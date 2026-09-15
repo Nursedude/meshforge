@@ -846,26 +846,92 @@ fi
 # predates the newest code commit, restart it. Output format
 # matches the remote sync (one tagged line per unit) so the operator
 # scans one table.
+# ---------------------------------------------------------------------------
+# self_skip — a self-leg skip that SPEAKS (2026-09-15).
+#
+# sync_local_unit and sync_local_user_unit each had SIX early returns and five
+# of them were bare `return 0` with no line and no counter, so a skipped unit
+# was indistinguishable from a unit that was never installed AND invisible in
+# the "N ok, 0 failed" tally. That is how meshforge-mini-dudeai silently missed
+# a code deploy on the federator while all 8 remotes restarted: the log said
+# 121 actions ok / 0 failed and the manager box kept running yesterday's mini.
+# The remote leg (sync_repo/sync_user_unit) has always printed no_unit /
+# not_running / restarted; only the SELF leg was dark. The author had already
+# reached this conclusion for ONE branch -- "Emit a clean line so the operator
+# can confirm self was checked (silence here would be confusing)" -- and the
+# other five kept the silence.
+#
+# Severity is deliberate, and split (honest_failure_modes #2: unobservable is
+# never healthy):
+#   PASS  absent-by-design / operator-disabled -- a real, benign answer.
+#   SKIP  no repo here -- nothing to be current WITH.
+#   WARN  we could NOT determine whether this daemon is current. An active
+#         unit with no MainPID, an unreadable /proc, or a repo whose history
+#         shows no code commit are not benign: each one silently disables the
+#         restart-on-code-change contract for that unit, forever, quietly.
+# ---------------------------------------------------------------------------
+self_skip() {
+    local unit="$1" reason="$2" level="${3:-PASS}"
+    local self_tag
+    self_tag="self ($(hostname -s))"
+    printf '[%-30s] %s %s %s\n' "$self_tag" "$level" "$unit" "$reason"
+    case "$level" in
+        PASS) action_pass=$((action_pass + 1)) ;;
+        WARN) action_warn=$((action_warn + 1)) ;;
+        SKIP) action_skip=$((action_skip + 1)) ;;
+        *)    action_fail=$((action_fail + 1)) ;;
+    esac
+    return 0
+}
+
 sync_local_unit() {
     local unit="$1" repo="$2"
     local self_tag
     self_tag="self ($(hostname -s))"
 
+    # A miss here is AMBIGUOUS and must not be read as "absent by design":
+    # `list-unit-files` exits 1 both when the unit is genuinely not installed
+    # and when the manager cannot be reached at all (measured 2026-09-15 --
+    # a dead user bus exits 1 identically). So confirm the manager is alive
+    # before calling an absence benign; an absence we cannot cross-check
+    # proves nothing (honest_failure_modes #2).
     if ! systemctl list-unit-files "${unit}.service" 2>/dev/null | grep -q "$unit"; then
-        return 0  # not installed locally — silent skip
-    fi
-    if ! systemctl is-active "${unit}.service" >/dev/null 2>&1; then
-        # Honor operator-disabled / not-running units the same way the
-        # remote sync_repo does — don't resurrect them.
+        if systemctl show --property=Version >/dev/null 2>&1; then
+            self_skip "$unit" "no_unit (not installed on this box)" PASS
+        else
+            self_skip "$unit" "UNKNOWN systemd unreachable — this box's units were NOT checked" WARN
+        fi
         return 0
     fi
+    # Tri-state, NOT a boolean (honest_failure_modes #1). A non-zero
+    # `is-active` conflates "the operator stopped it" with "I could not reach
+    # the manager at all" -- and the second is the likelier reason a unit
+    # silently misses a deploy during a busy 9-box sync. Only the states that
+    # really mean not-running may be treated as benign; anything else is
+    # UNKNOWN and says so, because a unit we cannot read is not a unit we
+    # know to be fine.
+    local active_state
+    active_state="$(systemctl is-active "${unit}.service" 2>/dev/null || true)"
+    case "$active_state" in
+        active) : ;;
+        inactive|failed|deactivating)
+            # Honor operator-disabled / not-running units the same way the
+            # remote sync_repo does — don't resurrect them.
+            self_skip "$unit" "not_running ($active_state — left as the operator set it)" PASS
+            return 0 ;;
+        *)
+            self_skip "$unit" "UNKNOWN is-active said '${active_state:-<no answer>}' — cannot tell if it is running" WARN
+            return 0 ;;
+    esac
     if [ ! -d "$repo/.git" ]; then
+        self_skip "$unit" "no_repo ($repo)" SKIP
         return 0
     fi
 
     local pid daemon_started newest_code_commit now
     pid="$(systemctl show "${unit}.service" -p MainPID --value 2>/dev/null)"
     if [ -z "$pid" ] || [ "$pid" = "0" ]; then
+        self_skip "$unit" "UNKNOWN no MainPID though the unit is active — restart-on-code-change is OFF for it" WARN
         return 0
     fi
     # /proc/<pid> directory's mtime is the process creation time
@@ -873,7 +939,8 @@ sync_local_unit() {
     # daemon's first request handling, which is what we want.
     daemon_started="$(stat -c %Y "/proc/$pid" 2>/dev/null || echo 0)"
     if [ "$daemon_started" = "0" ]; then
-        return 0  # couldn't read; skip silently rather than thrash
+        self_skip "$unit" "UNKNOWN /proc/$pid unreadable — cannot tell if it is current" WARN
+        return 0
     fi
 
     # Most-recent commit touching daemon-relevant paths. Matches the
@@ -882,7 +949,8 @@ sync_local_unit() {
     newest_code_commit="$(git -C "$repo" log -1 --format=%ct \
         -- 'src/*' 'pyproject.toml' 'requirements*.txt' 2>/dev/null)"
     if [ -z "$newest_code_commit" ]; then
-        return 0  # no code commits ever (unlikely) — skip
+        self_skip "$unit" "UNKNOWN no code commit found in $repo — cannot date the code" WARN
+        return 0
     fi
 
     if [ "$newest_code_commit" -le "$daemon_started" ]; then
@@ -965,29 +1033,59 @@ sync_local_user_unit() {
     case "$unit" in
         *@*) unit_file="${unit%%@*}@" ;;
     esac
+    # A miss here is AMBIGUOUS and must not be read as "absent by design":
+    # `list-unit-files` exits 1 both when the unit is genuinely not installed
+    # and when the manager cannot be reached at all (measured 2026-09-15 --
+    # a dead user bus exits 1 identically). So confirm the manager is alive
+    # before calling an absence benign; an absence we cannot cross-check
+    # proves nothing (honest_failure_modes #2).
     if ! systemctl --user list-unit-files "${unit_file}.service" 2>/dev/null | grep -q "${unit_file}.service"; then
-        return 0  # not installed locally — silent skip
+        if systemctl --user show --property=Version >/dev/null 2>&1; then
+            self_skip "$unit" "no_unit (not installed on this box)" PASS
+        else
+            self_skip "$unit" "UNKNOWN systemd --user unreachable — this box's user units were NOT checked" WARN
+        fi
+        return 0
     fi
-    if ! systemctl --user is-active "${unit}.service" >/dev/null 2>&1; then
-        return 0  # honor operator-disabled / not-running units
-    fi
+    # Tri-state, NOT a boolean (honest_failure_modes #1). A non-zero
+    # `is-active` conflates "the operator stopped it" with "I could not reach
+    # the manager at all" -- and the second is the likelier reason a unit
+    # silently misses a deploy during a busy 9-box sync. Only the states that
+    # really mean not-running may be treated as benign; anything else is
+    # UNKNOWN and says so, because a unit we cannot read is not a unit we
+    # know to be fine.
+    local active_state
+    active_state="$(systemctl --user is-active "${unit}.service" 2>/dev/null || true)"
+    case "$active_state" in
+        active) : ;;
+        inactive|failed|deactivating)
+            self_skip "$unit" "not_running ($active_state — left as the operator set it)" PASS
+            return 0 ;;
+        *)
+            self_skip "$unit" "UNKNOWN is-active said '${active_state:-<no answer>}' — user bus unreadable, cannot tell if it is running" WARN
+            return 0 ;;
+    esac
     if [ ! -d "$repo/.git" ]; then
+        self_skip "$unit" "no_repo ($repo)" SKIP
         return 0
     fi
 
     local pid daemon_started newest_code_commit now
     pid="$(systemctl --user show "${unit}.service" -p MainPID --value 2>/dev/null)"
     if [ -z "$pid" ] || [ "$pid" = "0" ]; then
+        self_skip "$unit" "UNKNOWN no MainPID though the unit is active — restart-on-code-change is OFF for it" WARN
         return 0
     fi
     daemon_started="$(stat -c %Y "/proc/$pid" 2>/dev/null || echo 0)"
     if [ "$daemon_started" = "0" ]; then
+        self_skip "$unit" "UNKNOWN /proc/$pid unreadable — cannot tell if it is current" WARN
         return 0
     fi
 
     newest_code_commit="$(git -C "$repo" log -1 --format=%ct \
         -- 'src/*' 'pyproject.toml' 'requirements*.txt' 2>/dev/null)"
     if [ -z "$newest_code_commit" ]; then
+        self_skip "$unit" "UNKNOWN no code commit found in $repo — cannot date the code" WARN
         return 0
     fi
 
