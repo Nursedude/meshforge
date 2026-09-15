@@ -165,6 +165,7 @@ fi
 #     and this assertion guards that the remote probe still INTERPOLATES it
 #     rather than re-spelling it: a literal pathspec reappearing in
 #     honest_status.sh is the regression, and it must fail HERE.
+. "$HERE/../scripts/lib/code_paths.sh"
 CODEHEAD_TEST="$HERE/test_honest_status_skew_codehead.sh"
 spec_real=$(printf '%s' "$src" | grep -o 'log -1 --format=%ct -- [^2]*2>/dev/null' | head -1 | sed 's/.*-- //; s/ *2>\/dev\/null//')
 if [ "$spec_real" = "\$MF_DAEMON_CODE_PATHS" ]; then
@@ -184,7 +185,11 @@ fi
 #     sentence to be rewritten alongside (2026-08-12 re-review).
 prose_paren=$(printf '%s' "$src" | grep -o 'behind on NON-code only ([^)]*)' | head -1)
 overlap=""
-for p in $spec_real; do
+# Iterate the REAL members. This used to walk $spec_real, which after the
+# pathspec became an interpolated variable was the single token
+# "$MF_DAEMON_CODE_PATHS" — a loop over one literal that could never overlap,
+# i.e. a guard that had quietly stopped guarding.
+for p in $MF_DAEMON_CODE_PATHS; do
   base=${p%%.*}   # requirements.txt -> requirements
   case "$prose_paren" in *"$base"*) overlap="$overlap $p";; esac
 done

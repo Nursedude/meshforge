@@ -621,7 +621,7 @@ udark_note=""
 # "no unit is behind on code" while six are behind on a corpus mini indexes is
 # a true sentence that must not be printed alone.
 prose_note=""
-[ "$skew_prose" -gt 0 ] && prose_note=" ; $skew_prose behind on NON-code only (docs/.claude/evals — still real for mini's oracle corpus)${skew_prose_desc}"
+[ "$skew_prose" -gt 0 ] && prose_note=" ; $skew_prose behind on NON-code only (docs/.claude/evals/scripts/templates — not loaded by a resident daemon, but still real for mini's oracle corpus and for cron-invoked tooling)${skew_prose_desc}"
 # Coverage disclosure, and it rides every outcome line for the same reason the
 # prose bucket does: "every active unit is current" is only true of the units
 # the leg can SEE. A venv interpreter that resolved to no repo may have that

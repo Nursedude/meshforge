@@ -23,49 +23,53 @@
 # case is the one that bites: a pyproject.toml-only change would have
 # fleet_sync restarting daemons that honest_status calls current.
 # honest_failure_modes #5 — two consumers of one artifact share ONE constant.
-# Resolved by UNION (honest_status's list plus fleet_sync's pyproject.toml),
-# not by picking a favourite: each list was missing something real.
+# Resolved by adopting the NARROW list (the remote classifier's, which is the
+# one with measurements behind it) plus fleet_sync's pyproject.toml, which
+# honest_status had been missing. A union was tried first and reverted: see
+# WHAT COUNTS below for why, and for the gap that choice leaves open.
 #
-# WHAT COUNTS. The canonical list is the UNION of what the three consumers
-# used, because the two risks are wildly asymmetric: being over-broad costs a
-# needless daemon restart (seconds, safe), being too narrow lets a daemon run
-# stale code forever — which is the bug that produced this file.
+# WHAT COUNTS — and this list is NARROW on purpose, after the union was tried
+# and reverted on 2026-09-15 (operator call). Two prior decisions, each with a
+# measurement behind it, say so:
 #
-#   src               the obvious case: importable modules
-#   scripts           ⚠️ NOT a tooling-only directory on this fleet. Resident
-#                     units ExecStart straight out of it — verified 2026-09-15:
-#                     nomadnet-silence-watch runs
-#                     `/usr/bin/python3 /opt/meshforge/scripts/nomadnet_silence_watch.py`.
-#                     Dropping it would mean that daemon NEVER restarts when
-#                     its own source changes. A 2026-08-12 review had already
-#                     established this ("resident daemons live there") and a
-#                     2026-09-15 session re-derived the opposite from the
-#                     directory's NAME, was wrong, and was caught by
-#                     tests/test_honest_status_skew_codehead.sh. Check
-#                     ExecStart before you believe a directory is inert.
-#   templates         unit FILES. A change means the installed unit is stale
-#                     even though the process's Python did not move; the
-#                     conservative reading (flag it, let the installer settle
-#                     it) is the one that cannot hide a stale deployment.
-#   pyproject.toml    packaging + dependency pins the interpreter resolves.
-#                     Only fleet_sync had this; honest_status did not, so a
-#                     pyproject-only change restarted daemons that the fleet
-#                     report called current. The mirror of the scripts/ gap.
+#   * 2026-05-11 — scripts/ was IN, and tuning scripts/cloud/push_snapshot.sh
+#     "triggered fleet-wide map restarts for no benefit". The map does not
+#     import that file. Excluded, and the remote classifier has carried that
+#     exclusion ever since.
+#   * templates/ cannot take effect through this mechanism AT ALL: fleet_sync
+#     uses `try-restart`, never `daemon-reload`, so a changed unit file is not
+#     picked up by the restart it would trigger. Including it is pointless by
+#     construction, not a judgement call.
+#
+#   src               the daemon's own importable modules
+#   pyproject.toml    packaging + dependency pins the interpreter resolves
 #   requirements      the requirements/ directory (e.g. requirements/rns.txt)
 #   requirements.txt  the top-level pin file
 #
-# ⚠️ The honest limit of this constant: "is this daemon behind its code?" is
-# really a PER-UNIT question — what a unit loads depends on its own ExecStart,
-# and mini-dudeai (`-m mini_dudeai`, from src/) genuinely does not care about a
-# scripts/ commit. One global pathspec cannot express that, so it answers the
-# union and over-restarts rather than under-restarts. If that churn ever costs
-# more than it saves, the fix is per-unit attribution from ExecStart — NOT
-# trimming this list, which is how a daemon goes quietly stale.
+# ⚠️ KNOWN GAP, deliberately accepted — do NOT "fix" it by widening this list.
+# Some resident daemons ExecStart straight out of scripts/:
+#
+#     nomadnet-silence-watch
+#       /usr/bin/python3 /opt/meshforge/scripts/nomadnet_silence_watch.py
+#
+# A commit touching only that file does not move this code-head, so the daemon
+# can keep running pre-fix code. This is not hypothetical: 366b435d
+# (2026-09-02, "a box with no NomadNet logfile is INERT, not silent" — the cure
+# for a LATCHING alarm) touched only scripts/nomadnet_silence_watch.py and its
+# test, and the code-head at that commit resolved to a src/ commit 7.8 HOURS
+# EARLIER, so a daemon started in that window read "current".
+#
+# Widening brought back the 05-11 churn, so the real fix is PER-UNIT
+# attribution: resolve each unit's ExecStart and let the file it actually runs
+# decide its restart, falling back to this list otherwise. That satisfies both
+# decisions at once — the map ignores push_snapshot.sh, nomadnet-silence-watch
+# restarts on its own source. Until that exists, the gap stands and is written
+# down here rather than being quietly absorbed.
 
 #: Pathspecs for code a resident daemon has loaded. Word-split on purpose:
 #: every consumer passes it unquoted after `--` so each entry is its own
 #: pathspec. Plain directory names match recursively; no globs needed.
-MF_DAEMON_CODE_PATHS="src scripts templates pyproject.toml requirements requirements.txt"
+MF_DAEMON_CODE_PATHS="src pyproject.toml requirements requirements.txt"
 
 # mf_code_head <repo> -> epoch seconds of the newest commit touching that code,
 # or EMPTY when git fails or the paths were never touched. Empty is NOT zero:

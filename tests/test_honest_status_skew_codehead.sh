@@ -105,27 +105,48 @@ r=$(classify $((T_DOCS - 100)) "$HEAD_B" "garbage")
 [ "$r" = B ] && ok "non-numeric code-head falls back to HEAD" \
   || bad "non-numeric code-head falls back to HEAD" "got $r"
 
-# ── scripts/ IS code (2026-08-12 review): resident daemons live there ─
-# nomadnet-silence-watch-user.service is Type=simple with
-# ExecStart=scripts/nomadnet_silence_watch.py, and MeshAnchor keeps its
-# systemd unit files under scripts/ — the original "exec'd fresh per
-# invocation" exclusion premise was false on both repos, and a code-stale
-# resident watcher read "behind on prose only" (the demotion the FAIL-SAFE
-# above exists to forbid).
+# ── scripts/ and templates/ are NOT in the code-head (2026-09-15) ────
+# ⚠️ READ THIS BEFORE FLIPPING IT BACK. This pair of assertions has now been
+# reversed twice, because BOTH directions are defensible and each has a
+# measurement behind it:
+#
+#   2026-05-11  scripts/ was IN. Tuning scripts/cloud/push_snapshot.sh
+#               "triggered fleet-wide map restarts for no benefit" — the map
+#               does not import it. Excluded.
+#   2026-08-12  scripts/ went back IN: nomadnet-silence-watch is Type=simple
+#               with ExecStart=scripts/nomadnet_silence_watch.py, and
+#               MeshAnchor keeps its systemd unit files under scripts/, so
+#               "exec'd fresh per invocation" was false on both repos.
+#   2026-09-15  OUT again (operator call). A session widened the shared
+#               constant to the union, measured the result, and found it
+#               re-created the 05-11 churn on the manager box while fixing
+#               nothing on the remote leg — whose classifier had kept the
+#               narrow list the whole time, so the two legs now DISAGREED.
+#               templates/ settles cleanly on its own: fleet_sync restarts
+#               with `try-restart`, never `daemon-reload`, so a changed unit
+#               file cannot take effect through the restart it would trigger.
+#
+# ⚠️ THE GAP THIS LEAVES, accepted knowingly and NOT to be closed by widening:
+# a commit touching only scripts/nomadnet_silence_watch.py does not move the
+# code-head, so that daemon can keep running pre-fix code. Real instance:
+# 366b435d (2026-09-02, the cure for a LATCHING alarm) touched only that file
+# and its test; the code-head there resolved to a src/ commit 7.8 hours
+# earlier. The fix is PER-UNIT ExecStart attribution, not a wider constant —
+# see scripts/lib/code_paths.sh.
 mk "$D/a" scripts/thing.sh $((T_DOCS + 1000))
 HEAD_A2=$(git -C "$D/a" show -s --format=%ct HEAD)
 CODE_A2=$(hs_codehead "$D/a")
-[ "$CODE_A2" = $((T_DOCS + 1000)) ] && ok "a scripts/ commit DOES move the code-head (resident daemons live there)" \
-  || bad "a scripts/ commit DOES move the code-head" "got $CODE_A2"
+[ "$CODE_A2" != $((T_DOCS + 1000)) ] && ok "a scripts/ commit does NOT move the code-head (05-11 churn)" \
+  || bad "a scripts/ commit does NOT move the code-head" "got $CODE_A2 — the union is back"
 r=$(classify $((T_CODE + 100)) "$HEAD_A2" "$CODE_A2")
-[ "$r" = B ] && ok "scripts/ commit lands a stale unit in CODE, not PROSE" \
-  || bad "scripts/ commit lands a stale unit in CODE" "got $r"
+[ "$r" = P ] && ok "scripts/ commit lands a stale unit in PROSE, not CODE" \
+  || bad "scripts/ commit lands a stale unit in PROSE" "got $r"
 
-# ── templates/ IS code: a unit-file change must move the code-head ───
+# ── templates/ is NOT code: try-restart cannot apply a unit-file change ──
 mk "$D/a" templates/systemd/u.service $((T_DOCS + 2000))
 CODE_A3=$(hs_codehead "$D/a")
-[ "$CODE_A3" = $((T_DOCS + 2000)) ] && ok "a templates/ commit DOES move the code-head" \
-  || bad "a templates/ commit DOES move the code-head" "got $CODE_A3"
+[ "$CODE_A3" != $((T_DOCS + 2000)) ] && ok "a templates/ commit does NOT move the code-head" \
+  || bad "a templates/ commit does NOT move the code-head" "got $CODE_A3"
 
 # ── top-level requirements.txt IS code: the meshforge-maps shape ─────
 # git pathspec `requirements` matches only the DIRECTORY; meshforge-maps
