@@ -56,6 +56,9 @@ SELF="$(hostname 2>/dev/null || echo localhost)"
 # two-consumers-two-constants drift the box list exists to end, one tier up
 # (honest_failure_modes #5; 2026-07-28 review). A missing lib falls through to
 # the SELF-ONLY branch below, which is loud and never eligible for fleet PASS.
+_HS_CODEPATHS="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/code_paths.sh"
+[ -r "$_HS_CODEPATHS" ] || { echo "honest_status: missing $_HS_CODEPATHS" >&2; exit 3; }
+. "$_HS_CODEPATHS"
 _HS_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/fleet_hosts.sh"
 _hs_resolved=0
 if [ -f "$_HS_LIB" ]; then
@@ -554,7 +557,10 @@ for b in $BOXES; do
 # Newest commit touching CODE the repo's resident units load. Empty (git
 # error / paths never touched) FALLS BACK to that repo's HEAD below, so an
 # unresolvable code-head can never demote a unit into the prose bucket.
-hs_codehead() { git -C \"\$1\" log -1 --format=%ct -- src requirements requirements.txt templates scripts 2>/dev/null; }
+# The pathspec is interpolated from lib/code_paths.sh so this remote probe and
+# fleet_sync cannot drift again; scripts/ and templates/ are deliberately NOT
+# in it (a daemon loads neither) — see that file for the exclusion rationale.
+hs_codehead() { git -C \"\$1\" log -1 --format=%ct -- $MF_DAEMON_CODE_PATHS 2>/dev/null; }
 if [ -e $REPO/.git ]; then
   HTMF=\$(git -C $REPO show -s --format=%ct HEAD 2>/dev/null); [ -n \"\$HTMF\" ] || HTMF=SKIP
   HTMA=\$(git -C /opt/meshanchor show -s --format=%ct HEAD 2>/dev/null); [ -n \"\$HTMA\" ] || HTMA=SKIP

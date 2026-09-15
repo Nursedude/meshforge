@@ -21,15 +21,21 @@
 # for the same input, so if the fixture ever stops exercising the difference
 # this harness fails instead of quietly passing.
 set -u
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 D="$(mktemp -d)"; trap 'rm -rf "$D"' EXIT
 fails=0
 ok()   { printf '  %-56s ok\n' "$1"; }
 bad()  { printf '  %-56s FAIL — %s\n' "$1" "$2"; fails=$((fails+1)); }
 
-# THE function under test, copied verbatim from honest_status.sh.
-# (test_honest_status_skew_repos.sh #10 pins that this copy matches the real
-# one, so the two hardcodes cannot drift apart silently.)
-hs_codehead() { git -C "$1" log -1 --format=%ct -- src requirements requirements.txt templates scripts 2>/dev/null; }
+# THE function under test. 2026-09-15: this used to be a VERBATIM COPY of the
+# pathspec, i.e. a fourth independent hardcode — so the test validated its own
+# declaration and could pass while the real definition said something else.
+# It now SOURCES the one definition (scripts/lib/code_paths.sh), which is what
+# honest_status.sh interpolates into its remote probe and what fleet_sync.sh
+# and fleet_pull.sh call directly. A checker must not re-declare the artifact
+# it validates.
+. "$HERE/../scripts/lib/code_paths.sh"
+hs_codehead() { mf_code_head "$1"; }
 
 mk() {  # $1=repo  $2=path  $3=epoch
   mkdir -p "$(dirname "$1/$2")"; echo x >> "$1/$2"

@@ -158,21 +158,20 @@ else
   fail "the CLEAN skew line still carries the prose bucket"
 fi
 
-# 10. The CODE pathspec exists as TWO hardcodes — hs_codehead inside the
-#     remote heredoc here, and the verbatim copy in
-#     test_honest_status_skew_codehead.sh — and two consumers of one constant
-#     must not drift (honest_failure_modes #5; 2026-08-12 review). Extract
-#     the pathspec (between `--` and the redirect) from both and compare, so
-#     widening/narrowing the real one while the behavioural test keeps
-#     validating the stale copy fails HERE instead of staying green.
+# 10. The CODE pathspec used to exist as FOUR independent hardcodes — here,
+#     the behavioural test, fleet_sync.sh (x2) and fleet_pull.sh's whole-repo
+#     variant — and on 2026-09-15 three of them genuinely disagreed in
+#     production (see scripts/lib/code_paths.sh). There is now ONE definition
+#     and this assertion guards that the remote probe still INTERPOLATES it
+#     rather than re-spelling it: a literal pathspec reappearing in
+#     honest_status.sh is the regression, and it must fail HERE.
 CODEHEAD_TEST="$HERE/test_honest_status_skew_codehead.sh"
 spec_real=$(printf '%s' "$src" | grep -o 'log -1 --format=%ct -- [^2]*2>/dev/null' | head -1 | sed 's/.*-- //; s/ *2>\/dev\/null//')
-spec_copy=$(grep -o 'log -1 --format=%ct -- [^2]*2>/dev/null' "$CODEHEAD_TEST" 2>/dev/null | head -1 | sed 's/.*-- //; s/ *2>\/dev\/null//')
-if [ -n "$spec_real" ] && [ "$spec_real" = "$spec_copy" ]; then
-  pass "hs_codehead pathspec matches its copy in the behavioural test ($spec_real)"
+if [ "$spec_real" = "\$MF_DAEMON_CODE_PATHS" ]; then
+  pass "hs_codehead interpolates the shared constant, not a literal ($spec_real)"
 else
-  fail "hs_codehead pathspec matches its copy in the behavioural test"
-  printf '    real: %s\n    copy: %s\n' "${spec_real:-<none>}" "${spec_copy:-<none>}"
+  fail "hs_codehead interpolates the shared constant, not a literal"
+  printf '    found: %s\n    want : $MF_DAEMON_CODE_PATHS (from scripts/lib/code_paths.sh)\n' "${spec_real:-<none>}"
 fi
 
 # 11. The prose_note sentence's parenthetical names the CODE pathspec's

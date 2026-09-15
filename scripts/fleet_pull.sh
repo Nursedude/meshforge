@@ -56,6 +56,7 @@ BRANCH=$(git -C "$REPO_DIR" branch --show-current 2>/dev/null || echo "?")
 # — the deployer and the gate that verifies its deploys must read the SAME
 # list, and hand-copies of this chain had already diverged (2026-07-28 review).
 REPO_BASE="$(basename "$REPO_DIR")"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/code_paths.sh"
 FP_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fleet_hosts.sh"
 if [ ! -f "$FP_LIB" ]; then
     echo "fleet_pull: missing $FP_LIB — cannot resolve the host list." >&2
@@ -210,7 +211,13 @@ if [ "$failures" -eq 0 ] && [ "$(basename "$REPO_DIR")" = "meshforge" ] \
         # not actually derived from anything is worse than no nag.)
         map_started_raw=$(systemctl show meshforge-map -p ActiveEnterTimestamp --value 2>/dev/null)
         map_started=$(date -d "$map_started_raw" +%s 2>/dev/null || echo 0)
-        head_ct=$(git -C "$REPO_DIR" log -1 --format=%ct 2>/dev/null || echo 0)
+        # Daemon-loaded code only (lib/code_paths.sh), NOT the whole repo's
+        # HEAD. This nagged about meshforge-map after 712ac491 — a commit that
+        # touched one shell script and nothing the map could possibly load —
+        # and `server_class_skew` was `{}`, as it had to be. A nag that fires
+        # on commits its subject cannot load trains the reader to ignore it.
+        head_ct=$(mf_code_head "$REPO_DIR" 2>/dev/null || echo 0)
+        [ -n "$head_ct" ] || head_ct=0
         # Only nag when HEAD is NEWER than the running process (the risky case).
         if [ "${map_started:-0}" -gt 0 ] && [ "${head_ct:-0}" -gt 0 ] \
            && [ "$map_started" -lt "$head_ct" ]; then

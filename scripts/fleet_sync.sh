@@ -89,6 +89,10 @@ done
 # Locate host list via THE shared resolver (scripts/lib/fleet_hosts.sh) —
 # this was one of ~13 independent copies of the chain (converged 2026-07-29).
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fleet_hosts.sh"
+# THE definition of "code a running daemon loaded" (scripts/lib/code_paths.sh).
+# Was inlined here in two places and differed from honest_status.sh's and
+# fleet_pull.sh's — see that file's header for what the drift cost.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/code_paths.sh"
 FLEET_FILE=""
 fleet_hosts_resolve "/opt/meshforge" && FLEET_FILE="$FLEET_HOSTS_FILE"
 
@@ -943,11 +947,10 @@ sync_local_unit() {
         return 0
     fi
 
-    # Most-recent commit touching daemon-relevant paths. Matches the
-    # remote classifier's include list: src/, pyproject.toml,
-    # requirements*.txt. `--` separates path filters from refs.
-    newest_code_commit="$(git -C "$repo" log -1 --format=%ct \
-        -- 'src/*' 'pyproject.toml' 'requirements*.txt' 2>/dev/null)"
+    # Most-recent commit touching daemon-relevant paths — ONE definition,
+    # shared with honest_status.sh and fleet_pull.sh (lib/code_paths.sh).
+    # It really did NOT match the remote classifier before 2026-09-15.
+    newest_code_commit="$(mf_code_head "$repo")"
     if [ -z "$newest_code_commit" ]; then
         self_skip "$unit" "UNKNOWN no code commit found in $repo — cannot date the code" WARN
         return 0
@@ -1082,8 +1085,7 @@ sync_local_user_unit() {
         return 0
     fi
 
-    newest_code_commit="$(git -C "$repo" log -1 --format=%ct \
-        -- 'src/*' 'pyproject.toml' 'requirements*.txt' 2>/dev/null)"
+    newest_code_commit="$(mf_code_head "$repo")"
     if [ -z "$newest_code_commit" ]; then
         self_skip "$unit" "UNKNOWN no code commit found in $repo — cannot date the code" WARN
         return 0
