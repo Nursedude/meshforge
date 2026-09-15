@@ -38,6 +38,20 @@ from .base import Condition, Source
 #: 2.5 cadences of the 10-minute ladder cron — same threshold the fleet page uses.
 DEFAULT_STALE_S = 25 * 60
 
+#: Consecutive unclean ladder ticks before a ``concern`` (loss below the fail
+#: bar — at a 20-packet sample, ONE dropped packet) is worth escalating.
+#:
+#: 2026-09-15: the ladder called one lost packet a FAIL, so ~8 escalations a
+#: day rode on ~0.1% far-path loss — a clean link. The ladder now separates
+#: fail from concern; this is the judging half. A ``fail`` or an ``unknown``
+#: still escalates on the FIRST tick: persistence is only asked of the
+#: weakest evidence, never of a measurement that already cleared the bar.
+#:
+#: The single suppressed tick is NOT swallowed — it stays in wan_path.json,
+#: in wan_path_history.jsonl, and in the ladder's own CONCERN cron_verdict
+#: line. What is withheld is the escalation, never the record.
+CONCERN_CONFIRM_TICKS = 2
+
 
 class WanPathSource(Source):
     """Emit the ladder's verdict, carrying the trace's localization when it has one."""
@@ -96,16 +110,34 @@ class WanPathSource(Source):
                 )
                 return
 
-        if status in ("fail", "concern", "unknown"):
-            yield Condition(
-                kind="wan_path_degraded",
-                subject=str(data.get("cause") or "unknown"),
-                detail="%s%s" % (data.get("message") or "no message",
-                                 self._trace_note(gen, now)),
-                source=self.name,
-                extras={
-                    "status": status,
-                    "cause": data.get("cause"),
-                    "worst_far_loss_pct": data.get("worst_far_loss_pct"),
-                },
-            )
+        if status not in ("fail", "concern", "unknown"):
+            return
+
+        streak = data.get("unclean_streak")
+        held = ""
+        if status == "concern":
+            if not isinstance(streak, int):
+                # An older ladder writes no streak. Absence is NOT permission
+                # to suppress — escalate and say the confirm could not run.
+                held = " · persistence UNKNOWN (ladder writes no unclean_streak)"
+            elif streak < CONCERN_CONFIRM_TICKS:
+                # One unclean tick of light loss is a dropped packet, not a
+                # degraded path. The row is on disk; only the page is held.
+                return
+
+        if isinstance(streak, int) and streak >= CONCERN_CONFIRM_TICKS:
+            held = " · unclean for %d consecutive ticks" % streak
+
+        yield Condition(
+            kind="wan_path_degraded",
+            subject=str(data.get("cause") or "unknown"),
+            detail="%s%s%s" % (data.get("message") or "no message",
+                               held, self._trace_note(gen, now)),
+            source=self.name,
+            extras={
+                "status": status,
+                "cause": data.get("cause"),
+                "worst_far_loss_pct": data.get("worst_far_loss_pct"),
+                "unclean_streak": streak,
+            },
+        )

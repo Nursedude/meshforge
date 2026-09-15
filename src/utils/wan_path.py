@@ -53,9 +53,25 @@ from utils.paths import get_real_user_home
 RUNGS = ("lan", "edge", "near", "far")
 
 #: Loss (percent) at or above which a rung is called broken.
-LOSS_FAIL_PCT = 5.0
-#: Ping count and interval per target: 20 probes at 0.2 s = 4 s per target,
-#: enough for 5% resolution without hammering anything.
+#:
+#: 2026-09-15: this was 5.0, which is EXACTLY the resolution floor of a
+#: 20-packet sample -- so the smallest loss the ladder can observe (one
+#: dropped packet) was also the threshold that called the path broken, and
+#: the "light loss" rung below it was unreachable by construction. Measured
+#: over 1008 samples / 7 days: 33 FAIL verdicts, ZERO concern verdicts, and
+#: every loss value a multiple of 5.0. Ten lost packets out of 8,640 per day
+#: (~0.1%, a clean link) produced ~8 FAIL verdicts a day, while the 03:02
+#: dish reboot -- a total WAN blackout -- rendered as the same one-packet
+#: shape. The alarm threshold must sit ABOVE the sampling floor, or the
+#: instrument cannot tell an outage from a stray packet.
+LOSS_FAIL_PCT = 10.0
+#: Loss at or above which a rung is "losing a little" -- one packet of 20.
+#: Kept strictly below LOSS_FAIL_PCT so this rung is actually REACHABLE; a
+#: change to PING_COUNT must keep that gap (TestSamplingFloor pins it).
+LOSS_CONCERN_PCT = 5.0
+#: Ping count and interval per target: 20 probes at 0.2 s = 4 s per target.
+#: This is the sampling floor: 1 packet = 100/PING_COUNT percent. Raising it
+#: buys finer resolution at proportional cost on every target, every run.
 PING_COUNT = 20
 PING_INTERVAL_S = 0.2
 PING_WAIT_S = 2
@@ -329,6 +345,8 @@ def classify(results: Sequence[RungResult], fail_pct: float = LOSS_FAIL_PCT) -> 
                            far_desc, ctx, ("%.0f%%" % near) if near is not None else "?"),
                        far, unmeasured)
     if far > 0:
+        # REACHABLE since 2026-09-15: with a 20-packet sample the smallest
+        # non-zero loss is 5%, which used to equal fail_pct and land above.
         return Verdict("concern", "transit",
                        "light loss beyond the ISP: %s (%s)" % (far_desc, ctx), far, unmeasured)
     status = "ok" if not unmeasured else "concern"
@@ -371,7 +389,25 @@ def _atomic_write(path: Path, text: str) -> None:
         raise
 
 
-def build_state(results: Sequence[RungResult], verdict: Verdict, now: Optional[float] = None) -> dict:
+def trailing_unclean(rows: Sequence[dict]) -> int:
+    """How many of the MOST RECENT consecutive history rows were not ``ok``.
+
+    Derived from the history the ladder already writes -- deliberately NOT a
+    new streak file. A saved streak that cannot be written freezes one below
+    its threshold and the condition can then never fire (the 2026-09-02
+    debounce-saver class, persistent_issues). Here, if history is unwritable
+    the ladder is already broken and ``wan_path_stale`` says so.
+    """
+    n = 0
+    for row in reversed(list(rows)):
+        if not isinstance(row, dict) or row.get("s") == "ok":
+            break
+        n += 1
+    return n
+
+
+def build_state(results: Sequence[RungResult], verdict: Verdict, now: Optional[float] = None,
+                prior_unclean: int = 0) -> dict:
     now = time.time() if now is None else now
     try:
         host = socket.gethostname().split(".")[0]
@@ -386,6 +422,11 @@ def build_state(results: Sequence[RungResult], verdict: Verdict, now: Optional[f
         "worst_far_loss_pct": verdict.worst_far_loss,
         "unmeasured": list(verdict.unmeasured),
         "fail_pct": LOSS_FAIL_PCT,
+        "concern_pct": LOSS_CONCERN_PCT,
+        # Counting THIS sample: 1 on the first unclean tick, 0 when clean.
+        # Lets a judging consumer require persistence before it escalates a
+        # single dropped packet, without inventing its own memory.
+        "unclean_streak": 0 if verdict.status == "ok" else int(prior_unclean) + 1,
         "rungs": [asdict(r) for r in results],
     }
 
@@ -458,7 +499,9 @@ def main(argv=None) -> int:
 
     results = [measure(t, args.count) for t in load_targets()]
     verdict = classify(results)
-    state = build_state(results, verdict)
+    # Read the streak BEFORE this run's row is appended, so it counts prior ticks.
+    state = build_state(results, verdict,
+                        prior_unclean=trailing_unclean(read_history(since_s=6 * 3600)))
     try:
         write_state(state)
     except OSError as exc:

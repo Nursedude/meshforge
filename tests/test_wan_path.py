@@ -45,9 +45,12 @@ class TestClassify:
         assert v.cause == "edge"
 
     def test_light_far_loss_is_concern_not_fail(self):
-        v = wp.classify(_ladder(far=(2.0, 0.0)))
+        # NOTE: the loss here must be a value the sampler can actually produce
+        # (a multiple of 100/PING_COUNT). This test used to pass 2.0%, which
+        # 20 packets can never yield, so it proved the branch worked while
+        # production could not reach it -- 1008 real samples, 0 concerns.
+        v = wp.classify(_ladder(far=(100.0 / wp.PING_COUNT, 0.0)))
         assert v.status == "concern" and v.cause == "transit"
-
     def test_far_loss_with_lossy_near_cannot_blame_transit_alone(self):
         v = wp.classify(_ladder(near=20.0, far=(20.0, 20.0)))
         assert v.status == "fail" and v.cause == "edge-or-transit"
@@ -61,6 +64,65 @@ class TestClassify:
         ladder = _ladder() + [R("far", "cloud-vps", "vps.example", error="unmeasured")]
         v = wp.classify(ladder)
         assert v.status == "concern" and "unmeasured: cloud-vps" in v.message
+
+
+class TestSamplingFloor:
+    """The alarm bar must sit ABOVE the smallest loss the sampler can see.
+
+    When LOSS_FAIL_PCT was 5.0 and PING_COUNT 20, one dropped packet was
+    exactly a FAIL and the concern rung was unreachable by construction.
+    These pin the gap so a future PING_COUNT change cannot silently re-close it.
+    """
+
+    def test_one_dropped_packet_is_not_a_failure(self):
+        one_packet = 100.0 / wp.PING_COUNT
+        v = wp.classify(_ladder(far=(one_packet, 0.0)))
+        assert v.status == "concern", (
+            "a single dropped packet of %d must not read as FAIL" % wp.PING_COUNT)
+
+    def test_two_dropped_packets_are_a_failure(self):
+        v = wp.classify(_ladder(far=(200.0 / wp.PING_COUNT, 0.0)))
+        assert v.status == "fail" and v.cause == "transit"
+
+    def test_the_concern_rung_is_reachable_at_this_sample_size(self):
+        floor = 100.0 / wp.PING_COUNT
+        assert floor <= wp.LOSS_CONCERN_PCT < wp.LOSS_FAIL_PCT, (
+            "concern is unreachable: the smallest observable loss (%.2f%%) must "
+            "be <= LOSS_CONCERN_PCT (%.2f%%) and strictly below LOSS_FAIL_PCT "
+            "(%.2f%%)" % (floor, wp.LOSS_CONCERN_PCT, wp.LOSS_FAIL_PCT))
+
+    def test_every_reachable_loss_below_the_bar_reads_concern(self):
+        step = 100.0 / wp.PING_COUNT
+        seen = set()
+        k = 1
+        while step * k < wp.LOSS_FAIL_PCT:
+            seen.add(wp.classify(_ladder(far=(step * k, 0.0))).status)
+            k += 1
+        assert seen == {"concern"}, seen
+        assert k > 1, "no reachable loss value sits below LOSS_FAIL_PCT"
+
+
+class TestTrailingUnclean:
+    def test_a_clean_tail_is_zero(self):
+        assert wp.trailing_unclean([{"s": "fail"}, {"s": "ok"}]) == 0
+
+    def test_counts_only_the_trailing_run(self):
+        rows = [{"s": "fail"}, {"s": "ok"}, {"s": "concern"}, {"s": "fail"}]
+        assert wp.trailing_unclean(rows) == 2
+
+    def test_no_history_is_zero(self):
+        assert wp.trailing_unclean([]) == 0
+
+    def test_a_corrupt_row_stops_the_count_rather_than_inflating_it(self):
+        assert wp.trailing_unclean(["junk", {"s": "fail"}]) == 1
+
+    def test_state_carries_the_streak_and_resets_on_clean(self):
+        clean = wp.build_state(_ladder(), wp.classify(_ladder()), now=1.0, prior_unclean=4)
+        assert clean["unclean_streak"] == 0
+        lossy_l = _ladder(far=(100.0 / wp.PING_COUNT, 0.0))
+        lossy = wp.build_state(lossy_l, wp.classify(lossy_l), now=1.0, prior_unclean=1)
+        assert lossy["unclean_streak"] == 2
+        assert lossy["concern_pct"] == wp.LOSS_CONCERN_PCT
 
 
 class TestParsing:

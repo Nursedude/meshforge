@@ -108,3 +108,51 @@ class TestStale:
         lp = _ladder(tmp_path, generated_at=time.time() - 9999)
         kinds = [c.kind for c in WanPathSource(ladder_path=lp).collect()]
         assert kinds == ["wan_path_stale"]
+
+
+class TestConcernNeedsPersistence:
+    """One dropped packet is not a degraded path (2026-09-15).
+
+    The ladder used to call a single lost packet of 20 a FAIL, because
+    LOSS_FAIL_PCT (5.0) sat exactly on the 20-packet sampling floor. It now
+    separates fail from concern, and this source asks light loss to persist
+    before it escalates — while never asking that of a fail or an unknown.
+    """
+
+    def _concern(self, tmp_path, **over):
+        doc = {"status": "concern", "cause": "transit",
+               "message": "light loss beyond the ISP: pypi 5%/56ms",
+               "worst_far_loss_pct": 5.0}
+        doc.update(over)
+        return _ladder(tmp_path, **doc)
+
+    def test_a_single_unclean_tick_of_light_loss_is_held(self, tmp_path):
+        path = self._concern(tmp_path, unclean_streak=1)
+        assert list(WanPathSource(ladder_path=path).collect()) == []
+
+    def test_a_persistent_concern_escalates_and_says_how_long(self, tmp_path):
+        path = self._concern(tmp_path, unclean_streak=3)
+        conds = list(WanPathSource(ladder_path=path).collect())
+        assert len(conds) == 1
+        assert "unclean for 3 consecutive ticks" in conds[0].detail
+        assert conds[0].extras["unclean_streak"] == 3
+
+    def test_a_missing_streak_escalates_rather_than_suppressing(self, tmp_path):
+        """Absence of the confirm is not permission to stay quiet."""
+        path = self._concern(tmp_path)          # no unclean_streak key at all
+        conds = list(WanPathSource(ladder_path=path).collect())
+        assert len(conds) == 1
+        assert "persistence UNKNOWN" in conds[0].detail
+
+    def test_a_non_integer_streak_escalates_too(self, tmp_path):
+        path = self._concern(tmp_path, unclean_streak="2")
+        conds = list(WanPathSource(ladder_path=path).collect())
+        assert len(conds) == 1 and "persistence UNKNOWN" in conds[0].detail
+
+    def test_a_fail_never_waits_for_a_second_tick(self, tmp_path):
+        path = _ladder(tmp_path, unclean_streak=1)      # status fail
+        assert len(list(WanPathSource(ladder_path=path).collect())) == 1
+
+    def test_an_unknown_never_waits_for_a_second_tick(self, tmp_path):
+        path = _ladder(tmp_path, status="unknown", unclean_streak=1)
+        assert len(list(WanPathSource(ladder_path=path).collect())) == 1
