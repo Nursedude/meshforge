@@ -46,52 +46,45 @@
 #   requirements      the requirements/ directory (e.g. requirements/rns.txt)
 #   requirements.txt  the top-level pin file
 #
-# ⚠️ KNOWN GAP, deliberately accepted — do NOT "fix" it by widening this list.
-# Some resident daemons ExecStart straight out of scripts/:
+# ✅ THE GAP THIS LIST USED TO LEAVE IS NOW CLOSED — BY MOVING THE CODE,
+# NOT BY WIDENING THE LIST (2026-09-15).
+#
+# Until this date exactly one resident daemon lived in scripts/:
 #
 #     nomadnet-silence-watch
-#       /usr/bin/python3 /opt/meshforge/scripts/nomadnet_silence_watch.py
+#       ExecStart=/usr/bin/python3 /opt/meshforge/scripts/nomadnet_silence_watch.py
 #
-# A commit touching only that file does not move this code-head, so the daemon
-# can keep running pre-fix code. This is not hypothetical: 366b435d
-# (2026-09-02, "a box with no NomadNet logfile is INERT, not silent" — the cure
-# for a LATCHING alarm) touched only scripts/nomadnet_silence_watch.py and its
-# test, and the code-head at that commit resolved to a src/ commit 7.8 HOURS
-# EARLIER, so a daemon started in that window read "current".
+# A commit touching only that file moved no code-head, so the daemon could keep
+# running pre-fix code. Not hypothetical: 366b435d (2026-09-02, "a box with no
+# NomadNet logfile is INERT, not silent" — the cure for a LATCHING alarm)
+# touched only that file and its test, and the code-head there resolved to a
+# src/ commit 7.8 HOURS EARLIER.
 #
-# Widening brought back the 05-11 churn. An earlier draft of this note named
-# PER-UNIT ExecStart attribution as "the real fix" — "let the file it actually
-# runs decide its restart". ⚠️ DO NOT BUILD THAT AS WRITTEN. It is wrong in two
-# ways, and it was written before anyone counted the population:
+# It now lives at src/monitoring/nomadnet_silence_watch.py and runs
+# `-m monitoring.nomadnet_silence_watch`, the same shape as every other
+# resident daemon. So this list is correct BY CONSTRUCTION: scripts/ means
+# operator-invoked tooling that is current the moment it lands, src/ means code
+# a resident process loads. Both dated decisions now agree instead of
+# contradicting — 05-11 excluded scripts/ on the premise that no daemon lives
+# there, and that premise is TRUE again.
 #
-#   1. It REPLACES the global list per unit, and file granularity is blind to
-#      TRANSITIVE IMPORTS. nomadnet_silence_watch.py imports from src/utils/*,
-#      so attributing it to its own file alone would stop catching src/ changes
-#      it depends on — a NEW under-restart gap wearing the appearance of
-#      precision. If it is ever built it must be ADDITIVE (this list UNION the
-#      unit's own ExecStart file), never a replacement.
-#   2. The population does not justify the machinery. Measured on the manager box
-#      2026-09-15: SIX units ExecStart out of scripts/, and FIVE are
-#      timers/oneshots (backup, ci-status, cloud-push, dep-advisory,
-#      dep-range) — invoked fresh each run, so never stale and pointless to
-#      restart. Exactly ONE is a long-lived Type=simple daemon:
-#      nomadnet-silence-watch. Every other resident daemon already runs
-#      `-m module` out of src/ (mini_dudeai, utils.watchdog_runner,
-#      lab.lxmf_echo, lab.lxmf_tracer, core.orchestrator) and is covered here
-#      already. Attribution would mean parsing `-m` module resolution and
-#      `bash -c` one-liners (meshforge-map's ExecStart is a buried shell
-#      string) for the nine units that do NOT need it, to serve the one that
-#      does. ⚠️ Measured on ONE box — sweep the fleet before trusting the count.
+# The fleet was SWEPT before choosing this (all 10 boxes, both scopes, 1,715
+# units): 310 Type=simple, 12 running a repo path, and exactly ONE out of
+# scripts/. Everything else already ran `-m module` or a src/ path.
 #
-# PREFERRED FIX: move the daemon's body into src/ and point ExecStart at
-# `-m`, like every other resident daemon. Then this list is correct BY
-# CONSTRUCTION, both dated decisions hold with no special case, and scripts/
-# goes back to meaning what 05-11 assumed it meant — operator-invoked tooling,
-# never resident daemon code. One file moved + a unit template edit, against a
-# design change inside a fragile REMOTE_SCRIPT with fleet-wide blast radius.
-# Fix the layout violation; do not teach the tool about the violation.
-#
-# Until then the gap stands, written down rather than quietly absorbed.
+# ⚠️ IF A DAEMON EVER LANDS IN scripts/ AGAIN, MOVE IT — do not widen this
+# list and do not add an exception entry for it. Two rejected alternatives,
+# both recorded so they are not re-proposed:
+#   * PER-UNIT ExecStart attribution — needs `-m` module resolution and
+#     `bash -c` parsing for the 11 units that do NOT need it to serve 1 that
+#     does, and at file granularity it is blind to TRANSITIVE IMPORTS (this
+#     daemon imports utils.fleet_hosts), so it would open a NEW under-restart
+#     gap while looking more precise.
+#   * An exception pathspec (`scripts/nomadnet_silence_watch.py` appended
+#     here) — one line and near-zero risk, but it teaches the tool about a
+#     layout violation instead of fixing it, and preserves the exact ambiguity
+#     that cost three sessions of argument (05-11, 08-12, 09-15).
+# Fix the layout; do not teach the tool about the violation.
 
 #: Pathspecs for code a resident daemon has loaded. Word-split on purpose:
 #: every consumer passes it unquoted after `--` so each entry is its own

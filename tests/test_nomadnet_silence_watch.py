@@ -1,6 +1,6 @@
 """Absence, blindness and silence are three different claims.
 
-Regression cover for the 2026-09-02 defect in scripts/nomadnet_silence_watch.py:
+Regression cover for the 2026-09-02 defect in src/monitoring/nomadnet_silence_watch.py:
 the remote probe ended `|| echo 0`, so a box with NO NomadNet logfile reported
 `now - 0` — seconds since the epoch. Four fleet boxes read as
 "quiet (29,806,174 min)" — 56.7 years — and latched into the alarm state
@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
-_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "nomadnet_silence_watch.py"
+_SCRIPT = Path(__file__).resolve().parent.parent / "src" / "monitoring" / "nomadnet_silence_watch.py"
 
 
 def _load():

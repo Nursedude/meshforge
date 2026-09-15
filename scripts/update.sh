@@ -400,7 +400,7 @@ if $USER_SVC_UPDATED; then
         # and would otherwise sit on OLD code after the pull (the #79 deploy
         # gap, surfaced 2026-06-15 by the §3b-ii honesty guard): the lab echo
         # responder (lab.lxmf_echo) and the nomadnet silence watcher
-        # (scripts/nomadnet_silence_watch.py). try-restart is a no-op on boxes
+        # (src/monitoring/nomadnet_silence_watch.py). try-restart is a no-op on boxes
         # that don't run them, and honors an operator-disabled unit. Oneshot
         # user units (synth-soak, lab-rollup, drain-snapshot, tracer, dream)
         # are deliberately NOT here — they pull fresh code at their next timer

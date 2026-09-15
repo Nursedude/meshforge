@@ -584,7 +584,7 @@ for cin in $(XDG_RUNTIME_DIR="$xdg2" systemctl --user list-units --plain --no-le
 done
 # Other long-lived USER daemons that run /opt/meshforge code (same #79 deploy
 # gap as mini): the lab echo responder (lab.lxmf_echo) and the nomadnet silence
-# watcher (scripts/nomadnet_silence_watch.py). Restart on the user bus so a code
+# watcher (src/monitoring/nomadnet_silence_watch.py). Restart on the user bus so a code
 # pull reaches the running daemon. no_unit / not_running PASS on boxes that do
 # not run them (try-restart honors absent/disabled).
 sync_user_unit meshforge-echo /opt/meshforge meshforge-echo "$MF_PRE_HEAD" || rc1f=$?

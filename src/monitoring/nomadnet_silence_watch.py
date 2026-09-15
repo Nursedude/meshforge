@@ -20,9 +20,9 @@ Usage — default reads peers from your fleet.json
 (``~/.config/meshforge/fleet.json`` by default; see
 ``scripts/fleet_sync.sh`` docs for the schema):
 
-    python3 scripts/nomadnet_silence_watch.py
-    python3 scripts/nomadnet_silence_watch.py --boxes host-a,host-b --quiet-min 30
-    python3 scripts/nomadnet_silence_watch.py --boxes host-a --poll-sec 60
+    PYTHONPATH=src python3 -m monitoring.nomadnet_silence_watch
+    PYTHONPATH=src python3 -m monitoring.nomadnet_silence_watch --boxes host-a,host-b --quiet-min 30
+    PYTHONPATH=src python3 -m monitoring.nomadnet_silence_watch --boxes host-a --poll-sec 60
 
 Stop with Ctrl+C.
 """
@@ -46,7 +46,11 @@ def _real_home() -> Path:
     return Path.home()
 
 
-_SRC_DIR = Path(__file__).resolve().parent.parent / "src"
+# This file lives in src/monitoring/, so src/ IS parent.parent. It was
+# scripts/-resident until 2026-09-15 (when the path was parent.parent/"src");
+# moving it here is what makes the deploy classifier correct BY CONSTRUCTION
+# rather than by an exception list — see scripts/lib/code_paths.sh.
+_SRC_DIR = Path(__file__).resolve().parent.parent
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 

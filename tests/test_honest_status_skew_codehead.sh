@@ -113,10 +113,18 @@ r=$(classify $((T_DOCS - 100)) "$HEAD_B" "garbage")
 #   2026-05-11  scripts/ was IN. Tuning scripts/cloud/push_snapshot.sh
 #               "triggered fleet-wide map restarts for no benefit" — the map
 #               does not import it. Excluded.
-#   2026-08-12  scripts/ went back IN: nomadnet-silence-watch is Type=simple
+#   2026-08-12  scripts/ went back IN: nomadnet-silence-watch WAS Type=simple
 #               with ExecStart=scripts/nomadnet_silence_watch.py, and
 #               MeshAnchor keeps its systemd unit files under scripts/, so
 #               "exec'd fresh per invocation" was false on both repos.
+#               !! THAT PREMISE NO LONGER HOLDS: on 2026-09-15 the daemon was
+#               MOVED to src/monitoring/nomadnet_silence_watch.py and now runs
+#               `-m monitoring.nomadnet_silence_watch`. A fleet sweep (10
+#               boxes, both scopes, 1,715 units) found it was the ONLY resident
+#               daemon in scripts/, so scripts/ is operator tooling again and
+#               05-11's premise is true once more. MeshAnchor's unit FILES are
+#               a separate matter: try-restart never daemon-reloads, so a unit
+#               file change cannot take effect through this path anyway.
 #   2026-09-15  OUT again (operator call). A session widened the shared
 #               constant to the union, measured the result, and found it
 #               re-created the 05-11 churn on the manager box while fixing
@@ -126,13 +134,19 @@ r=$(classify $((T_DOCS - 100)) "$HEAD_B" "garbage")
 #               with `try-restart`, never `daemon-reload`, so a changed unit
 #               file cannot take effect through the restart it would trigger.
 #
-# ⚠️ THE GAP THIS LEAVES, accepted knowingly and NOT to be closed by widening:
-# a commit touching only scripts/nomadnet_silence_watch.py does not move the
-# code-head, so that daemon can keep running pre-fix code. Real instance:
-# 366b435d (2026-09-02, the cure for a LATCHING alarm) touched only that file
-# and its test; the code-head there resolved to a src/ commit 7.8 hours
-# earlier. The fix is PER-UNIT ExecStart attribution, not a wider constant —
-# see scripts/lib/code_paths.sh.
+# ✅ THE GAP THAT USED TO LIVE HERE IS CLOSED — by MOVING THE CODE, not by
+# widening this list. Until 2026-09-15 exactly one resident daemon lived in
+# scripts/ (nomadnet-silence-watch), so a commit touching only
+# scripts/nomadnet_silence_watch.py moved no code-head and that daemon could
+# run pre-fix code — 366b435d (2026-09-02, the cure for a LATCHING alarm)
+# touched only that file and its test, and the code-head there resolved to a
+# src/ commit 7.8 HOURS earlier. It now lives at
+# src/monitoring/nomadnet_silence_watch.py and runs `-m`, so scripts/ is
+# operator tooling again and this list is right BY CONSTRUCTION.
+# ⚠️ An earlier note here called PER-UNIT ExecStart attribution "the fix".
+# RETRACTED: it is blind to transitive imports at file granularity, and a
+# fleet sweep (10 boxes, 1,715 units) found the population was ONE. If a
+# daemon ever lands in scripts/ again, MOVE IT.
 mk "$D/a" scripts/thing.sh $((T_DOCS + 1000))
 HEAD_A2=$(git -C "$D/a" show -s --format=%ct HEAD)
 CODE_A2=$(hs_codehead "$D/a")

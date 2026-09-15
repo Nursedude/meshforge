@@ -523,7 +523,7 @@ fi
 #   * scripts/ was excluded on the premise "exec'd fresh per invocation, no
 #     resident unit can be stale on one" — false on both repos:
 #     nomadnet-silence-watch-user.service is a Type=simple resident daemon
-#     whose ExecStart IS scripts/nomadnet_silence_watch.py, and MeshAnchor
+#     whose ExecStart IS src/monitoring/nomadnet_silence_watch.py, and MeshAnchor
 #     keeps its systemd unit files under scripts/ (meshanchor-daemon.service
 #     et al). A code-stale resident watcher read "behind on prose only".
 #   * git pathspec `requirements` matches only the DIRECTORY;

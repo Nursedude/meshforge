@@ -3,7 +3,7 @@
 #
 # Long-running detector for the silence-mode failure we caught on
 # 2026-05-11 (multiple boxes had NomadNet alive but doing nothing
-# for 8+ days). Pairs with scripts/nomadnet_silence_watch.py.
+# for 8+ days). Pairs with src/monitoring/nomadnet_silence_watch.py.
 #
 # Output → journal. Tail with:
 #   journalctl --user -u nomadnet-silence-watch -f
@@ -34,7 +34,8 @@ Type=simple
 Restart=on-failure
 RestartSec=10
 
-ExecStart=/usr/bin/python3 /opt/meshforge/scripts/nomadnet_silence_watch.py
+WorkingDirectory=/opt/meshforge/src
+ExecStart=/usr/bin/python3 -m monitoring.nomadnet_silence_watch
 
 StandardOutput=journal
 StandardError=journal

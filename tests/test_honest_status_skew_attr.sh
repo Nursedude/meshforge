@@ -39,8 +39,12 @@ run() { # $1 = record body
   printf '%s\n\n' "$1" | awk -v HTMF=2000 -v HCMF=2000 -v HTMA=3000 -v HCMA=3000 \
                              -v HTMM=4000 -v HCMM=4000 -f "$AWKF"
 }
-rec() { # $1=id $2=argv  -> a systemctl show record
-  printf 'Id=%s\nExecStart={ path=/x ; argv[]=%s ; }\nEnvironment=\nWorkingDirectory=\nActiveEnterTimestamp=@1000' "$1" "$2"
+rec() { # $1=id $2=argv [$3=WorkingDirectory]  -> a systemctl show record
+  # $3 added 2026-09-15: a `-m module` ExecStart carries NO repo path, so for
+  # such a unit WorkingDirectory is the ONLY membership evidence the attributor
+  # has. The fixture could not express it, so it modelled a unit that cannot
+  # exist and would have blessed a real blind spot.
+  printf 'Id=%s\nExecStart={ path=/x ; argv[]=%s ; }\nEnvironment=\nWorkingDirectory=%s\nActiveEnterTimestamp=@1000' "$1" "$2" "${3:-}"
 }
 expect() { # $1=label $2=expected $3=actual
   if [ "$2" = "$3" ]; then pass "$1"; else fail "$1"; printf '    want: [%s]\n    got : [%s]\n' "$2" "$3"; fi
@@ -53,8 +57,12 @@ out=$(run "$(rec meshforge-lxmd.service '/usr/local/bin/lxmd -p --config /home/x
 expect "packaged binary under an mf- name is NOT judged" "" "$out"
 
 # 2. THE FALSE NEGATIVES. Membership must not require the name prefix.
-out=$(run "$(rec nomadnet-silence-watch.service '/usr/bin/python3 /opt/meshforge/scripts/nomadnet_silence_watch.py')")
-expect "un-prefixed unit running repo code IS judged" "B /opt/meshforge nomadnet-silence-watch.service 0" "$out"
+#    The real shape since 2026-09-15: no meshforge- name prefix AND a `-m`
+#    ExecStart with no repo path in it — so membership rests entirely on
+#    WorkingDirectory. Moving this daemon into src/ closed a deploy gap and
+#    would have opened a REPORTING blind spot without that.
+out=$(run "$(rec nomadnet-silence-watch.service '/usr/bin/python3 -m monitoring.nomadnet_silence_watch' '/opt/meshforge/src')")
+expect "un-prefixed -m unit is judged via WorkingDirectory" "B /opt/meshforge nomadnet-silence-watch.service 0" "$out"
 #    ...and specifically the missing-hyphen shape that hid the orchestrator.
 out=$(run "$(rec meshanchor.service '/opt/meshanchor/venv/bin/python -m core.orchestrator')")
 expect "meshanchor.service (no hyphen) IS judged, against MA" "B /opt/meshanchor meshanchor.service 0" "$out"

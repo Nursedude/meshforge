@@ -582,7 +582,7 @@ MESHFORGE_CODE_DAEMONS: dict = {
     "meshforge-mini-dudeai":      "mini_dudeai engine (the #79 unit) (templates/systemd/)",
     "meshforge-mini-dudeai-claw": "dude-claw sibling, claw-brain box only (templates/systemd/)",
     "meshforge-echo":      "lab.lxmf_echo responder (templates/systemd/ meshforge-echo-user.service)",
-    "nomadnet-silence-watch": "scripts/nomadnet_silence_watch.py (templates/systemd/)",
+    "nomadnet-silence-watch": "monitoring.nomadnet_silence_watch (templates/systemd/)",
 }
 
 # Type=simple/forking daemons MeshForge installs that a /opt/meshforge pull does
