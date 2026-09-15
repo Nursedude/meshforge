@@ -24,9 +24,13 @@ Usage:
 
 import logging
 import math
+import os
+import shutil
 import struct
 import threading
+import time
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -198,13 +202,36 @@ class SyntheticTerrainProvider(TerrainProvider):
         return self._base + self._ridge_height * abs(math.sin(phase * math.pi))
 
 
+class TileCorrupt(ValueError):
+    """A tile on disk is not a whole SRTM1/SRTM3 file.
+
+    Raised by :meth:`SRTMProvider._interpolate` instead of guessing a
+    resolution. Before 2026-09-14 an unknown length fell through to "try
+    SRTM3", so a HALF-WRITTEN tile (a concurrent download mid-flight, a
+    power cut during the write) was indexed as terrain and published
+    elevations off by thousands of metres with ``has_elevation()`` True.
+    """
+
+
 class SRTMProvider(TerrainProvider):
     """SRTM elevation data provider.
 
     Downloads and caches SRTM HGT tiles (1 arc-second resolution,
     ~30m per pixel). Tiles are ~25MB each and cover 1 degree x 1 degree.
 
-    Data source: NASA SRTM via AWS Open Data or CGIAR-CSI mirrors.
+    Data source: Mapzen "skadi" tiles on AWS Open Data. Two properties of
+    that source, measured 2026-09-14 on the fleet's cached Big Island tiles:
+    it is **void-filled** (0 ``-32768`` samples in 77.8 M), and it carries
+    **bathymetry** (ocean floor down to -5,994 m). The second one matters
+    for RF: the sea floor is not the ground a radio path sees, the sea
+    SURFACE is, so :meth:`get_elevation` floors negative samples at 0 by
+    default (``sea_level_floor``). The trade is documented below.
+
+    Security shape (frontier pass 2026-09-14): the map's request path
+    constructs this with ``auto_download=False`` — a coordinate an
+    unauthenticated client picks must never turn into a synchronous 25 MB
+    fetch inside an HTTP handler. Tiles arrive via :meth:`warm_tiles`
+    (bounded, off the request thread) or an operator's deliberate call.
     """
 
     # SRTM data URLs (multiple fallback sources)
@@ -215,15 +242,43 @@ class SRTMProvider(TerrainProvider):
     # HGT file specifications
     SRTM1_SAMPLES = 3601  # 1 arc-second (SRTM1)
     SRTM3_SAMPLES = 1201  # 3 arc-second (SRTM3)
+    _VALID_LENGTHS = (SRTM1_SAMPLES * SRTM1_SAMPLES * 2,
+                      SRTM3_SAMPLES * SRTM3_SAMPLES * 2)
+
+    # A tile that is not on disk is re-checked after this long. Short,
+    # because the warm path (once per map start) or an operator running
+    # scripts/srtm_warm.py may land it; long enough that a 172,800-lookup
+    # coverage request does not stat the disk per sample.
+    MISSING_TTL_S = 60.0
+    # Decoded tiles held in RAM (~25.9 MB each). The map's request path
+    # shares ONE provider across requests, so this bounds the process.
+    DEFAULT_MAX_TILES_IN_MEMORY = 8
+    # warm_tiles() refuses to fill the disk: keep at least this much free.
+    DEFAULT_MIN_FREE_BYTES = 2 * 1024 ** 3
+    # A real gzipped tile is ~7-10 MB; anything past this is not a tile.
+    MAX_COMPRESSED_BYTES = 64 * 1024 * 1024
+    # Bound on the per-name bookkeeping dicts (a LAN client sweeping the
+    # globe could otherwise grow them to the 64,800-name coordinate space).
+    MAX_TRACKED_NAMES = 4096
 
     def __init__(self, cache_dir: Optional[Path] = None,
-                 auto_download: bool = True):
+                 auto_download: bool = True,
+                 sea_level_floor: bool = True,
+                 max_tiles_in_memory: int = DEFAULT_MAX_TILES_IN_MEMORY):
         """Initialize SRTM provider.
 
         Args:
             cache_dir: Directory for cached HGT files.
                       Default: ~/.local/share/meshforge/srtm/
-            auto_download: Whether to download tiles automatically.
+            auto_download: Whether :meth:`get_elevation` may download a
+                      missing tile on the spot. The HTTP request path
+                      passes False; see :meth:`warm_tiles`.
+            sea_level_floor: Clamp negative elevations to 0.0. The tiles
+                      carry bathymetry, and for an RF path the sea surface
+                      is the ground. Cost: genuine below-sea-level land
+                      (Death Valley, Dead Sea shores) reads as 0 — rare,
+                      and conservative in the safe direction for LoS.
+            max_tiles_in_memory: LRU bound on decoded tiles held in RAM.
         """
         if cache_dir is None:
             cache_dir = get_real_user_home() / ".local" / "share" / "meshforge" / "srtm"
@@ -231,28 +286,143 @@ class SRTMProvider(TerrainProvider):
 
         self._cache_dir = cache_dir
         self._auto_download = auto_download
-        self._tile_cache: Dict[str, Optional[bytes]] = {}
+        self._sea_level_floor = sea_level_floor
+        self._max_tiles = max(1, int(max_tiles_in_memory))
+        self._tile_cache: "OrderedDict[str, bytes]" = OrderedDict()
+        self._missing_until: Dict[str, float] = {}
         self._lock = threading.Lock()
+        # One lock per tile name so two requests missing the same tile
+        # serialise on the disk read / download instead of both doing it.
+        self._tile_locks: Dict[str, threading.Lock] = {}
+
+    # ── public API ────────────────────────────────────────────────────
 
     def get_elevation(self, lat: float, lon: float) -> float:
         """Get elevation from SRTM data.
 
-        Returns 0.0 if tile is not available and auto_download is False.
+        Returns 0.0 if the tile is not available — callers that publish a
+        verdict must ask :meth:`has_elevation` first, because 0.0 is also
+        a legitimate sea-level answer.
         """
         tile_data = self._get_tile(lat, lon)
         if tile_data is None:
             return 0.0
-
-        return self._interpolate(tile_data, lat, lon)
+        z = self._interpolate(tile_data, lat, lon)
+        if self._sea_level_floor and z < 0.0:
+            return 0.0
+        return z
 
     def has_elevation(self, lat: float, lon: float) -> bool:
-        """True when a tile actually covers this point.
+        """True when a whole, valid tile actually covers this point.
 
         The 0.0 that :meth:`get_elevation` returns for a missing tile sits
         squarely inside the healthy domain (sea level), so callers that
-        publish a verdict must ask this first.
+        publish a verdict must ask this first. A corrupt or half-written
+        tile on disk answers False here, never a number.
         """
         return self._get_tile(lat, lon) is not None
+
+    def tile_name_for(self, lat: float, lon: float) -> str:
+        """Public spelling of the tile that covers a point (``N19W156.hgt``)."""
+        return self._get_tile_name(lat, lon)
+
+    def missing_tiles_for(self, points) -> List[str]:
+        """Tile names (sorted, unique) not on disk for these ``(lat, lon)`` points.
+
+        A disk check, not a download — used by the map to tell a client
+        WHICH tiles a ``terrain_complete: false`` answer is missing.
+        """
+        names = set()
+        for lat, lon in points:
+            try:
+                name = self._get_tile_name(lat, lon)
+            except (ValueError, OverflowError):
+                continue
+            if not (self._cache_dir / name).exists():
+                names.add(name)
+        return sorted(names)
+
+    def warm_tiles(self, points, max_tiles: int = 9,
+                   min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
+                   neighbors: bool = True) -> Dict[str, Any]:
+        """Download the tiles around ``points`` — bounded, never on a request thread.
+
+        This is the ONLY sanctioned downloader for the map process. The
+        request path has ``auto_download=False`` so an unauthenticated
+        client cannot choose what this box fetches; the warm path fetches
+        what the box's OWN nodes need (their tiles plus the eight
+        neighbours, so a coverage radius or an inter-node path that
+        crosses a tile edge is covered).
+
+        Bounds, in order: ``max_tiles`` downloads per call (0 disables),
+        ``min_free_bytes`` of free disk that must remain, and the source's
+        own 30 s socket timeout per tile. Every fetch is one log line.
+
+        Returns a summary dict: ``wanted`` (tile names after dedupe),
+        ``cached`` (already on disk), ``downloaded``, ``failed``,
+        ``skipped_budget`` (over ``max_tiles``), ``skipped_disk``
+        (free space below the floor).
+        """
+        wanted: List[str] = []
+        seen = set()
+        for lat, lon in points:
+            try:
+                lat_i = int(math.floor(float(lat)))
+                lon_i = int(math.floor(float(lon)))
+            except (ValueError, OverflowError, TypeError):
+                continue
+            if not (-90 <= lat_i < 90 and -180 <= lon_i < 180):
+                continue
+            offsets = [(0, 0)]
+            if neighbors:
+                offsets = [(dy, dx) for dy in (-1, 0, 1) for dx in (-1, 0, 1)]
+            for dy, dx in offsets:
+                la, lo = lat_i + dy, lon_i + dx
+                if not (-90 <= la < 90):
+                    continue
+                if lo < -180:
+                    lo += 360
+                elif lo >= 180:
+                    lo -= 360
+                name = self._get_tile_name(la + 0.5, lo + 0.5)
+                if name not in seen:
+                    seen.add(name)
+                    wanted.append(name)
+
+        summary: Dict[str, Any] = {
+            "wanted": wanted, "cached": [], "downloaded": [],
+            "failed": [], "skipped_budget": [], "skipped_disk": [],
+        }
+        budget = max(0, int(max_tiles))
+        for name in wanted:
+            if (self._cache_dir / name).exists():
+                summary["cached"].append(name)
+                continue
+            if len(summary["downloaded"]) + len(summary["failed"]) >= budget:
+                summary["skipped_budget"].append(name)
+                continue
+            try:
+                free = shutil.disk_usage(self._cache_dir).free
+            except OSError as e:
+                logger.warning("SRTM warm: cannot read free disk for %s: %s", self._cache_dir, e)
+                free = 0
+            if free < min_free_bytes:
+                summary["skipped_disk"].append(name)
+                continue
+            lat_i, lon_i = self._tile_name_to_corner(name)
+            data = self._download_tile(lat_i + 0.5, lon_i + 0.5)
+            if data and len(data) in self._VALID_LENGTHS:
+                self._atomic_write(self._cache_dir / name, data)
+                summary["downloaded"].append(name)
+                logger.info("SRTM warm: cached %s (%d bytes)", name, len(data))
+            else:
+                summary["failed"].append(name)
+        if summary["skipped_disk"]:
+            logger.warning("SRTM warm: free disk below floor (%d B); not fetching %s",
+                           min_free_bytes, summary["skipped_disk"])
+        return summary
+
+    # ── tile naming ───────────────────────────────────────────────────
 
     def _get_tile_name(self, lat: float, lon: float) -> str:
         """Get SRTM tile filename for a coordinate."""
@@ -264,52 +434,177 @@ class SRTMProvider(TerrainProvider):
 
         return f"{ns}{abs(lat_int):02d}{ew}{abs(lon_int):03d}.hgt"
 
+    @staticmethod
+    def _tile_name_to_corner(name: str):
+        """Inverse of :meth:`_get_tile_name`: ``N19W156.hgt`` -> ``(19, -156)``."""
+        base = name[:-4] if name.endswith(".hgt") else name
+        lat = int(base[1:3]) * (1 if base[0] == "N" else -1)
+        lon = int(base[4:7]) * (1 if base[3] == "E" else -1)
+        return lat, lon
+
+    # ── cache machinery ───────────────────────────────────────────────
+
+    def _tile_lock(self, tile_name: str) -> threading.Lock:
+        with self._lock:
+            lock = self._tile_locks.get(tile_name)
+            if lock is None:
+                lock = self._tile_locks[tile_name] = threading.Lock()
+            return lock
+
+    def _remember(self, tile_name: str, data: bytes) -> None:
+        with self._lock:
+            self._tile_cache[tile_name] = data
+            self._tile_cache.move_to_end(tile_name)
+            self._missing_until.pop(tile_name, None)
+            while len(self._tile_cache) > self._max_tiles:
+                self._tile_cache.popitem(last=False)
+
+    def _forget(self, tile_name: str, ttl_s: float) -> None:
+        with self._lock:
+            self._tile_cache.pop(tile_name, None)
+            now = time.monotonic()
+            self._missing_until[tile_name] = now + ttl_s
+            if len(self._missing_until) > self.MAX_TRACKED_NAMES:
+                live = {k: v for k, v in self._missing_until.items() if v > now}
+                if len(live) > self.MAX_TRACKED_NAMES:
+                    # Still over the cap with nothing expired: keep the half
+                    # that expires latest; a re-check costs one stat.
+                    keep = sorted(live.items(), key=lambda kv: kv[1])[-(self.MAX_TRACKED_NAMES // 2):]
+                    live = dict(keep)
+                self._missing_until = live
+            if len(self._tile_locks) > self.MAX_TRACKED_NAMES:
+                # Locks are held only across one disk read / download; an
+                # unheld lock can be dropped and re-minted on demand.
+                self._tile_locks = {k: l for k, l in self._tile_locks.items() if l.locked()}
+
     def _get_tile(self, lat: float, lon: float) -> Optional[bytes]:
-        """Get tile data, downloading if necessary."""
+        """Get tile data: memory, then disk, then (only if allowed) download.
+
+        Returns None for a tile that is absent OR not a whole valid file.
+        """
         tile_name = self._get_tile_name(lat, lon)
 
         with self._lock:
-            if tile_name in self._tile_cache:
-                return self._tile_cache[tile_name]
-
-        # Check disk cache
-        tile_path = self._cache_dir / tile_name
-        if tile_path.exists():
-            data = tile_path.read_bytes()
-            with self._lock:
-                self._tile_cache[tile_name] = data
-            return data
-
-        # Check for gzipped version
-        gz_path = self._cache_dir / f"{tile_name}.gz"
-        if gz_path.exists():
-            import gzip
-            with gzip.open(gz_path, 'rb') as f:
-                data = f.read()
-            # Cache uncompressed
-            tile_path.write_bytes(data)
-            with self._lock:
-                self._tile_cache[tile_name] = data
-            return data
-
-        # Download if allowed
-        if self._auto_download:
-            data = self._download_tile(lat, lon)
-            if data:
-                tile_path.write_bytes(data)
-                with self._lock:
-                    self._tile_cache[tile_name] = data
+            data = self._tile_cache.get(tile_name)
+            if data is not None:
+                self._tile_cache.move_to_end(tile_name)
                 return data
+            until = self._missing_until.get(tile_name)
+            if until is not None and time.monotonic() < until:
+                return None
 
-        # No data available
-        with self._lock:
-            self._tile_cache[tile_name] = None
-        return None
+        with self._tile_lock(tile_name):
+            # Re-check: another thread may have loaded it while we waited.
+            with self._lock:
+                data = self._tile_cache.get(tile_name)
+                if data is not None:
+                    return data
+
+            tile_path = self._cache_dir / tile_name
+            if tile_path.exists():
+                try:
+                    data = tile_path.read_bytes()
+                except OSError as e:
+                    # A dying SD or a sandbox path drift (#60 class) must read
+                    # as MISSING with a witness, not as a 500 per request.
+                    logger.warning("SRTM tile %s unreadable (%s); reads as MISSING", tile_name, e)
+                    self._forget(tile_name, self.MISSING_TTL_S)
+                    return None
+                if len(data) in self._VALID_LENGTHS:
+                    self._remember(tile_name, data)
+                    return data
+                self._quarantine(tile_path, len(data))
+                self._forget(tile_name, self.MISSING_TTL_S)
+                return None
+
+            # Check for gzipped version
+            gz_path = self._cache_dir / f"{tile_name}.gz"
+            if gz_path.exists():
+                import gzip
+                try:
+                    with gzip.open(gz_path, 'rb') as f:
+                        data = f.read()
+                except (OSError, EOFError) as e:
+                    logger.warning("SRTM tile %s.gz unreadable: %s", tile_name, e)
+                    data = b""
+                if len(data) in self._VALID_LENGTHS:
+                    # Cache uncompressed, whole-file-or-nothing; a failed
+                    # write still serves the tile from memory this once.
+                    try:
+                        self._atomic_write(tile_path, data)
+                    except OSError as e:
+                        logger.warning("SRTM: could not cache %s uncompressed (%s)", tile_name, e)
+                    self._remember(tile_name, data)
+                    return data
+                self._quarantine(gz_path, len(data))
+                self._forget(tile_name, self.MISSING_TTL_S)
+                return None
+
+            # Download if allowed
+            if self._auto_download:
+                data = self._download_tile(lat, lon)
+                if data and len(data) in self._VALID_LENGTHS:
+                    self._atomic_write(tile_path, data)
+                    self._remember(tile_name, data)
+                    return data
+                # A failed download is remembered longer than a plain miss:
+                # the source is not going to change in the next minute, and
+                # each retry is a network round trip on this thread.
+                self._forget(tile_name, 10 * self.MISSING_TTL_S)
+                return None
+
+            # No data available here; the warm path may add it — re-check soon.
+            self._forget(tile_name, self.MISSING_TTL_S)
+            return None
+
+    @staticmethod
+    def _atomic_write(path: Path, data: bytes) -> None:
+        """Write a tile whole-or-nothing.
+
+        A plain ``write_bytes`` let a concurrent reader see a half-written
+        file that ``exists()`` — and until 2026-09-14 that reader would
+        publish it as terrain. Write beside the target, fsync, then
+        ``os.replace`` (atomic on POSIX) so a reader sees either no file or
+        the whole file.
+        """
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            with open(tmp, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        finally:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
+
+    @staticmethod
+    def _quarantine(path: Path, length: int) -> None:
+        """Move a not-whole tile aside so it is never read as terrain again.
+
+        Loud (WARNING) — a corrupt tile is a finding about the disk or a
+        killed download, not something to absorb silently (hfm #9).
+        """
+        target = path.with_name(f"{path.name}.corrupt-{int(time.time())}")
+        try:
+            os.replace(path, target)
+            logger.warning("SRTM tile %s is %d bytes, not a whole SRTM1/SRTM3 file — "
+                           "quarantined as %s; it will read as MISSING, never as terrain",
+                           path.name, length, target.name)
+        except OSError as e:
+            logger.warning("SRTM tile %s is %d bytes (not whole) and could not be "
+                           "quarantined (%s); it reads as MISSING", path.name, length, e)
 
     def _download_tile(self, lat: float, lon: float) -> Optional[bytes]:
-        """Download an SRTM tile from the web."""
+        """Download an SRTM tile from the web (one 30 s socket timeout per source)."""
         lat_int = int(math.floor(lat))
         lon_int = int(math.floor(lon))
+        if not (-90 <= lat_int < 90 and -180 <= lon_int < 180):
+            logger.warning("SRTM: refusing to fetch a tile for impossible coordinate (%s, %s)", lat, lon)
+            return None
 
         ns = "N" if lat_int >= 0 else "S"
         ew = "E" if lon_int >= 0 else "W"
@@ -326,10 +621,19 @@ class SRTMProvider(TerrainProvider):
                 logger.info(f"Downloading SRTM tile: {url}")
                 req = urllib.request.Request(url, headers={'User-Agent': 'MeshForge/0.4'})
                 with urllib.request.urlopen(req, timeout=30) as response:
-                    compressed = response.read()
+                    compressed = response.read(self.MAX_COMPRESSED_BYTES + 1)
+                if len(compressed) > self.MAX_COMPRESSED_BYTES:
+                    logger.warning("SRTM tile %s: compressed body exceeds %d bytes; refusing",
+                                   url, self.MAX_COMPRESSED_BYTES)
+                    return None
 
-                # Decompress
-                data = gzip.decompress(compressed)
+                # Decompress with a ceiling — a whole tile is at most SRTM1 size.
+                import zlib
+                d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                data = d.decompress(compressed, self._VALID_LENGTHS[0] + 1)
+                if d.unconsumed_tail or len(data) > self._VALID_LENGTHS[0]:
+                    logger.warning("SRTM tile %s: decompresses past a whole tile; refusing", url)
+                    return None
                 logger.info(f"Downloaded SRTM tile ({len(data)} bytes)")
                 return data
 
@@ -341,16 +645,22 @@ class SRTMProvider(TerrainProvider):
         return None
 
     def _interpolate(self, tile_data: bytes, lat: float, lon: float) -> float:
-        """Bilinear interpolation of elevation from tile data."""
-        # Determine tile resolution
+        """Bilinear interpolation of elevation from tile data.
+
+        Raises :class:`TileCorrupt` for a length that is neither SRTM1 nor
+        SRTM3 — guessing a resolution over a partial file produced
+        confident garbage (see the class docstring).
+        """
         data_len = len(tile_data)
         if data_len == self.SRTM1_SAMPLES * self.SRTM1_SAMPLES * 2:
             samples = self.SRTM1_SAMPLES
         elif data_len == self.SRTM3_SAMPLES * self.SRTM3_SAMPLES * 2:
             samples = self.SRTM3_SAMPLES
         else:
-            # Unknown format, try SRTM3
-            samples = self.SRTM3_SAMPLES
+            raise TileCorrupt(
+                f"tile is {data_len} bytes; a whole SRTM1 tile is "
+                f"{self._VALID_LENGTHS[0]} and SRTM3 {self._VALID_LENGTHS[1]}"
+            )
 
         lat_int = int(math.floor(lat))
         lon_int = int(math.floor(lon))
@@ -373,14 +683,24 @@ class SRTMProvider(TerrainProvider):
         row_i = min(row_i, samples - 2)
         col_i = min(col_i, samples - 2)
 
+        floor = self._sea_level_floor
+
         # Read 4 surrounding samples (big-endian int16)
         def read_sample(r, c):
             idx = (r * samples + c) * 2
             if idx + 2 > len(tile_data):
                 return 0
             val = struct.unpack('>h', tile_data[idx:idx+2])[0]
-            # SRTM void value
+            # SRTM void value (never seen in the skadi source — kept as a
+            # guard for a tile that came from somewhere else)
             if val == -32768:
+                return 0
+            # The sea-surface floor is applied PER SAMPLE, before the blend.
+            # Applied after it (the first cut of 2026-09-14, caught in
+            # review), a 300 m cliff beside a -3000 m sea-floor sample
+            # blended to a negative number and was then floored to 0 — the
+            # shoreline obstruction erased, in the OPTIMISTIC direction.
+            if floor and val < 0:
                 return 0
             return val
 

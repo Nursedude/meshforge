@@ -28,6 +28,9 @@ mixed into ``MapRequestHandler`` via inheritance and rely on the hub's
 import gzip
 import json
 import logging
+import math
+import os
+import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -40,6 +43,94 @@ from utils.safe_import import safe_import
 _SRTMProvider, _LOSAnalyzer, _HAS_TERRAIN = safe_import(
     'utils.terrain', 'SRTMProvider', 'LOSAnalyzer'
 )
+
+
+# ── Terrain endpoint guards (frontier security pass 2026-09-14) ──────
+#
+# /api/coverage and /api/los are the map's two compute+download amplifiers:
+# one maximal coverage request is 172,800 elevation lookups (1.7 s on a
+# Pi 5, ~5-6 s on a Pi 4, GIL-bound) and, before this pass, any coordinate
+# an unauthenticated client picked could trigger a synchronous 25 MB S3
+# download inside the handler. Three bounds, applied in this order:
+#
+#   1. _reject_if_untrusted()  — loopback / configured LAN only. "LAN" is
+#      whatever --cors-origins names: the fleet unit derives it from EVERY
+#      IPv4 address the box holds (one /24 each), so on that unit the gate
+#      keeps out a router port-forward and any client NOT on an attached
+#      /24 — it does NOT keep out a future second interface's own /24,
+#      because the unit would trust it on the next restart (a unit-file
+#      decision, reviewed 2026-09-14). With no --cors-origins at all the
+#      gate is loopback-only and LAN browsers get 403 here — the secure
+#      default; pinned by TestTerrainEndpointsAreGated.
+#   2. finite-range validation — lat/lon/alt/freq/radius/resolution must
+#      be finite and inside physical bounds. `float("nan")` used to parse
+#      and publish a confident `is_clear: true` beside a bare NaN token
+#      that no browser can JSON.parse.
+#   3. _TERRAIN_SLOTS — a per-BOX bound (not per-client: client IP is a
+#      weak key behind NAT/AREDN). Beyond N concurrent terrain
+#      computations the answer is 503 + Retry-After, so a burst costs the
+#      Pi one GIL's worth, never the whole map.
+#
+# The request path's provider is SHARED and never downloads
+# (`auto_download=False`): tiles arrive through SRTMProvider.warm_tiles()
+# at map warm-up, bounded and off the request thread (map_data_service).
+def _slots_from_env(default: int = 2) -> int:
+    """MESHFORGE_TERRAIN_SLOTS as a positive int; a bad value keeps the default
+    (and says so) rather than failing the whole map at import."""
+    raw = os.environ.get("MESHFORGE_TERRAIN_SLOTS", "")
+    if not raw:
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning("MESHFORGE_TERRAIN_SLOTS=%r is not an int; using %d", raw, default)
+        return default
+
+
+_TERRAIN_SLOTS = threading.BoundedSemaphore(_slots_from_env())
+_TERRAIN_RETRY_AFTER_S = 5
+_TERRAIN_MISSING_NOTE = (
+    "part of this path has no terrain tile cached on this box; the request "
+    "path never downloads (auto_download is off). The map warms tiles around "
+    "its own local nodes once at start-up; to add tiles now run "
+    "scripts/srtm_warm.py on this box (or restart the map)"
+)
+
+_provider_lock = threading.Lock()
+_provider_singleton = None
+
+
+def _terrain_provider():
+    """The map process's ONE terrain provider (request path, no downloads).
+
+    Shared so the decoded-tile LRU and the missing-tile memory are
+    per-process, not per-request: a per-request provider re-read 25 MB per
+    tile per request and forgot every negative answer. Tests patch THIS
+    name to inject a synthetic provider.
+    """
+    global _provider_singleton
+    with _provider_lock:
+        if _provider_singleton is None:
+            _provider_singleton = _SRTMProvider(auto_download=False)
+        return _provider_singleton
+
+
+def _finite(name: str, raw, lo: float, hi: float) -> float:
+    """Parse ``raw`` as a finite float inside ``[lo, hi]`` or raise ValueError.
+
+    `float()` accepts "nan", "inf" and "1e309"; none of those is a
+    coordinate, an antenna height or a frequency, and every one of them
+    reached the analyzer before 2026-09-14.
+    """
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a number, got {raw!r}")
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be finite, got {raw!r}")
+    if value < lo or value > hi:
+        raise ValueError(f"{name} must be between {lo:g} and {hi:g}, got {value:g}")
+    return value
 
 
 # ── Query parameter helper ────────────────────────────────────────────
@@ -542,33 +633,35 @@ class NodeDataEndpointsMixin:
         URL: /api/coverage/<lat>/<lon>/<antenna_height_m>
         Optional query params: radius_km (default 10), freq_mhz (default 906)
         """
+        if self._reject_if_untrusted():
+            return
         try:
             if len(parts) < 3:
-                self._serve_json({"error": "Usage: /api/coverage/<lat>/<lon>/<height_m>"})
+                self._serve_json({"error": "Usage: /api/coverage/<lat>/<lon>/<height_m>"},
+                                 status=400)
                 return
 
-            lat = float(parts[0])
-            lon = float(parts[1])
-            alt = float(parts[2])
+            lat = _finite("lat", parts[0], -90.0, 90.0)
+            lon = _finite("lon", parts[1], -180.0, 180.0)
+            alt = _finite("height_m", parts[2], 0.0, 10000.0)
 
             # Parse query params
 
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
-            radius_km = float(params.get('radius_km', ['10'])[0])
-            freq_mhz = float(params.get('freq_mhz', ['906'])[0])
-            resolution = int(params.get('resolution', ['24'])[0])
-
-            # Limit resolution for performance
-            resolution = min(resolution, 48)
-            radius_km = min(radius_km, 50)
+            radius_km = _finite("radius_km", params.get('radius_km', ['10'])[0], 0.1, 50.0)
+            freq_mhz = _finite("freq_mhz", params.get('freq_mhz', ['906'])[0], 1.0, 100000.0)
+            resolution = int(_finite("resolution", params.get('resolution', ['24'])[0], 1, 48))
 
             # Get coverage prediction from terrain analyzer
             if not _HAS_TERRAIN:
-                self._serve_json({"error": "terrain module not available"})
+                self._serve_json({"error": "terrain module not available"}, status=503)
+                return
+            if not _TERRAIN_SLOTS.acquire(blocking=False):
+                self._serve_terrain_busy()
                 return
             try:
-                provider = _SRTMProvider()
+                provider = _terrain_provider()
                 analyzer = _LOSAnalyzer(provider)
                 coverage = analyzer.coverage_grid(
                     lat, lon, alt,
@@ -578,8 +671,10 @@ class NodeDataEndpointsMixin:
                 )
             except Exception as e:
                 logger.error(f"Coverage calculation failed: {e}")
-                self._serve_json({"error": f"calculation failed: {str(e)}"})
+                self._serve_json({"error": f"calculation failed: {str(e)}"}, status=500)
                 return
+            finally:
+                _TERRAIN_SLOTS.release()
 
             # Convert to GeoJSON for map display
             features = []
@@ -613,10 +708,29 @@ class NodeDataEndpointsMixin:
             self._serve_json(result)
 
         except ValueError as e:
-            self._serve_json({"error": f"Invalid parameters: {e}"})
+            self._serve_json({"error": f"Invalid parameters: {e}"}, status=400)
         except Exception as e:
             logger.error(f"Coverage endpoint error: {e}")
-            self._serve_json({"error": str(e)})
+            self._serve_json({"error": str(e)}, status=500)
+
+    def _serve_terrain_busy(self):
+        """503 + Retry-After: every terrain slot on this box is in use."""
+        body = json.dumps({
+            "error": "terrain busy",
+            "detail": (f"this box is already running its maximum concurrent "
+                       f"terrain computations; retry in {_TERRAIN_RETRY_AFTER_S}s"),
+            "retry_after_s": _TERRAIN_RETRY_AFTER_S,
+        }).encode()
+        self.send_response(503)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Retry-After', str(_TERRAIN_RETRY_AFTER_S))
+        self.send_header('Cache-Control', 'no-cache')
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def _serve_snapshot(self):
         """Serve a historical network snapshot for playback.
@@ -693,36 +807,44 @@ class NodeDataEndpointsMixin:
         URL: /api/los/<lat1>/<lon1>/<lat2>/<lon2>
         Optional query params: alt1, alt2 (antenna heights, default 10m), freq_mhz (default 906)
         """
+        if self._reject_if_untrusted():
+            return
         try:
             if len(parts) < 4:
-                self._serve_json({"error": "Usage: /api/los/<lat1>/<lon1>/<lat2>/<lon2>"})
+                self._serve_json({"error": "Usage: /api/los/<lat1>/<lon1>/<lat2>/<lon2>"},
+                                 status=400)
                 return
 
-            lat1 = float(parts[0])
-            lon1 = float(parts[1])
-            lat2 = float(parts[2])
-            lon2 = float(parts[3])
+            lat1 = _finite("lat1", parts[0], -90.0, 90.0)
+            lon1 = _finite("lon1", parts[1], -180.0, 180.0)
+            lat2 = _finite("lat2", parts[2], -90.0, 90.0)
+            lon2 = _finite("lon2", parts[3], -180.0, 180.0)
 
             # Parse query params
 
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
-            alt1 = float(params.get('alt1', ['10'])[0])
-            alt2 = float(params.get('alt2', ['10'])[0])
-            freq_mhz = float(params.get('freq_mhz', ['906'])[0])
+            alt1 = _finite("alt1", params.get('alt1', ['10'])[0], 0.0, 10000.0)
+            alt2 = _finite("alt2", params.get('alt2', ['10'])[0], 0.0, 10000.0)
+            freq_mhz = _finite("freq_mhz", params.get('freq_mhz', ['906'])[0], 1.0, 100000.0)
 
             # Calculate LOS
             if not _HAS_TERRAIN:
-                self._serve_json({"error": "terrain module not available"})
+                self._serve_json({"error": "terrain module not available"}, status=503)
+                return
+            if not _TERRAIN_SLOTS.acquire(blocking=False):
+                self._serve_terrain_busy()
                 return
             try:
-                provider = _SRTMProvider()
+                provider = _terrain_provider()
                 analyzer = _LOSAnalyzer(provider)
                 result = analyzer.analyze(lat1, lon1, alt1, lat2, lon2, alt2, freq_mhz)
             except Exception as e:
                 logger.error(f"LOS calculation failed: {e}")
-                self._serve_json({"error": f"calculation failed: {str(e)}"})
+                self._serve_json({"error": f"calculation failed: {str(e)}"}, status=500)
                 return
+            finally:
+                _TERRAIN_SLOTS.release()
 
             # Build elevation profile for visualization.
             #
@@ -782,10 +904,22 @@ class NodeDataEndpointsMixin:
                     "to": {"lat": lat2, "lon": lon2, "alt": alt2},
                 }
             }
+            if not result.terrain_complete:
+                # Say WHICH lever to pull, not just that the answer is
+                # incomplete: the request path never downloads, so an
+                # honest "unknown" here stays unknown until someone warms
+                # the tiles. Name them when the provider can.
+                response["terrain_note"] = _TERRAIN_MISSING_NOTE
+                missing_for = getattr(provider, "missing_tiles_for", None)
+                if callable(missing_for):
+                    n = max(2, len(elevations))
+                    pts = [(lat1 + (lat2 - lat1) * i / (n - 1),
+                            lon1 + (lon2 - lon1) * i / (n - 1)) for i in range(n)]
+                    response["terrain_tiles_missing"] = missing_for(pts)
             self._serve_json(response)
 
         except ValueError as e:
-            self._serve_json({"error": f"Invalid parameters: {e}"})
+            self._serve_json({"error": f"Invalid parameters: {e}"}, status=400)
         except Exception as e:
             logger.error(f"LOS endpoint error: {e}")
-            self._serve_json({"error": str(e)})
+            self._serve_json({"error": str(e)}, status=500)
