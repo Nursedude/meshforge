@@ -859,7 +859,7 @@ in this section are the test cases.
 
 ---
 
-## QUEUED 2026-08-31 (Opus 5) — `scripts/rotate_session_notes.sh` adversarial pass
+## ~~QUEUED~~ CLOSED 2026-08-31 (Fable 5 — fix commit `7086ec4f`; see the rotate_session_notes table row at the top) — `scripts/rotate_session_notes.sh` adversarial pass
 
 > **CLOSED 2026-08-31 by the Fable 5 pass** — see the 2026-08-31 rotate_session_notes table row at the top. Fix commit `7086ec4f`. Brief kept below for the record.
 

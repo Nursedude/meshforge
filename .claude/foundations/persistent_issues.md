@@ -126,6 +126,11 @@ Symptom you can see at a terminal → which class it is. Full bodies in the arch
 | a condition reads RESOLVED while a live check says it is present — classically, N boxes show it active and one does not | the watcher's rate limiter ate the OBSERVATION (2026-09-02) — mini's engine `continue`d on cooldown BEFORE setting `currently_active`, with the key already in `matched_keys`, so a live condition returning inside its own cooldown sat matched-but-inactive; `brief.py`, `rollup.py` and `dreams.detect_persistent_active` all gate on that flag and read it RESOLVED for up to a full cooldown. Measured: moc3's federation backoff live and invisible on the federator for 14h under `cooldown_s=86400` while moc/moc1/moc2 showed it active. **Tell**: a same-condition disagreement BETWEEN boxes is per-box rule TIMING, not the subject — compare `last_fired_ts` against `cooldown_s`; do NOT restart the subject (moc3 is `role=gateway-only`, its map is off BY DESIGN, and starting it re-runs the 07-24 incident). 88 of 144 seeded rules carry cooldown ≥1h, four at 24h including `detector_blind_any`. Cured: cooldown rate-limits the ACTION only; an activation recorded under suppression is `announced=False`, emits `edge_up_suppressed`/`edge_down_suppressed` witnesses, and never pages a CLEAR for an alarm never raised. ⚠️ LIVE on every box whose mini is not yet rolled |
 | a fleet name resolves fine, matches the registry, and reaches the WRONG BOX | an AREDN front got REASSIGNED to a different node of ours (2026-09-11: bi-ecom vacated `.249`, volcano-hi-hap took it ~20 min later). `/etc/hosts` SHADOWS DNS, so the name is not unreachable — it is confidently wrong. `fleet_naming_drift_check` was structurally blind: its two inputs are `/etc/hosts` (getaddrinfo — nss `files` precedes `dns`) and the registry's `ip_fallback`, and BOTH went stale in the same event, so they agreed and it printed `OK: 14 hosts resolve+match registry`. **Quick check**: ask the address who it is — `curl -s http://<ip>:8080/a/status \| grep -oE 'WH6GXZ-6-[A-Z-]+'` — and match host keys; "it answers" is not "it is ours". Cured 2026-09-11: registry `ssh_port` + `expect_hostkey`, `fleet_naming_drift_check --verify-identity` hourly on the manager, seeded by `scripts/fleet_hostkey_stamp.py`. ⚠️ **`<alias>:22` is NOT the alias's own sshd on a shared front** — the stamper's collision guard caught TWO pairs live (hap↔moc1, lehua↔trdev); stamping without `ssh_port` records the neighbour's identity. Proof it can fail: `scripts/fleet_identity_drill.py` |
 | a whole subnet of boxes reads unreachable after a router/uplink change, while each box's own uptime is days | the MANAGEMENT plane broke, not the boxes (2026-09-12). A router moved to BRIDGE keeps passing frames but stops ANSWERING, so every box holding that subnet's lease kept a valid-looking default route to a gateway that no longer exists — internet and federation dead, rnsd FINE. Two DHCP servers then shared one L2 domain and raced every lease, waking a box on the wrong subnet from its own fleet. **Quick check, ON the box**: `ping $(ip route show default \| awk '{print $3}')` — a dead gateway beside live on-wire neighbours is "no router", never "box down". ⚠️ `/etc/hosts` and DNS went stale in the SAME event so they AGREED; `gen_fleet_hosts.py --apply` would have re-baked the dead map and reported success (09-11's blindness at fleet scale). **What worked when every IPv4 assumption failed: IPv6 link-local** — `ping -6 -c4 -i 1 ff02::1%eth0`, then `ssh user@fe80::...%eth0` identifies a box with no DHCP, no router and no DNS. ⚠️ incomplete alone (one box ignored multicast; the ARP sweep caught it) — use both. The data plane is identity-addressed and survived; every observer we own speaks IP and lied at once. ⚠️ **The cure is ON the box, not in the other DHCP server** (09-13: moc4 taken by the rogue scope ONLY after its .86 renewal went UNANSWERED — a squatter fills a vacuum) — pin the registry address with `nmcli con mod ... ipv4.method manual`, mirroring a working box on that L2 for gateway/DNS. NM then persists a profile to `/etc/NetworkManager/system-connections/`, which is EMPTY while the box is on DHCP. Confirm from a box ON that segment and match `expect_hostkey` — reachable is not ours |
+| meshtasticd cycles on `SX126x init result -2` / `No sx1262 radio`, intermittently, on a HAT that worked before | the 40-pin header is a MECHANICAL POWER contact, not a software fault (2026-09-14 lehua, 5 incidents/10 d; operator: *\"power was not adequately supplied to the hat, the slightest change tripped it\"* — failed standoff, cocked cantilever). **Discriminator**: a warm reboot NEVER helps (rails never drop) while a cold cut sometimes does, and it can recover unattended minutes after boot as the Pi warms. ⚠️ `vcgencmd get_throttled`=`0x0` is BLIND to the HAT's rail — it read clean through the failing boot; never rule power out with it. ⚠️ `is-active` is a FALSE GREEN while the unit cycles — read `NRestarts` + the init line. ⚠️ the antenna is a LEVER on that header: re-aiming it is a mounting event, re-verify `init result 0` after. Give the software layer ONE pass (spidev, bus, `CS:` line, GPIO claims), then go physical |
+| a Meshtastic node reads UNHEARD while it is plainly alive | node-cache gap, not radio silence (#4, 2026-07-21) — `to_dict()` wrote `service_type`, `_load_cache()` dropped it; false UNHEARD against a node heard 7x/25h. Three defects were all needed (loader drop, `_merge_node` never refreshing `service_*`, once-recorded name PERMANENT). ⚠️ `rnprobe lxmf.propagation` is NOT a delivery test. Body in the archive |
+| the radio publishes to an MQTT root nobody declared | `mqtt_root_drift` (#77) — compares the OBSERVED root in the meshtasticd journal (never queries the radio, #17) against `gateway.json` `mqtt_bridge.root_topic`; 2-tick. Fix: `meshtastic --host localhost --set mqtt.root <declared>` |
+| `cron_verdict_stale` says a cron has been silent FOREVER (never ran) | since 2026-07-10 that page is REAL — the old log-cap false leg is fixed (`d0254dae`). It judges only `cron_verdict.sh`-wired crons (cadence x3, 2h floor) and reads `inert` when none are wired (#78) |
+| a USER systemd unit crashloops and no probe ever says so | `probe_service_inactive` is structurally BLIND to user units (#82, 2026-07-21 — nomadnet crashlooped `NRestarts=7842` for 10 days, undetected). Check user units with `systemctl --user`, never plain `systemctl`; `probe_nomadnet_crashloop` closes that one gap, not the class |
 
 ⚠️ **Growth rule (this is the structural fix, 2026-08-05).** This file is
 bounded by VALUE-PER-TURN, not chronology. A newly-resolved issue goes
@@ -234,68 +239,6 @@ if MESHTASTIC_CONNECTION_LOCK.acquire(timeout=10):
 ---
 
 
-## Issue #69: Foreign daemon / boot race claims `@rns/<instance>` — RESOLVED, body in archive (trimmed 2026-06-07)
-
-5th rnsd-RPC-fragility variant. MeshAnchor daemon hijacked VolcanoAI's `@rns`
-listener (every RNS client EOF'd, fleet tracer 100% fail to VolcanoAI); boot-race
-addendum (06-06, `84a79ca`): a client starting before rnsd boot-claims the
-listener — chokepoint now waits for enabled rnsd + the spaced-instance ss-
-truncation parser fix. Prevention: `check_rns_listener_owner` preflight in
-`_lab_common.py` (allowlist rnsd/reticulum, fail-loud RuntimeError), 12 tests
-in `tests/test_lab_common.py`. Detection recipe + invariant (one RNS host per
-instance_name per box) in `persistent_issues_archive.md`.
-Quick check: `sudo ss -xnpl | grep "@rns/"` — owner must be rnsd.
----
-
-## #77 + #78 — row summaries (demoted 2026-07-31, MF012)
-
-**#77 mqtt_root_drift** (2026-06-07): OBSERVED radio publish root (meshtasticd
-journal, never queries the radio #17) vs DECLARED `gateway.json
-mqtt_bridge.root_topic`; 2-tick; fix `meshtastic --host localhost --set
-mqtt.root <declared>`. **#78 cron_verdict_stale** (2026-06-07): alerter for
-wired-cron silence/FAIL (judges only `cron_verdict.sh`-wired crons; cadence
-×3, 2h floor; INERT when none). ⚠️ post-07-10 a silent(never) page is REAL
-(the pre-07-10 log-cap false leg is fixed, `d0254dae`); eval
-`oracle-cron-silent-never-was-false`. Bodies in `persistent_issues_archive.md`.
-
----
-
-## Delivery probes blind on the gateway-only box shape — RESOLVED (2026-07-31)
-
-`delivery_confirmation_stall` + `delivery_write_canary` read ONLY the map's
-`:5000` relay of `/api/gateway/delivery`, so on moc3 (role gateway-only, map
-disabled BY DESIGN) they sat permanently `detector_blind_any` while the
-gateway's truth was on disk the whole time. ⚠️ **NEVER cure this by starting
-the map** — that re-runs the 07-24 deploy incident.
-Cure: the gateway publishes full `snapshot()` to
-`~/.local/share/meshforge/delivery_snapshot.json` (atomic, ts-stamped, rides
-the 60s content_id_view throttle in `rns_bridge`); `_fetch_delivery_payload`
-falls back to the file when :5000 is unreachable, refusing stale (>300s) /
-misshaped / future-stamped corpses as indeterminate with the failing leg
-named. Never the SQLite DB from root (#60 WAL-strand trap). Same-day port:
-`probe_queue_backlog` falls back to `queue_stats.json` (writer in
-`message_queue.py`, same guards). LXMF propagation probes split to
-`watchdog_probes_gateway_lxmf.py` (MF025). Tests: the two
-`*FileFallback` classes (16). Eval:
-`detector_blind_gateway_only_2026_07_31.jsonl`.
-
----
-
-## Issue #82: NomadNet boot-race gate hardcoded `@rns/default` — RESOLVED, body in archive (trimmed 2026-07-21)
-
-The #69 fix became a worse fleet-wide bug: the nomadnet user-unit `ExecStartPre`
-hardcoded `@rns/default`, so every box whose rnsd `instance_name` differs
-crashlooped (NRestarts=7842, ExecStart never ran, **UNDETECTED 10 days**). Cure:
-instance-agnostic `rnstatus` host-wait, fail-CLOSED `exit 75`, 120s window (MF
-`96aa3d78` + `c3a62c01`). Prevention, 2 layers: `TestNoHardcodedRnsDefaultSocket`
-blocks the CODE regression, and **`probe_nomadnet_crashloop`** closes the
-DETECTION gap (`probe_service_inactive` is structurally blind to USER units).
-Bonus: the "multi-chunk RNS reply drops chunks" symptom was downstream of this —
-the bridge was fine, the box's own NomadNet was the broken reader. Full body +
-detection recipe in `persistent_issues_archive.md`.
-
----
-
 ## meshtasticd VSZ leak (firmware#10468) — pthread stacks stranded, USB-radio boxes only (2026-07-10)
 
 Symptom: hundreds of GB of **virtual memory** (VSZ) with normal RSS — tens of
@@ -346,17 +289,6 @@ Quick check: `wc -l /proc/<pid>/maps` — climbing over 30 min = leaking, flat
 (≈8 stack pairs) = patched. ⚠️ `pgrep -x meshtasticd` MISSES the patched boxes
 (comm is `meshtasticd-patched`); use `pgrep -f`. Detail:
 [[project_updates_design_arc_2026_07_10]].
-
----
-
-## node cache dropped `service_type` on load (2026-07-21) — row summary; full body in archive
-
-Writer-with-no-reader (#4): `to_dict()` wrote `service_type`, `_load_cache()`
-dropped it → false UNHEARD page vs a node heard 7x/25h. Three defects, all
-needed (loader drop; `_merge_node` never refreshing `service_*`; once-recorded
-name PERMANENT). **Tell**: UNHEARD + node otherwise alive = this cache gap.
-⚠️ `rnprobe lxmf.propagation` is NOT a delivery test. MF `e383547c`/`48f5497d`,
-MA `87cae734`/`0657c993`. Full body: `persistent_issues_archive.md`.
 
 ---
 
