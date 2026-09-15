@@ -58,6 +58,16 @@ DEFAULT_PROBES = 10
 DISCOVERY_PROBES = 2
 DEFAULT_MAX_TTL = 20
 #: Loss at or above this counts as present rather than noise.
+#:
+#: ⚠️ This is a FLOOR, not the whole test — always ask for it through
+#: ``loss_floor_for(sent)``. 2026-09-15: 10.0 was also exactly the resolution
+#: of a 10-probe sample (100/DEFAULT_PROBES), so ONE dropped probe read as
+#: "loss present" and ``clean`` demanded a perfect 0/10. The same collision
+#: had made wan_path's concern rung unreachable (see persistent_issues and
+#: commit dfb299dc); here it was worse than noisy, because this module is
+#: what wan_autotrace runs to LOCALIZE a ladder failure -- a hop walk built on
+#: one-probe verdicts hands the ladder corroboration it did not earn, and
+#: names a specific router with it. FAIL is contagious; make it earn the claim.
 LOSS_FLOOR_PCT = 10.0
 #: Absolute slack a handshake must exceed before its inflation counts as a
 #: retransmit — jitter guard for very fast paths, NOT the main test.
@@ -65,6 +75,24 @@ HANDSHAKE_SLACK_S = 0.05
 #: TCP trials when confirming that ICMP loss is really reaching the app.
 DEFAULT_TCP_TRIALS = 10
 DEFAULT_TCP_PORT = 443
+
+def loss_floor_for(sent: Optional[int], floor: float = LOSS_FLOOR_PCT) -> float:
+    """Smallest loss worth calling "present" for a sample of ``sent`` probes.
+
+    Never below TWO lost probes. At a sample's resolution (100/sent) a single
+    drop is indistinguishable from noise, so a threshold at or under that
+    turns one stray packet into a verdict -- and, in the hop walk below, into
+    a named culprit. With the defaults (10 probes) this lifts the effective
+    floor from 10% to 20%; with the "careful run" of 20 probes it stays 10%,
+    which is where the constant was always meant to bite.
+
+    ``sent`` unknown (0/None) falls back to the bare floor: that is a caller
+    that cannot tell us its sample size, and guessing one would be worse.
+    """
+    if not sent or sent <= 0:
+        return floor
+    return max(floor, 200.0 / float(sent))
+
 
 #: Statuses that mean something is actually wrong with the path or the target.
 #: A closed list: every consumer that branches on status must be updated here
@@ -90,13 +118,29 @@ class Hop:
     loss_pct: Optional[float] = None    # direct-echo loss; None unless echo=answers
     avg_ms: Optional[float] = None
 
+    def is_lossy(self, floor: float = LOSS_FLOOR_PCT) -> bool:
+        """Loss present at this hop, judged against ITS OWN sample size."""
+        if self.loss_pct is None:
+            return False
+        return self.loss_pct >= loss_floor_for(self.sent, floor)
+
+    def is_clean(self, floor: float = LOSS_FLOOR_PCT) -> bool:
+        if self.loss_pct is None:
+            return False
+        return self.loss_pct < loss_floor_for(self.sent, floor)
+
+    # Properties kept for readers that do not carry a floor. They delegate, so
+    # there is ONE rule (honest_failure_modes #5) rather than a second copy
+    # that drifts -- which is exactly what the old pair did: localize() took a
+    # ``floor`` argument that these two silently ignored, so raising it moved
+    # the target test and left the hop walk judging at 10%.
     @property
     def lossy(self) -> bool:
-        return self.loss_pct is not None and self.loss_pct >= LOSS_FLOOR_PCT
+        return self.is_lossy()
 
     @property
     def clean(self) -> bool:
-        return self.loss_pct is not None and self.loss_pct < LOSS_FLOOR_PCT
+        return self.is_clean()
 
 
 @dataclass
@@ -140,6 +184,9 @@ class TraceResult:
     hops: List[Hop] = field(default_factory=list)
     target_loss_pct: Optional[float] = None
     target_avg_ms: Optional[float] = None
+    #: Probes actually sent to the target. Carried so localize() can derive the
+    #: target's own resolution instead of assuming DEFAULT_PROBES.
+    target_sent: int = 0
     tcp: Optional[TcpResult] = None
     finding: Optional[Finding] = None
     error: Optional[str] = None
@@ -280,7 +327,8 @@ def slow_handshakes(tcp: Optional[TcpResult], target_avg_ms: Optional[float]) ->
 def localize(hops: Sequence[Hop], target_loss_pct: Optional[float],
              tcp: Optional[TcpResult] = None,
              target_avg_ms: Optional[float] = None,
-             floor: float = LOSS_FLOOR_PCT) -> Finding:
+             floor: float = LOSS_FLOOR_PCT,
+             target_sent: Optional[int] = None) -> Finding:
     """Name where the loss starts — or say honestly that we cannot see it.
 
     Pure: takes measurements, returns a Finding. Every trap in the module
@@ -291,8 +339,13 @@ def localize(hops: Sequence[Hop], target_loss_pct: Optional[float],
 
     # TCP is the arbiter whenever we have it — it outranks every ICMP number
     # below, because it is the layer the application actually uses.
-    tcp_clean = tcp is not None and tcp.trials > 0 and tcp.fail_pct < floor
-    tcp_bad = tcp is not None and tcp.trials > 0 and tcp.fail_pct >= floor
+    # Each leg is judged against the resolution of ITS OWN sample: 10 ICMP
+    # probes and 10 TCP trials both resolve to 10%, so a bare 10% floor made
+    # one failed handshake "tcp_bad" and promoted the Finding to VERIFIED.
+    tcp_floor = loss_floor_for(tcp.trials, floor) if tcp is not None else floor
+    target_floor = loss_floor_for(target_sent, floor)
+    tcp_clean = tcp is not None and tcp.trials > 0 and tcp.fail_pct < tcp_floor
+    tcp_bad = tcp is not None and tcp.trials > 0 and tcp.fail_pct >= tcp_floor
 
     if target_loss_pct is None:
         if tcp_bad:
@@ -310,7 +363,7 @@ def localize(hops: Sequence[Hop], target_loss_pct: Optional[float],
                        "unmeasured, which is not the same as down",
                        confidence="believed", opaque=opaque)
 
-    if target_loss_pct < floor:
+    if target_loss_pct < target_floor:
         # Handshake timing outranks a clean ICMP sample. Loss is SAMPLED — ten
         # probes against a path that has read 0/20/30/40% across consecutive
         # runs will sometimes come up empty, and the timing still knows.
@@ -369,7 +422,7 @@ def localize(hops: Sequence[Hop], target_loss_pct: Optional[float],
     first_lossy = None
     first_idx = -1
     for i, h in enumerate(measured):
-        if all(x.lossy for x in measured[i:]):
+        if all(x.is_lossy(floor) for x in measured[i:]):
             first_lossy, first_idx = h, i
             break
 
@@ -478,6 +531,7 @@ def trace(target: str, probes: int = DEFAULT_PROBES, max_ttl: int = DEFAULT_MAX_
     say("measure", "echo target %s" % addr)
     st = echo_hop(addr, probes)
     if st["sent"]:
+        res.target_sent = int(st["sent"] or 0)
         res.target_loss_pct = st["loss_pct"]
         res.target_avg_ms = st["avg_ms"]
 
@@ -486,7 +540,8 @@ def trace(target: str, probes: int = DEFAULT_PROBES, max_ttl: int = DEFAULT_MAX_
         say("tcp", "%d handshakes to port %d" % (tcp_trials, tcp_port))
         res.tcp = tcp_connect_rate(addr, tcp_port, tcp_trials)
 
-    res.finding = localize(res.hops, res.target_loss_pct, res.tcp, res.target_avg_ms)
+    res.finding = localize(res.hops, res.target_loss_pct, res.tcp, res.target_avg_ms,
+                           target_sent=res.target_sent)
     return res
 
 

@@ -340,3 +340,98 @@ class TestRepeatedHopAddresses:
                 _hop(3, "10.0.0.7", 30.0, avg=90.0)]
         f = pt.localize(hops, target_loss_pct=30.0, tcp=_tcp(4))
         assert f.first_lossy == "10.0.0.7" and f.last_good == "10.0.0.1"
+
+
+class TestSamplingFloor:
+    """One dropped probe must not localize loss (2026-09-15).
+
+    LOSS_FLOOR_PCT was 10.0 while DEFAULT_PROBES is 10, so the threshold meant
+    to separate loss "from noise" sat exactly ON the noise floor: one dropped
+    probe read as lossy and ``clean`` demanded a perfect 0/10. This module is
+    what wan_autotrace runs to localize a ladder failure, so a hop walk built
+    on one-probe verdicts hands the ladder corroboration it never earned --
+    and names a specific router with it.
+    """
+
+    def test_the_floor_is_derived_from_the_sample_size(self):
+        assert pt.loss_floor_for(10) == 20.0        # 10 probes -> 2 must drop
+        assert pt.loss_floor_for(20) == 10.0        # the "careful run"
+        assert pt.loss_floor_for(100) == pt.LOSS_FLOOR_PCT   # never below the floor
+
+    def test_an_unknown_sample_size_falls_back_to_the_bare_floor(self):
+        assert pt.loss_floor_for(0) == pt.LOSS_FLOOR_PCT
+        assert pt.loss_floor_for(None) == pt.LOSS_FLOOR_PCT
+
+    def test_one_dropped_probe_of_ten_is_not_lossy(self):
+        h = _hop(1, "10.0.0.1", 100.0 / pt.DEFAULT_PROBES)
+        assert not h.lossy and h.clean
+
+    def test_two_dropped_probes_of_ten_are_lossy(self):
+        h = _hop(1, "10.0.0.1", 200.0 / pt.DEFAULT_PROBES)
+        assert h.lossy and not h.clean
+
+    def test_a_one_probe_blip_on_every_hop_localizes_nothing(self):
+        """THE contagion case, and the reason this fix is not cosmetic.
+
+        Real loss at the target (30%) plus ONE dropped probe at each hop --
+        pure noise -- used to satisfy ``all(x.lossy ...)`` from the very first
+        hop, so the trace blamed the operator's own gateway on the strength of
+        one packet. The honest answer is beyond_visibility: the hops we can
+        measure are clean, so the drop is somewhere this trace cannot see.
+
+        NOTE the arrangement: the target loss must clear the TARGET's floor and
+        the TCP leg must be bad, or localize() returns early (clean / service /
+        policing) and never reaches the hop walk at all. An earlier draft of
+        this test asserted the right outcome for exactly that wrong reason.
+        """
+        blip = 100.0 / pt.DEFAULT_PROBES            # 10% = one probe of ten
+        hops = [_hop(1, "10.0.0.1", blip), _hop(2, "10.0.0.2", blip),
+                _hop(3, "10.0.0.3", blip)]
+        f = pt.localize(hops, target_loss_pct=30.0, tcp=_tcp(4), target_sent=10)
+        assert f.first_lossy is None, "one stray probe per hop named %s" % f.first_lossy
+        assert f.status == "beyond_visibility"
+
+    def test_real_loss_on_every_hop_still_localizes_at_the_first_one(self):
+        hops = [_hop(1, "10.0.0.1", 30.0), _hop(2, "10.0.0.2", 30.0),
+                _hop(3, "10.0.0.3", 30.0)]
+        f = pt.localize(hops, target_loss_pct=30.0, tcp=_tcp(4), target_sent=10)
+        assert f.status == "localized" and f.first_lossy == "10.0.0.1"
+
+    def test_one_failed_handshake_of_ten_does_not_make_the_finding_verified(self):
+        """A single failed TCP trial used to read tcp_bad and promote confidence."""
+        hops = [_hop(1, "10.0.0.1", 0.0)]
+        f = pt.localize(hops, target_loss_pct=0.0, tcp=_tcp(9), target_avg_ms=50.0,
+                        target_sent=10)
+        assert f.status != "service", "1/10 failed handshakes blamed the service"
+
+
+class TestFloorPropagates:
+    """localize(floor=...) must reach the hop walk, not just the target test.
+
+    The old Hop.lossy/.clean read the MODULE constant, so a caller that raised
+    the floor moved the target comparison and left the hop walk judging at
+    10% -- two consumers of one threshold with independent reads (hfm #5).
+    """
+
+    def test_a_raised_floor_reaches_the_hop_walk(self):
+        """Target loss must clear the RAISED floor, or the walk is never run.
+
+        With target_loss below `floor` localize() returns "clean" early and
+        this test would pass without exercising the hop walk at all.
+        """
+        hops = [_hop(1, "10.0.0.1", 25.0), _hop(2, "10.0.0.2", 25.0)]
+        loose = pt.localize(hops, target_loss_pct=50.0, tcp=_tcp(4),
+                            floor=40.0, target_sent=10)
+        assert loose.status == "beyond_visibility", loose.status
+        assert loose.first_lossy is None, (
+            "floor=40 did not reach the hop walk; it named %s" % loose.first_lossy)
+
+    def test_the_default_floor_still_localizes_that_same_path(self):
+        hops = [_hop(1, "10.0.0.1", 25.0), _hop(2, "10.0.0.2", 25.0)]
+        f = pt.localize(hops, target_loss_pct=50.0, tcp=_tcp(4), target_sent=10)
+        assert f.status == "localized" and f.first_lossy == "10.0.0.1"
+
+    def test_the_properties_and_the_methods_agree_at_the_default(self):
+        for loss in (0.0, 5.0, 10.0, 20.0, 30.0):
+            h = _hop(1, "10.0.0.1", loss)
+            assert h.lossy == h.is_lossy() and h.clean == h.is_clean()
