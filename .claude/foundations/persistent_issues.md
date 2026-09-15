@@ -124,6 +124,7 @@ Symptom you can see at a terminal → which class it is. Full bodies in the arch
 | an RNS/RPC alarm (`rns_rpc_unresponsive`, cascade `rns_rpc_wedge`) fires and self-CLEARS inside one tick, or repeats at a FIXED minute past the hour | the detector timed a SUBPROCESS and named the SUBJECT (2026-09-08) — `rnstatus` is a fresh interpreter that imports RNS before it speaks one byte of RPC, so its wall time measures the BOX's CPU headroom. moc3: apt-daily-upgrade (61s CPU, 273 MB, 35 MB swap) tripped it while the gateway logged `rpc[rnsd.path_table_read] ok 0.000s` every 10s straight THROUGH the "wedge". moc: fired only at :07:51-:08:34, 50-72s after the `7 * * * *` kilo-matrix cron, 9x in 7 days, while the direct rnstatus probe fired ZERO times on that box. rnsd listens with a **zero-length accept backlog** (`Send-Q 0` on the `@rns/*/rpc` LISTEN row), so a concurrent connect queues in SYN-SENT correctly. **Quick check before touching rnsd**: `uptime` + `journalctl \| grep 'rpc\[rnsd\.'` during the alarm; sub-ms round trips = healthy. ⚠️ a wedge does NOT heal without a restart — self-clearing IS the tell. Cured `eb8a6529`/`a2827005` (MA `4a24b939`): N consecutive timeouts required (default 3, `MESHFORGE_RNS_RPC_CONFIRM_TICKS`), same-inode 0.4s re-sample for the SYN-SENT sampler, loadavg+PSI on the page. ⚠️ the false page's cure text was "restart rnsd" — the #69 race trigger |
 | `ssh <name>` gets Permission denied and an unfamiliar host key, while a sibling name to the same address works | two NAMES sharing one NAT front, not one box with a broken config (2026-09-10, hap/moc1). **Quick check**: `ssh-keyscan -t ed25519 <a> <b>` — no auth attempted; an IDENTICAL fingerprint means one sshd, so the names are one endpoint. hap:22 and moc1:22 match (the front forwards :22 to moc1); hap:2222 is the hAP itself. ⚠️ Do NOT declare `via:` between them — the via probe is `ssh <via> true`, so it would consume the box it excuses and turn a real outage into UNOBSERVABLE forever (the 07-25 self-confirming class) |
 | a condition reads RESOLVED while a live check says it is present — classically, N boxes show it active and one does not | the watcher's rate limiter ate the OBSERVATION (2026-09-02) — mini's engine `continue`d on cooldown BEFORE setting `currently_active`, with the key already in `matched_keys`, so a live condition returning inside its own cooldown sat matched-but-inactive; `brief.py`, `rollup.py` and `dreams.detect_persistent_active` all gate on that flag and read it RESOLVED for up to a full cooldown. Measured: moc3's federation backoff live and invisible on the federator for 14h under `cooldown_s=86400` while moc/moc1/moc2 showed it active. **Tell**: a same-condition disagreement BETWEEN boxes is per-box rule TIMING, not the subject — compare `last_fired_ts` against `cooldown_s`; do NOT restart the subject (moc3 is `role=gateway-only`, its map is off BY DESIGN, and starting it re-runs the 07-24 incident). 88 of 144 seeded rules carry cooldown ≥1h, four at 24h including `detector_blind_any`. Cured: cooldown rate-limits the ACTION only; an activation recorded under suppression is `announced=False`, emits `edge_up_suppressed`/`edge_down_suppressed` witnesses, and never pages a CLEAR for an alarm never raised. ⚠️ LIVE on every box whose mini is not yet rolled |
+| a checker reports `in sync` / `clean` and its `--apply` then refuses to heal a corruption you PLANTED | it consumes the artifact it validates (2026-07-25, `gen_fleet_hosts.py --check`) — it read "what DNS says" via `getaddrinfo`, but nss answers from `/etc/hosts` FIRST, so it compared the generated block against ITSELF and the corrupt file WAS its notion of truth. ⚠️ 13 unit tests passed throughout: they mocked the exact layer that was broken, so only a LIVE drill exposed it. **Rule** (calibrated_claims #7 in checker form): *a checker must not consume the artifact it validates* — ask what input would make the detector and its subject DISAGREE, then feed it that. Recurs constantly: 2026-09-15 alone, a drift guard comparing two hardcodes it also declared, and a `pgrep -f pytest` preflight that counted itself |
 | a fleet name resolves fine, matches the registry, and reaches the WRONG BOX | an AREDN front got REASSIGNED to a different node of ours (2026-09-11: bi-ecom vacated `.249`, volcano-hi-hap took it ~20 min later). `/etc/hosts` SHADOWS DNS, so the name is not unreachable — it is confidently wrong. `fleet_naming_drift_check` was structurally blind: its two inputs are `/etc/hosts` (getaddrinfo — nss `files` precedes `dns`) and the registry's `ip_fallback`, and BOTH went stale in the same event, so they agreed and it printed `OK: 14 hosts resolve+match registry`. **Quick check**: ask the address who it is — `curl -s http://<ip>:8080/a/status \| grep -oE 'WH6GXZ-6-[A-Z-]+'` — and match host keys; "it answers" is not "it is ours". Cured 2026-09-11: registry `ssh_port` + `expect_hostkey`, `fleet_naming_drift_check --verify-identity` hourly on the manager, seeded by `scripts/fleet_hostkey_stamp.py`. ⚠️ **`<alias>:22` is NOT the alias's own sshd on a shared front** — the stamper's collision guard caught TWO pairs live (hap↔moc1, lehua↔trdev); stamping without `ssh_port` records the neighbour's identity. Proof it can fail: `scripts/fleet_identity_drill.py` |
 | a whole subnet of boxes reads unreachable after a router/uplink change, while each box's own uptime is days | the MANAGEMENT plane broke, not the boxes (2026-09-12). A router moved to BRIDGE keeps passing frames but stops ANSWERING, so every box holding that subnet's lease kept a valid-looking default route to a gateway that no longer exists — internet and federation dead, rnsd FINE. Two DHCP servers then shared one L2 domain and raced every lease, waking a box on the wrong subnet from its own fleet. **Quick check, ON the box**: `ping $(ip route show default \| awk '{print $3}')` — a dead gateway beside live on-wire neighbours is "no router", never "box down". ⚠️ `/etc/hosts` and DNS went stale in the SAME event so they AGREED; `gen_fleet_hosts.py --apply` would have re-baked the dead map and reported success (09-11's blindness at fleet scale). **What worked when every IPv4 assumption failed: IPv6 link-local** — `ping -6 -c4 -i 1 ff02::1%eth0`, then `ssh user@fe80::...%eth0` identifies a box with no DHCP, no router and no DNS. ⚠️ incomplete alone (one box ignored multicast; the ARP sweep caught it) — use both. The data plane is identity-addressed and survived; every observer we own speaks IP and lied at once. ⚠️ **The cure is ON the box, not in the other DHCP server** (09-13: moc4 taken by the rogue scope ONLY after its .86 renewal went UNANSWERED — a squatter fills a vacuum) — pin the registry address with `nmcli con mod ... ipv4.method manual`, mirroring a working box on that L2 for gateway/DNS. NM then persists a profile to `/etc/NetworkManager/system-connections/`, which is EMPTY while the box is on DHCP. Confirm from a box ON that segment and match `expect_hostkey` — reachable is not ours |
 | meshtasticd cycles on `SX126x init result -2` / `No sx1262 radio`, intermittently, on a HAT that worked before | the 40-pin header is a MECHANICAL POWER contact, not a software fault (2026-09-14 lehua, 5 incidents/10 d; operator: *\"power was not adequately supplied to the hat, the slightest change tripped it\"* — failed standoff, cocked cantilever). **Discriminator**: a warm reboot NEVER helps (rails never drop) while a cold cut sometimes does, and it can recover unattended minutes after boot as the Pi warms. ⚠️ `vcgencmd get_throttled`=`0x0` is BLIND to the HAT's rail — it read clean through the failing boot; never rule power out with it. ⚠️ `is-active` is a FALSE GREEN while the unit cycles — read `NRestarts` + the init line. ⚠️ the antenna is a LEVER on that header: re-aiming it is a mounting event, re-verify `init result 0` after. Give the software layer ONE pass (spidev, bus, `CS:` line, GPIO claims), then go physical |
@@ -345,88 +346,3 @@ cloud.cfg.d; measured, block still wiped 1214→545. Applied + verified on all 8
 cloud-init boxes 07-27. **Test without rebooting**: `sudo cloud-init single --name
 update_etc_hosts --frequency always` — runs the real consumer-of-record rather
 than trusting the config (calibrated_claims #7).
-
----
-
-## A detector that reads what it audits is self-confirming (2026-07-25)
-
-The `gen_fleet_hosts.py --check` drift detector used `socket.getaddrinfo()`
-to fetch "what DNS says". But nss consults `files` (`/etc/hosts`) **before**
-`dns`, and systemd-resolved also answers from `/etc/hosts` — so the check
-compared the generated block **against itself**. A deliberately corrupted
-entry reported `in sync` (rc=0), and `--apply` then said "already current"
-and **refused to heal it**, because the corrupted file WAS the notion of
-truth. It could never detect, nor repair, the one thing it exists to catch.
-
-13 unit tests passed throughout: they mocked `resolve_a`, so the mock stood
-in for the exact layer that was broken. **Only a live drill — corrupt a real
-entry, run the real check — exposed it.**
-
-Cure: query the upstream server DIRECTLY over UDP (servers discovered from
-the resolved drop-in, never hardcoded — MF014), bypassing NSS. A silent
-server is UNKNOWN and falls through, never NXDOMAIN. The test that had
-**pinned the broken behaviour** now asserts the opposite: calling
-`getaddrinfo` at all is a failure.
-
-**The general rule** (calibrated_claims #7, in checker form): *a checker must
-not consume the artifact it validates.* Ask what input would make the
-detector and the thing it watches disagree — then feed it that input.
-
----
-
-## A detector keyed to the wrong NAME reads healthy, not broken (2026-08-05)
-
-Second instance of the rule above, from the other side: the checker did not
-consume what it audits — it audited **something that did not exist**.
-
-Both RNS probes build `@rns/<instance_name>`. The federator box's watchdog got
-a name nothing served, so for **8.8 days** `rns_shared_instance_unresponsive`
-sat `indeterminate` *blaming rnsd* while `rns_namespace_collision` reported an
-affirmative **`clean`** — the #69 detector blind and green on the very box #69
-happened to. rnsd was fine. Three defects, each enough to hide the others: (1) the name came from `~/.reticulum` via `get_real_user_home()`,
-which under a **ROOT service is `/root`** — a stale root config beat rnsd's own
-`--config /etc/reticulum`; (2) Linux answers a nonexistent **abstract** socket
-with `ECONNREFUSED`, never `ENOENT`, so permanent misconfiguration was
-indistinguishable from a transient rnsd shutdown; (3) `namespace_collision`
-noted `clean` after matching **zero** listeners. New class
-`rns_instance_name_mismatch` (degraded). Second leg: an **omitted**
-`instance_name` left probes silently `inert` — RNS resolves the omission to
-`default` itself, so absence is knowledge. Full account: that class's
-`SIGNAL_CLASSES` comment.
-
-**Decision tell**: an RNS probe `indeterminate`/`clean` while `rnstatus` is
-plainly healthy = check the NAME first. **Quick check**:
-`sudo ss -xnpl | grep @rns/` must match the watchdog's
-`instance_name resolved to` log line.
-
-⚠️ mini escalated this the whole time (`detector_blind_any` + three
-`persistent_active` proposals at 70m/170h/170h), all rejected **`known_benign`**
-— ⚠️ *corrected 2026-08-10; this line said "unspecified" and that was wrong.*
-The rejections carried long, live-verified notes that proved **rnsd** healthy
-(true) and concluded the **blindness** was benign — one even NAMED the broken
-`~/.reticulum` probe path and filed it under "structural". Worse, the 08-02
-rejection cited the 07-26 one as its warrant, so a wrong benign call became
-memory and the memory re-justified the dismissal. **`known_benign` on a
-`detector_blind` subject asserts "this detector cannot see and that is fine" —
-which is only true if the organ is absent BY DESIGN, and then the probe must say
-`inert`. A rejection may not cite a prior rejection as its warrant.**
-The witness worked; the READ failed. A long-running `detector_blind` is a
-finding, not furniture.
-
-**Same day, same class, three more legs** (the other two long-blind
-detectors). `delivery_confirmation_stall` never asked whether a gateway runs
-here, so every non-gateway box fell through to "no confirmable protocol
-recorded" forever — while its sibling `gateway_delivery_degraded` had always
-said `inert`. `mqtt_root_drift` collapsed *no gateway.json at all* (nothing
-here CAN be deaf → inert) into the same None as *unreadable* (indeterminate),
-and separately treated journal silence as unobservable without ever checking
-the journal WORKED — leaving four RX-only boxes permanently indeterminate.
-**And the hole under the first**: `if not confirmable: return None` meant a box
-that had NEVER confirmed could not trip the detector at all — a TOTAL collapse
-read as nothing-to-judge while a partial one fired. Real gateways confirm
-heavily (moc 16,759 RNS, moc3 26,732), so an empty `confirmed` bucket beside
-live RNS traffic is a wiring fact. ⚠️ The federator box's "zero ever" that
-prompted this was **test pollution, not telemetry** — see the row below; the
-leg's logic stands, its motivating example did not. **Rule**: `inert` and `indeterminate` are different
-claims — an organ that is absent by design must never be reported as an
-observation that failed, or the real failures have nowhere to stand out.

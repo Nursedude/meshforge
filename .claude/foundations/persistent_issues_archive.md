@@ -3969,3 +3969,95 @@ MA `87cae734`/`0657c993`. Full body: `persistent_issues_archive.md`.
 
 ---
 
+---
+
+# Demoted from persistent_issues.md 2026-09-15 (MF012 headroom pass)
+
+Both sections below were RESOLVED narratives. Their terminal tells stay in the
+live file as compact table rows — the wrong-NAME tell was ALREADY a row (it was
+duplicated here in full), and the self-confirming-checker rule got one on the way
+out. Nothing is deleted, only relocated:
+`grep -n "self-confirming" .claude/foundations/persistent_issues*.md`
+
+## A detector that reads what it audits is self-confirming (2026-07-25)
+
+The `gen_fleet_hosts.py --check` drift detector used `socket.getaddrinfo()`
+to fetch "what DNS says". But nss consults `files` (`/etc/hosts`) **before**
+`dns`, and systemd-resolved also answers from `/etc/hosts` — so the check
+compared the generated block **against itself**. A deliberately corrupted
+entry reported `in sync` (rc=0), and `--apply` then said "already current"
+and **refused to heal it**, because the corrupted file WAS the notion of
+truth. It could never detect, nor repair, the one thing it exists to catch.
+
+13 unit tests passed throughout: they mocked `resolve_a`, so the mock stood
+in for the exact layer that was broken. **Only a live drill — corrupt a real
+entry, run the real check — exposed it.**
+
+Cure: query the upstream server DIRECTLY over UDP (servers discovered from
+the resolved drop-in, never hardcoded — MF014), bypassing NSS. A silent
+server is UNKNOWN and falls through, never NXDOMAIN. The test that had
+**pinned the broken behaviour** now asserts the opposite: calling
+`getaddrinfo` at all is a failure.
+
+**The general rule** (calibrated_claims #7, in checker form): *a checker must
+not consume the artifact it validates.* Ask what input would make the
+detector and the thing it watches disagree — then feed it that input.
+
+---
+
+## A detector keyed to the wrong NAME reads healthy, not broken (2026-08-05)
+
+Second instance of the rule above, from the other side: the checker did not
+consume what it audits — it audited **something that did not exist**.
+
+Both RNS probes build `@rns/<instance_name>`. The federator box's watchdog got
+a name nothing served, so for **8.8 days** `rns_shared_instance_unresponsive`
+sat `indeterminate` *blaming rnsd* while `rns_namespace_collision` reported an
+affirmative **`clean`** — the #69 detector blind and green on the very box #69
+happened to. rnsd was fine. Three defects, each enough to hide the others: (1) the name came from `~/.reticulum` via `get_real_user_home()`,
+which under a **ROOT service is `/root`** — a stale root config beat rnsd's own
+`--config /etc/reticulum`; (2) Linux answers a nonexistent **abstract** socket
+with `ECONNREFUSED`, never `ENOENT`, so permanent misconfiguration was
+indistinguishable from a transient rnsd shutdown; (3) `namespace_collision`
+noted `clean` after matching **zero** listeners. New class
+`rns_instance_name_mismatch` (degraded). Second leg: an **omitted**
+`instance_name` left probes silently `inert` — RNS resolves the omission to
+`default` itself, so absence is knowledge. Full account: that class's
+`SIGNAL_CLASSES` comment.
+
+**Decision tell**: an RNS probe `indeterminate`/`clean` while `rnstatus` is
+plainly healthy = check the NAME first. **Quick check**:
+`sudo ss -xnpl | grep @rns/` must match the watchdog's
+`instance_name resolved to` log line.
+
+⚠️ mini escalated this the whole time (`detector_blind_any` + three
+`persistent_active` proposals at 70m/170h/170h), all rejected **`known_benign`**
+— ⚠️ *corrected 2026-08-10; this line said "unspecified" and that was wrong.*
+The rejections carried long, live-verified notes that proved **rnsd** healthy
+(true) and concluded the **blindness** was benign — one even NAMED the broken
+`~/.reticulum` probe path and filed it under "structural". Worse, the 08-02
+rejection cited the 07-26 one as its warrant, so a wrong benign call became
+memory and the memory re-justified the dismissal. **`known_benign` on a
+`detector_blind` subject asserts "this detector cannot see and that is fine" —
+which is only true if the organ is absent BY DESIGN, and then the probe must say
+`inert`. A rejection may not cite a prior rejection as its warrant.**
+The witness worked; the READ failed. A long-running `detector_blind` is a
+finding, not furniture.
+
+**Same day, same class, three more legs** (the other two long-blind
+detectors). `delivery_confirmation_stall` never asked whether a gateway runs
+here, so every non-gateway box fell through to "no confirmable protocol
+recorded" forever — while its sibling `gateway_delivery_degraded` had always
+said `inert`. `mqtt_root_drift` collapsed *no gateway.json at all* (nothing
+here CAN be deaf → inert) into the same None as *unreadable* (indeterminate),
+and separately treated journal silence as unobservable without ever checking
+the journal WORKED — leaving four RX-only boxes permanently indeterminate.
+**And the hole under the first**: `if not confirmable: return None` meant a box
+that had NEVER confirmed could not trip the detector at all — a TOTAL collapse
+read as nothing-to-judge while a partial one fired. Real gateways confirm
+heavily (moc 16,759 RNS, moc3 26,732), so an empty `confirmed` bucket beside
+live RNS traffic is a wiring fact. ⚠️ The federator box's "zero ever" that
+prompted this was **test pollution, not telemetry** — (the row that detail pointed at was itself demoted in an earlier pass, so this pointer was ALREADY dangling before this section moved; `grep -rn "confirmation_rate" .claude/` for the live account); the
+leg's logic stands, its motivating example did not. **Rule**: `inert` and `indeterminate` are different
+claims — an organ that is absent by design must never be reported as an
+observation that failed, or the real failures have nowhere to stand out.
