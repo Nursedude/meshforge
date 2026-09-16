@@ -19,7 +19,7 @@ These features have been used in actual mesh deployments with physical radios an
 
 | Category | Capabilities |
 |----------|-------------|
-| **TUI Interface** | Installer, service control, device config wizard, gateway config, diagnostics — <!--STAT:handlers-->103<!--/STAT--> handler modules via registry pattern |
+| **TUI Interface** | Installer, service control, device config wizard, gateway config, diagnostics — <!--STAT:handlers-->104<!--/STAT--> handler modules via registry pattern |
 | **Radio Management** | Install/configure meshtasticd, LoRa presets, channels, SPI/USB auto-detect |
 | **RF Engineering** | Link budget, Fresnel zone, path loss, site planning, space weather (NOAA), Cython-optimized |
 | **AI Diagnostics** | Offline knowledge base (20+ topics), rule-based troubleshooting, confidence scoring |
@@ -42,7 +42,7 @@ Code works in testing but hasn't been validated in real-world deployments with a
 | **Radio Failover** | Dual-radio state machine, automatic TX switchover at >25% channel utilization, anti-flap, HTTP health polling | Needs dual meshtasticd |
 | **Dual-radio mesh_bridge serial** | Cross-preset bridge (LF HAT + ST USB) via `connection_type: "serial"` on secondary — code merged + unit-tested, live-probed on a fleet box's Heltec | Needs sustained cross-preset traffic to validate |
 | **MQTT Monitoring** | Nodeless mesh observation, protobuf decode, telemetry tracking, congestion alerts | Needs real MQTT traffic |
-| **Coverage Maps** | Interactive Folium maps, SNR-based link quality, offline tile caching | **Priority QA target** — needs GPS position data |
+| **Coverage Maps** | Interactive Folium maps, SNR-based link quality | **Priority QA target** — needs GPS position data. ⚠️ **NOT offline-capable** — see the offline note below |
 | **Live NOC Map** | Browser view with WebSocket updates, node markers, signal heatmap | **Priority QA target** — needs running bridge |
 | **Traffic Inspector** | Packet capture, protocol tree, display filters, path tracing | Needs real packet flow |
 | **Emergency Alerts** | NOAA/NWS weather, USGS volcano, FEMA iPAWS | API-dependent |
@@ -176,7 +176,7 @@ MeshForge retains MeshCore as an optional gateway handler.
 ### Testing Reality Check
 
 MeshForge has **~9,300 automated tests** (run `python3 -m pytest tests/ --co -q`
-for the live count) across <!--STAT:testfiles-->386<!--/STAT--> test files. However, automated tests
+for the live count) across <!--STAT:testfiles-->390<!--/STAT--> test files. However, automated tests
 validate code paths with mocks — they do not replace field testing. The following
 features have strong unit test coverage but have **not been run with real services
 and radios** in a live deployment:
@@ -264,7 +264,8 @@ Interactive network visualization powered by Folium and Leaflet.js:
 - **Node markers** with status, battery, RSSI, hardware info
 - **SNR-based link coloring** — green (excellent) → red (marginal)
 - **Coverage radius estimation** based on LoRa preset
-- **Offline tile caching** — works without internet in the field
+- **Tile pre-caching** — `Maps & Viz > Offline Tiles` downloads tiles to
+  `~/.local/share/meshforge/tiles/`
 - **Multiple tile layers** — OpenStreetMap, Terrain, Satellite
 - **Heatmap generation** — node density visualization
 - **GeoJSON import/export** — interoperate with other tools
@@ -272,10 +273,29 @@ Interactive network visualization powered by Folium and Leaflet.js:
 ```python
 from utils.coverage_map import CoverageMapGenerator
 
-gen = CoverageMapGenerator(offline=True)
+gen = CoverageMapGenerator()
 gen.add_nodes_from_geojson(node_data)
 gen.generate("field_coverage.html")  # Opens in any browser
 ```
+
+> ⚠️ **Maps do NOT work without internet yet — measured 2026-09-15.**
+> This is the honest state, recorded because the previous text advertised the
+> opposite and a field operator would have trusted it:
+>
+> * `web/node_map.html` loads Leaflet, MarkerCluster, leaflet.heat and D3 from
+>   **`unpkg.com`**, and its basemap from **`server.arcgisonline.com`**. With no
+>   WAN the page is served by the local daemon and renders nothing.
+> * The downloaded tiles are never read back: `tile_cache.get_tile_path()` has
+>   **no caller**, there is **no `/tiles/` route** in `map_http_handler.py`, and
+>   a second, independent cache in `coverage_map.py` is instantiated only in its
+>   own docstring.
+> * `CoverageMapGenerator(offline=...)` was accepted and **never read** — the
+>   parameter is gone rather than left as a lie. Vendoring the JS and serving
+>   the tile cache is planned; until it lands, assume a map needs the network.
+>
+> What DOES work with no WAN: the TUI, messaging, the gateway bridge, RNS over
+> RNode, the oracle, RF math and tactical export. Terrain/SRTM works offline if
+> tiles are pre-warmed (`scripts/srtm_warm.py`).
 
 ### Live NOC Map (Beta)
 

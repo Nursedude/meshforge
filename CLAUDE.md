@@ -82,7 +82,13 @@ MeshForge is a **Network Operations Center (NOC)** bridging Meshtastic and Retic
 # Launch
 sudo python3 src/launcher_tui/main.py   # Primary interface (TUI)
 python3 src/standalone.py               # Zero-dependency RF tools
-# GTK4 desktop REMOVED — TUI is the only interface
+# GTK4 desktop app REMOVED — the TUI is the only interface.
+# ⚠️ That does NOT mean "no desktop integration". org.meshforge.app.desktop +
+# scripts/meshforge-terminal.sh are a LAUNCHER for this same TUI (they contain
+# no GTK), installed by scripts/install-desktop.sh on every update.sh run, and
+# in active use on the desktop box. assets/org.meshforge.policy is live too —
+# it authorises pkexec for utils/system.py. Do not "clean up" any of it.
+# Categories=Network;HamRadio (NOT System — that buried it in System Tools).
 
 # Verify changes
 python3 -m pytest tests/ -v
@@ -107,14 +113,16 @@ src/
 │   ├── handler_protocol.py  # CommandHandler Protocol + TUIContext + BaseHandler
 │   ├── handler_registry.py  # register/lookup/dispatch
 │   ├── backend.py           # whiptail/dialog abstraction
-│   └── handlers/            # 68 registered command handlers (2026-04-19)
+│   └── handlers/            # 81 handlers · 114 actions (2026-09-15; SSOT
+│                            #   .claude/skills/meshforge/capability_index.md)
 ├── commands/          # propagation.py, hamclock.py, base.py
 ├── gateway/           # RNS-Meshtastic bridge
 │   ├── rns_bridge.py, gateway_cli.py, meshcore_handler.py
 │   ├── canonical_message.py   # Multi-protocol message format
 │   └── message_routing.py, message_queue.py (SQLite)
 ├── monitoring/        # mqtt_subscriber, node_monitor, traffic_inspector, packet_dissectors
-├── plugins/           # meshcore.py plugin wrapper
+├── plugins/           # eas_alerts, meshing_around, mqtt_bridge
+│                     #   (MeshCore lives in gateway/meshcore_handler.py)
 ├── utils/             # rf.py, common.py, service_check.py, coverage_map.py, claude_assistant.py
 ├── standalone.py      # Zero-dependency RF tools
 └── __version__.py     # Version + changelog

@@ -9,7 +9,13 @@ Generates interactive Folium-based maps showing:
 
 Output: Self-contained HTML files viewable in any browser.
 
-Supports offline operation with local tile caching.
+⚠️ NOT offline-capable (measured 2026-09-15). generate() always builds a
+folium.Map against REMOTE tile servers, and the folium-less fallback
+hardcodes tile.openstreetmap.org plus unpkg.com Leaflet. The tile caches
+in this module and in utils/tile_cache.py are written and never read back;
+there is no /tiles/ route to serve them. An `offline=` constructor flag
+existed for months, was assigned to self._offline and read by nothing —
+REMOVED rather than left as a lie a field operator could trust.
 
 Usage:
     from utils.coverage_map import CoverageMapGenerator
@@ -17,10 +23,6 @@ Usage:
     generator = CoverageMapGenerator()
     generator.add_nodes(nodes)
     generator.generate("coverage_map.html")
-
-    # Offline mode
-    generator = CoverageMapGenerator(offline=True)
-    generator.generate("offline_map.html")
 """
 
 import json
@@ -560,21 +562,25 @@ class CoverageMapGenerator:
         'both': '#9B59B6',         # Purple
     }
 
-    def __init__(self, lora_preset: str = "DEFAULT", offline: bool = False,
+    def __init__(self, lora_preset: str = "DEFAULT",
                  custom_markers: bool = True):
         """
         Initialize the map generator.
 
         Args:
             lora_preset: LoRa preset for coverage estimation
-            offline: Use offline/cached tiles only
             custom_markers: Use custom markers based on node role
+
+        NOTE: an `offline` flag was accepted here until 2026-09-15. It was
+        assigned to self._offline and read by NOTHING in the file, while the
+        module docstring and docs/capabilities.md both advertised offline
+        field operation. Removed. Re-add it only together with a tile route
+        that actually serves the cache.
         """
         self._nodes: List[MapNode] = []
         self._links: List[Tuple[str, str, Dict]] = []  # (from_id, to_id, props)
         self._lora_preset = lora_preset
         self._coverage_radius = self.PRESET_RANGES.get(lora_preset, 5000)
-        self._offline = offline
         self._custom_markers = custom_markers
 
     @classmethod

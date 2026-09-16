@@ -7,7 +7,13 @@ Comment=LoRa Mesh Network Operations Suite (NOC)
 Exec=/opt/meshforge/scripts/meshforge-terminal.sh
 Icon=org.meshforge.app
 Terminal=false
-Categories=Network;System;HamRadio;
+# Categories: NOT System. 'System' matches LXDE's system-tools
+# directory, which buried the launcher under System Tools on the Pi
+# desktop (operator, 2026-09-15: "it's in the wrong place"). MeshForge
+# is a network operations tool, so Network is the main category and
+# HamRadio is its additional one (the freedesktop spec requires an
+# additional category to sit under a main one; HamRadio's is Network).
+Categories=Network;HamRadio;
 Keywords=meshtastic;lora;mesh;radio;network;reticulum;
 StartupNotify=true
 StartupWMClass=org.meshforge.app
