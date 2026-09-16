@@ -188,11 +188,35 @@ class SettingsHandler(BaseHandler):
 
         self.ctx.profile = profile
         self.ctx.feature_flags = dict(getattr(profile, 'feature_flags', {}) or {})
+        # A profile change re-arms gating: leaving a previous "show all"
+        # in force would make the new profile look like it did nothing.
+        self.ctx.show_all_features = False
+
+        registry = getattr(self.ctx, 'registry', None)
+        hidden = 0
+        if registry is not None:
+            # registry.section_names is derived — a hardcoded list would
+            # silently under-count the two handler-built sub-sections.
+            hidden = sum(len(registry.get_hidden_items(sec))
+                         for sec in registry.section_names)
+
+        # Say what actually happened, not "restart for full effect" — the
+        # menu re-filters on the next render, and the count is the honest
+        # answer to "what did that just do to my screen?".
+        if hidden:
+            effect = (f"{hidden} menu action(s) are now hidden.\n\n"
+                      f"Every affected menu carries a 'Show all' row that "
+                      f"brings them straight back for this session — "
+                      f"gating changes the VIEW, never what MeshForge can do.")
+        else:
+            effect = ("No menu actions are hidden by this profile.\n\n"
+                      "Profiles also drive dependency checks and the "
+                      "daemon's service expectations.")
         self.ctx.dialog.msgbox(
             "Profile Updated",
             f"Deployment profile set to: {profile.display_name}\n\n"
             f"{profile.description}\n\n"
-            "Restart MeshForge for this to take full effect.")
+            f"{effect}")
 
     def _configure_connection(self):
         """Configure Meshtastic connection."""

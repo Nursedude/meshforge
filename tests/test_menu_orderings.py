@@ -223,9 +223,39 @@ class TestMainMenuPin:
         ("x", "Exit"),
     ]
 
+    #: The four rows whose handler owns the label. Until 2026-09-16 the
+    #: launcher typed these a SECOND time and two of the four had already
+    #: drifted from the handler that runs them ("Common shortcuts" vs
+    #: "Single-key NOC shortcuts"; "Field operations" vs "EMCOMM field
+    #: operations"). The registry is the source now; the launcher keeps
+    #: fallback labels only so a failed import cannot silently delete a
+    #: top-level row, and those are pinned identical below.
+    HANDLER_OWNED = ("n", "t", "q", "e")
+
     @staticmethod
-    def _render_rows():
+    def _render_rows(profile_flags=None, show_all=False):
+        """Drive the real ``_run_main_menu`` against a real registry.
+
+        The registry is real (not a stub) because the four handler-owned
+        rows now get their labels from it — a stub would pin the test's
+        own idea of the menu rather than the launcher's.
+        """
         from types import SimpleNamespace
+        from handler_protocol import TUIContext
+        from handler_registry import HandlerRegistry
+        from handlers import get_all_handlers
+
+        ctx = TUIContext(dialog=SimpleNamespace())
+        ctx.feature_flags = dict(profile_flags or {})
+        ctx.show_all_features = show_all
+        if profile_flags:
+            ctx.profile = SimpleNamespace(
+                name=SimpleNamespace(value="testprofile"))
+        registry = HandlerRegistry(ctx)
+        for cls in get_all_handlers():
+            registry.register(cls())
+        ctx.registry = registry
+
         seen = []
 
         def fake_menu(title, subtitle, choices):
@@ -234,14 +264,35 @@ class TestMainMenuPin:
 
         fake = SimpleNamespace(
             _get_menu_status_hint=lambda: "",
-            _feature_enabled=lambda f: True,
             _MAX_DIALOG_RETRIES=3,
             _handle_main_choice=lambda c: None,
+            _registry=registry,
+            _tui_context=ctx,
             dialog=SimpleNamespace(menu=fake_menu, yesno=lambda *a: True),
         )
+        fake._handler_row = lambda tag: (
+            tui_main.MeshForgeLauncher._handler_row(fake, tag))
+        fake._gating_row = lambda sec: (
+            tui_main.MeshForgeLauncher._gating_row(fake, sec))
         tui_main.MeshForgeLauncher._run_main_menu(fake)
         assert seen, "_run_main_menu rendered no menu at all"
         return seen[0]
+
+    def test_main_fallback_labels_match_the_registry(self):
+        """The degraded-mode labels must equal what the handlers declare.
+
+        The fallbacks exist so a handler that fails to import cannot make
+        a top-level row vanish silently. That is only safe while they say
+        the same thing as the live row — otherwise they are just the old
+        duplicate declaration wearing a different name, free to drift the
+        way the inline copies did.
+        """
+        rows = dict(self._render_rows())
+        for tag, fallback in tui_main.MeshForgeLauncher._MAIN_FALLBACK_LABELS.items():
+            assert rows[tag] == fallback, (
+                f"main-menu fallback for {tag!r} has drifted from the "
+                f"handler's label.\n  handler:  {rows[tag]!r}\n"
+                f"  fallback: {fallback!r}")
 
     def test_rows_and_order_are_pinned(self):
         rows = self._render_rows()

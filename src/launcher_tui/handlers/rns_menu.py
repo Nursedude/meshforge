@@ -90,6 +90,14 @@ class RNSMenuHandler(BaseHandler):
                 if tag not in seen:
                     choices.append((tag, desc))
                     seen.add(tag)
+            # Profile gating hides a VIEW, never a capability: if anything
+            # here is filtered out, the way back renders with it. None when
+            # no profile is gating, which is every ungated box. FIRST, so
+            # it cannot fall below the fold of a short terminal.
+            if self.ctx.registry:
+                _gating = self.ctx.registry.gating_row('rns')
+                if _gating:
+                    choices.insert(0, _gating)
             choices.append(("back", "Back"))
 
             choice = self.ctx.dialog.menu(

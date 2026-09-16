@@ -81,13 +81,30 @@ class TestStatusBarEnhancedHalfStaysDead:
 
 class TestProfileGatingStaysDecided:
     def test_no_feature_enabled_on_launcher(self):
-        # W4: flags were provably always {} (no construction site passed a
-        # profile), so every gate was dead. Wire TUIContext.feature_flags
-        # if profile-based menu filtering is ever actually wanted.
+        """The flags live on the context, and only there.
+
+        W4 (2026-08-14) found the launcher carrying its own
+        ``_profile`` / ``_feature_flags`` / gate helper that no
+        construction site ever fed, so every gate was dead, and ruled:
+        decide wire-or-delete, never leave dead gates.
+
+        It was WIRED on 2026-09-16, through the seam W4 named —
+        ``TUIContext.feature_flags``, filtered in
+        ``HandlerRegistry.get_menu_items``. So this assertion still
+        stands and now means something narrower: the launcher must not
+        grow a SECOND, private copy of the gate beside the context's.
+        Two predicates answering "is this feature on" is how the menu and
+        the handler come to disagree.
+
+        The old form stripped a comment out of the source before
+        checking. That comment is gone, so the strip is gone with it — a
+        tolerance nothing needs is a quiet exemption waiting to be used.
+        See tests/test_profile_gating.py for what the wiring must do.
+        """
         src = _main_src()
-        assert '_feature_enabled' not in src.replace(
-            '# (_profile/_feature_flags/_feature_enabled', ''), (
-            "launcher-side feature gating returned without a wiring "
+        assert '_feature_enabled' not in src, (
+            "launcher-side feature gating returned. The flags belong on "
+            "TUIContext, which the registry filter already reads "
             "(audit W4: decide wire-or-delete, never leave dead gates)"
         )
 

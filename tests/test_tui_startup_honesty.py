@@ -153,11 +153,22 @@ class TestMainMenuEscapeSemantics:
             calls['yesno'] += 1
             return yesno_returns[min(calls['yesno'] - 1, len(yesno_returns) - 1)]
 
+        # These tests pin ESCAPE and retry semantics, not menu content,
+        # so the two row-builders are stubbed rather than driven off a
+        # real registry: _handler_row sources the four handler-owned
+        # top-level rows and _gating_row adds the profile escape hatch
+        # (both 2026-09-16). What they RENDER is owned by
+        # tests/test_menu_orderings.py and tests/test_profile_gating.py.
+        # ``_feature_enabled`` is gone from the fake because it is gone
+        # from the launcher — the flags live on TUIContext now, and a
+        # stub for a method that no longer exists is a fake that has
+        # stopped describing the thing it stands in for.
         fake = SimpleNamespace(
             _get_menu_status_hint=lambda: "",
-            _feature_enabled=lambda f: True,
             _MAX_DIALOG_RETRIES=3,
             _handle_main_choice=lambda c: calls['handled'].append(c),
+            _handler_row=lambda tag: [(tag, f"{tag} row")],
+            _gating_row=lambda section: None,
             dialog=SimpleNamespace(menu=fake_menu, yesno=fake_yesno),
         )
         return fake, calls

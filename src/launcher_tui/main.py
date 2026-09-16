@@ -144,15 +144,54 @@ class MeshForgeLauncher:
         self._tui_context.registry = self._registry
         for handler_cls in get_all_handlers():
             self._registry.register(handler_cls())
+        self._wire_profile_flags()
 
-    # Q1 purge 2026-08-14 (audit W4): the launcher-side profile plumbing
-    # (_profile/_feature_flags/_feature_enabled + the maps/tactical menu
-    # gates) is gone — no construction site ever passed a profile, so the
-    # flags were provably always {} and every gate always True. Deployment
-    # profiles remain a launcher.py/setup_wizard/daemon feature; if TUI
-    # menu filtering is ever wanted, wire it through TUIContext.feature_flags
-    # (the handler-level flag field + registry filter still exist and are
-    # tested — that is the seam to feed).
+    # Q1 purge 2026-08-14 (audit W4) deleted the launcher-side profile
+    # plumbing (_profile/_feature_flags + the launcher's own gate helper)
+    # because no construction site ever passed a profile, and it named the
+    # seam to feed instead: TUIContext.feature_flags, filtered by the
+    # registry. This is that wiring, 2026-09-16. The launcher-side helpers
+    # stay deleted and TestProfileGatingStaysDecided still enforces it —
+    # the flags live on the context, and only there.
+
+    def _wire_profile_flags(self) -> None:
+        """Feed the registry's feature-flag filter from a SAVED profile.
+
+        ``load_profile()``, never ``load_or_detect_profile()``, and that is
+        the whole design decision:
+
+        auto-detection reads which services are RUNNING. Gating on it would
+        hide the RNS menu on a box whose rnsd is down — taking the tool
+        away at exactly the moment it is needed, and doing it silently.
+        A saved profile is a human declaration; a detection is a guess, and
+        a guess must not remove anything from the operator's screen.
+
+        So on a box with no saved profile this is a no-op and all 115
+        actions render, exactly as before this existed.
+        """
+        try:
+            from utils.deployment_profiles import load_profile
+            profile = load_profile()
+        except Exception as e:
+            # Never let profile plumbing keep the NOC off the screen.
+            logger.warning("Deployment profile not loaded, no menu gating: %s", e)
+            return
+        if profile is None:
+            logger.debug("No saved deployment profile — menu gating inactive")
+            return
+        flags = dict(getattr(profile, "feature_flags", {}) or {})
+        if not flags:
+            logger.warning(
+                "Saved profile %r declares no feature_flags — menu gating "
+                "inactive", getattr(profile, "display_name", profile))
+            return
+        self._tui_context.profile = profile
+        self._tui_context.feature_flags = flags
+        hidden = sum(len(self._registry.get_hidden_items(sec))
+                     for sec in self._registry.section_names)
+        logger.info("Deployment profile %r active: %d menu action(s) gated "
+                    "out (Show all re-renders them)",
+                    getattr(profile, "display_name", "?"), hidden)
 
     def _notify_unwired(self, choice) -> None:
         """Honest feedback for a menu tag no handler owns (Q5, audit W17).
@@ -177,17 +216,42 @@ class MeshForgeLauncher:
 
         Args:
             section: Menu section key (e.g., "dashboard", "rf_sdr").
-            legacy_items: List of (tag, description) for unconverted items.
+            legacy_items: List of (tag, description) — or
+                (tag, description, flag) for a CROSS-SECTION row whose
+                handler lives elsewhere and carries a feature flag. Such a
+                row must obey its owner's flag, or a profile would hide an
+                action on one screen and leave the same action reachable
+                from another (which is worse than not gating at all).
             ordering: Optional list of tags defining display order.
 
         Returns:
-            List of (tag, description) tuples with "Back" appended.
+            List of (tag, description) tuples with "Back" appended, plus
+            the profile escape-hatch row when anything here is hidden.
         """
         registry_items = self._registry.get_menu_items(section)
         registry_tags = {tag for tag, _ in registry_items}
 
         # Filter legacy items already handled by registry
-        filtered_legacy = [(t, d) for t, d in legacy_items if t not in registry_tags]
+        filtered_legacy = []
+        hidden_legacy = 0
+        gateable_legacy = 0
+        for item in legacy_items:
+            tag, desc = item[0], item[1]
+            flag = item[2] if len(item) > 2 else None
+            if tag in registry_tags:
+                continue
+            if flag is not None:
+                # "Would the PROFILE block this?" — not "does it carry a
+                # flag?". Counting every flagged row as gateable made a
+                # section claim the profile hid N there while it hid none
+                # (e.g. Extensions under 'field', where maps is ON).
+                # Same question get_gateable_items asks, same answer.
+                if not self._registry.flag_allowed(flag):
+                    gateable_legacy += 1
+                if not self._tui_context.feature_enabled(flag):
+                    hidden_legacy += 1
+                    continue
+            filtered_legacy.append((tag, desc))
 
         all_map = {tag: desc for tag, desc in registry_items}
         all_map.update({tag: desc for tag, desc in filtered_legacy})
@@ -202,8 +266,36 @@ class MeshForgeLauncher:
         else:
             result = list(registry_items) + filtered_legacy
 
+        # FIRST, not last. A section list can be taller than the
+        # terminal — dashboard is 21 rows and system 19 — and whiptail
+        # then scrolls, so a row appended at the bottom is simply not on
+        # screen. Measured 2026-09-16 with scripts/tui_smoke.py: under
+        # the 'gateway' and 'field' profiles the escape hatch fell below
+        # the fold of a 24x80 terminal in mesh_networks, which is exactly
+        # the field-floor size and exactly the operator who most needs to
+        # know why a row is missing. An explanation you have to scroll to
+        # find is not an explanation.
+        gating = self._registry.gating_row(
+            section,
+            extra_hidden=hidden_legacy,
+            extra_gateable=gateable_legacy,
+        )
+        if gating:
+            result.insert(0, gating)
         result.append(("back", "Back"))
         return result
+
+    def _owner_flag(self, section, tag):
+        """The flag a cross-section row inherits from its owning handler."""
+        return self._registry.owner_flag(section, tag)
+
+    def _gating_row(self, section):
+        """Delegate to the registry — one implementation of the rule.
+
+        See ``HandlerRegistry.gating_row``: profile gating hides a VIEW,
+        never a capability, so a gated screen always carries the way back.
+        """
+        return self._registry.gating_row(section)
 
     @staticmethod
     def _wait_for_enter(msg: str = "\nPress Enter to continue...") -> None:
@@ -646,6 +738,42 @@ class MeshForgeLauncher:
 
     _MAX_DIALOG_RETRIES = 3
 
+    #: Degraded-mode labels for the four handler-owned top-level rows.
+    #: NOT a second declaration: the registry is the source, and these are
+    #: used only if a handler failed to register at all — so a broken
+    #: import can never silently DELETE a top-level row (the silent
+    #: re-render class, one level above the handlers). Pinned identical to
+    #: the live registry labels by ``test_main_fallback_labels_match_the_registry``, so
+    #: the two cannot drift the way the old inline copies did.
+    _MAIN_FALLBACK_LABELS = {
+        "n": "NOC Home            Transports, health, one-touch fixes",
+        "t": "Tactical Ops        SITREP, zones, QR, ATAK",
+        "q": "Quick Actions       Single-key NOC shortcuts",
+        "e": "Emergency Mode      EMCOMM field operations",
+    }
+
+    def _handler_row(self, tag):
+        """Render one handler-owned main-menu row, label from the registry.
+
+        Returns a 0- or 1-item list so callers can ``extend`` unconditionally.
+
+        Three outcomes, all of them explicit:
+          * owned and visible  -> the handler's own label
+          * gated by profile   -> nothing, and ``_gating_row`` says how many
+          * owned by nobody    -> the fallback label plus an ERROR log; a
+            top-level entry must never vanish because a module failed to
+            import (hfm #9 — every swallow leaves a witness).
+        """
+        owned = dict(self._registry.get_menu_items("main"))
+        if tag in owned:
+            return [(tag, owned[tag])]
+        if any(t == tag for t, _, _ in self._registry.get_hidden_items("main")):
+            return []
+        logger.error(
+            "Main-menu tag %r has no registry owner — rendering the "
+            "fallback label. A handler failed to register.", tag)
+        return [(tag, self._MAIN_FALLBACK_LABELS[tag])]
+
     def _run_main_menu(self):
         """Display the main NOC menu.
 
@@ -665,27 +793,39 @@ class MeshForgeLauncher:
             # Build status hint for menu subtitle
             status_hint = self._get_menu_status_hint()
 
-            choices = [
-                # NOC Home — operator landing: transports + health + one-touch fixes
-                ("n", "NOC Home            Transports, health, one-touch fixes"),
-                # Primary Operations (numbered for quick access)
-                ("1", "Dashboard           Status, health, alerts"),
-                ("2", "Mesh Networks       Meshtastic, RNS, AREDN"),
-                ("3", "RF & SDR            Calculators, SDR monitoring"),
-            ]
+            # n / t / q / e are owned by handlers in the "main" section;
+            # 1-7, a and x are section navigation this method dispatches
+            # itself. _handler_row() sources the first four from the
+            # registry so their label and their feature flag have ONE
+            # home — typing them here a second time had already drifted
+            # two of the four from the handler that runs them.
+            choices = []
+            # NOC Home — operator landing: transports + health + one-touch fixes
+            choices.extend(self._handler_row("n"))
+            # Primary Operations (numbered for quick access)
+            choices.append(("1", "Dashboard           Status, health, alerts"))
+            choices.append(("2", "Mesh Networks       Meshtastic, RNS, AREDN"))
+            choices.append(("3", "RF & SDR            Calculators, SDR monitoring"))
             choices.append(("4", "Maps & Viz          Coverage maps, topology"))
             choices.append(("5", "Configuration       Radio, services, settings"))
             choices.append(("6", "System              Hardware, logs, Linux tools"))
             choices.append(("7", "Extensions          Maps, bots, add-ons"))
             # Quick Access
-            choices.append(("t", "Tactical Ops        SITREP, zones, QR, ATAK"))
-            choices.extend([
-                ("q", "Quick Actions       Common shortcuts"),
-                ("e", "Emergency Mode      Field operations"),
-                # Meta
-                ("a", "About               Version, help, web client"),
-                ("x", "Exit"),
-            ])
+            choices.extend(self._handler_row("t"))
+            choices.extend(self._handler_row("q"))
+            choices.extend(self._handler_row("e"))
+            # Meta
+            choices.append(("a", "About               Version, help, web client"))
+            # Above Exit here, rather than first as in the sections: this
+            # menu is pinned at 13 rows and the smoke driver proves all 13
+            # paint on a 24x80 terminal, so the row is visible without
+            # scrolling either way — and the landing screen's first row
+            # should be the NOC, not a view toggle. Same rule, different
+            # placement because the constraint differs.
+            gating = self._gating_row("main")
+            if gating:
+                choices.append(gating)
+            choices.append(("x", "Exit"))
 
             try:
                 choice = self.dialog.menu(
@@ -747,6 +887,17 @@ class MeshForgeLauncher:
         update_count = getattr(self, '_updates_available', 0)
         if update_count > 0:
             hint += f"  |  {update_count} update(s) available"
+
+        # Name the profile whenever one is filtering the menu. The reason
+        # something is missing belongs on the same screen as the absence —
+        # an operator who cannot see WHY a tool is gone concludes the tool
+        # is broken.
+        profile = self._tui_context.profile_label()
+        if profile:
+            if self._tui_context.show_all_features:
+                hint += f"  |  profile '{profile}' (showing all)"
+            else:
+                hint += f"  |  profile '{profile}'"
 
         return hint
 
@@ -948,8 +1099,15 @@ class MeshForgeLauncher:
             # 'mfmaps' is the one cross-section entry (handler lives in
             # "maps_viz", dispatched below); 'meshing' was registry-shadowed
             # (Q1 purge 2026-08-14, audit W7).
+            # 'mfmaps' is a CROSS-SECTION row: the handler lives in
+            # "maps_viz" and carries the "maps" flag there, so the flag
+            # travels with the row. Without it a maps-off profile would
+            # hide MeshForge Maps in Maps & Viz and leave this copy of the
+            # same action one menu away.
+            _mfmaps_flag = self._owner_flag("maps_viz", "mfmaps")
             legacy = [
-                ("mfmaps", "MeshForge Maps      Multi-source map extension"),
+                ("mfmaps", "MeshForge Maps      Multi-source map extension",
+                 _mfmaps_flag),
             ]
             choices = self._build_section_menu("extensions", legacy, _ORDERING)
 

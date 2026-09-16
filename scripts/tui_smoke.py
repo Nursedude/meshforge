@@ -34,6 +34,7 @@ Usage:
     python3 scripts/tui_smoke.py                  # default size matrix
     python3 scripts/tui_smoke.py --sizes 24x80
     python3 scripts/tui_smoke.py --json out.json
+    python3 scripts/tui_smoke.py --profile monitor   # a GATED surface
 
 Exit code: 0 when every screen rendered on every size, 1 otherwise, 2
 when the driver could not run at all (no whiptail, no pty).
@@ -65,13 +66,20 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b[()][A-Z0-9]|\x1b[=>]")
 
 # --------------------------------------------------------------- screens
 
-def collect_screens():
+def collect_screens(profile_name=None):
     """Every (name, title, subtitle, choices) the TUI renders.
 
     Built from the same code the TUI uses — ``_build_section_menu``
     merging the live registry with SECTION_ORDERINGS, and the main
     menu's own builder — so this renders the real lists rather than a
     reconstruction that could drift from them.
+
+    Args:
+        profile_name: when given, the deployment profile whose feature
+            flags gate the surface, so the rows a profile HIDES and the
+            "Show all" row it adds get drawn by real whiptail too. A
+            gated menu that has only ever been unit-rendered is the same
+            BELIEVED this driver exists to retire.
     """
     sys.path.insert(0, str(SRC))
     sys.path.insert(0, str(TUI))
@@ -87,6 +95,13 @@ def collect_screens():
     from handlers import get_all_handlers
 
     ctx = TUIContext(dialog=SimpleNamespace())
+    if profile_name:
+        from utils.deployment_profiles import get_profile_by_name
+        profile = get_profile_by_name(profile_name)
+        if profile is None:
+            raise SystemExit(f"unknown profile {profile_name!r}")
+        ctx.profile = profile
+        ctx.feature_flags = dict(profile.feature_flags)
     registry = HandlerRegistry(ctx)
     ctx.registry = registry
     for cls in get_all_handlers():
@@ -98,20 +113,28 @@ def collect_screens():
     captured = []
     fake = SimpleNamespace(
         _get_menu_status_hint=lambda: "MeshForge smoke",
-        _feature_enabled=lambda f: True,
         _MAX_DIALOG_RETRIES=3,
         _handle_main_choice=lambda c: None,
+        _registry=registry,
+        _tui_context=ctx,
         dialog=SimpleNamespace(
             menu=lambda t, s, c: (captured.append(list(c)), "x")[1],
             yesno=lambda *a: True),
     )
+    # Bound the same way the launcher binds them, so the driver exercises
+    # the real methods rather than a stand-in that could disagree.
+    fake._handler_row = lambda tag: tui_main.MeshForgeLauncher._handler_row(
+        fake, tag)
+    fake._gating_row = lambda sec: tui_main.MeshForgeLauncher._gating_row(
+        fake, sec)
     tui_main.MeshForgeLauncher._run_main_menu(fake)
     if captured:
         screens.append(("main", "MeshForge NOC", "Network Operations Center",
                         captured[0]))
 
     builder = tui_main.MeshForgeLauncher._build_section_menu
-    holder = SimpleNamespace(_registry=registry)
+    holder = SimpleNamespace(_registry=registry, _tui_context=ctx)
+    holder._owner_flag = lambda sec, tag: registry.owner_flag(sec, tag)
     for section in sorted(registry.section_names):
         if section == "main":
             continue
@@ -231,10 +254,13 @@ def render_in_pty(title, subtitle, choices, rows, cols, timeout=25.0):
     # screen. First word, because whiptail truncates to the box width
     # and the labels carry column-alignment padding.
     seen = 0
+    missing = []
     for _tag, label in choices:
         word = label.strip().split()[0] if label.strip() else ""
         if word and word in screen:
             seen += 1
+        else:
+            missing.append(label.strip())
 
     first_tag = choices[0][0] if choices else None
     ok = (payload.get("error") is None
@@ -250,7 +276,7 @@ def render_in_pty(title, subtitle, choices, rows, cols, timeout=25.0):
         note = (f"child measured {payload.get('rows')}x{payload.get('cols')},"
                 f" PTY was {rows}x{cols}")
     return {"ok": ok, "selected": payload.get("selected"), "painted": seen,
-            "total": len(choices), "note": note,
+            "total": len(choices), "note": note, "missing": missing,
             "bytes": len(painted)}
 
 
@@ -262,6 +288,11 @@ def main(argv=None):
                    help="comma list like 24x80,40x120")
     p.add_argument("--json", dest="json_out", default=None)
     p.add_argument("--only", default=None, help="one screen name")
+    p.add_argument("--profile", default=None,
+                   help="render the surface a deployment profile leaves "
+                        "(radio_maps|monitor|meshcore|gateway|field|full) "
+                        "— proves the rows it hides and the 'Show all' row "
+                        "it adds draw on a real terminal")
     args = p.parse_args(argv)
 
     if not shutil.which("whiptail") and not shutil.which("dialog"):
@@ -275,7 +306,7 @@ def main(argv=None):
         sizes = tuple(tuple(int(v) for v in s.lower().split("x"))
                       for s in args.sizes.split(","))
 
-    screens = collect_screens()
+    screens = collect_screens(args.profile)
     if args.only:
         screens = [s for s in screens if s[0] == args.only]
     if not screens:
@@ -302,6 +333,20 @@ def main(argv=None):
 
     print(f"\nscreens rendered: {len(rows_out) - failures}/{len(rows_out)}")
     print(f"labels painted on a real terminal: {labels_painted}/{labels_total}")
+    # A bare "390/402" reports that a dozen rows never drew and does not
+    # say WHICH — an unexplained absence, which is the thing this whole
+    # arc exists to stop shipping. Name them.
+    if labels_painted < labels_total:
+        by_label = {}
+        for r in rows_out:
+            for lbl in r.get("missing", []):
+                by_label.setdefault(lbl, []).append(
+                    f"{r['screen']}@{r['rows']}x{r['cols']}")
+        print(f"\nnever painted ({len(by_label)} distinct label(s)):")
+        for lbl, where in sorted(by_label.items()):
+            print(f"  {lbl!r}")
+            print(f"      on {len(where)} combo(s): {', '.join(where[:3])}"
+                  + (" ..." if len(where) > 3 else ""))
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(rows_out, indent=1))
         print(f"json: {args.json_out}")

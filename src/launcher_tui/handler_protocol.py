@@ -39,6 +39,9 @@ class TUIContext:
         status_bar: StatusBar instance (may be None).
         feature_flags: Deployment-profile feature flags.
         profile: Active deployment profile object (may be None).
+        show_all_features: Session-only override — when True, profile
+            gating is bypassed everywhere and the full surface renders.
+            The escape hatch behind every "Show all (N hidden)" row.
         src_dir: Path to the ``src/`` directory.
         env: Environment dict from ``_detect_environment()``.
         registry: Back-reference to the HandlerRegistry (set after construction).
@@ -50,6 +53,10 @@ class TUIContext:
     status_bar: Optional[Any] = None
     feature_flags: dict = field(default_factory=dict)
     profile: Optional[Any] = None
+    # Session-only view override (never persisted): profile gating hides a
+    # VIEW, never a capability, so every gated menu carries one row that
+    # flips this and re-renders the full surface.
+    show_all_features: bool = False
     src_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent)
     env: dict = field(default_factory=dict)
     registry: Optional[Any] = None  # HandlerRegistry — set after construction
@@ -61,11 +68,31 @@ class TUIContext:
     def feature_enabled(self, feature: str) -> bool:
         """Check if a feature is enabled in the current deployment profile.
 
-        When no profile is set, all features are enabled (backward compatible).
+        When no profile is set, all features are enabled (backward
+        compatible) — and that is the DECLARED behaviour, not an accident:
+        the launcher feeds these flags from a profile the operator SAVED,
+        never from auto-detection, so a box with a service down never
+        loses the tool that fixes it.
+
+        ``show_all_features`` is the operator's escape hatch and wins over
+        the profile for the rest of the session.
         """
+        if self.show_all_features:
+            return True
         if not self.feature_flags:
             return True
         return self.feature_flags.get(feature, True)
+
+    def profile_label(self) -> str:
+        """Short name of the active profile, or '' when none is gating.
+
+        Used in menu subtitles and in the "Show all" row so the reason
+        something is missing is always on screen beside the absence.
+        """
+        if not self.feature_flags:
+            return ""
+        name = getattr(self.profile, "name", None)
+        return getattr(name, "value", None) or str(name or "")
 
     @staticmethod
     def wait_for_enter(msg: str = "\nPress Enter to continue...") -> None:

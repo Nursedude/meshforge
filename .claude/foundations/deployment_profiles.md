@@ -24,23 +24,39 @@ rather than overwrite a file it cannot parse.
 | `monitor` | Monitor | — | `rich`, `yaml`, `requests`, `paho` |
 | `meshcore` | MeshCore | — | `rich`, `yaml`, `requests` |
 | `gateway` | Gateway | `meshtasticd`, `rnsd` | `rich`, `yaml`, `requests`, `RNS`, `LXMF`, `paho` |
+| `field` | Field Kit | `meshtasticd`, `rnsd` | `rich`, `yaml`, `RNS`, `LXMF`, `folium` |
 | `full` | Full Stack | `meshtasticd`, `rnsd`, `mosquitto` | `rich`, `yaml`, `requests`, `RNS`, `LXMF`, `paho`, `folium`, `websockets`, `psutil`, `distro` |
 
 ## Feature flags
 
 A flag gates a TUI menu action via `TUIContext.feature_enabled()`.
-⚠️ **As of 2026-09-15 the TUI never populates `feature_flags`, so every
-gate passes and all actions are visible on every box.** The seam exists
-and is tested; only the feed was removed in the 2026-08-14 Q1 purge.
-See the TUI plan's Phase 3.
+Wired 2026-09-16 (plan Phase 3). Three rules govern it:
 
-| Profile | `gateway` | `maps` | `meshcore` | `meshtastic` | `mqtt` | `rns` | `tactical` |
-|---|---|---|---|---|---|---|---|
-| `radio_maps` | — | yes | — | yes | — | — | — |
-| `monitor` | — | — | — | — | yes | — | — |
-| `meshcore` | — | — | yes | yes | — | — | — |
-| `gateway` | yes | yes | — | yes | yes | yes | yes |
-| `full` | yes | yes | yes | yes | yes | yes | yes |
+1. **Only a SAVED profile gates.** The launcher calls `load_profile()`,
+   never `load_or_detect_profile()` — detection reads which services are
+   RUNNING, so gating on it would hide the RNS menu on a box whose rnsd
+   is down, removing the tool at the moment it is needed. A box with no
+   `profile` key in `deployment.json` shows all 115 actions, unchanged.
+2. **Hiding is a VIEW, never a capability.** Every gated menu carries a
+   first row reading `Show all  N hidden by profile 'x'`. One keystroke
+   restores the full surface for the session. It is the FIRST row
+   because a section list can be taller than the terminal — measured on
+   a 24x80 PTY, a bottom-placed row scrolled out of sight.
+3. **One vocabulary, both sides.** `FEATURE_FLAGS` in
+   `utils/deployment_profiles.py` is the SSOT. The guards in
+   `tests/test_profile_gating.py` fail if a profile declares a flag no
+   handler consumes, or a handler gates on a word no profile declares.
+   Both had happened: `maps` gated nothing, `fleet_management` could
+   never close.
+
+| Profile | `fleet_management` | `gateway` | `maps` | `meshcore` | `meshtastic` | `mqtt` | `rns` | `tactical` |
+|---|---|---|---|---|---|---|---|---|
+| `radio_maps` | — | — | yes | — | yes | — | — | — |
+| `monitor` | — | — | — | — | — | yes | — | — |
+| `meshcore` | — | — | — | yes | yes | — | — | — |
+| `gateway` | yes | yes | yes | — | yes | yes | yes | yes |
+| `field` | — | yes | yes | — | yes | — | yes | yes |
+| `full` | yes | yes | yes | yes | yes | yes | yes | yes |
 
 ## Descriptions
 
@@ -55,6 +71,8 @@ See the TUI plan's Phase 3.
 - **`gateway`** — Full Meshtastic <> RNS bridge with message routing
   - optional services: `mosquitto`
   - optional packages: `websockets`, `psutil`, `folium`
+- **`field`** — Off-grid EMCOMM kit: Meshtastic + RNS + tactical, no broker
+  - optional packages: `requests`, `psutil`, `distro`
 - **`full`** — All features enabled including MQTT broker
 
 ## Selecting a profile

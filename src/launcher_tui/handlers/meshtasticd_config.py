@@ -311,6 +311,14 @@ class MeshtasticdConfigHandler(BaseHandler):
                 else:
                     result.append((tag, desc))
 
+            # Profile gating hides a VIEW, never a capability: if anything
+            # here is filtered out, the way back renders with it. None when
+            # no profile is gating, which is every ungated box. FIRST, so
+            # it cannot fall below the fold of a short terminal.
+            if self.ctx.registry:
+                _gating = self.ctx.registry.gating_row('meshtasticd')
+                if _gating:
+                    result.insert(0, _gating)
             result.append(("back", "Back"))
 
             choice = self.ctx.dialog.menu(
@@ -324,6 +332,17 @@ class MeshtasticdConfigHandler(BaseHandler):
 
             # Section headers — just re-display menu
             if choice.startswith("_") and choice.endswith("_"):
+                continue
+
+            # The profile-gating toggle. Handled EXPLICITLY because this
+            # loop dispatches conditionally (``choice in registry_tags``)
+            # rather than calling dispatch() first like the eight section
+            # menus do — a reserved tag owned by the registry itself is in
+            # no handler's tag set, so it would fall through to the "not
+            # wired" tail. Menu loops are not one shape; the ones with few
+            # members are where a blanket assumption breaks.
+            if self.ctx.registry and choice == self.ctx.registry.SHOW_ALL_TAG:
+                self.ctx.registry.dispatch("meshtasticd", choice)
                 continue
 
             # Try registry sub-handlers first (owner, presets, hardware,
