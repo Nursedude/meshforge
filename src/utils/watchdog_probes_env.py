@@ -96,6 +96,7 @@ def probe_router_scout_degraded(
     now: Optional[float] = None,
     state_path: Optional[str] = None,
     debounce_ticks: int = 2,
+    declared: Optional[Dict[str, str]] = None,
     mirror_stale_s: float = ROUTER_SCOUT_MIRROR_STALE_S,
     tick_stale_s: float = ROUTER_SCOUT_TICK_STALE_S,
 ) -> Optional[Signal]:
@@ -134,6 +135,7 @@ def probe_router_scout_degraded(
         sp = state_path or DEFAULT_ROUTER_SCOUT_DEBOUNCE_PATH
 
         skipped_files: List[str] = []
+        home = None
         if ticks is None:
             if operator is None:
                 try:
@@ -141,7 +143,6 @@ def probe_router_scout_degraded(
                     operator = _find_operator_user()
                 except Exception:
                     operator = None
-            home = None
             if operator is not None:
                 try:
                     import pwd
@@ -149,6 +150,35 @@ def probe_router_scout_degraded(
                 except (KeyError, OSError):
                     home = None
             ticks = _read_router_scout_ticks(home, skipped=skipped_files)
+
+        # DECLARED POSTURE (2026-09-15, ecomm-kit arc). A mirror that stops
+        # advancing because the operator declared the box AWAY is absent BY
+        # DESIGN, and absent-by-design must read ``inert`` — never the alarm
+        # state. Without this, every deployment of the field kit plants a
+        # standing ``indeterminate`` that is indistinguishable from a real
+        # blind spot and never clears, which trains the reader to skip the one
+        # disposition that means "I cannot see" (the 2026-09-02
+        # nomadnet_silence_watch latch, in miniature).
+        #
+        # ⚠️ ``home`` is passed EXPLICITLY. This probe runs inside the watchdog
+        # as root, where posture_path()'s get_real_user_home() resolves to
+        # /root — so a bare read_posture() would find no document and silently
+        # treat every box as active (the rns_version_drift lesson, called out
+        # in fleet_posture.posture_path's own docstring).
+        #
+        # UNREADABLE/INVALID deliberately degrade to "nothing declared", i.e.
+        # watch everything: a broken declaration must never be able to silence
+        # a detector. That is the same direction fleet_offline_check.sh takes,
+        # and it fails toward noise rather than toward blindness.
+        if declared is None:
+            declared = {}
+            try:
+                from utils import fleet_posture as _fp
+                _p = _fp.read_posture(home=home)
+                if _p.status == _fp.DECLARED:
+                    declared = {n: b.state for n, b in _p.boxes.items()}
+            except Exception:
+                declared = {}
 
         if not ticks:
             if ticks is None:
@@ -170,10 +200,32 @@ def probe_router_scout_degraded(
         bad: List[Tuple[str, str]] = []     # (device-or-filename, why)
         for name, text, mtime in ticks:
             if mtime is not None and (now - mtime) > mirror_stale_s:
-                note_disposition(
-                    "router_scout_degraded", "indeterminate",
-                    reason="mirror stale; cron_verdict_stale owns the dead-cron page",
-                )
+                # The mirror filename stem IS the box name: SCOUT_DEVICE on the
+                # router was renamed 2026-09-15 so device == box == ssh
+                # destination. That rename is why this needs no device->box
+                # mapping — the alternative was a translation layer whose only
+                # job was to reconcile two names for one box (fix the layout,
+                # do not teach the tool about the violation).
+                # ``name`` is the FILENAME ("<box>_tick.json"), not the
+                # stem — _read_router_scout_ticks yields os.listdir entries.
+                # Looking the box up by the raw filename would never match a
+                # declaration and would fail SILENTLY toward "not declared",
+                # i.e. toward the old behaviour, with no witness. Caught by
+                # reading the reader; the suffix is guaranteed by its filter.
+                _suffix = "_tick.json"
+                _box = name[:-len(_suffix)] if name.endswith(_suffix) else name
+                _declared = declared.get(_box)
+                if _declared in ("dormant", "detached"):
+                    note_disposition(
+                        "router_scout_degraded", "inert",
+                        reason=(f"mirror not advancing: {_box} is declared "
+                                f"{_declared} — absent by design"),
+                    )
+                else:
+                    note_disposition(
+                        "router_scout_degraded", "indeterminate",
+                        reason="mirror stale; cron_verdict_stale owns the dead-cron page",
+                    )
                 continue    # dead pull cron — cron_verdict_stale's beat
             try:
                 tick = json.loads(text)
@@ -351,6 +403,7 @@ def probe_ntfy_loopback(
     now: Optional[float] = None,
     state_path: Optional[str] = None,
     debounce_ticks: int = 2,
+    declared: Optional[Dict[str, str]] = None,
     stale_after_s: float = NTFY_LOOPBACK_STATE_STALE_S,
     wedge_after_misses: int = NTFY_LOOPBACK_WEDGE_MISSES,
     degraded_after_misses: int = NTFY_LOOPBACK_DEGRADED_MISSES,
@@ -584,6 +637,7 @@ def probe_ntfy_ack_stale(
     now: Optional[float] = None,
     state_path: Optional[str] = None,
     debounce_ticks: int = 2,
+    declared: Optional[Dict[str, str]] = None,
     stale_after_s: float = NTFY_ACK_STATE_STALE_S,
     wedge_after_pings: int = NTFY_ACK_WEDGE_PINGS,
 ) -> Optional[Signal]:
@@ -790,6 +844,7 @@ def probe_kernel_reboot_pending(
     running_release: Optional[str] = None,
     state_path: Optional[str] = None,
     debounce_ticks: int = 2,
+    declared: Optional[Dict[str, str]] = None,
 ) -> Optional[Signal]:
     """Fire when this box is running an older kernel than it has installed.
 
@@ -1190,6 +1245,7 @@ def probe_inherited_app_drift(
     git_path: str = "git",
     state_path: Optional[str] = None,
     debounce_ticks: int = 2,
+    declared: Optional[Dict[str, str]] = None,
 ) -> Optional[Signal]:
     """Fire when an INHERITED (non-owned) upstream app checkout carries an
     unversioned tracked-file code patch — the R1 defect the upstream-app

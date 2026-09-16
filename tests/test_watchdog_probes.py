@@ -6435,6 +6435,51 @@ class TestRouterScoutDegraded:
                   self.NOW - 90000)]
         assert self._fire(tmp_path, ticks) is None
 
+    def test_stale_mirror_of_declared_detached_box_is_inert_not_indeterminate(self, tmp_path):
+        """2026-09-15 ecomm-kit arc — absent BY DESIGN must read `inert`.
+
+        When the field kit deploys, the pull can no longer reach it, so the
+        mirror stops advancing and goes stale. That is the operator's own
+        declaration playing out, not a blind spot. Left as `indeterminate`,
+        every deployment plants a standing detector-blind annotation that is
+        indistinguishable from a real one and never clears — which trains the
+        reader to skip the one disposition meaning "I cannot see" (the
+        2026-09-02 nomadnet_silence_watch latch, in miniature).
+
+        The lookup key is the box name derived from the FILENAME stem; the
+        router's SCOUT_DEVICE was renamed so device == box == ssh destination,
+        which is why no device->box mapping exists anywhere.
+        """
+        seen = []
+        ticks = [("alaula_tick.json", self._tick(device="alaula", age_s=90000.0),
+                  self.NOW - 90000)]
+        with patch("utils.watchdog_probes_env.note_disposition",
+                   side_effect=lambda c, d, **kw: seen.append((c, d, kw.get("reason", "")))):
+            sig = probe_router_scout_degraded(
+                ticks=ticks, now=self.NOW,
+                state_path=str(tmp_path / "s.json"),
+                declared={"alaula": "detached"})
+        assert sig is None
+        dispositions = [d for _, d, _ in seen]
+        assert "inert" in dispositions, dispositions
+        assert "indeterminate" not in dispositions, dispositions
+        assert any("absent by design" in r and "alaula" in r for _, _, r in seen), seen
+
+    def test_stale_mirror_of_UNdeclared_box_still_reads_indeterminate(self, tmp_path):
+        """Regression twin: teaching the probe posture must not silence the
+        ordinary dead-pull case. A box nobody declared is still a real gap."""
+        seen = []
+        ticks = [("alaula_tick.json", self._tick(device="alaula", age_s=90000.0),
+                  self.NOW - 90000)]
+        with patch("utils.watchdog_probes_env.note_disposition",
+                   side_effect=lambda c, d, **kw: seen.append((c, d, kw.get("reason", "")))):
+            probe_router_scout_degraded(
+                ticks=ticks, now=self.NOW,
+                state_path=str(tmp_path / "s.json"), declared={})
+        dispositions = [d for _, d, _ in seen]
+        assert "indeterminate" in dispositions, dispositions
+        assert "inert" not in dispositions, dispositions
+
     def test_mixed_stale_and_fresh_evaluates_only_fresh(self, tmp_path):
         ticks = [
             ("dead-router_tick.json", self._tick(device="dead-router",
