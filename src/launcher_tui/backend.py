@@ -280,11 +280,22 @@ class DialogBackend:
         # the list if it still doesn't fit. The old fit only shrank on
         # small terminals: a multi-line panel (NOC Home) inside the fixed
         # 22-row box was clipped even on a 40-row terminal (review F3).
-        needed = chrome + text_lines + lh
-        h = max(h, min(needed, max_h))
-        if needed > max_h or h > max_h:
-            lh = max(4, max_h - chrome - text_lines)
-            h = min(h, max_h)
+        #
+        # "Content" is BOTH the text panel and the LIST. Until 2026-09-16
+        # `needed` was computed from the DEFAULT list_height (14) rather
+        # than len(choices), so the grow step only ever grew the box to
+        # fit 14 rows and `lh` appeared nowhere but the shrink branch.
+        # Measured with scripts/tui_smoke.py against real whiptail:
+        # list_h read 14 at 24, 30, 40 AND 60 rows, so a 22-item menu
+        # scrolled identically on a 60-row terminal that could show every
+        # row with space to spare. F3 fixed the text half of this fit and
+        # left the list half. Small terminals are unaffected: when
+        # avail_lh is the binding constraint this computes exactly what
+        # the old shrink branch did.
+        wanted_lh = max(lh, len(choices))
+        avail_lh = max(4, max_h - chrome - text_lines)
+        lh = min(wanted_lh, avail_lh)
+        h = min(max(h, chrome + text_lines + lh), max_h)
 
         args = [
             '--title', title,
