@@ -189,3 +189,99 @@ class TestUnwiredTagTripwire:
         assert title == "Not wired"
         assert "ghost-tag" in body
         assert "SomeHandler._some_menu" in body
+
+
+class TestMainMenuPin:
+    """The top-level menu's 13 rows are hardcoded and were asserted by
+    nothing — deleting a row reddened no test (F9, plan Phase 2).
+
+    Both halves matter. The ORDER is the operator's muscle memory: these
+    are single-keystroke tags on a field terminal, and silently moving
+    "Emergency Mode" is worse than losing it. The DISPATCH half catches
+    the other direction — a row that still renders after the code behind
+    it was deleted, which is the silent re-render this phase exists to
+    kill, one level above the handlers.
+
+    Drives the real ``_run_main_menu`` with a fake dialog rather than
+    reading the source, so the pin tracks what the builder actually
+    emits, including the conditional ``choices.append`` rows.
+    """
+
+    EXPECTED = [
+        ("n", "NOC Home"),
+        ("1", "Dashboard"),
+        ("2", "Mesh Networks"),
+        ("3", "RF & SDR"),
+        ("4", "Maps & Viz"),
+        ("5", "Configuration"),
+        ("6", "System"),
+        ("7", "Extensions"),
+        ("t", "Tactical Ops"),
+        ("q", "Quick Actions"),
+        ("e", "Emergency Mode"),
+        ("a", "About"),
+        ("x", "Exit"),
+    ]
+
+    @staticmethod
+    def _render_rows():
+        from types import SimpleNamespace
+        seen = []
+
+        def fake_menu(title, subtitle, choices):
+            seen.append(list(choices))
+            return "x"
+
+        fake = SimpleNamespace(
+            _get_menu_status_hint=lambda: "",
+            _feature_enabled=lambda f: True,
+            _MAX_DIALOG_RETRIES=3,
+            _handle_main_choice=lambda c: None,
+            dialog=SimpleNamespace(menu=fake_menu, yesno=lambda *a: True),
+        )
+        tui_main.MeshForgeLauncher._run_main_menu(fake)
+        assert seen, "_run_main_menu rendered no menu at all"
+        return seen[0]
+
+    def test_rows_and_order_are_pinned(self):
+        rows = self._render_rows()
+        actual = [(tag, label.split("  ")[0].strip()) for tag, label in rows]
+        assert actual == self.EXPECTED, (
+            "the main menu changed. This is a pin, not a bug — if the "
+            "change is intended, update EXPECTED in the same commit and "
+            "say why in the message.\n"
+            f"  expected: {self.EXPECTED}\n  actual:   {actual}"
+        )
+
+    def test_every_main_row_has_a_dispatch_path(self):
+        """A row whose handler was deleted must redden here, not re-render."""
+        import ast
+        from pathlib import Path
+        from handlers import get_all_handlers
+
+        registry_tags = {
+            item[0]
+            for cls in get_all_handlers()
+            for item in cls().menu_items()
+            if cls().menu_section == "main"
+        }
+        dict_tags = set()
+        tree = ast.parse(
+            (Path(__file__).resolve().parent.parent
+             / "src" / "launcher_tui" / "main.py").read_text())
+        for fn in ast.walk(tree):
+            if isinstance(fn, ast.FunctionDef) and fn.name == "_handle_main_choice":
+                for n in ast.walk(fn):
+                    if isinstance(n, ast.Assign) and isinstance(n.value, ast.Dict):
+                        dict_tags |= {
+                            k.value for k in n.value.keys
+                            if isinstance(k, ast.Constant) and isinstance(k.value, str)
+                        }
+        # "x" is consumed by _run_main_menu itself, before dispatch.
+        dispatchable = registry_tags | dict_tags | {"x"}
+        orphans = [tag for tag, _ in self._render_rows() if tag not in dispatchable]
+        assert not orphans, (
+            f"main-menu rows that reach no dispatch path: {orphans}. "
+            f"registry 'main' owns {sorted(registry_tags)}, the "
+            f"_handle_main_choice dict owns {sorted(dict_tags)}."
+        )
