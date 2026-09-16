@@ -318,7 +318,7 @@ HANDLER_MANIFEST = [
         "error": None,
         "menu_items": [
             ('stack_health', 'Stack Health        Local: RNS path, NomadNet, bridge, DB', None),
-            ('fleet_posture', 'Fleet Posture       All boxes: mini daemon, deltas, freshness', None),
+            ('fleet_watchers', 'Fleet Watchers      All boxes: mini daemon, deltas, freshness', None),
         ],
     },
     {

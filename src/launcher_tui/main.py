@@ -72,7 +72,7 @@ from handlers import get_all_handlers
 SECTION_ORDERINGS = {
     "dashboard": [
         "status", "weather", "network", "nodes", "health", "score",
-        "datapath", "stack_health", "fleet_posture", "traffic_pulse",
+        "datapath", "stack_health", "fleet_watchers", "traffic_pulse",
         "metrics", "analytics", "latency", "reports", "alerts",
         "mini_dudeai", "mini_dudeai_chat", "mini_dudeai_rules",
         "offline_oracle", "moc_analysis", "demo",

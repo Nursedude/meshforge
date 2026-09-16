@@ -525,8 +525,8 @@ def test_handler_registration_shape():
     assert "Stack Health" in label
     assert gate is None
     tag2, label2, gate2 = items[1]
-    assert tag2 == "fleet_posture"
-    assert "Fleet Posture" in label2
+    assert tag2 == "fleet_watchers"
+    assert "Fleet Watchers" in label2
     assert gate2 is None
 
 
@@ -572,25 +572,25 @@ def test_rollup_command_root_without_sudo_user_warns():
     assert note and "root" in note
 
 
-def test_render_fleet_posture_prints_pane(monkeypatch, capsys):
+def test_render_fleet_watchers_prints_pane(monkeypatch, capsys):
     h = _handler()
     h.ctx = MagicMock()
     monkeypatch.setattr(
         h, "_run",
         lambda cmd, timeout=90: "# pane\n🟢 **moc** — fresh\n")
     with patch("backend.clear_screen", lambda: None):
-        h._render_fleet_posture()
+        h._render_fleet_watchers()
     out = capsys.readouterr().out
     assert "moc" in out and "**" not in out
 
 
-def test_render_fleet_posture_honest_on_empty_output(monkeypatch, capsys):
+def test_render_fleet_watchers_honest_on_empty_output(monkeypatch, capsys):
     """No output ≠ healthy pane — the failure must be said out loud."""
     h = _handler()
     h.ctx = MagicMock()
     monkeypatch.setattr(h, "_run", lambda cmd, timeout=90: None)
     with patch("backend.clear_screen", lambda: None):
-        h._render_fleet_posture()
+        h._render_fleet_watchers()
     out = capsys.readouterr().out
     assert "no output" in out.lower()
 

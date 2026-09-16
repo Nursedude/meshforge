@@ -53,7 +53,7 @@ A non-empty **Flag** means the action only appears when that deployment-profile 
 | `status` | Service Status — All services with health |  | DashboardHandler |
 | `weather` | Space Weather — SFI, Kp, bands at a glance |  | DashboardHandler |
 | `demo` | Demo Mode — Simulated mesh traffic |  | DemoHandler |
-| `fleet_posture` | Fleet Posture — All boxes: mini daemon, deltas, freshness |  | FleetHealthHandler |
+| `fleet_watchers` | Fleet Watchers — All boxes: mini daemon, deltas, freshness |  | FleetHealthHandler |
 | `stack_health` | Stack Health — Local: RNS path, NomadNet, bridge, DB |  | FleetHealthHandler |
 | `latency` | Latency Monitor — Service response times |  | LatencyHandler |
 | `metrics` | Historical Trends — Metrics over time |  | MetricsHandler |

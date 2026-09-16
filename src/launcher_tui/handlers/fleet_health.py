@@ -103,8 +103,17 @@ class FleetHealthHandler(BaseHandler):
                 None,
             ),
             (
-                "fleet_posture",
-                "Fleet Posture       All boxes: mini daemon, deltas, freshness",
+                # 2026-09-15 RENAMED from "fleet_posture"/"Fleet Posture".
+                # That name collided with the DECLARED posture of
+                # utils.fleet_posture (active/shed/dormant/detached — the
+                # thing `scripts/fleet_posture.py declare` writes and
+                # fleet_offline_check.sh reads). This screen shows neither:
+                # it renders mini-dudeai's per-box WATCHER rollup. An
+                # operator hunting the declare surface was handed the right
+                # name and the wrong screen, which is worse than no screen.
+                # "Fleet Posture" is reserved for declared posture.
+                "fleet_watchers",
+                "Fleet Watchers      All boxes: mini daemon, deltas, freshness",
                 None,
             ),
         ]
@@ -112,15 +121,15 @@ class FleetHealthHandler(BaseHandler):
     def execute(self, action):
         if action == "stack_health":
             self.ctx.safe_call("Fleet Health", self._render_overview)
-        elif action == "fleet_posture":
-            self.ctx.safe_call("Fleet Posture", self._render_fleet_posture)
+        elif action == "fleet_watchers":
+            self.ctx.safe_call("Fleet Watchers", self._render_fleet_watchers)
 
-    def _render_fleet_posture(self):
+    def _render_fleet_watchers(self):
         from backend import clear_screen
 
         clear_screen()
         cmd, note = _rollup_command()
-        print("Fleet Posture — mini-dudeai rollup, every box, freshness "
+        print("Fleet Watchers — mini-dudeai rollup, every box, freshness "
               "re-derived now")
         if note:
             print(f"note: {note}")
