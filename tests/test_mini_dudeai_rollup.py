@@ -160,6 +160,25 @@ def test_collect_local_missing_returns_none(tmp_path):
 
 # === build_rollup ================================================
 
+def test_build_rollup_headline_says_watchers_not_posture():
+    """The pane's headline must NOT call itself 'posture'.
+
+    'Fleet posture' means the DECLARED per-box state in utils.fleet_posture
+    (active/shed/dormant/detached). This pane reports mini-daemon liveness —
+    a different question with the same old name. The 2026-09-15 rename fixed
+    the TUI label (03bd69ec) and the warmstart skill (46a82572) but not this
+    renderer, so the menu said 'Fleet Watchers' and the screen it opened said
+    'fleet posture' for a day. Nothing pinned the string, so nothing caught
+    it. This is that pin.
+    """
+    out = build_rollup(
+        [{"host": "moc1", "status": "fresh", "age": "5s", "rule_count": 12,
+          "src_errors": 0, "active": [], "self_box": True}], NOW)
+    headline = out.splitlines()[0]
+    assert "watchers" in headline.lower()
+    assert "posture" not in headline.lower()
+
+
 def test_build_rollup_summary_and_ordering():
     postures = [
         {"host": "moc1", "status": "fresh", "age": "5s", "rule_count": 12,

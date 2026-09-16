@@ -147,7 +147,7 @@ class FleetProvisionHandler(BaseHandler):
         self.ctx.dialog.msgbox(
             "Fleet Membership",
             f"Wrote {st['path']} ({len(hosts)} hosts). Fleet panes pick "
-            "this up on next run — verify via Dashboard → Fleet Posture. "
+            "this up on next run — verify via Dashboard → Fleet Watchers. "
             "mini units on --preset auto follow this declaration at their "
             "next restart.")
 

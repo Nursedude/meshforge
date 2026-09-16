@@ -214,7 +214,7 @@ class TestDegradedStatesNeverLookHealthy:
 
 
 class TestRollupUplinkLine:
-    """The site uplink line in the fleet posture pane.
+    """The site uplink line in the fleet watchers pane.
 
     Absent-by-design must be SILENT. Most sites have no Starlink, and a
     permanent "no dish" line would train the reader to skip that row — the

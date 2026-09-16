@@ -1,11 +1,11 @@
-"""Fleet mini-dudeai posture rollup — one pane, every box.
+"""Fleet mini-dudeai WATCHERS rollup — one pane, every box.
 
 Each box's mini daemon writes its own state file — at the app adapter's
 ``APP_STATE_RELPATH``, relative to that box's home (the brief is the human
 render; the state file is the SSOT). This module ssh-fans to the fleet
 — resolving the host list the SAME way ``scripts/fleet_sync.sh`` does, so no
 operator hostnames live in the repo (MF014) — reads each box's state, and renders
-a single posture pane.
+a single watchers pane.
 
 The honesty contract mirrors ``warmstart``: each box's freshness is re-derived
 NOW from its ``last_tick_ts``, so a box whose daemon died shows 🔴 STALE rather
@@ -566,8 +566,14 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
         if counts.get(s)
     ) or "no boxes"
 
+    # "watchers", never "posture": *posture* is the DECLARED per-box state
+    # in utils.fleet_posture (active/shed/dormant/detached), written by
+    # scripts/fleet_posture.py declare. This pane reports whether each box's
+    # mini daemon is ALIVE and FRESH — a different question. The TUI label
+    # (03bd69ec) and the warmstart skill (46a82572) were renamed 2026-09-15;
+    # this headline is the copy that rename missed. Do not rename it back.
     lines = [
-        f"# mini-dudeai fleet posture — {len(postures)} boxes",
+        f"# mini-dudeai fleet watchers — {len(postures)} boxes",
         f"_rolled up {stamp} · per-box freshness re-derived now · {summary}_",
         "",
     ]
@@ -865,7 +871,7 @@ def build_deep_feed(results: list[dict], now_ts: float) -> str:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="mini-dudeai-rollup",
-        description="Fleet mini-dudeai posture (default, breadth) or merged "
+        description="Fleet mini-dudeai watchers (default, breadth) or merged "
                     "escalations+fires feed (--deep).",
     )
     p.add_argument("--deep", action="store_true",
@@ -885,7 +891,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     postures = collect_fleet(now_ts)
     if not postures:
-        print(f"# mini-dudeai fleet posture\n\n{_no_data}")
+        print(f"# mini-dudeai fleet watchers\n\n{_no_data}")
         return 0
     sys.stdout.write(build_rollup(postures, now_ts))
     return 0

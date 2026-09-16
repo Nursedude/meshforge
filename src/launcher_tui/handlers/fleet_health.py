@@ -10,7 +10,7 @@ icon (ok/warn/fail/info) and a single-line "why" hint. The goal is for
 silence-mode failures (daemon up, no activity for days) to surface
 without manual investigation.
 
-T0 = Stack Health (local box). T1 = Fleet Posture: the cross-box
+T0 = Stack Health (local box). T1 = Fleet Watchers: the cross-box
 mini-dudeai rollup pane (per-box daemon freshness, rule counts, source
 errors, pending dream-deltas) rendered in the TUI, so fleet visibility no
 longer requires the CLI module or a Claude session.

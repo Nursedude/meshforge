@@ -530,12 +530,12 @@ def test_handler_registration_shape():
     assert gate2 is None
 
 
-# --------------------------------------------------- fleet posture (T1 pane)
+# -------------------------------------------------- fleet watchers (T1 pane)
 
 
 def test_plainify_strips_markdown_keeps_content():
     from handlers.fleet_health import _plainify
-    md = ("# mini-dudeai fleet posture — 9 boxes\n"
+    md = ("# mini-dudeai fleet watchers — 9 boxes\n"
           "_rolled up 2026-07-18 08:21:37 · per-box freshness re-derived now_\n"
           "\n"
           "🟢 **boxA** (self) — fresh · 52 rules · src_errors=0\n"
@@ -544,7 +544,7 @@ def test_plainify_strips_markdown_keeps_content():
     assert "**" not in out
     assert "boxA" in out and "boxB" in out
     assert "3 delta(s) pending" in out
-    assert "fleet posture" in out
+    assert "fleet watchers" in out
 
 
 def test_rollup_command_plain_when_not_root():
