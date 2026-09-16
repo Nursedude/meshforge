@@ -775,6 +775,8 @@ class MeshForgeLauncher:
         if entry:
             name, method = entry
             self._safe_call(name, method)
+        else:
+            self._notify_unwired(choice)
 
     # --- Submenu: Dashboard (1) ---
 

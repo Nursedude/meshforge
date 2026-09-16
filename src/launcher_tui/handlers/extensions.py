@@ -57,6 +57,8 @@ class ExtensionsHandler(BaseHandler):
         entry = dispatch.get(action)
         if entry:
             self.ctx.safe_call(*entry)
+        else:
+            self.ctx.notify_unwired(action, "ExtensionsHandler.execute")
 
     # =========================================================================
     # Meshing Around Management

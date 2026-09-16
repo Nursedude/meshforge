@@ -102,6 +102,8 @@ class AutomationHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "AutomationHandler._menu_automation")
 
     def _show_status(self) -> None:
         """Show automation status and statistics."""

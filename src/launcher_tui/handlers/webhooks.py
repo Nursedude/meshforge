@@ -57,6 +57,8 @@ class WebhooksHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "WebhooksHandler._webhooks_menu")
 
     def _webhooks_list(self):
         clear_screen()

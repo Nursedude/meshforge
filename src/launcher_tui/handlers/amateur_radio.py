@@ -69,6 +69,8 @@ class AmateurRadioHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "AmateurRadioHandler._amateur_radio_menu")
 
     def _callsign_lookup(self):
         """Look up a callsign in the FCC database."""
@@ -253,6 +255,8 @@ class AmateurRadioHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "AmateurRadioHandler._ares_races_menu")
 
     def _ics213_compose(self):
         """Compose an ICS-213 formal traffic message."""

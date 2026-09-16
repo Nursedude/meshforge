@@ -61,6 +61,8 @@ class PropagationHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "PropagationHandler._propagation_menu")
 
     def _show_propagation_summary(self):
         result = propagation.get_propagation_summary()

@@ -346,6 +346,8 @@ class MeshtasticdConfigHandler(BaseHandler):
             entry = own_dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "MeshtasticdConfigHandler._meshtasticd_menu")
 
     # ------------------------------------------------------------------
     # View methods

@@ -81,6 +81,8 @@ class ServiceDiscoveryHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "ServiceDiscoveryHandler._service_discovery_menu")
 
     def _quick_scan(self):
         self.ctx.dialog.infobox("Scanning", "Discovering local services...")

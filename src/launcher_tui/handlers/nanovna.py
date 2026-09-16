@@ -69,13 +69,7 @@ class NanoVNAHandler(BaseHandler):
         if action == "vna":
             self._vna_menu()
         else:
-            # The 72 `if entry:`-with-no-else sites in handlers/ turn an
-            # unknown tag into a silent re-render. Say it instead.
-            logger.error("NanoVNAHandler got an unknown action %r", action)
-            self.ctx.dialog.msgbox(
-                "Not wired",
-                f"NanoVNA handler has no action '{action}'.\n\n"
-                "This is a MeshForge wiring bug — please report it.")
+            self.ctx.notify_unwired(action, "NanoVNAHandler.execute")
 
     # ------------------------------------------------------------------
     # storage
@@ -177,10 +171,7 @@ class NanoVNAHandler(BaseHandler):
             if entry:
                 self.ctx.safe_call(f"nanovna:{choice}", entry)
             else:
-                logger.error("NanoVNA submenu tag %r has no owner", choice)
-                self.ctx.dialog.msgbox(
-                    "Not wired",
-                    f"No action owns '{choice}' — MeshForge wiring bug.")
+                self.ctx.notify_unwired(choice, "NanoVNAHandler._vna_menu")
 
     # ------------------------------------------------------------------
     # actions

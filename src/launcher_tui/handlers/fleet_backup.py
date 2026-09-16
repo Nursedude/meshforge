@@ -90,6 +90,8 @@ class FleetBackupHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "FleetBackupHandler._fleet_backup_menu")
 
     def _backup_local(self):
         """Create a local backup of this node."""

@@ -69,6 +69,8 @@ class NodeHealthHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "NodeHealthHandler._node_health_menu")
 
     def _service_latency_probe(self):
         """Probe all NOC services and display latency/health."""

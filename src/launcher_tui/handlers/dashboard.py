@@ -72,6 +72,8 @@ class DashboardHandler(BaseHandler):
         entry = dispatch.get(action)
         if entry:
             self.ctx.safe_call(*entry)
+        else:
+            self.ctx.notify_unwired(action, "DashboardHandler.execute")
 
     @staticmethod
     def _meshtasticd_api_reachable() -> bool:

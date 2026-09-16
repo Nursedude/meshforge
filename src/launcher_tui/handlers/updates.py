@@ -95,6 +95,8 @@ class UpdatesHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "UpdatesHandler._updates_menu")
 
     def _check_updates(self) -> Optional[Dict[str, Any]]:
         """Check for available updates."""

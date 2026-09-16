@@ -108,6 +108,8 @@ class BrokerHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "BrokerHandler._broker_menu")
 
     def _broker_profiles_menu(self):
         """View and manage broker profiles."""

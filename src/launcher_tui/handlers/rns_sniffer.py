@@ -99,6 +99,8 @@ class RNSSnifferHandler(BaseHandler):
             if entry:
                 name, method, *args = entry
                 self.ctx.safe_call(name, method, *args)
+            else:
+                self.ctx.notify_unwired(choice, "RNSSnifferHandler._rns_traffic_sniffer")
 
     def _rns_sniffer_toggle_capture(self, sniffer, capturing):
         """Toggle RNS packet capture."""

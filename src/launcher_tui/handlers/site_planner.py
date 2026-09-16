@@ -64,6 +64,8 @@ class SitePlannerHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "SitePlannerHandler._site_planner_menu")
 
     def _select_environment(self):
         choice = self.ctx.dialog.menu("Environment", "Select deployment environment:", _ENV_CHOICES)

@@ -51,6 +51,8 @@ class TopologyHandler(BaseHandler):
         entry = dispatch.get(action)
         if entry:
             self.ctx.safe_call(*entry)
+        else:
+            self.ctx.notify_unwired(action, "TopologyHandler.execute")
 
     def _get_topology(self):
         """Get the network topology instance."""
@@ -101,6 +103,8 @@ class TopologyHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "TopologyHandler._topology_menu")
 
     def _show_topology_stats(self):
         """Display topology statistics."""
@@ -991,6 +995,8 @@ class TopologyHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "TopologyHandler._export_data_menu")
 
     def _export_topology_data(self, format_type: str):
         """Export topology data in specified format."""

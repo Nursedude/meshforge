@@ -111,6 +111,12 @@ class NetworkToolsHandler(BaseHandler):
                     print("=== Routing Table ===\n")
                     subprocess.run(['ip', 'route'], timeout=10)
                     self.ctx.wait_for_enter()
+                else:
+                    # Hybrid dispatch: the dict above handles some tags and this
+                    # chain the rest, so the tripwire belongs HERE, at the end of
+                    # the last dispatch path — on `if entry:` it would fire on the
+                    # four tags this chain owns.
+                    self.ctx.notify_unwired(choice, "NetworkToolsHandler._network_menu")
             except KeyboardInterrupt:
                 pass
             except Exception as e:

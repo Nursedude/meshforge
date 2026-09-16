@@ -76,6 +76,8 @@ class MeshCoreHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "MeshCoreHandler._meshcore_menu")
 
     def _meshcore_status_line(self) -> str:
         """Build status line for MeshCore menu subtitle."""

@@ -63,6 +63,8 @@ class BackupHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "BackupHandler._device_backup_menu")
 
     def _create_device_backup(self):
         conn_choices = [

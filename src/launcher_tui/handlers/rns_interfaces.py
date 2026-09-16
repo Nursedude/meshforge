@@ -83,6 +83,8 @@ class RNSInterfacesHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "RNSInterfacesHandler._rns_interfaces_menu")
 
     # ------------------------------------------------------------------
     # Interface Status (live)

@@ -39,6 +39,8 @@ class RFToolsHandler(BaseHandler):
         method = dispatch.get(action)
         if method:
             method()
+        else:
+            self.ctx.notify_unwired(action, "RFToolsHandler.execute")
 
     def _rf_tools_menu(self):
         """RF tools menu."""
@@ -73,6 +75,8 @@ class RFToolsHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "RFToolsHandler._rf_tools_menu")
 
     def _calc_frequency_slot(self):
         """Meshtastic Frequency Slot Calculator."""

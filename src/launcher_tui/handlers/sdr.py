@@ -82,6 +82,8 @@ class SDRHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "SDRHandler._rf_awareness_menu")
 
     def _rf_status(self):
         rf = self._get_rf_awareness()

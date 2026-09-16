@@ -90,6 +90,8 @@ class NomadNetSubmenusMixin:
                 self.ctx.safe_call(*entry)
                 if choice in terminal_actions:
                     return
+            else:
+                self.ctx.notify_unwired(choice, "NomadNetSubmenusMixin._default_identity_menu")
 
     # ------------------------------------------------------------------
     # Interactive Client submenu
@@ -147,6 +149,8 @@ class NomadNetSubmenusMixin:
                 self.ctx.safe_call(*entry)
                 if choice in terminal_actions:
                     return
+            else:
+                self.ctx.notify_unwired(choice, "NomadNetSubmenusMixin._interactive_client_menu")
 
     # ------------------------------------------------------------------
     # Identity-scoped running detection (proc-walk based)
@@ -214,6 +218,8 @@ class NomadNetSubmenusMixin:
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "NomadNetSubmenusMixin._advanced_menu")
 
     def _reset_identity_dir(self, path: Path, label: str) -> None:
         """Confirm + rm -rf a NomadNet identity directory.

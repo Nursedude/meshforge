@@ -65,6 +65,8 @@ class AnalyticsHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "AnalyticsHandler._analytics_menu")
 
     def _show_link_trends(self):
         """Show link budget trends over time."""

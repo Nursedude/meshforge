@@ -34,6 +34,8 @@ class DiagnosticsHandler(BaseHandler):
         entry = dispatch.get(action)
         if entry:
             self.ctx.safe_call(*entry)
+        else:
+            self.ctx.notify_unwired(action, "DiagnosticsHandler.execute")
 
     def _run_diagnostics(self):
         """Run the MeshForge diagnostic tool."""

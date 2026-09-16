@@ -55,6 +55,8 @@ class LatencyHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "LatencyHandler._latency_menu")
 
     def _show_latency_status(self):
         """Show current latency for all monitored services."""

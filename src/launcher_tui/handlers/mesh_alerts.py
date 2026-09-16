@@ -99,6 +99,8 @@ class MeshAlertsHandler(BaseHandler):
             handler = dispatch.get(choice)
             if handler:
                 self.ctx.safe_call("Mesh Alerts", handler)
+            else:
+                self.ctx.notify_unwired(choice, "MeshAlertsHandler._mesh_alerts_menu")
 
     def _view_active_alerts(self):
         """Display current unacknowledged mesh alerts."""

@@ -100,6 +100,8 @@ class EmergencyModeHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "EmergencyModeHandler._emergency_mode")
 
     def _emcomm_broadcast(self):
         """Send a broadcast message to all nodes."""

@@ -395,6 +395,8 @@ class NomadNetServiceOpsMixin:
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "NomadNetServiceOpsMixin._service_control_menu")
 
     def _run_systemctl_and_report(self, verb: str) -> None:
         """Execute a verb, show the combined output as an msgbox."""

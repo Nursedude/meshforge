@@ -58,6 +58,8 @@ class SettingsHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "SettingsHandler._settings_menu")
 
     def _configure_log_level(self):
         """Configure application log verbosity."""
@@ -309,6 +311,8 @@ class SettingsHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "SettingsHandler._configure_propagation_sources")
 
     def _test_noaa_source(self):
         """Test NOAA SWPC connectivity."""

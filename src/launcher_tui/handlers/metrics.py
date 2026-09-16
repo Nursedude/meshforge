@@ -80,6 +80,8 @@ class MetricsHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "MetricsHandler._metrics_menu")
 
     def _metrics_stats(self):
         history = self._get_metrics_history()

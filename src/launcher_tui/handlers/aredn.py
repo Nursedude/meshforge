@@ -65,6 +65,8 @@ class AREDNHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "AREDNHandler._aredn_menu")
 
     def _aredn_get_node_ip(self) -> str:
         from utils.service_check import check_port

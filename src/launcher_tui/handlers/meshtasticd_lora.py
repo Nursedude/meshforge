@@ -117,6 +117,8 @@ class MeshtasticdLoRaHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "MeshtasticdLoRaHandler._lora_module_menu")
 
     def _lora_set_module(self):
         """Select LoRa module type."""

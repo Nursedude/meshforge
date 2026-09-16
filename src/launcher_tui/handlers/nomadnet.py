@@ -404,6 +404,8 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
                 entry = dispatch.get(choice)
                 if entry:
                     self.ctx.safe_call(*entry)
+                else:
+                    self.ctx.notify_unwired(choice, "NomadNetHandler._nomadnet_menu")
                 continue
 
             service_state = self._nomadnet_service_state()
@@ -455,6 +457,8 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "NomadNetHandler._nomadnet_menu")
 
     # ------------------------------------------------------------------
     # Status

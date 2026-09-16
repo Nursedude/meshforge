@@ -88,6 +88,8 @@ class AIToolsHandler(
         entry = dispatch.get(action)
         if entry:
             self.ctx.safe_call(*entry)
+        else:
+            self.ctx.notify_unwired(action, "AIToolsHandler.execute")
 
     # -- Lifecycle hooks (LifecycleHandler protocol) --
 
@@ -147,6 +149,8 @@ class AIToolsHandler(
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "AIToolsHandler._ai_tools_menu")
 
     # =========================================================================
     # Map auto-start (LifecycleHandler)
@@ -295,6 +299,8 @@ class AIToolsHandler(
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "AIToolsHandler._open_live_map")
 
     def _open_live_map_browser(self):
         """Generate browser snapshot of the live map with current node data."""

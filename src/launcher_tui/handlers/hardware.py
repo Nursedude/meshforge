@@ -60,6 +60,8 @@ class HardwareHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "HardwareHandler._hardware_menu")
 
     def _rnode_submenu(self):
         """Delegate to the registered RNodeHandler (Q5, audit W16)."""

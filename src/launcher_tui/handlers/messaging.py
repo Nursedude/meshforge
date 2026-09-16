@@ -76,6 +76,8 @@ class MessagingHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "MessagingHandler._messaging_menu")
 
     def _messaging_live_feed(self):
         import threading

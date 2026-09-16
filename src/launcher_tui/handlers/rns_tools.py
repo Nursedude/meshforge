@@ -75,6 +75,8 @@ class RNSToolsHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "RNSToolsHandler._tools_menu")
 
     def _show_status(self):
         clear_screen()

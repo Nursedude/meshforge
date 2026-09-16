@@ -66,6 +66,8 @@ class MeshtasticdNodeDBHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "MeshtasticdNodeDBHandler._node_db_cleanup_menu")
 
     def _scan_phantom_nodes(self):
         """Scan for phantom/incomplete nodes via HTTP API."""

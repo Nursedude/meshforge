@@ -134,6 +134,8 @@ class TrafficInspectorHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "TrafficInspectorHandler._menu_traffic_inspector")
 
     def _toggle_capture(self) -> None:
         """Start or stop packet capture."""
@@ -482,6 +484,8 @@ class TrafficInspectorHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "TrafficInspectorHandler._traffic_path_visualization")
 
     def _path_ascii_view(self) -> None:
         """Show ASCII path visualization."""

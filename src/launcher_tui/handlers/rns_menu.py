@@ -136,6 +136,9 @@ class RNSMenuHandler(BaseHandler):
                     else:
                         print("RNS diagnostics handler not available.")
                     self.ctx.wait_for_enter()
+                else:
+                    # Hybrid dispatch — see NetworkToolsHandler._network_menu.
+                    self.ctx.notify_unwired(choice, "RNSMenuHandler._rns_submenu")
             except KeyboardInterrupt:
                 pass
             except Exception as e:

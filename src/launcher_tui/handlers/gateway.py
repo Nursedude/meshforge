@@ -121,6 +121,8 @@ class GatewayHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(entry[0], entry[1], config)
+            else:
+                self.ctx.notify_unwired(choice, "GatewayHandler._gateway_config_menu")
 
     def _show_gateway_status(self, config):
         """Show detailed gateway status."""
@@ -511,6 +513,8 @@ class GatewayHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(entry[0], entry[1], config)
+            else:
+                self.ctx.notify_unwired(choice, "GatewayHandler._config_routing")
 
     def _set_default_route(self, config):
         """Set the default routing direction."""

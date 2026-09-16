@@ -136,6 +136,8 @@ class TacticalOpsHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "TacticalOpsHandler._tactical_ops_menu")
 
     def _tactical_send_sitrep(self):
         """Send a SITREP (Situation Report)."""

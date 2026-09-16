@@ -63,6 +63,8 @@ class AutoReviewHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "AutoReviewHandler._auto_review_menu")
 
     def _run_auto_review(self, scope_name: str):
         """Execute an auto-review with the specified scope."""

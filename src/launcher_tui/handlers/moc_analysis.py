@@ -54,6 +54,8 @@ class MOCAnalysisHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "MOCAnalysisHandler._main_menu")
 
     def _list_presets(self):
         """Print the available preset bundles."""

@@ -62,6 +62,8 @@ class RNSDiagnosticsHandler(BaseHandler):
         method = dispatch.get(action)
         if method:
             method()
+        else:
+            self.ctx.notify_unwired(action, "RNSDiagnosticsHandler.execute")
 
     # Known RNS external interface plugins and their pip package dependencies.
     _INTERFACE_DEPS = {

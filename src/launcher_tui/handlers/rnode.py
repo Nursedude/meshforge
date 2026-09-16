@@ -58,6 +58,8 @@ class RNodeHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "RNodeHandler._rnode_menu")
 
     def _rnode_detect(self):
         clear_screen()

@@ -117,6 +117,8 @@ class WebClientHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "WebClientHandler._open_web_client")
 
     def _launch_web_client_browser(self, url: str):
         """Launch meshtasticd web client in browser."""

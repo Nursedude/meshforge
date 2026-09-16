@@ -73,6 +73,8 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "MeshtasticdDeviceMQTTHandler._mqtt_device_config")
 
     def _mqtt_view_settings(self):
         """View current MQTT settings."""

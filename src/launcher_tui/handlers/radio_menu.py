@@ -148,6 +148,9 @@ class RadioMenuHandler(BaseHandler):
                     self._radio_run([cli] + conn_args + ['--nodes'], "Node List")
                 elif choice == "channels":
                     self._radio_run([cli] + conn_args + ['--ch-index', '0', '--ch-getall'], "Channels")
+                else:
+                    # Hybrid dispatch — see NetworkToolsHandler._network_menu.
+                    self.ctx.notify_unwired(choice, "RadioMenuHandler._radio_menu")
             except KeyboardInterrupt:
                 pass
             except Exception as e:

@@ -48,6 +48,8 @@ class TileCacheMixin:
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "TileCacheMixin._tile_cache_menu")
 
     def _tile_cache_stats(self):
         """Display tile cache statistics."""

@@ -46,6 +46,8 @@ class RNSConfigHandler(BaseHandler):
         method = dispatch.get(action)
         if method:
             method()
+        else:
+            self.ctx.notify_unwired(action, "RNSConfigHandler.execute")
 
     # ------------------------------------------------------------------
     # Config management methods (from rns_config_mixin.py)

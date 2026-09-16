@@ -41,6 +41,8 @@ class AboutHandler(BaseHandler):
         entry = dispatch.get(action)
         if entry:
             self.ctx.safe_call(*entry)
+        else:
+            self.ctx.notify_unwired(action, "AboutHandler.execute")
 
     def _show_version(self):
         """Show about information."""

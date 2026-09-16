@@ -61,6 +61,8 @@ class ClassifierHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "ClassifierHandler._classifier_menu")
 
     def _show_routing_stats(self):
         """Show routing classifier statistics."""

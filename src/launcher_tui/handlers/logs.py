@@ -86,6 +86,8 @@ class LogsHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "LogsHandler._logs_menu")
 
     def _view_live_log(self, title: str, cmd: List[str]) -> None:
         clear_screen()

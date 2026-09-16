@@ -50,6 +50,8 @@ class LinkQualityHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "LinkQualityHandler._link_quality_menu")
 
     def _get_topology_scores(self):
         try:

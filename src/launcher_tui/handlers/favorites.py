@@ -62,6 +62,8 @@ class FavoritesHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "FavoritesHandler._favorites_menu")
 
     def _get_favorites_count(self) -> int:
         try:

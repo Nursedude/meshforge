@@ -99,6 +99,8 @@ class ChannelConfigHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+            else:
+                self.ctx.notify_unwired(choice, "ChannelConfigHandler._channel_config_menu")
 
     def _view_all_channels(self):
         """View all 8 channels with their configuration."""
@@ -252,6 +254,8 @@ class ChannelConfigHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(entry[0], entry[1], idx)
+            else:
+                self.ctx.notify_unwired(choice, "ChannelConfigHandler._edit_single_channel")
 
     def _set_channel_name(self, idx: int):
         """Set name for a specific channel."""

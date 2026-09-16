@@ -64,6 +64,8 @@ class ConfigDoctorHandler(BaseHandler):
         entry = dispatch.get(action)
         if entry:
             self.ctx.safe_call(*entry)
+        else:
+            self.ctx.notify_unwired(action, "ConfigDoctorHandler.execute")
 
     # ------------------------------------------------------------------
     # Run + render (summary view)
