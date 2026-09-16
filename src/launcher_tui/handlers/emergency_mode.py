@@ -15,10 +15,15 @@ import logging
 
 from backend import clear_screen
 from handler_protocol import BaseHandler
-from plugins.eas_alerts import EASAlertsPlugin
+from plugins.eas_alerts import EASAlertsPlugin, format_alert_line
 from utils.tx_guard import DEFAULT_MESH_TCP_PORT, assert_tx_allowed
 
 logger = logging.getLogger(__name__)
+
+# Rows of alert detail shown per source. Bounded so one chatty feed
+# (FEMA's archive returns 50 nationwide records) cannot push the
+# local NOAA/USGS lines off a 24-row field terminal.
+_MAX_ALERT_ROWS = 5
 
 # Emergency broadcast prefix for EMCOMM messages
 EMCOMM_PREFIX = "[EMCOMM] "
@@ -363,45 +368,64 @@ class EmergencyModeHandler(BaseHandler):
         self.ctx.wait_for_enter()
 
     def _emcomm_eas_alerts(self):
-        """Check weather and emergency alerts — field-safe implementation."""
+        """Check weather and emergency alerts — field-safe implementation.
+
+        HONESTY CONTRACT (2026-09-15, the defect this rewrite exists to kill):
+        this screen must NEVER print "no active alerts" unless a feed actually
+        ANSWERED. The previous version called get_weather_alerts(), which
+        swallowed URLError and returned the same empty list a clear sky
+        returns, and rendered it as "No active weather alerts for your area."
+        — a positive safety claim manufactured by a dead uplink, in the EMCOMM
+        menu, on a kit that duty-cycles its uplink on purpose.
+
+        It now reads FetchOutcome per source (see plugins/eas_alerts.py) and
+        renders one of: answered-with-alerts / answered-with-none /
+        UNKNOWN-plus-last-known-age / UNKNOWN-and-never-cached.
+        """
         clear_screen()
         print("=== WEATHER / EAS ALERTS ===\n")
+        print("Checking sources (NOAA, USGS, FEMA)...\n")
 
         try:
             plugin = EASAlertsPlugin()
-
-            print("Checking NOAA weather alerts...")
-            alerts = plugin.get_weather_alerts()
-
-            if not alerts:
-                print("\n  No active weather alerts for your area.")
-                print("  (Configure location in MeshForge Settings)")
-            else:
-                print(f"\n  {len(alerts)} active alert(s):\n")
-                for i, alert in enumerate(alerts[:10], 1):
-                    severity = getattr(alert, 'severity', 'Unknown')
-                    headline = getattr(alert, 'headline', str(alert))
-                    if len(headline) > 70:
-                        headline = headline[:67] + "..."
-                    print(f"  {i}. [{severity}] {headline}")
-
-            print("\nChecking USGS volcano alerts...")
-            try:
-                volcano_alerts = plugin.get_volcano_alerts()
-                if volcano_alerts:
-                    print(f"\n  {len(volcano_alerts)} volcano alert(s):")
-                    for alert in volcano_alerts[:5]:
-                        name = getattr(alert, 'volcano_name', str(alert))
-                        level = getattr(alert, 'alert_level', 'Unknown')
-                        print(f"  - [{level}] {name}")
-                else:
-                    print("  No active volcano alerts.")
-            except Exception:
-                print("  Volcano alert check unavailable.")
-
+            outcomes = plugin.fetch_all_checked()
         except Exception as e:
-            print(f"  Alert check failed: {e}")
-            print("  (Check network connectivity)")
+            # Even a total failure must not imply "clear". Say what we lost.
+            print(f"  EAS subsystem unavailable: {type(e).__name__}: {e}")
+            print("  ALERT STATUS IS UNKNOWN — this is not an all-clear.")
+            print()
+            self.ctx.wait_for_enter("Press Enter to continue...")
+            return
+
+        any_unknown = False
+        for outcome in outcomes:
+            print(f"  {outcome.summary_line()}")
+
+            if outcome.observed:
+                shown = outcome.alerts[:_MAX_ALERT_ROWS]
+                for i, alert in enumerate(shown, 1):
+                    print(f"      {i}. {self._format_alert_line(alert)}")
+                extra = len(outcome.alerts) - len(shown)
+                if extra > 0:
+                    # Never silently truncate: a field operator must know
+                    # the list continued past what the screen showed.
+                    print(f"      ... and {extra} more not shown")
+            else:
+                if outcome.status != "disabled":
+                    any_unknown = True
+                # Last-known-good, explicitly labelled as history.
+                for alert in outcome.cached_alerts[:5]:
+                    print(f"      (was) {self._format_alert_line(alert)}")
+            print()
+
+        if any_unknown:
+            print("  ** At least one source could not be reached. **")
+            print("  ** Treat its alert picture as UNKNOWN, not clear.  **")
 
         print()
         self.ctx.wait_for_enter("Press Enter to continue...")
+
+    @staticmethod
+    def _format_alert_line(alert) -> str:
+        """Delegate to the single shared formatter (see eas_alerts)."""
+        return format_alert_line(alert)

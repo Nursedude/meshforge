@@ -379,6 +379,177 @@ class Alert:
 
         return msg[:max_length]
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Alert':
+        """Rebuild an Alert from :meth:`to_dict` output (cache round-trip).
+
+        Tolerant by design: a cache written by an older version must not
+        crash the reader, because the reader is the offline path.
+        """
+        def _dt(key):
+            raw = data.get(key)
+            if not raw:
+                return None
+            try:
+                return datetime.fromisoformat(raw)
+            except (ValueError, TypeError):
+                return None
+
+        try:
+            source = AlertSource(data.get('source', ''))
+        except ValueError:
+            source = AlertSource.NOAA
+        try:
+            severity = AlertSeverity(data.get('severity', ''))
+        except ValueError:
+            severity = AlertSeverity.UNKNOWN
+
+        coords = data.get('coordinates')
+        return cls(
+            id=str(data.get('id', '')),
+            source=source,
+            title=str(data.get('title', '')),
+            description=str(data.get('description', '')),
+            severity=severity,
+            event_type=str(data.get('event_type', '')),
+            effective=_dt('effective'),
+            expires=_dt('expires'),
+            areas=list(data.get('areas') or []),
+            coordinates=tuple(coords) if coords else None,
+        )
+
+
+# ============================================================================
+# Fetch outcomes — the tri-state that keeps a dead channel from reading "clear"
+# ============================================================================
+#
+# THE DEFECT THIS EXISTS TO KILL (2026-09-15): every fetcher below used to
+# `except URLError: logger.error(...)` and then fall through to `return alerts`
+# — still the empty list it started with. The TUI rendered that as
+#
+#     "No active weather alerts for your area."
+#
+# i.e. a POSITIVE SAFETY CLAIM manufactured by a failed observation channel,
+# in the EMCOMM menu, on a kit whose whole design duty-cycles its uplink.
+# honest_failure_modes.md #2: absence of evidence is not evidence of absence.
+#
+# The cure is that "the feed answered and had nothing" and "we could not ask"
+# must not share a value. They are now different FETCH_* statuses, and the
+# only way to render "no alerts" is to hold a FETCH_OK.
+
+# What each source actually gives you. A row that says "50 alerts" while
+# meaning "50 nationwide records from an ARCHIVE with a ~24 h delay, not
+# filtered to your location" is the F1 defect wearing different clothes:
+# accurate count, wrong quantity. Measured 2026-09-15 — the FEMA fetcher's
+# own FIPS filter block is a no-op ("This is a simplified example"), and the
+# endpoint is IpawsArchivedAlerts.
+SOURCE_CAVEATS = {
+    "FEMA iPAWS": "archived, nationwide, ~24 h delay — NOT live local alerts",
+}
+
+FETCH_OK = "ok"                  # the feed ANSWERED; len(alerts) is the truth
+FETCH_UNREACHABLE = "unreachable"  # network/HTTP failure — we do NOT know
+FETCH_ERROR = "error"            # parsed/other failure — we do NOT know
+FETCH_DISABLED = "disabled"      # operator turned this source off (not a fault)
+FETCH_NEVER = "never"            # never attempted on this box
+
+
+
+def format_alert_line(alert) -> str:
+    """One readable line for an Alert — the ONE formatter, two consumers.
+
+    Emergency Mode and the Dashboard both render alerts; before 2026-09-15
+    each had its own copy reading `headline`, `volcano_name` and
+    `alert_level`, NONE of which exist on the Alert dataclass, so every real
+    alert printed as a dataclass repr. The display was broken in exactly the
+    case that matters. One function now, so a fix cannot land in one copy
+    (honest_failure_modes #5).
+    """
+    severity = getattr(getattr(alert, 'severity', None), 'value', None) or "Unknown"
+    title = (getattr(alert, 'title', None)
+             or getattr(alert, 'event_type', None)
+             or str(alert))
+    title = str(title)
+    if len(title) > 62:
+        title = title[:59] + "..."
+    areas = [a for a in (getattr(alert, 'areas', None) or []) if str(a).strip()]
+    where = f" [{areas[0]}]" if areas else ""
+    return f"[{severity}] {title}{where}"
+
+@dataclass
+class FetchOutcome:
+    """What we know about one source, and how well we know it.
+
+    ``alerts`` is meaningful ONLY when ``status == FETCH_OK``. On any other
+    status the caller must treat the alert picture as UNKNOWN for that source
+    and, if it wants to show something, show ``cached_alerts`` explicitly
+    labelled with ``cached_at`` — never silently as if it were current.
+    """
+    source: AlertSource
+    status: str = FETCH_NEVER
+    alerts: List[Alert] = field(default_factory=list)
+    error: str = ""
+    checked_at: Optional[datetime] = None
+    cached_alerts: List[Alert] = field(default_factory=list)
+    cached_at: Optional[datetime] = None
+
+    @property
+    def observed(self) -> bool:
+        """True only when the channel actually answered."""
+        return self.status == FETCH_OK
+
+    @property
+    def cache_age_seconds(self) -> Optional[float]:
+        if self.cached_at is None:
+            return None
+        return max(0.0, (datetime.now() - self.cached_at).total_seconds())
+
+    def human_age(self) -> str:
+        """'4h 12m ago' / 'just now' / 'never' — for the field display."""
+        age = self.cache_age_seconds
+        if age is None:
+            return "never"
+        if age < 90:
+            return "just now"
+        if age < 3600:
+            return f"{int(age // 60)}m ago"
+        if age < 86400:
+            return f"{int(age // 3600)}h {int((age % 3600) // 60)}m ago"
+        return f"{int(age // 86400)}d ago"
+
+    def summary_line(self) -> str:
+        """One honest line naming what we know AND how we know it.
+
+        Never says "no alerts" unless the feed answered.
+        """
+        name = self.source.value
+        caveat = SOURCE_CAVEATS.get(name)
+        if caveat:
+            name = f"{name} ({caveat})"
+        if self.status == FETCH_OK:
+            # A caveated source returns RECORDS, not active local alerts.
+            # Calling an archive's output "active" is the same wrong-quantity
+            # error this class exists to refuse.
+            noun = "record(s)" if caveat else "active alert(s)"
+            if self.alerts:
+                return f"{name}: {len(self.alerts)} {noun} (checked just now)"
+            if caveat:
+                return f"{name}: no records returned (feed answered just now)"
+            return f"{name}: no active alerts (feed answered just now)"
+        if self.status == FETCH_DISABLED:
+            return f"{name}: source disabled in settings — not checked"
+        if self.status == FETCH_NEVER:
+            return f"{name}: UNKNOWN — never fetched on this box"
+        reason = self.error or self.status
+        if self.cached_at is not None:
+            count = len(self.cached_alerts)
+            was = f"{count} alert(s) were active" if count else "no alerts were active"
+            return (f"{name}: UNKNOWN — cannot reach the feed ({reason}). "
+                    f"Last answer {self.human_age()}: {was}.")
+        return (f"{name}: UNKNOWN — cannot reach the feed ({reason}), "
+                f"and no cached answer exists on this box.")
+
+
 
 # ============================================================================
 # Plugin Implementation
@@ -401,6 +572,11 @@ class EASAlertsPlugin(IntegrationPlugin):
         self._seen_alerts: Dict[str, datetime] = {}
         self._alert_callbacks: List[Callable[[Alert], None]] = []
         self._current_alerts: List[Alert] = []
+        # Per-source fetch outcomes. The ONLY place that may answer
+        # "are there alerts?" honestly, because it distinguishes
+        # "the feed said none" from "we could not ask".
+        self._outcomes: Dict[str, FetchOutcome] = {}
+        self._cache_loaded = False
 
     @staticmethod
     def get_metadata() -> PluginMetadata:
@@ -573,26 +749,41 @@ class EASAlertsPlugin(IntegrationPlugin):
         # Check NOAA Weather Alerts
         if self._config.getboolean('noaa_weather', 'enabled', fallback=True):
             try:
-                noaa_alerts = self.get_weather_alerts()
-                all_alerts.extend(noaa_alerts)
+                all_alerts.extend(self.get_weather_alerts())
             except Exception as e:
+                # Raised PAST the fetcher's own guards. Still an
+                # UNOBSERVED source, never a clear one.
                 logger.error(f"[EAS] NOAA fetch error: {e}")
+                self._degraded(AlertSource.NOAA, FETCH_ERROR,
+                               f"{type(e).__name__}: {e}")
+        else:
+            self._mark_disabled(AlertSource.NOAA)
 
         # Check USGS Volcano Alerts
         if self._config.getboolean('usgs_volcano', 'enabled', fallback=True):
             try:
-                volcano_alerts = self.get_volcano_alerts()
-                all_alerts.extend(volcano_alerts)
+                all_alerts.extend(self.get_volcano_alerts())
             except Exception as e:
+                # Raised PAST the fetcher's own guards. Still an
+                # UNOBSERVED source, never a clear one.
                 logger.error(f"[EAS] USGS fetch error: {e}")
+                self._degraded(AlertSource.USGS, FETCH_ERROR,
+                               f"{type(e).__name__}: {e}")
+        else:
+            self._mark_disabled(AlertSource.USGS)
 
         # Check FEMA iPAWS Alerts
         if self._config.getboolean('fema_ipaws', 'enabled', fallback=True):
             try:
-                fema_alerts = self.get_fema_alerts()
-                all_alerts.extend(fema_alerts)
+                all_alerts.extend(self.get_fema_alerts())
             except Exception as e:
+                # Raised PAST the fetcher's own guards. Still an
+                # UNOBSERVED source, never a clear one.
                 logger.error(f"[EAS] FEMA fetch error: {e}")
+                self._degraded(AlertSource.FEMA, FETCH_ERROR,
+                               f"{type(e).__name__}: {e}")
+        else:
+            self._mark_disabled(AlertSource.FEMA)
 
         # Process new alerts
         dedupe_window = self._config.getint('general', 'dedupe_window', fallback=3600)
@@ -615,8 +806,20 @@ class EASAlertsPlugin(IntegrationPlugin):
         if max_alerts > 0:
             new_alerts = new_alerts[:max_alerts]
 
-        # Update current alerts
-        self._current_alerts = all_alerts
+        # Update current alerts — but ONLY from sources that actually
+        # answered. If every enabled source was unobservable this tick, an
+        # unconditional assignment would wipe a real alert picture and make
+        # a dead uplink look like an all-clear (honest_failure_modes #2,
+        # the "silent mass-deactivation" row). Hold prior state instead and
+        # say so.
+        if any(o.observed for o in self.get_outcomes()):
+            self._current_alerts = all_alerts
+        elif self._current_alerts:
+            logger.warning(
+                "[EAS] no source answered this tick — HOLDING %d previously "
+                "known alert(s) rather than reporting all-clear",
+                len(self._current_alerts),
+            )
 
         # Notify callbacks
         for alert in new_alerts:
@@ -629,6 +832,159 @@ class EASAlertsPlugin(IntegrationPlugin):
 
         if new_alerts:
             logger.info(f"[EAS] Found {len(new_alerts)} new alerts")
+
+    # ========================================================================
+    # Outcome recording + last-known-good cache
+    # ========================================================================
+    #
+    # The cache exists for ONE reader: a human in the field with no uplink,
+    # who needs "here is what was true 4 hours ago" instead of a blank screen
+    # or — far worse — a confident "no alerts". It is deliberately NOT fed
+    # back into get_*_alerts(), because _check_alerts() broadcasts what those
+    # return and re-broadcasting stale alerts as fresh is its own defect.
+    # Fresh data goes to the mesh; cached data goes to the screen, labelled.
+
+    def _cache_path(self) -> Path:
+        """Last-known-good alert cache (MF001: never Path.home())."""
+        return get_real_user_home() / ".local" / "share" / "meshforge" / "eas_last.json"
+
+    def _load_cache(self) -> Dict[str, Any]:
+        """Read the cache. A missing/corrupt cache is empty, never fatal."""
+        try:
+            path = self._cache_path()
+            if not path.exists():
+                return {}
+            with open(path, 'r', encoding='utf-8') as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError) as e:
+            logger.debug(f"[EAS] cache unreadable: {e}")
+            return {}
+
+    def _save_cache(self, source: AlertSource, alerts: List[Alert]) -> None:
+        """Persist one source's answer. Best-effort, but never silent.
+
+        A write failure leaves a WARNING (honest_failure_modes #9: every
+        swallow gets a witness) because the consequence lands later, in the
+        field, as a missing 'last known' line.
+        """
+        try:
+            path = self._cache_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = self._load_cache()
+            data[source.value] = {
+                'checked_at': datetime.now().isoformat(),
+                'alerts': [a.to_dict() for a in alerts],
+            }
+            tmp = path.with_suffix(f".tmp.{os.getpid()}")
+            with open(tmp, 'w', encoding='utf-8') as fh:
+                json.dump(data, fh)
+            os.replace(tmp, path)
+        except (OSError, ValueError, TypeError) as e:
+            logger.warning(
+                "[EAS] could not persist last-known-good for %s: %s "
+                "(the offline 'last checked' line will be missing)",
+                source.value, e,
+            )
+
+    def _cached_for(self, source: AlertSource):
+        """Return (alerts, checked_at) last stored for a source."""
+        entry = self._load_cache().get(source.value)
+        if not isinstance(entry, dict):
+            return [], None
+        try:
+            when = datetime.fromisoformat(entry.get('checked_at', ''))
+        except (ValueError, TypeError):
+            when = None
+        alerts = []
+        for raw in entry.get('alerts') or []:
+            try:
+                alerts.append(Alert.from_dict(raw))
+            except Exception as e:  # one bad row must not lose the rest
+                logger.debug(f"[EAS] skipping unreadable cached alert: {e}")
+        return alerts, when
+
+    def _answered(self, source: AlertSource, alerts: List[Alert]) -> List[Alert]:
+        """Record a REAL answer from the feed, and persist it."""
+        self._outcomes[source.value] = FetchOutcome(
+            source=source, status=FETCH_OK, alerts=list(alerts),
+            checked_at=datetime.now(),
+            cached_alerts=list(alerts), cached_at=datetime.now(),
+        )
+        self._save_cache(source, alerts)
+        return alerts
+
+    def _degraded(self, source: AlertSource, status: str, error: str) -> List[Alert]:
+        """Record that we could NOT observe this source.
+
+        Returns an empty list for the legacy List[Alert] API — but the
+        outcome now says WHY it is empty, so no caller can mistake it for
+        'the sky is clear'. Callers that care must read get_outcome().
+        """
+        cached, when = self._cached_for(source)
+        self._outcomes[source.value] = FetchOutcome(
+            source=source, status=status, alerts=[], error=error,
+            checked_at=datetime.now(), cached_alerts=cached, cached_at=when,
+        )
+        return []
+
+    def _mark_disabled(self, source: AlertSource) -> None:
+        """An operator-disabled source is not a fault — and not an answer."""
+        cached, when = self._cached_for(source)
+        self._outcomes[source.value] = FetchOutcome(
+            source=source, status=FETCH_DISABLED, alerts=[],
+            checked_at=datetime.now(), cached_alerts=cached, cached_at=when,
+        )
+
+    def get_outcome(self, source: AlertSource) -> FetchOutcome:
+        """What we know about one source right now.
+
+        Never fabricates: a source never fetched in this process reads
+        FETCH_NEVER, carrying whatever the on-disk cache holds.
+        """
+        existing = self._outcomes.get(source.value)
+        if existing is not None:
+            return existing
+        cached, when = self._cached_for(source)
+        return FetchOutcome(source=source, status=FETCH_NEVER,
+                            cached_alerts=cached, cached_at=when)
+
+    def get_outcomes(self) -> List[FetchOutcome]:
+        """All three sources, in display order."""
+        return [self.get_outcome(s) for s in
+                (AlertSource.NOAA, AlertSource.USGS, AlertSource.FEMA)]
+
+    def fetch_all_checked(self) -> List[FetchOutcome]:
+        """Fetch every ENABLED source and return honest per-source outcomes.
+
+        This is the API a display surface should use. ``check_all_alerts()``
+        remains for callers that only want the merged List[Alert].
+        """
+        if not self._config:
+            # _load_config() RETURNS the parser; it does not assign it.
+            # Dropping the return leaves self._config None and every
+            # fetcher below dies on `.getfloat` — found by the offline drill.
+            self._config = self._load_config()
+        plan = (
+            (AlertSource.NOAA, 'noaa_weather', self.get_weather_alerts),
+            (AlertSource.USGS, 'usgs_volcano', self.get_volcano_alerts),
+            (AlertSource.FEMA, 'fema_ipaws', self.get_fema_alerts),
+        )
+        for source, section, fetch in plan:
+            enabled = True
+            if self._config is not None:
+                enabled = self._config.getboolean(section, 'enabled', fallback=True)
+            if not enabled:
+                self._mark_disabled(source)
+                continue
+            try:
+                fetch()
+            except Exception as e:
+                # A fetcher that raises past its own guards is still an
+                # UNOBSERVED source, never a clear one.
+                logger.error(f"[EAS] {source.value} fetch raised: {e}")
+                self._degraded(source, FETCH_ERROR, f"{type(e).__name__}: {e}")
+        return self.get_outcomes()
 
     # ========================================================================
     # NOAA Weather Alerts
@@ -703,12 +1059,20 @@ class EASAlertsPlugin(IntegrationPlugin):
 
         except urllib.error.HTTPError as e:
             logger.error(f"[EAS] NOAA HTTP error: {e.code}")
+            return self._degraded(AlertSource.NOAA, FETCH_UNREACHABLE,
+                                  f"HTTP {e.code}")
         except urllib.error.URLError as e:
             logger.error(f"[EAS] NOAA URL error: {e.reason}")
+            return self._degraded(AlertSource.NOAA, FETCH_UNREACHABLE,
+                                  str(e.reason))
         except Exception as e:
             logger.error(f"[EAS] NOAA error: {e}")
+            return self._degraded(AlertSource.NOAA, FETCH_ERROR,
+                                  f"{type(e).__name__}: {e}")
 
-        return alerts
+        # The feed ANSWERED. Only here may an empty list mean
+        # "no active alerts" (honest_failure_modes #2).
+        return self._answered(AlertSource.NOAA, alerts)
 
     # ========================================================================
     # USGS Volcano Alerts
@@ -788,12 +1152,20 @@ class EASAlertsPlugin(IntegrationPlugin):
 
         except urllib.error.HTTPError as e:
             logger.error(f"[EAS] USGS HTTP error: {e.code}")
+            return self._degraded(AlertSource.USGS, FETCH_UNREACHABLE,
+                                  f"HTTP {e.code}")
         except urllib.error.URLError as e:
             logger.error(f"[EAS] USGS URL error: {e.reason}")
+            return self._degraded(AlertSource.USGS, FETCH_UNREACHABLE,
+                                  str(e.reason))
         except Exception as e:
             logger.error(f"[EAS] USGS error: {e}")
+            return self._degraded(AlertSource.USGS, FETCH_ERROR,
+                                  f"{type(e).__name__}: {e}")
 
-        return alerts
+        # The feed ANSWERED. Only here may an empty list mean
+        # "no active alerts" (honest_failure_modes #2).
+        return self._answered(AlertSource.USGS, alerts)
 
     # ========================================================================
     # FEMA iPAWS Alerts
@@ -892,12 +1264,20 @@ class EASAlertsPlugin(IntegrationPlugin):
 
         except urllib.error.HTTPError as e:
             logger.error(f"[EAS] FEMA HTTP error: {e.code}")
+            return self._degraded(AlertSource.FEMA, FETCH_UNREACHABLE,
+                                  f"HTTP {e.code}")
         except urllib.error.URLError as e:
             logger.error(f"[EAS] FEMA URL error: {e.reason}")
+            return self._degraded(AlertSource.FEMA, FETCH_UNREACHABLE,
+                                  str(e.reason))
         except Exception as e:
             logger.error(f"[EAS] FEMA error: {e}")
+            return self._degraded(AlertSource.FEMA, FETCH_ERROR,
+                                  f"{type(e).__name__}: {e}")
 
-        return alerts
+        # The feed ANSWERED. Only here may an empty list mean
+        # "no active alerts" (honest_failure_modes #2).
+        return self._answered(AlertSource.FEMA, alerts)
 
     # ========================================================================
     # Utility Methods
@@ -949,6 +1329,19 @@ class EASAlertsPlugin(IntegrationPlugin):
             'enabled': self._config.getboolean('general', 'enabled', fallback=True) if self._config else False,
             'last_poll': self._last_poll.isoformat() if self._last_poll else None,
             'current_alert_count': len(self._current_alerts),
+            # Per-source honesty: a caller must be able to tell "nothing is
+            # happening" from "we cannot see". 'observed' is the only field
+            # that licenses an all-clear.
+            'outcomes': {
+                o.source.value: {
+                    'status': o.status,
+                    'observed': o.observed,
+                    'alerts': len(o.alerts),
+                    'error': o.error,
+                    'cached_age': o.human_age(),
+                }
+                for o in self.get_outcomes()
+            },
             'seen_alerts_count': len(self._seen_alerts),
             'callback_count': len(self._alert_callbacks),
             'sources': {

@@ -26,7 +26,8 @@ generate_report, generate_and_save, _HAS_REPORT_GEN = safe_import(
     'utils.report_generator', 'generate_report', 'generate_and_save'
 )
 from utils.health_score import get_health_scorer
-from plugins.eas_alerts import EASAlertsPlugin
+from plugins.eas_alerts import (EASAlertsPlugin, AlertSource,
+                                format_alert_line)
 pub, _HAS_PUBSUB = safe_import('pubsub', 'pub')
 try:
     from gateway.radio_failover import FailoverManager
@@ -724,19 +725,26 @@ class DashboardHandler(BaseHandler):
         print()
         try:
             plugin = EASAlertsPlugin()
-            eas_alerts = plugin.get_weather_alerts()
-            if eas_alerts:
-                print(f"WEATHER ALERTS ({len(eas_alerts)}):")
-                for alert in eas_alerts[:5]:
-                    severity = getattr(alert, 'severity', 'Unknown')
-                    headline = getattr(alert, 'headline', str(alert))
-                    if len(headline) > 65:
-                        headline = headline[:62] + "..."
-                    print(f"  \033[0;31m!\033[0m [{severity}] {headline}")
-            else:
+            # get_weather_alerts() returns [] for BOTH "clear sky" and
+            # "could not reach NOAA". Reading the outcome instead is the only
+            # way this line can be true (honest_failure_modes #2); the same
+            # defect was live in Emergency Mode until 2026-09-15.
+            plugin.get_weather_alerts()
+            outcome = plugin.get_outcome(AlertSource.NOAA)
+            if outcome.observed and outcome.alerts:
+                print(f"WEATHER ALERTS ({len(outcome.alerts)}):")
+                for alert in outcome.alerts[:5]:
+                    print(f"  \033[0;31m!\033[0m {format_alert_line(alert)}")
+            elif outcome.observed:
                 print("  Weather: No active alerts")
+            else:
+                print(f"  Weather: UNKNOWN - {outcome.error or outcome.status}"
+                      f" (last answer {outcome.human_age()})")
         except Exception as e:
+            # A swallowed failure here used to print NOTHING, which reads as
+            # "nothing to report". Say that we could not look.
             logger.debug("EAS alert check failed: %s", e)
+            print(f"  Weather: UNKNOWN - alert check failed ({type(e).__name__})")
 
         # Show remediation hints for system alerts
         if has_system_alerts:
