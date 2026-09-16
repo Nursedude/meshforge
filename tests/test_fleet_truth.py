@@ -981,8 +981,9 @@ class TestDeclaredPosture:
     """2026-09-01 DORMANT arc batch 2: a box declared dormant/detached (the
     collector stamps snap['posture'] from utils.fleet_posture) is a FOURTH
     state — dark for the human, disclosed under `declared_posture`, counted
-    apart, and NOT tainting the fleet verdict. A declared box that answers is
-    posture drift: healthy reach + posture_drift flag + disclosure. Never
+    apart, and NOT tainting the fleet verdict. A declared DORMANT box that
+    answers is posture drift; a declared DETACHED box that answers has
+    REJOINED (2026-09-15) — the success case, never a fault. Never
     inferred from silence: no stamp = exactly the old document."""
 
     def _dark(self, alias, posture=None):
@@ -1029,11 +1030,45 @@ class TestDeclaredPosture:
         assert t["declared_posture"] == {}
         assert t["counts"]["healthy"] == 1
 
-    def test_detached_is_treated_like_dormant(self):
+    def test_detached_dark_is_treated_like_dormant(self):
+        """DARK is the one case where the two states DO agree: absent as
+        declared, disclosed, not tainting. They diverge only on ANSWERING."""
         t = ft.build_fleet_truth(
             [self._healthy("moc"), self._dark("kit", {"state": "detached", "note": "field"})],
             now=NOW, signal_classes=[], noc_host="moc")
         assert t["fleet_state"] == ft.HEALTHY and t["counts"]["dormant"] == 1
+
+    def test_detached_box_that_answers_is_rejoined_not_drift(self):
+        """2026-09-15 — the ecomm-kit case, and the reason the states split.
+
+        A DETACHED box is the field kit: "reachable only by its own push".
+        When it answers it has REJOINED, which is the SUCCESS case. Reporting
+        that as drift made the tile call the kit's successful deployment a
+        fault, and its twin in scripts/fleet_offline_check.sh paged
+        `Fleet posture DRIFT` at tier=critical for the whole deployment
+        (drilled live against the pre-fix code: POSTURE-DRIFT + PUSH-OK 200).
+        """
+        t = ft.build_fleet_truth(
+            [self._healthy("kit", {"state": "detached", "note": "declared detached until X (ecomm deploy)"})],
+            now=NOW, signal_classes=[], noc_host="kit")
+        r = t["boxes"][0]["reachable"]
+        assert r["state"] == ft.HEALTHY
+        assert r.get("rejoined") is True
+        assert r.get("posture_drift") is not True      # the defect, pinned
+        assert "REJOINED" in r["reason"]
+        assert t["posture_drift"] == {}                # nothing reported as a fault
+        assert t["counts"]["healthy"] == 1
+
+    def test_dormant_box_that_answers_still_drifts_after_the_split(self):
+        """Regression twin: splitting detached out must not silence dormant.
+        Dormant means OFF, so answering is still a real finding that pages."""
+        t = ft.build_fleet_truth(
+            [self._healthy("moc4", {"state": "dormant", "note": "declared dormant until X"})],
+            now=NOW, signal_classes=[], noc_host="moc")
+        r = t["boxes"][0]["reachable"]
+        assert r.get("posture_drift") is True
+        assert r.get("rejoined") is not True
+        assert "moc4" in t["posture_drift"]
 
     def test_active_stamp_changes_nothing(self):
         t = ft.build_fleet_truth([self._dark("moc4", {"state": "active", "note": "x"})],

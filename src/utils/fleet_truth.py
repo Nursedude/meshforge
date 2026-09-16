@@ -748,12 +748,30 @@ def build_box_truth(
     # inferred from silence — only ever set from the declaration file.
     posture = snap.get("posture") if isinstance(snap.get("posture"), dict) else None
     if posture and posture.get("state") in ("dormant", "detached"):
+        _pstate = posture["state"]
         if reach["state"] == DARK:
             reach["dormant"] = True
-            reach["reason"] = f"declared {posture['state']}: {posture.get('note') or ''}".strip()
+            reach["reason"] = f"declared {_pstate}: {posture.get('note') or ''}".strip()
+        elif _pstate == "detached":
+            # 2026-09-15: dormant and detached are DIFFERENT CLAIMS and no
+            # longer share this branch. A DETACHED box is the field kit —
+            # "reachable only by its own push"; when it answers it has
+            # REJOINED, which is the success case, not drift. Reporting the
+            # ecomm kit's successful deployment as a fault is the tile lying
+            # about the very outcome the posture exists to protect. (Twin fix:
+            # scripts/fleet_offline_check.sh owns the PAGE for the same
+            # conflation and is corrected in the same commit — one defect, two
+            # implementations, honest_failure_modes #5.)
+            # Deliberately NO new aggregate map here: drift_boxes/dormant_boxes
+            # have no consumer outside this module, so a parallel
+            # ``rejoined_boxes`` would be invisible surface. The flag below is
+            # the hook if a renderer ever wants to show rejoined kits.
+            reach["rejoined"] = True
+            reach["reason"] = (f"ANSWERED while declared detached "
+                               f"({posture.get('note') or ''}) — REJOINED, not a fault")
         else:
             reach["posture_drift"] = True
-            reach["reason"] = (f"ANSWERED while declared {posture['state']} "
+            reach["reason"] = (f"ANSWERED while declared {_pstate} "
                                f"({posture.get('note') or ''}) — posture drift")
 
     watchdog_block = (status or {}).get("watchdog") if status else None

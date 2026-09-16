@@ -322,25 +322,54 @@ for entry in "${BOXES[@]}"; do
 
   read_state "$name"
   # DECLARED POSTURE (note 7) — evaluated AFTER the probe, never instead of it:
-  # a silent box that ANSWERS is the finding (posture drift), so we must look.
+  # a silent box that ANSWERS is a finding for DORMANT, so we must look.
+  #
+  # 2026-09-15: dormant and detached no longer share the ANSWERED branch,
+  # because they are DIFFERENT CLAIMS.
+  #   dormant  = off on purpose. Answering means the declaration is stale or
+  #              the box is burning power it was meant to save -> DRIFT, pages.
+  #   detached = away on purpose, reachable only by its own push (the field
+  #              kit). Answering means it REJOINED — the success case, not a
+  #              fault. Pages NEITHER way; always leaves a witness.
+  # Why this was wrong: the ecomm kit (kiai, via alaula) is meant to deploy on
+  # a satellite link and stay VISIBLE from home. Under the old branch, the kit
+  # coming up as designed paged "Fleet posture DRIFT: kiai" at tier=critical,
+  # re-alerting for the whole deployment — the alarm firing on the very
+  # outcome it exists to protect. Drilled before the first real deploy: with
+  # kiai declared detached and answering normally, the pre-fix code emitted
+  # POSTURE-DRIFT and a confirmed ntfy push (PUSH-OK http=200).
+  # Until this change `detached` had NO behaviour of its own anywhere in the
+  # tree — three mentions, all docstring or constant. The twin copy of this
+  # conflation lives in utils/fleet_truth.py (the /fleet tile + mini) and is
+  # fixed in the same commit; a fix to one alone leaves the kit reading
+  # "drift" on the dashboard (honest_failure_modes #5 — grep for the copies).
   pstate="${POSTURE_STATE[$name]:-active}"
   if [ "$pstate" = dormant ] || [ "$pstate" = detached ]; then
     pnote="${POSTURE_NOTE[$name]:-declared $pstate}"
+    # Witness label follows the DECLARED state. It used to be hardcoded
+    # DORMANT, so a detached box's own witness line called it dormant — two
+    # states, one label, in the log the operator reads during the event.
+    plabel=$(printf '%s' "$pstate" | tr '[:lower:]' '[:upper:]')
     if [ -z "$reason" ]; then
-      echo "$TS  FLEET: POSTURE-DRIFT [$name] $pnote — but it ANSWERED (ssh ok, services up): the declaration is stale or the box is burning power it was meant to save" >> "$LOG"
-      if [ "$g_verdict" != drift ] || [ $(( NOW - g_lastalert )) -ge "$REALERT_INTERVAL" ]; then
-        ntfy_push "Fleet posture DRIFT: $name" "default" "warning" \
-          "$name answered while $pnote — clear or renew the declaration ($TS)" \
-          || echo "$TS  FLEET: PUSH-FAILED on POSTURE-DRIFT [$name] — see witness log" >> "$LOG"
-        set_state "$name" 0 0 0 "$NOW" 0 drift
+      if [ "$pstate" = detached ]; then
+        echo "$TS  FLEET: REJOINED [$name] $pnote — ANSWERED (ssh ok, services up): a detached kit that answers has REJOINED, which is the success case; not paged, declaration left standing" >> "$LOG"
+        set_state "$name" 0 0 0 0 0 "$pstate"
       else
-        set_state "$name" 0 0 0 "$g_lastalert" 0 drift
+        echo "$TS  FLEET: POSTURE-DRIFT [$name] $pnote — but it ANSWERED (ssh ok, services up): the declaration is stale or the box is burning power it was meant to save" >> "$LOG"
+        if [ "$g_verdict" != drift ] || [ $(( NOW - g_lastalert )) -ge "$REALERT_INTERVAL" ]; then
+          ntfy_push "Fleet posture DRIFT: $name" "default" "warning" \
+            "$name answered while $pnote — clear or renew the declaration ($TS)" \
+            || echo "$TS  FLEET: PUSH-FAILED on POSTURE-DRIFT [$name] — see witness log" >> "$LOG"
+          set_state "$name" 0 0 0 "$NOW" 0 drift
+        else
+          set_state "$name" 0 0 0 "$g_lastalert" 0 drift
+        fi
       fi
     else
       if [ "$g_alerted" = "1" ]; then
-        echo "$TS  FLEET: DORMANT [$name] $pnote — supersedes the open outage (was paged as $g_verdict); no RECOVERED page, nothing recovered" >> "$LOG"
+        echo "$TS  FLEET: $plabel [$name] $pnote — supersedes the open outage (was paged as $g_verdict); no RECOVERED page, nothing recovered" >> "$LOG"
       else
-        echo "$TS  FLEET: DORMANT [$name] $pnote — not paged" >> "$LOG"
+        echo "$TS  FLEET: $plabel [$name] $pnote — not paged" >> "$LOG"
       fi
       set_state "$name" 0 0 0 0 0 "$pstate"
     fi
