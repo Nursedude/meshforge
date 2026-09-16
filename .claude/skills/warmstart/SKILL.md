@@ -3,12 +3,12 @@ name: warmstart
 description: >
   Pull mini-dudeai's warm-start brief on demand — what mini saw while you were
   away, with an honest freshness banner re-derived from the last tick — PLUS a
-  single all-boxes fleet posture pane. Use when starting work mid-session, after
-  a /clear, or any time you want mini's current posture (active conditions,
+  single all-boxes fleet WATCHERS pane. Use when starting work mid-session, after
+  a /clear, or any time you want mini's current view (active conditions,
   escalations, recent fires) and the whole fleet's health without the automatic
   SessionStart injection.
 
-  Triggers: warmstart, warm start, mini brief, what did mini see, situation brief, fleet posture
+  Triggers: warmstart, warm start, mini brief, what did mini see, situation brief, fleet watchers, mini rollup
 ---
 
 # /warmstart — mini-dudeai warm-start brief (manual refresh)
@@ -27,7 +27,7 @@ box, shallow):
 # 1. This box's warm brief — active conditions, escalations, recent fires
 PYTHONPATH=/opt/meshforge/src python3 -m mini_dudeai.warmstart
 
-# 2. All-boxes posture — one line per box, per-box freshness re-derived now
+# 2. All-boxes watchers — one line per box, per-box freshness re-derived now
 PYTHONPATH=/opt/meshforge/src python3 -m mini_dudeai.rollup
 ```
 
@@ -78,7 +78,16 @@ last session's intent.
   or force one with `python3 -m mini_dudeai --preset meshforge_fleet --brief`.
 - **silent / "no brief and no state"** — mini has never run on this box.
 
-## Fleet posture pane (step 2)
+## Fleet watchers pane (step 2)
+
+⚠️ **This is NOT "fleet posture".** Renamed 2026-09-15: *posture* means the
+DECLARED per-box state in `utils.fleet_posture` — `active` / `shed` /
+`dormant` / `detached` — written by `scripts/fleet_posture.py declare`, read
+by `fleet_offline_check.sh` and `fleet_truth.py`. This pane shows something
+else entirely: whether each box's mini daemon is alive and fresh. The TUI
+carried the same collision (a menu item named "Fleet Posture" that rendered
+this rollup) and was renamed to **Fleet Watchers** in the same pass. Check
+declared posture with `scripts/fleet_posture.py check`, never here.
 
 `rollup.py` ssh-fans the fleet (host list from `~/.config/meshforge/fleet_hosts`,
 same as `fleet_sync`), reads each box's `mini_dudeai_state.json`, and folds in the
@@ -118,7 +127,7 @@ PYTHONPATH=/opt/meshforge/src python3 -m mini_dudeai.rollup --deep
 
 Escalations first (uncapped, "look here first"), then recent fleet fires (capped).
 This is the global *deep* view — each box's local detections (tracer, watchdog),
-not just its posture. Heavier than the default pane (pulls each box's history), so
+not just its watcher state. Heavier than the default pane (pulls each box's history), so
 it's a separate command, not part of the default `/warmstart` flow.
 
 ## Why manual *and* automatic
