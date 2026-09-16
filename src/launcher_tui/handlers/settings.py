@@ -111,41 +111,86 @@ class SettingsHandler(BaseHandler):
                 )
 
     def _configure_deployment_profile(self):
-        """Select deployment profile."""
-        profiles = [
-            ("full", "Full Install        All features enabled"),
-            ("gateway", "Gateway Bridge      Meshtastic + RNS bridge"),
-            ("monitor", "Monitor             MQTT monitoring only"),
-            ("radio_maps", "Radio + Maps        Radio config + coverage"),
-            ("meshcore", "MeshCore            Companion radio only"),
-        ]
+        """Select deployment profile.
 
-        current = "full"
-        if self.ctx.profile:
-            current = getattr(self.ctx.profile, 'name', 'full')
+        FIXED 2026-09-15 — this action could never succeed. It imported
+        ``get_profile``, which does not exist in ``utils.deployment_profiles``
+        (the real names are ``get_profile_by_name`` / ``load_profile`` /
+        ``load_or_detect_profile``), and passed a STRING to ``save_profile()``,
+        which takes a ``ProfileDefinition``. The ``except Exception`` below
+        turned the ImportError into "Failed to set profile: ..." on every
+        single attempt, so the menu item was decorative.
+
+        The five-entry hardcoded list it also carried is gone: profiles now
+        come from ``list_profiles()``, the same SSOT the launcher, wizard and
+        daemon read, so adding a profile cannot leave this screen stale
+        (honest_failure_modes #5).
+        """
+        from utils.deployment_profiles import (get_profile_by_name,
+                                               list_profiles, load_profile,
+                                               save_profile)
+
+        profiles = [(p.name.value, f"{p.display_name:<20}{p.description}")
+                    for p in list_profiles()]
+
+        current = None
+        if self.ctx.profile is not None:
+            current = getattr(getattr(self.ctx.profile, 'name', None),
+                              'value', None)
+        if current is None:
+            saved = load_profile()          # what is actually on disk
+            current = getattr(getattr(saved, 'name', None), 'value', None)
 
         choice = self.ctx.dialog.menu(
             "Deployment Profile",
-            f"Current profile: {current}\n"
-            "Profiles control which menu sections are visible.",
+            f"Current profile: {current or 'not set (auto-detect)'}\n"
+            "Sets which features this box declares it runs.",
             profiles
         )
 
-        if choice and choice != current:
-            try:
-                from utils.deployment_profiles import get_profile, save_profile
-                profile = get_profile(choice)
-                save_profile(choice)
-                self.ctx.profile = profile
-                self.ctx.feature_flags = getattr(profile, 'feature_flags', {})
-                self.ctx.dialog.msgbox(
-                    "Profile Updated",
-                    f"Deployment profile set to: {choice}\n\n"
-                    "Menu sections will update on next navigation.\n"
-                    "Restart MeshForge for full effect."
-                )
-            except Exception as e:
-                self.ctx.dialog.msgbox("Error", f"Failed to set profile:\n{e}")
+        if not choice or choice == current:
+            return
+
+        profile = get_profile_by_name(choice)
+        if profile is None:
+            # Cannot happen from the menu (tags come from list_profiles), so
+            # if it does, the registry and this screen have drifted apart.
+            self.ctx.dialog.msgbox(
+                "Unknown Profile",
+                f"'{choice}' is not a known deployment profile.\n\n"
+                "The menu and the profile registry have drifted — please "
+                "report this.")
+            return
+
+        # save_profile() returns a real bool and REFUSES rather than clobber
+        # an unreadable deployment.json (it is shared with the fleet-role
+        # system). Discarding that answer would claim success over a refusal.
+        try:
+            saved_ok = save_profile(profile)
+        except Exception as e:
+            self.ctx.dialog.msgbox(
+                "Profile Not Saved",
+                f"Could not write the deployment profile:\n\n"
+                f"{type(e).__name__}: {e}\n\n"
+                f"The profile is unchanged.")
+            return
+
+        if not saved_ok:
+            self.ctx.dialog.msgbox(
+                "Profile Not Saved",
+                f"Writing '{choice}' to deployment.json failed.\n\n"
+                f"deployment.json is shared with the fleet-role system and is "
+                f"not overwritten when it cannot be read. Check the MeshForge "
+                f"log for the reason.\n\nThe profile is unchanged.")
+            return
+
+        self.ctx.profile = profile
+        self.ctx.feature_flags = dict(getattr(profile, 'feature_flags', {}) or {})
+        self.ctx.dialog.msgbox(
+            "Profile Updated",
+            f"Deployment profile set to: {profile.display_name}\n\n"
+            f"{profile.description}\n\n"
+            "Restart MeshForge for this to take full effect.")
 
     def _configure_connection(self):
         """Configure Meshtastic connection."""
