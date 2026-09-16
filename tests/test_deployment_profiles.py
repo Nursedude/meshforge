@@ -25,6 +25,7 @@ from utils.deployment_profiles import (
     load_or_detect_profile,
     get_profile_by_name,
     list_profiles,
+    FEATURE_FLAGS,
 )
 
 
@@ -36,9 +37,17 @@ class TestProfileDefinitions:
         names = [p.name for p in PROFILES.values()]
         assert len(names) == len(set(names))
 
-    def test_five_profiles_defined(self):
-        """Exactly 5 profiles should be defined."""
-        assert len(PROFILES) == 5
+    def test_every_enum_member_has_a_profile(self):
+        """PROFILES covers ProfileName exactly — no orphan, no ghost.
+
+        Replaces a hardcoded count (was 5, now 6 with ``field``): the
+        count was the thing being asserted, and a count tells you nothing
+        about WHICH profile went missing. ``field`` was added 2026-09-16
+        for the ecomm kit.
+        """
+        assert set(PROFILES) == set(ProfileName), (
+            f"missing: {set(ProfileName) - set(PROFILES)}, "
+            f"extra: {set(PROFILES) - set(ProfileName)}")
 
     def test_all_profile_names_in_enum(self):
         """All ProfileName enum values should have a corresponding profile."""
@@ -79,13 +88,33 @@ class TestProfileDefinitions:
             assert profile.description, f"{profile.name} missing description"
 
     def test_all_profiles_require_core_packages(self):
-        """Every profile should require at least the core packages."""
-        core = {"rich", "yaml", "requests"}
+        """Every profile requires the packages the TUI cannot start without.
+
+        ``requests`` left this set on 2026-09-16, measured rather than
+        assumed: the whole of ``src/`` imports it exactly twice — in
+        ``installer/version.py`` (not the TUI) and lazily inside one
+        mfmaps health check that already degrades in-app. Everything else
+        goes through ``safe_import``. It was declared core for every
+        profile anyway, which would have forced an offline field kit to
+        carry an HTTP library to pass its own dependency check.
+        """
+        core = {"rich", "yaml"}
         for profile in PROFILES.values():
             required = set(profile.required_packages)
             assert core.issubset(required), (
                 f"{profile.name} missing core packages: {core - required}"
             )
+
+    def test_field_profile_is_offline_capable(self):
+        """The ecomm kit's profile must not require an online-only dep."""
+        field = PROFILES[ProfileName.FIELD]
+        assert "requests" not in field.required_packages, (
+            "the field profile is for a kit with no uplink — an HTTP "
+            "library is an optional convenience there, not a requirement")
+        assert "RNS" in field.required_packages
+        assert "LXMF" in field.required_packages
+        assert field.feature_flags["mqtt"] is False, (
+            "a field kit has no broker to reach")
 
     def test_feature_flags_are_booleans(self):
         """All feature flag values must be booleans."""
@@ -95,13 +124,60 @@ class TestProfileDefinitions:
                     f"{profile.name}.feature_flags[{key}] = {val!r} is not bool"
                 )
 
-    def test_gateway_flag_only_in_gateway_and_full(self):
-        """Gateway feature should only be enabled in gateway and full profiles."""
+    #: The full declared flag matrix. An expectation TABLE rather than a
+    #: per-flag rule, because a new profile must state its intent for
+    #: every flag instead of inheriting someone else's default — these
+    #: values now decide what an operator can SEE, so a silent default is
+    #: a silently missing menu row.
+    EXPECTED_FLAGS = {
+        ProfileName.RADIO_MAPS: dict(
+            meshtastic=True, meshcore=False, rns=False, gateway=False,
+            mqtt=False, maps=True, tactical=False, fleet_management=False),
+        ProfileName.MONITOR: dict(
+            meshtastic=False, meshcore=False, rns=False, gateway=False,
+            mqtt=True, maps=False, tactical=False, fleet_management=False),
+        ProfileName.MESHCORE: dict(
+            meshtastic=True, meshcore=True, rns=False, gateway=False,
+            mqtt=False, maps=False, tactical=False, fleet_management=False),
+        ProfileName.GATEWAY: dict(
+            meshtastic=True, meshcore=False, rns=True, gateway=True,
+            mqtt=True, maps=True, tactical=True, fleet_management=True),
+        # The ecomm kit: both radios carry traffic and the box is its own
+        # NOC, so the bridge is the point of it. No broker, no fleet.
+        ProfileName.FIELD: dict(
+            meshtastic=True, meshcore=False, rns=True, gateway=True,
+            mqtt=False, maps=True, tactical=True, fleet_management=False),
+        ProfileName.FULL: dict(
+            meshtastic=True, meshcore=True, rns=True, gateway=True,
+            mqtt=True, maps=True, tactical=True, fleet_management=True),
+    }
+
+    def test_declared_flag_matrix(self):
+        """Every profile's flags are pinned, all eight, by name."""
+        assert set(self.EXPECTED_FLAGS) == set(PROFILES), (
+            "a profile was added or removed without stating its flags — "
+            "update EXPECTED_FLAGS deliberately, in the same commit")
+        for name, expected in self.EXPECTED_FLAGS.items():
+            assert PROFILES[name].feature_flags == expected, (
+                f"{name.value} flags changed.\n"
+                f"  expected: {expected}\n"
+                f"  actual:   {PROFILES[name].feature_flags}")
+
+    def test_every_profile_declares_every_flag(self):
+        """No profile may leave a flag to feature_enabled()'s True default.
+
+        ``TUIContext.feature_enabled`` returns True for an unknown flag —
+        correct for "no profile at all", wrong for "this profile forgot
+        one", where it silently means "on". A flag that is missing rather
+        than False is how ``fleet_management`` stayed permanently visible.
+        """
         for name, profile in PROFILES.items():
-            if name in (ProfileName.GATEWAY, ProfileName.FULL):
-                assert profile.feature_flags.get("gateway") is True
-            else:
-                assert profile.feature_flags.get("gateway") is False
+            missing = set(FEATURE_FLAGS) - set(profile.feature_flags)
+            extra = set(profile.feature_flags) - set(FEATURE_FLAGS)
+            assert not missing, f"{name.value} does not declare {sorted(missing)}"
+            assert not extra, (
+                f"{name.value} declares {sorted(extra)}, which is not in "
+                f"FEATURE_FLAGS — add it there or it gates nothing")
 
 
 class TestProfileDetection:
@@ -283,10 +359,16 @@ class TestProfileLookup:
         assert get_profile_by_name("nonexistent") is None
         assert get_profile_by_name("") is None
 
-    def test_list_profiles_returns_all_five(self):
-        """list_profiles returns all 5 profiles."""
-        profiles = list_profiles()
-        assert len(profiles) == 5
+    def test_list_profiles_covers_every_profile_name(self):
+        """list_profiles is hand-ordered — it must not drop a profile.
+
+        It is a CLOSED consumer of an open enum (hfm #7): a profile added
+        to ``ProfileName`` but not listed here would exist, validate, and
+        be completely invisible in the Settings menu.
+        """
+        listed = {p.name for p in list_profiles()}
+        assert listed == set(ProfileName), (
+            f"list_profiles() omits {sorted(n.value for n in set(ProfileName) - listed)}")
 
     def test_list_profiles_order(self):
         """list_profiles returns profiles in display order."""

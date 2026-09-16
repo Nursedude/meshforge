@@ -147,7 +147,7 @@ src/
 
 ## Deployment Profiles
 
-Profiles: `radio_maps` | `monitor` | `meshcore` | `gateway` | `full`
+Profiles: `radio_maps` | `monitor` | `meshcore` | `gateway` | `field` | `full`
 
 ```bash
 python3 src/launcher.py --profile gateway   # Select profile

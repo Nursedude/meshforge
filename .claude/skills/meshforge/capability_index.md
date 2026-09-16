@@ -85,11 +85,11 @@ A non-empty **Flag** means the action only appears when that deployment-profile 
 | Action tag | Description | Flag | Handler |
 |---|---|---|---|
 | `ai` | AI Diagnostics — Knowledge base, assistant |  | AIToolsHandler |
-| `coverage` | Coverage Map — Generate coverage map |  | AIToolsHandler |
-| `heatmap` | Heatmap — Node density heatmap |  | AIToolsHandler |
-| `livemap` | Live NOC Map — Real-time browser view |  | AIToolsHandler |
-| `mfmaps` | MeshForge Maps — Multi-source map ext. |  | AIToolsHandler |
-| `tiles` | Offline Tiles — Cache map tiles |  | AIToolsHandler |
+| `coverage` | Coverage Map — Generate coverage map | `maps` | AIToolsHandler |
+| `heatmap` | Heatmap — Node density heatmap | `maps` | AIToolsHandler |
+| `livemap` | Live NOC Map — Real-time browser view | `maps` | AIToolsHandler |
+| `mfmaps` | MeshForge Maps — Multi-source map ext. | `maps` | AIToolsHandler |
+| `tiles` | Offline Tiles — Cache map tiles | `maps` | AIToolsHandler |
 | `quality` | Link Quality — Quality analysis |  | LinkQualityHandler |
 | `export` | Export Data — GeoJSON, CSV, GraphML |  | TopologyHandler |
 | `topology` | Network Topology — D3.js graph view |  | TopologyHandler |

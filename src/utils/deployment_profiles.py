@@ -1,7 +1,7 @@
 """
 MeshForge Deployment Profiles
 
-Defines 5 deployment scenarios so users can run MeshForge in their
+Defines 6 deployment scenarios so users can run MeshForge in their
 chosen configuration without irrelevant dependencies blocking them.
 
 Profiles:
@@ -9,6 +9,7 @@ Profiles:
     monitor     - MQTT packet analysis, no radio needed
     meshcore    - MeshCore companion radio integration
     gateway     - Full Meshtastic <> RNS bridge
+    field       - Off-grid EMCOMM kit: Meshtastic + RNS + tactical, no broker
     full        - Everything including MQTT broker
 
 Usage:
@@ -42,7 +43,33 @@ class ProfileName(Enum):
     MONITOR = "monitor"
     MESHCORE = "meshcore"
     GATEWAY = "gateway"
+    FIELD = "field"
     FULL = "full"
+
+
+# The feature-flag vocabulary — SSOT for BOTH sides of profile gating
+# (2026-09-16). A profile DECLARES these; TUI handlers CONSUME them via
+# the third element of ``menu_items()``, filtered in
+# ``HandlerRegistry.get_menu_items``.
+#
+# It is one constant because the two sides had independently drifted
+# (honest_failure_modes #5 — two consumers of one artifact, two hardcodes):
+#   * every profile declared ``maps`` and NO handler consumed it, so a
+#     profile promising "maps off" hid nothing;
+#   * one handler consumed ``fleet_management`` and NO profile declared it,
+#     so ``feature_enabled()``'s ``.get(flag, True)`` default made it
+#     permanently visible — a gate that could never close.
+# ``TestFlagVocabularyIsShared`` fails on either half drifting again.
+FEATURE_FLAGS: tuple = (
+    "meshtastic",
+    "meshcore",
+    "rns",
+    "gateway",
+    "mqtt",
+    "maps",
+    "tactical",
+    "fleet_management",
+)
 
 
 @dataclass
@@ -114,6 +141,7 @@ PROFILES: Dict[ProfileName, ProfileDefinition] = {
             "mqtt": False,
             "maps": True,
             "tactical": False,
+            "fleet_management": False,
         },
     ),
     ProfileName.MONITOR: ProfileDefinition(
@@ -132,6 +160,7 @@ PROFILES: Dict[ProfileName, ProfileDefinition] = {
             "mqtt": True,
             "maps": False,
             "tactical": False,
+            "fleet_management": False,
         },
     ),
     ProfileName.MESHCORE: ProfileDefinition(
@@ -150,6 +179,7 @@ PROFILES: Dict[ProfileName, ProfileDefinition] = {
             "mqtt": False,
             "maps": False,
             "tactical": False,
+            "fleet_management": False,
         },
     ),
     ProfileName.GATEWAY: ProfileDefinition(
@@ -168,6 +198,31 @@ PROFILES: Dict[ProfileName, ProfileDefinition] = {
             "mqtt": True,
             "maps": True,
             "tactical": True,
+            "fleet_management": True,
+        },
+    ),
+    ProfileName.FIELD: ProfileDefinition(
+        name=ProfileName.FIELD,
+        display_name="Field Kit",
+        description="Off-grid EMCOMM kit: Meshtastic + RNS + tactical, no broker",
+        # The ecomm kit's shape (kiai + alaula): both radios carry traffic and
+        # the box is its own NOC, so the gateway bridge is the point of it.
+        # No mosquitto — a field kit has no broker to reach and no fleet to
+        # manage; `requests` is deliberately NOT required, because every leg
+        # that needs it is an online-only convenience.
+        required_services=["meshtasticd", "rnsd"],
+        optional_services=[],
+        required_packages=["rich", "yaml", "RNS", "LXMF", "folium"],
+        optional_packages=["requests", "psutil", "distro"],
+        feature_flags={
+            "meshtastic": True,
+            "meshcore": False,
+            "rns": True,
+            "gateway": True,
+            "mqtt": False,
+            "maps": True,
+            "tactical": True,
+            "fleet_management": False,
         },
     ),
     ProfileName.FULL: ProfileDefinition(
@@ -189,6 +244,7 @@ PROFILES: Dict[ProfileName, ProfileDefinition] = {
             "mqtt": True,
             "maps": True,
             "tactical": True,
+            "fleet_management": True,
         },
     ),
 }
@@ -394,11 +450,19 @@ def get_profile_by_name(name: str) -> Optional[ProfileDefinition]:
 
 
 def list_profiles() -> List[ProfileDefinition]:
-    """Return all available profiles in display order."""
+    """Return all available profiles in display order.
+
+    Hand-ordered rather than ``PROFILES.values()`` so the Settings menu
+    reads narrowest-to-widest. That makes it a CLOSED consumer of an open
+    enum (hfm #7): a profile added to ``ProfileName`` but not listed here
+    would be invisible in the TUI forever. ``test_list_profiles_covers_
+    every_profile_name`` fails until it is added.
+    """
     return [
         PROFILES[ProfileName.RADIO_MAPS],
         PROFILES[ProfileName.MONITOR],
         PROFILES[ProfileName.MESHCORE],
         PROFILES[ProfileName.GATEWAY],
+        PROFILES[ProfileName.FIELD],
         PROFILES[ProfileName.FULL],
     ]

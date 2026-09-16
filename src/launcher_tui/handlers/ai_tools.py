@@ -67,12 +67,17 @@ class AIToolsHandler(
     menu_section = "maps_viz"
 
     def menu_items(self):
+        # The five map producers carry the "maps" flag; "ai" does not — a
+        # knowledge base is not a map, and a profile that turns maps off
+        # should not take the diagnostics assistant with it.
+        # Until 2026-09-16 every profile declared "maps" and NOTHING
+        # consumed it, so "maps": False hid exactly zero rows.
         return [
-            ("livemap",   "Live NOC Map        Real-time browser view", None),
-            ("mfmaps",    "MeshForge Maps      Multi-source map ext.", None),
-            ("coverage",  "Coverage Map        Generate coverage map",  None),
-            ("heatmap",   "Heatmap             Node density heatmap",   None),
-            ("tiles",     "Offline Tiles       Cache map tiles",        None),
+            ("livemap",   "Live NOC Map        Real-time browser view", "maps"),
+            ("mfmaps",    "MeshForge Maps      Multi-source map ext.", "maps"),
+            ("coverage",  "Coverage Map        Generate coverage map",  "maps"),
+            ("heatmap",   "Heatmap             Node density heatmap",   "maps"),
+            ("tiles",     "Offline Tiles       Cache map tiles",        "maps"),
             ("ai",        "AI Diagnostics      Knowledge base, assistant", None),
         ]
 
