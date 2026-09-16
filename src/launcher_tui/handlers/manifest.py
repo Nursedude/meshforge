@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 81 handlers · 114 menu actions (derived from get_all_handlers(), never hand-edited).
+# 82 handlers · 115 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -556,6 +556,17 @@ HANDLER_MANIFEST = [
         "error": None,
         "menu_items": [
             ('mqtt', 'MQTT Monitor        Nodeless mesh observation', 'mqtt'),
+        ],
+    },
+    {
+        "handler_id": 'nanovna',
+        "module": 'handlers.nanovna',
+        "class_name": 'NanoVNAHandler',
+        "menu_section": 'rf_sdr',
+        "lifecycle": False,
+        "error": None,
+        "menu_items": [
+            ('vna', 'Antenna Analyzer    NanoVNA sweep, SWR, baselines', None),
         ],
     },
     {

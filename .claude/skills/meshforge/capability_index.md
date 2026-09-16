@@ -10,7 +10,7 @@
 > X?", grep this file for the capability, then open the handler under
 > `src/launcher_tui/handlers/`.
 
-**81 handlers · 114 menu actions · 11 sections** (all derived from `get_all_handlers()`, never hardcoded).
+**82 handlers · 115 menu actions · 11 sections** (all derived from `get_all_handlers()`, never hardcoded).
 
 A non-empty **Flag** means the action only appears when that deployment-profile feature is enabled (blank = always visible).
 
@@ -136,6 +136,7 @@ A non-empty **Flag** means the action only appears when that deployment-profile 
 
 | Action tag | Description | Flag | Handler |
 |---|---|---|---|
+| `vna` | Antenna Analyzer — NanoVNA sweep, SWR, baselines |  | NanoVNAHandler |
 | `weather` | Space Weather — Propagation & HF bands |  | PropagationHandler |
 | `antenna` | Antenna Analysis — Compare antenna types |  | RFToolsHandler |
 | `freq` | Frequency Slots — Channel calculator |  | RFToolsHandler |

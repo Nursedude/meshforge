@@ -1,8 +1,33 @@
 """
-NanoVNA Device Communication Module
+NanoVNA antenna analyzer — serial driver and S-parameter math.
 
-Handles serial communication with NanoVNA and NanoVNA-H devices.
-Supports data acquisition and parsing of S-parameter measurements.
+Talks to NanoVNA / NanoVNA-H / -H4 hardware over USB serial and turns a
+frequency sweep into the numbers a HAM actually reads off an analyzer: SWR,
+return loss, complex impedance (R +/- jX), phase, and the best-match
+frequency across the sweep.
+
+MOVED 2026-09-15 from ``plugins/nanovna_analyzer/nanovna_device.py``. It had
+sat for months in a GTK-era plugin tree that NOTHING loads — the TUI's
+``handlers/extensions.py`` contains zero references to ``plugins/`` — so a
+complete, working instrument driver was unreachable from the app, next door
+to an "Antenna Analysis" menu item that only compares antenna types from a
+static table. Its GTK panel was deleted in the same change; this module never
+had any GTK in it.
+
+Pure-Python and hardware-free except for pyserial, which is optional: with no
+pyserial the module imports fine and every entry point reports that honestly
+rather than raising at import time.
+
+Usage:
+    from utils.nanovna import NanoVNADevice, format_swr
+
+    ports = NanoVNADevice.find_devices()
+    vna = NanoVNADevice(ports[0])
+    if vna.connect():
+        result = vna.sweep(144_000_000, 148_000_000, points=101)
+        swr, freq = result.min_swr
+        print(f"best match {format_swr(swr)} at {freq:.3f} MHz")
+        vna.disconnect()
 """
 
 import logging
@@ -13,16 +38,28 @@ from typing import List, Optional, Tuple
 import cmath
 import math
 
+from utils.safe_import import safe_import
+
 logger = logging.getLogger(__name__)
 
-# Try to import serial
-try:
-    import serial
-    import serial.tools.list_ports
-    HAS_SERIAL = True
-except ImportError:
-    HAS_SERIAL = False
-    serial = None
+# External dep -> safe_import (CLAUDE.md: safe_import is for external deps
+# only). pyserial is genuinely optional: the sweep math below is useful
+# without hardware, and every box in the fleet should not need it.
+serial, _HAS_SERIAL = safe_import('serial')
+_serial_list_ports, _HAS_LIST_PORTS = safe_import('serial.tools.list_ports')
+
+#: True only when BOTH halves are importable. Port enumeration lives in a
+#: separate submodule, and importing `serial` does NOT bring it in — treating
+#: them as one flag is how "found no devices" starts meaning "cannot look".
+HAS_SERIAL = _HAS_SERIAL and _HAS_LIST_PORTS
+
+
+class NanoVNAUnavailable(RuntimeError):
+    """Raised when the VNA cannot be used, with the reason in the message.
+
+    Deliberately NOT an empty return: "no devices found" and "I cannot look
+    for devices" are different facts and must not share a value.
+    """
 
 
 @dataclass
@@ -127,11 +164,26 @@ class NanoVNADevice:
     """Interface for NanoVNA antenna analyzer devices."""
 
     # NanoVNA USB identifiers
+    #: USB signatures we recognise. 0483:5740 is the STMicroelectronics
+    #: Virtual COM Port that the hugen79 NanoVNA-H / -H4 designs and their
+    #: resellers (SEESII among them) present, so it is the one that matters
+    #: in practice. The 04B4 pairs are kept for older/other builds.
+    #:
+    #: ⚠️ Clones with an unlisted VID:PID exist. `find_devices()` therefore
+    #: ALSO matches on a description containing "nanovna" or "stm32", and the
+    #: TUI's Detect screen prints every port it saw with its VID:PID so an
+    #: unrecognised device can be identified and added here rather than
+    #: silently reading as "no analyzer connected".
     VID_PID_PAIRS = [
-        (0x0483, 0x5740),  # NanoVNA original
-        (0x04B4, 0x0008),  # NanoVNA-H
-        (0x04B4, 0x000A),  # NanoVNA-H4
+        (0x0483, 0x5740),  # STM32 VCP — NanoVNA, NanoVNA-H, NanoVNA-H4 (SEESII)
+        (0x04B4, 0x0008),  # Cypress-based variants
+        (0x04B4, 0x000A),
     ]
+
+    #: The shell protocol used below ("version", "sweep", "frequencies",
+    #: "data 0") is the common NanoVNA command set and is what the -H4 /
+    #: DiSlord firmware speaks. `data 0` is S11 (reflection), which is what
+    #: antenna work needs; `data 1` would be S21 (through).
 
     DEFAULT_BAUD = 115200
     TIMEOUT = 2.0
@@ -150,7 +202,9 @@ class NanoVNADevice:
         self._device_version = ""
 
         if not HAS_SERIAL:
-            logger.warning("[NanoVNA] pyserial not installed")
+            logger.warning(
+                "[NanoVNA] pyserial not installed — this object can hold and "
+                "format sweep data but cannot talk to hardware")
 
     @classmethod
     def find_devices(cls) -> List[str]:
@@ -160,11 +214,19 @@ class NanoVNADevice:
             List of serial port paths.
         """
         if not HAS_SERIAL:
-            return []
+            # Callers cannot tell [] "no VNA plugged in" from [] "pyserial
+            # missing", so refuse to answer at all rather than answer wrong
+            # (honest_failure_modes #1: the degraded value must not overlap
+            # the healthy domain). The TUI catches this and says which it is.
+            raise NanoVNAUnavailable(
+                "pyserial is not installed, so USB serial ports cannot be "
+                "enumerated. Install it with: pipx inject meshforge pyserial "
+                "(or apt install python3-serial)."
+            )
 
         devices = []
         try:
-            ports = serial.tools.list_ports.comports()
+            ports = _serial_list_ports.comports()
             for port in ports:
                 # Check for NanoVNA by VID/PID
                 if port.vid and port.pid:
@@ -190,8 +252,9 @@ class NanoVNADevice:
             True if connected successfully.
         """
         if not HAS_SERIAL:
-            logger.error("[NanoVNA] pyserial not installed")
-            return False
+            raise NanoVNAUnavailable(
+                "pyserial is not installed — cannot open the serial port."
+            )
 
         with self._lock:
             # Auto-detect port if not specified
@@ -233,8 +296,11 @@ class NanoVNADevice:
             if self._serial:
                 try:
                     self._serial.close()
-                except Exception:
-                    pass
+                except (OSError, AttributeError) as e:
+                    # Closing a port that is already gone (device unplugged
+                    # mid-session) is not an error worth raising, but it is
+                    # worth a witness.
+                    logger.debug("[NanoVNA] close() on a dead port: %s", e)
                 self._serial = None
                 logger.info("[NanoVNA] Disconnected")
 
@@ -404,8 +470,13 @@ def format_swr(swr: float) -> str:
     Returns:
         Formatted string like "1.5:1" or ">10:1"
     """
+    # ORDER MATTERS. `swr > 10` is True for inf, so testing it first made the
+    # "Inf:1" branch unreachable and rendered an OPEN or SHORTED antenna
+    # identically to a merely-bad match. For antenna work those are different
+    # faults: >10:1 means "tune it", Inf:1 means "nothing is connected —
+    # check the connector". Found by a test, 2026-09-15.
+    if swr == float('inf') or math.isnan(swr):
+        return "Inf:1"
     if swr > 10:
         return ">10:1"
-    if swr == float('inf'):
-        return "Inf:1"
     return f"{swr:.2f}:1"

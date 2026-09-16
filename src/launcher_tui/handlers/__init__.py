@@ -46,7 +46,11 @@ def get_all_handlers() -> List[Type]:
     from handlers.link_quality import LinkQualityHandler
     from handlers.webhooks import WebhooksHandler
     from handlers.network_tools import NetworkToolsHandler
+    # NanoVNA antenna analyzer (2026-09-15). Its driver spent months in the
+    # unloaded plugins/ tree; this registration is what makes it reachable.
+    from handlers.nanovna import NanoVNAHandler
     handlers.extend([
+        NanoVNAHandler,
         NodeHealthHandler,
         MetricsHandler,
         PropagationHandler,

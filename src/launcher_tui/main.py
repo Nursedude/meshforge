@@ -84,7 +84,10 @@ SECTION_ORDERINGS = {
         "automation", "dual_failover", "load_balancer", "favorites",
         "ham", "services",
     ],
-    "rf_sdr": ["link", "site", "freq", "antenna", "weather", "sdr"],
+    # "vna" sits beside "antenna": one MEASURES the antenna in front of
+    # you, the other COMPARES antenna types from a table. Operators
+    # reach for them in the same breath.
+    "rf_sdr": ["link", "site", "freq", "antenna", "vna", "weather", "sdr"],
     "maps_viz": [
         "livemap", "mfmaps", "coverage", "heatmap", "tiles", "topology",
         "traffic", "quality", "export", "ai",
