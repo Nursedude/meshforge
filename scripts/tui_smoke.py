@@ -289,8 +289,8 @@ def main(argv=None):
     p.add_argument("--profile", default=None,
                    help="render the surface a deployment profile leaves "
                         "(radio_maps|monitor|meshcore|gateway|field|full) "
-                        "— proves the rows it hides and the 'Show all' row "
-                        "it adds draw on a real terminal")
+                        "— proves the '[off]' marks it adds survive a real "
+                        "terminal, where a label is truncated to box width")
     args = p.parse_args(argv)
 
     if not shutil.which("whiptail") and not shutil.which("dialog"):

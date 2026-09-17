@@ -79,8 +79,9 @@ class TUIContext:
     def profile_label(self) -> str:
         """Short name of the active profile, or '' when none is gating.
 
-        Used in menu subtitles and in the "Show all" row so the reason
-        something is missing is always on screen beside the absence.
+        Shown in the main-menu subtitle and named in the dialog a row
+        marked ``[off]`` raises, so the reason a tool is unavailable is
+        always on screen beside the tool itself.
         """
         if not self.feature_flags:
             return ""

@@ -233,7 +233,7 @@ class TestMainMenuPin:
     HANDLER_OWNED = ("n", "t", "q", "e")
 
     @staticmethod
-    def _render_rows(profile_flags=None, show_all=False):
+    def _render_rows(profile_flags=None):
         """Drive the real ``_run_main_menu`` against a real registry.
 
         The registry is real (not a stub) because the four handler-owned
@@ -247,7 +247,6 @@ class TestMainMenuPin:
 
         ctx = TUIContext(dialog=SimpleNamespace())
         ctx.feature_flags = dict(profile_flags or {})
-        ctx.show_all_features = show_all
         if profile_flags:
             ctx.profile = SimpleNamespace(
                 name=SimpleNamespace(value="testprofile"))

@@ -221,10 +221,6 @@ class HandlerRegistry:
             return self._materialize(handler, handler.menu_section)
         return handler
 
-    #: Reserved tag: the escape hatch every profile-gated menu carries.
-    #: Handled in ``dispatch()`` so the nine menu loops need no special
-    #: case — a gated menu that could not be un-gated would be a
-    #: capability loss, which is the one thing profile gating must not be.
     #: Prefix a row carries when the active profile does not include it.
     #: A PREFIX rather than a suffix on purpose: whiptail truncates a label
     #: to the box width, so a marker at the end is exactly what disappears
