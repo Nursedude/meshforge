@@ -761,6 +761,14 @@ class FleetWatchersHandler(BaseHandler):
     handler_id = "fleet_watchers"
     menu_section = "fleet"
 
+    #: Bounded subprocess helper, shared with FleetHealthHandler. Bound as a
+    #: class attribute rather than CALLED as ``FleetHealthHandler._run`` so
+    #: ``self._run`` stays the patch point: the first cut of this split called
+    #: the other class directly, which silently broke the instance
+    #: monkeypatch seam its tests use (caught by CI on 3d9b3299, not locally
+    #: — a cross-class call is not a drop-in for a method lookup).
+    _run = staticmethod(FleetHealthHandler._run)
+
     def menu_items(self):
         return [
             (
@@ -784,7 +792,7 @@ class FleetWatchersHandler(BaseHandler):
         if note:
             print(f"note: {note}")
         print("=" * 72)
-        out = FleetHealthHandler._run(cmd, timeout=90)
+        out = self._run(cmd, timeout=90)
         if not (out or "").strip():
             print("[FAIL] rollup produced no output — mini may not be "
                   "installed, or the invocation failed.")

@@ -16,12 +16,17 @@ sys.path.insert(0, str(SRC / "launcher_tui"))
 
 from handlers.fleet_health import (  # noqa: E402  (after sys.path mutation)
     FleetHealthHandler,
+    FleetWatchersHandler,
     ProbeResult,
 )
 
 
 def _handler() -> FleetHealthHandler:
     return FleetHealthHandler()
+
+
+def _watchers() -> FleetWatchersHandler:
+    return FleetWatchersHandler()
 
 
 _PROBE_NAMES = [
@@ -515,19 +520,52 @@ def test_probe_map_db_missing(monkeypatch, tmp_path):
 
 
 def test_handler_registration_shape():
+    """Local-only after the 2026-09-17 Phase-4 split.
+
+    This handler used to own ``fleet_watchers`` (ALL boxes) beside
+    ``stack_health`` (its label says "Local:") — two audiences, one handler.
+    A handler's rows render in ITS ``menu_section`` and ``alias()`` ADDS a row
+    rather than moving one, so separating them required a split.
+    """
     h = _handler()
     assert h.handler_id == "fleet_health"
     assert h.menu_section == "dashboard"
     items = h.menu_items()
-    assert len(items) == 2
+    assert len(items) == 1, (
+        "fleet_watchers moved to FleetWatchersHandler (section 'fleet'); "
+        "this handler is the LOCAL stack snapshot only.")
     tag, label, gate = items[0]
     assert tag == "stack_health"
     assert "Stack Health" in label
     assert gate is None
-    tag2, label2, gate2 = items[1]
-    assert tag2 == "fleet_watchers"
-    assert "Fleet Watchers" in label2
-    assert gate2 is None
+
+
+def test_watchers_handler_registration_shape():
+    """The all-boxes half of the split, in the Fleet section."""
+    w = _watchers()
+    assert w.handler_id == "fleet_watchers"
+    assert w.menu_section == "fleet"
+    items = w.menu_items()
+    assert len(items) == 1
+    tag, label, gate = items[0]
+    assert tag == "fleet_watchers"
+    assert "Fleet Watchers" in label
+    assert gate is None, (
+        "the rollup is read-only and degrades to this box alone when the "
+        "fleet host list is empty — gating it would hide an honest surface.")
+
+
+def test_watchers_run_seam_is_the_instance():
+    """``self._run`` must remain the patch point.
+
+    The first cut of the split called ``FleetHealthHandler._run`` directly,
+    which still WORKED but silently broke every instance monkeypatch in this
+    file — green locally, red in CI. Pin the seam, not just the behaviour.
+    """
+    w = _watchers()
+    sentinel = object()
+    w._run = lambda *a, **k: sentinel          # instance attribute wins
+    assert w._run() is sentinel
 
 
 # -------------------------------------------------- fleet watchers (T1 pane)
@@ -573,7 +611,7 @@ def test_rollup_command_root_without_sudo_user_warns():
 
 
 def test_render_fleet_watchers_prints_pane(monkeypatch, capsys):
-    h = _handler()
+    h = _watchers()
     h.ctx = MagicMock()
     monkeypatch.setattr(
         h, "_run",
@@ -586,7 +624,7 @@ def test_render_fleet_watchers_prints_pane(monkeypatch, capsys):
 
 def test_render_fleet_watchers_honest_on_empty_output(monkeypatch, capsys):
     """No output ≠ healthy pane — the failure must be said out loud."""
-    h = _handler()
+    h = _watchers()
     h.ctx = MagicMock()
     monkeypatch.setattr(h, "_run", lambda cmd, timeout=90: None)
     with patch("backend.clear_screen", lambda: None):
