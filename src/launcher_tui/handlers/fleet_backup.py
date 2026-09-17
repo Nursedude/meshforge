@@ -34,7 +34,7 @@ class FleetBackupHandler(BaseHandler):
     """TUI handler for fleet backup and recovery."""
 
     handler_id = "fleet_backup"
-    menu_section = "configuration"
+    menu_section = "fleet"
 
     def menu_items(self):
         return [

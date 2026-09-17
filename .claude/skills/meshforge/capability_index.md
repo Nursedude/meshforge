@@ -10,7 +10,7 @@
 > X?", grep this file for the capability, then open the handler under
 > `src/launcher_tui/handlers/`.
 
-**82 handlers · 115 menu actions · 11 sections** (all derived from `get_all_handlers()`, never hardcoded).
+**83 handlers · 115 menu actions · 12 sections** (all derived from `get_all_handlers()`, never hardcoded).
 
 A non-empty **Flag** means the action only appears when that deployment-profile feature is enabled (blank = always visible).
 
@@ -33,7 +33,6 @@ A non-empty **Flag** means the action only appears when that deployment-profile 
 | `channels` | Channel Config — Meshtastic channels |  | ChannelConfigHandler |
 | `config-api` | Config API Server — REST config endpoint |  | ConfigAPIHandler |
 | `wizard` | Setup Wizard — First-run wizard |  | FirstRunHandler |
-| `fleet_backup` | Fleet Backup — Backup/restore fleet state | `fleet_management` | FleetBackupHandler |
 | `meshtasticd` | meshtasticd — Radio, service, config | `meshtastic` | MeshtasticdConfigHandler |
 | `rnode` | RNode Setup — RNode device detection |  | RNodeHandler |
 | `meshforge` | MeshForge Settings — App preferences |  | SettingsHandler |
@@ -53,7 +52,6 @@ A non-empty **Flag** means the action only appears when that deployment-profile 
 | `status` | Service Status — All services with health |  | DashboardHandler |
 | `weather` | Space Weather — SFI, Kp, bands at a glance |  | DashboardHandler |
 | `demo` | Demo Mode — Simulated mesh traffic |  | DemoHandler |
-| `fleet_watchers` | Fleet Watchers — All boxes: mini daemon, deltas, freshness |  | FleetHealthHandler |
 | `stack_health` | Stack Health — Local: RNS path, NomadNet, bridge, DB |  | FleetHealthHandler |
 | `latency` | Latency Monitor — Service response times |  | LatencyHandler |
 | `metrics` | Historical Trends — Metrics over time |  | MetricsHandler |
@@ -70,6 +68,15 @@ A non-empty **Flag** means the action only appears when that deployment-profile 
 | Action tag | Description | Flag | Handler |
 |---|---|---|---|
 | `meshing` | Meshing Around — Mesh bot framework |  | ExtensionsHandler |
+
+## `fleet`
+
+| Action tag | Description | Flag | Handler |
+|---|---|---|---|
+| `fleet_backup` | Fleet Backup — Backup/restore fleet state | `fleet_management` | FleetBackupHandler |
+| `fleet_membership` | Fleet Membership — Declare standalone, or fleet + host list |  | FleetProvisionHandler |
+| `fleet_provision` | Fleet Architecture — Reproduce a box to a preset (preview + apply) |  | FleetProvisionHandler |
+| `fleet_watchers` | Fleet Watchers — All boxes: mini daemon, deltas, freshness |  | FleetWatchersHandler |
 
 ## `main`
 
@@ -172,8 +179,6 @@ A non-empty **Flag** means the action only appears when that deployment-profile 
 | `diagnose` | Diagnostics — System health check |  | DiagnosticsHandler |
 | `status` | Quick Status — One-shot status display |  | DiagnosticsHandler |
 | `discover` | Service Discovery — Auto-discover services |  | ServiceDiscoveryHandler |
-| `fleet_membership` | Fleet Membership — Declare standalone, or fleet + host list |  | FleetProvisionHandler |
-| `fleet_provision` | Fleet Architecture — Reproduce a box to a preset (preview + apply) |  | FleetProvisionHandler |
 | `hardware` | Hardware — Detect SPI/I2C/USB |  | HardwareHandler |
 | `logs` | Logs — View/follow logs |  | LogsHandler |
 | `network` | Network Tools — Ping, ports, interfaces |  | NetworkToolsHandler |

@@ -96,24 +96,15 @@ class FleetHealthHandler(BaseHandler):
     menu_section = "dashboard"
 
     def menu_items(self):
+        # THIS BOX ONLY. ``fleet_watchers`` moved to FleetWatchersHandler
+        # (section "fleet") in the 2026-09-17 Phase-4 split: one handler was
+        # serving two audiences, and a section move cannot separate them
+        # (a handler's rows render in ITS section, and an alias ADDS a row
+        # rather than moving one).
         return [
             (
                 "stack_health",
                 "Stack Health        Local: RNS path, NomadNet, bridge, DB",
-                None,
-            ),
-            (
-                # 2026-09-15 RENAMED from "fleet_posture"/"Fleet Posture".
-                # That name collided with the DECLARED posture of
-                # utils.fleet_posture (active/shed/dormant/detached — the
-                # thing `scripts/fleet_posture.py declare` writes and
-                # fleet_offline_check.sh reads). This screen shows neither:
-                # it renders mini-dudeai's per-box WATCHER rollup. An
-                # operator hunting the declare surface was handed the right
-                # name and the wrong screen, which is worse than no screen.
-                # "Fleet Posture" is reserved for declared posture.
-                "fleet_watchers",
-                "Fleet Watchers      All boxes: mini daemon, deltas, freshness",
                 None,
             ),
         ]
@@ -121,36 +112,6 @@ class FleetHealthHandler(BaseHandler):
     def execute(self, action):
         if action == "stack_health":
             self.ctx.safe_call("Fleet Health", self._render_overview)
-        elif action == "fleet_watchers":
-            self.ctx.safe_call("Fleet Watchers", self._render_fleet_watchers)
-
-    def _render_fleet_watchers(self):
-        from backend import clear_screen
-
-        clear_screen()
-        cmd, note = _rollup_command()
-        print("Fleet Watchers — mini-dudeai rollup, every box, freshness "
-              "re-derived now")
-        if note:
-            print(f"note: {note}")
-        print("=" * 72)
-        out = self._run(cmd, timeout=90)
-        if not (out or "").strip():
-            print("[FAIL] rollup produced no output — mini may not be "
-                  "installed, or the invocation failed.")
-            print("       Try by hand: PYTHONPATH="
-                  f"{_SRC_DIR} python3 -m mini_dudeai.rollup")
-        else:
-            print(_plainify(out.strip()))
-        print("=" * 72)
-        print("🔴 stale / ❌ unreachable rows: check that box's daemon — "
-              "'systemctl --user status meshforge-mini-dudeai'.")
-        print("💭 deltas pending: mini proposals awaiting review — sweep "
-              "them from a session before they pile up.")
-        try:
-            self.ctx.wait_for_enter("\nPress Enter to return to menu...")
-        except KeyboardInterrupt:
-            print()
 
     def _render_overview(self):
         from backend import clear_screen
@@ -777,3 +738,66 @@ class FleetHealthHandler(BaseHandler):
     def _first_host(endpoint: str) -> str:
         # "192.0.2.38:4242" -> "192.0.2.38"
         return endpoint.rsplit(":", 1)[0]
+
+
+class FleetWatchersHandler(BaseHandler):
+    """Fleet Watchers — every box's mini daemon, deltas and freshness.
+
+    Split out of ``FleetHealthHandler`` on 2026-09-17 (TUI audit Phase 4).
+    That handler owned this ALL-BOXES view alongside ``stack_health``, whose
+    own label says "Local:" — two audiences, one handler. The registry
+    renders a handler's rows in ITS ``menu_section`` and ``alias()`` ADDS a
+    row rather than moving one, so separating the two required a split, not
+    a section change.
+
+    ⚠️ The row tag stays ``fleet_watchers``: it was renamed from
+    "fleet_posture" on 2026-09-15 because that name collided with the
+    DECLARED posture of ``utils.fleet_posture`` (active/shed/dormant/
+    detached — what ``scripts/fleet_posture.py declare`` writes and
+    ``fleet_offline_check.sh`` reads). This screen shows neither; it renders
+    mini-dudeai's per-box WATCHER rollup. "Fleet Posture" stays reserved.
+    """
+
+    handler_id = "fleet_watchers"
+    menu_section = "fleet"
+
+    def menu_items(self):
+        return [
+            (
+                "fleet_watchers",
+                "Fleet Watchers      All boxes: mini daemon, deltas, freshness",
+                None,
+            ),
+        ]
+
+    def execute(self, action):
+        if action == "fleet_watchers":
+            self.ctx.safe_call("Fleet Watchers", self._render_fleet_watchers)
+
+    def _render_fleet_watchers(self):
+        from backend import clear_screen
+
+        clear_screen()
+        cmd, note = _rollup_command()
+        print("Fleet Watchers — mini-dudeai rollup, every box, freshness "
+              "re-derived now")
+        if note:
+            print(f"note: {note}")
+        print("=" * 72)
+        out = FleetHealthHandler._run(cmd, timeout=90)
+        if not (out or "").strip():
+            print("[FAIL] rollup produced no output — mini may not be "
+                  "installed, or the invocation failed.")
+            print("       Try by hand: PYTHONPATH="
+                  f"{_SRC_DIR} python3 -m mini_dudeai.rollup")
+        else:
+            print(_plainify(out.strip()))
+        print("=" * 72)
+        print("🔴 stale / ❌ unreachable rows: check that box's daemon — "
+              "'systemctl --user status meshforge-mini-dudeai'.")
+        print("💭 deltas pending: mini proposals awaiting review — sweep "
+              "them from a session before they pile up.")
+        try:
+            self.ctx.wait_for_enter("\nPress Enter to return to menu...")
+        except KeyboardInterrupt:
+            print()

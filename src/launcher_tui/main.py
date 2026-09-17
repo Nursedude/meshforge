@@ -72,7 +72,7 @@ from handlers import get_all_handlers
 SECTION_ORDERINGS = {
     "dashboard": [
         "status", "weather", "network", "nodes", "health", "score",
-        "datapath", "stack_health", "fleet_watchers", "traffic_pulse",
+        "datapath", "stack_health", "traffic_pulse",
         "metrics", "analytics", "latency", "reports", "alerts",
         "mini_dudeai", "mini_dudeai_chat", "mini_dudeai_rules",
         "offline_oracle", "moc_analysis", "demo",
@@ -94,8 +94,14 @@ SECTION_ORDERINGS = {
     ],
     "configuration": [
         "meshtasticd", "channels", "rns-config", "rnode", "backup",
-        "fleet_backup", "updates", "webhooks", "meshforge", "config-api",
+        "updates", "webhooks", "meshforge", "config-api",
         "wizard",
+    ],
+    # The newcomer's JOURNEY, not our taxonomy: declare what this box is,
+    # reproduce another one like it, watch them all, then protect the state.
+    # A newcomer who does not yet know the vocabulary can still read the path.
+    "fleet": [
+        "fleet_membership", "fleet_provision", "fleet_watchers", "fleet_backup",
     ],
     "system": [
         "hardware", "logs", "network", "discover", "diagnose", "db_health",
@@ -105,7 +111,7 @@ SECTION_ORDERINGS = {
         # Uplink telemetry joins the read-only posture group above it: both
         # answer "what is true here" and neither changes anything.
         "starlink_status", "starlink_skymap",
-        "run", "details", "daemon", "fleet_membership", "fleet_provision",
+        "run", "details", "daemon",
         "review", "status", "shell", "reboot",
     ],
     "extensions": ["mfmaps", "meshing"],
@@ -801,7 +807,12 @@ class MeshForgeLauncher:
             choices.append(("4", "Maps & Viz          Coverage maps, topology"))
             choices.append(("5", "Configuration       Radio, services, settings"))
             choices.append(("6", "System              Hardware, logs, Linux tools"))
-            choices.append(("7", "Extensions          Maps, bots, add-ons"))
+            # Fleet sits AFTER the single-box sections and BEFORE add-ons:
+            # the menu reads as a path — set this box up, then scale it out.
+            # Row order inside the section follows the newcomer's JOURNEY
+            # (declare -> reproduce -> watch -> protect), not our taxonomy.
+            choices.append(("7", "Fleet               Membership, architecture, watchers"))
+            choices.append(("8", "Extensions          Maps, bots, add-ons"))
             # Quick Access
             choices.extend(self._handler_row("t"))
             choices.extend(self._handler_row("q"))
@@ -899,7 +910,8 @@ class MeshForgeLauncher:
             "4": ("Maps & Visualization", self._maps_viz_menu),
             "5": ("Configuration", self._configuration_menu),
             "6": ("System Tools", self._system_menu),
-            "7": ("Extensions", self._extensions_menu),
+            "7": ("Fleet", self._fleet_menu),
+            "8": ("Extensions", self._extensions_menu),
             "a": ("About", self._about_menu),
         }
         entry = dispatch.get(choice)
@@ -1054,7 +1066,43 @@ class MeshForgeLauncher:
             if not self._registry.dispatch("system", choice):
                 self._notify_unwired(choice)
 
-    # --- Submenu: Extensions (7) ---
+    # --- Submenu: Fleet (7) ---
+
+    def _fleet_menu(self):
+        """Fleet - Membership, architecture, watchers, backup.
+
+        Added 2026-09-17 (TUI audit Phase 4). Before this, the four fleet
+        rows lived in THREE different sections (configuration, dashboard,
+        system), so the one question a newcomer actually asks -- "how do I
+        go from this box to a fleet?" -- had no screen that answered it.
+        You had to already know the answer to find the pieces.
+
+        Row order is the JOURNEY: declare what this box is, reproduce
+        another one like it, watch them all, then protect the state.
+
+        Deliberately NOT moved here: 'stack_health' (its own label says
+        "Local:") and 'offline_oracle'. Both are single-box surfaces that
+        merely read fleet-shaped data; a Fleet section that collects
+        everything with "fleet" in its description would teach the wrong
+        boundary.
+        """
+        _ORDERING = SECTION_ORDERINGS["fleet"]
+        while True:
+            choices = self._build_section_menu("fleet", [], _ORDERING)
+
+            choice = self.dialog.menu(
+                "Fleet",
+                "One box to many — declare, reproduce, watch, protect:",
+                choices
+            )
+
+            if choice is None or choice == "back":
+                break
+
+            if not self._registry.dispatch("fleet", choice):
+                self._notify_unwired(choice)
+
+    # --- Submenu: Extensions (8) ---
 
     def _extensions_menu(self):
         """Extensions - Maps, bots, add-ons."""

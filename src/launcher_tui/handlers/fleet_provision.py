@@ -58,9 +58,27 @@ class FleetProvisionHandler(BaseHandler):
     """Preview + guarded-apply TUI over the role/preset convergence engine."""
 
     handler_id = "fleet_provision"
-    menu_section = "system"
+    menu_section = "fleet"
 
     def menu_items(self) -> List[Tuple[str, str, Optional[str]]]:
+        # ⚠️ ``fleet_membership`` MUST stay ungated (flag ``None``) — this is a
+        # BOOTSTRAP EXCEPTION, not an oversight, and `TestFleetMembershipIsNeverGated`
+        # fails if it is ever given a flag.
+        #
+        # Since 2026-09-16 a gated row is MARKED ``[off]`` but also REFUSED by
+        # ``HandlerRegistry.dispatch`` (it shows ``explain_gated`` instead of
+        # running). ``fleet_management`` is True on only two profiles (gateway,
+        # full); it is False on radio_maps, monitor, meshcore and **field**. So
+        # gating THIS row — the one whose whole job is "declare standalone, or
+        # fleet + host list" — would make it refuse itself on exactly the four
+        # profiles from which a box would want to JOIN a fleet. A field kit could
+        # not declare its way in without first detouring through Settings to
+        # change profile.
+        #
+        # It looks like an inconsistency next to FleetBackupHandler's
+        # ``fleet_management``, so a future tidy-up sweep is the realistic way
+        # this breaks. The declaration of membership cannot be gated on the
+        # thing it declares.
         return [
             ("fleet_provision",
              "Fleet Architecture   Reproduce a box to a preset (preview + apply)",
@@ -147,7 +165,7 @@ class FleetProvisionHandler(BaseHandler):
         self.ctx.dialog.msgbox(
             "Fleet Membership",
             f"Wrote {st['path']} ({len(hosts)} hosts). Fleet panes pick "
-            "this up on next run — verify via Dashboard → Fleet Watchers. "
+            "this up on next run — verify via Fleet → Fleet Watchers. "
             "mini units on --preset auto follow this declaration at their "
             "next restart.")
 

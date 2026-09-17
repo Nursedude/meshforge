@@ -563,3 +563,36 @@ class TestTheGatedCountCountsRows:
                             if d.startswith(OFF))
             counted = sorted(t for t, _d, _f in registry.get_gated_items(section))
             assert marked == counted, (section, marked, counted)
+
+
+# ------------------------------------------------ the bootstrap exception
+
+
+class TestFleetMembershipIsNeverGated:
+    """``fleet_membership`` must carry NO flag — a bootstrap exception.
+
+    Since 2026-09-16 a gated row is marked ``[off]`` AND refused by
+    ``dispatch`` (``explain_gated`` runs instead of the handler). The flag
+    ``fleet_management`` is True on only two profiles (gateway, full) and
+    False on radio_maps, monitor, meshcore and **field** — so gating the one
+    row whose job is "declare standalone, or fleet + host list" would make it
+    refuse itself on exactly the profiles a box would be joining a fleet FROM.
+
+    This is pinned because it looks like an inconsistency next to
+    ``FleetBackupHandler``'s ``fleet_management``, so the realistic way it
+    breaks is a tidy-up sweep "fixing" it. The declaration of membership
+    cannot be gated on the thing it declares.
+    """
+
+    def test_fleet_membership_carries_no_flag(self):
+        rows = [(t, d, f) for h in HANDLER_MANIFEST
+                for t, d, f in h["menu_items"] if t == "fleet_membership"]
+        assert rows, ("fleet_membership is not in the manifest at all — if it "
+                      "was renamed, update this pin rather than deleting it.")
+        for tag, _desc, flag in rows:
+            assert flag is None, (
+                f"{tag} declares flag {flag!r}. It MUST stay ungated: a gated "
+                f"row is REFUSED by dispatch, and 'fleet_management' is False "
+                f"on the field/monitor/meshcore/radio_maps profiles — so a box "
+                f"on those profiles could no longer declare its way into a "
+                f"fleet. See the comment in handlers/fleet_provision.py.")

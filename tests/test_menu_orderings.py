@@ -192,7 +192,7 @@ class TestUnwiredTagTripwire:
 
 
 class TestMainMenuPin:
-    """The top-level menu's 13 rows are hardcoded and were asserted by
+    """The top-level menu's 14 rows are hardcoded and were asserted by
     nothing — deleting a row reddened no test (F9, plan Phase 2).
 
     Both halves matter. The ORDER is the operator's muscle memory: these
@@ -215,7 +215,15 @@ class TestMainMenuPin:
         ("4", "Maps & Viz"),
         ("5", "Configuration"),
         ("6", "System"),
-        ("7", "Extensions"),
+        # Fleet joined at "7" on 2026-09-17 (TUI audit Phase 4), pushing
+        # Extensions to "8". Deliberate: the four fleet rows had lived in
+        # three different sections, so "how do I go from this box to a
+        # fleet?" had no screen. Fleet sits after the single-box sections
+        # and before add-ons, so the menu reads as a path. Extensions is
+        # the only renumbered row; every letter key is unchanged, which is
+        # what protects the field-terminal muscle memory this pin guards.
+        ("7", "Fleet"),
+        ("8", "Extensions"),
         ("t", "Tactical Ops"),
         ("q", "Quick Actions"),
         ("e", "Emergency Mode"),

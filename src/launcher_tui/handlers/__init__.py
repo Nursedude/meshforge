@@ -238,8 +238,9 @@ def get_all_handlers() -> List[Type]:
     handlers.append(ConfigDoctorHandler)
 
     # Batch 21 — Fleet Health (T0 of cmd/diag/analyzer triad)
-    from handlers.fleet_health import FleetHealthHandler
+    from handlers.fleet_health import FleetHealthHandler, FleetWatchersHandler
     handlers.append(FleetHealthHandler)
+    handlers.append(FleetWatchersHandler)
 
     # Batch 22 — mini-dudeai findings → in-app fixes (In-Domain loop-closer)
     from handlers.mini_dudeai import MiniDudeaiHandler

@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 82 handlers · 115 menu actions (derived from get_all_handlers(), never hand-edited).
+# 83 handlers · 115 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -302,7 +302,7 @@ HANDLER_MANIFEST = [
         "handler_id": 'fleet_backup',
         "module": 'handlers.fleet_backup',
         "class_name": 'FleetBackupHandler',
-        "menu_section": 'configuration',
+        "menu_section": 'fleet',
         "lifecycle": False,
         "error": None,
         "menu_items": [
@@ -318,19 +318,29 @@ HANDLER_MANIFEST = [
         "error": None,
         "menu_items": [
             ('stack_health', 'Stack Health        Local: RNS path, NomadNet, bridge, DB', None),
-            ('fleet_watchers', 'Fleet Watchers      All boxes: mini daemon, deltas, freshness', None),
         ],
     },
     {
         "handler_id": 'fleet_provision',
         "module": 'handlers.fleet_provision',
         "class_name": 'FleetProvisionHandler',
-        "menu_section": 'system',
+        "menu_section": 'fleet',
         "lifecycle": False,
         "error": None,
         "menu_items": [
             ('fleet_provision', 'Fleet Architecture   Reproduce a box to a preset (preview + apply)', None),
             ('fleet_membership', 'Fleet Membership     Declare standalone, or fleet + host list', None),
+        ],
+    },
+    {
+        "handler_id": 'fleet_watchers',
+        "module": 'handlers.fleet_health',
+        "class_name": 'FleetWatchersHandler',
+        "menu_section": 'fleet',
+        "lifecycle": False,
+        "error": None,
+        "menu_items": [
+            ('fleet_watchers', 'Fleet Watchers      All boxes: mini daemon, deltas, freshness', None),
         ],
     },
     {
