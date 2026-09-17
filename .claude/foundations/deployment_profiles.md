@@ -37,11 +37,15 @@ Wired 2026-09-16 (plan Phase 3). Three rules govern it:
    RUNNING, so gating on it would hide the RNS menu on a box whose rnsd
    is down, removing the tool at the moment it is needed. A box with no
    `profile` key in `deployment.json` shows all 115 actions, unchanged.
-2. **Hiding is a VIEW, never a capability.** Every gated menu carries a
-   first row reading `Show all  N hidden by profile 'x'`. One keystroke
-   restores the full surface for the session. It is the FIRST row
-   because a section list can be taller than the terminal — measured on
-   a 24x80 PTY, a bottom-placed row scrolled out of sight.
+2. **A profile MARKS a row, it never removes one.** A row outside the
+   profile renders with an `[off]` prefix, keeps its own label, and
+   explains itself when selected — naming the profile, the flag, and
+   the in-app way to change it. Menus are the same length with or
+   without a profile. Hiding was tried first and reversed the same day
+   (2026-09-16): someone new to the domain cannot go looking for a
+   capability they have never been shown, and un-hiding needed a
+   session override, a reserved tag through eleven menu loops, and a
+   fix for the escape hatch scrolling off a 24x80 terminal.
 3. **One vocabulary, both sides.** `FEATURE_FLAGS` in
    `utils/deployment_profiles.py` is the SSOT. The guards in
    `tests/test_profile_gating.py` fail if a profile declares a flag no
