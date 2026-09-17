@@ -105,6 +105,18 @@ scan() {  # $1 = "" for system, "--user" for user manager
     # failed units are casualties regardless of enablement or type
     while read -r u; do
         [ -z "$u" ] && continue
+        # A TRANSIENT unit (`systemd-run`, Transient=yes) was created AFTER
+        # boot by whoever ran it, so its failure cannot be a boot casualty and
+        # nothing was "supposed" to bring it back. Measured 2026-09-14 and
+        # 2026-09-16 on the manager: a Claude session's pytest / honest_status
+        # runner (`mf-honest-*`, `mf-hs-*`, `hsfull-*`) exits non-zero, stays
+        # `failed` by design (its exit code must be READABLE, so it is never
+        # --collect'ed), and the 07:17 audit paged FAIL on it — 3 of this
+        # box's last 4 FAILs. Named in the OK line, never dropped: a waiver
+        # hides a verdict, not an observation.
+        if [ "$(systemctl $scope show "$u" -p Transient --value 2>/dev/null)" = "yes" ]; then
+            waived_hits+=("${scope:+usr:}$u(transient-failed)"); continue
+        fi
         if is_waived "$u"; then waived_hits+=("${scope:+usr:}$u(failed)"); else casualties+=("${scope:+usr:}$u FAILED"); fi
     done < <(systemctl $scope list-units --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}' | grep -v '^●')
 

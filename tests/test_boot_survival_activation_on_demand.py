@@ -52,6 +52,7 @@ case "$1" in
     case "$prop" in
       Type)            grep -m1 "^$u " "$FIX/type" 2>/dev/null | cut -d' ' -f2- ;;
       TriggeredBy)     grep -m1 "^$u " "$FIX/triggeredby" 2>/dev/null | cut -d' ' -f2- ;;
+      Transient)       grep -m1 "^$u " "$FIX/transient" 2>/dev/null | cut -d' ' -f2- ;;
       ConditionResult) echo "" ;;
       *)               echo "" ;;
     esac ;;
@@ -61,7 +62,8 @@ exit 0
 """
 
 
-def _run(tmp_path, *, unitfiles, type_, triggeredby, active, failed=""):
+def _run(tmp_path, *, unitfiles, type_, triggeredby, active, failed="",
+         transient=""):
     fix = tmp_path / "fix"
     fix.mkdir(exist_ok=True)
     (fix / "unitfiles").write_text(unitfiles)
@@ -69,6 +71,7 @@ def _run(tmp_path, *, unitfiles, type_, triggeredby, active, failed=""):
     (fix / "triggeredby").write_text(triggeredby)
     (fix / "active").write_text(active)
     (fix / "failed").write_text(failed)
+    (fix / "transient").write_text(transient)
 
     binn = tmp_path / "bin"
     binn.mkdir(exist_ok=True)
@@ -146,3 +149,58 @@ class TestActivationOnDemandIsNotACasualty:
         )
         assert "OK: 1 enabled unit(s) active" in out, out
         assert rc == 0, out
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
+class TestTransientFailedUnitIsNotABootCasualty:
+    """2026-09-16: a `systemd-run` unit that a session left in `failed` is
+    not a boot casualty — it was created after boot, and nothing was supposed
+    to bring it back. The manager paged FAIL on `mf-honest-*` / `mf-hs-*`
+    runners on 09-14 and 09-16; those units stay `failed` BY DESIGN so their
+    exit code can be read (never --collect'ed)."""
+
+    def test_a_failed_transient_unit_is_waived_and_named(self, tmp_path):
+        rc, out = _run(
+            tmp_path,
+            unitfiles="",
+            type_="",
+            triggeredby="",
+            active="",
+            failed="mf-honest-041908.service loaded failed failed pytest\n",
+            transient="mf-honest-041908.service yes\n",
+        )
+        assert rc == 0, out
+        # observed, not dropped — the OK line names it
+        assert "mf-honest-041908.service(transient-failed)" in out, out
+        assert "FAILED" not in out, out
+
+    def test_a_failed_persistent_unit_is_still_a_casualty(self, tmp_path):
+        """The guard must not over-exempt: a unit with a fragment on disk that
+        answers Transient=no is exactly what this audit exists to catch."""
+        rc, out = _run(
+            tmp_path,
+            unitfiles="",
+            type_="",
+            triggeredby="",
+            active="",
+            failed="meshforge-ci-status.service loaded failed failed ci\n",
+            transient="meshforge-ci-status.service no\n",
+        )
+        assert rc == 1, out
+        assert "meshforge-ci-status.service FAILED" in out, out
+
+    def test_transient_unanswered_defaults_to_casualty(self, tmp_path):
+        """An empty answer (older systemd, or a unit already GC'd) must fall
+        through to the casualty path — absence of the property is not a
+        waiver."""
+        rc, out = _run(
+            tmp_path,
+            unitfiles="",
+            type_="",
+            triggeredby="",
+            active="",
+            failed="mystery.service loaded failed failed x\n",
+            transient="",
+        )
+        assert rc == 1, out
+        assert "mystery.service FAILED" in out, out
