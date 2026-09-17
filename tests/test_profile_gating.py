@@ -69,8 +69,23 @@ class RecordingDialog:
         return False
 
 
-def _make(profile=None):
+@pytest.fixture(autouse=True)
+def _quiet_registry_logs():
+    """Registering 100+ handlers logs a line each; silence INFO for THIS
+    test only. ``_make()`` used to call ``logging.disable(logging.INFO)``
+    at module scope with a single one-off reset mid-file — the moment
+    tests AFTER that reset called ``_make()`` (2026-09-16), logging stayed
+    disabled for the rest of the session and the Prometheus exporter's
+    ``assertLogs`` saw nothing (CI red on eca86534, 1 of 12,834). Ambient
+    state a test changes, a test must restore."""
     logging.disable(logging.INFO)
+    try:
+        yield
+    finally:
+        logging.disable(logging.NOTSET)
+
+
+def _make(profile=None):
     ctx = TUIContext(dialog=RecordingDialog())
     if profile is not None:
         ctx.profile = profile
@@ -394,7 +409,6 @@ class TestMainMenuRowsNeverVanishSilently:
             _registry=registry, _tui_context=ctx,
             _MAIN_FALLBACK_LABELS=(
                 tui_main.MeshForgeLauncher._MAIN_FALLBACK_LABELS))
-        logging.disable(logging.NOTSET)
         with caplog.at_level(logging.ERROR):
             row = tui_main.MeshForgeLauncher._handler_row(fake, "t")
         assert row == [("t", tui_main.MeshForgeLauncher
