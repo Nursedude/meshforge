@@ -187,11 +187,11 @@ class MeshForgeLauncher:
             return
         self._tui_context.profile = profile
         self._tui_context.feature_flags = flags
-        hidden = sum(len(self._registry.get_hidden_items(sec))
-                     for sec in self._registry.section_names)
-        logger.info("Deployment profile %r active: %d menu action(s) gated "
-                    "out (Show all re-renders them)",
-                    getattr(profile, "display_name", "?"), hidden)
+        gated = sum(len(self._registry.get_gated_items(sec))
+                    for sec in self._registry.section_names)
+        logger.info("Deployment profile %r active: %d menu action(s) marked "
+                    "[off] (shown, not run)",
+                    getattr(profile, "display_name", "?"), gated)
 
     def _notify_unwired(self, choice) -> None:
         """Honest feedback for a menu tag no handler owns (Q5, audit W17).
@@ -219,39 +219,30 @@ class MeshForgeLauncher:
             legacy_items: List of (tag, description) — or
                 (tag, description, flag) for a CROSS-SECTION row whose
                 handler lives elsewhere and carries a feature flag. Such a
-                row must obey its owner's flag, or a profile would hide an
-                action on one screen and leave the same action reachable
-                from another (which is worse than not gating at all).
+                row must be MARKED by its owner's flag, or the same action
+                would read as available on one screen and off on another.
             ordering: Optional list of tags defining display order.
 
         Returns:
-            List of (tag, description) tuples with "Back" appended, plus
-            the profile escape-hatch row when anything here is hidden.
+            List of (tag, description) tuples with "Back" appended. The
+            list is the SAME LENGTH with or without a deployment profile —
+            a profile marks rows, it never removes them.
         """
         registry_items = self._registry.get_menu_items(section)
         registry_tags = {tag for tag, _ in registry_items}
 
         # Filter legacy items already handled by registry
         filtered_legacy = []
-        hidden_legacy = 0
-        gateable_legacy = 0
         for item in legacy_items:
             tag, desc = item[0], item[1]
             flag = item[2] if len(item) > 2 else None
             if tag in registry_tags:
                 continue
-            if flag is not None:
-                # "Would the PROFILE block this?" — not "does it carry a
-                # flag?". Counting every flagged row as gateable made a
-                # section claim the profile hid N there while it hid none
-                # (e.g. Extensions under 'field', where maps is ON).
-                # Same question get_gateable_items asks, same answer.
-                if not self._registry.flag_allowed(flag):
-                    gateable_legacy += 1
-                if not self._tui_context.feature_enabled(flag):
-                    hidden_legacy += 1
-                    continue
-            filtered_legacy.append((tag, desc))
+            # A CROSS-SECTION row is marked by the same method the registry
+            # uses, never by a second copy of the rule — otherwise the same
+            # action reads differently depending on which screen you found
+            # it on, which is worse than not marking it at all.
+            filtered_legacy.append((tag, self._registry.mark_label(desc, flag)))
 
         all_map = {tag: desc for tag, desc in registry_items}
         all_map.update({tag: desc for tag, desc in filtered_legacy})
@@ -266,36 +257,12 @@ class MeshForgeLauncher:
         else:
             result = list(registry_items) + filtered_legacy
 
-        # FIRST, not last. A section list can be taller than the
-        # terminal — dashboard is 21 rows and system 19 — and whiptail
-        # then scrolls, so a row appended at the bottom is simply not on
-        # screen. Measured 2026-09-16 with scripts/tui_smoke.py: under
-        # the 'gateway' and 'field' profiles the escape hatch fell below
-        # the fold of a 24x80 terminal in mesh_networks, which is exactly
-        # the field-floor size and exactly the operator who most needs to
-        # know why a row is missing. An explanation you have to scroll to
-        # find is not an explanation.
-        gating = self._registry.gating_row(
-            section,
-            extra_hidden=hidden_legacy,
-            extra_gateable=gateable_legacy,
-        )
-        if gating:
-            result.insert(0, gating)
         result.append(("back", "Back"))
         return result
 
     def _owner_flag(self, section, tag):
         """The flag a cross-section row inherits from its owning handler."""
         return self._registry.owner_flag(section, tag)
-
-    def _gating_row(self, section):
-        """Delegate to the registry — one implementation of the rule.
-
-        See ``HandlerRegistry.gating_row``: profile gating hides a VIEW,
-        never a capability, so a gated screen always carries the way back.
-        """
-        return self._registry.gating_row(section)
 
     @staticmethod
     def _wait_for_enter(msg: str = "\nPress Enter to continue...") -> None:
@@ -757,18 +724,18 @@ class MeshForgeLauncher:
 
         Returns a 0- or 1-item list so callers can ``extend`` unconditionally.
 
-        Three outcomes, all of them explicit:
-          * owned and visible  -> the handler's own label
-          * gated by profile   -> nothing, and ``_gating_row`` says how many
-          * owned by nobody    -> the fallback label plus an ERROR log; a
+        Two outcomes, both explicit:
+          * owned          -> the handler's own label, carrying the
+            profile's ``[off]`` mark when the profile excludes it. A gated
+            row still RENDERS: the top level is where a newcomer learns
+            what this software can do.
+          * owned by nobody -> the fallback label plus an ERROR log; a
             top-level entry must never vanish because a module failed to
             import (hfm #9 — every swallow leaves a witness).
         """
         owned = dict(self._registry.get_menu_items("main"))
         if tag in owned:
             return [(tag, owned[tag])]
-        if any(t == tag for t, _, _ in self._registry.get_hidden_items("main")):
-            return []
         logger.error(
             "Main-menu tag %r has no registry owner — rendering the "
             "fallback label. A handler failed to register.", tag)
@@ -816,15 +783,6 @@ class MeshForgeLauncher:
             choices.extend(self._handler_row("e"))
             # Meta
             choices.append(("a", "About               Version, help, web client"))
-            # Above Exit here, rather than first as in the sections: this
-            # menu is pinned at 13 rows and the smoke driver proves all 13
-            # paint on a 24x80 terminal, so the row is visible without
-            # scrolling either way — and the landing screen's first row
-            # should be the NOC, not a view toggle. Same rule, different
-            # placement because the constraint differs.
-            gating = self._gating_row("main")
-            if gating:
-                choices.append(gating)
             choices.append(("x", "Exit"))
 
             try:
@@ -894,10 +852,7 @@ class MeshForgeLauncher:
         # is broken.
         profile = self._tui_context.profile_label()
         if profile:
-            if self._tui_context.show_all_features:
-                hint += f"  |  profile '{profile}' (showing all)"
-            else:
-                hint += f"  |  profile '{profile}'"
+            hint += f"  |  profile '{profile}'"
 
         return hint
 

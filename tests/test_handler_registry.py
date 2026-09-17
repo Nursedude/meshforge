@@ -345,15 +345,33 @@ class TestRegistryMenuItems:
         assert "alpha" in tags
         assert "beta" in tags
 
-    def test_get_menu_items_feature_gated_hidden(self):
+    def test_get_menu_items_feature_gated_is_MARKED_not_removed(self):
+        """A profile changes what a row SAYS, never whether it is there.
+
+        Renamed and inverted 2026-09-16. This used to assert the gated row
+        was absent. Hiding is wrong for the people the TUI is actually for
+        — someone new to the domain cannot go looking for a capability
+        they have never been shown — so a flagged-off row now renders with
+        an ``[off]`` prefix and refuses at dispatch with an explanation.
+        """
         ctx = _make_context(feature_flags={"beta_feature": False})
         registry = HandlerRegistry(ctx)
         registry.register(SampleHandler())
 
-        items = registry.get_menu_items("test_section")
-        tags = [tag for tag, _desc in items]
-        assert "alpha" in tags
-        assert "beta" not in tags
+        items = dict(registry.get_menu_items("test_section"))
+        assert "alpha" in items
+        assert "beta" in items, (
+            "the gated row was removed — nothing may disappear from a menu "
+            "because of a deployment profile")
+        assert items["beta"].startswith(HandlerRegistry.OFF_MARK)
+        assert not items["alpha"].startswith(HandlerRegistry.OFF_MARK)
+
+    def test_gated_rows_are_reported_for_counting(self):
+        ctx = _make_context(feature_flags={"beta_feature": False})
+        registry = HandlerRegistry(ctx)
+        registry.register(SampleHandler())
+        gated = registry.get_gated_items("test_section")
+        assert [t for t, _d, _f in gated] == ["beta"]
 
     def test_get_menu_items_multiple_handlers(self):
         ctx = _make_context()

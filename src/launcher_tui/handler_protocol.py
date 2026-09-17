@@ -39,9 +39,6 @@ class TUIContext:
         status_bar: StatusBar instance (may be None).
         feature_flags: Deployment-profile feature flags.
         profile: Active deployment profile object (may be None).
-        show_all_features: Session-only override — when True, profile
-            gating is bypassed everywhere and the full surface renders.
-            The escape hatch behind every "Show all (N hidden)" row.
         src_dir: Path to the ``src/`` directory.
         env: Environment dict from ``_detect_environment()``.
         registry: Back-reference to the HandlerRegistry (set after construction).
@@ -53,10 +50,6 @@ class TUIContext:
     status_bar: Optional[Any] = None
     feature_flags: dict = field(default_factory=dict)
     profile: Optional[Any] = None
-    # Session-only view override (never persisted): profile gating hides a
-    # VIEW, never a capability, so every gated menu carries one row that
-    # flips this and re-renders the full surface.
-    show_all_features: bool = False
     src_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent)
     env: dict = field(default_factory=dict)
     registry: Optional[Any] = None  # HandlerRegistry — set after construction
@@ -74,11 +67,11 @@ class TUIContext:
         never from auto-detection, so a box with a service down never
         loses the tool that fixes it.
 
-        ``show_all_features`` is the operator's escape hatch and wins over
-        the profile for the rest of the session.
+        A False answer marks the row ``[off]`` and refuses to run it with
+        an explanation. It never removes the row: someone new to the
+        domain cannot go looking for a capability they have never been
+        shown.
         """
-        if self.show_all_features:
-            return True
         if not self.feature_flags:
             return True
         return self.feature_flags.get(feature, True)

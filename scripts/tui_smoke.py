@@ -76,10 +76,10 @@ def collect_screens(profile_name=None):
 
     Args:
         profile_name: when given, the deployment profile whose feature
-            flags gate the surface, so the rows a profile HIDES and the
-            "Show all" row it adds get drawn by real whiptail too. A
-            gated menu that has only ever been unit-rendered is the same
-            BELIEVED this driver exists to retire.
+            flags mark rows ``[off]``, so the MARKER itself gets drawn by
+            real whiptail. That matters more than it sounds: the marker is
+            a label PREFIX precisely because whiptail truncates to the box
+            width, and only a real terminal can show whether it survived.
     """
     sys.path.insert(0, str(SRC))
     sys.path.insert(0, str(TUI))
@@ -125,8 +125,6 @@ def collect_screens(profile_name=None):
     # the real methods rather than a stand-in that could disagree.
     fake._handler_row = lambda tag: tui_main.MeshForgeLauncher._handler_row(
         fake, tag)
-    fake._gating_row = lambda sec: tui_main.MeshForgeLauncher._gating_row(
-        fake, sec)
     tui_main.MeshForgeLauncher._run_main_menu(fake)
     if captured:
         screens.append(("main", "MeshForge NOC", "Network Operations Center",

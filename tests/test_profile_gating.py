@@ -1,30 +1,35 @@
-"""Deployment-profile menu gating — the rules, pinned.
+"""Deployment-profile menu gating — a profile MARKS rows, never removes them.
 
-Wired 2026-09-16 (plan Phase 3). Three things had drifted or were never
-built, and each has a test here because each was invisible:
+Wired 2026-09-16 (plan Phase 3), and its rendering half was reversed the
+same day after the operator reframed who the TUI is for:
 
-1. **The vocabulary had two independent halves.** Profiles declared
-   ``maps`` and no handler consumed it; one handler consumed
-   ``fleet_management`` and no profile declared it. Both halves type-
-   checked, both looked authoritative, and the result was a promise the
-   screen could not keep (hfm #5 — two consumers of one artifact).
+    "this is more for users in someway who are new to this domain"
+    "the scaffolding of this domain has to work if it overcomplicate itself"
 
-2. **Nothing fed the flags.** The registry's filter and the handlers'
-   flag field had existed and been tested for a year against a context
-   whose ``feature_flags`` was provably always ``{}``.
+The first implementation HID rows a profile excluded and offered a
+"Show all" escape hatch. That is wrong for a newcomer — you cannot go
+looking for a capability you have never been shown, so hiding teaches
+nothing and a shorter menu just looks like a smaller product. It was also
+the more complicated of the two answers by a wide margin: it needed a
+session-wide override, four predicates over one question, a reserved tag
+threaded through eleven menu loops of three different shapes, and a fix
+for the hatch scrolling off a 24x80 terminal.
 
-3. **Hiding needs a way back, ON SCREEN.** A missing row announces
-   itself far less than a wrong one, so every gated menu carries a row
-   naming the profile and the count — and it must be visible WITHOUT
-   scrolling, which is why its position is pinned below. That is not a
-   style rule: measured with ``scripts/tui_smoke.py`` on 2026-09-16, a
-   bottom-placed row fell off the end of a 24x80 terminal under the
-   ``gateway`` and ``field`` profiles.
+Marking needs none of that. Row counts never change, so nothing can
+scroll away; there is nothing to un-hide, so there is no override; and a
+gated row explains itself when selected instead of being absent.
+
+(Menu LENGTH is still a real problem — dashboard is 21 rows. That is a
+SHAPE problem and belongs to the section-cap work, which fixes it for
+every user rather than only for boxes that declare a profile.)
+
+What survived the reversal, because it was load-bearing either way: one
+flag vocabulary consumed by both sides, the startup wiring from a SAVED
+profile only, and the main-menu label de-duplication.
 """
 
 import logging
 import os
-import re
 import sys
 from types import SimpleNamespace
 
@@ -34,18 +39,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src',
                                 'launcher_tui'))
 
-import main as tui_main                      # noqa: E402
-from handler_protocol import TUIContext      # noqa: E402
-from handler_registry import HandlerRegistry  # noqa: E402
-from handlers import get_all_handlers        # noqa: E402
+import main as tui_main                       # noqa: E402
+from handler_protocol import TUIContext       # noqa: E402
+from handler_registry import HandlerRegistry   # noqa: E402
+from handlers import get_all_handlers         # noqa: E402
 from handlers.manifest import HANDLER_MANIFEST  # noqa: E402
-from utils.deployment_profiles import (      # noqa: E402
+from utils.deployment_profiles import (       # noqa: E402
     FEATURE_FLAGS, PROFILES, ProfileName, list_profiles,
 )
 
-SHOW_ALL = HandlerRegistry.SHOW_ALL_TAG
+OFF = HandlerRegistry.OFF_MARK
 
-# The eight menus built by MeshForgeLauncher._build_section_menu.
 SECTIONS = ("dashboard", "mesh_networks", "rf_sdr", "maps_viz",
             "configuration", "system", "extensions", "about")
 
@@ -55,14 +59,28 @@ LEGACY = {
 }
 
 
-def _make(profile=None, show_all=False):
-    """A real registry with every real handler, gated by ``profile``."""
+class RecordingDialog:
+    """Captures msgbox calls so a refusal can be read back."""
+
+    def __init__(self):
+        self.msgboxes = []
+
+    def msgbox(self, title, text, **kw):
+        self.msgboxes.append((title, text))
+
+    def menu(self, *a, **k):
+        return None
+
+    def yesno(self, *a, **k):
+        return False
+
+
+def _make(profile=None):
     logging.disable(logging.INFO)
-    ctx = TUIContext(dialog=SimpleNamespace())
+    ctx = TUIContext(dialog=RecordingDialog())
     if profile is not None:
         ctx.profile = profile
         ctx.feature_flags = dict(profile.feature_flags)
-    ctx.show_all_features = show_all
     registry = HandlerRegistry(ctx)
     for cls in get_all_handlers():
         registry.register(cls())
@@ -77,9 +95,8 @@ def _rows(holder, section):
     if section == "extensions":
         legacy = [("mfmaps", "MeshForge Maps      Multi-source map extension",
                    holder._owner_flag("maps_viz", "mfmaps"))]
-    ordering = tui_main.SECTION_ORDERINGS.get(section)
     return tui_main.MeshForgeLauncher._build_section_menu(
-        holder, section, legacy, ordering)
+        holder, section, legacy, tui_main.SECTION_ORDERINGS.get(section))
 
 
 # ------------------------------------------------------- the vocabulary
@@ -87,35 +104,28 @@ def _rows(holder, section):
 class TestFlagVocabularyIsShared:
     """Both halves of the gate must speak the same words.
 
-    ``TUIContext.feature_enabled`` answers True for a flag it has never
-    heard of — correct for "no profile", and the reason a one-sided flag
-    is SILENT rather than loud. So neither side may grow a word alone.
+    ``feature_enabled`` answers True for a flag it has never heard of —
+    correct for "no profile", and the reason a one-sided flag is SILENT
+    rather than loud. So neither side may grow a word alone.
     """
 
     def test_every_consumed_flag_is_in_the_vocabulary(self):
-        consumed = {flag
-                    for h in HANDLER_MANIFEST
-                    for _tag, _desc, flag in h["menu_items"]
-                    if flag is not None}
+        consumed = {f for h in HANDLER_MANIFEST
+                    for _t, _d, f in h["menu_items"] if f is not None}
         unknown = consumed - set(FEATURE_FLAGS)
         assert not unknown, (
             f"handlers gate on {sorted(unknown)}, which no profile can "
             f"declare — feature_enabled() defaults those to True, so the "
-            f"gate can never close. Add them to FEATURE_FLAGS and to "
-            f"every profile, or drop them from menu_items().")
+            f"gate can never close.")
 
     def test_every_vocabulary_flag_has_a_consumer(self):
-        consumed = {flag
-                    for h in HANDLER_MANIFEST
-                    for _tag, _desc, flag in h["menu_items"]
-                    if flag is not None}
+        consumed = {f for h in HANDLER_MANIFEST
+                    for _t, _d, f in h["menu_items"] if f is not None}
         inert = set(FEATURE_FLAGS) - consumed
         assert not inert, (
             f"profiles declare {sorted(inert)} and NO menu action carries "
-            f"it, so setting it False hides nothing. That was true of "
-            f"'maps' for a year. Either wire it to the rows it describes "
-            f"or delete it from FEATURE_FLAGS — a flag that gates nothing "
-            f"is a promise the screen cannot keep.")
+            f"it, so setting it False marks nothing. That was true of "
+            f"'maps' for a year.")
 
     def test_profiles_and_handlers_agree_exactly(self):
         declared = set()
@@ -124,40 +134,202 @@ class TestFlagVocabularyIsShared:
         assert declared == set(FEATURE_FLAGS)
 
 
-# --------------------------------------------------- the default is safe
+# ------------------------------------------------ nothing ever disappears
 
-class TestUngatedIsUnchanged:
-    """A box with no saved profile must render exactly what it did.
+class TestAProfileNeverRemovesARow:
+    """THE invariant of this design, and the reason it is simple.
 
-    This is the property that let the change ship to nine boxes at once:
-    gating is opt-in per box, by a human writing a profile into
-    deployment.json. Auto-detection is deliberately NOT consulted — it
-    reads which services are RUNNING, so gating on it would hide the RNS
-    menu on a box whose rnsd is down, taking the tool away at the exact
-    moment it is needed.
+    If no row can vanish, there is nothing to un-hide: no escape hatch,
+    no session override, no reserved tag, and no row that can scroll off
+    the bottom of a short terminal. Every one of those existed in the
+    first implementation and every one of them is gone.
     """
 
-    def test_no_profile_hides_nothing(self):
-        _ctx, registry, _holder = _make(None)
-        for section in registry.section_names:
-            assert registry.get_hidden_items(section) == []
-
-    def test_no_profile_renders_no_gating_row(self):
-        _ctx, _registry, holder = _make(None)
+    @pytest.mark.parametrize("profile", list_profiles(),
+                             ids=lambda p: p.name.value)
+    def test_the_tag_set_is_identical_with_and_without_a_profile(self, profile):
+        _cu, _ru, ungated = _make(None)
+        _cg, _rg, gated = _make(profile)
         for section in SECTIONS:
-            tags = [t for t, _d in _rows(holder, section)]
-            assert SHOW_ALL not in tags, (
-                f"{section} grew an escape-hatch row with no profile "
-                f"gating anything — the row must appear only beside a "
-                f"real absence")
+            before = [t for t, _d in _rows(ungated, section)]
+            after = [t for t, _d in _rows(gated, section)]
+            assert before == after, (
+                f"{profile.name.value}/{section}: a profile changed WHICH "
+                f"rows exist. It may only change what they SAY.\\n"
+                f"  gone:  {sorted(set(before) - set(after))}\\n"
+                f"  extra: {sorted(set(after) - set(before))}")
+
+    @pytest.mark.parametrize("profile", list_profiles(),
+                             ids=lambda p: p.name.value)
+    def test_the_main_menu_keeps_all_thirteen_rows(self, profile):
+        _cu, _ru, _hu = _make(None)
+        _cg, registry, _hg = _make(profile)
+        rows = dict(registry.get_menu_items("main"))
+        for tag in tui_main.MeshForgeLauncher._MAIN_FALLBACK_LABELS:
+            assert tag in rows, (
+                f"{profile.name.value}: top-level row {tag!r} vanished. The "
+                f"top level is where a newcomer learns what this software "
+                f"can do at all.")
+
+
+# ------------------------------------------------------ marked, and legible
+
+class TestGatedRowsAreMarked:
+
+    @staticmethod
+    def _resolve_flag(section, tag):
+        """The flag a row rendered in ``section`` is governed by.
+
+        Section-scoped, because TAGS ARE NOT GLOBALLY UNIQUE and asking
+        globally gets the wrong answer: 'wizard' is Setup Wizard
+        (configuration, unflagged) AND Gateway Wizard (mesh_networks,
+        flag 'gateway'). Two distinct actions sharing a short tag is fine
+        — dispatch is ``dispatch(section, tag)`` — but a global tag->flag
+        map collapses them, which is what the first version of this test
+        did before reporting it as a defect in the code.
+
+        Falls through to a unique owner in ANOTHER section for the
+        cross-section case (Extensions renders 'mfmaps', which Maps & Viz
+        owns and flags). Returns (flag, True) when governed, (None, False)
+        when the row is not registry-owned at all ('back', and the legacy
+        rows that carry no flag).
+        """
+        for h in HANDLER_MANIFEST:
+            if h["menu_section"] == section:
+                for t, _d, f in h["menu_items"]:
+                    if t == tag:
+                        return f, True
+        owners = [f for h in HANDLER_MANIFEST
+                  for t, _d, f in h["menu_items"] if t == tag]
+        if len(owners) == 1:
+            return owners[0], True
+        return None, False
+
+    @pytest.mark.parametrize("profile", list_profiles(),
+                             ids=lambda p: p.name.value)
+    def test_every_gated_row_carries_the_mark(self, profile):
+        ctx, _registry, holder = _make(profile)
+        for section in SECTIONS:
+            for tag, desc in _rows(holder, section):
+                flag, governed = self._resolve_flag(section, tag)
+                if not governed:
+                    assert not desc.startswith(OFF), (
+                        f"{profile.name.value}/{section}/{tag} is marked "
+                        f"off but no handler flags it: {desc!r}")
+                    continue
+                should_mark = flag is not None and not ctx.feature_enabled(flag)
+                assert desc.startswith(OFF) == should_mark, (
+                    f"{profile.name.value}/{section}/{tag}: flag={flag!r} "
+                    f"allowed={not should_mark} but label is {desc!r}")
+
+    def test_a_tag_is_not_ambiguous_within_one_section(self):
+        """Global uniqueness is NOT the invariant; per-section IS.
+
+        Two sections may reuse a short tag for different actions. Two
+        handlers in the SAME section claiming one tag is a real collision
+        — dispatch would pick whichever registered first.
+        """
+        seen = {}
+        for h in HANDLER_MANIFEST:
+            for tag, _d, _f in h["menu_items"]:
+                key = (h["menu_section"], tag)
+                assert key not in seen, (
+                    f"{h['menu_section']}/{tag} is claimed by both "
+                    f"{seen[key]!r} and {h['handler_id']!r}")
+                seen[key] = h["handler_id"]
+
+    def test_the_mark_keeps_the_row_saying_what_the_tool_is(self):
+        """The point of marking over hiding — so keep the original label."""
+        _ctx, registry, _h = _make(PROFILES[ProfileName.MONITOR])
+        rows = dict(registry.get_menu_items("mesh_networks"))
+        assert rows["rns"].startswith(OFF)
+        assert "Reticulum" in rows["rns"], (
+            "the mark replaced the description instead of prefixing it — "
+            "a reader now learns the row is off but not what it does")
+
+    def test_the_mark_is_a_prefix_not_a_suffix(self):
+        """whiptail truncates to the box width; a suffix is what vanishes.
+
+        Measured on this project's own 24x80 floor: the previous design's
+        escape-hatch row fell off the end of a tall section entirely. A
+        marker at the END of a long label is the same failure in miniature
+        — invisible on exactly the terminal that needs it most.
+        """
+        assert not OFF.strip().endswith("]") or OFF[0] == "[", OFF
+        _ctx, registry, _h = _make(PROFILES[ProfileName.MONITOR])
+        for _tag, desc in registry.get_menu_items("mesh_networks"):
+            if OFF.strip() in desc:
+                assert desc.startswith(OFF), (
+                    f"the mark must lead the label, not trail it: {desc!r}")
+
+
+# ------------------------------------------ shown, but not run — and it says why
+
+class TestGatedRowsRefuseWithAnExplanation:
+
+    def test_dispatching_a_gated_tag_does_not_reach_the_handler(self):
+        ctx, registry, _h = _make(PROFILES[ProfileName.MONITOR])
+        reached = []
+        handler = registry._tag_index["mesh_networks"]["rns"]
+        handler.execute = lambda *a, **k: reached.append(a)
+        assert registry.dispatch("mesh_networks", "rns") is True, (
+            "a gated tag IS owned — returning False would reach the "
+            "'not wired' tripwire and report a wiring bug that does not "
+            "exist")
+        assert not reached, "a row the profile excludes was actually run"
+
+    def test_the_refusal_explains_itself(self):
+        ctx, registry, _h = _make(PROFILES[ProfileName.MONITOR])
+        registry.dispatch("mesh_networks", "rns")
+        assert ctx.dialog.msgboxes, "refused silently — the worst option"
+        title, body = ctx.dialog.msgboxes[-1]
+        assert "monitor" in body, "must name the profile responsible"
+        assert "rns" in body, "must name the flag responsible"
+        assert "Deployment Profile" in body, "must say how to change it"
+
+    def test_the_refusal_never_sends_the_operator_out_of_the_app(self):
+        """MF018 — in-domain remediation.
+
+        The twin repo's version of this dialog tells the operator to quit
+        and run ``python3 src/launcher.py --profile gateway``. An app that
+        answers a question by sending you to a shell has failed at the
+        thing it is for.
+        """
+        ctx, registry, _h = _make(PROFILES[ProfileName.MONITOR])
+        registry.dispatch("mesh_networks", "rns")
+        _title, body = ctx.dialog.msgboxes[-1]
+        for leak in ("python3 ", "src/launcher.py", "--profile ", "sudo "):
+            assert leak not in body, (
+                f"the refusal tells the operator to leave the TUI: {leak!r}")
+
+    def test_an_allowed_row_still_runs(self):
+        ctx, registry, _h = _make(PROFILES[ProfileName.FIELD])
+        reached = []
+        handler = registry._tag_index["mesh_networks"]["rns"]
+        handler.execute = lambda *a, **k: reached.append(a)
+        registry.dispatch("mesh_networks", "rns")
+        assert reached, "'field' enables rns — the row must actually run"
+        assert not ctx.dialog.msgboxes, "and must not explain itself"
+
+
+# --------------------------------------------- the default is still a no-op
+
+class TestUngatedIsUnchanged:
+
+    def test_no_profile_marks_nothing(self):
+        _ctx, registry, holder = _make(None)
+        for section in registry.section_names:
+            assert registry.get_gated_items(section) == []
+        for section in SECTIONS:
+            for _tag, desc in _rows(holder, section):
+                assert not desc.startswith(OFF)
 
     def test_launcher_reads_saved_profile_not_detection(self):
-        """The wiring must CALL load_profile(), never load_or_detect_profile().
+        """Gating on auto-detection would hide tools when they are needed.
 
-        Asserted over the parsed call graph rather than the source text —
-        the method's own docstring explains the distinction and names
-        both, and a substring check cannot tell an explanation from a
-        call. (A checker must not be fooled by the thing it is reading.)
+        Asserted over the parsed call graph, not the source text — the
+        method's docstring explains the distinction and names both, and a
+        substring check cannot tell an explanation from a call.
         """
         import ast
         import inspect
@@ -166,218 +338,48 @@ class TestUngatedIsUnchanged:
             tui_main.MeshForgeLauncher._wire_profile_flags)))
         called = {n.func.id for n in ast.walk(tree)
                   if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
-        imported = {alias.name
-                    for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
-                    for alias in n.names}
-        assert "load_profile" in called and "load_profile" in imported
+        assert "load_profile" in called
         assert "load_or_detect_profile" not in called, (
-            "the TUI must not gate on an auto-detected profile: detection "
-            "reads which services are running, and a box with rnsd down "
-            "would silently lose the RNS menu")
+            "detection reads which services are RUNNING, so a box with "
+            "rnsd down would mark the RNS menu off at the exact moment it "
+            "is needed")
 
 
-# ------------------------------------------------ hiding stays explicable
-
-class TestHidingAlwaysExplainsItself:
-
-    @pytest.mark.parametrize("profile", list_profiles(),
-                             ids=lambda p: p.name.value)
-    def test_every_section_that_hides_says_so(self, profile):
-        _ctx, registry, holder = _make(profile)
-        for section in SECTIONS:
-            rows = _rows(holder, section)
-            tags = [t for t, _d in rows]
-            hidden = registry.get_hidden_items(section)
-            legacy_hidden = (section == "extensions"
-                             and registry.owner_flag("maps_viz", "mfmaps")
-                             and not _ctx.feature_enabled(
-                                 registry.owner_flag("maps_viz", "mfmaps")))
-            if hidden or legacy_hidden:
-                assert SHOW_ALL in tags, (
-                    f"{profile.name.value}/{section} hides "
-                    f"{[t for t, _, _ in hidden]} with no row saying so")
-            else:
-                assert SHOW_ALL not in tags
-
-    @pytest.mark.parametrize("profile", list_profiles(),
-                             ids=lambda p: p.name.value)
-    def test_the_row_names_the_profile_and_the_count(self, profile):
-        _ctx, registry, holder = _make(profile)
-        for section in SECTIONS:
-            for tag, desc in _rows(holder, section):
-                if tag != SHOW_ALL:
-                    continue
-                assert profile.name.value in desc, (
-                    f"the row must name the profile doing the hiding: {desc!r}")
-                assert any(ch.isdigit() for ch in desc), (
-                    f"the row must say HOW MANY are hidden: {desc!r}")
-
-    @pytest.mark.parametrize("profile", list_profiles(),
-                             ids=lambda p: p.name.value)
-    def test_the_row_is_visible_without_scrolling(self, profile):
-        """Pinned at index 0 — the fix for a MEASURED defect.
-
-        scripts/tui_smoke.py, 2026-09-16, real whiptail on a 24x80 PTY:
-        with the row appended before "Back", mesh_networks under the
-        'gateway' and 'field' profiles pushed it past the end of the
-        visible list. dashboard (21 rows) and system (19) overflow a
-        24-row terminal routinely. An explanation you have to scroll to
-        find is not an explanation, so position is part of the contract.
-        """
-        _ctx, _registry, holder = _make(profile)
-        for section in SECTIONS:
-            rows = _rows(holder, section)
-            tags = [t for t, _d in rows]
-            if SHOW_ALL in tags:
-                assert tags[0] == SHOW_ALL, (
-                    f"{profile.name.value}/{section}: the escape hatch is "
-                    f"at index {tags.index(SHOW_ALL)} of {len(tags)} rows. "
-                    f"It must be first — a section list can be taller than "
-                    f"the terminal and whiptail scrolls it away.")
-
-
-# ------------------------------------------------------- the way back works
-
-class TestEscapeHatchRestoresEverything:
-
-    @pytest.mark.parametrize("profile", list_profiles(),
-                             ids=lambda p: p.name.value)
-    def test_show_all_restores_every_hidden_row(self, profile):
-        _c0, _r0, ungated = _make(None)
-        _c1, _r1, shown = _make(profile, show_all=True)
-        for section in SECTIONS:
-            base = {t for t, _d in _rows(ungated, section)}
-            after = {t for t, _d in _rows(shown, section)} - {SHOW_ALL}
-            assert base <= after, (
-                f"{profile.name.value}/{section}: 'Show all' did not bring "
-                f"back {sorted(base - after)} — gating must hide a VIEW, "
-                f"never a capability")
-
-    @pytest.mark.parametrize("profile", list_profiles(),
-                             ids=lambda p: p.name.value)
-    def test_the_count_on_screen_is_the_count_that_is_real(self, profile):
-        """Both labels must report the number of rows actually removed.
-
-        Derived from the ROW SETS — ungated minus gated — not from the
-        label, so the test cannot be satisfied by two labels agreeing
-        with each other while both are wrong.
-
-        The first version of this test asked only about sections that
-        hide something when filtered, and therefore skipped the exact
-        case that produced the bug it was written for: Extensions under
-        'field', where maps is ON, hides nothing when filtered and still
-        announced "hides 1" in show-all mode. The cross-section row was
-        counted as gateable whenever it CARRIED a flag rather than when
-        the profile would BLOCK it. A count the operator cannot
-        reproduce teaches them the numbers are decoration.
-        """
-        _cu, _ru, ungated = _make(None)
-        _cg, _rg, gated = _make(profile)
-        _cs, _rs, shown = _make(profile, show_all=True)
-        for section in SECTIONS:
-            base = {t for t, _d in _rows(ungated, section)}
-            gated_rows = dict(_rows(gated, section))
-            really_hidden = len(base - set(gated_rows))
-
-            if really_hidden == 0:
-                assert SHOW_ALL not in gated_rows, (
-                    f"{profile.name.value}/{section}: an escape hatch "
-                    f"beside nothing hidden")
-                assert SHOW_ALL not in dict(_rows(shown, section)), (
-                    f"{profile.name.value}/{section}: show-all offers to "
-                    f"filter rows this profile does not filter")
-                continue
-
-            gated_n = int(re.search(r"(\d+) hidden",
-                                    gated_rows[SHOW_ALL]).group(1))
-            assert gated_n == really_hidden, (
-                f"{profile.name.value}/{section}: the row says "
-                f"{gated_n} hidden, {really_hidden} rows are actually gone")
-
-            shown_label = dict(_rows(shown, section)).get(SHOW_ALL)
-            assert shown_label is not None, (
-                f"{profile.name.value}/{section}: the toggle vanished in "
-                f"show-all mode, so there is no way back to the filter")
-            shown_n = int(re.search(r"hides (\d+)", shown_label).group(1))
-            assert shown_n == really_hidden, (
-                f"{profile.name.value}/{section}: show-all says the "
-                f"profile hides {shown_n}, it hides {really_hidden}")
-
-    def test_dispatching_the_tag_flips_the_toggle(self):
-        ctx, registry, _holder = _make(PROFILES[ProfileName.MONITOR])
-        assert ctx.show_all_features is False
-        assert registry.dispatch("mesh_networks", SHOW_ALL) is True
-        assert ctx.show_all_features is True
-        assert registry.dispatch("mesh_networks", SHOW_ALL) is True
-        assert ctx.show_all_features is False
-
-    def test_the_tag_is_dispatchable_from_every_section(self):
-        """Including the two sub-menus built inside handlers.
-
-        ``meshtasticd_config`` dispatches CONDITIONALLY (``choice in
-        registry_tags``) rather than calling dispatch() first like the
-        eight section loops — a reserved tag belongs to no handler's tag
-        set, so that loop needed an explicit branch. Menu loops are not
-        one shape; the ones with few members are where a blanket
-        assumption breaks.
-        """
-        ctx, registry, _holder = _make(PROFILES[ProfileName.MONITOR])
-        for section in registry.section_names:
-            ctx.show_all_features = False
-            assert registry.dispatch(section, SHOW_ALL) is True, (
-                f"the escape hatch is not dispatchable from {section!r}")
-            assert ctx.show_all_features is True
-
-    def test_meshtasticd_loop_handles_the_reserved_tag(self):
-        import inspect
-        from handlers.meshtasticd_config import MeshtasticdConfigHandler
-        src = inspect.getsource(MeshtasticdConfigHandler)
-        assert "SHOW_ALL_TAG" in src, (
-            "meshtasticd's menu loop dispatches only tags in "
-            "registry_tags, so it needs an explicit branch for the "
-            "registry-owned escape hatch or the row falls through to the "
-            "'not wired' tail")
-
-
-# ------------------------------------------- cross-section rows obey flags
+# ------------------------------------------- cross-section rows read alike
 
 class TestCrossSectionRowsObeyTheirOwner:
-    """A duplicate row must not outlive the original.
+    """The same action must not read as available on one screen and off
+    on another — that teaches the operator the menu is unreliable."""
 
-    'MeshForge Maps' is rendered in Extensions but owned in Maps & Viz,
-    where it carries the ``maps`` flag. Hiding it on one screen and
-    leaving the same action reachable from another is worse than not
-    gating at all: the operator learns the menu lies about what is there.
-    """
-
-    def test_extensions_mfmaps_hides_with_maps(self):
+    def test_extensions_mfmaps_is_marked_with_maps(self):
         _ctx, _registry, holder = _make(PROFILES[ProfileName.MONITOR])
-        tags = [t for t, _d in _rows(holder, "extensions")]
-        assert "mfmaps" not in tags
-        assert SHOW_ALL in tags, "and it must say so"
+        rows = dict(_rows(holder, "extensions"))
+        assert rows["mfmaps"].startswith(OFF)
 
-    def test_extensions_mfmaps_returns_with_maps(self):
+    def test_extensions_mfmaps_is_clean_when_maps_is_on(self):
         _ctx, _registry, holder = _make(PROFILES[ProfileName.FIELD])
-        tags = [t for t, _d in _rows(holder, "extensions")]
-        assert "mfmaps" in tags
+        rows = dict(_rows(holder, "extensions"))
+        assert not rows["mfmaps"].startswith(OFF)
+
+    def test_it_matches_its_owner_exactly(self):
+        _ctx, registry, holder = _make(PROFILES[ProfileName.MONITOR])
+        owner = dict(registry.get_menu_items("maps_viz"))["mfmaps"]
+        here = dict(_rows(holder, "extensions"))["mfmaps"]
+        assert here.startswith(OFF) == owner.startswith(OFF)
 
     def test_owner_flag_is_read_not_retyped(self):
         import inspect
         src = inspect.getsource(tui_main.MeshForgeLauncher._extensions_menu)
-        assert "_owner_flag" in src, (
-            "the cross-section row must inherit its owner's flag rather "
-            "than repeat the flag name — a second copy is the drift this "
-            "whole phase exists to remove")
+        assert "_owner_flag" in src
 
 
-# --------------------------------------------- a row never vanishes quietly
+# ------------------------------------- a top-level row never vanishes quietly
 
 class TestMainMenuRowsNeverVanishSilently:
 
     def test_unowned_row_falls_back_and_logs(self, caplog):
-        """A handler that failed to import must not delete a top-level row."""
-        ctx = TUIContext(dialog=SimpleNamespace())
-        registry = HandlerRegistry(ctx)   # deliberately EMPTY
+        ctx = TUIContext(dialog=RecordingDialog())
+        registry = HandlerRegistry(ctx)          # deliberately EMPTY
         ctx.registry = registry
         fake = SimpleNamespace(
             _registry=registry, _tui_context=ctx,
@@ -391,16 +393,34 @@ class TestMainMenuRowsNeverVanishSilently:
         assert any("no registry owner" in r.message for r in caplog.records), (
             "a fallback that leaves no witness is a swallow (hfm #9)")
 
-    def test_gated_row_is_absent_without_the_error(self, caplog):
-        """Gated is a DECISION; unowned is a DEFECT. They must not look alike."""
-        _ctx, _registry, _holder = _make(PROFILES[ProfileName.MONITOR])
-        ctx, registry, _h = _make(PROFILES[ProfileName.MONITOR])
-        fake = SimpleNamespace(
-            _registry=registry, _tui_context=ctx,
-            _MAIN_FALLBACK_LABELS=(
-                tui_main.MeshForgeLauncher._MAIN_FALLBACK_LABELS))
-        logging.disable(logging.NOTSET)
-        with caplog.at_level(logging.ERROR):
-            row = tui_main.MeshForgeLauncher._handler_row(fake, "t")
-        assert row == []
-        assert not [r for r in caplog.records if "no registry owner" in r.message]
+
+# -------------------------------------------- the reversed design stays gone
+
+class TestTheEscapeHatchStaysRemoved:
+    """A reversal only holds if re-adding the machinery fails a test.
+
+    Otherwise the next session reads the old plan, sees an escape hatch
+    described, and rebuilds it beside the thing that replaced it — which
+    is how the twin repo ended up applying its own fix to one menu and
+    not the other.
+    """
+
+    def test_no_session_wide_override(self):
+        assert not hasattr(TUIContext(dialog=None), "show_all_features"), (
+            "show_all_features returned. Nothing is hidden any more, so "
+            "there is nothing to un-hide — an override could only "
+            "un-mark rows, which is what the profile is for.")
+
+    def test_no_reserved_tag_or_hatch_helpers(self):
+        for gone in ("SHOW_ALL_TAG", "gating_row", "get_gateable_items",
+                     "flag_allowed", "get_hidden_items"):
+            assert not hasattr(HandlerRegistry, gone), (
+                f"HandlerRegistry.{gone} returned — it belongs to the "
+                f"hide-and-un-hide design that was reversed 2026-09-16")
+
+    def test_one_predicate_answers_is_this_feature_on(self):
+        """Four predicates over one question was the complexity smell."""
+        import inspect
+        src = inspect.getsource(HandlerRegistry)
+        assert src.count("def flag_allowed") == 0
+        assert src.count("feature_enabled(") >= 1

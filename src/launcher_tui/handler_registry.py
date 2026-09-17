@@ -225,59 +225,71 @@ class HandlerRegistry:
     #: Handled in ``dispatch()`` so the nine menu loops need no special
     #: case — a gated menu that could not be un-gated would be a
     #: capability loss, which is the one thing profile gating must not be.
-    SHOW_ALL_TAG = "__showall__"
+    #: Prefix a row carries when the active profile does not include it.
+    #: A PREFIX rather than a suffix on purpose: whiptail truncates a label
+    #: to the box width, so a marker at the end is exactly what disappears
+    #: on the 24x80 terminal where it matters most.
+    OFF_MARK = "[off] "
 
     def get_menu_items(self, section: str) -> List[Tuple[str, str]]:
-        """Get filtered menu items for a section, respecting feature flags.
+        """Every menu row for a section — gated ones MARKED, never removed.
 
-        Args:
-            section: Menu section key (e.g., ``"dashboard"``, ``"rf_sdr"``).
+        The rule, stated once: **a profile changes what a row SAYS, never
+        whether it is there.** Until 2026-09-16 this filtered gated rows
+        out of the list entirely. That was wrong for the people the TUI is
+        actually for — someone new to the domain cannot go looking for a
+        capability they have never been shown, so hiding teaches them
+        nothing and a shorter menu just looks like a smaller product.
+        Marking teaches them what the tool does AND why this box does not
+        do it, which is the whole job of a deployment profile.
+
+        It is also far less machinery. Nothing disappears, so there is no
+        escape hatch to render, no session-wide override to track, no
+        reserved tag threaded through eleven menu loops, and no row that
+        can scroll off the bottom of a short terminal.
+
+        (Menu LENGTH is a real problem — dashboard is 21 rows — but it is
+        a SHAPE problem, and capping sections fixes it for every user
+        rather than only for boxes that happen to declare a profile.)
 
         Returns:
-            List of (tag, description) tuples, filtered by feature flags.
+            List of (tag, description). A row whose flag is off keeps its
+            own label, prefixed with ``OFF_MARK`` so the reader still sees
+            what the tool is.
         """
         items: List[Tuple[str, str]] = []
         for handler in self._sections.get(section, []):
             for tag, desc, flag in handler.menu_items():
-                if flag is None or self._ctx.feature_enabled(flag):
-                    items.append((tag, desc))
+                items.append((tag, self.mark_label(desc, flag)))
         return items
 
-    def get_hidden_items(self, section: str) -> List[Tuple[str, str, str]]:
-        """The rows ``get_menu_items`` filtered OUT, and the flag that did it.
+    def mark_label(self, desc: str, flag: Optional[str]) -> str:
+        """The label a row shows under the active profile.
 
-        The counterpart a menu builder needs to say *"N hidden by profile
-        'monitor'"* instead of just rendering a shorter list. An absence a
-        screen cannot explain is the failure mode that makes an operator
-        distrust the screen (hfm #2 — surface the blindness, never absorb
-        it), so nothing may hide without this being rendered beside it.
+        One implementation, because four different menu builders render
+        rows and a cross-section row is marked by the launcher rather than
+        here — they must all mark identically or the same action reads
+        differently depending on which screen you found it on.
+        """
+        if flag is None or self._ctx.feature_enabled(flag):
+            return desc
+        return self.OFF_MARK + desc
+
+    def get_gated_items(self, section: str) -> List[Tuple[str, str, str]]:
+        """The rows the active profile marks off, and the flag that did it.
+
+        Not "hidden" — nothing is hidden any more. Used for the honest
+        counts in the startup log and the Settings dialog.
 
         Returns:
-            List of (tag, description, flag) tuples currently hidden.
-            Always empty when no profile is gating, or when the operator
-            has flipped ``show_all_features``.
+            List of (tag, description, flag). Empty when no profile is set.
         """
-        hidden: List[Tuple[str, str, str]] = []
+        gated: List[Tuple[str, str, str]] = []
         for handler in self._sections.get(section, []):
             for tag, desc, flag in handler.menu_items():
                 if flag is not None and not self._ctx.feature_enabled(flag):
-                    hidden.append((tag, desc, flag))
-        return hidden
-
-    def get_gateable_items(self, section: str) -> List[Tuple[str, str, str]]:
-        """Every flag-carrying row in a section, IGNORING the current flags.
-
-        What ``get_hidden_items`` would return if the profile were applied.
-        Used to label the toggle row while the operator is in "show all"
-        mode — otherwise the row could only say how many are hidden while
-        nothing is hidden, which is no information at all.
-        """
-        gateable: List[Tuple[str, str, str]] = []
-        for handler in self._sections.get(section, []):
-            for tag, desc, flag in handler.menu_items():
-                if flag is not None and not self.flag_allowed(flag):
-                    gateable.append((tag, desc, flag))
-        return gateable
+                    gated.append((tag, desc, flag))
+        return gated
 
     def owner_flag(self, section: str, tag: str) -> Optional[str]:
         """The feature flag a tag carries in the section that OWNS it.
@@ -292,61 +304,39 @@ class HandlerRegistry:
                     return flag
         logger.warning(
             "owner_flag(%r, %r): no handler in that section owns the tag "
-            "— the cross-section row will not be gated", section, tag)
+            "— the cross-section row will not be marked", section, tag)
         return None
 
-    def gating_row(self, section: str, extra_hidden: int = 0,
-                   extra_gateable: int = 0) -> Optional[Tuple[str, str]]:
-        """The escape-hatch row for a profile-gated section, or None.
+    def explain_gated(self, section: str, tag: str, flag: str) -> None:
+        """Say why this row is off, and how to change it WITHOUT leaving.
 
-        The rule this implements, stated once and shared by every menu
-        builder: **profile gating hides a VIEW, never a capability.** A
-        screen that is hiding something says so, names the profile doing
-        it, and is one keystroke from the full surface. An absence a
-        screen cannot explain is what makes an operator stop trusting the
-        menu — far more than a tool they can see and choose to ignore.
+        Derived from the flag and the profile rather than read out of a
+        per-feature table of hint strings. A table is a second declaration
+        of something the handler already states, free to drift from it and
+        certain to be missing an entry the day a flag is added — and the
+        twin repo's version of exactly that table has never once been
+        shown to anyone.
 
-        Lives here rather than in the launcher because three different
-        places build menus (``_build_section_menu``, the main menu, and
-        the two handler-built sub-sections) and a rule with three
-        implementations has none.
-
-        Returns:
-            ``(tag, label)`` for the toggle, or None when this section has
-            nothing to say — no profile gating, or no flag-carrying rows.
+        The remedy it offers is IN-APP (MF018): the TUI must never answer
+        a question by telling the operator to quit and run a CLI.
         """
-        profile = self._ctx.profile_label()
-        if not profile:
-            return None
-        if getattr(self._ctx, "show_all_features", False):
-            gateable = len(self.get_gateable_items(section)) + extra_gateable
-            if not gateable:
-                return None
-            return (self.SHOW_ALL_TAG,
-                    f"Filter to profile   '{profile}' hides {gateable} here")
-        hidden = len(self.get_hidden_items(section)) + extra_hidden
-        if not hidden:
-            return None
-        return (self.SHOW_ALL_TAG,
-                f"Show all            {hidden} hidden by profile '{profile}'")
-
-    def flag_allowed(self, flag: str) -> bool:
-        """Would the PROFILE alone allow this flag, ignoring show-all?
-
-        Deliberately re-implements ``TUIContext.feature_enabled`` minus the
-        override rather than adding a keyword to it: the override is what
-        every other caller wants, and a boolean parameter on a
-        widely-called predicate is how the wrong branch gets taken later.
-
-        Public because a cross-section row is counted by the menu builder
-        rather than by ``get_gateable_items``, and both must ask the same
-        question — "would the profile block this?", never "does this
-        carry a flag?".
-        """
-        flags = getattr(self._ctx, "feature_flags", None)
-        if not flags:
-            return True
-        return flags.get(flag, True)
+        profile = self._ctx.profile_label() or "?"
+        label = tag
+        for handler in self._sections.get(section, []):
+            for t, desc, _f in handler.menu_items():
+                if t == tag:
+                    label = desc.strip().split("  ")[0] or tag
+        self._ctx.dialog.msgbox(
+            f"{label} — not in this profile",
+            f"This box is set to the '{profile}' deployment profile, which "
+            f"does not include '{flag}'.\n\n"
+            f"Nothing is broken and nothing has been removed — the profile "
+            f"describes what this box is FOR, so tools outside it are shown "
+            f"but not run.\n\n"
+            f"To use it, change the profile in:\n"
+            f"  Configuration > MeshForge Settings > Deployment Profile\n\n"
+            f"Choosing a wider profile (for example 'full') enables "
+            f"everything.")
 
     def dispatch(self, section: str, tag: str) -> bool:
         """Find and execute the handler for a given section + tag.
@@ -364,24 +354,28 @@ class HandlerRegistry:
             tag: The action tag selected by the user.
 
         Returns:
-            True if a handler was found (invoked, or surfaced a load
-            failure), or the tag was the reserved ``SHOW_ALL_TAG`` view
-            toggle; False if no handler owns the tag.
+            True if a handler was found — invoked, refused with an
+            explanation because the active profile does not include it, or
+            surfaced a load failure. False only when no handler owns the
+            tag.
         """
-        if tag == self.SHOW_ALL_TAG:
-            # The escape hatch, owned by the registry rather than by any
-            # handler: it is a VIEW toggle, has no section of its own, and
-            # every gated menu renders it. Returning True lets all nine
-            # menu loops ``continue`` and re-render with no special case.
-            self._ctx.show_all_features = not getattr(
-                self._ctx, "show_all_features", False)
-            logger.info("Profile menu gating %s by operator",
-                        "bypassed" if self._ctx.show_all_features else "restored")
-            return True
-
         handler = self._tag_index.get(section, {}).get(tag)
         if handler is None:
             return False
+
+        # A row the profile marks off is SHOWN but not RUN. Intercepted
+        # here, before materialisation, so all eleven menu loops inherit
+        # it — they have at least three different dispatch shapes, and a
+        # rule implemented per-loop is a rule that is missing from one of
+        # them. Returns True because the tag IS owned; falling through
+        # would reach the "not wired" tripwire and tell the operator a
+        # wiring bug that does not exist.
+        flag = self.owner_flag(section, tag)
+        if flag is not None and not self._ctx.feature_enabled(flag):
+            logger.info("Refused %s/%s: '%s' is not in profile %r",
+                        section, tag, flag, self._ctx.profile_label())
+            self.explain_gated(section, tag, flag)
+            return True
 
         if isinstance(handler, _LazyHandler):
             handler = self._materialize(handler, section)
