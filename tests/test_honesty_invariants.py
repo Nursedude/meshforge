@@ -748,7 +748,6 @@ TEMPLATE_PROVENANCE: dict = {
     "meshforge-propagation-soak-user.service": ("glob", "update.sh *-user.service loop → propagation-soak.service (oneshot; inert until the timer is hand-deployed on a gateway box with rns.propagation_node set)"),
     "meshforge-gateway-resource-canary-user.service": ("glob", "update.sh *-user.service loop → gateway-resource-canary.service (inert everywhere until the timer is hand-deployed on a gateway box; oneshot, never enabled/started by the glob)"),
     "meshforge-lab-rollup-user.service":   ("glob", "update.sh *-user.service loop → lab-rollup.service"),
-    "moc-drain-snapshot-user.service":     ("glob", "update.sh *-user.service loop → moc-drain-snapshot.service"),
     "nomadnet-silence-watch-user.service": ("glob", "update.sh *-user.service loop → nomadnet-silence-watch.service"),
     "meshforge-notes-prune-user.service": ("glob", "update.sh *-user.service loop -> notes-prune.service (oneshot; the glob only copies, never enables -- inert until the timer is hand-enabled on a box that HAS session notes. Measured 2026-09-17: 4 of 9 boxes carry a notes file, 0 carried backups; the script exits 0 inert where there are none)"),
     # ── TUI-handler-deployed at runtime (verified: handler references it) ──
@@ -813,7 +812,6 @@ TEMPLATE_PROVENANCE: dict = {
                                                   "gateway-reliability arc A1 resource canary; RF-bearing, so opt-in per "
                                                   "box); NOT copied by update.sh's *-user.service glob — timer-deploy gap"),
     "meshforge-lab-rollup-user.timer":   ("hand", "hand-deployed; NOT copied by update.sh glob — known timer-deploy gap"),
-    "moc-drain-snapshot-user.timer":     ("hand", "hand-deployed; NOT copied by update.sh glob — known timer-deploy gap"),
 }
 
 # Drop-in directories (override fragments, not standalone units) — hand-deployed
