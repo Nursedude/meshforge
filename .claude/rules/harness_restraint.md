@@ -81,4 +81,11 @@ disposition census). If the harness share has not moved, the freeze was not the
 binding constraint and something else is — say so plainly rather than renewing
 out of habit.
 
+⚠️ **A THIRD measurement is queued for that review, and it is the proposed EXIT
+CRITERION: the inert-tier cut** — *which instruments fired and were ACTED ON*,
+not the commit ratio alone (last census: 314 clean / **234 inert**). It also
+asks whether author-facing gates and fleet-facing detectors deserve separate
+budgets. Full proposal, method and counter-evidence:
+`.claude/audits/review_provenance.md` → `QUEUED 2026-09-17`.
+
 *Slow wins the race.*

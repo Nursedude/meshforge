@@ -2001,3 +2001,85 @@ over every env root returned ZERO for the ten WANTED packages. Not live.
   exclusion in the detector to accommodate a drill is `known_benign`
   becoming policy. Rule recorded in memory: plant in a tmp tree and inject
   the glob; a live-path plant is a declared production event.
+
+---
+
+## QUEUED 2026-09-17 (Opus 5) — the INERT-TIER CUT, for the 2026-10-09 freeze review
+
+**Operator-directed at the close of the session-notes rotation session**
+("queue that inert-tier cut for the 10-09 freeze review — keep as much of
+this domain out in the light"). This is a SUBTRACTION pass, so it is
+freeze-EXEMPT by `harness_restraint.md`'s own terms; it is queued rather
+than done because the 10-09 review is where the measurements live.
+
+### The proposal
+
+`harness_restraint.md` currently ends the freeze on ONE test: re-run the
+commit split and the disposition census, and *"if the harness share has not
+moved, the freeze was not the binding constraint."* **Add a third, and make
+it the exit criterion: WHICH INSTRUMENTS FIRED AND WERE ACTED ON.**
+
+Rationale from the last census: **314 clean / 234 inert / 1 indeterminate**.
+~43% of class×box combinations have never had anything to say. Inert is not
+free — it costs context on every turn, review surface on every pass, and a
+maintenance claim on every future reader. The 2026-08-08 subtraction arc
+already proved cutting works here; the commit-ratio metric does not
+distinguish an instrument that guards something from one that has never
+spoken.
+
+### The architectural argument to settle at that review
+
+**Gates that refuse the AUTHOR and detectors that watch the FLEET are
+different animals and deserve different budgets — the current freeze metric
+mixes them.**
+
+- *Author-facing gates* (lint, pre-commit/pre-push hooks, regression
+  guards, the claim-gate, the permission classifier): cheap, unbypassable,
+  fire at the moment of the mistake, and the author cannot mark them benign.
+  Measured 2026-09-17: **5 fired, 5 were right**, and 2 taught the author
+  something they had not reasoned to (TEMPLATE_PROVENANCE surfaced that a
+  `-user.service` suffix ships a unit to every box via update.sh's glob).
+  This tier looks UNDER-built, not over-built.
+- *Fleet-facing detectors* (signal classes, probes, cadence rules): the
+  expensive tier, the mostly-inert tier, and the one whose failures are
+  quiet. This is where the cut belongs.
+
+### Method (do not skip — this is the falsifiability lesson)
+
+1. Re-derive the census; do NOT carry the 314/234/1 numbers forward.
+2. For each class inert on EVERY box, ask the `feedback_my_footprint_is_the_constraint`
+   question: `clean` everywhere = an armed backstop, **KEEP**; `inert`
+   everywhere = **CUT**. A class that is inert because it is BLIND is a
+   detector defect, not a cut candidate — `scripts/falsifiability_drill.py`
+   is the discriminator, and its number must be re-run, never quoted.
+3. ⚠️ Cut by DELETING the instrument, not by adding an exclusion or a
+   `known_benign` rejection — that is how a bug becomes policy (measured
+   3-for-3 wrong on blindness subjects).
+
+### The honest counter-evidence this session produced — weigh it
+
+The single highest-value check of 2026-09-17 was **NOT an instrument**.
+Nothing in 61 signal classes was watching "these backups may hold the only
+copy"; `rm *.bak*` would have passed every gate in the repo while destroying
+~6 sessions' handoffs (22 sections preserved nowhere else). What caught it
+was a human-style question asked before an irreversible act. Two readings,
+and the review should pick one deliberately:
+- *Pro-cut*: detectors did not catch the day's real risk, so the inert tier
+  is even less defensible than the census suggests.
+- *Anti-cut*: that is survivorship reasoning — the classes that never fire
+  may be exactly the ones whose subject has not failed YET.
+
+Also weigh: `harness_audit`'s session-notes leg FAILED on size while merely
+DISCLOSING the legibility problem that actually mattered (the next session
+was receiving 21% of the handoff). The instrument measured the cheap
+property by explicit design — *"adding a gate here would be one more
+instrument watching an instrument."* That is restraint working, AND it is an
+instrument aimed at the wrong quantity. Both are true.
+
+### Scope note for whoever runs it
+
+Today was **~100% harness-subject by the domain's own END test** (a janitor
+script, a rotation, two memory edits — no message moved). The session did
+not notice that until the operator asked. That is itself evidence for the
+review: **the harness/product ratio needs an outside reader, not a better
+self-report from the session.**
