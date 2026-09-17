@@ -144,7 +144,31 @@ class MeshForgeLauncher:
         self._tui_context.registry = self._registry
         for handler_cls in get_all_handlers():
             self._registry.register(handler_cls())
+        self._declare_cross_section_rows(self._registry)
         self._wire_profile_flags()
+
+    #: Cross-section rows — the ONE declaration. A row on one screen whose
+    #: handler lives in another section: (screen, tag, owner_section,
+    #: owner_tag), and nothing else. Label, [off] mark and the refusal's
+    #: title all derive from the owner through the registry, so the same
+    #: action cannot read differently on two screens (review 2026-09-16
+    #: R1/R4/F4 — the three menu loops used to carry a hand-copied label
+    #: each, and a test carried a fourth copy that had already drifted).
+    #: Nothing here is a label: a label in this table would be the second
+    #: copy this table exists to remove.
+    CROSS_SECTION_ROWS = (
+        ("dashboard",     "network",    "system",   "network"),
+        ("configuration", "rns-config", "rns",      "edit"),
+        ("extensions",    "mfmaps",     "maps_viz", "mfmaps"),
+    )
+
+    @classmethod
+    def _declare_cross_section_rows(cls, registry) -> None:
+        """Apply CROSS_SECTION_ROWS to a registry (the launcher's, a test's,
+        the smoke driver's) — one path, so every renderer of the TUI shows
+        the same rows."""
+        for section, tag, owner_section, owner_tag in cls.CROSS_SECTION_ROWS:
+            registry.alias(section, tag, owner_section, owner_tag)
 
     # Q1 purge 2026-08-14 (audit W4) deleted the launcher-side profile
     # plumbing (_profile/_feature_flags + the launcher's own gate helper)
@@ -189,7 +213,7 @@ class MeshForgeLauncher:
         self._tui_context.feature_flags = flags
         gated = sum(len(self._registry.get_gated_items(sec))
                     for sec in self._registry.section_names)
-        logger.info("Deployment profile %r active: %d menu action(s) marked "
+        logger.info("Deployment profile %r active: %d menu row(s) marked "
                     "[off] (shown, not run)",
                     getattr(profile, "display_name", "?"), gated)
 
@@ -214,13 +238,18 @@ class MeshForgeLauncher:
         Registry items auto-replace legacy items with the same tag.
         Ordering list controls display order when provided.
 
+        Since 2026-09-16 every menu loop passes ``[]``: the last three
+        legacy rows were cross-section rows, and those are declared ONCE
+        in ``CROSS_SECTION_ROWS`` and rendered by the registry from their
+        owner. The parameter stays for the drivers that share this
+        builder; a non-empty list here would be a second declaration of
+        a row, which is the defect the aliases removed.
+
         Args:
             section: Menu section key (e.g., "dashboard", "rf_sdr").
-            legacy_items: List of (tag, description) — or
-                (tag, description, flag) for a CROSS-SECTION row whose
-                handler lives elsewhere and carries a feature flag. Such a
-                row must be MARKED by its owner's flag, or the same action
-                would read as available on one screen and off on another.
+            legacy_items: List of (tag, description) or
+                (tag, description, flag); marked by the same rule as
+                registry rows. Expected empty.
             ordering: Optional list of tags defining display order.
 
         Returns:
@@ -259,10 +288,6 @@ class MeshForgeLauncher:
 
         result.append(("back", "Back"))
         return result
-
-    def _owner_flag(self, section, tag):
-        """The flag a cross-section row inherits from its owning handler."""
-        return self._registry.owner_flag(section, tag)
 
     @staticmethod
     def _wait_for_enter(msg: str = "\nPress Enter to continue...") -> None:
@@ -890,20 +915,11 @@ class MeshForgeLauncher:
         """Dashboard - Status, health, alerts, propagation."""
         _ORDERING = SECTION_ORDERINGS["dashboard"]
         while True:
-            # 'network' is the one cross-section entry (handler lives in
-            # "system"); every other legacy item is registry-owned now
-            # (Q1 purge 2026-08-14, audit W7 — verified against the live
-            # registry before deletion). It carries its OWNER's flag so it
-            # marks [off] the day system/network gains one — without the
-            # third element the mark is per-call-site memory, and dispatch
-            # would refuse a row this screen showed as available (review
-            # 2026-09-16, F3).
-            _network_flag = self._owner_flag("system", "network")
-            legacy = [
-                ("network", "Network Status      Ports, interfaces, conflicts",
-                 _network_flag),
-            ]
-            choices = self._build_section_menu("dashboard", legacy, _ORDERING)
+            # 'network' is a cross-section row (handler lives in "system")
+            # — declared once in CROSS_SECTION_ROWS, rendered and
+            # dispatched by the registry. Every other legacy item was
+            # registry-owned by the Q1 purge (2026-08-14, audit W7).
+            choices = self._build_section_menu("dashboard", [], _ORDERING)
 
             choice = self.dialog.menu(
                 "Dashboard",
@@ -914,13 +930,9 @@ class MeshForgeLauncher:
             if choice is None or choice == "back":
                 break
 
-            # Try registry-based dispatch first (converted handlers)
+            # The registry owns every row here, the cross-section one
+            # through its alias.
             if self._registry.dispatch("dashboard", choice):
-                continue
-
-            # Cross-section dispatch (network handler is in "system" section)
-            if choice == "network":
-                self._registry.dispatch("system", "network")
                 continue
             self._notify_unwired(choice)
 
@@ -1001,16 +1013,10 @@ class MeshForgeLauncher:
         """Configuration - Radio, services, settings."""
         _ORDERING = SECTION_ORDERINGS["configuration"]
         while True:
-            # 'rns-config' is the one cross-section entry (dispatches to
-            # "rns"/"edit" below); the other 7 were registry-shadowed
-            # (Q1 purge 2026-08-14, audit W7). Owner's flag threaded for
-            # the same reason as dashboard/network.
-            _rns_config_flag = self._owner_flag("rns", "edit")
-            legacy = [
-                ("rns-config", "RNS Config          Reticulum settings",
-                 _rns_config_flag),
-            ]
-            choices = self._build_section_menu("configuration", legacy, _ORDERING)
+            # 'rns-config' is a cross-section row (rns/edit) — declared
+            # once in CROSS_SECTION_ROWS; the other 7 legacy entries were
+            # registry-shadowed (Q1 purge 2026-08-14, audit W7).
+            choices = self._build_section_menu("configuration", [], _ORDERING)
 
             choice = self.dialog.menu(
                 "Configuration",
@@ -1021,13 +1027,7 @@ class MeshForgeLauncher:
             if choice is None or choice == "back":
                 break
 
-            # Registry-based dispatch (all configuration items converted)
             if self._registry.dispatch("configuration", choice):
-                continue
-
-            # Cross-section dispatch: RNS config is in the "rns" section
-            if choice == "rns-config":
-                self._registry.dispatch("rns", "edit")
                 continue
             self._notify_unwired(choice)
 
@@ -1060,22 +1060,11 @@ class MeshForgeLauncher:
         """Extensions - Maps, bots, add-ons."""
         _ORDERING = SECTION_ORDERINGS["extensions"]
         while True:
-            # 'mfmaps' is the one cross-section entry (handler lives in
-            # "maps_viz", dispatched below); 'meshing' was registry-shadowed
-            # (Q1 purge 2026-08-14, audit W7).
-            # 'mfmaps' is a CROSS-SECTION row: the handler lives in
-            # "maps_viz" and carries the "maps" flag there, so the flag
-            # travels with the row. Without it a maps-off profile would
-            # hide MeshForge Maps in Maps & Viz and leave this copy of the
-            # same action one menu away.
-            _mfmaps_flag = self._owner_flag("maps_viz", "mfmaps")
-            legacy = [
-                ("mfmaps", "MeshForge Maps      Multi-source map extension",
-                 _mfmaps_flag),
-            ]
-            choices = self._build_section_menu("extensions", legacy, _ORDERING)
+            # 'mfmaps' is a cross-section row (maps_viz/mfmaps, carrying
+            # the "maps" flag there) — declared once in CROSS_SECTION_ROWS;
+            # 'meshing' was registry-shadowed (Q1 purge 2026-08-14, W7).
+            choices = self._build_section_menu("extensions", [], _ORDERING)
 
-            # Also include maps_viz mfmaps handler
             choice = self.dialog.menu(
                 "Extensions",
                 "MeshForge ecosystem extensions:",
@@ -1085,10 +1074,8 @@ class MeshForgeLauncher:
             if choice is None or choice == "back":
                 break
 
-            # Try extensions section first, then maps_viz for mfmaps
             if not self._registry.dispatch("extensions", choice):
-                if not self._registry.dispatch("maps_viz", choice):
-                    self._notify_unwired(choice)
+                self._notify_unwired(choice)
 
     # --- Submenu: About (a) ---
 

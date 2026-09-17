@@ -22,36 +22,46 @@ def _main_src():
 
 
 class TestLegacyMenuEntriesStayDead:
-    # The ONLY legitimate legacy entries are cross-section dispatches whose
-    # handler lives in a DIFFERENT registry section. Everything else was
-    # shadowed by a same-section registry tag and filtered out on every
-    # render (W7 — ~31 entries deleted after per-tag verification).
-    SURVIVORS = {'network', 'rns-config', 'mfmaps'}
+    # W7 (2026-08-14) deleted ~31 legacy entries shadowed by registry tags.
+    # The three survivors were cross-section rows; on 2026-09-16 those
+    # moved into ONE declaration (CROSS_SECTION_ROWS, rendered by the
+    # registry alias), so NO legacy block may carry an entry any more.
+    SURVIVORS = {('dashboard', 'network'), ('configuration', 'rns-config'),
+                 ('extensions', 'mfmaps')}
 
-    def test_only_cross_section_survivors_remain(self):
+    def test_no_legacy_block_carries_an_entry(self):
         src = _main_src()
         tags = set()
         for block in re.findall(r'legacy = \[(.*?)\]', src, re.DOTALL):
             tags.update(re.findall(r'\(\s*["\']([^"\']+)["\']', block))
-        assert tags == self.SURVIVORS, (
-            f"legacy menu entries changed: {sorted(tags)} vs expected "
-            f"{sorted(self.SURVIVORS)}. A same-section entry is DEAD the "
-            "moment a handler owns its tag — register a handler action "
-            "instead of adding a legacy entry (audit W7)."
+        assert tags == set(), (
+            f"legacy menu entries returned: {sorted(tags)}. A same-section "
+            "entry is DEAD the moment a handler owns its tag (audit W7); a "
+            "cross-section row belongs in CROSS_SECTION_ROWS, never in a "
+            "per-loop list (review 2026-09-16 R4)."
         )
 
+    def test_the_declaration_is_exactly_the_survivors(self):
+        import main as tui_main
+        declared = {(s, t) for s, t, _os, _ot
+                    in tui_main.MeshForgeLauncher.CROSS_SECTION_ROWS}
+        assert declared == self.SURVIVORS, declared
+
     def test_survivors_are_actually_cross_section(self):
-        # The survivors must NOT be owned by their menu's own section —
-        # if a handler takes the tag over, the legacy entry dies too.
+        # Each declared row must NOT be owned by its screen's own section
+        # (a handler taking the tag over kills the alias — and alias()
+        # refuses it loudly), and its owner MUST exist.
+        import main as tui_main
         from handlers import get_all_handlers
         sections = {}
         for cls in get_all_handlers():
             h = cls()
             for item in h.menu_items():
                 sections.setdefault(h.menu_section, set()).add(item[0])
-        assert 'network' not in sections.get('dashboard', set())
-        assert 'rns-config' not in sections.get('configuration', set())
-        assert 'mfmaps' not in sections.get('extensions', set())
+        for screen, tag, osec, otag in tui_main.MeshForgeLauncher.CROSS_SECTION_ROWS:
+            assert screen != osec, (screen, tag)
+            assert tag not in sections.get(screen, set()), (screen, tag)
+            assert otag in sections.get(osec, set()), (osec, otag)
 
 
 class TestStatusBarEnhancedHalfStaysDead:

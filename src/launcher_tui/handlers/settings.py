@@ -200,12 +200,12 @@ class SettingsHandler(BaseHandler):
         # menu re-marks on the next render, and the count is the honest
         # answer to "what did that just do to my screen?".
         if gated:
-            effect = (f"{gated} menu action(s) are now marked [off].\n\n"
+            effect = (f"{gated} menu row(s) are now marked [off].\n\n"
                       f"They stay on screen and still explain themselves "
                       f"when you select them — a profile describes what "
                       f"this box is FOR, it never removes a tool.")
         else:
-            effect = ("No menu actions are marked off by this profile.\n\n"
+            effect = ("No menu rows are marked off by this profile.\n\n"
                       "Profiles also drive dependency checks and the "
                       "daemon's service expectations.")
         self.ctx.dialog.msgbox(

@@ -106,6 +106,9 @@ def collect_screens(profile_name=None):
     ctx.registry = registry
     for cls in get_all_handlers():
         registry.register(cls())
+    # The three cross-section rows, exactly as the launcher declares them
+    # — before 2026-09-16 this driver rendered none of them.
+    tui_main.MeshForgeLauncher._declare_cross_section_rows(registry)
 
     screens = []
 
@@ -132,7 +135,6 @@ def collect_screens(profile_name=None):
 
     builder = tui_main.MeshForgeLauncher._build_section_menu
     holder = SimpleNamespace(_registry=registry, _tui_context=ctx)
-    holder._owner_flag = lambda sec, tag: registry.owner_flag(sec, tag)
     for section in sorted(registry.section_names):
         if section == "main":
             continue

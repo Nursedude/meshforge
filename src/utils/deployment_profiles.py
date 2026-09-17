@@ -49,8 +49,8 @@ class ProfileName(Enum):
 
 # The feature-flag vocabulary — SSOT for BOTH sides of profile gating
 # (2026-09-16). A profile DECLARES these; TUI handlers CONSUME them via
-# the third element of ``menu_items()``, filtered in
-# ``HandlerRegistry.get_menu_items``.
+# the third element of ``menu_items()``, and ``HandlerRegistry``
+# MARKS a row ``[off]`` (never removes it) when its flag is off.
 #
 # It is one constant because the two sides had independently drifted
 # (honest_failure_modes #5 — two consumers of one artifact, two hardcodes):

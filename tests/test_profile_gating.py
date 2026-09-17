@@ -53,12 +53,6 @@ OFF = HandlerRegistry.OFF_MARK
 SECTIONS = ("dashboard", "mesh_networks", "rf_sdr", "maps_viz",
             "configuration", "system", "extensions", "about")
 
-LEGACY = {
-    "dashboard": [("network", "Network Status      Ports, interfaces")],
-    "configuration": [("rns-config", "RNS Config          Reticulum settings")],
-}
-
-
 class RecordingDialog:
     """Captures msgbox calls so a refusal can be read back."""
 
@@ -84,19 +78,18 @@ def _make(profile=None):
     registry = HandlerRegistry(ctx)
     for cls in get_all_handlers():
         registry.register(cls())
+    # The cross-section rows come from the launcher's ONE declaration —
+    # this file used to carry its own copy of them, and that copy had
+    # already drifted from main.py (review 2026-09-16, R4).
+    tui_main.MeshForgeLauncher._declare_cross_section_rows(registry)
     ctx.registry = registry
     holder = SimpleNamespace(_registry=registry, _tui_context=ctx)
-    holder._owner_flag = lambda sec, tag: registry.owner_flag(sec, tag)
     return ctx, registry, holder
 
 
 def _rows(holder, section):
-    legacy = list(LEGACY.get(section, []))
-    if section == "extensions":
-        legacy = [("mfmaps", "MeshForge Maps      Multi-source map extension",
-                   holder._owner_flag("maps_viz", "mfmaps"))]
     return tui_main.MeshForgeLauncher._build_section_menu(
-        holder, section, legacy, tui_main.SECTION_ORDERINGS.get(section))
+        holder, section, [], tui_main.SECTION_ORDERINGS.get(section))
 
 
 # ------------------------------------------------------- the vocabulary
@@ -367,10 +360,26 @@ class TestCrossSectionRowsObeyTheirOwner:
         here = dict(_rows(holder, "extensions"))["mfmaps"]
         assert here.startswith(OFF) == owner.startswith(OFF)
 
-    def test_owner_flag_is_read_not_retyped(self):
-        import inspect
-        src = inspect.getsource(tui_main.MeshForgeLauncher._extensions_menu)
-        assert "_owner_flag" in src
+    def test_the_declaration_carries_no_label(self):
+        """CROSS_SECTION_ROWS is (screen, tag, owner_section, owner_tag)
+        and nothing else. A label in it would be the second copy the
+        table exists to remove — the owner's row IS the label."""
+        for entry in tui_main.MeshForgeLauncher.CROSS_SECTION_ROWS:
+            assert len(entry) == 4, entry
+            assert all(" " not in part for part in entry), (
+                f"looks like a label crept into the declaration: {entry!r}")
+
+    def test_the_rendered_label_is_the_owners(self):
+        _ctx, registry, holder = _make()
+        for screen, tag, osec, otag in tui_main.MeshForgeLauncher.CROSS_SECTION_ROWS:
+            here = dict(_rows(holder, screen))[tag]
+            owner = dict(registry.get_menu_items(osec))[otag]
+            assert here == owner, (screen, tag, here, owner)
+
+    def test_the_launcher_keeps_no_owner_flag_helper(self):
+        assert not hasattr(tui_main.MeshForgeLauncher, "_owner_flag"), (
+            "the per-loop flag threading returned; the registry alias "
+            "renders and dispatches cross-section rows now")
 
 
 # ------------------------------------- a top-level row never vanishes quietly
@@ -429,31 +438,32 @@ class TestTheEscapeHatchStaysRemoved:
 # ------------------- every cross-section row inherits its OWNER's flag
 
 class TestEveryCrossSectionRowInheritsItsOwnersFlag:
-    """Three menus carry a row whose handler lives in another section:
-    dashboard/network → system/network, configuration/rns-config →
-    rns/edit, extensions/mfmaps → maps_viz/mfmaps. ``dispatch()`` refuses
-    on the OWNER's flag, so the row must be marked from the owner's flag
-    too, or the screen says "available" and the keypress says "not in this
-    profile". Until 2026-09-16 (review F3) only mfmaps threaded it; the
-    other two were 2-tuples, silent only because their owners carry no
-    flag today. These drive the REAL menu loops with the owner's flag
-    forced off, so the wiring is what is under test, not a copy of it.
+    """Three menus carry a row whose handler lives in another section
+    (``CROSS_SECTION_ROWS``). ``dispatch()`` refuses on the OWNER's flag,
+    so the row must be marked from the owner's flag too, or the screen
+    says "available" and the keypress says "not in this profile". Until
+    2026-09-16 only mfmaps threaded it by hand; now the registry alias
+    renders all three from the owner. These drive the REAL menu loops
+    with the owner's flag forced off, so the wiring is what is under
+    test, not a copy of it. The owner's ``menu_items`` is patched on the
+    CLASS (``patch.object``) because an instance assignment would raise
+    on a ``__slots__`` ``_LazyHandler`` (review R7).
     """
 
     @staticmethod
     def _drive(menu_method, holder, owner_section, owner_tag):
+        from unittest.mock import patch as _patch
         ctx = holder._tui_context
         ctx.feature_flags = {"maps": False}
         ctx.profile = SimpleNamespace(
             name=SimpleNamespace(value="testprofile"),
             feature_flags=ctx.feature_flags)
         registry = holder._registry
-        # The owner gains a flag that this profile has off.
         owner = registry._tag_index[owner_section][owner_tag]
-        orig = owner.menu_items
-        owner.menu_items = lambda: [
+        orig = type(owner).menu_items
+        forced = lambda self: [  # noqa: E731 — the owner gains a flag
             (t, d, "maps") if t == owner_tag else (t, d, f)
-            for t, d, f in orig()]
+            for t, d, f in orig(self)]
         seen = []
 
         def fake_menu(title, subtitle, choices):
@@ -464,10 +474,8 @@ class TestEveryCrossSectionRowInheritsItsOwnersFlag:
         holder._build_section_menu = (
             lambda *a: tui_main.MeshForgeLauncher._build_section_menu(
                 holder, *a))
-        holder._owner_flag = (
-            lambda sec, tag: tui_main.MeshForgeLauncher._owner_flag(
-                holder, sec, tag))
-        menu_method(holder)
+        with _patch.object(type(owner), "menu_items", forced):
+            menu_method(holder)
         assert seen, "the menu loop rendered nothing"
         return dict(seen[0])
 
@@ -488,3 +496,56 @@ class TestEveryCrossSectionRowInheritsItsOwnersFlag:
         rows = self._drive(tui_main.MeshForgeLauncher._extensions_menu,
                            holder, "maps_viz", "mfmaps")
         assert rows["mfmaps"].startswith(OFF), rows["mfmaps"]
+
+
+# ------------------------ the refusal is titled with the row you selected
+
+class TestCrossSectionRefusalNamesTheRowOnScreen:
+    """Review R1 (2026-09-16): the refusal dialog was titled with the
+    OWNER's label while the screen showed a hand-copied one — 'Network
+    Tools — not in this profile' after selecting 'Network Status'. With
+    one declaration the rendered label and the refusal's title are the
+    same string."""
+
+    def test_extensions_mfmaps_refusal_matches_its_row(self):
+        ctx, registry, holder = _make(PROFILES[ProfileName.MONITOR])
+        rendered = dict(_rows(holder, "extensions"))["mfmaps"]
+        assert rendered.startswith(OFF)
+        assert registry.dispatch("extensions", "mfmaps") is True
+        title, _body = ctx.dialog.msgboxes[-1]
+        shown = rendered[len(OFF):].strip().split("  ")[0]
+        assert title.startswith(shown), (title, rendered)
+
+    def test_an_alias_to_nothing_fails_at_declaration(self):
+        _ctx, registry, _h = _make()
+        with pytest.raises(ValueError):
+            registry.alias("dashboard", "ghost", "system", "no-such-tag")
+
+    def test_an_alias_over_an_owned_tag_fails_at_declaration(self):
+        _ctx, registry, _h = _make()
+        owned = next(iter(registry._tag_index["dashboard"]))
+        with pytest.raises(ValueError):
+            registry.alias("dashboard", owned, "system", "network")
+
+
+# ------------------------------- the count agrees with the marks on screen
+
+class TestTheGatedCountCountsRows:
+    """Review F4: the Settings dialog and the startup log counted handler
+    ACTIONS, so the marked cross-section copy of mfmaps in Extensions was
+    not in the number the operator read against the marks on screen."""
+
+    def test_extensions_marked_copy_is_counted(self):
+        _ctx, registry, holder = _make(PROFILES[ProfileName.MONITOR])
+        marked_rows = [t for t, d in _rows(holder, "extensions")
+                       if d.startswith(OFF)]
+        counted = [t for t, _d, _f in registry.get_gated_items("extensions")]
+        assert marked_rows == counted == ["mfmaps"], (marked_rows, counted)
+
+    def test_count_equals_marks_on_every_screen(self):
+        _ctx, registry, holder = _make(PROFILES[ProfileName.MONITOR])
+        for section in registry.section_names:
+            marked = sorted(t for t, d in _rows(holder, section)
+                            if d.startswith(OFF))
+            counted = sorted(t for t, _d, _f in registry.get_gated_items(section))
+            assert marked == counted, (section, marked, counted)
