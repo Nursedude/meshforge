@@ -893,9 +893,15 @@ class MeshForgeLauncher:
             # 'network' is the one cross-section entry (handler lives in
             # "system"); every other legacy item is registry-owned now
             # (Q1 purge 2026-08-14, audit W7 — verified against the live
-            # registry before deletion).
+            # registry before deletion). It carries its OWNER's flag so it
+            # marks [off] the day system/network gains one — without the
+            # third element the mark is per-call-site memory, and dispatch
+            # would refuse a row this screen showed as available (review
+            # 2026-09-16, F3).
+            _network_flag = self._owner_flag("system", "network")
             legacy = [
-                ("network", "Network Status      Ports, interfaces, conflicts"),
+                ("network", "Network Status      Ports, interfaces, conflicts",
+                 _network_flag),
             ]
             choices = self._build_section_menu("dashboard", legacy, _ORDERING)
 
@@ -997,9 +1003,12 @@ class MeshForgeLauncher:
         while True:
             # 'rns-config' is the one cross-section entry (dispatches to
             # "rns"/"edit" below); the other 7 were registry-shadowed
-            # (Q1 purge 2026-08-14, audit W7).
+            # (Q1 purge 2026-08-14, audit W7). Owner's flag threaded for
+            # the same reason as dashboard/network.
+            _rns_config_flag = self._owner_flag("rns", "edit")
             legacy = [
-                ("rns-config", "RNS Config          Reticulum settings"),
+                ("rns-config", "RNS Config          Reticulum settings",
+                 _rns_config_flag),
             ]
             choices = self._build_section_menu("configuration", legacy, _ORDERING)
 

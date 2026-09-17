@@ -89,8 +89,8 @@ class TestProfileGatingStaysDecided:
         decide wire-or-delete, never leave dead gates.
 
         It was WIRED on 2026-09-16, through the seam W4 named —
-        ``TUIContext.feature_flags``, filtered in
-        ``HandlerRegistry.get_menu_items``. So this assertion still
+        ``TUIContext.feature_flags``, MARKED ``[off]`` (never filtered
+        out) by ``HandlerRegistry.get_menu_items``. So this assertion still
         stands and now means something narrower: the launcher must not
         grow a SECOND, private copy of the gate beside the context's.
         Two predicates answering "is this feature on" is how the menu and
@@ -104,8 +104,24 @@ class TestProfileGatingStaysDecided:
         src = _main_src()
         assert '_feature_enabled' not in src, (
             "launcher-side feature gating returned. The flags belong on "
-            "TUIContext, which the registry filter already reads "
+            "TUIContext, which the registry's row marking already reads "
             "(audit W4: decide wire-or-delete, never leave dead gates)"
+        )
+
+    def test_no_gating_row_escape_hatch_on_launcher(self):
+        """The hide-plus-escape-hatch rendering was reversed the same day
+        it shipped (2026-09-16, ``2b28aa98``): a profile MARKS a row
+        ``[off]``, it never removes one, so there is nothing to un-hide
+        and ``_gating_row`` has no reason to exist. Two test fakes kept a
+        stub for it after the method was deleted — a lambda that is never
+        called never raises — which is the deletion-residue class the
+        review of that range named. Pin the absence so the residue cannot
+        return as a method either.
+        """
+        src = _main_src()
+        assert '_gating_row' not in src, (
+            "the profile escape hatch returned to the launcher. A profile "
+            "marks rows [off]; nothing is hidden, so nothing needs a hatch"
         )
 
     def test_dead_cleanup_block_stays_gone(self):

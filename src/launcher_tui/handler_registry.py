@@ -287,6 +287,22 @@ class HandlerRegistry:
                     gated.append((tag, desc, flag))
         return gated
 
+    @staticmethod
+    def _row_of(handler: CommandHandler,
+                tag: str) -> Optional[Tuple[str, Optional[str]]]:
+        """The (description, flag) a handler declares for one of its tags.
+
+        ONE lookup for the three readers below — ``owner_flag``,
+        ``dispatch`` and ``explain_gated`` each used to re-walk the whole
+        section on every call (review 2026-09-16, F5/F6), and ``dispatch``
+        did so one line after it had already resolved the owner from
+        ``_tag_index``.
+        """
+        for t, desc, flag in handler.menu_items():
+            if t == tag:
+                return desc, flag
+        return None
+
     def owner_flag(self, section: str, tag: str) -> Optional[str]:
         """The feature flag a tag carries in the section that OWNS it.
 
@@ -294,16 +310,18 @@ class HandlerRegistry:
         second hardcoded copy of the flag name — the drift that made this
         whole vocabulary need fixing in the first place.
         """
-        for handler in self._sections.get(section, []):
-            for t, _desc, flag in handler.menu_items():
-                if t == tag:
-                    return flag
-        logger.warning(
-            "owner_flag(%r, %r): no handler in that section owns the tag "
-            "— the cross-section row will not be marked", section, tag)
-        return None
+        handler = self._tag_index.get(section, {}).get(tag)
+        row = self._row_of(handler, tag) if handler is not None else None
+        if row is None:
+            logger.warning(
+                "owner_flag(%r, %r): no handler in that section owns the "
+                "tag — the cross-section row will not be marked",
+                section, tag)
+            return None
+        return row[1]
 
-    def explain_gated(self, section: str, tag: str, flag: str) -> None:
+    def explain_gated(self, section: str, tag: str, flag: str,
+                      label: Optional[str] = None) -> None:
         """Say why this row is off, and how to change it WITHOUT leaving.
 
         Derived from the flag and the profile rather than read out of a
@@ -315,14 +333,19 @@ class HandlerRegistry:
 
         The remedy it offers is IN-APP (MF018): the TUI must never answer
         a question by telling the operator to quit and run a CLI.
+
+        The dialog goes through ``safe_call`` like every other thing the
+        registry shows: a refusal that cannot render must leave a log
+        witness, never an exception out of ``dispatch()``.
         """
         profile = self._ctx.profile_label() or "?"
-        label = tag
-        for handler in self._sections.get(section, []):
-            for t, desc, _f in handler.menu_items():
-                if t == tag:
-                    label = desc.strip().split("  ")[0] or tag
-        self._ctx.dialog.msgbox(
+        if label is None:
+            handler = self._tag_index.get(section, {}).get(tag)
+            row = self._row_of(handler, tag) if handler is not None else None
+            label = row[0] if row is not None else tag
+        label = label.strip().split("  ")[0] or tag
+        self._ctx.safe_call(
+            f"explain gated {section}/{tag}", self._ctx.dialog.msgbox,
             f"{label} — not in this profile",
             f"This box is set to the '{profile}' deployment profile, which "
             f"does not include '{flag}'.\n\n"
@@ -366,11 +389,12 @@ class HandlerRegistry:
         # them. Returns True because the tag IS owned; falling through
         # would reach the "not wired" tripwire and tell the operator a
         # wiring bug that does not exist.
-        flag = self.owner_flag(section, tag)
+        row = self._row_of(handler, tag)
+        flag = row[1] if row is not None else None
         if flag is not None and not self._ctx.feature_enabled(flag):
             logger.info("Refused %s/%s: '%s' is not in profile %r",
                         section, tag, flag, self._ctx.profile_label())
-            self.explain_gated(section, tag, flag)
+            self.explain_gated(section, tag, flag, label=row[0])
             return True
 
         if isinstance(handler, _LazyHandler):

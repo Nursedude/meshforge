@@ -154,21 +154,22 @@ class TestMainMenuEscapeSemantics:
             return yesno_returns[min(calls['yesno'] - 1, len(yesno_returns) - 1)]
 
         # These tests pin ESCAPE and retry semantics, not menu content,
-        # so the two row-builders are stubbed rather than driven off a
-        # real registry: _handler_row sources the four handler-owned
-        # top-level rows and _gating_row adds the profile escape hatch
-        # (both 2026-09-16). What they RENDER is owned by
+        # so the row-builder is stubbed rather than driven off a real
+        # registry: _handler_row sources the four handler-owned top-level
+        # rows (2026-09-16). What it RENDERS is owned by
         # tests/test_menu_orderings.py and tests/test_profile_gating.py.
-        # ``_feature_enabled`` is gone from the fake because it is gone
-        # from the launcher — the flags live on TUIContext now, and a
-        # stub for a method that no longer exists is a fake that has
-        # stopped describing the thing it stands in for.
+        # ``_feature_enabled`` and ``_gating_row`` are gone from the fake
+        # because they are gone from the launcher — the flags live on
+        # TUIContext and a profile MARKS rows instead of hiding them
+        # behind an escape hatch — and a stub for a method that no longer
+        # exists is a fake that has stopped describing the thing it
+        # stands in for. tests/test_tui_dead_code_purge.py pins both
+        # absences.
         fake = SimpleNamespace(
             _get_menu_status_hint=lambda: "",
             _MAX_DIALOG_RETRIES=3,
             _handle_main_choice=lambda c: calls['handled'].append(c),
             _handler_row=lambda tag: [(tag, f"{tag} row")],
-            _gating_row=lambda section: None,
             dialog=SimpleNamespace(menu=fake_menu, yesno=fake_yesno),
         )
         return fake, calls

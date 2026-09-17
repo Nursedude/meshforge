@@ -271,8 +271,6 @@ class TestMainMenuPin:
         )
         fake._handler_row = lambda tag: (
             tui_main.MeshForgeLauncher._handler_row(fake, tag))
-        fake._gating_row = lambda sec: (
-            tui_main.MeshForgeLauncher._gating_row(fake, sec))
         tui_main.MeshForgeLauncher._run_main_menu(fake)
         assert seen, "_run_main_menu rendered no menu at all"
         return seen[0]

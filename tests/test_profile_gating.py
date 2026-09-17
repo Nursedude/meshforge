@@ -424,3 +424,67 @@ class TestTheEscapeHatchStaysRemoved:
         src = inspect.getsource(HandlerRegistry)
         assert src.count("def flag_allowed") == 0
         assert src.count("feature_enabled(") >= 1
+
+
+# ------------------- every cross-section row inherits its OWNER's flag
+
+class TestEveryCrossSectionRowInheritsItsOwnersFlag:
+    """Three menus carry a row whose handler lives in another section:
+    dashboard/network → system/network, configuration/rns-config →
+    rns/edit, extensions/mfmaps → maps_viz/mfmaps. ``dispatch()`` refuses
+    on the OWNER's flag, so the row must be marked from the owner's flag
+    too, or the screen says "available" and the keypress says "not in this
+    profile". Until 2026-09-16 (review F3) only mfmaps threaded it; the
+    other two were 2-tuples, silent only because their owners carry no
+    flag today. These drive the REAL menu loops with the owner's flag
+    forced off, so the wiring is what is under test, not a copy of it.
+    """
+
+    @staticmethod
+    def _drive(menu_method, holder, owner_section, owner_tag):
+        ctx = holder._tui_context
+        ctx.feature_flags = {"maps": False}
+        ctx.profile = SimpleNamespace(
+            name=SimpleNamespace(value="testprofile"),
+            feature_flags=ctx.feature_flags)
+        registry = holder._registry
+        # The owner gains a flag that this profile has off.
+        owner = registry._tag_index[owner_section][owner_tag]
+        orig = owner.menu_items
+        owner.menu_items = lambda: [
+            (t, d, "maps") if t == owner_tag else (t, d, f)
+            for t, d, f in orig()]
+        seen = []
+
+        def fake_menu(title, subtitle, choices):
+            seen.append(list(choices))
+            return "back"
+
+        holder.dialog = SimpleNamespace(menu=fake_menu)
+        holder._build_section_menu = (
+            lambda *a: tui_main.MeshForgeLauncher._build_section_menu(
+                holder, *a))
+        holder._owner_flag = (
+            lambda sec, tag: tui_main.MeshForgeLauncher._owner_flag(
+                holder, sec, tag))
+        menu_method(holder)
+        assert seen, "the menu loop rendered nothing"
+        return dict(seen[0])
+
+    def test_dashboard_network_is_marked_from_its_owner(self):
+        _ctx, _registry, holder = _make()
+        rows = self._drive(tui_main.MeshForgeLauncher._dashboard_menu,
+                           holder, "system", "network")
+        assert rows["network"].startswith(OFF), rows["network"]
+
+    def test_configuration_rns_config_is_marked_from_its_owner(self):
+        _ctx, _registry, holder = _make()
+        rows = self._drive(tui_main.MeshForgeLauncher._configuration_menu,
+                           holder, "rns", "edit")
+        assert rows["rns-config"].startswith(OFF), rows["rns-config"]
+
+    def test_extensions_mfmaps_is_marked_from_its_owner(self):
+        _ctx, _registry, holder = _make()
+        rows = self._drive(tui_main.MeshForgeLauncher._extensions_menu,
+                           holder, "maps_viz", "mfmaps")
+        assert rows["mfmaps"].startswith(OFF), rows["mfmaps"]
