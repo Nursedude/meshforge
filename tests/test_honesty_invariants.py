@@ -750,11 +750,13 @@ TEMPLATE_PROVENANCE: dict = {
     "meshforge-lab-rollup-user.service":   ("glob", "update.sh *-user.service loop → lab-rollup.service"),
     "moc-drain-snapshot-user.service":     ("glob", "update.sh *-user.service loop → moc-drain-snapshot.service"),
     "nomadnet-silence-watch-user.service": ("glob", "update.sh *-user.service loop → nomadnet-silence-watch.service"),
+    "meshforge-notes-prune-user.service": ("glob", "update.sh *-user.service loop -> notes-prune.service (oneshot; the glob only copies, never enables -- inert until the timer is hand-enabled on a box that HAS session notes. Measured 2026-09-17: 4 of 9 boxes carry a notes file, 0 carried backups; the script exits 0 inert where there are none)"),
     # ── TUI-handler-deployed at runtime (verified: handler references it) ──
     "meshtasticd-alt.service":           ("tui", "launcher_tui/handlers/dual_radio_failover.py"),
     # ── hand-deployed; documented-only (no committed installer by design) ──
     "meshforge-watchdog.service":  ("hand", "fleet daemon, hand-enabled; no committed "
                                             "installer; fleet_sync.sh restarts it (#3b-ii)"),
+    "meshforge-notes-prune-user.timer": ("hand", "hand-enabled ONLY on a box that writes session-notes handoffs (the dev box); NOT globbed -- a .timer is outside the *-user.service loop. Deliberately not fleet-wide: a timer on a box with no notes is machinery with no subject"),
     "meshforge-backup.service":    ("hand", "manager-box organ (the federator box), hand-enabled; fleet backup (c111f7a)"),
     "meshforge-backup.timer":      ("hand", "manager-box organ (the federator box), hand-enabled; fleet backup (c111f7a)"),
     "meshforge-ci-status.service": ("hand", "manager-box organ (the federator box); ecosystem CI cron (6e0f21f)"),

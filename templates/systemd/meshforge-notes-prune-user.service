@@ -1,0 +1,39 @@
+# MeshForge — session-notes backup pruner (systemd-user, one-shot)
+# ================================================================
+#
+# Runs scripts/prune_session_notes_backups.sh --apply. Sessions hand-copy the
+# handoff doc before editing it and nothing pruned those copies; measured
+# 2026-09-17 on the dev box: 21 files / 2.2 MB in ~/.claude/plans.
+#
+# ⚠️ This unit DELETES files, so read the script's header before changing it.
+# Its gate is COVERAGE, not age: a backup is removed only when every "## "
+# section it carries already exists in the live notes or an archive. On
+# 2026-09-17 that pile held 22 sections preserved NOWHERE else — an age-based
+# prune would have destroyed ~6 sessions' handoffs silently. An uncovered
+# backup is kept and reported to the journal as a finding.
+#
+# INSTALL ONLY ON BOXES WHERE CLAUDE SESSIONS WRITE HANDOFF NOTES (the dev
+# box, and the MeshAnchor twin if it grows notes). Everywhere else the script
+# exits 0 "inert" — absent by design is inert, never a fault — so a fleet-wide
+# install would be nine units doing nothing on seven of them.
+#
+# Install:
+#   cp /opt/meshforge/templates/systemd/meshforge-notes-prune-user.service \
+#      ~/.config/systemd/user/meshforge-notes-prune.service
+#   cp /opt/meshforge/templates/systemd/meshforge-notes-prune-user.timer \
+#      ~/.config/systemd/user/meshforge-notes-prune.timer
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now meshforge-notes-prune.timer
+
+[Unit]
+Description=MeshForge session-notes backup pruner (coverage-gated)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/meshforge
+ExecStart=/usr/bin/bash /opt/meshforge/scripts/prune_session_notes_backups.sh --apply
+# stderr reaches the journal on purpose: a KEEP-ORPHAN line is a FINDING and
+# must be visible without anyone running the script by hand.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshforge-notes-prune

@@ -1,0 +1,26 @@
+# MeshForge — session-notes backup prune timer (weekly)
+# =====================================================
+#
+# Weekly is matched to the measured growth rate: the pile that prompted this
+# reached 2.2 MB over ~2 weeks. Janitorial work does not need a tight loop,
+# and a rarely-firing deleter is easier to reason about than a daily one.
+#
+# Persistent=true so a box that was off through its window still catches up.
+# ⚠️ Persistent=true + `enable --now` FIRES THE MISSED WINDOW IMMEDIATELY
+# (measured on this fleet with meshtasticd-restart.timer — enabling such a
+# timer IS a run). That is harmless here: the prune is idempotent and its
+# gate is coverage, but run the script once by hand in DRY-RUN first so the
+# first thing it does is not a surprise deletion.
+
+[Unit]
+Description=Weekly MeshForge session-notes backup prune
+Requires=meshforge-notes-prune.service
+
+[Timer]
+OnCalendar=Sun *-*-* 04:20:00
+Persistent=true
+RandomizedDelaySec=15m
+AccuracySec=1m
+
+[Install]
+WantedBy=timers.target
