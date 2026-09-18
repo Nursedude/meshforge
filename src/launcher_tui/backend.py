@@ -255,9 +255,52 @@ class DialogBackend:
             return ['--cancel-label', label]
         return []
 
+    #: Sentinel for "no explicit label given — infer one from the choices".
+    #: A plain None cannot do this job: None is also how a caller says
+    #: "emit no flag at all", and the two need to stay distinguishable.
+    _AUTO_CANCEL = object()
+
+    #: The tag every navigational menu uses for its return-to-parent row.
+    BACK_TAG = 'back'
+
+    def _infer_cancel_label(self, choices, cancel_label):
+        """Derive the Cancel button's label from the menu's own rows.
+
+        A navigational menu carries a ``back`` row AND maps menu()'s None
+        to that same row, so the row and the button are ONE control with
+        two faces — but only the row can scroll off a short terminal.
+        Deriving the label from the choices means the two faces cannot
+        disagree (honest_failure_modes #5 satisfied structurally, not by
+        a constant two places have to keep in sync).
+
+        Inference, NOT a sweep: an operational picker has no ``back`` row,
+        so it keeps whiptail's "Cancel" — which is correct, because
+        cancelling an operation is not navigating back.
+
+        Measured 2026-09-18 across both repos: the "None means back"
+        contract is written at least five different ways
+        (``is None or x == "back"``, ``x in (None, "back")``,
+        ``if choice and choice != "back"``, …), so no regex over call
+        sites can classify these reliably — but the presence of the
+        ``back`` ROW is unambiguous. That is why this is inferred here
+        rather than passed at ~284 call sites that would drift.
+
+        An explicit ``cancel_label`` always wins, including
+        ``cancel_label="Cancel"`` as the deliberate opt-out.
+        """
+        if cancel_label is not self._AUTO_CANCEL:
+            return cancel_label
+        for row in choices or ():
+            try:
+                if row[0] == self.BACK_TAG:
+                    return 'Back'
+            except (IndexError, TypeError):
+                continue
+        return None
+
     def menu(self, title: str, text: str, choices: List[Tuple[str, str]],
              height: int = None, width: int = None, list_height: int = None,
-             cancel_label: Optional[str] = None) -> Optional[str]:
+             cancel_label=_AUTO_CANCEL) -> Optional[str]:
         """
         Display a menu and return selected tag.
 
@@ -268,10 +311,15 @@ class DialogBackend:
             height: Optional dialog height (uses default if not specified)
             width: Optional dialog width (uses default if not specified)
             list_height: Optional list height (uses default if not specified)
-            cancel_label: Optional text for the Cancel button. Callers that
-                treat None as "go back" should pass "Back"; the top-level
-                menu passes "Exit". Left unset the backend's default
-                ("Cancel") is used.
+            cancel_label: Text for the Cancel button. Left unset it is
+                INFERRED from the choices: a menu carrying a ``back`` row
+                gets "Back", anything else keeps whiptail's "Cancel" (an
+                operational picker should say Cancel — aborting an
+                operation is not navigating back). Pass a string to
+                override, including cancel_label="Cancel" as the
+                deliberate opt-out for a menu that has a ``back`` row but
+                whose Cancel genuinely is not a back. Pass None to emit no
+                flag at all. See _infer_cancel_label().
 
         Returns:
             Selected tag or None if cancelled
@@ -321,7 +369,8 @@ class DialogBackend:
         args = ['--title', title]
         # Must precede the --menu box option: whiptail/dialog parse
         # [options] --menu text h w lh [tag item]...
-        args.extend(self._cancel_flag(cancel_label) if cancel_label else [])
+        _label = self._infer_cancel_label(choices, cancel_label)
+        args.extend(self._cancel_flag(_label) if _label else [])
         args.extend([
             '--menu', text,
             str(h), str(w), str(lh),
