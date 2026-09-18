@@ -256,6 +256,62 @@ class TestFromMeshcore:
         assert msg.content == 'Dict payload test'
         assert msg.source_address == 'node123'
 
+    # ---- 2026-09-18: the wire's REAL keys (meshcore_py reader.py) --------
+    # Every fixture above fabricates ``channel`` / ``is_channel`` keys the
+    # library never emits; these pin the keys it DOES emit. Verified against
+    # meshcore 2.3.7 (live twin venv) and 2.3.11 (wheel): CHANNEL_MSG_RECV
+    # payload = {type:'CHAN', channel_idx:int, path_len, txt_type,
+    # sender_timestamp, text}; CONTACT_MSG_RECV has type:'PRIV'.
+
+    def test_REAL_wire_channel_idx_is_the_slot(self):
+        event = SimpleNamespace(
+            type='CHANNEL_MSG_RECV',
+            payload={'type': 'CHAN', 'channel_idx': 1, 'path_len': 0,
+                     'txt_type': 0, 'sender_timestamp': 1789767168,
+                     'text': 'meshanchor p4: wx'},
+        )
+        msg = CanonicalMessage.from_meshcore(event)
+        assert msg.metadata['channel'] == 1
+        assert msg.is_broadcast is True
+        assert msg.content == 'meshanchor p4: wx'
+
+    def test_REAL_wire_public_slot_is_zero_not_absent(self):
+        event = SimpleNamespace(
+            type='CHANNEL_MSG_RECV',
+            payload={'type': 'CHAN', 'channel_idx': 0, 'text': 'hi'},
+        )
+        assert CanonicalMessage.from_meshcore(event).metadata['channel'] == 0
+
+    def test_absent_slot_is_None_never_Public(self):
+        """The 09-18 root cause in one assertion: a payload that names no
+        slot must NOT read as slot 0. Absent is unknown, not Public."""
+        for payload in ({'type': 'CHAN', 'text': 'no slot key'},
+                        SimpleNamespace(text='no slot attr', contact=None)):
+            event = SimpleNamespace(type='CHANNEL_MSG_RECV', payload=payload)
+            assert CanonicalMessage.from_meshcore(event).metadata['channel'] is None
+
+    def test_channel_idx_wins_over_legacy_channel_key(self):
+        event = SimpleNamespace(
+            type='CHANNEL_MSG_RECV',
+            payload={'type': 'CHAN', 'channel_idx': 2, 'channel': 0, 'text': 'x'},
+        )
+        assert CanonicalMessage.from_meshcore(event).metadata['channel'] == 2
+
+    def test_object_payload_channel_idx_attr(self):
+        payload = SimpleNamespace(type='CHAN', channel_idx=3, text='obj',
+                                  contact=None)
+        event = SimpleNamespace(type='CHANNEL_MSG_RECV', payload=payload)
+        msg = CanonicalMessage.from_meshcore(event)
+        assert msg.metadata['channel'] == 3
+        assert msg.is_broadcast is True
+
+    def test_type_CHAN_marks_channel_without_is_channel_key(self):
+        event = SimpleNamespace(
+            type='CHANNEL_MSG_RECV',
+            payload={'type': 'CHAN', 'channel_idx': 1, 'text': 'x'},
+        )
+        assert CanonicalMessage.from_meshcore(event).is_broadcast is True
+
     def test_ack_event(self):
         """ACK events map to ACK message type."""
         event = SimpleNamespace(

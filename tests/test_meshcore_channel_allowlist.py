@@ -19,6 +19,7 @@ would leak exactly that traffic.
 """
 
 import asyncio
+import logging
 import threading
 from queue import Queue
 from unittest.mock import AsyncMock, MagicMock
@@ -64,13 +65,28 @@ def _policy(config=None):
 
 
 def _channel_event(channel, text="hello"):
-    """A CHANNEL_MSG_RECV-shaped event with a dict payload."""
+    """A CHANNEL_MSG_RECV event with the payload the library REALLY sends.
+
+    2026-09-18: this fixture used to fabricate ``channel`` / ``is_channel`` /
+    ``sender`` keys that meshcore_py never emits, so 19 green tests pinned
+    the author's model of the wire while the live guard read every message
+    as slot 0. Keys below are meshcore_py reader.py's CHANNEL_MSG_RECV
+    ``res`` verbatim (``channel_idx`` is the slot; ``type`` is ``'CHAN'``).
+    """
     ev = MagicMock()
     ev.type = "CHANNEL_MSG_RECV"
     ev.payload = {
-        'text': text, 'sender': 'deadbeef', 'is_channel': True,
-        'channel': channel,
+        'type': 'CHAN', 'channel_idx': channel, 'path_len': 0,
+        'txt_type': 0, 'sender_timestamp': 1789767168, 'text': text,
     }
+    return ev
+
+
+def _channel_event_without_slot(text="hello"):
+    """A channel event whose payload names NO slot — must read unknown."""
+    ev = MagicMock()
+    ev.type = "CHANNEL_MSG_RECV"
+    ev.payload = {'type': 'CHAN', 'text': text}
     return ev
 
 
@@ -78,7 +94,7 @@ def _dm_event(text="dm hello"):
     ev = MagicMock()
     ev.type = "CONTACT_MSG_RECV"
     ev.payload = {
-        'text': text, 'sender': 'deadbeef', 'is_channel': False,
+        'type': 'PRIV', 'text': text, 'sender': 'deadbeef',
         'destination': 'me',
     }
     return ev
@@ -183,6 +199,40 @@ class TestEventLeg:
         cb.assert_not_called()
         asyncio.run(h._on_channel_message(_channel_event(1)))
         assert cb.call_count == 1
+
+
+class TestIngressDisclosure2026_09_18:
+    """The witness that would have caught the 09-18 root cause at write time:
+    ingress says what slot the WIRE delivered, and a payload that names no
+    slot is UNKNOWN — refused, never read as Public, never read as private."""
+
+    def test_ingress_logs_the_real_slot_and_the_payload_keys(self, caplog):
+        h = _make_handler(queue=Queue(maxsize=100))
+        with caplog.at_level(logging.INFO):
+            asyncio.run(h._on_channel_message(_channel_event(1, text="meshanchor p4: wx")))
+        assert "MeshCore channel rx idx=1" in caplog.text, caplog.text
+        # first messages of a process capture the wire's keys verbatim
+        assert "'channel_idx'" in caplog.text and "'type'" in caplog.text
+        assert "text='meshanchor p4: wx'" in caplog.text
+
+    def test_missing_slot_reads_None_and_is_refused_not_Public(self, caplog):
+        q = Queue(maxsize=100)
+        h = _make_handler(queue=q)
+        with caplog.at_level(logging.INFO):
+            asyncio.run(h._on_channel_message(_channel_event_without_slot()))
+        assert "MeshCore channel rx idx=None" in caplog.text, caplog.text
+        # unknown is not known-safe: refused, with the witness incremented
+        assert q.empty()
+        assert h.get_channel_metrics()['channel_suppressed'] == 1
+
+    def test_missing_slot_is_not_admitted_even_when_Public_is_opted_in(self, monkeypatch):
+        """If None were folded to 0, opting Public IN would admit unknown
+        traffic too. It must not: None matches no allowlist entry."""
+        monkeypatch.setenv("MESHFORGE_MESHCORE_BRIDGE_CHANNELS", "0")
+        q = Queue(maxsize=100)
+        h = _make_handler(queue=q)
+        asyncio.run(h._on_channel_message(_channel_event_without_slot()))
+        assert q.empty()
 
 
 class TestPollLeg:

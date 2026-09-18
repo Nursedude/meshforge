@@ -72,6 +72,12 @@ class MeshCoreBridgeMixin:
                 is_broadcast = msg.is_broadcast
                 via_internet = getattr(msg, 'via_internet', False)
 
+            # Source-slot disclosure (2026-09-18): the INDEX the wire
+            # delivered, carried on metadata by from_meshcore. '?' means the
+            # payload named no slot — unknown, never assumed Public.
+            _meta = getattr(msg, 'metadata', None) or {}
+            _idx = _meta.get('channel') if isinstance(_meta, dict) else None
+            ch_tag = f"[ch:{'?' if _idx is None else _idx}]"
             prefix = f"[MC:{src_label}] "
             bridged_content = prefix + content
 
@@ -80,7 +86,7 @@ class MeshCoreBridgeMixin:
             if mesh_state not in (SubsystemState.DISCONNECTED, SubsystemState.DISABLED):
                 if self.send_to_meshtastic(bridged_content,
                                            channel=self.config.meshtastic.channel):
-                    logger.info(f"Bridge MC→Mesh: {bridged_content[:50]}...")
+                    logger.info(f"Bridge MC→Mesh {ch_tag}: {bridged_content[:50]}...")
                     with self._stats_lock:
                         self.stats.setdefault('messages_meshcore_to_mesh', 0)
                         self.stats['messages_meshcore_to_mesh'] += 1
@@ -106,9 +112,9 @@ class MeshCoreBridgeMixin:
                 sent_count = sum(1 for dh in dests if self.send_to_rns(bridged_content, dh))
                 if sent_count:
                     if len(dests) > 1:
-                        logger.info(f"Bridge MC→RNS: {sent_count}/{len(dests)} dest(s) — {bridged_content[:50]}...")
+                        logger.info(f"Bridge MC→RNS {ch_tag}: {sent_count}/{len(dests)} dest(s) — {bridged_content[:50]}...")
                     else:
-                        logger.info(f"Bridge MC→RNS: {bridged_content[:50]}...")
+                        logger.info(f"Bridge MC→RNS {ch_tag}: {bridged_content[:50]}...")
                     with self._stats_lock:
                         self.stats.setdefault('messages_meshcore_to_rns', 0)
                         self.stats['messages_meshcore_to_rns'] += 1

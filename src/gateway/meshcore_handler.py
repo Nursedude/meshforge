@@ -538,11 +538,41 @@ class MeshCoreHandler(BaseMessageHandler):
         except Exception as e:
             logger.error(f"Error processing MeshCore direct message: {e}")
 
+    def _disclose_channel_ingress(self, event: Any, msg: Any) -> None:
+        """INGRESS disclosure — the slot INDEX as the wire delivered it.
+
+        Born 2026-09-18: for months every channel message read as slot 0
+        because ``from_meshcore`` read a key the library never sends, and
+        nothing at ingress ever said what the payload carried. This is the
+        witness that would have caught it: one INFO line per channel message
+        naming the index (``None`` = the payload named no slot — unknown,
+        NOT Public), and, for the first few messages of a process, the
+        payload's actual keys so the wire shape is captured in the journal
+        rather than assumed from a fixture.
+        """
+        try:
+            payload = getattr(event, 'payload', None)
+            idx = (msg.metadata or {}).get('channel')
+            text = msg.content or ''
+            n = getattr(self, '_ingress_keys_logged', 0)
+            if n < 3:
+                self._ingress_keys_logged = n + 1
+                keys = (sorted(payload.keys()) if isinstance(payload, dict)
+                        else type(payload).__name__)
+                logger.info(
+                    f"MeshCore channel rx idx={idx} keys={keys} "
+                    f"text={text[:40]!r}")
+            else:
+                logger.info(f"MeshCore channel rx idx={idx} text={text[:40]!r}")
+        except Exception as e:  # disclosure must never break ingress
+            logger.debug(f"channel ingress disclosure failed: {e}")
+
     async def _on_channel_message(self, event: Any) -> None:
         """Handle incoming MeshCore channel (broadcast) message via event."""
         try:
             msg = CanonicalMessage.from_meshcore(event)
             msg.is_broadcast = True
+            self._disclose_channel_ingress(event, msg)
 
             # Track for dual-path reconciliation BEFORE the oracle may
             # consume: registering the hash first means a consumed query is

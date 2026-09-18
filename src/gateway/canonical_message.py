@@ -307,8 +307,20 @@ class CanonicalMessage:
         Args:
             event: Event object from meshcore_py subscription.
                    For CONTACT_MSG_RECV: event.payload has .text, .contact
-                   For CHANNEL_MSG_RECV: event.payload has .text, .channel
+                   For CHANNEL_MSG_RECV: event.payload has .text, .channel_idx
                    For ADVERTISEMENT: event.payload has node info
+
+        ⚠️ The channel slot arrives as ``channel_idx`` (meshcore_py
+        reader.py sets ``res["channel_idx"]`` on every CHANNEL_MSG_RECV /
+        _V3 frame and ``res["type"]`` = ``"CHAN"`` / ``"PRIV"``; it never
+        sets ``channel``, ``is_channel`` or ``destination``). Until
+        2026-09-18 this read the never-present ``channel`` key with a
+        default of 0, so EVERY live channel message carried
+        ``metadata['channel'] == 0`` — the root cause of the 09-18 100%
+        refusal (a guard read 0 as Public) and of months of Public/private
+        indistinguishability. Two rules, both verified against the live
+        library: read ``channel_idx`` first; when NO key names the slot the
+        value is ``None`` (unknown), never 0 (Public). Absent is not Public.
         """
         payload = getattr(event, 'payload', None) or {}
 
@@ -317,8 +329,9 @@ class CanonicalMessage:
             text = payload.get('text', '')
             sender = payload.get('sender', '') or payload.get('pubkey_prefix', '')
             destination = payload.get('destination', None)
-            is_channel = payload.get('is_channel', False)
-            channel = payload.get('channel', 0)
+            ptype = payload.get('type', None)
+            is_channel = payload.get('is_channel', ptype == 'CHAN')
+            channel = payload.get('channel_idx', payload.get('channel', None))
         else:
             text = getattr(payload, 'text', '') or ''
             contact = getattr(payload, 'contact', None)
@@ -329,8 +342,11 @@ class CanonicalMessage:
             elif not sender:
                 sender = getattr(payload, 'sender', '') or ''
             destination = getattr(payload, 'destination', None)
-            is_channel = getattr(payload, 'is_channel', False)
-            channel = getattr(payload, 'channel', 0)
+            ptype = getattr(payload, 'type', None)
+            is_channel = getattr(payload, 'is_channel', ptype == 'CHAN')
+            channel = getattr(payload, 'channel_idx', None)
+            if channel is None:
+                channel = getattr(payload, 'channel', None)
 
         # Determine event type
         event_type = getattr(event, 'type', None) or getattr(event, 'event_type', None)
@@ -366,6 +382,9 @@ class CanonicalMessage:
             origin=MessageOrigin.RADIO,
             metadata={
                 'event_type': event_type_str,
+                # Slot INDEX from the wire (channel_idx), or None when the
+                # payload named no slot. Consumers must treat None as
+                # unknown — never fold it to 0/Public (2026-09-18).
                 'channel': channel,
                 'raw_event': event,
             },
