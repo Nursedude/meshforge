@@ -342,6 +342,7 @@ pass or a follow-up.
 > its own — and when a line is missing, say the attribution is UNKNOWN rather
 > than reasoning backwards from mtimes.
 
+- 2026-09-17 23:23 HST · VolcanoAI → meshanchor-server → moc (one RF TX) · Opus 5 (1M) · at the operator's explicit instruction, `scripts/validate_rns_to_mesh.py --to <MA gateway lxmf delivery hash>` sent ONE LXMF message to close the RNS→Mesh leg's delivery claim. Read the MA gateway's identity file only to DERIVE its public delivery hash (no key copied, nothing written) · could trip: one extra text packet on the meshforge channel (ch 2) at this stamp under the operator's callsign, plus its RNS→MC mirror on MeshCore ch1 — a census or channel-utilisation blip there is this drill; the message body carries the marker `rns2mesh-drill <epoch>` so it is identifiable · cleanup: the validator writes to its own /tmp configdir which it owns; the derivation script was removed from the MA box
 - 2026-09-17 23:12–23:16 HST · meshanchor-server · Opus 5 (1M) · `git pull --ff-only` `/opt/meshanchor` 710b81ed→`df5861d7` (the radio-less RNS→Mesh fix, operator-directed), then `sudo systemctl restart meshanchor-daemon.service` (SYSTEM unit, scope checked; the ONLY unit restarted; new PID verified started 3 s after a captured t0). No config touched this time — code only. **This is a BEHAVIOUR change on a live gateway**: RNS→Meshtastic messages that were being discarded at enqueue now actually transmit, via moc's meshtasticd on channel 2 · could trip: channel-2 utilisation and packet census on moc should RISE from this stamp — that is the cure, not new traffic, and the volume is whatever LXMF has been arriving unseen (≈1.4 enqueues/hour over the prior 7 d); a second ~15 s gap in MA gateway telemetry at this stamp is the restart · cleanup: nothing planted; the earlier drill files were already removed
 - 2026-09-17 22:47–22:51 HST · meshanchor-server (+ one RF TX via moc) · Opus 5 (1M) · repointed `~/.config/meshanchor/gateway.json` `meshtastic_egress.host` from the stale literal `192.168.86.38` (moc's pre-2026-09-12 address; `No route to host` since Sep 13 08:06) to the NAME `moc`, backup `gateway.json.bak-meshanchor-egress-repoint-20260918T084654Z` beside it; then `sudo systemctl restart meshanchor-daemon.service` (SYSTEM unit, scope checked first; the ONLY unit restarted; new PID verified started 1 s after a captured t0). Name not literal DELIBERATELY: the box carries the managed `/etc/hosts` fleet block and the hourly `fleet_hosts_selfheal.sh`, so the name self-heals on the next address move while a literal has no healer at all — which is exactly how this leg died. Identity confirmed before trusting the name: `moc` and `192.168.88.3` present the same ED25519 fingerprint, matching the registry's `expect_hostkey`. Then ONE drill transmission through the real config + real `send_text_direct` (`[MC:egress-drill] …`), at the operator's explicit go-ahead · could trip: the restart re-announced the gateway's LXMF identity and re-registered MeshCore, so a ~10 s gap in MA gateway telemetry at this stamp is this restart, not an outage; the drill put ONE extra text packet on the meshforge channel (ch 2) under the operator's callsign, so a channel-utilisation or packet-census blip at 22:51 on moc is this, not traffic; a `Bridge MC→Mesh` success rate that jumps from 0 to nonzero after this stamp is the CURE, not a new signal · cleanup: `/tmp/egress_drill.py` and `/tmp/egress_t0` removed from meshanchor-server; background journal watcher killed (exit 144 is my own `pkill`, not a failure); config backup deliberately RETAINED
 - 2026-09-17 18:47 HST · moc3 · Fable 5.1 (cancel-label review session) · purged 22,495 RETAINED messages from the local mosquitto (`scripts/mqtt_retained_purge.py`: 21,680 dated >7 d, then 815 undatable with `--include-unknown-age`, operator's instruction) — residue of the public bridge disabled 2026-05-25; re-derived to 0 under `msh/#`, `$SYS` count 53 · could trip: nothing that pages — no unit restarted, no live traffic touched; a map/census subscriber no longer receives a 22k-message backlog on connect, so a 'traffic dropped' reading on moc3 MQTT after this stamp is this purge, not an outage · cleanup: temp script removed from /tmp; `mosquitto.db` shrinks on mosquitto's next autosave/restart, not immediately
@@ -495,11 +496,28 @@ journal logs `Registered remote-egress 'meshtastic' sender … egress → moc:94
 ch2`, drops since restart 0. Full row, every decision and residual: MeshAnchor's
 own `.claude/audits/review_provenance.md`, 2026-09-17.
 
-⚠️ **Residual carried, not closed**: an end-to-end RNS→Mesh delivery had not been
-observed at write time (quiet mesh), so that leg is VERIFIED at registration and
-reachability and **BELIEVED at delivery**. The MC→Mesh half IS delivery-verified.
-⚠️ **Also still open**: nothing pages on a dead bridge leg — see the blindness
+✅ **Residual CLOSED the same night — delivery VERIFIED end to end** (operator:
+"send the LXMF test now"). `scripts/validate_rns_to_mesh.py` sent one LXMF
+message from VolcanoAI to the MA gateway's delivery hash; the chain is witnessed
+at every hop by logs I did not author: validator `delivery CONFIRMED` →
+MA gateway `Stored message 15286 from 0f648f68` → `Sent text via stateless HTTP
+protobuf (id=113236411)` (the egress, not a local radio) → **`Bridge RNS→Mesh:
+[RNS:0f64] rns2mesh-drill …`** → moc's meshtasticd `Received text msg from=0x0,
+id=0x6bfd9bb, msg=[RNS:0f64] rns2mesh-drill …`, `"channel":2`, published to
+`msh/2/json/meshforge/`. **And the authority above all of those: the operator,
+watching the meshforge channel, reported the messages arriving** — the witness
+no instrument here can produce, and the one that actually closes a claim about
+a mesh. ⚠️ **`Bridge RNS→Mesh:` had fired ZERO times in the
+preceding 7 days** — that line appearing at all is the cure, and `from=0x0` plus
+the matching packet id proves it arrived by API injection through the egress.
+⚠️ **Still open**: nothing pages on a dead bridge leg — see the blindness
 paragraph above, which the code fix does not address.
+⚠️ **Found while drilling, NOT fixed**: `scripts/validate_rns_to_mesh.py`'s
+temp client config never creates `<configdir>/lxmf/lxmf/ratchets/`, so RNS's
+background path-response announce raises `FileNotFoundError` out of a daemon
+thread on every run. Harmless to the send (delivery still CONFIRMED, script
+exits 0) — but a traceback that always fires trains the reader to ignore
+tracebacks, and the script's exit code cannot see it. ~2 lines (`makedirs`).
 
 ## 2026-08-11 — tonight's INSTRUMENT changes, queued for a frontier pass
 
