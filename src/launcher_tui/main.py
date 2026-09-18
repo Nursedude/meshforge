@@ -63,6 +63,17 @@ from handler_registry import HandlerRegistry
 from handlers import get_all_handlers
 
 
+# The label on BOTH escape hatches out of a section, and they must agree.
+# A section menu treats Cancel/Escape (menu() -> None) as identical to the
+# "back" row, so the row and the button are one control with two faces.
+# The row is a LIST row and scrolls off a 24x80 terminal (dashboard paints
+# 17 of 21); the button is chrome and never can. Shared constant because
+# two consumers of one artifact drift when they are hardcoded apart
+# (honest_failure_modes #5).
+BACK_LABEL = "Back"
+# Top level: Cancel there is not "back" — main.py offers "Exit MeshForge?".
+TOP_LEVEL_CANCEL_LABEL = "Exit"
+
 # Menu display order per section (Q5, audit W8). One place, drift-tested:
 # tests/test_menu_orderings.py fails when a registry tag is missing here or
 # an entry goes stale — before this dict, 23 tags across 5 sections had
@@ -292,7 +303,7 @@ class MeshForgeLauncher:
         else:
             result = list(registry_items) + filtered_legacy
 
-        result.append(("back", "Back"))
+        result.append(("back", BACK_LABEL))
         return result
 
     @staticmethod
@@ -825,7 +836,8 @@ class MeshForgeLauncher:
                 choice = self.dialog.menu(
                     f"MeshForge NOC v{__version__}",
                     status_hint,
-                    choices
+                    choices,
+                    cancel_label=TOP_LEVEL_CANCEL_LABEL,
                 )
             except DialogError as e:
                 # Genuine dialog-subsystem failure — the only thing the
@@ -936,7 +948,8 @@ class MeshForgeLauncher:
             choice = self.dialog.menu(
                 "Dashboard",
                 "System status and monitoring:",
-                choices
+                choices,
+                cancel_label=BACK_LABEL,
             )
 
             if choice is None or choice == "back":
@@ -961,7 +974,8 @@ class MeshForgeLauncher:
             choice = self.dialog.menu(
                 "Mesh Networks",
                 "Manage mesh network connections:",
-                choices
+                choices,
+                cancel_label=BACK_LABEL,
             )
 
             if choice is None or choice == "back":
@@ -985,7 +999,8 @@ class MeshForgeLauncher:
             choice = self.dialog.menu(
                 "RF & SDR Tools",
                 "Radio frequency tools and monitoring:",
-                choices
+                choices,
+                cancel_label=BACK_LABEL,
             )
 
             if choice is None or choice == "back":
@@ -1008,7 +1023,8 @@ class MeshForgeLauncher:
             choice = self.dialog.menu(
                 "Maps & Visualization",
                 "Network visualization tools:",
-                choices
+                choices,
+                cancel_label=BACK_LABEL,
             )
 
             if choice is None or choice == "back":
@@ -1033,7 +1049,8 @@ class MeshForgeLauncher:
             choice = self.dialog.menu(
                 "Configuration",
                 "System and service configuration:",
-                choices
+                choices,
+                cancel_label=BACK_LABEL,
             )
 
             if choice is None or choice == "back":
@@ -1056,7 +1073,8 @@ class MeshForgeLauncher:
             choice = self.dialog.menu(
                 "System Tools",
                 "System administration:",
-                choices
+                choices,
+                cancel_label=BACK_LABEL,
             )
 
             if choice is None or choice == "back":
@@ -1093,7 +1111,8 @@ class MeshForgeLauncher:
             choice = self.dialog.menu(
                 "Fleet",
                 "One box to many — declare, reproduce, watch, protect:",
-                choices
+                choices,
+                cancel_label=BACK_LABEL,
             )
 
             if choice is None or choice == "back":
@@ -1116,7 +1135,8 @@ class MeshForgeLauncher:
             choice = self.dialog.menu(
                 "Extensions",
                 "MeshForge ecosystem extensions:",
-                choices
+                choices,
+                cancel_label=BACK_LABEL,
             )
 
             if choice is None or choice == "back":
@@ -1138,7 +1158,8 @@ class MeshForgeLauncher:
             choice = self.dialog.menu(
                 "About MeshForge",
                 "Information, help, and diagnostics:",
-                choices
+                choices,
+                cancel_label=BACK_LABEL,
             )
 
             if choice is None or choice == "back":

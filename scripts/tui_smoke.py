@@ -121,7 +121,10 @@ def collect_screens(profile_name=None):
         _registry=registry,
         _tui_context=ctx,
         dialog=SimpleNamespace(
-            menu=lambda t, s, c: (captured.append(list(c)), "x")[1],
+            # **kw: the real menu() takes cancel_label=; a double with a
+            # fixed arity turns a NEW keyword into a TypeError about the
+            # stand-in rather than a finding about the screen under test.
+            menu=lambda t, s, c, **kw: (captured.append(list(c)), "x")[1],
             yesno=lambda *a: True),
     )
     # Bound the same way the launcher binds them, so the driver exercises

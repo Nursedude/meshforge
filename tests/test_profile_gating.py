@@ -480,7 +480,11 @@ class TestEveryCrossSectionRowInheritsItsOwnersFlag:
             for t, d, f in orig(self)]
         seen = []
 
-        def fake_menu(title, subtitle, choices):
+        def fake_menu(title, subtitle, choices, **kwargs):
+            # **kwargs, not a fixed arity: the real menu() grew
+            # cancel_label= and a fake that cannot absorb a new keyword
+            # fails as a TypeError about the DOUBLE, not a finding about
+            # the code under test.
             seen.append(list(choices))
             return "back"
 

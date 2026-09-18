@@ -265,7 +265,10 @@ class TestMainMenuPin:
 
         seen = []
 
-        def fake_menu(title, subtitle, choices):
+        # **kwargs, not a fixed arity: the real menu() grew cancel_label=
+        # and a double that cannot absorb a new keyword fails as a
+        # TypeError about the DOUBLE, not a finding about the code.
+        def fake_menu(title, subtitle, choices, **kwargs):
             seen.append(list(choices))
             return "x"
 
@@ -341,3 +344,78 @@ class TestMainMenuPin:
             f"registry 'main' owns {sorted(registry_tags)}, the "
             f"_handle_main_choice dict owns {sorted(dict_tags)}."
         )
+
+
+# ------------------------------------------- the escape hatch is CHROME, not a row
+
+class TestEveryMenuLabelsItsCancelButton:
+    """Every ``self.dialog.menu()`` in main.py must label its Cancel button.
+
+    A section menu treats Cancel/Escape (``menu()`` returns None) as
+    identical to selecting the "back" row -- see the ``choice is None or
+    choice == "back"`` guard in every section loop. The two are one
+    control with two faces, and only one face survives a short terminal:
+    the ROW is a list row (dashboard paints 17 of 21 at 24x80, and "back"
+    is last, so "back" is what falls off), while the BUTTON is chrome and
+    cannot scroll. Left unlabelled, whiptail paints its default "Cancel",
+    which to a newcomer reads as "abort", not "go up one level" -- so the
+    always-visible control was the mislabelled one.
+
+    Parsed from the AST rather than driven, because the drift this guards
+    against is a NEW section menu whose author forgot the keyword, and a
+    behavioural test only covers the loops someone wrote a case for.
+    """
+
+    @staticmethod
+    def _menu_calls():
+        import ast
+        import inspect
+        tree = ast.parse(inspect.getsource(tui_main))
+        return [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == 'menu'
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr == 'dialog'
+        ]
+
+    def test_every_call_site_passes_cancel_label(self):
+        calls = self._menu_calls()
+        assert calls, "found no self.dialog.menu() calls — the parser drifted"
+        unlabelled = [
+            node.lineno for node in calls
+            if not any(kw.arg == 'cancel_label' for kw in node.keywords)
+        ]
+        assert not unlabelled, (
+            "self.dialog.menu() without cancel_label= at main.py line(s) "
+            f"{unlabelled}. A menu whose Cancel means 'back' must SAY so: "
+            "pass cancel_label=BACK_LABEL (or TOP_LEVEL_CANCEL_LABEL at "
+            "the top level). The 'back' row can scroll off a 24x80 "
+            "terminal; the button cannot."
+        )
+
+    def test_no_call_site_hardcodes_the_label(self):
+        """The row label and the button label must be ONE constant.
+
+        Hardcoding "Back" at a call site is how the two faces of this
+        control drift apart (honest_failure_modes #5).
+        """
+        import ast
+        literals = [
+            (node.lineno, kw.value.value)
+            for node in self._menu_calls()
+            for kw in node.keywords
+            if kw.arg == 'cancel_label' and isinstance(kw.value, ast.Constant)
+        ]
+        assert not literals, (
+            f"cancel_label hardcoded as a literal at {literals} — use "
+            "BACK_LABEL / TOP_LEVEL_CANCEL_LABEL so the button and the "
+            "'back' row can never disagree."
+        )
+
+    def test_the_row_and_the_button_share_one_label(self):
+        """The constant the 'back' row renders is the button's constant."""
+        assert tui_main.BACK_LABEL == "Back"
+        # Cancel at the TOP level is not "back" — it offers an exit.
+        assert tui_main.TOP_LEVEL_CANCEL_LABEL == "Exit"

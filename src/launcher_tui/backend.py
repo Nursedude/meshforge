@@ -239,8 +239,25 @@ class DialogBackend:
             raise DialogError(f"yesno '{title}' failed (subprocess died)")
         return code == 0
 
+    def _cancel_flag(self, label: str) -> List[str]:
+        """Relabel the always-painted Cancel button.
+
+        The button is CHROME, so unlike a list row it can never scroll off
+        a short terminal — which is why it, not the row, is the escape
+        hatch a 24x80 newcomer actually sees (TUI audit Phase 5).
+        whiptail and dialog spell the flag differently; an unrecognised
+        backend gets NOTHING, because an unsupported flag kills the dialog
+        and a mislabelled button is survivable while a dead menu is not.
+        """
+        if self.backend == 'whiptail':
+            return ['--cancel-button', label]
+        if self.backend == 'dialog':
+            return ['--cancel-label', label]
+        return []
+
     def menu(self, title: str, text: str, choices: List[Tuple[str, str]],
-             height: int = None, width: int = None, list_height: int = None) -> Optional[str]:
+             height: int = None, width: int = None, list_height: int = None,
+             cancel_label: Optional[str] = None) -> Optional[str]:
         """
         Display a menu and return selected tag.
 
@@ -251,6 +268,10 @@ class DialogBackend:
             height: Optional dialog height (uses default if not specified)
             width: Optional dialog width (uses default if not specified)
             list_height: Optional list height (uses default if not specified)
+            cancel_label: Optional text for the Cancel button. Callers that
+                treat None as "go back" should pass "Back"; the top-level
+                menu passes "Exit". Left unset the backend's default
+                ("Cancel") is used.
 
         Returns:
             Selected tag or None if cancelled
@@ -297,12 +318,15 @@ class DialogBackend:
         lh = min(wanted_lh, avail_lh)
         h = min(max(h, chrome + text_lines + lh), max_h)
 
-        args = [
-            '--title', title,
+        args = ['--title', title]
+        # Must precede the --menu box option: whiptail/dialog parse
+        # [options] --menu text h w lh [tag item]...
+        args.extend(self._cancel_flag(cancel_label) if cancel_label else [])
+        args.extend([
             '--menu', text,
             str(h), str(w), str(lh),
             '--',  # End of options — menu items are positional args
-        ]
+        ])
         for tag, desc in choices:
             args.extend([tag, desc])
 

@@ -147,6 +147,56 @@ class TestAnsiRegex:
         assert _ANSI_RE.sub('', s) == "LOCKED and plain"
 
 
+class TestCancelButtonLabel:
+    """The Cancel button is the escape hatch that cannot scroll off.
+
+    whiptail and dialog spell the flag differently, and an unsupported
+    flag does not degrade — it kills the dialog. So the spelling is
+    chosen from the DETECTED backend, and an unrecognised one emits
+    nothing: a mislabelled button is survivable, a dead menu is not.
+    """
+
+    def test_whiptail_spelling(self):
+        be = _make_backend([(0, "a")])
+        be.menu("T", "text", [("a", "A")], cancel_label="Back")
+        args = be._run_calls[0]
+        assert '--cancel-button' in args
+        assert args[args.index('--cancel-button') + 1] == 'Back'
+
+    def test_dialog_spelling(self):
+        be = _make_backend([(0, "a")])
+        be.backend = 'dialog'
+        be.menu("T", "text", [("a", "A")], cancel_label="Back")
+        args = be._run_calls[0]
+        assert '--cancel-label' in args, "dialog(1) spells it --cancel-label"
+        assert '--cancel-button' not in args
+
+    def test_unknown_backend_emits_no_flag(self):
+        be = _make_backend([(0, "a")])
+        be.backend = None
+        be.menu("T", "text", [("a", "A")], cancel_label="Back")
+        args = be._run_calls[0]
+        assert not [a for a in args if a.startswith('--cancel')], args
+
+    def test_flag_precedes_the_menu_box_option(self):
+        """whiptail parses [options] --menu text h w lh [tag item]...
+
+        A --cancel-button AFTER --menu would be read as a menu ITEM, so
+        the button label would silently become a selectable row.
+        """
+        be = _make_backend([(0, "a")])
+        be.menu("T", "text", [("a", "A")], cancel_label="Back")
+        args = be._run_calls[0]
+        assert args.index('--cancel-button') < args.index('--menu')
+
+    def test_omitted_label_leaves_args_untouched(self):
+        """No caller opts in -> byte-identical to the pre-change command."""
+        be = _make_backend([(0, "a")])
+        be.menu("T", "text", [("a", "A")])
+        assert be._run_calls[0][0] == '--title'
+        assert not [a for a in be._run_calls[0] if a.startswith('--cancel')]
+
+
 class TestDeadCodeStaysDead:
     def test_gauge_removed(self):
         # Deleted 2026-08-14: zero callers, single-write non-functional
