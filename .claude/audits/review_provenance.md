@@ -342,6 +342,7 @@ pass or a follow-up.
 > its own — and when a line is missing, say the attribution is UNKNOWN rather
 > than reasoning backwards from mtimes.
 
+- 2026-09-17 22:47–22:51 HST · meshanchor-server (+ one RF TX via moc) · Opus 5 (1M) · repointed `~/.config/meshanchor/gateway.json` `meshtastic_egress.host` from the stale literal `192.168.86.38` (moc's pre-2026-09-12 address; `No route to host` since Sep 13 08:06) to the NAME `moc`, backup `gateway.json.bak-meshanchor-egress-repoint-20260918T084654Z` beside it; then `sudo systemctl restart meshanchor-daemon.service` (SYSTEM unit, scope checked first; the ONLY unit restarted; new PID verified started 1 s after a captured t0). Name not literal DELIBERATELY: the box carries the managed `/etc/hosts` fleet block and the hourly `fleet_hosts_selfheal.sh`, so the name self-heals on the next address move while a literal has no healer at all — which is exactly how this leg died. Identity confirmed before trusting the name: `moc` and `192.168.88.3` present the same ED25519 fingerprint, matching the registry's `expect_hostkey`. Then ONE drill transmission through the real config + real `send_text_direct` (`[MC:egress-drill] …`), at the operator's explicit go-ahead · could trip: the restart re-announced the gateway's LXMF identity and re-registered MeshCore, so a ~10 s gap in MA gateway telemetry at this stamp is this restart, not an outage; the drill put ONE extra text packet on the meshforge channel (ch 2) under the operator's callsign, so a channel-utilisation or packet-census blip at 22:51 on moc is this, not traffic; a `Bridge MC→Mesh` success rate that jumps from 0 to nonzero after this stamp is the CURE, not a new signal · cleanup: `/tmp/egress_drill.py` and `/tmp/egress_t0` removed from meshanchor-server; background journal watcher killed (exit 144 is my own `pkill`, not a failure); config backup deliberately RETAINED
 - 2026-09-17 18:47 HST · moc3 · Fable 5.1 (cancel-label review session) · purged 22,495 RETAINED messages from the local mosquitto (`scripts/mqtt_retained_purge.py`: 21,680 dated >7 d, then 815 undatable with `--include-unknown-age`, operator's instruction) — residue of the public bridge disabled 2026-05-25; re-derived to 0 under `msh/#`, `$SYS` count 53 · could trip: nothing that pages — no unit restarted, no live traffic touched; a map/census subscriber no longer receives a 22k-message backlog on connect, so a 'traffic dropped' reading on moc3 MQTT after this stamp is this purge, not an outage · cleanup: temp script removed from /tmp; `mosquitto.db` shrinks on mosquitto's next autosave/restart, not immediately
 - 2026-09-16 21:56 HST · meshanchor-server · Opus 5 · `sudo systemctl restart meshanchor-daemon` (SYSTEM unit, scope checked; the ONLY unit restarted) — the end-of-session drill of the daemon config pin written earlier tonight, which until then had only been verified by loading `DaemonConfig` with the real files, never by the process that consumes it. Verified against a t0 captured BEFORE: start 21:56:33 > t0, `ExecMainStatus=0`, `NRestarts=0`, status file mtime > t0 (the NEW process writing, not the outgoing one's last flush), zero errors since. The new process loaded the saved `meshcore` profile and still came up with gateway, mqtt and map_server enabled, and its `Started:` service set is IDENTICAL to the pre-restart set under the previous profile — gateway_bridge and mqtt_subscriber being exactly what an unpinned profile would have dropped · could trip: ~4 s of daemon downtime on that box, so a delivery/health witness sampling it in that window was us; the MeshCore radio reconnected and re-fired its advert heartbeat on startup, which is a real on-air transmission · cleanup: none — the restart is the intended end state, and the daemon now runs the config it will have after any future reboot.
 - 2026-09-16 20:28-21:05 HST · meshanchor-server · Opus 5 · `fleet_pull.sh /opt/meshanchor` to `183c2b97` (code only, no restarts); then set the box's saved deployment profile `full` -> `meshcore` and added a system daemon config pinning gateway/mqtt/map_server true. The pin is the point: that profile's feature_flags are OVERLOADED — `DaemonConfig._apply_profile` maps gateway/meshtastic/rns/mqtt/maps onto the daemon's own enables, so selecting `meshcore` for an honest MeshCore-primary MENU would ALSO have switched the gateway, MQTT and map server off at the daemon's next restart, silently and days later. YAML outranks profile defaults; effective daemon config measured BEFORE (under `full`) and re-measured AFTER — identical. Also ran the whiptail render drill there (renders only, never dispatches) · could trip: nothing paged and no unit was restarted, so the daemon still runs its pre-change config; the latent change lands whenever `meshanchor-daemon` next restarts, and the pin is what makes that a no-op. A profile-reading witness (health_api, prometheus_exporter, map_data_service) sampling that box now reports `meshcore`, which is real and intended, not drift · cleanup: an interim `full` -> `meshcore` -> `full` cycle earlier in the session was reverted from a backup; the backup `deployment.json.bak-tuiport-<ts>` is KEPT, scratch scripts removed. TERM note for a later reader: a non-interactive ssh gives `TERM=dumb` and the render drill fails 0/10 there for that reason alone — not a fault.
@@ -360,6 +361,70 @@ pass or a follow-up.
 - 2026-09-06 23:24 HST · lehua · Opus 5 · watchdog `--one-shot` (read-only; one-shot never reaches `run_loop`, so no phase-2 action) to measure enrollment cost on a Zero 2W · wrote `watchdog.oneshot.json` + 19 debounce files under `/var/lib/meshforge` on a box whose role declares `meshforge-watchdog: absent` — a stray watchdog-shaped state file there can mislead a later reader · **cleaned**: all 20 removed 23:30, the 2 pre-existing files left untouched
 - 2026-09-06 ~17:56 HST · lehua · Fable 5.1 · UNKNOWN — created `/var/lib/meshforge` + 2 probe debounce files · nothing observed · **not cleaned** (the 2 files remain; harmless `{"streak":0}`). Attribution is the operator's recollection, not evidence: the box's journal had aged out before the question was asked. This line is the counterexample the log exists to prevent
 - 2026-09-06 22:15 HST · VolcanoAI · Fable 5.1 · review fixtures planted under `/opt` + `/srv` as root for the `518170fa`/`14290e60` second opinion · **paged the live watchdog**: `rns_stray_env_drift` edge_up 22:15:47 → edge_down 22:18:18 · **cleaned**: plants removed, removal listed in the pass. Rule taken: plant in a tmp tree and inject the glob; a live-path plant is a declared production event, and excluding the drill path in the detector was REFUSED
+
+## QUEUED 2026-09-17 (Opus 5) — MeshAnchor: the queue's `meshtastic` sender is never registered on a radio-less gateway
+
+**Found beside the egress repoint (touch log, same stamp), NOT fixed — the operator's
+call was "queue it, decide later."** MeshAnchor-only: MeshForge has **no**
+`meshtastic_egress` at all (`grep -rn meshtastic_egress src/` → 0 hits here), so
+there is no lead-repo obligation and no twin to port from. This is the one place
+the twin map's "untracked-diverged" tier bites in MA's favour.
+
+**The defect.** `rns_bridge.py` registers the persistent queue's Meshtastic sender
+under `if self._persistent_queue and self._mesh_handler:`. On meshanchor-server
+`_mesh_handler` is `None` **by design** — the box has no meshtasticd
+(`LoadState=not-found`, nothing on `:9443`), which is precisely why
+`meshtastic_egress` exists. The gate itself is *correct as written*
+(`self._mesh_handler.queue_send` would raise on `None`); what is missing is the
+egress-backed alternative. So `enqueue(destination="meshtastic")` hits
+`has_sender()` → False → Issue #67's drop-at-enqueue path, and the retry safety
+net silently discards. Measured: **242 `no sender registered for destination
+'meshtastic'` drops in 7 days** on `meshanchor-daemon.service`.
+
+**Severity — read this before ranking it.** Those 242 drops were a *consequence*
+of the stale address, not an independent failure: MA runs
+`bridge_mode="meshcore_bridge"`, so the RNS→Mesh and MC→Mesh **direct** paths are
+the live ones, and both go through `send_to_meshtastic`, which the repoint fixed.
+The enqueues came from `_requeue_failed_chunks` / `_persist_failed_message` — the
+paths that fire *because* a direct send failed. With the address correct, the
+drop count should fall to ~0 in steady state. **The gap is therefore LATENT, not
+active**: it removes the retry net exactly when a transient egress failure
+happens (moc reboots, the uplink blips, meshtasticd restarts) — the moment the
+net exists for. Honest framing: this is reliability-under-degradation, not a
+broken feature today.
+
+**Fix shape (~10 lines + tests), for whoever takes it:**
+* Add an `elif` beside the existing gate: when `_persistent_queue` is present,
+  `_mesh_handler` is None, and `meshtastic_egress` is enabled with a host,
+  register `"meshtastic"` → a new `_queue_send_meshtastic_egress(payload) -> bool`
+  that unwraps `payload['message']` / `payload.get('channel')` and delegates to
+  the existing `send_to_meshtastic` (which already owns the `send_text_direct`
+  fallback and the circuit breaker).
+* Keep `min_spacing_s=MESHTASTIC_TX_MIN_SPACING_S` — the 2026-06-04
+  RATE_LIMIT_EXCEEDED find applies identically to a remote toradio burst; the
+  egress ends at the same firmware limiter.
+* ⚠️ **Note the channel asymmetry and decide it deliberately**: the direct egress
+  path uses `meshtastic_egress.channel_index` (2 = moc's `meshforge`), while
+  queue payloads carry `self.config.meshtastic.channel`. A naive sender would
+  retry a chunk onto a *different* channel than the one the original went out on.
+  The egress's own index should win, mirroring `send_to_meshtastic`'s docstring.
+* ⚠️ **Write-time question for this fix** (hfm #4 — reader/writer wire together
+  or fail together): what would still pass the test if the sender were dead?
+  `has_sender("meshtastic") is True` is exactly that check — it passes on a
+  registered callable that never delivers. Terminate the test at a **delivered
+  payload**, with the egress stubbed and the channel asserted.
+
+**Why it went unseen for 5 days.** Nothing pages on it. The drop is logged at
+**INFO** and rate-limited per destination (`NO_SENDER_LOG_INTERVAL`), and
+`Circuit OPEN` is a WARNING that no probe consumes. A leg that had **zero**
+successful `Bridge MC→Mesh:` in 7 days looked identical to a quiet one from every
+instrument we own. ⚠️ **That is the more interesting finding than the code gap**,
+and it is a `detector_blind` shape on a product END ("a message arrives"), not a
+harness-housekeeping subject — so `harness_restraint.md` §2 does **not** demote
+it, and its §1 exemption for "fixing a detector that is blind or misaimed" would
+cover an instrument that watches this. Recommend scoping that question WITH the
+code fix rather than before it: the cheapest honest witness is probably a
+bridge-success-rate signal on the MA gateway, not a new probe class.
 
 ## 2026-08-11 — tonight's INSTRUMENT changes, queued for a frontier pass
 
