@@ -76,6 +76,26 @@ STICKY_MATCH="(^|[^A-Za-z])(${STICKY_RE})([^A-Za-z]|\$)"
 
 die() { printf 'refused: %s\n' "$1" >&2; exit 1; }
 
+# THE CLOSING STEP (2026-09-18). ONE definition, called from EVERY exit a
+# session close can take — "nothing to rotate", dry-run, and apply. It is
+# printed by THIS script because this is what runs at session close, next to
+# /memory-health: the only moment the question can still change where a fact
+# gets filed. Born from an outage that day — a session read the full handoff,
+# quoted it, then 9h later overrode its explicit instruction on a wrong code
+# trace and killed MeshCore bridging. The instruction was never truncated
+# away; it was prose, and prose cannot refuse you.
+print_closing_step() {
+    printf '\n  ➡️  CLOSING STEP before you write the handoff — ask ONE question:\n'
+    printf '      "is anything here a fact the next session must NOT override?"\n'
+    printf '      YES -> file it in tier 2 (.claude/foundations/persistent_issues.md,\n'
+    printf '             loads every turn) or tier 3 (a test/lint rule, which REFUSES\n'
+    printf '             you). The handoff then merely POINTS at it.\n'
+    printf '      Tier 1 (these notes) is the DEFAULT and the WEAKEST: lifted ~2400\n'
+    printf '      chars, the rest UNREAD, and NOT repo-tracked. Reading more is not\n'
+    printf '      the fix — prose cannot refuse you.\n'
+    printf '      Full rule: .claude/foundations/harness_map.md -> "Filing tiers".\n'
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --apply)   APPLY=1; shift ;;
@@ -225,11 +245,14 @@ else
 fi
 
 if [ "$n_rotate" -eq 0 ]; then
-    printf '\nnothing to rotate.\n'; exit 0
+    printf '\nnothing to rotate.\n'
+    print_closing_step
+    exit 0
 fi
 
 if [ "$APPLY" -eq 0 ]; then
     printf '\nDry run only. Re-run with --apply to move these sections.\n'
+    print_closing_step
     exit 0
 fi
 
@@ -426,6 +449,7 @@ if [ "$vfail" -eq 0 ]; then
     printf '    ✅ all %s rotated section(s) appended once and gone from notes\n' "$n_rotate"
     printf '\n  Reminder: the "## Rotated to the archive" pointer section is hand-written —\n'
     printf '  update it yourself if these sections deserve a breadcrumb.\n'
+    print_closing_step
     exit 0
 fi
 printf '\n  ❌ VERIFICATION FAILED — restore with:\n     cp %s %s\n' "$bk_notes" "$NOTES"

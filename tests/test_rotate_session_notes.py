@@ -749,3 +749,47 @@ class TestStickyMatchesWholeWordsOnly:
         assert v[hit] == "KEEP-STICKY", (
             f"a genuine 'OPEN' heading lost its protection ({v[hit]}) — "
             "narrowing a false-firing guard must not blind it")
+
+
+class TestClosingStepFiresOnEveryExit:
+    """The closing-step reminder must print on EVERY path a session close takes.
+
+    ⚠️ Born 2026-09-18. The reminder was first added to the apply path only,
+    and a dry-run on the real notes printed NOTHING — the common case is the
+    "nothing to rotate" early exit. Caught by running it, not by reading it.
+    A reminder that fires on one of three paths is worse than none, because
+    its absence reads as "nothing to do".
+
+    It is pinned here because the whole point of the reminder is to survive a
+    stranger: if a refactor drops a call site, this test refuses the change.
+    """
+
+    MARK = "CLOSING STEP before you write the handoff"
+
+    def test_fires_when_nothing_to_rotate(self, notes, home):
+        r = run(home, "--notes", str(notes), "--keep", "99")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "nothing to rotate" in r.stdout
+        assert self.MARK in r.stdout, r.stdout
+
+    def test_fires_on_a_dry_run_with_rotations(self, notes, home):
+        r = run(home, "--notes", str(notes), "--keep", "1")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "Dry run only" in r.stdout
+        assert self.MARK in r.stdout, r.stdout
+
+    def test_fires_after_apply(self, notes, home):
+        r = run(home, "--notes", str(notes), "--keep", "1", "--apply")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self.MARK in r.stdout, r.stdout
+
+    def test_names_the_durable_tiers_not_just_the_notes(self, notes, home):
+        """The reminder is useless if it does not say WHERE to file instead.
+
+        A gate that refuses without saying what to do gets satisfied the
+        cheapest way (feedback_falsifiability_terminates_rechecking_does_not).
+        """
+        out = run(home, "--notes", str(notes), "--keep", "99").stdout
+        assert "persistent_issues.md" in out
+        assert "harness_map.md" in out
+        assert "REFUSES" in out

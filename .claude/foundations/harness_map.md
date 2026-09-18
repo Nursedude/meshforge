@@ -63,6 +63,47 @@ Consumers: claim_gate (writes), warmstart brief (shows track record),
 | durable domain facts | `MEMORY.md` index → topic files; cold history in `MEMORY_ARCHIVE.md` (grep it) |
 | recurring bug? | `persistent_issues.md` FIRST (it's probably been fixed before) |
 
+## Filing tiers — where a fact must live to SURVIVE the stranger
+
+Born 2026-09-18 from the operator's concern: *"truncation is not good for you
+understanding this domain when you enter as the stranger — there is a limit to
+what you will read, past whatever that limit is it's 'unknown' because you don't
+read it."*
+
+**The read horizon, measured.** `harness_audit`'s handoff lift cap is 2,400
+chars; a live session-notes file runs ~76,000 B. A fresh session is handed ~3%
+plus a path. Past that line content is not absent, it is **UNREAD** — for a
+stranger, operationally identical. Unobservable ≠ healthy.
+
+⚠️ **Reading MORE is not the fix, and that is measured too.** Same day: a
+session read the FULL top handoff section at start, quoted it, then ~9 hours
+later **overrode its explicit instruction** ("name-matched like the oracle
+gate") on a code trace of the WRONG direction, shipping an index-based MeshCore
+channel guard that refused 100% of channel traffic on the live gateway. The
+instruction was never truncated away — it was in context and got contradicted,
+because it was **prose in a narrative section**. Prose cannot refuse you, and
+when a code trace contradicts prose, code wins — which is normally CORRECT.
+The defect was filing an invariant in the tier that loses that argument.
+
+| Tier | Home | Property | Use for |
+|---|---|---|---|
+| 1 | `~/.claude/plans/gateway-session-notes-<box>.md` | lifted ~2,400 chars, rest unread; **NOT repo-tracked**, per-box, unversioned | INTENT + STATE. Safe to lose, cheap to re-derive |
+| 2 | `.claude/foundations/persistent_issues.md` | loaded EVERY turn, 40 KB cap (MF012), never truncated | invariants a stranger must not miss; terminal decision tells |
+| 3 | a test or lint rule | **REFUSES you** | invariants that must win against a wrong code trace |
+
+Tier 1 is the DEFAULT and the WEAKEST. Anything load-bearing filed only there
+is destined to be lost — truncation or not.
+
+**➡️ The closing step, before writing any handoff**: ask *"is anything here a
+fact the next session must not override?"* If yes, it goes to tier 2 or 3 and
+the handoff merely POINTS at it. `scripts/rotate_session_notes.sh` prints this
+reminder at session close, where it actually fires.
+
+**Not concerns** (do not "fix" these — it would be machinery watching
+machinery): the warmstart lift mechanism, which correctly reports how much is
+unread and gives the path; and the 2,400 cap, which costs every turn to raise,
+regrows, and would not have prevented the incident above.
+
 ## Verification invariants (model-agnostic; the harness enforces what it can)
 
 1. **Consumer-of-record, not the wiring** (calibrated_claims rule 7): a static
