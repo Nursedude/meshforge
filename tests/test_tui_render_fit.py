@@ -116,3 +116,41 @@ class TestListGrowsWithTerminal:
         h, lh = _fit(3, 60)
         assert lh <= 14, f"a 3-item menu asked for {lh} list rows"
         assert h <= 22, f"a 3-item menu produced a {h}-row box"
+
+
+class TestChromeIsMeasuredNotAssumed:
+    """MENU_CHROME_ROWS is whiptail's real overhead, pinned by arithmetic.
+
+    Measured 2026-09-18 with real whiptail under a pty (LINES x COLUMNS,
+    text lines painted / text lines given, at the box menu() computed):
+
+        text 2 -> 1/2   text 3 -> 2/3   text 4 -> 3/4   text 6 -> 5/6
+        21 rows, 1-line subtitle, 24-row terminal -> 0/1 (18 list rows)
+
+    every one of them complete with ONE more row of chrome. The stub in
+    scripts/tui_smoke.py records list rows only, so it could not see a
+    subtitle line vanish. This test cannot run whiptail either — it pins
+    the arithmetic to the measured constant so a future 'tidy' back to 6
+    fails here and the docstring says what to re-measure.
+    """
+
+    def test_constant_is_the_measured_value(self):
+        assert be.DialogBackend.MENU_CHROME_ROWS == 7
+
+    def test_box_reserves_the_measured_chrome_when_content_fits(self):
+        # Not terminal-bound: 3 items, 3-line text, tall terminal.
+        h, lh = _fit(3, 40, text="one\ntwo\nthree")
+        assert h - lh - 3 == be.DialogBackend.MENU_CHROME_ROWS, (h, lh)
+
+    def test_box_reserves_the_measured_chrome_when_terminal_binds(self):
+        # Terminal-bound: 22 items, 1-line text, 24 rows — the dashboard shape.
+        h, lh = _fit(22, 24)
+        assert h == 24 and h - lh - 1 == be.DialogBackend.MENU_CHROME_ROWS, (h, lh)
+
+    def test_multiline_subtitle_is_never_traded_for_list_rows(self):
+        """At the binding size the LIST gives up rows, never the text."""
+        for n_text in (1, 2, 3, 4):
+            text = "\n".join(f"L{k}" for k in range(n_text))
+            h, lh = _fit(22, 24, text=text)
+            assert h == 24
+            assert lh == 24 - be.DialogBackend.MENU_CHROME_ROWS - n_text, (n_text, lh)

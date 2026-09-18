@@ -263,6 +263,20 @@ class DialogBackend:
     #: The tag every navigational menu uses for its return-to-parent row.
     BACK_TAG = 'back'
 
+    #: Rows a whiptail --menu box spends on everything that is not text or
+    #: list: borders, title, the gaps above/below the list, the button row.
+    #: MEASURED 2026-09-18 against real whiptail (newt 0.52.25) under a pty
+    #: at 24 and 40 rows — this was 6 from 2026-03-07 to 2026-09-18, and 6
+    #: is one short: a 2-line subtitle painted 1 line, 3 painted 2, 6
+    #: painted 5, and a 21-row menu at 24 rows painted ZERO subtitle lines
+    #: (18 list rows). With 7 every subtitle line renders and the list
+    #: gives up exactly one row when the terminal binds. Text cannot
+    #: scroll; the list can — so the row belongs to the text. The
+    #: scripts/tui_smoke.py stub records list rows only and was blind to
+    #: this for six months; the witness that is not ours is whiptail's own
+    #: bytes. dialog(1) NOT measured (not installed on the measuring box).
+    MENU_CHROME_ROWS = 7
+
     def _infer_cancel_label(self, choices, cancel_label):
         """Derive the Cancel button's label from the menu's own rows.
 
@@ -343,8 +357,8 @@ class DialogBackend:
             max(1, (len(line) + inner_w - 1) // inner_w)
             for line in text.split('\n')
         )
-        # Chrome: border(2) + title(1) + padding(2) + button(1) = 6
-        chrome = 6
+        # Chrome rows: see MENU_CHROME_ROWS — MEASURED, not derived.
+        chrome = self.MENU_CHROME_ROWS
         # GROW the box to fit its content up to the terminal, then shrink
         # the list if it still doesn't fit. The old fit only shrank on
         # small terminals: a multi-line panel (NOC Home) inside the fixed
