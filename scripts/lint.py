@@ -456,7 +456,14 @@ class MeshForgeLinter:
             is_string = stripped.startswith('"') or stripped.startswith("'")
             is_comment = stripped.startswith('#')
             basename = os.path.basename(filepath)
-            allowlisted_files = {'db_helpers.py'}
+            # db_audit.py is the AUDITOR of what connect_tuned produces. It
+            # opens each DB read-only (`file:...?mode=ro`) to read back
+            # journal_mode/synchronous/journal_size_limit. Routing it through
+            # connect_tuned would make it APPLY the very PRAGMAs it is
+            # checking for — a checker consuming the artifact it validates,
+            # the 2026-07-25 gen_fleet_hosts class. It must stay raw, and
+            # read-only so it cannot mutate what it measures.
+            allowlisted_files = {'db_helpers.py', 'db_audit.py'}
             in_tests = '/tests/' in filepath or basename.startswith('test_')
             if (not is_string and not is_comment and basename not in allowlisted_files
                     and not in_tests):
@@ -1888,7 +1895,8 @@ def check_probe_fail_dark(files: List[str],
 def main():
     parser = argparse.ArgumentParser(description='MeshForge Linter')
     parser.add_argument('files', nargs='*', help='Files to lint')
-    parser.add_argument('--all', action='store_true', help='Lint all Python files in src/')
+    parser.add_argument('--all', action='store_true',
+                        help='Lint all Python files in src/ and scripts/')
     parser.add_argument('--staged', action='store_true', help='Lint staged files only')
     parser.add_argument('--format', choices=['text', 'json', 'github'], default='text',
                        help='Output format')
@@ -1898,7 +1906,17 @@ def main():
 
     # Determine files to lint
     if args.all:
-        files = get_all_python_files('src')
+        # ⚠️ src/ AND scripts/. Until 2026-09-18 this was src/ only, so
+        # NOTHING under scripts/ was covered by the pre-push check CLAUDE.md
+        # names as the lint gate ("Lint green? — lint.py --all exits 0"),
+        # while --staged covered it — meaning a rule was enforced only on
+        # files someone happened to touch. A raw RNS.Reticulum() (MF019) sat
+        # in scripts/validate_rns_to_mesh.py while --all reported clean; the
+        # pre-commit hook caught it only because that file was finally
+        # staged. An instrument reporting "clean" over a scope narrower than
+        # its own name is the detector-blind class aimed at our own gate.
+        # Pinned by TestLintAllCoversScripts in tests/test_lint_scope.py.
+        files = get_all_python_files('src') + get_all_python_files('scripts')
     elif args.staged:
         files = get_staged_files()
     elif args.files:

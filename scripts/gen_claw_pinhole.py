@@ -321,14 +321,19 @@ def apply_region(nft_path: str, allow, port: int, dry: bool = False):
         if tmp and os.path.exists(tmp):
             os.unlink(tmp)
 
+    # reload stays a direct call: service_check has no reload-a-unit helper
+    # (daemon_reload() is `systemctl daemon-reload`, a different operation),
+    # and MF008 does not flag it. The RESTART fallback goes through the SSOT
+    # helper — behaviour-identical when this runs as root (_sudo_cmd is a
+    # passthrough there) and strictly better when it does not, since it
+    # elevates instead of failing.
     rc = subprocess.run(["systemctl", "reload", "nftables"],
                         capture_output=True, text=True, timeout=30)
     if rc.returncode != 0:
-        rc = subprocess.run(["systemctl", "restart", "nftables"],
-                            capture_output=True, text=True, timeout=30)
-        if rc.returncode != 0:
-            return False, "wrote config but nftables reload FAILED: %s" % (
-                rc.stderr or "").strip()
+        from utils.service_check import restart_service
+        ok, msg = restart_service("nftables", timeout=30)
+        if not ok:
+            return False, "wrote config but nftables reload FAILED: %s" % msg
     # INVARIANT 5: verify by observing the artifact.
     live = subprocess.run(["nft", "list", "ruleset"],
                           capture_output=True, text=True, timeout=20)

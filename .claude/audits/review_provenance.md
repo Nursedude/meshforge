@@ -2169,7 +2169,7 @@ over every env root returned ZERO for the ten WANTED packages. Not live.
 
 ---
 
-## CLOSED 2026-09-17 (Opus 5) — `scripts/validate_rns_to_mesh.py`: three defects, every one found by RUNNING it
+## CLOSED 2026-09-17 (Opus 5) — `scripts/validate_rns_to_mesh.py`: FOUR defects, every one found by RUNNING it
 
 **Queued an hour earlier as "~2 lines (`makedirs`)". That estimate was wrong,
 and so was the diagnosis behind it** — the second time in one session that a
@@ -2187,7 +2187,8 @@ called `rotate_ratchets()` → `_persist_ratchets()` and raised from
 `Thread-N (job)`. ➡️ **A path in an error message tells you WHERE, never
 WHEN. Read the lifetime.**
 
-**Three defects, in increasing order of how much they mattered:**
+**Four defects, in increasing order of how much they mattered** (the fourth
+was added after the commit gate refused the fix — see below):
 
 1. **Traceback on every run** (the one queued). Fixed by tearing down before
    deleting: flush → `router.exit_handler()` → `RNS.Transport.detach_interfaces()`
@@ -2248,9 +2249,9 @@ reported clean all session, including twice in this row's own measurements.
 instrument that reports "clean" over a scope narrower than its name is the
 `detector_blind` class aimed at the author's own gate — and per
 `harness_restraint` §1 fixing a blind instrument is explicitly EXEMPT from the
-freeze. **Not fixed here, deliberately**: widening the walk is one line, but
-it may surface a backlog across every script in the tree, and how much of that
-to take is the operator's call, not a decision to smuggle into a script fix.
+freeze. **FIXED the same night** at the operator's instruction, in its own commit —
+see the `--all` scope section below. The backlog I warned about did not exist:
+**2 issues across 78 script files**, both resolved rather than baselined.
 
 ### ⚠️ The residual is the real lesson: this repo ALREADY KNEW, in one file
 
@@ -2279,6 +2280,68 @@ just fixed. ➡️ hfm #5 states the rule as *two consumers of one concept will
 drift*; this is its sharper form: **a cure written into one copy of a
 mechanism and not the others is a cure the next reader will pay for again.**
 A grep at fix time is cheap; the rediscovery cost a session.
+
+## CLOSED 2026-09-18 (Opus 5) — `lint.py --all` walked `src/` only; the gate could not see `scripts/`
+
+**Found by the gate refusing a commit** (the MF019 rejection in the row above),
+not by reading code. CLAUDE.md's pre-push check names `python3 scripts/lint.py
+--all` as *the* lint gate. `--all` called `get_all_python_files('src')` and
+nothing else, so **every Python file under `scripts/` was outside the gate** —
+78 files of operational tooling that runs on live boxes. `--staged` did cover
+them, so each rule was enforced only on files somebody happened to touch. A raw
+`RNS.Reticulum()` sat in `scripts/validate_rns_to_mesh.py` while `--all`
+reported clean, including twice inside that row's own measurements.
+
+⚠️ **The argparse help even said "Lint all Python files in src/".** The scope
+was documented and still wrong, because the *name* is what CLAUDE.md and every
+reader trusted. An instrument that reports "clean" over ground narrower than
+its name is the `detector_blind` class aimed at our own gate — and
+`harness_restraint` §1 exempts fixing a blind instrument from the freeze.
+
+**I predicted a backlog and was wrong — measure before you warn.** I told the
+operator widening it "may surface a backlog across every script in the tree."
+Measured: **2 issues across 78 files.** Both fixed, neither baselined:
+* `scripts/db_audit.py:167` (MF013, ERROR) — bare `sqlite3.connect()`.
+  **Allowlisted, and it must be**: db_audit is the AUDITOR of what
+  `connect_tuned` produces, opening each DB read-only to read back
+  `journal_mode`/`synchronous`/`journal_size_limit`. Routing it through
+  `connect_tuned` would make it APPLY the PRAGMAs it is checking for — a
+  checker consuming the artifact it validates, the 2026-07-25
+  `gen_fleet_hosts` class. The file already carried a comment saying it
+  trusts MF013 to police the writers; the allowlist now says so too.
+* `scripts/gen_claw_pinhole.py:327` (MF008, WARNING) — raw `systemctl restart
+  nftables`, now `restart_service("nftables")`. ⚠️ Fixed rather than left as a
+  standing warning **because only ERRORS gate**: a warning that fires on every
+  pre-push is exactly the "traceback that always fires" pattern from the row
+  above — it trains the reader to skip warnings. Behaviour-identical when the
+  script runs as root (`_sudo_cmd` is a passthrough there) and strictly better
+  when it does not, since the helper elevates instead of failing. The `reload`
+  call one line up stays direct: `service_check` has no reload-a-unit helper
+  (`daemon_reload()` is `systemctl daemon-reload`, a different operation).
+
+**Guarded by a DRILL, not a source read**: `tests/test_lint_scope.py` (4)
+plants a real MF001 violation into `scripts/` and into `src/` and requires
+`--all` to find each, with a cleanup assertion because the plants are written
+into the repo. Reverting the widening fails the `scripts/` plant; the fixed
+version passes all four.
+
+🪞 **The first cut of that drill proved nothing, politely.** Its planted
+violation was `return Path.home() / 'x'` — and `return Path.home()` is a
+DELIBERATE MF001 exemption (the `get_real_user_home` fallback shape). So the
+linter correctly found nothing, and the test failed claiming the gate was
+blind **in `src/` too**, which it demonstrably is not. A plant that is not
+actually a violation is a drill that measures nothing; it only looked like a
+finding. Corrected to an assignment (`config = Path.home() / …`).
+➡️ Third time in two sessions that my first reading was wrong and the *running
+thing* corrected it. The pattern is consistent enough to name: **I reason
+confidently about what code does, and the cheapest correction is always to
+make it run.**
+
+**NOT done, measured, operator's call**: `tests/` is still outside `--all` —
+**23 issues there (1 error, 22 warnings)**. Many rules deliberately exempt
+tests (`is_test` guards in MF001/MF009/MF013/MF019), so including that tree is
+a different decision with a real backlog attached, unlike `scripts/`. Recorded
+here so the number does not have to be re-derived.
 
 ## QUEUED 2026-09-17 (Opus 5) — the INERT-TIER CUT, for the 2026-10-09 freeze review
 
