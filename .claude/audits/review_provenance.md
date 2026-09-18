@@ -2344,6 +2344,132 @@ tests (`is_test` guards in MF001/MF009/MF013/MF019), so including that tree is
 a different decision with a real backlog attached, unlike `scripts/`. Recorded
 here so the number does not have to be re-derived.
 
+## QUEUED 2026-09-18 (Opus 5 1M) — the INGRESS TRUST-BOUNDARY ENUMERATION
+
+**Operator-directed** at the close of the MeshCore Public-leak session: *"how
+can a leak that's months old be missed with opus, fable and me all over this
+domain 24/7??? this is the deeper arc"* and *"scope it properly — yes we can
+do better, this domain has the skills."*
+
+Written for **the stranger**: any future model, any tier, no context from this
+session. Everything below is measured on 2026-09-18 and re-derivable by the
+commands quoted. Nothing here is asserted from memory.
+
+### Why the domain missed it — the mechanism, not the blame
+
+The MeshCore Public-channel inbound leak survived months of attention from two
+models and the architect. Not inattention — **misaimed attention**, and the
+aim was structural:
+
+1. **Every instrument in this domain detects FAILURE.** Drops, wedges, stalls,
+   crashloops, silence, skew, drift. This leak produced none: bridged Public
+   text is byte-identical to intended bridged text. **Its signature was
+   SUCCESS** — more successful bridges, which every counter reads as health.
+   Measured: of all `probe_*` names, the five matching
+   leak/trust/allowlist/authz/ingress are `aredn_source_dark`,
+   `meshtasticd_vsz_leak`, `mini_watchdog_source_unwired`,
+   `phoneapi_tcp_leak`, `resource_canary_degraded` — every one is a
+   RESOURCE or AVAILABILITY probe. **Zero concern trust boundaries.**
+   Re-derive: `grep -roh "probe_[a-z_]*" src/utils/watchdog_probes*.py | sort -u`
+2. **The prior fixes acted as tombstones.** Three Public-leak fixes landed
+   (MA `ead12c7b` #35, `6d9bc395` #37, `2fdfdde2`), all thorough — 16
+   regression tests, a `-1` sentinel, two counters — and all on the WRITE
+   path. `6d9bc395` says *"silent slot-0 broadcasts no longer possible."*
+   True, about egress. Once a class is marked closed with tests and counters
+   it stops being a live question. A well-executed fix inoculates the area.
+3. **Both counters point OUTWARD.** `meshcore_dm_dropped_contact_not_found`
+   and `meshcore_bridge_default_channel_drop` count OUR refusals to send.
+   Nothing counted inbound acceptance until `channel_suppressed` (this
+   session), so the detector layer could read fully green with the input path
+   wide open.
+4. **The symptom presented as a MISSING FEATURE.** The architect observed it
+   for weeks: *"Public-channel text has been landing on the MeshForge channels
+   for a while, and a reply could never be made to work — you might say
+   leaky."* The visible form was *replies don't work*, which routes a reader
+   to "how do we add replies?" not "why is this traffic here at all?" An
+   excess of PERMISSION disguised as an absence of CAPABILITY.
+5. **There was a decoy.** `MeshCoreConfig.desired_channels` looks exactly like
+   a channel filter. It is radio PROVISIONING. A plausible answer to the right
+   question, that is wrong — so the check terminated early.
+6. **Three observers, ONE frame.** All three were asking *"is it working?"*
+   Nobody asked *"should this be allowed?"* By this domain's own
+   authorial-distance rule (*a witness you did not write outranks one you
+   did*), three witnesses sharing a frame are one witness with better uptime.
+   ⚠️ And 24/7 activity makes this WORSE: the escalation/review/deploy stream
+   BECOMES the agenda, and a question nobody asks never enters the queue.
+   Evidence, two days running: the 09-17 echo regression surfaced from
+   *"anything of concern?"* and this root cause from *"why the leak in the
+   first place?"* **Neither came from an instrument. Both came from an
+   open-ended human question.**
+
+### The measured state of ingress authorization
+
+`RoutingRule` DOES carry `source_filter` (regex on source address) — so a
+permission-shaped knob exists. But `message_routing.py:234` reads
+`if rule.source_filter:`, so **empty means the filter is skipped entirely =
+allow all**, it is per-rule and opt-in rather than default-deny, and
+meshanchor-server carries no `routing` block at all. Meanwhile all 8
+`ALLOWLIST` constants in `src/gateway/` are ORACLE-scoped: the read-only
+responder has authorization machinery; the BRIDGE — the thing that forwards
+other people's traffic onto other networks — had none until this session.
+Re-derive: `grep -rn "ALLOWLIST" src/gateway/*.py | grep -c ORACLE`
+
+### The deliverable: a COVERAGE GATE, not a new signal class
+
+Deliberately NOT a probe. The detector layer is not the problem (the 09-09
+census: 314 clean / 234 inert) and `harness_restraint` is right to freeze it.
+The gap is *nobody asked*, and a question cannot be a daemon — but it CAN be a
+failing test. This belongs in the Issue-#29 regression-guard tier, where
+coverage gates already live, as a closed-enum gate (hfm #7): **enumerate every
+inbound path; each must DECLARE a source policy; a new ingress FAILS the test
+until someone declares one.** A declaration may legitimately be "open, and
+here is why" — the gate forces the decision to be explicit, not restrictive.
+
+### Ingress inventory to enumerate (each row: policy? default? witness?)
+
+| # | Path | Entry point |
+|---|---|---|
+| 1 | MeshCore channel, event | `meshcore_handler._on_channel_message` |
+| 2 | MeshCore channel, poll (#1232) | `meshcore_handler._poll_channel_messages` |
+| 3 | MeshCore DM | `meshcore_handler._on_contact_message` |
+| 4 | Meshtastic RX -> bridge | `meshtastic_handler`, `mesh_bridge` |
+| 5 | LXMF/RNS inbound delivery | `bridge_ack_mixin._register_lxmf_delivery_callbacks`, `canonical_message.from_rns` |
+| 6 | MQTT subscribe | `monitoring/mqtt_subscriber.py:425,431`, `plugins/mqtt_bridge.py:188` |
+| 7 | HTTP surfaces | `metrics_server`, `config_api`, `map_http_handler`, `map_data_service` |
+| 8 | NATS claw bus | see the 2026-08-30 provenance row: cleartext + tokenless, and `tool_file_read` serves `/config.json` UNREDACTED to any bus/LAN client (deliberate bus-trust design, boundary verified) |
+
+Rows 1-2 are CLOSED as of MF `8c5b5fee`/`8910c156` + MA `518d9ba7`
+(default-deny Public, declared `bridge_source_channels`, `channel_suppressed`
+witness). Rows 3-8 are UNEXAMINED for source policy. Expect more than one gap;
+find them by enumeration rather than one operator observation at a time.
+
+### Method for the stranger — do this, in this order
+
+1. For each row, answer three questions in writing: **who can put bytes here?
+   did we CHOOSE them? what witnesses an acceptance we did not intend?**
+2. Ask the write-time question from `calibrated_claims` coverage §1: *what
+   would still pass our checks if this path were wide open?* If the answer is
+   "everything", the path has no authorization observability.
+3. Prefer DECLARING the existing posture over changing it. A surprise
+   tightening on a live gateway is its own incident (see the 09-18 echo
+   regression, caused by repairing a leg).
+4. Every tightening needs a POSITIVE control, not just absence: prove intended
+   traffic still arrives. "Quiet" is ambiguous — absence of unwanted traffic
+   and total breakage look identical.
+5. One ingress per commit, each with its own drill.
+
+### Counter-evidence, stated honestly
+
+This is a NEW gate during a freeze whose whole point is that this domain adds
+too much machinery. Three honest arguments against: (a) it is author-written,
+so it encodes only the narrowness I already thought of — the very limitation
+that hid the leak; (b) an enumeration gate rots, because the inventory is
+hand-maintained and a new ingress that nobody adds to the list is invisible
+again — it must derive the list from the tree, or it becomes the stale pointer
+class; (c) several rows may be legitimately open by design (row 8 explicitly
+is), so the gate risks manufacturing work. Weigh at the 10-09 review against
+the inert-tier cut, which is a SUBTRACTION and should win on any tie.
+
 ## QUEUED 2026-09-18 (Opus 5 1M) — a parity SHAPE leg for the MeshCore twin
 
 **Not done, and deliberately a proposal.** Adding a `parity_check.py` leg is
