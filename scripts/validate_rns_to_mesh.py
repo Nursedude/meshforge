@@ -31,10 +31,18 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+# Set by main() so __main__ can remove the temp configdir as the LAST thing
+# before os._exit(). _teardown()'s own rmtree runs first and is usually
+# enough; this is the pass that closes the window in which RNS's threads
+# re-persist state into the tree (measured: ~1 run in 3 still leaked an
+# 80 KB dir with only _teardown's removal).
+_TMPDIR: Path | None = None
 
 _THIS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_THIS_DIR.parent / "src"))
@@ -106,6 +114,71 @@ def _resolve_destination(RNS, dest_hash: bytes, path_timeout: float):
     if not RNS.Transport.has_path(dest_hash):
         return None
     return RNS.Identity.recall(dest_hash)
+
+
+def _teardown(RNS, reticulum, router, tmpdir: Path) -> None:
+    """Stop RNS/LXMF, THEN remove the temp configdir — in that order.
+
+    Why the order is the whole point (2026-09-17): this script used to run
+    inside ``with tempfile.TemporaryDirectory(...)`` and ``return`` from the
+    body, so the tree was deleted while RNS's daemon threads were still
+    live. The next path-response announce called ``rotate_ratchets()`` ->
+    ``_persist_ratchets()`` and raised ``FileNotFoundError`` from
+    ``Thread-N (job)`` on EVERY run — after a successful send, so the
+    script still exited 0 and the exit code could not see it.
+
+    ⚠️ The traceback's path (``.../lxmf/lxmf/ratchets/``) reads like a
+    directory that was never created, and the first diagnosis in this
+    session said exactly that. It is wrong: ``LXMRouter.register_delivery_
+    identity`` makes that directory itself. The directory existed and was
+    then DELETED out from under a running thread. Read the lifetime, not
+    just the path.
+
+    LXMF's ``exit_handler`` is idempotent (``exit_handler_running``), so the
+    ``atexit`` copy it registers is a no-op after this one — and under
+    ``__main__`` nothing registered with ``atexit`` runs at all, because the
+    entrypoint leaves via ``os._exit()``. That is deliberate: those handlers
+    write into this same tree and were re-creating it behind us.
+
+    Best-effort throughout: teardown must never turn a successful validation
+    into a nonzero exit, so every step is caught and only warns.
+    """
+    # Flush FIRST. Everything below can replace or close the streams, and a
+    # redirected stdout is block-buffered — an unflushed buffer that gets
+    # swapped out is silently discarded, taking the entire verdict with it.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        if router is not None:
+            router.exit_handler()
+    except Exception as e:  # noqa: BLE001 - teardown must not mask the verdict
+        print(f"warn: LXMF teardown: {e}", file=sys.stderr)
+
+    # ⚠️ detach_interfaces(), deliberately NOT RNS.Reticulum.exit_handler().
+    # The full handler ends with RNS._detach_stdout(), which rebinds
+    # sys.stdout/sys.stderr to os.devnull WITHOUT flushing them — calling it
+    # here ate every line this script had printed and left a successful run
+    # looking like it produced nothing (measured 2026-09-17, in the first cut
+    # of this very fix). The handler's other work is persisting state into a
+    # configdir we are about to delete, which is worth nothing to us. All we
+    # actually want is the network going quiet.
+    if reticulum is not None:
+        try:
+            RNS.Transport.detach_interfaces()
+        except Exception as e:  # noqa: BLE001
+            print(f"warn: RNS interface detach: {e}", file=sys.stderr)
+
+    # Settle, then remove. This is the last word only because __main__ takes
+    # the process down with os._exit() immediately afterwards — otherwise
+    # RNS's atexit handler runs LATER, persists Transport/Identity state and
+    # RECREATES the tree we just deleted (measured: every run of the original
+    # script left an 80 KB dir in /tmp, and /tmp is tmpfs on this fleet).
+    time.sleep(0.25)
+    shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def main(argv=None) -> int:
@@ -182,15 +255,39 @@ def main(argv=None) -> int:
 
     from utils.paths import get_real_user_home
 
-    with tempfile.TemporaryDirectory(prefix="meshforge_rns_validator_") as tmp:
-        tmpdir = Path(tmp)
+    global _TMPDIR
+    tmpdir = Path(tempfile.mkdtemp(prefix="meshforge_rns_validator_"))
+    _TMPDIR = tmpdir
+    router = None
+    reticulum = None
+    # try/finally rather than `with TemporaryDirectory`: every `return` below
+    # is a success path, and the directory must outlive the RNS threads that
+    # write into it. See _teardown().
+    try:
         _build_client_config(tmpdir)
 
         print(f"initialising RNS (configdir={tmpdir})...")
+        # MF019: through the guarded chokepoint, never RNS.Reticulum() raw.
+        # A validator is exactly the caller that must not hang on a wedged
+        # rnsd — it exists to return a verdict. open_reticulum() returns None
+        # instead of blocking the thread (#68) and raises loud on a foreign
+        # @rns owner (#69). ⚠️ The raw construction here PRE-DATED this fix
+        # and lint never saw it: `lint.py --all` walks src/ only, so nothing
+        # in scripts/ is covered by the documented pre-push check — it
+        # surfaced only when the pre-commit hook ran --staged on this file.
+        from utils.rns_init import open_reticulum
         try:
-            reticulum = RNS.Reticulum(configdir=str(tmpdir), loglevel=2)
+            reticulum = open_reticulum(str(tmpdir), loglevel=2)
         except Exception as e:
             print(f"error: RNS init failed: {e}", file=sys.stderr)
+            return 4
+        if reticulum is None:
+            print(
+                "error: RNS unavailable or degraded (no listener, or a wedged "
+                "rnsd that did not accept within the probe window) — "
+                "check `systemctl status rnsd` and `timeout 8 rnstatus`",
+                file=sys.stderr,
+            )
             return 4
 
         if getattr(reticulum, "is_connected_to_shared_instance", False):
@@ -306,7 +403,28 @@ def main(argv=None) -> int:
             file=sys.stderr,
         )
         return 7
+    finally:
+        _teardown(RNS, reticulum, router, tmpdir)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    _code = main()
+    # ⚠️ NOT sys.exit(). RNS registers an atexit handler that ends in
+    # RNS.exit() -> os._exit(0), so a SystemExit carrying our code is
+    # discarded during interpreter shutdown and the caller reads 0. Measured
+    # 2026-09-17 on the PRE-CHANGE script: "no path to <gateway>" — the
+    # script's documented exit 5 — reached the shell as **0**. A cron or
+    # drill gating on $? would have read a total failure to find the gateway
+    # as success, which is this repo's whole defect class in miniature.
+    #
+    # Taking the exit ourselves makes the documented codes authoritative, and
+    # incidentally stops RNS re-creating the temp configdir after _teardown
+    # removed it. Flush first — os._exit() does not.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.flush()
+        except Exception:  # noqa: BLE001
+            pass
+    if _TMPDIR is not None:
+        shutil.rmtree(_TMPDIR, ignore_errors=True)
+    os._exit(_code)
