@@ -52,6 +52,17 @@ def _make_handler(config=None, queue=None):
     )
 
 
+def _policy(config=None):
+    """A ChannelPath on its own — no handler, no mocked health, no queue.
+
+    Testing the policy without constructing a handler is the point of the
+    2026-09-18 extraction: the inbound channel decision is one object's job.
+    """
+    from gateway.meshcore_channel_path import ChannelPath
+    return ChannelPath(getattr(config, 'meshcore', None) if config is not None
+                       else _make_config().meshcore)
+
+
 def _channel_event(channel, text="hello"):
     """A CHANNEL_MSG_RECV-shaped event with a dict payload."""
     ev = MagicMock()
@@ -83,28 +94,28 @@ class TestPredicateDefault:
     """Default posture: everything EXCEPT Public may bridge."""
 
     def test_public_is_refused_by_default(self):
-        h = _make_handler()
-        assert h._channel_bridge_allowed(_msg(0)) is False
+        h = _policy()
+        assert h.bridge_allowed(_msg(0)) is False
 
     @pytest.mark.parametrize("chan", [1, 2, 7])
     def test_non_public_is_allowed_by_default(self, chan):
-        h = _make_handler()
-        assert h._channel_bridge_allowed(_msg(chan)) is True
+        h = _policy()
+        assert h.bridge_allowed(_msg(chan)) is True
 
     def test_unparseable_channel_is_refused(self):
         """Unobservable != healthy: an unknown source is not a safe source."""
-        h = _make_handler()
-        assert h._channel_bridge_allowed(_msg("not-an-int")) is False
+        h = _policy()
+        assert h.bridge_allowed(_msg("not-an-int")) is False
 
 
 class TestPredicateExplicit:
 
     def test_env_list_is_honoured_exactly(self, monkeypatch):
         monkeypatch.setenv("MESHFORGE_MESHCORE_BRIDGE_CHANNELS", "0,2")
-        h = _make_handler()
-        assert h._channel_bridge_allowed(_msg(0)) is True   # Public opt-IN
-        assert h._channel_bridge_allowed(_msg(2)) is True
-        assert h._channel_bridge_allowed(_msg(1)) is False
+        h = _policy()
+        assert h.bridge_allowed(_msg(0)) is True   # Public opt-IN
+        assert h.bridge_allowed(_msg(2)) is True
+        assert h.bridge_allowed(_msg(1)) is False
 
     def test_empty_env_means_bridge_nothing_not_bridge_all(self, monkeypatch):
         """An explicit empty list is a posture, not a missing value.
@@ -113,27 +124,27 @@ class TestPredicateExplicit:
         valid class this codebase exists to refuse.
         """
         monkeypatch.setenv("MESHFORGE_MESHCORE_BRIDGE_CHANNELS", "")
-        h = _make_handler()
+        h = _policy()
         for chan in (0, 1, 5):
-            assert h._channel_bridge_allowed(_msg(chan)) is False
+            assert h.bridge_allowed(_msg(chan)) is False
 
     def test_declared_config_used_when_env_absent(self):
-        h = _make_handler(_make_config(bridge_source_channels=[3]))
-        assert h._channel_bridge_allowed(_msg(3)) is True
-        assert h._channel_bridge_allowed(_msg(0)) is False
-        assert h._channel_bridge_allowed(_msg(1)) is False
+        h = _policy(_make_config(bridge_source_channels=[3]))
+        assert h.bridge_allowed(_msg(3)) is True
+        assert h.bridge_allowed(_msg(0)) is False
+        assert h.bridge_allowed(_msg(1)) is False
 
     def test_env_overrides_declared_config(self, monkeypatch):
         monkeypatch.setenv("MESHFORGE_MESHCORE_BRIDGE_CHANNELS", "9")
-        h = _make_handler(_make_config(bridge_source_channels=[3]))
-        assert h._channel_bridge_allowed(_msg(9)) is True
-        assert h._channel_bridge_allowed(_msg(3)) is False
+        h = _policy(_make_config(bridge_source_channels=[3]))
+        assert h.bridge_allowed(_msg(9)) is True
+        assert h.bridge_allowed(_msg(3)) is False
 
     def test_typo_is_loud_and_does_not_widen_the_gate(self, monkeypatch):
         monkeypatch.setenv("MESHFORGE_MESHCORE_BRIDGE_CHANNELS", "1,oops")
-        h = _make_handler()
-        assert h._channel_bridge_allowed(_msg(1)) is True
-        assert h._channel_bridge_allowed(_msg(0)) is False
+        h = _policy()
+        assert h.bridge_allowed(_msg(1)) is True
+        assert h.bridge_allowed(_msg(0)) is False
 
 
 def _msg(channel):
@@ -279,8 +290,10 @@ class TestDeclaredConfigReallyLoads:
         loaded = GatewayConfig.load()
         assert loaded.meshcore.bridge_source_channels == [0, 4]
 
-        h = _make_handler(loaded)
+        # Through the HANDLER's own collaborator, not a bare ChannelPath —
+        # this pins that the handler actually wires the loaded config in.
+        h = _make_handler(loaded)._channel_path
         # Public was opted IN by the declared config — honoured exactly.
-        assert h._channel_bridge_allowed(_msg(0)) is True
-        assert h._channel_bridge_allowed(_msg(4)) is True
-        assert h._channel_bridge_allowed(_msg(1)) is False
+        assert h.bridge_allowed(_msg(0)) is True
+        assert h.bridge_allowed(_msg(4)) is True
+        assert h.bridge_allowed(_msg(1)) is False

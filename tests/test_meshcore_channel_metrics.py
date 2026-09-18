@@ -86,86 +86,88 @@ class TestChannelMetrics:
         # Different content = different hash
         assert hash1 != hash3
 
-    def test_cleanup_channel_hashes(self, handler):
-        # Add some old entries
-        old_time = time.monotonic() - 200  # Older than 120s window
-        handler._event_msg_hashes["old1"] = old_time
-        handler._event_msg_hashes["old2"] = old_time
-        handler._poll_msg_hashes["old3"] = old_time
+    # ⚠️ Rewritten 2026-09-18 with the ChannelPath extraction. These tests
+    # used to hand-simulate the bookkeeping ("Simulate what
+    # _on_channel_message does to metrics") and then assert their own
+    # mutation — they would have passed with the handler deleted. The
+    # dual-path bookkeeping is now a real method, so they call it. The async
+    # legs themselves are driven end-to-end in
+    # tests/test_meshcore_channel_allowlist.py, which the old comment here
+    # ("we can't easily test the async method directly") said was infeasible.
 
-        # Add a recent entry
-        handler._event_msg_hashes["recent"] = time.monotonic()
+    def test_cleanup_channel_hashes(self, handler):
+        cp = handler._channel_path
+        old_time = time.monotonic() - 200  # Older than the 120s window
+        cp.record_event("old1", old_time)
+        cp.record_event("old2", old_time)
+        cp.record_poll("old3", old_time)
+        cp.record_event("recent", time.monotonic())
 
         handler._cleanup_channel_hashes()
 
-        assert "old1" not in handler._event_msg_hashes
-        assert "old2" not in handler._event_msg_hashes
-        assert "old3" not in handler._poll_msg_hashes
-        assert "recent" in handler._event_msg_hashes
+        assert "old1" not in cp._event_hashes
+        assert "old2" not in cp._event_hashes
+        assert "old3" not in cp._poll_hashes
+        assert "recent" in cp._event_hashes
 
     def test_log_channel_metrics_no_messages(self, handler):
         """log_channel_metrics should not error when no messages."""
         handler._log_channel_metrics()  # Should not raise
 
     def test_log_channel_metrics_with_data(self, handler):
-        handler._channel_metrics['event_received'] = 10
-        handler._channel_metrics['poll_discovered'] = 2
-        handler._channel_metrics['event_missed'] = 2
-        handler._channel_metrics['poll_cycles'] = 100
+        cp = handler._channel_path
+        now = time.monotonic()
+        for i in range(10):
+            cp.record_event(f"e{i}", now)
+        for i in range(2):
+            cp.record_poll(f"p{i}", now)
+        cp.begin_poll_cycle()
+
+        m = handler.get_channel_metrics()
+        assert m['event_received'] == 10
+        assert m['poll_discovered'] == 2
+        assert m['event_missed'] == 2
+        assert m['poll_cycles'] == 1
 
         handler._log_channel_metrics()  # Should not raise
 
     def test_metrics_tracking_on_channel_message(self, handler):
-        """Verify _on_channel_message updates event metrics."""
+        """The real event-path bookkeeping, not a re-implementation."""
         from gateway.canonical_message import CanonicalMessage
 
-        # Set up the handler state
-        handler._connected = True
-        handler._should_bridge = None  # No routing rules
-
-        # We can't easily test the async method directly without event loop,
-        # but we can verify the hash tracking works
         msg = CanonicalMessage(
             source_address="test123",
             content="Test channel broadcast",
         )
-
+        cp = handler._channel_path
         content_hash = handler._compute_channel_hash(msg)
-        now = time.monotonic()
 
-        # Simulate what _on_channel_message does to metrics
-        handler._event_msg_hashes[content_hash] = now
-        handler._channel_metrics['event_received'] += 1
+        is_poll_dup = cp.record_event(content_hash, time.monotonic())
 
-        assert handler._channel_metrics['event_received'] == 1
-        assert content_hash in handler._event_msg_hashes
+        assert is_poll_dup is False, "nothing polled it first"
+        assert handler.get_channel_metrics()['event_received'] == 1
+        assert content_hash in cp._event_hashes
 
     def test_dual_path_reconciliation(self, handler):
-        """Test that duplicate_reconciled increments correctly."""
+        """Poll sees it first, then the event path delivers the same message."""
+        cp = handler._channel_path
         content_hash = "test_hash_abc"
         now = time.monotonic()
 
-        # Simulate poll finding a message first
-        handler._poll_msg_hashes[content_hash] = now
-        handler._channel_metrics['poll_discovered'] += 1
+        assert cp.record_poll(content_hash, now) is False
+        # The event path must RECOGNISE it as already seen.
+        assert cp.record_event(content_hash, now) is True
 
-        # Then event delivers the same message
-        if content_hash in handler._poll_msg_hashes:
-            handler._channel_metrics['duplicate_reconciled'] += 1
-
-        assert handler._channel_metrics['poll_discovered'] == 1
-        assert handler._channel_metrics['duplicate_reconciled'] == 1
+        m = handler.get_channel_metrics()
+        assert m['poll_discovered'] == 1
+        assert m['duplicate_reconciled'] == 1
 
     def test_event_missed_tracking(self, handler):
-        """Test that event_missed increments when poll finds new messages."""
-        content_hash = "polled_only_hash"
-        now = time.monotonic()
+        """Poll finds a message the event subscription never delivered (#1232)."""
+        cp = handler._channel_path
 
-        # Poll finds a message not in event hashes
-        handler._poll_msg_hashes[content_hash] = now
-        if content_hash not in handler._event_msg_hashes:
-            handler._channel_metrics['event_missed'] += 1
-            handler._channel_metrics['poll_discovered'] += 1
+        assert cp.record_poll("polled_only_hash", time.monotonic()) is False
 
-        assert handler._channel_metrics['event_missed'] == 1
-        assert handler._channel_metrics['poll_discovered'] == 1
+        m = handler.get_channel_metrics()
+        assert m['event_missed'] == 1
+        assert m['poll_discovered'] == 1
