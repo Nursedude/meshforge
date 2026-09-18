@@ -130,3 +130,67 @@ def test_private_broker_write_success_shows_configured(mock_save):
 
     assert mock_save.called
     assert ctx.dialog.last_msgbox_title == "Private Broker Configured"
+
+
+# ---------------------------------------------------------------------------
+# Site: the toggles (autostart / autotelem) and the Cancel row.
+# Edits live in memory until "Save & Exit"; the form must SAY so at the
+# moment it matters — on the popup (pending tense) and on the menu the
+# user is about to Cancel out of (2026-09-18, cancel-label review F1 follow-up).
+# ---------------------------------------------------------------------------
+
+def _menu_calls(ctx):
+    return [c for c in ctx.dialog.calls if c[0] == 'menu']
+
+
+@patch('handlers.mqtt.load_mqtt_config', return_value={'broker': 'localhost'})
+@patch('handlers.mqtt.save_mqtt_config', return_value=True)
+def test_toggle_then_cancel_writes_nothing_and_the_form_said_so(mock_save, mock_load):
+    handler, ctx = _make_handler()
+    ctx.dialog._menu_returns = ["autostart", "cancel"]
+
+    handler._configure_mqtt()
+
+    assert not mock_save.called
+    # The popup speaks in the future tense and names the discard path.
+    assert "will be ENABLED after 'Save & Exit'" in ctx.dialog.last_msgbox_text
+    assert "discards" in ctx.dialog.last_msgbox_text
+    # The SECOND render (after the toggle) carries the unsaved marker on the
+    # subtitle AND on the Cancel row the user is about to pick.
+    first, second = _menu_calls(ctx)
+    assert "UNSAVED" not in first[1][1]
+    assert "UNSAVED CHANGES" in second[1][1]
+    cancel_rows = [d for t, d in second[1][2] if t == "cancel"]
+    assert cancel_rows == ["Cancel              (discard unsaved changes)"]
+
+
+@patch('handlers.mqtt.load_mqtt_config', return_value={'broker': 'localhost'})
+@patch('handlers.mqtt.save_mqtt_config', return_value=True)
+def test_clean_form_carries_no_unsaved_marker(mock_save, mock_load):
+    handler, ctx = _make_handler()
+    ctx.dialog._menu_returns = ["cancel"]
+
+    handler._configure_mqtt()
+
+    (only,) = _menu_calls(ctx)
+    assert "UNSAVED" not in only[1][1]
+    assert [d for t, d in only[1][2] if t == "cancel"] == ["Cancel"]
+    assert not mock_save.called
+
+
+@patch('handlers.mqtt.load_mqtt_config',
+       return_value={'broker': 'localhost', 'auto_start_telemetry': True})
+@patch('handlers.mqtt.save_mqtt_config', return_value=True)
+def test_toggle_twice_is_clean_again(mock_save, mock_load):
+    """Dirty is a COMPARISON against disk, not a flag: undoing the edit clears it.
+
+    The key must exist on disk for the round trip to be a no-op — a key the
+    file never had is a real (if harmless) change, and the form says so."""
+    handler, ctx = _make_handler()
+    ctx.dialog._menu_returns = ["autotelem", "autotelem", "cancel"]
+
+    handler._configure_mqtt()
+
+    calls = _menu_calls(ctx)
+    assert "UNSAVED" in calls[1][1][1]
+    assert "UNSAVED" not in calls[2][1][1]

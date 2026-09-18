@@ -11,6 +11,7 @@ Module-level load_mqtt_config() and save_mqtt_config() are shared with
 BrokerHandler for cross-handler config access.
 """
 
+import copy
 import json
 import logging
 import shutil
@@ -550,8 +551,13 @@ class MQTTHandler(BaseHandler):
     def _configure_mqtt(self):
         """Configure MQTT broker settings."""
         config = load_mqtt_config()
+        # Edits below only touch this dict; nothing reaches disk until
+        # 'Save & Exit'. Keep the on-disk shape so the form can SAY when
+        # it is carrying unsaved changes — the Cancel row discards them.
+        on_disk = copy.deepcopy(config)
 
         while True:
+            dirty = config != on_disk
             broker = config.get('broker', 'mqtt.meshtastic.org')
             port = config.get('port', 8883)
             topic = config.get('topic', 'msh/US/2/e/LongFast/#')
@@ -574,12 +580,17 @@ class MQTTHandler(BaseHandler):
                 ("autostart", f"Auto-Start          [{auto_status}] Start on TUI launch"),
                 ("autotelem", f"Auto Telemetry      [{telem_status}] Poll silent nodes"),
                 ("save", "Save & Exit"),
-                ("cancel", "Cancel"),
+                ("cancel", "Cancel              (discard unsaved changes)"
+                 if dirty else "Cancel"),
             ]
 
+            subtitle = "Configure MQTT broker connection:"
+            if dirty:
+                subtitle += ("\n\n* UNSAVED CHANGES — 'Save & Exit' writes them, "
+                             "'Cancel' discards them.")
             choice = self.ctx.dialog.menu(
                 "MQTT Configuration",
-                "Configure MQTT broker connection:",
+                subtitle,
                 choices
             )
 
@@ -690,10 +701,10 @@ class MQTTHandler(BaseHandler):
                 new_state = "ENABLED" if config['auto_start'] else "DISABLED"
                 self.ctx.dialog.msgbox(
                     "Auto-Start",
-                    f"MQTT auto-start: {new_state}\n\n"
+                    f"MQTT auto-start will be {new_state} after 'Save & Exit'.\n\n"
                     "When enabled, MQTT subscriber will start\n"
                     "automatically when the TUI launches.\n\n"
-                    "Save configuration to apply."
+                    "Nothing is written yet — 'Cancel' discards this change."
                 )
 
             elif choice == "autotelem":
@@ -702,11 +713,11 @@ class MQTTHandler(BaseHandler):
                 new_state = "ENABLED" if config['auto_start_telemetry'] else "DISABLED"
                 self.ctx.dialog.msgbox(
                     "Auto Telemetry",
-                    f"TelemetryPoller auto-start: {new_state}\n\n"
+                    f"TelemetryPoller auto-start will be {new_state} after 'Save & Exit'.\n\n"
                     "When enabled (and MQTT auto-start is on),\n"
                     "the TelemetryPoller will poll silent 2.7+\n"
                     "nodes in the background.\n\n"
-                    "Save configuration to apply."
+                    "Nothing is written yet — 'Cancel' discards this change."
                 )
 
             elif choice == "save":
