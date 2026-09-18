@@ -416,6 +416,16 @@ class MeshCoreConfig:
     auto_fetch_messages: bool = True      # Start auto message fetching on connect
     bridge_channels: bool = True          # Bridge channel (broadcast) messages
     bridge_dms: bool = True               # Bridge direct messages
+    # Inbound SOURCE-channel allowlist for bridging (2026-09-18).
+    # None (default) = every channel EXCEPT MeshCore's Public slot 0. An
+    # explicit list is honoured exactly as written, so Public is opt-IN;
+    # an explicit EMPTY list means "bridge no channel traffic at all" and
+    # is a legitimate DM-only posture, never re-read as "allow all".
+    # Overridden per box by MESHFORGE_MESHCORE_BRIDGE_CHANNELS.
+    # ⚠️ Must exist as a real field: GatewayConfig.load does
+    # MeshCoreConfig(**meshcore_data), so an undeclared key in gateway.json
+    # raises TypeError and fails the WHOLE config load, not just this knob.
+    bridge_source_channels: Optional[List[int]] = None
 
     # Testing
     simulation_mode: bool = False         # Run without hardware (fake events)

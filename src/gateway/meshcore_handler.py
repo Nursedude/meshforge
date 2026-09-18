@@ -53,6 +53,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# MeshCore's Public channel. Slot 0 is the network-wide open channel every
+# MeshCore node carries; anything said there is readable by any stranger in
+# radio range. ONE constant, because the inbound gate below and any future
+# outbound rail must not hardcode it independently (honest_failure_modes #5 —
+# two consumers of one concept WILL drift: 24,000 vs 24,576).
+MESHCORE_PUBLIC_CHANNEL = 0
+
 # meshcore_py is an optional external dependency
 _meshcore_mod, _HAS_MESHCORE = safe_import('meshcore')
 
@@ -220,6 +227,28 @@ class MeshCoreHandler(BaseMessageHandler):
             if meshcore_config else 5
         )
 
+        # Inbound SOURCE-channel bridge policy (2026-09-18).
+        # ⚠️ Until today NOTHING filtered inbound MeshCore channel traffic by
+        # channel: _on_channel_message and _poll_channel_messages both went
+        # straight to _should_bridge, whose routing rules match source_network
+        # and have NO channel field. So text from the Public channel was
+        # bridged onto the far mesh (Meshtastic/RNS) - and the reply could
+        # never get back, because a channel sender is a display name, not a
+        # DM-able contact, and the outbound rail refuses slot 0 by design
+        # (the 2026-05-19 leak fix). Leaky in exactly ONE direction, by
+        # ABSENCE of a filter rather than a bad default.
+        #
+        # Default: every channel EXCEPT Public may bridge. That makes inbound
+        # symmetric with outbound instead of inventing a new policy, and it
+        # closes the named exposure (a stranger on Public reaching the far
+        # mesh, including a bot's command surface) without breaking the
+        # private-channel bridging that works today.
+        # Declared config wins; env overrides for a per-role box. An EXPLICIT
+        # list is honoured exactly as written - Public is opt-in, never
+        # opt-out-by-accident.
+        self._bridge_source_channels = self._resolve_bridge_channels(
+            meshcore_config)
+
         # Dual-path tracking: event subscription + polling reconciliation
         # Messages seen via event subscription (content_hash -> timestamp)
         self._event_msg_hashes: Dict[str, float] = {}
@@ -237,6 +266,11 @@ class MeshCoreHandler(BaseMessageHandler):
             'poll_cycles': 0,         # Total poll cycles run
             'last_event_time': None,  # Timestamp of last event-delivered msg
             'last_poll_time': None,   # Timestamp of last poll-delivered msg
+            # Inbound channel messages refused by the source-channel
+            # policy. A swallow with no witness never happened
+            # (honest_failure_modes #9), so this is counted here and
+            # printed by _log_channel_metrics even when it is 0.
+            'channel_suppressed': 0,
         }
         self._metrics_log_interval = 50  # Log summary every N poll cycles
 
@@ -555,6 +589,81 @@ class MeshCoreHandler(BaseMessageHandler):
         except Exception as e:
             logger.error(f"Error processing MeshCore direct message: {e}")
 
+    @staticmethod
+    def _resolve_bridge_channels(meshcore_config: Any) -> Optional[frozenset]:
+        """Resolve the inbound source-channel allowlist.
+
+        Returns a frozenset of permitted channel indices, or None meaning
+        "all except Public". Precedence: env override > declared config >
+        default. An explicit EMPTY list means "bridge nothing" and is
+        honoured - refusing everything is a legitimate posture for a box
+        that should only receive DMs, and silently reinterpreting it as
+        "allow all" would be the degraded-value-looks-valid class.
+        """
+        import os
+        raw = os.environ.get("MESHFORGE_MESHCORE_BRIDGE_CHANNELS")
+        if raw is None and meshcore_config is not None:
+            declared = getattr(meshcore_config, 'bridge_source_channels', None)
+            if declared is not None:
+                raw = ",".join(str(t) for t in declared)
+        if raw is None:
+            return None  # default: everything but Public
+        out = set()
+        for tok in raw.split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            try:
+                out.add(int(tok))
+            except ValueError:
+                # Loud, not absorbed: a typo'd channel must not silently
+                # narrow OR widen the gate (honest_failure_modes #3).
+                logger.warning(
+                    f"MeshCore bridge channel {tok!r} is not an int; ignored")
+        return frozenset(out)
+
+    def _channel_bridge_allowed(self, msg: Any) -> bool:
+        """THE predicate both inbound channel legs derive from.
+
+        ⚠️ Deliberately ONE method called from BOTH _on_channel_message and
+        _poll_channel_messages. Those are two independent paths to the same
+        bridge (event subscription + the #1232 polling fallback), and this
+        session found the same shape three times over: a guard written on one
+        leg and not its symmetric twin. A filter on the event path alone
+        would leak every message the event path happened to miss - i.e.
+        exactly the traffic the poll fallback exists to catch.
+
+        Not called on the DM leg: a direct message has no channel (the oracle
+        gates it with channel=None), so a channel policy cannot speak to it.
+        """
+        chan = (msg.metadata or {}).get('channel', MESHCORE_PUBLIC_CHANNEL)
+        try:
+            chan = int(chan)
+        except (TypeError, ValueError):
+            # Unparseable channel on a channel message: refuse. An unknown
+            # source is not a known-safe source (unobservable != healthy).
+            logger.warning(
+                f"MeshCore channel message with unparseable channel "
+                f"{chan!r}; refusing to bridge")
+            return False
+        if self._bridge_source_channels is None:
+            return chan != MESHCORE_PUBLIC_CHANNEL
+        return chan in self._bridge_source_channels
+
+    def _note_channel_suppressed(self, msg: Any) -> None:
+        """Record + disclose a refusal. Never silent."""
+        with self._channel_hash_lock:
+            self._channel_metrics['channel_suppressed'] += 1
+            n = self._channel_metrics['channel_suppressed']
+        chan = (msg.metadata or {}).get('channel', MESHCORE_PUBLIC_CHANNEL)
+        # INFO for the first few so an operator sees it without DEBUG, then
+        # back off - a busy Public channel must not flood the journal, but
+        # the counter above keeps climbing and _log_channel_metrics prints it.
+        log = logger.info if n <= 3 or n % 100 == 0 else logger.debug
+        log(f"MeshCore channel {chan} not in the inbound bridge allowlist; "
+            f"message not bridged (suppressed={n}). Set "
+            f"MESHFORGE_MESHCORE_BRIDGE_CHANNELS to change this.")
+
     async def _on_channel_message(self, event: Any) -> None:
         """Handle incoming MeshCore channel (broadcast) message via event."""
         try:
@@ -599,6 +708,10 @@ class MeshCoreHandler(BaseMessageHandler):
 
             if is_poll_dup:
                 logger.debug("Channel message already delivered via poll, skipping event path")
+                return
+
+            if not self._channel_bridge_allowed(msg):
+                self._note_channel_suppressed(msg)
                 return
 
             if self._should_bridge and not self._should_bridge(msg):
@@ -764,6 +877,10 @@ class MeshCoreHandler(BaseMessageHandler):
                         f"{msg.content[:30]}..."
                     )
 
+                    if not self._channel_bridge_allowed(msg):
+                        self._note_channel_suppressed(msg)
+                        continue
+
                     if self._should_bridge and not self._should_bridge(msg):
                         continue
 
@@ -835,7 +952,8 @@ class MeshCoreHandler(BaseMessageHandler):
             f"poll_discovered={m['poll_discovered']}, "
             f"event_missed={m['event_missed']} ({miss_pct:.0f}%), "
             f"reconciled={m['duplicate_reconciled']}, "
-            f"poll_cycles={m['poll_cycles']}"
+            f"poll_cycles={m['poll_cycles']}, "
+            f"channel_suppressed={m['channel_suppressed']}"
         )
 
     def get_channel_metrics(self) -> dict:
