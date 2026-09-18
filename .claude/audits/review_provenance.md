@@ -2344,6 +2344,51 @@ tests (`is_test` guards in MF001/MF009/MF013/MF019), so including that tree is
 a different decision with a real backlog attached, unlike `scripts/`. Recorded
 here so the number does not have to be re-derived.
 
+## QUEUED 2026-09-18 (Opus 5 1M) — ADVERSARIAL REVIEW OWED, and NOT by the author
+
+**Why this row exists**: the author of the range below shipped a defect to a
+LIVE gateway (`518d9ba7`, reverted `8e9ac049`) — an inbound MeshCore channel
+guard matching by INDEX when the wire carries the channel as a NAME in the
+message text, which refused 100% of channel traffic for ~11 minutes. Self-review
+is therefore proven insufficient on this material, and the tests covering what
+is now deployed were written by the same author, so they encode the same
+narrowness (`feedback_review_your_own_fixes`; authorial distance). **Assign to a
+model that is not the author.** Mechanism: `/code-review ultra` — operator
+triggered and billed; a session cannot launch it.
+
+### Scope, highest yield first
+
+1. **MA `7ef55456` — the live disclosure.** Running on meshanchor-server now.
+   9 author-written tests. The specific hole: they assert the log renders
+   `[ch:meshanchor]` and **cannot** catch "the header does not name the SOURCE
+   channel" — the one thing still unknown. Attack `_split_meshcore_channel_header`
+   (it now backs TWO public helpers and two production callers on a live box),
+   and the `[ch:?]` unprefixed rendering.
+2. **MF `8c5b5fee` + `8910c156` — the LATENT broken guard on 9 boxes.** Inert
+   only because `meshcore.enabled:false` everywhere. Decide revert vs fix. Note
+   MF has NEITHER header parser, so porting the name-based cure by symmetry is
+   the same error twice. The `ChannelPath` seam is sound and worth keeping.
+3. **`test_KNOWN_DIVERGENCE_handler_parser_mis_splits_multiword`** — is pinning
+   a known bug as EXPECTED the right call, or does it bless it? The oracle's
+   name gate inherits the wrong parser today.
+
+### Low yield — skip unless cheap
+
+MF `ea686c2b` (rotate `STICKY_RE` word-boundary fix, 56 tests, drilled),
+`d289deed` (filing tiers + closing step, 4 tests, drilled), `2c3dd5b8` /
+`4a980b7f` (docs). Blast radius is a session-close script and per-turn docs.
+
+### Steers for whoever takes it
+
+* The author was wrong about this field THREE times in one session and twice
+  presented the wrong answer as a correction to the operator. Distrust every
+  claim about what the MeshCore wire carries unless it quotes captured data.
+* A traffic-rate claim in the notes ("Public every couple of minutes") was
+  FABRICATED from the broken guard's own default and has been retracted — check
+  whether any other number in this range shares that origin.
+* The operator caught the outage before any instrument did. Ask what would have
+  caught it, and whether the answer is a test rather than a detector.
+
 ## QUEUED 2026-09-18 (Opus 5 1M) — the INGRESS TRUST-BOUNDARY ENUMERATION
 
 **Operator-directed** at the close of the MeshCore Public-leak session: *"how
