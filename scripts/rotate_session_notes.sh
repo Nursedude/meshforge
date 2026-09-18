@@ -61,6 +61,18 @@ NOTES="${SESSION_NOTES:-$NOTES_DEFAULT}"
 ARCHIVE=""
 # A heading matching this is LIVE work and never rotates, wherever it sits.
 STICKY_RE="${SESSION_NOTES_STICKY_RE:-QUEUED|OPEN|LIVE|NEXT SESSION|DO NOT ROTATE|Rotated to the archive}"
+# ⚠️ WORD-BOUNDED, 2026-09-18. The bare alternation matched SUBSTRINGS, so a
+# heading was pinned forever by an ordinary word that merely contains a token:
+# "ALL 5 BOXES FOUND ALIVE", "DELIVERY-VERIFIED" and "DELIVERED" all matched
+# LIVE, and REOPENED/OPENWRT would match OPEN. Measured on this box's notes:
+# FIVE of fourteen sticky sections were stuck on "LIVE"-inside-a-word and none
+# of them concerned live work — which made the 80KB gate UNSATISFIABLE, because
+# --keep 3, 2 and 1 all produced the identical 83,139 B floor. A cure the
+# operator cannot reach is the same defect class as no cure at all.
+# POSIX bracket classes rather than \b: this runs under awk's ERE, where \b is
+# not portable. STICKY_RE itself stays the plain token list so the env override
+# and the printed "markers:" line remain readable.
+STICKY_MATCH="(^|[^A-Za-z])(${STICKY_RE})([^A-Za-z]|\$)"
 
 die() { printf 'refused: %s\n' "$1" >&2; exit 1; }
 
@@ -118,7 +130,7 @@ arch_size=0; [ -f "$ARCHIVE" ] && arch_size="$(wc -c < "$ARCHIVE")"
 # these notes are full of pasted snippets. Splitting there would cut a section
 # in half and move the wrong bytes (found in review 2026-08-31, latent: 0
 # occurrences in the live files at the time, but code blocks are everywhere).
-index="$(awk -v sticky="$STICKY_RE" '
+index="$(awk -v sticky="$STICKY_MATCH" '
     /^[ \t]*```/ { fence = !fence; if (fence) fence_line = NR; else fence_line = 0 }
     /^## / && !fence { sec++; start[sec]=NR; head[sec]=$0; if ($0 ~ sticky) st[sec]=1; ishead=1 }
     { if (sec > 0) { bytes[sec] += length($0)+1; last[sec]=NR

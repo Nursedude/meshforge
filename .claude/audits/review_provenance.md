@@ -2344,6 +2344,46 @@ tests (`is_test` guards in MF001/MF009/MF013/MF019), so including that tree is
 a different decision with a real backlog attached, unlike `scripts/`. Recorded
 here so the number does not have to be re-derived.
 
+## QUEUED 2026-09-18 (Opus 5 1M) — a parity SHAPE leg for the MeshCore twin
+
+**Not done, and deliberately a proposal.** Adding a `parity_check.py` leg is
+harness machinery, so it is freeze-bound to 2026-10-09 unless the operator
+calls it a blindness fix (it arguably is — see the precedent below).
+
+### What changed today that creates the question
+
+`src/gateway/meshcore_channel_path.py` now exists in BOTH repos (MF
+`8910c156`, MA `518d9ba7`) and `parity_check.py` tracks NEITHER. It carries
+the inbound Public-channel guard — a security default — so the two copies
+drifting apart is not a cosmetic concern.
+
+Byte-lock is the WRONG tier: the files legitimately differ (env prefix
+`MESHFORGE_` vs `MESHANCHOR_`, and MA's docstring carries its own
+provenance and its `bridge_target_channel`=1 fact). A SHAPE leg is the fit.
+
+### Why this is the same class as the TUI gap, not a new appetite
+
+The 2026-09-18 Fable session measured the cost of an untracked tier: the whole
+`launcher_tui/` layer has zero `parity_check.py` coverage, and FOUR
+pre-existing MA gaps surfaced in one session (`DialogError`, `_fit_width`,
+the lynx guard, the mqtt-form #74 port) precisely because no mechanism forced
+a port. `meshcore_channel_path.py` starts life today in the same
+untracked state, and its divergence would be a security divergence.
+
+### Shape to pin (if ratified)
+
+`ChannelPath.bridge_allowed` exists in both; both channel legs
+(`_on_channel_message`, `_poll_channel_messages`) call it and the DM leg does
+NOT; `MESHCORE_PUBLIC_CHANNEL` is defined once per repo;
+`bridge_source_channels` is a declared `MeshCoreConfig` field in both.
+
+### Counter-evidence, stated honestly
+
+MeshAnchor LEADS on MeshCore (9 `meshcore_*` modules vs 3 in MF), so a parity
+leg here pins the FOLLOWER to the leader's shape and may fight future
+MA-side MeshCore work. That is the real argument against, and it is why this
+is queued rather than landed.
+
 ## QUEUED 2026-09-17 (Opus 5) — the INERT-TIER CUT, for the 2026-10-09 freeze review
 
 **Operator-directed at the close of the session-notes rotation session**

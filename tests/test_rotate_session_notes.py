@@ -680,3 +680,72 @@ class TestBodyMarkersAreDisclosedNotObeyed:
             return rows
 
         assert verdicts(plan_with) == verdicts(plan_without)
+
+
+class TestStickyMatchesWholeWordsOnly:
+    """STICKY_RE must match WORDS, not substrings.
+
+    ⚠️ Found live 2026-09-18 on this box's own notes. The bare alternation
+    (`QUEUED|OPEN|LIVE|...`) matched inside ordinary words, so a heading was
+    pinned forever by a word that merely CONTAINS a token: "ALL 5 BOXES FOUND
+    ALIVE", "DELIVERY-VERIFIED" and "DELIVERED" all matched LIVE, and
+    REOPENED/OPENWRT would match OPEN.
+
+    Measured consequence — this is why it is a defect and not a nit: FIVE of
+    fourteen sticky sections were stuck on LIVE-inside-a-word, none of them
+    about live work, and `--keep 3`, `--keep 2` and `--keep 1` therefore all
+    produced an IDENTICAL 83,139 B floor above the 81,920 B gate. The gate
+    was unsatisfiable by its own documented remedy, which is the same class
+    as having no remedy at all.
+    """
+
+    @pytest.fixture
+    def worded(self, tmp_path: Path) -> Path:
+        p = tmp_path / "gateway-session-notes-testbox.md"
+        p.write_text(
+            "# Gateway session notes — testbox\n\n"
+            "## Newest close\nalpha\n\n"
+            "## ALL 5 BOXES FOUND ALIVE\nbravo\n\n"
+            "## Egress DELIVERY-VERIFIED end to end\ncharlie\n\n"
+            "## REOPENED the OPENWRT router question\ndelta\n\n"
+            "## OPEN — the real live one\necho\n",
+            encoding="utf-8",
+        )
+        return p
+
+    def _verdicts(self, worded: Path, home: Path) -> dict:
+        r = run(home, "--notes", str(worded), "--keep", "1")
+        assert r.returncode == 0, r.stdout + r.stderr
+        out = {}
+        for line in r.stdout.splitlines():
+            if "## " in line and ("ROTATE" in line or "KEEP" in line):
+                verdict = "KEEP-STICKY" if "KEEP-STICKY" in line else (
+                    "ROTATE" if "ROTATE" in line else "KEEP")
+                out[line.split("## ", 1)[1].strip()] = verdict
+        return out
+
+    def test_alive_is_not_sticky(self, worded, home):
+        v = self._verdicts(worded, home)
+        hit = [h for h in v if h.startswith("ALL 5 BOXES")][0]
+        assert v[hit] == "ROTATE", (
+            f"'ALIVE' pinned a section as sticky ({v[hit]}) — STICKY_RE is "
+            "matching substrings again, which made the 80KB gate "
+            "unsatisfiable on 2026-09-18")
+
+    def test_delivered_is_not_sticky(self, worded, home):
+        v = self._verdicts(worded, home)
+        hit = [h for h in v if h.startswith("Egress DELIVERY")][0]
+        assert v[hit] == "ROTATE", f"'DELIVERY' matched LIVE ({v[hit]})"
+
+    def test_reopened_and_openwrt_are_not_sticky(self, worded, home):
+        v = self._verdicts(worded, home)
+        hit = [h for h in v if h.startswith("REOPENED")][0]
+        assert v[hit] == "ROTATE", f"'REOPENED'/'OPENWRT' matched OPEN ({v[hit]})"
+
+    def test_a_real_open_heading_is_STILL_sticky(self, worded, home):
+        """The narrowing must not disarm the guard it narrows."""
+        v = self._verdicts(worded, home)
+        hit = [h for h in v if h.startswith("OPEN —")][0]
+        assert v[hit] == "KEEP-STICKY", (
+            f"a genuine 'OPEN' heading lost its protection ({v[hit]}) — "
+            "narrowing a false-firing guard must not blind it")
