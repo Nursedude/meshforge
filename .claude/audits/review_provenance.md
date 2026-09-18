@@ -362,69 +362,129 @@ pass or a follow-up.
 - 2026-09-06 ~17:56 HST · lehua · Fable 5.1 · UNKNOWN — created `/var/lib/meshforge` + 2 probe debounce files · nothing observed · **not cleaned** (the 2 files remain; harmless `{"streak":0}`). Attribution is the operator's recollection, not evidence: the box's journal had aged out before the question was asked. This line is the counterexample the log exists to prevent
 - 2026-09-06 22:15 HST · VolcanoAI · Fable 5.1 · review fixtures planted under `/opt` + `/srv` as root for the `518170fa`/`14290e60` second opinion · **paged the live watchdog**: `rns_stray_env_drift` edge_up 22:15:47 → edge_down 22:18:18 · **cleaned**: plants removed, removal listed in the pass. Rule taken: plant in a tmp tree and inject the glob; a live-path plant is a declared production event, and excluding the drill path in the detector was REFUSED
 
-## QUEUED 2026-09-17 (Opus 5) — MeshAnchor: the queue's `meshtastic` sender is never registered on a radio-less gateway
+## QUEUED 2026-09-17 (Opus 5) — MeshAnchor: the RNS→Meshtastic leg is 100% dead on a radio-less gateway, and its drops are invisible
 
-**Found beside the egress repoint (touch log, same stamp), NOT fixed — the operator's
-call was "queue it, decide later."** MeshAnchor-only: MeshForge has **no**
-`meshtastic_egress` at all (`grep -rn meshtastic_egress src/` → 0 hits here), so
-there is no lead-repo obligation and no twin to port from. This is the one place
-the twin map's "untracked-diverged" tier bites in MA's favour.
+⚠️ **This row was rewritten the same night it was filed. The first version
+called the defect "LATENT, not active" and was WRONG — refuted by a measurement
+taken ~10 minutes later.** Keeping the correction visible because the wrong
+version was pushed (`91a21777`) and because the error is instructive: I reasoned
+from a code read ("these enqueues come from requeue-after-failure paths, so
+fixing the address stops them") instead of asking the journal whether those
+failure paths had ever fired. They had not. `Failed to bridge RNS→Mesh` = **0 in
+7 days** — the requeue branch I blamed was never reached. Reasoning about a code
+path is not evidence that it EXECUTED (calibrated_claims #7, in its cheapest form).
 
-**The defect.** `rns_bridge.py` registers the persistent queue's Meshtastic sender
-under `if self._persistent_queue and self._mesh_handler:`. On meshanchor-server
-`_mesh_handler` is `None` **by design** — the box has no meshtasticd
-(`LoadState=not-found`, nothing on `:9443`), which is precisely why
-`meshtastic_egress` exists. The gate itself is *correct as written*
-(`self._mesh_handler.queue_send` would raise on `None`); what is missing is the
-egress-backed alternative. So `enqueue(destination="meshtastic")` hits
-`has_sender()` → False → Issue #67's drop-at-enqueue path, and the retry safety
-net silently discards. Measured: **242 `no sender registered for destination
-'meshtastic'` drops in 7 days** on `meshanchor-daemon.service`.
+**Context**: found while repointing `meshtastic_egress.host` off moc's stale
+pre-2026-09-12 address (touch log, 2026-09-17 22:47 HST). That repoint is
+verified and **fixed the MC→Mesh leg** — operator saw the drill message land on
+the meshforge channel. What follows is the half it did **not** fix. MeshAnchor-
+only: MeshForge has **no** `meshtastic_egress` at all (0 hits in `src/`), so
+there is no lead-repo obligation and no twin to port from.
 
-**Severity — read this before ranking it.** Those 242 drops were a *consequence*
-of the stale address, not an independent failure: MA runs
-`bridge_mode="meshcore_bridge"`, so the RNS→Mesh and MC→Mesh **direct** paths are
-the live ones, and both go through `send_to_meshtastic`, which the repoint fixed.
-The enqueues came from `_requeue_failed_chunks` / `_persist_failed_message` — the
-paths that fire *because* a direct send failed. With the address correct, the
-drop count should fall to ~0 in steady state. **The gap is therefore LATENT, not
-active**: it removes the retry net exactly when a transient egress failure
-happens (moc reboots, the uplink blips, meshtasticd restarts) — the moment the
-net exists for. Honest framing: this is reliability-under-degradation, not a
-broken feature today.
+### The real defect — the RNS→Mesh worker has no egress escape hatch
 
-**Fix shape (~10 lines + tests), for whoever takes it:**
-* Add an `elif` beside the existing gate: when `_persistent_queue` is present,
-  `_mesh_handler` is None, and `meshtastic_egress` is enabled with a host,
-  register `"meshtastic"` → a new `_queue_send_meshtastic_egress(payload) -> bool`
-  that unwraps `payload['message']` / `payload.get('channel')` and delegates to
-  the existing `send_to_meshtastic` (which already owns the `send_text_direct`
-  fallback and the circuit breaker).
-* Keep `min_spacing_s=MESHTASTIC_TX_MIN_SPACING_S` — the 2026-06-04
-  RATE_LIMIT_EXCEEDED find applies identically to a remote toradio burst; the
-  egress ends at the same firmware limiter.
-* ⚠️ **Note the channel asymmetry and decide it deliberately**: the direct egress
-  path uses `meshtastic_egress.channel_index` (2 = moc's `meshforge`), while
-  queue payloads carry `self.config.meshtastic.channel`. A naive sender would
-  retry a chunk onto a *different* channel than the one the original went out on.
-  The egress's own index should win, mirroring `send_to_meshtastic`'s docstring.
-* ⚠️ **Write-time question for this fix** (hfm #4 — reader/writer wire together
-  or fail together): what would still pass the test if the sender were dead?
-  `has_sender("meshtastic") is True` is exactly that check — it passes on a
-  registered callable that never delivers. Terminate the test at a **delivered
-  payload**, with the egress stubbed and the channel asserted.
+`rns_bridge.py` (~line 848) processes the RNS→Meshtastic queue like this:
 
-**Why it went unseen for 5 days.** Nothing pages on it. The drop is logged at
-**INFO** and rate-limited per destination (`NO_SENDER_LOG_INTERVAL`), and
-`Circuit OPEN` is a WARNING that no probe consumes. A leg that had **zero**
-successful `Bridge MC→Mesh:` in 7 days looked identical to a quiet one from every
-instrument we own. ⚠️ **That is the more interesting finding than the code gap**,
-and it is a `detector_blind` shape on a product END ("a message arrives"), not a
-harness-housekeeping subject — so `harness_restraint.md` §2 does **not** demote
-it, and its §1 exemption for "fixing a detector that is blind or misaimed" would
-cover an instrument that watches this. Recommend scoping that question WITH the
-code fix rather than before it: the cheapest honest witness is probably a
-bridge-success-rate signal on the MA gateway, not a new probe class.
+    mesh_state = self.health.get_subsystem_state("meshtastic")
+    if mesh_state in (SubsystemState.DISCONNECTED, SubsystemState.DISABLED):
+        requeued = self._requeue_failed_message(msg, "meshtastic")   # → queue
+    else:
+        self._process_rns_to_mesh(msg)                                # → egress
+
+On meshanchor-server that subsystem is **DISABLED by design** — the box has no
+meshtasticd (`LoadState=not-found`, nothing on `:9443`), which is the entire
+reason `meshtastic_egress` exists. So the gate takes the degraded branch
+**every time**, and `_process_rns_to_mesh` — the only path that reaches
+`send_to_meshtastic`, and therefore the only path that would use the egress — is
+**never reached at all**. Fixing the host address cannot help a branch that does
+not execute.
+
+⚠️ **Compare `meshcore_bridge_mixin.py` (~line 180), which gets this RIGHT**:
+
+    egress_on = bool(egress and egress.enabled and egress.host)
+    if egress_on or mesh_state not in (DISCONNECTED, DISABLED):
+
+Same question, two answers, one file apart. The egress feature was wired into
+`send_to_meshtastic` and into the MeshCore mixin's gate, and **not** into the
+RNS→Mesh worker's gate — honest_failure_modes #4 (reader/writer pairs wire
+together or fail together) and #5 (two consumers of one concept, independently
+coded, WILL drift). The MeshCore half is the proof the author knew the rule.
+
+### The second defect, which turns the first one silent
+
+The degraded branch enqueues to `destination="meshtastic"`, but
+`register_sender("meshtastic", …)` is gated on `self._mesh_handler`, which is
+`None` here. That gate is *correct as written* (`None.queue_send` would raise);
+what is missing is an egress-backed alternative. So `enqueue()` hits
+`has_sender()` → False → Issue #67's drop-at-enqueue, and the message is gone.
+
+**Net effect: every RNS→Meshtastic message on this box is silently discarded.**
+Not delayed, not retried — discarded, with the log line claiming only that no
+sender is registered.
+
+### Measured, not asserted
+
+| | 7 d before the repoint | since the repoint |
+|---|---|---|
+| `no sender registered … 'meshtastic'` (incl. suppressed) | **487** (242 logged + 245 suppressed) | 1 in the first 9 min |
+| `Failed to bridge RNS→Mesh` | **0** | 0 |
+| `Failed to bridge MC→Mesh` | 99 | **0** ✅ |
+| successful `Bridge MC→Mesh:` | **0** | — (awaiting organic traffic) |
+
+The drop rate did **not** fall after the address fix (~1.4/h before, 1 in 9 min
+after) — which is the measurement that refuted the first version of this row.
+`MeshBridge` is never instantiated, so `mesh_bridge.py`'s enqueue is dead code
+here; `rns_bridge.py:1290` is `bridge_mode == "mqtt_bridge"`-gated and MA runs
+`meshcore_bridge`. Every surviving producer routes through the branch above.
+
+### Fix shape (two halves — neither alone is enough)
+
+1. **The gate.** Give the RNS→Mesh worker the same `egress_on or …` test the
+   MeshCore mixin already uses. Better: extract ONE predicate
+   (`_meshtastic_path_available()`) and have both call it, so the next consumer
+   cannot drift a third way (hfm #5 — derive it, don't re-spell it).
+2. **The sender.** Register `"meshtastic"` → a new
+   `_queue_send_meshtastic_egress(payload) -> bool` when `_persistent_queue`
+   exists, `_mesh_handler` is None, and egress is enabled with a host; delegate
+   to `send_to_meshtastic` (which already owns `send_text_direct` and the
+   circuit breaker). Keep `min_spacing_s=MESHTASTIC_TX_MIN_SPACING_S` — the
+   2026-06-04 RATE_LIMIT_EXCEEDED find applies identically to a remote toradio
+   burst, since the egress ends at the same firmware limiter.
+   ⚠️ **Channel asymmetry, decide it deliberately**: the direct egress path uses
+   `meshtastic_egress.channel_index` (2 = moc's `meshforge`), while queue
+   payloads carry `self.config.meshtastic.channel`. A naive sender would replay
+   a chunk onto a different channel than the original. The egress's own index
+   should win, mirroring `send_to_meshtastic`'s docstring — and note Issue #37's
+   privacy class lives on exactly this replay path (`channel_override`).
+
+⚠️ **Write-time question for whoever takes it** — *what would still pass this
+test if the feature were dead?* `has_sender("meshtastic") is True` is precisely
+that: it passes on a registered callable that never delivers, and it would have
+passed all week. Terminate the test at a **delivered payload**, with the egress
+stubbed, the channel asserted, and `subsystem_state=DISABLED` in the fixture —
+because DISABLED is the only state this box is ever in, and no existing test
+pins that combination.
+
+### Why five days of total RNS→Mesh loss looked like silence
+
+Nothing pages on it. The drop is **INFO** and rate-limited per destination
+(`NO_SENDER_LOG_INTERVAL`, which is why 245 of 487 never printed a line of their
+own); `Circuit OPEN` is a WARNING no probe consumes; and a leg with **zero**
+successful bridges reads identically to a quiet one from every instrument we
+own. ⚠️ **This is the more interesting finding than either code gap**, and it is
+a `detector_blind` shape on a product END ("a message arrives") — so
+`harness_restraint.md` §2 does **not** demote it to a note, and §1's exemption
+for "fixing a detector that is blind or misaimed" would cover an instrument that
+watches it. Recommend scoping that WITH the code fix, not before it: the cheapest
+honest witness is probably a bridge-success-rate signal on the MA gateway, not a
+new probe class. ⚠️ Also note `mesh_bridge.py:1057` logs a `None` from
+`enqueue()` as *"deduplicated by queue"* — a no-sender drop rendered as a dedup.
+Dead code here, but the same mislabel would hide this class on any box where
+`MeshBridge` does run.
+
+**Not done**: no code changed, nothing deployed, no MA commit. The operator's
+call on the first (wrong) framing was "queue it, decide later"; that decision was
+made on a severity claim this row now retracts, so it is **open for re-decision**.
 
 ## 2026-08-11 — tonight's INSTRUMENT changes, queued for a frontier pass
 
