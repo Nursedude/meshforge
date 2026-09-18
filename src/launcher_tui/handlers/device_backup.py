@@ -241,7 +241,7 @@ class BackupHandler(BaseHandler):
             label = f"{device} ({created})"
             choices.append((backup_id, label))
 
-        choices.append(("back", "Cancel"))
+        choices.append(("cancel", "Cancel"))
 
         selected = self.ctx.dialog.menu(
             "Select Backup",
@@ -249,7 +249,7 @@ class BackupHandler(BaseHandler):
             choices
         )
 
-        if selected is None or selected == "back":
+        if selected is None or selected == "cancel":
             return
 
         if not self.ctx.dialog.yesno(
@@ -339,7 +339,7 @@ class BackupHandler(BaseHandler):
             label = f"{device} ({created})"
             choices.append((backup_id, label))
 
-        choices.append(("back", "Cancel"))
+        choices.append(("cancel", "Cancel"))
 
         selected = self.ctx.dialog.menu(
             "Select Backup",
@@ -347,7 +347,7 @@ class BackupHandler(BaseHandler):
             choices
         )
 
-        if selected is None or selected == "back":
+        if selected is None or selected == "cancel":
             return
 
         if not self.ctx.dialog.yesno(
