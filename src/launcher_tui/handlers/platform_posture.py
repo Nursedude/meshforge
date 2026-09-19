@@ -147,6 +147,41 @@ class PlatformPostureHandler(BaseHandler):
             return
 
         out = []
+
+        # ── the ACTUAL side (2026-09-19) ──────────────────────────────────
+        # This ledger used to record only what we DECLARE. A declared hold
+        # that is not in force still rendered as authoritative, which is the
+        # silent failure this block closes: the apt_hold is the only guard
+        # against a published build regressing the USB boxes, and several
+        # boxes carry a third-party repo at priority 500.
+        from utils.fleet_platform import (
+            HOLD_HELD, HOLD_INERT, HOLD_NOT_HELD, HOLD_UNDECLARED,
+            HOLD_UNKNOWN, holds_worst_state, reconcile_holds,
+        )
+
+        actual = self._holds()
+        wanted = [n for n, p in catalog.pins.items()
+                  if getattr(p, "mechanism", "") == "apt_hold"]
+        installed = self._installed_packages(wanted) if wanted else []
+        rows = reconcile_holds(catalog.pins, actual, installed)
+        worst = holds_worst_state(rows)
+
+        if worst == HOLD_NOT_HELD:
+            out += ["!! A DECLARED HOLD IS NOT IN FORCE ON THIS BOX !!",
+                    "   The next upgrade can move that package.", ""]
+        elif worst == HOLD_UNKNOWN:
+            out += ["Hold state UNKNOWN — apt could not be read.",
+                    "UNKNOWN is not a pass.", ""]
+
+        if rows:
+            label = {HOLD_HELD: "HELD", HOLD_NOT_HELD: "NOT HELD",
+                     HOLD_INERT: "inert", HOLD_UNKNOWN: "UNKNOWN",
+                     HOLD_UNDECLARED: "UNDECLARED"}
+            out.append("Holds on this box (declared vs actual):")
+            for name, state, detail in rows:
+                out.append(f"  {name:<16} {label[state]:<11} {detail}")
+            out.append("")
+
         for name, pin in sorted(catalog.pins.items()):
             watched = ("watched: a predicate can tell us when to look again"
                        if pin.self_monitoring
@@ -212,6 +247,21 @@ class PlatformPostureHandler(BaseHandler):
         if rc is None or rc != 0:
             return None
         return sum(1 for ln in out.splitlines() if ln.startswith("Inst "))
+
+    def _installed_packages(self, names):
+        """Which of ``names`` are installed here. None = could not look."""
+        if not names:
+            return []
+        rc, out = self._probe(
+            ["dpkg-query", "-W", "-f", "${Package} ${Status}\n"] + list(names))
+        if rc is None:
+            return None
+        found = []
+        for line in out.splitlines():
+            parts = line.split(" ", 1)
+            if len(parts) == 2 and "install ok installed" in parts[1]:
+                found.append(parts[0])
+        return found
 
     def _holds(self):
         rc, out = self._probe(["apt-mark", "showhold"])

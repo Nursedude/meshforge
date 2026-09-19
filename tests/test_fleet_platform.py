@@ -25,8 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from utils.fleet_platform import (  # noqa: E402
     DRIFT, INERT, OK, UNKNOWN, Catalog, Declaration, DistroBase,
     canonical_box, judge_box, kernel_flavour, kernel_version_key,
+    HOLD_HELD, HOLD_INERT, HOLD_NOT_HELD, HOLD_UNDECLARED, HOLD_UNKNOWN,
     load_catalog, load_declarations, match_declaration, newer_kernel_installed,
-    reboot_owed, same_box, summarize,
+    reboot_owed, reconcile_holds, holds_worst_state, same_box, summarize,
 )
 
 CATALOG_YAML = """
@@ -592,3 +593,78 @@ class TestRebootOwed:
         owed, _ = reboot_owed(reboot_required_flag=False,
                               running_kernel=None, installed_kernels=None)
         assert owed is None
+
+
+# ── hold reconciliation (2026-09-19) ─────────────────────────────────────
+# The pin ledger had no ACTUAL side: it recorded what we hold and why, and
+# never asked whether the box holds it. The apt_hold is the only guard
+# against a published build regressing the USB boxes, so a silently-missing
+# hold rendering as an authoritative pin is the failure this closes.
+
+class _FakePin:
+    def __init__(self, mechanism):
+        self.mechanism = mechanism
+
+
+def _pins(**kw):
+    return {name: _FakePin(mech) for name, mech in kw.items()}
+
+
+class TestReconcileHolds:
+    def test_declared_and_held_is_held(self):
+        rows = reconcile_holds(_pins(meshtasticd="apt_hold"),
+                               ["meshtasticd"], ["meshtasticd"])
+        assert rows == [("meshtasticd", HOLD_HELD, "declared and in force")]
+
+    def test_declared_installed_but_not_held_is_loud(self):
+        rows = reconcile_holds(_pins(meshtasticd="apt_hold"),
+                               [], ["meshtasticd"])
+        assert rows[0][1] == HOLD_NOT_HELD
+        assert "NOT held" in rows[0][2]
+
+    def test_not_installed_is_inert_not_missing(self):
+        """A box with no meshtasticd is COMPLIANT, not missing a hold."""
+        rows = reconcile_holds(_pins(meshtasticd="apt_hold"), [], ["python3"])
+        assert rows[0][1] == HOLD_INERT
+        assert "compliant" in rows[0][2]
+
+    def test_unreadable_holds_is_unknown_never_held(self):
+        rows = reconcile_holds(_pins(meshtasticd="apt_hold"), None, ["meshtasticd"])
+        assert rows[0][1] == HOLD_UNKNOWN
+
+    def test_not_held_and_installed_unknown_is_unknown(self):
+        rows = reconcile_holds(_pins(meshtasticd="apt_hold"), [], None)
+        assert rows[0][1] == HOLD_UNKNOWN
+
+    def test_undeclared_hold_is_reported(self):
+        rows = reconcile_holds(_pins(meshtasticd="apt_hold"),
+                               ["meshtasticd", "chromium"], ["meshtasticd", "chromium"])
+        states = {n: st for n, st, _ in rows}
+        assert states["meshtasticd"] == HOLD_HELD
+        assert states["chromium"] == HOLD_UNDECLARED
+
+    def test_fork_pins_are_not_apt_holds(self):
+        """rns/lxmf are fork_pin, not apt_hold -- they must not be reconciled."""
+        rows = reconcile_holds(_pins(rns="fork_pin", lxmf="fork_pin"), [], [])
+        assert rows == []
+
+    def test_no_pins_and_no_holds_is_empty(self):
+        assert reconcile_holds({}, [], []) == []
+
+
+class TestHoldsWorstState:
+    def test_not_held_outranks_everything(self):
+        rows = [("a", HOLD_HELD, ""), ("b", HOLD_INERT, ""),
+                ("c", HOLD_NOT_HELD, ""), ("d", HOLD_UNKNOWN, "")]
+        assert holds_worst_state(rows) == HOLD_NOT_HELD
+
+    def test_unknown_outranks_undeclared_and_held(self):
+        rows = [("a", HOLD_HELD, ""), ("b", HOLD_UNDECLARED, ""),
+                ("c", HOLD_UNKNOWN, "")]
+        assert holds_worst_state(rows) == HOLD_UNKNOWN
+
+    def test_all_held_reads_held(self):
+        assert holds_worst_state([("a", HOLD_HELD, "")]) == HOLD_HELD
+
+    def test_empty_is_none(self):
+        assert holds_worst_state([]) is None

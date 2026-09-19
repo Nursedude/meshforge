@@ -12,7 +12,7 @@
 
 **83 handlers · 116 menu actions · 12 sections** (all derived from `get_all_handlers()`, never hardcoded).
 
-A non-empty **Flag** means the action only appears when that deployment-profile feature is enabled (blank = always visible).
+A non-empty **Flag** names the deployment-profile feature that gates the action. Gated does NOT mean hidden: when the feature is off the row is still SHOWN, marked `[off]`, and refuses to run with an explanation naming the profile (`HandlerRegistry.mark_label` / `OFF_MARK`). Nothing is removed from the menu — someone new to the domain cannot go looking for a capability they have never been shown. Blank = never gated.
 
 ## `about`
 

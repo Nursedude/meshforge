@@ -541,3 +541,91 @@ def reboot_owed(*, reboot_required_flag: Optional[bool],
     if running_kernel is None or installed_kernels is None:
         return None, "reboot flag absent, but the running/installed kernel set could not be read"
     return False, f"running {running_kernel}, which is the newest installed for its flavour"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Hold reconciliation (2026-09-19) — the ACTUAL side of the pin ledger.
+#
+# The pin ledger records what we hold and WHY. It never asked whether the
+# box in front of you actually holds it. That asymmetry is a silent failure
+# in the strict sense: the meshtasticd apt_hold is the only guard against a
+# published build regressing the USB boxes (firmware#10468), several boxes
+# carry a third-party repo at priority 500, and a hold that quietly went
+# missing would still render as an authoritative pin.
+#
+# Absent-by-design must read INERT, never "missing" — a box with no
+# meshtasticd installed (the MeshAnchor replica) is COMPLIANT, and nagging
+# about it teaches the reader to skip the screen. Unreadable reads UNKNOWN,
+# never "held".
+# ─────────────────────────────────────────────────────────────────────────
+
+HOLD_HELD = "held"                  # declared and actually held
+HOLD_NOT_HELD = "not_held"          # declared, package installed, NOT held -> loud
+HOLD_INERT = "not_installed"        # declared, package absent by design
+HOLD_UNKNOWN = "unknown"            # could not observe
+HOLD_UNDECLARED = "undeclared"      # held here, but no pin explains why
+HOLD_STATES = (HOLD_HELD, HOLD_NOT_HELD, HOLD_INERT, HOLD_UNKNOWN,
+               HOLD_UNDECLARED)
+
+
+def reconcile_holds(pins: Optional[Dict[str, "Pin"]],
+                    actual_holds: Optional[List[str]],
+                    installed: Optional[List[str]]
+                    ) -> List[Tuple[str, str, str]]:
+    """Reconcile DECLARED apt_hold pins against what the box actually holds.
+
+    Returns ``[(package, state, detail), ...]`` sorted by package, covering
+    both directions: a declared hold that is not in force, and a hold in
+    force that nothing declares.
+
+    ``actual_holds`` or ``installed`` being None means "could not look" and
+    yields UNKNOWN rows — never a reassuring 'held'.
+    """
+    out: List[Tuple[str, str, str]] = []
+    declared_holds = {
+        name: p for name, p in (pins or {}).items()
+        if getattr(p, "mechanism", "") == "apt_hold"
+    }
+
+    for name in sorted(declared_holds):
+        if actual_holds is None:
+            out.append((name, HOLD_UNKNOWN,
+                        "could not read apt-mark; a hold cannot be confirmed"))
+            continue
+        if name in actual_holds:
+            out.append((name, HOLD_HELD, "declared and in force"))
+            continue
+        if installed is None:
+            out.append((name, HOLD_UNKNOWN,
+                        "not held, and whether it is installed could not be read"))
+            continue
+        if name not in installed:
+            out.append((name, HOLD_INERT,
+                        "not installed on this box — nothing to hold, "
+                        "so this is compliant, not missing"))
+            continue
+        out.append((name, HOLD_NOT_HELD,
+                    "DECLARED as held, INSTALLED here, and NOT held — the next "
+                    "upgrade can move it"))
+
+    if actual_holds:
+        for name in sorted(actual_holds):
+            if name in declared_holds:
+                continue
+            out.append((name, HOLD_UNDECLARED,
+                        "held on this box with no pin recording why — a hold "
+                        "nobody can justify is one somebody will remove"))
+    return out
+
+
+def holds_worst_state(rows: List[Tuple[str, str, str]]) -> Optional[str]:
+    """The most serious state in a reconciliation, or None if rows is empty.
+
+    Ordering is by how much it should interrupt the reader, NOT alphabetical.
+    """
+    for state in (HOLD_NOT_HELD, HOLD_UNKNOWN, HOLD_UNDECLARED, HOLD_INERT,
+                  HOLD_HELD):
+        for _, st, _ in rows:
+            if st == state:
+                return state
+    return None
