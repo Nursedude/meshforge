@@ -27,6 +27,11 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 PAYLOAD="$TMP/sync_repo.sh"
 awk '/^sync_repo\(\) \{$/{f=1} f{print} f&&/^\}$/{exit}' "$SYNC" > "$PAYLOAD"
 if [ ! -s "$PAYLOAD" ]; then echo "FAIL could not extract sync_repo"; exit 1; fi
+# The USER-bus sibling has the SAME branch and the same blindness -- fixing only
+# the one the incident arrived through is the 2026-08-09 trap. Extract it too.
+UPAYLOAD="$TMP/sync_user_unit.sh"
+awk '/^sync_user_unit\(\) \{$/{f=1} f{print} f&&/^\}$/{exit}' "$SYNC" > "$UPAYLOAD"
+if [ ! -s "$UPAYLOAD" ]; then echo "FAIL could not extract sync_user_unit"; exit 1; fi
 # NOT an early exit: an early exit here short-circuits the BEHAVIOURAL cases,
 # so a regression would be proven only by a grep. Counted as an assertion at
 # the end instead, after the cases have actually run.
@@ -108,10 +113,37 @@ run_case current "$(date -d '-1 hour' 2>/dev/null || date -v-1H)" no
 # though the pull applied nothing. This is the regression this file exists for.
 run_case behind  "$(date -d '+1 hour' 2>/dev/null || date -v+1H)" yes
 
-if grep -q 'mf_code_head' "$PAYLOAD"; then
-    echo "ok   sync_repo consults mf_code_head (THE shared definition)"
+run_user_case() {  # $1=label $2=date $3=expect_restart(yes|no)
+    mk_repo "$2" || { echo "FAIL $1 repo setup"; fails=$((fails+1)); return; }
+    export STUB_MARKER="$TMP/restarted.$1"; rm -f "$STUB_MARKER"
+    export STUB_PID=$$
+    local head out
+    head="$(git -C "$TMP/repo" rev-parse HEAD)"
+    # pre_head == HEAD is the "pull applied nothing" case, same as sync_repo.
+    out="$(cd "$TMP/repo" && . "$LIB" && . "$UPAYLOAD" && \
+           sync_user_unit test "$TMP/repo" meshforge-test "$head" 2>&1)"
+    if [ "$3" = "yes" ]; then
+        if [ -f "$STUB_MARKER" ]; then echo "ok   $1 user unit restarted despite no commits"
+        else echo "FAIL $1 expected a user restart, got: $out"; fails=$((fails+1)); fi
+    else
+        if [ -f "$STUB_MARKER" ]; then
+            echo "FAIL $1 restarted a CURRENT user process: $out"; fails=$((fails+1))
+        elif ! printf %s "$out" | grep -q unchanged; then
+            echo "FAIL $1 never reached the decision: $out"; fails=$((fails+1))
+        else echo "ok   $1 no restart, decision reached (user process is current)"; fi
+    fi
+}
+
+run_user_case user-current "$(date -d '-1 hour' 2>/dev/null || date -v-1H)" no
+# The one that would have shipped half-fixed: a USER unit older than its code,
+# with nothing pulled. It must restart -- and must NOT be swallowed by the
+# docs_only test that sits after this branch and diffs a sha against itself.
+run_user_case user-behind  "$(date -d '+1 hour' 2>/dev/null || date -v+1H)" yes
+
+if grep -q 'mf_code_head' "$PAYLOAD" && grep -q 'mf_code_head' "$UPAYLOAD"; then
+    echo "ok   both sync_repo and sync_user_unit consult mf_code_head"
 else
-    echo "FAIL sync_repo does not consult mf_code_head"; fails=$((fails+1))
+    echo "FAIL a sync path does not consult mf_code_head"; fails=$((fails+1))
 fi
 
 # mf_code_head must be REACHABLE from the payload on the remote box, or the

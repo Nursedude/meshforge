@@ -455,15 +455,56 @@ sync_user_unit() {
     # The repo was already pulled by sync_repo above (same path); compare the
     # caller-pinned pre-pull HEAD to the now-current HEAD using the same
     # code-vs-docs include list. No commits / docs-only -> no restart.
-    local new_head_full new_head
+    local new_head_full new_head u_skew
     new_head_full=$(cd "$repo" 2>/dev/null && git rev-parse HEAD 2>/dev/null || echo "")
     new_head=$(cd "$repo" 2>/dev/null && git rev-parse --short HEAD 2>/dev/null || echo "?")
+    u_skew=0
 
     if [ -z "$pre_head" ] || [ "$pre_head" = "$new_head_full" ]; then
-        echo "PASS $short $new_head unchanged"
-        return 0
+        # Same blindness the system-scope sibling had, and found the same day
+        # by the canary that verified the system-scope fix: "the pull applied
+        # nothing" is a fact about the REPO, not about the PROCESS. The USER
+        # units are the ones this cost most -- echo, mini-dudeai and its three
+        # claw instances, nomadnet-silence-watch were the bulk of the 46
+        # skewed units on 2026-09-18.
+        #
+        # Fixing only the branch the incident arrived through is the
+        # documented 2026-08-09 trap (persistent_issues: grep EVERY branch
+        # that reaches the same return). This is that grep.
+        local u_uid u_xdg u_code_ct u_pid u_started
+        u_uid=$(id -u 2>/dev/null || echo "")
+        u_xdg="${XDG_RUNTIME_DIR:-}"
+        if [ -z "$u_xdg" ] && [ -n "$u_uid" ]; then u_xdg="/run/user/$u_uid"; fi
+        u_code_ct="$(mf_code_head "$repo")"
+        case "${u_code_ct:-}" in
+            ""|*[!0-9]*)
+                echo "PASS $short $new_head unchanged code_head_unknown"
+                return 0 ;;
+        esac
+        u_pid="$(XDG_RUNTIME_DIR="$u_xdg" systemctl --user show -p MainPID --value "${unit}.service" 2>/dev/null)"
+        u_started=""
+        case "${u_pid:-0}" in
+            ""|0|*[!0-9]*) : ;;
+            *) u_started="$(stat -c %Y "/proc/$u_pid" 2>/dev/null || true)" ;;
+        esac
+        case "${u_started:-}" in
+            ""|*[!0-9]*)
+                echo "PASS $short $new_head unchanged not_running"
+                return 0 ;;
+        esac
+        if [ "$u_code_ct" -le "$u_started" ]; then
+            echo "PASS $short $new_head unchanged"
+            return 0
+        fi
+        # Process predates the code it loads: fall through to the same
+        # template-aware existence check and try-restart below. The flag is
+        # REQUIRED -- the docs_only test right after this diffs pre_head
+        # against new_head_full, which are EQUAL here, so an empty diff would
+        # read as docs_only and return without restarting. Caught before
+        # shipping by walking the fall-through, not by running it.
+        u_skew=1
     fi
-    if ! (cd "$repo" 2>/dev/null && git diff --name-only "$pre_head" "$new_head_full" 2>/dev/null \
+    if [ "$u_skew" = 0 ] && ! (cd "$repo" 2>/dev/null && git diff --name-only "$pre_head" "$new_head_full" 2>/dev/null \
             | grep -qE "^src/|^pyproject\.toml$|^requirements.*\.txt$"); then
         echo "PASS $short $new_head docs_only"
         return 0
