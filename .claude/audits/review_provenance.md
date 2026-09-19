@@ -2566,6 +2566,38 @@ leg here pins the FOLLOWER to the leader's shape and may fight future
 MA-side MeshCore work. That is the real argument against, and it is why this
 is queued rather than landed.
 
+## QUEUED 2026-09-18 (Opus 5) — the END-CITATION RULE, for the 2026-10-09 freeze review
+
+**Operator-directed** at the close of the wan_path/fleet_sync session ("the
+END-citation rule — write it up for next session… let's build better").
+
+**Full proposal, method, refutations and acceptance criteria**:
+`.claude/plans/end_citation_rule.md`. Read it there; this row is a pointer so
+the 10-09 review finds it beside the inert-tier cut below, which it SHARPENS
+rather than competes with.
+
+**One line**: every signal class must name the END it protects
+(`message-arrives` / `truth-told-in-app` / `delivery` / `operator-safety` /
+`harness`); a class that can only answer `harness` is a deletion candidate.
+Enforced by a lint over `SIGNAL_CLASSES` (`watchdog_probe_core.py:59`, 61
+classes) so it REFUSES rather than advises.
+
+**Why it exists**: the freeze fights a gradient with willpower. The product's
+END is rare and expensive to observe; an instrument's END returns a value every
+tick. Effort flows downhill, which is why a brake existed before the 316
+commits and they happened anyway. This gives a deletion criterion that does not
+depend on the reviewer's judgement.
+
+⚠️ **It is itself an instrument.** Its own falsifier is written into the
+proposal: if the first END-census cuts ZERO classes, delete the rule rather
+than tune it. Adopt only if the 10-09 commit-split has NOT moved AND the census
+yields a non-empty cut list the operator approves.
+
+⚠️ It must NOT be used to cut a blindness subject (`detector_blind`,
+`source_error_*`) — unobservable ≠ healthy, measured 3-for-3 wrong.
+
+---
+
 ## QUEUED 2026-09-17 (Opus 5) — the INERT-TIER CUT, for the 2026-10-09 freeze review
 
 **Operator-directed at the close of the session-notes rotation session**
