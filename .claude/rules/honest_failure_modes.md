@@ -85,6 +85,13 @@ satisfied; the truth wasn't.
     in context is not a check against current ground truth — this file's own
     class, aimed at the process instead of the code.)
 
+11. **Ask at incident close: would an operator WITHOUT the assistant have
+    seen this?** If no, the read-only surface owes a row. A domain whose
+    operator works through a model drifts its TUI behind its own dev
+    practice, because the surface learns only when someone carries the
+    lesson across by hand. (2026-09-19: an OS roll produced two panes this
+    way — reboot-owed, and declared-vs-actual holds.)
+
 ## How to apply
 
 Writing any monitor, daemon loop, validator, or persistence layer: walk the
