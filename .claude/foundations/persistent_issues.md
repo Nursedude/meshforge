@@ -135,7 +135,8 @@ Symptom you can see at a terminal → which class it is. Full bodies in the arch
 | `cron_verdict_stale` says a cron has been silent FOREVER (never ran) | since 2026-07-10 that page is REAL — the old log-cap false leg is fixed (`d0254dae`). It judges only `cron_verdict.sh`-wired crons (cadence x3, 2h floor) and reads `inert` when none are wired (#78) |
 | a USER systemd unit crashloops and no probe ever says so | `probe_service_inactive` is structurally BLIND to user units (#82, 2026-07-21 — nomadnet crashlooped `NRestarts=7842` for 10 days, undetected). Check user units with `systemctl --user`, never plain `systemctl`; `probe_nomadnet_crashloop` closes that one gap, not the class |
 | a boot-time unit dies on a network op while its OWN `ExecStartPre` guard reported `status=0/SUCCESS` | the guard gates on a NAME but the failure moved to ROUTABILITY (2026-09-17) — a 07-21 `getent hosts` bounded wait was silently DISARMED by the 07-25 `/etc/hosts` fleet block: `nsswitch` is `hosts: files ... dns`, so `getent` now succeeds **from a flat file with the NIC down**. It passed in ZERO seconds while ssh died the same second on `Network is unreachable` (was `Could not resolve hostname` in 07-21). **Tell**: a boot guard gating on a NAME is inert on any box carrying a static hosts block — gate on a TCP connect to the real peer instead. ⚠️ TWO CORRECT fixes disarmed each other, so neither commit looks wrong in isolation; ask at write time *what would still pass this check if the feature were dead?* |
-| `@rns/<instance>` owned by a **non-rnsd pid** after a reboot | **#69 boot race — LIVE 2026-09-19, root cause UNFIXED.** A USER unit (`meshforge-echo`) and SYSTEM `rnsd` start concurrently, so the winner is NONDETERMINISTIC: moc5 lost 1 of 8 reboots, the other 7 read `rnsd`. RNS still works (the app serves it) — but if that app restarts, RNS drops for the whole box, and you carry TWO ~40 MB RNS processes where one should serve. Races do not stay free: they leave duplicated work that compounds on a Pi fleet. **Check**: `sudo ss -xnpl | grep "@rns/"` — owner MUST be `rnsd`. ⚠️ **Repair ORDER**: stop the squatter → restart rnsd → start the squatter; restarting rnsd FIRST is itself the race trigger. Cure = a readiness wait before the app calls into Reticulum. |
+| `@rns/<instance>` owned by a **non-rnsd pid** after a reboot | **#69 boot race — root-caused + cured in code 2026-09-19; DEPLOY OWED.** The readiness wait had existed all along and was **never reached**: its body sat inside `if instance_name:`, and the lab units pass a **tmpdir** configdir (no `MESHFORGE_LAB_RNS_CONFIGDIR` in the shipped files), so the name read returned None and the guard disarmed itself — while `@rns/default` is kernel-global, so RNS collided with rnsd regardless. Not a lost race, an unguarded one. Cure `_guard_instance_name()` — full mechanism in its docstring. ⚠️ **A guard gated on a config value is inert wherever that value is absent — ask what the process BINDS, not what a file NAMES.** ⚠️ Cost is worse than "rnsd restarted": moc5 boot 08:17:45 → rnsd active only 09:00:13 (hand repair) = **42 min with no RNS**, and `meshforge-tracer` died with it (`boot_survival FAIL`). **Check**: `sudo ss -xnpl \| grep "@rns/"` — owner MUST be `rnsd`. ⚠️ **Repair ORDER**: stop squatter → restart rnsd → start squatter; rnsd first IS the race trigger. ⚠️ `open_reticulum`'s fallback keeps the same mis-aim (queued, call-site note). |
+| fleet-wide name lookups ~75-90ms while an A-only query is ~1ms | the AAAA leg forwarding to the WAN (2026-07-25) — fleet names had NO AAAA and the upstream returns NODATA with no SOA, so resolved can never negative-cache it; resolution was coupled to internet reachability. Cured by the `/etc/hosts` block (`gen_fleet_hosts.py --apply`, hourly `fleet_hosts_drift` self-heal). ⚠️ cloud-init owns that file too and re-wipes the block on EVERY boot unless `manage_etc_hosts: localhost` is in **`/boot/firmware/user-data`** — a `cloud.cfg.d/` drop-in does NOT work. ⚠️ seed from live DNS, never the registry snapshot: this file SHADOWS DNS. Router-side DNS cannot supersede it (measured 07-26, don't re-open). Body in the archive |
 
 ⚠️ **Growth rule (this is the structural fix, 2026-08-05).** This file is
 bounded by VALUE-PER-TURN, not chronology. A newly-resolved issue goes
@@ -295,57 +296,3 @@ Quick check: `wc -l /proc/<pid>/maps` — climbing over 30 min = leaking, flat
 (comm is `meshtasticd-patched`); use `pgrep -f`. Detail:
 [[project_updates_design_arc_2026_07_10]].
 
----
-
-## mf.internal AAAA forwards to the WAN — the 900ms fleet-name tax (2026-07-25)
-
-m1 answers only exact `(name, type)` static matches locally and **forwards
-everything else to its WAN upstream**. Fleet names carry A records only, so
-every AAAA for `<name>.mf.internal` goes to the internet and returns
-NODATA — **with no SOA, so systemd-resolved cannot negatively cache it** and
-pays that round trip forever. Every real tool (ssh, curl, urllib, getent)
-uses `getaddrinfo` AF_UNSPEC and asks both families:
-
-    m1  moc.mf.internal A     1.1ms      (local static entry)
-    m1  moc.mf.internal AAAA 75.5ms      (forwarded; WAN baseline 75.8ms)
-    12-host sweep  AF_UNSPEC 902ms  vs  AF_INET 1.7ms
-
-So resolution was **coupled to internet reachability** — a WAN hiccup makes
-healthy boxes look dead. Cure: `scripts/gen_fleet_hosts.py --apply` writes a
-delimited `/etc/hosts` block (nss `files` precedes `dns`), all 9 boxes; 902ms
-→ 4ms, and names resolve with DNS or the uplink down. Hourly per-box
-`fleet_hosts_drift` cron, **self-healing since 07-27**
-(`scripts/fleet_hosts_selfheal.sh`): drift → `--apply` → re-check the file.
-A heal reports **CONCERN** naming what moved and self-clears next run — never
-OK, or an hourly-churning box would look identical to a stable one.
-UNOBSERVABLE never heals: blindness is not drift, and this file shadows DNS.
-
-**Decision tell**: fleet-wide ~75-90ms per name lookup with A at ~1ms = this,
-not a sick resolver. **Quick check**: compare
-`getaddrinfo(name, AF_INET)` vs `AF_UNSPEC` timing — a ~75ms gap is the AAAA
-leg. ⚠️ `/etc/hosts` SHADOWS DNS, so the block is seeded from **live DNS**,
-never from the registry's `ip_fallback` snapshot (that would bake in a stale
-copy and shadow the truth — the moc5 reshuffle class).
-
-**Router-side DNS canNOT supersede this — measured 2026-07-26, don't re-open.**
-m1's DNS proxy strips the authority section from every relayed answer, so no
-negative answer through it is ever cacheable (RFC 2308 needs the SOA). Universal,
-not mf.internal-specific; admin access on m1 does not help. And a router-side fix
-would still couple fleet names to m1 being up. Full measurement in the archive.
-
-**⚠️ cloud-init owns /etc/hosts too — it wipes the block on EVERY boot
-(2026-07-27).** Boot-partition NoCloud user-data sets `manage_etc_hosts: true`
-and `update_etc_hosts` runs at frequency **always**. moc5 rebooted 07-27 10:18
-and lost all 12 names (`fleet_hosts_drift` caught it in 15 min); proven from
-cloud-init's log — read 1214 bytes, wrote 545, byte-identical to
-`/etc/hosts.bak-meshforge`. **Latent on all 8 cloud-init boxes**; moc5 was just
-the first to reboot. Honest-failure-modes #8 — a writer shipped without
-excluding the artifact's other owner.
-
-Cure: `manage_etc_hosts: localhost` in **`/boot/firmware/user-data`** (keeps the
-127.0.1.1 entry managed, stops the template render). ⚠️ **A
-`/etc/cloud/cloud.cfg.d/` drop-in does NOT work** — user-data merges *over*
-cloud.cfg.d; measured, block still wiped 1214→545. Applied + verified on all 8
-cloud-init boxes 07-27. **Test without rebooting**: `sudo cloud-init single --name
-update_etc_hosts --frequency always` — runs the real consumer-of-record rather
-than trusting the config (calibrated_claims #7).

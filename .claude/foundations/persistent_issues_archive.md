@@ -4061,3 +4061,63 @@ prompted this was **test pollution, not telemetry** — (the row that detail poi
 leg's logic stands, its motivating example did not. **Rule**: `inert` and `indeterminate` are different
 claims — an organ that is absent by design must never be reported as an
 observation that failed, or the real failures have nowhere to stand out.
+
+
+---
+
+<!-- DEMOTED from persistent_issues.md 2026-09-19 (MF012 cap). Fully
+resolved + self-healing since 07-27 and applied/verified on all 8 cloud-init
+boxes; the live tell survives as a row in the Quick-diagnostic-tells table. -->
+
+## mf.internal AAAA forwards to the WAN — the 900ms fleet-name tax (2026-07-25)
+
+m1 answers only exact `(name, type)` static matches locally and **forwards
+everything else to its WAN upstream**. Fleet names carry A records only, so
+every AAAA for `<name>.mf.internal` goes to the internet and returns
+NODATA — **with no SOA, so systemd-resolved cannot negatively cache it** and
+pays that round trip forever. Every real tool (ssh, curl, urllib, getent)
+uses `getaddrinfo` AF_UNSPEC and asks both families:
+
+    m1  moc.mf.internal A     1.1ms      (local static entry)
+    m1  moc.mf.internal AAAA 75.5ms      (forwarded; WAN baseline 75.8ms)
+    12-host sweep  AF_UNSPEC 902ms  vs  AF_INET 1.7ms
+
+So resolution was **coupled to internet reachability** — a WAN hiccup makes
+healthy boxes look dead. Cure: `scripts/gen_fleet_hosts.py --apply` writes a
+delimited `/etc/hosts` block (nss `files` precedes `dns`), all 9 boxes; 902ms
+→ 4ms, and names resolve with DNS or the uplink down. Hourly per-box
+`fleet_hosts_drift` cron, **self-healing since 07-27**
+(`scripts/fleet_hosts_selfheal.sh`): drift → `--apply` → re-check the file.
+A heal reports **CONCERN** naming what moved and self-clears next run — never
+OK, or an hourly-churning box would look identical to a stable one.
+UNOBSERVABLE never heals: blindness is not drift, and this file shadows DNS.
+
+**Decision tell**: fleet-wide ~75-90ms per name lookup with A at ~1ms = this,
+not a sick resolver. **Quick check**: compare
+`getaddrinfo(name, AF_INET)` vs `AF_UNSPEC` timing — a ~75ms gap is the AAAA
+leg. ⚠️ `/etc/hosts` SHADOWS DNS, so the block is seeded from **live DNS**,
+never from the registry's `ip_fallback` snapshot (that would bake in a stale
+copy and shadow the truth — the moc5 reshuffle class).
+
+**Router-side DNS canNOT supersede this — measured 2026-07-26, don't re-open.**
+m1's DNS proxy strips the authority section from every relayed answer, so no
+negative answer through it is ever cacheable (RFC 2308 needs the SOA). Universal,
+not mf.internal-specific; admin access on m1 does not help. And a router-side fix
+would still couple fleet names to m1 being up. Full measurement in the archive.
+
+**⚠️ cloud-init owns /etc/hosts too — it wipes the block on EVERY boot
+(2026-07-27).** Boot-partition NoCloud user-data sets `manage_etc_hosts: true`
+and `update_etc_hosts` runs at frequency **always**. moc5 rebooted 07-27 10:18
+and lost all 12 names (`fleet_hosts_drift` caught it in 15 min); proven from
+cloud-init's log — read 1214 bytes, wrote 545, byte-identical to
+`/etc/hosts.bak-meshforge`. **Latent on all 8 cloud-init boxes**; moc5 was just
+the first to reboot. Honest-failure-modes #8 — a writer shipped without
+excluding the artifact's other owner.
+
+Cure: `manage_etc_hosts: localhost` in **`/boot/firmware/user-data`** (keeps the
+127.0.1.1 entry managed, stops the template render). ⚠️ **A
+`/etc/cloud/cloud.cfg.d/` drop-in does NOT work** — user-data merges *over*
+cloud.cfg.d; measured, block still wiped 1214→545. Applied + verified on all 8
+cloud-init boxes 07-27. **Test without rebooting**: `sudo cloud-init single --name
+update_etc_hosts --frequency always` — runs the real consumer-of-record rather
+than trusting the config (calibrated_claims #7).

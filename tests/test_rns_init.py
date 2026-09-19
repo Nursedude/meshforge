@@ -286,6 +286,93 @@ class TestBootRaceGuard:
         with patch.dict(sys.modules, {"utils.service_check": None}):
             assert ri._rnsd_unit_enabled() is False
 
+    def test_lab_daemon_tmpdir_configdir_arms_the_guard(self, tmp_path):
+        """THE #69 regression (moc5, 2026-09-19).
+
+        The lab echo/tracer daemons are handed a TMPDIR configdir — the
+        shipped units set no ``MESHFORGE_LAB_RNS_CONFIGDIR`` — so it holds no
+        ``config`` file at all. The guard used to read only the explicit
+        ``instance_name`` directive, get None, and skip itself entirely via
+        ``if instance_name:`` while RNS went on to bind the kernel-global
+        ``@rns/default`` anyway. echo won that unguarded race at boot, rnsd
+        lost its bind, and the box had no RNS for 42 minutes.
+
+        With an enabled rnsd that never claims, this MUST raise rather than
+        boot-claim. Nothing is patched about the name resolution: the point is
+        that an EMPTY configdir still resolves to a real target.
+        """
+        assert not (tmp_path / "config").exists()
+        with patch.object(ri, "check_rns_listener_owner", return_value=None), \
+             patch.object(ri, "_shared_instance_listener_present",
+                          return_value=False), \
+             patch.object(ri, "_rnsd_unit_enabled", return_value=True), \
+             patch.object(ri, "_wait_for_rnsd_listener",
+                          return_value=False) as wait, \
+             patch.object(ri, "_construct_reticulum_with_watchdog") as construct:
+            with pytest.raises(RuntimeError, match="boot-claim"):
+                ri.init_reticulum_with_watchdog(str(tmp_path))
+            wait.assert_called_once_with(ri.RNS_DEFAULT_INSTANCE_NAME)
+            construct.assert_not_called()
+
+
+# --------------------------------------------- _guard_instance_name
+
+
+class TestGuardInstanceNameAiming:
+    """#69: the guard must aim at the socket THIS process will bind.
+
+    Arming it is half the job — pointing it at a name the box happens to
+    declare elsewhere is the 2026-08-05 "probing a name this box doesn't
+    serve" defect wearing a guard's clothes.
+    """
+
+    def test_explicit_directive_wins(self, tmp_path):
+        (tmp_path / "config").write_text(
+            "[reticulum]\n  instance_name = <site> rns\n", encoding="utf-8")
+        assert ri._guard_instance_name(str(tmp_path)) == "<site> rns"
+
+    def test_config_without_directive_aims_at_default(self, tmp_path):
+        """`/etc/reticulum` on the fleet: share_instance=Yes, no name. RNS
+        binds `@rns/default`, so that is what the guard must watch."""
+        (tmp_path / "config").write_text(
+            "[reticulum]\n  share_instance = Yes\n", encoding="utf-8")
+        assert ri._guard_instance_name(str(tmp_path)) == "default"
+
+    def test_absent_config_aims_at_default(self, tmp_path):
+        """The lab daemons' tmpdir — RNS writes its template here and the
+        template names the instance `default`. Absent config is NOT 'no
+        target' (honest_failure_modes #1: the degraded value must not
+        overlap the healthy domain)."""
+        assert ri._guard_instance_name(str(tmp_path)) == "default"
+
+    def test_no_configdir_asks_the_box(self):
+        """Only with NO configdir does RNS use its own default location —
+        then, and only then, the box's config is the right authority."""
+        fake = MagicMock()
+        fake.get_configured_instance_name.return_value = "box name"
+        with patch.dict(sys.modules, {"utils.paths": MagicMock(
+                ReticulumPaths=fake)}):
+            assert ri._guard_instance_name(None) == "box name"
+
+    def test_box_config_is_not_consulted_when_configdir_given(self, tmp_path):
+        """The mis-aim this fix exists to prevent: moc5's `~/.reticulum` says
+        `<site> rns` while a tmpdir/`/etc/reticulum` caller binds
+        `@rns/default`. Waiting on the box's name would watch a socket the
+        caller never binds."""
+        fake = MagicMock()
+        fake.get_configured_instance_name.return_value = "<site> rns"
+        with patch.dict(sys.modules, {"utils.paths": MagicMock(
+                ReticulumPaths=fake)}):
+            assert ri._guard_instance_name(str(tmp_path)) == "default"
+        fake.get_configured_instance_name.assert_not_called()
+
+    def test_default_name_constant_matches_rns_alignment(self):
+        """One constant, two consumers (honest_failure_modes #5). The two
+        modules stay acyclic by design, so they are TEST-pinned rather than
+        importing one another."""
+        from utils.rns_alignment import RNS_DEFAULT_INSTANCE_NAME as other
+        assert ri.RNS_DEFAULT_INSTANCE_NAME == other
+
 
 # --------------------------------------------- _existing_instance
 

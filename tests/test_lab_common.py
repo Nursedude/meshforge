@@ -604,7 +604,22 @@ class _FakeReticulum:
         self.loglevel = loglevel
 
 
-def test_watchdog_returns_instance_when_constructor_returns(monkeypatch):
+@pytest.fixture
+def guard_inert(monkeypatch):
+    """Neutralise the #69 boot-race guard for the CONSTRUCT-watchdog tests.
+
+    These exercise the watchdog, not the guard. Since the #69 fix
+    (2026-09-19) ``init_reticulum_with_watchdog`` resolves a real instance
+    name even for a configdir holding no config — that arming IS the fix —
+    so on any box where ``systemctl is-enabled rnsd`` says enabled these
+    would consult real systemd and then block for the full 30s wait. A test
+    whose verdict depends on un-pinned machine state pins nothing.
+    """
+    monkeypatch.setattr("utils.rns_init._rnsd_unit_enabled", lambda: False)
+
+
+def test_watchdog_returns_instance_when_constructor_returns(
+        monkeypatch, guard_inert):
     sentinel = _FakeReticulum("/tmp/x", 2)
 
     class _FakeRNSModule:
@@ -620,7 +635,7 @@ def test_watchdog_returns_instance_when_constructor_returns(monkeypatch):
     _ = sentinel  # silence unused
 
 
-def test_watchdog_reraises_constructor_exception(monkeypatch):
+def test_watchdog_reraises_constructor_exception(monkeypatch, guard_inert):
     class _Boom(RuntimeError):
         pass
 
@@ -634,7 +649,7 @@ def test_watchdog_reraises_constructor_exception(monkeypatch):
         init_reticulum_with_watchdog("/tmp/x", timeout_s=2.0)
 
 
-def test_watchdog_aborts_process_on_timeout(monkeypatch):
+def test_watchdog_aborts_process_on_timeout(monkeypatch, guard_inert):
     """The wedge fingerprint: constructor never returns. Watchdog thread
     must call os._exit(2) so systemd restarts the unit. In production
     os._exit terminates the whole process regardless of which thread

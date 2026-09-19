@@ -102,6 +102,14 @@ DEFAULT_WAIT_FOR_RNSD_TIMEOUT_S = float(
 # as a client.
 _RNS_LISTENER_ALLOWED_PATTERNS = ("rnsd", "reticulum")
 
+# The instance name RNS uses when a config declares none. Its own default
+# config template ships `instance_name = default` (RNS/Reticulum.py), and
+# `share_instance` defaults to True — so a process handed a configdir with no
+# config AT ALL still ends up binding the kernel-global `@rns/default`.
+# SSOT for this module and `utils.rns_alignment` (honest_failure_modes #5:
+# two consumers of one constant derive it, never hardcode it twice).
+RNS_DEFAULT_INSTANCE_NAME = "default"
+
 # Serializes the check-then-construct window in open_reticulum(). RNS is a
 # process singleton: without this, two threads that both pass the
 # _existing_instance() check race RNS.Reticulum(), and the loser sees
@@ -201,6 +209,52 @@ def _read_instance_name_from_config(configdir: Union[str, os.PathLike]) -> Optio
     except OSError:
         pass
     return None
+
+
+def _guard_instance_name(
+    configdir: Optional[Union[str, os.PathLike]],
+) -> Optional[str]:
+    """The ``@rns/<name>`` socket THIS process would bind — the #69 guard's aim.
+
+    ``_read_instance_name_from_config`` answers a narrower question ("is there
+    an explicit directive?") and returns None for three different states, only
+    one of which is a legitimate reason to skip the guard:
+
+    * explicit ``instance_name`` in ``<configdir>/config``  -> that name
+    * a configdir with no directive, or no config file yet  -> ``default``,
+      because RNS writes its template there and binds ``@rns/default`` anyway
+    * no configdir at all -> RNS uses its own default location, so ask the box
+      (``ReticulumPaths``); None only if even that cannot be resolved
+
+    WHY (Issue #69, root-caused 2026-09-19). ``init_reticulum_with_watchdog``
+    read only the explicit directive and gated its ENTIRE guard on
+    ``if instance_name:``. The lab echo/tracer daemons pass a TMPDIR configdir
+    (the shipped units set no ``MESHFORGE_LAB_RNS_CONFIGDIR``), so the read hit
+    ``OSError``, returned None, and the guard was skipped outright — while RNS
+    went on to bind the kernel-global ``@rns/default`` regardless. On moc5's
+    reboot that morning ``meshforge-echo`` won the unguarded race, rnsd lost its
+    bind, and the box had NO RNS for 42 minutes (08:17:45 boot -> 09:00:13
+    hand repair); ``meshforge-tracer`` died with it and tripped boot_survival.
+
+    ⚠️ Aim matters as much as arming. The fallback must NOT be the box's own
+    config when a configdir was passed: moc5's ``~/.reticulum`` declares
+    ``instance_name = <site> rns`` while a ``/etc/reticulum`` (or tmpdir)
+    caller binds ``@rns/default``. Waiting on a socket this process will never
+    bind is the 2026-08-05 "probing a name this box doesn't serve" defect
+    wearing a guard's clothes.
+    """
+    if configdir:
+        name = _read_instance_name_from_config(configdir)
+        if name:
+            return name
+        # RNS creates/uses a config in THIS configdir; its template names the
+        # instance `default`, and the socket namespace is kernel-global.
+        return RNS_DEFAULT_INSTANCE_NAME
+    try:
+        from utils.paths import ReticulumPaths
+        return ReticulumPaths.get_configured_instance_name() or None
+    except Exception:
+        return None
 
 
 def check_rns_listener_owner(
@@ -506,7 +560,11 @@ def init_reticulum_with_watchdog(
         kind="rns_attach",
         detail=f"init_reticulum_with_watchdog(configdir={configdir})")
 
-    instance_name = _read_instance_name_from_config(configdir)
+    # #69: resolve the socket this process will ACTUALLY bind, not merely the
+    # one a config happens to name. A tmpdir configdir (the lab daemons') has
+    # no directive and still binds `@rns/default` — reading only the directive
+    # skipped this whole guard and cost moc5 42 minutes of RNS on 2026-09-19.
+    instance_name = _guard_instance_name(configdir)
     if instance_name:
         check_rns_listener_owner(instance_name)
         # Issue #69 boot race: never boot-claim an instance that an enabled
@@ -622,6 +680,19 @@ def open_reticulum(
             # Fall back to the box's configured instance so the preflight/
             # probe still have a target even when configdir is
             # None/unparseable.
+            #
+            # ⚠️ KNOWN MIS-AIM, deliberately NOT changed here (2026-09-19,
+            # found while root-causing #69). When a caller PASSES a configdir
+            # that declares no `instance_name`, RNS binds `@rns/default` for
+            # THAT configdir — not the box's name. On a box whose rnsd runs a
+            # named instance this points the preflight at a socket
+            # the caller will never bind, so a tmpdir caller
+            # (`validate_rns_to_mesh`) can construct a SECOND, interface-less
+            # shared instance silently. `_guard_instance_name()` is the correct
+            # resolver and `init_reticulum_with_watchdog` already uses it;
+            # switching this call site flips those callers from a silent split
+            # instance to a loud degrade, which is right but needs field
+            # verification on a named-instance box first. Queued, not forgotten.
             try:
                 from utils.paths import ReticulumPaths
                 instance_name = ReticulumPaths.get_configured_instance_name()
