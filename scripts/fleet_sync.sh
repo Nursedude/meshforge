@@ -400,6 +400,19 @@ sync_repo() {
                 echo "PASS $short $new_head unchanged not_running"
                 return 0 ;;
         esac
+        # BOTH sides of the comparison below are wall-clock stamps, and they
+        # come from DIFFERENT clocks: code_ct was written by whichever box
+        # authored the commit, started by THIS box at fork. Ask first whether
+        # this box can date them at all (lib/code_paths.sh). Answering "behind"
+        # on a clock-stale box restarts the unit on EVERY sync, forever -- the
+        # replacement just gets another stale stamp. UNKNOWN is the honest
+        # answer, and it is WARN because it silently disables the skew-catch.
+        local clock_doubt
+        clock_doubt="$(mf_clock_trust "$repo" "$started")"
+        if [ -n "$clock_doubt" ]; then
+            echo "WARN $short $new_head unchanged clock_untrusted $clock_doubt -- cannot date $unit against the code; skew-catch is OFF here until the clock is fixed (timedatectl status). A sync that PULLS code still restarts on content."
+            return 0
+        fi
         if [ "$code_ct" -le "$started" ]; then
             echo "PASS $short $new_head unchanged"
             return 0
@@ -492,6 +505,14 @@ sync_user_unit() {
                 echo "PASS $short $new_head unchanged not_running"
                 return 0 ;;
         esac
+        # Same two-clock comparison as the system-scope sibling, same cure.
+        # Fixing only one scope is the documented 2026-08-09 trap.
+        local u_clock_doubt
+        u_clock_doubt="$(mf_clock_trust "$repo" "$u_started")"
+        if [ -n "$u_clock_doubt" ]; then
+            echo "WARN $short $new_head unchanged clock_untrusted $u_clock_doubt -- cannot date $unit against the code; skew-catch is OFF here until the clock is fixed (timedatectl status). A sync that PULLS code still restarts on content."
+            return 0
+        fi
         if [ "$u_code_ct" -le "$u_started" ]; then
             echo "PASS $short $new_head unchanged"
             return 0
@@ -1058,6 +1079,17 @@ sync_local_unit() {
         return 0
     fi
 
+    # Two clocks, one comparison (lib/code_paths.sh mf_clock_trust). Unlike the
+    # remote leg there is NO content-based path here -- this decider is purely
+    # timestamps -- so an untrusted clock disables restart-on-code-change for
+    # this unit ENTIRELY, which is exactly what WARN is reserved for above.
+    local clock_doubt
+    clock_doubt="$(mf_clock_trust "$repo" "$daemon_started")"
+    if [ -n "$clock_doubt" ]; then
+        self_skip "$unit" "UNKNOWN $clock_doubt -- this box cannot date the code against the process, so restart-on-code-change is OFF for it until the clock is fixed (timedatectl status)" WARN
+        return 0
+    fi
+
     if [ "$newest_code_commit" -le "$daemon_started" ]; then
         # Daemon is current. Emit a clean line so the operator can
         # confirm self was checked (silence here would be confusing).
@@ -1204,6 +1236,17 @@ sync_local_user_unit() {
     newest_code_commit="$(mf_code_head "$repo")"
     if [ -z "$newest_code_commit" ]; then
         self_skip "$unit" "UNKNOWN no code commit found in $repo — cannot date the code" WARN
+        return 0
+    fi
+
+    # Two clocks, one comparison (lib/code_paths.sh mf_clock_trust). Unlike the
+    # remote leg there is NO content-based path here -- this decider is purely
+    # timestamps -- so an untrusted clock disables restart-on-code-change for
+    # this unit ENTIRELY, which is exactly what WARN is reserved for above.
+    local clock_doubt
+    clock_doubt="$(mf_clock_trust "$repo" "$daemon_started")"
+    if [ -n "$clock_doubt" ]; then
+        self_skip "$unit" "UNKNOWN $clock_doubt -- this box cannot date the code against the process, so restart-on-code-change is OFF for it until the clock is fixed (timedatectl status)" WARN
         return 0
     fi
 

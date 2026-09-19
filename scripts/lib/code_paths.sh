@@ -1,13 +1,24 @@
 # scripts/lib/code_paths.sh — THE definition of "code a running daemon loaded".
 #
-# Source this file; it defines one variable and one function, no side effects.
+# Source this file; it defines two variables and two functions, no side effects.
+# MF_DAEMON_CODE_PATHS/mf_code_head say WHICH code dates a daemon;
+# MF_CLOCK_TOL_S/mf_clock_trust say whether this box's clock may date it AT ALL.
 #
 # Consumers (keep this list current — it is the grep target when this changes):
-#   - scripts/fleet_sync.sh    sync_local_unit + sync_local_user_unit: decides
-#                              whether to restart a daemon on this box
+#   - scripts/fleet_sync.sh    all four restart deciders — sync_repo and
+#                              sync_user_unit (remote, shipped into
+#                              REMOTE_SCRIPT) + sync_local_unit and
+#                              sync_local_user_unit (self). These ACT on the
+#                              answer, so they use mf_clock_trust too.
 #   - scripts/honest_status.sh hs_codehead (interpolated into the REMOTE probe
 #                              script, so the value must survive ssh as text)
 #   - scripts/fleet_pull.sh    the meshforge-map "started before HEAD" nag
+#
+# ⚠️ The last two REPORT rather than act, and as of 2026-09-18 neither consults
+# mf_clock_trust: on a clock-stale box honest_status will still bucket daemons
+# as `behind` and fleet_pull will still nag. That is a legibility defect, not a
+# loop, and it is named here rather than left to be rediscovered — the right
+# landing for honest_status is its existing `U` (unknown) bucket, not a new one.
 #
 # WHY THIS FILE EXISTS (2026-09-15). The same question had THREE different
 # answers, and they disagreed in production:
@@ -99,4 +110,84 @@ MF_DAEMON_CODE_PATHS="src pyproject.toml requirements requirements.txt"
 # -in-the-measurement-domain trap.
 mf_code_head() {
     git -C "$1" log -1 --format=%ct -- $MF_DAEMON_CODE_PATHS 2>/dev/null
+}
+
+#: Tolerance (seconds) for wall-clock disagreement, beyond which a
+#: commit-vs-process comparison is declared UNTRUSTWORTHY rather than answered.
+#: Generous on purpose: inter-box NTP offset on a healthy fleet is sub-second,
+#: and a deploy compares commits that are seconds old, so five minutes never
+#: trips on a healthy box — while one that came up on fake-hwclock trips hard.
+MF_CLOCK_TOL_S="${MF_CLOCK_TOL_S:-300}"
+
+# mf_clock_trust <repo> <started_epoch> -> EMPTY when this box's wall clock can
+# honestly date a commit against a process start, or a short reason token when
+# it cannot. A token means UNKNOWN: never "current", never "behind".
+#
+# WHY (2026-09-18). Every consumer of mf_code_head asks one question —
+#
+#     is this running process older than the newest commit touching code it loads?
+#
+# — and answers it by comparing two numbers from TWO DIFFERENT CLOCKS. `%ct` is
+# a wall-clock stamp written by whichever box authored the commit; the process
+# side is `stat -c %Y /proc/<pid>`, written by THIS box's wall clock at fork.
+# The comparison means something only while those two clocks agree.
+#
+# On this fleet they demonstrably do not. The Pis have no RTC, fake-hwclock
+# restores a stale time at boot, and an unreachable NTP server cannot step it
+# forward: moc4 ran ~8 days behind for days (persistent_issues, "uptime
+# disagrees with wtmp/`who -b`"). On such a box the process stamp is written 8
+# days in the past while commits pulled from a correct-clock box are not, so
+# `code_ct > started` is permanently true — sync restarts the unit, the
+# replacement process gets another stale stamp, and the next sync restarts it
+# again. A deploy tool in a restart loop, reporting PASS every time.
+# honest_failure_modes #6 — wall-clock durations are forgeable on this fleet.
+#
+# Two tells, both cheap, both from evidence the caller already has in hand:
+#
+#   1. The process claims to have started in this box's own FUTURE. Only a
+#      backward clock step produces that, and it voids `started` outright.
+#      (hfm #6: "persisted timestamps need a clock-went-backward branch".)
+#   2. A commit in the repo is dated in this box's FUTURE. A commit cannot have
+#      been made later than now, so this box's clock is behind the clock that
+#      wrote it — precisely the disagreement that makes the comparison a lie.
+#      The witness is the newest commit of ANY kind, not mf_code_head's: it is
+#      the tightest bound available, and after a pull it is minutes old here.
+#
+# Tell 2 is the one that catches the damaging case. The verdict only goes wrong
+# when the skew exceeds the true commit->start gap, and a skew that large puts
+# a freshly pulled commit in the future, where tell 2 sees it.
+#
+# ⚠️ NOT total, and the residue is named rather than papered over: a repo whose
+# newest commit is itself OLDER than the skew leaves the disagreement invisible
+# to both tells (quiet repo + long-running process). Closing that needs a
+# restart marker — record the code head a unit was actually started ON and
+# compare CONTENT, no clocks — which is a bigger change than this loop warrants
+# today, and which brings its own unwritable-state-dir failure mode (the
+# 2026-09-02 frozen-streak class). If the residue ever bites, that is the fix;
+# do not widen the tolerance, which only moves the hair trigger.
+mf_clock_trust() {
+    local repo="$1" started="${2:-}" now newest delta
+    now="$(date +%s 2>/dev/null)"
+    case "${now:-}" in
+        ""|*[!0-9]*) echo "no_clock"; return 0 ;;
+    esac
+    case "$started" in
+        ""|*[!0-9]*) : ;;
+        *)
+            if [ "$started" -gt "$(( now + MF_CLOCK_TOL_S ))" ]; then
+                delta=$(( started - now ))
+                echo "clock_stepped_back process start is ${delta}s in this box's future"
+                return 0
+            fi ;;
+    esac
+    newest="$(git -C "$repo" log -1 --format=%ct 2>/dev/null)"
+    case "${newest:-}" in
+        ""|*[!0-9]*) return 0 ;;
+    esac
+    if [ "$newest" -gt "$(( now + MF_CLOCK_TOL_S ))" ]; then
+        delta=$(( newest - now ))
+        echo "clock_behind newest commit is dated ${delta}s in this box's future"
+        return 0
+    fi
+    return 0
 }
