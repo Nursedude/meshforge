@@ -24,8 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from utils.fleet_platform import (  # noqa: E402
     DRIFT, INERT, OK, UNKNOWN, Catalog, Declaration, DistroBase,
-    canonical_box, judge_box, load_catalog, load_declarations, match_declaration,
-    same_box, summarize,
+    canonical_box, judge_box, kernel_flavour, kernel_version_key,
+    load_catalog, load_declarations, match_declaration, newer_kernel_installed,
+    reboot_owed, same_box, summarize,
 )
 
 CATALOG_YAML = """
@@ -489,3 +490,105 @@ class TestSummarize:
         s = summarize(vs)
         assert s[OK] == 1 and s[DRIFT] == 1 and s[UNKNOWN] == 1
         assert s[INERT] == 0
+
+
+
+# ── reboot-owed reduction (2026-09-19) ───────────────────────────────────
+# Regression anchor: on 2026-09-19 a session told the operator a reboot was
+# owed on a box because mini's RECENT-FIRES list still showed
+# kernel_reboot_pending. The box had rebooted 13 min after that fire and was
+# already on the new kernel -- the fire was history, the standing fact was
+# the opposite, and nothing rendered the standing fact. These pin it.
+
+class TestKernelFlavour:
+    def test_splits_at_plus(self):
+        assert kernel_flavour("6.18.50+rpt-rpi-2712") == "+rpt-rpi-2712"
+        assert kernel_flavour("6.18.50+rpt-rpi-v8") == "+rpt-rpi-v8"
+
+    def test_no_flavour_is_empty_not_error(self):
+        assert kernel_flavour("6.18.50") == ""
+        assert kernel_flavour("") == ""
+
+
+class TestKernelVersionKey:
+    def test_numeric_head(self):
+        assert kernel_version_key("6.18.50+rpt-rpi-v8") == (6, 18, 50)
+
+    def test_orders_within_a_series(self):
+        assert (kernel_version_key("6.18.50+rpt-rpi-v8")
+                > kernel_version_key("6.18.39+rpt-rpi-v8"))
+
+    def test_minor_is_numeric_not_lexical(self):
+        """String sort puts 6.12.109 above 6.18.33. It must not."""
+        assert (kernel_version_key("6.18.33+rpt-rpi-v8")
+                > kernel_version_key("6.12.109+rpt-rpi-v8"))
+
+    def test_garbage_sorts_low_rather_than_raising(self):
+        assert kernel_version_key("not-a-version") == ()
+
+
+class TestNewerKernelInstalled:
+    def test_finds_newer_same_flavour(self):
+        assert newer_kernel_installed(
+            "6.18.39+rpt-rpi-v8",
+            ["6.18.39+rpt-rpi-v8", "6.18.50+rpt-rpi-v8"]) == "6.18.50+rpt-rpi-v8"
+
+    def test_ignores_other_flavour(self):
+        """A -2712 package a -v8 box can never boot must not count as newer."""
+        assert newer_kernel_installed(
+            "6.18.50+rpt-rpi-v8",
+            ["6.18.50+rpt-rpi-v8", "6.19.0+rpt-rpi-2712"]) is None
+
+    def test_none_when_running_is_newest(self):
+        assert newer_kernel_installed(
+            "6.18.50+rpt-rpi-v8",
+            ["6.18.33+rpt-rpi-v8", "6.18.50+rpt-rpi-v8"]) is None
+
+    def test_picks_highest_not_first(self):
+        assert newer_kernel_installed(
+            "6.18.29+rpt-rpi-v8",
+            ["6.18.33+rpt-rpi-v8", "6.18.50+rpt-rpi-v8",
+             "6.18.39+rpt-rpi-v8"]) == "6.18.50+rpt-rpi-v8"
+
+
+class TestRebootOwed:
+    def test_already_rebooted_reads_false(self):
+        """THE miss: running the newest installed kernel, flag absent."""
+        owed, why = reboot_owed(reboot_required_flag=False,
+                                running_kernel="6.18.50+rpt-rpi-2712",
+                                installed_kernels=["6.18.39+rpt-rpi-2712",
+                                                   "6.18.50+rpt-rpi-2712"])
+        assert owed is False
+        assert "newest installed" in why
+
+    def test_kernel_installed_but_not_booted_reads_true(self):
+        owed, why = reboot_owed(reboot_required_flag=False,
+                                running_kernel="6.18.39+rpt-rpi-v8",
+                                installed_kernels=["6.18.39+rpt-rpi-v8",
+                                                   "6.18.50+rpt-rpi-v8"])
+        assert owed is True
+        assert "6.18.50+rpt-rpi-v8" in why
+
+    def test_distro_flag_believed_with_no_kernel_change(self):
+        """libc/systemd upgrades set the flag without a new kernel."""
+        owed, why = reboot_owed(reboot_required_flag=True,
+                                running_kernel="6.18.50+rpt-rpi-v8",
+                                installed_kernels=["6.18.50+rpt-rpi-v8"])
+        assert owed is True
+        assert "reboot-required" in why
+
+    def test_unobservable_is_unknown_never_false(self):
+        owed, _ = reboot_owed(reboot_required_flag=None,
+                              running_kernel=None, installed_kernels=None)
+        assert owed is None
+
+    def test_unreadable_flag_still_catches_newer_kernel(self):
+        owed, _ = reboot_owed(reboot_required_flag=None,
+                              running_kernel="6.18.39+rpt-rpi-v8",
+                              installed_kernels=["6.18.50+rpt-rpi-v8"])
+        assert owed is True
+
+    def test_absent_flag_with_no_kernel_data_is_unknown_not_false(self):
+        owed, _ = reboot_owed(reboot_required_flag=False,
+                              running_kernel=None, installed_kernels=None)
+        assert owed is None

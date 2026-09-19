@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 83 handlers · 115 menu actions (derived from get_all_handlers(), never hand-edited).
+# 83 handlers · 116 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -644,6 +644,7 @@ HANDLER_MANIFEST = [
         "menu_items": [
             ('platform_posture', 'Platform Posture    OS base vs declared, per box', None),
             ('platform_pins', 'Dependency Pins     what we hold and why', None),
+            ('platform_updates', 'Update Readiness    pending, reboot owed, holds', None),
         ],
     },
     {

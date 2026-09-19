@@ -118,7 +118,7 @@ SECTION_ORDERINGS = {
         "hardware", "logs", "network", "discover", "diagnose", "db_health",
         # Read-only posture surfaces sit beside db_health: all three answer
         # "what is true here", none of them change anything.
-        "platform_posture", "platform_pins",
+        "platform_posture", "platform_pins", "platform_updates",
         # Uplink telemetry joins the read-only posture group above it: both
         # answer "what is true here" and neither changes anything.
         "starlink_status", "starlink_skymap",

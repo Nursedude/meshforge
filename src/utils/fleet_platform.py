@@ -427,3 +427,117 @@ def summarize(verdicts: List[BoxVerdict]) -> Dict[str, int]:
     for v in verdicts:
         out[v.verdict] = out.get(v.verdict, 0) + 1
     return out
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Reboot-owed reduction (2026-09-19).
+#
+# Born from a live miss: a session read "kernel_reboot_pending" in mini's
+# RECENT-FIRES list and told the operator a reboot was owed on a box that had
+# already rebooted 13 minutes after that fire. The fired event was history;
+# the box was current. Nothing rendered the standing fact, so the only place
+# the answer lived was an event that had already resolved.
+#
+# The reduction below is pure so it can be tested without a Pi, and it is
+# deliberately conservative: it returns None ("cannot tell") rather than a
+# reassuring False. Unobservable is not "no reboot owed" — that is the
+# honest_failure_modes #2 shape, and it is how a box sits stale looking fine.
+# ─────────────────────────────────────────────────────────────────────────
+
+def kernel_flavour(release: str) -> str:
+    """The hardware flavour of a kernel release string.
+
+    ``6.18.50+rpt-rpi-2712`` -> ``+rpt-rpi-2712``. Releases of DIFFERENT
+    flavours are not comparable: a box installs both ``-2712`` and ``-v8``
+    packages and runs exactly one. Comparing across them is how "newer
+    kernel installed" gets claimed from a package the box can never boot.
+    """
+    if not release:
+        return ""
+    idx = release.find("+")
+    return release[idx:] if idx >= 0 else ""
+
+
+def kernel_version_key(release: str):
+    """Sortable key for the numeric head of a kernel release.
+
+    ``6.18.50+rpt-rpi-v8`` -> ``(6, 18, 50)``. Non-numeric components stop
+    the parse rather than raising, so an unexpected string sorts low instead
+    of taking down the caller.
+    """
+    head = release.split("+", 1)[0] if release else ""
+    parts = []
+    for chunk in head.split("."):
+        digits = ""
+        for ch in chunk:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def newer_kernel_installed(running: Optional[str],
+                           installed: Optional[List[str]]) -> Optional[str]:
+    """The newest installed kernel that is strictly newer than ``running``.
+
+    Returns the release string, or ``None`` when none is newer. Returns
+    ``None`` ONLY for that meaning when the inputs are observable; callers
+    must treat unobserved inputs as UNKNOWN before calling (see
+    ``reboot_owed``), because "nothing newer" and "could not look" must not
+    render identically.
+
+    Only same-flavour candidates are considered (see ``kernel_flavour``).
+    """
+    if not running or not installed:
+        return None
+    flav = kernel_flavour(running)
+    cur = kernel_version_key(running)
+    best = None
+    for rel in installed:
+        if kernel_flavour(rel) != flav:
+            continue
+        if kernel_version_key(rel) > cur:
+            if best is None or kernel_version_key(rel) > kernel_version_key(best):
+                best = rel
+    return best
+
+
+def reboot_owed(*, reboot_required_flag: Optional[bool],
+                running_kernel: Optional[str],
+                installed_kernels: Optional[List[str]]) -> Tuple[Optional[bool], str]:
+    """Is a reboot owed on this box? -> (verdict, human reason).
+
+    ``True``/``False`` are claims; ``None`` means UNKNOWN and must never be
+    rendered as "no reboot needed".
+
+    Two independent witnesses, and the DISTRO's own flag outranks our
+    derivation — it is the authority we did not write (calibrated_claims:
+    rank evidence by authorial distance). It also catches the cases a kernel
+    comparison cannot see at all, such as a libc or systemd upgrade.
+    """
+    newer = newer_kernel_installed(running_kernel, installed_kernels)
+
+    if reboot_required_flag is True:
+        if newer:
+            return True, f"/var/run/reboot-required is present; {newer} installed, running {running_kernel}"
+        return True, "/var/run/reboot-required is present (set by a package, not necessarily the kernel)"
+
+    if reboot_required_flag is None:
+        if newer:
+            return True, (f"reboot-required flag unreadable, but a newer kernel is "
+                          f"installed: {newer} (running {running_kernel})")
+        if running_kernel is None or installed_kernels is None:
+            return None, "could not read the reboot flag, the running kernel, or the installed set"
+        return None, "could not read /var/run/reboot-required; no newer kernel is installed, but that is only half the question"
+
+    # flag says no
+    if newer:
+        return True, (f"a newer kernel is installed ({newer}) than the one running "
+                      f"({running_kernel}), even though the reboot flag is absent")
+    if running_kernel is None or installed_kernels is None:
+        return None, "reboot flag absent, but the running/installed kernel set could not be read"
+    return False, f"running {running_kernel}, which is the newest installed for its flavour"

@@ -10,7 +10,7 @@
 > X?", grep this file for the capability, then open the handler under
 > `src/launcher_tui/handlers/`.
 
-**83 handlers · 115 menu actions · 12 sections** (all derived from `get_all_handlers()`, never hardcoded).
+**83 handlers · 116 menu actions · 12 sections** (all derived from `get_all_handlers()`, never hardcoded).
 
 A non-empty **Flag** means the action only appears when that deployment-profile feature is enabled (blank = always visible).
 
@@ -184,6 +184,7 @@ A non-empty **Flag** means the action only appears when that deployment-profile 
 | `network` | Network Tools — Ping, ports, interfaces |  | NetworkToolsHandler |
 | `platform_pins` | Dependency Pins — what we hold and why |  | PlatformPostureHandler |
 | `platform_posture` | Platform Posture — OS base vs declared, per box |  | PlatformPostureHandler |
+| `platform_updates` | Update Readiness — pending, reboot owed, holds |  | PlatformPostureHandler |
 | `reboot` | Reboot/Shutdown — Safe system control |  | RebootHandler |
 | `starlink_skymap` | Starlink Sky Map — Obstruction map + bearings |  | StarlinkHandler |
 | `starlink_status` | Starlink Dish — Uplink telemetry (read-only) |  | StarlinkHandler |

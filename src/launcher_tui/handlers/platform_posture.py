@@ -43,6 +43,7 @@ class PlatformPostureHandler(BaseHandler):
         return [
             ("platform_posture", "Platform Posture    OS base vs declared, per box", None),
             ("platform_pins", "Dependency Pins     what we hold and why", None),
+            ("platform_updates", "Update Readiness    pending, reboot owed, holds", None),
         ]
 
     def execute(self, action):
@@ -50,6 +51,8 @@ class PlatformPostureHandler(BaseHandler):
             self._show_posture()
         elif action == "platform_pins":
             self._show_pins()
+        elif action == "platform_updates":
+            self._show_updates()
 
     # -- helpers ----------------------------------------------------------
 
@@ -160,3 +163,126 @@ class PlatformPostureHandler(BaseHandler):
             out.append("")
         out.append("Detail: scripts/fleet_platform.py pins")
         self.ctx.dialog.msgbox("Dependency Pins", "\n".join(out))
+
+    # -- update readiness -------------------------------------------------
+    # Added 2026-09-19 after a fleet OS roll. The pane already answered "is
+    # this box's BASE intended"; it could not answer "is this box CURRENT,
+    # and does it owe a reboot" -- and that gap cost real time the same day:
+    # a session read a kernel_reboot_pending entry out of mini's RECENT-FIRES
+    # list and reported a reboot owed on a box that had already taken it 13
+    # minutes after the fire. The standing fact existed nowhere renderable,
+    # so the only available answer was an event that had already resolved.
+    #
+    # Still read-only. This renders what the box already knows; upgrading
+    # stays in a script the operator runs knowingly (see the module docstring
+    # -- a fleet-wide apt path behind a menu keystroke is the 2026-07-24
+    # shape, and nothing here should inherit that by proximity).
+
+    def _probe(self, argv, timeout=20):
+        """Run a read-only probe. Returns (rc, stdout) or (None, "") if it
+        could not run at all. None means UNOBSERVED, never 'fine'."""
+        import subprocess
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True,
+                               timeout=timeout, check=False)
+            return r.returncode, r.stdout
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.warning("probe %s failed: %s", argv[0], e)
+            return None, ""
+
+    def _installed_kernels(self):
+        rc, out = self._probe(
+            ["dpkg-query", "-W", "-f", "${Package}\t${Status}\n", "linux-image-*"])
+        if rc is None:
+            return None
+        rels = []
+        for line in out.splitlines():
+            parts = line.split("\t")
+            if len(parts) != 2 or "installed" not in parts[1]:
+                continue
+            name = parts[0]
+            rel = name[len("linux-image-"):] if name.startswith("linux-image-") else ""
+            # meta-packages (linux-image-rpi-2712) carry no numeric head
+            if rel[:1].isdigit():
+                rels.append(rel)
+        return rels
+
+    def _pending_count(self):
+        rc, out = self._probe(["apt-get", "-s", "upgrade"], timeout=60)
+        if rc is None or rc != 0:
+            return None
+        return sum(1 for ln in out.splitlines() if ln.startswith("Inst "))
+
+    def _holds(self):
+        rc, out = self._probe(["apt-mark", "showhold"])
+        if rc is None or rc != 0:
+            return None
+        return [x.strip() for x in out.split() if x.strip()]
+
+    def _show_updates(self):
+        import os
+        import time as _time
+        from utils.fleet_platform import reboot_owed
+
+        box = os.uname().nodename
+        running = os.uname().release
+
+        try:
+            flag = os.path.exists("/var/run/reboot-required")
+        except OSError as e:
+            logger.warning("reboot-required unreadable: %s", e)
+            flag = None
+
+        kernels = self._installed_kernels()
+        owed, why = reboot_owed(reboot_required_flag=flag,
+                                running_kernel=running,
+                                installed_kernels=kernels)
+        verdict = {True: "OWED", False: "not owed", None: "UNKNOWN"}[owed]
+
+        pending = self._pending_count()
+        holds = self._holds()
+
+        try:
+            age_s = _time.time() - os.stat("/var/lib/apt/lists").st_mtime
+            age = f"{int(age_s // 3600)}h ago" if age_s >= 3600 else "under an hour ago"
+        except OSError:
+            age = None
+
+        lines = [
+            f"Box:      {box}",
+            f"Kernel:   {running}",
+            "",
+            f"Reboot:   {verdict}",
+            f"          {why}",
+            "",
+        ]
+        if pending is None:
+            lines.append("Pending:  UNKNOWN - the upgrade simulation could not be run.")
+            lines.append("          That is not the same as 'nothing pending'.")
+        else:
+            lines.append(f"Pending:  {pending} package(s) upgradable")
+        lines.append(f"Lists:    {'refreshed ' + age if age else 'age UNKNOWN'}")
+        if age is None or (pending is not None and pending == 0 and age is None):
+            lines.append("          A count read from stale lists is not a current count.")
+
+        if holds is None:
+            lines.append("Holds:    UNKNOWN - could not read apt-mark.")
+        elif holds:
+            lines.append(f"Holds:    {', '.join(sorted(holds))}")
+            lines.append("          A hold is a DECISION. Why each one exists is on")
+            lines.append("          the Dependency Pins screen; removing one to")
+            lines.append("          'unblock' an upgrade is how an unintended build")
+            lines.append("          lands fleet-wide.")
+        else:
+            lines.append("Holds:    none on this box")
+
+        if owed is None:
+            lines += ["", "UNKNOWN is not a pass."]
+
+        lines += [
+            "",
+            "Fleet-wide:  scripts/fleet_platform.py show",
+            "",
+            "This screen never changes anything.",
+        ]
+        self.ctx.dialog.msgbox("Update Readiness", "\n".join(lines))
