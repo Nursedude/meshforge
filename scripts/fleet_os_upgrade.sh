@@ -217,7 +217,19 @@ do_reboot() {
               systemctl cat $u >/dev/null 2>&1 && echo "  $u=$(systemctl is-active $u) NRestarts=$(systemctl show -p NRestarts --value $u)"
             done
             echo "  user_units_running=$(systemctl --user list-units --type=service --state=running --no-legend "meshforge*" 2>/dev/null | wc -l)"
-            systemctl cat rnsd >/dev/null 2>&1 && { timeout 10 rnstatus >/dev/null 2>&1; echo "  rnstatus_rc=$?"; }
+            # rnstatus is often ONLY in ~/.local/bin, which is NOT on the
+            # non-interactive ssh PATH (live-caught on kiai 2026-09-19: bare
+            # `rnstatus` returned 127 -- "command not found" -- which reads
+            # like a status code and is not one. An instrument that could not
+            # RUN must say UNKNOWN, never emit a number a reader will skim as
+            # a verdict.)
+            if systemctl cat rnsd >/dev/null 2>&1; then
+              rs=$(command -v rnstatus 2>/dev/null || true)
+              [ -z "$rs" ] && [ -x "$HOME/.local/bin/rnstatus" ] && rs="$HOME/.local/bin/rnstatus"
+              [ -z "$rs" ] && [ -x /usr/local/bin/rnstatus ] && rs=/usr/local/bin/rnstatus
+              if [ -n "$rs" ]; then timeout 10 "$rs" >/dev/null 2>&1; echo "  rnstatus_rc=$? (via $rs)"
+              else echo "  rnstatus=UNKNOWN - binary not found; RNS NOT verified here"; fi
+            fi
             systemctl cat meshtasticd >/dev/null 2>&1 && echo "  radio: $(sudo journalctl -u meshtasticd -b --no-pager 2>/dev/null | grep -oE "init result [0-9-]+|init success" | tail -2 | tr "\n" " ")"
         ' 2>/dev/null
     done
