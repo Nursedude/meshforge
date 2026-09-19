@@ -59,7 +59,7 @@ behind=$(git -C "$REPO" rev-list --count "HEAD..origin/main" 2>/dev/null || echo
 candidate=$(apt-cache policy meshtasticd 2>/dev/null | awk '/Candidate:/{print $2}')
 
 box_line() {  # $1 = host ('' = local); $2 = label
-    local h="$1" label="$2" run sha ver hold shim vsz
+    local h="$1" label="$2" run sha ver hold shim vsz pend rpt
     if [[ -z "$h" ]]; then run() { bash -c "$1" 2>/dev/null; }
     else run() { timeout 15 ssh "${SSH_OPTS[@]}" "$h" "$1" 2>/dev/null; }
     fi
@@ -72,6 +72,20 @@ box_line() {  # $1 = host ('' = local); $2 = label
     hold=$(run "apt-mark showhold meshtasticd 2>/dev/null")
     shim=$(run "head -c 80 ~/.local/bin/meshtastic 2>/dev/null | head -1")
     vsz=$(run 'pid=$(pgrep -x meshtasticd | head -1); [ -n "$pid" ] && awk "/^VmSize/{printf \"%.1fGB\", \$2/1048576}" /proc/$pid/status')
+    # Pending OS updates (2026-09-19). unattended-upgrades on this fleet is
+    # enabled everywhere, but its Origins-Pattern carries Debian and
+    # Debian-Security ONLY -- NOT "Raspberry Pi Foundation", which is the
+    # archive that ships the KERNEL, the firmware and every Pi-specific
+    # package. Those are therefore never applied unattended, which is the
+    # right policy for a radio fleet and the reason they accumulate in
+    # silence: on 2026-09-19 a roll found 141-175 pending per box, and
+    # nothing periodic had ever said so. The digest already reports update
+    # POSTURE; this is the quantity that posture was missing.
+    # `rpt` is the never-automatic subset -- the number that only ever goes
+    # down when a human decides. An unreadable count prints '?', never 0:
+    # "could not ask apt" and "nothing pending" must not render alike.
+    pend=$(run 'apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null | grep -c "^Inst "')
+    rpt=$(run 'apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null | grep "^Inst " | grep -c "Raspberry Pi Foundation"')
     local git_state
     if [[ "$baseline_ok" != 1 ]]; then
         git_state="? (origin/main unknown)"
@@ -88,7 +102,7 @@ box_line() {  # $1 = host ('' = local); $2 = label
         "") shim_state="no-cli" ;;
         *) shim_state="SHADOWED-SHIM" ;;
     esac
-    echo "$label: git $git_state | meshtasticd ${ver:-absent}${hold:+ [HELD]} | cli $shim_state | vsz ${vsz:-n/a}"
+    echo "$label: git $git_state | meshtasticd ${ver:-absent}${hold:+ [HELD]} | cli $shim_state | vsz ${vsz:-n/a} | pending ${pend:-?}${rpt:+ (${rpt} rpi)}"
     return 0
 }
 
