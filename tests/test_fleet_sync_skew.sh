@@ -122,5 +122,9 @@ else
     echo "FAIL remote payload does not ship lib/code_paths.sh"; fails=$((fails+1))
 fi
 
-[ "$fails" -eq 0 ] && echo "PASS test_fleet_sync_skew" || echo "FAIL $fails assertion(s)"
-exit $([ "$fails" -eq 0 ] && echo 0 || echo 1)
+# "ALL PASS" is the sentinel tests/test_honest_status_shell.py asserts on --
+# exit 0 alone is NOT enough there, deliberately, so a harness cannot pass by
+# saying nothing. (This file failed that check on its first run.)
+if [ "$fails" -eq 0 ]; then echo "ALL PASS"; exit 0; fi
+echo "SOME FAILED ($fails assertion(s))"
+exit 1
