@@ -267,8 +267,11 @@ class TestBootRaceGuard:
 
     def test_wait_helper_returns_true_when_listener_appears(self):
         present = iter([False, False, True])
+        # check_rns_listener_owner is pinned: unpatched it scans the REAL
+        # /proc/net/unix of whoever runs the suite.
         with patch.object(ri, "_shared_instance_listener_present",
-                          side_effect=lambda _name: next(present)):
+                          side_effect=lambda _name: next(present)), \
+             patch.object(ri, "check_rns_listener_owner", return_value=None):
             assert ri._wait_for_rnsd_listener(
                 "inst", timeout_s=2.0, poll_interval_s=0.01
             ) is True
@@ -280,6 +283,52 @@ class TestBootRaceGuard:
                 "inst", timeout_s=0.05, poll_interval_s=0.01
             ) is False
 
+    def test_wait_rejects_present_but_foreign_owned_listener(self):
+        """THE #69 cause, root-caused from moc5's journals 2026-09-19.
+
+        The loop returned True on PRESENCE alone — a socket existing, held by
+        anyone. rnsd had died at boot (status=255) and was dead for the whole
+        window, so the two sibling lab daemons waiting concurrently satisfied
+        EACH OTHER's wait: whichever one RNS host-fallback put on the socket
+        made the other log "listener appeared — joining as client", and both
+        proceeded with no rnsd in the topology. 42 minutes with no RNS.
+
+        A present-but-foreign-owned socket must NOT end the wait.
+        """
+        with patch.object(ri, "_shared_instance_listener_present",
+                          return_value=True), \
+             patch.object(ri, "check_rns_listener_owner",
+                          side_effect=RuntimeError(
+                              "owned by pid=1214 "
+                              "cmd='/usr/bin/python3 -m lab.lxmf_echo'")):
+            assert ri._wait_for_rnsd_listener(
+                "default", timeout_s=0.05, poll_interval_s=0.01
+            ) is False
+
+    def test_wait_survives_a_transient_foreign_owner(self):
+        """A squatter seen early must not abort the wait — keep waiting for
+        rnsd rather than raising on first sight. (Raising immediately would
+        turn a boot-order blip into a failed unit.)"""
+        seq = iter([RuntimeError("squatter"), RuntimeError("squatter"), None])
+
+        def _owner(_name):
+            nxt = next(seq)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return None
+
+        with patch.object(ri, "_shared_instance_listener_present",
+                          return_value=True), \
+             patch.object(ri, "check_rns_listener_owner", side_effect=_owner):
+            assert ri._wait_for_rnsd_listener(
+                "default", timeout_s=2.0, poll_interval_s=0.01
+            ) is True
+
+    def test_owner_acceptable_is_false_when_socket_absent(self):
+        with patch.object(ri, "_shared_instance_listener_present",
+                          return_value=False):
+            assert ri._listener_owner_acceptable("default") is False
+
     def test_rnsd_unit_enabled_false_on_import_error(self):
         """Any failure resolving service_check degrades to no-wait (legacy
         behavior) rather than blocking RNS init."""
@@ -287,7 +336,7 @@ class TestBootRaceGuard:
             assert ri._rnsd_unit_enabled() is False
 
     def test_lab_daemon_tmpdir_configdir_arms_the_guard(self, tmp_path):
-        """THE #69 regression (moc5, 2026-09-19).
+        """Guard ARMING for a directive-less configdir (defensive; NOT the #69 cure — see test_wait_rejects_present_but_foreign_owned_listener).
 
         The lab echo/tracer daemons are handed a TMPDIR configdir — the
         shipped units set no ``MESHFORGE_LAB_RNS_CONFIGDIR`` — so it holds no

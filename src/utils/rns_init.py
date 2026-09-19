@@ -226,15 +226,17 @@ def _guard_instance_name(
     * no configdir at all -> RNS uses its own default location, so ask the box
       (``ReticulumPaths``); None only if even that cannot be resolved
 
-    WHY (Issue #69, root-caused 2026-09-19). ``init_reticulum_with_watchdog``
-    read only the explicit directive and gated its ENTIRE guard on
-    ``if instance_name:``. The lab echo/tracer daemons pass a TMPDIR configdir
-    (the shipped units set no ``MESHFORGE_LAB_RNS_CONFIGDIR``), so the read hit
-    ``OSError``, returned None, and the guard was skipped outright — while RNS
-    went on to bind the kernel-global ``@rns/default`` regardless. On moc5's
-    reboot that morning ``meshforge-echo`` won the unguarded race, rnsd lost its
-    bind, and the box had NO RNS for 42 minutes (08:17:45 boot -> 09:00:13
-    hand repair); ``meshforge-tracer`` died with it and tripped boot_survival.
+    ⚠️ CORRECTION (2026-09-19, same day). This helper was first written on the
+    theory that it FIXED #69 — that the lab daemons' tmpdir configdir held no
+    config, so the name read returned None and the guard was skipped. **That
+    was wrong, and the daemons' own journals refute it**: ``_build_client_config``
+    writes an explicit ``instance_name`` into the tmpdir BEFORE init, so the
+    name always resolved and the guard always armed. moc5's echo logged the
+    wait firing. The real #69 cause was ownership-vs-presence in
+    ``_wait_for_rnsd_listener`` (see its comment). This helper is retained as
+    a genuine defensive correction for callers that pass a directive-less
+    configdir — it is simply not what cured #69. Kept because the reasoning
+    about AIM below is sound and load-bearing for those callers.
 
     ⚠️ Aim matters as much as arming. The fallback must NOT be the box's own
     config when a configdir was passed: moc5's ``~/.reticulum`` declares
@@ -433,6 +435,22 @@ def _rnsd_unit_enabled() -> bool:
         return False
 
 
+def _listener_owner_acceptable(instance_name: str) -> bool:
+    """Is ``@rns/<instance_name>`` present AND held by an acceptable owner?
+
+    Non-raising by design: the wait loop needs a PREDICATE, and
+    ``check_rns_listener_owner`` signals by exception. Same policy as the
+    preflight — an RNS-family owner passes, a non-RNS squatter does not.
+    """
+    if not _shared_instance_listener_present(instance_name):
+        return False
+    try:
+        check_rns_listener_owner(instance_name)
+        return True
+    except RuntimeError:
+        return False
+
+
 def _wait_for_rnsd_listener(
     instance_name: str,
     timeout_s: float = DEFAULT_WAIT_FOR_RNSD_TIMEOUT_S,
@@ -463,18 +481,34 @@ def _wait_for_rnsd_listener(
         instance_name, timeout_s,
     )
     while time.monotonic() < deadline:
-        if _shared_instance_listener_present(instance_name):
+        # OWNERSHIP, not mere presence (#69 re-root-caused 2026-09-19). This
+        # loop used to return on `_shared_instance_listener_present` alone —
+        # a socket EXISTING, held by anyone. The preflight
+        # (`check_rns_listener_owner`) runs BEFORE the wait, i.e. at the one
+        # moment the socket is absent and the check is trivially satisfied,
+        # and nothing re-asked afterwards. So on moc5 two sibling lab daemons
+        # waiting concurrently satisfied EACH OTHER's wait: rnsd had died at
+        # boot (status=255) and was dead for the whole window, the first
+        # daemon RNS let host-fallback onto the socket made the second one's
+        # guard report "listener appeared — joining as client", and both
+        # proceeded into a topology with no rnsd in it. 42 minutes, no RNS.
+        # Polling ownership also survives a TRANSIENT foreign owner: we keep
+        # waiting for rnsd rather than raising on first sight of a squatter.
+        if _listener_owner_acceptable(instance_name):
             logger.info(
-                "rns_init: @rns/%s listener appeared — joining as client.",
+                "rns_init: @rns/%s listener present and acceptably owned — "
+                "joining as client.",
                 instance_name,
             )
             return True
         time.sleep(poll_interval_s)
     logger.error(
-        "rns_init: rnsd.service is enabled but never claimed @rns/%s within "
-        "%.0fs — refusing to boot-claim the shared instance. Check "
-        "`systemctl status rnsd`; this process will retry per its own "
-        "restart/cycle policy.",
+        "rns_init: no acceptably-owned @rns/%s listener within %.0fs though "
+        "rnsd.service is enabled — refusing to boot-claim the shared "
+        "instance. Either rnsd never came up (check `systemctl status rnsd` "
+        "and its journal for a startup exception) or a non-RNS process holds "
+        "the socket (`sudo ss -xnpl | grep \"@rns/\"` — the owner MUST be "
+        "rnsd). This process will retry per its own restart/cycle policy.",
         instance_name, timeout_s,
     )
     return False
