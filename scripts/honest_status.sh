@@ -623,6 +623,15 @@ else echo HSNOREPO; fi")
   # WARNING: if the MANAGER is the stale one, every box reads skewed and
   # everything goes unknown. That is correct -- nothing can be dated -- and
   # it is loud, which beats a fleet of confident wrong numbers.
+  # ⚠️ MEASURED BIAS (live drill 2026-09-18, MF_CLOCK_TOL_S=0): _mgrnow is taken
+  # AFTER the ssh returns while BOXNOW was stamped DURING it, so the delta
+  # carries this probe's own round-trip as a systematic NEGATIVE offset --
+  # all 9 boxes read -1s/-2s on a fleet whose clocks are fine. Irrelevant at
+  # the shipped 300s bar (~150x margin) and NOT worth "fixing": taking
+  # _mgrnow before the ssh only flips the sign, and a midpoint is
+  # over-engineering for 2s against 300s. Recorded so the next person running
+  # that drill reads nine boxes at -1s as latency, not as a fleet-wide clock
+  # fault -- an instrument reporting its own duration as the subject's state.
   box_clock_delta=""
   boxnow="$(printf '%s\n' "$body" | awk '$1=="BOXNOW"{print $2; exit}')"
   case "${boxnow:-}" in
