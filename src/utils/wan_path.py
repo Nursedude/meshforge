@@ -105,7 +105,7 @@ class RungResult:
 @dataclass
 class Verdict:
     status: str            # ok | concern | fail | unknown
-    cause: str             # clean | lan | edge | transit | unknown
+    cause: str             # clean | lan | edge | transit | endpoint | unknown
     message: str
     worst_far_loss: Optional[float] = None
     unmeasured: List[str] = field(default_factory=list)
@@ -338,17 +338,45 @@ def classify(results: Sequence[RungResult], fail_pct: float = LOSS_FAIL_PCT) -> 
     ctx = "edge %s, lan %s" % (
         ("%.0f%%" % edge) if edge is not None else "?",
         ("%.0f%%" % lan) if lan is not None else "?")
-    if far >= fail_pct:
+    # AGREEMENT, not the worst row (2026-09-18). ``far`` is the MAX over
+    # independent distant endpoints -- a VPS in Europe, GitHub, a Fastly CDN --
+    # so one of them dropping two packets rendered as "loss beyond the ISP": a
+    # claim about the PATH built from a single endpoint. Measured over the 80 h
+    # after the 09-15 threshold cure: 6 FAIL verdicts, and 4 were ONE far target
+    # losing while the other two read 0.0%. Raising the bar had moved that hair
+    # trigger, not removed it -- the bar was never the whole defect. The founding
+    # incident (module docstring) lost packets to EVERY distant host, and that
+    # agreement is what actually implicates transit.
+    measured_far = [x for x in by["far"] if x.loss_pct is not None]
+    losing_far = [x for x in measured_far if x.loss_pct > 0]
+    agreed = bool(measured_far) and len(losing_far) == len(measured_far)
+    if far >= fail_pct and agreed:
         where = "transit" if (near is not None and near < fail_pct) else "edge-or-transit"
         return Verdict("fail", where,
-                       "loss beyond the ISP: %s (%s, near %s)" % (
-                           far_desc, ctx, ("%.0f%%" % near) if near is not None else "?"),
+                       "loss beyond the ISP - all %d far target(s) losing: %s (%s, near %s)" % (
+                           len(measured_far), far_desc, ctx,
+                           ("%.0f%%" % near) if near is not None else "?"),
+                       far, unmeasured)
+    if far > 0 and not agreed:
+        # Some far targets losing, some clean: that is the losing ENDPOINT or
+        # its own path, not this box's transit. NAMED rather than averaged into
+        # a path claim -- and not silenced: it escalates on persistence like any
+        # other concern, and the localizer is aimed at the named host.
+        return Verdict("concern", "endpoint",
+                       "%s losing while %d of %d far target(s) are clean - that "
+                       "endpoint or its own path, not this box's transit: %s (%s)" % (
+                           ", ".join(rung_name(x) for x in losing_far),
+                           len(measured_far) - len(losing_far), len(measured_far),
+                           far_desc, ctx),
                        far, unmeasured)
     if far > 0:
+        # Every measured far target losing, but below the fail bar: the opening
+        # shape of the founding incident (5% to everything, then 10, then 25).
         # REACHABLE since 2026-09-15: with a 20-packet sample the smallest
         # non-zero loss is 5%, which used to equal fail_pct and land above.
         return Verdict("concern", "transit",
-                       "light loss beyond the ISP: %s (%s)" % (far_desc, ctx), far, unmeasured)
+                       "light loss beyond the ISP - all %d far target(s): %s (%s)" % (
+                           len(measured_far), far_desc, ctx), far, unmeasured)
     status = "ok" if not unmeasured else "concern"
     msg = "path clean: %s (%s)" % (far_desc, ctx)
     if unmeasured:

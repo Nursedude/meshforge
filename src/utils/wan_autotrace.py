@@ -38,7 +38,13 @@ TRACE_COOLDOWN_S = 3600.0
 TRACE_STALE_S = 4 * 3600.0
 #: Causes worth tracing. ``lan`` is deliberately excluded — the ladder has
 #: already named the first hop, and walking past it adds probes, not knowledge.
-TRACEABLE_CAUSES = ("edge", "transit", "edge-or-transit", "unknown")
+#:
+#: ``endpoint`` (2026-09-18) is the MOST traceable cause there is: exactly one
+#: far target losing while its siblings are clean is what ``pick_targets``
+#: wants — a bad host and a ready-made clean control. It is listed here in the
+#: same commit that ``classify`` can first emit it, because a closed enum with
+#: an un-updated consumer is a silent skip (honest_failure_modes #7).
+TRACEABLE_CAUSES = ("edge", "transit", "edge-or-transit", "endpoint", "unknown")
 
 
 def trace_state_path() -> Path:
