@@ -363,11 +363,50 @@ sync_repo() {
     fi
 
     if [ -z "$restart_reason" ]; then
-        # No commits to apply — repo is already at HEAD. Skip restart;
-        # any running service is on the same code the restart would
-        # bring up.
-        echo "PASS $short $new_head unchanged"
-        return 0
+        # No commits to apply. That is a fact about the REPO, never about the
+        # PROCESS -- anything else may have done the pull, and
+        # scripts/fleet_pull.sh does exactly that BY DESIGN, without restarting.
+        #
+        # This branch used to assert "any running service is on the same code
+        # the restart would bring up" and skip unconditionally. Measured
+        # 2026-09-18: after a fleet_pull, 46 units across 10 boxes were behind
+        # the newest CODE commit of the repo they load, and this branch would
+        # have called every one of them unchanged while exiting 0 -- sync blind
+        # to skew it did not itself cause. A sync that cannot restart after
+        # someone else pulled is a deploy tool that silently does nothing.
+        #
+        # So ask the RUNNING PROCESS the question sync_local_unit already asks
+        # on this box: is it older than the newest commit touching code it
+        # loads? Same question, same constant, one definition.
+        local code_ct pid started
+        code_ct="$(mf_code_head "$repo")"
+        case "${code_ct:-}" in
+            ""|*[!0-9]*)
+                # Unknown code-head is "cannot tell", never "current" -- named
+                # rather than folded into a clean skip (hfm #1/#9).
+                echo "PASS $short $new_head unchanged code_head_unknown"
+                return 0 ;;
+        esac
+        pid="$(systemctl show -p MainPID --value "${unit}.service" 2>/dev/null)"
+        started=""
+        case "${pid:-0}" in
+            ""|0|*[!0-9]*) : ;;
+            *) started="$(stat -c %Y "/proc/$pid" 2>/dev/null || true)" ;;
+        esac
+        case "${started:-}" in
+            ""|*[!0-9]*)
+                # Not running (or unreadable): try-restart would not start it
+                # anyway, and this script must never START something.
+                echo "PASS $short $new_head unchanged not_running"
+                return 0 ;;
+        esac
+        if [ "$code_ct" -le "$started" ]; then
+            echo "PASS $short $new_head unchanged"
+            return 0
+        fi
+        # Repo current, process is not. Fall through to the try-restart below,
+        # which still acts ONLY on an already-active unit.
+        restart_reason="skew"
     fi
 
     if systemctl list-unit-files "${unit}.service" 2>/dev/null | grep -q "$unit"; then
@@ -723,7 +762,15 @@ exit $(( ${rc1:-0} + ${rc1b:-0} + ${rc2:-0} ))
 # would unbind the recipe), and TestRemoteScriptBinds anchors on a line
 # starting exactly `REMOTE_SCRIPT='` — changing that opener does not trip the
 # apostrophe guard, it BLINDS it, which is strictly worse.
-REMOTE_SCRIPT="$GIT_HEAL_SRC
+# lib/code_paths.sh goes in too, for the same reason and by the same route:
+# sync_repo runs on the REMOTE box and now asks the running-process question,
+# which needs mf_code_head + MF_DAEMON_CODE_PATHS there. Shipping the file is
+# what keeps the remote half on THE definition instead of growing a fourth
+# private copy of the pathspec -- the exact drift that file exists to end
+# (2026-09-15; honest_failure_modes #5). $(cat) does not re-expand the body.
+MF_CODE_PATHS_SRC="$(cat "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/code_paths.sh")"
+REMOTE_SCRIPT="$MF_CODE_PATHS_SRC
+$GIT_HEAL_SRC
 $REMOTE_SCRIPT"
 
 # Pre-sync: auto-commit memory changes on the canonical box and push to
