@@ -218,8 +218,21 @@ if [ "$failures" -eq 0 ] && [ "$(basename "$REPO_DIR")" = "meshforge" ] \
         # on commits its subject cannot load trains the reader to ignore it.
         head_ct=$(mf_code_head "$REPO_DIR" 2>/dev/null || echo 0)
         [ -n "$head_ct" ] || head_ct=0
+        # Two clocks again (lib/code_paths.sh mf_clock_trust): map_started is
+        # THIS box's wall clock, head_ct is the wall clock of whichever box
+        # authored the commit. On a clock-stale box -- RTC-less Pi,
+        # fake-hwclock, NTP unreachable -- map_started lands days in the past
+        # and this nag fires on EVERY pull, forever, about a map that is
+        # current. This block already reached the same conclusion once for a
+        # different reason: "a nag that is not actually derived from anything
+        # is worse than no nag". An undatable comparison is that, exactly.
+        map_clock_doubt="$(mf_clock_trust "$REPO_DIR" "${map_started:-0}")"
         # Only nag when HEAD is NEWER than the running process (the risky case).
-        if [ "${map_started:-0}" -gt 0 ] && [ "${head_ct:-0}" -gt 0 ] \
+        if [ -n "$map_clock_doubt" ]; then
+            echo "fleet_pull: NOTE — meshforge-map skew NOT checked: $map_clock_doubt"
+            echo "            Fix the clock (timedatectl status). This is not a"
+            echo "            claim that the map is current; it is UNKNOWN."
+        elif [ "${map_started:-0}" -gt 0 ] && [ "${head_ct:-0}" -gt 0 ] \
            && [ "$map_started" -lt "$head_ct" ]; then
             echo "fleet_pull: NOTE — meshforge-map on this box started before ${TARGET_SHORT};"
             echo "            it serves /api/fleet/truth from the code it booted with."

@@ -542,6 +542,7 @@ fi
 skew_desc=""; skew_behind=0; skew_unknown=0; skew_boxes=0; skew_udark=0
 skew_prose=0; skew_prose_desc=""
 skew_noattr=0; skew_noattr_desc=""
+skew_clock=0; skew_clock_desc=""
 # The attribution program is a real file so it can be unit-tested directly
 # (tests/test_honest_status_skew_attr.sh); ship it base64 so no quoting of an
 # awk program has to survive this remote command string.
@@ -568,6 +569,9 @@ if [ -e $REPO/.git ]; then
   HCMF=\$(hs_codehead $REPO); [ -n \"\$HCMF\" ] || HCMF=\$HTMF
   HCMA=\$(hs_codehead /opt/meshanchor); [ -n \"\$HCMA\" ] || HCMA=\$HTMA
   HCMM=\$(hs_codehead /opt/meshforge-maps); [ -n \"\$HCMM\" ] || HCMM=\$HTMM
+  # This box\'s OWN wall clock, so the MANAGER can decide whether the skew
+  # verdict is datable at all. See the CLOCK block on the manager side.
+  echo BOXNOW \$(date +%s)
   AWKF=\$(mktemp); printf %s '$HS_ATTR_B64' | base64 -d > \"\$AWKF\"
   HSV=\"-v HTMF=\$HTMF -v HCMF=\$HCMF -v HTMA=\$HTMA -v HCMA=\$HCMA -v HTMM=\$HTMM -v HCMM=\$HCMM\"
   # ATTRIBUTION BY LOADED CODE, NEVER BY UNIT NAME. Enumerate EVERY active
@@ -594,7 +598,57 @@ else echo HSNOREPO; fi")
   np=$(printf '%s\n' "$body" | grep -c '^P ' || true)
   nn=$(printf '%s\n' "$body" | grep -c '^N ' || true)
   skew_noattr=$((skew_noattr+nn))
-  skew_behind=$((skew_behind+nb)); skew_unknown=$((skew_unknown+nu))
+  # CLOCK (2026-09-18). `B` means "this unit started BEFORE its repo\'s newest
+  # code commit" -- a comparison between the COMMIT\'s wall clock and the
+  # BOX\'s wall clock at fork. It says something only while those two agree,
+  # and on this fleet they do not: RTC-less Pis, fake-hwclock restoring a
+  # stale time at boot, NTP unreachable through a WAN outage. moc4 ran ~8
+  # days behind for days. Every attributed unit on such a box prints
+  # `B ... 8d`, and that 8 IS THE CLOCK SKEW wearing the name of deploy lag
+  # -- a confident, specific, wrong number on the check of record.
+  #
+  # This leg can do what fleet_sync\'s decider cannot: it runs on the MANAGER,
+  # so it has a SECOND clock to compare against. One BOXNOW line per box
+  # catches skew in EITHER direction -- a box BEHIND (units falsely `behind`)
+  # and a box AHEAD (units falsely `current`: the false-GREEN direction, which
+  # the commit-date tell in lib/code_paths.sh mf_clock_trust cannot see at
+  # all, because on the box there is only one clock to ask).
+  #
+  # The tolerance is THE shared constant (MF_CLOCK_TOL_S, sourced from
+  # lib/code_paths.sh above), never a second hardcode -- two consumers of one
+  # artifact WILL drift, which is why that lib exists (hfm #5).
+  #
+  # Untrusted => those units go to the EXISTING unknown bucket, never to
+  # `behind` and never to `current`. UNKNOWN is not a pass here either.
+  # WARNING: if the MANAGER is the stale one, every box reads skewed and
+  # everything goes unknown. That is correct -- nothing can be dated -- and
+  # it is loud, which beats a fleet of confident wrong numbers.
+  box_clock_delta=""
+  boxnow="$(printf '%s\n' "$body" | awk '$1=="BOXNOW"{print $2; exit}')"
+  case "${boxnow:-}" in
+    ""|*[!0-9]*)
+      # ABSENT IS NOT AGREEMENT. Control only reaches here after the payload
+      # ran (a box that did not answer HSUP was skipped far above), so a
+      # missing or unparseable BOXNOW means `date` itself failed on that box
+      # -- which is a broken clock, the very thing being asked about. Letting
+      # it fall through to the numeric comparison would read as "the clocks
+      # agree": the degraded value overlapping the healthy domain (hfm #1),
+      # committed inside the fix for that same trap.
+      box_clock_delta="clock unreadable" ;;
+    *)
+      _mgrnow="$(date +%s)"
+      _d=$(( boxnow - _mgrnow )); _ad="${_d#-}"
+      if [ "$_ad" -gt "$MF_CLOCK_TOL_S" ]; then box_clock_delta="${_d}s"; fi ;;
+  esac
+  if [ -n "$box_clock_delta" ]; then
+    skew_clock=$((skew_clock+1))
+    skew_clock_desc="$skew_clock_desc $b(${box_clock_delta})"
+    # nb is RECLASSIFIED, never dropped. Dropping it would shrink coverage
+    # silently -- the exact failure this leg exists to end.
+    skew_unknown=$((skew_unknown+nu+nb))
+  else
+    skew_behind=$((skew_behind+nb)); skew_unknown=$((skew_unknown+nu))
+  fi
   skew_prose=$((skew_prose+np))
   # ONE formatter for both buckets — two awk copies would drift the display
   # the first time a fourth repo prefix lands (honest_failure_modes #5).
@@ -605,7 +659,9 @@ else echo HSNOREPO; fi")
   _skew_units() {  # $1 = marker letter
     printf '%s\n' "$body" | awk -v m="$1" '$1==m{sub(/\.service$/,"",$3); if ($2=="/opt/meshforge-maps") { t="mm:"; sub(/^meshforge-maps/,"maps",$3) } else if ($2=="/opt/meshanchor") { t="ma:"; sub(/^meshanchor-/,"",$3) } else { t="mf:"; sub(/^meshforge-/,"",$3) } printf "%s%s(%sd),", t, $3, $4}' | sed 's/,$//'
   }
-  [ "$nb" -gt 0 ] && skew_desc="$skew_desc $b:$(_skew_units B)"
+  if [ "$nb" -gt 0 ] && [ -z "$box_clock_delta" ]; then
+    skew_desc="$skew_desc $b:$(_skew_units B)"
+  fi
   [ "$np" -gt 0 ] && skew_prose_desc="$skew_prose_desc $b:$(_skew_units P)"
   # N records are shaped "N <unit> <interp>", not "<marker> <repo> <unit> <days>"
   # — there IS no repo, which is the whole point — so they need their own
@@ -628,19 +684,21 @@ prose_note=""
 # repo editable-installed into it, in which case the unit loads repo code the
 # leg cannot attribute. Expected to be 0 on this fleet — it exists so the class
 # announces itself rather than silently shrinking coverage.
+clock_note=""
+[ "$skew_clock" -gt 0 ] && clock_note=" ; $skew_clock box(es) report a clock disagreeing with this one by more than ${MF_CLOCK_TOL_S}s${skew_clock_desc} — their units are UNKNOWN, not current and not behind (a commit date and a process start are two different clocks); fix the clock (timedatectl status) before reading their skew"
 noattr_note=""
 [ "$skew_noattr" -gt 0 ] && noattr_note=" ; $skew_noattr unit(s) run a venv interpreter resolving to NO repo — an editable install there would be INVISIBLE to this leg${skew_noattr_desc}"
 if [ "$skew_boxes" = 0 ]; then
   disc "running-code skew" "no box answered with a repo — not measured"
 elif [ "$skew_behind" = 0 ] && [ "$skew_unknown" = 0 ]; then
-  disc "running-code skew" "$skew_boxes box(es): every ACTIVE mf/ma unit (system+user scope) started at/after its own repo's newest CODE commit${prose_note}${noattr_note}${udark_note}"
+  disc "running-code skew" "$skew_boxes box(es): every ACTIVE mf/ma unit (system+user scope) started at/after its own repo's newest CODE commit${clock_note}${prose_note}${noattr_note}${udark_note}"
 else
   # ${var:+...} expands whenever the var is NON-EMPTY, and "0" is non-empty —
   # so the naive form printed "; 0 unknown(no start time)" on every clean run.
   # Caught by drilling the branches with synthetic counts, not by reading.
   unk_note=""
   [ "$skew_unknown" -gt 0 ] && unk_note=" ; $skew_unknown unknown(no start time / no repo for the unit — NOT 'current')"
-  disc "running-code skew" "$skew_behind unit(s) behind their repo's newest CODE commit across $skew_boxes box(es)${skew_desc}${unk_note}${prose_note}${noattr_note}${udark_note} — disclosure, not a fault; they load it at next restart"
+  disc "running-code skew" "$skew_behind unit(s) behind their repo's newest CODE commit across $skew_boxes box(es)${skew_desc}${unk_note}${clock_note}${prose_note}${noattr_note}${udark_note} — disclosure, not a fault; they load it at next restart"
 fi
 
 # 3. Full local suite — file-routed, never a streamed tail.

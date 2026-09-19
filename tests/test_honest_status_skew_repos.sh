@@ -151,7 +151,14 @@ if printf '%s' "$src" | grep -q 'skew_prose=$((skew_prose+np))' \
 else
   fail "prose-bucket units are counted and disclosed, never filtered out"
 fi
-nclean=$(printf '%s' "$src" | grep -c 'started at/after its own repo.s newest CODE commit${prose_note}')
+# Identify the CLEAN outcome line by its sentence, then require ${prose_note}
+# ON that line -- rather than requiring the two to be ADJACENT. The adjacency
+# form was a proxy for "which line", and it broke on 2026-09-18 when a second
+# disclosure (${clock_note}) was inserted between them, reporting a violation
+# where the invariant it names was intact. Over-specified pins fail on the
+# wrong thing; this one now fails only when the clean line really does drop
+# the prose bucket, which the drill in that commit confirms it still does.
+nclean=$(printf '%s' "$src" | grep 'started at/after its own repo.s newest CODE commit' | grep -c '${prose_note}')
 if [ "$nclean" -ge 1 ]; then
   pass "the CLEAN skew line still carries the prose bucket"
 else
