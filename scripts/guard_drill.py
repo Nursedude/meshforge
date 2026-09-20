@@ -194,7 +194,7 @@ REAL_CASES = [
     #  and `<app>-web` opened a browser tab on the operator's desktop mid-drill
     #  (2026-09-20) — a drill's side effects must stay inside the drill.
     (f"{APP}-status", ["--brief"], "", 0),
-    (f"{APP}-web", [], ":9443", None),      # either branch prints the port
+    (f"{APP}-web", [], "9443", None),       # either branch names the port
     (f"{APP}-map", ["url"], ":5000/", 0),
 ]
 FAKE = "#!/bin/bash\necho \"FAKE-EXEC: $*\"\n"
