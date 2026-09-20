@@ -65,9 +65,9 @@ jobs:
     # Can our requirements files actually RESOLVE on the oldest Python we
     # claim to support? Until 2026-09-11 nothing asked.
     #
-    # WHY THIS EXISTS: the `test` job installs BARE PACKAGE NAMES
+    # WHY THIS EXISTS: the `test` job USED TO install BARE PACKAGE NAMES
     # (`pip install pytest ... rich textual flask pyyaml requests psutil
-    # distro`) and never reads requirements/*.txt, so pip silently resolves
+    # distro`) and never read requirements/*.txt, so pip silently resolved
     # whatever is newest-compatible for the interpreter it is on. The
     # manifests were therefore unvalidated by ANY check. Dependabot PR #1179
     # proved the hole: it went green on all six checks — 3.9 matrix leg
@@ -75,6 +75,16 @@ jobs:
     # (need >=3.10) and `websockets>=17.1` (needs >=3.11) against a package
     # that declares `requires-python = ">=3.9"`. Six green checks, and the
     # manifests could not have installed on the Python we advertise.
+    #
+    # ⚠️ AMENDED 2026-09-20 — read this before trusting the past tense above.
+    # That fix validated the MANIFESTS and left the JOBS floating, and the
+    # remaining half bit us: cfad33b2 was green at 21:46 and RED at 04:55 on
+    # the 3.9 leg with byte-identical code (re-running the green run
+    # unchanged reproduced it). The jobs now install pinned
+    # requirements/ci.txt, which is itself dry-run here on MIN_PY — so the
+    # 3.9 branch of its markers is checked by this job rather than asserted.
+    # The lesson is the recurring one: when a mechanism is fixed, grep for
+    # its copies (honest_failure_modes #5). Transitive deps still float.
     #
     # --dry-run resolves the full dependency graph and fails on an
     # unsatisfiable pin WITHOUT building or installing anything, so this
@@ -111,7 +121,8 @@ jobs:
             -r requirements/maps.txt \
             -r requirements/mqtt.txt \
             -r requirements/monitoring.txt \
-            -r requirements/dev.txt
+            -r requirements/dev.txt \
+            -r requirements/ci.txt
 
   test:
     # Explicit name: the bare "Test Suite" auto-name appends ALL matrix
@@ -197,9 +208,19 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-cov pytest-timeout rich textual flask pyyaml requests psutil distro
-          pip install meshtastic || echo "meshtastic optional - continuing"
-          pip install folium || echo "folium optional - continuing"
+          # PINNED via requirements/ci.txt — bare names let pip resolve
+          # whatever was newest that minute, which turned a byte-identical
+          # commit red between 21:46 and 04:55 on 2026-09-20.
+          pip install -r requirements/ci.txt
+          pip install 'meshtastic==2.7.11' || echo "meshtastic optional - continuing"
+          pip install 'folium==0.20.0' || echo "folium optional - continuing"
+          # The resolved set, recorded. Transitive deps still float; when
+          # CI next moves under unchanged code this is the evidence that
+          # says which package did it — scraping "Downloading" lines from
+          # a rerun does not work, a rerun REPLACES the prior attempt's log.
+          echo "::group::resolved environment (pip freeze)"
+          pip freeze
+          echo "::endgroup::"
 
       - name: Run tests
         id: pytest
@@ -307,7 +328,12 @@ jobs:
           # The MF-owned forks, pinned by SHA (requirements/rns.txt is the
           # SSOT) — this job is the one CI leg that runs the REAL stack.
           pip install -r requirements/rns.txt
-          pip install meshtastic rich textual flask pyyaml requests psutil distro
+          # Same pins as the test job — ONE constant, three consumers.
+          pip install -r requirements/ci.txt
+          pip install 'meshtastic==2.7.11'
+          echo "::group::resolved environment (pip freeze)"
+          pip freeze
+          echo "::endgroup::"
 
       - name: Smoke — message arrives across the virtual fabric
         run: |
