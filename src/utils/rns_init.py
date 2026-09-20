@@ -435,6 +435,35 @@ def _rnsd_unit_enabled() -> bool:
         return False
 
 
+def _instance_name_was_declared(
+    configdir: Optional[Union[str, os.PathLike]],
+) -> bool:
+    """Did the CALLER choose this instance name, or is it the fallback?
+
+    The distinction is the whole scope of the 2026-09-20 mismatch gate.
+
+    * explicit ``instance_name`` in the configdir -> the caller MEANT this
+      instance. ``lab.virtual_fleet`` deliberately runs ``vfleet-<node>``
+      alongside a real rnsd; the lab daemons name the box's instance on
+      purpose. rnsd not serving that name is NORMAL, not an error.
+    * no directive -> nobody chose ``default``; RNS's template did. On a box
+      whose rnsd serves a named instance, constructing there silently creates
+      a SECOND, interface-less instance. THAT is the defect.
+    * no configdir -> RNS resolves the box's own config, so the box's name is
+      by definition the chosen one.
+
+    ⚠️ Gating on the mismatch ALONE (first cut of this fix, 2026-09-20) would
+    have refused ``virtual_fleet`` on every box with rnsd enabled. CI could
+    not see it — CI has no rnsd, so ``_rnsd_unit_enabled()`` is False there
+    and the gate never fires. The Virtual Fleet job passed for the wrong
+    reason. Narrowed to the fallback case, which leaves every explicit-name
+    caller on exactly the pre-existing code path.
+    """
+    if not configdir:
+        return True
+    return _read_instance_name_from_config(configdir) is not None
+
+
 def _rnsd_serves_instance(instance_name: str) -> bool:
     """Could this box's rnsd be the designated host of ``@rns/<instance_name>``?
 
@@ -646,7 +675,8 @@ def init_reticulum_with_watchdog(
             # (honest_failure_modes #5 — when a mechanism is fixed, grep for
             # its copies). This path RAISES by contract, so the win is a
             # correct, immediate message instead of a misleading one 30s late.
-            if not _rnsd_serves_instance(instance_name):
+            if (not _instance_name_was_declared(configdir)
+                    and not _rnsd_serves_instance(instance_name)):
                 raise RuntimeError(
                     f"configdir {configdir} resolves to @rns/{instance_name}, "
                     f"but this box's rnsd serves "
@@ -781,7 +811,8 @@ def open_reticulum(
                 listener_present = _shared_instance_listener_present(
                     instance_name)
                 if not listener_present and _rnsd_unit_enabled():
-                    if not _rnsd_serves_instance(instance_name):
+                    if (not _instance_name_was_declared(configdir)
+                            and not _rnsd_serves_instance(instance_name)):
                         # rnsd is enabled but hosts a DIFFERENT instance, so
                         # `@rns/<instance_name>` will never appear and the
                         # boot-race wait below would burn its full budget and

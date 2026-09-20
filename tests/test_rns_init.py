@@ -315,7 +315,7 @@ class TestBootRaceGuard:
         """
         with patch.object(ri, "_HAS_RNS", True), \
              patch.object(ri, "_existing_instance", return_value=None), \
-             patch.object(ri, "_read_instance_name_from_config", return_value="inst"), \
+             patch.object(ri, "_read_instance_name_from_config", return_value=None), \
              patch.object(ri, "check_rns_listener_owner", return_value=None), \
              patch.object(ri, "_shared_instance_listener_present", return_value=False), \
              patch.object(ri, "_rnsd_unit_enabled", return_value=True), \
@@ -324,6 +324,32 @@ class TestBootRaceGuard:
              patch.object(ri, "_construct_reticulum_with_watchdog") as construct:
             assert ri.open_reticulum("/tmp/x") is None
             wait.assert_not_called()
+            construct.assert_not_called()
+
+    def test_declared_name_is_never_gated_even_on_mismatch(self):
+        """THE regression this gate must not cause: a caller that DECLARES an
+        instance name meant it. `lab.virtual_fleet` runs `vfleet-<node>`
+        beside a real rnsd on purpose; refusing it would break the sandbox on
+        every box with rnsd enabled.
+
+        The first cut of the gate keyed on the mismatch ALONE and would have
+        done exactly that. CI could not catch it — CI has no rnsd, so the gate
+        never fires there and the Virtual Fleet job passed for the wrong
+        reason. This test fails on that first cut.
+        """
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_existing_instance", return_value=None), \
+             patch.object(ri, "_read_instance_name_from_config",
+                          return_value="vfleet-gw"), \
+             patch.object(ri, "check_rns_listener_owner", return_value=None), \
+             patch.object(ri, "_shared_instance_listener_present", return_value=False), \
+             patch.object(ri, "_rnsd_unit_enabled", return_value=True), \
+             patch.object(ri, "_rnsd_serves_instance", return_value=False), \
+             patch.object(ri, "_wait_for_rnsd_listener", return_value=False) as wait, \
+             patch.object(ri, "_construct_reticulum_with_watchdog") as construct:
+            assert ri.open_reticulum("/tmp/x") is None
+            # Not gated: the pre-existing #69 wait still runs for this caller.
+            wait.assert_called_once_with("vfleet-gw")
             construct.assert_not_called()
 
     def test_mismatch_gate_does_not_fire_when_listener_is_present(self):
@@ -453,11 +479,12 @@ class TestInitWithWatchdogMismatchGate:
     mismatch gate — fixed in the SAME change, because curing only the branch
     an incident came through is the 2026-08-09 partial-fix class."""
 
-    def _guards(self, serves):
+    def _guards(self, serves, declared_name=None):
         from utils import tx_guard
         return [
             patch.object(ri, "_HAS_RNS", True),
-            patch.object(ri, "_read_instance_name_from_config", return_value="inst"),
+            patch.object(ri, "_read_instance_name_from_config",
+                         return_value=declared_name),
             patch.object(ri, "check_rns_listener_owner", return_value=None),
             patch.object(ri, "_shared_instance_listener_present", return_value=False),
             patch.object(ri, "_rnsd_unit_enabled", return_value=True),
@@ -467,7 +494,7 @@ class TestInitWithWatchdogMismatchGate:
     def test_mismatch_raises_immediately_without_waiting(self):
         with patch.object(ri, "_wait_for_rnsd_listener") as wait, \
              patch.object(ri, "_construct_reticulum_with_watchdog") as construct:
-            ctxs = self._guards(serves=False)
+            ctxs = self._guards(serves=False, declared_name=None)
             for c in ctxs:
                 c.start()
             try:
@@ -485,7 +512,7 @@ class TestInitWithWatchdogMismatchGate:
         surfaces."""
         with patch.object(ri, "_wait_for_rnsd_listener", return_value=False) as wait, \
              patch.object(ri, "_construct_reticulum_with_watchdog") as construct:
-            ctxs = self._guards(serves=True)
+            ctxs = self._guards(serves=True, declared_name="inst")
             for c in ctxs:
                 c.start()
             try:
@@ -496,6 +523,26 @@ class TestInitWithWatchdogMismatchGate:
                     c.stop()
             wait.assert_called_once_with("inst")
             construct.assert_not_called()
+
+
+class TestInstanceNameWasDeclared:
+    """`_instance_name_was_declared` — the gate's scope limiter."""
+
+    def test_explicit_directive_is_declared(self, tmp_path):
+        (tmp_path / "config").write_text("[reticulum]\ninstance_name = vfleet-gw\n")
+        assert ri._instance_name_was_declared(str(tmp_path)) is True
+
+    def test_missing_directive_is_not_declared(self, tmp_path):
+        (tmp_path / "config").write_text("[reticulum]\nshare_instance = Yes\n")
+        assert ri._instance_name_was_declared(str(tmp_path)) is False
+
+    def test_absent_config_is_not_declared(self, tmp_path):
+        assert ri._instance_name_was_declared(str(tmp_path)) is False
+
+    def test_no_configdir_counts_as_declared(self):
+        """RNS resolves the box's own config, so the box name IS the chosen
+        one — the gate must never fire for configdir=None."""
+        assert ri._instance_name_was_declared(None) is True
 
 
 class TestRnsdServesInstance:
