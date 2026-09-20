@@ -29,6 +29,12 @@
 
 **MeshForge turns a Raspberry Pi into a mesh network operations center.**
 
+> **How it answers you:** measure first; assert only where measurement is not
+> possible, and say so; fall back to physics when neither is available. A
+> degraded reading is reported as degraded — never smoothed into a healthy
+> number — and "I cannot see that right now" is a first-class answer. The same
+> rule binds the tools that watch the tools: unobservable is not healthy.
+
 Modern mesh networks are fragmented. Meshtastic nodes can't talk to Reticulum
 nodes. AREDN operates on a different layer entirely. Each ecosystem has its own
 tools, its own interfaces, its own learning curve. MeshForge is one interface

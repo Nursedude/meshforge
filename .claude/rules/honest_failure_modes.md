@@ -27,6 +27,12 @@ satisfied; the truth wasn't.
 
 ## The checklist — run it over every error path you write
 
+> **First, the general question the ten below are specific shapes of:** *does
+> this path MEASURE what it reports, or ASSERT it?* An error path that asserts
+> — that returns a value it did not observe — is this file's defect class in
+> one line. `[]` because the read failed is an assertion that there is nothing
+> there. See `calibrated_claims.md` → "The method ordering".
+
 1. **Audit every `except`, `or []`, `or {}`, `.get(default)`:** does the
    degraded value overlap the healthy domain? If yes, tri-state it
    (ok / unobservable / error) or hold prior state. Empty ≠ error.

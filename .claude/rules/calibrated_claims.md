@@ -8,6 +8,40 @@
 > a confident wrong claim costs the operator real hours and burns the trust this
 > whole observability spine exists to protect.
 
+## The method ordering — the parent of everything below
+
+> **Operator, 2026-09-20:** *"better science to measure than assert — that's
+> done when you can't measure — then there's physics."*
+
+The tiers further down ask *how sure am I*. This asks the prior question:
+**what did I do to find out?** They rank, and the order is not negotiable.
+
+1. **MEASURE.** Go get the number from the thing itself. Always first, and
+   usually cheaper than the reasoning that would replace it.
+2. **ASSERT.** A reasoned claim — legitimate ONLY where measurement is
+   unavailable, and only when LABELLED as an assertion so the next reader can
+   settle it. An unlabelled assertion reads as a measurement.
+3. **PHYSICS.** First principles and invariants, when neither of the above is
+   available. On this fleet that is the floor, **not the fallback**: when the
+   WAN is gone, the observers are lying and the mesh is dark, the link budget,
+   the 40-pin header as a mechanical contact and a default gateway that
+   answers nothing are the most reliable tier left — they cannot be
+   misconfigured.
+
+⚠️ **Two clauses without which "we measure" becomes the most confident way
+to be wrong** (both proven 2026-09-20; the worked examples live in
+[[feedback_measure_assert_physics]], not here — this file is paid for every
+turn, so it carries the rule and not the evidence):
+
+- **Ask what the number is OF.** A measurement of the wrong quantity carries
+  authority a bad assertion never gets. Four of my own instruments returned
+  confident wrong labels in one session, every one rendering MY measurement
+  failing as a finding about the fleet.
+- **Measure the MEASURER when the instrument is yours.** A system that
+  measures only the network is a dashboard; one that can measure its own
+  instruments is an observatory — the whole NOC/MOC claim. In a domain run
+  through a model, **the model is one of the instruments.**
+
 ## The defect class
 
 **A claim of certainty I have not earned.** I say "done / verified / all green /
