@@ -13,7 +13,7 @@ name = "meshforge"
 version = "0.6.2-beta"
 description = "Network Operations Center bridging Meshtastic and Reticulum mesh networks"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = {text = "GPL-3.0"}
 authors = [
     {name = "WH6GXZ (Nursedude)", email = "meshforge@example.com"}

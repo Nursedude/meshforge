@@ -141,7 +141,7 @@ is CI's conclusion **for that exact HEAD**, not a local run:
 |-----|---------------|
 | **Lint & Security Check** | `scripts/lint.py --all` (the blocking gate) + an advisory secret scan |
 | **Syntax Check** | every file compiles |
-| **Test Suite (3.9)** / **(3.11)** | the full suite on both supported interpreters, minimal-deps profile |
+| **Test Suite (3.11)** | the full suite on the oldest SUPPORTED interpreter (bookworm's), minimal-deps profile. The 3.9 leg retired 2026-09-20 with the support floor; nine of ten boxes run 3.13 and CI does not yet test it — the local suite does. |
 | **Virtual Fleet (smoke + chaos)** | see below |
 
 #### Virtual fleet — a real RNS fabric in CI

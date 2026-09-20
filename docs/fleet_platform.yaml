@@ -58,7 +58,26 @@ platform:
   # The lowest Python the product claims to run on. NOT the fleet's minimum —
   # the STANDALONE offering's. Raising this is a support decision, not a
   # consequence of the fleet converging (that would silently drop users).
-  support_floor_python: "3.9"
+  #
+  # Raised 3.9 -> 3.11 on 2026-09-20, as a SUPPORT decision taken with the
+  # operator, not as a consequence of the fleet. The evidence: 3.9 is
+  # bullseye's Python, `distro_bases` above has never listed bullseye, and no
+  # box runs it — so the 3.9 claim had no declared constituency. bookworm
+  # (3.11) is already named above as the standalone offering's real-world
+  # floor, and moc4 is kept live there on purpose, so this makes the file
+  # agree with itself rather than narrowing what we actually support.
+  # ⚠️ The one bullseye Pi in the operator's world is an AllStar node
+  # (not MeshForge). Asking was what settled it — a fleet census cannot see
+  # a box that is not in fleet_hosts, and cannot see standalone users at all.
+  #
+  # ⚠️ 3.11 IS THE FLOOR AND DOES NOT FOLLOW THE FLEET UP. Operator,
+  # 2026-09-20: *"we must support the best of bookworm - going to be around
+  # for awhile longer"*. Nine of ten boxes run trixie/3.13, and that is NOT a
+  # reason to raise this to 3.13 — the same mistake as reading the 3.9
+  # retirement off the fleet rather than off the support claim. moc4 is kept
+  # live on bookworm on purpose; it is the only place we exercise the floor
+  # with a radio attached. Raising this again needs the operator, not a census.
+  support_floor_python: "3.11"
 
 # ---------------------------------------------------------------------------
 # Pinned dependencies. A pin is a decision to NOT take upstream, and every one
