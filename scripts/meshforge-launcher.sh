@@ -9,14 +9,39 @@ MESHFORGE_DIR="/opt/meshforge"
 # shellcheck source=lib/pycache_prefix.sh
 . "$MESHFORGE_DIR/scripts/lib/pycache_prefix.sh"
 
-# Function to launch TUI with sudo
+# THE interpreter this install actually uses. `.no-venv` is the installer's
+# own marker; without it the venv is authoritative, and using system python3
+# there would silently miss every dependency installed into the venv.
+mf_python() {
+    if [ -f "$MESHFORGE_DIR/.no-venv" ] || [ ! -x "$MESHFORGE_DIR/venv/bin/python" ]; then
+        echo "python3"
+    else
+        echo "$MESHFORGE_DIR/venv/bin/python"
+    fi
+}
+
+# Function to launch the NOC with sudo.
+#
+# Routes through src/launcher.py, NOT straight at launcher_tui/main.py:
+# launcher.py does profile detection, the startup health check and the setup
+# wizard, then `os.execv`s into launcher_tui/main.py (src/launcher.py:288)
+# with sys.executable — so the TUI still appears and the environment,
+# PYTHONPYCACHEPREFIX included, is inherited across the exec.
+#
+# Unifying on this shape 2026-09-20: /usr/local/bin/meshforge had drifted into
+# TWO different programs across the fleet (6 boxes on the installer's
+# launcher.py form, 2 on a stale copy of this script that went straight to the
+# TUI). Going through launcher.py is what the installer generates, what most
+# boxes already ran, and what CLAUDE.md documents as the entry point; the
+# maps/prometheus subcommands below are kept so the other boxes lose nothing.
 launch_tui() {
-    local script="$MESHFORGE_DIR/src/launcher_tui/main.py"
+    cd "$MESHFORGE_DIR" || exit 1
+    local py; py="$(mf_python)"
 
     if [ "$EUID" -eq 0 ]; then
-        exec env PYTHONPYCACHEPREFIX="$MF_ROOT_PYCACHE" python3 "$script" "$@"
+        exec env PYTHONPYCACHEPREFIX="$MF_ROOT_PYCACHE" "$py" src/launcher.py "$@"
     else
-        exec sudo PYTHONPYCACHEPREFIX="$MF_ROOT_PYCACHE" python3 "$script" "$@"
+        exec sudo PYTHONPYCACHEPREFIX="$MF_ROOT_PYCACHE" "$py" src/launcher.py "$@"
     fi
 }
 

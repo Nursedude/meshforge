@@ -2337,6 +2337,51 @@ class TestPrivilegedPycachePrefix:
             "reach the child) and source scripts/lib/pycache_prefix.sh:\n  "
             + "\n  ".join(offenders))
 
+    def test_installed_commands_are_symlinks_not_generated_copies(self):
+        """`/usr/local/bin/meshforge*` must be SYMLINKED into the repo, never
+        written with `cat >`.
+
+        Two reasons, both load-bearing:
+
+        1. A generated copy goes stale. Until 2026-09-20 install.sh wrote
+           these with a heredoc, so `git pull` updated the repo and left the
+           installed command frozen at install time. The fleet had drifted
+           into TWO different `meshforge` programs, and the
+           privileged-bytecode fix reached the repo without reaching the
+           command anyone types — `fleet_pull` alone could not have fixed it.
+        2. `cat >` FOLLOWS a symlink. Once these are links, re-adding a
+           heredoc would write it straight THROUGH into
+           scripts/meshforge-launcher.sh and corrupt the repo file. That is a
+           destructive regression, not a cosmetic one.
+        """
+        path = os.path.join(self.REPO, 'install.sh')
+        with open(path, 'r', encoding='utf-8') as fh:
+            lines = fh.read().splitlines()
+        offenders = [
+            f"install.sh:{i}: {l.strip()}"
+            for i, l in enumerate(lines, 1)
+            if not l.strip().startswith('#')
+            and re.search(r'(?:cat|tee|printf|echo)\s[^|]*>\s*/usr/local/bin/meshforge', l)
+        ]
+        assert offenders == [], (
+            "install.sh writes /usr/local/bin/meshforge* as a generated copy. "
+            "Use `ln -sfn /opt/meshforge/scripts/meshforge-launcher.sh <dest>` "
+            "— a copy goes stale on every pull, and `cat >` follows a symlink "
+            "and would corrupt the repo script:\n  " + "\n  ".join(offenders))
+        # And the links must actually be created (absence is not success).
+        # ⚠️ EXACT-LINE match, never a substring: `/usr/local/bin/meshforge-tui`
+        # CONTAINS `/usr/local/bin/meshforge`, so a substring test stayed green
+        # with the real line deleted — it was satisfied by the alias. Caught by
+        # drilling this guard, which is the only reason it is right.
+        target = 'ln -sfn /opt/meshforge/scripts/meshforge-launcher.sh /usr/local/bin/meshforge'
+        stripped = [l.strip() for l in lines]
+        for dest in ('meshforge', 'meshforge-tui'):
+            want = f'ln -sfn /opt/meshforge/scripts/meshforge-launcher.sh /usr/local/bin/{dest}'
+            assert want in stripped, (
+                f"install.sh no longer symlinks /usr/local/bin/{dest} — that "
+                f"installed command would not exist at all. Expected exactly: {want}")
+        assert target in stripped
+
     def test_launchers_source_the_shared_constant(self):
         """ONE constant, not a per-file literal (honest_failure_modes #5:
         independent hardcodes WILL drift)."""

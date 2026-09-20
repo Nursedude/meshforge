@@ -219,34 +219,22 @@ fi
 echo -e "${CYAN}[7/7] Creating system commands...${NC}"
 
 # Main launcher wizard (default)
-cat > /usr/local/bin/meshforge << 'EOF'
-#!/bin/bash
-cd /opt/meshforge
-# Keep the PRIVILEGED interpreter's bytecode out of the repo -- root
-# __pycache__ in /opt/meshforge is what the fleet chown sweeps kept curing.
-. /opt/meshforge/scripts/lib/pycache_prefix.sh
-if [[ -f .no-venv ]]; then
-    exec sudo PYTHONPYCACHEPREFIX="$MF_ROOT_PYCACHE" python3 src/launcher.py "$@"
-else
-    exec sudo PYTHONPYCACHEPREFIX="$MF_ROOT_PYCACHE" /opt/meshforge/venv/bin/python src/launcher.py "$@"
-fi
-EOF
-chmod +x /usr/local/bin/meshforge
+# SYMLINKS, not generated copies. Until 2026-09-20 these were written here
+# with `cat >`, so every `git pull` updated the repo and left the installed
+# command frozen at install time — the fleet had drifted into TWO different
+# `meshforge` programs, and the privileged-bytecode fix reached the repo
+# without reaching the command anyone actually types. A symlink cannot go
+# stale.
+#
+# ⚠️ This is also why `cat >` must never come back here: `cat >` FOLLOWS a
+# symlink, so re-adding it would write this heredoc straight through into
+# scripts/meshforge-launcher.sh and corrupt the repo file. `ln -sfn` replaces
+# the link itself. TestPrivilegedPycachePrefix pins this.
+ln -sfn /opt/meshforge/scripts/meshforge-launcher.sh /usr/local/bin/meshforge
 
-# TUI access (raspi-config style)
-cat > /usr/local/bin/meshforge-tui << 'EOF'
-#!/bin/bash
-cd /opt/meshforge
-# Keep the PRIVILEGED interpreter's bytecode out of the repo -- root
-# __pycache__ in /opt/meshforge is what the fleet chown sweeps kept curing.
-. /opt/meshforge/scripts/lib/pycache_prefix.sh
-if [[ -f .no-venv ]]; then
-    exec sudo PYTHONPYCACHEPREFIX="$MF_ROOT_PYCACHE" python3 src/launcher_tui/main.py "$@"
-else
-    exec sudo PYTHONPYCACHEPREFIX="$MF_ROOT_PYCACHE" /opt/meshforge/venv/bin/python src/launcher_tui/main.py "$@"
-fi
-EOF
-chmod +x /usr/local/bin/meshforge-tui
+# `meshforge-tui` is a compatibility alias: the launcher's default action is
+# the TUI, so the same target serves both names.
+ln -sfn /opt/meshforge/scripts/meshforge-launcher.sh /usr/local/bin/meshforge-tui
 
 echo -e "${GREEN}  ✓ Commands created: meshforge, meshforge-tui${NC}"
 
