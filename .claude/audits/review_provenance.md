@@ -2353,6 +2353,41 @@ tests (`is_test` guards in MF001/MF009/MF013/MF019), so including that tree is
 a different decision with a real backlog attached, unlike `scripts/`. Recorded
 here so the number does not have to be re-derived.
 
+## QUEUED 2026-09-20 (Opus 5 1M) — the CI-DRIFT arc, and the author reviewed himself
+
+**Upshift-witness fired on the push** (leg 3, advisory): 1169 src+scripts
+lines changed since the last CLOSING review boundary `4bf2c4509`, over the
+800 threshold. Queuing rather than faking a frontier pass on my own work.
+
+**Range**: `cfad33b2..3fb72979` — three commits, all mine, all self-reviewed.
+- `5df1aff0` docs(fleet_roles) — comments only; the value is the near-miss
+  recorded in it (I nearly declared a LIVE watchdog `absent`, which would
+  have dropped it from `honest_status.sh`'s denominator).
+- `d4cffeee` fix(tests) — `_SsSampler`, thread-owned. **This is the one that
+  wants an adversarial eye**: it changes test semantics in a detector class,
+  and a wrong call here makes a real `rns_rpc_wedge` regression invisible
+  rather than loud. Specifically worth attacking: does the foreign-thread
+  branch (benign empty `ss` table) ever mask a defect the old bare list would
+  have surfaced? I argued not — owner exhaustion still raises — but I wrote
+  both the argument and the test that checks it.
+- `3fb72979` ci(pins) — `requirements/ci.txt`. The `<3.10` marker branch is
+  verified only by the manifest-resolve job, never locally; no python3.9 on
+  this box.
+
+**The through-line, three instances in one session**: *a control that
+verifies, or protects, at the one moment it cannot fail.* The #69 readiness
+guard (checked ownership before the wait), the maps redaction denylist (every
+new field defaults exposed), and the cascade patch that READS module-scoped
+and mutates the shared `subprocess` module. A reviewer should ask of each new
+guard: what input would make this control and its subject DISAGREE?
+
+**Self-critique to verify, not take on trust**: I called the CI failure a
+flake before the rerun landed (it reproduced), then said the traceback killed
+my own hypothesis (it supported it — I misread which call raised), and I
+destroyed the green run's log baseline by re-running it. Three wrong calls
+inside one diagnosis that nevertheless reached a verified root cause. Worth
+asking whether the conclusion is right for the right reasons.
+
 ## QUEUED 2026-09-18 (Opus 5 1M) — ADVERSARIAL REVIEW OWED, and NOT by the author
 
 > ✅ **CLOSED 2026-09-18 (Fable 5.1)** — see the completed-review row of this date at the top of the table. Verdict: not a revert; the root cause is one ingress key (`channel_idx`), fixed `3bcc31b0` / MA `8540d7ec`.
