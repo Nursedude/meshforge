@@ -3,7 +3,7 @@
 #
 # Consumers (keep this list current — it is the grep target when this changes):
 #   - scripts/meshforge-launcher.sh   launch_tui + launch_prometheus
-#   - scripts/meshforge-terminal.sh   TUI_CMD (the desktop launcher)
+#   - scripts/meshforge-terminal.sh   delegates to meshforge-launcher.sh `tui` (2026-09-20)
 #   - tests/test_regression_guards.py TestPrivilegedPycachePrefix
 #
 # WHY THIS EXISTS (measured fleet-wide 2026-09-20). The documented primary

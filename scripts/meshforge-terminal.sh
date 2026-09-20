@@ -12,14 +12,18 @@ MESHFORGE_DIR="/opt/meshforge"
 ICON_NAME="org.meshforge.app"
 TITLE="MeshForge"
 
-# Root's bytecode must not land in the repo. Sourced, never copied — see
-# scripts/lib/pycache_prefix.sh for the fleet-wide census that forced this.
-# ⚠️ sudo resets the environment, so this MUST ride as `sudo VAR=... python3`;
-# exporting it out here would not reach the child.
-# shellcheck source=lib/pycache_prefix.sh
-. "$MESHFORGE_DIR/scripts/lib/pycache_prefix.sh"
-
-TUI_CMD="sudo PYTHONPYCACHEPREFIX=$MF_ROOT_PYCACHE python3 $MESHFORGE_DIR/src/launcher_tui/main.py"
+# ONE launch path, not two (2026-09-20). Until now this file built its own
+# privileged command — bare system `python3`, straight at launcher_tui/main.py
+# — while `meshforge` / `meshforge-tui` went through scripts/meshforge-launcher.sh,
+# which picks the venv, sets PYTHONPYCACHEPREFIX and passes `--tui`. Two
+# programs for one icon is the drift class the launcher fix closed for the
+# CLI; the desktop icon was the last copy. Delegate: `tui` is the direct-TUI
+# path (no launcher menu, no NOC service startup — what this icon always did).
+# Keep it as TWO words with no spaces in the path: every emulator branch below
+# hands $TUI_CMD over differently (quoted for -e, word-split for konsole /
+# gnome-terminal) and this shape survives all of them like the old one did.
+# Drilled by scripts/guard_drill.py Layer D (the no-display branch).
+TUI_CMD="$MESHFORGE_DIR/scripts/meshforge-launcher.sh tui"
 
 # Log file for debugging launch issues
 LOG_FILE="/tmp/meshforge-launch.log"
@@ -114,6 +118,11 @@ check_installation() {
 
     if [ ! -f "$MESHFORGE_DIR/src/launcher_tui/main.py" ]; then
         show_error "launcher_tui not found at $MESHFORGE_DIR/src/\n\nInstallation may be corrupted."
+        exit 1
+    fi
+
+    if [ ! -x "$MESHFORGE_DIR/scripts/meshforge-launcher.sh" ]; then
+        show_error "launcher script not found or not executable:\n$MESHFORGE_DIR/scripts/meshforge-launcher.sh\n\nInstallation may be corrupted."
         exit 1
     fi
 }

@@ -182,9 +182,11 @@ LAUNCHER_CASES = [
 FAKE = "#!/bin/bash\necho \"FAKE-EXEC: $*\"\n"
 
 
-def _run_launcher(script, name, argv):
+def _run_launcher(script, name, argv, drop_env=()):
     """Invoke `script` through a symlink called `name`, with fake sudo/env
-    first on PATH. Returns the intercepted argv line (or the raw output)."""
+    first on PATH. Returns the intercepted argv line (or the raw output).
+    `drop_env` removes variables first (the terminal launcher branches on
+    DISPLAY / WAYLAND_DISPLAY)."""
     with tempfile.TemporaryDirectory(prefix="guard_drill_launcher_") as d:
         for tool in ("sudo", "env"):
             p = os.path.join(d, tool)
@@ -194,6 +196,8 @@ def _run_launcher(script, name, argv):
         link = os.path.join(d, name)
         os.symlink(script, link)
         env = dict(os.environ, PATH=d + os.pathsep + os.environ.get("PATH", ""))
+        for k in drop_env:
+            env.pop(k, None)
         proc = subprocess.run([link] + argv, env=env, capture_output=True,
                               text=True, timeout=30)
         out = (proc.stdout + proc.stderr).strip()
@@ -224,6 +228,21 @@ else:
             launcher_failed.append(label)
         print(f"  {label:40s} {'OK    ' if ok else 'WRONG '} -> …{line[-72:]}")
 
+    # The DESKTOP launcher, no-display branch: `exec $TUI_CMD` must reach the
+    # SAME launcher with `tui`. The emulator branches (xterm/lxterminal/...)
+    # hand $TUI_CMD over differently and cannot be exercised headless — the
+    # verification of record for those is the operator clicking the icon once
+    # after a pull (feedback_web_changes_have_no_local_consumer_of_record).
+    terminal = os.path.join(REPO, "scripts", f"{APP}-terminal.sh")
+    if os.path.exists(terminal):
+        line = _run_launcher(terminal, f"{APP}-terminal", [],
+                             drop_env=("DISPLAY", "WAYLAND_DISPLAY"))
+        ok = _check(line, "src/launcher.py --tui")
+        launcher_ran += 1
+        if not ok:
+            launcher_failed.append(f"{APP}-terminal (no display)")
+        print(f"  {f'{APP}-terminal (no display)':40s} {'OK    ' if ok else 'WRONG '} -> …{line[-72:]}")
+
     # Self-test: the drill must FAIL on a copy with the alias line removed.
     with tempfile.TemporaryDirectory(prefix="guard_drill_broken_") as d:
         broken = os.path.join(d, os.path.basename(LAUNCHER))
@@ -247,7 +266,7 @@ else:
                 print(f"  {'self-test':40s} FIRES  (copy without the alias line "
                       f"-> …{line[-40:]})")
 
-print(f"\nguard_drill: launcher drilled {launcher_ran} of {len(LAUNCHER_CASES)} "
+print(f"\nguard_drill: launcher drilled {launcher_ran} of {len(LAUNCHER_CASES) + 1} "
       f"argv case(s); {launcher_ran - len([f for f in launcher_failed if not f.startswith('self-test')])} correct.")
 if launcher_ran == 0:
     print("UNKNOWN: the launcher was not drilled — this proves NOTHING.")

@@ -2435,16 +2435,30 @@ class TestPrivilegedPycachePrefix:
 
     def test_launchers_source_the_shared_constant(self):
         """ONE constant, not a per-file literal (honest_failure_modes #5:
-        independent hardcodes WILL drift)."""
-        missing = []
-        for rel in ('scripts/meshforge-launcher.sh', 'scripts/meshforge-terminal.sh'):
-            path = os.path.join(self.REPO, rel)
-            if not os.path.exists(path):
-                continue
-            with open(path, 'r', encoding='utf-8') as fh:
-                text = fh.read()
-            if 'lib/pycache_prefix.sh' not in text:
-                missing.append(rel)
-        assert missing == [], (
-            "launcher defines the pycache path itself instead of sourcing "
-            "scripts/lib/pycache_prefix.sh: " + ", ".join(missing))
+        independent hardcodes WILL drift). Since 2026-09-20 the desktop
+        launcher no longer launches python at all — it DELEGATES to the
+        launcher script (`tui`), so its contract is the delegation line, not
+        the sourced constant. A terminal.sh that grows its own
+        `sudo ... python` again is the two-programs-for-one-icon drift coming
+        back, and test_every_privileged_python3_sets_pycache_prefix would
+        only see it if it also forgot the prefix."""
+        path = os.path.join(self.REPO, 'scripts/meshforge-launcher.sh')
+        with open(path, 'r', encoding='utf-8') as fh:
+            text = fh.read()
+        assert 'lib/pycache_prefix.sh' in text, (
+            "scripts/meshforge-launcher.sh defines the pycache path itself "
+            "instead of sourcing scripts/lib/pycache_prefix.sh")
+
+        path = os.path.join(self.REPO, 'scripts/meshforge-terminal.sh')
+        with open(path, 'r', encoding='utf-8') as fh:
+            lines = [l.strip() for l in fh.read().splitlines()]
+        want = 'TUI_CMD="$MESHFORGE_DIR/scripts/meshforge-launcher.sh tui"'
+        assert want in lines, (
+            "scripts/meshforge-terminal.sh must delegate to the launcher script, "
+            f"exactly: {want} — it is the desktop icon's ONLY launch line, and "
+            "a second privileged python launch here is the drift the launcher "
+            "fix closed (2026-09-20)")
+        own_launch = [l for l in lines if l.startswith('TUI_CMD=') and l != want]
+        assert own_launch == [], (
+            "scripts/meshforge-terminal.sh builds its own launch command instead of "
+            "delegating: " + "; ".join(own_launch))
