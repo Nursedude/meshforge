@@ -183,12 +183,27 @@ roles:
 
   meshanchor-noc:
     board_tier: pi4_min_4gb
-    repo: meshanchor                  # sister app, MeshCore-primary; no MeshForge stack
-    provisioned_by: meshanchor        # EXTERNAL: the MeshForge provisioner SKIPS this role
-                                      # (host has no /opt/meshforge). Listed here for the
-                                      # complete fleet topology; MeshAnchor self-provisions.
+    repo: meshanchor                  # sister app, MeshCore-primary
+    provisioned_by: meshanchor        # EXTERNAL: the MeshForge provisioner SKIPS this role.
+                                      # Listed here for the complete fleet topology;
+                                      # MeshAnchor self-provisions.
                                       # rnsd legitimately owns the RNS listener on this host;
                                       # meshanchor-daemon joins as a client — no masking here.
+    # ⚠️ NO BOX CARRIES THIS ROLE (measured 2026-09-19). meshanchor-server has no
+    # ~/.config/meshforge/deployment.json, so it declares no role and
+    # fleet_role_stamp.py reads it INERT ("declares no MeshForge role — left
+    # UNKNOWN, still polled"). That is the honest state, not a gap to close from
+    # the manager: the role is authored in the BOX's deployment.json and nowhere
+    # else (see fleet_role_stamp.py's SSOT note).
+    # ⚠️ Two claims that used to sit above were FALSE and nearly caused a bad
+    # edit (2026-09-19): "no MeshForge stack" and "host has no /opt/meshforge".
+    # meshanchor-server carries /opt/meshforge at the current HEAD and runs
+    # meshforge-watchdog enabled+active (NRestarts=0, state file fresh). So the
+    # `services:` map below is NOT a description of that box, and a future
+    # stamper must RE-MEASURE the host before declaring anything here —
+    # especially meshforge-watchdog, which is present and healthy. Declaring it
+    # `absent` would drop a live watchdog out of honest_status.sh's denominator,
+    # which is the exact blindness this catalog exists to prevent.
     services:
       meshtasticd: absent             # radio-less; egresses to a peer meshtasticd
       rnsd: enabled
