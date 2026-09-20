@@ -2282,11 +2282,29 @@ class TestPrivilegedPycachePrefix:
     """
 
     REPO = os.path.dirname(SRC_DIR)
-    # Shell files that may invoke the interpreter with elevated privilege.
+    # Shell files that may invoke the interpreter with elevated privilege OR
+    # install the commands that do.
+    #
+    # ⚠️ This list started as three files and MISSED TWO GENERATORS
+    # (2026-09-20): scripts/install-desktop.sh `cp`-ed the launcher over the
+    # installed command on EVERY update.sh run, and scripts/install_noc.sh
+    # wrote its own privileged heredoc there. Both would have silently
+    # reverted the fix this class exists to protect. A guard with a
+    # hand-listed scope is only as good as the grep that built it — and the
+    # grep that built the first version was truncated by `head`.
     SCANNED = (
         'scripts/meshforge-launcher.sh',
         'scripts/meshforge-terminal.sh',
         'install.sh',
+        'scripts/install-desktop.sh',
+        'scripts/install_noc.sh',
+        'scripts/update.sh',
+    )
+    # Every file that may create /usr/local/bin/meshforge*.
+    INSTALLERS = (
+        'install.sh',
+        'scripts/install-desktop.sh',
+        'scripts/install_noc.sh',
     )
 
     def _privileged_python_lines(self, text):
@@ -2305,6 +2323,10 @@ class TestPrivilegedPycachePrefix:
             # caches bytecode identically. An earlier version of this guard
             # keyed on `python3` and was blind to exactly those two lines —
             # the guard's own instance of the defect it exists to catch.
+            # Advice TEXT is not a launch: `echo "... run: sudo python3 x"`
+            # is documentation. Match only lines that execute.
+            if re.match(r'(?:echo|printf|cat)\b', s) or '"  ' in s.split('sudo')[0]:
+                continue
             if re.search(r'\bsudo\b[^|;]*(?:\bpython3?\b|/bin/python3?\b)', s):
                 out.append((i, s))
         return out
@@ -2354,15 +2376,29 @@ class TestPrivilegedPycachePrefix:
            scripts/meshforge-launcher.sh and corrupt the repo file. That is a
            destructive regression, not a cosmetic one.
         """
-        path = os.path.join(self.REPO, 'install.sh')
-        with open(path, 'r', encoding='utf-8') as fh:
-            lines = fh.read().splitlines()
-        offenders = [
-            f"install.sh:{i}: {l.strip()}"
-            for i, l in enumerate(lines, 1)
-            if not l.strip().startswith('#')
-            and re.search(r'(?:cat|tee|printf|echo)\s[^|]*>\s*/usr/local/bin/meshforge', l)
-        ]
+        offenders = []
+        lines = []
+        for rel in self.INSTALLERS:
+            path = os.path.join(self.REPO, rel)
+            if not os.path.exists(path):
+                continue
+            with open(path, 'r', encoding='utf-8') as fh:
+                flines = fh.read().splitlines()
+            if rel == 'install.sh':
+                lines = flines
+            for i, l in enumerate(flines, 1):
+                t = l.strip()
+                if t.startswith('#'):
+                    continue
+                # `cp`, `cat >`, `tee` and mf_write_stdin all FOLLOW a symlink.
+                # ONLY the two commands converted to symlinks. The other
+                # meshforge-* commands (noc/lora/status/web/map) are still
+                # generated copies — a real but SEPARATE staleness debt,
+                # queued rather than silently widened into this guard.
+                dest = r'/usr/local/bin/meshforge(?:-tui)?(?![-\w])'
+                if re.search(r'(?:cat|tee|mf_write_stdin)\s[^|]*>?\s*' + dest, t) \
+                        or re.search(r'\bcp\b[^|]*\s' + dest, t):
+                    offenders.append(f"{rel}:{i}: {t}")
         assert offenders == [], (
             "install.sh writes /usr/local/bin/meshforge* as a generated copy. "
             "Use `ln -sfn /opt/meshforge/scripts/meshforge-launcher.sh <dest>` "

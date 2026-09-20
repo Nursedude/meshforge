@@ -138,12 +138,16 @@ fi
 
 # Install launcher scripts
 echo "Installing launcher scripts..."
-cp "$PROJECT_DIR/scripts/meshforge-launcher.sh" /usr/local/bin/meshforge
-chmod 755 /usr/local/bin/meshforge
+# SYMLINKS, not copies. This script runs on EVERY update.sh, and a `cp`
+# here is what re-froze the installed command at install time while the
+# repo moved on — it is how the fleet ended up running two different
+# `meshforge` programs (2026-09-20). A symlink cannot go stale.
+# ⚠️ Never go back to `cp`/`cat >`: both FOLLOW a symlink, so they would
+# write straight through into the repo script and corrupt it.
+ln -sfn "$PROJECT_DIR/scripts/meshforge-launcher.sh" /usr/local/bin/meshforge
 
 # Install terminal launcher (sets proper window class for icons)
-cp "$PROJECT_DIR/scripts/meshforge-terminal.sh" /usr/local/bin/meshforge-terminal
-chmod 755 /usr/local/bin/meshforge-terminal
+ln -sfn "$PROJECT_DIR/scripts/meshforge-terminal.sh" /usr/local/bin/meshforge-terminal
 
 
 # Install polkit policy (for pkexec authentication)

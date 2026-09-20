@@ -1940,18 +1940,22 @@ echo -e "  ${GREEN}✓ Daemon type: $DAEMON_TYPE${NC}"
 # ─────────────────────────────────────────────────────────────────
 mf_phase "8/8" "Creating system integration..."
 # Main command
-mf_write_stdin /usr/local/bin/meshforge << 'MESHFORGE_CMD'
-#!/bin/bash
-cd /opt/meshforge
-exec sudo /opt/meshforge/venv/bin/python src/launcher.py "$@"
-MESHFORGE_CMD
-chmod +x /usr/local/bin/meshforge
+# SYMLINK, not a generated copy: this heredoc froze the installed command at
+# install time, and its privileged `venv/bin/python` wrote root-owned
+# __pycache__ into the repo on every run (the cause of the fleet chown
+# sweeps). scripts/meshforge-launcher.sh now owns this logic — venv
+# selection, PYTHONPYCACHEPREFIX and all — and a symlink tracks it.
+# ⚠️ Never restore a heredoc here: `cat >`/`mf_write_stdin` FOLLOW a symlink
+# and would write through into the repo script.
+ln -sfn /opt/meshforge/scripts/meshforge-launcher.sh /usr/local/bin/meshforge
 
 # NOC orchestrator command
 mf_write_stdin /usr/local/bin/meshforge-noc << 'NOC_CMD'
 #!/bin/bash
 cd /opt/meshforge/src
-exec sudo /opt/meshforge/venv/bin/python -m core.orchestrator "$@"
+# Keep root bytecode out of the repo (scripts/lib/pycache_prefix.sh).
+. /opt/meshforge/scripts/lib/pycache_prefix.sh
+exec sudo PYTHONPYCACHEPREFIX="$MF_ROOT_PYCACHE" /opt/meshforge/venv/bin/python -m core.orchestrator "$@"
 NOC_CMD
 chmod +x /usr/local/bin/meshforge-noc
 
