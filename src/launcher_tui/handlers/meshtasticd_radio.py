@@ -6,6 +6,7 @@ MeshtasticdConfigHandler's unified meshtasticd menu.
 """
 
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -46,6 +47,35 @@ class MeshtasticdRadioHandler(BaseHandler):
     # Owner name
     # ------------------------------------------------------------------
 
+    # `meshtastic --info` prints OUR owner on exactly one line —
+    # `Owner: <long> (<short>)` (meshtastic/mesh_interface.py showInfo) —
+    # and then "Nodes in mesh:" followed by EVERY node's user JSON, where each
+    # entry carries its own `"longName": "...",` line.
+    _OWNER_LINE = re.compile(r'^\s*Owner:\s*(?P<long>.*?)\s*\((?P<short>[^()]*)\)\s*$')
+
+    @classmethod
+    def _parse_current_owner(cls, raw):
+        """Return (long_name, short_name) of OUR node from `--info` output.
+
+        ⚠️ Until 2026-09-20 this dialog scanned the WHOLE output for any line
+        containing `longName`, kept the LAST match, and stripped it with
+        `split(':')` + `strip('"')`. The last such line is some OTHER node
+        in the node list, and the strip leaves the trailing fragment — so
+        the dialog offered `GreenPanda",` / `Meshtastic 8d30",` as the
+        "current" name, and one Enter wrote a stranger's name (and, via the
+        matching shortName line, its short name `8D30`) to the radio. That
+        is how the desktop box's radio lost its real name more than once.
+        Read only the Owner line; stop at the node list; absent = blank,
+        never a guess.
+        """
+        for line in (raw or '').splitlines():
+            m = cls._OWNER_LINE.match(line)
+            if m:
+                return m.group('long').strip(), m.group('short').strip()
+            if line.strip().startswith('Nodes in mesh'):
+                break
+        return '', ''
+
     def _set_owner_name(self):
         """Set node owner name (long name and short name)."""
         self.ctx.dialog.infobox("Owner", "Getting current owner info...")
@@ -58,16 +88,9 @@ class MeshtasticdRadioHandler(BaseHandler):
             current_long = ""
             current_short = ""
 
-            if result.success and result.raw:
-                for line in result.raw.split('\n'):
-                    if 'longName' in line or 'long_name' in line:
-                        parts = line.split(':')
-                        if len(parts) > 1:
-                            current_long = parts[1].strip().strip('"')
-                    elif 'shortName' in line or 'short_name' in line:
-                        parts = line.split(':')
-                        if len(parts) > 1:
-                            current_short = parts[1].strip().strip('"')
+            raw = (getattr(result, 'raw', None) or getattr(result, 'raw_output', None) or "")
+            if result.success and raw:
+                current_long, current_short = self._parse_current_owner(raw)
 
             long_name = self.ctx.dialog.inputbox(
                 "Set Long Name",
@@ -91,6 +114,20 @@ class MeshtasticdRadioHandler(BaseHandler):
                 long_name = long_name[:40]
             if short_name:
                 short_name = short_name[:4].upper()
+
+            # A double quote in a node name is not something an operator
+            # means — it is the signature of the old pre-fill bug (`GreenPanda",`).
+            # Refuse at the authoring boundary rather than write it to the
+            # radio (honest_failure_modes #3).
+            bad = [n for n in (long_name, short_name) if n and '"' in n]
+            if bad:
+                self.ctx.dialog.msgbox(
+                    "Error",
+                    "A node name cannot contain a double quote (\").\n\n"
+                    f"Refused: {bad[0]}\n\n"
+                    "This shape is what the old dialog pre-filled from the node "
+                    "list; type the name you mean instead.")
+                return
 
             changes_made = []
 

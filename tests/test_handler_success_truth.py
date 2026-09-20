@@ -235,6 +235,93 @@ class TestSetOwnerNameTruthful:
         assert h.ctx.dialog.last_msgbox_title == "Success"
 
 
+# Realistic `meshtastic --info` text: OUR owner on the `Owner:` line, then the
+# node list where the LAST `longName` line is a stranger. The old parser
+# returned `GreenPanda",` / `GPND",` for this input.
+_INFO_RAW = """Connected to radio
+
+Owner: Kona Base (KONA)
+My info: { "myNodeNum": 1644220965, "rebootCount": 3 }
+Metadata: { "firmwareVersion": "2.7.9.abc" }
+
+Nodes in mesh: {
+  "!6201ce25": {
+    "num": 1644220965,
+    "user": {
+      "id": "!6201ce25",
+      "longName": "Kona Base",
+      "shortName": "KONA",
+      "hwModel": "PORTDUINO"
+    }
+  },
+  "!699aeb50": {
+    "num": 1771891536,
+    "user": {
+      "id": "!699aeb50",
+      "longName": "GreenPanda",
+      "shortName": "GPND",
+      "hwModel": "HELTEC_V3"
+    }
+  }
+}
+"""
+
+
+class TestSetOwnerNamePrefillIsOurOwner:
+    """The dialog's pre-fill must be OUR owner (the `Owner:` line), never a
+    name scraped from the node list. Root cause of the desktop box's radio being
+    renamed `Meshtastic 8d30",` / `GreenPanda",` (2026-09-20): the old
+    parser kept the LAST `longName` line of `--info` — a stranger — and its
+    `split(':')` + `strip('"')` left the `",` fragment. Accepting the
+    pre-filled default then WROTE that name to the radio."""
+
+    def _run(self, raw, inputs):
+        h = _make_radio_handler()
+        h.ctx.dialog._inputbox_returns = list(inputs)   # [] = accept the defaults
+        calls = {}
+        with patch.object(_mesh_cmd_module, 'get_node_info',
+                          return_value=CommandResult(success=True, message="", raw_output=raw)), \
+             patch.object(_mesh_cmd_module, 'set_owner',
+                          side_effect=lambda n: (calls.__setitem__('long', n), CommandResult.ok("OK"))[1]), \
+             patch.object(_mesh_cmd_module, 'set_owner_short',
+                          side_effect=lambda n: (calls.__setitem__('short', n), CommandResult.ok("OK"))[1]), \
+             patch('utils.device_config_store.save_device_settings', return_value=True):
+            h._set_owner_name()
+        inits = [kw['init'] for name, args, kw in h.ctx.dialog.calls if name == 'inputbox']
+        return h, inits, calls
+
+    def test_prefill_is_the_owner_line_not_the_last_node(self):
+        h, inits, calls = self._run(_INFO_RAW, inputs=[])
+        assert inits == ["Kona Base", "KONA"], inits
+        # Accepting the defaults writes OUR name back, unchanged.
+        assert calls == {'long': "Kona Base", 'short': "KONA"}, calls
+
+    def test_no_stranger_and_no_fragment_ever_reaches_the_radio(self):
+        h, inits, calls = self._run(_INFO_RAW, inputs=[])
+        for v in list(inits) + list(calls.values()):
+            assert 'GreenPanda' not in v and '"' not in v and ',' not in v, v
+
+    def test_absent_owner_line_prefills_blank_never_a_guess(self):
+        raw = _INFO_RAW.replace("Owner: Kona Base (KONA)\n", "")
+        h, inits, calls = self._run(raw, inputs=[])
+        assert inits == ["", ""], inits
+        assert calls == {}, "nothing should be written when the operator accepts blank defaults"
+
+    def test_a_double_quote_in_the_name_is_refused(self):
+        h, inits, calls = self._run(_INFO_RAW, inputs=['GreenPanda",', 'GPND'])
+        assert calls == {}, calls
+        assert h.ctx.dialog.last_msgbox_title == "Error"
+        assert "double quote" in (h.ctx.dialog.last_msgbox_text or "")
+
+    def test_parse_current_owner_direct(self):
+        from handlers.meshtasticd_radio import MeshtasticdRadioHandler as H
+        assert H._parse_current_owner(_INFO_RAW) == ("Kona Base", "KONA")
+        assert H._parse_current_owner("Owner: Meshtastic 8d30 (8D30)\n") == ("Meshtastic 8d30", "8D30")
+        assert H._parse_current_owner("") == ("", "")
+        # The node list alone must yield nothing, however many longName lines it has.
+        assert H._parse_current_owner(_INFO_RAW.split("Nodes in mesh", 1)[1]) == ("", "")
+
+
 class TestActivateHardwareConfigTruthful:
     """``_activate_hardware_config`` calls activate_hardware_config (returns
     bool). Pre-fix: unconditional 'Success'. Post-fix: 'Error' when the
