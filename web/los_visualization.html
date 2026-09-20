@@ -516,7 +516,35 @@
                       + `?alt1=${params.heightA}&alt2=${params.heightB}&freq_mhz=${params.freq}`;
             const res = await fetch(url);
             if (!res.ok) {
-                throw new Error(`terrain service returned HTTP ${res.status}`);
+                // Say what the server actually said. A 403 here is the terrain
+                // endpoint's LAN gate (_reject_if_untrusted) refusing this
+                // browser's source IP -- the terrain engine never ran -- so
+                // reporting it as "terrain service returned HTTP 403" sent a
+                // reader hunting a healthy subsystem (2026-09-20, measured: the
+                // same query answered 200 with terrain_complete on loopback).
+                // The refusal carries its own reason; surface it, and name the
+                // fix here rather than leaving the reader to go find it.
+                let detail = '';
+                try {
+                    const body = await res.json();
+                    detail = body.detail || body.error || '';
+                } catch (err) {
+                    detail = '';
+                }
+                const because = detail ? ` \u2014 ${detail}` : '';
+                if (res.status === 403) {
+                    // Name THIS map's host and port, not a placeholder: the
+                    // remedy should be copy-pasteable from the page that is
+                    // refusing you, or the reader goes hunting for it anyway.
+                    const port = location.port || '5000';
+                    throw new Error(
+                        `not authorised for terrain data (HTTP 403)${because}.`
+                        + ' The terrain engine did not run; this browser is not on'
+                        + ' a network this map trusts. Open the map from its own'
+                        + ' LAN, or tunnel it to loopback:'
+                        + ` ssh -L ${port}:127.0.0.1:${port} ${location.hostname}`);
+                }
+                throw new Error(`terrain service returned HTTP ${res.status}${because}`);
             }
             const data = await res.json();
             if (data.error) {

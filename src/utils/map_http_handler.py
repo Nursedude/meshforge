@@ -1189,11 +1189,22 @@ class MapRequestHandler(
         The HTTP server runs in a background thread. Writing to
         stdout/stderr corrupts the whiptail/dialog TUI display,
         but errors still need to be visible in log files for debugging.
+
+        The client address leads the line (2026-09-20). ``_reject_if_untrusted``
+        refuses the terrain endpoints BY source IP, and this logger used to drop
+        that address entirely -- so every 403 read byte-identically whether it
+        came from the operator on the wrong subnet or a scanner off the WAN. A
+        gate whose whole job is discriminating by source cannot log a refusal
+        whose subject is unrecorded (honest_failure_modes #9).
         """
         # Route through Python logger (goes to log file, not TUI)
+        try:
+            client = self.client_address[0]
+        except (IndexError, AttributeError, TypeError):
+            client = "-"
         message = format % args if args else format
         if '40' in str(args) or '50' in str(args):
             # 4xx/5xx responses logged as warnings for debugging
-            logger.warning("MapHTTP: %s", message)
+            logger.warning("MapHTTP: %s %s", client, message)
         else:
-            logger.debug("MapHTTP: %s", message)
+            logger.debug("MapHTTP: %s %s", client, message)
