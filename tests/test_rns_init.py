@@ -198,9 +198,19 @@ class TestOpenReticulum:
             assert ri.open_reticulum("/tmp/x", probe=False) is sentinel
             probe.assert_not_called()
 
-    def test_no_instance_name_falls_back_to_configured(self):
-        """configdir without instance_name -> fall back to box's configured one
-        so the preflight/probe still have a target."""
+    def test_directive_less_configdir_aims_at_default_not_the_box(self):
+        """A configdir that declares no instance_name must aim the preflight at
+        `@rns/default` — the socket RNS will ACTUALLY bind for that configdir —
+        never at the box's own instance name.
+
+        SUPERSEDES `test_no_instance_name_falls_back_to_configured`, which
+        asserted the opposite and pinned the defect: it encoded "fall back to
+        the box so the probe has a target", but a target the process will never
+        bind is not a target, it is the 2026-08-05 "probing a name this box
+        doesn't serve" class. Verified on a named-instance box 2026-09-20 by
+        planting a foreign owner on `@rns/default`: the old aim passed its
+        preflight while the correct aim raised, at the same instant.
+        """
         sentinel = object()
         fake_paths = MagicMock()
         fake_paths.get_configured_instance_name.return_value = "boxinst"
@@ -220,6 +230,27 @@ class TestOpenReticulum:
              patch.object(ri, "_construct_reticulum_with_watchdog",
                           return_value=sentinel):
             assert ri.open_reticulum("/tmp/x") is sentinel
+            assert seen.get("checked") == ri.RNS_DEFAULT_INSTANCE_NAME
+            assert seen.get("checked") != "boxinst"
+
+    def test_no_configdir_still_asks_the_box(self):
+        """configdir=None is the one case where the box's own name IS correct —
+        RNS resolves its own default location, which is the box's config."""
+        sentinel = object()
+        fake_paths = MagicMock()
+        fake_paths.get_configured_instance_name.return_value = "boxinst"
+        seen = {}
+
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_existing_instance", return_value=None), \
+             patch.dict(sys.modules, {"utils.paths": MagicMock(ReticulumPaths=fake_paths)}), \
+             patch.object(ri, "check_rns_listener_owner",
+                          side_effect=lambda n: seen.__setitem__("checked", n)), \
+             patch.object(ri, "_shared_instance_listener_present", return_value=True), \
+             patch.object(ri, "_probe_shared_instance_connect", return_value=True), \
+             patch.object(ri, "_construct_reticulum_with_watchdog",
+                          return_value=sentinel):
+            assert ri.open_reticulum(None) is sentinel
             assert seen.get("checked") == "boxinst"
 
 
@@ -242,6 +273,7 @@ class TestBootRaceGuard:
              patch.object(ri, "check_rns_listener_owner", return_value=None), \
              patch.object(ri, "_shared_instance_listener_present", return_value=False), \
              patch.object(ri, "_rnsd_unit_enabled", return_value=True), \
+             patch.object(ri, "_rnsd_serves_instance", return_value=True), \
              patch.object(ri, "_wait_for_rnsd_listener", return_value=True) as wait, \
              patch.object(ri, "_probe_shared_instance_connect", return_value=True), \
              patch.object(ri, "_construct_reticulum_with_watchdog",
@@ -260,10 +292,57 @@ class TestBootRaceGuard:
              patch.object(ri, "check_rns_listener_owner", return_value=None), \
              patch.object(ri, "_shared_instance_listener_present", return_value=False), \
              patch.object(ri, "_rnsd_unit_enabled", return_value=True), \
-             patch.object(ri, "_wait_for_rnsd_listener", return_value=False), \
+             patch.object(ri, "_rnsd_serves_instance", return_value=True), \
+             patch.object(ri, "_wait_for_rnsd_listener", return_value=False) as wait, \
              patch.object(ri, "_construct_reticulum_with_watchdog") as construct:
             assert ri.open_reticulum("/tmp/x", require_listener=False) is None
             construct.assert_not_called()
+            # Without this the test passes for the WRONG REASON: the
+            # 2026-09-20 mismatch gate also returns None, and would do
+            # so BEFORE the wait is ever consulted. Assert the path.
+            wait.assert_called_once_with("inst")
+
+    def test_mismatched_instance_degrades_without_waiting(self):
+        """rnsd is ENABLED but serves a DIFFERENT instance -> degrade LOUDLY
+        and IMMEDIATELY; never spend the 30s boot-race budget on a socket
+        nothing will ever claim.
+
+        Measured 2026-09-20 on a named-instance box: waiting for @rns/default
+        while rnsd served @rns/<site> rns burned the whole timeout and then
+        emitted a message blaming rnsd's health or a squatter — both false.
+        `_rnsd_unit_enabled()` answers "is rnsd the designated host HERE",
+        which is not "is rnsd the designated host OF THIS NAME".
+        """
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_existing_instance", return_value=None), \
+             patch.object(ri, "_read_instance_name_from_config", return_value="inst"), \
+             patch.object(ri, "check_rns_listener_owner", return_value=None), \
+             patch.object(ri, "_shared_instance_listener_present", return_value=False), \
+             patch.object(ri, "_rnsd_unit_enabled", return_value=True), \
+             patch.object(ri, "_rnsd_serves_instance", return_value=False), \
+             patch.object(ri, "_wait_for_rnsd_listener") as wait, \
+             patch.object(ri, "_construct_reticulum_with_watchdog") as construct:
+            assert ri.open_reticulum("/tmp/x") is None
+            wait.assert_not_called()
+            construct.assert_not_called()
+
+    def test_mismatch_gate_does_not_fire_when_listener_is_present(self):
+        """CONTROL: the gate is reached only on the absent-listener path. A
+        healthy shared instance must still be joined even if the name check
+        would disagree — otherwise the gate could refuse a working setup."""
+        sentinel = object()
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_existing_instance", return_value=None), \
+             patch.object(ri, "_read_instance_name_from_config", return_value="inst"), \
+             patch.object(ri, "check_rns_listener_owner", return_value=None), \
+             patch.object(ri, "_shared_instance_listener_present", return_value=True), \
+             patch.object(ri, "_rnsd_serves_instance", return_value=False) as serves, \
+             patch.object(ri, "_probe_shared_instance_connect", return_value=True), \
+             patch.object(ri, "_construct_reticulum_with_watchdog",
+                          return_value=sentinel):
+            assert ri.open_reticulum("/tmp/x") is sentinel
+            serves.assert_not_called()
+
 
     def test_wait_helper_returns_true_when_listener_appears(self):
         present = iter([False, False, True])
@@ -355,6 +434,7 @@ class TestBootRaceGuard:
              patch.object(ri, "_shared_instance_listener_present",
                           return_value=False), \
              patch.object(ri, "_rnsd_unit_enabled", return_value=True), \
+             patch.object(ri, "_rnsd_serves_instance", return_value=True), \
              patch.object(ri, "_wait_for_rnsd_listener",
                           return_value=False) as wait, \
              patch.object(ri, "_construct_reticulum_with_watchdog") as construct:
@@ -366,6 +446,76 @@ class TestBootRaceGuard:
 
 # --------------------------------------------- _guard_instance_name
 
+
+class TestInitWithWatchdogMismatchGate:
+    """The sibling call site. `init_reticulum_with_watchdog` carries the same
+    boot-race wait as `open_reticulum`, so it carries the same 2026-09-20
+    mismatch gate — fixed in the SAME change, because curing only the branch
+    an incident came through is the 2026-08-09 partial-fix class."""
+
+    def _guards(self, serves):
+        from utils import tx_guard
+        return [
+            patch.object(ri, "_HAS_RNS", True),
+            patch.object(ri, "_read_instance_name_from_config", return_value="inst"),
+            patch.object(ri, "check_rns_listener_owner", return_value=None),
+            patch.object(ri, "_shared_instance_listener_present", return_value=False),
+            patch.object(ri, "_rnsd_unit_enabled", return_value=True),
+            patch.object(ri, "_rnsd_serves_instance", return_value=serves),
+        ]
+
+    def test_mismatch_raises_immediately_without_waiting(self):
+        with patch.object(ri, "_wait_for_rnsd_listener") as wait, \
+             patch.object(ri, "_construct_reticulum_with_watchdog") as construct:
+            ctxs = self._guards(serves=False)
+            for c in ctxs:
+                c.start()
+            try:
+                with pytest.raises(RuntimeError, match="config mismatch"):
+                    ri.init_reticulum_with_watchdog("/tmp/x")
+            finally:
+                for c in ctxs:
+                    c.stop()
+            wait.assert_not_called()
+            construct.assert_not_called()
+
+    def test_match_still_waits_then_raises_on_timeout(self):
+        """CONTROL: a genuine boot race must behave exactly as before — the
+        wait IS consulted, and the #69 message (not the mismatch one) is what
+        surfaces."""
+        with patch.object(ri, "_wait_for_rnsd_listener", return_value=False) as wait, \
+             patch.object(ri, "_construct_reticulum_with_watchdog") as construct:
+            ctxs = self._guards(serves=True)
+            for c in ctxs:
+                c.start()
+            try:
+                with pytest.raises(RuntimeError, match="Issue #69 boot race"):
+                    ri.init_reticulum_with_watchdog("/tmp/x")
+            finally:
+                for c in ctxs:
+                    c.stop()
+            wait.assert_called_once_with("inst")
+            construct.assert_not_called()
+
+
+class TestRnsdServesInstance:
+    """`_rnsd_serves_instance` — the predicate the boot-race wait now gates on."""
+
+    def test_true_when_names_match(self):
+        with patch.object(ri, "_guard_instance_name", return_value="site rns"):
+            assert ri._rnsd_serves_instance("site rns") is True
+
+    def test_false_when_names_differ(self):
+        with patch.object(ri, "_guard_instance_name", return_value="site rns"):
+            assert ri._rnsd_serves_instance("default") is False
+
+    def test_unknown_box_name_is_not_a_mismatch(self):
+        """honest_failure_modes #1: a failed observation must not be rendered
+        as a negative finding. Unresolvable box name -> behave exactly as
+        before the gate existed (wait), never invent a mismatch."""
+        for unresolved in (None, ""):
+            with patch.object(ri, "_guard_instance_name", return_value=unresolved):
+                assert ri._rnsd_serves_instance("anything") is True
 
 class TestGuardInstanceNameAiming:
     """#69: the guard must aim at the socket THIS process will bind.

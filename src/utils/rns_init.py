@@ -435,6 +435,36 @@ def _rnsd_unit_enabled() -> bool:
         return False
 
 
+def _rnsd_serves_instance(instance_name: str) -> bool:
+    """Could this box's rnsd be the designated host of ``@rns/<instance_name>``?
+
+    ``_rnsd_unit_enabled()`` answers "is rnsd the designated host on this box",
+    which is NOT the same question as "is rnsd the designated host OF THIS
+    NAME". The #69 boot-race wait is only meaningful when both are true: rnsd
+    binds exactly one instance name, so waiting 30s for a name it does not
+    serve is guaranteed to time out.
+
+    ⚠️ Found 2026-09-20 by building the race rather than reasoning about it.
+    On this fleet's named-instance boxes (`instance_name = <site> rns`) a
+    caller resolving ``default`` made ``_wait_for_rnsd_listener`` burn its
+    full budget and then emit a message blaming rnsd's health or a squatter —
+    both false; the real cause is that nobody serves that name. That is the
+    2026-08-05 "probing a name this box doesn't serve" defect, and it only
+    appears once the ``open_reticulum`` aim is corrected, so the fix for one
+    ships with the fix for the other or it trades a silent bug for a slow,
+    misleading one.
+
+    UNKNOWN is not MISMATCH: when the box's own name cannot be resolved we
+    cannot prove a mismatch, so return True and let the wait behave exactly as
+    it did before (honest_failure_modes #1 — a failed observation must not be
+    rendered as a negative finding).
+    """
+    box_name = _guard_instance_name(None)
+    if not box_name:
+        return True
+    return box_name == instance_name
+
+
 def _listener_owner_acceptable(instance_name: str) -> bool:
     """Is ``@rns/<instance_name>`` present AND held by an acceptable owner?
 
@@ -608,14 +638,31 @@ def init_reticulum_with_watchdog(
         if (
             not _shared_instance_listener_present(instance_name)
             and _rnsd_unit_enabled()
-            and not _wait_for_rnsd_listener(instance_name)
         ):
-            raise RuntimeError(
-                f"rnsd.service is enabled but has not claimed "
-                f"@rns/{instance_name} — refusing to boot-claim the shared "
-                f"instance (Issue #69 boot race). Check `systemctl status "
-                f"rnsd`, then restart this service."
-            )
+            # Same 2026-09-20 mismatch gate as open_reticulum's. Fixed here in
+            # the SAME change rather than left for later: one mechanism, two
+            # call sites, and a cure applied to only the branch the incident
+            # came through is the 2026-08-09 partial-fix class
+            # (honest_failure_modes #5 — when a mechanism is fixed, grep for
+            # its copies). This path RAISES by contract, so the win is a
+            # correct, immediate message instead of a misleading one 30s late.
+            if not _rnsd_serves_instance(instance_name):
+                raise RuntimeError(
+                    f"configdir {configdir} resolves to @rns/{instance_name}, "
+                    f"but this box's rnsd serves "
+                    f"@rns/{_guard_instance_name(None)} — nothing will ever "
+                    f"claim @rns/{instance_name}. Declare "
+                    f"`instance_name = {_guard_instance_name(None)}` in "
+                    f"{configdir}/config (rnsd is healthy; this is a config "
+                    f"mismatch, not a boot race)."
+                )
+            if not _wait_for_rnsd_listener(instance_name):
+                raise RuntimeError(
+                    f"rnsd.service is enabled but has not claimed "
+                    f"@rns/{instance_name} — refusing to boot-claim the shared "
+                    f"instance (Issue #69 boot race). Check `systemctl status "
+                    f"rnsd`, then restart this service."
+                )
     return _construct_reticulum_with_watchdog(
         configdir, loglevel=loglevel, timeout_s=timeout_s,
     )
@@ -707,31 +754,23 @@ def open_reticulum(
         if existing is not None:
             return existing
 
-        instance_name = (
-            _read_instance_name_from_config(configdir) if configdir else None
-        )
-        if not instance_name:
-            # Fall back to the box's configured instance so the preflight/
-            # probe still have a target even when configdir is
-            # None/unparseable.
-            #
-            # ⚠️ KNOWN MIS-AIM, deliberately NOT changed here (2026-09-19,
-            # found while root-causing #69). When a caller PASSES a configdir
-            # that declares no `instance_name`, RNS binds `@rns/default` for
-            # THAT configdir — not the box's name. On a box whose rnsd runs a
-            # named instance this points the preflight at a socket
-            # the caller will never bind, so a tmpdir caller
-            # (`validate_rns_to_mesh`) can construct a SECOND, interface-less
-            # shared instance silently. `_guard_instance_name()` is the correct
-            # resolver and `init_reticulum_with_watchdog` already uses it;
-            # switching this call site flips those callers from a silent split
-            # instance to a loud degrade, which is right but needs field
-            # verification on a named-instance box first. Queued, not forgotten.
-            try:
-                from utils.paths import ReticulumPaths
-                instance_name = ReticulumPaths.get_configured_instance_name()
-            except Exception:
-                instance_name = None
+        # #69 aim. Resolve the socket this process will ACTUALLY bind, not
+        # merely the one a config happens to NAME. A configdir that declares
+        # no `instance_name` still makes RNS bind `@rns/default` (its own
+        # template ships `instance_name = default`, RNS/Reticulum.py), so
+        # reading only the directive and falling back to the BOX's name aimed
+        # the preflight at a socket this process would never bind.
+        #
+        # WAS a known mis-aim, deliberately deferred 2026-09-19 pending field
+        # verification; verified and fixed 2026-09-20 by building the race on
+        # a named-instance box (`instance_name = <site> rns`, rnsd owning that
+        # socket, `@rns/default` free). With a foreign owner planted on
+        # `@rns/default`, the old aim PASSED its preflight while the correct
+        # aim RAISED, at the same instant — i.e. the guard was inspecting a
+        # healthy socket belonging to someone else. No shipped caller reached
+        # this branch (every one writes an explicit directive), so this is a
+        # latent-defect fix, not an incident fix.
+        instance_name = _guard_instance_name(configdir)
 
         if instance_name:
             # (3) fail-LOUD on a foreign listener owner.
@@ -742,6 +781,25 @@ def open_reticulum(
                 listener_present = _shared_instance_listener_present(
                     instance_name)
                 if not listener_present and _rnsd_unit_enabled():
+                    if not _rnsd_serves_instance(instance_name):
+                        # rnsd is enabled but hosts a DIFFERENT instance, so
+                        # `@rns/<instance_name>` will never appear and the
+                        # boot-race wait below would burn its full budget and
+                        # then blame rnsd's health or a squatter. Degrade
+                        # LOUDLY and immediately, naming the actual cure.
+                        logger.error(
+                            "rns_init: configdir %s resolves to @rns/%s, but "
+                            "this box's rnsd serves @rns/%s — nothing will "
+                            "ever claim @rns/%s, so joining the shared "
+                            "instance is impossible and constructing here "
+                            "would create a SECOND, interface-less instance. "
+                            "Degraded (no RNS). Fix: declare "
+                            "`instance_name = %s` in %s/config.",
+                            configdir, instance_name,
+                            _guard_instance_name(None), instance_name,
+                            _guard_instance_name(None), configdir,
+                        )
+                        return None
                     # Issue #69 boot race: rnsd is the designated host but
                     # hasn't claimed yet (it's probably still starting). Wait
                     # instead of boot-claiming the instance out from under it.
