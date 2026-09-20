@@ -26,7 +26,11 @@ mf_python() {
 # launcher.py does profile detection, the startup health check and the setup
 # wizard, then `os.execv`s into launcher_tui/main.py (src/launcher.py:288)
 # with sys.executable — so the TUI still appears and the environment,
-# PYTHONPYCACHEPREFIX included, is inherited across the exec.
+# PYTHONPYCACHEPREFIX included, is inherited across the exec (VERIFIED live
+# 2026-09-20: the running main.py's /proc environ carried the prefix).
+# ⚠️ launcher.py's DEFAULT is its interface menu plus NOC service startup;
+# it goes straight to the TUI only with `--tui` or a saved auto_launch
+# preference. `meshforge tui` / `meshforge-tui` pass `--tui` (see below).
 #
 # Unifying on this shape 2026-09-20: /usr/local/bin/meshforge had drifted into
 # TWO different programs across the fleet (6 boxes on the installer's
@@ -104,8 +108,10 @@ show_help() {
     echo "Usage: meshforge [command] [options]"
     echo ""
     echo "Commands:"
-    echo "  (none)         Launch TUI menu (default)"
-    echo "  tui            Same as default"
+    echo "  (none)         Launch the NOC launcher (menu, or auto-launch the TUI"
+    echo "                 if you saved that preference); starts NOC services"
+    echo "  tui            Launch the TUI directly — skips the launcher menu AND"
+    echo "                 NOC service startup (same as the meshforge-tui command)"
     echo "  maps [file]    Generate coverage map (default: coverage_map.html)"
     echo "  prometheus [p] Start Prometheus metrics server (default port: 9090)"
     echo "  help           Show this help message"
@@ -119,11 +125,21 @@ show_help() {
     echo "  meshforge prometheus 8080  # Start metrics on port 8080"
 }
 
+# `meshforge-tui` is a symlink to this script (install.sh). Until 2026-09-20
+# it was its own wrapper that went STRAIGHT to launcher_tui/main.py; the
+# symlink made it run launcher.py's interface MENU and NOC service startup
+# instead — the two things the alias existed to skip (caught by the
+# adversarial review of cfad33b2..e25ee21d). `--tui` is launcher.py's own
+# flag for "the TUI, now, no services", so the alias means `tui`.
+case "$(basename "$0")" in
+    meshforge-tui) set -- tui "$@" ;;
+esac
+
 # Determine which interface to launch
 case "$1" in
     tui)
         shift
-        launch_tui "$@"
+        launch_tui --tui "$@"
         ;;
     maps|map)
         shift

@@ -232,8 +232,9 @@ echo -e "${CYAN}[7/7] Creating system commands...${NC}"
 # the link itself. TestPrivilegedPycachePrefix pins this.
 ln -sfn /opt/meshforge/scripts/meshforge-launcher.sh /usr/local/bin/meshforge
 
-# `meshforge-tui` is a compatibility alias: the launcher's default action is
-# the TUI, so the same target serves both names.
+# `meshforge-tui` is the DIRECT-TUI alias. The script dispatches on its own
+# basename: invoked as meshforge-tui it passes launcher.py `--tui` (no menu,
+# no NOC service startup), so one target serves both names correctly.
 ln -sfn /opt/meshforge/scripts/meshforge-launcher.sh /usr/local/bin/meshforge-tui
 
 echo -e "${GREEN}  ✓ Commands created: meshforge, meshforge-tui${NC}"

@@ -278,14 +278,24 @@ def print_menu(env, recommended):
     print()
 
 
-def launch_interface(choice):
-    """Launch the selected interface"""
+def launch_interface(choice, extra_args=None):
+    """Launch the selected interface.
+
+    ``extra_args`` are the argv items this launcher did not recognise
+    (``parse_known_args``). They belong to the TUI — ``--no-startup-checks``
+    is documented in docs/USAGE.md as ``meshforge-launcher.sh tui
+    --no-startup-checks`` — and until 2026-09-20 the exec below dropped
+    them silently, so the documented flag never reached its consumer
+    (caught by the adversarial review of cfad33b2..e25ee21d).
+    """
     src_dir = Path(__file__).parent
+    extra_args = list(extra_args or [])
 
     if choice == "1":
         # Launcher TUI (raspi-config style)
         print(f"\n{Colors.GREEN}Launching Terminal UI...{Colors.NC}\n")
-        os.execv(sys.executable, [sys.executable, str(src_dir / 'launcher_tui' / 'main.py')])
+        os.execv(sys.executable, [sys.executable, str(src_dir / 'launcher_tui' / 'main.py')]
+                 + extra_args)
 
     elif choice == "2":
         # Diagnostics
@@ -585,7 +595,7 @@ def main():
 
     # Direct interface flag (skip menu)
     if args.tui:
-        launch_interface('1')
+        launch_interface('1', extra_args)
 
     # Load deployment profile (--profile <name> or auto-detect)
     profile = None
@@ -618,7 +628,7 @@ def main():
         print(f"{Colors.DIM}(Run with --wizard to change){Colors.NC}")
         import time
         time.sleep(1)
-        launch_interface('1')
+        launch_interface('1', extra_args)
 
     # Check for --wizard flag
     if args.wizard:
@@ -659,7 +669,7 @@ def main():
             except (KeyboardInterrupt, EOFError):
                 prefs['auto_launch'] = False
             save_preferences(prefs)
-            launch_interface('1')
+            launch_interface('1', extra_args)
 
         elif choice in ['2', '3', '4', '5']:
             launch_interface(choice)
