@@ -46,7 +46,7 @@ reported as unobservable, never as healthy; and the status gate refuses to
 report green without quoting the check that produced it.
 
 ```bash
-sudo python3 src/launcher_tui/main.py
+scripts/meshforge-launcher.sh
 ```
 
 **Built for:** HAM operators, emergency comms teams, off-grid builders, and mesh
@@ -112,7 +112,7 @@ missing venv, permission errors), one-click repair, and start/stop/logs/health.
 git clone https://github.com/Nursedude/meshforge.git
 cd meshforge
 sudo bash scripts/install_noc.sh      # guided install
-sudo python3 src/launcher_tui/main.py # the NOC
+scripts/meshforge-launcher.sh   # the NOC
 ```
 
 Runs on **Pi 3B, Pi 4, or Pi 5** (64-bit). You don't need a Pi 4 to start — a

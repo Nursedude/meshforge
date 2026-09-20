@@ -80,7 +80,10 @@ MeshForge is a **Network Operations Center (NOC)** bridging Meshtastic and Retic
 
 ```bash
 # Launch
-sudo python3 src/launcher_tui/main.py   # Primary interface (TUI)
+scripts/meshforge-launcher.sh           # Primary interface (TUI) — use THIS, not
+#   a bare `sudo python3 src/launcher_tui/main.py`: the launcher sets
+#   PYTHONPYCACHEPREFIX so root's bytecode stops landing in the repo
+#   (scripts/lib/pycache_prefix.sh — that habit is what the chown sweeps kept curing).
 python3 src/standalone.py               # Zero-dependency RF tools
 # GTK4 desktop app REMOVED — the TUI is the only interface.
 # ⚠️ That does NOT mean "no desktop integration". org.meshforge.app.desktop +

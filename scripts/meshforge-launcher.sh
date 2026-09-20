@@ -4,14 +4,19 @@
 
 MESHFORGE_DIR="/opt/meshforge"
 
+# Root's bytecode must not land in the repo — see the file for the fleet-wide
+# census that forced this. Sourced, never copied (scripts/lib convention).
+# shellcheck source=lib/pycache_prefix.sh
+. "$MESHFORGE_DIR/scripts/lib/pycache_prefix.sh"
+
 # Function to launch TUI with sudo
 launch_tui() {
     local script="$MESHFORGE_DIR/src/launcher_tui/main.py"
 
     if [ "$EUID" -eq 0 ]; then
-        exec python3 "$script" "$@"
+        exec env PYTHONPYCACHEPREFIX="$MF_ROOT_PYCACHE" python3 "$script" "$@"
     else
-        exec sudo python3 "$script" "$@"
+        exec sudo PYTHONPYCACHEPREFIX="$MF_ROOT_PYCACHE" python3 "$script" "$@"
     fi
 }
 
@@ -35,7 +40,7 @@ launch_prometheus() {
     cd "$MESHFORGE_DIR"
 
     if [ "$EUID" -eq 0 ]; then
-        exec python3 -c "
+        exec env PYTHONPYCACHEPREFIX="$MF_ROOT_PYCACHE" python3 -c "
 from src.utils.metrics_export import start_metrics_server
 import signal
 import sys
@@ -50,7 +55,7 @@ signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
 signal.pause()
 " "$port"
     else
-        exec sudo python3 -c "
+        exec sudo PYTHONPYCACHEPREFIX="$MF_ROOT_PYCACHE" python3 -c "
 from src.utils.metrics_export import start_metrics_server
 import signal
 import sys

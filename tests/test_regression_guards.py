@@ -2251,3 +2251,104 @@ class TestOnePythonEnvUniverse:
             "python env-root globs must come from watchdog_probe_core."
             "PYTHON_ENV_SITE_GLOBS (via env_site_globs()), never be re-listed:\n  "
             + "\n  ".join(offenders))
+
+
+class TestPrivilegedPycachePrefix:
+    """Every PRIVILEGED python3 launch must carry PYTHONPYCACHEPREFIX.
+
+    WHY (measured fleet-wide 2026-09-20). Python caches bytecode for each
+    module it IMPORTS next to the source, so `sudo python3
+    src/launcher_tui/main.py` — the documented primary launch — left
+    root-owned `__pycache__` inside the repo on every run. SEVEN of the ten
+    fleet boxes were affected, the worst two carrying 4,059 and 1,910
+    root-owned files; three also carried root-owned VENVS while their units
+    declare a non-root `User=`, which fails any dependency install. The tell was WHERE the files were —
+    `src/launcher_tui/handlers/__pycache__` — and those dirs were then
+    unwritable by wh6gxz, so the *unprivileged* TUI silently stopped caching
+    bytecode at all.
+
+    It had been "cured" by repeated fleet-wide `chown -R` sweeps. It kept
+    coming back because it regenerates on documented, everyday use. A guard
+    is the fix; a sweep is a mop.
+
+    ⚠️ This guard exists because the condition is INVISIBLE in a green
+    suite and on a freshly-chowned fleet — nothing else fails when a
+    launcher loses the prefix, until a Pi has thousands of root-owned files
+    again weeks later. `scripts/guard_drill.py` shape: plant a bare
+    `sudo python3 ... main.py` in any launcher and this must go red.
+
+    Unprivileged launches are deliberately NOT required to set it: they
+    write wh6gxz-owned cache in-repo, which is correct and fast.
+    """
+
+    REPO = os.path.dirname(SRC_DIR)
+    # Shell files that may invoke the interpreter with elevated privilege.
+    SCANNED = (
+        'scripts/meshforge-launcher.sh',
+        'scripts/meshforge-terminal.sh',
+        'install.sh',
+    )
+
+    def _privileged_python_lines(self, text):
+        """Lines that run python3 as root: via `sudo`, or `env` in a branch
+        already known to be root. We match the `sudo ... python3` form only —
+        that is the one that crosses a privilege boundary and resets the
+        environment, so it is the one that can silently drop the variable.
+        """
+        out = []
+        for i, line in enumerate(text.splitlines(), 1):
+            s = line.strip()
+            if s.startswith('#'):
+                continue
+            # Match ANY interpreter, not the literal `python3`: the installed
+            # wrappers run `sudo /opt/meshforge/venv/bin/python ...`, which
+            # caches bytecode identically. An earlier version of this guard
+            # keyed on `python3` and was blind to exactly those two lines —
+            # the guard's own instance of the defect it exists to catch.
+            if re.search(r'\bsudo\b[^|;]*(?:\bpython3?\b|/bin/python3?\b)', s):
+                out.append((i, s))
+        return out
+
+    def test_every_privileged_python3_sets_pycache_prefix(self):
+        offenders = []
+        scanned_any = False
+        for rel in self.SCANNED:
+            path = os.path.join(self.REPO, rel)
+            if not os.path.exists(path):
+                continue
+            with open(path, 'r', encoding='utf-8') as fh:
+                text = fh.read()
+            for lineno, line in self._privileged_python_lines(text):
+                scanned_any = True
+                if 'PYTHONPYCACHEPREFIX' not in line:
+                    offenders.append(f"{rel}:{lineno}: {line}")
+        # A guard that silently scans nothing is not a guard (the probe-blind
+        # class): if no privileged launch exists at all, the files moved and
+        # this test must be re-aimed rather than pass vacuously.
+        assert scanned_any, (
+            "no `sudo ... python3` launch found in any of "
+            f"{self.SCANNED} — the launchers moved; re-aim this guard "
+            "instead of deleting it (scripts/lib/pycache_prefix.sh explains why)")
+        assert offenders == [], (
+            "privileged python3 launch without PYTHONPYCACHEPREFIX — root "
+            "bytecode will land in the repo again (the chown-sweep cause, "
+            "2026-09-20). Pass it as `sudo PYTHONPYCACHEPREFIX=\"$MF_ROOT_PYCACHE\" "
+            "python3 ...` (sudo resets the env, so exporting it will NOT "
+            "reach the child) and source scripts/lib/pycache_prefix.sh:\n  "
+            + "\n  ".join(offenders))
+
+    def test_launchers_source_the_shared_constant(self):
+        """ONE constant, not a per-file literal (honest_failure_modes #5:
+        independent hardcodes WILL drift)."""
+        missing = []
+        for rel in ('scripts/meshforge-launcher.sh', 'scripts/meshforge-terminal.sh'):
+            path = os.path.join(self.REPO, rel)
+            if not os.path.exists(path):
+                continue
+            with open(path, 'r', encoding='utf-8') as fh:
+                text = fh.read()
+            if 'lib/pycache_prefix.sh' not in text:
+                missing.append(rel)
+        assert missing == [], (
+            "launcher defines the pycache path itself instead of sourcing "
+            "scripts/lib/pycache_prefix.sh: " + ", ".join(missing))

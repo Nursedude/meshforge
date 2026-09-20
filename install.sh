@@ -222,10 +222,13 @@ echo -e "${CYAN}[7/7] Creating system commands...${NC}"
 cat > /usr/local/bin/meshforge << 'EOF'
 #!/bin/bash
 cd /opt/meshforge
+# Keep the PRIVILEGED interpreter's bytecode out of the repo -- root
+# __pycache__ in /opt/meshforge is what the fleet chown sweeps kept curing.
+. /opt/meshforge/scripts/lib/pycache_prefix.sh
 if [[ -f .no-venv ]]; then
-    exec sudo python3 src/launcher.py "$@"
+    exec sudo PYTHONPYCACHEPREFIX="$MF_ROOT_PYCACHE" python3 src/launcher.py "$@"
 else
-    exec sudo /opt/meshforge/venv/bin/python src/launcher.py "$@"
+    exec sudo PYTHONPYCACHEPREFIX="$MF_ROOT_PYCACHE" /opt/meshforge/venv/bin/python src/launcher.py "$@"
 fi
 EOF
 chmod +x /usr/local/bin/meshforge
@@ -234,10 +237,13 @@ chmod +x /usr/local/bin/meshforge
 cat > /usr/local/bin/meshforge-tui << 'EOF'
 #!/bin/bash
 cd /opt/meshforge
+# Keep the PRIVILEGED interpreter's bytecode out of the repo -- root
+# __pycache__ in /opt/meshforge is what the fleet chown sweeps kept curing.
+. /opt/meshforge/scripts/lib/pycache_prefix.sh
 if [[ -f .no-venv ]]; then
-    exec sudo python3 src/launcher_tui/main.py "$@"
+    exec sudo PYTHONPYCACHEPREFIX="$MF_ROOT_PYCACHE" python3 src/launcher_tui/main.py "$@"
 else
-    exec sudo /opt/meshforge/venv/bin/python src/launcher_tui/main.py "$@"
+    exec sudo PYTHONPYCACHEPREFIX="$MF_ROOT_PYCACHE" /opt/meshforge/venv/bin/python src/launcher_tui/main.py "$@"
 fi
 EOF
 chmod +x /usr/local/bin/meshforge-tui

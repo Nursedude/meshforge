@@ -71,7 +71,7 @@ TUI framework, gateway bridge, and RF tools. They differ in which radio is "home
 ```bash
 git clone https://github.com/Nursedude/meshanchor.git
 cd meshanchor
-sudo python3 src/launcher_tui/main.py
+scripts/meshforge-launcher.sh
 ```
 
 ### Deployment Profiles
@@ -99,7 +99,7 @@ python3 src/launcher.py
 ### Already Have meshtasticd?
 
 ```bash
-sudo python3 src/launcher_tui/main.py
+scripts/meshforge-launcher.sh
 ```
 
 ### RF Tools Only (no sudo, no radio)
@@ -381,7 +381,7 @@ sudo python3 src/launcher.py --verify-install
 # Manual checks
 python3 -c "from src.__version__ import __version__; print(__version__)"
 systemctl status meshtasticd rnsd
-sudo python3 src/launcher_tui/main.py
+scripts/meshforge-launcher.sh
 ```
 
 The `--verify-install` flag checks Python imports, service status, config

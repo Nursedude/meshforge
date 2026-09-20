@@ -65,7 +65,7 @@ read the log files. To skip the startup environment sweep and update
 check:
 
 ```bash
-sudo python3 src/launcher_tui/main.py --no-startup-checks
+scripts/meshforge-launcher.sh tui --no-startup-checks
 ```
 
 ## Configuration
