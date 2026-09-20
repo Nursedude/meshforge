@@ -2308,10 +2308,18 @@ class TestPrivilegedPycachePrefix:
     )
 
     def _privileged_python_lines(self, text):
-        """Lines that run python3 as root: via `sudo`, or `env` in a branch
-        already known to be root. We match the `sudo ... python3` form only —
-        that is the one that crosses a privilege boundary and resets the
-        environment, so it is the one that can silently drop the variable.
+        """Lines that run python as root: via `sudo`, OR via `exec env` in a
+        branch already known to be root.
+
+        ⚠️ The first version matched the `sudo` form ONLY, reasoning that it
+        is the one that resets the environment. But `sudo meshforge` runs the
+        launcher SCRIPT as root, so it takes the `EUID -eq 0` branch — the
+        `exec env PYTHONPYCACHEPREFIX=... python` line — and that is the
+        privileged launch the operator actually types. Drilled 2026-09-20 by
+        the adversarial review of cfad33b2..e25ee21d: with the prefix stripped
+        from that branch, all three tests stayed GREEN. The guard's fourth
+        instance of the defect it guards against. A launcher's root branch is
+        privileged by construction; match it too.
         """
         out = []
         for i, line in enumerate(text.splitlines(), 1):
@@ -2327,7 +2335,14 @@ class TestPrivilegedPycachePrefix:
             # is documentation. Match only lines that execute.
             if re.match(r'(?:echo|printf|cat)\b', s) or '"  ' in s.split('sudo')[0]:
                 continue
-            if re.search(r'\bsudo\b[^|;]*(?:\bpython3?\b|/bin/python3?\b)', s):
+            # Three shapes: `sudo ... <python>`, `exec env ... <python>` (the
+            # root branch as written), and `exec "$py" ...` (the root branch
+            # with the prefix STRIPPED — `$py` is the launcher's interpreter
+            # variable and only ever names a privileged launch). A bare
+            # `exec python3 ...` is NOT matched: launch_maps runs unprivileged.
+            if re.search(r'(?:\bsudo\b|\bexec\s+env\b)[^|;]*'
+                         r'(?:\bpython3?\b|/bin/python3?\b|\$py\b)'
+                         r'|\bexec\s+"?\$py\b', s):
                 out.append((i, s))
         return out
 
