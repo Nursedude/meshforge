@@ -2353,6 +2353,100 @@ tests (`is_test` guards in MF001/MF009/MF013/MF019), so including that tree is
 a different decision with a real backlog attached, unlike `scripts/`. Recorded
 here so the number does not have to be re-derived.
 
+## QUEUED 2026-09-20 (Opus 5 1M) — **ADVERSARIAL BRIEF FOR THE NEXT MODEL** (operator bringing a second model in)
+
+**Range: `cfad33b2..e25ee21d`, 8 commits, ALL mine, ALL self-reviewed.** This
+supersedes the CI-DRIFT row below, which was written at `3fb72979` and does
+not cover the four riskiest commits.
+
+### Attack these, in this order
+
+**1. `4e726548` + `e25ee21d` — the launch path for the ENTIRE fleet's primary
+CLI. Highest risk by far, and the TUI WAS NEVER LAUNCHED.**
+`launch_tui` now routes through `src/launcher.py` instead of straight at
+`launcher_tui/main.py`, and `mf_python()` prefers `venv/bin/python` unless
+`.no-venv` exists. Both changed for 8 live boxes. Specific things to break:
+- Does `src/launcher.py` behave differently under sudo than the TUI did —
+  does it ever PROMPT (setup wizard, profile selection, health-check
+  confirmation)? A prompt on a headless box turns `meshforge` into a hang.
+  I read the code; I did not run it. This is the single biggest unverified
+  claim in the range.
+- `os.execv(sys.executable, ...)` at `src/launcher.py:288` — I asserted the
+  environment (and so `PYTHONPYCACHEPREFIX`) survives the exec. Verify it,
+  and verify `sys.executable` is what `mf_python()` chose, not something
+  launcher.py re-derives.
+- `.no-venv` — does that marker actually exist anywhere on the fleet? If it
+  is vestigial, `mf_python()` has a branch that never runs, and if a venv is
+  present-but-broken we now PREFER it where the old code used system python3.
+- `meshforge-tui` now symlinks to the same script, so `meshforge-tui maps`
+  runs the map generator. Harmless or surprising?
+
+**2. `d4cffeee` — `_SsSampler`, test semantics inside a DETECTOR class.**
+A wrong call here makes a real `rns_rpc_wedge` regression silent instead of
+loud, which is strictly worse than the flake it replaced. Attack: can the
+foreign-thread branch (benign empty `ss` table) mask a defect the old bare
+`side_effect` list would have surfaced? I argued no — owner exhaustion still
+raises — but I wrote the argument AND the test that checks the argument.
+
+**3. `b29e26ae` — PYTHONPYCACHEPREFIX. Ask the questions I did not.**
+- The cache is `/var/cache/meshforge/pycache-root`, measured here at 995
+  files / 22 MB after light use, `root:root 0755`, no group/other-writable
+  dirs (so not a bytecode-poisoning surface — but re-check on every box).
+- **Unbounded growth?** Nothing prunes it. It mirrors the source tree AND the
+  venv, and a privileged venv-python launch will cache site-packages there.
+  On SD-card boxes that matters. There is no cleanup path and I did not add
+  one.
+- Stale `.pyc` for deleted modules accumulate forever.
+- Does redirecting only ROOT create a *split* cache that makes the first
+  unprivileged start slower, or interact badly with `sudo -E`?
+
+**4. `3fb72979` — CI pins.** Transitive deps still float and differ sharply
+by interpreter (bleak 1.1.1 on 3.9 vs 3.0.2 on 3.11 in one green run). The
+`<3.10` marker branch is verified ONLY by the manifest-resolve job; there is
+no python3.9 on the dev box.
+
+**5. `5df1aff0` — comments only, but read the near-miss.** I nearly declared a
+LIVE `meshforge-watchdog` `absent` in the role catalog on the strength of two
+comments that were FALSE. `honest_status.sh` drops declared-absent boxes from
+the watchdog denominator, so that edit would have retired a healthy watchdog
+into "absent by design". Check whether the corrected comment is now TRUE.
+
+### My wrong calls this session — verify the conclusions are right for the RIGHT reasons
+
+Seven, all self-caught, all by drilling rather than re-reading:
+1. Called the CI failure a flake before the rerun landed. It reproduced.
+2. Said the traceback killed my own hypothesis. It supported it — I misread
+   which call raised.
+3. Re-ran the last green CI run to diff its dependency set, which REPLACED
+   that attempt's log and destroyed the baseline. Permanently gone.
+4. Launched `honest_status.sh`, then edited the tree under it. Void run,
+   killed by PID; its orphaned pytest reaped.
+5. My CI poller selected by SHA alone and answered about the pip-graph
+   workflow, reporting `completed success` while CI was still running.
+6. Ranked the chown sweep by the wrong repo, twice, before measuring.
+7. My enumerating grep was truncated by `head -12`, so two of three
+   installer generators were invisible — and the guard inherited that
+   blind spot through its hand-listed scope.
+
+**The guards I wrote had the defect they guard against, three times:** keyed
+on `python3` and could not see `venv/bin/python`; asserted a link with a
+SUBSTRING that `meshforge-tui` satisfied; read echoed advice text as code.
+Every one was found by making the check fail on purpose. **Assume the fourth
+is still in there and look for it.**
+
+### What I could NOT verify (do not take these on trust)
+- The TUI itself, on any box. Interactive; takes the console.
+- Python 3.9 locally — none installed here.
+- Whether `/usr/local/bin/meshforge` behaves correctly END TO END; I verified
+  `help` (argument dispatch + sourcing) and `bash -n`, not a real launch.
+- The in-repo pycache control was inconclusive (bytecode already warm); the
+  isolated scratch probe is the control of record.
+
+### Known debt deliberately NOT taken at 1am
+`meshforge-noc/-lora/-status/-web/-map` are still generated copies with the
+same staleness class; the guard was narrowed to the two commands actually
+converted rather than silently widened to demand five more redesigns.
+
 ## QUEUED 2026-09-20 (Opus 5 1M) — the CI-DRIFT arc, and the author reviewed himself
 
 **Upshift-witness fired on the push** (leg 3, advisory): 1169 src+scripts
