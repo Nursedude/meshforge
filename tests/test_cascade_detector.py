@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -77,12 +78,100 @@ class TestCatalogShape:
 # ── rns_rpc_wedge probe ───────────────────────────────────────────────────
 
 
+class _SsSampler:
+    """A `subprocess.run` stand-in that serves ONLY the calling thread.
+
+    WHY THIS EXISTS (CI red 2026-09-20, Python 3.9). These tests patched
+    `utils.cascade_fingerprints.subprocess.run` with a plain
+    `side_effect=[first, second]` list. That target READS as module-scoped
+    and is not: `cascade_fingerprints` does a bare `import subprocess`, so
+    the patched attribute lives on the SHARED module object and every
+    thread in the process sees it. Meanwhile `probe_rns_rpc_wedge` holds
+    the patch open across its 0.4s `ev.wait()` re-sample pause. Any other
+    thread calling `subprocess.run` inside that window consumed a sample,
+    and the probe's own second sample then raised `StopIteration`.
+
+    The class docstring below is the irony worth keeping: conftest sets
+    `MESHFORGE_CASCADE_PROBE_DISABLED=1` precisely so background daemon
+    threads cannot leak `subprocess.run` into other tests' patches — and
+    this class's autouse fixture deletes it, disarming that guard for its
+    own patch. The author defended the outbound direction and not the
+    inbound one.
+
+    The tell was that the VICTIM MOVED: `test_transient_syn_sent_does_not_hit`
+    on one commit, `test_hit_survives_queue_depth_change` on another with
+    byte-identical code. A constant class with a moving member is a shared
+    resource being stolen, not a bug in any one test.
+
+    Contract: calls from the thread that constructed this object draw from
+    `samples` in order and are counted in `owner_calls`. Calls from any
+    other thread never touch either — an `ss` invocation gets a benign
+    empty table (the honest "nothing matched" answer), and anything else
+    goes to the real `subprocess.run`, exactly as with no patch at all.
+    Running out of `samples` on the OWNER thread still raises, loudly, so
+    a probe that samples more often than the test expects is still caught.
+    """
+
+    def __init__(self, *samples):
+        self._it = iter(samples)
+        self._owner = threading.get_ident()
+        self._real_run = subprocess.run   # captured BEFORE patch.__enter__
+        self.owner_calls = 0
+
+    def __call__(self, cmd, *args, **kwargs):
+        if threading.get_ident() != self._owner:
+            if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "ss":
+                return MagicMock(returncode=0, stdout="")
+            return self._real_run(cmd, *args, **kwargs)
+        self.owner_calls += 1
+        return next(self._it)
+
+
+class TestSsSamplerThreadIsolation:
+    """Pins `_SsSampler`'s contract, because a helper that has never been
+    shown to fail is not evidence it works. The bare-list pattern this
+    replaced turned CI red on 2026-09-20 and the fix is invisible in a
+    green suite — nothing in an ordinary run has a competing thread."""
+
+    def test_foreign_thread_cannot_consume_a_sample(self):
+        """THE defect, pinned: a non-owner `ss` call must not draw from the
+        sample list, and must not be counted."""
+        sampler = _SsSampler(MagicMock(returncode=0, stdout="owner-only"))
+        seen = {}
+
+        def foreign():
+            seen["r"] = sampler(["ss", "-xH", "state", "syn-sent"],
+                                capture_output=True, text=True, timeout=2)
+        t = threading.Thread(target=foreign)
+        t.start()
+        t.join(timeout=5)
+
+        assert seen["r"].stdout == ""        # benign empty table, not the sample
+        assert sampler.owner_calls == 0      # foreign call is not counted
+        # The owner's one sample is still intact and still first in line.
+        assert sampler(["ss"]).stdout == "owner-only"
+        assert sampler.owner_calls == 1
+
+    def test_owner_exhaustion_still_raises(self):
+        """The defence must not become an absorber: a probe that samples
+        more often than the test declared is still a loud failure."""
+        sampler = _SsSampler(MagicMock(returncode=0, stdout="one"))
+        assert sampler(["ss"]).stdout == "one"
+        with pytest.raises(StopIteration):
+            sampler(["ss"])
+
+
 class TestProbeRnsRpcWedge:
     """Direct probe-behavior tests. The conftest pytest_configure sets
     `MESHFORGE_CASCADE_PROBE_DISABLED=1` so background daemon threads
     don't leak `subprocess.run` calls into other tests' patches; these
     tests are the explicit exception — they need the probe to actually
-    run end-to-end so they delenv via this autouse fixture."""
+    run end-to-end so they delenv via this autouse fixture.
+
+    ⚠️ Deleting that env var re-arms exactly the leak it prevents, in the
+    inbound direction, for every patch in this class. Multi-sample tests
+    therefore go through `_SsSampler`, never a bare `side_effect` list —
+    see its docstring for the CI failure that proved it."""
 
     @pytest.fixture(autouse=True)
     def _enable_probe(self, monkeypatch):
@@ -161,7 +250,7 @@ class TestProbeRnsRpcWedge:
         with patch("utils.cascade_fingerprints.shutil.which",
                    return_value="/usr/bin/ss"), \
              patch("utils.cascade_fingerprints.subprocess.run",
-                   side_effect=samples):
+                   side_effect=_SsSampler(*samples)):
             assert cfp.probe_rns_rpc_wedge() is None
 
     def test_different_socket_in_second_sample_does_not_hit(self):
@@ -177,7 +266,7 @@ class TestProbeRnsRpcWedge:
         with patch("utils.cascade_fingerprints.shutil.which",
                    return_value="/usr/bin/ss"), \
              patch("utils.cascade_fingerprints.subprocess.run",
-                   side_effect=[first, second]):
+                   side_effect=_SsSampler(first, second)):
             assert cfp.probe_rns_rpc_wedge() is None
 
     def test_hit_survives_queue_depth_change(self):
@@ -193,7 +282,7 @@ class TestProbeRnsRpcWedge:
         with patch("utils.cascade_fingerprints.shutil.which",
                    return_value="/usr/bin/ss"), \
              patch("utils.cascade_fingerprints.subprocess.run",
-                   side_effect=[first, second]):
+                   side_effect=_SsSampler(first, second)):
             hit = cfp.probe_rns_rpc_wedge()
         assert hit is not None
         assert hit.metric["syn_sent_count"] == 1
@@ -207,19 +296,26 @@ class TestProbeRnsRpcWedge:
         with patch("utils.cascade_fingerprints.shutil.which",
                    return_value="/usr/bin/ss"), \
              patch("utils.cascade_fingerprints.subprocess.run",
-                   side_effect=[first, MagicMock(returncode=1, stdout="")]):
+                   side_effect=_SsSampler(
+                       first, MagicMock(returncode=1, stdout=""))):
             assert cfp.probe_rns_rpc_wedge() is None
 
     def test_healthy_box_pays_no_resample_delay(self):
         """The 0.4s confirmation is only paid on the candidate path. A
         clean box must sample `ss` exactly once per probe."""
         clean = MagicMock(returncode=0, stdout="")
+        # Counted per-thread: a background daemon thread's `ss` call would
+        # inflate a bare mock's call_count and fail this assertion for a
+        # reason that has nothing to do with the re-sample path. One sample
+        # is supplied on purpose — a probe that sampled twice on a clean box
+        # exhausts it and fails loudly, which is the thing under test.
+        sampler = _SsSampler(clean)
         with patch("utils.cascade_fingerprints.shutil.which",
                    return_value="/usr/bin/ss"), \
              patch("utils.cascade_fingerprints.subprocess.run",
-                   return_value=clean) as m:
+                   side_effect=sampler):
             assert cfp.probe_rns_rpc_wedge() is None
-        assert m.call_count == 1
+        assert sampler.owner_calls == 1
 
     def test_matches_non_default_instance_name(self):
         """Some hosts use a custom instance_name (per ReticulumPaths.
