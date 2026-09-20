@@ -2406,11 +2406,10 @@ class TestPrivilegedPycachePrefix:
                 if t.startswith('#'):
                     continue
                 # `cp`, `cat >`, `tee` and mf_write_stdin all FOLLOW a symlink.
-                # ONLY the two commands converted to symlinks. The other
-                # meshforge-* commands (noc/lora/status/web/map) are still
-                # generated copies — a real but SEPARATE staleness debt,
-                # queued rather than silently widened into this guard.
-                dest = r'/usr/local/bin/meshforge(?:-tui)?(?![-\w])'
+                # ALL seven installed names (2026-09-20): the five others were
+                # converted the same day the two first ones were, once the
+                # launcher grew basename dispatch for them.
+                dest = r'/usr/local/bin/meshforge(?:-tui|-noc|-lora|-status|-web|-map)?(?![-\w])'
                 if re.search(r'(?:cat|tee|mf_write_stdin)\s[^|]*>?\s*' + dest, t) \
                         or re.search(r'\bcp\b[^|]*\s' + dest, t):
                     offenders.append(f"{rel}:{i}: {t}")
@@ -2432,6 +2431,29 @@ class TestPrivilegedPycachePrefix:
                 f"install.sh no longer symlinks /usr/local/bin/{dest} — that "
                 f"installed command would not exist at all. Expected exactly: {want}")
         assert target in stripped
+        # install_noc.sh creates the main command AND the five others.
+        noc_path = os.path.join(self.REPO, 'scripts/install_noc.sh')
+        with open(noc_path, 'r', encoding='utf-8') as fh:
+            noc_lines = [l.strip() for l in fh.read().splitlines()]
+        for dest in ('meshforge', 'meshforge-noc', 'meshforge-lora', 'meshforge-status',
+                     'meshforge-web', 'meshforge-map'):
+            want = f'ln -sfn /opt/meshforge/scripts/meshforge-launcher.sh /usr/local/bin/{dest}'
+            assert want in noc_lines, (
+                f"scripts/install_noc.sh no longer symlinks /usr/local/bin/{dest} "
+                f"— expected exactly: {want} (a generated copy here goes stale "
+                "on every pull; 2026-09-20)")
+        # And the launcher must dispatch each installed name (a symlink to a
+        # script that does not recognise its own name would run the TUI).
+        launcher = os.path.join(self.REPO, 'scripts/meshforge-launcher.sh')
+        with open(launcher, 'r', encoding='utf-8') as fh:
+            ltext = fh.read()
+        for name, sub in (('meshforge-tui', 'tui'), ('meshforge-noc', 'noc'),
+                          ('meshforge-lora', 'lora'), ('meshforge-status', 'status'),
+                          ('meshforge-web', 'web'), ('meshforge-map', 'mapserver')):
+            assert re.search(r'^\s*' + re.escape(name) + r'\)\s+set -- ' + sub + r' "\$@"',
+                             ltext, re.M), (
+                f"scripts/meshforge-launcher.sh has no basename dispatch for {name} "
+                f"-> `{sub}`; the installed symlink would fall through to the TUI")
 
     def test_launchers_source_the_shared_constant(self):
         """ONE constant, not a per-file literal (honest_failure_modes #5:

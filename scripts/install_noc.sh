@@ -1949,116 +1949,18 @@ mf_phase "8/8" "Creating system integration..."
 # and would write through into the repo script.
 ln -sfn /opt/meshforge/scripts/meshforge-launcher.sh /usr/local/bin/meshforge
 
-# NOC orchestrator command
-mf_write_stdin /usr/local/bin/meshforge-noc << 'NOC_CMD'
-#!/bin/bash
-cd /opt/meshforge/src
-# Keep root bytecode out of the repo (scripts/lib/pycache_prefix.sh).
-. /opt/meshforge/scripts/lib/pycache_prefix.sh
-exec sudo PYTHONPYCACHEPREFIX="$MF_ROOT_PYCACHE" /opt/meshforge/venv/bin/python -m core.orchestrator "$@"
-NOC_CMD
-chmod +x /usr/local/bin/meshforge-noc
-
-# LoRa configuration helper
-mf_write_stdin /usr/local/bin/meshforge-lora << 'LORA_CMD'
-#!/bin/bash
-exec sudo /opt/meshforge/scripts/configure_lora.sh "$@"
-LORA_CMD
-chmod +x /usr/local/bin/meshforge-lora
-
-# Status command (terminal-native diagnostics)
-mf_write_stdin /usr/local/bin/meshforge-status << 'STATUS_CMD'
-#!/bin/bash
-cd /opt/meshforge
-exec /opt/meshforge/venv/bin/python src/cli/status.py "$@"
-STATUS_CMD
-chmod +x /usr/local/bin/meshforge-status
-
-# Web client launcher
-mf_write_stdin /usr/local/bin/meshforge-web << 'WEB_CMD'
-#!/bin/bash
-# Open or display the meshtasticd web client URL
-LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-[ -z "$LOCAL_IP" ] && LOCAL_IP="localhost"
-URL="https://${LOCAL_IP}:9443"
-
-# Check if meshtasticd web server is responding
-if timeout 2 bash -c "echo >/dev/tcp/${LOCAL_IP}/9443" 2>/dev/null; then
-    echo "Meshtastic Web Client: ${URL}"
-    echo ""
-    echo "  Full radio configuration in your browser:"
-    echo "    • Region, Preset, TX Power (Config → LoRa)"
-    echo "    • Channels and PSK keys   (Config → Channels)"
-    echo "    • Node name and position   (Config → Device)"
-    echo "    • Messaging and map view"
-    echo ""
-    # Try to open browser (works on desktop, no-op on headless)
-    if command -v xdg-open &>/dev/null && [ -n "$DISPLAY" ]; then
-        xdg-open "$URL" 2>/dev/null &
-        echo "  Opening browser..."
-    else
-        echo "  Open this URL in any browser on your network:"
-        echo "  ${URL}"
-    fi
-else
-    echo "ERROR: meshtasticd web server not responding on port 9443"
-    echo ""
-    echo "  Check: sudo systemctl status meshtasticd"
-    echo "  Start: sudo systemctl start meshtasticd"
-    echo ""
-    echo "  The web client is served by meshtasticd when running."
-    echo "  Config: /etc/meshtasticd/config.yaml (Webserver section)"
-fi
-WEB_CMD
-chmod +x /usr/local/bin/meshforge-web
-
-# MeshForge Map Server command (NOC web UI on port 5000)
-mf_write_stdin /usr/local/bin/meshforge-map << 'MAP_CMD'
-#!/bin/bash
-# MeshForge Map Server - NOC Web Interface
-# Serves the live node map on port 5000
-
-PYTHON_CMD="/opt/meshforge/venv/bin/python"
-[ ! -x "$PYTHON_CMD" ] && PYTHON_CMD="python3"
-
-case "${1:-}" in
-    start)
-        echo "Starting MeshForge Map Server..."
-        sudo systemctl start meshforge-map
-        ;;
-    stop)
-        echo "Stopping MeshForge Map Server..."
-        sudo systemctl stop meshforge-map
-        ;;
-    restart)
-        echo "Restarting MeshForge Map Server..."
-        sudo systemctl restart meshforge-map
-        ;;
-    status)
-        systemctl status meshforge-map --no-pager
-        cd /opt/meshforge/src && $PYTHON_CMD -m utils.map_data_service --status
-        ;;
-    enable)
-        echo "Enabling MeshForge Map Server on boot..."
-        sudo systemctl enable meshforge-map
-        ;;
-    disable)
-        echo "Disabling MeshForge Map Server on boot..."
-        sudo systemctl disable meshforge-map
-        ;;
-    url)
-        LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-        [ -z "$LOCAL_IP" ] && LOCAL_IP="localhost"
-        echo "MeshForge Map: http://${LOCAL_IP}:5000/"
-        ;;
-    *)
-        # Default: run interactively (for debugging)
-        cd /opt/meshforge/src
-        exec $PYTHON_CMD -m utils.map_data_service "$@"
-        ;;
-esac
-MAP_CMD
-chmod +x /usr/local/bin/meshforge-map
+# The five other commands — SYMLINKS to the launcher, dispatched on basename
+# (2026-09-20). They were heredocs here until then: frozen at install time,
+# and the -noc one ran a privileged venv python with no pycache prefix.
+# ⚠️ Never restore a heredoc: `cat >`/mf_write_stdin FOLLOW a symlink and
+# would write through into the repo script. TestPrivilegedPycachePrefix pins
+# all six lines. `meshforge-map` is the map SERVER control (port 5000), which the
+# launcher routes to `mapserver`, not to its coverage-map `map` subcommand.
+ln -sfn /opt/meshforge/scripts/meshforge-launcher.sh /usr/local/bin/meshforge-noc
+ln -sfn /opt/meshforge/scripts/meshforge-launcher.sh /usr/local/bin/meshforge-lora
+ln -sfn /opt/meshforge/scripts/meshforge-launcher.sh /usr/local/bin/meshforge-status
+ln -sfn /opt/meshforge/scripts/meshforge-launcher.sh /usr/local/bin/meshforge-web
+ln -sfn /opt/meshforge/scripts/meshforge-launcher.sh /usr/local/bin/meshforge-map
 
 # Install MeshForge Map Server systemd service
 # Map server runs as the operator (not root) so it reads/writes
