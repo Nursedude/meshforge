@@ -182,6 +182,90 @@ def _client_ip_trusted(client_host: str, allowed: Optional[List[str]]) -> bool:
     return any(ip in net for net in _trusted_networks_from_origins(allowed))
 
 
+def _own_primary_ipv4() -> Optional[str]:
+    """This box's address on the interface toward the default route.
+
+    UDP ``connect`` to a TEST-NET-1 address (RFC 5737) — the kernel picks the
+    source address from the routing table and no packet is ever sent. Returns
+    None when there is no route, which callers must treat as UNKNOWN, never as
+    "not covered": a box with no default route has an unobservable gate, not a
+    broken one.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.settimeout(1.0)
+            s.connect(("192.0.2.1", 1))
+            return s.getsockname()[0]
+    except OSError:
+        return None
+
+
+def read_gate_self_coverage(allowed: Optional[List[str]]) -> Dict[str, Any]:
+    """Would this box's own read gate admit a client on this box's own LAN?
+
+    THE kiai CLASS (found 2026-09-20 by a human clicking, after ~2 months).
+    The gated tier (``/api/los``, ``/api/coverage``) trusts loopback plus the
+    box's own /24, derived from ``hostname -I`` at unit start. kiai ran a unit
+    installed 2026-07-12 — before the 07-26 derivation fix — so it carried a
+    HARDCODED subnet that was not the one kiai sits on. Its terrain endpoints
+    refused every client but loopback, silently, for months.
+
+    Nothing could see it. ``/fleet``'s fan-out fetches ``/api/status`` and
+    ``/fleet/slo``, both UNGATED, so the box read ``healthy`` throughout. And
+    the NOC cannot probe the gated tier from outside, because a CORRECTLY
+    configured peer also refuses it — from a different subnet a 403 is the
+    right answer, so the fan-out can never tell misaimed from working.
+
+    What IS decidable is local and needs no probing: a gate that will not
+    admit the box's own LAN is misaimed no matter who asks. Tri-state, because
+    "no default route" is unobservable and must not read as a fault
+    (honest_failure_modes #1).
+
+    ⚠️ Returns a VERDICT, never the trusted CIDRs. ``/api/status`` is
+    unauthenticated; publishing the networks a box trusts hands out operator
+    LAN topology (MF015), which is the opposite of what tiering this surface
+    was for.
+    """
+    own = _own_primary_ipv4()
+    n_origins = len(allowed or [])
+    if own is None:
+        return {"self_covered": None, "posture": "unknown",
+                "origins_configured": n_origins,
+                "reason": "no default route — own address unobservable; "
+                          "gate coverage UNKNOWN, not failed"}
+    covered = _client_ip_trusted(own, allowed)
+    if covered:
+        return {"self_covered": True, "posture": "lan_admitted",
+                "origins_configured": n_origins,
+                "reason": "the gate admits a client on this box's own LAN"}
+    if n_origins == 0:
+        # Absent BY DESIGN is not a fault. A box that never opted a LAN in is
+        # loopback-only on purpose — that is the documented secure default,
+        # and reporting it as misaimed would make this field alarm on every
+        # correctly-hardened box until nobody read it. The distinction that
+        # matters is NOT "can my LAN reach me" but "did someone aim this
+        # somewhere, and did they miss".
+        return {
+            "self_covered": False, "posture": "loopback_only",
+            "origins_configured": 0,
+            "reason": ("no LAN origin configured — gated endpoints are "
+                       "loopback-only BY DESIGN (the secure default), not "
+                       "misaimed. Reach them with `ssh -L 5000:127.0.0.1:5000`."),
+        }
+    return {
+        "self_covered": False,
+        "posture": "misaimed",
+        "origins_configured": n_origins,
+        "reason": (
+            "MISAIMED: this box opted a LAN in, and it is not this box's own "
+            "— gated endpoints refuse every client here but loopback. Usual "
+            "cause is an installed unit older than the 2026-07-26 subnet-"
+            "derivation fix, carrying a hardcoded origin from another box. "
+            "Compare the unit's --cors-origins against `hostname -I`; "
+            "reinstall from the template rather than widening by hand."),
+    }
+
+
 class MapRequestHandler(
     RadioEndpointsMixin,
     MeshtasticProxyMixin,

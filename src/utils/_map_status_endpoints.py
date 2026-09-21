@@ -302,6 +302,28 @@ class StatusEndpointsMixin:
         # self-identifies.
         status["app"] = _build_app_block()
 
+        # Read-gate coherence — THE kiai CLASS (2026-09-20). The gated tier
+        # (/api/los, /api/coverage) can refuse every real client while this
+        # endpoint and /fleet/slo, both UNGATED, keep reading healthy; kiai
+        # did exactly that for ~2 months and a human found it by clicking.
+        # A peer cannot be probed for this from outside (a correctly gated box
+        # also 403s a cross-subnet caller), so each box self-reports whether
+        # its own gate admits its own LAN. VERDICT ONLY — never the trusted
+        # CIDRs; this endpoint is unauthenticated and the networks a box
+        # trusts are operator LAN topology (MF015).
+        try:
+            from utils.map_http_handler import read_gate_self_coverage
+            status["read_gate"] = read_gate_self_coverage(self.allowed_origins)
+        except Exception as e:  # unobservable != healthy, and != broken
+            logger.debug(f"read-gate coverage failed: {e}")
+            status["read_gate"] = {
+                "self_covered": None,
+                "posture": "unknown",
+                "origins_configured": None,
+                "reason": f"coverage check itself failed ({type(e).__name__}) "
+                          f"— UNKNOWN, not a verdict",
+            }
+
         # Include history stats if available
         if self.collector and self.collector._history:
             try:
