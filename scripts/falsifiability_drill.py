@@ -17,6 +17,12 @@ A class whose `dead` mutant survives the suite is a detector the suite would
 let die silently. That is the finding this phase exists to produce, and it is
 the number that must be RE-DERIVED (re-run this) rather than carried.
 
+  invalid  the mutant never RAN — it did not parse, or it took the test
+           module down at collection. Mutation testing calls these stillborn.
+           A stillborn mutant is NOT evidence about the suite, and scoring its
+           zero failures as "the suite noticed nothing" reports the DRILL's
+           own breakage as a finding about the code. Verdict `MUTANT-INVALID`.
+
 WHAT THIS DOES NOT CLAIM. A caught mutant proves the suite notices the ENTRY
 PROBE dying as a unit — the shape in which real probes die (an except-swallow,
 a wrong path, a wrong name). It says nothing about whether the drill resembles
@@ -64,6 +70,12 @@ PYTEST_TIMEOUT = 300
 # runner's own call sites, never hand-listed.
 EXTEND_RE = re.compile(r"\.extend\(\s*(probe_\w+)\s*\(")
 CALL_RE = re.compile(r"\b(probe_\w+)\s*\(")
+# The loud stub needs `Signal` in scope. It is inserted under a private ALIAS
+# at an AST-computed legal position rather than detected-then-prepended: see
+# `_import_line` for the failure that bought this.
+FDRILL_ALIAS = "_FDRILL_SIGNAL"
+FDRILL_IMPORT = (f"from utils.watchdog_probe_core import Signal as "
+                 f"{FDRILL_ALIAS}  # fdrill\n")
 
 
 def signal_classes() -> list:
@@ -163,6 +175,61 @@ def attribute(root: Path, classes: list) -> dict:
     return out, fns
 
 
+def _import_line(tree: ast.Module) -> int:
+    """First 0-based line at which an import is LEGAL in this module.
+
+    After the module docstring and after every ``from __future__`` import —
+    the one placement Python enforces at parse time.
+
+    WHY THIS IS PLACED AND NOT DETECTED (root-caused 2026-09-21). The previous
+    code regex-matched the file for an existing ``Signal`` import and, on a
+    miss, prepended its own at line 0. ``watchdog_probes_peer_cron.py``
+    reformatted its import to a parenthesised group in ``94cce651`` — legal
+    Python the regex could not see — so the drill prepended above that file's
+    ``from __future__`` line, every test module importing it died at
+    COLLECTION, and `cron_verdict_stale` reported ``loud: 0n/0c``. That read
+    as a finding about the suite for a week. A detector for a thing you can
+    instead COMPUTE is a defect waiting for a reformat.
+    """
+    body = tree.body
+    line, i = 0, 0
+    if (body and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)):
+        line, i = body[0].end_lineno, 1
+    for node in body[i:]:
+        if isinstance(node, ast.ImportFrom) and node.module == "__future__":
+            line = node.end_lineno
+        else:
+            break
+    return line
+
+
+def _with_loud_import(text: str, where: str) -> str:
+    """Give the loud stub's alias an import, at a line where one is legal —
+    and REFUSE to return text that names the alias without importing it.
+
+    The refusal is the point, not the insertion. The stub body ITSELF contains
+    the alias, so the obvious guard — ``if FDRILL_ALIAS not in text`` — is
+    always false and inserts nothing. The mutant then raises ``NameError``
+    instead of returning a Signal. It still fails the referencing tests, so
+    the drill still prints ``caught-both``: the right verdict measured off the
+    wrong quantity. That shipped for the length of one command on 2026-09-21
+    and was caught only because the fix was DRILLED against a planted defect
+    rather than read.
+    """
+    if FDRILL_IMPORT not in text:
+        lines = text.splitlines(keepends=True)
+        at = _import_line(ast.parse(text))
+        text = "".join(lines[:at] + [FDRILL_IMPORT] + lines[at:])
+    if FDRILL_ALIAS in text and FDRILL_IMPORT not in text:
+        raise RuntimeError(
+            f"{where}: the loud stub names {FDRILL_ALIAS} but never imports "
+            "it — that mutant would RAISE, not fire, and its failures would "
+            "be scored as coverage this class does not have")
+    return text
+
+
 def _stub(fn: Fn, body: str) -> tuple:
     """(path, new_text) with fn's body replaced by `body` (already a statement)."""
     lines = fn.path.read_text().splitlines(keepends=True)
@@ -183,7 +250,7 @@ def mutate(wt: Path, fns: dict, cls: str, attr: dict, mode: str) -> list:
             if mode == "dead":
                 body = "return []" if is_list else "return None"
             else:
-                sig = (f'Signal(cls={cls!r}, subject="fdrill", '
+                sig = (f'{FDRILL_ALIAS}(cls={cls!r}, subject="fdrill", '
                        f'severity={attr["severity"]!r}, detail="fdrill: stuck loud")')
                 body = f"return [{sig}]" if is_list else f"return {sig}"
             wt_path = wt / fn.path.relative_to(ROOT)
@@ -194,9 +261,8 @@ def mutate(wt: Path, fns: dict, cls: str, attr: dict, mode: str) -> list:
                         if isinstance(n, ast.FunctionDef) and n.name == e)
             wfn = Fn(e, wt_path, node)
             path, text = _stub(wfn, body)
-            if mode != "dead" and not re.search(
-                    r"^\s*from [\w.]+ import [^\n]*\bSignal\b|^\s+Signal,?\s*$", text, re.M):
-                text = "from utils.watchdog_probe_core import Signal  # fdrill\n" + text
+            if mode != "dead":
+                text = _with_loud_import(text, fn.path.name)
             path.write_text(text)
             touched.add(path)
     return sorted(touched)
@@ -236,7 +302,9 @@ def _test_mentions(wt: Path, nodeid: str, cls: str) -> bool:
 
 def run_pytest(wt: Path, files: list) -> dict:
     cmd = ["timeout", "-s", "KILL", str(PYTEST_TIMEOUT), sys.executable, "-m",
-           "pytest", "-q", "-p", "no:cacheprovider", "--no-header", "-rf",
+           # -rfE, not -rf: without E the short summary omits collection
+           # errors entirely and `errors` below is ALWAYS [] (2026-09-21).
+           "pytest", "-q", "-p", "no:cacheprovider", "--no-header", "-rfE",
            "-o", "addopts=", *[f"tests/{f}" for f in files]]
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     t0 = time.monotonic()
@@ -253,9 +321,33 @@ def run_pytest(wt: Path, files: list) -> dict:
     }
 
 
+def mutant_invalid(base: dict, run: dict, syntax_err: str) -> str:
+    """Why this mutant is not evidence — empty string when it IS.
+
+    Three independent legs, because each can miss on its own: the mutant did
+    not parse; pytest reported collection errors; or the mutant ran zero of a
+    baseline that ran some. The last is the backstop that needs no parsing and
+    no log format — a run that measured NOTHING cannot report an absence.
+    """
+    if syntax_err:
+        return f"mutant does not parse — {syntax_err}"
+    if run["errors"]:
+        return (f"{len(run['errors'])} collection error(s) — the mutant broke "
+                f"import: {run['errors'][0]}")
+    if base["passed"] > 0 and run["passed"] == 0:
+        return (f"mutant ran 0 of the baseline's {base['passed']} test(s) — "
+                "nothing was measured")
+    return ""
+
+
 def verdict(base: dict, dead: dict, loud: dict) -> str:
     if base["rc"] != 0:
         return "baseline-red"
+    # A mutant that never ran says nothing about the suite. Reporting its zero
+    # failures as "not caught" is this script's own honest-failure-mode class:
+    # a degraded internal state mapped to a valid-looking value.
+    if (dead and dead["invalid"]) or (loud and loud["invalid"]):
+        return "MUTANT-INVALID"
     d = bool(dead["named"]) if dead else False
     l = bool(loud["named"]) if loud else False
     if d and l:
@@ -322,11 +414,30 @@ def main() -> int:
             for mode in ("dead", "loud"):
                 touched = mutate(wt, fns, cls, attr, mode)
                 try:
-                    r = run_pytest(wt, files)
+                    syntax_err = ""
+                    for p in touched:
+                        try:
+                            # compile(), NOT ast.parse(): `ast.parse` ACCEPTS a
+                            # statement above `from __future__` and only the
+                            # compiler rejects it — so an ast-only check is
+                            # blind to the very defect this leg exists for
+                            # (measured 2026-09-21).
+                            compile(Path(p).read_text(), str(p), "exec")
+                        except SyntaxError as e:
+                            syntax_err = f"{Path(p).name}:{e.lineno}: {e.msg}"
+                            break
+                    if syntax_err:
+                        # Do not spend 20s running a suite against a mutant the
+                        # interpreter already rejected.
+                        r = {"rc": -1, "failed": [], "errors": [], "passed": 0,
+                             "secs": 0.0, "tail": [syntax_err]}
+                    else:
+                        r = run_pytest(wt, files)
                 finally:
                     restore(wt, touched)
                 r["named"] = [t for t in r["failed"] if _test_mentions(wt, t, cls)]
                 r["collateral"] = [t for t in r["failed"] if t not in r["named"]]
+                r["invalid"] = mutant_invalid(base, r, syntax_err)
                 out[mode] = r
             row["dead"], row["loud"] = out["dead"], out["loud"]
             row["verdict"] = verdict(base, out["dead"], out["loud"])
@@ -335,6 +446,11 @@ def main() -> int:
                   f"dead: {len(out['dead']['named'])}n/{len(out['dead']['collateral'])}c  "
                   f"loud: {len(out['loud']['named'])}n/{len(out['loud']['collateral'])}c  "
                   f"({','.join(attr['entries'])})", flush=True)
+            for mode in ("dead", "loud"):
+                if out[mode]["invalid"]:
+                    print(f"{'':<38} ⚠️  {mode} mutant INVALID — "
+                          f"{out[mode]['invalid']}  (this measures the DRILL, "
+                          f"not the suite)", flush=True)
     finally:
         if not a.keep:
             subprocess.run(["git", "-C", str(ROOT), "worktree", "remove", "--force", str(wt)],
@@ -363,10 +479,17 @@ def main() -> int:
     if a.md:
         Path(a.md).write_text(render_md(summary))
     if a.fail_on_survivor:
-        bad = [r["cls"] for r in results if r["verdict"] != "caught-both"]
+        invalid = [r["cls"] for r in results if r["verdict"] == "MUTANT-INVALID"]
+        bad = [r["cls"] for r in results
+               if r["verdict"] not in ("caught-both", "MUTANT-INVALID")]
+        if invalid:
+            print(f"UNKNOWN — {len(invalid)} class(es) were NOT MEASURED "
+                  f"(stillborn mutant; fix the drill, not the suite): "
+                  + ", ".join(invalid), file=sys.stderr)
         if bad:
             print(f"FAIL — {len(bad)} class(es) not caught in both polarities: "
                   + ", ".join(bad), file=sys.stderr)
+        if invalid or bad:
             return 1
         print(f"PASS — all {len(results)} classes caught in both polarities")
     return 0
@@ -380,8 +503,8 @@ def render_md(s: dict) -> str:
          "tests whose own source mentions the class; `collateral` = failures that "
          "belong to a sibling class sharing the probe.", "",
          "Verdict counts: " + "; ".join(f"`{k}` {v}" for k, v in sorted(s["counts"].items())) + ".", ""]
-    order = ["SURVIVED", "NO-ENTRY-PROBE", "collateral-only", "baseline-red",
-             "caught-dead-only", "caught-loud-only", "caught-both"]
+    order = ["MUTANT-INVALID", "SURVIVED", "NO-ENTRY-PROBE", "collateral-only",
+             "baseline-red", "caught-dead-only", "caught-loud-only", "caught-both"]
     for v in order:
         sel = [r for r in s["rows"] if r["verdict"] == v]
         if not sel:
@@ -393,6 +516,14 @@ def render_md(s: dict) -> str:
                 L.append(f"- `{r['cls']}`")
                 continue
             d, l = r["dead"], r["loud"]
+            if v == "MUTANT-INVALID":
+                why = "; ".join(f"{m}: {r[m]['invalid']}"
+                                for m in ("dead", "loud") if r[m]["invalid"])
+                L.append(f"- `{r['cls']}` via "
+                         f"{', '.join(f'`{e}`' for e in r['entries'])} — "
+                         f"**not measured** ({why}). This is a DRILL defect, "
+                         f"not a finding about the suite.")
+                continue
             L.append(f"- `{r['cls']}` via {', '.join(f'`{e}`' for e in r['entries'])} — "
                      f"dead {len(d['named'])} named / {len(d['collateral'])} collateral; "
                      f"loud {len(l['named'])} named / {len(l['collateral'])} collateral; "
