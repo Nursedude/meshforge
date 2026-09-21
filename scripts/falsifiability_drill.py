@@ -205,7 +205,7 @@ def _import_line(tree: ast.Module) -> int:
     return line
 
 
-def _with_loud_import(text: str, where: str) -> str:
+def _with_loud_import(text: str) -> str:
     """Give the loud stub's alias an import, at a line where one is legal —
     and REFUSE to return text that names the alias without importing it.
 
@@ -222,11 +222,16 @@ def _with_loud_import(text: str, where: str) -> str:
         lines = text.splitlines(keepends=True)
         at = _import_line(ast.parse(text))
         text = "".join(lines[:at] + [FDRILL_IMPORT] + lines[at:])
-    if FDRILL_ALIAS in text and FDRILL_IMPORT not in text:
-        raise RuntimeError(
-            f"{where}: the loud stub names {FDRILL_ALIAS} but never imports "
-            "it — that mutant would RAISE, not fire, and its failures would "
-            "be scored as coverage this class does not have")
+    # ⚠️ There is deliberately NO guard here, and that is a correction. This
+    # function first carried `if FDRILL_ALIAS in text and FDRILL_IMPORT not in
+    # text: raise` — UNREACHABLE, because the block above has just inserted the
+    # import, so the second condition is always false. A refusal that cannot
+    # refuse is the one-outcome instrument this repo keeps finding elsewhere,
+    # and the commit that added it CLAIMED it fires. Making it reachable would
+    # also be wrong: a raise here aborts the whole sweep, where the main loop's
+    # per-file `compile()` check yields one `MUTANT-INVALID` row and carries on.
+    # So: ONE witness, the reachable one. The alias/import invariant is pinned
+    # by `test_the_loud_alias_is_never_named_without_being_imported` instead.
     return text
 
 
@@ -262,7 +267,7 @@ def mutate(wt: Path, fns: dict, cls: str, attr: dict, mode: str) -> list:
             wfn = Fn(e, wt_path, node)
             path, text = _stub(wfn, body)
             if mode != "dead":
-                text = _with_loud_import(text, fn.path.name)
+                text = _with_loud_import(text)
             path.write_text(text)
             touched.add(path)
     return sorted(touched)

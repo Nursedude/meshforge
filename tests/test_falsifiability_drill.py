@@ -129,7 +129,7 @@ def test_the_loud_alias_is_never_named_without_being_imported():
     firing — failing tests for a reason that is not the one being measured."""
     src = "from __future__ import annotations\nimport os\n"
     stub = src + f"def p():\n    return {fdrill.FDRILL_ALIAS}(cls='x')\n"
-    out = fdrill._with_loud_import(stub, "t.py")
+    out = fdrill._with_loud_import(stub)
     assert fdrill.FDRILL_IMPORT in out, "the alias is named but not imported"
     compile(out, "<t>", "exec")
     assert out.index("from __future__") < out.index(fdrill.FDRILL_IMPORT)
@@ -137,4 +137,4 @@ def test_the_loud_alias_is_never_named_without_being_imported():
 
 def test_an_existing_loud_import_is_not_duplicated():
     src = "import os\n" + fdrill.FDRILL_IMPORT + "def p():\n    return 1\n"
-    assert fdrill._with_loud_import(src, "t.py").count(fdrill.FDRILL_IMPORT) == 1
+    assert fdrill._with_loud_import(src).count(fdrill.FDRILL_IMPORT) == 1
