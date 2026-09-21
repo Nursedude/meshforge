@@ -218,7 +218,7 @@ always exits 0; the blocking gate is `scripts/lint.py --all`.
 - Shared connection manager prevents TCP:4403 client contention
 - Exponential backoff reconnection (1s → 2s → 4s → ... → 30s max)
 - Canonical logging via `setup_logging()` — all 9 `basicConfig()` calls consolidated
-- Handler registry pattern: all <!--STAT:handlers-->104<!--/STAT--> TUI handler modules use registry dispatch (mixin inheritance fully replaced)
+- Handler registry pattern: all <!--STAT:handlers-->83<!--/STAT--> TUI handlers use registry dispatch (mixin inheritance fully replaced)
 - Connection failure logs upgraded to WARNING level for visibility (cleanup errors stay DEBUG)
 
 ---

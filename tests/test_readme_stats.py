@@ -110,7 +110,24 @@ class TestWiderSentinelScope:
             if key == "handlers":
                 tracked = [f for f in tracked
                            if not f.endswith("__init__.py")]
-            assert mod.COMPUTERS[key]() == len(tracked), (
+            # The PROPERTY is "a fresh clone reproduces this number", not
+            # "the number equals a file count". `handlers` counts handler_id
+            # ASSIGNMENTS, because one module may define more than one handler
+            # (fleet_health.py defines two) — so its expectation is derived
+            # over the tracked files rather than being their length. This
+            # still fails for the original reason: the computer globs the
+            # filesystem, so an UNTRACKED handler file makes it exceed this.
+            if key == "handlers":
+                import re as _re
+                expected = sum(
+                    len(_re.findall(r"^\s*handler_id\s*=",
+                                    (mod.ROOT / f).read_text(
+                                        encoding="utf-8", errors="ignore"),
+                                    _re.M))
+                    for f in tracked)
+            else:
+                expected = len(tracked)
+            assert mod.COMPUTERS[key]() == expected, (
                 "%s counts files git does not track — it will differ in CI"
                 % key)
 

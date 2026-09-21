@@ -86,10 +86,42 @@ def _count_test_files() -> int | None:
 
 
 def _count_handler_modules() -> int | None:
+    """Count TUI handlers — modules that declare ``handler_id``.
+
+    NOT a file count. ``handlers/`` also holds private mixin/helper modules
+    (``_rns_repair.py``, ``_nomadnet_io_ops.py``, …) that a handler composes
+    but the registry never dispatches. Globbing ``*.py`` counted those too
+    and overstated the figure by 21 as of 2026-09-21 (104 files vs 83
+    handlers) — a capability claim inflated by refactors that add a helper
+    without adding a capability, in docs that say these modules "use
+    registry dispatch".
+
+    ``handler_id`` is the registry's own contract, so it is the thing to
+    measure rather than a filename convention a future helper could break.
+    Cross-checked against an independent source at port time:
+    ``.claude/skills/meshforge/capability_index.md``, which derives its count
+    from ``get_all_handlers()``, also says 83.
+
+    Ported from MeshAnchor ``a712d77f`` (same defect there: 86 vs 72).
+    """
     d = ROOT / "src" / "launcher_tui" / "handlers"
     if not d.is_dir():
         return None
-    return len([p for p in d.glob("*.py") if p.name != "__init__.py"])
+    n = 0
+    for p in d.glob("*.py"):
+        if p.name == "__init__.py":
+            continue
+        try:
+            # COUNT ASSIGNMENTS, NOT FILES: one module may define more than
+            # one handler (MeshForge's fleet_health.py defines two), so a
+            # per-file tally silently undercounts. Found 2026-09-21 when the
+            # file count said 82 against three independent sources that all
+            # said 83 — the manifest, capability_index.md's get_all_handlers()
+            # figure, and the raw assignment count.
+            n += len(re.findall(r"^\s*handler_id\s*=", p.read_text(), re.M))
+        except OSError:
+            return None
+    return n
 
 
 # key -> zero-arg computation returning the ground-truth int, or None when the
