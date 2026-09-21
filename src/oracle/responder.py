@@ -157,7 +157,8 @@ class MeshOracleResponder:
             return True
         return channel is not None and channel in self._allowed_channels
 
-    def handle(self, from_id: str, text: str, channel: int = 0) -> Optional[str]:
+    def handle(self, from_id: str, text: str,
+               channel: Optional[int] = 0) -> Optional[str]:
         """Answer a query directed back to ``from_id``; return the reply or None.
 
         Returns the reply string when the query was TAKEN (so the caller can

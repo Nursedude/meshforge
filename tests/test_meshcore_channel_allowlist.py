@@ -22,7 +22,7 @@ import asyncio
 import logging
 import threading
 from queue import Queue
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -347,3 +347,153 @@ class TestDeclaredConfigReallyLoads:
         assert h.bridge_allowed(_msg(0)) is True
         assert h.bridge_allowed(_msg(4)) is True
         assert h.bridge_allowed(_msg(1)) is False
+
+
+def _snapshot():
+    """A real NocSnapshot, not {}.
+
+    An empty dict raises inside ``answer()``, and the handler's ``except``
+    swallows that to a debug line — so a bad fixture silently disables the
+    oracle and every refusal assertion passes vacuously. Build the real
+    thing (read_snapshot is the only I/O path and takes injected sources).
+    """
+    from oracle import read_snapshot
+    return read_snapshot(status={"directory": {"total": 3}}, nodes={}, now=1.0)
+
+
+class TestOracleGateSlotUnknown2026_09_20:
+    """The ORACLE consumer of the slot metadata — pinning a COUPLING.
+
+    ⚠️ No defect was found here. ``_on_channel_message`` carried
+    ``.get('channel', 0)``, which LOOKS like the 2026-09-18 "absent folded to
+    Public" bug, but the default was dead: ``from_meshcore`` always sets
+    ``metadata['channel']``, to ``None`` when the wire named no slot, so the
+    default never fired. Measured, not assumed — these tests PASS on the
+    pre-change source.
+
+    What is real is the coupling. The oracle is a second consumer of that
+    value (hfm #5) and ``TestIngressDisclosure2026_09_18`` above covers only
+    the BRIDGE consumer. The oracle also runs BEFORE
+    ``_channel_path.bridge_allowed`` and may ``return``-consume, so it gets
+    first look at unslotted traffic and no downstream gate would catch a
+    regression here. These pin: the oracle sees ``None`` (not 0) for an
+    unslotted message, a real slot still arrives intact, and — the one case
+    the ``, 0`` removal actually changes — a metadata dict MISSING the key
+    reads unknown rather than Public.
+    """
+
+    def test_oracle_receives_None_not_zero_for_an_unslotted_message(self):
+        h = _make_handler(queue=Queue(maxsize=100))
+        seen = []
+
+        class _Spy:
+            consume = True
+
+            def handle(self, from_id, text, channel=0):
+                seen.append(channel)
+                return None
+
+        h._oracle = _Spy()
+        asyncio.run(h._on_channel_message(_channel_event_without_slot(text="?status")))
+        assert seen == [None], (
+            f"oracle saw {seen!r}; 0 means unknown was laundered into Public")
+
+    def test_a_known_slot_still_reaches_the_oracle_intact(self):
+        """The fix must not blind the oracle to real slots."""
+        h = _make_handler(queue=Queue(maxsize=100))
+        seen = []
+
+        class _Spy:
+            consume = True
+
+            def handle(self, from_id, text, channel=0):
+                seen.append(channel)
+                return None
+
+        h._oracle = _Spy()
+        asyncio.run(h._on_channel_message(_channel_event(3, text="?status")))
+        assert seen == [3], f"oracle saw {seen!r}, expected the real slot 3"
+
+    def test_metadata_missing_the_key_entirely_reads_unknown_not_Public(self):
+        """The ONLY case the ``, 0`` removal changes behaviour.
+
+        from_meshcore always sets the key today, so this cannot arise from the
+        wire — it arises from a refactor. Pinned because the oracle gets first
+        look and nothing downstream would catch it.
+        """
+        h = _make_handler(queue=Queue(maxsize=100))
+        seen = []
+
+        class _Spy:
+            consume = True
+
+            def handle(self, from_id, text, channel=0):
+                seen.append(channel)
+                return None
+
+        h._oracle = _Spy()
+
+        from gateway.canonical_message import CanonicalMessage
+
+        real_from_meshcore = CanonicalMessage.from_meshcore
+
+        def _strip_slot_key(event):
+            msg = real_from_meshcore(event)
+            msg.metadata = {k: v for k, v in (msg.metadata or {}).items()
+                            if k != 'channel'}
+            return msg
+
+        with patch.object(CanonicalMessage, 'from_meshcore', _strip_slot_key):
+            asyncio.run(h._on_channel_message(_channel_event_without_slot(text="?status")))
+
+        assert seen == [None], (
+            f"oracle saw {seen!r}; 0 means a missing key was read as Public")
+
+    def test_unslotted_query_is_not_answered_when_Public_is_whitelisted(self):
+        """The consequence, through the REAL responder.
+
+        A Public bot whitelists channel 0. If unknown folds to 0, every
+        message whose slot the wire did not name becomes answerable — the
+        'never make their channel worse' bar, broken at the gate.
+        """
+        from oracle.responder import MeshOracleResponder
+
+        sent = []
+        responder = MeshOracleResponder.from_env(
+            snapshot_fn=_snapshot,
+            send_fn=lambda text, dest, channel: sent.append((text, dest, channel)) or True,
+            log_fn=lambda record: None,
+            env={"MESHFORGE_ORACLE_ENABLED": "1"},
+            transport="meshcore",
+            allowlist_env="MESHFORGE_ORACLE_MESHCORE_ALLOWLIST",
+            allowed_channels={0},
+        )
+        assert responder is not None, "responder did not build; test proves nothing"
+
+        h = _make_handler(queue=Queue(maxsize=100))
+        h._oracle = responder
+        asyncio.run(h._on_channel_message(_channel_event_without_slot(text="?status")))
+        assert sent == [], f"unslotted query was answered as Public: {sent!r}"
+
+    def test_the_same_query_on_the_whitelisted_slot_IS_answered(self):
+        """The control: the refusal above must be about the UNKNOWN slot, not
+        about the responder being inert. Without this, the test above passes
+        on a responder that answers nothing at all."""
+        from oracle.responder import MeshOracleResponder
+
+        sent = []
+        responder = MeshOracleResponder.from_env(
+            snapshot_fn=_snapshot,
+            send_fn=lambda text, dest, channel: sent.append((text, dest, channel)) or True,
+            log_fn=lambda record: None,
+            env={"MESHFORGE_ORACLE_ENABLED": "1"},
+            transport="meshcore",
+            allowlist_env="MESHFORGE_ORACLE_MESHCORE_ALLOWLIST",
+            allowed_channels={0},
+        )
+        assert responder is not None
+
+        h = _make_handler(queue=Queue(maxsize=100))
+        h._oracle = responder
+        asyncio.run(h._on_channel_message(_channel_event(0, text="?status")))
+        assert sent, "responder answered nothing on the whitelisted slot — the refusal test above would pass vacuously"

@@ -593,7 +593,18 @@ class MeshCoreHandler(BaseMessageHandler):
             # the dual-path (event vs poll) delivery of the same query.
             if self._oracle is not None:
                 try:
-                    chan = (msg.metadata or {}).get('channel', 0)
+                    # Absent is UNKNOWN, never Public. This read carried a
+                    # `, 0` default that was DEAD — from_meshcore always sets
+                    # metadata['channel'], to None when the wire named no slot
+                    # (2026-09-18 cure) — so it never fired. Dropped anyway:
+                    # the safety of this line rested entirely on that coupling,
+                    # and if the key ever goes missing the default would fold
+                    # unknown into Public one frame before
+                    # responder._allowed's `channel is not None` can refuse it.
+                    # The oracle runs BEFORE _channel_path.bridge_allowed and
+                    # may return-consume, so it gets first look at unslotted
+                    # traffic — no downstream gate would catch it.
+                    chan = (msg.metadata or {}).get('channel')
                     reply = self._oracle.handle(msg.source_address, msg.content, chan)
                     if reply is not None and self._oracle.consume:
                         return
