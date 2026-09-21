@@ -23,6 +23,25 @@ the number that must be RE-DERIVED (re-run this) rather than carried.
            zero failures as "the suite noticed nothing" reports the DRILL's
            own breakage as a finding about the code. Verdict `MUTANT-INVALID`.
 
+FORCING EACH `invalid` LEG (the live drills that proved them, 2026-09-21 —
+written down because re-deriving them cost ~20 min and each leg is otherwise
+only ever seen in a unit test). Import this module, override, call main():
+  leg 1  compile   `fd._import_line = lambda tree: 0` — restores the refuted
+                   line-0 prepend, which lands above `from __future__`.
+  leg 2  errors    `fd.FDRILL_IMPORT += "import _fdrill_absent_module\n"` — a
+                   mutant that COMPILES and dies at import. This is the ONLY
+                   leg through which `-rfE` is observable; under `-rf` the
+                   short summary omits errors and the list is always empty.
+  leg 3  backstop  `fd.PYTEST_TIMEOUT = 25` plus a module-level
+                   `time.sleep(999)` appended by `_with_loud_import`, on a
+                   class whose baseline is well under that (pick the smallest
+                   `baseline.secs` from a `--json` run). SIGKILL leaves no
+                   pytest summary, so both scrapers come back empty and only
+                   `passed == 0` against a non-empty baseline knows.
+Pass `--md` as well: `render_md`'s MUTANT-INVALID section ONLY runs when there
+is a finding, and CI passes `--md`, so it is otherwise unexercised code at
+exactly the moment the report matters.
+
 WHAT THIS DOES NOT CLAIM. A caught mutant proves the suite notices the ENTRY
 PROBE dying as a unit — the shape in which real probes die (an except-swallow,
 a wrong path, a wrong name). It says nothing about whether the drill resembles
