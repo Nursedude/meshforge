@@ -157,7 +157,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 |---|---|---|---|
 | `check` | Check RNS Setup |  | RNSConfigHandler |
 | `config` | View Reticulum Config |  | RNSConfigHandler |
-| `edit` | Edit Reticulum Config |  | RNSConfigHandler |
+| `edit` | Edit Reticulum Config | `rns` | RNSConfigHandler |
 | `logging` | Configure RNS Logging |  | RNSConfigHandler |
 | `diag` | RNS Diagnostics |  | RNSDiagnosticsHandler |
 | `drift` | Config Drift Check |  | RNSDiagnosticsHandler |

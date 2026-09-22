@@ -724,7 +724,7 @@ HANDLER_MANIFEST = [
         "error": None,
         "menu_items": [
             ('config', 'View Reticulum Config', None),
-            ('edit', 'Edit Reticulum Config', None),
+            ('edit', 'Edit Reticulum Config', 'rns'),
             ('logging', 'Configure RNS Logging', None),
             ('check', 'Check RNS Setup', None),
         ],

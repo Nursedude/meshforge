@@ -32,6 +32,7 @@ import logging
 import os
 import sys
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -201,7 +202,15 @@ class TestGatedRowsAreMarked:
         owns and flags). Returns (flag, True) when governed, (None, False)
         when the row is not registry-owned at all ('back', and the legacy
         rows that carry no flag).
+
+        A declared alias resolves through CROSS_SECTION_ROWS first: its tag
+        need not match the owner's ('rns-config' IS rns/edit), and matching
+        by tag alone read that row as ungoverned (review 2026-09-22).
         """
+        for screen, atag, osec, otag in tui_main.MeshForgeLauncher.CROSS_SECTION_ROWS:
+            if (screen, atag) == (section, tag):
+                section, tag = osec, otag
+                break
         for h in HANDLER_MANIFEST:
             if h["menu_section"] == section:
                 for t, _d, f in h["menu_items"]:
@@ -368,6 +377,26 @@ class TestCrossSectionRowsObeyTheirOwner:
         _ctx, _registry, holder = _make(PROFILES[ProfileName.FIELD])
         rows = dict(_rows(holder, "extensions"))
         assert not rows["mfmaps"].startswith(OFF)
+
+    @pytest.mark.parametrize("pname", [p for p in ProfileName
+                                       if not PROFILES[p].feature_flags.get("rns", True)])
+    def test_configuration_rns_config_obeys_the_rns_gate(self, pname):
+        """REAL flags, nothing patched (review 2026-09-22, Opus 5.5).
+        The RNS gate lives on the ENTRY row (mesh_networks/rns); the alias
+        follows its owner rns/edit, which carried None — so on every
+        rns-off profile Mesh Networks > RNS read [off] and refused while
+        Configuration > RNS Config stayed unmarked and ran the editor.
+        The `_drive` tests above force a fake flag onto the owner and
+        could not see that the real owner had none."""
+        ctx, registry, holder = _make(PROFILES[pname])
+        assert dict(_rows(holder, "mesh_networks"))["rns"].startswith(OFF)
+        assert dict(_rows(holder, "configuration"))["rns-config"].startswith(OFF)
+        reached = []
+        owner = registry._tag_index["rns"]["edit"]
+        with patch.object(type(owner), "execute",
+                          lambda self, *a, **k: reached.append(a)):
+            assert registry.dispatch("configuration", "rns-config") is True
+        assert not reached, f"{pname.value}: the RNS editor ran on an rns-off profile"
 
     def test_it_matches_its_owner_exactly(self):
         _ctx, registry, holder = _make(PROFILES[ProfileName.MONITOR])
