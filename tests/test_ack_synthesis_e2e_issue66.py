@@ -75,7 +75,7 @@ def integrated_bridge(tmp_path):
     but the queue, ack substrate, and synthesis helpers run for real.
     """
     with patch("gateway.rns_bridge.GatewayConfig") as MockConfig, \
-         patch("gateway.rns_bridge.UnifiedNodeTracker"), \
+         patch("gateway.rns_bridge.get_node_tracker"), \
          patch("gateway.rns_bridge.BridgeHealthMonitor"), \
          patch("gateway.rns_bridge.DeliveryTracker"), \
          patch("gateway.rns_bridge.MeshtasticHandler") as MockHandler, \

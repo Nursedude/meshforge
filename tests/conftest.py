@@ -161,6 +161,40 @@ def _reset_journal_scan_memo():
 
 
 @pytest.fixture(autouse=True)
+def _reset_node_tracker_singleton():
+    """Give every test a fresh node-tracker singleton.
+
+    The bridge SHARES the ``get_node_tracker()`` singleton instead of building
+    a private ``UnifiedNodeTracker`` (2026-09-22, the shutdown-clobber fix:
+    two trackers over one node_cache.json, the stale one flushing last).
+    Without this reset the second test to construct a bridge would inherit the
+    first test's node set — cross-test leakage that surfaces as a flake in
+    whichever test reads the population next, nowhere near the one that
+    dirtied it.
+
+    BOTH import aliases are reset, for exactly the reason
+    ``_isolate_node_cache_files`` gives below: ``sys.path`` carries the repo
+    root AND ``src/``, so ``gateway.node_tracker`` and
+    ``src.gateway.node_tracker`` are two module objects holding two
+    independent ``_node_tracker`` globals. Resetting the one in front of you
+    leaves the other handing the next test a used tracker.
+
+    Runs on setup as well as teardown: a test that leaks despite this must not
+    poison its successor.
+    """
+    def _reset():
+        for name in ("gateway.node_tracker", "src.gateway.node_tracker"):
+            mod = sys.modules.get(name)
+            reset = getattr(mod, "reset_node_tracker", None)
+            if reset is not None:
+                reset()
+
+    _reset()
+    yield
+    _reset()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_node_cache_files(tmp_path_factory):
     """Keep the node-cache writers out of the operator's live data directory.
 

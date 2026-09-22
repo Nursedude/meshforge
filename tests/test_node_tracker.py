@@ -1813,14 +1813,61 @@ class TestCacheWriteChurn20260803:
             f"{_PROPAGATION_CACHE_FRESH_S}s LXMF propagation freshness window"
         )
 
-    def test_stop_flushes_unconditionally(self, tracker):
-        """Shutdown must not lose up to CACHE_SAVE_INTERVAL of state."""
+    def test_stop_flushes_unconditionally_once_started(self, tracker):
+        """Shutdown must not lose up to CACHE_SAVE_INTERVAL of state.
+
+        "Unconditionally" is scoped to a tracker that actually RAN. Since
+        2026-09-22 an instance that never start()ed has no authoritative view
+        and must not write at all — see the next test. The 08-03 requirement
+        is unchanged for the live tracker: the dirty gate must not swallow the
+        final interval.
+        """
         t, cache_file, _ = tracker
+        t._ever_started = True  # models a tracker that ran its live loop
         t._cache_dirty = False
         t._last_cache_save = time.monotonic()
         cache_file.unlink(missing_ok=True)
         t.stop(timeout=0.1)
         assert cache_file.exists(), "stop() did not flush the cache"
+
+    def test_stop_does_not_flush_when_never_started(self, tracker):
+        """The defect this pins destroyed 25 live node records per daemon stop.
+
+        Measured on MeshAnchor 2026-09-22, whose daemon runs the bridge and
+        the singleton in ONE process. The bridge's tracker grew from RX; the
+        singleton sat on the snapshot it loaded at startup and, stopping LAST,
+        flushed that over the live file — 77 nodes (rns 57 / meshcore 20)
+        became 52 (rns 38 / meshcore 14), newest last_seen 31 minutes
+        backward, roughly four times a day on its restart timer.
+
+        The structural cure is one shared tracker (see
+        test_regression_guards.py::TestSingleNodeTrackerContract). This is the
+        invariant that makes the class impossible to reintroduce: an instance
+        that never ran the live loop has nothing authoritative to write.
+        Eviction cannot cure this direction — it removes expired nodes, it
+        cannot add back ones this instance never heard.
+        """
+        t, cache_file, _ = tracker
+        cache_file.unlink(missing_ok=True)
+        t.stop(timeout=0.1)
+        assert not cache_file.exists(), (
+            "a tracker that never start()ed flushed its stale snapshot — "
+            "this is the 2026-09-22 clobber"
+        )
+
+    def test_stop_is_idempotent(self, tracker):
+        """Two callers stop the same object now, so the second must be a no-op.
+
+        The bridge stops its tracker and the daemon's NodeTrackerService stops
+        the same object immediately after. A second flush is a wasted fsync of
+        the whole population, not a correctness gain.
+        """
+        t, _, _ = tracker
+        t._ever_started = True
+        t.stop(timeout=0.1)
+        with patch.object(t, '_save_cache') as save:
+            t.stop(timeout=0.1)
+        save.assert_not_called()
 
 
 class TestPopulationRetention20260803:
@@ -2044,7 +2091,14 @@ class TestStopSweepsBeforeFlush20260803:
     @pytest.fixture
     def tracker(self, tmp_path):
         with patch.object(UnifiedNodeTracker, '_load_cache'):
-            yield UnifiedNodeTracker()
+            t = UnifiedNodeTracker()
+            # These tests model the LIVE tracker's shutdown — the one that ran
+            # its cleanup loop and therefore owns the right to write the cache.
+            # Since 2026-09-22 a never-started instance skips the flush
+            # entirely (the clobber fix), so without this they would assert
+            # against a stop() that correctly does nothing.
+            t._ever_started = True
+            yield t
 
     @staticmethod
     def _node(nid, network="rns", age_days=0.0):

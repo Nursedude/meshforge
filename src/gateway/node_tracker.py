@@ -128,6 +128,15 @@ class UnifiedNodeTracker:
         self._running = False
         self._stop_event = threading.Event()
         self._cleanup_thread = None
+
+        # Write authority (2026-09-22). A tracker that never ran its live loop
+        # has no authoritative view to write: its in-memory set is the snapshot
+        # it loaded at construction, and flushing THAT over a file another
+        # tracker has been keeping current destroys the difference. Eviction
+        # cannot cure this direction -- it removes expired nodes, it cannot add
+        # the ones this instance never heard. Only a started tracker may write.
+        self._ever_started = False
+        self._stopped = False
         self._rns_thread = None
         self._reticulum = None
         self._rns_connected = False
@@ -162,6 +171,8 @@ class UnifiedNodeTracker:
     def start(self):
         """Start the node tracker"""
         self._running = True
+        self._ever_started = True
+        self._stopped = False
         self._stop_event.clear()
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
@@ -416,6 +427,21 @@ class UnifiedNodeTracker:
         Args:
             timeout: Seconds to wait for each thread to finish
         """
+        # Authority-gated and idempotent. Two callers reach this object in one
+        # process -- the bridge stops its tracker, then the daemon's
+        # NodeTrackerService stops the same object immediately after -- so a
+        # second flush must be a no-op rather than a second full fsync.
+        if not self._ever_started:
+            logger.info(
+                "Node tracker stop(): never started -- skipping cache flush "
+                "(this instance has no authoritative view to write)"
+            )
+            return
+        if self._stopped:
+            logger.debug("Node tracker stop(): already stopped -- skipping duplicate flush")
+            return
+        self._stopped = True
+
         logger.info("Stopping node tracker...")
         self._running = False
         self._stop_event.set()
@@ -1405,8 +1431,30 @@ _node_tracker: Optional[UnifiedNodeTracker] = None
 def get_node_tracker() -> UnifiedNodeTracker:
     """Get the global node tracker instance.
 
-    Returns a singleton UnifiedNodeTracker that is shared across the application.
-    The tracker is created on first call and reused thereafter.
+    Returns a singleton UnifiedNodeTracker shared across the application. The
+    tracker is created on first call and reused thereafter.
+
+    ⚠️ RNSMeshtasticBridge USES THIS -- it must not build its own (2026-09-22).
+    It used to, which lets a process run TWO trackers over one
+    node_cache.json: the bridge's lives and grows from RX, while the singleton
+    (touched only by message_listener/automation_engine) sits near the
+    snapshot it loaded at startup. Services stop in reverse registration
+    order, so the singleton's stop() flush lands LAST, over the live set.
+
+    Measured on MeshAnchor's daemon, which runs both in one process, via a
+    three-point drill across a single daemon stop:
+
+        before stop   77 nodes (rns 57 / meshcore 20)  newest 22:32:12
+        after  stop   52 nodes (rns 38 / meshcore 14)  newest 22:01:09
+
+    25 records destroyed and newest last_seen 31 minutes backward, roughly
+    four times a day on that box's restart timer.
+
+    Here the pair is LATENT only because meshforge.service is inactive on
+    every gateway box, so meshforge-gateway holds the bridge alone (see
+    daemon.py::NodeTrackerService). One `systemctl enable` arms it -- and a
+    deploy sweep has started an inactive unit on this fleet before. Two
+    consumers of one artifact share ONE object (honest_failure_modes #5).
 
     Returns:
         UnifiedNodeTracker: The global node tracker instance
@@ -1415,3 +1463,19 @@ def get_node_tracker() -> UnifiedNodeTracker:
     if _node_tracker is None:
         _node_tracker = UnifiedNodeTracker()
     return _node_tracker
+
+
+def reset_node_tracker() -> None:
+    """Drop the singleton so the next get_node_tracker() builds a fresh one.
+
+    FOR TESTS ONLY. The bridge shares this singleton rather than building its
+    own, so without a reset every test that constructs a bridge would inherit
+    the previous test's node set -- cross-test state leakage that surfaces as
+    flakes in tests unrelated to the one that dirtied it.
+
+    Does NOT stop the outgoing instance: callers that started one are
+    responsible for stopping it, and stopping here would flush a half-built
+    test fixture over the operator's real cache file.
+    """
+    global _node_tracker
+    _node_tracker = None

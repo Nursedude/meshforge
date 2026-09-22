@@ -60,7 +60,7 @@ def bridge_config():
 @pytest.fixture
 def bridge(bridge_config):
     """Create a bridge with mocked external dependencies."""
-    with patch('gateway.rns_bridge.UnifiedNodeTracker') as mock_tracker:
+    with patch('gateway.rns_bridge.get_node_tracker') as mock_tracker:
         mock_tracker_instance = MagicMock()
         mock_tracker.return_value = mock_tracker_instance
         b = RNSMeshtasticBridge(config=bridge_config)

@@ -373,8 +373,8 @@ class RNSMenuHandler(BaseHandler):
 
             # Load node tracker and cache
             try:
-                from gateway.node_tracker import UnifiedNodeTracker
-                tracker = UnifiedNodeTracker()
+                from gateway.node_tracker import get_node_tracker
+                tracker = get_node_tracker()
                 rns_nodes = tracker.get_rns_nodes()
             except Exception as e:
                 print(f"Error loading node tracker: {e}")

@@ -213,7 +213,7 @@ def _surviving_bridge_threads():
 def bridge():
     """Create a fully-mocked RNSMeshtasticBridge for unit testing."""
     with patch("gateway.rns_bridge.GatewayConfig") as MockConfig, \
-         patch("gateway.rns_bridge.UnifiedNodeTracker") as MockTracker, \
+         patch("gateway.rns_bridge.get_node_tracker") as MockTracker, \
          patch("gateway.rns_bridge.BridgeHealthMonitor") as MockHealth, \
          patch("gateway.rns_bridge.DeliveryTracker") as MockDelivery, \
          patch("gateway.rns_bridge.MeshtasticHandler") as MockHandler, \
@@ -278,7 +278,7 @@ def bridge():
 def bridge_no_cb():
     """Bridge with circuit breaker disabled."""
     with patch("gateway.rns_bridge.GatewayConfig") as MockConfig, \
-         patch("gateway.rns_bridge.UnifiedNodeTracker"), \
+         patch("gateway.rns_bridge.get_node_tracker"), \
          patch("gateway.rns_bridge.BridgeHealthMonitor"), \
          patch("gateway.rns_bridge.DeliveryTracker"), \
          patch("gateway.rns_bridge.MeshtasticHandler") as MockHandler, \
@@ -636,7 +636,7 @@ class TestRoutingLegacy:
     def _make_bridge_with_rules(self, rules, default_route="bidirectional", enabled=True):
         """Create bridge with specific routing rules."""
         with patch("gateway.rns_bridge.GatewayConfig") as MockConfig, \
-             patch("gateway.rns_bridge.UnifiedNodeTracker"), \
+             patch("gateway.rns_bridge.get_node_tracker"), \
              patch("gateway.rns_bridge.BridgeHealthMonitor"), \
              patch("gateway.rns_bridge.DeliveryTracker"), \
              patch("gateway.rns_bridge.MeshtasticHandler") as MockHandler, \
@@ -1449,7 +1449,7 @@ class TestProcessRNSToMesh:
         (HTTP send_text_direct path), NOT 'mqtt' (which publishes to a
         topic meshtasticd does not subscribe to)."""
         with patch("gateway.rns_bridge.GatewayConfig") as MockConfig, \
-             patch("gateway.rns_bridge.UnifiedNodeTracker"), \
+             patch("gateway.rns_bridge.get_node_tracker"), \
              patch("gateway.rns_bridge.BridgeHealthMonitor"), \
              patch("gateway.rns_bridge.DeliveryTracker"), \
              patch("gateway.rns_bridge.MeshtasticHandler"), \
@@ -1634,7 +1634,7 @@ class TestRNSToMeshChunking:
         """In mqtt_bridge mode each chunk is its own queue item (independent
         retry), and every enqueued message is within the byte cap."""
         with patch("gateway.rns_bridge.GatewayConfig") as MockConfig, \
-             patch("gateway.rns_bridge.UnifiedNodeTracker"), \
+             patch("gateway.rns_bridge.get_node_tracker"), \
              patch("gateway.rns_bridge.BridgeHealthMonitor"), \
              patch("gateway.rns_bridge.DeliveryTracker"), \
              patch("gateway.rns_bridge.MeshtasticHandler"), \
@@ -1681,7 +1681,7 @@ class TestRNSToMeshChunking:
         """Build an mqtt_bridge bridge whose persistent queue.enqueue uses the
         given side_effect, returning (bridge, mock_queue)."""
         with patch("gateway.rns_bridge.GatewayConfig") as MockConfig, \
-             patch("gateway.rns_bridge.UnifiedNodeTracker"), \
+             patch("gateway.rns_bridge.get_node_tracker"), \
              patch("gateway.rns_bridge.BridgeHealthMonitor"), \
              patch("gateway.rns_bridge.DeliveryTracker"), \
              patch("gateway.rns_bridge.MeshtasticHandler"), \
@@ -5845,7 +5845,7 @@ class TestRetentionPinsWired20260803:
         cfg = GatewayConfig()
         for k, v in rns_overrides.items():
             setattr(cfg.rns, k, v)
-        with patch("gateway.rns_bridge.UnifiedNodeTracker") as MockTracker, \
+        with patch("gateway.rns_bridge.get_node_tracker") as MockTracker, \
              patch("gateway.rns_bridge.BridgeHealthMonitor"), \
              patch("gateway.rns_bridge.DeliveryTracker"), \
              patch("gateway.rns_bridge.MeshtasticHandler"), \
