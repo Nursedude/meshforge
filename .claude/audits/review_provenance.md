@@ -2471,6 +2471,110 @@ is still in there and look for it.**
 same staleness class; the guard was narrowed to the two commands actually
 converted rather than silently widened to demand five more redesigns.
 
+## ROOT-CAUSED 2026-09-21 (Opus 5 1M) — MeshAnchor's node cache has TWO writers
+
+**Status: root cause PROVEN, fix NOT written — a design decision is owed.**
+Found while verifying roadmap 1b on meshanchor-server; it degrades that
+feature, so it is product work, not harness work.
+
+### The symptom
+
+Across a `meshanchor-daemon` restart, meshcore nodes' `last_seen` moved
+BACKWARD and some nodes vanished:
+
+    dc68ab4782d0   2026-09-21T18:28:19  ->  2026-09-03T14:05:27   (-18 days)
+    fedf8273822d   2026-09-21T18:23:42  ->  2026-09-03T14:04:40
+    meshcore nodes 22 -> 14; stamped 8 -> 3; whole cache 141 -> 58 nodes
+
+`first_seen`, name and pubkey were PRESERVED on the same rows — only
+`last_seen` was rewritten. Reproducible on every restart (3 this session).
+
+### The cause
+
+`meshanchor-map.service` runs its OWN `UnifiedNodeTracker` singleton over
+the SAME `~/.config/meshanchor/node_cache.json` as the daemon. Proven from
+the map's own journal, not inferred:
+
+    Sep 21 04:40:06 meshanchor-map[907672] -- gateway.node_tracker -- INFO -- Loaded 131 nodes from cache
+
+`get_cache_file()` is user-scoped, so both processes resolve one path;
+`add_node()` marks the cache dirty and the tracker saves when dirty, so
+BOTH load and save it with no lock and no merge. The map never hears
+MeshCore adverts, so its view carries stale receipts and clobbers the
+daemon's fresh ones whenever it saves. `honest_failure_modes` #8 exactly:
+*same state files + two processes = flock-refuse-loud or single-writer.*
+
+Measured over 120 s with both PIDs live: daemon wrote 7,118,848 B, map
+wrote 655,360 B, and the cache's md5 changed in the window.
+
+⚠️ **The instructive part**: `daemon.py:353` ALREADY documents that the map
+holds a different tracker instance, and solves the OBSERVATION-sharing
+problem correctly via `node_history.db` (WAL, concurrent-safe). The JSON
+cache sat beside it as an unsynchronized shared write target. One sharing
+problem was seen and fixed; its twin, in the same class, in the same two
+processes, was not.
+
+### Ruled out (do not re-walk these)
+
+- `/root/.config/meshanchor/node_cache.json` — exists (the `Path.home()`
+  -under-sudo class) but is from May 5 and holds different nodes.
+- `node_history.db` as a re-seeding source — `node_tracker` imports only
+  two retention CONSTANTS from `utils.node_history`, no loader.
+- The cache restore path — `node_tracker.py:932` copies `last_seen`
+  verbatim; it is not the rewriter.
+- A second in-process singleton — only one `get_node_tracker()` (:1337);
+  `get_global_node_tracker` referenced elsewhere does not exist there.
+- `.node_cache.json.nsllq91q.tmp` (6.8 MB, 6,211 nodes) — stale debris
+  from an interrupted write on 06-24, not the source. Worth deleting.
+
+### The decision owed
+
+Three shapes, none written:
+1. **Single-writer** (recommended): the daemon owns the cache; every other
+   process loads it READ-ONLY. Smallest change, matches the node_history
+   design already chosen for the same pair.
+2. Per-process cache paths — removes the collision but doubles the state.
+3. `flock` + merge-on-save — correct but the most code, and a merge policy
+   for `last_seen` (newest wins) has to be designed and tested.
+
+### MeshForge: the same shape, CONFIRMED (checked 2026-09-21, not assumed)
+
+(Journal quotes below render `|` as `--`: a wrapped line STARTING with `|`
+parses as a table row, and the upshift-witness gate correctly refused the
+push for it. Do not "restore" the pipes.)
+
+MF is structurally identical — `get_cache_file()` ->
+`~/.config/meshforge/node_cache.json`, the same save-when-dirty tracker,
+and `meshforge-map` runs its own instance. Proven from VolcanoAI's own
+journal:
+
+    Sep 20 15:38:45 VolcanoAI meshforge-map[2804283] -- gateway.node_tracker -- INFO -- Loaded 820 nodes from cache
+
+Active PID, 820 nodes (403 meshtastic / 417 rns, 818 stamped), up over a
+day. So the exposure is FLEET-wide, on every box running a map process
+beside a tracker-holding daemon — not twin-only.
+
+⚠️ **Exposure is confirmed; active corruption on MF is NOT measured.**
+State that distinction when acting. MA's symptom is stark because its map
+is structurally BLIND to MeshCore adverts, so the two views disagree hard
+about those rows. On MF both processes observe overlapping Meshtastic/RNS
+data, so the views may largely agree and the clobber be subtler — a
+`last_seen` regressing to whichever view is staler, rather than nodes
+visibly vanishing. Measure MF the way MA was measured (sample the cache
+across a daemon restart and diff `last_seen` per node) before claiming a
+magnitude there.
+
+**HYPOTHESIS, explicitly not a claim**: this may be a second, still-live
+cause of the false-UNHEARD class (persistent_issues #4, 2026-07-21 — "a
+node reads UNHEARD while it is plainly alive"). That issue was closed
+against three cache defects (`to_dict()` dropping `service_type`,
+`_merge_node` never refreshing, a permanent once-recorded name). A
+two-writer clobber of `last_seen` would produce the same symptom by a
+different route, and nothing in that fix would have caught it. Worth
+testing when this one is fixed; do NOT re-open #4 on this row alone.
+
+---
+
 ## QUEUED 2026-09-20 (Opus 5 1M) — the CI-DRIFT arc, and the author reviewed himself
 
 **Upshift-witness fired on the push** (leg 3, advisory): 1169 src+scripts
