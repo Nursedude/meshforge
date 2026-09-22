@@ -149,9 +149,15 @@ sudo setsid nohup /usr/local/sbin/mf_osupgrade.sh >/dev/null 2>&1 < /dev/null &
 sleep 2' >/dev/null 2>&1
 }
 
+# How long to wait for ONE launched box's MF_UPGRADE_RC before calling its
+# state UNKNOWN. 09-19's slowest box (a Pi4, ~520 MB from a seeded cache)
+# finished well inside this; a box past it is not "still fine", it is a
+# box nobody can vouch for — say so and move on to the others.
+UPGRADE_DEADLINE_S="${MF_UPGRADE_DEADLINE_S:-7200}"
+
 do_upgrade() {
     [ $# -eq 0 ] && die "upgrade needs at least one box"
-    local -a holds_before=()
+    local -a holds_before=() launched=()
     for h in "$@"; do
         local sim remv rl hold
         sim=$(timeout 300 ssh "${SSH_OPTS[@]}" "$h" '
@@ -167,12 +173,32 @@ do_upgrade() {
             RC=1; continue
         fi
         echo "$h: launching (removals=$remv, holds=$hold)"
-        launch_upgrade "$h"
+        if launch_upgrade "$h"; then
+            launched+=("$h")
+        else
+            echo "  !! $h: launch failed — upgrade state UNKNOWN (it may or may not have started)"
+            RC=1
+        fi
     done
 
-    echo; echo "=== waiting for completion ==="
-    for h in "$@"; do
-        until rsh "$h" 20 "sudo grep -q MF_UPGRADE_RC $LOG" 2>/dev/null; do sleep 30; done
+    # Wait ONLY on boxes this run launched. Until 2026-09-22 this looped over
+    # every box NAMED: a refused box was polled forever, or — if an earlier
+    # run's log was still on it (launch_upgrade is what clears it, and a
+    # refused box never gets there) — its stale MF_UPGRADE_RC=0 was reported
+    # as THIS run's success. And with no deadline, one box that never wrote
+    # its marker hung the whole script (review 2026-09-22, Opus 5.5).
+    [ ${#launched[@]} -eq 0 ] && { echo; echo "nothing launched."; return; }
+    echo; echo "=== waiting for completion (${launched[*]}) ==="
+    for h in "${launched[@]}"; do
+        local deadline=$(( $(date +%s) + UPGRADE_DEADLINE_S ))
+        until rsh "$h" 20 "sudo grep -q MF_UPGRADE_RC $LOG" 2>/dev/null; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "  !! $h: no MF_UPGRADE_RC after ${UPGRADE_DEADLINE_S}s — state UNKNOWN."
+                echo "     Check it by hand: ssh $h sudo tail $LOG"
+                RC=1; continue 2
+            fi
+            sleep 30
+        done
         local res rc_h hold_after before
         res=$(rsh "$h" 20 "sudo grep -E 'MF_UPGRADE_RC|MF_HOLD_AFTER|MF_REBOOT_REQUIRED|MF_KERNEL_RUNNING' $LOG")
         rc_h=$(echo "$res" | grep -oP 'MF_UPGRADE_RC=\K[0-9]+')
