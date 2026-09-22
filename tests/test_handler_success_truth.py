@@ -293,8 +293,29 @@ class TestSetOwnerNamePrefillIsOurOwner:
     def test_prefill_is_the_owner_line_not_the_last_node(self):
         h, inits, calls = self._run(_INFO_RAW, inputs=[])
         assert inits == ["Kona Base", "KONA"], inits
-        # Accepting the defaults writes OUR name back, unchanged.
-        assert calls == {'long': "Kona Base", 'short': "KONA"}, calls
+        # Accepting the defaults is a no-op: nothing is written back. (Until
+        # 2026-09-22 it rewrote both fields, and set_owner_short's .upper()
+        # turned a lowercase `moc3` into `MOC3` on one Enter.)
+        assert calls == {}, calls
+        assert h.ctx.dialog.last_msgbox_title == "Info"
+
+    def test_accepting_a_lowercase_short_name_does_not_rewrite_it(self):
+        raw = _INFO_RAW.replace("Owner: Kona Base (KONA)", "Owner: moc3 (moc3)")
+        h, inits, calls = self._run(raw, inputs=[])
+        assert inits == ["moc3", "moc3"], inits
+        assert calls == {}, calls
+
+    def test_only_the_changed_field_is_written(self):
+        h, inits, calls = self._run(_INFO_RAW, inputs=["Kona Relay", "KONA"])
+        assert calls == {'long': "Kona Relay"}, calls
+
+    def test_cli_none_owner_prefills_blank_and_writes_nothing(self):
+        # meshtastic's showInfo prints `Owner: None (None)` when getMyUser()
+        # has no record for our node yet (right after a meshtasticd restart).
+        raw = _INFO_RAW.replace("Owner: Kona Base (KONA)", "Owner: None (None)")
+        h, inits, calls = self._run(raw, inputs=[])
+        assert inits == ["", ""], inits
+        assert calls == {}, calls
 
     def test_no_stranger_and_no_fragment_ever_reaches_the_radio(self):
         h, inits, calls = self._run(_INFO_RAW, inputs=[])
@@ -318,6 +339,8 @@ class TestSetOwnerNamePrefillIsOurOwner:
         assert H._parse_current_owner(_INFO_RAW) == ("Kona Base", "KONA")
         assert H._parse_current_owner("Owner: Meshtastic 8d30 (8D30)\n") == ("Meshtastic 8d30", "8D30")
         assert H._parse_current_owner("") == ("", "")
+        assert H._parse_current_owner("Owner: None (None)\n") == ("", "")
+        assert H._parse_current_owner("Owner: Bob (None)\n") == ("Bob", "")
         # The node list alone must yield nothing, however many longName lines it has.
         assert H._parse_current_owner(_INFO_RAW.split("Nodes in mesh", 1)[1]) == ("", "")
 

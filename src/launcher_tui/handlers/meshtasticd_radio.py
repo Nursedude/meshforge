@@ -66,12 +66,16 @@ class MeshtasticdRadioHandler(BaseHandler):
         matching shortName line, its short name `8D30`) to the radio. That
         is how the desktop box's radio lost its real name more than once.
         Read only the Owner line; stop at the node list; absent = blank,
-        never a guess.
+        never a guess. The CLI prints a literal `None` for a field it has no
+        record of (`Owner: None (None)` right after a meshtasticd restart,
+        before our own node is in its DB) — that is absent too, never a name.
         """
         for line in (raw or '').splitlines():
             m = cls._OWNER_LINE.match(line)
             if m:
-                return m.group('long').strip(), m.group('short').strip()
+                long_, short_ = m.group('long').strip(), m.group('short').strip()
+                return (('' if long_ == 'None' else long_),
+                        ('' if short_ == 'None' else short_))
             if line.strip().startswith('Nodes in mesh'):
                 break
         return '', ''
@@ -110,6 +114,13 @@ class MeshtasticdRadioHandler(BaseHandler):
             if short_name is None:
                 return
 
+            # A field left as pre-filled is NOT written back. Accepting the
+            # defaults used to rewrite both — and set_owner_short's .upper()
+            # turned an unchanged lowercase `moc3` into `MOC3` on one Enter.
+            if long_name == current_long:
+                long_name = ""
+            if short_name == current_short:
+                short_name = ""
             if long_name:
                 long_name = long_name[:40]
             if short_name:
