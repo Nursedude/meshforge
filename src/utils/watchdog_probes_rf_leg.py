@@ -474,11 +474,16 @@ def probe_rf_leg_silent(
             severity="degraded",
             detail=(
                 "RF leg is transmitting into silence — " + "; ".join(findings) +
-                ". This leg has received before, so a peer exists. Check the "
-                "radio has not been left in a non-default MODE — promiscuous "
-                "is the known cause, RNS never clears it, and a power cycle or "
-                "an explicit CMD_PROMISC 0x00 is the fix. ⚠️ If IP backhaul is "
-                "up, traffic is still flowing and NOTHING ELSE will report this."
+                ". This leg has received before, so a peer exists. Two known "
+                "causes, each with its own fix. (1) SF DRIFT: the radio "
+                "reverted to its stored defaults after a reset and rnsd never "
+                "re-validates — `rnstatus` Rate will not match the configured "
+                "SF/BW (SF7/250 kHz = 10.94 kbps; 2026-09-22 read 585.94 bps = "
+                "SF12). Fix: restart rnsd, then check the @rns/ owner is rnsd. "
+                "(2) promiscuous mode left on by a tool — Rate reads right, RNS "
+                "never clears it; a power cycle or an explicit CMD_PROMISC 0x00 "
+                "is the fix. ⚠️ If IP backhaul is up, traffic is still flowing "
+                "and NOTHING ELSE will report this."
             ),
             extra={"interfaces": findings},
         )

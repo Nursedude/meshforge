@@ -162,6 +162,20 @@ class TestTheRealFault:
         assert "promiscuous" in sig.detail
         assert "IP backhaul" in sig.detail, "must warn that nothing else reports this"
 
+    def test_the_detail_names_sf_drift_and_its_different_fix(self, tmp_path):
+        """2026-09-22: the SECOND known cause. A fleet RNode reverted to
+        its stored defaults (rnstatus Rate 585.94 bps = SF12 vs config SF7)
+        and rnsd never re-validates, so both ends of the link went silent.
+        Its fix is an rnsd restart, not a power cycle — a detail naming only
+        promiscuous sent the reader to the wrong remedy."""
+        tick(tmp_path, tx_b=1000, rx_b=500)
+        for i in range(2, 6):
+            sig = tick(tmp_path, tx_b=1000 * i, rx_b=500)
+        assert "stored defaults" in sig.detail
+        assert "Rate" in sig.detail, "must say how to SEE the drift"
+        assert "restart rnsd" in sig.detail
+        assert "@rns/" in sig.detail, "a restart must be followed by the owner check (#69)"
+
     def test_recovery_clears_the_streak(self, tmp_path):
         tick(tmp_path, tx_b=1000, rx_b=500)
         tick(tmp_path, tx_b=2000, rx_b=500)
