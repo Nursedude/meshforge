@@ -574,6 +574,14 @@ def main():
 
         print(f"Gateway started successfully! ({len(started)} bridge(s) running)")
 
+        # Publish the running bridges to the observation registry so the
+        # :9090 status API (utils.meshcore_status_api) and any in-process
+        # reader can see them. Before this, the live gateway shape never
+        # set gateway_cli's singleton, so "is the bridge running?" read
+        # False from inside the very process running it (roadmap 1e).
+        from gateway.gateway_cli import register_bridges
+        register_bridges(started)
+
         # RECLAIM the signal handlers. RNS.Reticulum.__init__ installs its own
         # SIGINT/SIGTERM handlers (RNS/Reticulum.py), and it is constructed
         # inside inst.start() above — i.e. AFTER the registration near the top
@@ -641,6 +649,14 @@ def main():
         traceback.print_exc()
 
     finally:
+        # Registry first: a reader that races the shutdown must see "no
+        # bridge" rather than a half-stopped one.
+        try:
+            from gateway.gateway_cli import clear_registered_bridges
+            clear_registered_bridges()
+        except Exception:
+            pass
+
         # Stop metrics server if running
         if _metrics_server:
             try:

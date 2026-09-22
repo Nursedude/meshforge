@@ -230,10 +230,17 @@ class MeshCoreHandler(BaseMessageHandler):
         # MESHCORE_ALLOWLIST) OR a whitelisted channel (MESHFORGE_ORACLE_
         # MESHCORE_CHANNELS), additive — see _build_meshcore_oracle_responder.
         self._oracle = None
+        # A BUILD FAILURE must not be indistinguishable from "off by
+        # design": both leave self._oracle None, so without this witness
+        # the posture surface (utils.meshcore_status_api) would report a
+        # broken oracle as a deliberately disabled one (honest_failure_modes
+        # #1 and #9 — the swallow leaves something a reader can see).
+        self._oracle_error = None
         try:
             self._oracle = self._build_meshcore_oracle_responder()
         except Exception as e:  # pragma: no cover - never break handler init
-            logger.debug(f"meshcore oracle not initialized: {e}")
+            self._oracle_error = f"{type(e).__name__}: {e}"
+            logger.warning(f"meshcore oracle FAILED to build: {e}")
 
     def _build_meshcore_oracle_responder(self):
         """Construct the read-only MeshCore oracle responder, or None if disabled.
@@ -898,7 +905,8 @@ class MeshCoreHandler(BaseMessageHandler):
             if destination:
                 # Direct message — need to resolve contact
                 if hasattr(self._meshcore, 'commands'):
-                    contacts = await self._meshcore.commands.get_contacts()
+                    contacts = self._extract_contacts(
+                        await self._meshcore.commands.get_contacts())
                     contact = self._find_contact(contacts, destination)
                     if contact:
                         await self._meshcore.commands.send_msg(contact, text)
@@ -931,6 +939,156 @@ class MeshCoreHandler(BaseMessageHandler):
         except Exception as e:
             logger.error(f"Failed to send MeshCore message: {e}")
             return False
+
+    # ── read-only snapshots for the status API (roadmap 1e, 2026-09-22) ──
+    #
+    # Served over the gateway's own :9090 listener by
+    # utils.meshcore_status_api so a TUI in ANOTHER process can render the
+    # radio's contact table, its firmware fact and the oracle posture. Every
+    # snapshot is tri-state on failure: ``observed=False`` + a reason, never
+    # an empty list that would read as "the radio knows nobody"
+    # (honest_failure_modes #1: unobservable ≠ empty).
+
+    #: MeshCore contact ``type`` on the wire → role (meshcore_py reader.py).
+    CONTACT_TYPES = {1: "companion", 2: "repeater", 3: "room", 4: "sensor"}
+    DEVICE_INFO_TTL_S = 300.0
+
+    def _run_on_loop(self, coro, timeout: float = 10.0):
+        """Run a radio coroutine from a foreign (HTTP) thread.
+
+        The handler owns a dedicated asyncio loop thread; a caller outside
+        it schedules onto that loop and blocks. With no loop running
+        (tests, pre-connect) the coroutine runs inline.
+        """
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return asyncio.run(coro)
+        fut = asyncio.run_coroutine_threadsafe(coro, loop)
+        return fut.result(timeout=timeout)
+
+    @staticmethod
+    def _extract_contacts(contacts_evt: Any) -> List[Any]:
+        """The contact list out of meshcore_py's ``get_contacts`` Event.
+
+        The real Event carries ``.payload`` (a dict keyed by pubkey, or a
+        list); the simulator returns a plain list. Iterating the Event
+        itself yields nothing — which is why a DM to a real contact could
+        silently resolve to "not found" before this existed.
+        """
+        if contacts_evt is None:
+            return []
+        payload = getattr(contacts_evt, 'payload', contacts_evt)
+        if isinstance(payload, dict):
+            return list(payload.values())
+        if isinstance(payload, list):
+            return payload
+        return []
+
+    @staticmethod
+    def _local_iso(epoch: Any) -> Optional[str]:
+        """Epoch → local ISO, or None when absent/unusable — never the epoch
+        rendered as 1970 (the 2026-09-02 sentinel-leak class)."""
+        try:
+            return (time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(float(epoch)))
+                    if epoch else None)
+        except (TypeError, ValueError, OverflowError, OSError):
+            return None
+
+    @classmethod
+    def _normalise_contact(cls, c: Any) -> Dict[str, Any]:
+        """One contact → plain JSON. Keys are meshcore_py's; absent = None."""
+        g = (lambda k: c.get(k)) if isinstance(c, dict) else (lambda k: getattr(c, k, None))
+        pk = g("public_key")
+        pk_hex = pk.hex() if isinstance(pk, (bytes, bytearray)) else (str(pk) if pk else "")
+        ctype = g("type")
+        la, lm = g("last_advert"), g("lastmod")
+        return {
+            "name": g("adv_name") or "",
+            "public_key": pk_hex,
+            "prefix": pk_hex[:12],          # what a DM's pubkey_prefix carries
+            "type": ctype,
+            "role": cls.CONTACT_TYPES.get(ctype) if ctype is not None else g("role"),
+            # The SENDER's clock — a claim, not a receipt (live range on one
+            # radio: 2022..2084). Published as-is; never rendered as heard-at.
+            "last_advert": la,
+            "last_advert_iso": cls._local_iso(la),
+            # meshcore_py's If-Modified-Since sync cursor: stamped when the
+            # RECORD changed, not when the node was heard.
+            "lastmod": lm,
+            "lastmod_iso": cls._local_iso(lm),
+            "out_path_len": g("out_path_len"),  # -1 = no path (flood), else hops
+            "adv_lat": g("adv_lat"),
+            "adv_lon": g("adv_lon"),
+            "flags": g("flags"),
+        }
+
+    def get_contacts_snapshot(self) -> Dict[str, Any]:
+        """The radio's OWN contact table, read live through the handler's loop."""
+        out: Dict[str, Any] = {"ts": time.time(), "observed": False,
+                               "count": 0, "contacts": [], "reason": None}
+        mc = self._meshcore
+        if mc is None or not self._connected:
+            out["reason"] = "meshcore not connected"
+            return out
+        try:
+            cmds = getattr(mc, "commands", mc)
+            raw = self._extract_contacts(self._run_on_loop(cmds.get_contacts()))
+        except Exception as e:  # the radio did not answer — say so, never []
+            out["reason"] = f"get_contacts failed: {e}"
+            return out
+        contacts = [self._normalise_contact(c) for c in raw]
+        contacts.sort(key=lambda c: ((c.get("lastmod") or 0),
+                                     (c.get("last_advert") or 0)), reverse=True)
+        out.update(observed=True, count=len(contacts), contacts=contacts)
+        return out
+
+    def get_device_info_snapshot(self, refresh: bool = False) -> Dict[str, Any]:
+        """What the radio reports about itself — ``model``, ``fw_build``,
+        ``fw_ver`` — cached for DEVICE_INFO_TTL_S (a radio round trip).
+
+        ⚠️ Neither field is a release version (measured on a RAK 2026-09-21):
+        ``fw_build`` is a BUILD DATE string and ``fw_ver`` is the COMPANION
+        PROTOCOL version byte the library feature-gates on. The radio never
+        reports "1.15.0"; a renderer that says "firmware v11" is confidently
+        wrong on the exact fact an operator decides a flash against.
+        """
+        cached = getattr(self, "_device_info_cache", None)
+        if cached and not refresh and time.time() - cached[0] < self.DEVICE_INFO_TTL_S:
+            return dict(cached[1])
+        out: Dict[str, Any] = {"ts": time.time(), "observed": False, "model": None,
+                               "fw_build": None, "fw_ver": None, "source": None,
+                               "reason": None}
+        mc = self._meshcore
+        if mc is None or not self._connected:
+            out["reason"] = "meshcore not connected"
+            return out
+        if isinstance(mc, MeshCoreSimulator):
+            out.update(observed=True, model="MeshCoreSimulator", fw_build="sim",
+                       fw_ver=None, source="simulator")
+        else:
+            cmds = getattr(mc, "commands", None)
+            if cmds is None or not hasattr(cmds, "send_device_query"):
+                out["reason"] = "radio object exposes no device query"
+                return out
+            try:
+                evt = self._run_on_loop(cmds.send_device_query(), timeout=5.0)
+            except Exception as e:
+                out["reason"] = f"device query failed: {e}"
+                return out
+            info = getattr(evt, "payload", None)
+            if not isinstance(info, dict):
+                out["reason"] = f"device query returned {type(evt).__name__}, no payload"
+                return out
+            ver = info.get("fw ver")
+            try:
+                ver = int(ver) if ver is not None else None
+            except (TypeError, ValueError):
+                ver = None
+            out.update(observed=True, model=info.get("model") or None,
+                       fw_build=info.get("fw_build") or None, fw_ver=ver,
+                       source="radio")
+        self._device_info_cache = (time.time(), dict(out))
+        return out
 
     def _find_contact(self, contacts: List[Any], address: str) -> Optional[Any]:
         """

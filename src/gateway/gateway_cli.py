@@ -148,3 +148,41 @@ def is_gateway_running() -> bool:
     """Check if gateway bridge is currently running."""
     global _active_bridge
     return _active_bridge is not None and _active_bridge._running
+
+
+# ---------------------------------------------------------------------------
+# Bridge registry for OUT-OF-PROCESS readers (2026-09-22, roadmap 1e).
+#
+# The gateway's live shape is bridge_cli.py, which builds its own bridge
+# instances and never touches ``_active_bridge`` above — so every consumer of
+# ``is_gateway_running()`` / ``get_gateway_stats()`` in that process read
+# "not started" while the bridge ran, and a TUI in ANOTHER process could not
+# see the bridge at all. The status API served on the gateway's own :9090
+# listener (utils.meshcore_status_api) reads THIS registry; bridge_cli fills
+# it after the bridges start and clears it on the way down.
+#
+# Kept separate from ``_active_bridge`` on purpose: that singleton carries
+# start/stop semantics (stop_gateway_headless stops it) and bridge_cli owns
+# its instances' lifecycle itself. The registry is observation-only.
+# ---------------------------------------------------------------------------
+_registered_bridges: list = []
+
+
+def register_bridges(bridges) -> None:
+    """Record the bridge instances a gateway process is running."""
+    global _registered_bridges
+    _registered_bridges = list(bridges or [])
+
+
+def clear_registered_bridges() -> None:
+    global _registered_bridges
+    _registered_bridges = []
+
+
+def registered_bridges() -> list:
+    """Every bridge this process runs: bridge_cli's registry first, then the
+    headless singleton (daemon.py shape) so both process shapes answer."""
+    out = list(_registered_bridges)
+    if _active_bridge is not None and _active_bridge not in out:
+        out.append(_active_bridge)
+    return out

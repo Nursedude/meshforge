@@ -962,6 +962,11 @@ class MetricsHTTPHandler(http.server.BaseHTTPRequestHandler):
             self._serve_json_nodes()
         elif self.path == "/api/json/status":
             self._serve_json_status()
+        elif self.path.split("?", 1)[0].startswith("/api/json/meshcore"):
+            # Out-of-process MeshCore posture/contacts (roadmap 1e) — lives
+            # in its own module to keep this file under the MF025 cap.
+            from utils.meshcore_status_api import handle_get as _mc_get
+            _mc_get(self)
         # Prometheus API endpoints (for Grafana Prometheus data source)
         elif self.path.startswith("/api/v1/query_range"):
             self._serve_prometheus_query_range()

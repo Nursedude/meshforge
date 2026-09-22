@@ -427,6 +427,13 @@ class MeshCoreConfig:
     # raises TypeError and fails the WHOLE config load, not just this knob.
     bridge_source_channels: Optional[List[int]] = None
 
+    # Contacts that are OURS (adv_names or pubkey prefixes) for the TUI
+    # contacts pane (roadmap 1b/1e). The radio's table cannot tell our own
+    # nodes from a stranger's, so ownership is DECLARED here and the pane
+    # renders against it — a declared node ABSENT from the table becomes a
+    # row, not silence. Empty = inert (nothing marked, no absences claimed).
+    our_contacts: List[str] = field(default_factory=list)
+
     # Testing
     simulation_mode: bool = False         # Run without hardware (fake events)
 

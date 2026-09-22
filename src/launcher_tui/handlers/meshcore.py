@@ -4,10 +4,15 @@ MeshCore Handler — MeshCore companion radio management.
 Converted from meshcore_mixin.py as part of the mixin-to-registry migration.
 """
 
+import json
 import logging
+import time
+import urllib.error
+import urllib.request
 
 from backend import clear_screen
 from handler_protocol import BaseHandler
+from handlers._meshcore_contacts import MeshCoreContactsMixin
 from utils.safe_import import safe_import
 
 logger = logging.getLogger(__name__)
@@ -26,11 +31,19 @@ _is_gateway_running, _get_gateway_stats, _HAS_GW_CLI = safe_import(
 )
 
 
-class MeshCoreHandler(BaseHandler):
+class MeshCoreHandler(MeshCoreContactsMixin, BaseHandler):
     """TUI handler for MeshCore companion radio management."""
 
     handler_id = "meshcore"
     menu_section = "mesh_networks"
+
+    # The gateway PROCESS's own listener (utils.metrics_server binds
+    # 127.0.0.1:9090 inside bridge_cli). ``/api/json/meshcore`` there is the
+    # only surface that can answer for the radio, the oracle and the bridge
+    # counters from OUTSIDE the gateway process (roadmap 1e, 2026-09-22).
+    STATUS_API_BASE = "http://127.0.0.1:9090"
+    STATUS_TIMEOUT = 5
+    FW_BRIEF_TTL = 30.0
 
     def menu_items(self):
         return [
@@ -52,6 +65,7 @@ class MeshCoreHandler(BaseHandler):
                 ("config", "Configure           Connection settings"),
                 ("enable", "Enable/Disable      Toggle MeshCore in gateway"),
                 ("nodes", "View Nodes          MeshCore network nodes"),
+                ("contacts", "View Contacts       Radio's contact table + last heard"),
                 ("stats", "Statistics          Message & connection stats"),
                 ("back", "Back"),
             ]
@@ -71,6 +85,7 @@ class MeshCoreHandler(BaseHandler):
                 "config": ("MeshCore Config", self._meshcore_configure),
                 "enable": ("Enable/Disable", self._meshcore_toggle),
                 "nodes": ("MeshCore Nodes", self._meshcore_nodes),
+                "contacts": ("MeshCore Contacts", self._meshcore_contacts),
                 "stats": ("MeshCore Stats", self._meshcore_stats),
             }
             entry = dispatch.get(choice)
@@ -91,11 +106,131 @@ class MeshCoreHandler(BaseHandler):
                 return "MeshCore: DISABLED in gateway config"
             conn = mc.connection_type
             device = mc.device_path if conn == "serial" else f"{mc.tcp_host}:{mc.tcp_port}"
-            return f"MeshCore: ENABLED ({conn} -> {device})"
+            # Roadmap 1c: the firmware fact rides the landing subtitle so
+            # "what is this radio running?" costs zero menus. Cached +
+            # short-timeout (_meshcore_fw_brief) — the subtitle is rebuilt
+            # on every redraw, so it must never block the menu.
+            return (f"MeshCore: ENABLED ({conn} -> {device}) | "
+                    f"{self._meshcore_fw_brief()}")
         except Exception:
             # Distinct from the no-module neutral subtitle above: a config-read
             # failure must not masquerade as "feature unavailable" (S7, #74-#77).
             return "MeshCore: status unavailable (config read failed)"
+
+    # ── gateway status API (roadmap 1e) ─────────────────────────────────
+
+    def _status_fetch(self, timeout=None):
+        """``(payload, error)`` from ``GET /api/json/meshcore`` on the gateway.
+
+        ``(None, reason)`` on any failure — unreachable is UNKNOWN, never
+        "off": the gateway may simply not be running on this box.
+        """
+        try:
+            req = urllib.request.Request(
+                f"{self.STATUS_API_BASE}/api/json/meshcore",
+                headers={"Accept": "application/json"},
+            )
+            with urllib.request.urlopen(
+                    req, timeout=timeout or self.STATUS_TIMEOUT) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
+            return None, str(e)
+        if not isinstance(payload, dict):
+            return None, "response was not a JSON object"
+        return payload, None
+
+    # ── firmware brief (roadmap 1c) ─────────────────────────────────────
+    #
+    # ⚠️ What the radio actually reports (measured on a RAK, 2026-09-21) —
+    # neither field is a release version:
+    #   fw_build  '19-Apr-2026'  a BUILD DATE string
+    #   fw_ver    11             the COMPANION PROTOCOL version byte the
+    #                            library feature-gates on. Not firmware 11.
+    # So this brief says "build" and "proto" and never "version": calling
+    # fw_ver a version reads as "this radio runs 11" against an actual
+    # release of 1.15.0 — a confident wrong label on the exact fact the
+    # operator is deciding a flash against.
+
+    def _meshcore_fw_brief(self) -> str:
+        """One short clause for the menu subtitle. Never raises.
+
+        Cached for FW_BRIEF_TTL because the subtitle is rebuilt on every
+        menu redraw; without it, sitting on the menu would poll the gateway
+        once per keystroke.
+        """
+        now = time.monotonic()
+        cached = getattr(self, "_fw_brief_cache", None)
+        if cached and now - cached[0] < self.FW_BRIEF_TTL:
+            return cached[1]
+
+        try:
+            payload, err = self._status_fetch(timeout=1.5)
+        except Exception:
+            payload, err = None, "fetch failed"
+
+        if payload is None:
+            # Unreachable is UNKNOWN, never "no firmware" — an absent
+            # answer must not render as an answer.
+            brief = "firmware ? (gateway unreachable)"
+        elif not payload.get("observable", False):
+            brief = "firmware ? (no bridge in gateway)"
+        else:
+            dev = payload.get("device") or {}
+            if not dev.get("observed"):
+                brief = f"firmware ? ({dev.get('reason') or 'radio not read'})"
+            else:
+                model, build, ver = dev.get("model"), dev.get("fw_build"), dev.get("fw_ver")
+                parts = [str(model) if model else "unknown model",
+                         f"build {build}" if build else "build ?"]
+                if ver is not None:
+                    parts.append(f"proto v{ver}")
+                if dev.get("source") == "simulator":
+                    parts.insert(0, "[SIM]")
+                brief = " ".join(parts)
+
+        self._fw_brief_cache = (now, brief)
+        return brief
+
+    @staticmethod
+    def _oracle_posture_line(posture) -> str:
+        """One line for the oracle leg (roadmap 1d).
+
+        Wording tracks the gateway's own build log
+        (``mesh oracle (meshcore) responder built: answer_all=... ``) on
+        purpose: a journal grep and this pane describe the posture in the
+        SAME vocabulary. The posture dict is built by the GATEWAY
+        (utils.meshcore_status_api), never from this process's env — the
+        TUI's environment is not the daemon's; the fleet's allowlists ride
+        systemd drop-ins.
+        """
+        if posture is None:
+            # An older gateway, or a payload without the key. Not "off".
+            return ("Oracle:      UNKNOWN (gateway did not report a posture; "
+                    "older build?)")
+        if not posture.get("observable", False):
+            reason = posture.get("reason") or "not observable"
+            return f"Oracle:      UNKNOWN ({reason}) - not the same as OFF"
+        if posture.get("error"):
+            # Asked for, did not come up. The loudest of the three.
+            return f"Oracle:      BUILD FAILED - {posture['error']}"
+        if not posture.get("enabled", False):
+            return "Oracle:      OFF (default; MESHFORGE_ORACLE_ENABLED unset)"
+        chans = posture.get("channels") or []
+        cooldown = posture.get("cooldown_s")
+        # Fields the gateway could not read off the responder are NAMED,
+        # never rendered as zeros — an enabled oracle with allowlist=0 is a
+        # real fail-closed posture, so a defaulted 0 would be a confident
+        # wrong answer rather than an obvious blank.
+        unreadable = posture.get("unreadable") or []
+        suffix = f"  ! unreadable: {','.join(unreadable)}" if unreadable else ""
+        return ("Oracle:      ON  answer_all={} allowlist={} channels={} "
+                "cooldown={} consume={}".format(
+                    posture.get("answer_all", False),
+                    posture.get("allowlist", 0),
+                    ",".join(str(c) for c in chans) if chans else "-",
+                    f"{cooldown:g}s" if isinstance(cooldown, (int, float))
+                    else "?",
+                    posture.get("consume", False)) + suffix)
 
     def _meshcore_status(self):
         """Show MeshCore connection status."""
@@ -144,6 +279,31 @@ class MeshCoreHandler(BaseHandler):
         except ImportError:
             print(f"\n  meshcore_py:      NOT installed")
             print(f"  Install:          pip install meshcore")
+
+        # Roadmap 1c: what the radio reports about itself, from the gateway
+        # process that holds it. Labelled for what the fields ARE — the
+        # radio reports a BUILD DATE and a protocol version, never a
+        # release number.
+        payload, err = self._status_fetch()
+        print()
+        if payload is None:
+            print(f"  Gateway:          unreachable ({err})")
+            print("  Radio facts unavailable - start it: Service Control -> meshforge-gateway")
+        elif not payload.get("observable"):
+            print(f"  Gateway:          {payload.get('reason') or 'no bridge'}")
+        else:
+            print(f"  Gateway:          {'connected' if payload.get('connected') else 'NOT connected'}"
+                  f" to the radio{' [SIM]' if payload.get('simulation') else ''}")
+            dev = payload.get("device") or {}
+            if not dev.get("observed"):
+                print(f"  Radio:            not read ({dev.get('reason') or 'unknown'})")
+            else:
+                print(f"  Model:            {dev.get('model') or '?'}")
+                print(f"  Build:            {dev.get('fw_build') or '?'}")
+                if dev.get("fw_ver") is not None:
+                    print(f"  Companion proto:  v{dev['fw_ver']}")
+                print("  (build date + protocol version, never a release number -")
+                print("   compare the BUILD DATE against the release you intend to flash)")
 
         self.ctx.wait_for_enter()
 
@@ -434,29 +594,48 @@ class MeshCoreHandler(BaseHandler):
         clear_screen()
         print("=== MeshCore Statistics ===\n")
 
-        if not _HAS_GW_CLI:
-            print("  Gateway CLI module not available.")
+        # The gateway runs in ANOTHER process (meshforge-gateway.service /
+        # bridge_cli.py), so the in-process handle behind
+        # _is_gateway_running() is empty here and used to make this pane
+        # say "not running" forever (roadmap 1e). Ask the gateway itself;
+        # fall back to the in-process handle only when this process IS the
+        # gateway (daemon.py embedding).
+        payload, err = self._status_fetch()
+        if payload is None and _HAS_GW_CLI and _is_gateway_running():
+            try:
+                gw = _get_gateway_stats()
+            except Exception as e:
+                print(f"  Error reading gateway stats: {e}")
+                self.ctx.wait_for_enter()
+                return
+            payload = {"observable": True, "running": gw.get("running", False),
+                       "connected": gw.get("meshcore_connected", False),
+                       "oracle": None,
+                       "counters": {"observable": True,
+                                    "uptime_seconds": gw.get("uptime_seconds"),
+                                    "stats": gw.get("statistics", gw)}}
+        if payload is None:
+            print(f"  Gateway unreachable at {self.STATUS_API_BASE}: {err}\n")
+            print("  Statistics are UNKNOWN, not zero. Start the gateway in-app:")
+            print("    Service Control -> meshforge-gateway -> Start")
+            self.ctx.wait_for_enter()
+            return
+        if not payload.get("observable"):
+            print(f"  Gateway answered but runs no bridge: {payload.get('reason')}")
             self.ctx.wait_for_enter()
             return
 
-        if not _is_gateway_running():
-            print("  Gateway bridge is not running.\n")
-            print("  Start the bridge to collect MeshCore statistics.")
-            self.ctx.wait_for_enter()
-            return
-
-        try:
-            gw_stats = _get_gateway_stats()
-        except Exception as e:
-            print(f"  Error reading gateway stats: {e}")
-            self.ctx.wait_for_enter()
-            return
-
-        stats = gw_stats.get('statistics', gw_stats)
-        connected = gw_stats.get('meshcore_connected', False)
+        counters = payload.get("counters") or {}
+        stats = counters.get("stats") or {}
+        connected = payload.get("connected", False)
+        gw_stats = {"uptime_seconds": counters.get("uptime_seconds")}
 
         print(f"  Connection:  {'CONNECTED' if connected else 'DISCONNECTED'}")
-        print(f"  Bridge:      {gw_stats.get('status', 'unknown')}\n")
+        print(f"  Bridge:      {'Running' if payload.get('running') else 'Stopped'}")
+        print(f"  {self._oracle_posture_line(payload.get('oracle'))}")
+        if not counters.get("observable", True):
+            print(f"  Counters:    UNKNOWN ({counters.get('reason')})")
+        print()
 
         print(f"  Messages RX:    {stats.get('meshcore_rx', 0)}")
         print(f"  Messages TX:    {stats.get('meshcore_tx', 0)}")
