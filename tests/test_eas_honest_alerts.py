@@ -333,6 +333,42 @@ class TestPluginIsUsableWithoutActivate:
         assert "getfloat" not in out
 
 
+    @pytest.mark.parametrize("fetcher", ["get_weather_alerts",
+                                         "get_volcano_alerts",
+                                         "get_fema_alerts"])
+    def test_each_fetcher_loads_config_itself(self, tmp_path, fetcher):
+        """A direct fetcher call on a fresh plugin must not die on
+        ``None.getfloat`` — the Dashboard calls get_weather_alerts() that
+        way, and 81674f0a fixed only fetch_all_checked (review 2026-09-22)."""
+        p = EASAlertsPlugin()
+        p._cache_path = lambda: tmp_path / "eas_last.json"  # type: ignore
+        with patch('urllib.request.urlopen',
+                   side_effect=urllib.error.URLError("down")):
+            getattr(p, fetcher)()
+        assert p._config is not None
+
+    def test_dashboard_screen_does_not_blame_a_code_bug(self, tmp_path, capsys):
+        """Render the REAL Dashboard alerts pane — no hand-loaded config.
+        The older dashboard test above loads ``_config`` itself before
+        calling the fetcher, which is exactly the step the screen skipped,
+        so it passed while the screen printed `alert check failed
+        (AttributeError)` online and offline alike."""
+        import handlers.dashboard as dash
+        h = dash.DashboardHandler()
+        h.ctx = types.SimpleNamespace(env={}, env_state=None,
+                                      wait_for_enter=lambda msg="": None)
+        with patch.object(dash, 'clear_screen', lambda: None), \
+             patch.object(dash.EASAlertsPlugin, '_cache_path',
+                          lambda self: tmp_path / "eas_last.json"), \
+             patch('urllib.request.urlopen',
+                   side_effect=urllib.error.URLError("down")):
+            h._show_alerts()
+        out = capsys.readouterr().out
+        assert "AttributeError" not in out, "the config-never-loaded crash is back"
+        assert "Weather: UNKNOWN" in out
+        assert "Weather: No active alerts" not in out
+
+
 class TestSourceCaveats:
 
     def test_fema_archive_is_labelled_and_not_called_active(self):

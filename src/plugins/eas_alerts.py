@@ -954,17 +954,26 @@ class EASAlertsPlugin(IntegrationPlugin):
         return [self.get_outcome(s) for s in
                 (AlertSource.NOAA, AlertSource.USGS, AlertSource.FEMA)]
 
+    def _ensure_config(self) -> None:
+        """Load the config on first use, for EVERY entry point.
+
+        _load_config() RETURNS the parser; it does not assign it, and
+        __init__ leaves self._config None. Loading it only in
+        fetch_all_checked (81674f0a) left every direct fetcher caller — the
+        Dashboard's get_weather_alerts() — dying on `None.getfloat`, which
+        the screen reported as `alert check failed (AttributeError)` online
+        and offline alike (review 2026-09-22).
+        """
+        if not self._config:
+            self._config = self._load_config()
+
     def fetch_all_checked(self) -> List[FetchOutcome]:
         """Fetch every ENABLED source and return honest per-source outcomes.
 
         This is the API a display surface should use. ``check_all_alerts()``
         remains for callers that only want the merged List[Alert].
         """
-        if not self._config:
-            # _load_config() RETURNS the parser; it does not assign it.
-            # Dropping the return leaves self._config None and every
-            # fetcher below dies on `.getfloat` — found by the offline drill.
-            self._config = self._load_config()
+        self._ensure_config()
         plan = (
             (AlertSource.NOAA, 'noaa_weather', self.get_weather_alerts),
             (AlertSource.USGS, 'usgs_volcano', self.get_volcano_alerts),
@@ -996,6 +1005,7 @@ class EASAlertsPlugin(IntegrationPlugin):
 
         API: https://api.weather.gov/alerts/active
         """
+        self._ensure_config()
         alerts = []
 
         # Build URL based on config
@@ -1084,6 +1094,7 @@ class EASAlertsPlugin(IntegrationPlugin):
 
         API: https://volcanoes.usgs.gov/hans-public/api/volcano/getElevatedVolcanoes
         """
+        self._ensure_config()
         alerts = []
 
         url = "https://volcanoes.usgs.gov/hans-public/api/volcano/getElevatedVolcanoes"
@@ -1180,6 +1191,7 @@ class EASAlertsPlugin(IntegrationPlugin):
         Note: This is archived alerts (24h delay). For live alerts,
         registration at IPAWS User Portal is required.
         """
+        self._ensure_config()
         alerts = []
 
         if not self._config.getboolean('fema_ipaws', 'use_archived', fallback=True):
