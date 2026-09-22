@@ -373,6 +373,7 @@ pass or a follow-up.
 - 2026-09-18 12:35 HST · meshanchor-server · Fable 5.1 · `git pull --ff-only` `/opt/meshanchor` → `48262c9c` + `sudo systemctl restart meshanchor-daemon` (SYSTEM unit; new PID 3139773 holds `/dev/ttyACM0`; posture line witnessed) — the inbound Public policy, operator-directed · could trip: a `MeshCore inbound REFUSED slot=0` line per Public message is NEW and CORRECT, not a fault; `channel_suppressed` climbs by design · cleanup: none.
 - 2026-09-18 12:15 HST · meshanchor-server · Fable 5.1 · `git pull --ff-only` → `7831caed` + restart (PID 3132423) — the channel_idx fix + ingress disclosure, operator-directed · could trip: `[ch:<idx>]` replaced `[ch:<name>]` in the bridge lines; any grep for `[ch:meshanchor]` now reads 0 · cleanup: none.
 - 2026-09-18 11:28–11:31 HST · meshanchor-server · Fable 5.1 · TWO extra restarts for a payload capture that did not capture: `gateway.json` `log_level` INFO→DEBUG (a dead key; restored byte-identical from backup, backup removed) then a user `~/.config/meshanchor/daemon.yaml` `log_level: DEBUG` (removed; root logging back to INFO at the 12:15 restart) — `journalctl --rotate` run twice so the DEBUG window sits in its own journal file (no CHANNEL_INFO/secret lines were emitted; the library logger stayed pinned INFO) · could trip: ~140 DEBUG lines/h in the 11:31–12:15 window; three restart gaps of ~4 s each (any MeshCore message arriving inside one is lost — none was) · cleanup: DONE, nothing left on the box (a `sitecustomize` + drop-in hook was REFUSED by the permission guard and never written).
+- 2026-09-21 19:43–19:53 HST · meshanchor-server · Opus 5 (1M) · roadmap 1b deploy + drill. `git pull --ff-only` `/opt/meshanchor` `0ebca39f`→`cebb7afa`→`e16582af`, then ONE `sudo systemctl restart meshanchor-daemon.service` (SYSTEM unit, scope checked; the only unit restarted; MainPID 960011→**1210577**, `NRestarts=0`, verified clock-free by PID change against a captured t0 `05:43:38Z`). The `e16582af` pull was TUI-only — no second restart. Read-only drills in the daemon's own venv (`/opt/meshanchor/venv/bin/python`, the consumer-of-record): deployed pane+clock tests (18 passed, 1 passed), and `/tmp/pane_drill.py` rendering the contacts pane against the LIVE `:8081/chat/contacts` (68 real contacts). Zero radio writes, zero config writes, zero identity writes · **could trip**: a ~10s gap in MA gateway telemetry at 19:43:56 is this restart, not an outage; the RNS node cache legitimately shrank 141→58 nodes across it as RNS rediscovery restarts, so a node-count dip at this stamp is the restart, not loss; two Public-slot rx lines at 19:44:33 and 19:45:03 logged `REFUSED slot=0` — that is the default posture working, not a new fault · **cleanup**: `/tmp/pane_drill.py` and `/tmp/nc_{a,b,now}.json` removed from the twin (by path, never `pkill -f`), removal verified; daemon re-checked `active` `NRestarts=0` afterwards · ⚠️ **found, NOT caused by this session, still OPEN**: across the restart three meshcore nodes' `last_seen` moved BACKWARD (`dc68ab4782d0` 2026-09-21T18:28:19 → 2026-09-03T14:05:27; `fedf8273822d` 18:23:42 → 09-03T14:04:40) and five others lost their stamp entirely (8 stamped → 3). Proven not mine: the reverted values were already in the cache at 19:44:23, 27 s after restart and ~8 min BEFORE the pane drill ran, and the stamps are byte-identical across samples at 19:44 / 19:49 / 19:53, so the drill's second tracker instance wrote nothing. The `/root/.config/meshanchor/node_cache.json` hypothesis is REFUTED (that file is from May 5 and holds different nodes). Cache restore at `node_tracker.py:932` copies `last_seen` verbatim, so something re-seeds those rows from a 09-03 14:04–14:05 cluster after the load — next step is to find that writer, not to re-measure the symptom.
 - 2026-09-18 00:35–00:37 HST · meshanchor-server (+ 1 RF TX via moc) · Opus 5 (1M) · `fleet_pull` `/opt/meshanchor` to `e4086d4c` (the RNS→Mesh echo guard) + `sudo systemctl restart meshanchor-daemon.service` (SYSTEM unit, scope checked; new PID verified started 3 s after a captured t0), then a two-part live drill: an LXMF body pre-tagged `[meshtastic ch2:!echodrill]` (suppressed, **zero RF by construction** — if the guard works nothing transmits) and one untagged control that DID bridge to moc ch2 · ⚠️ **the honest part: between 23:15 and 00:35 my OWN earlier fix (`df5861d7`) caused meshanchor-server to duplicate 11 real ch2 user messages back onto ch2** (`yes they do`, `tide`, the 🎙 ones — other people's traffic, not drills), one extra copy each, under the operator's callsign. A ch2 packet census or channel-utilisation reading for that 80-minute window is inflated by this and by the session's 8 marker-tagged drill texts; after 00:35 the duplicates stop (verified: `grep guard-test` on moc's meshtasticd = 0 while the control landed) · could trip: RNS→Mesh volume on that box DROPS from this stamp — that is the cure; the new `rns_to_mesh_echo_suppressed` counter and its INFO line are where the suppressed ones go, deliberately visible rather than silent · cleanup: nothing planted
 - 2026-09-17 23:31–23:37 HST · VolcanoAI (+ RF via moc) · Opus 5 (1M) · at the operator's instruction ("fix the validator script too"), fixed and drilled `scripts/validate_rns_to_mesh.py`. **Six more LXMF sends to the MA gateway** while iterating (markers `validator-fix-check*`, `validator-final*`), each of which the gateway bridged onto the meshforge channel — so **seven** bridged test texts on ch 2 this session counting the earlier `rns2mesh-drill`, plus their RNS→MC mirrors on MeshCore ch1. The operator saw them arrive and said so. Also three no-path runs against a bogus destination hash (`0011…eeff`), which emit an RNS path REQUEST and nothing else · could trip: channel-2 utilisation / packet census on moc for this window is dominated by these drills, not by traffic — every body carries a `validator-*` marker so they are trivially excluded; a path-request blip for an unknown destination in the same window is the error-path drill · cleanup: **INCOMPLETE and deliberately reported** — six `/tmp/meshforge_rns_validator_*` dirs (336 KB total) remain on VolcanoAI from runs made BEFORE the cleanup fix landed. A permission guard refuses `rm -rf` under `/tmp` for this session (correctly — it refused a glob, a loop and a single literal path), so removal is the operator's: `rm -rf /tmp/meshforge_rns_validator_*`. ⚠️ /tmp is tmpfs on this fleet, so that is 336 KB of RAM, not disk. Runs made AFTER the fix leave nothing (measured: delta 0 over 4 consecutive runs)
 - 2026-09-17 23:23 HST · VolcanoAI → meshanchor-server → moc (one RF TX) · Opus 5 (1M) · at the operator's explicit instruction, `scripts/validate_rns_to_mesh.py --to <MA gateway lxmf delivery hash>` sent ONE LXMF message to close the RNS→Mesh leg's delivery claim. Read the MA gateway's identity file only to DERIVE its public delivery hash (no key copied, nothing written) · could trip: one extra text packet on the meshforge channel (ch 2) at this stamp under the operator's callsign, plus its RNS→MC mirror on MeshCore ch1 — a census or channel-utilisation blip there is this drill; the message body carries the marker `rns2mesh-drill <epoch>` so it is identifiable · cleanup: the validator writes to its own /tmp configdir which it owns; the derivation script was removed from the MA box
@@ -2828,3 +2829,60 @@ script, a rotation, two memory edits — no message moved). The session did
 not notice that until the operator asked. That is itself evidence for the
 review: **the harness/product ratio needs an outside reader, not a better
 self-report from the session.**
+
+### Specimen added 2026-09-21 (Opus 5 1M) — the session-notes leg, now MEASURED
+
+The counter-evidence paragraph above already names this leg as "aimed at the
+wrong quantity ... by explicit design". What it lacked was firing data.
+⚠️ A session re-derived that whole observation from scratch today before
+reading this row — the aim finding is NOT new, only the numbers below are.
+That mis-step is itself census evidence: the queue is where a finding goes to
+be re-found, and it was not consulted.
+
+**Firing record** (`cron_verdicts.log`, VolcanoAI, 13 days):
+
+- **7 FAIL in 30 runs** — 09-09/11/12/13/17/18/21 — every one `16 PASS, 1 FAIL`.
+- 5 have surviving captures; all 5 are the session-notes leg. The 2 oldest were
+  pruned, so "all 7 are this leg" is inference from the identical 16/1 shape,
+  not measurement.
+- Every one cleared with no fix: a later session rotated the note. 09-21 FAILed
+  at 15:35Z and read OK by 18:38Z.
+- The action taken each time was identical — and identical to what a re-aimed
+  message would have prompted. **The re-aim buys ZERO behavior change.** That
+  is why it was proposed and then NOT done on 09-21; both messages mean
+  "go trim the note".
+
+**The consumer already reports it better** (VERIFIED live 09-21, run not
+traced): `handoff_block` on a real oversized note renders
+`TRUNCATED — showing 2,120 of 9,181 chars (23%); 7,061 unread`, at session
+start, to the one reader who can act. The audit leg's version of that same
+fact lands 12h earlier, in a log, addressed to nobody.
+
+**Counter-fact this entry did not have**: the debt the leg pages about is
+already tolerated ~18x over, one directory entry away — the H1 handoff archive
+beside the active note is **1,012,657 B** and no instrument has ever
+complained about it. An 80KB threshold on the active note is not a line the
+domain actually holds.
+
+**Why it is the sharpest specimen for the cut**: the census has three buckets
+(clean / inert / indeterminate) and this leg is none of them. It **fires
+reliably, is acted on reliably, and changes nothing** — the chore it prompts
+is one the next session does anyway, and its only non-redundant claim
+(rotation debt) is one the domain has demonstrably declined to care about.
+
+> **Proposal for the 10-09 census: add a fourth bucket, ACTED-ON-BUT-INERT** —
+> instruments whose firing is always answered, so they read as working, while
+> removing them would change no outcome. `clean` vs `inert` cannot see these:
+> being acted on is what disguises them. An instrument can be honest, correct,
+> reliably actioned, and still not worth its turn.
+
+**If the review takes the cut**: delete the `nsz > 81920` branch
+(`scripts/harness_audit.sh:452`) and keep the `legible` text as a PASS-level
+statement. Do NOT re-aim it to fail on the character cap instead — that
+rebuilds exactly the instrument-watching-an-instrument the original design
+note rejected, and the consumer already covers it.
+
+**Live state at queue time** (will have moved by 10-09; re-derive, do not
+quote): active note 55,721 B, lifted section **2,392 of a 2,400-char cap —
+8 characters of headroom**. The next handoff written to it overflows the cap,
+and the leg will report PASS while it does.
