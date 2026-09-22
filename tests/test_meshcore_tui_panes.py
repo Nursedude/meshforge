@@ -112,6 +112,19 @@ class TestFetchDegradesHonestly:
             rows, err = handler._contacts_fetch()
         assert rows is None and "contacts" in err
 
+    def test_a_404_is_an_older_gateway_not_unreachable(self, handler):
+        """The live fleet's gateways answer on :9090 today but predate this
+        route; 'unreachable' would send the operator to the network."""
+        import urllib.error
+        err = urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+        with patch("urllib.request.urlopen", side_effect=err):
+            rows, reason = handler._contacts_fetch()
+            payload, reason2 = handler._status_fetch()
+        assert rows is None and payload is None
+        for r in (reason, reason2):
+            assert "predates" in r and "404" in r and "unreachable" not in r
+            assert "Service Control -> meshforge-gateway -> Restart" in r
+
     def test_fetch_targets_the_gateways_own_listener(self, handler):
         with patch("urllib.request.urlopen", side_effect=OSError("x")) as uo:
             handler._contacts_fetch()

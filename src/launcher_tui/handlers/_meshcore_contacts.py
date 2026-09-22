@@ -62,6 +62,9 @@ class MeshCoreContactsMixin:
             )
             with urllib.request.urlopen(req, timeout=self.CONTACTS_TIMEOUT) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            # Answered, not unreachable: a 404 is an older gateway build.
+            return None, self._older_gateway_reason(e)
         except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
             return None, str(e)
         if not isinstance(payload, dict):

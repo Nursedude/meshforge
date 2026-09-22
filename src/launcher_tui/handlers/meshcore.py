@@ -133,11 +133,25 @@ class MeshCoreHandler(MeshCoreContactsMixin, BaseHandler):
             with urllib.request.urlopen(
                     req, timeout=timeout or self.STATUS_TIMEOUT) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            # The listener ANSWERED. A 404 is a gateway process still on a
+            # build that predates this route — "unreachable" would send the
+            # operator to check the network for a process that is up.
+            return None, self._older_gateway_reason(e)
         except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
             return None, str(e)
         if not isinstance(payload, dict):
             return None, "response was not a JSON object"
         return payload, None
+
+    @staticmethod
+    def _older_gateway_reason(err) -> str:
+        code = getattr(err, "code", None)
+        if code == 404:
+            return ("gateway is up but predates this pane (HTTP 404) - restart "
+                    "it to load the current code: Service Control -> "
+                    "meshforge-gateway -> Restart")
+        return f"gateway answered HTTP {code}"
 
     # ── firmware brief (roadmap 1c) ─────────────────────────────────────
     #
