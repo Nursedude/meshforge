@@ -179,7 +179,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | `daemon` | MeshForge Daemon — Headless NOC (maps, RNS, chat) |  | sweep | DaemonHandler |
 | `db_health` | DB Health — Audit all SQLite DBs |  | sweep | DBAuditHandler |
 | `diagnose` | Diagnostics — System health check |  | sweep | DiagnosticsHandler |
-| `status` | Quick Status — One-shot status display |  | ⚠️ crashes | DiagnosticsHandler |
+| `status` | Quick Status — One-shot status display |  | sweep | DiagnosticsHandler |
 | `discover` | Service Discovery — Auto-discover services |  | sweep | ServiceDiscoveryHandler |
 | `hardware` | Hardware — Detect SPI/I2C/USB |  | sweep | HardwareHandler |
 | `logs` | Logs — View/follow logs |  | sweep | LogsHandler |

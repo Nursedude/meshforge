@@ -281,13 +281,11 @@ class FleetBackupHandler(BaseHandler):
             "Fleet config is LOCAL ONLY (never committed to git).",
         )
 
-        # Get this hostname
-        import subprocess
-        hostname_result = subprocess.run(
-            ["hostname", "-s"],
-            capture_output=True, text=True, timeout=5,
-        )
-        default_hostname = hostname_result.stdout.strip()
+        # This hostname — a PRE-FILL only, so read it from the kernel instead
+        # of shelling out to `hostname -s` (a box without it crashed the
+        # wizard before it asked anything; KNOWN_CRASHED_L2 2026-09-22).
+        import socket
+        default_hostname = socket.gethostname().split(".")[0]
 
         this_host = self.ctx.dialog.inputbox(
             "This Hostname",

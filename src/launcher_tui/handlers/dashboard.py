@@ -573,8 +573,9 @@ class DashboardHandler(BaseHandler):
 
     def _generate_and_view_report(self):
         """Generate a full status report and display it."""
-        import subprocess as _sp
-        _sp.run(['clear'], check=False, timeout=5)
+        # clear_screen, not a raw `clear` subprocess — a box without `clear`
+        # crashed here into safe_call (KNOWN_CRASHED_L2 2026-09-22).
+        clear_screen()
         print("=== Generating Network Status Report ===\n")
         print("Collecting data from all subsystems...\n")
 
@@ -591,8 +592,9 @@ class DashboardHandler(BaseHandler):
 
     def _generate_and_save_report(self):
         """Generate a report and save it to a file."""
-        import subprocess as _sp
-        _sp.run(['clear'], check=False, timeout=5)
+        # clear_screen, not a raw `clear` subprocess — a box without `clear`
+        # crashed here into safe_call (KNOWN_CRASHED_L2 2026-09-22).
+        clear_screen()
         print("=== Generating & Saving Report ===\n")
 
         if not _HAS_REPORT_GEN:

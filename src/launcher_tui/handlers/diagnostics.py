@@ -75,6 +75,12 @@ class DiagnosticsHandler(BaseHandler):
                 print("\nStatus check encountered an error.")
         except subprocess.TimeoutExpired:
             print("\n\nStatus check timed out (20s).")
+        except OSError as e:
+            # Could not START the status command (incl. FileNotFoundError):
+            # nothing was checked, so say UNKNOWN here rather than letting it
+            # escape to safe_call (KNOWN_CRASHED 2026-09-22).
+            print(f"\nUNKNOWN — the status command could not be started: {e}")
+            print("Nothing was checked.")
         except KeyboardInterrupt:
             print("\n\nAborted.")
 

@@ -96,6 +96,13 @@ class LogsHandler(BaseHandler):
         try:
             proc = subprocess.Popen(cmd)
             proc.wait(timeout=300)
+        except FileNotFoundError:
+            # The tool is absent (no journalctl on this box). Say so here;
+            # letting it escape gave safe_call's generic "File Not Found"
+            # (KNOWN_CRASHED_L2, 2026-09-22).
+            print(f"  UNKNOWN — '{cmd[0]}' is not installed on this box, so this")
+            print("  log cannot be followed here. Nothing was read.")
+            self.ctx.wait_for_enter()
         except subprocess.TimeoutExpired:
             print("\n[Log view timed out after 5 minutes]")
         except KeyboardInterrupt:

@@ -172,8 +172,13 @@ class HardwareHandler(BaseHandler):
                         print(f"  {DIM}  {line.strip()}{RESET}")
                 if root_hub_count > 0:
                     print(f"  {DIM}  ({root_hub_count} root hub(s) hidden){RESET}")
-        except Exception:
-            subprocess.run(['lsusb'], timeout=10)
+        except FileNotFoundError:
+            # The old fallback re-ran the missing tool, so a box without
+            # lsusb crashed twice (KNOWN_CRASHED_L2, 2026-09-22).
+            print(f"  {DIM}UNKNOWN — 'lsusb' (usbutils) is not installed; USB devices "
+                  f"not listed{RESET}")
+        except (subprocess.SubprocessError, OSError) as e:
+            print(f"  {DIM}UNKNOWN — lsusb failed: {e}{RESET}")
 
         # --- meshtasticd config ---
         print("\nmeshtasticd:")

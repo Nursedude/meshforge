@@ -66,8 +66,6 @@ KNOWN_FALSE_OK: Dict[Action, str] = {}
 #: FROZEN like KNOWN_FALSE_OK: a NEW crash fails the sweep; remove an entry
 #: the day its handler catches the failure itself.
 KNOWN_CRASHED: Dict[Action, str] = {
-    ("system", "status"): "2026-09-22: 'Quick Status' — FileNotFoundError from a "
-                          "subprocess escapes to safe_call ('File Not Found' dialog)",
 }
 
 
@@ -81,14 +79,6 @@ _NO_TOOL = "FileNotFoundError from a subprocess escapes to safe_call ('File Not 
 #: latency pair is deliberately NOT "fixed" by returning unreachable, since
 #: a socket that could not be created observed nothing (hfm #1).
 KNOWN_CRASHED_L2: Dict[Tuple[str, str, str], str] = {
-    ("dashboard", "reports", "generate"): f"2026-09-22: {_NO_TOOL}",
-    ("dashboard", "reports", "save"): f"2026-09-22: {_NO_TOOL}",
-    ("fleet", "fleet_backup", "setup"): f"2026-09-22: {_NO_TOOL}",
-    ("system", "discover", "full"): f"2026-09-22: {_NO_TOOL}",
-    ("system", "hardware", "detect"): f"2026-09-22: {_NO_TOOL}",
-    ("system", "logs", "live-all"): f"2026-09-22: {_NO_TOOL}",
-    ("system", "logs", "live-mesh"): f"2026-09-22: {_NO_TOOL}",
-    ("system", "logs", "live-rns"): f"2026-09-22: {_NO_TOOL}",
 }
 
 
