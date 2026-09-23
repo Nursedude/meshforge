@@ -123,6 +123,18 @@ class TestInertVsUnknown:
         assert {leg.status for leg in v.legs} == {dv.INERT}
         assert v.headline().startswith("NO DELIVERY ORGAN")
 
+    def test_sister_app_record_is_not_called_absent(self, tmp_path):
+        # meshanchor-server 2026-09-23: MA's gateway keeps its own record.
+        _write(str(tmp_path), dv.PEER_DELIVERY_DBS[0][1], "")
+        v = _gather(tmp_path, gw="absent")
+        assert v.headline().startswith("NOT READ HERE")
+        assert "MeshAnchor" in dv.render(v)
+
+    def test_sister_record_does_not_mask_our_own_unknown(self, tmp_path):
+        _write(str(tmp_path), dv.PEER_DELIVERY_DBS[0][1], "")
+        v = _gather(tmp_path, gw="ok")
+        assert v.headline().startswith("UNKNOWN")
+
     def test_gateway_running_but_no_record_is_unknown(self, tmp_path):
         v = _gather(tmp_path, gw="ok")
         assert _leg(v, "Gateway delivery").status == dv.UNKNOWN

@@ -58,6 +58,16 @@ UNKNOWN = "unknown"
 
 GATEWAY_UNIT = "meshforge-gateway.service"
 
+#: The sister app's delivery DB, relative to the operator home. This screen
+#: reads MeshForge's published files only; on a MeshAnchor box the organ
+#: exists but is MeshAnchor's, and "no delivery organ here" would be a false
+#: inert (found live on meshanchor-server 2026-09-23). Presence only — the
+#: DB is never opened (the #60 WAL/SHM trap).
+PEER_DELIVERY_DBS = (
+    ("MeshAnchor", os.path.join(".local", "share", "meshanchor",
+                                "delivery_counters.db")),
+)
+
 #: Stall-probe severities, restated for the reader (the probe owns firing).
 _RATE_DEGRADED = 0.50
 
@@ -86,9 +96,16 @@ class DeliveryView:
     host: str
     now: float
     legs: List[Leg]
+    # (app, path) of a sister app's delivery record found on this box.
+    peer_records: List[Tuple[str, str]] = field(default_factory=list)
 
     def headline(self) -> str:
         present = [leg for leg in self.legs if leg.status != INERT]
+        if not present and self.peer_records:
+            apps = ", ".join(sorted({a for a, _p in self.peer_records}))
+            return (f"NOT READ HERE — no MeshForge delivery organ, but {apps} "
+                    f"keeps a delivery record on this box; read it in {apps}'s "
+                    f"own TUI. Absent from this screen is not absent.")
         if not present:
             return ("NO DELIVERY ORGAN HERE — no gateway and no soak timer on "
                     "this box (inert). The mesh's END is read on a gateway box.")
@@ -433,7 +450,10 @@ def gather(home: Optional[str] = None, now: Optional[float] = None,
                  "propagation_soak", "prop-", PROPAGATION_SOAK_TIMER_UNIT,
                  _PROPAGATION_SOAK_STALE_AFTER_S, now, enrolled_fn),
     ]
-    return DeliveryView(host=socket.gethostname(), now=now, legs=legs)
+    peers = [(app, os.path.join(home, rel)) for app, rel in PEER_DELIVERY_DBS
+             if os.path.exists(os.path.join(home, rel))]
+    return DeliveryView(host=socket.gethostname(), now=now, legs=legs,
+                        peer_records=peers)
 
 
 def render(view: DeliveryView) -> str:
@@ -452,6 +472,8 @@ def render(view: DeliveryView) -> str:
         if leg.source:
             out.append(f"  source: {leg.source}")
         out.append("")
+    for app, path in view.peer_records:
+        out += [f"── [not read] {app} delivery record", f"  source: {path}", ""]
     out += ["Every number above was read from a file on THIS box, with its age.",
             "Other boxes: `ssh <box>` and open this screen there, or /fleet.",
             "This screen never changes anything."]
