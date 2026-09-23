@@ -82,7 +82,8 @@ TOP_LEVEL_CANCEL_LABEL = "Exit"
 # rns-config, extensions/mfmaps) are ordered here too.
 SECTION_ORDERINGS = {
     "dashboard": [
-        "status", "weather", "network", "nodes", "health", "score",
+        # The END first after status: did messages arrive (2026-09-23).
+        "status", "delivery", "weather", "network", "nodes", "health", "score",
         "datapath", "stack_health", "traffic_pulse",
         "metrics", "analytics", "latency", "reports", "alerts",
         "mini_dudeai", "mini_dudeai_chat", "mini_dudeai_rules",

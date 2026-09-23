@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 83 handlers · 116 menu actions (derived from get_all_handlers(), never hand-edited).
+# 84 handlers · 117 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -207,6 +207,17 @@ HANDLER_MANIFEST = [
         "error": None,
         "menu_items": [
             ('db_health', 'DB Health           Audit all SQLite DBs', None),
+        ],
+    },
+    {
+        "handler_id": 'delivery',
+        "module": 'handlers.delivery',
+        "class_name": 'DeliveryHandler',
+        "menu_section": 'dashboard',
+        "lifecycle": False,
+        "error": None,
+        "menu_items": [
+            ('delivery', 'Delivery            did messages arrive? (source+age)', None),
         ],
     },
     {

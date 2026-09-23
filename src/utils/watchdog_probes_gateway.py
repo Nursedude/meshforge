@@ -556,6 +556,55 @@ def _count(bucket, proto) -> int:
     return int(v) if v > 0 else 0
 
 
+def confirmation_window(payload: dict) -> dict:
+    """The windowed confirmation count ``probe_delivery_confirmation_stall``
+    judges, as a pure function of a delivery snapshot — ONE implementation for
+    the probe and the TUI Delivery screen (honest_failure_modes #5).
+
+    Keys: ``confirmable`` (sorted protocols that have ever confirmed),
+    ``ring_source`` (``recent_terminal`` | ``recent`` | None when neither ring
+    is a list), ``ring`` (the list judged, or None), ``confirmed``, ``failed``
+    (drops whose reason is a real delivery failure), ``terminal`` (their sum).
+
+    Prefer the terminal-only ring (2026-09-10). ``recent`` is a general-purpose
+    FIFO: on a gateway whose traffic is mostly a protocol that can never
+    confirm, it fills with queued/sent events and evicts the confirmable
+    terminals needed here. moc3 sat permanently ``indeterminate`` on 4 usable
+    events out of 200 while the same ring held 49 — and a TOTAL confirmation
+    collapse would have read identically. Older gateways (and older snapshot
+    files) carry no ``recent_terminal``; fall back to ``recent`` rather than
+    going blind on the box that has not rolled yet."""
+    by_proto = payload.get("state_by_protocol") or {}
+    if not isinstance(by_proto, dict):
+        by_proto = {}
+    confirmed_by_proto = by_proto.get("confirmed") or {}
+    if not isinstance(confirmed_by_proto, dict):
+        confirmed_by_proto = {}
+    confirmable = sorted(
+        p for p, c in confirmed_by_proto.items()
+        if isinstance(c, (int, float)) and not isinstance(c, bool) and c > 0
+    )
+    ring = payload.get("recent_terminal")
+    ring_source: Optional[str] = "recent_terminal"
+    if not isinstance(ring, list):
+        ring = payload.get("recent")
+        ring_source = "recent"
+    if not isinstance(ring, list):
+        ring, ring_source = None, None
+    confirmed = failed = 0
+    for e in ring or ():
+        if not isinstance(e, dict) or e.get("protocol") not in confirmable:
+            continue
+        st = e.get("state")
+        if st == "confirmed":
+            confirmed += 1
+        elif st == "dropped" and e.get("drop_reason") in _DELIVERY_FAILURE_REASONS:
+            failed += 1
+    return {"confirmable": confirmable, "ring_source": ring_source,
+            "ring": ring, "confirmed": confirmed, "failed": failed,
+            "terminal": confirmed + failed}
+
+
 def _never_confirmed_signal(by_proto: dict) -> Optional[Signal]:
     """A confirmable-capable protocol terminated real traffic and has NEVER
     recorded a confirmation → the confirmation channel is unwired.
@@ -612,12 +661,18 @@ def _never_confirmed_signal(by_proto: dict) -> Optional[Signal]:
     )
 
 
+#: Confirmable terminal events the stall probe needs before judging a rate —
+#: below it one failure tanks a tiny denominator. Named so the TUI Delivery
+#: screen says "too few to judge" at the SAME floor (honest_failure_modes #5).
+DELIVERY_STALL_MIN_TERMINAL = 20
+
+
 def probe_delivery_confirmation_stall(
     *,
     host: str = "127.0.0.1",
     port: int = 5000,
     timeout_s: float = 3.0,
-    min_terminal: int = 20,
+    min_terminal: int = DELIVERY_STALL_MIN_TERMINAL,
     rate_degraded: float = 0.50,
     rate_wedge: float = 0.10,
     snapshot_state_path: Optional[str] = None,
@@ -706,11 +761,8 @@ def probe_delivery_confirmation_stall(
     # Meshtastic isn't here until ACK consumption exists, so its
     # structurally-unconfirmable sends never drag the rate.
     by_proto = payload.get("state_by_protocol") or {}
-    confirmed_by_proto = by_proto.get("confirmed") or {}
-    confirmable = {
-        p for p, c in confirmed_by_proto.items()
-        if isinstance(c, (int, float)) and not isinstance(c, bool) and c > 0
-    }
+    win = confirmation_window(payload)
+    confirmable = set(win["confirmable"])
     if not confirmable:
         # ⚠️ THE BLIND SPOT this guard used to be (2026-08-05): "no protocol
         # has ever confirmed" was treated as nothing-to-judge, so a TOTAL,
@@ -730,37 +782,19 @@ def probe_delivery_confirmation_stall(
                          reason="no confirmable protocol recorded — cannot judge")
         return None
 
-    # Prefer the terminal-only ring (2026-09-10). `recent` is a general-purpose
-    # FIFO: on a gateway whose traffic is mostly a protocol that can never
-    # confirm, it fills with queued/sent events this probe must ignore and
-    # evicts the confirmable terminals it needs. moc3 sat permanently
-    # `indeterminate` on 4 usable events out of 200 while the same ring held 49
-    # — and a TOTAL confirmation collapse would have read identically, which is
-    # the #74 class inside the detector built to catch it. Older gateways (and
-    # older snapshot files) carry no `recent_terminal`; fall back to `recent`
-    # rather than going blind on the box that has not rolled yet.
-    recent = payload.get("recent_terminal")
-    ring_source = "recent_terminal"
-    if not isinstance(recent, list):
-        recent = payload.get("recent")
-        ring_source = "recent"
-    if not isinstance(recent, list):
+    # The ring choice (terminal-only first, legacy `recent` fallback) and the
+    # count live in confirmation_window() — shared with the TUI Delivery
+    # screen so the operator reads the SAME judgement this probe makes.
+    ring_source = win["ring_source"]
+    recent = win["ring"]
+    if ring_source is None:
         note_disposition("delivery_confirmation_stall", "indeterminate",
                          reason="recent-events ring absent/misshaped")
         return None
 
-    ring_confirmed = 0
-    ring_failed = 0
-    for e in recent:
-        if not isinstance(e, dict) or e.get("protocol") not in confirmable:
-            continue
-        st = e.get("state")
-        if st == "confirmed":
-            ring_confirmed += 1
-        elif st == "dropped" and e.get("drop_reason") in _DELIVERY_FAILURE_REASONS:
-            ring_failed += 1
-
-    terminal = ring_confirmed + ring_failed
+    ring_confirmed = win["confirmed"]
+    ring_failed = win["failed"]
+    terminal = win["terminal"]
     if terminal < min_terminal:
         # Name the ring that came up short, and say when the shortfall is the
         # OLD one — that reads as "this box has not rolled the fix yet", not as

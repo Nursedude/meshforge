@@ -152,6 +152,7 @@ def get_all_handlers() -> List[Type]:
     from handlers.auto_review import AutoReviewHandler
     from handlers.db_audit import DBAuditHandler
     from handlers.platform_posture import PlatformPostureHandler
+    from handlers.delivery import DeliveryHandler
     from handlers.system_tools import SystemToolsHandler
     from handlers.nomadnet import NomadNetHandler
     from handlers.first_run import FirstRunHandler
@@ -160,6 +161,7 @@ def get_all_handlers() -> List[Type]:
         AutoReviewHandler,
         DBAuditHandler,
         PlatformPostureHandler,
+        DeliveryHandler,
         SystemToolsHandler,
         NomadNetHandler,
         FirstRunHandler,
