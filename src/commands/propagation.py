@@ -290,6 +290,17 @@ def get_space_weather() -> CommandResult:
     api = SpaceWeatherAPI(timeout=10)
     data = api.get_current_conditions()
 
+    # No source answered → there is no weather to report. Until 2026-09-22
+    # this returned ok() with every field None, geomag QUIET and every band
+    # "Fair" (the assessor's defaults), and the Dashboard rendered it as a
+    # calm forecast with the network dead (truth sweep; hfm #1/#2).
+    if getattr(data, 'sources_answered', 0) == 0:
+        return CommandResult.fail(
+            "No space weather source answered — conditions UNKNOWN "
+            "(NOAA SWPC unreachable, or no internet).",
+            error="sources_answered=0",
+        )
+
     result_data = {
         'solar_flux': data.solar_flux,
         'sunspot_number': data.sunspot_number,

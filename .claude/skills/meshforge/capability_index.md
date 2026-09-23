@@ -14,179 +14,181 @@
 
 A non-empty **Flag** names the deployment-profile feature that gates the action. Gated does NOT mean hidden: when the feature is off the row is still SHOWN, marked `[off]`, and refuses to run with an explanation naming the profile (`HandlerRegistry.mark_label` / `OFF_MARK`). Nothing is removed from the menu — someone new to the domain cannot go looking for a capability they have never been shown. Blank = never gated.
 
+**Truth** says how the action's HONESTY is checked (`tests/test_tui_success_truth_sweep.py`, `launcher_tui/action_truth.py`): `sweep` = dispatched on every commit with every external DEAD and required to render a word of uncertainty; `local-only` = declared to consult no external (the why is in `action_truth.py`); `⚠️ false-ok` = a FROZEN baseline finding — renders a confident screen with nothing to be confident about. The baseline only shrinks.
+
 ## `about`
 
-| Action tag | Description | Flag | Handler |
-|---|---|---|---|
-| `changelog` | Changelog — Release history |  | AboutHandler |
-| `deps` | Dependencies — Package status |  | AboutHandler |
-| `help` | Help — Documentation |  | AboutHandler |
-| `sysinfo` | System Info — OS, Python, disk, uptime |  | AboutHandler |
-| `version` | Version Info — MeshForge version |  | AboutHandler |
-| `web` | Web Client — Open web interface |  | WebClientHandler |
+| Action tag | Description | Flag | Truth | Handler |
+|---|---|---|---|---|
+| `changelog` | Changelog — Release history |  | sweep | AboutHandler |
+| `deps` | Dependencies — Package status |  | sweep | AboutHandler |
+| `help` | Help — Documentation |  | sweep | AboutHandler |
+| `sysinfo` | System Info — OS, Python, disk, uptime |  | local-only | AboutHandler |
+| `version` | Version Info — MeshForge version |  | local-only | AboutHandler |
+| `web` | Web Client — Open web interface |  | sweep | WebClientHandler |
 
 ## `configuration`
 
-| Action tag | Description | Flag | Handler |
-|---|---|---|---|
-| `backup` | Device Backup — Backup/restore configs |  | BackupHandler |
-| `channels` | Channel Config — Meshtastic channels |  | ChannelConfigHandler |
-| `config-api` | Config API Server — REST config endpoint |  | ConfigAPIHandler |
-| `wizard` | Setup Wizard — First-run wizard |  | FirstRunHandler |
-| `meshtasticd` | meshtasticd — Radio, service, config | `meshtastic` | MeshtasticdConfigHandler |
-| `rnode` | RNode Setup — RNode device detection |  | RNodeHandler |
-| `meshforge` | MeshForge Settings — App preferences |  | SettingsHandler |
-| `updates` | Software Updates — One-click updates |  | UpdatesHandler |
-| `webhooks` | Webhooks — External notifications |  | WebhooksHandler |
+| Action tag | Description | Flag | Truth | Handler |
+|---|---|---|---|---|
+| `backup` | Device Backup — Backup/restore configs |  | sweep | BackupHandler |
+| `channels` | Channel Config — Meshtastic channels |  | sweep | ChannelConfigHandler |
+| `config-api` | Config API Server — REST config endpoint |  | sweep | ConfigAPIHandler |
+| `wizard` | Setup Wizard — First-run wizard |  | sweep | FirstRunHandler |
+| `meshtasticd` | meshtasticd — Radio, service, config | `meshtastic` | sweep | MeshtasticdConfigHandler |
+| `rnode` | RNode Setup — RNode device detection |  | sweep | RNodeHandler |
+| `meshforge` | MeshForge Settings — App preferences |  | sweep | SettingsHandler |
+| `updates` | Software Updates — One-click updates |  | sweep | UpdatesHandler |
+| `webhooks` | Webhooks — External notifications |  | sweep | WebhooksHandler |
 
 ## `dashboard`
 
-| Action tag | Description | Flag | Handler |
-|---|---|---|---|
-| `analytics` | Analytics — Coverage & link trends |  | AnalyticsHandler |
-| `alerts` | View Alerts — Current warnings |  | DashboardHandler |
-| `datapath` | Data Path Check — Test all data sources |  | DashboardHandler |
-| `nodes` | Node Count — Meshtastic + RNS nodes |  | DashboardHandler |
-| `reports` | Reports — Generate status report |  | DashboardHandler |
-| `score` | Health Score — Network health snapshot |  | DashboardHandler |
-| `status` | Service Status — All services with health |  | DashboardHandler |
-| `weather` | Space Weather — SFI, Kp, bands at a glance |  | DashboardHandler |
-| `demo` | Demo Mode — Simulated mesh traffic |  | DemoHandler |
-| `stack_health` | Stack Health — Local: RNS path, NomadNet, bridge, DB |  | FleetHealthHandler |
-| `latency` | Latency Monitor — Service response times |  | LatencyHandler |
-| `metrics` | Historical Trends — Metrics over time |  | MetricsHandler |
-| `mini_dudeai` | mini-dudeai (local watcher + fixes) |  | MiniDudeaiHandler |
-| `mini_dudeai_chat` | mini-dudeai: describe a rule (chat-compile) |  | MiniDudeaiHandler |
-| `mini_dudeai_rules` | mini-dudeai: edit rules (in-app) |  | MiniDudeaiHandler |
-| `moc_analysis` | MOC Analysis — Generate slide-ready SVG analysis pack |  | MOCAnalysisHandler |
-| `health` | Node Health — Battery, signal, latency |  | NodeHealthHandler |
-| `offline_oracle` | offline oracle (ask the fleet lore) |  | OfflineOracleHandler |
-| `traffic_pulse` | Traffic Heartbeat — Live flow pulse (telem/RF/dups/QA) |  | TrafficPulseHandler |
+| Action tag | Description | Flag | Truth | Handler |
+|---|---|---|---|---|
+| `analytics` | Analytics — Coverage & link trends |  | sweep | AnalyticsHandler |
+| `alerts` | View Alerts — Current warnings |  | sweep | DashboardHandler |
+| `datapath` | Data Path Check — Test all data sources |  | sweep | DashboardHandler |
+| `nodes` | Node Count — Meshtastic + RNS nodes |  | sweep | DashboardHandler |
+| `reports` | Reports — Generate status report |  | sweep | DashboardHandler |
+| `score` | Health Score — Network health snapshot |  | sweep | DashboardHandler |
+| `status` | Service Status — All services with health |  | sweep | DashboardHandler |
+| `weather` | Space Weather — SFI, Kp, bands at a glance |  | sweep | DashboardHandler |
+| `demo` | Demo Mode — Simulated mesh traffic |  | sweep | DemoHandler |
+| `stack_health` | Stack Health — Local: RNS path, NomadNet, bridge, DB |  | sweep | FleetHealthHandler |
+| `latency` | Latency Monitor — Service response times |  | sweep | LatencyHandler |
+| `metrics` | Historical Trends — Metrics over time |  | sweep | MetricsHandler |
+| `mini_dudeai` | mini-dudeai (local watcher + fixes) |  | sweep | MiniDudeaiHandler |
+| `mini_dudeai_chat` | mini-dudeai: describe a rule (chat-compile) |  | sweep | MiniDudeaiHandler |
+| `mini_dudeai_rules` | mini-dudeai: edit rules (in-app) |  | sweep | MiniDudeaiHandler |
+| `moc_analysis` | MOC Analysis — Generate slide-ready SVG analysis pack |  | sweep | MOCAnalysisHandler |
+| `health` | Node Health — Battery, signal, latency |  | sweep | NodeHealthHandler |
+| `offline_oracle` | offline oracle (ask the fleet lore) |  | sweep | OfflineOracleHandler |
+| `traffic_pulse` | Traffic Heartbeat — Live flow pulse (telem/RF/dups/QA) |  | sweep | TrafficPulseHandler |
 
 ## `extensions`
 
-| Action tag | Description | Flag | Handler |
-|---|---|---|---|
-| `meshing` | Meshing Around — Mesh bot framework |  | ExtensionsHandler |
+| Action tag | Description | Flag | Truth | Handler |
+|---|---|---|---|---|
+| `meshing` | Meshing Around — Mesh bot framework |  | sweep | ExtensionsHandler |
 
 ## `fleet`
 
-| Action tag | Description | Flag | Handler |
-|---|---|---|---|
-| `fleet_backup` | Fleet Backup — Backup/restore fleet state | `fleet_management` | FleetBackupHandler |
-| `fleet_membership` | Fleet Membership — Declare standalone, or fleet + host list |  | FleetProvisionHandler |
-| `fleet_provision` | Fleet Architecture — Reproduce a box to a preset (preview + apply) |  | FleetProvisionHandler |
-| `fleet_watchers` | Fleet Watchers — All boxes: mini daemon, deltas, freshness |  | FleetWatchersHandler |
+| Action tag | Description | Flag | Truth | Handler |
+|---|---|---|---|---|
+| `fleet_backup` | Fleet Backup — Backup/restore fleet state | `fleet_management` | sweep | FleetBackupHandler |
+| `fleet_membership` | Fleet Membership — Declare standalone, or fleet + host list |  | sweep | FleetProvisionHandler |
+| `fleet_provision` | Fleet Architecture — Reproduce a box to a preset (preview + apply) |  | sweep | FleetProvisionHandler |
+| `fleet_watchers` | Fleet Watchers — All boxes: mini daemon, deltas, freshness |  | sweep | FleetWatchersHandler |
 
 ## `main`
 
-| Action tag | Description | Flag | Handler |
-|---|---|---|---|
-| `e` | Emergency Mode — EMCOMM field operations |  | EmergencyModeHandler |
-| `n` | NOC Home — Transports, health, one-touch fixes |  | NocHomeHandler |
-| `q` | Quick Actions — Single-key NOC shortcuts |  | QuickActionsHandler |
-| `t` | Tactical Ops — SITREP, zones, QR, ATAK | `tactical` | TacticalOpsHandler |
+| Action tag | Description | Flag | Truth | Handler |
+|---|---|---|---|---|
+| `e` | Emergency Mode — EMCOMM field operations |  | sweep | EmergencyModeHandler |
+| `n` | NOC Home — Transports, health, one-touch fixes |  | sweep | NocHomeHandler |
+| `q` | Quick Actions — Single-key NOC shortcuts |  | sweep | QuickActionsHandler |
+| `t` | Tactical Ops — SITREP, zones, QR, ATAK | `tactical` | sweep | TacticalOpsHandler |
 
 ## `maps_viz`
 
-| Action tag | Description | Flag | Handler |
-|---|---|---|---|
-| `ai` | AI Diagnostics — Knowledge base, assistant |  | AIToolsHandler |
-| `coverage` | Coverage Map — Generate coverage map | `maps` | AIToolsHandler |
-| `heatmap` | Heatmap — Node density heatmap | `maps` | AIToolsHandler |
-| `livemap` | Live NOC Map — Real-time browser view | `maps` | AIToolsHandler |
-| `mfmaps` | MeshForge Maps — Multi-source map ext. | `maps` | AIToolsHandler |
-| `tiles` | Offline Tiles — Cache map tiles | `maps` | AIToolsHandler |
-| `quality` | Link Quality — Quality analysis |  | LinkQualityHandler |
-| `export` | Export Data — GeoJSON, CSV, GraphML |  | TopologyHandler |
-| `topology` | Network Topology — D3.js graph view |  | TopologyHandler |
-| `traffic` | Traffic Inspector — Packet capture & analysis |  | TrafficInspectorHandler |
+| Action tag | Description | Flag | Truth | Handler |
+|---|---|---|---|---|
+| `ai` | AI Diagnostics — Knowledge base, assistant |  | sweep | AIToolsHandler |
+| `coverage` | Coverage Map — Generate coverage map | `maps` | sweep | AIToolsHandler |
+| `heatmap` | Heatmap — Node density heatmap | `maps` | sweep | AIToolsHandler |
+| `livemap` | Live NOC Map — Real-time browser view | `maps` | sweep | AIToolsHandler |
+| `mfmaps` | MeshForge Maps — Multi-source map ext. | `maps` | sweep | AIToolsHandler |
+| `tiles` | Offline Tiles — Cache map tiles | `maps` | sweep | AIToolsHandler |
+| `quality` | Link Quality — Quality analysis |  | sweep | LinkQualityHandler |
+| `export` | Export Data — GeoJSON, CSV, GraphML |  | sweep | TopologyHandler |
+| `topology` | Network Topology — D3.js graph view |  | sweep | TopologyHandler |
+| `traffic` | Traffic Inspector — Packet capture & analysis |  | sweep | TrafficInspectorHandler |
 
 ## `mesh_networks`
 
-| Action tag | Description | Flag | Handler |
-|---|---|---|---|
-| `ham` | Ham Radio — Callsign, Part 97, ARES |  | AmateurRadioHandler |
-| `aredn` | AREDN Mesh — AREDN integration |  | AREDNHandler |
-| `automation` | Automation — Auto-ping, traceroute, welcome |  | AutomationHandler |
-| `broker-menu` | Broker Manager — MQTT broker setup |  | BrokerHandler |
-| `traffic` | Traffic Classifier — Routing & notification stats |  | ClassifierHandler |
-| `dual_failover` | Dual-Radio Failover — Configure, test, deploy failover |  | DualRadioFailoverHandler |
-| `favorites` | Favorites — Manage favorite nodes |  | FavoritesHandler |
-| `gateway` | Gateway Bridge — RNS-Meshtastic-MeshCore | `gateway` | GatewayHandler |
-| `check` | Gateway Pre-Flight — Validate bridge readiness |  | GatewayPreflightHandler |
-| `export` | Export Config — Snapshot current state as template |  | GatewayPreflightHandler |
-| `wizard` | Gateway Wizard — Guided SF↔MeshForge↔RNS setup | `gateway` | GatewayWizardHandler |
-| `load_balancer` | TX Load Balancer — Dual-radio TX distribution |  | LoadBalancerHandler |
-| `mesh_alerts` | Mesh Alerts — Battery, emergency, disconnect |  | MeshAlertsHandler |
-| `meshcore` | MeshCore — Companion radio, config | `meshcore` | MeshCoreHandler |
-| `messaging` | Messaging — Send/receive messages |  | MessagingHandler |
-| `mqtt` | MQTT Monitor — Nodeless mesh observation | `mqtt` | MQTTHandler |
-| `nomadnet` | NomadNet Client — RNS messaging | `rns` | NomadNetHandler |
-| `meshtastic` | Meshtastic — Radio, channels, CLI | `meshtastic` | RadioMenuHandler |
-| `rns` | RNS / Reticulum — Status, gateway, messaging | `rns` | RNSMenuHandler |
-| `services` | Service Control — Start/stop/restart |  | ServiceMenuHandler |
-| `test_gateway_rx` | Test Gateway RX — MQTT probe -> RNS -> NomadNet | `gateway` | TestGatewayRxHandler |
+| Action tag | Description | Flag | Truth | Handler |
+|---|---|---|---|---|
+| `ham` | Ham Radio — Callsign, Part 97, ARES |  | sweep | AmateurRadioHandler |
+| `aredn` | AREDN Mesh — AREDN integration |  | sweep | AREDNHandler |
+| `automation` | Automation — Auto-ping, traceroute, welcome |  | sweep | AutomationHandler |
+| `broker-menu` | Broker Manager — MQTT broker setup |  | sweep | BrokerHandler |
+| `traffic` | Traffic Classifier — Routing & notification stats |  | sweep | ClassifierHandler |
+| `dual_failover` | Dual-Radio Failover — Configure, test, deploy failover |  | sweep | DualRadioFailoverHandler |
+| `favorites` | Favorites — Manage favorite nodes |  | sweep | FavoritesHandler |
+| `gateway` | Gateway Bridge — RNS-Meshtastic-MeshCore | `gateway` | sweep | GatewayHandler |
+| `check` | Gateway Pre-Flight — Validate bridge readiness |  | sweep | GatewayPreflightHandler |
+| `export` | Export Config — Snapshot current state as template |  | sweep | GatewayPreflightHandler |
+| `wizard` | Gateway Wizard — Guided SF↔MeshForge↔RNS setup | `gateway` | sweep | GatewayWizardHandler |
+| `load_balancer` | TX Load Balancer — Dual-radio TX distribution |  | sweep | LoadBalancerHandler |
+| `mesh_alerts` | Mesh Alerts — Battery, emergency, disconnect |  | sweep | MeshAlertsHandler |
+| `meshcore` | MeshCore — Companion radio, config | `meshcore` | sweep | MeshCoreHandler |
+| `messaging` | Messaging — Send/receive messages |  | sweep | MessagingHandler |
+| `mqtt` | MQTT Monitor — Nodeless mesh observation | `mqtt` | sweep | MQTTHandler |
+| `nomadnet` | NomadNet Client — RNS messaging | `rns` | sweep | NomadNetHandler |
+| `meshtastic` | Meshtastic — Radio, channels, CLI | `meshtastic` | sweep | RadioMenuHandler |
+| `rns` | RNS / Reticulum — Status, gateway, messaging | `rns` | sweep | RNSMenuHandler |
+| `services` | Service Control — Start/stop/restart |  | sweep | ServiceMenuHandler |
+| `test_gateway_rx` | Test Gateway RX — MQTT probe -> RNS -> NomadNet | `gateway` | sweep | TestGatewayRxHandler |
 
 ## `meshtasticd`
 
-| Action tag | Description | Flag | Handler |
-|---|---|---|---|
-| `mqtt` | MQTT Uplink/Downlink |  | MeshtasticdDeviceMQTTHandler |
-| `lora` | LoRa Module Config |  | MeshtasticdLoRaHandler |
-| `cleanup` | Node DB Cleanup |  | MeshtasticdNodeDBHandler |
-| `hardware` | Select Radio Hardware | `meshtastic` | MeshtasticdRadioHandler |
-| `owner` | Set Owner/Node Name | `meshtastic` | MeshtasticdRadioHandler |
-| `presets` | Radio Presets (LoRa) | `meshtastic` | MeshtasticdRadioHandler |
+| Action tag | Description | Flag | Truth | Handler |
+|---|---|---|---|---|
+| `mqtt` | MQTT Uplink/Downlink |  | sweep | MeshtasticdDeviceMQTTHandler |
+| `lora` | LoRa Module Config |  | sweep | MeshtasticdLoRaHandler |
+| `cleanup` | Node DB Cleanup |  | sweep | MeshtasticdNodeDBHandler |
+| `hardware` | Select Radio Hardware | `meshtastic` | sweep | MeshtasticdRadioHandler |
+| `owner` | Set Owner/Node Name | `meshtastic` | sweep | MeshtasticdRadioHandler |
+| `presets` | Radio Presets (LoRa) | `meshtastic` | sweep | MeshtasticdRadioHandler |
 
 ## `rf_sdr`
 
-| Action tag | Description | Flag | Handler |
-|---|---|---|---|
-| `vna` | Antenna Analyzer — NanoVNA sweep, SWR, baselines |  | NanoVNAHandler |
-| `weather` | Space Weather — Propagation & HF bands |  | PropagationHandler |
-| `antenna` | Antenna Analysis — Compare antenna types |  | RFToolsHandler |
-| `freq` | Frequency Slots — Channel calculator |  | RFToolsHandler |
-| `link` | Link Budget — FSPL, Fresnel, range |  | RFToolsHandler |
-| `sdr` | SDR Monitor — RF awareness (Airspy) |  | SDRHandler |
-| `site` | Site Planner — Coverage estimation |  | SitePlannerHandler |
+| Action tag | Description | Flag | Truth | Handler |
+|---|---|---|---|---|
+| `vna` | Antenna Analyzer — NanoVNA sweep, SWR, baselines |  | sweep | NanoVNAHandler |
+| `weather` | Space Weather — Propagation & HF bands |  | sweep | PropagationHandler |
+| `antenna` | Antenna Analysis — Compare antenna types |  | sweep | RFToolsHandler |
+| `freq` | Frequency Slots — Channel calculator |  | sweep | RFToolsHandler |
+| `link` | Link Budget — FSPL, Fresnel, range |  | sweep | RFToolsHandler |
+| `sdr` | SDR Monitor — RF awareness (Airspy) |  | sweep | SDRHandler |
+| `site` | Site Planner — Coverage estimation |  | sweep | SitePlannerHandler |
 
 ## `rns`
 
-| Action tag | Description | Flag | Handler |
-|---|---|---|---|
-| `check` | Check RNS Setup |  | RNSConfigHandler |
-| `config` | View Reticulum Config |  | RNSConfigHandler |
-| `edit` | Edit Reticulum Config | `rns` | RNSConfigHandler |
-| `logging` | Configure RNS Logging |  | RNSConfigHandler |
-| `diag` | RNS Diagnostics |  | RNSDiagnosticsHandler |
-| `drift` | Config Drift Check |  | RNSDiagnosticsHandler |
-| `repair` | Repair RNS |  | RNSDiagnosticsHandler |
-| `ifaces` | Manage Interfaces |  | RNSInterfacesHandler |
-| `monitor` | Live RNS Monitor (auto-refresh) |  | RNSMonitorHandler |
-| `sniffer` | RNS Traffic Sniffer (Wireshark-grade) |  | RNSSnifferHandler |
-| `tools` | RNS Tools — rnstatus, paths, identity |  | RNSToolsHandler |
+| Action tag | Description | Flag | Truth | Handler |
+|---|---|---|---|---|
+| `check` | Check RNS Setup |  | sweep | RNSConfigHandler |
+| `config` | View Reticulum Config |  | sweep | RNSConfigHandler |
+| `edit` | Edit Reticulum Config | `rns` | sweep | RNSConfigHandler |
+| `logging` | Configure RNS Logging |  | sweep | RNSConfigHandler |
+| `diag` | RNS Diagnostics |  | sweep | RNSDiagnosticsHandler |
+| `drift` | Config Drift Check |  | sweep | RNSDiagnosticsHandler |
+| `repair` | Repair RNS |  | sweep | RNSDiagnosticsHandler |
+| `ifaces` | Manage Interfaces |  | sweep | RNSInterfacesHandler |
+| `monitor` | Live RNS Monitor (auto-refresh) |  | sweep | RNSMonitorHandler |
+| `sniffer` | RNS Traffic Sniffer (Wireshark-grade) |  | sweep | RNSSnifferHandler |
+| `tools` | RNS Tools — rnstatus, paths, identity |  | sweep | RNSToolsHandler |
 
 ## `system`
 
-| Action tag | Description | Flag | Handler |
-|---|---|---|---|
-| `review` | Code Review — Auto-review codebase |  | AutoReviewHandler |
-| `details` | Config Doctor Details — Drill into last run |  | ConfigDoctorHandler |
-| `run` | Config Doctor — Audit per-box config drift |  | ConfigDoctorHandler |
-| `daemon` | MeshForge Daemon — Headless NOC (maps, RNS, chat) |  | DaemonHandler |
-| `db_health` | DB Health — Audit all SQLite DBs |  | DBAuditHandler |
-| `diagnose` | Diagnostics — System health check |  | DiagnosticsHandler |
-| `status` | Quick Status — One-shot status display |  | DiagnosticsHandler |
-| `discover` | Service Discovery — Auto-discover services |  | ServiceDiscoveryHandler |
-| `hardware` | Hardware — Detect SPI/I2C/USB |  | HardwareHandler |
-| `logs` | Logs — View/follow logs |  | LogsHandler |
-| `network` | Network Tools — Ping, ports, interfaces |  | NetworkToolsHandler |
-| `platform_pins` | Dependency Pins — what we hold and why |  | PlatformPostureHandler |
-| `platform_posture` | Platform Posture — OS base vs declared, per box |  | PlatformPostureHandler |
-| `platform_updates` | Update Readiness — pending, reboot owed, holds |  | PlatformPostureHandler |
-| `reboot` | Reboot/Shutdown — Safe system control |  | RebootHandler |
-| `starlink_skymap` | Starlink Sky Map — Obstruction map + bearings |  | StarlinkHandler |
-| `starlink_status` | Starlink Dish — Uplink telemetry (read-only) |  | StarlinkHandler |
-| _(no menu items)_ | lifecycle / dispatch only |  | StartupHealthHandler |
-| `shell` | Linux Shell — Drop to bash |  | SystemToolsHandler |
+| Action tag | Description | Flag | Truth | Handler |
+|---|---|---|---|---|
+| `review` | Code Review — Auto-review codebase |  | sweep | AutoReviewHandler |
+| `details` | Config Doctor Details — Drill into last run |  | sweep | ConfigDoctorHandler |
+| `run` | Config Doctor — Audit per-box config drift |  | sweep | ConfigDoctorHandler |
+| `daemon` | MeshForge Daemon — Headless NOC (maps, RNS, chat) |  | sweep | DaemonHandler |
+| `db_health` | DB Health — Audit all SQLite DBs |  | sweep | DBAuditHandler |
+| `diagnose` | Diagnostics — System health check |  | sweep | DiagnosticsHandler |
+| `status` | Quick Status — One-shot status display |  | sweep | DiagnosticsHandler |
+| `discover` | Service Discovery — Auto-discover services |  | sweep | ServiceDiscoveryHandler |
+| `hardware` | Hardware — Detect SPI/I2C/USB |  | sweep | HardwareHandler |
+| `logs` | Logs — View/follow logs |  | sweep | LogsHandler |
+| `network` | Network Tools — Ping, ports, interfaces |  | sweep | NetworkToolsHandler |
+| `platform_pins` | Dependency Pins — what we hold and why |  | sweep | PlatformPostureHandler |
+| `platform_posture` | Platform Posture — OS base vs declared, per box |  | local-only | PlatformPostureHandler |
+| `platform_updates` | Update Readiness — pending, reboot owed, holds |  | sweep | PlatformPostureHandler |
+| `reboot` | Reboot/Shutdown — Safe system control |  | sweep | RebootHandler |
+| `starlink_skymap` | Starlink Sky Map — Obstruction map + bearings |  | sweep | StarlinkHandler |
+| `starlink_status` | Starlink Dish — Uplink telemetry (read-only) |  | sweep | StarlinkHandler |
+| _(no menu items)_ | lifecycle / dispatch only |  |  | StartupHealthHandler |
+| `shell` | Linux Shell — Drop to bash |  | sweep | SystemToolsHandler |

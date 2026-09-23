@@ -598,3 +598,30 @@ class TestReportActionInvalidatesStatusBar:
         from unittest.mock import MagicMock
         ctx = TUIContext(dialog=MagicMock(), status_bar=None)
         assert ctx.report_action(True, "t", "b") is True
+
+
+class TestDispatchUsageWitness:
+    """One INFO line per action RUN (2026-09-22) — the fleet's TUI logs are
+    the only honest input to "is this feature still used?". Until then only
+    refusals were logged at INFO, so a used action and a dead one left the
+    same record: none."""
+
+    def test_dispatch_logs_one_info_witness(self, caplog):
+        import logging
+        ctx = _make_context()
+        registry = HandlerRegistry(ctx)
+        registry.register(SampleHandler())
+        with caplog.at_level(logging.INFO, logger="handler_registry"):
+            assert registry.dispatch("test_section", "alpha") is True
+        witnesses = [r for r in caplog.records
+                     if r.levelno == logging.INFO and r.getMessage() == "dispatch test_section/alpha"]
+        assert len(witnesses) == 1, [r.getMessage() for r in caplog.records]
+
+    def test_unknown_tag_leaves_no_run_witness(self, caplog):
+        import logging
+        ctx = _make_context()
+        registry = HandlerRegistry(ctx)
+        registry.register(SampleHandler())
+        with caplog.at_level(logging.INFO, logger="handler_registry"):
+            assert registry.dispatch("test_section", "no-such-tag") is False
+        assert not [r for r in caplog.records if r.getMessage().startswith("dispatch ")]

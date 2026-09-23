@@ -96,9 +96,15 @@ class MeshtasticdRadioHandler(BaseHandler):
             if result.success and raw:
                 current_long, current_short = self._parse_current_owner(raw)
 
+            # "none" means the radio HAS no name; a failed read is not that.
+            # With the CLI dead this dialog used to say "current: none" — the
+            # same words as an unnamed radio — and invite a write on top of
+            # a name it never saw (truth sweep 2026-09-22).
+            absent = 'none' if (result.success and raw) else 'UNKNOWN — could not read the radio'
+
             long_name = self.ctx.dialog.inputbox(
                 "Set Long Name",
-                f"Enter node name (current: {current_long or 'none'}):",
+                f"Enter node name (current: {current_long or absent}):",
                 current_long or ""
             )
 
@@ -107,7 +113,7 @@ class MeshtasticdRadioHandler(BaseHandler):
 
             short_name = self.ctx.dialog.inputbox(
                 "Set Short Name",
-                f"Enter 4-char short name (current: {current_short or 'none'}):",
+                f"Enter 4-char short name (current: {current_short or absent}):",
                 current_short or ""
             )
 

@@ -480,6 +480,12 @@ class HandlerRegistry:
                 # surfaced inside _materialize; do NOT dispatch on it.
                 return True
 
+        # The usage witness (2026-09-22). One INFO line per action RUN, so
+        # the fleet's TUI logs can answer "was this feature used in the last
+        # 30 days?" — the only honest input to "do we still need it". Until
+        # now only REFUSALS were logged at INFO; a used action and a dead one
+        # left the same record: none.
+        logger.info("dispatch %s/%s", section, tag)
         self._ctx.safe_call(handler.handler_id, handler.execute, tag)
         return True
 

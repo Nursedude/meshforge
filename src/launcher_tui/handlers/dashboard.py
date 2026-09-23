@@ -323,7 +323,7 @@ class DashboardHandler(BaseHandler):
             f"Kp Index:          {d.get('k_index', 'N/A')}",
             f"A Index:           {d.get('a_index', 'N/A')}",
             f"X-ray Flux:        {d.get('xray_flux', 'N/A')}",
-            f"Geomagnetic:       {d.get('geomag_storm', 'Quiet')}",
+            f"Geomagnetic:       {d.get('geomag_storm', 'UNKNOWN')}",
             "",
         ]
 

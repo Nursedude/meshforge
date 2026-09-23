@@ -446,7 +446,7 @@ class QuickActionsHandler(BaseHandler):
             print(f"  Kp Index:          {d.get('k_index', 'N/A')}")
             print(f"  A Index:           {d.get('a_index', 'N/A')}")
             print(f"  X-ray:             {d.get('xray_flux', 'N/A')}")
-            print(f"  Geomagnetic:       {d.get('geomag_storm', 'Quiet')}")
+            print(f"  Geomagnetic:       {d.get('geomag_storm', 'UNKNOWN')}")
 
             bands = d.get('band_conditions', {})
             if bands:
