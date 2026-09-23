@@ -12,12 +12,16 @@ Services monitored:
 - MQTT (1883) - message broker
 """
 
+import logging
 import socket
 import time
 import threading
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+
+#: Witness channel for probes that could not be made (see ProbeUnobservable).
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -104,14 +108,27 @@ DEFAULT_SERVICES = [
 ]
 
 
+class ProbeUnobservable(OSError):
+    """The probe could not be MADE (no socket could be opened). Distinct from
+    a refused/timed-out connect: that is an observation that nothing
+    answered; this is no observation at all, and must never read as
+    CLOSED/DOWN (honest_failure_modes #1; TUI truth sweep 2026-09-22)."""
+
+
 def probe_tcp(host: str, port: int, timeout: float = 2.0) -> Tuple[bool, float]:
     """
     Measure TCP connection time to a service.
 
     Returns:
         (success, rtt_ms) - Whether connection succeeded and round-trip time
+
+    Raises:
+        ProbeUnobservable: a socket could not be created at all.
     """
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    except OSError as e:
+        raise ProbeUnobservable(f"cannot open a socket: {e}") from e
     sock.settimeout(timeout)
     start = time.monotonic()
     try:
@@ -157,6 +174,7 @@ class LatencyMonitor:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+        self.unobservable_probes = 0  # witness: probes that could not be made
 
         for name, host, port in (services or DEFAULT_SERVICES):
             self._services[name] = ServiceHealth(name=name, host=host, port=port)
@@ -165,7 +183,14 @@ class LatencyMonitor:
         """Run one probe cycle across all services. Thread-safe."""
         with self._lock:
             for svc in self._services.values():
-                success, rtt = probe_tcp(svc.host, svc.port)
+                try:
+                    success, rtt = probe_tcp(svc.host, svc.port)
+                except ProbeUnobservable as e:
+                    # No sample: an unmade probe is unknown, not a failure
+                    # (and must not kill the monitor thread). Witnessed.
+                    self.unobservable_probes += 1
+                    logger.debug("latency probe %s unobservable: %s", svc.name, e)
+                    continue
                 svc.samples.append(LatencySample(
                     timestamp=time.time(),
                     rtt_ms=rtt,

@@ -126,7 +126,10 @@ class LatencyHandler(BaseHandler):
             color, icon = status_indicators.get(status, ("\033[2m", "○"))
             reset = "\033[0m"
 
-            print(f"  {color}{icon}{reset} {name:<22} {color}{status}{reset}")
+            # HEALTHY here means "the TCP connect succeeded" — a listener, not
+            # a working service; say what was measured (2026-09-23).
+            shown = "OPEN (listening)" if status == 'HEALTHY' else status
+            print(f"  {color}{icon}{reset} {name:<22} {color}{shown}{reset}")
             if svc.is_reachable:
                 print(f"    RTT: {svc.avg_rtt_ms:.1f}ms  Jitter: {svc.jitter_ms:.1f}ms  Loss: {svc.packet_loss_pct:.0f}%")
             elif status == 'DOWN':

@@ -12,8 +12,8 @@ from utils.safe_import import safe_import
 
 logger = logging.getLogger(__name__)
 
-probe_tcp, DEFAULT_SERVICES, _HAS_LATENCY = safe_import(
-    'utils.latency_monitor', 'probe_tcp', 'DEFAULT_SERVICES'
+probe_tcp, DEFAULT_SERVICES, ProbeUnobservable, _HAS_LATENCY = safe_import(
+    'utils.latency_monitor', 'probe_tcp', 'DEFAULT_SERVICES', 'ProbeUnobservable'
 )
 
 
@@ -76,7 +76,12 @@ class NodeHealthHandler(BaseHandler):
 
         results = []
         for name, host, port in DEFAULT_SERVICES:
-            success, rtt_ms = probe_tcp(host, port, timeout=2.0)
+            try:
+                success, rtt_ms = probe_tcp(host, port, timeout=2.0)
+            except ProbeUnobservable as e:
+                print(f"  \033[2m{'UNKNOWN':8s}\033[0m {name:<22} {'---':>7}    "
+                      f"({host}:{port}) — {e}")
+                continue
             results.append((name, host, port, success, rtt_ms))
 
             # A TCP connect proves a LISTENER, not a working service
@@ -98,11 +103,13 @@ class NodeHealthHandler(BaseHandler):
 
         up_count = sum(1 for r in results if r[3])
         down_count = len(results) - up_count
+        unknown_count = len(DEFAULT_SERVICES) - len(results)
         up_results = [r for r in results if r[3]]
         avg_rtt = sum(r[4] for r in up_results) / len(up_results) if up_results else 0.0
 
         print(f"\n{'='*50}")
-        print(f"  Ports: {up_count} accepting, {down_count} not accepting")
+        print(f"  Ports: {up_count} accepting, {down_count} not accepting"
+              + (f", {unknown_count} UNKNOWN (probe could not be made)" if unknown_count else ""))
         print("  A port that accepts proves something is LISTENING there, not that")
         print("  the service works. A closed port may be off by design on this box.")
         if up_results:

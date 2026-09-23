@@ -81,9 +81,6 @@ _NO_TOOL = "FileNotFoundError from a subprocess escapes to safe_call ('File Not 
 #: latency pair is deliberately NOT "fixed" by returning unreachable, since
 #: a socket that could not be created observed nothing (hfm #1).
 KNOWN_CRASHED_L2: Dict[Tuple[str, str, str], str] = {
-    ("dashboard", "health", "latency"): "2026-09-22: probe_tcp creates its socket outside "
-                                        "the try; OSError escapes",
-    ("dashboard", "latency", "probe"): "2026-09-22: same probe_tcp OSError",
     ("dashboard", "reports", "generate"): f"2026-09-22: {_NO_TOOL}",
     ("dashboard", "reports", "save"): f"2026-09-22: {_NO_TOOL}",
     ("fleet", "fleet_backup", "setup"): f"2026-09-22: {_NO_TOOL}",
