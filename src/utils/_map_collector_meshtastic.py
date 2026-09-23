@@ -533,6 +533,7 @@ class MeshtasticDataCollectorMixin:
             is_gateway=user.get('role', '') in ('ROUTER', 'ROUTER_CLIENT'),
             via_mqtt=data.get('viaMqtt', False),
             is_local=(data.get('hopsAway', 99) == 0),
+            hops_away=data.get('hopsAway'),
             last_seen=last_seen,
             last_heard=last_heard,
             temperature=env_metrics.get('temperature'),

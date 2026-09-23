@@ -2198,3 +2198,66 @@ class TestServeFleetWan:
         h = self._h()
         h._serve_fleet_wan()
         assert h._captured["payload"]["status"] == "error"
+
+
+class TestTopologyLinkEvidence:
+    """2026-09-23: every topology link says whether it was SEEN or DRAWN.
+
+    Proximity links (nearest online gateway/router ≤50 km, gateways ≤100 km)
+    are geometry, not radio links; AREDN links come from AREDN's own link
+    table. Before this they were indistinguishable, and the browser view
+    invented its own links from list order.
+    """
+
+    def _feature(self, nid, lon, lat, **props):
+        p = {"id": nid, "network": "meshtastic", "is_online": True, "is_gateway": False}
+        p.update(props)
+        return {"type": "Feature", "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                "properties": p}
+
+    def _payload(self):
+        return {"type": "FeatureCollection", "features": [
+            self._feature("!gw1", -157.80, 21.30, is_gateway=True),
+            self._feature("!gw2", -157.70, 21.35, is_gateway=True),
+            self._feature("!n1", -157.81, 21.31),
+            self._feature("aredn-local", -157.8, 21.3, network="aredn"),
+            self._feature("aredn-nbr", -157.7, 21.3, network="aredn", link_type="RF",
+                          link_quality=90),
+        ]}
+
+    def _serve(self, path="/api/network/topology", cache=None):
+        h = _make_topology_handler(geojson_payload=self._payload(), accept_encoding="",
+                                   cache=cache)
+        h.path = path
+        h._serve_network_topology()
+        return h, json.loads(h.wfile.getvalue())
+
+    def test_every_link_carries_evidence_and_basis(self):
+        _h, body = self._serve()
+        assert body["links"], "fixture must produce links"
+        for lk in body["links"]:
+            assert lk["evidence"] in ("observed", "inferred"), lk
+            assert lk["basis"], lk
+
+    def test_aredn_links_are_observed_and_proximity_links_inferred(self):
+        _h, body = self._serve()
+        by_type = {}
+        for lk in body["links"]:
+            by_type.setdefault(lk["type"].startswith("aredn_"), set()).add(lk["evidence"])
+        assert by_type[True] == {"observed"}
+        assert by_type[False] == {"inferred"}
+        ev = body["evidence_counts"]
+        assert ev["observed"] + ev["inferred"] == len(body["links"])
+
+    def test_links_only_omits_nodes_and_keeps_evidence(self):
+        _h, full = self._serve()
+        _h2, lo = self._serve("/api/network/topology?links_only=1")
+        assert "nodes" not in lo
+        assert lo["links"] == full["links"]
+        assert lo["evidence_counts"] == full["evidence_counts"]
+
+    def test_variants_do_not_share_a_cache_entry(self):
+        cache = ResponseByteCache(ttl_s=60.0)
+        _h, lo = self._serve("/api/network/topology?links_only=1", cache=cache)
+        _h2, full = self._serve("/api/network/topology", cache=cache)
+        assert "nodes" in full and "nodes" not in lo

@@ -51,9 +51,18 @@ class VisualizationEndpointsMixin:
     def _serve_network_topology(self):
         """Serve network topology data for D3.js visualization.
 
-        Wrapped in the short-TTL response cache (Issue #71 / GitHub
-        #1168). The endpoint takes no query params, so a single
-        ``None`` cache key covers every caller. The build closure does
+        Every link carries ``evidence``: ``observed`` (AREDN's own link
+        table) or ``inferred`` (drawn from GEOMETRY — nearest online
+        gateway/router ≤50 km, gateways ≤100 km — never seen on the air),
+        plus a one-line ``basis``. Until 2026-09-23 both kinds looked the
+        same, and the browser view ignored this endpoint and invented its
+        own links from list order.
+
+        ``?links_only=1`` returns the links without the ~15 MB node list
+        (the browser already holds the nodes). Wrapped in the short-TTL
+        response cache (Issue #71 / GitHub #1168): key ``None`` is the
+        full body, ``"links"`` the links-only body, so neither variant can
+        be served for the other. The build closure does
         the full nodes/links/network_counts walk + ``json.dumps`` +
         ``gzip.compress`` — same wedge mechanics as the directory and
         geojson endpoints, just smaller body (~24 MB) and faster
@@ -64,6 +73,9 @@ class VisualizationEndpointsMixin:
             return
 
         cache = self.collector._topology_response_cache
+        from urllib.parse import parse_qs, urlparse
+        links_only = parse_qs(urlparse(getattr(self, "path", "") or "").query).get(
+            "links_only", ["0"])[0].lower() in ("1", "true", "yes")
 
         def _build() -> tuple:
             geojson = self.collector.collect()
@@ -113,6 +125,8 @@ class VisualizationEndpointsMixin:
                                 "source": local["id"],
                                 "target": neighbor["id"],
                                 "type": f"aredn_{link_type_str.lower()}",
+                                "evidence": "observed",
+                                "basis": f"AREDN link table ({link_type_str})",
                                 "link_quality": neighbor.get("link_quality", 0),
                                 "snr": neighbor.get("snr"),
                                 "distance_km": round(dist, 2)
@@ -145,6 +159,8 @@ class VisualizationEndpointsMixin:
                         "source": node["id"],
                         "target": nearest["id"],
                         "type": link_type,
+                        "evidence": "inferred",
+                        "basis": "nearest online gateway/router within 50 km",
                         "distance_km": round(min_dist, 2)
                     })
 
@@ -159,12 +175,26 @@ class VisualizationEndpointsMixin:
                             "source": gw1["id"],
                             "target": gw2["id"],
                             "type": "gateway",
+                            "evidence": "inferred",
+                            "basis": "online gateways within 100 km",
                             "distance_km": round(dist, 2)
                         })
 
+            evidence = {
+                "observed": sum(1 for lk in links if lk["evidence"] == "observed"),
+                "inferred": sum(1 for lk in links if lk["evidence"] == "inferred"),
+            }
+            if links_only:
+                body = {"links": links, "evidence_counts": evidence,
+                        "timestamp": datetime.now().isoformat()}
+                raw = json.dumps(body).encode()
+                gz = (gzip.compress(raw, compresslevel=6)
+                      if len(raw) >= self._GZIP_MIN_BYTES else None)
+                return raw, gz
             body = {
                 "nodes": nodes,
                 "links": links,
+                "evidence_counts": evidence,
                 "network_counts": {
                     "meshtastic": len([n for n in nodes if n["network"] == "meshtastic"]),
                     "rns": len([n for n in nodes if n["network"] == "rns"]),
@@ -182,7 +212,8 @@ class VisualizationEndpointsMixin:
             return raw, gz
 
         try:
-            raw_bytes, gzip_bytes, _was_built = cache.get_or_build(None, _build)
+            raw_bytes, gzip_bytes, _was_built = cache.get_or_build(
+                "links" if links_only else None, _build)
         except Exception as e:
             logger.error(f"topology build failed: {e}")
             self._serve_json(

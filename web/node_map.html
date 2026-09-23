@@ -1468,9 +1468,19 @@
                 <span>AREDN</span>
             </div>
             <div class="topo-legend-item">
-                <div class="topo-legend-line" style="background:#ffa726;background:repeating-linear-gradient(90deg,#ffa726,#ffa726 5px,transparent 5px,transparent 8px)"></div>
-                <span>Gateway Bridge</span>
+                <div class="topo-legend-line" style="background:#ffa726"></div>
+                <span>Gateway</span>
             </div>
+            <div class="legend-title" style="margin-top:6px">Evidence</div>
+            <div class="topo-legend-item">
+                <div class="topo-legend-line" style="background:#cfd8dc"></div>
+                <span>Solid = observed (AREDN link table)</span>
+            </div>
+            <div class="topo-legend-item">
+                <div class="topo-legend-line" style="background:repeating-linear-gradient(90deg,#cfd8dc,#cfd8dc 5px,transparent 5px,transparent 8px)"></div>
+                <span>Dashed = inferred: nearest online gateway &le;50&nbsp;km (not seen on air)</span>
+            </div>
+            <div class="topo-legend-item"><span id="topo-links-note">Loading links…</span></div>
         </div>
     </div>
 
@@ -2171,66 +2181,36 @@
             nodeMap.set(props.id, node);
         });
 
-        // Create links - gateways connect to all nearby nodes of different networks
-        const gateways = nodes.filter(n => n.isGateway);
-        const regularNodes = nodes.filter(n => !n.isGateway);
-
-        // Connect regular nodes to nearest gateway or router
-        regularNodes.forEach(node => {
-            let nearest = null;
-            let minDist = Infinity;
-
-            gateways.forEach(gw => {
-                // In topology view, use index distance as proxy
-                const dist = Math.abs(nodes.indexOf(node) - nodes.indexOf(gw));
-                if (dist < minDist) {
-                    minDist = dist;
-                    nearest = gw;
-                }
-            });
-
-            if (nearest) {
-                links.push({
-                    source: node,
-                    target: nearest,
-                    type: node.network === nearest.network ? 'mesh' : 'gateway',
-                    strength: node.isOnline && nearest.isOnline ? 0.3 : 0.1
-                });
-            }
-        });
-
-        // Connect gateways to each other (bridge links)
-        for (let i = 0; i < gateways.length; i++) {
-            for (let j = i + 1; j < gateways.length; j++) {
-                links.push({
-                    source: gateways[i],
-                    target: gateways[j],
-                    type: 'gateway',
-                    strength: 0.2
-                });
-            }
+        // Links come from the SERVER, each tagged `evidence` observed|inferred
+        // with a `basis` (2026-09-23). This view used to invent them here —
+        // nearest gateway by LIST POSITION ("index distance as proxy"), every
+        // gateway to every other, and a ring through the first 20 nodes of
+        // each network — none of it seen on the air, all drawn as links.
+        if (!state.topologyLinksAt || Date.now() - state.topologyLinksAt > 60000) {
+            state.topologyLinksAt = Date.now();
+            fetch('/api/network/topology?links_only=1')
+                .then(r => r.ok ? r.json() : Promise.reject('HTTP ' + r.status))
+                .then(j => { state.topologyLinks = j; state.topologyLinksError = null; })
+                .catch(e => { state.topologyLinks = null; state.topologyLinksError = String(e); })
+                .finally(() => renderTopology());
         }
-
-        // Connect nodes within same network
-        const byNetwork = {};
-        regularNodes.forEach(n => {
-            if (!byNetwork[n.network]) byNetwork[n.network] = [];
-            byNetwork[n.network].push(n);
+        const apiLinks = (state.topologyLinks && state.topologyLinks.links) || [];
+        let shownObserved = 0, shownInferred = 0;
+        apiLinks.forEach(l => {
+            const s = nodeMap.get(l.source), t = nodeMap.get(l.target);
+            if (!s || !t) return;
+            if (l.evidence === 'observed') shownObserved++; else shownInferred++;
+            links.push({ source: s, target: t, type: l.type, evidence: l.evidence,
+                         basis: l.basis, strength: l.evidence === 'observed' ? 0.3 : 0.1 });
         });
-
-        Object.values(byNetwork).forEach(networkNodes => {
-            for (let i = 0; i < networkNodes.length && i < 20; i++) {
-                const next = (i + 1) % networkNodes.length;
-                if (i !== next) {
-                    links.push({
-                        source: networkNodes[i],
-                        target: networkNodes[next],
-                        type: networkNodes[i].network,
-                        strength: 0.15
-                    });
-                }
-            }
-        });
+        const note = document.getElementById('topo-links-note');
+        if (note) {
+            note.textContent = state.topologyLinksError
+                ? 'Links unavailable (' + state.topologyLinksError + ') — nodes only'
+                : (state.topologyLinks
+                    ? shownObserved + ' observed · ' + shownInferred + ' inferred'
+                    : 'Loading links…');
+        }
 
         // Create force simulation
         state.topology = d3.forceSimulation(nodes)
@@ -2263,8 +2243,13 @@
             .join('line')
             .attr('class', d => `topo-link topo-link-${d.type}`)
             .attr('stroke', d => linkColors[d.type] || '#2a3a4a')
-            .attr('stroke-width', d => d.type === 'gateway' ? 2 : 1.5)
-            .attr('stroke-dasharray', d => d.type === 'gateway' ? '5,3' : null);
+            .attr('stroke-width', d => d.evidence === 'observed' ? 2 : 1.2)
+            // Dashed = INFERRED from geometry, never seen on the air.
+            .attr('stroke-dasharray', d => d.evidence === 'observed' ? null : '5,3')
+            .attr('opacity', d => d.evidence === 'observed' ? 0.9 : 0.55);
+
+        link.append('title')
+            .text(d => (d.evidence === 'observed' ? 'Observed: ' : 'Inferred (not an observed link): ') + (d.basis || ''));
 
         // Draw nodes
         const nodeColors = {

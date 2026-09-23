@@ -1194,8 +1194,14 @@ class MapDataCollector(
                       channel_utilization: Optional[float] = None,
                       air_util_tx: Optional[float] = None,
                       channel_name: str = "",
-                      has_encryption: Optional[bool] = None) -> Dict:
-        """Create a GeoJSON Feature for a node."""
+                      has_encryption: Optional[bool] = None,
+                      hops_away: Optional[int] = None) -> Dict:
+        """Create a GeoJSON Feature for a node.
+
+        ``hops_away`` is meshtasticd's own hop count to the node (0 = heard
+        directly). Set only when the radio reported one — absent stays absent,
+        because "unknown" is not "far" (2026-09-23: the positioned TCP path
+        dropped it, so no topology screen could show hops)."""
         props = {
             "id": str(node_id),
             "name": name or str(node_id),
@@ -1240,6 +1246,8 @@ class MapDataCollector(
             props["channel_name"] = channel_name
         if has_encryption is not None:
             props["has_encryption"] = has_encryption
+        if hops_away is not None:
+            props["hops_away"] = hops_away
         return {
             "type": "Feature",
             "geometry": {
