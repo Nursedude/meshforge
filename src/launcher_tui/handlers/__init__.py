@@ -39,7 +39,6 @@ def get_all_handlers() -> List[Type]:
 
     # Batch 1 handlers
     from handlers.node_health import NodeHealthHandler
-    from handlers.metrics import MetricsHandler
     from handlers.propagation import PropagationHandler
     from handlers.site_planner import SitePlannerHandler
     from handlers.sdr import SDRHandler
@@ -52,7 +51,6 @@ def get_all_handlers() -> List[Type]:
     handlers.extend([
         NanoVNAHandler,
         NodeHealthHandler,
-        MetricsHandler,
         PropagationHandler,
         SitePlannerHandler,
         SDRHandler,

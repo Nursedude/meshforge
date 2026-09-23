@@ -85,7 +85,9 @@ SECTION_ORDERINGS = {
         # The END first after status: did messages arrive (2026-09-23).
         "status", "delivery", "weather", "network", "nodes", "health", "score",
         "datapath", "stack_health", "traffic_pulse",
-        "metrics", "analytics", "latency", "reports", "alerts",
+        # "metrics" (Historical Trends + Prometheus + Grafana) retired
+        # 2026-09-23: its DB had no writer anywhere (0 rows on every box).
+        "analytics", "latency", "reports", "alerts",
         "mini_dudeai", "mini_dudeai_chat", "mini_dudeai_rules",
         "offline_oracle", "moc_analysis", "demo",
     ],

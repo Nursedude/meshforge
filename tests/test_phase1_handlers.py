@@ -87,7 +87,8 @@ class TestHandlerDiscovery:
         phase1 = {"latency", "classifier", "amateur_radio", "analytics", "rf_tools"}
         assert phase1.issubset(handler_ids)
         # Batch 1 handlers
-        batch1 = {"node_health", "metrics", "propagation", "site_planner",
+        # "metrics" retired 2026-09-23 (Historical Trends: DB with no writer)
+        batch1 = {"node_health", "propagation", "site_planner",
                    "sdr", "link_quality", "webhooks", "network_tools"}
         assert batch1.issubset(handler_ids)
 

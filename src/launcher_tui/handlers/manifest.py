@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 84 handlers · 117 menu actions (derived from get_all_handlers(), never hand-edited).
+# 83 handlers · 116 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -531,17 +531,6 @@ HANDLER_MANIFEST = [
         "error": None,
         "menu_items": [
             ('messaging', 'Messaging           Send/receive messages', None),
-        ],
-    },
-    {
-        "handler_id": 'metrics',
-        "module": 'handlers.metrics',
-        "class_name": 'MetricsHandler',
-        "menu_section": 'dashboard',
-        "lifecycle": False,
-        "error": None,
-        "menu_items": [
-            ('metrics', 'Historical Trends   Metrics over time', None),
         ],
     },
     {

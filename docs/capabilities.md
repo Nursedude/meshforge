@@ -19,7 +19,7 @@ These features have been used in actual mesh deployments with physical radios an
 
 | Category | Capabilities |
 |----------|-------------|
-| **TUI Interface** | Installer, service control, device config wizard, gateway config, diagnostics — <!--STAT:handlers-->84<!--/STAT--> handlers via registry pattern |
+| **TUI Interface** | Installer, service control, device config wizard, gateway config, diagnostics — <!--STAT:handlers-->83<!--/STAT--> handlers via registry pattern |
 | **Radio Management** | Install/configure meshtasticd, LoRa presets, channels, SPI/USB auto-detect |
 | **RF Engineering** | Link budget, Fresnel zone, path loss, site planning, space weather (NOAA), Cython-optimized |
 | **AI Diagnostics** | Offline knowledge base (20+ topics), rule-based troubleshooting, confidence scoring |

@@ -10,7 +10,7 @@
 > X?", grep this file for the capability, then open the handler under
 > `src/launcher_tui/handlers/`.
 
-**84 handlers · 117 menu actions · 12 sections** (all derived from `get_all_handlers()`, never hardcoded).
+**83 handlers · 116 menu actions · 12 sections** (all derived from `get_all_handlers()`, never hardcoded).
 
 A non-empty **Flag** names the deployment-profile feature that gates the action. Gated does NOT mean hidden: when the feature is off the row is still SHOWN, marked `[off]`, and refuses to run with an explanation naming the profile (`HandlerRegistry.mark_label` / `OFF_MARK`). Nothing is removed from the menu — someone new to the domain cannot go looking for a capability they have never been shown. Blank = never gated.
 
@@ -57,7 +57,6 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | `demo` | Demo Mode — Simulated mesh traffic |  | sweep | DemoHandler |
 | `stack_health` | Stack Health — Local: RNS path, NomadNet, bridge, DB |  | sweep | FleetHealthHandler |
 | `latency` | Latency Monitor — Service response times |  | sweep | LatencyHandler |
-| `metrics` | Historical Trends — Metrics over time |  | sweep | MetricsHandler |
 | `mini_dudeai` | mini-dudeai (local watcher + fixes) |  | sweep | MiniDudeaiHandler |
 | `mini_dudeai_chat` | mini-dudeai: describe a rule (chat-compile) |  | sweep | MiniDudeaiHandler |
 | `mini_dudeai_rules` | mini-dudeai: edit rules (in-app) |  | sweep | MiniDudeaiHandler |
