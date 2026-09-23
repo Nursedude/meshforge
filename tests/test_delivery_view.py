@@ -70,9 +70,10 @@ def _soak(home, leaf, name, body, age=600.0):
     return p
 
 
-def _gather(home, gw="ok", enrolled=None):
+def _gather(home, gw="ok", enrolled=None, unit_enabled=True):
     return dv.gather(home=str(home), now=NOW, gateway_resolver=_gw(gw),
-                     enrolled_fn=_enrolled(enrolled or {}))
+                     enrolled_fn=_enrolled(enrolled or {}),
+                     unit_enabled_fn=lambda unit: unit_enabled)
 
 
 def _gateway_box(home, snap=None, queue=None):
@@ -131,6 +132,17 @@ class TestInertVsUnknown:
         v = _gather(tmp_path, gw="down")
         assert _leg(v, "Gateway delivery").status == dv.UNKNOWN
 
+    def test_installed_stopped_and_disabled_is_inert(self, tmp_path):
+        # moc1/moc2 (2026-09-23): relays that do not bridge by decision.
+        v = _gather(tmp_path, gw="down", unit_enabled=False)
+        leg = _leg(v, "Gateway delivery")
+        assert leg.status == dv.INERT and "disabled" in leg.why
+
+    def test_stopped_with_unreadable_enablement_is_unknown(self, tmp_path):
+        # Unobservable must never read as a decision.
+        v = _gather(tmp_path, gw="down", unit_enabled=None)
+        assert _leg(v, "Gateway delivery").status == dv.UNKNOWN
+
     def test_unit_state_unreadable_is_unknown_not_inert(self, tmp_path):
         v = _gather(tmp_path, gw="unknown")
         assert _leg(v, "Gateway delivery").status == dv.UNKNOWN
@@ -139,7 +151,7 @@ class TestInertVsUnknown:
         def boom(unit):
             raise OSError("no systemctl")
         v = dv.gather(home=str(tmp_path), now=NOW, gateway_resolver=boom,
-                      enrolled_fn=_enrolled({}))
+                      enrolled_fn=_enrolled({}), unit_enabled_fn=lambda u: False)
         assert _leg(v, "Gateway delivery").status == dv.UNKNOWN
 
 

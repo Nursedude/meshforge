@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import subprocess
 import time
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
@@ -152,9 +153,10 @@ def _read_published(path: str, key: str, now: float
     return doc[key], age, None
 
 
-def _gateway_state(resolver: Optional[Callable[[str], Tuple[str, Optional[int]]]]
+def _gateway_state(resolver: Optional[Callable[[str], Tuple[str, Optional[int]]]],
+                   enabled_fn: Optional[Callable[[str], Optional[bool]]] = None
                    ) -> str:
-    """``ok`` | ``down`` | ``absent`` | ``unknown`` for the gateway unit."""
+    """``ok`` | ``down`` | ``down-disabled`` | ``absent`` | ``unknown``."""
     if resolver is None:
         from utils.watchdog_probe_core import _resolve_main_pid_status
         resolver = _resolve_main_pid_status
@@ -162,18 +164,51 @@ def _gateway_state(resolver: Optional[Callable[[str], Tuple[str, Optional[int]]]
         status, _pid = resolver(GATEWAY_UNIT)
     except Exception:
         return "unknown"
-    return status if status in ("ok", "down", "absent") else "unknown"
+    if status == "down":
+        try:
+            enabled = (enabled_fn or _unit_enabled)(GATEWAY_UNIT)
+        except Exception:
+            enabled = None
+        return "down-disabled" if enabled is False else "down"
+    return status if status in ("ok", "absent") else "unknown"
+
+
+def _unit_enabled(unit: str, timeout: float = 5.0) -> Optional[bool]:
+    """Tri-state ``systemctl is-enabled``: True / False / None (unobservable).
+
+    Not ``service_check.is_service_enabled`` — that returns False on ANY
+    error, and here False means "stopped by decision" and renders inert, so a
+    systemctl we could not run would be read as a deliberate absence
+    (honest_failure_modes #1)."""
+    try:
+        r = subprocess.run(["systemctl", "is-enabled", unit],
+                           capture_output=True, text=True, timeout=timeout)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    word = r.stdout.strip()
+    if word in ("enabled", "enabled-runtime"):
+        return True
+    if word in ("disabled", "masked", "masked-runtime"):
+        return False
+    return None
 
 
 def _missing_record_leg(title: str, source: str, gw: str) -> Leg:
-    """The publish file is absent: inert only when no gateway exists here."""
+    """The publish file is absent: inert only when no gateway exists here, or
+    it is installed but stopped AND disabled — a decision (moc1/moc2 are
+    federation relays that do not bridge, fleet_roles.yaml)."""
     if gw == "absent":
         return Leg(title, INERT, source,
                    why=f"no {GATEWAY_UNIT} on this box — not a gateway (by design)")
+    if gw == "down-disabled":
+        return Leg(title, INERT, source,
+                   why=f"{GATEWAY_UNIT} is installed but stopped AND disabled "
+                       f"— this box does not bridge (a decision, not an outage)")
     if gw == "down":
         return Leg(title, UNKNOWN, source,
-                   why=f"{GATEWAY_UNIT} is installed but NOT running, and no "
-                       f"record exists — nothing is being delivered here")
+                   why=f"{GATEWAY_UNIT} is installed but NOT running (enabled, "
+                       f"or its enablement could not be read) and no record "
+                       f"exists — nothing is being delivered here")
     if gw == "ok":
         return Leg(title, UNKNOWN, source,
                    why="the gateway is running but has published no record — "
@@ -379,14 +414,15 @@ def soak_leg(title: str, home: str, leaf: str, prefix: str, unit: str,
 
 
 def gather(home: Optional[str] = None, now: Optional[float] = None,
-           gateway_resolver=None, enrolled_fn=None) -> DeliveryView:
+           gateway_resolver=None, enrolled_fn=None,
+           unit_enabled_fn=None) -> DeliveryView:
     """Every leg for THIS box. ``home`` defaults to the real operator home
     (MF001-safe under sudo); the other arguments are test seams."""
     now = time.time() if now is None else now
     if home is None:
         from utils.paths import get_real_user_home
         home = str(get_real_user_home())
-    gw = _gateway_state(gateway_resolver)
+    gw = _gateway_state(gateway_resolver, unit_enabled_fn)
     legs = [
         delivery_leg(home, now, gw),
         queue_leg(home, now, gw),
