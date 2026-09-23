@@ -348,7 +348,7 @@ def _ring_span(ring, now: float) -> str:
 
 
 def queue_leg(home: str, now: float, gw: str) -> Leg:
-    title = "Gateway queue (since the gateway last started)"
+    title = "Gateway queue"
     path = os.path.join(home, _QUEUE_STATS_SUBPATH)
     stats, age, why = _read_published(path, "stats", now)
     if stats is None:
@@ -357,13 +357,19 @@ def queue_leg(home: str, now: float, gw: str) -> Leg:
         return Leg(title, UNKNOWN, path, age, why=why)
     leg = Leg(title, OK, path, age)
     g = stats.get
+    # Two different clocks in one record (message_queue.get_stats): row
+    # COUNTS still held in the queue DB (pruned by retention — measured
+    # 203 -> 199 between two reads with no restart), and in-memory counters
+    # since the gateway process started. The first cut of this screen titled
+    # all of it "since the gateway last started" (2026-09-23).
     leg.lines.append(
-        f"delivered {g('delivered', '?')} · failed {g('failed', '?')} · "
-        f"retried {g('retried', '?')} · shed {g('shed', '?')}")
+        f"held in the queue DB: delivered {g('delivered', '?')} · pending "
+        f"{g('pending', '?')} · in progress {g('in_progress', '?')} · DEAD "
+        f"LETTERS {g('dead_letter', '?')} · depth {g('queue_depth', '?')}/"
+        f"{g('max_queue_size', '?')}")
     leg.lines.append(
-        f"pending {g('pending', '?')} · in progress {g('in_progress', '?')} · "
-        f"depth {g('queue_depth', '?')}/{g('max_queue_size', '?')} · "
-        f"DEAD LETTERS {g('dead_letter', '?')}")
+        f"since the gateway started: failed {g('failed', '?')} · retried "
+        f"{g('retried', '?')} · shed {g('shed', '?')}")
     dead = _num(g("dead_letter"))
     failed = _num(g("failed"))
     if (dead or 0) > 0 or (failed or 0) > 0:

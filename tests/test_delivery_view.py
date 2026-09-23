@@ -267,6 +267,18 @@ class TestQueueLeg:
         assert v.headline().startswith("DEGRADED")
 
 
+class TestQueueClocks:
+    def test_db_counts_and_process_counters_are_labelled_apart(self, tmp_path):
+        # delivered/dead_letter are rows held in the queue DB (pruned by
+        # retention); failed/retried/shed reset with the process. One title
+        # for both was wrong (2026-09-23: 203 -> 199 with no restart).
+        _gateway_box(tmp_path)
+        text = dv.render(_gather(tmp_path))
+        assert "held in the queue DB: delivered 203" in text
+        assert "since the gateway started: failed 0" in text
+        assert "Gateway queue (since" not in text
+
+
 class TestSoakLegs:
     SYN = dv.SYNTH_SOAK_TIMER_UNIT
 
