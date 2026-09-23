@@ -60,16 +60,31 @@ LOCAL_ONLY: Dict[Action, str] = {
 #: action starts saying UNKNOWN.
 KNOWN_FALSE_OK: Dict[Action, str] = {}
 
+#: (section, tag) -> the exception that escaped the handler into safe_call
+#: with every external dead, dated. safe_call's dialog is honest; the
+#: handler did not handle its own failure (honest_failure_modes #1).
+#: FROZEN like KNOWN_FALSE_OK: a NEW crash fails the sweep; remove an entry
+#: the day its handler catches the failure itself.
+KNOWN_CRASHED: Dict[Action, str] = {
+    ("dashboard", "score"): "2026-09-22: 'Health Score' — FileNotFoundError from a "
+                            "subprocess escapes to safe_call ('File Not Found' dialog)",
+    ("system", "status"): "2026-09-22: 'Quick Status' — FileNotFoundError from a "
+                          "subprocess escapes to safe_call ('File Not Found' dialog)",
+}
+
 
 def truth_class(section: str, tag: str) -> str:
     """The Truth-column value for one action.
 
-    ``local-only`` — listed in LOCAL_ONLY; ``⚠️ false-ok`` — in the frozen
-    baseline; ``sweep`` — proven by the dead-externals sweep on every commit.
+    ``local-only`` — listed in LOCAL_ONLY; ``⚠️ false-ok`` / ``⚠️ crashes``
+    — in a frozen baseline; ``sweep`` — proven by the dead-externals sweep on
+    every commit.
     """
     key = (section, tag)
     if key in KNOWN_FALSE_OK:
         return "⚠️ false-ok"
+    if key in KNOWN_CRASHED:
+        return "⚠️ crashes"
     if key in LOCAL_ONLY:
         return "local-only"
     return "sweep"

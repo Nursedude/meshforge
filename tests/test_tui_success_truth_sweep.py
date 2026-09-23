@@ -27,13 +27,15 @@ this sweep found on its first run.
 What it cannot catch (stated, not hidden): a screen that says one honest
 word and three false ones passes; a handler that renders NOTHING is
 `silent` and passes (ambiguous between "asked nothing" and "swallowed" —
-the swallow class is MF027 / hfm #9's job); a `crashed` handler (safe_call
-caught an exception) passes because the error dialog IS honest, but it is
-its own verdict so it never counts as the handler telling the truth.
+the swallow class is MF027 / hfm #9's job). A `crashed` handler — an
+exception escaped it into safe_call, MEASURED by wrapping safe_call — fails
+unless it is in the frozen KNOWN_CRASHED baseline; a known crasher's screen
+is not judged, so a lie before its crash is unseen.
 Claims that a bad thing is ABSENT ("Errors: 0", "0 failures", "nothing
 failed", "No drift detected") are stripped before the vocabulary is
 applied. The vocabulary is a FLOOR: "disabled" / "n/a" still pass a claim
-beside them, and claims inside menu items / yesno / inputbox text are
+beside them; a menu ROW starting OK / PASS / ✓ is a claim (false-ok with
+nothing observed), but menu header, yesno and inputbox text are still
 `navigation` (second non-author review 2026-09-22).
 
 The operator's real home is proven untouched, not assumed: an audit hook
@@ -65,7 +67,7 @@ for p in (str(_SRC), str(_SRC / "launcher_tui"), str(Path(__file__).resolve().pa
 
 from handler_registry import HandlerRegistry  # noqa: E402
 from handler_test_utils import FakeDialog, make_handler_context  # noqa: E402
-from launcher_tui.action_truth import KNOWN_FALSE_OK, LOCAL_ONLY  # noqa: E402
+from launcher_tui.action_truth import KNOWN_CRASHED, KNOWN_FALSE_OK, LOCAL_ONLY  # noqa: E402
 import utils.paths as _paths  # noqa: E402
 
 # Words that make a screen honest when every external is dead. Broad on
@@ -103,15 +105,14 @@ ZERO_COUNT = re.compile(
     re.IGNORECASE,
 )
 
-# The fixture's own marker, and pytest's captured-stdin message: text that
-# reaches a dialog only because the harness intervened. A handler whose
-# dialog carries one of these CRASHED — it did not tell the truth, safe_call
-# did (review finding 1).
-CRASH_MARKERS = (
-    "[truth-sweep] no subprocess",
-    "reading from stdin while output is captured",
-    "Details logged to:",
-)
+# A handler CRASHED when an exception escaped it into TUIContext.safe_call —
+# safe_call told the truth, the handler did not (review finding 1). That is
+# MEASURED, not read from text: the fixture wraps safe_call and records every
+# exception that reaches it (`_CRASHES`). The first cut matched strings —
+# its own "[truth-sweep] no subprocess" marker and a copy of safe_call's
+# "Details logged to:" — so `system/shell`, which catches the failure and
+# prints "Shell error: …" itself, read as crashed (finding #5, 2026-09-22).
+_CRASHES: list = []
 
 # Dialog kinds that render only navigation / prompts, never a claim.
 # infobox is NOT here: "Connected via USB: /dev/ttyACM0" was an infobox.
@@ -347,6 +348,24 @@ def dead_externals(no_network, monkeypatch, tmp_path):
     empty.mkdir()
     _kill_box_state(monkeypatch, empty)
 
+    # Record every exception that escapes a handler into safe_call, then
+    # re-raise so safe_call renders its real dialog exactly as in the TUI.
+    from handler_protocol import TUIContext
+    real_safe_call = TUIContext.safe_call
+
+    def recording_safe_call(self, name, method, *args, **kwargs):
+        def witnessed(*a, **k):
+            try:
+                return method(*a, **k)
+            except KeyboardInterrupt:
+                raise
+            except BaseException as e:
+                _CRASHES.append((name, type(e).__name__, str(e)[:200]))
+                raise
+        return real_safe_call(self, name, witnessed, *args, **kwargs)
+    monkeypatch.setattr(TUIContext, "safe_call", recording_safe_call)
+
+    _CRASHES.clear()
     _HOME_TOUCHES.clear()
     _BOX_STATE_TOUCHES.clear()
     _AUDIT["armed"] = True
@@ -368,6 +387,7 @@ def _render(section: str, tag: str) -> tuple[bool, list, str]:
     for cls in get_all_handlers():
         reg.register(cls())
     out = io.StringIO()
+    _CRASHES.clear()
     with contextlib.redirect_stdout(out):
         routed = reg.dispatch(section, tag)
     kinds = [c[0] for c in dialog.calls]
@@ -381,6 +401,9 @@ def _render(section: str, tag: str) -> tuple[bool, list, str]:
     for label in _status_claims(dialog.calls):
         kinds.append("status_ok")
         text = text + "\n[status item] " + label
+    for name, etype, msg in _CRASHES:
+        kinds.append("crashed")
+        text = text + f"\n[crashed] {name}: {etype}: {msg}"
     return routed, kinds, text
 
 
@@ -388,12 +411,12 @@ def _verdict(kinds: list, text: str) -> str:
     """Classify one rendered action. Pure; unit-tested below."""
     if not kinds:
         return "silent"
-    if "status_ok" in kinds and not any(m in text for m in CRASH_MARKERS):
+    if "crashed" in kinds:
+        return "crashed"
+    if "status_ok" in kinds:
         return "false-ok"
     if all(k in NAVIGATION for k in kinds):
         return "navigation"
-    if any(m in text for m in CRASH_MARKERS):
-        return "crashed"
     scrubbed = ZERO_COUNT.sub("", text)
     if HONEST.search(scrubbed):
         return "honest"
@@ -421,6 +444,21 @@ def test_action_tells_the_truth_with_every_external_dead(section, tag, dead_exte
     verdict = _verdict(kinds, text)
     key = (section, tag)
     _DUMP[f"{section}/{tag}"] = {"verdict": verdict, "kinds": kinds, "text": text}
+
+    crashes = [ln for ln in text.splitlines() if ln.startswith("[crashed] ")]
+    if key in KNOWN_CRASHED:
+        assert verdict == "crashed", (
+            f"{section}/{tag} no longer crashes (renders '{verdict}'). Remove it "
+            f"from KNOWN_CRASHED in launcher_tui/action_truth.py — the baseline "
+            f"only shrinks — and the sweep will then judge its screen.")
+        return
+    assert verdict != "crashed", (
+        f"{section}/{tag} let an exception escape into safe_call with every "
+        f"external dead:\n" + "\n".join(crashes[:5]) + "\n"
+        f"safe_call's dialog is honest, but the handler did not handle its own "
+        f"failure (honest_failure_modes #1). Catch it where the external is "
+        f"asked and say UNKNOWN / not installed. KNOWN_CRASHED is frozen: do "
+        f"not add to it to make this pass.")
 
     if key in KNOWN_FALSE_OK:
         assert verdict == "false-ok", (
@@ -515,8 +553,9 @@ class TestVerdictIsFalsifiable:
         (["stdout"], "✓ Connected to meshtasticd\nall healthy\n", "false-ok"),
         (["msgbox"], "Space Weather Could not fetch: UNKNOWN", "honest"),
         (["stdout"], "rnsd is not running; check skipped\n", "honest"),
-        (["msgbox"], "Error Failed: [truth-sweep] no subprocess: every external is dead", "crashed"),
-        (["msgbox"], "Error OSError: pytest: reading from stdin while output is captured!", "crashed"),
+        # `crashed` is MEASURED at safe_call (finding #5), never read from text:
+        (["msgbox", "crashed"], "File Not Found … [crashed] x: FileNotFoundError", "crashed"),
+        (["msgbox"], "Shell error: [truth-sweep] no subprocess: every external is dead", "honest"),
         (["menu"], "Main pick one", "navigation"),
         ([], "", "silent"),
         # Second non-author review (2026-09-22): a bad thing's ABSENCE is a
@@ -545,7 +584,7 @@ class TestVerdictIsFalsifiable:
         # confident screen followed by a crash marker is `crashed`; claims
         # in menu items / yesno / inputbox text are `navigation`.
         assert _verdict(["msgbox"], "Bridge running. Failover: disabled") == "honest"
-        assert _verdict(["msgbox"], "✓ Connected\nDetails logged to: /x") == "crashed"
+        assert _verdict(["msgbox", "crashed"], "✓ Connected\n[crashed] x: OSError") == "crashed"
         # Claims in menu HEADER text / yesno / inputbox prompts are still
         # `navigation`; only status-shaped menu ITEMS are read (finding 4).
         assert _verdict(["yesno"], "Radio connected and healthy. Reboot it?") == "navigation"
@@ -574,14 +613,15 @@ class TestMenuItemStatusClaims:
         assert _status_claims(self._calls(label)) == []
 
     def test_crash_still_outranks(self):
-        assert _verdict(["menu", "status_ok"],
-                        "[status item] OK x\nDetails logged to: /y") == "crashed"
+        assert _verdict(["menu", "status_ok", "crashed"],
+                        "[status item] OK x\n[crashed] y: OSError") == "crashed"
 
 
 def test_allowlists_name_only_live_actions():
     """A closed enum's consumers must not outlive its members."""
     live = set(ACTIONS)
-    stale = [k for k in list(LOCAL_ONLY) + list(KNOWN_FALSE_OK) if k not in live]
+    stale = [k for k in list(LOCAL_ONLY) + list(KNOWN_FALSE_OK) + list(KNOWN_CRASHED)
+             if k not in live]
     assert not stale, f"action_truth lists actions that no longer exist: {stale}"
 
 
