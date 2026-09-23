@@ -3124,3 +3124,15 @@ note rejected, and the consumer already covers it.
 quote): active note 55,721 B, lifted section **2,392 of a 2,400-char cap —
 8 characters of headroom**. The next handoff written to it overflows the cap,
 and the leg will report PASS while it does.
+
+**Added 2026-09-22 (Opus 5.5) — the upshift-witness gate cannot see a SUBAGENT's model tier.**
+`review_provenance_check.py` judges a new completed-review row against the
+SESSION's newest ledger model. An Opus session that launches a Fable
+subagent (`Agent(model="fable")`) for a genuine non-author review is refused
+from recording it, and the gate's own remedy — a manual ledger claim under
+"this session's frontier id" — would be false from that session. Measured
+once: `9b24c208` (the row for the Fable review of `0a090d5d`+`b7c5f537`),
+pushed with `--no-verify` on the operator's explicit choice. For the 10-09
+review: is the fix a subagent-provenance field the row can carry, or is
+"frontier reviews are run from frontier sessions" the intended rule? A
+NOTE, not work (harness_restraint #2) — do not change the gate during the freeze.
