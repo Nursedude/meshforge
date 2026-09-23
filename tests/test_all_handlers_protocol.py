@@ -7,7 +7,7 @@ Tests ALL handler classes registered via get_all_handlers() for:
 3. Valid menu_items() format (3-tuple with tag, desc, flag)
 4. set_context() works correctly
 5. All menu_items tags are dispatchable via execute()
-6. Full registry dispatch integration
+6. Full registry integration (dispatch of every tag lives in test_tui_success_truth_sweep.py)
 
 Covers Batches 2-10 (Batch 1/pilot tested in test_phase1_handlers.py).
 """
@@ -250,26 +250,15 @@ class TestFullRegistryIntegration:
                 f"Section {section!r} has no menu items"
             )
 
-    def test_all_tags_dispatch(self, registry, no_network):
-        """Every registered tag should dispatch successfully.
-
-        ``no_network`` makes this hermetic: dispatch actually runs each
-        handler's ``execute()`` (wrapped in ``safe_call``), and some paths
-        reach the network — e.g. the AREDN worldmap fetch in
-        ``_map_collector_public._fetch_aredn_worldmap_nodes``. In CI a blocked
-        connect usually fails fast, but a reachable-but-slow host let the
-        ``socket.connect`` hang past pytest-timeout and reddened the suite
-        (a real CI flake, observed 2026-06-16). Blocking ``socket.socket``
-        turns any such attempt into an instant OSError that ``safe_call``
-        catches, so dispatch still returns True — the routing assertion this
-        test exists for is unchanged, just no longer at the mercy of the net.
-        """
-        for section in registry.section_names:
-            for tag, _ in registry.get_menu_items(section):
-                result = registry.dispatch(section, tag)
-                assert result is True, (
-                    f"Dispatch failed: section={section!r}, tag={tag!r}"
-                )
+    # `test_all_tags_dispatch` was RETIRED 2026-09-23. It dispatched every
+    # registered action on the operator's REAL home with real subprocesses,
+    # and a real-home audit of the full suite measured it renaming a file over
+    # the live map's `map_nodes.geojson` and opening `node_history.db` /
+    # `traceroute_history.db` on every run. Its one claim — every tag routes
+    # (dispatch() is True) — is asserted for the same action set, built the
+    # same way, by `test_tui_success_truth_sweep.py`
+    # (`assert routed is True`), under a fake home, dead externals and a
+    # real-home REFUSAL.
 
 
 # ---------------------------------------------------------------------------

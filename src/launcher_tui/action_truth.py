@@ -3,8 +3,8 @@
 Born 2026-09-22 from the operator's close-of-session question: *"have we
 checked every single item in the TUI?"* The measured answer was NO — every
 review row was a commit-RANGE review; the 116-action surface had never been
-walked as a whole, and the one test that touches all of it
-(`test_all_tags_dispatch`) proves ROUTING only: dispatch returned True. A
+walked as a whole, and the one test that touched all of it
+(`test_all_tags_dispatch`, since retired into the sweep) proved ROUTING only: dispatch returned True. A
 screen that says "no alerts" with the network dead passes that test.
 
 `tests/test_tui_success_truth_sweep.py` closes the gap: it dispatches EVERY

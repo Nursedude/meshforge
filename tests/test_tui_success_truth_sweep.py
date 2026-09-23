@@ -1,7 +1,8 @@
 """The success-truth SWEEP: every top-level TUI action, every external dead.
 
-`test_all_tags_dispatch` (test_all_handlers_protocol.py) proves that all
-registered actions ROUTE. This proves what their FIRST SCREEN says when
+This asserts that every registered action ROUTES (it replaced
+`test_all_tags_dispatch`, retired 2026-09-23 for writing the operator's real
+map data) — and proves what its FIRST SCREEN says when
 there is nothing to say it about: sockets refused, no subprocess, no tool on
 PATH, the operator's home replaced by an empty one, and box state (/etc/reticulum,
 /etc/meshtasticd, systemd units, /proc/net, device nodes) absent. A screen rendered under

@@ -5,6 +5,19 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _bridge_queues_in_tmp(tmp_path, monkeypatch):
+    """MeshtasticPresetBridge.__init__ creates its persistent queues under
+    get_real_user_home() — the operator's LIVE
+    ~/.config/meshforge/mesh_bridge_queues/{p2s,s2p}.db, the store a gateway
+    on this box drains to RF. A real-home audit of the full suite
+    (2026-09-23) measured these tests mkdir-ing that dir and opening both
+    DBs on every run (they held 0 messages — nothing was enqueued — but on
+    a fresh box the run would CREATE them)."""
+    import gateway.mesh_bridge as mb
+    monkeypatch.setattr(mb, "get_real_user_home", lambda: tmp_path)
+
+
 @pytest.fixture
 def bridge_with_serial_secondary():
     """GatewayConfig with TCP primary + serial secondary (Heltec USB)."""

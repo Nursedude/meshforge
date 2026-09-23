@@ -22,15 +22,13 @@ from utils.diagnostic_engine import (
 @pytest.fixture
 def engine(tmp_path: Path, monkeypatch) -> DiagnosticEngine:
     """DiagnosticEngine pointed at a tmp DB."""
+    # Redirect the DB path at the CLASS before construction: patching the
+    # instance afterwards let __init__'s _init_db open (and prune) the
+    # operator's REAL ~/.config/meshforge/diagnostic_history.db first —
+    # measured by a real-home audit of the full suite, 2026-09-23.
+    monkeypatch.setattr(DiagnosticEngine, "_get_db_path",
+                        lambda self: tmp_path / "diag.db")
     eng = DiagnosticEngine(persist_history=True)
-    # Redirect _get_db_path to a tmp file. _init_db has already run with the
-    # real path, but we close the persistent connection and reset so the
-    # next _get_connection() call hits the tmp DB.
-    monkeypatch.setattr(eng, "_get_db_path", lambda: tmp_path / "diag.db")
-    if eng._db_conn is not None:
-        eng._db_conn.close()
-        eng._db_conn = None
-    eng._init_db()
     eng._last_diagnostic_prune_ts = 0.0
     return eng
 

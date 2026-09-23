@@ -56,6 +56,21 @@ def _clean_dispositions():
     reset_dispositions()
 
 
+@pytest.fixture(autouse=True)
+def _debounce_state_in_tmp(tmp_path, monkeypatch):
+    """`judge_spooled_schedules` keeps its per-peer debounce streak at
+    `truth_spool_dir()`, which follows the CALLING process's home — not the
+    `spool_dir` these tests pass. So every run rewrote the operator's LIVE
+    `~/.local/state/meshforge/truth_spool/cron_debounce.lehua.json` (21 writes
+    per suite, measured 2026-09-23 by a real-home audit of the full suite) —
+    the streak the map-side collector debounces lehua's cron verdict with.
+    XDG_STATE_HOME is read first, so pointing it here isolates every test;
+    the path-resolution tests below delete it themselves and write nothing.
+    (Production is left alone on purpose: the root watchdog and the user
+    collector keep SEPARATE debounce files today, so they never interleave.)"""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg_state"))
+
+
 class TestItRoutesIntoTheExistingClass:
 
     def test_emits_no_new_signal_class(self):
