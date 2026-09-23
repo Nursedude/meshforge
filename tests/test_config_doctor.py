@@ -196,6 +196,26 @@ class TestCheckRnsdConfigDrift:
             r = checks.check_rnsd_config_drift()
         assert r.status == OK
 
+    def test_skip_not_ok_when_rnsd_not_running(self):
+        # "config drift check skipped" used to render as OK.
+        with patch("utils.config_drift.detect_rnsd_config_drift",
+                   return_value=self._drift_result(
+                       rnsd_config_dir=None,
+                       message="rnsd is not running; config drift check skipped")):
+            r = checks.check_rnsd_config_drift()
+        assert r.status == SKIP
+
+    def test_skip_not_ok_when_rnsd_dir_undeterminable(self):
+        # "assuming default resolution matches" is an assumption, not a
+        # comparison — nothing was measured.
+        with patch("utils.config_drift.detect_rnsd_config_drift",
+                   return_value=self._drift_result(
+                       rnsd_config_dir=None,
+                       message="rnsd running (PID 1) but config dir not "
+                               "determinable; assuming default resolution matches")):
+            r = checks.check_rnsd_config_drift()
+        assert r.status == SKIP
+
     def test_fail_when_drift_error(self):
         with patch("utils.config_drift.detect_rnsd_config_drift",
                    return_value=self._drift_result(
@@ -223,11 +243,26 @@ class TestCheckRnsdConfigDrift:
 # ---------------------------------------------------------------------------
 
 class TestCheckRnsInterfaceDevices:
-    def test_ok_when_no_blocking(self):
-        with patch("handlers._rns_interface_mgr."
+    def test_ok_when_no_blocking(self, tmp_path):
+        cfg = tmp_path / "config"
+        cfg.write_text("[reticulum]\n")
+        with patch("utils.paths.ReticulumPaths.get_config_file", return_value=cfg), \
+             patch("handlers._rns_interface_mgr."
                    "find_blocking_interfaces", return_value=[]):
             r = checks.check_rns_interface_devices()
         assert r.status == OK
+
+    def test_skip_not_ok_when_config_missing(self, tmp_path):
+        # find_blocking_interfaces() returns [] for a missing config — the
+        # same value as "all resolve". Vacuous truth must read SKIP
+        # (truth-sweep review 2026-09-22).
+        with patch("utils.paths.ReticulumPaths.get_config_file",
+                   return_value=tmp_path / "nope"), \
+             patch("handlers._rns_interface_mgr."
+                   "find_blocking_interfaces", return_value=[]):
+            r = checks.check_rns_interface_devices()
+        assert r.status == SKIP
+        assert "not checked" in r.message
 
     def test_fail_surfaces_blocking(self):
         blocking = [

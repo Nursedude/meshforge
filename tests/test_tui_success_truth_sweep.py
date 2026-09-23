@@ -117,6 +117,29 @@ CRASH_MARKERS = (
 # infobox is NOT here: "Connected via USB: /dev/ttyACM0" was an infobox.
 NAVIGATION = {"menu", "checklist", "inputbox", "yesno", "editbox"}
 
+# A menu ITEM can be a verdict: Config Doctor's `system/details` rendered
+# "OK     rnsd is not running; config drift check skipped" and "OK  all
+# enabled RNS interfaces resolve" as menu rows with every external dead,
+# and passed as `navigation` (second non-author review 2026-09-22, finding
+# 4). A label that STARTS with a positive status token is a health claim —
+# and with nothing to observe, a positive status is false-ok whatever the
+# row's body says ("not running" beside OK is the contradiction, not an
+# excuse). Case-sensitive: "Active Connections" is a label, "OK" is a status.
+STATUS_OK = re.compile(r"^\s*(?:\[\s*(?:OK|PASS)\s*\]|OK|PASS(?:ED)?|✓|✔)(?=[\s:\]]|$)")
+
+
+def _status_claims(calls) -> list:
+    """Menu/checklist item labels that assert a positive status. Pure."""
+    out = []
+    for kind, args, _kw in calls:
+        if kind not in ("menu", "checklist") or len(args) < 3:
+            continue
+        for choice in args[2] or ():
+            label = str(choice[1]) if len(choice) > 1 else ""
+            if STATUS_OK.match(label):
+                out.append(label)
+    return out
+
 
 # --- real-home witness -------------------------------------------------
 # The first cut asserted the RESOLVER was patched and called that proof;
@@ -355,6 +378,9 @@ def _render(section: str, tag: str) -> tuple[bool, list, str]:
     if printed.strip():
         kinds.append("stdout")
         text = text + "\n" + printed
+    for label in _status_claims(dialog.calls):
+        kinds.append("status_ok")
+        text = text + "\n[status item] " + label
     return routed, kinds, text
 
 
@@ -362,6 +388,8 @@ def _verdict(kinds: list, text: str) -> str:
     """Classify one rendered action. Pure; unit-tested below."""
     if not kinds:
         return "silent"
+    if "status_ok" in kinds and not any(m in text for m in CRASH_MARKERS):
+        return "false-ok"
     if all(k in NAVIGATION for k in kinds):
         return "navigation"
     if any(m in text for m in CRASH_MARKERS):
@@ -392,7 +420,7 @@ def test_action_tells_the_truth_with_every_external_dead(section, tag, dead_exte
         f"extension, an early-bound alias) and patch it in _kill_box_state.")
     verdict = _verdict(kinds, text)
     key = (section, tag)
-    _DUMP[f"{section}/{tag}"] = {"verdict": verdict, "kinds": kinds, "text": text[:800]}
+    _DUMP[f"{section}/{tag}"] = {"verdict": verdict, "kinds": kinds, "text": text}
 
     if key in KNOWN_FALSE_OK:
         assert verdict == "false-ok", (
@@ -402,6 +430,14 @@ def test_action_tells_the_truth_with_every_external_dead(section, tag, dead_exte
     if key in LOCAL_ONLY:
         # A declared local action may say anything; it asked no external.
         return
+    if "status_ok" in kinds:
+        items = [ln for ln in text.splitlines() if ln.startswith("[status item] ")]
+        assert verdict != "false-ok", (
+            f"{section}/{tag} renders menu rows that assert a POSITIVE status with "
+            f"every external dead:\n" + "\n".join(items[:8]) + "\n"
+            f"Nothing was observed, so OK/PASS/✓ is a claim the check did not "
+            f"earn: return SKIP (or UNKNOWN) when the input was absent, not OK — "
+            f"see _config_doctor_checks.check_rnsd_config_drift for the pattern.")
     assert verdict != "false-ok", (
         f"{section}/{tag} rendered a confident screen with every external dead "
         f"and no word of uncertainty:\n{text[:500]}\n"
@@ -510,7 +546,36 @@ class TestVerdictIsFalsifiable:
         # in menu items / yesno / inputbox text are `navigation`.
         assert _verdict(["msgbox"], "Bridge running. Failover: disabled") == "honest"
         assert _verdict(["msgbox"], "✓ Connected\nDetails logged to: /x") == "crashed"
-        assert _verdict(["menu"], "Doctor [('a', 'OK  rnsd reachable')]") == "navigation"
+        # Claims in menu HEADER text / yesno / inputbox prompts are still
+        # `navigation`; only status-shaped menu ITEMS are read (finding 4).
+        assert _verdict(["yesno"], "Radio connected and healthy. Reboot it?") == "navigation"
+
+
+class TestMenuItemStatusClaims:
+    """Finding 4 of the second non-author review, pinned."""
+
+    def _calls(self, *labels):
+        return [("menu", ("T", "pick", [(str(i), lab) for i, lab in enumerate(labels)]), {})]
+
+    @pytest.mark.parametrize("label", [
+        "OK     rnsd is not running; config drift check skipped",
+        "OK     all enabled RNS interfaces resolve their devices/hosts",
+        "[OK] meshtasticd reachable", "PASS   rpc_key pinned", "✓ Connected", "OK",
+    ])
+    def test_positive_status_item_is_a_claim(self, label):
+        assert _status_claims(self._calls(label)) == [label]
+        assert _verdict(["menu", "status_ok"], "[status item] " + label) == "false-ok"
+
+    @pytest.mark.parametrize("label", [
+        "Active Connections (ss -tunp)", "Okay, continue", "SKIP   RNS config not found",
+        "FAIL   RNS shared instance not detected", "View Active Alerts", "Status  View radio health",
+    ])
+    def test_ordinary_or_honest_item_is_not(self, label):
+        assert _status_claims(self._calls(label)) == []
+
+    def test_crash_still_outranks(self):
+        assert _verdict(["menu", "status_ok"],
+                        "[status item] OK x\nDetails logged to: /y") == "crashed"
 
 
 def test_allowlists_name_only_live_actions():

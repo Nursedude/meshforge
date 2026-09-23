@@ -259,6 +259,19 @@ def check_rnsd_config_drift() -> CheckResult:
     from utils.config_drift import detect_rnsd_config_drift
 
     result = detect_rnsd_config_drift()
+    # `drifted=False` has three sources and only one is a measurement:
+    # both dirs resolved and matched. "rnsd is not running" and "rnsd
+    # running but config dir not determinable; assuming…" leave
+    # rnsd_config_dir None — nothing was compared, so it is SKIP, never OK
+    # (truth-sweep review 2026-09-22: "OK  rnsd is not running; config
+    # drift check skipped" rendered with every external dead).
+    if not result.drifted and result.rnsd_config_dir is None:
+        return CheckResult(
+            name="rnsd_config_drift",
+            status=SKIP,
+            message=result.message or "rnsd config dir unknown; drift not checked",
+            details=[f"gateway dir: {result.gateway_config_dir}"],
+        )
     if not result.drifted:
         return CheckResult(
             name="rnsd_config_drift",
@@ -296,6 +309,22 @@ def check_rns_interface_devices() -> CheckResult:
     flow.
     """
     from ._rns_interface_mgr import find_blocking_interfaces
+    from utils.paths import ReticulumPaths
+
+    # find_blocking_interfaces() returns [] for a missing or unreadable
+    # config — the same value as "every interface resolves". An empty set
+    # makes "all enabled interfaces resolve" vacuously true, so read the
+    # config's presence HERE and say SKIP (truth-sweep review 2026-09-22).
+    config_file = ReticulumPaths.get_config_file()
+    try:
+        config_file.read_text()
+    except (OSError, UnicodeDecodeError) as e:
+        return CheckResult(
+            name="rns_interface_devices",
+            status=SKIP,
+            message=f"RNS config not readable at {config_file} — interfaces not checked",
+            details=[f"{type(e).__name__}: {e}"],
+        )
 
     blocking = find_blocking_interfaces()
     if not blocking:
