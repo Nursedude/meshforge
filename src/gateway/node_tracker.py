@@ -20,7 +20,7 @@ import json
 logger = logging.getLogger(__name__)
 
 # Import data models (extracted to reduce file size)
-from .network_topology import path_entry_hops  # first-party: direct import
+from .network_topology import cached_rns_hops, path_entry_hops  # first-party: direct import
 from .node_models import (
     Position, PKIKeyState, PKIStatus,
     AirQualityMetrics, HealthMetrics, DetectionSensor,
@@ -976,7 +976,7 @@ class UnifiedNodeTracker:
                     # enumerated this time. The round-trip test now compares
                     # the FULL serialized shape so the next added field
                     # cannot regress silently.
-                    hops=node_data.get('hops'),
+                    hops=cached_rns_hops(node_data),
                     is_gateway=bool(node_data.get('is_gateway', False)),
                     is_local=bool(node_data.get('is_local', False)),
                     firmware_version=node_data.get('firmware_version'),

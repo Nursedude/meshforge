@@ -97,3 +97,12 @@ def test_tracker_refuses_a_zero_echoed_back_by_add_edge():
         assert node.hops == 3             # and never overwrites a real value
     finally:
         ntr.RNS_SERVICES_AVAILABLE = old
+
+
+def test_cache_load_drops_the_rns_zero_sentinel_only():
+    from gateway.network_topology import cached_rns_hops as _cached_hops
+    assert _cached_hops({"network": "rns", "hops": 0}) is None
+    assert _cached_hops({"network": "rns", "hops": 2}) == 2
+    assert _cached_hops({"network": "meshtastic", "hops": 0}) == 0
+    assert _cached_hops({"network": "both", "hops": 0}) == 0
+    assert _cached_hops({"network": "rns"}) is None

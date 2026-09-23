@@ -198,6 +198,22 @@ def path_entry_interface_hash(path_data) -> Optional[bytes]:
     return h if isinstance(h, bytes) else None
 
 
+def cached_rns_hops(node_data: dict) -> Optional[int]:
+    """``hops`` from a cached node, with the pre-2026-09-23 sentinel removed.
+
+    Until 8185b8b4/45c6a21d the gateway wrote 0 for every RNS node whose hop
+    count it never actually read (a tuple parse of a list, and an add_edge
+    echo). RNS increments packet.hops on every inbound packet, so a remote
+    RNS path is >= 1: a cached 0 on an ``rns`` node is that sentinel and
+    loads as unknown (None). Meshtastic 0 (hopsAway: heard directly) is
+    real and kept — including on ``both`` nodes, whose hops may be the
+    Meshtastic side's."""
+    hops = node_data.get('hops')
+    if hops == 0 and node_data.get('network') == 'rns':
+        return None
+    return hops
+
+
 @dataclass
 class PathTableEntry:
     """Snapshot of a path table entry for change detection"""
