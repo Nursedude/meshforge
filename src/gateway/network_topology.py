@@ -159,6 +159,45 @@ class NetworkEdge:
         }
 
 
+#: RNS ``Transport.path_table`` entry layout — a LIST, written by RNS as
+#: ``[timestamp, received_from, hops, expires, random_blobs,
+#: receiving_interface, packet_hash]`` (``RNS.Transport.IDX_PT_*``; the
+#: two indices used here are test-pinned against the installed RNS).
+#:
+#: Until 2026-09-23 three readers here and in node_tracker parsed it as a
+#: TUPLE with hops at [1] and the interface at [0]. A list never matched,
+#: so every path-table node got the ``hops = 0`` default: 1,746 of 2,138
+#: nodes on moc and 1,557 of 1,610 on moc3, and not one real hop count.
+#: RNS increments ``packet.hops`` on every inbound packet
+#: (``Transport.inbound``), so a path learned from the air is >= 1 — a
+#: recorded 0 for a remote destination is never a measurement.
+IDX_PT_HOPS = 2
+IDX_PT_RVCD_IF = 5
+
+
+def path_entry_hops(path_data) -> Optional[int]:
+    """Hop count from one ``path_table`` entry, or None when the entry does
+    not have the RNS shape. Unknown is None — never 0 (0 reads as "local")."""
+    if not isinstance(path_data, (list, tuple)) or len(path_data) <= IDX_PT_HOPS:
+        return None
+    hops = path_data[IDX_PT_HOPS]
+    if isinstance(hops, bool) or not isinstance(hops, int) or hops < 0:
+        return None
+    return hops
+
+
+def path_entry_interface_hash(path_data) -> Optional[bytes]:
+    """The receiving interface's hash from one ``path_table`` entry, if any."""
+    if not isinstance(path_data, (list, tuple)) or len(path_data) <= IDX_PT_RVCD_IF:
+        return None
+    iface = path_data[IDX_PT_RVCD_IF]
+    try:
+        h = getattr(iface, "hash", None)
+    except Exception:
+        return None
+    return h if isinstance(h, bytes) else None
+
+
 @dataclass
 class PathTableEntry:
     """Snapshot of a path table entry for change detection"""
@@ -191,6 +230,9 @@ class PathTableMonitor:
 
         self._check_interval = check_interval
         self._last_snapshot: Dict[bytes, PathTableEntry] = {}
+        # Witness for entries whose hop count could not be read (see
+        # path_entry_hops) — skipped, never recorded as 0.
+        self.unparsed_path_entries = 0
         self._event_callbacks: List[Callable[[TopologyEvent], None]] = []
         self._event_log: List[TopologyEvent] = []
         self._max_log_size = 1000
@@ -256,19 +298,16 @@ class PathTableMonitor:
                 if not isinstance(dest_hash, bytes) or len(dest_hash) != 16:
                     continue
 
-                hops = 0
-                interface_hash = None
-
-                if isinstance(path_data, tuple):
-                    if len(path_data) > 1:
-                        hops = path_data[1] if isinstance(path_data[1], int) else 0
-                    if len(path_data) > 0 and path_data[0] is not None:
-                        # Interface reference - get hash if available
-                        try:
-                            if hasattr(path_data[0], 'hash'):
-                                interface_hash = path_data[0].hash
-                        except Exception:
-                            pass
+                hops = path_entry_hops(path_data)
+                if hops is None:
+                    # Not the RNS entry shape. Skip it and COUNT it: a path
+                    # recorded at 0 hops would read as local (the pre-fix
+                    # defect), and a silent skip would leave no witness.
+                    self.unparsed_path_entries += 1
+                    logger.debug("path_table entry for %s has no readable "
+                                 "hop count; skipped", dest_hash.hex()[:8])
+                    continue
+                interface_hash = path_entry_interface_hash(path_data)
 
                 current_snapshot[dest_hash] = PathTableEntry(
                     dest_hash=dest_hash,

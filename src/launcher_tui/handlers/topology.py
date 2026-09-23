@@ -31,6 +31,56 @@ _TopologyVisualizer, _HAS_TOPOLOGY_VISUALIZER = safe_import(
 )
 
 
+def hop_census(nodes) -> Dict[str, Any]:
+    """Hop counts the node tracker actually holds, per network, honest about
+    what is unknown.
+
+    ``hops`` None is unknown. An RNS node at 0 is ALSO unknown: RNS
+    increments ``packet.hops`` on every inbound packet, so a path learned from
+    the air is >= 1, and until 2026-09-23 the gateway wrote 0 for every
+    path-table node (network_topology.path_entry_hops). Those zeros persist in
+    node_cache.json until the gateway re-learns the path, so they are counted
+    as ``sentinel`` here, never averaged. A Meshtastic 0 is real (hopsAway 0 =
+    heard directly).
+    """
+    out: Dict[str, Any] = {}
+    for node in nodes:
+        net = getattr(node, "network", "") or "?"
+        h = getattr(node, "hops", None)
+        b = out.setdefault(net, {"known": [], "unknown": 0, "sentinel": 0})
+        if isinstance(h, bool) or not isinstance(h, int) or h < 0:
+            b["unknown"] += 1
+        elif h == 0 and net == "rns":
+            b["sentinel"] += 1
+        else:
+            b["known"].append(h)
+    return out
+
+
+def format_hop_census(census: Dict[str, Any]) -> List[str]:
+    lines = ["HOPS (per node, as recorded)"]
+    if not census:
+        return lines + ["  no nodes recorded"]
+    for net in sorted(census):
+        b = census[net]
+        k = b["known"]
+        if k:
+            hist: Dict[str, int] = {}
+            for h in k:
+                key = str(h) if h < 4 else "4+"
+                hist[key] = hist.get(key, 0) + 1
+            dist = " ".join(f"{key}:{hist[key]}" for key in sorted(hist))
+            lines.append(f"  {net:<11} {len(k)} known  (hops {dist}; max {max(k)})")
+        else:
+            lines.append(f"  {net:<11} 0 known")
+        if b["unknown"]:
+            lines.append(f"  {'':<11} {b['unknown']} unknown")
+        if b["sentinel"]:
+            lines.append(f"  {'':<11} {b['sentinel']} recorded as 0 = the pre-fix "
+                         f"sentinel, NOT a measurement (unknown)")
+    return lines
+
+
 class TopologyHandler(BaseHandler):
     """TUI handler for network topology visualization and export."""
 
@@ -106,6 +156,22 @@ class TopologyHandler(BaseHandler):
             else:
                 self.ctx.notify_unwired(choice, "TopologyHandler._topology_menu")
 
+    def _node_cache_source(self) -> str:
+        """``Source: <node_cache.json>, saved <age> ago`` — or why it can't say."""
+        try:
+            from gateway.node_tracker import UnifiedNodeTracker
+            path = UnifiedNodeTracker.get_cache_file()
+        except Exception as e:  # the screen still renders; the source is UNKNOWN
+            return f"Source: UNKNOWN ({type(e).__name__})"
+        try:
+            import time as _t
+            age = _t.time() - path.stat().st_mtime
+        except OSError:
+            return f"Source: {path} (absent — nodes above are this session's only)"
+        h = int(age // 3600)
+        when = f"{int(age // 60)}m" if h < 2 else (f"{h}h" if h < 48 else f"{h // 24}d")
+        return f"Source: {path}, saved {when} ago"
+
     def _show_topology_stats(self):
         """Display topology statistics."""
         # Prefer getting stats from node tracker (has richer data)
@@ -173,15 +239,34 @@ class TopologyHandler(BaseHandler):
                 if mesh_count > 0:
                     lines.append(f"  Meshtastic:   {mesh_count}")
 
-            lines.extend([
-                "",
-                f"Total Edges:    {stats.get('edge_count', 0)}",
-                f"Active Edges:   {stats.get('active_edges', 0)}",
-                "",
-                f"Average Hops:   {stats.get('avg_hops', 0):.2f}",
-                f"Maximum Hops:   {stats.get('max_hops', 0)}",
-                "",
-            ])
+            # Links live in the GATEWAY process's topology graph; in this TUI
+            # process that graph is never populated, so "Edges 0 / Max hops 0"
+            # was a confident number about something it could not see
+            # (2026-09-23). Print edge numbers only when the graph has any.
+            lines.append("")
+            if stats.get('edge_count'):
+                lines.extend([
+                    f"Links (edges):  {stats.get('edge_count')}  "
+                    f"(active {stats.get('active_edges', 0)})",
+                ])
+            else:
+                lines.extend([
+                    "Links (edges):  NOT OBSERVABLE from the TUI — the link",
+                    "                graph lives in the gateway process.",
+                    "                Observed vs inferred links: the :5000 map",
+                    "                Topology view.",
+                ])
+            lines.append("")
+            if tracker and hasattr(tracker, 'get_all_nodes'):
+                try:
+                    lines.extend(format_hop_census(hop_census(tracker.get_all_nodes())))
+                except (AttributeError, TypeError) as e:
+                    lines.append(f"HOPS: UNKNOWN ({e})")
+            lines.append("")
+            src = self._node_cache_source()
+            if src:
+                lines.append(src)
+                lines.append("")
 
             # Add service stats if available from node tracker
             if tracker and hasattr(tracker, 'get_service_stats'):
@@ -206,14 +291,10 @@ class TopologyHandler(BaseHandler):
                     from utils.service_check import check_service
                     rnsd = check_service("rnsd")
                     meshtd = check_service("meshtasticd")
-                    if rnsd.get("active"):
-                        lines.append("  [OK] rnsd is running")
-                    else:
-                        lines.append("  [--] rnsd not running (no RNS topology)")
-                    if meshtd.get("active"):
-                        lines.append("  [OK] meshtasticd is running")
-                    else:
-                        lines.append("  [--] meshtasticd not running")
+                    # ServiceStatus, not a dict: `.get("active")` raised and
+                    # this block always said "Could not check" (2026-09-23).
+                    for label, st in (("rnsd", rnsd), ("meshtasticd", meshtd)):
+                        lines.append(f"  [{st.state.value}] {label}: {st.message}")
                 except Exception:
                     lines.append("  Could not check service status")
                 lines.append("")

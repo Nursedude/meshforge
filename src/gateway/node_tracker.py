@@ -20,6 +20,7 @@ import json
 logger = logging.getLogger(__name__)
 
 # Import data models (extracted to reduce file size)
+from .network_topology import path_entry_hops  # first-party: direct import
 from .node_models import (
     Position, PKIKeyState, PKIStatus,
     AirQualityMetrics, HealthMetrics, DetectionSensor,
@@ -405,10 +406,9 @@ class UnifiedNodeTracker:
                                 if isinstance(dest_hash, bytes) and len(dest_hash) == 16:
                                     node_id = f"rns_{dest_hash.hex()[:16]}"
                                     if node_id not in self._nodes:
-                                        hops = 0
-                                        if isinstance(path_data, tuple) and len(path_data) > 1:
-                                            hops = path_data[1]
+                                        hops = path_entry_hops(path_data)
                                         node = UnifiedNode.from_rns(dest_hash, name="", app_data=None)
+                                        node.hops = hops  # None when unreadable — never a 0 default
                                         self.add_node(node)
                                         new_count += 1
                                         logger.debug(f"Discovered RNS destination: {dest_hash.hex()[:8]} ({hops} hops)")
@@ -1215,10 +1215,11 @@ class UnifiedNodeTracker:
                         if isinstance(dest_hash, bytes) and len(dest_hash) == 16:
                             node_id = f"rns_{dest_hash.hex()[:16]}"
                             if node_id not in self._nodes:
-                                # Extract hop count from path tuple if available
-                                hops = 0
-                                if isinstance(path_data, tuple) and len(path_data) > 1:
-                                    hops = path_data[1]
+                                # Hop count from the RNS entry (a LIST; see
+                                # network_topology.path_entry_hops). None when
+                                # unreadable — the old tuple parse never matched
+                                # and wrote 0 for every node.
+                                hops = path_entry_hops(path_data)
 
                                 node = UnifiedNode.from_rns(dest_hash, name="", app_data=None)
                                 # Store hop count for later use
