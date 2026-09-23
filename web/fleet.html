@@ -15,7 +15,7 @@
         disagree. The fleet verdict is computed from the truth document ALONE.
       - The NOC-LOCAL VISIBILITY section below them (2026-07-19) reads this
         box's own diagnostics endpoints — /fleet/slo (schedules + cron
-        verdicts), /lab/synth-rollup (soak), /fleet/logs (journal tail) — the
+        verdicts), /fleet/delivery (delivery view), /fleet/logs (journal tail) — the
         drill-down the 1.0 Fleet Monitor had. It is clearly labeled as local,
         NEVER feeds the fleet verdict, and a fetch failure renders the panel
         dark in place (no held readings). The fetch surface is allowlisted and
@@ -328,7 +328,7 @@
 
     <div class="legend" style="margin-top:14px">
         <span><b>NOC-LOCAL VISIBILITY</b> — the panels below read THIS box's own
-        diagnostics endpoints (SLO schedules/verdicts, lab soak rollup, journal
+        diagnostics endpoints (SLO schedules/verdicts, delivery view, journal
         tails), not the fleet-truth document. They never feed the verdict above.
         A fetch failure renders the panel dark — never a held reading.</span>
     </div>
@@ -1103,7 +1103,6 @@
 
     function renderSoak(doc, httpOk, slo) {
         const text = (doc && doc.text) || '';
-        const sourceLabel = (doc && doc.headline) || '';
         const chips = [];
         const v = (((slo || {}).schedules || {}).verdicts || {});
         (v.jobs || []).filter(j => /soak|synth/i.test(String(j.name))).forEach(j => {
@@ -1112,9 +1111,7 @@
                 esc(j.name) + ' ' + esc(j.status) + ' · ' + fmtAge(j.age_s) +
                 (j.stale ? ' STALE' : '') + '</span>');
         });
-        if (sourceLabel) {
-            chips.push('<span class="vstatus dark">' + esc(sourceLabel) + '</span>');
-        }
+        // The headline is the view's own first line — not repeated as a chip.
         const head = chips.length
             ? '<div class="soak-chips">' + chips.join('') + '</div>' : '';
         const body = httpOk
