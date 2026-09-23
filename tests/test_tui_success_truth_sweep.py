@@ -29,8 +29,15 @@ word and three false ones passes; a handler that renders NOTHING is
 the swallow class is MF027 / hfm #9's job); a `crashed` handler (safe_call
 caught an exception) passes because the error dialog IS honest, but it is
 its own verdict so it never counts as the handler telling the truth.
-Zero-count phrases ("Errors: 0", "FAIL: 0") are stripped before the
-vocabulary is applied. The vocabulary is a FLOOR.
+Claims that a bad thing is ABSENT ("Errors: 0", "0 failures", "nothing
+failed", "No drift detected") are stripped before the vocabulary is
+applied. The vocabulary is a FLOOR: "disabled" / "n/a" still pass a claim
+beside them, and claims inside menu items / yesno / inputbox text are
+`navigation` (second non-author review 2026-09-22).
+
+The operator's real home is proven untouched, not assumed: an audit hook
+fails any action that opens a path under it (the first cut patched only
+the resolver and still read ~/.config via an import-time CONFIG_DIR).
 
 Run with MF_TRUTH_SWEEP_DUMP=<path> to write every action's verdict and
 rendered text as JSON — that is how the allowlists get their entries.
@@ -76,10 +83,22 @@ HONEST = re.compile(
     re.IGNORECASE,
 )
 
-# "Errors: 0" / "FAIL: 0" / "Missing: 0" are CLAIMS OF HEALTH, not
-# uncertainty. Stripped before HONEST is applied (review finding 7).
+# Claims that a BAD THING is absent — "Errors: 0", "0 failures", "Errors:
+# none", "nothing failed", "No drift detected", "no issues found" — are
+# CLAIMS OF HEALTH, not uncertainty, but each carries an HONEST word
+# ("error", "fail", "no … detected"). Stripped before HONEST is applied.
+# Second non-author review 2026-09-22: 13 planted shapes of this kind all
+# read "honest", including the `rns/drift` "No drift detected" the
+# level-two walk exists to catch.
+_BAD = (r"(?:errors?|fail(?:ures?|ed|s)?|missing|warnings?|problems?|issues?|"
+        r"drift|alerts?|conflicts?|faults?|anomal(?:y|ies)|mismatch(?:es)?|"
+        r"collisions?|leaks?|stalls?|wedges?)")
 ZERO_COUNT = re.compile(
-    r"\b(?:errors?|fail(?:ures?|ed)?|missing|warnings?|problems?|issues?)\s*[:=]\s*0\b",
+    rf"\b{_BAD}\s*[:=]\s*(?:0|none|nil)\b"          # Errors: 0 / Errors: none
+    rf"|\b(?:0|zero)\s+{_BAD}"                        # 0 failures
+    rf"|\bnothing\s+(?:failed|missing|wrong|broken)"  # nothing failed
+    rf"|\bno\s+(?:\w+\s+){{0,2}}{_BAD}\b(?:\s+(?:detected|found|reported|seen|"
+    rf"present|active|pending|observed|recorded))?",  # No drift detected
     re.IGNORECASE,
 )
 
@@ -96,6 +115,59 @@ CRASH_MARKERS = (
 # Dialog kinds that render only navigation / prompts, never a claim.
 # infobox is NOT here: "Connected via USB: /dev/ttyACM0" was an infobox.
 NAVIGATION = {"menu", "checklist", "inputbox", "yesno", "editbox"}
+
+
+# --- real-home witness -------------------------------------------------
+# The first cut asserted the RESOLVER was patched and called that proof;
+# the files still opened under the real home through import-time constants.
+# So the proof is now the thing itself: a Python audit hook records every
+# filesystem event under the real home while a sweep test runs, and the
+# test fails on any. (A hook cannot be removed; it is armed only inside
+# the dead_externals fixture.)
+_REAL_HOME = Path(_paths.get_real_user_home()).resolve()
+_REPO = Path(__file__).resolve().parents[1]
+_HOME_TOUCHES: list = []
+_AUDIT = {"armed": False}
+_FS_EVENTS = {"open", "os.listdir", "os.scandir", "os.mkdir", "os.rename",
+              "os.remove", "os.rmdir", "os.truncate", "sqlite3.connect",
+              "shutil.rmtree"}
+# Interpreter/library reads under the home (a user-site install, the repo
+# checked out under ~) are the harness, not the handler.
+_EXEMPT = tuple(str(p) for p in {_REPO, *[Path(p).resolve() for p in sys.path
+                                          if p and Path(p).is_absolute()]}
+                if str(p).startswith(str(_REAL_HOME)))
+
+
+def _fs_audit(event, args):
+    if not _AUDIT["armed"] or event not in _FS_EVENTS or not args:
+        return
+    p = args[0]
+    if isinstance(p, int) or p is None:
+        return
+    try:
+        p = os.path.abspath(os.fsdecode(p))
+    except (TypeError, ValueError):
+        return
+    if (len(_REAL_HOME.parts) > 2 and p.startswith(str(_REAL_HOME) + os.sep)
+            and not p.startswith(_EXEMPT) and not p.endswith((".py", ".pyc", ".so"))):
+        _HOME_TOUCHES.append((event, p))
+
+
+sys.addaudithook(_fs_audit)
+
+
+def _rehome(val, home: Path):
+    """The fake-home equivalent of a Path/str rooted at the real home, else None."""
+    if len(_REAL_HOME.parts) <= 2:
+        return None
+    if isinstance(val, Path):
+        try:
+            return home / val.resolve().relative_to(_REAL_HOME)
+        except (ValueError, OSError):
+            return None
+    if isinstance(val, str) and val.startswith(str(_REAL_HOME) + os.sep):
+        return str(home / Path(val).relative_to(_REAL_HOME))
+    return None
 
 
 def _all_actions():
@@ -144,7 +216,30 @@ def dead_externals(no_network, monkeypatch, tmp_path):
         _paths, "_resolve_home_for_user",
         lambda user: home if user == "truthsweep" else real_resolve(user))
     assert _paths.get_real_user_home() == home
-    yield home
+
+    # Patching the resolver cannot reach a path FROZEN at import time
+    # (`utils.common.CONFIG_DIR = get_real_user_home() / ...` and four
+    # siblings) — the second non-author review caught the sweep reading
+    # the operator's real map_settings.json / mesh_alerts.json that way.
+    # Rewrite every home-rooted Path/str module global in first-party
+    # modules, so a NEW frozen constant is covered by construction.
+    for mod_name, mod in list(sys.modules.items()):
+        # realpath: tests load src as `tests/../src/…`, which a bare prefix
+        # match against _SRC misses (it did, on the first run of this fix).
+        mod_file = os.path.realpath(getattr(mod, "__file__", None) or "/")
+        if not mod_file.startswith(str(_SRC.resolve()) + os.sep):
+            continue
+        for attr, val in list(vars(mod).items()):
+            moved = _rehome(val, home)
+            if moved is not None:
+                monkeypatch.setattr(mod, attr, moved)
+
+    _HOME_TOUCHES.clear()
+    _AUDIT["armed"] = True
+    try:
+        yield home
+    finally:
+        _AUDIT["armed"] = False
 
 
 def _render(section: str, tag: str) -> tuple[bool, list, str]:
@@ -193,6 +288,12 @@ _DUMP: dict = {}
 def test_action_tells_the_truth_with_every_external_dead(section, tag, dead_externals):
     routed, kinds, text = _render(section, tag)
     assert routed is True, f"{section}/{tag} did not route"
+    assert not _HOME_TOUCHES, (
+        f"{section}/{tag} touched the operator's REAL home — its verdict is a "
+        f"statement about this box's files, not the code: {_HOME_TOUCHES[:5]}. "
+        f"Find the path frozen outside get_real_user_home() (a class attribute "
+        f"or default argument the fixture's module-global rewrite cannot reach) "
+        f"and resolve it at call time.")
     verdict = _verdict(kinds, text)
     key = (section, tag)
     _DUMP[f"{section}/{tag}"] = {"verdict": verdict, "kinds": kinds, "text": text[:800]}
@@ -218,6 +319,23 @@ def test_sweep_never_touched_the_real_home(dead_externals):
     a statement about THIS box's files, not about the code."""
     assert _paths.get_real_user_home() == dead_externals
     assert Path(os.path.expanduser("~")) == dead_externals
+    # The import-time constant the second review caught, rewritten:
+    import utils.common as _common
+    assert Path(_common.CONFIG_DIR).is_relative_to(dead_externals)
+
+
+def test_real_home_witness_can_fail(dead_externals):
+    """The witness must SEE a touch, or its silence proves nothing. Opens a
+    path under the real home that does not exist — the audit event fires
+    before the FileNotFoundError, and nothing is read or written."""
+    if len(_REAL_HOME.parts) <= 2:
+        pytest.skip("real home is too shallow to witness safely")
+    probe = _REAL_HOME / ".truthsweep-witness-probe-does-not-exist"
+    assert not probe.exists()
+    with pytest.raises(FileNotFoundError):
+        open(probe)
+    assert ("open", str(probe)) in _HOME_TOUCHES
+    _HOME_TOUCHES.clear()
 
 
 class TestVerdictIsFalsifiable:
@@ -237,6 +355,20 @@ class TestVerdictIsFalsifiable:
         (["msgbox"], "Error OSError: pytest: reading from stdin while output is captured!", "crashed"),
         (["menu"], "Main pick one", "navigation"),
         ([], "", "silent"),
+        # Second non-author review (2026-09-22): a bad thing's ABSENCE is a
+        # health claim. All six read "honest" before the scrub widened.
+        (["stdout"], "rnsd drift check: No drift detected", "false-ok"),
+        (["msgbox"], "Health: 0 errors, 0 failures. All services healthy.", "false-ok"),
+        (["msgbox"], "Mesh: No problems found", "false-ok"),
+        (["msgbox"], "Radio health: no issues detected", "false-ok"),
+        (["msgbox"], "Errors: none. Gateway bridging OK.", "false-ok"),
+        (["msgbox"], "Checks: 9 passed, nothing failed", "false-ok"),
+        # Controls: an ABSENT DEVICE / tool / service is uncertainty, and
+        # an honest word beside a scrubbed phrase survives the scrub.
+        (["msgbox"], "No radio detected on /dev/ttyUSB*", "honest"),
+        (["msgbox"], "No NanoVNA found", "honest"),
+        (["stdout"], "rnsd: NOT RUNNING", "honest"),
+        (["msgbox"], "No alerts — alert source unreachable", "honest"),
     ])
     def test_verdict(self, kinds, text, expected):
         assert _verdict(kinds, text) == expected
@@ -244,6 +376,13 @@ class TestVerdictIsFalsifiable:
     def test_incidental_honest_word_still_passes_and_is_documented(self):
         # The stated floor: one honest word beside a false claim passes.
         assert _verdict(["msgbox"], "✓ web server is UP. Tip: if a page shows an error, press F5") == "honest"
+        # Also still passing, stated not hidden (second review): "disabled"
+        # and "n/a" are honest words, so a claim beside them passes; a
+        # confident screen followed by a crash marker is `crashed`; claims
+        # in menu items / yesno / inputbox text are `navigation`.
+        assert _verdict(["msgbox"], "Bridge running. Failover: disabled") == "honest"
+        assert _verdict(["msgbox"], "✓ Connected\nDetails logged to: /x") == "crashed"
+        assert _verdict(["menu"], "Doctor [('a', 'OK  rnsd reachable')]") == "navigation"
 
 
 def test_allowlists_name_only_live_actions():
