@@ -342,7 +342,7 @@ def check_rns_interface_devices() -> CheckResult:
         return CheckResult(
             name="rns_interface_devices",
             status=SKIP,
-            message=f"no enabled RNS interfaces parsed from {config_file} — nothing checked",
+            message=f"no enabled RNS interfaces in {config_file} — nothing to check",
         )
 
     blocking = find_blocking_interfaces(content)

@@ -271,7 +271,7 @@ class TestCheckRnsInterfaceDevices:
         with patch("utils.paths.ReticulumPaths.get_config_file", return_value=cfg):
             r = checks.check_rns_interface_devices()
         assert r.status == SKIP
-        assert "nothing checked" in r.message
+        assert "nothing to check" in r.message
 
     def test_judges_the_text_it_read_not_a_second_read(self, tmp_path):
         cfg = tmp_path / "config"
@@ -699,8 +699,8 @@ class TestHeadlineNeverCallsSkipHealthy:
     def test_ok_plus_skip_is_not_green(self):
         lines = self._headline([OK] + [SKIP] * 7)
         assert not any("no drift detected" in ln for ln in lines)
-        assert any("7 of 8 checks could not run" in ln for ln in lines)
-        assert any("Not checked:" in ln for ln in lines)
+        assert any("7 of 8 checks did not run or had nothing to check" in ln for ln in lines)
+        assert any("Not checked (7 of 8):" in ln for ln in lines)
 
     def test_all_skip_is_not_green(self):
         lines = self._headline([SKIP] * 5)
@@ -709,6 +709,14 @@ class TestHeadlineNeverCallsSkipHealthy:
     def test_all_ok_is_green(self):
         lines = self._headline([OK] * 4)
         assert any("no drift detected" in ln for ln in lines)
+
+    @pytest.mark.parametrize("statuses", [[WARN] + [SKIP] * 6, [FAIL, SKIP, OK]])
+    def test_skips_are_named_even_beside_warn_or_fail(self, statuses):
+        # Fable rev3 MED-1: the Not-checked line lived only in the SKIP
+        # branch, so one WARN hid six unrun checks at the headline.
+        lines = self._headline(statuses)
+        n = statuses.count(SKIP)
+        assert any(f"Not checked ({n} of {len(statuses)})" in ln for ln in lines)
 
     def test_fail_still_outranks_skip(self):
         lines = self._headline([OK, SKIP, FAIL])

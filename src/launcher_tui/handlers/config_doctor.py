@@ -86,6 +86,12 @@ class ConfigDoctorHandler(BaseHandler):
 
         # Headline: worst status across all checks determines the verdict.
         worst = max(results, key=lambda r: _RANK[r.status])
+        # SKIP ranks below WARN for colour, but it is NOT healthy: a check
+        # that observed nothing cannot vouch for anything. All OK + SKIP
+        # printed a green "no drift detected", and with a WARN/FAIL present
+        # the unrun checks vanished from the headline entirely (Fable
+        # reviews 2026-09-22) — name them under EVERY verdict.
+        skipped = [r.name for r in results if r.status == SKIP]
         print()
         if _RANK[worst.status] >= _RANK[FAIL]:
             color = _ANSI[FAIL]
@@ -95,19 +101,19 @@ class ConfigDoctorHandler(BaseHandler):
             color = _ANSI[WARN]
             print(f"{color}Verdict: warnings present — review recommended."
                   f"{_ANSI_RESET}")
-        elif any(r.status == SKIP for r in results):
-            # SKIP ranks below WARN for colour, but it is NOT healthy: a
-            # check that observed nothing cannot vouch for "no drift". All
-            # OK + SKIP printed a green "no drift detected" (Fable review
-            # 2026-09-22) — say how much was actually checked.
-            skipped = [r.name for r in results if r.status == SKIP]
+        elif skipped:
             color = _ANSI[WARN]
-            print(f"{color}Verdict: {len(skipped)} of {len(results)} checks could "
-                  f"not run — drift NOT fully checked.{_ANSI_RESET}")
-            print(f"  Not checked: {', '.join(skipped)}")
+            # "did not run OR had nothing to check": a SKIP is also a check
+            # that ran and found nothing to judge (zero enabled interfaces) —
+            # "could not run" was wrong for that (Fable rev3 MED-2).
+            print(f"{color}Verdict: {len(skipped)} of {len(results)} checks did "
+                  f"not run or had nothing to check — not fully checked."
+                  f"{_ANSI_RESET}")
         else:
             color = _ANSI[OK]
             print(f"{color}Verdict: no drift detected.{_ANSI_RESET}")
+        if skipped:
+            print(f"  Not checked ({len(skipped)} of {len(results)}): {', '.join(skipped)}")
 
         # Inline fix hints for non-OK rows so operators can act without
         # needing the details view.
