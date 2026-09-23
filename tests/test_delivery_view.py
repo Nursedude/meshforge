@@ -123,12 +123,52 @@ class TestInertVsUnknown:
         assert {leg.status for leg in v.legs} == {dv.INERT}
         assert v.headline().startswith("NO DELIVERY ORGAN")
 
+    @staticmethod
+    def _units(mapping):
+        # per-unit resolver: MF gateway + the sister app's writer unit
+        return lambda unit: (mapping.get(unit, "absent"), None)
+
     def test_sister_app_record_is_not_called_absent(self, tmp_path):
-        # meshanchor-server 2026-09-23: MA's gateway keeps its own record.
+        # meshanchor-server 2026-09-23: MA's daemon keeps its own record.
         _write(str(tmp_path), dv.PEER_DELIVERY_DBS[0][1], "")
-        v = _gather(tmp_path, gw="absent")
+        v = dv.gather(home=str(tmp_path), now=NOW,
+                      gateway_resolver=self._units({dv.PEER_DELIVERY_DBS[0][2]: "ok"}),
+                      enrolled_fn=_enrolled({}), unit_enabled_fn=lambda u: True)
         assert v.headline().startswith("NOT READ HERE")
-        assert "MeshAnchor" in dv.render(v)
+        assert "[not read] MeshAnchor" in dv.render(v)
+
+    def test_sister_file_without_writer_unit_is_a_leftover(self, tmp_path):
+        # manager box 2026-09-23: an Aug-5 leftover DB, no MeshAnchor unit.
+        _write(str(tmp_path), dv.PEER_DELIVERY_DBS[0][1], "")
+        v = dv.gather(home=str(tmp_path), now=NOW,
+                      gateway_resolver=self._units({}),
+                      enrolled_fn=_enrolled({}), unit_enabled_fn=lambda u: True)
+        assert v.headline().startswith("NO DELIVERY ORGAN")
+        text = dv.render(v)
+        assert "[leftover] MeshAnchor" in text and "NOT READ HERE" not in text
+
+    def test_sister_writer_masked_is_a_leftover(self, tmp_path):
+        # The actual manager-box shape: the daemon unit is MASKED ("down").
+        _write(str(tmp_path), dv.PEER_DELIVERY_DBS[0][1], "")
+        v = dv.gather(home=str(tmp_path), now=NOW,
+                      gateway_resolver=self._units({dv.PEER_DELIVERY_DBS[0][2]: "down"}),
+                      enrolled_fn=_enrolled({}), unit_enabled_fn=lambda u: False)
+        assert v.peer_leftovers and not v.peer_records
+
+    def test_sister_writer_stopped_but_enabled_is_not_a_leftover(self, tmp_path):
+        _write(str(tmp_path), dv.PEER_DELIVERY_DBS[0][1], "")
+        v = dv.gather(home=str(tmp_path), now=NOW,
+                      gateway_resolver=self._units({dv.PEER_DELIVERY_DBS[0][2]: "down"}),
+                      enrolled_fn=_enrolled({}), unit_enabled_fn=lambda u: True)
+        assert v.peer_records and not v.peer_leftovers
+
+    def test_sister_writer_unobservable_is_not_a_leftover(self, tmp_path):
+        _write(str(tmp_path), dv.PEER_DELIVERY_DBS[0][1], "")
+        v = dv.gather(home=str(tmp_path), now=NOW,
+                      gateway_resolver=lambda unit: ("absent", None)
+                      if unit == dv.GATEWAY_UNIT else ("unknown", None),
+                      enrolled_fn=_enrolled({}), unit_enabled_fn=lambda u: True)
+        assert v.peer_records and not v.peer_leftovers
 
     def test_sister_record_does_not_mask_our_own_unknown(self, tmp_path):
         _write(str(tmp_path), dv.PEER_DELIVERY_DBS[0][1], "")

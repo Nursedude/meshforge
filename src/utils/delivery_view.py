@@ -61,11 +61,17 @@ GATEWAY_UNIT = "meshforge-gateway.service"
 #: The sister app's delivery DB, relative to the operator home. This screen
 #: reads MeshForge's published files only; on a MeshAnchor box the organ
 #: exists but is MeshAnchor's, and "no delivery organ here" would be a false
-#: inert (found live on meshanchor-server 2026-09-23). Presence only — the
-#: DB is never opened (the #60 WAL/SHM trap).
+#: inert (found live on meshanchor-server 2026-09-23). The DB is never
+#: opened (the #60 WAL/SHM trap). A FILE is not an organ: the writer unit is
+#: asked too — the manager box carried an Aug-5 leftover of this DB with its
+#: MeshAnchor daemon MASKED, and the headline claimed a record "on this box"
+#: (operator's screen, 2026-09-23). Absent, or present but disabled/masked,
+#: is a leftover; running, stopped-but-enabled or unreadable is not. ``meshanchor-daemon.service`` is the
+#: process that holds the DB open on meshanchor-server (measured: 3 fds).
 PEER_DELIVERY_DBS = (
     ("MeshAnchor", os.path.join(".local", "share", "meshanchor",
-                                "delivery_counters.db")),
+                                "delivery_counters.db"),
+     "meshanchor-daemon.service"),
 )
 
 #: Stall-probe severities, restated for the reader (the probe owns firing).
@@ -96,8 +102,12 @@ class DeliveryView:
     host: str
     now: float
     legs: List[Leg]
-    # (app, path) of a sister app's delivery record found on this box.
+    # (app, path) of a sister app's LIVE delivery record on this box (its
+    # writer unit exists here, running or not, or could not be asked).
     peer_records: List[Tuple[str, str]] = field(default_factory=list)
+    # (app, path, mtime) of a sister-app delivery file with NO writer unit
+    # here — a leftover, shown as a footnote, never as an organ.
+    peer_leftovers: List[Tuple[str, str, float]] = field(default_factory=list)
 
     def headline(self) -> str:
         present = [leg for leg in self.legs if leg.status != INERT]
@@ -168,6 +178,18 @@ def _read_published(path: str, key: str, now: float
                            f"{int(_DELIVERY_SNAPSHOT_FRESH_S)}s) — the gateway "
                            f"stopped publishing")
     return doc[key], age, None
+
+
+def _unit_state(unit: str, resolver) -> str:
+    """``ok`` | ``down`` | ``absent`` | ``unknown`` for any unit."""
+    if resolver is None:
+        from utils.watchdog_probe_core import _resolve_main_pid_status
+        resolver = _resolve_main_pid_status
+    try:
+        status, _pid = resolver(unit)
+    except Exception:
+        return "unknown"
+    return status if status in ("ok", "down", "absent") else "unknown"
 
 
 def _gateway_state(resolver: Optional[Callable[[str], Tuple[str, Optional[int]]]],
@@ -450,10 +472,27 @@ def gather(home: Optional[str] = None, now: Optional[float] = None,
                  "propagation_soak", "prop-", PROPAGATION_SOAK_TIMER_UNIT,
                  _PROPAGATION_SOAK_STALE_AFTER_S, now, enrolled_fn),
     ]
-    peers = [(app, os.path.join(home, rel)) for app, rel in PEER_DELIVERY_DBS
-             if os.path.exists(os.path.join(home, rel))]
+    peers, leftovers = [], []
+    for app, rel, unit in PEER_DELIVERY_DBS:
+        path = os.path.join(home, rel)
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        st = _unit_state(unit, gateway_resolver)
+        if st == "down":
+            try:
+                enabled = (unit_enabled_fn or _unit_enabled)(unit)
+            except Exception:
+                enabled = None
+            if enabled is False:
+                st = "absent"  # disabled/masked: a decision, not an organ
+        if st == "absent":
+            leftovers.append((app, path, mtime))
+        else:  # ok / down / unknown: an organ may be here — do not call it absent
+            peers.append((app, path))
     return DeliveryView(host=socket.gethostname(), now=now, legs=legs,
-                        peer_records=peers)
+                        peer_records=peers, peer_leftovers=leftovers)
 
 
 def render(view: DeliveryView) -> str:
@@ -474,6 +513,11 @@ def render(view: DeliveryView) -> str:
         out.append("")
     for app, path in view.peer_records:
         out += [f"── [not read] {app} delivery record", f"  source: {path}", ""]
+    for app, path, mtime in view.peer_leftovers:
+        when = time.strftime("%Y-%m-%d", time.localtime(mtime))
+        out += [f"── [leftover] {app} delivery file, last written {when}",
+                f"  its writer unit is absent, disabled or masked here — a "
+                f"leftover file, not a delivery organ", f"  source: {path}", ""]
     out += ["Every number above was read from a file on THIS box, with its age.",
             "Other boxes: `ssh <box>` and open this screen there, or /fleet.",
             "This screen never changes anything."]
