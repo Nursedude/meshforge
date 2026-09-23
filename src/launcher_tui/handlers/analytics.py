@@ -134,7 +134,7 @@ class AnalyticsHandler(BaseHandler):
             if not res["nodes_with_snr"]:
                 print("\n  No online node on this box carries an SNR reading (an MQTT-only")
                 print("  view has none) — link trends cannot be measured here.")
-            if not res["nodes_judged"]:
+            elif not res["nodes_judged"]:
                 print("\n  Not enough distinct readings at both ends to judge any node —")
                 print("  this is not a verdict that links are steady.")
             for label, rows in (("Falling", res["declining"]), ("Rising", res["improving"])):

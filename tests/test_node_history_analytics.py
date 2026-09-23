@@ -222,3 +222,5 @@ def test_observations_without_snr_are_not_empty(db, monkeypatch):
     assert res["state"] == "ok" and res["nodes_with_snr"] == 0
     text = _render("_show_link_trends", monkeypatch, db)
     assert "cannot be measured here" in text and "No node observations" not in text
+    # one explanation, not two (live double tap on moc, 2026-09-23)
+    assert "Not enough distinct readings" not in text
