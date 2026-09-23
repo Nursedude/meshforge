@@ -81,6 +81,28 @@ def format_hop_census(census: Dict[str, Any]) -> List[str]:
     return lines
 
 
+#: What the link-graph panes say when this process never built the graph.
+GRAPH_NOT_HERE = (
+    "NOT OBSERVABLE from the TUI.\n\n"
+    "The link graph, its events and path traces are built inside the\n"
+    "gateway process (it watches the RNS path table). This TUI process\n"
+    "never runs that tracker, so an empty graph here means nothing was\n"
+    "LOOKED AT — not that there are no links.\n\n"
+    "Observed vs inferred links: the :5000 map Topology view.\n"
+    "Per-node hop counts: Topology Statistics (from the gateway's\n"
+    "saved node cache).")
+
+
+def graph_observable(topology) -> bool:
+    """Is the link graph live in THIS process? False when the topology
+    object is missing or predates is_tracking (unknown is not live)."""
+    fn = getattr(topology, "is_tracking", None)
+    try:
+        return bool(fn()) if callable(fn) else False
+    except Exception:
+        return False
+
+
 class TopologyHandler(BaseHandler):
     """TUI handler for network topology visualization and export."""
 
@@ -244,7 +266,7 @@ class TopologyHandler(BaseHandler):
             # was a confident number about something it could not see
             # (2026-09-23). Print edge numbers only when the graph has any.
             lines.append("")
-            if stats.get('edge_count'):
+            if graph_observable(topology) and stats:
                 lines.extend([
                     f"Links (edges):  {stats.get('edge_count')}  "
                     f"(active {stats.get('active_edges', 0)})",
@@ -537,6 +559,9 @@ class TopologyHandler(BaseHandler):
         if topology is None:
             self.ctx.dialog.msgbox("Unavailable", "Topology module not loaded.")
             return
+        if not graph_observable(topology):
+            self.ctx.dialog.msgbox("Links / Edges", GRAPH_NOT_HERE)
+            return
 
         try:
             topo_dict = topology.to_dict()
@@ -600,6 +625,9 @@ class TopologyHandler(BaseHandler):
         if topology is None:
             self.ctx.dialog.msgbox("Unavailable", "Topology module not loaded.")
             return
+        if not graph_observable(topology):
+            self.ctx.dialog.msgbox("Topology Events", GRAPH_NOT_HERE)
+            return
 
         try:
             events = topology.get_recent_events(30)
@@ -656,6 +684,9 @@ class TopologyHandler(BaseHandler):
 
         if topology is None:
             self.ctx.dialog.msgbox("Unavailable", "Topology module not loaded.")
+            return
+        if not graph_observable(topology):
+            self.ctx.dialog.msgbox("Path Trace", GRAPH_NOT_HERE)
             return
 
         # Get destination hash from user
@@ -770,6 +801,9 @@ class TopologyHandler(BaseHandler):
             topology = self._get_topology()
             if topology is None:
                 self.ctx.dialog.msgbox("Unavailable", "Topology module not loaded.")
+                return
+            if not graph_observable(topology):
+                self.ctx.dialog.msgbox("Network Topology (ASCII)", GRAPH_NOT_HERE)
                 return
 
             visualizer = _TopologyVisualizer.from_topology(topology)

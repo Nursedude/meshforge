@@ -417,6 +417,13 @@ class NetworkTopology:
         self._path_monitor.start()
         logger.info("Network topology tracker started")
 
+    def is_tracking(self) -> bool:
+        """True only when THIS process's path monitor is running. The graph
+        is built in the gateway process; in any other process (the TUI) it
+        is empty by construction, and an empty graph is not an observation
+        that there are no links (2026-09-23)."""
+        return bool(getattr(self._path_monitor, "_running", False))
+
     def stop(self, timeout: float = 5.0):
         """Stop topology tracking"""
         self._path_monitor.stop(timeout)

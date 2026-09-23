@@ -63,3 +63,40 @@ def test_pane_never_prints_edge_or_hop_numbers_it_cannot_see(monkeypatch):
     assert "Total Edges:    0" not in text and "Maximum Hops:   0" not in text
     assert "5 recorded as 0 = the pre-fix sentinel" in text
     assert "Source:" in text
+
+
+class _Graph:
+    def __init__(self, live):
+        self._live = live
+
+    def is_tracking(self):
+        return self._live
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("method", ["_show_topology_edges", "_show_topology_events",
+                                    "_trace_path", "_show_ascii_topology"])
+def test_graph_panes_say_not_observable_when_graph_is_not_live(monkeypatch, method):
+    h = t.TopologyHandler()
+    h.ctx = MagicMock()
+    monkeypatch.setattr(h, "_get_topology", lambda: _Graph(False))
+    getattr(h, method)()
+    body = h.ctx.dialog.msgbox.call_args.args[1]
+    assert body == t.GRAPH_NOT_HERE
+    h.ctx.dialog.inputbox.assert_not_called()   # trace never prompts for a hash
+
+
+def test_graph_observable_is_false_for_unknown_shapes():
+    assert t.graph_observable(None) is False
+    assert t.graph_observable(object()) is False     # predates is_tracking
+    assert t.graph_observable(_Graph(True)) is True
+
+
+def test_network_topology_is_tracking_follows_its_monitor():
+    from gateway.network_topology import NetworkTopology
+    topo = NetworkTopology()
+    assert topo.is_tracking() is False              # a TUI process never starts it
+    topo._path_monitor._running = True
+    assert topo.is_tracking() is True
