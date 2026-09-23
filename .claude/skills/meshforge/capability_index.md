@@ -45,7 +45,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 
 | Action tag | Description | Flag | Truth | Handler |
 |---|---|---|---|---|
-| `analytics` | Analytics — Coverage & link trends |  | sweep | AnalyticsHandler |
+| `analytics` | Analytics — Health, trends, coverage |  | sweep | AnalyticsHandler |
 | `alerts` | View Alerts — Current warnings |  | sweep | DashboardHandler |
 | `datapath` | Data Path Check — Test all data sources |  | sweep | DashboardHandler |
 | `nodes` | Node Count — Meshtastic + RNS nodes |  | sweep | DashboardHandler |

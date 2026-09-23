@@ -67,7 +67,7 @@ HANDLER_MANIFEST = [
         "lifecycle": False,
         "error": None,
         "menu_items": [
-            ('analytics', 'Analytics           Coverage & link trends', None),
+            ('analytics', 'Analytics           Health, trends, coverage', None),
         ],
     },
     {

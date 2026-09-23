@@ -1,31 +1,63 @@
 """
-Analytics Handler — Coverage trends, link budget history, predictive alerts.
+Analytics Handler — network health, link trends, predictions, coverage.
 
-Converted from analytics_mixin.py as part of the mixin-to-registry migration.
+Re-pointed 2026-09-23 at the LIVE node history store. The previous screens
+read three `analytics.db` tables that nothing had ever written (no caller of
+`record_link_budget` / `record_network_health` / `record_coverage` since the
+module landed; empty or absent on all 10 boxes) while saying "Data is
+collected when nodes exchange packets". Operator: the user needs these eyes —
+so they now read `node_history.db`, which the map collector writes every
+cycle, through `utils.node_history_analytics` (read-only).
+
+Every screen states its source, window and what it judged, and says so
+plainly when this box has no history, cannot read it, or has too little.
 """
 
 import logging
+import time
 
 from backend import clear_screen
 from handler_protocol import BaseHandler
-from utils.safe_import import safe_import
+from utils import node_history_analytics as nha
 
 logger = logging.getLogger(__name__)
 
-get_analytics_store, get_predictive_analyzer, get_coverage_analyzer, _HAS_ANALYTICS = safe_import(
-    'utils.analytics', 'get_analytics_store', 'get_predictive_analyzer', 'get_coverage_analyzer'
-)
+_SOURCE = "node_history.db on THIS box (the map collector's node snapshots)"
+
+
+def _not_ok(res) -> bool:
+    """Print the honest line for a non-ok result; True if the caller stops."""
+    state = res.get("state")
+    if state == "absent":
+        print("  No node history on this box — nothing records it here")
+        print(f"  (not found: {res.get('path')}).")
+        print("  It is written by the map collector (meshforge-map); a box")
+        print("  without the map service has no history to analyse.")
+        return True
+    if state == "unreadable":
+        print("  UNKNOWN — the node history could not be read:")
+        print(f"    {res.get('error')}")
+        return True
+    if state == "empty":
+        print(f"  No node observations in the last {res.get('window_h'):.0f} h —")
+        print("  the collector has not recorded any in this window.")
+        return True
+    return False
+
+
+def _hhmm(epoch: float) -> str:
+    return time.strftime("%m-%d %H:%M", time.localtime(epoch))
 
 
 class AnalyticsHandler(BaseHandler):
-    """TUI handler for analytics display methods."""
+    """TUI handler for node-history analytics (read-only)."""
 
     handler_id = "analytics"
     menu_section = "dashboard"
 
     def menu_items(self):
         return [
-            ("analytics", "Analytics           Coverage & link trends", None),
+            ("analytics", "Analytics           Health, trends, coverage", None),
         ]
 
     def execute(self, action):
@@ -33,21 +65,19 @@ class AnalyticsHandler(BaseHandler):
             self._analytics_menu()
 
     def _analytics_menu(self):
-        """Analytics — coverage trends, link budget, predictions."""
+        """Analytics — from the live node history."""
         while True:
             choices = [
-                ("trends", "Link Trends         Link budget over time"),
-                ("health", "Health History       Network health timeline"),
-                ("forecast", "Forecast            24h network forecast"),
-                ("alerts", "Predictive Alerts   Predicted issues"),
-                ("coverage", "Coverage Stats      Area & spacing analysis"),
-                ("cleanup", "Cleanup Old Data    Purge records > 30d"),
+                ("health", "Health History      Online nodes per hour (48 h)"),
+                ("trends", "Link Trends         SNR first 6 h vs last 6 h"),
+                ("alerts", "Predictive Alerts   Falling battery / SNR"),
+                ("coverage", "Coverage Stats      Where the known nodes are"),
                 ("back", "Back"),
             ]
 
             choice = self.ctx.dialog.menu(
                 "Analytics",
-                "Historical analysis and predictions:",
+                "From this box's node history (read-only):",
                 choices
             )
 
@@ -55,12 +85,10 @@ class AnalyticsHandler(BaseHandler):
                 break
 
             dispatch = {
-                "trends": ("Link Trends", self._show_link_trends),
                 "health": ("Health History", self._show_health_history),
-                "forecast": ("Network Forecast", self._show_network_forecast),
+                "trends": ("Link Trends", self._show_link_trends),
                 "alerts": ("Predictive Alerts", self._show_predictive_alerts),
                 "coverage": ("Coverage Stats", self._show_coverage_stats),
-                "cleanup": ("Cleanup Old Data", self._analytics_cleanup),
             }
             entry = dispatch.get(choice)
             if entry:
@@ -68,246 +96,103 @@ class AnalyticsHandler(BaseHandler):
             else:
                 self.ctx.notify_unwired(choice, "AnalyticsHandler._analytics_menu")
 
-    def _show_link_trends(self):
-        """Show link budget trends over time."""
-        clear_screen()
-        print("=== Link Budget Trends ===\n")
-
-        if not _HAS_ANALYTICS:
-            print("  Analytics module not available.")
-            print("  File: src/utils/analytics.py")
-            self.ctx.wait_for_enter()
-            return
-
-        store = get_analytics_store()
-        history = store.get_link_budget_history(hours=24)
-
-        if not history:
-            print("  No link budget data recorded yet.")
-            print("  Data is collected when nodes exchange packets.")
-            self.ctx.wait_for_enter()
-            return
-
-        print(f"  Samples in last 24h: {len(history)}\n")
-        print(f"  {'Time':<20} {'Source':<12} {'Dest':<12} {'RSSI':>6} {'SNR':>6} {'Quality':<10}")
-        print(f"  {'-'*68}")
-
-        for sample in history[-15:]:
-            ts = sample.timestamp[:19] if len(sample.timestamp) > 19 else sample.timestamp
-            src = sample.source_node[:10] if sample.source_node else "?"
-            dst = sample.dest_node[:10] if sample.dest_node else "?"
-            print(f"  {ts:<20} {src:<12} {dst:<12} {sample.rssi_dbm:>5.0f} {sample.snr_db:>5.1f} {sample.link_quality:<10}")
-
-        if len(history) > 15:
-            print(f"\n  (showing 15 of {len(history)} — oldest omitted)")
-
-        print()
-        self.ctx.wait_for_enter()
-
     def _show_health_history(self):
-        """Show network health metrics over time."""
         clear_screen()
         print("=== Network Health History ===\n")
-
-        if not _HAS_ANALYTICS:
-            print("  Analytics module not available.")
-            self.ctx.wait_for_enter()
-            return
-
-        store = get_analytics_store()
-        history = store.get_network_health_history(hours=24)
-
-        if not history:
-            print("  No health history recorded yet.")
-            print("  Health snapshots are stored when the system runs.")
-            self.ctx.wait_for_enter()
-            return
-
-        print(f"  Snapshots in last 24h: {len(history)}\n")
-        print(f"  {'Time':<20} {'Online':>6} {'Offline':>7} {'Avg RSSI':>9} {'Avg SNR':>8} {'Pkt %':>6}")
-        print(f"  {'-'*58}")
-
-        for metric in history[-15:]:
-            ts = metric.timestamp[:19] if len(metric.timestamp) > 19 else metric.timestamp
-            print(f"  {ts:<20} {metric.online_nodes:>6} {metric.offline_nodes:>7} "
-                  f"{metric.avg_rssi_dbm:>8.0f} {metric.avg_snr_db:>7.1f} {metric.packet_success_rate * 100:>5.0f}%")
-
-        if len(history) > 15:
-            print(f"\n  (showing 15 of {len(history)} — oldest omitted)")
-
+        res = nha.health_timeline()
+        if not _not_ok(res):
+            hours = res["hours"]
+            print(f"  Source: {_SOURCE}")
+            print(f"  Window: {res['window_h']:.0f} h · {res['observations']} snapshots "
+                  f"({res['via_mqtt']} via MQTT)")
+            print("  Known = positioned nodes in the history (position-less nodes are")
+            print("  not recorded here) · Online = the node table marks it recently")
+            print("  heard · SNR = mean last-heard SNR of online nodes\n")
+            print(f"  {'Hour':<13} {'Known':>6} {'Online':>7} {'Avg SNR':>8} {'SNR n':>6}")
+            print(f"  {'-' * 44}")
+            for h in hours[-24:]:
+                snr = "—" if h["avg_snr_online"] is None else f"{h['avg_snr_online']:.1f}"
+                tag = "  (partial)" if h["partial"] else ""
+                print(f"  {_hhmm(h['hour_epoch']):<13} {h['known']:>6} {h['online']:>7} "
+                      f"{snr:>8} {h['snr_samples']:>6}{tag}")
+            if len(hours) > 24:
+                print(f"\n  (showing the newest 24 of {len(hours)} hours)")
         print()
         self.ctx.wait_for_enter()
 
-    def _show_network_forecast(self):
-        """Show 24-hour network forecast."""
+    def _show_link_trends(self):
         clear_screen()
-        print("=== Network Forecast (24h) ===\n")
-
-        if not _HAS_ANALYTICS:
-            print("  Predictive analytics module not available.")
-            self.ctx.wait_for_enter()
-            return
-
-        analyzer = get_predictive_analyzer()
-        forecast = analyzer.get_network_forecast(hours_ahead=24)
-
-        if not forecast:
-            print("  Insufficient data for forecast.")
-            print("  Need at least 24h of collected metrics.")
-            self.ctx.wait_for_enter()
-            return
-
-        outlook = forecast.get('outlook', 'unknown')
-        confidence = forecast.get('confidence', 0)
-
-        if outlook == 'stable':
-            color = "\033[0;32m"
-        elif outlook == 'declining':
-            color = "\033[0;33m"
-        else:
-            color = "\033[0;31m"
-
-        print(f"  Outlook:    {color}{outlook}\033[0m")
-        print(f"  Confidence: {confidence:.0%}\n")
-
-        pred = forecast.get('predicted_metrics', {})
-        if pred:
-            print("  Predicted next 24h:")
-            for key, val in pred.items():
-                label = key.replace('_', ' ').title()
-                if isinstance(val, float):
-                    print(f"    {label:<25} {val:.1f}")
-                else:
-                    print(f"    {label:<25} {val}")
-
-        risks = forecast.get('risk_factors', [])
-        if risks:
-            print(f"\n  Risk Factors ({len(risks)}):")
-            for risk in risks:
-                print(f"    \033[0;33m!\033[0m {risk}")
-
+        print("=== Link Trends (SNR) ===\n")
+        res = nha.link_trends()
+        if not _not_ok(res):
+            print(f"  Source: {_SOURCE}")
+            print(f"  Mean last-heard SNR of each node, first {res['edge_h']:.0f} h vs last "
+                  f"{res['edge_h']:.0f} h of {res['window_h']:.0f} h;")
+            print(f"  online readings only, repeats collapsed, ≥{res['min_samples']} "
+                  "distinct readings at each end.\n")
+            print(f"  Nodes with SNR: {res['nodes_with_snr']} · judged: {res['nodes_judged']}")
+            if not res["nodes_with_snr"]:
+                print("\n  No online node on this box carries an SNR reading (an MQTT-only")
+                print("  view has none) — link trends cannot be measured here.")
+            if not res["nodes_judged"]:
+                print("\n  Not enough distinct readings at both ends to judge any node —")
+                print("  this is not a verdict that links are steady.")
+            for label, rows in (("Falling", res["declining"]), ("Rising", res["improving"])):
+                if rows:
+                    print(f"\n  {label}:")
+                    for r in rows:
+                        print(f"    {str(r['name'])[:24]:<24} {r['snr_first']:>6.1f} -> "
+                              f"{r['snr_last']:>6.1f} dB  ({r['delta_db']:+.1f})")
         print()
         self.ctx.wait_for_enter()
 
     def _show_predictive_alerts(self):
-        """Show predictive alerts — issues predicted before they happen."""
         clear_screen()
         print("=== Predictive Alerts ===\n")
-
-        if not _HAS_ANALYTICS:
-            print("  Predictive analytics module not available.")
-            self.ctx.wait_for_enter()
-            return
-
-        analyzer = get_predictive_analyzer()
-        alerts = analyzer.analyze_all()
-
-        if not alerts:
-            # analyze_all() returns [] both when trends are clean AND when
-            # there is too little history to judge — say which (truth sweep
-            # level two, 2026-09-22: "System looks healthy" with zero data).
-            need = analyzer.MIN_SAMPLES_FOR_PREDICTION
-            try:
-                have = len(analyzer.store.get_network_health_history(hours=48))
-            except Exception as e:
-                logger.debug("health history unreadable: %s", e)
-                have = None
-            if have is None:
-                print("  UNKNOWN — health history could not be read.")
-            elif have < need:
-                print(f"  Not enough history to predict: {have} of {need} health")
-                print("  samples in the last 48 h. This is not a health verdict.")
-            else:
-                print(f"  No predicted issues from {have} health samples (48 h).")
-            self.ctx.wait_for_enter()
-            return
-
-        severity_colors = {
-            'critical': "\033[1;31m",
-            'warning': "\033[0;33m",
-            'info': "\033[0;36m",
-        }
-
-        print(f"  {len(alerts)} predicted issue(s):\n")
-        for alert in alerts:
-            color = severity_colors.get(alert.severity, "")
-            reset = "\033[0m"
-            eta = f"~{alert.predicted_time_hours:.0f}h" if alert.predicted_time_hours else "soon"
-            conf = f"{alert.confidence:.0%}" if alert.confidence else "?"
-
-            print(f"  {color}[{alert.severity.upper()}]{reset} {alert.message}")
-            print(f"           ETA: {eta}  Confidence: {conf}")
-            if alert.suggestions:
-                for suggestion in alert.suggestions[:2]:
-                    print(f"           -> {suggestion}")
-            print()
-
-        self.ctx.wait_for_enter()
-
-    def _show_coverage_stats(self):
-        """Show coverage area statistics."""
-        clear_screen()
-        print("=== Coverage Statistics ===\n")
-
-        if not _HAS_ANALYTICS:
-            print("  Coverage analyzer module not available.")
-            self.ctx.wait_for_enter()
-            return
-
-        analyzer = get_coverage_analyzer()
-        history = analyzer.get_coverage_history(days=7)
-
-        if not history:
-            print("  No coverage data recorded yet.")
-            print("  Coverage is calculated when GPS-enabled nodes report positions.")
-            self.ctx.wait_for_enter()
-            return
-
-        latest = history[-1]
-        print(f"  Total nodes:          {latest.get('total_nodes', 'N/A')}")
-        print(f"  Nodes with GPS:       {latest.get('nodes_with_position', 'N/A')}")
-        print(f"  Estimated area:       {latest.get('estimated_area_km2', 0):.1f} km2")
-        print(f"  Avg node spacing:     {latest.get('average_node_spacing_km', 0):.2f} km")
-        print(f"  Coverage radius:      {latest.get('coverage_radius_km', 0):.2f} km")
-
-        if len(history) > 1:
-            first = history[0]
-            area_change = latest.get('estimated_area_km2', 0) - first.get('estimated_area_km2', 0)
-            node_change = latest.get('total_nodes', 0) - first.get('total_nodes', 0)
-            print(f"\n  7-day change:")
-            sign = "+" if area_change >= 0 else ""
-            print(f"    Area:  {sign}{area_change:.1f} km2")
-            sign = "+" if node_change >= 0 else ""
-            print(f"    Nodes: {sign}{node_change}")
-
+        res = nha.predictive()
+        if not _not_ok(res):
+            print(f"  Source: {_SOURCE}")
+            print(f"  Least-squares slope over {res['window_h']:.0f} h, online readings, "
+                  f"≥{res['min_samples']} distinct each.")
+            print(f"  Judged: battery {res['battery_nodes_judged']} node(s) (1-100 %; 0 and "
+                  f">100 = no reading/external power) · SNR {res['snr_nodes_judged']} node(s)")
+            print(f"  Flags: battery ≤ {res['battery_slope_alert']:.1f} %/h · "
+                  f"SNR ≤ {res['snr_slope_alert']:.1f} dB/h\n")
+            alerts = res["alerts"]
+            if not res["battery_nodes_judged"] and not res["snr_nodes_judged"]:
+                print("  Too few distinct readings to judge any node — UNKNOWN,")
+                print("  not healthy.")
+            elif not alerts:
+                print("  None of the judged nodes crosses a flag. Nodes not judged")
+                print("  (too few readings) are unknown, not healthy.")
+            for a in alerts:
+                if a["kind"] == "battery":
+                    eta = ("at or below 20 %" if a["eta_h_to_floor"] <= 0
+                           else f"~{a['eta_h_to_floor']:.0f} h to 20 %")
+                    print(f"  \033[0;33m!\033[0m {str(a['name'])[:24]:<24} battery "
+                          f"{a['slope']:+.1f} %/h, now {a['last']:.0f} % ({eta}; n={a['samples']})")
+                else:
+                    print(f"  \033[0;33m!\033[0m {str(a['name'])[:24]:<24} SNR "
+                          f"{a['slope']:+.2f} dB/h, now {a['last']:.1f} dB (n={a['samples']})")
         print()
         self.ctx.wait_for_enter()
 
-    def _analytics_cleanup(self):
-        """Purge analytics data older than 30 days."""
+    def _show_coverage_stats(self):
         clear_screen()
-        print("=== Cleanup Analytics Data ===\n")
-
-        if not _HAS_ANALYTICS:
-            print("  Analytics module not available.")
-            self.ctx.wait_for_enter()
-            return
-
-        confirm = self.ctx.dialog.yesno(
-            "Confirm Cleanup",
-            "Delete analytics data older than 30 days?\n\n"
-            "This removes old link budget samples, health snapshots,\n"
-            "and coverage records. Recent data is preserved."
-        )
-
-        if not confirm:
-            return
-
-        store = get_analytics_store()
-        removed = store.cleanup_old_data(days=30)
-        if removed:
-            print(f"  Cleanup complete. {removed} record(s) older than 30 days removed.")
-        else:
-            print("  Cleanup complete. No data older than 30 days to remove.")
+        print("=== Coverage Statistics ===\n")
+        res = nha.coverage()
+        if not _not_ok(res):
+            print(f"  Source: {_SOURCE} · window {res['window_h']:.0f} h\n")
+            print(f"  Nodes in history:   {res['nodes_known']} (the history keeps "
+                  "positioned nodes only)")
+            print(f"  Usable position:    {res['positioned']} "
+                  f"({res['via_mqtt']} via MQTT; 0,0 fixes excluded)")
+            nets = ", ".join(f"{k} {v}" for k, v in sorted(res["by_network"].items()))
+            print(f"  By network:         {nets}")
+            b = res["extent_90"]
+            print(f"  Extent (central 90 %): {b['south']:.3f}..{b['north']:.3f} N, "
+                  f"{b['west']:.3f}..{b['east']:.3f} E")
+            print(f"                      diagonal ~{res['extent_diagonal_km']:.0f} km; "
+                  f"{res['outside_extent']} outside it (far or bad fixes)")
         print()
         self.ctx.wait_for_enter()
