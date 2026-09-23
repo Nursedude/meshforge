@@ -3,7 +3,8 @@
 `test_all_tags_dispatch` (test_all_handlers_protocol.py) proves that all
 registered actions ROUTE. This proves what their FIRST SCREEN says when
 there is nothing to say it about: sockets refused, no subprocess, no tool on
-PATH, the operator's home replaced by an empty one. A screen rendered under
+PATH, the operator's home replaced by an empty one, and box state (/etc/reticulum,
+/etc/meshtasticd, systemd units, /proc/net, device nodes) absent. A screen rendered under
 those conditions must carry a word of uncertainty — or the action must be
 declared LOCAL_ONLY in `launcher_tui/action_truth.py` with a why.
 
@@ -151,9 +152,94 @@ def _fs_audit(event, args):
     if (len(_REAL_HOME.parts) > 2 and p.startswith(str(_REAL_HOME) + os.sep)
             and not p.startswith(_EXEMPT) and not p.endswith((".py", ".pyc", ".so"))):
         _HOME_TOUCHES.append((event, p))
+    # The os-layer patches raise BEFORE the real call, so any audited event
+    # on box state here is a read that went around them.
+    if _box_path(p) is not None:
+        _BOX_STATE_TOUCHES.append((event, p))
 
 
 sys.addaudithook(_fs_audit)
+
+
+# --- box state reads as ABSENT -------------------------------------------
+# Sockets and subprocesses being dead did not make the BOX dead: the second
+# non-author review saw the sweep read /proc/net/unix (this box's live rnsd
+# socket) ×7, /etc/reticulum/config ×11, /etc/meshtasticd, systemd unit
+# files — and attempt mkdir under /etc/meshtasticd — so `system/details`
+# rendered "OK rnsd rpc_key pinned (<this box's key>)" and every verdict
+# was a statement about whichever box ran the suite. Most sites are inline
+# literals (Path('/etc/systemd/system/rnsd.service')), so the seam is the
+# os layer: these paths are ABSENT, mkdir under them is refused, and /dev
+# lists empty. Anything that still reaches them is caught by the audit
+# witness below (e.g. an interpreter whose pathlib binds os.stat early).
+BOX_STATE_DIRS = (
+    "/etc/reticulum", "/etc/meshtasticd", "/etc/systemd", "/lib/systemd",
+    "/usr/lib/systemd", "/proc/net", "/var/lib/meshforge", "/run/meshforge",
+    "/dev/serial", "/sys/class", "/sys/bus",
+)
+BOX_STATE_NAMES = ("/dev/tty", "/dev/spidev", "/dev/gpiochip", "/dev/i2c")
+_EMPTY_LISTING = ("/dev",)
+_BOX_STATE_TOUCHES: list = []
+
+
+def _box_path(p):
+    """The absolute path string if `p` is box state, else None."""
+    if isinstance(p, int) or p is None:
+        return None
+    try:
+        s = os.path.abspath(os.fsdecode(p))
+    except (TypeError, ValueError):
+        return None
+    if any(s == d or s.startswith(d + "/") for d in BOX_STATE_DIRS) \
+            or s.startswith(BOX_STATE_NAMES):
+        return s
+    return None
+
+
+def _kill_box_state(monkeypatch, empty_dir: Path):
+    import io
+
+    def absent(p):
+        raise FileNotFoundError(2, "[truth-sweep] box state is absent", p)
+
+    def reads(real):
+        def wrapper(path, *a, **k):
+            s = _box_path(path)
+            if s is not None:
+                absent(s)
+            return real(path, *a, **k)
+        return wrapper
+
+    def lists(real):
+        def wrapper(path=".", *a, **k):
+            if not isinstance(path, int) and os.path.abspath(os.fsdecode(path)) in _EMPTY_LISTING:
+                return real(str(empty_dir), *a, **k)
+            s = _box_path(path)
+            if s is not None:
+                absent(s)
+            return real(path, *a, **k)
+        return wrapper
+
+    def refuses(real):
+        def wrapper(path, *a, **k):
+            s = _box_path(path)
+            if s is not None:
+                raise PermissionError(13, "[truth-sweep] box state is read-only", s)
+            return real(path, *a, **k)
+        return wrapper
+
+    real_open = builtins.open
+    opener = reads(real_open)
+    monkeypatch.setattr(builtins, "open", opener)
+    monkeypatch.setattr(io, "open", opener)
+    for name in ("open", "stat", "lstat", "access", "readlink"):
+        monkeypatch.setattr(os, name, reads(getattr(os, name)))
+    for name in ("scandir", "listdir"):
+        monkeypatch.setattr(os, name, lists(getattr(os, name)))
+    for name in ("mkdir", "rename", "replace", "remove", "unlink", "rmdir", "chmod"):
+        monkeypatch.setattr(os, name, refuses(getattr(os, name)))
+    import sqlite3
+    monkeypatch.setattr(sqlite3, "connect", reads(sqlite3.connect))
 
 
 def _rehome(val, home: Path):
@@ -234,7 +320,12 @@ def dead_externals(no_network, monkeypatch, tmp_path):
             if moved is not None:
                 monkeypatch.setattr(mod, attr, moved)
 
+    empty = tmp_path / "empty-listing"
+    empty.mkdir()
+    _kill_box_state(monkeypatch, empty)
+
     _HOME_TOUCHES.clear()
+    _BOX_STATE_TOUCHES.clear()
     _AUDIT["armed"] = True
     try:
         yield home
@@ -294,6 +385,11 @@ def test_action_tells_the_truth_with_every_external_dead(section, tag, dead_exte
         f"Find the path frozen outside get_real_user_home() (a class attribute "
         f"or default argument the fixture's module-global rewrite cannot reach) "
         f"and resolve it at call time.")
+    assert not _BOX_STATE_TOUCHES, (
+        f"{section}/{tag} read box state AROUND the fixture's os-layer patches: "
+        f"{_BOX_STATE_TOUCHES[:5]} — its verdict depends on which box ran the "
+        f"suite. Find the call that bypasses os.stat/io.open/os.scandir (a C "
+        f"extension, an early-bound alias) and patch it in _kill_box_state.")
     verdict = _verdict(kinds, text)
     key = (section, tag)
     _DUMP[f"{section}/{tag}"] = {"verdict": verdict, "kinds": kinds, "text": text[:800]}
@@ -322,6 +418,38 @@ def test_sweep_never_touched_the_real_home(dead_externals):
     # The import-time constant the second review caught, rewritten:
     import utils.common as _common
     assert Path(_common.CONFIG_DIR).is_relative_to(dead_externals)
+
+
+def test_box_state_is_absent_and_the_witness_can_fail(dead_externals, tmp_path, monkeypatch):
+    """Proves both halves on ANY box, including CI where /etc/reticulum does
+    not exist: a real file under a prefix declared box state must read as
+    absent through every path API the handlers use, mkdir under it must be
+    refused, /dev must list empty — and a read that goes AROUND the patches
+    (the real io.FileIO, which the patches do not wrap) must be witnessed."""
+    import glob as _glob
+    import io
+    planted = tmp_path / "boxstate"
+    planted.mkdir()
+    (planted / "config").write_text("[reticulum]\n")
+    monkeypatch.setattr(sys.modules[__name__], "BOX_STATE_DIRS",
+                        BOX_STATE_DIRS + (str(planted),))
+    f = planted / "config"
+    assert not f.exists() and not os.path.exists(f) and not os.path.isfile(f)
+    with pytest.raises(FileNotFoundError):
+        f.read_text()
+    with pytest.raises(FileNotFoundError):
+        open(f)
+    with pytest.raises(FileNotFoundError):
+        list(planted.iterdir())
+    assert _glob.glob(str(planted / "*")) == []
+    with pytest.raises(PermissionError):
+        (planted / "sub").mkdir()
+    assert os.listdir("/dev") == [] and _glob.glob("/dev/ttyACM*") == []
+
+    _BOX_STATE_TOUCHES.clear()
+    io.FileIO(str(f)).close()  # around the patches: must be witnessed
+    assert any(p == str(f) for _, p in _BOX_STATE_TOUCHES)
+    _BOX_STATE_TOUCHES.clear()
 
 
 def test_real_home_witness_can_fail(dead_externals):

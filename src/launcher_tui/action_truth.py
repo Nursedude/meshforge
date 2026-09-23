@@ -9,7 +9,8 @@ screen that says "no alerts" with the network dead passes that test.
 
 `tests/test_tui_success_truth_sweep.py` closes the gap: it dispatches EVERY
 registered action with every external DEAD (sockets refused, subprocess
-absent, no tools on PATH, the operator's home swapped for an empty one) and
+absent, no tools on PATH, the operator's home swapped for an empty one, box state — /etc/reticulum,
+/etc/meshtasticd, unit files, /proc/net, device nodes — absent) and
 requires the FIRST SCREEN — every dialog including infobox, plus stdout —
 to carry a word of uncertainty — UNKNOWN / unreachable / not installed /
 failed … — or to be listed here as an action that never asks an external
