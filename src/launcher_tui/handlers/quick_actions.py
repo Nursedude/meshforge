@@ -395,7 +395,10 @@ class QuickActionsHandler(BaseHandler):
                     cat = d.symptom.category.value
                     print(f"    [{cat}] {d.likely_cause[:60]}")
             else:
-                print("\n  No recent issues detected.")
+                # The engine diagnoses only what is REPORTED to it (an
+                # on-demand AI diagnose); an empty list is silence.
+                print("\n  No diagnoses recorded — nothing has reported a symptom to")
+                print("  this process. Silence is not health.")
 
         except Exception as e:
             print(f"Error: {e}")

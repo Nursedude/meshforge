@@ -8,11 +8,30 @@ PATH, the operator's home replaced by an empty one, and box state (/etc/reticulu
 those conditions must carry a word of uncertainty — or the action must be
 declared LOCAL_ONLY in `launcher_tui/action_truth.py` with a why.
 
-SCOPE, stated exactly (non-author review 2026-09-22 corrected the first
-cut's "116/116" to this): ONE dialog level. `FakeDialog.menu` returns
-None, so nothing behind a sub-menu is run — an action whose only output is
-a menu is `navigation` and passes without a claim being checked. Walking
-one level down is queued, not done.
+SCOPE, stated exactly: TWO dialog levels. Level one — every action's first
+screen (`FakeDialog.menu` returns None, so an action whose first screen is
+a menu is `navigation`). Level two (`test_level_two_items_tell_the_truth`,
+2026-09-22) — every item of that first menu, one dispatch each, judged on
+what the ITEM rendered: 480 items. Level two gates only the MEASURED legs
+(crash, hang, status rows, home/box-state witnesses); its text verdicts are
+dumped, not gated (see that test's docstring). Level three — a menu inside
+an item — is `navigation`, unwalked.
+
+Level two runs items for real, so the fixture also refuses os.kill (a
+"Stop NomadNet" item finds the operator's live client through /proc),
+name resolution (getaddrinfo reached real DNS) and webbrowser; Path.glob's
+early-bound scandir is patched (it read this box's /dev/ttyACM0). A live
+view is stopped with Ctrl+C after SLEEP_BUDGET sleeps or CTRL_C_AFTER_S,
+as an operator would, and the cut is recorded (kind `ctrl_c`); the
+suite's pytest-timeout alarm is saved and handed back around every item.
+The real home is REFUSED, not only witnessed (a singleton an earlier test
+built wrote the operator's mesh_alerts.json in suite order); first-party
+singletons holding a real-home path are dropped for the test, and every
+first-party singleton a test CREATED is stop()/close()d at teardown.
+NOT contained (stated): a thread started by an object that is not a
+module-global singleton; stderr; os.system / ctypes / a symlink out of the
+fake home (no carriers in src today); items run in menu order on one fake
+home, so an earlier item's writes are visible to a later one.
 
 What it reads: every FakeDialog call INCLUDING infobox (an infobox can
 claim "Connected"), AND everything the handler printed to stdout (about a
@@ -80,7 +99,8 @@ for p in (str(_SRC), str(_SRC / "launcher_tui"), str(Path(__file__).resolve().pa
 
 from handler_registry import HandlerRegistry  # noqa: E402
 from handler_test_utils import FakeDialog, make_handler_context  # noqa: E402
-from launcher_tui.action_truth import KNOWN_CRASHED, KNOWN_FALSE_OK, LOCAL_ONLY  # noqa: E402
+from launcher_tui.action_truth import (  # noqa: E402
+    KNOWN_CRASHED, KNOWN_CRASHED_L2, KNOWN_FALSE_OK, LOCAL_ONLY)
 import utils.paths as _paths  # noqa: E402
 
 # Words that make a screen honest when every external is dead. Broad on
@@ -138,6 +158,8 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 # "Details logged to:" — so `system/shell`, which catches the failure and
 # prints "Shell error: …" itself, read as crashed (finding #5, 2026-09-22).
 _CRASHES: list = []
+_SIGNALS: list = []
+_LAST: dict = {}
 
 # Dialog kinds that render only navigation / prompts, never a claim.
 # infobox is NOT here: "Connected via USB: /dev/ttyACM0" was an infobox.
@@ -198,12 +220,24 @@ def _fs_audit(event, args):
         p = os.path.abspath(os.fsdecode(p))
     except (TypeError, ValueError):
         return
-    if (len(_REAL_HOME.parts) > 2 and p.startswith(str(_REAL_HOME) + os.sep)
+    # The home ITSELF counts: `os.listdir(home)` rendered 330 real entries
+    # unwitnessed when only paths UNDER it matched (Fable review, finding 7).
+    if (len(_REAL_HOME.parts) > 2
+            and (p == str(_REAL_HOME) or p.startswith(str(_REAL_HOME) + os.sep))
             and not p.startswith(_EXEMPT) and not p.endswith((".py", ".pyc", ".so"))):
         _HOME_TOUCHES.append((event, p))
+        # REFUSE, not just record: in the full suite's order, level two
+        # renamed a file over the operator's real ~/.config/meshforge/
+        # mesh_alerts.json (enabled_types: []) through a singleton an EARLIER
+        # test had built with the real path — witnessed only after the write
+        # landed (2026-09-22). Raising from the hook aborts the call.
+        raise PermissionError(13, "[truth-sweep] the operator's real home is refused", p)
     # The os-layer patches raise BEFORE the real call, so any audited event
-    # on box state here is a read that went around them.
-    if _box_path(p) is not None:
+    # on box state here is a read that went around them. A LISTING of /dev
+    # is box state too (the patches redirect it to an empty dir, so a real
+    # /dev listing here also went around them).
+    if _box_path(p) is not None or (
+            event in ("os.listdir", "os.scandir") and p in _EMPTY_LISTING):
         _BOX_STATE_TOUCHES.append((event, p))
 
 
@@ -297,6 +331,15 @@ def _kill_box_state(monkeypatch, empty_dir: Path):
         monkeypatch.setattr(os, name, refuses(getattr(os, name)))
     import sqlite3
     monkeypatch.setattr(sqlite3, "connect", reads(sqlite3.connect))
+    # Python 3.12+ `Path.glob` goes through glob._StringGlobber, which binds
+    # os.scandir / os.lstat at CLASS creation — the os patches above never
+    # reach it, and the level-two walk rendered this box's real
+    # /dev/ttyACM0 and spidev0.0 through `Path('/dev').glob(...)` (2026-09-22).
+    import glob as _glob_mod
+    globber = getattr(_glob_mod, "_StringGlobber", None)
+    if globber is not None:
+        monkeypatch.setattr(globber, "scandir", staticmethod(lists(os.scandir)))
+        monkeypatch.setattr(globber, "lstat", staticmethod(reads(os.lstat)))
 
 
 def _rehome(val, home: Path):
@@ -322,6 +365,83 @@ def _rehome(val, home: Path):
             return None
         return str(home / Path(val).relative_to(_REAL_HOME))
     return None
+
+
+_FIRST_PARTY_MOD: dict = {}
+
+
+def _is_first_party_module(name: str) -> bool:
+    """Cached: realpath per module global made every fixture setup ~0.4 s."""
+    hit = _FIRST_PARTY_MOD.get(name)
+    if hit is None:
+        mod = sys.modules.get(name)
+        if mod is None:
+            return False  # not loaded yet: answer, but do not cache
+        f = os.path.realpath(getattr(mod, "__file__", None) or "/")
+        hit = _FIRST_PARTY_MOD[name] = f.startswith(str(_SRC.resolve()) + os.sep)
+    return hit
+
+
+def _is_first_party_instance(val) -> bool:
+    if isinstance(val, (type, type(sys))):  # classes and modules are not singletons
+        return False
+    return _is_first_party_module(type(val).__module__)
+
+
+def _holds_real_home(obj, depth: int = 2) -> bool:
+    """True if a real-home Path/str sits in obj's attributes, `depth` levels down."""
+    try:
+        attrs = vars(obj)
+    except TypeError:
+        return False
+    for v in list(attrs.values()):
+        if _rehome(v, Path("/")) is not None:
+            return True
+        if depth > 1 and _is_first_party_instance(v) and _holds_real_home(v, depth - 1):
+            return True
+    return False
+
+
+_STOP_FAILURES: list = []
+_LAZY: dict = {}
+
+
+def _lazy_singleton_names(mod_name: str) -> frozenset:
+    """Globals some function in the module ASSIGNS via `global` — the lazy
+    singletons (`global _x; if _x is None: _x = X()`). Read from bytecode
+    (STORE_GLOBAL), cached per module."""
+    hit = _LAZY.get(mod_name)
+    if hit is None:
+        import dis
+        import types
+        names = set()
+        mod = sys.modules.get(mod_name)
+
+        def scan(code):
+            for ins in dis.get_instructions(code):
+                if ins.opname == "STORE_GLOBAL":
+                    names.add(ins.argval)
+            for const in code.co_consts:
+                if isinstance(const, types.CodeType):
+                    scan(const)
+        for val in list(vars(mod).values()) if mod else ():
+            if isinstance(val, types.FunctionType) and val.__module__ == mod_name:
+                scan(val.__code__)
+        hit = _LAZY[mod_name] = frozenset(names)
+    return hit
+
+
+def _first_party_globals() -> dict:
+    """{(module, attr): obj} for every first-party instance held in a
+    first-party module global — the lazy singletons."""
+    out = {}
+    for mod_name, mod in list(sys.modules.items()):
+        if not _is_first_party_module(mod_name):
+            continue
+        for attr, val in list(vars(mod).items()):
+            if not attr.startswith("__") and _is_first_party_instance(val):
+                out[(mod_name, attr)] = val
+    return out
 
 
 def _all_actions():
@@ -380,8 +500,7 @@ def dead_externals(no_network, monkeypatch, tmp_path):
     for mod_name, mod in list(sys.modules.items()):
         # realpath: tests load src as `tests/../src/…`, which a bare prefix
         # match against _SRC misses (it did, on the first run of this fix).
-        mod_file = os.path.realpath(getattr(mod, "__file__", None) or "/")
-        if not mod_file.startswith(str(_SRC.resolve()) + os.sep):
+        if not _is_first_party_module(mod_name):
             continue
         for attr, val in list(vars(mod).items()):
             if attr.startswith("__"):
@@ -389,10 +508,48 @@ def dead_externals(no_network, monkeypatch, tmp_path):
             moved = _rehome(val, home)
             if moved is not None:
                 monkeypatch.setattr(mod, attr, moved)
+            elif _is_first_party_instance(val) and (
+                    attr in _lazy_singleton_names(mod_name) or _holds_real_home(val)):
+                # A lazy singleton (`_engine = None` … `get_alert_engine()`)
+                # built by an EARLIER test carries that test's world into the
+                # sweep: the real home frozen in SettingsManager (it wrote the
+                # operator's mesh_alerts.json), or 7 services fed to the
+                # health scorer (dashboard/score read 69/100 in suite order,
+                # passed alone). Drop it so the accessor builds a fresh one
+                # under dead externals; restored after.
+                monkeypatch.setattr(mod, attr, None)
 
     empty = tmp_path / "empty-listing"
     empty.mkdir()
     _kill_box_state(monkeypatch, empty)
+
+    # No real process is ever signalled. /proc/<pid> is readable, so a
+    # "Stop NomadNet" item one level down finds the operator's REAL client
+    # through find_competing_clients() and would os.kill() it. Refused like
+    # any other permission failure, and witnessed.
+    def no_signal(pid, sig, *a):
+        _SIGNALS.append((pid, sig))
+        raise PermissionError(1, "[truth-sweep] signalling a real process is refused")
+    monkeypatch.setattr(os, "kill", no_signal)
+    monkeypatch.setattr(os, "killpg", no_signal)
+    _SIGNALS.clear()
+
+    # no_network blocks socket.socket only; name resolution goes through
+    # libc (getaddrinfo) and REACHED the real DNS — `system/network > dns`
+    # rendered a live meshtastic.org address (2026-09-22).
+    import socket as _socket
+
+    def no_dns(*a, **k):
+        raise _socket.gaierror(-3, "[truth-sweep] name resolution is dead")
+    for name in ("getaddrinfo", "gethostbyname", "gethostbyname_ex", "gethostbyaddr"):
+        monkeypatch.setattr(_socket, name, no_dns)
+
+    # Nothing opens on the operator's desktop. The real module would try a
+    # browser binary (dead via subprocess anyway) — refuse at the API so a
+    # screen that says "opened in browser" is judged against False.
+    import webbrowser
+    for name in ("open", "open_new", "open_new_tab"):
+        monkeypatch.setattr(webbrowser, name, lambda *a, **k: False)
 
     # Record every exception that escapes a handler into safe_call, then
     # re-raise so safe_call renders its real dialog exactly as in the TUI.
@@ -414,11 +571,80 @@ def dead_externals(no_network, monkeypatch, tmp_path):
     _CRASHES.clear()
     _HOME_TOUCHES.clear()
     _BOX_STATE_TOUCHES.clear()
+    before = _first_party_globals()
     _AUDIT["armed"] = True
     try:
         yield home
     finally:
+        # An item can START something that outlives the test — demo traffic
+        # publishing onto the process-global event bus 7.7 s later, inside
+        # an unrelated test (Fable review, finding 6). Stop every first-party
+        # singleton this test created, while the patches are still live
+        # (monkeypatch, a dependency of this fixture, tears down after it).
+        for key, obj in _first_party_globals().items():
+            if before.get(key) is obj:
+                continue
+            # stop() or, failing that, close() (MetricsHistory's hourly
+            # cleanup thread ends only through close()).
+            stop = getattr(obj, "stop", None) or getattr(obj, "close", None)
+            if callable(stop):
+                try:
+                    stop()
+                except Exception as e:  # a failed stop is reported, not hidden
+                    _STOP_FAILURES.append((key, repr(e)[:120]))
         _AUDIT["armed"] = False
+
+
+class _SweepDialog(FakeDialog):
+    """FakeDialog that remembers how much stdout existed at each call, so the
+    level-two walk can judge ONLY what the sub-item rendered — a level-one
+    honest word printed before the menu must not vouch for the screen behind
+    it."""
+
+    def __init__(self, out: io.StringIO):
+        super().__init__()
+        self._out = out
+        self.marks: list = []
+
+    def _mark(self):
+        while len(self.marks) < len(self.calls):
+            self.marks.append(len(self._out.getvalue()))
+
+    def menu(self, *a, **k):
+        r = super().menu(*a, **k)
+        self._mark()
+        return r
+
+    def __getattribute__(self, name):
+        attr = super().__getattribute__(name)
+        if name in ("msgbox", "yesno", "inputbox", "checklist", "textbox",
+                    "editbox", "infobox"):
+            def marked(*a, **k):
+                try:
+                    return attr(*a, **k)
+                finally:
+                    self._mark()
+            return marked
+        return attr
+
+
+def _dispatch(section: str, tag: str, menu_script=()):
+    """Dispatch one action on a fresh registry with the given menu answers
+    (then None forever = "back"). Returns (routed, dialog, stdout text)."""
+    from handlers import get_all_handlers
+    out = io.StringIO()
+    dialog = _SweepDialog(out)
+    dialog._menu_returns = list(menu_script)
+    _LAST["dialog"], _LAST["out"] = dialog, out  # reachable if dispatch never returns
+    ctx = make_handler_context(dialog=dialog)
+    reg = HandlerRegistry(ctx)
+    ctx.registry = reg  # main.py wires this; handlers reach siblings through it
+    for cls in get_all_handlers():
+        reg.register(cls())
+    _CRASHES.clear()
+    with contextlib.redirect_stdout(out):
+        routed = reg.dispatch(section, tag)
+    return routed, dialog, out.getvalue()
 
 
 def _render(section: str, tag: str) -> tuple[bool, list, str]:
@@ -426,31 +652,27 @@ def _render(section: str, tag: str) -> tuple[bool, list, str]:
 
     text = every dialog's title+body, then everything printed to stdout.
     """
-    from handlers import get_all_handlers
-    dialog = FakeDialog()
-    ctx = make_handler_context(dialog=dialog)
-    reg = HandlerRegistry(ctx)
-    for cls in get_all_handlers():
-        reg.register(cls())
-    out = io.StringIO()
-    _CRASHES.clear()
-    with contextlib.redirect_stdout(out):
-        routed = reg.dispatch(section, tag)
-    kinds = [c[0] for c in dialog.calls]
+    routed, dialog, printed = _dispatch(section, tag)
+    kinds, text = _judge(dialog.calls, printed)
+    return routed, kinds, text
+
+
+def _judge(calls, printed: str) -> tuple[list, str]:
+    """(kinds, text) for a slice of dialog calls + the stdout they produced."""
+    kinds = [c[0] for c in calls]
     text = "\n".join(
-        " ".join(str(part) for part in c[1] if part is not None) for c in dialog.calls
+        " ".join(str(part) for part in c[1] if part is not None) for c in calls
     )
-    printed = out.getvalue()
     if printed.strip():
         kinds.append("stdout")
         text = text + "\n" + printed
-    for label in _status_claims(dialog.calls):
+    for label in _status_claims(calls):
         kinds.append("status_ok")
         text = text + "\n[status item] " + label
     for name, etype, msg in _CRASHES:
         kinds.append("crashed")
         text = text + f"\n[crashed] {name}: {etype}: {msg}"
-    return routed, kinds, text
+    return kinds, text
 
 
 def _verdict(kinds: list, text: str) -> str:
@@ -459,6 +681,8 @@ def _verdict(kinds: list, text: str) -> str:
         return "silent"
     if "crashed" in kinds:
         return "crashed"
+    if "hung" in kinds:
+        return "hung"
     if "status_ok" in kinds:
         return "false-ok"
     if all(k in NAVIGATION for k in kinds):
@@ -530,6 +754,198 @@ def test_action_tells_the_truth_with_every_external_dead(section, tag, dead_exte
         f"launcher_tui/action_truth.py LOCAL_ONLY with a why).")
 
 
+class _SubItemHung(BaseException):
+    """Raised by the per-item alarm. BaseException so a handler's
+    `except Exception` cannot swallow it and loop on."""
+
+
+def _first_menu(dialog):
+    for i, c in enumerate(dialog.calls):
+        if c[0] == "menu":
+            return i, c
+    return None, None
+
+
+def _walk_level_two(section: str, tag: str) -> dict:
+    """Pick every item of the action's first menu, one dispatch each, and
+    judge ONLY what that item rendered (calls after the first menu, stdout
+    printed after it, re-shows of the parent menu excluded). Returns
+    {item_tag: (verdict, kinds, text)}."""
+    import signal
+    import threading
+    import time as _time
+    _, dialog, _ = _dispatch(section, tag)
+    i, top = _first_menu(dialog)
+    if top is None:
+        return {}
+    out = {}
+    real_sleep = _time.sleep
+    main = threading.main_thread()
+    for choice in top[1][2] or ():
+        item = choice[0]
+        if item in BACK_TAGS or not str(item).strip():
+            continue
+        where = f"{section}/{tag} > {item}"
+        slept = {"n": 0}
+        stage = {"ctrl_c": False}
+
+        # A live view ("monitor until Ctrl+C", "sweep for 10 s") is stopped
+        # the way an operator stops it: Ctrl+C — after SLEEP_BUDGET sleeps
+        # (sleeps cost nothing here) or CTRL_C_AFTER_S of wall time, since
+        # some wait with Event().wait. Its post-Ctrl+C screen is part of what
+        # is judged, and the cut is RECORDED (kind `ctrl_c`) so a partial
+        # screen is never mistaken for a finished one. Still running
+        # HUNG_AFTER_S later = it ignored Ctrl+C; the alarm then RE-FIRES
+        # every second, so a handler that swallows one _SubItemHung cannot
+        # loop forever (Fable review, finding 1).
+        def ctrl_c(_stage=stage):
+            _stage["ctrl_c"] = True
+            signal.setitimer(signal.ITIMER_REAL, HUNG_AFTER_S, 1.0)
+            raise KeyboardInterrupt
+
+        def fast_sleep(s, _slept=slept, _stage=stage):
+            # Only the item's own (main) thread is budgeted: a background
+            # thread's sleeps must not spend the item's budget or deliver
+            # its Ctrl+C (Fable review, finding 9) — they sleep for real.
+            if threading.current_thread() is not main:
+                return real_sleep(s)
+            _slept["n"] += 1
+            if _slept["n"] > SLEEP_BUDGET and not _stage["ctrl_c"]:
+                ctrl_c()
+
+        def on_alarm(*_a, _where=where, _stage=stage):
+            if not _stage["ctrl_c"]:
+                ctrl_c()
+            raise _SubItemHung(f"{_where}: still running {HUNG_AFTER_S}s after Ctrl+C")
+
+        # alarm()/setitimer share ONE timer with pytest-timeout (signal
+        # method): cancelling ours cancelled the suite's 600 s guard after
+        # the first item (Fable review, finding 1, reproduced). Save the
+        # outer timer + handler and give back what is left of it.
+        outer_delay, outer_interval = signal.getitimer(signal.ITIMER_REAL)
+        t0 = _time.monotonic()
+        prev = signal.signal(signal.SIGALRM, on_alarm)
+        # Never arm past the outer deadline: if it comes first, the item is
+        # stopped and the outer handler is fired below.
+        signal.setitimer(signal.ITIMER_REAL, min(CTRL_C_AFTER_S, outer_delay)
+                         if outer_delay > 0 else CTRL_C_AFTER_S)
+        _time.sleep = fast_sleep
+        hung = None
+        d2 = None
+        try:
+            _, d2, printed = _dispatch(section, tag, menu_script=[item])
+        except KeyboardInterrupt:
+            hung = None  # Ctrl+C escaped the handler: an exit, not a hang
+        except _SubItemHung as e:
+            hung = str(e)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            _time.sleep = real_sleep
+            signal.signal(signal.SIGALRM, prev)
+            if outer_delay > 0:
+                left = outer_delay - (_time.monotonic() - t0)
+                if left <= 0:
+                    # The outer deadline passed while this item ran. Re-arming
+                    # a tiny timer lost it to the NEXT item's handler (drilled:
+                    # 20.8 s passed under --timeout=3) — deliver it now.
+                    signal.raise_signal(signal.SIGALRM)
+                else:
+                    signal.setitimer(signal.ITIMER_REAL, left, outer_interval)
+        if d2 is None:
+            # Stopped mid-render: judge what it had drawn by then. The stop
+            # itself passed through safe_call's witness — it is not a crash.
+            d2, printed = _LAST["dialog"], _LAST["out"].getvalue()
+            _CRASHES[:] = [c for c in _CRASHES
+                           if c[1] not in ("_SubItemHung", "KeyboardInterrupt")]
+        j, _ = _first_menu(d2)
+        # Drop only an UNCHANGED re-show of the parent (same title, text and
+        # rows). A re-show whose text or rows changed IS the item's result —
+        # "Status: CAPTURING", a toggled row — and dropping every same-title
+        # menu let a planted "OK  all good" row pass (Fable review, finding 2).
+        calls = [c for c in d2.calls[j + 1:]
+                 if not (c[0] == "menu" and c[1] == top[1])]
+        # j's mark = stdout length when the parent menu returned.
+        after = printed[d2.marks[j]:] if j is not None and j < len(d2.marks) else printed
+        kinds, text = _judge(calls, after)
+        if hung:
+            kinds.append("hung")
+            text += f"\n[hung] {hung}"
+        verdict = _verdict(kinds, text)
+        if stage["ctrl_c"]:
+            kinds.append("ctrl_c")  # annotation, after the verdict: not a claim
+        out[item] = (verdict, kinds, text)
+    return out
+
+
+# Menu answers that leave rather than act. The parent menu's re-show after
+# "back" is excluded anyway; skipping these only saves dispatches.
+BACK_TAGS = {"back", "exit", "quit", "cancel", "done", "main", "return"}
+CTRL_C_AFTER_S = 5  # 2 s already cut CPU-bound items on a Pi 5 (Fable finding 8)
+HUNG_AFTER_S = 3
+SLEEP_BUDGET = 50
+
+
+@pytest.mark.parametrize("section,tag", ACTIONS, ids=[f"{s}/{t}" for s, t in ACTIONS])
+def test_level_two_items_tell_the_truth(section, tag, dead_externals):
+    """Level two: every item one menu below a top-level action, every
+    external dead. A sub-item that opens its own menu is `navigation`
+    (level three is out of scope, stated).
+
+    GATED on the MEASURED legs only — crash at safe_call (frozen
+    KNOWN_CRASHED_L2), hang (ignored Ctrl+C), status-shaped menu rows, and
+    the real-home / box-state witnesses. The TEXT verdict is recorded in
+    the MF_TRUTH_SWEEP_DUMP `.level2` file but NOT gated: at level two it
+    read ~110 of 480 screens `false-ok` (re-derive from the dump; never carry
+    the number), nearly all calculators, reference
+    text and honest empty states ("No nodes discovered yet") the porous
+    vocabulary does not know — the operator's 2026-09-22 decision not to
+    widen it applies here too. The real lies that triage found were fixed
+    at the source instead."""
+    import threading
+    before = set(threading.enumerate())
+    results = _walk_level_two(section, tag)
+    leaked = [t.name for t in threading.enumerate() if t not in before and t.is_alive()]
+    for item, (verdict, kinds, text) in results.items():
+        _DUMP2[f"{section}/{tag} > {item}"] = {"verdict": verdict, "kinds": kinds,
+                                               "text": text[:2000]}
+    _DUMP2[f"{section}/{tag} :: signals"] = list(_SIGNALS)
+    _DUMP2[f"{section}/{tag} :: threads"] = leaked
+    assert not _HOME_TOUCHES, (
+        f"{section}/{tag} level two touched the operator's REAL home: {_HOME_TOUCHES[:5]}")
+    assert not _BOX_STATE_TOUCHES, (
+        f"{section}/{tag} level two read box state around the fixture: {_BOX_STATE_TOUCHES[:5]}")
+
+    problems = []
+    for item, (verdict, kinds, text) in results.items():
+        key = (section, tag, str(item))
+        if key in KNOWN_CRASHED_L2:
+            if verdict != "crashed":
+                problems.append(f"> {item}: no longer crashes ('{verdict}') — remove it "
+                                f"from KNOWN_CRASHED_L2 (the baseline only shrinks)")
+            continue
+        if verdict == "crashed":
+            problems.append(f"> {item}: exception escaped into safe_call — "
+                            + "; ".join(ln for ln in text.splitlines()
+                                        if ln.startswith("[crashed] ")))
+        elif verdict == "hung":
+            problems.append(f"> {item}: " + text.splitlines()[-1])
+        elif "status_ok" in kinds:
+            problems.append(f"> {item}: positive status row with nothing observed — "
+                            + "; ".join(ln for ln in text.splitlines()
+                                        if ln.startswith("[status item] ")))
+    stale = [k for k in KNOWN_CRASHED_L2 if k[:2] == (section, tag) and k[2] not in
+             {str(i) for i in results}]
+    for k in stale:
+        problems.append(f"> {k[2]}: listed in KNOWN_CRASHED_L2 but no longer a menu item")
+    assert not problems, (
+        f"{section}/{tag} level two:\n  " + "\n  ".join(problems) + "\n"
+        f"A crash is fixed in the handler (catch where the external is asked; "
+        f"say UNKNOWN / not installed) — KNOWN_CRASHED_L2 is frozen.")
+
+
+_DUMP2: dict = {}
+
+
 def test_sweep_never_touched_the_real_home(dead_externals):
     """The fixture's whole point; if this fails, every verdict above is
     a statement about THIS box's files, not about the code."""
@@ -565,6 +981,15 @@ def test_box_state_is_absent_and_the_witness_can_fail(dead_externals, tmp_path, 
     with pytest.raises(PermissionError):
         (planted / "sub").mkdir()
     assert os.listdir("/dev") == [] and _glob.glob("/dev/ttyACM*") == []
+    # Path.glob binds os.scandir at import on 3.12+ (level-two walk found
+    # this box's /dev/ttyACM0 through it, 2026-09-22):
+    assert list(Path("/dev").glob("tty*")) == [] and list(Path("/dev").glob("spidev*")) == []
+    # Name resolution is dead too (it reached real DNS through getaddrinfo):
+    import socket as _socket
+    with pytest.raises(_socket.gaierror):
+        _socket.getaddrinfo("meshtastic.org", 443)
+    import webbrowser
+    assert webbrowser.open("http://127.0.0.1:5000") is False
 
     # sqlite URI form (connect_tuned(..., uri=True)) — Fable review MED-5b:
     import sqlite3
@@ -584,10 +1009,18 @@ def test_real_home_witness_can_fail(dead_externals):
     if len(_REAL_HOME.parts) <= 2:
         pytest.skip("real home is too shallow to witness safely")
     probe = _REAL_HOME / ".truthsweep-witness-probe-does-not-exist"
+    _AUDIT["armed"] = False
     assert not probe.exists()
-    with pytest.raises(FileNotFoundError):
+    _AUDIT["armed"] = True
+    # Refused by the hook BEFORE the open runs (PermissionError, not the
+    # FileNotFoundError the real call would give) — and recorded.
+    with pytest.raises(PermissionError, match="real home is refused"):
         open(probe)
     assert ("open", str(probe)) in _HOME_TOUCHES
+    # The home ITSELF (Fable finding 7): a listing rendered 330 entries unseen.
+    with pytest.raises(PermissionError, match="real home is refused"):
+        os.listdir(_REAL_HOME)
+    assert ("os.listdir", str(_REAL_HOME)) in _HOME_TOUCHES
     _HOME_TOUCHES.clear()
 
 
@@ -692,6 +1125,7 @@ def test_allowlists_name_only_live_actions():
     """A closed enum's consumers must not outlive its members."""
     live = set(ACTIONS)
     stale = [k for k in list(LOCAL_ONLY) + list(KNOWN_FALSE_OK) + list(KNOWN_CRASHED)
+             + [k[:2] for k in KNOWN_CRASHED_L2]
              if k not in live]
     assert not stale, f"action_truth lists actions that no longer exist: {stale}"
 
@@ -701,11 +1135,21 @@ def test_known_crashed_is_frozen_not_just_documented():
     asserts catch a stale entry, but nothing stopped ADDING one to make a
     new crash pass. Growing this set needs this literal changed in the same
     commit — a visible act, with a provenance row."""
-    frozen = {("dashboard", "score"), ("system", "status")}
+    frozen = {("system", "status")}  # dashboard/score cured 2026-09-22
     assert set(KNOWN_CRASHED) <= frozen, (
         f"KNOWN_CRASHED grew: {sorted(set(KNOWN_CRASHED) - frozen)}. A new crash "
         f"is fixed in the handler, not baselined.")
     assert not KNOWN_FALSE_OK, "KNOWN_FALSE_OK is frozen EMPTY"
+    frozen_l2 = {
+        ("dashboard", "health", "latency"), ("dashboard", "latency", "probe"),
+        ("dashboard", "reports", "generate"), ("dashboard", "reports", "save"),
+        ("fleet", "fleet_backup", "setup"), ("system", "discover", "full"),
+        ("system", "hardware", "detect"), ("system", "logs", "live-all"),
+        ("system", "logs", "live-mesh"), ("system", "logs", "live-rns"),
+    }
+    assert set(KNOWN_CRASHED_L2) <= frozen_l2, (
+        f"KNOWN_CRASHED_L2 grew: {sorted(set(KNOWN_CRASHED_L2) - frozen_l2)}. "
+        f"A new level-two crash is fixed in the handler, not baselined.")
 
 
 def test_every_local_only_entry_says_why():
@@ -719,3 +1163,5 @@ def _write_dump():
     path = os.environ.get("MF_TRUTH_SWEEP_DUMP")
     if path and _DUMP:
         Path(path).write_text(json.dumps(_DUMP, indent=1, sort_keys=True))
+    if path and _DUMP2:
+        Path(path + ".level2").write_text(json.dumps(_DUMP2, indent=1, sort_keys=True))

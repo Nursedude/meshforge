@@ -607,12 +607,22 @@ class DashboardHandler(BaseHandler):
 
     def _health_score_display(self):
         """Show comprehensive network health score with category breakdown."""
-        import subprocess as _sp
-        _sp.run(['clear'], check=False, timeout=5)
+        # clear_screen, not a raw `clear` subprocess: a box without `clear`
+        # crashed here into safe_call (KNOWN_CRASHED 2026-09-22).
+        clear_screen()
         print("=== Network Health Score ===\n")
 
         scorer = get_health_scorer()
         snapshot = scorer.get_snapshot()
+        if not snapshot.node_count and not snapshot.service_count:
+            # Same guard as report_generator: with nothing reporting, the
+            # category DEFAULTS rendered "65/100 (fair)" behind that crash
+            # (Fable review of the level-two walk, finding 5).
+            print("  Overall: UNKNOWN — no nodes or services are reporting to")
+            print("  the health scorer; nothing was measured.")
+            print()
+            self.ctx.wait_for_enter()
+            return
 
         score = snapshot.overall_score
         bar_len = 30

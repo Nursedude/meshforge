@@ -50,7 +50,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | `datapath` | Data Path Check — Test all data sources |  | sweep | DashboardHandler |
 | `nodes` | Node Count — Meshtastic + RNS nodes |  | sweep | DashboardHandler |
 | `reports` | Reports — Generate status report |  | sweep | DashboardHandler |
-| `score` | Health Score — Network health snapshot |  | ⚠️ crashes | DashboardHandler |
+| `score` | Health Score — Network health snapshot |  | sweep | DashboardHandler |
 | `status` | Service Status — All services with health |  | sweep | DashboardHandler |
 | `weather` | Space Weather — SFI, Kp, bands at a glance |  | sweep | DashboardHandler |
 | `demo` | Demo Mode — Simulated mesh traffic |  | sweep | DemoHandler |

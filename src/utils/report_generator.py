@@ -148,6 +148,13 @@ class ReportGenerator:
                     lines.append("*Health scorer not initialized — no node data available.*")
                 else:
                     snapshot = scorer.get_snapshot()
+                if scorer is not None and not snapshot.node_count and not snapshot.service_count:
+                    # With nothing reporting, the scorer's category DEFAULTS
+                    # rendered as "65/100 (fair)" (truth sweep level two,
+                    # 2026-09-22) — a score of nothing is not a score.
+                    lines.append("**Overall Score: UNKNOWN** — no nodes or services "
+                                 "reporting to the health scorer; nothing was measured.")
+                elif scorer is not None:
                     lines.append(f"**Overall Score: {snapshot.overall_score:.0f}/100** "
                                  f"({snapshot.status})")
                     lines.append("")

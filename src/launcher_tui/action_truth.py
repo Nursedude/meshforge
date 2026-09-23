@@ -14,9 +14,9 @@ absent, no tools on PATH, the operator's home swapped for an empty one, box stat
 requires the FIRST SCREEN — every dialog including infobox, plus stdout —
 to carry a word of uncertainty — UNKNOWN / unreachable / not installed /
 failed … — or to be listed here as an action that never asks an external
-in the first place. Scope is ONE dialog level: an action whose first
-screen is a menu passes as navigation and nothing behind that menu is run
-(non-author review 2026-09-22; walking one level down is queued). New actions are covered by construction (honest_failure_modes #7: a
+in the first place. Scope is TWO dialog levels: every action's first
+screen, and every item of its first menu (level two gates crashes, hangs,
+status rows and the home/box-state witnesses — not text). New actions are covered by construction (honest_failure_modes #7: a
 closed enum needs closed consumers), so the audit TERMINATES instead of
 recurring every session.
 
@@ -66,10 +66,32 @@ KNOWN_FALSE_OK: Dict[Action, str] = {}
 #: FROZEN like KNOWN_FALSE_OK: a NEW crash fails the sweep; remove an entry
 #: the day its handler catches the failure itself.
 KNOWN_CRASHED: Dict[Action, str] = {
-    ("dashboard", "score"): "2026-09-22: 'Health Score' — FileNotFoundError from a "
-                            "subprocess escapes to safe_call ('File Not Found' dialog)",
     ("system", "status"): "2026-09-22: 'Quick Status' — FileNotFoundError from a "
                           "subprocess escapes to safe_call ('File Not Found' dialog)",
+}
+
+
+_NO_TOOL = "FileNotFoundError from a subprocess escapes to safe_call ('File Not Found' dialog)"
+
+#: (section, tag, item) -> the exception that escaped a LEVEL-TWO item (one
+#: menu below the action) into safe_call with every external dead. Same
+#: contract as KNOWN_CRASHED: frozen, shrink-only, a NEW crash fails the
+#: sweep. First walk 2026-09-22. safe_call's dialog is honest in each case —
+#: these are handlers that let the failure escape rather than lies; the
+#: latency pair is deliberately NOT "fixed" by returning unreachable, since
+#: a socket that could not be created observed nothing (hfm #1).
+KNOWN_CRASHED_L2: Dict[Tuple[str, str, str], str] = {
+    ("dashboard", "health", "latency"): "2026-09-22: probe_tcp creates its socket outside "
+                                        "the try; OSError escapes",
+    ("dashboard", "latency", "probe"): "2026-09-22: same probe_tcp OSError",
+    ("dashboard", "reports", "generate"): f"2026-09-22: {_NO_TOOL}",
+    ("dashboard", "reports", "save"): f"2026-09-22: {_NO_TOOL}",
+    ("fleet", "fleet_backup", "setup"): f"2026-09-22: {_NO_TOOL}",
+    ("system", "discover", "full"): f"2026-09-22: {_NO_TOOL}",
+    ("system", "hardware", "detect"): f"2026-09-22: {_NO_TOOL}",
+    ("system", "logs", "live-all"): f"2026-09-22: {_NO_TOOL}",
+    ("system", "logs", "live-mesh"): f"2026-09-22: {_NO_TOOL}",
+    ("system", "logs", "live-rns"): f"2026-09-22: {_NO_TOOL}",
 }
 
 

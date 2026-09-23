@@ -422,6 +422,7 @@ class RNSInterfacesHandler(BaseHandler):
         user_home = get_real_user_home()
         issues_found = 0
         issues_fixed = 0
+        checked = 0  # paths actually examined — "0 issues" over 0 paths is not "all correct"
 
         # 1. Fix /etc/reticulum/ — identity and config world-readable,
         #    storage world-read/write
@@ -433,6 +434,7 @@ class RNSInterfacesHandler(BaseHandler):
             for fname in ('identity', 'config'):
                 fpath = etc_rns / fname
                 if fpath.exists():
+                    checked += 1
                     try:
                         mode = fpath.stat().st_mode
                         if not (mode & stat.S_IROTH):
@@ -447,10 +449,12 @@ class RNSInterfacesHandler(BaseHandler):
                         print(f"    FAIL: {fname} — {e}")
 
             # Storage: world-read/write (files 0o666, dirs 0o777)
+            checked += 1
             try:
                 ReticulumPaths._fix_storage_file_permissions()
                 print(f"    OK: storage/ — permissions fixed")
             except Exception as e:
+                issues_found += 1  # counted, or "All N checked … correct" follows a FAIL
                 print(f"    FAIL: storage/ — {e}")
 
         # 2. Fix ~/.reticulum/ — should be owned by user, not root
@@ -461,6 +465,7 @@ class RNSInterfacesHandler(BaseHandler):
         ]
         for dir_path in user_rns_dirs:
             if dir_path.exists():
+                checked += 1
                 try:
                     st = dir_path.stat()
                     if st.st_uid == 0 and sudo_user and sudo_user != 'root':
@@ -514,8 +519,11 @@ class RNSInterfacesHandler(BaseHandler):
                     print(f"  FAILED to restart rnsd: {start_msg}")
                     print(f"  rnsd may be left stopped — re-run this fix or use "
                           f"Diagnose RNS to recover.")
+        elif issues_found == 0 and checked == 0:
+            print(f"\n  Nothing checked — no RNS files found ({etc_rns}, "
+                  f"~/.reticulum, NomadNet dirs). Ownership NOT verified.")
         elif issues_found == 0:
-            print(f"\n  All files have correct ownership and permissions.")
+            print(f"\n  All {checked} checked path(s) have correct ownership and permissions.")
 
         self.ctx.wait_for_enter()
 

@@ -860,7 +860,13 @@ class DiagnosticEngine:
         error_count = by_severity.get("error", 0)
         warning_count = by_severity.get("warning", 0)
 
-        if critical_count > 0:
+        # The engine hears only what something REPORTS to it (in practice an
+        # on-demand AI diagnose), so an empty window is silence, not health —
+        # it read "healthy" with nothing observed (truth sweep level two,
+        # 2026-09-22; honest_failure_modes #2).
+        if not recent:
+            health = "unknown"
+        elif critical_count > 0:
             health = "critical"
         elif error_count > 2:
             health = "degraded"
@@ -869,12 +875,17 @@ class DiagnosticEngine:
         else:
             health = "healthy"
 
+        stats = dict(self._stats)
+        # Consumers print stats['rules_loaded'], which was never written —
+        # every screen said "Rules Loaded: 0" beside a loaded ruleset.
+        stats["rules_loaded"] = len(self._rules)
+
         return {
             "overall_health": health,
             "symptoms_last_hour": len(recent),
             "by_category": by_category,
             "by_severity": by_severity,
-            "stats": dict(self._stats),
+            "stats": stats,
         }
 
     def get_stats(self) -> Dict[str, int]:

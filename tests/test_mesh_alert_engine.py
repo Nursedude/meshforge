@@ -23,6 +23,22 @@ from utils.event_bus import AlertEvent, event_bus
 from utils.mesh_alert_engine import MeshAlertEngine, get_alert_engine
 
 
+@pytest.fixture(autouse=True)
+def _alert_config_in_tmp(tmp_path, monkeypatch):
+    """Every engine here writes settings through SettingsManager, which
+    resolves CONFIG_DIR at construction — the operator's REAL
+    ~/.config/meshforge. `update_config("battery_threshold", 15)` and the
+    fixture's cooldown/noisy values were landing in the live
+    mesh_alerts.json on every suite run, and `test_singleton_accessor` left
+    a real-home singleton behind for later tests (found 2026-09-22 by the
+    truth sweep's real-home witness). CONFIG_DIR is read at call time, so
+    patching it redirects every engine built in this file."""
+    import utils.common as common
+    import utils.mesh_alert_engine as mae
+    monkeypatch.setattr(common, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(mae, "_engine", None)
+
+
 @pytest.fixture
 def engine():
     """Create a fresh MeshAlertEngine for each test."""

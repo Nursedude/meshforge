@@ -866,10 +866,12 @@ class TopologyHandler(BaseHandler):
 
             self.ctx.dialog.msgbox(
                 "Topology Visualization",
-                f"Visualization generated and opened in browser.\n\n"
+                # The open runs in a background thread; its result is not
+                # known here, so do not claim it (truth sweep level two).
+                f"Visualization generated; asked the desktop to open it.\n\n"
                 f"File: {output_path}\n\n"
-                f"If the browser didn't open automatically,\n"
-                f"you can open this file manually."
+                f"If no browser window appeared (headless box, no desktop\n"
+                f"session), open this file manually."
             )
 
         except Exception as e:

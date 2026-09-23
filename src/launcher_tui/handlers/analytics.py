@@ -203,8 +203,22 @@ class AnalyticsHandler(BaseHandler):
         alerts = analyzer.analyze_all()
 
         if not alerts:
-            print("  No predicted issues.")
-            print("  System looks healthy based on available data.")
+            # analyze_all() returns [] both when trends are clean AND when
+            # there is too little history to judge — say which (truth sweep
+            # level two, 2026-09-22: "System looks healthy" with zero data).
+            need = analyzer.MIN_SAMPLES_FOR_PREDICTION
+            try:
+                have = len(analyzer.store.get_network_health_history(hours=48))
+            except Exception as e:
+                logger.debug("health history unreadable: %s", e)
+                have = None
+            if have is None:
+                print("  UNKNOWN — health history could not be read.")
+            elif have < need:
+                print(f"  Not enough history to predict: {have} of {need} health")
+                print("  samples in the last 48 h. This is not a health verdict.")
+            else:
+                print(f"  No predicted issues from {have} health samples (48 h).")
             self.ctx.wait_for_enter()
             return
 

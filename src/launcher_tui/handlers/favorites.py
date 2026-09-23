@@ -376,10 +376,15 @@ class FavoritesHandler(BaseHandler):
         try:
             with MeshtasticConnection() as interface:
                 if not interface:
+                    # A held lock raises ConnectionBusy inside get_connection;
+                    # a None here says only that no interface came back —
+                    # with meshtasticd dead this used to read "busy" (truth
+                    # sweep level two, 2026-09-22). Name both causes.
                     self.ctx.dialog.msgbox(
-                        "Connection Busy",
-                        "Another component is using the meshtasticd connection.\n"
-                        "Please try again in a moment."
+                        "No Connection",
+                        "Could not open a meshtasticd connection — it may be\n"
+                        "unreachable or in use by another component.\n\n"
+                        "Check meshtasticd in Service Control, then retry."
                     )
                     return
 

@@ -328,7 +328,10 @@ class AmateurRadioHandler(BaseHandler):
 
         if _HAS_ARES:
             tools = ARESRACESTools()
-            checklist = tools.get_net_checklist()
+            # A fresh ARESRACESTools holds no checklist; the method this called
+            # (get_net_checklist) never existed, so the item crashed every time
+            # (found by the truth sweep level-two walk, 2026-09-22).
+            checklist = tools.start_new_checklist()
 
             for i, item in enumerate(checklist, 1):
                 status = "\033[0;32m[X]\033[0m" if item.completed else "[ ]"

@@ -317,7 +317,14 @@ class RNSSniffer:
         self._original_handlers: Dict[str, Any] = {}
 
     def start(self) -> bool:
-        """Start packet capture."""
+        """Start packet capture.
+
+        Returns True only when the RNS hooks are installed. Capture mode is
+        enabled either way (it attaches once RNS appears); returning True
+        unconditionally left the TUI's honest "Capture Started (No RNS)"
+        branch dead, so it said "now active" with RNS absent (truth sweep
+        level-two review, 2026-09-22).
+        """
         if self._running:
             return True
 
@@ -332,7 +339,7 @@ class RNSSniffer:
         else:
             logger.warning("RNS Sniffer started (RNS not available - waiting)")
 
-        return True
+        return success
 
     def stop(self) -> None:
         """Stop packet capture."""
