@@ -33,7 +33,20 @@ unless it is in the frozen KNOWN_CRASHED baseline; a known crasher's screen
 is not judged, so a lie before its crash is unseen.
 Claims that a bad thing is ABSENT ("Errors: 0", "0 failures", "nothing
 failed", "No drift detected") are stripped before the vocabulary is
-applied. The vocabulary is a FLOOR: "disabled" / "n/a" still pass a claim
+applied (after ANSI colour codes are removed).
+
+⚠️ THE TEXT CLASSIFIER IS POROUS, MEASURED — do not widen it to chase
+this. A non-author Fable review (2026-09-22) planted 22 NEW lie shapes
+after the scrub was widened once: 18 read `honest` (`Unreachable: 0 of
+9`, `Timeouts: 0`, `Completed without errors`, `Failed nodes: []`,
+`Never failed` …) — the vocabulary's own words recur as zero-count
+claims. A regex over prose cannot converge on "is this sentence a
+claim"; each widening buys a few shapes and costs over-scrubs of real
+uncertainty. The decision (operator, same day): stop widening, state
+the porosity here, and trust the MEASURED legs instead — the crash
+witness at safe_call, status-shaped menu rows, dead box state and the
+real-home witness. A `honest` verdict means "carries an uncertainty
+word", nothing stronger. The vocabulary is a FLOOR: "disabled" / "n/a" still pass a claim
 beside them; a menu ROW starting OK / PASS / ✓ is a claim (false-ok with
 nothing observed), but menu header, yesno and inputbox text are still
 `navigation` (second non-author review 2026-09-22).
@@ -101,9 +114,19 @@ ZERO_COUNT = re.compile(
     rf"|\b(?:0|zero)\s+{_BAD}"                        # 0 failures
     rf"|\bnothing\s+(?:failed|missing|wrong|broken)"  # nothing failed
     rf"|\bno\s+(?:\w+\s+){{0,2}}{_BAD}\b(?:\s+(?:detected|found|reported|seen|"
-    rf"present|active|pending|observed|recorded))?",  # No drift detected
-    re.IGNORECASE,
+    rf"present|active|pending|observed|recorded))?"
+    # …and only when the bad noun ENDS the phrase: "No alert feed available"
+    # / "No drift baseline found" use the noun adjectivally and are real
+    # uncertainty — the unanchored first cut scrubbed 8 such shapes to
+    # false-ok (Fable review MED-3, 2026-09-22).
+    rf"(?=\s*(?:[.,;:!)\]]|$))",  # No drift detected
+    re.IGNORECASE | re.MULTILINE,
 )
+
+# ANSI colour codes end in a word character ("\x1b[0;32m"), so "\bNo drift"
+# had no boundary: the REAL rns/drift screen printed a green "No drift
+# detected" that the scrub never saw (Fable review HIGH-1). Stripped first.
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 # A handler CRASHED when an exception escaped it into TUIContext.safe_call —
 # safe_call told the truth, the handler did not (review finding 1). That is
@@ -211,7 +234,15 @@ def _box_path(p):
     if isinstance(p, int) or p is None:
         return None
     try:
-        s = os.path.abspath(os.fsdecode(p))
+        s = os.fsdecode(p)
+        # sqlite URI form (`connect_tuned(..., uri=True)`): "file:<path>?mode=ro"
+        # was abspath'd cwd-relative and READ the box DB unwitnessed (Fable
+        # review MED-5b). Take the path part.
+        if s.startswith("file:"):
+            s = s[5:].split("?", 1)[0].split("#", 1)[0]
+            if s.startswith("//"):
+                s = "/" + s[2:].split("/", 1)[-1]
+        s = os.path.abspath(s)
     except (TypeError, ValueError):
         return None
     if any(s == d or s.startswith(d + "/") for d in BOX_STATE_DIRS) \
@@ -270,12 +301,23 @@ def _rehome(val, home: Path):
     """The fake-home equivalent of a Path/str rooted at the real home, else None."""
     if len(_REAL_HOME.parts) <= 2:
         return None
+    # The repo and the interpreter's own paths are the HARNESS, even when
+    # they live under the home: on GitHub the checkout is /home/runner/work/…
+    # = under _REAL_HOME, and the first cut rewrote every repo-rooted global
+    # (incl. __file__) into the empty fake home, so CI swept a different
+    # program than this box (Fable review MED-6). Same exemption the witness
+    # already used.
     if isinstance(val, Path):
         try:
-            return home / val.resolve().relative_to(_REAL_HOME)
+            r = val.resolve()
+            if str(r).startswith(_EXEMPT) or r == _REPO:
+                return None
+            return home / r.relative_to(_REAL_HOME)
         except (ValueError, OSError):
             return None
     if isinstance(val, str) and val.startswith(str(_REAL_HOME) + os.sep):
+        if val.startswith(_EXEMPT):
+            return None
         return str(home / Path(val).relative_to(_REAL_HOME))
     return None
 
@@ -340,6 +382,8 @@ def dead_externals(no_network, monkeypatch, tmp_path):
         if not mod_file.startswith(str(_SRC.resolve()) + os.sep):
             continue
         for attr, val in list(vars(mod).items()):
+            if attr.startswith("__"):
+                continue  # __file__ / __cached__ / __path__ are the module's identity
             moved = _rehome(val, home)
             if moved is not None:
                 monkeypatch.setattr(mod, attr, moved)
@@ -417,7 +461,7 @@ def _verdict(kinds: list, text: str) -> str:
         return "false-ok"
     if all(k in NAVIGATION for k in kinds):
         return "navigation"
-    scrubbed = ZERO_COUNT.sub("", text)
+    scrubbed = ZERO_COUNT.sub("", _ANSI.sub("", text))
     if HONEST.search(scrubbed):
         return "honest"
     return "false-ok"
@@ -520,6 +564,11 @@ def test_box_state_is_absent_and_the_witness_can_fail(dead_externals, tmp_path, 
         (planted / "sub").mkdir()
     assert os.listdir("/dev") == [] and _glob.glob("/dev/ttyACM*") == []
 
+    # sqlite URI form (connect_tuned(..., uri=True)) — Fable review MED-5b:
+    import sqlite3
+    with pytest.raises(FileNotFoundError):
+        sqlite3.connect(f"file:{f}?mode=ro", uri=True)
+
     _BOX_STATE_TOUCHES.clear()
     io.FileIO(str(f)).close()  # around the patches: must be witnessed
     assert any(p == str(f) for _, p in _BOX_STATE_TOUCHES)
@@ -572,6 +621,17 @@ class TestVerdictIsFalsifiable:
         (["msgbox"], "No NanoVNA found", "honest"),
         (["stdout"], "rnsd: NOT RUNNING", "honest"),
         (["msgbox"], "No alerts — alert source unreachable", "honest"),
+        # Fable review HIGH-1: colour codes hid the claim from \b.
+        (["stdout"], "  \x1b[0;32mNo drift detected\x1b[0m\n", "false-ok"),
+        (["stdout"], "\x1b[0;32mErrors: 0\x1b[0m", "false-ok"),
+        (["stdout"], "\x1b[0;32m0 failures\x1b[0m", "false-ok"),
+        # Fable review MED-3: a bad noun used ADJECTIVALLY is uncertainty.
+        (["msgbox"], "No alert feed available", "honest"),
+        (["msgbox"], "No drift baseline found", "honest"),
+        (["msgbox"], "No error log available", "honest"),
+        (["msgbox"], "No alerts feed configured", "honest"),
+        (["msgbox"], "No warning threshold configured", "honest"),
+        (["msgbox"], "No alert source configured", "honest"),
     ])
     def test_verdict(self, kinds, text, expected):
         assert _verdict(kinds, text) == expected

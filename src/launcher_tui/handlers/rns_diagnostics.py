@@ -114,7 +114,15 @@ class RNSDiagnosticsHandler(BaseHandler):
                 print()
                 self.ctx.wait_for_enter()
         else:
-            print(f"  \033[0;32mNo drift detected\033[0m\n")
+            # drifted=False is a measurement ONLY when rnsd's dir resolved and
+            # matched. rnsd not running / dir not determinable leave it None:
+            # nothing was compared, so say that — not a green "No drift"
+            # beside "check skipped" (truth-sweep review 2026-09-22; the
+            # Config Doctor twin of this is check_rnsd_config_drift).
+            if result.rnsd_config_dir is None:
+                print(f"  \033[0;33mDrift NOT CHECKED — rnsd's config dir unknown\033[0m\n")
+            else:
+                print(f"  \033[0;32mNo drift detected\033[0m\n")
             print(f"  {result.message}")
             if result.gateway_config_dir:
                 print(f"  Config directory: {result.gateway_config_dir}")

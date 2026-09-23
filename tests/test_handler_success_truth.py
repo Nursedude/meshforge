@@ -425,3 +425,46 @@ class TestOwnerPrefillNamesTheReadState:
         r = CommandResult.ok("ok", data={})
         r.raw_output = "Owner: Lab Node (LAB1)\nNodes in mesh:\n"
         assert "current: Lab Node" in self._prompt_for(r)
+
+
+class TestRnsDriftScreenSaysWhatWasCompared:
+    """`rns/drift` printed a green "No drift detected" one line above "rnsd
+    is not running; config drift check skipped" (Fable review 2026-09-22 —
+    the rns_diagnostics twin of Config Doctor's check_rnsd_config_drift).
+    drifted=False is a measurement only when rnsd's config dir resolved."""
+
+    def _screen(self, capsys, **result):
+        from types import SimpleNamespace
+        from handlers import rns_diagnostics as mod
+        fields = dict(drifted=False, gateway_config_dir=Path("/etc/reticulum"),
+                      rnsd_config_dir=None, rnsd_pid=None, severity="info",
+                      detection_method="rnsd_not_running", fix_hint="",
+                      message="rnsd is not running; config drift check skipped")
+        fields.update(result)
+        h = mod.RNSDiagnosticsHandler()
+        h.set_context(make_handler_context())
+        with patch.object(mod, "detect_rnsd_config_drift",
+                          return_value=SimpleNamespace(**fields)), \
+             patch.object(mod, "clear_screen"), \
+             patch.object(h.ctx, "wait_for_enter", create=True):
+            h._rns_config_drift_check()
+        return capsys.readouterr().out
+
+    def test_rnsd_not_running_is_not_checked(self, capsys):
+        out = self._screen(capsys)
+        assert "NOT CHECKED" in out
+        assert "No drift detected" not in out
+
+    def test_undeterminable_dir_is_not_checked(self, capsys):
+        out = self._screen(capsys, rnsd_pid=1234, detection_method="proc",
+                           message="rnsd running (PID 1234) but config dir not "
+                                   "determinable; assuming default resolution matches")
+        assert "NOT CHECKED" in out
+        assert "No drift detected" not in out
+
+    def test_aligned_dirs_are_no_drift(self, capsys):
+        out = self._screen(capsys, rnsd_config_dir=Path("/etc/reticulum"),
+                           rnsd_pid=1234, detection_method="proc",
+                           message="Config aligned")
+        assert "No drift detected" in out
+        assert "NOT CHECKED" not in out
