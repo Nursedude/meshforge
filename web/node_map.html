@@ -2149,6 +2149,14 @@
     // Phase 4: D3.js Force-Directed Topology View
     // ============================================
 
+    // One node, two ID schemes: the gateway's unified model names Meshtastic
+    // nodes "mesh_!xxxx" (gateway/node_models.py) while the topology build
+    // uses meshtasticd's "!xxxx". Measured 2026-09-23: 0 of 11 live links
+    // matched a node on this view until both sides went through this.
+    function topoCanonId(id) {
+        return String(id || '').replace(/^mesh_(?=!)/, '');
+    }
+
     function renderTopology() {
         if (!state.currentGeoJSON || !state.currentGeoJSON.features.length) return;
 
@@ -2178,7 +2186,7 @@
                 y: height / 2 + (Math.random() - 0.5) * 200
             };
             nodes.push(node);
-            nodeMap.set(props.id, node);
+            nodeMap.set(topoCanonId(props.id), node);
         });
 
         // Links come from the SERVER, each tagged `evidence` observed|inferred
@@ -2195,10 +2203,10 @@
                 .finally(() => renderTopology());
         }
         const apiLinks = (state.topologyLinks && state.topologyLinks.links) || [];
-        let shownObserved = 0, shownInferred = 0;
+        let shownObserved = 0, shownInferred = 0, unplaced = 0;
         apiLinks.forEach(l => {
-            const s = nodeMap.get(l.source), t = nodeMap.get(l.target);
-            if (!s || !t) return;
+            const s = nodeMap.get(topoCanonId(l.source)), t = nodeMap.get(topoCanonId(l.target));
+            if (!s || !t) { unplaced++; return; }
             if (l.evidence === 'observed') shownObserved++; else shownInferred++;
             links.push({ source: s, target: t, type: l.type, evidence: l.evidence,
                          basis: l.basis, strength: l.evidence === 'observed' ? 0.3 : 0.1 });
@@ -2209,6 +2217,7 @@
                 ? 'Links unavailable (' + state.topologyLinksError + ') — nodes only'
                 : (state.topologyLinks
                     ? shownObserved + ' observed · ' + shownInferred + ' inferred'
+                      + (unplaced ? ' · ' + unplaced + ' not placed (endpoint not on this view)' : '')
                     : 'Loading links…');
         }
 
