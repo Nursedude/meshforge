@@ -1357,9 +1357,17 @@ class UnifiedNodeTracker:
             with self._lock:
                 node = self._nodes.get(node_id)
                 if node:
-                    # Update hop count from topology event
-                    if event.new_value is not None and isinstance(event.new_value, int):
-                        node.hops = event.new_value
+                    # Update hop count from topology event. A 0 is REFUSED:
+                    # add_edge echoes whatever hops its caller passed, and the
+                    # announce path passes `node.hops or 0`, so an unknown hop
+                    # count came back here as a "measured" 0 (2026-09-23:
+                    # moc logged `rns_627fa566 hops: 0` then `hops: 1` two
+                    # seconds later). RNS increments packet.hops on every
+                    # inbound packet, so a remote path is >= 1 — this handler
+                    # only sees rns_ nodes, and 0 is never a measurement here.
+                    nv = event.new_value
+                    if isinstance(nv, int) and not isinstance(nv, bool) and nv > 0:
+                        node.hops = nv
                         node.update_seen()
                         logger.debug(f"Updated node {node_id[:12]} hops: {event.new_value}")
 

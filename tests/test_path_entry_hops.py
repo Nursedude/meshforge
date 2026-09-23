@@ -75,3 +75,25 @@ def test_monitor_skips_and_counts_unreadable_entries(monkeypatch):
     assert m.unparsed_path_entries == 1
     assert m._last_snapshot[b"\x02" * 16].hops == 5
     assert b"\x03" * 16 not in m._last_snapshot
+
+
+def test_tracker_refuses_a_zero_echoed_back_by_add_edge():
+    from gateway import node_tracker as ntr
+    from types import SimpleNamespace as N
+    tr = ntr.UnifiedNodeTracker.__new__(ntr.UnifiedNodeTracker)
+    import threading
+    tr._lock = threading.RLock()
+    node = N(hops=None, update_seen=lambda: None)
+    dest = b"\x09" * 16
+    tr._nodes = {f"rns_{dest.hex()[:16]}": node}
+    old = ntr.RNS_SERVICES_AVAILABLE
+    ntr.RNS_SERVICES_AVAILABLE = True
+    try:
+        tr._on_topology_event(N(dest_hash=dest, new_value=0))
+        assert node.hops is None          # the echoed sentinel is refused
+        tr._on_topology_event(N(dest_hash=dest, new_value=3))
+        assert node.hops == 3
+        tr._on_topology_event(N(dest_hash=dest, new_value=0))
+        assert node.hops == 3             # and never overwrites a real value
+    finally:
+        ntr.RNS_SERVICES_AVAILABLE = old
