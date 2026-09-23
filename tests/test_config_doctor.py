@@ -264,12 +264,18 @@ class TestCheckRnsInterfaceDevices:
         assert r.status == SKIP
         assert "not checked" in r.message
 
-    def test_fail_surfaces_blocking(self):
+    def test_fail_surfaces_blocking(self, tmp_path):
         blocking = [
             ("MyRNode", "serial /dev/ttyUSB0 not found", "connect device"),
             ("MyTCP", "host 10.1.1.1:4403 unreachable", "check host"),
         ]
-        with patch("handlers._rns_interface_mgr."
+        # Pin the config: the check reads it first (SKIP when absent), and an
+        # unpinned test read the RUNNER's /etc/reticulum — green on a box that
+        # has one, red on CI (a75623c7).
+        cfg = tmp_path / "config"
+        cfg.write_text("[reticulum]\n")
+        with patch("utils.paths.ReticulumPaths.get_config_file", return_value=cfg), \
+             patch("handlers._rns_interface_mgr."
                    "find_blocking_interfaces", return_value=blocking):
             r = checks.check_rns_interface_devices()
         assert r.status == FAIL
