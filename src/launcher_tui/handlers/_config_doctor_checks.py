@@ -269,7 +269,12 @@ def check_rnsd_config_drift() -> CheckResult:
         return CheckResult(
             name="rnsd_config_drift",
             status=SKIP,
-            message=result.message or "rnsd config dir unknown; drift not checked",
+            # Not the detector's message verbatim: its "assuming default
+            # resolution matches" is an assumption a SKIP must not repeat.
+            message=("rnsd is not running — drift not checked"
+                     if result.rnsd_pid is None else
+                     f"rnsd running (PID {result.rnsd_pid}) but its config dir "
+                     f"could not be determined — drift not checked"),
             details=[f"gateway dir: {result.gateway_config_dir}"],
         )
     if not result.drifted:
@@ -317,7 +322,7 @@ def check_rns_interface_devices() -> CheckResult:
     # config's presence HERE and say SKIP (truth-sweep review 2026-09-22).
     config_file = ReticulumPaths.get_config_file()
     try:
-        config_file.read_text()
+        content = config_file.read_text()
     except (OSError, UnicodeDecodeError) as e:
         return CheckResult(
             name="rns_interface_devices",
@@ -326,7 +331,21 @@ def check_rns_interface_devices() -> CheckResult:
             details=[f"{type(e).__name__}: {e}"],
         )
 
-    blocking = find_blocking_interfaces()
+    # Readable is not parseable: an empty file, garbage, or interfaces with
+    # no `type` also give [] — "all resolve" over ZERO interfaces. Count
+    # what the shared parser actually yields, and judge the SAME text (a
+    # second read could fail differently and collapse to []; Fable review
+    # 2026-09-22).
+    from ._rns_interface_mgr import iter_enabled_interfaces
+    enabled = [name for name, _t, _b in iter_enabled_interfaces(content)]
+    if not enabled:
+        return CheckResult(
+            name="rns_interface_devices",
+            status=SKIP,
+            message=f"no enabled RNS interfaces parsed from {config_file} — nothing checked",
+        )
+
+    blocking = find_blocking_interfaces(content)
     if not blocking:
         return CheckResult(
             name="rns_interface_devices",

@@ -184,6 +184,7 @@ class TestCheckRnsdConfigDrift:
         defaults = dict(drifted=False,
                         gateway_config_dir=Path("/etc/reticulum"),
                         rnsd_config_dir=Path("/etc/reticulum"),
+                        rnsd_pid=None,  # the real DriftResult always carries it
                         message="aligned",
                         fix_hint="",
                         severity="info")
@@ -205,12 +206,23 @@ class TestCheckRnsdConfigDrift:
             r = checks.check_rnsd_config_drift()
         assert r.status == SKIP
 
+    def test_skip_message_does_not_repeat_the_assumption(self):
+        with patch("utils.config_drift.detect_rnsd_config_drift",
+                   return_value=self._drift_result(
+                       rnsd_config_dir=None, rnsd_pid=4242,
+                       message="rnsd running (PID 4242) but config dir not "
+                               "determinable; assuming default resolution matches")):
+            r = checks.check_rnsd_config_drift()
+        assert r.status == SKIP
+        assert "assuming" not in r.message
+        assert "4242" in r.message and "not checked" in r.message
+
     def test_skip_not_ok_when_rnsd_dir_undeterminable(self):
         # "assuming default resolution matches" is an assumption, not a
         # comparison — nothing was measured.
         with patch("utils.config_drift.detect_rnsd_config_drift",
                    return_value=self._drift_result(
-                       rnsd_config_dir=None,
+                       rnsd_config_dir=None, rnsd_pid=1,
                        message="rnsd running (PID 1) but config dir not "
                                "determinable; assuming default resolution matches")):
             r = checks.check_rnsd_config_drift()
@@ -242,10 +254,42 @@ class TestCheckRnsdConfigDrift:
 # RNS interface devices
 # ---------------------------------------------------------------------------
 
+_ONE_IFACE = "[interfaces]\n  [[Mesh]]\n    type = TCPClientInterface\n    enabled = yes\n    target_host = 10.0.0.9\n"
+
+
 class TestCheckRnsInterfaceDevices:
+    @pytest.mark.parametrize("body", [
+        "", "garbage {{{", "[reticulum]\n  share_instance = Yes\n",
+        "[interfaces]\n  [[X]]\n    enabled = yes\n",          # no type
+        "[interfaces]\n  [[X]]\n    type = TCPClientInterface\n    enabled = no\n",
+    ])
+    def test_skip_when_no_enabled_interface_parses(self, tmp_path, body):
+        # Readable is not parseable: "all enabled interfaces resolve" over
+        # ZERO interfaces is vacuous (Fable rev2 MED-3).
+        cfg = tmp_path / "config"
+        cfg.write_text(body)
+        with patch("utils.paths.ReticulumPaths.get_config_file", return_value=cfg):
+            r = checks.check_rns_interface_devices()
+        assert r.status == SKIP
+        assert "nothing checked" in r.message
+
+    def test_judges_the_text_it_read_not_a_second_read(self, tmp_path):
+        cfg = tmp_path / "config"
+        cfg.write_text(_ONE_IFACE)
+        seen = {}
+
+        def fake(content=None):
+            seen["content"] = content
+            return []
+        with patch("utils.paths.ReticulumPaths.get_config_file", return_value=cfg), \
+             patch("handlers._rns_interface_mgr.find_blocking_interfaces", side_effect=fake):
+            r = checks.check_rns_interface_devices()
+        assert r.status == OK
+        assert seen["content"] == _ONE_IFACE
+
     def test_ok_when_no_blocking(self, tmp_path):
         cfg = tmp_path / "config"
-        cfg.write_text("[reticulum]\n")
+        cfg.write_text(_ONE_IFACE)
         with patch("utils.paths.ReticulumPaths.get_config_file", return_value=cfg), \
              patch("handlers._rns_interface_mgr."
                    "find_blocking_interfaces", return_value=[]):
@@ -273,7 +317,7 @@ class TestCheckRnsInterfaceDevices:
         # unpinned test read the RUNNER's /etc/reticulum — green on a box that
         # has one, red on CI (a75623c7).
         cfg = tmp_path / "config"
-        cfg.write_text("[reticulum]\n")
+        cfg.write_text(_ONE_IFACE)
         with patch("utils.paths.ReticulumPaths.get_config_file", return_value=cfg), \
              patch("handlers._rns_interface_mgr."
                    "find_blocking_interfaces", return_value=blocking):
@@ -630,3 +674,42 @@ class TestConfigDoctorHandler:
         ctx.registry = FakeRegistry()
         h = self._handler(ctx)
         assert h._nomadnet_service_state() == sample
+
+
+class TestHeadlineNeverCallsSkipHealthy:
+    """Fable rev2 HIGH-1: `_RANK` puts SKIP below WARN, so OK + SKIP printed a
+    GREEN "Verdict: no drift detected." — the SKIP-as-healthy lie one level
+    above the rows a75623c7 fixed."""
+
+    def _headline(self, statuses):
+        import contextlib
+        import io
+        from handlers import config_doctor as cd
+        h = ConfigDoctorHandler()
+        h.set_context(make_handler_context())
+        rows = [CheckResult(name=f"c{i}", status=st, message="m") for i, st in enumerate(statuses)]
+        out = io.StringIO()
+        with patch.object(h, "_collect_results", return_value=rows), \
+             patch("backend.clear_screen"), \
+             patch.object(h.ctx, "wait_for_enter", create=True), \
+             contextlib.redirect_stdout(out):
+            h._run_and_render()
+        return [ln for ln in out.getvalue().splitlines() if "Verdict" in ln or "Not checked" in ln]
+
+    def test_ok_plus_skip_is_not_green(self):
+        lines = self._headline([OK] + [SKIP] * 7)
+        assert not any("no drift detected" in ln for ln in lines)
+        assert any("7 of 8 checks could not run" in ln for ln in lines)
+        assert any("Not checked:" in ln for ln in lines)
+
+    def test_all_skip_is_not_green(self):
+        lines = self._headline([SKIP] * 5)
+        assert not any("no drift detected" in ln for ln in lines)
+
+    def test_all_ok_is_green(self):
+        lines = self._headline([OK] * 4)
+        assert any("no drift detected" in ln for ln in lines)
+
+    def test_fail_still_outranks_skip(self):
+        lines = self._headline([OK, SKIP, FAIL])
+        assert any("critical issue" in ln for ln in lines)

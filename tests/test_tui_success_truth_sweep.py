@@ -113,13 +113,15 @@ ZERO_COUNT = re.compile(
     rf"\b{_BAD}\s*[:=]\s*(?:0|none|nil)\b"          # Errors: 0 / Errors: none
     rf"|\b(?:0|zero)\s+{_BAD}"                        # 0 failures
     rf"|\bnothing\s+(?:failed|missing|wrong|broken)"  # nothing failed
+    # "No drift detected" is a claim when the bad noun is followed by a
+    # RESULT VERB (whatever comes after — "… today", "… (gateway vs rnsd)")
+    # or by nothing word-like (end, punctuation, a dash, ✓). It is NOT a
+    # claim when a noun follows ("No alert feed available", "No drift
+    # baseline found" — adjectival, real uncertainty). History: unanchored
+    # it over-scrubbed 6 shapes (Fable MED-3); end-anchored it let 8 claim
+    # shapes back through, incl. the rns/drift target (Fable rev2 HIGH-2).
     rf"|\bno\s+(?:\w+\s+){{0,2}}{_BAD}\b(?:\s+(?:detected|found|reported|seen|"
-    rf"present|active|pending|observed|recorded))?"
-    # …and only when the bad noun ENDS the phrase: "No alert feed available"
-    # / "No drift baseline found" use the noun adjectivally and are real
-    # uncertainty — the unanchored first cut scrubbed 8 such shapes to
-    # false-ok (Fable review MED-3, 2026-09-22).
-    rf"(?=\s*(?:[.,;:!)\]]|$))",  # No drift detected
+    rf"present|active|pending|observed|recorded)\b|(?=\s*(?:[^\w\s]|$)))",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -632,6 +634,15 @@ class TestVerdictIsFalsifiable:
         (["msgbox"], "No alerts feed configured", "honest"),
         (["msgbox"], "No warning threshold configured", "honest"),
         (["msgbox"], "No alert source configured", "honest"),
+        # Fable rev2 HIGH-2: the end-anchor let these back through as honest.
+        (["stdout"], "No drift detected — rnsd not running", "honest"),  # real honest words remain
+        (["stdout"], "No drift detected (gateway vs rnsd)", "false-ok"),
+        (["msgbox"], "No errors — all good", "false-ok"),
+        (["msgbox"], "No issues found | uptime 14d", "false-ok"),
+        (["stdout"], "No drift detected ✓", "false-ok"),
+        (["msgbox"], "No problems found in 9 checks", "false-ok"),
+        (["stdout"], "No drift detected\tOK", "false-ok"),
+        (["stdout"], "no drift detected today", "false-ok"),
     ])
     def test_verdict(self, kinds, text, expected):
         assert _verdict(kinds, text) == expected
@@ -683,6 +694,18 @@ def test_allowlists_name_only_live_actions():
     stale = [k for k in list(LOCAL_ONLY) + list(KNOWN_FALSE_OK) + list(KNOWN_CRASHED)
              if k not in live]
     assert not stale, f"action_truth lists actions that no longer exist: {stale}"
+
+
+def test_known_crashed_is_frozen_not_just_documented():
+    """Shrink-only by GATE, not prose (Fable rev2 MED-5): the membership
+    asserts catch a stale entry, but nothing stopped ADDING one to make a
+    new crash pass. Growing this set needs this literal changed in the same
+    commit — a visible act, with a provenance row."""
+    frozen = {("dashboard", "score"), ("system", "status")}
+    assert set(KNOWN_CRASHED) <= frozen, (
+        f"KNOWN_CRASHED grew: {sorted(set(KNOWN_CRASHED) - frozen)}. A new crash "
+        f"is fixed in the handler, not baselined.")
+    assert not KNOWN_FALSE_OK, "KNOWN_FALSE_OK is frozen EMPTY"
 
 
 def test_every_local_only_entry_says_why():

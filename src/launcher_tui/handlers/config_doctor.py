@@ -95,6 +95,16 @@ class ConfigDoctorHandler(BaseHandler):
             color = _ANSI[WARN]
             print(f"{color}Verdict: warnings present — review recommended."
                   f"{_ANSI_RESET}")
+        elif any(r.status == SKIP for r in results):
+            # SKIP ranks below WARN for colour, but it is NOT healthy: a
+            # check that observed nothing cannot vouch for "no drift". All
+            # OK + SKIP printed a green "no drift detected" (Fable review
+            # 2026-09-22) — say how much was actually checked.
+            skipped = [r.name for r in results if r.status == SKIP]
+            color = _ANSI[WARN]
+            print(f"{color}Verdict: {len(skipped)} of {len(results)} checks could "
+                  f"not run — drift NOT fully checked.{_ANSI_RESET}")
+            print(f"  Not checked: {', '.join(skipped)}")
         else:
             color = _ANSI[OK]
             print(f"{color}Verdict: no drift detected.{_ANSI_RESET}")

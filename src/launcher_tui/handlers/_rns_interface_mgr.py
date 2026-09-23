@@ -8,6 +8,7 @@ import logging
 import re
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 from utils.paths import ReticulumPaths
 from utils.service_check import check_service
@@ -15,29 +16,14 @@ from utils.service_check import check_service
 logger = logging.getLogger(__name__)
 
 
-def find_blocking_interfaces() -> list:
-    """Check if enabled RNS interfaces have missing dependencies.
+def iter_enabled_interfaces(content: str):
+    """Yield (name, type, body) for every ENABLED interface with a type.
 
-    Parses /etc/reticulum/config for enabled interfaces and checks
-    whether their required services/hosts are available. Returns a
-    list of (interface_name, problem, fix) tuples for blocking interfaces.
-
-    This is the root cause of "rnsd active but not listening on 37428":
-    rnsd initializes interfaces BEFORE binding the shared instance port.
-    A blocking interface (e.g., TCP connect to dead host, missing serial
-    device) prevents the shared instance from ever becoming available.
+    The one parse both consumers share — find_blocking_interfaces() judges
+    these, and Config Doctor counts them so an empty result can say "no
+    enabled interfaces parsed" instead of "all resolve" (vacuous truth,
+    Fable review 2026-09-22).
     """
-    blocking = []
-    config_file = ReticulumPaths.get_config_file()
-    if not config_file.exists():
-        return blocking
-
-    try:
-        content = config_file.read_text()
-    except (OSError, PermissionError):
-        return blocking
-
-    # Parse enabled interfaces from the config
     # RNS config uses [[InterfaceName]] sections with type= and enabled=
     iface_pattern = re.compile(
         r'^\s*\[\[(.+?)\]\]\s*$'
@@ -64,8 +50,37 @@ def find_blocking_interfaces() -> list:
         if not type_match:
             continue
 
-        iface_type = type_match.group(1)
+        yield name, type_match.group(1), body
 
+
+def find_blocking_interfaces(content: Optional[str] = None) -> list:
+    """Check if enabled RNS interfaces have missing dependencies.
+
+    Parses /etc/reticulum/config for enabled interfaces and checks
+    whether their required services/hosts are available. Returns a
+    list of (interface_name, problem, fix) tuples for blocking interfaces.
+
+    ``content``: config text the caller already read, so a caller that
+    judged the read (Config Doctor) is not answered from a SECOND read
+    that may fail differently and collapse to ``[]``.
+
+    This is the root cause of "rnsd active but not listening on 37428":
+    rnsd initializes interfaces BEFORE binding the shared instance port.
+    A blocking interface (e.g., TCP connect to dead host, missing serial
+    device) prevents the shared instance from ever becoming available.
+    """
+    blocking = []
+    if content is None:
+        config_file = ReticulumPaths.get_config_file()
+        if not config_file.exists():
+            return blocking
+
+        try:
+            content = config_file.read_text()
+        except (OSError, PermissionError):
+            return blocking
+
+    for name, iface_type, body in iter_enabled_interfaces(content):
         # Check Meshtastic_Interface — tcp_port, serial port, or BLE
         if iface_type == 'Meshtastic_Interface':
             _check_meshtastic_interface(name, body, blocking)
