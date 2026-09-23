@@ -288,6 +288,38 @@ class FleetEndpointsMixin:
             self._serve_json({"status": "error", "reason": "%s: %s" % (type(exc).__name__, exc)},
                              status=200)
 
+    def _serve_fleet_delivery(self):
+        """Serve THIS box's delivery view — the domain's END — as JSON.
+
+        The same reader as the TUI Delivery screen (``utils.delivery_view``):
+        the gateway's published delivery record + queue stats and the newest
+        soak round trips, each with source and age, tri-state per leg.
+        Replaces the /fleet soak panel's dependency on
+        ``meshforge-lab-rollup.timer``, which was installed on ZERO boxes
+        (measured 2026-09-23), so that panel 404'd everywhere. Reads files
+        only; a failure is served as 500 so the page labels it, never as an
+        empty healthy-looking view.
+        """
+        try:
+            from utils.delivery_view import gather, render
+            view = gather()
+            self._serve_json({
+                "host": view.host,
+                "ts": view.now,
+                "headline": view.headline(),
+                "text": render(view),
+                "legs": [{
+                    "title": leg.title, "status": leg.status,
+                    "failing": leg.failing, "thin": leg.thin,
+                    "age_s": leg.age_s, "source": leg.source,
+                } for leg in view.legs],
+            }, status=200)
+        except Exception as exc:   # noqa: BLE001 — the page must say it could not see
+            self._serve_json({
+                "headline": "UNKNOWN — delivery view failed on this box",
+                "text": "%s: %s" % (type(exc).__name__, exc),
+            }, status=500)
+
     def _serve_fleet_uplink(self):
         """Serve THIS box's Starlink obstruction map, live from the dish.
 

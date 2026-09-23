@@ -356,7 +356,7 @@
 
         <div class="col">
             <div class="card">
-                <h2>Soak — Lab Synth Rollup <span class="sub">the delivery path, exercised on cadence</span></h2>
+                <h2>Delivery <span class="sub">did messages arrive on this box — per source, with age</span></h2>
                 <div class="body" id="soak"><div class="empty">loading…</div></div>
             </div>
 
@@ -385,10 +385,11 @@
     // ── NOC-local visibility (this box only) — deliberately OUTSIDE the
     //    truth document; these endpoints never influence the fleet verdict.
     const SLO_URL = '/fleet/slo';
-    // Synth-soak rollup exists only on synth boxes; the round-trip
-    // leaderboard is the soak surface everywhere else — fall back, labeled.
-    const SOAK_URL = '/lab/synth-rollup';
-    const LAB_URL = '/lab/rollup';
+    // Delivery (the END) for this box: gateway record + queue + newest soak
+    // round trips, per source with age — the TUI Delivery screen's reader.
+    // Replaced the lab-rollup markdown (2026-09-23): its timer was installed
+    // on zero boxes, so the old panel 404'd everywhere.
+    const DELIVERY_URL = '/fleet/delivery';
     const LOGS_URL = '/fleet/logs';
     const UPLINK_URL = '/fleet/uplink';
     const LOCAL_POLL_MS = 30000;
@@ -1100,7 +1101,9 @@
         el.innerHTML = bits.join('');
     }
 
-    function renderSoak(text, httpOk, slo, sourceLabel) {
+    function renderSoak(doc, httpOk, slo) {
+        const text = (doc && doc.text) || '';
+        const sourceLabel = (doc && doc.headline) || '';
         const chips = [];
         const v = (((slo || {}).schedules || {}).verdicts || {});
         (v.jobs || []).filter(j => /soak|synth/i.test(String(j.name))).forEach(j => {
@@ -1116,7 +1119,7 @@
             ? '<div class="soak-chips">' + chips.join('') + '</div>' : '';
         const body = httpOk
             ? '<pre class="mdpre">' + esc(text) + '</pre>'
-            : '<div class="panel-err">⚠ soak rollup not readable on this box:</div>' +
+            : '<div class="panel-err">⚠ delivery view failed on this box:</div>' +
               '<pre class="mdpre">' + esc(text) + '</pre>';
         document.getElementById('soak').innerHTML = head + body;
     }
@@ -1217,18 +1220,10 @@
             panelErr('uplink', UPLINK_URL, e && e.message ? e.message : String(e));
         }
         try {
-            let resp = await fetch(SOAK_URL);
-            let label = 'source: synth-soak rollup';
-            if (!resp.ok) {
-                // Not a synth box — the round-trip leaderboard is the honest
-                // soak surface here. Label the substitution, never silently.
-                resp = await fetch(LAB_URL);
-                label = 'source: round-trip leaderboard (no synth rollup on this box)';
-            }
-            const text = await resp.text();
-            renderSoak(text, resp.ok, slo, label);
+            const resp = await fetch(DELIVERY_URL, { headers: { 'Accept': 'application/json' } });
+            renderSoak(await resp.json(), resp.ok, slo);
         } catch (e) {
-            panelErr('soak', SOAK_URL, e && e.message ? e.message : String(e));
+            panelErr('soak', DELIVERY_URL, e && e.message ? e.message : String(e));
         }
         setTimeout(pollLocal, LOCAL_POLL_MS);
     }
