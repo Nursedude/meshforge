@@ -41,12 +41,16 @@ class ChannelConfigHandler(BaseHandler):
                 conn_value = result.data.get('value', '')
                 method = result.data.get('method', '')
 
+                # ensure_connection() CHOOSES a transport; it has not opened
+                # it. "Connected via USB" was claimed from a /dev node's
+                # presence with every external dead (truth sweep, non-author
+                # review 2026-09-22) — say what was decided, not what was proven.
                 if method == 'usb':
-                    msg = f"Connected via USB: {conn_value}"
+                    msg = f"Will use USB device: {conn_value} (present, not verified)"
                 else:
-                    msg = f"Connected via TCP: localhost:4403"
+                    msg = "Will use TCP: localhost:4403 (not verified)"
 
-                self.ctx.dialog.infobox("Connected", msg)
+                self.ctx.dialog.infobox("Transport", msg)
                 return True
             else:
                 self.ctx.dialog.msgbox(

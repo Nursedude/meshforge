@@ -87,3 +87,62 @@ def test_command_still_reports_when_a_source_answered():
             p.stop()
     assert result.success is True
     assert result.data["solar_flux"] == 120.0
+
+
+# --- siblings (non-author review 2026-09-22, finding 4: hfm #5, grep the copies) ---
+
+def _dead_api():
+    api, patches = _api_with()
+    for p in patches:
+        p.start()
+    return api, patches
+
+
+def test_band_conditions_fail_loud_when_no_source_answered():
+    api, patches = _dead_api()
+    try:
+        with patch.object(propagation, "SpaceWeatherAPI", return_value=api), \
+             patch.object(propagation, "_HAS_SPACE_WEATHER", True):
+            result = propagation.get_band_conditions()
+    finally:
+        for p in patches:
+            p.stop()
+    assert result.success is False
+    assert "UNKNOWN" in result.message
+    assert "Fair" not in result.message
+
+
+def test_propagation_summary_fails_loud_when_no_source_answered():
+    api, patches = _dead_api()
+    try:
+        with patch.object(propagation, "SpaceWeatherAPI", return_value=api), \
+             patch.object(propagation, "_HAS_SPACE_WEATHER", True):
+            result = propagation.get_propagation_summary()
+    finally:
+        for p in patches:
+            p.stop()
+    assert result.success is False
+    assert "Quiet" not in result.message
+
+
+def test_quick_summary_says_unavailable_not_quiet():
+    api, patches = _dead_api()
+    try:
+        summary = api.get_quick_summary()
+    finally:
+        for p in patches:
+            p.stop()
+    assert "unavailable" in summary.lower()
+    assert "Quiet" not in summary
+
+
+def test_quick_summary_still_summarises_when_a_source_answered():
+    api, patches = _api_with(get_k_index=(2, None), get_solar_flux=130.0)
+    for p in patches:
+        p.start()
+    try:
+        summary = api.get_quick_summary()
+    finally:
+        for p in patches:
+            p.stop()
+    assert summary.startswith("SFI:130 K:2")

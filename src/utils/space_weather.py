@@ -499,6 +499,14 @@ class SpaceWeatherAPI:
         """
         data = self.get_current_conditions()
 
+        # Nothing answered → there is no summary. Until 2026-09-22 the storm
+        # level (default QUIET) was appended unconditionally, so the
+        # "Data unavailable" branch below could never run and a dead
+        # network summarised as "Quiet" (non-author review, sibling of the
+        # get_space_weather fix — hfm #5: grep the copies).
+        if data.sources_answered == 0:
+            return "Data unavailable - no space weather source answered"
+
         parts = []
 
         if data.solar_flux:

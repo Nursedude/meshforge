@@ -21,8 +21,8 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | Action tag | Description | Flag | Truth | Handler |
 |---|---|---|---|---|
 | `changelog` | Changelog — Release history |  | sweep | AboutHandler |
-| `deps` | Dependencies — Package status |  | sweep | AboutHandler |
-| `help` | Help — Documentation |  | sweep | AboutHandler |
+| `deps` | Dependencies — Package status |  | local-only | AboutHandler |
+| `help` | Help — Documentation |  | local-only | AboutHandler |
 | `sysinfo` | System Info — OS, Python, disk, uptime |  | local-only | AboutHandler |
 | `version` | Version Info — MeshForge version |  | local-only | AboutHandler |
 | `web` | Web Client — Open web interface |  | sweep | WebClientHandler |

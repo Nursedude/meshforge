@@ -9,10 +9,13 @@ screen that says "no alerts" with the network dead passes that test.
 
 `tests/test_tui_success_truth_sweep.py` closes the gap: it dispatches EVERY
 registered action with every external DEAD (sockets refused, subprocess
-absent, no tools on PATH) and requires the rendered dialog text to carry a
-word of uncertainty — UNKNOWN / unreachable / not installed / failed … — or
-to be listed here as an action that never asks an external in the first
-place. New actions are covered by construction (honest_failure_modes #7: a
+absent, no tools on PATH, the operator's home swapped for an empty one) and
+requires the FIRST SCREEN — every dialog including infobox, plus stdout —
+to carry a word of uncertainty — UNKNOWN / unreachable / not installed /
+failed … — or to be listed here as an action that never asks an external
+in the first place. Scope is ONE dialog level: an action whose first
+screen is a menu passes as navigation and nothing behind that menu is run
+(non-author review 2026-09-22; walking one level down is queued). New actions are covered by construction (honest_failure_modes #7: a
 closed enum needs closed consumers), so the audit TERMINATES instead of
 recurring every session.
 
@@ -46,6 +49,9 @@ LOCAL_ONLY: Dict[Action, str] = {
     ("about", "sysinfo"): "reads /proc, os.uname, disk usage of THIS box — no external",
     ("system", "platform_posture"): "compares /etc/os-release + python to the "
                                     "declared target in a local file; 'never changes anything'",
+    ("about", "help"): "static keyboard-shortcut and documentation text",
+    ("about", "deps"): "importlib probes of THIS interpreter's packages — [OK] means "
+                       "'imports here', which is local truth, not a service claim",
 }
 
 #: (section, tag) -> the false-OK text it rendered, dated. FROZEN: add

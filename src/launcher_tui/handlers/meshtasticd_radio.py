@@ -80,6 +80,19 @@ class MeshtasticdRadioHandler(BaseHandler):
                 break
         return '', ''
 
+    @classmethod
+    def _owner_was_read(cls, raw) -> bool:
+        """True only when `--info` printed an Owner line that is NOT the
+        CLI's no-record placeholder `Owner: None (None)`."""
+        for line in (raw or '').splitlines():
+            m = cls._OWNER_LINE.match(line)
+            if m:
+                return not (m.group('long').strip() == 'None'
+                            and m.group('short').strip() == 'None')
+            if line.strip().startswith('Nodes in mesh'):
+                break
+        return False
+
     def _set_owner_name(self):
         """Set node owner name (long name and short name)."""
         self.ctx.dialog.infobox("Owner", "Getting current owner info...")
@@ -99,8 +112,14 @@ class MeshtasticdRadioHandler(BaseHandler):
             # "none" means the radio HAS no name; a failed read is not that.
             # With the CLI dead this dialog used to say "current: none" — the
             # same words as an unnamed radio — and invite a write on top of
-            # a name it never saw (truth sweep 2026-09-22).
-            absent = 'none' if (result.success and raw) else 'UNKNOWN — could not read the radio'
+            # a name it never saw (truth sweep 2026-09-22). Three states, two
+            # labels: "none" only when the CLI succeeded AND printed an Owner
+            # line that was genuinely empty; `Owner: None (None)` is the CLI
+            # having NO RECORD (right after a restart) and a missing line is a
+            # read that did not happen — both UNKNOWN, never a name-shaped
+            # blank (non-author review 2026-09-22).
+            absent = ('none' if (result.success and self._owner_was_read(raw))
+                      else 'UNKNOWN — could not read the radio')
 
             long_name = self.ctx.dialog.inputbox(
                 "Set Long Name",

@@ -385,3 +385,43 @@ class TestActivateHardwareConfigTruthful:
             h._activate_hardware_config("test-hat.yaml", available, config_d)
 
         assert h.ctx.dialog.last_msgbox_title == "Success"
+
+
+class TestOwnerPrefillNamesTheReadState:
+    """Three read states, two labels (non-author review 2026-09-22, finding 8):
+    'none' ONLY when the CLI succeeded and printed a genuinely empty Owner
+    line; `Owner: None (None)` (no record yet) and a missing/failed read both
+    say UNKNOWN — never a name-shaped blank on the dialog that once renamed
+    a radio."""
+
+    def _prompt_for(self, result):
+        handler = _make_radio_handler()
+        handler.ctx.dialog._inputbox_returns = [None]  # cancel at the first prompt
+        with patch.object(_mesh_cmd_module, "get_node_info", return_value=result):
+            handler.execute("owner")
+        prompts = [c[1][1] for c in handler.ctx.dialog.calls if c[0] == "inputbox"]
+        return prompts[0]
+
+    def test_failed_read_is_unknown(self):
+        r = CommandResult.fail("no radio")
+        assert "UNKNOWN" in self._prompt_for(r)
+
+    def test_no_record_placeholder_is_unknown(self):
+        r = CommandResult.ok("ok", data={})
+        r.raw_output = "Owner: None (None)\nNodes in mesh:\n"
+        assert "UNKNOWN" in self._prompt_for(r)
+
+    def test_missing_owner_line_is_unknown(self):
+        r = CommandResult.ok("ok", data={})
+        r.raw_output = "Nodes in mesh:\n"
+        assert "UNKNOWN" in self._prompt_for(r)
+
+    def test_real_empty_owner_is_none(self):
+        r = CommandResult.ok("ok", data={})
+        r.raw_output = "Owner:  ()\nNodes in mesh:\n"
+        assert "current: none" in self._prompt_for(r)
+
+    def test_real_owner_is_prefilled(self):
+        r = CommandResult.ok("ok", data={})
+        r.raw_output = "Owner: Lab Node (LAB1)\nNodes in mesh:\n"
+        assert "current: Lab Node" in self._prompt_for(r)
