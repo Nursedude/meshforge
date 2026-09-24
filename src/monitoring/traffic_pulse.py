@@ -176,6 +176,7 @@ def _parse_delivery_db() -> Optional[dict]:
         state_totals: Dict[str, int] = {}
         state_by_protocol: Dict[str, Dict[str, int]] = {}
         drop_reasons: Dict[str, int] = {}
+        drop_reasons_by_protocol: Dict[str, Dict[str, int]] = {}
         last_event_ts = None
         preflight_ok = None
         write_errors = 0
@@ -186,6 +187,10 @@ def _parse_delivery_db() -> Optional[dict]:
                 state_by_protocol.setdefault(state_v, {})[proto] = value
             elif key.startswith("state."):
                 state_totals[key.split(".", 1)[1]] = value
+            elif key.startswith("drop_proto."):
+                # 2026-09-23 writer scheme: drop_proto.<reason>.<proto>
+                _, reason_v, proto = key.split(".", 2)
+                drop_reasons_by_protocol.setdefault(proto, {})[reason_v] = value
             elif key.startswith("drop."):
                 drop_reasons[key.split(".", 1)[1]] = value
             elif key == "meta.last_event_ts":
@@ -208,18 +213,36 @@ def _parse_delivery_db() -> Optional[dict]:
         # DeliveryCounters.compute_confirmation_view (Issue #74 display fix).
         # Can't import it (gateway/__init__ pulls RNS into this monitoring
         # tool), so the arithmetic is inlined and shares the canonical
-        # failure-reason set; TestFallbackConfirmationHonest pins it against
-        # the served snapshot's shape.
+        # failure-reason set; tests/test_review_c_traffic_pulse_fallback_denominator.py
+        # pins it against the served rule (a cited test must exist, 2026-09-23).
         confirmed = int(state_totals.get("confirmed", 0) or 0)
-        _failures = sum(int(drop_reasons.get(r, 0) or 0)
-                        for r in _DELIVERY_FAILURE_REASONS)
-        _terminal = confirmed + _failures
         _conf_by_proto = state_by_protocol.get("confirmed", {}) or {}
         _sent_by_proto = state_by_protocol.get("sent", {}) or {}
         _confirmable = {
             p for p, c in _conf_by_proto.items()
             if isinstance(c, (int, float)) and not isinstance(c, bool) and c > 0
         }
+        # Same rule as compute_confirmation_view since 286a812f (2026-09-23):
+        # once any protocol confirms, a TAGGED failure counts only on a
+        # confirmable protocol; untagged (pre-patch / protocol-less) failures
+        # always count. Pinned equal to the served snapshot by
+        # test_review_c_traffic_pulse_fallback_denominator.
+        _global = {r: int(drop_reasons.get(r, 0) or 0)
+                   for r in _DELIVERY_FAILURE_REASONS}
+        if drop_reasons_by_protocol and _confirmable:
+            _attr = dict.fromkeys(_DELIVERY_FAILURE_REASONS, 0)
+            _failures = 0
+            for _p, _reasons in drop_reasons_by_protocol.items():
+                for _r, _v in (_reasons or {}).items():
+                    if _r in _attr:
+                        _attr[_r] += int(_v or 0)
+                        if _p in _confirmable:
+                            _failures += int(_v or 0)
+            _failures += sum(max(0, _global[_r] - _attr[_r])
+                             for _r in _DELIVERY_FAILURE_REASONS)
+        else:
+            _failures = sum(_global.values())
+        _terminal = confirmed + _failures
         return {
             "state_totals": state_totals,
             "state_by_protocol": state_by_protocol,

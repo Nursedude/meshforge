@@ -152,6 +152,35 @@ def _record_tx(state: str, msg_id: Optional[str], reason: Optional[str] = None,
         logger.warning(f"MeshCore delivery record failed ({state}): {e}")
 
 
+def companion_error(evt: Any) -> Optional[str]:
+    """meshcore_py (2.3.14) ``send_msg`` / ``send_chan_msg`` return an Event
+    and NEVER raise: a companion timeout, ``no_event_received`` or a device
+    ERR frame arrive as ``Event(EventType.ERROR, {...})`` (``meshcore/commands/
+    base.py`` ``send()``; the device frame carries ``code_string``, not
+    ``reason``). Returns the reason when the send failed, None when it
+    succeeded or the object is not Event-shaped (simulator / test double
+    returning None or bool: absence of an error is not an error). Twin of
+    MeshAnchor ``meshcore_dm_reply.companion_error`` (e40f66cd) — keep aligned."""
+    is_err = getattr(evt, "is_error", None)
+    try:
+        if not (callable(is_err) and is_err()):
+            return None
+    except Exception:
+        return None
+    payload = getattr(evt, "payload", None)
+    if isinstance(payload, dict):
+        return str(payload.get("reason") or payload.get("error")
+                   or payload.get("code_string") or "error")
+    return "error"
+
+
+def _companion_refused(err: str, msg_id: Optional[str], what: str) -> bool:
+    """The ERROR Event IS the failure (review C 2026-09-23: MF recorded it as SENT)."""
+    logger.warning(f"MeshCore {what} refused by the companion: {err}")
+    _record_tx("dropped", msg_id, "non_retriable_error", f"companion {err}")
+    return False
+
+
 class MeshCoreHandler(BaseMessageHandler):
     """
     Handles MeshCore companion radio connection and message processing.
@@ -942,7 +971,12 @@ class MeshCoreHandler(BaseMessageHandler):
                         await self._meshcore.commands.get_contacts())
                     contact = self._find_contact(contacts, destination)
                     if contact:
-                        await self._meshcore.commands.send_msg(contact, text)
+                        send_evt = await self._meshcore.commands.send_msg(
+                            contact, text)
+                        err = companion_error(send_evt)
+                        if err is not None:
+                            return _companion_refused(
+                                err, msg_id, f"DM {destination!r}")
                         _record_tx("sent", msg_id, note=f"dm {destination}")
                         return True
                 # A directed message to an unknown contact is DROPPED, never
