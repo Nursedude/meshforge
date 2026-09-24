@@ -51,6 +51,7 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 from utils.db_helpers import connect_tuned
+from utils.delivery_labels import canonical_protocol
 from utils.db_inventory import INVENTORY
 from utils.logging_config import get_logger
 
@@ -184,13 +185,18 @@ def _parse_delivery_db() -> Optional[dict]:
             key, value = row["key"], row["value"]
             if key.startswith("state_proto."):
                 _, state_v, proto = key.split(".", 2)
-                state_by_protocol.setdefault(state_v, {})[proto] = value
+                # Lane labels (primary/secondary) merge into their transport
+                # — the same map the served snapshot uses (review C F7).
+                by = state_by_protocol.setdefault(state_v, {})
+                proto = canonical_protocol(proto)
+                by[proto] = by.get(proto, 0) + value
             elif key.startswith("state."):
                 state_totals[key.split(".", 1)[1]] = value
             elif key.startswith("drop_proto."):
                 # 2026-09-23 writer scheme: drop_proto.<reason>.<proto>
                 _, reason_v, proto = key.split(".", 2)
-                drop_reasons_by_protocol.setdefault(proto, {})[reason_v] = value
+                by = drop_reasons_by_protocol.setdefault(canonical_protocol(proto), {})
+                by[reason_v] = by.get(reason_v, 0) + value
             elif key.startswith("drop."):
                 drop_reasons[key.split(".", 1)[1]] = value
             elif key == "meta.last_event_ts":
