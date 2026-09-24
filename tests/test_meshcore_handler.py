@@ -877,3 +877,16 @@ class TestRealLibraryShape:
         assert any("REFUSED" in r.getMessage() for r in caplog.records)
         (ev,) = [e for e in dc.get_singleton().recent() if e.protocol == "meshcore"]
         assert ev.note == "no slot routing"
+
+    def test_simulator_send_leaves_no_delivery_record(self, handler):
+        """Review A F5: simulator sends are not egress and must not land in
+        the real delivery DB."""
+        from gateway import delivery_counters as dc
+        from gateway.meshcore_handler import MeshCoreSimulator
+        dc._reset_singleton_for_tests()
+        dc.get_singleton()._reset_for_tests()
+        handler._meshcore = MeshCoreSimulator()
+        handler._connected = True
+        assert asyncio.run(handler._send_message("sim", destination=None)) is True
+        assert [e for e in dc.get_singleton().recent()
+                if e.protocol == "meshcore"] == []

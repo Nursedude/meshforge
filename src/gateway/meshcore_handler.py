@@ -964,8 +964,8 @@ class MeshCoreHandler(BaseMessageHandler):
                            "no slot routing")
                 return False
             if hasattr(self._meshcore, 'send_channel_txt_msg'):
-                await self._meshcore.send_channel_txt_msg(text)  # simulator
-                _record_tx("sent", msg_id, note="simulator broadcast")
+                # Simulator: not egress, so never a delivery record (review A F5).
+                await self._meshcore.send_channel_txt_msg(text)
                 return True
             logger.error("MeshCore instance has no send method")
             _record_tx("dropped", msg_id, "non_retriable_error", "no send method")

@@ -1370,3 +1370,56 @@ class TestSnapshotDbUnobservable:
         health = c.snapshot()["health"]
         assert "db_unobservable" not in health
         assert health["preflight_ok"] is True
+
+
+class TestPerProtocolDenominator:
+    """2026-09-23 (MeshAnchor review A_2 + its correction d97a4a6b): only
+    failures on protocols that can confirm enter the denominator — and drops
+    recorded before drop_proto.* keys existed STAY in it. moc counted 143
+    `secondary` retries_exhausted against RNS; the uncorrected A_2 would have
+    read ~0.99996 there at the first tagged drop."""
+
+    def _legacy_drop(self, c, n):
+        # What the pre-2026-09-23 _persist wrote: no drop_proto.* key.
+        with c._connect() as conn:
+            for key in ("drop.rns_delivery_failed", "state.dropped",
+                        "state_proto.dropped.rns"):
+                conn.execute(
+                    "INSERT INTO counters(key, value) VALUES(?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = value + ?",
+                    (key, n, n))
+            conn.commit()
+
+    def _confirm(self, c, n):
+        for i in range(n):
+            c.record(DeliveryState.CONFIRMED, f"lxmf-{i}", protocol="rns")
+
+    def test_unconfirmable_protocol_drops_do_not_move_the_rate(self):
+        c = DeliveryCounters()
+        self._confirm(c, 4)
+        c.record(DeliveryState.DROPPED, "lxmf-x", protocol="rns",
+                 drop_reason=DropReason.RNS_DELIVERY_FAILED)
+        assert c.snapshot()["confirmation_rate"] == 0.8
+        for i in range(4):
+            c.record(DeliveryState.DROPPED, f"sec-{i}", protocol="secondary",
+                     drop_reason=DropReason.RETRIES_EXHAUSTED)
+        snap = c.snapshot()
+        assert snap["confirmation_rate"] == 0.8
+        assert snap["confirmable_protocols"] == ["rns"]
+
+    def test_first_tagged_drop_does_not_forgive_legacy_failures(self):
+        c = DeliveryCounters()
+        self._confirm(c, 8)
+        self._legacy_drop(c, 2)
+        assert c.snapshot()["confirmation_rate"] == 0.8
+        c.record(DeliveryState.DROPPED, "lxmf-x", protocol="rns",
+                 drop_reason=DropReason.RNS_DELIVERY_FAILED)
+        assert c.snapshot()["confirmation_rate"] == 8 / 11
+
+    def test_unconfirmable_tagged_drop_keeps_legacy_failures(self):
+        c = DeliveryCounters()
+        self._confirm(c, 8)
+        self._legacy_drop(c, 2)
+        c.record(DeliveryState.DROPPED, "sec-1", protocol="secondary",
+                 drop_reason=DropReason.RETRIES_EXHAUSTED)
+        assert c.snapshot()["confirmation_rate"] == 0.8

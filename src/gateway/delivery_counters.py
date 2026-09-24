@@ -154,6 +154,7 @@ def compute_confirmation_view(
     state_totals: Dict[str, int],
     state_by_protocol: Dict[str, Dict[str, int]],
     drop_reasons: Dict[str, int],
+    drop_reasons_by_protocol: Optional[Dict[str, Dict[str, int]]] = None,
 ) -> Dict[str, Any]:
     """Honest confirmation accounting from raw counters (Issue #74 display fix).
 
@@ -192,9 +193,32 @@ def compute_confirmation_view(
 
     confirmable = sorted(p for p, c in confirmed_by_proto.items() if _pos_int(c) > 0)
     confirmable_set = set(confirmable)
-    failures = sum(
-        _pos_int((drop_reasons or {}).get(r, 0)) for r in DELIVERY_FAILURE_REASONS
-    )
+    global_failures = {
+        r: _pos_int((drop_reasons or {}).get(r, 0)) for r in DELIVERY_FAILURE_REASONS
+    }
+    if drop_reasons_by_protocol and confirmable_set:
+        # Judge only protocols that can confirm: a failure on one that never
+        # confirms has no CONFIRMED counterpart, so it is the blind spot,
+        # surfaced separately — not the denominator (MeshAnchor review A_2 +
+        # its correction d97a4a6b, 2026-09-23; moc counted 143 `secondary`
+        # retries_exhausted against RNS). Drops recorded before drop_proto.*
+        # keys existed carry no protocol and STAY in the denominator:
+        # forgiving them would pair lifetime confirmations with post-patch
+        # failures only. Unattributed = global minus attributed.
+        attributed = dict.fromkeys(DELIVERY_FAILURE_REASONS, 0)
+        failures = 0
+        for p, reasons in drop_reasons_by_protocol.items():
+            for r, v in (reasons or {}).items():
+                if r in attributed:
+                    attributed[r] += _pos_int(v)
+                    if p in confirmable_set:
+                        failures += _pos_int(v)
+        failures += sum(max(0, global_failures[r] - attributed[r])
+                        for r in DELIVERY_FAILURE_REASONS)
+    else:
+        # No per-protocol keys yet, or nothing has confirmed: the global sum,
+        # so "attempted and failed, none confirmed" still reads 0.0.
+        failures = sum(global_failures.values())
     terminal = confirmed + failures
     rate = confirmed / terminal if terminal > 0 else None
     unconfirmable_sent = sum(
@@ -757,6 +781,12 @@ class DeliveryCounters:
                 counter_keys.append(
                     f"state_proto.{event.state.value}.{event.protocol}"
                 )
+                if event.drop_reason is not None:
+                    # Per-protocol drop reasons feed the confirmation view's
+                    # confirmable-only denominator (2026-09-23).
+                    counter_keys.append(
+                        f"drop_proto.{event.drop_reason.value}.{event.protocol}"
+                    )
             for key in counter_keys:
                 conn.execute(
                     "INSERT INTO counters(key, value) VALUES(?, 1) "
@@ -882,6 +912,7 @@ class DeliveryCounters:
         state_by_protocol: Dict[str, Dict[str, int]] = {
             s.value: {} for s in DeliveryState
         }
+        drop_reasons_by_protocol: Dict[str, Dict[str, int]] = {}
         first_event_ts: Optional[float] = None
         last_event_ts: Optional[float] = None
         # Cross-process health fields (set by the last writer's
@@ -901,6 +932,9 @@ class DeliveryCounters:
             elif key.startswith("state_proto."):
                 _, state_v, proto = key.split(".", 2)
                 state_by_protocol.setdefault(state_v, {})[proto] = value
+            elif key.startswith("drop_proto."):
+                _, reason_v, proto = key.split(".", 2)
+                drop_reasons_by_protocol.setdefault(proto, {})[reason_v] = value
             elif key == "meta.first_event_ts":
                 first_event_ts = value / 1000.0
             elif key == "meta.last_event_ts":
@@ -919,7 +953,8 @@ class DeliveryCounters:
         # ">100% confirmed" (observed 1.64) while the mesh direction had zero
         # delivery proof — a valid-looking value masking a blind spot.
         confirmation = compute_confirmation_view(
-            state_totals, state_by_protocol, drop_reasons)
+            state_totals, state_by_protocol, drop_reasons,
+            drop_reasons_by_protocol=drop_reasons_by_protocol)
 
         # dedup/identity arc STEP 4b (measure-only): per-box dup/miss
         # aggregation keyed by (content_id, recipient) — the first consumer
