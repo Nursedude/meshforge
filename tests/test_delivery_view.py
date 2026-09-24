@@ -359,6 +359,17 @@ class TestSoakLegs:
                       enrolled_fn=lambda unit, home: None)
         assert _leg(v, "Synth soak").status == dv.UNKNOWN
 
+    def test_indeterminate_round_names_the_exercisers_reason(self, tmp_path):
+        # moc3 2026-09-23: pass_envelope null + "send timeout in state OUTBOUND".
+        _soak(str(tmp_path), "propagation_soak", "prop-1.json",
+              {"pass_envelope": None, "total_indeterminate": 1,
+               "round_results": [{"ok": False, "reason": "send timeout in state OUTBOUND"}]})
+        v = _gather(tmp_path, gw="absent",
+                    enrolled={dv.PROPAGATION_SOAK_TIMER_UNIT: True})
+        leg = _leg(v, "Propagation soak")
+        assert leg.status == dv.UNKNOWN
+        assert "INDETERMINATE" in leg.why and "send timeout in state OUTBOUND" in leg.why
+
     def test_verdictless_result_is_unknown(self, tmp_path):
         _soak(str(tmp_path), "synth_soak", "synth-1.json", {"total_ok": 3})
         v = _gather(tmp_path, gw="absent", enrolled={self.SYN: True})

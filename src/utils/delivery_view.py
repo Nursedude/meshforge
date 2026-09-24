@@ -438,8 +438,20 @@ def soak_leg(title: str, home: str, leaf: str, prefix: str, unit: str,
                    why=f"newest result unreadable ({type(e).__name__})")
     passed = res.get("pass_envelope")
     if not isinstance(passed, bool):
-        return Leg(title, UNKNOWN, path, age,
-                   why="newest result carries no pass/fail verdict")
+        # Say the exerciser's OWN reason: the propagation soak writes
+        # pass_envelope null for an INDETERMINATE round (e.g. "send timeout
+        # in state OUTBOUND" — the node was never exercised), and "no
+        # pass/fail verdict" alone sent the reader digging (moc3 2026-09-23).
+        why = "newest result carries no pass/fail verdict"
+        indet = res.get("total_indeterminate")
+        reasons = [r.get("reason") for r in res.get("round_results") or ()
+                   if isinstance(r, dict) and r.get("reason")]
+        if isinstance(indet, int) and indet > 0:
+            why = (f"the exerciser called its newest round INDETERMINATE "
+                   f"({indet} round(s) not exercised)")
+        if reasons:
+            why += f" — {reasons[0]}"
+        return Leg(title, UNKNOWN, path, age, why=why)
     leg = Leg(title, OK, path, age, failing=not passed)
     ok, n = res.get("total_ok", "?"), res.get("total_samples", "?")
     thr = _num(res.get("ok_ratio_threshold"))
