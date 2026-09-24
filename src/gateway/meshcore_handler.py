@@ -136,6 +136,22 @@ class MeshCoreSimulator:
         return True
 
 
+def _record_tx(state: str, msg_id: Optional[str], reason: Optional[str] = None,
+               note: str = "") -> None:
+    """MeshCore egress → delivery_counters (2026-09-23, MA b3591e09 port):
+    without it a MeshCore leg reads as silence on the Delivery screen. Lazy
+    import (module-level delivery_counters imports deadlocked threaded
+    startup, 2026-06-06). record() never raises."""
+    try:
+        from gateway import delivery_counters as dc
+        dc.record(dc.DeliveryState(state), msg_id or f"meshcore-{time.time():.3f}",
+                  protocol="meshcore",
+                  drop_reason=dc.DropReason(reason) if reason else None,
+                  note=note[:80])
+    except Exception as e:
+        logger.warning(f"MeshCore delivery record failed ({state}): {e}")
+
+
 class MeshCoreHandler(BaseMessageHandler):
     """
     Handles MeshCore companion radio connection and message processing.
@@ -836,7 +852,9 @@ class MeshCoreHandler(BaseMessageHandler):
 
         try:
             dm_only = False
+            msg_id = None
             if isinstance(msg, CanonicalMessage):
+                msg_id = msg.id
                 text = msg.to_meshcore_text()
                 dest = msg.destination_address
                 dm_only = bool((msg.metadata or {}).get('dm_only'))
@@ -844,12 +862,13 @@ class MeshCoreHandler(BaseMessageHandler):
                 text = msg.get('message', '')
                 dest = msg.get('destination')
                 dm_only = bool(msg.get('dm_only'))
+                msg_id = msg.get('id')
             else:
                 text = str(msg)
                 dest = None
 
             success = await self._send_message(
-                text, dest, broadcast_fallback=not dm_only)
+                text, dest, broadcast_fallback=not dm_only, msg_id=msg_id)
 
             if success:
                 with self._stats_lock:
@@ -875,18 +894,32 @@ class MeshCoreHandler(BaseMessageHandler):
             logger.error(f"Error processing outbound MeshCore message: {e}")
 
     async def _send_message(self, text: str, destination: Optional[str] = None,
-                            broadcast_fallback: bool = True) -> bool:
+                            broadcast_fallback: bool = True,
+                            msg_id: Optional[str] = None) -> bool:
         """
         Send a text message to the MeshCore network.
 
         Args:
             text: Message text (will be truncated to 160 bytes if needed)
             destination: Destination address (None = channel broadcast)
+            broadcast_fallback: retained for callers; IGNORED since
+                2026-09-23 — a DM to an unknown contact is always dropped.
 
         Returns:
             True if sent successfully.
+
+        Real-radio channel broadcast is REFUSED (2026-09-23). This path called
+        ``commands.send_channel_txt_msg`` — a name borrowed from the simulator
+        that meshcore_py has never had (2.3.14 exposes only
+        ``send_chan_msg(chan, msg)``), so every real broadcast since 0538faed
+        died on AttributeError, and that error was all that stopped the
+        DM→broadcast fallback from airing directed text on the channel.
+        MeshForge has no outbound slot routing: the only slot it could name is
+        0 = Public. Refuse loudly until slot routing is ported from
+        MeshAnchor (``bridge_target_channel``, refuse-when-unset).
         """
         if not self._meshcore or not self._connected:
+            _record_tx("dropped", msg_id, "non_retriable_error", "not connected")
             return False
 
         # RF egress chokepoint — every MeshCore send funnels through here,
@@ -910,34 +943,37 @@ class MeshCoreHandler(BaseMessageHandler):
                     contact = self._find_contact(contacts, destination)
                     if contact:
                         await self._meshcore.commands.send_msg(contact, text)
+                        _record_tx("sent", msg_id, note=f"dm {destination}")
                         return True
-                    if not broadcast_fallback:
-                        # DM-only (oracle reply): a directed answer to an
-                        # unknown contact is DROPPED, never broadcast to the
-                        # whole channel.
-                        logger.warning(
-                            f"MeshCore contact not found for {destination}, "
-                            f"dm_only set — dropping (not broadcasting)")
-                        return False
-                    logger.warning(
-                        f"MeshCore contact not found for {destination}, "
-                        f"sending as channel broadcast")
-                # Fall through to broadcast
-                await self._meshcore.commands.send_channel_txt_msg(text)
+                # A directed message to an unknown contact is DROPPED, never
+                # broadcast — for every caller, not just dm_only (MeshAnchor's
+                # channel-0 Public leak fix, 2026-05-19).
+                logger.warning(
+                    f"MeshCore contact not found for {destination} — "
+                    f"dropping (a DM is never broadcast)")
+                _record_tx("dropped", msg_id, "destination_unreachable",
+                           f"no contact {destination}")
+                return False
+            if hasattr(self._meshcore, 'commands'):
+                logger.warning(
+                    "MeshCore channel broadcast REFUSED: MeshForge has no "
+                    "outbound slot routing (the only slot it could name is "
+                    "0 = Public). Port MeshAnchor's bridge_target_channel to "
+                    "enable it.")
+                _record_tx("dropped", msg_id, "non_retriable_error",
+                           "no slot routing")
+                return False
+            if hasattr(self._meshcore, 'send_channel_txt_msg'):
+                await self._meshcore.send_channel_txt_msg(text)  # simulator
+                _record_tx("sent", msg_id, note="simulator broadcast")
                 return True
-            else:
-                # Channel broadcast
-                if hasattr(self._meshcore, 'commands'):
-                    await self._meshcore.commands.send_channel_txt_msg(text)
-                elif hasattr(self._meshcore, 'send_channel_txt_msg'):
-                    await self._meshcore.send_channel_txt_msg(text)
-                else:
-                    logger.error("MeshCore instance has no send method")
-                    return False
-                return True
+            logger.error("MeshCore instance has no send method")
+            _record_tx("dropped", msg_id, "non_retriable_error", "no send method")
+            return False
 
         except Exception as e:
             logger.error(f"Failed to send MeshCore message: {e}")
+            _record_tx("dropped", msg_id, "non_retriable_error", str(e))
             return False
 
     # ── read-only snapshots for the status API (roadmap 1e, 2026-09-22) ──

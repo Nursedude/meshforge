@@ -743,7 +743,11 @@ class TestOracleDmOnlySend:
         assert ok is False               # dropped
         assert cmds.broadcasts == []     # NOT broadcast to the channel
 
-    def test_default_still_broadcasts_for_bridge_paths(self, handler):
+    def test_bridge_dm_to_unknown_contact_drops_too(self, handler):
+        """2026-09-23: this test used to pin the DM→broadcast fallback as
+        "legacy behavior intact" — only reachable because this double
+        fabricated send_channel_txt_msg. A DM is never broadcast, for any
+        caller (MeshAnchor's channel-0 Public leak fix)."""
         from utils import tx_guard
         cmds = self._Cmds()
         handler._meshcore = self._MC(cmds)
@@ -754,8 +758,9 @@ class TestOracleDmOnlySend:
                 "bridged text", destination="!stranger")  # default fallback
         with tx_guard.allow_meshcore_egress():
             ok = asyncio.run(_run())
-        assert ok is True
-        assert cmds.broadcasts == ["bridged text"]  # legacy behavior intact
+        assert ok is False
+        assert cmds.broadcasts == []
+
 
     def test_undeclared_send_is_refused_and_sends_nothing(self, handler):
         """THE drill for the 2026-08-09 finding: a test driving the MeshCore
@@ -794,3 +799,56 @@ class TestOracleDmOnlySend:
         assert sent is True
         queued = handler._send_queue.get_nowait()
         assert (queued.metadata or {}).get("dm_only") is True
+
+
+class TestRealLibraryShape:
+    """A double carrying ONLY the verbs meshcore_py 2.3.14 has
+    (``commands.send_msg`` / ``send_chan_msg`` / ``get_contacts``) — a
+    fixture that fabricates ``send_channel_txt_msg`` pins the author, not
+    the wire (persistent_issues, MeshCore channel_idx row)."""
+
+    class _Cmds:
+        def __init__(self, contacts=()):
+            self.calls = []
+            self._contacts = list(contacts)
+
+        async def get_contacts(self):
+            return self._contacts
+
+        async def send_msg(self, contact, text):
+            self.calls.append(("send_msg", text))
+
+        async def send_chan_msg(self, chan, msg, timestamp=None):
+            self.calls.append(("send_chan_msg", chan, msg))
+
+    def _send(self, handler, cmds, **kw):
+        from utils import tx_guard
+        handler._meshcore = SimpleNamespace(commands=cmds)
+        handler._connected = True
+        with tx_guard.allow_meshcore_egress():
+            return asyncio.run(handler._send_message("hello", **kw))
+
+    def test_channel_broadcast_refused_never_public(self, handler):
+        cmds = self._Cmds()
+        assert self._send(handler, cmds, destination=None) is False
+        assert cmds.calls == []  # above all: no send_chan_msg(0, …)
+
+    def test_dm_to_known_contact_is_sent(self, handler):
+        contact = {"public_key": b"\xab\xcd", "adv_name": "p3"}
+        cmds = self._Cmds([contact])
+        assert self._send(handler, cmds, destination="abcd") is True
+        assert cmds.calls == [("send_msg", "hello")]
+
+    def test_outcomes_reach_delivery_counters(self, handler):
+        from gateway import delivery_counters as dc
+        dc._reset_singleton_for_tests()
+        dc.get_singleton()._reset_for_tests()
+        contact = {"public_key": b"\xab\xcd", "adv_name": "p3"}
+        self._send(handler, self._Cmds([contact]), destination="abcd")
+        self._send(handler, self._Cmds(), destination="nobody")
+        self._send(handler, self._Cmds(), destination=None)
+        got = [(e.state.value, e.drop_reason and e.drop_reason.value)
+               for e in dc.get_singleton().recent() if e.protocol == "meshcore"]
+        assert sorted(got) == sorted([
+            ("sent", None), ("dropped", "destination_unreachable"),
+            ("dropped", "non_retriable_error")])
