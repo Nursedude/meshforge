@@ -5,6 +5,7 @@ Converted from latency_mixin.py as part of the mixin-to-registry migration.
 """
 
 import logging
+import time
 
 from backend import clear_screen
 from handler_protocol import BaseHandler
@@ -71,9 +72,17 @@ class LatencyHandler(BaseHandler):
             self.ctx.wait_for_enter()
             return
 
+        # UNKNOWN because the probe cannot be MADE is not "no data yet"
+        # (review B 2026-09-23: an EMFILE box read "No probe data yet").
+        unobservable = [s for s in summary if s.get('unobservable_since') is not None]
         has_data = any(s.get('status') != 'UNKNOWN' for s in summary)
-        if not has_data:
+        if not has_data and not unobservable:
             print("  No probe data yet. Use 'Probe Now' to run a check.\n")
+        for s in unobservable:
+            print(f"  {s.get('name', '?')}: UNKNOWN — cannot probe {s.get('host')}:{s.get('port')} "
+                  f"(the monitor could not open a socket); its numbers are history, not the present.")
+        if unobservable:
+            print()
 
         status_colors = {
             'HEALTHY': "\033[0;32m",
@@ -129,8 +138,10 @@ class LatencyHandler(BaseHandler):
             # HEALTHY here means "the TCP connect succeeded" — a listener, not
             # a working service; say what was measured (2026-09-23).
             shown = "OPEN (listening)" if status == 'HEALTHY' else status
+            if status == 'UNKNOWN' and svc.unobservable_since is not None:
+                shown = "UNKNOWN — cannot probe (samples below are history)"
             print(f"  {color}{icon}{reset} {name:<22} {color}{shown}{reset}")
-            if svc.is_reachable:
+            if svc.is_reachable and status != 'UNKNOWN':
                 print(f"    RTT: {svc.avg_rtt_ms:.1f}ms  Jitter: {svc.jitter_ms:.1f}ms  Loss: {svc.packet_loss_pct:.0f}%")
             elif status == 'DOWN':
                 print(f"    Service not responding on {svc.host}:{svc.port}")
@@ -146,16 +157,30 @@ class LatencyHandler(BaseHandler):
         monitor = get_latency_monitor(auto_start=False)
         summary = monitor.get_summary()
 
+        # An unobservable service is not "no data yet" and not "healthy":
+        # the probe could not be MADE (EMFILE etc.), so its status is UNKNOWN
+        # while it holds real history (review B 2026-09-23: this pane read
+        # "No probe data yet" / "All services healthy" under EMFILE).
+        unobservable = [s for s in summary if s.get('unobservable_since') is not None]
         has_data = any(s.get('status') != 'UNKNOWN' for s in summary)
-        if not has_data:
+        if not has_data and not unobservable:
             print("  No probe data yet. Use 'Probe Now' first.")
             self.ctx.wait_for_enter()
             return
 
         degraded = monitor.get_degraded()
 
+        for s in unobservable:
+            print(f"  \033[2m○ UNKNOWN\033[0m  {s['name']}")
+            print(f"           Cannot probe {s['host']}:{s['port']} — the monitor "
+                  f"could not open a socket (since {time.strftime('%H:%M:%S', time.localtime(s['unobservable_since']))}).")
+            print(f"           Not proven healthy; not proven down.\n")
+
         if not degraded:
-            print("  \033[0;32mAll services healthy.\033[0m No degradation detected.")
+            if unobservable:
+                print(f"  {len(unobservable)} service(s) UNOBSERVABLE; none of the observed ones is degraded.")
+            else:
+                print("  \033[0;32mAll services healthy.\033[0m No degradation detected.")
             self.ctx.wait_for_enter()
             return
 

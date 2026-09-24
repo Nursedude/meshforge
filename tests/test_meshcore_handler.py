@@ -852,3 +852,28 @@ class TestRealLibraryShape:
         assert sorted(got) == sorted([
             ("sent", None), ("dropped", "destination_unreachable"),
             ("dropped", "non_retriable_error")])
+
+    def test_refusal_is_deliberate_not_a_crash(self, handler, caplog):
+        """Reviewer drill 2026-09-23: with the ORIGINAL bug re-planted
+        (``commands.send_channel_txt_msg`` + return True) every test in
+        this class stayed green, because a double lacking that name turns
+        the bug into AttributeError -> the same dropped/non_retriable_error
+        the refusal records. Pin the refusal itself: a double that DOES
+        carry the fabricated name must not be called, and the record must
+        say why."""
+        import logging
+        from gateway import delivery_counters as dc
+        dc._reset_singleton_for_tests()
+        dc.get_singleton()._reset_for_tests()
+        cmds = self._Cmds()
+        called = []
+
+        async def send_channel_txt_msg(text):
+            called.append(text)
+        cmds.send_channel_txt_msg = send_channel_txt_msg
+        with caplog.at_level(logging.WARNING, logger="gateway.meshcore_handler"):
+            assert self._send(handler, cmds, destination=None) is False
+        assert called == [] and cmds.calls == []
+        assert any("REFUSED" in r.getMessage() for r in caplog.records)
+        (ev,) = [e for e in dc.get_singleton().recent() if e.protocol == "meshcore"]
+        assert ev.note == "no slot routing"
