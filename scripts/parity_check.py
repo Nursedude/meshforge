@@ -66,6 +66,11 @@ DEFAULT_MESHANCHOR = "/opt/meshanchor"
 BYTE_IDENTICAL = (
     "src/utils/rns_init.py",
     "src/gateway/canonical_message.py",
+    # The delivery-label vocabulary (2026-09-24, review C F7): which routing
+    # lanes count as which transport in delivery_counters. Both repos' writers
+    # and readers judge confirmation rates by it; a per-repo drift would make
+    # the twins count one radio under different labels. Dependency-free.
+    "src/utils/delivery_labels.py",
     # The RNS-tree permission foundation SSOT (configdir/logfile/storage layout
     # for a non-root rnsd — the mf.4/#73 perms class). App-agnostic, stdlib-only,
     # delegated to by both rns_alignment (MeshForge) and fleet_foundation (both
