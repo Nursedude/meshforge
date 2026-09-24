@@ -20,7 +20,9 @@ import json
 logger = logging.getLogger(__name__)
 
 # Import data models (extracted to reduce file size)
-from .network_topology import cached_rns_hops, path_entry_hops  # first-party: direct import
+from .network_topology import (  # first-party: direct import
+    TopologyEventType, cached_rns_hops, path_entry_hops,
+)
 from .node_models import (
     Position, PKIKeyState, PKIStatus,
     AirQualityMetrics, HealthMetrics, DetectionSensor,
@@ -1357,16 +1359,21 @@ class UnifiedNodeTracker:
             with self._lock:
                 node = self._nodes.get(node_id)
                 if node:
-                    # Update hop count from topology event. A 0 is REFUSED:
-                    # add_edge echoes whatever hops its caller passed, and the
-                    # announce path passes `node.hops or 0`, so an unknown hop
-                    # count came back here as a "measured" 0 (2026-09-23:
-                    # moc logged `rns_627fa566 hops: 0` then `hops: 1` two
-                    # seconds later). RNS increments packet.hops on every
-                    # inbound packet, so a remote path is >= 1 — this handler
-                    # only sees rns_ nodes, and 0 is never a measurement here.
+                    # Discriminate by SOURCE, not by value (review 2026-09-23).
+                    # PATH_DISCOVERED / HOP_COUNT_CHANGED are path-table
+                    # measurements INCLUDING 0: on a shared-instance client RNS
+                    # decrements the inbound hop for the interface to rnsd
+                    # (Transport.inbound `interface_to_shared_instance`), so a
+                    # destination of another local client on THIS box is a real
+                    # 0 (moc: 219 of 263 discoveries in one afternoon). EDGE_*
+                    # is add_edge echoing `node.hops or 0` — that 0 is refused.
                     nv = event.new_value
-                    if isinstance(nv, int) and not isinstance(nv, bool) and nv > 0:
+                    from_path_table = getattr(event, "event_type", None) in (
+                        TopologyEventType.PATH_DISCOVERED,
+                        TopologyEventType.HOP_COUNT_CHANGED,
+                    )
+                    if (isinstance(nv, int) and not isinstance(nv, bool)
+                            and (nv > 0 or (nv == 0 and from_path_table))):
                         node.hops = nv
                         node.update_seen()
                         logger.debug(f"Updated node {node_id[:12]} hops: {event.new_value}")

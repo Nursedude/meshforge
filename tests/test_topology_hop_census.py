@@ -3,7 +3,8 @@
 The pane printed "Total Edges 0 · Average Hops 0.00 · Maximum Hops 0" on moc
 while the tracker held 2,138 nodes: the edge graph lives in the gateway
 process, and every RNS hop count was the pre-fix 0 sentinel. Pinned: unknown
-is counted, RNS 0 is the sentinel, Meshtastic 0 is real, and the pane never
+is counted, an RNS 0 is bucketed apart (same-box via the shared instance, or
+the pre-fix sentinel) and never averaged, Meshtastic 0 is real, and the pane never
 prints an edge/hop NUMBER it could not observe.
 """
 import os
@@ -17,24 +18,24 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "launche
 from handlers import topology as t  # noqa: E402
 
 
-def test_rns_zero_is_sentinel_mesh_zero_is_real():
+def test_rns_zero_is_bucketed_apart_mesh_zero_is_real():
     c = t.hop_census([N(network="rns", hops=0), N(network="rns", hops=3),
                       N(network="rns", hops=None), N(network="meshtastic", hops=0)])
-    assert c["rns"] == {"known": [3], "unknown": 1, "sentinel": 1}
+    assert c["rns"] == {"known": [3], "unknown": 1, "zero": 1}
     assert c["meshtastic"]["known"] == [0]
 
 
 def test_garbage_hops_are_unknown():
     c = t.hop_census([N(network="rns", hops=True), N(network="rns", hops=-2),
                       N(network="rns", hops="3")])
-    assert c["rns"] == {"known": [], "unknown": 3, "sentinel": 0}
+    assert c["rns"] == {"known": [], "unknown": 3, "zero": 0}
 
 
-def test_format_names_the_sentinel_and_buckets():
+def test_format_names_the_zero_bucket_and_buckets():
     lines = "\n".join(t.format_hop_census(t.hop_census(
         [N(network="rns", hops=h) for h in (1, 2, 2, 7, 0)])))
     assert "4 known" in lines and "1:1 2:2 4+:1; max 7" in lines
-    assert "pre-fix sentinel, NOT a measurement" in lines
+    assert "recorded as 0 = on THIS box via the shared instance (real), OR the pre-fix sentinel" in lines
 
 
 class _Tracker:
@@ -61,7 +62,7 @@ def test_pane_never_prints_edge_or_hop_numbers_it_cannot_see(monkeypatch):
     text = h.ctx.dialog.msgbox.call_args.args[1]
     assert "NOT OBSERVABLE from the TUI" in text
     assert "Total Edges:    0" not in text and "Maximum Hops:   0" not in text
-    assert "5 recorded as 0 = the pre-fix sentinel" in text
+    assert "5 recorded as 0 = on THIS box via the shared instance" in text
     assert "Source:" in text
 
 

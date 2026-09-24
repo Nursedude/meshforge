@@ -33,3 +33,18 @@ def test_monitor_records_no_sample_and_witnesses_unmade_probes():
     assert len(health["svc"].samples) == 0
     assert m.unobservable_probes == 1
     assert health["svc"].status == "UNKNOWN"
+
+
+def test_unobservable_probe_does_not_hold_a_prior_verdict():
+    # Review 2026-09-23: one old HEALTHY sample + EMFILE forever read HEALTHY.
+    m = lm.LatencyMonitor(services=[("svc", "127.0.0.1", 1)])
+    with patch.object(lm, "probe_tcp", return_value=(True, 1.0)):
+        m.probe_once()
+    with patch.object(lm.socket, "socket", side_effect=OSError("EMFILE")):
+        health = m.probe_once()
+    assert health["svc"].status == "UNKNOWN"
+    assert health["svc"].summary()["unobservable_since"] is not None
+    with patch.object(lm, "probe_tcp", return_value=(True, 1.0)):
+        health = m.probe_once()
+    assert health["svc"].status == "HEALTHY"          # a real observation clears it
+    assert health["svc"].summary()["unobservable_since"] is None

@@ -99,6 +99,36 @@ def test_tracker_refuses_a_zero_echoed_back_by_add_edge():
         ntr.RNS_SERVICES_AVAILABLE = old
 
 
+def test_tracker_accepts_a_zero_measured_by_the_path_table():
+    # Review 2026-09-23: on a shared-instance client RNS DECREMENTS the inbound
+    # hop for the interface to rnsd, so a destination announced by another
+    # local client on this box is a REAL 0 (moc: 219 of 263 discoveries in one
+    # afternoon). Only the add_edge echo (EDGE_*) is the sentinel.
+    from gateway import node_tracker as ntr
+    from gateway.network_topology import TopologyEvent, TopologyEventType
+    from types import SimpleNamespace as N
+    import threading
+    tr = ntr.UnifiedNodeTracker.__new__(ntr.UnifiedNodeTracker)
+    tr._lock = threading.RLock()
+    node = N(hops=None, update_seen=lambda: None)
+    dest = b"\x0a" * 16
+    tr._nodes = {f"rns_{dest.hex()[:16]}": node}
+    old = ntr.RNS_SERVICES_AVAILABLE
+    ntr.RNS_SERVICES_AVAILABLE = True
+    try:
+        tr._on_topology_event(TopologyEvent(event_type=TopologyEventType.EDGE_UPDATED,
+                                            dest_hash=dest, new_value=0))
+        assert node.hops is None          # the echo is refused
+        tr._on_topology_event(TopologyEvent(event_type=TopologyEventType.PATH_DISCOVERED,
+                                            dest_hash=dest, new_value=0))
+        assert node.hops == 0             # the measurement is kept
+        tr._on_topology_event(TopologyEvent(event_type=TopologyEventType.HOP_COUNT_CHANGED,
+                                            dest_hash=dest, old_value=0, new_value=2))
+        assert node.hops == 2
+    finally:
+        ntr.RNS_SERVICES_AVAILABLE = old
+
+
 def test_cache_load_drops_the_rns_zero_sentinel_only():
     from gateway.network_topology import cached_rns_hops as _cached_hops
     assert _cached_hops({"network": "rns", "hops": 0}) is None

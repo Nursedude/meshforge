@@ -251,6 +251,25 @@ class TestDeliveryLeg:
         assert _leg(v, "Gateway delivery").failing
         assert v.headline().startswith("DEGRADED")
 
+    def test_no_confirmable_protocol_never_reads_arriving(self, tmp_path):
+        # Review 2026-09-23: a mesh-only gateway (no ACK anywhere) read
+        # "Messages are arriving" — nothing on the box proves an arrival.
+        snap = _snapshot()
+        snap["snapshot"]["state_by_protocol"] = {"confirmed": {}, "sent": {"meshtastic": 5}}
+        snap["snapshot"]["recent_terminal"] = []
+        _gateway_box(tmp_path, snap=snap)
+        v = _gather(tmp_path)
+        assert _leg(v, "Gateway delivery").thin
+        assert v.headline().startswith("QUIET")
+
+    def test_missing_ring_never_reads_arriving(self, tmp_path):
+        snap = _snapshot()
+        del snap["snapshot"]["recent_terminal"]
+        _gateway_box(tmp_path, snap=snap)
+        v = _gather(tmp_path)
+        assert _leg(v, "Gateway delivery").thin
+        assert not v.headline().startswith("Messages are arriving")
+
     def test_write_errors_flag_failing(self, tmp_path):
         snap = _snapshot()
         snap["snapshot"]["health"]["consecutive_write_errors"] = 4
@@ -323,6 +342,17 @@ class TestSoakLegs:
         v = _gather(tmp_path, gw="absent", enrolled={})
         leg = _leg(v, "Synth soak")
         assert leg.status == dv.INERT and "hand-run" in leg.why
+
+    def test_fresh_hand_run_failure_is_shown_not_hidden(self, tmp_path):
+        # Review 2026-09-23: the probe judges a FRESH result regardless of
+        # enrollment; only a STALE unenrolled artifact is a leftover.
+        _soak(str(tmp_path), "synth_soak", "synth-1.json", self._result(False),
+              age=300)
+        v = _gather(tmp_path, gw="absent", enrolled={})
+        leg = _leg(v, "Synth soak")
+        assert leg.status == dv.OK and leg.failing
+        assert "hand-run result" in dv.render(v)
+        assert v.headline().startswith("DEGRADED")
 
     def test_enrollment_unobservable_is_not_inert(self, tmp_path):
         v = dv.gather(home=str(tmp_path), now=NOW, gateway_resolver=_gw("absent"),

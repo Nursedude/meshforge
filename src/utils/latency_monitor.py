@@ -39,6 +39,12 @@ class ServiceHealth:
     host: str
     port: int
     samples: deque = field(default_factory=lambda: deque(maxlen=120))
+    #: Wall-clock of the first probe that could not be MADE since the last
+    #: real observation; None while probes are being made. While set, the
+    #: samples above are history, not the present — `status` says UNKNOWN
+    #: rather than holding the last verdict silently (hfm #2, review
+    #: 2026-09-23: an EMFILE box read HEALTHY forever on one old sample).
+    unobservable_since: Optional[float] = None
 
     @property
     def is_reachable(self) -> bool:
@@ -75,8 +81,9 @@ class ServiceHealth:
 
     @property
     def status(self) -> str:
-        """HEALTHY, DEGRADED, or DOWN."""
-        if not self.samples:
+        """HEALTHY, DEGRADED, DOWN — or UNKNOWN when there is no sample, or
+        the probe currently cannot be made (the samples are stale history)."""
+        if not self.samples or self.unobservable_since is not None:
             return "UNKNOWN"
         if not self.is_reachable:
             return "DOWN"
@@ -96,6 +103,7 @@ class ServiceHealth:
             'jitter_ms': round(self.jitter_ms, 1),
             'packet_loss_pct': round(self.packet_loss_pct, 1),
             'samples': len(self.samples),
+            'unobservable_since': self.unobservable_since,
         }
 
 
@@ -187,10 +195,15 @@ class LatencyMonitor:
                     success, rtt = probe_tcp(svc.host, svc.port)
                 except ProbeUnobservable as e:
                     # No sample: an unmade probe is unknown, not a failure
-                    # (and must not kill the monitor thread). Witnessed.
+                    # (and must not kill the monitor thread). Witnessed on
+                    # the monitor AND on the service, so its status stops
+                    # holding the last verdict while nothing is observed.
                     self.unobservable_probes += 1
+                    if svc.unobservable_since is None:
+                        svc.unobservable_since = time.time()
                     logger.debug("latency probe %s unobservable: %s", svc.name, e)
                     continue
+                svc.unobservable_since = None
                 svc.samples.append(LatencySample(
                     timestamp=time.time(),
                     rtt_ms=rtt,

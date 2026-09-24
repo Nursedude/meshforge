@@ -35,23 +35,24 @@ def hop_census(nodes) -> Dict[str, Any]:
     """Hop counts the node tracker actually holds, per network, honest about
     what is unknown.
 
-    ``hops`` None is unknown. An RNS node at 0 is ALSO unknown: RNS
-    increments ``packet.hops`` on every inbound packet, so a path learned from
-    the air is >= 1, and until 2026-09-23 the gateway wrote 0 for every
-    path-table node (network_topology.path_entry_hops). Those zeros persist in
-    node_cache.json until the gateway re-learns the path, so they are counted
-    as ``sentinel`` here, never averaged. A Meshtastic 0 is real (hopsAway 0 =
-    heard directly).
+    ``hops`` None is unknown. An RNS node at 0 is AMBIGUOUS and is counted
+    apart as ``zero``, never averaged: on a shared-instance client a
+    destination announced by another local client of rnsd on this box is a
+    real 0 (RNS decrements the inbound hop for the shared-instance interface —
+    moc measured 219 such paths in one afternoon), while until 2026-09-23 the
+    gateway ALSO wrote 0 for every path-table node (the tuple-parse defect),
+    and those persist in node_cache.json until the gateway restarts and
+    re-saves. A Meshtastic 0 is real (hopsAway 0 = heard directly).
     """
     out: Dict[str, Any] = {}
     for node in nodes:
         net = getattr(node, "network", "") or "?"
         h = getattr(node, "hops", None)
-        b = out.setdefault(net, {"known": [], "unknown": 0, "sentinel": 0})
+        b = out.setdefault(net, {"known": [], "unknown": 0, "zero": 0})
         if isinstance(h, bool) or not isinstance(h, int) or h < 0:
             b["unknown"] += 1
         elif h == 0 and net == "rns":
-            b["sentinel"] += 1
+            b["zero"] += 1
         else:
             b["known"].append(h)
     return out
@@ -75,9 +76,10 @@ def format_hop_census(census: Dict[str, Any]) -> List[str]:
             lines.append(f"  {net:<11} 0 known")
         if b["unknown"]:
             lines.append(f"  {'':<11} {b['unknown']} unknown")
-        if b["sentinel"]:
-            lines.append(f"  {'':<11} {b['sentinel']} recorded as 0 = the pre-fix "
-                         f"sentinel, NOT a measurement (unknown)")
+        if b["zero"]:
+            lines.append(f"  {'':<11} {b['zero']} recorded as 0 = on THIS box via the "
+                         f"shared instance (real), OR the pre-fix sentinel if the "
+                         f"gateway has not restarted since 2026-09-23 — not averaged")
     return lines
 
 

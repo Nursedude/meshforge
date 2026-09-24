@@ -278,10 +278,17 @@ def delivery_leg(home: str, now: float, gw: str) -> Leg:
 
     win = confirmation_window(snap)
     if not win["confirmable"]:
+        # Nothing here PROVES an arrival: a fresh record with no confirmable
+        # protocol must not let the headline say "arriving" (review
+        # 2026-09-23 — it did, on a mesh-only gateway).
+        leg.thin = True
         leg.lines.append("Recent window: no protocol has ever confirmed here — "
-                         "cannot judge a rate (Meshtastic has no ACK).")
+                         "cannot judge a rate (Meshtastic has no ACK). Nothing "
+                         "on this box proves an arrival.")
     elif win["ring_source"] is None:
-        leg.lines.append("Recent window: UNKNOWN — the events ring is missing.")
+        leg.thin = True
+        leg.lines.append("Recent window: UNKNOWN — the events ring is missing; "
+                         "the rate cannot be judged.")
     else:
         protos = ", ".join(win["confirmable"])
         t = win["terminal"]
@@ -395,12 +402,19 @@ def soak_leg(title: str, home: str, leaf: str, prefix: str, unit: str,
         if newest is None:
             return Leg(title, INERT, sdir, why=f"{unit} not enabled here — "
                                                f"this box does not run it")
-        # Hand-run artifacts are not a cadence (the 08-09 78-day lesson).
+        # Hand-run artifacts are not a cadence (the 08-09 78-day lesson) —
+        # but only a STALE one is a leftover. A FRESH hand-run result is a
+        # real round-trip observation and the probe judges it regardless of
+        # enrollment (watchdog_probes_gateway_flow: enrollment is consulted
+        # only on the stale branch); hiding a fresh FAIL as inert flattered
+        # the headline (review 2026-09-23).
         path, mtime = newest
-        return Leg(title, INERT, path, now - mtime,
-                   why=f"{unit} not enabled here; the newest result is a "
-                       f"hand-run artifact, not a live exerciser")
-    if enrolled is None:
+        if now - mtime > stale_after_s:
+            return Leg(title, INERT, path, now - mtime,
+                       why=f"{unit} not enabled here; the newest result is a "
+                           f"hand-run artifact, not a live exerciser")
+        head = f"{unit} not enabled here — this is a hand-run result, not a cadence"
+    elif enrolled is None:
         head = "cannot tell whether the soak timer is enabled here"
     else:
         head = ""

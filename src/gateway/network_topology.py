@@ -168,9 +168,13 @@ class NetworkEdge:
 #: TUPLE with hops at [1] and the interface at [0]. A list never matched,
 #: so every path-table node got the ``hops = 0`` default: 1,746 of 2,138
 #: nodes on moc and 1,557 of 1,610 on moc3, and not one real hop count.
-#: RNS increments ``packet.hops`` on every inbound packet
-#: (``Transport.inbound``), so a path learned from the air is >= 1 — a
-#: recorded 0 for a remote destination is never a measurement.
+#: A 0 IS a real reading here: RNS increments ``packet.hops`` on inbound,
+#: then DECREMENTS it again for the interface to the shared instance
+#: (``Transport.inbound``), so on a shared-instance client (the gateway) a
+#: destination of another local client of rnsd on the SAME box reads 0.
+#: moc: 225 of 275 path discoveries on 2026-09-23 were at 0 hops. (The
+#: first cut of this fix called every 0 a sentinel; the non-author review
+#: caught it — never judge a 0 by value, only by where it came from.)
 IDX_PT_HOPS = 2
 IDX_PT_RVCD_IF = 5
 
@@ -199,15 +203,16 @@ def path_entry_interface_hash(path_data) -> Optional[bytes]:
 
 
 def cached_rns_hops(node_data: dict) -> Optional[int]:
-    """``hops`` from a cached node, with the pre-2026-09-23 sentinel removed.
+    """``hops`` from a cached node; an ``rns`` 0 loads as unknown (None).
 
-    Until 8185b8b4/45c6a21d the gateway wrote 0 for every RNS node whose hop
-    count it never actually read (a tuple parse of a list, and an add_edge
-    echo). RNS increments packet.hops on every inbound packet, so a remote
-    RNS path is >= 1: a cached 0 on an ``rns`` node is that sentinel and
-    loads as unknown (None). Meshtastic 0 (hopsAway: heard directly) is
-    real and kept — including on ``both`` nodes, whose hops may be the
-    Meshtastic side's."""
+    A cached rns 0 is AMBIGUOUS, not known-false: until 8185b8b4/45c6a21d the
+    gateway wrote 0 for every RNS node whose hop count it never read (a tuple
+    parse of a list, and an add_edge echo), but a same-box destination on a
+    shared-instance client is a REAL 0 (see IDX_PT_HOPS). The file cannot say
+    which, so it loads as unknown; a real same-box 0 is re-measured on the
+    path monitor's first tick (PATH_DISCOVERED, which node_tracker accepts).
+    Meshtastic 0 (hopsAway: heard directly) is real and kept — including on
+    ``both`` nodes, whose hops may be the Meshtastic side's."""
     hops = node_data.get('hops')
     if hops == 0 and node_data.get('network') == 'rns':
         return None
