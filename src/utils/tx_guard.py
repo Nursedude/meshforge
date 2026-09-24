@@ -884,11 +884,18 @@ def _raise_blocked(record: dict) -> None:
             f"test to hand the code a real host:port "
             f"(see src/utils/tx_guard.py). test={record['test']} {detail}"
         )
+    # The remedy must be one that WORKS for this target: RNS and MeshCore are
+    # declared by their own context managers, and allow_targets() never
+    # covers them (2026-09-23 — the message sent a test author to a no-op).
+    remedy = {
+        RNS_TARGET: "utils.tx_guard.allow_rns_egress()",
+        MESHCORE_TARGET: "utils.tx_guard.allow_meshcore_egress()",
+    }.get(target, f"utils.tx_guard.allow_targets('{target}')")
     raise TransmitBlocked(
         f"RF egress refused by tx_guard: kind={kind} target={target}. "
         f"This process is running under pytest and {target} is not in the "
         f"harness allowlist. If this is a mock daemon, wrap the send in "
-        f"utils.tx_guard.allow_targets('{target}'). If you meant to key a "
+        f"{remedy}. If you meant to key a "
         f"real radio, that is the bug this guard exists to stop "
         f"(see src/utils/tx_guard.py). test={record['test']} {detail}"
     )

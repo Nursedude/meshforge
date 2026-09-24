@@ -990,3 +990,21 @@ class TestRnsGuardIsWiredAtEverySendSite:
             "Reticulum network (public transport nodes + LoRa RNode):\n  "
             + "\n  ".join(offenders)
         )
+
+
+class TestRefusalAdviceWorks:
+    """The refusal names a remedy; following it must actually unblock the
+    send. 2026-09-23: MeshCore/RNS refusals advised allow_targets(), which
+    never covers them — a test author obeyed the message and stayed refused."""
+
+    @pytest.mark.parametrize("assert_fn,remedy", [
+        (tx_guard.assert_meshcore_tx_allowed, "allow_meshcore_egress"),
+        (tx_guard.assert_rns_tx_allowed, "allow_rns_egress"),
+    ])
+    def test_named_remedy_unblocks(self, assert_fn, remedy):
+        with pytest.raises(TransmitBlocked) as exc:
+            assert_fn(kind="advice_drill")
+        assert f"utils.tx_guard.{remedy}()" in str(exc.value)
+        assert "allow_targets(" not in str(exc.value)
+        with getattr(tx_guard, remedy)():
+            assert_fn(kind="advice_drill")  # the advice works: no raise
