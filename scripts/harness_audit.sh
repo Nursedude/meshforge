@@ -73,7 +73,14 @@ echo "harness_audit — $(hostname) $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 for r in "$REPO" "$MA_REPO"; do
     [ -d "$r" ] || continue
     hp="$(git -C "$r" config core.hooksPath 2>/dev/null)"
-    if [ "$hp" != ".githooks" ]; then F "hooksPath($(basename "$r"))" "got '${hp:-unset}'"; continue; fi
+    # An ABSOLUTE path to this repo's own .githooks runs the same hooks (seen
+    # 2026-09-23: '/opt/meshforge/.githooks', believed written by a managed
+    # agent worktree; every commit that day still ran the hooks) — so it is
+    # judged by function below, not failed on spelling. Anything else fails
+    # WITH the remedy in the message.
+    if [ "$hp" != ".githooks" ] && [ "$hp" != "$r/.githooks" ]; then
+        F "hooksPath($(basename "$r"))" "got '${hp:-unset}' — fix: (cd $r && scripts/install-hooks.sh)"; continue
+    fi
     # The config STRING was the whole check, and it read PASS with the hooks
     # directory gone (§3 drill 2026-09-07) — the dormant spine this leg exists
     # to catch, entered through a second door. The hooks must also EXIST and
