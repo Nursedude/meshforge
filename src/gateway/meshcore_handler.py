@@ -958,8 +958,8 @@ class MeshCoreHandler(BaseMessageHandler):
                 logger.warning(
                     "MeshCore channel broadcast REFUSED: MeshForge has no "
                     "outbound slot routing (the only slot it could name is "
-                    "0 = Public). Port MeshAnchor's bridge_target_channel to "
-                    "enable it.")
+                    "0 = Public). For MeshCore-primary bridging use "
+                    "MeshAnchor (github.com/Nursedude/meshanchor).")
                 _record_tx("dropped", msg_id, "non_retriable_error",
                            "no slot routing")
                 return False
