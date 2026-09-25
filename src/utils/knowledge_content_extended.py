@@ -349,14 +349,15 @@ Example (LONG_FAST, 10 km, stock antennas):
   RX Cable:        -1.0 dB
   \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   Received:        -99.4 dBm
-  RX Sensitivity:  -134.5 dBm (SF11, BW250kHz)
-  Link Margin:     +35.1 dB  \u2190 Excellent!
+  RX Sensitivity:  -131.5 dBm (SF11, BW250kHz)
+  Link Margin:     +32.1 dB  \u2190 Excellent!
 
-Sensitivity by Preset:
-  SHORT_FAST (SF7):   -124.0 dBm
-  MEDIUM_FAST (SF9):  -130.5 dBm
-  LONG_FAST (SF11):   -134.5 dBm
-  LONG_SLOW (SF12):   -137.0 dBm
+Sensitivity by Preset (-174 + 10log10(BW) + 6 dB NF + SNR limit):
+  SHORT_FAST (SF7, 250 kHz):   -121.5 dBm
+  MEDIUM_FAST (SF9, 250 kHz):  -126.5 dBm
+  LONG_FAST (SF11, 250 kHz):   -131.5 dBm
+  LONG_SLOW (SF12, 125 kHz):   -137.0 dBm
+  Halving the bandwidth gains 3 dB; each SF step gains ~2.5 dB.
 
 Rules of Thumb:
 - Every 6 dB margin \u2248 double the reliability

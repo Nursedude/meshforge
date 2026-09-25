@@ -572,6 +572,7 @@ class LinkBudgetResult:
     link_margin_db: float  # How much signal above sensitivity
     estimated_snr_db: float
     signal_quality: str  # EXCELLENT/GOOD/FAIR/BAD
+    sensitivity_basis: str = ""  # e.g. "SF11, 250 kHz" — what the sensitivity is FOR
 
     def summary(self) -> List[str]:
         """Human-readable breakdown for TUI display."""
@@ -589,7 +590,8 @@ class LinkBudgetResult:
             f"RX Cable Loss:   {self.rx_cable_loss_db:-.1f} dB",
             f"Received Power:  {self.received_power_dbm:+.1f} dBm",
             f"---",
-            f"RX Sensitivity:  {self.rx_sensitivity_dbm:.1f} dBm",
+            f"RX Sensitivity:  {self.rx_sensitivity_dbm:.1f} dBm"
+            + (f" ({self.sensitivity_basis})" if self.sensitivity_basis else ""),
             f"Link Margin:     {self.link_margin_db:+.1f} dB",
             f"Est. SNR:        {self.estimated_snr_db:+.1f} dB",
             f"Signal Quality:  {self.signal_quality}",
@@ -608,6 +610,7 @@ def detailed_link_budget(
     distance_m: float = 1000.0,
     freq_mhz: float = 906.875,
     spreading_factor: int = 11,
+    bandwidth_khz: float = 250.0,
 ) -> LinkBudgetResult:
     """
     Calculate detailed link budget with full component breakdown.
@@ -626,6 +629,10 @@ def detailed_link_budget(
         distance_m: Link distance in meters
         freq_mhz: Frequency in MHz (default 906.875 for US LoRa)
         spreading_factor: LoRa SF (7-12, affects sensitivity)
+        bandwidth_khz: LoRa bandwidth (default 250 = LongFast, matching the
+            906.875 MHz default). Sensitivity comes from rx_sensitivity(SF, BW):
+            until 2026-09-25 this used the SF-only LORA_SENSITIVITY_DBM table
+            (125 kHz values), so every LongFast margin read 3 dB optimistic.
 
     Returns:
         LinkBudgetResult with full breakdown
@@ -655,8 +662,8 @@ def detailed_link_budget(
     # Received power
     rx_power = eirp - path_loss + rx_antenna_gain_dbi - rx_cable_loss
 
-    # LoRa sensitivity by spreading factor
-    sensitivity = LORA_SENSITIVITY_DBM.get(spreading_factor, -130.0)
+    # LoRa sensitivity for THIS SF and bandwidth (formula, 6 dB NF)
+    sensitivity = rx_sensitivity(spreading_factor, bandwidth_khz * 1000.0)
 
     # Link margin: how far above sensitivity we are
     margin = rx_power - sensitivity
@@ -683,6 +690,7 @@ def detailed_link_budget(
         link_margin_db=margin,
         estimated_snr_db=snr,
         signal_quality=quality.name,
+        sensitivity_basis=f"SF{spreading_factor}, {bandwidth_khz:g} kHz",
     )
 
 

@@ -474,6 +474,17 @@ class TestDetailedLinkBudget:
         result = detailed_link_budget(tx_power_dbm=30.0, distance_m=5000.0)
         assert result.link_margin_db > 0
 
+    def test_sensitivity_is_for_the_links_bandwidth(self):
+        """2026-09-25: the link budget read the SF-only 125 kHz table, so its
+        LongFast (SF11, 250 kHz) default margin was 3 dB optimistic."""
+        lf = detailed_link_budget()                       # 906.875 MHz, SF11
+        assert lf.rx_sensitivity_dbm == pytest.approx(-131.5, abs=0.05)
+        assert lf.sensitivity_basis == "SF11, 250 kHz"
+        assert "(SF11, 250 kHz)" in "\n".join(lf.summary())
+        narrow = detailed_link_budget(bandwidth_khz=125)
+        assert narrow.rx_sensitivity_dbm == pytest.approx(-134.5, abs=0.05)
+        assert narrow.link_margin_db - lf.link_margin_db == pytest.approx(3.0, abs=0.02)
+
     def test_eirp_calculation(self):
         """EIRP = tx_power - cable_loss + antenna_gain."""
         result = detailed_link_budget(

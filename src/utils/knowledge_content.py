@@ -189,8 +189,8 @@ BAD (unreliable):
 
 Link Margin:
 The difference between received signal and receiver sensitivity.
-- SF11 sensitivity: -134.5 dBm
-- SF12 sensitivity: -137 dBm
+- SF11 sensitivity: -131.5 dBm at 250 kHz (LongFast), -134.5 dBm at 125 kHz
+- SF12 sensitivity: -137 dBm at 125 kHz (LongSlow)
 - 10+ dB margin recommended for reliability
 
 These thresholds are based on the meshtastic-go library and MeshTenna

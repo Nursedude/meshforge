@@ -225,6 +225,7 @@ class StandaloneTools:
                         dist = float(input("  Distance (km) [5]: ") or "5") * 1000
                         freq = float(input("  Frequency (MHz) [906.875]: ") or "906.875")
                         sf = int(input("  Spreading Factor (7-12) [11]: ") or "11")
+                        bw = float(input("  Bandwidth (kHz) [250]: ") or "250")
 
                         result = detailed_link_budget(
                             tx_power_dbm=tx_power,
@@ -237,6 +238,7 @@ class StandaloneTools:
                             distance_m=dist,
                             freq_mhz=freq,
                             spreading_factor=sf,
+                            bandwidth_khz=bw,
                         )
                         print("\n─── Results ───")
                         for line in result.summary():
