@@ -755,6 +755,10 @@ TEMPLATE_PROVENANCE: dict = {
     # ── hand-deployed; documented-only (no committed installer by design) ──
     "meshforge-watchdog.service":  ("hand", "fleet daemon, hand-enabled; no committed "
                                             "installer; fleet_sync.sh restarts it (#3b-ii)"),
+    "meshforge-sdr-user.service": ("glob", "update.sh *-user.service loop -> meshforge-sdr.service (oneshot; the glob only copies, never enables -- inert on every box whose timer was not hand-enabled; only the Airspy host (moc5, 2026-09-24) runs it)"),
+    "meshforge-sdr-adjacent-user.service": ("glob", "update.sh *-user.service loop -> meshforge-sdr-adjacent.service (oneshot, inert unless its timer is hand-enabled; Airspy host only)"),
+    "meshforge-sdr-user.timer": ("hand", "hand-enabled ONLY on the box hosting the Airspy SDR (moc5, 2026-09-24); NOT globbed -- a .timer is outside the *-user.service loop. Deliberately not fleet-wide: an SDR timer with no SDR writes an `unknown` row every 5 min, machinery with no subject"),
+    "meshforge-sdr-adjacent-user.timer": ("hand", "hand-enabled ONLY on the Airspy host (moc5, 2026-09-24), hourly class-D pass; NOT globbed"),
     "meshforge-notes-prune-user.timer": ("hand", "hand-enabled ONLY on a box that writes session-notes handoffs (the dev box); NOT globbed -- a .timer is outside the *-user.service loop. Deliberately not fleet-wide: a timer on a box with no notes is machinery with no subject"),
     "meshforge-backup.service":    ("hand", "manager-box organ (the federator box), hand-enabled; fleet backup (c111f7a)"),
     "meshforge-backup.timer":      ("hand", "manager-box organ (the federator box), hand-enabled; fleet backup (c111f7a)"),
