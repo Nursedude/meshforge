@@ -102,16 +102,24 @@ class TestLogsInApp:
         assert "could not run" in body.lower()
 
     def test_snapshot_views_route_in_app_never_terminal(self):
-        # All 5 snapshot views go through _show_command_output (in-app); none
-        # runs a bare subprocess to the terminal.
+        # All 5 snapshot views CAPTURE their command and show it in-app; none
+        # runs a bare subprocess to the terminal. (2026-09-25: the unit views
+        # and rnsd Logs prepend notes, so they capture + textbox directly
+        # instead of going through _show_command_output — same invariant.)
+        from unittest.mock import patch
         h = self._handler()
         calls = []
         h._show_command_output = lambda title, cmd, **k: calls.append(cmd)
-        h._view_error_logs()
-        h._view_meshtasticd_recent()
-        h._view_rnsd_recent()
-        h._view_boot_messages()
-        h._view_kernel_messages()
+        h._capture_command = lambda cmd, timeout=15: calls.append(cmd) or "out"
+        with patch("handlers.logs.is_service_unit_installed",
+                   lambda u, **k: not k.get("user")), \
+                patch("handlers.logs.subprocess.run",
+                      side_effect=AssertionError("terminal subprocess")):
+            h._view_error_logs()
+            h._view_meshtasticd_recent()
+            h._view_rnsd_recent()
+            h._view_boot_messages()
+            h._view_kernel_messages()
         assert len(calls) == 5
         assert any("meshtasticd" in c and "-n" in c for c in calls)
         assert any(c[0] == "dmesg" for c in calls)

@@ -153,6 +153,18 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
         "evidence": "utils/report_generator.py, utils/meshtastic_modem.py, "
                     "tests/test_meshtastic_modem.py (planted SF10 -> 4 failures)",
     },
+    ("system", "logs"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "FIXED then verified: rnsd Logs read the journal only, but `rnsd --service` "
+                 "logs to <configdir>/logfile — it now shows that file (817 lines, 947 NUL bytes "
+                 "stripped; last entries = the 09-22 RNode serial drops). Error/boot/live views "
+                 "name units absent on this box and read user-scope units with --user-unit "
+                 "(`-u <absent>` printed '-- No entries --', reading as quiet). meshtasticd / "
+                 "kernel / app-log / crash / level / cleanup views not re-checked",
+        "partial": True,
+        "evidence": "handlers/logs.py _mesh_journal_args + _view_rnsd_recent; "
+                    "tests/test_logs_truth.py (all 4 fail on the old code)",
+    },
     ("rf_sdr", "link"): {
         "date": "2026-09-25", "box": "dev/manager box",
         "scope": "RF Tools calculators rendered with defaults + edge inputs, checked by hand: "
