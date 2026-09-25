@@ -3290,3 +3290,15 @@ Scope A (SDR writer reads through `sdr_view.load`) landed as `4c119515`.
 
 **Live-verified touch** (2026-09-25 08:40–09:05 HST, VolcanoAI): renders quoted in-session;
 ledger entries in `launcher_tui/live_truth.py` carry scope + evidence per action.
+
+## QUEUED 2026-09-25 (Opus 5.5) — RF & SDR / Logs live-truth pass + RNode ownership: MF `eb963326..b2d158c9`, MA `5791f370..8bbc65b4`
+
+**What to review** (author-applied, unreviewed; live-verified on the dev/manager box, MA logs on meshanchor-server):
+- `eb963326`+`0e21dbb4` utils/rnode_profile (region defaults = fleet's measured RNode profile; declaration RAISES on invalid) and the deletions (PROVEN_GATEWAY_CONFIGS, preset-"matching" helper, config/rns_config.py). ⚠️ eb963326 is a HALF commit (git add failed on an absent path, stderr hidden) — CI red on it was real.
+- `70667b71` RNode overlap check: `local_meshtastic_lora` opens a guarded MeshtasticConnection — confirm it never outlives the screen (#17/#75 class).
+- `88eb0775` link-budget sensitivity via rx_sensitivity(SF, BW) (was the 125 kHz table).
+- `9be8d15e` slot calculator on firmware maths; `rf.fcc_part15_247_check` — re-read 47 CFR 15.247(b)(3),(b)(4) yourself; the author chose NOT to credit cable loss against the conducted limit.
+- `6652862d` sunspot (daily-solar-indices.txt col 5) + band-conditions refusal; MA `e0af6c3e` ports the morning Kp/A/UNKNOWN fixes too (+ DX-cluster hostname validation MA lacked).
+- `e52a04f6`/`b2d158c9` logs: rnsd log = <configdir>/logfile; unit existence via is_service_unit_installed — its error path returns False (a failed check reads "not installed"). Is that acceptable on this screen?
+- `60518c10` scripts/rnode_fw_mirror.py (publishes to a PUBLIC repo under the operator's account when run with --publish).
+- Deliberately NOT changed, argue it: Site Planner forest model (n=5) — kept because it predicts the operator's "17 dBm too low" at ~76 m through ohia.

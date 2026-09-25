@@ -194,7 +194,12 @@ class MessagingHandler(BaseHandler):
         messages = result.data.get('messages', [])
         if not messages:
             print("  No messages recorded yet.")
-            print("  Start the RX listener to capture incoming messages.")
+            # The map daemon's listener already runs on boxes with a map; an
+            # empty history on a quiet uplinked channel is normal, not a fault
+            # (live-truth pass 2026-09-25 — this used to say "start the listener").
+            print(f"  {_RECORDING_NOTE}")
+            print("  Empty = nothing has arrived on those channels yet (or no map daemon "
+                  "runs here).")
             self.ctx.wait_for_enter()
             return
 

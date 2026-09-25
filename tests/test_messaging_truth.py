@@ -52,3 +52,18 @@ def test_command_reports_newest(tmp_path, monkeypatch):
     conn.close()
     d = cm.get_stats().data
     assert d["total"] == 1 and d["newest"]
+
+
+def test_empty_history_explains_itself_not_start_the_listener(monkeypatch):
+    fake = SimpleNamespace(get_messages=lambda limit=20: SimpleNamespace(
+        success=True, data={"messages": []}, message=""))
+    monkeypatch.setattr(hm, "_messaging", lambda: fake)
+    monkeypatch.setattr(hm, "clear_screen", lambda: None)
+    h = hm.MessagingHandler()
+    h.set_context(make_handler_context(dialog=FakeDialog()))
+    h.ctx.wait_for_enter = lambda *a, **k: None
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        h._messaging_view()
+    assert "Start the RX listener" not in out.getvalue()
+    assert "MQTT uplink" in out.getvalue()
