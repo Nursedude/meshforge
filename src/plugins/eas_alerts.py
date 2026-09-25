@@ -590,6 +590,38 @@ class EASAlertsPlugin(IntegrationPlugin):
             homepage="https://github.com/Nursedude/meshforge",
         )
 
+    def location_is_template(self) -> bool:
+        """True when the [location] is still the TEMPLATE's example point.
+
+        Found 2026-09-25 (live-truth pass, Dashboard › View Alerts): every box
+        either had no config file (template in memory) or a file WRITTEN from
+        the template by "load or create" — 48.50,-123.0, the Washington coast —
+        so every weather all-clear was about the wrong place. A file existing
+        is not a location configured; comparing to the template is.
+        """
+        tmpl = configparser.ConfigParser()
+        tmpl.read_string(EAS_CONFIG_TEMPLATE)
+        cfg = self._config if self._config is not None else self._load_config()
+        try:
+            return (abs(cfg.getfloat("location", "latitude") - tmpl.getfloat("location", "latitude")) < 1e-6
+                    and abs(cfg.getfloat("location", "longitude") - tmpl.getfloat("location", "longitude")) < 1e-6)
+        except (configparser.Error, ValueError):
+            return True   # unreadable location = not configured, never "configured"
+
+    def location_notice(self) -> str:
+        """The one line every consumer prints when the location is the template's."""
+        return ("location NOT CONFIGURED — still the template's example point "
+                "(48.50, -123.0, not your area). Set [location] latitude/longitude in "
+                f"{self._get_config_path()}")
+
+    def severity_filter_text(self) -> str:
+        """The severity filter an all-clear is relative to (e.g. 'Extreme,Severe')."""
+        cfg = self._config if self._config is not None else self._load_config()
+        try:
+            return cfg.get("noaa_weather", "severity_filter", fallback="").strip()
+        except configparser.Error:
+            return ""
+
     def _get_config_path(self) -> Path:
         """Get configuration file path."""
         if self._config_path:

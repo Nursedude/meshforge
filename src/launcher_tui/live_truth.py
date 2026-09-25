@@ -77,6 +77,35 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
         "partial": False,
         "evidence": "live render + systemctl/rnpath 06:55–07:0x HST",
     },
+    ("dashboard", "alerts"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "FIXED then verified: Mesh now UNKNOWN (the TUI's alert engine has no feed "
+                 "attached — was 'No active alerts' from an engine that observed nothing); "
+                 "Weather now UNKNOWN (location = the TEMPLATE's example point 48.50,-123.0 "
+                 "on every box — the Washington coast; NWS had a Small Craft Advisory there "
+                 "the plugin's severity filter dropped). System line NOT verified (harness "
+                 "has no env_state)",
+        "partial": True,
+        "evidence": "plugins/eas_alerts.py location_is_template + mesh_alert_engine.has_feed, "
+                    "tests/test_dashboard_alerts_truth.py; NWS api.weather.gov cross-check",
+    },
+    ("dashboard", "datapath"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "all six checks vs the system: :4403 accepting, CLI responds, /json N/A "
+                 "(#76), pubsub importable, collector 476 mapped / 560 unpositioned / radio "
+                 "334 (now labelled — was '334 nodes (476 with GPS)', two scopes mixed), "
+                 "rnpath 48 = 43 + 5 IPC; the fake '~677 node refs' dropped",
+        "partial": False,
+        "evidence": "collector properties dumped live; dashboard.py this commit",
+    },
+    ("dashboard", "score"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "honest UNKNOWN verified — but ONLY gateway_heartbeat feeds the scorer, so "
+                 "inside the TUI process it can never show a score: a structurally dead "
+                 "screen, decision owed (wire to the gateway's score, or retire)",
+        "partial": True,
+        "evidence": "grep of get_health_scorer() callers; live render",
+    },
     ("rf_sdr", "sdr_watch"): {
         "date": "2026-09-25",
         "box": "Airspy host",

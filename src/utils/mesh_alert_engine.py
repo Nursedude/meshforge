@@ -333,6 +333,15 @@ class MeshAlertEngine:
 
     # ── Public API ──────────────────────────────────────────────
 
+    def has_feed(self) -> bool:
+        """True when something feeds this engine (an attached MQTT subscriber).
+
+        An engine with no feed has OBSERVED nothing, so an empty alert list
+        from it is not "no alerts" (live-truth pass 2026-09-25: Dashboard ›
+        View Alerts printed "Mesh: No active alerts" from an engine the TUI
+        process never attached to anything)."""
+        return self._subscriber is not None
+
     def get_active_alerts(self) -> List[AlertEvent]:
         """Get recent unacknowledged alerts."""
         return [a for a in self._active_alerts if not a.acknowledged]

@@ -411,9 +411,9 @@ class DashboardHandler(BaseHandler):
                 capture_output=True, text=True, timeout=15
             )
             if result.returncode == 0:
-                node_lines = [line for line in result.stdout.split('\n')
-                             if 'Node' in line or '!' in line]
-                results.append(("meshtastic CLI", "OK", f"Responded, ~{len(node_lines)} node refs"))
+                # No count here: the old "~N node refs" counted text lines
+                # containing 'Node' or '!' — not nodes (live-truth pass).
+                results.append(("meshtastic CLI", "OK", "Responded"))
                 print("      \033[0;32mOK\033[0m - CLI responded")
             else:
                 results.append(("meshtastic CLI", "WARN",
@@ -491,12 +491,19 @@ class DashboardHandler(BaseHandler):
             collector = MapDataCollector(enable_history=False)
             geojson = collector.collect(max_age_seconds=30)
             props = geojson.get('properties', {})
+            # Two DIFFERENT scopes (measured 2026-09-25): total_nodes is the
+            # radio's own node total; nodes_with_position counts mapped
+            # features from ALL sources. "334 nodes (476 with GPS)" read as
+            # more nodes with GPS than nodes. Say what each is.
             total = props.get('total_nodes', 0)
             with_gps = props.get('nodes_with_position', 0)
+            no_pos = props.get('nodes_without_position_count', 0)
             sources = props.get('sources', {})
             active_sources = [k for k, v in sources.items() if isinstance(v, (int, float)) and v > 0]
             if total > 0:
-                results.append(("MapDataCollector", "OK", f"{total} nodes ({with_gps} with GPS)"))
+                results.append(("MapDataCollector", "OK",
+                                f"{with_gps} mapped from all sources (+{no_pos} without "
+                                f"position); the radio itself knows {total}"))
                 print(f"      \033[0;32mOK\033[0m - {total} nodes, sources: {active_sources}")
             else:
                 results.append(("MapDataCollector", "WARN", "0 nodes returned"))
@@ -739,8 +746,13 @@ class DashboardHandler(BaseHandler):
                     print(f"           {alert.message}")
                 if len(mesh_alerts) > 10:
                     print(f"  ... and {len(mesh_alerts) - 10} more")
-            else:
+            elif engine.has_feed():
                 print("  Mesh: No active alerts")
+            else:
+                # An engine with no feed observed nothing — silence is not a
+                # clean bill (live-truth pass 2026-09-25).
+                print("  Mesh: UNKNOWN — the alert engine in this TUI has no feed attached")
+                print("        (start the MQTT subscriber here: Mesh Networks › MQTT)")
         except Exception as e:
             logger.debug("Mesh alert check failed: %s", e)
 
@@ -751,17 +763,23 @@ class DashboardHandler(BaseHandler):
             # "could not reach NOAA". Reading the outcome instead is the only
             # way this line can be true (honest_failure_modes #2); the same
             # defect was live in Emergency Mode until 2026-09-15.
-            plugin.get_weather_alerts()
-            outcome = plugin.get_outcome(AlertSource.NOAA)
-            if outcome.observed and outcome.alerts:
-                print(f"WEATHER ALERTS ({len(outcome.alerts)}):")
-                for alert in outcome.alerts[:5]:
-                    print(f"  \033[0;31m!\033[0m {format_alert_line(alert)}")
-            elif outcome.observed:
-                print("  Weather: No active alerts")
+            if plugin.location_is_template():
+                # Every all-clear below would be about the TEMPLATE's example
+                # point, not this operator's area (live-truth pass 2026-09-25).
+                print(f"  Weather: UNKNOWN — {plugin.location_notice()}")
             else:
-                print(f"  Weather: UNKNOWN - {outcome.error or outcome.status}"
-                      f" (last answer {outcome.human_age()})")
+                plugin.get_weather_alerts()
+                outcome = plugin.get_outcome(AlertSource.NOAA)
+                if outcome.observed and outcome.alerts:
+                    print(f"WEATHER ALERTS ({len(outcome.alerts)}):")
+                    for alert in outcome.alerts[:5]:
+                        print(f"  \033[0;31m!\033[0m {format_alert_line(alert)}")
+                elif outcome.observed:
+                    sev = plugin.severity_filter_text()
+                    print("  Weather: No active alerts" + (f" at severity {sev}" if sev else ""))
+                else:
+                    print(f"  Weather: UNKNOWN - {outcome.error or outcome.status}"
+                          f" (last answer {outcome.human_age()})")
         except Exception as e:
             # A swallowed failure here used to print NOTHING, which reads as
             # "nothing to report". Say that we could not look.

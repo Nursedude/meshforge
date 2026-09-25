@@ -400,6 +400,16 @@ class EmergencyModeHandler(BaseHandler):
             return
 
         any_unknown = False
+        try:
+            template = plugin.location_is_template()
+        except Exception:
+            template = True
+        if template:
+            # Proximity sources would be judged around the TEMPLATE's example
+            # point, not this operator's area (live-truth pass 2026-09-25).
+            print(f"  ⚠ {plugin.location_notice()}")
+            print("  ALERT STATUS FOR YOUR AREA IS UNKNOWN — this is not an all-clear.\n")
+            any_unknown = True
         for outcome in outcomes:
             print(f"  {outcome.summary_line()}")
 
