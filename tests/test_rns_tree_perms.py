@@ -97,6 +97,8 @@ class TestBuildScript:
         script = build_logfile_perms_script('wh6gxz')
         assert 'chown root:wh6gxz' in script
         assert 'chmod 1775' in script
+        # rnsd's private key is made owner-only (2026-09-25: 666 on 7 of 10 boxes)
+        assert 'chmod 600 "$CD/storage/transport_identity"' in script
         assert 'chown wh6gxz:wh6gxz' in script and 'logfile' in script
         assert 'storage' in script
         assert str(CANONICAL_CONFIGDIR) in script

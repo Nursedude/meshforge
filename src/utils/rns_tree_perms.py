@@ -115,7 +115,10 @@ def build_logfile_perms_script(user: str) -> str:
     and the storage/ subtree <user>-owned (rnsd persists path/identity/hashlist
     there — root-owned storage silently broke persistence on the root boxes, which
     only worked because storage happened to be 0777). The config FILE stays
-    root:root (operator-managed). Idempotent.
+    root:root (operator-managed). rnsd's private key storage/transport_identity is
+    made owner-only (600): it was 666 on 7 of 10 boxes (measured 2026-09-25), and
+    every RNS process on a box runs as the rnsd user, so 600 costs no reader.
+    Idempotent.
 
     `user` is validated against _USERNAME_RE upstream, so it cannot carry shell
     metacharacters, but it is only ever placed in already-safe positions.
@@ -128,6 +131,7 @@ chown root:{user} "$CD"
 chmod 1775 "$CD"
 if [ -e "$CD/logfile" ]; then chown {user}:{user} "$CD/logfile"; fi
 if [ -d "$CD/storage" ]; then chown -R {user}:{user} "$CD/storage"; fi
+if [ -f "$CD/storage/transport_identity" ]; then chmod 600 "$CD/storage/transport_identity"; fi
 """
 
 
