@@ -410,6 +410,8 @@ class EmergencyModeHandler(BaseHandler):
             print(f"  ⚠ {plugin.location_notice()}")
             print("  ALERT STATUS FOR YOUR AREA IS UNKNOWN — this is not an all-clear.\n")
             any_unknown = True
+        else:
+            print(f"  Area: {plugin.location_point()} (from {plugin.location_source()})\n")
         for outcome in outcomes:
             print(f"  {outcome.summary_line()}")
 

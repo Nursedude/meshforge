@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
+from plugins import _eas_location as _eas_loc
 from typing import Dict, Any, List, Optional, Callable
 
 # Import plugin base classes via safe_import
@@ -555,6 +556,13 @@ class FetchOutcome:
 # Plugin Implementation
 # ============================================================================
 
+def _is_template_location(cfg) -> bool:
+    return _eas_loc._is_template_location(cfg, EAS_CONFIG_TEMPLATE)
+
+
+_read_legacy_location = _eas_loc._read_legacy_location
+
+
 class EASAlertsPlugin(IntegrationPlugin):
     """
     Emergency Alert System integration for MeshForge.
@@ -591,22 +599,25 @@ class EASAlertsPlugin(IntegrationPlugin):
         )
 
     def location_is_template(self) -> bool:
-        """True when the [location] is still the TEMPLATE's example point.
+        """True when the [location] in use is still the TEMPLATE's example
+        point (why it matters: plugins/_eas_location.py)."""
+        cfg = self._config if self._config is not None else self._load_config()
+        return _is_template_location(cfg)   # one rule, shared with the loader (hfm #5)
 
-        Found 2026-09-25 (live-truth pass, Dashboard › View Alerts): every box
-        either had no config file (template in memory) or a file WRITTEN from
-        the template by "load or create" — 48.50,-123.0, the Washington coast —
-        so every weather all-clear was about the wrong place. A file existing
-        is not a location configured; comparing to the template is.
-        """
-        tmpl = configparser.ConfigParser()
-        tmpl.read_string(EAS_CONFIG_TEMPLATE)
+    def location_source(self) -> str:
+        """Where the location in use came from — shown beside every all-clear."""
+        if self._config is None:
+            self._config = self._load_config()
+        if self.location_is_template():
+            return "template"
+        return getattr(self, "_location_source", None) or "eas_alerts.ini"
+
+    def location_point(self) -> str:
         cfg = self._config if self._config is not None else self._load_config()
         try:
-            return (abs(cfg.getfloat("location", "latitude") - tmpl.getfloat("location", "latitude")) < 1e-6
-                    and abs(cfg.getfloat("location", "longitude") - tmpl.getfloat("location", "longitude")) < 1e-6)
+            return f"{cfg.getfloat('location', 'latitude'):.2f}, {cfg.getfloat('location', 'longitude'):.2f}"
         except (configparser.Error, ValueError):
-            return True   # unreadable location = not configured, never "configured"
+            return "unreadable"
 
     def location_notice(self) -> str:
         """The one line every consumer prints when the location is the template's."""
@@ -646,6 +657,16 @@ class EASAlertsPlugin(IntegrationPlugin):
             self._save_config(config)
             logger.info(f"[EAS] Created default config at {config_path}")
 
+        # Location resolution — why: plugins/_eas_location.py. In memory, no rewrite.
+        self._location_source = "eas_alerts.ini"
+        if _is_template_location(config):
+            legacy = _read_legacy_location(get_real_user_home() / ".config" / "meshforge" / "eas_location.json")
+            if legacy:
+                config.set("location", "latitude", str(legacy[0]))
+                config.set("location", "longitude", str(legacy[1]))
+                self._location_source = "eas_location.json (operator-set; the retired EAS panel's file)"
+            else:
+                self._location_source = "template"
         return config
 
     def _save_config(self, config: Optional[configparser.ConfigParser] = None) -> None:

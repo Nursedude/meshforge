@@ -79,7 +79,11 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
     },
     ("dashboard", "alerts"): {
         "date": "2026-09-25", "box": "dev/manager box",
-        "scope": "FIXED then verified: Mesh now UNKNOWN (the TUI's alert engine has no feed "
+        "scope": "FIXED then verified: Weather now resolves the OPERATOR's point (the retired "
+                 "EAS panel's eas_location.json, orphaned by the GTK removal) — NWS confirmed a "
+                 "Hurricane Watch + Tropical Storm Warning for Big Island East that the old "
+                 "screen, checking the template's Washington point, could never show. "
+                 "Mesh now UNKNOWN (the TUI's alert engine has no feed "
                  "attached — was 'No active alerts' from an engine that observed nothing); "
                  "Weather now UNKNOWN (location = the TEMPLATE's example point 48.50,-123.0 "
                  "on every box — the Washington coast; NWS had a Small Craft Advisory there "

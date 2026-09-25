@@ -777,6 +777,7 @@ class DashboardHandler(BaseHandler):
                 elif outcome.observed:
                     sev = plugin.severity_filter_text()
                     print("  Weather: No active alerts" + (f" at severity {sev}" if sev else ""))
+                    print(f"        for {plugin.location_point()} (from {plugin.location_source()})")
                 else:
                     print(f"  Weather: UNKNOWN - {outcome.error or outcome.status}"
                           f" (last answer {outcome.human_age()})")
