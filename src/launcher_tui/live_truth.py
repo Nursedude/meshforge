@@ -159,8 +159,10 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
                  "logs to <configdir>/logfile — it now shows that file (817 lines, 947 NUL bytes "
                  "stripped; last entries = the 09-22 RNode serial drops). Error/boot/live views "
                  "name units absent on this box and read user-scope units with --user-unit "
-                 "(`-u <absent>` printed '-- No entries --', reading as quiet). meshtasticd / "
-                 "kernel / app-log / crash / level / cleanup views not re-checked",
+                 "(`-u <absent>` printed '-- No entries --', reading as quiet). meshtasticd (live "
+                 "router lines), kernel (dmesg), app-log list (48 files, newest 09-23) and crash "
+                 "log (tui_errors.log, 5,012 lines) render real data; level / cleanup not "
+                 "exercised (they write)",
         "partial": True,
         "evidence": "handlers/logs.py _mesh_journal_args + _view_rnsd_recent; "
                     "tests/test_logs_truth.py (all 4 fail on the old code)",
