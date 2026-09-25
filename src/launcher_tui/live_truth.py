@@ -159,10 +159,21 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
                  "FSPL 1 km/915 = 91.7 dB; Fresnel 5 km = 20.2 m (60% 12.1); link budget "
                  "arithmetic; EIRP 25 dBm = 316 mW. FIXED: EIRP called 33 dBm into 0 dBi "
                  "'LEGAL' (now FCC 15.247 conducted + EIRP); slot calculator 0-based (ch20 -> "
-                 "907.125, radio says 906.875). Antenna Comparison not checked",
-        "partial": True,
+                 "907.125, radio says 906.875). Antenna Comparison = the rf_sdr/antenna screens",
+        "partial": False,
         "evidence": "rf.fcc_part15_247_check, rf_tools._calc_frequency_slot, tests in "
                     "test_rf.py + test_meshtastic_modem.py (plants fail)",
+    },
+    ("rf_sdr", "antenna"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "compare / coverage / specs rendered; range factors checked by hand "
+                 "(8 dBi: 10^(5.85/20) = 1.96x; 13 dBi Yagi 3.49x). They assume FREE-SPACE "
+                 "scaling and did not say so — now stated, with the forest contrast (n~5: the "
+                 "same Yagi ~1.65x). Antenna gain/beamwidth catalogue values not verified "
+                 "against manufacturer datasheets",
+        "partial": True,
+        "evidence": "rf_tools._antenna_compare_all / _antenna_coverage_estimate notes; live "
+                    "renders 10:4x HST",
     },
     ("rf_sdr", "freq"): {
         "date": "2026-09-25", "box": "dev/manager box",

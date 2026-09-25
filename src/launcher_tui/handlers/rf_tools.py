@@ -412,6 +412,9 @@ Note: Check local regulations."""
         print(f"\n  Base range (stock whip): {base_range:.1f} km")
         print(f"  Target azimuth: {azimuth:.0f} degrees")
         print(f"\n  Factor: range multiplier vs stock dipole (2.15 dBi)")
+        print("  Assumes FREE-SPACE scaling (range ~ 10^(dG/20)). Through vegetation or")
+        print("  buildings gain buys far less: forest (n~5) is 10^(dG/50) — a 13 dBi Yagi")
+        print("  gives ~1.65x there, not 3.49x.")
         print()
         self.ctx.wait_for_enter()
 
@@ -474,6 +477,8 @@ Note: Check local regulations."""
             rng = _coverage_with_antenna(base_range, antenna, deg)
             factor = antenna.effective_range_factor(deg)
             lines.append(f"{label:>10} {gain:>6.1f}dBi {rng:>6.1f}km {factor:>6.2f}x")
+        lines.append("\nFree-space scaling (range ~ 10^(dG/20)); through forest or")
+        lines.append("buildings the same gain buys far less range.")
 
         self.ctx.dialog.msgbox("Coverage Estimate", "\n".join(lines))
 

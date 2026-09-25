@@ -16,7 +16,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 
 **Truth** says how the action's HONESTY is checked (`tests/test_tui_success_truth_sweep.py`, `launcher_tui/action_truth.py`): `sweep` = dispatched on every commit with every external DEAD and required to render a word of uncertainty; `local-only` = declared to consult no external (the why is in `action_truth.py`); `⚠️ false-ok` = a FROZEN baseline finding — renders a confident screen with nothing to be confident about. The baseline only shrinks.
 
-**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 17 action(s) have an entry — a blank is the honest default, not a failure.
+**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 18 action(s) have an entry — a blank is the honest default, not a failure.
 
 ## `about`
 
@@ -148,9 +148,9 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 |---|---|---|---|---|---|
 | `vna` | Antenna Analyzer — NanoVNA sweep, SWR, baselines |  | sweep |  | NanoVNAHandler |
 | `weather` | Space Weather — Propagation & HF bands |  | sweep |  | PropagationHandler |
-| `antenna` | Antenna Analysis — Compare antenna types |  | sweep |  | RFToolsHandler |
+| `antenna` | Antenna Analysis — Compare antenna types |  | sweep | ◐ 2026-09-25 dev/manager box | RFToolsHandler |
 | `freq` | Frequency Slots — Channel calculator |  | sweep | ✓ 2026-09-25 dev/manager box | RFToolsHandler |
-| `link` | Link Budget — FSPL, Fresnel, range |  | sweep | ◐ 2026-09-25 dev/manager box | RFToolsHandler |
+| `link` | Link Budget — FSPL, Fresnel, range |  | sweep | ✓ 2026-09-25 dev/manager box | RFToolsHandler |
 | `sdr` | SDR Monitor — RF awareness (Airspy) |  | sweep | ◐ 2026-09-24 Airspy host | SDRHandler |
 | `sdr_watch` | Interference Watch — what the Airspy timer saw (read-only) |  | sweep | ◐ 2026-09-25 Airspy host | SDRWatchHandler |
 | `site` | Site Planner — Coverage estimation |  | sweep | ◐ 2026-09-25 dev/manager box | SitePlannerHandler |
