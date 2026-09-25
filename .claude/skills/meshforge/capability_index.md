@@ -16,7 +16,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 
 **Truth** says how the action's HONESTY is checked (`tests/test_tui_success_truth_sweep.py`, `launcher_tui/action_truth.py`): `sweep` = dispatched on every commit with every external DEAD and required to render a word of uncertainty; `local-only` = declared to consult no external (the why is in `action_truth.py`); `⚠️ false-ok` = a FROZEN baseline finding — renders a confident screen with nothing to be confident about. The baseline only shrinks.
 
-**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 12 action(s) have an entry — a blank is the honest default, not a failure.
+**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 13 action(s) have an entry — a blank is the honest default, not a failure.
 
 ## `about`
 
@@ -64,7 +64,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | `moc_analysis` | MOC Analysis — Generate slide-ready SVG analysis pack |  | sweep |  | MOCAnalysisHandler |
 | `health` | Node Health — Battery, signal, latency |  | sweep | ✓ 2026-09-25 dev/manager box | NodeHealthHandler |
 | `offline_oracle` | offline oracle (ask the fleet lore) |  | sweep |  | OfflineOracleHandler |
-| `traffic_pulse` | Traffic Heartbeat — Live flow pulse (telem/RF/dups/QA) |  | sweep |  | TrafficPulseHandler |
+| `traffic_pulse` | Traffic Heartbeat — Live flow pulse (telem/RF/dups/QA) |  | sweep | ◐ 2026-09-25 dev/manager box | TrafficPulseHandler |
 
 ## `extensions`
 

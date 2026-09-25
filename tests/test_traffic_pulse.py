@@ -552,3 +552,43 @@ class TestPulseSnapshot:
         snap = tp.pulse_snapshot()  # must not raise
         json.dumps(snap)
         assert set(snap) == {"meta", "telemetry", "rf", "dups", "diag", "qa"}
+
+
+class TestQueueAge:
+    """A seven-week-old test residue must not read as current traffic (2026-09-25)."""
+
+    def _queue(self, tmp_path, monkeypatch, updated):
+        from gateway.message_queue import PersistentMessageQueue
+        path = tmp_path / "message_queue.db"
+        PersistentMessageQueue(db_path=str(path))  # the real schema
+        c = connect_tuned(path)
+        cols = [r[1] for r in c.execute("PRAGMA table_info(messages)")]
+        for i, st in enumerate(["dead_letter", "dead_letter", "pending"]):
+            row = {k: "" for k in cols}
+            row.update(id=f"m{i}", status=st, created_at=updated, updated_at=updated,
+                       priority=0, retry_count=0, max_retries=3)
+            keys = [k for k in cols if k in row]
+            c.execute(f"INSERT INTO messages ({','.join(keys)}) VALUES ({','.join('?' * len(keys))})",
+                      [row[k] for k in keys])
+        c.commit()
+        c.close()
+        monkeypatch.setattr(tp, "_db_path", lambda n: path if n == "message_queue" else None)
+
+    def test_old_queue_carries_its_age(self, tmp_path, monkeypatch):
+        self._queue(tmp_path, monkeypatch, "2026-08-05T14:55:26.448403")
+        q = tp._queue_facts()
+        assert (q["backlog"], q["dead_letter"]) == (1, 2)
+        assert q["last_activity_age_s"] > 30 * 86400
+
+    def test_unparseable_stamp_is_unknown_not_now(self, tmp_path, monkeypatch):
+        self._queue(tmp_path, monkeypatch, "not-a-date")
+        assert tp._queue_facts()["last_activity_age_s"] is None
+
+    def test_never_any_delivery_is_quiet_not_sending(self, monkeypatch):
+        monkeypatch.setattr(tp, "_queue_facts", lambda: {
+            "status": tp.OK, "backlog": 0, "dead_letter": 0})
+        empty = {"state_totals": {"queued": 0, "sent": 0, "confirmed": 0, "dropped": 0},
+                 "drop_reasons": {}, "last_event_ts": None, "health": {}}
+        qa = tp._qa_block(empty, datetime.now())
+        assert qa["status"] == tp.QUIET
+        assert "Sending" not in qa["verdict"]

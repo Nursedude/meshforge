@@ -210,5 +210,9 @@ class TrafficPulseHandler(BaseHandler):
               f"benign {qa.get('benign_drops', 0)} · circuit {qa.get('circuit_open', 0)}")
         q = qa.get("queue", {})
         if q.get("status") == "ok":
+            age = q.get("last_activity_age_s")
+            when = ("last activity unknown" if age is None else
+                    f"last activity {age / 86400:.0f} d ago" if age >= 86400 else
+                    f"last activity {age / 60:.0f} min ago")
             print(f"{'':<13}{_DIM}queue:{_RESET} backlog {q.get('backlog', 0)} · "
-                  f"dead-letter {q.get('dead_letter', 0)}")
+                  f"dead-letter {q.get('dead_letter', 0)} · {when}")

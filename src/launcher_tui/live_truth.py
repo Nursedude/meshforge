@@ -130,6 +130,17 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
         "evidence": "node_history_analytics._snapshots_per_hour + tests; snapshot gaps measured "
                     "over 48 h (median 63 min)",
     },
+    ("dashboard", "traffic_pulse"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "FIXED then verified (snapshot view): DIAG 'no active signals' = /api/status "
+                 "watchdog.signals []; queue 4 pending / 62 dead-letter = message_queue.db, "
+                 "every row from a test 51 d earlier — now shows 'last activity 51 d ago'; QA "
+                 "read 'Sending traffic' with sent=0 and no event ever — now 'quiet'. "
+                 "TELEMETRY/RF lines and the live auto-refresh loop not cross-checked",
+        "partial": True,
+        "evidence": "monitoring/traffic_pulse.py _iso_age_s + never-active branch, "
+                    "tests/test_traffic_pulse.py TestQueueAge",
+    },
     ("rf_sdr", "sdr_watch"): {
         "date": "2026-09-25",
         "box": "Airspy host",

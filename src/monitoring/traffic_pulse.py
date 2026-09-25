@@ -717,6 +717,19 @@ def _honest_confirmation(delivery: dict) -> Dict[str, Any]:
                       f"confirmed in the window ({rate:.0%})."}
 
 
+def _iso_age_s(stamp: Any) -> Optional[float]:
+    """Seconds since a queue row's ISO timestamp (written naive, local), or
+    None when absent or unparseable — never 0, which would read as 'now'."""
+    if not stamp:
+        return None
+    try:
+        then = datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return None
+    now = datetime.now(then.tzinfo) if then.tzinfo else datetime.now()
+    return max(0.0, (now - then).total_seconds())
+
+
 def _queue_facts() -> Dict[str, Any]:
     """Read-only message_queue depth + dead-letter count."""
     path = _db_path("message_queue")
@@ -729,8 +742,12 @@ def _queue_facts() -> Dict[str, Any]:
             counts[r["status"]] = r["n"]
         backlog = counts.get("pending", 0) + counts.get("in_progress", 0)
         dead = counts.get("dead_letter", 0)
+        # How old the queue's contents are. Measured 2026-09-25: a box with no
+        # gateway showed "backlog 4 · dead-letter 62" as present tense; every
+        # row was from a test seven weeks earlier that nothing will drain.
+        last = conn.execute("SELECT MAX(updated_at) FROM messages").fetchone()[0]
         return {"status": OK, "by_status": counts, "backlog": backlog,
-                "dead_letter": dead}
+                "dead_letter": dead, "last_activity_age_s": _iso_age_s(last)}
     except Exception as exc:
         logger.debug("traffic_pulse: queue read failed: %s", exc)
         return {"status": UNOBSERVABLE, "reason": "read_error"}
@@ -786,12 +803,15 @@ def _qa_block(delivery: Optional[dict], now: datetime) -> Dict[str, Any]:
         hard_fail.append(f"{circuit_open} circuit-open drops")
 
     concerns: List[str] = []
+    q_age = queue.get("last_activity_age_s")
+    q_when = (f" (queue idle {q_age / 86400:.0f} d)"
+              if isinstance(q_age, (int, float)) and q_age >= 86400 else "")
     dead = queue.get("dead_letter")
     if isinstance(dead, int) and dead > 0:
-        concerns.append(f"{dead} dead-letter messages")
+        concerns.append(f"{dead} dead-letter messages{q_when}")
     backlog = queue.get("backlog")
     if isinstance(backlog, int) and backlog >= 50:
-        concerns.append(f"{backlog} messages backlogged")
+        concerns.append(f"{backlog} messages backlogged{q_when}")
 
     stale = age_s is not None and age_s > STALE_AFTER_S
 
@@ -799,6 +819,13 @@ def _qa_block(delivery: Optional[dict], now: datetime) -> Dict[str, Any]:
         status = ALERT
         verdict = "Reliability concern: " + "; ".join(hard_fail)
         verdict += (" (also: " + "; ".join(concerns) + ")" if concerns else "") + "."
+    elif age_s is None and not any(int(v or 0) for v in state_totals.values()):
+        # Counters observed, and nothing has ever passed through them. Before
+        # 2026-09-25 this fell through to "Sending traffic" with sent=0 on
+        # every box that runs no gateway.
+        status = QUIET
+        verdict = "No delivery activity ever recorded on this box — nothing to judge"
+        verdict += (" (note: " + "; ".join(concerns) + ")" if concerns else "") + "."
     elif stale:
         status = STALE
         verdict = (f"No delivery activity for {int(age_s // 60)}m — gateway "
