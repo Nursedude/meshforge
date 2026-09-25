@@ -4,7 +4,7 @@ RNS Interfaces Handler — RNS network interface CRUD management.
 Converted from rns_interfaces_mixin.py as part of the mixin-to-registry migration.
 """
 
-from commands.rns import interface_enabled
+from utils.rns_interface_flags import interface_enabled
 import os
 import re
 import logging

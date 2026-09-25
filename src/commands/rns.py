@@ -1358,17 +1358,4 @@ def identity_exposure(path) -> str:
             f"{' and '.join(who)}; should be 600, owned by the rnsd user")
 
 
-_TRUE_WORDS = ("yes", "true", "on", "1")
-
-
-def interface_enabled(settings: dict) -> bool:
-    """Is this interface brought up by RNS? Mirrors RNS Reticulum.py: UP when
-    ``interface_enabled`` OR ``enabled`` is true (ConfigObj booleans, any
-    case), otherwise NOT brought up.
-
-    MeshForge read only ``enabled``: an RNode configured the canonical way
-    (``interface_enabled = True``) showed DISABLED in Interface Status while
-    rnsd ran it; one counter even treated a missing key as enabled
-    (live-truth pass 2026-09-25)."""
-    return any(str(settings.get(k, "")).strip().lower() in _TRUE_WORDS
-               for k in ("interface_enabled", "enabled"))
+from utils.rns_interface_flags import interface_enabled  # noqa: E402,F401  (re-export)
