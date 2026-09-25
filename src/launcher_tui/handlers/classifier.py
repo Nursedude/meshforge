@@ -45,7 +45,9 @@ class ClassifierHandler(BaseHandler):
 
             choice = self.ctx.dialog.menu(
                 "Traffic Classification",
-                "Message routing and event classification:",
+                "Message routing and event classification\n"
+                "(the gateway's classifier is internal to meshforge-gateway — "
+                "see each screen):",
                 choices
             )
 
@@ -80,8 +82,7 @@ class ClassifierHandler(BaseHandler):
 
         total = stats.get('total', 0)
         if total == 0:
-            print("  No routing decisions recorded yet.")
-            print("  Data appears when messages are classified for bridging.")
+            _print_not_visible_here()
             self.ctx.wait_for_enter()
             return
 
@@ -115,8 +116,7 @@ class ClassifierHandler(BaseHandler):
 
         total = stats.get('total', 0)
         if total == 0:
-            print("  No notification events classified yet.")
-            print("  Events are classified as they occur during operation.")
+            _print_not_visible_here()
             self.ctx.wait_for_enter()
             return
 
@@ -156,8 +156,7 @@ class ClassifierHandler(BaseHandler):
         receipts = router.get_receipts(limit=15)
 
         if not receipts:
-            print("  No classification receipts yet.")
-            print("  Receipts are recorded for each routing decision.")
+            _print_not_visible_here()
             self.ctx.wait_for_enter()
             return
 
@@ -191,8 +190,7 @@ class ClassifierHandler(BaseHandler):
         bounced = router.bouncer.get_queue() if router.bouncer else []
 
         if not bounced:
-            print("  No bounced items in queue.")
-            print("  Items are bounced when classification confidence is too low.")
+            _print_not_visible_here()
             self.ctx.wait_for_enter()
             return
 
@@ -208,3 +206,17 @@ class ClassifierHandler(BaseHandler):
 
         print()
         self.ctx.wait_for_enter()
+
+
+def _print_not_visible_here() -> None:
+    """The live classifier runs INSIDE meshforge-gateway and exports neither its
+    stats nor its receipts; this screen can only build a fresh, empty one. It
+    used to print "No routing decisions recorded yet" on every box — including
+    gateway boxes bridging traffic (live-truth pass 2026-09-25)."""
+    print("  UNKNOWN from here — the gateway's classifier runs inside the")
+    print("  meshforge-gateway process and does not export its decisions, so")
+    print("  this screen cannot see them (a zero here would be this screen's own")
+    print("  empty classifier, not the gateway's).")
+    print()
+    print("  What the bridge actually did: Dashboard › Delivery (persisted")
+    print("  delivery counters, including every drop reason).")

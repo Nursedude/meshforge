@@ -167,6 +167,17 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
         "evidence": "tests/test_messaging_truth.py (fail on old code); radio role + MQTT "
                     "config read via MeshtasticConnection; mosquitto_sub 90 s = 0 messages",
     },
+    ("mesh_networks", "traffic"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "FIXED (honesty, not wiring): all four screens built a FRESH classifier and "
+                 "printed 'No routing decisions recorded yet' on every box, gateway boxes "
+                 "included — the live classifier is inside meshforge-gateway and exports "
+                 "neither stats nor receipts. Screens now say UNKNOWN-from-here and point to "
+                 "Dashboard › Delivery (persisted counters). Wire-or-retire is the operator's call",
+        "partial": True,
+        "evidence": "handlers/classifier._print_not_visible_here; "
+                    "tests/test_classifier_screen_truth.py (4 fail on the old code)",
+    },
     ("mesh_networks", "check"): {
         "date": "2026-09-25", "box": "dev/manager box",
         "scope": "FIXED then verified: the gateway LXMF hash got a green check and 'send from "
