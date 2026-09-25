@@ -56,6 +56,7 @@ for _p in (str(_LAUNCHER), str(_SRC)):
 
 
 from launcher_tui.action_truth import truth_class  # noqa: E402  (after sys.path setup)
+from launcher_tui.live_truth import LIVE_VERIFIED, live_class  # noqa: E402
 
 
 def _clean_desc(desc: str) -> str:
@@ -224,6 +225,16 @@ def build_index_markdown() -> str:
         "about. The baseline only shrinks."
     )
     out.append("")
+    n_live = sum(1 for k in LIVE_VERIFIED)
+    out.append(
+        "**Live** says whether the action was ever checked against a LIVE answer "
+        "(`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = "
+        "partially (the entry's scope says what was NOT covered); blank = never "
+        "checked live. The Truth column proves honesty with everything dead; this "
+        f"one records correctness with everything alive. {n_live} action(s) have an "
+        "entry — a blank is the honest default, not a failure."
+    )
+    out.append("")
 
     if errored:
         # Honest surface: a handler whose menu_items could not be read is a
@@ -237,26 +248,27 @@ def build_index_markdown() -> str:
         title = section if section else "(no section)"
         out.append(f"## `{title}`")
         out.append("")
-        out.append("| Action tag | Description | Flag | Truth | Handler |")
-        out.append("|---|---|---|---|---|")
+        out.append("| Action tag | Description | Flag | Truth | Live | Handler |")
+        out.append("|---|---|---|---|---|---|")
         any_row = False
         for r in handlers:
             if r["error"]:
-                out.append(f"| _(error)_ | ⚠️ {r['error']} |  |  | {r['class']} |")
+                out.append(f"| _(error)_ | ⚠️ {r['error']} |  |  |  | {r['class']} |")
                 any_row = True
                 continue
             if not r["items"]:
                 # Lifecycle/dispatch-only handler: listed so the surface is
                 # complete, not silently absent.
-                out.append(f"| _(no menu items)_ | lifecycle / dispatch only |  |  | {r['class']} |")
+                out.append(f"| _(no menu items)_ | lifecycle / dispatch only |  |  |  | {r['class']} |")
                 any_row = True
                 continue
             for tag, desc, flag in sorted(r["items"], key=lambda t: t[0]):
                 flag_cell = f"`{flag}`" if flag else ""
-                out.append(f"| `{tag}` | {desc} | {flag_cell} | {truth_class(r['section'], tag)} | {r['class']} |")
+                out.append(f"| `{tag}` | {desc} | {flag_cell} | {truth_class(r['section'], tag)} | "
+                           f"{live_class(r['section'], tag)} | {r['class']} |")
                 any_row = True
         if not any_row:
-            out.append("| _(none)_ |  |  |  |  |")
+            out.append("| _(none)_ |  |  |  |  |  |")
         out.append("")
 
     return "\n".join(out).rstrip("\n") + "\n"
