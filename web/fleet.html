@@ -1245,7 +1245,9 @@
             let doc = null;
             try { doc = JSON.parse(raw); } catch (_) { /* non-JSON error body */ }
             if (!resp.ok) {
-                throw new Error((doc && doc.error) || ('HTTP ' + resp.status +
+                // a 403 body says WHY and HOW (your address, what this box
+                // trusts, the file to change) — show it, not a bare "forbidden"
+                throw new Error((doc && (doc.detail || doc.error)) || ('HTTP ' + resp.status +
                     (resp.status === 403 ? ' — logs are LAN-gated' : '')));
             }
             const lines = (doc && doc.lines) || [];

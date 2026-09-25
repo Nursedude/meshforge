@@ -936,6 +936,36 @@ def _build_daemon_signal_handler(server, pid_file):
     return handle_signal
 
 
+def _apply_extra_trusted_networks(cors_origins, path=None):
+    """Merge /etc/meshforge/trusted_networks into the read gate's origins.
+
+    Absent file = nothing added (the common case). Unreadable file = logged
+    WARNING and nothing added (fail CLOSED: the gate keeps its narrower set).
+    Every refused line is logged. Counts land on MapRequestHandler for
+    /api/status — the networks themselves never do (MF015)."""
+    from utils.map_http_handler import (MapRequestHandler, TRUSTED_NETWORKS_FILE,
+                                        load_extra_trusted_networks)
+    path = path or TRUSTED_NETWORKS_FILE
+    MapRequestHandler.extra_networks = {"state": "absent", "accepted": 0, "refused": 0}
+    try:
+        text = open(path, encoding="utf-8").read()
+    except FileNotFoundError:
+        return cors_origins
+    except OSError as e:
+        logger.warning("trusted networks file %s unreadable (%s) — gate unchanged", path, e)
+        MapRequestHandler.extra_networks = {"state": "unreadable", "accepted": 0, "refused": 0}
+        return cors_origins
+    origins, refused = load_extra_trusted_networks(text)
+    for why in refused:
+        logger.warning("trusted networks file %s REFUSED %s", path, why)
+    if origins:
+        logger.info("trusted networks file %s: %d extra /24(s) trusted by the read gate",
+                    path, len(origins))
+    MapRequestHandler.extra_networks = {"state": "ok", "accepted": len(origins),
+                                        "refused": len(refused)}
+    return (list(cors_origins or []) + origins) if origins else cors_origins
+
+
 def main():
     """Run the map server standalone.
 
@@ -997,11 +1027,14 @@ Examples:
     if args.cors_origins:
         cors_origins = [o.strip() for o in args.cors_origins.split(",")
                         if o.strip()]
+    # Operator-declared extra trusted networks (local file, never repo).
+    # Loaded AFTER logging is up — see _apply_extra_trusted_networks below.
 
     # Configure logging — use canonical logging_config
     from utils.logging_config import setup_logging
     log_level = logging.DEBUG if args.verbose else logging.INFO
     setup_logging(level=log_level)
+    cors_origins = _apply_extra_trusted_networks(cors_origins)
 
     # Status check
     if args.status:

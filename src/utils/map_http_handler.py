@@ -54,7 +54,7 @@ import time
 from datetime import datetime
 from http.server import SimpleHTTPRequestHandler
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Tuple, Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs, unquote
 
 logger = logging.getLogger(__name__)
@@ -166,6 +166,42 @@ def _trusted_networks_from_origins(allowed: Optional[List[str]]):
         except ValueError:
             continue  # non-IP host (localhost) or malformed prefix
     return nets
+
+
+#: Operator-declared extra networks the read gate trusts (2026-09-25). The gate
+#: derives its LAN from `hostname -I`, so a workstation on ANOTHER of the
+#: operator's LANs (a second building) was refused by every box not on it —
+#: "forbidden" on the Fleet monitor. Local config, never repo (MF014).
+TRUSTED_NETWORKS_FILE = "/etc/meshforge/trusted_networks"
+
+
+def load_extra_trusted_networks(text: str) -> Tuple[List[str], List[str]]:
+    """Parse the trusted-networks file: one private IPv4 /24 per line
+    (``a.b.c.0/24``), ``#`` comments. Returns (origin prefixes the gate
+    already understands — ``http://a.b.c.`` — and one reason per REFUSED line).
+
+    Deliberately narrow: this widens who may read service journals, so only
+    RFC 1918 /24s are accepted. A public network, a wider prefix, or a
+    malformed line is refused LOUDLY (never silently skipped, never widened)."""
+    origins: List[str] = []
+    refused: List[str] = []
+    for n, raw in enumerate(text.splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        try:
+            net = ipaddress.ip_network(line, strict=True)
+        except ValueError as e:
+            refused.append(f"line {n}: not a network ({e})")
+            continue
+        if net.version != 4 or net.prefixlen != 24:
+            refused.append(f"line {n}: only IPv4 /24 is accepted, got /{net.prefixlen}")
+            continue
+        if not net.is_private:
+            refused.append(f"line {n}: not a private network")
+            continue
+        origins.append("http://" + str(net.network_address).rsplit(".", 1)[0] + ".")
+    return origins, refused
 
 
 def _client_ip_trusted(client_host: str, allowed: Optional[List[str]]) -> bool:
@@ -378,12 +414,26 @@ class MapRequestHandler(
         return _client_ip_trusted(host, self.allowed_origins)
 
     def _reject_if_untrusted(self) -> bool:
-        """Send 403 + return True when the caller isn't loopback/LAN-trusted."""
+        """Send 403 + return True when the caller isn't loopback/LAN-trusted.
+
+        The body says WHY and HOW (2026-09-25: the Fleet monitor showed a bare
+        "forbidden" to the operator's own workstation on another of their LANs).
+        It echoes only the CALLER's own address — never the trusted networks
+        (MF015: publishing them hands out LAN topology)."""
         if self._client_is_trusted():
             return False
+        try:
+            client = self.client_address[0]
+        except (IndexError, AttributeError, TypeError):
+            client = "unknown"
         self._serve_json(
             {"error": "forbidden",
-             "detail": "endpoint restricted to loopback or a configured LAN origin"},
+             "client": client,
+             "detail": (f"This box does not trust reads from {client}: it trusts "
+                        f"loopback and its own LAN only (journals carry LAN "
+                        f"topology). To trust another of YOUR networks, add it "
+                        f"as a private /24 to {TRUSTED_NETWORKS_FILE} on this "
+                        f"box and restart meshforge-map.")},
             status=403)
         return True
 

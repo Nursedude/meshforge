@@ -314,6 +314,9 @@ class StatusEndpointsMixin:
         try:
             from utils.map_http_handler import read_gate_self_coverage
             status["read_gate"] = read_gate_self_coverage(self.allowed_origins)
+            # counts only — never the networks (MF015)
+            status["read_gate"]["extra_networks"] = getattr(
+                type(self), "extra_networks", {"state": "absent", "accepted": 0, "refused": 0})
         except Exception as e:  # unobservable != healthy, and != broken
             logger.debug(f"read-gate coverage failed: {e}")
             status["read_gate"] = {
