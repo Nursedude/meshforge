@@ -201,3 +201,28 @@ Sound: fixed gain / no AGC; clip scale (int16 = (adc−2048)<<4 then FIR,
 FULL_SCALE 32767 right); short-term floor stability; user-unit
 prerequisites; freeze posture; the taxonomy; JSONL + user timer; data-first
 soak. Reviewer moc5 touches logged in review_provenance (18:16–18:22).
+
+## 10. Open-input reference — MEASURED 2026-09-24 18:40–18:45 (antenna on, then removed)
+No terminator yet (operator will get one); open SMA is a rough reference.
+- **Class B is blind at gain 0–10**: antenna adds ~0 / ~0 / **~0.1 dB** at
+  gains 0 / 5 / 10 (floor = the Airspy's own noise), ~0.7 dB at 15, **~4.5 dB
+  at 21** (−74.5…−75.2 on vs −79.1…−79.3 open). → B is measured at HIGH gain
+  in its own bursts; A/C stay at gain 10. A terminated run will widen, not
+  shrink, the gain-21 margin.
+- **Headroom at gain 10 is ~6 dB for our own near-field TX**: the recorded LF
+  burst peaks ±16,940 of 32,767. Overload rows at gain 10 are expected data;
+  at gain 21 any burst containing a near-field TX clips — B judges only the
+  quiet bursts, and dropping the rest is correct.
+- **Spur vs carrier**: 911.9985 is the Airspy's OWN (present antenna-off,
+  +41.8 dB at g21 — would have been a false class A); a ~1/3-MHz comb whose
+  offset moves with the tuning centre is internal → `SPUR_MAP_MHZ` keyed by
+  (window, gain) in `utils/sdr_analysis.py`. **937.515 is external and real**
+  (antenna-only, off the comb). **925.006 is antenna-dependent but ON the
+  comb** → likely radiated by local electronics (BELIEVED), not a foreign 915
+  device; the soak decides.
+- **Defect found while building step 1**: `np.abs(int16 −32768)` overflows, and
+  the Airspy's int16 is (adc−2048)<<4 — an ADC pinned at the NEGATIVE rail read
+  as unclipped in both the Phase 0 script and the first cut of the module
+  (planted: old clip_frac 0.0, fixed 0.02). Earlier "0 clipped" results rest
+  on the positive rail also reading 0 — BELIEVED to hold, not re-verified.
+

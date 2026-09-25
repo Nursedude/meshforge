@@ -100,7 +100,7 @@ def capture(center_mhz: float, n: int, gain: int, tmpdir: str):
 
 def analyse(raw: np.ndarray, center_mhz: float, channels):
     """Per-channel stats for one burst. Pure."""
-    clip = float(np.mean(np.abs(raw) >= 0.95 * FULL_SCALE))
+    clip = float(np.mean(np.abs(raw.astype(np.int32)) >= 0.95 * FULL_SCALE))
     iq = raw[0::2].astype(np.float32) + 1j * raw[1::2].astype(np.float32)
     frames = iq.size // FFT
     spec = np.fft.fftshift(

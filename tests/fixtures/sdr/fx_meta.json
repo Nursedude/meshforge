@@ -1,0 +1,22 @@
+{
+ "lf_neartx": {
+  "center_mhz": 906.3,
+  "t": 1790311138.0342062,
+  "peak_lf_above_floor_db": 63.9
+ },
+ "906_quiet": {
+  "center_mhz": 906.3,
+  "t": 1790311138.0342062,
+  "from": "same burst, LF < floor+6"
+ },
+ "910_quiet": {
+  "center_mhz": 910.525,
+  "t": 1790311139.3962953
+ },
+ "sample_rate": 3000000,
+ "gain_linearity": 10,
+ "host": "moc5",
+ "dtype": "int16 interleaved IQ",
+ "device": "Airspy Mini fw v1.0.0-rc10",
+ "note": "recorded 2026-09-24; real receiver, real near-field emitters"
+}
