@@ -8,9 +8,6 @@ services reporting. The sweep reads those screens only through its porous
 text classifier, which is not gated at level two — so the source behaviour
 is pinned here, where it can fail.
 """
-from types import SimpleNamespace
-from unittest.mock import patch
-
 import utils.report_generator as rg
 from utils.diagnostic_engine import Category, DiagnosticEngine, Severity
 
@@ -37,30 +34,47 @@ def test_a_reported_symptom_still_yields_a_verdict():
     assert eng.get_health_summary()["overall_health"] == "critical"
 
 
-def _scorer(nodes, services):
-    snap = SimpleNamespace(overall_score=65.0, status="fair", node_count=nodes,
-                           service_count=services,
-                           category_scores={"connectivity": 50.0, "reliability": 100.0})
-    return SimpleNamespace(get_snapshot=lambda: snap, get_trend=lambda: "stable")
+def _report(monkeypatch, *, radio=None, history="absent", alerts=(), pulse=None):
+    """A report with every source planted; nothing reaches the live box."""
+    monkeypatch.setattr(rg.node_counts, "radio_self_report",
+                        lambda: radio or {"online": None, "why": "planted: no journal"})
+    monkeypatch.setattr(rg.node_counts, "meshtastic_radio_nodes",
+                        lambda: {"count": None, "why": "planted"})
+    monkeypatch.setattr(rg.node_counts, "rns_path_table_counts",
+                        lambda: {"network": None, "ipc": None, "why": "planted"})
+    ok = history == "ok"
+    monkeypatch.setattr(rg.nha, "health_timeline", lambda: {"state": history, "hours": []})
+    monkeypatch.setattr(rg.nha, "link_trends", lambda: {"state": history} if not ok else
+                        {"state": "ok", "declining": [], "nodes_judged": 0,
+                         "nodes_with_snr": 0, "edge_h": 6.0})
+    monkeypatch.setattr(rg.nha, "predictive", lambda: {"state": history} if not ok else
+                        {"state": "ok", "alerts": list(alerts), "battery_nodes_judged": 1,
+                         "snr_nodes_judged": 0, "min_samples": 6})
+    monkeypatch.setattr(rg, "_pulse", lambda: pulse or {
+        "diag": {"status": "unobservable", "detail": "planted"},
+        "qa": {"status": "unobservable", "detail": "planted"}})
+    return rg.generate_report()
 
 
-def _health_section(scorer):
-    gen = rg.ReportGenerator()
-    with patch.object(rg, "_HAS_HEALTH_SCORE", True), \
-            patch.object(rg, "_get_health_scorer", lambda: scorer):
-        gen._add_health_section()
-    return gen._sections[-1].content
+def test_report_with_nothing_observed_claims_nothing(monkeypatch):
+    """2026-09-25: the old report turned an UNKNOWN score into 'Network health
+    is degraded'. Nothing observed must yield no finding and no 'healthy'."""
+    text = _report(monkeypatch)
+    assert "degraded" not in text and "healthy" not in text.lower().replace("not healthy", "")
+    assert "Nothing measured calls for action." in text
+    for src in ("radio node count", "RNS path table", "node history",
+                "watchdog signals", "delivery QA"):
+        assert src in text.split("**Not observed**")[1]
 
 
-def test_report_scores_nothing_as_unknown():
-    text = _health_section(_scorer(0, 0))
-    assert "UNKNOWN" in text and "/100" not in text
-
-
-def test_report_scores_when_something_reports():
-    text = _health_section(_scorer(3, 0))
-    assert "**Overall Score: 65/100** (fair)" in text
-    assert "Nodes reporting: 3" in text
+def test_report_measured_battery_fall_is_a_finding(monkeypatch):
+    alert = {"kind": "battery", "name": "Solar1", "last": 40.0, "slope": -2.0,
+             "eta_h_to_floor": 10.0}
+    text = _report(monkeypatch, history="ok", alerts=[alert],
+                   radio={"online": 90, "total": 334, "age_s": 120, "source": "planted telemetry"})
+    assert "**[URGENT]** Solar1: battery 40% falling" in text
+    assert "**90 online / 334 known**" in text
+    assert "Nothing measured calls for action." not in text
 
 
 # --- RNS Fix Ownership: a verdict over what was actually checked ----------

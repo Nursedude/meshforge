@@ -1,71 +1,56 @@
 """
-Network Status Report Generator.
+Network Status Report Generator — the verified screens, in one document.
 
-Generates comprehensive markdown reports capturing current mesh network state.
-Pulls data from all available MeshForge subsystems:
-- Health scoring
-- Signal trending
-- Diagnostic history
-- Predictive maintenance
-- RF analysis
+Rebuilt 2026-09-25 by the TUI live-truth pass. The previous report read four
+in-process singletons (health scorer, signal trending manager, maintenance
+predictor, diagnostic engine) that nothing in the TUI process ever feeds. On a
+box with 334 radio nodes and 410 in the history it printed "No nodes currently
+tracked", an UNKNOWN score, and then turned that UNKNOWN into the
+recommendation "Network health is degraded" — a finding from no measurement.
+
+Every number now comes from a source a Dashboard screen already reads and the
+live pass checked against the real system:
+  * Nodes        — utils.node_counts (radio's own telemetry, map view, rnsd path table)
+  * Node history — utils.node_history_analytics (snapshots, link trends, falling battery/SNR)
+  * Watchdog / delivery — monitoring.traffic_pulse (the /api/status watchdog
+                   block and the delivery QA verdict)
+  * RF reference — utils.preset_impact, labelled as physics, not measurement
+
+Each source is tri-state: a value, or UNKNOWN with why. "Findings" lists only
+what was measured; sources that could not be read are listed as not observed,
+never folded into "healthy" (honest_failure_modes #2).
 
 Usage:
-    from utils.report_generator import generate_report, ReportConfig
-
-    report = generate_report()
-    print(report)  # Markdown string
-
-    # Or with config:
-    config = ReportConfig(include_rf_analysis=True, include_recommendations=True)
-    report = generate_report(config=config)
-
-    # Save to file:
-    save_report(report, "/path/to/report.md")
+    from utils.report_generator import generate_report, generate_and_save
+    print(generate_report())
 """
 
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from utils.safe_import import safe_import
+from __version__ import __version__
+from utils import node_counts
+from utils import node_history_analytics as nha
+from utils.preset_impact import PresetAnalyzer
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Optional dependency imports (consolidated via safe_import)
-# ---------------------------------------------------------------------------
-HealthScorer, format_health_display, get_health_scorer, _HAS_HEALTH_SCORE = safe_import(
-    'utils.health_score', 'HealthScorer', 'format_health_display', 'get_health_scorer'
-)
-SignalTrendingManager, _HAS_SIGNAL_TRENDING = safe_import(
-    'utils.signal_trending', 'SignalTrendingManager'
-)
-MaintenancePredictor, _HAS_PREDICTIVE_MAINTENANCE = safe_import(
-    'utils.predictive_maintenance', 'MaintenancePredictor'
-)
-get_diagnostic_engine, Category, _HAS_DIAGNOSTIC_ENGINE = safe_import(
-    'utils.diagnostic_engine', 'get_diagnostic_engine', 'Category'
-)
-PresetAnalyzer, _HAS_PRESET_IMPACT = safe_import(
-    'utils.preset_impact', 'PresetAnalyzer'
-)
-__version__, _HAS_VERSION = safe_import('__version__', '__version__')
+REFERENCE_PRESETS = ("SHORT_TURBO", "SHORT_FAST", "MEDIUM_FAST", "LONG_FAST", "LONG_SLOW")
 
 
 @dataclass
 class ReportConfig:
     """Configuration for report generation."""
     title: str = "MeshForge Network Status Report"
-    include_health: bool = True
-    include_signals: bool = True
-    include_diagnostics: bool = True
-    include_maintenance: bool = True
-    include_rf_analysis: bool = True
-    include_recommendations: bool = True
+    include_nodes: bool = True
+    include_history: bool = True
+    include_watchdog: bool = True
+    include_rf_reference: bool = True
+    include_findings: bool = True
     include_metadata: bool = True
-    max_diagnostic_entries: int = 20
-    max_signal_nodes: int = 50
+    max_listed: int = 10
 
 
 @dataclass
@@ -77,383 +62,207 @@ class ReportSection:
     order: int = 0
 
 
-class ReportGenerator:
-    """
-    Generates comprehensive markdown network status reports.
+def _pulse() -> Dict[str, Any]:
+    """The Traffic Heartbeat snapshot (watchdog + delivery QA). Lazy import:
+    monitoring is a heavier package and must not break report import."""
+    from monitoring.traffic_pulse import pulse_snapshot
+    return pulse_snapshot()
 
-    Collects data from all available MeshForge subsystems and
-    formats into a single coherent report.
-    """
+
+class ReportGenerator:
+    """Collects each source once, then renders sections and findings from it."""
 
     def __init__(self, config: Optional[ReportConfig] = None):
         self.config = config or ReportConfig()
         self._sections: List[ReportSection] = []
+        self._findings: List[Tuple[str, str]] = []   # (priority, text)
+        self._unobserved: List[str] = []
 
     def generate(self) -> str:
-        """
-        Generate the full report.
-
-        Returns:
-            Markdown-formatted report string
-        """
-        self._sections = []
-
-        # Header
+        """Generate the full report as markdown."""
+        self._sections, self._findings, self._unobserved = [], [], []
         self._add_header()
-
-        # Sections based on config
-        if self.config.include_health:
-            self._add_health_section()
-
-        if self.config.include_signals:
-            self._add_signal_section()
-
-        if self.config.include_maintenance:
-            self._add_maintenance_section()
-
-        if self.config.include_diagnostics:
-            self._add_diagnostics_section()
-
-        if self.config.include_rf_analysis:
+        if self.config.include_nodes:
+            self._add_nodes_section()
+        if self.config.include_history:
+            self._add_history_section()
+        if self.config.include_watchdog:
+            self._add_watchdog_section()
+        if self.config.include_rf_reference:
             self._add_rf_section()
-
-        if self.config.include_recommendations:
-            self._add_recommendations_section()
-
+        if self.config.include_findings:
+            self._add_findings_section()
         if self.config.include_metadata:
             self._add_metadata_section()
-
-        # Assemble
         return self._assemble_report()
 
+    # ── sections ─────────────────────────────────────────────────────
+    def _add(self, heading: str, lines: List[str], order: int) -> None:
+        self._sections.append(ReportSection(heading, 2, "\n".join(lines), order))
+
     def _add_header(self) -> None:
-        """Add report header."""
-        now = datetime.now()
-        content = f"Generated: {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         self._sections.append(ReportSection(
-            heading=self.config.title,
-            level=1,
-            content=content,
-            order=0,
-        ))
+            self.config.title, 1,
+            f"Generated: {now} · scope: this box only\n", 0))
 
-    def _add_health_section(self) -> None:
-        """Add network health scoring section."""
+    def _add_nodes_section(self) -> None:
         lines = []
+        radio = _safe(node_counts.radio_self_report, {"online": None})
+        if radio.get("online") is not None:
+            age = radio.get("age_s")
+            when = f", reported {age / 60:.0f} min ago" if age is not None else ""
+            lines.append(f"- Meshtastic radio: **{radio['online']} online / "
+                         f"{radio['total']} known** ({radio['source']}{when})")
+        else:
+            lines.append(f"- Meshtastic radio: UNKNOWN — {radio.get('why', 'no answer')}")
+            self._unobserved.append("radio node count")
+        view = _safe(node_counts.meshtastic_radio_nodes, {"count": None})
+        if view.get("count") is not None:
+            lines.append(f"- Map collector: {view['count']} nodes ({view['source']})")
+        else:
+            lines.append(f"- Map collector: UNKNOWN — {view.get('why', 'no answer')}")
+        rns = _safe(node_counts.rns_path_table_counts, {"network": None})
+        if rns.get("network") is not None:
+            lines.append(f"- RNS: **{rns['network']} network destinations** "
+                         f"(+{rns['ipc']} local IPC peers; {rns['source']})")
+        else:
+            lines.append(f"- RNS: UNKNOWN — {rns.get('why', 'no answer')}")
+            self._unobserved.append("RNS path table")
+        self._add("Nodes", lines, 10)
 
-        if _HAS_HEALTH_SCORE:
-            try:
-                scorer = _get_health_scorer()
-                if scorer is None:
-                    lines.append("*Health scorer not initialized — no node data available.*")
+    def _add_history_section(self) -> None:
+        lines = []
+        tl = _safe(nha.health_timeline, {"state": "unreadable", "error": "raised"})
+        if tl.get("state") != "ok":
+            lines.append(f"UNKNOWN — node history {_why(tl)}")
+            self._unobserved.append("node history")
+            self._add("Node History", lines, 20)
+            return
+        full = [h for h in tl["hours"] if h.get("snapshots")]
+        if full:
+            h = full[-1]
+            snr = h["avg_snr_online"]
+            lines.append(f"Latest snapshot hour ({datetime.fromtimestamp(h['hour_epoch']):%m-%d %H:00}): "
+                         f"**{h['known']} known, {h['online']} online**, mean SNR of online "
+                         f"nodes {'—' if snr is None else f'{snr:.1f} dB'} "
+                         f"({h['snr_samples']} readings)")
+        else:
+            lines.append("No full snapshot in the window yet.")
+        tr = _safe(nha.link_trends, {"state": "unreadable", "error": "raised"})
+        if tr.get("state") == "ok":
+            dec = tr["declining"]
+            lines.append(f"\nLink trends: {tr['nodes_judged']} of {tr['nodes_with_snr']} nodes judged "
+                         f"(first {tr['edge_h']:.0f} h vs last {tr['edge_h']:.0f} h); "
+                         f"{len(dec)} declining.")
+            for r in dec[:self.config.max_listed]:
+                lines.append(f"- {r['name']}: {r['snr_first']:.1f} → {r['snr_last']:.1f} dB "
+                             f"({r['delta_db']:+.1f})")
+            for r in dec:
+                if r["delta_db"] <= -6.0:
+                    self._findings.append(("soon", f"{r['name']}: SNR fell {-r['delta_db']:.1f} dB"))
+        else:
+            lines.append(f"\nLink trends: UNKNOWN — {_why(tr)}")
+        pr = _safe(nha.predictive, {"state": "unreadable", "error": "raised"})
+        if pr.get("state") == "ok":
+            alerts = pr["alerts"]
+            lines.append(f"\nFalling battery / SNR: {len(alerts)} alert(s) from "
+                         f"{pr['battery_nodes_judged']} battery and {pr['snr_nodes_judged']} SNR "
+                         f"series with ≥{pr['min_samples']} readings.")
+            for a in alerts[:self.config.max_listed]:
+                if a["kind"] == "battery":
+                    txt = (f"{a['name']}: battery {a['last']:.0f}% falling {-a['slope']:.2f} %/h, "
+                           f"~{a['eta_h_to_floor']:.0f} h to floor")
+                    self._findings.append(("urgent" if a["eta_h_to_floor"] < 24 else "soon", txt))
                 else:
-                    snapshot = scorer.get_snapshot()
-                if scorer is not None and not snapshot.node_count and not snapshot.service_count:
-                    # With nothing reporting, the scorer's category DEFAULTS
-                    # rendered as "65/100 (fair)" (truth sweep level two,
-                    # 2026-09-22) — a score of nothing is not a score.
-                    lines.append("**Overall Score: UNKNOWN** — no nodes or services "
-                                 "reporting to the health scorer; nothing was measured.")
-                elif scorer is not None:
-                    lines.append(f"**Overall Score: {snapshot.overall_score:.0f}/100** "
-                                 f"({snapshot.status})")
-                    lines.append("")
-                    lines.append("| Category | Score | Status |")
-                    lines.append("|----------|-------|--------|")
-                    for cat, score in snapshot.category_scores.items():
-                        status = _score_status(score)
-                        lines.append(f"| {cat.title()} | {score:.0f} | {status} |")
-                    lines.append("")
-                    lines.append(f"- Nodes reporting: {snapshot.node_count}")
-                    lines.append(f"- Services tracked: {snapshot.service_count}")
-
-                    trend = scorer.get_trend()
-                    if trend != 'stable':
-                        lines.append(f"- Trend: **{trend}**")
-            except Exception as e:
-                lines.append(f"*Error collecting health data: {e}*")
+                    txt = f"{a['name']}: SNR falling {-a['slope']:.2f} dB/h (last {a['last']:.1f})"
+                    self._findings.append(("monitor", txt))
+                lines.append(f"- {txt}")
         else:
-            lines.append("*Health score module not available.*")
+            lines.append(f"\nFalling battery / SNR: UNKNOWN — {_why(pr)}")
+        lines.append("\n*Source: node_history.db on this box (the map collector's snapshots; "
+                     "position-less nodes are not recorded).*")
+        self._add("Node History", lines, 20)
 
-        self._sections.append(ReportSection(
-            heading="Network Health",
-            level=2,
-            content="\n".join(lines),
-            order=10,
-        ))
-
-    def _add_signal_section(self) -> None:
-        """Add signal trending section."""
+    def _add_watchdog_section(self) -> None:
         lines = []
-
-        if _HAS_SIGNAL_TRENDING:
-            try:
-                manager = _get_signal_manager()
-                if manager is None:
-                    lines.append("*Signal trending not initialized — no signal data available.*")
-                else:
-                    nodes = manager.get_tracked_nodes()
-                    if not nodes:
-                        lines.append("*No nodes currently tracked.*")
-                    else:
-                        lines.append(f"Tracking {len(nodes)} node(s).\n")
-                        lines.append("| Node | Current SNR | Current RSSI | Trend | Samples |")
-                        lines.append("|------|-------------|--------------|-------|---------|")
-
-                        for node_id in sorted(nodes)[:self.config.max_signal_nodes]:
-                            report = manager.get_report(node_id)
-                            if report:
-                                snr_str = f"{report.current_snr:.1f} dB" if report.current_snr else "N/A"
-                                rssi_str = f"{report.current_rssi:.0f} dBm" if report.current_rssi else "N/A"
-                                trend = report.trend if hasattr(report, 'trend') else "—"
-                                samples = report.sample_count if hasattr(report, 'sample_count') else "—"
-                                lines.append(f"| {node_id} | {snr_str} | {rssi_str} | {trend} | {samples} |")
-
-                        # Check for degrading nodes
-                        degrading = manager.get_degrading_nodes()
-                        if degrading:
-                            lines.append(f"\n**Warning:** {len(degrading)} node(s) showing signal degradation.")
-            except Exception as e:
-                lines.append(f"*Error collecting signal data: {e}*")
-        else:
-            lines.append("*Signal trending module not available.*")
-
-        self._sections.append(ReportSection(
-            heading="Signal Quality",
-            level=2,
-            content="\n".join(lines),
-            order=20,
-        ))
-
-    def _add_maintenance_section(self) -> None:
-        """Add predictive maintenance section."""
-        lines = []
-
-        if _HAS_PREDICTIVE_MAINTENANCE:
-            try:
-                predictor = _get_maintenance_predictor()
-                if predictor is None:
-                    lines.append("*Maintenance predictor not initialized — no telemetry data.*")
-                else:
-                    node_ids = predictor.get_node_ids()
-                    if not node_ids:
-                        lines.append("*No nodes tracked for maintenance.*")
-                    else:
-                        # Battery forecasts
-                        forecasts = predictor.get_all_forecasts()
-                        battery_nodes = [f for f in forecasts.values()
-                                         if f.trend != 'insufficient_data']
-                        if battery_nodes:
-                            lines.append("### Battery Status\n")
-                            lines.append("| Node | Level | Drain Rate | Hours to Critical | Trend |")
-                            lines.append("|------|-------|------------|-------------------|-------|")
-                            for f in sorted(battery_nodes, key=lambda x: x.current_pct):
-                                rate = f"{f.drain_rate_pct_per_hour:.2f}%/h" if f.trend == 'draining' else "—"
-                                critical = f"{f.hours_to_critical:.0f}h" if f.hours_to_critical else "—"
-                                lines.append(f"| {f.node_id} | {f.current_pct:.0f}% | {rate} | "
-                                             f"{critical} | {f.trend} |")
-
-                        # Dropout patterns
-                        patterns = predictor.get_all_patterns()
-                        problem_nodes = [p for p in patterns.values()
-                                         if p.prediction in ('intermittent', 'failing')]
-                        if problem_nodes:
-                            lines.append("\n### Node Reliability Issues\n")
-                            lines.append("| Node | Uptime | Dropouts/Day | Pattern | Reliability |")
-                            lines.append("|------|--------|--------------|---------|-------------|")
-                            for p in sorted(problem_nodes, key=lambda x: x.reliability_score):
-                                lines.append(f"| {p.node_id} | {p.uptime_pct:.0f}% | "
-                                             f"{p.dropouts_per_day:.1f} | {p.prediction} | "
-                                             f"{p.reliability_score:.0f}/100 |")
-
-                        # Recommendations
-                        recs = predictor.get_maintenance_recommendations()
-                        if recs:
-                            lines.append("\n### Maintenance Actions\n")
-                            for rec in recs[:10]:
-                                icon = {'urgent': '!!!', 'soon': '!!',
-                                        'scheduled': '!', 'monitor': '?'}.get(rec.priority, '')
-                                lines.append(f"- **[{rec.priority.upper()}]** {rec.node_id}: "
-                                             f"{rec.action}")
-                                lines.append(f"  - Reason: {rec.reason}")
-
-                        if not battery_nodes and not problem_nodes and not recs:
-                            lines.append("All tracked nodes are healthy. No maintenance needed.")
-            except Exception as e:
-                lines.append(f"*Error collecting maintenance data: {e}*")
-        else:
-            lines.append("*Predictive maintenance module not available.*")
-
-        self._sections.append(ReportSection(
-            heading="Predictive Maintenance",
-            level=2,
-            content="\n".join(lines),
-            order=30,
-        ))
-
-    def _add_diagnostics_section(self) -> None:
-        """Add diagnostic history section."""
-        lines = []
-
-        if _HAS_DIAGNOSTIC_ENGINE:
-            try:
-                engine = get_diagnostic_engine()
-
-                # Health summary
-                summary = engine.get_health_summary()
-                lines.append(f"**System Health:** {summary.get('overall_health', 'unknown')}")
-                lines.append(f"- Symptoms last hour: {summary.get('symptoms_last_hour', 0)}")
-                lines.append(f"- Total diagnosed: {summary['stats'].get('diagnoses_made', 0)}")
-                lines.append(f"- Auto-recoveries: {summary['stats'].get('auto_recoveries', 0)}")
-
-                # Recent diagnoses
-                recent = engine.get_recent_diagnoses(limit=self.config.max_diagnostic_entries)
-                if recent:
-                    lines.append(f"\n### Recent Diagnoses ({len(recent)})\n")
-                    lines.append("| Time | Category | Cause | Confidence |")
-                    lines.append("|------|----------|-------|------------|")
-                    for d in recent[-10:]:
-                        ts = d.symptom.timestamp.strftime('%H:%M:%S') if hasattr(d.symptom.timestamp, 'strftime') else '—'
-                        cat = d.symptom.category.value
-                        cause = d.likely_cause[:50]
-                        lines.append(f"| {ts} | {cat} | {cause} | {d.confidence:.0%} |")
-
-                # Recurring issues
-                recurring = engine.get_recurring_issues(threshold=2, hours=24)
-                if recurring:
-                    lines.append("\n### Recurring Issues\n")
-                    for issue in recurring[:5]:
-                        lines.append(f"- **{issue['likely_cause']}** "
-                                     f"({issue['count']}x in {issue['category']})")
-            except Exception as e:
-                lines.append(f"*Error collecting diagnostic data: {e}*")
-        else:
-            lines.append("*Diagnostic engine not available.*")
-
-        self._sections.append(ReportSection(
-            heading="Diagnostics",
-            level=2,
-            content="\n".join(lines),
-            order=40,
-        ))
+        try:
+            snap = _pulse()
+        except Exception as e:  # the heartbeat's contract says it won't; be safe
+            logger.debug("report: pulse snapshot failed: %s", e)
+            self._unobserved += ["watchdog signals", "delivery QA"]
+            self._add("Watchdog & Delivery", [f"UNKNOWN — heartbeat snapshot failed ({e})"], 30)
+            return
+        diag, qa = snap.get("diag") or {}, snap.get("qa") or {}
+        lines.append(f"- Watchdog: {diag.get('status', 'unobservable')} — {diag.get('detail', '')}")
+        if diag.get("status") == "unobservable":
+            self._unobserved.append("watchdog signals")
+        for s in (diag.get("signals") or [])[:self.config.max_listed]:
+            lines.append(f"  - {s.get('cls')} · {s.get('subject')}")
+            self._findings.append(("soon", f"watchdog signal {s.get('cls')} on {s.get('subject')}"))
+        lines.append(f"- Delivery QA: {qa.get('status', 'unobservable')} — "
+                     f"{qa.get('verdict') or qa.get('detail', '')}")
+        if qa.get("status") == "unobservable":
+            self._unobserved.append("delivery QA")
+        elif qa.get("status") == "alert":
+            self._findings.append(("urgent", f"delivery: {qa.get('verdict')}"))
+        self._add("Watchdog & Delivery", lines, 30)
 
     def _add_rf_section(self) -> None:
-        """Add RF analysis section."""
-        lines = []
-
-        if _HAS_PRESET_IMPACT:
+        lines = ["*Reference figures computed from LoRa physics (receiver sensitivity at "
+                 "the preset's SF/BW, raw bit rate) — not measurements of this network.*\n",
+                 "| Preset | Sensitivity | Raw bit rate |",
+                 "|--------|-------------|--------------|"]
+        analyzer = PresetAnalyzer()
+        for preset in REFERENCE_PRESETS:
             try:
-                analyzer = PresetAnalyzer()
+                p = analyzer.analyze_preset(preset)
+                lines.append(f"| {preset} | {p.sensitivity_dbm:.1f} dBm | {p.throughput_bps:.0f} bps |")
+            except Exception as e:  # an unknown preset name is skipped, not fatal
+                logger.debug("report: preset %s: %s", preset, e)
+        self._add("RF Reference", lines, 50)
 
-                # Current preset analysis
-                lines.append("### LoRa Preset Summary\n")
-                lines.append("| Preset | Max Range (LOS) | Sensitivity | Throughput |")
-                lines.append("|--------|-----------------|-------------|------------|")
-
-                key_presets = ['SHORT_FAST', 'MEDIUM_FAST', 'LONG_FAST', 'LONG_SLOW']
-                for preset in key_presets:
-                    try:
-                        impact = analyzer.analyze_preset(preset)
-                        lines.append(f"| {preset} | {impact.max_range_los_km:.1f} km | "
-                                     f"{impact.sensitivity_dbm:.1f} dBm | "
-                                     f"{impact.throughput_bps:.0f} bps |")
-                    except Exception as e:
-                        logger.debug(f"Preset {preset} analysis failed: {e}")
-            except Exception as e:
-                lines.append(f"*Error in RF analysis: {e}*")
-        else:
-            lines.append("*RF analysis module not available.*")
-
-        self._sections.append(ReportSection(
-            heading="RF Analysis",
-            level=2,
-            content="\n".join(lines),
-            order=50,
-        ))
-
-    def _add_recommendations_section(self) -> None:
-        """Add actionable recommendations section."""
-        lines = []
-        recommendations = []
-
-        # Gather recommendations from all subsystems
-        try:
-            scorer = _get_health_scorer()
-            if scorer:
-                snapshot = scorer.get_snapshot()
-                if snapshot.overall_score < 50:
-                    recommendations.append(
-                        ("urgent", "Network health is critical — investigate immediately"))
-                elif snapshot.overall_score < 70:
-                    recommendations.append(
-                        ("soon", "Network health is degraded — review node connectivity"))
-
-                for cat, score in snapshot.category_scores.items():
-                    if score < 40:
-                        recommendations.append(
-                            ("soon", f"{cat.title()} score is low ({score:.0f}/100) — needs attention"))
-        except Exception as e:
-            logger.debug(f"Error collecting health recommendations: {e}")
-
-        try:
-            predictor = _get_maintenance_predictor()
-            if predictor:
-                for rec in predictor.get_maintenance_recommendations()[:5]:
-                    recommendations.append((rec.priority, f"{rec.node_id}: {rec.action}"))
-        except Exception as e:
-            logger.debug(f"Error collecting maintenance recommendations: {e}")
-
-        if recommendations:
-            # Sort by priority
-            priority_order = {'urgent': 0, 'soon': 1, 'scheduled': 2, 'monitor': 3}
-            recommendations.sort(key=lambda r: priority_order.get(r[0], 4))
-
-            for priority, action in recommendations:
-                icon = {'urgent': '[!!!]', 'soon': '[!!]',
-                        'scheduled': '[!]', 'monitor': '[?]'}.get(priority, '-')
-                lines.append(f"- {icon} **[{priority.upper()}]** {action}")
-        else:
-            lines.append("No actionable recommendations at this time. Network is healthy.")
-
-        self._sections.append(ReportSection(
-            heading="Recommendations",
-            level=2,
-            content="\n".join(lines),
-            order=60,
-        ))
+    def _add_findings_section(self) -> None:
+        order = {"urgent": 0, "soon": 1, "scheduled": 2, "monitor": 3}
+        lines = [f"- **[{p.upper()}]** {t}"
+                 for p, t in sorted(self._findings, key=lambda f: order.get(f[0], 4))]
+        if not lines:
+            lines.append("Nothing measured calls for action.")
+        if self._unobserved:
+            lines.append(f"\n**Not observed** (UNKNOWN, not healthy): {', '.join(self._unobserved)}.")
+        self._add("Findings", lines, 60)
 
     def _add_metadata_section(self) -> None:
-        """Add report metadata."""
-        lines = []
-
-        if _HAS_VERSION:
-            lines.append(f"- MeshForge Version: {__version__}")
-        else:
-            lines.append("- MeshForge Version: unknown")
-
-        lines.append(f"- Report Generated: {datetime.now().isoformat()}")
-        lines.append(f"- Host: {_get_hostname()}")
-        lines.append(f"- Python: {_get_python_version()}")
-
-        self._sections.append(ReportSection(
-            heading="Report Metadata",
-            level=2,
-            content="\n".join(lines),
-            order=99,
-        ))
+        import socket
+        import sys
+        v = sys.version_info
+        self._add("Report Metadata", [
+            f"- MeshForge Version: {__version__}",
+            f"- Report Generated: {datetime.now().isoformat()}",
+            f"- Host: {socket.gethostname()}",
+            f"- Python: {v.major}.{v.minor}.{v.micro}",
+        ], 99)
 
     def _assemble_report(self) -> str:
-        """Assemble all sections into final markdown."""
         parts = []
-        sorted_sections = sorted(self._sections, key=lambda s: s.order)
-
-        for section in sorted_sections:
-            prefix = "#" * section.level
-            parts.append(f"{prefix} {section.heading}\n")
-            parts.append(section.content)
-            parts.append("")  # Blank line between sections
-
+        for section in sorted(self._sections, key=lambda s: s.order):
+            parts += [f"{'#' * section.level} {section.heading}\n", section.content, ""]
         return "\n".join(parts)
+
+
+def _safe(fn, fallback: Dict[str, Any]) -> Dict[str, Any]:
+    """Call a source; an exception becomes UNKNOWN with the reason, never a value."""
+    try:
+        return fn()
+    except Exception as e:
+        logger.debug("report: %s failed: %s", getattr(fn, "__name__", fn), e)
+        return {**fallback, "why": f"{e.__class__.__name__}: {e}"}
+
+
+def _why(res: Dict[str, Any]) -> str:
+    state = res.get("state", "unknown")
+    detail = res.get("error") or res.get("why") or res.get("path") or ""
+    return f"{state}{f' ({detail})' if detail else ''}"
 
 
 # =============================================================================
@@ -461,30 +270,12 @@ class ReportGenerator:
 # =============================================================================
 
 def generate_report(config: Optional[ReportConfig] = None) -> str:
-    """
-    Generate a network status report.
-
-    Args:
-        config: Optional ReportConfig to customize output
-
-    Returns:
-        Markdown-formatted report string
-    """
-    generator = ReportGenerator(config)
-    return generator.generate()
+    """Generate a network status report (markdown)."""
+    return ReportGenerator(config).generate()
 
 
 def save_report(report: str, path: str) -> str:
-    """
-    Save a report to a file.
-
-    Args:
-        report: Markdown report content
-        path: File path to save to
-
-    Returns:
-        Absolute path of saved file
-    """
+    """Save a report to a file; returns the absolute path."""
     from pathlib import Path
     file_path = Path(path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -495,83 +286,10 @@ def save_report(report: str, path: str) -> str:
 
 def generate_and_save(path: Optional[str] = None,
                       config: Optional[ReportConfig] = None) -> str:
-    """
-    Generate and save a report.
-
-    Args:
-        path: Optional file path (defaults to timestamped file in config dir)
-        config: Optional ReportConfig
-
-    Returns:
-        Path to saved report file
-    """
+    """Generate and save a report (default: timestamped file in the config dir)."""
     if path is None:
         from utils.paths import get_real_user_home
         reports_dir = get_real_user_home() / ".config" / "meshforge" / "reports"
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = str(reports_dir / f"status_report_{timestamp}.md")
-
-    report = generate_report(config)
-    return save_report(report, path)
-
-
-# =============================================================================
-# Private helpers — lazy singleton access
-# =============================================================================
-
-_signal_manager = None
-_maintenance_predictor = None
-
-
-def _get_health_scorer():
-    """Get shared health scorer instance if available."""
-    if not _HAS_HEALTH_SCORE:
-        return None
-    return get_health_scorer()
-
-
-def _get_signal_manager():
-    """Get signal trending manager if available."""
-    global _signal_manager
-    if not _HAS_SIGNAL_TRENDING:
-        return None
-    if _signal_manager is None:
-        _signal_manager = SignalTrendingManager()
-    return _signal_manager
-
-
-def _get_maintenance_predictor():
-    """Get maintenance predictor if available."""
-    global _maintenance_predictor
-    if not _HAS_PREDICTIVE_MAINTENANCE:
-        return None
-    if _maintenance_predictor is None:
-        _maintenance_predictor = MaintenancePredictor()
-    return _maintenance_predictor
-
-
-def _score_status(score: float) -> str:
-    """Convert numeric score to status text."""
-    if score >= 80:
-        return "Good"
-    elif score >= 60:
-        return "Fair"
-    elif score >= 40:
-        return "Degraded"
-    else:
-        return "Critical"
-
-
-def _get_hostname() -> str:
-    """Get current hostname."""
-    import socket
-    try:
-        return socket.gethostname()
-    except Exception:
-        return "unknown"
-
-
-def _get_python_version() -> str:
-    """Get Python version string."""
-    import sys
-    return f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    return save_report(generate_report(config), path)
