@@ -375,6 +375,7 @@ pass or a follow-up.
 > than reasoning backwards from mtimes.
 
 - 2026-09-24 ~08:00 HST · VolcanoAI + all 9 MeshForge boxes · Opus 5.5 1M · operator-directed ("failure is not an option"; then "fleet_pull … in due process"). VolcanoAI: `scripts/install-hooks.sh` restored `/opt/meshforge` `core.hooksPath` '/opt/meshforge/.githooks' → '.githooks'; a drill briefly set it to '.git/hooks' (hooks OFF for seconds, no commit in that window) then restored; ran `harness_audit.sh` by hand and recorded its verdict with `cron_verdict.sh harness_audit 0` (17 PASS) — `cron_verdict_stale_any` → `currently_active: false`. Fleet: `fleet_pull.sh` to this commit (carries `a5a6abbe`, the hooksPath check fix) after CI green — NO restarts (harness_audit.sh is read fresh by each cron run) · could trip: a hand-run OK verdict at 17:45Z sits between the daily 15:35Z cron runs in `~/cron_verdicts.log` — it is a real run of the job, not a synthetic mark · cleanup: none
+- 2026-09-24 16:53 HST · meshanchor-server · Opus 5.5 · truth-sweep port deploy, operator-directed ("queue the review, then deploy"), CI green on MA `86940c35` first (3.10 + 3.11; `60fbe12b` was RED on 3.10 — the sweep fixture's pathlib-accessor hole, fixed in `86940c35`). `git pull --ff-only` `2b1f9f3e`→`86940c35`; `try-restart` ONLY `meshanchor-map` (2422039→2622186, t0 16:53:03, active, NRestarts 0, 0 err lines) — it hosts `/api/weather`, the one daemon-side consumer of the change. `meshanchor-daemon` deliberately NOT restarted (2422127 unchanged): its import graph reaches no changed module (`latency_monitor` only via `claude_assistant`, TUI-only). TUI changes load on next launch. Function: `/api/weather` served live NOAA (SFI 115, C1.1), root 200 · could trip: one ~6 s map gap; the map's weather now reads `mesh_impact: unknown` instead of `nominal` whenever NOAA is unreachable — correct, not a regression. Seen, NOT fixed: `k_index: null` beside `geomag_storm: Quiet` and `a_index: -1` (partial answer; MF's queued geomag-Quiet item) · cleanup: none. REVIEW OWED (queued below).
 - 2026-09-24 06:53–06:54 HST · MF fleet + meshanchor-server · Opus 5.5 1M · F7 label-unification deploy, operator-directed ("yes deploy after CI"), CI green on MF `cc1eaa64`/`287ee092` + MA `2b1f9f3e` first. MF: `fleet_pull.sh` 9/9 → `287ee092`, `try-restart` only where active: moc `meshforge-gateway` (3336254→3548381) + `meshforge-map` (3336382→3548627), moc3 `meshforge-gateway` (2299406→2449296). MA: pull → `2b1f9f3e`, `try-restart` `meshanchor-map` (2376791→2422039) + `meshanchor-daemon` (2255850→2422127). All active, NRestarts 0; the one ERROR line was the OUTGOING map's WebSocket shutdown (`Event loop stopped before Future completed`, 13× in 10 d on stop — pre-existing). Function: served `/api/gateway/delivery` on moc now carries only `meshtastic`/`rns` (no `primary`/`secondary`) in every state and the recent ring; rates unchanged (moc 0.97492, MA 0.94311) · could trip: ~8 s gaps per unit; moc's Delivery per-protocol breakdown merges the two radios under `meshtastic` — the lane survives in each event note (`lane=secondary`), not in the counter keys · cleanup: none. Also: `parity_check.py` now tracks `src/utils/delivery_labels.py` byte-identical (`287ee092`; planted drift → rc=1).
 - 2026-09-23 23:3x HST · MF fleet + meshanchor-server · Opus 5.5 1M · operator-directed ("Yes, go ahead with both recommendations"), CI green on MF `603a8681` + MA `7546755d` first. MA: `git pull --ff-only` → `7546755d`, NO restart (legibility LOWs; the weekly `meshanchor-daemon-restart.timer` loads them). MF: `fleet_pull.sh` 9/9 → `603a8681`, then `systemctl try-restart` ONLY where active and ONLY the units that host the delivery rule: moc `meshforge-gateway` (3070966→3336254, 23:34:19) + `meshforge-map` (2984185→3336382, 23:34:30); moc3 `meshforge-gateway` (2112574→2299406, 23:34:39; its map stays inactive by design) — all active, NRestarts 0, 0 errors since t0; other maps NOT bounced (no gateway, no delivery data). This makes MF `286a812f` + `603a8681` LIVE — the 22:40 line's pull was not. Function: moc confirmed rns 27983→27995 after restart (writer recording), rate 0.97486 UNCHANGED (correct: moves only as tagged drops accrue); gateway traffic in journal on both · could trip: two ~8 s bridging gaps (moc, moc3), one map gap on moc; `running-code skew` NOTE persists on the unbounced maps — harmless for this change · cleanup: none
 - 2026-09-23 ~22:40 HST · all 9 MeshForge boxes · Opus 5.5 1M · `scripts/fleet_pull.sh` to this commit (carries `286a812f`: per-protocol confirmation denominator WITH legacy drops kept + simulator no-record) — NO restarts, operator-directed ("yes deploy both after CI"), CI green on `286a812f` first · could trip: nothing now; the reader/writer change activates at each gateway's/map's next restart, in either order (old writer = no drop_proto keys, old reader ignores them → global sum). moc's headline moves only as TAGGED `secondary` drops accrue (they stop counting against RNS) · cleanup: none
@@ -3178,3 +3179,41 @@ pushed with `--no-verify` on the operator's explicit choice. For the 10-09
 review: is the fix a subagent-provenance field the row can carry, or is
 "frontier reviews are run from frontier sessions" the intended rule? A
 NOTE, not work (harness_restraint #2) — do not change the gate during the freeze.
+
+## QUEUED 2026-09-24 (Opus 5.5) — MA `60fbe12b`: the truth-sweep PORT and the 13 fixes its first walk forced — review owed, NOT by the author
+
+**Scope**: MeshAnchor `2b1f9f3e..86940c35` (two commits). `86940c35` is the
+fixture fix CI forced: on Python <= 3.10 `pathlib._NormalAccessor` binds
+os.stat/scandir/io.open at class creation, so every Path method bypassed the
+box-state patches — the witness saw only the `/dev` listings. Attack it:
+is every accessor attribute covered, and does 3.10 have another early bind? The author wrote the
+port, fixed what it found, and verified it himself — the exact loop the
+09-03 audit named. Deployed to meshanchor-server BEFORE this review, on the
+operator's call (the diff only tightens failure paths; the one daemon-side
+behaviour change is the map server's `/api/space_weather` moving from
+`mesh_impact: nominal` to its existing `unknown` branch when NOAA is dead).
+
+**Where to spend the pass — MA-original code, not the verbatim MF ports**
+(those had MF's Fable reviews; `diff` against MF shows which is which):
+1. `handlers/logs.py::_run_snapshot` — five journalctl/dmesg items routed
+   through one helper; MF solved this differently (in-app textbox pane). Does
+   partial output before a TimeoutExpired read as complete anywhere?
+2. `handlers/service_menu.py::_print_unit_status` — three siblings; the
+   restart ran BEFORE the status crash, so check the action's own result
+   still reaches the operator on every path.
+3. `handlers/meshforge_maps.py::_open_browser` — trusts `webbrowser.open()`'s
+   return; is True ever returned with nothing opened (xdg-open fire-and-forget)?
+4. `handlers/node_health.py` — only the UNKNOWN count was ported; MF's
+   "a listener is not a working service" wording was NOT. Is "N up" a lie there?
+5. The sweep itself as ported: are MA's box-state dirs complete (MeshCore
+   companion serial, `/etc/meshanchor/*.yaml`, the daemon's `/api/*` on
+   localhost — sockets are dead, but is anything read through a cache file)?
+   LOCAL_ONLY is MF's list minus one: is each entry TRUE for MA?
+6. Frozen-EMPTY baselines + no parity leg: the two sweeps now drift by hand.
+   Worth a `parity_check` SHAPE leg, or is that machinery-watching-machinery
+   under the freeze?
+
+**Evidence the author had**: sweep 257 passed rc=0; control (pre-fix
+`meshforge_maps.py` + `amateur_radio.py` planted from HEAD) → exactly those
+two FAIL rc=1; MA full suite 7363 passed / 1 failed (README count, fixed,
+rc=0 after); lint rc=0. Plant the lie before trusting any of it.
