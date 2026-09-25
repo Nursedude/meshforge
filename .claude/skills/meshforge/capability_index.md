@@ -10,13 +10,13 @@
 > X?", grep this file for the capability, then open the handler under
 > `src/launcher_tui/handlers/`.
 
-**84 handlers · 117 menu actions · 12 sections** (all derived from `get_all_handlers()`, never hardcoded).
+**84 handlers · 116 menu actions · 12 sections** (all derived from `get_all_handlers()`, never hardcoded).
 
 A non-empty **Flag** names the deployment-profile feature that gates the action. Gated does NOT mean hidden: when the feature is off the row is still SHOWN, marked `[off]`, and refuses to run with an explanation naming the profile (`HandlerRegistry.mark_label` / `OFF_MARK`). Nothing is removed from the menu — someone new to the domain cannot go looking for a capability they have never been shown. Blank = never gated.
 
 **Truth** says how the action's HONESTY is checked (`tests/test_tui_success_truth_sweep.py`, `launcher_tui/action_truth.py`): `sweep` = dispatched on every commit with every external DEAD and required to render a word of uncertainty; `local-only` = declared to consult no external (the why is in `action_truth.py`); `⚠️ false-ok` = a FROZEN baseline finding — renders a confident screen with nothing to be confident about. The baseline only shrinks.
 
-**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 10 action(s) have an entry — a blank is the honest default, not a failure.
+**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 9 action(s) have an entry — a blank is the honest default, not a failure.
 
 ## `about`
 
@@ -52,7 +52,6 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | `datapath` | Data Path Check — Test all data sources |  | sweep | ✓ 2026-09-25 dev/manager box | DashboardHandler |
 | `nodes` | Node Count — Meshtastic + RNS nodes |  | sweep | ✓ 2026-09-25 dev/manager box | DashboardHandler |
 | `reports` | Reports — Generate status report |  | sweep |  | DashboardHandler |
-| `score` | Health Score — Network health snapshot |  | sweep | ◐ 2026-09-25 dev/manager box | DashboardHandler |
 | `status` | Service Status — All services with health |  | sweep | ✓ 2026-09-25 dev/manager box | DashboardHandler |
 | `weather` | Space Weather — SFI, Kp, bands at a glance |  | sweep | ✓ 2026-09-25 dev/manager box | DashboardHandler |
 | `delivery` | Delivery — did messages arrive? (source+age) |  | sweep | ◐ 2026-09-25 dev/manager box | DeliveryHandler |

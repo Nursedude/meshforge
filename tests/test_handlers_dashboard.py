@@ -39,7 +39,7 @@ class TestDashboardHandlerStructure:
     def test_menu_items_tags(self):
         h = _make_dashboard()
         tags = [t for t, _, _ in h.menu_items()]
-        expected = ["status", "weather", "nodes", "score", "datapath", "reports", "alerts"]
+        expected = ["status", "weather", "nodes", "datapath", "reports", "alerts"]
         assert tags == expected
 
     def test_execute_unknown_action_does_not_raise(self):
@@ -68,13 +68,6 @@ class TestDashboardDispatch:
         with patch.object(h, '_show_node_counts') as mock:
             h.ctx.safe_call = lambda name, fn, *a, **kw: fn(*a, **kw)
             h.execute("nodes")
-            mock.assert_called_once()
-
-    def test_execute_score_dispatches(self):
-        h = _make_dashboard()
-        with patch.object(h, '_health_score_display') as mock:
-            h.ctx.safe_call = lambda name, fn, *a, **kw: fn(*a, **kw)
-            h.execute("score")
             mock.assert_called_once()
 
     def test_execute_datapath_dispatches(self):
@@ -164,33 +157,6 @@ class TestDashboardNodeCounts:
         h.ctx.wait_for_enter = MagicMock()
         h._show_node_counts()
         # Should not raise even when HTTP client is unavailable
-
-
-class TestDashboardHealthScore:
-
-    @patch('handlers.dashboard.get_health_scorer')
-    @patch('subprocess.run')
-    def test_health_score_display(self, mock_run, mock_scorer_fn):
-        mock_run.return_value = MagicMock(returncode=0)
-        scorer = MagicMock()
-        snapshot = MagicMock()
-        snapshot.overall_score = 85
-        snapshot.status = "healthy"
-        snapshot.category_scores = {
-            "connectivity": 90,
-            "services": 80,
-            "hardware": 85,
-        }
-        snapshot.node_count = 5
-        snapshot.service_count = 3
-        scorer.get_snapshot.return_value = snapshot
-        scorer.get_trend.return_value = "stable"
-        mock_scorer_fn.return_value = scorer
-
-        h = _make_dashboard()
-        h.ctx.wait_for_enter = MagicMock()
-        h._health_score_display()
-        h.ctx.wait_for_enter.assert_called_once()
 
 
 class TestDashboardReports:

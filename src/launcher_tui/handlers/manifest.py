@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 84 handlers · 117 menu actions (derived from get_all_handlers(), never hand-edited).
+# 84 handlers · 116 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -192,7 +192,6 @@ HANDLER_MANIFEST = [
             ('status', 'Service Status      All services with health', None),
             ('weather', 'Space Weather       SFI, Kp, bands at a glance', None),
             ('nodes', 'Node Count          Meshtastic + RNS nodes', None),
-            ('score', 'Health Score        Network health snapshot', None),
             ('datapath', 'Data Path Check     Test all data sources', None),
             ('reports', 'Reports             Generate status report', None),
             ('alerts', 'View Alerts         Current warnings', None),

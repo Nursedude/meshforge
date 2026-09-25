@@ -83,10 +83,13 @@ TOP_LEVEL_CANCEL_LABEL = "Exit"
 SECTION_ORDERINGS = {
     "dashboard": [
         # The END first after status: did messages arrive (2026-09-23).
-        "status", "delivery", "weather", "network", "nodes", "health", "score",
+        "status", "delivery", "weather", "network", "nodes", "health",
         "datapath", "stack_health", "traffic_pulse",
         # "metrics" (Historical Trends + Prometheus + Grafana) retired
         # 2026-09-23: its DB had no writer anywhere (0 rows on every box).
+        # "score" (Health Score) retired 2026-09-25: only the gateway feeds the
+        # scorer, so in the TUI it could never show a score; its parts already
+        # have named, sourced screens (Stack Health, Delivery, Node Health).
         "analytics", "latency", "reports", "alerts",
         "mini_dudeai", "mini_dudeai_chat", "mini_dudeai_rules",
         "offline_oracle", "moc_analysis", "demo",

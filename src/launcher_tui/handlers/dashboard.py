@@ -25,7 +25,6 @@ get_http_client, reset_http_client, _HAS_MESHTASTIC_HTTP = safe_import(
 generate_report, generate_and_save, _HAS_REPORT_GEN = safe_import(
     'utils.report_generator', 'generate_report', 'generate_and_save'
 )
-from utils.health_score import get_health_scorer
 from plugins.eas_alerts import (EASAlertsPlugin, AlertSource,
                                 format_alert_line)
 pub, _HAS_PUBSUB = safe_import('pubsub', 'pub')
@@ -53,7 +52,6 @@ class DashboardHandler(BaseHandler):
             ("status", "Service Status      All services with health", None),
             ("weather", "Space Weather       SFI, Kp, bands at a glance", None),
             ("nodes", "Node Count          Meshtastic + RNS nodes", None),
-            ("score", "Health Score        Network health snapshot", None),
             ("datapath", "Data Path Check     Test all data sources", None),
             ("reports", "Reports             Generate status report", None),
             ("alerts", "View Alerts         Current warnings", None),
@@ -64,7 +62,6 @@ class DashboardHandler(BaseHandler):
             "status": ("Service Status", self._service_status_display),
             "weather": ("Space Weather", self._dashboard_space_weather),
             "nodes": ("Node Count", self._show_node_counts),
-            "score": ("Health Score", self._health_score_display),
             "datapath": ("Data Path Check", self._data_path_diagnostic),
             "reports": ("Reports", self._reports_menu),
             "alerts": ("View Alerts", self._show_alerts),
@@ -622,74 +619,6 @@ class DashboardHandler(BaseHandler):
         print(f"Report saved to:\n  {saved_path}\n")
         self.ctx.wait_for_enter()
 
-    def _health_score_display(self):
-        """Show comprehensive network health score with category breakdown."""
-        # clear_screen, not a raw `clear` subprocess: a box without `clear`
-        # crashed here into safe_call (KNOWN_CRASHED 2026-09-22).
-        clear_screen()
-        print("=== Network Health Score ===\n")
-
-        scorer = get_health_scorer()
-        snapshot = scorer.get_snapshot()
-        if not snapshot.node_count and not snapshot.service_count:
-            # Same guard as report_generator: with nothing reporting, the
-            # category DEFAULTS rendered "65/100 (fair)" behind that crash
-            # (Fable review of the level-two walk, finding 5).
-            print("  Overall: UNKNOWN — no nodes or services are reporting to")
-            print("  the health scorer; nothing was measured.")
-            print()
-            self.ctx.wait_for_enter()
-            return
-
-        score = snapshot.overall_score
-        bar_len = 30
-        filled = int(score / 100 * bar_len)
-        bar = "\033[0;32m" + "=" * filled + "\033[0m" + "-" * (bar_len - filled)
-
-        if score >= 80:
-            color = "\033[0;32m"
-        elif score >= 60:
-            color = "\033[0;33m"
-        elif score >= 40:
-            color = "\033[0;31m"
-        else:
-            color = "\033[1;31m"
-
-        print(f"  Overall: {color}{score:.0f}/100\033[0m ({snapshot.status})")
-        print(f"  [{bar}]\n")
-
-        print(f"  {'Category':<18} {'Score':>6}  Status")
-        print(f"  {'-'*42}")
-        for cat, cat_score in snapshot.category_scores.items():
-            if cat_score >= 80:
-                status = "Good"
-                c = "\033[0;32m"
-            elif cat_score >= 60:
-                status = "Fair"
-                c = "\033[0;33m"
-            elif cat_score >= 40:
-                status = "Degraded"
-                c = "\033[0;31m"
-            else:
-                status = "Critical"
-                c = "\033[1;31m"
-            print(f"  {cat.title():<18} {c}{cat_score:>5.0f}\033[0m  {status}")
-
-        print(f"\n  Nodes reporting:  {snapshot.node_count}")
-        print(f"  Services tracked: {snapshot.service_count}")
-
-        trend = scorer.get_trend()
-        trend_icons = {
-            'improving': '\033[0;32m  improving\033[0m',
-            'declining': '\033[0;31m  declining\033[0m',
-            'stable': '  stable',
-        }
-        print(f"  Trend:           {trend_icons.get(trend, trend)}")
-
-        print()
-        self.ctx.wait_for_enter()
-
-    # Known alert patterns mapped to remediation guidance.
     _REMEDIATION_HINTS = {
         "meshtasticd": "Configuration > meshtasticd > Restart Service",
         "rnsd": "Mesh Networks > RNS > RNS Diagnostics (auto-repair)",

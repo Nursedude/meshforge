@@ -102,14 +102,6 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
         "partial": False,
         "evidence": "collector properties dumped live; dashboard.py this commit",
     },
-    ("dashboard", "score"): {
-        "date": "2026-09-25", "box": "dev/manager box",
-        "scope": "honest UNKNOWN verified — but ONLY gateway_heartbeat feeds the scorer, so "
-                 "inside the TUI process it can never show a score: a structurally dead "
-                 "screen, decision owed (wire to the gateway's score, or retire)",
-        "partial": True,
-        "evidence": "grep of get_health_scorer() callers; live render",
-    },
     ("rf_sdr", "sdr_watch"): {
         "date": "2026-09-25",
         "box": "Airspy host",

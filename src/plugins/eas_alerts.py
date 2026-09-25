@@ -664,7 +664,7 @@ class EASAlertsPlugin(IntegrationPlugin):
             if legacy:
                 config.set("location", "latitude", str(legacy[0]))
                 config.set("location", "longitude", str(legacy[1]))
-                self._location_source = "eas_location.json (operator-set; the retired EAS panel's file)"
+                self._location_source = "eas_location.json (operator-set)"
             else:
                 self._location_source = "template"
         return config
