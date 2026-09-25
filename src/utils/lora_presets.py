@@ -14,7 +14,7 @@ Usage:
     from utils.lora_presets import get_rnode_config_for_meshtastic_preset
 
     config = get_rnode_config_for_meshtastic_preset('MEDIUM_FAST', region='US')
-    # Returns: {'frequency': 906875000, 'bandwidth': 250000, 'spreading_factor': 10, ...}
+    # Returns: {'frequency': 906875000, 'bandwidth': 250000, 'spreading_factor': 9, ...}
 """
 
 import logging
@@ -38,19 +38,26 @@ if _HAS_SERVICE_CHECK:
     ServiceState = _ServiceState
 
 from utils.cli import find_meshtastic_cli
+from utils.meshtastic_modem import firmware_params, raw_bit_rate_bps
+
+
+def _fmt_rate(bps: float) -> str:
+    return f"~{bps / 1000:.1f} kbps" if bps >= 1000 else f"~{bps:.0f} bps"
 
 
 class MeshtasticPreset(Enum):
-    """Official Meshtastic modem presets (fastest to slowest)"""
-    SHORT_TURBO = 'SHORT_TURBO'      # SF7, BW500, CR8 - Very fast, <1km (may be illegal)
-    SHORT_FAST = 'SHORT_FAST'        # SF7, BW250, CR8 - Very fast, 1-5km
-    SHORT_SLOW = 'SHORT_SLOW'        # SF7, BW125, CR8 - Fast, 1-5km
-    MEDIUM_FAST = 'MEDIUM_FAST'      # SF10, BW250, CR8 - MtnMesh Standard
-    MEDIUM_SLOW = 'MEDIUM_SLOW'      # SF10, BW125, CR8 - Balanced
-    LONG_FAST = 'LONG_FAST'          # SF11, BW250, CR8 - Default Meshtastic
-    LONG_MODERATE = 'LONG_MODERATE'  # SF11, BW125, CR8 - Extended range
-    LONG_SLOW = 'LONG_SLOW'          # SF12, BW125, CR8 - Extreme range (SAR)
-    VERY_LONG_SLOW = 'VERY_LONG_SLOW'  # SF12, BW62.5, CR8 - Experimental
+    """Official Meshtastic modem presets. SF/BW/CR live in
+    utils.meshtastic_modem (the firmware's own table), not in comments here."""
+    SHORT_TURBO = 'SHORT_TURBO'
+    SHORT_FAST = 'SHORT_FAST'
+    SHORT_SLOW = 'SHORT_SLOW'
+    MEDIUM_FAST = 'MEDIUM_FAST'      # MtnMesh Standard
+    MEDIUM_SLOW = 'MEDIUM_SLOW'
+    LONG_TURBO = 'LONG_TURBO'
+    LONG_FAST = 'LONG_FAST'          # Default Meshtastic
+    LONG_MODERATE = 'LONG_MODERATE'
+    LONG_SLOW = 'LONG_SLOW'          # deprecated in 2.7
+    VERY_LONG_SLOW = 'VERY_LONG_SLOW'  # deprecated in 2.5 — firmware runs it as LONG_FAST
 
 
 @dataclass
@@ -83,104 +90,84 @@ class LoRaConfig:
 # Meshtastic preset definitions (LoRa parameters only, frequency from region)
 MESHTASTIC_PRESETS = {
     'SHORT_TURBO': {
-        'bandwidth': 500000,
-        'spreading_factor': 7,
-        'coding_rate': 8,
         'description': 'Very high speed, very short range (<1km)',
         'estimated_range': '<1 km',
-        'estimated_throughput': '~21.9 kbps',
         'rns_data_speed': 8,  # RNS_Over_Meshtastic setting
         'rns_delay': 0.4,     # Recommended for RNS bridge
         'warning': 'May be illegal in some regions (500kHz BW)',
     },
     'SHORT_FAST': {
-        'bandwidth': 250000,
-        'spreading_factor': 7,
-        'coding_rate': 8,
         'description': 'High speed, short range - Urban/high-density',
         'estimated_range': '1-5 km',
-        'estimated_throughput': '~10.9 kbps',
         'rns_data_speed': 6,
         'rns_delay': 1.0,
     },
     'SHORT_SLOW': {
-        'bandwidth': 125000,
-        'spreading_factor': 7,
-        'coding_rate': 8,
         'description': 'Fast, reliable short range',
         'estimated_range': '1-5 km',
-        'estimated_throughput': '~5.5 kbps',
         'rns_data_speed': 5,
         'rns_delay': 3.0,
     },
     'MEDIUM_FAST': {
-        'bandwidth': 250000,
-        'spreading_factor': 10,
-        'coding_rate': 8,
         'description': 'MtnMesh Community Standard - Best balance',
         'estimated_range': '5-20 km',
-        'estimated_throughput': '~3.5 kbps',
         'rns_data_speed': 4,
         'rns_delay': 4.0,
         'recommended': True,
     },
     'MEDIUM_SLOW': {
-        'bandwidth': 125000,
-        'spreading_factor': 10,
-        'coding_rate': 8,
         'description': 'Balanced speed and range',
         'estimated_range': '5-20 km',
-        'estimated_throughput': '~1.8 kbps',
         'rns_data_speed': 3,
         'rns_delay': 6.0,
     },
+    'LONG_TURBO': {
+        'description': 'LongFast-like reach with 500 kHz bandwidth',
+        'estimated_range': '10-30 km',
+        'rns_data_speed': None,  # not in RNS_Over_Meshtastic's map
+        'rns_delay': None,
+        'warning': 'May be illegal in some regions (500kHz BW)',
+    },
     'LONG_FAST': {
-        'bandwidth': 250000,
-        'spreading_factor': 11,
-        'coding_rate': 8,
         'description': 'Default Meshtastic - Good for most deployments',
         'estimated_range': '10-30 km',
-        'estimated_throughput': '~1.1 kbps',
         'rns_data_speed': 0,
         'rns_delay': 8.0,
         'default': True,
         'rns_warning': 'Not recommended for RNS - slow throughput',
     },
     'LONG_MODERATE': {
-        'bandwidth': 125000,
-        'spreading_factor': 11,
-        'coding_rate': 8,
         'description': 'Extended range with moderate speed',
         'estimated_range': '15-40 km',
-        'estimated_throughput': '~550 bps',
         'rns_data_speed': 7,
         'rns_delay': 12.0,
         'rns_warning': 'Very slow for RNS data transfer',
     },
     'LONG_SLOW': {
-        'bandwidth': 125000,
-        'spreading_factor': 12,
-        'coding_rate': 8,
         'description': 'Maximum range - Search and Rescue',
         'estimated_range': '20-50 km',
-        'estimated_throughput': '~300 bps',
         'rns_data_speed': 1,
         'rns_delay': 15.0,
         'rns_warning': 'Not recommended for RNS - extremely slow',
     },
     'VERY_LONG_SLOW': {
-        'bandwidth': 62500,
-        'spreading_factor': 12,
-        'coding_rate': 8,
-        'description': 'Experimental - Extreme range',
-        'estimated_range': '30-60+ km',
-        'estimated_throughput': '~150 bps',
+        'description': 'Deprecated in 2.5 — firmware 2.7 runs it with LONG_FAST parameters',
+        'estimated_range': 'as LONG_FAST',
         'rns_data_speed': None,  # Not supported
         'rns_delay': None,
         'warning': 'Experimental, very slow',
         'rns_warning': 'Not supported by RNS_Over_Meshtastic',
     },
 }
+
+# SF / bandwidth / coding rate and the raw bit rate come from the firmware's
+# table, never from literals here: this dict carried MEDIUM_FAST as SF10,
+# MEDIUM_SLOW at 125 kHz, SHORT_SLOW as SF7/125 and CR 4/8 across the board
+# until 2026-09-25 (utils.meshtastic_modem has the story).
+for _name, _preset in MESHTASTIC_PRESETS.items():
+    _sf, _bw, _cr = firmware_params(_name)
+    _preset.update(bandwidth=_bw, spreading_factor=_sf, coding_rate=_cr,
+                   estimated_throughput=_fmt_rate(raw_bit_rate_bps(_sf, _bw, _cr)))
 
 
 # RNS_Over_Meshtastic data_speed to preset mapping

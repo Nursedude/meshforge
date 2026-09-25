@@ -31,6 +31,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from utils.meshtastic_modem import FIRMWARE_MODEM_PARAMS
 from utils.rf import (
     DeployEnvironment,
     BuildingType,
@@ -133,27 +134,26 @@ class PresetComparison:
         }
 
 
-# Preset definitions (matches lora_presets.py)
-PRESET_PARAMS = {
-    'SHORT_TURBO': {'sf': 7, 'bw': 500000, 'cr': 5,
-                    'desc': 'Very high speed, very short range',
+# Preset definitions. SF / bandwidth / coding rate come from the firmware's own
+# table (utils.meshtastic_modem) — this file used to carry its own copy, and
+# it had MEDIUM_FAST as SF10, MEDIUM_SLOW at 125 kHz and SHORT_SLOW as SF7/125
+# (2026-09-25). VERY_LONG_SLOW is not offered: firmware 2.7 runs it as LONG_FAST.
+_PRESET_TEXT = {
+    'SHORT_TURBO': {'desc': 'Very high speed, very short range',
                     'warning': 'May be illegal in some regions'},
-    'SHORT_FAST': {'sf': 7, 'bw': 250000, 'cr': 5,
-                   'desc': 'High speed, short range - Urban'},
-    'SHORT_SLOW': {'sf': 7, 'bw': 125000, 'cr': 5,
-                   'desc': 'Fast, reliable short range'},
-    'MEDIUM_FAST': {'sf': 10, 'bw': 250000, 'cr': 5,
-                    'desc': 'MtnMesh Standard - Best balance'},
-    'MEDIUM_SLOW': {'sf': 10, 'bw': 125000, 'cr': 5,
-                    'desc': 'Balanced speed and range'},
-    'LONG_FAST': {'sf': 11, 'bw': 250000, 'cr': 5,
-                  'desc': 'Default Meshtastic'},
-    'LONG_MODERATE': {'sf': 11, 'bw': 125000, 'cr': 8,
-                      'desc': 'Extended range, moderate speed'},
-    'LONG_SLOW': {'sf': 12, 'bw': 125000, 'cr': 8,
-                  'desc': 'Maximum range - SAR'},
-    'VERY_LONG_SLOW': {'sf': 12, 'bw': 62500, 'cr': 8,
-                       'desc': 'Experimental extreme range'},
+    'SHORT_FAST': {'desc': 'High speed, short range - Urban'},
+    'SHORT_SLOW': {'desc': 'Fast, reliable short range'},
+    'MEDIUM_FAST': {'desc': 'MtnMesh Standard - Best balance'},
+    'MEDIUM_SLOW': {'desc': 'Balanced speed and range'},
+    'LONG_TURBO': {'desc': 'LongFast-like reach, 500 kHz bandwidth',
+                   'warning': 'May be illegal in some regions'},
+    'LONG_FAST': {'desc': 'Default Meshtastic'},
+    'LONG_MODERATE': {'desc': 'Extended range, moderate speed'},
+    'LONG_SLOW': {'desc': 'Maximum range - SAR'},
+}
+PRESET_PARAMS = {
+    name: {'sf': sf, 'bw': bw, 'cr': cr, **_PRESET_TEXT[name]}
+    for name, (sf, bw, cr) in FIRMWARE_MODEM_PARAMS.items()
 }
 
 

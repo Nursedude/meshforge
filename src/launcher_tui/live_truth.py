@@ -141,6 +141,18 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
         "evidence": "monitoring/traffic_pulse.py _iso_age_s + never-active branch, "
                     "tests/test_traffic_pulse.py TestQueueAge",
     },
+    ("dashboard", "reports"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "REBUILT then verified: radio 88/335 vs its journal telemetry line; RNS 43 "
+                 "vs rnpath; history/trends/predictive from the same code as Analytics; "
+                 "watchdog vs /api/status; RF reference vs the LoRa formula and firmware "
+                 "2.7.26's preset table (MEDIUM_FAST was SF10 in three tables). Old report: "
+                 "'No nodes tracked' + 'Network health is degraded' from nothing measured. "
+                 "Generate & View and Generate & Save both exercised",
+        "partial": False,
+        "evidence": "utils/report_generator.py, utils/meshtastic_modem.py, "
+                    "tests/test_meshtastic_modem.py (planted SF10 -> 4 failures)",
+    },
     ("rf_sdr", "sdr_watch"): {
         "date": "2026-09-25",
         "box": "Airspy host",

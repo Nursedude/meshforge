@@ -227,15 +227,18 @@ class MeshtasticdRadioHandler(BaseHandler):
         except Exception:
             pass
 
+        # SF/BW from the firmware's own table (utils.meshtastic_modem); these
+        # labels were hand-written and said MEDIUM_FAST was SF10 (it is SF9).
+        from utils.meshtastic_modem import FIRMWARE_MODEM_PARAMS
+        reach = {"SHORT_TURBO": "Max speed, <1km", "SHORT_FAST": "Urban, 1-5km",
+                 "SHORT_SLOW": "Reliable short", "MEDIUM_FAST": "MtnMesh std, 5-20km",
+                 "MEDIUM_SLOW": "Alt medium", "LONG_TURBO": "LongFast reach, 500kHz",
+                 "LONG_FAST": "Default, 10-30km", "LONG_MODERATE": "Extended, 15-40km",
+                 "LONG_SLOW": "Max range, 20-50km"}
         presets = [
-            ("SHORT_TURBO", "500kHz SF7  - Max speed, <1km"),
-            ("SHORT_FAST", "250kHz SF7  - Urban, 1-5km"),
-            ("SHORT_SLOW", "125kHz SF7  - Reliable short"),
-            ("MEDIUM_FAST", "250kHz SF10 - MtnMesh std, 5-20km"),
-            ("MEDIUM_SLOW", "125kHz SF10 - Alt medium"),
-            ("LONG_FAST", "250kHz SF11 - Default, 10-30km"),
-            ("LONG_MODERATE", "125kHz SF11 - Extended, 15-40km"),
-            ("LONG_SLOW", "125kHz SF12 - Max range, 20-50km"),
+            (name, f"{bw // 1000}kHz SF{sf:<2} - {reach[name]}")
+            for name, (sf, bw, _cr) in FIRMWARE_MODEM_PARAMS.items()
+        ] + [
             ("back", "Back"),
         ]
 
@@ -260,16 +263,9 @@ class MeshtasticdRadioHandler(BaseHandler):
 
     def _apply_radio_preset(self, preset: str):
         """Apply a radio preset via meshtastic CLI."""
-        preset_info = {
-            "SHORT_TURBO": {"bw": 500, "sf": 7, "cr": 8},
-            "SHORT_FAST": {"bw": 250, "sf": 7, "cr": 8},
-            "SHORT_SLOW": {"bw": 125, "sf": 7, "cr": 8},
-            "MEDIUM_FAST": {"bw": 250, "sf": 10, "cr": 8},
-            "MEDIUM_SLOW": {"bw": 125, "sf": 10, "cr": 8},
-            "LONG_FAST": {"bw": 250, "sf": 11, "cr": 8},
-            "LONG_MODERATE": {"bw": 125, "sf": 11, "cr": 8},
-            "LONG_SLOW": {"bw": 125, "sf": 12, "cr": 8},
-        }
+        from utils.meshtastic_modem import FIRMWARE_MODEM_PARAMS
+        preset_info = {name: {"bw": bw // 1000, "sf": sf, "cr": cr}
+                       for name, (sf, bw, cr) in FIRMWARE_MODEM_PARAMS.items()}
 
         info = preset_info.get(preset, {})
         if not info:
@@ -278,8 +274,12 @@ class MeshtasticdRadioHandler(BaseHandler):
         slot_input = self.ctx.dialog.inputbox(
             "Frequency Slot",
             f"Set frequency slot (channel_num) for {preset}:\n\n"
-            "Slot determines the center frequency.\n"
-            "US: 0=903.875 MHz (default), 12=903.625 (regional/custom)\n"
+            "0 = the firmware's default, hashed from the channel name\n"
+            "(LONG_FAST with the default channel: slot 20).\n"
+            f"US centre of slot n = 902.0 + {info['bw'] / 2000:g} + (n-1) x "
+            f"{info['bw'] / 1000:g} MHz\n"
+            f"  e.g. slot 1 = {902.0 + info['bw'] / 2000:.3f}, slot 20 = "
+            f"{902.0 + info['bw'] / 2000 + 19 * info['bw'] / 1000:.3f} MHz\n"
             "Must match your mesh network's slot.\n\n"
             "Leave empty or 0 for default:",
             "0"
