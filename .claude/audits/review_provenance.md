@@ -375,6 +375,7 @@ pass or a follow-up.
 > than reasoning backwards from mtimes.
 
 - 2026-09-24 ~08:00 HST · VolcanoAI + all 9 MeshForge boxes · Opus 5.5 1M · operator-directed ("failure is not an option"; then "fleet_pull … in due process"). VolcanoAI: `scripts/install-hooks.sh` restored `/opt/meshforge` `core.hooksPath` '/opt/meshforge/.githooks' → '.githooks'; a drill briefly set it to '.git/hooks' (hooks OFF for seconds, no commit in that window) then restored; ran `harness_audit.sh` by hand and recorded its verdict with `cron_verdict.sh harness_audit 0` (17 PASS) — `cron_verdict_stale_any` → `currently_active: false`. Fleet: `fleet_pull.sh` to this commit (carries `a5a6abbe`, the hooksPath check fix) after CI green — NO restarts (harness_audit.sh is read fresh by each cron run) · could trip: a hand-run OK verdict at 17:45Z sits between the daily 15:35Z cron runs in `~/cron_verdicts.log` — it is a real run of the job, not a synthetic mark · cleanup: none
+- 2026-09-24 22:29 HST · moc5 · Opus 5.5 · dedupe scope A DEPLOY, operator-directed ("A now, queue B"), CI green on the EXACT sha `4c119515` first: `git pull --ff-only` `8c4eb856`→`4c119515` (moc5 only). Verified the 22:31:00 fire: Result=success, ExecMainStatus=0, B rolling deltas non-None on all 3 windows (≥ 12 history rows read through the NEW reader, live). Run read `partial`: the 906.3 window had 2 of 4 bursts filled by our own LF traffic (1,356 own-TX frames, 46 %) — by design, predicted by review 2. New analysis stamp 5af58f7a96 (the stamp hashes the writer too, so the pane's recurrence counts restart) · could trip: nothing new.
 - 2026-09-24 21:53 HST · moc5 · Opus 5.5 · class-D product tagging DEPLOY, operator-directed ("add alias tagging to class D"), CI green on the EXACT sha `8c4eb856` first: `git pull --ff-only` `14c565e6`→`8c4eb856` (moc5 only; no restart). Verified the 22:03:30 hourly adjacent fire: Result=success, ExecMainStatus=0, row stamped analysis=1f5596e844, `tags`/`clean_peak`/`clean_frac` present in every ok window; top lines this hour all cellular 869.6–884.3 MHz, untagged, clean_frac 1.0 — the tag itself NOT yet exercised on live data (no product-position line in the top) · could trip: nothing new · cleanup: /dev/shm check script removed.
 - 2026-09-24 21:08 HST · moc5 · Opus 5.5 · second review-fix DEPLOY, operator-directed ("deploy now"), CI green on the EXACT sha `14c565e6` first: `git pull --ff-only` `69c49509`→`14c565e6` (moc5 only; no restart). Verified: 21:11:00 fire Result=success ExecMainStatus=0, row stamped `analysis=5553708d62` (a field only this code writes), 3/3 windows ok; rendered the Interference Watch and the SDR Monitor MOCK banner ON moc5 through the real code (banner: "SoapySDR is not installed … An Airspy IS attached") · could trip: nothing new · noted: class D headline 890.316 MHz at −19 dBFS (+74 dB, cellular DL) — 19 dB from clipping at gain 10; class D has NO alias tagging yet, so an in-band line there (911.848 +34 dB) may be a receiver product.
 - 2026-09-24 20:25:50–20:31:47 HST · moc5 (+ VolcanoAI) · Opus 5.5 · alias discriminator drills (second Fable review #1), each UNDER `flock run.lock` so the timer could not collide (the 20:26 and 20:31 fleet runs wrote `skipped_overlap` rows by design): drill 1 20:25:50–20:28:21 (82 × 0.5 s bursts alternating centres 910.525 / 910.9, gain 10); drill 2 20:28:56–20:31:47 (78 bursts + a read of moc5's meshtasticd journal for LF-event timing). Result: 911.175 energy 10/80 vs 1/80 — moves with tuning; the "foreign" call RETRACTED · could trip: ~6 min of USB2 bursts; two skipped_overlap witness rows in interference.jsonl · cleanup: /dev/shm drill scripts + IQ removed. Also the second reviewer's READ-ONLY moc5 touches 20:05–20:16 (timers, JSONL read/scp, journal, git status) and VolcanoAI `/etc/reticulum/config` grep + rnstatus ~20:18.
@@ -3231,3 +3232,30 @@ behaviour change is the map server's `/api/space_weather` moving from
 `meshforge_maps.py` + `amateur_radio.py` planted from HEAD) → exactly those
 two FAIL rc=1; MA full suite 7363 passed / 1 failed (README count, fixed,
 rc=0 after); lint rc=0. Plant the lie before trusting any of it.
+
+## QUEUED 2026-09-24 (Opus 5.5, operator: "A now, queue B") — ONE JSONL posture for the repo: `utils/jsonl_io.py`
+
+**What**: extract one module for append-only JSONL, and move every copy onto it:
+- `mini_dudeai/history.py:append_jsonl` + `_repair_torn_tail` (its docstring already
+  claims "the one append-only JSONL write posture, shared by every appender");
+- `scripts/sdr_interference.py:append_row` — REINVENTED rotation + torn-tail repair on
+  2026-09-24 without grepping for the above (the author "discovered" the torn-line
+  bug by his own test; history.py had solved it);
+- the tail readers: `mini_dudeai/brief.py` + `mini_dudeai/dreams.py`
+  `_read_history_tail` (already DIVERGED: brief has a 128 KB window + full-read
+  fallback, dreams does not) and `utils/sdr_view.load` (backwards chunks, reaches `.1`).
+
+**Decide, don't flatten** (they differ for reasons):
+1. Locking: mini's appender has NO lock (single writer); SDR takes `append.lock`
+   (timer + a manual run can overlap). One API with an optional lock?
+2. Tail: fixed window + fallback vs backwards chunks; only SDR reaches the
+   rotated `.1`. Does mini WANT rotation reach (its brief is a 60-row window)?
+3. Unreadable semantics: mini readers return `[]` on OSError; the SDR writer
+   RAISES on unreadable history (an empty past silently resets persistence).
+   A shared reader must return a tri-state, never `[]` for "could not read".
+4. Blast radius: mini is the night watcher on all 9 boxes — a fleet deploy,
+   spaced, with the live mini history verified per box after.
+
+**Why queued, not done**: touches mini fleet-wide; freeze-exempt (removes
+duplication) but owed a non-author review before any fleet deploy.
+Scope A (SDR writer reads through `sdr_view.load`) landed as `4c119515`.
