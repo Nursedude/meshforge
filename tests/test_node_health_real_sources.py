@@ -43,3 +43,16 @@ def test_latency_never_says_healthy(capsys):
     out = capsys.readouterr().out
     assert "HEALTHY" not in out and "OPEN" in out
     assert "LISTENING" in out
+
+
+def test_the_default_probe_list_has_no_duplicate_port_and_no_tcp_rnsd():
+    """2026-09-25 (review of the MA port, verified on a fleet box): meshtasticd_http
+    probed 4403 twice-over, and rnsd — a unix-socket shared instance — was TCP
+    probed on 37428, reading DOWN on every healthy box."""
+    from utils import latency_monitor as lm
+    from utils.ports import MESHTASTICD_WEB_PORT
+    ports = [p for _n, _h, p in lm.DEFAULT_SERVICES]
+    assert len(ports) == len(set(ports)), ports
+    assert ("meshtasticd_http", "localhost", MESHTASTICD_WEB_PORT) in lm.DEFAULT_SERVICES
+    assert not any(n == "rnsd" for n, _h, _p in lm.DEFAULT_SERVICES)
+    assert any(n == "rnsd" for n, _why in lm.NOT_TCP_PROBED)

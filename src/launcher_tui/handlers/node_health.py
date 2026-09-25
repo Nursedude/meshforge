@@ -107,6 +107,13 @@ class NodeHealthHandler(BaseHandler):
         up_results = [r for r in results if r[3]]
         avg_rtt = sum(r[4] for r in up_results) / len(up_results) if up_results else 0.0
 
+        try:
+            from utils.latency_monitor import NOT_TCP_PROBED
+        except ImportError:
+            NOT_TCP_PROBED = ()
+        for name, why in NOT_TCP_PROBED:
+            print(f"  {'--':8s} {name:<22} {'':>7}    not TCP-probed: {why}")
+
         print(f"\n{'='*50}")
         print(f"  Ports: {up_count} accepting, {down_count} not accepting"
               + (f", {unknown_count} UNKNOWN (probe could not be made)" if unknown_count else ""))

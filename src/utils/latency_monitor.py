@@ -107,13 +107,28 @@ class ServiceHealth:
         }
 
 
-# Default services to monitor
+# Default services to monitor — TCP listeners only.
+# Corrected 2026-09-25 (non-author review of the MeshAnchor port, VERIFIED on
+# a fleet box): `meshtasticd_http` probed 4403, the SAME port as
+# `meshtasticd_tcp`, so ":9443" was never checked and "2 up" was one listener;
+# and rnsd's shared instance listens on ABSTRACT UNIX sockets (`@rns/...`),
+# not TCP — `ss -ltn` shows nothing on 37428 while rnsd runs — so the probe
+# read rnsd DOWN on every healthy box and the pane offered an rnsd restart
+# (the #69 race trigger) as the cure. rnsd is judged by systemd + its @rns
+# owner (service_check / the watchdog), never by a TCP connect.
+from utils.ports import MESHTASTICD_PORT, MESHTASTICD_WEB_PORT  # noqa: E402
+
 DEFAULT_SERVICES = [
-    ('meshtasticd_tcp', 'localhost', 4403),
-    ('meshtasticd_http', 'localhost', 4403),
-    ('rnsd', 'localhost', 37428),
+    ('meshtasticd_tcp', 'localhost', MESHTASTICD_PORT),
+    ('meshtasticd_http', 'localhost', MESHTASTICD_WEB_PORT),
     ('mqtt', 'localhost', 1883),
 ]
+
+#: What the TCP probe deliberately does NOT cover, and where its truth lives.
+NOT_TCP_PROBED = (
+    ("rnsd", "shared instance listens on a unix socket (@rns/...), not TCP — "
+             "see System › Service Status"),
+)
 
 
 class ProbeUnobservable(OSError):
