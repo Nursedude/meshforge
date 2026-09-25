@@ -144,3 +144,12 @@ def test_sniffer_start_reports_whether_hooks_installed():
         assert sn.start() is False
         assert sn._running is True
         sn.stop()
+
+
+def test_report_says_what_the_confirmation_rate_is_of(monkeypatch):
+    qa = {"status": "ok", "verdict": "Gateway is reliably moving traffic (confirmation 100%)",
+          "confirmation": {"status": "ok", "rate": 1.0, "confirmed": 38, "terminal": 38,
+                           "confirmable": ["rns"]}}
+    text = _report(monkeypatch, pulse={"diag": {"status": "ok", "detail": "none"}, "qa": qa})
+    assert "38/38 recent terminal events on rns" in text
+    assert "not the lifetime confirmation_rate" in text

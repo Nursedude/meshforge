@@ -202,6 +202,14 @@ class ReportGenerator:
             self._findings.append(("soon", f"watchdog signal {s.get('cls')} on {s.get('subject')}"))
         lines.append(f"- Delivery QA: {qa.get('status', 'unobservable')} — "
                      f"{qa.get('verdict') or qa.get('detail', '')}")
+        conf = qa.get("confirmation") or {}
+        if "rate" in conf:
+            # The verdict's rate is the RECENT window of confirmable protocols
+            # only (#74) — not the lifetime confirmation_rate other tools show
+            # (09-25, moc: "100%" here beside 0.975 in honest_status).
+            lines.append(f"  - confirmation: {conf.get('confirmed')}/{conf.get('terminal')} "
+                         f"recent terminal events on {', '.join(conf.get('confirmable', []))} "
+                         "(windowed; not the lifetime confirmation_rate)")
         if qa.get("status") == "unobservable":
             self._unobserved.append("delivery QA")
         elif qa.get("status") == "alert":
