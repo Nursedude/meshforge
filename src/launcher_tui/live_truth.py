@@ -153,6 +153,38 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
         "evidence": "utils/report_generator.py, utils/meshtastic_modem.py, "
                     "tests/test_meshtastic_modem.py (planted SF10 -> 4 failures)",
     },
+    ("rf_sdr", "link"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "RF Tools calculators rendered with defaults + edge inputs, checked by hand: "
+                 "FSPL 1 km/915 = 91.7 dB; Fresnel 5 km = 20.2 m (60% 12.1); link budget "
+                 "arithmetic; EIRP 25 dBm = 316 mW. FIXED: EIRP called 33 dBm into 0 dBi "
+                 "'LEGAL' (now FCC 15.247 conducted + EIRP); slot calculator 0-based (ch20 -> "
+                 "907.125, radio says 906.875). Antenna Comparison not checked",
+        "partial": True,
+        "evidence": "rf.fcc_part15_247_check, rf_tools._calc_frequency_slot, tests in "
+                    "test_rf.py + test_meshtastic_modem.py (plants fail)",
+    },
+    ("rf_sdr", "freq"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "FIXED then verified against the fleet's own radios: LongFast default and "
+                 "channel_num 20 -> 906.875 MHz (this box's radio: LONG_FAST ch20); ShortTurbo "
+                 "ch8 -> 905.750 (the ShortTurbo segment); out-of-range channel_num refused with the reason. "
+                 "Regions = firmware RDEF (v2.7.26)",
+        "partial": False,
+        "evidence": "utils/meshtastic_modem.slot_centre_mhz; live radio read via "
+                    "commands.rnode.local_meshtastic_lora",
+    },
+    ("rf_sdr", "site"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "link budget (22+4.3-91.7 = -65.4 dBm, margin 64.6) and preset comparison "
+                 "(sensitivities = formula; free-space rows = radio horizon 11.7 km at 2 m, now "
+                 "footnoted). Forest model (n=5, 20 dB fade) predicts 82 m at 22 dBm / 65 m at "
+                 "17 dBm for the SF7 RNode leg — consistent with the operator's '17 dBm too low' "
+                 "at ~76 m through ohia; NOT changed. Range estimator, Fresnel, antenna, "
+                 "frequency reference, external tools not checked",
+        "partial": True,
+        "evidence": "live renders 10:3x HST; preset_impact.format_comparison_table footnote",
+    },
     ("rf_sdr", "sdr_watch"): {
         "date": "2026-09-25",
         "box": "Airspy host",

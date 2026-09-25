@@ -526,6 +526,12 @@ def format_comparison_table(comparison: PresetComparison) -> str:
     lines.append(f"  [R] = Best Range: {comparison.best_range}")
     lines.append(f"  [T] = Best Throughput: {comparison.best_throughput}")
     lines.append(f"  [B] = Best Balance (range × throughput): {comparison.best_balance}")
+    capped = [p for p in comparison.presets if p.max_range_km < p.max_range_los_km - 1e-9]
+    if comparison.presets and len(capped) == len(comparison.presets):
+        # 2026-09-25: every row read "11.7 km" in free space with no reason given.
+        lines.append(f"  Every preset reaches the radio horizon ({capped[0].max_range_km:.1f} km at "
+                     "this antenna height): range here is set by antenna HEIGHT,")
+        lines.append("  not by preset. Rankings above use the uncapped model range.")
     lines.append("=" * 85)
 
     return "\n".join(lines)

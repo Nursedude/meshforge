@@ -137,3 +137,12 @@ def test_region_table_is_the_firmwares():
     assert mm.REGIONS["JP"] == (920.5, 923.5, 0.0)
     assert mm.REGIONS["SG_923"][0] == 917.0
     assert "UK_868" not in mm.REGIONS and "PH" not in mm.REGIONS
+
+
+def test_preset_table_says_when_the_horizon_is_the_limit():
+    from utils.preset_impact import PresetAnalyzer, format_comparison_table
+    from utils.rf import DeployEnvironment
+    free = format_comparison_table(PresetAnalyzer(environment=DeployEnvironment.FREE_SPACE).compare())
+    assert "reaches the radio horizon (11.7 km" in free
+    forest = format_comparison_table(PresetAnalyzer(environment=DeployEnvironment.FOREST).compare())
+    assert "radio horizon" not in forest
