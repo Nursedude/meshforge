@@ -55,3 +55,46 @@ def firmware_params(preset: str) -> Tuple[int, int, int]:
 def raw_bit_rate_bps(sf: int, bw_hz: int, cr: int) -> float:
     """LoRa raw bit rate: SF · BW / 2^SF · 4/CR (physics, not a measurement)."""
     return sf * bw_hz / (2 ** sf) * 4.0 / cr
+
+
+# ── Channel centre frequency (RadioInterface.cpp, same tag) ─────────────
+# Regions transcribed from RDEF(...): (freqStart MHz, freqEnd MHz, spacing MHz).
+REGIONS: Dict[str, Tuple[float, float, float]] = {
+    "US": (902.0, 928.0, 0.0),
+    "EU_868": (869.4, 869.65, 0.0),
+    "ANZ": (915.0, 928.0, 0.0),
+}
+
+# DisplayFormatters::getModemPresetDisplayName(preset, useShortName=false) —
+# the channel name an EMPTY primary channel name resolves to, i.e. what slot 0
+# hashes. VERY_LONG_SLOW has no case: the firmware's default arm says "Invalid".
+PRESET_DISPLAY_NAMES: Dict[str, str] = {
+    "SHORT_TURBO": "ShortTurbo", "SHORT_SLOW": "ShortSlow", "SHORT_FAST": "ShortFast",
+    "MEDIUM_SLOW": "MediumSlow", "MEDIUM_FAST": "MediumFast", "LONG_SLOW": "LongSlow",
+    "LONG_FAST": "LongFast", "LONG_TURBO": "LongTurbo", "LONG_MODERATE": "LongMod",
+    "VERY_LONG_SLOW": "Invalid",
+}
+
+
+def djb2(text: str) -> int:
+    """The firmware's ``hash()`` (djb2, uint32)."""
+    h = 5381
+    for byte in text.encode("utf-8"):
+        h = (h * 33 + byte) & 0xFFFFFFFF
+    return h
+
+
+def channel_centre_mhz(preset: str, channel_num: int = 0, region: str = "US",
+                       channel_name: str = "") -> Tuple[float, int, int]:
+    """(centre MHz, 1-based slot, numChannels) the firmware tunes for this
+    preset / channel_num / primary channel name. channel_num 0 = hashed from
+    the channel name (the preset's display name when the name is empty)."""
+    start, end, spacing = REGIONS[region.upper()]
+    _sf, bw_hz, _cr = firmware_params(preset)
+    bw_mhz = bw_hz / 1e6
+    num_channels = int((end - start) // (spacing + bw_mhz))
+    if channel_num:
+        idx = (channel_num - 1) % num_channels
+    else:
+        idx = djb2(channel_name or PRESET_DISPLAY_NAMES[preset.upper()]) % num_channels
+    return start + bw_mhz / 2 + idx * bw_mhz, idx + 1, num_channels

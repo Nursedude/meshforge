@@ -95,3 +95,19 @@ def rnode_profile(region: str = "US", path: Optional[Path] = None) -> Dict:
         raise ProfileError(f"no RNode default for region {region}; "
                            f"known: {', '.join(REGION_DEFAULTS)} — declare one in {path}")
     return {**REGION_DEFAULTS[region], "source": f"MeshForge {region} default"}
+
+
+def meshtastic_overlap(profile: Dict, mesh_centre_hz: float, mesh_bw_hz: int) -> Dict:
+    """Does the RNode's occupied band touch a Meshtastic channel's?
+
+    Occupied band = centre ± BW/2 for each. Returns overlap (bool) and the
+    edge-to-edge gap in kHz (negative = overlapping by that much). Physics
+    only: an overlap means the two share airtime — RNS and Meshtastic cannot
+    decode each other, so they only collide."""
+    r_lo = profile["frequency"] - profile["bandwidth"] / 2
+    r_hi = profile["frequency"] + profile["bandwidth"] / 2
+    m_lo, m_hi = mesh_centre_hz - mesh_bw_hz / 2, mesh_centre_hz + mesh_bw_hz / 2
+    gap_hz = max(m_lo - r_hi, r_lo - m_hi)
+    return {"overlap": gap_hz < 0, "gap_khz": gap_hz / 1000,
+            "rnode_band_mhz": (r_lo / 1e6, r_hi / 1e6),
+            "mesh_band_mhz": (m_lo / 1e6, m_hi / 1e6)}

@@ -56,6 +56,8 @@ def test_unknown_region_is_refused(tmp_path):
 
 def test_writers_and_template_agree_with_the_profile(monkeypatch, tmp_path):
     monkeypatch.setattr(rp, "declared_profile_path", lambda: tmp_path / "absent.json")
+    import commands.rnode as cr
+    monkeypatch.setattr(cr, "local_meshtastic_lora", lambda: {"state": "unknown", "why": "pinned"})
     from commands.rnode import get_recommended_config
     from commands.rns_templates import _rnode_template_settings
     cfg = get_recommended_config("/dev/ttyACM0", "US").data["config"]
@@ -75,3 +77,31 @@ def test_rnode_profiles_are_not_meshtastic_presets():
     assert not hasattr(lp, "PROVEN_GATEWAY_CONFIGS")
     assert not hasattr(lp, "get_rnode_config_for_meshtastic_preset")
     assert not os.path.exists(os.path.join(ROOT, "src/config/rns_config.py"))
+
+
+# --- overlap with the local Meshtastic channel ------------------------------
+
+def _lora(**kw):
+    base = {"state": "ok", "use_preset": True, "preset": "LONG_FAST", "region": "US",
+            "channel_num": 20, "override_frequency": 0.0, "channel_name": ""}
+    return {**base, **kw}
+
+
+def test_fleet_rnode_is_clear_of_long_fast_slot_20():
+    from commands.rnode import meshtastic_channel_check
+    r = meshtastic_channel_check(FLEET_MEASURED, _lora())
+    assert r["state"] == "ok" and r["overlap"] is False and r["gap_khz"] == 3000.0
+
+
+def test_rnode_on_the_mesh_channel_is_flagged():
+    from commands.rnode import meshtastic_channel_check
+    r = meshtastic_channel_check(FLEET_MEASURED, _lora(channel_num=7))   # 903.625 MHz
+    assert r["overlap"] is True and r["gap_khz"] == -250.0
+
+
+def test_unread_radio_is_unknown_not_clear():
+    from commands.rnode import meshtastic_channel_check
+    r = meshtastic_channel_check(FLEET_MEASURED, {"state": "unknown", "why": "planted"})
+    assert r["state"] == "unknown" and "overlap" not in r
+    r = meshtastic_channel_check(FLEET_MEASURED, _lora(use_preset=False))
+    assert r["state"] == "unknown"

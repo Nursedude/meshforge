@@ -213,6 +213,22 @@ class RNodeHandler(BaseHandler):
         print(f"  Coding Rate:      {config.get('coding_rate', '?')}")
         print(f"  TX Power:         {config.get('tx_power', '?')} dBm")
 
+        ov = result.data.get('meshtastic_overlap') or {}
+        print()
+        if ov.get('state') != 'ok':
+            print(f"  Meshtastic overlap: UNKNOWN — {ov.get('why', 'not checked')}")
+        else:
+            slot = f" slot {ov['slot']}" if ov.get('slot') else " (override frequency)"
+            mesh = f"{ov['preset']}{slot}, {ov['mesh_band_mhz'][0]:.3f}-{ov['mesh_band_mhz'][1]:.3f} MHz"
+            if ov['overlap']:
+                print(f"  Meshtastic overlap: YES — this RNode would share airtime with the")
+                print(f"    local radio's channel ({mesh}); RNS and Meshtastic cannot decode")
+                print(f"    each other, so they only collide. Pick a frequency outside it.")
+            else:
+                print(f"  Meshtastic overlap: clear — {ov['gap_khz']:.0f} kHz from the local")
+                print(f"    radio's channel ({mesh}; read from the radio).")
+            print("    Other Meshtastic segments on your site are not checked here.")
+
         snippet = result.data.get('snippet', '')
         if snippet:
             print(f"\n  Config snippet for ~/.reticulum/config:\n")

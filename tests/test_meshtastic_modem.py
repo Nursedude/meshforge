@@ -96,3 +96,20 @@ def test_gateway_template_dialog_shows_firmware_numbers(monkeypatch):
     h.ctx = type("C", (), {"dialog": Dialog()})()
     h._apply_gateway_template("mtnmesh")
     assert "Spreading Factor: SF9" in shown["text"]
+
+
+# --- channel maths (RadioInterface.cpp) against facts known independently ---
+
+def test_long_fast_default_lands_on_the_fleets_slot_20():
+    # The fleet's LongFast segment is ch20 / 906.875 MHz (measured on the radios).
+    assert mm.channel_centre_mhz("LONG_FAST") == (906.875, 20, 104)
+
+
+def test_explicit_slot_follows_the_firmware_formula():
+    assert mm.channel_centre_mhz("SHORT_TURBO", 8) == (905.75, 8, 52)   # fleet's ShortTurbo ch8
+    assert mm.channel_centre_mhz("LONG_FAST", 1)[0] == 902.125
+
+
+def test_djb2_is_the_firmware_hash():
+    assert mm.djb2("") == 5381
+    assert mm.djb2("a") == 5381 * 33 + ord("a")

@@ -591,12 +591,15 @@ def get_recommended_config(port: str, region: str = 'US') -> CommandResult:
   codingrate = {config['coding_rate']}
 """
 
+    overlap = meshtastic_channel_check(config)
+
     return CommandResult.ok(
         f"Recommended config for {region} region ({profile['source']})",
         data={
             'config': config,
             'snippet': config_snippet,
             'source': profile['source'],
+            'meshtastic_overlap': overlap,
         }
     )
 
@@ -604,3 +607,56 @@ def get_recommended_config(port: str, region: str = 'US') -> CommandResult:
 def is_available() -> bool:
     """Check if RNode functionality is available."""
     return True
+
+
+def local_meshtastic_lora() -> dict:
+    """The local radio's LoRa config, asked of the radio itself through the
+    guarded short-lived connection (#17). Tri-state: {"state": "ok", ...} or
+    {"state": "unknown", "why": ...} — never a guessed channel."""
+    try:
+        from utils.connection_manager import MeshtasticConnection
+        with MeshtasticConnection(connect=True, blocking=True, timeout=10,
+                                  caller="rnode_overlap") as iface:
+            node = getattr(iface, "localNode", None) if iface else None
+            lora = getattr(getattr(node, "localConfig", None), "lora", None)
+            if lora is None:
+                return {"state": "unknown", "why": "no local radio config (meshtasticd not reachable?)"}
+            from meshtastic.protobuf import config_pb2
+            enum = config_pb2.Config.LoRaConfig
+            name = ""
+            try:
+                name = node.channels[0].settings.name or ""
+            except (AttributeError, IndexError, TypeError):
+                pass
+            return {"state": "ok", "use_preset": bool(lora.use_preset),
+                    "preset": enum.ModemPreset.Name(lora.modem_preset),
+                    "region": enum.RegionCode.Name(lora.region),
+                    "channel_num": int(lora.channel_num),
+                    "override_frequency": float(lora.override_frequency or 0.0),
+                    "channel_name": name}
+    except Exception as e:  # any failure to ask is UNKNOWN, never "clear"
+        return {"state": "unknown", "why": f"could not read the radio ({e.__class__.__name__}: {e})"}
+
+
+def meshtastic_channel_check(profile: dict, lora: dict = None) -> dict:
+    """RNode band vs the local Meshtastic channel. UNKNOWN when the radio's
+    channel cannot be established — an unread radio is not a clear channel."""
+    from utils.meshtastic_modem import channel_centre_mhz, firmware_params
+    from utils.rnode_profile import meshtastic_overlap
+    lora = local_meshtastic_lora() if lora is None else lora
+    if lora.get("state") != "ok":
+        return {"state": "unknown", "why": lora.get("why", "radio not read")}
+    if not lora["use_preset"]:
+        return {"state": "unknown", "why": "radio uses custom LoRa settings, not a preset"}
+    try:
+        _sf, bw, _cr = firmware_params(lora["preset"])
+        if lora["override_frequency"]:
+            centre, slot = lora["override_frequency"], None
+        else:
+            centre, slot, _n = channel_centre_mhz(lora["preset"], lora["channel_num"],
+                                                  lora["region"], lora["channel_name"])
+    except KeyError as e:
+        return {"state": "unknown", "why": f"no firmware table entry for {e}"}
+    res = meshtastic_overlap(profile, centre * 1e6, bw)
+    return {"state": "ok", **res, "preset": lora["preset"], "slot": slot,
+            "mesh_centre_mhz": centre, "source": "the local radio's own LoRa config"}
