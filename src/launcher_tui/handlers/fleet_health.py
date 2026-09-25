@@ -208,18 +208,17 @@ class FleetHealthHandler(BaseHandler):
                 hint="rnsd may be unresponsive to RPC — check it "
                      "in-app: RNS > Diagnostics",
             )
-        lines = [ln for ln in out.splitlines() if " is " in ln and " away via " in ln]
-        if not lines:
+        from utils.node_counts import parse_rnpath_table
+        network, ipc = parse_rnpath_table(out)
+        if network + ipc == 0:
             return ProbeResult(
                 label="RNS path table",
                 status="warn",
                 headline="path table is empty",
                 hint="No destinations learned yet — wait for announces or check interfaces",
             )
-        # "LocalInterface" rows are shared-instance IPC peers (other
-        # local processes that connected to rnsd), not network destinations.
-        ipc = sum(1 for ln in lines if "LocalInterface" in ln)
-        network = len(lines) - ipc
+        # One parser shared with Dashboard > Node Count (utils.node_counts):
+        # the two screens disagreed (43 vs 0) until 2026-09-25.
         return ProbeResult(
             label="RNS path table",
             status="ok",

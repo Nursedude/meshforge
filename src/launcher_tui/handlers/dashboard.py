@@ -345,30 +345,38 @@ class DashboardHandler(BaseHandler):
         """Show node counts from all sources."""
         clear_screen()
         print("=== Node Counts ===\n")
-
-        if not _HAS_MESHTASTIC_HTTP:
-            print("  Meshtastic: meshtastic_http module not available")
+        # One source per number, each named (2026-09-25 live-truth pass: this
+        # screen read "RNS destinations: 0" from rnstatus -a — which lists
+        # interfaces — and "HTTP API unavailable" from an ESP32-only API).
+        from utils.node_counts import (directory_counts, meshtastic_radio_nodes,
+                                       radio_self_report, rns_path_table_counts)
+        me = radio_self_report()
+        if me["online"] is None:
+            print(f"  Meshtastic (radio's own):  UNKNOWN — {me['why']}")
         else:
-            try:
-                client = get_http_client()
-                if client.is_available:
-                    nodes = client.get_nodes()
-                    print(f"  Meshtastic nodes: {len(nodes)}")
-                else:
-                    print("  Meshtastic: HTTP API unavailable")
-            except Exception as e:
-                print(f"  Meshtastic: unavailable ({e})")
-
-        try:
-            result = subprocess.run(
-                ['rnstatus', '-a'],
-                capture_output=True, text=True, timeout=10
-            )
-            dest_count = len([line for line in result.stdout.splitlines()
-                             if line.strip().startswith('<')])
-            print(f"  RNS destinations: {dest_count}")
-        except Exception:
-            print("  RNS: unavailable")
+            age = me.get("age_s")
+            when = f", reported {int(age // 60)} min ago" if age is not None else ""
+            print(f"  Meshtastic (radio's own):  {me['online']} online / {me['total']} known{when}")
+            print(f"      source: {me['source']}")
+        mt = meshtastic_radio_nodes()
+        if mt["count"] is None:
+            print(f"  Meshtastic (map's view):   UNKNOWN — {mt['why']}")
+        else:
+            print(f"  Meshtastic (map's view):   {mt['count']} nodes")
+            print(f"      source: {mt['source']}")
+        rns = rns_path_table_counts()
+        if rns["network"] is None:
+            print(f"  RNS destinations:         UNKNOWN — {rns['why']}")
+        else:
+            print(f"  RNS destinations:         {rns['network']} network "
+                  f"(+{rns['ipc']} local IPC peers)")
+            print(f"      source: {rns['source']}")
+        d = directory_counts()
+        if d and d["by_network"]:
+            seen = ", ".join(f"{k} {v}" for k, v in sorted(d["by_network"].items()))
+            print(f"\n  Seen over the map's retention "
+                  f"({d.get('retention_local_days') or '?'} d local): {seen}")
+            print("      (history, not a live count)")
 
         print()
         self.ctx.wait_for_enter()

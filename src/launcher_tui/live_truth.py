@@ -12,7 +12,10 @@ actually checked against the real system, when, how far, and on what evidence.
 DATA, not behaviour. Rules for an entry (pinned by
 `tests/test_live_truth_ledger.py`):
   * the key is a LIVE (section, tag) — a retired action fails the test;
-  * `date` is ISO; `box` names where it was observed;
+  * `date` is ISO; `box` names WHERE by role ("dev/manager box", "Airspy
+    host") — repo source carries no fleet hostnames (MF014); the exact box is
+    in the provenance line `evidence` points to;
+  * `partial` is explicit: True when the scope left something unchecked;
   * `scope` says exactly what was checked — "banner only" is an honest entry,
     a bare "works" is not;
   * `evidence` points at something another reader can re-check (a commit, a
@@ -31,21 +34,66 @@ from typing import Dict, Tuple
 Action = Tuple[str, str]   # (menu_section, action_tag)
 
 LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
+    ("dashboard", "status"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "each listed unit's state (meshtasticd, rnsd, mosquitto 'running') against "
+                 "`systemctl is-active` — all three active, all three match",
+        "partial": False,
+        "evidence": "live render + is-active 06:55 HST, session of 2026-09-25",
+    },
+    ("dashboard", "nodes"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "FIXED then verified: radio's own 90 online/334 known vs its journal "
+                 "telemetry; map view 191 vs /api/status source_diagnostics; RNS 43 vs "
+                 "`rnpath -t` (same parser as Stack Health). Before the fix it read RNS 0 "
+                 "(rnstatus -a lists interfaces) and 'HTTP API unavailable' (ESP32-only API)",
+        "partial": False,
+        "evidence": "utils/node_counts.py + tests/test_node_counts.py, this commit; live "
+                    "render 07:0x HST",
+    },
+    ("dashboard", "weather"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "FIXED then verified against NOAA's live feeds: Kp 2 (feed estimated_kp "
+                 "1.67), Planetary A 19 (daily-geomagnetic-indices.txt), storm level derived "
+                 "from Kp. Before: Kp None (NOAA changed the feed to objects), A -1 "
+                 "(Fredericksburg's not-computed column), 'Quiet' as a default",
+        "partial": False,
+        "evidence": "utils/space_weather.py parse_planetary_a + Kp object format, "
+                    "tests/test_space_weather_truth.py real-row cases, this commit",
+    },
+    ("dashboard", "delivery"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "every section 'inert' against the box: no meshforge-gateway unit, synth "
+                 "and propagation soak timers `not-found` — inert is the true state here; "
+                 "a gateway box (moc/moc3) not yet checked",
+        "partial": True,
+        "evidence": "live render + `systemctl cat` / `is-enabled` 06:55 HST",
+    },
+    ("dashboard", "stack_health"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "uptimes vs systemd ActiveEnterTimestamp (rnsd 2.0 d, map 1.8 d, "
+                 "meshtasticd 5.2 d), NomadNet active (`systemctl --user`), path table 43 "
+                 "network destinations (rnpath) — all match",
+        "partial": False,
+        "evidence": "live render + systemctl/rnpath 06:55–07:0x HST",
+    },
     ("rf_sdr", "sdr_watch"): {
         "date": "2026-09-25",
-        "box": "moc5",
-        "scope": "view rendered from moc5's REAL interference.jsonl through the real "
+        "box": "Airspy host",
+        "scope": "view rendered from the Airspy host's REAL interference.jsonl through the real "
                  "sdr_view code (witness freshness, per-window classes, class D, blind "
                  "spots); the handler itself not launched inside a live TUI session",
+        "partial": True,
         "evidence": "render at 00:04 HST on 4c7866c5 quoted in session; provenance touch "
-                    "line 2026-09-24 23:46:36 (moc5)",
+                    "line 2026-09-24 23:46:36 (the Airspy host)",
     },
     ("rf_sdr", "sdr"): {
         "date": "2026-09-24",
-        "box": "moc5",
+        "box": "Airspy host",
         "scope": "MOCK-mode banner only (reason + USB bus line: 'SoapySDR is not installed "
                  "… An Airspy IS attached'); the monitor's capture screens NOT verified",
-        "evidence": "commit 6f5249f7; banner rendered on moc5 at 21:1x HST on 14c565e6",
+        "partial": True,
+        "evidence": "commit 6f5249f7; banner rendered on the Airspy host at 21:1x HST on 14c565e6",
     },
 }
 
@@ -55,5 +103,6 @@ def live_class(section: str, tag: str) -> str:
     e = LIVE_VERIFIED.get((section, tag))
     if not e:
         return ""
-    partial = any(w in e["scope"].lower() for w in ("only", "not verified", "not launched"))
-    return f"{'◐' if partial else '✓'} {e['date']} {e['box']}"
+    # Explicit, never inferred from the prose: a keyword guess marked a fully
+    # verified entry partial because its scope said "(ESP32-only API)".
+    return f"{'◐' if e['partial'] else '✓'} {e['date']} {e['box']}"

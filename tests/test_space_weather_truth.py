@@ -146,3 +146,39 @@ def test_quick_summary_still_summarises_when_a_source_answered():
         for p in patches:
             p.stop()
     assert summary.startswith("SFI:130 K:2")
+
+
+# ---- live-truth pass 2026-09-25: Dashboard > Space Weather ----
+
+REAL_ROWS = [  # NOAA daily-geomagnetic-indices.txt, 2026-09-25 (today's row partial)
+    "2026 09 23     4  0 1 0 1 2 1 2 2     0  0 0 0 0 0 0 0 1     4   0.33  0.33  0.33  1.00  0.67  0.67  1.67  1.67",
+    "2026 09 24    13  2 2 3 4 4 2 1 2    35  1 1 5 7 5 4 2 2    16   3.00  2.33  3.00  4.33  3.67  3.00  2.00  2.67",
+    "2026 09 25    -1  3 3 4 4 3-1-1-1    -1  2 3 6 6 5-1-1-1    19   3.67  3.67  4.00  4.00  3.67 -1.00 -1.00 -1.00",
+]
+
+
+def test_planetary_a_is_read_not_fredericksburgs_minus_one():
+    from utils.space_weather import parse_planetary_a
+    assert parse_planetary_a(REAL_ROWS) == 19            # not -1 (Fredericksburg, not computed)
+    assert parse_planetary_a(REAL_ROWS[:2]) == 16
+    partial = REAL_ROWS[:2] + [REAL_ROWS[2].replace("    19   ", "    -1   ")]
+    assert parse_planetary_a(partial) == 16              # a negative is skipped, never shown
+    assert parse_planetary_a([]) is None
+
+
+def test_kp_reads_noaas_current_object_format_and_the_old_pairs(monkeypatch):
+    from utils.space_weather import SpaceWeatherAPI
+    api = SpaceWeatherAPI()
+    new = [{"time_tag": "2026-09-25T16:53:00", "kp_index": 2, "estimated_kp": 1.67, "kp": "2M"}]
+    monkeypatch.setattr(api, "_fetch_json", lambda *_a, **_k: new)
+    kp, ts = api.get_k_index()
+    assert kp == 2 and ts.hour == 16
+    old = [["2026-01-12 10:00:00.000", "4.33"]]
+    monkeypatch.setattr(api, "_fetch_json", lambda *_a, **_k: old)
+    assert api.get_k_index()[0] == 4
+
+
+def test_no_kp_means_an_unknown_storm_level_never_quiet():
+    from utils.space_weather import GeomagneticStorm, SpaceWeatherData
+    assert SpaceWeatherData().geomag_storm is GeomagneticStorm.UNKNOWN
+    assert "UNKNOWN" in GeomagneticStorm.UNKNOWN.value

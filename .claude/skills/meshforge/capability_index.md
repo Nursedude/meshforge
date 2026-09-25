@@ -16,7 +16,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 
 **Truth** says how the action's HONESTY is checked (`tests/test_tui_success_truth_sweep.py`, `launcher_tui/action_truth.py`): `sweep` = dispatched on every commit with every external DEAD and required to render a word of uncertainty; `local-only` = declared to consult no external (the why is in `action_truth.py`); `⚠️ false-ok` = a FROZEN baseline finding — renders a confident screen with nothing to be confident about. The baseline only shrinks.
 
-**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 2 action(s) have an entry — a blank is the honest default, not a failure.
+**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 7 action(s) have an entry — a blank is the honest default, not a failure.
 
 ## `about`
 
@@ -50,14 +50,14 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | `analytics` | Analytics — Health, trends, coverage |  | sweep |  | AnalyticsHandler |
 | `alerts` | View Alerts — Current warnings |  | sweep |  | DashboardHandler |
 | `datapath` | Data Path Check — Test all data sources |  | sweep |  | DashboardHandler |
-| `nodes` | Node Count — Meshtastic + RNS nodes |  | sweep |  | DashboardHandler |
+| `nodes` | Node Count — Meshtastic + RNS nodes |  | sweep | ✓ 2026-09-25 dev/manager box | DashboardHandler |
 | `reports` | Reports — Generate status report |  | sweep |  | DashboardHandler |
 | `score` | Health Score — Network health snapshot |  | sweep |  | DashboardHandler |
-| `status` | Service Status — All services with health |  | sweep |  | DashboardHandler |
-| `weather` | Space Weather — SFI, Kp, bands at a glance |  | sweep |  | DashboardHandler |
-| `delivery` | Delivery — did messages arrive? (source+age) |  | sweep |  | DeliveryHandler |
+| `status` | Service Status — All services with health |  | sweep | ✓ 2026-09-25 dev/manager box | DashboardHandler |
+| `weather` | Space Weather — SFI, Kp, bands at a glance |  | sweep | ✓ 2026-09-25 dev/manager box | DashboardHandler |
+| `delivery` | Delivery — did messages arrive? (source+age) |  | sweep | ◐ 2026-09-25 dev/manager box | DeliveryHandler |
 | `demo` | Demo Mode — Simulated mesh traffic |  | sweep |  | DemoHandler |
-| `stack_health` | Stack Health — Local: RNS path, NomadNet, bridge, DB |  | sweep |  | FleetHealthHandler |
+| `stack_health` | Stack Health — Local: RNS path, NomadNet, bridge, DB |  | sweep | ✓ 2026-09-25 dev/manager box | FleetHealthHandler |
 | `latency` | Latency Monitor — Service response times |  | sweep |  | LatencyHandler |
 | `mini_dudeai` | mini-dudeai (local watcher + fixes) |  | sweep |  | MiniDudeaiHandler |
 | `mini_dudeai_chat` | mini-dudeai: describe a rule (chat-compile) |  | sweep |  | MiniDudeaiHandler |
@@ -152,8 +152,8 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | `antenna` | Antenna Analysis — Compare antenna types |  | sweep |  | RFToolsHandler |
 | `freq` | Frequency Slots — Channel calculator |  | sweep |  | RFToolsHandler |
 | `link` | Link Budget — FSPL, Fresnel, range |  | sweep |  | RFToolsHandler |
-| `sdr` | SDR Monitor — RF awareness (Airspy) |  | sweep | ◐ 2026-09-24 moc5 | SDRHandler |
-| `sdr_watch` | Interference Watch — what the Airspy timer saw (read-only) |  | sweep | ◐ 2026-09-25 moc5 | SDRWatchHandler |
+| `sdr` | SDR Monitor — RF awareness (Airspy) |  | sweep | ◐ 2026-09-24 Airspy host | SDRHandler |
+| `sdr_watch` | Interference Watch — what the Airspy timer saw (read-only) |  | sweep | ◐ 2026-09-25 Airspy host | SDRWatchHandler |
 | `site` | Site Planner — Coverage estimation |  | sweep |  | SitePlannerHandler |
 
 ## `rns`

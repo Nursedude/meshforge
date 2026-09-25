@@ -55,6 +55,10 @@ class GeomagneticStorm(Enum):
     STRONG = "G3 Strong"  # Kp 7
     SEVERE = "G4 Severe"  # Kp 8
     EXTREME = "G5 Extreme"  # Kp 9
+    # No Kp observed. Until 2026-09-25 the field DEFAULTED to QUIET, so a
+    # missing Kp rendered "Geomagnetic: Quiet" beside "Kp Index: None" — a
+    # storm level asserted from nothing (live-truth pass, Dashboard › Weather).
+    UNKNOWN = "UNKNOWN (Kp not reported)"
 
 
 @dataclass
@@ -71,7 +75,7 @@ class SpaceWeatherData:
     xray_class: Optional[str] = None  # B, C, M, X
 
     # Geomagnetic
-    geomag_storm: GeomagneticStorm = GeomagneticStorm.QUIET
+    geomag_storm: GeomagneticStorm = GeomagneticStorm.UNKNOWN
 
     # Timestamps
     updated: Optional[datetime] = None
@@ -101,6 +105,33 @@ class SpaceWeatherData:
             'updated': self.updated.isoformat() if self.updated else None,
             'band_conditions': {k: v.value for k, v in self.band_conditions.items()},
         }
+
+
+def parse_planetary_a(lines) -> Optional[int]:
+    """The most recent PLANETARY A-index from daily-geomagnetic-indices.txt.
+
+    Rows: date, Fredericksburg A + 8 K, College A + 8 K, Planetary A + 8 K
+    (the planetary K are decimals). The first cut read column 3 —
+    Fredericksburg, ONE middle-latitude station — and NOAA writes -1 there for
+    a day not yet computed, so the screen showed "A Index: -1" (live-truth
+    pass 2026-09-25). K digits run together ("3-1-1-1"), so the anchor is not a
+    column count but the integer immediately before the first decimal token.
+    A negative value is NOAA's "not computed" and is skipped, never shown.
+    """
+    for line in reversed(list(lines)):
+        parts = line.split()
+        if len(parts) < 5 or not parts[0].isdigit():
+            continue
+        first_float = next((i for i, t in enumerate(parts) if "." in t), None)
+        if not first_float:
+            continue
+        try:
+            value = int(parts[first_float - 1])
+        except ValueError:
+            continue
+        if value >= 0:
+            return value
+    return None
 
 
 class SpaceWeatherAPI:
@@ -175,14 +206,24 @@ class SpaceWeatherAPI:
 
         if data and isinstance(data, list) and len(data) > 0:
             try:
-                # Data is list of [timestamp, kp] pairs
-                # Get most recent entry
+                # NOAA changed this feed's shape: once a list of [timestamp, kp]
+                # pairs, now a list of {"time_tag", "kp_index", "estimated_kp",
+                # "kp"} objects (VERIFIED against the live feed 2026-09-25 — the
+                # old-only parser returned None, so Kp read None fleet-wide).
+                # Accept both; prefer the finer estimated_kp.
                 latest = data[-1]
-
-                # Parse timestamp: "2026-01-12 10:00:00.000" (variable milliseconds)
-                if isinstance(latest, list) and len(latest) >= 2:
+                ts_str = kp = None
+                if isinstance(latest, dict):
+                    ts_str = latest.get("time_tag")
+                    raw = latest.get("estimated_kp", latest.get("kp_index"))
+                    kp = float(raw) if raw is not None else None
+                elif isinstance(latest, list) and len(latest) >= 2:
                     ts_str = latest[0]
                     kp = float(latest[1])
+
+                # Parse timestamp: "2026-01-12 10:00:00.000" or "2026-09-25T16:53:00"
+                if ts_str is not None and kp is not None:
+                    ts_str = str(ts_str).replace("T", " ")
 
                     # Strip any milliseconds (handles .000, .123, or none)
                     ts_str_clean = ts_str.split('.')[0] if '.' in ts_str else ts_str
@@ -276,21 +317,10 @@ class SpaceWeatherAPI:
             # Skip comment lines starting with #
             lines = [l.strip() for l in text.splitlines() if l.strip() and not l.startswith('#') and not l.startswith(':')]
 
-            if lines:
-                # Get the last data line (most recent)
-                for line in reversed(lines):
-                    parts = line.split()
-                    # Expected: YYYY MM DD Ap [other values...]
-                    # or similar format with Ap in position 3 or 4
-                    if len(parts) >= 4:
-                        try:
-                            # Try to find Ap value (typically column 4 or later)
-                            # Format varies, but Ap is usually after date fields
-                            ap_value = int(parts[3])  # After YYYY MM DD
-                            self._cache[cache_key] = (datetime.now(), ap_value)
-                            return ap_value
-                        except (ValueError, IndexError):
-                            continue
+            ap_value = parse_planetary_a(lines)
+            if ap_value is not None:
+                self._cache[cache_key] = (datetime.now(), ap_value)
+                return ap_value
 
         except urllib.error.HTTPError as e:
             logger.warning(f"[SWPC] HTTP error fetching A-index text: {e.code}")

@@ -33,7 +33,8 @@ def test_every_ledger_key_is_a_live_action():
 
 def test_every_entry_says_when_where_how_far_and_on_what():
     for key, e in LIVE_VERIFIED.items():
-        assert set(e) >= {"date", "box", "scope", "evidence"}, key
+        assert set(e) >= {"date", "box", "scope", "evidence", "partial"}, key
+        assert isinstance(e["partial"], bool), key
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", e["date"]), key
         assert e["box"].strip() and len(e["scope"]) >= 20 and len(e["evidence"]) >= 10, key
         assert e["scope"].strip().lower() not in ("works", "ok", "verified", "checked"), key
@@ -45,3 +46,4 @@ def test_the_live_cell_marks_partial_scope_and_blank_for_unchecked():
         cell = live_class(s, t)
         assert e["date"] in cell and e["box"] in cell
     assert live_class("rf_sdr", "sdr").startswith("◐")          # banner only
+    assert live_class("dashboard", "nodes").startswith("✓")     # "(ESP32-only API)" is not partial
