@@ -196,6 +196,20 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
         "partial": True,
         "evidence": "live renders 10:3x HST; preset_impact.format_comparison_table footnote",
     },
+    ("rf_sdr", "weather"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "summary / space weather / band conditions / NOAA alerts vs NOAA's own feeds: "
+                 "SFI 115, Kp 2, A 18 (same parsers as Dashboard › weather), alerts = NOAA "
+                 "text. FIXED: sunspot number was never fetched (always 'None') — now SESC 124 "
+                 "from daily-solar-indices.txt, matching NOAA's 09-24 line; 'Updated' was our "
+                 "fetch time (now 'Fetched'); band table was MeshForge's rule of thumb labelled "
+                 "'NOAA SWPC' and scored a missing SFI 'very poor' / missing Kp 'excellent' — "
+                 "now attributed honestly and refused unless both are observed. DX spots, "
+                 "ionosonde, VOACAP, sources not checked",
+        "partial": True,
+        "evidence": "space_weather.parse_daily_sunspot + tests (planted column fails); "
+                    "commands.propagation.get_band_conditions refusal test",
+    },
     ("rf_sdr", "sdr_watch"): {
         "date": "2026-09-25",
         "box": "Airspy host",

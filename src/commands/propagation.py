@@ -359,6 +359,19 @@ def get_band_conditions() -> CommandResult:
             error="No space weather source answered (sources_answered=0)",
         )
 
+    # The per-band estimate needs BOTH solar flux and Kp: a missing SFI scores
+    # "very poor" and a missing Kp scores "excellent" inside
+    # assess_band_conditions, so a partial answer would print a confident
+    # table built on a default (2026-09-25).
+    missing = [n for n, v in (("solar flux", data.solar_flux), ("K-index", data.k_index))
+               if v is None]
+    if missing:
+        return CommandResult.fail(
+            f"Band conditions UNKNOWN — NOAA did not return {' and '.join(missing)}; "
+            "the estimate needs both.",
+            error=f"missing inputs: {', '.join(missing)}",
+        )
+
     bands = {k: v.value for k, v in data.band_conditions.items()}
 
     # Determine overall condition
@@ -372,7 +385,9 @@ def get_band_conditions() -> CommandResult:
             'solar_flux': data.solar_flux,
             'k_index': data.k_index,
             'a_index': data.a_index,
-            'source': 'NOAA SWPC',
+            # NOAA publishes the indices, not per-band conditions: this table is
+            # MeshForge's rule of thumb over them (was labelled "NOAA SWPC").
+            'source': 'MeshForge estimate from NOAA SWPC SFI/Kp/A (rule of thumb, not a NOAA forecast)',
         }
     )
 

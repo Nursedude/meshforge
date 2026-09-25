@@ -22,6 +22,7 @@ _DEAD = {
     "get_a_index": None,
     "get_solar_flux": None,
     "get_xray_flux": None,
+    "get_sunspot_number": None,
 }
 
 
@@ -182,3 +183,38 @@ def test_no_kp_means_an_unknown_storm_level_never_quiet():
     from utils.space_weather import GeomagneticStorm, SpaceWeatherData
     assert SpaceWeatherData().geomag_storm is GeomagneticStorm.UNKNOWN
     assert "UNKNOWN" in GeomagneticStorm.UNKNOWN.value
+
+
+# --- sunspot number + band-condition honesty (2026-09-25) --------------------
+
+def test_daily_sunspot_is_the_last_lines_sesc_column():
+    from utils.space_weather import parse_daily_sunspot
+    lines = ["2026 08 26  131     99      480      2    -999      *   4  2  0  4  1  0  0",
+             "2026 09 24  112    124      390      1    -999      *   1  0  0  0  0  0  0"]
+    assert parse_daily_sunspot(lines) == 124
+
+
+def test_daily_sunspot_skips_not_computed_and_headers():
+    from utils.space_weather import parse_daily_sunspot
+    lines = ["Date 10.7cm Number", "2026 09 23  110     88  300 0 -999 * 0 0 0 0 0 0 0",
+             "2026 09 24  112     -1  390 1 -999 * 1 0 0 0 0 0 0"]
+    assert parse_daily_sunspot(lines) == 88
+    assert parse_daily_sunspot([]) is None
+
+
+def test_band_conditions_refuse_a_partial_answer(monkeypatch):
+    """A missing SFI scored 'very poor' and a missing Kp 'excellent' — a
+    confident table built on a default."""
+    from commands import propagation
+    from utils.space_weather import SpaceWeatherData
+    d = SpaceWeatherData(k_index=2, sunspot_number=100)
+    d.sources_answered = 2
+    class FakeAPI:
+        def __init__(self, *a, **k):
+            pass
+
+        def get_current_conditions(self):
+            return d
+    monkeypatch.setattr(propagation, "SpaceWeatherAPI", FakeAPI)
+    r = propagation.get_band_conditions()
+    assert r.success is False and "solar flux" in r.message

@@ -73,10 +73,10 @@ class PropagationHandler(BaseHandler):
         lines = [
             result.message, "",
             f"Overall:      {d.get('overall', 'Unknown')}",
-            f"Solar Flux:   {d.get('solar_flux', 'N/A')} SFU",
-            f"K-index:      {d.get('k_index', 'N/A')}",
-            f"A-index:      {d.get('a_index', 'N/A')}",
-            f"Geomag:       {d.get('geomag_storm', 'N/A')}",
+            f"Solar Flux:   {_sfu(d.get('solar_flux'))}",
+            f"K-index:      {_or_unavailable(d.get('k_index'))}",
+            f"A-index:      {_or_unavailable(d.get('a_index'))}",
+            f"Geomag:       {_or_unavailable(d.get('geomag_storm'))}",
             "", f"Source: {d.get('source', 'NOAA SWPC')}",
         ]
         self.ctx.dialog.msgbox("Propagation Summary", "\n".join(lines))
@@ -89,16 +89,17 @@ class PropagationHandler(BaseHandler):
         d = result.data
         lines = [
             "Current Space Weather Conditions", "=" * 40, "",
-            f"Solar Flux Index (SFI):  {d.get('solar_flux', 'N/A')} SFU",
-            f"Sunspot Number:          {d.get('sunspot_number', 'N/A')}",
-            f"K-index (Kp):            {d.get('k_index', 'N/A')}",
-            f"A-index:                 {d.get('a_index', 'N/A')}",
-            f"X-ray Flux:              {d.get('xray_class', 'N/A')}",
-            f"Geomagnetic Storm:       {d.get('geomag_storm', 'N/A')}",
+            f"Solar Flux Index (SFI):  {_sfu(d.get('solar_flux'))}",
+            f"Sunspot Number (SESC):   {_or_unavailable(d.get('sunspot_number'))}",
+            f"K-index (Kp):            {_or_unavailable(d.get('k_index'))}",
+            f"A-index:                 {_or_unavailable(d.get('a_index'))}",
+            f"X-ray Flux:              {_or_unavailable(d.get('xray_class'))}",
+            f"Geomagnetic Storm:       {_or_unavailable(d.get('geomag_storm'))}",
         ]
         updated = d.get('updated')
         if updated:
-            lines.extend(["", f"Updated: {updated}"])
+            # This is when WE fetched, not when NOAA measured.
+            lines.extend(["", f"Fetched: {str(updated)[:19].replace('T', ' ')} (this box's clock)"])
         lines.extend(["", f"Source: {d.get('source', 'NOAA SWPC')}"])
         self.ctx.dialog.msgbox("Space Weather", "\n".join(lines))
 
@@ -111,7 +112,7 @@ class PropagationHandler(BaseHandler):
         bands = d.get('bands', {})
         lines = [
             f"Overall: {d.get('overall', 'Unknown')}",
-            f"SFI={d.get('solar_flux', 'N/A')}  Kp={d.get('k_index', 'N/A')}  A={d.get('a_index', 'N/A')}",
+            f"SFI={_or_unavailable(d.get('solar_flux'))}  Kp={_or_unavailable(d.get('k_index'))}  A={_or_unavailable(d.get('a_index'))}",
             "", "Band        Condition", "-" * 30,
         ]
         band_order = ['10m', '12m', '15m', '17m', '20m', '30m', '40m', '60m', '80m', '160m']
@@ -325,3 +326,13 @@ class PropagationHandler(BaseHandler):
             status = "OK" if result.success else "FAIL"
             lines.append(f"  {name:<20} [{status}] {result.message}")
         self.ctx.dialog.msgbox("Source Connectivity", "\n".join(lines))
+
+
+def _or_unavailable(value):
+    """A key present with None rendered as the word "None" on screen (sunspot,
+    until 2026-09-25). Absent or None both read "unavailable"."""
+    return "unavailable" if value is None else value
+
+
+def _sfu(value):
+    return "unavailable" if value is None else f"{value} SFU"
