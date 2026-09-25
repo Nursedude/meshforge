@@ -153,6 +153,32 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
         "evidence": "utils/report_generator.py, utils/meshtastic_modem.py, "
                     "tests/test_meshtastic_modem.py (planted SF10 -> 4 failures)",
     },
+    ("mesh_networks", "messaging"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "FIXED then verified: Statistics printed 'Total: 0' beside 'Received: 19185' "
+                 "(read a key the command never returns); now strict keys + the newest "
+                 "message's age (50 d). Diagnose/Routing called this CLIENT_MUTE radio "
+                 "(radio-read) 'Unknown role' + rebroadcast True — the CLI prints the role "
+                 "NUMBER; now mapped via the protobuf enum. FOUND, not changed: the store is "
+                 "~all TEST fixtures written before 08-06 (leak closed: 2,148 messaging tests "
+                 "left it untouched); the live MQTT listener sees only the one uplinked channel. "
+                 "Send / live feed / RX control not exercised (they transmit or hold the radio)",
+        "partial": True,
+        "evidence": "tests/test_messaging_truth.py (fail on old code); radio role + MQTT "
+                    "config read via MeshtasticConnection; mosquitto_sub 90 s = 0 messages",
+    },
+    ("mesh_networks", "check"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "FIXED then verified: the gateway LXMF hash got a green check and 'send from "
+                 "NomadNet to this address' on a box with no gateway running, and the verdict "
+                 "said 'bridge should work' with no gateway.json. Now the hash line depends on "
+                 "the service being RUNNING (control: gateway box reads running) and the "
+                 "verdict says 'no gateway configured yet'. Template drift rows vs the radio "
+                 "config match (LONG_FAST ch20, uplink on 'meshforge')",
+        "partial": False,
+        "evidence": "gateway_preflight._gateway_running + tests (fail on old code); gateway "
+                    "box: installed+available, systemctl is-active = active",
+    },
     ("system", "logs"): {
         "date": "2026-09-25", "box": "dev/manager box",
         "scope": "FIXED then verified: rnsd Logs read the journal only, but `rnsd --service` "

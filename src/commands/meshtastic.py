@@ -785,6 +785,8 @@ def get_device_role() -> CommandResult:
         'CLIENT_HIDDEN': 'Hidden from node list',
         'LOST_AND_FOUND': 'Recovery mode',
         'TAK_TRACKER': 'TAK + tracking',
+        'ROUTER_LATE': 'Router that rebroadcasts only after other nodes had their chance',
+        'CLIENT_BASE': 'Client base station, rebroadcasts favourited nodes',
     }
 
     try:
@@ -793,7 +795,7 @@ def get_device_role() -> CommandResult:
             if 'role' in line.lower():
                 parts = line.split(':')
                 if len(parts) >= 2:
-                    role = parts[-1].strip().upper()
+                    role = _role_name(parts[-1].strip())
                     return CommandResult.ok(
                         f"Device role: {role}",
                         data={
@@ -985,3 +987,18 @@ def get_cli_help() -> CommandResult:
         )
     except Exception as e:
         return CommandResult.fail(f"Failed to get help: {e}")
+
+
+def _role_name(raw: str) -> str:
+    """The CLI's `--get device.role` prints the enum NUMBER ("1"), which read
+    "Unknown role" on every box — and with it the messaging diagnose screen
+    claimed a CLIENT_MUTE radio rebroadcasts (2026-09-25). Map numbers through
+    Meshtastic's own protobuf enum so the names cannot drift from firmware."""
+    raw = raw.strip()
+    if raw.isdigit():
+        try:
+            from meshtastic.protobuf import config_pb2
+            return config_pb2.Config.DeviceConfig.Role.Name(int(raw))
+        except (ImportError, ValueError):
+            return f"UNKNOWN({raw})"
+    return raw.upper()

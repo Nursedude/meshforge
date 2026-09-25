@@ -610,6 +610,9 @@ def get_stats() -> CommandResult:
         ''')
         last_24h = cursor.fetchone()['recent']
 
+        cursor.execute("SELECT MAX(timestamp) AS newest FROM messages")
+        newest = cursor.fetchone()['newest']
+
         conn.close()
 
         return CommandResult.ok(
@@ -619,6 +622,7 @@ def get_stats() -> CommandResult:
                 'sent': sent,
                 'received': received,
                 'last_24h': last_24h,
+                'newest': newest,
                 'by_network': by_network,
             }
         )

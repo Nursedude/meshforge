@@ -16,7 +16,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 
 **Truth** says how the action's HONESTY is checked (`tests/test_tui_success_truth_sweep.py`, `launcher_tui/action_truth.py`): `sweep` = dispatched on every commit with every external DEAD and required to render a word of uncertainty; `local-only` = declared to consult no external (the why is in `action_truth.py`); `⚠️ false-ok` = a FROZEN baseline finding — renders a confident screen with nothing to be confident about. The baseline only shrinks.
 
-**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 20 action(s) have an entry — a blank is the honest default, not a failure.
+**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 22 action(s) have an entry — a blank is the honest default, not a failure.
 
 ## `about`
 
@@ -117,13 +117,13 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | `dual_failover` | Dual-Radio Failover — Configure, test, deploy failover |  | sweep |  | DualRadioFailoverHandler |
 | `favorites` | Favorites — Manage favorite nodes |  | sweep |  | FavoritesHandler |
 | `gateway` | Gateway Bridge — RNS-Meshtastic-MeshCore | `gateway` | sweep |  | GatewayHandler |
-| `check` | Gateway Pre-Flight — Validate bridge readiness |  | sweep |  | GatewayPreflightHandler |
+| `check` | Gateway Pre-Flight — Validate bridge readiness |  | sweep | ✓ 2026-09-25 dev/manager box | GatewayPreflightHandler |
 | `export` | Export Config — Snapshot current state as template |  | sweep |  | GatewayPreflightHandler |
 | `wizard` | Gateway Wizard — Guided SF↔MeshForge↔RNS setup | `gateway` | sweep |  | GatewayWizardHandler |
 | `load_balancer` | TX Load Balancer — Dual-radio TX distribution |  | sweep |  | LoadBalancerHandler |
 | `mesh_alerts` | Mesh Alerts — Battery, emergency, disconnect |  | sweep |  | MeshAlertsHandler |
 | `meshcore` | MeshCore — Companion radio, config | `meshcore` | sweep |  | MeshCoreHandler |
-| `messaging` | Messaging — Send/receive messages |  | sweep |  | MessagingHandler |
+| `messaging` | Messaging — Send/receive messages |  | sweep | ◐ 2026-09-25 dev/manager box | MessagingHandler |
 | `mqtt` | MQTT Monitor — Nodeless mesh observation | `mqtt` | sweep |  | MQTTHandler |
 | `nomadnet` | NomadNet Client — RNS messaging | `rns` | sweep |  | NomadNetHandler |
 | `meshtastic` | Meshtastic — Radio, channels, CLI | `meshtastic` | sweep |  | RadioMenuHandler |

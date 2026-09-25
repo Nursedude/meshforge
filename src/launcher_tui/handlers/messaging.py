@@ -198,7 +198,9 @@ class MessagingHandler(BaseHandler):
             self.ctx.wait_for_enter()
             return
 
-        print(f"  Showing {len(messages)} most recent:\n")
+        print(f"  Showing {len(messages)} most recent — newest "
+              f"{_age_line(messages[0].get('timestamp'))}")
+        print(f"  {_RECORDING_NOTE}\n")
         print(f"  {'Time':<20} {'From':<12} {'To':<12} {'Net':<6} Message")
         print(f"  {'-'*70}")
 
@@ -267,10 +269,16 @@ class MessagingHandler(BaseHandler):
             return
 
         data = result.data
-        print(f"  Total messages:       {data.get('total_messages', 0)}")
-        print(f"  Sent:                 {data.get('sent', 0)}")
-        print(f"  Received:             {data.get('received', 0)}")
-        print(f"  Last 24h:             {data.get('last_24h', 0)}")
+        # Required keys read strictly: this screen read 'total_messages' (the
+        # command returns 'total'), and .get(..., 0) printed "Total: 0" beside
+        # "Received: 19185" (live-truth pass 2026-09-25).
+        print(f"  Total messages:       {data['total']}")
+        print(f"  Sent:                 {data['sent']}")
+        print(f"  Received:             {data['received']}")
+        print(f"  Last 24h:             {data['last_24h']}")
+        print(f"  Newest message:       {_age_line(data.get('newest'))}")
+        print()
+        print(f"  {_RECORDING_NOTE}")
         print()
 
         by_net = data.get('by_network', {})
@@ -384,3 +392,25 @@ class MessagingHandler(BaseHandler):
             self.ctx.dialog.msgbox("Cleanup Complete", result.message)
         else:
             self.ctx.dialog.msgbox("Cleanup Failed", result.message)
+
+
+# What this history IS: the map daemon's listener records via MQTT, so only
+# channels the radio uplinks to MQTT arrive here (measured 2026-09-25: one
+# channel of four; the store's newest row was 50 days old).
+_RECORDING_NOTE = ("Recorded by the map daemon's MQTT listener: only channels with "
+                   "MQTT uplink enabled on the radio.")
+
+
+def _age_line(stamp) -> str:
+    """'<timestamp> (N d ago)' — a history's age is part of what it says."""
+    if not stamp:
+        return "none"
+    from datetime import datetime
+    try:
+        then = datetime.fromisoformat(str(stamp).replace("Z", ""))
+    except ValueError:
+        return f"{stamp} (age unknown)"
+    secs = (datetime.now() - then).total_seconds()
+    if secs >= 86400:
+        return f"{stamp} ({secs / 86400:.0f} d ago)"
+    return f"{stamp} ({max(secs, 0) / 3600:.1f} h ago)"

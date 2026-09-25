@@ -24,7 +24,8 @@ from typing import List, Optional, Tuple
 from handler_protocol import BaseHandler
 from utils.paths import get_real_user_home
 from utils.safe_import import safe_import
-from utils.service_check import check_service, check_port, get_rns_shared_instance_info
+from utils.service_check import (check_service, check_port, get_rns_shared_instance_info,
+                                 is_service_unit_installed)
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,11 @@ class GatewayPreflightHandler(BaseHandler):
         print(f"\n{_CYAN}{'─' * 60}{_RESET}")
         if fails == 0 and warns == 0:
             print(f"{_GREEN}{_BOLD}  All checks passed — bridge ready to launch.{_RESET}")
+        elif fails == 0 and not (get_real_user_home() / ".config" / "meshforge" / "gateway.json").exists():
+            # "bridge should work" was printed on boxes with no gateway config
+            # at all — a prediction about a bridge that does not exist yet.
+            print(f"{_YELLOW}  {warns} warning(s) — no gateway configured on this box yet: "
+                  f"launch the gateway once, then re-run this check.{_RESET}")
         elif fails == 0:
             print(f"{_YELLOW}  {warns} warning(s) — bridge should work, review hints above.{_RESET}")
         else:
@@ -298,14 +304,32 @@ class GatewayPreflightHandler(BaseHandler):
         try:
             identity = rns_mod.Identity.from_file(str(id_path))
             dest_hash = rns_mod.Destination.hash(identity, "lxmf", "delivery").hex()
-            return (
-                _OK,
-                f"gateway LXMF hash: {_BOLD}{dest_hash}{_RESET} "
-                f"(send from NomadNet to this address to test TX)",
-                None,
-            )
         except (OSError, ValueError, AttributeError) as e:
             return (_FAIL, f"could not derive gateway hash: {e}", None)
+        # The identity FILE is presence; a test message only arrives if the
+        # gateway is RUNNING. This line used to invite a NomadNet test send on
+        # boxes with no gateway service at all (live-truth pass 2026-09-25).
+        running = self._gateway_running()
+        if running is True:
+            return (_OK, f"gateway LXMF hash: {_BOLD}{dest_hash}{_RESET} "
+                         f"(gateway running — send from NomadNet to this address to test TX)", None)
+        if running is False:
+            return (_WARN, f"gateway LXMF hash: {_BOLD}{dest_hash}{_RESET} — but "
+                           f"meshforge-gateway is not running here, so nothing receives on "
+                           f"this address", "start the gateway (Service Control) before a test send")
+        return (_WARN, f"gateway LXMF hash: {_BOLD}{dest_hash}{_RESET} — gateway state "
+                       f"UNKNOWN (service check failed)", None)
+
+    @staticmethod
+    def _gateway_running() -> Optional[bool]:
+        """True/False from the service manager; None when it could not be asked."""
+        try:
+            if not is_service_unit_installed("meshforge-gateway"):
+                return False
+            return bool(check_service("meshforge-gateway").available)
+        except Exception as e:  # a failed check is UNKNOWN, never "not running"
+            logger.debug("gateway running check failed: %s", e)
+            return None
 
     def _check_nomadnet_identity_match(self) -> Tuple[str, str, Optional[str]]:
         cfg_path = get_real_user_home() / ".config" / "meshforge" / "gateway.json"
