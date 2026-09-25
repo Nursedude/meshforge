@@ -25,7 +25,9 @@ each row's `ts` + `run_s` (the interval the Airspy streamed); a carrier's
 
 What a row is OF: dBFS at a fixed gain (not dBm), at moc5 only, in the
 frames the gates kept; blind below the noise floor. Exit 0 = a row was
-written (whatever it says); 2 = no row could be written.
+written and judged something; 1 = a row was written but the analysis
+crashed (`error` — systemd then records Result=failed); 2 = no row could be
+written.
 """
 from __future__ import annotations
 
@@ -100,6 +102,20 @@ def airspy_capture(center_mhz: float, gain: int, tmpdir: str = "/dev/shm") -> Tu
             pass
 
 
+def analysis_stamp() -> str:
+    """Short hash of the analysis + writer source, stamped on every row, so a
+    reader can tell which rows share one analysis (review-fix deploys changed
+    the maths mid-history, and recurrence counts mixed the two)."""
+    import hashlib
+    h = hashlib.sha256()
+    for f in (Path(sa.__file__), Path(__file__)):
+        try:
+            h.update(f.read_bytes())
+        except OSError:
+            h.update(b"unreadable:" + str(f).encode())
+    return h.hexdigest()[:10]
+
+
 def soc_temp_c() -> Optional[float]:
     try:
         return round(int(Path("/sys/class/thermal/thermal_zone0/temp").read_text().strip()) / 1000, 1)
@@ -140,7 +156,8 @@ def judge_window(center: float, capture: Capture, previous: Optional[Dict],
             counts["failed"] += 1
             reasons.append(why or "unknown capture failure")
             continue
-        r = sa.analyse_window(raw, center, spur_mhz=sa.SPUR_MAP_MHZ.get((center, GAIN_AC), ()))
+        r = sa.analyse_window(raw, center, spur_mhz=sa.SPUR_MAP_MHZ.get((center, GAIN_AC), ()),
+                              ref_floor_dbfs=(previous or {}).get("floor_dbfs"))
         counts[r["status"]] += 1
         own_tx += r["own_tx_frames"]
         blocker += r["blocker_frames"]
@@ -196,7 +213,8 @@ def judge_window(center: float, capture: Capture, previous: Optional[Dict],
             b_counts["failed"] += 1
             b_reasons.append(why or "unknown capture failure")
             continue
-        r = sa.analyse_window(raw, center, spur_mhz=sa.SPUR_MAP_MHZ.get((center, GAIN_B), ()))
+        r = sa.analyse_window(raw, center, spur_mhz=sa.SPUR_MAP_MHZ.get((center, GAIN_B), ()),
+                              ref_floor_dbfs=((previous or {}).get("b") or {}).get("floor_dbfs"))
         b_counts[r["status"]] += 1
         if r["status"] == "ok":
             profiles.append(r["floor_profile"])
@@ -379,7 +397,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     d = data_dir()
     path = d / "interference.jsonl"
     base = {"v": SCHEMA, "ts": round(time.time(), 3), "host": socket.gethostname(),
-            "mode": a.mode, "soc_temp_c": soc_temp_c()}
+            "mode": a.mode, "soc_temp_c": soc_temp_c(), "analysis": analysis_stamp()}
     try:
         d.mkdir(parents=True, exist_ok=True)
         lock = open(d / "run.lock", "a")
@@ -428,7 +446,10 @@ def _emit(path: Path, row: Dict, to_stdout: bool) -> int:
         print(f"sdr_interference: could not write {path}: {e}", file=sys.stderr)
         return 2
     print(f"{row.get('mode')} {row.get('status')} -> {path}")
-    return 0
+    # A row was written, but an `error` row means the analysis crashed: exit 1
+    # so systemd records Result=failed and the fleet's user-unit probe can see
+    # it (review #5: exit 0 made a permanently broken analysis invisible).
+    return 1 if row.get("status") == "error" else 0
 
 
 if __name__ == "__main__":

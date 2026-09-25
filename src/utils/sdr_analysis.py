@@ -130,6 +130,29 @@ def im3_products(channels: Sequence[Channel] = FLEET_CHANNELS) -> List[Tuple[flo
     return out
 
 
+def alias_products(center_mhz: float, channels: Sequence[Channel] = FLEET_CHANNELS,
+                   fs_mhz: float = SAMPLE_RATE / 1e6) -> List[Tuple[float, float, str]]:
+    """Where our OWN out-of-window channels fold into this window.
+
+    Review 2026-09-24 (#1): both "persistent foreign" slices seen live sat at
+    2c - (f_LF ± fs). A centre-shift drill on moc5 (910.525 vs 910.9,
+    alternating) put energy at 911.175 in 10/80 bursts at one centre and 1/80
+    at the other — it moves with the tuning, so it is a receiver product, not a
+    foreign emitter. For each fleet channel OUTSIDE the usable window: the
+    direct alias f ± fs and its mirror 2c - (f ± fs), half-width = bw/2.
+    Tagged, never dropped — like IM3 — until the soak shows it with LF silent.
+    """
+    out = []
+    for ch in channels:
+        if abs(ch.center_mhz - center_mhz) <= USABLE_HALF_MHZ:
+            continue
+        for direct in (ch.center_mhz + fs_mhz, ch.center_mhz - fs_mhz):
+            for pos, kind in ((direct, "alias"), (2 * center_mhz - direct, "alias-mirror")):
+                if abs(pos - center_mhz) <= USABLE_HALF_MHZ + ch.half_mhz():
+                    out.append((pos, ch.half_mhz(), f"{kind} of {ch.label}"))
+    return out
+
+
 def _in_bands(freqs: np.ndarray, channels: Iterable[Channel], guard_khz: float) -> np.ndarray:
     m = np.zeros(freqs.size, bool)
     for ch in channels:
@@ -145,7 +168,8 @@ def analyse_window(raw: np.ndarray, center_mhz: float,
                    channels: Sequence[Channel] = FLEET_CHANNELS,
                    spur_mhz: Sequence[float] = (),
                    own_tx_dbfs: float = OWN_TX_DBFS,
-                   rel_tx_db: float = REL_TX_DB) -> Dict:
+                   rel_tx_db: float = REL_TX_DB,
+                   ref_floor_dbfs: Optional[float] = None) -> Dict:
     """Judge one burst. Pure. See the module docstring for what it is OF."""
     raw = np.asarray(raw)
     # int32 first: np.abs(int16 -32768) overflows to -32768, and the Airspy's
@@ -178,7 +202,15 @@ def analyse_window(raw: np.ndarray, center_mhz: float,
     own_tx = np.zeros(frames, bool)
     for v in band.values():
         own_tx |= (v > own_tx_dbfs) | (v > burst_floor + rel_tx_db)
-    blocker = frame_floor > burst_floor + BLOCKER_DB
+    # The blocker reference must be something a long burst cannot move
+    # (review #2: referenced to the burst MEDIAN, a frame-wide lift covering
+    # > 50 % of the burst flipped to blocker_frames=0, lifted the floor up to
+    # +8 dB and hid a +15 dB carrier). A low quantile of this burst, or the
+    # previous ok run's floor for this window when the caller has one.
+    blk_ref = float(np.percentile(frame_floor, 20))
+    if ref_floor_dbfs is not None:
+        blk_ref = min(blk_ref, float(ref_floor_dbfs))
+    blocker = frame_floor > blk_ref + BLOCKER_DB
     kept = ~own_tx & ~blocker
     result.update(own_tx_frames=int(own_tx.sum()), blocker_frames=int((blocker & ~own_tx).sum()),
                   kept_frames=int(kept.sum()), kept_frac=round(float(kept.mean()), 3))
@@ -230,6 +262,7 @@ def analyse_window(raw: np.ndarray, center_mhz: float,
     # > FOREIGN_BUSY_PCT of the kept frames. Tagged, not dropped, when the
     # slice sits on one of our own IM3 products.
     ims = im3_products(channels)
+    aliases = alias_products(center_mhz, channels)
     # No separate slice LEAK gate (design §2.C named one): a slice leak needs a
     # fleet band > floor + BUSY_DB + LEAK_DB (36 dB), and REL_TX_DB (20) has
     # already removed every such frame from `kept`. Mutation-tested 2026-09-24:
@@ -245,10 +278,11 @@ def analyse_window(raw: np.ndarray, center_mhz: float,
             pct = 100.0 * busy.mean()
             if pct > FOREIGN_BUSY_PCT:
                 tag = [p for c, hw, p in ims if abs(lo - c) <= hw + half]
+                alias = [p for c, hw, p in aliases if abs(lo - c) <= hw + half]
                 result["foreign"].append({
-                    "slice_mhz": round(lo, 4), "busy_pct": round(pct, 2),
+                    "slice_mhz": round(lo, 4), "busy_pct": round(float(pct), 2),
                     "peak_above_floor_db": round(float(sp.max() - floor), 1),
-                    "im3_candidate": tag or None})
+                    "im3_candidate": tag or None, "alias_candidate": alias or None})
         lo += 2 * half
     return result
 

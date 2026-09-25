@@ -27,7 +27,7 @@ Description=MeshForge SDR interference watch (fleet windows)
 Type=oneshot
 WorkingDirectory=/opt/meshforge
 ExecStart=/usr/bin/python3 /opt/meshforge/scripts/sdr_interference.py --mode fleet
-# Worst case 18 bursts x 15 s capture timeout = 270 s; stay under the 5-min
+# Worst case 18 bursts x 5 s capture timeout = 90 s (+ analysis); under the 5-min
 # cadence. systemd kills the whole cgroup, airspy_rx included.
 TimeoutStartSec=280
 Nice=10

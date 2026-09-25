@@ -337,3 +337,49 @@ def test_a_neighbour_channel_is_not_busy_from_our_leak(q906, neartx):
     that is LF's skirt, not ST traffic."""
     r = a.analyse_window(np.concatenate([q906, neartx]), 906.3)
     assert r["channels"]["meshtastic-ST-ch8"]["busy_pct"] < 5
+
+
+
+def _lifted(base, frames, floor, carrier_db=15):
+    planted = _plant_tone(base, 906.3, 907.30, carrier_db, floor)
+    iq = _iq(planted)
+    sigma = np.sqrt(np.var(_iq(base)) / 2)
+    for fr in frames:
+        sl = slice(fr * a.FFT, (fr + 1) * a.FFT)
+        iq[sl] += 2.3 * sigma * (RNG.normal(size=a.FFT) + 1j * RNG.normal(size=a.FFT))  # ~ +8 dB
+    return _raw(iq)
+
+
+def test_a_lift_over_most_of_a_burst_is_still_a_blocker_without_history(q906):
+    """Review #2 (exp 5): referenced to the burst MEDIAN, a +8 dB lift on 40
+    of 58 frames read blocker_frames=0 and hid a +15 dB carrier. The 20th
+    percentile stays on the unlifted frames — no history needed."""
+    base = np.concatenate([q906, q906])
+    floor = a.analyse_window(base, 906.3)["floor_dbfs"]
+    r = a.analyse_window(_lifted(base, range(40), floor), 906.3)
+    assert r["blocker_frames"] >= 38
+
+
+def test_a_fully_lifted_burst_is_caught_by_the_previous_floor(q906):
+    """When EVERY frame is lifted no in-burst quantile can see it; the previous
+    ok run's floor can. Without it the burst would read `ok` on a +8 dB floor."""
+    base = np.concatenate([q906, q906])
+    floor = a.analyse_window(base, 906.3)["floor_dbfs"]
+    r = a.analyse_window(_lifted(base, range(58), floor), 906.3, ref_floor_dbfs=floor)
+    assert r["status"] == "unjudgeable" and r["blocker_frames"] == 58
+
+
+def test_alias_positions_of_our_lf_are_tagged_where_they_were_seen_live():
+    tags = {round(c, 3): p for c, hw, p in a.alias_products(910.525)}
+    assert any(abs(c - 911.175) < 1e-6 and "meshtastic-LF-ch20" in p for c, p in tags.items())
+    tags903 = [(c, p) for c, hw, p in a.alias_products(903.625)]
+    assert any(abs(c - 903.375) < 1e-6 and "LF" in p for c, p in tags903)
+    # an in-window channel never aliases into its own window
+    assert not any("LF" in p for c, hw, p in a.alias_products(906.3))
+
+
+def test_a_foreign_slice_on_an_alias_position_carries_the_tag(q910):
+    t = _plant_band_noise(q910, 910.525, 911.175, 100, 20, frames=[2, 3, 9, 15, 16, 24])
+    r = a.analyse_window(t, 910.525)
+    hits = [f for f in r["foreign"] if abs(f["slice_mhz"] - 911.175) <= 0.0625]
+    assert hits and hits[0]["alias_candidate"] and "LF" in hits[0]["alias_candidate"][0]

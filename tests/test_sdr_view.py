@@ -128,3 +128,22 @@ def test_load_reaches_into_the_rotated_file(tmp_path):
     (tmp_path / "interference.jsonl.1").write_text("".join(json.dumps({"ts": i}) + "\n" for i in range(3)))
     p.write_text(json.dumps({"ts": 3}) + "\n")
     assert [r["ts"] for r in v.load(p, limit=3)[1]] == [1, 2, 3]
+
+
+
+def test_recurrence_uses_only_rows_from_the_current_analysis_code():
+    old = _row(si.run_fleet(quiet, None, {}, []), NOW - 600)            # no stamp = old code
+    new = [dict(_row(si.run_fleet(quiet, None, {}, []), NOW - 60 * k), analysis="abc1234567") for k in (2, 1)]
+    t = v.render("ok", [old] + new, now=NOW)
+    assert "1 older-code rows excluded" in t and "use 2 rows" in t
+
+
+
+def test_an_alias_tagged_slice_is_labelled_a_receiver_product():
+    t_mod = importlib.util.spec_from_file_location("_sdr_a_tests", _ROOT / "tests" / "test_sdr_analysis.py")
+    m = importlib.util.module_from_spec(t_mod)
+    t_mod.loader.exec_module(m)
+    img = m._plant_band_noise(Q910, 910.525, 911.175, 100, 20, frames=[2, 3, 9, 15, 16, 24])
+    cap = lambda c, g: ((img if c > 909 else Q906), None)  # noqa: E731
+    t = v.render("ok", [_row(si.run_fleet(cap, None, {}, []), NOW - 60)], now=NOW)
+    assert "C foreign 911.1" in t and "alias of our own channel — receiver product" in t

@@ -256,3 +256,29 @@ persistence skips rows without windows (#7); class D masks our own channels
 across rotation (#10/#11). Mutation test after: every non-equivalent mutant
 killed (18/18 across two passes).
 
+## 13. Second non-author review (Fable 5.1, of the §12 fixes) + the alias drill — 2026-09-24
+Verdict "sound with changes", no regression. Findings applied (author-applied again):
+- **The "first live foreign finding" was a receiver artefact** (#1). Both recurring
+  class-C slices sat at our LF's sample-rate image: 2c − (906.875 + 3) = 911.175
+  (910.525 window) and 903.375 (903.625 window). Centre-shift drill on moc5 under
+  run.lock (20:25 + 20:28, alternating 910.525 / 910.9): energy at 911.175 in
+  **10/80** bursts at 910.525 but **1/80** at 910.9 — a fixed emitter at that rate
+  gives ≤ 1/80 with p ≈ 3e-4, so it moves with tuning. That it is LF's image is
+  BELIEVED (it moved toward the predicted positions, weaker; the LF-timing test was
+  uninformative — 43 LF events in 170 s put 67 % of bursts near one by chance).
+  → `alias_products()` tags such slices `alias_candidate` (never a headline).
+- **Blocker reference** (#2): the burst median flipped once a frame-wide lift covered
+  > 50 % of a burst → 20th percentile, or the previous ok floor when known.
+- **Unpinned boundaries** (#3): M8 (2 of 4 read ok), M9 (B any-quiet-burst), M17
+  (tail boundary) — the reviewer's tests adopted verbatim.
+- **§12's "the slice leak gate can never fire (needs > 36 dB)" was circular** (#4):
+  it ASSUMED leakage ≥ 30 dB down. Measured on the recording: −7 to −14 dBc at
+  f_c ± 2Δ (a 2nd-order product). Whether a real 20 dB-weaker emitter reproduces
+  it is UNKNOWN until dudeclaw-02 is recorded as a fixture (§6's live negative
+  control) — the weaker-emitter tests model it by scaling a compressed recording.
+- **exit 1 on an `error` row** (#5) so systemd records Result=failed; the row stays.
+- **Rows carry an `analysis` stamp**; the pane counts recurrence only within one
+  analysis code. Template comments corrected (5 s timeout).
+Mutation: every mutant of the new code killed — including three the first cut of
+these tests let through (blocker median, blocker previous-floor, the pane label).
+

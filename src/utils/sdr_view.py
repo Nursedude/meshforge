@@ -126,7 +126,12 @@ def render(state: str, rows: Sequence[Dict], now: Optional[float] = None) -> str
                 "UNKNOWN is not a pass: nothing below is a claim about the band.", "", BLIND_SPOTS]
         return "\n".join(out)
 
-    fleet = [r for r in rows if r.get("mode") == "fleet"][-HISTORY_ROWS:]
+    fleet_all = [r for r in rows if r.get("mode") == "fleet"][-HISTORY_ROWS:]
+    # Recurrence counts only rows from the SAME analysis code as the newest
+    # row (the maths changed mid-history; older rows carry no stamp).
+    stamp = next((r.get("analysis") for r in reversed(fleet_all) if r.get("windows")), None)
+    fleet = [r for r in fleet_all if r.get("analysis") == stamp] if stamp else fleet_all
+    excluded = len(fleet_all) - len(fleet)
     newest = rows[-1]
     out.append(f"Newest row: {_age(now, newest.get('ts'))} · {newest.get('mode')} {newest.get('status', '?').upper()}"
                + (f" · {newest['note']}" if newest.get("note") else ""))
@@ -182,7 +187,8 @@ def render(state: str, rows: Sequence[Dict], now: Optional[float] = None) -> str
                 out.append("      A: no persistent carrier seen" + (f" ({new} new this run, unconfirmed)" if new else ""))
             for f in (w.get("foreign") or [])[:4]:
                 n, m, first = _recurrence(fleet, win, "foreign", "slice_mhz", f["slice_mhz"], 0.0625)
-                tag = " (our own IM3 candidate)" if f.get("im3_candidate") else ""
+                tag = (" (alias of our own channel — receiver product)" if f.get("alias_candidate")
+                       else " (our own IM3 candidate)" if f.get("im3_candidate") else "")
                 out.append(f"      C foreign {f['slice_mhz']:.3f} MHz busy {f['busy_pct']:.0f}% +{f['peak_above_floor_db']:.0f} dB"
                            f"{tag} — seen in {n} of {m} ok runs, first {_age(now, first)}")
             if w.get("status") == "ok" and not w.get("foreign"):
@@ -198,6 +204,9 @@ def render(state: str, rows: Sequence[Dict], now: Optional[float] = None) -> str
             else:
                 out.append(f"      B: {str(b.get('status', 'unknown')).upper()} — raised-floor check not judged this run")
 
+    if excluded:
+        out.append(f"  (recurrence counts use {len(fleet)} rows from the current analysis code; "
+                   f"{excluded} older-code rows excluded)")
     adj = next((r for r in reversed(rows) if r.get("mode") == "adjacent"), None)
     out.append("")
     if adj and adj.get("windows"):

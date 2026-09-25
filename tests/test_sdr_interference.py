@@ -203,7 +203,7 @@ def test_set_reference_merges_and_never_destroys(ddir):
 def test_an_exception_still_writes_a_witness_row(ddir, monkeypatch):
     monkeypatch.setattr(si.shutil, "which", lambda *_a, **_k: "/usr/bin/airspy_rx")
     monkeypatch.setattr(si, "airspy_capture", lambda c, g: (np.zeros(4097, np.int16), None))
-    assert si.main(["--mode", "fleet"]) == 0
+    assert si.main(["--mode", "fleet"]) == 1          # row written AND systemd told (review #5)
     row = si.read_rows(ddir / "interference.jsonl")[-1]
     assert row["status"] == "error" and "ValueError" in row["note"]
 
@@ -308,6 +308,65 @@ def test_any_exception_type_still_writes_a_witness_row(ddir, monkeypatch):
     def boom(*_a, **_k):
         raise KeyError("windows")
     monkeypatch.setattr(si, "run_fleet", boom)
-    assert si.main(["--mode", "fleet"]) == 0
+    assert si.main(["--mode", "fleet"]) == 1          # row written AND systemd told (review #5)
     row = si.read_rows(ddir / "interference.jsonl")[-1]
     assert row["status"] == "error" and "KeyError" in row["note"]
+
+
+# ---- second non-author review (Fable, 2026-09-24) — boundaries the first set missed ----
+
+def test_two_judged_bursts_of_four_is_partial_not_ok():
+    """Kills M8: the A/C window needs a MAJORITY (3 of 4); 2 of 4 is `partial`."""
+    calls = {"n": 0}
+
+    def cap(c, g):
+        if g == si.GAIN_AC and abs(c - 906.3) < 1e-6:
+            calls["n"] += 1
+            return (Q906 if calls["n"] % 2 else NEARTX), None
+        return Q906, None
+    w = si.run_fleet(cap, None, {}, [])["windows"]["906.300"]
+    assert w["bursts"]["ok"] == 2 and w["bursts"]["unjudgeable"] == 2
+    assert w["status"] == "partial"
+    assert si._window_status({"ok": 3, "overload": 1, "unjudgeable": 0, "failed": 0}) == "ok"
+
+
+def test_class_b_is_ok_on_one_quiet_burst_of_two():
+    """Kills M9: B judges only the quiet bursts by design; 1 of 2 is `ok`."""
+    calls = {"n": 0}
+
+    def cap(c, g):
+        if g == si.GAIN_B and abs(c - 906.3) < 1e-6:
+            calls["n"] += 1
+            return (Q906 if calls["n"] % 2 else NEARTX), None
+        return Q906, None
+    row = si.run_fleet(cap, None, {}, [])
+    w = row["windows"]["906.300"]
+    assert w["b"]["bursts"] == {"ok": 1, "overload": 0, "unjudgeable": 1, "failed": 0}
+    assert w["b"]["status"] == "ok" and "floor_dbfs" in w["b"]
+    assert row["status"] == "ok"
+
+
+def test_tail_lines_exact_boundary(tmp_path):
+    """Kills M17: a chunk landing on exactly `want` newlines leaves a partial first line."""
+    p = tmp_path / "x.jsonl"
+    with open(p, "w") as fh:
+        for i in range(12):
+            fh.write(json.dumps({"i": i, "pad": "x" * 7000}) + "\n")
+    for want in range(1, 12):
+        assert [r["i"] for r in si.read_rows(p, want)] == list(range(12 - want, 12)), want
+
+
+def test_an_error_row_exits_1_so_systemd_sees_it(ddir, monkeypatch):
+    """Review #5: exit 0 on a crashed analysis made it invisible to the
+    fleet's user-unit probe. The row is still written."""
+    monkeypatch.setattr(si.shutil, "which", lambda *_a, **_k: "/usr/bin/airspy_rx")
+    monkeypatch.setattr(si, "run_fleet", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert si.main(["--mode", "fleet"]) == 1
+    assert si.read_rows(ddir / "interference.jsonl")[-1]["status"] == "error"
+
+
+def test_every_row_carries_the_analysis_stamp(ddir, monkeypatch):
+    monkeypatch.setattr(si.shutil, "which", lambda *_a, **_k: None)
+    si.main(["--mode", "fleet"])
+    row = si.read_rows(ddir / "interference.jsonl")[-1]
+    assert row["analysis"] == si.analysis_stamp() and len(row["analysis"]) == 10
