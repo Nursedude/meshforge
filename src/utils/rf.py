@@ -920,3 +920,29 @@ else:
 def is_fast_available() -> bool:
     """Check if Cython-optimized RF functions are available."""
     return _USE_FAST
+
+
+def fcc_part15_247_check(tx_power_dbm: float, antenna_gain_dbi: float,
+                         cable_loss_db: float = 0.0) -> Tuple[bool, List[str]]:
+    """US 902-928 MHz unlicensed (FCC 47 CFR 15.247(b)(3),(b)(4)) check.
+
+    Limits: conducted output <= 30 dBm (1 W), reduced 1 dB for every dB of
+    antenna gain above 6 dBi — which keeps EIRP at or under 36 dBm. Cable
+    loss is NOT credited against the conducted limit (conservative).
+
+    Born 2026-09-25: the EIRP screen judged only EIRP <= 36 dBm, so 33 dBm
+    (2 W) into a 0 dBi antenna read "LEGAL". Part 97 (licensed amateur)
+    operation has different rules and is not judged here.
+
+    Returns (within_limits, reasons) — reasons name each limit exceeded.
+    """
+    reasons = []
+    conducted_limit = 30.0 - max(0.0, antenna_gain_dbi - 6.0)
+    if tx_power_dbm > conducted_limit:
+        reasons.append(f"conducted {tx_power_dbm:.1f} dBm > {conducted_limit:.1f} dBm limit"
+                       + (f" (30 dBm less {antenna_gain_dbi - 6.0:.1f} dB for gain over 6 dBi)"
+                          if antenna_gain_dbi > 6.0 else ""))
+    eirp = tx_power_dbm - cable_loss_db + antenna_gain_dbi
+    if eirp > 36.0:
+        reasons.append(f"EIRP {eirp:.1f} dBm > 36 dBm")
+    return (not reasons), reasons

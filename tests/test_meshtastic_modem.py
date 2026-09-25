@@ -12,7 +12,7 @@ import sys
 import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-for p in (os.path.join(HERE, "..", "src"), os.path.join(HERE, "..", "src", "launcher_tui")):
+for p in (HERE, os.path.join(HERE, "..", "src"), os.path.join(HERE, "..", "src", "launcher_tui")):
     if p not in sys.path:
         sys.path.insert(0, p)
 
@@ -113,3 +113,27 @@ def test_explicit_slot_follows_the_firmware_formula():
 def test_djb2_is_the_firmware_hash():
     assert mm.djb2("") == 5381
     assert mm.djb2("a") == 5381 * 33 + ord("a")
+
+
+def _slot_screen(menus, inputs):
+    from handler_test_utils import FakeDialog, make_handler_context
+    from handlers.rf_tools import RFToolsHandler
+    d = FakeDialog()
+    d._menu_returns, d._inputbox_returns = list(menus), list(inputs)
+    h = RFToolsHandler()
+    h.set_context(make_handler_context(dialog=d))
+    h._calc_frequency_slot()
+    return "\n".join(str(a[1]) for k, a, _ in d.calls if k == "msgbox")
+
+
+def test_slot_calculator_numbers_slots_like_the_radio():
+    """2026-09-25: typing the radio's channel_num 20 gave 907.125 MHz (0-based)."""
+    assert "Center Frequency: 906.875 MHz" in _slot_screen(["US", "LONG_FAST", "slot"], ["20"])
+    assert "channel_num 20" in _slot_screen(["US", "LONG_FAST", "name"], [""])
+    assert "Center Frequency: 905.750 MHz" in _slot_screen(["US", "SHORT_TURBO", "slot"], ["8"])
+
+
+def test_region_table_is_the_firmwares():
+    assert mm.REGIONS["JP"] == (920.5, 923.5, 0.0)
+    assert mm.REGIONS["SG_923"][0] == 917.0
+    assert "UK_868" not in mm.REGIONS and "PH" not in mm.REGIONS

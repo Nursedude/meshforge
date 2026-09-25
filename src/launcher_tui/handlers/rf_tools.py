@@ -79,154 +79,86 @@ class RFToolsHandler(BaseHandler):
                 self.ctx.notify_unwired(choice, "RFToolsHandler._rf_tools_menu")
 
     def _calc_frequency_slot(self):
-        """Meshtastic Frequency Slot Calculator."""
-        regions = [
-            ("US", 902.0, 928.0, 104, "United States ISM"),
-            ("ANZ", 915.0, 928.0, 52, "Australia/NZ"),
-            ("EU_868", 869.4, 869.65, 1, "EU 869 MHz (SRD)"),
-            ("EU_433", 433.0, 434.0, 8, "EU 433 MHz"),
-            ("UK_868", 869.4, 869.65, 1, "UK 869 MHz"),
-            ("UA_868", 868.0, 868.6, 2, "Ukraine 868 MHz"),
-            ("UA_433", 433.0, 434.79, 8, "Ukraine 433 MHz"),
-            ("RU", 868.7, 869.2, 2, "Russia"),
-            ("JP", 920.8, 923.8, 10, "Japan"),
-            ("KR", 920.0, 923.0, 12, "Korea"),
-            ("TW", 920.0, 925.0, 20, "Taiwan"),
-            ("CN", 470.0, 510.0, 80, "China"),
-            ("IN", 865.0, 867.0, 8, "India"),
-            ("TH", 920.0, 925.0, 20, "Thailand"),
-            ("PH", 920.0, 925.0, 20, "Philippines"),
-            ("SG_923", 920.0, 925.0, 20, "Singapore 923"),
-            ("MY_433", 433.0, 435.0, 8, "Malaysia 433 MHz"),
-            ("MY_919", 919.0, 924.0, 20, "Malaysia 919 MHz"),
-            ("NZ_865", 864.0, 868.0, 16, "New Zealand 865 MHz"),
-            ("LORA_24", 2400.0, 2483.5, 39, "2.4 GHz ISM (worldwide)"),
-        ]
+        """Meshtastic Frequency Slot Calculator — the firmware's own maths.
 
-        region_choices = [(r[0], f"{r[0]}: {r[1]:.1f}-{r[2]:.1f} MHz") for r in regions]
-        region_choices.append(("back", "Back"))
-
-        region_choice = self.ctx.dialog.menu(
-            "Frequency Slot",
-            "Select region:",
-            region_choices
-        )
-
-        if not region_choice or region_choice == "back":
+        Rebuilt 2026-09-25 on utils.meshtastic_modem (RadioInterface.cpp @
+        v2.7.26). The old one numbered slots from 0 while the radio's
+        channel_num counts from 1, so typing your radio's ch20 gave 907.125
+        MHz — one channel off the radio's 906.875; it also capped slot counts
+        with made-up per-region maxima, carried regions the firmware does not
+        have (UK_868) and wrong band edges (JP, SG_923, PH), and offered a free
+        bandwidth labelled "125 kHz (SLOW presets)" (SHORT/MEDIUM_SLOW are 250).
+        """
+        from utils.meshtastic_modem import (FIRMWARE_MODEM_PARAMS, PRESET_DISPLAY_NAMES,
+                                            REGIONS, num_channels, slot_centre_mhz)
+        region = self.ctx.dialog.menu(
+            "Frequency Slot", "Select region (firmware band edges):",
+            [(r, f"{r}: {lo:g}-{hi:g} MHz") for r, (lo, hi, _sp) in REGIONS.items()]
+            + [("back", "Back")])
+        if not region or region == "back":
             return
-
-        region = None
-        for r in regions:
-            if r[0] == region_choice:
-                region = r
-                break
-
-        if not region:
+        preset = self.ctx.dialog.menu(
+            "Modem Preset", "Select the radio's modem preset:",
+            [(p, f"{p:<14} {bw // 1000:g} kHz SF{sf}") for p, (sf, bw, _cr)
+             in FIRMWARE_MODEM_PARAMS.items()] + [("back", "Back")])
+        if not preset or preset == "back":
             return
-
-        mode_choices = [
-            ("name", "Calculate from Channel Name"),
-            ("slot", "Enter Slot Number Directly"),
-            ("back", "Back"),
-        ]
-
+        sf, bw_hz, _cr = FIRMWARE_MODEM_PARAMS[preset]
+        try:
+            n = num_channels(bw_hz, region)
+        except KeyError:
+            return
+        if n < 1:
+            self.ctx.dialog.msgbox("Frequency Result",
+                                   f"{preset} ({bw_hz // 1000} kHz) does not fit in {region}.")
+            return
         mode = self.ctx.dialog.menu(
-            "Input Mode",
-            "Calculate frequency from:",
-            mode_choices
-        )
-
+            "Input Mode", "Calculate frequency from:",
+            [("name", "Channel name (channel_num 0 = hashed from the name)"),
+             ("slot", f"channel_num as set on the radio (1-{n})"),
+             ("back", "Back")])
         if not mode or mode == "back":
             return
-
-        bw_choices = [
-            ("500", "500 kHz (SHORT_TURBO)"),
-            ("250", "250 kHz (FAST presets)"),
-            ("125", "125 kHz (SLOW presets)"),
-            ("62.5", "62.5 kHz (VERY_LONG_SLOW)"),
-        ]
-
-        bw_choice = self.ctx.dialog.menu(
-            "Bandwidth",
-            "Select modem bandwidth:",
-            bw_choices
-        )
-
-        if not bw_choice:
-            return
-
+        default_name = PRESET_DISPLAY_NAMES[preset]
         try:
-            bw_khz = float(bw_choice)
-
-            region_name = region[0]
-            freq_start = region[1]
-            freq_end = region[2]
-            max_slots = region[3]
-            region_desc = region[4]
-
-            calculated_slots = int(math.floor((freq_end - freq_start) / (bw_khz / 1000)))
-            num_channels = min(calculated_slots, max_slots) if calculated_slots > 0 else max_slots
-
             if mode == "name":
-                channel_name = self.ctx.dialog.inputbox(
+                name = self.ctx.dialog.inputbox(
                     "Channel Name",
-                    "Enter channel name:",
-                    "LongFast"
-                )
-
-                if not channel_name:
+                    f"Primary channel name (blank = the default, '{default_name}'):",
+                    default_name)
+                if name is None:
                     return
-
-                def djb2_hash(s):
-                    h = 5381
-                    for c in s:
-                        h = ((h << 5) + h) + ord(c)
-                        h &= 0xFFFFFFFF
-                    return h
-
-                hash_val = djb2_hash(channel_name)
-                slot = hash_val % num_channels
-
+                name = name or default_name
+                centre, used, n = slot_centre_mhz(bw_hz, 0, region, name)
+                basis = f"channel_num 0 -> hash('{name}') -> channel_num {used}"
             else:
-                slot_str = self.ctx.dialog.inputbox(
-                    "Slot Number",
-                    f"Enter slot number (0-{num_channels-1}):",
-                    "20"
-                )
-
-                if not slot_str:
+                raw = self.ctx.dialog.inputbox("channel_num",
+                                               f"channel_num as set on the radio (1-{n}):", "20")
+                if not raw:
                     return
-
-                slot = int(slot_str)
-                if slot < 0 or slot >= num_channels:
-                    self.ctx.dialog.msgbox("Error", f"Slot must be 0-{num_channels-1}")
+                num = int(raw)
+                if not 1 <= num <= n:
+                    self.ctx.dialog.msgbox("Error", f"channel_num must be 1-{n} for "
+                                                    f"{preset} in {region} (0 = hash the name)")
                     return
-
-            freq_mhz = freq_start + (bw_khz / 2000) + (slot * (bw_khz / 1000))
-
-            text = f"""Frequency Slot Calculation:
-
-Region: {region_name} ({region_desc})
-Band: {freq_start:.1f} - {freq_end:.1f} MHz
-Bandwidth: {bw_khz} kHz
-Available Slots: {num_channels}
-
-Slot Number: {slot}
-Center Frequency: {freq_mhz:.3f} MHz
-
-Channel spans:
-  {freq_mhz - bw_khz/2000:.3f} - {freq_mhz + bw_khz/2000:.3f} MHz"""
-
-            if mode == "name":
-                text += f"\n\nChannel Name: {channel_name}"
-                text += f"\nHash Value: {hash_val}"
-
-            self.ctx.dialog.msgbox("Frequency Result", text)
-
+                centre, used, n = slot_centre_mhz(bw_hz, num, region, default_name)
+                basis = f"channel_num {used}"
         except ValueError:
             self.ctx.dialog.msgbox("Error", "Invalid number entered")
-        except Exception as e:
-            self.ctx.dialog.msgbox("Error", str(e))
+            return
+        half = bw_hz / 2e6
+        lo, hi, _sp = REGIONS[region]
+        self.ctx.dialog.msgbox("Frequency Result", f"""Frequency Slot Calculation:
+
+Region: {region} ({lo:g}-{hi:g} MHz)
+Preset: {preset} ({bw_hz / 1000:g} kHz, SF{sf})
+Channels in band: {n}
+
+{basis}
+Center Frequency: {centre:.3f} MHz
+Channel spans:    {centre - half:.3f} - {centre + half:.3f} MHz
+
+Maths: meshtastic firmware RadioInterface.cpp (v2.7.26).""")
 
     def _calc_fspl(self):
         """Calculate Free Space Path Loss."""
@@ -390,7 +322,10 @@ of sight at the midpoint."""
 
             eirp_watts = 10 ** ((eirp - 30) / 10)
 
-            legal = "LEGAL (under 36 dBm)" if eirp <= 36 else "EXCEEDS FCC LIMIT"
+            from utils.rf import fcc_part15_247_check
+            ok, why = fcc_part15_247_check(tx, gain, loss)
+            legal = ("within Part 15.247 limits (conducted <= 30 dBm, EIRP <= 36 dBm)"
+                     if ok else "EXCEEDS Part 15.247: " + "; ".join(why))
 
             text = f"""EIRP Calculator:
 
@@ -400,8 +335,9 @@ Antenna Gain: +{gain} dBi
 
 EIRP: {eirp:.1f} dBm ({eirp_watts*1000:.0f} mW)
 
-US 915MHz ISM: {legal}
+US 915MHz ISM (unlicensed): {legal}
 
+Licensed amateur (Part 97) operation is not judged here.
 Note: Check local regulations."""
 
             self.ctx.dialog.msgbox("EIRP Result", text)

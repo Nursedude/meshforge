@@ -804,3 +804,22 @@ class TestRequiredAntennaHeight:
         short = required_antenna_height(1.0)
         long = required_antenna_height(10.0)
         assert long > short
+
+
+class TestFccPart15_247:
+    """2026-09-25: the EIRP screen called 33 dBm into 0 dBi 'LEGAL' (EIRP-only check)."""
+
+    def test_two_watts_conducted_is_over_the_limit_even_at_low_eirp(self):
+        from utils.rf import fcc_part15_247_check
+        ok, why = fcc_part15_247_check(33.0, 0.0)
+        assert not ok and "conducted 33.0 dBm > 30.0 dBm" in why[0]
+
+    def test_one_watt_into_six_dbi_is_the_edge_and_legal(self):
+        from utils.rf import fcc_part15_247_check
+        assert fcc_part15_247_check(30.0, 6.0) == (True, [])
+
+    def test_high_gain_reduces_the_conducted_limit(self):
+        from utils.rf import fcc_part15_247_check
+        assert fcc_part15_247_check(27.0, 9.0)[0] is True     # 30 - 3
+        ok, why = fcc_part15_247_check(28.0, 9.0)
+        assert not ok and "27.0 dBm limit" in why[0]
