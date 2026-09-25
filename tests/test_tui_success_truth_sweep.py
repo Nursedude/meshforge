@@ -478,6 +478,11 @@ def dead_externals(no_network, monkeypatch, tmp_path):
         monkeypatch.setattr(subprocess, name, _absent)
     monkeypatch.setattr(shutil, "which", lambda *a, **k: None)
     monkeypatch.setattr(builtins, "input", lambda *a, **k: "")
+    # A graphical session is an external too: the verdict must not depend on
+    # whether the suite ran in a desktop terminal (2026-09-25: MA's sweep passed
+    # on a dev box with DISPLAY=:0 and failed in headless CI on the same code).
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
 
     home = tmp_path / "home"
     home.mkdir()
