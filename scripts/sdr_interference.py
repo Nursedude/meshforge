@@ -250,34 +250,65 @@ def run_fleet(capture: Capture, prev_row: Optional[Dict], references: Dict[float
     return {"mode": "fleet", "status": status, "gain_ac": GAIN_AC, "gain_b": GAIN_B, "windows": windows}
 
 
+def _products_mask(f: np.ndarray, center: float) -> Tuple[np.ndarray, List[Tuple[float, float, str]]]:
+    """Bins at a known product of OUR OWN channels in this window: IM3
+    (fi+fj-fk, 2fi-fj) and sample-rate aliases of out-of-window channels."""
+    prods = [(c, hw, p) for c, hw, p in sa.im3_products() + sa.alias_products(center)
+             if abs(c - center) <= sa.USABLE_HALF_MHZ + hw]
+    m = np.zeros(f.size, bool)
+    for c, hw, _p in prods:
+        m |= np.abs(f - c) <= hw
+    return m, prods
+
+
+def _line(f: np.ndarray, med: np.ndarray, mx: np.ndarray, floor: float) -> Tuple[Dict, Dict]:
+    i, j = int(np.argmax(med)), int(np.argmax(mx))
+    return ({"freq_mhz": round(float(f[i]), 4), "above_floor_db": round(float(med[i] - floor), 1)},
+            {"freq_mhz": round(float(f[j]), 4), "above_floor_db": round(float(mx[j] - floor), 1),
+             "level_dbfs": round(float(mx[j]), 1)})
+
+
 def run_adjacent(capture: Capture) -> Dict:
+    """Class D. Each line that sits at a known product position of OUR channels
+    (IM3, sample-rate alias) carries `tags` — LABELLED, not excluded. Measured
+    2026-09-24: excluding product positions left 0 % clean bins in the 901.4,
+    903.8 and 908.6 windows (the 4-channel IM3 set covers most of 899-914 MHz),
+    which would blind class D to a real blocker exactly where it matters. A
+    position is a candidate, not proof. `clean_peak` is the strongest line clear
+    of every product (None when the window has no clean bins), with clean_frac.
+    Trigger: 911.848 +34 dB topped class D, inside LF+MeshCore-ST (911.65±0.406)."""
     rows = []
     c = ADJ_START
     while c <= ADJ_STOP + 1e-9:
         raw, why = capture(round(c, 3), GAIN_AC)
         if raw is None:
             rows.append({"center_mhz": round(c, 3), "status": "unknown", "reason": why})
-        else:
-            clip = float(np.mean(np.abs(raw.astype(np.int32)) >= sa.CLIP_LEVEL * sa.FULL_SCALE))
-            f, p = sa.spectrogram(raw, c)
-            # Our own channels (+guard) are masked: class D answers "is there an
-            # OUT-of-band blocker", and our own LF was once its headline (review #8).
-            keep = (np.abs(f - c) <= sa.USABLE_HALF_MHZ) & ~sa._in_bands(f, sa.FLEET_CHANNELS, sa.GUARD_KHZ)
-            if not keep.any():
-                rows.append({"center_mhz": round(c, 3), "status": "unknown",
-                             "reason": "window is entirely fleet channels"})
-                c += ADJ_STEP
-                continue
-            med = np.median(p[:, keep], axis=0)
-            mx = np.max(p[:, keep], axis=0)
-            floor = float(np.median(med))
-            i, j = int(np.argmax(med)), int(np.argmax(mx))
-            rows.append({"center_mhz": round(c, 3),
-                         "status": "overload" if clip > sa.CLIP_FRAC else "ok",
-                         "floor_dbfs": round(floor, 2),
-                         "steady": {"freq_mhz": round(float(f[keep][i]), 4), "above_floor_db": round(float(med[i] - floor), 1)},
-                         "peak": {"freq_mhz": round(float(f[keep][j]), 4), "above_floor_db": round(float(mx[j] - floor), 1),
-                                  "level_dbfs": round(float(mx[j]), 1)}})
+            c += ADJ_STEP
+            continue
+        clip = float(np.mean(np.abs(raw.astype(np.int32)) >= sa.CLIP_LEVEL * sa.FULL_SCALE))
+        f, p = sa.spectrogram(raw, c)
+        usable = np.abs(f - c) <= sa.USABLE_HALF_MHZ
+        # Our own channels (+guard) are masked: class D answers "is there an
+        # OUT-of-band blocker", and our own LF was once its headline (review #8).
+        keep = usable & ~sa._in_bands(f, sa.FLEET_CHANNELS, sa.GUARD_KHZ)
+        if not keep.any():
+            rows.append({"center_mhz": round(c, 3), "status": "unknown",
+                         "reason": "window is entirely fleet channels"})
+            c += ADJ_STEP
+            continue
+        prod, prods = _products_mask(f, c)
+        med = np.median(p[:, keep], axis=0)
+        floor = float(np.median(med))
+        steady, peak = _line(f[keep], med, np.max(p[:, keep], axis=0), floor)
+        for line in (steady, peak):
+            line["tags"] = sorted({lbl for cc, hw, lbl in prods if abs(line["freq_mhz"] - cc) <= hw}) or None
+        clean = keep & ~prod
+        clean_peak = None
+        if clean.any():
+            _s, clean_peak = _line(f[clean], np.median(p[:, clean], axis=0), np.max(p[:, clean], axis=0), floor)
+        rows.append({"center_mhz": round(c, 3), "status": "overload" if clip > sa.CLIP_FRAC else "ok",
+                     "floor_dbfs": round(floor, 2), "steady": steady, "peak": peak,
+                     "clean_peak": clean_peak, "clean_frac": round(float(clean.sum() / keep.sum()), 3)})
         c += ADJ_STEP
     sts = [r["status"] for r in rows]
     status = "ok" if all(s == "ok" for s in sts) else "unknown" if all(s == "unknown" for s in sts) else "partial"

@@ -370,3 +370,54 @@ def test_every_row_carries_the_analysis_stamp(ddir, monkeypatch):
     si.main(["--mode", "fleet"])
     row = si.read_rows(ddir / "interference.jsonl")[-1]
     assert row["analysis"] == si.analysis_stamp() and len(row["analysis"]) == 10
+
+
+
+# ---- class D: products of our own channels are never the headline (2026-09-24) ----
+
+def _clean_freq(center):
+    """A bin-centred frequency in this window clear of our channels and their products."""
+    f = center + np.fft.fftshift(np.fft.fftfreq(sa.FFT, 1 / sa.SAMPLE_RATE)) / 1e6
+    prod, _ = si._products_mask(f, center)
+    ok = (np.abs(f - center) <= 1.0) & ~prod & ~sa._in_bands(f, sa.FLEET_CHANNELS, sa.GUARD_KHZ + 50)
+    return float(f[np.flatnonzero(ok)[len(np.flatnonzero(ok)) // 2]])
+
+
+def test_class_d_labels_an_alias_it_does_not_hide_it():
+    """Labelled, not excluded: excluding product positions left 0 % clean bins
+    in three windows (measured) and would blind class D to a real blocker."""
+    t = _analysis_tests()
+    floor = sa.analyse_window(Q906, 906.3)["floor_dbfs"]
+    mirror = 2 * 911.0 - (906.875 + 3.0)                      # LF's image in the 911.0 window
+    img = t._plant_tone(Q906, 911.0, mirror, 30, floor)
+    row = si.run_adjacent(lambda c, g: ((img if abs(c - 911.0) < 1e-6 else Q906), None))
+    w = next(w for w in row["windows"] if abs(w["center_mhz"] - 911.0) < 1e-6)
+    assert abs(w["peak"]["freq_mhz"] - mirror) < 0.003
+    assert any("alias" in tag and "LF" in tag for tag in w["peak"]["tags"])
+    assert w["clean_peak"] is None or abs(w["clean_peak"]["freq_mhz"] - mirror) > 0.1
+    assert 0 < w["clean_frac"] < 1
+
+
+def test_class_d_never_goes_blind_on_a_fully_covered_window():
+    row = si.run_adjacent(quiet_capture)
+    w = next(w for w in row["windows"] if abs(w["center_mhz"] - 908.6) < 1e-6)
+    assert w["status"] == "ok" and w["peak"] is not None
+    assert w["clean_frac"] == 0.0 and w["clean_peak"] is None
+
+
+def test_class_d_headline_still_finds_a_real_clean_signal():
+    t = _analysis_tests()
+    floor = sa.analyse_window(Q906, 906.3)["floor_dbfs"]
+    real = _clean_freq(911.0)
+    sig = t._plant_tone(Q906, 911.0, real, 30, floor)
+    row = si.run_adjacent(lambda c, g: ((sig if abs(c - 911.0) < 1e-6 else Q906), None))
+    w = next(w for w in row["windows"] if abs(w["center_mhz"] - 911.0) < 1e-6)
+    assert abs(w["peak"]["freq_mhz"] - real) < 0.003 and w["peak"]["above_floor_db"] > 25
+    assert w["peak"]["tags"] is None
+    assert abs(w["clean_peak"]["freq_mhz"] - real) < 0.003
+
+
+def test_the_live_911_848_line_sits_on_our_own_im3():
+    f = 911.0 + np.fft.fftshift(np.fft.fftfreq(sa.FFT, 1 / sa.SAMPLE_RATE)) / 1e6
+    _m, prods = si._products_mask(f, 911.0)
+    assert any(abs(911.848 - c) <= hw and "meshcore" in p for c, hw, p in prods)

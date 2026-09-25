@@ -147,3 +147,17 @@ def test_an_alias_tagged_slice_is_labelled_a_receiver_product():
     cap = lambda c, g: ((img if c > 909 else Q906), None)  # noqa: E731
     t = v.render("ok", [_row(si.run_fleet(cap, None, {}, []), NOW - 60)], now=NOW)
     assert "C foreign 911.1" in t and "alias of our own channel — receiver product" in t
+
+
+
+def test_class_d_labels_a_product_line_as_a_candidate():
+    t_mod = importlib.util.spec_from_file_location("_sdr_a_tests2", _ROOT / "tests" / "test_sdr_analysis.py")
+    m = importlib.util.module_from_spec(t_mod)
+    t_mod.loader.exec_module(m)
+    floor = m.a.analyse_window(Q906, 906.3)["floor_dbfs"]
+    mirror = 2 * 911.0 - (906.875 + 3.0)
+    img = m._plant_tone(Q906, 911.0, mirror, 30, floor)
+    adj = _row(si.run_adjacent(lambda c, g: ((img if abs(c - 911.0) < 1e-6 else Q906), None)), NOW - 60)
+    t = v.render("ok", [_row(si.run_fleet(quiet, None, {}, []), NOW - 60), adj], now=NOW)
+    line = next(ln for ln in t.splitlines() if f"{mirror:.3f} MHz" in ln)
+    assert "at a product position of OUR channels (candidate)" in line and "alias" in line

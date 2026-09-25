@@ -215,8 +215,13 @@ def render(state: str, rows: Sequence[Dict], now: Optional[float] = None) -> str
         out.append(f"Class D — strongest OUT-of-our-channels signals 869–940 MHz ({_age(now, adj.get('ts'))}, "
                    f"{len(oks)}/{len(adj['windows'])} windows judged):")
         for w in top:
-            out.append(f"      {w['peak']['freq_mhz']:.3f} MHz  +{w['peak']['above_floor_db']:.0f} dB "
-                       f"({w['peak']['level_dbfs']:.0f} dBFS)")
+            pk = w["peak"]
+            # a position is a candidate, not proof: an IM3 needs its parents on
+            # air together, an alias needs the channel active (second review #1)
+            tag = (f"  ← at a product position of OUR channels (candidate): {', '.join(pk['tags'])[:50]}"
+                   if pk.get("tags") else "")
+            out.append(f"      {pk['freq_mhz']:.3f} MHz  +{pk['above_floor_db']:.0f} dB "
+                       f"({pk['level_dbfs']:.0f} dBFS){tag}")
         out.append("      A filter helps OUT-of-band trouble only; in-band noise is never filterable.")
     else:
         out.append("Class D (adjacent band): no hourly pass recorded yet — UNKNOWN.")
