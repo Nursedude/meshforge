@@ -4,6 +4,7 @@ RNS Interfaces Handler — RNS network interface CRUD management.
 Converted from rns_interfaces_mixin.py as part of the mixin-to-registry migration.
 """
 
+from commands.rns import interface_enabled
 import os
 import re
 import logging
@@ -191,8 +192,7 @@ class RNSInterfacesHandler(BaseHandler):
             name = iface.get('name', '(unnamed)')
             settings = iface.get('settings', {})
             itype = settings.get('type', '?')
-            enabled_raw = str(settings.get('enabled', 'no')).lower()
-            enabled = enabled_raw in ('yes', 'true', '1')
+            enabled = interface_enabled(settings)
 
             if not enabled:
                 status = "DISABLED"
@@ -552,10 +552,10 @@ class RNSInterfacesHandler(BaseHandler):
             name = iface.get('name', '(unnamed)')
             settings = iface.get('settings', {})
             itype = settings.get('type', '?')
-            enabled = settings.get('enabled', '?')
+            enabled = "Yes" if interface_enabled(settings) else "No"
             print(f"  {idx}. [[{name}]]")
             print(f"     type    = {itype}")
-            print(f"     enabled = {enabled}")
+            print(f"     enabled = {enabled}  (interface_enabled / enabled, as RNS reads it)")
             # Show a few key settings per type
             for key, val in settings.items():
                 if key in ('type', 'enabled'):
@@ -847,7 +847,7 @@ class RNSInterfacesHandler(BaseHandler):
             name = iface.get('name', '(unnamed)')
             settings = iface.get('settings', {})
             itype = settings.get('type', '?')
-            enabled = settings.get('enabled', '?')
+            enabled = "yes" if interface_enabled(settings) else "no"
             desc = f"{itype} (enabled={enabled})"
             choices.append((name, desc))
         choices.append(("back", "Back"))

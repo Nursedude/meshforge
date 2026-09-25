@@ -153,6 +153,24 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
         "evidence": "utils/report_generator.py, utils/meshtastic_modem.py, "
                     "tests/test_meshtastic_modem.py (planted SF10 -> 4 failures)",
     },
+    ("rns", "ifaces"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "FIXED then verified: Interface Status showed the RNode leg DISABLED while "
+                 "rnsd ran it (~650 KB each way) — MeshForge read only `enabled`, RNS reads "
+                 "`interface_enabled` OR `enabled`; the list showed 'enabled = ?' and a counter "
+                 "treated a missing key as enabled. Now one interface_enabled() mirroring RNS "
+                 "Reticulum.py; status rows vs rnstatus match. add/enable/disable/remove/fix/"
+                 "plugin not exercised (they write)",
+        "partial": True,
+        "evidence": "commands.rns.interface_enabled + tests; live render: RNode UP",
+    },
+    ("rns", "config"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "shows /etc/reticulum/config verbatim — the file rnsd was started with "
+                 "(--config /etc/reticulum)",
+        "partial": False,
+        "evidence": "live render vs file; rnsd ExecStart",
+    },
     ("rns", "diag"): {
         "date": "2026-09-25", "box": "dev/manager box",
         "scope": "FIXED then verified: 'RNS identity: not created' on a node whose rnsd has run "

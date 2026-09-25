@@ -270,3 +270,22 @@ class TestIdentityExposure:
     def test_missing_file_is_not_a_warning(self, tmp_path):
         from commands.rns import identity_exposure
         assert identity_exposure(tmp_path / "absent") == ""
+
+
+class TestInterfaceEnabled:
+    """Mirrors RNS Reticulum.py: UP when interface_enabled OR enabled is true
+    (2026-09-25: the fleet RNode's `interface_enabled = True` read DISABLED)."""
+
+    def test_canonical_key(self):
+        from commands.rns import interface_enabled
+        assert interface_enabled({"interface_enabled": "True"}) is True
+
+    def test_legacy_key_and_case(self):
+        from commands.rns import interface_enabled
+        assert interface_enabled({"enabled": "Yes"}) is True
+        assert interface_enabled({"enabled": "on"}) is True
+
+    def test_absent_or_false_is_not_up(self):
+        from commands.rns import interface_enabled
+        assert interface_enabled({}) is False
+        assert interface_enabled({"enabled": "no", "interface_enabled": "False"}) is False
