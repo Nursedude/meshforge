@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 83 handlers · 116 menu actions (derived from get_all_handlers(), never hand-edited).
+# 84 handlers · 117 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -806,6 +806,17 @@ HANDLER_MANIFEST = [
         "error": None,
         "menu_items": [
             ('sdr', 'SDR Monitor         RF awareness (Airspy)', None),
+        ],
+    },
+    {
+        "handler_id": 'sdr_watch',
+        "module": 'handlers.sdr_watch',
+        "class_name": 'SDRWatchHandler',
+        "menu_section": 'rf_sdr',
+        "lifecycle": False,
+        "error": None,
+        "menu_items": [
+            ('sdr_watch', 'Interference Watch  what the Airspy timer saw (read-only)', None),
         ],
     },
     {

@@ -42,6 +42,7 @@ def get_all_handlers() -> List[Type]:
     from handlers.propagation import PropagationHandler
     from handlers.site_planner import SitePlannerHandler
     from handlers.sdr import SDRHandler
+    from handlers.sdr_watch import SDRWatchHandler
     from handlers.link_quality import LinkQualityHandler
     from handlers.webhooks import WebhooksHandler
     from handlers.network_tools import NetworkToolsHandler
@@ -54,6 +55,7 @@ def get_all_handlers() -> List[Type]:
         PropagationHandler,
         SitePlannerHandler,
         SDRHandler,
+        SDRWatchHandler,
         LinkQualityHandler,
         WebhooksHandler,
         NetworkToolsHandler,
