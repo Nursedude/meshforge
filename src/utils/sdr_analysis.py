@@ -42,7 +42,14 @@ CARRIER_DB = 10.0             # class A: bin time-median > floor + this
 GUARD_KHZ = 25.0              # class A/C keep this far from a fleet channel edge
 SLICE_KHZ = 125.0             # class C slice width
 FOREIGN_BUSY_PCT = 2.0        # class C: slice busy in > this % of kept frames
-MIN_KEPT_FRAMES = 8           # fewer survivors = unjudgeable
+MIN_KEPT_FRAMES = 8           # absolute floor on survivors
+MIN_KEPT_FRAC = 0.25          # AND at least this share of the burst (review #5:
+                              # 8 of 732 frames = 1 % once read as a judged burst)
+REL_TX_DB = 20.0              # ALSO own TX: any fleet band > burst floor + this.
+                              # Review #1: the absolute gate alone failed open for
+                              # our own emitters 15-36 dB weaker than the recorded
+                              # one (dudeclaw-02 is one), and class C called them
+                              # foreign on 4-11 slices.
 
 # Coherent gain of a Hann window is 0.5: a full-scale complex tone lands in
 # its bin at |X| = FULL_SCALE * FFT * 0.5. That is 0 dBFS here.
@@ -79,13 +86,16 @@ FLEET_CHANNELS: Tuple[Channel, ...] = (
 #: rides the comb but is antenna-dependent (likely radiated by local
 #: electronics — BELIEVED), 937.515 is off the comb (external, real).
 SPUR_MAP_MHZ: Dict[Tuple[float, int], Tuple[float, ...]] = {
-    (903.625, 10): (902.7915, 903.124, 903.3789, 903.7891, 904.4585),
-    (906.3, 10): (905.4035, 905.4665, 905.799, 907.1335),
-    (912.0, 10): (911.9985,),
-    (937.5, 10): (936.999, 938.3335),
-    (906.3, 21): (905.9982,),
-    (912.0, 21): (911.9985,),
-    (924.17, 21): (923.9986,),
+    # Per fleet window: every line seen with the antenna off at ANY gain —
+    # the comb's frequencies follow the tuning centre, not the gain — so both
+    # gains the writer uses get the same set (review #9: 910.525 had none,
+    # and its 910.027 line reads +8.1 dB against CARRIER_DB 10 at gain 10).
+    **{(903.625, g): (902.4604, 902.79, 903.1226, 903.3774, 903.7891, 904.126, 904.4585)
+       for g in (10, 21)},
+    **{(906.3, g): (905.134, 905.4021, 905.465, 905.7976, 905.9982, 906.4641, 906.801,
+                    907.1335, 907.4675) for g in (10, 21)},
+    **{(910.525, g): (909.69, 910.0226, 910.3609, 910.6891, 911.0245, 911.3585, 911.6939)
+       for g in (10, 21)},
 }
 
 
@@ -134,7 +144,8 @@ def _mean_db(p_db: np.ndarray, axis: int) -> np.ndarray:
 def analyse_window(raw: np.ndarray, center_mhz: float,
                    channels: Sequence[Channel] = FLEET_CHANNELS,
                    spur_mhz: Sequence[float] = (),
-                   own_tx_dbfs: float = OWN_TX_DBFS) -> Dict:
+                   own_tx_dbfs: float = OWN_TX_DBFS,
+                   rel_tx_db: float = REL_TX_DB) -> Dict:
     """Judge one burst. Pure. See the module docstring for what it is OF."""
     raw = np.asarray(raw)
     # int32 first: np.abs(int16 -32768) overflows to -32768, and the Airspy's
@@ -162,15 +173,16 @@ def analyse_window(raw: np.ndarray, center_mhz: float,
     for c in here:
         sel = keep & (np.abs(freqs - c.center_mhz) <= c.half_mhz())
         band[c.label] = _mean_db(pwr[:, sel], axis=1)             # per-frame, dBFS
+    frame_floor = np.median(pwr[:, out_bins], axis=1)
+    burst_floor = float(np.median(frame_floor))
     own_tx = np.zeros(frames, bool)
     for v in band.values():
-        own_tx |= v > own_tx_dbfs
-    frame_floor = np.median(pwr[:, out_bins], axis=1)
-    blocker = frame_floor > np.median(frame_floor) + BLOCKER_DB
+        own_tx |= (v > own_tx_dbfs) | (v > burst_floor + rel_tx_db)
+    blocker = frame_floor > burst_floor + BLOCKER_DB
     kept = ~own_tx & ~blocker
     result.update(own_tx_frames=int(own_tx.sum()), blocker_frames=int((blocker & ~own_tx).sum()),
-                  kept_frames=int(kept.sum()))
-    if kept.sum() < MIN_KEPT_FRAMES:
+                  kept_frames=int(kept.sum()), kept_frac=round(float(kept.mean()), 3))
+    if kept.sum() < max(MIN_KEPT_FRAMES, MIN_KEPT_FRAC * frames):
         result["status"] = "unjudgeable"
         return result
 
@@ -180,12 +192,17 @@ def analyse_window(raw: np.ndarray, center_mhz: float,
     result["floor_dbfs"] = round(floor, 2)
     result["floor_profile"] = profile[keep]
 
+    # In-channel activity is judged over every non-blocker frame: our own
+    # traffic IS what it measures, so the own-TX gate must not hide it.
+    # A near-field burst also lifts the whole frame (reciprocal mixing), so it
+    # trips the blocker gate too — exclude only blockers that are NOT ours.
+    act = ~(blocker & ~own_tx)
     for label, v in band.items():
-        vk = v[kept]
+        vk = v[act]
         leak = np.zeros(vk.size, bool)
         for other, ov in band.items():
             if other != label:
-                leak |= ov[kept] - vk > LEAK_DB
+                leak |= ov[act] - vk > LEAK_DB
         busy = (vk > floor + BUSY_DB) & ~leak
         pct = 100.0 * busy.mean()
         result["channels"][label] = {"busy_pct": round(float(pct), 2), "saturated_in_sample": bool(pct > 50.0),
@@ -213,6 +230,11 @@ def analyse_window(raw: np.ndarray, center_mhz: float,
     # > FOREIGN_BUSY_PCT of the kept frames. Tagged, not dropped, when the
     # slice sits on one of our own IM3 products.
     ims = im3_products(channels)
+    # No separate slice LEAK gate (design §2.C named one): a slice leak needs a
+    # fleet band > floor + BUSY_DB + LEAK_DB (36 dB), and REL_TX_DB (20) has
+    # already removed every such frame from `kept`. Mutation-tested 2026-09-24:
+    # a slice leak gate here could never fire, and a gate that cannot fire is
+    # a claim of defence, not a defence.
     half = SLICE_KHZ / 2000.0
     lo = center_mhz - USABLE_HALF_MHZ + half
     while lo <= center_mhz + USABLE_HALF_MHZ - half + 1e-9:

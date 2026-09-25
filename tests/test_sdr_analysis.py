@@ -126,7 +126,7 @@ def test_the_own_tx_gate_is_load_bearing(neartx):
     reports our own near-field burst as foreign energy — Phase 0's first-run
     failure, reproduced from recorded IQ. If this stops failing the fixture
     no longer carries the analog skirt and the test above proves nothing."""
-    r = a.analyse_window(neartx, 906.3, own_tx_dbfs=999.0)
+    r = a.analyse_window(neartx, 906.3, own_tx_dbfs=999.0, rel_tx_db=999.0)
     assert r["status"] == "ok"
     assert r["channels"]["meshtastic-LF-ch20"]["saturated_in_sample"] is True
     assert len(r["foreign"]) >= 2
@@ -271,3 +271,69 @@ def test_spur_map_lines_sit_inside_their_windows():
         assert gain in (10, 21)
         for f in lines:
             assert abs(f - center) <= a.USABLE_HALF_MHZ, (center, f)
+
+
+# ---- review 2026-09-24 (Fable, non-author): the cases the first suite let through ----
+
+@pytest.mark.parametrize("atten_db", [15, 20, 30])
+def test_a_weaker_own_emitter_is_never_foreign(q906, neartx, atten_db):
+    """Review #1: our own emitter 15-36 dB weaker than the recording sits
+    under the absolute -40 dBFS gate but 30-50 dB over the floor; class C
+    called it foreign on 4-11 slices. dudeclaw-02 (2 dBm, ~3 ft) is this."""
+    tx = _iq(neartx) * 10 ** (-atten_db / 20)
+    raw = np.concatenate([q906, _raw(tx + _iq(q906))])
+    r = a.analyse_window(raw, 906.3, spur_mhz=a.SPUR_MAP_MHZ[(906.3, 10)])
+    assert r["foreign"] == [], r["foreign"]
+    assert r["own_tx_frames"] == 29
+
+
+def test_the_weaker_emitter_case_is_meaningful(q906, neartx):
+    """Control: with both own-TX gates off, the same attenuated burst DOES
+    report foreign slices — so the test above is testing the gate."""
+    tx = _iq(neartx) * 10 ** (-20 / 20)
+    raw = np.concatenate([q906, _raw(tx + _iq(q906))])
+    r = a.analyse_window(raw, 906.3, own_tx_dbfs=999.0, rel_tx_db=999.0)
+    assert r["foreign"], "attenuated own TX no longer leaks — the case above is untested"
+
+
+def test_a_burst_mostly_gated_is_unjudgeable_not_ok(q906, neartx):
+    """Review #5: 8 kept frames of 732 once read `ok`."""
+    raw = np.concatenate([neartx] * 25 + [q906])       # 725 TX frames + 29 quiet
+    r = a.analyse_window(raw, 906.3)
+    assert r["status"] == "unjudgeable"
+    assert r["kept_frac"] < a.MIN_KEPT_FRAC
+
+
+def test_a_tone_just_outside_a_channel_edge_is_not_a_carrier(q906):
+    floor = a.analyse_window(q906, 906.3)["floor_dbfs"]
+    r = a.analyse_window(_plant_tone(q906, 906.3, 907.010, 25, floor), 906.3)   # LF edge 907.0 + 10 kHz
+    assert r["carriers"] == []
+
+
+def test_foreign_needs_more_than_the_busy_threshold(q906):
+    raw = np.concatenate([q906, q906])                   # 58 frames
+    one = _plant_band_noise(raw, 906.3, 906.40, 100, 20, frames=[10])   # 1/58 = 1.7 %
+    two = _plant_band_noise(raw, 906.3, 906.40, 100, 20, frames=[10, 40])  # 3.4 %
+    assert a.analyse_window(one, 906.3, spur_mhz=a.SPUR_MAP_MHZ[(906.3, 10)])["foreign"] == []
+    assert a.analyse_window(two, 906.3, spur_mhz=a.SPUR_MAP_MHZ[(906.3, 10)])["foreign"]
+
+
+def test_in_channel_activity_counts_our_own_traffic(q906, neartx):
+    """The own-TX gate removes frames from interference judgement, never from
+    the channel's own busy % — our traffic is what that number measures."""
+    r = a.analyse_window(np.concatenate([q906, neartx]), 906.3)
+    assert 45 < r["channels"]["meshtastic-LF-ch20"]["busy_pct"] <= 55
+
+
+def test_spur_map_covers_every_fleet_window_at_both_writer_gains():
+    for c in (903.625, 906.3, 910.525):
+        for g in (10, 21):
+            assert (c, g) in a.SPUR_MAP_MHZ, (c, g)
+
+
+def test_a_neighbour_channel_is_not_busy_from_our_leak(q906, neartx):
+    """LEAK_DB between fleet channels: while LF transmits at -28 dBFS, the
+    ShortTurbo band 1 MHz away reads ~20 dB over the floor from leakage —
+    that is LF's skirt, not ST traffic."""
+    r = a.analyse_window(np.concatenate([q906, neartx]), 906.3)
+    assert r["channels"]["meshtastic-ST-ch8"]["busy_pct"] < 5

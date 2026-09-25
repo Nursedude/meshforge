@@ -238,3 +238,21 @@ already read 1.015–1.071 / 1–7 (partial hours, noisy edges).
 < 1.023, OR the median anomaly rate is > 6/h, OR any hour has > 14 anomalies.
 Fail → stop the timer first, then investigate (never a USB reset).
 
+## 12. Code review of steps 1+2 (Fable 5.1, 2026-09-24) — applied, NOT yet deployed
+Verdict "with fixes first". Applied (author-applied; this is itself unreviewed):
+own-TX gate gains a RELATIVE term (any fleet band > burst floor + 20 dB) — the
+absolute −40 dBFS gate alone failed OPEN for our own emitters 15–36 dB weaker
+than the recording, and class C called them foreign on 4–11 slices (#1); the
+§2.C slice leak gate is NOT built — mutation testing showed it can never fire
+once the relative gate exists (a slice leak needs a band > floor + 36 dB);
+in-channel busy % counts our own traffic (own-TX frames also trip the blocker
+gate via reciprocal mixing); ≥ 25 % of frames kept or `unjudgeable` (#5);
+window `ok` needs a majority of bursts, carriers a majority of ALL bursts (#5);
+run `ok` needs class B too (#4); --set-reference merges + writes atomically
+(#2); any exception writes an `error` row; a truncated reference npz reads
+`unreadable`, carried in every row (#3/#11); capture timeout 5 s (#3);
+persistence skips rows without windows (#7); class D masks our own channels
+(#8); spur map covers every fleet window × gain (#9); history reads backwards
+across rotation (#10/#11). Mutation test after: every non-equivalent mutant
+killed (18/18 across two passes).
+

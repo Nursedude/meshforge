@@ -31,6 +31,14 @@ Q910 = np.load(FX / "fx_910_quiet.npy")
 NEARTX = np.load(FX / "fx_lf_neartx.npy")
 
 
+def _analysis_tests():
+    """The planting helpers live in test_sdr_analysis.py; load it by path."""
+    spec = importlib.util.spec_from_file_location("_sdr_analysis_tests", _ROOT / "tests" / "test_sdr_analysis.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def quiet_capture(center, gain):
     return (Q910 if center > 909 else Q906), None
 
@@ -157,7 +165,8 @@ def test_read_rows_skips_a_torn_line_and_rotation_keeps_one(ddir, monkeypatch):
     monkeypatch.setattr(si, "MAX_BYTES", 10)
     si.append_row(p, {"a": 3})
     assert (ddir / "interference.jsonl.1").exists()
-    assert [r["a"] for r in si.read_rows(p)] == [3]
+    # rotation no longer drops history: read_rows reaches into .1 (review #11)
+    assert [r["a"] for r in si.read_rows(p)] == [1, 2, 3]
 
 
 def test_an_unwritable_data_dir_exits_2(tmp_path, monkeypatch):
@@ -167,7 +176,138 @@ def test_an_unwritable_data_dir_exits_2(tmp_path, monkeypatch):
     assert si.main(["--mode", "fleet"]) == 2
 
 
-def test_an_unreadable_reference_reads_as_none(ddir):
+def test_an_unreadable_reference_reads_as_unreadable_never_zero(ddir):
     ddir.mkdir()
-    (ddir / f"reference_g{si.GAIN_B}.npz").write_bytes(b"not an npz")
-    assert si.load_references(ddir) == {}
+    (ddir / f"reference_g{si.GAIN_B}.npz").write_bytes(b"not an npz")   # BadZipFile
+    assert si.load_references(ddir) == ({}, "unreadable")
+    assert si.load_references(ddir.parent / "nope") == ({}, "absent")
+
+
+# ---- review 2026-09-24 (Fable, non-author) ------------------------------------------
+
+def test_set_reference_merges_and_never_destroys(ddir):
+    ddir.mkdir()
+    good = {f"{c}": np.full(10, -80.0) for c in si.FLEET_WINDOWS}
+    np.savez(ddir / f"reference_g{si.GAIN_B}.npz", **good)
+    only906 = lambda c, g: (Q906, None) if abs(c - 906.3) < 1e-6 else (None, "busy")  # noqa: E731
+    row = si.set_reference(ddir, only906)
+    refs, state = si.load_references(ddir)
+    assert state == "ok" and sorted(refs) == sorted(si.FLEET_WINDOWS)     # 903/910 kept
+    assert row["status"] == "partial" and row["windows_updated"] == [906.3]
+    row = si.set_reference(ddir, dead_capture)
+    assert row["status"] == "unknown"
+    assert sorted(si.load_references(ddir)[0]) == sorted(si.FLEET_WINDOWS)  # untouched
+    assert not list(ddir.glob("*.tmp.npz"))
+
+
+def test_an_exception_still_writes_a_witness_row(ddir, monkeypatch):
+    monkeypatch.setattr(si.shutil, "which", lambda *_a, **_k: "/usr/bin/airspy_rx")
+    monkeypatch.setattr(si, "airspy_capture", lambda c, g: (np.zeros(4097, np.int16), None))
+    assert si.main(["--mode", "fleet"]) == 0
+    row = si.read_rows(ddir / "interference.jsonl")[-1]
+    assert row["status"] == "error" and "ValueError" in row["note"]
+
+
+def test_class_b_dead_makes_the_run_partial_with_reasons():
+    cap = lambda c, g: (quiet_capture(c, g)[0], None) if g == si.GAIN_AC else (None, "AIRSPY_ERROR_BUSY")  # noqa: E731
+    row = si.run_fleet(cap, None, {}, [])
+    assert row["status"] == "partial"
+    w = row["windows"]["906.300"]
+    assert w["status"] == "ok" and w["b"]["status"] == "unknown"
+    assert "AIRSPY_ERROR_BUSY" in w["b"]["reasons"][0]
+
+
+def test_one_judged_burst_of_four_is_partial_and_confirms_nothing():
+    planted = _with_carrier(Q906, 906.3, 907.30)
+    calls = {"n": 0}
+
+    def cap(c, g):
+        if abs(c - 906.3) < 1e-6 and g == si.GAIN_AC:
+            calls["n"] += 1
+            return (planted if calls["n"] % 4 == 1 else NEARTX), None
+        return quiet_capture(c, g)[0], None
+    first = si.run_fleet(cap, None, {}, [])
+    w = first["windows"]["906.300"]
+    assert w["status"] == "partial" and w["carriers"] == []        # 1 of 4: no majority
+    second = si.run_fleet(cap, first, {}, [first])
+    assert second["windows"]["906.300"]["carriers_persistent"] == []
+
+
+def test_foreign_merges_across_bursts_keeping_the_max():
+    # two bursts with the same foreign slice at different duty
+    t = _analysis_tests()
+    lo = t._plant_band_noise(Q906, 906.3, 906.40, 100, 20, frames=[3, 4, 5])
+    hi = t._plant_band_noise(Q906, 906.3, 906.40, 100, 20, frames=list(range(3, 17)))
+    seq = iter([lo, hi, Q906, Q906])
+    cap = lambda c, g: (next(seq), None) if abs(c - 906.3) < 1e-6 and g == si.GAIN_AC else quiet_capture(c, g)  # noqa: E731
+    w = si.run_fleet(cap, None, {}, [])["windows"]["906.300"]
+    hit = [f for f in w["foreign"] if abs(f["slice_mhz"] - 906.40) <= 0.0625]
+    assert hit and hit[0]["bursts"] == 2 and hit[0]["busy_pct"] > 40
+
+
+def test_a_mismatched_reference_reads_none_not_a_crash():
+    row = si.run_fleet(quiet_capture, None, {906.3: np.zeros(5)}, [])
+    assert row["windows"]["906.300"]["b"]["delta_ref_db"] is None
+
+
+def test_a_skipped_row_does_not_reset_persistence(ddir, monkeypatch):
+    planted = _with_carrier(Q906, 906.3, 907.30)
+    cap = lambda c, g: (planted if abs(c - 906.3) < 1e-6 else quiet_capture(c, g)[0], None)  # noqa: E731
+    first = dict(si.run_fleet(cap, None, {}, []), v=1, ts=1.0)
+    p = ddir / "interference.jsonl"
+    si.append_row(p, first)
+    si.append_row(p, {"v": 1, "ts": 2.0, "mode": "fleet", "status": "skipped_overlap"})
+    monkeypatch.setattr(si.shutil, "which", lambda *_a, **_k: "/usr/bin/airspy_rx")
+    monkeypatch.setattr(si, "airspy_capture", cap)
+    assert si.main(["--mode", "fleet"]) == 0
+    row = si.read_rows(p)[-1]
+    assert len(row["windows"]["906.300"]["carriers_persistent"]) == 1
+    assert row["reference"] == "absent"
+
+
+def test_adjacent_headline_is_never_our_own_channel():
+    t = _analysis_tests()
+    floor = sa.analyse_window(Q906, 906.3)["floor_dbfs"]
+    own = t._plant_tone(Q906, 906.3, 906.875, 40, floor)          # a loud LF carrier
+    row = si.run_adjacent(lambda c, g: (own, None))
+    for w in row["windows"]:
+        assert not (906.75 <= w["peak"]["freq_mhz"] <= 907.0), w
+
+
+def test_read_rows_returns_the_full_window_even_with_big_rows(ddir, monkeypatch):
+    p = ddir / "interference.jsonl"
+    big = {"pad": "x" * 11000}
+    for i in range(300):
+        si.append_row(p, dict(big, i=i))
+    rows = si.read_rows(p, limit=289)
+    assert len(rows) == 289 and rows[-1]["i"] == 299 and rows[0]["i"] == 11
+
+
+def test_read_rows_reaches_into_the_rotated_file(ddir, monkeypatch):
+    p = ddir / "interference.jsonl"
+    for i in range(5):
+        si.append_row(p, {"i": i})
+    monkeypatch.setattr(si, "MAX_BYTES", 10)
+    si.append_row(p, {"i": 5})                                      # rotates first
+    assert [r["i"] for r in si.read_rows(p, limit=4)] == [2, 3, 4, 5]
+
+
+def test_a_truncated_reference_npz_is_unreadable(ddir):
+    """Review #3: a half-written npz raises zipfile.BadZipFile, which a
+    narrower except once let escape and kill the run."""
+    ddir.mkdir()
+    full = ddir / "full.npz"
+    np.savez(full, **{"906.3": np.zeros(100)})
+    (ddir / f"reference_g{si.GAIN_B}.npz").write_bytes(full.read_bytes()[:120])
+    assert si.load_references(ddir) == ({}, "unreadable")
+
+
+def test_any_exception_type_still_writes_a_witness_row(ddir, monkeypatch):
+    monkeypatch.setattr(si.shutil, "which", lambda *_a, **_k: "/usr/bin/airspy_rx")
+
+    def boom(*_a, **_k):
+        raise KeyError("windows")
+    monkeypatch.setattr(si, "run_fleet", boom)
+    assert si.main(["--mode", "fleet"]) == 0
+    row = si.read_rows(ddir / "interference.jsonl")[-1]
+    assert row["status"] == "error" and "KeyError" in row["note"]

@@ -19,6 +19,10 @@ witness can tell "the timer ran and the SDR is dead" from "all quiet"
 (review R9: the witness is the age of the newest row whose window status
 is `ok`, never merely the newest row).
 
+Design columns carried by other means (review #11): "sdr_run_active" is
+each row's `ts` + `run_s` (the interval the Airspy streamed); a carrier's
+"first seen / present in N % of runs" is derived by the pane from history.
+
 What a row is OF: dBFS at a fixed gain (not dBm), at moc5 only, in the
 frames the gates kept; blind below the noise floor. Exit 0 = a row was
 written (whatever it says); 2 = no row could be written.
@@ -54,7 +58,7 @@ GAIN_B = 21
 BURSTS_AC = 4
 BURSTS_B = 2
 BURST_SAMPLES = int(sa.SAMPLE_RATE * 0.5)
-CAPTURE_TIMEOUT_S = 15
+CAPTURE_TIMEOUT_S = 5         # a 0.5 s burst takes ~1-2 s; 5 s is a dead device (review #3)
 ADJ_START, ADJ_STOP, ADJ_STEP = 870.2, 940.0, 2.4
 ROLLING_ROWS = 288            # 24 h of 5-min runs for class B's rolling baseline
 MAX_BYTES = 20 * 1024 * 1024  # rotate to .1 past this
@@ -105,12 +109,18 @@ def soc_temp_c() -> Optional[float]:
 
 # ---- aggregation (pure) --------------------------------------------------------
 
-def _window_status(counts: Dict[str, int]) -> str:
-    """ok if any burst was judged; unknown if nothing was captured; else the
-    reason no burst could be judged (overload outranks unjudgeable on a tie —
-    a clipped front end is the more actionable fact)."""
-    if counts["ok"]:
+def _window_status(counts: Dict[str, int], majority: bool = True) -> str:
+    """ok if a MAJORITY of bursts were judged (review #5: 1 of 4 once read ok
+    and could confirm a carrier from 2 of 8 bursts); partial if some were;
+    unknown if nothing was captured; else why none could be judged (overload
+    outranks unjudgeable — a clipped front end is the more actionable fact).
+    `majority=False` (class B) accepts any judged burst: B reads only the
+    quiet bursts by design, and our own TX clipping the rest is expected."""
+    total = sum(counts.values())
+    if counts["ok"] and (not majority or counts["ok"] >= total // 2 + 1):
         return "ok"
+    if counts["ok"]:
+        return "partial"
     if counts["overload"] + counts["unjudgeable"] == 0:
         return "unknown"
     return "overload" if counts["overload"] >= counts["unjudgeable"] else "unjudgeable"
@@ -139,7 +149,8 @@ def judge_window(center: float, capture: Capture, previous: Optional[Dict],
             oks.append(r)
 
     frag: Dict = {"status": _window_status(counts), "bursts": counts, "reasons": reasons[:4],
-                  "own_tx_frames": own_tx, "blocker_frames": blocker, "kept_frames": kept}
+                  "own_tx_frames": own_tx, "blocker_frames": blocker, "kept_frames": kept,
+                  "kept_frac": round(kept / (BURSTS_AC * (BURST_SAMPLES // sa.FFT)), 3)}
     if oks:
         frag["floor_dbfs"] = round(float(np.median([r["floor_dbfs"] for r in oks])), 2)
         chans: Dict[str, Dict] = {}
@@ -150,10 +161,11 @@ def judge_window(center: float, capture: Capture, previous: Optional[Dict],
                 agg["saturated_bursts"] += int(c["saturated_in_sample"])
         frag["channels"] = {k: {"busy_pct": round(float(np.mean(v["busy_pct"])), 2),
                                 "saturated_bursts": v["saturated_bursts"]} for k, v in chans.items()}
-        # A carrier must be in a MAJORITY of this run's ok bursts, then in the
-        # previous run too (>= 2 consecutive runs) to be a finding.
+        # A carrier must be in a MAJORITY of ALL this run's bursts — not of the
+        # judged ones, or 1 judged burst of 4 is its own majority (review #5) —
+        # then in the previous run too (>= 2 consecutive runs) to be a finding.
         allc = [c for r in oks for c in r["carriers"]]
-        need = len(oks) // 2 + 1
+        need = BURSTS_AC // 2 + 1
         majority = []
         for c in allc:
             n = sum(any(abs(c["freq_mhz"] - d["freq_mhz"]) * 1000 <= 3 for d in r["carriers"]) for r in oks)
@@ -175,19 +187,22 @@ def judge_window(center: float, capture: Capture, previous: Optional[Dict],
 
     # Class B at high gain — quiet bursts only.
     b_counts = {"ok": 0, "overload": 0, "unjudgeable": 0, "failed": 0}
+    b_reasons: List[str] = []
     profiles = []
     floors = []
     for _ in range(BURSTS_B):
         raw, why = capture(center, GAIN_B)
         if raw is None:
             b_counts["failed"] += 1
+            b_reasons.append(why or "unknown capture failure")
             continue
         r = sa.analyse_window(raw, center, spur_mhz=sa.SPUR_MAP_MHZ.get((center, GAIN_B), ()))
         b_counts[r["status"]] += 1
         if r["status"] == "ok":
             profiles.append(r["floor_profile"])
             floors.append(r["floor_dbfs"])
-    b: Dict = {"status": _window_status(b_counts), "bursts": b_counts, "gain": GAIN_B}
+    b: Dict = {"status": _window_status(b_counts, majority=False), "bursts": b_counts,
+               "gain": GAIN_B, "reasons": b_reasons[:2]}
     if floors:
         b["floor_dbfs"] = round(float(np.median(floors)), 2)
         prof = np.median(np.array(profiles), axis=0)
@@ -210,7 +225,9 @@ def run_fleet(capture: Capture, prev_row: Optional[Dict], references: Dict[float
                    if h.get("mode") == "fleet" and key in h.get("windows", {})
                    and h["windows"][key].get("b", {}).get("floor_dbfs") is not None]
         windows[key] = judge_window(c, capture, prev, references.get(c), rolling[-ROLLING_ROWS:])
-    sts = [w["status"] for w in windows.values()]
+    # Run-level ok needs A/C AND B ok in every window (review #4: B wholly
+    # dead once read `ok`, satisfying the pane's witness with B blind).
+    sts = [w["status"] for w in windows.values()] + [w["b"]["status"] for w in windows.values()]
     status = "ok" if all(s == "ok" for s in sts) else "unknown" if all(s == "unknown" for s in sts) else "partial"
     return {"mode": "fleet", "status": status, "gain_ac": GAIN_AC, "gain_b": GAIN_B, "windows": windows}
 
@@ -225,7 +242,14 @@ def run_adjacent(capture: Capture) -> Dict:
         else:
             clip = float(np.mean(np.abs(raw.astype(np.int32)) >= sa.CLIP_LEVEL * sa.FULL_SCALE))
             f, p = sa.spectrogram(raw, c)
-            keep = np.abs(f - c) <= sa.USABLE_HALF_MHZ
+            # Our own channels (+guard) are masked: class D answers "is there an
+            # OUT-of-band blocker", and our own LF was once its headline (review #8).
+            keep = (np.abs(f - c) <= sa.USABLE_HALF_MHZ) & ~sa._in_bands(f, sa.FLEET_CHANNELS, sa.GUARD_KHZ)
+            if not keep.any():
+                rows.append({"center_mhz": round(c, 3), "status": "unknown",
+                             "reason": "window is entirely fleet channels"})
+                c += ADJ_STEP
+                continue
             med = np.median(p[:, keep], axis=0)
             mx = np.max(p[:, keep], axis=0)
             floor = float(np.median(med))
@@ -244,20 +268,36 @@ def run_adjacent(capture: Capture) -> Dict:
 
 # ---- persistence ------------------------------------------------------------------
 
-def read_rows(path: Path, limit: int = ROLLING_ROWS + 1) -> List[Dict]:
-    """The newest `limit` parseable rows. A torn/garbled line is skipped, not fatal."""
+def _tail_lines(path: Path, want: int) -> List[bytes]:
+    """The last `want` lines, read backwards in chunks (review #10: a fixed
+    4 KB/row budget returned 110 of 289 rows once class C filled rows to 11 KB)."""
     if not path.exists():
         return []
-    out = []
     with open(path, "rb") as fh:
         fh.seek(0, os.SEEK_END)
-        size = fh.tell()
-        fh.seek(max(0, size - 4096 * (limit + 8)))
-        for ln in fh.read().splitlines():
-            try:
-                out.append(json.loads(ln))
-            except (ValueError, UnicodeDecodeError):
-                continue
+        pos = fh.tell()
+        buf = b""
+        while pos > 0 and buf.count(b"\n") <= want:
+            step = min(65536, pos)
+            pos -= step
+            fh.seek(pos)
+            buf = fh.read(step) + buf
+    return buf.splitlines()[-want:] if pos > 0 else buf.splitlines()
+
+
+def read_rows(path: Path, limit: int = ROLLING_ROWS + 1) -> List[Dict]:
+    """The newest `limit` parseable rows, reaching into the rotated `.1` file
+    when the live one is short (review #11: rotation reset all history). A
+    torn/garbled line is skipped, not fatal."""
+    lines = _tail_lines(path, limit)
+    if len(lines) < limit:
+        lines = _tail_lines(path.with_suffix(path.suffix + ".1"), limit - len(lines)) + lines
+    out = []
+    for ln in lines:
+        try:
+            out.append(json.loads(ln))
+        except (ValueError, UnicodeDecodeError):
+            continue
     return out[-limit:]
 
 
@@ -283,18 +323,50 @@ def append_row(path: Path, row: Dict) -> None:
             fcntl.flock(lk, fcntl.LOCK_UN)
 
 
-def load_references(d: Path) -> Dict[float, np.ndarray]:
-    """Fixed class-B references (gain-tagged), written only by --set-reference."""
-    out = {}
+def load_references(d: Path) -> Tuple[Dict[float, np.ndarray], str]:
+    """Fixed class-B references (gain-tagged), written only by --set-reference.
+
+    Returns (references, state) with state absent | ok | unreadable — the row
+    carries the state (review #11, hfm #9). ANY failure reads as unreadable:
+    a half-written npz raises zipfile.BadZipFile, which the first cut did not
+    catch (review #3), and an unreadable reference must never read as 0 dB.
+    """
     f = d / f"reference_g{GAIN_B}.npz"
-    if f.exists():
-        try:
-            z = np.load(f)
-            for k in z.files:
-                out[float(k)] = z[k]
-        except (OSError, ValueError):
-            pass  # an unreadable reference reads as "none" -> delta_ref_db None, never 0
-    return out
+    if not f.exists():
+        return {}, "absent"
+    try:
+        with np.load(f) as z:
+            return {float(k): z[k] for k in z.files}, "ok"
+    except Exception:
+        return {}, "unreadable"
+
+
+def set_reference(d: Path, capture: Capture) -> Dict:
+    """Capture a class-B reference, MERGED into the existing one and written
+    atomically (review #2: a partial run overwrote good windows, and zero
+    captures wrote an empty file over a good one)."""
+    refs, state = load_references(d)
+    new = {}
+    for c in FLEET_WINDOWS:
+        profs = []
+        for _ in range(8):
+            raw, _why = capture(c, GAIN_B)
+            if raw is None:
+                continue
+            r = sa.analyse_window(raw, c, spur_mhz=sa.SPUR_MAP_MHZ.get((c, GAIN_B), ()))
+            if r["status"] == "ok":
+                profs.append(r["floor_profile"])
+        if len(profs) >= 3:
+            new[c] = np.median(np.array(profs), axis=0)
+    if not new:
+        return {"mode": "set_reference", "status": "unknown", "prior_reference": state,
+                "note": "no window produced >= 3 quiet bursts; existing reference untouched"}
+    refs.update(new)
+    tmp = d / f"reference_g{GAIN_B}.tmp.npz"
+    np.savez(tmp, **{f"{k}": v for k, v in refs.items()})
+    os.replace(tmp, d / f"reference_g{GAIN_B}.npz")
+    return {"mode": "set_reference", "status": "ok" if len(new) == len(FLEET_WINDOWS) else "partial",
+            "prior_reference": state, "windows_updated": sorted(new), "windows_referenced": sorted(refs)}
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -322,30 +394,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         t0 = time.monotonic()
-        if shutil.which("airspy_rx") is None:
-            row = dict(base, status="unknown", note="airspy_rx is not installed on this box")
-        elif a.set_reference:
-            profiles = {}
-            for c in FLEET_WINDOWS:
-                profs = []
-                for _ in range(8):
-                    raw, _why = airspy_capture(c, GAIN_B)
-                    if raw is None:
-                        continue
-                    r = sa.analyse_window(raw, c, spur_mhz=sa.SPUR_MAP_MHZ.get((c, GAIN_B), ()))
-                    if r["status"] == "ok":
-                        profs.append(r["floor_profile"])
-                if len(profs) >= 3:
-                    profiles[f"{c}"] = np.median(np.array(profs), axis=0)
-            np.savez(d / f"reference_g{GAIN_B}.npz", **profiles)
-            row = dict(base, mode="set_reference", status="ok" if len(profiles) == len(FLEET_WINDOWS) else "partial",
-                       windows_referenced=sorted(profiles))
-        elif a.mode == "adjacent":
-            row = dict(base, **run_adjacent(airspy_capture))
-        else:
-            hist = read_rows(path)
-            prev = next((h for h in reversed(hist) if h.get("mode") == "fleet"), None)
-            row = dict(base, **run_fleet(airspy_capture, prev, load_references(d), hist))
+        try:
+            if shutil.which("airspy_rx") is None:
+                row = dict(base, status="unknown", note="airspy_rx is not installed on this box")
+            elif a.set_reference:
+                row = dict(base, **set_reference(d, airspy_capture))
+            elif a.mode == "adjacent":
+                row = dict(base, **run_adjacent(airspy_capture))
+            else:
+                hist = read_rows(path)
+                # newest fleet row that CARRIES windows: a skipped/error row
+                # must not reset class-A persistence (review #7)
+                prev = next((h for h in reversed(hist)
+                             if h.get("mode") == "fleet" and h.get("windows")), None)
+                refs, ref_state = load_references(d)
+                row = dict(base, reference=ref_state, **run_fleet(airspy_capture, prev, refs, hist))
+        except Exception as e:  # the witness row survives any analysis/IO bug (review #3)
+            row = dict(base, status="error", note=f"{type(e).__name__}: {str(e)[:200]}")
         row["run_s"] = round(time.monotonic() - t0, 1)
         return _emit(path, row, a.stdout)
     finally:
