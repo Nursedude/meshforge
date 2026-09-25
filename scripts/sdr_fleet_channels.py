@@ -9,8 +9,15 @@ share of FFT frames in which the channel was BUSY (> floor + BUSY_DB).
 What the numbers are OF (stated, not implied):
   * dBFS relative to this receiver's own floor — NOT dBm. Uncalibrated.
   * "busy %" is the share of ~0.7 ms frames over the captured bursts only;
-    bursts cover roughly half of wall time, so a short packet can fall
-    between them. It is occupancy SEEN, not occupancy.
+    bursts cover ~35 % of wall time (MEASURED: 878 x 0.5 s in 1260 s), so a
+    short packet can fall between them. It is occupancy SEEN, not occupancy.
+  * Energy detection is BLIND below the noise floor, where LoRa still decodes
+    (to ~-20 dB SNR). Measured 2026-09-24 against moc5's own journal: failed
+    decodes at rxSNR < -15 were "seen" no more often than the empty control
+    band (1/6 vs 1/6); at rxSNR >= -5, 6/7 vs 3/7. So busy % is a LOWER
+    BOUND on traffic — never evidence that a channel is idle. Against the
+    radio's own ChUtil (TX+RX+RX_ALL airtime, trailing 60 s — firmware
+    v2.7.26 airtime.cpp): SDR 6.7 % vs ChUtil 9.8 % over the same 60 s (n=1).
   * A clipped burst (ADC at full scale) is reported OVERLOAD and its levels
     are not trusted — a strong nearby TX can saturate the front end.
   * Any capture failure reads UNKNOWN for that window, never 0 %.
