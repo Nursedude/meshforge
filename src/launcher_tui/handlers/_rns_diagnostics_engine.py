@@ -81,7 +81,7 @@ def run_rns_diagnostics(handler):
     # Detect LXMF app conflict (common cause of rnsd crash-loops)
     conflicting_app = handler._check_lxmf_app_conflict()
     if conflicting_app:
-        print(f"  {conflicting_app}: RUNNING (port conflict!)")
+        print(f"  {conflicting_app}: OWNS the RNS shared instance (should be rnsd)")
         # Show port 37428 owner for clarity
         try:
             owner = get_udp_port_owner(37428)

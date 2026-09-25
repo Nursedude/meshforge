@@ -161,7 +161,10 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
                  "Transport.py). create_identities no longer writes the stray file. Now also "
                  "warns when the private key is group/world accessible (mode 666 here and on 6 "
                  "other boxes — permissions NOT changed, operator's call). Interface traffic "
-                 "rows match rnstatus. 'NomadNet: RUNNING (port conflict!)' not yet examined",
+                 "rows match rnstatus. FIXED too: 'NomadNet: RUNNING (port conflict!)' fired whenever "
+                 "nomadnet ran (the normal CLIENT state) and its Fix flow offered `pkill -f "
+                 "nomadnet`; now only when NomadNet OWNS @rns/<name> (live: owner rnsd). "
+                 "Interface/tool rows beyond traffic not re-checked",
         "partial": True,
         "evidence": "commands.rns.rnsd_identity_path / identity_exposure; "
                     "tests/test_rns_identities.py (8 fail on the old code)",

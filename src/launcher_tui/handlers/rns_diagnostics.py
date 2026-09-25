@@ -750,23 +750,31 @@ class RNSDiagnosticsHandler(BaseHandler):
             return False
 
     def _check_lxmf_app_conflict(self) -> Optional[str]:
-        """Check if an LXMF app (NomadNet) holds port 37428.
+        """'NomadNet' only when NomadNet OWNS the RNS shared-instance socket
+        instead of rnsd (the #69 inversion), else None.
 
-        NomadNet can create its own RNS shared instance,
-        which conflicts with rnsd if both try to bind port 37428.
-
-        Returns the app name if conflict detected, None otherwise.
+        This used to return 'NomadNet' whenever a nomadnet process existed —
+        the normal state on every box, where NomadNet is a CLIENT of rnsd's
+        shared instance — and the Fix Port Conflict flow then offered to
+        `pkill -f nomadnet` (live-truth pass 2026-09-25). Now it asks the
+        socket's actual owner via the watchdog's owner scan (which handles
+        spaced instance names). An unobservable scan never claims a conflict.
         """
         try:
-            result = subprocess.run(
-                ['pgrep', '-f', 'nomadnet'],
-                capture_output=True, text=True, timeout=5
-            )
-            if result.returncode == 0:
-                return "NomadNet"
-        except (subprocess.SubprocessError, OSError):
-            pass
-
+            from utils.paths import ReticulumPaths
+            from utils.watchdog_probes_rns import (_classify_listener_owners,
+                                                   _scan_rns_listener_owners)
+            name = ReticulumPaths.get_configured_instance_name() or "default"
+            scan = _scan_rns_listener_owners(name)
+            if scan is None:
+                return None
+            owners, _proc = scan
+            foreign, inverted, _vanished = _classify_listener_owners(owners, "/proc")
+            for _pid, cmdline in inverted + foreign:
+                if "nomadnet" in cmdline.lower():
+                    return "NomadNet"
+        except Exception as e:  # a failed check is not a conflict
+            logger.debug("shared-instance owner check failed: %s", e)
         return None
 
     def _check_rns_interface_health(self):
