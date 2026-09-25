@@ -261,6 +261,37 @@ class TestSdrMockProvenance:
         banner = self._cls()._mock_banner(_FakeRF("MOCK"))
         assert "MOCK MODE" in banner and "SIMULATED" in banner
 
+    @pytest.mark.parametrize("present,expect", [
+        (True, "An Airspy IS attached"),
+        (False, "No Airspy is attached"),
+        (None, "could not be read (UNKNOWN)"),
+    ])
+    def test_banner_says_why_and_what_is_on_the_bus(self, monkeypatch, present, expect):
+        """2026-09-24: on moc5 the banner said "(no SDR hardware)" beside a
+        live Airspy — the mock is caused by the LIBRARY (SoapySDR absent),
+        not the hardware. The banner now names the reason and the bus."""
+        import handlers.sdr as sdr_mod
+        monkeypatch.setattr(sdr_mod, "_airspy_on_usb", lambda: present)
+        banner = self._cls()._mock_banner(_FakeRF("MOCK"))
+        assert expect in banner
+        assert "Why: " in banner and "SoapySDR" in banner
+        assert "no SDR hardware" not in banner
+        assert "NOT real RF" in banner
+
+    def test_airspy_probe_reads_the_bus_or_says_unknown(self, tmp_path, monkeypatch):
+        import handlers.sdr as sdr_mod
+        dev = tmp_path / "1-1.3"
+        dev.mkdir()
+        (dev / "idVendor").write_text("1d50\n")
+        (dev / "idProduct").write_text("60a1\n")
+        real_path = sdr_mod.Path
+        monkeypatch.setattr(sdr_mod, "Path", lambda p: tmp_path if p == "/sys/bus/usb/devices" else real_path(p))
+        assert sdr_mod._airspy_on_usb() is True
+        (dev / "idProduct").write_text("0001\n")
+        assert sdr_mod._airspy_on_usb() is False
+        monkeypatch.setattr(sdr_mod, "Path", lambda p: tmp_path / "missing" if p == "/sys/bus/usb/devices" else real_path(p))
+        assert sdr_mod._airspy_on_usb() is None
+
     def test_banner_silent_on_real_backend_and_none(self):
         cls = self._cls()
         assert cls._mock_banner(_FakeRF("SOAPY")) == ""

@@ -6,6 +6,7 @@ Converted from rf_awareness_mixin.py as part of the mixin-to-registry migration.
 
 import logging
 import time
+from pathlib import Path
 
 from backend import clear_screen
 from handler_protocol import BaseHandler
@@ -25,6 +26,52 @@ def _load_lora_band():
         return LoRaBand
     except ImportError:
         return None
+
+
+_AIRSPY_USB = ("1d50", "60a1")  # OpenMoko/Airspy vendor:product
+
+
+def _airspy_on_usb():
+    """True / False from /sys/bus/usb (no subprocess), None when unreadable.
+
+    Lets the MOCK banner say what is really on the bus: on moc5 an Airspy IS
+    attached, but this monitor reaches SDRs only through SoapySDR — so the old
+    "(no SDR hardware)" wording was false there (operator 2026-09-24: keep the
+    monitor, fix the banner; own what we cannot fix).
+    """
+    try:
+        for dev in Path("/sys/bus/usb/devices").iterdir():
+            try:
+                vid = (dev / "idVendor").read_text().strip()
+                pid = (dev / "idProduct").read_text().strip()
+            except OSError:
+                continue
+            if (vid, pid) == _AIRSPY_USB:
+                return True
+        return False
+    except OSError:
+        return None
+
+
+def _mock_reason():
+    """Why this monitor is in MOCK: the library, not the hardware."""
+    try:
+        from utils.rf_awareness import _HAS_SOAPY
+    except ImportError:
+        return "the RF-awareness module could not load"
+    if not _HAS_SOAPY:
+        return "SoapySDR is not installed on this box, so this monitor cannot open ANY SDR"
+    return "SoapySDR is installed but found no SDR device it can open"
+
+
+def _airspy_line():
+    present = _airspy_on_usb()
+    if present is True:
+        return ("An Airspy IS attached (USB 1d50:60a1). It is sampled by the Interference\n"
+                "Watch timer through airspy_rx — see RF & SDR › Interference Watch.\n")
+    if present is None:
+        return "Whether an SDR is attached could not be read (UNKNOWN).\n"
+    return "No Airspy is attached to this box's USB.\n"
 
 
 class SDRHandler(BaseHandler):
@@ -107,10 +154,19 @@ class SDRHandler(BaseHandler):
             for dev in devices:
                 lines.append(f"  • {dev.label} ({dev.driver})")
         else:
-            lines.extend(["  No SoapySDR devices found", "  (Mock mode available for testing)"])
+            lines.extend(["  No SoapySDR devices found", f"  Why: {_mock_reason()}.",
+                          "  " + _airspy_line().replace("\n", "\n  ").rstrip(),
+                          "  (Mock mode = random test data, available for testing)"])
         self.ctx.dialog.msgbox("SDR Status", "\n".join(lines))
         if not rf.is_connected:
-            if self.ctx.dialog.yesno("Connect SDR", "Connect to SDR device?\n\nIf no hardware found, will use mock mode for testing."):
+            prompt = ("Connect to an SDR via SoapySDR?\n\n"
+                      "If SoapySDR cannot open a device, this monitor falls back to MOCK\n"
+                      "(random test data, clearly bannered) — not to real RF.")
+            if _airspy_on_usb():
+                prompt += ("\n\nNote: this box's Airspy is sampled every 5 min by the\n"
+                           "meshforge-sdr timer. A live session here can make those runs\n"
+                           "read UNKNOWN (device busy) while it is open.")
+            if self.ctx.dialog.yesno("Connect SDR", prompt):
                 self.ctx.dialog.infobox("Connecting...", "Connecting to SDR...")
                 has_airspy = any("airspy" in d.driver.lower() for d in devices)
                 if rf.connect(device_filter="airspy" if has_airspy else None):
@@ -295,8 +351,10 @@ class SDRHandler(BaseHandler):
         data itself, not just the connect prompt.
         """
         if rf is not None and getattr(rf.backend, "name", "") == "MOCK":
-            return ("*** MOCK MODE — SIMULATED DATA (no SDR hardware) ***\n"
-                    "Values below are random test data, NOT real RF.\n\n")
+            return ("*** MOCK MODE — SIMULATED DATA ***\n"
+                    f"Why: {_mock_reason()}.\n"
+                    + _airspy_line()
+                    + "Values below are random test data, NOT real RF.\n\n")
         return ""
 
     @staticmethod
