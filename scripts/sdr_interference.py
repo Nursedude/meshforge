@@ -1,0 +1,370 @@
+#!/usr/bin/env python3
+"""SDR interference watch at moc5 — Phase 1 step 2 (the writer).
+
+Design: `.claude/plans/sdr_interference_phase1.md` (rev 2 + §10). One run =
+one JSONL row in `<data_dir>/sdr/interference.jsonl`. Analysis is
+`utils.sdr_analysis` (pure); this file owns capture, locking, persistence.
+
+Modes:
+  fleet     (every 5 min) — the 3 fleet windows. Classes A/C at gain 10
+            (4 x 0.5 s bursts each); class B at gain 21 (2 bursts each —
+            the §10 reference showed the floor is the Airspy's own below
+            gain 15, so B is blind at 10). Our near-field TX clips at 21;
+            those bursts are `overload` and B judges only the quiet ones.
+  adjacent  (hourly) — class D: 869–940 MHz, 1 burst per 2.4 MHz, gain 10.
+
+A row is written for EVERY invocation — ok, partial, unknown (nothing
+captured), or skipped_overlap (another run held the lock) — so the pane's
+witness can tell "the timer ran and the SDR is dead" from "all quiet"
+(review R9: the witness is the age of the newest row whose window status
+is `ok`, never merely the newest row).
+
+What a row is OF: dBFS at a fixed gain (not dBm), at moc5 only, in the
+frames the gates kept; blind below the noise floor. Exit 0 = a row was
+written (whatever it says); 2 = no row could be written.
+"""
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
+
+_SRC = Path(__file__).resolve().parents[1] / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+import numpy as np  # noqa: E402
+
+from utils import sdr_analysis as sa  # noqa: E402
+from utils.paths import MeshForgePaths  # noqa: E402
+
+SCHEMA = 1
+FLEET_WINDOWS = (903.625, 906.300, 910.525)
+GAIN_AC = 10
+GAIN_B = 21
+BURSTS_AC = 4
+BURSTS_B = 2
+BURST_SAMPLES = int(sa.SAMPLE_RATE * 0.5)
+CAPTURE_TIMEOUT_S = 15
+ADJ_START, ADJ_STOP, ADJ_STEP = 870.2, 940.0, 2.4
+ROLLING_ROWS = 288            # 24 h of 5-min runs for class B's rolling baseline
+MAX_BYTES = 20 * 1024 * 1024  # rotate to .1 past this
+
+# Capture(center_mhz, gain) -> (raw int16 ndarray, None) | (None, reason str)
+Capture = Callable[[float, int], Tuple[Optional[np.ndarray], Optional[str]]]
+
+
+def data_dir() -> Path:
+    return MeshForgePaths.get_data_dir() / "sdr"
+
+
+def airspy_capture(center_mhz: float, gain: int, tmpdir: str = "/dev/shm") -> Tuple[Optional[np.ndarray], Optional[str]]:
+    """One 0.5 s burst via airspy_rx. Never raises; a failure is a reason."""
+    if not os.path.isdir(tmpdir):
+        tmpdir = tempfile.gettempdir()
+    fd, path = tempfile.mkstemp(prefix="aspy_", suffix=".iq", dir=tmpdir)
+    os.close(fd)
+    try:
+        r = subprocess.run(
+            ["airspy_rx", "-r", path, "-f", f"{center_mhz:.4f}", "-a", str(sa.SAMPLE_RATE),
+             "-t", "2", "-p", "1", "-g", str(gain), "-n", str(BURST_SAMPLES)],
+            capture_output=True, text=True, timeout=CAPTURE_TIMEOUT_S)
+        if r.returncode != 0:
+            tail = (r.stderr or r.stdout or "").strip().splitlines()[-1:] or [""]
+            return None, f"airspy_rx rc={r.returncode}: {tail[0][:160]}"
+        raw = np.fromfile(path, dtype=np.int16)
+        if raw.size < 2 * sa.FFT:
+            return None, f"short capture ({raw.size} int16 values)"
+        return raw, None
+    except subprocess.TimeoutExpired:
+        return None, f"airspy_rx timed out after {CAPTURE_TIMEOUT_S}s"
+    except OSError as e:
+        return None, f"airspy_rx could not run: {e}"
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def soc_temp_c() -> Optional[float]:
+    try:
+        return round(int(Path("/sys/class/thermal/thermal_zone0/temp").read_text().strip()) / 1000, 1)
+    except (OSError, ValueError):
+        return None
+
+
+# ---- aggregation (pure) --------------------------------------------------------
+
+def _window_status(counts: Dict[str, int]) -> str:
+    """ok if any burst was judged; unknown if nothing was captured; else the
+    reason no burst could be judged (overload outranks unjudgeable on a tie —
+    a clipped front end is the more actionable fact)."""
+    if counts["ok"]:
+        return "ok"
+    if counts["overload"] + counts["unjudgeable"] == 0:
+        return "unknown"
+    return "overload" if counts["overload"] >= counts["unjudgeable"] else "unjudgeable"
+
+
+def judge_window(center: float, capture: Capture, previous: Optional[Dict],
+                 reference_profile: Optional[np.ndarray], rolling_floors: Sequence[float]) -> Dict:
+    """All bursts for one fleet window -> one row fragment. `previous` is this
+    window's fragment from the last row (for class A persistence)."""
+    counts = {"ok": 0, "overload": 0, "unjudgeable": 0, "failed": 0}
+    reasons: List[str] = []
+    oks: List[Dict] = []
+    own_tx = blocker = kept = 0
+    for _ in range(BURSTS_AC):
+        raw, why = capture(center, GAIN_AC)
+        if raw is None:
+            counts["failed"] += 1
+            reasons.append(why or "unknown capture failure")
+            continue
+        r = sa.analyse_window(raw, center, spur_mhz=sa.SPUR_MAP_MHZ.get((center, GAIN_AC), ()))
+        counts[r["status"]] += 1
+        own_tx += r["own_tx_frames"]
+        blocker += r["blocker_frames"]
+        kept += r["kept_frames"]
+        if r["status"] == "ok":
+            oks.append(r)
+
+    frag: Dict = {"status": _window_status(counts), "bursts": counts, "reasons": reasons[:4],
+                  "own_tx_frames": own_tx, "blocker_frames": blocker, "kept_frames": kept}
+    if oks:
+        frag["floor_dbfs"] = round(float(np.median([r["floor_dbfs"] for r in oks])), 2)
+        chans: Dict[str, Dict] = {}
+        for r in oks:
+            for label, c in r["channels"].items():
+                agg = chans.setdefault(label, {"busy_pct": [], "saturated_bursts": 0})
+                agg["busy_pct"].append(c["busy_pct"])
+                agg["saturated_bursts"] += int(c["saturated_in_sample"])
+        frag["channels"] = {k: {"busy_pct": round(float(np.mean(v["busy_pct"])), 2),
+                                "saturated_bursts": v["saturated_bursts"]} for k, v in chans.items()}
+        # A carrier must be in a MAJORITY of this run's ok bursts, then in the
+        # previous run too (>= 2 consecutive runs) to be a finding.
+        allc = [c for r in oks for c in r["carriers"]]
+        need = len(oks) // 2 + 1
+        majority = []
+        for c in allc:
+            n = sum(any(abs(c["freq_mhz"] - d["freq_mhz"]) * 1000 <= 3 for d in r["carriers"]) for r in oks)
+            if n >= need and not any(abs(c["freq_mhz"] - m["freq_mhz"]) * 1000 <= 3 for m in majority):
+                majority.append(c)
+        frag["carriers"] = majority
+        prev_ok = previous if previous and previous.get("status") == "ok" else None
+        frag["carriers_persistent"] = sa.persistent(majority, prev_ok.get("carriers") if prev_ok else None)
+        frag["spurs_seen"] = len({s["freq_mhz"] for r in oks for s in r["spurs"]})
+        foreign: Dict[float, Dict] = {}
+        for r in oks:
+            for f in r["foreign"]:
+                cur = foreign.get(f["slice_mhz"])
+                if cur is None or f["busy_pct"] > cur["busy_pct"]:
+                    foreign[f["slice_mhz"]] = dict(f, bursts=1 + (cur["bursts"] if cur else 0))
+                else:
+                    cur["bursts"] += 1
+        frag["foreign"] = sorted(foreign.values(), key=lambda f: -f["busy_pct"])
+
+    # Class B at high gain — quiet bursts only.
+    b_counts = {"ok": 0, "overload": 0, "unjudgeable": 0, "failed": 0}
+    profiles = []
+    floors = []
+    for _ in range(BURSTS_B):
+        raw, why = capture(center, GAIN_B)
+        if raw is None:
+            b_counts["failed"] += 1
+            continue
+        r = sa.analyse_window(raw, center, spur_mhz=sa.SPUR_MAP_MHZ.get((center, GAIN_B), ()))
+        b_counts[r["status"]] += 1
+        if r["status"] == "ok":
+            profiles.append(r["floor_profile"])
+            floors.append(r["floor_dbfs"])
+    b: Dict = {"status": _window_status(b_counts), "bursts": b_counts, "gain": GAIN_B}
+    if floors:
+        b["floor_dbfs"] = round(float(np.median(floors)), 2)
+        prof = np.median(np.array(profiles), axis=0)
+        b["delta_ref_db"] = (round(sa.floor_delta_db(prof, reference_profile), 2)
+                             if reference_profile is not None and reference_profile.shape == prof.shape
+                             else None)
+        b["delta_rolling_db"] = (round(b["floor_dbfs"] - float(np.median(rolling_floors)), 2)
+                                 if len(rolling_floors) >= 12 else None)
+    frag["b"] = b
+    return frag
+
+
+def run_fleet(capture: Capture, prev_row: Optional[Dict], references: Dict[float, np.ndarray],
+              history: Sequence[Dict]) -> Dict:
+    windows = {}
+    for c in FLEET_WINDOWS:
+        key = f"{c:.3f}"
+        prev = (prev_row or {}).get("windows", {}).get(key)
+        rolling = [h["windows"][key]["b"]["floor_dbfs"] for h in history
+                   if h.get("mode") == "fleet" and key in h.get("windows", {})
+                   and h["windows"][key].get("b", {}).get("floor_dbfs") is not None]
+        windows[key] = judge_window(c, capture, prev, references.get(c), rolling[-ROLLING_ROWS:])
+    sts = [w["status"] for w in windows.values()]
+    status = "ok" if all(s == "ok" for s in sts) else "unknown" if all(s == "unknown" for s in sts) else "partial"
+    return {"mode": "fleet", "status": status, "gain_ac": GAIN_AC, "gain_b": GAIN_B, "windows": windows}
+
+
+def run_adjacent(capture: Capture) -> Dict:
+    rows = []
+    c = ADJ_START
+    while c <= ADJ_STOP + 1e-9:
+        raw, why = capture(round(c, 3), GAIN_AC)
+        if raw is None:
+            rows.append({"center_mhz": round(c, 3), "status": "unknown", "reason": why})
+        else:
+            clip = float(np.mean(np.abs(raw.astype(np.int32)) >= sa.CLIP_LEVEL * sa.FULL_SCALE))
+            f, p = sa.spectrogram(raw, c)
+            keep = np.abs(f - c) <= sa.USABLE_HALF_MHZ
+            med = np.median(p[:, keep], axis=0)
+            mx = np.max(p[:, keep], axis=0)
+            floor = float(np.median(med))
+            i, j = int(np.argmax(med)), int(np.argmax(mx))
+            rows.append({"center_mhz": round(c, 3),
+                         "status": "overload" if clip > sa.CLIP_FRAC else "ok",
+                         "floor_dbfs": round(floor, 2),
+                         "steady": {"freq_mhz": round(float(f[keep][i]), 4), "above_floor_db": round(float(med[i] - floor), 1)},
+                         "peak": {"freq_mhz": round(float(f[keep][j]), 4), "above_floor_db": round(float(mx[j] - floor), 1),
+                                  "level_dbfs": round(float(mx[j]), 1)}})
+        c += ADJ_STEP
+    sts = [r["status"] for r in rows]
+    status = "ok" if all(s == "ok" for s in sts) else "unknown" if all(s == "unknown" for s in sts) else "partial"
+    return {"mode": "adjacent", "status": status, "gain": GAIN_AC, "windows": rows}
+
+
+# ---- persistence ------------------------------------------------------------------
+
+def read_rows(path: Path, limit: int = ROLLING_ROWS + 1) -> List[Dict]:
+    """The newest `limit` parseable rows. A torn/garbled line is skipped, not fatal."""
+    if not path.exists():
+        return []
+    out = []
+    with open(path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        fh.seek(max(0, size - 4096 * (limit + 8)))
+        for ln in fh.read().splitlines():
+            try:
+                out.append(json.loads(ln))
+            except (ValueError, UnicodeDecodeError):
+                continue
+    return out[-limit:]
+
+
+def append_row(path: Path, row: Dict) -> None:
+    """Append one line under an append lock (short, blocking) and rotate past MAX_BYTES."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.parent / "append.lock", "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        try:
+            if path.exists() and path.stat().st_size > MAX_BYTES:
+                os.replace(path, path.with_suffix(path.suffix + ".1"))
+            # A crash mid-write leaves a line with no newline; appending straight
+            # after it glued the NEXT good row onto the fragment and lost both
+            # (caught by test_read_rows_skips_a_torn_line). Terminate it first.
+            torn = False
+            if path.exists() and path.stat().st_size:
+                with open(path, "rb") as rb:
+                    rb.seek(-1, os.SEEK_END)
+                    torn = rb.read(1) != b"\n"
+            with open(path, "a") as fh:
+                fh.write(("\n" if torn else "") + json.dumps(row, separators=(",", ":")) + "\n")
+        finally:
+            fcntl.flock(lk, fcntl.LOCK_UN)
+
+
+def load_references(d: Path) -> Dict[float, np.ndarray]:
+    """Fixed class-B references (gain-tagged), written only by --set-reference."""
+    out = {}
+    f = d / f"reference_g{GAIN_B}.npz"
+    if f.exists():
+        try:
+            z = np.load(f)
+            for k in z.files:
+                out[float(k)] = z[k]
+        except (OSError, ValueError):
+            pass  # an unreadable reference reads as "none" -> delta_ref_db None, never 0
+    return out
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--mode", choices=("fleet", "adjacent"), default="fleet")
+    ap.add_argument("--stdout", action="store_true", help="print the row instead of appending it")
+    ap.add_argument("--set-reference", action="store_true",
+                    help=f"capture a fixed class-B reference at gain {GAIN_B} (run when the site is normal)")
+    a = ap.parse_args(argv)
+    d = data_dir()
+    path = d / "interference.jsonl"
+    base = {"v": SCHEMA, "ts": round(time.time(), 3), "host": socket.gethostname(),
+            "mode": a.mode, "soc_temp_c": soc_temp_c()}
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        lock = open(d / "run.lock", "a")
+    except OSError as e:
+        print(f"sdr_interference: cannot use {d}: {e}", file=sys.stderr)
+        return 2
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        row = dict(base, status="skipped_overlap", note="another run held run.lock")
+        return _emit(path, row, a.stdout)
+
+    try:
+        t0 = time.monotonic()
+        if shutil.which("airspy_rx") is None:
+            row = dict(base, status="unknown", note="airspy_rx is not installed on this box")
+        elif a.set_reference:
+            profiles = {}
+            for c in FLEET_WINDOWS:
+                profs = []
+                for _ in range(8):
+                    raw, _why = airspy_capture(c, GAIN_B)
+                    if raw is None:
+                        continue
+                    r = sa.analyse_window(raw, c, spur_mhz=sa.SPUR_MAP_MHZ.get((c, GAIN_B), ()))
+                    if r["status"] == "ok":
+                        profs.append(r["floor_profile"])
+                if len(profs) >= 3:
+                    profiles[f"{c}"] = np.median(np.array(profs), axis=0)
+            np.savez(d / f"reference_g{GAIN_B}.npz", **profiles)
+            row = dict(base, mode="set_reference", status="ok" if len(profiles) == len(FLEET_WINDOWS) else "partial",
+                       windows_referenced=sorted(profiles))
+        elif a.mode == "adjacent":
+            row = dict(base, **run_adjacent(airspy_capture))
+        else:
+            hist = read_rows(path)
+            prev = next((h for h in reversed(hist) if h.get("mode") == "fleet"), None)
+            row = dict(base, **run_fleet(airspy_capture, prev, load_references(d), hist))
+        row["run_s"] = round(time.monotonic() - t0, 1)
+        return _emit(path, row, a.stdout)
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
+
+
+def _emit(path: Path, row: Dict, to_stdout: bool) -> int:
+    if to_stdout:
+        print(json.dumps(row, indent=1, default=str))
+        return 0
+    try:
+        append_row(path, row)
+    except OSError as e:
+        print(f"sdr_interference: could not write {path}: {e}", file=sys.stderr)
+        return 2
+    print(f"{row.get('mode')} {row.get('status')} -> {path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
