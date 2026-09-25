@@ -567,39 +567,15 @@ def get_recommended_config(port: str, region: str = 'US') -> CommandResult:
     Returns:
         CommandResult with recommended configuration
     """
-    # Region-specific defaults
-    REGION_DEFAULTS = {
-        'US': {
-            'frequency': 903625000,  # 903.625 MHz
-            'bandwidth': 250000,
-            'spreading_factor': 7,
-            'coding_rate': 5,
-            'tx_power': 22,
-        },
-        'EU': {
-            'frequency': 867500000,  # 867.5 MHz
-            'bandwidth': 125000,
-            'spreading_factor': 8,
-            'coding_rate': 5,
-            'tx_power': 14,  # EU limit
-        },
-        'AU': {
-            'frequency': 917000000,  # 917 MHz
-            'bandwidth': 250000,
-            'spreading_factor': 7,
-            'coding_rate': 5,
-            'tx_power': 22,
-        },
-    }
-
+    # One profile source (utils.rnode_profile): the operator's declaration,
+    # else the region default — which for US is the fleet's measured profile.
+    from utils.rnode_profile import ProfileError, rnode_profile
     region = region.upper()
-    if region not in REGION_DEFAULTS:
-        return CommandResult.fail(
-            f"Unknown region: {region}. Use US, EU, or AU.",
-            data={'available_regions': list(REGION_DEFAULTS.keys())}
-        )
-
-    config = REGION_DEFAULTS[region].copy()
+    try:
+        profile = rnode_profile(region)
+    except ProfileError as e:
+        return CommandResult.fail(str(e), data={'region': region})
+    config = {k: v for k, v in profile.items() if k != 'source'}
     config['port'] = port
     config['region'] = region
 
@@ -616,10 +592,11 @@ def get_recommended_config(port: str, region: str = 'US') -> CommandResult:
 """
 
     return CommandResult.ok(
-        f"Recommended config for {region} region",
+        f"Recommended config for {region} region ({profile['source']})",
         data={
             'config': config,
             'snippet': config_snippet,
+            'source': profile['source'],
         }
     )
 

@@ -1,25 +1,17 @@
 """
-LoRa Preset Mapping - Meshtastic ↔ RNode Configuration
+Meshtastic preset metadata + detection of the local radio's preset.
 
-Provides proven/tested configurations for bridging Meshtastic and RNS networks.
-The key to successful bridging is matching LoRa parameters exactly.
-
-Meshtastic presets are mapped to RNode configuration parameters:
-- Frequency (Hz)
-- Bandwidth (Hz)
-- Spreading Factor (7-12)
-- Coding Rate (5-8, representing 4/5 through 4/8)
-
-Usage:
-    from utils.lora_presets import get_rnode_config_for_meshtastic_preset
-
-    config = get_rnode_config_for_meshtastic_preset('MEDIUM_FAST', region='US')
-    # Returns: {'frequency': 906875000, 'bandwidth': 250000, 'spreading_factor': 9, ...}
+SF / bandwidth / coding rate come from utils.meshtastic_modem (the firmware's
+own table). RNode profiles live in utils.rnode_profile — they are NOT
+Meshtastic presets: the two protocols cannot decode each other, so an RNode
+"matched" to a Meshtastic preset only shares that mesh's airtime. This module
+used to claim "the key to successful bridging is matching LoRa parameters
+exactly" and carried RNode profiles named after presets (removed 2026-09-25;
+none had a caller).
 """
 
 import logging
-from dataclasses import dataclass
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 from enum import Enum
 
 from utils.ports import MESHTASTICD_PORTS
@@ -58,33 +50,6 @@ class MeshtasticPreset(Enum):
     LONG_MODERATE = 'LONG_MODERATE'
     LONG_SLOW = 'LONG_SLOW'          # deprecated in 2.7
     VERY_LONG_SLOW = 'VERY_LONG_SLOW'  # deprecated in 2.5 — firmware runs it as LONG_FAST
-
-
-@dataclass
-class LoRaConfig:
-    """LoRa radio configuration parameters"""
-    frequency: int          # Hz (e.g., 906875000 for 906.875 MHz)
-    bandwidth: int          # Hz (e.g., 250000 for 250 kHz)
-    spreading_factor: int   # 7-12
-    coding_rate: int        # 5-8 (representing 4/5 through 4/8)
-    tx_power: int           # dBm (0-22 typical, up to 30 for high-power)
-
-    # Metadata
-    preset_name: str = ""
-    description: str = ""
-    estimated_range: str = ""
-    estimated_throughput: str = ""
-
-    def to_dict(self) -> Dict:
-        return {
-            'frequency': self.frequency,
-            'bandwidth': self.bandwidth,
-            'spreading_factor': self.spreading_factor,
-            'coding_rate': self.coding_rate,
-            'tx_power': self.tx_power,
-            'preset_name': self.preset_name,
-            'description': self.description,
-        }
 
 
 # Meshtastic preset definitions (LoRa parameters only, frequency from region)
@@ -219,181 +184,6 @@ REGION_FREQUENCIES = {
         'range': (920000000, 923000000),
     },
 }
-
-
-# Proven/tested gateway configurations
-# Reference: https://github.com/landandair/RNS_Over_Meshtastic
-PROVEN_GATEWAY_CONFIGS = {
-    'rns_turbo_gateway': {
-        'name': 'RNS Turbo Gateway',
-        'description': 'Recommended for RNS_Over_Meshtastic - Maximum throughput',
-        'meshtastic_preset': 'SHORT_TURBO',
-        'meshtastic_slot': 0,
-        'region': 'US',
-        'frequency': 903080000,
-        'bandwidth': 500000,
-        'spreading_factor': 7,
-        'coding_rate': 8,
-        'tx_power': 22,
-        'rns_data_speed': 8,
-        'rns_throughput': '~500 B/s',
-        'tested': True,
-        'recommended_for_rns': True,
-        'notes': 'Best for RNS bridge - ~500 bytes/sec, 0.4s delay',
-        'warning': '500kHz BW may be illegal in some regions',
-    },
-    'rns_shortfast_gateway': {
-        'name': 'RNS Short-Fast Gateway',
-        'description': 'Legal alternative for RNS bridge - Good throughput',
-        'meshtastic_preset': 'SHORT_FAST',
-        'meshtastic_slot': 0,
-        'region': 'US',
-        'frequency': 903080000,
-        'bandwidth': 250000,
-        'spreading_factor': 7,
-        'coding_rate': 8,
-        'tx_power': 22,
-        'rns_data_speed': 6,
-        'rns_throughput': '~300 B/s',
-        'tested': True,
-        'recommended_for_rns': True,
-        'notes': 'Good RNS bridge option - ~300 bytes/sec, 1.0s delay',
-    },
-    'mtnmesh_gateway': {
-        'name': 'MtnMesh Gateway',
-        'description': 'Tested configuration for MtnMesh community networks',
-        'meshtastic_preset': 'MEDIUM_FAST',
-        'meshtastic_slot': 20,
-        'region': 'US',
-        'frequency': 906875000,  # Matches MtnMesh slot 20
-        'bandwidth': 250000,
-        'spreading_factor': 10,
-        'coding_rate': 8,
-        'tx_power': 22,
-        'rns_data_speed': 4,
-        'rns_throughput': '~100 B/s',
-        'tested': True,
-        'notes': 'Standard MtnMesh configuration - SF10, BW250, CR8',
-    },
-    'long_range_gateway': {
-        'name': 'Long Range Gateway',
-        'description': 'Default Meshtastic compatibility - maximum interop',
-        'meshtastic_preset': 'LONG_FAST',
-        'meshtastic_slot': 0,
-        'region': 'US',
-        'frequency': 903080000,  # Slot 0
-        'bandwidth': 250000,
-        'spreading_factor': 11,
-        'coding_rate': 8,
-        'tx_power': 22,
-        'rns_data_speed': 0,
-        'rns_throughput': '~50 B/s',
-        'tested': True,
-        'notes': 'Compatible with default Meshtastic installations',
-        'rns_warning': 'Not recommended for RNS - slow throughput',
-    },
-    'urban_fast_gateway': {
-        'name': 'Urban Fast Gateway',
-        'description': 'High-speed for dense urban environments',
-        'meshtastic_preset': 'SHORT_FAST',
-        'meshtastic_slot': 0,
-        'region': 'US',
-        'frequency': 903080000,
-        'bandwidth': 250000,
-        'spreading_factor': 7,
-        'coding_rate': 8,
-        'tx_power': 20,
-        'rns_data_speed': 6,
-        'rns_throughput': '~300 B/s',
-        'tested': True,
-        'notes': 'Fastest reliable config for city deployments',
-    },
-    'sar_gateway': {
-        'name': 'SAR/Emergency Gateway',
-        'description': 'Maximum range for Search and Rescue operations',
-        'meshtastic_preset': 'LONG_SLOW',
-        'meshtastic_slot': 0,
-        'region': 'US',
-        'frequency': 903080000,
-        'bandwidth': 125000,
-        'spreading_factor': 12,
-        'coding_rate': 8,
-        'tx_power': 30,  # High-power hardware required
-        'rns_data_speed': 1,
-        'rns_throughput': '~25 B/s',
-        'tested': True,
-        'notes': 'Extreme range, very slow - for emergency comms only',
-        'rns_warning': 'Not recommended for RNS - extremely slow',
-    },
-}
-
-
-def get_rnode_config_for_meshtastic_preset(
-    preset: str,
-    region: str = 'US',
-    channel_slot: int = 0,
-    tx_power: int = 22
-) -> LoRaConfig:
-    """
-    Get RNode configuration that matches a Meshtastic preset.
-
-    Args:
-        preset: Meshtastic modem preset name (e.g., 'MEDIUM_FAST')
-        region: ITU region for frequency selection ('US', 'EU', etc.)
-        channel_slot: Meshtastic channel slot number (0-20+)
-        tx_power: Desired TX power in dBm
-
-    Returns:
-        LoRaConfig with matching parameters
-    """
-    preset_upper = preset.upper().replace(' ', '_').replace('-', '_')
-
-    if preset_upper not in MESHTASTIC_PRESETS:
-        raise ValueError(f"Unknown preset: {preset}. Valid presets: {list(MESHTASTIC_PRESETS.keys())}")
-
-    preset_data = MESHTASTIC_PRESETS[preset_upper]
-    region_data = REGION_FREQUENCIES.get(region.upper(), REGION_FREQUENCIES['US'])
-
-    # Calculate frequency from channel slot
-    # Meshtastic channel spacing varies by region and bandwidth
-    base_freq = region_data['slot_0']
-    channel_spacing = preset_data['bandwidth']  # Approximate
-    frequency = base_freq + (channel_slot * channel_spacing)
-
-    # Ensure frequency is within region limits
-    freq_min, freq_max = region_data['range']
-    frequency = max(freq_min, min(frequency, freq_max))
-
-    return LoRaConfig(
-        frequency=frequency,
-        bandwidth=preset_data['bandwidth'],
-        spreading_factor=preset_data['spreading_factor'],
-        coding_rate=preset_data['coding_rate'],
-        tx_power=tx_power,
-        preset_name=preset_upper,
-        description=preset_data['description'],
-        estimated_range=preset_data.get('estimated_range', ''),
-        estimated_throughput=preset_data.get('estimated_throughput', ''),
-    )
-
-
-def get_proven_gateway_config(config_name: str) -> Optional[Dict]:
-    """Get a proven/tested gateway configuration by name."""
-    return PROVEN_GATEWAY_CONFIGS.get(config_name)
-
-
-def list_proven_configs() -> List[Dict]:
-    """List all proven gateway configurations with metadata."""
-    return [
-        {
-            'id': key,
-            'name': config['name'],
-            'description': config['description'],
-            'preset': config['meshtastic_preset'],
-            'tested': config.get('tested', False),
-        }
-        for key, config in PROVEN_GATEWAY_CONFIGS.items()
-    ]
 
 
 def detect_meshtastic_settings(verbose: bool = False) -> Optional[Dict]:

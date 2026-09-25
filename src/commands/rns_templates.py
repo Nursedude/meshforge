@@ -114,14 +114,7 @@ def get_interface_templates() -> CommandResult:
             'name': 'RNode LoRa',
             'description': 'Direct LoRa via RNode hardware',
             'type': 'RNodeInterface',
-            'settings': {
-                'port': '/dev/ttyUSB0',
-                'frequency': '903625000',
-                'txpower': '22',
-                'bandwidth': '250000',
-                'spreadingfactor': '7',
-                'codingrate': '5'
-            }
+            'settings': _rnode_template_settings(),
         }
     }
 
@@ -234,3 +227,20 @@ def apply_multi_template(
         f"Added {len(added)} interfaces: {', '.join(added)}",
         data={'added': added}
     )
+
+
+def _rnode_template_settings() -> dict:
+    """RNode template values from the one profile source (utils.rnode_profile).
+    A broken declaration is SHOWN, never silently swapped for the default."""
+    from utils.rnode_profile import ProfileError, REGION_DEFAULTS, rnode_profile
+    try:
+        p, warning = rnode_profile(), None
+    except ProfileError as e:
+        p, warning = dict(REGION_DEFAULTS["US"]), f"declared profile rejected: {e}"
+    settings = {'port': '/dev/ttyUSB0', 'frequency': str(p['frequency']),
+                'txpower': str(p['tx_power']), 'bandwidth': str(p['bandwidth']),
+                'spreadingfactor': str(p['spreading_factor']),
+                'codingrate': str(p['coding_rate'])}
+    if warning:
+        settings['warning'] = warning
+    return settings
