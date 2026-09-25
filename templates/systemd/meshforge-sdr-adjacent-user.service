@@ -1,0 +1,25 @@
+# MeshForge — SDR adjacent-band pass (class D), 869–940 MHz (systemd-user)
+# =======================================================================
+#
+# "Do we need a 902–928 bandpass filter here?" — strongest steady carrier,
+# strongest peak and clip per 2.4 MHz window, hourly. Same JSONL as the
+# fleet runs (mode=adjacent). Install like meshforge-sdr-user.service:
+#   cp .../meshforge-sdr-adjacent-user.service ~/.config/systemd/user/meshforge-sdr-adjacent.service
+#   cp .../meshforge-sdr-adjacent-user.timer   ~/.config/systemd/user/meshforge-sdr-adjacent.timer
+#   systemctl --user daemon-reload && systemctl --user enable --now meshforge-sdr-adjacent.timer
+
+[Unit]
+Description=MeshForge SDR adjacent-band pass (869-940 MHz)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/meshforge
+ExecStart=/usr/bin/python3 /opt/meshforge/scripts/sdr_interference.py --mode adjacent
+# Worst case 30 bursts x 15 s = 450 s.
+TimeoutStartSec=480
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=400M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshforge-sdr-adjacent

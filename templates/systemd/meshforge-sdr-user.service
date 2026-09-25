@@ -1,0 +1,38 @@
+# MeshForge — SDR interference watch, fleet windows (systemd-user, one-shot)
+# ==========================================================================
+#
+# One run of scripts/sdr_interference.py --mode fleet: the 3 fleet windows,
+# classes A/C at gain 10, class B at gain 21. Appends one JSONL row to
+# ~/.local/share/meshforge/sdr/interference.jsonl — ALWAYS, including
+# unknown / skipped_overlap, so a dead SDR is visible (design R9).
+# Design: .claude/plans/sdr_interference_phase1.md. Only on the box that
+# hosts the Airspy (moc5 as of 2026-09-24).
+#
+# Install:
+#   cp /opt/meshforge/templates/systemd/meshforge-sdr-user.service \
+#      ~/.config/systemd/user/meshforge-sdr.service
+#   cp /opt/meshforge/templates/systemd/meshforge-sdr-user.timer \
+#      ~/.config/systemd/user/meshforge-sdr.timer
+#   systemctl --user daemon-reload && systemctl --user enable --now meshforge-sdr.timer
+#
+# ⚠️ USER unit: probe_service_inactive cannot see it (#82). The witness is
+# the per-window age of the newest `ok` row, read by the TUI pane.
+# ⚠️ Never add a USB-reset "self-heal" here: the Airspy shares moc5's one
+# USB2 hub with the CH341 LoRa radio.
+
+[Unit]
+Description=MeshForge SDR interference watch (fleet windows)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/meshforge
+ExecStart=/usr/bin/python3 /opt/meshforge/scripts/sdr_interference.py --mode fleet
+# Worst case 18 bursts x 15 s capture timeout = 270 s; stay under the 5-min
+# cadence. systemd kills the whole cgroup, airspy_rx included.
+TimeoutStartSec=280
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=400M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshforge-sdr

@@ -226,3 +226,15 @@ No terminator yet (operator will get one); open SMA is a rough reference.
   (planted: old clip_frac 0.0, fixed 0.02). Earlier "0 clipped" results rest
   on the positive rail also reading 0 — BELIEVED to hold, not re-verified.
 
+## 11. USB control — baseline and PRE-REGISTERED criteria (2026-09-24 19:10, before the timer)
+Metric (review R8): moc5 RX/h ÷ moc RX/h (moc: same LF preset, < 10 ft) and
+moc5 anomaly/h. RX grep: `\[Router\] (Received |Rebroadcast received)`;
+anomaly grep: `handleReceiveInterrupt called when not in rx mode`.
+SDR-OFF baseline, 36 h of the last 48 (moc RX ≥ 20/h; today's SDR sessions
+excluded): ratio **median 1.057, p10 1.023, p90 1.101**; anomalies **median
+3/h, max 7**; RX/h medians moc5 386.5, moc 366.5. Today's SDR-session hours
+already read 1.015–1.071 / 1–7 (partial hours, noisy edges).
+**24 h after the timer starts, the control FAILS if**: the median ratio is
+< 1.023, OR the median anomaly rate is > 6/h, OR any hour has > 14 anomalies.
+Fail → stop the timer first, then investigate (never a USB reset).
+

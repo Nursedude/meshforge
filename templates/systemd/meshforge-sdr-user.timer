@@ -1,0 +1,16 @@
+# MeshForge — SDR interference watch timer (every 5 min, at :01/:06/:11 …)
+# Offset from meshforge-tracer's :00/10 and from the adjacent pass at :03:30
+# so the three never contend for the Airspy (a collision still only yields a
+# skipped_overlap row). Persistent=false: a missed 5-min look has no value
+# after the fact.
+
+[Unit]
+Description=Fire meshforge-sdr every 5 minutes
+
+[Timer]
+OnCalendar=*-*-* *:01/5:00
+Persistent=false
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

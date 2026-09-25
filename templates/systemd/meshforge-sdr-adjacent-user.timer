@@ -1,0 +1,13 @@
+# MeshForge — SDR adjacent-band pass, hourly at :03:30 (between fleet runs
+# at :01 and :06).
+
+[Unit]
+Description=Fire meshforge-sdr-adjacent hourly
+
+[Timer]
+OnCalendar=*-*-* *:03:30
+Persistent=false
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
