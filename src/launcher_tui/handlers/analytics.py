@@ -103,7 +103,7 @@ class AnalyticsHandler(BaseHandler):
         if not _not_ok(res):
             hours = res["hours"]
             print(f"  Source: {_SOURCE}")
-            print(f"  Window: {res['window_h']:.0f} h · {res['observations']} snapshots "
+            print(f"  Window: {res['window_h']:.0f} h · {res['observations']} observation rows "
                   f"({res['via_mqtt']} via MQTT)")
             print("  Known = positioned nodes in the history (position-less nodes are")
             print("  not recorded here) · Online = the node table marks it recently")
@@ -113,6 +113,13 @@ class AnalyticsHandler(BaseHandler):
             for h in hours[-24:]:
                 snr = "—" if h["avg_snr_online"] is None else f"{h['avg_snr_online']:.1f}"
                 tag = "  (partial)" if h["partial"] else ""
+                if not h["snapshots"]:
+                    # The collector snapshots every ~63 min; this hour fell
+                    # between two. Its few rows are stragglers, not a count.
+                    note = "no snapshot yet" if h["partial"] else "no snapshot this hour"
+                    print(f"  {_hhmm(h['hour_epoch']):<13} {'—':>6} {'—':>7} "
+                          f"{'—':>8} {'—':>6}  ({note})")
+                    continue
                 print(f"  {_hhmm(h['hour_epoch']):<13} {h['known']:>6} {h['online']:>7} "
                       f"{snr:>8} {h['snr_samples']:>6}{tag}")
             if len(hours) > 24:
@@ -129,13 +136,13 @@ class AnalyticsHandler(BaseHandler):
             print(f"  Mean last-heard SNR of each node, first {res['edge_h']:.0f} h vs last "
                   f"{res['edge_h']:.0f} h of {res['window_h']:.0f} h;")
             print(f"  online readings only, repeats collapsed, ≥{res['min_samples']} "
-                  "distinct readings at each end.\n")
+                  "readings at each end (consecutive repeats collapsed).\n")
             print(f"  Nodes with SNR: {res['nodes_with_snr']} · judged: {res['nodes_judged']}")
             if not res["nodes_with_snr"]:
                 print("\n  No online node on this box carries an SNR reading (an MQTT-only")
                 print("  view has none) — link trends cannot be measured here.")
             elif not res["nodes_judged"]:
-                print("\n  Not enough distinct readings at both ends to judge any node —")
+                print("\n  Not enough readings at both ends to judge any node —")
                 print("  this is not a verdict that links are steady.")
             for label, rows in (("Falling", res["declining"]), ("Rising", res["improving"])):
                 if rows:
@@ -153,14 +160,14 @@ class AnalyticsHandler(BaseHandler):
         if not _not_ok(res):
             print(f"  Source: {_SOURCE}")
             print(f"  Least-squares slope over {res['window_h']:.0f} h, online readings, "
-                  f"≥{res['min_samples']} distinct each.")
+                  f"≥{res['min_samples']} each (consecutive repeats collapsed).")
             print(f"  Judged: battery {res['battery_nodes_judged']} node(s) (1-100 %; 0 and "
                   f">100 = no reading/external power) · SNR {res['snr_nodes_judged']} node(s)")
             print(f"  Flags: battery ≤ {res['battery_slope_alert']:.1f} %/h · "
                   f"SNR ≤ {res['snr_slope_alert']:.1f} dB/h\n")
             alerts = res["alerts"]
             if not res["battery_nodes_judged"] and not res["snr_nodes_judged"]:
-                print("  Too few distinct readings to judge any node — UNKNOWN,")
+                print("  Too few readings to judge any node — UNKNOWN,")
                 print("  not healthy.")
             elif not alerts:
                 print("  None of the judged nodes crosses a flag. Nodes not judged")

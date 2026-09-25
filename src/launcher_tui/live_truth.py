@@ -102,6 +102,34 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
         "partial": False,
         "evidence": "collector properties dumped live; dashboard.py this commit",
     },
+    ("dashboard", "latency"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "probe results vs listening sockets (4403, 9443, 1883 all listening, all "
+                 "read OK); rnsd no longer TCP-probed (a unix-socket shared instance — it "
+                 "read DOWN on every healthy box); status/degraded honest when cold",
+        "partial": False,
+        "evidence": "utils/latency_monitor.py NOT_TCP_PROBED; live render 2026-09-25",
+    },
+    ("dashboard", "health"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "latency probe as above; battery (4 judged) and signal (117 nodes, 6 judged, "
+                 "55 SNR readings) match an independent SQL recount using the code's "
+                 "consecutive-repeat collapse. Both delegate to the Analytics screens; "
+                 "labels renamed to match the screens they open",
+        "partial": False,
+        "evidence": "recount + live render 2026-09-25; node_health.py labels this commit",
+    },
+    ("dashboard", "analytics"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "FIXED then verified: Health History read 'Known 18' for an hour holding no "
+                 "snapshot (the collector snapshots every ~63 min, so ~1 hour in 21 gets only "
+                 "stragglers) — now '— (no snapshot this hour)'; the header called 20k rows "
+                 "'snapshots'. Coverage 428 positioned nodes matches the DB; trends/alerts are "
+                 "the same code as Node Health signal/battery (verified there)",
+        "partial": False,
+        "evidence": "node_history_analytics._snapshots_per_hour + tests; snapshot gaps measured "
+                    "over 48 h (median 63 min)",
+    },
     ("rf_sdr", "sdr_watch"): {
         "date": "2026-09-25",
         "box": "Airspy host",

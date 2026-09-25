@@ -16,7 +16,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 
 **Truth** says how the action's HONESTY is checked (`tests/test_tui_success_truth_sweep.py`, `launcher_tui/action_truth.py`): `sweep` = dispatched on every commit with every external DEAD and required to render a word of uncertainty; `local-only` = declared to consult no external (the why is in `action_truth.py`); `⚠️ false-ok` = a FROZEN baseline finding — renders a confident screen with nothing to be confident about. The baseline only shrinks.
 
-**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 9 action(s) have an entry — a blank is the honest default, not a failure.
+**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 12 action(s) have an entry — a blank is the honest default, not a failure.
 
 ## `about`
 
@@ -47,7 +47,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 
 | Action tag | Description | Flag | Truth | Live | Handler |
 |---|---|---|---|---|---|
-| `analytics` | Analytics — Health, trends, coverage |  | sweep |  | AnalyticsHandler |
+| `analytics` | Analytics — Health, trends, coverage |  | sweep | ✓ 2026-09-25 dev/manager box | AnalyticsHandler |
 | `alerts` | View Alerts — Current warnings |  | sweep | ◐ 2026-09-25 dev/manager box | DashboardHandler |
 | `datapath` | Data Path Check — Test all data sources |  | sweep | ✓ 2026-09-25 dev/manager box | DashboardHandler |
 | `nodes` | Node Count — Meshtastic + RNS nodes |  | sweep | ✓ 2026-09-25 dev/manager box | DashboardHandler |
@@ -57,12 +57,12 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | `delivery` | Delivery — did messages arrive? (source+age) |  | sweep | ◐ 2026-09-25 dev/manager box | DeliveryHandler |
 | `demo` | Demo Mode — Simulated mesh traffic |  | sweep |  | DemoHandler |
 | `stack_health` | Stack Health — Local: RNS path, NomadNet, bridge, DB |  | sweep | ✓ 2026-09-25 dev/manager box | FleetHealthHandler |
-| `latency` | Latency Monitor — Service response times |  | sweep |  | LatencyHandler |
+| `latency` | Latency Monitor — Service response times |  | sweep | ✓ 2026-09-25 dev/manager box | LatencyHandler |
 | `mini_dudeai` | mini-dudeai (local watcher + fixes) |  | sweep |  | MiniDudeaiHandler |
 | `mini_dudeai_chat` | mini-dudeai: describe a rule (chat-compile) |  | sweep |  | MiniDudeaiHandler |
 | `mini_dudeai_rules` | mini-dudeai: edit rules (in-app) |  | sweep |  | MiniDudeaiHandler |
 | `moc_analysis` | MOC Analysis — Generate slide-ready SVG analysis pack |  | sweep |  | MOCAnalysisHandler |
-| `health` | Node Health — Battery, signal, latency |  | sweep |  | NodeHealthHandler |
+| `health` | Node Health — Battery, signal, latency |  | sweep | ✓ 2026-09-25 dev/manager box | NodeHealthHandler |
 | `offline_oracle` | offline oracle (ask the fleet lore) |  | sweep |  | OfflineOracleHandler |
 | `traffic_pulse` | Traffic Heartbeat — Live flow pulse (telem/RF/dups/QA) |  | sweep |  | TrafficPulseHandler |
 

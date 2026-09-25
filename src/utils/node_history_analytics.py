@@ -126,6 +126,26 @@ def _names(c, cut: float) -> Dict[str, str]:
         " GROUP BY node_id", (cut,))}
 
 
+def _snapshots_per_hour(batches) -> Dict[int, int]:
+    """Full snapshots per clock hour. A snapshot's rows share ONE timestamp;
+    one counts when it carries at least half the window's largest batch, so
+    the straggler rows between snapshots never pass for one — on a 10-node
+    box as on a 400-node one.
+
+    Why (measured 2026-09-25, dev/manager box): the collector snapshots every
+    ~63 min, not every hour, so its phase drifts ~3 min/h and about one clock
+    hour in 21 holds NO snapshot — only ~18 straggler rows. That hour read
+    "Known 18" between hours of ~410: a 400-node drop that never happened."""
+    if not batches:
+        return {}
+    floor = max(n for _, n in batches) / 2.0
+    out: Dict[int, int] = {}
+    for ts, n in batches:
+        if n >= floor:
+            out[int(ts // 3600)] = out.get(int(ts // 3600), 0) + 1
+    return out
+
+
 def health_timeline(db_path: Optional[Path] = None, *, window_h: float = DEFAULT_WINDOW_H,
                     now: Optional[float] = None) -> Dict[str, Any]:
     """Per hour: distinct nodes heard, how many were online, mean SNR."""
@@ -145,6 +165,8 @@ def health_timeline(db_path: Optional[Path] = None, *, window_h: float = DEFAULT
             (cut,)).fetchall()
         mqtt = c.execute("SELECT SUM(via_mqtt=1), COUNT(*) FROM node_observations"
                          " WHERE timestamp > ?", (cut,)).fetchone()
+        batches = c.execute("SELECT timestamp, COUNT(*) FROM node_observations"
+                            " WHERE timestamp > ? GROUP BY timestamp", (cut,)).fetchall()
     except sqlite3.Error as e:
         return _base("unreadable", str(e), window_h)
     finally:
@@ -153,9 +175,10 @@ def health_timeline(db_path: Optional[Path] = None, *, window_h: float = DEFAULT
         out["state"] = "empty"
         return out
     this_hour = int(now // 3600)
+    per_hour = _snapshots_per_hour(batches)
     out["hours"] = [{"hour_epoch": h * 3600, "known": n, "online": on,
                      "avg_snr_online": s, "snr_samples": ns, "observations": obs,
-                     "partial": h == this_hour}
+                     "snapshots": per_hour.get(h, 0), "partial": h == this_hour}
                     for h, n, on, s, ns, obs in rows]
     out["observations"] = mqtt[1] or 0
     out["via_mqtt"] = mqtt[0] or 0

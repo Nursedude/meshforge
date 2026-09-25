@@ -224,3 +224,35 @@ def test_observations_without_snr_are_not_empty(db, monkeypatch):
     assert "cannot be measured here" in text and "No node observations" not in text
     # one explanation, not two (live double tap on moc, 2026-09-23)
     assert "Not enough distinct readings" not in text
+
+
+# --- an hour between two snapshots is not a node count (2026-09-25) -------
+
+def test_hour_between_snapshots_has_zero_snapshots_not_a_low_count(db):
+    """The collector snapshots every ~63 min, so a clock hour can hold only
+    straggler rows. Measured live: 'Known 18' between hours of ~410."""
+    snap = lambda off: [(f"!n{i}", off, 1, 5.0, None, 21, -157, 0) for i in range(40)]
+    rows = snap(-2.9) + snap(-0.8)                       # snapshots in hours -3 and -1
+    rows += [("!s1", -1.7, 1, 2.0, None, 21, -157, 0),   # stragglers in hour -2
+             ("!s2", -1.6, 1, 2.0, None, 21, -157, 0)]
+    _obs(db, rows)
+    hours = nha.health_timeline(db, now=NOW)["hours"]
+    assert [h["snapshots"] for h in hours] == [1, 0, 1]
+    assert hours[1]["known"] == 2   # the raw count stays; the flag says what it is OF
+
+
+def test_screen_renders_no_snapshot_hour_as_a_dash_not_a_count(db, monkeypatch):
+    from handlers import analytics
+    snap = lambda off: [(f"!n{i}", off, 1, 5.0, None, 21, -157, 0) for i in range(40)]
+    _obs(db, snap(-2.9) + snap(-0.8) + [("!s1", -1.7, 1, 2.0, None, 21, -157, 0)])
+    real = nha.health_timeline
+    monkeypatch.setattr(analytics.nha, "health_timeline", lambda: real(db, now=NOW))
+    monkeypatch.setattr(analytics, "clear_screen", lambda: None)
+    h = analytics.AnalyticsHandler.__new__(analytics.AnalyticsHandler)
+    h.ctx = type("C", (), {"wait_for_enter": lambda self: None})()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        h._show_health_history()
+    out = buf.getvalue()
+    assert "no snapshot this hour" in out
+    assert "observation rows" in out and " snapshots (" not in out

@@ -37,8 +37,8 @@ class NodeHealthHandler(BaseHandler):
         while True:
             choices = [
                 ("latency", "Service Latency     TCP probe all services"),
-                ("battery", "Battery Forecast    Node battery projections"),
-                ("signal", "Signal Trends       SNR/RSSI analysis"),
+                ("battery", "Predictive Alerts   Falling battery / SNR (= Analytics)"),
+                ("signal", "Link Trends         SNR first 6 h vs last 6 h (= Analytics)"),
                 ("back", "Back"),
             ]
 
@@ -53,8 +53,8 @@ class NodeHealthHandler(BaseHandler):
 
             dispatch = {
                 "latency": ("Service Latency", self._service_latency_probe),
-                "battery": ("Battery Forecast", self._battery_forecast_display),
-                "signal": ("Signal Trends", self._signal_trending_display),
+                "battery": ("Predictive Alerts", self._battery_forecast_display),
+                "signal": ("Link Trends", self._signal_trending_display),
             }
             entry = dispatch.get(choice)
             if entry:
