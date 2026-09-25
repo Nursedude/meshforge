@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 84 handlers · 116 menu actions (derived from get_all_handlers(), never hand-edited).
+# 83 handlers · 115 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -134,17 +134,6 @@ HANDLER_MANIFEST = [
         "error": None,
         "menu_items": [
             ('channels', 'Channel Config      Meshtastic channels', None),
-        ],
-    },
-    {
-        "handler_id": 'classifier',
-        "module": 'handlers.classifier',
-        "class_name": 'ClassifierHandler',
-        "menu_section": 'mesh_networks',
-        "lifecycle": False,
-        "error": None,
-        "menu_items": [
-            ('traffic', 'Traffic Classifier  Routing & notification stats', None),
         ],
     },
     {

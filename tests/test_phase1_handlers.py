@@ -3,7 +3,6 @@ Phase 1 Handler Tests
 
 Tests for the 5 pilot handlers converted from mixins:
 - LatencyHandler
-- ClassifierHandler
 - AmateurRadioHandler
 - AnalyticsHandler
 - RFToolsHandler
@@ -84,7 +83,7 @@ class TestHandlerDiscovery:
         from handlers import get_all_handlers
         handler_ids = {cls().handler_id for cls in get_all_handlers()}
         # Phase 1 pilot handlers must always be present
-        phase1 = {"latency", "classifier", "amateur_radio", "analytics", "rf_tools"}
+        phase1 = {"latency", "amateur_radio", "analytics", "rf_tools"}
         assert phase1.issubset(handler_ids)
         # Batch 1 handlers
         # "metrics" retired 2026-09-23 (Historical Trends: DB with no writer)
@@ -102,7 +101,6 @@ class TestProtocolCompliance:
 
     @pytest.fixture(params=[
         "handlers.latency:LatencyHandler",
-        "handlers.classifier:ClassifierHandler",
         "handlers.amateur_radio:AmateurRadioHandler",
         "handlers.analytics:AnalyticsHandler",
         "handlers.rf_tools:RFToolsHandler",
@@ -168,33 +166,6 @@ class TestLatencyHandler:
         h = LatencyHandler()
         h.set_context(ctx)
         h.execute("latency")  # Should not raise
-
-
-# ---------------------------------------------------------------------------
-# ClassifierHandler tests
-# ---------------------------------------------------------------------------
-
-class TestClassifierHandler:
-
-    def test_menu_section(self):
-        from handlers.classifier import ClassifierHandler
-        h = ClassifierHandler()
-        assert h.menu_section == "mesh_networks"
-        assert h.handler_id == "classifier"
-
-    def test_menu_items_tag(self):
-        from handlers.classifier import ClassifierHandler
-        h = ClassifierHandler()
-        tags = [t for t, _, _ in h.menu_items()]
-        assert "traffic" in tags
-
-    def test_execute_traffic_opens_submenu(self):
-        from handlers.classifier import ClassifierHandler
-        ctx = _make_context()
-        ctx.dialog._menu_return = "back"
-        h = ClassifierHandler()
-        h.set_context(ctx)
-        h.execute("traffic")
 
 
 # ---------------------------------------------------------------------------
@@ -304,9 +275,13 @@ class TestRegistryDispatchIntegration:
         registry = self._make_registry()
         assert registry.dispatch("dashboard", "analytics") is True
 
-    def test_mesh_networks_traffic_dispatch(self):
+    def test_mesh_networks_traffic_is_retired(self):
+        # Traffic Classifier retired 2026-09-25 (operator): its screens could
+        # only ever read a fresh, empty classifier — the live one is inside
+        # the gateway process and exports nothing. Dashboard › Delivery holds
+        # what the bridge did.
         registry = self._make_registry()
-        assert registry.dispatch("mesh_networks", "traffic") is True
+        assert registry.dispatch("mesh_networks", "traffic") is False
 
     def test_mesh_networks_ham_dispatch(self):
         registry = self._make_registry()

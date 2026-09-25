@@ -23,14 +23,12 @@ def get_all_handlers() -> List[Type]:
 
     # Phase 1 pilot handlers
     from handlers.latency import LatencyHandler
-    from handlers.classifier import ClassifierHandler
     from handlers.amateur_radio import AmateurRadioHandler
     from handlers.analytics import AnalyticsHandler
     from handlers.rf_tools import RFToolsHandler
     from handlers.moc_analysis import MOCAnalysisHandler
     handlers.extend([
         LatencyHandler,
-        ClassifierHandler,
         AmateurRadioHandler,
         AnalyticsHandler,
         RFToolsHandler,
