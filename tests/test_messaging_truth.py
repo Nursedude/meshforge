@@ -21,6 +21,7 @@ def _stats_screen(monkeypatch, data):
     fake = SimpleNamespace(get_stats=lambda: SimpleNamespace(success=True, data=data, message=""))
     monkeypatch.setattr(hm, "_messaging", lambda: fake)
     monkeypatch.setattr(hm, "clear_screen", lambda: None)
+    monkeypatch.setattr(hm, "_listener_line", lambda: "PINNED")
     h = hm.MessagingHandler()
     h.set_context(make_handler_context(dialog=FakeDialog()))
     h.ctx.wait_for_enter = lambda *a, **k: None
@@ -59,6 +60,7 @@ def test_empty_history_explains_itself_not_start_the_listener(monkeypatch):
         success=True, data={"messages": []}, message=""))
     monkeypatch.setattr(hm, "_messaging", lambda: fake)
     monkeypatch.setattr(hm, "clear_screen", lambda: None)
+    monkeypatch.setattr(hm, "_listener_line", lambda: "PINNED")
     h = hm.MessagingHandler()
     h.set_context(make_handler_context(dialog=FakeDialog()))
     h.ctx.wait_for_enter = lambda *a, **k: None
@@ -67,3 +69,24 @@ def test_empty_history_explains_itself_not_start_the_listener(monkeypatch):
         h._messaging_view()
     assert "Start the RX listener" not in out.getvalue()
     assert "MQTT uplink" in out.getvalue()
+
+
+
+def test_listener_line_tri_state(monkeypatch):
+    import io as _io
+    import json as _json
+    import urllib.request
+
+    def fake(doc=None, exc=None):
+        def _open(url, timeout=0):
+            if exc:
+                raise exc
+            return _io.BytesIO(_json.dumps(doc).encode())
+        return _open
+    monkeypatch.setattr(urllib.request, "urlopen", fake(exc=OSError("refused")))
+    assert hm._listener_line().startswith("UNKNOWN")
+    monkeypatch.setattr(urllib.request, "urlopen", fake({"state": "disconnected", "error": "broker down"}))
+    assert hm._listener_line().startswith("NOT RECORDING") and "broker down" in hm._listener_line()
+    monkeypatch.setattr(urllib.request, "urlopen", fake({"state": "connected", "connected_since":
+                        "2026-09-25T11:54:45", "messages_received": 0, "last_message_time": None}))
+    assert hm._listener_line() == "connected since 2026-09-25 11:54, 0 received (none since connecting)"

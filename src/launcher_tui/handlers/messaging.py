@@ -198,14 +198,14 @@ class MessagingHandler(BaseHandler):
             # empty history on a quiet uplinked channel is normal, not a fault
             # (live-truth pass 2026-09-25 — this used to say "start the listener").
             print(f"  {_RECORDING_NOTE}")
-            print("  Empty = nothing has arrived on those channels yet (or no map daemon "
-                  "runs here).")
+            print(f"  Listener: {_listener_line()}")
             self.ctx.wait_for_enter()
             return
 
         print(f"  Showing {len(messages)} most recent — newest "
               f"{_age_line(messages[0].get('timestamp'))}")
-        print(f"  {_RECORDING_NOTE}\n")
+        print(f"  {_RECORDING_NOTE}")
+        print(f"  Listener: {_listener_line()}\n")
         print(f"  {'Time':<20} {'From':<12} {'To':<12} {'Net':<6} Message")
         print(f"  {'-'*70}")
 
@@ -282,6 +282,7 @@ class MessagingHandler(BaseHandler):
         print(f"  Received:             {data['received']}")
         print(f"  Last 24h:             {data['last_24h']}")
         print(f"  Newest message:       {_age_line(data.get('newest'))}")
+        print(f"  Listener:             {_listener_line()}")
         print()
         print(f"  {_RECORDING_NOTE}")
         print()
@@ -419,3 +420,27 @@ def _age_line(stamp) -> str:
     if secs >= 86400:
         return f"{stamp} ({secs / 86400:.0f} d ago)"
     return f"{stamp} ({max(secs, 0) / 3600:.1f} h ago)"
+
+
+RX_STATUS_URL = "http://127.0.0.1:5000/api/messages/rx-status"
+
+
+def _listener_line(timeout: float = 3.0) -> str:
+    """The recorder's own state, from the map daemon that runs it.
+
+    On a quiet channel an empty history looks the same whether the listener is
+    working or dead; this says which (2026-09-25). Unreachable is UNKNOWN,
+    never "idle"."""
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(RX_STATUS_URL, timeout=timeout) as r:
+            st = json.loads(r.read().decode("utf-8", "replace"))
+    except (OSError, ValueError) as e:
+        return f"UNKNOWN — map daemon not reachable ({e.__class__.__name__}); nothing is recorded without it"
+    if st.get("state") != "connected":
+        return f"NOT RECORDING — state {st.get('state')!r}" + (f": {st['error']}" if st.get("error") else "")
+    since = str(st.get("connected_since") or "?")[:16].replace("T", " ")
+    last = st.get("last_message_time")
+    last_txt = f"last message {str(last)[:16].replace('T', ' ')}" if last else "none since connecting"
+    return f"connected since {since}, {st.get('messages_received', 0)} received ({last_txt})"
