@@ -657,6 +657,11 @@ class ChannelConfigHandler(BaseHandler):
         tmpl = templates.get(template)
         if not tmpl:
             return
+        # The radio gets the preset BY NAME; the numbers shown come from the
+        # firmware's table (the literal "mtnmesh" row said SF10 — it is SF9).
+        from utils.meshtastic_modem import firmware_params
+        sf, bw, cr = firmware_params(tmpl["preset"])
+        tmpl = {**tmpl, "bw": bw // 1000, "sf": sf, "cr": cr}
 
         confirm = self.ctx.dialog.yesno(
             tmpl["name"],

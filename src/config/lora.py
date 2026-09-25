@@ -9,6 +9,7 @@ except ImportError:
     from utils.rich_fallback import Console, Prompt, Confirm, Table
     HAS_RICH = False
 
+from utils.meshtastic_modem import firmware_params
 from utils.cli import find_meshtastic_cli
 
 console = Console()
@@ -1338,3 +1339,12 @@ class LoRaConfigurator:
 
         console.print("\n")
         console.print(table)
+
+
+# SF / bandwidth (kHz) / coding rate come from the firmware's own table
+# (utils.meshtastic_modem), not the literals above: this table had MEDIUM_FAST
+# as SF10 and CR 4/8 across the board until 2026-09-25. Presets are applied to
+# the radio BY NAME, so the numbers only ever reached screens and saved YAML.
+for _key, _preset in LoRaConfigurator.MODEM_PRESETS.items():
+    _sf, _bw, _cr = firmware_params(_key)
+    _preset.update(bandwidth=_bw // 1000, spreading_factor=_sf, coding_rate=_cr)

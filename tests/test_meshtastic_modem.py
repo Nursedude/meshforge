@@ -51,6 +51,11 @@ def test_every_consumer_table_agrees_with_the_firmware():
         assert (PRESET_PARAMS[name]["sf"], PRESET_PARAMS[name]["bw"], PRESET_PARAMS[name]["cr"]) == (sf, bw, cr)
         lp = MESHTASTIC_PRESETS[name]
         assert (lp["spreading_factor"], lp["bandwidth"], lp["coding_rate"]) == (sf, bw, cr)
+    from config.lora import LoRaConfigurator
+    for name, (sf, bw, cr) in FIRMWARE_V2_7_26.items():
+        cp = LoRaConfigurator.MODEM_PRESETS.get(name)
+        if cp is not None:
+            assert (cp["spreading_factor"], cp["bandwidth"], cp["coding_rate"]) == (sf, bw // 1000, cr)
     assert "VERY_LONG_SLOW" not in PRESET_PARAMS   # not offered to the site planner
     assert MESHTASTIC_PRESETS["VERY_LONG_SLOW"]["spreading_factor"] == 11
 
@@ -76,3 +81,18 @@ def test_radio_menu_labels_and_apply_table_come_from_the_firmware(monkeypatch):
     assert seen["items"]["SHORT_SLOW"].startswith("250kHz SF8 ")
     assert "LONG_TURBO" in seen["items"]
     assert "slot 20 = 906.875 MHz" in seen["slot_text"]
+
+
+def test_gateway_template_dialog_shows_firmware_numbers(monkeypatch):
+    from handlers import channel_config as cc
+    shown = {}
+    h = cc.ChannelConfigHandler.__new__(cc.ChannelConfigHandler)
+
+    class Dialog:
+        def yesno(self, title, text, **k):
+            shown["text"] = text
+            return False   # decline: nothing is applied
+
+    h.ctx = type("C", (), {"dialog": Dialog()})()
+    h._apply_gateway_template("mtnmesh")
+    assert "Spreading Factor: SF9" in shown["text"]
