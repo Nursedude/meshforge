@@ -51,6 +51,7 @@ if str(_SRC) not in sys.path:
 import numpy as np  # noqa: E402
 
 from utils import sdr_analysis as sa  # noqa: E402
+from utils import sdr_view  # noqa: E402
 from utils.paths import MeshForgePaths  # noqa: E402
 
 SCHEMA = 1
@@ -317,37 +318,20 @@ def run_adjacent(capture: Capture) -> Dict:
 
 # ---- persistence ------------------------------------------------------------------
 
-def _tail_lines(path: Path, want: int) -> List[bytes]:
-    """The last `want` lines, read backwards in chunks (review #10: a fixed
-    4 KB/row budget returned 110 of 289 rows once class C filled rows to 11 KB)."""
-    if not path.exists():
-        return []
-    with open(path, "rb") as fh:
-        fh.seek(0, os.SEEK_END)
-        pos = fh.tell()
-        buf = b""
-        while pos > 0 and buf.count(b"\n") <= want:
-            step = min(65536, pos)
-            pos -= step
-            fh.seek(pos)
-            buf = fh.read(step) + buf
-    return buf.splitlines()[-want:] if pos > 0 else buf.splitlines()
-
-
 def read_rows(path: Path, limit: int = ROLLING_ROWS + 1) -> List[Dict]:
-    """The newest `limit` parseable rows, reaching into the rotated `.1` file
-    when the live one is short (review #11: rotation reset all history). A
-    torn/garbled line is skipped, not fatal."""
-    lines = _tail_lines(path, limit)
-    if len(lines) < limit:
-        lines = _tail_lines(path.with_suffix(path.suffix + ".1"), limit - len(lines)) + lines
-    out = []
-    for ln in lines:
-        try:
-            out.append(json.loads(ln))
-        except (ValueError, UnicodeDecodeError):
-            continue
-    return out[-limit:]
+    """The newest `limit` parseable rows, via utils.sdr_view.load — the ONE
+    reader of this file (the pane uses it too). Two private copies of the tail
+    read drifted once: the view's returned the whole file when it fit one chunk
+    while this one's final trim hid the same shape (2026-09-24).
+
+    An UNREADABLE file raises: treating it as "no history" would silently reset
+    class-A persistence and class B's rolling baseline. main() turns the raise
+    into an `error` row and exit 1 — the failure is witnessed, not absorbed.
+    """
+    state, rows = sdr_view.load(path, limit)
+    if state == "unreadable":
+        raise OSError(f"SDR history unreadable: {path}")
+    return rows          # load() already returns at most `limit` rows
 
 
 def append_row(path: Path, row: Dict) -> None:
@@ -470,7 +454,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 def _emit(path: Path, row: Dict, to_stdout: bool) -> int:
     if to_stdout:
         print(json.dumps(row, indent=1, default=str))
-        return 0
+        return 1 if row.get("status") == "error" else 0
     try:
         append_row(path, row)
     except OSError as e:

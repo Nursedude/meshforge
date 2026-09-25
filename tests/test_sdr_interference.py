@@ -421,3 +421,25 @@ def test_the_live_911_848_line_sits_on_our_own_im3():
     f = 911.0 + np.fft.fftshift(np.fft.fftfreq(sa.FFT, 1 / sa.SAMPLE_RATE)) / 1e6
     _m, prods = si._products_mask(f, 911.0)
     assert any(abs(911.848 - c) <= hw and "meshcore" in p for c, hw, p in prods)
+
+
+def test_the_writer_reads_history_through_the_views_one_reader(ddir, monkeypatch):
+    """Dedupe (2026-09-24): one reader for the file, shared with the pane."""
+    calls = []
+    real = si.sdr_view.load
+    monkeypatch.setattr(si.sdr_view, "load", lambda p, n: calls.append(n) or real(p, n))
+    si.append_row(ddir / "interference.jsonl", {"i": 1})
+    assert si.read_rows(ddir / "interference.jsonl", limit=5) == [{"i": 1}] and calls == [5]
+    assert not hasattr(si, "_tail_lines")
+
+
+def test_unreadable_history_is_an_error_row_not_an_empty_past(ddir, monkeypatch):
+    """Never 'no history' when the history exists but cannot be read — that
+    would reset persistence and the rolling baseline silently."""
+    monkeypatch.setattr(si.shutil, "which", lambda *_a, **_k: "/usr/bin/airspy_rx")
+    monkeypatch.setattr(si.sdr_view, "load", lambda p, n: ("unreadable", []))
+    captured = []
+    monkeypatch.setattr(si, "append_row", lambda p, row: captured.append(row))
+    assert si.main(["--mode", "fleet"]) == 1
+    assert captured[-1]["status"] == "error" and "unreadable" in captured[-1]["note"]
+    assert si.main(["--mode", "fleet", "--stdout"]) == 1      # the same verdict on stdout
