@@ -1,120 +1,203 @@
-# SDR Phase 1 — interference detection at moc5 (design, 2026-09-24)
+# SDR Phase 1 — interference detection at moc5 (design rev 2, 2026-09-24)
 
-> Status: **DESIGN, not built.** Author Opus 5.5; design is frontier-shaped —
-> a non-author (Fable) pass on THIS document is owed before code.
-> Tags: **MEASURED** (ran 09-24, numbers quoted) · **BELIEVED** (reasoned) ·
-> **OPEN** (needs the operator or a soak).
+> Status: **DESIGN rev 2, not built.** rev 1 author Opus 5.5; non-author
+> review Fable 5.1 (same day): **"build with changes"** — 7 CONFIRMED, 3
+> PLAUSIBLE, surfaces REFUTED/sound listed in §9. rev 2 applies every
+> finding; each change cites its number `[R#]`. rev 2 is author-applied and
+> NOT re-reviewed (review-your-own-fixes: queue before step 2).
+> Tags: **MEASURED** (ran, quoted) · **BELIEVED** (reasoned) · **OPEN**.
 
 ## 1. What this is for — and what it is NOT
 
-**END**: tell the operator, in-app, when something other than our own LoRa
-traffic is occupying or degrading the spectrum our radios depend on.
+**END**: tell the operator, in-app on moc5, when something other than our
+own LoRa traffic occupies or degrades the spectrum our radios depend on —
+and, for the lab AND a future field site, whether that trouble is
+**filterable** (out-of-band) or **not** (in-band).
 
-**Not** channel occupancy of our own channel. MEASURED 09-24: the radio's own
-ChUtil (TX+RX+RX_ALL airtime, trailing 60 s — firmware v2.7.26
-`airtime.cpp`) counts packets below the noise floor that energy detection
-cannot see (rxSNR < −15: SDR 1/6 = control 1/6). The radio already logs
-ChUtil + `noise_floor` every ~15 min (`Sending local stats`). The SDR's
-unique value is what one tuned radio cannot see:
+**Not** occupancy of our own channels. MEASURED 09-24: Meshtastic's ChUtil
+(TX+RX+RX_ALL airtime, trailing 60 s, firmware v2.7.26 `airtime.cpp`)
+counts packets below the floor that energy detection cannot see (rxSNR <
+−15: SDR 1/6 = control 1/6).
 
-1. all four fleet channels at once (RNode 903.625, ST ch8 905.75,
-   LF ch20 906.875, MeshCore 910.525), and
-2. energy that is **not LoRa, or not ours**, on or near them.
+**Operator decisions 09-24**: 5-min cadence; pane in moc5's TUI only; no
+33 cm handheld; **the RNode's own `Noise Fl.`/`Intrfrnc.` (rnstatus) is the
+cross-check for 903.625** — the SDR does not duplicate it [R12: not a
+duplicate — those are firmware bytes for 903.625/250k only, and
+`Intrfrnc.` is UNFILTERED (RNS's LNA-recal filter is commented out); read
+twice minutes apart it gave −102 and −88 → use as a slow reference, like
+the radio's noise_floor, §2.B].
 
-**Scope limit, stated**: one receiver at one site (moc5, one of two
-buildings ~250 ft apart through ohia forest). Interference seen here may be
-absent at the other building, and vice versa. Every surface says "at moc5".
+**Physical geometry (operator)**: moc, VolcanoAI (+ RNode 903.625, 22 dBm,
+airtime 0.23 %/h MEASURED), alaula and kiai all < 10 ft from the Airspy;
+dudeclaw-02 ~3 ft; ST boxes moc2/moc3 in the other building ~250 ft
+through forest. The Airspy sits INSIDE the densest emitter cluster, so
+**our own near-field transmitters are the main false-positive source.**
+One receiver, one site: every surface says "at moc5".
 
-## 2. The three interference classes energy detection CAN see
+## 2. The three classes — rev 2
 
-| Class | Physical signature | Metric (per window, per run) | Why LoRa does not trip it |
-|---|---|---|---|
-| **A. Persistent carrier** (stuck TX, spur, CW, a non-hopping device) | a bin whose power is high MOST of the time | per-bin **median over time** > floor + 10 dB; report freq + level | LoRa is bursty: LF busy 3–27 % MEASURED, so a bin's time-median stays at the floor unless a channel is > 50 % occupied (then it IS a problem) |
-| **B. Raised floor** (broadband RFI: switching supplies, LED drivers, a neighbour's noisy gear) | the whole window's floor rises | **absolute** floor dBFS at FIXED gain vs its own rolling baseline | relative-to-floor metrics (Phase 0's) are blind to this BY CONSTRUCTION — the floor is the reference. Absolute dBFS at fixed gain is the only honest axis |
-| **C. Foreign bursty energy** off our declared bands (other meshes, LoRaWAN 125 kHz uplinks, FHSS gear) | busy frames in bins no fleet channel occupies | busy % per 125 kHz slice outside declared bands, leak-gated | our own TX leaks 46–55 dB down (MEASURED); slices are leak-gated against every fleet channel AND frames where LF > +45 dB (moc5's own TX) are excluded |
+### A. Persistent carrier — narrowed to what it can honestly see
+rev 1's per-bin time-median metric is wrong both ways [R2, CONFIRMED by
+synthetic IQ]: a LongFast chirp (8.2 ms symbol) touches each bin in ~1/12
+of frames, so even a 100 %-jammed LF reads +1.9 dB (blind); a ShortTurbo
+symbol (0.26 ms) sweeps the whole BW inside one frame, so ST at 60 % duty
+reads +10–11 dB on 482 bins (false fire). A 45 % CW reads +5.8 (invisible).
+- A looks ONLY at bins **outside every declared fleet channel** (+ guard).
+  Inside a fleet channel, a >50 % sample is reported as `channel saturated
+  in sample`, never as a carrier.
+- A finding needs **≥ 2 consecutive runs**. Carriers below 50 % duty of the
+  sample belong to class C (analyse() measured a 45 % CW as 45.1 % busy).
+- **Spur map first** [R3, CONFIRMED live]: a comb 6–8 dB over the per-bin
+  median in every window (903.377, 905.4035, 909.69/910.024/911.36,
+  923.83/924.17/924.50 — ~333 kHz spacing; the 09-24 adjacent survey adds
+  911.998 +13 and 937.51 +12.4 as candidates). Source (Airspy's own vs
+  external) is undecidable without a **terminated-input reference** (§5).
+  Every A hit reports "first seen <run>, present in N % of runs"; bins in
+  the spur map are listed separately, never as findings.
+- The surface states the floor: "A sees a carrier that is on for > 50 % of
+  the 2 s sampled, outside our channels."
 
-**Cannot see (stated on every surface)**: anything below the floor — incl.
-foreign LoRa decoding at negative SNR; foreign LoRa ON our exact channel
-(same shape as ours — the radio's own `RX_ALL − RX` is the instrument for
-that, `airtime.h:25`); anything at the other building.
+### B. Raised floor — absolute, calibrated, two baselines
+- Absolute dBFS at FIXED gain, per-bin baseline (not a scalar: the passband
+  has the same ±1.2 dB slice shape in every window, biasing edge bins) [R6].
+  MEASURED sound: floor identical across 903–925 (−94.4…−94.6 dBFS) and
+  ±0.15 dB over 35 s; airspy_rx never enables AGC; `-g` sets mixer/LNA
+  AGC off [R12].
+- **Sensitivity is unmeasured** [R6]: gain sweep g0/5/10/15/21 →
+  −99.6/−96.5/−94.4/−89.9/−75.0 dBFS cannot separate antenna noise from
+  receiver noise. If the terminated floor is within ~1 dB of the antenna
+  floor, B is blind to a +3 dB rise by construction. → the terminated-input
+  reference sets it; **choose the lowest gain whose antenna floor sits
+  ≥ 3 dB above terminated** (gain 5 costs only 2.1 dB vs 10 and buys IIP3).
+- **Two baselines** [R7]: a FIXED gain-tagged soak reference AND a rolling
+  one; report both deltas (a permanent new LED driver becomes the rolling
+  baseline in one window — the fixed one still sees it).
+- `soc_temp_c` in every row [R6] (diurnal drift must be attributable).
+- **Cross-checks are SLOW references, never per-run** [R1, CONFIRMED at
+  source]: Meshtastic `noise_floor` = integer MEAN of a 20-slot ring of
+  single `getRSSI()` samples taken only at local-stats sends (irregular
+  15 min–2 h MEASURED) → a ~5 h outlier-driven mean; it stepped −91→−88→−91
+  →−86 in 5 days, the last step INSIDE an SDR session (UNKNOWN: was it us?).
+  Use the median of ≥ 6 reported values. Its absolute −86…−91 dBm on
+  250 kHz is 25–30 dB above kTB — calibration bias or a chronically raised
+  floor at moc5; B must not anchor on it. Same treatment for the RNode's
+  `Noise Fl.`.
+- **"Was it us?" column**: every row carries `sdr_run_active`; the first 24 h
+  of the timer re-checks whether noise_floor steps align with SDR runs.
 
-**Cross-check that can fail**: class B's absolute floor vs the radio's own
-`noise_floor` dBm (journal, every ~15 min). Both up = environment; radio up,
-SDR flat = local to the radio (its PA, its supply, #58-class hardware);
-SDR up, radio flat = local to the SDR or off-channel. A divergence is a
-finding, never averaged away.
+### C. Foreign bursty energy — gated against our own near field
+- Busy % per 125 kHz slice outside declared bands, leak-gated (MEASURED 09-24:
+  our bursts leak 46–55 dB into neighbours).
+- **Own-TX gate becomes ABSOLUTE and covers EVERY fleet channel** [R4]:
+  a frame is excluded when ANY fleet channel in the window exceeds
+  ~−40 dBFS at the operating gain (calibrate from the soak), not "LF > +45
+  dB relative".
+- **Blocker gate** [R4, CONFIRMED live]: a −21 dBFS pulse raised that
+  frame's median across ALL bins by +8.2 dB (reciprocal mixing). An RNode TX
+  during a 906.3 capture is OUTSIDE the window (3.25 MHz > 2.4 usable) so
+  no in-window gate sees the parent. → exclude any frame whose out-of-channel
+  floor exceeds the burst floor by > 6 dB, and count `blocker_frames` (a
+  witness, and a de-facto near-field TX log).
+- **IM3 tagging, not gating** [R5, PLAUSIBLE]: precompute 2fi−fj and
+  fi+fj−fk with summed bandwidths for the fleet set (e.g. LF+RNode → 910.125,
+  750 kHz wide, touching MeshCore; MC+LF → 903.225, touching the RNode).
+  A C hit inside an IM set is tagged `IM3-candidate (parents)` and kept out
+  of "foreign" until the soak sees it with parents silent. Expected rate
+  ~1 event / 10 days of soak (overlap ~1e-4). Lower gain helps IIP3.
+- MEASURED that C works on real foreign traffic: two ~5 kHz, 1–2 ms pulses
+  at 924.234 / 924.871 MHz, +22–25 dB, 4 ms apart (FHSS) — correct behaviour.
 
-## 3. Capture plan — sized to moc5's MEASURED limits
+### D (new). Adjacent-band blockers — "do we need a filter?"
+Hourly pass **869–940 MHz** (30 × 2.4 MHz windows, 1 burst each ≈ 45 s wall,
+MEASURED 09-24 18:25). Reports per window: floor, strongest steady carrier,
+strongest peak, clip. First snapshot (n=1, BELIEVED as a trend): floor flat
+−88.5 dBFS across 870–940; strongest = **cellular downlink 885.73 MHz, peak
+−37.3 dBFS (+50.6)**, bursts +22–29 dB across 869–882, steady 875.01 (+18.8);
+pager band 929–932 quiet (a 0.5 s look can miss bursty pagers); 0/30
+clipped. Verdict today: no blocker strong enough to need a 902–928 SAW/cavity
+filter at this site; 885.7 is the one to watch. The same pass at a FIELD
+site (ECOMM kit: Starlink, inverters, generator) answers the field question.
+**In-band noise is never filterable** — the pane says which kind it saw.
 
-- moc5 is a Pi 4; the Airspy shares ONE USB2 hub with its CH341 LoRa radio.
-  MEASURED: 21 min of continuous 0.5 s bursts (~35 % duty, 3 MSPS 12-bit
-  packed) → 0 radio errors, NRestarts 0. Phase 1 runs far below that.
-- **Every 5 min**: the 3 fleet windows (903.625 / 906.300 / 910.525),
-  4 × 0.5 s bursts each ≈ 12 s of capture ≈ **4 % duty**. ~1.4 s per burst
-  wall incl. spawn + FFT MEASURED → ~17 s CPU-ish per run on one core.
-- **Hourly**: a full 902–928 pass, 11 windows × 2 bursts, context for
-  class C (who else lives in the band). ≈ 30 s.
-- **Fixed gain** (linearity 10, MEASURED 0 clipped in 878 bursts). Gain is
-  recorded in every row; a gain change starts a NEW baseline, never mixes.
-- Clipped burst → `overload`, dropped, counted. Failed capture → `unknown`.
-  Never 0 %, never "clean" (hfm #1/#2).
+## 3. Capture plan and arithmetic — corrected [R11]
+- Every 5 min: 3 fleet windows × 4 × 0.5 s = **6 s of IQ** (~2 % capture
+  duty; ~20 s wall incl. spawn + FFT at 1.65 s/burst MEASURED).
+- Hourly: the 869–940 pass (~45 s wall).
+- Worst case: 34 bursts × 15 s timeout = 8.5 min > 5-min cadence → a run
+  refused by `flock` writes its OWN witness row `status: skipped_overlap`
+  (hfm #9) [R9].
+- Clipped burst → `overload`, dropped, counted. MEASURED 0/878 + 0/21 + 0/30
+  at gain 10, but RNode/MeshCore near-field clipping is UNTESTED (P(RNode TX
+  in 2 s) ≈ 0.4 %) — OVERLOAD rows on those windows are expected data.
 
-## 4. Storage and surfaces
+## 4. Storage, unit, surface
+- `utils/sdr_analysis.py` (pure; tests import it) + `scripts/sdr_interference.py`
+  (writer, `flock`). JSONL at `get_real_user_home()/.local/share/meshforge/
+  sdr/interference.jsonl`, size-capped rotation (~1 KB/run).
+- `meshforge-sdr.timer/.service`, USER scope on moc5, template in
+  `templates/systemd/`. MEASURED ready: `Linger=yes`, operator in `plugdev`,
+  device `root:plugdev rw`, `meshforge-tracer.timer` is a user-timer
+  precedent there [R12].
+- **Witness = per-window age of the newest row with `status: ok`** [R9] —
+  not the newest row: a timer whose every airspy_rx fails (device gone, or
+  `AIRSPY_ERROR_BUSY` after a timeout SIGKILL) writes fresh UNKNOWN rows
+  forever. N consecutive UNKNOWN → the pane prints the remediation
+  (`airspy_info`; if "not found", reseat the Airspy) — in-app (MF018), never
+  an auto-action. **Never a USB reset "self-heal": it is the radio's hub.**
+- Surface: one read-only TUI pane on moc5. Per fleet channel and slice:
+  class A/B/C/D findings with frequency, both B deltas, spur-map count,
+  blocker_frames, and the blind-spot line always printed.
+- **No mini signal class, no paging** (freeze) — §8.
 
-- **Writer**: `scripts/sdr_interference.py` (grows from
-  `sdr_fleet_channels.py`; shared analysis in `src/utils/sdr_analysis.py`
-  so tests import it). One writer, `flock`-refused if a run is live (hfm #8).
-- **Data**: JSONL at `get_real_user_home()/.local/share/meshforge/sdr/
-  interference.jsonl`, one row per run: ts (monotonic + wall), gain,
-  status, per-window floor dBFS, per-channel median/busy, class A/C hits
-  with freq + level. ~1 KB/run → ~300 KB/day; size-capped rotation (30 d).
-  JSONL, not SQLite: no DBSpec/MF013 surface, and it is append-only.
-- **Unit**: `meshforge-sdr.timer` + `.service`, **user** scope on moc5,
-  template in `templates/systemd/` (pre-push line 4). ⚠️ user units are
-  structurally invisible to `probe_service_inactive` (#82) — so the
-  surface carries the witness: **the pane shows the age of the newest row
-  and reads UNKNOWN (not "no interference") past 3 × cadence.**
-- **Surface**: one read-only TUI pane, local-box-only (TUI stays a surface):
-  per channel — floor now vs baseline, busy seen, class A/B/C findings with
-  frequency; the blind-spot line always printed. No actions.
-- **NO mini signal class, NO paging in Phase 1** — see §6.
+## 5. Physical acts (operator, ~2 min total) — highest value per minute
+1. **Terminated-input reference** [R3, R6]: antenna off, 50 Ω terminator
+   (or nothing) on the SMA, 30 s run at gains 0–21. Separates spurs from
+   carriers and sets class B's sensitivity + the operating gain.
+2. **Confirm the Espressif USB device on moc5's hub** [R4]: the reviewer
+   found an ESP32 CDC-ACM (ttyACM0) with no consumer — probably dudeclaw-02's
+   power cable. OPEN — operator.
 
-## 5. Falsifiability — every class gets a control that can fail
+## 6. Falsifiability — controls that can FAIL
+- **Fixtures from recorded moc5 IQ, not clean synthetic** [R10, CONFIRMED]:
+  clean synthetic passes trivially (LF 18.9 % busy, control 0.0 %, A +1.1
+  dB) because Phase 0's failure was ANALOG (reciprocal-mixing skirts).
+  Crop ~50 ms of a real near-field LF TX (~600 KB) as a fixture, or add a
+  −50 dBc phase-noise skirt to synthetic. Planted A/B/C/IM cases on top.
+- **USB control that can fail** [R8, CONFIRMED]: "0 errors" had no grep and
+  NRestarts survives any packet loss. The 24 h control = moc5 RX/h divided
+  by a same-site, same-preset sibling's RX/h (moc, < 10 ft), SDR-on vs off;
+  plus the anomaly rate with its exact grep: `handleReceiveInterrupt called
+  when not in rx mode` (baseline 1–7/h MEASURED; RX/h 340–470 over 5 d).
+  The hub is Single-TT: CH341 and the ESP32 (both 12 M) share one TT.
+- **Live negative control: dudeclaw-02** (~3 ft, 2 dBm LF, ~−29 dBm at the
+  Airspy): a logged `mesh_send` must fire NO class and must appear in the
+  SDR at that time. A mesh_send is outward traffic → operator asks first.
+- **Class C live drill**: OPEN — needs an emitter on an off-fleet frequency
+  (spare node on another slot, or retuning a claw = operator's call). Class
+  A live: synthetic + recorded only, BELIEVED until a real carrier is seen.
+- **Soak before thresholds**: 7 days data-only; every number above tagged
+  "calibrate from the soak" is replaced by measured base rates.
 
-- **Unit tests on synthetic IQ** (pure analysis functions): plant a CW tone
-  (A must fire, at the right freq), a +6 dB wideband noise step (B must
-  fire), a 125 kHz burst outside fleet bands (C must fire), and a real-shape
-  LoRa chirp train at 30 % duty on LF plus a +55 dB own-TX burst (NONE may
-  fire). The chirp + own-TX case is the one that failed Phase 0's first run.
-- **Live drill (OPEN — operator)**: 902–928 is the 33 cm ham band. A 33 cm
-  FM handheld keyed briefly at a known frequency off our channels is the
-  ideal planted interferer: class A must fire at that frequency within one
-  run, and clear the run after. Without one, the drill is a fleet radio on a
-  known channel (weaker: it is LoRa, so only class C/leak behaviour).
-- **Soak before thresholds**: 7 days data-only. The 10 dB / baseline /
-  persistence numbers above are ASSERTED starting points; the soak's
-  per-channel, per-hour base rates replace them (MEASURE > ASSERT). A class
-  that fires on every run, or never, is re-cut before anything reads it.
+## 7. Build order (each its own commit + control)
+0. Operator physical acts §5 (terminated reference; ESP32 identity).
+1. `utils/sdr_analysis.py` + fixtures from recorded IQ; A/B/C/D/IM cases,
+   own-TX + blocker gates, and a planted-lie test per class.
+2. `scripts/sdr_interference.py` + JSONL + flock + witness rows; one manual
+   run on moc5.
+3. User timer on moc5; 24 h USB control (RX/h ratio vs moc + anomaly/h) and
+   the "was it us?" noise_floor check.
+4. Read-only TUI pane with the per-window `ok`-age witness + blind-spot line.
+5. 7-day soak → thresholds → dudeclaw-02 negative drill → operator decides
+   on paging (after 2026-10-09).
 
-## 6. Freeze and ladder
+## 8. Freeze
+REFUTED-as-risk by the reviewer [R12]: END is RF truth on a local pane
+(standalone offering); no mini class; the cross-check is
+instrument-vs-physical-quantity. Record in the session note; paging is a
+post-10-09, post-soak decision.
 
-`harness_restraint.md` (active until 2026-10-09): no new signal class /
-detector. Phase 1 respects it by being **data + a surface only** — its END
-is RF truth on the operator's screen, not the harness. Whether class A/B/C
-ever become mini signal classes (paging) is decided AFTER 10-09 and AFTER
-the soak shows base rates — "a guard that never failed is not evidence",
-and one that fires hourly is noise.
-
-Build order (each step is its own commit with its control):
-1. `utils/sdr_analysis.py` + synthetic-IQ tests (A/B/C fire; LoRa/own-TX don't).
-2. `scripts/sdr_interference.py` writer + JSONL + flock; one manual run on moc5.
-3. User timer on moc5 (template + install), 5-min cadence; USB control
-   re-measured over the first 24 h (radio errors, NRestarts, RX rate).
-4. Read-only TUI pane with the staleness witness + blind-spot line.
-5. 7-day soak → thresholds from data → live drill → operator decides on paging.
-
-## 7. OPEN questions for the operator
-1. Is a 33 cm handheld available for the planted-interferer drill?
-2. Is 5-min cadence right, or is hourly enough for what you want to know?
-3. The pane: MeshForge TUI on moc5 only, or also surfaced in the fleet view
-   (that would read moc5's JSONL over ssh — a later, separate step)?
+## 9. Review record (Fable 5.1, 2026-09-24) — what was checked and held
+Sound: fixed gain / no AGC; clip scale (int16 = (adc−2048)<<4 then FIR,
+FULL_SCALE 32767 right); short-term floor stability; user-unit
+prerequisites; freeze posture; the taxonomy; JSONL + user timer; data-first
+soak. Reviewer moc5 touches logged in review_provenance (18:16–18:22).
