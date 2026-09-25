@@ -103,17 +103,37 @@ def airspy_capture(center_mhz: float, gain: int, tmpdir: str = "/dev/shm") -> Tu
             pass
 
 
+_STAMPED_FUNCS = ("judge_window", "run_fleet", "run_adjacent", "_window_status", "_products_mask",
+                  "_line", "_skirt_of", "_label", "load_references", "set_reference")
+
+
 def analysis_stamp() -> str:
-    """Short hash of the analysis + writer source, stamped on every row, so a
-    reader can tell which rows share one analysis (review-fix deploys changed
-    the maths mid-history, and recurrence counts mixed the two)."""
+    """Short hash of what DECIDES a row's numbers: the analysis module's bytes,
+    plus the writer's decision functions as docstring-stripped AST, plus its
+    UPPER-CASE constants. Review 3 #6: hashing the whole writer reset the pane's
+    recurrence 3x in 4 h (once for a reader-only refactor); hashing the module
+    alone missed a class-D maths change that lives in the writer."""
+    import ast
     import hashlib
     h = hashlib.sha256()
-    for f in (Path(sa.__file__), Path(__file__)):
-        try:
-            h.update(f.read_bytes())
-        except OSError:
-            h.update(b"unreadable:" + str(f).encode())
+    try:
+        h.update(Path(sa.__file__).read_bytes())
+    except OSError:
+        h.update(b"unreadable-analysis")
+    try:
+        tree = ast.parse(Path(__file__).read_text())
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name in _STAMPED_FUNCS:
+                body = node.body
+                if body and isinstance(body[0], ast.Expr) and isinstance(getattr(body[0], "value", None), ast.Constant) \
+                        and isinstance(body[0].value.value, str):
+                    body = body[1:]
+                h.update(node.name.encode())
+                h.update("".join(ast.dump(n) for n in body).encode())
+            elif isinstance(node, ast.Assign) and all(isinstance(t, ast.Name) and t.id.isupper() for t in node.targets):
+                h.update(ast.dump(node).encode())
+    except (OSError, SyntaxError):
+        h.update(b"unreadable-writer")
     return h.hexdigest()[:10]
 
 
@@ -269,48 +289,80 @@ def _line(f: np.ndarray, med: np.ndarray, mx: np.ndarray, floor: float) -> Tuple
              "level_dbfs": round(float(mx[j]), 1)})
 
 
+def _skirt_of(freq: float) -> Optional[str]:
+    """A line within one channel-bandwidth of a fleet channel's edge is that
+    channel's SKIRT before it is anything else (review 3 #1: 907.047 MHz at
+    -33 dBFS, 22 kHz past LF's guard, wore an IM3 label)."""
+    for ch in sa.FLEET_CHANNELS:
+        if abs(freq - ch.center_mhz) <= ch.half_mhz() + ch.bw_khz / 1000.0:
+            return f"skirt of {ch.label}"
+    return None
+
+
+def _label(freq: float, prods: List[Tuple[float, float, str]]) -> Optional[List[str]]:
+    skirt = _skirt_of(freq)
+    if skirt:
+        return [skirt]                 # priority: a skirt is not also an IM3 story
+    return sorted({lbl for cc, hw, lbl in prods if abs(freq - cc) <= hw}) or None
+
+
 def run_adjacent(capture: Capture) -> Dict:
-    """Class D. Each line that sits at a known product position of OUR channels
-    (IM3, sample-rate alias) carries `tags` — LABELLED, not excluded. Measured
-    2026-09-24: excluding product positions left 0 % clean bins in the 901.4,
-    903.8 and 908.6 windows (the 4-channel IM3 set covers most of 899-914 MHz),
-    which would blind class D to a real blocker exactly where it matters. A
-    position is a candidate, not proof. `clean_peak` is the strongest line clear
-    of every product (None when the window has no clean bins), with clean_frac.
-    Trigger: 911.848 +34 dB topped class D, inside LF+MeshCore-ST (911.65±0.406)."""
+    """Class D, FRAME-GATED like every other class (review 3 #1: it was a
+    single-frame max-hold over every frame, and its live headline was our own
+    LF skirt at -33 dBFS). Lines are judged over kept frames only; a window
+    whose kept frames fall below the shared bar is `unjudgeable`.
+
+    Each steady/peak line that sits at a known product position of OUR
+    channels carries `tags` — LABELLED, not excluded (excluding left 0 % clean
+    bins in three windows and would blind class D where it matters); a line at
+    a channel's skirt is labelled `skirt of <ch>` with priority. `clean_peak` is
+    the strongest line clear of every product; `product_frac` says how much of
+    the window a tag can even distinguish."""
     rows = []
-    c = ADJ_START
-    while c <= ADJ_STOP + 1e-9:
-        raw, why = capture(round(c, 3), GAIN_AC)
+    n = 0
+    while ADJ_START + n * ADJ_STEP <= ADJ_STOP + 1e-9:
+        # Compute on the SAME rounded centre the row records: accumulating
+        # 870.2 + 2.4 + … gave 913.4000000000001, one bin off the recorded
+        # centre in every mask (caught by the clean_frac exactness test).
+        c = round(ADJ_START + n * ADJ_STEP, 3)
+        n += 1
+        raw, why = capture(c, GAIN_AC)
         if raw is None:
-            rows.append({"center_mhz": round(c, 3), "status": "unknown", "reason": why})
-            c += ADJ_STEP
+            rows.append({"center_mhz": c, "status": "unknown", "reason": why})
             continue
         clip = float(np.mean(np.abs(raw.astype(np.int32)) >= sa.CLIP_LEVEL * sa.FULL_SCALE))
+        if clip > sa.CLIP_FRAC:
+            rows.append({"center_mhz": round(c, 3), "status": "overload", "clip_frac": round(clip, 5)})
+            continue
         f, p = sa.spectrogram(raw, c)
-        usable = np.abs(f - c) <= sa.USABLE_HALF_MHZ
-        # Our own channels (+guard) are masked: class D answers "is there an
-        # OUT-of-band blocker", and our own LF was once its headline (review #8).
-        keep = usable & ~sa._in_bands(f, sa.FLEET_CHANNELS, sa.GUARD_KHZ)
-        if not keep.any():
+        try:
+            g = sa.frame_gate(f, p, c)
+        except ValueError:
             rows.append({"center_mhz": round(c, 3), "status": "unknown",
                          "reason": "window is entirely fleet channels"})
-            c += ADJ_STEP
             continue
+        kept = g["kept"]
+        base = {"center_mhz": round(c, 3), "own_tx_frames": int(g["own_tx"].sum()),
+                "blocker_frames": int((g["blocker"] & ~g["own_tx"]).sum()),
+                "kept_frac": round(float(kept.mean()), 3)}
+        if not sa.judgeable(kept):
+            rows.append(dict(base, status="unjudgeable"))
+            continue
+        keep = g["out_bins"]                       # usable and outside our channels (+guard)
         prod, prods = _products_mask(f, c)
-        med = np.median(p[:, keep], axis=0)
+        pk = p[kept]
+        med = np.median(pk[:, keep], axis=0)
         floor = float(np.median(med))
-        steady, peak = _line(f[keep], med, np.max(p[:, keep], axis=0), floor)
+        steady, peak = _line(f[keep], med, np.max(pk[:, keep], axis=0), floor)
         for line in (steady, peak):
-            line["tags"] = sorted({lbl for cc, hw, lbl in prods if abs(line["freq_mhz"] - cc) <= hw}) or None
+            line["tags"] = _label(line["freq_mhz"], prods)
         clean = keep & ~prod
         clean_peak = None
         if clean.any():
-            _s, clean_peak = _line(f[clean], np.median(p[:, clean], axis=0), np.max(p[:, clean], axis=0), floor)
-        rows.append({"center_mhz": round(c, 3), "status": "overload" if clip > sa.CLIP_FRAC else "ok",
-                     "floor_dbfs": round(floor, 2), "steady": steady, "peak": peak,
-                     "clean_peak": clean_peak, "clean_frac": round(float(clean.sum() / keep.sum()), 3)})
-        c += ADJ_STEP
+            _s, clean_peak = _line(f[clean], np.median(pk[:, clean], axis=0), np.max(pk[:, clean], axis=0), floor)
+        rows.append(dict(base, status="ok", floor_dbfs=round(floor, 2), steady=steady, peak=peak,
+                         clean_peak=clean_peak, clean_frac=round(float(clean.sum() / keep.sum()), 3),
+                         product_frac=round(float((keep & prod).sum() / keep.sum()), 3)))
     sts = [r["status"] for r in rows]
     status = "ok" if all(s == "ok" for s in sts) else "unknown" if all(s == "unknown" for s in sts) else "partial"
     return {"mode": "adjacent", "status": status, "gain": GAIN_AC, "windows": rows}
@@ -318,8 +370,9 @@ def run_adjacent(capture: Capture) -> Dict:
 
 # ---- persistence ------------------------------------------------------------------
 
-def read_rows(path: Path, limit: int = ROLLING_ROWS + 1) -> List[Dict]:
-    """The newest `limit` parseable rows, via utils.sdr_view.load — the ONE
+def read_rows(path: Path, limit: int = (ROLLING_ROWS + 1) * 2) -> List[Dict]:
+    """Rows parsed from the newest `limit` LINES (a garbled line is skipped, so
+    possibly fewer rows — review 3 #7), via utils.sdr_view.load — the ONE
     reader of this file (the pane uses it too). Two private copies of the tail
     read drifted once: the view's returned the whole file when it fit one chunk
     while this one's final trim hid the same shape (2026-09-24).
@@ -328,6 +381,9 @@ def read_rows(path: Path, limit: int = ROLLING_ROWS + 1) -> List[Dict]:
     class-A persistence and class B's rolling baseline. main() turns the raise
     into an `error` row and exit 1 — the failure is witnessed, not absorbed.
     """
+    # The default fetch is 2x the rolling window: rows of ALL modes (hourly
+    # adjacent, skipped, error) share the file, and class B's rolling baseline
+    # filters to fleet rows afterwards (review 3 #9: 289 lines held ~277).
     state, rows = sdr_view.load(path, limit)
     if state == "unreadable":
         raise OSError(f"SDR history unreadable: {path}")

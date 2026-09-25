@@ -164,6 +164,51 @@ def _mean_db(p_db: np.ndarray, axis: int) -> np.ndarray:
     return 10 * np.log10(np.mean(10 ** (p_db / 10), axis=axis))
 
 
+def frame_gate(freqs: np.ndarray, pwr: np.ndarray, center_mhz: float,
+               channels: Sequence[Channel] = FLEET_CHANNELS,
+               own_tx_dbfs: float = OWN_TX_DBFS, rel_tx_db: float = REL_TX_DB,
+               ref_floor_dbfs: Optional[float] = None) -> Dict:
+    """Which frames of one burst may be judged — shared by every class.
+
+    own_tx: any fleet band in the window above the absolute gate OR the burst
+    floor + REL_TX_DB (our near-field TX). blocker: the frame's out-of-channel
+    floor above a reference a long burst cannot move (20th percentile, or the
+    previous ok floor) + BLOCKER_DB. kept = neither. Class D had NO gate until
+    2026-09-24 (review 3 #1): its live headline was our own LF skirt at
+    -33 dBFS in a single frame, above this module's own -40 dBFS own-TX line.
+    """
+    keep = np.abs(freqs - center_mhz) <= USABLE_HALF_MHZ
+    here = [c for c in channels if np.any(keep & (np.abs(freqs - c.center_mhz) <= c.half_mhz()))]
+    guarded = _in_bands(freqs, channels, GUARD_KHZ)
+    out_bins = keep & ~guarded
+    if not out_bins.any():
+        raise ValueError("window has no bins outside the fleet channels to measure a floor on")
+    band = {}
+    for c in here:
+        sel = keep & (np.abs(freqs - c.center_mhz) <= c.half_mhz())
+        band[c.label] = _mean_db(pwr[:, sel], axis=1)             # per-frame, dBFS
+    frame_floor = np.median(pwr[:, out_bins], axis=1)
+    burst_floor = float(np.median(frame_floor))
+    own_tx = np.zeros(pwr.shape[0], bool)
+    for v in band.values():
+        own_tx |= (v > own_tx_dbfs) | (v > burst_floor + rel_tx_db)
+    # The blocker reference must be something a long burst cannot move
+    # (review #2: referenced to the burst MEDIAN, a frame-wide lift covering
+    # > 50 % of the burst flipped to blocker_frames=0, lifted the floor up to
+    # +8 dB and hid a +15 dB carrier). A low quantile of this burst, or the
+    # previous ok run's floor for this window when the caller has one.
+    blk_ref = float(np.percentile(frame_floor, 20))
+    if ref_floor_dbfs is not None:
+        blk_ref = min(blk_ref, float(ref_floor_dbfs))
+    blocker = frame_floor > blk_ref + BLOCKER_DB
+    return {"keep": keep, "guarded": guarded, "out_bins": out_bins, "band": band,
+            "own_tx": own_tx, "blocker": blocker, "kept": ~own_tx & ~blocker}
+
+
+def judgeable(kept: np.ndarray) -> bool:
+    return kept.sum() >= max(MIN_KEPT_FRAMES, MIN_KEPT_FRAC * kept.size)
+
+
 def analyse_window(raw: np.ndarray, center_mhz: float,
                    channels: Sequence[Channel] = FLEET_CHANNELS,
                    spur_mhz: Sequence[float] = (),
@@ -186,35 +231,12 @@ def analyse_window(raw: np.ndarray, center_mhz: float,
         result["status"] = "overload"
         return result
 
-    keep = np.abs(freqs - center_mhz) <= USABLE_HALF_MHZ
-    here = [c for c in channels if np.any(keep & (np.abs(freqs - c.center_mhz) <= c.half_mhz()))]
-    guarded = _in_bands(freqs, channels, GUARD_KHZ)
-    out_bins = keep & ~guarded
-    if not out_bins.any():
-        raise ValueError("window has no bins outside the fleet channels to measure a floor on")
-
-    band = {}
-    for c in here:
-        sel = keep & (np.abs(freqs - c.center_mhz) <= c.half_mhz())
-        band[c.label] = _mean_db(pwr[:, sel], axis=1)             # per-frame, dBFS
-    frame_floor = np.median(pwr[:, out_bins], axis=1)
-    burst_floor = float(np.median(frame_floor))
-    own_tx = np.zeros(frames, bool)
-    for v in band.values():
-        own_tx |= (v > own_tx_dbfs) | (v > burst_floor + rel_tx_db)
-    # The blocker reference must be something a long burst cannot move
-    # (review #2: referenced to the burst MEDIAN, a frame-wide lift covering
-    # > 50 % of the burst flipped to blocker_frames=0, lifted the floor up to
-    # +8 dB and hid a +15 dB carrier). A low quantile of this burst, or the
-    # previous ok run's floor for this window when the caller has one.
-    blk_ref = float(np.percentile(frame_floor, 20))
-    if ref_floor_dbfs is not None:
-        blk_ref = min(blk_ref, float(ref_floor_dbfs))
-    blocker = frame_floor > blk_ref + BLOCKER_DB
-    kept = ~own_tx & ~blocker
+    g = frame_gate(freqs, pwr, center_mhz, channels, own_tx_dbfs, rel_tx_db, ref_floor_dbfs)
+    keep, guarded, out_bins = g["keep"], g["guarded"], g["out_bins"]
+    band, own_tx, blocker, kept = g["band"], g["own_tx"], g["blocker"], g["kept"]
     result.update(own_tx_frames=int(own_tx.sum()), blocker_frames=int((blocker & ~own_tx).sum()),
                   kept_frames=int(kept.sum()), kept_frac=round(float(kept.mean()), 3))
-    if kept.sum() < max(MIN_KEPT_FRAMES, MIN_KEPT_FRAC * frames):
+    if not judgeable(kept):
         result["status"] = "unjudgeable"
         return result
 

@@ -160,4 +160,51 @@ def test_class_d_labels_a_product_line_as_a_candidate():
     adj = _row(si.run_adjacent(lambda c, g: ((img if abs(c - 911.0) < 1e-6 else Q906), None)), NOW - 60)
     t = v.render("ok", [_row(si.run_fleet(quiet, None, {}, []), NOW - 60), adj], now=NOW)
     line = next(ln for ln in t.splitlines() if f"{mirror:.3f} MHz" in ln)
-    assert "at a product position of OUR channels (candidate)" in line and "alias" in line
+    assert "at a product position of OUR channels (candidate; " in line and "% of this window is product positions" in line
+    assert "alias-mirror of meshtastic-LF-ch20" in line                 # full label, not cut mid-word (#5)
+
+
+
+# ---- review 3 (Fable, 2026-09-24): class D legibility ----
+
+def _adj_row(windows):
+    return {"mode": "adjacent", "status": "ok", "ts": NOW - 60, "windows": windows}
+
+
+def _w(freq, above, tags=None, product_frac=0.2, clean=None):
+    return {"center_mhz": 900.0, "status": "ok", "product_frac": product_frac,
+            "peak": {"freq_mhz": freq, "above_floor_db": above, "level_dbfs": -90 + above, "tags": tags},
+            "clean_peak": clean}
+
+
+def test_a_fully_covered_window_says_its_label_is_uninformative():
+    t = v.render("ok", [_row(si.run_fleet(quiet, None, {}, []), NOW - 60),
+                        _adj_row([_w(908.6, 30, ["2xmeshtastic-LF-ch20-rnode", "x", "y"], product_frac=1.0)])], now=NOW)
+    line = next(ln for ln in t.splitlines() if "908.600 MHz" in ln)
+    assert "label uninformative: this whole window is product positions" in line
+    assert "2xmeshtastic-LF-ch20-rnode (+2 more)" in line
+
+
+def test_a_skirt_is_labelled_plainly_not_as_a_candidate():
+    t = v.render("ok", [_row(si.run_fleet(quiet, None, {}, []), NOW - 60),
+                        _adj_row([_w(907.047, 60, ["skirt of meshtastic-LF-ch20"])])], now=NOW)
+    line = next(ln for ln in t.splitlines() if "907.047 MHz" in ln)
+    assert line.endswith("← skirt of meshtastic-LF-ch20") and "candidate" not in line
+
+
+def test_class_d_shows_exactly_top_d_lines_plus_the_strongest_clean_line():
+    ws = [_w(870.0 + i, 10 + i) for i in range(6)]
+    ws[1]["clean_peak"] = {"freq_mhz": 871.5, "above_floor_db": 44.0, "level_dbfs": -46.0}
+    t = v.render("ok", [_row(si.run_fleet(quiet, None, {}, []), NOW - 60), _adj_row(ws)], now=NOW)
+    section = t.split("Class D")[1].split("A filter helps")[0]
+    shown = [ln for ln in section.splitlines() if ln.strip().startswith("87") and "MHz" in ln]
+    assert [ln.split()[0] for ln in shown] == ["875.000", "874.000", "873.000"]    # TOP_D, ranked
+    assert "strongest line clear of every product position: 871.500 MHz +44 dB" in section
+
+
+def test_load_reports_unreadable_even_when_exists_itself_fails(tmp_path, monkeypatch):
+    """Review 3 #8: Path.exists() raises PermissionError on an unreadable
+    parent (Python 3.13) — load() must still say `unreadable`, never raise."""
+    p = tmp_path / "interference.jsonl"
+    monkeypatch.setattr(type(p), "exists", lambda self: (_ for _ in ()).throw(PermissionError(13, "denied")))
+    assert v.load(p) == ("unreadable", [])

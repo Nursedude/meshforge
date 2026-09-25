@@ -62,11 +62,14 @@ def _tail(path: Path, want: int) -> List[bytes]:
 
 
 def load(path: Optional[Path] = None, limit: int = HISTORY_ROWS * 2) -> Tuple[str, List[Dict]]:
-    """(state, rows). state: ok | absent | unreadable. Reaches into `.1`."""
+    """(state, rows parsed from the newest `limit` LINES — garbled lines are
+    skipped, so possibly fewer rows). state: ok | absent | unreadable.
+    Reaches into `.1`. Never raises OSError: even `exists()` can raise on an
+    unreadable parent directory (review 3 #8, Python 3.13)."""
     path = path or jsonl_path()
-    if not path.exists():
-        return "absent", []
     try:
+        if not path.exists():
+            return "absent", []
         lines = _tail(path, limit)
         rotated = path.with_suffix(path.suffix + ".1")
         if len(lines) < limit and rotated.exists():
@@ -80,6 +83,26 @@ def load(path: Optional[Path] = None, limit: int = HISTORY_ROWS * 2) -> Tuple[st
         except (ValueError, UnicodeDecodeError):
             continue
     return "ok", rows
+
+
+TOP_D = 3                      # class-D headline lines shown
+
+
+def _d_label(tags: Optional[Sequence[str]], w: Dict) -> str:
+    """The tag, honest about how much it can say. Full first label + a count
+    (review 3 #5: [:50] cut labels mid-word); a skirt is plain; a product
+    candidate carries how much of its window is product positions (review 3
+    #2: in 3 windows every line is tagged and the tag says nothing)."""
+    if not tags:
+        return ""
+    first = tags[0] + (f" (+{len(tags) - 1} more)" if len(tags) > 1 else "")
+    if first.startswith("skirt of"):
+        return f"  ← {first}"
+    frac = w.get("product_frac")
+    if frac is not None and frac >= 0.999:
+        return f"  ← {first} — label uninformative: this whole window is product positions"
+    share = f"; {100 * frac:.0f}% of this window is product positions" if frac is not None else ""
+    return f"  ← at a product position of OUR channels (candidate{share}): {first}"
 
 
 def _age(now: float, ts: Optional[float]) -> str:
@@ -211,17 +234,21 @@ def render(state: str, rows: Sequence[Dict], now: Optional[float] = None) -> str
     out.append("")
     if adj and adj.get("windows"):
         oks = [w for w in adj["windows"] if w.get("status") == "ok"]
-        top = sorted(oks, key=lambda w: -w["peak"]["above_floor_db"])[:3]
+        gated = [w for w in adj["windows"] if w.get("status") == "unjudgeable"]
+        top = sorted(oks, key=lambda w: -w["peak"]["above_floor_db"])[:TOP_D]
         out.append(f"Class D — strongest OUT-of-our-channels signals 869–940 MHz ({_age(now, adj.get('ts'))}, "
-                   f"{len(oks)}/{len(adj['windows'])} windows judged):")
+                   f"{len(oks)}/{len(adj['windows'])} windows judged"
+                   + (f", {len(gated)} unjudgeable — our own TX filled them" if gated else "") + "):")
         for w in top:
             pk = w["peak"]
-            # a position is a candidate, not proof: an IM3 needs its parents on
-            # air together, an alias needs the channel active (second review #1)
-            tag = (f"  ← at a product position of OUR channels (candidate): {', '.join(pk['tags'])[:50]}"
-                   if pk.get("tags") else "")
             out.append(f"      {pk['freq_mhz']:.3f} MHz  +{pk['above_floor_db']:.0f} dB "
-                       f"({pk['level_dbfs']:.0f} dBFS){tag}")
+                       f"({pk['level_dbfs']:.0f} dBFS){_d_label(pk.get('tags'), w)}")
+        cleans = [w for w in oks if w.get("clean_peak")]
+        if cleans:
+            cw = max(cleans, key=lambda w: w["clean_peak"]["above_floor_db"])
+            cp = cw["clean_peak"]
+            out.append(f"      strongest line clear of every product position: {cp['freq_mhz']:.3f} MHz "
+                       f"+{cp['above_floor_db']:.0f} dB ({cp['level_dbfs']:.0f} dBFS)")
         out.append("      A filter helps OUT-of-band trouble only; in-band noise is never filterable.")
     else:
         out.append("Class D (adjacent band): no hourly pass recorded yet — UNKNOWN.")

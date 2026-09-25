@@ -282,3 +282,29 @@ Verdict "sound with changes", no regression. Findings applied (author-applied ag
 Mutation: every mutant of the new code killed — including three the first cut of
 these tests let through (blocker median, blocker previous-floor, the pane label).
 
+## 14. Third non-author review (Fable 5.1, of `4c119515` dedupe + `8c4eb856` class D) — 2026-09-24
+Verdicts: dedupe SOUND (its three claims survived mutation); class D NOT SOUND AS
+DEPLOYED. Applied (author-applied; unreviewed):
+- **#1 class D had no frame gate.** Its live 23:03 headline was `907.047 MHz −33.3 dBFS`
+  "(candidate: meshcore+rnode−LF)" — our own LF skirt in ONE frame, louder than the
+  −40 dBFS own-TX line and 22 kHz past LF's guard. The gating is now ONE function,
+  `sa.frame_gate()`, shared by fleet mode and class D; class D judges kept frames
+  only and is `unjudgeable` below the shared bar. A line within one bandwidth of a
+  fleet channel's edge is `skirt of <ch>` with priority over IM3/alias labels.
+  The pane's "frames holding our own near-field TX are not judged" is now TRUE for D.
+- **#2** in 901.4/903.8/908.6 every line is tagged — the pane says "label uninformative"
+  there and shows the product share everywhere else (`product_frac`).
+- **#3** `clean_peak` rendered as its own line; the top-3 ranking is pinned.
+- **#4** the five surviving mutants (M0 clean_frac, M1 clean_peak floor, M2 reach-in,
+  M7 label, M8 ranking) now have tests; all killed.
+- **#5** labels are no longer cut mid-word ("first (+N more)").
+- **#6** the `analysis` stamp hashes the analysis module + the writer's DECISION
+  functions as docstring-stripped AST + its constants — a docstring/reader edit no
+  longer resets recurrence; a maths change still does (both pinned).
+- **#7/#8/#9** reader docstrings say "newest `limit` LINES"; `load()` never raises
+  OSError (exists() can, on an unreadable parent); the writer fetches 2× the rolling
+  window because every mode shares the file.
+- Found while fixing: class D computed on an accumulated float centre
+  (913.4000000000001) one bin off the recorded one — now the rounded centre.
+Mutation: 13/13 killed (one re-run as valid syntax to rule out a syntax-error kill).
+

@@ -443,3 +443,87 @@ def test_unreadable_history_is_an_error_row_not_an_empty_past(ddir, monkeypatch)
     assert si.main(["--mode", "fleet"]) == 1
     assert captured[-1]["status"] == "error" and "unreadable" in captured[-1]["note"]
     assert si.main(["--mode", "fleet", "--stdout"]) == 1      # the same verdict on stdout
+
+
+
+# ---- review 3 (Fable, 2026-09-24): class D gate + quantities ----
+
+def _recentre(raw, from_c, to_c):
+    """Digitally retune a recording captured at `from_c` so it reads correctly
+    at `to_c` (multiply by e^{j2pi df t}). Relabelling without this shifts
+    every frequency by the centre difference — our LF then sat 0.1 MHz off its
+    declared band and only half its frames crossed the gate (a test artefact)."""
+    iq = raw[0::2].astype(np.float64) + 1j * raw[1::2].astype(np.float64)
+    iq = iq * np.exp(2j * np.pi * (from_c - to_c) * 1e6 * np.arange(iq.size) / sa.SAMPLE_RATE)
+    out = np.empty(raw.size, np.int16)
+    out[0::2] = np.clip(np.round(iq.real), -32768, 32767)
+    out[1::2] = np.clip(np.round(iq.imag), -32768, 32767)
+    return out
+
+
+def test_class_d_gates_our_own_tx_frames_out_of_its_lines():
+    """Review 3 #1, the live case: in the window holding LF, our own
+    near-field burst must not be class D's headline — its frames are gated."""
+    t = _analysis_tests()
+    mix = _recentre(np.concatenate([Q906] * 3 + [NEARTX]), 906.3, 906.2)   # 87 quiet + 29 own-TX
+    row = si.run_adjacent(lambda c, g: ((mix if abs(c - 906.2) < 1e-6 else Q906), None))
+    w = next(w for w in row["windows"] if abs(w["center_mhz"] - 906.2) < 1e-6)
+    assert w["status"] == "ok" and 29 <= w["own_tx_frames"] <= 30     # the join frame holds part of the burst
+    assert w["peak"]["level_dbfs"] < -60                        # not the -28 dBFS burst or its skirt
+    tx = _recentre(NEARTX, 906.3, 906.2)
+    only_tx = si.run_adjacent(lambda c, g: ((tx if abs(c - 906.2) < 1e-6 else Q906), None))
+    assert next(w for w in only_tx["windows"] if abs(w["center_mhz"] - 906.2) < 1e-6)["status"] == "unjudgeable"
+
+
+def test_a_line_at_a_channel_edge_is_a_skirt_before_it_is_im3():
+    assert si._label(907.047, [(907.1, 0.3, "meshcore+rnode-meshtastic-LF-ch20")]) == ["skirt of meshtastic-LF-ch20"]
+    assert si._label(901.0, [(901.0, 0.3, "x")]) == ["x"]
+
+
+def test_clean_frac_and_product_frac_are_exact_shares_of_the_judged_bins():
+    row = si.run_adjacent(quiet_capture)
+    for w in (w for w in row["windows"] if w["status"] == "ok"):
+        f = w["center_mhz"] + np.fft.fftshift(np.fft.fftfreq(sa.FFT, 1 / sa.SAMPLE_RATE)) / 1e6
+        keep = (np.abs(f - w["center_mhz"]) <= sa.USABLE_HALF_MHZ) & ~sa._in_bands(f, sa.FLEET_CHANNELS, sa.GUARD_KHZ)
+        prod, _ = si._products_mask(f, w["center_mhz"])
+        assert w["clean_frac"] == round((keep & ~prod).sum() / keep.sum(), 3), w["center_mhz"]
+        assert w["product_frac"] == round((keep & prod).sum() / keep.sum(), 3)
+
+
+def test_clean_peak_shares_the_windows_floor():
+    t = _analysis_tests()
+    floor = sa.analyse_window(Q906, 906.3)["floor_dbfs"]
+    real = _clean_freq(918.2)
+    sig = t._plant_tone(Q906, 918.2, real, 30, floor)
+    w = next(w for w in si.run_adjacent(lambda c, g: ((sig if abs(c - 918.2) < 1e-6 else Q906), None))["windows"]
+             if abs(w["center_mhz"] - 918.2) < 1e-6)
+    assert w["clean_peak"]["above_floor_db"] == w["peak"]["above_floor_db"]
+
+
+def test_a_product_centred_outside_the_window_still_reaches_in():
+    """A product whose CENTRE is past the usable edge but whose span reaches in
+    must be tagged (pins the `+ hw` in _products_mask's filter)."""
+    found = []
+    n = 0
+    while si.ADJ_START + n * si.ADJ_STEP <= si.ADJ_STOP + 1e-9:
+        c = round(si.ADJ_START + n * si.ADJ_STEP, 3)
+        n += 1
+        f = c + np.fft.fftshift(np.fft.fftfreq(sa.FFT, 1 / sa.SAMPLE_RATE)) / 1e6
+        _m, prods = si._products_mask(f, c)
+        found += [(c, pc) for pc, hw, p in prods if abs(pc - c) > sa.USABLE_HALF_MHZ]
+    assert found, "no window has an edge-straddling product — the case is untested"
+
+
+def test_the_stamp_ignores_docstrings_and_moves_on_logic(tmp_path, monkeypatch):
+    """Review 3 #6: a reader-only / docstring edit must not reset recurrence;
+    a change to the maths must."""
+    src = Path(si.__file__).read_text()
+    base = si.analysis_stamp()
+    doc = src.replace('"""Class D, FRAME-GATED like every other class', '"""Class D (reworded), FRAME-GATED like every other class')
+    logic = src.replace("        clean = keep & ~prod\n", "        clean = keep\n")
+    assert doc != src and logic != src
+    for text, same in ((doc, True), (logic, False)):
+        f = tmp_path / "w.py"
+        f.write_text(text)
+        monkeypatch.setattr(si, "__file__", str(f))
+        assert (si.analysis_stamp() == base) is same
