@@ -16,7 +16,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 
 **Truth** says how the action's HONESTY is checked (`tests/test_tui_success_truth_sweep.py`, `launcher_tui/action_truth.py`): `sweep` = dispatched on every commit with every external DEAD and required to render a word of uncertainty; `local-only` = declared to consult no external (the why is in `action_truth.py`); `⚠️ false-ok` = a FROZEN baseline finding — renders a confident screen with nothing to be confident about. The baseline only shrinks.
 
-**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 22 action(s) have an entry — a blank is the honest default, not a failure.
+**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 23 action(s) have an entry — a blank is the honest default, not a failure.
 
 ## `about`
 
@@ -162,7 +162,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | `config` | View Reticulum Config |  | sweep |  | RNSConfigHandler |
 | `edit` | Edit Reticulum Config | `rns` | sweep |  | RNSConfigHandler |
 | `logging` | Configure RNS Logging |  | sweep |  | RNSConfigHandler |
-| `diag` | RNS Diagnostics |  | sweep |  | RNSDiagnosticsHandler |
+| `diag` | RNS Diagnostics |  | sweep | ◐ 2026-09-25 dev/manager box | RNSDiagnosticsHandler |
 | `drift` | Config Drift Check |  | sweep |  | RNSDiagnosticsHandler |
 | `repair` | Repair RNS |  | sweep |  | RNSDiagnosticsHandler |
 | `ifaces` | Manage Interfaces |  | sweep |  | RNSInterfacesHandler |

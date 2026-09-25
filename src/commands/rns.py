@@ -73,32 +73,14 @@ def create_identities() -> CommandResult:
     results = {'rns_identity': None, 'gateway_identity': None, 'created': []}
 
     # 1. RNS identity (rnsd config dir)
-    config_dir = ReticulumPaths.get_config_dir()
-    rns_identity_path = config_dir / 'identity'
+    # rnsd's identity is <configdir>/storage/transport_identity, and rnsd
+    # creates it itself on first start. MeshForge used to "create" one at
+    # <configdir>/identity — a file RNS never reads (2026-09-25) — so this
+    # only REPORTS it now.
+    rns_identity_path = rnsd_identity_path()
     results['rns_identity'] = str(rns_identity_path)
-
-    if rns_identity_path.exists():
-        results['rns_identity_status'] = 'exists'
-    elif not _HAS_RNS:
-        results['rns_identity_status'] = 'error'
-        return CommandResult.fail(
-            "RNS module not installed — cannot create identity",
-            data=results
-        )
-    else:
-        try:
-            identity = RNS.Identity()
-            config_dir.mkdir(parents=True, exist_ok=True)
-            identity.to_file(str(rns_identity_path))
-            results['rns_identity_status'] = 'created'
-            results['created'].append('rns')
-            logger.info(f"Created RNS identity at {rns_identity_path}")
-        except Exception as e:
-            results['rns_identity_status'] = 'error'
-            return CommandResult.fail(
-                f"Failed to create RNS identity: {e}",
-                data=results
-            )
+    results['rns_identity_status'] = ('exists' if rns_identity_path.exists()
+                                      else 'missing (rnsd creates it on first start)')
 
     # 2. Gateway identity (meshforge config dir)
     gw_identity_path = get_identity_path()
@@ -106,6 +88,12 @@ def create_identities() -> CommandResult:
 
     if gw_identity_path.exists():
         results['gateway_identity_status'] = 'exists'
+    elif not _HAS_RNS:
+        results['gateway_identity_status'] = 'error'
+        return CommandResult.fail(
+            "RNS module not installed — cannot create the gateway identity",
+            data=results
+        )
     else:
         try:
             identity = RNS.Identity()
@@ -127,7 +115,9 @@ def create_identities() -> CommandResult:
             f"Created identities: {', '.join(created)}",
             data=results
         )
-    return CommandResult.ok("All identities already exist", data=results)
+    return CommandResult.ok(
+        f"Nothing created — gateway identity exists; rnsd identity "
+        f"{results['rns_identity_status']}", data=results)
 
 
 def get_lxmf_storage_path() -> Path:
@@ -862,11 +852,11 @@ def check_connectivity() -> CommandResult:
         connectivity['issues'].append(f"Config error: {config_result.message}")
 
     # Check identities (warnings, not blocking issues)
-    config_dir = ReticulumPaths.get_config_dir()
-    rns_identity = config_dir / 'identity'
+    rns_identity = rnsd_identity_path()
     gw_identity = get_identity_path()
     if not rns_identity.exists():
-        connectivity['warnings'].append("RNS identity not created")
+        connectivity['warnings'].append(
+            "rnsd transport identity missing (rnsd creates it on first start)")
     if not gw_identity.exists():
         connectivity['warnings'].append("Gateway identity not created")
 
@@ -1337,3 +1327,32 @@ def discover_nodes(timeout: int = 30) -> CommandResult:
 
     except Exception as e:
         return CommandResult.fail(f"Discovery failed: {e}")
+
+
+def rnsd_identity_path(config_dir=None):
+    """rnsd's identity: <configdir>/storage/transport_identity (RNS Transport.py).
+
+    Seven MeshForge call sites looked at <configdir>/identity, a file RNS never
+    reads or writes, and reported every running rnsd's identity 'not created'
+    (live-truth pass 2026-09-25)."""
+    base = ReticulumPaths.get_config_dir() if config_dir is None else config_dir
+    return base / "storage" / "transport_identity"
+
+
+def identity_exposure(path) -> str:
+    """'' when the private key file is owner-only; else a warning naming who
+    else can read or write it. Measured 2026-09-25: mode 666 on 7 of 10 boxes."""
+    import stat as _stat
+    try:
+        mode = path.stat().st_mode
+    except OSError:
+        return ""
+    who = []
+    if mode & (_stat.S_IRGRP | _stat.S_IWGRP):
+        who.append("group")
+    if mode & (_stat.S_IROTH | _stat.S_IWOTH):
+        who.append("ALL users")
+    if not who:
+        return ""
+    return (f"private key file is mode {oct(mode & 0o777)[2:]} — readable/writable by "
+            f"{' and '.join(who)}; should be 600, owned by the rnsd user")

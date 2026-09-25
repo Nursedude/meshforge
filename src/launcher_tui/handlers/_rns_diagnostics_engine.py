@@ -184,8 +184,14 @@ def run_rns_diagnostics(handler):
     print("\n[3/6] Checking identity...")
     identity_exists = status_data.get('identity_exists', False)
     print(f"  Gateway identity: {'found' if identity_exists else 'not created'}")
-    rns_identity = config_dir / 'identity'
-    print(f"  RNS identity: {'found' if rns_identity.exists() else 'not created'}")
+    from commands.rns import identity_exposure, rnsd_identity_path
+    rns_identity = rnsd_identity_path(config_dir)
+    print(f"  rnsd identity: {'found' if rns_identity.exists() else 'not yet created by rnsd'}"
+          f" ({rns_identity})")
+    exposure = identity_exposure(rns_identity)
+    if exposure:
+        print(f"  ⚠ {exposure}")
+        warnings.append(f"rnsd identity {exposure}")
 
     # 4. Full connectivity check
     print("\n[4/6] Running connectivity check...")
@@ -352,15 +358,15 @@ def run_rns_diagnostics(handler):
             handler.ctx.wait_for_enter()
             return
 
-    # Offer to create missing identities
-    if not identity_exists or not rns_identity.exists():
+    # Offer to create the GATEWAY identity only — rnsd creates its own
+    # transport identity on first start (MeshForge used to "create" one at a
+    # path RNS never reads, 2026-09-25).
+    if not identity_exists:
         print("\n--- Identity Setup ---")
         if handler.ctx.dialog.yesno(
-            "Create Identities",
-            "One or more RNS identities are missing.\n\n"
-            "Create them now?\n\n"
-            "  • RNS identity: used by rnsd for network presence\n"
-            "  • Gateway identity: used by MeshForge bridge"
+            "Create Gateway Identity",
+            "The MeshForge gateway identity is missing.\n\n"
+            "Create it now? (rnsd's own identity is created by rnsd itself.)"
         ):
             try:
                 result = create_identities()

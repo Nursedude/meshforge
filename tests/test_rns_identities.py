@@ -22,8 +22,11 @@ sys.path.insert(0, 'src')
 class TestCreateIdentities:
     """Test commands.rns.create_identities()"""
 
-    def test_creates_both_identities_when_missing(self, tmp_path):
-        """Both identities created when neither exists."""
+    def test_creates_gateway_never_rnsd_identity(self, tmp_path):
+        """Only the gateway identity is created. rnsd's identity lives at
+        <configdir>/storage/transport_identity and rnsd creates it itself;
+        MeshForge used to write <configdir>/identity, a file RNS never reads
+        (2026-09-25)."""
         rns_config_dir = tmp_path / "reticulum"
         rns_config_dir.mkdir()
         (rns_config_dir / "config").touch()
@@ -44,17 +47,18 @@ class TestCreateIdentities:
             result = create_identities()
 
         assert result.success
-        assert 'rns' in result.data['created']
-        assert 'gateway' in result.data['created']
-        # Identity.to_file called twice (once per identity)
-        assert mock_identity.to_file.call_count == 2
+        assert result.data['created'] == ['gateway']
+        assert mock_identity.to_file.call_count == 1
+        assert not (rns_config_dir / "identity").exists()
+        assert result.data['rns_identity'].endswith("storage/transport_identity")
 
     def test_skips_existing_identities(self, tmp_path):
         """Existing identities are not overwritten."""
         rns_config_dir = tmp_path / "reticulum"
         rns_config_dir.mkdir()
         (rns_config_dir / "config").touch()
-        (rns_config_dir / "identity").touch()  # Already exists
+        (rns_config_dir / "storage").mkdir()
+        (rns_config_dir / "storage" / "transport_identity").touch()  # rnsd made it
 
         gw_dir = tmp_path / "meshforge"
         gw_dir.mkdir()
@@ -76,7 +80,8 @@ class TestCreateIdentities:
         rns_config_dir = tmp_path / "reticulum"
         rns_config_dir.mkdir()
         (rns_config_dir / "config").touch()
-        (rns_config_dir / "identity").touch()
+        (rns_config_dir / "storage").mkdir()
+        (rns_config_dir / "storage" / "transport_identity").touch()
 
         gw_path = tmp_path / "meshforge" / "gateway_identity"
 
@@ -162,7 +167,7 @@ class TestConnectivityWarnings:
         # Should still be OK (identities are warnings, not errors)
         assert result.success
         warnings = result.data.get('warnings', [])
-        assert any('RNS identity' in w for w in warnings)
+        assert any('rnsd transport identity' in w for w in warnings)
         assert any('Gateway identity' in w for w in warnings)
         # Should have no blocking issues
         assert result.data['issues'] == []
@@ -172,7 +177,8 @@ class TestConnectivityWarnings:
         rns_config_dir = tmp_path / "reticulum"
         rns_config_dir.mkdir()
         (rns_config_dir / "config").touch()
-        (rns_config_dir / "identity").touch()
+        (rns_config_dir / "storage").mkdir()
+        (rns_config_dir / "storage" / "transport_identity").touch()
 
         gw_dir = tmp_path / "meshforge"
         gw_dir.mkdir()
@@ -240,3 +246,27 @@ class TestRunRnsToolPatterns:
         # when the tool name doesn't suggest error context.
         # The actual guard is returncode != 0 in _run_rns_tool.
         assert True  # Pattern matching is guarded by returncode check
+
+
+class TestIdentityExposure:
+    """The rnsd private key must be owner-only (measured 2026-09-25: mode 666
+    on 7 of 10 boxes, i.e. any local user could read or replace it)."""
+
+    def test_world_writable_is_named(self, tmp_path):
+        from commands.rns import identity_exposure
+        f = tmp_path / "transport_identity"
+        f.write_bytes(b"k" * 64)
+        f.chmod(0o666)
+        msg = identity_exposure(f)
+        assert "mode 666" in msg and "ALL users" in msg
+
+    def test_owner_only_is_quiet(self, tmp_path):
+        from commands.rns import identity_exposure
+        f = tmp_path / "transport_identity"
+        f.write_bytes(b"k" * 64)
+        f.chmod(0o600)
+        assert identity_exposure(f) == ""
+
+    def test_missing_file_is_not_a_warning(self, tmp_path):
+        from commands.rns import identity_exposure
+        assert identity_exposure(tmp_path / "absent") == ""

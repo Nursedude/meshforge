@@ -153,6 +153,19 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
         "evidence": "utils/report_generator.py, utils/meshtastic_modem.py, "
                     "tests/test_meshtastic_modem.py (planted SF10 -> 4 failures)",
     },
+    ("rns", "diag"): {
+        "date": "2026-09-25", "box": "dev/manager box",
+        "scope": "FIXED then verified: 'RNS identity: not created' on a node whose rnsd has run "
+                 "for days — seven call sites looked at <configdir>/identity, a file RNS never "
+                 "reads; rnsd's identity is <configdir>/storage/transport_identity (RNS "
+                 "Transport.py). create_identities no longer writes the stray file. Now also "
+                 "warns when the private key is group/world accessible (mode 666 here and on 6 "
+                 "other boxes — permissions NOT changed, operator's call). Interface traffic "
+                 "rows match rnstatus. 'NomadNet: RUNNING (port conflict!)' not yet examined",
+        "partial": True,
+        "evidence": "commands.rns.rnsd_identity_path / identity_exposure; "
+                    "tests/test_rns_identities.py (8 fail on the old code)",
+    },
     ("mesh_networks", "messaging"): {
         "date": "2026-09-25", "box": "dev/manager box",
         "scope": "FIXED then verified: Statistics printed 'Total: 0' beside 'Received: 19185' "

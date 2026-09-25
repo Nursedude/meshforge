@@ -188,13 +188,13 @@ class RNSMenuHandler(BaseHandler):
         while True:
             # Check identity status for menu hints
             config_dir = ReticulumPaths.get_config_dir()
-            rnsd_exists = (config_dir / 'identity').exists()
+            rnsd_exists = _rns_cmds().rnsd_identity_path(config_dir).exists()
             gw_exists = _rns_cmds().get_identity_path().exists()
 
             choices = [
                 ("show", "Show local identity"),
-                ("create", "Create identities" + (
-                    "" if not rnsd_exists or not gw_exists else " (all exist)")),
+                ("create", "Create gateway identity" + (
+                    " (exists)" if gw_exists else "")),
                 ("path", "Show identity file paths"),
                 ("recall", "Recall identity by hash"),
                 ("back", "Back"),
@@ -219,7 +219,7 @@ class RNSMenuHandler(BaseHandler):
                     clear_screen()
                     print("=== Local RNS Identity ===\n")
 
-                    rnsd_identity = config_dir / 'identity'
+                    rnsd_identity = _rns_cmds().rnsd_identity_path(config_dir)
                     if rnsd_identity.exists():
                         print(f"rnsd identity: {rnsd_identity}")
                         if diag:
@@ -229,7 +229,7 @@ class RNSMenuHandler(BaseHandler):
                             )
                     else:
                         print(f"rnsd identity: {rnsd_identity}")
-                        print("  Not found — use 'Create identities' to generate.\n")
+                        print("  Not found — rnsd creates it when it first starts.\n")
 
                     gw_id = _rns_cmds().get_identity_path()
                     print(f"\nMeshForge gateway identity: {gw_id}")
@@ -240,13 +240,13 @@ class RNSMenuHandler(BaseHandler):
                                 'rnid'
                             )
                     else:
-                        print("  Not created — use 'Create identities' to generate.")
+                        print("  Not created — use 'Create gateway identity' to generate.")
                     self.ctx.wait_for_enter()
 
                 elif choice == "path":
                     clear_screen()
                     print("=== RNS Identity Paths ===\n")
-                    identity_path = config_dir / 'identity'
+                    identity_path = _rns_cmds().rnsd_identity_path(config_dir)
                     print(f"RNS config dir:    {config_dir}")
                     print(f"RNS identity file: {identity_path}")
                     if identity_path.exists():
@@ -301,15 +301,16 @@ class RNSMenuHandler(BaseHandler):
             config_dir = ReticulumPaths.get_config_dir()
 
             # Show current state
-            rns_id = config_dir / 'identity'
+            rns_id = _rns_cmds().rnsd_identity_path(config_dir)
             gw_id = _rns_cmds().get_identity_path()
-            print(f"RNS identity:     {rns_id}")
-            print(f"  Status: {'EXISTS' if rns_id.exists() else 'MISSING'}")
+            print(f"rnsd identity:    {rns_id}")
+            print(f"  Status: {'EXISTS' if rns_id.exists() else 'not yet created — rnsd creates it on first start'}")
             print(f"Gateway identity: {gw_id}")
             print(f"  Status: {'EXISTS' if gw_id.exists() else 'MISSING'}\n")
 
-            if rns_id.exists() and gw_id.exists():
-                print("Both identities already exist. Nothing to create.")
+            if gw_id.exists():
+                print("The gateway identity already exists. Nothing to create "
+                      "(MeshForge never creates rnsd's identity).")
                 self.ctx.wait_for_enter()
                 return
 
@@ -322,7 +323,7 @@ class RNSMenuHandler(BaseHandler):
                 if 'gateway' in created:
                     print(f"  Created: {result.data['gateway_identity']}")
                 if not created:
-                    print("  All identities already existed.")
+                    print("  Nothing was created.")
             else:
                 print(f"ERROR: {result.message}")
         except Exception as e:
