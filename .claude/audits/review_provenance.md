@@ -3268,3 +3268,25 @@ rc=0 after); lint rc=0. Plant the lie before trusting any of it.
 **Why queued, not done**: touches mini fleet-wide; freeze-exempt (removes
 duplication) but owed a non-author review before any fleet deploy.
 Scope A (SDR writer reads through `sdr_view.load`) landed as `4c119515`.
+
+## QUEUED 2026-09-25 (Opus 5.5) — dashboard live-truth pass, parts 1–5 + the preset SSOT: `19d931d1..e23feb5d`
+
+**What to review** (author-applied, unreviewed; each verified live on the dev/manager box only):
+- `19d931d1` / `14ea6e8a` — node_counts (radio journal telemetry as authority), NOAA Kp object
+  format + Planetary A parse, EAS location chain (`_eas_location.py`), mesh-alert `has_feed()`.
+- `c1afba94` — Health Score retired (dashboard + main order).
+- `6860625d` — `_snapshots_per_hour`: a snapshot = a timestamp carrying ≥ half the window's
+  largest batch. Attack: a box whose FIRST snapshot is partial (collector warming up), or
+  two collectors writing one DB — does the half-max floor misclassify?
+- `ac5a3d6b` — traffic_pulse QUIET branch (`age_s is None and all state_totals zero`) and
+  `_iso_age_s` (naive local ISO vs `datetime.now()`; DST/TZ-change boxes?).
+- `f69857e8` — report_generator rebuilt; ask what the Findings list CAN'T see (it only
+  knows what the three sources expose) and whether "Nothing measured calls for action"
+  can print while a source is silently partial.
+- `e23feb5d` — `utils/meshtastic_modem.py` transcription of MeshRadio.h @ v2.7.26.
+  Re-derive the table from the firmware source yourself; do not trust the test (the
+  author wrote both). Also: `PROVEN_GATEWAY_CONFIGS['mtnmesh_gateway']` SF10/CR8 left
+  untouched pending the operator.
+
+**Live-verified touch** (2026-09-25 08:40–09:05 HST, VolcanoAI): renders quoted in-session;
+ledger entries in `launcher_tui/live_truth.py` carry scope + evidence per action.
