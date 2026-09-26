@@ -18,6 +18,7 @@ import logging
 import struct
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
@@ -307,7 +308,12 @@ class RNSSniffer:
             "paths_discovered": 0,
             "bytes_captured": 0,
             "start_time": None,
+            # Same announce PACKET handed to the handler more than once
+            # (dropped; see _is_announce_redelivery). A rebroadcast is a
+            # different packet hash and is NOT counted here.
+            "announce_redeliveries_dropped": 0,
         }
+        self._recent_announce_hashes: "OrderedDict[bytes, float]" = OrderedDict()
 
         # Callbacks for packet notifications
         self._callbacks: List[Callable[[RNSPacketInfo], None]] = []
@@ -384,8 +390,12 @@ class RNSSniffer:
                     self.aspect_filter = None  # Capture all aspects
                     self.sniffer = sniffer
 
-                def received_announce(self, destination_hash, announced_identity, app_data):
-                    self.sniffer._on_rns_announce(destination_hash, announced_identity, app_data)
+                # 4-arg form: RNS passes announce_packet_hash, the only way to
+                # tell a redelivered packet from a real rebroadcast (2026-09-26).
+                def received_announce(self, destination_hash, announced_identity, app_data,
+                                      announce_packet_hash):
+                    self.sniffer._on_rns_announce(destination_hash, announced_identity, app_data,
+                                                  announce_packet_hash)
 
             self._announce_handler = SnifferAnnounceHandler(self)
             RNS.Transport.register_announce_handler(self._announce_handler)
@@ -420,9 +430,48 @@ class RNSSniffer:
         except Exception as e:
             logger.debug(f"Error capturing inbound packet: {e}")
 
-    def _on_rns_announce(self, dest_hash: bytes, announced_identity, app_data: bytes) -> None:
+    #: How long a seen announce packet hash is remembered for redelivery checks.
+    ANNOUNCE_REDELIVERY_WINDOW_S = 30.0
+    _ANNOUNCE_HASH_CAP = 4096
+
+    def _is_announce_redelivery(self, packet_hash: Optional[bytes]) -> bool:
+        """True when this exact announce PACKET was already handed to us.
+
+        Measured 2026-09-26 on both gateway boxes: every announce was stored
+        twice, 3-5 ms apart, from two threads (RNS starts one per accepted
+        announce per handler). Keyed on the packet hash, so this is right
+        either way: a redelivery of one packet is dropped, while an original
+        and its rebroadcast (different hashes) are both kept. No hash = cannot
+        tell = keep (never drop what we cannot identify).
+        """
+        if not packet_hash:
+            return False
+        now = time.monotonic()
+        with self._lock:
+            seen = self._recent_announce_hashes
+            while seen:
+                oldest, t = next(iter(seen.items()))
+                if now - t <= self.ANNOUNCE_REDELIVERY_WINDOW_S and len(seen) < self._ANNOUNCE_HASH_CAP:
+                    break
+                seen.popitem(last=False)
+            if packet_hash in seen:
+                self._stats["announce_redeliveries_dropped"] += 1
+                first = self._stats["announce_redeliveries_dropped"] == 1
+            else:
+                seen[packet_hash] = now
+                return False
+        if first:
+            logger.info("RNS sniffer: dropped the first same-hash announce redelivery "
+                        "(%s) — duplicates are one packet delivered twice, not rebroadcasts",
+                        packet_hash.hex()[:16])
+        return True
+
+    def _on_rns_announce(self, dest_hash: bytes, announced_identity, app_data: bytes,
+                         announce_packet_hash: Optional[bytes] = None) -> None:
         """Handle RNS announce (called from announce handler)."""
         if not self._running:
+            return
+        if self._is_announce_redelivery(announce_packet_hash):
             return
 
         try:

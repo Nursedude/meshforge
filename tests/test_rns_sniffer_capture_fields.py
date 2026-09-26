@@ -53,3 +53,56 @@ def test_packet_without_a_sender_stays_unknown():
     md = _captured_metadata(packet_type=rs.RNSPacketType.DATA, destination_hash=DST,
                             direction="inbound")
     assert RNSDissector().dissect(None, md).source == ""
+
+
+# --- announce redelivery (2026-09-26: every announce stored twice) ---
+
+import inspect  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture
+def sniffer():
+    s = rs.RNSSniffer()
+    s._running = True
+    stored = []
+    s._store_packet = stored.append
+    s._update_path_table = lambda *a, **k: None
+    s.stored = stored
+    return s
+
+
+def test_same_packet_twice_is_stored_once(sniffer):
+    h = b"\x11" * 32
+    sniffer._on_rns_announce(DST, None, b"", h)
+    sniffer._on_rns_announce(DST, None, b"", h)
+    assert len(sniffer.stored) == 1
+    assert sniffer.get_stats()["announce_redeliveries_dropped"] == 1
+
+
+def test_a_rebroadcast_is_a_different_packet_and_is_kept(sniffer):
+    sniffer._on_rns_announce(DST, None, b"", b"\x11" * 32)
+    sniffer._on_rns_announce(DST, None, b"", b"\x22" * 32)
+    assert len(sniffer.stored) == 2
+    assert sniffer.get_stats()["announce_redeliveries_dropped"] == 0
+
+
+def test_no_hash_is_never_dropped(sniffer):
+    sniffer._on_rns_announce(DST, None, b"")
+    sniffer._on_rns_announce(DST, None, b"")
+    assert len(sniffer.stored) == 2
+
+
+def test_window_expiry_lets_a_hash_count_again(sniffer):
+    h = b"\x33" * 32
+    with patch.object(rs.time, "monotonic", side_effect=[0.0, 1000.0]):
+        sniffer._on_rns_announce(DST, None, b"", h)
+        sniffer._on_rns_announce(DST, None, b"", h)
+    assert len(sniffer.stored) == 2
+
+
+def test_handler_takes_the_packet_hash():
+    """RNS picks the call form by arity; 4 params = it passes the hash."""
+    src = inspect.getsource(rs.RNSSniffer._install_rns_hooks)
+    assert "announce_packet_hash):" in src
