@@ -3302,3 +3302,14 @@ ledger entries in `launcher_tui/live_truth.py` carry scope + evidence per action
 - `e52a04f6`/`b2d158c9` logs: rnsd log = <configdir>/logfile; unit existence via is_service_unit_installed — its error path returns False (a failed check reads "not installed"). Is that acceptable on this screen?
 - `60518c10` scripts/rnode_fw_mirror.py (publishes to a PUBLIC repo under the operator's account when run with --publish).
 - Deliberately NOT changed, argue it: Site Planner forest model (n=5) — kept because it predicts the operator's "17 dBm too low" at ~76 m through ohia.
+
+## QUEUED 2026-09-25 (Opus 5.5) — messaging/RNS/map pass: MF `c98dd56b..151eaa00` (13), MA twins, meshforge-maps `5477d56`+`f8e8d2a`
+
+**What to review** (author-applied, unreviewed; each live-verified on at least one box — the verification is the author's, not yours):
+- **`151eaa00` — SECURITY-SHAPED, review first.** The map's WebSocket now binds with the map (0.0.0.0 on fleet units) and admits per handshake via `ws_client_admitted()` = the HTTP read gate (client IP) AND `_origin_allowed` (Origin). Attack it: IPv6 / IPv4-mapped client addresses, a missing or `null` Origin, a hostname Origin (refused today → poll fallback), the gate reading `MapRequestHandler.allowed_origins` live, the move to `websockets.asyncio.server`, and the new `stop()` (join first, loop.stop only as a fallback). Operator approved LAN exposure ("continuity and flow"). ⚠️ Found and NOT fixed: `/api/messages/received` is UNGATED over HTTP — queued to measure readers first.
+- `95e0e836` `_csp_policy()` puts a Host-header-derived hostname into the CSP header — is `_HOSTNAME_RE` enough?
+- `b8d5a8d4` + `db068468` rnsd private-key path + born-correct `chmod 600` in the apply script (byte-locked twin with MA). Fleet applied 09-25; first real restart exercise passed 16:00 on moc3/VolcanoAI (key loaded, not recreated).
+- `a9d41365` NomadNet "port conflict" now judged by the watchdog owner scan — the old flow killed a healthy NomadNet.
+- `d9b3b537`/`87fe116b` `interface_enabled` (reads `interface_enabled` OR `enabled` like RNS); moved to a light module after the startup-lean guard caught the import. CI cannot see that guard (no RNS in CI).
+- `b80a7bfc` classifier retirement; `c98dd56b`/`c46d8cd1`/`044d49df` messaging wording + listener line.
+- meshforge-maps `5477d56` (move a marker only on changed latlng; heatmap setLatLngs) + `f8e8d2a` (dark `.leaflet-container`; zoom/fade stay OFF per 2e7a372).

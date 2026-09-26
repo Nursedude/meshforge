@@ -238,6 +238,16 @@ already read 1.015–1.071 / 1–7 (partial hours, noisy edges).
 < 1.023, OR the median anomaly rate is > 6/h, OR any hour has > 14 anomalies.
 Fail → stop the timer first, then investigate (never a USB reset).
 
+**RESULT 2026-09-25 19:17 — PASS** (`~/.claude/plans/sdr_usb_control.sh`, rc=0; the §11
+greps, hourly, whole hours 09-24 20:00 → 09-25 19:00 = 23 h, 0 excluded for moc RX < 20):
+ratio **median 1.051** (≥ 1.023 ✓; baseline 1.057) · anomalies **median 4/h** (≤ 6 ✓)
+· **max 9/h** (≤ 14 ✓; baseline max 7). Timers stay ON. Worth carrying, not a fail:
+the first 4 hours (21:00–00:59) read 1.012–1.022, below baseline p10, then 1.033–1.096
+for the remaining 19 — the dip overlaps the 21:08 fixed-code deploy + first night; not
+explained. moc5 meshtasticd up since 09-20, NRestarts=0 (no restart in the window).
+The RNode CR switch (16:00, 903.625 MHz, outside the LF windows) shows no step:
+16:00 1.033, 17:00 1.043, 18:00 1.051 — within the day's spread; not attributable either way.
+
 ## 12. Code review of steps 1+2 (Fable 5.1, 2026-09-24) — applied, NOT yet deployed
 Verdict "with fixes first". Applied (author-applied; this is itself unreviewed):
 own-TX gate gains a RELATIVE term (any fleet band > burst floor + 20 dB) — the
