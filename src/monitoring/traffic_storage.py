@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import threading
 import time
 from collections import defaultdict
@@ -682,17 +683,27 @@ class TrafficLogger:
         self._lock = threading.Lock()
         self._packet_count = 0
 
-        # Create/truncate log file with header
+        # Append a session header — never truncate (see _write_header)
         self._write_header()
 
     def _write_header(self) -> None:
-        """Write log file header."""
+        """Append a session header naming the process that wrote it.
+
+        APPEND, never truncate (2026-09-26): this opened the log with 'w', so
+        every construction erased it — every gateway restart, and every time
+        an operator merely OPENED Traffic Inspector in the TUI, which wiped
+        the gateway's live log on moc/moc3 and left "View Traffic Log"
+        showing only the header it had just written. Size is bounded by
+        _maybe_rotate(); several processes may append to one file, so each
+        header says which one started.
+        """
         try:
-            with open(self._log_path, 'w') as f:
+            with open(self._log_path, 'a') as f:
                 f.write("=" * 100 + "\n")
                 f.write(" MESHFORGE TRAFFIC LOG ".center(100, "=") + "\n")
                 f.write("=" * 100 + "\n")
-                f.write(f"Started: {datetime.now().isoformat()}\n")
+                f.write(f"Started: {datetime.now().isoformat()}  "
+                        f"pid={os.getpid()} ({Path(sys.argv[0]).name or 'python'})\n")
                 f.write(f"Log file: {self._log_path}\n")
                 f.write("-" * 100 + "\n")
                 f.write(f"{'Time':<12} {'Dir':<4} {'Proto':<10} {'Source':<14} "
