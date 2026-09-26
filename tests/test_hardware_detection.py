@@ -333,6 +333,42 @@ class TestRadioHealth:
             # Reload to restore original
             importlib.reload(hw_mod)
 
+    def test_unavailable_http_api_is_not_zero_nodes(self):
+        """meshtasticd never serves /json/nodes (#76): the client reports
+        UNAVAILABLE. That must stay None — mapping it to 0 made every
+        meshtasticd box warn "Web module mismatch" (2026-09-26 live render)."""
+        mock_client = MagicMock()
+        mock_client.is_available = False
+
+        mock_cli_result = MagicMock(success=True,
+                                    output='\n'.join(f'!node{i:04d} N{i}' for i in range(340)))
+        mock_cli = MagicMock()
+        mock_cli.get_nodes.return_value = mock_cli_result
+        mock_svc = MagicMock(available=True, state=MagicMock(value='available'), message='OK')
+
+        with patch.dict('sys.modules', {
+            'utils.service_check': MagicMock(
+                check_service=MagicMock(return_value=mock_svc),
+                check_port=MagicMock(return_value=True),
+            ),
+            'utils.meshtastic_http': MagicMock(
+                get_http_client=MagicMock(return_value=mock_client),
+            ),
+            'core.meshtastic_cli': MagicMock(
+                get_cli=MagicMock(return_value=mock_cli),
+            ),
+        }):
+            import importlib
+            import commands.hardware as hw_mod
+            importlib.reload(hw_mod)
+            try:
+                result = hw_mod.get_radio_health()
+            finally:
+                importlib.reload(hw_mod)
+        assert result.data['http_nodes'] is None
+        assert result.data['cli_node_count'] == 340
+        assert not [w for w in result.data['warnings'] if 'mismatch' in w.lower()]
+
     def test_radio_health_returns_command_result(self):
         """get_radio_health should return a CommandResult."""
         from commands.hardware import get_radio_health

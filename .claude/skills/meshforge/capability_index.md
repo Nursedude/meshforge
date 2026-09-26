@@ -16,7 +16,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 
 **Truth** says how the action's HONESTY is checked (`tests/test_tui_success_truth_sweep.py`, `launcher_tui/action_truth.py`): `sweep` = dispatched on every commit with every external DEAD and required to render a word of uncertainty; `local-only` = declared to consult no external (the why is in `action_truth.py`); `⚠️ false-ok` = a FROZEN baseline finding — renders a confident screen with nothing to be confident about. The baseline only shrinks.
 
-**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 33 action(s) have an entry — a blank is the honest default, not a failure.
+**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 39 action(s) have an entry — a blank is the honest default, not a failure.
 
 ## `about`
 
@@ -178,18 +178,18 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | `details` | Config Doctor Details — Drill into last run |  | sweep |  | ConfigDoctorHandler |
 | `run` | Config Doctor — Audit per-box config drift |  | sweep |  | ConfigDoctorHandler |
 | `daemon` | MeshForge Daemon — Headless NOC (maps, RNS, chat) |  | sweep |  | DaemonHandler |
-| `db_health` | DB Health — Audit all SQLite DBs |  | sweep |  | DBAuditHandler |
+| `db_health` | DB Health — Audit all SQLite DBs |  | sweep | ◐ 2026-09-26 dev/manager box | DBAuditHandler |
 | `diagnose` | Diagnostics — System health check |  | sweep |  | DiagnosticsHandler |
 | `status` | Quick Status — One-shot status display |  | sweep |  | DiagnosticsHandler |
 | `discover` | Service Discovery — Auto-discover services |  | sweep |  | ServiceDiscoveryHandler |
-| `hardware` | Hardware — Detect SPI/I2C/USB |  | sweep |  | HardwareHandler |
+| `hardware` | Hardware — Detect SPI/I2C/USB |  | sweep | ◐ 2026-09-26 dev/manager box | HardwareHandler |
 | `logs` | Logs — View/follow logs |  | sweep | ◐ 2026-09-25 dev/manager box | LogsHandler |
 | `network` | Network Tools — Ping, ports, interfaces |  | sweep |  | NetworkToolsHandler |
-| `platform_pins` | Dependency Pins — what we hold and why |  | sweep |  | PlatformPostureHandler |
-| `platform_posture` | Platform Posture — OS base vs declared, per box |  | local-only |  | PlatformPostureHandler |
-| `platform_updates` | Update Readiness — pending, reboot owed, holds |  | sweep |  | PlatformPostureHandler |
+| `platform_pins` | Dependency Pins — what we hold and why |  | sweep | ◐ 2026-09-26 dev/manager box | PlatformPostureHandler |
+| `platform_posture` | Platform Posture — OS base vs declared, per box |  | local-only | ✓ 2026-09-26 dev/manager box | PlatformPostureHandler |
+| `platform_updates` | Update Readiness — pending, reboot owed, holds |  | sweep | ✓ 2026-09-26 dev/manager box | PlatformPostureHandler |
 | `reboot` | Reboot/Shutdown — Safe system control |  | sweep |  | RebootHandler |
 | `starlink_skymap` | Starlink Sky Map — Obstruction map + bearings |  | sweep |  | StarlinkHandler |
-| `starlink_status` | Starlink Dish — Uplink telemetry (read-only) |  | sweep |  | StarlinkHandler |
+| `starlink_status` | Starlink Dish — Uplink telemetry (read-only) |  | sweep | ◐ 2026-09-26 dev/manager box | StarlinkHandler |
 | _(no menu items)_ | lifecycle / dispatch only |  |  |  | StartupHealthHandler |
 | `shell` | Linux Shell — Drop to bash |  | sweep |  | SystemToolsHandler |

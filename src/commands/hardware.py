@@ -615,7 +615,12 @@ def get_radio_health() -> CommandResult:
     except ImportError:
         logger.debug("service_check not available")
 
-    # 2. Get nodes via HTTP API (no TCP lock contention)
+    # 2. Get nodes via HTTP API (no TCP lock contention). meshtasticd NEVER
+    # serves /json/nodes (#76 — ESP32 firmware only), so against a local
+    # daemon the client is honestly UNAVAILABLE: that stays None (not
+    # observed), never 0. Mapping it to 0 made every meshtasticd box show
+    # "Web module mismatch: HTTP API shows 0 nodes but CLI sees 340"
+    # (2026-09-26 live render) — a warning about an API that does not exist.
     try:
         from utils.meshtastic_http import get_http_client
         client = get_http_client()
@@ -653,7 +658,7 @@ def get_radio_health() -> CommandResult:
                     'seconds_since_boot': report.seconds_since_boot,
                 }
         else:
-            health['http_nodes'] = 0
+            health['http_nodes'] = None
     except ImportError:
         logger.debug("meshtastic_http not available")
     except Exception as e:

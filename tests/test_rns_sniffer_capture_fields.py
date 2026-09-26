@@ -64,13 +64,24 @@ import pytest  # noqa: E402
 
 @pytest.fixture
 def sniffer():
+    # _on_rns_announce imports RNS inside the call; CI installs no RNS, so
+    # without a stub the handler returned before storing and these tests
+    # passed only on boxes that have RNS (CI red on 5c61ba30, 2026-09-26).
+    import types
+    fake = types.ModuleType("RNS")
+    fake.Transport = types.SimpleNamespace(has_path=lambda h: False, hops_to=lambda h: 0)
+    with patch.dict("sys.modules", {"RNS": fake}):
+        yield from _sniffer()
+
+
+def _sniffer():
     s = rs.RNSSniffer()
     s._running = True
     stored = []
     s._store_packet = stored.append
     s._update_path_table = lambda *a, **k: None
     s.stored = stored
-    return s
+    yield s
 
 
 def test_same_packet_twice_is_stored_once(sniffer):

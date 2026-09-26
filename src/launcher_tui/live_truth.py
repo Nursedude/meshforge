@@ -392,6 +392,58 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
         "evidence": "live run 10:51 HST (files + ls -la); tests/test_topology_nodes_label.py; "
                     "this commit",
     },
+    ("system", "platform_updates"): {
+        "date": "2026-09-26", "box": "dev/manager box",
+        "scope": "Reboot 'not owed' vs no reboot-required + running kernel = newest "
+                 "installed; Pending 19 = `apt-get -s upgrade` Inst lines (the 20th is the "
+                 "held package, kept back — the screen does not say '+1 held'); Lists "
+                 "'refreshed 9h ago' = apt-daily's 03:38 success (update-stamp); Holds "
+                 "meshtasticd = apt-mark showhold",
+        "partial": False,
+        "evidence": "live render + apt/dpkg/journal 12:5x HST, session of 2026-09-26",
+    },
+    ("system", "platform_pins"): {
+        "date": "2026-09-26", "box": "dev/manager box",
+        "scope": "rns 1.3.8+mf.0 / lxmf 1.0.1+mf.1 in BOTH the system python and the venv; "
+                 "meshtasticd the 54e0d8d build (dpkg adds a packaging suffix) and HELD. "
+                 "The predicates' 'watched' legs were not re-evaluated",
+        "partial": True,
+        "evidence": "live render + importlib.metadata in both interpreters + dpkg-query",
+    },
+    ("system", "platform_posture"): {
+        "date": "2026-09-26", "box": "dev/manager box",
+        "scope": "Base trixie / python 3.13.5 vs /etc/os-release + python3 --version; "
+                 "verdict OK on target",
+        "partial": False,
+        "evidence": "live render 12:5x HST",
+    },
+    ("system", "db_health"): {
+        "date": "2026-09-26", "box": "dev/manager box",
+        "scope": "20 DBs listed; traffic_capture 76K = its 77,824 bytes; metrics owner now "
+                 "the user (after the approved chown). Pragmas/retention columns not "
+                 "independently re-derived",
+        "partial": True,
+        "evidence": "live render + ls -la",
+    },
+    ("system", "starlink_status"): {
+        "date": "2026-09-26", "box": "dev/manager box",
+        "scope": "latency/drop/obstruction agree with mini's independent uplink reading the "
+                 "same morning (58 ms / 0.00 % / 0.39 %); dish identity/software not "
+                 "checked against the dish app",
+        "partial": True,
+        "evidence": "live render vs the rollup's uplink line 07:22 HST",
+    },
+    ("system", "hardware"): {
+        "date": "2026-09-26", "box": "dev/manager box",
+        "scope": "FIXED then verified: Detect lists = /dev spidev/i2c/ttyACM + lsusb; Radio "
+                 "Health warned 'Web module mismatch: HTTP API shows 0 nodes but CLI sees "
+                 "340' — meshtasticd never serves /json/nodes (#76), unavailable was mapped "
+                 "to 0. Now 'Nodes: 341 (CLI) · No issues detected'. Note: the CLI count "
+                 "opens a short TCP client to :4403 (no gateway-ownership guard). RNode "
+                 "setup / Enable SPI not run",
+        "partial": True,
+        "evidence": "live render before/after, 12:5x-13:1x HST; this commit",
+    },
 }
 
 
