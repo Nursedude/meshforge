@@ -944,9 +944,15 @@ def integrate_with_traffic_inspector() -> bool:
         mesh_packet = convert_to_mesh_packet(rns_packet)
         if mesh_packet:
             # Create metadata for the capture
+            # source_hash + direction MUST ride along (2026-09-26): without
+            # them the RNS dissector stored every packet as source "local",
+            # direction inbound — moc's capture showed 5,027 packets, one
+            # "sender", zero outbound.
             metadata = {
                 "protocol": "rns",
                 "dest_hash": rns_packet.destination_hash.hex() if rns_packet.destination_hash else "",
+                "source_hash": rns_packet.source_hash.hex() if rns_packet.source_hash else "",
+                "direction": rns_packet.direction,
                 "hops": rns_packet.hops,
                 "interface": rns_packet.interface_name,
                 "packet_type": rns_packet.packet_type.name,

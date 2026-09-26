@@ -332,17 +332,16 @@ class RNSDissector(PacketDissector):
         elif isinstance(dest_hash, bytes):
             packet.rns_dest_hash = dest_hash
 
-        # Source hash (for announces)
+        # Source hash (for announces). Unknown stays EMPTY — "local" was a
+        # claim that THIS node sent it, stamped on every packet with no
+        # source (2026-09-26: 5,027 of 5,027 on a gateway box).
         source_hash = metadata.get("source_hash", metadata.get("identity_hash"))
         if isinstance(source_hash, str):
-            try:
-                packet.source = source_hash
-            except ValueError:
-                packet.source = "local"
+            packet.source = source_hash
         elif isinstance(source_hash, bytes):
             packet.source = source_hash.hex()
         else:
-            packet.source = metadata.get("source", "local")
+            packet.source = metadata.get("source", "")
 
         packet.destination = metadata.get("destination", "")
         if packet.rns_dest_hash:
