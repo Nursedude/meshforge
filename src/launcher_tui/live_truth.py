@@ -359,8 +359,11 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
                  "After deploy both gateways restarted and their earlier header + packet "
                  "lines survived (202->281, 166->235 lines, 2 headers, new header names "
                  "the new MainPID). Statistics/Archive (0/DISABLED) match on the dev box. "
-                 "OPEN: on a gateway box the menu's 'Capture: STOPPED' checks only the TUI "
-                 "process while the gateway captures into the shared DB — not rendered there",
+                 "FIXED: on a gateway box (rendered on one) the menu said 'Capture: STOPPED' "
+                 "beside Statistics of 5,027 gateway-captured packets; it now says 'in this "
+                 "TUI' plus the shared DB's newest-packet age (dev box: 49d = the DB mtime). "
+                 "Seen, NOT fixed: RNS sniffer rows carry size 0 and source 'local' for "
+                 "every packet (Total Bytes 0, Top Sources local: 5027)",
         "partial": True,
         "evidence": "commit fe5c4ef5; ssh line counts before/after the 10:24 HST restarts",
     },

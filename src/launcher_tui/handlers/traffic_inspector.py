@@ -72,6 +72,33 @@ class TrafficInspectorHandler(BaseHandler):
             )
             return None
 
+    def _shared_capture_line(self) -> str:
+        """How fresh the SHARED capture DB is — the part "Capture: STOPPED"
+        could not say.
+
+        The gateway captures into the same traffic_capture.db this screen
+        reads, so on a gateway box the menu said "Capture: STOPPED" beside
+        Statistics showing 5,027 packets (moc, 2026-09-26): true of THIS
+        process, false as a statement about the box. The newest row's age
+        says whether something is writing it; a failed read says UNKNOWN.
+        """
+        try:
+            inspector = get_traffic_inspector() if get_traffic_inspector else None
+            if inspector is None:
+                return "Shared capture DB: UNKNOWN (inspector unavailable)"
+            newest = inspector.get_packets(limit=1)
+        except Exception as e:  # the menu still renders; the line says why
+            return f"Shared capture DB: UNKNOWN ({type(e).__name__})"
+        if not newest:
+            return "Shared capture DB: empty"
+        age = (datetime.now() - newest[0].timestamp).total_seconds()
+        if age < 0:
+            return "Shared capture DB: newest packet is in the FUTURE (clock stepped?)"
+        m = int(age // 60)
+        when = (f"{int(age)}s" if age < 120 else f"{m}m" if m < 120
+                else f"{m // 60}h" if m < 2880 else f"{m // 1440}d")
+        return f"Shared capture DB: newest packet {when} ago (any process)"
+
     def _menu_traffic_inspector(self) -> None:
         """Traffic Inspector - Wireshark-grade mesh traffic visibility."""
         if not HAS_INSPECTOR:
@@ -92,7 +119,8 @@ class TrafficInspectorHandler(BaseHandler):
             choice = self.ctx.dialog.menu(
                 "Traffic Inspector",
                 f"Wireshark-grade mesh traffic visibility\n"
-                f"Capture: {capture_status}",
+                f"Capture in this TUI: {capture_status}\n"
+                f"{self._shared_capture_line()}",
                 choices=[
                     ("capture", f"{capture_action}        - {'Stop' if capturing else 'Start'} packet capture"),
                     ("1", "View Live Traffic      - Real-time packet stream"),
