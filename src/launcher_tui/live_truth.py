@@ -362,8 +362,10 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
                  "FIXED: on a gateway box (rendered on one) the menu said 'Capture: STOPPED' "
                  "beside Statistics of 5,027 gateway-captured packets; it now says 'in this "
                  "TUI' plus the shared DB's newest-packet age (dev box: 49d = the DB mtime). "
-                 "Seen, NOT fixed: RNS sniffer rows carry size 0 and source 'local' for "
-                 "every packet (Total Bytes 0, Top Sources local: 5027)",
+                 "Sniffer rows read source 'local' for every packet — FIXED 417a16e9 "
+                 "(verified: real sender hashes after the gateway restarts). Seen, NOT "
+                 "fixed: each announce is stored twice (counts doubled); size 0 for "
+                 "announces is 'no raw bytes', not measured",
         "partial": True,
         "evidence": "commit fe5c4ef5; ssh line counts before/after the 10:24 HST restarts",
     },
