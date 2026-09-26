@@ -3330,3 +3330,10 @@ ledger entries in `launcher_tui/live_truth.py` carry scope + evidence per action
 - `67eea412` coverage filter on `source_origin` excluding `source == "federation"`; tile cache screens now say "not used by maps"; Link Quality → `GRAPH_NOT_HERE`.
 - `fe5c4ef5` `TrafficLogger` appends (was `'w'`). Two processes append to one file with no lock between them (hfm #8) — interleaved lines possible; argue whether per-process files are owed.
 - **Findings NOT fixed (operator's call):** (1) meshanchor-server `/api/nodes/directory` serves 50,001 world MeshCore features; the dev box federates them → a 29.8 MB `/api/nodes/geojson` (46 of 49,296 in Hawaii) — region-filter federation, drop MA as a peer, or keep; (2) OSM bulk tile download is still offered (now labelled) — retire?; (3) Traffic Inspector 'Capture: STOPPED' on gateway boxes (see ledger).
+
+## QUEUED 2026-09-26 (Opus 5.5) — Topology/Export + Traffic header: MF `3eda7605`, `676421cb`
+
+**What to review** (author-applied, unreviewed; live-verified by the author per `live_truth.py` maps_viz topology/export/traffic):
+- `3eda7605` Export refuses when `graph_observable(topology)` is False — on EVERY box, since the TUI never runs the tracker. Argue: is Export then dead code in the TUI, owed a redirect to the map service's data (or retirement) rather than a refusal?
+- `676421cb` `_shared_capture_line()` — newest row of the shared `traffic_capture.db` per menu redraw (a SQLite read each loop iteration while the gateway writes; WAL?). Age bands; FUTURE branch for RTC-less clock steps.
+- **Finding NOT fixed**: RNS sniffer rows on moc carry size 0 and source `local` for all 5,027 packets (Statistics Total Bytes 0, Top Sources local: 5027) — the dissection loses the sender hash and size before storage. Product defect in `monitoring/rns_sniffer.py`, not a label.
