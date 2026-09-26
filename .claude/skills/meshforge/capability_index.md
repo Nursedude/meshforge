@@ -16,7 +16,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 
 **Truth** says how the action's HONESTY is checked (`tests/test_tui_success_truth_sweep.py`, `launcher_tui/action_truth.py`): `sweep` = dispatched on every commit with every external DEAD and required to render a word of uncertainty; `local-only` = declared to consult no external (the why is in `action_truth.py`); `⚠️ false-ok` = a FROZEN baseline finding — renders a confident screen with nothing to be confident about. The baseline only shrinks.
 
-**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 25 action(s) have an entry — a blank is the honest default, not a failure.
+**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 30 action(s) have an entry — a blank is the honest default, not a failure.
 
 ## `about`
 
@@ -95,12 +95,12 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | Action tag | Description | Flag | Truth | Live | Handler |
 |---|---|---|---|---|---|
 | `ai` | AI Diagnostics — Knowledge base, assistant |  | sweep |  | AIToolsHandler |
-| `coverage` | Coverage Map — Generate coverage map | `maps` | sweep |  | AIToolsHandler |
+| `coverage` | Coverage Map — Generate coverage map | `maps` | sweep | ◐ 2026-09-26 dev/manager box | AIToolsHandler |
 | `heatmap` | Heatmap — Node density heatmap | `maps` | sweep |  | AIToolsHandler |
-| `livemap` | Live NOC Map — Real-time browser view | `maps` | sweep |  | AIToolsHandler |
-| `mfmaps` | MeshForge Maps — Multi-source map ext. | `maps` | sweep |  | AIToolsHandler |
-| `tiles` | Offline Tiles — Cache map tiles | `maps` | sweep |  | AIToolsHandler |
-| `quality` | Link Quality — Quality analysis |  | sweep |  | LinkQualityHandler |
+| `livemap` | Live NOC Map — Real-time browser view | `maps` | sweep | ◐ 2026-09-26 dev/manager box | AIToolsHandler |
+| `mfmaps` | MeshForge Maps — Multi-source map ext. | `maps` | sweep | ◐ 2026-09-26 dev/manager box | AIToolsHandler |
+| `tiles` | Tile Cache — Stored, not yet used | `maps` | sweep | ◐ 2026-09-26 dev/manager box | AIToolsHandler |
+| `quality` | Link Quality — Quality analysis |  | sweep | ◐ 2026-09-26 dev/manager box | LinkQualityHandler |
 | `export` | Export Data — GeoJSON, CSV, GraphML |  | sweep |  | TopologyHandler |
 | `topology` | Network Topology — D3.js graph view |  | sweep |  | TopologyHandler |
 | `traffic` | Traffic Inspector — Packet capture & analysis |  | sweep |  | TrafficInspectorHandler |

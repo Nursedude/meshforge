@@ -44,7 +44,7 @@ HANDLER_MANIFEST = [
             ('mfmaps', 'MeshForge Maps      Multi-source map ext.', 'maps'),
             ('coverage', 'Coverage Map        Generate coverage map', 'maps'),
             ('heatmap', 'Heatmap             Node density heatmap', 'maps'),
-            ('tiles', 'Offline Tiles       Cache map tiles', 'maps'),
+            ('tiles', 'Tile Cache          Stored, not yet used', 'maps'),
             ('ai', 'AI Diagnostics      Knowledge base, assistant', None),
         ],
     },

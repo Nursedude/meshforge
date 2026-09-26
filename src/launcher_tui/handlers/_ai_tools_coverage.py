@@ -17,6 +17,15 @@ import webbrowser
 
 logger = logging.getLogger(__name__)
 
+#: Coverage-map source choice -> the collector's `source_origin` tag
+#: (utils.map_data_collector._tag_source_origin). One table, so a new origin
+#: name fails a test rather than silently matching nothing.
+_ORIGIN_FOR_SOURCE = {
+    "meshtasticd": "local_radio",
+    "mqtt": "mqtt_local",
+    "rns": "rns_path_table",
+}
+
 
 def _load_coverage_map_generator():
     """Deferred import: utils.coverage_map needs folium (optional dep).
@@ -41,6 +50,36 @@ def _load_map_data_collector():
         return MapDataCollector
     except ImportError:
         return None
+
+
+#: The running map service's merged view. Loopback is always inside its read
+#: gate. 30 s: a federated box serves ~30 MB (measured 2026-09-26).
+_SERVICE_GEOJSON_URL = "http://127.0.0.1:5000/api/nodes/geojson"
+
+
+def _collect_geojson():
+    """(geojson, via) — the running map service's collection when :5000
+    answers, else an in-process MapDataCollector; (None, reason) when neither.
+
+    Why the service first (2026-09-26): an in-process collector reads
+    meshtasticd over TCP :4403 guarded only by an in-process threading lock,
+    so the TUI opened a SECOND PhoneAPI client beside the map service's own
+    (the #17 single-consumer class). The service already holds the merged
+    answer; reading it touches no radio.
+    """
+    import urllib.request
+    try:
+        with urllib.request.urlopen(_SERVICE_GEOJSON_URL, timeout=30) as r:
+            data = json.load(r)
+        if isinstance(data, dict) and isinstance(data.get("features"), list):
+            return data, "running map service (:5000)"
+        logger.debug("map service geojson had no feature list; collecting in-process")
+    except (OSError, ValueError) as e:
+        logger.debug("map service geojson unavailable (%s); collecting in-process", e)
+    MapDataCollector = _load_map_data_collector()
+    if MapDataCollector is None:
+        return None, "map service not answering and the map stack is not installed"
+    return MapDataCollector().collect(), "in-process collector (map service not answering)"
 
 
 class CoverageMapAndHeatmapMixin:
@@ -83,12 +122,10 @@ class CoverageMapAndHeatmapMixin:
             generator = CoverageMapGenerator()
 
             if choice == "all":
-                MapDataCollector = _load_map_data_collector()
-                if MapDataCollector is None:
-                    self.ctx.dialog.msgbox("Error", "MapDataCollector not available.")
+                geojson, via = _collect_geojson()
+                if geojson is None:
+                    self.ctx.dialog.msgbox("Error", f"No node data: {via}.")
                     return
-                collector = MapDataCollector()
-                geojson = collector.collect()
                 features = geojson.get('features', [])
                 if features:
                     generator.add_nodes_from_geojson(geojson)
@@ -175,18 +212,28 @@ class CoverageMapAndHeatmapMixin:
 
         Args:
             source: Source filter — "meshtasticd", "mqtt", or "rns".
+
+        Filters on ``source_origin`` (the collector's own provenance tag),
+        never ``source``: no feature carries ``source == "meshtasticd"`` or
+        ``"mqtt"`` (measured on 5 fleet boxes 2026-09-26 — local radio nodes
+        read ``source`` null / ``unified_tracker``), so both menu choices
+        answered "No nodes found" beside 196 radio nodes. Federated features
+        copy the PEER's origin, so they are excluded — "live from meshtasticd"
+        means THIS box's radio.
         """
-        MapDataCollector = _load_map_data_collector()
-        if MapDataCollector is None:
+        origin = _ORIGIN_FOR_SOURCE.get(source)
+        if origin is None:
             return {"type": "FeatureCollection", "features": []}
 
         try:
-            collector = MapDataCollector()
-            geojson = collector.collect()
+            geojson, _via = _collect_geojson()
+            if geojson is None:
+                return {"type": "FeatureCollection", "features": []}
 
             filtered_features = [
                 f for f in geojson.get('features', [])
-                if f.get('properties', {}).get('source') == source
+                if f.get('properties', {}).get('source_origin') == origin
+                and f.get('properties', {}).get('source') != 'federation'
             ]
 
             return {
@@ -252,18 +299,15 @@ class CoverageMapAndHeatmapMixin:
             )
             return
 
-        MapDataCollector = _load_map_data_collector()
-        if MapDataCollector is None:
-            self.ctx.dialog.msgbox("Error", "MapDataCollector not available.")
-            return
-
         try:
             from utils.paths import get_real_user_home
 
             generator = CoverageMapGenerator()
 
-            collector = MapDataCollector()
-            geojson = collector.collect()
+            geojson, via = _collect_geojson()
+            if geojson is None:
+                self.ctx.dialog.msgbox("Error", f"No node data: {via}.")
+                return
             features = geojson.get('features', [])
             if features:
                 generator.add_nodes_from_geojson(geojson)

@@ -10,6 +10,8 @@ from handler_protocol import BaseHandler
 from utils.link_quality import LinkQualityScorer, score_topology_edges
 from gateway.network_topology import get_network_topology
 
+from .topology import GRAPH_NOT_HERE, graph_observable
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,13 +65,30 @@ class LinkQualityHandler(BaseHandler):
             logger.error(f"Error scoring topology: {e}")
             return None, None
 
-    def _show_quality_overview(self):
+    def _scores_or_explain(self, title):
+        """Scores for a link-graph pane, or None after saying why.
+
+        The graph lives in the gateway process; this TUI's copy is empty by
+        construction, so every pane here read "No links found" / "No link
+        quality data" on every box — including gateways with a live graph
+        (2026-09-26; the Topology sibling was cured 2026-09-23 and this one
+        was missed). Empty-because-not-looked-at is not empty.
+        """
         scores, topology = self._get_topology_scores()
         if scores is None:
-            self.ctx.dialog.msgbox("Unavailable", "Link quality module or topology not available.\n\nEnsure the gateway is running.")
-            return
+            self.ctx.dialog.msgbox("Unavailable", "Link quality module or topology not available.")
+            return None
+        if not graph_observable(topology):
+            self.ctx.dialog.msgbox(title, GRAPH_NOT_HERE)
+            return None
         if not scores:
-            self.ctx.dialog.msgbox("No Links", "No links found in the topology.")
+            self.ctx.dialog.msgbox(title, "The gateway's link graph is live and holds no links yet.")
+            return None
+        return scores
+
+    def _show_quality_overview(self):
+        scores = self._scores_or_explain("Quality Overview")
+        if scores is None:
             return
         all_scores = [s.score for s in scores.values()]
         avg_score = sum(all_scores) / len(all_scores)
@@ -86,9 +105,8 @@ class LinkQualityHandler(BaseHandler):
         self.ctx.dialog.msgbox("Quality Overview", "\n".join(lines))
 
     def _show_best_links(self):
-        scores, topology = self._get_topology_scores()
-        if not scores:
-            self.ctx.dialog.msgbox("No Data", "No link quality data available.")
+        scores = self._scores_or_explain("Best Links")
+        if scores is None:
             return
         sorted_links = sorted(scores.items(), key=lambda x: x[1].score, reverse=True)[:15]
         lines = ["BEST QUALITY LINKS", "=" * 60, ""]
@@ -102,9 +120,8 @@ class LinkQualityHandler(BaseHandler):
         self.ctx.dialog.msgbox("Best Links", "\n".join(lines))
 
     def _show_worst_links(self):
-        scores, topology = self._get_topology_scores()
-        if not scores:
-            self.ctx.dialog.msgbox("No Data", "No link quality data available.")
+        scores = self._scores_or_explain("Worst Links")
+        if scores is None:
             return
         sorted_links = sorted(scores.items(), key=lambda x: x[1].score)[:15]
         lines = ["WORST QUALITY LINKS", "=" * 60, ""]
@@ -124,9 +141,8 @@ class LinkQualityHandler(BaseHandler):
         self.ctx.dialog.msgbox("Worst Links", "\n".join(lines))
 
     def _show_quality_alerts(self):
-        scores, topology = self._get_topology_scores()
-        if not scores:
-            self.ctx.dialog.msgbox("No Data", "No link quality data available.")
+        scores = self._scores_or_explain("Quality Alerts")
+        if scores is None:
             return
         alerts = [(link_id, score) for link_id, score in scores.items() if score.quality.value in ("poor", "bad")]
         alerts.sort(key=lambda x: x[1].score)
@@ -184,9 +200,8 @@ class LinkQualityHandler(BaseHandler):
         self.ctx.dialog.msgbox("Link Score", "\n".join(lines))
 
     def _show_quality_trends(self):
-        scores, topology = self._get_topology_scores()
-        if not scores:
-            self.ctx.dialog.msgbox("No Data", "No link quality data available.")
+        scores = self._scores_or_explain("Quality Trends")
+        if scores is None:
             return
         lines = ["LINK QUALITY ANALYSIS", "=" * 60, "", "Note: Trend tracking requires continuous monitoring.", "Current snapshot analysis:", ""]
         excellent = sum(1 for s in scores.values() if s.quality.value == "excellent")

@@ -19,6 +19,15 @@ logger = logging.getLogger(__name__)
 class TileCacheMixin:
     """Mixin: tile cache stats / download / estimate / clear menus."""
 
+    #: Said on every screen that could be read as an offline promise
+    #: (2026-09-26 live-truth pass). Measured 2026-09-15 (utils/coverage_map.py
+    #: header): the cache is WRITTEN and never READ — no map serves /tiles/,
+    #: every map pulls remote tiles. A field kit trusting "offline" gets a
+    #: blank map exactly when it needs one.
+    _TILES_NOT_USED = ("NOTE: no MeshForge map reads this cache yet — every map\n"
+                       "loads tiles from the internet. Cached tiles are NOT\n"
+                       "offline maps.")
+
     def _tile_cache_menu(self):
         """Manage offline tile cache for maps."""
         while True:
@@ -31,8 +40,8 @@ class TileCacheMixin:
             ]
 
             choice = self.ctx.dialog.menu(
-                "Offline Tile Cache",
-                "Manage cached map tiles for offline use:",
+                "Tile Cache (not used by maps yet)",
+                "Downloaded tiles are stored but no map reads them yet:",
                 choices
             )
 
@@ -71,8 +80,9 @@ class TileCacheMixin:
                 info.append(f"Newest Tile:  {stats['newest']}")
             if stats['tile_count'] == 0:
                 info.append("")
-                info.append("No tiles cached yet. Use 'Download Region'")
-                info.append("to cache tiles for offline map viewing.")
+                info.append("No tiles cached.")
+            info.append("")
+            info.append(self._TILES_NOT_USED)
 
             self.ctx.dialog.msgbox("Tile Cache Stats", "\n".join(info))
         except Exception as e:
@@ -131,6 +141,9 @@ class TileCacheMixin:
                 "Confirm Download",
                 f"Tiles to download: {estimate['total_tiles']}\n"
                 f"Estimated size: {estimate['estimated_mb']:.1f} MB\n\n"
+                f"{self._TILES_NOT_USED}\n\n"
+                "Bulk download also counts against the tile server's\n"
+                "usage policy (OpenStreetMap forbids bulk prefetch).\n\n"
                 "Proceed with download?"
             )
 

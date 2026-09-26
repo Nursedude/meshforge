@@ -302,6 +302,56 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
         "partial": True,
         "evidence": "commit 6f5249f7; banner rendered on the Airspy host at 21:1x HST on 14c565e6",
     },
+    ("maps_viz", "livemap"): {
+        "date": "2026-09-26", "box": "dev/manager box",
+        "scope": "menu [RUNNING] vs :5000 + the unit's active state; 'Auto-open [ON]' "
+                 "vs map_settings.json auto_open_map; View logs vs the unit's journal "
+                 "(same last lines). Browser snapshot NOT run (writes a "
+                 "file + opens a browser); its data path now reads the running service, "
+                 "unit-tested only. start/stop/restart not exercised",
+        "partial": True,
+        "evidence": "live render 09:2x HST, session of 2026-09-26; this commit",
+    },
+    ("maps_viz", "mfmaps"): {
+        "date": "2026-09-26", "box": "dev/manager box",
+        "scope": "box where meshforge-maps is installed but stopped+disabled: menu "
+                 "'Stopped', Service Status, Logs ('-- No entries --') and Health "
+                 "('not running') all match the unit's state; Health's field names matched a "
+                 "RUNNING box's live /api/health (status/score/data_age_seconds/"
+                 "sources_reporting/components). Not rendered on a box where it runs; "
+                 "the health screen omits node_history_write_error_* (null fleet-wide)",
+        "partial": True,
+        "evidence": "live render + the unit's active/enabled state + :8808/api/health on "
+                    "four boxes, 09:2x HST",
+    },
+    ("maps_viz", "coverage"): {
+        "date": "2026-09-26", "box": "dev/manager box",
+        "scope": "FIXED then verified: 'Live from meshtasticd only' said 'No nodes found' "
+                 "beside 196 radio nodes (filtered on a `source` value no feature carries, "
+                 "5 boxes measured); now 'Found 360 nodes' = the service geojson's "
+                 "local_radio non-federated count (360), map generated. 'All sources', "
+                 "MQTT (0 is true: not_configured) and file NOT run",
+        "partial": True,
+        "evidence": "live render 09:32 HST + jq over /api/nodes/geojson; this commit",
+    },
+    ("maps_viz", "tiles"): {
+        "date": "2026-09-26", "box": "dev/manager box",
+        "scope": "Cache Stats 0 tiles vs the cache dir; the screens now say what "
+                 "coverage_map.py measured 09-15 — the cache is written and never read, "
+                 "no map serves it. Download / Clear NOT run",
+        "partial": True,
+        "evidence": "live render 09:3x HST; tests/test_tile_cache_honesty.py; this commit",
+    },
+    ("maps_viz", "quality"): {
+        "date": "2026-09-26", "box": "dev/manager box",
+        "scope": "FIXED then verified: all five graph panes read 'No links found' / 'No "
+                 "link quality data' from the TUI's own empty topology (the graph lives in "
+                 "the gateway process); now they say NOT OBSERVABLE like the Topology "
+                 "sibling (cured 09-23). Score Single Link (a calculator) not run",
+        "partial": True,
+        "evidence": "live render 09:4x HST; tests/test_link_quality_observability.py; "
+                    "this commit",
+    },
 }
 
 

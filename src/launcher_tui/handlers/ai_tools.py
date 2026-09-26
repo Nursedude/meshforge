@@ -54,6 +54,25 @@ MAP_SERVER_SERVICE = "meshforge-map"
 logger = logging.getLogger(__name__)
 
 
+def _snapshot_source_lines(geojson: dict) -> str:
+    """Every source that yielded nodes, plus the federated share.
+
+    The snapshot used to name exactly three (meshtasticd / MQTT /
+    node_tracker) — on the dev box that read "MQTT: 0, node_tracker: 0" beside
+    49,812 features, 49,425 of them FEDERATED from peers and counted by no
+    source at all (2026-09-26). Non-numeric entries (``meshtasticd_via``) are
+    transport notes, not counts.
+    """
+    sources = (geojson.get("properties") or {}).get("sources") or {}
+    lines = [f"  {k}: {v}" for k, v in sorted(sources.items())
+             if isinstance(v, int) and not isinstance(v, bool) and v > 0]
+    fed = sum(1 for f in geojson.get("features", [])
+              if (f.get("properties") or {}).get("source") == "federation")
+    if fed:
+        lines.append(f"  federated from peers: {fed}")
+    return "Sources:\n" + ("\n".join(lines) if lines else "  (no source reported a count)")
+
+
 class AIToolsHandler(
     MeshForgeMapsExtensionMixin,
     DiagnosticsAndAssistantMixin,
@@ -77,7 +96,7 @@ class AIToolsHandler(
             ("mfmaps",    "MeshForge Maps      Multi-source map ext.", "maps"),
             ("coverage",  "Coverage Map        Generate coverage map",  "maps"),
             ("heatmap",   "Heatmap             Node density heatmap",   "maps"),
-            ("tiles",     "Offline Tiles       Cache map tiles",        "maps"),
+            ("tiles",     "Tile Cache          Stored, not yet used",   "maps"),
             ("ai",        "AI Diagnostics      Knowledge base, assistant", None),
         ]
 
@@ -313,10 +332,12 @@ class AIToolsHandler(
         self.ctx.dialog.infobox("Loading", "Collecting node data from all sources...")
 
         try:
-            from utils.map_data_service import MapDataCollector
+            from ._ai_tools_coverage import _collect_geojson
 
-            collector = MapDataCollector()
-            geojson = collector.collect()
+            geojson, via = _collect_geojson()
+            if geojson is None:
+                self.ctx.dialog.msgbox("Error", f"No node data: {via}.")
+                return
             node_count = len(geojson.get("features", []))
             sources = geojson.get("properties", {}).get("sources", {})
 
@@ -339,10 +360,7 @@ class AIToolsHandler(
                 geojson_str = json.dumps(geojson)
                 inject_script = (
                     f'\n<script>\n'
-                    f'// MeshForge: {node_count} nodes from '
-                    f'meshtasticd({sources.get("meshtasticd", 0)}) '
-                    f'mqtt({sources.get("mqtt", 0)}) '
-                    f'tracker({sources.get("node_tracker", 0)})\n'
+                    f'// MeshForge: {node_count} nodes via {via}\n'
                     f'window.meshforgeData = {geojson_str};\n'
                     f'</script>\n</body>'
                 )
@@ -357,16 +375,10 @@ class AIToolsHandler(
             with open(output_file, 'w') as f:
                 f.write(html_content)
 
-            # Build detailed source breakdown
-            source_info = []
-            source_info.append(f"meshtasticd: {sources.get('meshtasticd', 0)}")
-            source_info.append(f"MQTT: {sources.get('mqtt', 0)}")
-            source_info.append(f"node_tracker: {sources.get('node_tracker', 0)}")
-
             msg = (
                 f"Map saved: {output_file}\n\n"
-                f"Total nodes: {node_count}\n"
-                f"Sources:\n  " + "\n  ".join(source_info) + "\n\n"
+                f"Total features: {node_count}  (via {via})\n"
+                + _snapshot_source_lines(geojson) + "\n\n"
                 "Opening in browser..."
             )
             self.ctx.dialog.msgbox("Live Map", msg)
