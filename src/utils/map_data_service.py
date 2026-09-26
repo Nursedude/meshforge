@@ -251,8 +251,9 @@ class MapServer:
             from utils.map_http_handler import ws_client_admitted
             ws_server = _get_websocket_server(
                 port=self.websocket_port, page_port=self.port, host=self.host,
-                gate=lambda ip, origin: ws_client_admitted(
-                    ip, origin, MapRequestHandler.allowed_origins))
+                gate=lambda ip, origin, host: ws_client_admitted(
+                    ip, origin, MapRequestHandler.allowed_origins,
+                    request_host=host, page_port=self.port))
             if ws_server.start():
                 self._websocket_started = True
                 logger.info(f"WebSocket server started on port {self.websocket_port}")

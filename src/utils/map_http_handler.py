@@ -218,8 +218,47 @@ def _client_ip_trusted(client_host: str, allowed: Optional[List[str]]) -> bool:
     return any(ip in net for net in _trusted_networks_from_origins(allowed))
 
 
+#: Name suffixes only the browser's LOCAL resolver can answer (mDNS, RFC 8375
+#: home.arpa, ICANN-reserved .internal, AREDN's local.mesh). A public name is
+#: attacker-controllable (DNS rebinding), so it never earns same-host trust.
+_LOCAL_NAME_SUFFIXES = (".local", ".home.arpa", ".internal", ".local.mesh")
+_LABEL_RE = re.compile(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+
+
+def _local_only_name(name: str) -> bool:
+    """True for a hostname no public DNS can hand an attacker: one label
+    (``moc``, resolved from /etc/hosts or the LAN's own DNS) or a reserved
+    local suffix. IP literals are handled by the /24 rule, never here."""
+    name = (name or "").lower().rstrip(".")
+    labels = name.split(".")
+    if not name or not all(_LABEL_RE.match(lbl) for lbl in labels):
+        return False
+    if len(labels) == 1:
+        return not name.isdigit()
+    return name.endswith(_LOCAL_NAME_SUFFIXES)
+
+
+def _same_local_host(origin: str, request_host: Optional[str],
+                     page_port: Optional[int]) -> bool:
+    """The page and the socket were reached by the SAME local-only name: the
+    map opened as ``http://moc:5000`` connects ``ws://moc:5001`` (the status
+    endpoint builds that URL from the page's Host), so Origin names the host
+    the browser itself dialled. Found 2026-09-25: the IP-prefix list refused
+    every map opened by hostname (moc: IP origin 101, hostname origin 403)."""
+    if not request_host or page_port is None:
+        return False
+    m = re.match(r'^http://([^/:]+):(\d+)$', origin or "")
+    if not m or int(m.group(2)) != int(page_port):
+        return False
+    name = m.group(1).lower()
+    dialled = request_host.rsplit(":", 1)[0].lower() if ":" in request_host else request_host.lower()
+    return name == dialled and _local_only_name(name)
+
+
 def ws_client_admitted(client_host: str, origin: str,
-                       allowed: Optional[List[str]]) -> bool:
+                       allowed: Optional[List[str]],
+                       request_host: Optional[str] = None,
+                       page_port: Optional[int] = None) -> bool:
     """The live-updates WebSocket admits exactly who the HTTP read gate does.
 
     It pushes the same node/message data the page already polls, so the
@@ -228,11 +267,14 @@ def ws_client_admitted(client_host: str, origin: str,
     accepts — a trusted LAN browser visiting a hostile page must not be able
     to open it. Operator 2026-09-25: fleet = "continuity and flow"; a
     standalone map bound to loopback stays loopback (the bind follows the map).
+    The Origin may also be the map page itself reached by a local-only name
+    (``_same_local_host``) — the IP gate still applies first.
     """
     if not _client_ip_trusted(client_host, allowed):
         return False
     origins = allowed if allowed else MapRequestHandler._DEFAULT_ORIGINS + ['http://127.0.0.1']
-    return _origin_allowed(origin, origins)
+    return (_origin_allowed(origin, origins)
+            or _same_local_host(origin, request_host, page_port))
 
 
 def _own_primary_ipv4() -> Optional[str]:

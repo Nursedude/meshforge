@@ -98,18 +98,19 @@ def test_ws_gate_matches_read_gate(ip, origin, allowed, expected):
 def test_gate_mode_handshake(server_factory):
     seen = []
 
-    def gate(ip, origin):
-        seen.append((ip, origin))
+    def gate(ip, origin, host):
+        seen.append((ip, origin, host))
         return origin == "http://localhost:5000"
 
     srv = server_factory(gate=gate)
     assert _handshake(srv.port, "http://localhost:5000")
     assert not _handshake(srv.port, "http://localhost:6000")
     assert seen and seen[0][0] == "127.0.0.1"
+    assert seen[0][2] == f"127.0.0.1:{srv.port}"  # the Host header reaches the gate
 
 
 def test_gate_that_raises_refuses(server_factory):
-    def gate(ip, origin):
+    def gate(ip, origin, host):
         raise RuntimeError("cannot decide")
 
     srv = server_factory(gate=gate)
@@ -124,3 +125,35 @@ def test_stop_releases_the_port(server_factory):
     with socket.socket() as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(("127.0.0.1", port))  # raises EADDRINUSE if still listening
+
+
+# --- the map opened by HOSTNAME (2026-09-25: moc IP origin 101, hostname 403) ---
+
+@pytest.mark.parametrize("ip,origin,host,expected", [
+    ("192.0.2.40", "http://moc:5000", "moc:5001", True),              # fleet alias
+    ("192.0.2.40", "http://MOC:5000", "moc:5001", True),              # case
+    ("192.0.2.40", "http://kiai.local:5000", "kiai.local:5001", True),
+    ("192.0.2.40", "http://n.home.arpa:5000", "n.home.arpa:5001", True),
+    ("192.0.2.40", "http://wh6gxz-6-n.local.mesh:5000", "wh6gxz-6-n.local.mesh:5001", True),
+    # DNS rebinding: an attacker controls a PUBLIC name's resolution
+    ("192.0.2.40", "http://evil.example:5000", "evil.example:5001", False),
+    ("192.0.2.40", "http://moc.evil.example:5000", "moc.evil.example:5001", False),
+    # hostile page reaching the box by its real name
+    ("192.0.2.40", "http://evil:5000", "moc:5001", False),
+    ("192.0.2.40", "http://moc:6000", "moc:5001", False),             # not the map port
+    ("192.0.2.40", "https://moc:5000", "moc:5001", False),            # map is http
+    ("192.0.2.40", "http://moc:5000/x", "moc:5001", False),
+    ("192.0.2.40", "http://moc:5000", "", False),                     # no Host header
+    ("192.0.2.40", "http://1234:5000", "1234:5001", False),           # all-digit label
+    # the IP gate still comes first
+    ("198.51.100.7", "http://moc:5000", "moc:5001", False),
+])
+def test_ws_gate_admits_the_map_by_local_hostname(ip, origin, host, expected):
+    assert ws_client_admitted(ip, origin, LAN, request_host=host,
+                              page_port=5000) is expected
+
+
+def test_hostname_rule_needs_the_page_port():
+    """Without page_port the same-host rule cannot fire (fail closed)."""
+    assert not ws_client_admitted("192.0.2.40", "http://moc:5000", LAN,
+                                  request_host="moc:5001")

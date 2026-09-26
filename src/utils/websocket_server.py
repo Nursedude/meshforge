@@ -86,7 +86,8 @@ class MessageWebSocketServer:
             port: WebSocket port (default 5001, one above HTTP)
             page_port: HTTP port of the page that opens this socket; its
                 loopback origins are allowed (the bind stays loopback-only)
-            gate: (client_ip, origin) -> admitted. When given it REPLACES the
+            gate: (client_ip, origin, host) -> admitted, where host is the
+                handshake's Host header. When given it REPLACES the
                 fixed origin list and is asked per handshake (403 otherwise),
                 so a LAN bind is only as open as the gate.
         """
@@ -257,9 +258,11 @@ class MessageWebSocketServer:
         try:
             ip = connection.remote_address[0]
             origin = request.headers.get('Origin', '')
-            if self.gate(ip, origin):
+            host = request.headers.get('Host', '')
+            if self.gate(ip, origin, host):
                 return None
-            logger.info(f"WebSocket refused: {ip} origin={origin or '-'} not trusted")
+            logger.info(f"WebSocket refused: {ip} origin={origin or '-'} "
+                        f"host={host or '-'} not trusted")
         except Exception as e:  # a gate that cannot decide refuses
             logger.warning(f"WebSocket gate error, refusing: {e}")
         return connection.respond(HTTPStatus.FORBIDDEN, "not a trusted client\n")
