@@ -2735,6 +2735,17 @@
         return 'default';
     }
 
+    // Exactly the inputs createMarkerIcon / getNodeColor / getNodeShape read.
+    // last_seen / snr / exact battery change on nearly every 60 s poll but the
+    // icon cannot show them; rebuilding every marker's DOM each refresh made
+    // the map flash and re-shuffle clusters ("it rolls" — operator 2026-09-25).
+    // Add a field here when the icon starts depending on it.
+    function markerIconKey(p) {
+        return [p.is_online, p.network, p.is_gateway, p.via_mqtt, p.role,
+                p.is_local, p.federated,
+                (p.battery !== null && p.battery !== undefined && p.battery < 20)].join('|');
+    }
+
     function createMarkerIcon(props, isNew) {
         const color = getNodeColor(props);
         const shape = getNodeShape(props);
@@ -3182,7 +3193,12 @@
                 oldProps.last_seen !== props.last_seen
             );
             if (propsChanged) {
-                existing.marker.setIcon(createMarkerIcon(props, false));
+                // Rebuild the icon ONLY when something the icon shows changed;
+                // the popup text still refreshes (cheap: it's not in the DOM
+                // until opened).
+                if (markerIconKey(oldProps) !== markerIconKey(props)) {
+                    existing.marker.setIcon(createMarkerIcon(props, false));
+                }
                 existing.marker.setPopupContent(createPopupContent(props, coords));
             }
             const oldCoords = existing.feature.geometry.coordinates;
@@ -3273,7 +3289,14 @@
             drawNodeLinks(state.currentGeoJSON.features, ctx.activeIds);
         }
 
-        updateSignalHeatmap(state.currentGeoJSON.features);
+        // Only what the view displays: the heatmap used every feature, so a
+        // Hawaii view heated the US mainland too (operator 2026-09-25). Same
+        // id rule as _processOneFeature, so markers and heat always agree.
+        updateSignalHeatmap(state.currentGeoJSON.features.filter(f => {
+            const p = f.properties || {};
+            const c = (f.geometry && f.geometry.coordinates) || [];
+            return ctx.activeIds.has(p.id || `${c[0]}_${c[1]}`);
+        }));
 
         // Per-protocol counts come from the persistent node directory
         // (Issue #49) when available — that includes RNS / MeshCore nodes
@@ -3573,8 +3596,25 @@
             }
         }
 
-        // Create or update heatmap layer
-        if (heatData.length > 0) {
+        // Nothing to show in this view: remove the layer. (It used to stay on
+        // screen with the previous view's data.)
+        if (heatData.length === 0) {
+            if (heatmapLayer) {
+                map.removeLayer(heatmapLayer);
+                heatmapLayer = null;
+            }
+            return;
+        }
+
+        // Update IN PLACE on refresh: removing and re-creating the layer every
+        // 60 s blanked and repainted the canvas (operator: "it rolls").
+        if (heatmapLayer && typeof heatmapLayer.setLatLngs === 'function') {
+            heatmapLayer.setLatLngs(heatData);
+            return;
+        }
+
+        // Create heatmap layer
+        {
             if (heatmapLayer) {
                 map.removeLayer(heatmapLayer);
             }

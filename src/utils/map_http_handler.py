@@ -367,6 +367,37 @@ class MapRequestHandler(
         "form-action 'self'"
     )
 
+    _HOSTNAME_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
+
+    def _ws_connect_source(self) -> str:
+        """The live-updates WebSocket as a CSP source — exactly the URL
+        _serve_websocket_status hands the page (Host header's hostname +
+        the running server's port) — or '' when it is not running.
+
+        connect-src 'self' covers only :5000, so the page's ws://…:5001
+        connection was REFUSED by our own CSP from 2026-05-14 (6c832b23) on:
+        the map never went live and fell back to its 60 s poll (found
+        2026-09-25). The hostname comes from a client header, so it must
+        match a plain hostname/IPv4 before it is placed in a response header."""
+        try:
+            if not (_HAS_WS_SERVER and _is_websocket_available()):
+                return ""
+            ws_server = _get_websocket_server()
+            if not ws_server._running:
+                return ""
+            hostname = self.headers.get('Host', 'localhost:5000').split(':')[0]
+            if not self._HOSTNAME_RE.match(hostname):
+                return ""
+            return f"ws://{hostname}:{int(ws_server.port)}"
+        except Exception:  # never let the header path fail the page
+            return ""
+
+    def _csp_policy(self) -> str:
+        ws = self._ws_connect_source()
+        if not ws:
+            return self._CSP_POLICY
+        return self._CSP_POLICY.replace("connect-src 'self'; ", f"connect-src 'self' {ws}; ", 1)
+
     def _send_security_headers(self):
         """Send CSP + companion hardening headers for HTML responses.
 
@@ -374,7 +405,7 @@ class MapRequestHandler(
         those don't render in a script context). CSP is the load-bearing
         line; the other three are zero-cost defense-in-depth.
         """
-        self.send_header('Content-Security-Policy', self._CSP_POLICY)
+        self.send_header('Content-Security-Policy', self._csp_policy())
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer-when-downgrade')
         self.send_header('X-Frame-Options', 'DENY')
