@@ -16,7 +16,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 
 **Truth** says how the action's HONESTY is checked (`tests/test_tui_success_truth_sweep.py`, `launcher_tui/action_truth.py`): `sweep` = dispatched on every commit with every external DEAD and required to render a word of uncertainty; `local-only` = declared to consult no external (the why is in `action_truth.py`); `⚠️ false-ok` = a FROZEN baseline finding — renders a confident screen with nothing to be confident about. The baseline only shrinks.
 
-**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 31 action(s) have an entry — a blank is the honest default, not a failure.
+**Live** says whether the action was ever checked against a LIVE answer (`launcher_tui/live_truth.py`): `✓ date box` = verified end to end; `◐` = partially (the entry's scope says what was NOT covered); blank = never checked live. The Truth column proves honesty with everything dead; this one records correctness with everything alive. 33 action(s) have an entry — a blank is the honest default, not a failure.
 
 ## `about`
 
@@ -101,8 +101,8 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | `mfmaps` | MeshForge Maps — Multi-source map ext. | `maps` | sweep | ◐ 2026-09-26 dev/manager box | AIToolsHandler |
 | `tiles` | Tile Cache — Stored, not yet used | `maps` | sweep | ◐ 2026-09-26 dev/manager box | AIToolsHandler |
 | `quality` | Link Quality — Quality analysis |  | sweep | ◐ 2026-09-26 dev/manager box | LinkQualityHandler |
-| `export` | Export Data — GeoJSON, CSV, GraphML |  | sweep |  | TopologyHandler |
-| `topology` | Network Topology — D3.js graph view |  | sweep |  | TopologyHandler |
+| `export` | Export Data — GeoJSON, CSV, GraphML |  | sweep | ◐ 2026-09-26 dev/manager box | TopologyHandler |
+| `topology` | Network Topology — D3.js graph view |  | sweep | ◐ 2026-09-26 dev/manager box | TopologyHandler |
 | `traffic` | Traffic Inspector — Packet capture & analysis |  | sweep | ◐ 2026-09-26 dev/manager box + both gateway boxes | TrafficInspectorHandler |
 
 ## `mesh_networks`

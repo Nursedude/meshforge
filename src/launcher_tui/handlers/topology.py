@@ -389,9 +389,15 @@ class TopologyHandler(BaseHandler):
 
             node_choices.append(("back", "Back"))
 
+            # Say what the list IS (2026-09-26 live render): "Found 820 nodes"
+            # read as a live count while the tracker served a 54-day-old
+            # node_cache.json, and only the first 50 were listed.
+            shown = len(sorted_nodes)
+            count = (f"{len(all_nodes)} nodes" if shown == len(all_nodes)
+                     else f"{len(all_nodes)} nodes (first {shown} by name)")
             selected = self.ctx.dialog.menu(
                 "Network Nodes",
-                f"Found {len(all_nodes)} nodes:",
+                f"{count}\n{self._node_cache_source()}",
                 node_choices
             )
 
@@ -1127,6 +1133,16 @@ class TopologyHandler(BaseHandler):
                     "Network topology not loaded.\n\n"
                     "The gateway service may need to be running."
                 )
+                return
+
+            # An export of a graph this process never built is an empty file
+            # announced as "Exported" (2026-09-26 live run: CSV nodes = 1 row,
+            # edges = header only). Refuse and say where the data lives.
+            if not graph_observable(topology):
+                self.ctx.dialog.msgbox(
+                    "Export — not observable here",
+                    GRAPH_NOT_HERE + "\n\nNodes with positions, as GeoJSON: the running "
+                    "map service's /api/nodes/geojson (Maps > Live NOC Map).")
                 return
 
             viz = _TopologyVisualizer.from_topology(topology)

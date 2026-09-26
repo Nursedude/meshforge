@@ -364,6 +364,29 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
         "partial": True,
         "evidence": "commit fe5c4ef5; ssh line counts before/after the 10:24 HST restarts",
     },
+    ("maps_viz", "topology"): {
+        "date": "2026-09-26", "box": "dev/manager box",
+        "scope": "Statistics (820 nodes, links NOT OBSERVABLE, source node_cache.json "
+                 "'saved 54d ago' = its mtime 08-03); Links/ASCII say NOT OBSERVABLE. "
+                 "FIXED: View Nodes said 'Found 820 nodes' as if live while listing 50 of a "
+                 "54-day-old cache — now says 'first 50 by name' + source + age. The cache "
+                 "holds a test fixture '!deadbeef' (first_seen 07-21, the test-leak window) — "
+                 "operator's call. Events/Trace/Browser/Export-from-here not run",
+        "partial": True,
+        "evidence": "live render 10:4x HST + jq over node_cache.json; this commit",
+    },
+    ("maps_viz", "export"): {
+        "date": "2026-09-26", "box": "dev/manager box",
+        "scope": "FIXED then verified: GeoJSON failed 'Permission denied' on a ROOT-owned "
+                 "topology.geojson (24 root-owned files in the user's meshforge dirs, "
+                 "Feb–Apr sudo runs — operator's call); CSV reported 'Exported' for 1 node "
+                 "row + a header-only edges file — the TUI's graph is empty by "
+                 "construction. Now every format refuses with NOT OBSERVABLE and points at "
+                 "the map's /api/nodes/geojson",
+        "partial": True,
+        "evidence": "live run 10:51 HST (files + ls -la); tests/test_topology_nodes_label.py; "
+                    "this commit",
+    },
 }
 
 
