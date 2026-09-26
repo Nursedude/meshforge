@@ -34,8 +34,9 @@ REPOS=(
     "Nursedude/meshanchor"
     "Nursedude/meshforge-maps"
     "Nursedude/meshing_around_meshforge"
-    "Nursedude/RNS-Management-Tool"
-    "Nursedude/RNS-Meshtastic-Gateway-Tool"
+    # RNS-Management-Tool and RNS-Meshtastic-Gateway-Tool: ARCHIVED on GitHub
+    # (operator, 2026-09-25) — their CI no longer runs; listing them would
+    # report stale results as current.
 )
 
 STATUS_FILE="$HOME/.meshforge-ci-status"

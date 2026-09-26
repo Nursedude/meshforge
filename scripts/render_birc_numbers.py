@@ -27,7 +27,7 @@ REPOS = [
     ("meshforge-maps",           Path("/opt/meshforge-maps"),           "src/__init__.py"),
     ("meshing_around_meshforge", Path("/opt/meshing_around_meshforge"), "meshing_around_clients/__init__.py"),
     ("meshanchor",               Path("/opt/meshanchor"),               "src/__version__.py"),
-    ("RNS-Management-Tool",      Path("/opt/RNS-Management-Tool"),      None),
+    # RNS-Management-Tool: archived + local checkout removed 2026-09-25.
 ]
 
 VERSION_RE = re.compile(r'__version__\s*=\s*["\']([^"\']+)["\']')

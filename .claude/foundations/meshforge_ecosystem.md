@@ -63,14 +63,14 @@ MeshForge is not a single repository — it's a **domain** spanning five repos t
 
 ### Nursedude/RNS-Management-Tool (RNS Installer)
 - **Role**: Cross-platform installer/manager for the entire RNS ecosystem
-- **Status**: Beta (v0.3.2)
+- **Status**: **ARCHIVED** on GitHub; local checkout retired 2026-09-25 (operator: consolidating dev effort). Was Beta (v0.3.2)
 - **Stack**: Bash (Linux/RPi), PowerShell (Windows 11), Python 3.7+
 - **Owns**: RNS/LXMF/NomadNet/MeshChat/Sideband installation, RNODE firmware flashing (21+ boards), backup/restore
 - **Unique**: Only MeshForge ecosystem tool with native Windows support
 
 ### Nursedude/RNS-Meshtastic-Gateway-Tool (Bridge Driver)
 - **Role**: Original RNS-to-Meshtastic bridge implementation
-- **Status**: Alpha — **migration to MeshForge NOC in progress**
+- **Status**: **ARCHIVED** on GitHub; local checkout retired 2026-09-25. Bridging now lives in MeshForge `src/gateway/` (was Alpha, migrating)
 - **Stack**: Python, custom `Meshtastic_Interface` extending `RNS.Interfaces.Interface`
 - **Contains**: `MESHFORGE_ANALYSIS.md`, `TO_MESHFORGE.md` (migration plan docs)
 - **Future**: Core driver logic absorbing into `src/gateway/` in MeshForge NOC
@@ -90,8 +90,8 @@ suite 534 passed on the new versions. Regen recipe: needs a py3.11 host
 |-----|-----------|-----------------------------------|
 | meshforge, meshanchor, meshforge-maps | **active** | fleet-wide / meshanchor-server / moc:8808 + cloud |
 | meshing_around_meshforge (+ meshing-around fork) | **dormant** (last upstream merge 2026-08-06) | NOT deployed — checkouts on VolcanoAI only, no units/procs anywhere |
-| RNS-Management-Tool | **dormant** (2026-06-20) | NOT deployed — checkout only |
-| RNS-Meshtastic-Gateway-Tool | **dormant/absorbing** (2026-06-01) | NOT deployed — checkout only; logic migrating into `src/gateway/` |
+| RNS-Management-Tool | **archived** (2026-09-25) | nowhere — GitHub archived, VolcanoAI checkout retired |
+| RNS-Meshtastic-Gateway-Tool | **archived** (2026-09-25) | nowhere — GitHub archived, VolcanoAI checkout retired; bridging is `src/gateway/` |
 | reticulum-meshchat (3rd-party, liamcottle via Nursedude fork) | external | **RUNNING on moc5** — updated 2026-08-28 to `4d57d6a`, RNS env on the fork pin (1.3.8+mf.0). **Auth added 08-28**: nginx-light basic-auth owns LAN `:8000` (`sites-available/meshchat-auth`, WS-aware, 101 verified), meshchat itself loopback-only `127.0.0.1:8001` via systemd drop-in `localhost-behind-nginx.conf`; credential in `/etc/nginx/.htpasswd-meshchat`. MeshChatX (Quad4 fork) evaluated 08-28: not a drop-in — data-incompatible, untested vs the fork pin; canary in the lab first if wanted |
 
 ---
@@ -99,7 +99,7 @@ suite 534 passed on the new versions. Regen recipe: needs a py3.11 host
 ## 3. Boundary Rules (What Lives Where)
 
 ### Gateway & Bridge Logic → meshforge (NOC)
-All protocol bridging, message routing, and 3-way MeshCore routing belongs in the core NOC. The RNS-Meshtastic-Gateway-Tool's driver is migrating here.
+All protocol bridging, message routing, and 3-way MeshCore routing belongs in the core NOC. (The archived RNS-Meshtastic-Gateway-Tool's role now lives here.)
 
 ### Visualization & Mapping → meshforge-maps
 Interactive maps, topology graphs, health dashboards, and map-based alerting. The NOC's `coverage_map.py` generates static Folium maps; meshforge-maps provides the live interactive layer.
@@ -107,8 +107,8 @@ Interactive maps, topology graphs, health dashboards, and map-based alerting. Th
 ### Bot-Adjacent Alerting → meshing_around_meshforge
 Alert rules that operate on meshing-around bot data (proximity, EAS/iPAWS, volcano, etc.). This is NOT generic NOC alerting — it's specific to the meshing-around bot ecosystem.
 
-### RNS Ecosystem Install/Manage → RNS-Management-Tool
-Installing, updating, configuring, and backing up RNS components. The NOC **connects to** running RNS services; this tool **installs and manages** them.
+### RNS Ecosystem Install/Manage → MeshForge installers + `rnodeconf`
+Installing, updating, configuring, and backing up RNS components: MeshForge's own install/update path (RNS/LXMF pinned to the Nursedude forks, `requirements/rns.txt`), RNode firmware via `rnodeconf` — owned firmware: `Nursedude/RNode_Firmware` (fork 2026-09-25; `scripts/rnode_fw_mirror.py`). RNS-Management-Tool, which held this role, is archived (2026-09-25).
 
 ### NOC Alerting vs Bot Alerting
 - **NOC (meshforge)**: Service health, gateway status, link quality, node tracker events
