@@ -352,6 +352,18 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
         "evidence": "live render 09:4x HST; tests/test_link_quality_observability.py; "
                     "this commit",
     },
+    ("maps_viz", "traffic"): {
+        "date": "2026-09-26", "box": "dev/manager box + both gateway boxes",
+        "scope": "FIXED then verified: opening the screen truncated traffic.log (the "
+                 "gateway's live log on gateway boxes; every gateway restart did too). "
+                 "After deploy both gateways restarted and their earlier header + packet "
+                 "lines survived (202->281, 166->235 lines, 2 headers, new header names "
+                 "the new MainPID). Statistics/Archive (0/DISABLED) match on the dev box. "
+                 "OPEN: on a gateway box the menu's 'Capture: STOPPED' checks only the TUI "
+                 "process while the gateway captures into the shared DB — not rendered there",
+        "partial": True,
+        "evidence": "commit fe5c4ef5; ssh line counts before/after the 10:24 HST restarts",
+    },
 }
 
 
