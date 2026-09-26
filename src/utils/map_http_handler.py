@@ -1219,6 +1219,10 @@ class MapRequestHandler(
 
     def _serve_message_queue(self):
         """Serve pending messages from the gateway message queue."""
+        # Who-talks-to-whom metadata: same audience as the live-updates socket
+        # and /api/messages/received (2026-09-26).
+        if self._reject_if_untrusted():
+            return
         messages = []
 
         # Try to load from SQLite message queue
@@ -1271,7 +1275,15 @@ class MapRequestHandler(
 
         This endpoint returns messages RECEIVED from the mesh, stored by
         the MessageListener. Use /api/messages/queue for pending OUTBOUND messages.
+
+        GATED (2026-09-26): message TEXT, up to 500 rows, was served to any
+        client that could reach :5000 while the WebSocket pushing the same
+        messages already sat behind the read gate. Measured before gating:
+        zero reads on all 7 fleet maps since their last restart; the only
+        reader is the map page itself, which the gate admits.
         """
+        if self._reject_if_untrusted():
+            return
         # Parse query parameters. Clamp limit defensively — a bare int() here
         # (outside the try below) turned ?limit=abc into an uncaught 500 and
         # ?limit=-1 into SQLite `LIMIT -1` (unbounded table dump on the request
