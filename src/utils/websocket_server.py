@@ -28,6 +28,7 @@ Usage:
 import asyncio
 import json
 import logging
+from http import HTTPStatus
 import threading
 from dataclasses import dataclass
 from datetime import datetime
@@ -39,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 # Import websockets - graceful fallback if not available
 _websockets, _HAS_WEBSOCKETS = safe_import('websockets')
-_serve, _HAS_WS_SERVER = safe_import('websockets.server', 'serve')
+_serve, _HAS_WS_SERVER = safe_import('websockets.asyncio.server', 'serve')  # new API (>=13): process_request sees remote_address; the legacy one never did
 _ConnectionClosed, _HAS_WS_EXCEPTIONS = safe_import('websockets.exceptions', 'ConnectionClosed')
 
 WEBSOCKETS_AVAILABLE = _HAS_WEBSOCKETS and _HAS_WS_SERVER and _HAS_WS_EXCEPTIONS
@@ -68,19 +69,35 @@ class MessageWebSocketServer:
     Thread-safe broadcast method can be called from any thread.
     """
 
-    # Allowed WebSocket origin prefixes (localhost only by default)
+    # Allowed WebSocket origins (localhost only by default). websockets
+    # matches the Origin header EXACTLY, and a browser's Origin carries the
+    # page's port — so these portless entries alone refused every page served
+    # from :5000 (403, found 2026-09-25). Pass page_port to name that page.
     _ALLOWED_ORIGINS = ['http://localhost', 'https://localhost']
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 5001):
+    def __init__(self, host: str = "127.0.0.1", port: int = 5001,
+                 page_port: Optional[int] = None,
+                 gate: Optional[Callable[[str, str], bool]] = None):
         """
         Initialize WebSocket server.
 
         Args:
             host: Bind address (127.0.0.1 for localhost only)
             port: WebSocket port (default 5001, one above HTTP)
+            page_port: HTTP port of the page that opens this socket; its
+                loopback origins are allowed (the bind stays loopback-only)
+            gate: (client_ip, origin) -> admitted. When given it REPLACES the
+                fixed origin list and is asked per handshake (403 otherwise),
+                so a LAN bind is only as open as the gate.
         """
+        self.gate = gate
         self.host = host
         self.port = port
+        self.allowed_origins = list(self._ALLOWED_ORIGINS)
+        if page_port is not None:
+            p = int(page_port)
+            self.allowed_origins += [f"http://localhost:{p}",
+                                     f"http://127.0.0.1:{p}"]
         self._clients: Set = set()
         self._lock = threading.Lock()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -155,13 +172,17 @@ class MessageWebSocketServer:
             except Exception as e:
                 logger.debug(f"Error closing clients: {e}")
 
-        # Stop the event loop
-        if self._loop:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-
-        # Wait for thread to finish
+        # _serve() leaves its `async with serve(...)` within ~1 s of _running
+        # going False, which closes the listening socket properly. Stopping
+        # the loop from outside first abandoned that close mid-flight
+        # ("Event loop stopped before Future completed") — keep it only as
+        # the fallback for a loop that does not come back.
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=5)
+            self._thread.join(timeout=3)
+        if self._thread and self._thread.is_alive() and self._loop:
+            logger.warning("WebSocket server did not exit cleanly; stopping its loop")
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._thread.join(timeout=2)
 
         self._loop = None
         self._thread = None
@@ -215,11 +236,11 @@ class MessageWebSocketServer:
             ping_interval=30,
             ping_timeout=10,
         )
-        # Restrict allowed origins to localhost (prevents cross-site WebSocket hijacking)
-        try:
-            serve_kwargs['origins'] = self._ALLOWED_ORIGINS
-        except Exception:
-            pass  # Older websockets versions may not support origins
+        if self.gate is not None:
+            serve_kwargs['process_request'] = self._gate_request
+        else:
+            # Restrict allowed origins to localhost (prevents cross-site WebSocket hijacking)
+            serve_kwargs['origins'] = self.allowed_origins
         async with serve(
             self._handle_client,
             self.host,
@@ -230,6 +251,18 @@ class MessageWebSocketServer:
             # Keep running until stopped
             while self._running:
                 await asyncio.sleep(1)
+
+    def _gate_request(self, connection, request):
+        """websockets process_request hook: None admits, a Response refuses."""
+        try:
+            ip = connection.remote_address[0]
+            origin = request.headers.get('Origin', '')
+            if self.gate(ip, origin):
+                return None
+            logger.info(f"WebSocket refused: {ip} origin={origin or '-'} not trusted")
+        except Exception as e:  # a gate that cannot decide refuses
+            logger.warning(f"WebSocket gate error, refusing: {e}")
+        return connection.respond(HTTPStatus.FORBIDDEN, "not a trusted client\n")
 
     async def _handle_client(self, websocket):
         """Handle a new WebSocket client connection."""
@@ -354,11 +387,16 @@ class MessageWebSocketServer:
 _ws_server: Optional[MessageWebSocketServer] = None
 
 
-def get_websocket_server(port: int = 5001) -> MessageWebSocketServer:
+def get_websocket_server(port: int = 5001,
+                         page_port: Optional[int] = None,
+                         host: str = "127.0.0.1",
+                         gate: Optional[Callable[[str, str], bool]] = None
+                         ) -> MessageWebSocketServer:
     """Get or create the global WebSocket server."""
     global _ws_server
     if _ws_server is None:
-        _ws_server = MessageWebSocketServer(port=port)
+        _ws_server = MessageWebSocketServer(host=host, port=port,
+                                            page_port=page_port, gate=gate)
     return _ws_server
 
 

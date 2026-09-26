@@ -245,7 +245,14 @@ class MapServer:
                 print("  WebSocket: Not available (pip install websockets)")
                 return
 
-            ws_server = _get_websocket_server(port=self.websocket_port)
+            # Bind follows the map (0.0.0.0 on fleet units, loopback on a
+            # standalone default); every handshake passes the SAME read gate
+            # the HTTP handler uses, read live from MapRequestHandler.
+            from utils.map_http_handler import ws_client_admitted
+            ws_server = _get_websocket_server(
+                port=self.websocket_port, page_port=self.port, host=self.host,
+                gate=lambda ip, origin: ws_client_admitted(
+                    ip, origin, MapRequestHandler.allowed_origins))
             if ws_server.start():
                 self._websocket_started = True
                 logger.info(f"WebSocket server started on port {self.websocket_port}")

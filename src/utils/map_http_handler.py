@@ -218,6 +218,23 @@ def _client_ip_trusted(client_host: str, allowed: Optional[List[str]]) -> bool:
     return any(ip in net for net in _trusted_networks_from_origins(allowed))
 
 
+def ws_client_admitted(client_host: str, origin: str,
+                       allowed: Optional[List[str]]) -> bool:
+    """The live-updates WebSocket admits exactly who the HTTP read gate does.
+
+    It pushes the same node/message data the page already polls, so the
+    audience is the same: client IP loopback or inside the allow-list (incl.
+    /etc/meshforge/trusted_networks), AND a browser Origin the CORS rule
+    accepts — a trusted LAN browser visiting a hostile page must not be able
+    to open it. Operator 2026-09-25: fleet = "continuity and flow"; a
+    standalone map bound to loopback stays loopback (the bind follows the map).
+    """
+    if not _client_ip_trusted(client_host, allowed):
+        return False
+    origins = allowed if allowed else MapRequestHandler._DEFAULT_ORIGINS + ['http://127.0.0.1']
+    return _origin_allowed(origin, origins)
+
+
 def _own_primary_ipv4() -> Optional[str]:
     """This box's address on the interface toward the default route.
 
