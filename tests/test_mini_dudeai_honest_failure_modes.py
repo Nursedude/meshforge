@@ -509,7 +509,7 @@ class TestCleanupBatch:
             json.dump(state, f)
         write_brief(state_path, hist_path, out_path, now_ts=1010.0)
         first = os.stat(out_path).st_mtime_ns
-        # Same substance, later stamp — only the volatile _generated line
+        # Same substance, later stamp — only the volatile stamp line
         # differs, so the write must be skipped (SD wear, every 30s forever).
         write_brief(state_path, hist_path, out_path, now_ts=1040.0)
         assert os.stat(out_path).st_mtime_ns == first

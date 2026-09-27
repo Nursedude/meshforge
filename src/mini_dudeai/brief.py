@@ -22,6 +22,11 @@ from ._util import APP_MINI_UNIT, atomic_write_text, read_json
 
 DEFAULT_STALE_S = 300.0  # 30s tick → >5m means the daemon likely stopped
 ESCALATION_WINDOW_S = 86400.0  # only surface escalations fired in the last 24h
+# The brief's one volatile token. It was "_generated", which read as staleness
+# beside a FRESH banner (misread live 2026-09-27): the SD-wear guard skips
+# unchanged rewrites, so the stamp is the last CONTENT change, not generation.
+# One constant for the writer, the wear-guard mask, and its matcher.
+STAMP_PREFIX = "_content as of "
 
 
 def _escalation_of(h: dict) -> dict | None:
@@ -237,7 +242,9 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
     # "content as of".
     lines = [
         f"# mini-dudeai warm brief — {host}",
-        f"_generated {stamp} · read this FIRST, then "
+        f"{STAMP_PREFIX}{stamp} (rewritten only when content changes — "
+        f"freshness is state last_tick_ts / the warmstart banner) · "
+        f"read this FIRST, then "
         f"mini_dudeai_history.jsonl → state → memory_",
         "",
     ]
@@ -528,7 +535,7 @@ def write_brief(state_path: str, history_path: str, out_path: str,
     earlier; the decoupled callers (--brief CLI, cron) omit it and read disk.
 
     SD-wear guard: the rendered text is compared against the existing brief
-    with the volatile `_generated …` stamp line excluded — when nothing else
+    with the volatile `_content as of …` stamp line excluded — when nothing else
     changed (the common quiet-box tick), the write is skipped entirely
     instead of burning a tmp+fsync+rename cycle on flash every 30s forever.
     The file's mtime then honestly reflects the last CONTENT change; the
@@ -577,17 +584,18 @@ def write_brief(state_path: str, history_path: str, out_path: str,
     return text
 
 
-_STAMP_RE = re.compile(r"^(_generated )\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
+_STAMP_RE = re.compile(
+    "^(" + re.escape(STAMP_PREFIX) + r")\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 
 
 def _strip_volatile(text: str) -> str:
-    """Mask the timestamp inside the `_generated <stamp> …` line — the one
+    """Mask the timestamp inside the `_content as of <stamp> …` line — the one
     token guaranteed to differ every tick even when the brief's substance is
     identical. Only the STAMP is masked, not the whole line: a change to the
     line's wording (a format bump) must still register as changed content,
     or quiet boxes would keep serving the old wording forever."""
     return "\n".join(
-        _STAMP_RE.sub(r"\1<stamp>", l) if l.startswith("_generated ") else l
+        _STAMP_RE.sub(r"\1<stamp>", l) if l.startswith(STAMP_PREFIX) else l
         for l in text.splitlines())
 
 
