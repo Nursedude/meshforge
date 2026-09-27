@@ -124,6 +124,40 @@ def _plant_stack_health(text):
     return _PATH_ROW.sub("RNS path table            0 network destinations, 0 local", text, count=1)
 
 
+# --- Set Owner (SANDBOX: writes to a SimRadio, never the real radio) -----
+_OWNER_LONG, _OWNER_SHORT = "SANDBOX-OWNER", "SBX1"
+_INFO = ["meshtastic", "--host", "localhost", "--info"]
+_OWNER_LINE = re.compile(r"^Owner:\s*(.*?)\s*\(([^)]*)\)\s*$", re.M)
+
+
+def _check_owner(text, oracle):
+    t = _clean(text)
+    res = []
+    success = "[msgbox] Success" in t
+    res.append((success, "screen reports Success" if success
+                else "no Success screen after the write"))
+    info = oracle(_INFO)
+    m = _OWNER_LINE.search(info or "")
+    if not m:
+        return res + [(None, "read-back of the sim's owner failed — UNKNOWN")]
+    dev_long, dev_short = m.group(1), m.group(2)
+    # 1. the device holds what the operator TYPED (independent of the screen)
+    res.append((dev_long == _OWNER_LONG and dev_short == _OWNER_SHORT,
+                f"device owner {dev_long!r} ({dev_short!r}), typed "
+                f"{_OWNER_LONG!r} ({_OWNER_SHORT!r})"))
+    # 2. the screen's claim matches the device
+    claimed = re.search(r"Long name: (.+)", t)
+    res.append((bool(claimed) and claimed.group(1).strip() == dev_long,
+                f"screen claims long name {claimed.group(1).strip() if claimed else None!r}, "
+                f"device has {dev_long!r}"))
+    return res
+
+
+def _plant_owner(text):
+    # The 09-20 class: the screen says one name, the radio holds another.
+    return text.replace(f"Long name: {_OWNER_LONG}", "Long name: Meshtastic 8d30", 1)
+
+
 JOURNEYS = [
     {"name": "noc_home", "section": "main", "tag": "n", "path": [],
      "why": "landing screen; review claims unknown maps to UP (noc_home.py:89-93)",
@@ -134,4 +168,12 @@ JOURNEYS = [
     {"name": "stack_health", "section": "dashboard", "tag": "stack_health", "path": [],
      "why": "review claims a failed rnpath reads as an empty table (fleet_health.py:202-219)",
      "check": _check_stack_health, "plant": _plant_stack_health},
+    {"name": "set_owner", "section": "meshtasticd", "tag": "owner", "sandbox": True,
+     "path": [{"kind": "inputbox", "answer": _OWNER_LONG},
+              {"kind": "inputbox", "answer": _OWNER_SHORT},
+              {"kind": "msgbox"}],
+     "readback": [_INFO],
+     "why": "the 09-20 owner-rename class: does the typed name reach the radio, "
+            "and does the screen say what the radio holds?",
+     "check": _check_owner, "plant": _plant_owner},
 ]

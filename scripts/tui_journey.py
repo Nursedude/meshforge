@@ -65,6 +65,12 @@ sys.path.insert(0, %(tui)r)
 logging.disable(logging.CRITICAL)
 SPEC = json.loads(%(spec)r)
 SCRATCH = %(scratch)r
+# Sandbox mode (set by scripts/tui_sandbox.sh inside unshare -rnm): the only
+# meshtasticd reachable is the SimRadio, so radio writes are allowed — but
+# ONLY to --host localhost/127.0.0.1, never a serial --port or a bare
+# autodetect (/dev is NOT namespaced: the RNode's USB serial is still there).
+SANDBOX = os.environ.get("MF_TUI_SANDBOX") == "1"
+SANDBOX_RW = os.environ.get("MF_SANDBOX_CONFIG") if SANDBOX else None
 blocked, screens = [], []
 
 MUTATING = (("systemctl", ("start", "stop", "restart", "reload", "enable",
@@ -90,11 +96,20 @@ def _mutating(argv):
         verbs = [x for x in argv[1:] if not x.startswith("-")]
         if verbs and verbs[0] in dict(MUTATING)["systemctl"]:
             return "systemctl " + verbs[0]
-    if b == "meshtastic" and any(x.startswith(("--set", "--seturl", "--ch-",
-            "--reboot", "--factory", "--remove", "--sendtext", "--configure",
-            "--begin-edit", "--commit-edit")) for x in argv):
-        return "meshtastic write"
+    if b == "meshtastic":
+        host = argv[argv.index("--host") + 1] if "--host" in argv[:-1] else None
+        if host not in ("localhost", "127.0.0.1"):
+            return "meshtastic without --host localhost (serial/autodetect)"
+        if not SANDBOX and any(x.startswith(("--set", "--seturl", "--ch-",
+                "--reboot", "--factory", "--remove", "--sendtext", "--configure",
+                "--begin-edit", "--commit-edit")) for x in argv):
+            return "meshtastic write"
     return None
+
+_DEVICES = ("/dev/tty", "/dev/spidev", "/dev/gpiochip", "/dev/i2c", "/dev/serial")
+
+def _writable(p):
+    return p.startswith(SCRATCH) or (SANDBOX_RW and p.startswith(SANDBOX_RW))
 
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
 
@@ -109,7 +124,7 @@ def _hook(event, args):
                    "os.chown", "os.symlink"):
         target = str(args[0]) if args else ""
         if event in ("os.remove", "os.rename", "os.truncate", "os.chmod") \
-                and target.startswith(SCRATCH):
+                and _writable(target):
             return
         blocked.append(f"{event}: {target[:120]}")
         raise PermissionError(f"[tui_journey] refused {event}")
@@ -118,8 +133,12 @@ def _hook(event, args):
         writes = (isinstance(mode, str) and any(c in mode for c in "wax+")) \
             or (isinstance(flags, int) and flags & _WRITE_FLAGS)
         p = str(path)
-        if writes and not isinstance(path, int) and not p.startswith(SCRATCH) \
-                and not p.startswith("/dev/"):
+        if isinstance(path, int):
+            return
+        if p.startswith(_DEVICES):
+            blocked.append(f"open-device: {p[:120]}")
+            raise PermissionError(f"[tui_journey] refused device {p}")
+        if writes and not _writable(p) and p != "/dev/null":
             blocked.append(f"open-for-write: {p[:120]}")
             raise PermissionError(f"[tui_journey] refused write to {p}")
 
@@ -192,10 +211,15 @@ if SPEC["section"] == "__guard_selftest__":
     for attempt in (lambda: _sp.run(["systemctl", "restart", "nonexistent-unit"], timeout=5),
                     lambda: _sp.run(["sudo", "-n", "true"], timeout=5),
                     lambda: open(os.path.expanduser("~/.tui_journey_selftest"), "w"),
-                    lambda: os.system("true")):
+                    lambda: os.system("true"),
+                    # A NONEXISTENT device path: if the guard were broken this
+                    # fails with FileNotFoundError and still touches no radio.
+                    lambda: _sp.run(["meshtastic", "--port", "/dev/ttyMFSELFTEST0",
+                                     "--info"], timeout=5),
+                    lambda: open("/dev/ttyMFSELFTEST0", "rb")):
         try:
             attempt()
-        except PermissionError:
+        except (PermissionError, OSError, _sp.SubprocessError):
             pass
     try:                                   # a READ must still work
         open("/etc/hostname").read(); read_ok = True
@@ -211,9 +235,20 @@ try:
         owned = registry.dispatch(SPEC["section"], SPEC["tag"])
 except BaseException as e:  # report, never hide
     err = f"{type(e).__name__}: {e}"
+# Read-back runs IN the child, so in sandbox mode it sees the same SimRadio
+# the journey wrote to (a fresh namespace would be a fresh, empty sim).
+readback = {}
+import subprocess as _sp
+for argv in SPEC.get("readback", []):
+    try:
+        p = _sp.run(argv, capture_output=True, text=True, timeout=60)
+        readback[" ".join(argv)] = p.stdout if p.returncode == 0 else ""
+    except (OSError, _sp.TimeoutExpired, PermissionError):
+        readback[" ".join(argv)] = ""
 print("__RESULT__" + json.dumps({"owned": bool(owned), "screens": screens,
       "stdout": out.getvalue(), "blocked": blocked, "diverged": diverged,
-      "error": err, "unused_answers": answers}), file=sys.__stdout__)
+      "error": err, "unused_answers": answers, "readback": readback,
+      "sandbox": SANDBOX}), file=sys.__stdout__)
 '''
 
 
@@ -222,12 +257,20 @@ def run_child(journey, timeout=60):
     or {'error': …} when it hung or produced nothing."""
     scratch = tempfile.mkdtemp(prefix="tui_journey_")
     spec = json.dumps({"section": journey["section"], "tag": journey["tag"],
-                       "path": journey.get("path", [])})
+                       "path": journey.get("path", []),
+                       "readback": journey.get("readback", [])})
     src = CHILD % {"src": str(SRC), "tui": str(TUI), "spec": spec,
                    "scratch": scratch}
     env = dict(os.environ, TMPDIR=scratch)
+    cmd = [sys.executable, "-c", src]
+    if journey.get("sandbox"):
+        sys.path.insert(0, str(SRC))
+        from utils.paths import get_real_user_home
+        env["MF_REAL_HOME"] = str(get_real_user_home())
+        cmd = ["unshare", "-rnm", "bash", str(REPO / "scripts" / "tui_sandbox.sh"),
+               scratch] + cmd
     try:
-        p = subprocess.run([sys.executable, "-c", src], cwd=str(REPO), env=env,
+        p = subprocess.run(cmd, cwd=str(REPO), env=env,
                            capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return {"error": f"did not return within {timeout}s"}
@@ -274,8 +317,16 @@ def judge(journey, r) -> tuple[str, list]:
             if s["kind"] == "msgbox" and s["title"] in SAFE_CALL_ERROR_TITLES]
     if errs:
         return "ERROR", [f"safe_call rescued a crash: {errs}"]
+    if journey.get("sandbox") and not r.get("sandbox"):
+        return "ERROR", ["journey marked sandbox but the child did not run in one"]
+    ask = oracle
+    if journey.get("sandbox"):
+        # Oracle = what the child read back from the SAME SimRadio it wrote;
+        # a host command here would ask the REAL radio.
+        rb = r.get("readback") or {}
+        ask = lambda argv, timeout=15: rb.get(" ".join(argv), "")  # noqa: E731
     text = screen_text(r)
-    results = journey["check"](text, oracle)
+    results = journey["check"](text, ask)
     if not results:
         return "ERROR", ["check returned no results — nothing was judged"]
     unknown = [m for ok, m in results if ok is None]
@@ -287,18 +338,21 @@ def judge(journey, r) -> tuple[str, list]:
     lie = journey["plant"](text)
     if lie == text:
         return "UNFALSIFIED", ["plant() changed nothing — the control never ran"]
-    caught = [m for ok, m in journey["check"](lie, oracle) if ok is False]
+    caught = [m for ok, m in journey["check"](lie, ask) if ok is False]
     if not caught:
         return "UNFALSIFIED", ["the planted lie PASSED the check — the oracle cannot fail"]
     return "PASS", [m for _, m in results] + [f"control: lie caught — {caught[0]}"]
 
 
-GUARD_EXPECTED = 4   # systemctl restart, sudo, open-for-write in ~, os.system
+# systemctl restart, sudo, open-for-write in ~, os.system, meshtastic
+# without --host localhost, open of a serial device
+GUARD_EXPECTED = 6
 
 
 def selftest() -> int:
-    """A guard that has never refused is not evidence. Plant 4 writes inside a
-    guarded child; all 4 must be BLOCKED and a plain read must still pass."""
+    """A guard that has never refused is not evidence. Plant GUARD_EXPECTED
+    writes inside a guarded child; all must be BLOCKED and a plain read must
+    still pass."""
     r = run_child({"section": "__guard_selftest__", "tag": "", "path": []})
     blocked = r.get("blocked") or []
     ok = r.get("selftest") and len(blocked) == GUARD_EXPECTED and r.get("read_ok")

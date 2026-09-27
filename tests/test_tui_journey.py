@@ -93,6 +93,7 @@ def test_every_registered_journey_carries_a_plant_that_changes_its_screen():
         "noc_home": "  [ UP ] rnsd               running\n",
         "service_status": "  ● mosquitto          running\n",
         "stack_health": "[ OK ]  RNS path table            40 network destinations, 5 local IPC peers\n",
+        "set_owner": "[msgbox] Success\nOwner settings updated:\n\nLong name: SANDBOX-OWNER\n",
     }
     names = {j["name"] for j in tjs.JOURNEYS}
     assert names <= set(samples), f"add a sample for {names - set(samples)}"
@@ -106,3 +107,25 @@ def test_guard_refuses_writes_in_a_real_child():
     assert r.get("selftest") is True, r
     assert len(r["blocked"]) == tj.GUARD_EXPECTED, r["blocked"]
     assert r["read_ok"] is True
+
+
+def test_sandbox_journey_that_ran_outside_a_sandbox_is_an_error():
+    j = dict(_journey(_says_running), sandbox=True)
+    v, notes = tj.judge(j, _result(sandbox=False))
+    assert v == "ERROR" and "did not run in one" in notes[0]
+
+
+def test_sandbox_oracle_reads_only_the_childs_readback():
+    """In a sandbox the oracle must be what the child read from the SAME sim —
+    a live host command would ask the REAL radio."""
+    seen = {}
+
+    def check(text, oracle):
+        seen["out"] = oracle(["meshtastic", "--host", "localhost", "--info"])
+        seen["other"] = oracle(["systemctl", "show", "rnsd"])
+        return [("running" in text, "x")]
+
+    j = dict(_journey(check), sandbox=True)
+    tj.judge(j, _result(sandbox=True, readback={
+        "meshtastic --host localhost --info": "Owner: A (B)"}))
+    assert seen == {"out": "Owner: A (B)", "other": ""}
