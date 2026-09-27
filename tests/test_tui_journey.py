@@ -1,0 +1,108 @@
+"""scripts/tui_journey.py — the verdict logic and the write guard.
+
+The driver's promise is that PASS means "the screen agrees with an
+independent oracle AND a planted lie was caught". These pin the ways that
+promise could quietly weaken: a check that cannot fail, an oracle that
+cannot answer, a journey that wrote, a script that went somewhere else.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+
+import tui_journey as tj  # noqa: E402
+import tui_journeys as tjs  # noqa: E402
+
+
+def _result(text="rnsd running", **kw):
+    r = {"owned": True, "screens": [{"kind": "msgbox", "title": "T",
+                                     "text": text, "choices": []}],
+         "stdout": "", "blocked": [], "diverged": [], "error": None,
+         "unused_answers": []}
+    r.update(kw)
+    return r
+
+
+def _journey(check, plant=lambda t: t.replace("running", "stopped")):
+    return {"name": "x", "section": "s", "tag": "t", "check": check, "plant": plant}
+
+
+def _says_running(text, oracle):
+    return [("running" in text, "screen says running")]
+
+
+def test_pass_requires_the_planted_lie_to_be_caught():
+    v, notes = tj.judge(_journey(_says_running), _result())
+    assert v == "PASS"
+    assert any(n.startswith("control: lie caught") for n in notes)
+
+
+def test_a_check_that_cannot_fail_is_unfalsified_not_pass():
+    v, _ = tj.judge(_journey(lambda t, o: [(True, "always")]), _result())
+    assert v == "UNFALSIFIED"
+
+
+def test_a_plant_that_changes_nothing_is_unfalsified():
+    v, notes = tj.judge(_journey(_says_running, plant=lambda t: t), _result())
+    assert v == "UNFALSIFIED"
+    assert "control never ran" in notes[0]
+
+
+def test_oracle_unknown_is_never_a_pass():
+    v, _ = tj.judge(_journey(lambda t, o: [(None, "oracle down")]), _result())
+    assert v == "UNKNOWN"
+
+
+def test_no_results_is_an_error_not_a_pass():
+    v, _ = tj.judge(_journey(lambda t, o: []), _result())
+    assert v == "ERROR"
+
+
+def test_disagreement_is_fail():
+    v, notes = tj.judge(_journey(_says_running), _result(text="rnsd stopped"))
+    assert v == "FAIL" and notes == ["screen says running"]
+
+
+@pytest.mark.parametrize("kw,verdict", [
+    ({"blocked": ["subprocess sudo: ['sudo']"]}, "BLOCKED"),
+    ({"diverged": ["no menu item 'x'"]}, "DIVERGED"),
+    ({"unused_answers": [{"kind": "menu", "pick": "x"}]}, "DIVERGED"),
+    ({"error": "did not return within 60s"}, "ERROR"),
+    ({"owned": False}, "ERROR"),
+])
+def test_a_journey_that_wrote_or_wandered_is_never_judged(kw, verdict):
+    v, _ = tj.judge(_journey(_says_running), _result(**kw))
+    assert v == verdict
+
+
+def test_a_safe_call_rescue_is_an_error():
+    title = sorted(tj.SAFE_CALL_ERROR_TITLES)[0]
+    r = _result()
+    r["screens"].append({"kind": "msgbox", "title": title, "text": "boom", "choices": []})
+    v, _ = tj.judge(_journey(_says_running), r)
+    assert v == "ERROR"
+
+
+def test_every_registered_journey_carries_a_plant_that_changes_its_screen():
+    # A plant that no-ops on the screen it targets makes the control vacuous.
+    samples = {
+        "noc_home": "  [ UP ] rnsd               running\n",
+        "service_status": "  ● mosquitto          running\n",
+        "stack_health": "[ OK ]  RNS path table            40 network destinations, 5 local IPC peers\n",
+    }
+    names = {j["name"] for j in tjs.JOURNEYS}
+    assert names <= set(samples), f"add a sample for {names - set(samples)}"
+    for j in tjs.JOURNEYS:
+        assert j["plant"](samples[j["name"]]) != samples[j["name"]], j["name"]
+
+
+def test_guard_refuses_writes_in_a_real_child():
+    """The guard that has never refused is not evidence — run the selftest."""
+    r = tj.run_child({"section": "__guard_selftest__", "tag": "", "path": []})
+    assert r.get("selftest") is True, r
+    assert len(r["blocked"]) == tj.GUARD_EXPECTED, r["blocked"]
+    assert r["read_ok"] is True
