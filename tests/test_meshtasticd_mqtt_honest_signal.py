@@ -87,9 +87,15 @@ class TestMqttTopicPersistenceHonest(_Base):
     """Site: _mqtt_set_topic (save_device_setting)."""
 
     def _drive(self, save_return):
-        # inputbox() supplies the root topic.
-        self.dialog._inputbox_returns = ["msh"]
-        with patch('handlers.meshtasticd_mqtt.subprocess.run', side_effect=_ok_run), \
+        # The dialog reads the radio's CURRENT root first (2026-09-27 one-Enter
+        # fix) — pin it, or this test reads the LIVE radio on a meshtasticd box.
+        # A typed change from the current root, then Yes on the confirm.
+        self.dialog._inputbox_returns = ["msh/US/MAUI"]
+        self.dialog._yesno_returns = [True]
+        fake_cli = MagicMock()
+        fake_cli.get_pref.return_value = "msh/US/HI"
+        with patch('core.meshtastic_cli.get_cli', return_value=fake_cli), \
+             patch('handlers.meshtasticd_mqtt.subprocess.run', side_effect=_ok_run), \
              patch.object(type(self.ctx), 'wait_for_enter', lambda *a, **k: None), \
              patch('utils.device_config_store.save_device_setting',
                    return_value=save_return):

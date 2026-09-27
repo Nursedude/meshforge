@@ -190,10 +190,15 @@ def detect_meshtastic_settings(verbose: bool = False) -> Optional[Dict]:
     """
     Detect current Meshtastic LoRa settings from connected device.
 
-    First checks if meshtasticd service is running (systemctl), then tries:
-    1. meshtasticd on localhost:4403 (via meshtastic CLI)
-    2. Direct USB/serial connection
-    3. CLI auto-detect
+    First checks if meshtasticd service is running (systemctl), then asks
+    meshtasticd over TCP (localhost, each of MESHTASTICD_PORTS) — and NOTHING
+    else. It used to fall back to `meshtastic --port <each /dev/ttyUSB*|ACM*>`
+    and then a bare autodetect: a blind Meshtastic-protocol probe of whatever
+    serial device came first. On a box with an RNode on USB, /dev/ttyACM0 IS that RNode
+    (journeyed in the TUI sandbox 2026-09-27: Radio Presets issued exactly that
+    probe). The TCP leg had also never worked — `--host localhost --port 4403`
+    hands `--port` to the CLI as a SERIAL path (45/45 failures in the TUI logs)
+    — so every detection fell through to the serial probe.
 
     Args:
         verbose: If True, include attempt summary in result
@@ -212,7 +217,6 @@ def detect_meshtastic_settings(verbose: bool = False) -> Optional[Dict]:
     Returns dict with service_running=True but preset=None if service runs but CLI unavailable.
     """
     import subprocess
-    import glob
 
     attempts_log = []
     result_data = None
@@ -318,7 +322,7 @@ def detect_meshtastic_settings(verbose: bool = False) -> Optional[Dict]:
     # =========================================================================
     for port in MESHTASTICD_PORTS:
         method = f"meshtasticd TCP :{port}"
-        result, err = run_meshtastic_cmd(['--host', 'localhost', '--port', str(port), '--export-config'])
+        result, err = run_meshtastic_cmd(['--host', f'localhost:{port}', '--export-config'])
         if result:
             settings = parse_meshtastic_output(result.stdout)
             if settings:
@@ -327,44 +331,6 @@ def detect_meshtastic_settings(verbose: bool = False) -> Optional[Dict]:
                 result_data['detection_method'] = method
                 break
         log_attempt(method, False, err or "No response")
-
-    # =========================================================================
-    # Method 2: Try direct serial/USB connection
-    # =========================================================================
-    if not result_data:
-        serial_ports = []
-        for pattern in ['/dev/ttyUSB*', '/dev/ttyACM*', '/dev/tty.usbserial*', '/dev/tty.usbmodem*']:
-            serial_ports.extend(glob.glob(pattern))
-
-        if serial_ports:
-            for port in sorted(set(serial_ports))[:2]:  # Try up to 2 ports
-                method = f"USB {port}"
-                result, err = run_meshtastic_cmd(['--port', port, '--export-config'], timeout=15)
-                if result:
-                    settings = parse_meshtastic_output(result.stdout)
-                    if settings:
-                        log_attempt(method, True)
-                        result_data = settings
-                        result_data['detection_method'] = method
-                        break
-                log_attempt(method, False, err or "No response")
-        else:
-            log_attempt("USB serial", False, "No devices found")
-
-    # =========================================================================
-    # Method 3: CLI auto-detect (last resort)
-    # =========================================================================
-    if not result_data:
-        method = "CLI auto-detect"
-        result, err = run_meshtastic_cmd(['--export-config'], timeout=15)
-        if result:
-            settings = parse_meshtastic_output(result.stdout)
-            if settings:
-                log_attempt(method, True)
-                result_data = settings
-                result_data['detection_method'] = method
-        if not result_data:
-            log_attempt(method, False, err or "No device found")
 
     # =========================================================================
     # Build final result

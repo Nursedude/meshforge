@@ -495,23 +495,58 @@ class ChannelConfigHandler(BaseHandler):
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed:\n{e}")
 
+    _CH0_NAME = re.compile(r'Index 0: PRIMARY[^\n]*?"name":\s*"([^"]*)"')
+
+    @classmethod
+    def _parse_primary_name(cls, info: str):
+        """Channel 0's name from `meshtastic --info`: "" when the primary is
+        unnamed (the firmware then shows its preset name), None when the
+        output carries no primary channel at all — a read that did not happen."""
+        if not info or "Index 0: PRIMARY" not in info:
+            return None
+        m = cls._CH0_NAME.search(info)
+        return m.group(1) if m else ""
+
     def _set_primary_channel(self):
-        """Set primary channel name."""
-        name = self.ctx.dialog.inputbox(
-            "Primary Channel",
-            "Enter channel name (max 12 chars):",
-            "MeshForge"
-        )
+        """Set primary channel name.
 
-        if not name:
-            return
-
+        Pre-fills the radio's CURRENT name and writes only a deliberate,
+        confirmed change. It used to pre-fill "MeshForge" and write on one
+        Enter with no confirm — renaming the mesh's primary channel (sandbox
+        journey primary_channel_one_enter, 2026-09-27).
+        """
         try:
             sys.path.insert(0, str(self.ctx.src_dir))
             from commands import meshtastic as mesh_cmd
 
+            info = mesh_cmd.get_node_info()
+            raw = (getattr(info, 'raw', None) or getattr(info, 'raw_output', None) or "")
+            current = self._parse_primary_name(raw) if info.success else None
+            shown = ("(unnamed — firmware default)" if current == ""
+                     else current if current is not None
+                     else "UNKNOWN — could not read the radio")
+            name = self.ctx.dialog.inputbox(
+                "Primary Channel",
+                f"Enter channel name (max 12 chars):\n\nCurrent: {shown}",
+                current or ""
+            )
+            if name is None:
+                return
+            name = name.strip()[:12]
+            if not name or (current is not None and name == current):
+                self.ctx.dialog.msgbox("Primary Channel",
+                                       "No change — the primary channel name was not written.")
+                return
+            if not self.ctx.dialog.yesno(
+                    "Rename Primary Channel",
+                    f"Rename the PRIMARY channel?\n\n  {shown}  ->  {name}\n\n"
+                    "Every node on this mesh must use the same primary channel\n"
+                    "name and key, or they stop hearing each other.",
+                    default_no=True):
+                return
+
             self.ctx.dialog.infobox("Setting", f"Setting channel name to {name}...")
-            result = mesh_cmd.set_channel_name(0, name[:12])
+            result = mesh_cmd.set_channel_name(0, name)
             self.ctx.dialog.msgbox("Result", result.message)
 
         except Exception as e:

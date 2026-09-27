@@ -76,11 +76,16 @@ def test_radio_menu_labels_and_apply_table_come_from_the_firmware(monkeypatch):
 
     h.ctx = type("C", (), {"dialog": Dialog()})()
     monkeypatch.setattr("utils.lora_presets.detect_meshtastic_settings", lambda: None)
+    # The slot dialog reads the radio's CURRENT slot (one-Enter fix 2026-09-27);
+    # pin it, or this test reads the LIVE radio on a meshtasticd box.
+    fake_cli = type("F", (), {"get_pref": lambda self, key: "20"})()
+    monkeypatch.setattr(mr, "_get_cli", lambda: fake_cli)
     h._radio_presets_menu()
     assert seen["items"]["MEDIUM_FAST"].startswith("250kHz SF9 ")
     assert seen["items"]["SHORT_SLOW"].startswith("250kHz SF8 ")
     assert "LONG_TURBO" in seen["items"]
     assert "slot 20 = 906.875 MHz" in seen["slot_text"]
+    assert "Current slot: 20" in seen["slot_text"]
 
 
 def test_gateway_template_dialog_shows_firmware_numbers(monkeypatch):

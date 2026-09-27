@@ -94,6 +94,12 @@ def test_every_registered_journey_carries_a_plant_that_changes_its_screen():
         "service_status": "  ● mosquitto          running\n",
         "stack_health": "[ OK ]  RNS path table            40 network destinations, 5 local IPC peers\n",
         "set_owner": "[msgbox] Success\nOwner settings updated:\n\nLong name: SANDBOX-OWNER\n",
+        "preset_one_enter": "Frequency slot: 8 (unchanged)\n",
+        "primary_channel_one_enter": "No change\n",
+        "mqtt_root_one_enter": "No change\n",
+        "preset_deliberate": "Frequency slot: 12\n",
+        "primary_channel_deliberate": "Setting channel name to Fleet1...\n",
+        "mqtt_root_deliberate": "MQTT root topic set to: msh/US/MAUI\n",
     }
     names = {j["name"] for j in tjs.JOURNEYS}
     assert names <= set(samples), f"add a sample for {names - set(samples)}"
@@ -107,6 +113,7 @@ def test_guard_refuses_writes_in_a_real_child():
     assert r.get("selftest") is True, r
     assert len(r["blocked"]) == tj.GUARD_EXPECTED, r["blocked"]
     assert r["read_ok"] is True
+    assert r["timeout_ok"] is True, "the guard must not block our OWN timeout kill"
 
 
 def test_sandbox_journey_that_ran_outside_a_sandbox_is_an_error():

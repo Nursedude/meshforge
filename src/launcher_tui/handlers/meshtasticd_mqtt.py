@@ -264,16 +264,38 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
         self.ctx.wait_for_enter()
 
     def _mqtt_set_topic(self):
-        """Set MQTT root topic."""
+        """Set MQTT root topic.
+
+        Pre-fills the radio's CURRENT root and writes only a confirmed change.
+        It used to pre-fill "msh" and write on one Enter — turning a declared
+        root like msh/US/HI into msh, i.e. manufacturing mqtt_root_drift
+        (sandbox journey mqtt_root_one_enter, 2026-09-27).
+        """
+        from core.meshtastic_cli import get_cli
+        current = get_cli().get_pref('mqtt.root')
+        shown = current if current is not None else "UNKNOWN — could not read the radio"
         topic = self.ctx.dialog.inputbox(
             "MQTT Root Topic",
             "Enter MQTT root topic:\n\n"
-            "Default: msh\n"
-            "Full topic pattern: {root}/{region}/2/e/{channel}/...",
-            init="msh"
+            f"Current: {shown}\n"
+            "Firmware default: msh\n"
+            "Full topic pattern: {root}/{region}/2/e/{channel}/...\n\n"
+            "The gateway's declared root lives in gateway.json\n"
+            "(mqtt_bridge.root_topic) — they should match.",
+            init=current or ""
         )
 
-        if not topic:
+        if topic is None:
+            return
+        topic = topic.strip()
+        if not topic or (current is not None and topic == current):
+            self.ctx.dialog.msgbox("MQTT Root Topic",
+                                   "No change — the MQTT root topic was not written.")
+            return
+        if not self.ctx.dialog.yesno(
+                "Change MQTT Root",
+                f"Change the radio's MQTT root topic?\n\n  {shown}  ->  {topic}",
+                default_no=True):
             return
 
         cli = self.ctx.get_meshtastic_cli()

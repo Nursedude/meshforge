@@ -17,7 +17,7 @@ from handlers.meshtasticd_config import (
 )
 
 # Direct imports for first-party modules (MF006: no safe_import for first-party)
-from core.meshtastic_cli import get_cli as _get_cli
+from core.meshtastic_cli import CLIResult, get_cli as _get_cli
 
 logger = logging.getLogger(__name__)
 
@@ -271,9 +271,18 @@ class MeshtasticdRadioHandler(BaseHandler):
         if not info:
             return
 
+        # Pre-fill the slot the radio IS on. It used to pre-fill "0" (the
+        # hashed default): re-applying the SAME preset on a slot-8 box with one
+        # Enter moved it to slot 0, off its segment (sandbox journey
+        # preset_one_enter, 2026-09-27). Unreadable = UNKNOWN, no pre-fill.
+        current_slot = _get_cli().get_pref('lora.channel_num')
+        current_note = (f"Current slot: {current_slot}" if current_slot is not None
+                        else "Current slot: UNKNOWN — could not read the radio;\n"
+                             "type the slot your mesh uses")
         slot_input = self.ctx.dialog.inputbox(
             "Frequency Slot",
-            f"Set frequency slot (channel_num) for {preset}:\n\n"
+            f"Set frequency slot (channel_num) for {preset}:\n"
+            f"{current_note}\n\n"
             "0 = the firmware's default, hashed from the channel name\n"
             "(LONG_FAST with the default channel: slot 20).\n"
             f"US centre of slot n = 902.0 + {info['bw'] / 2000:g} + (n-1) x "
@@ -281,17 +290,29 @@ class MeshtasticdRadioHandler(BaseHandler):
             f"  e.g. slot 1 = {902.0 + info['bw'] / 2000:.3f}, slot 20 = "
             f"{902.0 + info['bw'] / 2000 + 19 * info['bw'] / 1000:.3f} MHz\n"
             "Must match your mesh network's slot.\n\n"
-            "Leave empty or 0 for default:",
-            "0"
+            "Leave unchanged to keep the current slot:",
+            current_slot if current_slot is not None else ""
         )
 
         if slot_input is None:
             return
 
+        raw = slot_input.strip()
+        if not raw and current_slot is None:
+            self.ctx.dialog.msgbox(
+                "Frequency Slot",
+                "The radio's current slot could not be read, so an empty\n"
+                "entry cannot mean 'keep it'. Nothing was changed.\n\n"
+                "Type the slot explicitly (0 = the firmware's hashed default).")
+            return
         try:
-            freq_slot = int(slot_input) if slot_input.strip() else 0
+            freq_slot = int(raw) if raw else int(current_slot)
         except ValueError:
-            freq_slot = 0
+            self.ctx.dialog.msgbox(
+                "Frequency Slot",
+                f"'{slot_input}' is not a slot number. Nothing was changed.")
+            return
+        slot_unchanged = current_slot is not None and str(freq_slot) == current_slot
 
         confirm_text = (
             f"Apply {preset} preset?\n\n"
@@ -327,12 +348,17 @@ class MeshtasticdRadioHandler(BaseHandler):
 
             verified = '[verified]' in (result.output or '')
 
-            slot_result = cli.set_channel_num(freq_slot)
-            slot_msg = ""
-            if not slot_result.success:
-                slot_msg = f"\nFrequency slot: FAILED ({slot_result.error})"
+            if slot_unchanged:
+                # Same slot the radio already holds — do not rewrite it.
+                slot_result = CLIResult(success=True)
+                slot_msg = f"\nFrequency slot: {freq_slot} (unchanged)"
             else:
-                slot_msg = f"\nFrequency slot: {freq_slot}"
+                slot_result = cli.set_channel_num(freq_slot)
+                slot_msg = ""
+                if not slot_result.success:
+                    slot_msg = f"\nFrequency slot: FAILED ({slot_result.error})"
+                else:
+                    slot_msg = f"\nFrequency slot: {freq_slot}"
 
             from utils.device_config_store import save_device_settings
             saved = save_device_settings({

@@ -158,6 +158,70 @@ def _plant_owner(text):
     return text.replace(f"Long name: {_OWNER_LONG}", "Long name: Meshtastic 8d30", 1)
 
 
+# --- One-Enter hazards (SANDBOX): does accepting a pre-fill change the radio?
+# A fresh sim's defaults (slot 0, root msh, unnamed ch0) equal the suspect
+# pre-fills and would HIDE the hazard, so each journey's setup gives the sim a
+# fleet-shaped state first (moc2/moc3: SHORT_TURBO slot 8; root msh/US/HI).
+_H = ["meshtastic", "--host", "localhost"]
+_SLOT, _ROOT = _H + ["--get", "lora.channel_num"], _H + ["--get", "mqtt.root"]
+_CH0_NAME = re.compile(r'Index 0: PRIMARY[^\n]*?"name":\s*"([^"]*)"')
+
+
+def _get_value(out, key):
+    m = re.search(rf"^{re.escape(key)}:\s*(.*?)\s*$", out or "", re.M)
+    return m.group(1) if m else None
+
+
+def _ch0_name(info):
+    if not info or "Index 0: PRIMARY" not in info:
+        return None
+    m = _CH0_NAME.search(info)
+    return m.group(1) if m else ""       # key omitted = empty name
+
+
+def _one_enter_check(read, argv, expect_before, label, claim_re):
+    """Shared shape: (1) setup took (else UNKNOWN), (2) one Enter must not
+    change the device, (3) every value the screen claims it set must be what
+    the device holds (the planted-lie hook)."""
+    def check(text, oracle):
+        before, after = read(oracle(["BEFORE"] + argv)), read(oracle(argv))
+        if before != expect_before:
+            return [(None, f"setup did not take: {label} before={before!r}, "
+                           f"wanted {expect_before!r} — UNKNOWN")]
+        if after is None:
+            return [(None, f"{label} read-back after failed — UNKNOWN")]
+        res = [(after == before,
+                f"{label}: before {before!r}, after one Enter {after!r}")]
+        for claimed in re.findall(claim_re, _clean(text)):
+            res.append((claimed.strip() == after,
+                        f"screen claims {label} {claimed.strip()!r}, device has {after!r}"))
+        return res
+    return check
+
+
+def _deliberate_check(read, argv, expect_before, wanted, label, claim_re):
+    """A typed, confirmed change MUST reach the device — the other half of a
+    one-Enter fix (a fix that broke writing would pass the one-Enter journey)."""
+    def check(text, oracle):
+        before, after = read(oracle(["BEFORE"] + argv)), read(oracle(argv))
+        if before != expect_before:
+            return [(None, f"setup did not take: {label} before={before!r} — UNKNOWN")]
+        if after is None:
+            return [(None, f"{label} read-back after failed — UNKNOWN")]
+        res = [(after == wanted, f"{label}: before {before!r}, typed {wanted!r}, after {after!r}")]
+        claims = re.findall(claim_re, _clean(text))
+        res.append((bool(claims), f"screen reports the write ({len(claims)} claim(s))"))
+        for claimed in claims:
+            res.append((claimed.strip() == after,
+                        f"screen claims {label} {claimed.strip()!r}, device has {after!r}"))
+        return res
+    return check
+
+
+def _plant_claim(line):
+    return lambda text: text + f"\n[msgbox] Success\n{line}\n"
+
+
 JOURNEYS = [
     {"name": "noc_home", "section": "main", "tag": "n", "path": [],
      "why": "landing screen; review claims unknown maps to UP (noc_home.py:89-93)",
@@ -176,4 +240,75 @@ JOURNEYS = [
      "why": "the 09-20 owner-rename class: does the typed name reach the radio, "
             "and does the screen say what the radio holds?",
      "check": _check_owner, "plant": _plant_owner},
+    {"name": "preset_one_enter", "section": "meshtasticd", "tag": "presets", "sandbox": True,
+     "setup": [_H + ["--set", "lora.region", "US", "--set", "lora.modem_preset",
+                     "SHORT_TURBO", "--set", "lora.channel_num", "8"]],
+     "path": [{"kind": "menu", "pick": "SHORT_TURBO"},
+              {"kind": "inputbox", "answer": "__INIT__"},
+              {"kind": "yesno", "answer": True},
+              {"kind": "msgbox"}],
+     "readback": [_SLOT],
+     "why": "audit: slot pre-fills '0' not the current slot (meshtasticd_radio.py:283) — "
+            "re-applying the SAME preset moves a ch8 box off its segment",
+     "check": _one_enter_check(lambda o: _get_value(o, "lora.channel_num"), _SLOT, "8",
+                               "channel_num", r"Frequency slot: (\d+)"),
+     "plant": _plant_claim("Frequency slot: 31")},
+    {"name": "primary_channel_one_enter", "section": "configuration", "tag": "channels",
+     "sandbox": True,
+     "setup": [_H + ["--ch-index", "0", "--ch-set", "name", "Fleet0"]],
+     "path": [{"kind": "menu", "pick": "primary"},
+              {"kind": "inputbox", "answer": "__INIT__"},
+              {"kind": "msgbox"}],
+     "readback": [_H + ["--info"]],
+     "why": "audit: Primary Channel pre-fills 'MeshForge', writes on one Enter with no "
+            "confirm (channel_config.py:498-517) — renames the mesh's primary channel",
+     "check": _one_enter_check(_ch0_name, _H + ["--info"], "Fleet0", "channel 0 name",
+                               r"channel name to ([^.\n]+?)(?:\.\.\.|$)"),
+     "plant": _plant_claim("Setting channel name to Evil0...")},
+    {"name": "mqtt_root_one_enter", "section": "meshtasticd", "tag": "mqtt", "sandbox": True,
+     "setup": [_H + ["--set", "mqtt.root", "msh/US/HI"]],
+     "path": [{"kind": "menu", "pick": "topic"},
+              {"kind": "inputbox", "answer": "__INIT__"},
+              {"kind": "msgbox"}],
+     "readback": [_ROOT],
+     "why": "audit: MQTT root pre-fills 'msh' not the current root, writes on one Enter "
+            "(meshtasticd_mqtt.py:270) — produces mqtt_root_drift",
+     "check": _one_enter_check(lambda o: _get_value(o, "mqtt.root"), _ROOT, "msh/US/HI",
+                               "mqtt.root", r"MQTT root topic set to: (\S+)"),
+     "plant": _plant_claim("MQTT root topic set to: msh/EVIL")},
+    {"name": "preset_deliberate", "section": "meshtasticd", "tag": "presets", "sandbox": True,
+     "setup": [_H + ["--set", "lora.region", "US", "--set", "lora.modem_preset",
+                     "SHORT_TURBO", "--set", "lora.channel_num", "8"]],
+     "path": [{"kind": "menu", "pick": "SHORT_TURBO"},
+              {"kind": "inputbox", "answer": "12"},
+              {"kind": "yesno", "answer": True},
+              {"kind": "msgbox"}],
+     "readback": [_SLOT],
+     "why": "the preset fix must still WRITE a typed slot",
+     "check": _deliberate_check(lambda o: _get_value(o, "lora.channel_num"), _SLOT, "8", "12",
+                                "channel_num", r"Frequency slot: (\d+)"),
+     "plant": _plant_claim("Frequency slot: 31")},
+    {"name": "primary_channel_deliberate", "section": "configuration", "tag": "channels",
+     "sandbox": True,
+     "setup": [_H + ["--ch-index", "0", "--ch-set", "name", "Fleet0"]],
+     "path": [{"kind": "menu", "pick": "primary"},
+              {"kind": "inputbox", "answer": "Fleet1"},
+              {"kind": "yesno", "answer": True},
+              {"kind": "msgbox"}],
+     "readback": [_H + ["--info"]],
+     "why": "the primary-channel fix must still WRITE a typed, confirmed name",
+     "check": _deliberate_check(_ch0_name, _H + ["--info"], "Fleet0", "Fleet1",
+                                "channel 0 name", r"channel name to ([^.\n]+?)(?:\.\.\.|$)"),
+     "plant": _plant_claim("Setting channel name to Evil0...")},
+    {"name": "mqtt_root_deliberate", "section": "meshtasticd", "tag": "mqtt", "sandbox": True,
+     "setup": [_H + ["--set", "mqtt.root", "msh/US/HI"]],
+     "path": [{"kind": "menu", "pick": "topic"},
+              {"kind": "inputbox", "answer": "msh/US/MAUI"},
+              {"kind": "yesno", "answer": True},
+              {"kind": "msgbox"}],
+     "readback": [_ROOT],
+     "why": "the MQTT-root fix must still WRITE a typed, confirmed root",
+     "check": _deliberate_check(lambda o: _get_value(o, "mqtt.root"), _ROOT, "msh/US/HI",
+                                "msh/US/MAUI", "mqtt.root", r"MQTT root topic set to: (\S+)"),
+     "plant": _plant_claim("MQTT root topic set to: msh/EVIL")},
 ]

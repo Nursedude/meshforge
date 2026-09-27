@@ -361,6 +361,23 @@ class MeshtasticCLI:
         """
         return self.run(['--configure', yaml_path], timeout=60)
 
+    def get_pref(self, key: str) -> Optional[str]:
+        """Current value of one radio preference (e.g. 'lora.channel_num').
+
+        None when it could NOT be read — never a default. A dialog that
+        pre-fills from this must show UNKNOWN on None, not a plausible value:
+        pre-filling a hardcoded default is how one Enter moved a slot-8 box to
+        slot 0 and renamed an MQTT root (TUI sandbox journeys, 2026-09-27).
+        """
+        result = self.run(['--get', key], retries=1)
+        if not result.success:
+            return None
+        prefix = f"{key}:"
+        for line in (result.output or "").splitlines():
+            if line.strip().startswith(prefix):
+                return line.strip()[len(prefix):].strip()
+        return None
+
     def set_lora_region(self, region: str) -> CLIResult:
         """Set LoRa region (e.g., US, EU_868)."""
         return self.set_with_verify('lora.region', region)
