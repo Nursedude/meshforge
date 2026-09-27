@@ -384,3 +384,47 @@ class TestMirrorOrdering:
         # the first thing that actually powers a box off inside cmd_down
         poweroff = src.index("rc, _ = _ssh(name, power_command(args.method))")
         assert confirmed < mirror < poweroff
+
+
+class TestPowerOnly:
+    """`power_only` (2026-09-27): boxes the shutdown must reach that the
+    offline monitor must not page — meshanchor-server was the one fleet Pi the
+    tool refused, so it could only ever go down the hard way."""
+
+    def _graph(self, tmp_path, boxes, power_only):
+        p = tmp_path / "boxes.json"
+        p.write_text(json.dumps({"boxes": boxes, "power_only": power_only}), encoding="utf-8")
+        return str(p)
+
+    def test_power_only_box_is_a_shutdown_target(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MESHFORGE_POWER_SELF", "themanager")
+        boxes, via = fpw.load_graph(self._graph(
+            tmp_path, [{"name": "a", "host": "a"}], [{"name": "ma", "host": "ma"}]))
+        assert boxes["ma"]["power_only"] is True and boxes["a"]["power_only"] is False
+        plan = fpw.build_plan(["a", "ma"], boxes, via, probe=ALL_UP)
+        assert set(plan["order"]) == {"a", "ma"}
+
+    def test_power_only_via_is_honoured_in_the_order(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MESHFORGE_POWER_SELF", "themanager")
+        boxes, via = fpw.load_graph(self._graph(
+            tmp_path, [{"name": "hop", "host": "hop"}],
+            [{"name": "leaf", "host": "leaf", "via": "hop"}]))
+        order = fpw.order_shutdown(["hop", "leaf"], via)
+        assert order.index("leaf") < order.index("hop")
+
+    def test_a_name_in_both_lists_is_refused(self, tmp_path):
+        with pytest.raises(fpw.Refusal) as exc:
+            fpw.load_graph(self._graph(
+                tmp_path, [{"name": "x", "host": "x"}], [{"name": "x", "host": "x"}]))
+        assert "both" in str(exc.value)
+
+    def test_members_lists_monitored_and_power_only(self, tmp_path, capsys):
+        g = self._graph(tmp_path, [{"name": "a", "host": "a"}], [{"name": "ma", "host": "ma"}])
+        assert fpw.main(["--boxes", g, "members"]) == 0
+        assert capsys.readouterr().out.split() == ["a", "ma"]
+
+    def test_the_offline_monitor_does_not_read_power_only(self):
+        # The monitor's reader iterates doc["boxes"] only — pin that, or a
+        # power_only box starts paging on MeshForge service names.
+        src = (Path(__file__).parent.parent / "scripts" / "fleet_offline_check.sh").read_text()
+        assert 'doc.get("boxes")' in src and "power_only" not in src

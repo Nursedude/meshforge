@@ -184,11 +184,21 @@ def load_graph(path: str) -> Tuple[Dict[str, dict], Dict[str, str]]:
                       "which is the failure mode this ordering exists to prevent.")
     boxes: Dict[str, dict] = {}
     via: Dict[str, str] = {}
-    for b in doc.get("boxes") or []:
+    # `power_only`: boxes this tool must be able to power down that the OFFLINE
+    # MONITOR must not page (it reads only "boxes"). meshanchor-server is the
+    # case: excluded from monitoring by design (it runs the MeshAnchor stack,
+    # not MeshForge units), yet it is on the same battery — so without this it
+    # was the one fleet Pi that could only go down the hard way (2026-09-27).
+    monitored = [(b, False) for b in doc.get("boxes") or []]
+    power_only = [(b, True) for b in doc.get("power_only") or []]
+    for b, is_power_only in monitored + power_only:
         name = str(b.get("name") or "").strip()
         if not name:
             continue
-        boxes[name] = b
+        if name in boxes:
+            raise Refusal(f"'{name}' appears in both 'boxes' and 'power_only' in {path} "
+                          "— one entry is wrong. Refusing rather than picking one.")
+        boxes[name] = dict(b, power_only=is_power_only)
         hop = str(b.get("via") or "").strip()
         if hop:
             via[name] = hop
@@ -339,6 +349,16 @@ def build_plan(targets: Sequence[str], boxes: Dict[str, dict], via: Dict[str, st
         "declarable": [t for t in order if t in boxes],
         "hops_only": [t for t in order if t not in boxes],
     }
+
+
+def cmd_members(args) -> int:
+    """Every box this tool can power down (monitored + power_only), one per
+    line — the list `fleet_down.sh` targets, so the membership lives in ONE
+    parser (hfm #5), not a second one in bash."""
+    boxes, _via = load_graph(args.boxes)
+    for name in sorted(boxes):
+        print(name)
+    return 0
 
 
 def cmd_plan(args) -> int:
@@ -559,6 +579,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--boxes", default=DEFAULT_BOXES, help="dependency graph (offline-boxes config)")
     ap.add_argument("--posture", default=None, help="posture file (default: the SSOT path)")
     sub = ap.add_subparsers(dest="cmd", required=True)
+
+    m = sub.add_parser("members", help="every box this tool can power down, one per line")
+    m.set_defaults(fn=cmd_members)
 
     p = sub.add_parser("plan", help="print the shutdown order; no side effects")
     p.add_argument("box", nargs="+")
