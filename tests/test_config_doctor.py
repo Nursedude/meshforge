@@ -514,6 +514,26 @@ class TestCheckNomadnetServiceState:
         assert r.status == WARN
         assert "3" in r.message
 
+    def test_long_stable_run_is_not_called_a_crashloop(self):
+        """NRestarts counts since the unit loaded: 3 restarts then 3 days
+        unbroken read as an active crashloop (2026-09-26 live render)."""
+        state = {"unit_installed": True, "active": True, "enabled": True,
+                 "sub_state": "running", "main_pid": 1234, "n_restarts": 3,
+                 "running_for_s": 3 * 86400 + 60,
+                 "tmux_session": True, "error": None}
+        r = checks.check_nomadnet_service_state(state)
+        assert r.status == WARN
+        assert "running 3d without one since" in r.message
+        assert "not an active crashloop" in r.fix_hint.lower()
+
+    def test_recent_restart_keeps_the_crash_hint(self):
+        state = {"unit_installed": True, "active": True, "enabled": True,
+                 "sub_state": "running", "main_pid": 1234, "n_restarts": 3,
+                 "running_for_s": 120.0,
+                 "tmux_session": True, "error": None}
+        r = checks.check_nomadnet_service_state(state)
+        assert "before it hits rate-limit" in r.fix_hint
+
     def test_warn_when_error_present(self):
         state = {"unit_installed": True, "active": False, "enabled": False,
                  "sub_state": "", "main_pid": 0, "n_restarts": 0,

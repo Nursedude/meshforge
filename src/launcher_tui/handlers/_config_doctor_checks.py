@@ -593,6 +593,23 @@ def check_nomadnet_service_state(service_state: Optional[dict]) -> CheckResult:
         )
 
     if n_restarts > 0:
+        # NRestarts counts since the unit was loaded, not "recently": on the
+        # dev box it read 3 while the unit had run 3 days unbroken, and the
+        # hint called that a crashloop (2026-09-26). Say how long it has been.
+        running_for = service_state.get("running_for_s")
+        if isinstance(running_for, (int, float)) and running_for >= 3600:
+            h = int(running_for // 3600)
+            since = f"{h // 24}d" if h >= 48 else f"{h}h"
+            return CheckResult(
+                name="nomadnet_service_state",
+                status=WARN,
+                message=(f"nomadnet has restarted {n_restarts} time(s) since the unit "
+                         f"loaded; running {since} without one since"),
+                fix_hint=("Past restarts, not an active crashloop. Check the journal "
+                          "if their cause was never found."),
+                route_hint="NomadNet Client > Logs",
+                details=[f"sub_state: {sub_state}"],
+            )
         return CheckResult(
             name="nomadnet_service_state",
             status=WARN,
@@ -602,7 +619,9 @@ def check_nomadnet_service_state(service_state: Optional[dict]) -> CheckResult:
                 "Snapshot; fix the crash cause before it hits rate-limit."
             ),
             route_hint="NomadNet Client > Logs",
-            details=[f"sub_state: {sub_state}"],
+            details=[f"sub_state: {sub_state}"
+                     + ("" if running_for is None
+                        else f"; running {int(running_for)}s since the last start")],
         )
 
     return CheckResult(

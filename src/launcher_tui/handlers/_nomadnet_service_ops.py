@@ -31,6 +31,7 @@ import pwd
 import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -153,6 +154,8 @@ class NomadNetServiceOpsMixin:
             sub_state       — str:  "running" / "exited" / "failed" / ...
             main_pid        — int:  MainPID (0 if no active process)
             n_restarts      — int:  NRestarts (0 if unit healthy)
+            running_for_s   — Optional[float]: seconds since the unit last
+                              became active (monotonic; None if unknown)
             tmux_session    — bool: `tmux has-session -t nomadnet`
             error           — Optional[str]: transient reason state is UNKNOWN
 
@@ -172,6 +175,7 @@ class NomadNetServiceOpsMixin:
             "sub_state": "",
             "main_pid": 0,
             "n_restarts": 0,
+            "running_for_s": None,
             "tmux_session": False,
             "error": None,
         }
@@ -194,6 +198,7 @@ class NomadNetServiceOpsMixin:
         rc, out = self._user_systemctl_text([
             'show', 'nomadnet',
             '-p', 'SubState', '-p', 'MainPID', '-p', 'NRestarts',
+            '-p', 'ActiveEnterTimestampMonotonic',
         ])
         if rc == 0:
             for line in out.splitlines():
@@ -211,6 +216,16 @@ class NomadNetServiceOpsMixin:
                 elif k == "NRestarts":
                     try:
                         state["n_restarts"] = int(v)
+                    except ValueError:
+                        pass
+                elif k == "ActiveEnterTimestampMonotonic":
+                    # CLOCK_MONOTONIC µs — the same clock as time.monotonic()
+                    # on Linux, so no wall-clock step can forge it (hfm #6).
+                    try:
+                        us = int(v)
+                        if us > 0:
+                            age = time.monotonic() - us / 1e6
+                            state["running_for_s"] = age if age >= 0 else None
                     except ValueError:
                         pass
 
