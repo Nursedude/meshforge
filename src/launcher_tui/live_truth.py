@@ -444,6 +444,17 @@ LIVE_VERIFIED: Dict[Action, Dict[str, str]] = {
         "partial": True,
         "evidence": "live render before/after, 12:5x-13:1x HST; this commit",
     },
+    ("system", "run"): {
+        "date": "2026-09-26", "box": "dev/manager box",
+        "scope": "Config Doctor: device resolution (the RNode by-id path exists), rnsd "
+                 "configdir alignment, nomadnet WARN 'restarted 3 time(s)' = NRestarts 3. "
+                 "LEGIBILITY gaps, not fixed: the WARN omits that the unit has run "
+                 "continuously for 3 days (its advice reads as an ongoing crashloop), and "
+                 "'available (unknown)' does not say what is unknown. rpc_key legs not "
+                 "re-derived",
+        "partial": True,
+        "evidence": "live render + systemctl --user show nomadnet, 14:5x HST",
+    },
 }
 
 
