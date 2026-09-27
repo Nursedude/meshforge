@@ -339,6 +339,8 @@ def repair_rns_shared_instance(handler) -> bool:
         print(f"  Stopped RNS client: {label}")
     for unit, _user, msg in hold.stop_failed:
         print(f"  Warning: could not stop RNS client {unit}: {msg}")
+    for unit, _user in hold.unobservable:
+        print(f"  Warning: state of RNS client {unit} UNKNOWN (user manager unreachable) — not stopped")
 
     print("  Stopping rnsd...")
     success, msg = stop_service('rnsd')

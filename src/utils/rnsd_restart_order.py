@@ -23,7 +23,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
-from utils.service_check import check_service, start_service, stop_service
+from utils.service_check import (check_service, is_user_unit_active,
+                                 start_service, stop_service)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ class ClientHold:
     """Clients this restart stopped, so exactly those are started again."""
     stopped: List[Tuple[str, bool]] = field(default_factory=list)
     stop_failed: List[Tuple[str, bool, str]] = field(default_factory=list)
+    unobservable: List[Tuple[str, bool]] = field(default_factory=list)
 
     def names(self) -> List[str]:
         return [f"{u} ({_scope(user)})" for u, user in self.stopped]
@@ -151,10 +153,17 @@ def hold_rns_clients(units=RNS_CLIENT_UNITS) -> ClientHold:
     hold = ClientHold()
     for unit, user in units:
         try:
-            if not check_service(unit, user=user).available:
-                continue
+            active = (is_user_unit_active(unit) if user else
+                      check_service(unit).available)
         except Exception as e:
             logger.debug("client state check %s failed: %s", unit, e)
+            active = None
+        if active is None:
+            # unobservable ≠ inactive: not stopped (we cannot reach it), but
+            # recorded so the operator is told it may squat the socket.
+            hold.unobservable.append((unit, user))
+            continue
+        if not active:
             continue
         ok, msg = stop_service(unit, user=user)
         if ok:

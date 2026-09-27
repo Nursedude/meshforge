@@ -1051,6 +1051,31 @@ def is_service_masked(
         return False
 
 
+def is_user_unit_active(unit: str, timeout: int = 5) -> Optional[bool]:
+    """Is a USER-scope unit active on the operator's user manager?
+
+    Tri-state, unlike ``check_service(user=True)`` (which folds an
+    unreachable manager into NOT_RUNNING): None = unobservable, never
+    "inactive". ``activating`` counts as active — a starting client can
+    still grab a socket. Twin of MeshAnchor ``is_user_unit_active``
+    (MA ``e1fa3732``).
+    """
+    try:
+        r = subprocess.run(
+            _systemctl_query_argv(['is-active', unit], user=True),
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.debug("user unit %s state unreadable: %s", unit, e)
+        return None
+    state = r.stdout.strip()
+    if r.returncode == 0 or state in ('activating', 'reloading'):
+        return True
+    if state in ('inactive', 'failed', 'deactivating'):
+        return False
+    return None  # e.g. "Failed to connect to user scope bus"
+
+
 def start_service(
     service_name: str, timeout: int = 30, user: bool = False
 ) -> Tuple[bool, str]:

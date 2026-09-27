@@ -33,6 +33,9 @@ class Recorder:
     def check_service(self, unit, user=False):
         return SimpleNamespace(available=(unit, user) in ACTIVE)
 
+    def user_active(self, unit, timeout=5):
+        return (unit, True) in ACTIVE
+
     def stop(self, unit, timeout=30, user=False):
         self.log.append(("stop", unit))
         if unit == "rnsd":
@@ -55,6 +58,7 @@ class Recorder:
 def _patched(rec):
     return [
         patch.object(ro, "check_service", rec.check_service),
+        patch.object(ro, "is_user_unit_active", rec.user_active),
         patch.object(ro, "stop_service", rec.stop),
         patch.object(ro, "start_service", rec.start),
         patch.object(ro, "rnsd_owns_listener", rec.owns),
@@ -151,6 +155,38 @@ class TestOwnership:
 
     def test_unobservable_is_none(self):
         assert self._owns(None, None) is None
+
+
+class TestUserUnitTriState:
+    """Back-port of MA e1fa3732: an unreachable user manager is UNKNOWN,
+    never "inactive" — check_service(user=True) folds it into NOT_RUNNING."""
+
+    def _state(self, rc, out):
+        from utils import service_check as sc
+        with patch.object(sc.subprocess, "run",
+                          return_value=SimpleNamespace(returncode=rc, stdout=out)):
+            return sc.is_user_unit_active("nomadnet")
+
+    def test_active(self):
+        assert self._state(0, "active\n") is True
+
+    def test_activating_counts_as_active(self):
+        assert self._state(3, "activating\n") is True
+
+    def test_inactive(self):
+        assert self._state(3, "inactive\n") is False
+
+    def test_unreachable_manager_is_unknown_not_inactive(self):
+        assert self._state(1, "") is None
+
+    def test_unobservable_client_is_not_stopped_and_is_recorded(self):
+        with patch.object(ro, "is_user_unit_active", return_value=None), \
+             patch.object(ro, "check_service",
+                          return_value=SimpleNamespace(available=False)), \
+             patch.object(ro, "stop_service") as stop:
+            hold = ro.hold_rns_clients()
+        stop.assert_not_called()
+        assert ("nomadnet", True) in hold.unobservable
 
 
 class TestRepairWizardOrder:
