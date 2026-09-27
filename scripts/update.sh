@@ -275,7 +275,16 @@ RNSD_LL_DST="/etc/systemd/system/rnsd.service.d/10-wait-for-ipv6-ll.conf"
 if [[ -f /etc/systemd/system/rnsd.service && -f "$RNSD_LL_TMPL" ]]; then
     # The template names /opt/meshforge; follow a checkout that lives elsewhere.
     RNSD_LL_BODY="$(sed "s#/opt/meshforge/#${INSTALL_DIR}/#g" "$RNSD_LL_TMPL")"
-    if [[ "$(cat "$RNSD_LL_DST" 2>/dev/null)" != "$RNSD_LL_BODY" ]]; then
+    # A box carrying BOTH checkouts (MeshForge + MeshAnchor) must not flip the
+    # file between the two on every update: an installed copy that differs only
+    # in which checkout's wait_for_ipv6_ll.sh it runs, where that script exists
+    # and is executable, is current. Any other difference is rewritten.
+    RNSD_LL_NORM='s#^ExecStartPre=[^ ]*/scripts/wait_for_ipv6_ll\.sh#ExecStartPre=@WAIT@#'
+    RNSD_LL_CUR="$(sed -nE 's#^ExecStartPre=([^ ]*/scripts/wait_for_ipv6_ll\.sh).*#\1#p' "$RNSD_LL_DST" 2>/dev/null)"
+    if [[ -f "$RNSD_LL_DST" && -n "$RNSD_LL_CUR" && -x "$RNSD_LL_CUR" \
+          && "$(sed -E "$RNSD_LL_NORM" "$RNSD_LL_DST")" == "$(printf '%s\n' "$RNSD_LL_BODY" | sed -E "$RNSD_LL_NORM")" ]]; then
+        echo -e "  ${GREEN}✓ rnsd IPv6-DAD wait drop-in already current (runs ${RNSD_LL_CUR})${NC}"
+    elif [[ "$(cat "$RNSD_LL_DST" 2>/dev/null)" != "$RNSD_LL_BODY" ]]; then
         mkdir -p "$(dirname "$RNSD_LL_DST")"
         printf '%s\n' "$RNSD_LL_BODY" > "$RNSD_LL_DST"
         chmod 644 "$RNSD_LL_DST"

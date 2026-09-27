@@ -120,11 +120,20 @@ class TestDropInIsDeployed:
     """The drop-in was hand-deployed from 2026-09-10 and one box (the manager)
     never got it; it crashed on its 2026-09-26 reboot. Both installers now
     carry it. These run the REAL update.sh block, with its /etc paths pointed
-    at a sandbox, rather than grepping for the file name alone."""
+    at a sandbox, rather than grepping for the file name alone.
+
+    Repo-agnostic on purpose (MeshForge is the lead repo, MeshAnchor carries a
+    port): the checkout prefix is read from the template's own ExecStartPre."""
 
     REPO = Path(__file__).parent.parent
     TMPL = REPO / "templates" / "systemd" / "rnsd.service.d" / "10-wait-for-ipv6-ll.conf"
     START = "# Deploy the rnsd IPv6-DAD wait drop-in."
+
+    def _prefix(self) -> str:
+        for line in self.TMPL.read_text().splitlines():
+            if line.startswith("ExecStartPre="):
+                return line.split("=", 1)[1].split("/scripts/")[0] + "/"
+        raise AssertionError("template has no ExecStartPre")
 
     def _block(self) -> str:
         text = (self.REPO / "scripts" / "update.sh").read_text()
@@ -139,23 +148,35 @@ class TestDropInIsDeployed:
         return subprocess.run(["bash", "-c", script], capture_output=True,
                               text=True, timeout=30)
 
-    def test_installs_the_template_byte_for_byte_then_is_idempotent(self, tmp_path):
+    def _etc(self, tmp_path: Path) -> Path:
         etc = tmp_path / "etc"
         etc.mkdir()
         (etc / "rnsd.service").write_text("[Service]\n")
+        return etc
+
+    def _sibling(self, tmp_path: Path, executable: bool) -> Path:
+        """An installed drop-in that runs ANOTHER checkout's gate script."""
+        other = tmp_path / "other-checkout"
+        (other / "scripts").mkdir(parents=True)
+        gate = other / "scripts" / "wait_for_ipv6_ll.sh"
+        gate.write_text("#!/bin/sh\nexit 0\n")
+        gate.chmod(0o755 if executable else 0o644)
+        return other
+
+    def test_installs_the_template_byte_for_byte_then_is_idempotent(self, tmp_path):
+        etc = self._etc(tmp_path)
         first = self._run(etc, self.REPO)
         dst = etc / "rnsd.service.d" / "10-wait-for-ipv6-ll.conf"
         assert first.returncode == 0, first.stderr
-        assert dst.read_bytes() == self.TMPL.read_bytes()
+        expected = self.TMPL.read_text().replace(self._prefix(), f"{self.REPO}/")
+        assert dst.read_text() == expected
         assert "SVC_UPDATED=true" in first.stdout
         second = self._run(etc, self.REPO)
         assert "already current" in second.stdout
         assert "SVC_UPDATED=false" in second.stdout
 
-    def test_follows_a_checkout_outside_opt_meshforge(self, tmp_path):
-        etc = tmp_path / "etc"
-        etc.mkdir()
-        (etc / "rnsd.service").write_text("[Service]\n")
+    def test_follows_a_checkout_outside_the_default_prefix(self, tmp_path):
+        etc = self._etc(tmp_path)
         alt = tmp_path / "alt"
         (alt / "templates" / "systemd" / "rnsd.service.d").mkdir(parents=True)
         (alt / "templates" / "systemd" / "rnsd.service.d" / self.TMPL.name).write_bytes(
@@ -163,7 +184,6 @@ class TestDropInIsDeployed:
         self._run(etc, alt)
         body = (etc / "rnsd.service.d" / self.TMPL.name).read_text()
         assert f"ExecStartPre={alt}/scripts/wait_for_ipv6_ll.sh" in body
-        assert "/opt/meshforge/" not in body.split("ExecStartPre=")[1].splitlines()[0]
 
     def test_a_box_without_system_rnsd_gets_nothing(self, tmp_path):
         etc = tmp_path / "etc"
@@ -171,8 +191,42 @@ class TestDropInIsDeployed:
         self._run(etc, self.REPO)
         assert not (etc / "rnsd.service.d").exists()
 
+    def test_a_sibling_checkouts_working_copy_is_left_alone(self, tmp_path):
+        """MeshForge + MeshAnchor on one box: no flip-flop between the two."""
+        etc = self._etc(tmp_path)
+        other = self._sibling(tmp_path, executable=True)
+        dst = etc / "rnsd.service.d" / self.TMPL.name
+        dst.parent.mkdir()
+        planted = self.TMPL.read_text().replace(self._prefix(), f"{other}/")
+        dst.write_text(planted)
+        out = self._run(etc, self.REPO)
+        assert dst.read_text() == planted
+        assert "SVC_UPDATED=false" in out.stdout
+        assert f"runs {other}/scripts/wait_for_ipv6_ll.sh" in out.stdout
+
+    def test_a_copy_whose_gate_script_is_missing_is_rewritten(self, tmp_path):
+        """Pointing at a checkout that is gone = a pre-start that FAILS = rnsd
+        does not start. That copy must be replaced, not honoured."""
+        etc = self._etc(tmp_path)
+        dst = etc / "rnsd.service.d" / self.TMPL.name
+        dst.parent.mkdir()
+        dst.write_text(self.TMPL.read_text().replace(self._prefix(), f"{tmp_path}/gone/"))
+        out = self._run(etc, self.REPO)
+        assert f"ExecStartPre={self.REPO}/scripts/wait_for_ipv6_ll.sh" in dst.read_text()
+        assert "SVC_UPDATED=true" in out.stdout
+
+    def test_a_non_executable_sibling_gate_is_rewritten(self, tmp_path):
+        etc = self._etc(tmp_path)
+        other = self._sibling(tmp_path, executable=False)
+        dst = etc / "rnsd.service.d" / self.TMPL.name
+        dst.parent.mkdir()
+        dst.write_text(self.TMPL.read_text().replace(self._prefix(), f"{other}/"))
+        self._run(etc, self.REPO)
+        assert f"ExecStartPre={self.REPO}/scripts/wait_for_ipv6_ll.sh" in dst.read_text()
+
     def test_fresh_install_path_carries_it_too(self):
         text = (self.REPO / "scripts" / "install_noc.sh").read_text()
         assert "rnsd.service.d/10-wait-for-ipv6-ll.conf" in text
-        # through the dry-run-aware writer, never a raw redirection
-        assert "| mf_write_stdin /etc/systemd/system/rnsd.service.d/10-wait-for-ipv6-ll.conf" in text
+        # Template on sed's STDIN: the MeshForge dry-run shadow reads any sed
+        # whose ARGS contain "-i" as a write, and "wait-for-ipv6" does.
+        assert '< "$INSTALL_DIR/templates/systemd/rnsd.service.d/10-wait-for-ipv6-ll.conf"' in text
