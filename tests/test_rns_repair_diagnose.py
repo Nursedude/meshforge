@@ -13,7 +13,7 @@ write the failure happened on.
 
 import os
 import sys
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'launcher_tui'))
@@ -85,7 +85,11 @@ class TestOfferDisableBlocking:
                           return_value=True), \
              patch.object(_rns_repair, 'get_rns_shared_instance_info',
                           return_value={'detail': 'up on @rns/default'}), \
+             patch.object(_rns_repair, 'release_rns_clients',
+                          return_value=MagicMock(ok=True, summary=lambda: "")), \
              patch.object(_rns_repair.time, 'sleep'):
+            # ownership is pinned: a real ss scan would pass only on a box
+            # whose live rnsd owns the listener (this test ran green on one).
             assert _rns_repair._offer_disable_blocking(h, BLOCKING) is True
         texts = _dialog_texts(h.ctx.dialog)
         assert "Restored" in texts

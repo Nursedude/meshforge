@@ -18,30 +18,80 @@ from utils.service_check import (
     _sudo_write, daemon_reload, enable_service,
 )
 from utils.config_drift import detect_rnsd_config_drift
+from utils.rnsd_restart_order import (
+    ClientHold, hold_rns_clients, instance_name, listener_owners,
+    ordered_restart_rnsd, release_rns_clients, terminate_pid,
+)
 from ._rns_interface_mgr import find_blocking_interfaces, disable_interfaces_in_config
 
 logger = logging.getLogger(__name__)
 
 
 def restart_rnsd() -> bool:
-    """Restart rnsd via service_check (stop + start + wait).
+    """Restart rnsd in the #69 repair order (clients down → rnsd → rnsd
+    OWNS @rns → clients up). Use :func:`restart_rnsd_reported` to show why.
 
-    Thin helper so callers outside _rns_repair.py don't need to
-    import stop_service/start_service directly.
-
-    Returns True if rnsd restarted and shared instance became available.
+    Returns True only if rnsd started, owns the shared instance, and every
+    client it stopped came back.
     """
-    stop_service('rnsd')
-    time.sleep(1)
-    success, msg = start_service('rnsd')
-    if not success:
-        logger.warning("rnsd start failed: %s", msg)
-        return False
-    from ._service_ops_common import wait_for_condition
-    if wait_for_condition(check_rns_shared_instance, 5):
-        return True
-    logger.warning("rnsd restarted but shared instance not available after 5s")
-    return False
+    return restart_rnsd_reported()[0]
+
+
+def restart_rnsd_reported():
+    """:func:`restart_rnsd` plus a one-paragraph summary for a dialog."""
+    started, release, _hold = ordered_restart_rnsd()
+    if not started:
+        return False, "rnsd did not start. " + release.summary()
+    return release.ok, release.summary()
+
+
+def _report_held(hold: ClientHold) -> None:
+    """Every failure exit of the repair names the clients it left stopped —
+    starting them without an rnsd-owned listener is what makes the squat."""
+    if hold.stopped:
+        print("\n  RNS clients LEFT STOPPED (rnsd does not own the shared")
+        print("  instance; starting them now would let one host it):")
+        for label in hold.names():
+            print(f"    {label}")
+        print("  Start them from Service Control once rnsd is healthy.")
+
+
+def _release_and_report(hold: ClientHold, name: str) -> bool:
+    """Start the held clients only once rnsd owns ``@rns/<name>``."""
+    release = release_rns_clients(hold, name)
+    print(f"  {release.summary()}")
+    return release.ok
+
+
+def _offer_evict_squatters(ctx, name: str) -> None:
+    """rnsd is stopped and its clients are held: ANY process still holding
+    ``@rns/<name>`` is a squatter rnsd would lose the bind to. Name it by
+    PID and offer to stop THAT pid — never a pattern kill (``pkill -f
+    nomadnet`` also hit healthy clients and anything with the word in its
+    arguments)."""
+    owners = listener_owners(name)
+    if owners is None:
+        print("  Shared-instance owner: UNKNOWN (ss unavailable)")
+        return
+    if not owners:
+        print(f"  @rns/{name}: no holder while rnsd is stopped (OK)")
+        return
+    for pid, cmdline in owners:
+        print(f"\n  WARNING: @rns/{name} is held by PID {pid} while rnsd is stopped:")
+        print(f"    {cmdline[:100]}")
+        if ctx.dialog.yesno(
+            "Stop shared-instance squatter?",
+            f"PID {pid} holds the RNS shared instance @rns/{name}\n"
+            f"while rnsd is stopped:\n\n  {cmdline[:60]}\n\n"
+            f"rnsd cannot become the shared instance while it does.\n"
+            f"Stop PID {pid}? (it can rejoin as a client afterwards)",
+        ):
+            if terminate_pid(pid):
+                print(f"  PID {pid} stopped")
+            else:
+                print(f"  PID {pid} did NOT exit — rnsd may fail to bind")
+        else:
+            print("  Proceeding with the squatter in place (rnsd may fail)...")
 
 
 def validate_rnsd_service_file() -> bool:
@@ -175,6 +225,32 @@ WantedBy=multi-user.target
         return False
 
 
+def _clear_stale_auth_files() -> int:
+    """Remove stale shared_instance_* auth files (rnsd must be stopped)."""
+    # Clear stale shared_instance_* files
+    print("  Clearing stale shared instance authentication files...")
+    user_home = get_real_user_home()
+    storage_dirs = [
+        Path('/etc/reticulum/storage'),
+        Path('/root/.reticulum/storage'),
+        user_home / '.reticulum' / 'storage',
+        user_home / '.config' / 'reticulum' / 'storage',
+    ]
+    files_cleared = 0
+    for storage_dir in storage_dirs:
+        if storage_dir.exists():
+            for auth_file in storage_dir.glob('shared_instance_*'):
+                try:
+                    auth_file.unlink()
+                    files_cleared += 1
+                    print(f"    Removed: {auth_file}")
+                except (OSError, PermissionError) as e:
+                    print(f"    Warning: Could not remove {auth_file}: {e}")
+    if files_cleared == 0:
+        print("    No stale auth files found")
+    return files_cleared
+
+
 def repair_rns_shared_instance(handler) -> bool:
     """Repair RNS shared instance — explicit user action only.
 
@@ -252,8 +328,17 @@ def repair_rns_shared_instance(handler) -> bool:
     print(f"\n[3/5] Checking rnsd Python dependencies...")
     handler._ensure_rnsd_dependencies()
 
-    # Step 4: Stop rnsd, clear stale auth tokens, start rnsd
-    print(f"\n[4/5] Restarting rnsd service...")
+    # Step 4: clients down, stop rnsd, clear stale auth tokens, start rnsd.
+    # #69 repair order: a client left running while rnsd is down can host
+    # @rns/<instance> itself — so clients stop FIRST and start only after
+    # rnsd is proven to own the listener.
+    print(f"\n[4/5] Restarting rnsd service (RNS clients first)...")
+    name = instance_name()
+    hold = hold_rns_clients()
+    for label in hold.names():
+        print(f"  Stopped RNS client: {label}")
+    for unit, _user, msg in hold.stop_failed:
+        print(f"  Warning: could not stop RNS client {unit}: {msg}")
 
     print("  Stopping rnsd...")
     success, msg = stop_service('rnsd')
@@ -261,27 +346,7 @@ def repair_rns_shared_instance(handler) -> bool:
         print(f"  Warning stopping rnsd: {msg}")
     time.sleep(1)
 
-    # Clear stale shared_instance_* files
-    print("  Clearing stale shared instance authentication files...")
-    user_home = get_real_user_home()
-    storage_dirs = [
-        Path('/etc/reticulum/storage'),
-        Path('/root/.reticulum/storage'),
-        user_home / '.reticulum' / 'storage',
-        user_home / '.config' / 'reticulum' / 'storage',
-    ]
-    files_cleared = 0
-    for storage_dir in storage_dirs:
-        if storage_dir.exists():
-            for auth_file in storage_dir.glob('shared_instance_*'):
-                try:
-                    auth_file.unlink()
-                    files_cleared += 1
-                    print(f"    Removed: {auth_file}")
-                except (OSError, PermissionError) as e:
-                    print(f"    Warning: Could not remove {auth_file}: {e}")
-    if files_cleared == 0:
-        print("    No stale auth files found")
+    _clear_stale_auth_files()
 
     # Pre-flight 4a: Validate share_instance = Yes
     _preflight_share_instance(ctx)
@@ -298,35 +363,12 @@ def repair_rns_shared_instance(handler) -> bool:
     except Exception as e:
         logger.debug("Pre-flight config drift check failed: %s", e)
 
-    # Pre-flight 4c: NomadNet conflict
+    # Pre-flight 4c: anything still holding the shared-instance socket
     try:
-        if handler._check_nomadnet_conflict():
-            print("\n  WARNING: NomadNet is running!")
-            print("  NomadNet may hold the RNS shared instance,")
-            print("  preventing rnsd from becoming the shared instance.")
-            owner = get_udp_port_owner(37428)
-            if owner:
-                print(f"  Port 37428 held by: {owner[0]} (PID {owner[1]})")
-            if ctx.dialog.yesno(
-                "Stop NomadNet?",
-                "NomadNet is running and may hold the\n"
-                "RNS shared instance port.\n\n"
-                "Stop NomadNet before starting rnsd?\n"
-                "(NomadNet can be restarted afterward as a client)",
-            ):
-                try:
-                    subprocess.run(
-                        ['pkill', '-f', 'nomadnet'],
-                        capture_output=True, timeout=5
-                    )
-                    time.sleep(1)
-                    print("  NomadNet stopped")
-                except (subprocess.SubprocessError, OSError) as e:
-                    print(f"  Could not stop NomadNet: {e}")
-            else:
-                print("  Proceeding with NomadNet running (rnsd may fail)...")
+        _offer_evict_squatters(ctx, name)
     except Exception as e:
-        logger.debug("Pre-flight NomadNet check failed: %s", e)
+        logger.debug("Pre-flight squatter check failed: %s", e)
+        print(f"  Shared-instance owner check skipped: {e}")
 
     # Pre-flight: check blocking interfaces
     user_declined_disable = False
@@ -419,20 +461,27 @@ def repair_rns_shared_instance(handler) -> bool:
 
     if instance_ok:
         info = get_rns_shared_instance_info()
-        print(f"  SUCCESS: RNS shared instance is available")
-        print(f"  Method: {info['detail']}")
+        print(f"  Shared instance answers: {info['detail']}")
+        # "Answers" is not "rnsd owns it" — a squatter answers too.
+        if not _release_and_report(hold, name):
+            print("\n  Repair INCOMPLETE — see above.")
+            return False
         print("\n" + "=" * 50)
         print("RNS shared instance is now available!")
         print("=" * 50 + "\n")
         if rpc_key_generated:
-            _offer_rns_client_restarts(ctx)
+            restarted = {u for u, _user in hold.stopped}
+            _offer_rns_client_restarts(ctx, skip=restarted)
         return True
 
     if rnsd_crashed:
-        return _handle_rnsd_crash(ctx)
-
-    # Shared instance not available after 30s but rnsd didn't crash
-    return _diagnose_timeout(handler, user_declined_disable)
+        ok = _handle_rnsd_crash(ctx, hold, name)
+    else:
+        # Shared instance not available after 30s but rnsd didn't crash
+        ok = _diagnose_timeout(handler, user_declined_disable, hold, name)
+    if not ok:
+        _report_held(hold)
+    return ok
 
 
 def _ensure_rnsd_rpc_key() -> bool:
@@ -471,7 +520,7 @@ def _ensure_rnsd_rpc_key() -> bool:
         return False
 
 
-def _offer_rns_client_restarts(ctx):
+def _offer_rns_client_restarts(ctx, skip=frozenset()):
     """After a fresh rpc_key is pinned, offer to restart the RNS client
     services in-app.
 
@@ -485,6 +534,8 @@ def _offer_rns_client_restarts(ctx):
     try:
         from service_remediation import offer_service_fix
         for svc in ("meshforge-gateway", "meshforge-map"):
+            if svc in skip:
+                continue  # already restarted after rnsd took the listener
             offer_service_fix(ctx, svc, running=True)
     except Exception as e:
         logger.debug("RNS client restart offer failed: %s", e)
@@ -545,7 +596,7 @@ def _preflight_share_instance(ctx):
         logger.debug("Pre-flight share_instance check failed: %s", e)
 
 
-def _handle_rnsd_crash(ctx) -> bool:
+def _handle_rnsd_crash(ctx, hold: ClientHold = None, name: str = None) -> bool:
     """Handle rnsd crash during repair — diagnose and offer fixes."""
     print("  FAILED: rnsd crashed on startup")
     print()
@@ -608,7 +659,8 @@ def _handle_rnsd_crash(ctx) -> bool:
                 )
                 start_service('rnsd')
                 time.sleep(3)
-                if check_rns_shared_instance():
+                if check_rns_shared_instance() and _release_and_report(
+                        hold or ClientHold(), name or instance_name()):
                     print("  SUCCESS: RNS shared instance is available")
                     print("\n" + "=" * 50)
                     print("RNS shared instance is now available!")
@@ -655,7 +707,8 @@ def _confirm_disable_interfaces(ctx, iface_names, prompt_text):
     return True, disabled
 
 
-def _offer_disable_blocking(handler, post_blocking) -> bool:
+def _offer_disable_blocking(handler, post_blocking, hold: ClientHold = None,
+                            name: str = None) -> bool:
     """Offer to disable blocking interfaces and restart rnsd — with a witness.
 
     This is a USER-CONFIRMED DESTRUCTIVE flow (it rewrites the Reticulum
@@ -689,7 +742,9 @@ def _offer_disable_blocking(handler, post_blocking) -> bool:
         start_service('rnsd')
         from ._service_ops_common import wait_for_condition
         if wait_for_condition(check_rns_shared_instance, 15,
-                              label="Waiting for shared instance"):
+                              label="Waiting for shared instance") and \
+                _release_and_report(hold or ClientHold(),
+                                    name or instance_name()):
             si = get_rns_shared_instance_info()
             return ctx.report_action(
                 True,
@@ -723,7 +778,8 @@ def _offer_disable_blocking(handler, post_blocking) -> bool:
         return False
 
 
-def _diagnose_timeout(handler, user_declined_disable: bool) -> bool:
+def _diagnose_timeout(handler, user_declined_disable: bool,
+                      hold: ClientHold = None, name: str = None) -> bool:
     """Diagnose why shared instance isn't available after 30s."""
     ctx = handler.ctx
     print("  WARNING: Shared instance not available after 30s")
@@ -763,10 +819,13 @@ def _diagnose_timeout(handler, user_declined_disable: bool) -> bool:
         logger.debug("diagnosis step skipped (config drift): %s", e)
 
     try:
-        if handler._check_nomadnet_conflict():
-            print("  NomadNet is running (may hold the shared instance)")
+        owners = listener_owners(name)
+        if owners is None:
+            print("  Shared-instance owner: UNKNOWN (ss unavailable)")
+        for pid, cmdline in owners or []:
+            print(f"  @rns/{name or instance_name()} held by PID {pid}: {cmdline[:80]}")
     except Exception as e:
-        logger.debug("diagnosis step skipped (nomadnet conflict): %s", e)
+        logger.debug("diagnosis step skipped (listener owner): %s", e)
 
     # Blocking interfaces — offer second chance. Only the DETECTION is
     # allowed to fail quietly; the confirmed destructive flow inside
@@ -785,7 +844,7 @@ def _diagnose_timeout(handler, user_declined_disable: bool) -> bool:
             print(f"    [{iface_name}] {reason}")
         if user_declined_disable:
             print("\n  These are likely why rnsd is stuck.")
-            if _offer_disable_blocking(handler, post_blocking):
+            if _offer_disable_blocking(handler, post_blocking, hold, name):
                 return True
 
     # Journal output

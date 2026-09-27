@@ -523,7 +523,7 @@ class TestPrelaunchDegradedFlow:
         h.ctx.dialog._menu_returns = ["restart"]
         with patch.object(h, '_get_rnsd_user', return_value='pi'):
             with patch.dict(os.environ, {'SUDO_USER': 'pi'}):
-                with patch('handlers._rns_repair.restart_rnsd', return_value=True):
+                with patch('handlers._rns_repair.restart_rnsd_reported', return_value=(True, 'ok')):
                     result = h._check_rns_for_nomadnet()
         assert result is True
 

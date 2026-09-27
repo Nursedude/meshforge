@@ -670,16 +670,26 @@ class RNSDiagnosticsHandler(BaseHandler):
             except Exception as e:
                 logger.warning("rnsd logfile perms fix failed (non-fatal): %s", e)
 
-            # Reload systemd and restart rnsd
+            # Reload systemd and restart rnsd — clients first (#69 order).
+            from utils.rnsd_restart_order import (hold_rns_clients,
+                                                  release_rns_clients)
+            hold = hold_rns_clients()
             stop_service('rnsd')
+            # A stray rnsd outside the unit: match the process NAME exactly
+            # (-x). `pkill -f rnsd` matched any cmdline containing "rnsd",
+            # e.g. an editor on rnsd.service or this repo's own scripts.
             subprocess.run(
-                ['pkill', '-f', 'rnsd'],
+                ['pkill', '-x', 'rnsd'],
                 capture_output=True, timeout=5,
             )
             threading.Event().wait(1)  # MF010: service restart stabilization
             # Honest-signal: capture the restart result rather than discarding it.
             restart_ok, restart_msg = apply_config_and_restart('rnsd')
             threading.Event().wait(2)  # MF010: service restart stabilization
+            release = release_rns_clients(hold)
+            if not release.ok:
+                restart_ok = False
+                restart_msg = f"{restart_msg}; {release.summary()}"
 
             # Verify it's running as the right user now
             new_user = self._get_rnsd_user()
@@ -730,24 +740,6 @@ class RNSDiagnosticsHandler(BaseHandler):
         """Show targeted diagnostics — delegates to engine module."""
         from ._rns_diagnostics_engine import diagnose_rns_connectivity
         diagnose_rns_connectivity(self, error_output)
-
-    def _check_nomadnet_conflict(self) -> bool:
-        """Check if NomadNet is running and holding the shared instance port.
-
-        NomadNet creates its own Reticulum() instance and becomes the shared
-        instance on port 37428. If rnsd is also configured with
-        share_instance = Yes, they fight over the port causing crash loops.
-
-        Returns True if NomadNet conflict detected.
-        """
-        try:
-            result = subprocess.run(
-                ['pgrep', '-f', 'nomadnet'],
-                capture_output=True, text=True, timeout=5
-            )
-            return result.returncode == 0
-        except (subprocess.SubprocessError, OSError):
-            return False
 
     def _check_lxmf_app_conflict(self) -> Optional[str]:
         """'NomadNet' only when NomadNet OWNS the RNS shared-instance socket

@@ -62,11 +62,45 @@ def _sudo_cmd(cmd: List[str]) -> List[str]:
     return cmd
 
 
+def _operator_user_prefix() -> List[str]:
+    """argv prefix that lands a ``systemctl --user`` call on the OPERATOR's
+    user manager when MeshForge runs as root via sudo; ``[]`` otherwise.
+
+    The TUI is launched through sudo (``scripts/meshforge-launcher.sh``), so
+    a plain ``systemctl --user`` asks ROOT's user manager, which does not
+    exist: measured 2026-09-27, ``sudo systemctl --user is-active nomadnet``
+    → rc=1 "Failed to connect to user scope bus" while the unit was active.
+    Keyed on SUDO_USER, like ``_nomadnet_service_ops._user_systemctl_argv``
+    (same argv shape). A root daemon under systemd carries no SUDO_USER and
+    is unaffected.
+    """
+    if os.geteuid() != 0:
+        return []
+    sudo_user = os.environ.get('SUDO_USER', '')
+    if not sudo_user or sudo_user == 'root':
+        return []
+    try:
+        import pwd
+        uid = pwd.getpwnam(sudo_user).pw_uid
+    except KeyError:
+        logger.warning("SUDO_USER=%s not in passwd; user-scope systemctl "
+                       "will reach root's (absent) user manager", sudo_user)
+        return []
+    runtime_dir = f"/run/user/{uid}"
+    return [
+        'sudo', '-u', sudo_user, '-H', 'env',
+        f'XDG_RUNTIME_DIR={runtime_dir}',
+        f'DBUS_SESSION_BUS_ADDRESS=unix:path={runtime_dir}/bus',
+    ]
+
+
 def _systemctl_argv(verbs: List[str], user: bool = False) -> List[str]:
     """Build a systemctl argv, picking system vs user scope.
 
-    User-scope systemctl never needs sudo — the caller's own session bus
-    authorizes the operation. System-scope falls through ``_sudo_cmd``.
+    User-scope systemctl never needs sudo for elevation — the operator's
+    session bus authorizes it; under sudo it is routed back to that
+    operator via ``_operator_user_prefix``. System-scope falls through
+    ``_sudo_cmd``.
     The NomadNet user unit (Issue #38 / Issue #45) is the primary caller.
 
     Args:
@@ -75,7 +109,7 @@ def _systemctl_argv(verbs: List[str], user: bool = False) -> List[str]:
               (sudo-prefixed if needed).
     """
     if user:
-        return ['systemctl', '--user'] + verbs
+        return _operator_user_prefix() + ['systemctl', '--user'] + verbs
     return _sudo_cmd(['systemctl'] + verbs)
 
 
@@ -97,7 +131,7 @@ def _systemctl_query_argv(verbs: List[str], user: bool = False) -> List[str]:
     from wrong to correct.
     """
     if user:
-        return ['systemctl', '--user'] + verbs
+        return _operator_user_prefix() + ['systemctl', '--user'] + verbs
     return ['systemctl'] + verbs
 
 # Public API - these are the functions/classes intended for external use

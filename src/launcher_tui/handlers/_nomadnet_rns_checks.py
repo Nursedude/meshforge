@@ -180,9 +180,10 @@ class NomadNetRNSChecksMixin:
         )
 
         if choice == "restart":
-            from handlers._rns_repair import restart_rnsd
+            from handlers._rns_repair import restart_rnsd_reported
             self.ctx.dialog.infobox("Restarting", "Restarting rnsd...")
-            if restart_rnsd():
+            ok, detail = restart_rnsd_reported()
+            if ok:
                 self.ctx.dialog.msgbox(
                     "rnsd Restarted",
                     "rnsd restarted successfully.\n"
@@ -192,6 +193,7 @@ class NomadNetRNSChecksMixin:
             self.ctx.dialog.msgbox(
                 "Restart Failed",
                 "rnsd restart did not fully recover.\n\n"
+                f"{detail}\n\n"
                 "Use RNS Diagnostics for a full repair.",
             )
             return False
