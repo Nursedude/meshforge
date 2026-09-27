@@ -251,7 +251,15 @@ class BridgeRnsEventsMixin:
                 try:
                     import RNS
                     sniffer = _rns_bridge.get_rns_sniffer()
-                    if sniffer and sniffer._running:
+                    # The sniffer registers its OWN announce handler (aspect
+                    # filter None = every announce). When those hooks are in,
+                    # capturing here too stored every lxmf.delivery announce
+                    # TWICE — measured 2026-09-26 on both gateways: identical
+                    # rows 3-30 ms apart, Traffic Statistics doubled. Capture
+                    # here only as the fallback when the sniffer runs without
+                    # hooks (started before RNS was importable).
+                    if (sniffer and sniffer._running
+                            and not getattr(sniffer, "_hooks_installed", False)):
                         packet_info = _rns_bridge.RNSPacketInfo(
                             packet_type=_rns_bridge.RNSPacketType.ANNOUNCE,
                             destination_hash=dest_hash,
