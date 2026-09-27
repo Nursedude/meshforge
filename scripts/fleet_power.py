@@ -99,8 +99,8 @@ METHODS = ("poweroff", "reboot")
 
 #: The mirror organ. Distributing the declaration is part of declaring it --
 #: see mirror_posture() for why it is a step of the shutdown, not a chore.
-POSTURE_SYNC = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "fleet_posture_sync.sh")
+POSTURE_SYNC = os.environ.get("MESHFORGE_POWER_POSTURE_SYNC") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "fleet_posture_sync.sh")
 
 
 def mirror_posture(*, why: str, sync: Optional[str] = None) -> int:

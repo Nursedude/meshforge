@@ -50,6 +50,11 @@ fi
 if [ "$(printf '%s\n' "${TARGETS[@]}" | sort)" = "$(printf '%s\n' "${MEMBERS[@]}" | sort)" ]; then
     FORCE=(--force)
     echo "fleet_down: whole fleet (${#TARGETS[@]} boxes) — the bridge-silence refusal is overridden, recorded"
+else
+    # THIS box goes down only on a WHOLE-fleet run. A partial list (one leg,
+    # one box) must never take the manager with it — `--yes <one box>` used to
+    # power the MANAGER off too (caught before first use, 2026-09-27).
+    SELF=no
 fi
 if [ ${#TARGETS[@]} -eq 0 ]; then
     echo "fleet_down: no targets (fleet_power.py members printed nothing) — REFUSING" >&2
@@ -106,4 +111,6 @@ if [ $YES -eq 0 ]; then
 fi
 echo "fleet_down: powering off $(hostname) — last. Log: $LOG" | tee -a "$LOG"
 sync
-exec sudo -n systemctl poweroff
+# Overridable ONLY so a test can prove a partial run never reaches this line
+# without powering off the machine running the test.
+exec ${FLEET_DOWN_SELF_CMD:-sudo -n systemctl poweroff}
