@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 from utils.service_check import (
     check_systemd_service, check_process_running, check_port,
     check_rns_shared_instance, check_service, ServiceState,
-    apply_config_and_restart, restart_service,
+    apply_config_and_restart,
 )
 from utils.paths import ReticulumPaths
 
@@ -210,8 +210,13 @@ class QuickActionsHandler(BaseHandler):
 
     def _qa_restart_rnsd(self):
         """Quick: restart rnsd; result + status shown in-pane (Class 3)."""
+        # #69 repair order: RNS clients down → rnsd → rnsd OWNS @rns →
+        # clients up. A bare restart let a client host the shared instance.
         try:
-            success, msg = restart_service('rnsd')
+            from handlers._rns_repair import restart_rnsd_reported
+            self.ctx.dialog.infobox("Restart rnsd",
+                                    "Restarting rnsd (RNS clients first)...")
+            _ok, msg = restart_rnsd_reported()
         except Exception as e:
             self.ctx.dialog.textbox("Restart rnsd", f"Error: {e}")
             return

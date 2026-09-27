@@ -300,7 +300,12 @@ class ServiceMenuHandler(BaseHandler):
             self._start_rnsd_direct()
             self.ctx.wait_for_enter()
             return
-        success, msg = restart_service('rnsd')
+        # #69 repair order: RNS clients down → rnsd → rnsd OWNS @rns →
+        # clients up. A bare restart let a client host the shared instance.
+        from handlers._rns_repair import restart_rnsd_reported
+        self.ctx.dialog.infobox("Restart rnsd",
+                                "Restarting rnsd (RNS clients first)...")
+        _ok, msg = restart_rnsd_reported()
         status = self._capture_command(
             ['systemctl', 'status', 'rnsd', '--no-pager', '-l'], timeout=10)
         self.ctx.dialog.textbox("Restart rnsd", f"{msg}\n\n{status}")

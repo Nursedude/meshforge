@@ -752,8 +752,9 @@ def stop_rnsd() -> CommandResult:
 
     # Fallback to pkill (non-systemd systems)
     try:
+        # exact process name — `-f rnsd` matched any cmdline with "rnsd"
         result = subprocess.run(
-            ['pkill', '-f', 'rnsd'],
+            ['pkill', '-x', 'rnsd'],
             capture_output=True,
             text=True,
             timeout=10
@@ -766,12 +767,15 @@ def stop_rnsd() -> CommandResult:
 
 
 def restart_rnsd() -> CommandResult:
-    """Restart the RNS daemon."""
-    stop_result = stop_rnsd()
-    # Brief pause
-    import time
-    time.sleep(1)
-    return start_rnsd()
+    """Restart the RNS daemon in the #69 repair order: RNS clients down →
+    rnsd → rnsd OWNS @rns → clients up (left stopped and named otherwise).
+    """
+    from utils.rnsd_restart_order import ordered_restart_rnsd
+    started, release, _hold = ordered_restart_rnsd()
+    if started and release.ok:
+        return CommandResult.ok(release.summary())
+    prefix = "" if started else "rnsd did not start. "
+    return CommandResult.fail(prefix + release.summary())
 
 
 # ============================================================================

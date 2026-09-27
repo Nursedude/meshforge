@@ -284,3 +284,57 @@ class TestOperatorUserScope:
              patch.dict(os.environ, env, clear=True):
             assert sc._systemctl_argv(["stop", "x"], user=True) == \
                 ["systemctl", "--user", "stop", "x"]
+
+
+class TestEveryRestartSiteIsOrdered:
+    """The four sites that restarted rnsd bare after 71705049 (2026-09-27)."""
+
+    def test_commands_rns_restart_is_ordered(self):
+        from commands import rns
+        rel = MagicMock(ok=True, summary=lambda: "rnsd owns the shared instance.")
+        with patch("utils.rnsd_restart_order.ordered_restart_rnsd",
+                   return_value=(True, rel, ro.ClientHold())) as ordered, \
+             patch.object(rns, "stop_service") as bare_stop:
+            result = rns.restart_rnsd()
+        ordered.assert_called_once()
+        bare_stop.assert_not_called()
+        assert result.success
+
+    def test_commands_rns_restart_reports_left_stopped(self):
+        from commands import rns
+        rel = ro.ReleaseResult(rnsd_owns=False, left_stopped=["nomadnet (user)"])
+        with patch("utils.rnsd_restart_order.ordered_restart_rnsd",
+                   return_value=(True, rel, ro.ClientHold())):
+            result = rns.restart_rnsd()
+        assert not result.success and "nomadnet (user)" in result.message
+
+    def _tui_site(self, handler_cls_path, method):
+        import importlib
+        mod_name, cls_name = handler_cls_path.rsplit(".", 1)
+        mod = importlib.import_module(mod_name)
+        h = getattr(mod, cls_name).__new__(getattr(mod, cls_name))
+        h.ctx = MagicMock()
+        h._capture_command = MagicMock(return_value="status")
+        h._has_systemd_unit = MagicMock(return_value=True)
+        with patch("handlers._rns_repair.restart_rnsd_reported",
+                   return_value=(False, "left STOPPED: nomadnet (user)")) as rr:
+            getattr(h, method)()
+        rr.assert_called_once()
+        shown = h.ctx.dialog.textbox.call_args[0][1]
+        assert "left STOPPED: nomadnet (user)" in shown
+
+    def test_quick_actions_restart_is_ordered(self):
+        self._tui_site("handlers.quick_actions.QuickActionsHandler", "_qa_restart_rnsd")
+
+    def test_service_menu_restart_is_ordered(self):
+        self._tui_site("handlers.service_menu.ServiceMenuHandler", "_restart_rnsd_service")
+
+    def test_drift_fix_holds_clients_across_rnsd_restart(self):
+        import inspect
+        from handlers.rns_diagnostics import RNSDiagnosticsHandler
+        src = inspect.getsource(RNSDiagnosticsHandler._offer_drift_fix)
+        hold = src.index("hold_rns_clients()")
+        stop = src.index("stop_service('rnsd')")
+        start = src.index("start_service('rnsd')")
+        release = src.index("release_rns_clients(hold)")
+        assert hold < stop < start < release

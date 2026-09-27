@@ -228,27 +228,18 @@ class RNSDiagnosticsHandler(BaseHandler):
         else:
             print("  Warning: Could not create all directories (need sudo?)")
 
-        # Step 3: Clear stale auth tokens from all locations
-        print("\n[3/7] Clearing stale auth tokens...")
-        user_home = get_real_user_home()
-        storage_dirs = [
-            Path('/etc/reticulum/storage'),
-            Path('/root/.reticulum/storage'),
-            user_home / '.reticulum' / 'storage',
-            user_home / '.config' / 'reticulum' / 'storage',
-        ]
-        files_cleared = 0
-        for storage_dir in storage_dirs:
-            if storage_dir.exists():
-                for auth_file in storage_dir.glob('shared_instance_*'):
-                    try:
-                        auth_file.unlink()
-                        files_cleared += 1
-                        print(f"  Removed: {auth_file}")
-                    except (OSError, PermissionError) as e:
-                        print(f"  Warning: Could not remove {auth_file}: {e}")
-        if files_cleared == 0:
-            print("  No stale auth files found")
+        # Step 3: RNS clients down, then clear stale auth tokens. #69 order:
+        # clients stop BEFORE rnsd and start only once rnsd owns @rns.
+        from ._rns_repair import _clear_stale_auth_files
+        from utils.rnsd_restart_order import (hold_rns_clients,
+                                              release_rns_clients)
+        print("\n[3/7] Stopping RNS clients, clearing stale auth tokens...")
+        hold = hold_rns_clients()
+        for label in hold.names():
+            print(f"  Stopped RNS client: {label}")
+        for unit, _user in hold.unobservable:
+            print(f"  Warning: state of RNS client {unit} UNKNOWN — not stopped")
+        _clear_stale_auth_files()
 
         # Step 4: Validate rnsd.service file (ExecStart path, directives)
         print("\n[4/7] Validating rnsd.service...")
@@ -286,6 +277,11 @@ class RNSDiagnosticsHandler(BaseHandler):
         print("\n[7/7] Verifying fix...")
         print("  Waiting for shared instance...")
         instance_ready = self._wait_for_rns_shared_instance(max_wait=15)
+
+        release = release_rns_clients(hold)
+        print(f"  {release.summary()}")
+        if instance_ready and not release.ok:
+            instance_ready = False
 
         if instance_ready:
             si_info = get_rns_shared_instance_info(

@@ -93,6 +93,17 @@ Restarts every RNS client that's connected — gateway, tracer, NomadNet,
 this map service. Use only when sustained wedges are the dominant
 operator pain. Configure in ``~/.config/meshforge/map_settings.json``
 as ``"cascade_recovery_action": "systemctl_restart_rnsd"``.
+
+⚠️ #69: this is a BARE restart — it does NOT use the repair order in
+``utils.rnsd_restart_order`` (clients down → rnsd → rnsd OWNS @rns →
+clients up), so while rnsd is down any running client (NomadNet, lxmd,
+meshchat) can host ``@rns/<instance>`` itself. It cannot simply call
+``ordered_restart_rnsd()``: this actor runs INSIDE meshforge-map, which
+is on the client hold list — it would stop its own process between
+"stop rnsd" and "start rnsd" and leave rnsd down. An ordered variant must
+exclude its own unit. Measured 2026-09-27: no box opts in (all 10 boxes'
+operator map_settings.json lack the key; no restart rows in any audit
+log; root's copy unreadable over ssh = UNKNOWN for that leg).
 """
 
 
