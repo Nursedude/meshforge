@@ -16,7 +16,12 @@ Type=simple
 # the service (was running as root → /root/.config/, /root/.local/share/).
 User=__MESHFORGE_USER__
 WorkingDirectory=/opt/meshforge/src
+# Preserve: this dir is SHARED with meshforge-daemon.service (same RuntimeDirectory=). With the
+# default (no), stopping EITHER unit deletes it — the map's daily restart wiped
+# the daemon's PID file, so `daemon.py stop` exited 1 on every stop and
+# status/double-start guards went blind (2026-09-27).
 RuntimeDirectory=meshforge
+RuntimeDirectoryPreserve=yes
 
 # Use venv if available, fall back to system Python
 # --cors-origins set so the MA dashboard at http://<lan-host>:5000

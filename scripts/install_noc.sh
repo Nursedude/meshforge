@@ -1999,6 +1999,7 @@ Type=simple
 User=${MESHFORGE_MAP_USER}
 WorkingDirectory=/opt/meshforge/src
 RuntimeDirectory=meshforge
+RuntimeDirectoryPreserve=yes
 ExecStart=/bin/bash -c 'if [ -x /opt/meshforge/venv/bin/python ]; then exec /opt/meshforge/venv/bin/python -m utils.map_data_service --daemon --host 0.0.0.0 --port 5000; else exec python3 -m utils.map_data_service --daemon --host 0.0.0.0 --port 5000; fi'
 ExecStop=/bin/kill -TERM \$MAINPID
 TimeoutStopSec=10

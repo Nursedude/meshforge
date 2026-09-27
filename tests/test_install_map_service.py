@@ -147,3 +147,47 @@ class TestMigrationScript:
         assert "chown" in text and "mv" in text, (
             "migrator must chown user DB before mv-aside (moc3 gotcha)."
         )
+
+
+# --- shared RuntimeDirectory= must be preserved (2026-09-27) ---------------
+# Two units declaring the same RuntimeDirectory= share one /run/<name>. With
+# the default RuntimeDirectoryPreserve=no, stopping EITHER unit deletes it:
+# on meshanchor-server the map's daily restart wiped the daemon's PID file,
+# so `daemon.py stop` exited 1 on every stop and status went blind.
+
+def _unit_blocks(root):
+    """(label, text) per unit: each scripts/*.service file, plus each
+    [Unit]-delimited heredoc in scripts/install_noc.sh."""
+    import re
+    scripts = Path(root) / "scripts"
+    for p in sorted(scripts.glob("*.service")):
+        yield p.name, p.read_text()
+    noc = scripts / "install_noc.sh"
+    if noc.exists():
+        for i, block in enumerate(noc.read_text().split("[Unit]")[1:]):
+            yield f"install_noc.sh#unit{i + 1}", block
+
+
+def _shared_runtime_dir_violations(root):
+    import re
+    by_dir = {}
+    for label, text in _unit_blocks(root):
+        for name in re.findall(r"^RuntimeDirectory=(\S+)", text, re.M):
+            preserved = re.search(r"^RuntimeDirectoryPreserve=yes\s*$",
+                                  text, re.M) is not None
+            by_dir.setdefault(name, []).append((label, preserved))
+    return sorted(label for units in by_dir.values() if len(units) > 1
+                  for label, preserved in units if not preserved)
+
+
+def test_shared_runtime_directory_is_preserved():
+    root = Path(__file__).resolve().parent.parent
+    assert _shared_runtime_dir_violations(root) == []
+
+
+def test_shared_runtime_directory_check_can_fail(tmp_path):
+    (tmp_path / "scripts").mkdir()
+    for n in ("a", "b"):
+        (tmp_path / "scripts" / f"{n}.service").write_text(
+            "[Service]\nRuntimeDirectory=shared\n")
+    assert _shared_runtime_dir_violations(tmp_path) == ["a.service", "b.service"]

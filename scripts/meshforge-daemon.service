@@ -17,7 +17,12 @@ RestartSec=10
 WatchdogSec=120
 
 # Runtime directory (auto-created by systemd)
+# Preserve: this dir is SHARED with meshforge-map.service (same RuntimeDirectory=). With the
+# default (no), stopping EITHER unit deletes it — the map's daily restart wiped
+# the daemon's PID file, so `daemon.py stop` exited 1 on every stop and
+# status/double-start guards went blind (2026-09-27).
 RuntimeDirectory=meshforge
+RuntimeDirectoryPreserve=yes
 
 # Security hardening (mirrors meshforge.service)
 NoNewPrivileges=true
