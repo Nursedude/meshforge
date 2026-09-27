@@ -823,7 +823,7 @@ TEMPLATE_PROVENANCE: dict = {
 # be accounted for rather than appearing silently.
 DROPIN_PROVENANCE: dict = {
     "meshforge-map.service.d": "hand-deployed map start-pre wait-for-rnsd drop-in (cb61d3b)",
-    "rnsd.service.d":          "hand-deployed RNS-fork drop-ins: 10-stop-timeout, 20-exit-on-host-loss (#68/#69)",
+    "rnsd.service.d":          "10-wait-for-ipv6-ll: INSTALLED by update.sh + install_noc.sh since 2026-09-26 (was hand-deployed; one box missed it and crashed). 10-stop-timeout, 20-exit-on-host-loss: still hand-deployed RNS-fork drop-ins (#68/#69)",
     "meshtasticd.service.d":   "hand-deployed on SPI-HAT boxes: 50-sx1262-retry-patience "
                                "(RestartSec=30 + StartLimitIntervalSec=0) so a flaky "
                                "`SX126x init result -2` retries instead of latching "

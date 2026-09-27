@@ -114,3 +114,65 @@ class TestDropIn:
 
     def test_it_points_at_the_shipped_script(self):
         assert "wait_for_ipv6_ll.sh" in self.CONF.read_text()
+
+
+class TestDropInIsDeployed:
+    """The drop-in was hand-deployed from 2026-09-10 and one box (the manager)
+    never got it; it crashed on its 2026-09-26 reboot. Both installers now
+    carry it. These run the REAL update.sh block, with its /etc paths pointed
+    at a sandbox, rather than grepping for the file name alone."""
+
+    REPO = Path(__file__).parent.parent
+    TMPL = REPO / "templates" / "systemd" / "rnsd.service.d" / "10-wait-for-ipv6-ll.conf"
+    START = "# Deploy the rnsd IPv6-DAD wait drop-in."
+
+    def _block(self) -> str:
+        text = (self.REPO / "scripts" / "update.sh").read_text()
+        i = text.index(self.START)
+        j = text.index("\nfi\n", i) + len("\nfi\n")
+        return text[i:j]
+
+    def _run(self, etc: Path, install_dir: Path) -> subprocess.CompletedProcess:
+        block = self._block().replace("/etc/systemd/system", str(etc))
+        script = (f'GREEN=""; NC=""; SVC_UPDATED=false; INSTALL_DIR="{install_dir}"\n'
+                  f'{block}\necho "SVC_UPDATED=$SVC_UPDATED"\n')
+        return subprocess.run(["bash", "-c", script], capture_output=True,
+                              text=True, timeout=30)
+
+    def test_installs_the_template_byte_for_byte_then_is_idempotent(self, tmp_path):
+        etc = tmp_path / "etc"
+        etc.mkdir()
+        (etc / "rnsd.service").write_text("[Service]\n")
+        first = self._run(etc, self.REPO)
+        dst = etc / "rnsd.service.d" / "10-wait-for-ipv6-ll.conf"
+        assert first.returncode == 0, first.stderr
+        assert dst.read_bytes() == self.TMPL.read_bytes()
+        assert "SVC_UPDATED=true" in first.stdout
+        second = self._run(etc, self.REPO)
+        assert "already current" in second.stdout
+        assert "SVC_UPDATED=false" in second.stdout
+
+    def test_follows_a_checkout_outside_opt_meshforge(self, tmp_path):
+        etc = tmp_path / "etc"
+        etc.mkdir()
+        (etc / "rnsd.service").write_text("[Service]\n")
+        alt = tmp_path / "alt"
+        (alt / "templates" / "systemd" / "rnsd.service.d").mkdir(parents=True)
+        (alt / "templates" / "systemd" / "rnsd.service.d" / self.TMPL.name).write_bytes(
+            self.TMPL.read_bytes())
+        self._run(etc, alt)
+        body = (etc / "rnsd.service.d" / self.TMPL.name).read_text()
+        assert f"ExecStartPre={alt}/scripts/wait_for_ipv6_ll.sh" in body
+        assert "/opt/meshforge/" not in body.split("ExecStartPre=")[1].splitlines()[0]
+
+    def test_a_box_without_system_rnsd_gets_nothing(self, tmp_path):
+        etc = tmp_path / "etc"
+        etc.mkdir()
+        self._run(etc, self.REPO)
+        assert not (etc / "rnsd.service.d").exists()
+
+    def test_fresh_install_path_carries_it_too(self):
+        text = (self.REPO / "scripts" / "install_noc.sh").read_text()
+        assert "rnsd.service.d/10-wait-for-ipv6-ll.conf" in text
+        # through the dry-run-aware writer, never a raw redirection
+        assert "| mf_write_stdin /etc/systemd/system/rnsd.service.d/10-wait-for-ipv6-ll.conf" in text

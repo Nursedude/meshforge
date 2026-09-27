@@ -1770,6 +1770,19 @@ SyslogIdentifier=rnsd
 WantedBy=multi-user.target
 RNSD_SERVICE
 
+    # IPv6-DAD wait drop-in: without it AutoInterface binds a still-`tentative`
+    # fe80 at boot and rnsd exits 255 (becd34cb). Same template update.sh
+    # deploys, so a fresh box is born with it instead of waiting for a hand.
+    if [[ -f "$INSTALL_DIR/templates/systemd/rnsd.service.d/10-wait-for-ipv6-ll.conf" ]]; then
+        mkdir -p /etc/systemd/system/rnsd.service.d
+        # Template on STDIN, not as an argument: the dry-run shadow reads any
+        # sed whose args contain "-i" as an in-place write, and "wait-for-ipv6"
+        # does — the preview would then report writing an empty file.
+        sed "s#/opt/meshforge/#${INSTALL_DIR}/#g" \
+            < "$INSTALL_DIR/templates/systemd/rnsd.service.d/10-wait-for-ipv6-ll.conf" \
+            | mf_write_stdin /etc/systemd/system/rnsd.service.d/10-wait-for-ipv6-ll.conf
+    fi
+
     # Also deploy user-level service template for non-root setups
     # Route through the chokepoint rather than re-deriving the same login a
     # second way. With both env vars empty the old inline form silently yielded

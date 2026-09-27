@@ -263,6 +263,29 @@ RNSD_SVC
     fi
 fi
 
+# Deploy the rnsd IPv6-DAD wait drop-in. Without it, RNS AutoInterface binds a
+# still-`tentative` fe80 address at boot and rnsd exits 255 (root cause
+# becd34cb, 2026-09-10). It was hand-deployed until 2026-09-26, and one fleet box
+# never got it — that box crashed on its 2026-09-26 reboot. Written only when
+# the content differs, then picked up by the daemon-reload below. rnsd is NOT
+# restarted here: the gate acts at rnsd's next start, and a restart just to
+# apply it would open the #69 race window for nothing.
+RNSD_LL_TMPL="$INSTALL_DIR/templates/systemd/rnsd.service.d/10-wait-for-ipv6-ll.conf"
+RNSD_LL_DST="/etc/systemd/system/rnsd.service.d/10-wait-for-ipv6-ll.conf"
+if [[ -f /etc/systemd/system/rnsd.service && -f "$RNSD_LL_TMPL" ]]; then
+    # The template names /opt/meshforge; follow a checkout that lives elsewhere.
+    RNSD_LL_BODY="$(sed "s#/opt/meshforge/#${INSTALL_DIR}/#g" "$RNSD_LL_TMPL")"
+    if [[ "$(cat "$RNSD_LL_DST" 2>/dev/null)" != "$RNSD_LL_BODY" ]]; then
+        mkdir -p "$(dirname "$RNSD_LL_DST")"
+        printf '%s\n' "$RNSD_LL_BODY" > "$RNSD_LL_DST"
+        chmod 644 "$RNSD_LL_DST"
+        echo -e "  ${GREEN}✓ rnsd IPv6-DAD wait drop-in installed (applies at rnsd's next start)${NC}"
+        SVC_UPDATED=true
+    else
+        echo -e "  ${GREEN}✓ rnsd IPv6-DAD wait drop-in already current${NC}"
+    fi
+fi
+
 # Deploy the meshtasticd MUDP-leg self-heal guard (oneshot + timer). The guard
 # script self-gates: it no-ops unless meshtasticd is active AND the box has been
 # seen actually using UDP multicast (224.0.0.69:4403), so it is safe to install
