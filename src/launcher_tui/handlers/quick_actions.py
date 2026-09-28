@@ -323,8 +323,11 @@ class QuickActionsHandler(BaseHandler):
                     roles_str = ", ".join(f"{r}: {c}" for r, c in stats['roles'].items())
                     print(f"\n  Roles: {roles_str}")
             else:
-                print("\n  No nodes tracked yet.")
-                print("  Nodes are added when received via MQTT or meshtastic CLI.")
+                print("\n  No nodes tracked.")
+                # Nothing in MeshForge writes this inventory today (TUI audit
+                # finding 6); the old hint promised MQTT / CLI would fill it.
+                print("  Note: no MeshForge component currently writes this")
+                print("  inventory — press 'n' (Node list) for the radio's live nodes.")
 
         except Exception as e:
             logger.debug(f"Node inventory quick action failed: {e}")
@@ -369,7 +372,8 @@ class QuickActionsHandler(BaseHandler):
             else:
                 print("  gpsd: not available")
                 if not gps.has_position:
-                    print("  Tip: Set position manually in Tools > GPS")
+                    # "Tools > GPS" does not exist (TUI audit finding 6).
+                    print("  No position source: start gpsd with a GPS attached.")
 
         except Exception as e:
             logger.debug(f"GPS quick action failed: {e}")

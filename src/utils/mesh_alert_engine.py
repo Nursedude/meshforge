@@ -304,6 +304,9 @@ class MeshAlertEngine:
         try:
             mqtt_subscriber.register_node_callback(self._on_node_update)
             mqtt_subscriber.register_message_callback(self._on_message)
+            # has_feed() reads this; it was never set, so every consumer said
+            # "no feed attached" while one was (TUI audit finding 6).
+            self._subscriber = mqtt_subscriber
             logger.info("Alert engine attached to MQTT subscriber")
         except Exception as e:
             logger.warning("Failed to attach alert engine to subscriber: %s", e)

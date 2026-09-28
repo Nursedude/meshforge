@@ -20,6 +20,17 @@ except ImportError:
     _HAS_LOAD_BALANCER = False
 
 
+#: Honest dead-end text (TUI audit finding 6): the RadioLoadBalancer lives
+#: in the GATEWAY process; nothing hands it to the TUI.
+LB_NOT_HERE = (
+    "Load-balancer state is NOT OBSERVABLE from the TUI: it runs inside\n"
+    "the gateway process.\n\n"
+    "⚠️ Known defect (TUI audit 2026-09-27, finding 6C): the gateway\n"
+    "currently never starts it even when enabled — it reads the\n"
+    "flag from the wrong config object."
+)
+
+
 class LoadBalancerHandler(BaseHandler):
     """TUI handler for TX load balancing across dual radios."""
 
@@ -64,7 +75,7 @@ class LoadBalancerHandler(BaseHandler):
                     f"Primary: {p_w:.0f}% | Secondary: {s_w:.0f}%"
                 )
             else:
-                header = "Load balancer not active"
+                header = "Load balancer: NOT OBSERVABLE from the TUI"
 
             choices = [
                 ("status", "Status              View radio health & weights"),
@@ -100,10 +111,7 @@ class LoadBalancerHandler(BaseHandler):
         if not lb:
             self.ctx.dialog.msgbox(
                 "TX Load Balancer",
-                "Load balancer is not active.\n\n"
-                "Enable via gateway config:\n"
-                "  load_balancer_enabled: true\n\n"
-                "Requires two meshtasticd instances."
+                LB_NOT_HERE
             )
             return
 
@@ -149,7 +157,7 @@ class LoadBalancerHandler(BaseHandler):
         """Show recent state transition events."""
         lb = self._get_lb()
         if not lb:
-            self.ctx.dialog.msgbox("Event Log", "Load balancer not active.")
+            self.ctx.dialog.msgbox("Event Log", LB_NOT_HERE)
             return
 
         events = list(lb._events)
@@ -176,7 +184,7 @@ class LoadBalancerHandler(BaseHandler):
         """Show congested nodes (top talkers)."""
         lb = self._get_lb()
         if not lb:
-            self.ctx.dialog.msgbox("Congested Nodes", "Load balancer not active.")
+            self.ctx.dialog.msgbox("Congested Nodes", LB_NOT_HERE)
             return
 
         status = lb.get_status()
@@ -206,7 +214,7 @@ class LoadBalancerHandler(BaseHandler):
         """Show current threshold configuration."""
         lb = self._get_lb()
         if not lb:
-            self.ctx.dialog.msgbox("Thresholds", "Load balancer not active.")
+            self.ctx.dialog.msgbox("Thresholds", LB_NOT_HERE)
             return
 
         config = lb._config
@@ -242,7 +250,7 @@ class LoadBalancerHandler(BaseHandler):
         """Reset TX send counters."""
         lb = self._get_lb()
         if not lb:
-            self.ctx.dialog.msgbox("Reset Counters", "Load balancer not active.")
+            self.ctx.dialog.msgbox("Reset Counters", LB_NOT_HERE)
             return
 
         if self.ctx.dialog.yesno(

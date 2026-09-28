@@ -21,6 +21,16 @@ def _load_sniffer_mod():
         return None
 
 
+def _tui_has_reticulum() -> bool:
+    """Does THIS process run a Reticulum instance? Measured, not assumed:
+    RNS.Reticulum.get_instance() is None unless one was constructed here."""
+    try:
+        import RNS
+        return RNS.Reticulum.get_instance() is not None
+    except Exception:
+        return False
+
+
 class RNSSnifferHandler(BaseHandler):
     """TUI handler for RNS traffic sniffer functionality."""
 
@@ -122,13 +132,26 @@ class RNSSnifferHandler(BaseHandler):
             )
         else:
             if sniffer_mod.start_rns_capture():
-                self.ctx.dialog.msgbox(
-                    "Capture Started",
-                    "RNS packet capture is now active.\n\n"
-                    "Listening for RNS announces, links, and packets.\n"
-                    "Packets will appear in Live Traffic view.",
-                    height=10, width=50
-                )
+                if _tui_has_reticulum():
+                    self.ctx.dialog.msgbox(
+                        "Capture Started",
+                        "RNS packet capture is now active.\n\n"
+                        "Listening for RNS announces, links, and packets.\n"
+                        "Packets will appear in Live Traffic view.",
+                        height=10, width=50
+                    )
+                else:
+                    # start() succeeds whenever RNS IMPORTS, but announces only
+                    # reach a process running a Reticulum instance — which the
+                    # TUI never is (TUI audit finding 6). Say so.
+                    self.ctx.dialog.msgbox(
+                        "Capture Armed — NOT Seeing Traffic",
+                        "Capture is armed, but this TUI process runs no\n"
+                        "Reticulum instance, so it will capture NOTHING.\n\n"
+                        "Live RNS traffic is seen by the gateway process;\n"
+                        "use RNS > Diagnostics / rnstatus for live state.",
+                        height=11, width=54
+                    )
             else:
                 self.ctx.dialog.msgbox(
                     "Capture Started (No RNS)",

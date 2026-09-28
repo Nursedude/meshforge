@@ -77,13 +77,27 @@ class MeshtasticdNodeDBHandler(BaseHandler):
             client = _get_http_client()
 
             if not client.is_available:
+                # The scan needs /json/nodes, which meshtasticd has NEVER
+                # served (ESP32 firmware only — #76). It used to blame
+                # meshtasticd and offer a restart (TUI audit finding 6);
+                # report the service's REAL state instead.
+                from utils.service_check import check_service
+                try:
+                    up = check_service("meshtasticd").available
+                except Exception:
+                    up = None
+                svc = {True: "running", False: "NOT running"}.get(up, "UNKNOWN")
                 self.ctx.dialog.msgbox(
-                    "Not Available",
-                    "meshtasticd HTTP API not reachable.\n\n"
-                    "meshtasticd may not be running.",
+                    "Scan Not Available",
+                    "The phantom-node scan reads /json/nodes, which\n"
+                    "meshtasticd never serves (only ESP32 firmware does,\n"
+                    "#76). This scan cannot run against meshtasticd.\n\n"
+                    f"meshtasticd service: {svc}",
                 )
-                from service_remediation import offer_service_fix
-                offer_service_fix(self.ctx, "meshtasticd", running=False)
+                if up is False:
+                    # a REAL down state still gets the in-app fix (MF018)
+                    from service_remediation import offer_service_fix
+                    offer_service_fix(self.ctx, "meshtasticd", running=False)
                 return
 
             nodes = client.get_nodes()

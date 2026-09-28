@@ -83,9 +83,10 @@ class DemoHandler(BaseHandler):
             self.ctx.dialog.msgbox(
                 "Demo Started",
                 "Demo mode is now active!\n\n"
-                "Simulated nodes and messages will appear in:\n"
-                "  - Dashboard > View Alerts\n"
-                "  - MQTT Monitor (if running)\n\n"
+                "Simulated nodes and messages feed the status bar\n"
+                "and the messaging view.\n\n"
+                "Alerts are NOT simulated: the alert engine does not\n"
+                "listen to demo events (TUI audit finding 6).\n\n"
                 "Use 'Stop Demo Mode' to end simulation."
             )
         else:

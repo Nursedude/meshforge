@@ -13,8 +13,8 @@ from utils.safe_import import safe_import
 # Direct import — first-party module, always available
 from amateur.callsign import CallsignManager
 
-Part97Reference, ComplianceChecker, _HAS_COMPLIANCE = safe_import(
-    'amateur.compliance', 'Part97Reference', 'ComplianceChecker'
+Part97Reference, ComplianceChecker, LicenseClass, _HAS_COMPLIANCE = safe_import(
+    'amateur.compliance', 'Part97Reference', 'ComplianceChecker', 'LicenseClass'
 )
 ARESRACESTools, MessagePriority, _HAS_ARES = safe_import(
     'amateur.ares_races', 'ARESRACESTools', 'MessagePriority'
@@ -91,7 +91,7 @@ class AmateurRadioHandler(BaseHandler):
 
         try:
             mgr = CallsignManager()
-            info = mgr.lookup(callsign)
+            info = mgr.lookup_callsign(callsign)
 
             if info and info.is_valid():
                 print(f"  Callsign:  {info.callsign}")
@@ -146,8 +146,13 @@ class AmateurRadioHandler(BaseHandler):
             return
 
         try:
-            ref = Part97Reference()
-            bands = ref.get_ism_relevant_bands()
+            # get_ism_relevant_bands() never existed (TUI audit finding 6):
+            # the relevant bands are the Part 97 allocations that overlap the
+            # ISM ranges LoRa uses (33 cm / 70 cm).
+            lora_ranges = ((420.0, 450.0), (902.0, 928.0))
+            bands = [b for b in Part97Reference.get_bands_for_license(LicenseClass.EXTRA)
+                     if any(b.frequency_start < hi and b.frequency_end > lo
+                            for lo, hi in lora_ranges)]
 
             print("  Band        Frequency       Power    License")
             print("  " + "-" * 55)
@@ -211,13 +216,17 @@ class AmateurRadioHandler(BaseHandler):
             print()
 
             try:
-                result = checker.check_frequency(freq, power_dbm=power)
-                if result.compliant:
-                    print("  \033[0;32mCOMPLIANT\033[0m - Operation within legal limits")
+                # check_frequency(freq) returns a dict ('authorized', 'band',
+                # 'warnings'); it takes no power argument (TUI audit finding 6).
+                result = checker.check_frequency(freq)
+                if result.get('authorized'):
+                    print("  \033[0;32mAUTHORIZED\033[0m - frequency within your license privileges")
                 else:
-                    print("  \033[0;31mNON-COMPLIANT\033[0m - Review settings")
-                for note in result.notes:
+                    print("  \033[0;31mNOT AUTHORIZED\033[0m - review settings")
+                for note in result.get('warnings', []):
                     print(f"    - {note}")
+                if power is not None:
+                    print(f"    (TX power {power} dBm was NOT checked — the checker covers frequency only)")
             except Exception as e:
                 print(f"  Check failed: {e}")
         else:
@@ -305,18 +314,30 @@ class AmateurRadioHandler(BaseHandler):
         print("\n  Message composed. Ready to transmit via mesh.")
 
         try:
+            # create_traffic_message() never existed (TUI audit finding 6).
+            # log_message() swallows a failed write, so "saved" is only said
+            # after the log file is READ BACK and holds this message.
             tools = ARESRACESTools()
-            msg = tools.create_traffic_message(
-                to=to_field,
-                from_field=from_field,
-                subject=subject,
-                body=message,
-                priority=priority,
-            )
-            if msg:
-                print(f"  Saved: {msg.get('file', 'in memory')}")
+            msg = tools.create_message(station_id=from_field)
+            msg.to_position, msg.from_position = to_field, from_field
+            msg.subject, msg.message = subject, message
+            msg.priority = MessagePriority(priority) if priority in ("R", "P", "O") \
+                else MessagePriority.ROUTINE
+            tools.log_message(msg)
+            log_file = tools.data_dir / f"traffic_log_{msg.date.replace('-', '')}.json"
+            import json as _json
+            saved = False
+            try:
+                saved = any(m.get('message_number') == msg.message_number
+                            for m in _json.loads(log_file.read_text()))
+            except (OSError, ValueError, AttributeError):
+                saved = False
+            if saved:
+                print(f"  Saved as message {msg.message_number} -> {log_file}")
+            else:
+                print(f"  NOT SAVED: message {msg.message_number} is not in {log_file}")
         except Exception as e:
-            print(f"  Save note: {e}")
+            print(f"  NOT SAVED: {e}")
 
         print()
         self.ctx.wait_for_enter()
@@ -365,18 +386,24 @@ class AmateurRadioHandler(BaseHandler):
             print("  File: src/amateur/ares_races.py")
         else:
             try:
+                # get_net_status() never existed (TUI audit finding 6). There
+                # is no live net-session tracking; show what IS persisted.
                 tools = ARESRACESTools()
-                status = tools.get_net_status()
-
-                if status:
-                    print(f"  Net Active: {'Yes' if status.get('active') else 'No'}")
-                    print(f"  NCS:        {status.get('ncs', 'Not set')}")
-                    print(f"  Frequency:  {status.get('frequency', 'Not set')}")
-                    print(f"  Check-ins:  {status.get('checkin_count', 0)}")
-                    print(f"  Traffic:    {status.get('traffic_count', 0)} messages")
-                else:
-                    print("  No active net session.")
-                    print("  Use 'Net Checklist' to start operations.")
+                print("  (No live net-session tracking exists — showing saved data.)\n")
+                tac = getattr(tools, "tactical_assignments", {}) or {}
+                print(f"  Tactical assignments: {len(tac)}")
+                for t, c in sorted(tac.items())[:10]:
+                    print(f"    {t:<12} {c}")
+                import json as _json
+                from datetime import datetime as _dt
+                today = tools.data_dir / f"traffic_log_{_dt.now().strftime('%Y%m%d')}.json"
+                try:
+                    n = len(_json.loads(today.read_text()))
+                    print(f"  Traffic logged today: {n} message(s)")
+                except FileNotFoundError:
+                    print("  Traffic logged today: 0 (no log file yet)")
+                except (OSError, ValueError) as e:
+                    print(f"  Traffic log UNREADABLE: {e}")
             except Exception as e:
                 print(f"  Status unavailable: {e}")
 

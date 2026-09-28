@@ -58,6 +58,18 @@ from utils.ports import (
 MESHTASTICD_ALT_WEB_PORT = 9444
 
 
+#: Honest dead-end text (TUI audit finding 6): the FailoverManager lives in
+#: the GATEWAY process; nothing hands it to the TUI, so its live state is not
+#: observable here — whether or not the bridge runs.
+FAILOVER_NOT_HERE = (
+    "Live failover state is NOT OBSERVABLE from the TUI: the failover\n"
+    "manager runs inside the gateway process.\n\n"
+    "⚠️ Known defect (TUI audit 2026-09-27, finding 6C): the gateway\n"
+    "currently never starts it even when enabled — it reads the\n"
+    "flag from the wrong config object."
+)
+
+
 class DualRadioFailoverHandler(BaseHandler):
     """TUI handler for dual-radio failover setup and management."""
 
@@ -105,7 +117,7 @@ class DualRadioFailoverHandler(BaseHandler):
 
         cfg = self._load_config()
         if cfg and cfg.failover_enabled:
-            return "Enabled (bridge not running)"
+            return "Enabled in config — live state NOT OBSERVABLE here"
         return "Disabled"
 
     # ── Main menu ──────────────────────────────────────────────────────
@@ -171,7 +183,7 @@ class DualRadioFailoverHandler(BaseHandler):
                 return
 
             lines = [
-                "FAILOVER STATUS (bridge not running)",
+                "FAILOVER CONFIG (live state NOT OBSERVABLE from the TUI)",
                 "",
                 f"Enabled:               {cfg.failover_enabled}",
                 f"Utilization Threshold: {cfg.failover_utilization_threshold}%",
@@ -745,8 +757,7 @@ class DualRadioFailoverHandler(BaseHandler):
         if not fm:
             self.ctx.dialog.msgbox(
                 "Event Log",
-                "Failover manager not active.\n\n"
-                "Start the gateway bridge to see events."
+                FAILOVER_NOT_HERE
             )
             return
 

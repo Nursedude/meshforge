@@ -95,7 +95,7 @@ class TestDualRadioFailoverHelpers:
         cfg = MagicMock()
         cfg.failover_enabled = True
         with patch.object(h, '_load_config', return_value=cfg):
-            assert h._get_quick_status() == "Enabled (bridge not running)"
+            assert h._get_quick_status() == "Enabled in config — live state NOT OBSERVABLE here"
 
     @patch('handlers.dual_radio_failover._HAS_FAILOVER', True)
     def test_quick_status_with_manager(self):
@@ -180,7 +180,7 @@ class TestDualRadioFailoverStatus:
         cfg.failover_secondary_service = "meshtasticd-alt"
         with patch.object(h, '_load_config', return_value=cfg):
             h._show_status()
-        assert "bridge not running" in h.ctx.dialog.last_msgbox_text
+        assert "NOT OBSERVABLE" in h.ctx.dialog.last_msgbox_text
         assert "80" in h.ctx.dialog.last_msgbox_text
 
     @patch('handlers.dual_radio_failover._HAS_FAILOVER', True)
@@ -434,7 +434,7 @@ class TestDualRadioFailoverEventLog:
         h = _make_handler()
         h._show_event_log()
         assert h.ctx.dialog.last_msgbox_title == "Event Log"
-        assert "not active" in h.ctx.dialog.last_msgbox_text
+        assert "NOT OBSERVABLE" in h.ctx.dialog.last_msgbox_text
 
     @patch('handlers.dual_radio_failover._HAS_FAILOVER', True)
     def test_event_log_empty(self):

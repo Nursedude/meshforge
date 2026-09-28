@@ -34,8 +34,13 @@ def test_nodedb_unreachable_offers_meshtasticd_fix():
     fake_client = MagicMock()
     fake_client.is_available = False
 
+    # The offer is only right when meshtasticd is REALLY down: the scan's
+    # /json/nodes is never served by meshtasticd (#76), so "unreachable" alone
+    # used to blame a running daemon (TUI audit finding 6).
     with patch('handlers.meshtasticd_nodedb._get_http_client',
-               return_value=fake_client):
+               return_value=fake_client), \
+         patch('utils.service_check.check_service',
+               return_value=MagicMock(available=False)):
         with patch('service_remediation.offer_service_fix') as offer:
             h._scan_phantom_nodes()
 
@@ -162,3 +167,20 @@ def test_offer_rns_client_restarts_targets_gateway_and_map():
         _rns_repair._offer_rns_client_restarts(ctx)
     svcs = [c[0][1] for c in offer.call_args_list]
     assert 'meshforge-gateway' in svcs and 'meshforge-map' in svcs
+
+
+def test_nodedb_unreachable_with_meshtasticd_running_offers_no_restart():
+    """#76: /json/nodes is never served by meshtasticd, so an unreachable API
+    with meshtasticd RUNNING must not trigger a restart offer."""
+    from handlers.meshtasticd_nodedb import MeshtasticdNodeDBHandler
+    h = MeshtasticdNodeDBHandler()
+    h.set_context(make_handler_context())
+    fake_client = MagicMock()
+    fake_client.is_available = False
+    with patch('handlers.meshtasticd_nodedb._get_http_client',
+               return_value=fake_client), \
+         patch('utils.service_check.check_service',
+               return_value=MagicMock(available=True)):
+        with patch('service_remediation.offer_service_fix') as offer:
+            h._scan_phantom_nodes()
+    assert not offer.called
