@@ -354,14 +354,12 @@ class MeshForgeLinter:
             # Allowlisted homes for an actual RNS.Reticulum() construction:
             #   - utils/rns_init.py — THE chokepoint (open_reticulum + the
             #     watchdog-guarded constructor).
-            #   - launcher_tui/handlers/rns_interfaces.py — a `python3 -c`
-            #     connectivity probe that runs in an ISOLATED subprocess with
-            #     its own subprocess timeout, and deliberately tests NomadNet's
-            #     OWN venv RNS (not MeshForge's), so it cannot route through the
-            #     in-process chokepoint and cannot hang the TUI.
+            #   (rns_interfaces.py was allowlisted until 2026-09-28: its
+            #   NomadNet probe now runs open_reticulum() in NomadNet's own
+            #   interpreter — the exemption covered the #68 hang but not the
+            #   #69 squat; TUI audit finding 7.)
             chokepoint_files = (
                 'utils/rns_init.py',
-                'launcher_tui/handlers/rns_interfaces.py',
             )
             is_allowed = any(f in filepath for f in chokepoint_files)
             if (is_actual_call and not is_test and not is_comment

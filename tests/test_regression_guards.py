@@ -204,15 +204,12 @@ class TestRNSReticulumChokepoint:
 
     Allowlist:
       - rns_init.py        — THE chokepoint.
-      - rns_interfaces.py  — an isolated `python3 -c` connectivity probe with
-        its own subprocess timeout that deliberately tests NomadNet's OWN venv
-        RNS (not MeshForge's), so it cannot route through the in-process
-        chokepoint and cannot hang the TUI.
+      (rns_interfaces.py removed 2026-09-28 — its NomadNet probe now calls
+      open_reticulum() inside NomadNet's own interpreter; TUI audit finding 7.)
     """
 
     ALLOWLISTED = {
         'rns_init.py',
-        'rns_interfaces.py',
     }
 
     def test_reticulum_constructed_only_in_chokepoint(self):

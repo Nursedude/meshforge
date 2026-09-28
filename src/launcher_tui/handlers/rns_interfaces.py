@@ -368,11 +368,18 @@ class RNSInterfacesHandler(BaseHandler):
         if not Path(config_dir).exists():
             config_dir = str(get_real_user_home() / '.reticulum')
 
+        # Through the #68/#69 chokepoint, in NomadNet's OWN interpreter (so
+        # NomadNet's RNS is what gets tested). require_listener=True: with no
+        # rnsd listener it returns None instead of HOSTING the shared instance
+        # — the raw RNS.Reticulum() this used to run could squat @rns for up
+        # to the 15 s timeout while rnsd was down (TUI audit finding 7).
+        src_dir = str(Path(__file__).resolve().parents[2])
         snippet = (
-            "import RNS,sys; "
-            f"r = RNS.Reticulum(configdir='{config_dir}', loglevel=6); "
-            "s = 'connected' if r.is_connected_to_shared_instance else 'standalone'; "
-            "print(s)"
+            f"import sys; sys.path.insert(0, {src_dir!r}); "
+            "from utils.rns_init import open_reticulum; "
+            f"r = open_reticulum({config_dir!r}, loglevel=6, require_listener=True); "
+            "print('no-rnsd' if r is None else "
+            "('connected' if r.is_connected_to_shared_instance else 'standalone'))"
         )
 
         sudo_user = os.environ.get('SUDO_USER')
@@ -391,9 +398,13 @@ class RNSInterfacesHandler(BaseHandler):
                 if line.strip()
             ] if r.stderr else []
 
-            if r.returncode == 0 and 'connected' in r.stdout:
+            verdict = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
+            if r.returncode == 0 and verdict == 'connected':
                 return 'connected', 'shared instance OK', debug_lines
-            elif r.returncode == 0 and 'standalone' in r.stdout:
+            elif r.returncode == 0 and verdict == 'no-rnsd':
+                return ('standalone', 'NOT connected: no rnsd shared instance '
+                        'reachable (the test refused to host one)', debug_lines)
+            elif r.returncode == 0 and verdict == 'standalone':
                 return 'standalone', 'NOT connected to rnsd', debug_lines
             else:
                 err = r.stderr.strip()[:100] if r.stderr else 'unknown'
