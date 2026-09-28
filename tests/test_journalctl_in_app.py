@@ -96,11 +96,16 @@ class TestConvertedLogViewsAreInPane:
         tb = _textboxes(h)
         assert tb and "mtd line" in tb[0][1][1]
 
-    def test_daemon_logs_in_pane(self):
+    def test_daemon_logs_in_pane(self, tmp_path):
+        # The daemon's OWN log file, shown in-pane (TUI audit finding 8: the
+        # journal of the "meshforge" unit is another program's log).
         from handlers.daemon import DaemonHandler
+        log = tmp_path / "daemon.log"
+        log.write_text("daemon line\n")
         h = DaemonHandler()
         h.set_context(make_handler_context())
-        with patch('subprocess.run', return_value=_proc(stdout="daemon line\n")):
+        with patch('handlers.daemon._daemon_log_path', return_value=log), \
+             patch('subprocess.run', side_effect=AssertionError("no shell-out")):
             h._daemon_logs()
         tb = _textboxes(h)
         assert tb and "daemon line" in tb[0][1][1]

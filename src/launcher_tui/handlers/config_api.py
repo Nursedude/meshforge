@@ -48,7 +48,13 @@ class ConfigAPIHandler(BaseHandler):
         """Config API Server start/stop/status menu."""
         while True:
             running = self._server and self._server.is_running
-            status = "RUNNING on 127.0.0.1:8081" if running else "STOPPED"
+            if running:
+                status = "RUNNING on 127.0.0.1:8081"
+            elif self._port_in_use():
+                # up, but not ours — used to read "STOPPED" (finding 8)
+                status = "SERVED BY ANOTHER PROCESS (8081 in use)"
+            else:
+                status = "STOPPED"
 
             choices = [
                 ("status", f"Status              {status}"),
@@ -100,8 +106,23 @@ class ConfigAPIHandler(BaseHandler):
 
     # -- Lifecycle helpers --
 
+    @staticmethod
+    def _port_in_use(port: int = 8081) -> bool:
+        """Is something ALREADY serving 127.0.0.1:<port> (e.g. the daemon's
+        own Config API)? A bind race used to fail silently (finding 8)."""
+        import socket
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                return True
+        except OSError:
+            return False
+
     def _maybe_auto_start(self):
-        """Auto-start Config API Server. Silent on failure."""
+        """Auto-start Config API Server — unless the port is already served."""
+        if self._port_in_use():
+            logger.info("Config API: 127.0.0.1:8081 already served by another "
+                        "process (e.g. the daemon) — not starting a second")
+            return
         try:
             from utils import config_api as config_api_mod
             create_gateway_config_api = config_api_mod.create_gateway_config_api

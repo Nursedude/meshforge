@@ -20,6 +20,13 @@ from backend import clear_screen
 logger = logging.getLogger(__name__)
 
 
+def _daemon_log_path():
+    """Where a TUI-started daemon's stdout/stderr go (the file "Daemon Logs"
+    reads). One path for the writer and the reader."""
+    from utils.paths import get_real_user_home
+    return get_real_user_home() / ".local" / "share" / "meshforge" / "daemon.log"
+
+
 class DaemonHandler(BaseHandler):
     """MeshForge Daemon — headless NOC services."""
 
@@ -132,14 +139,29 @@ class DaemonHandler(BaseHandler):
         ):
             return
 
+        # A second gateway bridge next to systemd's meshforge-gateway would
+        # double every TX (TUI audit finding 8): daemon.py runs its own
+        # GatewayBridgeService whenever gateway_enabled (default True).
+        refusal = self._second_bridge_refusal()
+        if refusal:
+            self.ctx.dialog.msgbox("Daemon NOT Started", refusal)
+            return
+
         try:
             daemon_script = self.ctx.src_dir / "daemon.py"
+            # The daemon logs to stderr by default (log_file None) and no
+            # systemd unit runs it, so its output used to go to /dev/null and
+            # "Daemon Logs" showed another program's journal (finding 8).
+            log_path = _daemon_log_path()
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_fh = open(log_path, "ab")
             proc = subprocess.Popen(
                 [sys.executable, str(daemon_script), "start", "--foreground"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
+            log_fh.close()  # the child keeps its own descriptor
             # Verify daemon started successfully
             import time
             time.sleep(2)
@@ -149,6 +171,30 @@ class DaemonHandler(BaseHandler):
             self.ctx.dialog.msgbox("Daemon Started", "Daemon launched in background.\nCheck status for details.")
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed to start daemon:\n{e}")
+
+    def _second_bridge_refusal(self):
+        """Why starting the daemon here would run a SECOND gateway bridge,
+        or None. Unknown service state refuses too (unobservable ≠ safe)."""
+        try:
+            from daemon_config import DaemonConfig
+            if not DaemonConfig.load().gateway_enabled:
+                return None
+        except Exception as e:
+            return (f"Could not read the daemon config ({e}).\n\n"
+                    "Not starting: the daemon may run a gateway bridge.")
+        from utils.service_check import check_service
+        try:
+            gw_up = check_service("meshforge-gateway").available
+        except Exception:
+            return ("Could not tell whether meshforge-gateway is running.\n\n"
+                    "Not starting: the daemon would add a gateway bridge.")
+        if gw_up:
+            return ("meshforge-gateway is already running as a service.\n\n"
+                    "The daemon runs its own gateway bridge (gateway_enabled),\n"
+                    "so starting it here would run TWO bridges and double\n"
+                    "every message. Disable the gateway in the daemon config\n"
+                    "first, or use the service.")
+        return None
 
     def _daemon_stop(self):
         """Stop the daemon via subprocess."""
@@ -226,37 +272,25 @@ class DaemonHandler(BaseHandler):
     def _daemon_logs(self):
         """Show daemon logs in-app (In-Domain Class 3 — no terminal eject).
 
-        Captures journalctl (or the daemon log file as a fallback) into one
-        scrollable in-pane view instead of printing to the terminal.
+        Shows the daemon's own log file in one scrollable in-pane view.
         """
         title = "MeshForge Daemon Logs (last 100 lines)"
         try:
-            # Try journalctl first (systemd)
-            result = subprocess.run(
-                ['journalctl', '-u', 'meshforge', '-n', '100',
-                 '--no-pager', '--output=short-iso'],
-                capture_output=True, text=True, timeout=10
-            )
-            output = result.stdout.strip()
-            if output and "No entries" not in output:
-                out = output
+            # Not the journal of the "meshforge" unit: that unit runs
+            # launcher.py / core.orchestrator, never daemon.py, so it showed
+            # another program's log under the daemon's name (TUI audit
+            # finding 8). No unit runs daemon.py; a TUI-started daemon
+            # writes to this file.
+            log_file = _daemon_log_path()
+            if log_file.exists():
+                out = "\n".join(log_file.read_text(errors="replace").splitlines()[-100:])
             else:
-                # Fall back to daemon log file
-                from utils.paths import get_real_user_home
-                log_file = get_real_user_home() / ".local" / "share" / "meshforge" / "daemon.log"
-                if log_file.exists():
-                    out = "\n".join(log_file.read_text().splitlines()[-100:])
-                else:
-                    out = (
-                        "No daemon logs found.\n\n"
-                        "The daemon writes logs to journald (if running as a\n"
-                        "systemd service) or to stderr (foreground mode).\n\n"
-                        f"Log file path: {log_file}"
-                    )
-        except FileNotFoundError:
-            out = "journalctl not available (not a systemd system)."
-        except subprocess.TimeoutExpired:
-            out = "Timed out reading logs."
+                out = (
+                    "No daemon log yet.\n\n"
+                    "No systemd unit runs daemon.py on this box; a daemon\n"
+                    "started from this menu logs to:\n"
+                    f"  {log_file}"
+                )
         except Exception as e:
             out = f"Failed to read logs: {e}"
 
