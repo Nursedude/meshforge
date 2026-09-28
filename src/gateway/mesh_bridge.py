@@ -611,14 +611,10 @@ class MeshtasticPresetBridge:
             logger.warning("Mesh bridge not enabled in config")
             return False
 
-        pri = self.bridge_config.primary
-        sec = self.bridge_config.secondary
-        pri_mode = "MQTT" if pri.use_mqtt else "TCP"
-        sec_mode = "MQTT" if sec.use_mqtt else "TCP"
-
         logger.info("Starting Meshtastic preset bridge...")
-        logger.info(f"  Primary: {pri.preset} @ {pri.host}:{pri.port} ({pri_mode})")
-        logger.info(f"  Secondary: {sec.preset} @ {sec.host}:{sec.port} ({sec_mode})")
+        for label, leg in (("Primary", self.bridge_config.primary),
+                           ("Secondary", self.bridge_config.secondary)):
+            logger.info(f"  {label}: {leg.preset} @ {self._leg_endpoint(leg)}")
 
         self._running = True
         self._stop_event.clear()
@@ -700,6 +696,13 @@ class MeshtasticPresetBridge:
         if ctype in ("serial", "mqtt"):
             return ctype
         return 'mqtt' if leg.use_mqtt else 'tcp'
+
+    @classmethod
+    def _leg_endpoint(cls, leg) -> str:
+        """Where the leg really connects (banner said TCP for moc's serial RAK)."""
+        return {'serial': f"{leg.serial_device or 'auto-detect'} (serial)",
+                'mqtt': f"{leg.mqtt_broker}:{leg.mqtt_port} (MQTT)",
+                }.get(cls._leg_mode(leg), f"{leg.host}:{leg.port} (TCP)")
 
     def get_status(self) -> dict:
         """Get current bridge status."""
@@ -950,6 +953,10 @@ class MeshtasticPresetBridge:
         elif interface is self._primary_interface:
             leg = "primary"
         else:
+            return
+        if self._stop_event.is_set():
+            # stop() closing the port fires connection.lost: planned, not lost
+            logger.info(f"{leg} serial link closed ({name}) — bridge stopping")
             return
         logger.warning(
             f"{leg} serial link LOST ({name}) — radio gone; reconnecting")

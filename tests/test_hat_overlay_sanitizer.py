@@ -127,3 +127,38 @@ class TestForbiddenKeysContract:
         assert "Webserver" in _HAT_OVERLAY_FORBIDDEN_KEYS, (
             "Webserver must stay in the forbidden set — see moc3 2026-05-18"
         )
+
+
+class TestShippedTemplatesCarryNoWebserver:
+    """TUI audit finding 10 (2026-09-28): the sanitizer only guards the TUI's
+    activation path. The installer copies templates/available.d/ into
+    /etc/meshtasticd/available.d/, and install_noc.sh, templates/config.yaml
+    and the orchestrator all tell the operator to activate one with a raw
+    `cp` into config.d/ — which never passes the sanitizer. All 33 shipped
+    templates (and all 36 inline fallbacks) carried `Webserver: Port: 443`,
+    so the documented manual path re-created the moc3 incident. Measured the
+    same day: meshanchor-server's config.d/usb-serial.yaml still carries it
+    (inert only because meshtasticd is not installed there)."""
+
+    REPO = Path(__file__).parent.parent
+
+    def test_repo_available_d_templates(self):
+        files = sorted((self.REPO / "templates" / "available.d").glob("*.yaml"))
+        assert files, "no templates found — the glob is aimed wrong"
+        carrying = [f.name for f in files
+                    if "Webserver" in (yaml.safe_load(f.read_text()) or {})]
+        assert carrying == []
+
+    def test_inline_fallback_templates(self):
+        from core.meshtasticd_templates import RADIO_TEMPLATES
+        assert RADIO_TEMPLATES
+        carrying = [k for k, v in RADIO_TEMPLATES.items()
+                    if "Webserver" in (yaml.safe_load(v["config"]) or {})]
+        assert carrying == []
+
+    def test_spi_hat_generator(self):
+        from config.spi_hats import SPIHatConfigurator
+        gen = SPIHatConfigurator.generate_config_yaml
+        out = gen(SPIHatConfigurator.__new__(SPIHatConfigurator),
+                  {"hat": "x", "module": "sx1262"})
+        assert "Webserver" not in (yaml.safe_load(out) or {})

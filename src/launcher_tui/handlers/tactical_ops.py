@@ -99,8 +99,8 @@ class TacticalOpsHandler(BaseHandler):
             )
 
             choices = [
-                ("sitrep", "Send SITREP       Situation report"),
-                ("task", "Send TASK         Work assignment"),
+                ("sitrep", "Encode SITREP     Situation report"),
+                ("task", "Encode TASK       Work assignment"),
                 ("checkin", "Check-In          Position report"),
                 ("zone", "Mark Zone         Geographic area"),
                 ("resource", "Resource          Equipment/supply"),
@@ -114,7 +114,7 @@ class TacticalOpsHandler(BaseHandler):
 
             choice = self.ctx.dialog.menu(
                 "Tactical Operations",
-                f"Structured messaging {mode_badge}:",
+                f"Structured messaging {mode_badge} — encoded + recorded locally;\nnothing here transmits over radio or network:",
                 choices
             )
 
@@ -122,8 +122,8 @@ class TacticalOpsHandler(BaseHandler):
                 break
 
             dispatch = {
-                "sitrep": ("Send SITREP", self._tactical_send_sitrep),
-                "task": ("Send TASK", self._tactical_send_task),
+                "sitrep": ("Encode SITREP", self._tactical_send_sitrep),
+                "task": ("Encode TASK", self._tactical_send_task),
                 "checkin": ("Check-In", self._tactical_checkin),
                 "zone": ("Mark Zone", self._tactical_mark_zone),
                 "resource": ("Resource", self._tactical_send_resource),

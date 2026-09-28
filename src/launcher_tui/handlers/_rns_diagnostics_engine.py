@@ -117,10 +117,13 @@ def run_rns_diagnostics(handler):
     if service_state == 'failed' or (not running and conflicting_app):
         print("")
         if conflicting_app:
-            print("  WARNING: NomadNet is holding the RNS shared "
-                  "instance port.")
-            print("  rnsd cannot bind port 37428 while NomadNet "
-                  "is running.")
+            # On Linux the shared instance is the abstract socket
+            # @rns/<instance>, not UDP 37428 (that is the TCP/UDP-mode port).
+            print(f"  WARNING: {conflicting_app} is holding the RNS "
+                  "shared instance.")
+            print("  rnsd cannot take @rns/"
+                  f"{ReticulumPaths.get_configured_instance_name()} "
+                  f"while {conflicting_app} is running.")
             print("  Fix: stop NomadNet first, or disable rnsd "
                   "and let NomadNet")
             print("  serve as the shared instance.")

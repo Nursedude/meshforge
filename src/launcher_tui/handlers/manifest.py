@@ -305,7 +305,7 @@ HANDLER_MANIFEST = [
         "lifecycle": False,
         "error": None,
         "menu_items": [
-            ('fleet_backup', 'Fleet Backup       Backup/restore fleet state', 'fleet_management'),
+            ('fleet_backup', 'Fleet Backup       Backup fleet state (no restore here)', 'fleet_management'),
         ],
     },
     {
@@ -771,7 +771,7 @@ HANDLER_MANIFEST = [
         "lifecycle": False,
         "error": None,
         "menu_items": [
-            ('sniffer', 'RNS Traffic Sniffer (Wireshark-grade)', None),
+            ('sniffer', 'RNS Traffic Sniffer (announces, paths, links)', None),
         ],
     },
     {
@@ -793,7 +793,7 @@ HANDLER_MANIFEST = [
         "lifecycle": False,
         "error": None,
         "menu_items": [
-            ('sdr', 'SDR Monitor         RF awareness (Airspy)', None),
+            ('sdr', 'SDR Monitor         RF awareness (SoapySDR)', None),
         ],
     },
     {

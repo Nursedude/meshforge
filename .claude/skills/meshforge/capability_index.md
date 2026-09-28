@@ -76,7 +76,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 
 | Action tag | Description | Flag | Truth | Live | Handler |
 |---|---|---|---|---|---|
-| `fleet_backup` | Fleet Backup — Backup/restore fleet state | `fleet_management` | sweep |  | FleetBackupHandler |
+| `fleet_backup` | Fleet Backup — Backup fleet state (no restore here) | `fleet_management` | sweep |  | FleetBackupHandler |
 | `fleet_membership` | Fleet Membership — Declare standalone, or fleet + host list |  | sweep |  | FleetProvisionHandler |
 | `fleet_provision` | Fleet Architecture — Reproduce a box to a preset (preview + apply) |  | sweep |  | FleetProvisionHandler |
 | `fleet_watchers` | Fleet Watchers — All boxes: mini daemon, deltas, freshness |  | sweep |  | FleetWatchersHandler |
@@ -150,7 +150,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | `antenna` | Antenna Analysis — Compare antenna types |  | sweep | ◐ 2026-09-25 dev/manager box | RFToolsHandler |
 | `freq` | Frequency Slots — Channel calculator |  | sweep | ✓ 2026-09-25 dev/manager box | RFToolsHandler |
 | `link` | Link Budget — FSPL, Fresnel, range |  | sweep | ✓ 2026-09-25 dev/manager box | RFToolsHandler |
-| `sdr` | SDR Monitor — RF awareness (Airspy) |  | sweep | ◐ 2026-09-24 Airspy host | SDRHandler |
+| `sdr` | SDR Monitor — RF awareness (SoapySDR) |  | sweep | ◐ 2026-09-24 Airspy host | SDRHandler |
 | `sdr_watch` | Interference Watch — what the Airspy timer saw (read-only) |  | sweep | ◐ 2026-09-25 Airspy host | SDRWatchHandler |
 | `site` | Site Planner — Coverage estimation |  | sweep | ◐ 2026-09-25 dev/manager box | SitePlannerHandler |
 
@@ -167,7 +167,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | `repair` | Repair RNS |  | sweep |  | RNSDiagnosticsHandler |
 | `ifaces` | Manage Interfaces |  | sweep | ◐ 2026-09-25 dev/manager box | RNSInterfacesHandler |
 | `monitor` | Live RNS Monitor (auto-refresh) |  | sweep |  | RNSMonitorHandler |
-| `sniffer` | RNS Traffic Sniffer (Wireshark-grade) |  | sweep |  | RNSSnifferHandler |
+| `sniffer` | RNS Traffic Sniffer (announces, paths, links) |  | sweep |  | RNSSnifferHandler |
 | `tools` | RNS Tools — rnstatus, paths, identity |  | sweep |  | RNSToolsHandler |
 
 ## `system`

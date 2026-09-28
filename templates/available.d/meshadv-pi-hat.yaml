@@ -32,8 +32,5 @@ I2C:
 TCP:
   Port: 4403
 
-Webserver:
-  Port: 443
-
 Logging:
   LogLevel: info

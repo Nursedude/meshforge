@@ -86,7 +86,7 @@ class SDRHandler(BaseHandler):
 
     def menu_items(self):
         return [
-            ("sdr", "SDR Monitor         RF awareness (Airspy)", None),
+            ("sdr", "SDR Monitor         RF awareness (SoapySDR)", None),
         ]
 
     def execute(self, action):

@@ -125,7 +125,7 @@ class DashboardHandler(BaseHandler):
         try:
             content = config_path.read_text()
             if 'Webserver:' not in content:
-                return "Fix: Add 'Webserver: Port: 443' to /etc/meshtasticd/config.yaml"
+                return "Fix: Add 'Webserver: Port: 9443' to /etc/meshtasticd/config.yaml"
             for line in content.splitlines():
                 stripped = line.strip()
                 if stripped.startswith('#'):

@@ -234,8 +234,9 @@ class FleetProvisionHandler(BaseHandler):
         while True:
             choice = self.ctx.dialog.menu(
                 "Fleet Architecture",
-                "Reproduce this box to a lab-hardened configuration "
-                "(DRY-RUN — nothing is applied).",
+                "Reproduce this box to a lab-hardened configuration. "
+                "Browsing previews only; a preset's screen offers Apply "
+                "(admin mode, after a confirm) — that changes systemd units.",
                 [
                     ("current", "Current box     role, overrides, live drift"),
                     ("catalog", "Browse presets  the lab-hardened catalog"),

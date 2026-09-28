@@ -38,7 +38,7 @@ class FleetBackupHandler(BaseHandler):
 
     def menu_items(self):
         return [
-            ("fleet_backup", "Fleet Backup       Backup/restore fleet state", "fleet_management"),
+            ("fleet_backup", "Fleet Backup       Backup fleet state (no restore here)", "fleet_management"),
         ]
 
     def execute(self, action):

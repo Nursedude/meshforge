@@ -1,5 +1,5 @@
 """
-RNS Sniffer Handler — Wireshark-grade RNS traffic inspection.
+RNS Sniffer Handler — RNS announce/path/link inspection.
 
 Converted from rns_sniffer_mixin.py as part of the mixin-to-registry migration.
 """
@@ -39,7 +39,7 @@ class RNSSnifferHandler(BaseHandler):
 
     def menu_items(self):
         return [
-            ("sniffer", "RNS Traffic Sniffer (Wireshark-grade)", None),
+            ("sniffer", "RNS Traffic Sniffer (announces, paths, links)", None),
         ]
 
     def execute(self, action):
@@ -47,7 +47,7 @@ class RNSSnifferHandler(BaseHandler):
             self._rns_traffic_sniffer()
 
     def _rns_traffic_sniffer(self):
-        """RNS Traffic Sniffer - Wireshark-grade packet capture for RNS."""
+        """RNS Traffic Sniffer - announces, paths and links seen by this RNS instance."""
         sniffer_mod = _load_sniffer_mod()
         if sniffer_mod is None:
             self.ctx.dialog.msgbox(
@@ -72,7 +72,7 @@ class RNSSnifferHandler(BaseHandler):
 
             choice = self.ctx.dialog.menu(
                 "RNS Traffic Sniffer",
-                f"Wireshark-grade RNS packet visibility\n"
+                f"RNS announce / path / link visibility\n"
                 f"Status: {capture_status} | Packets: {packets} | "
                 f"Announces: {announces} | Paths: {paths}",
                 choices=[

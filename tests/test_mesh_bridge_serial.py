@@ -421,3 +421,37 @@ def test_status_reports_serial_leg_as_serial(bridge_with_serial_secondary):
     st = MeshtasticPresetBridge(config=bridge_with_serial_secondary).get_status()
     assert st['secondary']['mode'] == 'serial'
     assert st['primary']['mode'] == 'tcp'
+
+
+def test_planned_stop_close_is_not_a_lost_radio(bridge_with_serial_secondary):
+    """moc 2026-09-28: every gateway restart logged "serial link LOST — radio
+    gone" and counted a lost link, because stop() closing the port fires
+    connection.lost too. A close under stop() is planned, not a lost radio."""
+    from gateway.mesh_bridge import MeshtasticPresetBridge
+    bridge = MeshtasticPresetBridge(config=bridge_with_serial_secondary)
+    iface, real_pub = TestSerialLinkLost()._connected(
+        bridge, bridge_with_serial_secondary.mesh_bridge.secondary)
+    statuses = []
+    bridge._notify_status = statuses.append
+    bridge._stop_event.set()
+    try:
+        real_pub.sendMessage("meshtastic.connection.lost", interface=iface)
+    finally:
+        real_pub.unsubAll("meshtastic.connection.lost")
+        real_pub.unsubAll("meshtastic.receive")
+    assert bridge.stats['link_lost'] == 0
+    assert "secondary_disconnected" not in statuses
+
+
+def test_start_banner_names_the_real_endpoint(bridge_with_serial_secondary):
+    """moc 2026-09-28: the start banner printed the serial RAK leg as
+    'localhost:4404 (TCP)'. It must say where the leg really connects."""
+    from gateway.config import MeshtasticConfig
+    from gateway.mesh_bridge import MeshtasticPresetBridge as B
+    mb = bridge_with_serial_secondary.mesh_bridge
+    assert B._leg_endpoint(mb.secondary) == "/dev/ttyUSB0 (serial)"
+    assert B._leg_endpoint(mb.primary) == "localhost:4403 (TCP)"
+    mq = MeshtasticConfig(connection_type="mqtt", mqtt_broker="b", mqtt_port=1)
+    assert B._leg_endpoint(mq) == "b:1 (MQTT)"
+    assert B._leg_endpoint(MeshtasticConfig(connection_type="serial")) == \
+        "auto-detect (serial)"

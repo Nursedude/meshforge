@@ -425,10 +425,9 @@ class SPIHatConfigurator:
             lines.append("  I2CDevice: /dev/i2c-1")
             lines.append("")
 
-        # Webserver section (common default)
-        lines.append("Webserver:")
-        lines.append("  Port: 443")
-        lines.append("")
+        # No Webserver block: this file is activated into config.d/, where an
+        # overlay's Webserver wins over config.yaml — `Port: 443` here moved
+        # meshtasticd off :9443 (Issue #58). The base config.yaml owns it.
 
         return "\n".join(lines)
 

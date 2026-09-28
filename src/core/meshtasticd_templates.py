@@ -53,9 +53,6 @@ Serial:
 TCP:
   Port: 4403
 
-Webserver:
-  Port: 443
-
 Logging:
   LogLevel: info
 """
@@ -74,9 +71,6 @@ Serial:
 
 TCP:
   Port: 4403
-
-Webserver:
-  Port: 443
 
 Logging:
   LogLevel: info
@@ -97,9 +91,6 @@ Serial:
 TCP:
   Port: 4403
 
-Webserver:
-  Port: 443
-
 Logging:
   LogLevel: info
 """
@@ -118,9 +109,6 @@ Serial:
 
 TCP:
   Port: 4403
-
-Webserver:
-  Port: 443
 
 Logging:
   LogLevel: info
@@ -141,9 +129,6 @@ Serial:
 TCP:
   Port: 4403
 
-Webserver:
-  Port: 443
-
 Logging:
   LogLevel: info
 """
@@ -161,9 +146,6 @@ Serial:
 
 TCP:
   Port: 4403
-
-Webserver:
-  Port: 443
 
 Logging:
   LogLevel: info
@@ -183,9 +165,6 @@ Serial:
 
 TCP:
   Port: 4403
-
-Webserver:
-  Port: 443
 
 Logging:
   LogLevel: info
@@ -250,9 +229,6 @@ I2C:
 TCP:
   Port: 4403
 
-Webserver:
-  Port: 443
-
 Logging:
   LogLevel: info
 """
@@ -286,9 +262,6 @@ I2C:
 TCP:
   Port: 4403
 
-Webserver:
-  Port: 443
-
 Logging:
   LogLevel: info
 """
@@ -313,9 +286,6 @@ Lora:
 TCP:
   Port: 4403
 
-Webserver:
-  Port: 443
-
 Logging:
   LogLevel: info
 """
@@ -338,9 +308,6 @@ Lora:
 
 TCP:
   Port: 4403
-
-Webserver:
-  Port: 443
 
 Logging:
   LogLevel: info
@@ -365,9 +332,6 @@ Lora:
 TCP:
   Port: 4403
 
-Webserver:
-  Port: 443
-
 Logging:
   LogLevel: info
 """
@@ -389,9 +353,6 @@ Lora:
 
 TCP:
   Port: 4403
-
-Webserver:
-  Port: 443
 
 Logging:
   LogLevel: info
@@ -416,9 +377,6 @@ Lora:
 
 TCP:
   Port: 4403
-
-Webserver:
-  Port: 443
 
 Logging:
   LogLevel: info
@@ -447,9 +405,6 @@ Lora:
 TCP:
   Port: 4403
 
-Webserver:
-  Port: 443
-
 Logging:
   LogLevel: info
 """
@@ -477,9 +432,6 @@ Lora:
 TCP:
   Port: 4403
 
-Webserver:
-  Port: 443
-
 Logging:
   LogLevel: info
 """
@@ -502,9 +454,6 @@ Lora:
 TCP:
   Port: 4403
 
-Webserver:
-  Port: 443
-
 Logging:
   LogLevel: info
 """
@@ -526,9 +475,6 @@ Lora:
 
 TCP:
   Port: 4403
-
-Webserver:
-  Port: 443
 
 Logging:
   LogLevel: info
@@ -553,9 +499,6 @@ Lora:
 
 TCP:
   Port: 4403
-
-Webserver:
-  Port: 443
 
 Logging:
   LogLevel: info
@@ -584,9 +527,6 @@ Lora:
 
 TCP:
   Port: 4403
-
-Webserver:
-  Port: 443
 
 Logging:
   LogLevel: info
@@ -663,9 +603,6 @@ Lora:
 TCP:
   Port: 4403
 
-Webserver:
-  Port: 443
-
 Logging:
   LogLevel: info
 """
@@ -690,9 +627,6 @@ Lora:
 
 TCP:
   Port: 4403
-
-Webserver:
-  Port: 443
 
 Logging:
   LogLevel: info
@@ -719,9 +653,6 @@ Lora:
 TCP:
   Port: 4403
 
-Webserver:
-  Port: 443
-
 Logging:
   LogLevel: info
 """
@@ -745,9 +676,6 @@ Lora:
 
 TCP:
   Port: 4403
-
-Webserver:
-  Port: 443
 
 Logging:
   LogLevel: info
@@ -773,9 +701,6 @@ Lora:
 TCP:
   Port: 4403
 
-Webserver:
-  Port: 443
-
 Logging:
   LogLevel: info
 """
@@ -798,9 +723,6 @@ Lora:
 
 TCP:
   Port: 4403
-
-Webserver:
-  Port: 443
 
 Logging:
   LogLevel: info
@@ -828,9 +750,6 @@ Lora:
 TCP:
   Port: 4403
 
-Webserver:
-  Port: 443
-
 Logging:
   LogLevel: info
 """
@@ -857,9 +776,6 @@ Lora:
 TCP:
   Port: 4403
 
-Webserver:
-  Port: 443
-
 Logging:
   LogLevel: info
 """
@@ -880,9 +796,6 @@ Lora:
 
 TCP:
   Port: 4403
-
-Webserver:
-  Port: 443
 
 Logging:
   LogLevel: info
@@ -908,9 +821,6 @@ Lora:
 TCP:
   Port: 4403
 
-Webserver:
-  Port: 443
-
 Logging:
   LogLevel: info
 """
@@ -934,9 +844,6 @@ Lora:
 
 TCP:
   Port: 4403
-
-Webserver:
-  Port: 443
 
 Logging:
   LogLevel: info
@@ -962,9 +869,6 @@ Lora:
 TCP:
   Port: 4403
 
-Webserver:
-  Port: 443
-
 Logging:
   LogLevel: info
 """
@@ -985,9 +889,6 @@ Lora:
 
 TCP:
   Port: 4403
-
-Webserver:
-  Port: 443
 
 Logging:
   LogLevel: info
