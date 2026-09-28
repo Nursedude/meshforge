@@ -24,6 +24,23 @@ from handler_protocol import BaseHandler
 
 logger = logging.getLogger(__name__)
 
+
+def _install_overlay(src: Path, dst: Path) -> list:
+    """Install a HAT template into config.d/ — sanitized, never a raw copy.
+
+    An overlay overrides config.yaml, so Webserver/TCP/... must not reach
+    config.d (#58: `Webserver: Port: 443` moved the API off :9443).
+    Returns the stripped top-level keys.
+    """
+    from core.meshtasticd_templates import sanitize_hat_overlay
+    content, stripped = sanitize_hat_overlay(src.read_text())
+    dst.write_text(content)
+    if stripped:
+        logger.warning(
+            "HAT overlay %s: stripped %s before install (belongs in "
+            "/etc/meshtasticd/config.yaml)", src.name, ", ".join(stripped))
+    return stripped
+
 from utils.paths import get_real_user_home
 from utils.safe_import import safe_import
 
@@ -477,8 +494,7 @@ class FirstRunHandler(BaseHandler):
             config_d.mkdir(parents=True, exist_ok=True)
             dst = config_d / src.name
 
-            # Copy config file
-            shutil.copy2(src, dst)
+            _install_overlay(src, dst)
 
             # Restart meshtasticd — honest-signal: gate on the real (ok, msg).
             ok, msg = apply_config_and_restart('meshtasticd')
@@ -857,8 +873,7 @@ class FirstRunHandler(BaseHandler):
             config_d.mkdir(parents=True, exist_ok=True)
             dest = config_d / config_file
 
-            # Copy config file
-            shutil.copy2(source, dest)
+            _install_overlay(source, dest)
 
             # Restart meshtasticd — honest-signal: gate on the real (ok, msg).
             ok, msg = apply_config_and_restart('meshtasticd')

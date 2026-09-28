@@ -44,30 +44,8 @@ OVERLAY_PATH = Path('/etc/meshtasticd/config.d/meshforge-overrides.yaml')
 from core.meshtasticd_templates import (
     HAT_OVERLAY_FORBIDDEN_KEYS as _HAT_OVERLAY_FORBIDDEN_KEYS,
     OVERRIDES_NAMES,
+    sanitize_hat_overlay as _sanitize_hat_overlay,
 )
-
-
-def _sanitize_hat_overlay(content: str):
-    """Strip non-Lora top-level blocks from a HAT overlay before activation.
-
-    Returns ``(sanitized_yaml_text, stripped_keys_list)``. If the input
-    doesn't parse as YAML or isn't a top-level mapping, returns it
-    unchanged with an empty strip list — the caller (and meshtasticd's
-    own load) will surface the parse error loudly rather than silently
-    mangling the operator's content.
-    """
-    try:
-        loaded = yaml.safe_load(content)
-    except yaml.YAMLError:
-        return content, []
-    if not isinstance(loaded, dict):
-        return content, []
-    stripped = sorted(k for k in loaded if k in _HAT_OVERLAY_FORBIDDEN_KEYS)
-    if not stripped:
-        return content, []
-    for key in stripped:
-        del loaded[key]
-    return yaml.safe_dump(loaded, sort_keys=False, default_flow_style=False), stripped
 
 
 def _glob_yaml(directory: Path) -> list:

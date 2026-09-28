@@ -28,6 +28,33 @@ HAT_OVERLAY_FORBIDDEN_KEYS = frozenset({
 OVERRIDES_NAMES = frozenset({'meshforge-overrides.yaml', 'meshforge-overrides.yml'})
 
 
+def sanitize_hat_overlay(content: str):
+    """Strip forbidden top-level blocks from a HAT overlay before activation.
+
+    Returns ``(sanitized_yaml_text, stripped_keys_list)``. If the input
+    doesn't parse as YAML or isn't a top-level mapping, returns it
+    unchanged with an empty strip list — the caller (and meshtasticd's
+    own load) will surface the parse error loudly rather than silently
+    mangling the operator's content.
+
+    Every path that copies a template into config.d/ goes through this: the
+    radio handler, the first-run wizard and the config file manager.
+    """
+    import yaml
+    try:
+        loaded = yaml.safe_load(content)
+    except yaml.YAMLError:
+        return content, []
+    if not isinstance(loaded, dict):
+        return content, []
+    stripped = sorted(k for k in loaded if k in HAT_OVERLAY_FORBIDDEN_KEYS)
+    if not stripped:
+        return content, []
+    for key in stripped:
+        del loaded[key]
+    return yaml.safe_dump(loaded, sort_keys=False, default_flow_style=False), stripped
+
+
 class RadioType(Enum):
     """Type of Meshtastic radio connection."""
     USB_SERIAL = "usb_serial"    # T-Beam, Heltec, etc. via USB

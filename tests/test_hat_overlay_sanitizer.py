@@ -162,3 +162,39 @@ class TestShippedTemplatesCarryNoWebserver:
         out = gen(SPIHatConfigurator.__new__(SPIHatConfigurator),
                   {"hat": "x", "module": "sx1262"})
         assert "Webserver" not in (yaml.safe_load(out) or {})
+
+
+class TestEveryActivationPathSanitizes:
+    """2026-09-28: the sanitizer guarded ONE of three activation paths. The
+    first-run wizard (two copies) and the config file manager copied
+    available.d templates into config.d/ raw — including the upstream
+    package's templates, which is exactly where moc3's 443 came from."""
+
+    def test_handler_uses_the_core_sanitizer(self):
+        from core.meshtasticd_templates import sanitize_hat_overlay
+        assert _sanitize_hat_overlay is sanitize_hat_overlay
+
+    def test_wizard_install_strips_webserver(self, tmp_path):
+        from launcher_tui.handlers.first_run import _install_overlay
+        src = tmp_path / "lora-MeshAdv-900M30S.yaml"
+        src.write_text(MOC3_BROKEN_TEMPLATE)
+        dst = tmp_path / "config.d.yaml"
+        stripped = _install_overlay(src, dst)
+        assert "Webserver" in stripped
+        loaded = yaml.safe_load(dst.read_text())
+        assert "Webserver" not in loaded and "Lora" in loaded
+
+    def test_no_raw_template_copy_into_config_d(self):
+        # Source guard: the activation paths may not copy a template raw.
+        root = Path(__file__).parent.parent / "src"
+        for rel in ("launcher_tui/handlers/first_run.py",
+                    "config/config_file_manager.py"):
+            text = (root / rel).read_text()
+            assert "sanitize_hat_overlay" in text, rel
+        wizard = (root / "launcher_tui/handlers/first_run.py").read_text()
+        assert "shutil.copy2(src, dst)" not in wizard
+        assert "shutil.copy2(source, dest)" not in wizard
+        cfm = (root / "config/config_file_manager.py").read_text()
+        activate = cfm[cfm.index('"""Select a config from available.d'):]
+        activate = activate[:activate.index("\n    def ")]
+        assert "shutil.copy2" not in activate

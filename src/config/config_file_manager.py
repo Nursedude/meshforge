@@ -789,8 +789,16 @@ class ConfigFileManager:
         if Confirm.ask(f"\n[yellow]Activate {selected}?[/yellow]", default=True):
             try:
                 self.CONFIG_D.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst)
+                # Sanitized, never a raw copy: an overlay overrides config.yaml,
+                # so Webserver/TCP/... must not reach config.d (#58).
+                from core.meshtasticd_templates import sanitize_hat_overlay
+                content, stripped = sanitize_hat_overlay(src.read_text())
+                dst.write_text(content)
                 console.print(f"[green]Activated: {selected}[/green]")
+                if stripped:
+                    console.print(
+                        f"[yellow]Stripped {', '.join(stripped)} — those belong "
+                        f"in /etc/meshtasticd/config.yaml, not an overlay[/yellow]")
                 console.print(f"[dim]Copied to: {dst}[/dim]")
 
                 if Confirm.ask("\n[cyan]Edit this config before applying?[/cyan]", default=False):
