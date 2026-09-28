@@ -58,7 +58,7 @@ class GatewayHandler(BaseHandler):
         if config.load_error:
             self.ctx.dialog.msgbox(
                 "gateway.json NOT READABLE",
-                f"~/.config/meshforge/gateway.json could not be read:\n\n"
+                f"{config.get_config_path()} could not be read:\n\n"
                 f"  {config.load_error}\n\n"
                 f"You are looking at DEFAULTS, not your configuration.\n"
                 f"Save is protected: it will not overwrite your file\n"

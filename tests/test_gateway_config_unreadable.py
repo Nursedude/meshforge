@@ -31,10 +31,10 @@ GOOD = {"enabled": True, "bridge_mode": "mqtt_bridge",
 
 @pytest.fixture
 def home(tmp_path):
-    cfg = tmp_path / ".config" / "meshforge"
-    cfg.mkdir(parents=True)
+    # the path comes from the SSOT, never a hardcode (the MA twin keeps it
+    # under ~/.config/meshanchor — a hardcode hid that until the port)
     with patch("gateway.config.get_real_user_home", return_value=tmp_path):
-        yield cfg / "gateway.json"
+        yield GatewayConfig.get_config_path()
 
 
 def _write(path, text, mode=0o664):
