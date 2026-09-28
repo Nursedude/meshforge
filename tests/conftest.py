@@ -29,8 +29,89 @@ CI = os.environ.get('CI', 'false').lower() == 'true'
 MESHFORGE_CI = os.environ.get('MESHFORGE_CI', 'false').lower() == 'true'
 
 
+_SUDO_FENCE = r"""#!/bin/sh
+# tests/conftest.py sudo fence — NO test may run a privileged command on the
+# box it runs on. 2026-09-27: a mutation drill's mutants (bare rnsd restarts)
+# ran REAL `sudo systemctl stop/start/restart rnsd` on the manager box, twice, mid
+# experiment. One narrow allowance: a script inside pytest's own temp tree is
+# run UNPRIVILEGED (fleet_hosts_selfheal tests drive `sudo -n <tmp stub>`).
+echo "$(date +%T) ${PYTEST_CURRENT_TEST:-?} sudo $*" >> "$MF_SUDO_FENCE_LOG"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -n|-E|-H|-k|-S) shift ;;
+    -u|-g) shift 2 ;;
+    --) shift; break ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+case "$1" in
+  "$MF_SUDO_FENCE_TMP"*) exec "$@" ;;
+esac
+echo "sudo refused under pytest (tests/conftest.py fence): $*" >&2
+exit 1
+"""
+
+
+_REFUSE = r"""#!/bin/sh
+echo "$(date +%T) ${PYTEST_CURRENT_TEST:-?} $(basename "$0") $*" >> "$MF_SUDO_FENCE_LOG"
+echo "$(basename "$0") refused under pytest (tests/conftest.py host fence): $*" >&2
+exit 1
+"""
+
+_SYSTEMCTL_FENCE = r"""#!/bin/sh
+# read-only verbs pass through to the real systemctl; mutating verbs refuse
+for a in "$@"; do
+  case "$a" in
+    start|stop|restart|reload|try-restart|reload-or-restart|kill|enable|disable|\
+    mask|unmask|daemon-reload|daemon-reexec|reset-failed|isolate|edit|\
+    set-property|revert|link|preset|reboot|poweroff|halt|suspend)
+      echo "$(date +%T) ${PYTEST_CURRENT_TEST:-?} systemctl $*" >> "$MF_SUDO_FENCE_LOG"
+      echo "systemctl $a refused under pytest (tests/conftest.py host fence)" >&2
+      exit 1 ;;
+  esac
+done
+exec "$MF_REAL_SYSTEMCTL" "$@"
+"""
+
+# Commands a test must never run for real on the box it runs on. 2026-09-27:
+# a sudo-only fence let a mutant's non-systemd fallback `pkill -x rnsd` kill
+# the LIVE rnsd (it runs as the operator's user — no sudo needed).
+_REFUSED_BINARIES = ("pkill", "killall", "reboot", "shutdown", "poweroff",
+                     "rnsd", "lxmd", "nomadnet", "meshtasticd")
+
+
+def _install_sudo_fence():
+    """Host fence: a refusing `sudo`, refusing process-killers/daemons, and a
+    `systemctl` that refuses mutating verbs — first on PATH for this process
+    AND every subprocess it spawns. Measured-safe: the full suite passes
+    under it (2026-09-27)."""
+    import shutil
+    import tempfile
+    real_systemctl = shutil.which("systemctl") or "/usr/bin/systemctl"
+    d = tempfile.mkdtemp(prefix="mf-host-fence-")
+
+    def _put(name, body):
+        path = os.path.join(d, name)
+        with open(path, "w") as fh:
+            fh.write(body)
+        os.chmod(path, 0o755)
+
+    _put("sudo", _SUDO_FENCE)
+    _put("systemctl", _SYSTEMCTL_FENCE)
+    for name in _REFUSED_BINARIES:
+        _put(name, _REFUSE)
+    os.environ["MF_REAL_SYSTEMCTL"] = real_systemctl
+    os.environ["MF_SUDO_FENCE_LOG"] = os.path.join(d, "calls.log")
+    os.environ["MF_SUDO_FENCE_TMP"] = tempfile.gettempdir().rstrip("/") + "/pytest-of-"
+    os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+    return d
+
+
 def pytest_configure(config):
     """Register custom markers."""
+    if os.environ.get("MF_TESTS_ALLOW_REAL_SUDO") != "1":
+        _install_sudo_fence()
     config.addinivalue_line(
         "markers", "hardware: mark test as requiring hardware (skipped in CI)"
     )
