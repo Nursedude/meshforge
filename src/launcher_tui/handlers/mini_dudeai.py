@@ -154,6 +154,19 @@ def discover_chat_targets(home: str) -> list:
     return targets
 
 
+#: One freshness window for the header AND the verdict (a second constant
+#: would drift — honest_failure_modes #5).
+STALE_AFTER_S = 300
+
+
+def _is_fresh(state: dict, now_ts: float) -> bool:
+    last_tick = state.get("last_tick_ts")
+    try:
+        return bool(last_tick) and (now_ts - float(last_tick)) <= STALE_AFTER_S
+    except (TypeError, ValueError):
+        return False
+
+
 def _posture(state: dict, now_ts: float) -> str:
     last_tick = state.get("last_tick_ts")
     rule_count = state.get("rule_count", len(state.get("rules") or {}))
@@ -161,8 +174,8 @@ def _posture(state: dict, now_ts: float) -> str:
     if not last_tick:
         return "⚠️ mini-dudeai has no state here (never ticked, or file missing)."
     age = int(max(0, now_ts - float(last_tick)))
-    if age > 300:
-        return (f"🔴 STALE — last tick {age}s ago (>300s). The watcher itself may "
+    if age > STALE_AFTER_S:
+        return (f"🔴 STALE — last tick {age}s ago (>{STALE_AFTER_S}s). The watcher itself may "
                 f"be down: systemctl --user status meshforge-mini-dudeai")
     return f"🟢 alive — {rule_count} rules, src_errors={errs}, last tick {age}s ago."
 
@@ -198,8 +211,20 @@ class MiniDudeaiHandler(BaseHandler):
             findings = build_findings(state, history, now)
 
             if not findings:
-                self.ctx.dialog.msgbox(
-                    "mini-dudeai", f"{header}\n\nNothing actionable right now ✓")
+                # An empty list from a watcher that is not ticking — or ticked
+                # blind — is not a clean bill (TUI audit finding 5): the ✓ used
+                # to show under a 🔴 STALE header.
+                errs = state.get("error_count", 0) or 0
+                if not _is_fresh(state, now):
+                    verdict = ("No findings to show — but the watcher is NOT "
+                               "fresh, so this is NOT a clean bill of health "
+                               "(unobservable ≠ healthy).")
+                elif errs:
+                    verdict = (f"No findings — but {errs} source error(s) this "
+                               f"tick: partly blind, not a clean bill.")
+                else:
+                    verdict = "Nothing actionable right now ✓"
+                self.ctx.dialog.msgbox("mini-dudeai", f"{header}\n\n{verdict}")
                 return
 
             choices = []

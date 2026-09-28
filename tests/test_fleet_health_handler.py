@@ -108,6 +108,23 @@ def test_probe_rnsd_active(monkeypatch):
 # ----------------------------------------------------------- RNS path table
 
 
+def _cp(rc, out, err=""):
+    from types import SimpleNamespace
+    return SimpleNamespace(returncode=rc, stdout=out, stderr=err)
+
+
+def test_probe_rns_path_table_failed_query_is_not_an_empty_table(monkeypatch):
+    """Planted fault (TUI audit finding 5): rnpath exits non-zero with an
+    error. It used to be parsed as zero paths — "no destinations learned yet"."""
+    monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/rnpath")
+    monkeypatch.setattr(FleetHealthHandler, "_run_rc", staticmethod(
+        lambda *a, **k: _cp(1, "", "Could not connect to the shared instance")))
+    r = _handler()._probe_rns_path_table()
+    assert r.status == "fail"
+    assert "rc=1" in r.headline and "empty" not in r.headline
+    assert "shared instance" in r.hint
+
+
 def test_probe_rns_path_table_no_rnpath(monkeypatch):
     monkeypatch.setattr("shutil.which", lambda _: None)
     r = _handler()._probe_rns_path_table()
@@ -117,7 +134,8 @@ def test_probe_rns_path_table_no_rnpath(monkeypatch):
 
 def test_probe_rns_path_table_empty(monkeypatch):
     monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/rnpath")
-    monkeypatch.setattr(FleetHealthHandler, "_run", staticmethod(lambda *a, **k: ""))
+    monkeypatch.setattr(FleetHealthHandler, "_run_rc", staticmethod(
+        lambda *a, **k: _cp(0, "")))
     r = _handler()._probe_rns_path_table()
     assert r.status == "warn"
     assert "empty" in r.headline
@@ -131,7 +149,8 @@ def test_probe_rns_path_table_populated(monkeypatch):
         "<ccc> is 0 hops away via <self> on LocalInterface[rns/default] expires X\n"
         "<ddd> is 0 hops away via <self> on LocalInterface[rns/default] expires X\n"
     )
-    monkeypatch.setattr(FleetHealthHandler, "_run", staticmethod(lambda *a, **k: sample))
+    monkeypatch.setattr(FleetHealthHandler, "_run_rc", staticmethod(
+        lambda *a, **k: _cp(0, sample)))
     r = _handler()._probe_rns_path_table()
     assert r.status == "ok"
     # 2 network destinations, 2 IPC peers

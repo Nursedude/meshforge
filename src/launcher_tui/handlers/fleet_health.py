@@ -199,7 +199,20 @@ class FleetHealthHandler(BaseHandler):
                 status="info",
                 headline="rnpath command not installed",
             )
-        out = self._run([rnpath, "--config", "/etc/reticulum", "-t"], timeout=10)
+        proc = self._run_rc([rnpath, "--config", "/etc/reticulum", "-t"], timeout=10)
+        if proc is not None and proc.returncode != 0:
+            # A FAILED query is not an empty table (TUI audit finding 5): it
+            # used to parse the error text as zero paths and say "no
+            # destinations learned yet".
+            err = (proc.stderr or proc.stdout or "").strip().splitlines()
+            return ProbeResult(
+                label="RNS path table",
+                status="fail",
+                headline=f"rnpath failed (rc={proc.returncode})",
+                hint=(err[-1][:120] if err else "no output") +
+                     " — check RNS > Diagnostics",
+            )
+        out = proc.stdout if proc is not None else None
         if out is None:
             return ProbeResult(
                 label="RNS path table",
@@ -666,6 +679,18 @@ class FleetHealthHandler(BaseHandler):
                 check=False,
             )
             return proc.stdout
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            logger.debug("run failed: %s -> %s", args, exc)
+            return None
+
+    @staticmethod
+    def _run_rc(args, timeout: int = 10):
+        """Like ``_run`` but keeps the exit code and stderr (a CompletedProcess),
+        or None on timeout/missing binary. For probes where a FAILED command
+        must not read as empty output (TUI audit finding 5)."""
+        try:
+            return subprocess.run(args, capture_output=True, text=True,
+                                  timeout=timeout, check=False)
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
             logger.debug("run failed: %s -> %s", args, exc)
             return None

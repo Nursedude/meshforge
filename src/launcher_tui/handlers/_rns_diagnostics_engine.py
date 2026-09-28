@@ -24,6 +24,26 @@ from utils.config_drift import detect_rnsd_config_drift
 logger = logging.getLogger(__name__)
 
 
+def summary_lines(issues, warnings, unobserved) -> list:
+    """The diagnostics verdict. A leg that could not be checked is UNKNOWN —
+    it must never be summarised as "passed" or "OK" (TUI audit finding 5)."""
+    out = []
+    if issues:
+        out.append(f"\n--- Issues Found ({len(issues)}) ---")
+        out += [f"  ! {i}" for i in issues]
+    if warnings:
+        out.append(f"\n--- Warnings ({len(warnings)}) ---")
+        out += [f"  ~ {w}" for w in warnings]
+    if unobserved:
+        out.append(f"\n--- NOT CHECKED ({len(unobserved)}) — UNKNOWN, not passed ---")
+        out += [f"  ? {u}" for u in unobserved]
+    if not issues and not warnings and not unobserved:
+        out.append("\n--- All checks passed ---")
+    elif not issues and not unobserved:
+        out.append("\n--- Connectivity OK (with warnings) ---")
+    return out
+
+
 def run_rns_diagnostics(handler):
     """Run comprehensive RNS diagnostics.
 
@@ -40,6 +60,10 @@ def run_rns_diagnostics(handler):
     # Collect issues and warnings throughout diagnostics
     issues = []
     warnings = []
+    # Legs that could NOT be checked. Never folded into "passed": before
+    # this (TUI audit finding 5) a blind rnstatus leg printed a note and the
+    # summary still said "All checks passed".
+    unobserved = []
 
     # 1. Service status
     print("[1/6] Checking rnsd service...")
@@ -319,28 +343,21 @@ def run_rns_diagnostics(handler):
             rnstatus_path = shutil.which('rnstatus')
             if not rnstatus_path:
                 print("  rnstatus not found — reinstall MeshForge to restore RNS (Settings > Updates).")
+                unobserved.append("interface traffic (rnstatus not installed)")
             elif running and not instance_ok:
                 print("  rnstatus available but cannot connect (shared instance not available)")
+                unobserved.append("interface traffic (rnstatus cannot connect)")
             else:
                 print("  Could not retrieve interface traffic from rnstatus")
+                unobserved.append("interface traffic (rnstatus returned nothing)")
     except Exception as e:
         logger.debug("Interface health check failed: %s", e)
         print(f"  Could not check: {e}")
+        unobserved.append(f"interface traffic ({type(e).__name__})")
 
     # Summary
-    if issues:
-        print(f"\n--- Issues Found ({len(issues)}) ---")
-        for issue in issues:
-            print(f"  ! {issue}")
-    if warnings:
-        print(f"\n--- Warnings ({len(warnings)}) ---")
-        for warning in warnings:
-            print(f"  ~ {warning}")
-
-    if not issues and not warnings:
-        print("\n--- All checks passed ---")
-    elif not issues:
-        print("\n--- Connectivity OK (with warnings) ---")
+    for line in summary_lines(issues, warnings, unobserved):
+        print(line)
 
     # Offer inline repair if shared instance is not available
     if running and not instance_ok:

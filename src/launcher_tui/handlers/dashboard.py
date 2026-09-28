@@ -516,15 +516,23 @@ class DashboardHandler(BaseHandler):
                 ['rnpath', '-t'],
                 capture_output=True, text=True, timeout=10
             )
-            lines = [line for line in result.stdout.splitlines()
-                     if line.strip() and not line.startswith('Path')]
-            path_count = len(lines)
-            if path_count > 0:
-                results.append(("RNS paths", "OK", f"{path_count} known paths"))
-                print(f"      \033[0;32mOK\033[0m - {path_count} paths in table")
+            if result.returncode != 0:
+                # A failed query is not an empty table (TUI audit finding 5):
+                # it used to be parsed as "no paths — normal if no traffic".
+                err = (result.stderr or result.stdout or "").strip().splitlines()
+                why = err[-1][:50] if err else f"rc={result.returncode}"
+                results.append(("RNS paths", "FAIL", f"rnpath failed: {why}"))
+                print(f"      \033[0;31mFAIL\033[0m - rnpath failed (rc={result.returncode}): {why}")
             else:
-                results.append(("RNS paths", "WARN", "Path table empty"))
-                print("      \033[0;33mWARN\033[0m - No paths (normal if no RNS traffic yet)")
+                lines = [line for line in result.stdout.splitlines()
+                         if line.strip() and not line.startswith('Path')]
+                path_count = len(lines)
+                if path_count > 0:
+                    results.append(("RNS paths", "OK", f"{path_count} known paths"))
+                    print(f"      \033[0;32mOK\033[0m - {path_count} paths in table")
+                else:
+                    results.append(("RNS paths", "WARN", "Path table empty"))
+                    print("      \033[0;33mWARN\033[0m - No paths (normal if no RNS traffic yet)")
         except FileNotFoundError:
             results.append(("RNS paths", "SKIP", "rnpath not installed"))
             print("      \033[0;33mSKIP\033[0m - rnpath not found")

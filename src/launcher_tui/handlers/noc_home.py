@@ -66,7 +66,9 @@ class NocHomeHandler(BaseHandler):
             return ("up", "running") if check_service(svc).available \
                 else ("down", "stopped")
         except Exception:  # a probe must never crash the landing
-            return ("off", "unknown")
+            # UNKNOWN, never "off": a failed probe is not a disabled service
+            # (TUI audit finding 5 — the landing read a blind probe as benign).
+            return ("unknown", "UNKNOWN — probe failed")
 
     def _probe_rns(self):
         """('up'|'degraded'|'down'|'off', running_bool).
@@ -87,20 +89,25 @@ class NocHomeHandler(BaseHandler):
                     ReticulumPaths.get_configured_instance_name()
                 )
             except Exception:
-                ok = True  # can't determine the shared instance; trust the daemon
+                # rnsd runs but the shared instance could not be CHECKED —
+                # that is unknown, not "up" (it used to trust the daemon).
+                return ("unknown", True)
             return ("up", True) if ok else ("degraded", True)
         except Exception:
-            return ("off", False)
+            return ("unknown", False)
 
     def _probe_meshcore(self) -> str:
         """'on'|'off' from the gateway config. MeshCore is a companion radio, not
         a systemd unit, so we report configured-enablement, not link health."""
         try:
             from gateway.config import GatewayConfig
-            mc = getattr(GatewayConfig.load(), "meshcore", None)
+            cfg = GatewayConfig.load()
+            if getattr(cfg, "load_error", None):
+                return "unknown"   # unreadable gateway.json is not "disabled"
+            mc = getattr(cfg, "meshcore", None)
             return "on" if (mc and getattr(mc, "enabled", False)) else "off"
         except Exception:
-            return "off"
+            return "unknown"
 
     # ------------------------------------------------------------ view
     def _noc_home(self):
@@ -116,8 +123,11 @@ class NocHomeHandler(BaseHandler):
             # before drawing, so anything print()ed here is never seen).
             panel = ["TRANSPORTS"]
             panel.append(f"  {_dot(mesh_state)} Meshtastic   {mesh_state.upper()}")
-            mc_label = "ON (config)" if mc_state == "on" else "off / not configured"
-            panel.append(f"  {_dot('up' if mc_state == 'on' else 'off')} MeshCore     {mc_label}")
+            mc_label = {"on": "ON (config)",
+                        "unknown": "UNKNOWN — gateway.json unreadable"}.get(
+                mc_state, "off / not configured")
+            mc_dot = {"on": "up", "unknown": "unknown"}.get(mc_state, "off")
+            panel.append(f"  {_dot(mc_dot)} MeshCore     {mc_label}")
             rns_tail = "   -> Repair below" if rns_state in ("degraded", "down") else ""
             panel.append(f"  {_dot(rns_state)} RNS / rnsd   {rns_state.upper()}{rns_tail}")
             # Degrade-not-down: RNS leg down but another transport still carrying.
