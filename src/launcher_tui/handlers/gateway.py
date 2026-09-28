@@ -179,6 +179,9 @@ class GatewayHandler(BaseHandler):
                 "",
             ])
 
+        if config.mesh_bridge.enabled:
+            lines.extend(self._mesh_bridge_leg_lines(config))
+
         lines.extend([
             "RNS:",
             f"  Identity:   {config.rns.identity_name}",
@@ -214,6 +217,59 @@ class GatewayHandler(BaseHandler):
             lines.extend(["", f"CIRCUIT BREAKERS: (status unavailable: {e})"])
 
         self.ctx.dialog.msgbox("Gateway Status", "\n".join(lines), width=50, height=25)
+
+    def _mesh_bridge_leg_lines(self, config, lines_fn=None):
+        """Per-leg rows for the cross-preset bridge: real endpoint + live state.
+
+        State is the running gateway's OWN self-report (the ``<PRESET>:
+        connected|disconnected`` block it journals every ~30 s) — the same
+        evidence and regex as the ``bridge_leg_down`` watchdog probe, so this
+        screen and the page cannot disagree. Never opens the radio (#17).
+        """
+        from gateway.mesh_bridge import MeshtasticPresetBridge
+        from utils.watchdog_probe_core import _journal_match_lines
+        from utils.watchdog_probes_mesh_bridge import _LEG_RE
+
+        mb = config.mesh_bridge
+        legs = [("primary", mb.primary), ("secondary", mb.secondary)]
+        labels = [str(leg.preset or name) for name, leg in legs]
+        leg_pat = _LEG_RE.format(labels="|".join(re.escape(x) for x in labels))
+        count_pat = r"P->S: \d+, S->P: \d+"
+        window = "2min"
+        pattern = f"{leg_pat}|{count_pat}"
+        if lines_fn is None:
+            found = _journal_match_lines("meshforge-gateway.service", pattern, window)
+        else:
+            found = lines_fn(pattern)
+
+        latest = {}
+        counts = None
+        if found:
+            rx = re.compile(leg_pat)
+            crx = re.compile(r"P->S: (\d+), S->P: (\d+)")
+            for ln in found:  # oldest first: the last match wins
+                for label, state in rx.findall(ln):
+                    latest[label] = state
+                m = crx.search(ln)
+                if m:
+                    counts = (m.group(1), m.group(2))
+
+        out = [f"MESH BRIDGE ({mb.direction}):"]
+        for (name, leg), label in zip(legs, labels):
+            endpoint = MeshtasticPresetBridge._leg_endpoint(leg)
+            if found is None:
+                state = "UNKNOWN (gateway journal unreadable)"
+            elif label in latest:
+                state = latest[label]
+            else:
+                state = f"UNKNOWN (no gateway report in {window})"
+            out.append(f"  {label:<12} {state}")
+            out.append(f"    via {endpoint}")
+        if counts:
+            out.append(f"  Handed to radio: P->S {counts[0]}, S->P {counts[1]}")
+            out.append("    (radio accepted it — not proof it was heard on RF)")
+        out.append("")
+        return out
 
     def _set_bridge_mode(self, config):
         """Set the bridge operating mode."""

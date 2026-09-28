@@ -100,6 +100,7 @@ class KnowledgeBase:
         extended.load_aredn_knowledge(self)
         extended.load_rf_fundamentals_extended(self)
         extended.load_mqtt_knowledge(self)
+        extended.load_meshtastic_wifi_knowledge(self)
 
         # Build index
         self._build_keyword_index()

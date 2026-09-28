@@ -61,6 +61,8 @@ def _make_mock_config():
     config.rns.identity_name = "meshforge_gateway"
     config.rns.announce_interval = 300
     config.rns.config_dir = ""
+    # Off unless a test opts in: enabled reads the live gateway journal.
+    config.mesh_bridge.enabled = False
 
     # Telemetry sub-config
     config.telemetry.share_position = True
@@ -123,6 +125,85 @@ class TestGatewayStatus:
         h._show_gateway_status(config)
         text = h.ctx.dialog.last_msgbox_text
         assert "False" in text  # Enabled: False
+
+
+def _mesh_bridge_config():
+    from gateway.config import MeshtasticBridgeConfig
+    config = _make_mock_config()
+    mb = MeshtasticBridgeConfig(enabled=True)
+    mb.primary.preset = "LONG_FAST"
+    mb.secondary.preset = "SHORT_TURBO"
+    mb.secondary.connection_type = "serial"
+    mb.secondary.serial_device = "/dev/serial/by-id/usb-RAK4631"
+    config.mesh_bridge = mb
+    return config
+
+
+# The gateway's real 30 s status block, as journalctl -o cat returns it.
+_MOC_BLOCK = [
+    "    LONG_FAST: connected   SHORT_TURBO: disconnected",
+    "    Messages bridged: 3 (P->S: 3, S->P: 0)",
+    "    LONG_FAST: connected   SHORT_TURBO: connected",
+    "    Messages bridged: 4 (P->S: 3, S->P: 1)",
+]
+
+
+class TestMeshBridgeLegRows:
+
+    def test_latest_reading_per_leg_and_real_endpoint(self):
+        h = _make_gateway()
+        text = "\n".join(h._mesh_bridge_leg_lines(
+            _mesh_bridge_config(), lines_fn=lambda pat: list(_MOC_BLOCK)))
+        assert "SHORT_TURBO  connected" in text      # the LAST report wins
+        assert "/dev/serial/by-id/usb-RAK4631 (serial)" in text
+        assert "(TCP)" in text                        # primary leg's endpoint
+
+    def test_count_labelled_handed_to_radio_not_delivered(self):
+        h = _make_gateway()
+        text = "\n".join(h._mesh_bridge_leg_lines(
+            _mesh_bridge_config(), lines_fn=lambda pat: list(_MOC_BLOCK)))
+        assert "Handed to radio: P->S 3, S->P 1" in text
+        assert "not proof it was heard on RF" in text
+        assert "delivered" not in text.lower()
+
+    def test_disconnected_reported(self):
+        h = _make_gateway()
+        text = "\n".join(h._mesh_bridge_leg_lines(
+            _mesh_bridge_config(), lines_fn=lambda pat: _MOC_BLOCK[:2]))
+        assert "SHORT_TURBO  disconnected" in text
+
+    def test_unreadable_journal_is_unknown_not_down(self):
+        h = _make_gateway()
+        text = "\n".join(h._mesh_bridge_leg_lines(
+            _mesh_bridge_config(), lines_fn=lambda pat: None))
+        assert text.count("UNKNOWN (gateway journal unreadable)") == 2
+        assert "disconnected" not in text
+
+    def test_no_reports_is_unknown_not_down(self):
+        h = _make_gateway()
+        text = "\n".join(h._mesh_bridge_leg_lines(
+            _mesh_bridge_config(), lines_fn=lambda pat: []))
+        assert text.count("UNKNOWN (no gateway report") == 2
+        assert "Handed to radio" not in text
+
+    def test_pattern_matches_the_real_status_line(self):
+        # The regex must match what bridge_cli prints, or every leg reads UNKNOWN.
+        import re
+        seen = []
+        h = _make_gateway()
+        h._mesh_bridge_leg_lines(_mesh_bridge_config(),
+                                 lines_fn=lambda pat: seen.append(pat) or [])
+        assert re.search(seen[0], _MOC_BLOCK[0])
+        assert re.search(seen[0], _MOC_BLOCK[1])
+
+    def test_status_screen_includes_section_only_when_enabled(self):
+        h = _make_gateway()
+        with patch("utils.watchdog_probe_core._journal_match_lines",
+                   return_value=list(_MOC_BLOCK)):
+            h._show_gateway_status(_mesh_bridge_config())
+        assert "MESH BRIDGE" in h.ctx.dialog.last_msgbox_text
+        h._show_gateway_status(_make_mock_config())
+        assert "MESH BRIDGE" not in h.ctx.dialog.last_msgbox_text
 
 
 class TestSetBridgeMode:

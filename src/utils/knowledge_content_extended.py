@@ -1,7 +1,7 @@
 """
 Extended knowledge content loaders for MeshForge Knowledge Base.
 
-Contains AREDN, extended RF fundamentals, and MQTT knowledge.
+Contains AREDN, extended RF fundamentals, MQTT and Meshtastic Wi-Fi knowledge.
 Separated from knowledge_content.py for maintainability (file size limit).
 
 These functions are called by KnowledgeBase.__init__() to load content.
@@ -727,5 +727,61 @@ Fixes:
                  "embarrassing", "react", "undefined", "missing", "user",
                  "longName", "role", "M3GO", "nodedb", "cleanup"],
         related_entries=["MQTT Downlink Echo Loop", "MQTT for Meshtastic"],
+        expertise_level="intermediate",
+    ))
+
+
+def load_meshtastic_wifi_knowledge(kb: "KnowledgeBase") -> None:
+    """Load ESP32 Meshtastic Wi-Fi troubleshooting knowledge."""
+
+    kb._add_entry(KnowledgeEntry(
+        topic=KnowledgeTopic.TROUBLESHOOTING,
+        title="Meshtastic Wi-Fi Reason Codes",
+        content="""
+Meshtastic Wi-Fi reason codes — why an ESP32 node will not join Wi-Fi.
+
+Applies to ESP32 boards only (Heltec, T-Beam, Station G2, ...). nRF52
+boards (RAK4631, T-Echo) have no Wi-Fi; a Linux meshtasticd node uses the
+host's network.
+
+Where to see it: the device's serial debug log prints the ESP-IDF
+disconnect reason on every failed attempt, e.g.
+  Reason: 15 - 4WAY_HANDSHAKE_TIMEOUT
+Read it with the node on USB:  meshtastic --port /dev/ttyUSB0 --noproto
+(the Meshtastic app only shows "not connected").
+
+Codes seen on this fleet:
+  15  4WAY_HANDSHAKE_TIMEOUT  The AP was found but the WPA key exchange
+                              failed. Almost always the WRONG PSK.
+                              (Borg, 2026-09-28: the stored PSK was 14
+                              then 12 chars; the real one is 20.)
+  201 NO_AP_FOUND             The SSID is not visible to the node: wrong
+                              or misspelled SSID, out of range, or a
+                              5 GHz-only network (ESP32 is 2.4 GHz only).
+
+Other common ESP-IDF codes:
+  2   AUTH_EXPIRE             Authentication timed out (weak signal).
+  8   ASSOC_LEAVE             The node left on purpose (reboot, disable).
+  200 BEACON_TIMEOUT          Lost the AP's beacons (range or interference).
+  202 AUTH_FAIL               Authentication refused (security mode mismatch,
+                              or a wrong key on some APs).
+  203 ASSOC_FAIL              AP refused association (MAC filter, AP full).
+  204 HANDSHAKE_TIMEOUT       Key handshake timed out (like 15).
+
+Fixes, in order:
+1. Code 15/204: re-set the PSK exactly. It is case-sensitive, 8-63 chars;
+   a pasted key picks up truncation or trailing whitespace easily:
+     meshtastic --port /dev/ttyUSB0 --set network.wifi_psk '<psk>'
+   Keep the key out of chat logs and shell history (use a 0600 file).
+2. Code 201: check the SSID spelling and that the AP broadcasts 2.4 GHz:
+     meshtastic --port /dev/ttyUSB0 --set network.wifi_ssid '<ssid>'
+3. Codes 2/200: signal — move the node or the AP; check RSSI once joined.
+4. Confirm: the log shows an IP address, and the node answers on it.
+""",
+        keywords=["wifi", "wi-fi", "wlan", "esp32", "reason", "reason code",
+                  "4way_handshake_timeout", "handshake", "no_ap_found", "psk",
+                  "ssid", "password", "join", "network", "15", "201",
+                  "station g2", "heltec", "t-beam"],
+        related_entries=["MQTT for Meshtastic"],
         expertise_level="intermediate",
     ))

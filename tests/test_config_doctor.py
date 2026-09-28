@@ -552,6 +552,70 @@ class TestCheckNomadnetServiceState:
 
 
 # ---------------------------------------------------------------------------
+# meshtasticd config.d/ overlays (#58)
+# ---------------------------------------------------------------------------
+
+class TestCheckMeshtasticdOverlayKeys:
+    def _run(self, config_d):
+        return checks.check_meshtasticd_overlay_keys(config_d)
+
+    def test_absent_dir_skips(self, tmp_path):
+        assert self._run(tmp_path / "missing").status == SKIP
+
+    def test_empty_dir_ok(self, tmp_path):
+        assert self._run(tmp_path).status == OK
+
+    def test_lora_only_overlay_ok(self, tmp_path):
+        (tmp_path / "lora-usb-meshtoad-e22.yaml").write_text(
+            "Lora:\n  Module: sx1262\n  spidev: ch341\n")
+        r = self._run(tmp_path)
+        assert r.status == OK
+        assert "1 active overlay" in r.message
+
+    def test_port_443_overlay_fails(self, tmp_path):
+        # meshanchor-server shape: usb-serial.yaml copied raw into config.d/
+        (tmp_path / "usb-serial.yaml").write_text(
+            "Lora:\n  Module: auto\nWebserver:\n  Port: 443\n")
+        r = self._run(tmp_path)
+        assert r.status == FAIL
+        assert "usb-serial.yaml" in r.message and "443" in r.message
+
+    def test_port_9443_overlay_warns_not_fails(self, tmp_path):
+        (tmp_path / "hat.yaml").write_text(
+            "Lora:\n  Module: sx1262\nWebserver:\n  Port: 9443\n")
+        r = self._run(tmp_path)
+        assert r.status == WARN
+        assert "Webserver" in r.message
+
+    def test_meshforge_overrides_may_carry_general(self, tmp_path):
+        # The TUI's nodedb editor writes General: MaxNodes here by design.
+        (tmp_path / "meshforge-overrides.yaml").write_text(
+            "General:\n  MaxNodes: 200\n")
+        assert self._run(tmp_path).status == OK
+
+    def test_meshforge_overrides_port_move_still_fails(self, tmp_path):
+        (tmp_path / "meshforge-overrides.yaml").write_text(
+            "Webserver:\n  Port: 443\n")
+        assert self._run(tmp_path).status == FAIL
+
+    def test_unparseable_overlay_is_not_clean(self, tmp_path):
+        (tmp_path / "broken.yaml").write_text("Lora: [unclosed\n")
+        r = self._run(tmp_path)
+        assert r.status == WARN
+        assert "broken.yaml" in r.message
+
+    def test_non_yaml_files_ignored(self, tmp_path):
+        (tmp_path / "notes.txt").write_text("Webserver:\n  Port: 443\n")
+        assert self._run(tmp_path).status == OK
+
+    def test_shares_the_sanitizers_key_set(self):
+        # hfm #5: the activation sanitizer and this audit read ONE constant.
+        from handlers.meshtasticd_config import _HAT_OVERLAY_FORBIDDEN_KEYS
+        from core.meshtasticd_templates import HAT_OVERLAY_FORBIDDEN_KEYS
+        assert _HAT_OVERLAY_FORBIDDEN_KEYS is HAT_OVERLAY_FORBIDDEN_KEYS
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -571,7 +635,8 @@ class TestRunAllChecks:
              patch("utils.config_drift.detect_rnsd_config_drift") as drift, \
              patch("handlers._rns_interface_mgr."
                    "find_blocking_interfaces", return_value=[]), \
-             patch("utils.paths.get_real_user_home", return_value=tmp_path):
+             patch("utils.paths.get_real_user_home", return_value=tmp_path), \
+             patch.object(checks, "_MESHTASTICD_CONFIG_D", tmp_path / "no-config.d"):
             from types import SimpleNamespace
             drift.return_value = SimpleNamespace(
                 drifted=False, gateway_config_dir=tmp_path,
@@ -588,6 +653,7 @@ class TestRunAllChecks:
             "gateway_default_lxmf_destination",
             "nomadnet_unit_tmux",
             "nomadnet_service_state",
+            "meshtasticd_overlay_keys",
         ]
 
 

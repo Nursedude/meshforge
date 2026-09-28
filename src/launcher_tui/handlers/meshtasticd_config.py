@@ -32,8 +32,6 @@ from utils.meshtastic_http import get_http_client as _get_http_client
 # --- Shared overlay utilities (imported by sub-handlers) ---
 
 OVERLAY_PATH = Path('/etc/meshtasticd/config.d/meshforge-overrides.yaml')
-OVERRIDES_NAMES = {'meshforge-overrides.yaml', 'meshforge-overrides.yml'}
-
 # Top-level YAML keys that have no business in a HAT overlay and that MeshForge
 # guarantees come from the base /etc/meshtasticd/config.yaml. If an upstream-
 # vendored template (e.g. chrismyers2000's lora-MeshAdv-900M30S.yaml in
@@ -42,14 +40,11 @@ OVERRIDES_NAMES = {'meshforge-overrides.yaml', 'meshforge-overrides.yml'}
 # off MeshForge's expected :9443 and breaks every consumer that posts to
 # `/api/v1/toradio` (gateway TX SSOT). moc3 ran in this zombie state for 18h
 # on 2026-05-18 — meshtasticd "active", but :9443 silently bound to :443.
-_HAT_OVERLAY_FORBIDDEN_KEYS = frozenset({
-    'Webserver',
-    'TCP',
-    'Logging',
-    'MQTT',
-    'Bluetooth',
-    'General',
-})
+# Defined in core so Config Doctor audits against the same set.
+from core.meshtasticd_templates import (
+    HAT_OVERLAY_FORBIDDEN_KEYS as _HAT_OVERLAY_FORBIDDEN_KEYS,
+    OVERRIDES_NAMES,
+)
 
 
 def _sanitize_hat_overlay(content: str):

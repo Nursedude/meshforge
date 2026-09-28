@@ -10,6 +10,23 @@ from dataclasses import dataclass
 from typing import Optional
 from enum import Enum
 
+# Top-level keys a HAT overlay in config.d/ must not carry: meshtasticd lets an
+# overlay override config.yaml, and `Webserver: Port: 443` moved the API off
+# :9443 (#58, moc3 2026-05-18). One constant for the two consumers — the TUI
+# activation sanitizer and Config Doctor's audit of what is already active.
+HAT_OVERLAY_FORBIDDEN_KEYS = frozenset({
+    'Webserver',
+    'TCP',
+    'Logging',
+    'MQTT',
+    'Bluetooth',
+    'General',
+})
+
+# MeshForge's own overlay (written by the TUI config editors). It legitimately
+# carries `General: MaxNodes`, so the HAT key rule does not apply to it.
+OVERRIDES_NAMES = frozenset({'meshforge-overrides.yaml', 'meshforge-overrides.yml'})
+
 
 class RadioType(Enum):
     """Type of Meshtastic radio connection."""

@@ -633,6 +633,106 @@ def check_nomadnet_service_state(service_state: Optional[dict]) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# meshtasticd config.d/ overlays (#58)
+# ---------------------------------------------------------------------------
+
+_MESHTASTICD_CONFIG_D = Path("/etc/meshtasticd/config.d")
+
+
+def check_meshtasticd_overlay_keys(config_d: Optional[Path] = None) -> CheckResult:
+    """Audit the ACTIVE config.d/ overlays for keys that override config.yaml.
+
+    The TUI sanitizes a HAT template when it activates one, but a raw ``cp``
+    into config.d/ (installer, docs, upstream package) is never sanitized:
+    meshanchor-server carried ``Webserver: Port: 443`` in
+    ``usb-serial.yaml`` for five months with no surface saying so.
+
+    FAIL: any overlay sets ``Webserver: Port`` to something other than 9443
+    (the API moves; gateway TX and every /api/v1 consumer go deaf).
+    WARN: a non-MeshForge overlay carries another forbidden top-level key, or
+    an overlay could not be read/parsed (unobservable is not clean).
+    """
+    import yaml
+    from core.meshtasticd_templates import HAT_OVERLAY_FORBIDDEN_KEYS, OVERRIDES_NAMES
+    from utils.meshtastic_http import DEFAULT_HTTP_PORT
+
+    name = "meshtasticd_overlay_keys"
+    if config_d is None:
+        config_d = _MESHTASTICD_CONFIG_D
+    if not config_d.is_dir():
+        return CheckResult(
+            name=name, status=SKIP,
+            message=f"{config_d} absent (meshtasticd not installed here)",
+        )
+
+    try:
+        files = sorted(p for p in config_d.iterdir()
+                       if p.suffix in (".yaml", ".yml") and p.is_file())
+    except OSError as exc:
+        return CheckResult(
+            name=name, status=WARN,
+            message=f"cannot list {config_d}: {exc}",
+            details=[str(config_d)],
+        )
+    if not files:
+        return CheckResult(name=name, status=OK,
+                           message=f"no active overlays in {config_d}")
+
+    port_moved: List[str] = []
+    extra_keys: List[str] = []
+    unreadable: List[str] = []
+    for path in files:
+        try:
+            loaded = yaml.safe_load(path.read_text())
+        except (OSError, yaml.YAMLError) as exc:
+            unreadable.append(f"{path.name}: {type(exc).__name__}")
+            continue
+        if not isinstance(loaded, dict):
+            continue
+        web = loaded.get("Webserver")
+        port = web.get("Port") if isinstance(web, dict) else None
+        if port is not None and port != DEFAULT_HTTP_PORT:
+            port_moved.append(f"{path.name}: Webserver: Port: {port}")
+        if path.name in OVERRIDES_NAMES:
+            continue
+        forbidden = sorted(k for k in loaded if k in HAT_OVERLAY_FORBIDDEN_KEYS)
+        if forbidden:
+            extra_keys.append(f"{path.name}: {', '.join(forbidden)}")
+
+    details = [str(p) for p in files] + port_moved + extra_keys + unreadable
+    fix = (f"Remove the listed top-level block(s) from the overlay in "
+           f"{config_d} (they override config.yaml), then restart meshtasticd. "
+           f"A HAT overlay should carry only Lora:.")
+    if port_moved:
+        return CheckResult(
+            name=name, status=FAIL,
+            message=(f"overlay moves the meshtasticd API off :{DEFAULT_HTTP_PORT} "
+                     f"— {port_moved[0]}"),
+            fix_hint=fix, route_hint="Configuration > meshtasticd > View config.d/ Overlays",
+            details=details,
+        )
+    if extra_keys:
+        return CheckResult(
+            name=name, status=WARN,
+            message=f"overlay overrides config.yaml — {extra_keys[0]}",
+            fix_hint=fix, route_hint="Configuration > meshtasticd > View config.d/ Overlays",
+            details=details,
+        )
+    if unreadable:
+        return CheckResult(
+            name=name, status=WARN,
+            message=f"could not read overlay — {unreadable[0]} (keys unchecked)",
+            fix_hint="Run Config Doctor with sudo, or fix the YAML.",
+            details=details,
+        )
+    return CheckResult(
+        name=name, status=OK,
+        message=f"{len(files)} active overlay(s) carry no config.yaml overrides",
+        details=details,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Orchestration helper
 # ---------------------------------------------------------------------------
 
@@ -652,4 +752,5 @@ def run_all_checks(*, service_state: Optional[dict] = None) -> List[CheckResult]
         check_gateway_default_lxmf_destination(),
         check_nomadnet_unit_tmux(),
         check_nomadnet_service_state(service_state),
+        check_meshtasticd_overlay_keys(),
     ]
