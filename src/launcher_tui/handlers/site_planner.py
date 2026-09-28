@@ -208,6 +208,30 @@ and fade margin."""
         env_label = dict(_ENV_CHOICES).get(env.value, env.value)
         self.ctx.dialog.msgbox(f"Preset Comparison ({env_label})", table)
 
+    @staticmethod
+    def _cable_loss_lines() -> str:
+        """Cable loss lines GENERATED from utils.rf (the table the link-budget
+        math uses). The hand-typed text was ~2x optimistic vs rf.py (LMR-400
+        0.7 vs 1.5 dB/10 m) — TUI audit finding 4."""
+        from utils.rf import CABLE_LOSS_DB_PER_M
+        rows = (("rg58", "RG58", " (avoid)"), ("rg8x", "RG8X", ""),
+                ("lmr240", "LMR-240", ""), ("lmr400", "LMR-400", " (recommended)"))
+        return "\n".join(f"  - {label}: ~{CABLE_LOSS_DB_PER_M[key] * 10:.1f} dB{note}"
+                         for key, label, note in rows)
+
+    @staticmethod
+    def _default_frequency_lines() -> str:
+        """Default LongFast centre frequencies GENERATED from the firmware's own
+        slot math (utils.meshtastic_modem). The hand-typed text said "US Ch 0"
+        (906.875 is hashed slot 20; channel_num 0 means "hash the name") and
+        EU 433 433.175 (the firmware tunes 433.875) — TUI audit finding 4."""
+        from utils.meshtastic_modem import channel_centre_mhz
+        out = []
+        for region, label in (("US", "US"), ("EU_868", "EU 868"), ("EU_433", "EU 433")):
+            f, slot, n = channel_centre_mhz("LONG_FAST", 0, region)
+            out.append(f"  {label}: {f:.3f} MHz (LongFast, slot {slot} of {n})")
+        return "\n".join(out)
+
     def _antenna_guidelines(self):
         text = """Antenna Guidelines for 915 MHz:
 
@@ -223,16 +247,13 @@ Antenna Types:
   - Colinear: 5-9 dBi, omnidirectional
 
 Cable Loss (per 10m @ 915MHz):
-  - RG58: ~2.5 dB (avoid)
-  - RG8X: ~1.8 dB
-  - LMR-240: ~1.3 dB
-  - LMR-400: ~0.7 dB (recommended)
+{cable}
 
 Best Practices:
   - Mount antenna clear of obstructions
   - Use quality coax, keep runs short
   - Ground antenna mast for lightning
-  - Weatherproof all connections"""
+  - Weatherproof all connections""".format(cable=self._cable_loss_lines())
         self.ctx.dialog.msgbox("Antenna Guidelines", text)
 
     def _frequency_reference(self):
@@ -250,13 +271,11 @@ CN          470-510 MHz       17 dBm
 JP          920-923 MHz       13 dBm
 
 Default Meshtastic Frequencies:
-  US: 906.875 MHz (Ch 0)
-  EU 868: 869.525 MHz
-  EU 433: 433.175 MHz
+{defaults}
 
 ISM Band Limits (US):
   EIRP: 36 dBm (4W) max
-  Duty Cycle: No limit (FHSS)"""
+  Duty Cycle: No limit (FHSS)""".format(defaults=self._default_frequency_lines())
         self.ctx.dialog.msgbox("Frequency Reference", text)
 
     def _external_tools(self):
