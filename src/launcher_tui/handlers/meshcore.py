@@ -520,6 +520,13 @@ class MeshCoreHandler(MeshCoreContactsMixin, BaseHandler):
             config = _GatewayConfig.load()
         except Exception:
             config = _GatewayConfig()
+        if getattr(config, 'load_error', None):
+            self.ctx.dialog.msgbox(
+                "gateway.json NOT READABLE",
+                f"Cannot toggle MeshCore: gateway.json could not be read\n"
+                f"({config.load_error}).\n\nNothing was changed. Fix the file "
+                f"or reset it from Gateway Bridge > Save.")
+            return
 
         mc = getattr(config, 'meshcore', None)
         if mc is None:

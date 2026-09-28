@@ -55,6 +55,16 @@ class GatewayHandler(BaseHandler):
                 )
                 return
 
+        if config.load_error:
+            self.ctx.dialog.msgbox(
+                "gateway.json NOT READABLE",
+                f"~/.config/meshforge/gateway.json could not be read:\n\n"
+                f"  {config.load_error}\n\n"
+                f"You are looking at DEFAULTS, not your configuration.\n"
+                f"Save is protected: it will not overwrite your file\n"
+                f"unless you choose a deliberate reset (the old file is kept)."
+            )
+
         while True:
             status = "ENABLED" if config.enabled else "DISABLED"
             mode = config.bridge_mode
@@ -100,7 +110,20 @@ class GatewayHandler(BaseHandler):
                 )
                 continue
             elif choice == "save":
-                if config.save():
+                if config.load_error:
+                    if not self.ctx.dialog.yesno(
+                        "Replace unreadable gateway.json?",
+                        f"Your gateway.json could not be read:\n  {config.load_error}\n\n"
+                        f"Saving now REPLACES it with what you see here.\n"
+                        f"The old file is kept as gateway.json.unreadable-<time>.\n\n"
+                        f"Replace it?",
+                        default_no=True,
+                    ):
+                        continue
+                    ok = config.save(replace_unreadable=True)
+                else:
+                    ok = config.save()
+                if ok:
                     self.ctx.dialog.msgbox("Saved", "Gateway configuration saved.")
                 else:
                     self.ctx.dialog.msgbox("Error", "Failed to save configuration.")

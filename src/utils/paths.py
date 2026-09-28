@@ -634,3 +634,34 @@ def atomic_write_text(path: Path, content: str) -> None:
         if tmp_path and tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
         raise
+
+
+def atomic_write_text_preserving(path: Path, content: str) -> None:
+    """``atomic_write_text`` that KEEPS the existing file's owner and mode.
+
+    ``atomic_write_text``'s temp file is 0600 and owned by the WRITER; as
+    root (the TUI runs under sudo) the renamed file would lock out a service
+    that reads it as the operator. A NEW file is handed to the operator.
+    """
+    st = path.stat() if path.exists() else None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f'.{path.name}.',
+                               suffix='.tmp')
+    try:
+        os.write(fd, content.encode('utf-8'))
+        os.fsync(fd)
+        if st is not None:
+            os.fchmod(fd, st.st_mode & 0o7777)
+            if os.geteuid() == 0:
+                os.fchown(fd, st.st_uid, st.st_gid)
+        os.close(fd)
+        fd = None
+        os.replace(tmp, path)
+    except Exception:
+        if fd is not None:
+            os.close(fd)
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    if st is None:
+        chown_to_operator(path)

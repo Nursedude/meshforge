@@ -6,13 +6,16 @@ Handles persistent configuration for RNS-Meshtastic bridge
 import json
 import os
 import re
+import shutil
+import time
 from pathlib import Path
 from dataclasses import dataclass, asdict, field
 from typing import Optional, List, Dict, Any, Tuple
 import logging
 
 from utils.safe_import import safe_import
-from utils.paths import get_real_user_home
+from utils.paths import get_real_user_home, atomic_write_text_preserving
+from gateway.config_migrations import migrate_stale_http_port
 
 logger = logging.getLogger(__name__)
 
@@ -816,26 +819,7 @@ class GatewayConfig:
         config_dir.mkdir(parents=True, exist_ok=True)
         return config_dir / "gateway.json"
 
-    @staticmethod
-    def _migrate_stale_http_port(meshtastic_data: dict) -> dict:
-        """Migrate the stale http_port=443 default (Issue #62 pattern).
-
-        http_port defaulted to 443 for a long stretch and got baked into
-        every rendered/saved gateway.json, while meshtasticd's web API
-        lives on 9443 — so the primary stateless TX path was dead
-        (connection refused, circuit breaker permanently flapping) and
-        every send rode the legacy session fallback (#17 contention
-        class). 443 was never a valid value for us (Issue #58 treats a
-        :443 webserver override as forbidden), so it is safe to treat
-        a saved 443 as the stale default rather than operator intent.
-        """
-        if meshtastic_data.get('http_port') == 443:
-            meshtastic_data = dict(meshtastic_data)
-            meshtastic_data['http_port'] = 9443
-            logger.info(
-                "Migrated stale http_port 443 -> 9443 "
-                "(saved default predating the 9443 fix)")
-        return meshtastic_data
+    _migrate_stale_http_port = staticmethod(migrate_stale_http_port)
 
     @classmethod
     def load(cls) -> 'GatewayConfig':
@@ -938,12 +922,36 @@ class GatewayConfig:
             return config
 
         except Exception as e:
+            # Defaults, but MARKED: the next save() used to write them over
+            # the operator's file (TUI audit finding 3, 2026-09-27).
             logger.error(f"Failed to load gateway config: {e}")
-            return cls()
+            cfg = cls()
+            cfg._load_error = f"{type(e).__name__}: {e}"
+            return cfg
 
-    def save(self) -> bool:
-        """Save configuration to file"""
+    @property
+    def load_error(self) -> Optional[str]:
+        """Why load() fell back to defaults (None for a missing file)."""
+        return getattr(self, "_load_error", None)
+
+    def save(self, replace_unreadable: bool = False) -> bool:
+        """Save atomically, keeping the file's owner/mode. REFUSES when this
+        object came from a FAILED load of an existing file (it would write
+        defaults over it); ``replace_unreadable=True`` resets deliberately,
+        keeping the old file as ``gateway.json.unreadable-<ts>``."""
         config_path = self.get_config_path()
+
+        if self.load_error and config_path.exists():
+            if not replace_unreadable:
+                logger.error("REFUSING to save %s: it came from a FAILED load (%s)"
+                             " — defaults would replace it", config_path, self.load_error)
+                return False
+            keep = config_path.with_name(f"{config_path.name}.unreadable-{int(time.time())}")
+            try:
+                shutil.copy2(config_path, keep)
+            except OSError as e:
+                logger.error("Reset aborted: could not keep %s (%s)", keep, e)
+                return False
 
         try:
             # Convert RNSOverMeshtasticConfig manually (has method that shouldn't be serialized)
@@ -998,8 +1006,8 @@ class GatewayConfig:
                 'anomaly_detection': self.anomaly_detection,
             }
 
-            with open(config_path, 'w') as f:
-                json.dump(data, f, indent=2)
+            atomic_write_text_preserving(config_path, json.dumps(data, indent=2))
+            self._load_error = None
 
             logger.info(f"Saved gateway config to {config_path}")
             return True
