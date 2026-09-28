@@ -12,8 +12,14 @@ Lora:
   # Adjust these for your specific hardware
   # Common defaults shown (MeshAdv-Mini/similar boards)
 
-  # SPI Chip Select - GPIO 8 (Pin 24)
-  CS: 8
+  # SPI Chip Select: deliberately NOT set. GPIO 8 (pin 24) is SPI0 CE0, which
+  # the kernel's spidev already drives; claiming it again crashloops
+  # meshtasticd on trixie (libgpiod v2: "gpiod_line_request_reconfigure_lines:
+  # Assertion 'request' failed" right after "Final Tx power" — lehua,
+  # 2026-08-29). Measured working WITHOUT CS: lehua (MeshAdv-Mini, trixie) and
+  # moc4 (bookworm, RAK6421). Set CS only for a board wired to a NON-CE GPIO
+  # (e.g. MeshAdv-Pi HAT / 900M30S: CS: 21).
+  # CS: 8
 
   # Interrupt Request (DIO1) - GPIO 16 (Pin 36)
   IRQ: 16

@@ -590,7 +590,8 @@ class MeshtasticdRadioHandler(BaseHandler):
             "1. Remove old hardware configs from config.d/\n"
             f"2. Copy {config_name} to {config_d}/\n"
             "3. Restart meshtasticd service",
-            default_no=False
+            default_no=True  # removes the radio's hardware config + restarts:
+            # one stray Enter must not swap a HAT (TUI audit finding 2)
         )
 
         if not confirm:
@@ -637,6 +638,7 @@ class MeshtasticdRadioHandler(BaseHandler):
                 f"  {target.name}\n\n"
                 "meshtasticd will not start without a hardware config.\n"
                 "You can re-activate one from the Device Templates menu.",
+                default_no=True,  # deletes the radio's hardware config
             )
             if confirm:
                 try:

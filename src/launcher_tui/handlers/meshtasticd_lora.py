@@ -364,8 +364,11 @@ class MeshtasticdLoRaHandler(BaseHandler):
         presets = {
             "meshadv-mini": {
                 "desc": "MeshAdv-Mini (SX1262, 22dBm)",
+                # No CS: GPIO 8 is SPI0 CE0, already driven by the kernel's
+                # spidev; claiming it crashloops meshtasticd on trixie
+                # (lehua 2026-08-29). Works without CS on trixie + bookworm.
                 "config": {
-                    "Module": "sx1262", "CS": 8, "IRQ": 16,
+                    "Module": "sx1262", "IRQ": 16,
                     "Busy": 20, "Reset": 24,
                     "DIO2_AS_RF_SWITCH": True,
                     "DIO3_TCXO_VOLTAGE": True,

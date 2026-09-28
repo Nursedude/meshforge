@@ -447,25 +447,25 @@ class RadioMenuHandler(BaseHandler):
             )
 
     def _radio_set_name(self):
-        """Set node long name via meshtastic CLI."""
-        name = self.ctx.dialog.inputbox(
-            "Node Name",
-            "Enter node long name:",
-            ""
-        )
-        if not name:
+        """Set node name — delegates to the ONE owner writer.
+
+        This menu used to carry a second, weaker writer (blank pre-fill, no
+        confirm, no `"` refusal, `--set-owner` straight to the radio). The
+        owner-rename incidents (2026-09-20) were fixed in
+        ``MeshtasticdRadioHandler._set_owner_name`` — Owner-line parse,
+        UNKNOWN on a failed read, unchanged fields not rewritten, quotes
+        refused — so every entry point goes through that one (TUI audit
+        finding 2). If it cannot load, nothing is written.
+        """
+        handler = (self.ctx.registry.get_handler("meshtasticd_radio")
+                   if getattr(self.ctx, "registry", None) else None)
+        if handler is None or not hasattr(handler, "_set_owner_name"):
+            self.ctx.dialog.msgbox(
+                "Node Name",
+                "The node-name editor could not be loaded — nothing was "
+                "changed.\n\nUse meshtasticd > Set Owner/Node Name.")
             return
-
-        short = self.ctx.dialog.inputbox(
-            "Short Name",
-            "Enter short name (max 4 chars):",
-            name[:4]
-        )
-
-        cmd = [self.ctx.get_meshtastic_cli(), '--host', 'localhost', '--set-owner', name]
-        if short:
-            cmd.extend(['--set-owner-short', short[:4]])
-        self._radio_run(cmd, "Setting Node Name")
+        handler._set_owner_name()
 
     def _radio_position_menu(self):
         """Position submenu: view settings or set fixed lat/lon."""
