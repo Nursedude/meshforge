@@ -56,6 +56,7 @@ from utils.watchdog_probes import (
     probe_local_brain_regressed,
     probe_channel_feed_dark,
     probe_mqtt_root_drift,
+    probe_bridge_leg_down,
     probe_cron_verdict_stale,
     probe_fleet_box_unreachable,
     probe_host_frozen,
@@ -518,6 +519,13 @@ def run_all_probes(
     # the radio — #17); self-guards None on no-json-uplink boxes and an
     # unreadable declared side; 2-tick debounce rides out mid-rotation.
     sig = probe_mqtt_root_drift()
+    if sig is not None:
+        signals.append(sig)
+
+    # Cross-preset bridge leg down (2026-09-27 operator drill) — a declared
+    # mesh_bridge leg reading "disconnected" in every gateway self-report
+    # block for 5 min. Journal-only; inert where no mesh_bridge is declared.
+    sig = probe_bridge_leg_down()
     if sig is not None:
         signals.append(sig)
 

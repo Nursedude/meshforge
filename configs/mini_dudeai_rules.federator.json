@@ -642,6 +642,25 @@
       "annotation": "Issue #77 — the radio's OBSERVED publish root diverged from the box's DECLARED consumer root (zero-config join or factory reset reintroduces msh/US). This is the CAUSE of the dark-feed class, visible hours before channel_feed_dark proves the symptom. Fix: meshtastic --host localhost --set mqtt.root <declared> (or correct gateway.json if the radio is the intended truth)."
     },
     {
+      "id": "bridge_leg_down_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "bridge_leg_down",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] Mesh bridge leg down",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning"
+        ]
+      },
+      "cooldown_s": 3600,
+      "annotation": "2026-09-27 operator drill: a declared mesh_bridge leg (e.g. moc's SHORT_TURBO USB radio) read disconnected in every gateway status block for 5 min — nothing crosses between presets. Fix: check the leg's device in gateway.json mesh_bridge (prefer /dev/serial/by-id/), restart meshforge-gateway, confirm '<PRESET>: connected'."
+    },
+    {
       "id": "cron_verdict_stale_any",
       "match": {
         "kind": "signal_class",

@@ -2193,7 +2193,16 @@ class TestSignalClassBudget:
 
     # of its own. Do that before the next class is added.
 
-    SIGNAL_CLASS_BUDGET = 61
+    # 2026-09-27: 61 -> 62 for bridge_leg_down, by OPERATOR DECISION (asked,
+    # answered "raise"). Forced by a live operator drill: moc's SHORT_TURBO
+    # bridge radio was pulled "to see if the domain would notice" and the leg
+    # sat dark ~6 h with nothing paging. The replacement debt is now TWO
+    # classes (rf_leg_silent's + this one), DUE at the 2026-10-09 freeze
+    # review's inert-tier cut. Measured 2026-09-27 (9 boxes, lehua
+    # unreadable): oracle_delivery_degraded and inherited_app_drift inert
+    # 9/9 — but oracle_delivery_degraded guards src/oracle, the runtime of
+    # the queued ECOMM MeshCore bot, so it was NOT cut blind.
+    SIGNAL_CLASS_BUDGET = 62
 
     @staticmethod
     def _live_count():

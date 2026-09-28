@@ -464,6 +464,8 @@ class MeshtasticPresetBridge:
         # reference is garbage-collected right after connect and the
         # callback never fires (serial RX silently dead).
         self._serial_rx_keepalive: Dict[str, Callable] = {}
+        # Same weak-listener rule for the link-lost listener (below).
+        self._serial_lost_keepalive: Dict[str, Callable] = {}
 
         # Statistics
         self._stats_lock = threading.Lock()
@@ -484,6 +486,10 @@ class MeshtasticPresetBridge:
             # (honest_failure_modes #9 — absent-vs-zero ambiguity).
             'dual_path_suppressed_cid_only': 0,
             'errors': 0,
+            # Serial legs whose radio vanished (USB unplug/reset) and were
+            # marked disconnected so the leg loop reconnects. Pre-seeded:
+            # healthy-zero vs meter-absent (honest_failure_modes #9).
+            'link_lost': 0,
             'start_time': None,
         }
 
@@ -687,6 +693,14 @@ class MeshtasticPresetBridge:
         logger.info("Mesh bridge stopped")
         self._notify_status("stopped")
 
+    @staticmethod
+    def _leg_mode(leg) -> str:
+        """The leg's REAL transport — a serial leg used to report 'tcp'."""
+        ctype = (getattr(leg, "connection_type", "") or "").lower()
+        if ctype in ("serial", "mqtt"):
+            return ctype
+        return 'mqtt' if leg.use_mqtt else 'tcp'
+
     def get_status(self) -> dict:
         """Get current bridge status."""
         uptime = None
@@ -704,14 +718,14 @@ class MeshtasticPresetBridge:
                 'preset': pri.preset,
                 'host': pri.host,
                 'port': pri.port,
-                'mode': 'mqtt' if pri.use_mqtt else 'tcp',
+                'mode': self._leg_mode(pri),
             },
             'secondary': {
                 'connected': self._secondary_connected,
                 'preset': sec.preset,
                 'host': sec.host,
                 'port': sec.port,
-                'mode': 'mqtt' if sec.use_mqtt else 'tcp',
+                'mode': self._leg_mode(sec),
             },
             'direction': self.bridge_config.direction,
             'uptime_seconds': uptime,
@@ -740,6 +754,12 @@ class MeshtasticPresetBridge:
             try:
                 if not self._primary_connected:
                     self._connect_primary()
+                    if not self._primary_connected:
+                        # absent radio: retry every 10 s, not every 1 s
+                        # (each failed attempt logs an ERROR)
+                        if self._stop_event.wait(10):
+                            break
+                        continue
 
                 if self._stop_event.wait(1):
                     break
@@ -756,6 +776,12 @@ class MeshtasticPresetBridge:
             try:
                 if not self._secondary_connected:
                     self._connect_secondary()
+                    if not self._secondary_connected:
+                        # absent radio: retry every 10 s, not every 1 s
+                        # (each failed attempt logs an ERROR)
+                        if self._stop_event.wait(10):
+                            break
+                        continue
 
                 if self._stop_event.wait(1):
                     break
@@ -893,6 +919,18 @@ class MeshtasticPresetBridge:
             # or the closure is garbage-collected and RX silently dies.
             self._serial_rx_keepalive[name] = on_receive
             _pub.subscribe(on_receive, "meshtastic.receive")
+
+            # Link loss. Without this the leg stayed "connected" on a dead
+            # handle when its USB radio vanished: moc 2026-09-27, the V3 was
+            # unplugged at 08:36, the loop never reconnected, and the first
+            # sign was "Failed to forward to secondary" 5.7 h later.
+            def on_lost(interface=None):
+                if interface is not our_interface:
+                    return
+                self._on_serial_link_lost(name, our_interface)
+
+            self._serial_lost_keepalive[name] = on_lost
+            _pub.subscribe(on_lost, "meshtastic.connection.lost")
             logger.info(
                 f"Connected to {name} via serial "
                 f"({config.preset or 'unknown preset'})"
@@ -902,6 +940,26 @@ class MeshtasticPresetBridge:
         except Exception as e:
             logger.error(f"Failed to connect to {name} via serial: {e}")
             return None, False
+
+    def _on_serial_link_lost(self, name: str, interface) -> None:
+        """A serial leg's radio went away: mark THAT leg disconnected so its
+        loop reconnects, and leave a witness. Identity-matched, so a late
+        event from an interface already replaced changes nothing."""
+        if interface is self._secondary_interface:
+            leg = "secondary"
+        elif interface is self._primary_interface:
+            leg = "primary"
+        else:
+            return
+        logger.warning(
+            f"{leg} serial link LOST ({name}) — radio gone; reconnecting")
+        with self._stats_lock:
+            self.stats['link_lost'] += 1
+        if leg == "secondary":
+            self._disconnect_secondary()
+        else:
+            self._disconnect_primary()
+        self._notify_status(f"{leg}_disconnected")
 
     def _connect_mqtt(self, config: MeshtasticConfig, name: str,
                       callback: Callable) -> tuple:

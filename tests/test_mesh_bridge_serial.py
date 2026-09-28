@@ -340,3 +340,84 @@ class TestSerialRxListenerLifetime:
             assert received == []
         finally:
             real_pub.unsubAll("meshtastic.receive")
+
+
+class TestSerialLinkLost:
+    """moc 2026-09-27: the secondary's USB radio was unplugged at 08:36; the
+    leg stayed "connected" on a dead handle, never reconnected, and the first
+    sign was "Failed to forward to secondary" 5.7 h later. The leg must now
+    hear meshtastic.connection.lost (REAL pubsub) and drop to disconnected."""
+
+    def _connected(self, bridge, config):
+        from pubsub import pub as real_pub
+        fake_iface = MagicMock()
+        fake_serial_mod = MagicMock()
+        fake_serial_mod.SerialInterface = MagicMock(return_value=fake_iface)
+        with patch("gateway.mesh_bridge._HAS_MESHTASTIC", True), \
+             patch("gateway.mesh_bridge._HAS_MESHTASTIC_SERIAL", True), \
+             patch("gateway.mesh_bridge._HAS_PUBSUB", True), \
+             patch("gateway.mesh_bridge._meshtastic_serial", fake_serial_mod), \
+             patch("gateway.mesh_bridge._pub", real_pub):
+            iface, ok = bridge._connect_serial(config, "secondary", lambda p: None)
+        assert ok
+        bridge._secondary_interface, bridge._secondary_connected = iface, True
+        import gc
+        gc.collect()  # the lost-listener must survive like the rx one
+        return iface, real_pub
+
+    def test_link_lost_marks_leg_disconnected_with_witness(
+            self, bridge_with_serial_secondary):
+        from gateway.mesh_bridge import MeshtasticPresetBridge
+        bridge = MeshtasticPresetBridge(config=bridge_with_serial_secondary)
+        iface, real_pub = self._connected(
+            bridge, bridge_with_serial_secondary.mesh_bridge.secondary)
+        statuses = []
+        bridge._notify_status = statuses.append
+        try:
+            real_pub.sendMessage("meshtastic.connection.lost", interface=iface)
+        finally:
+            real_pub.unsubAll("meshtastic.connection.lost")
+            real_pub.unsubAll("meshtastic.receive")
+        assert bridge._secondary_connected is False
+        assert bridge._secondary_interface is None
+        assert bridge.stats['link_lost'] == 1
+        assert "secondary_disconnected" in statuses
+        iface.close.assert_called_once()
+
+    def test_foreign_or_replaced_interface_changes_nothing(
+            self, bridge_with_serial_secondary):
+        from gateway.mesh_bridge import MeshtasticPresetBridge
+        bridge = MeshtasticPresetBridge(config=bridge_with_serial_secondary)
+        iface, real_pub = self._connected(
+            bridge, bridge_with_serial_secondary.mesh_bridge.secondary)
+        try:
+            real_pub.sendMessage("meshtastic.connection.lost", interface=MagicMock())
+            assert bridge._secondary_connected is True
+            # a late event for the OLD handle after a reconnect replaced it
+            bridge._secondary_interface = MagicMock()
+            real_pub.sendMessage("meshtastic.connection.lost", interface=iface)
+            assert bridge._secondary_connected is True
+            assert bridge.stats['link_lost'] == 0
+        finally:
+            real_pub.unsubAll("meshtastic.connection.lost")
+            real_pub.unsubAll("meshtastic.receive")
+
+    def test_failed_reconnect_backs_off_ten_seconds(
+            self, bridge_with_serial_secondary):
+        from gateway.mesh_bridge import MeshtasticPresetBridge
+        bridge = MeshtasticPresetBridge(config=bridge_with_serial_secondary)
+        bridge._running = True
+        waits = []
+        bridge._stop_event = MagicMock()
+        bridge._stop_event.wait = lambda t: (waits.append(t), True)[1]
+        bridge._connect_secondary = lambda: None  # radio absent: stays down
+        bridge._secondary_loop()
+        assert waits == [10]
+
+
+def test_status_reports_serial_leg_as_serial(bridge_with_serial_secondary):
+    """get_status() labelled the moc USB leg 'tcp' — a legibility lie."""
+    from gateway.mesh_bridge import MeshtasticPresetBridge
+    st = MeshtasticPresetBridge(config=bridge_with_serial_secondary).get_status()
+    assert st['secondary']['mode'] == 'serial'
+    assert st['primary']['mode'] == 'tcp'

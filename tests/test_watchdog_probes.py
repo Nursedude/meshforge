@@ -136,6 +136,7 @@ def test_signal_classes_closed_enum_is_documented():
         f"fold any extra rationale into its comment.")
     assert len(SIGNAL_CLASSES) == len(set(SIGNAL_CLASSES))
     assert set(SIGNAL_CLASSES) == {
+        "bridge_leg_down",   # 2026-09-27: operator drill (moc SHORT_TURBO leg pulled, nothing paged); tests in test_watchdog_bridge_leg_down.py
         "rns_namespace_collision",
         "main_thread_wedge",
         "http_local_unresponsive",

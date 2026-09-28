@@ -88,6 +88,7 @@ from utils.watchdog_probes_rns import (
     _tcp_reachable,
 )
 from utils.watchdog_probes_rf_leg import probe_rf_leg_silent  # noqa: F401
+from utils.watchdog_probes_mesh_bridge import probe_bridge_leg_down  # noqa: F401
 from utils.watchdog_probes_peer_cron import (  # noqa: F401
     probe_peer_cron_verdict_stale,
 )
@@ -209,6 +210,7 @@ __all__ = [
     "probe_role_drift",
     "probe_channel_feed_dark",
     "probe_mqtt_root_drift",
+    "probe_bridge_leg_down",
     "probe_delivery_write_canary",
     "probe_queue_backlog",
     "probe_delivery_confirmation_stall",
