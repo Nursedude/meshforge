@@ -15,6 +15,34 @@ from handler_protocol import BaseHandler
 logger = logging.getLogger(__name__)
 
 
+def spi_enabled_config(config_content: str):
+    """(new config.txt text, changed?) with SPI enabled on ACTIVE lines only.
+
+    A commented "#dtparam=spi=on" used to count as enabled, so the active
+    line was never added and the screen still said SPI was on (TUI audit
+    finding 9). Pure, so every commented / partial case is pinned in tests.
+    """
+    lines = config_content.split('\n')
+    active = {ln.strip() for ln in lines
+              if ln.strip() and not ln.strip().startswith('#')}
+    spi_on = 'dtparam=spi=on' in active
+    overlay_on = 'dtoverlay=spi0-0cs' in active
+    changed = False
+    new_lines = []
+    for line in lines:
+        new_lines.append(line)
+        if (line.strip() == 'dtparam=spi=on' and not overlay_on
+                and 'dtoverlay=spi0-0cs' not in new_lines):
+            new_lines.append('dtoverlay=spi0-0cs')
+            changed = True
+    if not spi_on:
+        new_lines.append('dtparam=spi=on')
+        if not overlay_on:
+            new_lines.append('dtoverlay=spi0-0cs')
+        changed = True
+    return '\n'.join(new_lines), changed
+
+
 class HardwareHandler(BaseHandler):
     """TUI handler for hardware detection and configuration."""
 
@@ -322,23 +350,13 @@ class HardwareHandler(BaseHandler):
                 raspi_rc = result.returncode
 
             config_content = Path(boot_config).read_text()
-            needs_write = False
-            lines = config_content.split('\n')
-            new_lines = []
-
-            for line in lines:
-                new_lines.append(line)
-                if 'dtparam=spi=on' in line and 'dtoverlay=spi0-0cs' not in config_content:
-                    new_lines.append('dtoverlay=spi0-0cs')
-                    needs_write = True
-
-            if 'dtparam=spi=on' not in config_content:
-                new_lines.append('dtparam=spi=on')
-                new_lines.append('dtoverlay=spi0-0cs')
-                needs_write = True
+            new_text, needs_write = spi_enabled_config(config_content)
 
             if needs_write:
-                Path(boot_config).write_text('\n'.join(new_lines))
+                # Atomic, owner/mode kept: a torn config.txt can stop the Pi
+                # booting (finding 9). vfat-safe — see the helper.
+                from utils.paths import atomic_write_text_preserving
+                atomic_write_text_preserving(Path(boot_config), new_text)
 
             # Honest outcome: don't claim a fresh enable when nothing changed
             # this run, and surface a non-zero raspi-config status as a caveat

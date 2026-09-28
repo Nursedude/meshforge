@@ -651,8 +651,13 @@ def atomic_write_text_preserving(path: Path, content: str) -> None:
         os.write(fd, content.encode('utf-8'))
         os.fsync(fd)
         if st is not None:
-            os.fchmod(fd, st.st_mode & 0o7777)
-            if os.geteuid() == 0:
+            # Skip a call whose target the temp file ALREADY has: on vfat
+            # (/boot/firmware) owner and mode come from mount options, a new
+            # file already matches, and fchmod/fchown there can raise.
+            cur = os.fstat(fd)
+            if (cur.st_mode & 0o7777) != (st.st_mode & 0o7777):
+                os.fchmod(fd, st.st_mode & 0o7777)
+            if os.geteuid() == 0 and (cur.st_uid, cur.st_gid) != (st.st_uid, st.st_gid):
                 os.fchown(fd, st.st_uid, st.st_gid)
         os.close(fd)
         fd = None

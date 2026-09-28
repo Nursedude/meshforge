@@ -170,10 +170,15 @@ def _drive_enable_spi(handler, boot_file: Path, boot_target: str, raspi_rc):
 
     handler.ctx.dialog._yesno_returns = [True]  # confirm the enable prompt
 
+    # config.txt is now written atomically (TUI audit finding 9) through
+    # utils.paths.atomic_write_text_preserving, which needs a real path —
+    # route that write to the test's boot file.
     with patch.object(hw, "Path", side_effect=fake_path), \
          patch.object(hw.subprocess, "run", run_mock), \
          patch.object(hw.shutil, "which", return_value=which_ret), \
-         patch.object(handler, "_is_raspberry_pi", return_value=True):
+         patch.object(handler, "_is_raspberry_pi", return_value=True), \
+         patch("utils.paths.atomic_write_text_preserving",
+               side_effect=lambda _p, text: boot_file.write_text(text)):
         handler._enable_spi()
 
 

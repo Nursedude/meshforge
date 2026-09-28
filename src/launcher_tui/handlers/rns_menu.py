@@ -466,9 +466,12 @@ class RNSMenuHandler(BaseHandler):
             new_name = name_input if name_input else node.name
 
             # Save to cache
-            self._save_rns_node_position(node.id, new_name, lat, lon)
-            print(f"\nSaved: {new_name} at ({lat:.6f}, {lon:.6f})")
-            print("Refresh the map to see the updated position.")
+            err = self._save_rns_node_position(node.id, new_name, lat, lon)
+            if err:
+                print(f"\nNOT saved: {err}")
+            else:
+                print(f"\nSaved: {new_name} at ({lat:.6f}, {lon:.6f})")
+                print("Refresh the map to see the updated position.")
 
         except ValueError as e:
             print(f"Invalid input: {e}")
@@ -478,7 +481,14 @@ class RNSMenuHandler(BaseHandler):
         self.ctx.wait_for_enter()
 
     def _save_rns_node_position(self, node_id: str, name: str, lat: float, lon: float):
-        """Save an RNS node position to the node cache."""
+        """Save an RNS node position to the node cache.
+
+        Returns None on success, else why nothing was written. node_cache.json
+        is the GATEWAY's shared state: an unreadable file used to be reset to
+        empty and saved, wiping every node to add one position (TUI audit
+        finding 9). An unreadable existing file is now refused, and the write
+        is atomic.
+        """
         cache_path = get_real_user_home() / '.config' / 'meshforge' / 'node_cache.json'
         cache_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -487,8 +497,12 @@ class RNSMenuHandler(BaseHandler):
             try:
                 with open(cache_path) as f:
                     data = json.load(f)
-            except (json.JSONDecodeError, IOError):
-                data = {'version': 1, 'nodes': []}
+            except (json.JSONDecodeError, IOError) as e:
+                return (f"{cache_path} exists but is unreadable ({e}); "
+                        f"refusing to overwrite the gateway's node cache")
+            if not isinstance(data, dict):
+                return (f"{cache_path} is not a node-cache object; "
+                        f"refusing to overwrite it")
         else:
             data = {'version': 1, 'nodes': []}
 
@@ -514,6 +528,10 @@ class RNSMenuHandler(BaseHandler):
                 'is_online': True,
             })
 
-        # Save
-        with open(cache_path, 'w') as f:
-            json.dump(data, f, indent=2)
+        # Save — atomic, owner/mode kept (the gateway reads this file)
+        from utils.paths import atomic_write_text_preserving
+        try:
+            atomic_write_text_preserving(cache_path, json.dumps(data, indent=2))
+        except OSError as e:
+            return f"could not write {cache_path}: {e}"
+        return None

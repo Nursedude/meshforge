@@ -533,7 +533,10 @@ class RNSConfigHandler(BaseHandler):
             if config_path.exists():
                 import shutil as _shutil
                 _shutil.copy2(str(config_path), str(backup))
-            config_path.write_text(new_content)
+            # Atomic, owner/mode kept: a truncate-then-write left a torn
+            # rnsd config on power loss (TUI audit finding 9).
+            from utils.paths import atomic_write_text_preserving
+            atomic_write_text_preserving(config_path, new_content)
         except (OSError, PermissionError) as e:
             self.ctx.dialog.msgbox("Error", f"Cannot write config:\n{e}")
             return
