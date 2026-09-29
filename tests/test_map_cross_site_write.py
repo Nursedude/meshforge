@@ -125,3 +125,15 @@ def test_websocket_and_post_share_one_origin_rule():
     assert mh.ws_client_admitted("127.0.0.1", "http://evil.example", LAN) is False
     assert mh.browser_origin_allowed("http://evil.example", LAN) is False
     assert mh.browser_origin_allowed("http://192.0.2.7:5000", LAN) is True
+
+
+@pytest.mark.parametrize("ctype", ["application/x-www-form-urlencoded",
+                                   "multipart/form-data; boundary=x"])
+def test_every_cors_safelisted_type_is_refused(server, ctype):
+    # a <form> sends these two without a preflight — refuse them exactly as
+    # text/plain (Fable re-review 2026-09-28 #4, mutant M1 survived)
+    srv, sent = server
+    status, _ = _post(srv, "/api/radio/message", MSG,
+                      {"Content-Type": ctype, "Origin": "http://evil.example"})
+    assert status == 415
+    assert sent == []

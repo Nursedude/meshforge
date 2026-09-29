@@ -322,7 +322,7 @@ sudo python3 src/utils/map_data_service.py
 ```
 
 **Data Sources**:
-- Gateway Bridge → WebSocket:5001 (real-time)
+- Map service → WebSocket:5001 (real-time; owned by `meshforge-map` — the gateway no longer runs its own, 2026-09-28)
 - MQTT Subscriber → mosquitto:1883 (multi-consumer)
 - MQTT → WebSocket Bridge (connects MQTT to web UI)
 

@@ -91,3 +91,29 @@ def test_host_rule_matches_the_websocket_local_name_rule():
     for name in ("moc", "x.local", "x.home.arpa", "x.internal", "x.local.mesh"):
         assert mh._host_header_trusted(name + ":5000") is mh._local_only_name(name) is True
     assert mh._host_header_trusted("evil.example:5000") is mh._local_only_name("evil.example") is False
+
+
+def test_standalone_map_with_no_lan_origins_still_checks_host(monkeypatch):
+    # a loopback-only map (no --cors-origins) is the "browser ON the box"
+    # rebinding case — the Host rule must not depend on a LAN being set
+    # (Fable re-review 2026-09-28 #4, mutant M2 survived)
+    monkeypatch.setattr(MapRequestHandler, "allowed_origins", None)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), MapRequestHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        with patch("utils.map_http_handler._HAS_MSG_QUEUE", False), \
+             patch("utils.map_http_handler.messaging.get_messages", return_value=_EMPTY) as gm:
+            assert _get(srv, "/api/messages/received", "evil.example:5000")[0] == 403
+            gm.assert_not_called()
+            assert _get(srv, "/api/messages/received", "127.0.0.1:5000")[0] == 200
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+@pytest.mark.parametrize("name", ["x.internal.evil.example", "x.local.evil.example",
+                                  "evil.local.mesh.example.com", "x.home.arpa.example"])
+def test_a_local_suffix_in_the_middle_is_not_local(name):
+    # suffixes match at the END only (Fable re-review #4, mutant M4 survived)
+    assert mh._local_only_name(name) is False
+    assert mh._host_header_trusted(name + ":5000") is False

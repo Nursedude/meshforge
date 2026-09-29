@@ -110,7 +110,7 @@ See `dashboards/README.md` and `docs/METRICS.md` for full setup instructions.
 | 4403 | meshtasticd TCP API | meshtasticd | Single client limit |
 | 1883 | mosquitto MQTT | mosquitto | Multi-consumer (optional) |
 | 5000 | MeshForge Map Server | **MeshForge** | Live NOC map + REST API (enumerated in [API Reference](#api-reference)) |
-| 5001 | MeshForge WebSocket | **MeshForge** | Real-time message broadcast |
+| 5001 | MeshForge WebSocket | **MeshForge** (map service) | Real-time broadcast; owned by `meshforge-map`, same trust gate as the :5000 read API |
 | 8081 | MeshForge Config API | **MeshForge** | RESTful config management |
 | 9090 | Prometheus metrics | **MeshForge** | Prometheus + Grafana JSON API |
 | 9443 | meshtasticd Web UI | meshtasticd | Protobuf + JSON endpoints |

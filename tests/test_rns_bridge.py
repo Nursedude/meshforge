@@ -2803,8 +2803,13 @@ class TestGatewayOwnsNoWebSocket:
 
     def test_start_never_starts_a_websocket_server(self, bridge):
         # patch the BIND itself: every path to a WS server (module helper,
-        # a from-import copy, a direct construction) ends in .start()
-        with patch("utils.websocket_server.MessageWebSocketServer.start",
+        # a from-import copy, a direct construction) ends in .start().
+        # Force WEBSOCKETS_AVAILABLE: CI installs no `websockets`, and the old
+        # path (`if is_websocket_available(): start_websocket_server()`) never
+        # reached .start() there — this pin was vacuous in CI (Fable re-review
+        # 2026-09-28 #3). is_websocket_available reads the global at call time.
+        with patch("utils.websocket_server.WEBSOCKETS_AVAILABLE", True), \
+             patch("utils.websocket_server.MessageWebSocketServer.start",
                    return_value=True) as bind, \
              patch.object(bridge, '_init_rns_main_thread'), \
              patch("gateway._channel_resolver.apply_resolved_channel"):
