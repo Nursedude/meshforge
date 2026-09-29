@@ -2816,6 +2816,16 @@ class TestGatewayOwnsNoWebSocket:
             bridge.start()
         bind.assert_not_called()
 
+    def test_no_gateway_module_references_the_websocket_server(self):
+        # Static pin (Fable follow-up 2026-09-28, F-A): the runtime pin above is
+        # blind to a re-add behind its OWN `import websockets` guard when the
+        # library is absent — CI's shape, and the gateway venv's. A source
+        # reference cannot hide behind any guard.
+        gw = Path(__file__).resolve().parents[1] / "src" / "gateway"
+        offenders = [str(f.relative_to(gw)) for f in sorted(gw.rglob("*.py"))
+                     if "websocket_server" in f.read_text()]
+        assert offenders == [], f"gateway modules reference the WS server: {offenders}"
+
 
 # ---------------------------------------------------------------------------
 # start() — refuse-loud on channel resolution error

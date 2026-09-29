@@ -124,3 +124,40 @@ def test_absolute_form_target_is_judged_by_its_path(server):
     assert _req(srv, "GET", "http://evil.example/fleet/slo", "127.0.0.1:5000")[0] == 200
     assert _req(srv, "GET", "http://127.0.0.1/fleet/slo", EVIL)[0] == 403
     assert calls == ["/fleet/slo"]
+
+
+def test_the_refusal_names_no_trusted_network(server):
+    # MF015: the 403 must not hand a rebinding page the LAN it is aiming at
+    # (Fable follow-up 2026-09-28, F-B — a mutant appending allowed_origins survived)
+    srv, _, _ = server
+    status, body = _req(srv, "GET", "/api/status", EVIL)
+    assert status == 403
+    for leak in (b"192.0.2", b"localhost", b"127.0.0.1", b"trusted_networks", b"allowed"):
+        assert leak not in body, leak
+
+
+@pytest.mark.parametrize("path", ["/healthzx", "/healthz/x", "/metrics/x", "/metricsx",
+                                  "/healthz-api", "/metrics.json"])
+def test_exemptions_match_exactly_not_by_prefix(server, path):
+    # an exemption by startswith would admit these to dispatch (F-C, mutant M-B survived)
+    srv, calls, _ = server
+    assert _req(srv, "GET", path, EVIL)[0] == 403, path
+    assert calls == []
+
+
+def test_get_root_refuses_a_rebinding_host(server):
+    # "/" is dropped by the route extraction (len > 1); pin it explicitly (F-C)
+    srv, calls, _ = server
+    assert _req(srv, "GET", "/", EVIL)[0] == 403
+    assert calls == []
+
+
+def test_a_refusal_is_still_counted_in_metrics(server):
+    # the Host check sits INSIDE the metrics wrapper, so refusals are graphed
+    # (F-C, mutant M-E moved it outside and survived)
+    srv, _, _ = server
+    seen = []
+    with patch("utils.map_metrics.record_http",
+               lambda **kw: seen.append(kw)):
+        _req(srv, "GET", "/fleet/slo", EVIL)
+    assert any(kw.get("status_code") == 403 for kw in seen), seen
