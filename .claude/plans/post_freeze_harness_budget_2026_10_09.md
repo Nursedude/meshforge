@@ -171,3 +171,40 @@ volume lands on one 65-year-old operator's hours. That is
 [[feedback_opus_fable_positive_feedback_loop_2026_09_03]], measured again.
 
 *Slow wins the race.*
+
+---
+
+## 7. INTERIM measurement — 2026-09-28 (Opus 5.5), 11 days before the review
+
+Operator asked for the review early. These are READINGS for 10-09, not its
+verdict — re-run them then; do not carry these numbers.
+
+**Commit split** — §1's pinned definition (majority-of-files; `tests/` unclassified;
+neither/mixed reported). Awk: `scratchpad/share.awk` of that session; reproduce from §1.
+
+| window | commits | /day | harness | product | neither | h:p |
+|---|---|---|---|---|---|---|
+| 08-10..09-09 (pre-freeze, 30 d) | 323 | 10.8 | 165 (51%) | 73 (23%) | 85 (26%) | 2.26 |
+| 09-09..09-28 (freeze, 19 d) | 463 | 24.4 | 199 (43%) | 181 (39%) | 83 (18%) | 1.10 |
+
+The RATIO moved (2.26 → 1.10) — but VOLUME more than doubled, and harness
+commits/day went UP (5.5 → 10.5). The freeze shifted the mix toward product;
+it did not brake the rate. Nothing gates volume (the 09-03 loop memory).
+
+**Disposition census** — `/var/lib/meshforge/watchdog.json` `coverage`, 9 boxes
+(lehua is `field-node`: no watchdog BY DESIGN, `docs/fleet_roles.yaml` §field-node):
+62 classes · **299 clean / 258 inert / 1 active / 0 indeterminate** (Sept: 61 ·
+314 / 234 / 1 indeterminate). Inert on EVERY box: `oracle_delivery_degraded`
+(the Sept one) **+ `inherited_app_drift`** — the two cut candidates, pending
+`falsifiability_drill.py` to rule out BLIND. One class added in-freeze:
+`bridge_leg_down` (09-27), forced by an operator drill (5.7 h dark, nothing
+paged) and proven end-to-end 09-28 (ntfy received) — the freeze's "evidence
+worth having" clause working as written.
+
+**Not yet run for 10-09**: the inert-tier cut's ACTED-ON column (which fired
+AND drove a change), and the drill on the two all-inert classes.
+
+**Product-counter decision owed at 10-09** (recorded, not fixed): p2s queue
+`delivered` = the RAK accepted it over SERIAL, not heard on RF (09-28: 3
+delivered / 1 arrived). An honest-claims gap in a PRODUCT counter — decide
+whether it earns a rename/second state.
