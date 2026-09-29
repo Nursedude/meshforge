@@ -55,6 +55,17 @@ class Recorder:
         return self.rnsd_up
 
 
+_REAL_UNIT_STOP_TIMEOUT = ro.unit_stop_timeout_s  # the autouse pin below replaces the attribute
+
+
+@pytest.fixture(autouse=True)
+def _pinned_stop_timeout():
+    # Ambient-state pin: the hold now reads each unit's TimeoutStopUSec from
+    # the host's systemd. Tests that care patch it themselves.
+    with patch.object(ro, "unit_stop_timeout_s", lambda unit, user: 90.0):
+        yield
+
+
 def _patched(rec):
     return [
         patch.object(ro, "is_system_unit_active", rec.system_active),
@@ -263,7 +274,8 @@ class TestSystemUnitTriState:
 
     def test_hold_never_consults_the_bool_check_service(self):
         import inspect
-        src = inspect.getsource(ro.hold_rns_clients)
+        src = (inspect.getsource(ro.hold_rns_clients)
+               + inspect.getsource(ro._client_active))
         assert "check_service(" not in src
         assert "is_system_unit_active" in src
 
@@ -417,3 +429,91 @@ class TestEveryRestartSiteIsOrdered:
         start = src.index("start_service('rnsd')")
         release = src.index("release_rns_clients(hold)")
         assert hold < stop < start < release
+
+
+class TestStopFollowsTheUnitsOwnTimeout:
+    """Re-review F1 (2026-09-29, drilled): stop_service's 30 s default is
+    shorter than every RNS client's TimeoutStopSec, so a slow-to-stop held
+    unit timed out the CLIENT, landed in stop_failed, was stopped by the
+    still-queued job anyway, and release never restarted it — left down."""
+
+    @pytest.mark.parametrize("text,expect", [
+        ("1min 30s", 90.0), ("5min", 300.0), ("45s", 45.0), ("1h 2min 3s", 3723.0),
+        ("infinity", float("inf")), ("", None), ("garbage", None), ("1min x", None),
+    ])
+    def test_parse_systemd_timespan(self, text, expect):
+        assert ro.parse_systemd_timespan(text) == expect
+
+    def test_deadline_is_the_units_timeout_plus_margin(self):
+        with patch.object(ro, "unit_stop_timeout_s", return_value=90.0):
+            assert ro.stop_deadline_s("x", False) == 90 + ro.STOP_TIMEOUT_MARGIN_S
+
+    def test_deadline_unreadable_waits_the_cap(self):
+        # F-B: the map's TimeoutStopSec is 5 min; a 90 s guess reproduces F1.
+        with patch.object(ro, "unit_stop_timeout_s", return_value=None):
+            assert ro.stop_deadline_s("x", True) == ro.STOP_TIMEOUT_CAP_S
+
+    def test_deadline_infinity_is_capped(self):
+        with patch.object(ro, "unit_stop_timeout_s", return_value=float("inf")):
+            assert ro.stop_deadline_s("x", False) == ro.STOP_TIMEOUT_CAP_S
+
+    def test_unit_stop_timeout_reads_the_units_property(self):
+        with patch.object(ro.subprocess, "run",
+                          return_value=SimpleNamespace(returncode=0, stdout="1min 30s\n")) as run:
+            assert _REAL_UNIT_STOP_TIMEOUT("meshforge-gateway", False) == 90.0
+        argv = run.call_args.args[0]
+        assert argv[-3:] == ["-p", "TimeoutStopUSec", "--value"] and "meshforge-gateway" in argv
+
+    def _hold_with_client_timeout(self, state_after):
+        # hold asks: True (held); stop_service's client times out; re-ask -> state_after
+        with patch.object(ro, "is_user_unit_active", return_value=False), \
+             patch.object(ro, "is_system_unit_active",
+                          side_effect=[True, state_after]), \
+             patch.object(ro, "unit_stop_timeout_s", return_value=90.0), \
+             patch.object(ro, "stop_service",
+                          return_value=(False, "Timeout while stopping u")) as stop:
+            hold = ro.hold_rns_clients(units=(("meshforge-gateway", False),))
+        return hold, stop
+
+    def test_stop_waits_as_long_as_the_unit_may_take(self):
+        _, stop = self._hold_with_client_timeout(False)
+        assert stop.call_args.kwargs["timeout"] == 90 + ro.STOP_TIMEOUT_MARGIN_S
+
+    def test_client_timeout_but_unit_did_stop_counts_as_stopped(self):
+        # The exact drilled sequence: client gave up, job landed, unit inactive.
+        hold, _ = self._hold_with_client_timeout(False)
+        assert hold.stopped == [("meshforge-gateway", False)] and hold.stop_failed == []
+
+    def test_client_timeout_and_unit_still_up_is_stop_failed(self):
+        hold, _ = self._hold_with_client_timeout(True)
+        assert hold.stopped == [] and [u for u, _, _ in hold.stop_failed] == ["meshforge-gateway"]
+
+    def test_client_timeout_and_unit_unobservable_says_unknown(self):
+        hold, _ = self._hold_with_client_timeout(None)
+        assert hold.stopped == [] and "UNKNOWN" in hold.stop_failed[0][2]
+
+    def test_release_is_not_ok_while_a_client_could_not_be_stopped(self):
+        # F-A: the run-as-user site shows "rnsd Fixed" on `ok` alone.
+        hold = ro.ClientHold(stop_failed=[("meshforge-map", False, "Timeout while stopping")])
+        with patch.object(ro, "rnsd_owns_listener", return_value=True):
+            rel = ro.release_rns_clients(hold, name="default", wait_s=0)
+        assert rel.ok is False and rel.not_stopped
+
+    def test_release_reports_what_could_not_be_stopped(self):
+        hold = ro.ClientHold(stop_failed=[("meshforge-gateway", False, "Timeout while stopping")])
+        with patch.object(ro, "rnsd_owns_listener", return_value=True):
+            rel = ro.release_rns_clients(hold, name="default", wait_s=0)
+        assert rel.not_stopped and "meshforge-gateway" in rel.not_stopped[0]
+        assert "Could NOT be stopped" in rel.summary()
+        with patch.object(ro, "rnsd_owns_listener", return_value=False), \
+             patch.object(ro, "listener_owners", return_value=[]):
+            rel = ro.release_rns_clients(hold, name="default", wait_s=0)
+        assert "NOT stopped (may be the squatter)" in rel.summary()
+
+    def test_both_diagnostics_sites_print_stop_failed(self):
+        # F2: one site printed nothing from the hold at all.
+        from pathlib import Path
+        src = (Path(__file__).parent.parent / "src" / "launcher_tui" / "handlers"
+               / "rns_diagnostics.py").read_text()
+        assert src.count("hold.stop_failed") >= 2
+        assert "hold_rns_clients()\n            stop_service('rnsd')" not in src

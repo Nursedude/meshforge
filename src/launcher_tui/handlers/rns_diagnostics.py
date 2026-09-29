@@ -237,8 +237,12 @@ class RNSDiagnosticsHandler(BaseHandler):
         hold = hold_rns_clients()
         for label in hold.names():
             print(f"  Stopped RNS client: {label}")
-        for unit, _user in hold.unobservable:
-            print(f"  Warning: state of RNS client {unit} UNKNOWN — not stopped")
+        for unit, _user, msg in hold.stop_failed:
+            print(f"  Warning: could NOT stop RNS client {unit}: {msg} — it may squat @rns")
+        for unit, user in hold.unobservable:
+            scope = "user manager" if user else "system manager"
+            print(f"  Warning: state of RNS client {unit} UNKNOWN — {scope} did not "
+                  f"answer (timeout or bus unreachable); not stopped")
         _clear_stale_auth_files()
 
         # Step 4: Validate rnsd.service file (ExecStart path, directives)
@@ -670,6 +674,15 @@ class RNSDiagnosticsHandler(BaseHandler):
             from utils.rnsd_restart_order import (hold_rns_clients,
                                                   release_rns_clients)
             hold = hold_rns_clients()
+            # F2 (re-review 2026-09-29): this site printed NOTHING from the hold,
+            # so a client that could not be stopped vanished from every line.
+            for label in hold.names():
+                print(f"  Stopped RNS client: {label}")
+            for unit, _user, msg in hold.stop_failed:
+                print(f"  Warning: could NOT stop RNS client {unit}: {msg} — it may squat @rns")
+            for unit, user in hold.unobservable:
+                print(f"  Warning: state of RNS client {unit} UNKNOWN — "
+                      f"{'user' if user else 'system'} manager did not answer; not stopped")
             stop_service('rnsd')
             # A stray rnsd outside the unit: match the process NAME exactly
             # (-x). `pkill -f rnsd` matched any cmdline containing "rnsd",

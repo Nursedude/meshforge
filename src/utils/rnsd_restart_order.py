@@ -8,8 +8,14 @@ itself; rnsd then comes back as a client of the squatter, or dies on the
 bind. If rnsd never takes the socket, the clients are LEFT STOPPED and
 named: starting them is exactly what makes the squat.
 
-Only units that are ACTIVE when the hold begins are touched, so a deliberate
-stop stays a stop (feedback_deploy_restarts_only_active_units).
+Only units that are ACTIVE when the hold begins are touched, so a COMPLETED
+deliberate stop (inactive/failed) stays a stop
+(feedback_deploy_restarts_only_active_units). ``activating`` and
+``deactivating`` count as active: both will be running again with nobody
+starting them (a crashed unit under ``Restart=`` sits in ``deactivating``
+for its whole TimeoutStopSec), so they are held and RESTARTED by release —
+a stop still in flight when the hold begins is therefore undone; that window
+is seconds and the alternative is a squatter (re-review R1/F3, 2026-09-29).
 
 Ownership is read from the socket (``ss -xnpl`` → ``/proc/<pid>/cmdline``),
 the same scan the #69 watchdog probe uses — never from "the port answers",
@@ -18,13 +24,16 @@ which a squatter satisfies too.
 
 import logging
 import os
+import re
+import subprocess
 import signal
 import threading
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
-from utils.service_check import (is_system_unit_active, is_user_unit_active,
-                                 start_service, stop_service)
+from utils.service_check import (_systemctl_query_argv, is_system_unit_active,
+                                 is_user_unit_active, start_service,
+                                 stop_service)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +60,75 @@ def _scope(user: bool) -> str:
     return "user" if user else "system"
 
 
+# Re-review F1 (2026-09-29, drilled on a throwaway unit): ``stop_service()``'s
+# 30 s default is SHORTER than every RNS client's TimeoutStopSec (90 s on the
+# fleet; the map 5 min), so a held unit that is slow to stop — which a
+# ``deactivating`` one is BY DEFINITION — timed out the systemctl CLIENT while
+# the stop JOB stayed queued in systemd and landed anyway: the unit ended
+# ``failed``, sat in ``stop_failed``, and release (which starts only
+# ``stopped``) never brought it back. Left down until a human noticed. Cure:
+# wait as long as the unit itself may take (+ margin, capped), and when the
+# client still gives up, RE-ASK THE UNIT — the message is not the state.
+STOP_TIMEOUT_MARGIN_S = 10
+STOP_TIMEOUT_CAP_S = 330         # the map's 5 min + margin; ``infinity`` lands here
+
+_TIMESPAN_UNITS = {"y": 31557600.0, "month": 2629800.0, "w": 604800.0, "d": 86400.0,
+                   "h": 3600.0, "min": 60.0, "s": 1.0, "ms": 0.001, "us": 1e-6,
+                   "\u00b5s": 1e-6, "ns": 1e-9}
+
+
+def parse_systemd_timespan(text: str) -> Optional[float]:
+    """``systemctl show`` prints USec properties as ``1min 30s`` / ``5min`` /
+    ``infinity``. Seconds; ``inf`` for infinity; None when unparseable."""
+    t = (text or "").strip()
+    if not t:
+        return None
+    if t == "infinity":
+        return float("inf")
+    parts = re.findall(r"(\d+(?:\.\d+)?)\s*([a-z\u00b5]+)", t)
+    if not parts or not re.fullmatch(r"(?:\s*\d+(?:\.\d+)?\s*[a-z\u00b5]+)+\s*", t):
+        return None
+    total = 0.0
+    for num, unit in parts:
+        if unit not in _TIMESPAN_UNITS:
+            return None
+        total += float(num) * _TIMESPAN_UNITS[unit]
+    return total
+
+
+def unit_stop_timeout_s(unit: str, user: bool) -> Optional[float]:
+    """The unit's own ``TimeoutStopSec`` (read-only ``systemctl show``);
+    ``inf`` for infinity; None when the manager did not answer."""
+    try:
+        r = subprocess.run(
+            _systemctl_query_argv(['show', unit, '-p', 'TimeoutStopUSec', '--value'], user=user),
+            capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.debug("TimeoutStopUSec of %s unreadable: %s", unit, e)
+        return None
+    return parse_systemd_timespan(r.stdout) if r.returncode == 0 else None
+
+
+def stop_deadline_s(unit: str, user: bool) -> int:
+    """How long ``stop_service`` may block for this unit: its own stop timeout
+    plus a margin, capped; the CAP when unreadable (F-B: too long costs
+    seconds, too short costs a downed unit — the map's is 5 min)."""
+    t = unit_stop_timeout_s(unit, user)
+    if t is None:
+        return STOP_TIMEOUT_CAP_S
+    return int(min(t + STOP_TIMEOUT_MARGIN_S, STOP_TIMEOUT_CAP_S))
+
+
+def _client_active(unit: str, user: bool) -> Optional[bool]:
+    """Tri-state state of one client unit; None = unobservable (never skip)."""
+    try:
+        return is_user_unit_active(unit) if user else is_system_unit_active(unit)
+    except Exception as e:
+        logger.debug("client state check %s failed: %s", unit, e)
+        return None
+
+
 @dataclass
 class ClientHold:
     """Clients this restart stopped, so exactly those are started again."""
@@ -69,10 +147,14 @@ class ReleaseResult:
     start_failed: List[str] = field(default_factory=list)
     left_stopped: List[str] = field(default_factory=list)
     owners: List[Tuple[int, str]] = field(default_factory=list)
+    not_stopped: List[str] = field(default_factory=list)  # F2: hold.stop_failed
 
     @property
     def ok(self) -> bool:
-        return self.rnsd_owns is True and not self.start_failed
+        # F-A (second read, 2026-09-29): a client that could NOT be stopped is
+        # in the F1 shape (job lands later, never restarted) — never "Fixed".
+        return (self.rnsd_owns is True and not self.start_failed
+                and not self.not_stopped)
 
     def summary(self) -> str:
         if self.rnsd_owns is True:
@@ -81,14 +163,19 @@ class ReleaseResult:
                 line += " Restarted clients: " + ", ".join(self.started) + "."
             if self.start_failed:
                 line += " FAILED to restart: " + ", ".join(self.start_failed) + "."
+            if self.not_stopped:
+                line += (" Could NOT be stopped before the restart (check them): "
+                         + ", ".join(self.not_stopped) + ".")
             return line
         why = ("ownership could not be observed (ss unavailable)"
                if self.rnsd_owns is None else
                "rnsd does NOT own the shared instance")
         held = ", ".join(self.left_stopped) or "none"
         own = "; ".join(f"PID {p}: {c[:60]}" for p, c in self.owners) or "no listener"
+        ns = (" NOT stopped (may be the squatter): " + ", ".join(self.not_stopped) + "."
+              if self.not_stopped else "")
         return (f"{why} — left STOPPED so they cannot squat it: {held}. "
-                f"Listener: {own}.")
+                f"Listener: {own}.{ns}")
 
 
 def instance_name() -> str:
@@ -152,15 +239,9 @@ def hold_rns_clients(units=RNS_CLIENT_UNITS) -> ClientHold:
     """Stop every ACTIVE RNS client unit; remember which ones."""
     hold = ClientHold()
     for unit, user in units:
-        try:
-            # BOTH scopes tri-state (review S2): the bool `.available` on a
-            # ServiceStatus read `activating` and a systemctl timeout as
-            # "not active → skip" — a squatter-in-waiting left unheld.
-            active = (is_user_unit_active(unit) if user else
-                      is_system_unit_active(unit))
-        except Exception as e:
-            logger.debug("client state check %s failed: %s", unit, e)
-            active = None
+        # BOTH scopes tri-state (review S2): a squatter-in-waiting is never
+        # skipped on a bool; None = unobservable, recorded.
+        active = _client_active(unit, user)
         if active is None:
             # unobservable ≠ inactive: not stopped (we cannot reach it), but
             # recorded so the operator is told it may squat the socket.
@@ -168,7 +249,16 @@ def hold_rns_clients(units=RNS_CLIENT_UNITS) -> ClientHold:
             continue
         if not active:
             continue
-        ok, msg = stop_service(unit, user=user)
+        deadline = stop_deadline_s(unit, user)
+        ok, msg = stop_service(unit, user=user, timeout=deadline)
+        if not ok and msg.startswith("Timeout"):
+            # F1: our systemctl CLIENT gave up; the stop JOB is still queued
+            # in systemd and lands on its own. Re-ask the unit.
+            again = _client_active(unit, user)
+            if again is False:
+                ok, msg = True, f"{unit} stopped (client waited {deadline}s)"
+            elif again is None:
+                msg = f"{unit} state UNKNOWN after the client waited {deadline}s"
         if ok:
             hold.stopped.append((unit, user))
         else:
@@ -195,6 +285,7 @@ def release_rns_clients(
         owns = rnsd_owns_listener(name)
 
     result = ReleaseResult(rnsd_owns=owns)
+    result.not_stopped = [f"{u} ({_scope(user)}): {m}" for u, user, m in hold.stop_failed]
     if owns is not True:
         result.left_stopped = hold.names()
         result.owners = listener_owners(name) or []
