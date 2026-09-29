@@ -3,7 +3,7 @@ MeshForge Meshtasticd Configuration Manager
 
 Manages the /etc/meshtasticd/ directory structure:
   - available.d/  - Available radio configurations (templates)
-  - config.d/     - Active/enabled configurations (symlinks)
+  - config.d/     - Active/enabled configurations (sanitized copies)
   - config.yaml   - Main configuration file
   - ssl/          - SSL certificates
 
@@ -18,9 +18,6 @@ Usage:
 
     # List available radio configs
     available = config.list_available()
-
-    # Enable a config
-    config.enable("meshtoad-spi")
 
     # Check radio type
     radio_type = config.detect_radio_type()
@@ -50,7 +47,7 @@ class MeshtasticdConfig:
         ├── available.d/     # Available radio configs (36 templates)
         │   ├── heltec-usb.yaml, tbeam-usb.yaml, ...  (9 USB)
         │   └── meshtoad-spi.yaml, rak-hat-spi.yaml, ... (27 SPI)
-        ├── config.d/        # Enabled configs (symlinks to available.d)
+        ├── config.d/        # Enabled configs (sanitized copies of available.d)
         │   └── active.yaml -> ../available.d/meshtoad-spi.yaml
         ├── config.yaml      # Main config (merged from config.d)
         └── ssl/             # SSL certificates
@@ -216,7 +213,7 @@ General:
         for config_file in sorted(self.available_dir.glob("*.yaml")):
             name = config_file.stem
 
-            # Check if enabled (symlink exists in config.d)
+            # Check if enabled (same-named file exists in config.d)
             enabled = (self.config_d_dir / config_file.name).exists()
 
             # Get template info if available
@@ -239,63 +236,6 @@ General:
     def list_enabled(self) -> List[RadioConfig]:
         """List enabled (active) configurations."""
         return [c for c in self.list_available() if c.enabled]
-
-    def enable(self, config_name: str) -> bool:
-        """
-        Enable a radio configuration.
-
-        Creates a symlink in config.d/ pointing to available.d/
-
-        Args:
-            config_name: Name of config (without .yaml extension)
-
-        Returns:
-            True if enabled successfully
-        """
-        source = self.available_dir / f"{config_name}.yaml"
-        target = self.config_d_dir / f"{config_name}.yaml"
-
-        if not source.exists():
-            logger.error(f"Config not found: {source}")
-            return False
-
-        try:
-            # Remove existing symlink if present
-            if target.exists() or target.is_symlink():
-                target.unlink()
-
-            # Create relative symlink
-            target.symlink_to(f"../available.d/{config_name}.yaml")
-            logger.info(f"Enabled config: {config_name}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to enable {config_name}: {e}")
-            return False
-
-    def disable(self, config_name: str) -> bool:
-        """
-        Disable a radio configuration.
-
-        Removes symlink from config.d/
-
-        Args:
-            config_name: Name of config (without .yaml extension)
-
-        Returns:
-            True if disabled successfully
-        """
-        target = self.config_d_dir / f"{config_name}.yaml"
-
-        try:
-            if target.exists() or target.is_symlink():
-                target.unlink()
-                logger.info(f"Disabled config: {config_name}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to disable {config_name}: {e}")
-            return False
 
     def detect_radio_type(self) -> RadioType:
         """
