@@ -726,7 +726,7 @@ class FleetEndpointsMixin:
         action, gated to loopback / the configured LAN like the RF-transmit
         endpoint — not any host that can reach 0.0.0.0:5000.
         """
-        if self._reject_if_untrusted():
+        if self._reject_if_untrusted() or self._reject_cross_site_write():
             return
         import json as _json
         import socket as _socket

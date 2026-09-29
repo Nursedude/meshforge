@@ -462,6 +462,8 @@ class NodeDataEndpointsMixin:
 
     def _handle_settings_update(self):
         """Handle POST /api/settings — save map settings."""
+        if self._reject_cross_site_write():
+            return
         try:
             content_length = int(self.headers.get('Content-Length', 0))
             if content_length <= 0 or content_length > 4096:

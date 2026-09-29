@@ -272,6 +272,15 @@ def ws_client_admitted(client_host: str, origin: str,
     """
     if not _client_ip_trusted(client_host, allowed):
         return False
+    return browser_origin_allowed(origin, allowed, request_host, page_port)
+
+
+def browser_origin_allowed(origin: str, allowed: Optional[List[str]],
+                           request_host: Optional[str] = None,
+                           page_port: Optional[int] = None) -> bool:
+    """A browser Origin the map trusts: the CORS rule, or the map page itself
+    reached by a local-only name. ONE rule for the WebSocket handshake and the
+    state-changing POSTs (``_reject_cross_site_write``), so they cannot drift."""
     origins = allowed if allowed else MapRequestHandler._DEFAULT_ORIGINS + ['http://127.0.0.1']
     return (_origin_allowed(origin, origins)
             or _same_local_host(origin, request_host, page_port))
@@ -524,6 +533,45 @@ class MapRequestHandler(
                         f"topology). To trust another of YOUR networks, add it "
                         f"as a private /24 to {TRUSTED_NETWORKS_FILE} on this "
                         f"box and restart meshforge-map.")},
+            status=403)
+        return True
+
+    def _reject_cross_site_write(self) -> bool:
+        """Send 415/403 + return True for a write a hostile PAGE could forge.
+
+        The IP gate cannot see CSRF: a trusted LAN browser visiting an
+        attacker's page sends the attacker's POST from a trusted address. A
+        ``text/plain`` POST is a CORS "simple request" — no preflight, so
+        ``do_OPTIONS`` never runs — and the body was parsed as JSON anyway, so
+        such a page could key the radio (Fable review 2026-09-28, F3).
+
+        Two checks: the body must be declared ``application/json`` (forces a
+        preflight the browser will not pass cross-origin), and a PRESENT Origin
+        must be one the map trusts. No Origin = not a browser (curl, scripts):
+        every current browser sends Origin on a POST, same-origin included.
+        """
+        ctype = (self.headers.get('Content-Type') or '').split(';', 1)[0].strip().lower()
+        if ctype != 'application/json':
+            self._serve_json(
+                {"error": "unsupported media type",
+                 "detail": "Send the body as JSON with 'Content-Type: application/json'."},
+                status=415)
+            return True
+        origin = self.headers.get('Origin')
+        if origin is None:
+            return False
+        try:
+            page_port = self.server.server_address[1]
+        except (AttributeError, IndexError, TypeError):
+            page_port = None
+        if browser_origin_allowed(origin, self.allowed_origins,
+                                  self.headers.get('Host'), page_port):
+            return False
+        self._serve_json(
+            {"error": "forbidden",
+             "detail": (f"Cross-site write refused: Origin {origin!r} is not this "
+                        f"map. Send it from the map page itself, or without a "
+                        f"browser.")},
             status=403)
         return True
 
@@ -820,7 +868,7 @@ class MapRequestHandler(
         can merely reach ``0.0.0.0:5000``). Unattended third-party RF control
         from an untrusted network is an operator/FCC problem.
         """
-        if self._reject_if_untrusted():
+        if self._reject_if_untrusted() or self._reject_cross_site_write():
             return
         try:
             content_length = int(self.headers.get('Content-Length', 0))
