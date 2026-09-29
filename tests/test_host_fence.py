@@ -50,9 +50,18 @@ def test_systemctl_read_only_passes_through():
     assert r.stdout.strip() in ("inactive", "unknown")
 
 
-@pytest.mark.parametrize("name", ["pkill", "killall", "rnsd", "reboot"])
+@pytest.mark.parametrize("name", ["pkill", "killall", "rnsd", "reboot",
+                                  "kill", "systemd-run", "busctl", "dbus-send"])
 def test_killers_and_daemons_are_refused(name):
-    r = _run([name, "-x", "rnsd"] if name in ("pkill", "killall") else [name])
+    if name == "kill":
+        argv = ["kill", "-TERM", "1"]          # the exec'd /bin/kill, not the builtin
+    elif name == "systemd-run":
+        argv = ["systemd-run", "--user", "/bin/true"]
+    elif name in ("pkill", "killall"):
+        argv = [name, "-x", "rnsd"]
+    else:
+        argv = [name]
+    r = _run(argv)
     assert r.returncode == 1 and "refused under pytest" in r.stderr
 
 

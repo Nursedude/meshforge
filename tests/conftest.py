@@ -78,7 +78,16 @@ exec "$MF_REAL_SYSTEMCTL" "$@"
 # a sudo-only fence let a mutant's non-systemd fallback `pkill -x rnsd` kill
 # the LIVE rnsd (it runs as the operator's user — no sudo needed).
 _REFUSED_BINARIES = ("pkill", "killall", "reboot", "shutdown", "poweroff",
-                     "rnsd", "lxmd", "nomadnet", "meshtasticd")
+                     "rnsd", "lxmd", "nomadnet", "meshtasticd",
+                     # review S4 (2026-09-28): four src sites exec
+                     # ['kill', ..., pid] — a mutant reaching one with a real
+                     # pid kills for real, the pkill shape the fence was built
+                     # from. systemd-run/busctl/dbus-send start or drive units
+                     # around the systemctl fence. (`kill` here is the /bin
+                     # binary; the shell builtin is untouched.) Residual: the
+                     # module form `python -m RNS.Utilities.rnsd` cannot be
+                     # fenced by PATH.
+                     "kill", "systemd-run", "busctl", "dbus-send")
 
 
 def _install_sudo_fence():
