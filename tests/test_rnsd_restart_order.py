@@ -30,8 +30,8 @@ class Recorder:
         self.owns_after_start = owns_after_start
         self.owns_value = owns_value  # override (e.g. None = unobservable)
 
-    def check_service(self, unit, user=False):
-        return SimpleNamespace(available=(unit, user) in ACTIVE)
+    def system_active(self, unit, timeout=5):
+        return (unit, False) in ACTIVE
 
     def user_active(self, unit, timeout=5):
         return (unit, True) in ACTIVE
@@ -57,7 +57,7 @@ class Recorder:
 
 def _patched(rec):
     return [
-        patch.object(ro, "check_service", rec.check_service),
+        patch.object(ro, "is_system_unit_active", rec.system_active),
         patch.object(ro, "is_user_unit_active", rec.user_active),
         patch.object(ro, "stop_service", rec.stop),
         patch.object(ro, "start_service", rec.start),
@@ -181,12 +181,77 @@ class TestUserUnitTriState:
 
     def test_unobservable_client_is_not_stopped_and_is_recorded(self):
         with patch.object(ro, "is_user_unit_active", return_value=None), \
-             patch.object(ro, "check_service",
-                          return_value=SimpleNamespace(available=False)), \
+             patch.object(ro, "is_system_unit_active", return_value=False), \
              patch.object(ro, "stop_service") as stop:
             hold = ro.hold_rns_clients()
         stop.assert_not_called()
         assert ("nomadnet", True) in hold.unobservable
+
+
+class TestSystemUnitTriState:
+    """Review S2 (2026-09-28): the hold was tri-state for USER units only.
+    SYSTEM units read `check_service(unit).available` — a bool — so
+    `activating` and a systemctl TIMEOUT both folded into "not active → skip"
+    and a gateway in auto-restart when the repair began was neither held nor
+    reported (probe: activating → NOT_RUNNING available=False; TimeoutExpired
+    → UNKNOWN available=False; hold stopped=[] with no witness)."""
+
+    def _state(self, rc=None, out="", exc=None):
+        import subprocess
+        from utils import service_check as sc
+        kw = ({"side_effect": exc} if exc else
+              {"return_value": SimpleNamespace(returncode=rc, stdout=out)})
+        with patch.object(sc.subprocess, "run", **kw) as run:
+            r = sc.is_system_unit_active("meshforge-gateway")
+        if not exc:
+            assert "--user" not in run.call_args.args[0]
+        return r
+
+    def test_active(self):
+        assert self._state(0, "active\n") is True
+
+    def test_activating_counts_as_active(self):
+        assert self._state(3, "activating\n") is True
+
+    def test_inactive(self):
+        assert self._state(3, "inactive\n") is False
+
+    def test_failed_is_inactive(self):
+        assert self._state(3, "failed\n") is False
+
+    def test_timeout_is_unknown_not_inactive(self):
+        import subprocess
+        assert self._state(exc=subprocess.TimeoutExpired("systemctl", 5)) is None
+
+    def test_unrecognised_answer_is_unknown(self):
+        assert self._state(1, "") is None
+
+    def test_activating_system_client_is_held(self):
+        # The squatter-in-waiting: a gateway mid-start must be STOPPED before
+        # rnsd restarts, exactly as an active one is.
+        with patch.object(ro, "is_user_unit_active", return_value=False), \
+             patch.object(ro, "is_system_unit_active",
+                          side_effect=lambda u, timeout=5: u == "meshforge-gateway"), \
+             patch.object(ro, "stop_service", return_value=(True, "ok")) as stop:
+            hold = ro.hold_rns_clients()
+        assert ("meshforge-gateway", False) in hold.stopped
+        assert [c.args[0] for c in stop.call_args_list] == ["meshforge-gateway"]
+
+    def test_unobservable_system_client_is_recorded_not_skipped(self):
+        with patch.object(ro, "is_user_unit_active", return_value=False), \
+             patch.object(ro, "is_system_unit_active",
+                          side_effect=lambda u, timeout=5: None if u == "meshforge-gateway" else False), \
+             patch.object(ro, "stop_service") as stop:
+            hold = ro.hold_rns_clients()
+        stop.assert_not_called()
+        assert ("meshforge-gateway", False) in hold.unobservable
+        assert "meshforge-gateway" in " ".join(hold.names()) or hold.unobservable
+
+    def test_hold_never_consults_the_bool_check_service(self):
+        import inspect
+        src = inspect.getsource(ro.hold_rns_clients)
+        assert "check_service(" not in src
+        assert "is_system_unit_active" in src
 
 
 class TestRepairWizardOrder:

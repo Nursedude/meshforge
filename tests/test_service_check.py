@@ -1009,6 +1009,26 @@ class TestMissingUnitIsNotInstalled:
             run.side_effect = [MagicMock(returncode=3, stdout="inactive\n"), second]
             assert check_service('mosquitto').state == ServiceState.NOT_RUNNING
 
+    TEMPLATE_PRESENT = MagicMock(returncode=0, stdout=(
+        "UNIT FILE      STATE   PRESET\ngetty@.service enabled enabled\n\n"
+        "1 unit files listed.\n"))
+
+    def test_template_instance_asks_for_the_template(self):
+        # Review S5 (2026-09-28): `list-unit-files getty@tty9.service` prints
+        # "0 unit files listed" while getty@.service is enabled (measured,
+        # systemd 257) — the instance read NOT_INSTALLED. Ask for the template.
+        with patch('subprocess.run') as run:
+            run.side_effect = [MagicMock(returncode=3, stdout="inactive\n"),
+                               self.TEMPLATE_PRESENT]
+            status = check_service('getty@tty9')
+        assert status.state == ServiceState.NOT_RUNNING
+        assert run.call_args_list[1].args[0][-2:] == ['list-unit-files', 'getty@.service']
+
+    def test_template_instance_whose_template_is_missing_is_not_installed(self):
+        with patch('subprocess.run') as run:
+            run.side_effect = [MagicMock(returncode=3, stdout="inactive\n"), self.ABSENT]
+            assert check_service('nosuch@x').state == ServiceState.NOT_INSTALLED
+
     def test_user_scope_missing_unit(self):
         with patch('subprocess.run') as run, \
              patch('src.utils.service_check._operator_user_prefix', return_value=[]):

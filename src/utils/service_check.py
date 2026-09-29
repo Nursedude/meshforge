@@ -250,18 +250,23 @@ def _unit_file_absent(systemd_name: str, user: bool = False) -> bool:
     measured 2026-09-28). A timeout, a missing systemctl or any other output
     is NOT evidence of absence and returns False.
     """
+    # A template INSTANCE (foo@bar) has no unit file of its own — ask for the
+    # TEMPLATE. `list-unit-files getty@tty9.service` prints "0 unit files
+    # listed" (rc 1) while getty@.service is enabled (measured systemd 257,
+    # review S5 2026-09-28), so the instance read NOT_INSTALLED.
+    query = systemd_name.split('@', 1)[0] + '@' if '@' in systemd_name else systemd_name
     try:
         r = subprocess.run(
             _systemctl_query_argv(
-                ['list-unit-files', f'{systemd_name}.service'], user=user),
+                ['list-unit-files', f'{query}.service'], user=user),
             capture_output=True, text=True, timeout=5,
         )
     except (subprocess.SubprocessError, OSError) as e:
-        logger.debug("list-unit-files %s failed: %s", systemd_name, e)
+        logger.debug("list-unit-files %s failed: %s", query, e)
         return False
     out = r.stdout or ""
     return (r.returncode == 1 and "0 unit files listed" in out
-            and systemd_name not in out.replace("0 unit files listed", ""))
+            and query not in out.replace("0 unit files listed", ""))
 
 
 def check_service(
@@ -489,17 +494,11 @@ def check_service(
                     detection_method="systemctl --user" if user else "systemctl"
                 )
 
-            # Check if service unit exists (read-only, no sudo)
-            check_result = subprocess.run(
-                _systemctl_query_argv(
-                    ['list-unit-files', f'{systemd_name}.service'],
-                    user=user,
-                ),
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            if systemd_name not in check_result.stdout:
+            # Check if service unit exists (read-only, no sudo). POSITIVE
+            # evidence only, same rule as the "inactive" branch above — and
+            # template-aware (review S5): `foo@bar` never appears in
+            # list-unit-files output, `foo@.service` does.
+            if _unit_file_absent(systemd_name, user=user):
                 return ServiceStatus(
                     name=name,
                     available=False,
@@ -1089,6 +1088,32 @@ def is_service_masked(
         return False
 
 
+def _unit_active_tri_state(unit: str, user: bool, timeout: int) -> Optional[bool]:
+    """``is-active`` as a tri-state: True / False / None (unobservable).
+
+    ``activating`` and ``reloading`` count as ACTIVE — a starting client can
+    still grab a socket, which is the whole point for the rnsd repair order.
+    A timeout, a missing systemctl or an unrecognised answer is None, never
+    "inactive" (honest_failure_modes #1: the degraded value must not overlap
+    the healthy domain).
+    """
+    try:
+        r = subprocess.run(
+            _systemctl_query_argv(['is-active', unit], user=user),
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.debug("%s unit %s state unreadable: %s",
+                     "user" if user else "system", unit, e)
+        return None
+    state = r.stdout.strip()
+    if r.returncode == 0 or state in ('activating', 'reloading'):
+        return True
+    if state in ('inactive', 'failed', 'deactivating'):
+        return False
+    return None  # e.g. "Failed to connect to user scope bus"
+
+
 def is_user_unit_active(unit: str, timeout: int = 5) -> Optional[bool]:
     """Is a USER-scope unit active on the operator's user manager?
 
@@ -1098,20 +1123,16 @@ def is_user_unit_active(unit: str, timeout: int = 5) -> Optional[bool]:
     still grab a socket. Twin of MeshAnchor ``is_user_unit_active``
     (MA ``e1fa3732``).
     """
-    try:
-        r = subprocess.run(
-            _systemctl_query_argv(['is-active', unit], user=True),
-            capture_output=True, text=True, timeout=timeout,
-        )
-    except (subprocess.SubprocessError, OSError) as e:
-        logger.debug("user unit %s state unreadable: %s", unit, e)
-        return None
-    state = r.stdout.strip()
-    if r.returncode == 0 or state in ('activating', 'reloading'):
-        return True
-    if state in ('inactive', 'failed', 'deactivating'):
-        return False
-    return None  # e.g. "Failed to connect to user scope bus"
+    return _unit_active_tri_state(unit, user=True, timeout=timeout)
+
+
+def is_system_unit_active(unit: str, timeout: int = 5) -> Optional[bool]:
+    """SYSTEM-scope twin of ``is_user_unit_active`` (frontier review S2,
+    2026-09-28). ``check_service(unit).available`` is a bool, so the rnsd
+    repair order read ``activating`` and a systemctl TIMEOUT both as "not
+    active → skip": a gateway in auto-restart when the repair began was not
+    held, not reported, and could squat ``@rns`` (the #69 shape)."""
+    return _unit_active_tri_state(unit, user=False, timeout=timeout)
 
 
 def start_service(

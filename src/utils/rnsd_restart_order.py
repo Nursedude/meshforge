@@ -23,7 +23,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
-from utils.service_check import (check_service, is_user_unit_active,
+from utils.service_check import (is_system_unit_active, is_user_unit_active,
                                  start_service, stop_service)
 
 logger = logging.getLogger(__name__)
@@ -153,8 +153,11 @@ def hold_rns_clients(units=RNS_CLIENT_UNITS) -> ClientHold:
     hold = ClientHold()
     for unit, user in units:
         try:
+            # BOTH scopes tri-state (review S2): the bool `.available` on a
+            # ServiceStatus read `activating` and a systemctl timeout as
+            # "not active → skip" — a squatter-in-waiting left unheld.
             active = (is_user_unit_active(unit) if user else
-                      check_service(unit).available)
+                      is_system_unit_active(unit))
         except Exception as e:
             logger.debug("client state check %s failed: %s", unit, e)
             active = None
