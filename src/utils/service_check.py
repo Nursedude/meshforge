@@ -1107,9 +1107,14 @@ def _unit_active_tri_state(unit: str, user: bool, timeout: int) -> Optional[bool
                      "user" if user else "system", unit, e)
         return None
     state = r.stdout.strip()
-    if r.returncode == 0 or state in ('activating', 'reloading'):
+    if r.returncode == 0 or state in ('activating', 'reloading', 'deactivating'):
+        # `deactivating` is HELD too (non-author re-review R1, 2026-09-29,
+        # drilled): a client that CRASHED mid-teardown reads it for its whole
+        # TimeoutStopSec (90 s on the gateway) and Restart= brings it back BY
+        # ITSELF inside the rnsd window; an explicit stop issued now cancels
+        # that restart. Only inactive/failed are safe to skip.
         return True
-    if state in ('inactive', 'failed', 'deactivating'):
+    if state in ('inactive', 'failed'):
         return False
     return None  # e.g. "Failed to connect to user scope bus"
 

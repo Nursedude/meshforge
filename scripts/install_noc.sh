@@ -1255,7 +1255,7 @@ REBOOT_CONFIG
                             fi
                         else
                             echo -e "  ${YELLOW}⚠ No SPI HAT templates found (all templates are USB/display)${NC}"
-                            echo -e "  ${YELLOW}  Copy a SPI template to /etc/meshtasticd/config.d/ manually${NC}"
+                            echo -e "  ${YELLOW}  Fix: sudo python3 $REAL_INSTALL_DIR/scripts/sanitize_overlay.py /etc/meshtasticd/available.d/<your-hat>.yaml /etc/meshtasticd/config.d/${NC}"
                         fi
                     else
                         echo -e "  ${YELLOW}⚠ No HAT templates found in ${AVAIL_DIR}/${NC}"

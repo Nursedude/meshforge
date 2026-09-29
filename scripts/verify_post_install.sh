@@ -359,7 +359,7 @@ else
     # Check if this is SPI radio (needs HAT config) or USB (doesn't need it)
     if [[ -e /dev/spidev0.0 ]] || [[ -e /dev/spidev0.1 ]]; then
         check_warn "Active HAT config" "SPI detected but no HAT config in config.d/" \
-            "Copy your HAT template: sudo cp $CONFIG_DIR/available.d/<your-hat>.yaml $CONFIG_DIR/config.d/"
+            "Activate your HAT template (sanitized, never copied raw — #58): sudo python3 /opt/meshforge/scripts/sanitize_overlay.py $CONFIG_DIR/available.d/<your-hat>.yaml $CONFIG_DIR/config.d/"
     else
         check_skip "Active HAT config" "USB radio doesn't require HAT config"
     fi

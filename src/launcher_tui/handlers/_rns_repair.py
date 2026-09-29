@@ -339,8 +339,12 @@ def repair_rns_shared_instance(handler) -> bool:
         print(f"  Stopped RNS client: {label}")
     for unit, _user, msg in hold.stop_failed:
         print(f"  Warning: could not stop RNS client {unit}: {msg}")
-    for unit, _user in hold.unobservable:
-        print(f"  Warning: state of RNS client {unit} UNKNOWN (user manager unreachable) — not stopped")
+    for unit, user in hold.unobservable:
+        # Both scopes land here since S2 (re-review R4): name the manager that
+        # did not answer, not "user manager" for a SYSTEM unit's timeout.
+        scope = "user manager" if user else "system manager"
+        print(f"  Warning: state of RNS client {unit} UNKNOWN — {scope} did not "
+              f"answer (timeout or bus unreachable); not stopped")
 
     print("  Stopping rnsd...")
     success, msg = stop_service('rnsd')

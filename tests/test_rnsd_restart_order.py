@@ -173,6 +173,13 @@ class TestUserUnitTriState:
     def test_activating_counts_as_active(self):
         assert self._state(3, "activating\n") is True
 
+    def test_deactivating_counts_as_active(self):
+        # Re-review R1 (2026-09-29, drilled on a throwaway unit): a CRASHED
+        # client reads `deactivating` for its whole TimeoutStopSec and comes
+        # back by itself under Restart=; an explicit stop now cancels that.
+        # Skipping it hands the rnsd window to a squatter-in-waiting.
+        assert self._state(3, "deactivating\n") is True
+
     def test_inactive(self):
         assert self._state(3, "inactive\n") is False
 
@@ -212,6 +219,13 @@ class TestSystemUnitTriState:
 
     def test_activating_counts_as_active(self):
         assert self._state(3, "activating\n") is True
+
+    def test_deactivating_counts_as_active(self):
+        # Re-review R1 (2026-09-29, drilled on a throwaway unit): a CRASHED
+        # client reads `deactivating` for its whole TimeoutStopSec and comes
+        # back by itself under Restart=; an explicit stop now cancels that.
+        # Skipping it hands the rnsd window to a squatter-in-waiting.
+        assert self._state(3, "deactivating\n") is True
 
     def test_inactive(self):
         assert self._state(3, "inactive\n") is False
