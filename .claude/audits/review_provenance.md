@@ -20,17 +20,37 @@
 >   2. every BEHAVIORAL finding was exercised LIVE on the thing — a unit, a box,
 >      the CLI — not a mock (a mock pins the author's model of the world);
 >   3. the diff reads in one sitting (a reviewer can hold all of it);
->   4. ONE reader with NO session context — a fresh session or a contextless
->      subagent, same day is fine, same model is fine — attacked it and its
->      findings were folded in or refuted in the row.
-> Without (4) the row says `OPEN: no second reader`. That is an honest terminal
+>   4. TWO readers with NO session context — contextless subagents, launched
+>      IN PARALLEL on the SAME artifact, each unaware of the other, same model
+>      is fine — attacked it, and their findings were folded in or refuted in
+>      the row **with the capture-recapture estimate** (doctrine, operator
+>      2026-09-29; Eick et al. 1992, Lincoln-Petersen): A = reader-1 defects,
+>      B = reader-2 defects, C = the overlap **matched by defect identity**
+>      (same file + mechanism, never same wording — the session does the
+>      matching and records the pairs). N = A·B/C, remaining = N − (A+B−C).
+>      The row says `CLOSED by gate · found A+B−C · est. remaining ≈ R`.
+>      C = 0 is a FINDING, not a divide-by-zero: the readers barely touched
+>      the defect population; the row says `overlap 0 — N unbounded` and the
+>      operator decides. Two same-model readers are correlated, so N runs
+>      LOW — record it as a floor, never as a count. Serial readers (one on the
+>      fix, one on the fix-of-the-fix) give NO estimate; that was 2026-09-29.
+> Without (4) the row says `OPEN: no reader pair`. That is an honest terminal
 > state, not a queue: the next session either runs (4) in minutes or leaves it
-> — it never re-queues. **Why:** a review fix spawns a review; if the terminator
+> — it never re-queues. **The pair runs ONCE, on the fix.** The fixes of the
+> pair's findings are covered by (1)+(2); they get their own pair only when
+> they change BEHAVIOUR (a message, a docstring, a test shape does not). The
+> estimate is recorded, never acted on by the session: R ≥ 1 is the operator's
+> call, not a reader 3. **Why:** a review fix spawns a review; if the terminator
 > is *another reader* the regress never ends, and "queue it for the next
 > frontier session" is exactly how the can gets kicked (measured 2026-09-29:
 > 697 commits in 30 days, ~23/day, under a freeze written at ~10.5/day). What
-> terminates is a GATE, and (1)+(2) are the gate; (4) is one cheap read to catch
-> what the author's context hid. A second reader is never a substitute for (2).
+> terminates is a GATE, and (1)+(2) are the gate; (4) is one cheap parallel pair
+> to catch what the author's context hid AND to put a NUMBER on what it did
+> not catch. Readers are never a substitute for (2). Launch shape: two `Agent`
+> calls in ONE message, `general-purpose`, read-only, identical prompt
+> ("find why this is wrong", the concrete attacks, CONFIRMED/PLAUSIBLE +
+> smallest fix + HELD list); match findings by defect identity after both
+> return; write A, B, C, the matched pairs, N and R into the row.
 
 | Date | Scope (range + paths) | Mechanism | Fix commits | Residuals / refuted notes |
 |------|----------------------|-----------|-------------|---------------------------|
