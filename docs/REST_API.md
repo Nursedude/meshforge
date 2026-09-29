@@ -23,6 +23,21 @@ All responses are JSON. Errors include `error` field with description.
 Currently, the API is intended for local use and does not require authentication.
 For production deployments, consider placing behind a reverse proxy with auth.
 
+### The Host rule (DNS-rebinding defence)
+
+The map answers a request only when the `Host` it was addressed to is an IP
+literal, a bare name (`moc`), or a local-only name (`.local`, `.home.arpa`,
+`.internal`, `.local.mesh`). Anything else — a public name — gets `403`, on
+every route except `/healthz` and `/metrics`. A public name is exactly what a
+DNS-rebinding page sends: a hostile site re-points its own name at this box and
+then reads the API from your browser's trusted address.
+
+**Behind a reverse proxy**, forward the upstream's own host, not the browser's:
+
+- **nginx** — the default (`proxy_set_header Host $proxy_host`) already does.
+- **Caddy** — forwards the browser's Host by default; add
+  `header_up Host {upstream_hostport}` to the `reverse_proxy` block.
+
 ---
 
 ## Endpoints

@@ -364,6 +364,38 @@ class MapRequestHandler(
             return False
         return _client_ip_trusted(host, self.allowed_origins)
 
+    #: Paths answered whatever Host the client dialled: liveness + scrape
+    #: endpoints that carry no mesh data and are polled by tooling that may
+    #: address a box by any name (Prometheus, uptime monitors).
+    _HOST_EXEMPT_PATHS = frozenset({'/healthz', '/metrics'})
+
+    def _serve_host_refusal(self, host) -> None:
+        self._serve_json(
+            {"error": "forbidden",
+             "detail": (f"This box does not answer requests addressed to "
+                        f"{host!r}: open it by IP, by its bare name, or by a "
+                        f"local name (.local / .home.arpa / .internal / "
+                        f".local.mesh). A public name here is what a DNS-"
+                        f"rebinding page would send. Behind a reverse proxy, "
+                        f"forward the upstream's own host (docs/REST_API.md).")},
+            status=403)
+
+    def _refuse_untrusted_host(self, path_only: str) -> bool:
+        """Send 403 + return True when the request was addressed to a name DNS
+        rebinding could hand an attacker — for EVERY route, not only the gated
+        ones (Fable re-review 2026-09-28 #2: 15 ungated GETs — node roster and
+        positions, fleet SLO, uplink, channel names — still answered a
+        rebinding page). ``_reject_if_untrusted`` keeps its own Host check as a
+        second layer for the endpoints that also need a trusted client IP."""
+        if (path_only or '/') in self._HOST_EXEMPT_PATHS:
+            return False
+        headers = getattr(self, 'headers', None)
+        host = headers.get('Host') if headers is not None else None
+        if _host_header_trusted(host):
+            return False
+        self._serve_host_refusal(host)
+        return True
+
     def _reject_if_untrusted(self) -> bool:
         """Send 403 + return True when the caller isn't loopback/LAN-trusted.
 
@@ -376,14 +408,7 @@ class MapRequestHandler(
             host = headers.get('Host') if headers is not None else None
             if _host_header_trusted(host):
                 return False
-            self._serve_json(
-                {"error": "forbidden",
-                 "detail": (f"This box does not answer trusted reads addressed to "
-                            f"{host!r}: open it by IP, by its bare name, or by a "
-                            f"local name (.local / .home.arpa / .internal / "
-                            f".local.mesh). A public name here is what a DNS-"
-                            f"rebinding page would send.")},
-                status=403)
+            self._serve_host_refusal(host)
             return True
         try:
             client = self.client_address[0]
@@ -463,7 +488,8 @@ class MapRequestHandler(
         self._last_status = 0  # reset; send_response will overwrite
 
         try:
-            self._dispatch_get(path_only)
+            if not self._refuse_untrusted_host(path_only):
+                self._dispatch_get(path_only)
         finally:
             try:
                 from utils import map_metrics
@@ -660,6 +686,8 @@ class MapRequestHandler(
     def do_POST(self):
         """Handle POST requests for radio control and meshtastic API proxy."""
         path_only = urlparse(self.path).path.rstrip('/')
+        if self._refuse_untrusted_host(path_only):
+            return
 
         # ─────────────────────────────────────────────────────────────
         # Map settings API
@@ -700,6 +728,8 @@ class MapRequestHandler(
 
     def do_PUT(self):
         """Handle PUT requests (meshtastic web client uses PUT for toradio)."""
+        if self._refuse_untrusted_host(urlparse(self.path).path.rstrip('/')):
+            return
         if self.path.startswith('/api/v1/toradio'):
             self._proxy_toradio()
         elif self.path.startswith('/mesh/api/v1/toradio'):
@@ -707,8 +737,16 @@ class MapRequestHandler(
         else:
             self.send_error(404, "Not Found")
 
+    def do_HEAD(self):
+        """HEAD on the static tree (stdlib) — behind the same Host rule."""
+        if self._refuse_untrusted_host(urlparse(self.path).path.rstrip('/')):
+            return
+        super().do_HEAD()
+
     def do_OPTIONS(self):
         """Handle CORS preflight requests."""
+        if self._refuse_untrusted_host(urlparse(self.path).path.rstrip('/')):
+            return
         self.send_response(200)
         self._send_cors_header()
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS')
