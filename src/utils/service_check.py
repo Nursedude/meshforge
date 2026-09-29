@@ -242,6 +242,28 @@ from utils._port_detection import (  # noqa: F401, E402
 )
 
 
+def _unit_file_absent(systemd_name: str, user: bool = False) -> bool:
+    """True only on POSITIVE evidence that no unit file exists.
+
+    ``systemctl list-unit-files <unit>.service`` exits 1 and prints
+    "0 unit files listed." when the unit does not exist (systemd 252 and 257,
+    measured 2026-09-28). A timeout, a missing systemctl or any other output
+    is NOT evidence of absence and returns False.
+    """
+    try:
+        r = subprocess.run(
+            _systemctl_query_argv(
+                ['list-unit-files', f'{systemd_name}.service'], user=user),
+            capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.debug("list-unit-files %s failed: %s", systemd_name, e)
+        return False
+    out = r.stdout or ""
+    return (r.returncode == 1 and "0 unit files listed" in out
+            and systemd_name not in out.replace("0 unit files listed", ""))
+
+
 def check_service(
     name: str,
     port: Optional[int] = None,
@@ -425,6 +447,22 @@ def check_service(
 
             # Not active - check if it exists
             if status_text == "inactive":
+                # ``is-active`` prints "inactive" for a MISSING unit too, and
+                # the exit code does not separate them portably (systemd 257:
+                # 4 = no such unit; 252 on moc4: 3, same as stopped — both
+                # measured 2026-09-28). Ask list-unit-files; only POSITIVE
+                # evidence of absence reads NOT_INSTALLED, an error keeps
+                # NOT_RUNNING (a degraded answer must not overlap "absent").
+                if _unit_file_absent(systemd_name, user=user):
+                    return ServiceStatus(
+                        name=name,
+                        available=False,
+                        state=ServiceState.NOT_INSTALLED,
+                        message=f"{description} is not installed",
+                        fix_hint=f"Install {name} first",
+                        port=check_port_num,
+                        detection_method="systemctl"
+                    )
                 # Service exists but not running
                 return ServiceStatus(
                     name=name,

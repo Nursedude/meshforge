@@ -971,3 +971,48 @@ class TestFrontierReviewFixes20260709:
         assert ok is False
         assert target.read_text() == "ORIGINAL"  # untouched
         assert list(tmp_path.glob(".existing.conf.*")) == []
+
+
+class TestMissingUnitIsNotInstalled:
+    """2026-09-28: `systemctl is-active` prints "inactive" for a MISSING unit,
+    so check_service reported NOT_RUNNING for a unit that does not exist
+    (meshtasticd on meshanchor-server). The exit code does not separate the
+    two portably — both shapes below were measured on the fleet."""
+
+    ABSENT = MagicMock(returncode=1, stdout="UNIT FILE STATE PRESET\n\n0 unit files listed.\n")
+    PRESENT = MagicMock(returncode=0, stdout=(
+        "UNIT FILE           STATE   PRESET\nmosquitto.service enabled enabled\n\n"
+        "1 unit files listed.\n"))
+
+    @pytest.mark.parametrize("rc", [3, 4])  # systemd 252 (moc4) / 257
+    def test_missing_unit_reads_not_installed(self, rc):
+        with patch('subprocess.run') as run:
+            run.side_effect = [MagicMock(returncode=rc, stdout="inactive\n"), self.ABSENT]
+            status = check_service('mosquitto')
+        assert status.state == ServiceState.NOT_INSTALLED
+        assert run.call_args_list[1].args[0][-2:] == ['list-unit-files', 'mosquitto.service']
+
+    def test_installed_but_stopped_stays_not_running(self):
+        with patch('subprocess.run') as run:
+            run.side_effect = [MagicMock(returncode=3, stdout="inactive\n"), self.PRESENT]
+            assert check_service('mosquitto').state == ServiceState.NOT_RUNNING
+
+    @pytest.mark.parametrize("second", [
+        subprocess.TimeoutExpired(cmd="systemctl", timeout=5),
+        FileNotFoundError("systemctl"),
+        MagicMock(returncode=1, stdout=""),            # rc 1, no answer text
+        MagicMock(returncode=0, stdout="0 unit files listed.\n"),  # odd rc
+    ])
+    def test_unanswered_lookup_is_not_absent(self, second):
+        # A failed existence check must never read as "not installed".
+        with patch('subprocess.run') as run:
+            run.side_effect = [MagicMock(returncode=3, stdout="inactive\n"), second]
+            assert check_service('mosquitto').state == ServiceState.NOT_RUNNING
+
+    def test_user_scope_missing_unit(self):
+        with patch('subprocess.run') as run, \
+             patch('src.utils.service_check._operator_user_prefix', return_value=[]):
+            run.side_effect = [MagicMock(returncode=4, stdout="inactive\n"), self.ABSENT]
+            status = check_service('nomadnet', user=True)
+        assert status.state == ServiceState.NOT_INSTALLED
+        assert '--user' in run.call_args_list[1].args[0]
