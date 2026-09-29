@@ -556,8 +556,54 @@ class TestCheckNomadnetServiceState:
 # ---------------------------------------------------------------------------
 
 class TestCheckMeshtasticdOverlayKeys:
+    @pytest.fixture(autouse=True)
+    def _unit_present(self, monkeypatch):
+        # Pin ambient state: never ask this box's systemd from a test.
+        monkeypatch.setattr(checks, "_meshtasticd_unit_absent", lambda: False)
+
     def _run(self, config_d):
         return checks.check_meshtasticd_overlay_keys(config_d)
+
+    def test_fix_says_restart_when_unit_present(self, tmp_path):
+        (tmp_path / "usb-serial.yaml").write_text("Webserver:\n  Port: 443\n")
+        assert "then restart meshtasticd" in self._run(tmp_path).fix_hint
+
+    def test_fix_says_no_restart_when_unit_absent(self, tmp_path, monkeypatch):
+        # meshanchor-server 2026-09-28: no meshtasticd unit on the box.
+        monkeypatch.setattr(checks, "_meshtasticd_unit_absent", lambda: True)
+        (tmp_path / "usb-serial.yaml").write_text("Webserver:\n  Port: 443\n")
+        r = self._run(tmp_path)
+        assert r.status == FAIL
+        assert "restart meshtasticd" not in r.fix_hint
+        assert "no restart" in r.fix_hint
+        assert any("no systemd unit" in d for d in r.details)
+
+    @pytest.mark.parametrize("state,installed,expected", [
+        # meshanchor-server, measured: is-active prints "inactive" for a
+        # MISSING unit, so check_service says NOT_RUNNING there.
+        ("NOT_RUNNING", False, True),
+        ("NOT_INSTALLED", False, True),
+        ("NOT_RUNNING", True, False),     # installed, stopped
+        ("AVAILABLE", True, False),
+        ("UNKNOWN", False, False),        # systemctl unanswered: not absent
+    ])
+    def test_unit_absent_needs_an_answer_and_no_unit_file(
+            self, monkeypatch, state, installed, expected):
+        from utils.service_check import ServiceState
+        import utils.service_check as sc
+        fake = type("S", (), {"state": ServiceState[state]})()
+        monkeypatch.undo()  # drop the class fixture's stub of the helper itself
+        monkeypatch.setattr(sc, "check_service", lambda name: fake)
+        monkeypatch.setattr(sc, "is_service_unit_installed", lambda name: installed)
+        assert checks._meshtasticd_unit_absent() is expected
+
+    def test_unit_lookup_error_is_not_absent(self, monkeypatch):
+        import utils.service_check as sc
+        monkeypatch.undo()
+        def boom(name):
+            raise OSError("systemctl missing")
+        monkeypatch.setattr(sc, "check_service", boom)
+        assert checks._meshtasticd_unit_absent() is False
 
     def test_absent_dir_skips(self, tmp_path):
         assert self._run(tmp_path / "missing").status == SKIP

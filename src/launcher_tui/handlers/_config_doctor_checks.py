@@ -639,6 +639,30 @@ def check_nomadnet_service_state(service_state: Optional[dict]) -> CheckResult:
 _MESHTASTICD_CONFIG_D = Path("/etc/meshtasticd/config.d")
 
 
+def _meshtasticd_unit_absent() -> bool:
+    """True only when systemd ANSWERED and there is no meshtasticd unit file.
+
+    Two read-only answers, because neither alone is enough:
+    ``check_service`` returns UNKNOWN when systemctl could not be asked, but
+    it reads ``is-active``'s "inactive" text, which systemd prints for a
+    MISSING unit too (exit 4 vs 3) — so it says NOT_RUNNING on a box with no
+    unit (measured on meshanchor-server 2026-09-28). ``systemctl cat``
+    (``is_service_unit_installed``) knows whether the unit file exists but
+    reads an error as absent. Absent = systemd answered AND no unit file;
+    an unanswered query keeps the ordinary "restart meshtasticd" advice.
+    """
+    from utils.service_check import (
+        check_service, is_service_unit_installed, ServiceState,
+    )
+    try:
+        if check_service("meshtasticd").state == ServiceState.UNKNOWN:
+            return False
+        return not is_service_unit_installed("meshtasticd")
+    except Exception as exc:  # unobservable is not absent
+        logger.debug("meshtasticd unit lookup failed: %s", exc)
+        return False
+
+
 def check_meshtasticd_overlay_keys(config_d: Optional[Path] = None) -> CheckResult:
     """Audit the ACTIVE config.d/ overlays for keys that override config.yaml.
 
@@ -703,6 +727,15 @@ def check_meshtasticd_overlay_keys(config_d: Optional[Path] = None) -> CheckResu
     fix = (f"Remove the listed top-level block(s) from the overlay in "
            f"{config_d} (they override config.yaml), then restart meshtasticd. "
            f"A HAT overlay should carry only Lora:.")
+    if (port_moved or extra_keys) and _meshtasticd_unit_absent():
+        # meshanchor-server 2026-09-28: "restart meshtasticd" on a box with
+        # no meshtasticd unit is advice the operator cannot follow.
+        details.append("meshtasticd has no systemd unit here — nothing reads "
+                       "this overlay today")
+        fix = (f"Remove the listed top-level block(s) from the overlay in "
+               f"{config_d} before meshtasticd is installed here (no restart "
+               f"needed — this box has no meshtasticd unit, so nothing reads "
+               f"the file yet). A HAT overlay should carry only Lora:.")
     if port_moved:
         return CheckResult(
             name=name, status=FAIL,
