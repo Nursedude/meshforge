@@ -2319,8 +2319,7 @@ class TestStartStop:
     """Tests for start/stop lifecycle."""
 
     def test_start_sets_running(self, bridge):
-        with patch.object(bridge, '_start_websocket_server'), \
-             patch.object(bridge, '_init_rns_main_thread'), \
+        with patch.object(bridge, '_init_rns_main_thread'), \
              patch("gateway._channel_resolver.apply_resolved_channel"):
             bridge.start()
         assert bridge._running is True
@@ -2332,8 +2331,7 @@ class TestStartStop:
         assert result is True
 
     def test_start_returns_true(self, bridge):
-        with patch.object(bridge, '_start_websocket_server'), \
-             patch.object(bridge, '_init_rns_main_thread'), \
+        with patch.object(bridge, '_init_rns_main_thread'), \
              patch("gateway._channel_resolver.apply_resolved_channel"):
             result = bridge.start()
         assert result is True
@@ -2343,8 +2341,7 @@ class TestStartStop:
         bridge._mesh_handler = MagicMock()
         bridge._persistent_queue = MagicMock()
 
-        with patch.object(bridge, '_disconnect_rns'), \
-             patch.object(bridge, '_stop_websocket_server'):
+        with patch.object(bridge, '_disconnect_rns'):
             bridge.stop()
 
         assert bridge._running is False
@@ -2355,30 +2352,26 @@ class TestStartStop:
         bridge.stop()  # Should not raise
 
     def test_start_starts_node_tracker(self, bridge):
-        with patch.object(bridge, '_start_websocket_server'), \
-             patch.object(bridge, '_init_rns_main_thread'), \
+        with patch.object(bridge, '_init_rns_main_thread'), \
              patch("gateway._channel_resolver.apply_resolved_channel"):
             bridge.start()
         bridge.node_tracker.start.assert_called_once()
 
     def test_stop_stops_node_tracker(self, bridge):
         bridge._running = True
-        with patch.object(bridge, '_disconnect_rns'), \
-             patch.object(bridge, '_stop_websocket_server'):
+        with patch.object(bridge, '_disconnect_rns'):
             bridge.stop()
         bridge.node_tracker.stop.assert_called_once()
 
     def test_stop_disconnects_mesh_handler(self, bridge):
         bridge._running = True
-        with patch.object(bridge, '_disconnect_rns'), \
-             patch.object(bridge, '_stop_websocket_server'):
+        with patch.object(bridge, '_disconnect_rns'):
             bridge.stop()
         bridge._mesh_handler.disconnect.assert_called_once()
 
     def test_stop_sets_stop_event(self, bridge):
         bridge._running = True
-        with patch.object(bridge, '_disconnect_rns'), \
-             patch.object(bridge, '_stop_websocket_server'):
+        with patch.object(bridge, '_disconnect_rns'):
             bridge.stop()
         assert bridge._stop_event.is_set()
 
@@ -2796,17 +2789,27 @@ class TestRegexInputLimit:
 # WebSocket server integration
 # ---------------------------------------------------------------------------
 
-class TestWebSocketServer:
-    """Tests for WebSocket server start/stop."""
+class TestGatewayOwnsNoWebSocket:
+    """The map owns live UI push on :5001 (Fable review F1, 2026-09-28).
 
-    def test_start_websocket_handles_import_error(self, bridge):
-        with patch("gateway.rns_bridge.HAS_RNS_SNIFFER", False):
-            # Should not crash when websocket module not available
-            bridge._start_websocket_server()
+    The gateway's own WS server never bound on the fleet and could only race
+    the map for the port at boot, so it was removed. Pin the absence: a start
+    must not construct or bind any WebSocket server.
+    """
 
-    def test_stop_websocket_when_not_started(self, bridge):
-        bridge._websocket_started = False
-        bridge._stop_websocket_server()  # Should not raise
+    def test_bridge_has_no_websocket_lifecycle(self, bridge):
+        assert not hasattr(bridge, '_start_websocket_server')
+        assert not hasattr(bridge, '_stop_websocket_server')
+
+    def test_start_never_starts_a_websocket_server(self, bridge):
+        # patch the BIND itself: every path to a WS server (module helper,
+        # a from-import copy, a direct construction) ends in .start()
+        with patch("utils.websocket_server.MessageWebSocketServer.start",
+                   return_value=True) as bind, \
+             patch.object(bridge, '_init_rns_main_thread'), \
+             patch("gateway._channel_resolver.apply_resolved_channel"):
+            bridge.start()
+        bind.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -5913,8 +5916,7 @@ class TestBridgeThreadTeardownWitness20260803:
     def test_started_bridge_leaves_no_live_loop_threads(self, bridge):
         before = set(_surviving_bridge_threads())
 
-        with patch.object(bridge, '_start_websocket_server'), \
-             patch.object(bridge, '_init_rns_main_thread'), \
+        with patch.object(bridge, '_init_rns_main_thread'), \
              patch("gateway._channel_resolver.apply_resolved_channel"):
             bridge.start()
         assert bridge._running is True
@@ -5974,7 +5976,6 @@ class TestStopJoinIsVerified20260803:
         bridge._rns_thread = t
         try:
             with patch.object(bridge, '_disconnect_rns'), \
-                 patch.object(bridge, '_stop_websocket_server'), \
                  patch.object(t, 'join'):          # simulate an EXPIRED join
                 bridge.stop()
             assert getattr(bridge, '_stop_survivors', None), (
@@ -5985,8 +5986,7 @@ class TestStopJoinIsVerified20260803:
 
     def test_clean_stop_records_no_survivors(self, bridge):
         self._prep(bridge)
-        with patch.object(bridge, '_disconnect_rns'), \
-             patch.object(bridge, '_stop_websocket_server'):
+        with patch.object(bridge, '_disconnect_rns'):
             bridge.stop()
         assert bridge._stop_survivors == []
 
@@ -5999,8 +5999,7 @@ class TestStopJoinIsVerified20260803:
         chan.name = "ChannelDiagnostic"
         bridge._oracle_tap_thread = oracle
         bridge._channel_diagnostic_thread = chan
-        with patch.object(bridge, '_disconnect_rns'), \
-             patch.object(bridge, '_stop_websocket_server'):
+        with patch.object(bridge, '_disconnect_rns'):
             bridge.stop()
         assert oracle.join.called, "_oracle_tap_thread was never joined"
         assert chan.join.called, "_channel_diagnostic_thread was never joined"
@@ -6012,8 +6011,7 @@ class TestStopJoinIsVerified20260803:
         for attr in ("_oracle_tap_thread", "_channel_diagnostic_thread"):
             if hasattr(bridge, attr):
                 delattr(bridge, attr)
-        with patch.object(bridge, '_disconnect_rns'), \
-             patch.object(bridge, '_stop_websocket_server'):
+        with patch.object(bridge, '_disconnect_rns'):
             bridge.stop()   # must not raise
         assert bridge._stop_survivors == []
 

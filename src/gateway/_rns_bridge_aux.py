@@ -2,7 +2,6 @@
 
 Holds bolt-on helpers that aren't part of the core message-bridging flow:
 
-- WebSocket UI broadcast server lifecycle.
 - Hardening A channel-deployment-gap diagnostic (Issue #43 — surface a
   one-shot WARN when no MQTT uplink is observed on the configured bridge
   channel within the threshold window; the silent symptom shape behind
@@ -11,9 +10,13 @@ Holds bolt-on helpers that aren't part of the core message-bridging flow:
 Extracted from ``rns_bridge.py`` to keep that file under the 1,500-line
 size cap (``CLAUDE.md``). No behaviour change — the methods are imported
 into ``RNSMeshtasticBridge`` via mixin inheritance, so attribute access
-patterns (``bridge._start_websocket_server`` and
-``RNSMeshtasticBridge._should_emit_channel_stall_warning`` for tests)
-remain identical.
+patterns (``RNSMeshtasticBridge._should_emit_channel_stall_warning`` for
+tests) remain identical.
+
+The gateway's own WebSocket server lived here until 2026-09-28 (Fable
+review F1): it never bound on the fleet (``websockets`` absent from the
+gateway's interpreter) and, once the map took ``0.0.0.0:5001``, could only
+ever race the map for that port at boot. The map owns live UI push.
 """
 
 from __future__ import annotations
@@ -24,16 +27,6 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# WebSocket is optional — used for web UI push, not core bridging.
-try:
-    from utils.websocket_server import (
-        is_websocket_available,
-        start_websocket_server,
-        stop_websocket_server,
-    )
-    HAS_WEBSOCKET = True
-except ImportError:
-    HAS_WEBSOCKET = False
 
 
 class BridgeAuxMixin:
@@ -43,8 +36,6 @@ class BridgeAuxMixin:
 
     - :meth:`_should_emit_channel_stall_warning` — pure decision helper.
     - :meth:`_channel_diagnostic_loop` — Hardening A monitoring thread.
-    - :meth:`_start_websocket_server` / :meth:`_stop_websocket_server` —
-      WebSocket UI broadcast lifecycle.
     """
 
     @staticmethod
@@ -117,31 +108,3 @@ class BridgeAuxMixin:
                 )
                 handler._stale_warning_emitted = True
 
-    def _start_websocket_server(self):
-        """Start WebSocket server for real-time message broadcast to web UI."""
-        if not HAS_WEBSOCKET:
-            return
-        try:
-            if is_websocket_available():
-                # MESHFORGE_WS_PORT: sandbox override (lab.virtual_fleet) so
-                # an isolated gateway never binds the box's real UI port.
-                # Unset = 5001, production behavior unchanged.
-                ws_port = int(os.environ.get("MESHFORGE_WS_PORT", "5001"))
-                if start_websocket_server(port=ws_port):
-                    logger.info("WebSocket server started on port %d", ws_port)
-                    self._websocket_started = True
-                else:
-                    logger.debug("WebSocket server failed to start")
-            else:
-                logger.debug("WebSocket not available (websockets library not installed)")
-        except Exception as e:
-            logger.debug(f"Could not start WebSocket server: {e}")
-
-    def _stop_websocket_server(self):
-        """Stop WebSocket server."""
-        if getattr(self, '_websocket_started', False):
-            try:
-                stop_websocket_server()
-                logger.info("WebSocket server stopped")
-            except Exception as e:
-                logger.debug(f"Error stopping WebSocket server: {e}")

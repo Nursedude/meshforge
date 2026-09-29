@@ -283,8 +283,6 @@ def _gateway_env(workdir: Path, base_port: int) -> Dict[str, str]:
     # first attaches the whole process to the BOX's real instance (caught
     # live 2026-08-27: the sandbox gateway discovered the real fleet).
     env["MESHFORGE_RNS_CONFIGDIR"] = str(_node_dir(workdir, "gw"))
-    # Sandbox websocket port — never the box's real UI port 5001.
-    env["MESHFORGE_WS_PORT"] = str(base_port + 198)
     # HOME changed => python's user-site (where RNS/LXMF are pip --user
     # installed) would vanish from sys.path. Carry the REAL user's site dir.
     import site

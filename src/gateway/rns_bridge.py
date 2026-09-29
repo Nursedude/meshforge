@@ -223,7 +223,6 @@ class RNSMeshtasticBridge(
 
         # State
         self._running = False
-        self._websocket_started = False
         self._connected_rns = False
         self._rns_via_rnsd = False  # True when rnsd handles RNS (bridge defers)
         self._rns_init_failed_permanently = False  # True if RNS can't be initialized from this thread
@@ -694,9 +693,6 @@ class RNSMeshtasticBridge(
         self._running = True
         self.stats['start_time'] = datetime.now()
 
-        # Start WebSocket server for real-time message broadcast to web UI
-        self._start_websocket_server()
-
         # Start node tracker
         self.node_tracker.start()
 
@@ -836,9 +832,6 @@ class RNSMeshtasticBridge(
                 "Bridge stop(): %d thread(s) still alive after a 5s join: %s. "
                 "They keep running and logging after shutdown.",
                 len(self._stop_survivors), ", ".join(self._stop_survivors))
-
-        # Stop WebSocket server
-        self._stop_websocket_server()
 
         # Stop TX load balancer
         if self._load_balancer:
@@ -1378,9 +1371,6 @@ class RNSMeshtasticBridge(
                     )
             except Exception as e:
                 logger.warning(f"Tactical auto-ingest failed: {e}")
-
-    # _start_websocket_server / _stop_websocket_server inherited from
-    # BridgeAuxMixin (web UI broadcast lifecycle).
 
     def _notify_status(self, status: str):
         """Notify status callbacks (thread-safe snapshot)"""

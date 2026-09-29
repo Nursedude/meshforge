@@ -16,7 +16,6 @@ import logging
 import subprocess
 import threading
 import time
-from datetime import datetime
 from queue import Full
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
@@ -35,11 +34,6 @@ from .reconnect import ReconnectStrategy
 from utils.meshtastic_connection import (
     clear_stale_connections, get_connection_manager, wait_for_cooldown
 )
-try:
-    from utils.websocket_server import broadcast_message
-except ImportError:
-    def broadcast_message(*args, **kwargs):
-        pass
 from utils.boundary_timing import timed_boundary
 from utils.tx_guard import (
     DEFAULT_MESH_TCP_PORT, assert_iface_tx_allowed, assert_tx_allowed,
@@ -764,21 +758,6 @@ class MeshtasticHandler(BaseMessageHandler):
             )
         except Exception as e:
             logger.debug(f"Could not store incoming message: {e}")
-
-        # Broadcast to WebSocket for real-time web UI updates
-        try:
-            broadcast_message({
-                'from_id': from_id,
-                'to_id': to_id,
-                'content': text,
-                'channel': packet.get('channel', 0),
-                'snr': packet.get('rxSnr'),
-                'rssi': packet.get('rxRssi'),
-                'timestamp': datetime.now().isoformat(),
-                'is_broadcast': to_id is None,
-            })
-        except Exception as e:
-            logger.debug(f"Could not broadcast to WebSocket: {e}")
 
         # Queue for bridging if routing rules allow it (non-blocking to prevent deadlock)
         if self._message_queue is not None:
