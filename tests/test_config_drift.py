@@ -158,6 +158,65 @@ class TestGetRnsdConfigFromSystemd:
         assert result is None
 
 
+class TestEffectiveConfigDefaultResolution:
+    """Method 3: rnsd without --config resolves RNS's default order for the
+    uid rnsd RUNS AS — /etc/reticulum first, then THAT user's home.
+
+    Filesystem existence is pinned (never read from this box): a verdict that
+    depends on whether the test host has /etc/reticulum/config pins nothing.
+    """
+
+    M = 'src.utils.config_drift'
+
+    def _run(self, uid, home, existing):
+        def fake_is_file(path):
+            return str(path) in existing
+        pw = MagicMock(pw_dir=home)
+        with patch(f'{self.M}._get_rnsd_pid', return_value=4242), \
+             patch(f'{self.M}._get_rnsd_config_from_proc', return_value=None), \
+             patch(f'{self.M}._get_rnsd_config_from_systemd', return_value=None), \
+             patch(f'{self.M}.os.stat', return_value=MagicMock(st_uid=uid)), \
+             patch(f'{self.M}.pwd.getpwuid', return_value=pw), \
+             patch.object(Path, 'is_file', fake_is_file):
+            return _get_rnsd_effective_config()
+
+    def test_non_root_rnsd_reads_etc_first(self):
+        # meshanchor-server shape: User=wh6gxz drop-in, no --config. This
+        # returned (None, pid, "rnsd_default_unknown") before 2026-09-28.
+        d, pid, method = self._run(1000, '/home/op',
+                                   {'/etc/reticulum/config',
+                                    '/home/op/.reticulum/config'})
+        assert (d, pid, method) == (Path('/etc/reticulum'), 4242, 'rnsd_default')
+
+    def test_non_root_rnsd_falls_to_its_own_home(self):
+        d, _, method = self._run(1000, '/home/op',
+                                 {'/home/op/.config/reticulum/config',
+                                  '/home/op/.reticulum/config'})
+        assert (d, method) == (Path('/home/op/.config/reticulum'), 'rnsd_default')
+
+    def test_non_root_rnsd_dot_reticulum(self):
+        d, _, _ = self._run(1000, '/home/op', {'/home/op/.reticulum/config'})
+        assert d == Path('/home/op/.reticulum')
+
+    def test_root_rnsd_uses_root_home_not_ours(self):
+        d, _, _ = self._run(0, '/root', {'/root/.reticulum/config',
+                                         '/home/op/.reticulum/config'})
+        assert d == Path('/root/.reticulum')
+
+    def test_no_config_anywhere_stays_unknown(self):
+        d, pid, method = self._run(1000, '/home/op', set())
+        assert (d, pid, method) == (None, 4242, 'rnsd_default_unknown')
+
+    def test_unknown_uid_stays_unknown(self):
+        with patch(f'{self.M}._get_rnsd_pid', return_value=7), \
+             patch(f'{self.M}._get_rnsd_config_from_proc', return_value=None), \
+             patch(f'{self.M}._get_rnsd_config_from_systemd', return_value=None), \
+             patch(f'{self.M}.os.stat', return_value=MagicMock(st_uid=31337)), \
+             patch(f'{self.M}.pwd.getpwuid', side_effect=KeyError(31337)), \
+             patch.object(Path, 'is_file', lambda p: False):
+            assert _get_rnsd_effective_config() == (None, 7, 'rnsd_default_unknown')
+
+
 class TestDetectRnsdConfigDrift:
     """Tests for detect_rnsd_config_drift."""
 

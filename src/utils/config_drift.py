@@ -20,6 +20,7 @@ Usage:
 
 import logging
 import os
+import pwd
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -215,27 +216,27 @@ def _get_rnsd_effective_config() -> tuple:
     if systemd_config is not None:
         return systemd_config, pid, "systemd_unit"
 
-    # Method 3: rnsd uses RNS default resolution (no explicit --config)
-    # This means rnsd will find config the same way we do,
-    # BUT if rnsd runs as root its ~ differs from the sudo user's ~
+    # Method 3: rnsd uses RNS default resolution (no explicit --config).
+    # RNS checks /etc/reticulum first for ANY uid, then the home of the
+    # user rnsd RUNS AS (Reticulum.py configdir fallback) — never ours.
+    # Until 2026-09-28 only uid 0 was resolved here, so a rnsd started
+    # with User= (meshanchor-server's user.conf drop-in) read as
+    # "not determinable; assuming default resolution matches".
     if pid is not None:
-        # rnsd is running without --config flag
-        # Check if rnsd runs as root (systemd services typically do)
         try:
-            stat = os.stat(f'/proc/{pid}')
-            if stat.st_uid == 0:
-                # rnsd runs as root - its default resolution starts at /etc/reticulum
-                # then falls to /root/.config/reticulum, then /root/.reticulum
-                if Path('/etc/reticulum/config').is_file():
-                    return Path('/etc/reticulum'), pid, "rnsd_root_default"
-                elif Path('/root/.config/reticulum/config').is_file():
-                    return Path('/root/.config/reticulum'), pid, "rnsd_root_default"
-                elif Path('/root/.reticulum/config').is_file():
-                    return Path('/root/.reticulum'), pid, "rnsd_root_default"
+            uid = os.stat(f'/proc/{pid}').st_uid
         except OSError:
-            pass
-
-        # rnsd runs as non-root (unusual but possible)
+            return None, pid, "rnsd_default_unknown"
+        if Path('/etc/reticulum/config').is_file():
+            return Path('/etc/reticulum'), pid, "rnsd_default"
+        try:
+            rnsd_home = Path(pwd.getpwuid(uid).pw_dir)
+        except KeyError:
+            return None, pid, "rnsd_default_unknown"
+        for candidate in (rnsd_home / '.config' / 'reticulum',
+                          rnsd_home / '.reticulum'):
+            if (candidate / 'config').is_file():
+                return candidate, pid, "rnsd_default"
         return None, pid, "rnsd_default_unknown"
 
     # rnsd is not running
