@@ -344,6 +344,17 @@ def launch_gateway_bridge(src_dir):
 
     try:
         config = GatewayConfig.load()
+        if config.load_error:
+            # Review S3 (2026-09-28): load() returns DEFAULTS with load_error
+            # set when gateway.json exists but cannot be read. Since
+            # 06e06c7c save() refuses to write those defaults over it — and
+            # this path then ran a default bridge (no legs, default PSK)
+            # with enabled=True, silently. A failed load starts nothing.
+            print(f"{Colors.RED}Gateway config failed to load: {config.load_error}{Colors.NC}")
+            print(f"{Colors.YELLOW}Refusing to start the bridge on defaults over "
+                  f"{config.get_config_path()} — fix the file (or reset it from "
+                  f"the TUI: Gateway > Configuration) and retry.{Colors.NC}")
+            return
         if not config.enabled:
             print(f"{Colors.YELLOW}Gateway bridge is disabled in config.{Colors.NC}")
             print(f"Enable it in ~/.config/meshforge/gateway.json or via the UI.\n")
@@ -351,7 +362,10 @@ def launch_gateway_bridge(src_dir):
                 enable = input(f"Enable and start now? [y/N]: ").strip().lower()
                 if enable in ['y', 'yes']:
                     config.enabled = True
-                    config.save()
+                    if not config.save():
+                        print(f"{Colors.RED}Could not save gateway.json — "
+                              f"not starting the bridge.{Colors.NC}")
+                        return
                 else:
                     return
             except (KeyboardInterrupt, EOFError):
