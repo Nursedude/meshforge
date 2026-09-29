@@ -643,6 +643,11 @@ def atomic_write_text_preserving(path: Path, content: str) -> None:
     root (the TUI runs under sudo) the renamed file would lock out a service
     that reads it as the operator. A NEW file is handed to the operator.
     """
+    if path.is_symlink():
+        # os.replace() would swap the LINK itself for a regular file and
+        # orphan its target (review S6, 2026-09-28) while stat() below
+        # follows the link. Write through to what the link points at.
+        path = path.resolve()
     st = path.stat() if path.exists() else None
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f'.{path.name}.',

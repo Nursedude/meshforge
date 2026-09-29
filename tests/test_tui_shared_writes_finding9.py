@@ -116,3 +116,31 @@ class TestSpiConfig:
     def test_empty_config_gets_both(self):
         new, changed = self._run("")
         assert changed and "dtparam=spi=on" in new and "dtoverlay=spi0-0cs" in new
+
+
+# ------------------------------------------------------------- symlinked targets
+
+class TestAtomicWriteThroughASymlink:
+    """Review S6 (2026-09-28): os.replace() on a symlink path swaps the LINK
+    for a regular file and orphans the target, while stat() followed the link.
+    Write through to the target; the link survives."""
+
+    def test_symlink_survives_and_target_gets_the_content(self, tmp_path):
+        from utils.paths import atomic_write_text_preserving
+        target = tmp_path / "real" / "config"
+        target.parent.mkdir()
+        target.write_text("old")
+        link = tmp_path / "config"
+        link.symlink_to(target)
+        atomic_write_text_preserving(link, "new")
+        assert link.is_symlink(), "the link was replaced by a regular file"
+        assert target.read_text() == "new"
+        assert link.read_text() == "new"
+
+    def test_dangling_symlink_creates_the_target(self, tmp_path):
+        from utils.paths import atomic_write_text_preserving
+        target = tmp_path / "real" / "config"
+        link = tmp_path / "config"
+        link.symlink_to(target)
+        atomic_write_text_preserving(link, "new")
+        assert link.is_symlink() and target.read_text() == "new"
