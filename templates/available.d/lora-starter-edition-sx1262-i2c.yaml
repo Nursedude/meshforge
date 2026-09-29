@@ -16,9 +16,3 @@ Lora:
   IRQ: 22
   Busy: 4
   Reset: 18
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info

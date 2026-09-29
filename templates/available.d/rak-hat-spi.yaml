@@ -15,9 +15,3 @@ Lora:
   Busy: 24
   Reset: 17
   DIO2_AS_RF_SWITCH: true
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info

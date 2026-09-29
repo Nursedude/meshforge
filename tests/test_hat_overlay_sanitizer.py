@@ -198,3 +198,94 @@ class TestEveryActivationPathSanitizes:
         activate = cfm[cfm.index('"""Select a config from available.d'):]
         activate = activate[:activate.index("\n    def ")]
         assert "shutil.copy2" not in activate
+
+
+class TestShippedTemplatesCarryOnlyHardwareKeys:
+    """Frontier review S1 (2026-09-28): stopping at Webserver was not enough.
+    All 34 shipped templates and inline fallbacks still carried top-level
+    `TCP:` + `Logging:` — both in HAT_OVERLAY_FORBIDDEN_KEYS — so the TUI
+    stripped keys our OWN templates shipped, and Config Doctor graded a
+    fresh install's overlay `warn: overlay overrides config.yaml — Logging,
+    TCP` (measured against waveshare-sx1262.yaml copied raw, as the installer
+    did). A HAT overlay carries hardware only; ports and logging belong in
+    config.yaml."""
+
+    REPO = Path(__file__).parent.parent
+
+    def test_repo_available_d_templates(self):
+        from core.meshtasticd_templates import HAT_OVERLAY_FORBIDDEN_KEYS
+        files = sorted((self.REPO / "templates" / "available.d").glob("*.yaml"))
+        assert len(files) >= 30, "the glob is aimed wrong"
+        carrying = {f.name: sorted(set(yaml.safe_load(f.read_text()) or {})
+                                   & HAT_OVERLAY_FORBIDDEN_KEYS)
+                    for f in files}
+        assert {k: v for k, v in carrying.items() if v} == {}
+
+    def test_inline_fallback_templates(self):
+        from core.meshtasticd_templates import (HAT_OVERLAY_FORBIDDEN_KEYS,
+                                                RADIO_TEMPLATES)
+        carrying = {k: sorted(set(yaml.safe_load(v["config"]) or {})
+                              & HAT_OVERLAY_FORBIDDEN_KEYS)
+                    for k, v in RADIO_TEMPLATES.items()}
+        assert {k: v for k, v in carrying.items() if v} == {}
+
+    def test_every_shipped_template_passes_config_doctor_raw(self, tmp_path):
+        # The measured defect, end to end: drop every shipped template into a
+        # config.d/ exactly as a raw `cp` would, and the doctor must read OK.
+        from launcher_tui.handlers._config_doctor_checks import (
+            OK, check_meshtasticd_overlay_keys)
+        config_d = tmp_path / "config.d"
+        config_d.mkdir()
+        for f in (self.REPO / "templates" / "available.d").glob("*.yaml"):
+            (config_d / f.name).write_text(f.read_text())
+        r = check_meshtasticd_overlay_keys(config_d)
+        assert r.status == OK, (r.message, r.details)
+
+
+class TestInstallerActivatesSanitized:
+    """S1, the other end: both raw `cp` sites in install_noc.sh (f5d162d9's
+    own message named them; a3d9e924's "every activation path" covered only
+    the Python paths) now go through scripts/sanitize_overlay.py — the same
+    core function — and a failure installs nothing rather than copying raw."""
+
+    REPO = Path(__file__).parent.parent
+    CLI = REPO / "scripts" / "sanitize_overlay.py"
+
+    def test_installer_has_no_raw_copy_into_config_d(self):
+        text = (self.REPO / "scripts" / "install_noc.sh").read_text()
+        raw = [ln.strip() for ln in text.splitlines()
+               if ln.lstrip().startswith("cp ") and "config.d/" in ln
+               and "available.d" not in ln.split("config.d/")[0]]
+        assert raw == [], raw
+        assert text.count("install_hat_overlay \"$AVAIL_DIR/") == 2
+        assert "scripts/sanitize_overlay.py" in text
+        assert "python3-yaml" in text  # the sanitizer's one dependency is installed first
+
+    def _run(self, *args):
+        import subprocess
+        return subprocess.run([sys.executable, str(self.CLI), *map(str, args)],
+                              capture_output=True, text=True, timeout=30)
+
+    def test_cli_strips_the_moc3_template_into_a_directory(self, tmp_path):
+        src = tmp_path / "lora-MeshAdv-900M30S.yaml"
+        src.write_text(MOC3_BROKEN_TEMPLATE)
+        dst_dir = tmp_path / "config.d"
+        r = self._run(src, f"{dst_dir}/")
+        assert r.returncode == 0, r.stderr
+        out = dst_dir / src.name
+        loaded = yaml.safe_load(out.read_text())
+        assert "Webserver" not in loaded and "Lora" in loaded
+        assert "Webserver" in r.stdout and "config.yaml" in r.stdout
+
+    def test_cli_reports_clean_and_keeps_bytes(self, tmp_path):
+        src = self.REPO / "templates" / "available.d" / "waveshare-sx1262.yaml"
+        dst_dir = tmp_path / "config.d"
+        r = self._run(src, f"{dst_dir}/")
+        assert r.returncode == 0 and "clean" in r.stdout
+        assert (dst_dir / src.name).read_text() == src.read_text()
+
+    def test_cli_unreadable_source_writes_nothing(self, tmp_path):
+        dst_dir = tmp_path / "config.d"
+        r = self._run(tmp_path / "missing.yaml", f"{dst_dir}/")
+        assert r.returncode == 2 and "cannot read" in r.stderr
+        assert not dst_dir.exists()

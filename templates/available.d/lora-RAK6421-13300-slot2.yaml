@@ -19,9 +19,3 @@ Lora:
   spidev: spidev0.1
   # Ant_sw: 23  # IO3
   # CS: 7
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info

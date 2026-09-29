@@ -93,12 +93,6 @@ RADIO_TEMPLATES = {
 
 Serial:
   Device: auto
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "station-g2-usb": {
@@ -112,12 +106,6 @@ Logging:
 
 Serial:
   Device: auto
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "tbeam-usb": {
@@ -131,12 +119,6 @@ Logging:
 
 Serial:
   Device: auto
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "rak4631-usb": {
@@ -150,12 +132,6 @@ Logging:
 
 Serial:
   Device: auto
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "meshtoad-usb": {
@@ -169,12 +145,6 @@ Logging:
 
 Serial:
   Device: auto
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "meshstick-usb": {
@@ -187,12 +157,6 @@ Logging:
 
 Serial:
   Device: auto
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "usb-serial-generic": {
@@ -206,12 +170,6 @@ Logging:
 
 Serial:
   Device: auto
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     # ─────────────────────────────────────────────
@@ -235,12 +193,6 @@ Lora:
   Busy: 4
   DIO2_AS_RF_SWITCH: true
   DIO3_TCXO_VOLTAGE: true
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "meshadv-pi-hat": {
@@ -269,12 +221,6 @@ GPS:
 
 I2C:
   I2CDevice: /dev/i2c-1
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "meshadv-mini": {
@@ -302,12 +248,6 @@ GPS:
 
 I2C:
   I2CDevice: /dev/i2c-1
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "meshadv-pi-v1.1": {
@@ -326,12 +266,6 @@ Lora:
   Busy: 23
   Reset: 24
   DIO2_AS_RF_SWITCH: true
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "waveshare-sx1262": {
@@ -349,12 +283,6 @@ Lora:
   Busy: 20
   Reset: 18
   DIO2_AS_RF_SWITCH: true
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "rak-hat-spi": {
@@ -372,12 +300,6 @@ Lora:
   Busy: 24
   Reset: 17
   DIO2_AS_RF_SWITCH: true
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "adafruit-rfm9x": {
@@ -394,12 +316,6 @@ Lora:
   CS: 7
   IRQ: 25
   Reset: 17
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "femtofox": {
@@ -418,12 +334,6 @@ Lora:
   Reset: 24
   DIO2_AS_RF_SWITCH: true
   DIO3_TCXO_VOLTAGE: true
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "ebyte-e22-900m30s": {
@@ -445,12 +355,6 @@ Lora:
   TXen: 13
   DIO2_AS_RF_SWITCH: true
   DIO3_TCXO_VOLTAGE: true
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "ebyte-e22-400m30s": {
@@ -472,12 +376,6 @@ Lora:
   TXen: 13
   DIO2_AS_RF_SWITCH: true
   DIO3_TCXO_VOLTAGE: true
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "elecrow-rfm95": {
@@ -494,12 +392,6 @@ Lora:
   CS: 25
   IRQ: 5
   Reset: 17
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "seeed-sensecap": {
@@ -516,12 +408,6 @@ Lora:
   IRQ: 25
   Reset: 22
   DIO2_AS_RF_SWITCH: true
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     # ─────────────────────────────────────────────
@@ -540,12 +426,6 @@ Lora:
   CS: 0
   IRQ: 10
   spidev: ch341
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "lora-usb-meshtoad-e22": {
@@ -568,12 +448,6 @@ Lora:
   spidev: ch341
   USB_PID: 0x5512
   USB_VID: 0x1A86
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     # ─────────────────────────────────────────────
@@ -643,12 +517,6 @@ Lora:
   Reset: 25
   CS: 7
   IRQ: 22
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "lora-MeshAdv-900M30S": {
@@ -668,12 +536,6 @@ Lora:
   TXen: 13
   RXen: 12
   DIO3_TCXO_VOLTAGE: true
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "lora-MeshAdv-Mini-900M22S": {
@@ -693,12 +555,6 @@ Lora:
   RXen: 12
   DIO2_AS_RF_SWITCH: true
   DIO3_TCXO_VOLTAGE: true
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "lora-RAK6421-13300-slot1": {
@@ -717,12 +573,6 @@ Lora:
   DIO3_TCXO_VOLTAGE: true
   DIO2_AS_RF_SWITCH: true
   spidev: spidev0.0
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "lora-RAK6421-13300-slot2": {
@@ -741,12 +591,6 @@ Lora:
   DIO3_TCXO_VOLTAGE: true
   DIO2_AS_RF_SWITCH: true
   spidev: spidev0.1
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "lora-lyra-picocalc-wio-sx1262": {
@@ -764,12 +608,6 @@ Lora:
   SX126X_MAX_POWER: 22
   spidev: spidev1.0
   SPI_Speed: 2000000
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "lora-meshstick-1262": {
@@ -790,12 +628,6 @@ Lora:
   DIO3_TCXO_VOLTAGE: true
   USB_PID: 0x5512
   USB_VID: 0x1A86
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "lora-piggystick-lr1121": {
@@ -816,12 +648,6 @@ Lora:
   DIO3_TCXO_VOLTAGE: 1.8
   USB_PID: 0x5512
   USB_VID: 0x1A86
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "lora-raxda-rock2f-starter-edition-hat": {
@@ -837,12 +663,6 @@ Lora:
   DIO2_AS_RF_SWITCH: true
   DIO3_TCXO_VOLTAGE: 1.8
   spidev: spidev0.1
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "lora-starter-edition-sx1262-i2c": {
@@ -861,12 +681,6 @@ Lora:
   IRQ: 22
   Busy: 4
   Reset: 18
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "lora-waveshare-sxxx": {
@@ -885,12 +699,6 @@ Lora:
   Busy: 20
   Reset: 18
   SX126X_ANT_SW: 6
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "lora-ws-raspberry-pi-pico-to-rpi-adapter": {
@@ -909,12 +717,6 @@ Lora:
   IRQ: 16
   Busy: 20
   Reset: 18
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
     "lora-ws-raspberry-pico-to-orangepi-03": {
@@ -930,12 +732,6 @@ Lora:
   DIO2_AS_RF_SWITCH: true
   DIO3_TCXO_VOLTAGE: true
   spidev: spidev1.1
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
 """
     },
 }

@@ -17,9 +17,3 @@ Lora:
   Busy: 20
   Reset: 18
   SX126X_ANT_SW: 6
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info

@@ -16,9 +16,3 @@
 
 Serial:
   Device: auto          # /dev/ttyUSB0 typical for CH340
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info

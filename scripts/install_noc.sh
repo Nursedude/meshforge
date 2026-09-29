@@ -559,6 +559,28 @@ deploy_meshforge_templates() {
     fi
 }
 
+install_hat_overlay() {
+    # Activate ONE template into config.d/ — SANITIZED, never a raw cp (#58).
+    # A config.d/ overlay overrides config.yaml, so a template carrying
+    # Webserver:/TCP:/Logging:/MQTT:/... moves the daemon's ports out from
+    # under the box (moc3's `Webserver: Port: 443` rode in on a raw cp of an
+    # upstream template). Same function the TUI uses (core.meshtasticd_templates
+    # .sanitize_hat_overlay) via scripts/sanitize_overlay.py — ONE rule.
+    # A failure installs NOTHING and says so: fail loud, never fall back to cp.
+    local src="$1" dst_dir="$2"
+    if [[ "$DRY_RUN" == "true" ]]; then
+        mf_dry_note "python3 $REAL_INSTALL_DIR/scripts/sanitize_overlay.py $src $dst_dir/"
+        return 0
+    fi
+    mkdir -p "$dst_dir"
+    if python3 "$REAL_INSTALL_DIR/scripts/sanitize_overlay.py" "$src" "$dst_dir/"; then
+        return 0
+    fi
+    echo -e "  ${RED}✗ Overlay NOT installed: $(basename "$src") — sanitizer failed (see above)${NC}" >&2
+    echo -e "  ${YELLOW}  Fix: sudo python3 $REAL_INSTALL_DIR/scripts/sanitize_overlay.py $src $dst_dir/${NC}" >&2
+    return 1
+}
+
 detect_os_repo() {
     # Detect OS and return the correct OpenSUSE Build Service repo name
     # Returns: Debian_12, Debian_13, Raspbian_12, Ubuntu_24.04, etc.
@@ -759,7 +781,7 @@ apt-get update -qq
 # — picks it up without needing --break-system-packages in the venv.
 if mf_apt_install \
     python3 python3-pip python3-venv \
-    python3-msgpack \
+    python3-msgpack python3-yaml \
     unattended-upgrades \
     git wget curl gnupg \
     libusb-1.0-0 \
@@ -1222,14 +1244,14 @@ REBOOT_CONFIG
                             fi
 
                             if [[ -n "$SELECTED_HAT" ]]; then
-                                # Copy selected HAT config to config.d/
-                                mkdir -p "$MESHTASTICD_CONFIG_DIR/config.d"
-                                cp "$AVAIL_DIR/${SELECTED_HAT}.yaml" "$MESHTASTICD_CONFIG_DIR/config.d/"
-                                echo -e "  ${GREEN}✓ HAT config installed: ${SELECTED_HAT}.yaml${NC}"
-                                HAT_SELECTED=true
+                                # Activate the selected HAT config into config.d/ — sanitized (#58)
+                                if install_hat_overlay "$AVAIL_DIR/${SELECTED_HAT}.yaml" "$MESHTASTICD_CONFIG_DIR/config.d"; then
+                                    echo -e "  ${GREEN}✓ HAT config installed: ${SELECTED_HAT}.yaml${NC}"
+                                    HAT_SELECTED=true
+                                fi
                             else
                                 echo -e "  ${YELLOW}⚠ No HAT selected - meshtasticd may not start correctly${NC}"
-                                echo -e "  ${YELLOW}  Fix: cp /etc/meshtasticd/available.d/<your-hat>.yaml /etc/meshtasticd/config.d/${NC}"
+                                echo -e "  ${YELLOW}  Fix: sudo python3 $REAL_INSTALL_DIR/scripts/sanitize_overlay.py /etc/meshtasticd/available.d/<your-hat>.yaml /etc/meshtasticd/config.d/${NC}"
                             fi
                         else
                             echo -e "  ${YELLOW}⚠ No SPI HAT templates found (all templates are USB/display)${NC}"
@@ -1488,13 +1510,13 @@ NATIVE_SERVICE
                             fi
 
                             if [[ -n "$SELECTED_USB" ]]; then
-                                # Copy selected USB config to config.d/
-                                mkdir -p "$MESHTASTICD_CONFIG_DIR/config.d"
-                                cp "$AVAIL_DIR/${SELECTED_USB}.yaml" "$MESHTASTICD_CONFIG_DIR/config.d/"
-                                echo -e "  ${GREEN}✓ USB config installed: ${SELECTED_USB}.yaml${NC}"
+                                # Activate the selected USB config into config.d/ — sanitized (#58)
+                                if install_hat_overlay "$AVAIL_DIR/${SELECTED_USB}.yaml" "$MESHTASTICD_CONFIG_DIR/config.d"; then
+                                    echo -e "  ${GREEN}✓ USB config installed: ${SELECTED_USB}.yaml${NC}"
+                                fi
                             else
                                 echo -e "  ${YELLOW}⚠ No USB radio selected — meshtasticd may not start correctly${NC}"
-                                echo -e "  ${YELLOW}  Fix: cp /etc/meshtasticd/available.d/<your-radio>.yaml /etc/meshtasticd/config.d/${NC}"
+                                echo -e "  ${YELLOW}  Fix: sudo python3 $REAL_INSTALL_DIR/scripts/sanitize_overlay.py /etc/meshtasticd/available.d/<your-radio>.yaml /etc/meshtasticd/config.d/${NC}"
                             fi
                         fi
                     fi

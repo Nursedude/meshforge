@@ -16,9 +16,3 @@ Lora:
   Reset: 24
   DIO2_AS_RF_SWITCH: true
   DIO3_TCXO_VOLTAGE: true
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info

@@ -40,9 +40,3 @@ Lora:
   # TXen:               # Physical pin 13
   #   gpiochip: 4
   #   line: 21
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info

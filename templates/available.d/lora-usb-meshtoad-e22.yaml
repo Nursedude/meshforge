@@ -26,9 +26,3 @@ Lora:
   # SX126X_MAX_POWER: 10
   # Optional: Set serial number for multi-radio support
   # USB_Serialnum: 13374201
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info

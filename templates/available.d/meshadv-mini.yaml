@@ -32,9 +32,3 @@ GPS:
 
 I2C:
   I2CDevice: /dev/i2c-1      # TMP102 temp sensor at 0x48
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info

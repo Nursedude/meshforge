@@ -15,9 +15,3 @@ Lora:
   CS: 7
   IRQ: 25
   Reset: 17
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info

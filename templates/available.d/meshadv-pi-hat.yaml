@@ -28,9 +28,3 @@ GPS:
 
 I2C:
   I2CDevice: /dev/i2c-1
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info

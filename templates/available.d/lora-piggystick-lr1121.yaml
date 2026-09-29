@@ -20,9 +20,3 @@ Lora:
   # USB_Serialnum: 12345678
   USB_PID: 0x5512
   USB_VID: 0x1A86
-
-TCP:
-  Port: 4403
-
-Logging:
-  LogLevel: info
