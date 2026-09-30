@@ -162,8 +162,9 @@ GPS:
 I2C:
   I2CDevice: /dev/i2c-1    # I2C bus for sensors
 
-Webserver:
-  Port: 443                # Web interface port
+# Webserver / TCP / Logging are NOT hardware settings: they belong to
+# /etc/meshtasticd/config.yaml. In a config.d/ overlay they OVERRIDE it —
+# `Webserver: Port: 443` moves the API off :9443 (Issue #58).
 ```
 
 ---

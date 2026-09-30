@@ -12,20 +12,10 @@
 #   Device: /dev/ttyUSB0    # Usually auto-detected
 #   Baud: 115200            # Default baud rate
 
-# === TCP Interface ===
-# This is what MeshForge connects to
-TCP:
-  Port: 4403                # Default port (don't change unless needed)
-  # BindAddress: 127.0.0.1  # Uncomment to restrict to localhost only
-
-# === Web Interface (Optional) ===
-Webserver:
-  Port: 443                 # HTTPS port for meshtasticd web UI
-  # Port: 80                # Use 80 for HTTP
-
-# === Logging ===
-Logging:
-  LogLevel: info            # debug, info, warn, error
+# === TCP / Webserver / Logging — NOT in an overlay ===
+# These belong to /etc/meshtasticd/config.yaml. A config.d/ overlay's values
+# OVERRIDE config.yaml: `Webserver: Port: 443` here moves meshtasticd's API
+# off :9443 and every /api/v1 consumer goes deaf (Issue #58).
 
 # === Notes ===
 #
@@ -35,7 +25,8 @@ Logging:
 #    meshtastic --host localhost --set lora.region US
 #    meshtastic --host localhost --set lora.modem_preset LONG_FAST
 #
-# 3. For multiple USB devices, specify different ports:
+# 3. For multiple USB devices (one meshtasticd each), set a different TCP port
+#    in each instance's config.yaml — not in this overlay:
 #    Device 1: TCP.Port: 4403
 #    Device 2: TCP.Port: 4404
 #

@@ -57,17 +57,10 @@ I2C:
   # I2C bus for BME280, OLED displays, etc.
   I2CDevice: /dev/i2c-1
 
-# === TCP Interface ===
-TCP:
-  Port: 4403              # MeshForge connects here
-
-# === Web Interface ===
-Webserver:
-  Port: 443
-
-# === Logging ===
-Logging:
-  LogLevel: info
+# === TCP / Webserver / Logging — NOT in an overlay ===
+# These belong to /etc/meshtasticd/config.yaml. A config.d/ overlay's values
+# OVERRIDE config.yaml: `Webserver: Port: 443` here moves meshtasticd's API
+# off :9443 and every /api/v1 consumer goes deaf (Issue #58).
 
 # === Common HAT GPIO Mappings ===
 #
