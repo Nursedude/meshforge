@@ -583,11 +583,10 @@ MESHFORGE_CODE_DAEMONS: dict = {
     "meshforge-mini-dudeai-claw": "dude-claw sibling, claw-brain box only (templates/systemd/)",
     "meshforge-echo":      "lab.lxmf_echo responder (templates/systemd/ meshforge-echo-user.service)",
     "nomadnet-silence-watch": "monitoring.nomadnet_silence_watch (templates/systemd/)",
-    # OFF-REPO: ~/meshforge_digest.py + ~/.config/systemd/user/meshforge-digest.service
-    # on the manager box, but it imports repo mini_dudeai (write_brief) — so it
-    # runs THIS repo's code and went 3 days stale unseen (2026-09-30 deploy,
-    # skew NOTE). Restart wired in fleet_sync's self leg.
-    "meshforge-digest":    "~/meshforge_digest.py importing repo mini_dudeai (off-repo unit, manager box)",
+    # Manager box only. Was an OFF-REPO ~/meshforge_digest.py importing repo
+    # mini_dudeai (3 days stale unseen, 2026-09-30); moved into the repo the
+    # same day. Restart wired in fleet_sync's self leg.
+    "meshforge-digest":    "monitoring.meshforge_digest (templates/systemd/meshforge-digest.service, manager box)",
 }
 
 # Type=simple/forking daemons MeshForge installs that a /opt/meshforge pull does
@@ -764,6 +763,7 @@ TEMPLATE_PROVENANCE: dict = {
     "meshforge-sdr-adjacent-user.service": ("glob", "update.sh *-user.service loop -> meshforge-sdr-adjacent.service (oneshot, inert unless its timer is hand-enabled; Airspy host only)"),
     "meshforge-sdr-user.timer": ("hand", "hand-enabled ONLY on the box hosting the Airspy SDR (moc5, 2026-09-24); NOT globbed -- a .timer is outside the *-user.service loop. Deliberately not fleet-wide: an SDR timer with no SDR writes an `unknown` row every 5 min, machinery with no subject"),
     "meshforge-sdr-adjacent-user.timer": ("hand", "hand-enabled ONLY on the Airspy host (moc5, 2026-09-24), hourly class-D pass; NOT globbed"),
+    "meshforge-digest.service": ("hand", "manager box ONLY, hand-installed as a USER unit per the template header (2026-09-30, moved from an untracked ~/meshforge_digest.py); deliberately NOT -user-suffixed so the update.sh glob never lands it fleet-wide; fleet_sync.sh self leg restarts it on a code change"),
     "meshforge-notes-prune-user.timer": ("hand", "hand-enabled ONLY on a box that writes session-notes handoffs (the dev box); NOT globbed -- a .timer is outside the *-user.service loop. Deliberately not fleet-wide: a timer on a box with no notes is machinery with no subject"),
     "meshforge-backup.service":    ("hand", "manager-box organ (the federator box), hand-enabled; fleet backup (c111f7a)"),
     "meshforge-backup.timer":      ("hand", "manager-box organ (the federator box), hand-enabled; fleet backup (c111f7a)"),

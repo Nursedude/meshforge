@@ -1,0 +1,31 @@
+# meshforge-digest — the manager box's fleet situation digest (USER unit).
+#
+# MANAGER BOX ONLY. Deliberately named WITHOUT the -user suffix so update.sh's
+# `*-user.service` copy loop never places it on a fleet box (a deploy must not
+# change which services run). Install once, as the operator, on the manager:
+#   cp /opt/meshforge/templates/systemd/meshforge-digest.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now meshforge-digest
+# Operator-specific values (cloud map URL, expected federation backoffs) live
+# in ~/.config/meshforge/digest.json — see src/monitoring/meshforge_digest.py.
+# Restarted on a code change by scripts/fleet_sync.sh's self leg.
+[Unit]
+Description=MeshForge Fleet Situation Digest (observation-only)
+After=network-online.target
+
+[Service]
+Type=simple
+# Observation-only daemon: reads fleet ground truth, writes ~/situation_digest.md.
+# Reads nothing privileged; flags, never fixes (crons/watchdog own recovery).
+WorkingDirectory=/opt/meshforge/src
+ExecStart=/usr/bin/python3 -m monitoring.meshforge_digest
+Environment=MESHFORGE_DIGEST_INTERVAL=900
+Restart=on-failure
+RestartSec=30
+# Light hardening — it only needs to read HTTP + home logs and write home.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=%h
+ProtectKernelTunables=true
+
+[Install]
+WantedBy=default.target
