@@ -623,9 +623,10 @@ class DeviceScanner:
             'chip': known.get('name', 'Unknown'),
             'use_persistent_name': bool(port.by_id or port.by_path),
             'config_example': f"""
-# meshtasticd config.yaml
-Lora:
-  SerialPath: {port.by_id or port.by_path or port.device}
+# meshtasticd has no serial-radio mode (no `Serial:` key, and it reads
+# SerialPath only under GPS:), so a USB Meshtastic node gets NO meshtasticd
+# config. Reach it directly:
+#   meshtastic --port {port.by_id or port.by_path or port.device} --info
 
 # Python API
 import meshtastic.serial_interface
@@ -736,8 +737,8 @@ interface = meshtastic.serial_interface.SerialInterface(
         if recommended:
             lines.append(f"  Use: {recommended}")
             lines.append("")
-            lines.append("  For meshtasticd config.yaml:")
-            lines.append(f"    SerialPath: {recommended}")
+            lines.append("  meshtasticd does not use a USB node (no serial-radio mode); reach it with:")
+            lines.append(f"    meshtastic --port {recommended} --info")
             lines.append("")
             lines.append("  For Python API:")
             lines.append(f'    interface = meshtastic.serial_interface.SerialInterface("{recommended}")')

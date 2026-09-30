@@ -301,6 +301,8 @@ log ""
 log "${BOLD}[3/6] meshtasticd Configuration${NC}"
 
 CONFIG_DIR="/etc/meshtasticd"
+# The checkout this script belongs to (its overlay_kind.py helper).
+VERIFY_SCRIPT_DIR="${VERIFY_SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 CONFIG_YAML="$CONFIG_DIR/config.yaml"
 
 # Check config directory
@@ -323,12 +325,72 @@ if [[ -f "$CONFIG_YAML" ]]; then
             "Add: Webserver:\\n  Port: 9443\\n  RootPath: /usr/share/meshtasticd/web"
     fi
 
-    # Check for Lora section
-    if grep -q "Lora:" "$CONFIG_YAML" 2>/dev/null; then
-        MODULE=$(grep -A1 "Lora:" "$CONFIG_YAML" | grep "Module:" | awk '{print $2}' || echo "auto")
-        check_pass "Lora section" "Module: ${MODULE:-auto}"
+    # Which radio module will meshtasticd ACTUALLY use? Ask meshtasticd:
+    # --output-yaml merges config.yaml + config.d/ exactly as the daemon will
+    # and exits during config load (private netns, scratch data dir). The old
+    # grep read a COMMENTED `# Module: auto` as "Module: Module:", and an
+    # unset Module silently runs a SIMULATED radio (measured 2026-09-30).
+    # --output-yaml exits BEFORE autoconf, so `auto` is judged here against
+    # the hardware autoconf would look for (reader pair, 2026-09-30).
+    MT_BIN=$(command -v meshtasticd || true)
+    MODULE=""; MT_OUT=""
+    if [[ -n "$MT_BIN" ]]; then
+        MT_TMP=$(mktemp -d)
+        MT_OUT=$(timeout 20 unshare -rn "$MT_BIN" --output-yaml -c "$CONFIG_YAML" -d "$MT_TMP" 2>/dev/null)
+        rm -rf "$MT_TMP"
+        MODULE=$(printf '%s\n' "$MT_OUT" | awk '/^Lora:/{l=1;next} /^[^ ]/{l=0} l && $1=="Module:"{print $2; exit}')
+    fi
+    HAVE_CH341=false
+    for _d in /sys/bus/usb/devices/*; do
+        if [[ "$(cat "$_d/idVendor" 2>/dev/null)" == "1a86" && "$(cat "$_d/idProduct" 2>/dev/null)" == "5512" ]]; then
+            HAVE_CH341=true; break
+        fi
+    done
+    MT_WANTED=false
+    if systemctl is-enabled --quiet meshtasticd 2>/dev/null || systemctl is-active --quiet meshtasticd 2>/dev/null; then
+        MT_WANTED=true
+    fi
+    # A radio overlay in config.d/ whose Module did not survive the merge
+    # (unreadable, or a name meshtasticd does not know, e.g. `sx1276`).
+    RADIO_OVERLAY=""
+    for _f in "$CONFIG_DIR"/config.d/*.yaml; do
+        [[ -f "$_f" ]] || continue
+        case "$(python3 -B "$VERIFY_SCRIPT_DIR/overlay_kind.py" "$_f" 2>/dev/null)" in
+            spi|ch341) RADIO_OVERLAY="$_f"; break ;;
+        esac
+    done
+    if printf '%s\n' "$MT_OUT" | grep -q '\*\*\* Exception'; then
+        check_warn "Radio module" "UNKNOWN — meshtasticd could not load its config: $(printf '%s\n' "$MT_OUT" | grep -m1 '\*\*\* Exception')" \
+            "Check file permissions / YAML in $CONFIG_DIR/config.d/"
     else
-        check_warn "Lora section" "Missing from config.yaml" "Reinstall meshtasticd package or run MeshForge ensure_structure() to regenerate"
+    case "$MODULE" in
+        "")
+            check_warn "Radio module" "UNKNOWN — could not ask meshtasticd (--output-yaml)" \
+                "Check by hand: sudo meshtasticd --output-yaml -c $CONFIG_YAML -d \$(mktemp -d) | grep -A1 '^Lora:'" ;;
+        sim)
+            if $MT_WANTED; then
+                check_fail "Radio module" "SIMULATED radio (Lora Module unset) — nothing will transmit" \
+                    "Select hardware: TUI > Meshtasticd Config > Hardware Config, or set 'Lora: Module: auto' in $CONFIG_YAML"
+            else
+                check_info "Radio module" "unset (would be a SIMULATED radio) — meshtasticd is not enabled here"
+            fi ;;
+        auto)
+            if [[ -n "$RADIO_OVERLAY" ]]; then
+                check_fail "Radio module" "$(basename "$RADIO_OVERLAY") did not set a Module meshtasticd knows — merged config is still 'auto'" \
+                    "Valid names: sx1262 sx1268 sx1280 RF95 LLCC68 lr1110 lr1120 lr1121 (not e.g. sx1276)"
+            elif $HAVE_CH341; then
+                check_pass "Radio module" "auto — a CH341 USB stick is present for autoconf"
+            elif [[ -r /proc/device-tree/hat/product ]]; then
+                check_pass "Radio module" "auto — a HAT+ EEPROM is present for autoconf"
+            elif $MT_WANTED; then
+                check_warn "Radio module" "auto, but no CH341 stick or HAT+ EEPROM detected — meshtasticd will exit ('Could not locate any devices')" \
+                    "Select hardware: TUI > Meshtasticd Config > Hardware Config"
+            else
+                check_info "Radio module" "auto — no radio hardware detected; meshtasticd is not enabled here"
+            fi ;;
+        *)
+            check_pass "Radio module" "$MODULE (merged config.yaml + config.d/)" ;;
+    esac
     fi
 
     # Check for WRONG content (radio parameters that shouldn't be here)
@@ -446,6 +508,17 @@ fi
 
 # Check for USB serial devices and identify them
 USB_DEVICE_FOUND=false
+# A CH341 USB LoRa stick (MeshToad, MeshStick, ...) runs in SPI mode and
+# creates NO tty, so the tty loop below can never see it (reader pair,
+# 2026-09-30). Every such stick is USB 1a86:5512.
+for _d in /sys/bus/usb/devices/*; do
+    if [[ "$(cat "$_d/idVendor" 2>/dev/null)" == "1a86" && "$(cat "$_d/idProduct" 2>/dev/null)" == "5512" ]]; then
+        check_pass "USB radio identified" "CH341 USB LoRa stick — meshtasticd drives it via a lora-usb-*.yaml overlay"
+        RADIO_FOUND=true
+        break
+    fi
+done
+
 for dev in /dev/ttyUSB* /dev/ttyACM*; do
     if [[ -e "$dev" ]]; then
         check_pass "USB serial device" "$dev"
@@ -458,23 +531,11 @@ for dev in /dev/ttyUSB* /dev/ttyACM*; do
         if [[ -n "$USB_VID" && -n "$USB_PID" ]]; then
             USB_ID="${USB_VID}:${USB_PID}"
             case "$USB_ID" in
-                303a:1001|303a:4001|303a:1002)
-                    check_pass "USB radio identified" "Heltec V3/V4 (template: heltec-usb.yaml)" ;;
-                1209:0000)
-                    check_pass "USB radio identified" "MeshStick (template: meshstick-usb.yaml)" ;;
-                1a86:7523|1a86:55d4|1a86:7522)
-                    check_pass "USB radio identified" "MeshToad/CH340 (template: meshtoad-usb.yaml)" ;;
-                239a:8029|239a:0029|19d2:0016)
-                    check_pass "USB radio identified" "RAK4631 (template: rak4631-usb.yaml)" ;;
-                10c4:ea60)
-                    check_pass "USB radio identified" "Station G2/CP2102 (template: station-g2-usb.yaml)" ;;
-                1a86:55d3)
-                    check_pass "USB radio identified" "T-Beam S3/CH9102 (template: tbeam-usb.yaml)" ;;
-                0403:6001|0403:6015)
-                    check_pass "USB radio identified" "FTDI USB-Serial (template: usb-serial-generic.yaml)" ;;
                 *)
-                    check_warn "USB radio ID" "Unknown USB ID $USB_ID" \
-                        "Use generic template: usb-serial-generic.yaml" ;;
+                    # A tty is a standalone node, an RNode or a GPS: meshtasticd
+                    # has no serial-radio mode (no `Serial:` key), so no overlay
+                    # applies. Reach a Meshtastic node with: meshtastic --port $dev
+                    check_info "USB serial device" "$USB_ID on $dev — not a meshtasticd radio; a Meshtastic node is reached with: meshtastic --port $dev" ;;
             esac
         fi
         break
@@ -490,8 +551,8 @@ if ! $RADIO_FOUND; then
     else
         check_warn "Radio hardware" "No SPI or USB radio detected" \
             "Connect USB radio or enable SPI for HAT"
-        log "  Available USB templates: heltec-usb, meshstick-usb, meshtoad-usb,"
-        log "    rak4631-usb, station-g2-usb, tbeam-usb, usb-serial-generic"
+        log "  CH341 USB sticks: a lora-usb-*.yaml overlay from available.d/."
+        log "  USB Meshtastic nodes need no meshtasticd config (meshtastic --port <tty>)."
         log "  Select in TUI: Configuration > Hardware Config"
     fi
 fi

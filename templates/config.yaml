@@ -6,11 +6,15 @@
 ### Including the "Module:" line!
 ---
 Lora:
-  # Module is set by hardware templates in config.d/
-  # DO NOT set Module: auto — it triggers meshtasticd's native autoconf
-  # which crashes when no hardware is detected (EEPROM CRC32, no CH341, etc.)
-  # Select your radio via TUI > Meshtasticd Config > Hardware Config
-  # Or: sudo cp /etc/meshtasticd/available.d/<radio>.yaml /etc/meshtasticd/config.d/
+  # auto: meshtasticd finds a CH341 USB stick or a HAT+ EEPROM itself, and
+  # EXITS loudly ("autoconf: Could not locate any devices") when it finds
+  # none. A hardware overlay in config.d/ sets Module and wins — select it
+  # via TUI > Meshtasticd Config > Hardware Config, or:
+  #   sudo python3 scripts/sanitize_overlay.py /etc/meshtasticd/available.d/<radio>.yaml /etc/meshtasticd/config.d/
+  # NEVER leave Module unset: meshtasticd then runs a SIMULATED radio and
+  # says nothing (measured 2026-09-30 with --output-yaml; 8827a3bb had
+  # commented this out to avoid the loud exit — the silent sim is worse).
+  Module: auto
 #  Module: sx1262
 
 #  # Uncomment to enable Simulation mode, or use --sim

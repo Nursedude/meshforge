@@ -157,11 +157,12 @@ class MeshtasticdConfig:
 ### To activate, simply copy or link the appropriate file into /etc/meshtasticd/config.d
 
 ### Define your devices here using Broadcom pin numbering
-### Module is set by hardware templates in config.d/
-### DO NOT set Module: auto — it triggers meshtasticd autoconf crashes
-### Select your radio via TUI or: sudo cp available.d/<radio>.yaml config.d/
+### A hardware overlay in config.d/ sets Module and wins (TUI > Hardware
+### Config). `auto` finds a CH341 stick / HAT+ EEPROM itself and EXITS loudly
+### when it finds none; an UNSET Module silently runs a SIMULATED radio.
 ---
 Lora:
+  Module: auto
 #  Module: sx1262
 
 GPS:

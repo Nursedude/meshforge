@@ -322,9 +322,10 @@ class ServiceOrchestrator:
             existing = list(config_d.glob("*.yaml"))
             _warn_ignored_overlays(existing)
             if existing:
-                # Defense-in-depth: ensure SPI templates have explicit
-                # Module: to prevent any residual Module: auto in
-                # config.yaml from triggering meshtasticd autoconf.
+                # Defense-in-depth: ensure SPI templates have an explicit
+                # Module:. config.yaml carries `Module: auto` on purpose (an
+                # unset Module silently runs a SIMULATED radio, 2026-09-30),
+                # so an overlay without Module would fall through to autoconf.
                 for tmpl in existing:
                     self._validate_template_module(tmpl)
                 return True
@@ -366,9 +367,10 @@ class ServiceOrchestrator:
         """Validate that a deployed config.d template has an explicit Lora.Module line.
 
         Defense-in-depth: if a user manually copies an SPI template that
-        lacks Module:, this patches it to prevent any residual Module: auto
-        from triggering meshtasticd's autoconf hardware scan (which crashes
-        on EEPROM CRC32 missing, no CH341, etc.).
+        lacks Module:, this patches it. config.yaml carries `Module: auto`, so
+        a Module-less overlay would leave meshtasticd on autoconf, which EXITS
+        when it finds no CH341 / HAT+ EEPROM — and its pins would be dropped
+        (PortduinoGlue.cpp reads pins only for an explicit module).
 
         If Module: is missing, infers the correct value from the
         RADIO_TEMPLATES metadata or falls back to sx1262 (most common).
@@ -402,7 +404,9 @@ class ServiceOrchestrator:
             # Filename heuristics
             lower = stem.lower()
             if 'sx1276' in lower or 'rfm9' in lower or 'rfm95' in lower:
-                module_value = 'sx1276'
+                # meshtasticd's name for SX127x/RFM9x; `sx1276` is not one it
+                # knows (PortduinoGlue.h loraModules) — it was injected here.
+                module_value = 'RF95'
             elif 'sx1268' in lower or '400m' in lower:
                 module_value = 'sx1268'
             else:
@@ -422,7 +426,8 @@ class ServiceOrchestrator:
                 deployed_path.write_text(patched)
                 logger.warning(
                     f"Injected 'Module: {module_value}' into "
-                    f"{deployed_path.name} to prevent autoconf crash"
+                    f"{deployed_path.name}: without an explicit Module its pins "
+                    f"are ignored and meshtasticd falls back to autoconf"
                 )
             except OSError as e:
                 logger.error(f"Cannot patch deployed template: {e}")

@@ -398,8 +398,8 @@ ask_radio_type() {
             "What type of LoRa radio is connected to this device?\n\nSelect your hardware:" \
             15 60 3 \
             -- \
-            "spi"  "SPI HAT (MeshAdv, Waveshare, RAK, Meshtoad)" \
-            "usb"  "USB Serial (T-Beam, Heltec, RAK USB)" \
+            "spi"  "meshtasticd radio: Pi HAT or CH341 USB stick (MeshToad)" \
+            "usb"  "USB Meshtastic node (T-Beam, Heltec, RAK) - no daemon" \
             "none" "No radio connected / install later" \
             3>&1 1>&2 2>&3) || CHOICE="none"
 
@@ -409,8 +409,8 @@ ask_radio_type() {
 
     # Fallback: simple text menu
     echo -e "  ${BOLD}What type of LoRa radio is connected?${NC}" >&2
-    echo "    1) SPI HAT (MeshAdv, Waveshare, RAK, Meshtoad)" >&2
-    echo "    2) USB Serial (T-Beam, Heltec, RAK USB)" >&2
+    echo "    1) meshtasticd radio: Pi HAT, or CH341 USB stick (MeshToad, MeshStick)" >&2
+    echo "    2) USB Meshtastic node (T-Beam, Heltec, RAK USB) - needs no meshtasticd" >&2
     echo "    3) No radio / install later" >&2
     echo "" >&2
     read -rp "  Select [1/2/3]: " radio_choice
@@ -450,33 +450,45 @@ flush_terminal_input() {
 }
 
 classify_template() {
-    # Classify a hardware template as "spi", "usb", or "display".
-    # Mirrors src/launcher_tui/handlers/meshtasticd_radio.py:277-296
-    local file="$1"
-    local stem
-    stem=$(basename "$file" .yaml)
-
-    # Display configs (not radio hardware)
-    [[ "$stem" == display-* ]] && { echo "display"; return; }
-
-    # Name-based USB detection (covers MeshForge-named templates)
-    case "$stem" in
-        *-usb|usb-*) echo "usb"; return ;;
+    # ONE rule with the TUI: scripts/overlay_kind.py -> classify_overlay(),
+    # judged on CONTENT (B7, 2026-09-30). The filename lied both ways:
+    # `*-usb.yaml` held `Serial:` files meshtasticd ignores (no `Serial:`
+    # key), upstream `lora-usb-*` held real CH341 configs. Prints
+    # spi (Pi HAT) | usb (CH341 USB-SPI stick) | display (aux: not a radio) |
+    # ignored. The helper is the checkout RUNNING this script ($MF_SCRIPT_DIR),
+    # never the install dir — which may not be synced yet (reader pair,
+    # 2026-09-30). Only stdout is the answer; anything outside the closed
+    # vocabulary, or a failed run, is `ignored` AND said on stderr.
+    local kind errf
+    errf=$(mktemp)
+    kind=$(python3 -B "$MF_SCRIPT_DIR/overlay_kind.py" "$1" 2>"$errf") || kind="!failed"
+    case "$kind" in
+        ch341) echo "usb" ;;
+        spi)   echo "spi" ;;
+        aux)   echo "display" ;;
+        ignored) echo "ignored" ;;
+        *)
+            # Say it: a helper that cannot run would otherwise empty every
+            # hardware menu without a word (unobservable != no templates).
+            echo -e "  ${YELLOW}⚠ cannot classify $(basename "$1") — not offered: $(tr '\n' ' ' < "$errf")${NC}" >&2
+            echo "ignored" ;;
     esac
+    rm -f "$errf"
+}
 
-    # Content-based: Serial: section without spidev -> USB serial radio
-    local content
-    content=$(head -20 "$file" 2>/dev/null) || content=""
-    if echo "$content" | grep -q "^Serial:" && ! echo "$content" | grep -qi "spidev"; then
-        echo "usb"; return
-    fi
+is_radio_overlay() {
+    # A config.d file that really configures a radio (Pi HAT or CH341 stick).
+    # A leftover `Serial:` overlay or a display overlay does not.
+    case "$(classify_template "$1")" in spi|usb) return 0 ;; *) return 1 ;; esac
+}
 
-    # CH341 USB-to-SPI adapters used as USB devices
-    if [[ "$stem" == *usb* ]] && echo "$content" | grep -qi "spidev:.*ch341"; then
-        echo "usb"; return
-    fi
-
-    echo "spi"
+first_radio_overlay() {
+    # The first radio overlay in a config.d/, or nothing.
+    local f
+    for f in "$1"/*.yaml; do
+        [[ -f "$f" ]] || continue
+        if is_radio_overlay "$f"; then echo "$f"; return; fi
+    done
 }
 
 get_template_description() {
@@ -489,18 +501,11 @@ get_template_description() {
     stem=$(basename "$file" .yaml)
 
     case "$stem" in
-        # USB radios
-        heltec-usb)          echo "Heltec V3/V4 USB (ESP32-S3, 28dBm)" ;;
-        station-g2-usb)      echo "Station G2 USB (CP2102, gateway, PoE)" ;;
-        tbeam-usb)           echo "T-Beam S3 USB (CH9102, GPS, gateway)" ;;
-        rak4631-usb)         echo "RAK4631 USB (nRF52840 + SX1262)" ;;
-        meshtoad-usb)        echo "MeshToad/MeshTadpole USB (CH340)" ;;
-        meshstick-usb)       echo "MeshStick USB (official Meshtastic)" ;;
-        usb-serial-generic)  echo "Generic USB Serial (FTDI, fallback)" ;;
+        # USB radios (CH341 USB-SPI boards; standalone USB nodes need no overlay)
         lora-pinedio-usb-sx1262)  echo "Pinedio USB (CH341 + SX1262)" ;;
         lora-usb-meshtoad-e22)    echo "MeshToad E22 USB (CH341 + SX1262)" ;;
+        meshtoad-spi)        echo "Meshtoad/MeshStick USB (CH341 + SX1262)" ;;
         # SPI radios
-        meshtoad-spi)        echo "Meshtoad/MeshStick SPI (SX1262 CH341)" ;;
         meshadv-pi-hat)      echo "MeshAdv-Pi-Hat 1W (SX1262, GPS)" ;;
         meshadv-mini)        echo "MeshAdv-Mini (SX1262, GPS, +22dBm)" ;;
         meshadv-pi-v1.1)     echo "MeshAdv-Pi v1.1 (SX1262)" ;;
@@ -1037,7 +1042,12 @@ SPI_NEEDS_NATIVE
                         mf_write_stdin "$MESHTASTICD_CONFIG_DIR/config.yaml" << 'FALLBACK_CONFIG'
 ---
 Lora:
-  # Module: auto  # Disabled — select hardware via TUI or copy template to config.d/
+  # auto: meshtasticd finds a CH341 USB stick or a HAT+ EEPROM itself, and
+  # EXITS loudly ("autoconf: Could not locate any devices") when it finds
+  # none. A hardware overlay in config.d/ (TUI > Hardware Config) sets
+  # Module and wins. Never leave Module unset: meshtasticd then runs a
+  # SIMULATED radio and says nothing (measured 2026-09-30, --output-yaml).
+  Module: auto
 
 Logging:
   LogLevel: info
@@ -1125,7 +1135,12 @@ FALLBACK_CONFIG
                             mf_write_stdin "$MESHTASTICD_CONFIG_DIR/config.yaml" << 'REBOOT_CONFIG'
 ---
 Lora:
-  # Module: auto  # Disabled — select hardware via TUI or copy template to config.d/
+  # auto: meshtasticd finds a CH341 USB stick or a HAT+ EEPROM itself, and
+  # EXITS loudly ("autoconf: Could not locate any devices") when it finds
+  # none. A hardware overlay in config.d/ (TUI > Hardware Config) sets
+  # Module and wins. Never leave Module unset: meshtasticd then runs a
+  # SIMULATED radio and says nothing (measured 2026-09-30, --output-yaml).
+  Module: auto
 
 Logging:
   LogLevel: info
@@ -1157,7 +1172,7 @@ REBOOT_CONFIG
                     # Check if a HAT config is already in config.d/
                     EXISTING_HAT=""
                     if [[ -d "$MESHTASTICD_CONFIG_DIR/config.d" ]]; then
-                        EXISTING_HAT=$(ls -1 "$MESHTASTICD_CONFIG_DIR/config.d/"*.yaml 2>/dev/null | head -1)
+                        EXISTING_HAT=$(first_radio_overlay "$MESHTASTICD_CONFIG_DIR/config.d")
                     fi
 
                     if [[ -n "$EXISTING_HAT" ]]; then
@@ -1169,8 +1184,10 @@ REBOOT_CONFIG
                         declare -a HAT_OPTIONS=()
                         declare -A HAT_TAG_MAP=()
                         while IFS= read -r hat_file; do
-                            # Filter: only show SPI templates (skip USB, display)
-                            [[ "$(classify_template "$hat_file")" != "spi" ]] && continue
+                            # meshtasticd-driven radios: Pi HATs AND CH341 USB sticks
+                            # (a detected CH341 lands here; hiding its overlays was a
+                            # regression — reader pair, 2026-09-30). Skip display/ignored.
+                            case "$(classify_template "$hat_file")" in spi|usb) ;; *) continue ;; esac
                             hat_base=$(basename "$hat_file" .yaml)
                             hat_desc=$(get_template_description "$hat_file")
                             # Sanitize tag: prefix if starts with '-' (whiptail flag confusion)
@@ -1282,7 +1299,12 @@ ADD_WEBSERVER
                         mf_write_stdin "$MESHTASTICD_CONFIG_DIR/config.yaml" << 'SPI_CONFIG'
 ---
 Lora:
-  # Module: auto  # Disabled — select hardware via TUI or copy template to config.d/
+  # auto: meshtasticd finds a CH341 USB stick or a HAT+ EEPROM itself, and
+  # EXITS loudly ("autoconf: Could not locate any devices") when it finds
+  # none. A hardware overlay in config.d/ (TUI > Hardware Config) sets
+  # Module and wins. Never leave Module unset: meshtasticd then runs a
+  # SIMULATED radio and says nothing (measured 2026-09-30, --output-yaml).
+  Module: auto
 
 Logging:
   LogLevel: info
@@ -1374,208 +1396,29 @@ NATIVE_SERVICE
             ;;
 
         usb)
-            echo -e "  ${CYAN}Installing for USB serial radio...${NC}"
+            # A standalone USB Meshtastic node runs its own firmware.
+            # meshtasticd has no serial-radio mode (no `Serial:` key), so no
+            # meshtasticd, no overlay and no unit are installed for it — the
+            # CLI talks to the node directly (B7 phase 2, 2026-09-30; the
+            # orchestrator already treats `usb-direct` as "meshtasticd not
+            # required"). An existing meshtasticd install is left untouched.
+            echo -e "  ${CYAN}Installing for a USB Meshtastic node...${NC}"
 
-            # Install meshtastic Python package for CLI tools
             if ! mf_pip_install python3 $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt 'cryptography>=50.0.1,<51' 'pyopenssl>=26.4.0'; then
                 echo -e "  ${RED}✗ meshtastic CLI install failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2
                 exit 1
             fi
+            echo -e "  ${GREEN}✓ Python meshtastic CLI installed${NC}"
 
             USB_DEV=$(get_usb_device)
-            echo -e "  ${GREEN}✓ Python meshtastic CLI installed${NC}"
             if [[ -n "$USB_DEV" ]]; then
                 echo -e "  ${GREEN}  USB device: $USB_DEV${NC}"
             fi
-
-            NATIVE_INSTALLED=false
-
-            # Check if native meshtasticd is already installed
-            if command -v meshtasticd &>/dev/null; then
-                INSTALLED_VERSION=$(meshtasticd --version 2>/dev/null || echo "unknown")
-                echo -e "  ${GREEN}✓ Native meshtasticd already installed (${INSTALLED_VERSION})${NC}"
-                NATIVE_INSTALLED=true
-                deploy_meshforge_templates
-            else
-                # Install native meshtasticd via apt (same as SPI path)
-                if add_meshtastic_repo; then
-                    echo -e "  ${CYAN}Installing meshtasticd via apt...${NC}"
-                    if apt-get install -y -qq meshtasticd >/dev/null 2>&1; then
-                        if command -v meshtasticd &>/dev/null; then
-                            INSTALLED_VERSION=$(meshtasticd --version 2>/dev/null || echo "unknown")
-                            echo -e "  ${GREEN}✓ Native meshtasticd installed (${INSTALLED_VERSION})${NC}"
-                            NATIVE_INSTALLED=true
-                            deploy_meshforge_templates
-                        else
-                            echo -e "  ${RED}Package installed but binary not found${NC}"
-                        fi
-                    else
-                        echo -e "  ${YELLOW}⚠ apt install meshtasticd failed — will use USB templates only${NC}"
-                        deploy_meshforge_templates
-                    fi
-                else
-                    echo -e "  ${YELLOW}⚠ Could not add Meshtastic repo — will use USB templates only${NC}"
-                    deploy_meshforge_templates
-                fi
-            fi
-
-            if $NATIVE_INSTALLED; then
-                MESHTASTICD_BIN=$(command -v meshtasticd)
-
-                # Let user select their USB hardware template from available.d
-                AVAIL_DIR="$MESHTASTICD_CONFIG_DIR/available.d"
-                USB_TEMPLATES=()
-                for tmpl in "$AVAIL_DIR/"*.yaml; do
-                    [[ -f "$tmpl" ]] || continue
-                    [[ "$(classify_template "$tmpl")" == "usb" ]] && USB_TEMPLATES+=("$tmpl")
-                done
-
-                if [[ ${#USB_TEMPLATES[@]} -gt 0 ]]; then
-                    # Check if a USB config is already in config.d/
-                    EXISTING_USB=""
-                    if [[ -d "$MESHTASTICD_CONFIG_DIR/config.d" ]]; then
-                        EXISTING_USB=$(ls -1 "$MESHTASTICD_CONFIG_DIR/config.d/"*.yaml 2>/dev/null | head -1)
-                    fi
-
-                    if [[ -n "$EXISTING_USB" ]]; then
-                        USB_NAME=$(basename "$EXISTING_USB")
-                        echo -e "  ${GREEN}✓ USB config already active: ${USB_NAME}${NC}"
-                    else
-                        # Build USB menu from available.d/ — USB templates only
-                        declare -a USB_OPTIONS=()
-                        declare -A USB_TAG_MAP=()
-                        for tmpl in "${USB_TEMPLATES[@]}"; do
-                            usb_base=$(basename "$tmpl" .yaml)
-                            usb_desc=$(get_template_description "$tmpl")
-                            tag="$usb_base"
-                            [[ "$tag" == -* ]] && tag="f:$tag"
-                            USB_TAG_MAP["$tag"]="$usb_base"
-                            USB_OPTIONS+=("$tag" "$usb_desc")
-                        done
-
-                        if [[ ${#USB_OPTIONS[@]} -gt 0 ]]; then
-                            USB_COUNT=$((${#USB_OPTIONS[@]} / 2))
-                            SELECTED_USB=""
-
-                            if [[ "$DRY_RUN" == "true" ]]; then
-                                # DRY-RUN NEVER PROMPTS — twin of the SPI HAT
-                                # menu above; same reasoning, same shape.
-                                SELECTED_USB="${USB_TAG_MAP[${USB_OPTIONS[0]}]:-${USB_OPTIONS[0]#f:}}"
-                                echo -e "  ${CYAN}[dry-run]${NC} a real run would ASK which of the ${USB_COUNT} USB radio config(s) applies;" >&2
-                                echo -e "  ${CYAN}[dry-run]${NC} previewing the first one: ${SELECTED_USB}" >&2
-                            elif command -v whiptail &>/dev/null; then
-                                MENU_H=$((USB_COUNT + 7))
-                                [[ $MENU_H -lt 12 ]] && MENU_H=12
-                                [[ $MENU_H -gt 22 ]] && MENU_H=22
-                                LIST_H=$((MENU_H - 8))
-                                [[ $LIST_H -gt $USB_COUNT ]] && LIST_H=$USB_COUNT
-                                [[ $LIST_H -lt 1 ]] && LIST_H=$USB_COUNT
-
-                                flush_terminal_input
-                                SELECTED_USB=$(whiptail --title "USB Radio Selection" \
-                                    --menu \
-                                    "Which USB radio is connected?\n\nConfigs from: ${AVAIL_DIR}/" \
-                                    $MENU_H 70 $LIST_H \
-                                    -- \
-                                    "${USB_OPTIONS[@]}" \
-                                    3>&1 1>&2 2>&3) || SELECTED_USB=""
-
-                                # Resolve tag back to filename stem
-                                if [[ -n "$SELECTED_USB" ]] && [[ -n "${USB_TAG_MAP[$SELECTED_USB]+x}" ]]; then
-                                    SELECTED_USB="${USB_TAG_MAP[$SELECTED_USB]}"
-                                fi
-                            fi
-
-                            # Fallback: text menu (if whiptail unavailable or
-                            # failed). Excluded under --dry-run: DRY-RUN NEVER
-                            # PROMPTS, and the branch above already answered.
-                            if [[ -z "$SELECTED_USB" && "$DRY_RUN" != "true" ]]; then
-                                if command -v whiptail &>/dev/null; then
-                                    echo -e "  ${YELLOW}Dialog failed or cancelled — trying text menu...${NC}" >&2
-                                fi
-                                echo "" >&2
-                                echo -e "  ${BOLD}Select your USB radio:${NC}" >&2
-                                i=1
-                                for ((idx=0; idx<${#USB_OPTIONS[@]}; idx+=2)); do
-                                    echo "    $i) ${USB_OPTIONS[$((idx+1))]}" >&2
-                                    ((i++))
-                                done
-                                echo "" >&2
-                                read -rp "  Select [1-${USB_COUNT}]: " usb_choice || true
-                                if [[ "$usb_choice" =~ ^[0-9]+$ ]] && [[ "$usb_choice" -ge 1 ]] && [[ "$usb_choice" -le "$USB_COUNT" ]]; then
-                                    idx=$(( (usb_choice - 1) * 2 ))
-                                    sel_tag="${USB_OPTIONS[$idx]}"
-                                    SELECTED_USB="${USB_TAG_MAP[$sel_tag]:-${sel_tag#f:}}"
-                                fi
-                            fi
-
-                            if [[ -n "$SELECTED_USB" ]]; then
-                                # Activate the selected USB config into config.d/ — sanitized (#58)
-                                if install_hat_overlay "$AVAIL_DIR/${SELECTED_USB}.yaml" "$MESHTASTICD_CONFIG_DIR/config.d"; then
-                                    echo -e "  ${GREEN}✓ USB config installed: ${SELECTED_USB}.yaml${NC}"
-                                fi
-                            else
-                                echo -e "  ${YELLOW}⚠ No USB radio selected — meshtasticd may not start correctly${NC}"
-                                echo -e "  ${YELLOW}  Fix: sudo python3 $REAL_INSTALL_DIR/scripts/sanitize_overlay.py /etc/meshtasticd/available.d/<your-radio>.yaml /etc/meshtasticd/config.d/${NC}"
-                            fi
-                        fi
-                    fi
-                fi
-
-                # Deploy systemd service from template or create inline
-                if [[ -f "$INSTALL_DIR/templates/systemd/meshtasticd-native.service" ]]; then
-                    sed "s|@MESHTASTICD_BIN@|${MESHTASTICD_BIN}|g" \
-                        "$INSTALL_DIR/templates/systemd/meshtasticd-native.service" \
-                        | mf_write_stdin /etc/systemd/system/meshtasticd.service
-                else
-                    mf_write_stdin /etc/systemd/system/meshtasticd.service << NATIVE_USB_SERVICE
-[Unit]
-Description=Meshtastic Daemon (USB Serial)
-Documentation=https://meshtastic.org
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/etc/meshtasticd
-ExecStart=${MESHTASTICD_BIN} -c /etc/meshtasticd/config.yaml
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-NATIVE_USB_SERVICE
-                fi
-
-                DAEMON_TYPE="native-usb"
-            else
-                # Native meshtasticd not available
-                echo -e "  ${YELLOW}Note: Native meshtasticd not installed${NC}"
-                echo -e "  ${YELLOW}  USB templates are available in ${MESHTASTICD_CONFIG_DIR}/available.d/${NC}"
-                echo -e "  ${YELLOW}  Install meshtasticd later: sudo apt install meshtasticd${NC}"
-
-                # Don't overwrite a working service with a placeholder
-                if systemctl show meshtasticd --property=ExecStart 2>/dev/null | grep -q meshtasticd; then
-                    echo -e "  ${GREEN}✓ Existing meshtasticd service is valid — keeping it${NC}"
-                    DAEMON_TYPE="native-usb"
-                else
-                    mf_write_stdin /etc/systemd/system/meshtasticd.service << 'USB_PLACEHOLDER'
-[Unit]
-Description=Meshtastic (pending native install)
-Documentation=https://meshtastic.org
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/bin/echo "Install native meshtasticd: sudo apt install meshtasticd — then select hardware in MeshForge TUI"
-
-[Install]
-WantedBy=multi-user.target
-USB_PLACEHOLDER
-
-                    DAEMON_TYPE="usb-pending"
-                fi
-            fi
+            echo -e "  ${CYAN}  meshtasticd is not used for a USB node (it cannot drive one).${NC}"
+            echo -e "  ${CYAN}  Reach the node with: meshtastic --port ${USB_DEV:-/dev/ttyACM0} --info${NC}"
+            echo -e "  ${CYAN}  A CH341 USB LoRa stick (MeshToad, MeshStick) is different: re-run${NC}"
+            echo -e "  ${CYAN}  and choose the meshtasticd radio option.${NC}"
+            DAEMON_TYPE="usb-direct"
             ;;
 
         none)

@@ -112,7 +112,7 @@ class RadioConfig:
     name: str
     radio_type: RadioType
     device_path: Optional[str] = None
-    chip: Optional[str] = None  # e.g., "sx1262", "sx1276"
+    chip: Optional[str] = None  # a meshtasticd Module name, e.g. "sx1262", "RF95"
     description: str = ""
     enabled: bool = False
     config_file: Optional[str] = None
@@ -261,14 +261,14 @@ Lora:
     "adafruit-rfm9x": {
         "name": "adafruit-rfm9x",
         "radio_type": RadioType.NATIVE_SPI,
-        "chip": "sx1276",
+        "chip": "RF95",
         "description": "Adafruit RFM9x LoRa Radio Bonnet (SX1276)",
         "config": """\
 # Adafruit RFM9x LoRa Radio Bonnet SPI Configuration
 # Hardware: SX1276 (RFM95/RFM96) — no Busy pin
 
 Lora:
-  Module: sx1276
+  Module: RF95
   CS: 7
   IRQ: 25
   Reset: 17
@@ -337,14 +337,14 @@ Lora:
     "elecrow-rfm95": {
         "name": "elecrow-rfm95",
         "radio_type": RadioType.NATIVE_SPI,
-        "chip": "sx1276",
+        "chip": "RF95",
         "description": "Elecrow RFM95 LoRa HAT (SX1276)",
         "config": """\
 # Elecrow RFM95 LoRa HAT SPI Configuration
 # Hardware: SX1276 (RFM95) — no Busy pin
 
 Lora:
-  Module: sx1276
+  Module: RF95
   CS: 25
   IRQ: 5
   Reset: 17

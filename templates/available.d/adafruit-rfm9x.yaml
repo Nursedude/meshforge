@@ -11,7 +11,7 @@
 #   sudo reboot
 
 Lora:
-  Module: sx1276
+  Module: RF95   # meshtasticd's name for SX127x/RFM9x (sx1276 is not recognised)
   CS: 7
   IRQ: 25
   Reset: 17

@@ -873,11 +873,13 @@ General:
   ConfigDirectory: /etc/meshtasticd/config.d/
   AvailableDirectory: /etc/meshtasticd/available.d/
 
-# LoRa radio settings (REQUIRED)
-# Most settings come from the hardware config in config.d/
-# You can override region here if needed:
+# LoRa radio (REQUIRED). The hardware overlay in config.d/ sets Module and
+# wins. `auto` finds a CH341 stick / HAT+ EEPROM itself and exits loudly when
+# it finds none; an UNSET Module silently runs a SIMULATED radio (measured
+# 2026-09-30). Region is a radio setting (meshtastic --set lora.region),
+# not a key meshtasticd reads here.
 Lora:
-  Region: US  # Change to your region: US, EU_868, AU_915, etc.
+  Module: auto
 
 # Web server settings (RECOMMENDED)
 Webserver:

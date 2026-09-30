@@ -260,7 +260,10 @@ class TestInstallerActivatesSanitized:
         # R3: the sibling script must not TEACH the raw cp either
         verify = (self.REPO / "scripts" / "verify_post_install.sh").read_text()
         assert _cp_into_config_d(verify) == [], _cp_into_config_d(verify)
-        assert text.count("install_hat_overlay \"$AVAIL_DIR/") == 2
+        # ONE activation path since B7 phase 2 (2026-09-30): the meshtasticd-radio
+        # (HAT / CH341) branch. The USB-node branch activates NOTHING — meshtasticd
+        # cannot drive a USB node (tests/test_installer_usb_and_module.py pins it).
+        assert text.count("install_hat_overlay \"$AVAIL_DIR/") == 1
         assert "scripts/sanitize_overlay.py" in text
         assert "python3-yaml" in text  # the sanitizer's one dependency is installed first
 
