@@ -6,7 +6,6 @@ Host class must provide `self.ctx` (TUIContext).
 """
 
 import logging
-import os
 
 from utils.safe_import import safe_import
 
@@ -215,30 +214,62 @@ class DiagnosticsAndAssistantMixin:
             self.ctx.dialog.msgbox("Error", f"Query failed: {e}")
 
     def _claude_assistant(self):
-        """Interactive Claude Assistant for mesh help."""
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        mode = "PRO" if api_key else "Standalone"
+        """Claude Assistant — first says which AI assist this box ACTUALLY has.
 
-        self.ctx.dialog.msgbox(
-            "Claude Assistant",
-            f"Mode: {mode}\n\n"
-            f"{'PRO mode: Full Claude AI capabilities' if api_key else 'Standalone: Rule-based + knowledge base'}\n\n"
-            f"{'Set ANTHROPIC_API_KEY for PRO features.' if not api_key else 'API key detected.'}"
-        )
+        The old banner said "Mode: PRO — Full Claude AI capabilities" whenever
+        ANTHROPIC_API_KEY was set, even with no `anthropic` package (it could
+        never answer), and a reply whose first block was a thinking block
+        fell back to the knowledge base without a word. Now: measured
+        availability, the fallback reason on every answer, and the
+        subscription path (Claude Code in the repo) named — an API SDK cannot
+        use a Claude subscription (item 5, 2026-09-30).
+        """
+        if not _HAS_ASSISTANT:
+            self.ctx.dialog.msgbox(
+                "Error",
+                "Claude assistant not available.\n\n"
+                "Ensure you're running from the src/ directory."
+            )
+            return
+        from pathlib import Path as _Path
+        from utils.claude_assistant import check_availability
+        av = check_availability()
+        repo = _Path(__file__).resolve().parents[3]
+        lines = ["AI assist on this box (checked now):", ""]
+        if av.api == "configured":
+            lines.append(f"  Claude API: {av.detail}")
+        else:
+            lines.append("  Claude API: not in use —")
+            lines.append(f"    {av.detail}")
+        if av.claude_code:
+            lines.append("  Claude Code (Claude subscription): installed —")
+            lines.append(f"    as your user: cd {repo} && claude")
+            lines.append("    (MeshForge's skills, rules and checks load there)")
+        else:
+            lines.append("  Claude Code (Claude subscription): not found")
+            lines.append("    (checked PATH and ~/.local/bin)")
+        lines += ["", "Each answer says whether the Claude API or the local",
+                  "knowledge base answered it — and why, if not the API."]
+        self.ctx.dialog.msgbox("Claude Assistant", "\n".join(lines))
 
+        # The title follows the LAST ACTUAL answerer, never the banner's hope.
+        label = "Claude API configured" if av.api == "configured" else "local knowledge base"
+        assistant = ClaudeAssistant()      # one per session: history carries over
         while True:
             question = self.ctx.dialog.inputbox(
-                f"Claude Assistant ({mode})",
+                f"Claude Assistant ({label})",
                 "Ask a question about mesh networking:\n(Enter blank to exit)"
             )
-
             if not question:
                 break
+            mode = self._ask_assistant(question, assistant)
+            if mode == "pro":
+                label = "Claude API"
+            elif mode == "standalone":
+                label = "local knowledge base"
 
-            self._ask_assistant(question)
-
-    def _ask_assistant(self, question: str):
-        """Ask the Claude assistant."""
+    def _ask_assistant(self, question: str, assistant=None):
+        """Ask the Claude assistant; the answer says who answered, and why not the API."""
         self.ctx.dialog.infobox("Thinking", f"Processing: {question[:40]}...")
 
         if not _HAS_ASSISTANT:
@@ -250,7 +281,7 @@ class DiagnosticsAndAssistantMixin:
             return
 
         try:
-            assistant = ClaudeAssistant()
+            assistant = assistant or ClaudeAssistant()
             response = assistant.ask(question)
 
             result_lines = [
@@ -267,7 +298,13 @@ class DiagnosticsAndAssistantMixin:
                     result_lines.append(f"  - {action}")
                 result_lines.append("")
 
-            result_lines.append(f"Mode: {response.mode.value.upper()}")
+            if response.mode.value == "pro":
+                from utils.claude_assistant import DEFAULT_ASSISTANT_MODEL
+                result_lines.append(f"Answered by: Claude API ({DEFAULT_ASSISTANT_MODEL})")
+            else:
+                result_lines.append("Answered by: local knowledge base")
+                if getattr(response, "fallback_reason", ""):
+                    result_lines.append(f"Claude API NOT used: {response.fallback_reason}")
             if response.confidence > 0:
                 result_lines.append(f"Confidence: {response.confidence:.0%}")
 
@@ -275,5 +312,7 @@ class DiagnosticsAndAssistantMixin:
                 "Claude Assistant",
                 "\n".join(result_lines)
             )
+            return response.mode.value
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Assistant failed: {e}")
+            return None

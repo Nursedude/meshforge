@@ -71,7 +71,7 @@ logger = logging.getLogger(__name__)
 # answers, never silently-wrong). See .claude/rules/calibrated_claims.md
 # ("behavior shifts across model versions") and ~/.claude/plans/self-audit-qa-arc.md s0.
 DEFAULT_ASSISTANT_MODEL = os.environ.get(
-    "MESHFORGE_ASSISTANT_MODEL", "claude-sonnet-5"
+    "MESHFORGE_ASSISTANT_MODEL", "claude-opus-5-5"
 )
 
 
@@ -80,6 +80,116 @@ class ExpertiseLevel(Enum):
     NOVICE = "novice"      # New to mesh networking
     INTERMEDIATE = "intermediate"  # Familiar with basics
     EXPERT = "expert"      # Deep technical knowledge
+
+
+# Effort for the in-app chat assistant: short answers to operator questions,
+# not agentic work — `low` (thinking stays on; it cannot be disabled on the
+# current Opus). Override with MESHFORGE_ASSISTANT_EFFORT.
+ASSISTANT_EFFORT = os.environ.get("MESHFORGE_ASSISTANT_EFFORT", "low")
+
+# The API key may come from the environment or from this file (mode 0600).
+# The TUI launcher starts under `sudo`, whose default env_reset drops
+# ANTHROPIC_API_KEY — a key only in the operator's shell never reaches it.
+KEY_FILE_NAME = "anthropic.key"
+
+
+def _key_file_path():
+    from utils.paths import get_real_user_home
+    return get_real_user_home() / ".config" / "meshforge" / KEY_FILE_NAME
+
+
+def resolve_api_key():
+    """(key, None) or (None, reason). Env first, then the key file.
+
+    The TUI runs as ROOT under sudo, so the file is opened without following
+    a symlink and without blocking (a FIFO planted there froze the banner),
+    and must be a small regular file owned by the operator (or root) with no
+    group/other bits — never a pointer to some root-only secret that would
+    then be sent to api.anthropic.com (reader pair, 2026-09-30).
+    """
+    import stat as _stat
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if key:
+        return key, None
+    path = _key_file_path()
+    try:
+        fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None, ("no API key visible to this process (ANTHROPIC_API_KEY is "
+                      f"unset — the TUI runs under sudo, which drops it — and {path} "
+                      "does not exist)")
+    except OSError as e:
+        return None, f"{path} refused ({e.strerror}; a symlink is never followed)"
+    try:
+        st = os.fstat(fd)
+        owner_ok = st.st_uid in (0, path.parent.parent.parent.stat().st_uid)
+        if not _stat.S_ISREG(st.st_mode):
+            return None, f"{path} is not a regular file — refused"
+        if not owner_ok:
+            return None, f"{path} is not owned by you or root — refused"
+        if st.st_mode & 0o077:
+            return None, (f"{path} is readable by other users (mode "
+                          f"{oct(st.st_mode & 0o777)}) — refused; chmod 600 it")
+        if st.st_size > 512:
+            return None, f"{path} is {st.st_size} bytes — not an API key; refused"
+        key = os.read(fd, 513).decode("utf-8", "replace").strip()
+    except OSError as e:
+        return None, f"cannot read {path}: {e}"
+    finally:
+        os.close(fd)
+    if not key:
+        return None, f"{path} is empty"
+    return key, None
+
+
+def find_claude_code():
+    """Path of the `claude` CLI (Claude Code) for the operator, or None.
+    A Claude SUBSCRIPTION reaches the domain through Claude Code run in the
+    repo — the API SDK cannot use a subscription. Checked on PATH and in the
+    real user's ~/.local/bin (root's PATH under sudo usually lacks it)."""
+    import shutil
+    found = shutil.which("claude")
+    if found:
+        return found
+    try:
+        from utils.paths import get_real_user_home
+        cand = get_real_user_home() / ".local" / "bin" / "claude"
+        return str(cand) if os.access(cand, os.X_OK) else None
+    except OSError:
+        return None
+
+
+@dataclass
+class AssistantAvailability:
+    """What AI assist this box ACTUALLY has — measured, never assumed."""
+    api: str            # "configured" | "no_key" | "no_package"
+    detail: str         # one line for the operator
+    claude_code: Optional[str] = None
+
+
+def check_availability() -> "AssistantAvailability":
+    key, reason = resolve_api_key()
+    cc = find_claude_code()
+    if not key:
+        return AssistantAvailability("no_key", reason, cc)
+    if not _HAS_ANTHROPIC:
+        return AssistantAvailability(
+            "no_package",
+            "API key found, but the `anthropic` package is not installed "
+            f"({_pip_hint()}; needs Python >= 3.10)", cc)
+    # Key + package found is PRESENCE, not function: a revoked key, no WAN or
+    # an unusable model all look the same until a reply comes back.
+    return AssistantAvailability(
+        "configured",
+        f"configured — key + package found, not contacted yet "
+        f"({DEFAULT_ASSISTANT_MODEL}, effort {ASSISTANT_EFFORT})", cc)
+
+
+def _pip_hint():
+    """The install command for the interpreter RUNNING this code (the TUI's
+    venv, not whatever `pip` is first on PATH — PEP 668 refuses system pip)."""
+    import sys as _sys
+    return f"{_sys.executable} -m pip install -r requirements/ai.txt"
 
 
 class AssistantMode(Enum):
@@ -98,6 +208,8 @@ class AssistantResponse:
     suggested_actions: List[str] = field(default_factory=list)
     mode: AssistantMode = AssistantMode.STANDALONE
     expertise_level: ExpertiseLevel = ExpertiseLevel.INTERMEDIATE
+    # Why the Claude API did NOT answer, when it was tried ("" = not tried).
+    fallback_reason: str = ""
 
 
 @dataclass
@@ -157,9 +269,15 @@ Always prioritize safety - never suggest actions that could damage hardware
             api_key: Anthropic API key. If not provided, uses ANTHROPIC_API_KEY env var.
             expertise_level: User's expertise level for response adaptation.
         """
-        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        self._api_key = api_key or resolve_api_key()[0]
+        self.last_api_error = ""
         self._expertise_level = expertise_level
-        self._mode = AssistantMode.PRO if self._api_key else AssistantMode.STANDALONE
+        self._mode = (AssistantMode.PRO if self._api_key and _HAS_ANTHROPIC
+                      else AssistantMode.STANDALONE)
+        if self._api_key and not _HAS_ANTHROPIC:
+            # decided here, so say it here — _get_client() never runs now
+            self.last_api_error = ("the `anthropic` package is not installed "
+                                   f"({_pip_hint()})")
 
         # Initialize standalone components
         self._diagnostic_engine = get_diagnostic_engine()
@@ -181,13 +299,17 @@ Always prioritize safety - never suggest actions that could damage hardware
         """Get or create Claude API client."""
         if self._client is None and self._api_key:
             if not _HAS_ANTHROPIC:
-                logger.warning("anthropic package not installed. Run: pip install anthropic")
+                self.last_api_error = ("the `anthropic` package is not installed "
+                                       f"({_pip_hint()})")
+                logger.warning(self.last_api_error)
                 self._mode = AssistantMode.STANDALONE
             else:
                 try:
-                    self._client = _anthropic_mod.Anthropic(api_key=self._api_key)
+                    self._client = _anthropic_mod.Anthropic(
+                        api_key=self._api_key, timeout=90.0, max_retries=1)
                 except Exception as e:
-                    logger.error(f"Failed to initialize Claude client: {e}")
+                    self.last_api_error = f"client init failed: {type(e).__name__}: {e}"
+                    logger.error(self.last_api_error)
                     self._mode = AssistantMode.STANDALONE
         return self._client
 
@@ -218,28 +340,47 @@ Always prioritize safety - never suggest actions that could damage hardware
         Returns:
             AssistantResponse with answer and metadata
         """
-        # Add to conversation history
+        # History holds ONLY turns the API took part in, as user/assistant
+        # pairs starting on a user turn: a knowledge-base answer replayed as
+        # the model's own words, a leading assistant turn after a mid-pair
+        # trim, or an orphaned user turn after a fallback all corrupt it
+        # (reader pair, 2026-09-30).
         with self._conversation_lock:
             self._conversation.append(ConversationMessage(
                 role="user",
                 content=question
             ))
-
-            # Trim history if needed
             if len(self._conversation) > self.MAX_HISTORY:
                 self._conversation = self._conversation[-self.MAX_HISTORY:]
+            while self._conversation and self._conversation[0].role != "user":
+                self._conversation.pop(0)
 
         # Try PRO mode first
+        reason = ""
         if self._mode == AssistantMode.PRO:
             response = self._ask_claude(question, include_history)
             if response:
                 return response
+            reason = self.last_api_error or "the Claude API was unavailable"
+        elif self._api_key:
+            # configured, but out for this session (no package / client init):
+            # every later answer says so too, not just the first
+            reason = self.last_api_error or "the Claude API is unavailable in this session"
 
-        # Fall back to standalone
-        return self._ask_standalone(question)
+        # The pending user turn got no API answer: drop it from history.
+        with self._conversation_lock:
+            if self._conversation and self._conversation[-1].role == "user":
+                self._conversation.pop()
+
+        # Fall back to standalone — and say why, so a key that is set but
+        # broken never passes for a working PRO mode.
+        answer = self._ask_standalone(question)
+        answer.fallback_reason = reason
+        return answer
 
     def _ask_claude(self, question: str, include_history: bool) -> Optional[AssistantResponse]:
         """Ask using Claude API."""
+        self.last_api_error = ""
         client = self._get_client()
         if not client:
             return None
@@ -270,17 +411,29 @@ Always prioritize safety - never suggest actions that could damage hardware
             # the old 1024 cap could truncate a reasoned answer mid-thought.
             response = client.messages.create(
                 model=DEFAULT_ASSISTANT_MODEL,
-                max_tokens=4096,
+                max_tokens=16000,
+                output_config={"effort": ASSISTANT_EFFORT},
                 system=self._get_system_prompt(),
                 messages=messages,
                 cache_control={"type": "ephemeral"},
             )
 
-            # Safely extract response text
-            if not response.content:
-                logger.warning("Empty response from Claude API")
+            # The reply's first block can be a THINKING block (thinking is on
+            # by default); `content[0].text` raised there and the broad except
+            # below turned every such answer into a silent standalone one.
+            if getattr(response, "stop_reason", None) == "refusal":
+                self.last_api_error = "the model declined this question (refusal)"
+                logger.warning("Claude API: %s", self.last_api_error)
                 return None
-            answer = response.content[0].text
+            answer = "".join(getattr(b, "text", "") for b in (response.content or [])
+                             if getattr(b, "type", "") == "text").strip()
+            if not answer:
+                self.last_api_error = ("no text in the reply (stop_reason="
+                                       f"{getattr(response, 'stop_reason', '?')})")
+                logger.warning("Claude API: %s", self.last_api_error)
+                return None
+            if getattr(response, "stop_reason", None) == "max_tokens":
+                answer += "\n\n(truncated: the reply hit its length limit)"
 
             # Add to conversation history
             with self._conversation_lock:
@@ -302,7 +455,8 @@ Always prioritize safety - never suggest actions that could damage hardware
             )
 
         except Exception as e:
-            logger.error(f"Claude API error: {e}")
+            self.last_api_error = f"{type(e).__name__}: {e}"
+            logger.error(f"Claude API error: {self.last_api_error}")
             return None
 
     def _ask_standalone(self, question: str) -> AssistantResponse:
@@ -331,13 +485,8 @@ Always prioritize safety - never suggest actions that could damage hardware
         related = [entry.title for entry, _ in results[1:]]
         related.extend(top_entry.related_entries)
 
-        # Add to conversation history
-        with self._conversation_lock:
-            self._conversation.append(ConversationMessage(
-                role="assistant",
-                content=content
-            ))
-
+        # NOT added to history: the API must never be shown knowledge-base
+        # text as if it were its own earlier answer (reader J6).
         return AssistantResponse(
             answer=content,
             confidence=min(0.7, score / 5.0),  # Normalize score
@@ -474,7 +623,7 @@ Always prioritize safety - never suggest actions that could damage hardware
             return AssistantResponse(
                 answer="No significant issues detected in the provided logs.",
                 confidence=0.7,
-                mode=self._mode,
+                mode=AssistantMode.STANDALONE,   # never an API answer
             )
 
         # Build response
@@ -488,7 +637,7 @@ Always prioritize safety - never suggest actions that could damage hardware
             confidence=0.8,
             sources=["Diagnostic Engine"],
             suggested_actions=list(set(recommendations))[:5],
-            mode=self._mode,
+            mode=AssistantMode.STANDALONE,   # never an API answer
         )
 
     def get_help(self, topic: str, expertise: Optional[ExpertiseLevel] = None) -> AssistantResponse:
@@ -525,7 +674,7 @@ Always prioritize safety - never suggest actions that could damage hardware
                 confidence=0.9,
                 sources=[f"Troubleshooting Guide: {guide.problem}"],
                 related_topics=guide.related_problems,
-                mode=self._mode,
+                mode=AssistantMode.STANDALONE,   # never an API answer
             )
         else:
             # Fall back to regular query
@@ -580,7 +729,8 @@ Always prioritize safety - never suggest actions that could damage hardware
 
     def is_pro_enabled(self) -> bool:
         """Check if PRO mode is available."""
-        return self._mode == AssistantMode.PRO and self._api_key is not None
+        return (self._mode == AssistantMode.PRO and self._api_key is not None
+                and _HAS_ANTHROPIC)
 
 
 # Convenience functions

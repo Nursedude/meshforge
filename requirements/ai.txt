@@ -1,0 +1,9 @@
+# Optional: AI assist through the Claude API (the in-TUI Claude Assistant).
+# NOT needed for anything else — the assistant falls back to the local
+# knowledge base without it, and says so. Needs Python >= 3.10.
+# A Claude SUBSCRIPTION is used through Claude Code run in the repo instead
+# (the API SDK cannot use a subscription).
+#   pip install -r requirements/ai.txt
+# Key: ANTHROPIC_API_KEY, or ~/.config/<app>/anthropic.key (mode 0600; the TUI
+# runs under sudo, which drops environment variables).
+anthropic>=1.10.0,<2

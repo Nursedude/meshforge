@@ -122,6 +122,7 @@ jobs:
             -r requirements/mqtt.txt \
             -r requirements/monitoring.txt \
             -r requirements/dev.txt \
+            -r requirements/ai.txt \
             -r requirements/ci.txt
 
   test:
