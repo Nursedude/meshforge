@@ -745,7 +745,7 @@ def check_rns_port_available(port: int = 29716) -> Dict[str, any]:
             if pids:
                 result['fix_hint'] = (
                     f"Kill existing RNS process: sudo kill {pids[0]}\n"
-                    f"Or stop rnsd: pkill -f rnsd\n"
+                    f"Or stop rnsd: pkill -x rnsd\n"
                     f"Or use the shared RNS instance by running rnsd separately"
                 )
             else:
@@ -776,7 +776,7 @@ def check_rns_port_available(port: int = 29716) -> Dict[str, any]:
                     pids = find_rns_processes()
                     result['pids'] = pids
                     result['fix_hint'] = (
-                        f"Kill existing RNS process or stop rnsd: pkill -f rnsd"
+                        f"Kill existing RNS process or stop rnsd: pkill -x rnsd"
                     )
             finally:
                 if sock4:
@@ -934,7 +934,7 @@ def kill_rns_processes(force: bool = False) -> Dict[str, any]:
     # Also try pkill for any we might have missed
     try:
         subprocess.run(
-            ['pkill', '-f', 'rnsd'],
+            ['pkill', '-x', 'rnsd'],
             capture_output=True, timeout=5
         )
     except subprocess.SubprocessError:
@@ -989,7 +989,7 @@ def handle_address_in_use_error(error: Exception, logger=None) -> Dict[str, any]
             )
             result['fix_options'] = [
                 "Use the shared RNS instance (recommended if rnsd is running)",
-                f"Stop existing RNS: pkill -f rnsd",
+                f"Stop existing RNS: pkill -x rnsd",
                 f"Kill specific process: sudo kill {result['rns_pids'][0]}",
                 "Wait a few seconds and try again"
             ]

@@ -483,7 +483,7 @@ def diagnose_rns_connectivity(handler, error_output: str):
             )
             stop_service('rnsd')
             subprocess.run(
-                ['pkill', '-f', 'rnsd'],
+                ['pkill', '-x', 'rnsd'],
                 capture_output=True, timeout=5,
             )
             time.sleep(1)
