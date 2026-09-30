@@ -29,6 +29,27 @@ from status_bar import (
 )
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _no_real_space_weather_fetch():
+    """No test here may reach NOAA from the status bar's weather thread.
+
+    `get_status_line()` submits `_check_space_weather` to a worker thread
+    whenever the weather TTL is stale, so any test that calls it unpatched
+    starts a REAL HTTPS fetch that outlives the test. On CI 2026-09-30
+    (`7d6b46c7`, a docs-only commit) that thread — left by
+    `test_concurrent_calls_safe` — segfaulted inside
+    `space_weather._fetch_a_index_from_text` while a later test ran:
+    exit 139, no pytest summary. MODULE scope on purpose: a per-test patch
+    is gone by the time a late-starting executor thread looks the class up.
+    Tests that exercise the fetch patch `status_bar.SpaceWeatherAPI`
+    themselves; that inner patch wins while it is active.
+    """
+    api = MagicMock()
+    api.return_value.get_current_conditions.side_effect = OSError("network disabled in tests")
+    with patch("status_bar.SpaceWeatherAPI", api):
+        yield api
+
+
 @pytest.fixture(autouse=True)
 def _isolate_status_bar_from_fleet(request):
     """Block StatusBar.__init__ from pulling real node-tracker state.
