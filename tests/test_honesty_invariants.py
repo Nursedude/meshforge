@@ -583,6 +583,11 @@ MESHFORGE_CODE_DAEMONS: dict = {
     "meshforge-mini-dudeai-claw": "dude-claw sibling, claw-brain box only (templates/systemd/)",
     "meshforge-echo":      "lab.lxmf_echo responder (templates/systemd/ meshforge-echo-user.service)",
     "nomadnet-silence-watch": "monitoring.nomadnet_silence_watch (templates/systemd/)",
+    # OFF-REPO: ~/meshforge_digest.py + ~/.config/systemd/user/meshforge-digest.service
+    # on the manager box, but it imports repo mini_dudeai (write_brief) — so it
+    # runs THIS repo's code and went 3 days stale unseen (2026-09-30 deploy,
+    # skew NOTE). Restart wired in fleet_sync's self leg.
+    "meshforge-digest":    "~/meshforge_digest.py importing repo mini_dudeai (off-repo unit, manager box)",
 }
 
 # Type=simple/forking daemons MeshForge installs that a /opt/meshforge pull does
@@ -1008,6 +1013,8 @@ AUX_DAEMON_COVERAGE: dict = {
                       "no claw-specific output probe yet — a documented single-box gap",
     "nomadnet-silence-watch": "is itself an observability organ (watches nomadnet "
                       "MQTT silence); its output is alerts, not metered by a meta-probe",
+    "meshforge-digest": "manager box only; writes ~/situation_digest.md for a human "
+                      "reader — no freshness probe, a documented single-box gap",
 }
 
 

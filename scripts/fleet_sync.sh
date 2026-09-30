@@ -1306,6 +1306,10 @@ done
 # responder + nomadnet silence watcher. no-op on boxes without the unit.
 sync_local_user_unit meshforge-echo /opt/meshforge
 sync_local_user_unit nomadnet-silence-watch /opt/meshforge
+# The situation digest: an OFF-REPO user unit on the manager box whose script
+# imports repo mini_dudeai — without this line it served 3-day-old mini code
+# (2026-09-30 skew NOTE). no-op on boxes without the unit.
+sync_local_user_unit meshforge-digest /opt/meshforge
 
 # Self-side fleet-config smokes. Mirrors the remote checks so the
 # canonical box (which fleet_hosts deliberately excludes) gets the same
