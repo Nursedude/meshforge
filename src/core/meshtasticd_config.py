@@ -44,9 +44,11 @@ class MeshtasticdConfig:
 
     Directory structure:
         /etc/meshtasticd/
-        ├── available.d/     # Available radio configs (36 templates)
-        │   ├── heltec-usb.yaml, tbeam-usb.yaml, ...  (9 USB)
-        │   └── meshtoad-spi.yaml, rak-hat-spi.yaml, ... (27 SPI)
+        ├── available.d/     # Available radio configs
+        │   ├── lora-usb-meshtoad-e22.yaml, meshtoad-spi.yaml, ...  (CH341 USB-SPI)
+        │   └── rak-hat-spi.yaml, ... (SPI HATs)
+        │   (no USB-serial entries: meshtasticd has no `Serial:` key;
+        │    standalone USB nodes are reached over serial directly)
         ├── config.d/        # Enabled configs (sanitized copies of available.d)
         │   └── active.yaml -> ../available.d/meshtoad-spi.yaml
         ├── config.yaml      # Main config (merged from config.d)

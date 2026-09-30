@@ -273,9 +273,11 @@ def detect_hardware() -> HardwareHealth:
                     device_name = HardwareDetector.get_device_name_for_usb_id(usb_id)
                     if device_name:
                         hardware.device_name = device_name
-                    template = HardwareDetector.match_usb_to_template(usb_id)
-                    if template:
-                        hardware.template_match = template
+                    # A tty is a standalone node: no meshtasticd overlay
+                    # applies (meshtasticd has no `Serial:` key) — never name
+                    # one. It is reached over serial directly.
+                    if HardwareDetector.usb_radio_kind(usb_id) == 'node':
+                        hardware.template_match = "none — standalone node, reached over serial"
                 except ImportError:
                     logger.debug("config.hardware not available for USB identification")
 

@@ -1,7 +1,7 @@
 """Hardware detection for LoRa modules and devices
 
 Single source of truth for:
-- USB module database (KNOWN_USB_MODULES, USB_ID_TO_TEMPLATE)
+- USB module database (KNOWN_USB_MODULES, USB_ID_KIND)
 - SPI HAT database (KNOWN_SPI_HATS, HAT_KEY_TO_TEMPLATE)
 - Hardware device configs (HARDWARE_DEVICES) for TUI selection
 - Hardware detection logic (HardwareDetector)
@@ -126,44 +126,38 @@ class HardwareDetector:
         }
     }
 
-    # USB vendor:product ID → meshtasticd template mapping
-    # Maps detected USB chipsets to the correct template in available.d/
-    USB_ID_TO_TEMPLATE = {
-        # Heltec ESP32-S3 variants
-        '303a:1001': 'heltec-usb.yaml',      # ESP32-S3 CDC (Heltec V3/V4)
-        '303a:4001': 'heltec-usb.yaml',      # ESP32-S3 JTAG
-        '303a:1002': 'heltec-usb.yaml',      # ESP32-S3 Native USB
-        # MeshStick
-        '1209:0000': 'meshstick-usb.yaml',   # Official Meshtastic USB device
-        # MeshToad / CH340 family
-        '1a86:7523': 'meshtoad-usb.yaml',    # CH340 (MeshToad, MeshTadpole)
-        '1a86:55d4': 'meshtoad-usb.yaml',    # CH341 alternate
-        '1a86:5512': 'lora-usb-meshtoad-e22.yaml',  # CH341 SPI/I2C bridge
-        '1a86:7522': 'meshtoad-usb.yaml',    # CH340K variant
-        # RAK4631 / nRF52840
-        '239a:8029': 'rak4631-usb.yaml',     # Adafruit nRF52840 (RAK4631)
-        '239a:0029': 'rak4631-usb.yaml',     # RAK4631 bootloader mode
-        '19d2:0016': 'rak4631-usb.yaml',     # RAK WisBlock USB
-        # Station G2 / CP2102
-        '10c4:ea60': 'station-g2-usb.yaml',  # CP2102 (Station G2)
-        # T-Beam S3 / CH9102
-        '1a86:55d3': 'tbeam-usb.yaml',       # CH9102 (T-Beam S3)
-        # Generic USB-serial fallback
-        '0403:6001': 'usb-serial-generic.yaml',  # FT232R
-        '0403:6015': 'usb-serial-generic.yaml',  # FT231X
+    # USB vendor:product ID → what KIND of radio it is. Not a template map:
+    # meshtasticd 2.7.26 has no `Serial:` key (PortduinoGlue.cpp parses 11
+    # top-level keys), so the old map sent every standalone node to an
+    # overlay meshtasticd ignores (queued B7, re-measured 2026-09-30).
+    #   'ch341' — CH341 in SPI mode: meshtasticd drives the LoRa chip over
+    #             USB via a `Lora: … spidev: ch341` overlay (upstream
+    #             lora-usb-*.yaml; ALL such boards share 1a86:5512, so the ID
+    #             cannot pick the overlay — the board's product string does).
+    #   'node'  — a USB-UART / native-USB chip: presents a tty, runs its own
+    #             Meshtastic firmware. Reached over serial directly (the CLI's
+    #             --port, gateway `meshtastic.connection_type: serial`).
+    USB_ID_KIND = {
+        '1a86:5512': 'ch341',   # CH341 SPI/I2C bridge (MeshToad E22, MeshStick 1262, Pinedio, PiggyStick)
+        '303a:1001': 'node',    # ESP32-S3 CDC (Heltec V3/V4)
+        '303a:4001': 'node',    # ESP32-S3 JTAG
+        '303a:1002': 'node',    # ESP32-S3 native USB
+        '1a86:7523': 'node',    # CH340 USB-UART
+        '1a86:55d4': 'node',    # WCH USB-UART (CH9102/CH343 family)
+        '1a86:7522': 'node',    # CH340K USB-UART
+        '239a:8029': 'node',    # nRF52840 (RAK4631)
+        '239a:0029': 'node',    # RAK4631 bootloader
+        '19d2:0016': 'node',    # RAK WisBlock USB
+        '10c4:ea60': 'node',    # CP2102 (Station G2)
+        '1a86:55d3': 'node',    # WCH USB-UART (CH9102/CH343 family; T-Beam S3)
+        '0403:6001': 'node',    # FT232R
+        '0403:6015': 'node',    # FT231X
     }
 
     @classmethod
-    def match_usb_to_template(cls, vendor_product_id: str) -> 'Optional[str]':
-        """Match a USB vendor:product ID to a meshtasticd template filename.
-
-        Args:
-            vendor_product_id: USB ID in 'vendor:product' format (e.g. '303a:1001')
-
-        Returns:
-            Template filename (e.g. 'heltec-usb.yaml') or None if no match.
-        """
-        return cls.USB_ID_TO_TEMPLATE.get(vendor_product_id.lower())
+    def usb_radio_kind(cls, vendor_product_id: str) -> 'Optional[str]':
+        """'ch341', 'node', or None for an ID we do not know."""
+        return cls.USB_ID_KIND.get((vendor_product_id or '').lower())
 
     @classmethod
     def get_device_name_for_usb_id(cls, vendor_product_id: str) -> 'Optional[str]':
@@ -771,13 +765,5 @@ HARDWARE_DEVICES = {
         requires_spi=False,
         requires_i2c=True,
         notes='Common OLED display module'
-    ),
-    # USB Serial
-    'usb-serial': HardwareDevice(
-        name='USB Serial Radio',
-        description='USB-connected Meshtastic device',
-        yaml_file='usb-serial.yaml',
-        requires_spi=False,
-        notes='For T-Beam, T-Echo, etc. Template: usb-serial.yaml'
     ),
 }

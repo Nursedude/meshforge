@@ -9,8 +9,9 @@ This directory contains example configurations to help you get started with Mesh
 mkdir -p ~/.config/meshforge
 cp examples/configs/gateway-basic.json ~/.config/meshforge/gateway.json
 
-# 2. Copy hardware config (requires sudo)
-sudo cp examples/configs/meshtasticd-usb.yaml /etc/meshtasticd/config.d/
+# 2. Radio hardware (requires sudo): a Pi SPI HAT gets an overlay —
+#    sudo python3 scripts/sanitize_overlay.py examples/configs/meshtasticd-spi-hat.yaml /etc/meshtasticd/config.d/
+#    A USB radio: see "USB radios" below (the setup wizard routes it).
 
 # 3. Start MeshForge
 sudo python3 src/launcher.py
@@ -82,14 +83,18 @@ RNS App <---> MeshForge <---> Meshtastic LoRa <---> Remote Node
 
 ## Hardware Configurations
 
-### `meshtasticd-usb.yaml` - USB LoRa Device
-For USB-connected devices like Heltec V3, T-Beam, RAK4631.
+### USB radios — no example overlay, on purpose
+meshtasticd (2.7.x) has no `Serial:` key, so no `config.d/` overlay can point
+it at a USB-serial device; an overlay here would configure nothing. Two kinds:
 
-**Supported devices:**
-- Heltec V3 / V4
-- LilyGo T-Beam
-- RAK4631 (MeshStick)
-- Any USB-serial Meshtastic device
+- **CH341 USB LoRa sticks** (MeshToad, MeshStick, uMesh, Pinedio, PiggyStick):
+  meshtasticd drives the radio over USB with a `Lora: … spidev: ch341`
+  overlay. The meshtasticd package ships them in
+  `/etc/meshtasticd/available.d/` (`lora-usb-*.yaml`, `lora-meshstick-1262.yaml`);
+  the setup wizard offers exactly these.
+- **Standalone Meshtastic nodes** (Heltec, T-Beam, RAK4631, Station G2): they
+  run their own firmware; meshtasticd is not used for them. Reach them over
+  serial (`meshtastic --port /dev/ttyACM0 ...`).
 
 ### `meshtasticd-spi-hat.yaml` - Raspberry Pi SPI HAT
 For SPI-connected LoRa HATs on Raspberry Pi GPIO.

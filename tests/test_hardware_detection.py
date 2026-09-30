@@ -29,11 +29,11 @@ class TestCH341DeviceDatabases:
         assert 'MeshToad E22' in entry['common_devices']
         assert entry.get('connection_type') == 'spi'
 
-    def test_ch341_5512_in_usb_template_map(self):
-        """CH341 SPI bridge should map to lora-usb-meshtoad-e22.yaml template."""
+    def test_ch341_5512_is_kind_ch341(self):
+        """CH341 SPI bridge is the one 'ch341' ID. It no longer maps to ONE
+        template: every CH341 board shares 1a86:5512 (B7, 2026-09-30)."""
         from config.hardware import HardwareDetector
-        assert '1a86:5512' in HardwareDetector.USB_ID_TO_TEMPLATE
-        assert HardwareDetector.USB_ID_TO_TEMPLATE['1a86:5512'] == 'lora-usb-meshtoad-e22.yaml'
+        assert HardwareDetector.usb_radio_kind('1a86:5512') == 'ch341'
 
     def test_ch341_5512_in_device_scanner(self):
         """CH341 SPI bridge should be in device_scanner.py KNOWN_DEVICES."""
@@ -58,12 +58,6 @@ class TestCH341DeviceDatabases:
         assert entry.name == 'MeshToad E22'
         assert entry.yaml_file == 'lora-usb-meshtoad-e22.yaml'
         assert entry.requires_spi is True
-
-    def test_ch341_5512_match_usb_to_template(self):
-        """match_usb_to_template should return correct template for 1a86:5512."""
-        from config.hardware import HardwareDetector
-        template = HardwareDetector.match_usb_to_template('1a86:5512')
-        assert template == 'lora-usb-meshtoad-e22.yaml'
 
     def test_ch341_5512_get_device_name(self):
         """get_device_name_for_usb_id should return device names for 1a86:5512."""

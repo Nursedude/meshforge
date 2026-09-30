@@ -429,7 +429,7 @@ class TestConfigDValidation:
         available_d = tmp_path / "available.d"
         config_d.mkdir()
         available_d.mkdir()
-        (available_d / "meshtoad-spi.yaml").write_text("Lora:\n")
+        (available_d / "meshtoad-spi.yaml").write_text("Lora:\n  Module: sx1262\n  spidev: ch341\n")
         (available_d / "heltec-usb.yaml").write_text("Serial:\n")
 
         with patch('core.orchestrator.MESHTASTICD_CONFIG_DIR', tmp_path), \
@@ -437,7 +437,8 @@ class TestConfigDValidation:
             result = orchestrator._check_meshtasticd_config()
             assert result is False
             assert "meshtoad-spi.yaml" in caplog.text
-            assert "heltec-usb.yaml" in caplog.text
+            # a `Serial:`-only file configures nothing: never recommended (B7)
+            assert "heltec-usb.yaml" not in caplog.text
 
     def test_no_auto_deployment(self, orchestrator, tmp_path):
         """When config.d/ is empty, no templates are auto-deployed."""

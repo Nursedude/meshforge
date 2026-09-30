@@ -216,7 +216,9 @@ class TestShippedTemplatesCarryOnlyHardwareKeys:
     def test_repo_available_d_templates(self):
         from core.meshtasticd_templates import HAT_OVERLAY_FORBIDDEN_KEYS
         files = sorted((self.REPO / "templates" / "available.d").glob("*.yaml"))
-        assert len(files) >= 30, "the glob is aimed wrong"
+        # 29 since the 7 `Serial:`-only USB templates were deleted (B7,
+        # 2026-09-30); a floor, so the glob cannot silently match nothing.
+        assert len(files) >= 25, "the glob is aimed wrong"
         carrying = {f.name: sorted(set(yaml.safe_load(f.read_text()) or {})
                                    & HAT_OVERLAY_FORBIDDEN_KEYS)
                     for f in files}

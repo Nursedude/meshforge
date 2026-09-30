@@ -438,7 +438,16 @@ def _make_config_recovery_callback():
         if not available_dir.exists():
             return False
 
-        available = sorted(available_dir.glob('*.yaml'))
+        # Only real radio configs: an `ignored` (e.g. `Serial:`-only, left
+        # behind in available.d by older installs) or `aux` (display, GPS)
+        # overlay offered as the FIX for a failed start would replace the
+        # radio's overlay with one that configures no radio (B7, 2026-09-30).
+        try:
+            from core.meshtasticd_templates import classify_overlay
+        except ImportError:
+            return False
+        available = [cfg for cfg in sorted(available_dir.glob('*.yaml'))
+                     if classify_overlay(cfg.read_text(errors='replace')) in ('ch341', 'spi')]
         if not available:
             return False
 

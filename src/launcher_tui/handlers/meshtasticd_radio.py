@@ -395,25 +395,21 @@ class MeshtasticdRadioHandler(BaseHandler):
     # ------------------------------------------------------------------
 
     def _classify_hardware_config(self, config_path: Path) -> str:
-        """Classify a hardware config as 'usb' or 'spi'."""
-        try:
-            from core.meshtasticd_config import RADIO_TEMPLATES, RadioType
-            template = RADIO_TEMPLATES.get(config_path.stem, {})
-            if template:
-                rtype = template.get("radio_type")
-                if rtype == RadioType.USB_SERIAL:
-                    return "usb"
-                return "spi"
-        except ImportError:
-            pass
+        """'usb' (CH341 USB-SPI), 'spi', or 'ignored' — from CONTENT.
 
+        It used to call any `Serial:` file 'usb' and list it as a USB radio;
+        meshtasticd has no `Serial:` key, so activating one changed nothing
+        (B7, 2026-09-30). An unreadable file is 'ignored', never offered.
+        """
         try:
-            content = config_path.read_text(errors='replace')[:500]
-            if 'Serial:' in content and 'spidev' not in content.lower():
-                return "usb"
-        except Exception:
-            pass
-        return "spi"
+            from core.meshtasticd_templates import classify_overlay
+            kind = classify_overlay(config_path.read_text(errors='replace'))
+        except Exception as e:
+            logger.debug("classify %s failed: %s", config_path, e)
+            return "ignored"
+        # 'aux' (display, GPS, I2C only) is a real overlay but not a RADIO:
+        # activating it here would delete the radio's overlay first.
+        return {"ch341": "usb", "spi": "spi", "aux": "aux"}.get(kind, "ignored")
 
     def _get_template_description(self, config_path: Path) -> str:
         """Get human-readable description for a hardware template.
@@ -505,16 +501,18 @@ class MeshtasticdRadioHandler(BaseHandler):
             usb_configs = []
             spi_configs = []
             for cfg in sorted(available):
-                if self._classify_hardware_config(cfg) == "usb":
+                kind = self._classify_hardware_config(cfg)
+                if kind == "usb":
                     usb_configs.append(cfg)
-                else:
+                elif kind == "spi":
                     spi_configs.append(cfg)
+                # 'ignored' (e.g. `Serial:`-only) / 'aux': not a radio config
 
             # Map stem tags back to full filenames for activation
             stem_to_name = {}
 
             choices = []
-            choices.append(("_usb_", f"--- USB Radios ({len(usb_configs)}) ---"))
+            choices.append(("_usb_", f"--- USB Radios, CH341 ({len(usb_configs)}) ---"))
             for cfg in usb_configs:
                 status = " [ACTIVE]" if cfg.name in active else ""
                 stem = cfg.stem
@@ -539,6 +537,13 @@ class MeshtasticdRadioHandler(BaseHandler):
             choices.append(("back", "Back"))
 
             active_display = ', '.join(sorted(active_names_set)) if active_names_set else 'none'
+            inert = sorted(f.name for f in _glob_yaml(config_d)
+                           if not _is_overrides(f)
+                           and self._classify_hardware_config(f) == "ignored") if config_d.exists() else []
+            if inert:
+                # Hidden from the radio list, so name it here: meshtasticd
+                # ignores it (e.g. an old wizard `Serial:` overlay).
+                active_display += f"\nIGNORED by meshtasticd (use Remove): {', '.join(inert)}"
 
             choice = self.ctx.dialog.menu(
                 "Select Radio Hardware",

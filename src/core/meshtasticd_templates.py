@@ -2,7 +2,7 @@
 
 Extracted from meshtasticd_config.py for file size compliance (CLAUDE.md #6).
 
-Contains RADIO_TEMPLATES dict (36 templates for USB serial and SPI HAT radios),
+Contains RADIO_TEMPLATES dict (SPI and CH341 USB-SPI radio overlays),
 RadioType enum, and RadioConfig dataclass.
 """
 
@@ -26,6 +26,49 @@ HAT_OVERLAY_FORBIDDEN_KEYS = frozenset({
 # MeshForge's own overlay (written by the TUI config editors). It legitimately
 # carries `General: MaxNodes`, so the HAT key rule does not apply to it.
 OVERRIDES_NAMES = frozenset({'meshforge-overrides.yaml', 'meshforge-overrides.yml'})
+
+
+# Top-level keys meshtasticd itself reads — measured, not recalled:
+#   grep -oE 'yamlConfig\["[A-Za-z0-9_]+"\]' src/platform/portduino/PortduinoGlue.cpp | sort -u
+# on v2.7.26.54e0d8d gives these 12. A key outside this set is silently
+# ignored — a `Serial:`-only overlay configures nothing (verified with
+# `meshtasticd --output-yaml`: merged config identical to no overlay).
+MESHTASTICD_TOP_LEVEL_KEYS = frozenset({
+    'Config', 'Display', 'General', 'GPIO', 'GPS', 'HostMetrics', 'I2C',
+    'Input', 'Logging', 'Lora', 'Touchscreen', 'Webserver',
+})
+
+
+def classify_overlay(content: str) -> str:
+    """What a meshtasticd overlay IS, from its content, never its filename.
+
+    Judged on what survives activation: the keys HAT_OVERLAY_FORBIDDEN_KEYS
+    strips (Webserver, Logging, General, …) are removed first, so a
+    `Serial:` + `Webserver:` file is 'ignored', not a radio.
+      'ch341'   — `Lora:` with `spidev: ch341` (exact, as the firmware
+                  compares): a USB-SPI board (MeshToad, MeshStick, …).
+      'spi'     — any other `Lora:` overlay (a HAT on the Pi's SPI bus).
+      'aux'     — no `Lora:`, but keys meshtasticd reads (Display, GPS,
+                  I2C, …): a real overlay, NOT a radio config — activating
+                  it as one would replace the radio's overlay.
+      'ignored' — nothing meshtasticd reads survives (e.g. `Serial:` only),
+                  or not YAML: activating it changes nothing.
+    Only 'ch341'/'spi' belong in a radio menu. First YAML document only, as
+    yaml-cpp's LoadFile reads. Twins: MeshForge core/meshtasticd_templates.py,
+    MeshAnchor utils/meshtasticd_overlay.py — same body.
+    """
+    import yaml
+    try:
+        doc = next(yaml.safe_load_all(content), None)
+    except yaml.YAMLError:
+        return 'ignored'
+    if not isinstance(doc, dict):
+        return 'ignored'
+    keys = (set(doc) - HAT_OVERLAY_FORBIDDEN_KEYS) & MESHTASTICD_TOP_LEVEL_KEYS
+    lora = doc.get('Lora')
+    if 'Lora' in keys and isinstance(lora, dict):
+        return 'ch341' if lora.get('spidev') == 'ch341' else 'spi'
+    return 'aux' if keys - {'Lora'} else 'ignored'
 
 
 def sanitize_hat_overlay(content: str):
@@ -78,100 +121,13 @@ class RadioConfig:
 # Default config templates for all supported radios
 # GPIO pins sourced from src/config/hardware.py KNOWN_SPI_HATS / KNOWN_USB_MODULES
 RADIO_TEMPLATES = {
-    # ─────────────────────────────────────────────
-    # USB Radios (run own firmware, managed via serial)
-    # ─────────────────────────────────────────────
-    "heltec-usb": {
-        "name": "heltec-usb",
-        "radio_type": RadioType.USB_SERIAL,
-        "description": "Heltec V3/V4 USB (ESP32-S3, 28dBm TX, gateway)",
-        "config": """\
-# Heltec V3/V4 USB Radio Configuration
-# Chipset: ESP32-S3 (USB CDC)
-# V4 supports 28dBm TX power. Gateway capable.
-# Power: 500mA typical, 1A peak (V4 at max TX)
-
-Serial:
-  Device: auto
-"""
-    },
-    "station-g2-usb": {
-        "name": "station-g2-usb",
-        "radio_type": RadioType.USB_SERIAL,
-        "description": "Station G2 USB (CP2102, gateway, PoE)",
-        "config": """\
-# Station G2 USB Radio Configuration
-# Chipset: CP2102 USB-Serial
-# Gateway capable. PoE option available.
-
-Serial:
-  Device: auto
-"""
-    },
-    "tbeam-usb": {
-        "name": "tbeam-usb",
-        "radio_type": RadioType.USB_SERIAL,
-        "description": "LILYGO T-Beam S3 USB (CH9102, GPS, gateway)",
-        "config": """\
-# LILYGO T-Beam S3 USB Radio Configuration
-# Chipset: CH9102 USB-Serial
-# Built-in GPS. Gateway capable.
-
-Serial:
-  Device: auto
-"""
-    },
-    "rak4631-usb": {
-        "name": "rak4631-usb",
-        "radio_type": RadioType.USB_SERIAL,
-        "description": "RAK4631 USB (nRF52840 + SX1262, ultra-low power)",
-        "config": """\
-# RAK4631 USB Radio Configuration
-# Chipset: nRF52840 + SX1262
-# Ultra-low power. Flash via UF2.
-
-Serial:
-  Device: auto
-"""
-    },
-    "meshtoad-usb": {
-        "name": "meshtoad-usb",
-        "radio_type": RadioType.USB_SERIAL,
-        "description": "MeshToad/MeshTadpole USB (CH340, MtnMesh)",
-        "config": """\
-# MeshToad / MeshTadpole USB Radio Configuration
-# Chipset: CH340/CH341 USB-Serial
-# MtnMesh devices. 900mA peak power draw.
-
-Serial:
-  Device: auto
-"""
-    },
-    "meshstick-usb": {
-        "name": "meshstick-usb",
-        "radio_type": RadioType.USB_SERIAL,
-        "description": "MeshStick USB (official Meshtastic device)",
-        "config": """\
-# MeshStick USB Radio Configuration
-# Official Meshtastic USB device.
-
-Serial:
-  Device: auto
-"""
-    },
-    "usb-serial-generic": {
-        "name": "usb-serial-generic",
-        "radio_type": RadioType.USB_SERIAL,
-        "description": "Generic USB Serial Radio (FTDI/FT232, fallback)",
-        "config": """\
-# Generic USB Serial Radio Configuration
-# For FTDI (FT232) and other USB-serial LoRa boards.
-# Use as fallback when your specific device is not listed.
-
-Serial:
-  Device: auto
-"""
-    },
+    # No USB-serial entries: meshtasticd 2.7.26 parses 11 top-level keys and
+    # `Serial:` is not one (PortduinoGlue.cpp) — a standalone USB node runs
+    # its own firmware and is reached over serial directly (gateway
+    # `meshtastic.connection_type: serial`), never via a meshtasticd overlay.
+    # CH341 USB-SPI boards are driven by `Lora: ... spidev: ch341` overlays
+    # (upstream `lora-usb-*.yaml`). The 7 `Serial:` entries were removed
+    # 2026-09-30.
     # ─────────────────────────────────────────────
     # SPI HATs (GPIO-connected, native meshtasticd)
     # ─────────────────────────────────────────────

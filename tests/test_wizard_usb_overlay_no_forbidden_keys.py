@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import yaml
 
@@ -23,48 +22,21 @@ for p in (str(_ROOT / "src"), str(_ROOT / "src" / "launcher_tui"), str(_ROOT / "
         sys.path.insert(0, p)
 
 from core.meshtasticd_templates import HAT_OVERLAY_FORBIDDEN_KEYS  # noqa: E402
-from handler_test_utils import make_handler_context  # noqa: E402
 
 EXAMPLES = _ROOT / "examples" / "configs"
 
 
-def test_usb_overlay_content_carries_only_serial():
-    from handlers.first_run import usb_overlay_content
-    assert yaml.safe_load(usb_overlay_content("/dev/ttyUSB0")) == {
-        "Serial": {"Device": "/dev/ttyUSB0"}}
-
-
-def test_wizard_writes_no_forbidden_key_through_its_real_path(tmp_path):
-    """Drive `_create_usb_config` itself — the consumer path — with the
-    config.d directory redirected to tmp, and read back what it WROTE."""
-    from handlers import first_run
-
-    real_path = first_run.Path
-
-    def redirect(p, *a):
-        s = str(p)
-        if s.startswith("/etc/meshtasticd"):
-            return real_path(tmp_path) / s.lstrip("/")
-        return real_path(p, *a)
-
-    h = first_run.FirstRunHandler()
-    h.set_context(make_handler_context())
-    with patch.object(first_run, "Path", side_effect=redirect), \
-         patch.object(first_run, "apply_config_and_restart", return_value=(True, "ok")):
-        h._create_usb_config("/dev/ttyACM0")
-
-    written = list(tmp_path.rglob("usb-serial.yaml"))
-    assert len(written) == 1, written          # the write happened, and only once
-    loaded = yaml.safe_load(written[0].read_text())
-    assert sorted(HAT_OVERLAY_FORBIDDEN_KEYS & set(loaded)) == [], loaded
-    assert loaded["Serial"]["Device"] == "/dev/ttyACM0"
+# The wizard's own USB overlay writer (`usb_overlay_content`,
+# `_create_usb_config`) was REMOVED 2026-09-30: meshtasticd has no `Serial:`
+# key, so what it wrote configured nothing. The wizard now writes only
+# sanitized CH341 `Lora:` overlays — tests/test_wizard_usb_routes_by_kind.py.
 
 
 def test_overlay_examples_carry_no_forbidden_keys():
     # examples/README.md: `sudo cp examples/configs/meshtasticd-usb.yaml
     # /etc/meshtasticd/config.d/` — #58 by the documented path.
     files = sorted(EXAMPLES.glob("meshtasticd-*.yaml"))
-    assert len(files) == 2, [f.name for f in files]
+    assert len(files) == 1, [f.name for f in files]   # the USB example was removed (B7)
     carrying = {f.name: sorted(HAT_OVERLAY_FORBIDDEN_KEYS & set(yaml.safe_load(f.read_text()) or {}))
                 for f in files}
     assert all(not keys for keys in carrying.values()), carrying

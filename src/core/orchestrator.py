@@ -320,6 +320,7 @@ class ServiceOrchestrator:
         # Check if config.d/ already has configs
         if config_d.exists():
             existing = list(config_d.glob("*.yaml"))
+            _warn_ignored_overlays(existing)
             if existing:
                 # Defense-in-depth: ensure SPI templates have explicit
                 # Module: to prevent any residual Module: auto in
@@ -351,9 +352,10 @@ class ServiceOrchestrator:
 
         # List available templates if the directory exists
         if available_d.exists():
-            templates = sorted(available_d.glob("*.yaml"))
+            templates = [t for t in sorted(available_d.glob("*.yaml"))
+                         if _overlay_kind(t) in ("ch341", "spi")]
             if templates:
-                logger.error("Available templates:")
+                logger.error("Available radio templates:")
                 for tmpl in templates:
                     logger.error(f"  - {tmpl.name}")
                 logger.error("")
@@ -1378,3 +1380,26 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+def _overlay_kind(path: Path) -> str:
+    """classify_overlay() of a file; 'unknown' when it cannot be read."""
+    try:
+        from core.meshtasticd_templates import classify_overlay
+        return classify_overlay(path.read_text(errors="replace"))
+    except (ImportError, OSError) as e:
+        logger.debug("classify %s failed: %s", path, e)
+        return "unknown"
+
+
+def _warn_ignored_overlays(files) -> None:
+    """A config.d overlay meshtasticd ignores (e.g. `Serial:` only — the
+    wizard wrote these until 2026-09-30) still passes the start gate below;
+    say so instead of letting it read as a radio config. The gate itself is
+    unchanged: a box whose config.yaml carries Lora with only overrides in
+    config.d must keep starting (B7 phase 1, 2026-09-30)."""
+    for f in files:
+        if _overlay_kind(f) == "ignored":
+            logger.warning(
+                "%s configures nothing meshtasticd reads (e.g. a `Serial:`-only "
+                "overlay) — it is not a radio config; remove it", f)
