@@ -346,6 +346,38 @@ fi
 # Posture is asked BEFORE the round-trip (finding 24): a box the operator
 # switched off is not sshed at all — it used to pay the ConnectTimeout and
 # then be discarded.
+#
+# AUDIT-RECORD LAG (2026-09-29 — the docs-drift loop). Every deploy's touch row
+# is a commit to .claude/audits/ pushed AFTER the deploy it records, so the
+# fleet sat one commit behind and this leg FAILED until the next code deploy:
+# recording a deploy un-converged it, and "fleet one docs commit behind BY
+# CHOICE" became a standing FAIL the operator had to read past (handoffs
+# 09-29 06:40, 08:10, 09:30, 22:30). A box is converged-with-a-NOTE when BOTH
+# hold, proven from THIS repo's history:
+#   * its sha is an ANCESTOR of HEAD (behind, never ahead or diverged), and
+#   * every path changed in box..HEAD matches HS_AUDIT_RECORD_GLOBS.
+# ALLOWLIST, not "docs": the offline oracle reads docs/*.md and
+# .claude/{foundations,rules,research}/*.md as its corpus, and agent sessions
+# on a box read CLAUDE.md and its @-includes — those are INPUTS, not records.
+# tests/test_honest_status_inert_paths.py pins this list apart from the
+# oracle's default_roots(). Unknown sha / git error / empty diff → drift.
+HS_AUDIT_RECORD_GLOBS='.claude/audits/*.md'
+sha_behind_by_audit_records_only() {  # $1=repo $2=box-sha $3=headfull → 0 when proven
+  local f files g hit
+  git -C "$1" cat-file -e "$2^{commit}" 2>/dev/null || return 1
+  git -C "$1" merge-base --is-ancestor "$2" "$3" 2>/dev/null || return 1
+  files=$(git -C "$1" diff --name-only "$2" "$3" 2>/dev/null) || return 1
+  [ -n "$files" ] || return 1
+  while IFS= read -r f; do
+    hit=0
+    for g in $HS_AUDIT_RECORD_GLOBS; do
+      # shellcheck disable=SC2254  # $g is a glob by design
+      case "$f" in $g) hit=1 ;; esac
+    done
+    [ "$hit" = 1 ] || return 1
+  done <<<"$files"
+  return 0
+}
 sha_drift_measure() {  # $1=repo $2=headfull $3..=hosts → SD_* variables
   local repo="$1" headfull="$2" b raw up s; shift 2
   SD_matched=0; SD_reached=0; SD_total=0; SD_norepo=0; SD_dormant=0; SD_desc=""
@@ -361,7 +393,11 @@ sha_drift_measure() {  # $1=repo $2=headfull $3..=hosts → SD_* variables
       HSGITERR|"") SD_desc="$SD_desc $b:git-error(repo present)"; continue ;;
     esac
     SD_reached=$((SD_reached+1))
-    if [ "$s" = "$headfull" ]; then SD_matched=$((SD_matched+1)); else SD_desc="$SD_desc $b:${s:0:7}"; fi
+    if [ "$s" = "$headfull" ]; then SD_matched=$((SD_matched+1))
+    elif sha_behind_by_audit_records_only "$repo" "$s" "$headfull"; then
+      SD_matched=$((SD_matched+1))
+      SD_desc="$SD_desc $b:audit-records-behind($(git -C "$repo" rev-list --count "$s..$headfull" 2>/dev/null || echo '?'))"
+    else SD_desc="$SD_desc $b:${s:0:7}"; fi
   done
   SD_drifted=$((SD_reached - SD_matched))
   SD_expect=$((SD_total - SD_norepo - SD_dormant))

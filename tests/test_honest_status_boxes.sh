@@ -61,6 +61,12 @@ case "$box" in
       *rev-parse*) echo "HSUP"; echo "HSGITERR" ;;
       *WDSEP*) echo "1700000000"; echo "inactive"; echo "not-found"; echo "---WDSEP---" ;;
     esac ;;
+  box-behind)                                  # up; repo at a caller-chosen sha (docs-drift cases)
+    case "$cmd" in
+      *rev-parse*) echo "HSUP"; echo "$FAKE_BOX_HEAD" ;;
+      *WDSEP*) echo "$(date +%s)"; echo "active"; echo "loaded"; echo "---WDSEP---"
+               echo "{\"ts\": $(date +%s), \"signals\": []}" ;;
+    esac ;;
   box-good)
     case "$cmd" in
       # The SHA leg asks per REPO: the twin leg's command names the sister
@@ -134,6 +140,7 @@ run() {  # env: HONEST_BOXES / MESHFORGE_FLEET_HOSTS as needed
     FAKE_CURL_JSON="${FAKE_CURL_JSON:-}" HONEST_WD_PATH="${HONEST_WD_PATH:-}" \
     HONEST_TWIN_REPO="${HONEST_TWIN_REPO:-$TMP/no-twin}" \
     FAKE_TWIN_REPO="${FAKE_TWIN_REPO:-}" FAKE_TWIN_HEAD="${FAKE_TWIN_HEAD:-}" \
+    FAKE_BOX_HEAD="${FAKE_BOX_HEAD:-}" \
     bash "$SCRIPT" --quick "$@" 2>&1
 }
 
@@ -540,4 +547,47 @@ check "watchdog snapshot without ts is UNKNOWN under the stale gate, not clean" 
   "$(echo "$out" | grep -E 'watchdog signals' | grep -q 'UNKNOWN' && echo ok)"
 check "and says the age is unobservable" \
   "$(echo "$out" | grep -E 'watchdog signals' | grep -q 'no-ts' && echo ok)"
+# ── docs-drift loop (2026-09-29) ──────────────────────────────────────────
+# Every deploy's touch row is a commit to .claude/audits/ pushed AFTER the
+# deploy, so the fleet sat one audit-record commit behind and this leg FAILED
+# until the next code deploy — recording a deploy un-converged it. A box behind
+# ONLY by audit-record commits (an ALLOWLIST: .claude/audits/*.md, which no
+# running code reads — the oracle corpus is pinned apart by
+# tests/test_honest_status_inert_paths.py) is converged-with-a-note. Anything
+# else behind, a sha this repo does not know, or a box AHEAD/diverged stays drift.
+# Runs LAST: it adds commits to the fake repo, and the earlier sections assume
+# its single init commit.
+DD_BASE="$(git -C "$FAKE_REPO" rev-parse HEAD)"
+_dd_commit() {  # $1 = path, $2 = message → new HEAD sha
+  mkdir -p "$FAKE_REPO/$(dirname "$1")"; echo "$2" >> "$FAKE_REPO/$1"
+  git -C "$FAKE_REPO" add -A && git -C "$FAKE_REPO" -c user.email=t@t -c user.name=t commit -q -m "$2"
+  git -C "$FAKE_REPO" rev-parse HEAD
+}
+_dd_commit ".claude/audits/review_provenance.md" "touch row" >/dev/null
+out="$(FAKE_BOX_HEAD="$DD_BASE" HONEST_BOXES="box-behind" run)"
+check "behind by an audit-record commit only → converged (PASS), not drift" \
+  "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q 'PASS' && echo ok)"
+check "and the lag is NAMED, never silent" \
+  "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q 'box-behind:audit-records-behind' && echo ok)"
+DD_AUDIT="$(git -C "$FAKE_REPO" rev-parse HEAD)"
+_dd_commit "src/thing.py" "code change" >/dev/null
+out="$(FAKE_BOX_HEAD="$DD_AUDIT" HONEST_BOXES="box-behind" run)"
+check "behind by a CODE commit → FAIL" \
+  "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q 'FAIL' && echo ok)"
+DD_CODE="$(git -C "$FAKE_REPO" rev-parse HEAD)"
+_dd_commit "docs/capabilities.md" "stat bump (oracle corpus)" >/dev/null
+out="$(FAKE_BOX_HEAD="$DD_CODE" HONEST_BOXES="box-behind" run)"
+check "behind by docs/*.md (read by the offline oracle) → FAIL, docs are not all inert" \
+  "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q 'FAIL' && echo ok)"
+out="$(FAKE_BOX_HEAD="0123456789abcdef0123456789abcdef01234567" HONEST_BOXES="box-behind" run)"
+check "a box sha this repo does not know → FAIL (unprovable is never converged)" \
+  "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q 'FAIL' && echo ok)"
+DD_TIP="$(git -C "$FAKE_REPO" rev-parse HEAD)"
+git -C "$FAKE_REPO" checkout -q -b side "$DD_BASE"
+DD_SIDE="$(_dd_commit ".claude/audits/other.md" "diverged audit commit")"
+git -C "$FAKE_REPO" checkout -q - && git -C "$FAKE_REPO" reset -q --hard "$DD_TIP"
+out="$(FAKE_BOX_HEAD="$DD_SIDE" HONEST_BOXES="box-behind" run)"
+check "a box AHEAD/diverged (not an ancestor), even by audit files → FAIL" \
+  "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q 'FAIL' && echo ok)"
+
 if [ "$fails" = 0 ]; then echo "ALL PASS"; exit 0; else echo "FAILED"; exit 1; fi
