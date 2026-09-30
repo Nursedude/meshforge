@@ -263,14 +263,43 @@ class ChannelConfigHandler(BaseHandler):
                 self.ctx.notify_unwired(choice, "ChannelConfigHandler._edit_single_channel")
 
     def _set_channel_name(self, idx: int):
-        """Set name for a specific channel."""
+        """Set name for a specific channel.
+
+        Channel 0 goes through `_set_primary_channel` — the one door that reads
+        the current name and confirms. Edit Channel › PRIMARY › Set Channel
+        Name used to rename the mesh's primary on one typed word (reader pair
+        A4/B1, 2026-09-29).
+        """
+        if idx == 0:
+            self._set_primary_channel()
+            return
+        limit = self.CHANNEL_NAME_MAX_BYTES
         name = self.ctx.dialog.inputbox(
             f"Channel {idx} Name",
-            "Enter channel name (max 12 chars):",
+            f"Enter channel name (max {limit} bytes; ō/ū/ʻ take 2):",
             ""
         )
 
+        if name is None:
+            return
+        name = name.strip()
         if not name:
+            return
+        problem = self._channel_name_problem(name)
+        if problem:
+            self.ctx.dialog.msgbox(
+                f"Channel {idx} Name",
+                f"Not written — '{name}' {problem}.")
+            return
+        # Peers find a channel by name + key, and the gateway bridge resolves
+        # its channel BY NAME (gateway/_channel_resolver.py) — a rename is
+        # not cosmetic (reader pair, 2026-09-30).
+        if not self.ctx.dialog.yesno(
+                f"Rename Channel {idx}",
+                f"Rename channel {idx} to '{name}'?\n\n"
+                "Nodes and the gateway bridge that look this channel up by\n"
+                "its old name stop finding it.",
+                default_no=True):
             return
 
         try:
@@ -278,7 +307,7 @@ class ChannelConfigHandler(BaseHandler):
             from commands import meshtastic as mesh_cmd
 
             self.ctx.dialog.infobox("Setting", f"Setting channel {idx} name...")
-            result = mesh_cmd.set_channel_name(idx, name[:12])
+            result = mesh_cmd.set_channel_name(idx, name)
             self.ctx.dialog.msgbox("Result", result.message)
 
         except Exception as e:
@@ -302,15 +331,24 @@ class ChannelConfigHandler(BaseHandler):
         if not choice:
             return
 
-        psk = "AQ=="
+        # The CLI's word for the well-known key; "AQ==" is NOT understood —
+        # fromPSK returns it as a str and the protobuf assign raises
+        # TypeError, so this option never worked (reader pair, 2026-09-30).
+        psk = "default"
+        effect = None
         if choice == "random":
             psk = "random"
         elif choice == "none":
             psk = "none"
         elif choice == "custom":
-            psk = self.ctx.dialog.inputbox("Custom PSK", "Enter PSK (base64 or hex):", "")
+            psk, effect = self._read_custom_psk()
             if not psk:
                 return
+
+        if not self._confirm_psk_change(idx, choice, effect):
+            self.ctx.dialog.msgbox(f"Channel {idx} PSK",
+                                   "No change — the key was not written.")
+            return
 
         try:
             sys.path.insert(0, str(self.ctx.src_dir))
@@ -322,6 +360,110 @@ class ChannelConfigHandler(BaseHandler):
 
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed:\n{e}")
+
+    # The word an operator must TYPE to re-key channel 0. A yes/no is one
+    # keystroke from a slip; this is the mesh's key.
+    PRIMARY_PSK_CONFIRM_WORD = "PRIMARY"
+    _PSK_EFFECT = {
+        "random": "a NEW random key that no other node has",
+        "default": "the public default key (AQ==) — anyone can read it",
+        "none": "NO encryption — anyone in range can read it",
+        "custom": "the custom key you entered",
+    }
+
+    def _confirm_psk_change(self, idx: int, choice: str, effect: str = None) -> bool:
+        """Default-No confirm for any key change; channel 0 needs the typed
+        word. Changing a channel's key cuts this node off from every peer
+        that does not get the same key — on channel 0, from the whole mesh.
+        Edit Channel › PRIMARY › Generate Random PSK used to do that on two
+        menu picks (reader pair A4/B1, 2026-09-29)."""
+        effect = effect or self._PSK_EFFECT.get(choice, choice)
+        if idx != 0:
+            return self.ctx.dialog.yesno(
+                f"Change Channel {idx} Key",
+                f"Set channel {idx}'s key to {effect}?\n\n"
+                "Nodes without the same key stop hearing this channel.",
+                default_no=True)
+        word = self.PRIMARY_PSK_CONFIRM_WORD
+        typed = self.ctx.dialog.inputbox(
+            "Re-key PRIMARY Channel",
+            f"You are changing the PRIMARY channel's key to {effect}.\n\n"
+            "Every node on this mesh must use the same primary key, or this\n"
+            "node and the rest of the mesh stop hearing each other.\n\n"
+            f"Type {word} to confirm; anything else cancels:",
+            "")
+        return (typed or "").strip() == word
+
+    @staticmethod
+    def _normalize_custom_psk(text):
+        """(cli_token, description) for a custom key, or (None, reason).
+
+        The meshtastic CLI only understands `0x<hex>` and `base64:<b64>`
+        (plus the words default/random/none) — a bare base64 or hex string
+        raises TypeError inside it (measured, meshtastic 2.7.x fromPSK). A
+        bare paste is prefixed only when its length makes it unambiguous:
+        a 16/32-byte key is 24/44 base64 chars or 32/64 hex chars.
+        """
+        t = (text or "").strip()
+        m = re.fullmatch(r"simple([0-9])", t.lower())
+        if m:
+            # the CLI's well-known one-byte keys (fromPSK: simpleN -> N+1)
+            return (t.lower(), f"the well-known key {t.lower()} — effectively public")
+        raw = None
+        if t.lower().startswith("0x"):
+            try:
+                raw = bytes.fromhex(t[2:])
+            except ValueError:
+                return None, "not valid hex after 0x"
+        elif t.lower().startswith("base64:"):
+            raw = ChannelConfigHandler._b64(t[7:])
+            if raw is None:
+                return None, "not valid base64 after base64:"
+        elif len(t) in (32, 64) and all(c in "0123456789abcdefABCDEF" for c in t):
+            raw = bytes.fromhex(t)
+        elif ChannelConfigHandler._b64(t) is not None and len(ChannelConfigHandler._b64(t)) in (16, 32):
+            raw = ChannelConfigHandler._b64(t)
+        else:
+            return None, ("not a 16- or 32-byte key (paste base64 or hex, "
+                          "prefix it with base64: / 0x, or type simple0..simple9)")
+        if len(raw) not in (16, 32):
+            return None, (f"decodes to {len(raw)} bytes; a custom key must be "
+                          "16 (AES-128) or 32 (AES-256) — for a well-known key "
+                          "type simple0..simple9, or use the menu for default / none")
+        b64 = base64.b64encode(raw).decode()
+        bits = len(raw) * 8
+        # A 128-bit key where 256 was meant is the classic truncated paste
+        # (reader pair 2, 2026-09-30) — say so where the operator looks.
+        warn = " — only 128-bit: expected 256? check the paste" if bits == 128 else ""
+        return "base64:" + b64, f"a custom {bits}-bit key starting {b64[:4]}…{warn}"
+
+    @staticmethod
+    def _b64(text):
+        """Decode base64 the way people paste it — wrapped lines, urlsafe
+        -/_ (Meshtastic share links), missing padding — or None."""
+        t = re.sub(r"\s+", "", text or "").replace("-", "+").replace("_", "/")
+        if not t or not re.fullmatch(r"[A-Za-z0-9+/]*={0,2}", t):
+            return None
+        t = t.rstrip("=")
+        t += "=" * (-len(t) % 4)
+        try:
+            return base64.b64decode(t, validate=True)
+        except ValueError:
+            return None
+
+    def _read_custom_psk(self):
+        """Ask for a custom key; (token, description) or (None, None) after
+        telling the operator why it was refused."""
+        text = self.ctx.dialog.inputbox(
+            "Custom PSK",
+            "Enter a 16- or 32-byte key (base64 or hex), or simple0..simple9:", "")
+        if not text:
+            return None, None
+        token, desc = self._normalize_custom_psk(text)
+        if not token:
+            self.ctx.dialog.msgbox("Custom PSK", f"Not written — the key is {desc}.")
+            return None, None
+        return token, desc
 
     def _set_channel_role(self, idx: int):
         """Set role for a specific channel."""
@@ -407,7 +549,16 @@ class ChannelConfigHandler(BaseHandler):
                 f"Channel{idx}"
             )
 
+            if name is None:
+                return
+            name = name.strip()
             if not name:
+                return
+            problem = self._channel_name_problem(name)
+            if problem:
+                self.ctx.dialog.msgbox(
+                    "Channel Name",
+                    f"Not written — '{name}' {problem}.")
                 return
 
             use_psk = self.ctx.dialog.yesno(
@@ -421,7 +572,7 @@ class ChannelConfigHandler(BaseHandler):
 
             self.ctx.dialog.infobox("Adding", f"Adding channel {idx}...")
 
-            name_result = mesh_cmd.set_channel_name(idx, name[:12])
+            name_result = mesh_cmd.set_channel_name(idx, name)
             psk_result = mesh_cmd.set_channel_psk(
                 idx, "random" if use_psk else "none",
             )
@@ -502,6 +653,32 @@ class ChannelConfigHandler(BaseHandler):
     CHANNEL_NAME_MAX_BYTES = 11
 
     @classmethod
+    def _channel_name_problem(cls, name: str):
+        """Why the radio would not end up with exactly `name`, or None.
+
+        Refuse, never truncate: the CLI reports success on an over-long name
+        and the radio keeps the old one (measured 2026-09-29). And the CLI
+        runs every --ch-set value through meshtastic.util.fromStr, so a name
+        that reads as a number, a boolean or a 0x/base64: literal is written
+        as that value or crashes the CLI: `0x41` becomes 'A', `007`/`yes`/
+        `nan` raise (reader pair 2, 2026-09-30).
+        """
+        n = len(name.encode("utf-8"))
+        if n > cls.CHANNEL_NAME_MAX_BYTES:
+            return f"is {n} bytes; the radio stores at most {cls.CHANNEL_NAME_MAX_BYTES}"
+        low = name.lower()
+        if (low.startswith(("0x", "base64:"))
+                or low in ("t", "true", "yes", "f", "false", "no")):
+            return "would be read by the meshtastic CLI as a value, not a name"
+        for conv in (int, float):
+            try:
+                conv(name)
+                return "would be read by the meshtastic CLI as a number, not a name"
+            except ValueError:
+                pass
+        return None
+
+    @classmethod
     def _parse_primary_name(cls, info: str):
         """Channel 0's name from `meshtastic --info`: "" when the primary is
         unnamed (the firmware then shows its preset name), None when the
@@ -555,13 +732,11 @@ class ChannelConfigHandler(BaseHandler):
                 self.ctx.dialog.msgbox("Primary Channel",
                                        "No change — the primary channel name was not written.")
                 return
-            if len(name.encode("utf-8")) > limit:
-                # Refuse, never truncate: a cut name is a name nobody typed,
-                # and the CLI does not check — the firmware would drop it.
+            problem = self._channel_name_problem(name)
+            if problem:
                 self.ctx.dialog.msgbox(
                     "Primary Channel",
-                    f"Not written — '{name}' is {len(name.encode('utf-8'))} bytes; "
-                    f"the radio stores at most {limit}.")
+                    f"Not written — '{name}' {problem}.")
                 return
             if not self.ctx.dialog.yesno(
                     "Rename Primary Channel",
@@ -610,12 +785,12 @@ class ChannelConfigHandler(BaseHandler):
         if not psk_choice:
             return
 
-        psk = "AQ=="
+        psk = "default"
         if psk_choice == "random":
             psk = "random"
         elif psk_choice == "custom":
-            psk = self.ctx.dialog.inputbox("Custom PSK", "Enter PSK (hex or base64):", "")
-            if not psk:
+            psk, desc = self._read_custom_psk()
+            if not psk or not self._confirm_psk_change(7, "custom", desc):
                 return
 
         try:
@@ -655,7 +830,7 @@ class ChannelConfigHandler(BaseHandler):
         self.ctx.dialog.msgbox("Generated PSK",
             f"New 256-bit PSK:\n\n"
             f"Base64:\n{psk_b64}\n\n"
-            f"Hex:\n{psk_hex[:32]}...\n\n"
+            f"Hex:\n{psk_hex[:32]}\n{psk_hex[32:]}\n\n"
             "Copy this PSK and share securely\n"
             "with your mesh network members.")
 

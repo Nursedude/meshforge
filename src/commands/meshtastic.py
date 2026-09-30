@@ -71,6 +71,18 @@ def _get_connection_args() -> List[str]:
     return ["--host", "localhost"]
 
 
+def _redact_secrets(argv):
+    """argv for LOGGING: the value after `--ch-set psk` and a `--seturl` URL
+    (a channel URL encodes every key) become <redacted>. Keys reached the
+    DEBUG log in full once custom PSKs started to succeed (reader pair 2,
+    2026-09-30) — the same class scripts/mesh_psk_safe.py exists for."""
+    out = list(argv)
+    for i, a in enumerate(out[:-1]):
+        if a == "--seturl" or (a == "psk" and i > 0 and out[i - 1] == "--ch-set"):
+            out[i + 1] = "<redacted>"
+    return out
+
+
 def _run_command(args: List[str], timeout: int = 60, auto_detect: bool = True) -> CommandResult:
     """
     Run a meshtastic CLI command.
@@ -100,7 +112,7 @@ def _run_command(args: List[str], timeout: int = 60, auto_detect: bool = True) -
     assert_cli_args_allowed(args, host, detail="commands.meshtastic._run_command")
 
     full_args = [cli_path] + _get_connection_args() + args
-    cmd_str = ' '.join(full_args)
+    cmd_str = ' '.join(_redact_secrets(full_args))
     logger.debug(f"Running: {cmd_str}")
 
     try:

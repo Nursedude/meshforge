@@ -255,7 +255,10 @@ class BackupHandler(BaseHandler):
         if not self.ctx.dialog.yesno(
             "Confirm Restore",
             f"Restore from backup: {selected}?\n\n"
-            "This will overwrite current device settings."
+            "This will overwrite current device settings, INCLUDING the\n"
+            "PRIMARY channel's name and key (restore applies the backup's\n"
+            "channel URL) — a stale backup cuts this node off the mesh.",
+            default_no=True,
         ):
             return
 

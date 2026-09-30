@@ -378,7 +378,8 @@ class RadioMenuHandler(BaseHandler):
         if choice is None or choice == "back":
             return
 
-        if self.ctx.dialog.yesno("Confirm", f"Set region to {choice}?\n\nRadio will restart."):
+        if self.ctx.dialog.yesno("Confirm", f"Set region to {choice}?\n\nRadio will restart.",
+                                 default_no=True):
             self._radio_run(
                 [self.ctx.get_meshtastic_cli(), '--host', 'localhost', '--set', 'lora.region', choice],
                 f"Setting Region: {choice}"
