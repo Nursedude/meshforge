@@ -76,7 +76,7 @@ server.
 | **Reticulum (RNS)** | Encrypted transport, LXMF messaging, propagation | Network or radio |
 | **Traffic inspection** | Wireshark-grade packet dissection, both networks | MQTT or radio |
 | **AREDN** | Monitoring integration for the AREDN layer | AREDN node |
-| **AI diagnostics** | Offline symptom → cause → fix, no API key required | — |
+| **AI diagnostics** | Offline symptom → cause → fix, no API key required. Optional AI assist with your own Claude API key or subscription | — |
 | **Watchdog + mini-dudeai** | One probe per failure class; briefs and pages | — |
 
 You choose the combination at install with a **deployment profile** —
@@ -146,7 +146,7 @@ Field-tested on a live multi-site fleet.
 - **Traffic inspection** — packet dissection for Meshtastic, RNS, and MQTT
 - **RF engineering** — link budgets, Fresnel zones, terrain, site planning
 - **Radio config** — meshtastic CLI integration, transient and non-interfering
-- **AI diagnostics** — offline symptom→cause→fix; optional Claude tier
+- **AI diagnostics** — offline symptom→cause→fix; optional AI assist with your own Claude API key (in-TUI assistant) or subscription (Claude Code in the repo) — [how](docs/capabilities.md#ai-assist--optional-and-yours-to-configure)
 
 **The full inventory, with what's proven vs. what needs field validation:
 [docs/capabilities.md](docs/capabilities.md)**

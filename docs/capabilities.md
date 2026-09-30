@@ -20,14 +20,14 @@ These features have been used in actual mesh deployments with physical radios an
 | Category | Capabilities |
 |----------|-------------|
 | **TUI Interface** | Installer, service control, device config wizard, gateway config, diagnostics — <!--STAT:handlers-->83<!--/STAT--> handlers via registry pattern |
-| **Radio Management** | Install/configure meshtasticd, LoRa presets, channels, SPI/USB auto-detect |
+| **Radio Management** | Install/configure meshtasticd, LoRa presets, channels (the PRIMARY channel is renamed/re-keyed only on an explicit confirm), Pi SPI HATs and CH341 USB LoRa sticks |
 | **RF Engineering** | Link budget, Fresnel zone, path loss, site planning, space weather (NOAA), Cython-optimized |
 | **AI Diagnostics** | Offline knowledge base (20+ topics), rule-based troubleshooting, confidence scoring |
 | **RNS/Reticulum** | Config editor, interface templates, rnstatus/rnpath, identity management, shared instance detection (domain socket + TCP + UDP), pre-flight checks |
 | **NomadNet** | Install/launch/configure via TUI, LXMF messaging |
-| **meshtasticd** | Full lifecycle management, SPI HAT and USB radio auto-detection |
+| **meshtasticd** | Full lifecycle management for Pi SPI HATs and CH341 USB LoRa sticks (MeshToad, MeshStick); overlays chosen by content, not filename. A standalone USB Meshtastic node (Heltec, T-Beam, RAK) is not driven by meshtasticd — it is reached over serial |
 | **Service Management** | systemd integration via `service_check.py` (single source of truth), health monitoring |
-| **First-Run Wizard** | Hardware auto-detect templates, region selection, service verification |
+| **First-Run Wizard** | Routes hardware by what it is (Pi HAT, CH341 stick, USB node — the node gets no meshtasticd config), region selection, service verification |
 | **Standalone RF Tools** | Zero-dependency RF calculator, works without sudo or radio hardware |
 | **Multi-Mesh Gateway** | Meshtastic ↔ RNS/LXMF bridge via MQTT, composable-bridges model, refusal-on-inconsistency preflight, persistent SQLite queue. Field-deployed across the operator's 5-box LAN fleet + 1 cloud peer (since 2026-04-24) |
 | **Gateway + RNode** | rnsd RNodeInterface on USB LoRa radio alongside Meshtastic HAT; RNS-LoRa egress at 903.625 MHz / SF7 — validated on fleet-host-3 |
@@ -55,7 +55,7 @@ Code works in testing but hasn't been validated in real-world deployments with a
 | **Device Backup** | Configuration backup/restore, versioned snapshots | Needs real device |
 | **Prometheus Metrics** | HTTP endpoint on port 9090, metrics exporter | Ready for Grafana |
 | **Tactical Ops** | XTOC interop, 8 templates, X1 codec, KML/CoT/ATAK export | Implemented v0.5.4 |
-| **AI PRO Mode** | Claude API integration, log analysis, predictive diagnostics | Requires API key |
+| **AI Assist (optional)** | Claude API chat assistant in the TUI, or a Claude subscription via Claude Code in the repo — see [AI Assist](#ai-assist--optional-and-yours-to-configure) | Your key or subscription; nothing without it |
 | **Messaging** | Broadcast/direct messaging, LXMF routing, message history | Needs bridge running |
 
 ### Code-Ready (Implemented, Awaiting Hardware/Services)
@@ -200,32 +200,38 @@ above. See sister project [MeshAnchor's #131](https://github.com/Nursedude/mesha
 
 ---
 
-## AI Intelligence
+## AI Assist — optional, and yours to configure
 
-MeshForge includes two tiers of AI-powered network diagnostics:
+MeshForge works fully without AI, as a standalone box or across a fleet. AI assist
+is an option you configure; the app **measures which one you have and says
+so** — it never claims more than it has.
 
-### Standalone Mode (No Internet Required)
-- 20+ topic knowledge base covering mesh networking fundamentals
-- Rule-based diagnostic engine with pattern matching
-- Structured troubleshooting guides for common issues
-- Confidence scoring on diagnoses
-- Works completely offline — ideal for field deployment
+| You have | What you get | How to set it up |
+|---|---|---|
+| **Nothing** (the default) | Offline knowledge base (20+ topics), rule-based diagnostic engine, structured troubleshooting guides, confidence scoring — works in the field with no internet | Nothing to set up |
+| **A Claude API key** | The in-TUI **Claude Assistant** (*AI Diagnostics › Claude Assistant*): natural-language questions about mesh networking, answered by the Claude API | Install the optional SDK with the interpreter MeshForge runs on: `<venv>/bin/python -m pip install -r requirements/ai.txt` (Python ≥ 3.10). Put the key in `ANTHROPIC_API_KEY`, or in `~/.config/meshforge/anthropic.key` with mode `600` — the TUI starts under `sudo`, which drops environment variables |
+| **A Claude subscription** | **Claude Code** run in the repo. It loads MeshForge's `CLAUDE.md`, rules, skills and verification gates — the same harness MeshForge is developed with | Install Claude Code, then as your own user: `cd /opt/meshforge && claude` |
 
-### PRO Mode (Claude API)
-- Natural language troubleshooting ("Why is my node offline?")
-- Log file analysis with suggested actions
-- Context-aware responses (knows your network topology)
-- Predictive issue detection
-- Expertise-level adaptation (novice → expert)
-- Falls back to Standalone when API unavailable
+**What the assistant tells you.** Its opening screen reports what it found:
+the API as *configured, not contacted yet* (key and package present), *no key*
+(with the exact file it looked for) or *package not installed*, and whether
+Claude Code was found. Every answer then says whether the **Claude API** or the
+**local knowledge base** answered it — and, when a configured API did not, why
+(package missing, the model declined, an error). The API SDK cannot use a Claude
+subscription; that is what Claude Code is for.
+
+**What it does not do (yet).** The API assistant is chat Q&A. Log analysis and
+the troubleshooting guides are local, rule-based features whether or not a key
+is set, and the assistant has no live view of your network or its devices.
 
 ```python
-from utils.claude_assistant import ClaudeAssistant
+from utils.claude_assistant import ClaudeAssistant, check_availability
 
-assistant = ClaudeAssistant()  # Auto-detects mode
-response = assistant.ask("Node !abc123 has -15dB SNR, is that okay?")
-print(response.answer)
-print(response.suggested_actions)
+print(check_availability())          # configured / no_key / no_package + Claude Code path
+assistant = ClaudeAssistant()
+r = assistant.ask("Node !abc123 has -15dB SNR, is that okay?")
+print(r.answer)
+print(r.mode.value, r.fallback_reason)   # who answered, and why not the API
 ```
 
 ### mini-dudeai — Always-On Local Agent
