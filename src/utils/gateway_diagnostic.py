@@ -896,57 +896,6 @@ def diagnose_rnsd_connection(rns_pids: List[int], error: Exception = None) -> No
     _log.info("Full logs: journalctl -u rnsd -n 50")
 
 
-def kill_rns_processes(force: bool = False) -> Dict[str, any]:
-    """
-    Kill running RNS processes to free up the port.
-
-    Args:
-        force: If True, use SIGKILL instead of SIGTERM
-
-    Returns:
-        dict with keys:
-            - success: bool
-            - killed: List[int] - PIDs that were killed
-            - message: str
-    """
-    pids = find_rns_processes()
-
-    if not pids:
-        return {
-            'success': True,
-            'killed': [],
-            'message': "No RNS processes found"
-        }
-
-    killed = []
-    signal_name = '-9' if force else '-15'
-
-    for pid in pids:
-        try:
-            subprocess.run(
-                ['kill', signal_name, str(pid)],
-                capture_output=True, timeout=5
-            )
-            killed.append(pid)
-        except subprocess.SubprocessError:
-            pass
-
-    # Also try pkill for any we might have missed
-    try:
-        subprocess.run(
-            ['pkill', '-x', 'rnsd'],
-            capture_output=True, timeout=5
-        )
-    except subprocess.SubprocessError:
-        pass
-
-    return {
-        'success': len(killed) > 0 or len(pids) == 0,
-        'killed': killed,
-        'message': f"Killed {len(killed)} RNS process(es)" if killed else "No processes killed"
-    }
-
-
 def handle_address_in_use_error(error: Exception, logger=None) -> Dict[str, any]:
     """
     Handle the "Address already in use" error from RNS initialization.

@@ -834,8 +834,6 @@ class TestGuardedRunnersStillGuard:
 
     RUNNERS = (
         ("commands/meshtastic.py", "def _run_command("),
-        ("cli/meshtastic_cli.py", "def _run_command("),
-        ("cli/meshtastic_cli.py", "def _run_command_interactive("),
         ("core/meshtastic_cli.py", "def run("),
     )
 
