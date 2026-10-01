@@ -43,8 +43,9 @@ the end; never patch a running tally. Check of record: `bash scripts/honest_stat
 
 ## Quick Context
 
-MeshForge is a **Network Operations Center (NOC)** bridging Meshtastic and Reticulum (RNS) mesh networks — the first open-source tool to unify these incompatible ecosystems.
+MeshForge is a **Mesh Operations Center (MOC)**: one interface over meshes that cannot hear each other (Meshtastic, MeshCore, RNS, AREDN, MQTT, IP/Starlink), serving the best available route with RNS as the hub — and telling the truth when it cannot see.
 
+**Roadmap SSOT — read first**: `.claude/ROADMAP.md` (what we are, why we win, the best-available-route gap, Now/Next/Later).
 **Active context / current sprint**: per-box session handoff notes at `~/.claude/plans/gateway-session-notes-*.md` (not repo-tracked; each box maintains its own).
 
 ---

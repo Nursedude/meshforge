@@ -34,6 +34,12 @@ EXEMPT, because they *remove* work rather than add it: deleting an instrument;
 narrowing one that false-fires; fixing a detector that is blind or misaimed;
 and anything whose stated END is not `harness`.
 
+**The freeze never blocks a serious bug or a fundamental architectural change**
+(operator, 2026-10-01: *"it can't get in the way… competition is getting
+stiff"*). Test: does it change whether a message ARRIVES, or whether the truth
+is told in-app? Then it is product: build it, with one line in the session note.
+"Architectural" is not a loophole for an instrument whose only END is `harness`.
+
 If something truly must be added during the freeze, **that is evidence worth
 having** — record what forced it in the session note, and do it anyway. The
 freeze is a measuring instrument, not a cage.
