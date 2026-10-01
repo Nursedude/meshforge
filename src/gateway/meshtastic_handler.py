@@ -727,6 +727,10 @@ class MeshtasticHandler(BaseMessageHandler):
                     return
             except Exception as e:
                 logger.debug(f"mesh oracle handle error: {e}")
+        # Past the oracle: really going to RNS — the hand-off marker for
+        # mesh_bridge's witness (same as the MQTT leg; consumed queries never).
+        if loop_cid and packet.get('toId') == '!ffffffff':
+            get_rf_tx_registry().register_handoff(loop_cid)
 
         to_id = packet.get('toId')
         msg = BridgedMessage(

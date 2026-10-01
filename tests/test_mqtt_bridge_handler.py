@@ -378,6 +378,37 @@ class TestCrossBoxEgressRegistration:
         finally:
             mp.undo()
 
+    def test_bridged_broadcast_sets_handoff_marker(self):
+        """2026-09-30: past the oracle, the broadcast really goes to RNS —
+        the marker mesh_bridge's hand-off witness reads."""
+        import pytest
+        mp = pytest.MonkeyPatch()
+        try:
+            handler, reg = self._armed(mp, enabled=True)
+            self._send(handler, "borg joke reply")
+            handler._message_queue.put.assert_called_once()
+            assert reg.seen_handoff_within(
+                self._cid("borg joke reply"), 120) is True
+        finally:
+            mp.undo()
+
+    def test_consumed_oracle_query_is_claimed_but_not_handed_off(self):
+        """(review B#1) the cid claim precedes the oracle; a consumed query
+        is never sent to RNS, so it must carry NO hand-off marker."""
+        import pytest
+        from unittest.mock import MagicMock
+        mp = pytest.MonkeyPatch()
+        try:
+            handler, reg = self._armed(mp, enabled=True)
+            handler._oracle = MagicMock(consume=True)
+            handler._oracle.handle.return_value = "dude-AI: ok"
+            self._send(handler, "?status")
+            handler._message_queue.put.assert_not_called()
+            assert reg.seen_content_id_within(self._cid("?status"), 120) is True
+            assert reg.seen_handoff_within(self._cid("?status"), 120) is False
+        finally:
+            mp.undo()
+
     def test_flag_off_does_not_register(self):
         import pytest
         mp = pytest.MonkeyPatch()

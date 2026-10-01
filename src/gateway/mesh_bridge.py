@@ -37,6 +37,8 @@ from .base_handler import (
     true_origin_downlink_enabled, true_origin_loop_guard_window_s,
 )
 from .config import GatewayConfig, MeshtasticBridgeConfig, MeshtasticConfig
+from ._handoff_witness import HandoffWitness
+from ._mesh_bridge_legs import build_downlink_injector
 from .message_queue import PersistentMessageQueue, MessagePriority, RetryPolicy
 from utils.safe_import import safe_import
 from utils.paths import get_real_user_home
@@ -493,6 +495,10 @@ class MeshtasticPresetBridge:
             'link_lost': 0,
             'start_time': None,
         }
+        # Did a LF->ST hand-off to the RNS path reach the air? (2026-09-30)
+        self._handoff = HandoffWitness(
+            observable=lambda: self._secondary_connected,
+            handed_off=lambda cid: get_rf_tx_registry().seen_handoff_within(cid, 120))
 
         # Optional true-origin downlink injector for the primary (meshtasticd)
         # leg — makes ST→LF traffic show as the real source node on :9443
@@ -507,37 +513,8 @@ class MeshtasticPresetBridge:
         self._nodeinfo_sent = set()
 
     def _build_downlink_injector(self, leg: MeshtasticConfig):
-        """Construct a DownlinkInjector for a leg, or None if not enabled."""
-        if (leg.injection_mode or "toradio").lower() != "downlink":
-            return None
-        if not leg.downlink_psk:
-            logger.warning(
-                "mesh_bridge %s injection_mode=downlink but no downlink_psk — "
-                "falling back to toradio", leg.name)
-            return None
-        try:
-            from .mqtt_downlink_inject import DownlinkInjector
-            injector = DownlinkInjector(
-                broker=leg.mqtt_broker,
-                port=leg.mqtt_port,
-                channel_name=leg.mqtt_channel,
-                psk_b64=leg.downlink_psk,
-                root_topic="msh",
-            )
-            if not injector.usable:
-                logger.warning(
-                    "mesh_bridge %s downlink injector unusable: %s — "
-                    "falling back to toradio", leg.name, injector.fatal_reason)
-                return None
-            logger.info(
-                "mesh_bridge %s: true-origin downlink injection ENABLED "
-                "(channel=%s)", leg.name, leg.mqtt_channel)
-            return injector
-        except Exception as e:
-            logger.warning(
-                "mesh_bridge %s downlink injector init failed: %s — "
-                "falling back to toradio", leg.name, e)
-            return None
+        """Construct a DownlinkInjector for a leg, or None (see _mesh_bridge_legs)."""
+        return build_downlink_injector(leg)
 
     def _lookup_node_user(self, node_id_str: str):
         """Return {'long','short','hw'} for a node id from an interface nodedb.
@@ -733,7 +710,7 @@ class MeshtasticPresetBridge:
             },
             'direction': self.bridge_config.direction,
             'uptime_seconds': uptime,
-            'statistics': self.stats.copy(),
+            'statistics': {**self.stats, **self._handoff.snapshot()},
             'queue': {
                 'p2s_pending': self._primary_to_secondary.get_queue_depth(),
                 's2p_pending': self._secondary_to_primary.get_queue_depth(),
@@ -838,6 +815,7 @@ class MeshtasticPresetBridge:
                     expired = [k for k, v in self._seen_messages.items() if v < cutoff]
                     for key in expired:
                         del self._seen_messages[key]
+                self._handoff.sweep()
 
             except Exception as e:
                 logger.error(f"Cleanup loop error: {e}")
@@ -1132,30 +1110,26 @@ class MeshtasticPresetBridge:
             else:
                 text = str(payload)
 
-            # Seen-on-RF registration (dual-path dedup, cross-BOX direction):
-            # a broadcast heard on this leg IS on that radio's mesh, whoever
-            # TX'd it — including a peer box's radio on the same RF segment.
-            # Scope matters: register into the RECEIVING leg's registry only
-            # (a primary-RX entry must never suppress a primary→secondary
-            # forward of the same content). Deliberately BEFORE the
-            # already-bridged drop below — tagged content is refused for
-            # re-bridging but is still on the mesh, and recording it is what
-            # lets the inject-side checks kill the other path's copy (the
-            # moc3 ×4 bot-reply shape, 2026-06-04). After the channel
+            # Seen-on-RF registration (dual-path dedup, cross-BOX direction): a
+            # broadcast heard on this leg IS on that radio's mesh, whoever TX'd
+            # it, incl. a peer box on the same RF segment. RECEIVING leg's
+            # registry only (a primary-RX entry must never suppress a
+            # primary→secondary forward). BEFORE the already-bridged drop:
+            # tagged content is still on the mesh,
+            # and recording it lets the inject-side checks kill the other
+            # path's copy (moc3 ×4 bot-reply, 2026-06-04). After the channel
             # allow-list, so filtered channels don't poison the registry.
             if is_broadcast and text:
                 (get_rf_tx_registry() if source == "primary"
                  else get_secondary_rf_registry()).register(text)
+                if source == "secondary":   # a hand-off's copy, heard on air?
+                    self._handoff.observe(text)
 
-            # ECHO-LOOP INVARIANT (cf. 1a34699): content already carrying a
-            # bridge tag has crossed SOME bridge — it never crosses another.
-            # Live failure shape (moc, 2026-06-03): ST text -> mesh_bridge ->
-            # HAT -> M->R fan-out -> peer gateway (moc3, also on the ST RF
-            # segment) re-injected it tagged [RNS:...] -> our serial RX heard
-            # it -> re-forwarded with a fresh prefix -> dedup never matched
-            # the mutated content -> infinite prefix-growing amplification.
-            # Our own forwards carry a [Mesh: prefix (BRIDGE_TAG_PREFIXES),
-            # so every gateway — including this one — refuses them on re-RX.
+            # ECHO-LOOP INVARIANT (cf. 1a34699): bridge-tagged content has
+            # crossed SOME bridge and never crosses another (moc 2026-06-03: ST->
+            # HAT->M->R->peer moc3 re-injected [RNS:]->our serial RX; each pass
+            # re-prefixed it so dedup never matched: the TAG is the guard). Our
+            # forwards carry [Mesh:, so every gateway, this one too, refuses them.
             # Content_id leg (Phase 2, flag-gated; off = tag test only). ⚠️ The
             # M->R leg ALSO registers every ORIGINAL broadcast it bridges (echo
             # guard), so an untagged hit is usually a HAND-OFF to the RNS path,
@@ -1174,6 +1148,8 @@ class MeshtasticPresetBridge:
                         else 'cross_preset_cid_only_dropped')
                 with self._stats_lock:
                     self.stats[stat] = self.stats.get(stat, 0) + 1
+                if not tagged and source == "primary" and is_broadcast:
+                    self._handoff.note(text, loop_cid)   # heard on secondary?
                 logger.debug(
                     f"Already-bridged content dropped from {source}: {text[:50]}..."
                     if tagged else f"Cross-preset copy dropped from {source}: "

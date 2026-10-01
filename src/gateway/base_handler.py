@@ -368,6 +368,40 @@ class RecentRfTxRegistry:
             ts = self._entries.get(key)
             return ts is not None and (now - ts) <= window_s
 
+    # ── hand-off marker (2026-09-30) ──────────────────────────────────
+    #
+    # The M→R legs register a broadcast's content_id BEFORE the oracle check,
+    # so a query the oracle then consumes is claimed but never sent to RNS.
+    # This marker is set only once the message is actually proceeding to RNS,
+    # so mesh_bridge's hand-off witness can tell a real hand-off (expect the
+    # peer's copy on the other preset) from a cid-only drop that went nowhere.
+    # Own namespace: it never feeds a suppression decision.
+
+    @staticmethod
+    def _handoff_key(content_id: str) -> Optional[str]:
+        cid = (content_id or "").strip()
+        return ("handoff\x00" + cid) if cid else None
+
+    def register_handoff(self, content_id: str) -> None:
+        """Record that this content is being handed to the RNS path."""
+        key = self._handoff_key(content_id)
+        if key is None:
+            return
+        now = time.monotonic()
+        with self._lock:
+            self._entries[key] = now
+            self._prune_locked(now)
+
+    def seen_handoff_within(self, content_id: str, window_s: float) -> bool:
+        """True if ``content_id`` was handed to the RNS path in window_s."""
+        key = self._handoff_key(content_id)
+        if key is None:
+            return False
+        now = time.monotonic()
+        with self._lock:
+            ts = self._entries.get(key)
+            return ts is not None and (now - ts) <= window_s
+
     def seen_namespace_within(self, text: str, content_id: str,
                               window_s: float) -> str:
         """The Phase-4 two-namespace egress gate, in one shared place.

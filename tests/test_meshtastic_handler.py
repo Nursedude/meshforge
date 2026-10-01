@@ -1311,6 +1311,41 @@ class TestMeshOracleWiring:
                 {"payload": b"hello"}, "!a1b2c3d4")
         assert not handler._message_queue.empty()
 
+    # -- hand-off marker for mesh_bridge's witness (2026-09-30, review B#1) --
+    def _armed(self, handler, monkeypatch):
+        import gateway.base_handler as bh
+        reg = bh.RecentRfTxRegistry()
+        monkeypatch.setattr(bh, "_rf_tx_registry", reg)
+        handler.config.rns.true_origin_downlink_enabled = True
+        handler.config.rns.true_origin_loop_guard_window_sec = 120
+        return reg
+
+    def test_bridged_broadcast_sets_handoff_marker(self, handler, monkeypatch):
+        from gateway.base_handler import mesh_origin_content_id
+        reg = self._armed(handler, monkeypatch)
+        handler._oracle = None
+        with patch("commands.messaging.store_incoming"):
+            handler._handle_text_message(
+                {"toId": "!ffffffff", "channel": 0},
+                {"payload": b"hello world"}, "!a1b2c3d4")
+        assert not handler._message_queue.empty()
+        assert reg.seen_handoff_within(
+            mesh_origin_content_id("!a1b2c3d4", "hello world"), 120) is True
+
+    def test_consumed_query_claimed_but_not_handed_off(self, handler,
+                                                       monkeypatch):
+        from gateway.base_handler import mesh_origin_content_id
+        reg = self._armed(handler, monkeypatch)
+        handler._oracle = MagicMock(consume=True)
+        handler._oracle.handle.return_value = "dude-AI@x: ok"
+        handler._handle_text_message(
+            {"toId": "!ffffffff", "channel": 0}, {"payload": b"status"},
+            "!a1b2c3d4")
+        assert handler._message_queue.empty()
+        cid = mesh_origin_content_id("!a1b2c3d4", "status")
+        assert reg.seen_content_id_within(cid, 120) is True
+        assert reg.seen_handoff_within(cid, 120) is False
+
     # -- channel whitelist (MESHFORGE_ORACLE_CHANNELS name -> local index) --
     def test_resolve_oracle_channels_empty(self, handler):
         assert handler._resolve_oracle_channels("") == set()

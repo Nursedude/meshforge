@@ -786,6 +786,10 @@ class MQTTBridgeHandler(BaseMessageHandler):
                     return
             except Exception as e:
                 logger.debug(f"mqtt oracle handle error: {e}")
+        # Past the oracle: this broadcast is really going to RNS. Marks it a
+        # true hand-off for mesh_bridge's witness (consumed queries never are).
+        if loop_cid and to_num == 0xFFFFFFFF:
+            get_rf_tx_registry().register_handoff(loop_cid)
 
         # Determine destination
         to_id = f"!{to_num:08x}" if to_num else None

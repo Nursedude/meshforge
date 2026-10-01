@@ -1573,3 +1573,126 @@ class TestCrossPresetCidOnlyDropWitness:
         """Healthy-zero must be distinguishable from meter-absent (hfm #9)."""
         bridge, _ = self._bridge(mock_home, tmp_path, mock_config, monkeypatch)
         assert bridge.stats['cross_preset_cid_only_dropped'] == 0
+
+
+@pytest.mark.usefixtures("allow_local_radio_tx")
+class TestHandoffWitnessWiring:
+    """The consumer path to its END state, through the bridge's OWN witness
+    wiring (only the clock is swapped, review A#6): a primary cid-only drop
+    is noted, the peer's tagged copy heard on the SECONDARY radio confirms
+    it, an unheard real hand-off is swept UNCONFIRMED, a consumed query (no
+    hand-off marker) is not owed — all surfaced in get_status()."""
+
+    @staticmethod
+    def _packet(text, to_id='!ffffffff'):
+        return {'fromId': '!851a9fe7', 'toId': to_id, 'channel': 2,
+                'decoded': {'portnum': 'TEXT_MESSAGE_APP', 'payload': text}}
+
+    def _bridge(self, mock_home, tmp_path, mock_config, monkeypatch,
+                handed_off=True):
+        import gateway.base_handler as bh
+        from gateway.base_handler import mesh_origin_content_id
+        from gateway.mesh_bridge import MeshtasticPresetBridge
+        reg = bh.RecentRfTxRegistry()
+        monkeypatch.setattr(bh, "_rf_tx_registry", reg)
+        mock_home.return_value = tmp_path
+        mock_config.rns.true_origin_downlink_enabled = True
+        mock_config.rns.true_origin_loop_guard_window_sec = 120
+        b = MeshtasticPresetBridge(config=mock_config)
+        b._secondary_connected = True
+        clock = {"t": 5000.0}
+        b._handoff._clock = lambda: clock["t"]
+        cid = mesh_origin_content_id("!851a9fe7", "wx")
+        reg.register_content_id(cid)          # the M->R leg's claim ...
+        if handed_off:
+            reg.register_handoff(cid)         # ... and its "went to RNS" mark
+        return b, clock
+
+    def _drop(self, b, text="wx", **kw):
+        b._process_receive(self._packet(text, **kw), "primary", "secondary",
+                           b._primary_to_secondary)
+
+    def _expire(self, b, clock):
+        clock["t"] += 31
+        b._handoff.sweep()
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_copy_heard_on_secondary_confirms(self, mock_home, tmp_path,
+                                              mock_config, monkeypatch):
+        b, clock = self._bridge(mock_home, tmp_path, mock_config, monkeypatch)
+        self._drop(b)
+        b._process_receive(self._packet("[RNS:meshforge ] wx"), "secondary",
+                           "primary", b._secondary_to_primary)
+        self._expire(b, clock)
+        stats = b.get_status()['statistics']
+        assert stats['cross_preset_cid_only_dropped'] == 1
+        assert stats['cross_preset_handoff_confirmed'] == 1
+        assert stats['cross_preset_handoff_unconfirmed'] == 0
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_unheard_real_handoff_is_unconfirmed(self, mock_home, tmp_path,
+                                                 mock_config, monkeypatch):
+        b, clock = self._bridge(mock_home, tmp_path, mock_config, monkeypatch)
+        self._drop(b)
+        self._expire(b, clock)
+        assert b.get_status()['statistics'][
+            'cross_preset_handoff_unconfirmed'] == 1
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_consumed_query_is_not_owed(self, mock_home, tmp_path,
+                                        mock_config, monkeypatch):
+        """(B#1) tonight's ?status: claimed by the M->R leg, consumed by the
+        oracle, never sent to RNS — no hand-off marker, no warning."""
+        b, clock = self._bridge(mock_home, tmp_path, mock_config, monkeypatch,
+                                handed_off=False)
+        self._drop(b)
+        self._expire(b, clock)
+        stats = b.get_status()['statistics']
+        assert stats['cross_preset_handoff_not_handed_off'] == 1
+        assert stats['cross_preset_handoff_unconfirmed'] == 0
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_secondary_down_reads_unobservable(self, mock_home, tmp_path,
+                                               mock_config, monkeypatch):
+        """The constructor's own observable= wiring (A#6), not a test stub."""
+        b, clock = self._bridge(mock_home, tmp_path, mock_config, monkeypatch)
+        self._drop(b)
+        b._secondary_connected = False
+        self._expire(b, clock)
+        assert b.get_status()['statistics'][
+            'cross_preset_handoff_unobservable'] == 1
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_tagged_primary_drop_is_not_a_handoff(self, mock_home, tmp_path,
+                                                  mock_config, monkeypatch):
+        b, clock = self._bridge(mock_home, tmp_path, mock_config, monkeypatch)
+        self._drop(b, "[RNS:1f68] hi")
+        clock["t"] += 31
+        assert b._handoff.sweep() == []
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_dm_is_not_a_handoff(self, mock_home, tmp_path, mock_config,
+                                 monkeypatch):
+        """(B#6) observe() only sees broadcasts, so a DM can never confirm."""
+        from gateway.base_handler import get_rf_tx_registry, mesh_origin_content_id
+        b, clock = self._bridge(mock_home, tmp_path, mock_config, monkeypatch)
+        get_rf_tx_registry().register_content_id(
+            mesh_origin_content_id("!851a9fe7", "dm text"))
+        self._drop(b, "dm text", to_id='!b03bb70c')
+        clock["t"] += 31
+        assert b._handoff.sweep() == []
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_cleanup_loop_runs_the_sweep(self, mock_home, tmp_path,
+                                         mock_config, monkeypatch):
+        """Expiry must not wait for traffic: one real cleanup tick sweeps."""
+        b, clock = self._bridge(mock_home, tmp_path, mock_config, monkeypatch)
+        self._drop(b)
+        clock["t"] += 31
+        b._running = True
+        b.bridge_config.dedup_window_sec = 60
+        ticks = iter([False, True])
+        monkeypatch.setattr(b._stop_event, "wait", lambda *_: next(ticks))
+        b._cleanup_loop()
+        assert b.get_status()['statistics'][
+            'cross_preset_handoff_unconfirmed'] == 1
