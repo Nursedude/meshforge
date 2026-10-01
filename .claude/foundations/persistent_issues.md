@@ -268,9 +268,9 @@ grep its portduino.ini ch341 ref's `libpinedio-usb.c` for the detach first.
 ⚠️ **Do not roll meshtasticd**: 2.7.26.54e0d8d is STILL upstream `Latest`
 (2026-06-24); the only newer build is a 2.8.0 *alpha* whose predecessor
 `2.8.0.7239fe8` was **revoked** 08-30. meshtasticd is `apt-mark hold`ed on
-all 9 boxes (verified 09-11) — 5 of them have the OBS alpha repo enabled at
-priority 500, so the hold is the only thing standing between a routine
-`apt upgrade` and an alpha fleet-wide. Do not remove it to "unblock" a roll.
+all 9 boxes (re-verified 09-30). The OBS alpha repo (hand-added on 5 boxes;
+MeshForge installs beta only) was disabled 09-30 → `*.disabled-20260930`, so
+apt's candidate = the installed beta. Keep the hold anyway: beta moves too.
 
 History: pine64 merged our detach as `b0694ec8` 07-19, but firmware had
 moved to its OWN fork two days earlier (07-17), so it never carried over —
