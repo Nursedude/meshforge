@@ -48,6 +48,24 @@ def _clear_systemctl_cache():
 
 
 @pytest.fixture(autouse=True)
+def _no_live_radio_probe(monkeypatch):
+    """Keep ``build_slo_snapshot()`` off the HOST's live meshtasticd.
+
+    Its ``_probe_radio()`` does a real ``connect_ex(("localhost", 4403))``
+    unless meshforge-gateway is active. Unpinned, every snapshot test here
+    opened a PhoneAPI connection to the live daemon — measured 2026-10-01 on
+    a dev box: this file alone produced 21 "Incoming API connection" /
+    "Force close previous TCP connection" events in 5 s, and its verdicts
+    depended on whether this box happens to run meshtasticd. The direct
+    ``_probe_radio`` tests import the function by name and mock the socket
+    themselves, so this only replaces the snapshot's call.
+    """
+    monkeypatch.setattr(fleet_snapshot, "_probe_radio", lambda: {
+        "connected": False, "name": None, "preset": None, "battery_pct": None,
+    })
+
+
+@pytest.fixture(autouse=True)
 def _neutral_watchdog_block(monkeypatch):
     """Decouple ``build_slo_snapshot()``'s ``overall_status`` from the HOST's
     real ``/var/lib/meshforge/watchdog.json``.
