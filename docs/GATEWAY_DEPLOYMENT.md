@@ -264,7 +264,7 @@ Each bridge's startup is gated by its own `enabled` flag:
 |----------------|-----------------|
 | `rns_bridge_enabled: true` (default) | `RNSMeshtasticBridge` — the RNS ↔ Meshtastic message bridge (mqtt_bridge / message_bridge behavior) |
 | `mesh_bridge.enabled: true` | `MeshtasticPresetBridge` — cross-preset Meshtastic ↔ Meshtastic (e.g. LF HAT + ST USB) |
-| `rns_transport.enabled: true` | `RNSMeshtasticTransport` — RNS over Meshtastic as a transport layer |
+| `rns_transport.enabled: true` | Removed 2026-10-01; startup refuses it. RNS over LoRa = an RNodeInterface in rnsd |
 
 Any combination is valid. The common deployment (`rns_bridge_enabled=true`,
 everything else `false`) runs exactly what the fleet runs today. A

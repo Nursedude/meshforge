@@ -72,10 +72,25 @@ def validate_data_speed(speed: int, field_name: str) -> Optional[ConfigValidatio
     return None
 
 
+#: The RNS-over-Meshtastic transport (gateway/rns_transport.py) was removed
+#: 2026-10-01. It started, held a meshtasticd TCP connection and counted
+#: fragments, but nothing ever handed a reassembled packet to RNS, so it
+#: carried nothing. RNS over LoRa is an RNodeInterface in rnsd's own config.
+RNS_TRANSPORT_REMOVED = (
+    "rns_transport was removed on 2026-10-01: it never delivered packets to "
+    "RNS. Set rns_transport.enabled=false (and bridge_mode to another value) "
+    "in gateway.json. For RNS over LoRa, add an RNodeInterface to rnsd's "
+    "config instead."
+)
+
+
 def validate_bridge_mode(mode: str, field_name: str) -> Optional[ConfigValidationError]:
-    """Validate bridge mode."""
+    """Validate bridge mode. ``rns_transport`` is named as REMOVED, not merely
+    invalid, with the same text gateway startup refuses with."""
+    if (mode or "").lower() == "rns_transport":
+        return ConfigValidationError(field_name, RNS_TRANSPORT_REMOVED)
     valid_modes = [
-        "mqtt_bridge", "message_bridge", "rns_transport", "mesh_bridge",
+        "mqtt_bridge", "message_bridge", "mesh_bridge",
         "meshcore_bridge", "tri_bridge",
     ]
     if mode not in valid_modes:
@@ -121,24 +136,6 @@ def validate_dedup_window(seconds: int, field_name: str) -> Optional[ConfigValid
         )
     return None
 
-
-def validate_speed_hop_combination(speed: int, hop_limit: int) -> Optional[ConfigValidationError]:
-    """Check for incompatible speed/hop combinations."""
-    # High speed + high hops = likely packet loss due to timing
-    if speed >= 7 and hop_limit >= 5:
-        return ConfigValidationError(
-            "rns_transport",
-            f"Speed {speed} with hop_limit {hop_limit} may cause reliability issues (fast speed + many hops)",
-            severity="warning"
-        )
-    # Low speed + low hops = underutilizing range
-    if speed <= 2 and hop_limit <= 2:
-        return ConfigValidationError(
-            "rns_transport",
-            f"Speed {speed} with hop_limit {hop_limit} may underutilize range capability",
-            severity="info"
-        )
-    return None
 
 
 def validate_log_level(level: str, field_name: str) -> Optional[ConfigValidationError]:
@@ -1100,22 +1097,9 @@ class GatewayConfig:
         if err:
             errors.append(err)
 
-        # Validate RNS transport config
-        err = validate_data_speed(self.rns_transport.data_speed, "rns_transport.data_speed")
-        if err:
-            errors.append(err)
-
-        err = validate_hop_limit(self.rns_transport.hop_limit, "rns_transport.hop_limit")
-        if err:
-            errors.append(err)
-
-        # Check speed/hop combination
-        err = validate_speed_hop_combination(
-            self.rns_transport.data_speed,
-            self.rns_transport.hop_limit
-        )
-        if err:
-            errors.append(err)
+        # rns_transport.* is no longer validated: the transport was removed
+        # 2026-10-01 and its section only parses (bridge_mode / enabled are
+        # refused elsewhere with RNS_TRANSPORT_REMOVED).
 
         # Validate mesh bridge config. Composable-bridges model: mesh_bridge
         # can be enabled alongside another bridge_mode (e.g. mqtt_bridge +
@@ -1342,27 +1326,6 @@ class GatewayConfig:
         config.routing_rules = config.get_default_rules()
         return config
 
-    @classmethod
-    def template_rns_over_mesh(cls, speed: int = 8, hop_limit: int = 3) -> 'GatewayConfig':
-        """
-        RNS transport over Meshtastic (RNS uses LoRa as network layer).
-
-        Use case: Run RNS apps (NomadNet, Sideband) over LoRa mesh
-        Requirements: meshtasticd on localhost:4403 with radio
-
-        Args:
-            speed: LoRa speed preset (0-8, higher=faster/shorter range)
-            hop_limit: Mesh hop limit (1-7)
-        """
-        config = cls()
-        config.enabled = True
-        config.bridge_mode = "rns_transport"
-        config.rns_transport.enabled = True
-        config.rns_transport.connection_type = "tcp"
-        config.rns_transport.device_path = "localhost:4403"
-        config.rns_transport.data_speed = speed
-        config.rns_transport.hop_limit = hop_limit
-        return config
 
     @classmethod
     def template_dual_preset_bridge(cls,
@@ -1450,7 +1413,6 @@ class GatewayConfig:
         return {
             "mqtt_bridge": "MQTT-based Meshtastic <-> RNS bridge (RECOMMENDED, zero interference)",
             "basic_bridge": "TCP-based Meshtastic <-> RNS bridge (legacy, blocks web client)",
-            "rns_over_mesh": "Run RNS apps over LoRa mesh (transport mode)",
             "dual_preset_bridge": "Bridge two Meshtastic networks with different presets",
             "mqtt_monitor": "Monitor Meshtastic network via MQTT (no radio needed)",
             "relay_node": "Dedicated relay/repeater node configuration",
@@ -1471,7 +1433,6 @@ class GatewayConfig:
         templates = {
             "mqtt_bridge": cls.template_mqtt_bridge,
             "basic_bridge": cls.template_basic_bridge,
-            "rns_over_mesh": cls.template_rns_over_mesh,
             "dual_preset_bridge": cls.template_dual_preset_bridge,
             "mqtt_monitor": cls.template_mqtt_monitor,
             "relay_node": cls.template_relay_node,

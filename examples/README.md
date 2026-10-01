@@ -109,7 +109,7 @@ sudo reboot
 {
   "enabled": true,              // Enable the gateway
   "auto_start": false,          // Start on launch
-  "bridge_mode": "message_bridge", // message_bridge | rns_transport | mesh_bridge
+  "bridge_mode": "message_bridge", // message_bridge | mesh_bridge
 
   "meshtastic": {
     "host": "localhost",        // meshtasticd host

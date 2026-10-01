@@ -69,7 +69,7 @@ As of commit `4bae714` (2026-04-24), **`bridge_mode` is an advisory display labe
 |------------------------|---------|--------------|-------------|
 | `rns_bridge_enabled` | `true` | `RNSMeshtasticBridge` — Meshtastic ↔ RNS/LXMF | The common case. Bridges mesh messages to NomadNet. |
 | `mesh_bridge.enabled` | `false` | `MeshtasticPresetBridge` — cross-preset mesh ↔ mesh | Dual-radio boxes bridging e.g. LongFast HAT with a ShortTurbo USB device via `connection_type: "serial"` |
-| `rns_transport.enabled` | `false` | `RNSMeshtasticTransport` — RNS-over-Meshtastic transport | Specialist: use Meshtastic's LoRa as the physical layer for RNS packets |
+| `rns_transport.enabled` | `false` | Removed 2026-10-01 | Startup refuses `true`. For RNS over LoRa, add an RNodeInterface to rnsd's config |
 
 A dual-radio gateway that also bridges to NomadNet sets both `rns_bridge_enabled: true` and `mesh_bridge.enabled: true` — two bridges run side-by-side with independent queues, threads, and connections. A pure cross-preset testbed with no NomadNet sets `rns_bridge_enabled: false` and `mesh_bridge.enabled: true`.
 

@@ -288,7 +288,6 @@ class GatewayHandler(BaseHandler):
             "  Requires: mosquitto + meshtasticd mqtt.enabled\n\n"
             "TCP Bridge: Legacy mode, holds TCP connection.\n"
             "  Blocks meshtasticd web client while running.\n\n"
-            "RNS Transport: Use Meshtastic as RNS network layer\n"
             "Mesh Bridge: Connect two Meshtastic presets",
             choices
         )

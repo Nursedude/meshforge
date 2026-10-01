@@ -447,3 +447,37 @@ class TestSignalHandlerReclaim20260803:
             "shutdown path (and inst.stop()) will never run. Registrations "
             "in order: %r" % (sigterm,)
         )
+
+
+class TestRemovedTransportIsNotOffered:
+    """Review pair 2026-10-01: the rns_over_mesh TEMPLATE survived R1 and the
+    TUI's Load Template wrote configs startup then refused. No offered template
+    may produce a config the gateway refuses, and the validator must name the
+    removal with the same text startup uses."""
+
+    def test_no_offered_template_is_refused_at_startup(self):
+        from gateway.config import GatewayConfig
+        from gateway.bridge_cli import (
+            RNS_TRANSPORT_REMOVED, resolve_bridges, validate_bridge_conflicts)
+
+        names = list(GatewayConfig.get_available_templates())
+        assert names, "no templates offered"
+        for name in names:
+            cfg = GatewayConfig.from_template(name)
+            assert cfg is not None, name
+            errs = validate_bridge_conflicts(cfg, resolve_bridges(cfg))
+            assert RNS_TRANSPORT_REMOVED not in errs, name
+        assert GatewayConfig.from_template("rns_over_mesh") is None
+
+    @pytest.mark.parametrize("mode", ["rns_transport", "RNS_Transport"])
+    def test_validator_names_the_removal(self, mode):
+        from gateway.config import RNS_TRANSPORT_REMOVED, validate_bridge_mode
+
+        err = validate_bridge_mode(mode, "bridge_mode")
+        assert err is not None and err.severity == "error"
+        assert err.message == RNS_TRANSPORT_REMOVED
+
+    def test_startup_and_validator_share_one_message(self):
+        from gateway import bridge_cli, config
+
+        assert bridge_cli.RNS_TRANSPORT_REMOVED is config.RNS_TRANSPORT_REMOVED
