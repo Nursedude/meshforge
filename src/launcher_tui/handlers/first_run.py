@@ -70,8 +70,7 @@ USB_NODE_GATEWAY_NOTE = (
     "    Meshtastic through meshtasticd (TCP/MQTT) only. A USB node\n"
     "    CAN be a leg of, in ~/.config/meshforge/gateway.json:\n"
     '      mesh_bridge.secondary: connection_type "serial",\n'
-    '                             serial_device "{tty}"\n'
-    '      rns_transport: connection_type "serial", device_path "{tty}"'
+    '                             serial_device "{tty}"'
 )
 
 

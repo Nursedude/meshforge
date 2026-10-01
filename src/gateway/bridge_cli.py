@@ -20,8 +20,6 @@ from gateway import (
     GatewayConfig,
     MeshtasticPresetBridge,
     create_mesh_bridge,
-    RNSMeshtasticTransport,
-    create_rns_transport,
 )
 from utils.service_check import check_service, check_port
 from utils.sandbox_check import assert_writable_or_exit, meshforge_writable_paths
@@ -64,14 +62,9 @@ def migrate_legacy_bridge_mode(config: GatewayConfig) -> list:
             "mesh_bridge.enabled=true explicitly in gateway.json.)"
         )
 
-    # Legacy "rns_transport" mode: same pattern.
-    if mode == "rns_transport" and not config.rns_transport.enabled:
-        config.rns_transport.enabled = True
-        warnings_out.append(
-            "bridge_mode='rns_transport' but rns_transport.enabled=false — "
-            "auto-enabled. (Set rns_transport.enabled=true explicitly in "
-            "gateway.json to silence this warning.)"
-        )
+    # "rns_transport" mode is NOT auto-enabled any more: the transport was
+    # removed (see RNS_TRANSPORT_REMOVED) and validate_bridge_conflicts
+    # refuses a config that still asks for it.
 
     # Pure mesh_bridge deployments that want to run WITHOUT the RNS bridge
     # have to opt out explicitly via rns_bridge_enabled=false. We don't
@@ -79,6 +72,18 @@ def migrate_legacy_bridge_mode(config: GatewayConfig) -> list:
     # whether the user also wants RNS — keep both enabled by default.
 
     return warnings_out
+
+
+#: The RNS-over-Meshtastic transport (gateway/rns_transport.py) was removed
+#: 2026-10-01. It started, held a meshtasticd TCP connection and counted
+#: fragments, but nothing ever handed a reassembled packet to RNS, so it
+#: carried nothing. RNS over LoRa is an RNodeInterface in rnsd's own config.
+RNS_TRANSPORT_REMOVED = (
+    "rns_transport was removed on 2026-10-01: it never delivered packets to "
+    "RNS. Set rns_transport.enabled=false (and bridge_mode to another value) "
+    "in gateway.json. For RNS over LoRa, add an RNodeInterface to rnsd's "
+    "config instead."
+)
 
 
 def resolve_bridges(config: GatewayConfig) -> list:
@@ -105,13 +110,6 @@ def resolve_bridges(config: GatewayConfig) -> list:
             "builder": lambda cfg=config: create_mesh_bridge(cfg),
         })
 
-    if config.rns_transport.enabled:
-        bridges.append({
-            "name": "rns_transport",
-            "label": "RNS Over Meshtastic Transport",
-            "builder": lambda cfg=config: create_rns_transport(cfg.rns_transport),
-        })
-
     return bridges
 
 
@@ -125,11 +123,16 @@ def validate_bridge_conflicts(config: GatewayConfig, bridges: list) -> list:
     """
     errs = []
 
+    # Checked BEFORE the empty-bridges return: a config whose only leg was
+    # rns_transport must say WHY it has no bridge, not just that it has none.
+    mode = (config.bridge_mode or "").lower()
+    if config.rns_transport.enabled or mode == "rns_transport":
+        errs.append(RNS_TRANSPORT_REMOVED)
+
     if not bridges:
         errs.append(
-            "No bridges enabled. At least one of: rns_bridge_enabled=true, "
-            "mesh_bridge.enabled=true, or rns_transport.enabled=true must "
-            "be set in gateway.json."
+            "No bridges enabled. At least one of: rns_bridge_enabled=true "
+            "or mesh_bridge.enabled=true must be set in gateway.json."
         )
         return errs  # nothing else to validate
 
@@ -147,15 +150,6 @@ def validate_bridge_conflicts(config: GatewayConfig, bridges: list) -> list:
                 f"serial_device={p.serial_device}. Each radio must have a "
                 "distinct device path."
             )
-
-    # mesh_bridge and rns_transport both expect to own the meshtasticd
-    # radio's data path — running both concurrently is ambiguous and untested.
-    if config.mesh_bridge.enabled and config.rns_transport.enabled:
-        errs.append(
-            "mesh_bridge.enabled and rns_transport.enabled are both true. "
-            "These two bridges both claim the Meshtastic radio's data "
-            "path and cannot run concurrently — enable at most one."
-        )
 
     # Secondary serial device that does not exist: caught here as a hard
     # refusal rather than at runtime.
@@ -205,7 +199,7 @@ def preflight_checks(config: GatewayConfig) -> bool:
 
     # Check RNS daemon (if RNS mode enabled)
     bridge_mode = config.bridge_mode if config else "message_bridge"
-    if bridge_mode in ("message_bridge", "rns_transport"):
+    if bridge_mode == "message_bridge":
         print("Checking rnsd...", end=" ")
         rns_status = check_service('rnsd')
         if rns_status.available:

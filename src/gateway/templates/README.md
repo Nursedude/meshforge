@@ -15,23 +15,9 @@ Bridges messages between Meshtastic LoRa mesh and Reticulum (RNS/LXMF) networks.
 - rnsd running
 - Meshtastic radio connected
 
-### 2. `rns_over_meshtastic.json` - RNS Over Meshtastic Transport
+### 2. (removed) `rns_over_meshtastic.json`
 
-Uses Meshtastic LoRa as a transport layer for RNS packets.
-
-**Use case**: Extend RNS network coverage using Meshtastic radios.
-
-**Requirements**:
-- meshtasticd running
-- RNS configured to use Meshtastic transport
-
-**Speed Presets**:
-| data_speed | Preset | B/s | Range |
-|------------|--------|-----|-------|
-| 8 | SHORT_TURBO | 500 | Short (testing) |
-| 6 | SHORT_FAST | 300 | Medium (urban) |
-| 4 | MEDIUM_FAST | 100 | Long (suburban) |
-| 0 | LONG_FAST | 50 | Maximum (rural) |
+RNS over Meshtastic was removed on 2026-10-01: the transport never delivered packets to RNS. For RNS over LoRa, add an `RNodeInterface` to rnsd's config.
 
 ### 3. `meshtastic_preset_bridge.json` - LONG_FAST <> SHORT_TURBO Bridge
 

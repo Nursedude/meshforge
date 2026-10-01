@@ -33,7 +33,7 @@ MeshForge supports 6 bridge modes configured via `bridge_mode` in `GatewayConfig
 |------|-----------|---------------|--------|
 | `mqtt_bridge` | MQTT (recommended) | Meshtastic <> RNS | Production (main) |
 | `message_bridge` | TCP (legacy) | Meshtastic <> RNS | Production (main) |
-| `rns_transport` | LoRa via Meshtastic | RNS over Meshtastic | Production (main) |
+| `rns_transport` | LoRa via Meshtastic | RNS over Meshtastic | **Removed 2026-10-01.** Never production: nothing handed its packets to RNS. RNS over LoRa = RNodeInterface in rnsd |
 | `mesh_bridge` | TCP (dual instance) | Meshtastic <> Meshtastic | Production (main) |
 | `meshcore_bridge` | Serial/TCP/BLE | MeshCore <> Meshtastic/RNS | Alpha branch |
 | `tri_bridge` | All transports | All 3 protocols | Alpha branch |

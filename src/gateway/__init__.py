@@ -2,9 +2,8 @@
 MeshForge Gateway Module
 Bridges Reticulum Network Stack (RNS) and Meshtastic networks
 
-Supports three bridge modes:
+Supports two bridge modes:
 - message_bridge: Translates messages between RNS/LXMF and Meshtastic
-- rns_transport: RNS uses Meshtastic as network transport layer (RNS_Over_Meshtastic)
 - mesh_bridge: Bridges two Meshtastic networks with different LoRa presets
 
 Exports resolve lazily (PEP 562): eager imports here pulled the full
@@ -24,7 +23,6 @@ _LAZY_EXPORTS = {
     'rns_bridge': '.rns_bridge',
     'node_tracker': '.node_tracker',
     'config': '.config',
-    'rns_transport': '.rns_transport',
     'mesh_bridge': '.mesh_bridge',
     'meshtastic_protobuf_client': '.meshtastic_protobuf_client',
     'meshtastic_protobuf_ops': '.meshtastic_protobuf_ops',
@@ -38,11 +36,6 @@ _LAZY_EXPORTS = {
     'RNSOverMeshtasticConfig': '.config',
     'MeshtasticConfig': '.config',
     'MeshtasticBridgeConfig': '.config',
-    # RNS Transport
-    'RNSMeshtasticTransport': '.rns_transport',
-    'RNSMeshtasticInterface': '.rns_transport',
-    'TransportStats': '.rns_transport',
-    'create_rns_transport': '.rns_transport',
     # Mesh preset bridge
     'MeshtasticPresetBridge': '.mesh_bridge',
     'BridgedMeshMessage': '.mesh_bridge',

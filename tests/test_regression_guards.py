@@ -167,7 +167,6 @@ class TestTCPConnectionContract:
         'connection_manager.py',    # IS the connection manager
         'meshtastic_connection.py', # IS connection infrastructure
         'node_monitor.py',          # Uses MESHTASTIC_CONNECTION_LOCK
-        'rns_transport.py',         # Uses MESHTASTIC_CONNECTION_LOCK
         'mesh_bridge.py',           # Uses MESHTASTIC_CONNECTION_LOCK
     }
 

@@ -81,14 +81,29 @@ class TestValidateBridgeConflicts:
         errs = validate_bridge_conflicts(fresh_config, bridges)
         assert any("serial_device=/dev/ttyUSB0" in e for e in errs)
 
-    def test_mesh_bridge_and_rns_transport_both_enabled_conflict(self, fresh_config):
-        from gateway.bridge_cli import resolve_bridges, validate_bridge_conflicts
+    def test_rns_transport_enabled_is_refused_with_the_reason(self, fresh_config):
+        """The transport was removed 2026-10-01; a config still asking for it
+        must refuse to start and say why, never silently drop the leg."""
+        from gateway.bridge_cli import (
+            RNS_TRANSPORT_REMOVED, resolve_bridges, validate_bridge_conflicts)
 
-        fresh_config.mesh_bridge.enabled = True
+        fresh_config.rns_transport.enabled = True
+        bridges = resolve_bridges(fresh_config)
+        assert "rns_transport" not in [b["name"] for b in bridges]
+        errs = validate_bridge_conflicts(fresh_config, bridges)
+        assert RNS_TRANSPORT_REMOVED in errs
+
+    def test_rns_transport_only_config_says_why_it_has_no_bridge(self, fresh_config):
+        from gateway.bridge_cli import (
+            RNS_TRANSPORT_REMOVED, resolve_bridges, validate_bridge_conflicts)
+
+        fresh_config.rns_bridge_enabled = False
         fresh_config.rns_transport.enabled = True
         bridges = resolve_bridges(fresh_config)
         errs = validate_bridge_conflicts(fresh_config, bridges)
-        assert any("both claim the Meshtastic radio" in e for e in errs)
+        assert bridges == []
+        assert errs[0] == RNS_TRANSPORT_REMOVED
+        assert any("No bridges enabled" in e for e in errs)
 
     def test_missing_secondary_serial_device_is_a_conflict(self, fresh_config):
         from gateway.bridge_cli import resolve_bridges, validate_bridge_conflicts
@@ -139,14 +154,17 @@ class TestLegacyBridgeModeMigration:
         assert fresh_config.mesh_bridge.enabled is True
         assert any("auto-enabled" in w for w in warnings_out)
 
-    def test_legacy_rns_transport_mode_auto_enables_section(self, fresh_config):
-        from gateway.bridge_cli import migrate_legacy_bridge_mode
+    def test_legacy_rns_transport_mode_is_refused_not_auto_enabled(self, fresh_config):
+        from gateway.bridge_cli import (
+            RNS_TRANSPORT_REMOVED, migrate_legacy_bridge_mode,
+            resolve_bridges, validate_bridge_conflicts)
 
         fresh_config.bridge_mode = "rns_transport"
         fresh_config.rns_transport.enabled = False
-        warnings_out = migrate_legacy_bridge_mode(fresh_config)
-        assert fresh_config.rns_transport.enabled is True
-        assert any("auto-enabled" in w for w in warnings_out)
+        assert migrate_legacy_bridge_mode(fresh_config) == []
+        assert fresh_config.rns_transport.enabled is False
+        errs = validate_bridge_conflicts(fresh_config, resolve_bridges(fresh_config))
+        assert RNS_TRANSPORT_REMOVED in errs
 
     def test_mqtt_bridge_mode_is_no_op_migration(self, fresh_config):
         """The common fleet config — bridge_mode=mqtt_bridge, rns_bridge_enabled default True.

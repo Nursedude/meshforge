@@ -67,21 +67,9 @@ Meshtastic <---> MeshForge <---> RNS
 - You're integrating with Home Assistant or similar
 - You need message logging/archival
 
-### `gateway-rns-transport.json` - RNS Over Meshtastic
-Use the Meshtastic mesh as a transport layer for RNS.
+### (removed) `gateway-rns-transport.json`
 
-```
-RNS App <---> MeshForge <---> Meshtastic LoRa <---> Remote Node
-```
-
-**Use when:**
-- You want to run RNS applications over LoRa
-- You need end-to-end encryption (RNS provides this)
-- You're building a hybrid mesh network
-
----
-
-## Hardware Configurations
+RNS over Meshtastic was removed on 2026-10-01: the transport never delivered packets to RNS. For RNS over LoRa, add an `RNodeInterface` to rnsd's config.
 
 ### USB radios — no example overlay, on purpose
 meshtasticd (2.7.x) has no `Serial:` key, so no `config.d/` overlay can point

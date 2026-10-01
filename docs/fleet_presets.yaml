@@ -43,10 +43,6 @@ legs:
     desc: "MeshCore companion-radio leg (alpha)."
     gateway_json:
       meshcore.enabled: true
-  rns_transport:
-    desc: "RNS-over-LoRa transport leg."
-    gateway_json:
-      rns_transport.enabled: true
 
 # ---------------------------------------------------------------------------
 # The catalog. `role` MUST name a role in fleet_roles.yaml. `bridge_legs` MUST

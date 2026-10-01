@@ -276,7 +276,6 @@ class GatewayHandler(BaseHandler):
         choices = [
             ("mqtt_bridge", "MQTT Bridge (Recommended)  Zero interference"),
             ("message_bridge", "TCP Message Bridge         Legacy, blocks web client"),
-            ("rns_transport", "RNS Transport              RNS over LoRa mesh"),
             ("mesh_bridge", "Mesh Bridge                Bridge two Meshtastic nets"),
             ("back", "Back"),
         ]

@@ -92,8 +92,9 @@ def test_standalone_node_is_confirmed_writes_nothing_and_names_real_knobs(tmp_pa
     assert "/dev/ttyUSB3" in menus[0][1], menus[0][1]      # the tty survived the join
     text = h.ctx.dialog.last_msgbox_text or ""
     assert "Nothing was written" in text and "/dev/ttyUSB3" in text, text
-    # knobs a consumer READS (mesh_bridge.py _connect_interface, rns_transport.py)
-    assert "mesh_bridge.secondary" in text and "rns_transport" in text, text
+    # the knob a consumer READS (mesh_bridge.py _connect_interface); the
+    # rns_transport leg was removed 2026-10-01 and must not be offered
+    assert "mesh_bridge.secondary" in text and "rns_transport" not in text, text
     assert "TCP/MQTT" in text                            # the RNS message bridge's truth
 
 
