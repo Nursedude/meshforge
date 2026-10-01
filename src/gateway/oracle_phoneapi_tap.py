@@ -34,9 +34,13 @@ class OraclePhoneAPITap:
     """A read-only :4403 reader that runs the mesh-oracle on every decoded text
     packet — seeing multi-hop nodes the MQTT-json uplink never carries."""
 
+    #: Seconds between link-health checks while connected.
+    _HEALTH_POLL_S = 15
+
     def __init__(self, config, stop_event):
         self.config = config
         self._stop_event = stop_event
+        self._unobservable_warned = False
         self._conn_manager = None
         self._interface = None
         self._pubsub_handler = None
@@ -151,9 +155,10 @@ class OraclePhoneAPITap:
                 # thread. Wake periodically only to honor stop_event promptly +
                 # notice a dropped link.
                 while not self._stop_event.is_set() and self._healthy():
-                    self._stop_event.wait(15)
+                    self._stop_event.wait(self._HEALTH_POLL_S)
                 if not self._stop_event.is_set():
-                    logger.warning("oracle tap link down; reconnecting")
+                    logger.warning("oracle tap link down (library reports "
+                                   "disconnected); reconnecting")
                 self._teardown()
             else:
                 self._stop_event.wait(min(backoff, 60))
@@ -188,11 +193,36 @@ class OraclePhoneAPITap:
             return False
 
     def _healthy(self) -> bool:
-        # Best-effort: the manager still hands back an interface. A hard drop is
-        # recovered on the next connect iteration after _teardown.
+        """True while the LIBRARY says the link is up — not merely while the
+        manager still holds an interface object (it holds one until released).
+
+        meshtastic 2.7.11 on a meshtasticd restart: recv() returns b"" ->
+        _reconnect() sleeps 1 s -> connect refused (meshtasticd still starting)
+        -> the OSError ends the reader thread -> _disconnected() clears
+        ``isConnected``. The stored object outlives that, so checking only for
+        its presence left the tap deaf until the next gateway restart
+        (2026-09-30, oracle-leg finding 2). A heartbeat send that fails on a
+        half-open link ends in the same _disconnected(), so this one event
+        covers both paths.
+        """
         try:
-            return (self._conn_manager is not None
-                    and self._conn_manager.get_interface() is not None)
+            if self._conn_manager is None:
+                return False
+            iface = self._conn_manager.get_interface()
+            if iface is None:
+                return False
+            connected = getattr(iface, "isConnected", None)
+            if not hasattr(connected, "is_set"):
+                # Unobservable: reconnecting every poll would churn :4403
+                # (#17), so keep the prior answer, but leave a witness once.
+                if not self._unobservable_warned:
+                    self._unobservable_warned = True
+                    logger.warning(
+                        "oracle tap: interface has no isConnected event; link "
+                        "health UNOBSERVABLE, a dropped :4403 link will not be "
+                        "noticed until the gateway restarts")
+                return True
+            return connected.is_set()
         except Exception:
             return False
 

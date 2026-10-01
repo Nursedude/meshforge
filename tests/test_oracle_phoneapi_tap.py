@@ -173,3 +173,88 @@ class TestTapSenderDerivation:
         tap = self._tap()
         tap._on_receive(self._packet(fromId=None))
         tap._oracle.handle.assert_not_called()
+
+
+class TestTapHealthFollowsTheLibrarysConnectionState:
+    """2026-09-30 (oracle-leg finding 2): _healthy() asked only whether the
+    connection manager still HELD an interface object, which it does until
+    someone releases it. meshtastic 2.7.11 on a meshtasticd restart: recv()
+    returns b"" -> _reconnect() sleeps 1 s -> connect refused (meshtasticd
+    is still starting) -> OSError ends the reader thread -> _disconnected()
+    clears isConnected. The stored object lived on, so the tap read healthy
+    and stayed deaf until the next gateway restart. Health is now the
+    library's own isConnected event."""
+
+    def _tap_with_iface(self, monkeypatch, iface):
+        tap = _disabled_tap(monkeypatch)
+        tap._conn_manager = MagicMock()
+        tap._conn_manager.get_interface.return_value = iface
+        return tap
+
+    def test_disconnected_interface_is_unhealthy(self, monkeypatch):
+        iface = SimpleNamespace(isConnected=threading.Event())  # cleared
+        assert self._tap_with_iface(monkeypatch, iface)._healthy() is False
+
+    def test_connected_interface_is_healthy(self, monkeypatch):
+        ev = threading.Event()
+        ev.set()
+        iface = SimpleNamespace(isConnected=ev)
+        assert self._tap_with_iface(monkeypatch, iface)._healthy() is True
+
+    def test_no_interface_is_unhealthy(self, monkeypatch):
+        assert self._tap_with_iface(monkeypatch, None)._healthy() is False
+
+    def test_unobservable_library_keeps_prior_behaviour_with_a_witness(
+            self, monkeypatch, caplog):
+        """A library without isConnected cannot tell us; reconnecting every
+        poll would churn :4403 (#17), so hold the prior answer — but say so
+        once, never silently (honest_failure_modes #9)."""
+        tap = self._tap_with_iface(monkeypatch, SimpleNamespace())
+        with caplog.at_level("WARNING"):
+            assert tap._healthy() is True
+            assert tap._healthy() is True
+        hits = [r for r in caplog.records if "isConnected" in r.getMessage()]
+        assert len(hits) == 1
+
+    def test_run_loop_reconnects_after_the_library_disconnects(self, monkeypatch):
+        """Consumer path to its END state: the first link dies (isConnected
+        cleared), the loop tears it down and connects AGAIN."""
+        import gateway.oracle_phoneapi_tap as mod
+        monkeypatch.setattr(mod, "_pub", MagicMock())
+        monkeypatch.setattr(mod, "_HAS_PUBSUB", True)
+        stop = threading.Event()
+        tap = _disabled_tap(monkeypatch)
+        tap._stop_event = stop
+        tap._oracle = MagicMock()
+        tap._HEALTH_POLL_S = 0.01
+        first, second = threading.Event(), threading.Event()
+        first.set()
+        second.set()
+        ifaces = [SimpleNamespace(isConnected=first),
+                  SimpleNamespace(isConnected=second)]
+        held = {"iface": None}
+        connects = []
+
+        mgr = MagicMock()
+
+        def acquire(owner="x"):
+            held["iface"] = ifaces[len(connects)]
+            connects.append(held["iface"])
+            if len(connects) == 2:
+                stop.set()
+            return True
+
+        def release():
+            held["iface"] = None
+
+        mgr.acquire_persistent.side_effect = acquire
+        mgr.release_persistent.side_effect = release
+        mgr.get_interface.side_effect = lambda: held["iface"]
+        monkeypatch.setattr(mod, "get_connection_manager", lambda h, p: mgr)
+        first.clear()  # the library has already noticed the link died
+        t = threading.Thread(target=tap.run_loop, daemon=True)
+        t.start()
+        t.join(10)
+        assert not t.is_alive()
+        assert connects == ifaces
+        assert mgr.release_persistent.call_count >= 1
