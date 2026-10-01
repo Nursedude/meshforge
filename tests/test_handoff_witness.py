@@ -82,17 +82,90 @@ def test_short_fragment_does_not_confirm_by_partial_match():
     assert _expire(w, clock) != []
 
 
-def test_unheard_handoff_is_unconfirmed_with_a_warning(caplog):
+def test_one_unheard_handoff_is_info_not_a_warning(caplog):
+    """moc 2026-09-30 22:18:56: moc3 DID transmit the copy; moc's radio
+    missed it (half-duplex / RF loss). One miss is not an outage."""
     w, clock, _ = _w()
     w.note("test", "c1")
     clock.t += 29
     assert w.sweep() == []                       # still inside the window
     clock.t += 2
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.DEBUG):
         assert w.sweep() == ["test"]
     snap = w.snapshot()
     assert snap['cross_preset_handoff_unconfirmed'] == 1
-    assert any("UNCONFIRMED" in r.getMessage() for r in caplog.records)
+    assert snap['cross_preset_handoff_unheard_streak'] == 1
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any(r.levelno == logging.INFO and "not heard" in r.getMessage()
+               for r in caplog.records)
+
+
+def _miss(w, clock, text):
+    w.note(text, "c-" + text)
+    clock.t += 31
+    w.sweep()
+
+
+def test_a_run_of_unheard_handoffs_warns(caplog):
+    """An RNS or peer-gateway outage loses EVERY hand-off: a streak."""
+    w, clock, _ = _w()
+    with caplog.at_level(logging.INFO):
+        _miss(w, clock, "m1")
+        _miss(w, clock, "m2")
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        _miss(w, clock, "m3")
+    warns = [r.getMessage() for r in caplog.records
+             if r.levelno >= logging.WARNING]
+    assert len(warns) == 1 and "3 in a row" in warns[0]
+    assert w.snapshot()['cross_preset_handoff_unheard_streak'] == 3
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        _miss(w, clock, "m4")                    # still out: keeps warning
+    assert any("4 in a row" in r.getMessage() for r in caplog.records)
+
+
+def test_a_confirmation_resets_the_streak_and_marks_recovery(caplog):
+    w, clock, _ = _w()
+    for t in ("m1", "m2", "m3"):
+        _miss(w, clock, t)
+    w.note("back", "c9")
+    with caplog.at_level(logging.WARNING):
+        assert w.observe("[RNS:x] back") is True
+    assert w.snapshot()['cross_preset_handoff_unheard_streak'] == 0
+    assert any("recovered" in r.getMessage() for r in caplog.records)
+
+
+def test_isolated_misses_between_confirmations_never_warn(caplog):
+    w, clock, _ = _w()
+    with caplog.at_level(logging.WARNING):
+        for i in range(5):
+            _miss(w, clock, f"miss{i}")
+            w.note(f"ok{i}", f"k{i}")
+            assert w.observe(f"[RNS:x] ok{i}")
+    assert not caplog.records
+    assert w.snapshot()['cross_preset_handoff_unconfirmed'] == 5
+
+
+def test_blind_and_not_owed_do_not_touch_the_streak():
+    w, clock, state = _w()
+    _miss(w, clock, "m1")
+    state["seeing"] = False
+    _miss(w, clock, "blind")
+    state["seeing"] = True
+    w2 = w
+    w2._handed_off = lambda cid: cid != "c-owed-not"
+    _miss(w2, clock, "owed-not")
+    assert w.snapshot()['cross_preset_handoff_unheard_streak'] == 1
+
+
+def test_confirmation_leaves_a_debug_line_with_the_delay(caplog):
+    w, clock, _ = _w()
+    w.note("handoff test 1", "c1")
+    clock.t += 12
+    with caplog.at_level(logging.DEBUG):
+        assert w.observe("[RNS:meshforge ] handoff test 1")
+    assert any("confirmed" in r.getMessage() and "12.0s" in r.getMessage()
+               for r in caplog.records)
 
 
 def test_not_handed_off_is_neither_lost_nor_warned(caplog):
@@ -195,5 +268,104 @@ def test_counters_are_pre_seeded():
     assert set(w.snapshot()) == {
         'cross_preset_handoff_confirmed', 'cross_preset_handoff_unconfirmed',
         'cross_preset_handoff_unobservable',
-        'cross_preset_handoff_not_handed_off', 'cross_preset_handoff_untracked'}
+        'cross_preset_handoff_not_handed_off', 'cross_preset_handoff_untracked',
+        'cross_preset_handoff_unheard_streak'}
     assert all(v == 0 for v in w.snapshot().values())
+
+
+# -- review C/D of the streak change (2026-09-30) --------------------------
+
+def _run_of_three(w, clock):
+    for t in ("m1", "m2", "m3"):
+        _miss(w, clock, t)
+
+
+def test_outage_leftovers_expiring_after_recovery_do_not_re_warn(caplog):
+    """(C#1) three hand-offs pending when RNS comes back, a LATER one is
+    confirmed, then the three expire: no '3 in a row' after 'recovered'."""
+    w, clock, _ = _w()
+    for t in ("o1", "o2", "o3"):
+        w.note(t, "c-" + t)
+        clock.t += 2
+    w.note("back", "c-back")
+    assert w.observe("[RNS:x] back") is True
+    clock.t += 31
+    with caplog.at_level(logging.INFO):
+        assert sorted(w.sweep()) == ["o1", "o2", "o3"]
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("not counted toward the run" in r.getMessage()
+               for r in caplog.records)
+    snap = w.snapshot()
+    assert snap['cross_preset_handoff_unconfirmed'] == 3
+    assert snap['cross_preset_handoff_unheard_streak'] == 0
+
+
+def test_short_untagged_native_text_confirms_nothing():
+    """(D#3) a native SHORT_TURBO 'test' is not the peer's copy."""
+    w, clock, _ = _w()
+    w.note("test", "c1")
+    assert w.observe("test") is False
+    assert _expire(w, clock) == ["test"]
+
+
+def test_untagged_long_copy_confirms_but_never_clears_the_alarm(caplog):
+    """(C#3) a long text posted natively on both presets may confirm its
+    hand-off, but must not end an outage run or log 'recovered'."""
+    w, clock, _ = _w()
+    _run_of_three(w, clock)
+    beacon = "Net check-in tonight 19:00 on the meshforge channel, all welcome"
+    w.note(beacon, "cb")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        assert w.observe(beacon) is True
+    assert not caplog.records
+    snap = w.snapshot()
+    assert snap['cross_preset_handoff_confirmed'] == 1
+    assert snap['cross_preset_handoff_unheard_streak'] == 3
+
+
+def test_warning_says_receiving_when_other_traffic_was_heard(caplog):
+    """(D) some other secondary traffic during the run ⇒ the radio hears."""
+    w, clock, _ = _w()
+    _miss(w, clock, "m1")
+    w.observe("[Mesh:LONG_FAST:e001] unrelated chatter")
+    _miss(w, clock, "m2")
+    with caplog.at_level(logging.WARNING):
+        _miss(w, clock, "m3")
+    msg = caplog.records[-1].getMessage()
+    assert "not heard by this box's secondary radio" in msg
+    assert "heard 1 other broadcast(s)" in msg and "RNS path or peer" in msg
+
+
+def test_warning_says_radio_may_be_deaf_when_nothing_was_heard(caplog):
+    w, clock, _ = _w()
+    with caplog.at_level(logging.WARNING):
+        _run_of_three(w, clock)
+    msg = caplog.records[-1].getMessage()
+    assert "may not be receiving" in msg
+    assert "RNS path or peer gateway down" not in msg
+
+
+def test_recovered_is_logged_once(caplog):
+    w, clock, _ = _w()
+    _run_of_three(w, clock)
+    for t in ("back1", "back2"):
+        w.note(t, "c-" + t)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        assert w.observe("[RNS:x] back1")
+        assert w.observe("[RNS:x] back2")
+    assert len(caplog.records) == 1 and "recovered" in caplog.records[0].getMessage()
+
+
+def test_early_tagged_copy_resets_the_run_and_says_it_came_first(caplog):
+    w, clock, _ = _w()
+    _run_of_three(w, clock)
+    assert w.observe("[RNS:meshforge ] early bird") is False
+    clock.t += 3
+    with caplog.at_level(logging.DEBUG):
+        w.note("early bird", "ce")
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("3.0s before the drop was processed" in m for m in msgs)
+    assert any("recovered" in m for m in msgs)
+    assert w.snapshot()['cross_preset_handoff_unheard_streak'] == 0
