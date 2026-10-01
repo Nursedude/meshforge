@@ -33,11 +33,12 @@ import os
 import sys
 import json
 import signal
+import socket
 import threading
 import datetime
 import time
 import urllib.request
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 from utils.paths import get_real_user_home
 
@@ -150,8 +151,10 @@ def _mini_recent_escalations(hist):
 _stop = threading.Event()
 
 
-def _fetch_json(url, timeout=8):
-    """Return (data, None) or (None, error_str). Never raises."""
+def _fetch_once(url, timeout=8):
+    """(data, error, shape). Never raises. `shape` names a failure's KIND:
+    "refused" (nothing listens yet), "warming" (the map's own 503
+    `state: warming`), "timeout", or None (anything else — a real finding)."""
     try:
         req = urllib.request.Request(url, headers={"Accept-Encoding": "gzip"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -159,9 +162,72 @@ def _fetch_json(url, timeout=8):
             if r.headers.get("Content-Encoding") == "gzip":
                 import gzip
                 raw = gzip.decompress(raw)
-            return json.loads(raw.decode("utf-8", "replace")), None
-    except (URLError, OSError, ValueError, TimeoutError) as e:
-        return None, f"{type(e).__name__}: {e}"
+            return json.loads(raw.decode("utf-8", "replace")), None, None
+    except HTTPError as e:
+        shape = None
+        if e.code == 503:
+            try:
+                body = json.loads(e.read().decode("utf-8", "replace"))
+                if isinstance(body, dict) and body.get("state") == "warming":
+                    shape = "warming"
+            except (OSError, ValueError):
+                pass
+        return None, f"HTTPError: {e}", shape
+    except (URLError, OSError, ValueError, TimeoutError, EOFError) as e:
+        reason = getattr(e, "reason", e)
+        if isinstance(reason, ConnectionRefusedError):
+            shape = "refused"
+        elif isinstance(reason, (TimeoutError, socket.timeout)):
+            shape = "timeout"
+        else:
+            shape = None
+        return None, f"{type(e).__name__}: {e}", shape
+
+
+def _fetch_json(url, timeout=8):
+    """Return (data, None) or (None, error_str). Never raises."""
+    data, err, _ = _fetch_once(url, timeout)
+    return data, err
+
+
+# A service restarted at the same moment as this digest — every deploy
+# (fleet_sync restarts the map, then the digest ~1s later) and every boot —
+# is still binding or warming when the first tick reads it. Measured
+# 2026-09-30: the map bound :5000 2s after start, then serves 503 `warming`
+# for the documented 10-30s; the digest's tick 1s in read "refused" and
+# painted the whole TL;DR red for 15 min. And warming clears BEFORE the map
+# pre-populates its /api/status caches (14s+ COUNT(*) on a big history DB,
+# map_data_service), so the first post-warming read can time out too.
+# SETTLE_S is 3x the documented envelope.
+SETTLE_S = 90
+SETTLE_STEP_S = 5
+STARTING_SHAPES = ("refused", "warming")
+
+
+def _fetch_json_settling(url, settle_s=None, step_s=None):
+    """(data, error, note). Retries ONLY while the service is observably
+    starting: refused / map-declared warming, and a timeout ONLY after one of
+    those was seen this tick (the post-warming cache prewarm). A timeout with
+    no starting phase is a wedge — never retried. Every settle leaves a
+    witness, in `note` on success and inside `error` on failure."""
+    settle_s = SETTLE_S if settle_s is None else settle_s
+    step_s = SETTLE_STEP_S if step_s is None else step_s
+    t0 = time.monotonic()
+    seen = []                       # the starting phases passed through, in order
+    while True:
+        data, err, shape = _fetch_once(url)
+        waited = time.monotonic() - t0
+        starting = shape in STARTING_SHAPES or (shape == "timeout" and bool(seen))
+        if not starting:
+            if seen and data is not None:
+                return data, None, f"was {' → '.join(seen)} at tick start, answered after {waited:.0f}s"
+            if seen:
+                err = f"{err} (after {' → '.join(seen)} at tick start)"
+            return data, err, None
+        if not seen or seen[-1] != shape:
+            seen.append(shape)
+        if waited >= settle_s or _stop.wait(step_s):
+            return None, f"{err} — still {' → '.join(seen)} after {waited:.0f}s", None
 
 
 def _read_log(path, last=0):
@@ -232,10 +298,15 @@ class Section:
 def sect_federation(cfg):
     url = cfg["federation_url"]
     s = Section("Federation — is the fleet talking?", url)
-    d, err = _fetch_json(url)
+    d, err, settled = _fetch_json_settling(url)
     if err:
         s.posture, s.gap, s.fresh = "red", f"federation /api/status unreachable ({err})", "STALE"
         return s
+    if settled:
+        # Observed: it was starting and then answered. NOT observed: why it
+        # restarted — a deploy, a boot, or a crash look identical from here.
+        s.lines.append(f"⏳ {settled} — a restart or a crash; if this recurs, "
+                       "check `systemctl status meshforge-map` (NRestarts)")
     fed = d.get("federation") or {}
     peers = fed.get("peer_status") or fed.get("peers") or []
     s.fresh = _age(fed.get("last_sync")) + " since last_sync"
@@ -688,6 +759,12 @@ def build_digest(cfg=None):
 
 def write_digest():
     text = build_digest()
+    if _stop.is_set():
+        # Stopped mid-cycle (a settle was cut short by SIGTERM): this text
+        # judged a half-observation, and the next instance may not overwrite
+        # it for a whole settle window. Keep the last complete digest.
+        print("digest: stopping mid-cycle — not rewritten", flush=True)
+        return text
     out = P.OUT
     tmp = out + ".tmp"
     with open(tmp, "w") as f:

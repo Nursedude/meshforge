@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import sys
+import urllib.parse
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +21,25 @@ _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 
 import monitoring.meshforge_digest as dg  # noqa: E402
+
+
+_LIVE_PORTS = (5000, 8808)           # the real map / cloud map — never from a test
+_real_urlopen = dg.urllib.request.urlopen
+
+
+@pytest.fixture(autouse=True)
+def _no_live_services(monkeypatch):
+    """2026-09-30: moving the federation fetch to a new seam left 5 tests
+    stubbing the OLD one, so they silently read this box's live :5000 and
+    passed or failed on the fleet's mood. Any request to a live service port
+    from this file now fails the test instead."""
+    def guarded(req, *a, **k):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        # parsed port, never a substring: ":5000" is inside ":50001" (readers)
+        if urllib.parse.urlsplit(url).port in _LIVE_PORTS:
+            raise AssertionError(f"test reached a LIVE service: {url}")
+        return _real_urlopen(req, *a, **k)
+    monkeypatch.setattr(dg.urllib.request, "urlopen", guarded)
 
 
 @pytest.fixture
@@ -53,7 +73,7 @@ def test_expected_backoff_comes_from_config(home):
     cfg = dg.load_config()
     peers = [{"peer_name": "GW-Box-7", "in_backoff": True, "backoff_multiplier": 4},
              {"peer_name": "other-box", "in_backoff": False, "reachable": True}]
-    with patch.object(dg, "_fetch_json", return_value=(_fed(peers), None)):
+    with patch.object(dg, "_fetch_once", return_value=(_fed(peers), None, None)):
         s = dg.sect_federation(cfg)
     assert s.lines[0] == "peers: 1 ok / 1 expected-backoff / 0 unexpected", s.lines
     assert s.posture != "red"
@@ -62,7 +82,7 @@ def test_expected_backoff_comes_from_config(home):
 def test_unexpected_backoff_is_red(home):
     cfg = dg.load_config()                                   # no expectations
     peers = [{"peer_name": "gw-box", "in_backoff": True, "backoff_multiplier": 4}]
-    with patch.object(dg, "_fetch_json", return_value=(_fed(peers), None)):
+    with patch.object(dg, "_fetch_once", return_value=(_fed(peers), None, None)):
         s = dg.sect_federation(cfg)
     assert s.posture == "red" and "investigate" in " ".join(s.lines)
 
@@ -94,10 +114,10 @@ def test_broken_config_is_a_gap_never_inert(home, body):
         assert s.gap and "unusable" in s.gap and s.posture != "green", (s.gap, s.posture)
         assert "inert" not in " ".join(s.lines)
     peers = [{"peer_name": "gw-box", "in_backoff": False, "reachable": True}]
-    with patch.object(dg, "_fetch_json", return_value=(_fed(peers), None)):
+    with patch.object(dg, "_fetch_once", return_value=(_fed(peers), None, None)):
         f = dg.sect_federation(cfg)
     assert f.gap and "NOT applied" in f.gap and f.posture != "green"
-    with patch.object(dg, "_fetch_json", return_value=(None, "URLError: offline")):
+    with patch.object(dg, "_fetch_once", return_value=(None, "URLError: offline", None)):
         text = dg.build_digest(cfg)                      # never raises
     assert "NOMINAL" not in text
 
@@ -112,7 +132,7 @@ def test_green_tldr_does_not_claim_an_unwatched_map(home):
 
 
 def test_write_digest_is_atomic_under_the_operator_home(home):
-    with patch.object(dg, "_fetch_json", return_value=(None, "URLError: offline")):
+    with patch.object(dg, "_fetch_once", return_value=(None, "URLError: offline", None)):
         text = dg.write_digest()
     out = home / "situation_digest.md"
     assert out.read_text() == text
@@ -327,3 +347,189 @@ def test_every_verdict_the_writer_can_store_is_one_the_digest_knows():
     assert '[ "$pstate" = dormant ] || [ "$pstate" = detached ]' in code
     writable = literal | verdict_vals | {"dormant", "detached", "down"}  # +6-field back-compat
     assert writable <= set(dg.OFFLINE_VERDICTS), writable - set(dg.OFFLINE_VERDICTS)
+
+
+# ── deploy/boot race: a service still starting is not a fault ──────────────
+# 2026-09-30: fleet_sync restarted the map, then the digest 1s later; the
+# digest's first tick read :5000 "Connection refused" and painted the TL;DR
+# red for 15 min. The map binds ~2s after start, then answers 503
+# {"state": "warming"} for 10-30s. The digest now settles through exactly
+# those two shapes, and nothing else.
+
+import http.server
+import socket
+import threading
+
+
+def _free_port():
+    with socket.socket() as so:
+        so.bind(("127.0.0.1", 0))
+        return so.getsockname()[1]
+
+
+class _Scripted(http.server.BaseHTTPRequestHandler):
+    script = []          # list of (status, body) served in order; last repeats
+    hits = 0
+
+    def do_GET(self):
+        cls = type(self)
+        status, body = cls.script[min(cls.hits, len(cls.script) - 1)]
+        cls.hits += 1
+        raw = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def log_message(self, *a):
+        pass
+
+
+@pytest.fixture
+def scripted_server():
+    """A REAL local HTTP server that can start late: (url, start(script, delay))."""
+    port = _free_port()
+    servers = []
+
+    def start(script, delay=0.0):
+        handler = type("H", (_Scripted,), {"script": script, "hits": 0})
+
+        def run():
+            time.sleep(delay)
+            srv = http.server.HTTPServer(("127.0.0.1", port), handler)
+            servers.append(srv)
+            srv.serve_forever(poll_interval=0.05)
+        threading.Thread(target=run, daemon=True).start()
+        return handler
+
+    yield f"http://127.0.0.1:{port}/api/status", start
+    for srv in servers:
+        srv.shutdown()
+        srv.server_close()
+
+
+WARMING = (503, {"error": "service_warming", "state": "warming", "retry_after_s": 10})
+STATUS_OK = (200, {"federation": {"peer_status": [], "last_sync": None}})
+
+
+def test_refused_then_warming_then_ok_settles_green(scripted_server):
+    """The real consumer path: not bound yet → 503 warming → 200."""
+    url, start = scripted_server
+    h = start([WARMING, WARMING, STATUS_OK], delay=0.4)       # refused for 0.4s first
+    data, err, note = dg._fetch_json_settling(url, settle_s=10, step_s=0.1)
+    assert err is None and data["federation"] is not None, err
+    assert h.hits == 3
+    assert note and "answered after" in note and "refused" in note, note
+
+
+def test_settle_gives_up_and_says_why(scripted_server):
+    url, start = scripted_server
+    start([WARMING])                                          # warms forever
+    data, err, note = dg._fetch_json_settling(url, settle_s=0.5, step_s=0.1)
+    assert data is None and "still " in err and "warming after" in err, err
+
+
+def test_refused_with_nothing_ever_listening_gives_up(scripted_server):
+    url, _ = scripted_server
+    data, err, note = dg._fetch_json_settling(url, settle_s=0.3, step_s=0.1)
+    assert data is None and "still refused after" in err, err
+
+
+@pytest.mark.parametrize("resp", [
+    (503, {"error": "overloaded"}),          # a 503 the map did NOT declare as warming
+    (500, {"error": "boom"}),
+])
+def test_other_errors_are_never_retried(scripted_server, resp):
+    url, start = scripted_server
+    h = start([resp, STATUS_OK])
+    time.sleep(0.2)
+    data, err, note = dg._fetch_json_settling(url, settle_s=10, step_s=0.1)
+    assert data is None and h.hits == 1, (err, h.hits)
+
+
+def test_a_timeout_is_never_retried(monkeypatch):
+    calls = []
+
+    def fake(url, timeout=8):
+        calls.append(1)
+        return None, "URLError: timed out", "timeout"
+    monkeypatch.setattr(dg, "_fetch_once", fake)
+    data, err, _ = dg._fetch_json_settling("http://x", settle_s=10, step_s=0.01)
+    assert data is None and len(calls) == 1
+
+
+def test_shutdown_cuts_the_settle_short(monkeypatch):
+    monkeypatch.setattr(dg, "_fetch_once", lambda url, timeout=8: (None, "refused", "refused"))
+    monkeypatch.setattr(dg._stop, "wait", lambda s: True)          # stop requested
+    t = time.monotonic()
+    data, err, _ = dg._fetch_json_settling("http://x", settle_s=60, step_s=5)
+    assert data is None and time.monotonic() - t < 1
+
+
+def test_first_try_success_leaves_no_note_even_if_slow(monkeypatch):
+    """A slow but successful first fetch is not a settle (and must not crash)."""
+    def slow(url, timeout=8):
+        time.sleep(1.1)
+        return {"federation": {}}, None, None
+    monkeypatch.setattr(dg, "_fetch_once", slow)
+    data, err, note = dg._fetch_json_settling("http://x")
+    assert data is not None and note is None
+
+
+def test_federation_section_settles_through_a_restart_to_green(home, scripted_server, monkeypatch):
+    url, start = scripted_server
+    start([WARMING, STATUS_OK], delay=0.3)
+    monkeypatch.setattr(dg, "SETTLE_STEP_S", 0.1)
+    s = dg.sect_federation({"federation_url": url, "expected_backoff": {}, "config_error": None})
+    assert s.posture == "green" and s.gap is None, (s.posture, s.gap)
+    assert any("a restart or a crash" in l and "NRestarts" in l for l in s.lines), s.lines
+
+
+def test_fetch_once_classifies_real_socket_failures():
+    """The classification itself, on REAL sockets (a mutant calling every
+    error 'refused' survived the stubbed tests): nothing listening → refused;
+    listening but never answering → a timeout, which is NOT starting."""
+    port = _free_port()                                      # nothing bound
+    _, err, starting = dg._fetch_once(f"http://127.0.0.1:{port}/api/status", timeout=2)
+    assert starting == "refused", err
+    with socket.socket() as so:                              # bound, never accepts
+        so.bind(("127.0.0.1", 0))
+        so.listen(1)
+        p = so.getsockname()[1]
+        _, err, starting = dg._fetch_once(f"http://127.0.0.1:{p}/api/status", timeout=0.5)
+    assert starting == "timeout" and "timed out" in err, err
+
+
+def test_timeout_after_a_starting_phase_is_still_starting(monkeypatch):
+    """Warming clears BEFORE the map prewarms its status caches, so the first
+    post-warming read can time out (reader P). After an observed starting
+    phase that is still starting; without one it is a wedge (tested above)."""
+    seq = iter([(None, "refused", "refused"), (None, "HTTPError: 503", "warming"),
+                (None, "URLError: timed out", "timeout"), ({"federation": {}}, None, None)])
+    monkeypatch.setattr(dg, "_fetch_once", lambda url, timeout=8: next(seq))
+    data, err, note = dg._fetch_json_settling("http://x", settle_s=10, step_s=0.01)
+    assert data is not None and "refused → warming → timeout" in note, note
+
+
+def test_a_failure_after_a_starting_phase_keeps_the_witness(monkeypatch):
+    seq = iter([(None, "refused", "refused"), (None, "HTTPError: 500", None)])
+    monkeypatch.setattr(dg, "_fetch_once", lambda url, timeout=8: next(seq))
+    data, err, note = dg._fetch_json_settling("http://x", settle_s=10, step_s=0.01)
+    assert data is None and "500" in err and "after refused at tick start" in err, err
+
+
+def test_a_stop_mid_cycle_never_overwrites_the_last_digest(home, monkeypatch):
+    out = home / "situation_digest.md"
+    out.write_text("LAST COMPLETE DIGEST")
+    monkeypatch.setattr(dg, "build_digest", lambda cfg=None: "half-observed")
+    monkeypatch.setattr(dg._stop, "is_set", lambda: True)
+    dg.write_digest()
+    assert out.read_text() == "LAST COMPLETE DIGEST"
+
+
+def test_fence_matches_the_port_not_a_substring(scripted_server):
+    """A test server on 5000x must not trip the live-port fence."""
+    url = "http://127.0.0.1:50001/api/status"
+    assert urllib.parse.urlsplit(url).port not in _LIVE_PORTS
+    assert urllib.parse.urlsplit("http://localhost:5000/x").port in _LIVE_PORTS
