@@ -26,8 +26,8 @@
 # (upstream Carrier Switch, Dec 2025). Baseline history: field-proven
 # 1.2.5+mf.5 / 0.9.4+mf.0 until 2026-07-19; upstream 1.3.8 / 1.0.1 merged +
 # canaried + fleet-rolled 07-17..07-19 (see rns_138_merge_eval_2026_07_16.md).
-#   forks: github.com/Nursedude/reticulum  (branch meshforge, tag 1.3.8+mf.1)
-#          github.com/Nursedude/lxmf        (branch meshforge, tag 1.0.1+mf.2)
+#   forks: github.com/Nursedude/reticulum  (branch meshforge, tag 1.3.8+mf.3)
+#          github.com/Nursedude/lxmf        (branch meshforge, tag 1.0.1+mf.4)
 # +mf.1 (2026-05-30): #68 fix — bound LocalClientInterface connect (no thread hang).
 # +mf.2 (2026-05-30): #72 fix — bound shared-instance RPC recv (no rnstatus hang).
 # +mf.3 (2026-05-30): rnsd-SIGTERM fix — bound detach_interfaces() (CONTAINS but does
@@ -49,16 +49,23 @@
 #                     10-wait-for-ipv6-ll.conf, this is the second layer).
 #                     lxmf 1.0.1+mf.2 = pin-only follow. Rolled in place 09-26,
 #                     NO rnsd restarts: live on each box from its next rnsd start.
+# 1.3.8 base, +mf.2/+mf.3 (2026-10-01): `interface_mode = gateway|internal` no longer
+#                     raises KeyError (rnsd failed to start); a client refused
+#                     by require_shared_instance (every local rnstatus) now
+#                     releases @rns instead of squatting it until exit (#69
+#                     class); the Backbone accept handler binds its exception.
+#                     lxmf 1.0.1+mf.4 = pin-only follow. Rolled in place, NO
+#                     rnsd restarts; two independent reviews before the tag.
 # pip resolves by commit SHA (reproducible); the MF-FORK-PIN lines are the
 # version SSOT enforced by scripts/rns_version_check.py. The baseline is
 # IDENTICAL to stock 1.3.8/1.0.1 except the +mf.N patches above + FORK.md/
 # NOTICE (interop PROVEN 07-17: cross-version LXMF round-trips direct, via
 # public transport node, and real-net tracer), so it stays wire-compatible
 # with the public Reticulum net (NomadNet, Sideband).
-# MF-FORK-PIN rns 1.3.8+mf.1
-# MF-FORK-PIN lxmf 1.0.1+mf.2
-rns @ git+https://github.com/Nursedude/reticulum.git@f609ad565e006f9eeb5dfeb88327c4c85b3f7d26
-lxmf @ git+https://github.com/Nursedude/lxmf.git@92fbcfd062cbec08f5ed58b9ab1cf192dfd206cb
+# MF-FORK-PIN rns 1.3.8+mf.3
+# MF-FORK-PIN lxmf 1.0.1+mf.4
+rns @ git+https://github.com/Nursedude/reticulum.git@3d2de051b832d8b24a512dd0eb5bfb14ccd6e965
+lxmf @ git+https://github.com/Nursedude/lxmf.git@8b177cc5083a078adbea74476a8dc3c415f58e84
 
 # Cryptography / PyOpenSSL version alignment — BOTH bounds are load-bearing,
 # and the two packages MOVE TOGETHER. RNS's own constraint is only
