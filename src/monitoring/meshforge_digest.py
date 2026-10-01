@@ -409,7 +409,7 @@ def sect_cloudmap(cfg):
 OFFLINE_VERDICTS = ("healthy", "down", "unobservable", "dormant", "detached", "drift")
 OFFLINE_ALERT_THRESHOLD_DEFAULT = 3          # the writer's ${ALERT_THRESHOLD:-3}; test-pinned
 OFFLINE_RUN_STALE_S = 20 * 60                # 4x the writer's */5 cadence
-CRON_FRESHNESS_WINDOW_S = 7 * 3600           # its writer re-alerts every 6h while stale, hourly
+CRON_FRESHNESS_WINDOW_S = 8 * 3600           # writer re-alerts every 6h while stale; +hourly cadence +1 late run (test-pinned)
 LOG_ATTENTION_WINDOW_S = 24 * 3600           # one-shot monitor-blindness kinds stay amber a day
 # Log kinds that say the MONITOR could not see or could not tell anyone. The
 # state file records none of them, so the log is their only witness.
