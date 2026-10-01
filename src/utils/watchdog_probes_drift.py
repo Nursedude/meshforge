@@ -446,6 +446,7 @@ def probe_rns_version_drift(
     # is what made moc4 report "service-user env unreadable" about an env that
     # read perfectly well (honest_failure_modes #1: empty != error).
     drift = []
+    ahead = []  # installed strictly NEWER than this checkout's pin (same base)
     for pkg, want in pins.items():
         have = installed.get(pkg)
         if have is None:
@@ -455,6 +456,9 @@ def probe_rns_version_drift(
             continue  # not visible anywhere we can read (isolated venv?) — don't guess
         if have != want:
             drift.append(f"{pkg} installed={have} pinned={want}")
+            hk, wk = _fork_version_key(have), _fork_version_key(want)
+            if hk is not None and wk is not None and hk[0] == wk[0] and hk[1] > wk[1]:
+                ahead.append(pkg)
     if not drift:
         # A clean verdict built on a GUESSED path is not the same claim as one
         # built on the interpreter's own answer — say which, every tick, so a
@@ -470,19 +474,45 @@ def probe_rns_version_drift(
         note_disposition("rns_version_drift", "clean")
         return None
 
-    detail = (
-        f"rns/lxmf off the pinned MeshForge-fork version ({'; '.join(drift)}). "
-        f"Upstream withdrew support so the pin is deliberate — converge with a "
-        f"REVIEWED bump: pip install --force-reinstall -r requirements/rns.txt, "
-        f"then verify rnsd."
-    )
+    # Direction decides the cure (2026-10-01). Installed AHEAD of this
+    # checkout's pin means a fork roll landed before this box pulled the repo:
+    # the cure is the deploy, and reinstalling from THIS checkout's
+    # requirements/rns.txt would DOWNGRADE the box and undo the roll. Behind
+    # (or unparseable) means the box missed a roll: that is the dangerous case
+    # and keeps `degraded` + the reinstall cure. The ahead case still shows
+    # (info), and the deploy debt stays visible as honest_status fleet SHA drift.
+    if len(ahead) == len(drift):
+        detail = (
+            f"rns/lxmf AHEAD of this checkout's fork pin ({'; '.join(drift)}) — "
+            f"a fork roll landed before this box pulled the repo. Cure: deploy "
+            f"the repo (fleet_sync THEN fleet_pull). Do NOT reinstall from this "
+            f"checkout's requirements/rns.txt: it would DOWNGRADE the fork."
+        )
+        severity = "info"
+    else:
+        detail = (
+            f"rns/lxmf off the pinned MeshForge-fork version ({'; '.join(drift)}). "
+            f"Upstream withdrew support so the pin is deliberate — converge with a "
+            f"REVIEWED bump: pip install --force-reinstall -r requirements/rns.txt, "
+            f"then verify rnsd."
+        )
+        severity = "degraded"
     return Signal(
         cls="rns_version_drift",
         subject="rns/lxmf",
-        severity="degraded",
+        severity=severity,
         detail=detail,
-        extra={"rnsd_user": rnsd_user, "drift": drift},
+        extra={"rnsd_user": rnsd_user, "drift": drift, "ahead": ahead},
     )
+
+
+def _fork_version_key(v):
+    """``'1.3.8+mf.3'`` -> ``((1, 3, 8), 3)``; a stock ``'1.3.8'`` -> ``((1, 3, 8), -1)``.
+    None when unparseable, so an odd version never reads as "ahead"."""
+    m = re.fullmatch(r"(\d+(?:\.\d+)*)(?:\+mf\.(\d+))?", str(v).strip())
+    if not m:
+        return None
+    return tuple(int(x) for x in m.group(1).split(".")), int(m.group(2)) if m.group(2) else -1
 
 
 # ─────────────────────────────────────────────────────────────────────

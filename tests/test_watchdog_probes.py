@@ -3289,6 +3289,43 @@ def test_rns_version_drift_none_when_no_pin():
     assert probe_rns_version_drift(rnsd_user="wh6gxz", pins={}, installed={"rns": "1.1.1"}) is None
 
 
+def test_rns_version_drift_ahead_of_checkout_pin_is_info_and_says_do_not_reinstall():
+    # 2026-10-01: the fleet was rolled to mf.3 in place before the boxes pulled
+    # the pin bump. The old cure text ("pip install --force-reinstall -r
+    # requirements/rns.txt") would have DOWNGRADED every box back to mf.1.
+    sig = probe_rns_version_drift(
+        rnsd_user="wh6gxz", pins={"rns": "1.3.8+mf.1", "lxmf": "1.0.1+mf.2"},
+        installed={"rns": "1.3.8+mf.3", "lxmf": "1.0.1+mf.4"})
+    assert sig is not None and sig.cls == "rns_version_drift"
+    assert sig.severity == "info"
+    assert "AHEAD" in sig.detail and "DOWNGRADE" in sig.detail
+    assert "--force-reinstall" not in sig.detail
+    assert sig.extra["ahead"] == ["rns", "lxmf"]
+
+
+def test_rns_version_drift_behind_pin_stays_degraded_with_reinstall_cure():
+    sig = probe_rns_version_drift(
+        rnsd_user="wh6gxz", pins={"rns": "1.3.8+mf.3", "lxmf": "1.0.1+mf.4"},
+        installed={"rns": "1.3.8+mf.1", "lxmf": "1.0.1+mf.4"})
+    assert sig.severity == "degraded"
+    assert "--force-reinstall" in sig.detail and "AHEAD" not in sig.detail
+
+
+def test_rns_version_drift_mixed_or_unparseable_is_never_called_ahead():
+    # One ahead + one behind: the behind one is the danger, so degraded.
+    mixed = probe_rns_version_drift(
+        rnsd_user="wh6gxz", pins={"rns": "1.3.8+mf.1", "lxmf": "1.0.1+mf.4"},
+        installed={"rns": "1.3.8+mf.3", "lxmf": "1.0.1+mf.2"})
+    assert mixed.severity == "degraded"
+    # A different base (stock upstream newer than the fork) is NOT "ahead".
+    stock = probe_rns_version_drift(
+        rnsd_user="wh6gxz", pins={"rns": "1.3.8+mf.3"}, installed={"rns": "1.5.5"})
+    assert stock.severity == "degraded"
+    odd = probe_rns_version_drift(
+        rnsd_user="wh6gxz", pins={"rns": "1.3.8+mf.3"}, installed={"rns": "1.3.8+local.9"})
+    assert odd.severity == "degraded"
+
+
 def test_rns_version_drift_none_when_pkg_not_visible():
     # rns not found in any searched env (isolated venv?) — don't guess drift on absence.
     sig = probe_rns_version_drift(

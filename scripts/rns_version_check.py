@@ -56,6 +56,16 @@ def installed_version(pkg):
         return None
 
 
+def fork_version_key(v):
+    """'1.3.8+mf.3' -> ((1, 3, 8), 3); stock '1.3.8' -> ((1, 3, 8), -1); None if
+    unparseable, so an odd version never reads as "ahead". Test-pinned to
+    utils.watchdog_probes_drift._fork_version_key (one rule, two consumers)."""
+    m = re.fullmatch(r"(\d+(?:\.\d+)*)(?:\+mf\.(\d+))?", str(v).strip())
+    if not m:
+        return None
+    return tuple(int(x) for x in m.group(1).split(".")), int(m.group(2)) if m.group(2) else -1
+
+
 def main():
     pins = pinned_versions()
     host = os.uname().nodename
@@ -65,6 +75,7 @@ def main():
         return 2
 
     drift = False
+    behind = False  # any drift that is NOT strictly ahead of this checkout's pin
     for pkg in ("rns", "lxmf"):
         want = pins.get(pkg)
         if want is None:
@@ -72,8 +83,18 @@ def main():
         have = installed_version(pkg)
         ok = have == want
         drift = drift or not ok
+        if not ok:
+            hk, wk = fork_version_key(have), fork_version_key(want)
+            if not (hk is not None and wk is not None and hk[0] == wk[0] and hk[1] > wk[1]):
+                behind = True
         print(f"  [{'OK   ' if ok else 'DRIFT'}] {pkg:<5} installed={str(have):<10} pinned={want}")
 
+    if drift and not behind:
+        # 2026-10-01: a fork roll landed before this checkout pulled the pin
+        # bump. Reinstalling from THIS checkout's requirements would DOWNGRADE.
+        print("  -> AHEAD of this checkout's pin: pull the repo (fleet_sync THEN fleet_pull).")
+        print("     Do NOT reinstall from this checkout's requirements/rns.txt — it would downgrade.")
+        return 1
     if drift:
         print("  -> CONVERGE (watched): pip install --force-reinstall -r requirements/rns.txt")
         print("     (installs the MeshForge fork; verify rnsd + shared instance after)")
