@@ -1516,3 +1516,60 @@ class TestCidOnlySuppressionWitness:
         bridge._primary_interface.sendText.assert_not_called()
         assert bridge.stats['dual_path_suppressed'] == 1
         assert bridge.stats.get('dual_path_suppressed_cid_only', 0) == 0
+
+
+@pytest.mark.usefixtures("allow_local_radio_tx")
+class TestCrossPresetCidOnlyDropWitness:
+    """2026-09-30 (moc): with true-origin on, the M->R leg registers each
+    ORIGINAL broadcast's content_id on the primary registry (cross-box echo
+    guard), so mesh_bridge's loop check matches that original and drops its
+    cross-preset copy. Measured over 24 h: 11 of 11 such drops reached
+    SHORT_TURBO via RNS -> moc3 instead — a hand-off, not a loop. It was
+    logged "Already-bridged" and counted as a loop; it now carries its own
+    stat + log line so the hand-off is visible and countable."""
+
+    @staticmethod
+    def _packet(text):
+        return {'fromId': '!851a9fe7', 'toId': '!ffffffff', 'channel': 2,
+                'decoded': {'portnum': 'TEXT_MESSAGE_APP', 'payload': text}}
+
+    def _bridge(self, mock_home, tmp_path, mock_config, monkeypatch):
+        import gateway.base_handler as bh
+        from gateway.mesh_bridge import MeshtasticPresetBridge
+        fresh = bh.RecentRfTxRegistry()
+        monkeypatch.setattr(bh, "_rf_tx_registry", fresh)
+        mock_home.return_value = tmp_path
+        mock_config.rns.true_origin_downlink_enabled = True
+        mock_config.rns.true_origin_loop_guard_window_sec = 120
+        return MeshtasticPresetBridge(config=mock_config), fresh
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_untagged_cid_hit_counts_as_handoff_not_loop(
+            self, mock_home, tmp_path, mock_config, monkeypatch, caplog):
+        from gateway.base_handler import mesh_origin_content_id
+        bridge, reg = self._bridge(mock_home, tmp_path, mock_config, monkeypatch)
+        reg.register_content_id(mesh_origin_content_id("!851a9fe7", "wx"))
+        with caplog.at_level("DEBUG", logger="gateway.mesh_bridge"):
+            bridge._process_receive(self._packet("wx"), "primary", "secondary",
+                                    bridge._primary_to_secondary)
+        assert bridge._primary_to_secondary.get_queue_depth() == 0
+        assert bridge.stats['cross_preset_cid_only_dropped'] == 1
+        assert bridge.stats['already_bridged_dropped'] == 0
+        msgs = " ".join(r.getMessage() for r in caplog.records)
+        assert "content_id" in msgs and "Already-bridged" not in msgs
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_tagged_text_is_still_a_loop(self, mock_home, tmp_path,
+                                         mock_config, monkeypatch):
+        bridge, _ = self._bridge(mock_home, tmp_path, mock_config, monkeypatch)
+        bridge._process_receive(self._packet("[RNS:1f68] hi"), "primary",
+                                "secondary", bridge._primary_to_secondary)
+        assert bridge.stats['already_bridged_dropped'] == 1
+        assert bridge.stats['cross_preset_cid_only_dropped'] == 0
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_witness_is_pre_seeded(self, mock_home, tmp_path, mock_config,
+                                   monkeypatch):
+        """Healthy-zero must be distinguishable from meter-absent (hfm #9)."""
+        bridge, _ = self._bridge(mock_home, tmp_path, mock_config, monkeypatch)
+        assert bridge.stats['cross_preset_cid_only_dropped'] == 0
