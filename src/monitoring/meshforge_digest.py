@@ -35,6 +35,7 @@ import json
 import signal
 import threading
 import datetime
+import time
 import urllib.request
 from urllib.error import URLError
 
@@ -327,16 +328,238 @@ def sect_cloudmap(cfg):
     return s
 
 
-def sect_monitors():
-    s = Section("Monitors & alerts — did anything fire?", "~/[fleet|soak]_alerts.log, synth_stress.log")
-    s.fresh = "tail at digest time"
-    # fleet_alerts: HIGH-severity offline/role alerts
-    fa, _ = _read_log(f"{P.HOME}/fleet_alerts.log")
-    if fa:
-        s.posture = "red"
-        s.lines.append(f"🔴 fleet_alerts: {len(fa)} line(s) — last: {fa[-1][:120]}")
+# fleet_offline_check.sh is the ONE writer of per-box up/down truth. Its
+# current state lives in a TSV it rewrites every */5 tick; fleet_alerts.log is
+# its append-only HISTORY. The digest used to colour this section from the
+# log's mere non-emptiness, so one alert ever written kept it red forever —
+# 2026-09-30 it read "ACTION" on a 3-day-old POSTURE-LIFTED (a recovery) while
+# the state said all 8 boxes healthy. State is the claim; the log is context,
+# except the writer kinds that report the MONITOR itself could not see.
+OFFLINE_VERDICTS = ("healthy", "down", "unobservable", "dormant", "detached", "drift")
+OFFLINE_ALERT_THRESHOLD_DEFAULT = 3          # the writer's ${ALERT_THRESHOLD:-3}; test-pinned
+OFFLINE_RUN_STALE_S = 20 * 60                # 4x the writer's */5 cadence
+CRON_FRESHNESS_WINDOW_S = 7 * 3600           # its writer re-alerts every 6h while stale, hourly
+LOG_ATTENTION_WINDOW_S = 24 * 3600           # one-shot monitor-blindness kinds stay amber a day
+# Log kinds that say the MONITOR could not see or could not tell anyone. The
+# state file records none of them, so the log is their only witness.
+LOG_ATTENTION_KINDS = ("FATAL", "MONITOR-GAP", "POSTURE-UNREADABLE", "VIACONF-SUSPECT",
+                       "PUSH-FAILED", "LOCKED-OUT")
+CLOCK_SKEW_S = 60
+
+
+def _offline_env_path(var, filename):
+    # The writer's own env overrides, so a shared environment can never point
+    # the two at different files. NOTE: cron and the user unit do not share an
+    # environment — set an override in BOTH or in neither.
+    return os.environ.get(var) or os.path.join(P.HOME, filename)
+
+
+def _alert_threshold():
+    try:
+        return max(1, int(os.environ.get("ALERT_THRESHOLD") or OFFLINE_ALERT_THRESHOLD_DEFAULT))
+    except ValueError:
+        return OFFLINE_ALERT_THRESHOLD_DEFAULT
+
+
+def _read_offline_state(path):
+    """(rows, bad_rows, error). rows: [(box, fail, alerted, verdict)]. Never raises.
+    Rows are judged ONE AT A TIME: a malformed row is reported, never allowed
+    to hide a good row (a paged DOWN beside it must still read red). A 6-field
+    row is 'down', exactly as the writer's back-compat reads it."""
+    try:
+        with open(path) as f:
+            raw = [l.rstrip("\n") for l in f if l.strip()]
+    except FileNotFoundError:
+        return [], [], "not found"
+    except OSError as e:
+        return [], [], f"{type(e).__name__}: {e}"
+    rows, bad = [], []
+    for line in raw:
+        cols = line.split("\t")
+        try:
+            if len(cols) < 6 or not cols[0]:
+                raise ValueError
+            fail, alerted = int(cols[1] or 0), cols[2] == "1"
+        except ValueError:
+            bad.append(line[:60])
+            continue
+        verdict = (cols[6] if len(cols) > 6 else "") or "down"
+        rows.append((cols[0], fail, alerted, verdict))
+    return rows, bad, None
+
+
+def _configured_boxes():
+    """(names, error) — the writer's own box list: every entry with a name and
+    a host (host defaults to the name). None when it cannot be read."""
+    path = _offline_env_path("MESHFORGE_OFFLINE_BOXES",
+                             os.path.join(".config", "meshforge", "fleet_offline_boxes.json"))
+    doc, err = _read_json_file(path)
+    if err or not isinstance(doc, dict) or not isinstance(doc.get("boxes") or [], list):
+        return None, err or "not a {boxes: [...]} document"
+    names = []
+    for b in doc.get("boxes") or []:
+        if isinstance(b, dict):
+            name = str(b.get("name") or "").strip()
+            if name and str(b.get("host") or name).strip():
+                names.append(name)
+    return names, None
+
+
+def _log_line_epoch(line):
+    """Epoch of a log line, or None when it cannot be TRUSTED. Two formats:
+    'YYYY-MM-DD HH:MM:SS TZ' (local) and 'YYYY-MM-DDTHH:MM:SSZ' (UTC). A local
+    stamp whose zone is not this process's zone is refused, not guessed."""
+    try:
+        if len(line) >= 20 and line[10] == "T" and line[19] == "Z":
+            dt = datetime.datetime.strptime(line[:19], "%Y-%m-%dT%H:%M:%S")
+            return dt.replace(tzinfo=datetime.timezone.utc).timestamp()
+        dt = datetime.datetime.strptime(line[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    zone = line[19:].split()[0] if line[19:].split() else ""
+    if zone in ("UTC", "GMT"):
+        return dt.replace(tzinfo=datetime.timezone.utc).timestamp()
+    if zone and zone not in time.tzname:
+        return None
+    return dt.timestamp()
+
+
+def _last_completed_run(hb_path):
+    """(epoch, error) of the writer's last COMPLETED run: the final `<ts> ran`
+    line, appended only at the very end of a run. The state file's mtime is
+    NOT that — the writer touches it before it can refuse to run (FATAL box
+    config), so a dead sweep would keep a fresh-looking file forever."""
+    lines, err = _read_log(hb_path)
+    if err:
+        return None, err
+    for line in reversed(lines):
+        if line.endswith(" ran"):
+            e = _log_line_epoch(line)
+            return (e, None) if e is not None else (None, f"unparseable run stamp {line[:40]!r}")
+    return None, "no completed run recorded"
+
+
+def _amber(s):
+    s.posture = "amber" if s.posture == "green" else s.posture
+
+
+def _fleet_leg(s):
+    """Per-box up/down NOW, from the writer's state — never from log history."""
+    now = datetime.datetime.now().timestamp()
+    hb = _offline_env_path("MESHFORGE_OFFLINE_HB", "fleet_offline_hb.log")
+    ran, hb_err = _last_completed_run(hb)
+    if hb_err:
+        _amber(s)
+        s.gap = s.gap or f"fleet offline monitor: {hb_err} ({hb}) — whether its box states are CURRENT is UNKNOWN"
+    elif ran - now > CLOCK_SKEW_S:
+        _amber(s)
+        s.gap = s.gap or f"fleet offline monitor's last run is dated {int(ran - now)}s in the FUTURE — clock moved; its age cannot be judged"
+    elif now - ran > OFFLINE_RUN_STALE_S:
+        _amber(s)
+        s.gap = s.gap or (f"fleet offline monitor last COMPLETED a run {int(now - ran) // 60}m ago (cadence */5) — "
+                          "it is not running to completion; the box states below are OLD")
+    path = _offline_env_path("MESHFORGE_OFFLINE_STATE", "fleet_offline_state.tsv")
+    rows, bad, err = _read_offline_state(path)
+    if err:
+        _amber(s)
+        s.gap = s.gap or f"fleet offline state {path} unreadable ({err}) — whether any box is down is UNKNOWN"
+        s.lines.append("fleet boxes: UNKNOWN (no readable monitor state)")
+        return
+    if bad:
+        _amber(s)
+        s.lines.append(f"🟡 {len(bad)} malformed state row(s), not judged: {bad[0]!r}")
+    configured, cfg_err = _configured_boxes()
+    if cfg_err:
+        _amber(s)
+        s.lines.append(f"🟡 monitor box list unreadable ({cfg_err}) — coverage NOT checked")
     else:
-        s.lines.append("fleet_alerts: quiet ✓")
+        have = {r[0] for r in rows}
+        missing = [b for b in configured if b not in have]
+        if missing:
+            _amber(s)
+            s.lines.append(f"🟡 configured but never judged (no state row): {', '.join(missing)}")
+        stray = [r[0] for r in rows if r[0] not in configured]
+        if stray:
+            s.lines.append(f"not in the monitor's box list — stale row(s), ignored: {', '.join(stray)}")
+            rows = [r for r in rows if r[0] in configured]
+    if not rows:
+        _amber(s)
+        s.gap = s.gap or "fleet offline state holds no judged box — nothing is being watched"
+        return
+    threshold = _alert_threshold()
+    ok, notes = [], []
+    for box, fail, alerted, verdict in rows:
+        if verdict == "healthy" and fail == 0:
+            ok.append(box)
+        elif verdict == "down" and alerted:
+            s.posture = "red"
+            notes.append(f"🔴 {box}: DOWN (paged, failed {fail}x)")
+        elif verdict == "down" and fail >= threshold:
+            # Past the threshold with alerted=0 = the FIRST page was NOT
+            # delivered (the writer keeps alerted=0 to retry it). Down, and
+            # nobody has been told — the opposite of "not yet".
+            s.posture = "red"
+            notes.append(f"🔴 {box}: DOWN, failed {fail}x — the page was NOT delivered (ntfy), retrying")
+        elif verdict == "unobservable":
+            _amber(s)
+            paged = "paged" if alerted else f"failing {fail}x, not yet paged"
+            notes.append(f"🟡 {box}: UNOBSERVABLE ({paged}) — its path is down too; state UNKNOWN, not asserted down")
+        elif verdict in ("down", "healthy"):
+            _amber(s)
+            notes.append(f"🟡 {box}: failing {fail}x — not yet paged (threshold {threshold})")
+        elif verdict in ("dormant", "detached"):
+            notes.append(f"{box}: declared {verdict} — not watched, by declaration")
+        elif verdict == "drift":
+            _amber(s)
+            notes.append(f"🟡 {box}: declared silent but ANSWERED — the declaration is stale")
+        else:
+            _amber(s)
+            notes.append(f"🟡 {box}: unrecognised verdict {verdict!r} — the digest does not know this state")
+    age = f", last completed run {_age(ran)} ago" if ran and not hb_err else ""
+    s.lines.append(f"fleet boxes: {len(ok)}/{len(rows)} healthy (monitor state{age})")
+    s.lines += notes
+
+
+def _fleet_log_context(s):
+    """The log is HISTORY: shown with its age, never coloured — except the
+    kinds that say the MONITOR could not see or could not page (24h), and a
+    cron-freshness STALE block inside its writer's re-alert window (7h)."""
+    fa, _ = _read_log(f"{P.HOME}/fleet_alerts.log")
+    if not fa:
+        s.lines.append("fleet_alerts.log: empty")
+        return
+    now = datetime.datetime.now().timestamp()
+    stamped = [(e, l) for l in fa if (e := _log_line_epoch(l)) is not None]
+    ahead = [l for e, l in stamped if e - now > CLOCK_SKEW_S]
+    stamped = [(e, l) for e, l in stamped if e - now <= CLOCK_SKEW_S]
+    if stamped:
+        e, l = stamped[-1]
+        s.lines.append(f"fleet_alerts.log (history): last event {_age(e)} ago — {l[:110]}")
+    if ahead:
+        _amber(s)
+        s.lines.append(f"🟡 {len(ahead)} fleet_alerts.log line(s) dated in the FUTURE — a clock moved; their ages cannot be judged")
+    fresh = [e for e, l in stamped if "CRON-FRESHNESS STALE" in l and now - e <= CRON_FRESHNESS_WINDOW_S]
+    if fresh:
+        _amber(s)
+        s.lines.append(f"🟡 cron freshness flagged a silent cron {_age(fresh[-1])} ago (see ~/fleet_alerts.log)")
+    recent = {}
+    for e, l in stamped:
+        if now - e > LOG_ATTENTION_WINDOW_S:
+            continue
+        kind = next((k for k in LOG_ATTENTION_KINDS
+                     if f"FLEET: {k}" in l or f" {k} " in l[:40]), None)
+        if kind:
+            recent.setdefault(kind, []).append((e, l))
+    for kind, hits in sorted(recent.items()):
+        _amber(s)
+        s.lines.append(f"🟡 monitor {kind} ×{len(hits)} in 24h, last {_age(hits[-1][0])} ago — {hits[-1][1][:100]}")
+
+
+def sect_monitors():
+    s = Section("Monitors & alerts — did anything fire?", "fleet_offline_state.tsv, ~/[fleet|soak]_alerts.log, synth_stress.log")
+    s.fresh = "tail at digest time"
+    _fleet_leg(s)
+    _fleet_log_context(s)
     # soak_alerts: dup/airtime/telemetry
     sa, _ = _read_log(f"{P.HOME}/soak_alerts.log")
     if sa:
@@ -359,7 +582,7 @@ def sect_monitors():
             s.lines.append(f"synth_stress: last cycle {rid}, no RF-independent regressions ✓ ({len(syn)} cycles logged)")
     else:
         s.lines.append("synth_stress: no cycles logged")
-    s.lines.append("_why: fleet_alerts = a box/service is down (HIGH); synth dedup/attr leak = a shipped gateway fix regressed (the only RF-independent failures)._")
+    s.lines.append("_why: fleet boxes = who is down NOW (the monitor's state, not its log); synth dedup/attr leak = a shipped gateway fix regressed (the only RF-independent failures)._")
     return s
 
 

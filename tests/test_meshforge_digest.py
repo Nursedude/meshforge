@@ -118,3 +118,212 @@ def test_write_digest_is_atomic_under_the_operator_home(home):
     assert out.read_text() == text
     assert not (home / "situation_digest.md.tmp").exists()
     assert "Situation Digest" in text and "GAP" in text          # offline federation said
+
+
+# ── fleet leg: who is down NOW comes from the monitor's STATE, not its log ──
+# 2026-09-30: the section read 🔴 ACTION for a 3-day-old POSTURE-LIFTED line
+# (a recovery) because ANY non-empty fleet_alerts.log coloured it red — while
+# fleet_offline_state.tsv said all 8 boxes healthy. Append-only history can
+# never return to green, so the alarm carried no information.
+
+import json as _json
+import re
+import time
+
+_WRITER = _ROOT / "scripts" / "fleet_offline_check.sh"
+BOXES = ["box-a", "box-b"]
+HEALTHY = [("box-a", 0, 0, 0, 0, 0, "healthy"), ("box-b", 0, 0, 0, 0, 0, "healthy")]
+
+
+def _ts(ago_s, utc=False, zone=None):
+    t = time.time() - ago_s
+    if utc:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+    return time.strftime("%Y-%m-%d %H:%M:%S ", time.localtime(t)) + (zone or time.strftime("%Z"))
+
+
+def _fleet(home, monkeypatch, rows=HEALTHY, boxes=BOXES, ran_ago=60, log=(), hb=None):
+    """A writer-shaped home: state TSV, box config, heartbeat, alerts log."""
+    for v in ("MESHFORGE_OFFLINE_STATE", "MESHFORGE_OFFLINE_HB", "MESHFORGE_OFFLINE_BOXES",
+              "ALERT_THRESHOLD"):
+        monkeypatch.delenv(v, raising=False)
+    if rows is not None:
+        (home / "fleet_offline_state.tsv").write_text(
+            "".join("\t".join(map(str, r)) + "\n" for r in rows))
+    cfg = home / ".config" / "meshforge"
+    cfg.mkdir(parents=True, exist_ok=True)
+    (cfg / "fleet_offline_boxes.json").unlink(missing_ok=True)
+    if boxes is not None:
+        (cfg / "fleet_offline_boxes.json").write_text(
+            _json.dumps({"ssh_user": "u", "boxes": [{"name": b} for b in boxes]}))
+    if hb is None and ran_ago is not None:
+        hb = [f"{_ts(ran_ago + 300)} ran", f"{_ts(ran_ago)} ran"]
+    if hb is not None:
+        (home / "fleet_offline_hb.log").write_text("\n".join(hb) + "\n")
+    if log:
+        (home / "fleet_alerts.log").write_text("\n".join(log) + "\n")
+    return dg.sect_monitors()
+
+
+def _says(s, text):
+    return any(text in l for l in s.lines) or (s.gap is not None and text in s.gap)
+
+
+def test_old_recovery_in_the_log_no_longer_paints_red(home, monkeypatch):
+    """The exact 09-30 shape: healthy state + a 3-day-old outage and recovery."""
+    s = _fleet(home, monkeypatch, log=[
+        f"{_ts(3 * 86400)}  FLEET: ALERT [box-a] UNREACHABLE (failed 3x consecutive)",
+        f"{_ts(3 * 86400 - 600)}  FLEET: POSTURE-LIFTED [box-a] was dormant; watching again"])
+    assert s.posture == "green", (s.posture, s.gap, s.lines)
+    assert _says(s, "2/2 healthy") and _says(s, "history")
+
+
+def test_a_paged_down_box_is_red(home, monkeypatch):
+    s = _fleet(home, monkeypatch, rows=HEALTHY + [("box-c", 4, 1, 1, 1, 1, "down")],
+               boxes=BOXES + ["box-c"])
+    assert s.posture == "red" and _says(s, "box-c: DOWN (paged"), s.lines
+
+
+def test_down_past_threshold_with_the_page_undelivered_is_red(home, monkeypatch):
+    """alerted=0 at fail>=threshold = ntfy failed the FIRST page; nobody knows."""
+    s = _fleet(home, monkeypatch, rows=HEALTHY + [("box-c", 3, 0, 0, 0, 0, "down")],
+               boxes=BOXES + ["box-c"])
+    assert s.posture == "red" and _says(s, "NOT delivered"), s.lines
+
+
+@pytest.mark.parametrize("row,expect", [
+    (("box-c", 1, 0, 0, 0, 0, "down"), "not yet paged"),
+    (("box-c", 4, 1, 1, 1, 1, "unobservable"), "UNOBSERVABLE (paged)"),
+    (("box-c", 3, 0, 0, 0, 0, "unobservable"), "UNOBSERVABLE (failing 3x"),
+    (("box-c", 0, 0, 0, 1, 0, "drift"), "declaration is stale"),
+    (("box-c", 0, 0, 0, 0, 0, "sleeping"), "unrecognised verdict"),
+])
+def test_partial_or_unknown_states_are_amber(home, monkeypatch, row, expect):
+    s = _fleet(home, monkeypatch, rows=HEALTHY + [row], boxes=BOXES + ["box-c"])
+    assert s.posture == "amber" and _says(s, expect), (s.posture, s.lines)
+
+
+def test_declared_dormant_is_listed_not_alarmed(home, monkeypatch):
+    s = _fleet(home, monkeypatch, rows=HEALTHY + [("box-c", 0, 0, 0, 0, 0, "dormant")],
+               boxes=BOXES + ["box-c"])
+    assert s.posture == "green" and _says(s, "box-c: declared dormant")
+
+
+def test_six_field_row_reads_down_like_the_writer(home, monkeypatch):
+    s = _fleet(home, monkeypatch, rows=HEALTHY + [("box-c", 4, 1, 1, 1, 1)], boxes=BOXES + ["box-c"])
+    assert s.posture == "red"
+
+
+def test_a_malformed_row_cannot_hide_a_red_row(home, monkeypatch):
+    rows = HEALTHY + [("box-c", "x", 0, 0, 0, 0, "healthy"), ("box-d", 4, 1, 1, 1, 1, "down")]
+    s = _fleet(home, monkeypatch, rows=rows, boxes=BOXES + ["box-c", "box-d"])
+    assert s.posture == "red" and _says(s, "malformed state row") and _says(s, "box-d: DOWN"), s.lines
+
+
+def test_fresh_state_from_a_run_that_refused_is_not_healthy(home, monkeypatch):
+    """Both readers, 2026-09-30: the writer TOUCHES the state file before its
+    FATAL box-config refusal, so the TSV stays fresh while nothing is judged.
+    Only the heartbeat's final `ran` line marks a completed run."""
+    s = _fleet(home, monkeypatch, ran_ago=dg.OFFLINE_RUN_STALE_S + 600,
+               log=[f"{_ts(30)} FATAL box config unusable (ssh_user or boxes empty) — refusing to run"])
+    assert s.posture != "green" and s.gap and "not running to completion" in s.gap, (s.posture, s.gap)
+    assert _says(s, "monitor FATAL")
+
+
+@pytest.mark.parametrize("hb,gap", [
+    ([], "no completed run"),
+    (["garbage"], "no completed run"),
+    ([f"{_ts(-3600)} ran"], "FUTURE"),
+    ([f"{_ts(60, zone='XYZ')} ran"], "unparseable run stamp"),
+])
+def test_unjudgeable_heartbeat_is_a_gap(home, monkeypatch, hb, gap):
+    s = _fleet(home, monkeypatch, hb=hb)
+    assert s.posture != "green" and s.gap and gap in s.gap, (s.posture, s.gap)
+
+
+def test_missing_heartbeat_file_is_a_gap(home, monkeypatch):
+    s = _fleet(home, monkeypatch, ran_ago=None)
+    assert s.posture != "green" and "not found" in s.gap
+
+
+@pytest.mark.parametrize("rows,gap", [(None, "UNKNOWN"), ([], "no judged box")])
+def test_missing_or_empty_state_is_a_gap(home, monkeypatch, rows, gap):
+    s = _fleet(home, monkeypatch, rows=rows)
+    assert s.posture != "green" and s.gap and gap in s.gap, (s.posture, s.gap)
+
+
+def test_coverage_against_the_writers_box_list(home, monkeypatch):
+    # configured but never judged -> amber
+    s = _fleet(home, monkeypatch, boxes=BOXES + ["box-new"])
+    assert s.posture == "amber" and _says(s, "never judged (no state row): box-new")
+    # a stale row for a box the monitor no longer watches -> ignored, never red forever
+    s = _fleet(home, monkeypatch, rows=HEALTHY + [("box-gone", 9, 1, 1, 1, 9, "down")])
+    assert s.posture == "green" and _says(s, "stale row(s), ignored: box-gone"), s.lines
+    # unreadable box list -> coverage not checked, said
+    s = _fleet(home, monkeypatch, boxes=None)
+    assert s.posture == "amber" and _says(s, "coverage NOT checked")
+
+
+def test_state_path_honours_the_writers_env_override(home, monkeypatch, tmp_path_factory):
+    _fleet(home, monkeypatch)
+    other = tmp_path_factory.mktemp("elsewhere") / "state.tsv"
+    other.write_text("box-a\t4\t1\t1\t1\t1\tdown\nbox-b\t0\t0\t0\t0\t0\thealthy\n")
+    monkeypatch.setenv("MESHFORGE_OFFLINE_STATE", str(other))
+    assert dg.sect_monitors().posture == "red"
+
+
+@pytest.mark.parametrize("kind_line", [
+    "FLEET: MONITOR-GAP 1200s (cadence 300s) — cron missed",
+    "FLEET: POSTURE-UNREADABLE x — watching EVERY box",
+    "FLEET: VIACONF-SUSPECT [box-a] direct ssh OK but declared dependency 'hop' did not answer",
+    "FLEET: PUSH-FAILED on RECOVERED [box-a] — see witness log",
+])
+def test_monitor_blindness_kinds_are_amber_for_a_day(home, monkeypatch, kind_line):
+    s = _fleet(home, monkeypatch, log=[f"{_ts(2 * 3600)}  {kind_line}"])
+    assert s.posture == "amber" and _says(s, "in 24h"), s.lines
+    s = _fleet(home, monkeypatch, log=[f"{_ts(dg.LOG_ATTENTION_WINDOW_S + 600)}  {kind_line}"])
+    assert s.posture == "green", s.lines
+
+
+def test_cron_freshness_window_edges(home, monkeypatch):
+    w = dg.CRON_FRESHNESS_WINDOW_S
+    s = _fleet(home, monkeypatch, log=[f"{_ts(w - 60, utc=True)} CRON-FRESHNESS STALE:", "box-a/some_cron: silent"])
+    assert s.posture == "amber" and _says(s, "cron freshness"), s.lines
+    s = _fleet(home, monkeypatch, log=[f"{_ts(w + 600, utc=True)} CRON-FRESHNESS STALE:"])
+    assert s.posture == "green", s.lines
+
+
+def test_future_dated_log_lines_are_said_not_trusted(home, monkeypatch):
+    s = _fleet(home, monkeypatch, log=[f"{_ts(-7200, utc=True)} CRON-FRESHNESS STALE:"])
+    assert s.posture == "amber" and _says(s, "in the FUTURE") and not _says(s, "cron freshness flagged")
+
+
+@pytest.mark.skipif(not _WRITER.exists(), reason="writer script not in this tree")
+def test_alert_threshold_default_matches_the_writer():
+    m = re.search(r'ALERT_THRESHOLD="\$\{ALERT_THRESHOLD:-(\d+)\}"', _WRITER.read_text())
+    assert m and int(m.group(1)) == dg.OFFLINE_ALERT_THRESHOLD_DEFAULT
+
+
+@pytest.mark.skipif(not _WRITER.exists(), reason="writer script not in this tree")
+def test_every_verdict_the_writer_can_store_is_one_the_digest_knows():
+    """Closed enum, closed consumer (honest_failure_modes #7): a new verdict in
+    fleet_offline_check.sh must fail HERE, not render as 'unrecognised' live.
+    Reads CODE lines only — a first draft matched `verdict=unobservable` in a
+    header COMMENT and passed off it."""
+    code_lines = [l for l in _WRITER.read_text().splitlines() if not l.lstrip().startswith("#")]
+    code = "\n".join(code_lines)
+    stored = re.findall(r'set_state "\$name"(?: \S+){5} (\S+)', code)
+    calls = [l for l in code_lines if re.search(r'\bset_state\s+"', l)]
+    assert stored and len(stored) == len(calls), (
+        f"parsed {len(stored)} set_state calls but {len(calls)} lines call it — "
+        "a call of a new shape would escape this check")
+    literal = {v for v in stored if not v.startswith('"$')}
+    dynamic = {v for v in stored if v.startswith('"$')}
+    assert dynamic == {'"$verdict"', '"$pstate"'}, dynamic
+    verdict_assigns = re.findall(r'(?<![\w.])verdict=(\S+)', code)
+    assert verdict_assigns and all(re.fullmatch(r'"?[a-z]+"?', v) for v in verdict_assigns), (
+        f"$verdict is assigned a non-literal {verdict_assigns} — enumerate it here")
+    verdict_vals = {v.strip('"') for v in verdict_assigns}
+    assert '[ "$pstate" = dormant ] || [ "$pstate" = detached ]' in code
+    writable = literal | verdict_vals | {"dormant", "detached", "down"}  # +6-field back-compat
+    assert writable <= set(dg.OFFLINE_VERDICTS), writable - set(dg.OFFLINE_VERDICTS)
