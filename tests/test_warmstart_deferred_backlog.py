@@ -102,15 +102,20 @@ def test_unreadable_present_ledger_is_UNKNOWN_not_absent(tmp_path):
     assert "UNKNOWN, not empty" in out
 
 
-def test_done_and_other_statuses_are_ignored(tmp_path):
-    """Only 'blocked' pages in the watcher, so only 'blocked' is overdue here —
-    the line must agree with the mechanism it re-surfaces, not invent its own."""
+def test_only_terminal_statuses_are_ignored(tmp_path):
+    """Only a TERMINAL status (done / dropped) leaves the watch. 2026-09-30:
+    the watcher paged 'blocked' alone, so seven tasks marked ready / open /
+    pending / deferred sat overdue for up to 98 days with no page and no
+    line here — the ledger's "can NEVER fall silent" held for one status."""
     p = _ledger(tmp_path, [
         {"id": "shipped", "status": "done", "review_after": "2026-01-01"},
-        {"id": "parked", "status": "deferred", "review_after": "2026-01-01"},
-        {"id": "ready", "status": "ready", "review_after": "2026-01-01"},
+        {"id": "cut", "status": "dropped", "review_after": "2026-01-01"},
     ])
     assert deferred_backlog_line(p, TODAY) == ""
+    for status in ("deferred", "ready", "open", "pending", "done — typo'd note"):
+        p = _ledger(tmp_path, [{"id": "live-one", "status": status,
+                                "review_after": "2026-01-01"}])
+        assert "live-one" in deferred_backlog_line(p, TODAY), status
 
 
 def test_blocked_with_no_review_date_is_surfaced(tmp_path):
@@ -241,10 +246,35 @@ def test_watcher_predicate_still_says_what_these_tests_pin():
                     "not passed: this pin runs only in the lead repo)")
     with open(_WATCHER, encoding="utf-8") as fh:
         src = fh.read()
-    # Axis 1: missing status defaults to blocked.
+    # Axis 1: missing status defaults to blocked (watched), and only the
+    # terminal set leaves the watch — the SAME set this module skips.
     assert 't.get("status", "blocked")' in src
+    from mini_dudeai.warmstart import DEFERRED_TERMINAL_STATUSES
+    assert ("TERMINAL_STATUSES = %r" % (DEFERRED_TERMINAL_STATUSES,)) in src
     # Axis 2 + 3: raw strptime parse (no strip), due when today >= ra.
     assert 'datetime.strptime(ra, "%Y-%m-%d")' in src
     assert "if today < ra_date" in src
     # Env binding: two-arg get, so a set-but-empty override propagates.
     assert 'os.environ.get("DEFERRED_WORK_LEDGER", os.path.join(' in src
+
+
+def test_watcher_pages_an_overdue_non_blocked_task(tmp_path):
+    """The OWNING consumer, run for real (dry-run ntfy, HOME + ledger in
+    tmp): an overdue 'open' task must page, a 'dropped' one must not.
+    2026-09-30 this is the leg that was blind — 'ready' since 06-24."""
+    import subprocess
+    import pytest
+    if not os.path.exists(_WATCHER):
+        pytest.skip("no scripts/deferred_work_watch.py here (MeshAnchor)")
+    ledger = _ledger(tmp_path, [
+        {"id": "open-overdue", "status": "open", "review_after": "2026-01-01"},
+        {"id": "cut-overdue", "status": "dropped", "review_after": "2026-01-01"},
+    ])
+    env = dict(os.environ, HOME=str(tmp_path), DEFERRED_WORK_LEDGER=ledger,
+               DEFERRED_WORK_DRYRUN="1")
+    r = subprocess.run([sys.executable, _WATCHER], env=env, timeout=60,
+                       capture_output=True, text=True)
+    log = (tmp_path / "deferred_work_watch.log").read_text()
+    assert r.returncode == 0, (r.returncode, r.stderr, log)
+    assert "DUE+PAGED task open-overdue" in log
+    assert "cut-overdue" not in log

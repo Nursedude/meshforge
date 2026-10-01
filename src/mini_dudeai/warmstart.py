@@ -59,6 +59,12 @@ def _read_text(path: str) -> str | None:
 #: this byte-locked file may name it directly.
 DEFERRED_LEDGER_BASENAME = "deferred_work.json"
 
+#: The only statuses that leave the watch. Everything else (blocked, ready,
+#: open, pending, deferred, a typo) is watched. Until 2026-09-30 only
+#: "blocked" was, and seven non-blocked tasks sat overdue up to 98 days
+#: unseen. Must equal the watcher's TERMINAL_STATUSES (test-pinned).
+DEFERRED_TERMINAL_STATUSES = ('done', 'dropped')
+
 #: The previous session's per-box HANDOFF note. App-agnostic for the same
 #: reason as the ledger above: keyed to the human's home and the box, not to a
 #: repo. CLAUDE.md names it the active sprint.
@@ -292,9 +298,9 @@ def deferred_backlog_line(ledger_path: str, today: str) -> str:
     for t in tasks:
         if not isinstance(t, dict):
             continue
-        # No status field = "blocked" — the watcher's default (its line
-        # `t.get("status", "blocked")`), so it must be the default here too.
-        if t.get("status", "blocked") != "blocked":
+        # No status field = "blocked" (watched) — the watcher's default (its
+        # line `t.get("status", "blocked")`); only a terminal status skips.
+        if t.get("status", "blocked") in DEFERRED_TERMINAL_STATUSES:
             continue
         # str(): a numeric id must not make sorted() below raise TypeError
         # and take the whole warm-start brief down with it.

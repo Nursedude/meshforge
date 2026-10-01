@@ -4,7 +4,7 @@
 The fleet creed is "silence is the failure mode." A deferred task whose gate
 clears with nobody watching is exactly that — it rots. This watcher reads the
 durable ledger (~/deferred_work.json) and, the moment a task's review_after
-date passes while it is still 'blocked', surfaces it so the work gets done.
+date passes while it is not done or dropped, surfaces it so the work gets done.
 Wired into the cron-verdict regime (cron_verdict.sh deferred_work_watch $?) so
 #78 probe_cron_verdict_stale guards the watcher ITSELF — it cannot silently die.
 
@@ -57,6 +57,12 @@ LOG = os.path.join(HOME, "deferred_work_watch.log")
 # silently killed 68 pages (2026-06-14..29) is structurally impossible here.
 # Resolve the SSOT relative to __file__ so cron's absolute invocation finds it.
 FLEET_NTFY_PUSH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fleet_ntfy_push.sh")
+# Only a TERMINAL status leaves the watch; every other value — blocked, ready,
+# open, pending, deferred, a typo — is watched. Until 2026-09-30 only "blocked"
+# was, and seven ready/open/pending/deferred tasks sat overdue up to 98 days
+# with no page. Pinned equal to mini_dudeai.warmstart.DEFERRED_TERMINAL_STATUSES
+# by tests/test_warmstart_deferred_backlog.py (honest_failure_modes #5).
+TERMINAL_STATUSES = ('done', 'dropped')
 
 
 def _ntfy_topic():
@@ -191,7 +197,7 @@ def main():
     for t in tasks:
         tid = t.get("id", "?")
         status = t.get("status", "blocked")
-        if status != "blocked":
+        if status in TERMINAL_STATUSES:
             continue
         ra = t.get("review_after", "")
         try:
@@ -253,7 +259,7 @@ def main():
                  "lands fleet-wide — no need to set status by hand.\n"
                  if verify_spec else "")
         body = ("Gate review DUE for deferred task %s:\n%s\n\nGate: %s\nHow to check: %s\n%s\n"
-                "Pull it up in a session to execute. When done, set status 'done' (or bump "
+                "Pull it up in a session to execute. When done, set status 'done' or 'dropped' (or bump "
                 "review_after + rm %s) in ~/deferred_work.json."
                 % (tid, subject, t.get("gate", "?"), t.get("check", "?"), extra, sentinel))
         ok = ntfy("[DEFERRED-WORK] %s — gate review due" % subject[:48], body,
