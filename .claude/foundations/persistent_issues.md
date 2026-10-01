@@ -258,13 +258,13 @@ pthread **thread stack** per interrupt cycle (~9/min): the CH341 poll thread
 runs the RadioLib ISR on ITSELF, so `pinedio_deattach_interrupt`'s self-join
 guard SKIPS the join and the stack strands (`pine64/libch341-spi-userspace`;
 strace/gdb-pinned 07-10). Live: ~561 GB VSZ / 71k anon maps @ day 5 (Pi5+USB);
-SPI-radio boxes clean. **NO published build fixes #10468** — not 2.7.24,
-2.7.26, or 2.8. **Re-verified 2026-09-11 AT SOURCE** (not by version
-string): `v2.8.0.47db0e3`'s `variants/native/portduino.ini` still pins
-`meshtastic/libch341-spi-userspace@03bf505d`, and that ref's
-`libpinedio-usb.c` has `pthread_detach` count **0** vs **1** in pine64
-`b0694ec8` (what our patched builds carry) — so upgrading the 4 USB boxes
-to 2.8 would REGRESS them. Our PR#2 still OPEN, untouched since 07-27.
+SPI-radio boxes clean. **FIXED UPSTREAM, NOT RELEASED (re-verified AT
+SOURCE 2026-09-30).** Our `meshtastic/libch341-spi-userspace#2` MERGED
+09-17 (+#3, #4); firmware `develop` pins `d85aceb7` (`pthread_detach` ×2)
+since 09-19. No release carries it: `2.8.0.47db0e3` (09-01) pins `03bf505d`
+(×0) and `master` pins pine64 `2e5ff751` (×0, one behind `b0694ec8`) — a
+stock roll today REGRESSES the 4 USB boxes. Next release from `develop`:
+grep its portduino.ini ch341 ref's `libpinedio-usb.c` for the detach first.
 ⚠️ **Do not roll meshtasticd**: 2.7.26.54e0d8d is STILL upstream `Latest`
 (2026-06-24); the only newer build is a 2.8.0 *alpha* whose predecessor
 `2.8.0.7239fe8` was **revoked** 08-30. meshtasticd is `apt-mark hold`ed on
@@ -272,15 +272,10 @@ all 9 boxes (verified 09-11) — 5 of them have the OBS alpha repo enabled at
 priority 500, so the hold is the only thing standing between a routine
 `apt upgrade` and an alpha fleet-wide. Do not remove it to "unblock" a roll.
 
-⚠️ **Our merged fix does NOT reach meshtastic builds (07-27).** pine64 merged
-PR#10 (`pthread_detach(pthread_self())`) as `b0694ec8` on 07-19 — but
-`meshtastic/firmware` switched `variants/native/portduino.ini` to its OWN fork
-`meshtastic/libch341-spi-userspace@03bf505d` on **07-17, two days earlier**, so
-it never carried over. That fork kept the self-join guard with NO detach
-anywhere → still strands. Ported as **meshtastic/libch341-spi-userspace#2**
-(open; operator has `push:false` there — only a maintainer can merge).
-**Read the fork's source, never the version string** — "2.8 is newer" is not
-"2.8 is fixed".
+History: pine64 merged our detach as `b0694ec8` 07-19, but firmware had
+moved to its OWN fork two days earlier (07-17), so it never carried over —
+hence the port as fork PR#2. **Read the pinned source, never the version
+string** — "2.8 is newer" is not "2.8 is fixed".
 
 Cures: (1) patched builds on all 4 USB boxes (VolcanoAI/moc1/moc5/kiai) via
 `/usr/local/sbin/meshtasticd-patched` + `50-canary-pinedio-fix.conf` drop-in;
