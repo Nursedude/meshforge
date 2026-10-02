@@ -89,7 +89,9 @@ from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from utils.fleet_naming import load_registry  # noqa: E402
+from utils.fleet_naming import FleetHost, Registry, load_registry  # noqa: E402
+from utils.observation import (  # noqa: E402
+    Failed, Observation, Seen, Unobservable, assert_never)
 from utils.fleet_hosts import (  # noqa: E402
     DEFAULT_DOMAIN,
     HOSTS_BLOCK_BEGIN as BEGIN,
@@ -107,12 +109,13 @@ EXIT_OK = 0
 EXIT_DRIFT = 1
 EXIT_UNKNOWN = 2
 
-# resolve_a tri-state. "No server answered" (blind) must never collapse into
-# "the zone says no" (authoritative negative): only NEGATIVE may fall to the
-# registry snapshot; UNOBSERVABLE holds the current entry (module docstring).
-ANSWERED = "answered"
-NEGATIVE = "negative"
-UNOBSERVABLE = "unobservable"
+# resolve_a answers with utils.observation (2026-10-02, the first adopter of the
+# truth-path type; ADR plans/adr_truth_kernel_2026_10_02.md). "No server
+# answered" (blind) must never collapse into "the zone says no" (authoritative
+# negative): Seen(None) may fall to the registry snapshot; Unobservable holds
+# the current entry (module docstring). Before, this was three string
+# constants in a (status, ip) tuple — and a status/ip pairing the type system
+# could not see; now a consumer that forgets a variant fails mypy.
 
 # The per-entry PROVENANCE marker, in ONE place because two consumers read it:
 # render_block writes it and parse_provenance reads it back. Independent
@@ -305,13 +308,13 @@ def _dns_query_a(server: str, fqdn: str, timeout: float) -> Tuple[bool, Optional
 
 
 def resolve_a(fqdn: str, timeout: float = 3.0, *,
-              servers: Optional[List[str]] = None) -> Tuple[str, Optional[str]]:
+              servers: Optional[List[str]] = None) -> Observation[Optional[str]]:
     """Authoritative IPv4 for `fqdn` from the DNS SERVER — never via NSS.
 
-    -> (status, ip): ANSWERED (with the A record), NEGATIVE (at least one
-    server authoritatively answered and none holds an A — NXDOMAIN or
-    answered-empty on every answering server), or UNOBSERVABLE (no server
-    answered at all: blindness, never a negative). Only a POSITIVE A answer
+    -> ``Seen(ip)`` (the A record), ``Seen(None)`` (at least one server
+    authoritatively answered and none holds an A — NXDOMAIN or answered-empty
+    on every answering server), or ``Unobservable`` (no server answered at
+    all: blindness, never a negative). Only a POSITIVE A answer
     stops the server loop — an answered-empty from server 1 must not mask
     the A that server 2 holds (07-26 review D2c).
 
@@ -329,16 +332,61 @@ def resolve_a(fqdn: str, timeout: float = 3.0, *,
     negative_seen = False
     # Resolved ONCE by the caller when given: re-discovering per name would
     # re-read the resolver config for every host in the registry.
-    for server in (upstream_servers() if servers is None else servers):
+    asked = upstream_servers() if servers is None else servers
+    for server in asked:
         answered, ip = _dns_query_a(server, fqdn, timeout)
         if answered and ip:
-            return ANSWERED, ip
+            return Seen(ip)
         if answered:
             negative_seen = True
-    return (NEGATIVE, None) if negative_seen else (UNOBSERVABLE, None)
+    if negative_seen:
+        return Seen(None)
+    return Unobservable(f"no DNS server answered for {fqdn} "
+                        f"({len(asked)} asked)" if asked else
+                        f"no upstream DNS server to ask for {fqdn}")
 
 
-def build_entries(registry, current: Optional[Dict[str, str]] = None,
+def _fallback_or_omit(alias: str, fqdn: str, host: FleetHost, why: str,
+                      ) -> Tuple[Optional[Tuple[str, str, str]], str]:
+    """No usable DNS answer for this name: registry ip_fallback, or omit."""
+    if host.ip_fallback:
+        return ((host.ip_fallback, fqdn, "ip_fallback"),
+                f"{alias}: {why}; used registry ip_fallback {host.ip_fallback}")
+    return None, f"{alias}: {why}; no ip_fallback — omitted"
+
+
+def _entry_for(alias: str, fqdn: str, host: FleetHost, obs: Observation[Optional[str]],
+               current: Dict[str, str],
+               ) -> Tuple[Optional[Tuple[str, str, str]], Optional[str]]:
+    """ONE name's decision -> (entry or None, warning or None).
+
+    Every arm RETURNS: a reason computed for one host can never be carried
+    into the next host's warning (review C2 — a loop-scoped `why` that a
+    future arm forgot to set would have reused the previous host's text).
+    """
+    match obs:
+        case Seen(value=ip):
+            if ip is None:
+                return _fallback_or_omit(alias, fqdn, host,
+                                         "the zone answered with no A record")
+            stale = (f"{alias}: DNS says {ip}, registry ip_fallback says "
+                     f"{host.ip_fallback} (fallback_stale)"
+                     if host.ip_fallback and host.ip_fallback != ip else None)
+            return (ip, fqdn, "dns"), stale
+        case Unobservable(why=w) | Failed(why=w):
+            if fqdn in current:
+                return (current[fqdn], fqdn, "held"), (
+                    f"{alias}: DNS unobservable (no server answered) — HELD the "
+                    f"current hosts entry {current[fqdn]}; never overwritten with "
+                    f"the registry snapshot on a transport blip")
+            return _fallback_or_omit(
+                alias, fqdn, host,
+                f"DNS could not answer ({w}) and no current entry to hold")
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def build_entries(registry: Registry, current: Optional[Dict[str, str]] = None,
                   *, servers: Optional[List[str]] = None,
                   ) -> Tuple[List[Tuple[str, str, str]], List[str]]:
     """-> ([(ip, fqdn, source)], warnings). source: 'dns' | 'held' | 'ip_fallback'.
@@ -356,25 +404,12 @@ def build_entries(registry, current: Optional[Dict[str, str]] = None,
     for alias in sorted(registry.hosts):
         host = registry.hosts[alias]
         fqdn = f"{alias}.{domain}"
-        status, ip = resolve_a(fqdn, servers=servers)
-        if status == ANSWERED and ip:
-            entries.append((ip, fqdn, "dns"))
-            if host.ip_fallback and host.ip_fallback != ip:
-                warnings.append(
-                    f"{alias}: DNS says {ip}, registry ip_fallback says "
-                    f"{host.ip_fallback} (fallback_stale)")
-        elif status == UNOBSERVABLE and fqdn in current:
-            entries.append((current[fqdn], fqdn, "held"))
-            warnings.append(
-                f"{alias}: DNS unobservable (no server answered) — HELD the "
-                f"current hosts entry {current[fqdn]}; never overwritten with "
-                f"the registry snapshot on a transport blip")
-        elif host.ip_fallback:
-            entries.append((host.ip_fallback, fqdn, "ip_fallback"))
-            warnings.append(f"{alias}: DNS could not answer; used registry "
-                            f"ip_fallback {host.ip_fallback}")
-        else:
-            warnings.append(f"{alias}: unresolvable and no ip_fallback — omitted")
+        entry, warning = _entry_for(alias, fqdn, host,
+                                    resolve_a(fqdn, servers=servers), current)
+        if entry is not None:
+            entries.append(entry)
+        if warning is not None:
+            warnings.append(warning)
     return entries, warnings
 
 

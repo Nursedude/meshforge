@@ -53,17 +53,17 @@ def registry():
 # signature is kept in step deliberately rather than absorbed with **kwargs.
 def _dns(ip):
     """resolve_a stub: authoritative A answer."""
-    return lambda f, timeout=3.0, *, servers=None: (gfh.ANSWERED, ip)
+    return lambda f, timeout=3.0, *, servers=None: gfh.Seen(ip)
 
 
 def _negative(f, timeout=3.0, *, servers=None):
     """resolve_a stub: server answered, name/record not in the zone."""
-    return (gfh.NEGATIVE, None)
+    return gfh.Seen(None)
 
 
 def _unobservable(f, timeout=3.0, *, servers=None):
     """resolve_a stub: no server answered at all (blind, not negative)."""
-    return (gfh.UNOBSERVABLE, None)
+    return gfh.Unobservable("test: no server answered")
 
 
 class TestSeedsFromLiveDnsNotTheSnapshot:
@@ -282,7 +282,7 @@ class TestResolutionNeverReadsEtcHosts:
         monkeypatch.setattr(gfh, "upstream_servers", lambda: ["192.0.2.53"])
         monkeypatch.setattr(gfh, "_dns_query_a",
                             lambda s, f, t: (True, "192.0.2.99"))
-        assert gfh.resolve_a("moc.mf.internal") == (gfh.ANSWERED, "192.0.2.99")
+        assert gfh.resolve_a("moc.mf.internal") == gfh.Seen("192.0.2.99")
 
     def test_queries_the_upstream_server_directly(self, monkeypatch):
         seen = {}
@@ -294,7 +294,7 @@ class TestResolutionNeverReadsEtcHosts:
 
         monkeypatch.setattr(gfh, "upstream_servers", lambda: ["192.0.2.53"])
         monkeypatch.setattr(gfh, "_dns_query_a", fake_query)
-        assert gfh.resolve_a("moc.mf.internal") == (gfh.ANSWERED, "192.0.2.7")
+        assert gfh.resolve_a("moc.mf.internal") == gfh.Seen("192.0.2.7")
         assert seen == {"server": "192.0.2.53", "fqdn": "moc.mf.internal"}
 
     def test_unanswered_server_falls_through_to_next(self, monkeypatch):
@@ -309,20 +309,21 @@ class TestResolutionNeverReadsEtcHosts:
         monkeypatch.setattr(gfh, "upstream_servers",
                             lambda: ["192.0.2.1", "192.0.2.2"])
         monkeypatch.setattr(gfh, "_dns_query_a", fake_query)
-        assert gfh.resolve_a("moc.mf.internal") == (gfh.ANSWERED, "192.0.2.8")
+        assert gfh.resolve_a("moc.mf.internal") == gfh.Seen("192.0.2.8")
         assert calls == ["192.0.2.1", "192.0.2.2"]
 
     def test_no_reachable_server_is_unobservable_not_a_guess(self, monkeypatch):
         monkeypatch.setattr(gfh, "upstream_servers", lambda: ["192.0.2.1"])
         monkeypatch.setattr(gfh, "_dns_query_a", lambda s, f, t: (False, None))
-        assert gfh.resolve_a("moc.mf.internal") == (gfh.UNOBSERVABLE, None)
+        got = gfh.resolve_a("moc.mf.internal")
+        assert isinstance(got, gfh.Unobservable) and got.why.strip(), got
 
     def test_answered_with_no_a_record_is_negative(self, monkeypatch):
         """NODATA is a real answer meaning 'no A here' — distinct from
         'server never replied': negative may fall to ip_fallback, blind holds."""
         monkeypatch.setattr(gfh, "upstream_servers", lambda: ["192.0.2.1"])
         monkeypatch.setattr(gfh, "_dns_query_a", lambda s, f, t: (True, None))
-        assert gfh.resolve_a("moc.mf.internal") == (gfh.NEGATIVE, None)
+        assert gfh.resolve_a("moc.mf.internal") == gfh.Seen(None)
 
     def test_upstream_servers_read_from_the_resolved_dropin(self, monkeypatch,
                                                             tmp_path):
@@ -504,13 +505,13 @@ class TestResolveALoopSemantics:
         monkeypatch.setattr(gfh, "upstream_servers",
                             lambda: ["192.0.2.1", "192.0.2.2"])
         monkeypatch.setattr(gfh, "_dns_query_a", fake_query)
-        assert gfh.resolve_a("moc.mf.internal") == (gfh.ANSWERED, "192.0.2.9")
+        assert gfh.resolve_a("moc.mf.internal") == gfh.Seen("192.0.2.9")
 
     def test_all_servers_empty_is_negative(self, monkeypatch):
         monkeypatch.setattr(gfh, "upstream_servers",
                             lambda: ["192.0.2.1", "192.0.2.2"])
         monkeypatch.setattr(gfh, "_dns_query_a", lambda s, f, t: (True, None))
-        assert gfh.resolve_a("moc.mf.internal") == (gfh.NEGATIVE, None)
+        assert gfh.resolve_a("moc.mf.internal") == gfh.Seen(None)
 
 
 # ── 2026-07-26 review D3: per-name unobservable HOLDS, never snapshots ───────
@@ -561,8 +562,8 @@ class TestHoldOnPerNameUnobservable:
 
         def flaky(fqdn, timeout=3.0, *, servers=None):
             if fqdn.startswith("moc1."):
-                return (gfh.UNOBSERVABLE, None)     # one lost datagram
-            return (gfh.ANSWERED, "10.0.0.9")
+                return gfh.Unobservable("test: no server answered")     # one lost datagram
+            return gfh.Seen("10.0.0.9")
 
         monkeypatch.setattr(gfh, "resolve_a", flaky)
         assert gfh.main() == gfh.EXIT_OK
@@ -583,8 +584,8 @@ class TestHoldOnPerNameUnobservable:
 
         def flaky(fqdn, timeout=3.0, *, servers=None):
             if fqdn.startswith("moc1."):
-                return (gfh.UNOBSERVABLE, None)
-            return (gfh.ANSWERED, "10.0.0.9")
+                return gfh.Unobservable("test: no server answered")
+            return gfh.Seen("10.0.0.9")
 
         monkeypatch.setattr(gfh, "resolve_a", flaky)
         monkeypatch.setattr(sys, "argv",
@@ -644,16 +645,16 @@ def _zone_without_moc(fqdn, timeout=3.0, *, servers=None):
     refuses to write when nothing resolved (blindness is not an empty
     fleet), which is itself a pinned behaviour above."""
     if fqdn.startswith("moc."):
-        return (gfh.NEGATIVE, None)
-    return (gfh.ANSWERED, "192.0.2.249")
+        return gfh.Seen(None)
+    return gfh.Seen("192.0.2.249")
 
 
 def _zone_with_moc(fqdn, timeout=3.0, *, servers=None):
     """The record has been added — at the address the ip_fallback already
     held, so the address map is byte-identical to _zone_without_moc's."""
     if fqdn.startswith("moc."):
-        return (gfh.ANSWERED, "192.0.2.38")
-    return (gfh.ANSWERED, "192.0.2.249")
+        return gfh.Seen("192.0.2.38")
+    return gfh.Seen("192.0.2.249")
 
 
 class TestProvenanceComparison:
@@ -745,8 +746,8 @@ class TestProvenanceComparison:
 
         def dropped(fqdn, timeout=3.0, *, servers=None):
             if fqdn.startswith("moc."):
-                return (gfh.NEGATIVE, None)      # gone from the zone
-            return (gfh.ANSWERED, "192.0.2.38")
+                return gfh.Seen(None)      # gone from the zone
+            return gfh.Seen("192.0.2.38")
 
         monkeypatch.setattr(gfh, "resolve_a", dropped)
         monkeypatch.setattr(sys, "argv",
@@ -789,8 +790,8 @@ class TestProvenanceComparison:
 
         def flaky(fqdn, timeout=3.0, *, servers=None):
             if fqdn.startswith("moc1."):
-                return (gfh.UNOBSERVABLE, None)
-            return (gfh.ANSWERED, "10.0.0.9")
+                return gfh.Unobservable("test: no server answered")
+            return gfh.Seen("10.0.0.9")
 
         monkeypatch.setattr(gfh, "resolve_a", flaky)
         monkeypatch.setattr(sys, "argv",
@@ -815,8 +816,8 @@ class TestProvenanceComparison:
 
         def flaky(fqdn, timeout=3.0, *, servers=None):
             if fqdn.startswith("moc1."):
-                return (gfh.UNOBSERVABLE, None)
-            return (gfh.ANSWERED, "10.0.0.9")
+                return gfh.Unobservable("test: no server answered")
+            return gfh.Seen("10.0.0.9")
 
         monkeypatch.setattr(gfh, "resolve_a", flaky)
         assert gfh.main() == gfh.EXIT_OK
@@ -918,7 +919,7 @@ class TestServerOverride:
         monkeypatch.setattr(gfh, "upstream_servers",
                             lambda *a, **k: ["203.0.113.1"])  # must NOT be used
         got = gfh.resolve_a("moc.mf.internal", servers=["198.51.100.9"])
-        assert got == (gfh.ANSWERED, "192.0.2.7")
+        assert got == gfh.Seen("192.0.2.7")
         assert asked == ["198.51.100.9"]
 
     def test_build_entries_threads_servers_through(self, monkeypatch):

@@ -59,4 +59,10 @@ distro==1.9.0
 # by actually patching. Do not re-introduce a <3.10 marker here without
 # re-opening that decision.
 pytest==9.1.1
+# truth-path type gate (tests/test_truth_path_types.py; ADR plans/adr_truth_kernel_2026_10_02.md)
+mypy==1.15.0
+# mypy's declared deps, pinned so the gate does not float (review C5;
+# the 2026-09-20 floating-transitive CI incident)
+mypy_extensions==1.0.0
+typing_extensions==4.15.0
 requests==2.34.2
