@@ -79,7 +79,7 @@ The service runs `validate_bridge_conflicts()` before constructing any bridge. I
 
 - No bridges enabled at all
 - `mesh_bridge` primary + secondary both point to the same serial device
-- Both `mesh_bridge.enabled` and `rns_transport.enabled` true (they both claim the Meshtastic radio's data path)
+- `rns_transport.enabled` true or `bridge_mode: rns_transport` (removed 2026-10-01; RNS over LoRa is an RNodeInterface in rnsd)
 - `mesh_bridge.secondary.connection_type="serial"` with a `serial_device` path that does not exist on the box
 
 On refusal, fix `gateway.json` and restart the service. Errors point at the exact key to change.
@@ -109,7 +109,6 @@ Gateways deployed before 2026-04-24 that used the single-enum pattern (e.g. `bri
 | `test_rns_bridge.py` | ~407 | Core bridge: routing, circuit breaker, message processing, callbacks, lifecycle |
 | `test_message_queue.py` | ~114 | Persistent SQLite queue, retry policy, dead letter, overflow shedding |
 | `test_rf.py` | ~107 | RF calculations: haversine, FSPL, Fresnel, link budget, signal classification |
-| `test_rns_transport.py` | ~97 | Packet fragmentation, reassembly, transport stats, connection management |
 | `test_node_tracker.py` | ~97 | Unified node tracking, RNS + Meshtastic state management |
 | `test_meshtastic_handler.py` | ~88 | Meshtastic connection, message handling, node tracking |
 | `test_mqtt_robustness.py` | ~83 | MQTT reconnection, message loss recovery, broker failover |

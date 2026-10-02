@@ -26,7 +26,6 @@ tests/                             # 3,160 tests across 90 files (as of 2026-04-
 ├── conftest.py                    # Shared fixtures (mock_meshtastic, mock_rns, no_network)
 ├── test_rns_bridge.py             # Gateway bridge (140 tests)
 ├── test_rf.py                     # RF calculations (107 tests)
-├── test_rns_transport.py          # RNS transport (97 tests)
 ├── test_meshtastic_protobuf.py    # Protobuf client (74 tests)
 ├── test_message_queue.py          # SQLite queue (72 tests)
 ├── test_status_bar.py             # TUI status bar (70 tests)

@@ -279,7 +279,7 @@ error message if the config is inconsistent. Current refusal conditions:
 
 - No bridges enabled (need at least one)
 - `mesh_bridge.primary.serial_device == mesh_bridge.secondary.serial_device` (both radios can't share one serial port)
-- `mesh_bridge.enabled` and `rns_transport.enabled` both true (both claim the Meshtastic radio's data path)
+- `rns_transport.enabled` true or `bridge_mode: rns_transport` (removed 2026-10-01; RNS over LoRa is an RNodeInterface in rnsd)
 - `mesh_bridge.secondary.connection_type="serial"` with a `serial_device` path that doesn't exist
 
 On refusal the service exits with code 2 and prints what to fix. There

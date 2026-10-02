@@ -399,7 +399,7 @@ file integrity, and radio hardware detection without modifying anything.
 | Stale `.pyc` files | Clean reinstall handles this automatically |
 | Wrong bridge mode after upgrade | As of 0.5.7-beta, `bridge_mode` is an advisory label only — each bridge is gated by its own `.enabled` flag. Legacy configs auto-migrate in-place at startup with a `MIGRATION:` journal warning. If the gateway exits with a `CONFIG ERRORS` block, read the message and fix the named key in `gateway.json`; see `docs/GATEWAY_DEPLOYMENT.md` → "Refusal on inconsistency". |
 | `:9443` web UI can't send messages / empty reply | Legacy TCP-mode bridges held the single-client slot on `:4403`. Check `ss -tnp \| grep :4403`. Fix: ensure `mqtt_bridge.enabled=true` and `bridge_mode="mqtt_bridge"` (or run `scripts/configure_gateway.sh` to re-render the config). |
-| Gateway exits immediately with `CONFIG ERRORS` | The new refusal-on-inconsistency preflight caught a config bug — e.g. both `mesh_bridge.enabled` and `rns_transport.enabled` true, or `mesh_bridge` primary + secondary sharing a serial device. The error block names the exact key to change. This is by design: the gateway will not silently run a different mode than you asked for. |
+| Gateway exits immediately with `CONFIG ERRORS` | The new refusal-on-inconsistency preflight caught a config bug — e.g. `rns_transport` still enabled (removed 2026-10-01), or `mesh_bridge` primary + secondary sharing a serial device. The error block names the exact key to change. This is by design: the gateway will not silently run a different mode than you asked for. |
 
 #### Python Library Conflicts
 

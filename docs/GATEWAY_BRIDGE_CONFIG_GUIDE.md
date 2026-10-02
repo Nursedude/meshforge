@@ -44,8 +44,8 @@ see the born-correct permissions foundation). The gateway runs as
 
 **Composable bridges**: `bridge_mode` is an advisory label; what actually
 gates each leg is its own `enabled` flag (`rns_bridge_enabled`,
-`mesh_bridge.enabled`, `meshcore.enabled`, `meshtastic_broadcast.enabled`,
-`rns_transport.enabled`). Legs compose — a full gateway can run the RNS
+`mesh_bridge.enabled`, `meshcore.enabled`, `meshtastic_broadcast.enabled`).
+Legs compose — a full gateway can run the RNS
 bridge AND a dual-radio mesh_bridge simultaneously.
 
 ## 2. Standalone (no fleet)

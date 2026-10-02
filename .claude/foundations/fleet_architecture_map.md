@@ -35,7 +35,8 @@ Every gateway box is the same hub code. What differs box-to-box is **two axes**:
   `templates/gateway/gateway.json.template`). Each leg is an independently
   toggleable block: `rns_bridge_enabled` (RNS/LXMF), `mqtt_bridge.json_enabled`
   (Meshtastic MQTT ingest), `mesh_bridge.enabled` (dual-radio Meshtastic↔Meshtastic),
-  `meshcore.enabled`, `rns_transport.enabled`. `bridge_mode` selects the primary mode.
+  `meshcore.enabled`. (`rns_transport` was removed 2026-10-01 — RNS over LoRa is an
+  RNodeInterface in rnsd.) `bridge_mode` is an advisory label.
 
 AREDN is a **data-source** overlay (map/telemetry ingest via `map_settings.json`
 `aredn_node_ips`), not a gateway bridge leg.

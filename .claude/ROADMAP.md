@@ -59,8 +59,11 @@ input to best-available-route, not the goal by itself.
 **NOW** (this sprint)
 1. moc3 antenna baseline → operator swaps the antenna (it stays SMALL) → repeat R2
    with n≥5 per size, interference logged on every run.
-2. Close the research artifact's "Road to conclusion" rows (R1 re-verify, R9
-   template guidance, the R10/M3 namespace drill).
+2. **rnsd onto mf.4** (`rnsd-restart-onto-mf4`): the fork rolls were in place, so
+   every rnsd still RUNS pre-mf.3 code. VolcanoAI canaried 10-01 (clean); moc3 at
+   its antenna-swap boot; the rest one box at a time, operator present.
+   (R1, R9 and R10/M3 closed 10-01; the lab-daemon half of the #69 race closed in
+   `c8dca3bc` after a contextless audit found it open.)
 3. **R3 decision due 10-07 (operator):** is RNS over MeshCore needed? A no-go
    closes R3, R4, R6 and the SMCI part of R5.
 
@@ -68,9 +71,10 @@ input to best-available-route, not the goal by itself.
 4. **Per-leg delivery measurement.** Each transport leg reports delivered and
    failed counts over time. Observe before alarming: counters first, then a soak
    baseline.
-5. **Best-available-route selection.** The router uses leg health, plus RNS
-   interface modes (`access_point`/`boundary`/announce limits), so a flaky RF leg
-   cannot own paths. Gate it with a breaker on the hand-off witness: an rnsd wedge
+5. **Best-available-route selection.** The router uses measured leg health so a
+   flaky RF leg cannot own paths. RNS interface modes do NOT do this (R9, read
+   from the fork's Transport.py: modes only shorten path expiry; RNS picks by
+   hops, then newest announce). Gate it with a breaker on the hand-off witness: an rnsd wedge
    takes down all cross-mesh traffic.
 6. **One RF-leg pane** (R8): airtime against budget, per-hop success, dead-hop
    events. The operator never leaves the app to learn whether RF carries RNS
