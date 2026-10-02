@@ -83,6 +83,13 @@ input to best-available-route, not the goal by itself.
    events. The operator never leaves the app to learn whether RF carries RNS
    (MF018).
 
+6b. **Typed tri-state on the truth path** (ADR `plans/adr_truth_kernel_2026_10_02.md`,
+    measured: 23% of 128 incidents, κ 0.91): `Seen | Unobservable | Failed`, no
+    default collapse, mypy-exhaustive — first `hs_substrate_skew`, `watchdog_probe_core`,
+    `rns_init`, `service_check`. Every truth-path check also ships one test that
+    feeds an input where check and subject DISAGREE (F_SHARED = 27%). Compiled
+    rewrite REJECTED (2%); compiled kernel not now (scope 10/23).
+
 **LATER**
 7. Mesh-issue rules for the *user's* mesh (MeshMonitor M1), with one thresholds
    file and a test that forbids harmful advice.

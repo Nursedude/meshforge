@@ -1,0 +1,164 @@
+{"id": "A12", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "fleet_sync omitted map restart; stale daemon code caused :4403 contention"}
+{"id": "A67", "class": "C5", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Root cause UX, not transport; NomadNet panels confused operators"}
+{"id": "A115", "class": "C4", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "DEFAULT_TIMEOUT 5s sized for 1MB directory; grew 30x, fetch timed out"}
+{"id": "A157", "class": "C4", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Serial systemctl probes ~2s consumed 3s peer-fetch timeout budget"}
+{"id": "A225", "class": "C5", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Peer keyed by IP not name; operator correlation across views hard"}
+{"id": "A286", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Install gotchas: LXMF not installed, uplink default off, channel name config, perms"}
+{"id": "A348", "class": "C2", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "Subscribed to wrong topic shape; validated with crafted publish matching same wrong assumption"}
+{"id": "A398", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "rnsd started with different config dir; rpc authkey mismatch"}
+{"id": "A463", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Two NomadNet processes/identities on one box; messages landed in unopened dir"}
+{"id": "A549", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Install script didn't create ratchets dir; PermissionError"}
+{"id": "A582", "class": "C2", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Fallback ReticulumPaths copies diverged; one skipped /etc/reticulum"}
+{"id": "A611", "class": "C4", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Proxy polled single-consumer fromradio queue, starving native web client"}
+{"id": "A641", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Reconciliation table of review findings"}
+{"id": "A658", "class": "C2", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Path.home() returned /root under sudo, breaking config paths"}
+{"id": "A666", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Refactor consolidation note"}
+{"id": "A674", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "File-split history"}
+{"id": "A693", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "One-line rule about file references"}
+{"id": "A699", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "One-line version-bump rule"}
+{"id": "A705", "class": "C2", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Broad exception swallowing fixed across files"}
+{"id": "A712", "class": "C5", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Map scrollbar CSS overlap UI fix"}
+{"id": "A718", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Handler registry migration record"}
+{"id": "A728", "class": "C4", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "meshtasticd single TCP client; multiple connections thrash"}
+{"id": "A750", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Behavioral reconnect pattern note"}
+{"id": "A764", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Implementation pattern for path_table discovery"}
+{"id": "A779", "class": "C2", "F_SHARED": false, "F_TRISTATE": true, "F_RUST": false, "why": "Status display conflated service state with detection capability"}
+{"id": "A803", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Best-effort delivery behavioral pattern"}
+{"id": "A818", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "rnsd interpreter lacked meshtastic module; env mismatch"}
+{"id": "A837", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Design principle: rnsd optional"}
+{"id": "A855", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Decision record: keep plugin disabled"}
+{"id": "A888", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "RNS version/user mismatch between pipx NomadNet and rnsd"}
+{"id": "A907", "class": "C2", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "auto_lock_port silently added iptables rules breaking web UI"}
+{"id": "A927", "class": "C2", "F_SHARED": true, "F_TRISTATE": true, "F_RUST": false, "why": "pgrep self-matched other processes; status assumed shared instance; three-state display fix"}
+{"id": "A961", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Feature change: bridge identity and addressing"}
+{"id": "A1057", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Service-check rule and table"}
+{"id": "A1078", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "File size status note"}
+{"id": "A1087", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Upstream meshtastic CLI preset bug"}
+{"id": "A1092", "class": "C5", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Not a bug; operator looked in wrong conversation"}
+{"id": "A1129", "class": "C1", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": true, "why": "bytes content concatenated with str raised TypeError; plus wrong MQTT topic"}
+{"id": "A1187", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Header only"}
+{"id": "A1189", "class": "C2", "F_SHARED": false, "F_TRISTATE": true, "F_RUST": false, "why": "Position filter dropped MeshCore; AREDN returned [] indistinguishable from unsupported"}
+{"id": "A1252", "class": "C4", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "RNS init on worker thread raised signal ValueError under ThreadingHTTPServer"}
+{"id": "A1330", "class": "C2", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "TUI pkill vs systemd restart reported Stopped falsely; double-bound identity"}
+{"id": "A1443", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Fleet RNS configs misaligned; rpc_key auth failures, restart loop"}
+{"id": "A1542", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Client configs lacked pinned rpc_key; wrong option name silently ignored"}
+{"id": "A1591", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Migration copied WAL sidecars; cold-start fsync stall"}
+{"id": "A1623", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Design change splitting directory from observations"}
+{"id": "A1699", "class": "C2", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "UPSERT reset last_seen each cycle, defeating retention"}
+{"id": "A1774", "class": "C2", "F_SHARED": true, "F_TRISTATE": true, "F_RUST": false, "why": "ISO string float() ValueError swallowed, fell back to now; tests used numeric fixtures"}
+{"id": "A1828", "class": "C4", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "RNS RPC calls never aborted; wedged rnsd hung threads silently"}
+{"id": "A1881", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Reticulum without configdir binds ports; address in use"}
+{"id": "A1895", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Rule: never overwrite meshtasticd config.yaml"}
+{"id": "A1918", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Post-install verification rule"}
+{"id": "A1928", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Upstream HAT template smuggled Webserver Port override"}
+{"id": "A1994", "class": "C2", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Federation polled failing peer every cycle; no backoff"}
+{"id": "A2084", "class": "C3", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "Sandbox ReadWritePaths drift; tests outside sandbox can't see trap"}
+{"id": "A2167", "class": "C4", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "socketserver shutdown called on serve_forever thread; deadlock"}
+{"id": "A2213", "class": "C2", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Saved merged defaults blocked default bumps; dual-default .get"}
+{"id": "A2256", "class": "C2", "F_SHARED": false, "F_TRISTATE": true, "F_RUST": false, "why": "Write failures swallowed with warning; no visible witness"}
+{"id": "A2322", "class": "C4", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Directory payload too large; client never requested gzip"}
+{"id": "A2373", "class": "C2", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Single backoff cap wrong for permanent outages"}
+{"id": "A2444", "class": "C4", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Uncapped connect to wedged rnsd blocked main thread"}
+{"id": "A2509", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Foreign MeshAnchor daemon claimed @rns listener; tracer EOF crash"}
+{"id": "A2640", "class": "C4", "F_SHARED": true, "F_TRISTATE": true, "F_RUST": false, "why": "rnsd accepts but RPC hangs; probe returned healthy on accept, gap unowned"}
+{"id": "A2696", "class": "C4", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "mqtt _connect leaked paho clients; fd exhaustion"}
+{"id": "A2732", "class": "C2", "F_SHARED": true, "F_TRISTATE": true, "F_RUST": false, "why": "Write-only circuit breaker; canary read writer-local zero; disjoint populations"}
+{"id": "A2776", "class": "C2", "F_SHARED": false, "F_TRISTATE": true, "F_RUST": false, "why": "Probe fell through to fromradio, reporting dead API available; tri-state fix"}
+{"id": "A2798", "class": "C4", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "Leaked TCPInterface drained PhoneAPI; journal greps couldn't see via_mqtt traffic"}
+{"id": "A2826", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Kernels installed but not rebooted into; nothing paged"}
+{"id": "A2845", "class": "C3", "F_SHARED": false, "F_TRISTATE": true, "F_RUST": false, "why": "AREDN IPs never configured; slow reachable mislabeled unreachable"}
+{"id": "A2892", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Factory reset/zero-config reintroduces divergent MQTT root"}
+{"id": "A2918", "class": "C2", "F_SHARED": false, "F_TRISTATE": true, "F_RUST": false, "why": "Degraded internal state mapped to valid-looking value, 18 findings"}
+{"id": "A2954", "class": "C2", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Failed sends never retried; crash boots coalesced by cooldown key"}
+{"id": "A2990", "class": "C3", "F_SHARED": true, "F_TRISTATE": true, "F_RUST": false, "why": "Probe used sudo blocked by sandbox; fields None so never fired"}
+{"id": "A3020", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Dead crons silenced to /dev/null; log-cap made false never-reported"}
+{"id": "A3046", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Deploy didn't restart user daemons after git pull"}
+{"id": "A3073", "class": "C2", "F_SHARED": true, "F_TRISTATE": true, "F_RUST": false, "why": "Soak script always exit 0; wedge probe checked process not result"}
+{"id": "A3103", "class": "C2", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "_load_cache dropped service_type; probe matched on it, false page"}
+{"id": "A3145", "class": "C3", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "ExecStartPre hardcoded @rns/default; service_inactive blind to user units"}
+{"id": "A3177", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Stale apt repo, holds, shadowed pip script, non-interactive upgrade issues"}
+{"id": "A3202", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "NAT hop delivery gap lost heartbeats; separate verdict write race"}
+{"id": "A3243", "class": "C4", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "RNS fork patches for connect/RPC hangs and shutdown wedges"}
+{"id": "A3276", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Router DNS proxy strips SOA; negatives uncacheable"}
+{"id": "A3295", "class": "C2", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Failed sends not retried; back-to-back crashes coalesced"}
+{"id": "A3307", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Apt repo mismatch, holds, shadowed pipx shim"}
+{"id": "A3323", "class": "C4", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "Leaked TCPInterface drained PhoneAPI; json greps blind to via_mqtt"}
+{"id": "A3335", "class": "C2", "F_SHARED": false, "F_TRISTATE": true, "F_RUST": false, "why": "Probe fell through to fromradio, available forever; tri-state probe fix"}
+{"id": "A3350", "class": "C4", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Paho client per reconnect leaked fds"}
+{"id": "A3367", "class": "C4", "F_SHARED": true, "F_TRISTATE": true, "F_RUST": false, "why": "RPC round-trip hangs after accept; gap between existing probes"}
+{"id": "A3373", "class": "C2", "F_SHARED": true, "F_TRISTATE": true, "F_RUST": false, "why": "Soak always exit 0; probe checked process not result"}
+{"id": "A3385", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Deploy-restart gap: user daemons not restarted after pull"}
+{"id": "A3399", "class": "C2", "F_SHARED": false, "F_TRISTATE": true, "F_RUST": false, "why": "Degraded state mapped to valid-looking value"}
+{"id": "A3412", "class": "C2", "F_SHARED": true, "F_TRISTATE": true, "F_RUST": false, "why": "None collapsed absent/inactive/unknown; four probes indeterminate by construction"}
+{"id": "A3464", "class": "C2", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Probe counted dedup suppressions as lost; counter had no reader"}
+{"id": "A3515", "class": "C2", "F_SHARED": false, "F_TRISTATE": true, "F_RUST": false, "why": "Probes used state-dir proxy not timer enrollment; True/False/None cure"}
+{"id": "A3567", "class": "C2", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "Probe compared working trees on authoring box; mocked tests stayed green"}
+{"id": "A3693", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Index relocation note"}
+{"id": "A3704", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Index table of resolved issues"}
+{"id": "A3785", "class": "C2", "F_SHARED": false, "F_TRISTATE": true, "F_RUST": false, "why": "stat-or-echo-0 fallback made absent logfile read as 56.7 years"}
+{"id": "A3831", "class": "C2", "F_SHARED": false, "F_TRISTATE": true, "F_RUST": false, "why": "Probe kept stale rule copy; empty host list collapsed to standalone"}
+{"id": "A3899", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Foreign daemon / boot race claimed @rns listener"}
+{"id": "A3912", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Row summaries of probes"}
+{"id": "A3925", "class": "C2", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "Probes read only :5000 relay; blind on gateway-only box"}
+{"id": "A3946", "class": "C3", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "Hardcoded @rns/default crashloop; probe blind to user units"}
+{"id": "A3961", "class": "C2", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "Loader dropped service_type; false UNHEARD page"}
+{"id": "A3982", "class": "C2", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "Checker used getaddrinfo reading /etc/hosts it validated; mocked tests passed"}
+{"id": "A4008", "class": "C2", "F_SHARED": true, "F_TRISTATE": true, "F_RUST": false, "why": "Probe built wrong instance name; clean after zero matches; refused ambiguous"}
+{"id": "A4072", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Router forwarded AAAA to WAN, uncacheable NODATA"}
+{"id": "A4125", "class": "C2", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Alarm threshold equal to sampling floor; max() aggregation"}
+{"id": "A4133", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Table of demoted tells"}
+{"id": "L36", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Fork SSOT and operating rules reference"}
+{"id": "L85", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Index pointer and tell table header"}
+{"id": "L103", "class": "C4", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "fd leak class"}
+{"id": "L104", "class": "C4", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "rnsd RPC wedge"}
+{"id": "L105", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Namespace collision: foreign process owns @rns listener"}
+{"id": "L106", "class": "C2", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "Probing a name this box doesn't serve"}
+{"id": "L107", "class": "C2", "F_SHARED": true, "F_TRISTATE": true, "F_RUST": false, "why": "Partial fix left transport branch collapse; gateway-only box blind 12 days"}
+{"id": "L108", "class": "C2", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "Probe assumed ~/.local; box installs to dist-packages"}
+{"id": "L109", "class": "C2", "F_SHARED": true, "F_TRISTATE": true, "F_RUST": false, "why": "Observed path not box; tunnel down paged box DOWN; UNOBSERVABLE cure"}
+{"id": "L110", "class": "C2", "F_SHARED": true, "F_TRISTATE": true, "F_RUST": false, "why": "Probe named nonexistent unit; absent must read inert not indeterminate"}
+{"id": "L111", "class": "C2", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Reader checked one wants dir; called live timer disabled"}
+{"id": "L112", "class": "C4", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Leaked TCPInterface starving PhoneAPI"}
+{"id": "L113", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Endpoints ESP32-only, never served by meshtasticd"}
+{"id": "L114", "class": "C4", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "GIL-serialization family"}
+{"id": "L115", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Sandbox ReadWritePaths drift from write paths"}
+{"id": "L116", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Upstream overlay smuggled Webserver Port"}
+{"id": "L117", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Generic guidance on long indeterminate probes"}
+{"id": "L118", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Power-loss zero-byte state file truncation"}
+{"id": "L119", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "SPI overlay claimed CS line already owned by kernel"}
+{"id": "L120", "class": "C2", "F_SHARED": false, "F_TRISTATE": true, "F_RUST": false, "why": "Absent-value sentinel echo 0 leaked into age measurement"}
+{"id": "L121", "class": "C3", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "Stale clock on RTC-less Pi; all wall-clock instruments lie together"}
+{"id": "L122", "class": "C3", "F_SHARED": true, "F_TRISTATE": true, "F_RUST": false, "why": "Streak saver couldn't write unwritable state path; reason hid cause"}
+{"id": "L123", "class": "C2", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Advisory sweep ignored distro backports and name normalisation"}
+{"id": "L124", "class": "C2", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "Detector timed subprocess; measured box CPU not RPC"}
+{"id": "L125", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Two names share one NAT front"}
+{"id": "L126", "class": "C2", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Rate limiter skipped setting currently_active; read RESOLVED"}
+{"id": "L127", "class": "C2", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "Checker consumed the artifact it validates"}
+{"id": "L128", "class": "C3", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "AREDN front reassigned; hosts and registry stale together, agreed"}
+{"id": "L129", "class": "C3", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "Router bridged; dead gateway; hosts and DNS stale together"}
+{"id": "L130", "class": "C3", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "HAT header mechanical power fault; vcgencmd and is-active blind"}
+{"id": "L131", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "RNode reverted to stored defaults; rnsd never rechecks"}
+{"id": "L132", "class": "C1", "F_SHARED": true, "F_TRISTATE": true, "F_RUST": true, "why": "Read key 'channel' library never sends; fixtures fabricated it; defaulted 0"}
+{"id": "L133", "class": "C2", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Pre-fill parsed last longName line from node list"}
+{"id": "L134", "class": "C2", "F_SHARED": true, "F_TRISTATE": true, "F_RUST": false, "why": "Audit as operator can't read root dirs; reports OK"}
+{"id": "L135", "class": "C4", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "systemctl client timeout shorter than stop job"}
+{"id": "L136", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Radio MQTT root drifted from declared"}
+{"id": "L137", "class": "C2", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Log-cap retention produced false never-ran verdicts"}
+{"id": "L138", "class": "C2", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "probe_service_inactive structurally blind to user units"}
+{"id": "L139", "class": "C2", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "Boot guard gated on name; /etc/hosts made getent succeed"}
+{"id": "L140", "class": "C4", "F_SHARED": true, "F_TRISTATE": false, "F_RUST": false, "why": "Boot race; ownership checked before wait when trivially satisfied"}
+{"id": "L141", "class": "C2", "F_SHARED": true, "F_TRISTATE": true, "F_RUST": false, "why": "Detector resolved only uid 0; asserted match instead of measuring"}
+{"id": "L142", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "CI installed unpinned packages; shared subprocess patch stole samples"}
+{"id": "L143", "class": "C3", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "AAAA leg forwarded to WAN, uncacheable"}
+{"id": "L154", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Checklist"}
+{"id": "L167", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Import pattern reference"}
+{"id": "L199", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Regression prevention system description"}
+{"id": "L206", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Lint rule entry"}
+{"id": "L207", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Lint rule entry"}
+{"id": "L208", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Lint rule entry"}
+{"id": "L209", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Lint rule entry"}
+{"id": "L210", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Lint rule entry"}
+{"id": "L211", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Lint rule entry"}
+{"id": "L212", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Lint rule entry"}
+{"id": "L213", "class": "NA", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Lint rule entry"}
+{"id": "L252", "class": "C4", "F_SHARED": false, "F_TRISTATE": false, "F_RUST": false, "why": "Upstream CH341 lib stranded joinable pthread stacks; VSZ leak"}

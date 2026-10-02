@@ -1,0 +1,164 @@
+A12	.claude/foundations/persistent_issues_archive.md	12	section	Issue #53: meshforge-map.service stale daemon → :4403 contention starves :9443 web UI (2026-05-02)
+A67	.claude/foundations/persistent_issues_archive.md	67	section	Issue #47: NomadNet operator confusion — two kinds of conversation in a gateway-equipped fleet (2026-04-25)
+A115	.claude/foundations/persistent_issues_archive.md	115	section	Issue #56: Federation peer timeout sized for ancient directories (2026-05-17)
+A157	.claude/foundations/persistent_issues_archive.md	157	section	Issue #55: `/fleet/slo` serial systemctl probes consumed MA's peer-fetch budget (2026-05-17)
+A225	.claude/foundations/persistent_issues_archive.md	225	section	Issue #54: Federation peer_status keyed by IP; cross-view diagnostics need name (2026-05-17)
+A286	.claude/foundations/persistent_issues_archive.md	286	section	Issue #33: Gateway Bridge Field Validation — First Green End-to-End (2026-04-18)
+A348	.claude/foundations/persistent_issues_archive.md	348	section	Issue #34: mqtt_bridge topic shape mismatch (2026-04-18)
+A398	.claude/foundations/persistent_issues_archive.md	398	section	Issue #37: NomadNet AuthenticationError on startup — rnsd rpc_key mismatch (2026-04-20)
+A463	.claude/foundations/persistent_issues_archive.md	463	section	Issue #38: NomadNet single-identity consolidation (2026-04-20)
+A549	.claude/foundations/persistent_issues_archive.md	549	section	Issue #25: rnsd PermissionError on /etc/reticulum/storage/ratchets
+A582	.claude/foundations/persistent_issues_archive.md	582	section	Issue #26: ReticulumPaths Fallback Copies Cause Config Divergence
+A611	.claude/foundations/persistent_issues_archive.md	611	section	Issue #28: API Proxy Steals fromradio Packets from Native Web Client
+A641	.claude/foundations/persistent_issues_archive.md	641	section	Health Check Reconciliation (2026-02-20) — Moved from persistent_issues.md
+A658	.claude/foundations/persistent_issues_archive.md	658	section	Issue #1: Path.home() Returns /root with sudo — RESOLVED (2026-02-20)
+A666	.claude/foundations/persistent_issues_archive.md	666	section	Issue #5: Duplicate Utility Functions — RESOLVED (2026-02-20)
+A674	.claude/foundations/persistent_issues_archive.md	674	section	Issue #6: Large Files — Extraction History (2026-03-02)
+A693	.claude/foundations/persistent_issues_archive.md	693	section	Issue #7: Missing File References — RESOLVED
+A699	.claude/foundations/persistent_issues_archive.md	699	section	Issue #8: Outdated Fallback Versions — RESOLVED
+A705	.claude/foundations/persistent_issues_archive.md	705	section	Issue #9: Broad Exception Swallowing — MOSTLY RESOLVED (2026-02-20)
+A712	.claude/foundations/persistent_issues_archive.md	712	section	Issue #10: Map Control Panel Scrollbar Overlap — FIXED (2026-02-25)
+A718	.claude/foundations/persistent_issues_archive.md	718	section	Handler Registry Migration — COMPLETE (2026-02-28)
+A728	.claude/foundations/persistent_issues_archive.md	728	section	Issue #17: Meshtastic Connection Contention (Single-Client TCP) — RESOLVED (2026-04-21 archived)
+A750	.claude/foundations/persistent_issues_archive.md	750	section	Issue #18: Auto-Reconnect on Connection Drop — RESOLVED (2026-04-21 archived)
+A764	.claude/foundations/persistent_issues_archive.md	764	section	Issue #19: RNS Node Discovery from path_table — RESOLVED (2026-04-21 archived)
+A779	.claude/foundations/persistent_issues_archive.md	779	section	Issue #20: Service Detection & Status Display — RESOLVED (2026-04-21 archived)
+A803	.claude/foundations/persistent_issues_archive.md	803	section	Issue #16: Gateway Message Routing Reliability — RESOLVED (2026-04-21 archived)
+A818	.claude/foundations/persistent_issues_archive.md	818	section	Issue #24: Python Environment Mismatch (rnsd + meshtastic module) — ARCHIVED (2026-04-21)
+A837	.claude/foundations/persistent_issues_archive.md	837	section	Issue #27: rnsd is OPTIONAL — ARCHIVED (2026-04-21)
+A855	.claude/foundations/persistent_issues_archive.md	855	section	Issue #36: Meshtastic_Interface rnsd plugin — keep disabled (2026-04-20, archived 2026-04-21)
+A888	.claude/foundations/persistent_issues_archive.md	888	section	Issue #30: NomadNet RPC ConnectionRefusedError (2026-03-11, archived 2026-04-21)
+A907	.claude/foundations/persistent_issues_archive.md	907	section	Issue #31: No Silent Persistent System Changes on Startup (2026-03-12, archived 2026-04-21)
+A927	.claude/foundations/persistent_issues_archive.md	927	section	Issue #32: NomadNet "Enabled but Disconnected" Interfaces (2026-03-13, archived 2026-04-21)
+A961	.claude/foundations/persistent_issues_archive.md	961	section	Issue #39: Gateway bridge becomes identifying and two-way directable (2026-04-21)
+A1057	.claude/foundations/persistent_issues_archive.md	1057	section	Issue #3: Services Not Started/Verified — MOSTLY RESOLVED (archived 2026-04-25)
+A1078	.claude/foundations/persistent_issues_archive.md	1078	section	Issue #6: Large Files — ALL UNDER THRESHOLD (archived 2026-04-25)
+A1087	.claude/foundations/persistent_issues_archive.md	1087	section	Issue #21: Meshtastic CLI Preset Bug (Upstream) (archived 2026-04-25)
+A1092	.claude/foundations/persistent_issues_archive.md	1092	section	Issue #35: Gateway-delivered LXMF lands under GATEWAY's hash, not receiver's (2026-04-20)
+A1129	.claude/foundations/persistent_issues_archive.md	1129	section	Issue #40: RNS→Mesh bridge — bytes payload crash + wrong-topic MQTT downlink (2026-04-21)
+A1187	.claude/foundations/persistent_issues_archive.md	1187	section	Issues #43-#46 (archived 2026-04-30 from persistent_issues.md)
+A1189	.claude/foundations/persistent_issues_archive.md	1189	section	Issue #43: MeshCore + AREDN visibility on :5000 map (2026-04-22)
+A1252	.claude/foundations/persistent_issues_archive.md	1252	section	Issue #44: Map server threading — RNS main-thread invariant (2026-04-22)
+A1330	.claude/foundations/persistent_issues_archive.md	1330	section	Issue #45: NomadNet TUI — tmux-wrapped service is first-class (2026-04-23)
+A1443	.claude/foundations/persistent_issues_archive.md	1443	section	Issue #46: Fleet-wide RNS config alignment (2026-04-25)
+A1542	.claude/foundations/persistent_issues_archive.md	1542	section	Issue #41: rpc_key pinning closes the Issue #37/#40 gateway inbound gap (2026-04-21)
+A1591	.claude/foundations/persistent_issues_archive.md	1591	section	Issue #48: Phase-2 migration inherits source WAL → cold-start stall (2026-04-27)
+A1623	.claude/foundations/persistent_issues_archive.md	1623	section	Issue #49: Lean node directory — split "what we know" from "what we observed" (2026-04-28)
+A1699	.claude/foundations/persistent_issues_archive.md	1699	section	Issue #50: Directory tier retention defeated by UPSERT last_seen rewrite (2026-04-30)
+A1774	.claude/foundations/persistent_issues_archive.md	1774	section	Issue #51: Issue #50 wiring unreachable — meshcore parser emitted ISO-8601 string, not Unix epoch (2026-04-30)
+A1828	.claude/foundations/persistent_issues_archive.md	1828	section	Issue #57: Gateway data-path watchdog — `bounded_call` over RNS RPC hot path (2026-05-17)
+A1881	.claude/foundations/persistent_issues_archive.md	1881	section	Issue #12: RNS "Address Already in Use" (archived 2026-05-20)
+A1895	.claude/foundations/persistent_issues_archive.md	1895	section	Issue #22: Never Overwrite meshtasticd's config.yaml (archived 2026-05-20)
+A1918	.claude/foundations/persistent_issues_archive.md	1918	section	Issue #23: Post-Install Verification (archived 2026-05-20)
+A1928	.claude/foundations/persistent_issues_archive.md	1928	section	Issue #58: Upstream HAT template smuggled `Webserver: Port: 443` → :9443 silently moved (2026-05-18)
+A1994	.claude/foundations/persistent_issues_archive.md	1994	section	Issue #59: Federation polls a permanently-failing peer every cycle — exponential backoff (2026-05-18)
+A2084	.claude/foundations/persistent_issues_archive.md	2084	section	Issue #60: Systemd sandbox path drift class — preflight + audit (2026-05-18)
+A2167	.claude/foundations/persistent_issues_archive.md	2167	section	Issue #61: `meshforge-map.service` daemon-mode SIGTERM deadlock (2026-05-18)
+A2213	.claude/foundations/persistent_issues_archive.md	2213	section	Issue #62: Config-layering — saved defaults block future default bumps (2026-05-18)
+A2256	.claude/foundations/persistent_issues_archive.md	2256	section	Issue #63: delivery_counters write-path canary — surface silent failures (2026-05-18)
+A2322	.claude/foundations/persistent_issues_archive.md	2322	section	Issue #64: `/api/nodes/directory` gzip negotiation + size-budget alarm (2026-05-18)
+A2373	.claude/foundations/persistent_issues_archive.md	2373	section	Issue #65: Two-tier federation backoff cap — long-outage cadence (2026-05-18)
+A2444	.claude/foundations/persistent_issues_archive.md	2444	section	Issue #68: rnsd hard-wedge → meshforge-map main thread silent-stuck in `unix_stream_connect` (2026-05-20)
+A2509	.claude/foundations/persistent_issues_archive.md	2509	section	Issue #69: Foreign daemon claims `@rns/<instance>` shared-instance listener — every RNS client EOFs (2026-05-20)
+A2640	.claude/foundations/persistent_issues_archive.md	2640	section	Issue #72: wedged rnsd RPC — rnstatus hangs though the socket accepts (2026-05-30)
+A2696	.claude/foundations/persistent_issues_archive.md	2696	section	Issue #73: meshforge-map fd-leak → [Errno 24] → :5000 wedge; + proactive fd probe (2026-05-31) — archived from persistent_issues 2026-06-09
+A2732	.claude/foundations/persistent_issues_archive.md	2732	section	Issue #74: gateway health-check review — decorative breaker, dead canary branch, 2 new probes (2026-06-06)
+A2776	.claude/foundations/persistent_issues_archive.md	2776	section	Issue #76: /json/* was NEVER served by meshtasticd — honest-absent probe; fromradio probe-leak killed (2026-06-07)
+A2798	.claude/foundations/persistent_issues_archive.md	2798	section	Issue #75: leaked TCPInterface starves :9443 web client — phoneapi_tcp_leak probe (2026-06-07)
+A2826	.claude/foundations/persistent_issues_archive.md	2826	section	kernel_reboot_pending probe — the 6.12.75-straggler guard (2026-06-09)
+A2845	.claude/foundations/persistent_issues_archive.md	2845	section	aredn_source_dark probe — the dormant-AREDN-organ guard (2026-06-12, Phase 0)
+A2892	.claude/foundations/persistent_issues_archive.md	2892	section	Issue #77: mqtt_root_drift probe — the msh/US split guard (2026-06-07)
+A2918	.claude/foundations/persistent_issues_archive.md	2918	section	Issue #80: mini-dudeai honest-failure-modes review — one defect class, 18/18 confirmed (2026-06-09; archived from persistent_issues.md 2026-
+A2954	.claude/foundations/persistent_issues_archive.md	2954	section	Issue #81: mini paging honesty — failed-send retry + per-boot crash identity (2026-06-11)
+A2990	.claude/foundations/persistent_issues_archive.md	2990	section	[Demoted 2026-07-14] Issue #73 addendum — the five watchdog probes of 2026-06-01→06-04 (full body)
+A3020	.claude/foundations/persistent_issues_archive.md	3020	section	[Demoted 2026-07-14] Issue #78: cron_verdict_stale probe — the silent-cron guard (full body)
+A3046	.claude/foundations/persistent_issues_archive.md	3046	section	[Demoted 2026-07-14] Issue #79: mini-dudeai hardening + the deploy-restart gap class (full body)
+A3073	.claude/foundations/persistent_issues_archive.md	3073	section	synth_soak_degraded probe — the unwatched delivery canary (2026-06-15)
+A3103	.claude/foundations/persistent_issues_archive.md	3103	section	node cache dropped `service_type` on load — the false "NEVER heard" page (2026-07-21)
+A3145	.claude/foundations/persistent_issues_archive.md	3145	section	Issue #82: NomadNet boot-race gate hardcoded @rns/default — the #69-fix regression (2026-06-19)
+A3177	.claude/foundations/persistent_issues_archive.md	3177	section	Issue #83: TUI updates — apt truth, holds, mismatched repo, silent no-op (2026-07-10)
+A3202	.claude/foundations/persistent_issues_archive.md	3202	section	manager_deadman transient — NAT beat-delivery gap, NOT a dead manager (2026-07-16)
+A3243	.claude/foundations/persistent_issues_archive.md	3243	section	RNS fork `1.2.5+mf.1` → `+mf.5` patch history (demoted from persistent_issues 2026-07-26)
+A3276	.claude/foundations/persistent_issues_archive.md	3276	section	Router-side DNS canNOT supersede the /etc/hosts block (demoted from persistent_issues 2026-07-27)
+A3295	.claude/foundations/persistent_issues_archive.md	3295	section	Issue #81 (2026-06-11): mini paging honesty — RESOLVED, body in archive (trimmed 2026-07-12)
+A3307	.claude/foundations/persistent_issues_archive.md	3307	section	Issue #83: TUI updates — apt truth, holds, mismatched repo — RESOLVED, body in archive (trimmed 2026-07-21)
+A3323	.claude/foundations/persistent_issues_archive.md	3323	section	Issue #75: leaked TCPInterface starves :9443 — RESOLVED, body in archive (trimmed 2026-06-12)
+A3335	.claude/foundations/persistent_issues_archive.md	3335	section	Issue #76: /json/* NEVER served by meshtasticd — RESOLVED, body in archive (trimmed 2026-06-12)
+A3350	.claude/foundations/persistent_issues_archive.md	3350	section	Issue #73 (2026-05-31): meshforge-map fd-leak — RESOLVED, body in archive (trimmed 2026-06-09)
+A3367	.claude/foundations/persistent_issues_archive.md	3367	section	Issue #72: wedged rnsd RPC — rnstatus hangs though the socket accepts (2026-05-30)
+A3373	.claude/foundations/persistent_issues_archive.md	3373	section	synth_soak_degraded probe — RESOLVED, body in archive (trimmed 2026-07-21)
+A3385	.claude/foundations/persistent_issues_archive.md	3385	section	Issue #79: mini-dudeai hardening + the deploy-restart gap class — RESOLVED, body in archive (trimmed 2026-07-14)
+A3399	.claude/foundations/persistent_issues_archive.md	3399	section	Issue #80: mini-dudeai honest-failure-modes review — RESOLVED, body in archive (trimmed 2026-07-09)
+A3412	.claude/foundations/persistent_issues_archive.md	3412	section	meshtasticd ABSENT read as INACTIVE — 4 classes blind by construction on meshanchor-server (2026-08-12) — RESOLVED `32a6998e`
+A3464	.claude/foundations/persistent_issues_archive.md	3464	section	gateway_delivery_degraded counted CORRECT dedup as lost messages (2026-08-12) — RESOLVED
+A3515	.claude/foundations/persistent_issues_archive.md	3515	section	The synth-soak timer gate had TWO un-ported siblings (2026-08-12) — RESOLVED
+A3567	.claude/foundations/persistent_issues_archive.md	3567	section	`parity_drift` measured the WORKING TREE while claiming COMMITTED port debt (2026-09-01) — RESOLVED
+A3693	.claude/foundations/persistent_issues_archive.md	3693	section	Resolved-issue INDEX (moved out of the hot file 2026-08-05, MF012)
+A3704	.claude/foundations/persistent_issues_archive.md	3704	section	Archived / Fully Resolved Issues
+A3785	.claude/foundations/persistent_issues_archive.md	3785	section	nomadnet-silence-watch rendered "no logfile" as 56.7 years of silence (2026-09-02) — RESOLVED
+A3831	.claude/foundations/persistent_issues_archive.md	3831	section	The auto-preset rule existed TWICE; only one copy got fixed (2026-09-14) — RESOLVED
+A3899	.claude/foundations/persistent_issues_archive.md	3899	section	Issue #69: Foreign daemon / boot race claims `@rns/<instance>` — RESOLVED, body in archive (trimmed 2026-06-07)
+A3912	.claude/foundations/persistent_issues_archive.md	3912	section	#77 + #78 — row summaries (demoted 2026-07-31, MF012)
+A3925	.claude/foundations/persistent_issues_archive.md	3925	section	Delivery probes blind on the gateway-only box shape — RESOLVED (2026-07-31)
+A3946	.claude/foundations/persistent_issues_archive.md	3946	section	Issue #82: NomadNet boot-race gate hardcoded `@rns/default` — RESOLVED, body in archive (trimmed 2026-07-21)
+A3961	.claude/foundations/persistent_issues_archive.md	3961	section	node cache dropped `service_type` on load (2026-07-21) — row summary; full body in archive
+A3982	.claude/foundations/persistent_issues_archive.md	3982	section	A detector that reads what it audits is self-confirming (2026-07-25)
+A4008	.claude/foundations/persistent_issues_archive.md	4008	section	A detector keyed to the wrong NAME reads healthy, not broken (2026-08-05)
+A4072	.claude/foundations/persistent_issues_archive.md	4072	section	mf.internal AAAA forwards to the WAN — the 900ms fleet-name tax (2026-07-25)
+A4125	.claude/foundations/persistent_issues_archive.md	4125	section	A loss/rate detector firing at EXACTLY its threshold — wan_path sampling floor + max() aggregation (2026-09-15 → 09-18) — RESOLVED, demoted 
+A4133	.claude/foundations/persistent_issues_archive.md	4133	section	Demoted from persistent_issues.md quick-tells — 2026-09-22
+L36	.claude/foundations/persistent_issues.md	36	section	RNS / LXMF are MeshForge-owned forks (SSOT, 2026-05-30)
+L85	.claude/foundations/persistent_issues.md	85	section	Resolved issues — index moved to the archive (2026-08-05)
+L103	.claude/foundations/persistent_issues.md	103	tell	`[Errno 24]` or climbing fds on `:5000`
+L104	.claude/foundations/persistent_issues.md	104	tell	`rnstatus` hangs but the socket accepts
+L105	.claude/foundations/persistent_issues.md	105	tell	`@rns/` listener owned by a non-rnsd process
+L106	.claude/foundations/persistent_issues.md	106	tell	RNS probe `indeterminate`/`clean` while `rnstatus` is healthy
+L107	.claude/foundations/persistent_issues.md	107	tell	a disposition-collapse fix landed and the fleet went quiet
+L108	.claude/foundations/persistent_issues.md	108	tell	a probe is blind on ONE box, clean on the other seven
+L109	.claude/foundations/persistent_issues.md	109	tell	a box pages `DOWN` but its own `uptime` says it never rebooted
+L110	.claude/foundations/persistent_issues.md	110	tell	a probe tells you to check a systemd unit, or blames another probe that "owns" it
+L111	.claude/foundations/persistent_issues.md	111	tell	`systemctl --user is-enabled` says `enabled` but the unit isn't in `timers.target.wants`
+L112	.claude/foundations/persistent_issues.md	112	tell	`:9443` web client deaf while RX is healthy
+L113	.claude/foundations/persistent_issues.md	113	tell	meshtasticd `/json/report` or `/json/nodes` 404
+L114	.claude/foundations/persistent_issues.md	114	tell	a NEW `http_local_unresponsive`
+L115	.claude/foundations/persistent_issues.md	115	tell	service `active` but its writes vanish
+L116	.claude/foundations/persistent_issues.md	116	tell	meshtasticd moved off `:9443` after a HAT change
+L117	.claude/foundations/persistent_issues.md	117	tell	a probe reports `indeterminate` for DAYS
+L118	.claude/foundations/persistent_issues.md	118	tell	service crashloops after power loss with `OSError`/`InsufficientDataException` on a state file
+L119	.claude/foundations/persistent_issues.md	119	tell	meshtasticd crashloops in ~300ms with `gpiod_line_request_reconfigure_lines: Assertion 'request' failed` right after "Final Tx power"
+L120	.claude/foundations/persistent_issues.md	120	tell	a detector reports an age in the MILLIONS of minutes (29,806,174 min = 56.7 yr)
+L121	.claude/foundations/persistent_issues.md	121	tell	`uptime` disagrees with wtmp/`who -b`, or crons barely fire while cron is `active`
+L122	.claude/foundations/persistent_issues.md	122	tell	a debounced probe reads `held by debounce` / `first sighting recorded` on EVERY tick for days while its condition is plainly present
+L123	.claude/foundations/persistent_issues.md	123	tell	an advisory sweep says an apt-managed box carries N advisories, or `dpkg -l` shows a `+deb12uN` / `+deb13uN` / `ubuntuN.M` suffix
+L124	.claude/foundations/persistent_issues.md	124	tell	an RNS/RPC alarm (`rns_rpc_unresponsive`, cascade `rns_rpc_wedge`) fires and self-CLEARS inside one tick, or repeats at a FIXED minute past 
+L125	.claude/foundations/persistent_issues.md	125	tell	`ssh <name>` gets Permission denied and an unfamiliar host key, while a sibling name to the same address works
+L126	.claude/foundations/persistent_issues.md	126	tell	a condition reads RESOLVED while a live check says it is present — classically, N boxes show it active and one does not
+L127	.claude/foundations/persistent_issues.md	127	tell	a checker reports `in sync` / `clean` and its `--apply` then refuses to heal a corruption you PLANTED
+L128	.claude/foundations/persistent_issues.md	128	tell	a fleet name resolves fine, matches the registry, and reaches the WRONG BOX
+L129	.claude/foundations/persistent_issues.md	129	tell	a whole subnet of boxes reads unreachable after a router/uplink change, while each box's own uptime is days
+L130	.claude/foundations/persistent_issues.md	130	tell	meshtasticd cycles on `SX126x init result -2` / `No sx1262 radio`, intermittently, on a HAT that worked before
+L131	.claude/foundations/persistent_issues.md	131	tell	an RNode's `rnstatus` `Rate` is not what its config's SF/BW give (SF7/250 kHz = 10.94 kbps), or TX grows while RX is flat at BOTH ends of on
+L132	.claude/foundations/persistent_issues.md	132	tell	a MeshCore channel filter refuses EVERYTHING, every channel message reads as slot 0, or a message sent on Public logs as the private channel
+L133	.claude/foundations/persistent_issues.md	133	tell	a radio's owner name is ANOTHER node's name — often a default like `Meshtastic 8d30` — with a `",` fragment, and the short name is that node
+L134	.claude/foundations/persistent_issues.md	134	tell	`meshtastic_install_audit.py` says OK while the watchdog pages `dep_install_fragmented` on the same box
+L135	.claude/foundations/persistent_issues.md	135	tell	our tooling says `Timeout while stopping <unit>` and the unit later reads `failed` and stays down
+L136	.claude/foundations/persistent_issues.md	136	tell	the radio publishes to an MQTT root nobody declared
+L137	.claude/foundations/persistent_issues.md	137	tell	`cron_verdict_stale` says a cron has been silent FOREVER (never ran)
+L138	.claude/foundations/persistent_issues.md	138	tell	a USER systemd unit crashloops and no probe ever says so
+L139	.claude/foundations/persistent_issues.md	139	tell	a boot-time unit dies on a network op while its OWN `ExecStartPre` guard reported `status=0/SUCCESS`
+L140	.claude/foundations/persistent_issues.md	140	tell	`@rns/<instance>` owned by a **non-rnsd pid** after a reboot
+L141	.claude/foundations/persistent_issues.md	141	tell	Config Doctor / drift check says rnsd's configdir is "not determinable; assuming default resolution matches"
+L142	.claude/foundations/persistent_issues.md	142	tell	CI red on a commit that CANNOT have caused it (docs/comments only), or one interpreter leg failing alone
+L143	.claude/foundations/persistent_issues.md	143	tell	fleet-wide name lookups ~75-90ms while an A-only query is ~1ms
+L154	.claude/foundations/persistent_issues.md	154	section	Development Checklist
+L167	.claude/foundations/persistent_issues.md	167	section	Quick Reference: Import Patterns
+L199	.claude/foundations/persistent_issues.md	199	section	Issue #29: Regression Prevention System — ACTIVE
+L206	.claude/foundations/persistent_issues.md	206	tell	MF007
+L207	.claude/foundations/persistent_issues.md	207	tell	MF008
+L208	.claude/foundations/persistent_issues.md	208	tell	MF009
+L209	.claude/foundations/persistent_issues.md	209	tell	MF010
+L210	.claude/foundations/persistent_issues.md	210	tell	MF014
+L211	.claude/foundations/persistent_issues.md	211	tell	MF019
+L212	.claude/foundations/persistent_issues.md	212	tell	MF021
+L213	.claude/foundations/persistent_issues.md	213	tell	MF027
+L252	.claude/foundations/persistent_issues.md	252	section	meshtasticd VSZ leak (firmware#10468) — pthread stacks stranded, USB-radio boxes only (2026-07-10)
