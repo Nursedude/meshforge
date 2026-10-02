@@ -17,7 +17,7 @@ Two checks are needed because load()'s unknown-key behavior is MIXED:
    from defaults (every template sets non-default values).
 
 2. ``test_template_keys_are_known`` — the ``.get()``-built sections
-   (top-level, mesh_bridge's own keys, meshtastic_broadcast, rns_transport)
+   (top-level, mesh_bridge's own keys, meshtastic_broadcast)
    silently IGNORE unknown keys, and several top-level dataclass fields
    (failover_*, gateway_heartbeat_*, load_balancer_*, gateway_role,
    gateway_id) are defined on GatewayConfig but never read by load() at all.
@@ -56,7 +56,9 @@ TEMPLATE_DIR = Path(__file__).parent.parent / "docs" / "gateway_config_templates
 # (this set rotting is exactly the loud failure we want).
 TOP_LEVEL_KEYS_READ_BY_LOAD = {
     "enabled", "auto_start", "bridge_mode", "rns_bridge_enabled",
-    "meshtastic", "rns", "mqtt_bridge", "rns_transport", "mesh_bridge",
+    # rns_transport left this set 2026-10-02: load() still READS an old
+    # section (to refuse enabled=true), but no template may set it again.
+    "meshtastic", "rns", "mqtt_bridge", "mesh_bridge",
     "meshcore", "routing_rules", "default_route", "telemetry",
     "meshtastic_broadcast", "log_level", "log_messages",
     "ai_diagnostics_enabled", "snr_analysis", "anomaly_detection",

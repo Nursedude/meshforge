@@ -117,7 +117,7 @@ def validate_bridge_conflicts(config: GatewayConfig, bridges: list) -> list:
     # Checked BEFORE the empty-bridges return: a config whose only leg was
     # rns_transport must say WHY it has no bridge, not just that it has none.
     mode = (config.bridge_mode or "").lower()
-    if config.rns_transport.enabled or mode == "rns_transport":
+    if config.rns_transport_legacy_enabled or mode == "rns_transport":
         errs.append(RNS_TRANSPORT_REMOVED)
 
     if not bridges:

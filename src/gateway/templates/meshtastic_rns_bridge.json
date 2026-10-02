@@ -22,19 +22,6 @@
     "propagation_node": ""
   },
 
-  "rns_transport": {
-    "enabled": false,
-    "connection_type": "tcp",
-    "device_path": "localhost:4403",
-    "data_speed": 8,
-    "hop_limit": 3,
-    "fragment_timeout_sec": 30,
-    "max_pending_fragments": 100,
-    "enable_stats": true,
-    "stats_interval_sec": 60,
-    "packet_loss_threshold": 0.1,
-    "latency_threshold_ms": 5000
-  },
 
   "routing_rules": [
     {

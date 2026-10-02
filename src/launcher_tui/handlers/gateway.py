@@ -791,7 +791,6 @@ class GatewayHandler(BaseHandler):
                     config.meshtastic = new_config.meshtastic
                     config.rns = new_config.rns
                     config.mqtt_bridge = new_config.mqtt_bridge
-                    config.rns_transport = new_config.rns_transport
                     config.mesh_bridge = new_config.mesh_bridge
                     config.routing_rules = new_config.routing_rules
                     config.default_route = new_config.default_route

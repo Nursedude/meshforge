@@ -87,7 +87,7 @@ class TestValidateBridgeConflicts:
         from gateway.bridge_cli import (
             RNS_TRANSPORT_REMOVED, resolve_bridges, validate_bridge_conflicts)
 
-        fresh_config.rns_transport.enabled = True
+        fresh_config.rns_transport_legacy_enabled = True
         bridges = resolve_bridges(fresh_config)
         assert "rns_transport" not in [b["name"] for b in bridges]
         errs = validate_bridge_conflicts(fresh_config, bridges)
@@ -98,7 +98,7 @@ class TestValidateBridgeConflicts:
             RNS_TRANSPORT_REMOVED, resolve_bridges, validate_bridge_conflicts)
 
         fresh_config.rns_bridge_enabled = False
-        fresh_config.rns_transport.enabled = True
+        fresh_config.rns_transport_legacy_enabled = True
         bridges = resolve_bridges(fresh_config)
         errs = validate_bridge_conflicts(fresh_config, bridges)
         assert bridges == []
@@ -160,9 +160,9 @@ class TestLegacyBridgeModeMigration:
             resolve_bridges, validate_bridge_conflicts)
 
         fresh_config.bridge_mode = "rns_transport"
-        fresh_config.rns_transport.enabled = False
+        fresh_config.rns_transport_legacy_enabled = False
         assert migrate_legacy_bridge_mode(fresh_config) == []
-        assert fresh_config.rns_transport.enabled is False
+        assert fresh_config.rns_transport_legacy_enabled is False
         errs = validate_bridge_conflicts(fresh_config, resolve_bridges(fresh_config))
         assert RNS_TRANSPORT_REMOVED in errs
 

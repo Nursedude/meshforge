@@ -33,7 +33,6 @@ _LAZY_EXPORTS = {
     'UnifiedNodeTracker': '.node_tracker',
     # Configuration
     'GatewayConfig': '.config',
-    'RNSOverMeshtasticConfig': '.config',
     'MeshtasticConfig': '.config',
     'MeshtasticBridgeConfig': '.config',
     # Mesh preset bridge

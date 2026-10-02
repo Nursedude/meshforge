@@ -38,7 +38,6 @@
     "channel": "meshforge",
     "json_enabled": true
   },
-  "rns_transport": { "enabled": false },
   "mesh_bridge": { "enabled": false },
   "meshcore": { "enabled": false },
   "routing_rules": [],

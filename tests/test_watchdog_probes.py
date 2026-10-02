@@ -8939,20 +8939,34 @@ class TestGatewayDupTransportIndeterminate:
     """G1 — on the manager box (the only observable one) a crashed map /
     5xx lands in the transport except too: unobservable ≠ benign inert."""
 
-    def test_transport_error_is_indeterminate_not_inert(self, tmp_path):
+    # The box's ROLE is pinned, never read from the host running the suite:
+    # this test used to read the real cron spool, so it passed on a manager-ish
+    # host and failed on one with no /var/spool/cron (outside review rev 4.9,
+    # 2026-10-02) — a verdict that depends on where it runs pins nothing.
+    def _run(self, tmp_path, manager):
         from urllib.error import URLError as _URLError
 
         def _raise(*args, **kwargs):
             raise _URLError("connection refused")
 
         collect = _fresh_dispositions()
-        with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
+        with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise), \
+                patch("utils.watchdog_probes_gateway.operator_cron_wired",
+                      return_value=manager):
             sig = probe_gateway_dup_degraded(
                 debounce_path=str(tmp_path / "d.json"))
         assert sig is None
-        got = collect()["gateway_dup_degraded"]
+        return collect()["gateway_dup_degraded"]
+
+    def test_transport_error_is_indeterminate_not_inert(self, tmp_path):
+        got = self._run(tmp_path, manager=True)
         assert got["disp"] == "indeterminate"
         assert "manager" in got["reason"]
+
+    def test_transport_error_with_spool_unreadable_is_not_inert(self, tmp_path):
+        got = self._run(tmp_path, manager=None)
+        assert got["disp"] == "indeterminate"
+        assert "unreadable" in got["reason"]
 
 
 class TestDupsRollupUnavailableIsInertNotBlind:

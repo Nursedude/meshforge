@@ -586,6 +586,15 @@ HS_HERE="$(cd "$(dirname "$0")" && pwd)"
 HS_ATTR_F="$HS_HERE/hs_skew_attr.awk"
 [ -r "$HS_ATTR_F" ] || { echo "honest_status: missing $HS_ATTR_F" >&2; exit 3; }
 HS_ATTR_B64=$(base64 -w0 < "$HS_ATTR_F" 2>/dev/null || base64 < "$HS_ATTR_F" | tr -d "\n")
+# 2c's helper (running SUBSTRATE — see the block after this loop). The watched
+# distributions come from the fork-pin SSOT, never a second hardcode (hfm #5):
+# a dist pinned tomorrow is watched tomorrow. Unparseable SSOT => the helper
+# prints `SU * no-watched-dists` => UNKNOWN, never a quiet clean.
+HS_SUB_F="$HS_HERE/hs_substrate_skew.py"
+[ -r "$HS_SUB_F" ] || { echo "honest_status: missing $HS_SUB_F" >&2; exit 3; }
+HS_SUB_B64=$(base64 -w0 < "$HS_SUB_F" 2>/dev/null || base64 < "$HS_SUB_F" | tr -d "\n")
+HS_SUB_WANT=$(awk '$1=="#" && $2=="MF-FORK-PIN" && $3 ~ /^[A-Za-z0-9._-]+$/ {printf "%s ", $3}' "$REPO/requirements/rns.txt" 2>/dev/null)
+sub_behind=0; sub_unknown=0; sub_desc=""; sub_unk_desc=""; sub_boxes=0; sub_none=""; sub_checked=0; sub_unjudged=0
 for b in $BOXES; do
   # A declared-dormant box is not asked (finding 24): this leg had no posture
   # check at all, so it paid a ConnectTimeout per switched-off box.
@@ -623,11 +632,35 @@ if [ -e $REPO/.git ]; then
     [ -n \"\$UU\" ] && XDG_RUNTIME_DIR=\$XRD systemctl --user show -p Id -p ExecStart -p Environment -p WorkingDirectory -p ActiveEnterTimestamp --timestamp=unix \$UU 2>/dev/null | awk \$HSV -f \"\$AWKF\"
   fi
   rm -f \"\$AWKF\"
+  # 2c running SUBSTRATE: same unit enumeration, judged by the process's own
+  # interpreter. Paired PER RECORD (RS=): systemctl prints MainPID BEFORE Id,
+  # so a line-wise pairing labelled every PID with the PREVIOUS unit's name
+  # (first live run: rnsd read as polkit). root (sudo -n) is needed to probe another uid's process;
+  # without it those rows come back SU (unknown), never silently clean.
+  SKF=\$(mktemp); printf %s '$HS_SUB_B64' | base64 -d > \"\$SKF\"
+  { [ -n \"\$SU\" ] && systemctl show -p Id -p MainPID \$SU 2>/dev/null | awk -v s=system -v RS= '{i=\"\"; p=\"\"; n=split(\$0,L,\"\\n\"); for(k=1;k<=n;k++){if(L[k]~/^Id=/)i=substr(L[k],4); if(L[k]~/^MainPID=/)p=substr(L[k],9)} if(i!=\"\"&&p!=\"\")print s, i, p}'
+    [ \"\$USOK\" = 1 ] && [ -n \"\$UU\" ] && XDG_RUNTIME_DIR=\$XRD systemctl --user show -p Id -p MainPID \$UU 2>/dev/null | awk -v s=user -v RS= '{i=\"\"; p=\"\"; n=split(\$0,L,\"\\n\"); for(k=1;k<=n;k++){if(L[k]~/^Id=/)i=substr(L[k],4); if(L[k]~/^MainPID=/)p=substr(L[k],9)} if(i!=\"\"&&p!=\"\")print s, i, p}'; } > \"\$SKF.in\"
+  echo HSSUB
+  if sudo -n true 2>/dev/null; then sudo -n timeout 150 python3 \"\$SKF\" $HS_SUB_WANT < \"\$SKF.in\"; else timeout 150 python3 \"\$SKF\" $HS_SUB_WANT < \"\$SKF.in\"; fi || echo \"SU * helper-rc\$?\"
+  rm -f \"\$SKF\" \"\$SKF.in\"
 else echo HSNOREPO; fi")
   [ "$(printf '%s\n' "$raw" | sed -n '1p')" = "HSUP" ] || continue
   body=$(printf '%s\n' "$raw" | sed -n '2,$p')
   printf '%s\n' "$body" | grep -q HSNOREPO && continue
   skew_boxes=$((skew_boxes+1))
+  if printf '%s\n' "$body" | grep -q '^HSSUB$'; then
+    sub_boxes=$((sub_boxes+1))
+    _sb=$(printf '%s\n' "$body" | awk '$1=="SB"{print $2}' | sort -u | wc -l)
+    _su=$(printf '%s\n' "$body" | awk '$1=="SU"{print $2}' | sort -u | wc -l)
+    _sc=$(printf '%s\n' "$body" | awk '$1=="SB"||$1=="SC"{print $2}' | sort -u | wc -l)
+    _sx=$(printf '%s\n' "$body" | awk '$1=="SX"{print $2}' | sort -u | wc -l)
+    sub_behind=$((sub_behind+_sb)); sub_unknown=$((sub_unknown+_su)); sub_checked=$((sub_checked+_sc)); sub_unjudged=$((sub_unjudged+_sx))
+    # One entry per unit: dist list + basis. `entry` = its own entry point
+    # needs the dist (fact); `repo` = repo code that MAY import it (labelled).
+    [ "$_sb" -gt 0 ] && sub_desc="$sub_desc $b:$(printf '%s\n' "$body" | awk '$1=="SB"{u=$2; sub(/\.service$/,"",u); k=u"("$5")"; if(!(k in s)){s[k]=1; o=o k ","}} END{sub(/,$/,"",o); print o}')"
+    [ "$_su" -gt 0 ] && sub_unk_desc="$sub_unk_desc $b:$(printf '%s\n' "$body" | awk '$1=="SU"{u=$2; sub(/\.service$/,"",u); printf "%s[%s],", u, $3}' | sed 's/,$//')"
+    [ "$_sb" = 0 ] && [ "$_su" = 0 ] && [ "$_sc" = 0 ] && [ "$_sx" = 0 ] && sub_none="$sub_none $b"
+  fi
   printf '%s\n' "$body" | grep -q '^USCOPEDARK' && skew_udark=$((skew_udark+1))
   nb=$(printf '%s\n' "$body" | grep -c '^B ' || true)
   nu=$(printf '%s\n' "$body" | grep -c '^U ' || true)
@@ -744,6 +777,46 @@ else
   unk_note=""
   [ "$skew_unknown" -gt 0 ] && unk_note=" ; $skew_unknown unknown(no start time / no repo for the unit — NOT 'current')"
   disc "running-code skew" "$skew_behind unit(s) behind their repo's newest CODE commit across $skew_boxes box(es)${skew_desc}${unk_note}${clock_note}${prose_note}${noattr_note}${udark_note} — disclosure, not a fault; they load it at next restart"
+fi
+
+# 2c. Running SUBSTRATE vs installed substrate (2026-10-02).
+#
+# 2b judges only processes that load REPO code, so it can never see the pinned
+# RNS/LXMF fork RUNNING: rnsd, lxmd and nomadnet load no repo code and were
+# "untracked" by construction. After the 10-01 in-place fork rolls, 8 of 9
+# rnsd (and lxmd on moc + moc1) ran pre-roll code for a day while 2b printed
+# "every ACTIVE mf/ma unit ... started at/after its own repo's newest CODE
+# commit" — true, and not the question. The check lived only as prose in a
+# memory file and was re-run by hand. scripts/hs_substrate_skew.py asks each
+# live python process's OWN interpreter, as its own uid with its own env, where
+# `import RNS` would resolve, and compares that copy's install time to the
+# process start (same box clock, so the 2b clock reclassification is moot).
+#
+# WARN, not NOTE — the deliberate difference from 2b: repo-code lag is the
+# normal state between deploys and every deploy restarts it. NOTHING restarts
+# the substrate (no timer, no deploy step, #69 makes it operator-present), so
+# behind here means the new fork's STARTUP has never run on that box and will
+# first run at the next power loss, on every box at once. WARN keeps exit 0
+# reachable (a pending, operator-gated restart is not a red build) while making
+# "fleet on mf.N" impossible to read as running mf.N.
+# Notes built explicitly: ${n:+..} expands for "0" (see the 2b unk_note).
+sub_unk_note=""; [ "$sub_unknown" -gt 0 ] && sub_unk_note=" ; $sub_unknown unit(s) UNOBSERVED (not current):$sub_unk_desc"
+sub_none_note=""; [ -n "$sub_none" ] && sub_none_note=" ; no watched dist resolvable on:$sub_none"
+# SX = a python process that CAN import a watched dist but neither its entry
+# point nor its repo declares it: not judged, never silent (review A3).
+sub_unjudged_note=""; [ "$sub_unjudged" -gt 0 ] && sub_unjudged_note=" ; $sub_unjudged unit(s) could import it but were not judged (no entry/repo evidence)"
+if [ "$sub_boxes" = 0 ]; then
+  unk "running substrate" "no box returned a substrate probe — not measured"
+elif [ "$sub_behind" -gt 0 ]; then
+  warnf "running substrate" "$sub_behind unit(s) RUN an older ${HS_SUB_WANT% } copy than is INSTALLED (process started before the install):${sub_desc} — entry = its own entry point needs it, repo = repo code that may import it; restart rnsd one box at a time (#69 order: clients down → rnsd → owner check → clients)${sub_unk_note}${sub_none_note}${sub_unjudged_note}"
+elif [ "$sub_checked" = 0 ]; then
+  # Boxes answered and NOTHING was judged: that is not "all current". A
+  # resolution bug (review A1/A2) lands exactly here, so it must not PASS.
+  unk "running substrate" "$sub_boxes box(es) answered but 0 units were judged — not measured${sub_unk_note}${sub_none_note}${sub_unjudged_note}"
+elif [ "$sub_unknown" -gt 0 ]; then
+  unk "running substrate" "$sub_checked unit(s) current${sub_unk_note}${sub_none_note}${sub_unjudged_note}"
+else
+  ok "running substrate" "$sub_checked unit(s) on $sub_boxes box(es) run the ${HS_SUB_WANT% } copy that is installed${sub_none_note}${sub_unjudged_note}"
 fi
 
 # 3. Full local suite — file-routed, never a streamed tail.
