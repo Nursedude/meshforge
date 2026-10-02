@@ -8,7 +8,6 @@ runtime, so a template that sets them claims a mode it does not set; and
 import re
 from pathlib import Path
 
-import configobj
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,8 +20,34 @@ RUNTIME_ONLY = ("name", "selected_interface_mode", "configured_bitrate")
 
 
 def _interface_sections(path):
-    ifaces = configobj.ConfigObj(str(path)).get("interfaces", {})
-    return {k: v for k, v in ifaces.items() if isinstance(v, dict)}
+    """Active (uncommented) ``[[name]]`` stanzas under ``[interfaces]`` -> {name: {key: value}}.
+
+    A small parser on purpose: CI's minimal profile has no configobj, and these
+    templates use only ``[section]``, ``[[subsection]]`` and ``key = value``.
+    """
+    sections, current, in_ifaces = {}, None, False
+    for raw in path.read_text().splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        m2 = re.fullmatch(r"\[\[(.+?)\]\]", line)
+        m1 = re.fullmatch(r"\[([^\[\]]+)\]", line)
+        if m2:
+            current = sections.setdefault(m2.group(1).strip(), {}) if in_ifaces else None
+        elif m1:
+            in_ifaces, current = m1.group(1).strip() == "interfaces", None
+        elif current is not None and "=" in line:
+            k, v = line.split("=", 1)
+            current[k.strip()] = v.strip()
+    return sections
+
+
+def test_parser_sees_the_stanzas_a_template_declares():
+    # Guards the hand parser itself: it must find real stanzas, or every
+    # runtime-key assertion below passes vacuously.
+    secs = _interface_sections(ROOT / "src/gateway/templates/rns/regional_server.conf")
+    assert set(secs) == {"Regional RNS", "my_rnode_gateway"}
+    assert secs["my_rnode_gateway"]["type"] == "RNodeInterface"
 
 
 def test_templates_were_found():
