@@ -117,3 +117,80 @@ def test_construct_never_passes_flag_when_not_joining(monkeypatch):
     _FakeReticulum.calls = []
     ri._construct_reticulum_with_watchdog("/tmp/x", loglevel=2, timeout_s=5)
     assert "require_shared_instance" not in _FakeReticulum.calls[-1]
+
+
+# --- init_reticulum_with_watchdog (lab echo/tracer daemons) -----------------
+# The 09-19 moc5 #69 incident came through THIS entry point, not
+# open_reticulum; the 10-01 join-only change covered only open_reticulum
+# (found by the 10-01 audit's contextless reader). These daemons restart on
+# exit, so a join-only refusal here must RAISE loudly, never degrade.
+
+def _lab_gate(listener_present, rnsd_enabled, wait_ok=True, name="inst"):
+    return [
+        patch.object(ri, "_guard_instance_name", return_value=name),
+        patch.object(ri, "check_rns_listener_owner", return_value=None),
+        patch.object(ri, "_shared_instance_listener_present", return_value=listener_present),
+        patch.object(ri, "_rnsd_unit_enabled", return_value=rnsd_enabled),
+        patch.object(ri, "_instance_name_was_declared", return_value=True),
+        patch.object(ri, "_wait_for_rnsd_listener", return_value=wait_ok),
+    ]
+
+
+def _run_lab(gates, construct):
+    from contextlib import ExitStack
+    with ExitStack() as st:
+        for g in gates:
+            st.enter_context(g)
+        st.enter_context(patch.object(ri, "_construct_reticulum_with_watchdog", construct))
+        return ri.init_reticulum_with_watchdog("/tmp/x")
+
+
+class TestLabEntryPointJoinOnly:
+    @staticmethod
+    def _recorder(seen):
+        def construct(configdir, **kw):
+            seen["join_only"] = kw.get("join_only", False)
+            return "R"
+        return construct
+
+    def test_live_listener_constructs_join_only(self):
+        seen = {}
+        assert _run_lab(_lab_gate(True, rnsd_enabled=True), self._recorder(seen)) == "R"
+        assert seen["join_only"] is True
+
+    def test_listener_after_boot_wait_constructs_join_only(self):
+        seen = {}
+        _run_lab(_lab_gate(False, rnsd_enabled=True), self._recorder(seen))
+        assert seen["join_only"] is True
+
+    def test_no_rnsd_and_no_listener_may_host(self):
+        seen = {}
+        _run_lab(_lab_gate(False, rnsd_enabled=False), self._recorder(seen))
+        assert seen["join_only"] is False
+
+    def test_unresolvable_instance_name_is_not_join_only(self):
+        seen = {}
+        _run_lab(_lab_gate(True, rnsd_enabled=True, name=None), self._recorder(seen))
+        assert seen["join_only"] is False
+
+    def test_refusal_while_joining_raises_loud_69_error(self):
+        def construct(configdir, **kw):
+            raise SystemError("No shared instance available, but application that started Reticulum required it")
+        with pytest.raises(RuntimeError, match="#69"):
+            _run_lab(_lab_gate(True, rnsd_enabled=True), construct)
+
+    def test_other_systemerror_while_joining_is_not_rewritten(self):
+        def construct(configdir, **kw):
+            raise SystemError("some unrelated RNS failure")
+        with pytest.raises(SystemError):
+            _run_lab(_lab_gate(True, rnsd_enabled=True), construct)
+
+
+def test_join_only_on_rns_without_marker_leaves_a_warning(monkeypatch, caplog):
+    cls = type("Reticulum", (_FakeReticulum,), {})
+    monkeypatch.setitem(sys.modules, "RNS", types.SimpleNamespace(Reticulum=cls))
+    _FakeReticulum.calls = []
+    with caplog.at_level("WARNING"):
+        ri._construct_reticulum_with_watchdog("/tmp/x", loglevel=2, timeout_s=5, join_only=True)
+    assert "require_shared_instance" not in _FakeReticulum.calls[-1]
+    assert "MF_REQUIRE_SHARED_RETRYABLE" in caplog.text

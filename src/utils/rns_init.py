@@ -637,6 +637,15 @@ def _construct_reticulum_with_watchdog(
     # then hand back as if it were live — so on stock RNS this stays off.
     if join_only and getattr(RNS.Reticulum, "MF_REQUIRE_SHARED_RETRYABLE", False):
         kwargs["require_shared_instance"] = True
+    elif join_only:
+        # Witness: the #69 protection is OFF in this interpreter (stock or
+        # pre-mf.4 RNS) — otherwise indistinguishable from it working.
+        logger.warning(
+            "rns_init: join-only requested but the installed RNS lacks the "
+            "MeshForge fork marker (MF_REQUIRE_SHARED_RETRYABLE); constructing "
+            "WITHOUT require_shared_instance — the #69 race is unguarded here. "
+            "Roll this environment to the MF-FORK-PIN in requirements/rns.txt."
+        )
     with bounded_block(timeout_s, label="RNS.Reticulum()"):
         return RNS.Reticulum(configdir=configdir, loglevel=loglevel, **kwargs)
 
@@ -667,8 +676,15 @@ def init_reticulum_with_watchdog(
     # no directive and still binds `@rns/default` — reading only the directive
     # skipped this whole guard and cost moc5 42 minutes of RNS on 2026-09-19.
     instance_name = _guard_instance_name(configdir)
+    # Join-only once we know an rnsd hosts (or is about to host) this
+    # instance: the 10-01 open_reticulum fix, applied to the entry point the
+    # 09-19 moc5 incident actually came through. Stays False when nothing
+    # will ever host it (no rnsd enabled) — then this process may host.
+    joining = False
     if instance_name:
         check_rns_listener_owner(instance_name)
+        joining = (_shared_instance_listener_present(instance_name)
+                   or _rnsd_unit_enabled())
         # Issue #69 boot race: never boot-claim an instance that an enabled
         # rnsd is about to host. Fail LOUD on timeout — these daemons run
         # under systemd Restart=/timer policies, so refusing now means a
@@ -702,9 +718,22 @@ def init_reticulum_with_watchdog(
                     f"instance (Issue #69 boot race). Check `systemctl status "
                     f"rnsd`, then restart this service."
                 )
-    return _construct_reticulum_with_watchdog(
-        configdir, loglevel=loglevel, timeout_s=timeout_s,
-    )
+    try:
+        return _construct_reticulum_with_watchdog(
+            configdir, loglevel=loglevel, timeout_s=timeout_s,
+            join_only=joining,
+        )
+    except SystemError as exc:
+        # rnsd vanished between the check above and the constructor. Before
+        # join-only this process became the @rns host (#69). This entry point
+        # raises by contract, so say why: the daemon exits and systemd retries.
+        if not joining or "No shared instance available" not in str(exc):
+            raise
+        raise RuntimeError(
+            f"@rns/{instance_name} disappeared between the rnsd check and the "
+            f"constructor; RNS refused to host it (join-only, Issue #69). "
+            f"Exiting for a clean restart once rnsd is back."
+        ) from exc
 
 
 def _existing_instance():
