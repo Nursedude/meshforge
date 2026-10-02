@@ -26,8 +26,8 @@
 # (upstream Carrier Switch, Dec 2025). Baseline history: field-proven
 # 1.2.5+mf.5 / 0.9.4+mf.0 until 2026-07-19; upstream 1.3.8 / 1.0.1 merged +
 # canaried + fleet-rolled 07-17..07-19 (see rns_138_merge_eval_2026_07_16.md).
-#   forks: github.com/Nursedude/reticulum  (branch meshforge, tag 1.3.8+mf.3)
-#          github.com/Nursedude/lxmf        (branch meshforge, tag 1.0.1+mf.4)
+#   forks: github.com/Nursedude/reticulum  (branch meshforge, tag 1.3.8+mf.4)
+#          github.com/Nursedude/lxmf        (branch meshforge, tag 1.0.1+mf.5)
 # +mf.1 (2026-05-30): #68 fix — bound LocalClientInterface connect (no thread hang).
 # +mf.2 (2026-05-30): #72 fix — bound shared-instance RPC recv (no rnstatus hang).
 # +mf.3 (2026-05-30): rnsd-SIGTERM fix — bound detach_interfaces() (CONTAINS but does
@@ -62,10 +62,14 @@
 # NOTICE (interop PROVEN 07-17: cross-version LXMF round-trips direct, via
 # public transport node, and real-net tracer), so it stays wire-compatible
 # with the public Reticulum net (NomadNet, Sideband).
-# MF-FORK-PIN rns 1.3.8+mf.3
-# MF-FORK-PIN lxmf 1.0.1+mf.4
-rns @ git+https://github.com/Nursedude/reticulum.git@3d2de051b832d8b24a512dd0eb5bfb14ccd6e965
-lxmf @ git+https://github.com/Nursedude/lxmf.git@8b177cc5083a078adbea74476a8dc3c415f58e84
+# 1.3.8 base, +mf.4 (2026-10-01): join-only (require_shared_instance) never
+#                     binds @rns and a refusal is retryable in-process; MF/MA
+#                     open_reticulum constructs join-only once it decided to
+#                     join rnsd (#69 race, R10). lxmf 1.0.1+mf.5 = pin follow.
+# MF-FORK-PIN rns 1.3.8+mf.4
+# MF-FORK-PIN lxmf 1.0.1+mf.5
+rns @ git+https://github.com/Nursedude/reticulum.git@c4f74c387d1a722b55a22063ccd794b80c67a177
+lxmf @ git+https://github.com/Nursedude/lxmf.git@06c00097f85ef060deed1d7968dd219c3f36e945
 
 # Cryptography / PyOpenSSL version alignment — BOTH bounds are load-bearing,
 # and the two packages MOVE TOGETHER. RNS's own constraint is only
