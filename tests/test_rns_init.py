@@ -666,7 +666,7 @@ class TestConstructConcurrencyAndReinitialise:
         def fake_existing():
             return holder["inst"]
 
-        def fake_construct(configdir, *, loglevel, timeout_s):
+        def fake_construct(configdir, *, loglevel, timeout_s, join_only=False):
             construct_calls.append(threading.get_ident())
             _time.sleep(0.15)  # widen the race window
             holder["inst"] = instance

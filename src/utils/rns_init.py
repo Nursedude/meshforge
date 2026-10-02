@@ -618,6 +618,7 @@ def _construct_reticulum_with_watchdog(
     *,
     loglevel: int,
     timeout_s: float,
+    join_only: bool = False,
 ):
     """The ONE allowed ``RNS.Reticulum()`` construction in MeshForge.
 
@@ -628,8 +629,16 @@ def _construct_reticulum_with_watchdog(
     re-raises whatever the constructor raised on failure.
     """
     import RNS  # lazy — keeps module import cheap and patchable in tests
+    kwargs = {}
+    # Join-only (#69, 2026-10-01): refuse to BECOME the @rns host. Passed only
+    # when the installed RNS advertises a clean refusal (fork 1.3.8+mf.4:
+    # @rns released AND the singleton un-latched). Stock RNS leaves a
+    # half-built singleton behind a refusal, which _existing_instance() would
+    # then hand back as if it were live — so on stock RNS this stays off.
+    if join_only and getattr(RNS.Reticulum, "MF_REQUIRE_SHARED_RETRYABLE", False):
+        kwargs["require_shared_instance"] = True
     with bounded_block(timeout_s, label="RNS.Reticulum()"):
-        return RNS.Reticulum(configdir=configdir, loglevel=loglevel)
+        return RNS.Reticulum(configdir=configdir, loglevel=loglevel, **kwargs)
 
 
 def init_reticulum_with_watchdog(
@@ -801,6 +810,7 @@ def open_reticulum(
         # this branch (every one writes an explicit directive), so this is a
         # latent-defect fix, not an incident fix.
         instance_name = _guard_instance_name(configdir)
+        joining = False  # set once the probe has decided to join a live rnsd
 
         if instance_name:
             # (3) fail-LOUD on a foreign listener owner.
@@ -859,6 +869,8 @@ def open_reticulum(
                     # Listener present but wedged (or stopped mid-probe) —
                     # degrade.
                     return None
+                else:
+                    joining = True
 
         # (5) construct under the watchdog backstop. Absorb the singleton
         # "reinitialise" race with anything that constructed outside this
@@ -866,7 +878,23 @@ def open_reticulum(
         try:
             return _construct_reticulum_with_watchdog(
                 configdir, loglevel=loglevel, timeout_s=init_timeout_s,
+                join_only=joining,
             )
+        except SystemError as exc:
+            # Join-only refusal: rnsd vanished between the probe and the
+            # constructor. Before join-only, this race made THIS process the
+            # @rns host and a returning rnsd joined it as a client (#69).
+            # Degrade exactly like an absent listener; a later cycle retries.
+            # Only the join-only refusal itself; any other SystemError is a
+            # real fault and must stay loud (both reviewers, 2026-10-01).
+            if not joining or "No shared instance available" not in str(exc):
+                raise
+            logger.warning(
+                "rns_init: @rns/%s disappeared between the probe and the "
+                "constructor; RNS refused to host (join-only). Degraded; "
+                "retry on a later cycle. (%s)", instance_name, exc,
+            )
+            return None
         except OSError as exc:
             msg = str(exc).lower()
             if "reinitialise" in msg or "already running" in msg:
