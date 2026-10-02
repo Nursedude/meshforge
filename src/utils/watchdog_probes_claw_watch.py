@@ -65,30 +65,16 @@ from utils.watchdog_probes_liveness import (
 
 DEFAULT_CLAW_WATCH_DEBOUNCE_PATH = "/var/lib/meshforge/claw_watch_debounce.json"
 
-#: Verdict vocabulary, imported from the module that OWNS the gate rather than
-#: restated here. A probe carrying its own copy of these strings would keep
-#: matching after a rename and quietly judge nothing (the closed-enum shape,
-#: honest_failure_modes #7).
-#:
-#: The guard STAYS (the 2026-07-29 review recommended deleting it; that would
-#: break this module on a box without the mini package, and the guarded-mini-
-#: import is the deliberate convention in watchdog_probes_mini.py — four
-#: instances, each commented "mini package absent in some contexts").
-#: What the review was RIGHT about is that the author's claim "a rename is
-#: test-pinned" was imprecise: a coordinated rename+revalue that also updates
-#: claw_rf_watch's own tests would leave THIS module silently on the fallback,
-#: comparing against values the owner no longer emits — every verdict then folds
-#: to `blind` and the gate goes permanently quiet. Fail-dark, in the file that
-#: ships MF027's sibling.
-#: So the fallback is now OBSERVABLE instead of silent: the flag below records
-#: that it was taken, and a test asserts it is False wherever mini is importable
-#: (which is every fleet box and CI). Blindness with a witness, not blindness.
-_VERDICT_CONSTANTS_FROM_FALLBACK = False
-try:
-    from mini_dudeai.claw_rf_watch import HEARD, SILENT, UNOBSERVABLE
-except ImportError:                       # mini package absent in some contexts
-    HEARD, SILENT, UNOBSERVABLE = "heard", "silent", "unobservable"
-    _VERDICT_CONSTANTS_FROM_FALLBACK = True
+#: Verdicts are read through the SAME codec the producer's vocabulary lives in
+#: (``utils.claw_watch_verdict``), and matched as an Observation — never as
+#: strings. Until 2026-10-02 this module imported the strings from mini behind
+#: an ImportError guard with a FALLBACK copy (plus a flag and a test to make the
+#: fallback observable): two copies of one vocabulary, where a coordinated
+#: rename would fold every verdict to `blind` and silence the gate. The
+#: vocabulary now lives in utils, which is importable wherever this runs, so
+#: there is no second copy to drift (tri-state adopter #2).
+from utils.claw_watch_verdict import Heard, Hearing, NotHeard, from_wire
+from utils.observation import Failed, Seen, Unobservable, assert_never
 
 
 def _fold_watch_verdicts(ticks: List[dict]) -> Tuple[Dict[str, dict], int]:
@@ -137,27 +123,40 @@ def _fold_watch_verdicts(ticks: List[dict]) -> Tuple[Dict[str, dict], int]:
                 # node's interval is, the claim must clear the stricter bar.
                 rec["required_window_s"] = max(
                     float(need), rec["required_window_s"] or 0.0)
-            verdict = v.get("verdict")
-            if verdict == HEARD:
-                rec["heard_by"].append({"device": device, "age_s": v.get("age_s")})
-            elif verdict == SILENT:
-                held = v.get("silent_for_at_least_s")
-                rec["silent_by"].append({"device": device,
-                                         "silent_for_at_least_s": held})
-                if isinstance(held, (int, float)) and not isinstance(held, bool):
-                    # Longest observed silence is the honest lower bound — the
-                    # firmware only knows "not since radio start", so the true
-                    # duration is at least the longest window that missed it.
-                    rec["silent_for_at_least_s"] = max(
-                        float(held), rec["silent_for_at_least_s"] or 0.0)
-            else:
-                # UNOBSERVABLE and anything unrecognised. An unknown verdict
-                # string is blindness, never healthy and never a finding: a
-                # vocabulary that grew must not be read as an answer.
-                rec["blind_by"].append({"device": device,
-                                        "verdict": verdict,
-                                        "reason": v.get("reason")})
+            match from_wire(v):
+                case Seen(value=hearing):
+                    _fold_seen(rec, device, hearing, v)
+                case Unobservable() | Failed():
+                    # Not yet observable, cross-segment, garbled — or a verdict
+                    # string the codec does not know (Failed). Blindness, never
+                    # healthy and never a finding: a vocabulary that grew must
+                    # not be read as an answer.
+                    rec["blind_by"].append({"device": device,
+                                            "verdict": v.get("verdict"),
+                                            "reason": v.get("reason")})
+                case _ as unreachable:
+                    assert_never(unreachable)
     return nodes, reporting
+
+
+def _fold_seen(rec: Dict[str, Any], device: str, hearing: Hearing,
+               v: Dict[str, Any]) -> None:
+    """One claw's OBSERVED answer for one node, folded into the node record."""
+    match hearing:
+        case Heard():
+            rec["heard_by"].append({"device": device, "age_s": v.get("age_s")})
+        case NotHeard(silent_for_at_least_s=held):
+            rec["silent_by"].append({"device": device,
+                                     "silent_for_at_least_s":
+                                         v.get("silent_for_at_least_s")})
+            if held is not None:
+                # Longest observed silence is the honest lower bound — the
+                # firmware only knows "not since radio start", so the true
+                # duration is at least the longest window that missed it.
+                rec["silent_for_at_least_s"] = max(
+                    held, rec["silent_for_at_least_s"] or 0.0)
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _classify_nodes(nodes: Dict[str, dict]) -> Tuple[List[str], List[str], List[str]]:

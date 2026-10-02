@@ -33,6 +33,9 @@ TRUTH_PATH = [
     "src/utils/observation.py",
     "scripts/gen_fleet_hosts.py",
     "src/utils/rnsd_restart_order.py",
+    "src/utils/claw_watch_verdict.py",
+    "src/mini_dudeai/claw_rf_watch.py",
+    "src/utils/watchdog_probes_claw_watch.py",
 ]
 
 

@@ -37,6 +37,15 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+# The verdict vocabulary and its Observation codec live in utils so the
+# watchdog consumer imports the SAME names with no fallback copy (tri-state
+# adopter #2, 2026-10-02). Re-exported here: peer_rf and the tests import them
+# from this module.
+from utils.claw_watch_verdict import (  # noqa: F401  (re-export)
+    HEARD, SILENT, UNOBSERVABLE, Hearing, Heard, NotHeard)
+from utils.observation import (
+    Failed, Observation, Seen, Unobservable, assert_never)
+
 # Meshtastic's default NodeInfo broadcast is ~3 h; position/telemetry intervals
 # vary by config. 3 h is the conservative assumption for "this radio should have
 # said something by now".
@@ -46,10 +55,6 @@ DEFAULT_EXPECTED_TX_INTERVAL_S = 3 * 3600
 # node two missed broadcasts of slack, so a single skipped beat (airtime
 # contention, a duty-cycle pause, a marginal link) is not an incident.
 DEFAULT_SILENCE_MULTIPLE = 3
-
-HEARD = "heard"
-SILENT = "silent"
-UNOBSERVABLE = "unobservable"
 
 
 def required_window_s(expected_interval_s: Optional[float] = None,
@@ -146,16 +151,82 @@ def classify_watch(
         need = required_window_s(ivs.get(node, default_interval_s), multiple)
         node_seg = segs.get(node)
         cross = bool(claw_segment and node_seg and node_seg != claw_segment)
+        out[node] = _render(judge_node(rec, uptime_s, need, cross,
+                                       node_seg, claw_segment),
+                            need, uptime_s, cross, node_seg, claw_segment)
+    return out or None
 
-        if rec.get("parse_error"):
-            out[node] = {"verdict": UNOBSERVABLE, "age_s": None,
-                         "silent_for_at_least_s": None,
-                         "required_window_s": need,
-                         "reason": "watch entry unreadable — cannot judge"}
-            continue
 
-        age = rec.get("age_s")
-        if age is not None:
+def judge_node(rec: Dict[str, Any], uptime_s: Optional[float], need: float,
+               cross: bool, node_seg: Optional[str] = None,
+               claw_segment: Optional[str] = None) -> Observation[Hearing]:
+    """THE gate for one watched node, as an Observation (see classify_watch).
+
+    ``Seen(Heard)`` / ``Seen(NotHeard)`` are the two things we OBSERVED;
+    ``Unobservable`` is every way the window cannot support a claim; ``Failed``
+    is a garbled watch entry. Order matters and is the docstring's: a reading
+    outranks silence, the segment gate runs before the uptime gate.
+    """
+    if rec.get("parse_error"):
+        return Failed("watch entry unreadable — cannot judge")
+    age = rec.get("age_s")
+    if age is not None:
+        return Seen(Heard(age))
+    if cross:
+        return Unobservable(
+            "not heard, and it CANNOT be heard here: this node is on RF "
+            "segment %r while the claw listens on %r. Cross-segment visibility "
+            "needs the MQTT/RNS bridge, not RF — silence on this claw says "
+            "nothing about that radio." % (node_seg, claw_segment))
+    if uptime_s is None:
+        return Unobservable("not heard, but the claw's uptime is unknown — the "
+                            "listening window cannot be established")
+    if float(uptime_s) < need:
+        return Unobservable(
+            "not heard, but the claw has listened only %.0fs of the %.0fs this "
+            "node's transmit interval needs — silence means nothing yet"
+            % (float(uptime_s), need))
+    return Seen(NotHeard(float(uptime_s)))
+
+
+def _render(obs: Observation[Hearing], need: float, uptime_s: Optional[float],
+            cross: bool, node_seg: Optional[str],
+            claw_segment: Optional[str]) -> Dict[str, Any]:
+    """Observation -> the per-node wire dict (format unchanged since 07-30)."""
+    match obs:
+        case Seen(value=hearing):
+            return _render_seen(hearing, need, cross, node_seg, claw_segment)
+        case Unobservable(why=why):
+            # Inside-the-window keeps its honest lower bound; the cross-segment
+            # and unknown-uptime cases have none to give.
+            held = (float(uptime_s)
+                    if uptime_s is not None and not cross else None)
+            # Key ORDER is part of the wire: tick files are json.dumps'd
+            # without sort_keys, so segment_conflict stays before reason
+            # (review 2026-10-02: byte parity with the 07-30 format).
+            rec_out: Dict[str, Any] = {
+                "verdict": UNOBSERVABLE, "age_s": None,
+                "silent_for_at_least_s": held,
+                "required_window_s": need}
+            if cross:
+                rec_out["segment_conflict"] = True
+            rec_out["reason"] = why
+            return rec_out
+        case Failed(why=why):
+            # The wire has no `failed` verdict (mixed-version fleet): written as
+            # unobservable, which every consumer folds to blind, never healthy.
+            return {"verdict": UNOBSERVABLE, "age_s": None,
+                    "silent_for_at_least_s": None,
+                    "required_window_s": need, "reason": why}
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _render_seen(hearing: Hearing, need: float, cross: bool,
+                 node_seg: Optional[str],
+                 claw_segment: Optional[str]) -> Dict[str, Any]:
+    match hearing:
+        case Heard(age_s=age):
             # Hearing outranks silence, so the verdict stays HEARD. But a
             # cross-segment node we can hear is a CONTRADICTION with two
             # explanations, and asserting either one would be the overclaim this
@@ -174,10 +245,11 @@ def classify_watch(
             # Live case — moc2 declared SHORT_TURBO, heard at -102 dBm in a burst
             # of 7 while a box on its OWN segment hears it at -17 dBm: relayed,
             # not direct, and the declaration was correct.
-            rec_out = {"verdict": HEARD, "age_s": age,
-                       "silent_for_at_least_s": None,
-                       "required_window_s": need,
-                       "reason": "heard %ss ago" % age}
+            rec_out: Dict[str, Any] = {
+                "verdict": HEARD, "age_s": age,
+                "silent_for_at_least_s": None,
+                "required_window_s": need,
+                "reason": "heard %ss ago" % age}
             if cross:
                 rec_out["segment_conflict"] = True
                 rec_out["reason"] += (
@@ -187,48 +259,16 @@ def classify_watch(
                     "bridge) — compare RSSI against a peer on its own segment "
                     "before concluding the link is direct."
                     % (node_seg, claw_segment))
-            out[node] = rec_out
-            continue
-
-        # never. The segment gate runs FIRST: no amount of listening makes a
-        # node on another frequency/modulation audible, so the uptime window is
-        # not the right question for it.
-        if cross:
-            out[node] = {"verdict": UNOBSERVABLE, "age_s": None,
-                         "silent_for_at_least_s": None,
-                         "required_window_s": need,
-                         "segment_conflict": True,
-                         "reason": "not heard, and it CANNOT be heard here: this "
-                                   "node is on RF segment %r while the claw "
-                                   "listens on %r. Cross-segment visibility "
-                                   "needs the MQTT/RNS bridge, not RF — silence "
-                                   "on this claw says nothing about that radio."
-                                   % (node_seg, claw_segment)}
-            continue
-
-        if uptime_s is None:
-            out[node] = {"verdict": UNOBSERVABLE, "age_s": None,
-                         "silent_for_at_least_s": None,
-                         "required_window_s": need,
-                         "reason": "not heard, but the claw's uptime is unknown "
-                                   "— the listening window cannot be established"}
-            continue
-        if float(uptime_s) < need:
-            out[node] = {"verdict": UNOBSERVABLE, "age_s": None,
-                         "silent_for_at_least_s": float(uptime_s),
-                         "required_window_s": need,
-                         "reason": "not heard, but the claw has listened only "
-                                   "%.0fs of the %.0fs this node's transmit "
-                                   "interval needs — silence means nothing yet"
-                                   % (float(uptime_s), need)}
-            continue
-        out[node] = {"verdict": SILENT, "age_s": None,
-                     "silent_for_at_least_s": float(uptime_s),
-                     "required_window_s": need,
-                     "reason": "NOT heard in %.0fs of listening (>= the %.0fs "
-                               "window) — this radio is not reaching this claw"
-                               % (float(uptime_s), need)}
-    return out or None
+            return rec_out
+        case NotHeard(silent_for_at_least_s=held):
+            return {"verdict": SILENT, "age_s": None,
+                    "silent_for_at_least_s": held,
+                    "required_window_s": need,
+                    "reason": "NOT heard in %.0fs of listening (>= the %.0fs "
+                              "window) — this radio is not reaching this claw"
+                              % (held or 0.0, need)}
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def summarise(verdicts: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

@@ -274,19 +274,23 @@ class TestUplinkDebounceIsIndeterminate:
 # ── bug_003 — the fallback is observable now, not silent ────────────────────
 
 class TestVerdictConstantsAreNotOnTheFallback:
-    def test_real_import_succeeded(self):
-        """Wherever mini is importable (every fleet box, and CI) the probe must
-        be using claw_rf_watch's OWN constants. If this trips, the probe is
-        comparing against values the gate no longer emits and every verdict
-        folds to `blind` — a permanently quiet gate."""
-        from utils import watchdog_probes_claw_watch as w
-        assert w._VERDICT_CONSTANTS_FROM_FALLBACK is False
+    """Superseded 2026-10-02 (tri-state adopter #2): the fallback copy is GONE.
+    The vocabulary lives once, in utils.claw_watch_verdict; producer and probe
+    both import it. These pin that it stays one copy."""
 
-    def test_constants_match_the_owning_module(self):
-        from utils import watchdog_probes_claw_watch as w
+    def test_probe_carries_no_fallback_copy(self):
+        src = open(os.path.join(ROOT, "src", "utils",
+                                "watchdog_probes_claw_watch.py")).read()
+        assert "_VERDICT_CONSTANTS_FROM_FALLBACK" not in src
+        assert '"heard"' not in src and '"silent"' not in src, (
+            "the probe restated a verdict string — read it through "
+            "utils.claw_watch_verdict.from_wire instead")
+
+    def test_producer_uses_the_shared_vocabulary(self):
         from mini_dudeai import claw_rf_watch as owner
-        assert (w.HEARD, w.SILENT, w.UNOBSERVABLE) == (
-            owner.HEARD, owner.SILENT, owner.UNOBSERVABLE)
+        from utils import claw_watch_verdict as v
+        assert (owner.HEARD, owner.SILENT, owner.UNOBSERVABLE) == (
+            v.HEARD, v.SILENT, v.UNOBSERVABLE)
 
 
 # ── bug_002 — a latent NameError in a firewall rewriter ────────────────────

@@ -323,3 +323,32 @@ class TestSegmentsReachTheTick:
                 "last from=!a to=!b ch=0x08 rssi=-1 snr=1)"
                 " watch=!ddfb8065:never"))
         assert t["watch_verdicts"][MOC2]["verdict"] == SILENT
+
+
+class TestWireShapePinnedPerCause:
+    """Tri-state adopter #2 (2026-10-02): judge_node decides, _render writes the
+    wire. The wire is json.dumps'd WITHOUT sort_keys, so key ORDER is part of
+    it, and the Unobservable lower bound is derived at render time — both are
+    pinned here per cause so a reordered gate cannot silently change either
+    (review findings: key order drifted once; the bound is not in the value)."""
+
+    NEED = required_window_s()
+    BASE = ["verdict", "age_s", "silent_for_at_least_s", "required_window_s"]
+
+    @pytest.mark.parametrize("rec, uptime, segs, claw, verdict, held, keys", [
+        (_garbled(), 99999, None, None, UNOBSERVABLE, None, BASE + ["reason"]),
+        (_heard(age=0), 5, None, None, HEARD, None, BASE + ["reason"]),
+        (_never(), 99999, {MOC3: "ST"}, "LF", UNOBSERVABLE, None,
+         BASE + ["segment_conflict", "reason"]),
+        (_never(), None, None, None, UNOBSERVABLE, None, BASE + ["reason"]),
+        (_never(), 400, None, None, UNOBSERVABLE, 400.0, BASE + ["reason"]),
+        (_never(), 3 * 3600 * 3 + 1, None, None, SILENT, 32401.0,
+         BASE + ["reason"]),
+    ], ids=["garbled", "heard_age0", "cross", "uptime_unknown",
+            "inside_window", "silent"])
+    def test_cause(self, rec, uptime, segs, claw, verdict, held, keys):
+        out = classify_watch({MOC3: rec}, uptime, segments=segs,
+                             claw_segment=claw)[MOC3]
+        assert out["verdict"] == verdict
+        assert out["silent_for_at_least_s"] == held
+        assert list(out) == keys
