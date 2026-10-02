@@ -65,6 +65,12 @@ DEFAULT_MESHANCHOR = "/opt/meshanchor"
 # shape tier (symbol presence) instead.
 BYTE_IDENTICAL = (
     "src/utils/rns_init.py",
+    # The truth-path result type (2026-10-02, ADR plans/adr_truth_kernel_2026_10_02.md)
+    # and the per-process substrate probe both repos' rnsd restart order now
+    # measures its client set with. Two copies of either that drift = two
+    # repos disagreeing about which processes are RNS clients (hfm #5).
+    "src/utils/observation.py",
+    "scripts/hs_substrate_skew.py",
     "src/gateway/canonical_message.py",
     # The delivery-label vocabulary (2026-09-24, review C F7): which routing
     # lanes count as which transport in delivery_counters. Both repos' writers
