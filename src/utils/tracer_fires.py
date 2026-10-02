@@ -189,7 +189,7 @@ def classify_peer_reachability(
 
     Returns:
         {
-          "tier": "reachable" | "transient" | "persistent",
+          "tier": "reachable" | "transient" | "persistent" | "unobservable",
           "leading_fail": <int>,       # consecutive non-ok newest-first
           "latest_result": <str|None>,
           "persistent_cycles_threshold": <int>,
@@ -205,6 +205,22 @@ def classify_peer_reachability(
             "latest_result": None,
             "persistent_cycles_threshold": persistent_cycles,
         }
+
+    # Rows the tracer wrote because RNS failed to initialise on the OBSERVER
+    # are not evidence about this peer (same value as the probe's
+    # OBSERVER_INIT_ERROR, test-pinned). Newest one blind -> say so; never
+    # count them as the peer failing.
+    from utils.watchdog_probes_tracer import OBSERVER_INIT_ERROR
+    if fires[0].get("result") == OBSERVER_INIT_ERROR:
+        real = [f for f in fires if f.get("result") != OBSERVER_INIT_ERROR]
+        return {
+            "tier": "unobservable",
+            "leading_fail": 0,
+            "latest_result": OBSERVER_INIT_ERROR,
+            "latest_real_result": real[0].get("result") if real else None,
+            "persistent_cycles_threshold": persistent_cycles,
+        }
+    fires = [f for f in fires if f.get("result") != OBSERVER_INIT_ERROR]
 
     # fires is newest-first.
     latest_result = fires[0].get("result")

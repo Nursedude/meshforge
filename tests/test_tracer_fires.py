@@ -339,3 +339,33 @@ def test_get_recent_fires_carries_path_retries_used(tmp_path, monkeypatch):
     out = get_recent_fires(peer="moc1", since_unix=NOW - 60)
     assert len(out["fires"]) == 1
     assert out["fires"][0]["path_retries_used"] == 2
+
+
+# ─── observer-side init errors (2026-10-01) ─────────────────────────────
+# Rows the tracer writes when RNS failed to initialise on THIS box say
+# nothing about the peer; before, three of them made a healthy peer
+# "persistent" on the /fleet drilldown (reviewer, measured).
+
+def test_classify_init_errors_never_make_a_peer_persistent():
+    from utils.tracer_fires import classify_peer_reachability
+    from utils.watchdog_probes_tracer import OBSERVER_INIT_ERROR
+    fires = [{"fire_at_unix": t, "result": OBSERVER_INIT_ERROR} for t in (4000, 3000, 2000)]
+    fires.append({"fire_at_unix": 1000, "result": "ok"})
+    out = classify_peer_reachability(peer="moc1", fires=fires, persistent_cycles=3)
+    assert out["tier"] == "unobservable"
+    assert out["leading_fail"] == 0
+    assert out["latest_real_result"] == "ok"
+
+
+def test_classify_skips_older_init_errors_when_counting_failures():
+    from utils.tracer_fires import classify_peer_reachability
+    from utils.watchdog_probes_tracer import OBSERVER_INIT_ERROR
+    fires = [
+        {"fire_at_unix": 5000, "result": "no-route"},
+        {"fire_at_unix": 4000, "result": OBSERVER_INIT_ERROR},
+        {"fire_at_unix": 3000, "result": OBSERVER_INIT_ERROR},
+        {"fire_at_unix": 2000, "result": "ok"},
+    ]
+    out = classify_peer_reachability(peer="moc1", fires=fires, persistent_cycles=3)
+    assert out["tier"] == "transient"
+    assert out["leading_fail"] == 1

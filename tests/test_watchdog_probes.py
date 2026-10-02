@@ -12388,3 +12388,90 @@ class TestHealthyRowsNeverReachTheVerdictParse:
         ).splitlines()]
         classify = lambda p: "down" if (p[6].strip().lower() or "down") == "down" else "unobs"
         assert [classify(p) for p in rows] == ["down", "unobs", "unobs"]
+
+
+# tracer rows written when the TRACER could not initialise RNS on this box
+# (2026-10-01): an observer-side failure, not evidence about any peer. Before
+# this, they were 'send-error' for every peer and read as N unresponsive boxes.
+
+def test_tracer_init_error_rows_are_not_peer_failures(tmp_path):
+    from utils.watchdog_probe_core import collect_dispositions, reset_dispositions
+    from utils.watchdog_probes_tracer import OBSERVER_INIT_ERROR
+    now = time.time()
+    for age in (600, 300, 60):
+        _write_fire(tmp_path, now - age, [
+            {"peer": p, "seq": 0, "result": OBSERVER_INIT_ERROR, "rtt_ms": 0}
+            for p in ("moc1", "moc2")])
+    reset_dispositions()
+    signals = probe_tracer_peer_unreachable(
+        tracer_dir=tmp_path, persistent_cycles=3, now=now)
+    assert signals == []
+    noted = collect_dispositions()["tracer_peer_unreachable"]
+    assert noted["disp"] == "indeterminate"
+    assert "RNS" in noted["reason"] and "3" in noted["reason"]
+
+
+def test_tracer_init_error_holds_a_peers_last_real_result(tmp_path):
+    from utils.watchdog_probes_tracer import OBSERVER_INIT_ERROR
+    now = time.time()
+    _write_fire(tmp_path, now - 900,
+                [{"peer": "moc1", "seq": 1, "result": "ok", "rtt_ms": 40}])
+    for age in (600, 300, 60):
+        _write_fire(tmp_path, now - age, [
+            {"peer": "moc1", "seq": 0, "result": OBSERVER_INIT_ERROR, "rtt_ms": 0}])
+    assert probe_tracer_peer_unreachable(
+        tracer_dir=tmp_path, persistent_cycles=3, now=now) == []
+
+
+def test_tracer_init_error_does_not_hide_a_real_absence(tmp_path):
+    from utils.watchdog_probes_tracer import OBSERVER_INIT_ERROR
+    now = time.time()
+    for age in (900, 600, 300):
+        _write_fire(tmp_path, now - age,
+                    [{"peer": "moc2", "seq": 1, "result": "no-route", "rtt_ms": 0}])
+    _write_fire(tmp_path, now - 60, [
+        {"peer": "moc2", "seq": 0, "result": OBSERVER_INIT_ERROR, "rtt_ms": 0}])
+    signals = probe_tracer_peer_unreachable(
+        tracer_dir=tmp_path, persistent_cycles=3, now=now)
+    assert len(signals) == 1 and signals[0].extra["tier"] == "absent"
+    assert signals[0].extra["observer_init_errors"] == 1
+
+
+def test_tracer_and_probe_share_the_init_error_value():
+    from utils.watchdog_probes_tracer import OBSERVER_INIT_ERROR
+    from lab.lxmf_tracer import RESULT_RNS_INIT_ERROR
+    assert RESULT_RNS_INIT_ERROR == OBSERVER_INIT_ERROR
+
+
+def test_tracer_newest_fire_blind_is_indeterminate_not_clean(tmp_path):
+    """Reviewer 2026-10-01: peers hold their last real result, but the
+    disposition must not say healthy about a present it cannot see."""
+    from utils.watchdog_probe_core import collect_dispositions, reset_dispositions
+    from utils.watchdog_probes_tracer import OBSERVER_INIT_ERROR
+    now = time.time()
+    _write_fire(tmp_path, now - 300,
+                [{"peer": "moc1", "seq": 1, "result": "ok", "rtt_ms": 40}])
+    _write_fire(tmp_path, now - 60, [
+        {"peer": "moc1", "seq": 0, "result": OBSERVER_INIT_ERROR, "rtt_ms": 0}])
+    reset_dispositions()
+    assert probe_tracer_peer_unreachable(
+        tracer_dir=tmp_path, persistent_cycles=3, now=now) == []
+    noted = collect_dispositions()["tracer_peer_unreachable"]
+    assert noted["disp"] == "indeterminate"
+    assert "newest tracer fire" in noted["reason"]
+
+
+def test_tracer_clean_reason_witnesses_excluded_init_errors(tmp_path):
+    from utils.watchdog_probe_core import collect_dispositions, reset_dispositions
+    from utils.watchdog_probes_tracer import OBSERVER_INIT_ERROR
+    now = time.time()
+    _write_fire(tmp_path, now - 300, [
+        {"peer": "moc1", "seq": 0, "result": OBSERVER_INIT_ERROR, "rtt_ms": 0}])
+    _write_fire(tmp_path, now - 60,
+                [{"peer": "moc1", "seq": 1, "result": "ok", "rtt_ms": 40}])
+    reset_dispositions()
+    assert probe_tracer_peer_unreachable(
+        tracer_dir=tmp_path, persistent_cycles=3, now=now) == []
+    noted = collect_dispositions()["tracer_peer_unreachable"]
+    assert noted["disp"] == "clean"
+    assert "1 fire(s) excluded" in noted["reason"]

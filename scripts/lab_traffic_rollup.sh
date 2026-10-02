@@ -196,6 +196,9 @@ def empty_slot():
     return {
         "samples": 0, "ok": 0,
         "fail_kinds": defaultdict(int), "rtts": [],
+        # rns-init-error rows: the SENDER could not bring up RNS, so the pair
+        # was never tried. Not a sample, not a failure — shown, not counted.
+        "observer_blind": 0,
     }
 
 
@@ -239,6 +242,9 @@ with open(tmp_path) as f:
                 if age_h > w:
                     continue
                 slot = buckets[w][key]
+                if result == "rns-init-error":
+                    slot["observer_blind"] += 1
+                    continue
                 slot["samples"] += 1
                 if result == "ok":
                     slot["ok"] += 1
@@ -279,6 +285,8 @@ def build_rows(pairs):
             f"{kind}={cnt}" for kind, cnt in
             sorted(slot["fail_kinds"].items())
         ]
+        if slot["observer_blind"]:
+            breakdown_bits.append(f"observer-blind={slot['observer_blind']}")
         breakdown = " ".join(breakdown_bits) if breakdown_bits else "(none)"
         rows.append({
             "label": pair_label(key),

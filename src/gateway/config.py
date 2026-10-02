@@ -723,7 +723,8 @@ class GatewayConfig:
     # what actually gates startup — bridge_mode is kept for back-compat and
     # for the "Mode:" line printed at startup. Legacy values still parse.
     # - mqtt_bridge / message_bridge: implies rns_bridge_enabled=True
-    # - rns_transport: implies rns_transport.enabled=True
+    # - rns_transport: REMOVED 2026-10-01 — refused at startup (see
+    #   RNS_TRANSPORT_REMOVED); RNS over LoRa is an RNodeInterface in rnsd
     # - mesh_bridge: implies mesh_bridge.enabled=True
     # - meshcore_bridge / tri_bridge: implies meshcore.enabled=True
     bridge_mode: str = "mqtt_bridge"
@@ -741,7 +742,8 @@ class GatewayConfig:
     # MQTT bridge transport (used when bridge_mode="mqtt_bridge")
     mqtt_bridge: MQTTBridgeConfig = field(default_factory=MQTTBridgeConfig)
 
-    # RNS Over Meshtastic transport (used when bridge_mode="rns_transport")
+    # Removed RNS-over-Meshtastic transport: the section still PARSES so old
+    # gateway.json files load, but enabled=true is refused at startup.
     rns_transport: RNSOverMeshtasticConfig = field(default_factory=RNSOverMeshtasticConfig)
 
     # Meshtastic-to-Meshtastic bridge (used when bridge_mode="mesh_bridge")

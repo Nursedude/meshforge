@@ -198,10 +198,11 @@ class RNSMeshtasticBridge(
     Main gateway bridge between RNS, Meshtastic, and MeshCore networks.
 
     Supports multiple modes:
-    1. RNS Over Meshtastic - Uses Meshtastic as RNS transport layer
-    2. Message Bridge - Translates messages between separate networks
-    3. MeshCore Bridge - Bridges MeshCore companion radio with other protocols
-    4. Tri-Bridge - All three protocols (Meshtastic + MeshCore + RNS)
+    1. Message Bridge - Translates messages between separate networks
+    2. MeshCore Bridge - Bridges MeshCore companion radio with other protocols
+    3. Tri-Bridge - All three protocols (Meshtastic + MeshCore + RNS)
+    (RNS over LoRa is an RNodeInterface in rnsd; the RNS-over-Meshtastic
+    transport was removed 2026-10-01.)
 
     MeshCore bridge processing methods inherited from MeshCoreBridgeMixin.
     """

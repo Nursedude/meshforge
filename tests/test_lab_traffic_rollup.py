@@ -214,3 +214,22 @@ def test_invalid_windows_arg_is_rejected(rollup_env):
     _, err, rc = run({"WINDOWS": "1,abc,24"})
     assert rc == 2
     assert "WINDOWS" in err
+
+
+def test_observer_init_errors_are_not_pair_failures(rollup_env):
+    """A tracer that could not initialise RNS on its own box writes
+    rns-init-error for every peer (2026-10-01). Those rows say nothing about
+    the pair: they must not count as samples or fail %, but must stay
+    visible in the breakdown."""
+    _, tracer_dir, run = rollup_env
+    now = 1778890800.0
+    _write_fire(tracer_dir, now - 600, "host-a", [
+        {"seq": 1, "peer": "host-b", "result": "ok", "rtt_ms": 1500},
+    ])
+    _write_fire(tracer_dir, now - 300, "host-a", [
+        {"seq": 0, "peer": "host-b", "result": "rns-init-error", "rtt_ms": 0},
+    ])
+    out, err, rc = run()
+    assert rc == 0, f"stderr={err}"
+    one_h = out.split("### Last 1h")[1].split("### Last 24h")[0]
+    assert "| 1 | 1500 | 1500 | 0.0 | observer-blind=1 |" in one_h

@@ -20,6 +20,13 @@ from utils import fleet_posture as fp
 from utils.watchdog_probe_core import Signal, note_disposition
 
 
+#: Row result the tracer writes for every peer when it could not initialise
+#: RNS on THIS box (lab.lxmf_tracer.RESULT_RNS_INIT_ERROR, test-pinned). It is
+#: an observer-side failure: excluded from peer history, so a peer keeps its
+#: last REAL result (hfm #2: hold prior state, never infer a peer verdict).
+OBSERVER_INIT_ERROR = "rns-init-error"
+
+
 def probe_tracer_peer_unreachable(
     *,
     tracer_dir: Optional[Path] = None,
@@ -116,10 +123,21 @@ def probe_tracer_peer_unreachable(
     # Group results by peer: list of (fire_at_unix, result) newest-first.
     by_peer: dict = {}
     skipped_rows = 0
-    for fire in fires:
-        for r in fire.get("results", []):
+    init_error_fires = 0
+    newest_fire_blind = False
+    for i, fire in enumerate(fires):
+        rows = fire.get("results", [])
+        if rows and all(isinstance(r, dict)
+                        and r.get("result") == OBSERVER_INIT_ERROR
+                        for r in rows):
+            init_error_fires += 1
+            newest_fire_blind = newest_fire_blind or i == 0
+            continue
+        for r in rows:
             if not isinstance(r, dict):
                 skipped_rows += 1
+                continue
+            if r.get("result") == OBSERVER_INIT_ERROR:
                 continue
             peer = r.get("peer")
             if not isinstance(peer, str) or not peer:
@@ -129,6 +147,17 @@ def probe_tracer_peer_unreachable(
                 (fire["fire_at_unix"], r.get("result"))
             )
 
+    if not by_peer and init_error_fires:
+        # Every fire in the window failed BEFORE any peer was tried: the
+        # tracer could not bring up RNS on this box. Peers are unobserved,
+        # not unreachable — and not healthy either (hfm #1/#2).
+        note_disposition(
+            "tracer_peer_unreachable", "indeterminate",
+            reason=(f"tracer could not initialise RNS on this observer in "
+                    f"{init_error_fires} fire(s) — peers unobservable; check "
+                    f"rnsd / the tracer journal (#69 refusal or init fault)"),
+        )
+        return []
     if not by_peer and skipped_rows:
         # Fires were present but EVERY result row was unparseable — no peer
         # was actually observed. The final not-signals note would otherwise
@@ -291,10 +320,34 @@ def probe_tracer_peer_unreachable(
         # is how a broken declaration survives for days (hfm #9).
         for sig in signals:
             sig.extra["posture_read_error"] = posture_err
+    if init_error_fires:
+        # Witness for the excluded observer-side fires (hfm #9): on every
+        # signal, and in the clean reason, so "clean" never hides them.
+        for sig in signals:
+            sig.extra["observer_init_errors"] = init_error_fires
+    if not signals and newest_fire_blind:
+        # Peers HOLD their last real result (no signal invented), but the
+        # present is unobserved: the newest fire never reached a peer. "clean"
+        # would claim health about a now this probe cannot see (reviewer
+        # 2026-10-01; probe_tracer_stale_fire stays quiet because these fires
+        # still write files, so nothing else would say it).
+        note_disposition(
+            "tracer_peer_unreachable", "indeterminate",
+            reason=(f"newest tracer fire could not initialise RNS on this "
+                    f"observer ({init_error_fires} such fire(s) in window) — "
+                    f"peers hold their last real result; check rnsd / the "
+                    f"tracer journal"))
+        return signals
     if not signals:
+        notes = []
+        if posture_err:
+            notes.append(f"posture unusable ({posture_err})")
+        if init_error_fires:
+            notes.append(f"{init_error_fires} fire(s) excluded: tracer could "
+                         f"not initialise RNS on this observer")
         note_disposition(
             "tracer_peer_unreachable", "clean",
-            reason=(f"posture unusable ({posture_err})" if posture_err else None))
+            reason="; ".join(notes) if notes else None)
     return signals
 
 

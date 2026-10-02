@@ -58,12 +58,19 @@ class Peer:
         return bytes.fromhex(self.hash_hex)
 
 
+#: Result for every peer when THIS box could not initialise RNS (incl. the
+#: #69 join-only refusal). Observer-side: it says nothing about any peer, so
+#: utils.watchdog_probes_tracer keeps it out of peer history. Test-pinned to
+#: that module's OBSERVER_INIT_ERROR (honest_failure_modes #5).
+RESULT_RNS_INIT_ERROR = "rns-init-error"
+
+
 @dataclass
 class TraceResult:
     """One outcome row from a tracer run."""
     seq: int
     peer: str
-    result: str  # "ok" | "timeout" | "no-route" | "send-error"
+    result: str  # "ok" | "timeout" | "no-route" | "send-error" | RESULT_RNS_INIT_ERROR
     rtt_ms: int  # 0 when result != "ok"
     # Path-resolve attempts used before this peer's PING was sent (or
     # before resolution gave up). 1 = first try succeeded; >1 = cold-
@@ -324,7 +331,8 @@ def run_trace(
         except Exception as exc:
             logger.error("tracer: RNS init failed: %s", exc)
             return [
-                TraceResult(seq=0, peer=p.name, result="send-error", rtt_ms=0)
+                TraceResult(seq=0, peer=p.name, result=RESULT_RNS_INIT_ERROR,
+                            rtt_ms=0)
                 for p in peers
             ]
 
