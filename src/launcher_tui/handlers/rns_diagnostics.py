@@ -234,15 +234,12 @@ class RNSDiagnosticsHandler(BaseHandler):
         from utils.rnsd_restart_order import (hold_rns_clients,
                                               release_rns_clients)
         print("\n[3/7] Stopping RNS clients, clearing stale auth tokens...")
+        print("  Measuring which running units load RNS (a few seconds)...")
         hold = hold_rns_clients()
-        for label in hold.names():
-            print(f"  Stopped RNS client: {label}")
-        for unit, _user, msg in hold.stop_failed:
-            print(f"  Warning: could NOT stop RNS client {unit}: {msg} — it may squat @rns")
-        for unit, user in hold.unobservable:
-            scope = "user manager" if user else "system manager"
-            print(f"  Warning: state of RNS client {unit} UNKNOWN — {scope} did not "
-                  f"answer (timeout or bus unreachable); not stopped")
+        # ONE formatter for the hold (ClientHold.report_lines): client-set source,
+        # stopped, stop-failed, unobservable and unprobed units, in every site.
+        for line in hold.report_lines():
+            print(line)
         _clear_stale_auth_files()
 
         # Step 4: Validate rnsd.service file (ExecStart path, directives)
@@ -673,16 +670,14 @@ class RNSDiagnosticsHandler(BaseHandler):
             # Reload systemd and restart rnsd — clients first (#69 order).
             from utils.rnsd_restart_order import (hold_rns_clients,
                                                   release_rns_clients)
+            print("  Measuring which running units load RNS (a few seconds)...")
             hold = hold_rns_clients()
             # F2 (re-review 2026-09-29): this site printed NOTHING from the hold,
             # so a client that could not be stopped vanished from every line.
-            for label in hold.names():
-                print(f"  Stopped RNS client: {label}")
-            for unit, _user, msg in hold.stop_failed:
-                print(f"  Warning: could NOT stop RNS client {unit}: {msg} — it may squat @rns")
-            for unit, user in hold.unobservable:
-                print(f"  Warning: state of RNS client {unit} UNKNOWN — "
-                      f"{'user' if user else 'system'} manager did not answer; not stopped")
+            # ONE formatter for the hold (ClientHold.report_lines): client-set source,
+            # stopped, stop-failed, unobservable and unprobed units, in every site.
+            for line in hold.report_lines():
+                print(line)
             stop_service('rnsd')
             # A stray rnsd outside the unit: match the process NAME exactly
             # (-x). `pkill -f rnsd` matched any cmdline containing "rnsd",

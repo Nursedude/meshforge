@@ -29,17 +29,26 @@ import subprocess
 import signal
 import threading
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Tuple
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
+from utils.observation import Failed, Observation, Seen, Unobservable, assert_never
 from utils.service_check import (_systemctl_query_argv, is_system_unit_active,
                                  is_user_unit_active, start_service,
                                  stop_service)
 
 logger = logging.getLogger(__name__)
 
-# (unit, user_scope). No SSOT for "RNS client units" existed before this;
-# the kernel cannot map a client to the socket (``ss -xnp`` shows peers as
-# ``* 0``), so the list is curated. Inactive/absent units are skipped.
+# (unit, user_scope). The FLOOR of the hold set, not the whole of it.
+# The kernel cannot map a client to the socket (``ss -xnp`` shows peers as
+# ``* 0``), so this list was curated — and on 2026-10-02 a fleet measurement
+# showed it MISSING real clients: `lxmd` runs as a SYSTEM unit on one box (the
+# list knew only a user one), `meshforge-lxmd` as a USER unit on another, and
+# `meshcore-chat` on the MeshAnchor box. A TUI rnsd repair there would have
+# left an lxmd up through the restart — the #69 window. The cure is not a
+# longer list: hold_rns_clients() now MEASURES which live units load RNS
+# (measure_rns_clients) and holds the union; this floor remains for when the
+# measurement cannot run. Inactive/absent units are skipped.
 RNS_CLIENT_UNITS: Tuple[Tuple[str, bool], ...] = (
     ("meshforge-gateway", False),
     ("meshforge-map", False),
@@ -49,9 +58,19 @@ RNS_CLIENT_UNITS: Tuple[Tuple[str, bool], ...] = (
     ("nomadnet", True),
     ("meshforge-echo", True),
     ("lxmd", True),
+    ("lxmd", False),
+    ("meshforge-lxmd", True),
+    ("meshcore-chat", True),
     ("meshanchor-echo", True),
     ("meshchatx", True),
 )
+
+#: The per-process substrate probe honest_status uses (it asks each live
+#: python process's own interpreter where `import RNS` resolves). One
+#: measurement, two consumers — never a second implementation (hfm #5).
+SUBSTRATE_PROBE = (Path(__file__).resolve().parent.parent.parent
+                   / "scripts" / "hs_substrate_skew.py")
+MEASURE_TIMEOUT_S = 90
 
 DEFAULT_OWNERSHIP_WAIT_S = 30.0
 
@@ -135,9 +154,198 @@ class ClientHold:
     stopped: List[Tuple[str, bool]] = field(default_factory=list)
     stop_failed: List[Tuple[str, bool, str]] = field(default_factory=list)
     unobservable: List[Tuple[str, bool]] = field(default_factory=list)
+    #: units the substrate probe could not look inside (unit, user, why):
+    #: NOT stopped (an unprobeable root process may be anything — stopping
+    #: unattended-upgrades mid-run is its own harm), but named to the operator.
+    unprobed: List[Tuple[str, bool, str]] = field(default_factory=list)
+    #: repo code that imports RNS but is not proven a client: named, NOT stopped.
+    repo_only: List[Tuple[str, bool]] = field(default_factory=list)
+    #: units that could import RNS but showed no evidence either way.
+    unjudged: int = 0
+    #: transient / oneshot units never considered (review D re-read: a one-off
+    #: `python3 -m RNS.Utilities.rnpath` in a systemd-run unit IS a client and
+    #: would stay up unmentioned). Never-hold system units are not listed.
+    not_considered: List[str] = field(default_factory=list)
+    #: where the hold set came from — "measured + floor" or "floor only: why".
+    client_set: str = ""
 
     def names(self) -> List[str]:
         return [f"{u} ({_scope(user)})" for u, user in self.stopped]
+
+    def report_lines(self) -> List[str]:
+        """The ONE rendering of a hold for every TUI caller (three sites used
+        to hand-format it; the fourth fact would have drifted)."""
+        out = [f"  RNS client set: {self.client_set}"] if self.client_set else []
+        out += [f"  Stopped RNS client: {label}" for label in self.names()]
+        out += [f"  Warning: could NOT stop RNS client {u}: {m} — it may squat @rns"
+                for u, _user, m in self.stop_failed]
+        out += [f"  Warning: state of RNS client {u} UNKNOWN — "
+                f"{'user' if user else 'system'} manager did not answer "
+                f"(timeout or bus unreachable); not stopped"
+                for u, user in self.unobservable]
+        out += [f"  Note: {u} ({_scope(user)}) runs repo code that imports RNS but "
+                f"is not proven a client — NOT stopped; if it holds @rns it may squat"
+                for u, user in self.repo_only]
+        # Privilege-shaped blindness is one fact, not 36 lines (review D7).
+        priv = [x for x in self.unprobed
+                if x[2] == "no-access" or x[2].startswith("uid-")]
+        named = [x for x in self.unprobed if x not in priv]
+        out += [f"  Warning: could not see inside {u} ({_scope(user)}): {why} — "
+                f"not stopped; if it uses RNS it may squat @rns"
+                for u, user, why in named]
+        if priv:
+            out.append(f"  Note: {len(priv)} unit(s) not inspectable without root "
+                       f"— not stopped (run the repair with sudo to measure them)")
+        if self.not_considered:
+            out.append(f"  Note: {len(self.not_considered)} transient/oneshot unit(s) "
+                       f"not considered and not stopped: "
+                       + ", ".join(self.not_considered[:6])
+                       + (" ..." if len(self.not_considered) > 6 else ""))
+        if self.unjudged:
+            out.append(f"  Note: {self.unjudged} unit row(s) could import RNS but "
+                       f"showed no evidence of loading it — not stopped")
+        return out
+
+
+#: Units a hold must NEVER stop, whatever the measurement says. A hold leaves
+#: units STOPPED when rnsd fails to take the socket, so a false positive here
+#: is an outage: review D (2026-10-02) measured ssh.service classed as an RNS
+#: client (an `ssh box 'cd /opt/meshforge && python3 ...'` under sshd) — on a
+#: tunnel-only box that is a lock-out. Prefix match on the unit name.
+NEVER_HOLD_PREFIXES = ("ssh", "sshd", "cron", "crond", "atd", "dbus", "systemd-",
+                       "user@", "getty@", "serial-getty@", "polkit", "run-",
+                       "session-")
+
+
+@dataclass
+class MeasuredClients:
+    """What one measurement saw. Only ``clients`` is ever stopped."""
+    clients: List[Tuple[str, bool]] = field(default_factory=list)
+    #: repo code that imports RNS, but the unit's own entry point does not
+    #: declare it — NOT proven a client: named, never stopped (review D).
+    repo_only: List[Tuple[str, bool]] = field(default_factory=list)
+    unprobed: List[Tuple[str, bool, str]] = field(default_factory=list)
+    unjudged: int = 0            # SX rows: could import RNS, no evidence
+    skipped: List[str] = field(default_factory=list)   # never-hold / transient / oneshot
+    user_scope_seen: bool = True
+
+
+def _active_units() -> Tuple[List[Tuple[bool, Dict[str, str]]], bool]:
+    """Every ACTIVE service, both scopes, with the facts a hold decision needs.
+    -> (units, user_scope_seen). A user manager that does not answer (root
+    without SUDO_USER) is reported, never read as "no user units"."""
+    units: List[Tuple[bool, Dict[str, str]]] = []
+    user_seen = True
+    for user in (False, True):
+        listed = subprocess.run(
+            _systemctl_query_argv(['list-units', '--type=service', '--state=active',
+                                   '--no-legend', '--no-pager'], user=user),
+            capture_output=True, text=True, timeout=10)
+        names = [ln.split()[0] for ln in listed.stdout.splitlines() if ln.split()]
+        names = [u for u in names if u.endswith(".service")]
+        if listed.returncode != 0 or not names:
+            if user:
+                user_seen = False
+            continue
+        shown = subprocess.run(
+            _systemctl_query_argv(['show', '-p', 'Id', '-p', 'MainPID', '-p',
+                                   'ControlGroup', '-p', 'Type', '-p', 'FragmentPath',
+                                   *names], user=user),
+            capture_output=True, text=True, timeout=20)
+        for rec in shown.stdout.split("\n\n"):
+            kv = dict(ln.split("=", 1) for ln in rec.splitlines() if "=" in ln)
+            if kv.get("Id"):
+                units.append((user, kv))
+    return units, user_seen
+
+
+def _cgroup_pids(cgroup: str) -> List[int]:
+    """Processes in the unit's OWN cgroup (v2). Not its descendants: a
+    session or a tmux scope forked from it lives in another cgroup."""
+    if not cgroup:
+        return []
+    try:
+        with open(f"/sys/fs/cgroup{cgroup}/cgroup.procs") as fh:
+            return [int(x) for x in fh.read().split() if x.isdigit()]
+    except OSError:
+        return []
+
+
+def measure_rns_clients(probe: Path = SUBSTRATE_PROBE) -> Observation[MeasuredClients]:
+    """Which ACTIVE units' OWN processes load RNS right now.
+
+    The probe (honest_status's substrate probe, ``--no-descend``) is fed every
+    pid in each candidate unit's own cgroup. A unit becomes a hold target only
+    on ``entry`` evidence (its process's entry point needs RNS) and only if it
+    is not on NEVER_HOLD_PREFIXES, not transient (/run) and not oneshot.
+    rnsd is excluded. A missing or failing probe is Unobservable/Failed —
+    never an empty client set.
+    """
+    if not probe.is_file():
+        return Unobservable(f"substrate probe not present at {probe}")
+    try:
+        units, user_seen = _active_units()
+    except (subprocess.SubprocessError, OSError) as e:
+        return Unobservable(f"could not enumerate active units: {e}")
+    if not units:
+        return Unobservable("no active units enumerated (manager unreachable?)")
+    out = MeasuredClients(user_scope_seen=user_seen)
+    lines: List[str] = []
+    scope_of: Dict[str, bool] = {}
+    for is_user, u in units:
+        unit = u["Id"]
+        if unit == "rnsd.service":
+            continue
+        if (unit.startswith(NEVER_HOLD_PREFIXES)
+                or u.get("FragmentPath", "").startswith("/run/")
+                or u.get("Type") == "oneshot"):
+            out.skipped.append(unit)
+            continue
+        pids = _cgroup_pids(u.get("ControlGroup", ""))
+        if not pids and u.get("MainPID", "0") not in ("", "0"):
+            pids = [int(u["MainPID"])]
+        scope_of[unit] = is_user
+        lines += [f"{_scope(is_user)} {unit} {p}" for p in pids]
+    if not lines:
+        return Unobservable("no candidate unit had a readable process")
+    try:
+        r = subprocess.run(["python3", str(probe), "--no-descend", "rns"],
+                           input="\n".join(lines) + "\n",
+                           capture_output=True, text=True,
+                           timeout=MEASURE_TIMEOUT_S)
+    except (subprocess.SubprocessError, OSError) as e:
+        return Failed(f"substrate probe did not complete: {e}")
+    if r.returncode != 0:
+        return Failed(f"substrate probe rc={r.returncode}")
+    for ln in r.stdout.splitlines():
+        f = ln.split()
+        if len(f) < 3:
+            continue
+        unit = f[1]
+        if unit == "*":
+            return Failed(f"substrate probe: {' '.join(f[2:])}")
+        if unit not in scope_of:
+            continue
+        key = (unit[:-len(".service")] if unit.endswith(".service") else unit,
+               scope_of[unit])
+        if f[0] in ("SB", "SC"):
+            bucket = out.clients if f[-1] == "entry" else out.repo_only
+            if key not in bucket:
+                bucket.append(key)
+        elif f[0] == "SU":
+            if (key[0], key[1], f[2]) not in out.unprobed:
+                out.unprobed.append((key[0], key[1], f[2]))
+        elif f[0] == "SX":
+            out.unjudged += 1
+    out.repo_only = [k for k in out.repo_only if k not in out.clients]
+    return Seen(out)
+
+
+#: The real measurement, reachable by its own tests: tests/conftest.py pins
+#: ``measure_rns_clients`` OFF for the whole suite, because an unpinned call
+#: probes the test host's LIVE processes (a verdict that depends on where the
+#: suite runs pins nothing — feedback_tests_must_pin_ambient_state).
+_measure_rns_clients_impl = measure_rns_clients
 
 
 @dataclass
@@ -235,9 +443,44 @@ def terminate_pid(pid: int, wait_s: float = 3.0) -> bool:
     return not os.path.exists(f"/proc/{pid}")
 
 
-def hold_rns_clients(units=RNS_CLIENT_UNITS) -> ClientHold:
-    """Stop every ACTIVE RNS client unit; remember which ones."""
+def hold_rns_clients(units: Optional[Sequence[Tuple[str, bool]]] = None) -> ClientHold:
+    """Stop every ACTIVE RNS client unit; remember which ones.
+
+    ``units=None`` (every real caller): the MEASURED clients unioned with the
+    RNS_CLIENT_UNITS floor. An explicit list is used as given (tests).
+    """
     hold = ClientHold()
+    if units is not None:
+        units = list(units)
+    else:
+        units = list(RNS_CLIENT_UNITS)
+        obs = measure_rns_clients()
+        match obs:
+            case Seen(value=m):
+                extra = [u for u in m.clients if u not in units]
+                units += extra
+                hold.unprobed = [x for x in m.unprobed if (x[0], x[1]) not in units]
+                hold.repo_only = [x for x in m.repo_only if x not in units]
+                hold.unjudged = m.unjudged
+                # Report every skipped transient/oneshot unit — `run-*` too:
+                # systemd-run names one-offs run-uNN, exactly where a one-off
+                # RNS client lives. Only the system never-hold units are quiet.
+                quiet = tuple(x for x in NEVER_HOLD_PREFIXES if x != "run-")
+                hold.not_considered = [u for u in m.skipped if not u.startswith(quiet)]
+                hold.client_set = (
+                    f"measured, service cgroups only ({len(m.clients)} units whose own entry point "
+                    f"loads RNS" + (f", {len(extra)} beyond the curated floor"
+                                    if extra else "") + ") + curated floor"
+                    + "; a client run from a login/tmux session is not seen"
+                    + ("" if m.user_scope_seen else
+                       " — USER scope NOT visible to this run (no SUDO_USER?): "
+                       "user-scope clients outside the floor would stay up"))
+            case Unobservable(why=w) | Failed(why=w):
+                hold.client_set = (f"curated floor ONLY — measurement unavailable "
+                                   f"({w}); a client outside the floor would stay up")
+                logger.warning("rnsd restart: %s", hold.client_set)
+            case _ as unreachable:
+                assert_never(unreachable)
     for unit, user in units:
         # BOTH scopes tri-state (review S2): a squatter-in-waiting is never
         # skipped on a bool; None = unobservable, recorded.

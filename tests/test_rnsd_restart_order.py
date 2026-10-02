@@ -511,9 +511,16 @@ class TestStopFollowsTheUnitsOwnTimeout:
         assert "NOT stopped (may be the squatter)" in rel.summary()
 
     def test_both_diagnostics_sites_print_stop_failed(self):
-        # F2: one site printed nothing from the hold at all.
+        # F2: one site printed nothing from the hold at all. Since 2026-10-02
+        # every site prints through ClientHold.report_lines (one formatter),
+        # so pin BOTH halves: each site calls it, and it renders stop_failed.
         from pathlib import Path
-        src = (Path(__file__).parent.parent / "src" / "launcher_tui" / "handlers"
-               / "rns_diagnostics.py").read_text()
-        assert src.count("hold.stop_failed") >= 2
-        assert "hold_rns_clients()\n            stop_service('rnsd')" not in src
+        handlers = Path(__file__).parent.parent / "src" / "launcher_tui" / "handlers"
+        diag = (handlers / "rns_diagnostics.py").read_text()
+        repair = (handlers / "_rns_repair.py").read_text()
+        assert diag.count("hold.report_lines()") >= 2
+        assert repair.count("hold.report_lines()") >= 1
+        assert "hold_rns_clients()\n            stop_service('rnsd')" not in diag
+        hold = ro.ClientHold(stop_failed=[("meshforge-gateway", False, "Timeout")])
+        assert any("could NOT stop RNS client meshforge-gateway" in ln
+                   for ln in hold.report_lines())

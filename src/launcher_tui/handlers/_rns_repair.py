@@ -334,17 +334,12 @@ def repair_rns_shared_instance(handler) -> bool:
     # rnsd is proven to own the listener.
     print(f"\n[4/5] Restarting rnsd service (RNS clients first)...")
     name = instance_name()
+    print("  Measuring which running units load RNS (a few seconds)...")
     hold = hold_rns_clients()
-    for label in hold.names():
-        print(f"  Stopped RNS client: {label}")
-    for unit, _user, msg in hold.stop_failed:
-        print(f"  Warning: could not stop RNS client {unit}: {msg}")
-    for unit, user in hold.unobservable:
-        # Both scopes land here since S2 (re-review R4): name the manager that
-        # did not answer, not "user manager" for a SYSTEM unit's timeout.
-        scope = "user manager" if user else "system manager"
-        print(f"  Warning: state of RNS client {unit} UNKNOWN — {scope} did not "
-              f"answer (timeout or bus unreachable); not stopped")
+    # ONE formatter for the hold (ClientHold.report_lines): client-set source,
+    # stopped, stop-failed, unobservable and unprobed units, in every site.
+    for line in hold.report_lines():
+        print(line)
 
     print("  Stopping rnsd...")
     success, msg = stop_service('rnsd')

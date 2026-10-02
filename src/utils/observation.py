@@ -53,8 +53,16 @@ Usage::
 """
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
-from typing import Generic, NoReturn, TypeVar, Union, assert_never
+from typing import Generic, NoReturn, TypeVar, Union
+
+if sys.version_info >= (3, 11):
+    from typing import assert_never
+else:  # MeshAnchor still supports 3.10 (this file is byte-identical in both
+    # repos): same contract — a statically unreachable call, loud at runtime.
+    def assert_never(arg: NoReturn, /) -> NoReturn:
+        raise AssertionError(f"unreachable: unhandled Observation {arg!r}")
 
 __all__ = ["Seen", "Unobservable", "Failed", "Observation", "describe",
            "assert_never"]

@@ -394,7 +394,15 @@ def judge(unit, start, data, want, now):
 
 
 def main(argv=None, stdin=None):
-    want = [w for w in (argv if argv is not None else sys.argv[1:]) if w]
+    args = [w for w in (argv if argv is not None else sys.argv[1:]) if w]
+    # --no-descend: the caller supplies EXACT pids (a unit's own cgroup
+    # members) — probe only those. The descendant walk is right for the
+    # honest_status disclosure leg and wrong for anything that ACTS on the
+    # answer: sshd's descendants include every `ssh box 'cd /opt/meshforge &&
+    # python3 ...'`, which made ssh.service read as an RNS client (review D,
+    # 2026-10-02 — a hold would have stopped sshd).
+    no_descend = "--no-descend" in args
+    want = [w for w in args if w != "--no-descend"]
     if not want:
         print("SU * no-watched-dists", flush=True)
         return 0
@@ -413,7 +421,8 @@ def main(argv=None, stdin=None):
         emitted = set()
         # A systemd USER MANAGER's descendants are every user unit's processes;
         # those are enumerated (and labelled) in user scope already.
-        tree = [pid] if unit.startswith("user@") else descendants(pid)
+        tree = ([pid] if no_descend or unit.startswith("user@")
+                else descendants(pid))
         for p in tree:
             try:
                 start, data = probe_process(p, want)

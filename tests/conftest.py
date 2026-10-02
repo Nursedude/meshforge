@@ -812,3 +812,27 @@ def _pin_declared_posture(monkeypatch, _absent_posture_path):
     # can reach the fleet however it is written.
     monkeypatch.setenv("FLEET_POSTURE_SYNC_HOSTS",
                        str(absent.parent / "no-such-fleet_hosts"))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _pin_rns_client_measurement():
+    """hold_rns_clients() MEASURES which live units load RNS (2026-10-02).
+    Unpinned, every test that calls it probes THIS host's running processes
+    — ~3 s each and a verdict that depends on where the suite runs. Pin the
+    measurement to Unobservable so callers exercise the curated-floor path
+    deterministically; the measurement's own tests use
+    ``_measure_rns_clients_impl`` with mocked inputs."""
+    from utils.observation import Unobservable as _Unobs
+    stub = lambda *a, **k: _Unobs("measurement pinned off in tests (conftest)")  # noqa: E731
+    patched = []
+    with ExitStack() as stack:
+        for alias in ("utils.rnsd_restart_order", "src.utils.rnsd_restart_order"):
+            try:
+                stack.enter_context(patch(f"{alias}.measure_rns_clients", stub))
+                patched.append(alias)
+            except (ImportError, AttributeError, ModuleNotFoundError):
+                continue
+        if not patched:
+            raise RuntimeError("rns client measurement pin patched NOTHING — "
+                               "tests would probe this host's live processes")
+        yield
