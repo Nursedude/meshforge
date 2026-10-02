@@ -60,8 +60,11 @@ input to best-available-route, not the goal by itself.
 1. moc3 antenna baseline → operator swaps the antenna (it stays SMALL) → repeat R2
    with n≥5 per size, interference logged on every run.
 2. **rnsd onto mf.4** (`rnsd-restart-onto-mf4`): the fork rolls were in place, so
-   every rnsd still RUNS pre-mf.3 code. VolcanoAI canaried 10-01 (clean); moc3 at
-   its antenna-swap boot; the rest one box at a time, operator present.
+   the substrate still RUNS pre-roll code. MEASURED by honest_status leg
+   `running substrate` (`4c9cef06`), not by hand: 10-02 = 12 units — rnsd ×8,
+   lxmd (moc, moc1), nomadnet + meshcore-chat (MA box). VolcanoAI canaried 10-01
+   (clean); moc3 at its antenna-swap boot; the rest one box at a time, operator
+   present, #69 order. Done = that leg PASS.
    (R1, R9 and R10/M3 closed 10-01; the lab-daemon half of the #69 race closed in
    `c8dca3bc` after a contextless audit found it open.)
 3. **R3 decision due 10-07 (operator):** is RNS over MeshCore needed? A no-go
@@ -86,6 +89,18 @@ input to best-available-route, not the goal by itself.
 8. Lower the install barrier (M5): a `monitor`-profile container, and an OpenAPI
    spec over the map service.
 9. Virtual-node / one-owner-many-clients for the radio (M2), if R3 is go.
+10. **Contain rnsd plugins (R5)** — regardless of R3: a deploy-time manifest of
+    what rnsd auto-loads from `interfaces/`, and an import failure must not kill
+    rnsd (the moc3 zombie-plugin class). Ledger `rnsd-plugin-containment-r5`.
+11. **RF-window capture header (R7)**: every RF measurement window starts with an
+    effective-settings snapshot (rate, SF/BW/CR, noise, interference) — the
+    09-22 stored-params reversion would have shown in one.
+12. **Bots back off on a busy channel (M4)**: oracle/echo responders gate on the
+    radio's reported channel utilisation.
+13. **Pin wire formats to real bytes (M6)**: fixtures generated from the installed
+    library, never hand-written keys (the 09-18 `channel_idx` class).
+14. Upstream to SMCI (R6) — drafts only, and only if R3 is go; posting is the
+    operator's call.
 
 ## Rules that shape the roadmap
 
