@@ -47,7 +47,7 @@ def test_fallback_rate_equals_the_served_rule_with_drop_proto_keys(tmp_path, mon
     p = _db(tmp_path, _ROWS)
     monkeypatch.setattr(tp, "_db_path",
                         lambda n: p if n == "delivery_counters" else None)
-    d = tp._parse_delivery_db()
+    d = tp._parse_delivery_db().value
     served = compute_confirmation_view(
         {"confirmed": 8, "dropped": 6},
         {"confirmed": {"rns": 8}, "dropped": {"rns": 2, "secondary": 4}},
@@ -63,5 +63,5 @@ def test_fallback_drop_proto_keys_are_not_misfiled_as_reasons(tmp_path, monkeypa
     p = _db(tmp_path, _ROWS)
     monkeypatch.setattr(tp, "_db_path",
                         lambda n: p if n == "delivery_counters" else None)
-    d = tp._parse_delivery_db()
+    d = tp._parse_delivery_db().value
     assert set(d["drop_reasons"]) == {"retries_exhausted"}

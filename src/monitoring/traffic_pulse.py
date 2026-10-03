@@ -41,8 +41,10 @@ Honest-failure-mode contract (``.claude/rules/honest_failure_modes.md``):
 """
 from __future__ import annotations
 
+import http.client
 import json
 import socket
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -54,6 +56,7 @@ from utils.db_helpers import connect_tuned
 from utils.delivery_labels import canonical_protocol
 from utils.db_inventory import INVENTORY
 from utils.logging_config import get_logger
+from utils.observation import Failed, Observation, Seen, Unobservable, assert_never
 
 logger = get_logger(__name__)
 
@@ -114,7 +117,7 @@ def _db_path(name: str) -> Optional[Path]:
     return None
 
 
-def _ro_connect(path: Path):
+def _ro_connect(path: Path) -> Optional[sqlite3.Connection]:
     """Open a strictly read-only connection (writes blocked) or None.
 
     Uses ``connect_tuned(mode=ro)`` — MF013-compliant and side-effect-free
@@ -124,7 +127,7 @@ def _ro_connect(path: Path):
         return None
     try:
         conn = connect_tuned(f"file:{path}?mode=ro", uri=True)
-        conn.row_factory = __import__("sqlite3").Row
+        conn.row_factory = sqlite3.Row
         return conn
     except Exception as exc:
         logger.debug("traffic_pulse: ro-connect %s failed: %s", path, exc)
@@ -136,32 +139,79 @@ def _ro_connect(path: Path):
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _http_json(url: str, timeout_s: float) -> Optional[dict]:
+def _http_json(url: str, timeout_s: float) -> Observation[Dict[str, Any]]:
+    """GET a JSON object. Transport failure is ``Unobservable``; a reply that
+    is not a JSON object is ``Failed`` — neither is ever an empty dict."""
     try:
         with urlopen(url, timeout=timeout_s) as resp:  # nosec - localhost map daemon
             payload = json.loads(resp.read())
-        return payload if isinstance(payload, dict) else None
-    except (URLError, socket.timeout, json.JSONDecodeError, OSError, ValueError):
-        return None
+    except (json.JSONDecodeError, ValueError, RecursionError) as exc:
+        return Failed(f"{url}: reply is not usable JSON ({exc.__class__.__name__})")
+    except (URLError, socket.timeout, OSError, http.client.HTTPException) as exc:
+        return Unobservable(f"{url}: unreachable ({exc.__class__.__name__})")
+    if not isinstance(payload, dict):
+        return Failed(f"{url}: reply is {type(payload).__name__}, not an object")
+    return Seen(payload)
 
 
-def _load_delivery(base_url: str, timeout_s: float) -> Tuple[Optional[dict], str]:
-    """Return (delivery_snapshot, source). source ∈ {http, db, none}.
+def _delivery_reading(payload: Dict[str, Any]) -> Observation[Dict[str, Any]]:
+    """A served snapshot is a reading only if the map could read its DB.
+
+    ``gateway.delivery_counters`` (G3, 2026-07-18) marks a DB it could not
+    read THIS call with ``health.db_unobservable`` — and still serves all-zero
+    totals, an empty ring and ``last_event_ts=None``. Read as data, that is
+    "nothing ever happened" (the 2026-10-02 finding: the TUI heartbeat said
+    "No delivery activity ever recorded"). The watchdog canary and
+    ``delivery_view`` already honour the marker; this is the third consumer.
+    """
+    health = payload.get("health")
+    if isinstance(health, dict) and health.get("db_unobservable") is True:
+        return Unobservable("map could not read the delivery DB this call "
+                            "(health.db_unobservable) — its zeros are not counts")
+    if not isinstance(payload.get("state_totals"), dict):
+        return Failed("delivery payload has no state_totals object — "
+                      "not a delivery snapshot")
+    return Seen(payload)
+
+
+def _load_delivery(base_url: str,
+                   timeout_s: float) -> Tuple[Observation[Dict[str, Any]], str]:
+    """Return (delivery_observation, source). source ∈ {http, db, none}.
 
     Prefer the served ``/api/gateway/delivery`` (zero side effects, identical
     to ``delivery_counters.snapshot()``). Fall back to a read-only DB parse
-    when the map daemon is down so a single-box TUI still works.
+    ONLY when the map did not answer (the pre-2026-10-02 trigger, kept on
+    purpose). A map that answered BLIND (``db_unobservable``) or misshaped is
+    reported as exactly that, with no DB open: review A measured that a
+    ``mode=ro`` open still creates ``-wal``/``-shm`` sidecars, and "the map
+    cannot read its DB" is the #60-class moment a root TUI must not be
+    touching it (cf. the watchdog's NEVER-the-DB rule in
+    ``watchdog_probes_gateway._fetch_delivery_payload``). Both blind is
+    ``Unobservable`` carrying both reasons, never an empty snapshot.
     """
-    payload = _http_json(f"{base_url}/api/gateway/delivery", timeout_s)
-    if payload is not None:
-        return payload, "http"
+    served = _http_json(f"{base_url}/api/gateway/delivery", timeout_s)
+    match served:
+        case Seen(value=payload):
+            return _delivery_reading(payload), "http"
+        case Unobservable(why=why) | Failed(why=why):
+            return _delivery_from_db(why)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _delivery_from_db(served_why: str) -> Tuple[Observation[Dict[str, Any]], str]:
+    """The read-only DB fallback, carrying why the served answer was not used."""
     db = _parse_delivery_db()
-    if db is not None:
-        return db, "db"
-    return None, "none"
+    match db:
+        case Seen():
+            return db, "db"
+        case Unobservable(why=db_why) | Failed(why=db_why):
+            return Unobservable(f"served: {served_why}; db fallback: {db_why}"), "none"
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
-def _parse_delivery_db() -> Optional[dict]:
+def _parse_delivery_db() -> Observation[Dict[str, Any]]:
     """Reconstruct the delivery snapshot from a read-only DB read.
 
     Mirrors the key scheme written by ``gateway.delivery_counters`` —
@@ -170,16 +220,18 @@ def _parse_delivery_db() -> Optional[dict]:
     there changes, this fallback (and its test) updates with it.
     """
     path = _db_path("delivery_counters")
-    conn = _ro_connect(path) if path else None
+    if path is None or not path.exists():
+        return Unobservable("delivery counters DB absent on this box")
+    conn = _ro_connect(path)
     if conn is None:
-        return None
+        return Unobservable("delivery counters DB could not be opened read-only")
     try:
         state_totals: Dict[str, int] = {}
         state_by_protocol: Dict[str, Dict[str, int]] = {}
         drop_reasons: Dict[str, int] = {}
         drop_reasons_by_protocol: Dict[str, Dict[str, int]] = {}
-        last_event_ts = None
-        preflight_ok = None
+        last_event_ts: Optional[float] = None
+        preflight_ok: Optional[bool] = None
         write_errors = 0
         for row in conn.execute("SELECT key, value FROM counters"):
             key, value = row["key"], row["value"]
@@ -195,7 +247,8 @@ def _parse_delivery_db() -> Optional[dict]:
             elif key.startswith("drop_proto."):
                 # 2026-09-23 writer scheme: drop_proto.<reason>.<proto>
                 _, reason_v, proto = key.split(".", 2)
-                by = drop_reasons_by_protocol.setdefault(canonical_protocol(proto), {})
+                by = drop_reasons_by_protocol.setdefault(
+                    canonical_protocol(proto) or proto, {})
                 by[reason_v] = by.get(reason_v, 0) + value
             elif key.startswith("drop."):
                 drop_reasons[key.split(".", 1)[1]] = value
@@ -249,7 +302,7 @@ def _parse_delivery_db() -> Optional[dict]:
         else:
             _failures = sum(_global.values())
         _terminal = confirmed + _failures
-        return {
+        return Seen({
             "state_totals": state_totals,
             "state_by_protocol": state_by_protocol,
             "drop_reasons": drop_reasons,
@@ -267,10 +320,10 @@ def _parse_delivery_db() -> Optional[dict]:
                 "consecutive_write_errors": write_errors,
                 "last_successful_write_ts": last_event_ts,
             },
-        }
+        })
     except Exception as exc:
         logger.debug("traffic_pulse: delivery DB parse failed: %s", exc)
-        return None
+        return Failed(f"delivery DB parse failed ({exc.__class__.__name__}: {exc})")
     finally:
         conn.close()
 
@@ -590,11 +643,19 @@ def _rf_block(nf: _NodeFacts) -> Dict[str, Any]:
     return block
 
 
-def _dups_block(delivery: Optional[dict]) -> Dict[str, Any]:
-    if delivery is None:
-        return {"status": UNOBSERVABLE, "reason": "delivery_source_down",
-                "detail": "Delivery counters unreachable — dedup count "
-                          "unobservable."}
+def _dups_block(delivery: Observation[Dict[str, Any]]) -> Dict[str, Any]:
+    match delivery:
+        case Seen(value=snap):
+            return _dups_seen(snap)
+        case Unobservable(why=why) | Failed(why=why):
+            return {"status": UNOBSERVABLE, "reason": "delivery_source_down",
+                    "why": why,
+                    "detail": f"{why} — dedup count unknown."}
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _dups_seen(delivery: Dict[str, Any]) -> Dict[str, Any]:
     drops = delivery.get("drop_reasons") or {}
     dedup_total = int(drops.get("dedup", 0) or 0)
     state_totals = delivery.get("state_totals") or {}
@@ -629,19 +690,41 @@ def _traffic_signal_classes() -> frozenset:
     })
 
 
-def _diag_block(status_blob: Optional[dict]) -> Dict[str, Any]:
+def _diag_block(status_blob: Observation[Dict[str, Any]]) -> Dict[str, Any]:
     """Active watchdog signals (read-only) tagged for traffic relevance."""
-    if not isinstance(status_blob, dict):
-        return {"status": UNOBSERVABLE, "reason": "status_source_down",
-                "signals": [],
-                "detail": "/api/status unreachable — watchdog signals "
-                          "unobservable."}
+    match status_blob:
+        case Seen(value=blob):
+            return _diag_seen(blob)
+        case Unobservable(why=why) | Failed(why=why):
+            return {"status": UNOBSERVABLE, "reason": "status_source_down",
+                    "why": why, "signals": [],
+                    "detail": f"{why} — watchdog signals unknown."}
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _diag_seen(status_blob: Dict[str, Any]) -> Dict[str, Any]:
     wd = status_blob.get("watchdog") or {}
     if not wd.get("installed"):
         return {"status": UNOBSERVABLE, "reason": "watchdog_absent",
                 "signals": [],
                 "detail": "Watchdog not installed on this box."}
-    raw = wd.get("signals") or []
+    # `ok: False` is overloaded upstream (_map_status_endpoints): with a
+    # `reason` it means the watchdog.json was STALE or MALFORMED — its signal
+    # list, if any, is old news, not "current"; without one it means a
+    # wedge-severity signal is live, which IS a reading (rendered below).
+    if wd.get("ok") is False and wd.get("reason"):
+        return {"status": UNOBSERVABLE, "reason": "watchdog_state_unreadable",
+                "why": str(wd.get("reason")), "signals": [],
+                "detail": "Watchdog state not current — signals unknown "
+                          f"({wd.get('reason')})."}
+    raw = wd.get("signals")
+    if not isinstance(raw, list):
+        # Missing/null is not "no signals" — the list is the observation.
+        return {"status": UNOBSERVABLE, "reason": "watchdog_signals_missing",
+                "signals": [],
+                "detail": "Watchdog block carries no signal list — signals "
+                          "unknown, not none."}
     traffic_classes = _traffic_signal_classes()
     signals = []
     worst = OK
@@ -755,16 +838,25 @@ def _queue_facts() -> Dict[str, Any]:
         conn.close()
 
 
-def _qa_block(delivery: Optional[dict], now: datetime) -> Dict[str, Any]:
+def _qa_block(delivery: Observation[Dict[str, Any]],
+              now: datetime) -> Dict[str, Any]:
     """The app diagnosing its own delivery quality & assured reliability.
 
     Confirmation honesty + failure-vs-benign drops + write canary +
     freshness + queue depth → a single reliability verdict.
     """
-    if delivery is None:
-        return {"status": UNOBSERVABLE, "reason": "delivery_source_down",
-                "detail": "Delivery counters unreachable — gateway reliability "
-                          "unobservable."}
+    match delivery:
+        case Seen(value=snap):
+            return _qa_seen(snap, now)
+        case Unobservable(why=why) | Failed(why=why):
+            return {"status": UNOBSERVABLE, "reason": "delivery_source_down",
+                    "why": why,
+                    "detail": f"{why} — gateway reliability unknown."}
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _qa_seen(delivery: Dict[str, Any], now: datetime) -> Dict[str, Any]:
     state_totals = delivery.get("state_totals") or {}
     drops = delivery.get("drop_reasons") or {}
     sent = int(state_totals.get("sent", 0) or 0)
@@ -826,7 +918,7 @@ def _qa_block(delivery: Optional[dict], now: datetime) -> Dict[str, Any]:
         status = QUIET
         verdict = "No delivery activity ever recorded on this box — nothing to judge"
         verdict += (" (note: " + "; ".join(concerns) + ")" if concerns else "") + "."
-    elif stale:
+    elif stale and age_s is not None:  # stale implies age_s; spelled for mypy
         status = STALE
         verdict = (f"No delivery activity for {int(age_s // 60)}m — gateway "
                    "idle/inactive (counters healthy)")
@@ -863,6 +955,16 @@ def _qa_block(delivery: Optional[dict], now: datetime) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────
 
 
+def _source_label(obs: Observation[Dict[str, Any]]) -> str:
+    match obs:
+        case Seen():
+            return "http"
+        case Unobservable() | Failed():
+            return "none"
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def pulse_snapshot(*, base_url: str = DEFAULT_BASE_URL,
                    window_s: int = DEFAULT_WINDOW_S,
                    timeout_s: float = DEFAULT_TIMEOUT_S,
@@ -885,7 +987,7 @@ def pulse_snapshot(*, base_url: str = DEFAULT_BASE_URL,
             "base_url": base_url,
             "scope": "local_box",
             "delivery_source": delivery_src,
-            "status_source": "http" if status_blob is not None else "none",
+            "status_source": _source_label(status_blob),
             "nodes_heard": nf.nodes,
             "node_obs": nf.obs,
             "node_obs_latest_age_s": (round(nf.latest_age_s)

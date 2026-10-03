@@ -93,6 +93,6 @@ def test_db_fallback_reads_the_same_labels_and_rate_as_the_served_snapshot(
     served = c.snapshot()
     monkeypatch.setattr(tp, "_db_path",
                         lambda n: c._db_path if n == "delivery_counters" else None)
-    fallback = tp._parse_delivery_db()
+    fallback = tp._parse_delivery_db().value
     assert fallback["confirmation_rate"] == served["confirmation_rate"] == 0.5
     assert fallback["state_by_protocol"]["dropped"] == {"meshtastic": 3}

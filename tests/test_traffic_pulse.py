@@ -15,6 +15,7 @@ from datetime import datetime
 import pytest
 
 from monitoring import traffic_pulse as tp
+from utils.observation import Seen, Unobservable
 # connect_tuned creates WAL DBs (as production does), so the aggregator's
 # connect_tuned(mode=ro) open succeeds — a raw sqlite3.connect would leave the
 # fixture in rollback-journal mode, which a read-only WAL open cannot convert.
@@ -135,7 +136,7 @@ class TestDupsBlock:
     def test_dedup_counted_and_pct(self):
         d = {"drop_reasons": {"dedup": 100}, "state_totals": {"queued": 900},
              "recent": []}
-        r = tp._dups_block(d)
+        r = tp._dups_block(Seen(d))
         assert r["dedup_total"] == 100 and r["dedup_pct"] == 10.0
         assert r["status"] == tp.OK
 
@@ -143,7 +144,7 @@ class TestDupsBlock:
         recent = [{"state": "dropped", "drop_reason": "dedup"} for _ in range(25)]
         d = {"drop_reasons": {"dedup": 25}, "state_totals": {"queued": 5},
              "recent": recent}
-        r = tp._dups_block(d)
+        r = tp._dups_block(Seen(d))
         assert r["window_dedup"] == 25 and r["status"] == tp.ALERT
 
     def test_high_lifetime_dedup_is_not_an_alarm(self):
@@ -151,12 +152,12 @@ class TestDupsBlock:
         # benign by design — this must NOT alert.
         d = {"drop_reasons": {"dedup": 1070}, "state_totals": {"queued": 200},
              "recent": []}
-        r = tp._dups_block(d)
+        r = tp._dups_block(Seen(d))
         assert r["dedup_total"] == 1070 and r["window_dedup"] == 0
         assert r["status"] == tp.OK
 
     def test_delivery_down_is_unobservable(self):
-        r = tp._dups_block(None)
+        r = tp._dups_block(Unobservable("down"))
         assert r["status"] == tp.UNOBSERVABLE and r["reason"] == "delivery_source_down"
 
 
@@ -166,29 +167,29 @@ class TestDupsBlock:
 
 class TestDiagBlock:
     def test_status_source_down_unobservable(self):
-        assert tp._diag_block(None)["status"] == tp.UNOBSERVABLE
+        assert tp._diag_block(Unobservable("down"))["status"] == tp.UNOBSERVABLE
 
     def test_watchdog_absent_unobservable(self):
-        r = tp._diag_block({"watchdog": {"installed": False}})
+        r = tp._diag_block(Seen({"watchdog": {"installed": False}}))
         assert r["status"] == tp.UNOBSERVABLE and r["reason"] == "watchdog_absent"
 
     def test_traffic_relevant_degraded_alerts(self):
         sb = {"watchdog": {"installed": True, "signals": [
             {"class": "channel_feed_dark", "severity": "degraded", "subject": "ch0"}]}}
-        r = tp._diag_block(sb)
+        r = tp._diag_block(Seen(sb))
         assert r["status"] == tp.ALERT and r["traffic_relevant"] == 1
 
     def test_nonrelevant_signal_not_alert(self):
         sb = {"watchdog": {"installed": True, "signals": [
             {"class": "cron_verdict_stale", "severity": "degraded"}]}}
-        r = tp._diag_block(sb)
+        r = tp._diag_block(Seen(sb))
         assert r["status"] == tp.OK and r["traffic_relevant"] == 0
 
     def test_reads_class_key_not_cls(self):
         # /api/status serializes Signal.cls as "class" — the bug we fixed.
         sb = {"watchdog": {"installed": True, "signals": [
             {"class": "mqtt_root_drift", "severity": "info"}]}}
-        r = tp._diag_block(sb)
+        r = tp._diag_block(Seen(sb))
         assert r["signals"][0]["cls"] == "mqtt_root_drift"
 
 
@@ -213,11 +214,11 @@ class TestQABlock:
             "status": tp.OK, "by_status": {}, "backlog": 0, "dead_letter": 0})
 
     def test_delivery_down_unobservable(self):
-        assert tp._qa_block(None, datetime.now())["status"] == tp.UNOBSERVABLE
+        assert tp._qa_block(Unobservable("down"), datetime.now())["status"] == tp.UNOBSERVABLE
 
     def test_healthy_fresh_unconfirmable_is_ok_but_not_claimed_reliable(self, no_queue):
         now = datetime.now()
-        r = tp._qa_block(self._delivery(now), now)
+        r = tp._qa_block(Seen(self._delivery(now)), now)
         assert r["status"] == tp.OK
         assert "not observable" in r["verdict"]
         assert "reliably moving" not in r["verdict"]
@@ -227,7 +228,7 @@ class TestQABlock:
         recent = [{"protocol": "rns", "state": "confirmed"} for _ in range(25)]
         d = self._delivery(now, state_by_protocol={"confirmed": {"rns": 25}},
                            recent=recent)
-        r = tp._qa_block(d, now)
+        r = tp._qa_block(Seen(d), now)
         assert r["status"] == tp.OK and "reliably moving" in r["verdict"]
 
     def test_write_canary_fail_is_alert(self, no_queue):
@@ -235,7 +236,7 @@ class TestQABlock:
         d = self._delivery(now, health={"preflight_ok": True,
                            "consecutive_write_errors": 3,
                            "last_successful_write_ts": now.timestamp()})
-        r = tp._qa_block(d, now)
+        r = tp._qa_block(Seen(d), now)
         assert r["status"] == tp.ALERT and "write canary" in r["verdict"]
 
     def test_stale_is_stale_not_alert_dead_letter_is_concern(self, monkeypatch):
@@ -247,7 +248,7 @@ class TestQABlock:
                            health={"preflight_ok": True,
                                    "consecutive_write_errors": 0,
                                    "last_successful_write_ts": old})
-        r = tp._qa_block(d, now)
+        r = tp._qa_block(Seen(d), now)
         assert r["status"] == tp.STALE
         assert "idle" in r["verdict"] and "6 dead-letter" in r["verdict"]
         assert r["concerns"] == ["6 dead-letter messages"]
@@ -259,19 +260,19 @@ class TestQABlock:
                       "drop_reason": "rns_delivery_failed"} for _ in range(20)])
         d = self._delivery(now, state_by_protocol={"confirmed": {"rns": 2}},
                            recent=recent)
-        r = tp._qa_block(d, now)
+        r = tp._qa_block(Seen(d), now)
         assert r["status"] == tp.ALERT and "confirmation collapsed" in r["verdict"]
 
     def test_circuit_open_is_alert(self, no_queue):
         now = datetime.now()
         d = self._delivery(now, drop_reasons={"circuit_open": 4})
-        r = tp._qa_block(d, now)
+        r = tp._qa_block(Seen(d), now)
         assert r["status"] == tp.ALERT and "circuit-open" in r["verdict"]
 
     def test_cumulative_rate_only_labelled_never_headline(self, no_queue):
         now = datetime.now()
         d = self._delivery(now, confirmation_rate=0.0)
-        r = tp._qa_block(d, now)
+        r = tp._qa_block(Seen(d), now)
         assert r["status"] == tp.OK
         # Issue #74 display fix: the cumulative field is the honest
         # confirmable-population rate now, surfaced labelled — never the
@@ -498,7 +499,7 @@ class TestParseDeliveryDB:
         conn.close()
         monkeypatch.setattr(tp, "_db_path",
                             lambda n: p if n == "delivery_counters" else None)
-        d = tp._parse_delivery_db()
+        d = tp._parse_delivery_db().value
         assert d["state_totals"]["sent"] == 10
         assert d["state_by_protocol"]["confirmed"]["rns"] == 4
         assert d["drop_reasons"]["dedup"] == 2
@@ -512,7 +513,7 @@ class TestParseDeliveryDB:
 
     def test_absent_db_returns_none(self, monkeypatch):
         monkeypatch.setattr(tp, "_db_path", lambda n: None)
-        assert tp._parse_delivery_db() is None
+        assert isinstance(tp._parse_delivery_db(), Unobservable)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -521,8 +522,9 @@ class TestParseDeliveryDB:
 
 class TestPulseSnapshot:
     def test_shape_json_serializable_and_unobservable_when_sources_down(self, monkeypatch):
-        monkeypatch.setattr(tp, "_load_delivery", lambda b, t: (None, "none"))
-        monkeypatch.setattr(tp, "_http_json", lambda u, t: None)
+        monkeypatch.setattr(tp, "_load_delivery",
+                            lambda b, t: (Unobservable("map down; db absent"), "none"))
+        monkeypatch.setattr(tp, "_http_json", lambda u, t: Unobservable("map down"))
         monkeypatch.setattr(tp, "_node_facts",
                             lambda w, n: tp._NodeFacts(status=tp.UNOBSERVABLE,
                                                        reason="db_absent", window_s=w))
@@ -538,8 +540,10 @@ class TestPulseSnapshot:
         assert snap["rf"]["status"] == tp.UNOBSERVABLE
 
     def test_never_raises_on_garbage_sources(self, monkeypatch):
-        monkeypatch.setattr(tp, "_load_delivery", lambda b, t: ({"junk": 1}, "http"))
-        monkeypatch.setattr(tp, "_http_json", lambda u, t: {"nonsense": True})
+        # Garbage INSIDE a Seen (the type guarantees the envelope, not the
+        # payload) must still never raise.
+        monkeypatch.setattr(tp, "_load_delivery", lambda b, t: (Seen({"junk": 1}), "http"))
+        monkeypatch.setattr(tp, "_http_json", lambda u, t: Seen({"nonsense": True}))
         monkeypatch.setattr(tp, "_node_facts",
                             lambda w, n: tp._NodeFacts(status=tp.OK, window_s=w,
                                                        obs=5, nodes=3, snr_values=[],
@@ -589,6 +593,114 @@ class TestQueueAge:
             "status": tp.OK, "backlog": 0, "dead_letter": 0})
         empty = {"state_totals": {"queued": 0, "sent": 0, "confirmed": 0, "dropped": 0},
                  "drop_reasons": {}, "last_event_ts": None, "health": {}}
-        qa = tp._qa_block(empty, datetime.now())
+        qa = tp._qa_block(Seen(empty), datetime.now())
         assert qa["status"] == tp.QUIET
         assert "Sending" not in qa["verdict"]
+
+
+class TestServedBlindnessIsNotAnEmptyHistory:
+    """2026-10-02 (tri-state adopter #3): the map's delivery snapshot marks a
+    DB it could not read THIS call with ``health.db_unobservable`` — and then
+    still serves ALL-ZERO totals, an empty ring and ``last_event_ts=None``
+    (gateway.delivery_counters G3). The watchdog canary and delivery_view
+    honour the marker; traffic_pulse did not, so the TUI heartbeat read a
+    blind DB as "0 duplicates suppressed" + "No delivery activity ever
+    recorded on this box". Driven through the real HTTP layer so the test is
+    independent of the loader's internal types."""
+
+    BLIND = {
+        "state_totals": {"queued": 0, "sent": 0, "confirmed": 0, "dropped": 0},
+        "drop_reasons": {"dedup": 0}, "state_by_protocol": {},
+        "confirmation_rate": None, "recent": [], "last_event_ts": None,
+        "health": {"preflight_ok": None, "consecutive_write_errors": 0,
+                   "db_unobservable": True},
+    }
+
+    def _serve(self, monkeypatch, delivery, status=None):
+        import io
+
+        def fake_urlopen(url, timeout=None):
+            if url.endswith("/api/gateway/delivery"):
+                body = delivery
+            elif url.endswith("/api/status") and status is not None:
+                body = status
+            else:
+                raise tp.URLError("down")
+            return io.BytesIO(json.dumps(body).encode())
+
+        monkeypatch.setattr(tp, "urlopen", fake_urlopen)
+        monkeypatch.setattr(tp, "_queue_facts", lambda: {
+            "status": tp.OK, "backlog": 0, "dead_letter": 0})
+        monkeypatch.setattr(tp, "_db_path", lambda n: None)  # no DB fallback
+
+    def test_blind_snapshot_is_unobservable_in_dups_and_qa(self, monkeypatch):
+        self._serve(monkeypatch, self.BLIND)
+        snap = tp.pulse_snapshot()
+        assert snap["dups"]["status"] == tp.UNOBSERVABLE, snap["dups"]
+        assert snap["qa"]["status"] == tp.UNOBSERVABLE, snap["qa"]
+        assert "ever recorded" not in snap["qa"].get("verdict", "")
+        assert "0 duplicates" not in snap["dups"].get("detail", "")
+
+    def test_misshaped_payload_is_unobservable_not_quiet(self, monkeypatch):
+        self._serve(monkeypatch, {"ok": True})  # 200, parses, no state_totals
+        snap = tp.pulse_snapshot()
+        assert snap["dups"]["status"] == tp.UNOBSERVABLE, snap["dups"]
+        assert snap["qa"]["status"] == tp.UNOBSERVABLE, snap["qa"]
+
+    def test_control_healthy_empty_snapshot_still_reads_quiet(self, monkeypatch):
+        """The control that CAN fail the other way: a READABLE DB with no
+        traffic is a real observation and must stay QUIET, not blind."""
+        healthy = dict(self.BLIND, health={"preflight_ok": True,
+                                           "consecutive_write_errors": 0})
+        self._serve(monkeypatch, healthy)
+        snap = tp.pulse_snapshot()
+        assert snap["qa"]["status"] == tp.QUIET, snap["qa"]
+        assert snap["dups"]["status"] == tp.OK, snap["dups"]
+
+    def test_watchdog_installed_with_no_signal_list_is_not_all_clear(self, monkeypatch):
+        """Same class on the diag axis: ``signals`` missing/null is not 'none'."""
+        self._serve(monkeypatch, self.BLIND,
+                    status={"watchdog": {"installed": True, "signals": None}})
+        snap = tp.pulse_snapshot()
+        assert snap["diag"]["status"] == tp.UNOBSERVABLE, snap["diag"]
+
+    def test_stale_watchdog_block_is_unobservable_not_current(self, monkeypatch):
+        """_map_status_endpoints marks a stale watchdog.json ok=False with a
+        `stale:` reason but still passes its OLD signal list through."""
+        old = [{"class": "queue_backlog", "severity": "degraded"}]
+        self._serve(monkeypatch, self.BLIND, status={"watchdog": {
+            "installed": True, "ok": False, "signals": old,
+            "reason": "stale: last write 900s ago (threshold 300s)"}})
+        assert tp.pulse_snapshot()["diag"]["status"] == tp.UNOBSERVABLE
+
+    def test_control_wedge_ok_false_without_reason_is_an_observation(self, monkeypatch):
+        """ok=False ALSO means 'a wedge-severity signal is live' — that is a
+        reading, and must still render (ALERT), never blind."""
+        live = [{"class": "queue_backlog", "severity": "wedge"}]
+        self._serve(monkeypatch, self.BLIND, status={"watchdog": {
+            "installed": True, "ok": False, "signals": live}})
+        assert tp.pulse_snapshot()["diag"]["status"] == tp.ALERT
+
+    def test_blind_served_answer_never_opens_the_db(self, monkeypatch):
+        """Review A (2026-10-02): a mode=ro open still creates -wal/-shm, and
+        'the map cannot read its DB' is the moment a root TUI must not touch
+        it. The fallback keeps its OLD trigger: map did not answer."""
+        self._serve(monkeypatch, self.BLIND)
+        opened = []
+        monkeypatch.setattr(tp, "_parse_delivery_db",
+                            lambda: opened.append(1) or Unobservable("x"))
+        snap = tp.pulse_snapshot()
+        assert opened == []
+        assert snap["meta"]["delivery_source"] == "http"
+        assert snap["dups"]["detail"].startswith("map could not read")
+
+    def test_control_map_down_still_uses_the_db_fallback(self, monkeypatch):
+        self._serve(monkeypatch, None)  # body unused: delivery URL raises below
+        monkeypatch.setattr(tp, "urlopen",
+                            lambda url, timeout=None: (_ for _ in ()).throw(tp.URLError("down")))
+        good = dict(self.BLIND, health={"preflight_ok": True,
+                                        "consecutive_write_errors": 0})
+        monkeypatch.setattr(tp, "_parse_delivery_db", lambda: Seen(good))
+        snap = tp.pulse_snapshot()
+        assert snap["meta"]["delivery_source"] == "db"
+        assert snap["qa"]["status"] == tp.QUIET
