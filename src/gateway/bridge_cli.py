@@ -312,6 +312,28 @@ def _format_counts(stats: dict) -> list:
     return []
 
 
+def _meshtastic_leg(status: dict) -> str:
+    """The Meshtastic leg word(s) for an RNS-dialect status.
+
+    ``meshtastic_connected`` alone is the MQTT BROKER session in mqtt_bridge
+    mode; it read "connected" for 30 min while moc3's meshtasticd was stopped
+    (2026-10-02). When the handler also reports ``meshtastic_radio``, the leg
+    is connected only if BOTH answer. Leading word stays connected|disconnected
+    so line consumers keep parsing.
+    """
+    if not status.get('meshtastic_connected'):
+        return "disconnected"
+    radio = status.get('meshtastic_radio')
+    if not isinstance(radio, dict):
+        return "connected"
+    endpoint = radio.get('endpoint', '?')
+    if radio.get('reachable') is True:
+        return "connected"
+    if radio.get('reachable') is False:
+        return f"disconnected (MQTT broker up; meshtasticd not answering at {endpoint})"
+    return f"connected to MQTT broker; meshtasticd UNKNOWN at {endpoint}"
+
+
 def print_status(status: dict):
     """Print bridge status."""
     running = status.get('running', False)
@@ -325,7 +347,7 @@ def print_status(status: dict):
     elif _is_rns_dialect(status):
         # Legacy wording preserved verbatim — field tooling and log consumers
         # match on these exact lines.
-        mesh = "connected" if status.get('meshtastic_connected') else "disconnected"
+        mesh = _meshtastic_leg(status)
         if status.get('rns_connected'):
             rns = "connected"
         elif status.get('rns_via_rnsd'):
@@ -395,7 +417,7 @@ def print_multi_status(instances):
             )
             print(f"    {legs}")
         elif _is_rns_dialect(status):
-            mesh = "connected" if status.get("meshtastic_connected") else "disconnected"
+            mesh = _meshtastic_leg(status)
             if status.get("rns_connected"):
                 rns = "connected"
             elif status.get("rns_via_rnsd"):

@@ -65,6 +65,7 @@ _get_protobuf_client, _HAS_PROTOBUF_CLIENT = safe_import(
 # Sudo-safe home directory — first-party, always available (MF001)
 from utils.paths import get_real_user_home as _get_real_user_home_fn
 from utils.service_check import check_service as _check_service
+from utils.service_check import check_port as _check_port
 
 if TYPE_CHECKING:
     from .bridge_health import BridgeHealthMonitor
@@ -366,6 +367,31 @@ class MQTTBridgeHandler(BaseMessageHandler):
                 self._connected = False
                 self.health.record_connection_event("meshtastic", "error", str(e))
                 self._stop_event.wait(5)
+
+    def radio_reachability(self) -> Dict[str, Any]:
+        """Does meshtasticd answer on the port this handler TXes to?
+
+        ``_connected`` is the MQTT BROKER session only. On 2026-10-02 moc3's
+        meshtasticd was stopped for 30 min and the status line read
+        "Meshtastic: connected" every 30 s throughout — mosquitto was up, so
+        the only leg it measured was fine, while every R->M TX would have hit
+        Connection refused. This reads the radio side separately; it does NOT
+        feed ``_connected`` (that drives broker reconnects and TX gating).
+
+        TCP connect to the configured HTTP port (the TX endpoint, :9443) —
+        never the single-client :4403 PhoneAPI slot (#17/#75). The load
+        balancer may pick another port per send; this checks the configured
+        one. ``reachable`` is None when the check itself could not run.
+        """
+        mesh = getattr(self.config, 'meshtastic', None)
+        host = getattr(mesh, 'host', None) or 'localhost'
+        port = getattr(mesh, 'http_port', None) or 9443
+        try:
+            reachable: Optional[bool] = _check_port(port, host=host, timeout=1.0)
+        except Exception as e:
+            logger.debug(f"meshtasticd reachability check failed: {e}")
+            reachable = None
+        return {'reachable': reachable, 'endpoint': f"{host}:{port}"}
 
     def connect(self) -> bool:
         """Connect to MQTT broker (ABC contract)."""
