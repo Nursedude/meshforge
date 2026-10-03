@@ -1484,6 +1484,19 @@ NO_RADIO_SERVICE
             ;;
     esac
 
+    # meshtasticd NTP-sync wait drop-in: portduino meshtasticd rates its clock
+    # once at startup; before NTP sync no node's lastHeard ever advances (moc4
+    # 2026-10-02). Same template update.sh deploys. Written whenever a
+    # meshtasticd unit exists by now (installer-written or the apt package's).
+    if [[ -f "$INSTALL_DIR/templates/systemd/meshtasticd.service.d/20-wait-for-ntp-sync.conf" ]] \
+       && systemctl cat meshtasticd.service &>/dev/null; then
+        mkdir -p /etc/systemd/system/meshtasticd.service.d
+        # Template on STDIN (dry-run shadow reads "-i" in sed args as in-place).
+        sed "s#/opt/meshforge/#${INSTALL_DIR}/#g" \
+            < "$INSTALL_DIR/templates/systemd/meshtasticd.service.d/20-wait-for-ntp-sync.conf" \
+            | mf_write_stdin /etc/systemd/system/meshtasticd.service.d/20-wait-for-ntp-sync.conf
+    fi
+
     systemctl daemon-reload
 
     echo -e "  ${GREEN}✓ meshtasticd installed (${DAEMON_TYPE})${NC}"

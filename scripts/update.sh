@@ -295,6 +295,31 @@ if [[ -f /etc/systemd/system/rnsd.service && -f "$RNSD_LL_TMPL" ]]; then
     fi
 fi
 
+# Deploy the meshtasticd NTP-sync wait drop-in. Portduino meshtasticd rates its
+# clock ONCE at startup from `timedatectl`; started before NTP sync it stamps
+# every received packet rx_time 0 and no node's lastHeard ever advances (moc4:
+# 0 of 374 online for 5.8 days, 2026-10-02). Written only when the content
+# differs. meshtasticd is NOT restarted here: the gate acts at its next start,
+# and a box that is already running synced is healthy — check with
+# `num_online_nodes` in its journal, and restart only one that reads 0.
+MTD_NTP_TMPL="$INSTALL_DIR/templates/systemd/meshtasticd.service.d/20-wait-for-ntp-sync.conf"
+MTD_NTP_DST="/etc/systemd/system/meshtasticd.service.d/20-wait-for-ntp-sync.conf"
+if [[ -f "$MTD_NTP_TMPL" ]] && [[ -f /etc/systemd/system/meshtasticd.service \
+      || -f /lib/systemd/system/meshtasticd.service \
+      || -f /usr/lib/systemd/system/meshtasticd.service ]]; then
+    # The template names /opt/meshforge; follow a checkout that lives elsewhere.
+    MTD_NTP_BODY="$(sed "s#/opt/meshforge/#${INSTALL_DIR}/#g" "$MTD_NTP_TMPL")"
+    if [[ "$(cat "$MTD_NTP_DST" 2>/dev/null)" != "$MTD_NTP_BODY" ]]; then
+        mkdir -p "$(dirname "$MTD_NTP_DST")"
+        printf '%s\n' "$MTD_NTP_BODY" > "$MTD_NTP_DST"
+        chmod 644 "$MTD_NTP_DST"
+        echo -e "  ${GREEN}✓ meshtasticd NTP-sync wait drop-in installed (applies at meshtasticd's next start)${NC}"
+        SVC_UPDATED=true
+    else
+        echo -e "  ${GREEN}✓ meshtasticd NTP-sync wait drop-in already current${NC}"
+    fi
+fi
+
 # Deploy the meshtasticd MUDP-leg self-heal guard (oneshot + timer). The guard
 # script self-gates: it no-ops unless meshtasticd is active AND the box has been
 # seen actually using UDP multicast (224.0.0.69:4403), so it is safe to install
