@@ -48,7 +48,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -87,9 +87,18 @@ CONF_WEDGE = 0.10
 # consumers can never drift (honest_failure_modes checklist item 5). Pinned
 # mirror only if the import fails; `tests/test_traffic_pulse.py` asserts the
 # effective set equals the watchdog module's.
+# The windowed count itself — ONE implementation for the #74 probe, the TUI
+# Delivery screen and this pane (2026-10-03, reviewer B #3: this pane read
+# `recent` while the probe read `recent_terminal`, so on a moc3-shape gateway
+# it said "too small to judge" about data the probe judged). None only on a
+# broken import graph, which _honest_confirmation reports as unobservable.
+_confirmation_window: Optional[Callable[[dict], dict]]
 try:
     from utils.watchdog_probes_gateway import _DELIVERY_FAILURE_REASONS
+    from utils.watchdog_probes_gateway import confirmation_window as _cw
+    _confirmation_window = _cw
 except Exception:  # pragma: no cover - exercised only on a broken import graph
+    _confirmation_window = None
     _DELIVERY_FAILURE_REASONS = frozenset({
         "rns_delivery_failed", "retries_exhausted", "destination_unreachable",
         "delivery_timeout", "non_retriable_error", "circuit_open", "wedged",
@@ -830,20 +839,19 @@ def _honest_confirmation(delivery: dict) -> Dict[str, Any]:
                 "detail": "No protocol records delivery confirmations here "
                           "(Meshtastic has no ACK consumption yet — Thread-2 "
                           "step 4). Sends are real; confirmation is unobservable."}
-    recent = delivery.get("recent")
-    if not isinstance(recent, list):
+    if _confirmation_window is None:
+        # No second copy of the counting rule: a broken import is blindness,
+        # said as such, never a locally re-derived number.
+        return {"status": UNOBSERVABLE, "reason": "window_reader_unavailable",
+                "confirmable": sorted(confirmable),
+                "detail": "Confirmation window reader failed to import — "
+                          "not judging rather than counting a second way."}
+    win = _confirmation_window(delivery)
+    if win["ring_source"] is None:
         return {"status": UNOBSERVABLE, "reason": "no_recent_ring",
                 "confirmable": sorted(confirmable), "detail": "No recent-event ring."}
-    confirmed = failed = 0
-    for e in recent:
-        if not isinstance(e, dict) or e.get("protocol") not in confirmable:
-            continue
-        st = e.get("state")
-        if st == "confirmed":
-            confirmed += 1
-        elif st == "dropped" and e.get("drop_reason") in _DELIVERY_FAILURE_REASONS:
-            failed += 1
-    terminal = confirmed + failed
+    confirmed, failed = win["confirmed"], win["failed"]
+    terminal = win["terminal"]
     if terminal < MIN_CONFIRMABLE_TERMINAL:
         return {"status": UNOBSERVABLE, "reason": "insufficient_sample",
                 "confirmable": sorted(confirmable), "terminal": terminal,
@@ -858,6 +866,7 @@ def _honest_confirmation(delivery: dict) -> Dict[str, Any]:
     else:
         status = OK
     return {"status": status, "confirmable": sorted(confirmable),
+            "ring_source": win["ring_source"],
             "confirmed": confirmed, "failed": failed, "terminal": terminal,
             "rate": round(rate, 3),
             "detail": f"{confirmed}/{terminal} {', '.join(sorted(confirmable))} "

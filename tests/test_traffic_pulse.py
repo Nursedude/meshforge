@@ -120,6 +120,43 @@ class TestHonestConfirmation:
         assert r["confirmed"] == 20 and r["failed"] == 0 and r["rate"] == 1.0
         assert r["status"] == tp.OK
 
+    def test_moc3_shape_reads_recent_terminal_not_the_flooded_fifo(self):
+        """Reviewer B #3 (2026-10-02): `recent` full of unconfirmable sends
+        evicts the confirmable terminals; the probe judges `recent_terminal`.
+        The pane must judge the same ring, not say 'too small to judge'."""
+        d = {"state_by_protocol": {"confirmed": {"rns": 25}},
+             "recent": [{"protocol": "meshtastic", "state": "sent"}] * 200,
+             "recent_terminal": [{"protocol": "rns", "state": "confirmed"}] * 25}
+        r = tp._honest_confirmation(d)
+        assert r["status"] == tp.OK, r
+        assert r["terminal"] == 25 and r["ring_source"] == "recent_terminal"
+
+    def test_old_snapshot_without_recent_terminal_falls_back_to_recent(self):
+        d = {"state_by_protocol": {"confirmed": {"rns": 25}},
+             "recent": [{"protocol": "rns", "state": "confirmed"}] * 25}
+        r = tp._honest_confirmation(d)
+        assert r["status"] == tp.OK and r["ring_source"] == "recent"
+
+    def test_same_count_as_the_probe(self):
+        """One implementation (hfm #5): the pane's numbers ARE the probe's."""
+        from utils.watchdog_probes_gateway import confirmation_window
+        d = {"state_by_protocol": {"confirmed": {"rns": 3}},
+             "recent": [{"protocol": "meshtastic", "state": "sent"}] * 50,
+             "recent_terminal": ([{"protocol": "rns", "state": "confirmed"}] * 18
+                                 + [{"protocol": "rns", "state": "dropped",
+                                     "drop_reason": "rns_delivery_failed"}] * 7)}
+        r, w = tp._honest_confirmation(d), confirmation_window(d)
+        assert (r["confirmed"], r["failed"], r["terminal"]) == (
+            w["confirmed"], w["failed"], w["terminal"])
+
+    def test_window_reader_unavailable_is_unobservable_not_a_second_count(self, monkeypatch):
+        monkeypatch.setattr(tp, "_confirmation_window", None)
+        d = {"state_by_protocol": {"confirmed": {"rns": 25}},
+             "recent": [{"protocol": "rns", "state": "confirmed"}] * 25}
+        r = tp._honest_confirmation(d)
+        assert r["status"] == tp.UNOBSERVABLE
+        assert r["reason"] == "window_reader_unavailable"
+
     def test_meshtastic_sends_excluded_from_confirmable(self):
         recent = ([{"protocol": "rns", "state": "confirmed"} for _ in range(20)]
                   + [{"protocol": "meshtastic", "state": "sent"} for _ in range(100)])
