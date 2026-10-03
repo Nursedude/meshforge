@@ -172,6 +172,7 @@ def get_all_handlers() -> List[Type]:
     from handlers.meshtasticd_mqtt import MeshtasticdDeviceMQTTHandler
     from handlers.meshtasticd_nodedb import MeshtasticdNodeDBHandler
     from handlers.meshtasticd_txpower import MeshtasticdTxPowerHandler
+    from handlers.meshtasticd_channel_load import MeshtasticdChannelLoadHandler
     handlers.extend([
         MeshtasticdConfigHandler,
         MeshtasticdRadioHandler,
@@ -179,6 +180,7 @@ def get_all_handlers() -> List[Type]:
         MeshtasticdDeviceMQTTHandler,
         MeshtasticdNodeDBHandler,
         MeshtasticdTxPowerHandler,
+        MeshtasticdChannelLoadHandler,
     ])
 
     # Batch 10 — QA cleanup: about, daemon, reboot, diagnostics, config API

@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 84 handlers · 116 menu actions (derived from get_all_handlers(), never hand-edited).
+# 85 handlers · 117 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -451,6 +451,17 @@ HANDLER_MANIFEST = [
         "error": None,
         "menu_items": [
             ('meshcore', 'MeshCore            Companion radio, config', 'meshcore'),
+        ],
+    },
+    {
+        "handler_id": 'meshtasticd_channel_load',
+        "module": 'handlers.meshtasticd_channel_load',
+        "class_name": 'MeshtasticdChannelLoadHandler',
+        "menu_section": 'meshtasticd',
+        "lifecycle": False,
+        "error": None,
+        "menu_items": [
+            ('channel_load', 'Channel Load        Time over the 25% knee, utilization, decode fails (read-only)', None),
         ],
     },
     {
