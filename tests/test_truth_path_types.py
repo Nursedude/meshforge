@@ -37,6 +37,7 @@ TRUTH_PATH = [
     "src/mini_dudeai/claw_rf_watch.py",
     "src/utils/watchdog_probes_claw_watch.py",
     "src/monitoring/traffic_pulse.py",
+    "src/utils/radio_txpower_truth.py",
 ]
 
 

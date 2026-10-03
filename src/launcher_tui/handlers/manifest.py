@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 83 handlers · 115 menu actions (derived from get_all_handlers(), never hand-edited).
+# 84 handlers · 116 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -508,6 +508,17 @@ HANDLER_MANIFEST = [
             ('owner', 'Set Owner/Node Name', 'meshtastic'),
             ('presets', 'Radio Presets (LoRa)', 'meshtastic'),
             ('hardware', 'Select Radio Hardware', 'meshtastic'),
+        ],
+    },
+    {
+        "handler_id": 'meshtasticd_txpower',
+        "module": 'handlers.meshtasticd_txpower',
+        "class_name": 'MeshtasticdTxPowerHandler',
+        "menu_section": 'meshtasticd',
+        "lifecycle": False,
+        "error": None,
+        "menu_items": [
+            ('txpower_truth', 'TX Power Truth      Saved vs applied vs pending (read-only)', None),
         ],
     },
     {

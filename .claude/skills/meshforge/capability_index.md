@@ -10,7 +10,7 @@
 > X?", grep this file for the capability, then open the handler under
 > `src/launcher_tui/handlers/`.
 
-**83 handlers · 115 menu actions · 12 sections** (all derived from `get_all_handlers()`, never hardcoded).
+**84 handlers · 116 menu actions · 12 sections** (all derived from `get_all_handlers()`, never hardcoded).
 
 A non-empty **Flag** names the deployment-profile feature that gates the action. Gated does NOT mean hidden: when the feature is off the row is still SHOWN, marked `[off]`, and refuses to run with an explanation naming the profile (`HandlerRegistry.mark_label` / `OFF_MARK`). Nothing is removed from the menu — someone new to the domain cannot go looking for a capability they have never been shown. Blank = never gated.
 
@@ -140,6 +140,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | `hardware` | Select Radio Hardware | `meshtastic` | sweep |  | MeshtasticdRadioHandler |
 | `owner` | Set Owner/Node Name | `meshtastic` | sweep |  | MeshtasticdRadioHandler |
 | `presets` | Radio Presets (LoRa) | `meshtastic` | sweep |  | MeshtasticdRadioHandler |
+| `txpower_truth` | TX Power Truth — Saved vs applied vs pending (read-only) |  | sweep |  | MeshtasticdTxPowerHandler |
 
 ## `rf_sdr`
 
