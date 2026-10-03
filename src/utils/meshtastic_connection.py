@@ -14,6 +14,7 @@ Features:
 - Auto-detection of USB devices
 """
 
+import os
 import socket
 import subprocess
 import sys
@@ -77,6 +78,42 @@ def _install_meshtastic_thread_guard():
 
 # Install the guard on module import
 _install_meshtastic_thread_guard()
+
+
+def _device_held_by_other(device: str, proc_root: str = '/proc') -> Optional[bool]:
+    """Is ``device`` open in any OTHER process? True / False / None (unknown).
+
+    Scans <proc_root>/<pid>/fd. A process whose fds cannot be read makes the
+    answer unknown, never "free": the caller must not open a port it cannot
+    prove is unowned (the moc3 RNode, 2026-10-02). Run unprivileged, root's
+    processes are unreadable, so this reads None — AUTO then stays on TCP and
+    a standalone USB radio needs an explicit SERIAL mode. Safe by design.
+    """
+    try:
+        target = os.path.realpath(device)
+        me = os.getpid()
+        unknown = False
+        for pid in os.listdir(proc_root):
+            if not pid.isdigit() or int(pid) == me:
+                continue
+            fd_dir = os.path.join(proc_root, pid, 'fd')
+            try:
+                fds = os.listdir(fd_dir)
+            except FileNotFoundError:
+                continue  # exited mid-scan
+            except PermissionError:
+                unknown = True
+                continue
+            for fd in fds:
+                try:
+                    if os.path.realpath(os.path.join(fd_dir, fd)) == target:
+                        return True
+                except OSError:
+                    continue
+        return None if unknown else False
+    except OSError as e:
+        logger.debug(f"device ownership scan failed for {device}: {e}")
+        return None
 
 
 class ConnectionMode(Enum):
@@ -510,9 +547,31 @@ class MeshtasticConnectionManager:
             logger.info("AUTO mode: meshtasticd available on TCP, using TCP mode")
             return ConnectionMode.TCP
 
-        # Fall back to serial if USB device available
-        if self.serial_port or self._detect_usb_device():
-            logger.info("AUTO mode: no meshtasticd, USB device detected, using SERIAL mode")
+        # Fall back to serial ONLY when nothing else owns the radio path.
+        # 2026-10-02 moc3: with meshtasticd stopped, AUTO took the first
+        # /dev/ttyUSB* — the RNode rnsd had open — and wrote Meshtastic
+        # framing into a live RNS interface every ~90 s. Two owners make the
+        # fallback wrong: an installed meshtasticd (it IS the radio owner; its
+        # downtime is transient, and on a USB-radio box we would hold the port
+        # it needs to reopen), and any other process holding the device.
+        # Unknown on either question = do not take the port.
+        device = self.serial_port or self._detect_usb_device()
+        if device:
+            mtd = check_service('meshtasticd').state
+            if mtd != ServiceState.NOT_INSTALLED:
+                logger.info(
+                    f"AUTO mode: no meshtasticd on TCP, but its unit is present "
+                    f"({mtd.value}) — NOT falling back to serial {device}; "
+                    f"meshtasticd owns the radio")
+                return ConnectionMode.TCP
+            held = _device_held_by_other(device)
+            if held is not False:
+                logger.warning(
+                    f"AUTO mode: {device} is "
+                    f"{'open in another process' if held else 'of unknown ownership'}"
+                    f" — NOT opening it (could be an RNode or another radio's port)")
+                return ConnectionMode.TCP
+            logger.info(f"AUTO mode: no meshtasticd, {device} free, using SERIAL mode")
             return ConnectionMode.SERIAL
 
         # Default to TCP (will fail with clear message if no meshtasticd)
