@@ -552,6 +552,51 @@ class TestParseDeliveryDB:
         monkeypatch.setattr(tp, "_db_path", lambda n: None)
         assert isinstance(tp._parse_delivery_db(), Unobservable)
 
+    def _moc3_shape_db(self, tmp_path, monkeypatch):
+        """25 rns terminals, then 250 newer meshtastic queued/sent that flood
+        any newest-N FIFO — the moc3 shape the 2026-09-10 ring exists for."""
+        p = tmp_path / "delivery_counters.db"
+        conn = connect_tuned(str(p))
+        conn.execute("CREATE TABLE counters (key TEXT PRIMARY KEY, value INTEGER)")
+        conn.execute("CREATE TABLE events (ts REAL, id TEXT, state TEXT, "
+                     "protocol TEXT, drop_reason TEXT, note TEXT)")
+        conn.executemany("INSERT INTO counters VALUES (?,?)", [
+            ("state.confirmed", 22), ("state_proto.confirmed.rns", 22),
+            ("state.sent", 250), ("state_proto.sent.primary", 250)])
+        rows = [(1781000000.0 + i, f"r{i}", "confirmed", "rns", None, None)
+                for i in range(22)]
+        rows += [(1781000100.0 + i, f"f{i}", "dropped", "rns",
+                  "retries_exhausted", None) for i in range(3)]
+        rows += [(1781001000.0 + i, f"m{i}", "sent" if i % 2 else "queued",
+                  "primary", None, None) for i in range(250)]
+        conn.executemany("INSERT INTO events VALUES (?,?,?,?,?,?)", rows)
+        conn.commit()
+        conn.close()
+        monkeypatch.setattr(tp, "_db_path",
+                            lambda n: p if n == "delivery_counters" else None)
+        return tp._parse_delivery_db().value
+
+    def test_fallback_carries_recent_terminal_on_moc3_shape(self, tmp_path,
+                                                            monkeypatch):
+        """traffic_pulse queue #3 (2026-10-03): the DB fallback built only
+        `recent`, so confirmation_window fell back to the flooded FIFO and the
+        pane said "too small to judge" about 25 terminals the probe judges."""
+        d = self._moc3_shape_db(tmp_path, monkeypatch)
+        assert len(d["recent_terminal"]) == 25
+        assert d["recent_terminal"][-1]["drop_reason"] == "retries_exhausted"
+        r = tp._honest_confirmation(d)
+        assert r["status"] != tp.UNOBSERVABLE, r
+        assert r["confirmed"] == 22 and r["failed"] == 3
+
+    def test_fallback_canonicalises_ring_protocols_like_the_writer(
+            self, tmp_path, monkeypatch):
+        d = self._moc3_shape_db(tmp_path, monkeypatch)
+        assert {e["protocol"] for e in d["recent"]} == {"meshtastic"}
+
+    def test_fallback_ring_limit_matches_served_snapshot(self):
+        from gateway.delivery_counters import SNAPSHOT_RECENT_LIMIT
+        assert tp._SNAPSHOT_RECENT_LIMIT == SNAPSHOT_RECENT_LIMIT
+
 
 # ─────────────────────────────────────────────────────────────────────
 # End-to-end pulse_snapshot

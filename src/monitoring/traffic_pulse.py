@@ -104,6 +104,12 @@ except Exception:  # pragma: no cover - exercised only on a broken import graph
         "delivery_timeout", "non_retriable_error", "circuit_open", "wedged",
     })
 
+# Ring size of the served snapshot (gateway.delivery_counters
+# .SNAPSHOT_RECENT_LIMIT) — mirrored, not imported: gateway/__init__ pulls RNS
+# into this monitoring tool. Test-pinned equal so the DB fallback judges the
+# same window the probe does (honest_failure_modes #5).
+_SNAPSHOT_RECENT_LIMIT = 200
+
 # Benign drops — capacity/duplicate management, NOT delivery failures.
 _BENIGN_DROP_REASONS = frozenset({
     "dedup", "queue_pressure", "queue_shed", "evicted_overflow",
@@ -268,16 +274,24 @@ def _parse_delivery_db() -> Observation[Dict[str, Any]]:
                 preflight_ok = bool(value)
             elif key == "meta.consecutive_write_errors":
                 write_errors = int(value)
-        recent: List[Dict[str, Any]] = []
-        rows = conn.execute(
-            "SELECT ts, id, state, protocol, drop_reason FROM events "
-            "ORDER BY ts DESC LIMIT 50"
-        ).fetchall()
-        for r in reversed(rows):  # snapshot contract is newest-LAST
-            recent.append({
-                "ts": r["ts"], "id": r["id"], "state": r["state"],
-                "protocol": r["protocol"], "drop_reason": r["drop_reason"],
-            })
+        # Both rings mirror DeliveryCounters.snapshot(): same limit, same
+        # rowid order, same canonical protocol labels, newest-LAST. Without
+        # `recent_terminal` confirmation_window fell back to the FIFO, which
+        # on a moc3-shape gateway is flooded by unconfirmable sends — so this
+        # pane said "too small to judge" about terminals the #74 probe judges
+        # (traffic_pulse queue #3, 2026-10-03).
+        def _ring(where: str, args: Tuple[Any, ...]) -> List[Dict[str, Any]]:
+            rows = conn.execute(
+                "SELECT ts, id, state, protocol, drop_reason FROM events "
+                f"{where} ORDER BY rowid DESC LIMIT ?",
+                (*args, _SNAPSHOT_RECENT_LIMIT),
+            ).fetchall()
+            return [{"ts": r["ts"], "id": r["id"], "state": r["state"],
+                     "protocol": canonical_protocol(r["protocol"]),
+                     "drop_reason": r["drop_reason"]}
+                    for r in reversed(rows)]
+        recent = _ring("", ())
+        recent_terminal = _ring("WHERE state IN (?, ?)", ("confirmed", "dropped"))
         # Honest confirmation accounting — mirrors
         # DeliveryCounters.compute_confirmation_view (Issue #74 display fix).
         # Can't import it (gateway/__init__ pulls RNS into this monitoring
@@ -324,6 +338,7 @@ def _parse_delivery_db() -> Observation[Dict[str, Any]]:
                 and isinstance(v, (int, float)) and not isinstance(v, bool)
             ),
             "recent": recent,
+            "recent_terminal": recent_terminal,
             "last_event_ts": last_event_ts,
             "health": {
                 "preflight_ok": preflight_ok,
