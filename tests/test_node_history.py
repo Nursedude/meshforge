@@ -22,13 +22,13 @@ def hist(tmp_path: Path) -> NodeHistoryDB:
 
 def _feature(node_id: str, ts_offset: float = 0.0,
              lat: float = 0.2, lon: float = 0.1,
-             network: str = "meshtastic"):
+             network: str = "meshtastic", is_online: bool = True):
     """Build a minimal GeoJSON feature for record_observations."""
     return {
         "type": "Feature",
         "geometry": {"type": "Point", "coordinates": [lon, lat]},
         "properties": {
-            "id": node_id, "name": node_id, "is_online": True,
+            "id": node_id, "name": node_id, "is_online": is_online,
             "network": network,
         },
     }
@@ -236,6 +236,21 @@ class TestValueDedup:
         assert h.record_observations([
             _feature("!multi", network="aredn")
         ]) == 1
+
+    def test_online_flip_triggers_record_inside_heartbeat(self, tmp_path):
+        """traffic_pulse residual queue, writer root cause (2026-10-03): the
+        key omitted is_online, so a node going offline at a fixed position
+        wrote no row for up to a heartbeat and online-at-snapshot readers
+        kept counting it online."""
+        h = self._hist(tmp_path, heartbeat_seconds=3600)
+        assert h.record_observations([_feature("!flip", is_online=True)]) == 1
+        h._last_recorded["!flip"] -= 120
+        assert h.record_observations([_feature("!flip", is_online=False)]) == 1
+        h._last_recorded["!flip"] -= 120
+        # Unchanged offline → deduped again.
+        assert h.record_observations([_feature("!flip", is_online=False)]) == 0
+        # Back online → recorded.
+        assert h.record_observations([_feature("!flip", is_online=True)]) == 1
 
 
 # ────────────────────────────────────────────────────────────────────────

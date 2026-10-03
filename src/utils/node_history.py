@@ -115,7 +115,7 @@ class NodeHistoryDB:
                 Trajectories rarely matter beyond the last day; the `nodes`
                 directory table answers the "did we ever hear this node"
                 question on a longer horizon.
-            heartbeat_seconds: Skip insert when (lat, lon, network) match the
+            heartbeat_seconds: Skip insert when (lat, lon, network, is_online) match the
                 last recorded value AND we're inside this window. 0 disables
                 the value-dedup path (legacy time-only throttle).
             directory_retention_local: Retention for locally-RX'd directory
@@ -145,7 +145,7 @@ class NodeHistoryDB:
         self._last_recorded: Dict[str, float] = {}  # node_id -> last record time
         # Last (round(lat,6), round(lon,6), network) per node. Pruned in
         # lockstep with _last_recorded.
-        self._last_value: Dict[str, Tuple[float, float, str]] = {}
+        self._last_value: Dict[str, Tuple[float, float, str, bool]] = {}
         # Hourly auto-prune cadence. Without this, the DB+WAL grow unbounded
         # — see Issue #44 follow-up where a 14 GB WAL accumulated over 4 days
         # and wedged the service in `jbd2_log_wait_commit` on next startup.
@@ -630,16 +630,22 @@ class NodeHistoryDB:
             # lon/lat were coerced to float above.
             network = props.get("network", "meshtastic")
 
-            # Value-dedup: skip when (lat, lon, network) match the last
-            # recorded value AND we're still inside the heartbeat window.
-            # Disabled when heartbeat_seconds == 0.
-            if self._heartbeat_seconds > 0:
-                rounded = (round(lat, _LAT_LON_PRECISION),
-                           round(lon, _LAT_LON_PRECISION),
-                           network)
-                if (self._last_value.get(node_id) == rounded
-                        and (now - last) < self._heartbeat_seconds):
-                    continue
+            is_online = bool(props.get("is_online", True))
+
+            # Value-dedup: skip when (lat, lon, network, is_online) match the
+            # last recorded value AND we're still inside the heartbeat window.
+            # Disabled when heartbeat_seconds == 0. is_online is in the key
+            # (2026-10-03) because readers judge "online at snapshot": without
+            # it a node that went offline in place wrote no row for up to a
+            # heartbeat and kept reading online (traffic_pulse residual queue,
+            # writer root cause; measured +5-16% rows, accepted).
+            dedup_key = (round(lat, _LAT_LON_PRECISION),
+                         round(lon, _LAT_LON_PRECISION),
+                         network, is_online)
+            if (self._heartbeat_seconds > 0
+                    and self._last_value.get(node_id) == dedup_key
+                    and (now - last) < self._heartbeat_seconds):
+                continue
 
             to_insert.append((
                 node_id,
@@ -651,7 +657,7 @@ class NodeHistoryDB:
                 props.get("rssi"),
                 props.get("battery"),
                 _clean_voltage(props.get("voltage")),
-                1 if props.get("is_online", True) else 0,
+                1 if is_online else 0,
                 network,
                 props.get("hardware", ""),
                 props.get("role", ""),
@@ -660,11 +666,7 @@ class NodeHistoryDB:
             ))
             self._last_recorded[node_id] = now
             if self._heartbeat_seconds > 0:
-                self._last_value[node_id] = (
-                    round(lat, _LAT_LON_PRECISION),
-                    round(lon, _LAT_LON_PRECISION),
-                    network,
-                )
+                self._last_value[node_id] = dedup_key
 
         # Prune stale entries to prevent unbounded memory growth
         if len(self._last_recorded) > 10000:

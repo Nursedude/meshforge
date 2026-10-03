@@ -629,7 +629,7 @@ pass or a follow-up.
 
 ## QUEUED 2026-10-02 — traffic_pulse residual audit (reviewer B, contextless; tri-state adopter #3)
 Shipped this session: `cef6853d` (blind delivery/watchdog reads -> unobservable), `f015680b` (online-at-snapshot RF/telemetry, battery 101/0). Reviewer B counted 11 REAL defects of the class in the pane after `cef6853d`; #1 (offline SNR) + #2 (battery 101) fixed in `f015680b`. Remaining, ranked:
-- [ ] **writer root cause** — `node_history` dedup key `(lat, lon, network)` omits `is_online`: an online/offline flip writes no row for up to a heartbeat (3600 s). Cure: add the flag to the key; MEASURE row-rate on the smallest box first (the dedup is an SD-survival fix).
+- [x] **DONE 2026-10-03** (MF this commit; MA port follows) **writer root cause** — `node_history` dedup key `(lat, lon, network)` omits `is_online`: an online/offline flip writes no row for up to a heartbeat (3600 s). Cure: add the flag to the key; MEASURE row-rate on the smallest box first (the dedup is an SD-survival fix).
 - [x] **DONE 2026-10-03** (served half `531c5857`; DB-fallback half: `_parse_delivery_db` now builds `recent_terminal` + canonical labels + the served 200 limit, test-pinned) #3 `_honest_confirmation` reads `recent`, not `recent_terminal` (producer field since 09-10; the #74 probe reads it) — moc3-shape gateways show "too small to judge" while the probe judges the same data. DB fallback has no terminal ring.
 - [ ] #4 `_mqtt_node_facts` has no freshness gate (live file 8 months old reads env `ok`); share the 300 s constant with `_map_collector_trackers`.
 - [ ] #6 clock: negative deltas clamp to "fresh" (`_node_facts` no upper bound; `_qa_seen`/`_iso_age_s` `max(0, ...)`) — hfm #6.
