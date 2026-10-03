@@ -704,3 +704,91 @@ class TestServedBlindnessIsNotAnEmptyHistory:
         snap = tp.pulse_snapshot()
         assert snap["meta"]["delivery_source"] == "db"
         assert snap["qa"]["status"] == tp.QUIET
+
+
+class TestCollectorSnapshotIsNotReception:
+    """2026-10-02, review B, re-measured on the manager box's live node_history.db:
+    a window row is a collector SNAPSHOT row (written ~once per heartbeat per
+    unmoved node, with its is_online flag at that moment), so a 60-min window
+    held 882 rows at only 2 distinct timestamps — 838 of them offline nodes
+    carrying their LAST-KNOWN SNR. is_online can itself be ~a heartbeat stale
+    (review C), so the pane says "online at last snapshot", never "heard". The pane said 433 SNR nodes avg -0.9 dB (excellent); the online
+    truth was 25 nodes at -7.3 dB (fair). And Meshtastic's battery=101 means
+    "external power", which node_history_analytics already excludes
+    (BATTERY_MAX_REAL) — two consumers, two rules (hfm #5)."""
+
+    NOW = datetime(2026, 10, 2, 14, 0, 0)
+    DDL = ("CREATE TABLE node_observations (id INTEGER PRIMARY KEY, node_id TEXT, "
+           "timestamp REAL, snr REAL, rssi INTEGER, battery INTEGER, is_online INTEGER, "
+           "voltage REAL)")
+
+    def _db(self, tmp_path, monkeypatch, rows):
+        path = tmp_path / "n.db"
+        conn = connect_tuned(str(path))
+        conn.execute(self.DDL)
+        rows = [r if len(r) == 7 else tuple(r) + (None,) for r in rows]
+        conn.executemany("INSERT INTO node_observations (node_id, timestamp, snr, "
+                         "rssi, battery, is_online, voltage) VALUES (?,?,?,?,?,?,?)", rows)
+        conn.commit()
+        conn.close()
+        monkeypatch.setattr(tp, "_db_path",
+                            lambda n: path if n == "node_history" else None)
+
+    def test_offline_last_known_snr_is_not_counted(self, tmp_path, monkeypatch):
+        ts = self.NOW.timestamp() - 60
+        rows = [(f"!off{i}", ts, 8.0, -90, 50, 0) for i in range(20)]
+        rows += [("!on1", ts, -10.0, -120, 60, 1), ("!on2", ts, -12.0, -121, 70, 1)]
+        self._db(tmp_path, monkeypatch, rows)
+        nf = tp._node_facts(3600, self.NOW)
+        rf = tp._rf_block(nf)
+        assert nf.nodes == 2 and nf.snr_nodes == 2
+        assert rf["avg_snr"] == -11.0 and rf["quality_band"] == "fair"
+
+    def test_external_power_101_is_not_a_percentage(self, tmp_path, monkeypatch):
+        ts = self.NOW.timestamp() - 60
+        rows = [("!a", ts, 1.0, -90, 101, 1), ("!b", ts, 1.0, -90, 101, 1),
+                ("!c", ts, 1.0, -90, 40, 1), ("!d", ts, 1.0, -90, 0, 1)]
+        self._db(tmp_path, monkeypatch, rows)
+        tel = tp._telemetry_block(tp._node_facts(3600, self.NOW))
+        assert tel["avg_battery"] == 40
+        assert tel["telemetry_nodes"] == 1
+        assert tel.get("external_power_nodes") == 2
+
+    def test_control_legacy_db_without_is_online_still_reads(self, tmp_path, monkeypatch):
+        """No is_online column (pre-migration) must not drop every row."""
+        ts = self.NOW.timestamp() - 60
+        path = _make_node_db(tmp_path / "legacy.db", [("!a", ts, -5.0, -100, 80)])
+        monkeypatch.setattr(tp, "_db_path",
+                            lambda n: path if n == "node_history" else None)
+        nf = tp._node_facts(3600, self.NOW)
+        assert nf.nodes == 1 and nf.status == tp.OK
+
+    def test_zero_with_voltage_is_depleted_not_absent(self, tmp_path, monkeypatch):
+        """Review C: live 1S cells at 2.76-3.0 V report battery 0 — a reading.
+        0 with NO voltage is 'no monitor' and stays excluded."""
+        ts = self.NOW.timestamp() - 60
+        rows = [("!dead", ts, 1.0, -90, 0, 1, 2.9), ("!nomon", ts, 1.0, -90, 0, 1, None),
+                ("!ok", ts, 1.0, -90, 80, 1, 4.0)]
+        self._db(tmp_path, monkeypatch, rows)
+        tel = tp._telemetry_block(tp._node_facts(3600, self.NOW))
+        assert tel["avg_battery"] == 40 and tel["telemetry_nodes"] == 2
+        assert tel["depleted_nodes"] == 1 and "DEPLETED" in tel["detail"]
+
+    def test_all_offline_at_snapshot_is_not_claimed_silent(self, tmp_path, monkeypatch):
+        """Review C: is_online can be a heartbeat stale, so zero online rows
+        beside offline ones must not read 'No node activity — mesh quiet'."""
+        ts = self.NOW.timestamp() - 60
+        self._db(tmp_path, monkeypatch, [("!x", ts, 1.0, -90, 50, 0),
+                                         ("!y", ts, 2.0, -91, 60, 0)])
+        nf = tp._node_facts(3600, self.NOW)
+        for blk in (tp._telemetry_block(nf), tp._rf_block(nf)):
+            assert blk["status"] == tp.QUIET
+            assert "mesh quiet" not in blk["detail"] and "No node activity" not in blk["detail"]
+            assert "0 of 2" in blk["detail"]
+
+    def test_offline_count_excludes_nodes_that_also_had_an_online_row(self, tmp_path, monkeypatch):
+        ts = self.NOW.timestamp()
+        self._db(tmp_path, monkeypatch, [("!flip", ts - 1800, 1.0, -90, 50, 0),
+                                         ("!flip", ts - 60, 1.0, -90, 50, 1),
+                                         ("!gone", ts - 60, 1.0, -90, 50, 0)])
+        assert tp._node_facts(3600, self.NOW).offline_nodes == 1

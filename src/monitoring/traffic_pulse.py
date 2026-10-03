@@ -55,6 +55,7 @@ from urllib.request import urlopen
 from utils.db_helpers import connect_tuned
 from utils.delivery_labels import canonical_protocol
 from utils.db_inventory import INVENTORY
+from utils.node_history_analytics import BATTERY_MAX_REAL
 from utils.logging_config import get_logger
 from utils.observation import Failed, Observation, Seen, Unobservable, assert_never
 
@@ -349,6 +350,12 @@ class _NodeFacts:
     rssi_nodes: int = 0
     battery_values: List[int] = None        # type: ignore[assignment]
     battery_nodes: int = 0
+    # Meshtastic battery=101 is "on external power", not a percentage.
+    external_power_nodes: int = 0
+    # Nodes whose every window row was marked OFFLINE — excluded above.
+    offline_nodes: int = 0
+    # battery 0 with a measured voltage: a real empty cell, not "no monitor".
+    depleted_nodes: int = 0
 
 
 def _node_facts(window_s: int, now: datetime) -> _NodeFacts:
@@ -376,6 +383,7 @@ def _node_facts(window_s: int, now: datetime) -> _NodeFacts:
         snr_node_ids = set()
         rssi_node_ids = set()
         bat_node_ids = set()
+        ext_node_ids = set()
         obs = 0
         # rssi was added later (collector migration) — an un-migrated DB read
         # restart-free has no rssi column, so select it only when present
@@ -383,9 +391,30 @@ def _node_facts(window_s: int, now: datetime) -> _NodeFacts:
         obs_cols = {r[1] for r in
                     conn.execute("PRAGMA table_info(node_observations)")}
         has_rssi = "rssi" in obs_cols
+        # A window row is a collector SNAPSHOT row, not a reception: the
+        # writer (node_history) records each node with its is_online flag at
+        # most ~once per heartbeat (3600 s) while its position is unchanged,
+        # so an offline node carries its last-known SNR/battery through the
+        # window, and is_online itself can be up to a heartbeat stale (review
+        # C 2026-10-02: 7 of 13 nodes live on the map had only an offline row
+        # here). Measured on the manager box: 838 of 882 window rows offline;
+        # counting them read RF as 433 nodes "excellent" (-0.9 dB) vs 25
+        # online-at-snapshot nodes "fair" (-7.3 dB). So this reads "online at
+        # their last snapshot" and SAYS so; the writer-side cure (a row on an
+        # is_online flip) is queued. A pre-migration DB without the column is
+        # read unfiltered (unknown is not offline).
+        online = " AND is_online = 1" if "is_online" in obs_cols else ""
+        has_volt = "voltage" in obs_cols
         sel = ("SELECT node_id, snr, battery"
                + (", rssi" if has_rssi else "")
-               + " FROM node_observations WHERE timestamp > ?")
+               + (", voltage" if has_volt else "")
+               + " FROM node_observations WHERE timestamp > ?" + online)
+        offline_ids = set()
+        if online:
+            offline_ids = {row[0] for row in conn.execute(
+                "SELECT DISTINCT node_id FROM node_observations "
+                "WHERE timestamp > ? AND is_online = 0", (cutoff,))}
+        depleted_ids = set()
         for r in conn.execute(sel, (cutoff,)):
             obs += 1
             nid = r["node_id"]
@@ -397,9 +426,23 @@ def _node_facts(window_s: int, now: datetime) -> _NodeFacts:
             if has_rssi and r["rssi"] is not None:
                 rssi.append(int(r["rssi"]))
                 rssi_node_ids.add(nid)
-            if r["battery"] is not None:
-                battery.append(int(r["battery"]))
-                bat_node_ids.add(nid)
+            b = r["battery"]
+            if b is not None:
+                # 101 = external power (BATTERY_MAX_REAL, the one constant
+                # node_history_analytics uses — hfm #5): not a percentage.
+                # 0 WITH a measured voltage is a real depleted battery (review
+                # C: live 1S cells at 2.76-3.0 V) and is averaged + counted;
+                # 0 with no voltage is "no monitor" and is excluded.
+                bi = int(b)
+                if 0 < bi <= BATTERY_MAX_REAL:
+                    battery.append(bi)
+                    bat_node_ids.add(nid)
+                elif bi > BATTERY_MAX_REAL:
+                    ext_node_ids.add(nid)
+                elif bi == 0 and has_volt and r["voltage"] is not None:
+                    battery.append(0)
+                    bat_node_ids.add(nid)
+                    depleted_ids.add(nid)
         if obs > 0:
             status, reason = OK, ""
         elif latest is None:
@@ -414,6 +457,10 @@ def _node_facts(window_s: int, now: datetime) -> _NodeFacts:
             snr_nodes=len(snr_node_ids), rssi_values=rssi,
             rssi_nodes=len(rssi_node_ids), battery_values=battery,
             battery_nodes=len(bat_node_ids),
+            external_power_nodes=len(ext_node_ids),
+            # Only nodes with NO online row in the window were excluded.
+            offline_nodes=len(offline_ids - node_ids),
+            depleted_nodes=len(depleted_ids),
         )
     except Exception as exc:
         logger.debug("traffic_pulse: node_observations read failed: %s", exc)
@@ -572,6 +619,16 @@ def _attach_rssi(block: Dict[str, Any], nf: _NodeFacts) -> None:
     block["detail"] += f" · RSSI ~{avg} dBm ({nf.rssi_nodes} nodes)"
 
 
+def _quiet_detail(nf: _NodeFacts, win_m: int) -> str:
+    """QUIET wording. Zero ONLINE rows beside offline-marked ones is not "no
+    activity": is_online can be a heartbeat stale (review C 2026-10-02)."""
+    if nf.offline_nodes:
+        return (f"0 of {nf.offline_nodes} nodes in the {win_m}m window were "
+                "online at their last snapshot (snapshots can be ~60m old) — "
+                "not a reception count.")
+    return f"No node activity in the last {win_m}m — mesh quiet."
+
+
 def _telemetry_block(nf: _NodeFacts,
                      mqtt: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if nf.status == UNOBSERVABLE:
@@ -579,19 +636,25 @@ def _telemetry_block(nf: _NodeFacts,
     win_m = nf.window_s // 60
     if nf.status == QUIET or nf.obs == 0:
         return {"status": QUIET, "telemetry_nodes": 0, "nodes_heard": nf.nodes,
-                "detail": f"No node activity in the last {win_m}m — mesh quiet."}
+                "detail": _quiet_detail(nf, win_m)}
     if nf.battery_nodes == 0:
         # Nodes are heard but none reported device telemetry this window —
         # normal (telemetry is periodic), not an alarm.
-        block = {"status": OK, "telemetry_nodes": 0, "nodes_heard": nf.nodes,
-                 "detail": f"{nf.nodes} nodes heard in {win_m}m, none reporting "
+        block: Dict[str, Any] = {"status": OK, "telemetry_nodes": 0, "nodes_heard": nf.nodes,
+                 "detail": f"{nf.nodes} nodes online at last snapshot ({win_m}m), none reporting "
                            "device telemetry (battery) — telemetry is periodic."}
     else:
         avg_bat = round(sum(nf.battery_values) / len(nf.battery_values))
         block = {"status": OK, "telemetry_nodes": nf.battery_nodes,
                  "nodes_heard": nf.nodes, "avg_battery": avg_bat,
-                 "detail": f"{nf.battery_nodes} of {nf.nodes} nodes reporting "
-                           f"device telemetry in {win_m}m · avg battery {avg_bat}%."}
+                 "detail": f"{nf.battery_nodes} of {nf.nodes} online-at-snapshot nodes "
+                           f"reporting battery in {win_m}m · avg {avg_bat}%."}
+    block["external_power_nodes"] = nf.external_power_nodes
+    block["depleted_nodes"] = nf.depleted_nodes
+    if nf.depleted_nodes:
+        block["detail"] += f" · {nf.depleted_nodes} DEPLETED (0%)"
+    if nf.external_power_nodes:
+        block["detail"] += f" · {nf.external_power_nodes} on external power"
     _attach_env(block, mqtt)
     return block
 
@@ -626,10 +689,10 @@ def _rf_block(nf: _NodeFacts) -> Dict[str, Any]:
     if nf.status == QUIET or not nf.snr_values:
         if nf.status == QUIET:
             return {"status": QUIET, "snr_samples": 0,
-                    "detail": f"No node activity in the last {win_m}m."}
+                    "detail": _quiet_detail(nf, win_m)}
         # Nodes heard but none carried SNR — relayed/RNS nodes have no RF leg.
         return {"status": UNOBSERVABLE, "reason": "no_snr_samples", "snr_samples": 0,
-                "detail": f"{nf.nodes} nodes heard in {win_m}m but none carried "
+                "detail": f"{nf.nodes} online-at-snapshot nodes in {win_m}m but none carried "
                           "SNR (relayed/RNS nodes have no RF leg)."}
     avg_snr = sum(nf.snr_values) / len(nf.snr_values)
     band = _rf_quality_band(avg_snr)
@@ -637,7 +700,8 @@ def _rf_block(nf: _NodeFacts) -> Dict[str, Any]:
     block = {"status": status, "snr_samples": len(nf.snr_values),
              "snr_nodes": nf.snr_nodes, "avg_snr": round(avg_snr, 1),
              "min_snr": round(min(nf.snr_values), 1), "quality_band": band,
-             "detail": f"{len(nf.snr_values)} SNR samples from {nf.snr_nodes} nodes "
+             "detail": f"{len(nf.snr_values)} SNR samples from {nf.snr_nodes} "
+                      "online-at-snapshot nodes "
                       f"in {win_m}m · avg {round(avg_snr, 1)} dB ({band})."}
     _attach_rssi(block, nf)
     return block
@@ -990,6 +1054,7 @@ def pulse_snapshot(*, base_url: str = DEFAULT_BASE_URL,
             "status_source": _source_label(status_blob),
             "nodes_heard": nf.nodes,
             "node_obs": nf.obs,
+            "nodes_offline_excluded": nf.offline_nodes,
             "node_obs_latest_age_s": (round(nf.latest_age_s)
                                       if nf.latest_age_s is not None else None),
         },
