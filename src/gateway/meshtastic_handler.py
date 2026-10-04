@@ -269,7 +269,13 @@ class MeshtasticHandler(BaseMessageHandler):
                     msg_id=msg_id,
                     protocol="meshtastic",
                 )
-            self._ack_tracker.register(packet_id, msg_id, protocol="meshtastic")
+            # The send result's `.to` is the destination node number; the
+            # caller's `destination` (a "!hex" id) is the fallback.
+            dest_num = getattr(result, 'to', None)
+            if not isinstance(dest_num, int) or isinstance(dest_num, bool):
+                dest_num = destination
+            self._ack_tracker.register(packet_id, msg_id, protocol="meshtastic",
+                                       dest_num=dest_num)
         except Exception as e:
             logger.debug(f"Could not arm ACK tracking: {e}")
 
@@ -620,12 +626,12 @@ class MeshtasticHandler(BaseMessageHandler):
             # end-to-end ACK/NAK for one of our wantAck DMs. Consume it so
             # delivery_counters records the honest terminal state (#74).
             elif portnum == 'ROUTING_APP':
-                self._handle_routing_ack(decoded)
+                self._handle_routing_ack(decoded, packet.get('from'))
 
         except Exception as e:
             logger.error(f"Error processing Meshtastic message: {e}")
 
-    def _handle_routing_ack(self, decoded: dict) -> None:
+    def _handle_routing_ack(self, decoded: dict, from_num=None) -> None:
         """Resolve a ROUTING_APP ACK/NAK to a CONFIRMED / DROPPED transition.
 
         Inert unless the packet's ``request_id`` matches a DM we sent with
@@ -638,7 +644,10 @@ class MeshtasticHandler(BaseMessageHandler):
             ack = parse_routing_ack(decoded)
             if ack is None:
                 return
-            resolved = self._ack_tracker.resolve(ack.request_id)
+            # A positive ACK counts only if the DM's destination sent it —
+            # a relay's implicit ack is not delivery (ack_tracker docstring).
+            resolved = self._ack_tracker.resolve(
+                ack.request_id, from_num=from_num, positive=ack.ok)
             if resolved is None:
                 return
             msg_id, protocol = resolved

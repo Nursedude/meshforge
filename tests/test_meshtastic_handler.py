@@ -1158,7 +1158,8 @@ class TestMeshAckConsumption:
         _, kwargs = h._interface.sendText.call_args
         assert kwargs["wantAck"] is True
         # packet_id registered → resolvable as the synthesized id
-        resolved = h.ack_tracker.resolve(0x11112222)
+        # ...against the DM's destination: only that node's ACK confirms
+        resolved = h.ack_tracker.resolve(0x11112222, from_num=0xAABB0001)
         assert resolved == ("mesh-11112222", "meshtastic")
         # direct path records its own SENT (no queue lifecycle)
         rec.assert_any_call(DeliveryState.SENT,
@@ -1182,7 +1183,7 @@ class TestMeshAckConsumption:
         assert h.send_text("hi", destination="!aabb0001") is True
         _, kwargs = h._interface.sendText.call_args
         assert kwargs["wantAck"] is False
-        assert h.ack_tracker.resolve(0x33334444) is None
+        assert h.ack_tracker.pending_count() == 0
 
     def test_queue_send_dm_registers_with_queue_msg_id(self, handler, monkeypatch):
         from gateway.delivery_counters import DeliveryState
@@ -1194,7 +1195,8 @@ class TestMeshAckConsumption:
                            "channel": 2, "_queue_msg_id": "q-123"})
         assert ok is True
         # registered against the queue's id (so CONFIRMED joins QUEUED→SENT)
-        assert h.ack_tracker.resolve(0x55556666) == ("q-123", "meshtastic")
+        assert h.ack_tracker.resolve(0x55556666, from_num=0xB03BB70C) == (
+            "q-123", "meshtastic")
         # queue owns SENT — queue_send must NOT double-record it
         for c in rec.call_args_list:
             assert c.args[:1] != (DeliveryState.SENT,) or \
@@ -1207,10 +1209,11 @@ class TestMeshAckConsumption:
         rec = self._rec(monkeypatch)
         h = self._connected(handler)
         h.config.rns.meshtastic_ack_consumption_enabled = True
-        h.ack_tracker.register(0xAA01, "msg-7")
+        h.ack_tracker.register(0xAA01, "msg-7", dest_num=0xAABB0001)
 
         h._handle_routing_ack({"portnum": "ROUTING_APP",
-                               "requestId": 0xAA01, "routing": {}})
+                               "requestId": 0xAA01, "routing": {}},
+                              0xAABB0001)
 
         rec.assert_called_once_with(DeliveryState.CONFIRMED,
                                     msg_id="msg-7", protocol="meshtastic")
@@ -1249,9 +1252,10 @@ class TestMeshAckConsumption:
         rec = self._rec(monkeypatch)
         h = self._connected(handler)
         h.config.rns.meshtastic_ack_consumption_enabled = True
-        h.ack_tracker.register(0xCAFE, "msg-x")
+        h.ack_tracker.register(0xCAFE, "msg-x", dest_num=0xAABB0001)
 
-        h._on_receive({"decoded": {"portnum": "ROUTING_APP",
+        h._on_receive({"from": 0xAABB0001,
+                       "decoded": {"portnum": "ROUTING_APP",
                                    "requestId": 0xCAFE, "routing": {}}})
         rec.assert_called_once_with(DeliveryState.CONFIRMED,
                                     msg_id="msg-x", protocol="meshtastic")
@@ -1266,12 +1270,70 @@ class TestMeshAckConsumption:
 
         h.queue_send({"message": "ping", "destination": "!b03bb70c",
                       "channel": 2, "_queue_msg_id": "q-777"})
-        h._on_receive({"decoded": {"portnum": "ROUTING_APP",
+        h._on_receive({"from": 0xB03BB70C,
+                       "decoded": {"portnum": "ROUTING_APP",
                                    "requestId": 0x0BADF00D, "routing": {}}})
 
         rec.assert_called_with(DeliveryState.CONFIRMED,
                               msg_id="q-777", protocol="meshtastic")
-        assert h.ack_tracker.resolve(0x0BADF00D) is None  # consumed once
+        assert h.ack_tracker.resolve(0x0BADF00D,
+                                     from_num=0xB03BB70C) is None  # consumed once
+
+    # --- delivered != relayed: only the destination's ACK confirms -------
+
+    def test_implicit_ack_from_own_radio_does_not_confirm(self, handler, monkeypatch):
+        """Firmware ReliableRouter.cpp:54 — overhearing a relay rebroadcast
+        our DM makes our OWN radio emit an ack with our request_id. The
+        DM left; nothing says it arrived."""
+        from gateway.delivery_counters import DeliveryState
+        rec = self._rec(monkeypatch)
+        h = self._connected(handler, packet_id=0x0BADF00D)
+        h.config.rns.meshtastic_ack_consumption_enabled = True
+        h.queue_send({"message": "ping", "destination": "!b03bb70c",
+                      "channel": 2, "_queue_msg_id": "q-778"})
+
+        h._on_receive({"from": 0x12345678,   # our own node, not b03bb70c
+                       "decoded": {"portnum": "ROUTING_APP",
+                                   "requestId": 0x0BADF00D, "routing": {}}})
+        for c in rec.call_args_list:
+            assert c.args[:1] != (DeliveryState.CONFIRMED,)
+        assert h.ack_tracker.pending_count() == 1
+        assert h.ack_tracker.rejected_counts() == {"not_from_destination": 1}
+
+        # the recipient's own ACK, arriving after, still confirms
+        h._on_receive({"from": 0xB03BB70C,
+                       "decoded": {"portnum": "ROUTING_APP",
+                                   "requestId": 0x0BADF00D, "routing": {}}})
+        rec.assert_called_with(DeliveryState.CONFIRMED,
+                              msg_id="q-778", protocol="meshtastic")
+
+    def test_nak_from_own_radio_still_records_dropped(self, handler, monkeypatch):
+        """MAX_RETRANSMIT is generated by OUR radio (NextHopRouter.cpp:282),
+        so a NAK must resolve whoever sent it."""
+        from gateway.delivery_counters import DeliveryState
+        rec = self._rec(monkeypatch)
+        h = self._connected(handler)
+        h.config.rns.meshtastic_ack_consumption_enabled = True
+        h.ack_tracker.register(0xBB03, "msg-10", dest_num=0xAABB0001)
+
+        h._on_receive({"from": 0x12345678,
+                       "decoded": {"portnum": "ROUTING_APP", "requestId": 0xBB03,
+                                   "routing": {"errorReason": "MAX_RETRANSMIT"}}})
+        assert rec.call_args.args[0] == DeliveryState.DROPPED
+
+    def test_register_prefers_send_result_destination(self, handler, monkeypatch):
+        """The library's returned MeshPacket carries `.to` as an int; that
+        is the destination of record."""
+        from unittest.mock import MagicMock
+        self._rec(monkeypatch)
+        h = self._connected(handler)
+        h.config.rns.meshtastic_ack_consumption_enabled = True
+        h._interface.sendText.return_value = MagicMock(id=0x7777, to=0xCCDD0002)
+
+        assert h.send_text("hi", destination="!aabb0001") is True
+        assert h.ack_tracker.resolve(0x7777, from_num=0xAABB0001) is None
+        assert h.ack_tracker.resolve(0x7777, from_num=0xCCDD0002) == (
+            "mesh-00007777", "meshtastic")
 
 
 class TestMeshOracleWiring:

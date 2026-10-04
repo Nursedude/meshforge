@@ -1126,13 +1126,27 @@ class TestEServiceEnvelopeAckIngestion:
         from gateway.delivery_counters import DeliveryState
         rec = self._rec(monkeypatch)
         h = self._h()
-        h.ack_tracker.register(0xAA01, "msg-7")
-        dp = MagicMock(request_id=0xAA01)
+        h.ack_tracker.register(0xAA01, "msg-7", dest_num=0xAABB0001)
+        dp = MagicMock(request_id=0xAA01, from_node=0xAABB0001)
         dp.routing_error_name.return_value = "NONE"
         h._handle_routing_envelope(dp)
         rec.assert_called_once_with(DeliveryState.CONFIRMED,
                                     msg_id="msg-7", protocol="meshtastic")
         assert h.stats.get("mesh_ack_confirmed") == 1
+
+    def test_ack_not_from_destination_does_not_confirm(self, monkeypatch):
+        """delivered != relayed: an ack heard on /e/ from any node other
+        than the DM's destination (a relay, or our own radio's implicit
+        ack) is refused and the DM stays pending."""
+        rec = self._rec(monkeypatch)
+        h = self._h()
+        h.ack_tracker.register(0xAA02, "msg-8", dest_num=0xAABB0001)
+        dp = MagicMock(request_id=0xAA02, from_node=0x55667788)
+        dp.routing_error_name.return_value = "NONE"
+        h._handle_routing_envelope(dp)
+        rec.assert_not_called()
+        assert h.ack_tracker.pending_count() == 1
+        assert h.ack_tracker.rejected_counts() == {"not_from_destination": 1}
 
     def test_dropped_on_nak(self, monkeypatch):
         from gateway.delivery_counters import DeliveryState, DropReason
@@ -1178,8 +1192,8 @@ class TestEServiceEnvelopeAckIngestion:
         from gateway.delivery_counters import DeliveryState
         rec = self._rec(monkeypatch)
         h = self._h(ack_enabled=True)
-        h.ack_tracker.register(0xCAFE, "msg-x")
-        dp = MagicMock(request_id=0xCAFE, is_routing=True)
+        h.ack_tracker.register(0xCAFE, "msg-x", dest_num=0xAABB0001)
+        dp = MagicMock(request_id=0xCAFE, is_routing=True, from_node=0xAABB0001)
         dp.routing_error_name.return_value = "NONE"
         monkeypatch.setattr('gateway.mqtt_bridge_handler.decode_service_envelope',
                             lambda *a, **k: dp)
@@ -1196,7 +1210,8 @@ class TestEServiceEnvelopeAckIngestion:
         self._rec(monkeypatch)
         h = self._h()
         h._maybe_register_ack(0x1234, 0xAABB0001, "q-1", record_sent=False)
-        assert h.ack_tracker.resolve(0x1234) == ("q-1", "meshtastic")
+        assert h.ack_tracker.resolve(0x1234, from_num=0xAABB0001) == (
+            "q-1", "meshtastic")
 
     def test_channel_keys_include_default_and_downlink(self):
         h = self._h()

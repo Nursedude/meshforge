@@ -35,6 +35,21 @@ was never seen). Bounded + monotonic-TTL'd so a never-acked DM can't leak
 the expiry timer). No sweeper thread (MF010): TTL is enforced lazily on
 ``register``/``resolve`` and via ``expire_idle()`` from the bridge sweep.
 
+A positive ACK confirms only when it came FROM the DM's destination.
+Firmware v2.7.26 has our OWN radio emit an error-NONE "implicit" ack
+carrying our request_id in two places: on overhearing a relay rebroadcast
+the packet over LoRa (ReliableRouter.cpp:54-57, DMs included), and on
+seeing its own packet echoed back via MQTT downlink (MQTT.cpp:97). Every
+other positive ack is sent from inside isToUs(), i.e. by the destination.
+The implicit ones prove the DM left, not that it arrived. Such an ack is refused,
+counted (in-process only; the INFO log line is the persistent trace),
+and the entry stays pending for the destination's own ACK. NAKs resolve
+whoever sent them: only our radio (MAX_RETRANSMIT, guarded by isFromUs,
+NextHopRouter.cpp:281-284) or the destination ever sends one.
+⚠️ A relayed-then-lost DM gets no MAX_RETRANSMIT (the implicit ack
+already stopped retransmission), so it stays SENT when its entry
+expires — unknown, never counted as success or failure.
+
 Mirrors the store idioms (``correlation_store``/``reply_context``):
 ``threading.RLock``, ``_sanitize_positive`` on config numerics
 (MagicMock-safe), every public method swallows and logs — ACK bookkeeping
@@ -61,6 +76,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TTL_SEC = 600        # forget an un-acked DM after ~10 min (retransmits)
 DEFAULT_MAX_PENDING = 1024   # in-flight DM cap, oldest-evicted
+BROADCAST_NUM = 0xFFFFFFFF   # no single node can ACK a broadcast
 
 
 @dataclass(frozen=True)
@@ -111,6 +127,23 @@ def routing_error_to_drop_reason(reason: str) -> DropReason:
         return DropReason.NON_RETRIABLE_ERROR
     return _NAK_DROP_REASON.get(reason.strip().upper(),
                                 DropReason.NON_RETRIABLE_ERROR)
+
+
+def _node_num(value) -> Optional[int]:
+    """A Meshtastic node number (uint32) or None. Accepts an int or a
+    ``!hex`` node id; bools, negatives and junk are None (unknown, never
+    a match)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if 0 <= value <= 0xFFFFFFFF else None
+    if isinstance(value, str) and value.startswith("!"):
+        try:
+            n = int(value[1:], 16)
+        except ValueError:
+            return None
+        return n if 0 <= n <= 0xFFFFFFFF else None
+    return None
 
 
 def parse_routing_ack(decoded) -> Optional[RoutingAck]:
@@ -166,14 +199,19 @@ class AckTracker:
         self._ttl = _sanitize_positive(ttl_sec, DEFAULT_TTL_SEC)
         self._max = int(_sanitize_positive(max_pending, DEFAULT_MAX_PENDING))
         self._lock = threading.RLock()
-        # packet_id -> (msg_id, protocol, registered_monotonic_ts)
-        self._pending: Dict[int, Tuple[str, str, float]] = {}
+        # packet_id -> (msg_id, protocol, registered_monotonic_ts, dest_num)
+        self._pending: Dict[int, Tuple[str, str, float, Optional[int]]] = {}
+        # Positive ACKs refused, by why (hfm #9: every swallow leaves a witness)
+        self._rejected: Dict[str, int] = {}
 
-    def register(self, packet_id, msg_id, protocol: str = "meshtastic") -> bool:
+    def register(self, packet_id, msg_id, protocol: str = "meshtastic",
+                 dest_num=None) -> bool:
         """Remember that ``packet_id`` carries ``msg_id`` awaiting an ACK.
 
-        Returns False on bad input. Enforces TTL + cap on every call so
-        the map stays bounded without a sweeper thread (MF010).
+        ``dest_num`` is the DM's destination node number; without it a
+        positive ACK can never confirm (nothing to check the sender
+        against). Returns False on bad input. Enforces TTL + cap on every
+        call so the map stays bounded without a sweeper thread (MF010).
         """
         try:
             if (not isinstance(packet_id, int) or isinstance(packet_id, bool)
@@ -184,16 +222,23 @@ class AckTracker:
             proto = protocol if isinstance(protocol, str) and protocol \
                 else "meshtastic"
             now = time.monotonic()
+            dest = _node_num(dest_num)
             with self._lock:
-                self._pending[packet_id] = (msg_id, proto, now)
+                self._pending[packet_id] = (msg_id, proto, now, dest)
                 self._expire_locked(now)
             return True
         except Exception as e:
             logger.warning(f"ack register failed: {e}")
             return False
 
-    def resolve(self, request_id) -> Optional[Tuple[str, str]]:
+    def resolve(self, request_id, from_num=None,
+                positive: bool = True) -> Optional[Tuple[str, str]]:
         """Pop and return ``(msg_id, protocol)`` for an arriving ACK, or None.
+
+        ``positive`` True (an ACK) confirms only when ``from_num`` equals
+        the registered destination; otherwise the ACK is refused, counted
+        in ``rejected_counts()``, and the entry stays pending. A NAK
+        (``positive`` False) resolves regardless of sender.
 
         Single-shot: a duplicate / retransmitted ACK for the same
         ``request_id`` resolves to None the second time, so the caller
@@ -203,17 +248,45 @@ class AckTracker:
         try:
             if not isinstance(request_id, int) or isinstance(request_id, bool):
                 return None
+            sender = _node_num(from_num)
             with self._lock:
-                entry = self._pending.pop(request_id, None)
-            if entry is None:
-                return None
-            msg_id, proto, ts = entry
-            if (time.monotonic() - ts) > self._ttl:
-                return None
+                entry = self._pending.get(request_id)
+                if entry is None:
+                    return None
+                msg_id, proto, ts, dest = entry
+                if (time.monotonic() - ts) > self._ttl:
+                    del self._pending[request_id]
+                    return None
+                if positive:
+                    why = None
+                    if dest is None or dest == BROADCAST_NUM:
+                        why = "destination_unknown"
+                    elif sender is None:
+                        why = "sender_unknown"
+                    elif sender != dest:
+                        why = "not_from_destination"
+                    if why is not None:
+                        self._rejected[why] = self._rejected.get(why, 0) + 1
+                        logger.info(
+                            f"ACK for {msg_id} (pkt={request_id:#0x}) not "
+                            f"counted as delivery: {why} (from="
+                            f"{'?' if sender is None else f'{sender:#010x}'}, "
+                            f"dest={'?' if dest is None else f'{dest:#010x}'})")
+                        return None
+                del self._pending[request_id]
             return (msg_id, proto)
         except Exception as e:
             logger.warning(f"ack resolve failed: {e}")
             return None
+
+    def rejected_counts(self) -> Dict[str, int]:
+        """Positive ACKs refused as delivery proof, by reason."""
+        try:
+            with self._lock:
+                return dict(self._rejected)
+        except Exception as e:
+            logger.warning(f"ack rejected_counts failed: {e}")
+            return {}
 
     def pending_count(self) -> int:
         """Count of un-resolved, non-expired in-flight entries."""
@@ -251,7 +324,7 @@ class AckTracker:
         """Remove TTL-expired entries, then oldest-evict down to the cap."""
         removed = 0
         cutoff = now - self._ttl
-        stale = [pid for pid, (_, _, ts) in self._pending.items()
+        stale = [pid for pid, (_, _, ts, _) in self._pending.items()
                  if ts < cutoff]
         for pid in stale:
             del self._pending[pid]

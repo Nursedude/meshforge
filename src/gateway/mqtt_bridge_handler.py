@@ -299,7 +299,8 @@ class MQTTBridgeHandler(BaseMessageHandler):
             if record_sent:
                 _dc.record(_dc.DeliveryState.SENT, msg_id=msg_id,
                            protocol="meshtastic")
-            self._ack_tracker.register(packet_id, msg_id, protocol="meshtastic")
+            self._ack_tracker.register(packet_id, msg_id, protocol="meshtastic",
+                                       dest_num=dest_num)
         except Exception as e:
             logger.debug(f"Could not arm ACK tracking: {e}")
 
@@ -307,12 +308,16 @@ class MQTTBridgeHandler(BaseMessageHandler):
         """A decoded ROUTING_APP /e/ packet → CONFIRMED / DROPPED if it
         matches one of our in-flight DMs. Never raises into the MQTT loop."""
         try:
-            resolved = self._ack_tracker.resolve(dp.request_id)
+            # A positive ACK counts only if the DM's destination sent it —
+            # a relay's implicit ack is not delivery (ack_tracker docstring).
+            err = dp.routing_error_name()
+            positive = err in (None, "", "NONE")
+            resolved = self._ack_tracker.resolve(
+                dp.request_id, from_num=dp.from_node, positive=positive)
             if resolved is None:
                 return
             msg_id, protocol = resolved
-            err = dp.routing_error_name()
-            if err in (None, "", "NONE"):
+            if positive:
                 _dc.record(_dc.DeliveryState.CONFIRMED, msg_id=msg_id,
                            protocol=protocol)
                 with self._stats_lock:
