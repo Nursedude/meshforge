@@ -110,6 +110,32 @@ check_info() {
 }
 
 # ─────────────────────────────────────────────────────────────────
+# Install mode — read from the installer's OWN declaration.
+# install_noc.sh phase 7 writes /etc/meshforge/noc.yaml with
+# services.<svc>.managed. Until 2026-10-04 this script never read it, so a
+# box installed --client-only (meshtasticd deliberately NOT here) was told
+# "Installation needs attention" with two FAILs — found by the gate-5
+# stranger drill. Tri-state, never collapsed:
+#   true     managed here     → the checks apply
+#   false    declared absent  → the checks SKIP (never PASS: this box makes
+#                               no claim about a radio it does not run)
+#   unknown  no/unreadable noc.yaml → the checks apply, and say why
+# ─────────────────────────────────────────────────────────────────
+NOC_YAML="${MESHFORGE_NOC_YAML:-/etc/meshforge/noc.yaml}"
+noc_service_managed() {   # <service> → prints true | false | unknown
+    [[ -r "$NOC_YAML" ]] || { echo unknown; return 0; }
+    awk -v svc="$1" '
+        { match($0, /^[[:space:]]*/); ind = RLENGTH }
+        !inb && $1 == svc":" { inb = 1; base = ind; next }
+        inb && NF && ind <= base { exit }
+        inb && $1 == "managed:" { v = $2; exit }
+        END { print ((v == "true" || v == "false") ? v : "unknown") }
+    ' "$NOC_YAML"
+}
+MTD_MANAGED="$(noc_service_managed meshtasticd)"
+MTD_SKIP_WHY="$NOC_YAML declares meshtasticd managed: false (client / skip install mode)"
+
+# ─────────────────────────────────────────────────────────────────
 # Header
 # ─────────────────────────────────────────────────────────────────
 if ! $QUIET; then
@@ -267,6 +293,16 @@ fi
 # Section 2: meshtasticd Installation
 # ─────────────────────────────────────────────────────────────────
 log "${BOLD}[2/6] meshtasticd Installation${NC}"
+
+# Section 3 sets these and Section 5 reads them — defined even when skipped.
+ACTIVE_COUNT=0
+ACTIVE_NAME=""
+if [[ "$MTD_MANAGED" == "false" ]]; then
+    check_skip "meshtasticd install + config" "not managed on this box — $MTD_SKIP_WHY"
+else
+if [[ "$MTD_MANAGED" == "unknown" ]]; then
+    check_info "Install mode" "$NOC_YAML missing or unreadable — assuming meshtasticd is managed here"
+fi
 
 MESHTASTICD_INSTALLED=false
 
@@ -429,6 +465,8 @@ fi
 
 log ""
 
+fi  # MTD_MANAGED (sections 2-3)
+
 # ─────────────────────────────────────────────────────────────────
 # Section 4: Service Status
 # ─────────────────────────────────────────────────────────────────
@@ -437,7 +475,9 @@ log "${BOLD}[4/6] Service Status${NC}"
 MESHTASTICD_RUNNING=false
 
 # Check meshtasticd service
-if systemctl is-active --quiet meshtasticd 2>/dev/null; then
+if [[ "$MTD_MANAGED" == "false" ]]; then
+    check_skip "meshtasticd service" "not managed on this box"
+elif systemctl is-active --quiet meshtasticd 2>/dev/null; then
     check_pass "meshtasticd service" "Running"
     MESHTASTICD_RUNNING=true
 elif systemctl is-enabled --quiet meshtasticd 2>/dev/null; then
@@ -461,7 +501,9 @@ elif $MESHTASTICD_RUNNING; then
     done
 fi
 
-if $PORT_4403_OK; then
+if [[ "$MTD_MANAGED" == "false" ]] && ! $PORT_4403_OK; then
+    check_skip "Port 4403 (TCP)" "meshtasticd not managed on this box"
+elif $PORT_4403_OK; then
     check_pass "Port 4403 (TCP)" "meshtasticd TCP interface listening"
 elif $MESHTASTICD_RUNNING; then
     check_warn "Port 4403 (TCP)" "Not listening yet" \
@@ -543,7 +585,9 @@ for dev in /dev/ttyUSB* /dev/ttyACM*; do
 done
 
 if ! $RADIO_FOUND; then
-    if $MESHTASTICD_RUNNING && [[ "$ACTIVE_COUNT" -gt 0 ]]; then
+    if [[ "$MTD_MANAGED" == "false" ]]; then
+        check_skip "Radio hardware" "no radio expected — meshtasticd not managed on this box"
+    elif $MESHTASTICD_RUNNING && [[ "$ACTIVE_COUNT" -gt 0 ]]; then
         # Service is running with active config — hardware not visible but
         # likely working (common in containers or when device managed by daemon)
         check_info "Radio hardware" \
