@@ -1,0 +1,115 @@
+# Stranger install drill — 1.0 gate 5, VIRTUAL leg (.claude/ROADMAP.md).
+#
+# WHY (2026-10-04): strangers install and copy MeshForge and never speak —
+# 0 issues ever opened by anyone but the operator. The fleet and lab are full
+# of our own config (hosts block, rnsd, apt holds, ~/.gitconfig: a test leaned
+# on the operator's git identity the same morning and went CI-red). This job
+# installs MeshForge the way a stranger would: a fresh Debian arm64 box with
+# systemd as PID 1, a fresh user with no dotfiles, no fleet registry, no AI,
+# and ONLY the README's commands.
+#
+# OBSERVE MODE (observe before alarm): the first runs RECORD what a stranger
+# meets; the job fails only when the drill itself could not run. The gate's
+# pass criteria are set from these baselines, then this mode is removed.
+#
+# Assumption, labelled: stock Raspberry Pi OS Lite is approximated by Debian
+# plus the packages listed in the Dockerfile below (sudo, git, python3,
+# ca-certificates). If RPi OS Lite lacks one of them, the README owes a step.
+#
+# Manual only: gh workflow run stranger_drill.yml [-f installer_args=...]
+
+name: Stranger drill (gate 5, virtual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      installer_args:
+        description: "Extra args after the README's install command (empty = literal README)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  drill:
+    name: stranger on debian ${{ matrix.release }} arm64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        release: [bookworm, trixie]
+    steps:
+      - name: Build a fresh box (systemd as PID 1, user 'ham', no dotfiles)
+        run: |
+          mkdir box && cat > box/Dockerfile <<'EOF'
+          ARG RELEASE
+          FROM debian:${RELEASE}
+          ENV container=docker
+          RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                systemd systemd-sysv sudo git python3 ca-certificates \
+              && rm -rf /var/lib/apt/lists/* \
+              && useradd -m -s /bin/bash ham \
+              && echo 'ham ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/ham
+          STOPSIGNAL SIGRTMIN+3
+          CMD ["/sbin/init"]
+          EOF
+          docker build -q --build-arg RELEASE=${{ matrix.release }} -t stranger box
+          docker run -d --name box --privileged --cgroupns=host \
+            --tmpfs /run --tmpfs /run/lock \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw stranger
+          for i in $(seq 1 30); do
+            s=$(docker exec box systemctl is-system-running 2>/dev/null || true)
+            case "$s" in running|degraded) break;; esac; sleep 2
+          done
+          echo "box systemd state: $s"
+
+      - name: README step 1-2 — git clone + cd (pinned to the dispatched commit)
+        run: |
+          docker exec -u ham -w /home/ham box bash -lc \
+            "git clone -q https://github.com/${{ github.repository }}.git meshforge \
+             && git -C meshforge checkout -q ${{ github.sha }}"
+
+      - name: README step 3 — sudo bash scripts/install_noc.sh (no TTY, stdin closed)
+        run: |
+          set +e
+          docker exec -u ham -w /home/ham/meshforge box bash -lc \
+            "timeout 1800 sudo bash scripts/install_noc.sh ${{ inputs.installer_args }} </dev/null" \
+            > install.log 2>&1
+          echo "INSTALL_RC=$?" >> "$GITHUB_ENV"
+          tail -40 install.log
+
+      - name: Observe what the stranger got
+        if: always()
+        run: |
+          set +e
+          x() { docker exec -u ham -w /home/ham/meshforge box bash -lc "$1" > "$2" 2>&1; echo $?; }
+          VERIFY_RC=$(x "sudo bash scripts/verify_post_install.sh" verify.log)
+          STANDALONE_RC=$(x "timeout 60 python3 src/standalone.py --help" standalone.log)
+          docker exec box systemctl --failed --no-legend --plain > failed_units.log 2>&1
+          docker exec box systemctl list-units --all --no-legend --plain \
+            'meshforge*' 'rnsd*' 'meshtasticd*' 'mosquitto*' > units.log 2>&1
+          docker exec box bash -c 'env | grep -ci anthropic' > ai_env.log 2>&1
+          {
+            echo "## Stranger drill — debian ${{ matrix.release }} arm64 @ ${GITHUB_SHA::8}"
+            echo "_OBSERVE MODE — records what a stranger meets; not a gate yet._"
+            echo
+            echo "| step | result |"
+            echo "|---|---|"
+            echo "| install_noc.sh (literal README, no TTY) | rc=${INSTALL_RC:-unset} |"
+            echo "| verify_post_install.sh | rc=$VERIFY_RC (0 ok / 1 critical / 2 warnings) |"
+            echo "| standalone.py --help | rc=$STANDALONE_RC |"
+            echo "| failed systemd units | $(grep -c . failed_units.log) |"
+            echo "| AI configured in env | $(cat ai_env.log) var(s) (expect 0) |"
+            echo
+            echo '```'; cat units.log; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stranger-drill-${{ matrix.release }}
+          path: "*.log"
+          retention-days: 30
