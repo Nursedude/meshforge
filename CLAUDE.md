@@ -118,8 +118,8 @@ src/
 │   ├── handler_protocol.py  # CommandHandler Protocol + TUIContext + BaseHandler
 │   ├── handler_registry.py  # register/lookup/dispatch
 │   ├── backend.py           # whiptail/dialog abstraction
-│   └── handlers/            # 83 handlers · 115 actions (2026-09-25; SSOT
-│                            #   .claude/skills/meshforge/capability_index.md)
+│   └── handlers/            # <!--STAT:handlers-->86<!--/STAT--> handlers (sentinel; action
+│                            #   count: SSOT .claude/skills/meshforge/capability_index.md)
 ├── commands/          # propagation.py, hamclock.py, base.py
 ├── gateway/           # RNS-Meshtastic bridge
 │   ├── rns_bridge.py, gateway_cli.py, meshcore_handler.py

@@ -36,7 +36,7 @@ Wired 2026-09-16 (plan Phase 3). Three rules govern it:
    never `load_or_detect_profile()` — detection reads which services are
    RUNNING, so gating on it would hide the RNS menu on a box whose rnsd
    is down, removing the tool at the moment it is needed. A box with no
-   `profile` key in `deployment.json` shows all 115 actions, unchanged.
+   `profile` key in `deployment.json` shows every action, unchanged.
 2. **A profile MARKS a row, it never removes one.** A row outside the
    profile renders with an `[off]` prefix, keeps its own label, and
    explains itself when selected — naming the profile, the flag, and
