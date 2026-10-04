@@ -4,15 +4,17 @@
 > session notes (`~/.claude/plans/gateway-session-notes-*.md`) say what the last
 > session was doing on that box. This file says where the domain is going and why.
 > Owner: WH6GXZ (operator). Update it when a direction changes, not when a task ends.
-> Last set: 2026-10-01 (operator words, Opus 5.5 session).
+> Last set: 2026-10-04 — 1.0 exit criteria added (operator grilling, Opus 5.5).
+> Previously: 2026-10-01 (operator words, Opus 5.5 session).
 
 ## What we are
 
 A **MOC: Mesh Operations Center.** One interface over meshes that cannot hear
 each other: Meshtastic, MeshCore, Reticulum (RNS), AREDN, MQTT, and IP backhaul
-(the site has a Starlink uplink). We serve the **best available route** for a
-message across whichever of those transports is up, and we **tell the truth when
-we cannot see**.
+(the site has a Starlink uplink). We are building toward serving the **best available
+route** for a message across whichever of those transports is up; until route
+selection ships (1.1), we **measure every leg and tell you which is up**. Always:
+we **tell the truth when we cannot see**.
 
 - **RNS is the network stack and the hub.** Cross-mesh traffic goes RNS-first.
   Pairwise radio-to-radio bridges multiply into duplicates and false information.
@@ -54,6 +56,45 @@ Measured 2026-10-01:
 So the hub must **measure its legs** and choose among them. Link quality is one
 input to best-available-route, not the goal by itself.
 
+## 1.0 = these checks pass (set 2026-10-04, operator grilling)
+
+**What 1.0 promises:** a stable contract AND a product a stranger can run
+without us. It covers the **STANDALONE** offering only. FLEET (and the ECOMM
+kit) is the lab that produces the evidence; it gets its own milestone later.
+
+**Why the gates look like this (measured 2026-10-04):** 22 stars, 0 forks, 21
+unique human viewers in 14 days, **0 issues ever opened by anyone but the
+operator**. Clone counts (5,071 / 985 unique in 14 d) are mostly our own CI and
+cannot be separated. Strangers install and copy MeshForge and never speak. The
+fleet and the lab are the only physical reality we have, and they are full of
+our own config. So the gates make the lab stand in for the silent stranger.
+
+**Path:** `1.0.0-rc1` when every gate below passes except the soak → the 30-day
+soak runs ON rc1 → `1.0.0`. **No date.** Progress = N of 10 gates passing, each
+by its check. A runnable gate script waits for the 2026-10-09 freeze review;
+until then this table is the record. Status is measured, never carried: re-run
+the check before changing a cell.
+
+| # | Gate | Passes when | Check | Status 10-04 |
+|---|---|---|---|---|
+| 1 | **Contract frozen** | `CanonicalMessage` v1 (jointly with MeshAnchor), config formats, CLI entry points (`meshforge-launcher.sh`, `--profile`, `standalone.py`), and the REST endpoints our own consumers use are frozen. The REST doc is regenerated from code and test-pinned. NOT frozen: Python internals, TUI layout (the TUI is a surface, not an API). | `python3 scripts/parity_check.py` (exists) + a REST-doc drift test (owed) | PARTIAL: parity enforced; `docs/REST_API.md` header says 0.4.6-beta, no drift test |
+| 2 | **Config upgrades** | Auto-migrate with a backup; refuse LOUDLY on a config written by a newer version. Never silently reinterpret a file it does not understand. | migration test incl. a newer-version fixture (owed) | PARTIAL: `gateway/config_migrations.py` fixes known keys; no schema version, no newer-version refusal |
+| 3 | **Per-leg delivery truth** (NEXT #4) | No silent loss: every accepted message ends delivered, queued, or shown failed in-app. No false green: a leg-kill drill shows the leg down within N min (N from the detector cadence). 30-day soak on rc1. Rates are SHOWN, not gated (a rate measures RF weather, not software). | leg-kill drill + soak ledger (owed) | NOT MET: NEXT #4 not built |
+| 4 | **No AI required** | Every gate passes with no API key and no Claude Code. AI features say plainly that they are not configured. | one stranger-drill run with no AI anywhere | NOT MEASURED |
+| 5 | **Stranger install drill** | VIRTUAL, every release: fresh image, README commands only, no dotfiles / hosts block / registry / AI. PHYSICAL, at rc1: one existing fleet board per supported type, clean user account + separate checkout (no wipe). Pass = the domain END (a message crosses mesh↔RNS and arrives; truth panes honest, incl. UNKNOWN), never "installer exit 0". | drill procedure (owed); CI `Virtual Fleet` job is the seed | NOT MET |
+| 6 | **Supported list = what gate 5 passed** | Pi 4 + Pi 5, Raspberry Pi OS bookworm / trixie 64-bit. Zero 2 W, Pi 3B, CM5 listed only if measured. Everything else "may work, untested", said so. | gate 5 results | NOT MET: README claims Pi 3B / Zero 2 W and install.md claims Ubuntu 22.04+, while `pyproject.toml` requires Python ≥3.11 (22.04 ships 3.10 — assertion, not measured here) |
+| 7 | **No-radio `monitor` deployment** | Container or VM, `monitor` profile (MQTT + RNS over TCP, no LoRa). LATER #8 moved up. Gateway / radio profiles stay hardware-only. | gate 5 virtual leg | NOT MET: no container exists |
+| 8 | **Resource budget** | RAM + SD writes per day, per profile, on the smallest supported box: baseline recorded now, "no worse than baseline" at rc1. The hardware we have is the hardware for ~a year. | baseline measurement (owed) | NOT MET: no baseline |
+| 9 | **"Report a problem"** | TUI action writes a redacted diagnostic bundle (versions, service states, last errors; no keys, no IPs per MF015) + an issue template it points to. The only way a silent stranger's broken install becomes evidence. | redaction test that plants a key/IP and proves it absent (owed) | NOT MET |
+| 10 | **Security** | Frontier pass: design-level NOW on the new surfaces (gate 9 redaction, gate 7 container exposure); full pass at rc1 on the shipping build. Zero open high findings at tag. | review_provenance row | NOT MET |
+
+**Context, recorded not gated:** hardware supply is constrained and prices are
+rising; the fleet's hardware is unlikely to change for ~a year, so virtual,
+cloud and local deployment work matters more. The uConsole was lost in
+shipping; **kiai** is the build-our-own alternative; a CM5 8 GB (bought for the
+uConsole) awaits an enclosure. When prices improve the operator will invest —
+new boards join gate 6 only by passing gate 5.
+
 ## Now / Next / Later
 
 **NOW** (this sprint)
@@ -71,10 +112,10 @@ input to best-available-route, not the goal by itself.
    closes R3, R4, R6 and the SMCI part of R5.
 
 **NEXT** (architecture; product work, not frozen)
-4. **Per-leg delivery measurement.** Each transport leg reports delivered and
+4. **Per-leg delivery measurement** (**1.0 gate 3**). Each transport leg reports delivered and
    failed counts over time. Observe before alarming: counters first, then a soak
    baseline.
-5. **Best-available-route selection.** The router uses measured leg health so a
+5. **Best-available-route selection** (**1.1** — not a 1.0 gate). The router uses measured leg health so a
    flaky RF leg cannot own paths. RNS interface modes do NOT do this (R9, read
    from the fork's Transport.py: modes only shorten path expiry; RNS picks by
    hops, then newest announce). Gate it with a breaker on the hand-off witness: an rnsd wedge
@@ -93,8 +134,8 @@ input to best-available-route, not the goal by itself.
 **LATER**
 7. Mesh-issue rules for the *user's* mesh (MeshMonitor M1), with one thresholds
    file and a test that forbids harmful advice.
-8. Lower the install barrier (M5): a `monitor`-profile container, and an OpenAPI
-   spec over the map service.
+8. Lower the install barrier (M5): the `monitor`-profile container MOVED to
+   1.0 gate 7 (2026-10-04); an OpenAPI spec over the map service stays here.
 9. Virtual-node / one-owner-many-clients for the radio (M2), if R3 is go.
 10. **Contain rnsd plugins (R5)** — regardless of R3: a deploy-time manifest of
     what rnsd auto-loads from `interfaces/`, and an import failure must not kill
@@ -118,4 +159,5 @@ input to best-available-route, not the goal by itself.
 - Batch commits: one docs commit per session, code fixes grouped by logical
   change, at most one fleet deploy per session.
 - `.claude/plans/v1.0_roadmap.md` (2026-04) is **superseded** by this file; its
-  v1.0 criteria (stable API, production-ready at a QTH) still stand.
+  two v1.0 criteria (stable API, production-ready at a QTH) are made measurable
+  by the "1.0 = these checks pass" section above (2026-10-04).
