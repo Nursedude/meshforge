@@ -74,7 +74,7 @@ One difference matters for a crowded rack. Meshtastic's channel check detects on
 
 Meshtastic's firmware draws a line at 25% of airtime: above it, a node stops sending its polite periodic broadcasts. A simple collision model shows why a quarter is a sensible place for that line.
 
-![At 25% channel use only about 56% of packets survive — pure-ALOHA model, survival = (1 − busy fraction)², with the site's measured points: tent FS20 12.6% → 76%, yurt FS20 11.4% → 78%, lehua peak sample 44% → 31%](img/2026-10-03-aloha-knee.png)
+![In a simple collision model, 25% busy leaves about 56% of packets surviving. Heuristic survival = (1 − busy)², a model not a measurement (textbook e^(−2G) gives 61% at 25%). Dots: yurt FS20 11.4% → 78% and tent FS20 12.6% → 76% (SDR-measured), lehua peak sample 44% → 31% (as its radio reported)](img/2026-10-03-aloha-knee.png)
 
 The curve is a simple heuristic in the spirit of pure ALOHA, where nobody coordinates: a packet survives if the channel is free when it starts and stays free for one packet time, so survival is (1 − busy)². The textbook Poisson form, e^(−2G), gives 61% rather than 56% at 25%; either way survival falls steadily with load, and pure ALOHA's throughput peaks at 18.4% of capacity ([ALOHA](https://platform.commit.tu-berlin.de/en/book/telecom/chapter/ch19/section/s04)). LoRa is kinder than pure ALOHA because radios listen first and the capture effect saves the stronger packet. It is harsher when nodes cannot hear each other, as between our yurt and tent. Studies of LoRa at scale reach the same conclusion: success falls exponentially as nodes are added on one spreading factor ([Georgiou and Raza](https://ar5iv.arxiv.org/html/1610.04793), [Adelantado et al.](https://arxiv.org/pdf/1607.08011)).
 
@@ -88,11 +88,11 @@ We cut every Meshtastic radio on site from 30 to 17 dBm except two controls (leh
 
 The first readings said nothing changed. Signal-to-noise between our own radios moved a quarter of a dB (one reporting step); channel load rose on the control box we never touched (time of day). Rather than call that "no effect", we went to direct physics: an SDR in the same tent, listening while one radio stepped through its settings and sent marked test packets we could pick out by their exact airtime.
 
-![Radiated power is flat from 12 to 30 dBm; 7 dBm cuts it about 11 dB — VolcanoAI's HAT, change vs setting 17 at a nearby SDR: set 30 (chip 22) +0.4 dB, set 17 0 dB, set 12 −1.5 dB, set 7 −11.4 dB, against a dashed line showing a linear amplifier](img/2026-10-03-pa-transfer.png)
+![Received level barely moves from setting 12 to 30; setting 7 cuts it about 11 dB. VolcanoAI HAT at one nearby SDR, relative to setting 17, not calibrated radiated power: set 30 (chip 22) +0.4 dB (run 2, within 0.3 dB), set 17 0 dB, set 12 −1.5 dB and set 7 −11.4 dB (run 3, about ±2 dB), against a dashed line showing a linear amplifier](img/2026-10-03-pa-transfer.png)
 
 The chip itself caps at 22 dBm, so a setting of 30 drives it at 22. Above a setting of about 12 the received level stops following the setting; only at 7 does it fall, by about 11 dB. These are relative levels at one SDR position, not calibrated radiated power. The 30 point comes from a run that repeated within 0.3 dB; the 12 and 7 points come from a later run whose reference drifted 1.8 dB, so read them as about ±2 dB. One honest failure on the way: our first run set the SDR's gain too high and measured the receiver's own ceiling, not the transmitter. A gain sweep found the headroom and the rerun is what you see here.
 
-This contradicts the published data, and we have not resolved it. Bench measurements of the EBYTE E22-900M30S module show a nearly linear amplifier, about 7 to 11 dB of gain, all the way to 20-22 dBm of drive ([S5NC bench test](https://github.com/S5NC/EBYTE_ESP32-S3/blob/main/E22-900M30S%20power%20output%20testing.txt), [EBYTE data via ndoo.sg](https://ndoo.sg/projects:amateur_radio:meshtastic:components?rev=1729513582)). The module draws about 650 mA when transmitting and wants more than 5 V for best performance ([EBYTE manual](https://voltiq.ru/datasheets/ebyte/E22-900M30S-user-manual.pdf)). Our radio hangs off a USB port. A current- or voltage-limited supply would flatten the curve long before the amplifier saturates on its own. That is our hypothesis, not a finding; the test is the same step with the radio on a powered hub. Until then, the curve above describes this installation, not the module.
+This contradicts the published data, and we have not resolved it. Bench measurements of the EBYTE E22-900M30S module show a nearly linear amplifier, about 7 to 11 dB of gain, all the way to 20-22 dBm of drive ([S5NC bench test](https://github.com/S5NC/EBYTE_ESP32-S3/blob/e53961d2b8bd133f0ded5b5f001bb938f5c36e85/E22-900M30S%20power%20output%20testing.txt), [EBYTE data via ndoo.sg](https://ndoo.sg/projects:amateur_radio:meshtastic:components?rev=1729513582)). The module draws about 650 mA when transmitting and wants more than 5 V for best performance ([EBYTE manual](https://voltiq.ru/datasheets/ebyte/E22-900M30S-user-manual.pdf)). Our radio hangs off a USB port. A current- or voltage-limited supply would flatten the curve long before the amplifier saturates on its own. That is our hypothesis, not a finding; the test is the same step with the radio on a powered hub. Until then, the curve above describes this installation, not the module.
 
 The question we set out to answer then answered itself: at 7 dBm, the worst path on site (VolcanoAI in the tent to lehua in the far corner of the yurt) still went out direct on both traceroutes. One reply came back direct, the other through one relay.
 
@@ -150,13 +150,13 @@ The literature backs every mechanism we propose; it disagrees with two of our nu
 | An RNode's -71 dBm "interference" was not in the air | RNode firmware: the flag is the chip's own RSSI against a learned floor; it re-learns only below -83 dBm, so a steady -71 never triggers a re-learn | Agree: the firmware explains why the flag recurs, not why it sometimes drops for minutes |
 | Rack neighbours near the input limit (estimated); the one measured radio changed about 0.4 dB from 30 to 17 | E22 module: +10 dBm maximum input before damage risk. SX1262: 88 dB blocking at 1 MHz. Different spreading factors are not fully orthogonal | Consistent with the specs; no co-location study found |
 
-**The amplifier.** The cause has strong support. EBYTE's manual says "the lower the voltage is, the lower the transmitting power is" ([manual](https://voltiq.ru/datasheets/ebyte/E22-900M30S-user-manual.pdf)), and the config file our own radio loads tells users to cap it "to avoid over-drawing the USB port" ([lora-usb-meshtoad-e22.yaml](https://github.com/meshtastic/firmware/blob/master/bin/config.d/lora-usb-meshtoad-e22.yaml)). The shape does not match: a comparable USB module's maker publishes roughly +4 dB for the same 17-to-22 dBm drive step ([uMesh](https://github.com/linser233/uMesh/blob/main/RF_Power.md)), and a Heltec V4 measured with a spectrum analyser flattened near +27-28 dBm ([MeshCore #1708](https://github.com/meshcore-dev/MeshCore/issues/1708)). Our +0.4 dB is flatter than either. A failing part stays on the list beside the supply.
+**The amplifier.** The cause has strong support. EBYTE's manual says "the lower the voltage is, the lower the transmitting power is" ([manual](https://voltiq.ru/datasheets/ebyte/E22-900M30S-user-manual.pdf)), and the config file our own radio loads tells users to cap it "to avoid over-drawing the USB port" ([lora-usb-meshtoad-e22.yaml](https://github.com/meshtastic/firmware/blob/727d8c31dcd2a8e577b672bc5da394a88751bee5/bin/config.d/lora-usb-meshtoad-e22.yaml)). The shape does not match: a comparable USB module's maker publishes roughly +4 dB for the same 17-to-22 dBm drive step ([uMesh](https://github.com/linser233/uMesh/blob/74a56080d226e4a8525b6072a04fbb63c2bb47cf/RF_Power.md)), and a Heltec V4 measured with a spectrum analyser flattened near +27-28 dBm ([MeshCore #1708](https://github.com/meshcore-dev/MeshCore/issues/1708)). Our +0.4 dB is flatter than either. A failing part stays on the list beside the supply.
 
 **The SNR ceiling.** Semtech and a gateway vendor agree that packet SNR is a demodulator figure, not "signal above the noise", and that it stops rising ([Semtech FAQ](https://semtech.com/design-support/faq/faq-lora), [MultiTech](https://www.multitech.net/developer/?p=18209)). The 2026 bench study puts LongFast's ceiling at 8-11 dB ([Hernandez Ortiz et al.](https://arxiv.org/html/2605.17063)). Ours sits lower; a noisier rack is a plausible reason we have not tested.
 
-**The knee.** The firmware's own comment calls the 60-second figure a snapshot ([airtime.h](https://github.com/meshtastic/firmware/blob/master/src/airtime.h)), and Meshtastic tells router operators to stop above 25% ([ROUTER_LATE](https://meshtastic.org/blog/demystifying-router-late/)). Its case that managed flooding scales past 100 nodes rests on simulation ([managed flood](https://meshtastic.org/blog/why-meshtastic-uses-managed-flood-routing/)). We found no published field measurement of time spent over the gate, though that is a statement about our search, not about the field.
+**The knee.** The firmware's own comment calls the 60-second figure a snapshot ([airtime.h](https://github.com/meshtastic/firmware/blob/727d8c31dcd2a8e577b672bc5da394a88751bee5/src/airtime.h)), and Meshtastic tells router operators to stop above 25% ([ROUTER_LATE](https://meshtastic.org/blog/demystifying-router-late/)). Its case that managed flooding scales past 100 nodes rests on simulation ([managed flood](https://meshtastic.org/blog/why-meshtastic-uses-managed-flood-routing/)). We found no published field measurement of time spent over the gate, though that is a statement about our search, not about the field.
 
-**The false interference.** The RNode firmware explains our result rather than merely permitting it: its recalibration only fires for assertions below -83 dBm, so a steady -71 dBm keeps re-asserting; that explains why the flag recurs, though not why it sometimes drops for minutes ([RNode_Firmware.ino](https://github.com/markqvist/RNode_Firmware/blob/master/RNode_Firmware.ino)). We found no report of the same on a Heltec V3, and no primary source on USB-borne self-noise.
+**The false interference.** The RNode firmware explains our result rather than merely permitting it: its recalibration only fires for assertions below -83 dBm, so a steady -71 dBm keeps re-asserting; that explains why the flag recurs, though not why it sometimes drops for minutes ([RNode_Firmware.ino](https://github.com/markqvist/RNode_Firmware/blob/56775c51b60a6190242e324c210997dcc7637e53/RNode_Firmware.ino)). We found no report of the same on a Heltec V3, and no primary source on USB-borne self-noise.
 
 **Scale.** Classic LoRa capacity work finds success falling exponentially as nodes share a spreading factor ([Georgiou and Raza](https://ar5iv.labs.arxiv.org/html/1610.04793)), and inter-SF interference costs a further 10% or so at scale ([Mahmood et al.](https://arxiv.org/abs/1808.01761)). Those studies assume nodes spread over kilometres, not three feet apart on a shelf.
 
@@ -169,7 +169,7 @@ The literature backs every mechanism we propose; it disagrees with two of our nu
 - [Semtech LoRa FAQ](https://www.semtech.com/design-support/faq/faq-lora): SNR above +5 dB, RSSI saturation
 - [Hernandez Ortiz et al., 2026](https://arxiv.org/pdf/2605.17063): SX1262 Meshtastic presets on a guided link, SNR ceilings
 - [Croce et al., IEEE Commun. Lett. 2018](https://iris.unipa.it/retrieve/handle/10447/301652/1028841/08267219.pdf): capture and inter-SF interference
-- [RadioLib SX126x time-on-air implementation](https://github.com/jgromes/RadioLib/blob/master/src/modules/SX126x/SX126x.cpp)
+- [RadioLib SX126x time-on-air implementation, commit 02f0afaa](https://github.com/jgromes/RadioLib/blob/02f0afaaa32de07874e2954dd929e8c08356e24f/src/modules/SX126x/SX126x.cpp)
 
 **Capacity**
 
@@ -186,7 +186,7 @@ The literature backs every mechanism we propose; it disagrees with two of our nu
 **Hardware**
 
 - [EBYTE E22-900M30S manual](https://voltiq.ru/datasheets/ebyte/E22-900M30S-user-manual.pdf)
-- [S5NC E22-900M30S output test](https://github.com/S5NC/EBYTE_ESP32-S3/blob/main/E22-900M30S%20power%20output%20testing.txt)
+- [S5NC E22-900M30S output test, commit e53961d2](https://github.com/S5NC/EBYTE_ESP32-S3/blob/e53961d2b8bd133f0ded5b5f001bb938f5c36e85/E22-900M30S%20power%20output%20testing.txt)
 - [RNode firmware, commit 56775c51](https://github.com/markqvist/RNode_Firmware/blob/56775c51b60a6190242e324c210997dcc7637e53/RNode_Firmware.ino)
 
 **Transports**
@@ -197,11 +197,11 @@ The literature backs every mechanism we propose; it disagrees with two of our nu
 
 **Cited in the comparison**
 
-- [Meshtastic lora-usb-meshtoad-e22.yaml](https://github.com/meshtastic/firmware/blob/master/bin/config.d/lora-usb-meshtoad-e22.yaml)
-- [Meshtastic airtime.h](https://github.com/meshtastic/firmware/blob/master/src/airtime.h)
+- [Meshtastic lora-usb-meshtoad-e22.yaml, commit 727d8c31](https://github.com/meshtastic/firmware/blob/727d8c31dcd2a8e577b672bc5da394a88751bee5/bin/config.d/lora-usb-meshtoad-e22.yaml)
+- [Meshtastic airtime.h, commit 727d8c31](https://github.com/meshtastic/firmware/blob/727d8c31dcd2a8e577b672bc5da394a88751bee5/src/airtime.h)
 - [Meshtastic: Demystifying ROUTER_LATE](https://meshtastic.org/blog/demystifying-router-late/)
 - [Meshtastic: Why managed flood routing](https://meshtastic.org/blog/why-meshtastic-uses-managed-flood-routing/)
-- [uMesh RF power measurements](https://github.com/linser233/uMesh/blob/main/RF_Power.md)
+- [uMesh RF power measurements, commit 74a56080](https://github.com/linser233/uMesh/blob/74a56080d226e4a8525b6072a04fbb63c2bb47cf/RF_Power.md)
 - [MeshCore issue #1708, Heltec V4 output](https://github.com/meshcore-dev/MeshCore/issues/1708)
 - [MultiTech, LoRa SNR and RSSI](https://www.multitech.net/developer/?p=18209)
 
