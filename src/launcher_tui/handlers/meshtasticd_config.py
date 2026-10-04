@@ -194,7 +194,9 @@ def ensure_meshtasticd_config():
 # come from the "meshtasticd" registry section.
 _MESHTASTICD_ORDERING = [
     "_svc_", "status", "test", "restart", "logs",
-    "_radio_", "owner", "presets", "lora",
+    # Read-only truth panes lead the Radio group: what the radio is
+    # ACTUALLY doing, before the knobs that change it (audit 2026-10-03).
+    "_radio_", "txpower_truth", "channel_load", "owner", "presets", "lora",
     "_hw_", "hardware",
     "_dev_", "mqtt", "cleanup",
     "_cfg_", "view", "overlays", "edit",

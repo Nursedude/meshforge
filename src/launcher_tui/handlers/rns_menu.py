@@ -28,10 +28,12 @@ logger = logging.getLogger(__name__)
 # Desired menu order for the RNS submenu.
 # Sub-handler items are merged from the "rns" section; own items are inline.
 _RNS_ORDERING = [
-    "status", "monitor", "paths", "sniffer",
+    "status", "monitor", "rnode_interference", "paths", "sniffer",
     "probe", "identity", "nodes", "positions",
     "diag", "repair", "drift",
     "ifaces", "config", "edit", "logging", "check",
+    # Overlaps Status/Paths/Probe/Identity above; ordered last on purpose.
+    "tools",
 ]
 
 

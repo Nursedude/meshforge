@@ -419,3 +419,38 @@ class TestEveryMenuLabelsItsCancelButton:
         assert tui_main.BACK_LABEL == "Back"
         # Cancel at the TOP level is not "back" — it offers an exit.
         assert tui_main.TOP_LEVEL_CANCEL_LABEL == "Exit"
+
+
+class TestSubmenuOrderingsTrackRegistry:
+    """The SUBMENU orderings get the same pin as SECTION_ORDERINGS.
+
+    2026-10-03 TUI audit: the three read-only truth panes shipped that day
+    (TX Power Truth, Channel Load, RNode Interference) were absent from
+    ``_MESHTASTICD_ORDERING`` / ``_RNS_ORDERING``, so they rendered as an
+    unordered tail — two of them under "--- Config Files ---", all three
+    below the fold on a 24-line terminal — while every test above stayed
+    green, because ``SECTION_ORDERINGS`` has no ``meshtasticd``/``rns`` key.
+    """
+
+    @staticmethod
+    def _sub_orderings():
+        from handlers.meshtasticd_config import _MESHTASTICD_ORDERING
+        from handlers.rns_menu import _RNS_ORDERING
+        return {"meshtasticd": _MESHTASTICD_ORDERING, "rns": _RNS_ORDERING}
+
+    def test_every_submenu_registry_tag_is_ordered(self):
+        sections = _registry_sections()
+        problems = []
+        for section, ordering in self._sub_orderings().items():
+            missing = sections.get(section, set()) - set(ordering)
+            if missing:
+                problems.append(f"{section}: missing {sorted(missing)}")
+        assert not problems, (
+            "submenu registry tags absent from their ordering list — they "
+            f"render as an unordered tail under the wrong header: {problems}"
+        )
+
+    def test_no_duplicates_within_a_submenu(self):
+        for section, ordering in self._sub_orderings().items():
+            assert len(ordering) == len(set(ordering)), (
+                f"duplicate entries in {section} sub-ordering")
