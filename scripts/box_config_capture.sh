@@ -17,9 +17,13 @@
 #   ~/.ssh/config                                aliases + tunnel ProxyCommands
 #   user + root crontab                          -> _meta/crontab-*.txt
 #   /etc/reticulum/{config,interfaces,storage/transport_identity}
-#   /etc/meshtasticd/{config.yaml,config.d}
+#   /etc/meshtasticd (whole tree incl. ssl/, minus vendor available.d)
+#   {/root,/var/lib/meshtasticd}/.portduino/**/*.proto  radio prefs (channels,
+#     owner, LoRa) — the user-meshtasticd boxes keep them under /var/lib
 #   /etc/systemd/system units + drop-ins for rnsd / meshtasticd / meshforge* /
-#     meshanchor* / mosquitto
+#     meshanchor* / mosquitto / lxmd / nomadnet
+#   /usr/local/bin/meshforge* wrappers; sha256 of meshtasticd binaries (never
+#     the binary)
 #   /etc/NetworkManager/system-connections, /etc/hosts
 # NEVER captured: ssh private keys (operator-held by design, LAB-ZERO.md).
 # The snapshot carries secrets (identities, wifi PSKs, API keys): it lands
@@ -68,12 +72,25 @@ done >>"$L"
 crontab -l >"$T/crontab-user.txt" 2>/dev/null || true
 [ -n "$S" ] && $S crontab -l >"$T/crontab-root.txt" 2>/dev/null || true
 for p in /etc/reticulum/config /etc/reticulum/interfaces /etc/reticulum/storage/transport_identity \
-         /etc/meshtasticd/config.yaml /etc/meshtasticd/config.d \
          /etc/NetworkManager/system-connections /etc/hosts; do
   $S test -e "$p" 2>/dev/null && echo "$p"
 done >>"$L"
+# The whole /etc/meshtasticd tree (ssl/ included — the 08-11 moc5 lesson) minus
+# the vendor templates in available.d, and the radio's own prefs: channel keys,
+# owner, LoRa settings live in *.proto under /root/.portduino — or under
+# /var/lib/meshtasticd/.portduino where meshtasticd runs as its own user.
+$S find /etc/meshtasticd -type f -not -path '*/available.d/*' -size -257k 2>/dev/null >>"$L"
+$S find /root/.portduino /var/lib/meshtasticd/.portduino -name '*.proto' -type f -size -257k 2>/dev/null >>"$L"
 find /etc/systemd/system -maxdepth 2 -type f \( -path '*rnsd*' -o -path '*meshtasticd*' \
-  -o -path '*meshforge*' -o -path '*meshanchor*' -o -path '*mosquitto*' \) 2>/dev/null >>"$L"
+  -o -path '*meshforge*' -o -path '*meshanchor*' -o -path '*mosquitto*' -o -path '*lxmd*' \
+  -o -path '*nomadnet*' \) 2>/dev/null >>"$L"
+find /usr/local/bin -maxdepth 1 -type f -name 'meshforge*' -size -257k 2>/dev/null >>"$L"
+# Launch wrappers are symlinks into the repo since 09-19 — record the layout.
+ls -la /usr/local/bin/meshforge* >"$T/wrappers.txt" 2>/dev/null || true
+# Patched / installed meshtasticd binaries: fingerprint, never the binary.
+for b in /usr/local/sbin/meshtasticd* /usr/bin/meshtasticd /usr/sbin/meshtasticd; do
+  [ -f "$b" ] && sha256sum "$b"
+done >"$T/binary-fingerprints.txt" 2>/dev/null
 { echo "host=$(hostname)"; echo "captured_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)";
   echo "sudo=$([ -n "$S" ] && echo yes || echo no)"; echo "paths_listed=$(wc -l <"$L")"; } >"$T/capture.meta"
 # Belt and braces: a private key must never ride along, whatever the list says.
