@@ -39,6 +39,7 @@ TRUTH_PATH = [
     "src/monitoring/traffic_pulse.py",
     "src/utils/radio_txpower_truth.py",
     "src/utils/radio_channel_load.py",
+    "src/utils/rnode_interference.py",
 ]
 
 

@@ -10,7 +10,7 @@
 > X?", grep this file for the capability, then open the handler under
 > `src/launcher_tui/handlers/`.
 
-**85 handlers · 117 menu actions · 12 sections** (all derived from `get_all_handlers()`, never hardcoded).
+**86 handlers · 118 menu actions · 12 sections** (all derived from `get_all_handlers()`, never hardcoded).
 
 A non-empty **Flag** names the deployment-profile feature that gates the action. Gated does NOT mean hidden: when the feature is off the row is still SHOWN, marked `[off]`, and refuses to run with an explanation naming the profile (`HandlerRegistry.mark_label` / `OFF_MARK`). Nothing is removed from the menu — someone new to the domain cannot go looking for a capability they have never been shown. Blank = never gated.
 
@@ -169,6 +169,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | `repair` | Repair RNS |  | sweep |  | RNSDiagnosticsHandler |
 | `ifaces` | Manage Interfaces |  | sweep | ◐ 2026-09-25 dev/manager box | RNSInterfacesHandler |
 | `monitor` | Live RNS Monitor (auto-refresh) |  | sweep |  | RNSMonitorHandler |
+| `rnode_interference` | RNode Interference — Radio's own flag, with what it means (read-only) |  | sweep |  | RNodeInterferenceHandler |
 | `sniffer` | RNS Traffic Sniffer (announces, paths, links) |  | sweep |  | RNSSnifferHandler |
 | `tools` | RNS Tools — rnstatus, paths, identity |  | sweep |  | RNSToolsHandler |
 

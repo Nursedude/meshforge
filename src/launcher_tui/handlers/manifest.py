@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 85 handlers · 117 menu actions (derived from get_all_handlers(), never hand-edited).
+# 86 handlers · 118 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -783,6 +783,17 @@ HANDLER_MANIFEST = [
         "error": None,
         "menu_items": [
             ('monitor', 'Live RNS Monitor (auto-refresh)', None),
+        ],
+    },
+    {
+        "handler_id": 'rns_rnode_interference',
+        "module": 'handlers.rns_rnode_interference',
+        "class_name": 'RNodeInterferenceHandler',
+        "menu_section": 'rns',
+        "lifecycle": False,
+        "error": None,
+        "menu_items": [
+            ('rnode_interference', "RNode Interference  Radio's own flag, with what it means (read-only)", None),
         ],
     },
     {
