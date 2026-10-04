@@ -222,75 +222,85 @@ class MeshtasticdConfigHandler(BaseHandler):
     # Unified meshtasticd submenu
     # ------------------------------------------------------------------
 
+    MENU_TITLE = "meshtasticd"
+    MENU_SUBTITLE = "Configure meshtasticd daemon:"
+
+    def menu_choices(self):
+        """The submenu's rows — PURE (no I/O): the loop below and
+        scripts/tui_smoke.py both render exactly this list, so the smoke
+        driver draws the screen the operator sees (2026-10-03)."""
+        # Own inline items (service lifecycle + config files)
+        own_items = [
+            ("_svc_", "--- Service ---"),
+            ("status", "Service Status"),
+            ("test", "Connection Test"),
+            ("restart", "Restart Service"),
+            ("logs", "Service Logs"),
+            ("_radio_", "--- Radio ---"),
+            ("_hw_", "--- Radio Hardware ---"),
+            ("_dev_", "--- Device Config ---"),
+            ("_cfg_", "--- Config Files ---"),
+            ("view", "View Active Config"),
+            ("overlays", "View config.d/ Overlays"),
+            ("edit", "Edit Config Files"),
+        ]
+
+        # Merge with registry sub-handler items
+        # (owner, presets, hardware from meshtasticd_radio;
+        #  lora from meshtasticd_lora; mqtt from meshtasticd_device_mqtt;
+        #  cleanup from meshtasticd_nodedb)
+        registry_items = []
+        if self.ctx.registry:
+            registry_items = self.ctx.registry.get_menu_items("meshtasticd")
+
+        registry_tags = {tag for tag, _ in registry_items}
+        own_map = {tag: desc for tag, desc in own_items}
+        reg_map = {tag: desc for tag, desc in registry_items}
+        all_map = {**own_map, **reg_map}
+
+        # Apply ordering
+        ordered = []
+        for tag in _MESHTASTICD_ORDERING:
+            if tag in all_map:
+                ordered.append((tag, all_map[tag]))
+        # Append any unordered items
+        ordered_set = set(_MESHTASTICD_ORDERING)
+        for tag, desc in list(own_items) + list(registry_items):
+            if tag not in ordered_set and (tag, desc) not in ordered:
+                ordered.append((tag, desc))
+
+        # Filter out section headers with no items after them
+        # (prevents empty groups when sub-handlers fail to register)
+        result = []
+        for i, (tag, desc) in enumerate(ordered):
+            if tag.startswith("_") and tag.endswith("_"):
+                # Look ahead: is there at least one non-header item
+                # before the next header or end of list?
+                has_items = False
+                for j in range(i + 1, len(ordered)):
+                    next_tag = ordered[j][0]
+                    if next_tag.startswith("_") and next_tag.endswith("_"):
+                        break
+                    has_items = True
+                    break
+                if has_items:
+                    result.append((tag, desc))
+            else:
+                result.append((tag, desc))
+
+        result.append(("back", "Back"))
+        return result
+
     def _meshtasticd_menu(self):
         """Unified meshtasticd menu: service, radio, hardware, config files."""
         ensure_meshtasticd_config()
 
         while True:
-            # Own inline items (service lifecycle + config files)
-            own_items = [
-                ("_svc_", "--- Service ---"),
-                ("status", "Service Status"),
-                ("test", "Connection Test"),
-                ("restart", "Restart Service"),
-                ("logs", "Service Logs"),
-                ("_radio_", "--- Radio ---"),
-                ("_hw_", "--- Radio Hardware ---"),
-                ("_dev_", "--- Device Config ---"),
-                ("_cfg_", "--- Config Files ---"),
-                ("view", "View Active Config"),
-                ("overlays", "View config.d/ Overlays"),
-                ("edit", "Edit Config Files"),
-            ]
-
-            # Merge with registry sub-handler items
-            # (owner, presets, hardware from meshtasticd_radio;
-            #  lora from meshtasticd_lora; mqtt from meshtasticd_device_mqtt;
-            #  cleanup from meshtasticd_nodedb)
-            registry_items = []
-            if self.ctx.registry:
-                registry_items = self.ctx.registry.get_menu_items("meshtasticd")
-
-            registry_tags = {tag for tag, _ in registry_items}
-            own_map = {tag: desc for tag, desc in own_items}
-            reg_map = {tag: desc for tag, desc in registry_items}
-            all_map = {**own_map, **reg_map}
-
-            # Apply ordering
-            ordered = []
-            for tag in _MESHTASTICD_ORDERING:
-                if tag in all_map:
-                    ordered.append((tag, all_map[tag]))
-            # Append any unordered items
-            ordered_set = set(_MESHTASTICD_ORDERING)
-            for tag, desc in list(own_items) + list(registry_items):
-                if tag not in ordered_set and (tag, desc) not in ordered:
-                    ordered.append((tag, desc))
-
-            # Filter out section headers with no items after them
-            # (prevents empty groups when sub-handlers fail to register)
-            result = []
-            for i, (tag, desc) in enumerate(ordered):
-                if tag.startswith("_") and tag.endswith("_"):
-                    # Look ahead: is there at least one non-header item
-                    # before the next header or end of list?
-                    has_items = False
-                    for j in range(i + 1, len(ordered)):
-                        next_tag = ordered[j][0]
-                        if next_tag.startswith("_") and next_tag.endswith("_"):
-                            break
-                        has_items = True
-                        break
-                    if has_items:
-                        result.append((tag, desc))
-                else:
-                    result.append((tag, desc))
-
-            result.append(("back", "Back"))
+            result = self.menu_choices()
 
             choice = self.ctx.dialog.menu(
-                "meshtasticd",
-                "Configure meshtasticd daemon:",
+                self.MENU_TITLE,
+                self.MENU_SUBTITLE,
                 result
             )
 
@@ -302,7 +312,10 @@ class MeshtasticdConfigHandler(BaseHandler):
                 continue
 
             # Try registry sub-handlers first (owner, presets, hardware,
-            # lora, mqtt, cleanup)
+            # lora, mqtt, cleanup). Same source menu_choices() reads.
+            registry_tags = {
+                tag for tag, _ in self.ctx.registry.get_menu_items("meshtasticd")
+            } if self.ctx.registry else set()
             if choice in registry_tags:
                 if self.ctx.registry:
                     self.ctx.registry.dispatch("meshtasticd", choice)

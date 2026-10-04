@@ -66,6 +66,19 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b[()][A-Z0-9]|\x1b[=>]")
 
 # --------------------------------------------------------------- screens
 
+#: Sections whose real screen is built INSIDE a parent handler, not by the
+#: top-level ``_build_section_menu``. Until 2026-10-03 these were drawn from
+#: the bare registry section — no handler-owned rows, no handler ordering —
+#: so a PASS here verified a screen the operator never sees. Each builder
+#: exposes a PURE ``menu_choices()`` + MENU_TITLE/MENU_SUBTITLE, which its
+#: own menu loop also renders (test-pinned), so this cannot drift from it.
+#: A section in neither SECTION_ORDERINGS nor this map is REFUSED below.
+SUBMENU_BUILDERS = {
+    "meshtasticd": ("handlers.meshtasticd_config", "MeshtasticdConfigHandler"),
+    "rns": ("handlers.rns_menu", "RNSMenuHandler"),
+}
+
+
 def collect_screens(profile_name=None):
     """Every (name, title, subtitle, choices) the TUI renders.
 
@@ -138,14 +151,33 @@ def collect_screens(profile_name=None):
 
     builder = tui_main.MeshForgeLauncher._build_section_menu
     holder = SimpleNamespace(_registry=registry, _tui_context=ctx)
+    import importlib
+    unrendered = []
     for section in sorted(registry.section_names):
         if section == "main":
             continue
-        ordering = tui_main.SECTION_ORDERINGS.get(section)
+        if section in SUBMENU_BUILDERS:
+            mod_name, cls_name = SUBMENU_BUILDERS[section]
+            owner = getattr(importlib.import_module(mod_name), cls_name)()
+            owner.ctx = ctx
+            screens.append((section, owner.MENU_TITLE, owner.MENU_SUBTITLE,
+                            owner.menu_choices()))
+            continue
+        if section not in tui_main.SECTION_ORDERINGS:
+            unrendered.append(section)
+            continue
+        ordering = tui_main.SECTION_ORDERINGS[section]
         choices = builder(holder, section, [], ordering)
         if len(choices) > 1:          # more than the bare "Back"
             screens.append((section, section.replace("_", " ").title(),
                             f"{section} section:", choices))
+    if unrendered:
+        # Never fall back to a bare-registry reconstruction: that is the
+        # defect this map exists to end. Unobservable is not a pass.
+        print(f"UNKNOWN: no renderer for section(s) {unrendered} — add the "
+              "owning handler to SUBMENU_BUILDERS (it must expose "
+              "menu_choices())", file=sys.stderr)
+        raise SystemExit(2)          # this driver's UNKNOWN code
     return screens
 
 

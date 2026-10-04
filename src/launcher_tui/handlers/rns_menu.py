@@ -56,47 +56,56 @@ class RNSMenuHandler(BaseHandler):
     # Submenu dispatcher
     # ------------------------------------------------------------------
 
+    MENU_TITLE = "RNS / Reticulum"
+    MENU_SUBTITLE = "Reticulum Network Stack tools:"
+
+    def menu_choices(self):
+        """The submenu's rows — PURE (no I/O): the loop below and
+        scripts/tui_smoke.py both render exactly this list (2026-10-03)."""
+        # Build choices from "rns" section handlers + own items
+        registry_items = {}
+        if self.ctx.registry:
+            for tag, desc in self.ctx.registry.get_menu_items("rns"):
+                registry_items[tag] = desc
+
+        # Own items (not from sub-handlers)
+        own_items = {
+            "status": "RNS Status (rnstatus)",
+            "paths": "RNS Path Table (rnpath)",
+            "probe": "Probe Destination (rnprobe)",
+            "identity": "Identity Info (rnid)",
+            "nodes": "Known Destinations",
+            "positions": "Set Node Positions (for map)",
+        }
+
+        # Merge: registry items + own items
+        all_items = {}
+        all_items.update(own_items)
+        all_items.update(registry_items)  # registry wins on conflicts
+
+        # Build ordered choices list
+        choices = []
+        seen = set()
+        for tag in _RNS_ORDERING:
+            if tag in all_items and tag not in seen:
+                choices.append((tag, all_items[tag]))
+                seen.add(tag)
+        # Add any items not in the ordering list
+        for tag, desc in all_items.items():
+            if tag not in seen:
+                choices.append((tag, desc))
+                seen.add(tag)
+        choices.append(("back", "Back"))
+        return choices
+
     def _rns_submenu(self):
         """RNS / Reticulum submenu — dispatches to sub-handlers and own methods."""
         while True:
-            # Build choices from "rns" section handlers + own items
-            registry_items = {}
-            if self.ctx.registry:
-                for tag, desc in self.ctx.registry.get_menu_items("rns"):
-                    registry_items[tag] = desc
-
-            # Own items (not from sub-handlers)
-            own_items = {
-                "status": "RNS Status (rnstatus)",
-                "paths": "RNS Path Table (rnpath)",
-                "probe": "Probe Destination (rnprobe)",
-                "identity": "Identity Info (rnid)",
-                "nodes": "Known Destinations",
-                "positions": "Set Node Positions (for map)",
-            }
-
-            # Merge: registry items + own items
-            all_items = {}
-            all_items.update(own_items)
-            all_items.update(registry_items)  # registry wins on conflicts
-
-            # Build ordered choices list
-            choices = []
-            seen = set()
-            for tag in _RNS_ORDERING:
-                if tag in all_items and tag not in seen:
-                    choices.append((tag, all_items[tag]))
-                    seen.add(tag)
-            # Add any items not in the ordering list
-            for tag, desc in all_items.items():
-                if tag not in seen:
-                    choices.append((tag, desc))
-                    seen.add(tag)
-            choices.append(("back", "Back"))
+            choices = self.menu_choices()
 
             choice = self.ctx.dialog.menu(
-                "RNS / Reticulum",
-                "Reticulum Network Stack tools:",
+                self.MENU_TITLE,
+                self.MENU_SUBTITLE,
                 choices
             )
 
