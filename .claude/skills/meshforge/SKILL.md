@@ -1,15 +1,16 @@
 ---
 name: MeshForge
 description: >
-  MeshForge NOC (Network Operations Center) assistant for LoRa mesh network development.
-  Handles Meshtastic and RNS (Reticulum) network operations, configuration, debugging, and development.
+  MeshForge co-pilot DISPATCHER + domain reference. Maps the shape of a question
+  (broke / build / decide / design / upstream fact / review / RF-radio-mesh) to the
+  method or skill that answers it, then carries the reference no auto-loaded file
+  holds (ports, service scopes, fleet facts, harness layer, lint digest).
 
-  Use when working with: (1) Meshtasticd configuration and service management, (2) RNS/Reticulum
-  network setup and bridging, (3) LoRa radio configuration (presets, frequencies, regions),
-  (4) MeshForge TUI development, (5) Gateway bridge between Meshtastic and RNS,
-  (6) RF calculations and link budgets, (7) Node discovery and monitoring.
+  Use when: a question needs a METHOD and it is not obvious which; any RF / radio /
+  traceroute / mesh-behaviour question; any fleet or box question; TUI handler work.
 
-  Triggers: meshtastic, meshtasticd, rnsd, reticulum, lora, meshforge, gateway, rnode, nomadnet
+  Triggers: meshtastic, meshtasticd, rnsd, reticulum, lora, rnode, traceroute, snr,
+  gateway, fleet, which skill, how should we
 ---
 
 # MeshForge Development Assistant
@@ -25,6 +26,27 @@ description: >
 > Router→primer upgrade 2026-07-14 (cross-model arc): domain model, fleet facts,
 > harness layer, and the MF lint index now live here so a smaller model reading
 > ONE skill sees the whole operating picture.
+
+## Question → Method (the dispatcher, 2026-10-04)
+
+Measured 2026-10-04 over 112 sessions (08-15→10-04): skills here fire when a
+hook or a slash command NAMES them — description-matching fired this skill 0
+times. So the short form of this table lives in CLAUDE.md (loaded every turn);
+this is the long form. Re-count at each freeze review:
+`grep -ohE '"name":"Skill","input":\{"skill":"[^"]+"' ~/.claude/projects/-opt-meshforge/*.jsonl | sort | uniq -c`.
+
+| Question shape | Method | Why this, not the obvious move |
+|---|---|---|
+| Something broke / failing / "why does X" | `git log -S'<error text>'` + `grep -n <symptom> .claude/foundations/persistent_issues*.md` FIRST, then `mattpocock-skills:diagnosing-bugs` | the root cause is often already found and its cure undeployed (becd34cb was re-found 09-26) |
+| Build or change behaviour | `mattpocock-skills:tdd` | the test must FAIL on the old code before it passes on the new — a test that only ever passed pins the author, not the code |
+| Define / decide / plan ("what is 1.0", "should we") | `mattpocock-skills:grilling` → result into `.claude/ROADMAP.md` | turns a wish into checks that can FAIL; an unmeasurable goal has no distance |
+| Module / seam / interface design | `mattpocock-skills:codebase-design`; decision record → `engineering:architecture` (ADR in `.claude/plans/adr_*.md`) | |
+| Upstream / library / protocol fact | `mattpocock-skills:research` | read the PINNED source, never the version string ("2.8 is newer" ≠ "2.8 is fixed") |
+| Diff ready / "review this" | `code-review` | ⚠️ SEQUENTIAL on VolcanoAI (see Fleet Facts); two contextless readers one after another keep the independence |
+| RF / radio / traceroute / SNR / mesh behaviour | this skill → measure at BOTH ends (the originator's journal holds the back leg) | an app screen is a rendering, not a measurement; label physics as physics |
+| Box down / unreachable / probe blind | persistent_issues "Quick diagnostic tells" table, then `ssh` + the box's own `uptime` | you may have observed a PATH, not a box |
+| Session start / mid-session refresh | `/warmstart` | |
+| Wrapping up | `memory-health`, then the end-of-session double tap | |
 
 ## The Domain in One Screen
 
@@ -82,9 +104,9 @@ greps miss `via_mqtt`, #75 trap). Service state = `check_service()` only.
 
 ## Fleet Facts a Session Must Not Miss
 
-- Roster (2026-07-14): manager **VolcanoAI** + `moc, moc1, moc2, moc3, moc5,
-  kiai, meshanchor-server` — live list in `~/.config/meshforge/fleet_hosts`;
-  posture pane: `PYTHONPATH=src python3 -m mini_dudeai.rollup` (or `/warmstart`).
+- Roster: READ `~/.config/meshforge/fleet_hosts` — never trust a copy (this line
+  carried a 07-14 list missing moc4 + lehua until 10-04). Manager **VolcanoAI**;
+  watchers pane (NOT posture — that is `scripts/fleet_posture.py check`): `PYTHONPATH=src python3 -m mini_dudeai.rollup` (or `/warmstart`).
 - **Two-preset fleet, deliberately**: LONG_FAST/ch20 everywhere + **moc2 AND
   moc3** on SHORT_TURBO/ch8 (moc2 verified 2026-07-30 from its parsed
   `config.proto`; this line said moc3 only, and the stale roster helped cost an
@@ -100,6 +122,10 @@ greps miss `via_mqtt`, #75 trap). Service state = `check_service()` only.
   mini runs `MINI_DUDEAI_ENABLE_WATCHDOG=0` (declared absent ≠ error).
 - ⚠️ **No multi-agent fan-outs on VolcanoAI** (kernel-lockup class, 2/2 froze
   the box) — one sequential agent at a time; no /deep-research fan-out here.
+  ⚠️ Carried WITHOUT its evidence (10-04: the incident record was not found).
+  Verify before relaxing: `git log -S'fan-out'` for the cause, then measure
+  headroom incl. swap (10-04: swap 2015/2047 MB used). Never test it BY fanning
+  out on the manager.
 - fleet_sync restarts gateways on `^src/` diffs — **never during a soak**; the
   no-restart deploy is targeted `git pull --ff-only` per box. Always pull every
   box after `git push` (divergence failure mode).
@@ -136,7 +162,7 @@ do X?", then open the handler. Regenerate it after touching any handler:
 ## Launch & Verify
 
 ```bash
-sudo python3 src/launcher_tui/main.py   # Primary interface (TUI)
+scripts/meshforge-launcher.sh           # Primary interface (TUI) — sets PYTHONPYCACHEPREFIX
 python3 src/standalone.py               # Zero-dependency RF tools
 
 python3 scripts/lint.py --all           # Blocking gate (MF rules)
@@ -145,9 +171,12 @@ python3 scripts/parity_check.py         # MeshForge<->MeshAnchor drift
 python3 scripts/db_audit.py             # DBSpec inventory (MF013)
 ```
 
-For honest test results in long sessions, redirect to a file and check the exit
-code explicitly (`pytest … 1>/tmp/out.log 2>&1; echo EXIT=$?`) — never trust a
-`| head`/`| tail`-truncated stream.
+The full suite runs ~18 min on the manager — longer than a Bash timeout, and the
+idle reaper kills long background shells. Run it as a transient unit and read
+the exit code from a FILE it wrote, never a `| tail` stream:
+`systemd-run --user --unit=mf-suite-$$ --working-directory=/opt/meshforge bash -c "python3 -m pytest tests/ -q -p no:cacheprovider >$S/suite.out 2>&1; echo \$? >$S/suite.rc"`.
+Local green is not CI green: CI has no operator `~/.gitconfig`, no fleet, no
+`~/.config` — re-check CI for the exact HEAD before deploying.
 
 ## Cold-Start Ground Truth & the Harness Layer
 
@@ -174,8 +203,10 @@ The harness is the portability layer, not the model (`.claude/rules/model_adviso
 - **Gates never scale down with the model** — smaller model = lean on lint,
   regression guards, and honest_status HARDER.
 - A resolved incident compiles to THREE artifacts: probe/rule (R) +
-  persistent_issues entry (R) + tier-L eval case in `evals/local_brain/`
-  (`.claude/rules/honest_failure_modes.md` point 10).
+  persistent_issues entry (R) + a triage artifact for the tier that CONSUMES it
+  — while tier-L is parked (since 09-07) that is the decision-tell row in
+  persistent_issues, NOT an `evals/local_brain/` case
+  (`.claude/rules/honest_failure_modes.md` point 10; check the consumer's live state first).
 - Full map: `.claude/foundations/harness_map.md` (hooks → claim-gate → ledger →
   mini → probes → paging; truth-source oracle table; SPOF list).
 

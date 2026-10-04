@@ -150,7 +150,7 @@ rns_bridge (extracted lifecycle), service_check (extracted iptables), map_data_c
 
 ## For rns_over_meshtastic_gateway TDD Session
 
-Focus areas for `/ralph-wiggum`:
+Focus areas for TDD work (`mattpocock-skills:tdd`; the old `/ralph-wiggum` was retired 2026-10-04):
 1. Message passing between RNS and Meshtastic
 2. Position/telemetry bridging
 3. Identity mapping (RNS hash <-> Meshtastic node ID)

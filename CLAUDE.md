@@ -35,6 +35,18 @@ unobservable ≠ healthy). "Worked once" is not "reliable". Re-derive the count 
 the end; never patch a running tally. Check of record: `bash scripts/honest_status.sh`
 (`exit 0` = green; `exit 2`/UNKNOWN is never a pass).
 
+**Question → method** (skills fire here only when NAMED — description-matching
+measured 0/112 sessions, 2026-10-04; long form + re-count recipe: `meshforge` skill):
+
+| Shape | Reach for |
+|---|---|
+| broke / failing / "why" | `git log -S'<error>'` + persistent_issues grep, then `mattpocock-skills:diagnosing-bugs` |
+| build / change behaviour | `mattpocock-skills:tdd` — fails on old code first |
+| define / decide / plan | `mattpocock-skills:grilling` → `.claude/ROADMAP.md` |
+| upstream / protocol fact | `mattpocock-skills:research` — the pinned source, not the version |
+| diff ready / review | `code-review` — sequential on the manager box, never fan out |
+| RF / radio / mesh / traceroute | `meshforge` skill — measure at BOTH ends |
+
 > Full security rules: `.claude/rules/security.md`
 > Calibrated-claims discipline: `.claude/rules/calibrated_claims.md`
 > Known issues & fixes: `.claude/foundations/persistent_issues.md`
