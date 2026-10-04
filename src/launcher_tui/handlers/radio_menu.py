@@ -403,9 +403,12 @@ class RadioMenuHandler(BaseHandler):
 
         choice = self.ctx.dialog.menu(
             "Set TX Power",
-            "Select transmit power level:\n\n"
-            "Note: Check your region's legal limit.\n"
-            "Higher power = more range but more battery use.",
+            # Not "higher power = more range": a PA HAT can saturate — one
+            # measured module radiated flat from setting ~12 to 30 (SDR step
+            # test 2026-10-03). On a dense site reach comes from a relay hop.
+            "tx_power SETTING (what the radio is told, not what it radiates).\n"
+            "PA HATs can saturate; check your region's legal limit.\n"
+            "Afterwards: meshtasticd > TX Power Truth (saved vs applied).",
             choices
         )
 
@@ -438,9 +441,13 @@ class RadioMenuHandler(BaseHandler):
 
         if self.ctx.dialog.yesno(
             "Confirm TX Power",
-            f"Set TX power to {power} dBm?\n\n"
-            f"This is approximately {10 ** (power / 10):.0f} mW.\n\n"
-            "Ensure this complies with your region's regulations."
+            f"Set tx_power to {power} dBm?\n\n"
+            "This is the SETTING. With a PA HAT the radiated power can be\n"
+            "higher, or flat across settings (measure, don't infer).\n\n"
+            "meshtasticd reconfigures: an API client (e.g. a mesh bot) can\n"
+            "be left disconnected — check it afterwards.\n\n"
+            "Ensure this complies with your region's regulations.",
+            default_no=True,
         ):
             self._radio_run(
                 [self.ctx.get_meshtastic_cli(), '--host', 'localhost', '--set', 'lora.tx_power', str(power)],

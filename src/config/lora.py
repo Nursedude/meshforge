@@ -306,7 +306,7 @@ class LoRaConfigurator:
         console.print("  Standard modules: 0-22 dBm (max 158mW)")
         console.print("  MeshAdv-Mini: 0-22 dBm (max 158mW)")
         console.print("  MeshAdv-Pi-Hat: 0-30 dBm (max 1W), up to 33dBm on 33S variants")
-        console.print("[dim]Higher power = more range but more battery drain[/dim]")
+        console.print("[dim]This is the SETTING; a PA HAT can saturate (flat output across settings) — measure, don't infer range[/dim]")
         power = Prompt.ask("\nEnter transmit power (dBm)", default="22")
         try:
             power_val = int(power)
