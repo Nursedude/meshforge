@@ -47,9 +47,13 @@ jobs:
           ARG RELEASE
           FROM debian:${RELEASE}
           ENV container=docker
+          # udev + no policy-rc.d: a real Pi has udev (/etc/udev/rules.d) and
+          # never ships Docker's policy-rc.d (exit 101 blocks every service
+          # start). Run 1 (2026-10-04) died on both — drill artifacts, not
+          # stranger findings. Keep the box faithful to the Pi, not the image.
           RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
-                systemd systemd-sysv sudo git python3 ca-certificates \
-              && rm -rf /var/lib/apt/lists/* \
+                systemd systemd-sysv udev sudo git python3 ca-certificates \
+              && rm -rf /var/lib/apt/lists/* /usr/sbin/policy-rc.d \
               && useradd -m -s /bin/bash ham \
               && echo 'ham ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/ham
           STOPSIGNAL SIGRTMIN+3
