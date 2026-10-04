@@ -59,7 +59,7 @@ This isn't conversation history — it's curated domain knowledge that gets read
 Three repos, one domain:
 
 ```
-/opt/meshforge              — NOC core, TUI, gateway bridge (60 handlers)
+/opt/meshforge              — NOC core, TUI, gateway bridge (60 handlers in April 2026)
 /opt/meshforge-maps         — Leaflet.js web map, 7-tab curses TUI
 /opt/meshing_around_meshforge — Bot companion TUI (11 screens)
 ```
@@ -110,7 +110,8 @@ Real example from today: the map server on fleet-host-1 wasn't showing live node
 ### Domain-Wide Quality Control
 
 Claude audited all three TUIs in parallel:
-- meshforge: 60 handlers, 90 menu items
+- meshforge: 60 handlers, 90 menu items (April 2026; the live count is in
+  `.claude/skills/meshforge/capability_index.md`)
 - meshforge-maps: 7 tabs, 25 key bindings
 - meshing_around: 11 screens, 5 action shortcuts
 

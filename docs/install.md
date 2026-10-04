@@ -422,9 +422,9 @@ this if you understand the implications for your system Python.
 
 MeshForge's diagnostics can detect this automatically:
 ```bash
-# TUI: System → Diagnostics → Gateway Pre-flight
-# Or directly:
-sudo python3 src/launcher_tui/main.py  # Dashboard shows import warnings
+# TUI: Mesh Networks → Gateway Pre-Flight
+# Launch the TUI with:
+scripts/meshforge-launcher.sh  # Dashboard shows import warnings
 ```
 
 ### Version History

@@ -81,7 +81,8 @@ server = start_metrics_server(port=9090)
 # Metrics at http://localhost:9090/metrics
 ```
 
-**TUI Access**: `Tools → Historical Metrics → Prometheus Server → Start Server`
+**TUI Access**: none. The TUI's Historical Metrics / Prometheus entry was retired
+2026-09-23 (its DB had no writer on any box); start the exporter from Python as above.
 
 ### Grafana Dashboards
 
