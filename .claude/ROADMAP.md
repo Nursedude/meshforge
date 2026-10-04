@@ -94,6 +94,11 @@ cloud and local deployment work matters more. The uConsole was lost in
 shipping; **kiai** is the build-our-own alternative; a CM5 8 GB (bought for the
 uConsole) awaits an enclosure. When prices improve the operator will invest —
 new boards join gate 6 only by passing gate 5.
+**Bare-metal stranger box (operator, 2026-10-04):** a bare-system Pi 4 + a
+radio are on hand for gate 5's PHYSICAL leg. This closes the gap a
+clean-account install on a fleet box leaves (the system config — hosts block,
+rnsd, apt holds — would still be ours). Keep it OUT of the fleet so it stays a
+stranger: README-only install, no fleet registry, re-imaged before each rc.
 
 ## Now / Next / Later
 
