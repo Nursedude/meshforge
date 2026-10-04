@@ -282,9 +282,13 @@ def delivery_leg(home: str, now: float, gw: str) -> Leg:
         # protocol must not let the headline say "arriving" (review
         # 2026-09-23 — it did, on a mesh-only gateway).
         leg.thin = True
+        # Not "Meshtastic has no ACK": a want_ack DM IS acked by its
+        # destination (13/13 measured 2026-10-03). The gateway just does
+        # not consume acks (meshtastic_ack_consumption_enabled off).
         leg.lines.append("Recent window: no protocol has ever confirmed here — "
-                         "cannot judge a rate (Meshtastic has no ACK). Nothing "
-                         "on this box proves an arrival.")
+                         "cannot judge a rate (the gateway does not consume "
+                         "Meshtastic ACKs). Nothing on this box proves an "
+                         "arrival. Measure DMs: scripts/dm_delivery_check.py")
     elif win["ring_source"] is None:
         leg.thin = True
         leg.lines.append("Recent window: UNKNOWN — the events ring is missing; "
@@ -331,7 +335,7 @@ def delivery_leg(home: str, now: float, gw: str) -> Leg:
                          f"(confirmable protocols only)")
     uncon = _num(snap.get("unconfirmable_sent"))
     if uncon:
-        leg.lines.append(f"  {int(uncon)} sent on protocols with no ACK — "
+        leg.lines.append(f"  {int(uncon)} sent with no ACK consumed — "
                          f"handed to the radio, arrival not provable")
     last = _num(snap.get("last_event_ts"))
     if last is not None:

@@ -261,6 +261,12 @@ class TestDeliveryLeg:
         v = _gather(tmp_path)
         assert _leg(v, "Gateway delivery").thin
         assert v.headline().startswith("QUIET")
+        # 2026-10-03: a want_ack DM IS acked by its destination (13/13
+        # measured). The gap is that the gateway does not CONSUME acks —
+        # say that, and name the tool that measures delivery today.
+        text = "\n".join(_leg(v, "Gateway delivery").lines)
+        assert "Meshtastic has no ACK" not in text
+        assert "dm_delivery_check" in text
 
     def test_missing_ring_never_reads_arriving(self, tmp_path):
         snap = _snapshot()
