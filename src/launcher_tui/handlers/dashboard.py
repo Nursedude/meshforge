@@ -629,12 +629,12 @@ class DashboardHandler(BaseHandler):
 
     _REMEDIATION_HINTS = {
         "meshtasticd": "Configuration > meshtasticd > Restart Service",
-        "rnsd": "Mesh Networks > RNS > RNS Diagnostics (auto-repair)",
-        "port": "System > Network Tools > Port Listening",
-        "mqtt": "Mesh Networks > MQTT > Broker Profiles",
-        "bridge": "Mesh Networks > Gateway Bridge > Configure",
+        "rnsd": "Mesh Networks > RNS / Reticulum > Repair RNS",
+        "port": "System > Network Tools > Listening Ports",
+        "mqtt": "Mesh Networks > Broker Manager > Broker Profiles",
+        "bridge": "Mesh Networks > Gateway Bridge > Validate Config",
         "connection": "Configuration > meshtasticd > Connection Test",
-        "identity": "Mesh Networks > Gateway Bridge > Configure",
+        "identity": "Mesh Networks > Gateway Bridge > RNS Settings > Identity Name",
     }
 
     def _show_alerts(self):

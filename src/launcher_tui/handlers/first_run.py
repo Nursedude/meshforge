@@ -1038,7 +1038,7 @@ class FirstRunHandler(BaseHandler):
         else:
             lines.append("\n" + "-" * 40)
             lines.append("Some services need to be started.")
-            lines.append("Use Service Manager from the main menu.")
+            lines.append("Start them from Mesh Networks > Service Control.")
 
         self.ctx.dialog.msgbox("Step 2: Services", "\n".join(lines))
 

@@ -212,7 +212,9 @@ Made with aloha for the mesh community
 MeshForge - Network Operations Center
 
 KEYBOARD SHORTCUTS:
-  1-6     Quick access to main sections
+  n       NOC Home
+  1-8     Main sections (Dashboard ... Fleet, Extensions)
+  t       Tactical Ops
   q       Quick Actions
   e       Emergency Mode
   a       About
