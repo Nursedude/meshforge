@@ -39,9 +39,22 @@ for i in $(seq 1 15); do echo "config line $i for $host ($variant)"; done
 """
 
 
+# Every git call here — the test's own seed commits AND the script's — runs
+# with an explicit identity and NO global/system config. The first cut leaned
+# on the operator's ~/.gitconfig for the seed commit: green on the manager, exit
+# 128 on the CI runner (no identity). Ambient machine state must not decide
+# the verdict.
+GIT_ENV = {
+    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+    "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+}
+
+
 def _git(repo, *args):
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
-                          text=True, timeout=30, check=True).stdout
+                          text=True, timeout=30, check=True,
+                          env=dict(os.environ, **GIT_ENV)).stdout
 
 
 def _setup(tmp_path, nodes=("node-a", "node-b"), git_repo=True):
@@ -68,8 +81,7 @@ def _setup(tmp_path, nodes=("node-a", "node-b"), git_repo=True):
                AREDN_NODES_FILE=str(node_file),
                AREDN_CAPTURE_ROOT=str(dest),
                CRON_VERDICT_LOG=str(tmp_path / "verdicts.log"),
-               GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
-               GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
+               **GIT_ENV)
     return dest, shim, env
 
 
