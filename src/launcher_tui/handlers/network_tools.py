@@ -352,7 +352,12 @@ class NetworkToolsHandler(BaseHandler):
         ]
 
         if result.success:
-            hops = "direct" if result.hops == 0 else f"{result.hops} hops"
+            if not (result.route or result.snr_towards):
+                hops = "route not parsed — see CLI output"
+            elif result.hops == 0:
+                hops = "direct"
+            else:
+                hops = f"{result.hops} hops"
             lines.append(f"Status:  \u2713 SUCCESS ({hops})")
             lines.append("")
             lines.append(f"Forward: {result.format_route()}")
@@ -367,7 +372,7 @@ class NetworkToolsHandler(BaseHandler):
             lines.append(f"Status:  \u2717 FAILED")
             lines.append(f"Error:   {result.error or 'No response'}")
 
-        if result.output and not result.route:
+        if result.output and not (result.route or result.snr_towards):
             lines.append("")
             lines.append("CLI Output:")
             for out_line in result.output.split("\n")[:8]:

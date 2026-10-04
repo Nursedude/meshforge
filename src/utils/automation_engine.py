@@ -56,9 +56,6 @@ _get_node_tracker, _HAS_NODE_TRACKER = safe_import(
 _NodeInventory, _HAS_NODE_INVENTORY = safe_import(
     'utils.node_inventory', 'NodeInventory'
 )
-_MeshtasticProtobufClient, _HAS_PROTOBUF_CLIENT = safe_import(
-    'gateway.meshtastic_protobuf_client', 'MeshtasticProtobufClient'
-)
 
 # Rate limiting constants
 MAX_PINGS_PER_MINUTE = 2
@@ -141,14 +138,6 @@ def validate_node_id(node_id: str) -> bool:
     return bool(_NODE_ID_PATTERN.match(node_id))
 
 
-def _node_id_to_int(node_id: str) -> Optional[int]:
-    """Convert a !hex node ID string to an integer for protobuf API."""
-    try:
-        return int(node_id.lstrip("!"), 16)
-    except (ValueError, AttributeError):
-        return None
-
-
 @dataclass
 class PingResult:
     """Result from an auto-ping operation."""
@@ -157,6 +146,46 @@ class PingResult:
     success: bool
     latency_ms: Optional[float] = None
     error: Optional[str] = None
+
+
+_CLI_HOP = re.compile(r"!([0-9a-fA-F]{1,8})(?:\s*\((-?[0-9.]+|\?)dB\))?")
+
+
+def parse_cli_traceroute(output: str) -> Optional[Dict[str, List]]:
+    """Parse ``meshtastic --traceroute`` stdout into RouteDiscovery fields.
+
+    The CLI prints each leg as ``!origin --> !relay (snr) --> !end (snr)``,
+    the SNR after a node being what THAT node measured. Mapped to firmware
+    semantics (route = relays only; each SNR list ends with the leg's end
+    node's SNR; ``?`` = unknown = -32.0, firmware INT8_MIN/4). Returns None
+    when no route line is present — never an empty route, which would read
+    as a direct trace.
+    """
+    legs = {}
+    current = None
+    for line in output.splitlines():
+        low = line.lower()
+        if "towards destination" in low:
+            current = "towards"
+        elif "back to us" in low:
+            current = "back"
+        elif current and "-->" in line:
+            hops = _CLI_HOP.findall(line)
+            if len(hops) >= 2:
+                legs[current] = hops
+            current = None
+    if "towards" not in legs:
+        return None
+
+    def split(hops):
+        nodes = [int(h, 16) for h, _ in hops]
+        snrs = [-32.0 if v in ("", "?") else float(v) for _, v in hops[1:]]
+        return nodes[1:-1], snrs
+
+    route, snr_towards = split(legs["towards"])
+    route_back, snr_back = split(legs["back"]) if "back" in legs else ([], [])
+    return {"route": route, "snr_towards": snr_towards,
+            "route_back": route_back, "snr_back": snr_back}
 
 
 @dataclass
@@ -823,61 +852,16 @@ class AutomationEngine:
                 return
 
     def _send_traceroute(self, node_id: str, timeout: int = 60) -> TracerouteResult:
-        """Send a traceroute — protobuf API first, CLI fallback."""
-        result = self._send_traceroute_protobuf(node_id, timeout)
-        if result is not None:
-            return result
+        """Send a traceroute via the meshtastic CLI.
+
+        CLI only, deliberately (operator 2026-10-03). A protobuf-API path
+        sat in front of this from 776b4b2e and NEVER ran: it passed ``host=``
+        to a client whose constructor takes a config, raised TypeError, and
+        a DEBUG-level except fell through to the CLI every time. Reviving it
+        would poll /api/v1/fromradio from a TX path (CLAUDE.md bans that —
+        it steals packets from other HTTP API clients), so it was deleted.
+        """
         return self._send_traceroute_cli(node_id, timeout)
-
-    def _send_traceroute_protobuf(
-        self, node_id: str, timeout: int = 60
-    ) -> Optional[TracerouteResult]:
-        """Traceroute via HTTP protobuf API (richer data, no TCP lock)."""
-        if not _HAS_PROTOBUF_CLIENT or _MeshtasticProtobufClient is None:
-            return None
-
-        dest_num = _node_id_to_int(node_id)
-        if dest_num is None:
-            return None
-
-        try:
-            client = _MeshtasticProtobufClient(
-                host=self._meshtastic_host
-            )
-            if not client.connect():
-                return None
-
-            try:
-                pb_result = client.send_traceroute(
-                    dest_num=dest_num,
-                    timeout=float(timeout),
-                )
-            finally:
-                client.disconnect()
-
-            if pb_result is None:
-                return None
-
-            with self._stats_lock:
-                self._stats["traceroutes_sent"] += 1
-                if pb_result.completed:
-                    self._stats["traceroutes_success"] += 1
-                else:
-                    self._stats["traceroutes_failed"] += 1
-
-            return TracerouteResult(
-                node_id=node_id,
-                timestamp=datetime.now(),
-                success=pb_result.completed,
-                hops=len(pb_result.route),
-                route=list(pb_result.route),
-                snr_towards=list(pb_result.snr_towards),
-                route_back=list(pb_result.route_back),
-                snr_back=list(pb_result.snr_back),
-            )
-        except Exception as e:
-            logger.debug(f"Protobuf traceroute to {node_id} failed: {e}")
-            return None
 
     def _send_traceroute_cli(
         self, node_id: str, timeout: int = 60
@@ -906,12 +890,10 @@ class AutomationEngine:
             success = result.returncode == 0
             output = result.stdout.strip()
 
-            # Count hops from output (lines with node IDs)
-            hops = 0
-            if success and output:
-                for line in output.split("\n"):
-                    if "!" in line or "node" in line.lower():
-                        hops += 1
+            # Parse the route lines (2026-10-03: this used to count output
+            # lines containing "!" and called a DIRECT trace "3 hops").
+            parsed = parse_cli_traceroute(output) if success and output else None
+            hops = len(parsed["route"]) if parsed else 0
 
             with self._stats_lock:
                 self._stats["traceroutes_sent"] += 1
@@ -927,6 +909,7 @@ class AutomationEngine:
                 hops=hops,
                 output=output,
                 error=result.stderr.strip() if not success else None,
+                **(parsed or {}),
             )
         except subprocess.TimeoutExpired:
             with self._stats_lock:

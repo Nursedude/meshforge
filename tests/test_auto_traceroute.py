@@ -280,19 +280,6 @@ class TestNodeIdValidation:
         assert not validate_node_id("!123456789")  # too long (9 digits)
         assert not validate_node_id("!")  # empty after !
 
-    def test_node_id_to_int(self):
-        from utils.automation_engine import _node_id_to_int
-        assert _node_id_to_int("!abc12345") == 0xABC12345
-        assert _node_id_to_int("!1") == 1
-        assert _node_id_to_int("!FF") == 255
-
-    def test_node_id_to_int_invalid(self):
-        from utils.automation_engine import _node_id_to_int
-        assert _node_id_to_int("invalid") is None
-        assert _node_id_to_int("") is None
-        assert _node_id_to_int(None) is None
-
-
 # --- AutomationEngine tests ---
 
 @pytest.mark.usefixtures("allow_local_radio_tx")
@@ -327,12 +314,7 @@ class TestAutomationEngineTraceroute:
             stderr="",
         )
 
-        # Ensure protobuf client is unavailable
-        with patch.dict(
-            'utils.automation_engine.__dict__',
-            {'_HAS_PROTOBUF_CLIENT': False},
-        ):
-            result = engine.run_single_traceroute("!abc12345")
+        result = engine.run_single_traceroute("!abc12345")
 
         assert result.success or mock_run.called
 
@@ -342,11 +324,7 @@ class TestAutomationEngineTraceroute:
         import subprocess as sp
         mock_run.side_effect = sp.TimeoutExpired(cmd="meshtastic", timeout=60)
 
-        with patch.dict(
-            'utils.automation_engine.__dict__',
-            {'_HAS_PROTOBUF_CLIENT': False},
-        ):
-            result = engine.run_single_traceroute("!abc12345")
+        result = engine.run_single_traceroute("!abc12345")
 
         assert not result.success
         assert "Timeout" in result.error
@@ -458,3 +436,77 @@ class TestDirectTraceRenders:
     def test_log_line_keeps_the_return_snr(self):
         line = self._direct().format_log_line()
         assert "5.5" in line
+
+
+class TestCliTracerouteParse:
+    """The CLI fallback is the path that ACTUALLY runs (the protobuf path has
+    raised TypeError on every call since 776b4b2e — see automation_engine).
+    Live 2026-10-03 22:51 HST to a direct neighbour it reported "3 hops"
+    (it counted output lines containing "!") and handed the formatter no
+    route. Fixture = that run's real stdout, not authored text."""
+
+    REAL_DIRECT = (
+        "Connected to radio\n"
+        "Sending traceroute request to !0daee001 on channelIndex:0 (this could take a while)\n"
+        "Route traced towards destination:\n"
+        "!6201ce25 --> !0daee001 (5.75dB)\n"
+        "Route traced back to us:\n"
+        "!0daee001 --> !6201ce25 (3.75dB)\n"
+    )
+
+    def test_direct_trace_parses_to_zero_relays_and_both_snrs(self):
+        from utils.automation_engine import parse_cli_traceroute
+        p = parse_cli_traceroute(self.REAL_DIRECT)
+        assert p == {"route": [], "snr_towards": [5.75],
+                     "route_back": [], "snr_back": [3.75]}
+
+    def test_multi_hop_and_unknown_snr(self):
+        from utils.automation_engine import parse_cli_traceroute
+        out = ("Route traced towards destination:\n"
+               "!6201ce25 --> !40da60b6 (-9.25dB) --> !0daee001 (?dB)\n"
+               "Route traced back to us:\n"
+               "!0daee001 --> !40da60b6 (-2.0dB) --> !6201ce25 (4.0dB)\n")
+        p = parse_cli_traceroute(out)
+        assert p["route"] == [0x40da60b6]
+        assert p["snr_towards"] == [-9.25, -32.0]      # firmware's unknown
+        assert p["route_back"] == [0x40da60b6]
+        assert p["snr_back"] == [-2.0, 4.0]
+
+    def test_no_route_lines_returns_none(self):
+        from utils.automation_engine import parse_cli_traceroute
+        assert parse_cli_traceroute("Connected to radio\nTimed out\n") is None
+
+    def test_cli_result_is_direct_not_three_hops(self):
+        from unittest.mock import patch, MagicMock
+        from utils.automation_engine import AutomationEngine
+        eng = AutomationEngine.__new__(AutomationEngine)
+        import threading
+        eng._stats_lock = threading.Lock()
+        eng._stats = {"traceroutes_sent": 0, "traceroutes_success": 0, "traceroutes_failed": 0}
+        eng._meshtastic_host = "localhost"
+        done = MagicMock(returncode=0, stdout=self.REAL_DIRECT, stderr="")
+        with patch("utils.automation_engine.subprocess.run", return_value=done), \
+             patch("utils.automation_engine.assert_tx_allowed", create=True), \
+             patch("utils.tx_guard.assert_tx_allowed", create=True):
+            r = eng._send_traceroute_cli("!0daee001")
+        assert r.success and r.hops == 0
+        assert r.format_route() == "Local -> !0daee001 (+5.8dB)"
+        assert r.format_return_route() == "!0daee001 -> Local (+3.8dB)"
+
+
+def test_pane_never_says_direct_without_route_data():
+    """exit 0 with no parsable route (e.g. a CLI timeout line) must not be
+    rendered as a DIRECT trace — hops=0 there means 'unknown', not 'direct'."""
+    import sys
+    from types import SimpleNamespace
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src" / "launcher_tui"))
+    from launcher_tui.handlers.network_tools import NetworkToolsHandler
+    from utils.automation_engine import TracerouteResult
+    shown = []
+    h = NetworkToolsHandler()
+    h.ctx = SimpleNamespace(dialog=SimpleNamespace(msgbox=lambda t, x, **k: shown.append(x)))
+    h._display_traceroute_result(TracerouteResult(
+        node_id="!0daee001", timestamp=datetime(2026, 10, 3), success=True,
+        hops=0, output="Connected to radio\nTimed out waiting for traceroute"))
+    assert "direct" not in shown[0]
+    assert "route not parsed" in shown[0]
