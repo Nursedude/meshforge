@@ -95,11 +95,13 @@ SECTION_ORDERINGS = {
         "offline_oracle", "moc_analysis", "demo",
     ],
     "mesh_networks": [
-        "meshtastic", "meshcore", "rns", "gateway", "wizard", "check",
-        "export", "test_gateway_rx", "aredn", "messaging",
+        # Service Control sits beside the gateway: it is an everyday ops
+        # row and was last (row 21, below the 24x80 fold) until 2026-10-03.
+        "meshtastic", "meshcore", "rns", "gateway", "services", "wizard",
+        "check", "export", "test_gateway_rx", "aredn", "messaging",
         "nomadnet", "mqtt", "broker-menu", "mesh_alerts",
         "automation", "dual_failover", "load_balancer", "favorites",
-        "ham", "services",
+        "ham",
     ],
     # "vna" sits beside "antenna": one MEASURES the antenna in front of
     # you, the other COMPARES antenna types from a table. Operators
@@ -121,6 +123,9 @@ SECTION_ORDERINGS = {
         "fleet_membership", "fleet_provision", "fleet_watchers", "fleet_backup",
     ],
     "system": [
+        # Quick Status (read-only, one shot) leads: it was below the 24x80
+        # fold beside shell/reboot until 2026-10-03.
+        "status",
         "hardware", "logs", "network", "discover", "diagnose", "db_health",
         # Read-only posture surfaces sit beside db_health: all three answer
         # "what is true here", none of them change anything.
@@ -129,7 +134,7 @@ SECTION_ORDERINGS = {
         # answer "what is true here" and neither changes anything.
         "starlink_status", "starlink_skymap",
         "run", "details", "daemon",
-        "review", "status", "shell", "reboot",
+        "review", "shell", "reboot",
     ],
     "extensions": ["mfmaps", "meshing"],
     "about": ["version", "changelog", "sysinfo", "deps", "web", "help"],
