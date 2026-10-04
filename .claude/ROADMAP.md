@@ -81,7 +81,7 @@ the check before changing a cell.
 | 2 | **Config upgrades** | Auto-migrate with a backup; refuse LOUDLY on a config written by a newer version. Never silently reinterpret a file it does not understand. | migration test incl. a newer-version fixture (owed) | PARTIAL: `gateway/config_migrations.py` fixes known keys; no schema version, no newer-version refusal |
 | 3 | **Per-leg delivery truth** (NEXT #4) | No silent loss: every accepted message ends delivered, queued, or shown failed in-app. No false green: a leg-kill drill shows the leg down within N min (N from the detector cadence). 30-day soak on rc1. Rates are SHOWN, not gated (a rate measures RF weather, not software). | leg-kill drill + soak ledger (owed) | NOT MET: NEXT #4 not built |
 | 4 | **No AI required** | Every gate passes with no API key and no Claude Code. AI features say plainly that they are not configured. | one stranger-drill run with no AI anywhere | NOT MEASURED |
-| 5 | **Stranger install drill** | VIRTUAL, every release: fresh image, README commands only, no dotfiles / hosts block / registry / AI. PHYSICAL, at rc1: one existing fleet board per supported type, clean user account + separate checkout (no wipe). Pass = the domain END (a message crosses mesh↔RNS and arrives; truth panes honest, incl. UNKNOWN), never "installer exit 0". | VIRTUAL: `gh workflow run stranger_drill.yml [-f installer_args=--client-only]` (observe mode); PHYSICAL: bare Pi 4 procedure (owed) | NOT MET — virtual run 2 (10-04, `37232491579`/`37232494058`): literal README install COMPLETES on bookworm + trixie arm64 with no TTY (rnsd/map/mosquitto up, 0 failed units); `--client-only` → `verify_post_install.sh` FAILs "meshtasticd config dir / config.yaml" on a box that deliberately has no radio (false red — fix owed) |
+| 5 | **Stranger install drill** | VIRTUAL, every release: fresh image, README commands only, no dotfiles / hosts block / registry / AI. PHYSICAL, at rc1: one existing fleet board per supported type, clean user account + separate checkout (no wipe). Pass = the domain END (a message crosses mesh↔RNS and arrives; truth panes honest, incl. UNKNOWN), never "installer exit 0". | VIRTUAL: `gh workflow run stranger_drill.yml [-f installer_args=--client-only]` (observe mode); PHYSICAL: bare Pi 4 procedure (owed) | NOT MET — virtual run 2 (10-04, `37232491579`/`37232494058`): literal README install COMPLETES on bookworm + trixie arm64 with no TTY (rnsd/map/mosquitto up, 0 failed units); `--client-only` false red FIXED `9c76a19f` (verify reads `/etc/meshforge/noc.yaml` `managed:`; drill `37233965857` → "Installation OK with warnings", 0 FAIL) |
 | 6 | **Supported list = what gate 5 passed** | Pi 4 + Pi 5, Raspberry Pi OS bookworm / trixie 64-bit. Zero 2 W, Pi 3B, CM5 listed only if measured. Everything else "may work, untested", said so. | gate 5 results | NOT MET: README claims Pi 3B / Zero 2 W and install.md claims Ubuntu 22.04+, while `pyproject.toml` requires Python ≥3.11 (22.04 ships 3.10 — assertion, not measured here) |
 | 7 | **No-radio `monitor` deployment** | Container or VM, `monitor` profile (MQTT + RNS over TCP, no LoRa). LATER #8 moved up. Gateway / radio profiles stay hardware-only. | gate 5 virtual leg | NOT MET: no container exists |
 | 8 | **Resource budget** | RAM + SD writes per day, per profile, on the smallest supported box: baseline recorded now, "no worse than baseline" at rc1. The hardware we have is the hardware for ~a year. | baseline measurement (owed) | NOT MET: no baseline |
@@ -99,6 +99,33 @@ radio are on hand for gate 5's PHYSICAL leg. This closes the gap a
 clean-account install on a fleet box leaves (the system config — hosts block,
 rnsd, apt holds — would still be ours). Keep it OUT of the fleet so it stays a
 stranger: README-only install, no fleet registry, re-imaged before each rc.
+
+**`malihini`** (Hawaiian: newcomer, stranger — operator 2026-10-04):
+- **Where:** the tent (power + LAN), wired to **m1**. m1 may give it a DHCP
+  reservation and a plain name (`malihini.lan`); NEVER an `mf-fleet-naming`
+  entry (the fleet naming system; the hourly identity check reads it). Access
+  = one `~/.ssh/config` alias. Never `fleet_hosts`, `fleet_roles.yaml`, the
+  registry, our `/etc/hosts` block, mini or `fleet_sync` — so the monthly
+  `box_config_capture` never touches it (by design: re-imaged per rc).
+- **Hardware:** RAK6421 WisMesh Pi HAT + (per moc4's identical set) RAK13302
+  in slot 2 + WisBlock env sensors + ALFA 915 MHz 2 dBi elbow antenna.
+- **Answer key (from moc4, read 10-04 — not used during the blind install):**
+  `lora-RAK6421-13302-slot2.yaml`; pass = SX1262 `init result 0`, then a
+  message crosses mesh↔RNS. Confirm malihini's module/slot on first boot.
+- **Two stranger paths:** (A) stock Raspberry Pi OS Lite 64-bit trixie via
+  Raspberry Pi Imager + our README — run FIRST (tests our own claim); (B) RAK's
+  official pi-gen image (meshtasticd pre-configured) + our README — tests that
+  our installer does not break a working vendor setup (the #58 class).
+- **Hypothesis to measure (ASSERTION, 10-04):** the installer writes
+  `Module: auto` and its friendly labels name only RAK6421 + 13300 slot 1/2.
+  The HAT EEPROM (`/proc/device-tree/hat/product` = "6421 Pi Hat") is written
+  at manufacture and cannot know which module sits in which slot, so `auto`
+  cannot reach `13302-slot2`; a stranger with moc4's exact hardware gets no
+  label for the template it needs. Likely fix after the drill confirms: on a
+  RAK6421 EEPROM, ASK module + slot (all four combinations).
+- **Channel step:** a stranger's radio boots on public default LongFast; fleet
+  HATs run HawaiiNet primary with no public LongFast — the drill tests whether
+  the README gets a stranger onto a channel the mesh can hear.
 
 ## Now / Next / Later
 
