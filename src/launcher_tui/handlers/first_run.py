@@ -844,76 +844,6 @@ class FirstRunHandler(BaseHandler):
 
     # -- Legacy hardware detection step ------------------------------------
 
-    def _wizard_step_hardware(self):
-        """Wizard Step 1: Hardware Detection"""
-        self.ctx.dialog.infobox("Step 1/4", "Detecting connected hardware...")
-
-        lines = ["Hardware Detection\n"]
-        lines.append("=" * 40)
-
-        # Check for SPI devices (HAT-based radios like MeshAdv-Pi-Hat)
-        spi_devices = list(Path('/dev').glob('spidev*'))
-        is_raspberry_pi = self._is_raspberry_pi()
-
-        if spi_devices:
-            lines.append(f"\n✓ SPI Interface Available:")
-            for spi in spi_devices[:3]:
-                lines.append(f"  • {spi.name}")
-            lines.append("  (Supports HAT radios: MeshAdv-Pi-Hat, Waveshare)")
-        elif is_raspberry_pi:
-            # No SPI but on Pi - offer to enable it
-            lines.append("\n✗ SPI Interface Not Enabled")
-            lines.append("  HAT radios require SPI to be enabled.")
-            self.ctx.dialog.msgbox("Step 1: Hardware", "\n".join(lines))
-
-            # Ask if they want to enable SPI
-            if self._offer_enable_spi():
-                # Re-check after enable
-                spi_devices = list(Path('/dev').glob('spidev*'))
-                if spi_devices:
-                    self.ctx.dialog.msgbox(
-                        "SPI Enabled",
-                        "SPI has been enabled!\n\n"
-                        "A REBOOT is required for changes to take effect.\n\n"
-                        "After reboot, your HAT radio will be detected."
-                    )
-                    lines = ["Hardware Detection\n", "=" * 40]
-                    lines.append("\n✓ SPI Enabled (reboot required)")
-
-        scanner = DeviceScanner()
-        results = scanner.scan_all()
-
-        if results['meshtastic_candidates']:
-            lines.append(f"\n✓ Found {len(results['meshtastic_candidates'])} Meshtastic-compatible device(s):\n")
-            for dev in results['meshtastic_candidates']:
-                lines.append(f"  • {dev.description}")
-        elif not spi_devices:
-            lines.append("\n✗ No Meshtastic devices detected")
-            lines.append("\nTo use MeshForge with a radio:")
-            lines.append("  1. Connect a Meshtastic device via USB")
-            lines.append("  2. Or configure meshtasticd for HAT/SPI")
-
-        if results['serial_ports']:
-            compat_ports = [p for p in results['serial_ports'] if p.meshtastic_compatible]
-            if compat_ports:
-                lines.append(f"\n✓ Serial Ports Available:")
-                for port in compat_ports[:3]:  # Show first 3
-                    lines.append(f"  • {port.device}")
-
-        if results['recommended_port']:
-            lines.append(f"\n→ Recommended port: {results['recommended_port']}")
-
-        # Summary for new users
-        if spi_devices or results.get('meshtastic_candidates'):
-            lines.append("\n" + "-" * 40)
-            lines.append("Hardware detected! Continue to configure.")
-        else:
-            lines.append("\n" + "-" * 40)
-            lines.append("No radio found - you can still explore")
-            lines.append("the interface and configure later.")
-
-        self.ctx.dialog.msgbox("Step 1: Hardware", "\n".join(lines))
-
     # -- Raspberry Pi detection --------------------------------------------
 
     def _is_raspberry_pi(self) -> bool:
@@ -1044,55 +974,6 @@ class FirstRunHandler(BaseHandler):
 
     # -- Legacy config step ------------------------------------------------
 
-    def _wizard_step_config(self):
-        """Wizard Step 3: Quick Configuration"""
-        # Check if basic config exists
-        config_dir = get_real_user_home() / ".config" / "meshforge"
-        settings_file = config_dir / "settings.json"
-
-        if settings_file.exists():
-            self.ctx.dialog.msgbox(
-                "Step 3: Configuration",
-                "Configuration file found.\n\n"
-                "Your settings are preserved from a previous install.\n\n"
-                "You can modify settings from:\n"
-                "  Main Menu → Settings"
-            )
-            return
-
-        # Offer basic setup
-        result = self.ctx.dialog.yesno(
-            "Step 3: Configuration",
-            "Would you like to configure basic settings?\n\n"
-            "This includes:\n"
-            "• Callsign (for ham operators)\n"
-            "• Default region\n"
-            "• UI preferences"
-        )
-
-        if result:
-            # Get callsign
-            callsign = self.ctx.dialog.inputbox(
-                "Callsign",
-                "Enter your callsign (optional):",
-                ""
-            )
-
-            if callsign:
-                # Save to settings
-                try:
-                    from utils.common import SettingsManager
-                    settings = SettingsManager("meshforge")
-                    settings.set("callsign", callsign.upper())
-                    self.ctx.report_action(
-                        settings.save(),
-                        "Saved", f"Callsign set to: {callsign.upper()}",
-                        "Save Failed",
-                        f"Callsign {callsign.upper()} could NOT be saved — it won't persist.",
-                    )
-                except Exception as e:
-                    self.ctx.dialog.msgbox("Note", f"Could not save settings: {e}")
-
     # -- Wizard completion -------------------------------------------------
 
     def _wizard_complete(self):
@@ -1117,14 +998,3 @@ class FirstRunHandler(BaseHandler):
 
     # -- Settings menu entry point -----------------------------------------
 
-    def _settings_run_wizard(self):
-        """Run wizard from settings menu."""
-        result = self.ctx.dialog.yesno(
-            "Run Setup Wizard",
-            "Run the first-run setup wizard again?\n\n"
-            "This will walk through hardware detection,\n"
-            "service checks, and basic configuration."
-        )
-
-        if result:
-            self._run_first_run_wizard()

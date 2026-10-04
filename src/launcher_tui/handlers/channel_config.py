@@ -834,28 +834,6 @@ class ChannelConfigHandler(BaseHandler):
             "Copy this PSK and share securely\n"
             "with your mesh network members.")
 
-    def _gateway_template_menu(self):
-        """Gateway template configuration."""
-        templates = [
-            ("standard", "Standard Gateway (Long Fast)"),
-            ("turbo", "Turbo Gateway (Short Turbo + Ch8)"),
-            ("mtnmesh", "MtnMesh Gateway (Medium Fast)"),
-            ("custom", "Custom Gateway Setup"),
-            ("back", "Back"),
-        ]
-
-        choice = self.ctx.dialog.menu(
-            "Gateway Templates",
-            "Pre-configured gateway setups:\n\n"
-            "Templates configure radio preset,\n"
-            "channel 8 for gateway, and optimize\n"
-            "for RNS bridging.",
-            templates
-        )
-
-        if choice and choice != "back":
-            self._apply_gateway_template(choice)
-
     def _apply_gateway_template(self, template: str):
         """Apply a gateway template."""
         templates = {

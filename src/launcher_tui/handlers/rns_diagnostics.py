@@ -773,11 +773,6 @@ class RNSDiagnosticsHandler(BaseHandler):
             logger.debug("shared-instance owner check failed: %s", e)
         return None
 
-    def _check_rns_interface_health(self):
-        """Run rnstatus and parse per-interface TX/RX counters — delegates to engine."""
-        from ._rns_diagnostics_engine import check_rns_interface_health
-        return check_rns_interface_health()
-
     def _diagnose_rns_port_conflict(self):
         """Diagnose and offer to fix RNS port conflicts — delegates to engine."""
         from ._rns_diagnostics_engine import diagnose_rns_port_conflict
@@ -830,9 +825,4 @@ class RNSDiagnosticsHandler(BaseHandler):
         """Check for blocking RNS interfaces — delegates to _rns_interface_mgr."""
         from ._rns_interface_mgr import find_blocking_interfaces
         return find_blocking_interfaces()
-
-    def _disable_interfaces_in_config(self, interface_names: list) -> list:
-        """Disable interfaces in config — delegates to _rns_interface_mgr."""
-        from ._rns_interface_mgr import disable_interfaces_in_config
-        return disable_interfaces_in_config(interface_names)
 
