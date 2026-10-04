@@ -198,3 +198,15 @@ def test_bad_link_does_not_vanish_when_latest_sample_is_unknown(scorer):
     alerts = t.get_alerts()
     assert len(alerts) == 1 and alerts[0]["latest_unobservable"] is True
     assert t.get_stats("x_y")["latest_unobservable"] is True
+
+
+def test_below_every_floor_caps_at_poor(scorer):
+    # review 1b probe: snr=-21 (no SF), no RSSI, direct+fresh+stable read FAIR
+    s = scorer.score(snr=-21.0, hops=1, age_seconds=30, announce_count=60)
+    assert s.quality in (LinkQuality.POOR, LinkQuality.BAD)
+
+
+def test_recommendation_text_is_not_nested_parens(scorer):
+    s = scorer.score(snr=-16.0, sf=11, rssi=-118, hops=1, age_seconds=30)
+    rec = next(r for r in s.recommendations if "Thin SNR margin" in r)
+    assert "((" not in rec and "))" not in rec and "dB (" not in rec.split(":", 1)[0]

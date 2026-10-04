@@ -87,3 +87,15 @@ def test_ceiling_with_known_sf_shows_margin_as_lower_bound():
 def test_nan_is_unknown_not_good():
     g = grade_snr(float("nan"), sf=11)
     assert g.label == "unknown" and g.score is None
+
+
+def test_below_every_presets_floor_needs_no_sf():
+    # No LoRa preset's floor is lower than SF12's -20 dB, so a reading under
+    # it is below floor whatever radio heard it — a claim that needs no SF.
+    g = grade_snr(-21.5)
+    assert g.label == "below floor" and g.score == 5.0
+    assert "below every preset's floor" in g.text()
+
+
+def test_between_floors_without_sf_stays_unknown():
+    assert grade_snr(-19.0).score is None      # below SF7..SF11, above SF12

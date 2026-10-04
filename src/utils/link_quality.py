@@ -246,6 +246,11 @@ class LinkQualityScorer:
         # SF-aware yet (stage 2), so this cap can under-grade a LongFast link.
         if snr_score is None and rssi_score is not None:
             composite = min(composite, rssi_score)
+        # A reading BELOW its floor (or below every preset's floor) caps the
+        # link at POOR whatever hops/age/stability say (review 1b probe:
+        # snr=-21 direct+fresh+stable read FAIR).
+        if grade_snr(snr, sf).label == "below floor":
+            composite = min(composite, 49.0)
 
         # Clamp to 0-100
         composite = max(0.0, min(100.0, composite))
@@ -416,7 +421,7 @@ class LinkQualityScorer:
         g = grade_snr(snr, sf)
         if g.label in ("edge", "below floor"):
             recommendations.append(
-                f"Thin SNR margin ({g.text()}). Try placement or a relay hop "
+                f"Thin SNR margin: {g.text()}. Try placement or a relay hop "
                 "before more gain or power."
             )
 

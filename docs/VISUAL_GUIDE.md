@@ -117,17 +117,16 @@ Example knowledge base result:
 │   SNR measures signal strength relative to background noise       │
 │   in decibels (dB).                                               │
 │                                                                   │
-│   For LoRa/Meshtastic:                                            │
-│   • SNR > 0 dB: Good signal                                       │
-│   • SNR -5 to 0 dB: Acceptable                                    │
-│   • SNR -10 to -5 dB: Weak, may have packet loss                  │
-│   • SNR < -15 dB: Very weak, near receive limit                   │
+│   Read SNR as MARGIN over your spreading factor's floor:          │
+│   • Floors: SF7 -7.5 ... SF11 -17.5, SF12 -20 dB                  │
+│   • Margin >=10 dB good · 5-10 fair · 0-5 edge                    │
+│   • -9 dB on LongFast (SF11) = 8.5 dB margin: fair                │
+│   • Reported SNR tops out near +6 dB: use RSSI above that         │
 │                                                                   │
-│   Improvement strategies:                                         │
-│   • Raise antenna height                                          │
-│   • Use higher gain antenna                                       │
-│   • Improve line of sight                                         │
-│   • Add relay nodes                                               │
+│   Improvement strategies (in this order):                         │
+│   • Raise antenna height / improve line of sight                  │
+│   • Add a relay node to shorten the hop                           │
+│   • Only then more gain or power                                  │
 │                                                                   │
 │                                <Ok>                               │
 └───────────────────────────────────────────────────────────────────┘

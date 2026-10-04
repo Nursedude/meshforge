@@ -129,6 +129,9 @@ class SnrGrade:
                         f"≥{self.margin_db:+.1f} dB vs SF{self.sf} floor)")
             return f"{s} (at ceiling — SNR can't rank further)"
         if self.margin_db is None:
+            if self.label == "below floor":     # under SF12's floor: any preset
+                return (f"{s} (below every preset's floor — high loss "
+                        "expected, or the reading is suspect)")
             return f"{s} (margin: preset unknown)"
         return f"{s} ({self.label}, {self.margin_db:+.1f} dB vs SF{self.sf} floor)"
 
@@ -155,6 +158,11 @@ def grade_snr(snr_db: Optional[float], sf: Optional[int] = None) -> SnrGrade:
                         None if floor is None else snr - floor, at_ceiling=True)
     floor = SNR_THRESHOLD_DB.get(sf) if sf is not None else None
     if floor is None:
+        # No preset's floor is below SF12's, so under it the reading is below
+        # floor WHATEVER radio heard it — the one SF-free claim besides the
+        # ceiling (2026-10-04). Between floors the margin is unknowable.
+        if snr < min(SNR_THRESHOLD_DB.values()):
+            return SnrGrade(snr, sf, "below floor", 5.0, None)
         return SnrGrade(snr, sf, "margin unknown", None, None)
     m = snr - floor
     if m < 0:

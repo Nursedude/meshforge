@@ -190,6 +190,10 @@ class TrafficPulseHandler(BaseHandler):
         status = block.get("status", "unobservable")
         detail = block.get("detail", "")
         print(f"{label:<11}{_badge(status)} {_DIM}{detail[:60]}{_RESET}")
+        # The graded verdict gets its own line: cut at 60 chars inside
+        # detail, an RF ALERT showed no reason (review 1b, 2026-10-04).
+        if block.get("grade"):
+            print(f"{'':<11}{_DIM}{block['grade']}{_RESET}")
 
     def _qa_panel(self, qa: dict):
         status = qa.get("status", "unobservable")

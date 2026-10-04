@@ -397,9 +397,9 @@ class HealthScorer:
 
         # Average signal quality over the legs that HAVE evidence; an absent
         # leg is excluded, never averaged in as a neutral 50 (2026-10-04).
-        # Only with FULL coverage: without an SF only at-ceiling readings
-        # grade (all 100), so a partial average measures who is CLOSE, not
-        # the network (review A, 2026-10-04: one co-located node at +7 dB
+        # Only with FULL coverage: without an SF only the SF-free extremes
+        # grade (at ceiling = 100, below every floor = 5), so a partial
+        # average measures who is CLOSEST or FARTHEST, not the network (review A, 2026-10-04: one co-located node at +7 dB
         # beside nine at -15 dB read 100).
         avg_snr_score = (sum(snr_scores) / len(snr_scores)
                          if snr_scores and snr_ungraded == 0 else None)
@@ -510,8 +510,9 @@ class HealthScorer:
     def _snr_to_score(self, snr: float) -> Optional[float]:
         """SNR -> 0-100 via the shared grader; None when not knowable.
 
-        Nodes here carry no spreading factor, so only an at-ceiling reading
-        grades (SNR stage 2 carries the SF per observation).
+        Nodes here carry no spreading factor, so only the SF-free extremes
+        grade — at ceiling (100) or below every preset's floor (5); SNR
+        stage 2 carries the SF per observation.
         """
         return grade_snr(snr).score
 

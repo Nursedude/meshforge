@@ -48,7 +48,10 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:  # type-only: the runtime import stays lazy
+    from utils.rf import SnrGrade
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -683,27 +686,17 @@ def _telemetry_block(nf: _NodeFacts,
     return block
 
 
-def _rf_quality_band(avg_snr: Optional[float]) -> str:
-    """Map mean SNR to the rf.py quality bands (best-effort import)."""
-    if avg_snr is None:
-        return "n/a"
-    try:
-        from utils import rf
-        for name, thresh in (("excellent", getattr(rf, "SNR_EXCELLENT", -3.0)),
-                             ("good", getattr(rf, "SNR_GOOD", -7.0)),
-                             ("fair", getattr(rf, "SNR_FAIR", -15.0))):
-            if avg_snr > thresh:
-                return name
-        return "bad"
-    except Exception:
-        # Pinned fallback mirrors rf.py SNR bands.
-        if avg_snr > -3.0:
-            return "excellent"
-        if avg_snr > -7.0:
-            return "good"
-        if avg_snr > -15.0:
-            return "fair"
-        return "bad"
+def _rf_grade(avg_snr: float) -> "SnrGrade":
+    """The ONE shared SNR grader (utils.rf.grade_snr), with no SF.
+
+    Was a fifth grader: it read rf.SNR_EXCELLENT, a constant rf.py never
+    had, so getattr ALWAYS fell back to private -3/-7/-15 bands and called a
+    decodable SF11/SF12 mean "bad" (ALERT). These SNRs carry no spreading
+    factor (mostly MQTT-decoded, heard by other radios), so below the +6 dB
+    ceiling the margin is unknown — said, not guessed (2026-10-04).
+    """
+    from utils.rf import grade_snr
+    return grade_snr(avg_snr)
 
 
 def _rf_block(nf: _NodeFacts) -> Dict[str, Any]:
@@ -718,15 +711,29 @@ def _rf_block(nf: _NodeFacts) -> Dict[str, Any]:
         return {"status": UNOBSERVABLE, "reason": "no_snr_samples", "snr_samples": 0,
                 "detail": f"{nf.nodes} online-at-snapshot nodes in {win_m}m but none carried "
                           "SNR (relayed/RNS nodes have no RF leg)."}
-    avg_snr = sum(nf.snr_values) / len(nf.snr_values)
-    band = _rf_quality_band(avg_snr)
-    status = ALERT if band == "bad" else OK
-    block = {"status": status, "snr_samples": len(nf.snr_values),
+    vals = sorted(nf.snr_values)
+    avg_snr = sum(vals) / len(vals)
+    n = len(vals)
+    median = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2.0
+    # Graded on the MEDIAN: one deep outlier must not drag a mean of dB
+    # values under every floor (review 1b: [-40,-15,-14] -> mean -23 ALERTed
+    # though -15/-14 decode fine at SF11).
+    grade = _rf_grade(median)
+    band = grade.label
+    below = sum(1 for v in vals if _rf_grade(v).label == "below floor")
+    # ALERT only on the SF-free claim: the median under EVERY preset's floor.
+    status = ALERT if band == "below floor" else OK
+    block = {"status": status, "snr_samples": n,
              "snr_nodes": nf.snr_nodes, "avg_snr": round(avg_snr, 1),
-             "min_snr": round(min(nf.snr_values), 1), "quality_band": band,
-             "detail": f"{len(nf.snr_values)} SNR samples from {nf.snr_nodes} "
+             "median_snr": round(median, 1),
+             "min_snr": round(vals[0], 1), "quality_band": band,
+             "samples_below_floor": below,
+             # rendered on its OWN line by the pane — detail is cut at 60
+             "grade": f"median {grade.text()}"
+                      + (f" · {below} sample(s) below every preset's floor" if below else ""),
+             "detail": f"{n} SNR samples from {nf.snr_nodes} "
                       "online-at-snapshot nodes "
-                      f"in {win_m}m · avg {round(avg_snr, 1)} dB ({band})."}
+                      f"in {win_m}m · median {grade.text()}."}
     _attach_rssi(block, nf)
     return block
 

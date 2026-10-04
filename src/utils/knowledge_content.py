@@ -30,25 +30,31 @@ def load_rf_knowledge(kb: "KnowledgeBase") -> None:
         content="""
 SNR measures signal strength relative to background noise in decibels (dB).
 
-For LoRa/Meshtastic:
-- SNR > 0 dB: Good signal
-- SNR -5 to 0 dB: Acceptable
-- SNR -10 to -5 dB: Weak, may have packet loss
-- SNR < -15 dB: Very weak, near receive limit
+For LoRa/Meshtastic, read SNR as MARGIN over the demodulation floor of the
+spreading factor the radio runs (Semtech datasheet), not as an absolute:
+- Floors: SF7 -7.5, SF8 -10, SF9 -12.5, SF10 -15, SF11 -17.5, SF12 -20 dB
+  (LongFast = SF11, ShortTurbo = SF7). LoRa decodes BELOW 0 dB SNR.
+- Margin >= 10 dB: good · 5-10: fair · 0-5: edge (fading drops packets)
+  · below the floor: steep loss, or the SF is not what you think.
+- Example: -9 dB is 8.5 dB of margin on LongFast (fair — decodes fine) but
+  below the floor on ShortTurbo.
+- Reported SNR has a CEILING near +6 dB (measured on a LongFast receiver):
+  above it, SNR cannot rank links — use RSSI to say how strong.
+- Weak margin: try placement or a relay hop before more gain or power.
 
 Factors affecting SNR:
 1. Distance - Signal strength decreases with distance (inverse square law)
 2. Obstacles - Buildings, trees, terrain block/reflect signals
-3. Antenna quality - Higher gain antennas improve SNR
+3. Antenna placement - height, clear line of sight and a sound feedline
+   usually matter more than gain on a dense site
 4. Interference - Other RF sources on same frequency
 5. Antenna orientation - LoRa antennas are usually vertically polarized
 
-Improvement strategies:
-- Raise antenna height
-- Use higher gain antenna
-- Improve line of sight
+Improvement strategies (in this order):
+- Raise antenna height / improve line of sight
 - Reduce interference sources
-- Add relay nodes to shorten hops
+- Add a relay node to shorten the hop
+- Only then more gain or power
 """,
         keywords=["snr", "signal", "noise", "weak signal", "reception", "decibels", "db"],
         expertise_level="novice",
@@ -165,6 +171,11 @@ even with "clear" line of sight.
         topic=KnowledgeTopic.RF_FUNDAMENTALS,
         title="Signal Quality Classification",
         content="""
+This is an ABSOLUTE classifier (rf.classify_signal, from meshtastic-go /
+MeshTenna), tuned for LongFast. It ignores the spreading factor, so on other
+presets it misgrades: MeshForge grades SNR as MARGIN over the SF's demod
+floor (SF11 -17.5 dB, SF7 -7.5 dB) — see "SNR (Signal-to-Noise Ratio)".
+
 Signal quality is classified based on both SNR and RSSI together:
 
 EXCELLENT (reliable, high margin):
@@ -727,7 +738,8 @@ def load_troubleshooting_guides(kb: "KnowledgeBase") -> None:
             TroubleshootingStep(
                 instruction="Check current SNR and RSSI values",
                 command="meshtastic --nodes",
-                expected_result="SNR > -10, RSSI > -110",
+                expected_result="SNR margin >= 5 dB over your preset's floor "
+                                "(LongFast: SNR > -12.5 dB), RSSI > -120 dBm",
             ),
             TroubleshootingStep(
                 instruction="Verify antenna is properly connected",

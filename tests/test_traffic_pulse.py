@@ -410,16 +410,34 @@ class TestTelemetryRFBlocks:
         tb = tp._telemetry_block(nf)
         assert tb["status"] == tp.UNOBSERVABLE and "collector appears stopped" in tb["detail"]
 
+    # 2026-10-04 SNR stage 1b: the band comes from rf.grade_snr. It used to
+    # read rf.SNR_EXCELLENT — a constant rf.py never had — so getattr always
+    # fell back to private -3/-7/-15 thresholds (a FIFTH grader). These SNRs
+    # carry no spreading factor (mostly MQTT-decoded, heard by other
+    # radios), so below the +6 ceiling the margin is UNKNOWN, not a band.
+
     def test_rf_ok_with_snr(self):
         nf = self._nf(snr_values=[5.0, -2.0, 8.0], snr_nodes=3)
         rb = tp._rf_block(nf)
         assert rb["status"] == tp.OK and rb["snr_samples"] == 3
-        assert rb["quality_band"] == "excellent"
+        assert rb["quality_band"] == "margin unknown"      # avg +3.7, no SF
+        assert "margin: preset unknown" in rb["detail"]
 
-    def test_rf_bad_snr_alerts(self):
+    def test_rf_ceiling_says_ceiling(self):
+        nf = self._nf(snr_values=[6.5, 7.0], snr_nodes=2)
+        assert tp._rf_block(nf)["quality_band"] == "at ceiling"
+
+    def test_rf_decodable_longfast_snr_does_not_alert(self):
+        # avg -19: above SF12's floor (and SF11 decodes to -17.5) — the old
+        # private scale ALERTed here ("bad" below -15).
         nf = self._nf(snr_values=[-18.0, -20.0], snr_nodes=2)
         rb = tp._rf_block(nf)
-        assert rb["status"] == tp.ALERT and rb["quality_band"] == "bad"
+        assert rb["status"] == tp.OK and rb["quality_band"] == "margin unknown"
+
+    def test_rf_below_every_floor_alerts(self):
+        nf = self._nf(snr_values=[-21.0, -22.0], snr_nodes=2)
+        rb = tp._rf_block(nf)
+        assert rb["status"] == tp.ALERT and rb["quality_band"] == "below floor"
 
     def test_rf_no_snr_samples_is_unobservable(self):
         # Nodes heard but none carried SNR (relayed/RNS) — not a signal problem.
@@ -824,7 +842,7 @@ class TestCollectorSnapshotIsNotReception:
         nf = tp._node_facts(3600, self.NOW)
         rf = tp._rf_block(nf)
         assert nf.nodes == 2 and nf.snr_nodes == 2
-        assert rf["avg_snr"] == -11.0 and rf["quality_band"] == "fair"
+        assert rf["avg_snr"] == -11.0 and rf["quality_band"] == "margin unknown"
 
     def test_external_power_101_is_not_a_percentage(self, tmp_path, monkeypatch):
         ts = self.NOW.timestamp() - 60
@@ -874,3 +892,29 @@ class TestCollectorSnapshotIsNotReception:
                                          ("!flip", ts - 60, 1.0, -90, 50, 1),
                                          ("!gone", ts - 60, 1.0, -90, 50, 0)])
         assert tp._node_facts(3600, self.NOW).offline_nodes == 1
+
+
+class TestRFGradeReview1b:
+    """Review of SNR stage 1b (2026-10-04): ALERT on the MEDIAN, report how
+    many samples sit below every floor, and the grade must reach the screen
+    (the pane cuts detail at 60 chars, which hid it)."""
+
+    def _nf(self, vals):
+        return TestTelemetryRFBlocks._nf(TestTelemetryRFBlocks(), snr_values=vals,
+                                         snr_nodes=len(vals))
+
+    def test_one_deep_outlier_does_not_alert(self):
+        rb = tp._rf_block(self._nf([-40.0, -15.0, -14.0]))   # mean -23, median -15
+        assert rb["status"] == tp.OK
+        assert rb["samples_below_floor"] == 1
+
+    def test_majority_below_every_floor_alerts(self):
+        rb = tp._rf_block(self._nf([-21.0, -22.0, -5.0]))
+        assert rb["status"] == tp.ALERT and rb["quality_band"] == "below floor"
+        assert rb["samples_below_floor"] == 2
+
+    def test_the_grade_reaches_the_screen(self, capsys):
+        from launcher_tui.handlers.traffic_pulse import TrafficPulseHandler
+        rb = tp._rf_block(self._nf([-9.0, -10.0]))
+        TrafficPulseHandler._line(TrafficPulseHandler(), "RF", rb)
+        assert "margin: preset unknown" in capsys.readouterr().out
