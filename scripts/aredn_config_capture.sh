@@ -23,6 +23,15 @@
 # always diffable/recoverable. A node that cannot be captured is a named
 # CONCERN leg — unobservable is not captured.
 #
+# Each run COMMITS what it captured (2026-10-04). fleet-vault's sync.sh
+# bundles commits only and refuses a dirty tree, so a capture left in the
+# working tree is not backed up: the 09-05 capture (a new hi-hap forward, a
+# bi-ecom passthrough flip, an m1 DNS entry) sat uncommitted until the
+# 10-03 vault run refused, leaving the off-site copy seven weeks stale.
+# Only the captured node dirs are staged — anything else dirty in the repo
+# is a human's edit and stays theirs (the vault will still refuse it, loudly).
+# A capture that could not be committed is a CONCERN, never OK.
+#
 # Crontab idiom (manager, monthly):
 #   37 7 5 * * /opt/meshforge/scripts/aredn_config_capture.sh \
 #     >> ~/.local/state/meshforge/aredn_config_capture.log 2>&1 \
@@ -43,7 +52,7 @@ if [ ! -f "$NODES_FILE" ]; then
     exit 0
 fi
 
-captured=() failed=()
+captured=() captured_dirs=() failed=()
 # fd 3 carries the loop input: ssh reads stdin and would swallow the rest of
 # the node list (the same bug fleet_registry_sync.sh shipped with today).
 while IFS= read -r line <&3; do
@@ -66,6 +75,7 @@ while IFS= read -r line <&3; do
         [ -f "$dest/$outfile" ] && cp "$dest/$outfile" "$dest/${outfile%.txt}.prev.txt"
         mv "$tmp" "$dest/$outfile"
         captured+=("$name($(wc -l < "$dest/$outfile")l)")
+        captured_dirs+=("$name")
     else
         rm -f "$tmp"
         failed+=("$name")
@@ -73,11 +83,31 @@ while IFS= read -r line <&3; do
 done 3< "$NODES_FILE"
 
 join() { local IFS=,; echo "$*"; }
+
+# Commit the captures so the vault can carry them (see header). commit_note
+# is empty on success or no-change; otherwise it names why the vault won't.
+commit_note=""
+if [ ${#captured_dirs[@]} -gt 0 ]; then
+    if [ ! -d "$DEST_ROOT/.git" ]; then
+        commit_note="NOT COMMITTED: $DEST_ROOT is not a git repo — fleet-vault cannot carry it"
+    elif ! git -C "$DEST_ROOT" add -- "${captured_dirs[@]}" 2>/dev/null; then
+        commit_note="NOT COMMITTED: git add failed in $DEST_ROOT — fleet_vault_refresh will refuse"
+    elif ! git -C "$DEST_ROOT" diff --cached --quiet -- "${captured_dirs[@]}"; then
+        if ! git -C "$DEST_ROOT" commit -q \
+                -m "capture: $NAME $(date -u +%Y-%m-%d) — $(join "${captured_dirs[@]}")" \
+                -- "${captured_dirs[@]}" >/dev/null 2>&1; then
+            commit_note="NOT COMMITTED: git commit failed in $DEST_ROOT — fleet_vault_refresh will refuse"
+        fi
+    fi
+fi
+
 total=$(( ${#captured[@]} + ${#failed[@]} ))
 if [ "$total" -eq 0 ]; then
     say FAIL "node list is empty — nothing captured is not everything safe"
 elif [ ${#failed[@]} -gt 0 ]; then
-    say CONCERN "captured=$(join "${captured[@]:-}") UNCAPTURED=$(join "${failed[@]}") (last good snapshot retained)"
+    say CONCERN "captured=$(join "${captured[@]:-}") UNCAPTURED=$(join "${failed[@]}") (last good snapshot retained)${commit_note:+ $commit_note}"
+elif [ -n "$commit_note" ]; then
+    say CONCERN "captured $total node(s): $(join "${captured[@]}") $commit_note"
 else
     say OK "captured $total node(s): $(join "${captured[@]}")"
 fi
