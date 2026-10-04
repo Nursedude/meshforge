@@ -91,6 +91,82 @@ SNR_THRESHOLD_DB = {
     10: -15.0, 11: -17.5, 12: -20.0,
 }
 
+# Reported SNR saturates: above this a reading cannot rank links. MEASURED,
+# not a datasheet value — and measured on ONE receiver type only: 1948
+# distinct over-the-air readings decoded by a LongFast (SF11/250 kHz) HAT
+# on the fleet's manager box (2026-10-03, MQTT-relayed excluded): p90
+# +6.75, p99 +7.5, a pile-up at +6.0..+6.75, max +9.75 (+10 is RARE, not
+# impossible). An 11 dB TX cut moved a short link's SNR by 0.25 dB the same
+# day. SF7/500 kHz (ShortTurbo) is UNMEASURED — the estimate's compression
+# may depend on SF (2^SF FFT bins); re-measure before trusting it there.
+# Use RSSI (or an SDR) to say HOW strong.
+REPORTED_SNR_CEILING_DB = 6.0
+
+
+@dataclass(frozen=True)
+class SnrGrade:
+    """One SNR reading, graded the same way on every screen.
+
+    ``score``/``margin_db`` are None when they cannot be known — an unknown
+    SNR, or an SF that is not given (a radio decodes only its OWN spreading
+    factor, so the margin depends on which radio heard it; guessing one
+    preset mis-grades the other by ~10 dB on this two-preset fleet).
+    """
+    snr_db: Optional[float]
+    sf: Optional[int]
+    label: str                      # unknown | at ceiling | good | fair | edge | below floor | margin unknown
+    score: Optional[float]          # 0-100, None = not knowable
+    margin_db: Optional[float]      # dB over the SF's demodulation floor
+    at_ceiling: bool = False
+
+    def text(self) -> str:
+        if self.snr_db is None:
+            return "unknown"
+        s = f"{self.snr_db:+.1f} dB"
+        if self.at_ceiling:
+            if self.margin_db is not None:      # a LOWER bound at ceiling
+                return (f"{s} (at ceiling — SNR can't rank further; "
+                        f"≥{self.margin_db:+.1f} dB vs SF{self.sf} floor)")
+            return f"{s} (at ceiling — SNR can't rank further)"
+        if self.margin_db is None:
+            return f"{s} (margin: preset unknown)"
+        return f"{s} ({self.label}, {self.margin_db:+.1f} dB vs SF{self.sf} floor)"
+
+
+def grade_snr(snr_db: Optional[float], sf: Optional[int] = None) -> SnrGrade:
+    """Grade an SNR as MARGIN over its spreading factor's demod floor.
+
+    Bands follow the usual ~10 dB fade-margin rule of thumb: good >= 10 dB,
+    fair 5-10, edge 0-5. A reading BELOW the datasheet floor still decoded:
+    the floor is the sensitivity point, not a cliff (PER rises smoothly
+    below it, and the estimate is ~1-2 dB noisy there), so it is "below
+    floor" — in the PER waterfall, high loss expected, or the SF is wrong —
+    and scores 5: never 0, never "unusable". At or above REPORTED_SNR_CEILING_DB the
+    grade is 100 on any preset: the number has stopped carrying information.
+    """
+    if snr_db is None:
+        return SnrGrade(None, sf, "unknown", None, None)
+    snr = float(snr_db)
+    if math.isnan(snr):                 # NaN fails every comparison -> it
+        return SnrGrade(None, sf, "unknown", None, None)  # graded "good, 99"
+    if snr >= REPORTED_SNR_CEILING_DB:
+        floor = SNR_THRESHOLD_DB.get(sf) if sf is not None else None
+        return SnrGrade(snr, sf, "at ceiling", 100.0,
+                        None if floor is None else snr - floor, at_ceiling=True)
+    floor = SNR_THRESHOLD_DB.get(sf) if sf is not None else None
+    if floor is None:
+        return SnrGrade(snr, sf, "margin unknown", None, None)
+    m = snr - floor
+    if m < 0:
+        return SnrGrade(snr, sf, "below floor", 5.0, m)
+    if m < 5:
+        return SnrGrade(snr, sf, "edge", 10.0 + 40.0 * m / 5.0, m)
+    if m < 10:
+        return SnrGrade(snr, sf, "fair", 50.0 + 25.0 * (m - 5.0) / 5.0, m)
+    ceil_m = REPORTED_SNR_CEILING_DB - floor
+    span = max(ceil_m - 10.0, 1e-9)
+    return SnrGrade(snr, sf, "good", 75.0 + 24.0 * min(1.0, (m - 10.0) / span), m)
+
 
 # ============================================================================
 # Signal Quality Classification (based on meshtastic-go/MeshTenna research)

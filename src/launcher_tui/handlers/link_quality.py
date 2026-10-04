@@ -7,12 +7,34 @@ Converted from link_quality_mixin.py as part of the mixin-to-registry migration.
 import logging
 
 from handler_protocol import BaseHandler
-from utils.link_quality import LinkQualityScorer, score_topology_edges
+from utils.link_quality import LinkQuality, LinkQualityScorer, score_topology_edges
+from utils.rf import grade_snr
 from gateway.network_topology import get_network_topology
 
 from .topology import GRAPH_NOT_HERE, graph_observable
 
 logger = logging.getLogger(__name__)
+
+
+def _split_known(scores):
+    """(links WITH signal evidence, count without). A link with no SNR and
+    no RSSI is UNKNOWN — never ranked best/worst, never called fine."""
+    known = {k: v for k, v in scores.items() if v.quality is not LinkQuality.UNKNOWN}
+    return known, len(scores) - len(known)
+
+
+def _snr_text(score):
+    """The shared grade's text; 0.0 dB is a reading, not N/A."""
+    return grade_snr(score.inputs.get("snr"), score.inputs.get("sf")).text()
+
+
+def _num(v, fmt="{:.0f}"):
+    return "?" if v is None else fmt.format(v)
+
+
+def _unknown_line(n):
+    return [f"{n} link(s) with no signal evidence — not ranked"] if n else []
+
 
 
 class LinkQualityHandler(BaseHandler):
@@ -90,14 +112,20 @@ class LinkQualityHandler(BaseHandler):
         scores = self._scores_or_explain("Quality Overview")
         if scores is None:
             return
-        all_scores = [s.score for s in scores.values()]
-        avg_score = sum(all_scores) / len(all_scores)
+        known, n_unknown = _split_known(scores)
+        all_scores = [s.score for s in known.values()]
         quality_counts = {}
         for score in scores.values():
             quality = score.quality.value
             quality_counts[quality] = quality_counts.get(quality, 0) + 1
-        lines = ["LINK QUALITY OVERVIEW", "=" * 50, "", f"Total Links:    {len(scores)}", f"Average Score:  {avg_score:.1f}/100", f"Best Score:     {max(all_scores):.1f}/100", f"Worst Score:    {min(all_scores):.1f}/100", "", "Quality Distribution:", "-" * 30]
-        for quality in ["excellent", "good", "fair", "poor", "bad"]:
+        lines = ["LINK QUALITY OVERVIEW", "=" * 50, "", f"Total Links:    {len(scores)}"]
+        if all_scores:
+            lines += [f"Average Score:  {sum(all_scores) / len(all_scores):.1f}/100 (links with signal evidence)",
+                      f"Best Score:     {max(all_scores):.1f}/100", f"Worst Score:    {min(all_scores):.1f}/100"]
+        else:
+            lines.append("Average Score:  UNKNOWN — no link has signal evidence")
+        lines += ["", "Quality Distribution:", "-" * 30]
+        for quality in ["excellent", "good", "fair", "poor", "bad", "unknown"]:
             count = quality_counts.get(quality, 0)
             pct = (count / len(scores) * 100) if scores else 0
             bar = "█" * int(pct / 5) + "░" * (20 - int(pct / 5))
@@ -108,36 +136,36 @@ class LinkQualityHandler(BaseHandler):
         scores = self._scores_or_explain("Best Links")
         if scores is None:
             return
-        sorted_links = sorted(scores.items(), key=lambda x: x[1].score, reverse=True)[:15]
+        known, n_unknown = _split_known(scores)
+        sorted_links = sorted(known.items(), key=lambda x: x[1].score, reverse=True)[:15]
         lines = ["BEST QUALITY LINKS", "=" * 60, ""]
         for link_id, score in sorted_links:
             parts = link_id.split("_", 1)
             src = parts[0][:12] if len(parts) > 0 else "?"
             dst = parts[1][:12] if len(parts) > 1 else "?"
-            snr = score.inputs.get("snr")
-            snr_str = f"{snr:.1f}dB" if snr else "N/A"
-            lines.extend([f"[{score.score:5.1f}] {score.quality.value.upper():<10}", f"   {src} → {dst}", f"   SNR: {snr_str} | Hops: {score.inputs.get('hops', '?')}", ""])
+            lines.extend([f"[{score.score:5.1f}] {score.quality.value.upper():<10}", f"   {src} → {dst}", f"   SNR: {_snr_text(score)} | Hops: {score.inputs.get('hops', '?')}", ""])
+        lines += _unknown_line(n_unknown)
         self.ctx.dialog.msgbox("Best Links", "\n".join(lines))
 
     def _show_worst_links(self):
         scores = self._scores_or_explain("Worst Links")
         if scores is None:
             return
-        sorted_links = sorted(scores.items(), key=lambda x: x[1].score)[:15]
+        known, n_unknown = _split_known(scores)
+        sorted_links = sorted(known.items(), key=lambda x: x[1].score)[:15]
         lines = ["WORST QUALITY LINKS", "=" * 60, ""]
         for link_id, score in sorted_links:
             parts = link_id.split("_", 1)
             src = parts[0][:12] if len(parts) > 0 else "?"
             dst = parts[1][:12] if len(parts) > 1 else "?"
-            snr = score.inputs.get("snr")
-            snr_str = f"{snr:.1f}dB" if snr else "N/A"
             lines.append(f"[{score.score:5.1f}] {score.quality.value.upper():<10}")
             lines.append(f"   {src} → {dst}")
-            lines.append(f"   SNR: {snr_str} | Hops: {score.inputs.get('hops', '?')}")
+            lines.append(f"   SNR: {_snr_text(score)} | Hops: {score.inputs.get('hops', '?')}")
             if score.recommendations:
                 rec = score.recommendations[0][:50]
                 lines.append(f"   ! {rec}...")
             lines.append("")
+        lines += _unknown_line(n_unknown)
         self.ctx.dialog.msgbox("Worst Links", "\n".join(lines))
 
     def _show_quality_alerts(self):
@@ -146,8 +174,13 @@ class LinkQualityHandler(BaseHandler):
             return
         alerts = [(link_id, score) for link_id, score in scores.items() if score.quality.value in ("poor", "bad")]
         alerts.sort(key=lambda x: x[1].score)
+        _known, n_unknown = _split_known(scores)
         if not alerts:
-            self.ctx.dialog.msgbox("No Alerts", f"All links are in fair or better condition!\n\nTotal links checked: {len(scores)}")
+            msg = f"No link is poor or bad.\n\nLinks judged: {len(scores) - n_unknown}"
+            if n_unknown:
+                msg += (f"\n{n_unknown} link(s) have no signal evidence — not judged, "
+                        "so not known to be fine.")
+            self.ctx.dialog.msgbox("No Alerts", msg)
             return
         lines = [f"LINK QUALITY ALERTS ({len(alerts)} issues)", "=" * 60, ""]
         for link_id, score in alerts:
@@ -157,7 +190,7 @@ class LinkQualityHandler(BaseHandler):
             severity = "CRITICAL" if score.quality.value == "bad" else "WARNING"
             lines.append(f"[{severity}] {src} → {dst}")
             lines.append(f"   Score: {score.score:.1f}/100 ({score.quality.value})")
-            lines.append(f"   Components: SNR={score.snr_score:.0f} RSSI={score.rssi_score:.0f} Hops={score.hops_score:.0f}")
+            lines.append(f"   Components: SNR={_num(score.snr_score)} RSSI={_num(score.rssi_score)} Hops={score.hops_score:.0f}")
             for rec in score.recommendations[:2]:
                 lines.append(f"   → {rec[:55]}")
             lines.append("")
@@ -179,19 +212,30 @@ class LinkQualityHandler(BaseHandler):
                 rssi = int(float(rssi_input))
             except ValueError:
                 pass
+        sf_input = self.ctx.dialog.inputbox(
+            "Link Quality Scorer",
+            "Spreading factor of the radio that measured the SNR (7-12)\n"
+            "LongFast=11, ShortTurbo=7. Empty = unknown (SNR not graded):", "")
+        sf = None
+        if sf_input:
+            try:
+                sf = int(sf_input)
+            except ValueError:
+                pass
         hops_input = self.ctx.dialog.inputbox("Link Quality Scorer", "Enter hop count (default: 1):", "1")
         try:
             hops = int(hops_input) if hops_input else 1
         except ValueError:
             hops = 1
-        score = scorer.score(snr=snr, rssi=rssi, hops=hops)
+        score = scorer.score(snr=snr, rssi=rssi, hops=hops, sf=sf)
         lines = [
             "LINK QUALITY SCORE", "=" * 50, "",
             f"Overall Score: {score.score:.1f}/100", f"Quality: {score.quality.value.upper()}", "",
             "Component Scores:", "-" * 30,
-            f"  SNR:        {score.snr_score:.1f}/100", f"  RSSI:       {score.rssi_score:.1f}/100",
-            f"  Hops:       {score.hops_score:.1f}/100", f"  Age:        {score.age_score:.1f}/100",
-            f"  Stability:  {score.stability_score:.1f}/100", "",
+            f"  SNR:        {_num(score.snr_score, '{:.1f}')}/100  {_snr_text(score)}",
+            f"  RSSI:       {_num(score.rssi_score, '{:.1f}')}/100",
+            f"  Hops:       {score.hops_score:.1f}/100", f"  Age:        {_num(score.age_score, '{:.1f}')}/100",
+            f"  Stability:  {_num(score.stability_score, '{:.1f}')}/100", "",
         ]
         if score.recommendations:
             lines.extend(["Recommendations:", "-" * 30])
@@ -204,6 +248,14 @@ class LinkQualityHandler(BaseHandler):
         if scores is None:
             return
         lines = ["LINK QUALITY ANALYSIS", "=" * 60, "", "Note: Trend tracking requires continuous monitoring.", "Current snapshot analysis:", ""]
+        # UNKNOWN links are not judged: counting them as 0 called a network
+        # with no signal data CRITICAL (review B, 2026-10-04).
+        scores, n_unknown = _split_known(scores)
+        if not scores:
+            lines += ["Network Health Score: UNKNOWN — no link has signal evidence"]
+            lines += _unknown_line(n_unknown)
+            self.ctx.dialog.msgbox("Quality Trends", "\n".join(lines))
+            return
         excellent = sum(1 for s in scores.values() if s.quality.value == "excellent")
         good = sum(1 for s in scores.values() if s.quality.value == "good")
         fair = sum(1 for s in scores.values() if s.quality.value == "fair")
@@ -211,7 +263,8 @@ class LinkQualityHandler(BaseHandler):
         bad = sum(1 for s in scores.values() if s.quality.value == "bad")
         total = len(scores)
         health_score = (excellent * 100 + good * 80 + fair * 60 + poor * 30 + bad * 10) / total if total > 0 else 0
-        lines.append(f"Network Health Score: {health_score:.1f}/100")
+        lines.append(f"Network Health Score: {health_score:.1f}/100 (links with signal evidence)")
+        lines += _unknown_line(n_unknown)
         lines.append("")
         if health_score >= 80:
             lines.extend(["Status: HEALTHY", "Network is performing well."])

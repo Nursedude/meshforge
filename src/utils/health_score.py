@@ -49,6 +49,8 @@ from typing import Any, Dict, List, Optional, Tuple
 # EventBus for automatic service status updates
 from utils.event_bus import event_bus
 
+from utils.rf import grade_snr
+
 
 # Score thresholds
 THRESHOLD_HEALTHY = 75
@@ -66,11 +68,11 @@ FRESH_THRESHOLD = 300       # 5 minutes — very fresh
 STALE_THRESHOLD = 3600      # 1 hour — getting stale
 DEAD_THRESHOLD = 7200       # 2 hours — essentially dead
 
-# Signal quality thresholds (dB)
-SNR_EXCELLENT = -5.0   # Above this: great signal
-SNR_GOOD = -10.0       # Above this: usable
-SNR_FAIR = -15.0       # Above this: marginal
-# Below SNR_FAIR: poor
+# SNR is graded by utils.rf.grade_snr — the ONE grader every screen shares
+# (margin over the SF's demod floor + the measured reporting ceiling). This
+# module's own SNR_EXCELLENT=-5/GOOD=-10/FAIR=-15 scale was removed
+# 2026-10-04: it disagreed with link_quality and the topology pane by ~50
+# points on the same reading.
 
 RSSI_EXCELLENT = -80   # Above this: strong
 RSSI_GOOD = -100       # Above this: moderate
@@ -379,36 +381,48 @@ class HealthScorer:
         rssi_scores = []
         util_penalties = []
 
+        snr_ungraded = 0
         for node in self._nodes.values():
             if node.snr is not None:
-                snr_scores.append(self._snr_to_score(node.snr))
+                g = self._snr_to_score(node.snr)
+                if g is None:
+                    snr_ungraded += 1      # no SF -> margin not knowable
+                else:
+                    snr_scores.append(g)
             if node.rssi is not None:
                 rssi_scores.append(self._rssi_to_score(node.rssi))
             if node.channel_util is not None:
                 # High utilization is bad
                 util_penalties.append(max(0, node.channel_util - 25) * 2)
 
-        # Average signal quality
-        if snr_scores:
-            avg_snr_score = sum(snr_scores) / len(snr_scores)
+        # Average signal quality over the legs that HAVE evidence; an absent
+        # leg is excluded, never averaged in as a neutral 50 (2026-10-04).
+        # Only with FULL coverage: without an SF only at-ceiling readings
+        # grade (all 100), so a partial average measures who is CLOSE, not
+        # the network (review A, 2026-10-04: one co-located node at +7 dB
+        # beside nine at -15 dB read 100).
+        avg_snr_score = (sum(snr_scores) / len(snr_scores)
+                         if snr_scores and snr_ungraded == 0 else None)
+        avg_rssi_score = sum(rssi_scores) / len(rssi_scores) if rssi_scores else None
+        legs = [v for v in (avg_snr_score, avg_rssi_score) if v is not None]
+        if legs:
+            signal_score = sum(legs) / len(legs)
+            details['signal_unobservable'] = False
         else:
-            avg_snr_score = 50.0
-
-        if rssi_scores:
-            avg_rssi_score = sum(rssi_scores) / len(rssi_scores)
-        else:
-            avg_rssi_score = 50.0
-
-        # Signal score: average of SNR and RSSI scores
-        signal_score = (avg_snr_score + avg_rssi_score) / 2.0
+            # The combiner still multiplies a number; say loudly that this
+            # one is not a measurement (tri-state HealthSnapshot = follow-up).
+            signal_score = 50.0
+            details['signal_unobservable'] = True
 
         # Apply utilization penalty
         if util_penalties:
             avg_penalty = sum(util_penalties) / len(util_penalties)
             signal_score = max(0, signal_score - avg_penalty)
 
-        details['avg_snr_score'] = round(avg_snr_score, 1)
-        details['avg_rssi_score'] = round(avg_rssi_score, 1)
+        details['avg_snr_score'] = None if avg_snr_score is None else round(avg_snr_score, 1)
+        details['avg_rssi_score'] = None if avg_rssi_score is None else round(avg_rssi_score, 1)
+        details['snr_graded'] = len(snr_scores)
+        details['snr_ungraded'] = snr_ungraded
         details['nodes_with_signal'] = len(snr_scores) + len(rssi_scores)
 
         return clamp(signal_score), details
@@ -493,29 +507,13 @@ class HealthScorer:
 
         return clamp(avg_freshness), details
 
-    def _snr_to_score(self, snr: float) -> float:
-        """Convert SNR value to quality score (0-100).
+    def _snr_to_score(self, snr: float) -> Optional[float]:
+        """SNR -> 0-100 via the shared grader; None when not knowable.
 
-        Args:
-            snr: Signal-to-noise ratio in dB.
-
-        Returns:
-            Quality score 0-100.
+        Nodes here carry no spreading factor, so only an at-ceiling reading
+        grades (SNR stage 2 carries the SF per observation).
         """
-        if snr >= SNR_EXCELLENT:
-            return 100.0
-        elif snr >= SNR_GOOD:
-            # Linear interpolation between excellent and good
-            progress = (snr - SNR_GOOD) / (SNR_EXCELLENT - SNR_GOOD)
-            return 75.0 + progress * 25.0
-        elif snr >= SNR_FAIR:
-            progress = (snr - SNR_FAIR) / (SNR_GOOD - SNR_FAIR)
-            return 50.0 + progress * 25.0
-        else:
-            # Below fair: linear down to 0
-            # At -25 dB: score = 0
-            below = SNR_FAIR - snr
-            return max(0.0, 50.0 - below * 5.0)
+        return grade_snr(snr).score
 
     def _rssi_to_score(self, rssi: int) -> float:
         """Convert RSSI value to quality score (0-100).
@@ -637,8 +635,9 @@ class HealthScorer:
 
         # Signal quality (50% weight)
         signal_scores = []
-        if node.snr is not None:
-            signal_scores.append(self._snr_to_score(node.snr))
+        snr_g = self._snr_to_score(node.snr) if node.snr is not None else None
+        if snr_g is not None:
+            signal_scores.append(snr_g)
         if node.rssi is not None:
             signal_scores.append(self._rssi_to_score(node.rssi))
 

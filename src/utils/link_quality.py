@@ -35,6 +35,8 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Dict, List, Optional, Any, Tuple
 
+from utils.rf import grade_snr
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,12 +59,14 @@ class LinkScore:
     # Quality classification
     quality: LinkQuality
 
-    # Individual component scores (0-100 each)
-    snr_score: float = 0.0
-    rssi_score: float = 0.0
+    # Individual component scores (0-100 each). snr/rssi are None when not
+    # knowable (no reading, or SNR without its spreading factor) — excluded
+    # from the composite, never scored as a neutral 50 (2026-10-04).
+    snr_score: Optional[float] = None
+    rssi_score: Optional[float] = None
     hops_score: float = 0.0
-    age_score: float = 0.0
-    stability_score: float = 0.0
+    age_score: Optional[float] = None
+    stability_score: Optional[float] = None
 
     # Weights used for calculation
     weights: Dict[str, float] = field(default_factory=dict)
@@ -75,15 +79,19 @@ class LinkScore:
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
+        rnd = (lambda v: None if v is None else round(v, 1))
         return {
-            "score": round(self.score, 1),
+            # an UNKNOWN link publishes no score: its renormalised composite
+            # (hops/age only) must not read as a measurement downstream
+            "score": None if self.quality is LinkQuality.UNKNOWN else round(self.score, 1),
             "quality": self.quality.value,
             "components": {
-                "snr": round(self.snr_score, 1),
-                "rssi": round(self.rssi_score, 1),
+                # None = not knowable (see snr_score/rssi_score above)
+                "snr": None if self.snr_score is None else round(self.snr_score, 1),
+                "rssi": None if self.rssi_score is None else round(self.rssi_score, 1),
                 "hops": round(self.hops_score, 1),
-                "age": round(self.age_score, 1),
-                "stability": round(self.stability_score, 1),
+                "age": rnd(self.age_score),
+                "stability": rnd(self.stability_score),
             },
             "weights": self.weights,
             "inputs": self.inputs,
@@ -120,12 +128,11 @@ class LinkQualityScorer:
         "stability": 0.15,  # Link stability over time
     }
 
-    # SNR thresholds for LoRa (dB)
-    SNR_EXCELLENT = 10.0
-    SNR_GOOD = 5.0
-    SNR_FAIR = 0.0
-    SNR_POOR = -5.0
-    SNR_MIN = -15.0  # Below this, link is unusable
+    # SNR is graded by utils.rf.grade_snr (margin over the SF's demod floor,
+    # measured reporting ceiling) — the ONE grader every screen shares. The
+    # old absolute SNR_EXCELLENT=10 / SNR_MIN=-15 scale is gone: +10 is
+    # rare (reported SNR saturates ~+6; see rf.REPORTED_SNR_CEILING_DB) and
+    # -15 called decodable SF11/SF12 links "unusable".
 
     # RSSI thresholds (dBm) - typical for LoRa
     RSSI_EXCELLENT = -80
@@ -180,6 +187,7 @@ class LinkQualityScorer:
         announce_count: int = None,
         packet_loss: float = None,
         last_seen: datetime = None,
+        sf: int = None,
     ) -> LinkScore:
         """
         Calculate composite link quality score.
@@ -192,6 +200,9 @@ class LinkQualityScorer:
             announce_count: Number of announcements received
             packet_loss: Packet loss rate 0.0-1.0 (if available)
             last_seen: Datetime of last activity
+            sf: Spreading factor of the radio that measured ``snr``. Without
+                it the SNR margin is unknowable and the SNR component is
+                excluded (a radio decodes only its own SF).
 
         Returns:
             LinkScore with composite score and component breakdown
@@ -202,6 +213,7 @@ class LinkQualityScorer:
             "hops": hops,
             "age_seconds": age_seconds,
             "announce_count": announce_count,
+            "sf": sf,
             "packet_loss": packet_loss,
         }
 
@@ -211,31 +223,43 @@ class LinkQualityScorer:
             inputs["age_seconds"] = age_seconds
 
         # Calculate individual component scores
-        snr_score = self._score_snr(snr)
+        snr_score = self._score_snr(snr, sf)
         rssi_score = self._score_rssi(rssi)
         hops_score = self._score_hops(hops)
         age_score = self._score_age(age_seconds)
         stability_score = self._score_stability(announce_count, packet_loss)
 
-        # Calculate weighted composite
-        composite = (
-            self.weights["snr"] * snr_score +
-            self.weights["rssi"] * rssi_score +
-            self.weights["hops"] * hops_score +
-            self.weights["age"] * age_score +
-            self.weights["stability"] * stability_score
-        )
+        # Weighted composite over the KNOWN components only (renormalised):
+        # an unknown is excluded, never averaged in as a neutral 50.
+        parts = {"snr": snr_score, "rssi": rssi_score, "hops": hops_score,
+                 "age": age_score, "stability": stability_score}
+        known = {k: v for k, v in parts.items() if v is not None}
+        wsum = sum(self.weights[k] for k in known)
+        composite = (sum(self.weights[k] * v for k, v in known.items()) / wsum
+                     if wsum > 0 else 0.0)
+
+        # SNR ungraded but RSSI known: the SCORE may not exceed what the
+        # signal evidence supports — the number, not just the label, since
+        # alerts, rankings and averages read the number (review C). Without
+        # this, dropping SNR's 35% let hops/age/stability lift a -125 dBm
+        # link to GOOD (review B, probe: 72.3). ⚠️ the RSSI scale is not
+        # SF-aware yet (stage 2), so this cap can under-grade a LongFast link.
+        if snr_score is None and rssi_score is not None:
+            composite = min(composite, rssi_score)
 
         # Clamp to 0-100
         composite = max(0.0, min(100.0, composite))
 
-        # Determine quality classification
-        quality = self._classify_quality(composite)
+        # No signal evidence at all -> the link's quality is not observable.
+        if snr_score is None and rssi_score is None:
+            quality = LinkQuality.UNKNOWN
+        else:
+            quality = self._classify_quality(composite)
 
         # Generate recommendations
         recommendations = self._generate_recommendations(
             snr_score, rssi_score, hops_score, age_score, stability_score,
-            snr, rssi, hops, age_seconds
+            snr, rssi, hops, age_seconds, sf
         )
 
         return LinkScore(
@@ -251,32 +275,14 @@ class LinkQualityScorer:
             recommendations=recommendations,
         )
 
-    def _score_snr(self, snr: float = None) -> float:
-        """Score SNR on 0-100 scale."""
-        if snr is None:
-            return 50.0  # Unknown - neutral score
+    def _score_snr(self, snr: float = None, sf: int = None) -> Optional[float]:
+        """Score SNR 0-100 via the shared grader; None when not knowable."""
+        return grade_snr(snr, sf).score
 
-        # Map SNR to 0-100 using sigmoid-like curve
-        if snr >= self.SNR_EXCELLENT:
-            return 100.0
-        if snr <= self.SNR_MIN:
-            return 0.0
-
-        # Linear interpolation between thresholds
-        if snr >= self.SNR_GOOD:
-            return 80.0 + 20.0 * (snr - self.SNR_GOOD) / (self.SNR_EXCELLENT - self.SNR_GOOD)
-        if snr >= self.SNR_FAIR:
-            return 60.0 + 20.0 * (snr - self.SNR_FAIR) / (self.SNR_GOOD - self.SNR_FAIR)
-        if snr >= self.SNR_POOR:
-            return 40.0 + 20.0 * (snr - self.SNR_POOR) / (self.SNR_FAIR - self.SNR_POOR)
-
-        # Below poor threshold
-        return 40.0 * (snr - self.SNR_MIN) / (self.SNR_POOR - self.SNR_MIN)
-
-    def _score_rssi(self, rssi: int = None) -> float:
-        """Score RSSI on 0-100 scale."""
+    def _score_rssi(self, rssi: int = None) -> Optional[float]:
+        """Score RSSI on 0-100 scale; None when there is no reading."""
         if rssi is None:
-            return 50.0  # Unknown - neutral score
+            return None
 
         # Map RSSI to 0-100
         if rssi >= self.RSSI_EXCELLENT:
@@ -318,10 +324,10 @@ class LinkQualityScorer:
         # Linear decay from 45 to 10
         return 45.0 - (hops - 5) * (35.0 / (self.MAX_USEFUL_HOPS - 5))
 
-    def _score_age(self, age_seconds: float = None) -> float:
-        """Score age on 0-100 scale (fresher is better)."""
+    def _score_age(self, age_seconds: float = None) -> Optional[float]:
+        """Score age on 0-100 scale (fresher is better); None when unknown."""
         if age_seconds is None:
-            return 50.0  # Unknown - neutral score
+            return None
 
         if age_seconds <= 0:
             return 100.0  # Just now
@@ -345,7 +351,7 @@ class LinkQualityScorer:
         return 10.0
 
     def _score_stability(self, announce_count: int = None,
-                         packet_loss: float = None) -> float:
+                         packet_loss: float = None) -> Optional[float]:
         """
         Score link stability based on announce frequency and packet loss.
 
@@ -379,7 +385,7 @@ class LinkQualityScorer:
         if scores:
             return sum(scores) / len(scores)
 
-        return 50.0  # Unknown - neutral score
+        return None  # unknown -> excluded from the composite, never 50
 
     def _classify_quality(self, score: float) -> LinkQuality:
         """Classify score into quality category."""
@@ -399,35 +405,27 @@ class LinkQualityScorer:
         rssi: int = None,
         hops: int = None,
         age_seconds: float = None,
+        sf: int = None,
     ) -> List[str]:
         """Generate improvement recommendations based on weak components."""
         recommendations = []
 
-        # SNR issues
-        if snr_score < 50 and snr is not None:
-            if snr < -5:
-                recommendations.append(
-                    "Critical: Very low SNR ({:.1f} dB). Consider antenna upgrade or "
-                    "relocating node to improve signal quality.".format(snr)
-                )
-            else:
-                recommendations.append(
-                    "SNR is marginal ({:.1f} dB). Check for interference or "
-                    "antenna alignment.".format(snr)
-                )
+        # SNR: advise only on a KNOWN margin (grade_snr). Thin margin ->
+        # placement or a relay hop BEFORE gain/power (dense-site doctrine,
+        # operator 2026-09-27). Never "antenna upgrade" off an absolute dB.
+        g = grade_snr(snr, sf)
+        if g.label in ("edge", "below floor"):
+            recommendations.append(
+                f"Thin SNR margin ({g.text()}). Try placement or a relay hop "
+                "before more gain or power."
+            )
 
         # RSSI issues
-        if rssi_score < 50 and rssi is not None:
-            if rssi < -120:
-                recommendations.append(
-                    "Signal strength is near sensitivity limit ({} dBm). "
-                    "Node may be at edge of range.".format(rssi)
-                )
-            else:
-                recommendations.append(
-                    "Weak signal ({} dBm). Consider higher gain antenna or "
-                    "reducing distance.".format(rssi)
-                )
+        if rssi_score is not None and rssi_score < 50 and rssi is not None:
+            recommendations.append(
+                f"Weak signal ({rssi} dBm). Check placement/obstruction, or "
+                "add a relay hop, before more gain or power."
+            )
 
         # Hop count issues
         if hops_score < 50 and hops is not None and hops > 4:
@@ -437,7 +435,7 @@ class LinkQualityScorer:
             )
 
         # Age issues
-        if age_score < 50 and age_seconds is not None:
+        if age_score is not None and age_score < 50 and age_seconds is not None:
             if age_seconds > 3600:
                 hours = age_seconds / 3600
                 recommendations.append(
@@ -450,7 +448,7 @@ class LinkQualityScorer:
                 )
 
         # Stability issues
-        if stability_score < 50:
+        if stability_score is not None and stability_score < 50:
             recommendations.append(
                 "Link stability is low. This could indicate intermittent "
                 "connectivity or node issues."
@@ -545,6 +543,12 @@ class LinkQualityTracker:
         self._history_size = history_size
         self._scorer = LinkQualityScorer()
 
+    @staticmethod
+    def _observed(history):
+        """Entries with signal evidence. An UNKNOWN sample's composite is
+        hops/age only — never averaged, trended or alerted on as quality."""
+        return [(t, s) for t, s in history if s.quality is not LinkQuality.UNKNOWN]
+
     def record(self, link_id: str, score: LinkScore = None, **kwargs) -> LinkScore:
         """
         Record a link quality measurement.
@@ -585,7 +589,7 @@ class LinkQualityTracker:
         if link_id not in self._history:
             return None
 
-        history = self._history[link_id]
+        history = self._observed(self._history[link_id])
         if len(history) < window:
             return None
 
@@ -618,7 +622,7 @@ class LinkQualityTracker:
         if link_id not in self._history:
             return None
 
-        history = self._history[link_id]
+        history = self._observed(self._history[link_id])
         if not history:
             return None
 
@@ -636,13 +640,18 @@ class LinkQualityTracker:
         if link_id not in self._history:
             return None
 
-        history = self._history[link_id]
+        history = self._observed(self._history[link_id])
         if not history:
             return None
 
         scores = [s.score for _, s in history]
+        latest_unknown = (self._history[link_id][-1][1].quality
+                          is LinkQuality.UNKNOWN)
 
         return {
+            # "current" is the last OBSERVED score; say so when the newest
+            # sample had no signal evidence (absence is not recovery).
+            "latest_unobservable": latest_unknown,
             "current": scores[-1],
             "min": min(scores),
             "max": max(scores),
@@ -666,13 +675,17 @@ class LinkQualityTracker:
         alerts = []
 
         for link_id, history in self._history.items():
-            if not history:
-                continue
+            observed = self._observed(history)
+            if not observed:
+                continue        # never observed: not an alert, not "fine"
 
-            _, latest = history[-1]
+            # Alert on the last OBSERVED sample; a newer UNKNOWN sample must
+            # not make a BAD link vanish (hfm #2 — absence is not recovery).
+            _, latest = observed[-1]
             if latest.score < threshold:
                 alerts.append({
                     "link_id": link_id,
+                    "latest_unobservable": history[-1][1].quality is LinkQuality.UNKNOWN,
                     "score": latest.score,
                     "quality": latest.quality.value,
                     "trend": self.get_trend(link_id),
