@@ -110,6 +110,10 @@ Published at: https://wh6gxznursedude.substack.com/
 - **2026-09-29 — [Not a Swarm](2026-09-29-not-a-swarm.md)**
   _A non-author re-review of ten fixes, a fix that broke something, the contextless reader that caught it, and the doctrine we wrote afterward: four roles, a stopping rule, and a number for what the readers missed._
 
+### October 2026
+- **2026-10-03 — [Measuring the Air: LoRa, Power, and Truth in a Two-Site Mesh](2026-10-03-measuring-the-air.md)** _(white paper, ~14 min — RF)_
+  _We turned the site's Meshtastic radios from 30 to 17 dBm and the instruments said nothing changed. An SDR beside one radio showed why: its received level stayed within about 2 dB from setting 12 to 30 (we suspect its USB supply) and fell ~11 dB only at 7, where the worst path still went out direct. Two receivers found an RNode's constant −71 dBm "interference" was not in the air, and six of our own instruments turned out to be measuring something else. LoRa physics, three transports on one band, the 25% knee, and how it compares to published work. Live version: [Claude Doc](https://claude.ai/code/artifact/57c1f68a-62fa-40e8-9c39-981fc6134279)._
+
 ---
 
 _New posts: add the dated `.md` here and a line in the timeline above. Keep the
