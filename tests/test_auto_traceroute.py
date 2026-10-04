@@ -66,6 +66,38 @@ class TestTracerouteResult:
         r = self._make_result(route_back=[])
         assert r.format_return_route() == "(no return route)"
 
+    # Firmware semantics, read at source (TraceRouteModule.cpp @
+    # v2.7.26.54e0d8d, appendMyIDandSNR :383 + printer :192-262):
+    # ``route``/``route_back`` hold INTERMEDIATE relays only; each SNR list
+    # carries one extra, final entry — the SNR measured by the node at that
+    # leg's END (destination going out, us coming back); INT8_MIN (-128,
+    # -32.0 after /4) means unknown. On a DIRECT trace both routes are
+    # empty and each SNR list has exactly one entry.
+
+    def test_direct_trace_names_destination_and_its_snr(self):
+        r = self._make_result(route=[], snr_towards=[6.0], hops=0)
+        assert r.format_route() == "Local -> !abc12345 (+6.0dB)"
+
+    def test_direct_trace_shows_the_return_leg(self):
+        # 2026-10-03: phone apps and this pane showed NO route back on a
+        # direct trace, though the firmware measured it (snr_back[0]).
+        r = self._make_result(route_back=[], snr_back=[5.5])
+        assert r.format_return_route() == "!abc12345 -> Local (+5.5dB)"
+
+    def test_multi_hop_destination_snr_is_the_final_entry(self):
+        r = self._make_result(route=[0xDEF456], snr_towards=[-5.0, 3.25])
+        assert r.format_route() == "Local -> !00def456 (-5.0dB) -> !abc12345 (+3.2dB)"
+
+    def test_multi_hop_return(self):
+        r = self._make_result(route_back=[0xDEF456], snr_back=[-2.0, 4.0])
+        assert r.format_return_route() == "!abc12345 -> !00def456 (-2.0dB) -> Local (+4.0dB)"
+
+    def test_unknown_snr_is_never_rendered_as_minus_32(self):
+        r = self._make_result(route=[0xDEF456], snr_towards=[-32.0, 6.0])
+        out = r.format_route()
+        assert "-32.0" not in out
+        assert "!00def456 (?dB)" in out
+
     def test_format_log_line_success(self):
         r = self._make_result(
             node_name="Hilltop",
@@ -396,3 +428,33 @@ class TestTracerouteLogging:
             path = _get_traceroute_db_path()
         assert str(fake_home) in str(path)
         assert "traceroute_history.db" in str(path)
+
+
+class TestDirectTraceRenders:
+    """2026-10-03 TUI audit: a DIRECT traceroute rendered no destination and
+    no return leg, though the firmware measured both SNRs (snr_towards[0],
+    snr_back[0]) — the same "no route back" misreading phone apps show."""
+
+    def _direct(self):
+        from utils.automation_engine import TracerouteResult
+        return TracerouteResult(node_id="!5f01371f", timestamp=datetime(2026, 10, 3, 12, 0),
+                                success=True, hops=0, snr_towards=[6.0], snr_back=[5.5])
+
+    def test_pane_shows_both_legs_of_a_direct_trace(self):
+        import sys
+        from types import SimpleNamespace
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src" / "launcher_tui"))
+        from launcher_tui.handlers.network_tools import NetworkToolsHandler
+        shown = []
+        h = NetworkToolsHandler()
+        h.ctx = SimpleNamespace(dialog=SimpleNamespace(
+            msgbox=lambda title, text, **kw: shown.append(text)))
+        h._display_traceroute_result(self._direct())
+        text = shown[0]
+        assert "Forward: Local -> !5f01371f (+6.0dB)" in text
+        assert "Return:  !5f01371f -> Local (+5.5dB)" in text
+        assert "direct" in text
+
+    def test_log_line_keeps_the_return_snr(self):
+        line = self._direct().format_log_line()
+        assert "5.5" in line

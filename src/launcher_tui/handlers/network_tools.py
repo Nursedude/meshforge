@@ -352,10 +352,13 @@ class NetworkToolsHandler(BaseHandler):
         ]
 
         if result.success:
-            lines.append(f"Status:  \u2713 SUCCESS ({result.hops} hops)")
+            hops = "direct" if result.hops == 0 else f"{result.hops} hops"
+            lines.append(f"Status:  \u2713 SUCCESS ({hops})")
             lines.append("")
             lines.append(f"Forward: {result.format_route()}")
-            if result.route_back:
+            # A DIRECT trace has an empty route_back but still carries the
+            # SNR we measured on the reply (snr_back[0]) — show it.
+            if result.route_back or result.snr_back:
                 lines.append(f"Return:  {result.format_return_route()}")
             if result.snr_towards:
                 snr_strs = [f"{s:+.1f}dB" for s in result.snr_towards]

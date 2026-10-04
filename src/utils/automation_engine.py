@@ -174,30 +174,44 @@ class TracerouteResult:
     route_back: List[int] = field(default_factory=list)
     snr_back: List[float] = field(default_factory=list)
 
+    # Firmware RouteDiscovery semantics (TraceRouteModule.cpp @ v2.7.26,
+    # appendMyIDandSNR + its own printer): route/route_back hold the
+    # INTERMEDIATE relays only; each SNR list carries one extra, final entry
+    # measured by the node at that leg's END (the destination going out, us
+    # coming back). A DIRECT trace therefore has empty routes and one SNR
+    # each. INT8_MIN (-128 -> -32.0 dB after /4) is the firmware's "unknown".
+    _SNR_UNKNOWN = -32.0
+
+    @classmethod
+    def _snr_at(cls, snrs: List[float], i: int) -> str:
+        if i >= len(snrs):
+            return ""
+        if snrs[i] <= cls._SNR_UNKNOWN:
+            return " (?dB)"
+        return f" ({snrs[i]:+.1f}dB)"
+
     def format_route(self) -> str:
-        """Format the route as a human-readable string."""
-        if not self.route:
+        """Format the forward route: Local -> relays -> destination."""
+        if not self.route and not self.snr_towards:
             return self.output or "(no route data)"
-        parts = []
-        parts.append("Local")
+        parts = ["Local"]
         for i, hop in enumerate(self.route):
-            snr = ""
-            if i < len(self.snr_towards):
-                snr = f" ({self.snr_towards[i]:+.1f}dB)"
-            parts.append(f"!{hop:08x}{snr}")
+            parts.append(f"!{hop:08x}{self._snr_at(self.snr_towards, i)}")
+        parts.append(f"{self.node_id}{self._snr_at(self.snr_towards, len(self.route))}")
         return " -> ".join(parts)
 
     def format_return_route(self) -> str:
-        """Format the return route as a human-readable string."""
-        if not self.route_back:
+        """Format the return route: destination -> relays -> Local.
+
+        A direct trace has no relays but still carries the SNR we measured
+        on the reply (snr_back[0]) — shown, not hidden (2026-10-03).
+        """
+        if not self.route_back and not self.snr_back:
             return "(no return route)"
-        parts = []
+        parts = [self.node_id]
         for i, hop in enumerate(self.route_back):
-            snr = ""
-            if i < len(self.snr_back):
-                snr = f" ({self.snr_back[i]:+.1f}dB)"
-            parts.append(f"!{hop:08x}{snr}")
-        parts.append("Local")
+            parts.append(f"!{hop:08x}{self._snr_at(self.snr_back, i)}")
+        parts.append(f"Local{self._snr_at(self.snr_back, len(self.route_back))}")
         return " -> ".join(parts)
 
     def format_log_line(self) -> str:
@@ -211,6 +225,8 @@ class TracerouteResult:
             snr_str = ""
             if self.snr_towards:
                 snr_str = f" SNR: {self.snr_towards}"
+            if self.snr_back:
+                snr_str += f" SNR back: {self.snr_back}"
             return (
                 f"TRACEROUTE {self.node_id}{name} -> "
                 f"{self.hops} hops{route_str}{snr_str} OK"

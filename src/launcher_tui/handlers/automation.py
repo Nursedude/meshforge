@@ -505,6 +505,8 @@ class AutomationHandler(BaseHandler):
                 route_str = " -> ".join(f"!{h:08x}" if isinstance(h, int) else str(h) for h in route_hops[:5])
                 if len(route_hops) > 5:
                     route_str += " ..."
+            elif ok and not r.get("raw_output"):
+                route_str = "direct"
             elif ok and r.get("raw_output"):
                 route_str = r["raw_output"][:30]
             elif not ok:
