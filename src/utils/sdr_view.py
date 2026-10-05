@@ -33,10 +33,15 @@ UNKNOWN_STREAK_ALERT = 3        # consecutive unknown fleet rows -> remediation
 FLEET_WINDOWS = ("903.625", "906.300", "910.525")
 
 BLIND_SPOTS = (
-    "Blind spots: levels are dBFS at a fixed gain, not dBm · one receiver, at "
-    "moc5 only · nothing below the noise floor (LoRa decodes ~20 dB under it) · "
+    "Blind spots: levels are dBFS at a fixed gain, not dBm · one receiver at "
+    "one position · nothing below the noise floor (LoRa decodes ~20 dB under it) · "
     "foreign LoRa ON our exact channel looks like ours · frames holding our own "
     "near-field TX are not judged.")
+
+
+#: Home-relative, so the fleet rollup's ssh `tail` (which lands in the remote
+#: $HOME) reads the same file as jsonl_path() — pinned equal by a test.
+SDR_JSONL_RELPATH = ".local/share/meshforge/sdr/interference.jsonl"
 
 
 def jsonl_path() -> Path:
@@ -140,8 +145,8 @@ def render(state: str, rows: Sequence[Dict], now: Optional[float] = None) -> str
     out = ["SDR Interference Watch — what the Airspy timer recorded (read-only)", ""]
     if state == "absent":
         out += ["No SDR data file on this box — absent.",
-                "The watch runs only on the box hosting the Airspy (moc5). If THIS",
-                "box hosts it, the timer is not running: check",
+                "The watch runs only on a box hosting an Airspy. If THIS box",
+                "hosts one, the timer is not running: check",
                 "  systemctl --user status meshforge-sdr.timer", "", BLIND_SPOTS]
         return "\n".join(out)
     if state == "unreadable" or not rows:
@@ -254,3 +259,147 @@ def render(state: str, rows: Sequence[Dict], now: Optional[float] = None) -> str
         out.append("Class D (adjacent band): no hourly pass recorded yet — UNKNOWN.")
     out += ["", BLIND_SPOTS]
     return "\n".join(out)
+
+
+# ── fleet line (2026-10-05) ────────────────────────────────────────────────
+# One compact summary per box for the Fleet Watchers rollup. Same witness as
+# render(): freshness is the newest OK window, never the newest row. An SDR on
+# USB that nothing reads is BLINDNESS — it gets a line, never silence (moc1's
+# RTL-SDR sat unread from 10-03 with no surface saying so).
+
+#: vendor:product → name. The bus is read from sysfs, never lsusb.
+SDR_USB_IDS = {
+    ("1d50", "60a1"): "Airspy",
+    ("0bda", "2838"): "RTL-SDR",
+    ("0bda", "2832"): "RTL-SDR",
+    ("1d50", "6089"): "HackRF",
+}
+#: The only device scripts/sdr_interference.py captures from (airspy_rx).
+WRITER_DEVICE = "Airspy"
+#: Rows the rollup tails per box: 14 x 5 min covers the hourly adjacent pass.
+SUMMARY_ROWS = 14
+ADJACENT_STALE_S = 3 * 3600
+
+
+def sdr_devices(pairs) -> Optional[List[str]]:
+    """Known SDR names among (vendor, product) pairs. None = the bus could not
+    be read — unobservable is not 'no SDR'."""
+    if pairs is None:
+        return None
+    return sorted({SDR_USB_IDS[p] for p in pairs if p in SDR_USB_IDS})
+
+
+def local_usb_pairs() -> Optional[List[Tuple[str, str]]]:
+    """(vendor, product) for every device on THIS box's bus; None if unreadable."""
+    root = Path("/sys/bus/usb/devices")
+    try:
+        devs = list(root.iterdir())
+    except OSError:
+        return None
+    pairs = []
+    for dev in devs:
+        try:
+            pairs.append(((dev / "idVendor").read_text().strip(),
+                          (dev / "idProduct").read_text().strip()))
+        except OSError:
+            continue
+    return pairs or None
+
+
+def summarize(state: str, rows: Sequence[Dict], usb: Optional[List[str]],
+              now: Optional[float] = None) -> Optional[Dict]:
+    """Compact per-box SDR summary, or None when the box has neither data nor
+    an SDR (absent by design stays silent). status: fresh | stale | unknown |
+    no_consumer."""
+    now = time.time() if now is None else now
+    if state == "absent":
+        if usb:
+            return {"status": "no_consumer", "devices": list(usb)}
+        return None
+    device = WRITER_DEVICE
+    unread = [d for d in (usb or []) if d != WRITER_DEVICE]
+    base = {"device": device, "unread": unread, "usb_missing": usb == []}
+    if state != "ok" or not rows:
+        return dict(base, status="unknown", reason=state if state != "ok" else "no parseable rows")
+    fleet = [r for r in rows if r.get("mode") == "fleet"]
+    newest_ok: Dict[str, Optional[float]] = {}
+    for win in FLEET_WINDOWS:
+        r = next((r for r in reversed(fleet)
+                  if r.get("windows", {}).get(win, {}).get("status") == "ok"), None)
+        newest_ok[win] = r.get("ts") if r else None
+    stale = [w for w, ts in newest_ok.items()
+             if ts is None or now - ts > STALE_AFTER_S or now - ts < 0]
+    streak = 0
+    for r in reversed(fleet):
+        if r.get("status") in ("unknown", "error"):
+            streak += 1
+        else:
+            break
+    known = [ts for ts in newest_ok.values() if ts is not None]
+    # Busy is the MEAN over every tailed run with that window ok: one run is
+    # a ~30 s capture, so a lone 0.0% read as "idle" while 23 h averaged 5.2%
+    # on LF (2026-10-05). Energy detection misses LoRa below the floor, so the
+    # line labels it a lower bound.
+    samples: Dict[str, List[float]] = {}
+    runs = 0
+    if not stale:
+        for r in fleet:
+            if r.get("status") in ("unknown", "error") or not r.get("windows"):
+                continue
+            runs += 1
+            for w in r["windows"].values():
+                if w.get("status") != "ok":
+                    continue
+                for label, c in (w.get("channels") or {}).items():
+                    samples.setdefault(label.replace("meshtastic-", ""), []).append(
+                        c.get("busy_pct") or 0.0)
+    busy = {k: sum(v) / len(v) for k, v in samples.items()}
+    foreign = carriers = 0
+    latest = next((r for r in reversed(fleet) if r.get("windows")), None)
+    if latest and not stale:
+        for w in latest["windows"].values():
+            if w.get("status") != "ok":
+                continue
+            foreign += sum(1 for f in w.get("foreign") or []
+                           if not f.get("alias_candidate") and not f.get("im3_candidate"))
+            carriers += len(w.get("carriers_persistent") or [])
+    adj = next((r for r in reversed(rows) if r.get("mode") == "adjacent" and r.get("windows")), None)
+    return dict(base, status="stale" if stale else "fresh", stale_windows=stale,
+                newest_ok_ts=max(known) if known else None, unknown_streak=streak,
+                busy=busy, busy_runs=runs, foreign=foreign, carriers=carriers,
+                adjacent_ts=adj.get("ts") if adj else None, now=now)
+
+
+def summary_line(s: Dict) -> str:
+    """One line under the box in the Fleet Watchers pane."""
+    if s["status"] == "no_consumer":
+        return (f"📡 SDR {', '.join(s['devices'])}: ⚠️ on USB, nothing reads it — "
+                "blind (no capture timer on this box)")
+    head = f"📡 SDR {s['device']}: "
+    tail = []
+    if s.get("unread"):
+        tail.append(f"⚠️ {', '.join(s['unread'])} on USB, nothing reads it")
+    if s.get("usb_missing"):
+        tail.append("⚠️ no SDR on USB now")
+    now = s.get("now")
+    if s["status"] == "unknown":
+        body = f"⚪ UNKNOWN — data file {s.get('reason')}"
+    elif s["status"] == "stale":
+        body = (f"🔴 STALE — newest ok capture {_age(now, s['newest_ok_ts'])} "
+                f"({', '.join(s['stale_windows'])} stale)")
+        if s.get("unknown_streak", 0) >= UNKNOWN_STREAK_ALERT:
+            body += f" · last {s['unknown_streak']} runs captured nothing"
+        body += " · check: systemctl --user status meshforge-sdr.timer"
+    else:
+        busy = " ".join(f"{k} {v:.1f}%" for k, v in s["busy"].items())
+        body = (f"🟢 fresh · newest ok {_age(now, s['newest_ok_ts'])} · "
+                f"busy ≥ (mean of {s.get('busy_runs', 0)} runs) {busy} · "
+                f"foreign {s['foreign']} · carriers {s['carriers']}")
+        adj_ts = s.get("adjacent_ts")
+        if adj_ts is None:
+            body += " · adjacent UNKNOWN"
+        else:
+            body += f" · adjacent {_age(now, adj_ts)}"
+            if now - adj_ts > ADJACENT_STALE_S:
+                body += " (STALE)"
+    return head + " · ".join([body] + tail)

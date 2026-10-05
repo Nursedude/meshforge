@@ -829,3 +829,134 @@ def test_collect_local_still_returns_none_on_a_mini_less_box(tmp_path, monkeypat
     import mini_dudeai.rollup as _r
     monkeypatch.setattr(_r, "resolve_home", lambda: str(tmp_path))
     assert collect_local(NOW) is None
+
+
+# === fleet SDR line (2026-10-05) =================================
+# The SDR section rides the SAME breadth ssh, behind its own sentinel, split
+# off FIRST: appended after the claw loop without that split, it would be
+# glued onto the last claw chunk, fail json.loads, and silently erase that
+# claw card (the dudeclaw-02 class).
+
+import importlib.util  # noqa: E402
+
+from mini_dudeai.rollup import (  # noqa: E402
+    _SDR_SENTINEL,
+    _split_sdr_payload,
+    parse_sdr_payload,
+)
+
+_ROOT = os.path.join(os.path.dirname(__file__), "..")
+
+
+def _writer_rows(ts_fleet, ts_adj):
+    """Rows from the WRITER itself on the real fixtures, never hand-shaped."""
+    import numpy as np
+    spec = importlib.util.spec_from_file_location(
+        "sdr_interference_rollup", os.path.join(_ROOT, "scripts", "sdr_interference.py"))
+    si = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(si)
+    fx = os.path.join(_ROOT, "tests", "fixtures", "sdr")
+    q906, q910 = np.load(os.path.join(fx, "fx_906_quiet.npy")), np.load(os.path.join(fx, "fx_910_quiet.npy"))
+    cap = lambda c, g: ((q910 if c > 909 else q906), None)  # noqa: E731
+    return [dict(si.run_fleet(cap, None, {}, []), v=1, ts=ts_fleet, host="sdrbox"),
+            dict(si.run_adjacent(cap), v=1, ts=ts_adj, host="sdrbox")]
+
+
+def _sdr_section(usb_lines, rows=None):
+    body = [_SDR_SENTINEL] + [f"usb:{u}" for u in usb_lines]
+    if rows is not None:
+        body.append("sdrfile:yes")
+        body += [json.dumps(r) for r in rows]
+    return "\n".join(body) + "\n"
+
+
+def _payload(state, claws, sdr=""):
+    out = json.dumps(state) + "\n" + _CLAW_SENTINEL + "\n"
+    for c in claws:
+        out += json.dumps(c) + "\n" + _CLAW_SENTINEL + "\n"
+    return out + sdr
+
+
+_STATE = {"last_tick_ts": NOW - 5, "rule_count": 71, "host": "x"}
+
+
+def test_sdr_section_rides_the_breadth_ssh_without_eating_the_last_claw():
+    rows = _writer_rows(NOW - 60, NOW - 600)
+    out = _payload(_STATE, [_CLAW_DOC], _sdr_section(["1d6b:0002", "1d50:60a1"], rows))
+    p = collect_remote("sdrbox", NOW, runner=lambda h, t: (0, out, ""))
+    assert p["status"] == "fresh"
+    assert [c["device"] for c in p["claws"]] == ["dudeclaw-01"]
+    assert p["sdr"]["status"] == "fresh"
+    pane = build_rollup([p], NOW)
+    assert "📡 SDR Airspy: 🟢 fresh" in pane and "🦞 dudeclaw-01" in pane
+
+
+def test_a_legacy_payload_without_the_sdr_section_renders_no_sdr_line():
+    out = _payload(_STATE, [_CLAW_DOC])
+    p = collect_remote("old", NOW, runner=lambda h, t: (0, out, ""))
+    assert p.get("sdr") is None and [c["device"] for c in p["claws"]] == ["dudeclaw-01"]
+    assert "📡" not in build_rollup([p], NOW)
+
+
+def test_an_unread_sdr_on_a_box_shows_as_blind():
+    out = _payload(_STATE, [], _sdr_section(["1d6b:0002", "0bda:2838"]))
+    p = collect_remote("rtlbox", NOW, runner=lambda h, t: (0, out, ""))
+    assert p["sdr"]["status"] == "no_consumer"
+    assert "📡 SDR RTL-SDR: ⚠️ on USB, nothing reads it" in build_rollup([p], NOW)
+
+
+def test_a_box_with_no_sdr_and_no_data_stays_silent():
+    out = _payload(_STATE, [], _sdr_section(["1d6b:0002"]))
+    p = collect_remote("plain", NOW, runner=lambda h, t: (0, out, ""))
+    assert p.get("sdr") is None and "📡" not in build_rollup([p], NOW)
+
+
+def test_an_unreadable_bus_is_not_reported_as_no_sdr():
+    # zero usb lines = the bus could not be read; data rows still summarise,
+    # and the line must NOT claim "no SDR on USB"
+    rows = _writer_rows(NOW - 60, NOW - 600)
+    s = parse_sdr_payload(_sdr_section([], rows), NOW)
+    assert s["status"] == "fresh" and s["usb_missing"] is False
+
+
+def test_a_mini_less_box_still_gets_its_sdr_line():
+    out = _CLAW_SENTINEL + "\n" + _sdr_section(["0bda:2838"])
+    p = collect_remote("nomini", NOW, runner=lambda h, t: (0, out, ""))
+    assert p["status"] == "no_state_file"
+    assert "nothing reads it" in build_rollup([p], NOW)
+
+
+def test_split_sdr_payload_without_sentinel_is_untouched():
+    assert _split_sdr_payload("abc") == ("abc", None)
+
+
+def test_remote_breadth_cmd_really_tails_the_sdr_file(tmp_path):
+    """Run the REAL one-liner in a real shell over a home with state, a claw
+    and an SDR file: every part must come back, the claw included."""
+    import subprocess
+
+    from mini_dudeai.rollup import _remote_breadth_cmd, _split_claw_payload
+    from utils.sdr_view import SDR_JSONL_RELPATH
+    (tmp_path / "mini_dudeai_state.json").write_text(json.dumps(_STATE))
+    (tmp_path / "claw_last_tick.json").write_text(json.dumps(_CLAW_DOC))
+    f = tmp_path / SDR_JSONL_RELPATH
+    f.parent.mkdir(parents=True)
+    f.write_text("".join(json.dumps(r) + "\n" for r in _writer_rows(NOW - 60, NOW - 600)))
+    p = subprocess.run(["sh", "-c", _remote_breadth_cmd()], cwd=str(tmp_path),
+                       capture_output=True, text=True, timeout=30)
+    assert p.returncode == 0
+    rest, sdr_text = _split_sdr_payload(p.stdout)
+    _state, claws = _split_claw_payload(rest)
+    assert [c["device"] for c in claws] == ["dudeclaw-01"]
+    assert parse_sdr_payload(sdr_text, NOW)["status"] == "fresh"
+
+
+def test_collect_local_carries_this_boxs_sdr(tmp_path):
+    from utils.sdr_view import SDR_JSONL_RELPATH
+    state = tmp_path / "mini_dudeai_state.json"
+    state.write_text(json.dumps(_STATE))
+    f = tmp_path / SDR_JSONL_RELPATH
+    f.parent.mkdir(parents=True)
+    f.write_text("".join(json.dumps(r) + "\n" for r in _writer_rows(NOW - 60, NOW - 600)))
+    p = collect_local(NOW, str(state), sdr_path=str(f), usb_pairs=[("1d50", "60a1")])
+    assert p["sdr"]["status"] == "fresh"

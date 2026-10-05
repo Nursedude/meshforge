@@ -106,6 +106,17 @@ the brief, applied fleet-wide. Per-box banners:
   a larger claim one `cat` cannot make.
 - **❌ unreachable** — ssh transport failed (box down or network).
 
+**📡 SDR line** (2026-10-05) — under any box with an SDR on USB or SDR data;
+silent otherwise. Same ssh round trip (sysfs USB ids + a bounded tail of
+`sdr/interference.jsonl`):
+- **🟢 fresh** — every fleet window has an ok capture within 15 min. `busy ≥`
+  is a MEAN over the tailed runs and a LOWER bound (energy detection misses
+  LoRa below the floor) — the radio's own ChUtil is the in-channel number.
+- **🔴 STALE** — the capture timer stopped or every capture fails; no numbers.
+- **⚠️ on USB, nothing reads it** — an SDR with no consumer is BLINDNESS (moc1's
+  RTL-SDR since 10-03). The writer drives `airspy_rx` only.
+- **⚪ UNKNOWN** — the data file exists but could not be read.
+
 Problems sort to the top, so a clean pane means a clean fleet.
 
 ⚠️ **`no_state_file` on a box you believe runs a mini is a finding, not

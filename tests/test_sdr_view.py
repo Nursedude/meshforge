@@ -208,3 +208,110 @@ def test_load_reports_unreadable_even_when_exists_itself_fails(tmp_path, monkeyp
     p = tmp_path / "interference.jsonl"
     monkeypatch.setattr(type(p), "exists", lambda self: (_ for _ in ()).throw(PermissionError(13, "denied")))
     assert v.load(p) == ("unreadable", [])
+
+
+# ---- fleet SDR line (2026-10-05): one compact summary per box for the
+# Fleet Watchers rollup. Same freshness contract as render(); an SDR on USB
+# that nothing reads is BLINDNESS and must say so, never stay silent.
+
+AIRSPY = (("1d50", "60a1"),)
+RTL = (("0bda", "2838"),)
+HUB = (("1d6b", "0002"),)          # a root hub: proves the bus was readable
+
+
+def _fresh_rows():
+    return [_row(si.run_fleet(quiet, None, {}, []), NOW - 60),
+            _row(si.run_adjacent(quiet), NOW - 600)]
+
+
+def test_sdr_devices_names_known_sdrs_and_keeps_unobservable_distinct():
+    assert v.sdr_devices(HUB + AIRSPY + RTL) == ["Airspy", "RTL-SDR"]
+    assert v.sdr_devices(HUB) == []
+    assert v.sdr_devices(None) is None          # bus unreadable ≠ no SDR
+
+
+@pytest.mark.parametrize("usb", [[], None])
+def test_no_data_and_no_sdr_is_silent(usb):
+    assert v.summarize("absent", [], usb, now=NOW) is None
+
+
+def test_an_sdr_nothing_reads_is_blindness_not_silence():
+    s = v.summarize("absent", [], ["RTL-SDR"], now=NOW)
+    assert s["status"] == "no_consumer"
+    line = v.summary_line(s)
+    assert "RTL-SDR" in line and "nothing reads it" in line
+
+
+def test_a_fresh_run_summarises_busy_per_channel_and_the_adjacent_pass():
+    s = v.summarize("ok", _fresh_rows(), ["Airspy"], now=NOW)
+    assert s["status"] == "fresh" and s["stale_windows"] == []
+    line = v.summary_line(s)
+    assert "fresh" in line and "LF-ch20" in line and "busy" in line
+    assert "adjacent 10 min ago" in line
+    assert "STALE" not in line and "UNKNOWN" not in line
+
+
+def test_old_rows_read_stale_with_the_check_to_run():
+    rows = [_row(si.run_fleet(quiet, None, {}, []), NOW - 20 * 60)]
+    s = v.summarize("ok", rows, ["Airspy"], now=NOW)
+    assert s["status"] == "stale" and len(s["stale_windows"]) == 3
+    line = v.summary_line(s)
+    assert "STALE" in line and "meshforge-sdr.timer" in line
+    assert "busy" not in line          # never healthy numbers from a dead capture
+
+
+def test_fresh_failed_rows_do_not_make_the_line_fresh():
+    """R9 in summary form: the witness is the newest OK window."""
+    ok = _row(si.run_fleet(quiet, None, {}, []), NOW - 20 * 60)
+    dead_rows = [_row(si.run_fleet(dead, None, {}, []), NOW - 60 * k) for k in (3, 2, 1)]
+    s = v.summarize("ok", [ok] + dead_rows, ["Airspy"], now=NOW)
+    assert s["status"] == "stale" and s["unknown_streak"] == 3
+    assert "captured nothing" in v.summary_line(s)
+
+
+def test_a_future_timestamp_is_not_fresh():
+    rows = [_row(si.run_fleet(quiet, None, {}, []), NOW + 3600)]
+    assert v.summarize("ok", rows, ["Airspy"], now=NOW)["status"] == "stale"
+
+
+@pytest.mark.parametrize("state", ["unreadable", "ok"])
+def test_unreadable_or_empty_is_unknown_in_summary(state):
+    s = v.summarize(state, [], ["Airspy"], now=NOW)
+    assert s["status"] == "unknown" and "UNKNOWN" in v.summary_line(s)
+
+
+def test_a_second_sdr_beside_the_watched_one_is_named_unread():
+    s = v.summarize("ok", _fresh_rows(), ["Airspy", "RTL-SDR"], now=NOW)
+    assert s["unread"] == ["RTL-SDR"]
+    assert "RTL-SDR on USB, nothing reads it" in v.summary_line(s)
+
+
+def test_data_with_no_sdr_on_usb_says_so():
+    s = v.summarize("ok", _fresh_rows(), [], now=NOW)
+    assert "no SDR on USB now" in v.summary_line(s)
+
+
+def test_remote_relpath_is_the_reader_path_under_home(tmp_path, monkeypatch):
+    """hfm #5: the rollup's ssh tail and the local reader share one path."""
+    import utils.paths as paths
+    monkeypatch.setattr(paths, "get_real_user_home", lambda: tmp_path)
+    assert tmp_path / v.SDR_JSONL_RELPATH == v.jsonl_path()
+
+
+def test_no_host_is_hardcoded_into_the_view_text():
+    """A second SDR host must not read as 'moc5 only'."""
+    assert "moc5" not in v.BLIND_SPOTS
+    assert "moc5" not in v.render("absent", [], now=NOW)
+
+
+def test_busy_is_a_labelled_lower_bound_mean_over_runs_not_one_snapshot():
+    """2026-10-05 live: one 5-min run read LF 0.0% while 23 h of runs averaged
+    5.2% (105 of 277 non-zero) — a single burst is a moment, not the channel."""
+    r1 = _row(si.run_fleet(quiet, None, {}, []), NOW - 360)
+    r2 = _row(si.run_fleet(quiet, None, {}, []), NOW - 60)
+    r1["windows"]["906.300"]["channels"]["meshtastic-LF-ch20"]["busy_pct"] = 10.0
+    r2["windows"]["906.300"]["channels"]["meshtastic-LF-ch20"]["busy_pct"] = 0.0
+    s = v.summarize("ok", [r1, r2], ["Airspy"], now=NOW)
+    assert s["busy"]["LF-ch20"] == pytest.approx(5.0) and s["busy_runs"] == 2
+    line = v.summary_line(s)
+    assert "busy ≥ (mean of 2 runs)" in line and "LF-ch20 5.0%" in line

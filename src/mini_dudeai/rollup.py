@@ -101,6 +101,11 @@ _CLAW_SENTINEL = "__MINI_DUDEAI_CLAW_SENTINEL__"
 #: 3x the */5-min claw_metrics capture cadence (matches _read_claw_state_block).
 CLAW_STALE_S = 900.0
 
+# The SDR section rides the same breadth ssh behind its OWN sentinel and is
+# split off FIRST: glued after the claw loop without that split, it would join
+# the last claw chunk, fail json.loads and silently erase that claw card.
+_SDR_SENTINEL = "__MINI_DUDEAI_SDR_SENTINEL__"
+
 
 def resolve_fleet_hosts(env: dict | None = None) -> list[str]:
     """Fleet remote-host list — delegates to ``utils.fleet_hosts``, THE
@@ -242,11 +247,55 @@ def _remote_breadth_cmd() -> str:
     literal and is skipped, so a claw-less box emits state + one sentinel
     exactly as before. Trailing ``true`` keeps the compound rc off the last
     ``[ -f ]`` test, which would otherwise report 1 on a claw-less box."""
+    from utils.sdr_view import SDR_JSONL_RELPATH, SUMMARY_ROWS
+    # SDR leg: every USB vendor:product from sysfs (no lsusb dependency; zero
+    # lines = bus unreadable, never "no SDR"), then a BOUNDED tail of the
+    # watch file — it runs to megabytes, so never cat it.
     return (f"{_state_probe_sh()}; "
             f"echo '{_CLAW_SENTINEL}'; "
             f"for f in {' '.join(_CLAW_REMOTE_ALL)}; do "
             f"[ -f \"$f\" ] && {{ cat \"$f\" 2>/dev/null; echo; "
-            f"echo '{_CLAW_SENTINEL}'; }}; done; true")
+            f"echo '{_CLAW_SENTINEL}'; }}; done; "
+            f"echo '{_SDR_SENTINEL}'; "
+            f"for d in /sys/bus/usb/devices/*; do [ -f \"$d/idVendor\" ] && "
+            f"echo \"usb:$(cat \"$d/idVendor\"):$(cat \"$d/idProduct\")\"; done 2>/dev/null; "
+            f"[ -f \"{SDR_JSONL_RELPATH}\" ] && {{ echo sdrfile:yes; "
+            f"tail -n {SUMMARY_ROWS} \"{SDR_JSONL_RELPATH}\" 2>/dev/null; }}; true")
+
+
+def _split_sdr_payload(stdout: str) -> tuple[str, str | None]:
+    """Peel the SDR section off the breadth payload → (rest, sdr_text | None).
+    No sentinel (a legacy remote or an injected runner) → (stdout, None): the
+    box simply renders no SDR line, never a false 'no SDR'."""
+    head, sep, tail = (stdout or "").partition(_SDR_SENTINEL)
+    return (head, tail) if sep else (stdout, None)
+
+
+def parse_sdr_payload(text: str | None, now_ts: float) -> dict | None:
+    """Pure: the SDR section → utils.sdr_view.summarize() (None = say nothing)."""
+    if text is None:
+        return None
+    from utils.sdr_view import sdr_devices, summarize
+    pairs: list[tuple[str, str]] = []
+    rows: list[dict] = []
+    has_file = False
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("usb:"):
+            parts = line.split(":")
+            if len(parts) == 3:
+                pairs.append((parts[1].lower(), parts[2].lower()))
+        elif line == "sdrfile:yes":
+            has_file = True
+        elif line.startswith("{"):
+            try:
+                doc = json.loads(line)
+            except ValueError:
+                continue          # a torn last line mid-append
+            if isinstance(doc, dict):
+                rows.append(doc)
+    usb = sdr_devices(pairs if pairs else None)
+    return summarize("ok" if has_file else "absent", rows, usb, now=now_ts)
 
 
 def _split_src_tag(state_text: str) -> tuple[str | None, str]:
@@ -377,6 +426,16 @@ def collect_remote(host: str, now_ts: float, timeout_s: float = DEFAULT_SSH_TIME
     if rc == 255:
         return {"host": host, "self_box": False, "status": "unreachable",
                 "error": (err or "").strip()[:160] or "ssh failed"}
+    out, sdr_text = _split_sdr_payload(out)
+    posture = _collect_remote_posture(host, out, err, now_ts, stale_s)
+    posture["sdr"] = parse_sdr_payload(sdr_text, now_ts)
+    return posture
+
+
+def _collect_remote_posture(host: str, out: str, err: str, now_ts: float,
+                            stale_s: float) -> dict:
+    """collect_remote's state + claw half, on a payload with the SDR section
+    already removed."""
     state_text, claws = _split_claw_payload(out)
     src, state_text = _split_src_tag(state_text)
     # A state-less box MAY still host a claw — build_rollup has always rendered
@@ -401,9 +460,22 @@ def collect_remote(host: str, now_ts: float, timeout_s: float = DEFAULT_SSH_TIME
         parse_state_posture(host, state, now_ts, stale_s, claws=claws), src)
 
 
+def _local_sdr(now_ts: float, sdr_path: str | None, usb_pairs) -> dict | None:
+    """THIS box's SDR summary, read the same way as the ssh leg's (bounded)."""
+    from pathlib import Path
+
+    from utils import sdr_view
+    state, rows = sdr_view.load(Path(sdr_path) if sdr_path else None,
+                                limit=sdr_view.SUMMARY_ROWS)
+    pairs = sdr_view.local_usb_pairs() if usb_pairs is None else usb_pairs
+    return sdr_view.summarize(state, rows, sdr_view.sdr_devices(pairs), now=now_ts)
+
+
 def collect_local(now_ts: float, state_path: str | None = None,
                   stale_s: float = DEFAULT_STALE_S,
-                  claw_path: str | None = None) -> dict | None:
+                  claw_path: str | None = None,
+                  sdr_path: str | None = None,
+                  usb_pairs=None) -> dict | None:
     """Read the manager box's own state file directly (it's excluded from
     fleet_hosts). Returns None if there is no local mini state at all.
     Also folds in the local claw tick (sibling claw_last_tick.json) if present.
@@ -433,6 +505,7 @@ def collect_local(now_ts: float, state_path: str | None = None,
     state, err = read_json(state_path)
     if err == "not found":
         return None  # genuinely no mini here
+    sdr = _local_sdr(now_ts, sdr_path, usb_pairs)
     if err:
         # CORRUPT is not ABSENT: a truncated state file (the very failure
         # class the fleet pane exists to expose) used to render identically
@@ -440,11 +513,14 @@ def collect_local(now_ts: float, state_path: str | None = None,
         posture = parse_state_posture("self", {}, now_ts, stale_s,
                                       self_box=True, claws=claw_docs)
         posture["error"] = f"state unreadable: {err}"
+        posture["sdr"] = sdr
         return posture
     label = (state.get("host") if isinstance(state, dict) else None) or "self"
-    return _tag_foreign_app(
+    posture = _tag_foreign_app(
         parse_state_posture(label, state, now_ts, stale_s,
                             self_box=True, claws=claw_docs), src)
+    posture["sdr"] = sdr
+    return posture
 
 
 _BANNER = {
@@ -505,6 +581,14 @@ def _append_claw(lines: list[str], posture: dict | None) -> None:
     for c in cards:
         if c:
             lines.append(_claw_line(c))
+
+
+def _append_sdr(lines: list[str], posture: dict | None) -> None:
+    """One SDR line under the box, or nothing when it has no SDR and no data."""
+    s = posture.get("sdr") if isinstance(posture, dict) else None
+    if s:
+        from utils.sdr_view import summary_line
+        lines.append("    · " + summary_line(s))
 
 
 def _render_uplink() -> str:
@@ -596,10 +680,12 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
             lines.append(f"{banner} **{p['host']}**{tag} — "
                          + (p.get("error") or _no_state_error()))
             _append_claw(lines, p)  # a state-less box may still run a claw
+            _append_sdr(lines, p)
             continue
         if p["status"] == "no_state":
             lines.append(f"{banner} **{p['host']}**{tag} — never ticked (no state)")
             _append_claw(lines, p)
+            _append_sdr(lines, p)
             continue
         head = (f"{banner} **{p['host']}**{tag} — {p['status']} · "
                 f"last tick {p['age']} ago · {p['rule_count']} rules · "
@@ -618,6 +704,7 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
             head += " · ⚠️ daemon may be down"
         lines.append(head)
         _append_claw(lines, p)
+        _append_sdr(lines, p)
         for a in p.get("active", [])[:4]:
             lines.append(f"    · active: {a['rule_id']} · {a['subject']} · {a['detail']}")
     return "\n".join(lines) + "\n"
