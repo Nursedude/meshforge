@@ -97,6 +97,52 @@ EXPECTED_SIDE_EFFECTS = (
 
 METHODS = ("poweroff", "reboot")
 
+# Operator REASONS (2026-10-05) map onto the two existing silent states — no
+# new posture state (closed enum: every consumer would owe a change).
+#   move / power      -> dormant  : the box is OFF; answering = POSTURE-DRIFT
+#   travel / hardware -> detached : up or down, off our net; answering = REJOINED
+# Defaults stay inside fleet_posture.MAX_DORMANCY_S (14 d); renew a long trip.
+KINDS = {
+    "move": ("dormant", "+8h"),
+    "power": ("dormant", "+24h"),
+    "travel": ("detached", "+7d"),
+    "hardware": ("detached", "+8h"),
+}
+LEGACY = ("dormant", "+4h")   # no --kind: exactly what this tool always did
+
+
+def resolve_kind(kind: Optional[str], state: Optional[str],
+                 until: Optional[str]) -> Tuple[str, str]:
+    """(state, until) for a declaration; explicit flags override the kind."""
+    d_state, d_until = KINDS[kind] if kind else LEGACY
+    return state or d_state, until or d_until
+
+
+def declare_targets(doc: dict, names: Sequence[str], state: str, until: float,
+                    reason: str, kind: Optional[str]) -> dict:
+    """Pure: every target into ONE new document. The kind rides beside the
+    free text, and is prefixed into it so every consumer that prints
+    `reason` (pager notes, honest_status) says WHY without learning a field."""
+    text = f"[{kind}] {reason}".strip() if kind else reason
+    for name in names:
+        doc = fp.declare(doc, name, state, until, reason=text)
+        if kind:
+            doc["boxes"][name]["kind"] = kind
+    return doc
+
+
+def identity_of(name: str) -> str:
+    """OK | MISMATCH(...) | UNDECLARED | UNKNOWN(...) — the registry's
+    expect_hostkey against a live keyscan, via the naming audit (one
+    implementation). Never raises: a broken check is UNKNOWN."""
+    try:
+        from fleet_naming_audit import audit_host
+        from utils.fleet_naming import load_registry_quiet
+        return audit_host(name, load_registry_quiet(),
+                          verify_identity=True).get("identity", "UNKNOWN(no row)")
+    except Exception as e:  # the gate must hold, not crash, on a broken check
+        return f"UNKNOWN(identity check failed: {type(e).__name__})"
+
 #: The mirror organ. Distributing the declaration is part of declaring it --
 #: see mirror_posture() for why it is a step of the shutdown, not a chore.
 POSTURE_SYNC = os.environ.get("MESHFORGE_POWER_POSTURE_SYNC") or os.path.join(
@@ -380,17 +426,17 @@ def cmd_down(args) -> int:
     plan = build_plan(args.box, boxes, via)
     order = plan["order"]
 
-    until = fp.parse_until(args.until)
+    state, until_s = resolve_kind(args.kind, args.state, args.until)
+    until = fp.parse_until(until_s)
     if until is None:
-        raise Refusal(f"could not parse --until '{args.until}' (try +4h, +2d, or ISO-8601)")
+        raise Refusal(f"could not parse --until '{until_s}' (try +4h, +2d, or ISO-8601)")
 
     # STEP ONE IS THE DECLARATION, and it is ONE write. declare() is pure, so
     # every target composes into a single document before it reaches the disk
     # -- there is no window between the first box being declared and the last.
     path = args.posture or fp.posture_path()
     doc = fp.load_doc(path)
-    for name in plan["declarable"]:
-        doc = fp.declare(doc, name, fp.STATE_DORMANT, until, reason=args.reason)
+    doc = declare_targets(doc, plan["declarable"], state, until, args.reason, args.kind)
 
     bridges, bnote = bridge_boxes()
     errs = fp.validate(doc, bridge_boxes=bridges)
@@ -400,6 +446,8 @@ def cmd_down(args) -> int:
 
     power_command(args.method)   # validate BEFORE declaring anything
     print(f"targets     : {len(order)} ({', '.join(order)})")
+    print(f"declared as : {state}" + (f"  (kind: {args.kind})" if args.kind else "")
+          + ("   — DECLARE ONLY, nothing is powered off" if args.declare_only else ""))
     print(f"method      : {args.method}"
           + ("   ⚠️ DRILL MODE — boxes come back on their own; nothing stays off"
              if args.method == "reboot" else ""))
@@ -447,6 +495,13 @@ def cmd_down(args) -> int:
     # poweroff (a box that is already dark cannot be told anything).
     mirror_rc = mirror_posture(why="before the first poweroff")
 
+    if args.declare_only:
+        # The box is already gone (kiai packed in the kit), or the operator
+        # will pull power by hand at the bench. Declared + mirrored is the job.
+        print(f"\n=== done — declared {state}, nothing powered off ===")
+        print("Run `fleet_power.py resume --apply` when the box(es) return.")
+        return 0 if mirror_rc == 0 else 1
+
     failed = []
     for name in order:
         print(f"\n--- {name} ---")
@@ -477,7 +532,11 @@ def cmd_down(args) -> int:
               "peers as unreachable — correctly, from what they can see.")
     if failed:
         print(f"⚠️ {len(failed)} box(es) did not confirm down: {', '.join(failed)}")
-        print("   They are DECLARED dormant but ANSWERING — expect POSTURE-DRIFT, correctly.")
+        if state == fp.STATE_DORMANT:
+            print("   They are DECLARED dormant but ANSWERING — expect POSTURE-DRIFT, correctly.")
+        else:
+            print(f"   They are declared {state} — answering reads as REJOINED, not drift;"
+                  " the power-off itself did not take.")
         return 1
     if args.method == "reboot" and not args.no_resume:
         # MEASURED on the first real drill (moc4, 2026-09-10): reboot issued
@@ -525,19 +584,44 @@ def cmd_resume(args) -> int:
         print("\n=== DRY RUN — will not poll or clear. Re-run with --apply ===")
         return 0
 
-    return watch_and_clear(path, targets, args.wait)
+    return watch_and_clear(path, targets, args.wait,
+                           allow_unverified=args.no_identity)
 
 
 def watch_and_clear(path: str, targets: Sequence[str], wait: int,
-                    poll_s: int = 10) -> int:
-    """Poll until each box answers, clearing its posture the moment it does."""
+                    poll_s: int = 10, identity=None,
+                    allow_unverified: bool = False) -> int:
+    """Poll until each box answers, clearing its posture the moment it does.
+
+    A `move` box is cleared only on a host-key MATCH: a node that moved can
+    answer at its old name from a reassigned front, and reachable is not ours
+    (2026-09-11). MISMATCH is never cleared; unverifiable (no stamp, scan
+    failed) holds unless the operator accepts it with --no-identity."""
+    identity = identity or identity_of
     deadline = time.time() + wait
     pending = list(targets)
     returned: List[str] = []
+    refused: Dict[str, str] = {}
     while pending and time.time() < deadline:
         for name in list(pending):
             if not reachable(name):
                 continue
+            entry = (fp.load_doc(path).get("boxes") or {}).get(name) or {}
+            if entry.get("kind") == "move":
+                ident = identity(name)
+                if ident.startswith("MISMATCH"):
+                    refused[name] = f"{ident} — answering at this name is NOT our box"
+                    pending.remove(name)
+                    print(f"  {name} answered but its host key is {ident} — NOT our box; "
+                          "posture LEFT declared")
+                    continue
+                if ident != "OK" and not allow_unverified:
+                    refused[name] = (f"identity {ident} — cannot confirm it is ours; "
+                                     "re-run with --no-identity to accept")
+                    pending.remove(name)
+                    print(f"  {name} answered, identity {ident} — posture LEFT declared "
+                          "(--no-identity accepts an unverified return)")
+                    continue
             # Clear IMMEDIATELY, per box, the moment it answers. Batching the
             # clears would reopen exactly the window this mirrors shut: a box
             # that is up and still declared is POSTURE-DRIFT on the very next
@@ -563,6 +647,10 @@ def watch_and_clear(path: str, targets: Sequence[str], wait: int,
 
     print("\n=== done ===")
     print(f"returned+cleared : {', '.join(returned) or '(none)'}")
+    for name, why in refused.items():
+        print(f"⚠️ NOT cleared   : {name} — {why}")
+    if refused and not pending:
+        return 1
     if pending:
         print(f"⚠️ still dark    : {', '.join(pending)}")
         print("   Posture is INTENTIONALLY left declared for these — clearing a box that")
@@ -589,8 +677,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     d = sub.add_parser("down", help="declare + power off, in dependency order")
     d.add_argument("box", nargs="+")
-    d.add_argument("--until", default="+4h")
+    d.add_argument("--kind", choices=sorted(KINDS), default=None,
+                   help="why: move/power -> dormant, travel/hardware -> detached")
+    d.add_argument("--state", choices=(fp.STATE_DORMANT, fp.STATE_DETACHED), default=None,
+                   help="override the kind's state")
+    d.add_argument("--until", default=None, help="default from --kind (no kind: +4h)")
     d.add_argument("--reason", default="")
+    d.add_argument("--declare-only", action="store_true",
+                   help="declare + mirror, power nothing off (box already gone / pulled by hand)")
     d.add_argument("--settle", type=int, default=60, help="seconds to wait for each box to go dark")
     d.add_argument("--no-resume", action="store_true",
                    help="reboot mode: do NOT chain into resume (leaves the declaration standing)")
@@ -606,6 +700,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("box", nargs="*")
     r.add_argument("--wait", type=int, default=1800, help="seconds to keep watching")
     r.add_argument("--apply", action="store_true", help="actually poll+clear (default: dry run)")
+    r.add_argument("--no-identity", action="store_true",
+                   help="accept a `move` box whose host key cannot be verified (never a MISMATCH)")
     r.set_defaults(fn=cmd_resume)
 
     return ap

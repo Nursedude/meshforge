@@ -428,3 +428,132 @@ class TestPowerOnly:
         # power_only box starts paging on MeshForge service names.
         src = (Path(__file__).parent.parent / "scripts" / "fleet_offline_check.sh").read_text()
         assert 'doc.get("boxes")' in src and "power_only" not in src
+
+
+# ── P1 (operator 2026-10-05): dormant/detached by REASON ─────────────────
+# move/power -> dormant (box OFF; answering = drift); travel/hardware ->
+# detached (box may be up or down off our net; answering = REJOINED). No new
+# posture state. Plan: .claude/plans/fleet_posture_controls_2026_10_05.md
+
+
+def _fp():
+    sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+    from utils import fleet_posture as fp
+    return fp
+
+
+class TestReasonKinds:
+    def _parse(self, argv):
+        return fpw.build_parser().parse_args(argv)
+
+    @pytest.mark.parametrize("kind,state,until", [
+        ("move", "dormant", "+8h"), ("power", "dormant", "+24h"),
+        ("travel", "detached", "+7d"), ("hardware", "detached", "+8h")])
+    def test_each_kind_maps_to_its_state_and_default_until(self, kind, state, until):
+        assert fpw.resolve_kind(kind, None, None) == (state, until)
+
+    def test_no_kind_keeps_the_legacy_dormant_4h(self):
+        assert fpw.resolve_kind(None, None, None) == ("dormant", "+4h")
+
+    def test_explicit_until_and_state_override_the_kind(self):
+        assert fpw.resolve_kind("travel", None, "+12d") == ("detached", "+12d")
+        assert fpw.resolve_kind("hardware", "dormant", None) == ("dormant", "+8h")
+
+    def test_every_kind_default_fits_the_posture_cap(self):
+        fp = _fp()
+        for kind in fpw.KINDS:
+            _, until = fpw.resolve_kind(kind, None, None)
+            assert fp.parse_until(until) - __import__("time").time() <= fp.MAX_DORMANCY_S
+
+    def test_arg_surface(self):
+        ns = self._parse(["down", "kiai", "--kind", "travel", "--declare-only"])
+        assert ns.kind == "travel" and ns.declare_only is True and ns.until is None
+        with pytest.raises(SystemExit):
+            self._parse(["down", "kiai", "--kind", "vacation"])
+        assert self._parse(["resume", "--no-identity"]).no_identity is True
+
+    def test_declaration_carries_state_kind_and_a_legible_reason(self):
+        fp = _fp()
+        doc = {"boxes": {}}
+        until = fp.parse_until("+7d")
+        new = fpw.declare_targets(doc, ["kiai"], "detached", until, "ECOMM trip", "travel")
+        e = new["boxes"]["kiai"]
+        assert e["state"] == "detached" and e["kind"] == "travel"
+        assert e["reason"] == "[travel] ECOMM trip"
+        assert fp.validate(new, bridge_boxes=set()) == []
+        legacy = fpw.declare_targets({"boxes": {}}, ["b"], "dormant", until, "x", None)
+        assert legacy["boxes"]["b"]["reason"] == "x" and "kind" not in legacy["boxes"]["b"]
+
+
+class TestDeclareOnly:
+    def test_declare_only_writes_and_mirrors_but_never_powers_off(self, tmp_path, monkeypatch, capsys):
+        posture = tmp_path / "posture.json"
+        monkeypatch.setattr(fpw, "build_plan", lambda t, b, v: {
+            "order": ["kiai"], "declarable": ["kiai"], "hops_only": [], "notes": []})
+        monkeypatch.setattr(fpw, "load_graph", lambda p: ({}, {}))
+        monkeypatch.setattr(fpw, "bridge_boxes", lambda: (set(), "test"))
+        mirrored = []
+        monkeypatch.setattr(fpw, "mirror_posture", lambda **kw: mirrored.append(kw) or 0)
+
+        def no_ssh(*a, **k):
+            raise AssertionError("declare-only must never ssh a power command")
+        monkeypatch.setattr(fpw, "_ssh", no_ssh)
+        ns = fpw.build_parser().parse_args(
+            ["--posture", str(posture), "down", "kiai", "--kind", "travel",
+             "--declare-only", "--apply"])
+        assert fpw.cmd_down(ns) == 0
+        e = json.loads(posture.read_text())["boxes"]["kiai"]
+        assert e["state"] == "detached" and e["kind"] == "travel"
+        assert mirrored, "the declaration must still reach the boxes that judge"
+        assert "nothing powered off" in capsys.readouterr().out
+
+
+class TestMoveResumeIdentity:
+    """A moved node can come back on a reassigned front — reachable is not
+    ours (2026-09-11). `move` clears only on a host-key MATCH."""
+
+    def _posture(self, tmp_path, kind):
+        fp = _fp()
+        import time as _t
+        now = _t.time()
+        e = {"state": "dormant", "since": fp.fmt_ts(now), "until": fp.fmt_ts(now + 3600)}
+        if kind:
+            e["kind"] = kind
+        f = tmp_path / "posture.json"
+        f.write_text(json.dumps({"boxes": {"b1": e}, "declared_at": fp.fmt_ts(now),
+                                 "declared_by": "operator", "posture": "t"}))
+        return str(f)
+
+    def _run(self, path, monkeypatch, identity, **kw):
+        monkeypatch.setattr(fpw, "reachable", lambda n: True)
+        monkeypatch.setattr(fpw, "mirror_posture", lambda **k: 0)
+        rc = fpw.watch_and_clear(path, ["b1"], wait=1, poll_s=0,
+                                 identity=lambda n: identity, **kw)
+        return rc, json.loads(Path(path).read_text())["boxes"]
+
+    def test_a_match_clears(self, tmp_path, monkeypatch):
+        rc, boxes = self._run(self._posture(tmp_path, "move"), monkeypatch, "OK")
+        assert rc == 0 and boxes == {}
+
+    def test_a_mismatch_is_never_cleared_even_with_no_identity(self, tmp_path, monkeypatch, capsys):
+        rc, boxes = self._run(self._posture(tmp_path, "move"), monkeypatch,
+                              "MISMATCH(SHA256:x)", allow_unverified=True)
+        assert rc == 1 and "b1" in boxes
+        assert "NOT our box" in capsys.readouterr().out
+
+    def test_unverifiable_holds_unless_operator_accepts(self, tmp_path, monkeypatch):
+        rc, boxes = self._run(self._posture(tmp_path, "move"), monkeypatch, "UNDECLARED")
+        assert rc == 1 and "b1" in boxes
+        rc, boxes = self._run(self._posture(tmp_path, "move"), monkeypatch, "UNDECLARED",
+                              allow_unverified=True)
+        assert rc == 0 and boxes == {}
+
+    def test_other_kinds_never_ask_identity(self, tmp_path, monkeypatch):
+        for kind in (None, "hardware"):
+            path = self._posture(tmp_path, kind)
+
+            def boom(n):
+                raise AssertionError("identity asked for a non-move box")
+            monkeypatch.setattr(fpw, "reachable", lambda n: True)
+            monkeypatch.setattr(fpw, "mirror_posture", lambda **k: 0)
+            assert fpw.watch_and_clear(path, ["b1"], wait=1, poll_s=0, identity=boom) == 0
