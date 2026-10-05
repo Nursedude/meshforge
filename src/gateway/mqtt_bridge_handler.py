@@ -1025,12 +1025,17 @@ class MQTTBridgeHandler(BaseMessageHandler):
                 and (not payload_id or payload_id == node_id.lower())
             )
 
+            # short_name is an @address (_resolve_mesh_destination) and the
+            # tracker merge overwrites it unconditionally, so only the node's
+            # own word may set it — an uplinker-attributed one would route
+            # DMs for this id to whoever the uplinker last heard.
             node = UnifiedNode(
                 id=node_id,
                 name=long_name or short_name or node_id,
                 network="meshtastic",
                 meshtastic_id=node_id,
                 name_is_self_reported=self_reported,
+                short_name=short_name if self_reported else "",
             )
             self.node_tracker.add_node(node)
             logger.debug(f"NodeInfo from {node_id}: {long_name} ({short_name})")

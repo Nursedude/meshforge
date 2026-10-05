@@ -662,6 +662,55 @@ class TestNodeTrackerAttribution:
         })
         assert handler.node_tracker.get_node("!32962f10").name == "hawaii_gaz"
 
+    # The short_name is an ADDRESS, not a label: `@moc4 hi` from RNS resolves
+    # through get_node_by_short_name, and an unresolved token falls through
+    # to a BROADCAST. MQTT nodeinfo never stored it (2026-10-05: moc's cache
+    # held short_name='' for the two nodes healed by 979589b1 while 1859 of
+    # 2222 entries had one). The merge overwrites short_name unconditionally,
+    # so only a self-report may write it — an uplinker-attributed one would
+    # put a stranger's address on the gateway's own entry and MISDELIVER.
+
+    def test_own_nodeinfo_stores_short_name(self):
+        handler = self._real_tracker_handler()
+        handler._update_nodeinfo({
+            "from": 0x32962f10, "sender": "!32962f10",
+            "payload": {"id": "!32962f10", "longname": "meshforge moc",
+                        "shortname": "moc"},
+        })
+        assert handler.node_tracker.get_node("!32962f10").short_name == "moc"
+
+    def test_nodeinfo_without_from_cannot_set_short_name(self):
+        handler = self._real_tracker_handler()
+        handler._update_nodeinfo({
+            "sender": "!32962f10",
+            "payload": {"longname": "someone_else", "shortname": "else"},
+        })
+        assert handler.node_tracker.get_node("!32962f10").short_name == ""
+
+    def test_nodeinfo_whose_payload_id_disagrees_cannot_set_short_name(self):
+        handler = self._real_tracker_handler()
+        handler._update_nodeinfo({
+            "from": 0x32962f10, "sender": "!32962f10",
+            "payload": {"id": "!e2e50444", "longname": "someone_else",
+                        "shortname": "else"},
+        })
+        assert handler.node_tracker.get_node("!32962f10").short_name == ""
+
+    def test_mqtt_nodeinfo_makes_short_name_addressable(self):
+        """The consumer END: an RNS `@moc4` must resolve to moc4's id (a
+        DM), not fall through to None (a broadcast)."""
+        from types import SimpleNamespace
+        from gateway._rns_bridge_xform import MessageTransformMixin
+        handler = self._real_tracker_handler()
+        handler._update_nodeinfo({
+            "from": 0x896b1917, "sender": "!32962f10",
+            "payload": {"id": "!896b1917", "longname": "meshforge moc4",
+                        "shortname": "moc4"},
+        })
+        bridge = SimpleNamespace(node_tracker=handler.node_tracker)
+        assert MessageTransformMixin._resolve_mesh_destination(
+            bridge, "moc4") == "!896b1917"
+
     def test_node_from_mqtt_keyed_on_originator(self):
         handler = self._make_tracker_handler()
         handler._update_node_from_mqtt({
