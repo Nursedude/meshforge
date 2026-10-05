@@ -98,7 +98,19 @@ def planted(tmp_path):
     bin_ = tmp_path / "bin"
     bin_.mkdir()
     script = bin_ / "fakernsd"
-    script.write_text("import time\nwhile True:\n    time.sleep(1)\n")
+    # The fake daemon must die with the pytest that planted it: cleanup lives
+    # in `finally:`, which never runs when pytest is SIGKILLed (timeout, idle
+    # reaper, stopped unit) — 16 orphans had piled up on the dev box by
+    # 2026-10-04. Polling the owner pid ends it within a second either way.
+    script.write_text(
+        "import os, time\n"
+        "owner = %d\n"
+        "while True:\n"
+        "    time.sleep(1)\n"
+        "    try:\n"
+        "        os.kill(owner, 0)\n"
+        "    except ProcessLookupError:\n"
+        "        break\n" % os.getpid())
     return site, script, di, pkg
 
 
