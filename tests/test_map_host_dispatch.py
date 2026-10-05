@@ -157,7 +157,17 @@ def test_a_refusal_is_still_counted_in_metrics(server):
     # (F-C, mutant M-E moved it outside and survived)
     srv, _, _ = server
     seen = []
-    with patch("utils.map_metrics.record_http",
-               lambda **kw: seen.append(kw)):
+    recorded = threading.Event()
+
+    def _record(**kw):
+        seen.append(kw)
+        recorded.set()
+
+    # record_http runs in do_GET's `finally`, AFTER the response is on the
+    # wire, so the client can return first. Under full-suite load the server
+    # thread lost that race (2026-10-05: seen == [] in-suite, 3/3 green
+    # alone) — wait for the record instead of assuming it already landed.
+    with patch("utils.map_metrics.record_http", _record):
         _req(srv, "GET", "/fleet/slo", EVIL)
+        recorded.wait(timeout=5)
     assert any(kw.get("status_code") == 403 for kw in seen), seen
