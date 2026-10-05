@@ -1,0 +1,14 @@
+[Unit]
+Description=Re-activate a Wi-Fi profile NetworkManager abandoned (headless self-heal)
+Documentation=https://github.com/Nursedude/meshforge
+# Background: 2026-10-04 a 3-minute weak-signal blip ended in NetworkManager
+# `failed (reason 'no-secrets')`, which blocks autoconnect until an agent
+# supplies secrets — forever on a headless box (a 2 h outage). This guard brings
+# the autoconnect profile back up ONLY when Wi-Fi is the box's missing uplink.
+# Install on Wi-Fi-uplink boxes only (docs/fleet_roles.yaml field-node).
+After=NetworkManager.service
+ConditionPathExists=/usr/bin/nmcli
+
+[Service]
+Type=oneshot
+ExecStart=/opt/meshforge/scripts/wifi_reconnect_guard.sh

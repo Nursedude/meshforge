@@ -246,6 +246,11 @@ roles:
                                       # the claws + the ssh spool), which is weaker than
                                       # a local watchdog and is the price of the tier.
       meshtasticd-mudp-guard.timer: absent
+      meshforge-wifi-guard.timer: enabled  # Wi-Fi IS this tier's uplink: re-activates the profile
+                                      # NetworkManager abandons after a weak-signal blip
+                                      # ('no-secrets' blocks autoconnect forever, 2026-10-04:
+                                      # 3 min of RF became a 2 h outage). Acts only when
+                                      # the box is OFFLINE; a few KB of shell, no daemon.
     service_dropins:                  # see the service_dropins note below the roles
       # Keep a flaky SX126x init retrying instead of latching `failed
       # (start-limit-hit)`. Declared on THIS role because the zero-class tier

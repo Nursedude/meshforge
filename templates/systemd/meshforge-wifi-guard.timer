@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodic headless Wi-Fi self-heal (see meshforge-wifi-guard.service)
+Documentation=https://github.com/Nursedude/meshforge
+
+[Timer]
+# Every 2 min; the script waits for 5 min of `disconnected` (monotonic) before
+# acting, so worst-case recovery is ~7 min after NetworkManager gives up.
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Unit=meshforge-wifi-guard.service
+
+[Install]
+WantedBy=timers.target
