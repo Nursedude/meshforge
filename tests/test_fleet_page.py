@@ -208,3 +208,18 @@ class TestFleetPageLocalPanels:
             assert f"['{unit}'" in page_source, (
                 f"log-unit dropdown missing server-allowlisted unit {unit!r}"
             )
+
+
+class TestSdrLine:
+    """The SDR line (2026-10-05): rendered only when the box reports one,
+    escaped, and coloured through the default-dark stClass — never green
+    on its own say-so."""
+
+    def test_sdr_line_renders_through_stclass_and_esc(self, page_source):
+        m = re.search(r"function renderBoxes\(doc\)\s*\{(.*?)\n    \}",
+                      page_source, re.DOTALL)
+        assert m, "renderBoxes missing"
+        body = m.group(1)
+        assert re.search(r"b\.sdr\s*\?", body), "sdr line must be optional"
+        assert "stClass(b.sdr.state)" in body
+        assert "esc(b.sdr.line)" in body

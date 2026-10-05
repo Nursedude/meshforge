@@ -437,6 +437,34 @@ class TestAppIdentityBlock:
         assert payload["app"]["name"] == "meshforge"
         assert payload["app"]["version"]
 
+    def test_serve_status_carries_this_boxs_sdr_block(self, monkeypatch):
+        # The web fleet page's SDR line: each box reports its OWN SDR in the
+        # /api/status the collector already fetches (2026-10-05).
+        blk = {"status": "fresh", "state": "healthy", "line": "📡 SDR Airspy"}
+        monkeypatch.setattr("utils.sdr_view.local_web_block", lambda **kw: blk)
+        h = MapRequestHandler.__new__(MapRequestHandler)
+        h.collector = None
+        h.wfile = BytesIO()
+        h.send_response = MagicMock()
+        h.send_header = MagicMock()
+        h.end_headers = MagicMock()
+        h._send_cors_header = MagicMock()
+        h._get_radio_status_summary = lambda: {}
+        h._get_local_radio_config = lambda: {}
+        h._read_watchdog_block = lambda: {}
+        h._read_mini_state_block = lambda: {}
+        h._read_claw_state_block = lambda: {}
+        h._serve_status()
+        assert json.loads(h.wfile.getvalue())["sdr"] == blk
+
+    def test_a_broken_sdr_reader_never_breaks_status(self, monkeypatch):
+        def boom(**kw):
+            raise RuntimeError("sysfs exploded")
+        monkeypatch.setattr("utils.sdr_view.local_web_block", boom)
+        h = MapRequestHandler.__new__(MapRequestHandler)
+        blk = h._read_sdr_block()
+        assert blk["state"] == "dark" and "sysfs exploded" in blk["line"]
+
 
 # ── F8: Server-side View preset filter ─────────────────────────────────
 from utils.map_http_handler import (

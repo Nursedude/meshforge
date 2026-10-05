@@ -198,3 +198,28 @@ class TestUplinkAttachedOnTheCollectorSeam:
 
         monkeypatch.setattr(builtins, "__import__", no_starlink)
         assert c._read_uplink() is None
+
+
+class TestSdrAttachedOnTheCollectorSeam:
+    """Each box's own /api/status `sdr` block rides onto ITS row after the
+    verdict — never through the byte-locked fleet_truth contract, never
+    colouring box_state (2026-10-05, the web fleet page's SDR line)."""
+
+    def test_each_box_gets_its_own_sdr_block_and_nothing_else_changes(self):
+        blk = {"status": "fresh", "state": "healthy", "line": "📡 SDR Airspy: 🟢 fresh"}
+        truth = {"boxes": [{"alias": "moc5", "box_state": "healthy"},
+                           {"alias": "moc", "box_state": "healthy"},
+                           {"alias": "down", "box_state": "dark"}]}
+        snaps = [{"alias": "moc5", "status": {"sdr": blk}},
+                 {"alias": "moc", "status": {"sdr": None}},
+                 {"alias": "down", "status": None}]
+        c._attach_sdr(truth, snaps)
+        by = {b["alias"]: b for b in truth["boxes"]}
+        assert by["moc5"]["sdr"] == blk
+        assert "sdr" not in by["moc"] and "sdr" not in by["down"]
+        assert [b["box_state"] for b in truth["boxes"]] == ["healthy", "healthy", "dark"]
+
+    def test_a_malformed_block_is_dropped_not_rendered(self):
+        truth = {"boxes": [{"alias": "x"}]}
+        c._attach_sdr(truth, [{"alias": "x", "status": {"sdr": "garbage"}}])
+        assert "sdr" not in truth["boxes"][0]

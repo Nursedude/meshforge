@@ -498,6 +498,11 @@ class StatusEndpointsMixin:
         # claw_metrics cron already pages on the claw's death.
         status["claw"] = self._read_claw_state_block()
 
+        # SDR passthrough (2026-10-05): this box's own SDR summary, so the web
+        # fleet page shows every box's RF eyes. None (no SDR, no data) is the
+        # common case and renders nothing.
+        status["sdr"] = self._read_sdr_block()
+
         data = json.dumps(status).encode()
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
@@ -602,6 +607,17 @@ class StatusEndpointsMixin:
         except (json.JSONDecodeError, ValueError) as exc:
             return {"installed": True, "ok": False, "reason": f"malformed_json: {exc}"}
         return mini_block_from_payload(payload, stale_after_s=self._MINI_STALE_S)
+
+    def _read_sdr_block(self) -> Optional[Dict[str, Any]]:
+        """utils.sdr_view.local_web_block(), or a DARK block naming the error —
+        a broken reader must not read as "no SDR here" (hfm #1), and must never
+        break /api/status."""
+        try:
+            from utils import sdr_view
+            return sdr_view.local_web_block()
+        except Exception as e:  # never let the SDR read break status
+            return {"status": "unknown", "state": "dark",
+                    "line": f"📡 SDR: ⚪ UNKNOWN — reader failed: {e}"}
 
     # 3x the */5-min claw_metrics capture cadence: captured every 5 min, called
     # stale (capture cron stopped) after 15.

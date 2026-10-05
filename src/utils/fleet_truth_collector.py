@@ -424,6 +424,21 @@ def _read_uplink():
         return {"state": "error", "detail": f"reader raised: {exc}"}
 
 
+def _attach_sdr(truth: dict, snapshots: list) -> None:
+    """Copy each box's own /api/status ``sdr`` block onto its truth row.
+    A box with no block (no SDR, unreachable, spooled) gets no key; a block
+    that is not the {state, line} shape is dropped, never rendered."""
+    by_alias = {}
+    for snap in snapshots or []:
+        blk = (snap.get("status") or {}).get("sdr") if isinstance(snap.get("status"), dict) else None
+        if isinstance(blk, dict) and isinstance(blk.get("line"), str) and "state" in blk:
+            by_alias[snap.get("alias")] = blk
+    for box in truth.get("boxes") or []:
+        blk = by_alias.get(box.get("alias"))
+        if blk:
+            box["sdr"] = blk
+
+
 def get_fleet_truth(*, port: int = DEFAULT_PORT, ttl_s: float = CACHE_TTL_S,
                     force: bool = False) -> Dict[str, Any]:
     """Return the current fleet-truth document, refreshing via fan-out when the
@@ -466,6 +481,9 @@ def get_fleet_truth(*, port: int = DEFAULT_PORT, ttl_s: float = CACHE_TTL_S,
             # it. An unreachable dish means we could not ASK — letting that
             # tint fleet_state would smuggle a detector in through a surface.
             truth["uplink"] = _read_uplink()
+            # Per-box SDR line, same seam and same rule: after the verdict,
+            # outside the byte-locked contract, display only.
+            _attach_sdr(truth, snapshots)
         except Exception as e:
             logger.error("fleet_truth build failed: %s", e)
             truth = {

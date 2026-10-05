@@ -403,3 +403,32 @@ def summary_line(s: Dict) -> str:
             if now - adj_ts > ADJACENT_STALE_S:
                 body += " (STALE)"
     return head + " · ".join([body] + tail)
+
+
+# ── web fleet page (2026-10-05) ────────────────────────────────────────────
+# Each box reports its OWN SDR in /api/status; the collector carries it onto
+# that box's row; fleet.html renders `line` through its default-dark stClass.
+# The state mapping lives HERE so the page never re-derives it.
+
+def web_block(s: Optional[Dict]) -> Optional[Dict]:
+    """summary → {status, state, line}; state is the page's class vocabulary.
+    healthy ONLY for a fresh watch with every SDR on the bus read; an unread
+    SDR is blindness (failed); unknown stays dark."""
+    if not s:
+        return None
+    st = s["status"]
+    if st == "fresh" and not s.get("unread") and not s.get("usb_missing"):
+        state = "healthy"
+    elif st in ("fresh", "stale", "no_consumer"):
+        state = "failed"
+    else:
+        state = "dark"
+    return {"status": st, "state": state, "line": summary_line(s)}
+
+
+def local_web_block(path: Optional[Path] = None, usb_pairs=None,
+                    now: Optional[float] = None) -> Optional[Dict]:
+    """THIS box's block: a bounded tail of the watch file + the sysfs bus."""
+    state, rows = load(path, limit=SUMMARY_ROWS)
+    pairs = local_usb_pairs() if usb_pairs is None else usb_pairs
+    return web_block(summarize(state, rows, sdr_devices(pairs), now=now))

@@ -315,3 +315,30 @@ def test_busy_is_a_labelled_lower_bound_mean_over_runs_not_one_snapshot():
     assert s["busy"]["LF-ch20"] == pytest.approx(5.0) and s["busy_runs"] == 2
     line = v.summary_line(s)
     assert "busy ≥ (mean of 2 runs)" in line and "LF-ch20 5.0%" in line
+
+
+# ---- web fleet page (2026-10-05): the network manager's centralized view.
+# One mapping to the page's state classes, here, so the page never re-derives.
+
+def test_web_block_maps_only_a_clean_fresh_sdr_to_healthy():
+    fresh = v.summarize("ok", _fresh_rows(), ["Airspy"], now=NOW)
+    assert v.web_block(fresh) == {"status": "fresh", "state": "healthy",
+                                  "line": v.summary_line(fresh)}
+    stale = v.summarize("ok", [_row(si.run_fleet(quiet, None, {}, []), NOW - 20 * 60)],
+                        ["Airspy"], now=NOW)
+    assert v.web_block(stale)["state"] == "failed"
+    blind = v.summarize("absent", [], ["RTL-SDR"], now=NOW)
+    assert v.web_block(blind)["state"] == "failed"       # unread SDR = blindness
+    extra = v.summarize("ok", _fresh_rows(), ["Airspy", "RTL-SDR"], now=NOW)
+    assert v.web_block(extra)["state"] == "failed"       # fresh, but one SDR unread
+    unk = v.summarize("unreadable", [], ["Airspy"], now=NOW)
+    assert v.web_block(unk)["state"] == "dark"
+    assert v.web_block(None) is None
+
+
+def test_local_block_reads_this_box_bounded(tmp_path):
+    f = tmp_path / "interference.jsonl"
+    f.write_text("".join(json.dumps(r) + "\n" for r in _fresh_rows()))
+    b = v.local_web_block(path=f, usb_pairs=[("1d50", "60a1")], now=NOW)
+    assert b["status"] == "fresh" and b["state"] == "healthy"
+    assert v.local_web_block(path=tmp_path / "none.jsonl", usb_pairs=[], now=NOW) is None
