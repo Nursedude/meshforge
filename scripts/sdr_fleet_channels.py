@@ -47,7 +47,15 @@ from datetime import datetime
 
 import numpy as np
 
-SAMPLE_RATE = 3_000_000
+SAMPLE_RATE = 3_000_000   # set by set_device(); Airspy default
+DEVICE = "airspy"
+# Device backends. The RTL-SDR (moc1, Elonics E4000, 2026-10-05) is 8-bit at
+# 2.048 MS/s; its bytes are rescaled onto the int16 full scale so analyse()'s
+# overload gate (>= 95 % FS) and every threshold below apply unchanged.
+DEVICES = {
+    "airspy": {"rate": 3_000_000, "binary": "airspy_rx", "gain_help": "linearity gain 0-21"},
+    "rtl": {"rate": 2_048_000, "binary": "rtl_sdr", "gain_help": "tuner gain dB (E4000: -1..42)"},
+}
 FFT = 2048
 USABLE = 0.8          # central share of the window kept (Airspy filter edges)
 BUSY_DB = 6.0         # a frame is busy when channel power > floor + this
@@ -71,26 +79,79 @@ FLEET_CHANNELS = [
 ]
 WINDOWS = [903.625, 906.300, 910.525]  # 3 MSPS each; ±1.2 MHz usable
 
+# RTL-SDR plan (MEASURED on moc1 2026-10-05, Elonics E4000 zero-IF): a channel
+# at the tuned centre read 100 % busy from the DC spike alone and 0.0 % when
+# retuned 325 kHz away; a channel on another's mirror (2c - f) picks up its
+# image. So every judged channel sits >= 150 kHz off centre and off every
+# mirror, ST and LF get their own windows, and a new control (907.8, nothing
+# of ours) shares the LF window. Witness at 907.2: LF saw 20/22 of the radio's
+# RX events, the control 0/22 (gain 9).
+RTL_CONTROL = ("control-rtl", 907.800, 250.0)
+RTL_WINDOWS = [903.300, 905.340, 907.200, 910.300]
+WITNESS_WINDOW = {"airspy": 906.300, "rtl": 907.200}
+
+
+def set_device(name: str) -> None:
+    """Select the capture backend; sets SAMPLE_RATE for every caller."""
+    global SAMPLE_RATE, DEVICE
+    if name not in DEVICES:
+        raise ValueError(f"unknown SDR device {name!r} (known: {', '.join(DEVICES)})")
+    DEVICE, SAMPLE_RATE = name, DEVICES[name]["rate"]
+
+
+def windows():
+    return list(RTL_WINDOWS if DEVICE == "rtl" else WINDOWS)
+
+
+def channels():
+    return FLEET_CHANNELS + [RTL_CONTROL] if DEVICE == "rtl" else FLEET_CHANNELS
+
+
+def judged_channels():
+    """Channels that fit wholly inside at least one of this device's windows;
+    the rest are absent from its plan by design and are not reported."""
+    half = USABLE * SAMPLE_RATE / 2e6
+    return [c for c in channels()
+            if any(abs(c[1] - w) + c[2] / 2000 <= half for w in windows())]
+
+
+def witness_window() -> float:
+    return WITNESS_WINDOW[DEVICE]
+
+
+def rtl_to_int16(u8: np.ndarray) -> np.ndarray:
+    """RTL-SDR offset-binary bytes (0..255, centre 127.5) → interleaved int16
+    on the same full scale airspy_rx emits, so 0 and 255 read as railed."""
+    return np.clip((u8.astype(np.float32) - 127.5) * (FULL_SCALE / 127.5),
+                   -FULL_SCALE, FULL_SCALE).astype(np.int16)
+
 
 def capture(center_mhz: float, n: int, gain: int, tmpdir: str):
-    """(iq complex64 array, start_time) or (None, reason)."""
-    fd, path = tempfile.mkstemp(prefix="aspy_", suffix=".iq", dir=tmpdir)
+    """(raw interleaved int16 array, start_time) or (None, reason)."""
+    binary = DEVICES[DEVICE]["binary"]
+    fd, path = tempfile.mkstemp(prefix=f"{DEVICE}_", suffix=".iq", dir=tmpdir)
     os.close(fd)
     try:
         t0 = time.time()
-        r = subprocess.run(
-            ["airspy_rx", "-r", path, "-f", f"{center_mhz:.4f}",
-             "-a", str(SAMPLE_RATE), "-t", "2", "-p", "1",
-             "-g", str(gain), "-n", str(n)],
-            capture_output=True, text=True, timeout=15)
+        if DEVICE == "rtl":
+            cmd = ["rtl_sdr", "-f", str(int(round(center_mhz * 1e6))),
+                   "-s", str(SAMPLE_RATE), "-g", str(gain), "-n", str(n), path]
+        else:
+            cmd = ["airspy_rx", "-r", path, "-f", f"{center_mhz:.4f}",
+                   "-a", str(SAMPLE_RATE), "-t", "2", "-p", "1",
+                   "-g", str(gain), "-n", str(n)]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         if r.returncode != 0:
-            return None, f"airspy_rx rc={r.returncode}: {(r.stderr or r.stdout).strip()[-160:]}"
-        raw = np.fromfile(path, dtype=np.int16)
+            return None, f"{binary} rc={r.returncode}: {(r.stderr or r.stdout).strip()[-160:]}"
+        if DEVICE == "rtl":
+            raw = rtl_to_int16(np.fromfile(path, dtype=np.uint8))
+        else:
+            raw = np.fromfile(path, dtype=np.int16)
         if raw.size < 2 * FFT:
             return None, f"short capture ({raw.size} int16 values)"
         return raw, t0
     except (OSError, subprocess.SubprocessError) as e:
-        return None, f"airspy_rx could not run: {e}"
+        return None, f"{binary} could not run: {e}"
     finally:
         try:
             os.unlink(path)
@@ -136,13 +197,16 @@ def analyse(raw: np.ndarray, center_mhz: float, channels):
     return out, floor, clip
 
 
-def sweep(bursts: int, gain: int, tmpdir: str, windows=tuple(WINDOWS), record_busy: bool = False):
-    per = {label: {"busy": 0, "frames": 0, "med": [], "peak": -1e9} for label, *_ in FLEET_CHANNELS}
+def sweep(bursts: int, gain: int, tmpdir: str, windows=None, record_busy: bool = False):
+    windows = tuple(windows) if windows is not None else tuple(globals()["windows"]())
+    plan = channels()
+    per = {label: {"busy": 0, "frames": 0, "med": [], "peak": -1e9} for label, *_ in plan}
     status = {}
     timeline = []  # (t_start, frame_s, {label: mask}) when record_busy
     n = int(SAMPLE_RATE * 0.5)
     for center in windows:
-        chans = [c for c in FLEET_CHANNELS if abs(c[1] - center) <= USABLE * SAMPLE_RATE / 2e6]
+        # a channel is judged only when ALL of it fits the usable span
+        chans = [c for c in plan if abs(c[1] - center) + c[2] / 2000 <= USABLE * SAMPLE_RATE / 2e6]
         clipped = errors = 0
         for _ in range(bursts):
             raw, t0 = capture(center, n, gain, tmpdir)
@@ -209,21 +273,26 @@ def hit_rate(events, timeline, label, lookback=1.5):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--bursts", type=int, default=10, help="0.5 s bursts per window")
-    ap.add_argument("--gain", type=int, default=10, help="airspy linearity gain 0-21")
+    ap.add_argument("--device", choices=sorted(DEVICES), default="airspy")
+    ap.add_argument("--gain", type=int, default=10,
+                    help="airspy linearity gain 0-21 / rtl tuner gain dB")
     ap.add_argument("--witness", type=int, default=0, metavar="SECONDS",
                     help="also correlate LF-window bursts against meshtasticd RX for this long")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
-    if shutil.which("airspy_rx") is None:
-        print("UNKNOWN — airspy_rx is not installed on this box; nothing was captured.")
+    set_device(a.device)
+    binary = DEVICES[a.device]["binary"]
+    if shutil.which(binary) is None:
+        print(f"UNKNOWN — {binary} is not installed on this box; nothing was captured.")
         return 2
     tmpdir = "/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir()
 
     per, status, _ = sweep(a.bursts, a.gain, tmpdir)
-    report = {"when": datetime.now().isoformat(timespec="seconds"), "gain": a.gain,
+    report = {"when": datetime.now().isoformat(timespec="seconds"), "device": a.device,
+              "sample_rate": SAMPLE_RATE, "gain": a.gain,
               "bursts_per_window": a.bursts, "windows": {f"{k:.3f}": v for k, v in status.items()},
               "channels": {}}
-    for label, c, bw in FLEET_CHANNELS:
+    for label, c, bw in judged_channels():
         p = per[label]
         report["channels"][label] = None if not p["frames"] else {
             "centre_mhz": c, "bw_khz": bw,
@@ -235,14 +304,16 @@ def main() -> int:
         timeline = []
         t_start = time.time()
         while time.time() - t_start < a.witness:
-            _, _, tl = sweep(1, a.gain, tmpdir, windows=(906.300,), record_busy=True)
+            _, _, tl = sweep(1, a.gain, tmpdir, windows=(witness_window(),), record_busy=True)
             timeline += tl
         events, why = radio_rx_times(t_start, time.time())
         if events is None:
             report["witness"] = f"UNKNOWN — {why}"
         else:
             w = {"radio_rx_events": len(events), "bursts": len(timeline)}
-            for label in ("meshtastic-LF-ch20", "meshtastic-ST-ch8", "control-gap"):
+            half = USABLE * SAMPLE_RATE / 2e6
+            for label in [c[0] for c in channels()
+                          if abs(c[1] - witness_window()) + c[2] / 2000 <= half]:
                 cov, hits = hit_rate(events, timeline, label)
                 w[label] = {"covered": cov, "hits": hits,
                             "hit_pct": round(100 * hits / cov, 1) if cov else None}
@@ -251,7 +322,7 @@ def main() -> int:
     if a.json:
         print(json.dumps(report, indent=1))
         return 0
-    print(f"SDR fleet-channel look — {report['when']}  (gain {a.gain}, "
+    print(f"SDR fleet-channel look — {report['when']}  ({a.device}, gain {a.gain}, "
           f"{a.bursts} x 0.5 s bursts/window; dB above THIS receiver's floor, not dBm)")
     for k, v in report["windows"].items():
         if v != "ok":
