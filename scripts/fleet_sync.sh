@@ -864,6 +864,17 @@ echo
 # Iterate hosts. Each host produces multiple summary lines (one per repo);
 # we track host-level pass/fail counts (any FAIL on a host = host failed)
 # AND per-action counts so the operator sees both views.
+# Declared posture (P2, 2026-10-05): a box declared dormant/detached is
+# skipped, not counted unreachable — that failed the deploy's exit code for a
+# box switched off on purpose. Same reader as fleet_pull; it syncs on return.
+posture_skip_host() {  # host -> rc 0 (and a SKIP row) when declared silent
+    fleet_posture_is_silent "$1" 2>/dev/null || return 1
+    printf '[%-30s] SKIP declared %s — not deployed, not a failure (%s)\n' \
+        "$1" "$(fleet_posture_state "$1")" "$(fleet_posture_note "$1" | cut -c1-70)"
+}
+_posture_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fleet_posture.sh"
+if [ -f "$_posture_lib" ]; then . "$_posture_lib"; fleet_posture_read "$(dirname "$_posture_lib")/../.."; fi
+declared_count=0
 fail_count=0
 pass_count=0
 skip_count=0
@@ -876,6 +887,7 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
     # strip leading/trailing whitespace, skip blank + comment
     host="$(echo "$raw_line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
     [[ -z "$host" || "${host:0:1}" == "#" ]] && continue
+    if posture_skip_host "$host"; then declared_count=$((declared_count + 1)); continue; fi
 
     # Memory mirror first (local-side rsync). Runs before code pull so a
     # code-sync failure doesn't strand the fleet on a stale memory state.
@@ -938,8 +950,8 @@ done <<< "$FLEET_HOSTS_LIST"
 # exactly the gateway-churn this mode exists to avoid, so it is safe to cron.
 if [ "$MEMORY_ONLY" = "1" ]; then
     echo
-    printf 'Hosts:   %d ok, %d failed, %d unreachable\n' \
-        "$pass_count" "$fail_count" "$skip_count"
+    printf 'Hosts:   %d ok, %d failed, %d unreachable, %d declared off\n' \
+        "$pass_count" "$fail_count" "$skip_count" "$declared_count"
     printf 'Actions: %d ok, %d failed, %d warn, %d skipped (memory-only)\n' \
         "$action_pass" "$action_fail" "$action_warn" "$action_skip"
     exit "$((action_fail + skip_count))"
@@ -1441,8 +1453,8 @@ if [[ -z "${MESHFORGE_SKIP_ROLE_CHECK:-}" && -f /opt/meshforge/scripts/provision
 fi
 
 echo
-printf 'Hosts:   %d ok, %d failed, %d unreachable\n' \
-    "$pass_count" "$fail_count" "$skip_count"
+printf 'Hosts:   %d ok, %d failed, %d unreachable, %d declared off\n' \
+    "$pass_count" "$fail_count" "$skip_count" "$declared_count"
 printf 'Actions: %d ok, %d failed, %d warn, %d skipped (no_repo)\n' \
     "$action_pass" "$action_fail" "$action_warn" "$action_skip"
 

@@ -529,10 +529,49 @@ _BANNER = {
     "no_state": "⚪",
     "no_state_file": "—",
     "unreachable": "❌",
+    "declared_off": "💤",
 }
-#: problems first, healthy last; then alpha by host within a bucket.
+#: problems first, healthy last; then alpha by host within a bucket. A box
+#: declared off on purpose is not a problem, so it sorts after the healthy.
 _ORDER = {"unreachable": 0, "stale": 1, "no_state": 2, "no_state_file": 3,
-          "fresh": 4}
+          "fresh": 4, "declared_off": 5}
+
+
+def apply_posture(postures: list[dict], declared: dict) -> None:
+    """Fold the operator's declarations (host -> {state, note}, dormant /
+    detached in effect) into the postures, same semantics as fleet_truth:
+    a dark declared box is ``declared_off`` (not ❌ unreachable); one that
+    answers keeps its status and carries the declaration, which renders as
+    POSTURE-DRIFT (dormant) or rejoined (detached)."""
+    for p in postures:
+        d = declared.get(p.get("host"))
+        if not d:
+            continue
+        p["declared"] = d
+        if p.get("status") == "unreachable":
+            p["status"] = "declared_off"
+
+
+def read_declared() -> dict:
+    """{host: {state, note}} for every box declared silent in effect, via THE
+    posture reader. A broken/unreadable file declares nothing — every box is
+    watched (the reader's own honest-failure rule)."""
+    try:
+        from utils import fleet_posture as fp
+        posture = fp.read_posture()
+    except Exception:
+        return {}
+    return {name: {"state": b.state, "note": b.note}
+            for name, b in (posture.boxes or {}).items() if b.silent}
+
+
+def _declared_suffix(p: dict) -> str:
+    d = p.get("declared")
+    if not d:
+        return ""
+    if d.get("state") == "dormant":
+        return " · ⚠️ POSTURE-DRIFT — declared dormant but answering"
+    return f" · 🧳 declared {d.get('state')} — rejoined"
 
 _CLAW_BANNER = {"fresh": "🟢", "stale": "🔴", "unreachable": "❌", "unknown": "⚪"}
 
@@ -646,7 +685,8 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
         counts[p["status"]] = counts.get(p["status"], 0) + 1
     summary = " · ".join(
         f"{_BANNER.get(s, '?')} {counts[s]} {s}"
-        for s in ("fresh", "stale", "no_state", "no_state_file", "unreachable")
+        for s in ("fresh", "stale", "no_state", "no_state_file", "unreachable",
+                  "declared_off")
         if counts.get(s)
     ) or "no boxes"
 
@@ -668,6 +708,12 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
     for p in ordered:
         banner = _BANNER.get(p["status"], "?")
         tag = " (self)" if p.get("self_box") else ""
+        if p["status"] == "declared_off":
+            d = p.get("declared") or {}
+            icon = "🧳" if d.get("state") == "detached" else "💤"
+            lines.append(f"{icon} **{p['host']}**{tag} — declared {d.get('state')}, dark as "
+                         f"declared ({d.get('note') or 'no reason given'})")
+            continue
         if p["status"] == "unreachable":
             # ssh transport failed → we never read the claw file either.
             lines.append(f"{banner} **{p['host']}**{tag} — {p['status']}"
@@ -702,6 +748,7 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
             head += f" · 💭 {pd} delta(s) pending"
         if p["status"] == "stale":
             head += " · ⚠️ daemon may be down"
+        head += _declared_suffix(p)
         lines.append(head)
         _append_claw(lines, p)
         _append_sdr(lines, p)
@@ -724,6 +771,7 @@ def collect_fleet(now_ts: float | None = None,
         postures.append(local)
     for host in resolve_fleet_hosts(env):
         postures.append(collect_remote(host, now_ts, timeout_s, stale_s, runner))
+    apply_posture(postures, read_declared())
     return postures
 
 

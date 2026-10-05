@@ -22,6 +22,13 @@ from mini_dudeai.rollup import (  # noqa: E402
 
 NOW = 1_780_000_000.0
 
+
+@__import__("pytest").fixture(autouse=True)
+def _no_real_posture(tmp_path, monkeypatch):
+    """collect_fleet reads the declared posture; never the operator's real file
+    (a test verdict must not depend on what the operator declared today)."""
+    monkeypatch.setenv("MESHFORGE_FLEET_POSTURE", str(tmp_path / "no-posture.json"))
+
 _CLAW_DOC = {
     "captured_at": NOW - 10, "ok": True, "device": "dudeclaw-01",
     "device_info": {"uptime_s": 109368, "heap_free_bytes": 17764,
@@ -960,3 +967,70 @@ def test_collect_local_carries_this_boxs_sdr(tmp_path):
     f.write_text("".join(json.dumps(r) + "\n" for r in _writer_rows(NOW - 60, NOW - 600)))
     p = collect_local(NOW, str(state), sdr_path=str(f), usb_pairs=[("1d50", "60a1")])
     assert p["sdr"]["status"] == "fresh"
+
+
+# === declared posture in the watchers pane (P2, 2026-10-05) =======
+# A box declared off must not read ❌ unreachable (a problem, sorted to the
+# top); one declared dormant that ANSWERS is drift and says so; a detached
+# box that answers has REJOINED. Same semantics as fleet_truth.
+
+from mini_dudeai.rollup import apply_posture  # noqa: E402
+
+
+def _declared(state, note="declared off"):
+    return {"state": state, "note": note}
+
+
+def test_a_dark_declared_box_reads_declared_not_unreachable():
+    p = {"host": "kiai", "self_box": False, "status": "unreachable", "error": "ssh timed out"}
+    apply_posture([p], {"kiai": _declared("detached", "[travel] ECOMM trip")})
+    assert p["status"] == "declared_off"
+    pane = build_rollup([p], NOW)
+    assert "❌" not in pane and "🧳" in pane and "[travel] ECOMM trip" in pane
+    q = {"host": "moc5", "self_box": False, "status": "unreachable", "error": "x"}
+    apply_posture([q], {"moc5": _declared("dormant", "[move] new shelf")})
+    assert "💤" in build_rollup([q], NOW)
+
+
+def test_declared_off_sorts_with_the_healthy_not_the_problems():
+    dark = {"host": "aaa", "self_box": False, "status": "unreachable", "error": "x"}
+    down = {"host": "zzz", "self_box": False, "status": "unreachable", "error": "x"}
+    apply_posture([dark], {"aaa": _declared("dormant")})
+    pane = build_rollup([dark, down], NOW)
+    assert pane.index("zzz") < pane.index("aaa")
+
+
+def test_a_dormant_box_that_answers_is_drift():
+    p = parse_state_posture("moc5", {"last_tick_ts": NOW - 5, "rule_count": 3}, NOW)
+    apply_posture([p], {"moc5": _declared("dormant")})
+    assert p["status"] == "fresh"
+    assert "POSTURE-DRIFT" in build_rollup([p], NOW)
+
+
+def test_a_detached_box_that_answers_has_rejoined():
+    p = parse_state_posture("kiai", {"last_tick_ts": NOW - 5, "rule_count": 3}, NOW)
+    apply_posture([p], {"kiai": _declared("detached")})
+    pane = build_rollup([p], NOW)
+    assert "rejoined" in pane and "POSTURE-DRIFT" not in pane
+
+
+def test_no_declaration_changes_nothing():
+    p = {"host": "moc", "self_box": False, "status": "unreachable", "error": "x"}
+    apply_posture([p], {})
+    assert p["status"] == "unreachable" and "❌" in build_rollup([p], NOW)
+
+
+def test_read_declared_uses_the_real_reader(tmp_path, monkeypatch):
+    import time as _t
+
+    from mini_dudeai.rollup import read_declared
+    from utils import fleet_posture as fp
+    now = _t.time()
+    f = tmp_path / "p.json"
+    f.write_text(json.dumps({"boxes": {"kiai": {
+        "state": "detached", "since": fp.fmt_ts(now), "until": fp.fmt_ts(now + 3600),
+        "reason": "[travel] ECOMM"}}, "declared_at": fp.fmt_ts(now),
+        "declared_by": "operator", "posture": "t"}))
+    monkeypatch.setenv("MESHFORGE_FLEET_POSTURE", str(f))
+    d = read_declared()
+    assert d["kiai"]["state"] == "detached" and "[travel] ECOMM" in d["kiai"]["note"]

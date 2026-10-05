@@ -238,6 +238,7 @@ class TestClosedConsumers:
         "scripts/lib/fleet_posture.sh": ("fleet_posture", "fleet_posture_is_silent"),
         "scripts/honest_status.sh": ("fleet_posture.sh", "fleet_posture_is_silent"),
         "scripts/fleet_pull.sh": ("fleet_posture.sh", "fleet_posture_is_silent"),
+        "scripts/fleet_sync.sh": ("fleet_posture.sh", "posture_skip_host"),
         "scripts/fleet_registry_sync.sh": ("fleet_posture.sh", "fleet_posture_is_silent"),
         # The mirror, and the first two consumers that could only exist once
         # the declaration reached the boxes (2026-09-10).
@@ -796,3 +797,48 @@ class TestCliShowEmptyDeclaration:
         r = self._show(path)
         assert r.returncode == 0
         assert "1 box(es) silenced" in r.stdout and "boxa" in r.stdout
+
+
+# --------------------------------------------------------------------------- #
+# fleet_sync honours posture (P2, 2026-10-05): a box declared dormant/detached
+# is SKIPPED, not counted unreachable (which failed the deploy's exit code).
+# Drives the REAL shell function in a real bash against a planted file.
+# --------------------------------------------------------------------------- #
+class TestFleetSyncSkipsDeclaredBoxes:
+    SYNC = REPO / "scripts" / "fleet_sync.sh"
+
+    def _run(self, tmp_path, host):
+        import subprocess
+        import time as _t
+        posture = tmp_path / "posture.json"
+        now = _t.time()
+        posture.write_text(json.dumps({"boxes": {
+            "boxd": {"state": "dormant", "since": fp.fmt_ts(now),
+                     "until": fp.fmt_ts(now + 3600), "reason": "[move] new shelf"},
+            "boxt": {"state": "detached", "since": fp.fmt_ts(now),
+                     "until": fp.fmt_ts(now + 3600), "reason": "[travel] ECOMM"}},
+            "declared_at": fp.fmt_ts(now), "declared_by": "operator", "posture": "t"}))
+        src = self.SYNC.read_text()
+        start = src.index("posture_skip_host() {")
+        fn = src[start:src.index("\n}\n", start) + 3]
+        script = (f'. "{REPO}/scripts/lib/fleet_posture.sh"\n'
+                  f'fleet_posture_read "{REPO}"\n{fn}\n'
+                  f'posture_skip_host "{host}"; echo "rc=$?"\n')
+        env = dict(os.environ, MESHFORGE_FLEET_POSTURE=str(posture))
+        return subprocess.run(["bash", "-c", script], capture_output=True,
+                              text=True, timeout=60, env=env).stdout
+
+    def test_dormant_and_detached_are_skipped_with_their_reason(self, tmp_path):
+        out = self._run(tmp_path, "boxd")
+        assert "rc=0" in out and "SKIP declared dormant" in out and "[move] new shelf" in out
+        out = self._run(tmp_path, "boxt")
+        assert "rc=0" in out and "SKIP declared detached" in out
+
+    def test_an_active_box_is_not_skipped(self, tmp_path):
+        out = self._run(tmp_path, "moc")
+        assert out.strip() == "rc=1"
+
+    def test_the_skip_runs_before_any_ssh_or_memory_mirror(self):
+        src = self.SYNC.read_text()
+        loop = src[src.index('while IFS= read -r raw_line'):]
+        assert loop.index("posture_skip_host") < loop.index("mirror_memory_to_host")
