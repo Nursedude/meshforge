@@ -406,3 +406,12 @@ def test_an_unknown_device_string_is_unknown_not_airspy():
              "windows": {"906.300": {"status": "ok"}}}]
     s = v.summarize("ok", rows, [], now=NOW)
     assert s["status"] == "unknown" and "hackrf" in v.summary_line(s)
+
+
+def test_a_receiver_with_no_adjacent_pass_says_na_without_a_witness_row():
+    """moc1 runs no hourly adjacent timer (the pass is not built for the RTL);
+    'adjacent UNKNOWN' forever would be a permanent false nag (review W3)."""
+    line = v.summary_line(v.summarize("ok", _rtl_rows(NOW - 60), ["RTL-SDR"], now=NOW))
+    assert "adjacent n/a" in line and "UNKNOWN" not in line
+    assert "adjacent UNKNOWN" in v.summary_line(
+        v.summarize("ok", _fresh_rows()[:1], ["Airspy"], now=NOW))   # Airspy still owes one

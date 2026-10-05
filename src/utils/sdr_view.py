@@ -40,6 +40,8 @@ RX_WINDOWS = {
 }
 #: device name in a row -> the name the USB bus reports for it
 RX_USB_NAME = {"airspy": "Airspy", "rtl": "RTL-SDR"}
+#: receivers the hourly adjacent-band pass is built for (the rest read "n/a")
+ADJACENT_RX = frozenset({"airspy"})
 FLEET_WINDOWS = tuple(f"{c:.3f}" for c in RX_WINDOWS["airspy"])
 
 
@@ -410,7 +412,8 @@ def summarize(state: str, rows: Sequence[Dict], usb: Optional[List[str]],
             carriers += sum(1 for c in w.get("carriers_persistent") or [] if not c.get("image_of"))
     adj = next((r for r in reversed(rows) if r.get("mode") == "adjacent" and r.get("windows")), None)
     last_adj = next((r for r in reversed(rows) if r.get("mode") == "adjacent"), None)
-    adjacent_na = bool(last_adj and last_adj.get("status") == "unsupported")
+    adjacent_na = bool(last_adj and last_adj.get("status") == "unsupported") or \
+        row_dev not in ADJACENT_RX
     return dict(base, status="stale" if stale else "fresh", stale_windows=stale, adjacent_na=adjacent_na,
                 newest_ok_ts=max(known) if known else None, unknown_streak=streak,
                 busy=busy, busy_runs=runs, foreign=foreign, carriers=carriers,
