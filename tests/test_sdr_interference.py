@@ -135,6 +135,10 @@ def test_adjacent_pass_covers_870_to_940():
 @pytest.fixture
 def ddir(tmp_path, monkeypatch):
     monkeypatch.setattr(si, "data_dir", lambda: tmp_path / "sdr")
+    # --device auto reads the USB bus: pin it (a test must not depend on what
+    # is plugged into the machine running it — moc1 HAS an RTL-SDR). Default:
+    # an Airspy on the bus, the moc5 shape these writer tests were built on.
+    monkeypatch.setattr(si, "local_usb_pairs", lambda: [("1d50", "60a1")])
     return tmp_path / "sdr"
 
 
@@ -147,9 +151,10 @@ def test_a_refused_run_still_writes_a_witness_row(ddir):
     assert rows[-1]["status"] == "skipped_overlap"
 
 
-def test_missing_airspy_rx_writes_unknown_not_silence(ddir, monkeypatch):
+def test_missing_airspy_rx_writes_unknown_not_silence(ddir, monkeypatch, restore_device):
     monkeypatch.setattr(si.shutil, "which", lambda *_a, **_k: None)
-    assert si.main(["--mode", "fleet"]) == 0
+    # explicit device: --device auto with nothing on the bus is its own case now
+    assert si.main(["--mode", "fleet", "--device", "airspy"]) == 0
     row = si.read_rows(ddir / "interference.jsonl")[-1]
     assert row["status"] == "unknown" and "not installed" in row["note"]
     assert row["v"] == si.SCHEMA and "ts" in row and "soc_temp_c" in row
@@ -527,3 +532,106 @@ def test_the_stamp_ignores_docstrings_and_moves_on_logic(tmp_path, monkeypatch):
         f.write_text(text)
         monkeypatch.setattr(si, "__file__", str(f))
         assert (si.analysis_stamp() == base) is same
+
+
+# ---- RTL Phase 1 (2026-10-05): one writer, two receivers --------------------
+
+@pytest.fixture
+def restore_device():
+    yield
+    si.set_device("airspy")
+
+
+def test_auto_detect_prefers_the_reviewed_airspy_then_the_rtl():
+    assert si.detect_device([("1d50", "60a1"), ("0bda", "2838")]) == "airspy"
+    assert si.detect_device([("1d6b", "0002"), ("0bda", "2838")]) == "rtl"
+    assert si.detect_device([("1d6b", "0002")]) is None
+    assert si.detect_device(None) is None
+
+
+def test_rtl_device_uses_its_own_windows_gains_and_stamps_the_row(restore_device):
+    from utils.sdr_view import RX_WINDOWS
+    si.set_device("rtl")
+    assert sa.SAMPLE_RATE == 2_048_000 and si.BURST_SAMPLES == 1_024_000
+    rng = np.random.default_rng(5)
+
+    def cap(center, gain):
+        n = 2048 * 24
+        iq = 0.004 * (rng.standard_normal(n) + 1j * rng.standard_normal(n)) + 0.05
+        raw = np.empty(2 * n, np.int16)
+        raw[0::2] = iq.real * 32767
+        raw[1::2] = iq.imag * 32767
+        return raw, None
+    row = si.run_fleet(cap, None, {}, [])
+    assert list(row["windows"]) == [f"{c:.3f}" for c in RX_WINDOWS["rtl"]]
+    assert row["device"] == "rtl" and row["gain_ac"] == 9
+    for w in row["windows"].values():
+        assert w["status"] == "ok", w
+        assert not w["carriers"], "the DC spike must never read as a carrier"
+
+
+def test_airspy_rows_are_unchanged_but_now_say_their_device(restore_device):
+    si.set_device("airspy")
+    row = si.run_fleet(quiet_capture, None, {}, [])
+    assert list(row["windows"]) == ["903.625", "906.300", "910.525"]
+    assert row["device"] == "airspy" and row["gain_ac"] == 10 and row["gain_b"] == 21
+
+
+def test_rtl_capture_runs_rtl_sdr_and_rescales(monkeypatch, tmp_path, restore_device):
+    si.set_device("rtl")
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        Path(cmd[-1]).write_bytes(np.full(4096, 255, dtype=np.uint8).tobytes())
+        return __import__("subprocess").CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(si.subprocess, "run", fake_run)
+    raw, why = si.rtl_capture(907.2, 9, str(tmp_path))
+    c = seen["cmd"]
+    assert c[0] == "rtl_sdr" and c[c.index("-f") + 1] == "907200000"
+    assert c[c.index("-s") + 1] == "2048000" and c[c.index("-g") + 1] == "9"
+    assert raw.dtype == np.int16 and int(raw.max()) >= 0.95 * sa.FULL_SCALE
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_auto_on_an_rtl_box_writes_rtl_rows(ddir, monkeypatch, restore_device):
+    monkeypatch.setattr(si, "local_usb_pairs", lambda: [("0bda", "2838")])
+    monkeypatch.setattr(si.shutil, "which", lambda *_a, **_k: None)
+    assert si.main(["--mode", "fleet"]) == 0
+    row = si.read_rows(ddir / "interference.jsonl")[-1]
+    assert row["device"] == "rtl" and row["status"] == "unknown"
+    assert "rtl_sdr is not installed" in row["note"]
+
+
+def test_rtl_adjacent_is_said_unsupported_not_run(ddir, monkeypatch, restore_device):
+    monkeypatch.setattr(si, "local_usb_pairs", lambda: [("0bda", "2838")])
+    monkeypatch.setattr(si.shutil, "which", lambda *_a, **_k: "/usr/bin/rtl_sdr")
+    assert si.main(["--mode", "adjacent"]) == 0
+    row = si.read_rows(ddir / "interference.jsonl")[-1]
+    assert row["status"] == "unsupported" and "rtl" in row["note"]
+
+
+def test_one_window_table_for_writer_and_phase0_tool():
+    spec = importlib.util.spec_from_file_location("sdr_fc", _ROOT / "scripts" / "sdr_fleet_channels.py")
+    fc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fc)
+    from utils.sdr_view import RX_WINDOWS
+    assert list(RX_WINDOWS["rtl"]) == fc.RTL_WINDOWS
+    assert list(RX_WINDOWS["airspy"]) == fc.WINDOWS
+
+
+@pytest.mark.parametrize("pairs,why", [([("1d6b", "0002")], "no SDR on USB"),
+                                       (None, "USB bus unreadable")])
+def test_W2_auto_with_nothing_detected_says_so_and_keeps_the_last_device(ddir, monkeypatch,
+                                                                      restore_device, pairs, why):
+    """Review W2: auto finding nothing fell back to the Airspy path — an RTL box
+    with the dongle out wrote `device: airspy` rows, and the pane called it an
+    Airspy box; the note blamed a missing airspy_rx."""
+    ddir.mkdir()
+    si.append_row(ddir / "interference.jsonl", {"mode": "fleet", "status": "ok", "device": "rtl",
+                                                "ts": 1.0, "windows": {}})
+    monkeypatch.setattr(si, "local_usb_pairs", lambda: pairs)
+    assert si.main(["--mode", "fleet"]) == 0
+    row = si.read_rows(ddir / "interference.jsonl")[-1]
+    assert row["status"] == "unknown" and why in row["note"]
+    assert row["device"] == "rtl" and "windows" not in row

@@ -1,0 +1,81 @@
+{
+ "alias": {
+  "903.625": [
+   [
+    902.75,
+    0.25,
+    "alias of meshtastic-ST-ch8"
+   ],
+   [
+    904.5,
+    0.25,
+    "alias-mirror of meshtastic-ST-ch8"
+   ],
+   [
+    903.875,
+    0.125,
+    "alias of meshtastic-LF-ch20"
+   ],
+   [
+    903.375,
+    0.125,
+    "alias-mirror of meshtastic-LF-ch20"
+   ]
+  ],
+  "906.3": [
+   [
+    906.625,
+    0.125,
+    "alias of rnode"
+   ],
+   [
+    905.9749999999999,
+    0.125,
+    "alias-mirror of rnode"
+   ],
+   [
+    907.525,
+    0.03125,
+    "alias of meshcore"
+   ],
+   [
+    905.0749999999999,
+    0.03125,
+    "alias-mirror of meshcore"
+   ]
+  ],
+  "910.525": [
+   [
+    909.875,
+    0.125,
+    "alias of meshtastic-LF-ch20"
+   ],
+   [
+    911.175,
+    0.125,
+    "alias-mirror of meshtastic-LF-ch20"
+   ]
+  ]
+ },
+ "rate": 3000000,
+ "usable": 1.2,
+ "fx906": {
+  "status": "ok",
+  "floor_dbfs": -94.42,
+  "kept_frames": 29,
+  "carriers": [],
+  "foreign": [],
+  "channels": {
+   "meshtastic-ST-ch8": {
+    "busy_pct": 0.0,
+    "saturated_in_sample": false,
+    "median_dbfs": -92.37
+   },
+   "meshtastic-LF-ch20": {
+    "busy_pct": 0.0,
+    "saturated_in_sample": false,
+    "median_dbfs": -92.2
+   }
+  }
+ }
+}

@@ -30,13 +30,51 @@ CADENCE_S = 300                 # meshforge-sdr.timer
 STALE_AFTER_S = 3 * CADENCE_S   # witness: older than this = STALE
 HISTORY_ROWS = 288              # 24 h of 5-min runs for recurrence
 UNKNOWN_STREAK_ALERT = 3        # consecutive unknown fleet rows -> remediation
-FLEET_WINDOWS = ("903.625", "906.300", "910.525")
+#: Window centres per receiver — THE table: the writer (sdr_interference) and
+#: the Phase 0 tool are pinned to it. Numpy-free on purpose: the map server
+#: imports this module for /api/status. RTL plan MEASURED on moc1 2026-10-05
+#: (every channel >= 150 kHz off the zero-IF DC spike and off every mirror).
+RX_WINDOWS = {
+    "airspy": (903.625, 906.300, 910.525),
+    "rtl": (903.300, 905.340, 907.200, 910.300),
+}
+#: device name in a row -> the name the USB bus reports for it
+RX_USB_NAME = {"airspy": "Airspy", "rtl": "RTL-SDR"}
+FLEET_WINDOWS = tuple(f"{c:.3f}" for c in RX_WINDOWS["airspy"])
+
+
+#: the in-app remediation per receiver (review 2026-10-05: an RTL box was told
+#: to run airspy_info)
+RX_CHECK = {
+    "airspy": "`airspy_info` on this box. \"not found\" → reseat the Airspy's USB.",
+    "rtl": "`rtl_test -t` on this box. \"No supported devices\" → reseat the RTL-SDR's USB.",
+}
+
+
+def windows_for(device: Optional[str]) -> Tuple[str, ...]:
+    """A row's window keys; rows from before 2026-10-05 carry no device = Airspy.
+    An UNKNOWN device has no windows (never judged on the Airspy's — hfm #7)."""
+    return tuple(f"{c:.3f}" for c in RX_WINDOWS.get(device or "airspy", ()))
+
+
+def row_device(fleet_rows: Sequence[Dict]) -> str:
+    """The receiver the NEWEST fleet row speaks for — even a windowless
+    error/unknown row (review W1: reading only rows WITH windows named an
+    old Airspy history for a failing RTL). Legacy rows (no field) = airspy."""
+    if not fleet_rows:
+        return "airspy"
+    dev = fleet_rows[-1].get("device")
+    if dev:
+        return dev
+    return next((r.get("device") for r in reversed(fleet_rows) if r.get("device")), None) or "airspy"
 
 BLIND_SPOTS = (
     "Blind spots: levels are dBFS at a fixed gain, not dBm · one receiver at "
     "one position · nothing below the noise floor (LoRa decodes ~20 dB under it) · "
     "foreign LoRa ON our exact channel looks like ours · frames holding our own "
-    "near-field TX are not judged.")
+    "near-field TX are not judged · overload is read AFTER the receiver's own "
+    "decimation filter, so a blocker outside the window can clip the ADC unseen · "
+    "a zero-IF receiver (RTL) never judges ~±190 kHz around its tuned centre.")
 
 
 #: Home-relative, so the fleet rollup's ssh `tail` (which lands in the remote
@@ -142,10 +180,10 @@ def _recurrence(fleet: Sequence[Dict], window: str, key: str, freq_key: str,
 
 def render(state: str, rows: Sequence[Dict], now: Optional[float] = None) -> str:
     now = time.time() if now is None else now
-    out = ["SDR Interference Watch — what the Airspy timer recorded (read-only)", ""]
+    out = ["SDR Interference Watch — what this box's SDR timer recorded (read-only)", ""]
     if state == "absent":
         out += ["No SDR data file on this box — absent.",
-                "The watch runs only on a box hosting an Airspy. If THIS box",
+                "The watch runs only on a box hosting an SDR. If THIS box",
                 "hosts one, the timer is not running: check",
                 "  systemctl --user status meshforge-sdr.timer", "", BLIND_SPOTS]
         return "\n".join(out)
@@ -175,13 +213,14 @@ def render(state: str, rows: Sequence[Dict], now: Optional[float] = None) -> str
         reason = next((w["reasons"][0] for w in fleet[-1].get("windows", {}).values() if w.get("reasons")),
                       fleet[-1].get("note", "no reason recorded"))
         out += [f"⚠ The last {streak} fleet runs captured NOTHING: {reason}",
-                "  Check: `airspy_info` on this box. \"not found\" → reseat the Airspy's USB.",
+                "  Check: " + RX_CHECK.get(row_device(fleet), "the SDR's own probe tool on this box."),
                 "  Never reset the USB hub: the LoRa radio shares it."]
 
     # Per-window witness: age of the newest row whose WINDOW was ok
     out += ["", "Witness — newest OK capture per window (stale after 15 min = UNKNOWN):"]
     last_ok: Dict[str, Optional[Dict]] = {}
-    for win in FLEET_WINDOWS:
+    wins = windows_for(row_device(fleet))
+    for win in wins:
         r = next((r for r in reversed(fleet) if r.get("windows", {}).get(win, {}).get("status") == "ok"), None)
         last_ok[win] = r
         ts = r.get("ts") if r else None
@@ -192,7 +231,7 @@ def render(state: str, rows: Sequence[Dict], now: Optional[float] = None) -> str
     if latest and latest.get("windows"):
         out += ["", f"Latest fleet run ({_age(now, latest.get('ts'))}, gain {latest.get('gain_ac')} / B at "
                 f"{latest.get('gain_b')}; reference {latest.get('reference', '?')}):"]
-        for win in FLEET_WINDOWS:
+        for win in wins:
             w = latest["windows"].get(win)
             if not w:
                 continue
@@ -237,7 +276,10 @@ def render(state: str, rows: Sequence[Dict], now: Optional[float] = None) -> str
                    f"{excluded} older-code rows excluded)")
     adj = next((r for r in reversed(rows) if r.get("mode") == "adjacent"), None)
     out.append("")
-    if adj and adj.get("windows"):
+    if adj and adj.get("status") == "unsupported":
+        out.append(f"Class D (adjacent band): not built for this receiver "
+                   f"({adj.get('device', '?')}) — n/a, not a fault.")
+    elif adj and adj.get("windows"):
         oks = [w for w in adj["windows"] if w.get("status") == "ok"]
         gated = [w for w in adj["windows"] if w.get("status") == "unjudgeable"]
         top = sorted(oks, key=lambda w: -w["peak"]["above_floor_db"])[:TOP_D]
@@ -274,8 +316,6 @@ SDR_USB_IDS = {
     ("0bda", "2832"): "RTL-SDR",
     ("1d50", "6089"): "HackRF",
 }
-#: The only device scripts/sdr_interference.py captures from (airspy_rx).
-WRITER_DEVICE = "Airspy"
 #: Rows the rollup tails per box: 14 x 5 min covers the hourly adjacent pass.
 SUMMARY_ROWS = 14
 ADJACENT_STALE_S = 3 * 3600
@@ -316,14 +356,18 @@ def summarize(state: str, rows: Sequence[Dict], usb: Optional[List[str]],
         if usb:
             return {"status": "no_consumer", "devices": list(usb)}
         return None
-    device = WRITER_DEVICE
-    unread = [d for d in (usb or []) if d != WRITER_DEVICE]
+    fleet_rows = [r for r in rows if r.get("mode") == "fleet"]
+    row_dev = row_device(fleet_rows)
+    device = RX_USB_NAME.get(row_dev, row_dev)
+    unread = [d for d in (usb or []) if d != device]
     base = {"device": device, "unread": unread, "usb_missing": usb == []}
     if state != "ok" or not rows:
         return dict(base, status="unknown", reason=state if state != "ok" else "no parseable rows")
+    if row_dev not in RX_WINDOWS:
+        return dict(base, status="unknown", reason=f"written by an unknown device {row_dev!r}")
     fleet = [r for r in rows if r.get("mode") == "fleet"]
     newest_ok: Dict[str, Optional[float]] = {}
-    for win in FLEET_WINDOWS:
+    for win in windows_for(row_dev):
         r = next((r for r in reversed(fleet)
                   if r.get("windows", {}).get(win, {}).get("status") == "ok"), None)
         newest_ok[win] = r.get("ts") if r else None
@@ -361,10 +405,13 @@ def summarize(state: str, rows: Sequence[Dict], usb: Optional[List[str]],
             if w.get("status") != "ok":
                 continue
             foreign += sum(1 for f in w.get("foreign") or []
-                           if not f.get("alias_candidate") and not f.get("im3_candidate"))
-            carriers += len(w.get("carriers_persistent") or [])
+                           if not f.get("alias_candidate") and not f.get("im3_candidate")
+                           and not f.get("image_candidate"))
+            carriers += sum(1 for c in w.get("carriers_persistent") or [] if not c.get("image_of"))
     adj = next((r for r in reversed(rows) if r.get("mode") == "adjacent" and r.get("windows")), None)
-    return dict(base, status="stale" if stale else "fresh", stale_windows=stale,
+    last_adj = next((r for r in reversed(rows) if r.get("mode") == "adjacent"), None)
+    adjacent_na = bool(last_adj and last_adj.get("status") == "unsupported")
+    return dict(base, status="stale" if stale else "fresh", stale_windows=stale, adjacent_na=adjacent_na,
                 newest_ok_ts=max(known) if known else None, unknown_streak=streak,
                 busy=busy, busy_runs=runs, foreign=foreign, carriers=carriers,
                 adjacent_ts=adj.get("ts") if adj else None, now=now)
@@ -396,7 +443,9 @@ def summary_line(s: Dict) -> str:
                 f"busy ≥ (mean of {s.get('busy_runs', 0)} runs) {busy} · "
                 f"foreign {s['foreign']} · carriers {s['carriers']}")
         adj_ts = s.get("adjacent_ts")
-        if adj_ts is None:
+        if s.get("adjacent_na"):
+            body += " · adjacent n/a"
+        elif adj_ts is None:
             body += " · adjacent UNKNOWN"
         else:
             body += f" · adjacent {_age(now, adj_ts)}"

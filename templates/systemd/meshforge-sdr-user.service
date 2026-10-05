@@ -1,12 +1,14 @@
 # MeshForge — SDR interference watch, fleet windows (systemd-user, one-shot)
 # ==========================================================================
 #
-# One run of scripts/sdr_interference.py --mode fleet: the 3 fleet windows,
-# classes A/C at gain 10, class B at gain 21. Appends one JSONL row to
+# One run of scripts/sdr_interference.py --mode fleet (--device auto: the
+# Airspy if on USB, else an RTL-SDR). Airspy: 3 fleet windows, A/C gain 10,
+# B gain 21. RTL (2026-10-05): 4 windows off its zero-IF DC spike, A/C gain 9,
+# B gain 29 — worst case 24 bursts x 5 s = 120 s. Appends one JSONL row to
 # ~/.local/share/meshforge/sdr/interference.jsonl — ALWAYS, including
 # unknown / skipped_overlap, so a dead SDR is visible (design R9).
-# Design: .claude/plans/sdr_interference_phase1.md. Only on the box that
-# hosts the Airspy (moc5 as of 2026-09-24).
+# Design: .claude/plans/sdr_interference_phase1.md. Only on a box that hosts
+# an SDR (Airspy: moc5 since 2026-09-24; RTL-SDR: moc1 since 2026-10-05).
 #
 # Install:
 #   cp /opt/meshforge/templates/systemd/meshforge-sdr-user.service \

@@ -55,12 +55,36 @@ from utils import sdr_view  # noqa: E402
 from utils.paths import MeshForgePaths  # noqa: E402
 
 SCHEMA = 1
-FLEET_WINDOWS = (903.625, 906.300, 910.525)
-GAIN_AC = 10
-GAIN_B = 21
+# One writer, two receivers (2026-10-05). set_device() rebinds these for the
+# process; the Airspy values are the reviewed ones, unchanged. RTL gains:
+# A/C 9 MEASURED on moc1 (witness 26/32 vs control 0/32; 29 overloaded more);
+# B 29 is BELIEVED, not measured — the row's b.status will say if it overloads.
+DEVICE_GAINS = {"airspy": (10, 21), "rtl": (9, 29)}
+DEVICE_BINARY = {"airspy": "airspy_rx", "rtl": "rtl_sdr"}
+DEVICE = "airspy"
+FLEET_WINDOWS = sdr_view.RX_WINDOWS["airspy"]
+GAIN_AC, GAIN_B = DEVICE_GAINS["airspy"]
 BURSTS_AC = 4
 BURSTS_B = 2
 BURST_SAMPLES = int(sa.SAMPLE_RATE * 0.5)
+local_usb_pairs = sdr_view.local_usb_pairs   # module seam: tests pin the bus
+
+
+def set_device(name: str) -> None:
+    global DEVICE, FLEET_WINDOWS, GAIN_AC, GAIN_B, BURST_SAMPLES
+    if name not in DEVICE_GAINS:
+        raise ValueError(f"unknown SDR device {name!r}")
+    sa.use_receiver(sa.RTL if name == "rtl" else sa.AIRSPY)
+    DEVICE, FLEET_WINDOWS = name, sdr_view.RX_WINDOWS[name]
+    GAIN_AC, GAIN_B = DEVICE_GAINS[name]
+    BURST_SAMPLES = int(sa.SAMPLE_RATE * 0.5)
+
+
+def detect_device(pairs) -> Optional[str]:
+    """The reviewed Airspy wins when both are present (the other then reads as
+    'on USB, nothing reads it' in the pane); None = no SDR, or bus unreadable."""
+    names = sdr_view.sdr_devices(pairs) or []
+    return "airspy" if "Airspy" in names else "rtl" if "RTL-SDR" in names else None
 CAPTURE_TIMEOUT_S = 5         # a 0.5 s burst takes ~1-2 s; 5 s is a dead device (review #3)
 ADJ_START, ADJ_STOP, ADJ_STEP = 870.2, 940.0, 2.4
 ROLLING_ROWS = 288            # 24 h of 5-min runs for class B's rolling baseline
@@ -268,7 +292,8 @@ def run_fleet(capture: Capture, prev_row: Optional[Dict], references: Dict[float
     # dead once read `ok`, satisfying the pane's witness with B blind).
     sts = [w["status"] for w in windows.values()] + [w["b"]["status"] for w in windows.values()]
     status = "ok" if all(s == "ok" for s in sts) else "unknown" if all(s == "unknown" for s in sts) else "partial"
-    return {"mode": "fleet", "status": status, "gain_ac": GAIN_AC, "gain_b": GAIN_B, "windows": windows}
+    return {"mode": "fleet", "status": status, "device": DEVICE, "gain_ac": GAIN_AC,
+            "gain_b": GAIN_B, "windows": windows}
 
 
 def _products_mask(f: np.ndarray, center: float) -> Tuple[np.ndarray, List[Tuple[float, float, str]]]:
@@ -304,6 +329,38 @@ def _label(freq: float, prods: List[Tuple[float, float, str]]) -> Optional[List[
     if skirt:
         return [skirt]                 # priority: a skirt is not also an IM3 story
     return sorted({lbl for cc, hw, lbl in prods if abs(freq - cc) <= hw}) or None
+
+
+def rtl_capture(center_mhz: float, gain: int, tmpdir: str = "/dev/shm") -> Tuple[Optional[np.ndarray], Optional[str]]:
+    """One 0.5 s burst via rtl_sdr, rescaled onto the int16 full scale so the
+    overload gate (>= 95 % FS) means the same thing. Never raises."""
+    if not os.path.isdir(tmpdir):
+        tmpdir = tempfile.gettempdir()
+    fd, path = tempfile.mkstemp(prefix="rtl_", suffix=".iq", dir=tmpdir)
+    os.close(fd)
+    try:
+        r = subprocess.run(
+            ["rtl_sdr", "-f", str(int(round(center_mhz * 1e6))), "-s", str(sa.SAMPLE_RATE),
+             "-g", str(gain), "-n", str(BURST_SAMPLES), path],
+            capture_output=True, text=True, timeout=CAPTURE_TIMEOUT_S)
+        if r.returncode != 0:
+            tail = (r.stderr or r.stdout or "").strip().splitlines()[-1:] or [""]
+            return None, f"rtl_sdr rc={r.returncode}: {tail[0][:160]}"
+        u8 = np.fromfile(path, dtype=np.uint8)
+        raw = np.clip((u8.astype(np.float32) - 127.5) * (sa.FULL_SCALE / 127.5),
+                      -sa.FULL_SCALE, sa.FULL_SCALE).astype(np.int16)
+        if raw.size < 2 * sa.FFT:
+            return None, f"short capture ({raw.size} int16 values)"
+        return raw, None
+    except subprocess.TimeoutExpired:
+        return None, f"rtl_sdr timed out after {CAPTURE_TIMEOUT_S}s"
+    except OSError as e:
+        return None, f"rtl_sdr could not run: {e}"
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def run_adjacent(capture: Capture) -> Dict:
@@ -461,14 +518,40 @@ def set_reference(d: Path, capture: Capture) -> Dict:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--mode", choices=("fleet", "adjacent"), default="fleet")
+    ap.add_argument("--device", choices=("auto", "airspy", "rtl"), default="auto",
+                    help="auto: Airspy if on USB, else an RTL-SDR; nothing found = an "
+                         "UNKNOWN row naming why (never a guess)")
     ap.add_argument("--stdout", action="store_true", help="print the row instead of appending it")
     ap.add_argument("--set-reference", action="store_true",
-                    help=f"capture a fixed class-B reference at gain {GAIN_B} (run when the site is normal)")
+                    help="capture a fixed class-B reference at the device's class-B gain "
+                         "(run when the site is normal)")
     a = ap.parse_args(argv)
+    # auto that finds NOTHING writes an unknown row naming the cause and the
+    # last device this box ran (review W2, 2026-10-05: falling back to the
+    # Airspy path made an RTL box with the dongle out read as an Airspy box,
+    # blamed on a missing airspy_rx).
+    absent_why = None
+    if a.device == "auto":
+        pairs = local_usb_pairs()
+        device = detect_device(pairs)
+        if device is None:
+            absent_why = "USB bus unreadable (sysfs)" if pairs is None else "no SDR on USB"
+            try:
+                hist_rows = read_rows(data_dir() / "interference.jsonl")
+            except OSError:
+                hist_rows = []      # the run below reports the unreadable history itself
+            last = next((r.get("device") for r in reversed(hist_rows) if r.get("device")), None)
+            device = last if last in DEVICE_GAINS else "airspy"
+    else:
+        device = a.device
+    set_device(device)
+    capture = rtl_capture if device == "rtl" else airspy_capture
+    binary = DEVICE_BINARY[device]
     d = data_dir()
     path = d / "interference.jsonl"
     base = {"v": SCHEMA, "ts": round(time.time(), 3), "host": socket.gethostname(),
-            "mode": a.mode, "soc_temp_c": soc_temp_c(), "analysis": analysis_stamp()}
+            "mode": a.mode, "device": device, "soc_temp_c": soc_temp_c(),
+            "analysis": analysis_stamp()}
     try:
         d.mkdir(parents=True, exist_ok=True)
         lock = open(d / "run.lock", "a")
@@ -484,12 +567,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         t0 = time.monotonic()
         try:
-            if shutil.which("airspy_rx") is None:
-                row = dict(base, status="unknown", note="airspy_rx is not installed on this box")
+            if absent_why:
+                row = dict(base, status="unknown", note=f"{absent_why} — nothing captured")
+            elif shutil.which(binary) is None:
+                row = dict(base, status="unknown", note=f"{binary} is not installed on this box")
             elif a.set_reference:
-                row = dict(base, **set_reference(d, airspy_capture))
+                row = dict(base, **set_reference(d, capture))
+            elif a.mode == "adjacent" and device == "rtl":
+                row = dict(base, status="unsupported",
+                           note="the adjacent-band pass is not built for the rtl receiver yet")
             elif a.mode == "adjacent":
-                row = dict(base, **run_adjacent(airspy_capture))
+                row = dict(base, **run_adjacent(capture))
             else:
                 hist = read_rows(path)
                 # newest fleet row that CARRIES windows: a skipped/error row
@@ -497,7 +585,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 prev = next((h for h in reversed(hist)
                              if h.get("mode") == "fleet" and h.get("windows")), None)
                 refs, ref_state = load_references(d)
-                row = dict(base, reference=ref_state, **run_fleet(airspy_capture, prev, refs, hist))
+                row = dict(base, reference=ref_state, **run_fleet(capture, prev, refs, hist))
         except Exception as e:  # the witness row survives any analysis/IO bug (review #3)
             row = dict(base, status="error", note=f"{type(e).__name__}: {str(e)[:200]}")
         row["run_s"] = round(time.monotonic() - t0, 1)

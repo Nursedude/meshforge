@@ -342,3 +342,67 @@ def test_local_block_reads_this_box_bounded(tmp_path):
     b = v.local_web_block(path=f, usb_pairs=[("1d50", "60a1")], now=NOW)
     assert b["status"] == "fresh" and b["state"] == "healthy"
     assert v.local_web_block(path=tmp_path / "none.jsonl", usb_pairs=[], now=NOW) is None
+
+
+
+# ---- RTL Phase 1: the view follows the ROW's device ------------------------
+
+def _rtl_rows(ts):
+    from utils.sdr_view import RX_WINDOWS
+    w = {"status": "ok", "channels": {"meshtastic-LF-ch20": {"busy_pct": 4.0}},
+         "foreign": [], "carriers_persistent": []}
+    return [{"mode": "fleet", "status": "ok", "device": "rtl", "ts": ts,
+             "windows": {f"{c:.3f}": dict(w) for c in RX_WINDOWS["rtl"]}}]
+
+
+def test_rtl_rows_read_fresh_against_the_rtl_windows():
+    s = v.summarize("ok", _rtl_rows(NOW - 60), ["RTL-SDR"], now=NOW)
+    assert s["status"] == "fresh" and s["device"] == "RTL-SDR" and s["unread"] == []
+    assert v.web_block(s)["state"] == "healthy"
+    assert "📡 SDR RTL-SDR: 🟢 fresh" in v.summary_line(s)
+
+
+def test_legacy_rows_without_a_device_field_are_airspy():
+    s = v.summarize("ok", _fresh_rows(), ["Airspy"], now=NOW)
+    assert s["device"] == "Airspy" and s["status"] == "fresh"
+
+
+# ---- review (contextless, 2026-10-05) of the RTL Phase 1 diff --------------
+
+def _err_rows(device, ts_list):
+    return [{"mode": "fleet", "status": "error", "device": device, "ts": t,
+             "note": "rtl_sdr rc=1: usb_claim_interface error -6"} for t in ts_list]
+
+
+def test_W1_the_newest_rows_device_names_the_line_even_without_windows():
+    """An Airspy row 10 min old, then 4 failing RTL rows: the line read
+    'Airspy 🟢 fresh … RTL-SDR nothing reads it' — the RTL IS read, and failing."""
+    rows = [_row(si.run_fleet(quiet, None, {}, []), NOW - 600)] + \
+        _err_rows("rtl", [NOW - 240, NOW - 180, NOW - 120, NOW - 60])
+    s = v.summarize("ok", rows, ["RTL-SDR"], now=NOW)
+    assert s["device"] == "RTL-SDR" and s["status"] == "stale"
+    assert s["unread"] == [] and s["unknown_streak"] == 4
+    line = v.summary_line(s)
+    assert "SDR RTL-SDR" in line and "captured nothing" in line and "Airspy" not in line
+
+
+def test_W3_an_unsupported_adjacent_pass_is_said_not_unknown():
+    rows = _rtl_rows(NOW - 60) + [{"mode": "adjacent", "status": "unsupported", "device": "rtl",
+                                   "ts": NOW - 300, "note": "not built for the rtl receiver yet"}]
+    line = v.summary_line(v.summarize("ok", rows, ["RTL-SDR"], now=NOW))
+    assert "adjacent n/a" in line and "UNKNOWN" not in line
+    t = v.render("ok", rows, now=NOW)
+    assert "not built for this receiver" in t and "no hourly pass recorded yet" not in t
+
+
+def test_the_remediation_names_the_check_for_THIS_device():
+    rows = _err_rows("rtl", [NOW - 240, NOW - 180, NOW - 120, NOW - 60])
+    t = v.render("ok", rows, now=NOW)
+    assert "rtl_test" in t and "airspy_info" not in t
+
+
+def test_an_unknown_device_string_is_unknown_not_airspy():
+    rows = [{"mode": "fleet", "status": "ok", "device": "hackrf", "ts": NOW - 60,
+             "windows": {"906.300": {"status": "ok"}}}]
+    s = v.summarize("ok", rows, [], now=NOW)
+    assert s["status"] == "unknown" and "hackrf" in v.summary_line(s)

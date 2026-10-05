@@ -66,6 +66,34 @@ class Channel:
         return (self.bw_khz / 2 + guard_khz) / 1000.0
 
 
+@dataclass(frozen=True)
+class Receiver:
+    """What the capture device IS, for the maths below (2026-10-05)."""
+    name: str
+    sample_rate: int
+    usable_half_mhz: float
+    dc_guard_khz: float     # bins this close to the tuned centre are never judged
+    zero_if: bool           # mirror images (2c - f) of in-window channels exist
+
+
+#: The reviewed Airspy constants, unchanged (real IF: no centre spike).
+AIRSPY = Receiver("airspy", 3_000_000, 1.2, 0.0, False)
+#: moc1's RTL-SDR (Elonics E4000, zero-IF, 8-bit rescaled onto the int16 full
+#: scale). MEASURED on moc1 2026-10-05: a channel at the tuned centre read
+#: 100 % busy from the DC spike alone, 0.0 % retuned 325 kHz away; usable span
+#: = 80 % of the band, as the Phase 0 witness ran it (LF 26/32, control 0/32).
+RTL = Receiver("rtl", 2_048_000, 0.8 * 2.048 / 2, 150.0, True)
+RECEIVER = AIRSPY
+
+
+def use_receiver(rx: Receiver) -> None:
+    """Select the device profile for this PROCESS (one timer run = one device).
+    Module globals, deliberately: every function below already reads them, and
+    the Airspy profile reproduces the reviewed constants exactly."""
+    global RECEIVER, SAMPLE_RATE, USABLE_HALF_MHZ
+    RECEIVER, SAMPLE_RATE, USABLE_HALF_MHZ = rx, rx.sample_rate, rx.usable_half_mhz
+
+
 # DECLARED config, not measured: RNode from /etc/reticulum/config, Meshtastic
 # slots from the US band plan (902 + BW/2 + (slot-1)*BW), MeshCore from the
 # companion's radio_freq_mhz (2026-09-24).
@@ -131,7 +159,7 @@ def im3_products(channels: Sequence[Channel] = FLEET_CHANNELS) -> List[Tuple[flo
 
 
 def alias_products(center_mhz: float, channels: Sequence[Channel] = FLEET_CHANNELS,
-                   fs_mhz: float = SAMPLE_RATE / 1e6) -> List[Tuple[float, float, str]]:
+                   fs_mhz: Optional[float] = None) -> List[Tuple[float, float, str]]:
     """Where our OWN out-of-window channels fold into this window.
 
     Review 2026-09-24 (#1): both "persistent foreign" slices seen live sat at
@@ -142,9 +170,15 @@ def alias_products(center_mhz: float, channels: Sequence[Channel] = FLEET_CHANNE
     direct alias f ± fs and its mirror 2c - (f ± fs), half-width = bw/2.
     Tagged, never dropped — like IM3 — until the soak shows it with LF silent.
     """
+    fs_mhz = SAMPLE_RATE / 1e6 if fs_mhz is None else fs_mhz
     out = []
     for ch in channels:
         if abs(ch.center_mhz - center_mhz) <= USABLE_HALF_MHZ:
+            # A zero-IF receiver's imperfect I/Q balance puts a weak copy of
+            # every in-window signal at its mirror about the tuned centre.
+            if RECEIVER.zero_if:
+                out.append((2 * center_mhz - ch.center_mhz, ch.half_mhz(),
+                            f"mirror of {ch.label}"))
             continue
         for direct in (ch.center_mhz + fs_mhz, ch.center_mhz - fs_mhz):
             for pos, kind in ((direct, "alias"), (2 * center_mhz - direct, "alias-mirror")):
@@ -178,6 +212,9 @@ def frame_gate(freqs: np.ndarray, pwr: np.ndarray, center_mhz: float,
     -33 dBFS in a single frame, above this module's own -40 dBFS own-TX line.
     """
     keep = np.abs(freqs - center_mhz) <= USABLE_HALF_MHZ
+    if RECEIVER.dc_guard_khz:
+        # zero-IF: the centre spike is the receiver, never the band
+        keep &= np.abs(freqs - center_mhz) >= RECEIVER.dc_guard_khz / 1000.0
     here = [c for c in channels if np.any(keep & (np.abs(freqs - c.center_mhz) <= c.half_mhz()))]
     guarded = _in_bands(freqs, channels, GUARD_KHZ)
     out_bins = keep & ~guarded
@@ -279,6 +316,9 @@ def analyse_window(raw: np.ndarray, center_mhz: float,
                "above_floor_db": round(float(profile[j] - floor), 1), "width_bins": len(g)}
         is_spur = any(abs(freqs[j] - s) <= 2 * bin_mhz for s in spur_mhz)
         (result["spurs"] if is_spur else result["carriers"]).append(hit)
+    if RECEIVER.zero_if:
+        _tag_images(result["carriers"], center_mhz, "freq_mhz", "level_dbfs",
+                    2 * bin_mhz, "image_of")
 
     # Class C: 125 kHz slices clear of every fleet channel (+guard); busy in
     # > FOREIGN_BUSY_PCT of the kept frames. Tagged, not dropped, when the
@@ -294,7 +334,11 @@ def analyse_window(raw: np.ndarray, center_mhz: float,
     lo = center_mhz - USABLE_HALF_MHZ + half
     while lo <= center_mhz + USABLE_HALF_MHZ - half + 1e-9:
         sel = keep & (np.abs(freqs - lo) <= half)
-        if sel.any() and not (sel & guarded).any():
+        # A slice touching the zero-IF DC guard would be judged on the spike's
+        # own skirt (live moc1 2026-10-05: a "foreign" 907.3183 in 2 of 3 runs).
+        dc_touch = bool(RECEIVER.dc_guard_khz) and \
+            abs(lo - center_mhz) - half < RECEIVER.dc_guard_khz / 1000.0
+        if sel.any() and not (sel & guarded).any() and not dc_touch:
             sp = _mean_db(pk[:, sel], axis=1)
             busy = sp > floor + BUSY_DB
             pct = 100.0 * busy.mean()
@@ -306,7 +350,28 @@ def analyse_window(raw: np.ndarray, center_mhz: float,
                     "peak_above_floor_db": round(float(sp.max() - floor), 1),
                     "im3_candidate": tag or None, "alias_candidate": alias or None})
         lo += 2 * half
+    if RECEIVER.zero_if:
+        _tag_images(result["foreign"], center_mhz, "slice_mhz", "peak_above_floor_db",
+                    half, "image_candidate")
     return result
+
+
+#: an image is this much weaker than its parent before it is called one — a
+#: zero-IF tuner's image rejection is finite (E4000 ~25-35 dB), never negative
+IMAGE_MIN_DB = 6.0
+
+
+def _tag_images(hits: List[Dict], center_mhz: float, fkey: str, lkey: str,
+                tol_mhz: float, tag: str) -> None:
+    """Zero-IF: a hit whose mirror (2c - f) holds a hit >= IMAGE_MIN_DB stronger
+    is that hit's IMAGE (review 2026-10-05 #1: a foreign carrier would otherwise
+    count twice). Tagged, never dropped — like IM3 and alias candidates."""
+    for h in hits:
+        mirror = 2 * center_mhz - h[fkey]
+        parent = max((p for p in hits if p is not h and abs(p[fkey] - mirror) <= tol_mhz
+                      and p[lkey] >= h[lkey] + IMAGE_MIN_DB), key=lambda p: p[lkey], default=None)
+        if parent is not None:
+            h[tag] = parent[fkey]
 
 
 def floor_delta_db(current: np.ndarray, reference: np.ndarray) -> float:
