@@ -163,6 +163,11 @@ stranger: README-only install, no fleet registry, re-imaged before each rc.
     feeds an input where check and subject DISAGREE (F_SHARED = 27%). Compiled
     rewrite REJECTED (2%); compiled kernel not now (scope 10/23).
 
+6c. **Fleet posture controls by REASON** (operator 10-05; `plans/fleet_posture_controls_2026_10_05.md`):
+    move/power → dormant, travel/hardware → detached (no new state); fleet_sync +
+    rollup honour posture; TUI declares AND powers off via `fleet_power.py` (09-11
+    surface doctrine amended for this action). UPS auto-trigger waits for cabling.
+
 **LATER**
 7. Mesh-issue rules for the *user's* mesh (MeshMonitor M1), with one thresholds
    file and a test that forbids harmful advice.
