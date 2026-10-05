@@ -618,6 +618,50 @@ class TestNodeTrackerAttribution:
         node = handler.node_tracker.add_node.call_args.args[0]
         assert node.id == "!aabb0042"
 
+    # A nodeinfo IS the node naming itself — when ``from`` matches the
+    # payload's own id. Without the self-reported flag the tracker's merge
+    # rule (named entries change only on a self-reported name) froze the
+    # 0ce2a658-era phantom: moc's !32962f10 read "hawaii_gaz" from 06-03 to
+    # 10-04 while its radio announced "meshforge moc" every 3 h.
+
+    def _real_tracker_handler(self):
+        from gateway.node_tracker import UnifiedNodeTracker, UnifiedNode
+        handler = MQTTBridgeHandler.__new__(MQTTBridgeHandler)
+        handler.node_tracker = UnifiedNodeTracker()
+        handler.node_tracker.add_node(UnifiedNode(
+            id="!32962f10", name="hawaii_gaz", network="meshtastic",
+            meshtastic_id="!32962f10"))
+        return handler
+
+    def test_own_nodeinfo_heals_poisoned_name(self):
+        handler = self._real_tracker_handler()
+        handler._update_nodeinfo({
+            "from": 0x32962f10, "sender": "!32962f10",
+            "payload": {"id": "!32962f10", "longname": "meshforge moc",
+                        "shortname": "moc"},
+        })
+        node = handler.node_tracker.get_node("!32962f10")
+        assert node.name == "meshforge moc"
+        assert node.name_is_self_reported is True
+
+    def test_nodeinfo_without_from_cannot_overwrite_a_name(self):
+        # the sender fallback is attribution by the uplinker — never a
+        # self-report, so it may fill an empty entry but not replace one
+        handler = self._real_tracker_handler()
+        handler._update_nodeinfo({
+            "sender": "!32962f10",
+            "payload": {"longname": "someone_else", "shortname": "else"},
+        })
+        assert handler.node_tracker.get_node("!32962f10").name == "hawaii_gaz"
+
+    def test_nodeinfo_whose_payload_id_disagrees_is_not_self_report(self):
+        handler = self._real_tracker_handler()
+        handler._update_nodeinfo({
+            "from": 0x32962f10, "sender": "!32962f10",
+            "payload": {"id": "!e2e50444", "longname": "someone_else"},
+        })
+        assert handler.node_tracker.get_node("!32962f10").name == "hawaii_gaz"
+
     def test_node_from_mqtt_keyed_on_originator(self):
         handler = self._make_tracker_handler()
         handler._update_node_from_mqtt({

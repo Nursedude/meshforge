@@ -326,6 +326,51 @@ class TestEntryCanonicalization:
         assert subscriber.get_node("!ABC0FFEE") is not None
 
 
+class TestSenderIsTheUplinkGateway:
+    """In meshtasticd's JSON uplink, ``sender`` is the GATEWAY that
+    published the packet and ``from`` is the node that originated it.
+    Keying per-packet RF stats on ``sender`` stamped every uplinked node's
+    snr/rssi/hops onto the gateway's own entry (2026-10-04: moc's
+    ``!32962f10`` carried hawaii_gaz's identity in the bridge cache). Live
+    shape, sampled from moc's journal: numeric ``from``, ``!hex`` sender."""
+
+    def _uplink(self, subscriber, **extra):
+        data = {"from": 3806659652,  # !e2e50444 (hawaii_gaz, Heltec V3)
+                "sender": "!32962f10",  # moc — the uplinking gateway
+                "type": "nodeinfo", "snr": -7.25, "rssi": -110,
+                "hops_away": 6, "hop_start": 7,
+                "payload": {"id": "!e2e50444", "longname": "hawaii_gaz",
+                            "shortname": "gaz"}}
+        data.update(extra)
+        subscriber._handle_json_message("msh/2/json/LongFast/!32962f10",
+                                        json.dumps(data).encode())
+
+    def test_rf_stats_land_on_originator(self, subscriber):
+        self._uplink(subscriber)
+        node = subscriber.get_node("!e2e50444")
+        assert node is not None
+        assert node.snr == -7.25
+        assert node.rssi == -110
+        assert node.hops_away == 6
+
+    def test_gateway_entry_not_stamped(self, subscriber):
+        self._uplink(subscriber)
+        gw = subscriber.get_node("!32962f10")
+        if gw is not None:
+            assert gw.snr is None
+            assert gw.rssi is None
+            assert gw.hops_away is None
+            assert gw.long_name != "hawaii_gaz"
+
+    def test_sender_only_packet_stamps_nothing(self, subscriber):
+        # no ``from`` → originator unknown; the gateway is not a stand-in
+        self._uplink(subscriber, **{"from": None, "type": "position",
+                                    "payload": {}})
+        gw = subscriber.get_node("!32962f10")
+        if gw is not None:
+            assert gw.snr is None and gw.hops_away is None
+
+
 class TestRemovePacketCallback:
     """add/remove must pair (QA sweep S2): a shared long-lived subscriber
     must not accumulate one dead observer per bounded collect window."""

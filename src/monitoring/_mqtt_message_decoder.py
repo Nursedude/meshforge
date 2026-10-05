@@ -98,10 +98,14 @@ class MQTTMessageDecoderMixin:
             except Exception as e:
                 logger.debug(f"Packet callback error: {e}")
 
-        # Extract node info from sender
-        sender = data.get("sender") or data.get("from")
-        if sender:
-            self._update_node_from_json(sender, data)
+        # Per-packet RF stats belong to the ORIGINATOR (``from``). ``sender``
+        # is the gateway that uplinked the packet — keying on it stamped
+        # every uplinked node's snr/rssi/hops onto the gateway (2026-10-04).
+        origin = data.get("from")
+        if origin:
+            self._update_node_from_json(origin, data)
+        if data.get("sender") and data.get("sender") != origin:
+            self._ensure_node(data["sender"])  # observed uplinking; no stats
 
         # Handle specific message types
         msg_type = data.get("type", "")

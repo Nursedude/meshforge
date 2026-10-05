@@ -1012,11 +1012,25 @@ class MQTTBridgeHandler(BaseMessageHandler):
             short_name = payload.get('shortname', '')
             hw_model = payload.get('hardware', '')
 
+            # A nodeinfo is the node naming ITSELF — only when the wire
+            # originator (`from`) is present and agrees with the payload's
+            # own id. Without the flag, a stored name could never be
+            # corrected (the merge rule only lets self-reports replace one):
+            # moc's 0ce2a658-era phantom name survived four months that way.
+            # The sender fallback is the uplinker's word, never a self-report.
+            payload_id = str(payload.get('id') or '').lower()
+            self_reported = bool(
+                (long_name or short_name)
+                and data.get('from')
+                and (not payload_id or payload_id == node_id.lower())
+            )
+
             node = UnifiedNode(
                 id=node_id,
                 name=long_name or short_name or node_id,
                 network="meshtastic",
                 meshtastic_id=node_id,
+                name_is_self_reported=self_reported,
             )
             self.node_tracker.add_node(node)
             logger.debug(f"NodeInfo from {node_id}: {long_name} ({short_name})")
