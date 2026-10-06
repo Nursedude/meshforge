@@ -110,6 +110,12 @@ need a Pi ON them to read them (operator's idea: a Pi on the yurt switch; YURT-B
 carries moc1/lehua/moc2/moc3/moc4, so one of them can read the YURT-B APC). When YURT-A empties,
 Starlink (WAN) and the yurt switch die together — yurt boxes are unreachable from the
 tent and the cloud path is blind from that moment.
+**Direction (operator 10-05):** today an outage keeps only PART of the lab up — the P4
+trigger's job is to shed cleanly to that part, not to keep everything running. Later:
+more battery + solar to run the lab 24/7 (the shed list shrinks then; re-read this map).
+**Backup WAN:** a **Starlink Mini** is on hand to deploy wherever it keeps work in the
+domain going (e.g. if YURT-A empties and the main dish goes dark). Not yet in the fleet
+registry or any posture — where it plugs in is a decision for when it is used.
 **Research spot-checked 10-05 (VERIFIED at pinned source, by the session, not the
 researcher):** ha-ef-ble @511e0470 `_delta3_base.py:88` `plugged_in_ac`; `river2.py:58`
 `ac_input_power ... default_when_missing(0)` (missing reading == "grid lost" — guard it);
