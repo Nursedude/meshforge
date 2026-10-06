@@ -74,7 +74,7 @@ EcoFlow app or m1's DHCP list, THEN research whether it answers locally (EcoFlow
 cloud-MQTT by default — a local API is UNKNOWN). Not scanned: it is not a fleet box.
 **Operator idea 10-05 (yurt):** an EcoFlow 3600/3000 powers ONLY Starlink + a 5-port
 switch; put a Pi on it — USB to the EcoFlow, Ethernet to that switch everyone sees.
-⚠️ UNCONFIRMED: one EcoFlow or two (1600 on m1 Wi-Fi vs 3600/3000 in the yurt) — ask.
+CONFIRMED (operator 10-05): TWO units, not connected — EcoFlow 1600 in the TENT (Wi-Fi via m1), EcoFlow 3600 in the YURT (Starlink + 5-port switch). Operator has the EcoFlow phone app; API research queued (.claude/research/ecoflow_api_2026_10_05.md).
 ASSERTIONS to settle when cabled: (1) EcoFlow USB ports are believed charge-only (no
 HID-UPS like APC) — state comes via cloud API or reverse-engineered BLE, local API
 UNKNOWN; (2) grid loss flips APC and EcoFlow to battery at the same instant, so APC USB →
