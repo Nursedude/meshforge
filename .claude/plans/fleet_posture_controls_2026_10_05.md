@@ -91,18 +91,24 @@ Design becomes TWO STAGES (assertion until cabled):
    sits on the WALL side, not behind the EcoFlow (a mains-powered pingable device, or a
    wall USB charger into a GPIO via opto) → declare + announce, shed load.
 2. **APC on battery** (late): ordered `fleet_power.py down` NOW, VolcanoAI last.
-**SITE MAP (operator 10-05 — one APC PER SITE, same chain at both):**
-- TENT: wall → **RIVER 2 Pro** → **APC** → VolcanoAI, alaula, moc, moc5, hAP, 3× 5-port
-  switches, Apple router.
-- YURT: wall → **DELTA 3** → **APC** → Starlink + 5-port switch.
-Implications (assertion): BOTH sites get the two-stage shape — EcoFlow telemetry (or a
-wall-side probe) = grid lost; that site's APC on-battery = EcoFlow empty, shut down now.
-Neither APC has a USB data cable yet. Tent APC → VolcanoAI (the trigger host). The yurt
-APC needs a Pi ON that APC to read it (operator's idea: a Pi on the yurt switch); when
-the yurt APC empties, Starlink (WAN) and the yurt switch die together — yurt boxes are
-unreachable from the tent and the cloud path is blind from that moment.
-- ALSO on APC power (operator 10-05, FYI): moc1, lehua, moc2, the hAPs, the Pi Zero 2 Ws.
-  WHICH APC / which site each sits on is not yet stated — ask before P4 ordering.
+**SITE MAP (operator 10-05, completed late) — THREE APCs, two sites:**
+- TENT: wall → **RIVER 2 Pro** → **APC 650VA/360W** → VolcanoAI, alaula, moc, moc5, hAP,
+  3× 5-port switches, Apple router.
+- YURT-A: wall → **DELTA 3** → **APC 900VA/480W** → Starlink + 5-port switch.
+- YURT-B: wall → **APC 650VA/360W** (NOT behind the DELTA 3, no EcoFlow) → moc1, lehua,
+  moc2, the hAPs, the Pi Zero 2 Ws.
+- **Honda 2200 generator** keeps the EcoFlow batteries up in a long outage, so EcoFlow-fed
+  runtime is long; the shutdown trigger is for when THAT chain fails, not every grid blip.
+Implications (assertion): TENT and YURT-A get the two-stage shape — EcoFlow telemetry (or
+a wall-side probe) = grid lost; that APC on-battery = EcoFlow empty, shut down now.
+YURT-B is the opposite: no EcoFlow, so its APC goes on-battery AT grid loss — the
+earliest, local, HID-standard grid-lost signal on site — and its boxes have only APC
+runtime (minutes, not generator-hours) unless the Honda feeds that circuit: ASK.
+No APC has a USB data cable yet. Tent APC → VolcanoAI (the trigger host). Both yurt APCs
+need a Pi ON them to read them (operator's idea: a Pi on the yurt switch; YURT-B already
+carries moc1/lehua/moc2, so one of them can read the YURT-B APC). When YURT-A empties,
+Starlink (WAN) and the yurt switch die together — yurt boxes are unreachable from the
+tent and the cloud path is blind from that moment.
 **Research spot-checked 10-05 (VERIFIED at pinned source, by the session, not the
 researcher):** ha-ef-ble @511e0470 `_delta3_base.py:88` `plugged_in_ac`; `river2.py:58`
 `ac_input_power ... default_when_missing(0)` (missing reading == "grid lost" — guard it);
@@ -113,10 +119,12 @@ tolwi @38986e6e `registry.py:108` DELTA 3 public API COMMENTED OUT, `:111` RIVER
 - The network path (switches, router, hAP, alaula) is on the SAME UPS, so it outlasts
   the boxes it must reach as long as the trigger fires on-battery + delay, well
   before runtime ends.
-- The 7 boxes off the UPS go dark at the outage itself — nothing can shut them down
-  cleanly. The trigger's job for them is `down --declare-only --kind power` (no
+- YURT-B boxes (moc1, lehua, moc2) are on a UPS with NO EcoFlow behind it: they are the
+  FIRST to need a real `down`, on YURT-B on-battery + delay. Boxes on no UPS at all
+  (moc3, moc4, kiai — re-confirm the list) go dark at the outage itself — nothing can
+  shut them down cleanly. The trigger's job for them is `down --declare-only --kind power` (no
   POSTURE-DRIFT/DOWN storm while dark, cleared by `resume` on return); the real
-  `down` is only for the 4 UPS-fed boxes, VolcanoAI LAST (it runs the tool).
+  `down` is for the UPS-fed boxes, VolcanoAI LAST (it runs the tool).
 - kiai routes via alaula (on the UPS) but is itself off it: dark at the outage.
 
 ## Acceptance (before code, per observe-before-alarm)
