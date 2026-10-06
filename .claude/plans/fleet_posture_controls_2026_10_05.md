@@ -58,6 +58,28 @@ No new posture state (closed enum, hfm #7 — every consumer would owe a change)
   Pis, or each box shuts itself down on its own UPS signal. EcoFlow (VolcanoAI,
   Starlink): research whether it exposes a local state API before designing.
 
+## P4 site facts (operator 10-05) + measurement (10-05 15:2x)
+
+**Operator:** the APC UPS feeds VolcanoAI, alaula, moc5, moc, the AREDN hAP, three
+5-port switches and the Apple router. EcoFlow is a **1600** (earlier text said 3600).
+NOT on the APC (operator list by omission — confirm): moc1, moc2, moc3, moc4, kiai,
+lehua, meshanchor-server.
+
+**Measured:** no APC on USB (vendor `051d`) on VolcanoAI, moc, moc5 (lsusb) or
+alaula (sysfs); no apcupsd / NUT binary or unit on any of the four. So the trigger
+does not exist yet — cabling is the first step, as stated.
+
+**What that implies (ASSERTION, settle when cabled):**
+- Trigger host = **VolcanoAI**: on the APC, holds the posture SSOT, runs fleet_power.py.
+- The network path (switches, router, hAP, alaula) is on the SAME UPS, so it outlasts
+  the boxes it must reach as long as the trigger fires on-battery + delay, well
+  before runtime ends.
+- The 7 boxes off the UPS go dark at the outage itself — nothing can shut them down
+  cleanly. The trigger's job for them is `down --declare-only --kind power` (no
+  POSTURE-DRIFT/DOWN storm while dark, cleared by `resume` on return); the real
+  `down` is only for the 4 UPS-fed boxes, VolcanoAI LAST (it runs the tool).
+- kiai routes via alaula (on the UPS) but is itself off it: dark at the outage.
+
 ## Acceptance (before code, per observe-before-alarm)
 
 A box declared `travel` that powers up off-net and later tunnels back produces

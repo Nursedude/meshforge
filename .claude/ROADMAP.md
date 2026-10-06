@@ -173,10 +173,10 @@ stranger: README-only install, no fleet registry, re-imaged before each rc.
     surface doctrine amended for this action). P1-P3 SHIPPED 10-05 (`59257aaf`,
     `1b0f672a`). P4 UPS auto-trigger waits for cabling — operator 10-05: cabling is a
     work in progress; nearest Pis to a UPS are VolcanoAI + kiai, or the yurt
-    (Starlink + EcoFlow 3600). PHYSICS: the signal cable goes to a Pi POWERED BY THAT
+    (Starlink + EcoFlow 1600). PHYSICS: the signal cable goes to a Pi POWERED BY THAT
     UPS (its signal means "MY power is on battery"), and the switch/AP must outlast
-    the Pis or the central trigger cannot reach them. Which UPS feeds which box is an
-    operator fact — ask before designing.
+    the Pis or the central trigger cannot reach them. APC feeds VolcanoAI, alaula, moc5, moc,
+    hAP, 3 switches, router (operator 10-05); no APC on USB anywhere yet (measured).
 
 **LATER**
 7. Mesh-issue rules for the *user's* mesh (MeshMonitor M1), with one thresholds
