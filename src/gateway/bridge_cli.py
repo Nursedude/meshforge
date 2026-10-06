@@ -490,6 +490,19 @@ def main():
         print(f"\nWarning: Could not load config, using defaults: {e}")
         config = GatewayConfig()  # Use default config, not None
 
+    # load() returns DEFAULTS marked with load_error when gateway.json exists
+    # but was refused (unparseable, or written by a newer MeshForge — 1.0
+    # gate 2). Starting on those runs a bridge the operator never configured
+    # (no legs, default PSK). The launcher refuses since review S3
+    # (2026-09-28); this is the path systemd actually runs.
+    if config.load_error:
+        msg = (f"REFUSING to start: {GatewayConfig.get_config_path()} was not "
+               f"loaded ({config.load_error}). Fix or restore the file, or "
+               f"reset it from the TUI: Gateway Bridge > Save Configuration.")
+        logger.error(msg)
+        print(f"\nCONFIG ERROR — gateway will not start:\n  {msg}")
+        sys.exit(2)
+
     # Migrate legacy bridge_mode-as-gate configs to the composable-bridges
     # model in-place, announcing any rewrites so operators see them.
     for warn_msg in migrate_legacy_bridge_mode(config):

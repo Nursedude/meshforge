@@ -34,9 +34,21 @@ def start_gateway_headless() -> bool:
         return True
 
     try:
+        from .config import GatewayConfig
         from .rns_bridge import RNSMeshtasticBridge
 
-        _active_bridge = RNSMeshtasticBridge()
+        # Load HERE so a refused gateway.json (unparseable, or written by a
+        # newer MeshForge — 1.0 gate 2) stops the start instead of the bridge
+        # loading it itself and running its defaults.
+        config = GatewayConfig.load()
+        if config.load_error:
+            msg = (f"REFUSING to start the gateway: {config.get_config_path()} "
+                   f"was not loaded ({config.load_error})")
+            logger.error(msg)
+            print(msg)
+            return False
+
+        _active_bridge = RNSMeshtasticBridge(config)
         success = _active_bridge.start()
 
         if success:

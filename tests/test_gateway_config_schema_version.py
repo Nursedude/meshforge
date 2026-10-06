@@ -80,3 +80,42 @@ def test_a_schema_version_that_is_not_a_plain_count_is_refused(home, bad):
     assert repr(bad) in cfg.load_error
     assert cfg.save() is False
     assert home.read_text() == original
+
+
+@pytest.mark.parametrize("text", [
+    json.dumps({"schema_version": 2, "enabled": True}),   # newer MeshForge
+    "{not json",                                          # unreadable
+])
+def test_the_gateway_service_refuses_to_start_on_a_refused_load(home, text, capsys):
+    # The consumer of record: meshforge-gateway runs bridge_cli.main(). It
+    # printed "Config loaded" and started bridges on DEFAULTS whenever load()
+    # refused the file — the launcher's S3 fix (09-28) never reached it.
+    from unittest.mock import MagicMock
+    from gateway import bridge_cli
+
+    home.write_text(text)
+    resolve = MagicMock(return_value=[])
+    with patch.object(bridge_cli, "assert_writable_or_exit"), \
+         patch.object(bridge_cli, "resolve_bridges", resolve):
+        with pytest.raises(SystemExit) as exc:
+            bridge_cli.main()
+
+    assert exc.value.code not in (0, None)
+    out = capsys.readouterr().out
+    assert "REFUSING" in out
+    assert str(home) in out
+    resolve.assert_not_called()
+    assert home.read_text() == text
+
+
+def test_the_headless_gateway_refuses_to_start_on_a_refused_load(home):
+    # meshforge-daemon's path: start_gateway_headless() built the bridge with
+    # no config, so the bridge called load() itself and ran its defaults.
+    from gateway import gateway_cli
+
+    text = json.dumps({"schema_version": 2, "enabled": True})
+    home.write_text(text)
+    with patch("gateway.rns_bridge.RNSMeshtasticBridge") as Bridge:
+        assert gateway_cli.start_gateway_headless() is False
+    Bridge.assert_not_called()
+    assert home.read_text() == text

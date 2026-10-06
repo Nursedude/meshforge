@@ -427,7 +427,9 @@ class TestSignalHandlerReclaim20260803:
             sig_mod.signal.side_effect = fake_signal
             sig_mod.SIGINT = _signal.SIGINT
             sig_mod.SIGTERM = _signal.SIGTERM
-            MockCfg.load.return_value = MagicMock()
+            # a successful load: load_error is None (a bare MagicMock attr is
+            # truthy and main() would rightly refuse to start on it)
+            MockCfg.load.return_value = MagicMock(load_error=None)
 
             # Break the main loop immediately: the event is already set.
             with patch("threading.Event") as MockEv:
