@@ -3420,6 +3420,18 @@ Options: **A** `fleet_sync` re-renders + installs from templates — REJECT (ove
 
 ⚠️ B is a new check (END=harness) — queued, not built, during the freeze.
 
+## QUEUED 2026-10-06 (Opus 5.5) — DETECTOR DEFECT: a peer-blindness HOLD froze a recovered LOCAL verdict and paged it after cooldown
+
+Fix-shaped (it paged a false failure), so freeze-EXEMPT — not a 10-09 decision; take it in its own session, test-first.
+
+**Measured chain, 10-06 (all HST):** alaula moved → `router_scout` FAIL 12:07 + 12:37 (alaula unreachable — our own action) → `cron_verdict_stale_any` `edge_up_suppressed` 12:38 (cooldown) → `router_scout` **OK 13:07** → peers' `fleet_hosts_drift` CONCERN (registry not yet pushed — author's skipped step) → manager's `cron_verdict_stale` peer leg `indeterminate` with `extra.unobserved_hold: true`, holding the WHOLE class at its last verdict, `failed: [router_scout(FAIL(1))]` → cooldown expired → **ntfy edge_up 13:24:23 "1 failing: router_scout(FAIL(1))"**, 17 min after it passed (operator's phone) → registry pushed 13:32 → hold released, `edge_down` 13:33:54.
+
+**One confirmed defect + one open question, one class (stale evidence judged against now — same class as the 10-06 tracer/returned_at fix `5c5986a2`):**
+1. **Hold granularity.** Blindness on PEER verdicts held the LOCAL verdict too. A local cron that has re-run OK is observed, not unobservable; the hold should cover only what cannot be seen.
+2. **OPEN QUESTION (asserted, NOT checked): release after suppression.** At 13:24 the watchdog itself still reported `router_scout` failing (because of the hold), so mini's release most likely re-judged correctly against a signal that was already stale — making #1 the whole cause. Settle it by reading the engine's release path: does an `edge_up` after a cooldown re-evaluate the live signal, or replay the suppressed one? If it re-evaluates, #2 is not a defect; drop it.
+
+**Start here:** `src/utils/watchdog_probes_cron.py::probe_cron_verdict_stale` (`unobserved_hold`), and mini's cooldown release path (engine `edge_up_suppressed` → announce). Drill recipe: fail a fast local cron, make one peer leg indeterminate, re-run the local cron OK, let cooldown lapse — the old code pages the cleared failure.
+
 ## ~~QUEUED~~ CLOSED 2026-09-25 (Fable 5.1; fixes MF `45169ef2` + MA `5c8f7f86`) — MA `60fbe12b`: the truth-sweep PORT and the 13 fixes its first walk forced
 
 **Outcome**: instrument SOUND as ported (257 passed twice; a planted level-1 lie in MA-original code caught; box-state list measured complete at levels 1–2; the 3.10 accessor fix covers every early bind, CI 3.10 green). 11/13 fixes stand. Applied: the Node Health probe list (rnsd is a unix-socket shared instance — TCP 37428 read DOWN on every healthy box and the pane offered an rnsd restart; meshtasticd_http probed 4403 twice) — MF's bug too, fixed MF-first; MA pane OPEN/CLOSED + no raw `sudo systemctl start`; Maps > Open honest about a fire-and-forget hand-off and no graphical session; sweep box-state dirs widened (/boot, /proc/device-tree, /etc/mosquitto, /etc/nomadnetwork, the meshing_around path, /dev/rfcomm, /dev/bus); sysinfo's LOCAL_ONLY why names lsb_release. Parity leg: NOT added (reviewer: a byte leg is permanently red, a shape leg inert — machinery watching machinery under the freeze). **Still queued**: MA logs' "Mesh Service Errors" reads "-- No entries --" for units that are not system units on the box (nomadnet is a USER unit, meshtasticd absent by design on meshanchor-server) — needs a LoadState read via the service layer; and `_has_systemd_unit` returns False on ANY failure, routing restart-rns to pkill against a systemd-managed rnsd (PLAUSIBLE, pre-existing).
