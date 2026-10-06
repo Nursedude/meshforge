@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 86 handlers · 118 menu actions (derived from get_all_handlers(), never hand-edited).
+# 87 handlers · 119 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -317,6 +317,17 @@ HANDLER_MANIFEST = [
         "error": None,
         "menu_items": [
             ('stack_health', 'Stack Health        Local: RNS path, NomadNet, bridge, DB', None),
+        ],
+    },
+    {
+        "handler_id": 'fleet_posture',
+        "module": 'handlers.fleet_posture',
+        "class_name": 'FleetPostureHandler',
+        "menu_section": 'fleet',
+        "lifecycle": False,
+        "error": None,
+        "menu_items": [
+            ('fleet_posture', 'Fleet Posture       Declared state; declare/power off/resume', None),
         ],
     },
     {

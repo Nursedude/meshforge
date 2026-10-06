@@ -521,9 +521,9 @@
         const dp = doc.declared_posture || {};
         const dpBoxes = Object.keys(dp);
         if (dpBoxes.length) {
-            parts.push('<span class="note">⏻ ' + esc(dpBoxes.length) + ' box(es) declared off: ' +
+            parts.push('<span class="note">⏻ ' + esc(dpBoxes.length) + ' box(es) declared silent: ' +
                        dpBoxes.map(b => esc(b) + ' (' + esc(dp[b]) + ')').join('; ') +
-                       ' — dormant by declaration, not faults, not observed either.</span>');
+                       ' — dormant/detached by declaration, not faults, not observed either.</span>');
         }
         const drift = doc.posture_drift || {};
         const driftBoxes = Object.keys(drift);
@@ -590,8 +590,15 @@
                 (w.failover ? ' (failover)' : '') +
                 ' — witness on ' + esc(w.source_box || '?') + '</div>'
             ).join('');
-            const posture = r.dormant ? '<div class="app">⏻ DORMANT — declared off</div>'
-                          : (r.posture_drift ? '<div class="reason">⚠ posture DRIFT — declared off, but answering</div>' : '');
+            // fleet_truth's reason prefix names WHICH silent state: dormant =
+            // switched off; detached = travel/bench, off our net, and one that
+            // ANSWERS has REJOINED (the success case, never drift).
+            const detached = (r.reason || '').startsWith('declared detached');
+            const posture = r.dormant
+                ? (detached ? '<div class="app">🧳 DETACHED — declared off-net (travel/bench)</div>'
+                            : '<div class="app">⏻ DORMANT — declared off</div>')
+                : r.rejoined ? '<div class="app">🧳 REJOINED — declared detached, answering (not a fault)</div>'
+                : (r.posture_drift ? '<div class="reason">⚠ posture DRIFT — declared off, but answering</div>' : '');
             // SDR line (2026-10-05): the box's own report, coloured ONLY via
             // stClass (default-dark) — display, never part of box_state.
             const sdr = b.sdr ? '<div class="sdr ' + stClass(b.sdr.state) + '">' + esc(b.sdr.line) + '</div>' : '';

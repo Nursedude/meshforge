@@ -120,7 +120,8 @@ SECTION_ORDERINGS = {
     # reproduce another one like it, watch them all, then protect the state.
     # A newcomer who does not yet know the vocabulary can still read the path.
     "fleet": [
-        "fleet_membership", "fleet_provision", "fleet_watchers", "fleet_backup",
+        "fleet_membership", "fleet_provision", "fleet_watchers", "fleet_posture",
+        "fleet_backup",
     ],
     "system": [
         # Quick Status (read-only, one shot) leads: it was below the 24x80

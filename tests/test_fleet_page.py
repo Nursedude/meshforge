@@ -223,3 +223,14 @@ class TestSdrLine:
         assert re.search(r"b\.sdr\s*\?", body), "sdr line must be optional"
         assert "stClass(b.sdr.state)" in body
         assert "esc(b.sdr.line)" in body
+
+
+def test_tile_distinguishes_detached_from_dormant_and_shows_rejoined():
+    """P3 (2026-10-05): a travelling/bench box is DETACHED, not 'declared off',
+    and a detached box that answers has REJOINED — fleet_truth sets
+    reach.rejoined and the reason prefix 'declared detached'; the tile must
+    render both instead of calling every silent box DORMANT."""
+    src = FLEET_HTML.read_text()
+    assert "r.rejoined" in src
+    assert "declared detached" in src
+    assert "DETACHED" in src and "REJOINED" in src

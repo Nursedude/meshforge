@@ -88,6 +88,19 @@ SILENT_STATES = (STATE_DORMANT, STATE_DETACHED)
 #: Hard cap on one declaration. Renewable by re-declaring; never silently.
 MAX_DORMANCY_S = 14 * 86400
 
+#: Operator REASONS (2026-10-05) -> (state, default until). They map onto the
+#: two existing silent states — no new posture state (closed enum, hfm #7).
+#:   move / power      -> dormant  : the box is OFF; answering = POSTURE-DRIFT
+#:   travel / hardware -> detached : up or down, off our net; answering = REJOINED
+#: ONE table: fleet_power.py's --kind and the TUI's Fleet Posture screen both
+#: read it, so the screen can never offer a kind the tool refuses (hfm #5).
+KINDS = {
+    "move": (STATE_DORMANT, "+8h"),
+    "power": (STATE_DORMANT, "+24h"),
+    "travel": (STATE_DETACHED, "+7d"),
+    "hardware": (STATE_DETACHED, "+8h"),
+}
+
 #: Doc statuses (tri-state-plus): the reader never collapses these.
 DECLARED = "declared"
 UNDECLARED = "undeclared"      # no file — today's behaviour

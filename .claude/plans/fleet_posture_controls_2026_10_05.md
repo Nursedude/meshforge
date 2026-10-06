@@ -32,7 +32,9 @@ No new posture state (closed enum, hfm #7 — every consumer would owe a change)
   deploy failure. `mini_dudeai/rollup.py` renders a silent box ❌ unreachable.
 - `fleet_os_upgrade.sh reboot` reboots with no declaration (agent inference).
 - No TUI screen shows or sets posture (`fleet_watchers` reserved the name).
-- Side finding: moc `throttled=0xe0000` (under-voltage since boot), moc3 `0x60000`.
+- Side finding: moc `throttled=0xe0000` — CORRECTED 10-05: bits 17/18/19 = THERMAL
+  (freq-capped/throttled/soft-temp occurred); under-voltage bit 16 is CLEAR. Fanless
+  by design (only kiai has a fan). moc3 `0x60000` = bits 17/18, also not under-voltage.
 
 ## Phases
 
@@ -45,7 +47,8 @@ No new posture state (closed enum, hfm #7 — every consumer would owe a change)
   failure), mirroring `fleet_pull.sh:117-134`; rollup renders `💤 dormant` /
   `🧳 detached` + reason + until instead of ❌; `fleet_os_upgrade.sh reboot`
   declares a short dormant first.
-- **P3 TUI**: Fleet → Fleet Posture. Read: every declaration (state, reason,
+- **P3 TUI** (BUILT 10-05: `handlers/fleet_posture.py`; web tiles now say DETACHED /
+  REJOINED instead of DORMANT for every silent box): Fleet → Fleet Posture. Read: every declaration (state, reason,
   since/until, who). Act (manager box only — the SSOT lives there; elsewhere the
   pane is read-only on the mirror): declare / power off / resume via
   `fleet_power.py`, plan shown first, typed box-name confirm.

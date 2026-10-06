@@ -97,17 +97,9 @@ EXPECTED_SIDE_EFFECTS = (
 
 METHODS = ("poweroff", "reboot")
 
-# Operator REASONS (2026-10-05) map onto the two existing silent states — no
-# new posture state (closed enum: every consumer would owe a change).
-#   move / power      -> dormant  : the box is OFF; answering = POSTURE-DRIFT
-#   travel / hardware -> detached : up or down, off our net; answering = REJOINED
+# Operator REASONS -> (state, default until): ONE table, shared with the TUI.
 # Defaults stay inside fleet_posture.MAX_DORMANCY_S (14 d); renew a long trip.
-KINDS = {
-    "move": ("dormant", "+8h"),
-    "power": ("dormant", "+24h"),
-    "travel": ("detached", "+7d"),
-    "hardware": ("detached", "+8h"),
-}
+KINDS = fp.KINDS
 LEGACY = ("dormant", "+4h")   # no --kind: exactly what this tool always did
 
 

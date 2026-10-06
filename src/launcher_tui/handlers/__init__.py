@@ -248,6 +248,10 @@ def get_all_handlers() -> List[Type]:
     handlers.append(FleetHealthHandler)
     handlers.append(FleetWatchersHandler)
 
+    # Batch 21b — Fleet Posture (declared state; declare/power off via fleet_power.py)
+    from handlers.fleet_posture import FleetPostureHandler
+    handlers.append(FleetPostureHandler)
+
     # Batch 22 — mini-dudeai findings → in-app fixes (In-Domain loop-closer)
     from handlers.mini_dudeai import MiniDudeaiHandler
     handlers.append(MiniDudeaiHandler)
