@@ -55,6 +55,7 @@ import os
 import socket
 import subprocess
 import sys
+import textwrap
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -94,6 +95,12 @@ EXPECTED_SIDE_EFFECTS = (
     "copy, not the manager's, so --apply mirrors it before the first poweroff",
 )
 
+
+#: Side-effect lines are pre-wrapped with a hanging indent: the TUI shows
+#: this output in a whiptail textbox (>= 78 cols, minus its frame), which
+#: wraps long lines back to the left margin, where a continuation reads as a
+#: new item (10-06 TUI QA).
+WRAP_WIDTH = 74
 
 METHODS = ("poweroff", "reboot")
 
@@ -446,7 +453,9 @@ def cmd_down(args) -> int:
     print(f"declarable  : {', '.join(plan['declarable']) or '(none)'}")
     if plan["hops_only"]:
         print(f"hops only   : {', '.join(plan['hops_only'])}  (no posture entry — nothing watches them)")
-    print(f"until       : {fp.fmt_ts(until)}")
+    local = fp.fmt_local(until)
+    print(f"until       : {fp.fmt_ts(until)} ("
+          + (f"{local}, " if local else "") + f"{fp.fmt_rel(until, time.time())})")
     print(f"bridges     : {bnote}")
     if errs:
         print(f"⚠️ validator : {len(errs)} refusal(s) OVERRIDDEN by --force")
@@ -454,17 +463,18 @@ def cmd_down(args) -> int:
         print(f"note        : {n}")
     print("expected side effects (announced, not discovered later):")
     for e in EXPECTED_SIDE_EFFECTS:
-        print(f"  - {e}")
+        print(textwrap.fill(e, width=WRAP_WIDTH, initial_indent="  - ",
+                            subsequent_indent="    "))
     print("order       :")
     for i, name in enumerate(order, 1):
         print(f"  {i}. {name}")
 
     if not args.apply:
-        print("mirror      : would distribute the declaration to the boxes "
-              "staying up, after\n              it is confirmed on disk and "
-              "before the first poweroff")
-        print("\n=== DRY RUN — nothing declared, nothing mirrored, nothing "
-              "powered off. Re-run with --apply ===")
+        print("mirror      : would distribute the declaration to the boxes\n"
+              "              staying up, after it is confirmed on disk and\n"
+              "              before the first poweroff")
+        print("\n=== DRY RUN — nothing declared, nothing mirrored, nothing powered off\n"
+              "    Re-run with --apply to do it.")
         return 0
 
     backup = fp.write_doc(path, doc)

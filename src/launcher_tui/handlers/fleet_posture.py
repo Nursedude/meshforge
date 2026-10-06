@@ -126,16 +126,14 @@ def actable(p: fp.Posture, graph: str) -> Tuple[bool, str]:
 
 
 def _ts(epoch: Optional[float]) -> str:
-    return fp.fmt_ts(epoch) if epoch else "-"
+    if not epoch:
+        return "-"
+    local = fp.fmt_local(epoch)
+    return f"{fp.fmt_ts(epoch)} ({local})" if local else fp.fmt_ts(epoch)
 
 
 def _rel(epoch: Optional[float], now: float) -> str:
-    if not epoch:
-        return ""
-    d = epoch - now
-    a = abs(d)
-    span = f"{a / 86400:.1f}d" if a >= 86400 else f"{a / 3600:.1f}h" if a >= 3600 else f"{a / 60:.0f}m"
-    return f"in {span}" if d >= 0 else f"{span} ago"
+    return fp.fmt_rel(epoch, now)
 
 
 def render_posture(p: fp.Posture, now: Optional[float] = None) -> List[str]:

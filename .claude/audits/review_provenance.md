@@ -3396,6 +3396,18 @@ Operator 10-04: *"hard to follow one rule 100 percent when AI models change … 
 
 ⚠️ Items 3–4 are NEW instruments (END=harness) — that is why they are queued here and not built. Decide at 10-09 alongside the inert-tier cut; the exit criterion is the same question asked of guidance.
 
+## QUEUED 2026-10-06 (Opus 5.5) — the UNIT-FILE divergence layer, for the 2026-10-09 freeze review
+
+Operator 10-06: *"hx has shown how many ways we can diverge … goal is quality assurance."* Every other layer has a check of record — local↔origin (push), origin↔CI (deploy-after-CI), repo↔checkout (`fleet SHA drift`), checkout↔running (skew leg), installed↔running substrate, MF↔MA (`parity_check` + twin SHA). **Unit files and drop-ins ↔ `contrib/systemd/*.in` have none.** Nothing re-renders units on deploy, so a template change reaches NEW installs only; existing boxes need a hand drop-in (10-05: `RestartPreventExitStatus=2` → `30-config-refusal-no-restart.conf` placed by hand on moc, moc1, moc2, moc3).
+
+Measured 10-06 (one setting, read-only): the 4 boxes with a gateway unit all report `RestartPreventExitStatus=2`; the other 5 have no gateway unit. Consistent TODAY — n=1 setting, not the layer.
+
+Options: **A** `fleet_sync` re-renders + installs from templates — REJECT (overwrites legitimate per-box drop-ins like `10-oracle.conf`/`10-rns-storage-rw.conf`; risks changing WHICH services run). **B** `fleet_sync` REPORTS effective `systemctl show` vs the template's key directives, prints a diff, changes nothing. **C** repo-owned drop-ins (`contrib/systemd/<unit>.d/`), installed by NAME only + `daemon-reload`, never a start.
+
+**Recommendation: B first (observe before alarm), decide C from B's count.** Near-zero drift → C is not worth its complexity; real drift → C puts these settings in git with the rest of the SoT. Second unguarded layer, NOT for a gate: what the operator SEES — 10-06 TUI QA found two legibility defects (UTC-only expiry, whiptail rewrap) that the full suite and a CLI drill both passed. That leg stays human.
+
+⚠️ B is a new check (END=harness) — queued, not built, during the freeze.
+
 ## ~~QUEUED~~ CLOSED 2026-09-25 (Fable 5.1; fixes MF `45169ef2` + MA `5c8f7f86`) — MA `60fbe12b`: the truth-sweep PORT and the 13 fixes its first walk forced
 
 **Outcome**: instrument SOUND as ported (257 passed twice; a planted level-1 lie in MA-original code caught; box-state list measured complete at levels 1–2; the 3.10 accessor fix covers every early bind, CI 3.10 green). 11/13 fixes stand. Applied: the Node Health probe list (rnsd is a unix-socket shared instance — TCP 37428 read DOWN on every healthy box and the pane offered an rnsd restart; meshtasticd_http probed 4403 twice) — MF's bug too, fixed MF-first; MA pane OPEN/CLOSED + no raw `sudo systemctl start`; Maps > Open honest about a fire-and-forget hand-off and no graphical session; sweep box-state dirs widened (/boot, /proc/device-tree, /etc/mosquitto, /etc/nomadnetwork, the meshing_around path, /dev/rfcomm, /dev/bus); sysinfo's LOCAL_ONLY why names lsb_release. Parity leg: NOT added (reviewer: a byte leg is permanently red, a shape leg inert — machinery watching machinery under the freeze). **Still queued**: MA logs' "Mesh Service Errors" reads "-- No entries --" for units that are not system units on the box (nomadnet is a USER unit, meshtasticd absent by design on meshanchor-server) — needs a LoadState read via the service layer; and `_has_systemd_unit` returns False on ANY failure, routing restart-rns to pkill against a systemd-managed rnsd (PLAUSIBLE, pre-existing).

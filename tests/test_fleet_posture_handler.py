@@ -208,3 +208,22 @@ def test_failed_apply_reports_failure(monkeypatch):
     monkeypatch.setattr(h, "_stream", lambda cmd, timeout: 1)
     h._confirm_and_apply("Power off", ["moc4"], ["x", "--apply"], 60)
     assert h.ctx.report_action.call_args[0][0] is False
+
+
+def test_render_box_rows_show_local_time_beside_utc(monkeypatch):
+    # The pasted 10-06 dry run read "until : 2026-10-07T00:43:55Z" — an HST
+    # operator had to do arithmetic to learn the pages come back at 14:43.
+    import time as _t
+    monkeypatch.setenv("TZ", "Pacific/Honolulu")
+    _t.tzset()
+    try:
+        until = 1791333835.0  # 2026-10-07T00:43:55Z
+        p = _posture(declared_by="operator", boxes={
+            "kiai": fp.BoxPosture(name="kiai", state="dormant", declared_state="dormant",
+                                  since=until - 8 * 3600, until=until, reason="[move] x"),
+        })
+        text = "\n".join(fph.render_posture(p, now=until - 8 * 3600))
+    finally:
+        monkeypatch.undo()
+        _t.tzset()
+    assert "until  : 2026-10-07T00:43:55Z (Tue 14:43 HST) in 8.0h" in text

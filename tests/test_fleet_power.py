@@ -557,3 +557,59 @@ class TestMoveResumeIdentity:
             monkeypatch.setattr(fpw, "reachable", lambda n: True)
             monkeypatch.setattr(fpw, "mirror_posture", lambda **k: 0)
             assert fpw.watch_and_clear(path, ["b1"], wait=1, poll_s=0, identity=boom) == 0
+
+
+class TestDryRunLegibility:
+    """What the 10-06 TUI QA paste showed: a UTC-only expiry, and side-effect
+    lines wrapped by whiptail back to the left margin."""
+
+    def _dry_run(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(fpw, "build_plan", lambda t, b, v: {
+            "order": ["kiai"], "declarable": ["kiai"], "hops_only": [], "notes": []})
+        monkeypatch.setattr(fpw, "load_graph", lambda p: ({}, {}))
+        monkeypatch.setattr(fpw, "bridge_boxes", lambda: (set(), "test"))
+
+        def no_ssh(*a, **k):
+            raise AssertionError("a dry run must never ssh")
+        monkeypatch.setattr(fpw, "_ssh", no_ssh)
+        ns = fpw.build_parser().parse_args(
+            ["--posture", str(tmp_path / "posture.json"), "down", "kiai", "--kind", "move"])
+        assert fpw.cmd_down(ns) == 0
+        return capsys.readouterr().out
+
+    def test_until_shows_local_time_and_how_far_away(self, tmp_path, monkeypatch, capsys):
+        import re
+        import time as _t
+        monkeypatch.setenv("TZ", "Pacific/Honolulu")
+        _t.tzset()
+        try:
+            out = self._dry_run(tmp_path, monkeypatch, capsys)
+        finally:
+            monkeypatch.undo()
+            _t.tzset()
+        line = next(l for l in out.splitlines() if l.startswith("until"))
+        assert re.fullmatch(r"until       : \S+Z \(\w{3} \d{2}:\d{2} HST, in 8\.0h\)", line), line
+
+    def test_side_effects_wrap_with_a_hanging_indent(self, tmp_path, monkeypatch, capsys):
+        out = self._dry_run(tmp_path, monkeypatch, capsys).splitlines()
+        start = out.index("expected side effects (announced, not discovered later):") + 1
+        end = next(i for i in range(start, len(out)) if out[i].startswith("order"))
+        block = out[start:end]
+        assert all(len(l) <= fpw.WRAP_WIDTH for l in block), block
+        assert all(l.startswith("  - ") or l.startswith("    ") for l in block), block
+        # Wrapping must not lose or reorder a word.
+        bullets = []
+        for l in block:
+            if l.startswith("  - "):
+                bullets.append(l[4:])
+            else:
+                bullets[-1] += " " + l.strip()
+        assert bullets == list(fpw.EXPECTED_SIDE_EFFECTS)
+
+    def test_every_dry_run_line_fits_the_textbox(self, tmp_path, monkeypatch, capsys):
+        # The banner was 96 cols and the mirror line 78; whiptail rewraps
+        # anything past its frame, so the END of the dry run broke worst.
+        out = self._dry_run(tmp_path, monkeypatch, capsys)
+        wide = [l for l in out.splitlines() if len(l) > fpw.WRAP_WIDTH]
+        assert not wide, wide
+        assert "DRY RUN" in out and "nothing powered off" in out and "--apply" in out

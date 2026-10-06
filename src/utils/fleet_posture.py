@@ -144,6 +144,27 @@ def fmt_ts(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def fmt_local(epoch: float) -> str:
+    """DISPLAY ONLY — "Tue 14:43 HST" in this box's zone. The file and every
+    page keep fmt_ts (UTC); this rides beside it for an operator at a TUI.
+    "" when the zone cannot be read, so callers show UTC alone."""
+    try:
+        return datetime.fromtimestamp(epoch).astimezone().strftime("%a %H:%M %Z")
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def fmt_rel(epoch: Optional[float], now: float) -> str:
+    """"in 8.0h" / "1.5h ago" — "" for no timestamp."""
+    if not epoch:
+        return ""
+    d = epoch - now
+    a = abs(d)
+    span = (f"{a / 86400:.1f}d" if a >= 86400 else
+            f"{a / 3600:.1f}h" if a >= 3600 else f"{a / 60:.0f}m")
+    return f"in {span}" if d >= 0 else f"{span} ago"
+
+
 @dataclass
 class BoxPosture:
     name: str

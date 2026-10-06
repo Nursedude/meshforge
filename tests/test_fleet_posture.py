@@ -842,3 +842,31 @@ class TestFleetSyncSkipsDeclaredBoxes:
         src = self.SYNC.read_text()
         loop = src[src.index('while IFS= read -r raw_line'):]
         assert loop.index("posture_skip_host") < loop.index("mirror_memory_to_host")
+
+
+@pytest.fixture
+def hst(monkeypatch):
+    """Pin the box's local zone; restore it after (tzset reads TZ)."""
+    monkeypatch.setenv("TZ", "Pacific/Honolulu")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+class TestDisplayTime:
+    """An operator reads posture times in HST at a TUI; the FILE stays UTC."""
+
+    UNTIL = 1791333835.0   # 2026-10-07T00:43:55Z == Tue 2026-10-06 14:43 HST
+
+    def test_stored_format_is_unchanged_utc(self, hst):
+        assert fp.fmt_ts(self.UNTIL) == "2026-10-07T00:43:55Z"
+
+    def test_local_names_the_day_time_and_zone(self, hst):
+        assert fp.fmt_local(self.UNTIL) == "Tue 14:43 HST"
+
+    def test_rel_reads_forward_and_back(self):
+        assert fp.fmt_rel(self.UNTIL, self.UNTIL - 8 * 3600) == "in 8.0h"
+        assert fp.fmt_rel(self.UNTIL, self.UNTIL + 90 * 60) == "1.5h ago"
+        assert fp.fmt_rel(self.UNTIL, self.UNTIL - 2 * 86400) == "in 2.0d"
+        assert fp.fmt_rel(None, self.UNTIL) == ""
