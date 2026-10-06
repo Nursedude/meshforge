@@ -136,6 +136,13 @@ def test_render_undeclared_says_every_box_active():
     assert "nothing declared" in text.lower()
 
 
+def test_render_empty_file_does_not_say_declared():
+    # 10-05 operator screenshot: "status : declared" over "Nothing declared".
+    text = "\n".join(fph.render_posture(_posture(status=fp.DECLARED), now=NOW))
+    assert "status : declared" not in text
+    assert "0 boxes declared" in text
+
+
 def test_render_box_rows():
     p = _posture(declared_by="operator", boxes={
         "kiai": fp.BoxPosture(name="kiai", state="detached", declared_state="detached",

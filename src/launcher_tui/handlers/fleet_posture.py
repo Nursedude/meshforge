@@ -140,7 +140,14 @@ def _rel(epoch: Optional[float], now: float) -> str:
 
 def render_posture(p: fp.Posture, now: Optional[float] = None) -> List[str]:
     now = time.time() if now is None else now
-    lines = [f"file   : {p.path}", f"status : {p.status}"
+    # The reader's status names describe the FILE, not the boxes: DECLARED
+    # means "read and valid", which beside an empty file read as a
+    # contradiction ("status : declared" / "Nothing declared", 10-05).
+    status = {
+        fp.UNDECLARED: "no posture file",
+        fp.DECLARED: f"file valid, {len(p.boxes)} boxes declared",
+    }.get(p.status, p.status.upper())
+    lines = [f"file   : {p.path}", f"status : {status}"
              + (f"   (MIRROR from {p.mirror_from or '?'})" if p.is_mirror else "")]
     if p.status in (fp.UNREADABLE, fp.INVALID):
         lines += ["", f"⚠ {p.status.upper()}: {p.detail}",
