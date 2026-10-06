@@ -6,4 +6,4 @@
 #   pip install -r requirements/ai.txt
 # Key: ANTHROPIC_API_KEY, or ~/.config/<app>/anthropic.key (mode 0600; the TUI
 # runs under sudo, which drops environment variables).
-anthropic>=1.10.0,<2
+anthropic>=1.11.0,<2
