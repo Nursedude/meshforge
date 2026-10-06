@@ -1020,6 +1020,34 @@ class TestDeclaredPosture:
         assert r["state"] == ft.DARK and r["dormant"] is True     # still dark for the human
         assert "declared dormant" in r["reason"]
 
+    def test_dormant_reason_does_not_repeat_the_state(self):
+        # 10-06 /fleet tile: "declared dormant: declared dormant until ..." —
+        # the posture note already opens with the declaration.
+        note = "declared dormant until 2026-10-07T02:49:26Z ([move] x)"
+        t = ft.build_fleet_truth(
+            [self._healthy("moc"), self._dark("kiai", {"state": "dormant", "note": note,
+                                                       "until": 1791341366.0})],
+            now=NOW, signal_classes=[], noc_host="moc")
+        r = {b["alias"]: b for b in t["boxes"]}["kiai"]["reachable"]
+        assert r["reason"] == note
+        assert t["declared_posture"]["kiai"] == note
+        assert r["until"] == 1791341366.0
+
+    @pytest.mark.parametrize("state,note", [
+        ("detached", "field"),                                   # bare note
+        ("detached", "declared detached until X (trip)"),        # self-describing
+        ("dormant", ""),                                         # no note
+    ])
+    def test_reason_always_opens_with_the_declared_state(self, state, note):
+        # fleet.html keys DETACHED vs DORMANT on this prefix — a contract.
+        t = ft.build_fleet_truth(
+            [self._healthy("moc"), self._dark("kit", {"state": state, "note": note})],
+            now=NOW, signal_classes=[], noc_host="moc")
+        r = {b["alias"]: b for b in t["boxes"]}["kit"]["reachable"]
+        assert r["reason"].startswith(f"declared {state}")
+        assert r["reason"].count(f"declared {state}") == 1
+        assert "until" not in r          # absent stays absent, never a fake 0
+
     def test_declared_box_that_answers_is_posture_drift(self):
         t = ft.build_fleet_truth(
             [self._healthy("moc4", {"state": "dormant", "note": "declared dormant until X"})],

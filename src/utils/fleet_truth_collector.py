@@ -380,6 +380,8 @@ def _stamp_declared_posture(snapshots: List[Dict[str, Any]]) -> None:
             b = p.boxes.get(str(snap.get("alias")))
             if b is not None and b.silent:
                 snap["posture"] = {"state": b.state, "note": b.note}
+                if b.until:
+                    snap["posture"]["until"] = b.until
     except Exception as e:  # never sink a fan-out over a posture read
         logger.warning("fleet_posture read failed: %s — treating every box as active", e)
 

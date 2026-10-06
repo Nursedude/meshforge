@@ -751,7 +751,18 @@ def build_box_truth(
         _pstate = posture["state"]
         if reach["state"] == DARK:
             reach["dormant"] = True
-            reach["reason"] = f"declared {_pstate}: {posture.get('note') or ''}".strip()
+            # The posture note already opens "declared <state> until ..." —
+            # prefixing it again read "declared dormant: declared dormant"
+            # (10-06). The prefix itself is a contract: fleet.html keys
+            # DETACHED vs DORMANT on it.
+            _note = posture.get("note") or ""
+            _prefix = f"declared {_pstate}"
+            reach["reason"] = (_note if _note.startswith(_prefix)
+                               else f"{_prefix}: {_note}" if _note else _prefix)
+            # Epoch, for the page to format in the VIEWER's zone; absent
+            # stays absent (never a fake 0).
+            if isinstance(posture.get("until"), (int, float)):
+                reach["until"] = float(posture["until"])
         elif _pstate == "detached":
             # 2026-09-15: dormant and detached are DIFFERENT CLAIMS and no
             # longer share this branch. A DETACHED box is the field kit —

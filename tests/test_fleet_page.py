@@ -234,3 +234,17 @@ def test_tile_distinguishes_detached_from_dormant_and_shows_rejoined():
     assert "r.rejoined" in src
     assert "declared detached" in src
     assert "DETACHED" in src and "REJOINED" in src
+
+
+def test_dormant_tile_shows_until_in_the_viewers_zone():
+    """10-06: the kiai tile read 'until 2026-10-07T02:49:26Z' only. The tile
+    formats reach.until (epoch) with the browser's own locale/zone."""
+    src = FLEET_HTML.read_text()
+    assert "r.until" in src
+    assert "toLocaleString" in src
+
+
+def test_resolution_chip_is_labelled():
+    """The bare 'dns' chip read as a stray word on a dormant tile."""
+    src = FLEET_HTML.read_text()
+    assert 'title="name resolved via' in src

@@ -129,6 +129,21 @@ class TestDeclaredPostureStamp:
         assert by["moc4"]["posture"]["state"] == "dormant" and "storm" in by["moc4"]["posture"]["note"]
         assert "posture" not in by["moc"]
 
+    def test_stamp_carries_until_as_epoch_for_the_browser(self, tmp_path, monkeypatch):
+        # 10-06: the /fleet tile showed the expiry in UTC only. The page
+        # formats it in the VIEWER's zone, so it needs the number, not text.
+        import json, time
+        from utils import fleet_posture as fp
+        from utils import fleet_truth_collector as c
+        until = float(int(time.time()) + 3600)
+        p = tmp_path / "fleet_posture.json"
+        p.write_text(json.dumps({"boxes": {"moc4": {"state": "dormant",
+                                                    "until": fp.fmt_ts(until)}}}))
+        monkeypatch.setenv("MESHFORGE_FLEET_POSTURE", str(p))
+        snaps = self._snaps()
+        c._stamp_declared_posture(snaps)
+        assert {s["alias"]: s for s in snaps}["moc4"]["posture"]["until"] == until
+
     def test_broken_file_warns_and_stamps_nothing(self, tmp_path, monkeypatch, caplog):
         import logging
         from utils import fleet_truth_collector as c

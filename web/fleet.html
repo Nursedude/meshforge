@@ -599,15 +599,21 @@
                             : '<div class="app">⏻ DORMANT — declared off</div>')
                 : r.rejoined ? '<div class="app">🧳 REJOINED — declared detached, answering (not a fault)</div>'
                 : (r.posture_drift ? '<div class="reason">⚠ posture DRIFT — declared off, but answering</div>' : '');
+            // The declaration's expiry in the VIEWER's zone (10-06: the tile
+            // read UTC only). reach.until is epoch seconds from fleet_truth.
+            const expires = (r.dormant && typeof r.until === 'number')
+                ? '<div class="app">declaration expires ' + esc(new Date(r.until * 1000).toLocaleString([],
+                      {weekday: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short'})) + '</div>'
+                : '';
             // SDR line (2026-10-05): the box's own report, coloured ONLY via
             // stClass (default-dark) — display, never part of box_state.
             const sdr = b.sdr ? '<div class="sdr ' + stClass(b.sdr.state) + '">' + esc(b.sdr.line) + '</div>' : '';
             return '<div class="box-tile ' + st + '" title="' + esc(cellTitle('reachable', r)) + '">' +
-                '<div class="alias">' + esc(b.alias) + '</div>' + posture +
+                '<div class="alias">' + esc(b.alias) + '</div>' + posture + expires +
                 (appLine ? '<div class="app">' + appLine + '</div>' : '') +
                 (st !== 'healthy' && r.reason ? '<div class="reason">' + esc(r.reason) + '</div>' : '') +
                 witnessed + sdr +
-                '<span class="res-chip' + (methodWarn(method) ? ' warn' : '') + '">' + esc(method) + '</span>' +
+                '<span class="res-chip' + (methodWarn(method) ? ' warn' : '') + '" title="name resolved via ' + esc(method) + '">' + esc(method) + '</span>' +
                 '</div>';
         }).join('') || '<div class="empty">no boxes in the truth document</div>';
     }
