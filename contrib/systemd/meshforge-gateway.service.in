@@ -15,6 +15,10 @@ Environment=HOME=@HOME@
 ExecStart=/usr/bin/python3 /opt/meshforge/src/gateway/bridge_cli.py
 Restart=on-failure
 RestartSec=5s
+# Exit 2 = bridge_cli refused its config (unreadable or newer-schema
+# gateway.json, bridge conflicts). Retrying cannot fix a config: stop and
+# stay failed, with the reason in the journal (EXIT_CONFIG_REFUSED, test-pinned).
+RestartPreventExitStatus=2
 StandardOutput=journal
 StandardError=journal
 

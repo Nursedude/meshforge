@@ -30,6 +30,11 @@ from utils.logging_config import setup_logging, get_logger
 setup_logging(level=logging.INFO)
 logger = get_logger('gateway.cli')
 
+# Exit code for "the config itself is wrong" (refused load, bridge conflicts):
+# retrying cannot fix it, so contrib/systemd/meshforge-gateway.service.in
+# lists it in RestartPreventExitStatus= (test-pinned together).
+EXIT_CONFIG_REFUSED = 2
+
 # Metrics server instance (auto-started with gateway)
 _metrics_server = None
 
@@ -501,7 +506,7 @@ def main():
                f"reset it from the TUI: Gateway Bridge > Save Configuration.")
         logger.error(msg)
         print(f"\nCONFIG ERROR — gateway will not start:\n  {msg}")
-        sys.exit(2)
+        sys.exit(EXIT_CONFIG_REFUSED)
 
     # Migrate legacy bridge_mode-as-gate configs to the composable-bridges
     # model in-place, announcing any rewrites so operators see them.
@@ -519,7 +524,7 @@ def main():
         for c in conflicts:
             print(f"  - {c}")
         print("\nEdit ~/.config/meshforge/gateway.json and restart.")
-        sys.exit(2)
+        sys.exit(EXIT_CONFIG_REFUSED)
 
     bridge_names = [b["name"] for b in bridge_specs]
     print(f"  Bridges enabled: {', '.join(bridge_names)}")

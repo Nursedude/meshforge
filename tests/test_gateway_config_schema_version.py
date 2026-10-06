@@ -119,3 +119,18 @@ def test_the_headless_gateway_refuses_to_start_on_a_refused_load(home):
         assert gateway_cli.start_gateway_headless() is False
     Bridge.assert_not_called()
     assert home.read_text() == text
+
+
+def test_the_gateway_unit_does_not_restart_into_a_config_refusal():
+    # A refused config does not heal by retrying: Restart=on-failure would
+    # re-run the refusal every RestartSec until StartLimitBurst. The unit's
+    # RestartPreventExitStatus and bridge_cli's refusal code are ONE value.
+    from pathlib import Path
+    from gateway import bridge_cli
+
+    unit = (Path(__file__).resolve().parent.parent / "contrib" / "systemd"
+            / "meshforge-gateway.service.in").read_text()
+    prevented = [line.split("=", 1)[1].split() for line in unit.splitlines()
+                 if line.startswith("RestartPreventExitStatus=")]
+    assert prevented, "the gateway unit restarts into a config refusal"
+    assert str(bridge_cli.EXIT_CONFIG_REFUSED) in prevented[-1]
