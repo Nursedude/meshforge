@@ -68,6 +68,10 @@ lehua, meshanchor-server.
 **Measured:** no APC on USB (vendor `051d`) on VolcanoAI, moc, moc5 (lsusb) or
 alaula (sysfs); no apcupsd / NUT binary or unit on any of the four. So the trigger
 does not exist yet — cabling is the first step, as stated.
+**Operator 10-05:** no USB yet to the UPS OR the EcoFlow; the EcoFlow 1600 is on
+Wi-Fi via m1. Its state can only come over the network: get its IP/MAC from the
+EcoFlow app or m1's DHCP list, THEN research whether it answers locally (EcoFlow is
+cloud-MQTT by default — a local API is UNKNOWN). Not scanned: it is not a fleet box.
 
 **What that implies (ASSERTION, settle when cabled):**
 - Trigger host = **VolcanoAI**: on the APC, holds the posture SSOT, runs fleet_power.py.
