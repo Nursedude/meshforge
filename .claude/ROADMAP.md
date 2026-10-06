@@ -132,16 +132,20 @@ stranger: README-only install, no fleet registry, re-imaged before each rc.
 **NOW** (this sprint)
 1. moc3 antenna baseline → operator swaps the antenna (it stays SMALL) → repeat R2
    with n≥5 per size, interference logged on every run.
-2. **rnsd onto mf.4** (`rnsd-restart-onto-mf4`): the fork rolls were in place, so
-   the substrate still RUNS pre-roll code. MEASURED by honest_status leg
-   `running substrate` (`4c9cef06`), not by hand: 10-02 = 12 units — rnsd ×8,
-   lxmd (moc, moc1), nomadnet + meshcore-chat (MA box). VolcanoAI canaried 10-01
-   (clean); moc3 at its antenna-swap boot; the rest one box at a time, operator
-   present, #69 order. Done = that leg PASS.
-   (R1, R9 and R10/M3 closed 10-01; the lab-daemon half of the #69 race closed in
-   `c8dca3bc` after a contextless audit found it open.)
-3. **R3 decision due 10-07 (operator):** is RNS over MeshCore needed? A no-go
-   closes R3, R4, R6 and the SMCI part of R5.
+2. ~~**rnsd onto mf.4**~~ **MET 10-05** — honest_status leg `running substrate`
+   PASS twice on 10-05 (14:20, 15:06 runs): "60 units on 10 boxes run the rns lxmf
+   copy that is installed". ⚠️ Two caveats stay on the record, not averaged away:
+   24 units "could import it but were not judged (no entry/repo evidence)", and
+   lehua has "no watched dist resolvable" — UNKNOWN, not pass, for those.
+3. ~~**R3 decision due 10-07**~~ **DECIDED GO 10-05 (operator):** RNS over MeshCore
+   IS needed — *"same reason meshforge has it — think standalone … meshanchor is the
+   sister, why does meshforge get all the power."* MF already ships RNS over its
+   radio as an OPTION (`Meshtastic_Interface` templates, `commands/rns_templates.py`;
+   disabled on the fleet BY CHOICE, moc3 `.disabled`). MA has no MeshCore twin, so a
+   standalone MeshCore ham cannot put RNS on the radio they own. GO opens R4, R6, the
+   SMCI part of R5, LATER #9 and #14. Candidate transport: `afit21/Reticulum-Smart-
+   MeshCore-Interface` 1.0.0 (research artifact rev 4, 10-01). Lands MA-first (its
+   radio), contract shared; containment (R5/LATER #10) BEFORE it ships to anyone.
 
 **NEXT** (architecture; product work, not frozen)
 4. **Per-leg delivery measurement** (**1.0 gate 3**). Each transport leg reports delivered and
@@ -166,7 +170,13 @@ stranger: README-only install, no fleet registry, re-imaged before each rc.
 6c. **Fleet posture controls by REASON** (operator 10-05; `plans/fleet_posture_controls_2026_10_05.md`):
     move/power → dormant, travel/hardware → detached (no new state); fleet_sync +
     rollup honour posture; TUI declares AND powers off via `fleet_power.py` (09-11
-    surface doctrine amended for this action). UPS auto-trigger waits for cabling.
+    surface doctrine amended for this action). P1-P3 SHIPPED 10-05 (`59257aaf`,
+    `1b0f672a`). P4 UPS auto-trigger waits for cabling — operator 10-05: cabling is a
+    work in progress; nearest Pis to a UPS are VolcanoAI + kiai, or the yurt
+    (Starlink + EcoFlow 3600). PHYSICS: the signal cable goes to a Pi POWERED BY THAT
+    UPS (its signal means "MY power is on battery"), and the switch/AP must outlast
+    the Pis or the central trigger cannot reach them. Which UPS feeds which box is an
+    operator fact — ask before designing.
 
 **LATER**
 7. Mesh-issue rules for the *user's* mesh (MeshMonitor M1), with one thresholds
