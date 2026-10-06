@@ -88,7 +88,10 @@ def test_save_keeps_mode_and_leaves_no_temp_files(home):
     cfg = GatewayConfig.load()
     assert cfg.save() is True
     assert stat.S_IMODE(home.stat().st_mode) == 0o640
-    assert [p.name for p in home.parent.iterdir()] == ["gateway.json"]
+    # GOOD has no schema_version, so its first save keeps the pre-v1 copy
+    # (1.0 gate 2) — that one deliberate file, and no temp files.
+    assert sorted(p.name for p in home.parent.iterdir()) == [
+        "gateway.json", "gateway.json.pre-v1"]
 
 
 class TestTuiIsHonest:

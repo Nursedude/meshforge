@@ -15,7 +15,9 @@ import logging
 
 from utils.safe_import import safe_import
 from utils.paths import get_real_user_home, atomic_write_text_preserving
-from gateway.config_migrations import migrate_stale_http_port
+from gateway.config_migrations import (
+    CONFIG_SCHEMA_VERSION, check_schema_version, keep_pre_migration_copy,
+    migrate_stale_http_port)
 
 logger = logging.getLogger(__name__)
 
@@ -778,6 +780,7 @@ class GatewayConfig:
         try:
             with open(config_path, 'r') as f:
                 data = json.load(f)
+            check_schema_version(data)
 
             # Removed rns_transport: keep only "was it ON" (see the field).
             # Only an explicit false (or no section / no key) reads as OFF.
@@ -904,6 +907,9 @@ class GatewayConfig:
                 logger.error("Reset aborted: could not keep %s (%s)", keep, e)
                 return False
 
+        if config_path.exists() and not keep_pre_migration_copy(config_path):
+            return False
+
         try:
             # Convert MeshtasticBridgeConfig manually (has nested dataclasses)
             mesh_bridge_data = {
@@ -921,6 +927,7 @@ class GatewayConfig:
 
             # Convert to dict with nested dataclasses
             data = {
+                'schema_version': CONFIG_SCHEMA_VERSION,
                 'enabled': self.enabled,
                 'auto_start': self.auto_start,
                 'bridge_mode': self.bridge_mode,
