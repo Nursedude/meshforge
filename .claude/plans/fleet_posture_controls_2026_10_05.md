@@ -82,6 +82,32 @@ VolcanoAI may be the ONE site-wide grid-loss signal and the EcoFlow only adds ru
 remaining; (3) the house↔yurt link must be battery-backed end to end or the yurt boxes
 are unreachable from the trigger at the very moment it fires.
 
+**⚠️ CORRECTION — power chain (operator 10-05): wall/grid → EcoFlow → APC UPS → devices.**
+Assertion (2) above is WRONG for this wiring: the EcoFlow rides through grid loss, so the
+APC stays ON-LINE until the EcoFlow is EMPTY. APC on-battery therefore means "EcoFlow
+exhausted, APC runtime only" — a LATE but unambiguous, local, HID-standard signal.
+Design becomes TWO STAGES (assertion until cabled):
+1. **Grid lost** (early): EcoFlow telemetry (BLE/cloud — research file) OR a probe that
+   sits on the WALL side, not behind the EcoFlow (a mains-powered pingable device, or a
+   wall USB charger into a GPIO via opto) → declare + announce, shed load.
+2. **APC on battery** (late): ordered `fleet_power.py down` NOW, VolcanoAI last.
+**SITE MAP (operator 10-05 — one APC PER SITE, same chain at both):**
+- TENT: wall → **RIVER 2 Pro** → **APC** → VolcanoAI, alaula, moc, moc5, hAP, 3× 5-port
+  switches, Apple router.
+- YURT: wall → **DELTA 3** → **APC** → Starlink + 5-port switch.
+Implications (assertion): BOTH sites get the two-stage shape — EcoFlow telemetry (or a
+wall-side probe) = grid lost; that site's APC on-battery = EcoFlow empty, shut down now.
+Neither APC has a USB data cable yet. Tent APC → VolcanoAI (the trigger host). The yurt
+APC needs a Pi ON that APC to read it (operator's idea: a Pi on the yurt switch); when
+the yurt APC empties, Starlink (WAN) and the yurt switch die together — yurt boxes are
+unreachable from the tent and the cloud path is blind from that moment.
+- ALSO on APC power (operator 10-05, FYI): moc1, lehua, moc2, the hAPs, the Pi Zero 2 Ws.
+  WHICH APC / which site each sits on is not yet stated — ask before P4 ordering.
+**Research spot-checked 10-05 (VERIFIED at pinned source, by the session, not the
+researcher):** ha-ef-ble @511e0470 `_delta3_base.py:88` `plugged_in_ac`; `river2.py:58`
+`ac_input_power ... default_when_missing(0)` (missing reading == "grid lost" — guard it);
+tolwi @38986e6e `registry.py:108` DELTA 3 public API COMMENTED OUT, `:111` RIVER 2 Pro public.
+
 **What that implies (ASSERTION, settle when cabled):**
 - Trigger host = **VolcanoAI**: on the APC, holds the posture SSOT, runs fleet_power.py.
 - The network path (switches, router, hAP, alaula) is on the SAME UPS, so it outlasts
