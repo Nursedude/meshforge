@@ -72,6 +72,15 @@ does not exist yet — cabling is the first step, as stated.
 Wi-Fi via m1. Its state can only come over the network: get its IP/MAC from the
 EcoFlow app or m1's DHCP list, THEN research whether it answers locally (EcoFlow is
 cloud-MQTT by default — a local API is UNKNOWN). Not scanned: it is not a fleet box.
+**Operator idea 10-05 (yurt):** an EcoFlow 3600/3000 powers ONLY Starlink + a 5-port
+switch; put a Pi on it — USB to the EcoFlow, Ethernet to that switch everyone sees.
+⚠️ UNCONFIRMED: one EcoFlow or two (1600 on m1 Wi-Fi vs 3600/3000 in the yurt) — ask.
+ASSERTIONS to settle when cabled: (1) EcoFlow USB ports are believed charge-only (no
+HID-UPS like APC) — state comes via cloud API or reverse-engineered BLE, local API
+UNKNOWN; (2) grid loss flips APC and EcoFlow to battery at the same instant, so APC USB →
+VolcanoAI may be the ONE site-wide grid-loss signal and the EcoFlow only adds runtime
+remaining; (3) the house↔yurt link must be battery-backed end to end or the yurt boxes
+are unreachable from the trigger at the very moment it fires.
 
 **What that implies (ASSERTION, settle when cabled):**
 - Trigger host = **VolcanoAI**: on the APC, holds the posture SSOT, runs fleet_power.py.
