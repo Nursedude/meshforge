@@ -97,13 +97,17 @@ Design becomes TWO STAGES (assertion until cabled):
 - YURT-A: wall → **DELTA 3** → **APC 900VA/480W** → Starlink + 5-port switch.
 - YURT-B: wall → **APC 650VA/360W** (NOT behind the DELTA 3, no EcoFlow) → moc1, lehua,
   moc2, moc3, moc4, meshanchor-server, the hAPs, the Pi Zero 2 Ws.
-- **Honda 2200 generator** keeps the EcoFlow batteries up in a long outage, so EcoFlow-fed
-  runtime is long; the shutdown trigger is for when THAT chain fails, not every grid blip.
+- **Honda 2200 generator** charges the EcoFlows ONLY (operator 10-05) — it does NOT feed
+  YURT-B. EcoFlow-fed runtime is long; the shutdown trigger is for when THAT chain
+  fails, not every grid blip.
+- **YURT-B option (operator 10-05):** in an outage the YURT-B APC can be re-plugged by
+  hand onto an EcoFlow — depends on WHAT WE WANT TO RUN. Undecided; a manual step, so
+  the trigger must not assume it happened (default: YURT-B = APC runtime only).
 Implications (assertion): TENT and YURT-A get the two-stage shape — EcoFlow telemetry (or
 a wall-side probe) = grid lost; that APC on-battery = EcoFlow empty, shut down now.
 YURT-B is the opposite: no EcoFlow, so its APC goes on-battery AT grid loss — the
 earliest, local, HID-standard grid-lost signal on site — and its boxes have only APC
-runtime (minutes, not generator-hours) unless the Honda feeds that circuit: ASK.
+runtime (minutes, not generator-hours) — the Honda does not feed it.
 No APC has a USB data cable yet. Tent APC → VolcanoAI (the trigger host). Both yurt APCs
 need a Pi ON them to read them (operator's idea: a Pi on the yurt switch; YURT-B already
 carries moc1/lehua/moc2/moc3/moc4, so one of them can read the YURT-B APC). When YURT-A empties,
