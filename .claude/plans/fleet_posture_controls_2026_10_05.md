@@ -63,7 +63,7 @@ No new posture state (closed enum, hfm #7 — every consumer would owe a change)
 **Operator:** the APC UPS feeds VolcanoAI, alaula, moc5, moc, the AREDN hAP, three
 5-port switches and the Apple router. EcoFlow is a **1600** (earlier text said 3600).
 ~~NOT on the APC (by omission): moc1, moc2, moc3, moc4, kiai, lehua, meshanchor-server.~~
-SUPERSEDED same day — every box but meshanchor-server is on an APC; see SITE MAP below.
+SUPERSEDED same day — every box is on an APC; see SITE MAP below.
 
 **Measured:** no APC on USB (vendor `051d`) on VolcanoAI, moc, moc5 (lsusb) or
 alaula (sysfs); no apcupsd / NUT binary or unit on any of the four. So the trigger
@@ -92,12 +92,11 @@ Design becomes TWO STAGES (assertion until cabled):
    wall USB charger into a GPIO via opto) → declare + announce, shed load.
 2. **APC on battery** (late): ordered `fleet_power.py down` NOW, VolcanoAI last.
 **SITE MAP (operator 10-05, completed late) — THREE APCs, two sites:**
-- TENT: wall → **RIVER 2 Pro** → **APC** → VolcanoAI, alaula, moc, moc5, kiai, hAP,
-  3× 5-port switches, Apple router. ⚠️ SIZE OPEN: recorded as 650VA/360W, but the
-  operator also called kiai's (= this same APC) 900VA/480W — read the label.
+- TENT: wall → **RIVER 2 Pro** → **APC 650VA/360W** → VolcanoAI, alaula, moc, moc5, kiai,
+  hAP, 3× 5-port switches, Apple router.
 - YURT-A: wall → **DELTA 3** → **APC 900VA/480W** → Starlink + 5-port switch.
 - YURT-B: wall → **APC 650VA/360W** (NOT behind the DELTA 3, no EcoFlow) → moc1, lehua,
-  moc2, moc3, moc4, the hAPs, the Pi Zero 2 Ws.
+  moc2, moc3, moc4, meshanchor-server, the hAPs, the Pi Zero 2 Ws.
 - **Honda 2200 generator** keeps the EcoFlow batteries up in a long outage, so EcoFlow-fed
   runtime is long; the shutdown trigger is for when THAT chain fails, not every grid blip.
 Implications (assertion): TENT and YURT-A get the two-stage shape — EcoFlow telemetry (or
@@ -126,9 +125,9 @@ tolwi @38986e6e `registry.py:108` DELTA 3 public API COMMENTED OUT, `:111` RIVER
 - The network path (switches, router, hAP, alaula) is on the SAME UPS, so it outlasts
   the boxes it must reach as long as the trigger fires on-battery + delay, well
   before runtime ends.
-- EVERY fleet box is on an APC (operator 10-05; meshanchor-server not yet stated).
-  YURT-B boxes (moc1, lehua, moc2, moc3, moc4) are on a UPS with NO EcoFlow behind it:
-  they are the FIRST to need a real `down`, on YURT-B on-battery + delay — 5 Pis +
+- EVERY fleet box is on an APC (operator 10-05).
+  YURT-B boxes (moc1, lehua, moc2, moc3, moc4, meshanchor-server) are on a UPS with NO EcoFlow behind it:
+  they are the FIRST to need a real `down`, on YURT-B on-battery + delay — 6 boxes +
   hAPs + Pi Zeros on one 650VA, so runtime is the shortest on site (measure the load).
   `down --declare-only --kind power` is now only for a box that goes dark uncleanly.
   Real `down` order: YURT-B boxes first, tent boxes later, VolcanoAI LAST (it runs the tool).
