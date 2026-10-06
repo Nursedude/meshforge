@@ -104,8 +104,31 @@ def test_the_gateway_service_refuses_to_start_on_a_refused_load(home, text, caps
     out = capsys.readouterr().out
     assert "REFUSING" in out
     assert str(home) in out
+    # The journal must not claim the file loaded right before refusing it
+    # (seen live on moc3, 2026-10-06 drill).
+    assert "Config loaded" not in out
     resolve.assert_not_called()
     assert home.read_text() == text
+
+
+def test_the_gateway_service_still_reports_a_good_load(home, capsys):
+    # Control for the assertion above: a fix that just deletes the line
+    # would pass it. A file that loads must still say so.
+    from gateway import bridge_cli
+
+    home.write_text(json.dumps({"schema_version": 1, "enabled": True}))
+
+    class _Stop(Exception):
+        pass
+
+    with patch.object(bridge_cli, "assert_writable_or_exit"), \
+         patch.object(bridge_cli, "resolve_bridges", side_effect=_Stop):
+        with pytest.raises(_Stop):
+            bridge_cli.main()
+
+    out = capsys.readouterr().out
+    assert f"Config loaded from: {home}" in out
+    assert "REFUSING" not in out
 
 
 def test_the_headless_gateway_refuses_to_start_on_a_refused_load(home):
@@ -134,3 +157,22 @@ def test_the_gateway_unit_does_not_restart_into_a_config_refusal():
                  if line.startswith("RestartPreventExitStatus=")]
     assert prevented, "the gateway unit restarts into a config refusal"
     assert str(bridge_cli.EXIT_CONFIG_REFUSED) in prevented[-1]
+
+
+def test_a_load_that_raises_is_not_reported_as_loaded(home, capsys):
+    # load() raising falls back to DEFAULTS with no load_error — that path
+    # must not print "Config loaded" either.
+    from gateway import bridge_cli
+
+    class _Stop(Exception):
+        pass
+
+    with patch.object(bridge_cli, "assert_writable_or_exit"), \
+         patch.object(bridge_cli.GatewayConfig, "load", side_effect=OSError("boom")), \
+         patch.object(bridge_cli, "resolve_bridges", side_effect=_Stop):
+        with pytest.raises(_Stop):
+            bridge_cli.main()
+
+    out = capsys.readouterr().out
+    assert "Could not load config" in out
+    assert "Config loaded" not in out

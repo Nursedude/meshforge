@@ -488,9 +488,10 @@ def main():
         "meshforge-gateway", meshforge_writable_paths(rns_client=True))
 
     # Load config
+    loaded = False
     try:
         config = GatewayConfig.load()
-        print(f"\nConfig loaded from: {GatewayConfig.get_config_path()}")
+        loaded = True
     except Exception as e:
         print(f"\nWarning: Could not load config, using defaults: {e}")
         config = GatewayConfig()  # Use default config, not None
@@ -507,6 +508,10 @@ def main():
         logger.error(msg)
         print(f"\nCONFIG ERROR — gateway will not start:\n  {msg}")
         sys.exit(EXIT_CONFIG_REFUSED)
+    # Only now is "loaded" true — printed earlier, the journal claimed a
+    # refused file loaded one line before refusing it (2026-10-06 drill).
+    if loaded:
+        print(f"\nConfig loaded from: {GatewayConfig.get_config_path()}")
 
     # Migrate legacy bridge_mode-as-gate configs to the composable-bridges
     # model in-place, announcing any rewrites so operators see them.
