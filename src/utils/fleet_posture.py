@@ -59,6 +59,7 @@ honest_status SHA leg, peer-facing watchdog probes, claw RF watch lists
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -87,6 +88,15 @@ SILENT_STATES = (STATE_DORMANT, STATE_DETACHED)
 
 #: Hard cap on one declaration. Renewable by re-declaring; never silently.
 MAX_DORMANCY_S = 14 * 86400
+
+#: A return record (``returned``, written by clear()/declare() when a box
+#: leaves a silent declaration) applies for this long, then evidence is judged
+#: as usual — it cannot hold a peer unjudged forever. Twelve 10-min tracer
+#: cycles; ONE constant for every consumer (hfm #5).
+RETURN_WINDOW_S = 2 * 3600
+#: A return record further in the future than this (the WRITER's clock ahead
+#: of the reader's) is ignored by consumers, never trusted to blind them.
+RETURN_FUTURE_SLACK_S = 300
 
 #: Operator REASONS (2026-10-05) -> (state, default until). They map onto the
 #: two existing silent states — no new posture state (closed enum, hfm #7).
@@ -205,6 +215,10 @@ class Posture:
     #: original — see read_posture().
     is_mirror: bool = False
     mirror_from: str = ""
+    #: {box: epoch} — when each box last LEFT a declaration (written by
+    #: clear(), i.e. Resume). Evidence about a box recorded before this is
+    #: evidence about its declared absence, not about the box (10-06).
+    returned: Dict[str, float] = field(default_factory=dict)
 
     def box(self, name: str) -> BoxPosture:
         """Effective posture for ``name`` — ACTIVE for any box not declared
@@ -241,6 +255,20 @@ def validate(doc, now: Optional[float] = None,
     declared_at = parse_ts(doc.get("declared_at"))
     if doc.get("declared_at") is not None and declared_at is None:
         errs.append("`declared_at` is not an ISO-8601 timestamp with zone")
+    returned = doc.get("returned")
+    if returned is not None:
+        if not isinstance(returned, dict):
+            errs.append("`returned` must be an object keyed by box name")
+        else:
+            for rname, rts in returned.items():
+                rv = parse_ts(rts)
+                if rv is None or not math.isfinite(rv):
+                    errs.append(f"returned.{rname}: {rts!r} is not an ISO-8601 "
+                                f"timestamp with zone")
+                elif rv > now + MAX_DORMANCY_S:
+                    # Absurd, not merely skewed: no real clock is weeks ahead.
+                    errs.append(f"returned.{rname}: {rts!r} is more than "
+                                f"{MAX_DORMANCY_S // 86400} days in the future")
     silenced: List[str] = []
     for name, entry in boxes.items():
         if not isinstance(name, str) or not name.strip():
@@ -508,6 +536,8 @@ def read_posture(path: Optional[str] = None, *, now: Optional[float] = None,
                 clock_note=clock_note, clock_confident=bool(clock_confident))
     for name, entry in doc["boxes"].items():
         p.boxes[name] = _effective(name, entry, now, clock_confident)
+    for name, ts in (doc.get("returned") or {}).items():
+        p.returned[name] = parse_ts(ts)
 
     # A MIRROR is not the original, and must not be trusted like one.
     #
@@ -539,6 +569,9 @@ def read_posture(path: Optional[str] = None, *, now: Optional[float] = None,
                         + f"{p.mirror_from or '?'} and this reader cannot "
                         + "confirm its own clock, so the window is unjudgeable. "
                         + "Watching (paging) instead of silencing.")
+            # Same rule for return records: a cutoff compared against a clock
+            # we cannot confirm is no better than a window (review W2, 10-06).
+            p.returned = {}
             p.detail = ("mirrored declaration NOT APPLIED — reader's clock "
                         f"unconfirmed ({p.clock_note or 'no clock note'})")
     return p
@@ -602,14 +635,28 @@ def declare(doc: dict, name: str, state: str, until: Optional[float],
         entry["reason"] = reason
     if services is not None:
         entry["services"] = list(services)
+    old = new["boxes"].get(name)
+    if (isinstance(old, dict) and old.get("state") in SILENT_STATES
+            and state not in SILENT_STATES):
+        # A second way out of a silent declaration (review S1, 10-06).
+        new.setdefault("returned", {})[name] = fmt_ts(now)
     new["boxes"][name] = entry
     new["declared_at"] = fmt_ts(now)
     new.setdefault("declared_by", "operator")
     return new
 
 
-def clear(doc: dict, name: str) -> Tuple[dict, bool]:
+def clear(doc: dict, name: str, now: Optional[float] = None) -> Tuple[dict, bool]:
+    """Return a NEW doc without ``name``. When the box WAS declared, record
+    when it returned: consumers that judge history (the tracer probe) must
+    not count evidence from the declared absence as a fault of the box
+    (10-06: a false AMBER paged 21 s after Resume). One entry per box,
+    overwritten — bounded by the fleet size."""
+    now = time.time() if now is None else now
     new = json.loads(json.dumps(doc))
-    existed = name in new.get("boxes", {})
+    old = new.get("boxes", {}).get(name)
+    existed = old is not None
     new["boxes"].pop(name, None)
+    if isinstance(old, dict) and old.get("state") in SILENT_STATES:
+        new.setdefault("returned", {})[name] = fmt_ts(now)
     return new, existed

@@ -203,6 +203,7 @@ def probe_tracer_peer_unreachable(
 
     signals: List[Signal] = []
     suppressed: List[str] = []
+    awaiting: List[str] = []   # returned from a declaration, unobserved since
     for peer, history in by_peer.items():
         # history is newest-first thanks to fires being newest-first.
         if not history:
@@ -221,6 +222,28 @@ def probe_tracer_peer_unreachable(
                 + (f" until {fp.fmt_ts(declared.until)}" if declared.until else "")
                 + ")")
             continue
+
+        # A box that RETURNED from a declaration is judged only on fires
+        # recorded after it came back — the earlier no-routes describe the
+        # declared absence, not the box (10-06: counted as a streak, they
+        # paged a false AMBER 21 s after Resume).
+        # Bounded both ways (review W1/W2): a record from the future (writer's
+        # clock ahead) or older than RETURN_WINDOW_S is ignored.
+        _rbox = fp.resolve_peer_box(peer, posture.returned) if posture.returned else None
+        returned_at = posture.returned.get(_rbox) if _rbox else None
+        if returned_at and not (now - fp.RETURN_WINDOW_S <= returned_at
+                                <= now + fp.RETURN_FUTURE_SLACK_S):
+            returned_at = None
+        if returned_at:
+            history = [h for h in history if h[0] > returned_at]
+            if not history:
+                awaiting.append(
+                    f"{peer} (returned {fp.fmt_ts(returned_at)} — no fire "
+                    f"since, not yet observed)")
+                continue
+            latest_result = history[0][1]
+            if latest_result == "ok":
+                continue
 
         # Count leading non-ok results.
         leading_fail = 0
@@ -296,6 +319,23 @@ def probe_tracer_peer_unreachable(
                     "tier": "transient",
                 },
             ))
+    if awaiting:
+        # A returned box with no fire since is UNOBSERVED — not absent by
+        # design (never `inert`, harness_restraint #3), and bounded by
+        # RETURN_WINDOW_S so it cannot latch (review W3, 10-06).
+        if signals:
+            for sig in signals:
+                sig.extra["returned_unobserved"] = sorted(awaiting)
+        else:
+            # Unobserved outranks absent-by-design: with both kinds present
+            # the disposition is `indeterminate`, and both are witnessed.
+            note_disposition("tracer_peer_unreachable", "indeterminate",
+                             reason="returned peer(s) not yet observed: "
+                                    + "; ".join(sorted(awaiting))
+                                    + ("; declared-absent peer(s) not judged: "
+                                       + "; ".join(sorted(suppressed))
+                                       if suppressed else ""))
+            return signals
     if suppressed:
         # The swallow leaves a witness in BOTH shapes: as the class
         # disposition when it is the whole story, and on each surviving

@@ -12320,6 +12320,100 @@ def test_tracer_shed_peer_is_still_judged(tmp_path):
     assert [s.subject for s in signals] == ["meshforge-boxa"]
 
 
+def _returned_posture(tmp_path, box, returned_at):
+    """A real Posture written the way Resume writes it: declare, then clear."""
+    from utils import fleet_posture as fp
+    doc = fp.declare({"boxes": {}}, box, fp.STATE_DORMANT, returned_at + 3600,
+                     now=returned_at - 7200)
+    doc, _ = fp.clear(doc, box, now=returned_at)
+    p = tmp_path / "posture-returned.json"
+    p.write_text(json.dumps(doc))
+    return fp.read_posture(str(p), now=returned_at + 60, clock_confident=True)
+
+
+def test_tracer_ignores_fires_recorded_before_a_box_returned(tmp_path):
+    """2026-10-06, live: Resume cleared kiai at 20:12:13Z; 8 no-route fires from
+    the dormant window (19:00-20:10Z) were counted as a streak and paged a
+    false AMBER 21 s later, 47 s after kiai's rnsd started."""
+    tracer_dir = tmp_path / "tracer"
+    tracer_dir.mkdir()
+    returned = time.time() - 30
+    for i in range(8):
+        _write_fire(tracer_dir, returned - 600 * (i + 1) + 5,
+                    [{"peer": "meshforge-kiai", "seq": i, "result": "no-route", "rtt_ms": 0}])
+    from utils.watchdog_probe_core import collect_dispositions, reset_dispositions
+    reset_dispositions()
+    signals = probe_tracer_peer_unreachable(
+        tracer_dir=tracer_dir, persistent_cycles=3, now=returned + 30,
+        lookback_s=7200.0, posture=_returned_posture(tmp_path, "kiai", returned))
+    assert signals == []
+    # W3: awaiting a first observation is UNOBSERVED, not absent-by-design —
+    # never `inert`, and never under the "declared-absent" witness prefix.
+    noted = collect_dispositions()["tracer_peer_unreachable"]
+    assert noted["disp"] == "indeterminate", noted
+    assert "kiai" in noted["reason"] and "returned" in noted["reason"]
+    assert "declared-absent" not in noted["reason"]
+
+
+def test_tracer_still_fires_on_fresh_failures_after_a_return(tmp_path):
+    """A box that came back but never rejoined RNS is a real finding."""
+    tracer_dir = tmp_path / "tracer"
+    tracer_dir.mkdir()
+    returned = time.time() - 2000
+    for i, off in enumerate((1800, 1200, 600), 1):
+        _write_fire(tracer_dir, returned + off,
+                    [{"peer": "meshforge-kiai", "seq": i, "result": "no-route", "rtt_ms": 0}])
+    signals = probe_tracer_peer_unreachable(
+        tracer_dir=tracer_dir, persistent_cycles=3, now=returned + 1900,
+        posture=_returned_posture(tmp_path, "kiai", returned))
+    assert [s.subject for s in signals] == ["meshforge-kiai"]
+
+
+def test_tracer_return_record_stops_applying_after_its_window(tmp_path):
+    """W1/W3 bound: a return record cannot hold a peer unjudged forever."""
+    from utils import fleet_posture as fp
+    tracer_dir = tmp_path / "tracer"
+    tracer_dir.mkdir()
+    now = time.time()
+    returned = now - fp.RETURN_WINDOW_S - 600
+    for i, off in enumerate((1800, 1200, 600), 1):
+        _write_fire(tracer_dir, returned - off,
+                    [{"peer": "meshforge-kiai", "seq": i, "result": "no-route", "rtt_ms": 0}])
+    signals = probe_tracer_peer_unreachable(
+        tracer_dir=tracer_dir, persistent_cycles=3, now=now,
+        lookback_s=fp.RETURN_WINDOW_S + 4000,
+        posture=_returned_posture(tmp_path, "kiai", returned))
+    assert [s.subject for s in signals] == ["meshforge-kiai"]
+
+
+def test_tracer_ignores_a_return_record_from_the_future(tmp_path):
+    """W1/W2: a manager clock AHEAD of this observer's must not blind it."""
+    from utils import fleet_posture as fp
+    tracer_dir = tmp_path / "tracer"
+    tracer_dir.mkdir()
+    now = time.time()
+    for i, off in enumerate((1800, 1200, 600), 1):
+        _write_fire(tracer_dir, now - off,
+                    [{"peer": "meshforge-kiai", "seq": i, "result": "no-route", "rtt_ms": 0}])
+    future = _returned_posture(tmp_path, "kiai", now)
+    future.returned = {"kiai": now + fp.RETURN_FUTURE_SLACK_S + 3600}
+    signals = probe_tracer_peer_unreachable(
+        tracer_dir=tracer_dir, persistent_cycles=3, now=now, posture=future)
+    assert [s.subject for s in signals] == ["meshforge-kiai"]
+
+
+def test_tracer_without_a_return_record_judges_as_before(tmp_path):
+    """Control: the old history alone still fires — the fix is the record."""
+    tracer_dir = tmp_path / "tracer"
+    tracer_dir.mkdir()
+    now = time.time()
+    for i, off in enumerate((1800, 1200, 600), 1):
+        _write_fire(tracer_dir, now - off,
+                    [{"peer": "meshforge-kiai", "seq": i, "result": "no-route", "rtt_ms": 0}])
+    signals = probe_tracer_peer_unreachable(tracer_dir=tracer_dir, persistent_cycles=3, now=now)
+    assert [s.subject for s in signals] == ["meshforge-kiai"]
+
+
 def test_tracer_unreadable_posture_judges_everything_as_before(tmp_path):
     """A broken declaration must not mute the fleet. Paging is the safe
     default, and the failure rides along in the note rather than being

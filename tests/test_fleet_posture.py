@@ -870,3 +870,95 @@ class TestDisplayTime:
         assert fp.fmt_rel(self.UNTIL, self.UNTIL + 90 * 60) == "1.5h ago"
         assert fp.fmt_rel(self.UNTIL, self.UNTIL - 2 * 86400) == "in 2.0d"
         assert fp.fmt_rel(None, self.UNTIL) == ""
+
+
+class TestReturned:
+    """2026-10-06: Resume cleared kiai at 20:12:13Z and a false AMBER
+    'tracer peer unreachable' paged 21 s later — the probe counted 8 no-route
+    fires recorded WHILE kiai was declared off. clear() is the one place a box
+    leaves a declaration, so it records WHEN; readers judge only evidence
+    newer than that."""
+
+    def _declared(self):
+        return fp.declare({"boxes": {}}, "kiai", fp.STATE_DORMANT,
+                          time.time() + 3600, reason="x")
+
+    def test_clear_of_a_declared_box_records_when_it_returned(self):
+        now = 1_800_000_000.0
+        new, existed = fp.clear(self._declared(), "kiai", now=now)
+        assert existed and "kiai" not in new["boxes"]
+        assert new["returned"] == {"kiai": fp.fmt_ts(now)}
+
+    def test_clear_of_an_undeclared_box_records_nothing(self):
+        new, existed = fp.clear({"boxes": {}}, "kiai", now=1_800_000_000.0)
+        assert not existed and "returned" not in new
+
+    def test_reader_exposes_returned_as_epoch(self, tmp_path):
+        now = 1_800_000_000.0
+        new, _ = fp.clear(self._declared(), "kiai", now=now)
+        p = tmp_path / "fleet_posture.json"
+        p.write_text(json.dumps(new))
+        post = fp.read_posture(str(p), now=now + 60, clock_confident=True)
+        assert post.status == fp.DECLARED
+        assert post.returned == {"kiai": now}
+
+    @pytest.mark.parametrize("bad", [["kiai"], {"kiai": "yesterday"}, {"kiai": None}])
+    def test_validator_refuses_a_malformed_returned_map(self, bad):
+        errs = fp.validate({"boxes": {}, "returned": bad})
+        assert any("returned" in e for e in errs), errs
+
+    def test_mirror_stamp_carries_returned_to_the_fleet(self, tmp_path):
+        # The tracer runs on EVERY box and reads its own mirrored copy.
+        sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+        import fleet_posture_stamp as st
+        # Real clock: the stamp validates against now, and a return record
+        # >14 d in the future is (correctly) refused.
+        new, _ = fp.clear(self._declared(), "kiai", now=time.time())
+        src, dest = tmp_path / "src.json", tmp_path / "dest.json"
+        src.write_text(json.dumps(new))
+        assert st.main([str(src), str(dest), "mgr"]) == 0
+        assert json.loads(dest.read_text())["returned"] == new["returned"]
+
+
+class TestReturnedHardening:
+    """Folded from the non-author review of the returned_at fix (10-06)."""
+
+    @pytest.mark.parametrize("bad", [float("inf"), float("nan"), 1e20])
+    def test_validator_refuses_a_non_finite_or_absurd_return(self, bad):
+        # W1: inf/1e20 passed validation, silenced a peer forever, and
+        # fmt_ts(1e20) raised OverflowError inside the probe's witness.
+        errs = fp.validate({"boxes": {}, "returned": {"moc2": bad}}, now=1_800_000_000.0)
+        assert any("returned" in e for e in errs), errs
+
+    @pytest.mark.parametrize("state", [fp.STATE_ACTIVE, fp.STATE_SHED])
+    def test_clear_records_a_return_only_for_a_silent_entry(self, state):
+        # S2: an active/shed box never left the watch; nothing "returned".
+        doc = {"boxes": {"moc2": {"state": state, "since": fp.fmt_ts(1_800_000_000.0),
+                                  "until": fp.fmt_ts(1_800_003_600.0)}}}
+        new, existed = fp.clear(doc, "moc2", now=1_800_000_100.0)
+        assert existed and "returned" not in new
+
+    def test_declaring_active_over_a_silent_box_records_its_return(self):
+        # S1: `fleet_posture.py declare <box> active` is a second exit path.
+        now = 1_800_000_000.0
+        doc = fp.declare({"boxes": {}}, "kiai", fp.STATE_DORMANT, now + 3600, now=now)
+        new = fp.declare(doc, "kiai", fp.STATE_ACTIVE, None, now=now + 600)
+        assert new["returned"] == {"kiai": fp.fmt_ts(now + 600)}
+
+    def test_renewing_a_silent_declaration_records_no_return(self):
+        now = 1_800_000_000.0
+        doc = fp.declare({"boxes": {}}, "kiai", fp.STATE_DORMANT, now + 3600, now=now)
+        new = fp.declare(doc, "kiai", fp.STATE_DORMANT, now + 7200, now=now + 600)
+        assert "returned" not in new
+
+    def test_unconfirmed_clock_mirror_applies_no_return_record(self, tmp_path):
+        # W2: a mirror whose reader cannot confirm its clock applies no
+        # declaration — a cutoff compared against that clock is no better.
+        now = 1_800_000_000.0
+        doc = fp.declare({"boxes": {}}, "kiai", fp.STATE_DORMANT, now + 3600, now=now - 600)
+        doc, _ = fp.clear(doc, "kiai", now=now)
+        doc["mirror"] = {"from": "mgr"}
+        p = tmp_path / "fleet_posture.json"
+        p.write_text(json.dumps(doc))
+        assert fp.read_posture(str(p), now=now + 60, clock_confident=False).returned == {}
+        assert fp.read_posture(str(p), now=now + 60, clock_confident=True).returned == {"kiai": now}
