@@ -100,9 +100,15 @@ Design becomes TWO STAGES (assertion until cabled):
 - **Honda 2200 generator** charges the EcoFlows ONLY (operator 10-05) — it does NOT feed
   YURT-B. EcoFlow-fed runtime is long; the shutdown trigger is for when THAT chain
   fails, not every grid blip.
-- **YURT-B option (operator 10-05):** in an outage the YURT-B APC can be re-plugged by
-  hand onto an EcoFlow — depends on WHAT WE WANT TO RUN. Undecided; a manual step, so
-  the trigger must not assume it happened (default: YURT-B = APC runtime only).
+- **YURT-B outage DECISION (operator 10-05): KEEP moc2 + moc3** (the SHORT_TURBO
+  segment; moc3 carries the HawaiiNet RNode) — the operator moves them onto the yurt
+  EcoFlow (DELTA 3), using the APC's runtime as the window to rewire. SHED moc1, lehua,
+  moc4, meshanchor-server. Manual step — the trigger must not assume it happened.
+  ASSERTION (not tried): `down` the shed set FIRST, then move the APC's INPUT from wall to
+  the DELTA 3 — moc2/moc3 never lose power. Moving a Pi's own plug is a power cycle:
+  moc3 then re-runs rnsd boot (#69 race/ipv6-LL drop-in — check `@rns/` owner after).
+- **Later (operator 10-05):** the whole fleet on 24/7 backup (more battery + solar);
+  this keep/shed split is the interim.
 Implications (assertion): TENT and YURT-A get the two-stage shape — EcoFlow telemetry (or
 a wall-side probe) = grid lost; that APC on-battery = EcoFlow empty, shut down now.
 YURT-B is the opposite: no EcoFlow, so its APC goes on-battery AT grid loss — the
