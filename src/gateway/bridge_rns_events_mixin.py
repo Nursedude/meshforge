@@ -303,7 +303,8 @@ class BridgeRnsEventsMixin:
             posture = self.rns_ingress_posture()
             led = self._rns_ingress_ledger()
             if posture["policy"] != "open" or led.path.exists():
-                led.stamp(policy=posture["policy"], listed=posture["listed"])
+                led.stamp(policy=posture["policy"], listed=posture["listed"],
+                          identities=posture["identities"])
         except Exception as e:  # noqa: BLE001
             logger.debug(f"rns ingress stamp skipped: {e}")
 
@@ -339,6 +340,12 @@ class BridgeRnsEventsMixin:
                         self._peer_gateway_hash_set(),
                         signature_validated=signature_validated)
             if v in (VERDICT_LISTED, VERDICT_PEER):
+                # measured USE (house cleaning, 2026-10-07) — a witness,
+                # never decisive: a ledger failure must not refuse a member.
+                try:
+                    self._rns_ingress_ledger().note_listed(source_hex)
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(f"rns ingress use note failed: {e}")
                 return True
             unverified = v == VERDICT_UNVERIFIED
             refused = policy == POLICY_ENFORCE

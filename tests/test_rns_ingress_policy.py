@@ -181,7 +181,11 @@ class TestIngressThroughTheMixin:
         b._on_lxmf_receive(_lxmf(PEER))
         assert b._rns_to_mesh_queue.qsize() == 2
         assert "rns_ingress_unlisted" not in b.stats
-        assert not (tmp_path / "ledger.json").exists()
+        # members leave measured USE (house cleaning, 2026-10-07) but are
+        # never recorded as unlisted senders
+        snap = b._rns_ingress_ledger().snapshot()
+        assert snap["unlisted_total"] == 0
+        assert set(snap["use"]["last_inbound"]) == {LISTED, PEER}
 
     def test_policy_error_admits_as_open_and_says_so(self, tmp_path, caplog):
         """A broken policy must neither silently close nor silently open."""

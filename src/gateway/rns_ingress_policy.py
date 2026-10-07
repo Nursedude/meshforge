@@ -69,6 +69,11 @@ UNVERIFIED_REASONS = {0x01: "source unknown (never announced)",
 LEDGER_FILENAME = "rns_ingress_ledger.json"
 LEDGER_SCHEMA = "rns_ingress_ledger/v1"
 MAX_SENDERS = 200
+#: House-cleaning window (operator 2026-10-07): a listed identity with no
+#: VALIDATED inbound message in this long is reported stale — never removed
+#: automatically. One constant for the ledger projection AND the
+#: housekeeping script (hfm #5).
+USE_STALE_S = 14 * 86400.0
 
 
 def normalize_hashes(raw: Any) -> List[str]:
@@ -226,13 +231,35 @@ class IngressLedger:
             self._write()
             return dict(ent)
 
-    def stamp(self, *, policy: str, listed: int) -> None:
+    def stamp(self, *, policy: str, listed: int,
+              identities: Optional[List[str]] = None) -> None:
         """Record the posture even when nothing was refused, so a reader can
-        tell "enforcing, nobody unlisted" from "never ran"."""
+        tell "enforcing, nobody unlisted" from "never ran". Also starts the
+        USE watch: ``watch_since`` is set once and persists across restarts,
+        so "no inbound in 14 d" is only claimed after 14 d of watching."""
         with self._lock:
+            now = float(self._now())
             self._doc["policy"] = policy
             self._doc["listed"] = int(listed)
-            self._doc["updated_at"] = float(self._now())
+            if identities is not None:
+                self._doc["listed_ids"] = list(identities)
+            if not isinstance(self._doc.get("watch_since"), (int, float)):
+                self._doc["watch_since"] = now
+            self._doc["updated_at"] = now
+            self._write()
+
+    def note_listed(self, source_hex: str) -> None:
+        """Measured USE: a VALIDATED listed/peer sender just passed."""
+        s = (source_hex or "").lower()
+        with self._lock:
+            now = float(self._now())
+            seen = self._doc.get("listed_seen")
+            if not isinstance(seen, dict):
+                seen = self._doc["listed_seen"] = {}
+            ent = seen.get(s) if isinstance(seen.get(s), dict) else {}
+            ent["last_seen"] = now
+            ent["seen"] = int(ent.get("seen", 0) or 0) + 1
+            seen[s] = ent
             self._write()
 
     # ── reading ──────────────────────────────────────────────────────
@@ -287,10 +314,36 @@ def project_ledger_doc(doc: Any, *, now: float,
              "unverified": v.get("unverified", 0),
              "last_seen": v.get("last_seen")}
             for k, v in recent],
+        "use": _project_use(doc if isinstance(doc, dict) else {}, now),
         "unlisted_total": len([v for v in senders.values() if isinstance(v, dict)]),
         "refused_total": sum(int(v.get("refused", 0) or 0) for v in senders.values()
                              if isinstance(v, dict)),
     }
+
+
+def _project_use(doc: Dict[str, Any], now: float) -> Dict[str, Any]:
+    """Inbound use per listed identity. ``no_inbound`` is ``None`` (NOT an
+    empty list) until the watch has covered a full ``USE_STALE_S`` — an
+    unwatched window is unknown, never "everyone active" (hfm #2). A clock
+    that went backwards past ``watch_since`` is likewise unjudgeable (#6)."""
+    ids = [h for h in (doc.get("listed_ids") or []) if isinstance(h, str)]
+    seen = doc.get("listed_seen") if isinstance(doc.get("listed_seen"), dict) else {}
+    last: Dict[str, float] = {}
+    for k, v in seen.items():
+        try:
+            last[k] = float(v.get("last_seen"))
+        except (AttributeError, TypeError, ValueError):
+            continue
+    ws = doc.get("watch_since")
+    observed = (now - float(ws)) if isinstance(ws, (int, float)) else None
+    judgeable = observed is not None and observed >= USE_STALE_S
+    no_inbound = None
+    if judgeable:
+        no_inbound = [h for h in ids
+                      if h not in last or now - last[h] > USE_STALE_S]
+    return {"quantity": "inbound", "window_s": USE_STALE_S,
+            "observed_s": observed, "judgeable": judgeable,
+            "listed_ids": ids, "last_inbound": last, "no_inbound": no_inbound}
 
 
 def read_ledger_projection(path: Optional[Path] = None, *,

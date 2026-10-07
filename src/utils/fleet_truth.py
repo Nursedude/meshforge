@@ -1173,7 +1173,31 @@ def _rns_ingress_cell(slo: Optional[Dict[str, Any]],
     return cell(HEALTHY, source=src, age_s=age, observed_at=updated,
                 reason=f"allowlist of {listed if listed is not None else '?'} "
                        f"identit(ies), policy={policy or '?'}, 0 unlisted "
-                       f"senders in {hours}h")
+                       f"senders in {hours}h{_rns_use_hint(proj.get('use'))}")
+
+
+def _rns_use_hint(use: Any) -> str:
+    """Housekeeping hint for the HEALTHY reason (2026-10-07): listed
+    identities with no VALIDATED inbound in the window. A hint, never a
+    state — stale is for the operator to clean, not for a page. Absent
+    ``use`` (a gateway that predates it) adds nothing."""
+    if not isinstance(use, dict):
+        return ""
+    try:
+        days = int(float(use.get("window_s") or 14 * 86400) // 86400)
+        if not use.get("judgeable"):
+            obs = use.get("observed_s")
+            if not isinstance(obs, (int, float)) or obs < 0:
+                return "; use: unjudgeable (no watch start)"
+            return f"; use: too early ({obs / 86400:.1f}d watched of {days}d)"
+        stale = use.get("no_inbound") or []
+        if not stale:
+            return f"; every listed identity had inbound in {days}d"
+        return (f"; {len(stale)} listed with no inbound in {days}d "
+                f"({', '.join(str(h)[:8] for h in stale[:6])}"
+                f"{' …' if len(stale) > 6 else ''}) — housekeeping candidates")
+    except Exception:  # noqa: BLE001 — a hint must never break the cell
+        return ""
 
 
 def _generic_present_cell(slo: Optional[Dict[str, Any]], key: str, source: str) -> Dict[str, Any]:

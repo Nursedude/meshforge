@@ -1183,6 +1183,26 @@ class TestRnsIngressCell:
         assert "13" in c["reason"] and "observe" in c["reason"]
         assert c["source"] == "/fleet/slo.rns_ingress"
 
+    def test_healthy_reason_carries_stale_use_as_a_hint_not_an_alarm(self):
+        use = {"quantity": "inbound", "judgeable": True,
+               "observed_s": 20 * 86400.0, "no_inbound": ["7cda" + "0" * 28,
+                                                          "9217" + "0" * 28]}
+        b = self._box(slo=self._slo(policy="observe", listed=13,
+                                    unlisted_recent=[], use=use,
+                                    updated_at=self.NOW - 60))
+        c = b["subsystems"]["rns_ingress"]
+        assert c["state"] == ft.HEALTHY          # housekeeping, never a page
+        assert "2 listed with no inbound in 14d" in c["reason"]
+
+    def test_unwatched_window_says_too_early(self):
+        use = {"quantity": "inbound", "judgeable": False,
+               "observed_s": 3 * 86400.0, "no_inbound": None}
+        b = self._box(slo=self._slo(policy="observe", listed=13,
+                                    unlisted_recent=[], use=use,
+                                    updated_at=self.NOW - 60))
+        assert "use: too early (3.0d watched of 14d)" in \
+            b["subsystems"]["rns_ingress"]["reason"]
+
     def test_unlisted_sender_fires_the_tripwire(self):
         b = self._box(slo=self._slo(
             policy="enforce", listed=13, updated_at=self.NOW - 5,
