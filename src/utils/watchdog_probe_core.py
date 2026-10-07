@@ -152,11 +152,28 @@ DISPOSITIONS = ("clean", "inert", "indeterminate")
 _DISP_RANK = {"clean": 0, "inert": 1, "indeterminate": 2}
 
 _tick_dispositions: dict = {}
+#: cls -> {subject}: subjects a probe POSITIVELY observed healthy this tick.
+#: Separate from the worst-wins disposition because one class can have two
+#: legs (cron_verdict_stale: local ``cron`` + peer ``<alias>``) and a blind
+#: sibling leg must not hold a subject that WAS seen (2026-10-06).
+_tick_observed_subjects: dict = {}
 
 
 def reset_dispositions() -> None:
     """Clear the recorder. The runner calls this at the top of every tick."""
     _tick_dispositions.clear()
+    _tick_observed_subjects.clear()
+
+
+def note_subject_observed(cls: str, subject: str) -> None:
+    """Record that ``(cls, subject)`` was positively observed healthy this tick.
+
+    Lets the tracker clear THAT subject even when the class disposition is
+    ``indeterminate`` because a different subject's channel failed. Call it
+    only on a real observation — never from an error path. Never raises.
+    """
+    if isinstance(cls, str) and isinstance(subject, str) and cls and subject:
+        _tick_observed_subjects.setdefault(cls, set()).add(subject)
 
 
 def note_disposition(cls: str, disp: str, *, reason: Optional[str] = None,
@@ -288,6 +305,11 @@ def classify_orphan_verdicts(latest, wired):
 def collect_dispositions() -> dict:
     """Snapshot the recorder (shallow copy — entries are never mutated)."""
     return dict(_tick_dispositions)
+
+
+def collect_observed_subjects() -> dict:
+    """Snapshot of ``note_subject_observed``: cls -> sorted subject list."""
+    return {c: sorted(s) for c, s in _tick_observed_subjects.items()}
 
 
 @dataclass

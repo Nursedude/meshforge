@@ -3420,7 +3420,11 @@ Options: **A** `fleet_sync` re-renders + installs from templates — REJECT (ove
 
 ⚠️ B is a new check (END=harness) — queued, not built, during the freeze.
 
-## QUEUED 2026-10-06 (Opus 5.5) — DETECTOR DEFECT: a peer-blindness HOLD froze a recovered LOCAL verdict and paged it after cooldown
+## ~~QUEUED~~ FIXED 2026-10-06 (Opus 5.5; test-first, NOT yet deployed) — DETECTOR DEFECT: a peer-blindness HOLD froze a recovered LOCAL verdict and paged it after cooldown
+
+**Outcome:** #1 fixed — `note_subject_observed(cls, subject)` (watchdog_probe_core) records a POSITIVE per-subject observation outside the worst-wins disposition; `build_coverage` attaches `observed_subjects` only where the class is otherwise blind; the tracker clears a vanished key whose subject was observed. Local cron probe notes `cron` on every branch that notes `clean`; the peer leg notes each peer judged `healthy` (same hold, peer-to-peer). Red-first: `tests/test_cron_hold_granularity.py` replays the 10-06 chain with the real probes (old code: `cron` held). **#2 SETTLED, not a defect:** engine.py edge_up fires only for a rule matching a condition in THIS tick's `conds` with the live `cond.detail` — no replay. At 13:24 the watchdog was still EMITTING the held signal. **Note (not built, wider):** mini does not read `extra.unobserved_hold`, so a held signal can earn a FIRST page after cooldown. `observed_only()` already says held must not drive an action; whether a page is an action is an operator question.
+
+_Original queue entry:_
 
 Fix-shaped (it paged a false failure), so freeze-EXEMPT — not a 10-09 decision; take it in its own session, test-first.
 

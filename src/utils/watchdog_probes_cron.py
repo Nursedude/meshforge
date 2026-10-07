@@ -31,6 +31,7 @@ from utils.watchdog_probe_core import (
     _load_parity_streak,
     _save_parity_streak,
     note_disposition,
+    note_subject_observed,
 )
 
 _GLOBAL_NOTE_DISPOSITION = note_disposition  # probe_cron_verdict_stale shadows it
@@ -392,6 +393,16 @@ def probe_cron_verdict_stale(
             # produced no verdict either way, so prior state must hold.
             if not unconfirmed:
                 _save_parity_streak(sp, 0)
+            # Every branch above that noted `clean` is a positive observation
+            # of the LOCAL subject. Recorded per-subject because the peer leg
+            # shares this class: its blindness made the class indeterminate
+            # and HELD a local FAIL that had already re-run OK — paged 17 min
+            # after it passed (2026-10-06). Same subject literal as the emit.
+            if (disposition_sink is None and verdicts_text is not None
+                    and not unconfirmed
+                    and (not reboot_unjudged
+                         or len(wired) > len(reboot_unjudged))):
+                note_subject_observed("cron_verdict_stale", "cron")
             return None
 
         # 5. Debounce — first sighting silent, fire on the 2nd consecutive tick.

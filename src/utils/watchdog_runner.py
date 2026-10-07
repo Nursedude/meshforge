@@ -49,6 +49,7 @@ from utils.watchdog_probes import (
     SIGNAL_CLASSES,
     Signal,
     collect_dispositions,
+    collect_observed_subjects,
     note_disposition,
     reset_dispositions,
     probe_aredn_source_dark,
@@ -876,6 +877,7 @@ def build_coverage(signals: List[Signal]) -> Dict[str, Dict[str, str]]:
     missing from the map would be indistinguishable from "not watched".
     """
     noted = collect_dispositions()
+    observed = collect_observed_subjects()
     active = {s.cls for s in signals}
     coverage: Dict[str, Dict[str, str]] = {}
     for cls in SIGNAL_CLASSES:
@@ -899,6 +901,13 @@ def build_coverage(signals: List[Signal]) -> Dict[str, Dict[str, str]]:
         else:
             coverage[cls] = {"disp": "unknown",
                              "reason": "no disposition reported this tick"}
+        # Per-subject positive observations, attached ONLY where the class is
+        # otherwise blind (2026-10-06): a blind peer leg held a local cron
+        # verdict that had re-run OK and mini paged it 17 min after it passed.
+        entry = coverage[cls]
+        if cls in observed and (entry.get("partial") or entry.get("disp")
+                                not in ("clean", "inert", "active")):
+            coverage[cls] = {**entry, "observed_subjects": observed[cls]}
     return coverage
 
 

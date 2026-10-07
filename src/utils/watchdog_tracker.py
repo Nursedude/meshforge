@@ -47,13 +47,21 @@ def observed_only(
 
 def _class_was_observed(
     coverage: Optional[Dict[str, Dict[str, str]]], cls: str,
+    subject: Optional[str] = None,
 ) -> bool:
-    """True only when ``coverage`` positively says this class was observed."""
+    """True only when ``coverage`` positively says this class — or this
+    SUBJECT of it — was observed."""
     if not isinstance(coverage, dict):
         return False  # dispatch crashed / no map — nothing was observed
     entry = coverage.get(cls)
     if not isinstance(entry, dict):
         return False  # absent or malformed entry is unobserved, not healthy
+    observed = entry.get("observed_subjects")
+    if (subject is not None and isinstance(observed, list)
+            and subject in observed):
+        # A probe positively saw THIS subject healthy; a sibling leg's
+        # blindness is not blindness about it (2026-10-06, cron hold).
+        return True
     if entry.get("partial") is True:
         # active-but-partial (B3, 2026-07-26): the probe emitted SOME subjects
         # while noting indeterminate — another subject's channel failed. The
@@ -209,7 +217,7 @@ class SignalTracker:
         still_held: set = set()
         newly_held: List[Tuple[str, str]] = []
         for key in vanished:
-            if _class_was_observed(coverage, key[0]):
+            if _class_was_observed(coverage, key[0], key[1]):
                 newly_cleared.append(key)
             else:
                 still_held.add(key)

@@ -49,7 +49,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from utils.watchdog_probe_core import (
-    CRON_VERDICT_BAND_FAIL, Signal, note_disposition,
+    CRON_VERDICT_BAND_FAIL, Signal, note_disposition, note_subject_observed,
 )
 
 # This probe contributes to the EXISTING class "cron_verdict_stale" — see
@@ -147,6 +147,10 @@ def probe_peer_cron_verdict_stale(
                        "verdict_band": (cell.get("band")
                                         or CRON_VERDICT_BAND_FAIL)},
             ))
+        elif state == "healthy":
+            # Positively observed — a sibling peer's blindness must not hold
+            # THIS peer's recovered subject (2026-10-06, the cron hold).
+            note_subject_observed("cron_verdict_stale", alias)
         elif state == "dark":
             # Unconfirmed / unobservable on the PEER's side. Its own reason is
             # the witness; surface it as partial coverage, never as health.
