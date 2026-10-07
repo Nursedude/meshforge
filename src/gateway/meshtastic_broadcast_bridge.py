@@ -70,6 +70,16 @@ _LXMF_mod, _HAS_LXMF = safe_import("LXMF")
 logger = logging.getLogger(__name__)
 
 
+def _who(lxmf_hash: str) -> str:
+    """``name — purpose [hash8]`` from the LXMF identity registry, or
+    ``UNKNOWN identity`` (2026-10-07). Labels only; never raises."""
+    try:
+        from .lxmf_identity_registry import load_registry
+        return load_registry().describe(lxmf_hash)
+    except Exception as e:  # noqa: BLE001
+        return f"unnamed [{str(lxmf_hash)[:8]}] (registry error: {e})"
+
+
 @contextmanager
 def _suppress_signal_in_thread():
     """Disable signal.signal() registration on non-main threads.
@@ -336,6 +346,7 @@ class SubscriberStore:
             logger.info(json.dumps({
                 "event": "meshtastic_broadcast_state_transition",
                 "hash": lxmf_hash[:8],
+                "who": _who(lxmf_hash),
                 "from": prior_state,
                 "to": STATE_HEALTHY,
                 "fails": 0,
@@ -438,6 +449,7 @@ class SubscriberStore:
             logger.info(json.dumps({
                 "event": "meshtastic_broadcast_state_transition",
                 "hash": lxmf_hash[:8],
+                "who": _who(lxmf_hash),
                 "from": prior_state,
                 "to": new_state,
                 "fails": new_fails,
@@ -886,6 +898,12 @@ class MeshtasticBroadcastBridge:
             added = self._subs.add(source_hex)
             with self._stats_lock:
                 self.stats["subscribes"] += 1
+            # Subscribe is OPEN to any RNS identity (operator 2026-10-07), so
+            # the one thing owed is saying WHO now receives channel traffic.
+            logger.info(
+                "Meshtastic broadcast subscriber %s: %s (%s) — channels %s",
+                "SUBSCRIBED" if added else "re-subscribe (already listed)",
+                source_hex, _who(source_hex), self._config.channels)
             reply = (
                 "Subscribed. You'll receive Meshtastic channel "
                 f"{self._config.channels} as LXMF DMs. Send 'unsubscribe' to stop."
@@ -897,6 +915,10 @@ class MeshtasticBroadcastBridge:
             removed = self._subs.remove(source_hex)
             with self._stats_lock:
                 self.stats["unsubscribes"] += 1
+            logger.info(
+                "Meshtastic broadcast subscriber %s: %s (%s)",
+                "UNSUBSCRIBED" if removed else "unsubscribe (was not listed)",
+                source_hex, _who(source_hex))
             reply = "Unsubscribed." if removed else "You were not subscribed."
             self._reply(source_hex, reply)
         elif verb == _VERB_CHANNELS:
@@ -912,9 +934,14 @@ class MeshtasticBroadcastBridge:
             )
         else:
             if self._config.autosubscribe:
-                self._subs.add(source_hex)
+                added = self._subs.add(source_hex)
                 with self._stats_lock:
                     self.stats["subscribes"] += 1
+                if added:
+                    logger.info(
+                        "Meshtastic broadcast subscriber SUBSCRIBED (auto): "
+                        "%s (%s) — channels %s",
+                        source_hex, _who(source_hex), self._config.channels)
                 self._reply(source_hex, "Subscribed (auto).")
 
     # ------------------------------------------------------------------

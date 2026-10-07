@@ -23,6 +23,7 @@ Run: python3 -m pytest tests/test_meshtastic_broadcast_bridge.py -v
 
 from __future__ import annotations
 
+import logging
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -562,6 +563,38 @@ class TestSubscriptionProtocol:
             assert b.stats["unsubscribes"] == 1
         finally:
             b.stop()
+
+    def test_subscribe_leaves_a_named_witness(self, tmp_path, fake_rns_lxmf,
+                                              monkeypatch, caplog):
+        """Subscribe is OPEN to any RNS identity (operator 2026-10-07), so
+        the journal must say WHO subscribed — name + purpose, or UNKNOWN."""
+        import json as _json
+        from gateway import lxmf_identity_registry as reg
+        named = "58cecbd0" + "1" * 24
+        (tmp_path / reg.REGISTRY_FILENAME).write_text(_json.dumps({
+            "identities": {named: {"name": "the bot", "purpose": "wx relay"}}}))
+        monkeypatch.setattr(reg, "default_config_dir", lambda: tmp_path)
+        caplog.set_level(logging.INFO,
+                         logger="gateway.meshtastic_broadcast_bridge")
+        b = _make_bridge(tmp_path, fake_rns_lxmf)
+        b.start()
+        try:
+            b._on_lxmf_delivery(_fake_lxmf_message(
+                source_hash=bytes.fromhex(named), body="subscribe"))
+            b._on_lxmf_delivery(_fake_lxmf_message(
+                source_hash=bytes.fromhex("aaaa000000000003"),
+                body="subscribe"))
+            b._on_lxmf_delivery(_fake_lxmf_message(
+                source_hash=bytes.fromhex(named), body="unsubscribe"))
+        finally:
+            b.stop()
+        lines = [r.getMessage() for r in caplog.records
+                 if "broadcast subscri" in r.getMessage()]
+        assert any("SUBSCRIBED" in l and "the bot — wx relay" in l
+                   and named in l for l in lines), lines
+        assert any("SUBSCRIBED" in l and "UNKNOWN identity" in l
+                   for l in lines), lines
+        assert any("UNSUBSCRIBED" in l and "the bot" in l for l in lines), lines
 
     def test_unknown_verb_does_not_subscribe_by_default(
         self, tmp_path, fake_rns_lxmf,

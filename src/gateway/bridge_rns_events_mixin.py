@@ -302,6 +302,17 @@ class BridgeRnsEventsMixin:
         except Exception as e:  # noqa: BLE001
             logger.debug(f"rns ingress stamp skipped: {e}")
 
+    def _lxmf_identity_registry(self):
+        """The identity registry (name + purpose per hash), re-read when its
+        file changes. Labels only — the allowlist decides (2026-10-07)."""
+        cache = getattr(self, "_lxmf_identity_registry_obj", None)
+        if cache is None:
+            from .lxmf_identity_registry import RegistryCache
+            cache = RegistryCache(getattr(self, "_lxmf_identity_registry_dir",
+                                          None))
+            self._lxmf_identity_registry_obj = cache
+        return cache.get()
+
     def _rns_ingress_admits(self, source_hex: str) -> bool:
         """True when ``source_hex`` may be bridged onto RF. Never raises."""
         try:
@@ -334,20 +345,29 @@ class BridgeRnsEventsMixin:
             if refused:
                 self.stats['rns_to_mesh_refused_unlisted'] = (
                     self.stats.get('rns_to_mesh_refused_unlisted', 0) + 1)
+        # WHO it is (name + purpose), never WHETHER it passes: a registry
+        # failure leaves the decision above untouched and says it is blind.
+        try:
+            ident = self._lxmf_identity_registry()
+            who = ident.describe(source_hex)
+            label = ident.label(source_hex)
+        except Exception as e:  # noqa: BLE001
+            who = f"unnamed [{source_hex[:8]}] (registry error: {e})"
+            label = ""
         ent: dict = {}
         try:
             ent = self._rns_ingress_ledger().record(
-                source_hex, policy=policy, refused=refused)
+                source_hex, policy=policy, refused=refused, label=label)
         except Exception as e:  # noqa: BLE001 — witnessed, never decisive
             logger.warning(f"rns ingress ledger record failed ({e}); the "
                            f"journal line below is the only witness")
         # The tripwire's witness: the FULL hash, the policy, and what
         # happened — so the journal alone can seed or amend the list.
         logger.info(
-            "RNS ingress %s: sender %s is not in bridge_source_identities "
+            "RNS ingress %s: sender %s (%s) is not in bridge_source_identities "
             "(policy=%s, seen %d×%s) — %s",
             "REFUSED" if refused else "unlisted",
-            source_hex.lower(), policy, ent.get("seen", 1),
+            source_hex.lower(), who, policy, ent.get("seen", 1),
             f", refused {ent.get('refused', 0)}×" if refused else "",
             "not bridged onto RF" if refused else
             "bridged anyway (observe); add it to the list or enforce")

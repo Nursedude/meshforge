@@ -129,8 +129,11 @@ def _lxmf(source_hex):
 
 
 @pytest.fixture(autouse=True)
-def _no_side_effects(monkeypatch):
+def _no_side_effects(monkeypatch, tmp_path):
     monkeypatch.setattr("gateway.rns_bridge.HAS_RNS_SNIFFER", False)
+    # the identity registry must never read the REAL ~/.config (ambient state)
+    monkeypatch.setattr("gateway.lxmf_identity_registry.default_config_dir",
+                        lambda: tmp_path / "no-registry")
     monkeypatch.setattr("commands.messaging.store_incoming",
                         lambda **kw: None)
 

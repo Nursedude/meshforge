@@ -134,7 +134,26 @@ class MessageRouter:
             return ""
         if not ids:
             return ""
-        return f" rns_allowlist={len(ids)} policy={pol}"
+        return f" rns_allowlist={len(ids)} policy={pol}{self._identity_clause(ids)}"
+
+    @staticmethod
+    def _identity_clause(ids) -> str:
+        """`` named=<n>/<m> unnamed=<h8,…> registry=<state>`` — every listed
+        identity the registry cannot name is printed, so "name their
+        purpose" (operator 2026-10-07) has a visible worklist. Never raises."""
+        try:
+            from .lxmf_identity_registry import load_registry
+            r = load_registry()
+            un = r.unnamed(ids)
+            clause = f" named={len(ids) - len(un)}/{len(ids)}"
+            if un:
+                clause += " unnamed=" + ",".join(h[:8] for h in un)
+            clause += f" registry={r.state}"
+            if r.problems:
+                clause += f" registry_problems={len(r.problems)}"
+            return clause
+        except Exception as e:  # noqa: BLE001
+            return f" registry=error({e})"
 
     def describe_ingress_policy(self) -> str:
         """One sentence naming who this gateway bridges, derived from the

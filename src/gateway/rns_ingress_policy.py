@@ -186,6 +186,8 @@ class IngressLedger:
                        "refused": 0, "label": label or s[:4]}
                 senders[s] = ent
             ent["last_seen"] = now
+            if label:  # follow a later naming in the identity registry
+                ent["label"] = label
             ent["seen"] = int(ent.get("seen", 0)) + 1
             if refused:
                 ent["refused"] = int(ent.get("refused", 0)) + 1
