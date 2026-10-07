@@ -3457,6 +3457,16 @@ Options: **A** `fleet_sync` re-renders + installs from templates — REJECT (ove
 
 ⚠️ B is a new check (END=harness) — queued, not built, during the freeze.
 
+## QUEUED 2026-10-07 (Fable 5.1, self-queued at session close) — NON-AUTHOR PASS OWED on the 10-06/07 session's source commits
+
+All five are author-drilled, none reviewed by anyone else; the next session is Opus-class, so this is a queue entry for the next FRONTIER pass, not work for Opus (model_advisor: never fake a frontier adversarial pass on a smaller model). Highest yield first:
+1. `81ee6ca4` + `9a826535` — RNS→RF allowlist + ledger (`gateway/rns_ingress_policy.py`, `bridge_rns_events_mixin.py`). Attack: the error branch admits as OPEN — what input makes that branch fire silently and often? Is `observe` ever able to leak a refusal into `enforce` semantics via the ledger's `last_policy`? Thread safety of the ledger under the bridge's threads. The `verdict()` peer set reads `_peer_gateway_hash_set` — a config reload mid-run.
+2. `d2c2b713` — the /fleet cell + spool leg. Attack: a STALE ledger (gateway dead, file old) reads HEALTHY — the cell carries `age_s` but no state flips on age; is that the #74-style flattering lie? What does `absent` on a GATEWAY box (open, never stamped) hide?
+3. `2223d2c1` — `drop` on the legacy decider + the disclosure line. Attack: a `drop` rule with NO filters refuses everything on legacy (`_check_rule`-less path) — intended? Does the classifier's `drop` with no filters behave the same?
+4. `7edefbb8` — three hold-class cures. Attack: any emitter that now notes `observed` on a path that is NOT a positive observation (the cron fix's own rule).
+5. `294c8e0b` — `unobserved_since` + peer clock skew. Attack: `fetched_at`-vs-`peer_now` across a DST/NTP step on the manager.
+Also queued for 10-09 from this session: per-cron subjects for the local cron leg (one `cron` subject holds a recovered cron's name); the coverage gate decision with the decoy evidence.
+
 ## ~~QUEUED~~ RUN 2026-10-06 (Fable 5.1; fix `7edefbb8`, test-first `tests/test_hold_granularity_siblings.py` — 7 drills RED on the pre-fix code, GREEN after; lint rc=0, full suite rc=0 15078 passed; NOT yet deployed — fleet @ 53aeff32) — FRONTIER WORKLIST: the "stale evidence judged against now" class — hunt its SIBLINGS
 
 **Method:** AST census of every `probe_*` emitting a variable or looped subject (32 candidates), then the question per class: *can a disposition about subject A decide subject B?* Confirmed = a drill through the REAL probe → `build_coverage` → `SignalTracker` leaves the recovered subject HELD. Live fleet sweep first (8/8 reachable boxes: the four classes `clean`, zero `unobserved_hold` signals) — every sibling is LATENT today, none is a current page.
