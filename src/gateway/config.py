@@ -116,6 +116,12 @@ def validate_direction(direction: str, field_name: str) -> Optional[ConfigValida
         "mesh_to_meshcore", "meshcore_to_mesh",
         "rns_to_meshcore", "meshcore_to_rns",
         "all_to_all",
+        # A REFUSING rule: a message matching its filters is never bridged.
+        # The classifier decider has honoured this word since it shipped;
+        # until 2026-10-06 this list rejected it, so the only knob that
+        # could express a source policy on the live path was invalid config
+        # (ingress trust-boundary enumeration).
+        "drop",
     ]
     if direction not in valid:
         return ConfigValidationError(field_name, f"Invalid direction '{direction}'. Valid: {valid}")

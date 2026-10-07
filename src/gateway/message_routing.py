@@ -61,7 +61,15 @@ class MessageRouter:
         'rns_to_meshcore': ('rns', 'meshcore'),
         'meshcore_to_rns': ('meshcore', 'rns'),
         'all_to_all': None,  # Any direction
+        # A refusing rule applies to any source; its FILTERS pick the
+        # messages it refuses (2026-10-06 — before this entry the legacy
+        # decider read 'drop' as an unknown direction and ALLOWED the match).
+        'drop': None,
     }
+
+    #: ``default_route`` values under which the legacy decider bridges a
+    #: message no rule matched. Anything else makes rules an allow-list.
+    _OPEN_DEFAULT_ROUTES = ("bidirectional", "all_to_all")
 
     # Maximum input length for regex matching to bound execution time
     _REGEX_INPUT_LIMIT = 512
@@ -104,6 +112,57 @@ class MessageRouter:
                 fixes_path=fixes_path
             )
             logger.info("Routing classifier initialized with confidence scoring")
+        # Say the EFFECTIVE policy, once, where the operator reads (the
+        # journal). Measured 2026-10-06 on both live gateways: zero rules +
+        # bidirectional + classifier = every sender on every network bridged,
+        # and the line above was the only thing the gateway said about it.
+        logger.info(self.describe_ingress_policy())
+
+    def describe_ingress_policy(self) -> str:
+        """One sentence naming who this gateway bridges, derived from the
+        config and the decider actually in use — never from a hope.
+
+        Two deciders exist and they read the same ``routing_rules``
+        differently; the sentence says which one is live:
+
+        * classifier — every message is bridged (``bridge_to_*`` is the
+          default category per source network) unless a rule with
+          ``direction: "drop"`` matches it. ALLOW rules only add
+          confidence and ``default_route`` is not consulted, so neither
+          restricts anything on this path.
+        * legacy — a message is bridged when an enabled rule matches it, or
+          when ``default_route`` is bidirectional/all_to_all; a matching
+          ``drop`` rule refuses it.
+        """
+        rules = [r for r in self.config.routing_rules if r.enabled]
+        drop = [r for r in rules if r.direction == "drop"]
+        allow = [r for r in rules if r.direction != "drop"]
+        decider = "classifier" if self._classifier is not None else "legacy"
+        head = (f"Routing ingress policy: decider={decider} rules={len(rules)} "
+                f"default_route={self.config.default_route} — ")
+        knob = ("a rule with direction 'drop' (source_filter/dest_filter/"
+                "message_filter pick what it refuses) is the knob that "
+                "closes a path")
+        if decider == "classifier":
+            if drop:
+                return (head + f"every source network is bridged except what "
+                        f"{len(drop)} drop rule(s) refuse "
+                        f"({', '.join(r.name for r in drop)}); "
+                        f"{len(allow)} allow rule(s) and default_route do not "
+                        f"restrict on this decider")
+            return (head + "OPEN on every source network: any sender whose "
+                    "message reaches this gateway is bridged onward (RNS→RF "
+                    "included); " + (f"{len(allow)} allow rule(s) and "
+                    "default_route do not restrict on this decider; "
+                    if allow else "") + knob)
+        if self.config.default_route in self._OPEN_DEFAULT_ROUTES:
+            return (head + "OPEN: any sender is bridged unless "
+                    + (f"one of {len(drop)} drop rule(s) matches; "
+                       if drop else "") + knob)
+        return (head + f"ALLOW-LISTED: only messages matching "
+                f"{len(allow)} enabled allow rule(s) are bridged"
+                + (f", minus {len(drop)} drop rule(s)" if drop else "")
+                + "; a sender no rule names is refused")
 
     def should_bridge(self, msg) -> bool:
         """
@@ -258,13 +317,19 @@ class MessageRouter:
 
             # All filters passed - this rule matches
             source_id = getattr(msg, 'source_id', '') or getattr(msg, 'source_address', '')
+            if rule.direction == 'drop':
+                logger.info(
+                    "Routing legacy: drop rule '%s' refused %s from %s",
+                    rule.name, source_id[:16], source
+                )
+                return False
             logger.debug(
                 "Routing legacy: rule '%s' matched for %s from %s",
                 rule.name, source_id[:16], source
             )
             return True
 
-        default_bridge = self.config.default_route in ("bidirectional", "all_to_all")
+        default_bridge = self.config.default_route in self._OPEN_DEFAULT_ROUTES
         logger.debug(
             "Routing legacy: no rule matched, default_route=%s -> bridge=%s",
             self.config.default_route, default_bridge
