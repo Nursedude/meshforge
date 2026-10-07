@@ -103,8 +103,16 @@ def _watchdog_extractor(data):
             # nothing in the message distinguished it from a live reading.
             item["unobserved_hold"] = True
             since = extra.get("unobserved_since")
+            stamp = None
             if isinstance(since, (int, float)) and not isinstance(since, bool):
-                stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(since))
+                try:
+                    stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(since))
+                except (ValueError, OverflowError, OSError):
+                    # An absurd stamp must not crash the extractor — that
+                    # blinds mini's ENTIRE watchdog source for the box
+                    # (non-author review 2026-10-07).
+                    stamp = None
+            if stamp is not None:
                 item["detail"] = (f"HELD since {stamp} (currently "
                                   f"unobservable): {item['detail']}")
             else:

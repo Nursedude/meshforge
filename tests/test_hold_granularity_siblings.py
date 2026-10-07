@@ -374,3 +374,35 @@ class TestObservedAndEmittedNeverCollide:
         assert cleared == [] and held == []
         assert [(s.subject, s.extra.get("unobserved_hold"))
                 for s, _ in active] == [("x", None)]
+
+
+class TestLxmfPatternSharedByPids:
+    """Non-author review 2026-10-07 (CONFIRMED): the lxmf leg's subject is a
+    cmdline PATTERN shared by N pids; a clean sibling pid (`pgrep -f
+    lab.lxmf_echo`) cleared the daemon's held wedge while the daemon's own
+    stack was unreadable."""
+    CLS = "main_thread_wedge"
+
+    def test_clean_sibling_pid_does_not_observe_the_pattern(self, tmp_path):
+        _proc_tree(tmp_path, 200, "bash -c pgrep -f lab.lxmf_echo")   # clean sibling
+        (tmp_path / "100" / "task" / "100").mkdir(parents=True)        # daemon, no stack
+        (tmp_path / "100" / "cmdline").write_bytes(b"python3\x00-m\x00lab.lxmf_echo")
+        tracker = _tracker_with(Signal(cls=self.CLS, subject="lab.lxmf_echo",
+                                       severity="wedge", detail="wedged"))
+        reset_dispositions()
+        current = list(probe_lxmf_process_wedge(proc_root=str(tmp_path)))
+        assert current == []
+        cov, active, cleared, held = _settle(tracker, current)
+        assert cov[self.CLS]["disp"] == "indeterminate"
+        assert cleared == [] and (self.CLS, "lab.lxmf_echo") in held
+
+    def test_all_pids_clean_observes_the_pattern(self, tmp_path):
+        _proc_tree(tmp_path, 100, "python3 -m lab.lxmf_echo")
+        _proc_tree(tmp_path, 200, "bash -c pgrep -f lab.lxmf_echo")
+        tracker = _tracker_with(Signal(cls=self.CLS, subject="lab.lxmf_echo",
+                                       severity="wedge", detail="wedged"))
+        reset_dispositions()
+        note_disposition(self.CLS, "indeterminate", reason="unit leg blind")
+        current = list(probe_lxmf_process_wedge(proc_root=str(tmp_path)))
+        _cov, _active, cleared, _held = _settle(tracker, current)
+        assert (self.CLS, "lab.lxmf_echo") in cleared

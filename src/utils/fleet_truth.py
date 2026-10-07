@@ -833,7 +833,8 @@ def build_box_truth(
                                else _schedules_cell(slo))
     subsystems["rns_paths"] = _generic_present_cell(
         slo, "path_table", "/fleet/slo.path_table")
-    subsystems["rns_ingress"] = _rns_ingress_cell(slo, spool_ingress, now=now)
+    subsystems["rns_ingress"] = _rns_ingress_cell(
+        slo, spool_ingress, now=now, spool_clock=snap.get("spool_clock"))
 
     # Mark the cells whose ONLY window is the HTTP surface this box's declared
     # role deliberately does not run. Strictly gated: the flag is applied only
@@ -1061,11 +1062,19 @@ def _schedules_cell_from_spool(judged: Dict[str, Any]) -> Dict[str, Any]:
 #: the ledger projection's default, so "0 unlisted" means the same thing on
 #: every surface.
 RNS_INGRESS_WINDOW_S = 86400.0
+#: A ledger older than this is a DEAD gateway's last word, not a live
+#: posture: the gateway re-stamps on its LXMF announce cadence (≥60 s,
+#: default 300 s), so 3600 s = at least 12 missed stamps. Past it the cell is
+#: DARK — "healthy, 0 unlisted" from a dead enforcer was the flattering lie
+#: the non-author review (2026-10-07) found. A NEGATIVE age (stamp in the
+#: future) is a clock fault and is DARK too (hfm #6).
+RNS_INGRESS_STALE_S = 3600.0
 
 
 def _rns_ingress_cell(slo: Optional[Dict[str, Any]],
                       spool_ingress: Optional[Dict[str, Any]], *,
-                      now: float) -> Dict[str, Any]:
+                      now: float,
+                      spool_clock: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The RNS→RF ingress TRIPWIRE as a fleet cell (2026-10-06).
 
     Sources, in order: the map's ``/fleet/slo.rns_ingress`` (already
@@ -1078,27 +1087,50 @@ def _rns_ingress_cell(slo: Optional[Dict[str, Any]],
     * absent  — no ledger: no gateway on this box, OR an OPEN gateway that
       never stamped (the ledger is written only once a list is declared).
       Marked ``absent`` so it never taints; the reason says both readings.
-    * DARK    — ledger says policy ``open``: a gateway with no allowlist
-      declared. Undeclared is dark, not healthy.
+    * DARK    — ledger says policy ``open`` (undeclared is dark, not
+      healthy); OR the ledger is STALE / from the future (a dead enforcer,
+      or a clock fault — never "healthy, 0 unlisted"); OR, on the spool
+      leg, the peer's clock is skewed past ``PEER_CLOCK_SKEW_DARK_S`` so its
+      stamps cannot be windowed (same cure as the cron cell, hfm #5).
     * FAILED  — one or more unlisted senders in the window. The reason names
       their labels and whether they were bridged (observe) or refused
       (enforce). This is the tripwire firing; under observe it is the soak
       telling the operator who is missing from the list.
-    * HEALTHY — a list is declared and nobody unlisted in the window.
+    * HEALTHY — a list is declared, the ledger is fresh, nobody unlisted.
     """
     src = None
     proj: Optional[Dict[str, Any]] = None
     if isinstance(slo, dict) and isinstance(slo.get("rns_ingress"), dict):
         proj = slo["rns_ingress"]
         src = "/fleet/slo.rns_ingress"
+        eff_now = now
     elif isinstance(spool_ingress, dict):
+        src = "ssh_spool.rns_ingress_ledger"
+        # The ledger's stamps are the PEER's clock. Window them against the
+        # peer's notion of now (fetch pair carried by the collector); a skew
+        # past the cron judge's threshold makes the ages unjudgeable.
+        eff_now = now
+        pn = (spool_clock or {}).get("peer_now") if isinstance(spool_clock, dict) else None
+        fa = (spool_clock or {}).get("fetched_at") if isinstance(spool_clock, dict) else None
+        if (isinstance(pn, (int, float)) and not isinstance(pn, bool)
+                and isinstance(fa, (int, float)) and not isinstance(fa, bool)):
+            skew = float(pn) - float(fa)
+            try:
+                from utils.fleet_truth_collector import PEER_CLOCK_SKEW_DARK_S as _skew_cap
+            except Exception:  # noqa: BLE001
+                _skew_cap = 600.0
+            if abs(skew) > _skew_cap:
+                return cell(DARK, source=src,
+                            reason=f"peer clock skew {skew:+.0f}s vs THIS box at "
+                                   f"fetch — the ingress ledger's ages are "
+                                   f"unjudgeable (same tell as the schedules cell)")
+            eff_now = now + skew
         try:
             from gateway.rns_ingress_policy import project_ledger_doc
-            proj = project_ledger_doc(spool_ingress, now=now,
+            proj = project_ledger_doc(spool_ingress, now=eff_now,
                                       window_s=RNS_INGRESS_WINDOW_S)
         except Exception:  # noqa: BLE001 — cannot project = cannot judge
             proj = None
-        src = "ssh_spool.rns_ingress_ledger"
     if not isinstance(proj, dict):
         return cell(DARK, absent=True, source=src or "/fleet/slo.rns_ingress",
                     reason="no RNS ingress ledger: no gateway on this box, "
@@ -1106,11 +1138,26 @@ def _rns_ingress_cell(slo: Optional[Dict[str, Any]],
                            "declared) and has never stamped")
     policy = proj.get("policy")
     updated = proj.get("updated_at")
-    age = (now - float(updated)) if isinstance(updated, (int, float)) else None
+    age = (eff_now - float(updated)) if isinstance(updated, (int, float)) else None
     if policy == "open":
         return cell(DARK, source=src, age_s=age, observed_at=updated,
                     reason="RNS→RF ingress OPEN — no allowlist declared on "
                            "this gateway; every RNS sender is bridged onto RF")
+    if age is None:
+        return cell(DARK, source=src,
+                    reason="ingress ledger carries no stamp time — cannot tell "
+                           "a live enforcer from a dead one")
+    if age < 0:
+        return cell(DARK, source=src, age_s=age, observed_at=updated,
+                    reason=f"ingress ledger stamped {-age:.0f}s in the FUTURE "
+                           f"— clock fault on the gateway or here; posture "
+                           f"unjudgeable")
+    if age > RNS_INGRESS_STALE_S:
+        return cell(DARK, source=src, age_s=age, observed_at=updated,
+                    reason=f"ingress ledger is {age / 3600:.1f}h old (stale past "
+                           f"{RNS_INGRESS_STALE_S / 3600:.0f}h) — the gateway "
+                           f"that enforced it is not re-stamping; nothing is "
+                           f"enforcing now")
     recent = proj.get("unlisted_recent") or []
     listed = proj.get("listed")
     hours = int(RNS_INGRESS_WINDOW_S // 3600)

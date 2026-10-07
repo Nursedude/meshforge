@@ -181,6 +181,7 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
     # RAW rns_ingress_ledger.json from the spool (map-less gateways);
     # fleet_truth projects it. None = no ledger spooled.
     spool_ingress: Optional[Dict[str, Any]] = None
+    spool_clock: Optional[Dict[str, Any]] = None
 
     if slo is None and status is None:
         # Direct fan-out failed — try the ssh spool (fresh-only).
@@ -195,6 +196,13 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
                 spool_services = spool["services"]
             if isinstance(spool.get("ingress"), dict):
                 spool_ingress = spool["ingress"]
+                # The ledger's stamps are the PEER's clock; carry the same
+                # clock pair the cron judge uses so the cell can window them
+                # honestly (non-author review 2026-10-07, hfm #5).
+                _c = spool.get("clock")
+                if isinstance(_c, dict):
+                    spool_clock = {"peer_now": _c.get("now"),
+                                   "fetched_at": spool.get("fetched_at")}
             _clock = spool.get("clock")
             spool_schedules = judge_spooled_schedules(
                 alias, spool.get("schedules"),
@@ -260,6 +268,7 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
         "spool_services": spool_services,
         "spool_schedules": spool_schedules,
         "spool_ingress": spool_ingress,
+        "spool_clock": spool_clock,
     }
 
 
@@ -308,9 +317,11 @@ def judge_spooled_schedules(alias: str, section: "Optional[Dict[str, Any]]",
         skew = float(peer_now) - float(fetched_at)
         if abs(skew) > PEER_CLOCK_SKEW_DARK_S:
             return {"state": "dark",
-                    "reason": (f"peer clock skew {skew:+.0f}s vs this box at "
+                    "reason": (f"peer clock skew {skew:+.0f}s vs THIS box at "
                                f"fetch — {alias}'s verdict ages are "
-                               f"unjudgeable; check NTP on {alias}")}
+                               f"unjudgeable; one peer skewed = check NTP on "
+                               f"{alias}, every peer skewed alike = fix NTP "
+                               f"on this box")}
     import base64
 
     def _dec(key: str) -> "Optional[str]":

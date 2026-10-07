@@ -1190,14 +1190,29 @@ class GatewayConfig:
         try:
             from .rns_ingress_policy import (
                 DECLARABLE_POLICIES, malformed_hashes, normalize_hashes)
-            bad = malformed_hashes(self.rns.bridge_source_identities)
+            raw_ids = self.rns.bridge_source_identities
+            if raw_ids not in ("", None) and not isinstance(raw_ids, (str, list, tuple)):
+                # A dict/int/bool normalises to [] = OPEN with nothing named
+                # (non-author review 2026-10-07). Name the shape.
+                errors.append(ConfigValidationError(
+                    "rns.bridge_source_identities",
+                    f"must be a list of 32-hex LXMF hashes (or one string), "
+                    f"got {type(raw_ids).__name__} — treated as EMPTY, i.e. "
+                    f"RNS→RF ingress is OPEN", severity="warning"))
+            bad = malformed_hashes(raw_ids)
             for b in bad:
                 errors.append(ConfigValidationError(
                     "rns.bridge_source_identities",
                     f"{b} is not a 32-hex LXMF hash — dropped from the list",
                     severity="warning"))
             pol = (self.rns.bridge_source_policy or "").strip().lower()
-            if normalize_hashes(self.rns.bridge_source_identities) and \
+            if pol == "enforce" and not normalize_hashes(raw_ids):
+                errors.append(ConfigValidationError(
+                    "rns.bridge_source_policy",
+                    "'enforce' declared but bridge_source_identities is empty "
+                    "— the effective policy is OPEN (every RNS sender bridged)",
+                    severity="warning"))
+            if normalize_hashes(raw_ids) and \
                     pol not in DECLARABLE_POLICIES:
                 errors.append(ConfigValidationError(
                     "rns.bridge_source_policy",

@@ -260,3 +260,13 @@ def test_watchdog_extractor_leaves_a_live_signal_alone():
         "extra": {"pid": 4}}]})
     assert "unobserved_hold" not in out[0]
     assert out[0]["detail"] == "wedged"
+
+
+def test_watchdog_extractor_survives_an_absurd_hold_stamp():
+    """Non-author review 2026-10-07: strftime on 1e300 / NaN raised and the
+    engine recorded the whole watchdog source as a source_error."""
+    for bad in (1e300, float("nan")):
+        out = _watchdog_extractor({"signals": [{
+            "class": "main_thread_wedge", "subject": "x", "detail": "wedged",
+            "extra": {"unobserved_hold": True, "unobserved_since": bad}}]})
+        assert out[0]["detail"].startswith("HELD (currently unobservable")

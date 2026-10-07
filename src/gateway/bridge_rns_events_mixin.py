@@ -16,9 +16,15 @@ Module-name resolution for the moved bodies:
 All other imports the moved bodies use are function-local and moved with them.
 """
 import logging
+import threading
 from queue import Full
 
 from .node_tracker import UnifiedNode
+
+#: Guards the lazy first construction of the RNS ingress ledger (see
+#: ``_rns_ingress_ledger``); process-wide because the bridge is one per
+#: process and two ledger objects on one file clobber each other.
+_RNS_INGRESS_INIT_LOCK = threading.Lock()
 
 logger = logging.getLogger(__name__)
 
@@ -250,13 +256,20 @@ class BridgeRnsEventsMixin:
 
     # ── RNS→RF ingress policy ────────────────────────────────────────
     def _rns_ingress_ledger(self):
-        """Lazily-built, process-wide ledger of unlisted senders."""
+        """Lazily-built, process-wide ledger of unlisted senders. Built under
+        a lock: get_status() (status thread) and the LXMF delivery thread may
+        race to the first construction, and two ledger objects would clobber
+        each other's writes (non-author review 2026-10-07)."""
         led = getattr(self, "_rns_ingress_ledger_obj", None)
         if led is None:
-            from .rns_ingress_policy import IngressLedger, default_ledger_path
-            path = getattr(self, "_rns_ingress_ledger_path", None)
-            led = IngressLedger(path or default_ledger_path())
-            self._rns_ingress_ledger_obj = led
+            with _RNS_INGRESS_INIT_LOCK:
+                led = getattr(self, "_rns_ingress_ledger_obj", None)
+                if led is None:
+                    from .rns_ingress_policy import (
+                        IngressLedger, default_ledger_path)
+                    path = getattr(self, "_rns_ingress_ledger_path", None)
+                    led = IngressLedger(path or default_ledger_path())
+                    self._rns_ingress_ledger_obj = led
         return led
 
     def rns_ingress_posture(self) -> dict:
@@ -303,31 +316,42 @@ class BridgeRnsEventsMixin:
             if v != VERDICT_UNLISTED:
                 return True
             refused = policy == POLICY_ENFORCE
-            with self._stats_lock:
-                self.stats['rns_ingress_unlisted'] = (
-                    self.stats.get('rns_ingress_unlisted', 0) + 1)
-                if refused:
-                    self.stats['rns_to_mesh_refused_unlisted'] = (
-                        self.stats.get('rns_to_mesh_refused_unlisted', 0) + 1)
-            ent = self._rns_ingress_ledger().record(
-                source_hex, policy=policy, refused=refused)
-            # The tripwire's witness: the FULL hash, the policy, and what
-            # happened — so the journal alone can seed or amend the list.
-            logger.info(
-                "RNS ingress %s: sender %s is not in bridge_source_identities "
-                "(policy=%s, seen %d×%s) — %s",
-                "REFUSED" if refused else "unlisted",
-                source_hex.lower(), policy, ent.get("seen", 1),
-                f", refused {ent.get('refused', 0)}×" if refused else "",
-                "not bridged onto RF" if refused else
-                "bridged anyway (observe); add it to the list or enforce")
-            return not refused
-        except Exception as e:  # noqa: BLE001 — a broken policy must not
+        except Exception as e:  # noqa: BLE001 — a broken POLICY must not
             # silently CLOSE the bridge, but must not silently open it
             # either: say so, and fall back to today's behaviour (open).
             logger.warning(f"rns ingress policy error ({e}); admitting "
                            f"{source_hex[:8]} as if OPEN")
             return True
+        # The DECISION is made. Everything below is witness-keeping, and a
+        # failure there must change nothing about the decision (non-author
+        # review 2026-10-07: a corrupt ledger entry raised inside the guarded
+        # block above and admitted a stranger under enforce, forever, while
+        # the refused counter still climbed — state must never open the
+        # bridge; only a policy error may).
+        with self._stats_lock:
+            self.stats['rns_ingress_unlisted'] = (
+                self.stats.get('rns_ingress_unlisted', 0) + 1)
+            if refused:
+                self.stats['rns_to_mesh_refused_unlisted'] = (
+                    self.stats.get('rns_to_mesh_refused_unlisted', 0) + 1)
+        ent: dict = {}
+        try:
+            ent = self._rns_ingress_ledger().record(
+                source_hex, policy=policy, refused=refused)
+        except Exception as e:  # noqa: BLE001 — witnessed, never decisive
+            logger.warning(f"rns ingress ledger record failed ({e}); the "
+                           f"journal line below is the only witness")
+        # The tripwire's witness: the FULL hash, the policy, and what
+        # happened — so the journal alone can seed or amend the list.
+        logger.info(
+            "RNS ingress %s: sender %s is not in bridge_source_identities "
+            "(policy=%s, seen %d×%s) — %s",
+            "REFUSED" if refused else "unlisted",
+            source_hex.lower(), policy, ent.get("seen", 1),
+            f", refused {ent.get('refused', 0)}×" if refused else "",
+            "not bridged onto RF" if refused else
+            "bridged anyway (observe); add it to the list or enforce")
+        return not refused
 
     def _on_rns_announce(self, dest_hash, announced_identity, app_data):
         """Handle RNS announce for node discovery"""

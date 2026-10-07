@@ -291,7 +291,12 @@ class MessageRouter:
         # Determine source network (handle both BridgedMessage and CanonicalMessage)
         source = getattr(msg, 'source_network', '')
 
-        for rule in self.config.routing_rules:
+        # A refusing rule wins regardless of config order (non-author review
+        # 2026-10-07: an allow rule listed first returned True before the
+        # drop rule was ever consulted). Walk drop rules first.
+        ordered = ([r for r in self.config.routing_rules if r.direction == 'drop']
+                   + [r for r in self.config.routing_rules if r.direction != 'drop'])
+        for rule in ordered:
             if not rule.enabled:
                 continue
 

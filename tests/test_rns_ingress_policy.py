@@ -271,3 +271,72 @@ def test_default_ledger_path_is_inside_the_gateway_units_writable_dirs(monkeypat
     assert p.parts[-3:] == (".local", "share", "meshforge")[:3][-3:] or ".local/share/meshforge" in str(p)
     assert p.name == pol.LEDGER_FILENAME
     assert ".local/state" not in str(p)
+
+
+class TestLedgerCorruptionCannotOpenTheBridge:
+    """Non-author review 2026-10-07 (CONFIRMED): under enforce a malformed
+    ledger entry made record() raise inside the except-guarded path, so that
+    sender was admitted "as if OPEN" on every message, while the refused
+    counter still incremented. The ledger is on-disk INPUT to the enforce
+    path; state must never open the bridge, only a policy error may."""
+
+    @pytest.mark.parametrize("entry", [{"seen": None}, 7, "x", {"refused": "n"}])
+    def test_enforce_still_refuses_with_a_corrupt_ledger_entry(self, tmp_path, entry):
+        (tmp_path / "ledger.json").write_text(json.dumps(
+            {"schema": pol.LEDGER_SCHEMA, "senders": {STRANGER: entry}}))
+        b = _fake_bridge(tmp_path, [LISTED], "enforce")
+        b._on_lxmf_receive(_lxmf(STRANGER))
+        b._on_lxmf_receive(_lxmf(STRANGER))
+        assert b._rns_to_mesh_queue.qsize() == 0
+        assert b.stats["rns_to_mesh_refused_unlisted"] == 2
+
+    def test_loader_sanitizes_entries(self, tmp_path):
+        (tmp_path / "l.json").write_text(json.dumps(
+            {"schema": pol.LEDGER_SCHEMA,
+             "senders": {STRANGER: {"seen": None, "refused": "n"}, PEER: 7}}))
+        led = pol.IngressLedger(tmp_path / "l.json", now_fn=lambda: 1.0)
+        ent = led.record(STRANGER, policy="enforce", refused=True)
+        assert ent["seen"] == 1 and ent["refused"] == 1
+        assert led.snapshot()["unlisted_total"] == 1      # the int entry was dropped
+
+
+class TestConfigShapeIsNamed:
+    """Non-author review 2026-10-07 (CONFIRMED): a dict/int/bool/None list
+    normalised to [] → OPEN with nothing named, despite a declared policy."""
+
+    @pytest.mark.parametrize("raw", [{"a": LISTED}, 123, True])
+    def test_wrong_shape_is_named(self, raw):
+        cfg = GatewayConfig()
+        cfg.rns = RNSConfig(bridge_source_identities=raw, bridge_source_policy="enforce")
+        _ok, errors = cfg.validate()
+        assert any("bridge_source_identities" in str(e) for e in errors), errors
+
+    def test_declared_policy_with_empty_list_is_named(self):
+        cfg = GatewayConfig()
+        cfg.rns = RNSConfig(bridge_source_identities=[], bridge_source_policy="enforce")
+        _ok, errors = cfg.validate()
+        assert any("bridge_source_policy" in str(e) and "OPEN" in str(e) for e in errors), errors
+
+
+def test_lazy_ledger_init_is_single_under_threads(tmp_path):
+    """Non-author review 2026-10-07 (PLAUSIBLE → pinned): two threads calling
+    the lazy getter before start() must share ONE ledger object."""
+    import threading as _t
+    b = _fake_bridge(tmp_path, [LISTED], "observe")
+    seen = []
+    def go():
+        seen.append(id(b._rns_ingress_ledger()))
+    ts = [_t.Thread(target=go) for _ in range(8)]
+    [t.start() for t in ts]; [t.join(5) for t in ts]
+    assert len(set(seen)) == 1
+
+
+def test_unparseable_last_seen_stays_in_the_window():
+    """Non-author review 2026-10-07: untyped last_seen silently aged a
+    sender out of the window → healthy. Unknown is not old."""
+    doc = {"senders": {STRANGER: {"last_seen": None, "seen": 2, "refused": 2},
+                       PEER: {"last_seen": "yesterday", "seen": 1, "refused": 1},
+                       "ab" * 16: {"last_seen": "1799999995", "seen": 1}}}
+    p = pol.project_ledger_doc(doc, now=1_800_000_000.0)
+    assert {r["hash"] for r in p["unlisted_recent"]} == {STRANGER, PEER, "ab" * 16}
+    assert p["refused_total"] == 3

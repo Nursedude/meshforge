@@ -138,3 +138,27 @@ class TestTheRouterSaysItsPolicy:
                 default_route="mesh_to_rns")
         assert "decider=legacy" in line
         assert "ALLOW-LISTED" in line
+
+
+class TestDropWinsOverAllow:
+    """Non-author review 2026-10-07 (CONFIRMED): a drop rule was silently
+    defeated by any ALLOW rule that matched first — the classifier `break`s
+    on the first match in priority order and the legacy decider returns True
+    on the first allow in config order — while the disclosure line said the
+    drop rule was in force. A refusing rule must win regardless of order."""
+
+    def _rules(self):
+        return [RoutingRule(name="allow_all", direction="bidirectional", priority=10),
+                RoutingRule(name="block", direction="drop", source_filter="^dead",
+                            priority=5)]
+
+    def test_classifier_drop_wins_whatever_the_priority(self):
+        r = _router(self._rules())
+        assert r.should_bridge(_msg(sid=STRANGER)) is False
+        assert r.should_bridge(_msg(sid=PEER)) is True
+
+    def test_legacy_drop_wins_whatever_the_order(self):
+        with patch.object(mr, "CLASSIFIER_AVAILABLE", False):
+            r = _router(self._rules())
+            assert r.should_bridge(_msg(sid=STRANGER)) is False
+            assert r.should_bridge(_msg(sid=PEER)) is True

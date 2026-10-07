@@ -323,6 +323,7 @@ _WEDGE_PATTERNS = (
 
 def _scan_pid_task_stacks(
     pid: int, proc_root: str, *, subject: Optional[str] = None,
+    outcome: Optional[dict] = None,
 ) -> Optional[Tuple[int, str, str]]:
     """Walk every task under /proc/<pid>/task/*/stack for a wedge pattern.
 
@@ -376,6 +377,13 @@ def _scan_pid_task_stacks(
     note_disposition("main_thread_wedge", "clean")
     if subject:
         note_subject_observed("main_thread_wedge", subject)
+    if outcome is not None:
+        # Tri-state for callers that must AGGREGATE before observing: the
+        # two unreadable branches above return the same None as this clean
+        # one, and the lxmf leg's subject is a cmdline PATTERN shared by N
+        # pids (non-author review 2026-10-07: a clean `pgrep -f lab.lxmf_echo`
+        # cleared the daemon's held wedge).
+        outcome["clean"] = True
     return None
 
 
@@ -486,6 +494,9 @@ def probe_lxmf_process_wedge(
                          reason="/proc unlistable; lxmf process scan impossible")
         return signals
 
+    # Per PATTERN: every pid matching it must scan clean before the pattern
+    # is a positive observation — a pattern is a subject shared by N pids.
+    pattern_clean: dict = {}
     for entry in entries:
         if not entry.isdigit():
             continue
@@ -506,9 +517,13 @@ def probe_lxmf_process_wedge(
         if matched_pat is None:
             continue
 
-        found = _scan_pid_task_stacks(pid, proc_root, subject=matched_pat)
+        outcome: dict = {}
+        found = _scan_pid_task_stacks(pid, proc_root, outcome=outcome)
         if found is None:
+            pattern_clean[matched_pat] = (pattern_clean.get(matched_pat, True)
+                                          and outcome.get("clean", False))
             continue
+        pattern_clean[matched_pat] = False
         tid, kernel_pattern, excerpt = found
 
         thread_role = "main thread" if tid == pid else f"worker thread tid={tid}"
@@ -534,6 +549,12 @@ def probe_lxmf_process_wedge(
         ))
     if not signals:
         note_disposition("main_thread_wedge", "clean")
+    # A pattern is observed healthy only when EVERY pid that carried it
+    # scanned clean (a clean sibling — a `pgrep -f` of the pattern — must
+    # not clear the daemon's held wedge; non-author review 2026-10-07).
+    for pat, ok in pattern_clean.items():
+        if ok:
+            note_subject_observed("main_thread_wedge", pat)
     return signals
 
 

@@ -1075,6 +1075,14 @@ class RNSMeshtasticBridge(
                             self._last_lxmf_announce = time.monotonic()
                             logger.info("LXMF re-announce sent (dest=%s)",
                                         self._lxmf_source.hash.hex())
+                            # Re-stamp the ingress ledger on the announce
+                            # cadence so a LIVE gateway's ledger is provably
+                            # fresh and a dead gateway's goes stale → DARK
+                            # on /fleet instead of "healthy, 0 unlisted"
+                            # (non-author review 2026-10-07). Cadence ≥60 s,
+                            # default 300 s; the cell's stale floor is
+                            # fleet_truth.RNS_INGRESS_STALE_S (3600 s).
+                            self.rns_ingress_stamp()
                         except TransmitBlocked as e:
                             # Deliberate catch (see tx_guard docstring): the
                             # refusal is already recorded+logged by the guard,

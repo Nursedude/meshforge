@@ -156,11 +156,15 @@ class SignalTracker:
             self._active[key] = (float(first_seen), sig)
             if sig.extra.get("unobserved_hold"):
                 # A hold persisted across the restart is not a new edge, and
-                # its start is the persisted one, not "now".
+                # its start is the persisted one, not "now". A torn/absurd
+                # stamp (NaN, 1e300 — json accepts NaN) is dropped rather
+                # than carried: one bad stamp crashed mini's whole watchdog
+                # source for the box (non-author review 2026-10-07, hfm #6).
                 self._held.add(key)
                 since = sig.extra.get("unobserved_since")
                 if (isinstance(since, (int, float))
-                        and not isinstance(since, bool)):
+                        and not isinstance(since, bool)
+                        and since == since and 0.0 < float(since) < 4e9):
                     self._held_since[key] = float(since)
             adopted += 1
         return adopted
@@ -270,7 +274,10 @@ class SignalTracker:
                 replace(last_sig, extra={
                     **(last_sig.extra or {}),
                     "unobserved_hold": True,
-                    "unobserved_since": self._held_since.get(key, now),
+                    # Never a start in the future: a backward clock step
+                    # (RTC-less fleet) would otherwise render "HELD since
+                    # <next year>" (non-author review 2026-10-07).
+                    "unobserved_since": min(self._held_since.get(key, now), now),
                 }),
                 first_seen,
             ))

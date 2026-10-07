@@ -421,22 +421,32 @@ class RoutingClassifier(Classifier):
 
         category = default_category
 
-        # Check rules (priority order)
-        for rule in sorted(self.rules, key=lambda r: r.get('priority', 0), reverse=True):
-            if not rule.get('enabled', True):
+        # Check rules. A REFUSING rule wins regardless of priority or order:
+        # until 2026-10-07 the first match in priority order ended the walk,
+        # so any allow rule ranked above a drop rule silently defeated it
+        # while the gateway's disclosure line said the drop was in force
+        # (non-author review). Drop rules are walked first; then the first
+        # matching allow rule adds its confidence as before.
+        enabled = [r for r in sorted(self.rules, key=lambda r: r.get('priority', 0),
+                                     reverse=True) if r.get('enabled', True)]
+        for rule in enabled:
+            if rule.get('direction', 'bidirectional') != 'drop':
                 continue
-
-            rule_matches = self._check_rule(rule, data)
-            if rule_matches:
+            if self._check_rule(rule, data):
                 confidence += self.weights['rule_match']
                 reasons.append(f"Matched rule: {rule.get('name', 'unnamed')}")
                 metadata['matched_rules'].append(rule.get('name'))
-
-                # Rule can override direction
-                direction = rule.get('direction', 'bidirectional')
-                if direction == 'drop':
-                    category = RoutingCategory.DROP.value
+                category = RoutingCategory.DROP.value
                 break
+        else:
+            for rule in enabled:
+                if rule.get('direction', 'bidirectional') == 'drop':
+                    continue
+                if self._check_rule(rule, data):
+                    confidence += self.weights['rule_match']
+                    reasons.append(f"Matched rule: {rule.get('name', 'unnamed')}")
+                    metadata['matched_rules'].append(rule.get('name'))
+                    break
 
         # Source known check
         if source_id:

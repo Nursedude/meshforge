@@ -129,13 +129,36 @@ class IngressLedger:
 
     # ── persistence ──────────────────────────────────────────────────
     def _load(self) -> Dict[str, Any]:
+        """Read the persisted document and SANITIZE every entry: the ledger
+        is on-disk input to the enforce path, and a malformed entry (hand
+        edit, older writer, future schema) must not be able to raise inside
+        the decision (non-author review 2026-10-07). Non-dict entries are
+        dropped; counters coerce to int, defaulting to 0."""
         try:
             doc = json.loads(self.path.read_text(encoding="utf-8"))
-            if isinstance(doc, dict) and isinstance(doc.get("senders"), dict):
-                return doc
         except (OSError, ValueError):
-            pass
-        return {"schema": LEDGER_SCHEMA, "senders": {}}
+            doc = None
+        if not isinstance(doc, dict) or not isinstance(doc.get("senders"), dict):
+            return {"schema": LEDGER_SCHEMA, "senders": {}}
+        clean: Dict[str, Any] = {}
+        for k, v in doc["senders"].items():
+            if not isinstance(k, str) or not isinstance(v, dict):
+                continue
+            ent = dict(v)
+            for fld in ("seen", "refused"):
+                try:
+                    ent[fld] = int(ent.get(fld) or 0)
+                except (TypeError, ValueError):
+                    ent[fld] = 0
+            for fld in ("first_seen", "last_seen"):
+                try:
+                    ent[fld] = float(ent.get(fld) or 0.0)
+                except (TypeError, ValueError):
+                    ent[fld] = 0.0
+            ent["label"] = str(ent.get("label") or k[:4])
+            clean[k] = ent
+        doc["senders"] = clean
+        return doc
 
     def _write(self) -> None:
         try:
@@ -209,16 +232,23 @@ def project_ledger_doc(doc: Any, *, now: float,
     listed = doc.get("listed") if isinstance(doc, dict) else None
     updated = doc.get("updated_at") if isinstance(doc, dict) else None
     recent: List[Tuple[str, Dict[str, Any]]] = []
+    parsed_ts: Dict[str, float] = {}
     for k, v in senders.items():
         if not isinstance(v, dict):
             continue
         try:
-            age = now - float(v.get("last_seen", 0))
+            ts = float(v.get("last_seen"))
+            if ts != ts:  # NaN
+                raise ValueError("nan")
         except (TypeError, ValueError):
-            continue
-        if age <= window_s:
+            # An UNPARSEABLE last_seen is unknown, and unknown is not old:
+            # the sender stays in the window rather than silently ageing
+            # out into "healthy" (non-author review 2026-10-07, hfm #1).
+            ts = float("inf")
+        parsed_ts[k] = ts
+        if ts == float("inf") or now - ts <= window_s:
             recent.append((k, v))
-    recent.sort(key=lambda kv: kv[1].get("last_seen", 0), reverse=True)
+    recent.sort(key=lambda kv: parsed_ts.get(kv[0], 0.0), reverse=True)
     return {
         "schema": LEDGER_SCHEMA,
         "policy": policy if isinstance(policy, str) else None,

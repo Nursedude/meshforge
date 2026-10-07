@@ -1214,3 +1214,65 @@ class TestRnsIngressCell:
         b = self._box(status={"app": {"name": "meshforge"}},
                       resolution_method="ssh_spool", spool_ingress=raw)
         assert b["subsystems"]["rns_ingress"]["state"] == ft.HEALTHY
+
+
+class TestRnsIngressCellStaleness:
+    """Non-author review 2026-10-07 (CONFIRMED): a ledger from a gateway
+    dead for days read HEALTHY — "0 unlisted in 24h" from a dead enforcer —
+    and the spool leg windowed the PEER's stamps against the NOC's clock."""
+    NOW = 1_800_000_000.0
+
+    def _box(self, **kw):
+        base = {"alias": "gw", "resolution_method": "dns", "status": None,
+                "slo": None, "error": None, "answered_at": self.NOW}
+        base.update(kw)
+        return ft.build_box_truth(base, now=self.NOW, signal_classes=["role_drift"])
+
+    def _slo(self, **i):
+        return {"overall_status": "ready", "rns_ingress": i}
+
+    def test_stale_ledger_is_dark_never_healthy(self):
+        b = self._box(slo=self._slo(policy="enforce", listed=2, unlisted_recent=[],
+                                    updated_at=self.NOW - 3 * 86400))
+        c = b["subsystems"]["rns_ingress"]
+        assert c["state"] == ft.DARK and "stale" in c["reason"]
+
+    def test_future_stamp_is_dark(self):
+        b = self._box(slo=self._slo(policy="enforce", listed=2, unlisted_recent=[],
+                                    updated_at=self.NOW + 3600))
+        c = b["subsystems"]["rns_ingress"]
+        assert c["state"] == ft.DARK and "FUTURE" in c["reason"]
+
+    def test_missing_stamp_is_dark(self):
+        b = self._box(slo=self._slo(policy="enforce", listed=2, unlisted_recent=[]))
+        assert b["subsystems"]["rns_ingress"]["state"] == ft.DARK
+
+    def test_fresh_ledger_still_healthy(self):
+        b = self._box(slo=self._slo(policy="enforce", listed=2, unlisted_recent=[],
+                                    updated_at=self.NOW - 120))
+        assert b["subsystems"]["rns_ingress"]["state"] == ft.HEALTHY
+
+    def _raw(self, peer_now):
+        return {"schema": "rns_ingress_ledger/v1", "policy": "enforce", "listed": 3,
+                "updated_at": peer_now - 30,
+                "senders": {"abcd" + "0" * 28: {"last_seen": peer_now - 60,
+                                                "seen": 9, "refused": 9,
+                                                "label": "abcd"}}}
+
+    def test_spool_leg_with_skewed_peer_clock_is_dark(self):
+        peer_now = self.NOW - 3 * 86400          # peer 3 days behind
+        b = self._box(status={"app": {"name": "meshforge"}},
+                      resolution_method="ssh_spool", spool_ingress=self._raw(peer_now),
+                      spool_clock={"peer_now": peer_now, "fetched_at": self.NOW - 10})
+        c = b["subsystems"]["rns_ingress"]
+        assert c["state"] == ft.DARK and "skew" in c["reason"]
+
+    def test_spool_leg_windows_against_the_peers_clock(self):
+        """A small skew is tolerated and the peer's stamps are judged on the
+        peer's own time: a refusal 60 s ago on the peer is a live tripwire."""
+        peer_now = self.NOW + 200
+        b = self._box(status={"app": {"name": "meshforge"}},
+                      resolution_method="ssh_spool", spool_ingress=self._raw(peer_now),
+                      spool_clock={"peer_now": peer_now, "fetched_at": self.NOW - 10})
+        c = b["subsystems"]["rns_ingress"]
+        assert c["state"] == ft.FAILED and "abcd" in c["reason"]

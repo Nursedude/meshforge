@@ -345,3 +345,26 @@ class TestHeldSignalCarriesItsHoldStart:
         active, _c, held = tracker.update([], now=200.0, coverage=_cov("indeterminate"))
         assert held == []            # the hold was already an edge before the restart
         assert active[0][0].extra["unobserved_since"] == 80.0
+
+
+class TestHoldStampIsClamped:
+    """Non-author review 2026-10-07: a backward clock step rendered "HELD
+    since <next year>", and a torn stamp (NaN / 1e300 — json accepts NaN)
+    crashed mini's extractor and blinded its whole watchdog source."""
+
+    def test_emitted_stamp_never_exceeds_now(self):
+        tracker = SignalTracker()
+        tracker.update([_sig()], now=1000.0, coverage=_cov("active"))
+        tracker.update([], now=1100.0, coverage=_cov("indeterminate"))
+        active, _c, _h = tracker.update([], now=900.0, coverage=_cov("indeterminate"))
+        assert active[0][0].extra["unobserved_since"] == 900.0
+
+    @pytest.mark.parametrize("bad", [float("nan"), 1e300, -5.0, 0.0])
+    def test_rehydrate_drops_an_absurd_stamp(self, bad):
+        tracker = SignalTracker()
+        tracker.rehydrate([{"class": CLS, "subject": SUBJ, "severity": "wedge",
+                            "detail": "d", "first_seen": 50.0,
+                            "extra": {"unobserved_hold": True,
+                                      "unobserved_since": bad}}])
+        active, _c, _h = tracker.update([], now=200.0, coverage=_cov("indeterminate"))
+        assert active[0][0].extra["unobserved_since"] == 200.0
