@@ -628,3 +628,41 @@ class TestPeerJudgeRefusesASkewedClock:
 
     def test_threshold_is_one_constant(self):
         assert c.PEER_CLOCK_SKEW_DARK_S >= 300
+
+
+class TestSpoolCarriesTheIngressLedger:
+    """2026-10-06: the RNS→RF tripwire ledger rides the spool RAW for
+    map-less gateways; fleet_truth projects it with the gateway's own
+    function. Absent file → no section → the cell reads absent."""
+
+    def test_ingress_is_a_parsed_section(self):
+        mod = _load_spool_script()
+        assert "__TRUTH_INGRESS__" in mod._SECTIONS
+        assert mod._SECTION_KEYS["__TRUTH_INGRESS__"] == "ingress"
+        blob = ('__TRUTH_INGRESS__\n'
+                '{"schema":"rns_ingress_ledger/v1","policy":"observe","senders":{}}\n')
+        assert mod.parse_sections(blob)["ingress"]["policy"] == "observe"
+
+    def test_remote_command_cats_the_ledger(self):
+        mod = _load_spool_script()
+        assert "rns_ingress_ledger.json" in mod._REMOTE_CMD
+
+    def test_collector_promotes_spool_ingress(self):
+        raw = {"schema": "rns_ingress_ledger/v1", "policy": "enforce",
+               "listed": 3, "senders": {}}
+        spool = {"schema": c.SPOOL_SCHEMA, "alias": "moc3",
+                 "fetched_at": time.time() - 30.0,
+                 "slo": None, "status": None, "raw_watchdog": None,
+                 "ingress": raw}
+        with patch.object(c, "_http_get_json", return_value=None), \
+             patch.object(c, "_resolve_peer", return_value=("moc3", "dns")), \
+             patch.object(c, "_read_spool", return_value=spool):
+            snap = c._fetch_peer("moc3", is_self=False, port=5000)
+        assert snap["spool_ingress"] == raw
+
+    def test_direct_success_leaves_spool_ingress_none(self):
+        with patch.object(c, "_http_get_json",
+                          side_effect=[{"overall_status": "ready"}, {"app": {}}]), \
+             patch.object(c, "_resolve_peer", return_value=("moc", "dns")):
+            snap = c._fetch_peer("moc", is_self=False, port=5000)
+        assert snap["spool_ingress"] is None

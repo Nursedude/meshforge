@@ -805,6 +805,10 @@ def build_box_truth(
     spool_schedules = snap.get("spool_schedules")
     if isinstance(spool_schedules, dict):
         spool_observed.add("schedules")
+    # RAW rns_ingress_ledger.json spooled from a map-less gateway (2026-10-06).
+    spool_ingress = snap.get("spool_ingress")
+    if isinstance(spool_ingress, dict):
+        spool_observed.add("rns_ingress")
 
     subsystems = {
         "watchdog": classify_block(watchdog_block, source="/api/status.watchdog"),
@@ -829,6 +833,7 @@ def build_box_truth(
                                else _schedules_cell(slo))
     subsystems["rns_paths"] = _generic_present_cell(
         slo, "path_table", "/fleet/slo.path_table")
+    subsystems["rns_ingress"] = _rns_ingress_cell(slo, spool_ingress, now=now)
 
     # Mark the cells whose ONLY window is the HTTP surface this box's declared
     # role deliberately does not run. Strictly gated: the flag is applied only
@@ -1050,6 +1055,78 @@ def _schedules_cell_from_spool(judged: Dict[str, Any]) -> Dict[str, Any]:
         c["absent"] = True
         return c
     return cell(DARK, reason=reason or "cron verdicts unobservable", source=src)
+
+
+#: Window the RNS→RF tripwire cell judges over (seconds). ONE constant with
+#: the ledger projection's default, so "0 unlisted" means the same thing on
+#: every surface.
+RNS_INGRESS_WINDOW_S = 86400.0
+
+
+def _rns_ingress_cell(slo: Optional[Dict[str, Any]],
+                      spool_ingress: Optional[Dict[str, Any]], *,
+                      now: float) -> Dict[str, Any]:
+    """The RNS→RF ingress TRIPWIRE as a fleet cell (2026-10-06).
+
+    Sources, in order: the map's ``/fleet/slo.rns_ingress`` (already
+    projected on the box) else the spool's RAW ``rns_ingress_ledger.json``
+    (map-less gateways), projected here with the gateway's own function.
+
+    States — the operator's Tripwire analogy: the published DIFF is a
+    sender outside the declared set.
+
+    * absent  — no ledger: no gateway on this box, OR an OPEN gateway that
+      never stamped (the ledger is written only once a list is declared).
+      Marked ``absent`` so it never taints; the reason says both readings.
+    * DARK    — ledger says policy ``open``: a gateway with no allowlist
+      declared. Undeclared is dark, not healthy.
+    * FAILED  — one or more unlisted senders in the window. The reason names
+      their labels and whether they were bridged (observe) or refused
+      (enforce). This is the tripwire firing; under observe it is the soak
+      telling the operator who is missing from the list.
+    * HEALTHY — a list is declared and nobody unlisted in the window.
+    """
+    src = None
+    proj: Optional[Dict[str, Any]] = None
+    if isinstance(slo, dict) and isinstance(slo.get("rns_ingress"), dict):
+        proj = slo["rns_ingress"]
+        src = "/fleet/slo.rns_ingress"
+    elif isinstance(spool_ingress, dict):
+        try:
+            from gateway.rns_ingress_policy import project_ledger_doc
+            proj = project_ledger_doc(spool_ingress, now=now,
+                                      window_s=RNS_INGRESS_WINDOW_S)
+        except Exception:  # noqa: BLE001 — cannot project = cannot judge
+            proj = None
+        src = "ssh_spool.rns_ingress_ledger"
+    if not isinstance(proj, dict):
+        return cell(DARK, absent=True, source=src or "/fleet/slo.rns_ingress",
+                    reason="no RNS ingress ledger: no gateway on this box, "
+                           "or its RNS→RF ingress is OPEN (no allowlist "
+                           "declared) and has never stamped")
+    policy = proj.get("policy")
+    updated = proj.get("updated_at")
+    age = (now - float(updated)) if isinstance(updated, (int, float)) else None
+    if policy == "open":
+        return cell(DARK, source=src, age_s=age, observed_at=updated,
+                    reason="RNS→RF ingress OPEN — no allowlist declared on "
+                           "this gateway; every RNS sender is bridged onto RF")
+    recent = proj.get("unlisted_recent") or []
+    listed = proj.get("listed")
+    hours = int(RNS_INGRESS_WINDOW_S // 3600)
+    if recent:
+        labels = ", ".join(str(r.get("label") or str(r.get("hash", ""))[:4])
+                           for r in recent[:6])
+        more = f" (+{len(recent) - 6} more)" if len(recent) > 6 else ""
+        fate = ("REFUSED (enforce)" if policy == "enforce"
+                else "bridged anyway (observe) — add to the list or enforce")
+        return cell(FAILED, source=src, age_s=age, observed_at=updated,
+                    reason=f"tripwire: {len(recent)} unlisted RNS sender(s) "
+                           f"in {hours}h: {labels}{more} — {fate}")
+    return cell(HEALTHY, source=src, age_s=age, observed_at=updated,
+                reason=f"allowlist of {listed if listed is not None else '?'} "
+                       f"identit(ies), policy={policy or '?'}, 0 unlisted "
+                       f"senders in {hours}h")
 
 
 def _generic_present_cell(slo: Optional[Dict[str, Any]], key: str, source: str) -> Dict[str, Any]:

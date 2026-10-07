@@ -1146,3 +1146,71 @@ class TestSharedContractCarriesNoUplink:
                                  now=NOW, signal_classes=[], noc_host="moc")
         for box in t["boxes"]:
             assert "uplink" not in box
+
+
+class TestRnsIngressCell:
+    """The RNS→RF tripwire on /fleet (2026-10-06): the published DIFF is a
+    sender outside the declared allowlist."""
+    NOW = 1_800_000_000.0
+
+    def _box(self, **kw):
+        base = {"alias": "gw", "resolution_method": "dns", "status": None,
+                "slo": None, "error": None, "answered_at": self.NOW}
+        base.update(kw)
+        return ft.build_box_truth(base, now=self.NOW, signal_classes=["role_drift"])
+
+    def _slo(self, **ingress):
+        return {"overall_status": "ready", "rns_ingress": ingress or None}
+
+    def test_no_ledger_is_absent_never_healthy(self):
+        b = self._box(slo={"overall_status": "ready", "rns_ingress": None})
+        c = b["subsystems"]["rns_ingress"]
+        assert c["state"] == ft.DARK and c.get("absent") is True
+        assert "no gateway" in c["reason"] and "OPEN" in c["reason"]
+
+    def test_open_gateway_is_dark(self):
+        b = self._box(slo=self._slo(policy="open", listed=0, unlisted_recent=[],
+                                    updated_at=self.NOW - 60))
+        c = b["subsystems"]["rns_ingress"]
+        assert c["state"] == ft.DARK and not c.get("absent")
+        assert "OPEN" in c["reason"]
+
+    def test_declared_and_quiet_is_healthy(self):
+        b = self._box(slo=self._slo(policy="observe", listed=13, unlisted_recent=[],
+                                    updated_at=self.NOW - 60))
+        c = b["subsystems"]["rns_ingress"]
+        assert c["state"] == ft.HEALTHY
+        assert "13" in c["reason"] and "observe" in c["reason"]
+        assert c["source"] == "/fleet/slo.rns_ingress"
+
+    def test_unlisted_sender_fires_the_tripwire(self):
+        b = self._box(slo=self._slo(
+            policy="enforce", listed=13, updated_at=self.NOW - 5,
+            unlisted_recent=[{"hash": "627f" + "f" * 28, "label": "627f",
+                              "seen": 2, "refused": 2, "last_seen": self.NOW - 5}]))
+        c = b["subsystems"]["rns_ingress"]
+        assert c["state"] == ft.FAILED
+        assert "627f" in c["reason"] and "REFUSED" in c["reason"]
+
+    def test_map_less_gateway_is_projected_from_the_raw_spool_ledger(self):
+        raw = {"schema": "rns_ingress_ledger/v1", "policy": "observe", "listed": 9,
+               "updated_at": self.NOW - 30,
+               "senders": {"abcd" + "0" * 28: {"first_seen": self.NOW - 100,
+                                               "last_seen": self.NOW - 50,
+                                               "seen": 1, "refused": 0,
+                                               "label": "abcd"}}}
+        b = self._box(status={"app": {"name": "meshforge", "role": "gateway-only"}},
+                      resolution_method="ssh_spool", spool_ingress=raw)
+        c = b["subsystems"]["rns_ingress"]
+        assert c["state"] == ft.FAILED and "abcd" in c["reason"]
+        assert "bridged anyway" in c["reason"]
+        assert c["source"] == "ssh_spool.rns_ingress_ledger"
+
+    def test_old_unlisted_sender_ages_out_of_the_window(self):
+        raw = {"schema": "rns_ingress_ledger/v1", "policy": "enforce", "listed": 9,
+               "updated_at": self.NOW - 30,
+               "senders": {"abcd" + "0" * 28: {"last_seen": self.NOW - 90000,
+                                               "seen": 1, "refused": 1}}}
+        b = self._box(status={"app": {"name": "meshforge"}},
+                      resolution_method="ssh_spool", spool_ingress=raw)
+        assert b["subsystems"]["rns_ingress"]["state"] == ft.HEALTHY

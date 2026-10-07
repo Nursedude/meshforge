@@ -692,6 +692,10 @@ class RNSMeshtasticBridge(
 
         logger.info("Starting RNS-Meshtastic bridge...")
         self._running = True
+        # RNS→RF ingress posture into the ledger (2026-10-06): the fleet
+        # page reads it; a declared list with nothing unlisted must be
+        # visible as "healthy", not as "no gateway here".
+        self.rns_ingress_stamp()
         self.stats['start_time'] = datetime.now()
 
         # Start node tracker

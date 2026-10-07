@@ -1306,7 +1306,21 @@ def build_slo_snapshot(*, collector: Optional[Any] = None) -> Dict[str, Any]:
         "interfaces": interfaces,
         "cascade": cascade,
         "watchdog": watchdog,
+        # RNS→RF ingress tripwire (2026-10-06): the gateway's unlisted-sender
+        # ledger, projected. None = no ledger on this box (no gateway, or an
+        # OPEN one that never stamped) — the truth layer reads None as
+        # absent, never as healthy.
+        "rns_ingress": _rns_ingress_block(),
     }
+
+
+def _rns_ingress_block() -> Optional[Dict[str, Any]]:
+    """Projected ``rns_ingress_ledger.json`` from THIS box, or None."""
+    try:
+        from gateway.rns_ingress_policy import read_ledger_projection
+        return read_ledger_projection()
+    except Exception:  # noqa: BLE001 — a missing gateway package is "no ledger"
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────

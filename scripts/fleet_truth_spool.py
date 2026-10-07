@@ -137,17 +137,27 @@ _REMOTE_CMD = (
     # pair it is judged against, so a healthy pair differs by the ssh
     # duration only.
     "; echo; echo __TRUTH_CLOCK__; printf '{\"now\":%s}' \"$(date +%s)\""
+    # ── RNS→RF ingress tripwire ledger (2026-10-06) ───────────────────────
+    # A map-less gateway (moc3) has no /fleet/slo to carry the projected
+    # ledger, so the RAW file rides the spool and fleet_truth projects it
+    # with the same function the map uses. Absent file → empty section →
+    # the cell reads absent, never healthy.
+    "; echo; echo __TRUTH_INGRESS__; "
+    "cat ${XDG_STATE_HOME:-$HOME/.local/state}/meshforge/rns_ingress_ledger.json "
+    "2>/dev/null || true"
 )
 _SECTIONS = ("__TRUTH_SLO__", "__TRUTH_STATUS__", "__TRUTH_RAWWD__",
              "__TRUTH_DEPLOY__", "__TRUTH_RAWMINI__", "__TRUTH_RADIO__",
-             "__TRUTH_SERVICES__", "__TRUTH_SCHEDULES__", "__TRUTH_CLOCK__")
+             "__TRUTH_SERVICES__", "__TRUTH_SCHEDULES__", "__TRUTH_CLOCK__",
+             "__TRUTH_INGRESS__")
 _SECTION_KEYS = {"__TRUTH_SLO__": "slo", "__TRUTH_STATUS__": "status",
                  "__TRUTH_RAWWD__": "raw_watchdog",
                  "__TRUTH_DEPLOY__": "deployment",
                  "__TRUTH_RAWMINI__": "raw_mini", "__TRUTH_RADIO__": "radio_probe",
                  "__TRUTH_SERVICES__": "services",
                  "__TRUTH_SCHEDULES__": "schedules",
-                 "__TRUTH_CLOCK__": "clock"}
+                 "__TRUTH_CLOCK__": "clock",
+                 "__TRUTH_INGRESS__": "ingress"}
 
 
 #: Service whose absence removes a box's whole HTTP truth surface

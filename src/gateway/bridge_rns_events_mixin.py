@@ -273,6 +273,22 @@ class BridgeRnsEventsMixin:
         return {"policy": policy, "listed": len(identities),
                 "identities": identities}
 
+    def rns_ingress_stamp(self) -> None:
+        """Write the posture into the ledger at start, so a declared gateway
+        with ZERO unlisted senders is distinguishable, on /fleet, from a box
+        that runs no gateway. Writes only when a list is declared (or a
+        ledger already exists): an OPEN gateway without a ledger reads as
+        absent on the fleet page — stated in `_rns_ingress_cell`'s docstring,
+        and the price of never writing state from a unit-test construction.
+        Never raises."""
+        try:
+            posture = self.rns_ingress_posture()
+            led = self._rns_ingress_ledger()
+            if posture["policy"] != "open" or led.path.exists():
+                led.stamp(policy=posture["policy"], listed=posture["listed"])
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"rns ingress stamp skipped: {e}")
+
     def _rns_ingress_admits(self, source_hex: str) -> bool:
         """True when ``source_hex`` may be bridged onto RF. Never raises."""
         try:

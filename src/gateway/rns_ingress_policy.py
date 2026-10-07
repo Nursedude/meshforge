@@ -190,31 +190,68 @@ class IngressLedger:
     def snapshot(self, *, window_s: float = 86400.0) -> Dict[str, Any]:
         """What a status page needs: posture + the unlisted senders seen in
         ``window_s`` (newest first) + lifetime totals."""
-        now = float(self._now())
         with self._lock:
-            senders = dict(self._doc.get("senders", {}))
-            policy = self._doc.get("policy")
-            listed = self._doc.get("listed")
-            updated = self._doc.get("updated_at")
-        recent: List[Tuple[str, Dict[str, Any]]] = [
-            (k, v) for k, v in senders.items()
-            if isinstance(v, dict) and now - float(v.get("last_seen", 0)) <= window_s]
-        recent.sort(key=lambda kv: kv[1].get("last_seen", 0), reverse=True)
-        return {
-            "schema": LEDGER_SCHEMA,
-            "policy": policy,
-            "listed": listed,
-            "updated_at": updated,
-            "window_s": window_s,
-            "unlisted_recent": [
-                {"hash": k, "label": v.get("label", k[:4]),
-                 "seen": v.get("seen", 0), "refused": v.get("refused", 0),
-                 "last_seen": v.get("last_seen")}
-                for k, v in recent],
-            "unlisted_total": len(senders),
-            "refused_total": sum(int(v.get("refused", 0)) for v in senders.values()
-                                 if isinstance(v, dict)),
-        }
+            doc = json.loads(json.dumps(self._doc))
+        return project_ledger_doc(doc, now=float(self._now()), window_s=window_s)
+
+
+def project_ledger_doc(doc: Any, *, now: float,
+                       window_s: float = 86400.0) -> Dict[str, Any]:
+    """The ONE projection of a raw ledger document that every surface
+    reads — the gateway's ``get_status()``, the map's ``/fleet/slo`` and the
+    truth spool's raw-file leg all land on the same shape (hfm #5: two
+    consumers of one artifact share one constant). A malformed document
+    projects as empty, never as a crash."""
+    senders = doc.get("senders") if isinstance(doc, dict) else None
+    if not isinstance(senders, dict):
+        senders = {}
+    policy = doc.get("policy") if isinstance(doc, dict) else None
+    listed = doc.get("listed") if isinstance(doc, dict) else None
+    updated = doc.get("updated_at") if isinstance(doc, dict) else None
+    recent: List[Tuple[str, Dict[str, Any]]] = []
+    for k, v in senders.items():
+        if not isinstance(v, dict):
+            continue
+        try:
+            age = now - float(v.get("last_seen", 0))
+        except (TypeError, ValueError):
+            continue
+        if age <= window_s:
+            recent.append((k, v))
+    recent.sort(key=lambda kv: kv[1].get("last_seen", 0), reverse=True)
+    return {
+        "schema": LEDGER_SCHEMA,
+        "policy": policy if isinstance(policy, str) else None,
+        "listed": listed if isinstance(listed, int) and not isinstance(listed, bool) else None,
+        "updated_at": updated if isinstance(updated, (int, float)) else None,
+        "window_s": window_s,
+        "unlisted_recent": [
+            {"hash": k, "label": v.get("label", str(k)[:4]),
+             "seen": v.get("seen", 0), "refused": v.get("refused", 0),
+             "last_seen": v.get("last_seen")}
+            for k, v in recent],
+        "unlisted_total": len([v for v in senders.values() if isinstance(v, dict)]),
+        "refused_total": sum(int(v.get("refused", 0) or 0) for v in senders.values()
+                             if isinstance(v, dict)),
+    }
+
+
+def read_ledger_projection(path: Optional[Path] = None, *,
+                           now: Optional[float] = None,
+                           window_s: float = 86400.0) -> Optional[Dict[str, Any]]:
+    """Read + project the ledger file on THIS box; ``None`` when there is no
+    ledger (no gateway here, or one that has never stamped). Unreadable or
+    malformed → ``None`` too, so a surface can only ever say "absent", never
+    invent a posture. Never raises."""
+    try:
+        p = Path(path) if path is not None else default_ledger_path()
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(doc, dict):
+            return None
+        return project_ledger_doc(doc, now=float(now if now is not None else time.time()),
+                                  window_s=window_s)
+    except Exception:  # noqa: BLE001 — absent/unreadable is "no ledger"
+        return None
 
 
 def default_ledger_path() -> Path:

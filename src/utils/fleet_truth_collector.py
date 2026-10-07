@@ -178,6 +178,9 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
     watchdog_expected: Optional[bool] = None
     spool_services: Optional[Dict[str, Any]] = None
     spool_schedules: Optional[Dict[str, Any]] = None
+    # RAW rns_ingress_ledger.json from the spool (map-less gateways);
+    # fleet_truth projects it. None = no ledger spooled.
+    spool_ingress: Optional[Dict[str, Any]] = None
 
     if slo is None and status is None:
         # Direct fan-out failed — try the ssh spool (fresh-only).
@@ -190,6 +193,8 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
             radio_probe = spool.get("radio_probe")
             if isinstance(spool.get("services"), dict):
                 spool_services = spool["services"]
+            if isinstance(spool.get("ingress"), dict):
+                spool_ingress = spool["ingress"]
             _clock = spool.get("clock")
             spool_schedules = judge_spooled_schedules(
                 alias, spool.get("schedules"),
@@ -254,6 +259,7 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
         "watchdog_expected": watchdog_expected,
         "spool_services": spool_services,
         "spool_schedules": spool_schedules,
+        "spool_ingress": spool_ingress,
     }
 
 

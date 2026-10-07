@@ -218,3 +218,44 @@ class TestConfigAndDisclosure:
         cfg.enabled = True
         r = mr.MessageRouter(cfg, {"bounced": 0}, threading.Lock())
         assert "rns_allowlist" not in r.describe_ingress_policy()
+
+
+# ── the projection every surface shares ─────────────────────────────────
+
+class TestProjection:
+    def test_raw_doc_projects_like_the_ledger(self, tmp_path):
+        led = pol.IngressLedger(tmp_path / "l.json", now_fn=lambda: 1000.0)
+        led.stamp(policy="observe", listed=13)
+        led.record(STRANGER, policy="observe", refused=False)
+        raw = json.loads((tmp_path / "l.json").read_text())
+        assert pol.project_ledger_doc(raw, now=1000.0) == led.snapshot()
+
+    def test_malformed_doc_projects_empty_never_raises(self):
+        for bad in (None, [], "x", {"senders": "nope"}, {"senders": {"a": 1}}):
+            p = pol.project_ledger_doc(bad, now=0.0)
+            assert p["unlisted_recent"] == [] and p["unlisted_total"] == 0
+            assert p["policy"] is None
+
+    def test_read_helper_is_none_without_a_ledger(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        assert pol.read_ledger_projection() is None
+        (tmp_path / "meshforge").mkdir()
+        (tmp_path / "meshforge" / pol.LEDGER_FILENAME).write_text("not json")
+        assert pol.read_ledger_projection() is None
+        pol.IngressLedger(pol.default_ledger_path(), now_fn=lambda: 5.0).stamp(
+            policy="enforce", listed=2)
+        got = pol.read_ledger_projection(now=6.0)
+        assert got["policy"] == "enforce" and got["listed"] == 2
+
+
+class TestStampAtStart:
+    def test_declared_gateway_stamps_open_one_does_not(self, tmp_path):
+        b = _fake_bridge(tmp_path, [LISTED], "observe")
+        b.rns_ingress_stamp = BridgeRnsEventsMixin.rns_ingress_stamp.__get__(b)
+        b.rns_ingress_stamp()
+        doc = json.loads((tmp_path / "ledger.json").read_text())
+        assert doc["policy"] == "observe" and doc["listed"] == 1
+        o = _fake_bridge(tmp_path / "open", [], "observe")
+        o.rns_ingress_stamp = BridgeRnsEventsMixin.rns_ingress_stamp.__get__(o)
+        o.rns_ingress_stamp()
+        assert not (tmp_path / "open" / "ledger.json").exists()
