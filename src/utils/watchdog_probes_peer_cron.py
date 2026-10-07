@@ -52,6 +52,10 @@ from utils.watchdog_probe_core import (
     CRON_VERDICT_BAND_FAIL, Signal, note_disposition, note_subject_observed,
 )
 
+#: The subject the LOCAL leg (`probe_cron_verdict_stale`) emits and observes.
+#: Same literal as its emit; a spool alias equal to it is refused above.
+LOCAL_CRON_SUBJECT = "cron"
+
 # This probe contributes to the EXISTING class "cron_verdict_stale" — see
 # "WHAT THIS IS *NOT*" above.
 #
@@ -107,6 +111,14 @@ def probe_peer_cron_verdict_stale(
     judged = 0
     for path in files:
         alias = path.stem
+        if alias == LOCAL_CRON_SUBJECT:
+            # The local leg emits and observes subject `cron`; a peer spooled
+            # under that alias would clear (or raise) the LOCAL verdict on a
+            # peer's behalf. Witnessed as blind, never judged (review (b),
+            # 2026-10-06).
+            blind.append(f"{alias}(alias collides with the local subject "
+                         f"{LOCAL_CRON_SUBJECT!r}; rename the spool target)")
+            continue
         try:
             doc: Dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
             fetched_at = float(doc.get("fetched_at") or 0.0)

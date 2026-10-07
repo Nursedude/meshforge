@@ -17,7 +17,9 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from utils import fleet_posture as fp
-from utils.watchdog_probe_core import Signal, note_disposition
+from utils.watchdog_probe_core import (
+    Signal, note_disposition, note_subject_observed,
+)
 
 
 #: Row result the tracer writes for every peer when it could not initialise
@@ -210,6 +212,12 @@ def probe_tracer_peer_unreachable(
             continue
         latest_result = history[0][1]
         if latest_result == "ok":
+            # Reachable right now — a positive observation of THIS peer.
+            # Recorded per subject because the class disposition is
+            # worst-wins: a returned peer still awaiting its first fire
+            # notes `indeterminate` below and would otherwise HOLD every
+            # peer that is answering (sibling of the 10-06 cron hold).
+            note_subject_observed("tracer_peer_unreachable", peer)
             continue  # peer reachable right now → nothing to report
 
         declared = fp.silenced_peer(peer, posture)
@@ -243,6 +251,8 @@ def probe_tracer_peer_unreachable(
                 continue
             latest_result = history[0][1]
             if latest_result == "ok":
+                # Seen ok SINCE it returned: observed, same as above.
+                note_subject_observed("tracer_peer_unreachable", peer)
                 continue
 
         # Count leading non-ok results.

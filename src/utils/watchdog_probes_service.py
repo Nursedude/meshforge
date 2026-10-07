@@ -28,6 +28,7 @@ from utils.watchdog_probe_core import (
     _resolve_main_pid_status,
     _short_unix_ts,
     note_disposition,
+    note_subject_observed,
     note_unit_presence_gate,
 )
 
@@ -950,6 +951,11 @@ def probe_service_inactive(
     actual = proc.stdout.strip() or "unknown"
     if actual == expected_state:
         note_disposition("service_inactive", "clean")
+        # The runner calls this once per unit and the class disposition is
+        # worst-wins, so one unit's systemctl timeout held every sibling
+        # unit that had recovered (sibling of the 10-06 cron hold). This
+        # unit WAS seen in its expected state — say so per subject.
+        note_subject_observed("service_inactive", service_name)
         return None
     if actual == "inactive" and expected_state == "active":
         severity = "degraded"

@@ -19,6 +19,7 @@ from utils.watchdog_probe_core import (  # noqa: F401
     Signal,
     _resolve_main_pid_status,
     note_disposition,
+    note_subject_observed,
     note_unit_presence_gate,
 )
 from utils import tx_guard
@@ -320,7 +321,9 @@ _WEDGE_PATTERNS = (
 )
 
 
-def _scan_pid_task_stacks(pid: int, proc_root: str) -> Optional[Tuple[int, str, str]]:
+def _scan_pid_task_stacks(
+    pid: int, proc_root: str, *, subject: Optional[str] = None,
+) -> Optional[Tuple[int, str, str]]:
     """Walk every task under /proc/<pid>/task/*/stack for a wedge pattern.
 
     Returns ``(tid, matched_pattern, stack_excerpt)`` on first match,
@@ -328,6 +331,15 @@ def _scan_pid_task_stacks(pid: int, proc_root: str) -> Optional[Tuple[int, str, 
     (cheap, no race), then worker threads — today's 2026-05-21 moc1
     investigation showed Issue #68's wedge can live in a WORKER thread
     of meshforge-echo while the main thread sits idle in futex_wait.
+
+    ``subject`` is the Signal subject the caller would emit for this pid
+    (unit name or cmdline pattern). A clean scan notes it observed: the
+    class disposition is worst-wins across the unit leg AND the lxmf leg,
+    so one unreadable stack — or a wedge-checked unit that is DOWN, which
+    the presence gate notes indeterminate every tick — held every sibling
+    wedge that a restart had already cured (sibling of the 10-06 cron hold).
+    None (the two unreadable branches) is the same None as a clean scan by
+    return value alone; the disposition is what tells them apart.
     """
     main_stack_path = f"{proc_root}/{pid}/task/{pid}/stack"
     try:
@@ -362,6 +374,8 @@ def _scan_pid_task_stacks(pid: int, proc_root: str) -> Optional[Tuple[int, str, 
         if matched is not None:
             return tid, matched, worker_stack[:300]
     note_disposition("main_thread_wedge", "clean")
+    if subject:
+        note_subject_observed("main_thread_wedge", subject)
     return None
 
 
@@ -406,7 +420,7 @@ def probe_main_thread_wedge(
             )
             return None
 
-    found = _scan_pid_task_stacks(pid, proc_root)
+    found = _scan_pid_task_stacks(pid, proc_root, subject=service_name)
     if found is None:
         return None
     tid, matched, excerpt = found
@@ -492,7 +506,7 @@ def probe_lxmf_process_wedge(
         if matched_pat is None:
             continue
 
-        found = _scan_pid_task_stacks(pid, proc_root)
+        found = _scan_pid_task_stacks(pid, proc_root, subject=matched_pat)
         if found is None:
             continue
         tid, kernel_pattern, excerpt = found
