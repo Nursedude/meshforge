@@ -147,7 +147,8 @@ def _fake_bridge(tmp_path, identities, policy):
 def _lxmf(source_hex):
     return types.SimpleNamespace(source_hash=bytes.fromhex(source_hex),
                                  content=b"hello", title="", stamp=None,
-                                 fields={})
+                                 fields={}, signature_validated=True,
+                                 unverified_reason=None)
 
 
 @pytest.fixture(autouse=True)

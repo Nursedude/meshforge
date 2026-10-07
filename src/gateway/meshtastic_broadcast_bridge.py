@@ -885,6 +885,26 @@ class MeshtasticBroadcastBridge:
             else:
                 content = str(content_raw)
 
+            # LXMF delivers a message whose signature failed (or whose source
+            # never announced) with the CLAIMED source hash. A subscription
+            # command acts ON that hash, so only a validated one counts — a
+            # forged `unsubscribe` would silently cut a real subscriber
+            # (2026-10-07, sibling of the ingress-allowlist fix).
+            if getattr(lxmf_message, "signature_validated", None) is not True:
+                reason = getattr(lxmf_message, "unverified_reason", None)
+                with self._stats_lock:
+                    self.stats["unverified_commands"] = (
+                        self.stats.get("unverified_commands", 0) + 1)
+                logger.info(
+                    "Meshtastic broadcast command IGNORED — unverified sender "
+                    "%s (%s): %s; claimed command %r",
+                    source_hex, _who(source_hex),
+                    {0x01: "source unknown (never announced)",
+                     0x02: "signature invalid"}.get(
+                         reason, "signature not validated"),
+                    content.strip()[:24])
+                return
+
             self._handle_subscription_command(source_hex, content)
         except Exception as e:
             logger.error("Meshtastic broadcast inbound error: %s", e)

@@ -56,6 +56,15 @@ DECLARABLE_POLICIES = (POLICY_OBSERVE, POLICY_ENFORCE)
 VERDICT_LISTED = "listed"
 VERDICT_PEER = "peer_gateway"
 VERDICT_UNLISTED = "unlisted"
+#: A claim of a listed/peer hash whose LXMF signature did NOT validate
+#: (forged or garbled source field, or a source never announced). LXMF
+#: still delivers such a message (lxmf_delivery never checks), so the claim
+#: alone proves nothing — treated exactly like unlisted (2026-10-07).
+VERDICT_UNVERIFIED = "unverified"
+
+#: LXMF.LXMessage.unverified_reason codes → words for the witness line.
+UNVERIFIED_REASONS = {0x01: "source unknown (never announced)",
+                      0x02: "signature invalid (claimed hash not signed by its key)"}
 
 LEDGER_FILENAME = "rns_ingress_ledger.json"
 LEDGER_SCHEMA = "rns_ingress_ledger/v1"
@@ -105,14 +114,27 @@ def effective_policy(identities: List[str], declared: Optional[str]) -> str:
 
 
 def verdict(source_hex: str, identities: List[str],
-            peer_gateways: Iterable[str]) -> str:
-    """Classify one sender. Pure; the caller decides what the verdict does."""
+            peer_gateways: Iterable[str], *,
+            signature_validated: Optional[bool] = None) -> str:
+    """Classify one sender. Pure; the caller decides what the verdict does.
+
+    Membership needs a VALIDATED signature: ``signature_validated`` must be
+    exactly ``True``. Anything else (False, absent/None) turns a listed or
+    peer claim into ``unverified`` — fail closed, so a caller that forgets
+    the flag cannot open the gate."""
     s = (source_hex or "").strip().lower()
+    member = None
     if s in set(identities):
-        return VERDICT_LISTED
-    if s in {p.strip().lower() for p in peer_gateways if isinstance(p, str)}:
-        return VERDICT_PEER
-    return VERDICT_UNLISTED
+        member = VERDICT_LISTED
+    elif s in {p.strip().lower() for p in peer_gateways if isinstance(p, str)}:
+        member = VERDICT_PEER
+    if member is None:
+        return VERDICT_UNLISTED
+    return member if signature_validated is True else VERDICT_UNVERIFIED
+
+
+def unverified_words(reason: Any) -> str:
+    return UNVERIFIED_REASONS.get(reason, "signature not validated")
 
 
 class IngressLedger:
@@ -174,7 +196,7 @@ class IngressLedger:
 
     # ── recording ────────────────────────────────────────────────────
     def record(self, source_hex: str, *, policy: str, refused: bool,
-               label: str = "") -> Dict[str, Any]:
+               label: str = "", unverified: bool = False) -> Dict[str, Any]:
         """Note one unlisted-sender event; returns that sender's entry."""
         now = float(self._now())
         s = (source_hex or "").lower()
@@ -191,6 +213,8 @@ class IngressLedger:
             ent["seen"] = int(ent.get("seen", 0)) + 1
             if refused:
                 ent["refused"] = int(ent.get("refused", 0)) + 1
+            if unverified:
+                ent["unverified"] = int(ent.get("unverified", 0)) + 1
             ent["last_policy"] = policy
             if len(senders) > self._max:
                 oldest = sorted(senders.items(),
@@ -260,6 +284,7 @@ def project_ledger_doc(doc: Any, *, now: float,
         "unlisted_recent": [
             {"hash": k, "label": v.get("label", str(k)[:4]),
              "seen": v.get("seen", 0), "refused": v.get("refused", 0),
+             "unverified": v.get("unverified", 0),
              "last_seen": v.get("last_seen")}
             for k, v in recent],
         "unlisted_total": len([v for v in senders.values() if isinstance(v, dict)]),

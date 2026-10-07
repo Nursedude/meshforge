@@ -45,8 +45,11 @@ class TestNormalize:
         assert pol.effective_policy([LISTED], "bogus") == "observe"
 
     def test_verdict(self):
-        assert pol.verdict(LISTED.upper(), [LISTED], []) == "listed"
-        assert pol.verdict(PEER, [LISTED], [PEER]) == "peer_gateway"
+        # membership needs a VALIDATED signature (test_rns_ingress_signature)
+        assert pol.verdict(LISTED.upper(), [LISTED], [],
+                           signature_validated=True) == "listed"
+        assert pol.verdict(PEER, [LISTED], [PEER],
+                           signature_validated=True) == "peer_gateway"
         assert pol.verdict(STRANGER, [LISTED], [PEER]) == "unlisted"
 
 
@@ -123,9 +126,11 @@ def _fake_bridge(tmp_path, identities, policy):
 
 
 def _lxmf(source_hex):
+    # a GENUINE message: LXMF validated its signature against the source key
     return types.SimpleNamespace(source_hash=bytes.fromhex(source_hex),
                                  content=b"hello", title="", stamp=None,
-                                 fields={})
+                                 fields={}, signature_validated=True,
+                                 unverified_reason=None)
 
 
 @pytest.fixture(autouse=True)

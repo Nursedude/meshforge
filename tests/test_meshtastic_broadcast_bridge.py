@@ -527,11 +527,15 @@ class TestBridgedMessageCompatibility:
 # ---------------------------------------------------------------------------
 
 
-def _fake_lxmf_message(*, source_hash: bytes, body: str):
+def _fake_lxmf_message(*, source_hash: bytes, body: str,
+                       signature_validated=True, unverified_reason=None):
     msg = MagicMock()
     msg.source_hash = source_hash
     msg.content = body.encode("utf-8")
     msg.title = b"test"
+    # explicit: a MagicMock attribute is truthy but is NOT True
+    msg.signature_validated = signature_validated
+    msg.unverified_reason = unverified_reason
     return msg
 
 
@@ -595,6 +599,35 @@ class TestSubscriptionProtocol:
         assert any("SUBSCRIBED" in l and "UNKNOWN identity" in l
                    for l in lines), lines
         assert any("UNSUBSCRIBED" in l and "the bot" in l for l in lines), lines
+
+    def test_forged_unsubscribe_cannot_cut_a_subscriber(
+        self, tmp_path, fake_rns_lxmf, caplog,
+    ):
+        """LXMF delivers a message whose signature failed with the CLAIMED
+        source hash (2026-10-07). An unsubscribe claiming the federation
+        subscriber's hash must not remove it."""
+        caplog.set_level(logging.INFO,
+                         logger="gateway.meshtastic_broadcast_bridge")
+        b = _make_bridge(tmp_path, fake_rns_lxmf)
+        b.start()
+        try:
+            b._subs.add("aaaa000000000003")
+            b._on_lxmf_delivery(_fake_lxmf_message(
+                source_hash=bytes.fromhex("aaaa000000000003"),
+                body="unsubscribe", signature_validated=False,
+                unverified_reason=0x02))
+            b._on_lxmf_delivery(_fake_lxmf_message(
+                source_hash=bytes.fromhex("bbbb000000000004"),
+                body="subscribe", signature_validated=False,
+                unverified_reason=0x01))
+            hashes = [s.lxmf_hash for s in b._subs.list_all()]
+            assert hashes == ["aaaa000000000003"]
+            assert b.stats.get("unverified_commands") == 2
+        finally:
+            b.stop()
+        lines = [r.getMessage() for r in caplog.records
+                 if "unverified" in r.getMessage().lower()]
+        assert len(lines) == 2, lines
 
     def test_unknown_verb_does_not_subscribe_by_default(
         self, tmp_path, fake_rns_lxmf,

@@ -235,7 +235,12 @@ class BridgeRnsEventsMixin:
             # through the bridge. Runs AFTER the oracle (which keeps its own
             # identity policy) and BEFORE the router, so a refusal is about
             # bridging only. See gateway/rns_ingress_policy.py.
-            if not self._rns_ingress_admits(source_hash.hex()):
+            if not self._rns_ingress_admits(
+                    source_hash.hex(),
+                    signature_validated=getattr(message, 'signature_validated',
+                                                None),
+                    unverified_reason=getattr(message, 'unverified_reason',
+                                              None)):
                 self._notify_message(msg)
                 return
 
@@ -313,19 +318,29 @@ class BridgeRnsEventsMixin:
             self._lxmf_identity_registry_obj = cache
         return cache.get()
 
-    def _rns_ingress_admits(self, source_hex: str) -> bool:
-        """True when ``source_hex`` may be bridged onto RF. Never raises."""
+    def _rns_ingress_admits(self, source_hex: str, *,
+                            signature_validated=None,
+                            unverified_reason=None) -> bool:
+        """True when ``source_hex`` may be bridged onto RF. Never raises.
+
+        Membership counts only with ``signature_validated is True``: LXMF
+        delivers a message whose signature failed (or whose source never
+        announced) with the CLAIMED source hash, so a claim alone is not an
+        identity (2026-10-07)."""
         try:
             from .rns_ingress_policy import (
-                POLICY_ENFORCE, POLICY_OPEN, VERDICT_UNLISTED, verdict)
+                POLICY_ENFORCE, POLICY_OPEN, VERDICT_LISTED, VERDICT_PEER,
+                VERDICT_UNVERIFIED, verdict)
             posture = self.rns_ingress_posture()
             policy = posture["policy"]
             if policy == POLICY_OPEN:
                 return True
             v = verdict(source_hex, posture["identities"],
-                        self._peer_gateway_hash_set())
-            if v != VERDICT_UNLISTED:
+                        self._peer_gateway_hash_set(),
+                        signature_validated=signature_validated)
+            if v in (VERDICT_LISTED, VERDICT_PEER):
                 return True
+            unverified = v == VERDICT_UNVERIFIED
             refused = policy == POLICY_ENFORCE
         except Exception as e:  # noqa: BLE001 — a broken POLICY must not
             # silently CLOSE the bridge, but must not silently open it
@@ -357,17 +372,24 @@ class BridgeRnsEventsMixin:
         ent: dict = {}
         try:
             ent = self._rns_ingress_ledger().record(
-                source_hex, policy=policy, refused=refused, label=label)
+                source_hex, policy=policy, refused=refused, label=label,
+                unverified=unverified)
         except Exception as e:  # noqa: BLE001 — witnessed, never decisive
             logger.warning(f"rns ingress ledger record failed ({e}); the "
                            f"journal line below is the only witness")
         # The tripwire's witness: the FULL hash, the policy, and what
         # happened — so the journal alone can seed or amend the list.
+        if unverified:
+            from .rns_ingress_policy import unverified_words
+            why = (f"CLAIMS a listed identity but {unverified_words(unverified_reason)}"
+                   f" — treated as unlisted")
+        else:
+            why = "is not in bridge_source_identities"
         logger.info(
-            "RNS ingress %s: sender %s (%s) is not in bridge_source_identities "
+            "RNS ingress %s: sender %s (%s) %s "
             "(policy=%s, seen %d×%s) — %s",
             "REFUSED" if refused else "unlisted",
-            source_hex.lower(), who, policy, ent.get("seen", 1),
+            source_hex.lower(), who, why, policy, ent.get("seen", 1),
             f", refused {ent.get('refused', 0)}×" if refused else "",
             "not bridged onto RF" if refused else
             "bridged anyway (observe); add it to the list or enforce")
