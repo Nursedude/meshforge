@@ -21,6 +21,7 @@ MINI_DUDEAI_NTFY_TOPIC (or pass ntfy_topic= when calling build_engine).
 from __future__ import annotations
 
 import os
+import time
 from typing import Iterable
 
 from ..actions import (
@@ -91,6 +92,25 @@ def _watchdog_extractor(data):
             "severity": sig.get("severity", "info"),
             "issue_ref": sig.get("issue_ref"),
         }
+        extra = sig.get("extra") or {}
+        if isinstance(extra, dict) and extra.get("unobserved_hold"):
+            # A HELD signal (the tracker could not observe its class this
+            # tick, so it re-emits the last-known one). Operator, 2026-10-06:
+            # keep paging it — silence would be the false recovery the hold
+            # exists to prevent — but the page must SAY the detail is
+            # last-known. 13:24 that day mini paged "1 failing:
+            # router_scout(FAIL(1))" 17 min after the cron had passed, and
+            # nothing in the message distinguished it from a live reading.
+            item["unobserved_hold"] = True
+            since = extra.get("unobserved_since")
+            if isinstance(since, (int, float)) and not isinstance(since, bool):
+                stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(since))
+                item["detail"] = (f"HELD since {stamp} (currently "
+                                  f"unobservable): {item['detail']}")
+            else:
+                # Watchdog older than the stamp (half-rolled fleet).
+                item["detail"] = ("HELD (currently unobservable; hold start "
+                                  f"unknown): {item['detail']}")
         if cls in _BANDED_CLASSES:
             # The loudness band the split rules match on (2026-09-14). Projected
             # EXPLICITLY, not by splatting `extra` — extras are the rules' open

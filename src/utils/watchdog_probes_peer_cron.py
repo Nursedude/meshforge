@@ -133,7 +133,12 @@ def probe_peer_cron_verdict_stale(
             continue
 
         try:
-            cell = judge_spooled_schedules(alias, doc.get("schedules"), now=now)
+            _clock = doc.get("clock")
+            cell = judge_spooled_schedules(
+                alias, doc.get("schedules"), now=now,
+                peer_now=(_clock.get("now") if isinstance(_clock, dict)
+                          else None),
+                fetched_at=fetched_at)
         except Exception as exc:  # noqa: BLE001
             blind.append(f"{alias}(judge failed: {type(exc).__name__})")
             continue

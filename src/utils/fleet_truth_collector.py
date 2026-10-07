@@ -190,8 +190,12 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
             radio_probe = spool.get("radio_probe")
             if isinstance(spool.get("services"), dict):
                 spool_services = spool["services"]
+            _clock = spool.get("clock")
             spool_schedules = judge_spooled_schedules(
-                alias, spool.get("schedules"))
+                alias, spool.get("schedules"),
+                peer_now=(_clock.get("now") if isinstance(_clock, dict)
+                          else None),
+                fetched_at=spool.get("fetched_at"))
             # Decided by the spool writer (it holds the role catalog). True /
             # False / None-if-undecidable; None must NEVER become False —
             # "not expected" is what stops a dark box tainting the verdict.
@@ -253,10 +257,29 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
     }
 
 
+#: |peer clock − this box's clock| at spool-fetch time beyond which a peer's
+#: cron verdicts are UNJUDGEABLE (``dark``), never ``failed`` (2026-10-06).
+#: `fetched_at` is stamped after the ssh returns, so a healthy pair differs
+#: by the round trip (≤ SSH_TIMEOUT_S = 30 s). Ten minutes is far above that
+#: and far below the 2 h stale floor the verdict judge applies, so a skew
+#: that would move a verdict's band is always caught first. ONE constant for
+#: both callers (the peer-leg probe and the /fleet cell).
+PEER_CLOCK_SKEW_DARK_S = 600.0
+
+
 def judge_spooled_schedules(alias: str, section: "Optional[Dict[str, Any]]",
                            *, now: "Optional[float]" = None,
+                           peer_now: "Optional[float]" = None,
+                           fetched_at: "Optional[float]" = None,
                            ) -> "Optional[Dict[str, Any]]":
     """Judge a map-less peer's spooled crontab + cron verdicts (2026-09-07).
+
+    ``peer_now`` / ``fetched_at``: the peer's own clock as spooled (the
+    ``clock.now`` section, 2026-10-06) and this box's stamp for the same
+    fetch. A skew past ``PEER_CLOCK_SKEW_DARK_S`` makes the verdicts
+    ``dark`` with the number in the reason — the stamps were written by a
+    clock we cannot relate to ours. Absent (an older spool) → judged as
+    before: no witness is today's judgment, not darkness for the fleet.
 
     WHY THIS EXISTS. lehua is a `field-node`: no map (so ``fleet_snapshot``
     never publishes its verdicts) and no watchdog (so
@@ -273,6 +296,15 @@ def judge_spooled_schedules(alias: str, section: "Optional[Dict[str, Any]]",
     """
     if not isinstance(section, dict):
         return None
+    if (isinstance(peer_now, (int, float)) and not isinstance(peer_now, bool)
+            and isinstance(fetched_at, (int, float))
+            and not isinstance(fetched_at, bool)):
+        skew = float(peer_now) - float(fetched_at)
+        if abs(skew) > PEER_CLOCK_SKEW_DARK_S:
+            return {"state": "dark",
+                    "reason": (f"peer clock skew {skew:+.0f}s vs this box at "
+                               f"fetch — {alias}'s verdict ages are "
+                               f"unjudgeable; check NTP on {alias}")}
     import base64
 
     def _dec(key: str) -> "Optional[str]":

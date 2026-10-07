@@ -304,3 +304,44 @@ class TestCoverageIsRequired:
         tracker = SignalTracker()
         with pytest.raises(TypeError):
             tracker.update([_sig()], now=100.0)
+
+
+class TestHeldSignalCarriesItsHoldStart:
+    """Operator, 2026-10-06: a held signal must keep paging, but the page
+    must SAY it is held. The tracker therefore stamps WHEN the hold began
+    (``extra.unobserved_since``) — the tick after the subject was last seen
+    — so the consumer can render "HELD since <ts>" instead of presenting a
+    last-known detail as a fresh observation."""
+
+    def test_hold_start_is_stamped_and_stable_across_ticks(self):
+        tracker = SignalTracker()
+        tracker.update([_sig()], now=100.0, coverage=_cov("active"))
+        active, _c, held = tracker.update([], now=130.0, coverage=_cov("indeterminate"))
+        assert held == [(CLS, SUBJ)]
+        assert active[0][0].extra["unobserved_hold"] is True
+        assert active[0][0].extra["unobserved_since"] == 130.0
+        active, _c, held = tracker.update([], now=160.0, coverage=_cov("indeterminate"))
+        assert held == []                                    # not a new edge
+        assert active[0][0].extra["unobserved_since"] == 130.0   # unchanged
+
+    def test_refire_drops_the_hold_stamp(self):
+        tracker = SignalTracker()
+        tracker.update([_sig()], now=100.0, coverage=_cov("active"))
+        tracker.update([], now=130.0, coverage=_cov("indeterminate"))
+        active, _c, _h = tracker.update([_sig()], now=160.0, coverage=_cov("active"))
+        assert "unobserved_hold" not in active[0][0].extra
+        assert "unobserved_since" not in active[0][0].extra
+        # A later hold starts a NEW clock, not the old one.
+        active, _c, _h = tracker.update([], now=190.0, coverage=_cov("indeterminate"))
+        assert active[0][0].extra["unobserved_since"] == 190.0
+
+    def test_rehydrated_hold_keeps_its_persisted_start(self):
+        tracker = SignalTracker()
+        assert tracker.rehydrate([{
+            "class": CLS, "subject": SUBJ, "severity": "wedge", "detail": "d",
+            "first_seen": 50.0,
+            "extra": {"unobserved_hold": True, "unobserved_since": 80.0},
+        }]) == 1
+        active, _c, held = tracker.update([], now=200.0, coverage=_cov("indeterminate"))
+        assert held == []            # the hold was already an edge before the restart
+        assert active[0][0].extra["unobserved_since"] == 80.0

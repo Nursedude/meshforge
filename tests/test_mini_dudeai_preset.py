@@ -219,3 +219,44 @@ def test_fleet_preset_routes_artifact_paths_through_the_adapter():
         assert literal not in src, (
             "artifact basename %r re-hardcoded in the preset — route it "
             "through _util.app_artifact_paths" % literal)
+
+
+def test_watchdog_extractor_says_held_instead_of_presenting_a_stale_detail():
+    """Operator, 2026-10-06: keep paging a held signal, never suppress it,
+    but the page must SAY it is held. 13:24 that day mini paged
+    "1 failing: router_scout(FAIL(1))" off a held signal 17 min after the
+    cron had passed, and nothing in the message said the detail was
+    last-known."""
+    import time as _t
+    since = 1_800_000_000.0
+    data = {"signals": [{
+        "class": "cron_verdict_stale", "subject": "cron", "severity": "degraded",
+        "detail": "Cron(s) unhealthy — 1 failing: router_scout(FAIL(1))",
+        "first_seen": since - 900,
+        "extra": {"unobserved_hold": True, "unobserved_since": since,
+                  "verdict_band": "fail"},
+    }]}
+    out = _watchdog_extractor(data)
+    assert out[0]["unobserved_hold"] is True
+    stamp = _t.strftime("%Y-%m-%d %H:%M", _t.localtime(since))
+    assert out[0]["detail"].startswith(f"HELD since {stamp} (currently unobservable): ")
+    assert out[0]["detail"].endswith("router_scout(FAIL(1))")
+    assert out[0]["verdict_band"] == "fail"       # the band still rides along
+
+
+def test_watchdog_extractor_held_without_a_start_still_says_held():
+    """Half-rolled fleet: a watchdog older than the stamp still holds."""
+    out = _watchdog_extractor({"signals": [{
+        "class": "main_thread_wedge", "subject": "x", "detail": "wedged",
+        "extra": {"unobserved_hold": True}}]})
+    assert out[0]["unobserved_hold"] is True
+    assert out[0]["detail"].startswith("HELD (currently unobservable")
+    assert out[0]["detail"].endswith(": wedged")
+
+
+def test_watchdog_extractor_leaves_a_live_signal_alone():
+    out = _watchdog_extractor({"signals": [{
+        "class": "main_thread_wedge", "subject": "x", "detail": "wedged",
+        "extra": {"pid": 4}}]})
+    assert "unobserved_hold" not in out[0]
+    assert out[0]["detail"] == "wedged"

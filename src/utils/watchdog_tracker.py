@@ -95,6 +95,13 @@ class SignalTracker:
         #: the rest of this file's transition-only logging: a permanently-blind
         #: probe must not emit a WARNING every tick forever.
         self._held: set = set()
+        #: key → unix ts of the tick the hold BEGAN (the tick after the
+        #: subject was last positively seen). Re-emitted as
+        #: ``extra["unobserved_since"]`` so a consumer can say "HELD since
+        #: <ts>" instead of presenting a last-known detail as a fresh
+        #: observation (operator, 2026-10-06: keep paging, never suppress,
+        #: but SAY it). Dropped when the key re-fires or clears.
+        self._held_since: Dict[Tuple[str, str], float] = {}
 
     def rehydrate(self, entries) -> int:
         """Adopt the previous process's persisted signals as active (B2).
@@ -147,6 +154,14 @@ class SignalTracker:
             if key in self._active:
                 continue  # first adoption wins; duplicates in a torn file
             self._active[key] = (float(first_seen), sig)
+            if sig.extra.get("unobserved_hold"):
+                # A hold persisted across the restart is not a new edge, and
+                # its start is the persisted one, not "now".
+                self._held.add(key)
+                since = sig.extra.get("unobserved_since")
+                if (isinstance(since, (int, float))
+                        and not isinstance(since, bool)):
+                    self._held_since[key] = float(since)
             adopted += 1
         return adopted
 
@@ -223,12 +238,16 @@ class SignalTracker:
                 still_held.add(key)
                 if key not in self._held:
                     newly_held.append(key)
+                self._held_since.setdefault(key, now)
         self._held = still_held
 
         first_seen_ts_for: List[Tuple[Signal, float]] = []
         for sig in current:
             key = sig.key()
             prior = self._active.get(key)
+            # Seen again — whatever hold it carried is over; a later hold
+            # starts its own clock.
+            self._held_since.pop(key, None)
             if prior is None:
                 # New transition
                 self._active[key] = (now, sig)
@@ -251,6 +270,7 @@ class SignalTracker:
                 replace(last_sig, extra={
                     **(last_sig.extra or {}),
                     "unobserved_hold": True,
+                    "unobserved_since": self._held_since.get(key, now),
                 }),
                 first_seen,
             ))
@@ -259,5 +279,6 @@ class SignalTracker:
         # (with their original first_seen) until an observation says otherwise.
         for key in newly_cleared:
             self._active.pop(key, None)
+            self._held_since.pop(key, None)
 
         return first_seen_ts_for, newly_cleared, newly_held

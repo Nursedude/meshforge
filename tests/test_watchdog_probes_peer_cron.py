@@ -238,3 +238,17 @@ class TestRootServiceSafety:
         assert d["disp"] == "indeterminate"
         assert "operator" in d["reason"]
 
+
+
+def test_skewed_peer_clock_reads_blind_never_failed(tmp_path):
+    """2026-10-06: the spool carries the peer's clock; a peer days behind
+    must surface as UNOBSERVABLE (with the skew), not as a failing cron."""
+    now = time.time()
+    _spool(tmp_path, "lehua", _verdict("OK", 60, now), now=now)
+    doc = json.loads((tmp_path / "lehua.json").read_text())
+    doc["clock"] = {"now": doc["fetched_at"] - 8 * 86400}
+    (tmp_path / "lehua.json").write_text(json.dumps(doc))
+    assert probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path) == []
+    d = collect_dispositions()["cron_verdict_stale"]
+    assert d["disp"] == "indeterminate", d
+    assert "lehua" in d["reason"] and "skew" in d["reason"]

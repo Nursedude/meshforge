@@ -561,3 +561,70 @@ class TestSchedulesCellFromSpool:
     def test_source_is_honest_about_where_it_came_from(self):
         c_ = ft._schedules_cell_from_spool({"state": "healthy"})
         assert c_["source"] == "ssh_spool.cron_verdicts"
+
+
+class TestSpoolCarriesThePeerClock:
+    """2026-10-06 (frontier hunt, item 4): the peer leg judged a PEER's
+    verdict stamps (its clock) against the MANAGER's `now` with no skew
+    witness — a peer days behind (the moc4 08-27 class) reads every cron
+    stale and pages a healthy cron as failed; a peer ahead reads fresh
+    forever. The spool now carries the peer's own clock, read in the same
+    ssh round trip."""
+
+    def test_clock_is_a_parsed_section(self):
+        mod = _load_spool_script()
+        assert "__TRUTH_CLOCK__" in mod._SECTIONS
+        assert mod._SECTION_KEYS["__TRUTH_CLOCK__"] == "clock"
+        assert mod.parse_sections('__TRUTH_CLOCK__\n{"now":1800000000}\n')["clock"] == {
+            "now": 1800000000}
+
+    def test_remote_command_reads_the_peer_clock(self):
+        mod = _load_spool_script()
+        assert "date +%s" in mod._REMOTE_CMD
+
+
+class TestPeerJudgeRefusesASkewedClock:
+
+    def test_peer_clock_far_ahead_is_dark_with_the_number(self, tmp_path):
+        now = time.time()
+        with patch.object(c, "truth_spool_dir", return_value=tmp_path):
+            got = c.judge_spooled_schedules(
+                "lehua", _section(verdicts=_verdict("OK", 60, now)), now=now,
+                peer_now=now + 86400, fetched_at=now)
+        assert got["state"] == "dark", got
+        assert "skew" in got["reason"] and "lehua" in got["reason"]
+        assert "+86400s" in got["reason"] or "+1d" in got["reason"]
+
+    def test_peer_clock_far_behind_is_dark_not_failed(self, tmp_path):
+        """The moc4 08-27 shape: a verdict log that reads days stale ONLY
+        because the writer's clock was behind."""
+        now = time.time()
+        with patch.object(c, "truth_spool_dir", return_value=tmp_path):
+            for _ in range(4):
+                got = c.judge_spooled_schedules(
+                    "lehua", _section(verdicts=_verdict("OK", 60, now)), now=now,
+                    peer_now=now - 8 * 86400, fetched_at=now)
+        assert got["state"] == "dark", got
+
+    def test_ssh_latency_sized_skew_is_judged_normally(self, tmp_path):
+        """`fetched_at` is stamped after the round trip, so a healthy pair
+        differs by the ssh duration — seconds, never minutes."""
+        now = time.time()
+        with patch.object(c, "truth_spool_dir", return_value=tmp_path):
+            got = c.judge_spooled_schedules(
+                "lehua", _section(verdicts=_verdict("OK", 60, now)), now=now,
+                peer_now=now - 25, fetched_at=now)
+        assert got["state"] == "healthy", got
+
+    def test_absent_clock_judges_as_before(self, tmp_path):
+        """Half-rolled: an older spool carries no clock. No witness means
+        today's judgment, not darkness for the whole fleet."""
+        now = time.time()
+        with patch.object(c, "truth_spool_dir", return_value=tmp_path):
+            got = c.judge_spooled_schedules(
+                "lehua", _section(verdicts=_verdict("OK", 60, now)), now=now,
+                peer_now=None, fetched_at=now)
+        assert got["state"] == "healthy", got
+
+    def test_threshold_is_one_constant(self):
+        assert c.PEER_CLOCK_SKEW_DARK_S >= 300

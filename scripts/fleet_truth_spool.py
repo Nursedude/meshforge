@@ -127,16 +127,27 @@ _REMOTE_CMD = (
     "END{for(k in n){if (k in p) print p[k]; print n[k]}}' "
     "\"$HOME/cron_verdicts.log\" 2>/dev/null | base64 -w0 2>/dev/null); "
     "printf '{\"crontab_b64\":\"%s\",\"verdicts_b64\":\"%s\"}' \"${_ct:-}\" \"${_cv:-}\""
+    # ── The peer's OWN clock (2026-10-06) ─────────────────────────────────
+    # The schedules above are judged by comparing the PEER's verdict stamps
+    # (written by its clock) against THIS box's `now`. With no witness of
+    # the peer's clock, a peer days behind (RTC-less Pi after a WAN outage —
+    # the moc4 08-27 class) reads every cron stale and pages a healthy cron
+    # as failed; a peer ahead reads fresh forever. Read in the same round
+    # trip; `fetched_at` (this box, stamped after the ssh returns) is the
+    # pair it is judged against, so a healthy pair differs by the ssh
+    # duration only.
+    "; echo; echo __TRUTH_CLOCK__; printf '{\"now\":%s}' \"$(date +%s)\""
 )
 _SECTIONS = ("__TRUTH_SLO__", "__TRUTH_STATUS__", "__TRUTH_RAWWD__",
              "__TRUTH_DEPLOY__", "__TRUTH_RAWMINI__", "__TRUTH_RADIO__",
-             "__TRUTH_SERVICES__", "__TRUTH_SCHEDULES__")
+             "__TRUTH_SERVICES__", "__TRUTH_SCHEDULES__", "__TRUTH_CLOCK__")
 _SECTION_KEYS = {"__TRUTH_SLO__": "slo", "__TRUTH_STATUS__": "status",
                  "__TRUTH_RAWWD__": "raw_watchdog",
                  "__TRUTH_DEPLOY__": "deployment",
                  "__TRUTH_RAWMINI__": "raw_mini", "__TRUTH_RADIO__": "radio_probe",
                  "__TRUTH_SERVICES__": "services",
-                 "__TRUTH_SCHEDULES__": "schedules"}
+                 "__TRUTH_SCHEDULES__": "schedules",
+                 "__TRUTH_CLOCK__": "clock"}
 
 
 #: Service whose absence removes a box's whole HTTP truth surface
