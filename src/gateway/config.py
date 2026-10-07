@@ -470,6 +470,15 @@ class RNSConfig:
     # M→R fan-out list (operator NomadNet inboxes). Same single-or-list
     # shape as default_lxmf_destination.
     peer_gateway_destinations: Any = ""
+    # RNS→RF ingress policy (2026-10-06, ingress trust-boundary enumeration).
+    # LXMF source hashes (str | list, 32 hex) allowed to be bridged onto our
+    # radios. Empty = OPEN (every sender bridged — the router's startup line
+    # says so). With a list, `bridge_source_policy` decides what an UNLISTED
+    # sender gets: "observe" (bridged, but witnessed + ledgered — the soak
+    # that proves the list is complete) or "enforce" (refused). Peer
+    # gateways are always allowed. See gateway/rns_ingress_policy.py.
+    bridge_source_identities: Any = ""
+    bridge_source_policy: str = "observe"
     # Theme-A step 1 — reply routing. When True, the bridge records which
     # mesh node last messaged each RNS peer (reply-context memory) and
     # honors reply addressing on R→M: explicit @addr > echoed
@@ -599,6 +608,12 @@ class RNSConfig:
         if isinstance(raw, (list, tuple)):
             return [d for d in raw if isinstance(d, str) and d]
         return []
+
+    def get_bridge_source_identities(self) -> List[str]:
+        """``bridge_source_identities`` normalized to lowercase 32-hex list;
+        malformed entries are dropped (validate() names them)."""
+        from .rns_ingress_policy import normalize_hashes
+        return normalize_hashes(self.bridge_source_identities)
 
 
 @dataclass
@@ -1169,6 +1184,30 @@ class GatewayConfig:
                     self.meshcore.baud_rate, "meshcore.baud_rate")
                 if err:
                     errors.append(err)
+
+        # RNS→RF ingress policy: a typo in the one list that guards the
+        # radios must be NAMED, never silently dropped into "open".
+        try:
+            from .rns_ingress_policy import (
+                DECLARABLE_POLICIES, malformed_hashes, normalize_hashes)
+            bad = malformed_hashes(self.rns.bridge_source_identities)
+            for b in bad:
+                errors.append(ConfigValidationError(
+                    "rns.bridge_source_identities",
+                    f"{b} is not a 32-hex LXMF hash — dropped from the list",
+                    severity="warning"))
+            pol = (self.rns.bridge_source_policy or "").strip().lower()
+            if normalize_hashes(self.rns.bridge_source_identities) and \
+                    pol not in DECLARABLE_POLICIES:
+                errors.append(ConfigValidationError(
+                    "rns.bridge_source_policy",
+                    f"{self.rns.bridge_source_policy!r} is not one of "
+                    f"{list(DECLARABLE_POLICIES)} — treated as 'observe'",
+                    severity="warning"))
+        except Exception as exc:  # noqa: BLE001 — validation must not crash load
+            errors.append(ConfigValidationError(
+                "rns.bridge_source_identities",
+                f"could not validate: {exc}", severity="warning"))
 
         # Validate routing rules
         for i, rule in enumerate(self.routing_rules):

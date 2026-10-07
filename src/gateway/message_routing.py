@@ -118,6 +118,24 @@ class MessageRouter:
         # and the line above was the only thing the gateway said about it.
         logger.info(self.describe_ingress_policy())
 
+    def _rns_allowlist_clause(self) -> str:
+        """`` rns_allowlist=<n> policy=<observe|enforce>`` when a list is
+        declared, ``""`` when the RNS→RF path is open (the sentence that
+        follows already says OPEN). Defensive: a mocked/absent section
+        reads as no list."""
+        try:
+            from .rns_ingress_policy import effective_policy
+            rns_cfg = getattr(self.config, "rns", None)
+            ids = list(rns_cfg.get_bridge_source_identities())
+            declared = getattr(rns_cfg, "bridge_source_policy", None)
+            pol = effective_policy(ids, declared if isinstance(declared, str)
+                                   else None)
+        except Exception:  # noqa: BLE001
+            return ""
+        if not ids:
+            return ""
+        return f" rns_allowlist={len(ids)} policy={pol}"
+
     def describe_ingress_policy(self) -> str:
         """One sentence naming who this gateway bridges, derived from the
         config and the decider actually in use — never from a hope.
@@ -139,7 +157,8 @@ class MessageRouter:
         allow = [r for r in rules if r.direction != "drop"]
         decider = "classifier" if self._classifier is not None else "legacy"
         head = (f"Routing ingress policy: decider={decider} rules={len(rules)} "
-                f"default_route={self.config.default_route} — ")
+                f"default_route={self.config.default_route}"
+                f"{self._rns_allowlist_clause()} — ")
         knob = ("a rule with direction 'drop' (source_filter/dest_filter/"
                 "message_filter pick what it refuses) is the knob that "
                 "closes a path")

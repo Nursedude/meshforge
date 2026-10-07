@@ -225,6 +225,14 @@ class BridgeRnsEventsMixin:
             except Exception as e:
                 logger.debug(f"Could not store incoming RNS message: {e}")
 
+            # RNS→RF ingress policy (2026-10-06): WHO may reach our radios
+            # through the bridge. Runs AFTER the oracle (which keeps its own
+            # identity policy) and BEFORE the router, so a refusal is about
+            # bridging only. See gateway/rns_ingress_policy.py.
+            if not self._rns_ingress_admits(source_hash.hex()):
+                self._notify_message(msg)
+                return
+
             # Queue for bridging if enabled (non-blocking to prevent deadlock)
             if self._router.should_bridge(msg):
                 try:
@@ -239,6 +247,71 @@ class BridgeRnsEventsMixin:
 
         except Exception as e:
             logger.error(f"Error processing LXMF message: {e}")
+
+    # ── RNS→RF ingress policy ────────────────────────────────────────
+    def _rns_ingress_ledger(self):
+        """Lazily-built, process-wide ledger of unlisted senders."""
+        led = getattr(self, "_rns_ingress_ledger_obj", None)
+        if led is None:
+            from .rns_ingress_policy import IngressLedger, default_ledger_path
+            path = getattr(self, "_rns_ingress_ledger_path", None)
+            led = IngressLedger(path or default_ledger_path())
+            self._rns_ingress_ledger_obj = led
+        return led
+
+    def rns_ingress_posture(self) -> dict:
+        """The declared list + the policy in force, for status surfaces."""
+        from .rns_ingress_policy import effective_policy
+        rns_cfg = getattr(self.config, "rns", None)
+        try:
+            identities = list(rns_cfg.get_bridge_source_identities())
+        except Exception:  # noqa: BLE001 — a mocked/absent section is OPEN
+            identities = []
+        declared = getattr(rns_cfg, "bridge_source_policy", None)
+        policy = effective_policy(identities, declared
+                                  if isinstance(declared, str) else None)
+        return {"policy": policy, "listed": len(identities),
+                "identities": identities}
+
+    def _rns_ingress_admits(self, source_hex: str) -> bool:
+        """True when ``source_hex`` may be bridged onto RF. Never raises."""
+        try:
+            from .rns_ingress_policy import (
+                POLICY_ENFORCE, POLICY_OPEN, VERDICT_UNLISTED, verdict)
+            posture = self.rns_ingress_posture()
+            policy = posture["policy"]
+            if policy == POLICY_OPEN:
+                return True
+            v = verdict(source_hex, posture["identities"],
+                        self._peer_gateway_hash_set())
+            if v != VERDICT_UNLISTED:
+                return True
+            refused = policy == POLICY_ENFORCE
+            with self._stats_lock:
+                self.stats['rns_ingress_unlisted'] = (
+                    self.stats.get('rns_ingress_unlisted', 0) + 1)
+                if refused:
+                    self.stats['rns_to_mesh_refused_unlisted'] = (
+                        self.stats.get('rns_to_mesh_refused_unlisted', 0) + 1)
+            ent = self._rns_ingress_ledger().record(
+                source_hex, policy=policy, refused=refused)
+            # The tripwire's witness: the FULL hash, the policy, and what
+            # happened — so the journal alone can seed or amend the list.
+            logger.info(
+                "RNS ingress %s: sender %s is not in bridge_source_identities "
+                "(policy=%s, seen %d×%s) — %s",
+                "REFUSED" if refused else "unlisted",
+                source_hex.lower(), policy, ent.get("seen", 1),
+                f", refused {ent.get('refused', 0)}×" if refused else "",
+                "not bridged onto RF" if refused else
+                "bridged anyway (observe); add it to the list or enforce")
+            return not refused
+        except Exception as e:  # noqa: BLE001 — a broken policy must not
+            # silently CLOSE the bridge, but must not silently open it
+            # either: say so, and fall back to today's behaviour (open).
+            logger.warning(f"rns ingress policy error ({e}); admitting "
+                           f"{source_hex[:8]} as if OPEN")
+            return True
 
     def _on_rns_announce(self, dest_hash, announced_identity, app_data):
         """Handle RNS announce for node discovery"""

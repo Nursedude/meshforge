@@ -889,6 +889,22 @@ class RNSMeshtasticBridge(
         # mqtt_bridge mode: meshtastic_connected is the BROKER session; the
         # radio is read separately so a stopped meshtasticd is not reported
         # as connected (2026-10-02). Absent key = handler has no such read.
+        # RNS→RF ingress policy + the unlisted-sender ledger (2026-10-06):
+        # the tripwire's diff, where a status surface can read it.
+        try:
+            posture = self.rns_ingress_posture()
+            snap = self._rns_ingress_ledger().snapshot()
+            status['rns_ingress'] = {
+                'policy': posture['policy'],
+                'listed': posture['listed'],
+                'unlisted_recent': snap['unlisted_recent'],
+                'unlisted_total': snap['unlisted_total'],
+                'refused_total': snap['refused_total'],
+                'window_s': snap['window_s'],
+            }
+        except Exception as e:  # noqa: BLE001 — status must not break
+            logger.debug(f"rns ingress status read failed: {e}")
+            status['rns_ingress'] = {'policy': None, 'error': str(e)[:120]}
         reach = getattr(self._mesh_handler, 'radio_reachability', None)
         if callable(reach):
             try:
