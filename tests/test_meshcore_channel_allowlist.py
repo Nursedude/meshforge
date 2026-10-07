@@ -275,11 +275,14 @@ class TestDirectMessagesAreNotGated:
     oracle already identity-gates DMs with channel=None.
     """
 
-    def test_dm_still_bridges_with_public_refused(self):
+    def test_dm_not_counted_as_channel_suppression(self):
+        # DMs never bridge (DMs stay DMs, 10-07 — see
+        # test_meshcore_dm_stays_dm.py); the channel policy must still not be
+        # the thing that refused it, or its counter would lie.
         q = Queue(maxsize=100)
         h = _make_handler(queue=q)
         asyncio.run(h._on_contact_message(_dm_event()))
-        assert not q.empty(), "DM was swallowed by the channel allowlist"
+        assert q.empty()
         assert h.get_channel_metrics()['channel_suppressed'] == 0
 
 

@@ -240,8 +240,9 @@ class TestConnectionLifecycle:
 class TestMessageReceive:
     """Test incoming message processing."""
 
-    def test_contact_message_queued(self, handler):
-        """Incoming DM is converted and queued."""
+    def test_contact_message_not_queued(self, handler):
+        """Incoming DM is converted but NOT queued — DMs stay DMs (10-07).
+        Full contract: tests/test_meshcore_dm_stays_dm.py."""
         loop = asyncio.new_event_loop()
         try:
             loop.run_until_complete(handler._connect())
@@ -258,12 +259,8 @@ class TestMessageReceive:
             )
             loop.run_until_complete(handler._on_contact_message(event))
 
-            # Check message was queued
-            assert not handler._message_queue.empty()
-            msg = handler._message_queue.get_nowait()
-            assert isinstance(msg, CanonicalMessage)
-            assert msg.content == 'Hello from MeshCore'
-            assert msg.source_network == 'meshcore'
+            assert handler._message_queue.empty()
+            assert handler.stats.get('meshcore_dm_kept') == 1
         finally:
             loop.close()
 
@@ -678,7 +675,7 @@ class TestMeshOracleMeshcoreWiring:
         handler._oracle.handle.assert_called_once_with('node789', 'status', 2)
         assert not handler._message_queue.empty()  # answered AND bridged onward
 
-    def test_non_query_passes_through_to_bridge(self, handler):
+    def test_non_query_dm_is_kept_not_bridged(self, handler):
         handler._oracle = MagicMock()
         handler._oracle.handle.return_value = None  # not a query
         event = SimpleNamespace(type='CONTACT_MSG_RECV', payload={
@@ -689,7 +686,7 @@ class TestMeshOracleMeshcoreWiring:
             loop.run_until_complete(handler._on_contact_message(event))
         finally:
             loop.close()
-        assert not handler._message_queue.empty()  # passed through
+        assert handler._message_queue.empty()  # DMs stay DMs (10-07)
 
     def test_oracle_none_does_not_break_rx(self, handler):
         handler._oracle = None  # default-off: hook is a no-op
@@ -701,7 +698,8 @@ class TestMeshOracleMeshcoreWiring:
             loop.run_until_complete(handler._on_contact_message(event))
         finally:
             loop.close()
-        assert not handler._message_queue.empty()
+        assert handler.stats.get('meshcore_rx') == 1  # RX still processed
+        assert handler._message_queue.empty()  # DMs stay DMs (10-07)
 
 
 # =============================================================================

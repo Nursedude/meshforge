@@ -283,7 +283,9 @@ class MeshCoreHandler(MeshCoreContactsMixin, BaseHandler):
             print(f"  TCP Host:         {mc.tcp_host}")
             print(f"  TCP Port:         {mc.tcp_port}")
         print(f"  Bridge Channels:  {'Yes' if mc.bridge_channels else 'No'}")
-        print(f"  Bridge DMs:       {'Yes' if mc.bridge_dms else 'No'}")
+        # DMs stay DMs (operator declaration 2026-10-07): never bridged,
+        # whatever `bridge_dms` says — the handler does not read it.
+        print("  Bridge DMs:       No (DMs stay DMs — declared 2026-10-07)")
         print(f"  Simulation Mode:  {'Yes' if mc.simulation_mode else 'No'}")
         print(f"  Auto-Fetch Msgs:  {'Yes' if mc.auto_fetch_messages else 'No'}")
 
@@ -382,7 +384,6 @@ class MeshCoreHandler(MeshCoreContactsMixin, BaseHandler):
                 ("tcp_host", f"TCP Host            {mc.tcp_host or '(not set)'}"),
                 ("tcp_port", f"TCP Port            {mc.tcp_port}"),
                 ("channels", f"Bridge Channels     {'Yes' if mc.bridge_channels else 'No'}"),
-                ("dms", f"Bridge DMs          {'Yes' if mc.bridge_dms else 'No'}"),
                 ("sim", f"Simulation Mode     {'Yes' if mc.simulation_mode else 'No'}"),
                 ("save", "Save Configuration"),
                 ("back", "Back"),
@@ -478,9 +479,6 @@ class MeshCoreHandler(MeshCoreContactsMixin, BaseHandler):
 
             elif choice == "channels":
                 mc.bridge_channels = not mc.bridge_channels
-
-            elif choice == "dms":
-                mc.bridge_dms = not mc.bridge_dms
 
             elif choice == "sim":
                 mc.simulation_mode = not mc.simulation_mode
