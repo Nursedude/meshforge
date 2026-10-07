@@ -196,6 +196,14 @@ stranger: README-only install, no fleet registry, re-imaged before each rc.
     library, never hand-written keys (the 09-18 `channel_idx` class).
 14. Upstream to SMCI (R6) — drafts only, and only if R3 is go; posting is the
     operator's call.
+15. **Uplink HEADROOM on `/fleet` (operator 10-06)**: `utils/starlink_dish.py`
+    reads only the instantaneous `get_status` (one sample — read 0.5 Mbps down
+    while YouTube streamed in the tent: a between-bursts sample, not headroom).
+    Read the dish's own `get_history` ring buffer (per-second down/up bps,
+    PoP latency, drop) and render peak/p95 over the window beside the current
+    line. Read-only surface; the site has ONE dish, so this is the truth about
+    the single path every non-mesh service shares (Starlink Mini backup WAN is
+    the cure for that, separately).
 
 ## Rules that shape the roadmap
 
