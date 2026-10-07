@@ -2968,7 +2968,16 @@ testing when this one is fixed; do NOT re-open #4 on this row alone.
 
 ---
 
-## QUEUED 2026-09-20 (Opus 5 1M) — the CI-DRIFT arc, and the author reviewed himself
+## ~~QUEUED~~ CLOSED 2026-10-06 (Fable 5.1, non-author; one CONFIRMED by drill, cured test-first in the same file; rest dismissed by read or execution) — the CI-DRIFT arc, and the author reviewed himself
+
+**Verdict on `d4cffeee` (`_SsSampler`):** the root cause is right for the right reason — RE-EXECUTED, not read: `cfp.subprocess is subprocess` → True, and a `patch("utils.cascade_fingerprints.subprocess.run")` is visible as the global `subprocess.run` (scratch `shared_module_check.py`). The author's question — *does the foreign-thread branch ever mask a defect the old bare list would have surfaced?* — **YES, one, and it is a refactor, not a wedge.** Drilled with the probe's `_ss_syn_sent_rns_rpc` wrapped to run on a worker thread: `test_transient_syn_sent_does_not_hit` stayed GREEN with `owner_calls == 0` (every sample foreign → empty table → None, which is what it asserts), while the hit-shaped tests failed loudly (hit None). So the None-shaped tests pinned nothing against a threaded probe; the old bare list would have fed the worker and kept them meaningful. Cure (test-only, same file): every `_SsSampler` test now asserts `sampler.owner_calls == len(samples)`, and `test_a_worker_thread_probe_is_invisible_except_through_owner_calls` pins WHY. Red proof: the new assertion fails under the threaded drill. 60/60 in the file after.
+**Other attacks, dismissed by read:** `_real_run` is captured before the run-patch enters (`with` items are entered left to right, the sampler is constructed between them); the foreign branch keys on `cmd[0] == "ss"` which is the only spelling both fingerprints use; thread-ident reuse cannot collide with a live owner; `return_value` tests are immune to theft and none of them asserts a call count.
+**`3fb72979` (`<3.10` marker verified only in CI): MOOT** — `7d972e29` (09-20) retired the 3.9 floor; `requires-python >=3.11` and `MIN_PY: '3.11'` agree (read 10-06). Transitive drift stays open as the file itself says.
+**`5df1aff0`:** comments only; not reviewed (low yield by the author's own ranking).
+**The through-line stands and gained a fourth instance:** a control that protects at the one moment it cannot fail — here a sampler that absorbs exactly the input (a foreign thread) that a future refactor would make the normal case.
+
+_Original queue entry:_
+
 
 **Upshift-witness fired on the push** (leg 3, advisory): 1169 src+scripts
 lines changed since the last CLOSING review boundary `4bf2c4509`, over the
