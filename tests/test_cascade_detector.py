@@ -160,6 +160,41 @@ class TestSsSamplerThreadIsolation:
         with pytest.raises(StopIteration):
             sampler(["ss"])
 
+    def test_a_worker_thread_probe_is_invisible_except_through_owner_calls(
+            self, monkeypatch):
+        """Non-author review of d4cffeee (2026-10-06): the foreign-thread
+        branch DOES mask one refactor the old bare list would have
+        surfaced. If the probe ever takes its `ss` samples on a worker
+        thread (a timeout wrapper, a pool), every sample is foreign, reads
+        an empty table, and the probe returns None — which is exactly what
+        the None-shaped tests assert, so they pass having exercised
+        nothing. Drilled: `owner_calls == 0` while the test stayed green.
+        The hit-shaped tests fail loudly either way. The count is the only
+        witness, so every sampler test asserts it; this test pins WHY."""
+        monkeypatch.delenv("MESHFORGE_CASCADE_PROBE_DISABLED", raising=False)
+        real = cfp._ss_syn_sent_rns_rpc
+
+        def on_worker(*a, **k):
+            box = {}
+            t = threading.Thread(
+                target=lambda: box.setdefault("r", real(*a, **k)))
+            t.start()
+            t.join(5)
+            return box.get("r")
+        monkeypatch.setattr(cfp, "_ss_syn_sent_rns_rpc", on_worker)
+
+        wedged = "u_str  SYN-SENT  0  0  *  1234  @rns/default/rpc  5678\n"
+        sampler = _SsSampler(MagicMock(returncode=0, stdout=wedged),
+                             MagicMock(returncode=0, stdout=wedged))
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/ss"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   side_effect=sampler):
+            hit = cfp.probe_rns_rpc_wedge()
+        # A persisted wedge went unreported, and the ONLY trace is the count.
+        assert hit is None
+        assert sampler.owner_calls == 0
+
 
 class TestProbeRnsRpcWedge:
     """Direct probe-behavior tests. The conftest pytest_configure sets
@@ -247,11 +282,17 @@ class TestProbeRnsRpcWedge:
             MagicMock(returncode=0, stdout=wedged),   # candidate seen
             MagicMock(returncode=0, stdout=""),       # ...gone 0.4s later
         ]
+        sampler = _SsSampler(*samples)
         with patch("utils.cascade_fingerprints.shutil.which",
                    return_value="/usr/bin/ss"), \
              patch("utils.cascade_fingerprints.subprocess.run",
-                   side_effect=_SsSampler(*samples)):
+                   side_effect=sampler):
             assert cfp.probe_rns_rpc_wedge() is None
+        # None is also what a probe that never drew a sample returns — see
+        # TestSsSamplerThreadIsolation.test_a_worker_thread_probe_is_invisible
+        # _except_through_owner_calls. The count is what makes this None mean
+        # "judged transient" rather than "saw nothing".
+        assert sampler.owner_calls == 2
 
     def test_different_socket_in_second_sample_does_not_hit(self):
         """Connect CHURN: sockets present in both samples, but not the
@@ -263,11 +304,13 @@ class TestProbeRnsRpcWedge:
         second = MagicMock(
             returncode=0,
             stdout="u_str  SYN-SENT  0  0  *  3333  @rns/default/rpc  4444\n")
+        sampler = _SsSampler(first, second)
         with patch("utils.cascade_fingerprints.shutil.which",
                    return_value="/usr/bin/ss"), \
              patch("utils.cascade_fingerprints.subprocess.run",
-                   side_effect=_SsSampler(first, second)):
+                   side_effect=sampler):
             assert cfp.probe_rns_rpc_wedge() is None
+        assert sampler.owner_calls == 2
 
     def test_hit_survives_queue_depth_change(self):
         """Same socket (same inode pair), recv-q/send-q moved under load.
@@ -279,13 +322,15 @@ class TestProbeRnsRpcWedge:
         second = MagicMock(
             returncode=0,
             stdout="u_str  SYN-SENT  4  9  *  1234  @rns/default/rpc  5678\n")
+        sampler = _SsSampler(first, second)
         with patch("utils.cascade_fingerprints.shutil.which",
                    return_value="/usr/bin/ss"), \
              patch("utils.cascade_fingerprints.subprocess.run",
-                   side_effect=_SsSampler(first, second)):
+                   side_effect=sampler):
             hit = cfp.probe_rns_rpc_wedge()
         assert hit is not None
         assert hit.metric["syn_sent_count"] == 1
+        assert sampler.owner_calls == 2
 
     def test_unobservable_second_sample_does_not_hit(self):
         """`ss` failed on the confirming read: we do not know whether the
@@ -293,12 +338,13 @@ class TestProbeRnsRpcWedge:
         first = MagicMock(
             returncode=0,
             stdout="u_str  SYN-SENT  0  0  *  1234  @rns/default/rpc  5678\n")
+        sampler = _SsSampler(first, MagicMock(returncode=1, stdout=""))
         with patch("utils.cascade_fingerprints.shutil.which",
                    return_value="/usr/bin/ss"), \
              patch("utils.cascade_fingerprints.subprocess.run",
-                   side_effect=_SsSampler(
-                       first, MagicMock(returncode=1, stdout=""))):
+                   side_effect=sampler):
             assert cfp.probe_rns_rpc_wedge() is None
+        assert sampler.owner_calls == 2
 
     def test_healthy_box_pays_no_resample_delay(self):
         """The 0.4s confirmation is only paid on the candidate path. A
