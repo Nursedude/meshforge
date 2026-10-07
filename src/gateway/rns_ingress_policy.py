@@ -255,10 +255,19 @@ def read_ledger_projection(path: Optional[Path] = None, *,
 
 
 def default_ledger_path() -> Path:
-    """``$XDG_STATE_HOME/meshforge/<LEDGER_FILENAME>`` under the REAL user's
-    home (sudo-safe resolution, MF001)."""
+    """``$XDG_DATA_HOME/meshforge/<LEDGER_FILENAME>`` (default
+    ``~/.local/share/meshforge``, the REAL user's home — sudo-safe, MF001).
+
+    WHY the data dir and not the state dir (measured 2026-10-07 on a live
+    gateway, by this module's own unwritable-ledger witness): the gateway
+    unit runs under ``ProtectHome=read-only`` with ``ReadWritePaths`` of
+    ``~/.config/meshforge``, ``~/.cache/meshforge`` and
+    ``~/.local/share/meshforge`` only — ``~/.local/state`` is a read-only
+    file system from inside the unit (the #60 sandbox class). The delivery
+    counters already live in the data dir; the ledger sits beside them.
+    """
     import os
     from utils.paths import get_real_user_home
-    base = os.environ.get("XDG_STATE_HOME")
-    root = Path(base) if base else get_real_user_home() / ".local" / "state"
+    base = os.environ.get("XDG_DATA_HOME")
+    root = Path(base) if base else get_real_user_home() / ".local" / "share"
     return root / "meshforge" / LEDGER_FILENAME

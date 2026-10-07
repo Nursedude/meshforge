@@ -143,7 +143,10 @@ _REMOTE_CMD = (
     # with the same function the map uses. Absent file → empty section →
     # the cell reads absent, never healthy.
     "; echo; echo __TRUTH_INGRESS__; "
-    "cat ${XDG_STATE_HOME:-$HOME/.local/state}/meshforge/rns_ingress_ledger.json "
+    # Data dir, not state dir: the gateway unit can only write there
+    # (ReadWritePaths; measured 2026-10-07) — same path as
+    # gateway.rns_ingress_policy.default_ledger_path().
+    "cat ${XDG_DATA_HOME:-$HOME/.local/share}/meshforge/rns_ingress_ledger.json "
     "2>/dev/null || true"
 )
 _SECTIONS = ("__TRUTH_SLO__", "__TRUTH_STATUS__", "__TRUTH_RAWWD__",

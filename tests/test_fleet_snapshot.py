@@ -1715,7 +1715,7 @@ def test_rns_ingress_block_reads_this_boxes_ledger(tmp_path, monkeypatch):
     """2026-10-06: /fleet/slo carries the projected RNS→RF tripwire ledger
     on map boxes; None when this box has no ledger (never a guess)."""
     from utils import fleet_snapshot as fs
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     assert fs._rns_ingress_block() is None
     from gateway.rns_ingress_policy import IngressLedger, default_ledger_path
     IngressLedger(default_ledger_path(), now_fn=lambda: 1.0).stamp(

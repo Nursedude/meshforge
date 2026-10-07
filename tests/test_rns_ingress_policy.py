@@ -237,7 +237,7 @@ class TestProjection:
             assert p["policy"] is None
 
     def test_read_helper_is_none_without_a_ledger(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
         assert pol.read_ledger_projection() is None
         (tmp_path / "meshforge").mkdir()
         (tmp_path / "meshforge" / pol.LEDGER_FILENAME).write_text("not json")
@@ -259,3 +259,15 @@ class TestStampAtStart:
         o.rns_ingress_stamp = BridgeRnsEventsMixin.rns_ingress_stamp.__get__(o)
         o.rns_ingress_stamp()
         assert not (tmp_path / "open" / "ledger.json").exists()
+
+
+def test_default_ledger_path_is_inside_the_gateway_units_writable_dirs(monkeypatch):
+    """Measured 2026-10-07 on a live gateway: the unit's ReadWritePaths are
+    ~/.config/meshforge, ~/.cache/meshforge, ~/.local/share/meshforge, and
+    ProtectHome=read-only makes ~/.local/state EROFS — the first stamp failed
+    there and only the unwritable-ledger witness said so. Pin the contract."""
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    p = pol.default_ledger_path()
+    assert p.parts[-3:] == (".local", "share", "meshforge")[:3][-3:] or ".local/share/meshforge" in str(p)
+    assert p.name == pol.LEDGER_FILENAME
+    assert ".local/state" not in str(p)
