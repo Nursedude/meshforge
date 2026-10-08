@@ -256,3 +256,35 @@ def test_screen_renders_no_snapshot_hour_as_a_dash_not_a_count(db, monkeypatch):
     out = buf.getvalue()
     assert "no snapshot this hour" in out
     assert "observation rows" in out and " snapshots (" not in out
+
+
+# --- a real drop is a count, not "no snapshot" (non-author review 2026-10-08) --
+# 6860625d took the half-max floor over the WHOLE 48 h window, so after a real
+# 400 → 30 drop every later snapshot fell below 200 and read "no snapshot this
+# hour" for up to 48 h — an outage rendered as collector phase drift.
+
+def _snaps(n, offs, prefix="!n"):
+    return [(f"{prefix}{i}", off, 1, 5.0, None, 21, -157, 0)
+            for off in offs for i in range(n)]
+
+
+def test_a_real_drop_keeps_being_counted_after_the_transition(db):
+    big = [-11.5 + 1.05 * k for k in range(6)]          # ~63-min cadence
+    small = [big[-1] + 1.05 * (k + 1) for k in range(5)]
+    _obs(db, _snaps(400, big) + _snaps(30, small, "!m"))
+    hours = nha.health_timeline(db, now=NOW)["hours"]
+    small_hours = {int((NOW + o * 3600) // 3600) for o in small}
+    judged = [h for h in hours if h["hour_epoch"] // 3600 in small_hours]
+    # at most the ONE transition snapshot may be lost; the rest are counts
+    assert sum(1 for h in judged if h["snapshots"]) >= len(judged) - 1
+    assert any(h["snapshots"] and h["known"] == 30 for h in judged)
+
+
+def test_a_growing_mesh_counts_its_early_snapshots(db):
+    offs = [-5.5 + 1.05 * k for k in range(5)]
+    rows = []
+    for k, off in enumerate(offs):
+        rows += _snaps(10 + 10 * k, [off], f"!g{k}_")
+    _obs(db, rows)
+    hours = nha.health_timeline(db, now=NOW)["hours"]
+    assert sum(h["snapshots"] for h in hours) >= 4      # was: the first ~3 read none

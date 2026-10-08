@@ -153,3 +153,48 @@ def test_report_says_what_the_confirmation_rate_is_of(monkeypatch):
     text = _report(monkeypatch, pulse={"diag": {"status": "ok", "detail": "none"}, "qa": qa})
     assert "38/38 recent terminal events on rns" in text
     assert "not the lifetime confirmation_rate" in text
+
+
+# --- non-author review 2026-10-08 (f69857e8) ------------------------------
+
+def _hist_ok(monkeypatch, hours, *, trends="unreadable", pred="unreadable"):
+    monkeypatch.setattr(rg.nha, "health_timeline", lambda: {"state": "ok", "hours": hours})
+    monkeypatch.setattr(rg.nha, "link_trends", lambda: {"state": trends, "error": "database is locked"})
+    monkeypatch.setattr(rg.nha, "predictive", lambda: {"state": pred, "error": "raised"})
+
+
+def _hour(epoch, snaps, known=400):
+    return {"hour_epoch": epoch, "known": known, "online": known, "avg_snr_online": 5.0,
+            "snr_samples": known, "observations": known, "snapshots": snaps, "partial": False}
+
+
+def test_every_unknown_source_is_named_as_not_observed(monkeypatch):
+    import time as _t
+    now = _t.time()
+    _report(monkeypatch)                               # plant everything else
+    _hist_ok(monkeypatch, [_hour(now - 1800, 1)])
+    text = rg.generate_report()
+    not_obs = text.split("**Not observed**")[1]
+    for src in ("map collector", "link trends", "battery/SNR trends"):
+        assert src in not_obs, src
+
+
+def test_a_pulse_missing_its_blocks_is_unobserved_not_silent(monkeypatch):
+    text = _report(monkeypatch, pulse={"diag": {}, "qa": {}})
+    not_obs = text.split("**Not observed**")[1]
+    assert "watchdog signals" in not_obs and "delivery QA" in not_obs
+
+
+def test_a_stale_latest_snapshot_says_its_age_and_is_not_current(monkeypatch):
+    import time as _t
+    now = _t.time()
+    _report(monkeypatch)
+    hours = [_hour(now - 8 * 3600, 1)] + [_hour(now - k * 3600, 0, known=30) for k in range(6, 0, -1)]
+    _hist_ok(monkeypatch, hours, trends="ok", pred="ok")
+    monkeypatch.setattr(rg.nha, "link_trends", lambda: {"state": "ok", "declining": [],
+                        "nodes_judged": 0, "nodes_with_snr": 0, "edge_h": 6.0})
+    monkeypatch.setattr(rg.nha, "predictive", lambda: {"state": "ok", "alerts": [],
+                        "battery_nodes_judged": 0, "snr_nodes_judged": 0, "min_samples": 6})
+    text = rg.generate_report()
+    assert " h ago)" in text
+    assert "current node snapshot" in text.split("**Not observed**")[1]

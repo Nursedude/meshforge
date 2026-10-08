@@ -126,6 +126,11 @@ def _names(c, cut: float) -> Dict[str, str]:
         " GROUP BY node_id", (cut,))}
 
 
+#: Half-width of the neighbourhood a batch is judged against: a little wider
+#: than the collector's ~63-min snapshot cadence (measured 2026-09-25).
+SNAPSHOT_NEIGHBOUR_S = 70 * 60
+
+
 def _snapshots_per_hour(batches) -> Dict[int, int]:
     """Full snapshots per clock hour. A snapshot's rows share ONE timestamp;
     one counts when it carries at least half the window's largest batch, so
@@ -138,10 +143,24 @@ def _snapshots_per_hour(batches) -> Dict[int, int]:
     "Known 18" between hours of ~410: a 400-node drop that never happened."""
     if not batches:
         return {}
-    floor = max(n for _, n in batches) / 2.0
+    # The floor is LOCAL — half the largest batch within SNAPSHOT_NEIGHBOUR_S —
+    # never the whole window's (non-author review 2026-10-08): with a window
+    # max, a real 400 → 30 drop made every later snapshot "no snapshot" for up
+    # to 48 h. Stragglers always sit within one ~63-min cadence of a real
+    # snapshot, so a neighbourhood a little wider than that still exposes
+    # them; a transition can now misread at most the one snapshot beside it.
+    bs = sorted(batches)
     out: Dict[int, int] = {}
-    for ts, n in batches:
-        if n >= floor:
+    lo = 0
+    for i, (ts, n) in enumerate(bs):
+        while bs[lo][0] < ts - SNAPSHOT_NEIGHBOUR_S:
+            lo += 1
+        peak = n
+        for j in range(lo, len(bs)):
+            if bs[j][0] > ts + SNAPSHOT_NEIGHBOUR_S:
+                break
+            peak = max(peak, bs[j][1])
+        if n >= peak / 2.0:
             out[int(ts // 3600)] = out.get(int(ts // 3600), 0) + 1
     return out
 

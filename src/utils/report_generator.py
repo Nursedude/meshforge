@@ -26,6 +26,7 @@ Usage:
 """
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -36,6 +37,10 @@ from utils import node_history_analytics as nha
 from utils.preset_impact import PresetAnalyzer
 
 logger = logging.getLogger(__name__)
+
+#: A "latest" full node snapshot older than this is not a current count —
+#: the collector snapshots every ~63 min (node_history_analytics).
+STALE_SNAPSHOT_H = 2.0
 
 REFERENCE_PRESETS = ("SHORT_TURBO", "SHORT_FAST", "MEDIUM_FAST", "LONG_FAST", "LONG_SLOW")
 
@@ -122,6 +127,7 @@ class ReportGenerator:
             lines.append(f"- Map collector: {view['count']} nodes ({view['source']})")
         else:
             lines.append(f"- Map collector: UNKNOWN — {view.get('why', 'no answer')}")
+            self._unobserved.append("map collector node count")
         rns = _safe(node_counts.rns_path_table_counts, {"network": None})
         if rns.get("network") is not None:
             lines.append(f"- RNS: **{rns['network']} network destinations** "
@@ -143,10 +149,18 @@ class ReportGenerator:
         if full:
             h = full[-1]
             snr = h["avg_snr_online"]
-            lines.append(f"Latest snapshot hour ({datetime.fromtimestamp(h['hour_epoch']):%m-%d %H:00}): "
+            # SAY the age: an hour-old "latest" read as current (review
+            # 2026-10-08 — 7 h stale "400 known" beside "nothing calls for
+            # action" after a real drop).
+            age_h = max(0.0, (time.time() - (h["hour_epoch"] + 3600)) / 3600)
+            lines.append(f"Latest snapshot hour ({datetime.fromtimestamp(h['hour_epoch']):%m-%d %H:00}, "
+                         f"{age_h:.0f} h ago): "
                          f"**{h['known']} known, {h['online']} online**, mean SNR of online "
                          f"nodes {'—' if snr is None else f'{snr:.1f} dB'} "
                          f"({h['snr_samples']} readings)")
+            if age_h > STALE_SNAPSHOT_H:
+                self._unobserved.append(
+                    f"current node snapshot (the newest full one is {age_h:.0f} h old)")
         else:
             lines.append("No full snapshot in the window yet.")
         tr = _safe(nha.link_trends, {"state": "unreadable", "error": "raised"})
@@ -163,6 +177,7 @@ class ReportGenerator:
                     self._findings.append(("soon", f"{r['name']}: SNR fell {-r['delta_db']:.1f} dB"))
         else:
             lines.append(f"\nLink trends: UNKNOWN — {_why(tr)}")
+            self._unobserved.append("link trends")
         pr = _safe(nha.predictive, {"state": "unreadable", "error": "raised"})
         if pr.get("state") == "ok":
             alerts = pr["alerts"]
@@ -180,6 +195,7 @@ class ReportGenerator:
                 lines.append(f"- {txt}")
         else:
             lines.append(f"\nFalling battery / SNR: UNKNOWN — {_why(pr)}")
+            self._unobserved.append("battery/SNR trends")
         lines.append("\n*Source: node_history.db on this box (the map collector's snapshots; "
                      "position-less nodes are not recorded).*")
         self._add("Node History", lines, 20)
@@ -195,7 +211,7 @@ class ReportGenerator:
             return
         diag, qa = snap.get("diag") or {}, snap.get("qa") or {}
         lines.append(f"- Watchdog: {diag.get('status', 'unobservable')} — {diag.get('detail', '')}")
-        if diag.get("status") == "unobservable":
+        if (diag.get("status") or "unobservable") == "unobservable":
             self._unobserved.append("watchdog signals")
         for s in (diag.get("signals") or [])[:self.config.max_listed]:
             lines.append(f"  - {s.get('cls')} · {s.get('subject')}")
@@ -210,7 +226,7 @@ class ReportGenerator:
             lines.append(f"  - confirmation: {conf.get('confirmed')}/{conf.get('terminal')} "
                          f"recent terminal events on {', '.join(conf.get('confirmable', []))} "
                          "(windowed; not the lifetime confirmation_rate)")
-        if qa.get("status") == "unobservable":
+        if (qa.get("status") or "unobservable") == "unobservable":
             self._unobserved.append("delivery QA")
         elif qa.get("status") == "alert":
             self._findings.append(("urgent", f"delivery: {qa.get('verdict')}"))
