@@ -87,6 +87,21 @@ class TestSetupLxmfRetryLeak(unittest.TestCase):
                          "Transport keeps every handler — duplicates re-process "
                          "every announce")
 
+    def test_logs_its_own_lxmf_address(self):
+        """A gateway must SAY its own LXMF address at startup (2026-10-07):
+        58cecbd0 sat in configs as an unowned 'lone hash' for months because
+        the MeshAnchor gateway logged only its bridges' addresses, never its
+        own — it was identified only by hashing its key file."""
+        mock_rns, mock_lxmf, router = self._mocks()
+        router.register_delivery_identity.return_value.hash = bytes.fromhex(
+            "58cecbd0ab5e17750c3d45411c913b75")
+        host = _Host()
+        with self.assertLogs("gateway._rns_bridge_connection", "INFO") as cm:
+            _run_setup_n_times(host, 1, mock_rns, mock_lxmf)
+        self.assertTrue(any("Gateway LXMF destination: "
+                            "58cecbd0ab5e17750c3d45411c913b75" in m
+                            for m in cm.output), cm.output)
+
     def test_single_run_still_wires_everything(self):
         mock_rns, mock_lxmf, router = self._mocks()
         host = _Host()
