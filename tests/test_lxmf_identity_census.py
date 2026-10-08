@@ -101,3 +101,26 @@ def test_missing_rns_is_unknown_not_a_crash(tmp_path, monkeypatch, capsys):
     rc = census.main(["--home", str(tmp_path), "--box", "x"])
     assert rc == 2
     assert "UNKNOWN" in capsys.readouterr().out
+
+
+def test_depth_capped_dirs_are_reported_not_silently_skipped(tmp_path, monkeypatch):
+    """2026-10-07: MAX_DEPTH 6 silently skipped the DR snapshot gateway keys
+    (fleet-configs/<box>/snapshot/home/<user>/.config/meshforge/ = depth 7)."""
+    monkeypatch.setattr(census, "MAX_DEPTH", 2)
+    _ident(tmp_path / "a" / "b" / "c" / "d" / "gateway_identity")
+    assert census.scan(tmp_path) == []                      # beyond reach…
+    capped = census.scan_capped(tmp_path)
+    assert capped and all(str(tmp_path / "a") in c for c in capped)  # …but SAID
+
+
+def test_default_depth_reaches_snapshot_keys(tmp_path):
+    h = _ident(tmp_path / "fleet-configs" / "moc" / "snapshot" / "home" / "u"
+               / ".config" / "meshforge" / "gateway_identity")
+    assert [r["lxmf_delivery"] for r in census.scan(tmp_path)] == [h]
+
+
+def test_main_prints_depth_blind(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(census, "MAX_DEPTH", 1)
+    (tmp_path / "x" / "y" / "z").mkdir(parents=True)
+    census.main(["--home", str(tmp_path), "--box", "b"])
+    assert "BLIND (depth limit" in capsys.readouterr().out

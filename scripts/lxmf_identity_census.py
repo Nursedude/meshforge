@@ -28,10 +28,12 @@ from pathlib import Path
 from typing import List, Optional
 
 IDENTITY_SIZE = 64          # RNS Identity.to_file: X25519 + Ed25519 private keys
-MAX_DEPTH = 6
+MAX_DEPTH = 10        # DR snapshot keys sit at depth 7 under fleet-configs/
 SKIP_DIRS = {".cache", ".git", "node_modules", "site-packages", "dist-packages",
              ".npm", ".cargo", ".rustup", "__pycache__", ".venv", "venv",
-             ".local/lib", ".mozilla", ".config/chromium", "go"}
+             ".local/lib", ".mozilla", ".config/chromium", "go",
+             ".platformio", ".arduino15", ".espressif", ".pio",  # build trees
+             ".claude"}  # agent state: never RNS identities
 
 # Path fragment (relative to home) → app. First match wins; most specific first.
 APP_HINTS = [
@@ -70,8 +72,12 @@ def _app(rel: str) -> str:
 
 
 def _walk(home: Path):
-    """Yield (candidate files, blind dirs) under ``home``."""
+    """(candidate files, unreadable dirs, depth-capped dirs) under ``home``.
+
+    A dir NOT descended because of MAX_DEPTH is RETURNED, never silently
+    dropped (2026-10-07: depth 6 hid the DR snapshot gateway keys)."""
     blind: List[str] = []
+    capped: List[str] = []
     found: List[Path] = []
     stack = [(home, 0)]
     while stack:
@@ -89,7 +95,10 @@ def _walk(home: Path):
                     continue
                 if e.is_dir():
                     rel = os.path.relpath(e.path, home)
-                    if e.name in SKIP_DIRS or rel in SKIP_DIRS or depth >= MAX_DEPTH:
+                    if e.name in SKIP_DIRS or rel in SKIP_DIRS:
+                        continue
+                    if depth >= MAX_DEPTH:
+                        capped.append(e.path)
                         continue
                     stack.append((Path(e.path), depth + 1))
                 elif (e.is_file() and "identity" in e.name.lower()
@@ -97,11 +106,15 @@ def _walk(home: Path):
                     found.append(Path(e.path))
             except OSError:
                 continue
-    return found, blind
+    return found, blind, capped
 
 
 def scan_blind(home: Path) -> List[str]:
     return _walk(Path(home))[1]
+
+
+def scan_capped(home: Path) -> List[str]:
+    return _walk(Path(home))[2]
 
 
 def scan(home: Path) -> List[dict]:
@@ -141,7 +154,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"== {box}: UNKNOWN — RNS not importable here ({e}); "
               f"identities NOT scanned (unobservable, not absent)")
         return 2
-    blind = scan_blind(a.home)
+    _, blind, capped = _walk(Path(a.home))
     if a.json:
         print(json.dumps({"box": box, "identities": rows, "blind": blind}, indent=2))
         return 0
@@ -153,6 +166,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"  {r['lxmf_delivery']}  {r['app']:<36} {r['path']}{tag}")
     for b in blind:
         print(f"  BLIND (unreadable, not empty): {b}")
+    for c in capped[:20]:
+        print(f"  BLIND (depth limit {MAX_DEPTH}, not searched): {c}")
+    if len(capped) > 20:
+        print(f"  BLIND (depth limit {MAX_DEPTH}): +{len(capped) - 20} more dirs")
     return 0
 
 
