@@ -595,20 +595,53 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         lock.close()
 
 
+def receiver_blind(row: Dict) -> Optional[str]:
+    """Why this row means the receiver produced NO samples, else None.
+
+    2026-10-08 moc1: the RTL-SDR's bulk path wedged and every burst timed out
+    for 10 h while the unit exited 0/SUCCESS, so ``user_timer_unit_failing``
+    (it reads ``Result=failed``) was blind to it. Only a receiver that gave
+    nothing counts: one burst with samples — even ``overload``/``unjudgeable``,
+    which are RF facts — is a working receiver, and ``unsupported``/
+    ``skipped_overlap`` are by design."""
+    if row.get("status") != "unknown":
+        return None
+    wins = row.get("windows")
+    if not wins:
+        return row.get("note") or "nothing captured"
+    reasons: List[str] = []
+    for w in wins.values():
+        for counts in (w.get("bursts") or {}, ((w.get("b") or {}).get("bursts") or {})):
+            if any(counts.get(k, 0) for k in ("ok", "overload", "unjudgeable")):
+                return None
+        reasons += list(w.get("reasons") or [])
+    return "every burst in every window failed" + (f": {reasons[0]}" if reasons else "")
+
+
+def _exit_code(row: Dict) -> int:
+    """1 tells systemd Result=failed, which is what the fleet's user-timer
+    probe can see: an ``error`` row (the analysis crashed, review #5) or a
+    blind receiver (above). A row is written either way."""
+    if row.get("status") == "error":
+        return 1
+    why = receiver_blind(row)
+    if why:
+        print(f"sdr_interference: receiver produced no samples — {why}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _emit(path: Path, row: Dict, to_stdout: bool) -> int:
     if to_stdout:
         print(json.dumps(row, indent=1, default=str))
-        return 1 if row.get("status") == "error" else 0
+        return _exit_code(row)
     try:
         append_row(path, row)
     except OSError as e:
         print(f"sdr_interference: could not write {path}: {e}", file=sys.stderr)
         return 2
     print(f"{row.get('mode')} {row.get('status')} -> {path}")
-    # A row was written, but an `error` row means the analysis crashed: exit 1
-    # so systemd records Result=failed and the fleet's user-unit probe can see
-    # it (review #5: exit 0 made a permanently broken analysis invisible).
-    return 1 if row.get("status") == "error" else 0
+    return _exit_code(row)
 
 
 if __name__ == "__main__":

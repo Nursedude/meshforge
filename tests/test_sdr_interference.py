@@ -154,7 +154,9 @@ def test_a_refused_run_still_writes_a_witness_row(ddir):
 def test_missing_airspy_rx_writes_unknown_not_silence(ddir, monkeypatch, restore_device):
     monkeypatch.setattr(si.shutil, "which", lambda *_a, **_k: None)
     # explicit device: --device auto with nothing on the bus is its own case now
-    assert si.main(["--mode", "fleet", "--device", "airspy"]) == 0
+    # exit 1 (2026-10-08): a timer firing every 5 min on a box that cannot
+    # capture is BLIND, and only a failed Result= reaches user_timer_unit_failing
+    assert si.main(["--mode", "fleet", "--device", "airspy"]) == 1
     row = si.read_rows(ddir / "interference.jsonl")[-1]
     assert row["status"] == "unknown" and "not installed" in row["note"]
     assert row["v"] == si.SCHEMA and "ts" in row and "soc_temp_c" in row
@@ -597,7 +599,7 @@ def test_rtl_capture_runs_rtl_sdr_and_rescales(monkeypatch, tmp_path, restore_de
 def test_auto_on_an_rtl_box_writes_rtl_rows(ddir, monkeypatch, restore_device):
     monkeypatch.setattr(si, "local_usb_pairs", lambda: [("0bda", "2838")])
     monkeypatch.setattr(si.shutil, "which", lambda *_a, **_k: None)
-    assert si.main(["--mode", "fleet"]) == 0
+    assert si.main(["--mode", "fleet"]) == 1          # no binary = blind (2026-10-08)
     row = si.read_rows(ddir / "interference.jsonl")[-1]
     assert row["device"] == "rtl" and row["status"] == "unknown"
     assert "rtl_sdr is not installed" in row["note"]
@@ -631,7 +633,47 @@ def test_W2_auto_with_nothing_detected_says_so_and_keeps_the_last_device(ddir, m
     si.append_row(ddir / "interference.jsonl", {"mode": "fleet", "status": "ok", "device": "rtl",
                                                 "ts": 1.0, "windows": {}})
     monkeypatch.setattr(si, "local_usb_pairs", lambda: pairs)
-    assert si.main(["--mode", "fleet"]) == 0
+    assert si.main(["--mode", "fleet"]) == 1      # blind receiver → Result=failed
     row = si.read_rows(ddir / "interference.jsonl")[-1]
     assert row["status"] == "unknown" and why in row["note"]
     assert row["device"] == "rtl" and "windows" not in row
+
+
+# 2026-10-08 moc1: the RTL-SDR's bulk path wedged at 20:11 and every burst
+# timed out for 10 h while the service exited 0/SUCCESS — so the existing
+# user_timer_unit_failing probe (it reads Result=failed) could not see it.
+# A row is still written either way; the exit code is what tells systemd.
+
+def _fleet_main(ddir, monkeypatch, capture):
+    monkeypatch.setattr(si.shutil, "which", lambda *_a, **_k: "/usr/bin/airspy_rx")
+    monkeypatch.setattr(si, "airspy_capture", capture)
+    return si.main(["--mode", "fleet"])
+
+
+def test_a_receiver_that_returns_nothing_fails_the_unit(ddir, monkeypatch, capsys):
+    assert _fleet_main(ddir, monkeypatch, dead_capture) == 1
+    row = si.read_rows(ddir / "interference.jsonl")[-1]
+    assert row["status"] == "unknown"                  # the witness row survives
+    assert "AIRSPY_ERROR_NOT_FOUND" in capsys.readouterr().err
+
+
+def test_one_burst_with_samples_is_not_a_dead_receiver(ddir, monkeypatch):
+    calls = {"n": 0}
+
+    def one_good(center, gain):
+        calls["n"] += 1
+        return quiet_capture(center, gain) if calls["n"] == 1 else dead_capture(center, gain)
+    assert _fleet_main(ddir, monkeypatch, one_good) == 0
+
+
+def test_rf_unjudgeable_is_not_a_dead_receiver():
+    row = {"mode": "fleet", "status": "unknown", "windows": {"906.3": {
+        "bursts": {"ok": 0, "overload": 0, "unjudgeable": 4, "failed": 0},
+        "b": {"bursts": {"ok": 0, "overload": 0, "unjudgeable": 0, "failed": 2}}}}}
+    assert si.receiver_blind(row) is None
+
+
+def test_healthy_and_by_design_rows_are_never_blind():
+    assert si.receiver_blind({"status": "ok", "windows": {}}) is None
+    assert si.receiver_blind({"status": "unsupported", "note": "rtl adjacent"}) is None
+    assert si.receiver_blind({"status": "skipped_overlap"}) is None
