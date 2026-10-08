@@ -199,7 +199,17 @@ class FleetHealthHandler(BaseHandler):
                 status="info",
                 headline="rnpath command not installed",
             )
-        proc = self._run_rc([rnpath, "--config", "/etc/reticulum", "-t"], timeout=10)
+        from utils import node_counts
+        if not node_counts.rns_config_present():
+            return ProbeResult(
+                label="RNS path table",
+                status="info",
+                headline=f"{node_counts.RNS_CONFIG_DIR}/config absent — not queried",
+                hint="rnpath --config on a missing dir would CREATE a default "
+                     "RNS config there",
+            )
+        proc = self._run_rc([rnpath, "--config", node_counts.RNS_CONFIG_DIR, "-t"],
+                            timeout=10)
         if proc is not None and proc.returncode != 0:
             # A FAILED query is not an empty table (TUI audit finding 5): it
             # used to parse the error text as zero paths and say "no

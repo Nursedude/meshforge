@@ -8,6 +8,8 @@ whenever a source could not be asked.
 """
 import json
 import subprocess
+
+import pytest
 import sys
 import time
 from pathlib import Path
@@ -30,6 +32,32 @@ def test_rnpath_parser_separates_network_from_ipc():
 
 def _proc(out, rc=0):
     return subprocess.CompletedProcess([], rc, stdout=out, stderr="")
+
+
+@pytest.fixture(autouse=True)
+def _rns_config_here(monkeypatch):
+    # pin, never read the machine's /etc (CI has no /etc/reticulum)
+    monkeypatch.setattr(nc, "rns_config_present", lambda: True)
+
+
+def test_an_absent_rns_config_is_unknown_and_rnpath_is_never_run(monkeypatch):
+    """Non-author review 2026-10-08: `rnpath --config /etc/reticulum` on a box
+    without that directory makes RNS WRITE a default config there — which RNS
+    then resolves FIRST for every uid (persistent_issues 09-28), silently
+    re-pointing rnsd at its next restart. Absent → UNKNOWN, no subprocess."""
+    monkeypatch.setattr(nc, "rns_config_present", lambda: False)
+    with patch.object(nc.shutil, "which", lambda *_: "/usr/bin/rnpath"), \
+         patch.object(nc.subprocess, "run", side_effect=AssertionError("ran rnpath")):
+        r = nc.rns_path_table_counts()
+    assert r["network"] is None and "/etc/reticulum/config" in r["why"]
+
+
+def test_rns_config_present_reads_the_one_constant(tmp_path, monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setattr(nc, "RNS_CONFIG_DIR", str(tmp_path))
+    assert nc.rns_config_present() is False
+    (tmp_path / "config").write_text("[reticulum]\n")
+    assert nc.rns_config_present() is True
 
 
 def test_rns_count_is_unknown_not_zero_when_rnpath_cannot_answer():

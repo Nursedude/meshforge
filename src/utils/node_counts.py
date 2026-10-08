@@ -22,6 +22,17 @@ import urllib.request
 from typing import Dict, Optional, Tuple
 
 RNS_CONFIG_DIR = "/etc/reticulum"
+
+
+def rns_config_present() -> bool:
+    """True when ``RNS_CONFIG_DIR/config`` exists. Ask BEFORE any
+    ``rnpath --config RNS_CONFIG_DIR``: on a box without it, RNS WRITES a
+    default config there (``Reticulum.__init__`` creates configdir), and RNS
+    resolves /etc/reticulum FIRST for every uid (persistent_issues 09-28) —
+    a read-only count would silently re-point rnsd at its next restart
+    (non-author review 2026-10-08). One seam, shared with the TUI probe."""
+    from pathlib import Path
+    return (Path(RNS_CONFIG_DIR) / "config").is_file()
 MAP_STATUS_URL = "http://127.0.0.1:5000/api/status"
 
 
@@ -40,6 +51,10 @@ def rns_path_table_counts(timeout: int = 10) -> Dict:
     rnpath = shutil.which("rnpath")
     if not rnpath:
         return {"network": None, "ipc": None, "why": "rnpath command not installed"}
+    if not rns_config_present():
+        return {"network": None, "ipc": None,
+                "why": f"{RNS_CONFIG_DIR}/config absent — not asking rnpath "
+                       "(it would create a default config there)"}
     try:
         proc = subprocess.run([rnpath, "--config", RNS_CONFIG_DIR, "-t"],
                               capture_output=True, text=True, timeout=timeout, check=False)

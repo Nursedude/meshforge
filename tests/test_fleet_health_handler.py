@@ -113,6 +113,22 @@ def _cp(rc, out, err=""):
     return SimpleNamespace(returncode=rc, stdout=out, stderr=err)
 
 
+@pytest.fixture(autouse=True)
+def _rns_config_here(monkeypatch):
+    monkeypatch.setattr("utils.node_counts.rns_config_present", lambda: True)
+
+
+def test_probe_rns_path_table_refuses_without_an_rns_config(monkeypatch):
+    """review 2026-10-08: never run `rnpath --config <absent dir>` — RNS would
+    CREATE a default config there that every uid then resolves first."""
+    monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/rnpath")
+    monkeypatch.setattr("utils.node_counts.rns_config_present", lambda: False)
+    monkeypatch.setattr(FleetHealthHandler, "_run_rc", staticmethod(
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran rnpath"))))
+    r = _handler()._probe_rns_path_table()
+    assert r.status == "info" and "/etc/reticulum/config" in r.headline
+
+
 def test_probe_rns_path_table_failed_query_is_not_an_empty_table(monkeypatch):
     """Planted fault (TUI audit finding 5): rnpath exits non-zero with an
     error. It used to be parsed as zero paths — "no destinations learned yet"."""
