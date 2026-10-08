@@ -230,6 +230,37 @@ class TestConfigAndDisclosure:
         cfg.enabled = True
         r = mr.MessageRouter(cfg, {"bounced": 0}, threading.Lock())
         assert "rns_allowlist" not in r.describe_ingress_policy()
+        assert "(RNS→RF included)" in r.describe_ingress_policy()
+
+    # 2026-10-08, moc's live startup line after the enforce flip read
+    # "policy=enforce … OPEN on every source network: any sender … is
+    # bridged onward (RNS→RF included)" — the sentence knew the routing
+    # rules and not the allowlist, so it contradicted its own clause.
+    @staticmethod
+    def _line(policy, legacy=False):
+        cfg = GatewayConfig()
+        cfg.enabled = True
+        cfg.rns = RNSConfig(bridge_source_identities=[LISTED, PEER],
+                            bridge_source_policy=policy)
+        if legacy:
+            with patch.object(mr, "CLASSIFIER_AVAILABLE", False):
+                return mr.MessageRouter(cfg, {"bounced": 0},
+                                        threading.Lock()).describe_ingress_policy()
+        return mr.MessageRouter(cfg, {"bounced": 0},
+                                threading.Lock()).describe_ingress_policy()
+
+    @pytest.mark.parametrize("legacy", [False, True])
+    def test_enforce_never_claims_rns_to_rf_is_open(self, legacy):
+        line = self._line("enforce", legacy)
+        assert "RNS→RF included" not in line
+        assert ("RNS→RF, which admits only the 2 listed, signature-verified "
+                "identities") in line
+
+    @pytest.mark.parametrize("legacy", [False, True])
+    def test_observe_says_the_list_does_not_refuse(self, legacy):
+        line = self._line("observe", legacy)
+        assert "the 2-identity list only logs strangers, policy=observe" in line
+        assert "admits only" not in line
 
 
 # ── the projection every surface shares ─────────────────────────────────

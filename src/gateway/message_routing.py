@@ -118,11 +118,9 @@ class MessageRouter:
         # and the line above was the only thing the gateway said about it.
         logger.info(self.describe_ingress_policy())
 
-    def _rns_allowlist_clause(self) -> str:
-        """`` rns_allowlist=<n> policy=<observe|enforce>`` when a list is
-        declared, ``""`` when the RNS→RF path is open (the sentence that
-        follows already says OPEN). Defensive: a mocked/absent section
-        reads as no list."""
+    def _rns_allowlist(self):
+        """``(ids, policy)`` when an RNS→RF list is declared, else ``None``.
+        Defensive: a mocked/absent section reads as no list."""
         try:
             from .rns_ingress_policy import effective_policy
             rns_cfg = getattr(self.config, "rns", None)
@@ -131,10 +129,36 @@ class MessageRouter:
             pol = effective_policy(ids, declared if isinstance(declared, str)
                                    else None)
         except Exception:  # noqa: BLE001
+            return None
+        return (ids, pol) if ids else None
+
+    def _rns_allowlist_clause(self) -> str:
+        """`` rns_allowlist=<n> policy=<observe|enforce>`` when a list is
+        declared, ``""`` when the RNS→RF path is open."""
+        al = self._rns_allowlist()
+        if al is None:
             return ""
-        if not ids:
-            return ""
+        ids, pol = al
         return f" rns_allowlist={len(ids)} policy={pol}{self._identity_clause(ids)}"
+
+    def _rns_to_rf_words(self, *, open_verdict: bool) -> str:
+        """What the sentence may say about RNS→RF. The allowlist is a gate in
+        the bridge, not a routing rule, so the routing verdict alone cannot
+        describe it (2026-10-08: moc read ``policy=enforce`` and "OPEN …
+        (RNS→RF included)" in one line). ``open_verdict``: the words follow
+        "bridged onward"; otherwise they are a trailing clause ("" = no list)."""
+        al = self._rns_allowlist()
+        if al is None:
+            return "(RNS→RF included)" if open_verdict else ""
+        ids, pol = al
+        n = len(ids)
+        if pol == "enforce":
+            gate = f"only the {n} listed, signature-verified identities (enforce)"
+            return (f"except RNS→RF, which admits {gate}" if open_verdict
+                    else f"; RNS→RF also admits {gate}")
+        logs = "only logs strangers, policy=" + pol
+        return (f"(RNS→RF included — the {n}-identity list {logs})"
+                if open_verdict else f"; the {n}-identity RNS→RF list {logs}")
 
     @staticmethod
     def _identity_clause(ids) -> str:
@@ -178,6 +202,8 @@ class MessageRouter:
         head = (f"Routing ingress policy: decider={decider} rules={len(rules)} "
                 f"default_route={self.config.default_route}"
                 f"{self._rns_allowlist_clause()} — ")
+        rns_open = self._rns_to_rf_words(open_verdict=True)
+        rns_tail = self._rns_to_rf_words(open_verdict=False)
         knob = ("a rule with direction 'drop' (source_filter/dest_filter/"
                 "message_filter pick what it refuses) is the knob that "
                 "closes a path")
@@ -187,20 +213,20 @@ class MessageRouter:
                         f"{len(drop)} drop rule(s) refuse "
                         f"({', '.join(r.name for r in drop)}); "
                         f"{len(allow)} allow rule(s) and default_route do not "
-                        f"restrict on this decider")
+                        f"restrict on this decider{rns_tail}")
             return (head + "OPEN on every source network: any sender whose "
-                    "message reaches this gateway is bridged onward (RNS→RF "
-                    "included); " + (f"{len(allow)} allow rule(s) and "
+                    "message reaches this gateway is bridged onward "
+                    f"{rns_open}; " + (f"{len(allow)} allow rule(s) and "
                     "default_route do not restrict on this decider; "
                     if allow else "") + knob)
         if self.config.default_route in self._OPEN_DEFAULT_ROUTES:
-            return (head + "OPEN: any sender is bridged unless "
-                    + (f"one of {len(drop)} drop rule(s) matches; "
-                       if drop else "") + knob)
+            return (head + f"OPEN: any sender is bridged {rns_open}"
+                    + (f" unless one of {len(drop)} drop rule(s) matches"
+                       if drop else "") + "; " + knob)
         return (head + f"ALLOW-LISTED: only messages matching "
                 f"{len(allow)} enabled allow rule(s) are bridged"
                 + (f", minus {len(drop)} drop rule(s)" if drop else "")
-                + "; a sender no rule names is refused")
+                + "; a sender no rule names is refused" + rns_tail)
 
     def should_bridge(self, msg) -> bool:
         """
