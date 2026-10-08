@@ -17,6 +17,7 @@ All other imports the moved bodies use are function-local and moved with them.
 """
 import logging
 import threading
+import time
 from queue import Full
 
 from .node_tracker import UnifiedNode
@@ -27,6 +28,26 @@ from .node_tracker import UnifiedNode
 _RNS_INGRESS_INIT_LOCK = threading.Lock()
 
 logger = logging.getLogger(__name__)
+
+#: Monotonic clock for the path-nudge rate limit — a module name so a test
+#: can pin it without patching the SHARED ``time`` module (2026-09-20 class).
+_monotonic = time.monotonic
+#: At most one source-unknown path request per member hash per this many
+#: seconds: a forger spamming claims for a listed hash must not make us storm.
+INGRESS_PATH_NUDGE_S = 60.0
+#: LXMF's unverified_reason for "source never announced" (rns_ingress_policy
+#: UNVERIFIED_REASONS) — the ONLY reason a path request can cure.
+_SOURCE_UNKNOWN = 0x01
+#: Seconds the warm-up waits for rnsd's path responses before re-measuring.
+INGRESS_WARMUP_SETTLE_S = 5.0
+#: Single-flight: one warm-up at a time however often RNS reconnects.
+_WARMUP_LOCK = threading.Lock()
+
+
+def _spawn(fn, *args) -> None:
+    """Daemon thread seam (tests run it inline)."""
+    threading.Thread(target=fn, args=args, name="rns-ingress-nudge",
+                     daemon=True).start()
 
 
 def _lxmf_text(value) -> str:
@@ -277,6 +298,109 @@ class BridgeRnsEventsMixin:
                     self._rns_ingress_ledger_obj = led
         return led
 
+    # ── identity warm-up (2026-10-08) ───────────────────────────────────
+    # LXMF validates a source with RNS.Identity.recall IN THIS PROCESS, which
+    # knows only announces it heard while running. moc3, 2026-10-08: rnsd held
+    # 627f's path, the gateway (restarted 08:20) did not, so 627f's next
+    # message read "source unknown (never announced)" — refused under enforce,
+    # after every restart, until each peer next announced. A path request to
+    # the local rnsd is answered from its table and teaches this process the
+    # identity. Witness-keeping only: never a decision.
+
+    def _rns_recall_identity(self, dest: bytes):
+        """The question LXMF itself asks (``LXMessage`` validates the source
+        with ``Identity.recall(h, _no_use=True)``): a local dict read, no RPC
+        to rnsd — without ``_no_use`` a hit calls ``_used_destination_data``,
+        an RPC on rnsd's zero-backlog listener (the #72 surface; review
+        2026-10-08)."""
+        import RNS
+        return RNS.Identity.recall(dest, _no_use=True)
+
+    def _rns_request_path(self, dest: bytes) -> str:
+        """``sent`` | ``blocked`` (tx_guard armed — deliberate, not a fault)."""
+        import RNS
+        from gateway.bounded_rpc import bounded_call
+        from utils.tx_guard import TransmitBlocked, assert_rns_tx_allowed
+        try:
+            assert_rns_tx_allowed(kind="rns_path_request",
+                                  detail="ingress identity warm-up")
+        except TransmitBlocked:
+            return "blocked"
+        bounded_call("rnsd.request_path", RNS.Transport.request_path, dest,
+                     target=dest.hex()[:8], timeout_s=5.0, exit_on_wedge=False)
+        return "sent"
+
+    def rns_ingress_warmup(self, *, settle_s: float = INGRESS_WARMUP_SETTLE_S) -> dict:
+        """At RNS connect: request a path for every listed/peer identity this
+        process cannot recall, wait ``settle_s``, then RE-MEASURE — the line
+        says how many are recallable AFTER, because "request sent" is not the
+        END (rnsd silently ignores a request whose announce cache entry is
+        gone; review 2026-10-08). Single-flight; never raises; {} when open."""
+        if not _WARMUP_LOCK.acquire(blocking=False):
+            return {}
+        try:
+            return self._rns_ingress_warmup_once(settle_s)
+        finally:
+            _WARMUP_LOCK.release()
+
+    def _rns_ingress_warmup_once(self, settle_s: float) -> dict:
+        try:
+            posture = self.rns_ingress_posture()
+            if posture["policy"] == "open":
+                return {}
+            members = sorted(set(posture["identities"])
+                             | set(self._peer_gateway_hash_set()))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"rns ingress warm-up skipped: {e}")
+            return {}
+
+        def recallable(h: str) -> bool:
+            try:
+                return self._rns_recall_identity(bytes.fromhex(h)) is not None
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"rns ingress recall {h[:8]}: {e}")
+                return False
+
+        missing = [h for h in members if not recallable(h)]
+        requested = blocked = failed = 0
+        for h in missing:
+            try:
+                r = self._rns_request_path(bytes.fromhex(h))
+                requested += r == "sent"
+                blocked += r == "blocked"
+            except Exception as e:  # noqa: BLE001 — counted, never raised
+                failed += 1
+                logger.debug(f"rns ingress warm-up {h[:8]}: {e}")
+        if requested and settle_s > 0:
+            ev = getattr(self, "_stop_event", None)
+            if ev is not None:
+                ev.wait(settle_s)
+        still = [h for h in missing if not recallable(h)] if requested else missing
+        after = len(members) - len(still)
+        logger.info(
+            "RNS ingress warm-up: %d/%d recallable in-process before, %d/%d "
+            "after %d path request(s)%s%s%s", len(members) - len(missing),
+            len(members), after, len(members), requested,
+            f"; {blocked} blocked by tx_guard" if blocked else "",
+            f"; {failed} FAILED" if failed else "",
+            f"; still unknown: {','.join(h[:8] for h in still)}" if still else "")
+        return {"members": len(members), "known": len(members) - len(missing),
+                "requested": requested, "blocked": blocked, "failed": failed,
+                "after": after}
+
+    def _rns_ingress_path_nudge(self, source_hex: str) -> None:
+        """One path request per member hash per INGRESS_PATH_NUDGE_S, OFF the
+        LXMF delivery thread — a send that blocks must never stall ingress."""
+        last = getattr(self, "_rns_ingress_nudged", None)
+        if last is None:
+            last = self._rns_ingress_nudged = {}
+        now = _monotonic()
+        h = source_hex.lower()
+        if h in last and now - last[h] < INGRESS_PATH_NUDGE_S:
+            return
+        last[h] = now
+        _spawn(self._rns_request_path, bytes.fromhex(h))
+
     def rns_ingress_posture(self) -> dict:
         """The declared list + the policy in force, for status surfaces."""
         from .rns_ingress_policy import effective_policy
@@ -356,7 +480,15 @@ class BridgeRnsEventsMixin:
                            f"{source_hex[:8]} as if OPEN")
             return True
         # The DECISION is made. Everything below is witness-keeping, and a
-        # failure there must change nothing about the decision (non-author
+        # failure there must change nothing about the decision. First: a
+        # MEMBER that arrived source-unknown is one this process cannot
+        # recall yet — ask rnsd so its NEXT message validates (2026-10-08).
+        if unverified and unverified_reason == _SOURCE_UNKNOWN:
+            try:
+                self._rns_ingress_path_nudge(source_hex)
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"rns ingress path nudge failed: {e}")
+        # (non-author
         # review 2026-10-07: a corrupt ledger entry raised inside the guarded
         # block above and admitted a stranger under enforce, forever, while
         # the refused counter still climbed — state must never open the

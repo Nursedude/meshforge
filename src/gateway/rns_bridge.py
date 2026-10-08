@@ -1056,6 +1056,14 @@ class RNSMeshtasticBridge(
                                 )
                         # Start Meshtastic broadcast bridge plug-in (idempotent)
                         self._maybe_start_meshtastic_broadcast()
+                        # Make every listed/peer identity recallable in THIS
+                        # process now, not at each peer's next announce — an
+                        # enforcing RNS→RF allowlist refuses "source unknown"
+                        # (2026-10-08). Own thread: bounded rnsd calls must
+                        # never stall this loop.
+                        threading.Thread(target=self.rns_ingress_warmup,
+                                         name="rns-ingress-warmup",
+                                         daemon=True).start()
                     else:
                         self._rns_reconnect.record_failure()
                         self._rns_reconnect.wait(self._stop_event)
