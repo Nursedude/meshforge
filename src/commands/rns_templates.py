@@ -110,12 +110,7 @@ def get_interface_templates() -> CommandResult:
                 }
             ]
         },
-        'rnode': {
-            'name': 'RNode LoRa',
-            'description': 'Direct LoRa via RNode hardware',
-            'type': 'RNodeInterface',
-            'settings': _rnode_template_settings(),
-        }
+        'rnode': _rnode_template(),
     }
 
     return CommandResult.ok(
@@ -146,6 +141,8 @@ def apply_template(template_name: str, interface_name: str, overrides: Dict[str,
         )
 
     template = templates[template_name]
+    if template.get('unavailable'):
+        return CommandResult.fail(template['unavailable'])
 
     if template.get('multi_interface'):
         return CommandResult.fail(
@@ -229,18 +226,31 @@ def apply_multi_template(
     )
 
 
-def _rnode_template_settings() -> dict:
-    """RNode template values from the one profile source (utils.rnode_profile).
-    A broken declaration is SHOWN, never silently swapped for the default."""
-    from utils.rnode_profile import ProfileError, REGION_DEFAULTS, rnode_profile
+def _rnode_template() -> dict:
+    """The RNode template from the one profile source (utils.rnode_profile).
+
+    A REJECTED declaration makes the template UNAVAILABLE with the reason —
+    never the US region default (review 2026-10-08, VERIFIED: a typo'd
+    declaration wrote 903.625 MHz into an EU operator's RNS config, plus a
+    junk ``warning =`` key that ConfigObj parsed as a list)."""
+    from utils.rnode_profile import ProfileError
+    tpl = {'name': 'RNode LoRa', 'description': 'Direct LoRa via RNode hardware',
+           'type': 'RNodeInterface'}
     try:
-        p, warning = rnode_profile(), None
+        tpl['settings'] = _rnode_template_settings()
     except ProfileError as e:
-        p, warning = dict(REGION_DEFAULTS["US"]), f"declared profile rejected: {e}"
-    settings = {'port': '/dev/ttyUSB0', 'frequency': str(p['frequency']),
-                'txpower': str(p['tx_power']), 'bandwidth': str(p['bandwidth']),
-                'spreadingfactor': str(p['spreading_factor']),
-                'codingrate': str(p['coding_rate'])}
-    if warning:
-        settings['warning'] = warning
-    return settings
+        tpl['settings'] = {}
+        tpl['unavailable'] = (f"declared RNode profile rejected: {e} — fix the "
+                              "declaration (or remove it to use the region default)")
+    return tpl
+
+
+def _rnode_template_settings() -> dict:
+    """RNode template values from the profile. Raises ProfileError on a broken
+    declaration — the caller marks the template unavailable."""
+    from utils.rnode_profile import rnode_profile
+    p = rnode_profile()
+    return {'port': '/dev/ttyUSB0', 'frequency': str(p['frequency']),
+            'txpower': str(p['tx_power']), 'bandwidth': str(p['bandwidth']),
+            'spreadingfactor': str(p['spreading_factor']),
+            'codingrate': str(p['coding_rate'])}

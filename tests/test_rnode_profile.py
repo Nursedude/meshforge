@@ -105,3 +105,22 @@ def test_unread_radio_is_unknown_not_clear():
     assert r["state"] == "unknown" and "overlap" not in r
     r = meshtastic_channel_check(FLEET_MEASURED, _lora(use_preset=False))
     assert r["state"] == "unknown"
+
+
+def test_a_rejected_declaration_is_never_written_as_the_us_default(monkeypatch, tmp_path):
+    """Non-author review 2026-10-08 (VERIFIED): a typo'd declaration (`txpower`,
+    the RNS config's own spelling) made the template fall back to
+    REGION_DEFAULTS['US'] plus a junk `warning =` key, and "No keeps defaults"
+    wrote 903.625 MHz into an EU operator's RNS config."""
+    import json
+    bad = tmp_path / "rnode_profile.json"
+    bad.write_text(json.dumps({"frequency": 868100000, "bandwidth": 125000,
+                               "spreading_factor": 8, "coding_rate": 5,
+                               "tx_power": 14, "txpower": 14}))
+    monkeypatch.setattr(rp, "declared_profile_path", lambda: bad)
+    from commands import rns_templates as rt
+    tpl = rt.get_interface_templates().data["templates"]["rnode"]
+    assert "rejected" in tpl["unavailable"] and "txpower" in tpl["unavailable"]
+    assert tpl["settings"] == {}
+    res = rt.apply_template("rnode", "LoRa", {"frequency": "903625000"})
+    assert not res.success and "rejected" in res.message

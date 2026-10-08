@@ -604,6 +604,8 @@ class RNSInterfacesHandler(BaseHandler):
                 label = f"Multi - {tpl['description']}"
             else:
                 label = f"{tpl['type']} - {tpl['description']}"
+            if tpl.get('unavailable'):
+                label = f"{tpl['type']} - UNAVAILABLE (see why)"
             # Truncate long descriptions for whiptail
             if len(label) > 60:
                 label = label[:57] + "..."
@@ -620,6 +622,9 @@ class RNSInterfacesHandler(BaseHandler):
             return
 
         template = templates[tpl_choice]
+        if template.get('unavailable'):
+            self.ctx.dialog.msgbox("Template unavailable", template['unavailable'])
+            return
 
         # Multi-interface templates have a different flow
         if template.get('multi_interface'):
