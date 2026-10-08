@@ -141,21 +141,40 @@ class MessageRouter:
         ids, pol = al
         return f" rns_allowlist={len(ids)} policy={pol}{self._identity_clause(ids)}"
 
+    def _peer_gateways(self) -> int:
+        """How many peer gateways the bridge admits by VERDICT_PEER — same
+        normalisation as ``_peer_gateway_hash_set`` (32-hex, lowercase)."""
+        try:
+            raw = self.config.rns.get_peer_gateway_destinations()
+        except Exception:  # noqa: BLE001
+            return 0
+        if not isinstance(raw, (list, tuple)):
+            return 0
+        return len({h.lower() for h in raw
+                    if isinstance(h, str) and len(h) == 32})
+
     def _rns_to_rf_words(self, *, open_verdict: bool) -> str:
         """What the sentence may say about RNS→RF. The allowlist is a gate in
         the bridge, not a routing rule, so the routing verdict alone cannot
         describe it (2026-10-08: moc read ``policy=enforce`` and "OPEN …
         (RNS→RF included)" in one line). ``open_verdict``: the words follow
-        "bridged onward"; otherwise they are a trailing clause ("" = no list)."""
+        "bridged onward"; otherwise they are a trailing clause ("" = no list)
+        that the routing rules must ALSO pass — the gate runs first, so the
+        two compose as AND."""
         al = self._rns_allowlist()
         if al is None:
             return "(RNS→RF included)" if open_verdict else ""
         ids, pol = al
         n = len(ids)
         if pol == "enforce":
-            gate = f"only the {n} listed, signature-verified identities (enforce)"
-            return (f"except RNS→RF, which admits {gate}" if open_verdict
-                    else f"; RNS→RF also admits {gate}")
+            p = self._peer_gateways()
+            # A peer relays its whole RF segment as one identity (review
+            # 2026-10-08), so naming the count alone would hide the surface.
+            peers = (f" or {p} peer gateway(s) (each relays its whole mesh "
+                     f"segment)" if p else "")
+            who = f"the {n} listed identities{peers}, signature-verified (enforce)"
+            return (f"except RNS→RF, which admits only {who}" if open_verdict
+                    else f"; RNS→RF additionally requires one of {who}")
         logs = "only logs strangers, policy=" + pol
         return (f"(RNS→RF included — the {n}-identity list {logs})"
                 if open_verdict else f"; the {n}-identity RNS→RF list {logs}")
@@ -220,9 +239,14 @@ class MessageRouter:
                     "default_route do not restrict on this decider; "
                     if allow else "") + knob)
         if self.config.default_route in self._OPEN_DEFAULT_ROUTES:
-            return (head + f"OPEN: any sender is bridged {rns_open}"
-                    + (f" unless one of {len(drop)} drop rule(s) matches"
-                       if drop else "") + "; " + knob)
+            if not drop:
+                return (head + f"OPEN: any sender is bridged {rns_open}; "
+                        + knob)
+            # The drop clause qualifies the OPEN verdict, never the allowlist
+            # (review 2026-10-08): state it first, the RNS gate after.
+            return (head + f"OPEN: any sender is bridged unless one of "
+                    f"{len(drop)} drop rule(s) matches"
+                    + (rns_tail or f" {rns_open}") + "; " + knob)
         return (head + f"ALLOW-LISTED: only messages matching "
                 f"{len(allow)} enabled allow rule(s) are bridged"
                 + (f", minus {len(drop)} drop rule(s)" if drop else "")

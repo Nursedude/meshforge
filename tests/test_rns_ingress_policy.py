@@ -237,24 +237,56 @@ class TestConfigAndDisclosure:
     # bridged onward (RNS→RF included)" — the sentence knew the routing
     # rules and not the allowlist, so it contradicted its own clause.
     @staticmethod
-    def _line(policy, legacy=False):
+    def _line(policy, legacy=False, peers=(), rules=(),
+              default_route="bidirectional"):
+        from gateway.config import RoutingRule
         cfg = GatewayConfig()
         cfg.enabled = True
+        cfg.routing_rules = [RoutingRule(**r) for r in rules]
+        cfg.default_route = default_route
         cfg.rns = RNSConfig(bridge_source_identities=[LISTED, PEER],
-                            bridge_source_policy=policy)
-        if legacy:
-            with patch.object(mr, "CLASSIFIER_AVAILABLE", False):
-                return mr.MessageRouter(cfg, {"bounced": 0},
-                                        threading.Lock()).describe_ingress_policy()
-        return mr.MessageRouter(cfg, {"bounced": 0},
-                                threading.Lock()).describe_ingress_policy()
+                            bridge_source_policy=policy,
+                            peer_gateway_destinations=list(peers))
+        # Pin the decider both ways: CLASSIFIER_AVAILABLE is machine state
+        # (a minimal CI profile would silently test legacy twice).
+        with patch.object(mr, "CLASSIFIER_AVAILABLE", not legacy):
+            return mr.MessageRouter(cfg, {"bounced": 0},
+                                    threading.Lock()).describe_ingress_policy()
+
+    # review 2026-10-08 (non-author, on 4d03bbf9): under enforce the bridge
+    # also admits every peer gateway (VERDICT_PEER), and a peer relays its
+    # whole RF segment as one identity — "only the N listed" hid that.
+    @pytest.mark.parametrize("legacy", [False, True])
+    def test_enforce_names_peer_gateways_and_their_relay(self, legacy):
+        other = "ab" * 16
+        line = self._line("enforce", legacy, peers=[PEER, other])
+        assert "2 peer gateway(s)" in line
+        assert "relays its whole mesh segment" in line
+
+    def test_restricted_branch_says_and_not_or(self):
+        drop = [dict(name="block", direction="drop", source_filter="^dead")]
+        line = self._line("enforce", rules=drop)
+        assert "also admits" not in line
+        assert "RNS→RF additionally requires one of the 2 listed" in line
+        allow = [dict(name="peers", direction="rns_to_mesh",
+                      source_filter="^abc")]
+        line = self._line("enforce", legacy=True, rules=allow,
+                          default_route="mesh_to_rns")
+        assert "ALLOW-LISTED" in line
+        assert "RNS→RF additionally requires one of the 2 listed" in line
+
+    def test_legacy_drop_clause_does_not_qualify_the_allowlist(self):
+        drop = [dict(name="block", direction="drop", source_filter="^dead")]
+        line = self._line("enforce", legacy=True, rules=drop)
+        assert line.index("unless one of 1 drop rule(s) matches") < \
+            line.index("RNS→RF")
 
     @pytest.mark.parametrize("legacy", [False, True])
     def test_enforce_never_claims_rns_to_rf_is_open(self, legacy):
         line = self._line("enforce", legacy)
         assert "RNS→RF included" not in line
-        assert ("RNS→RF, which admits only the 2 listed, signature-verified "
-                "identities") in line
+        assert ("RNS→RF, which admits only the 2 listed identities, "
+                "signature-verified (enforce)") in line
 
     @pytest.mark.parametrize("legacy", [False, True])
     def test_observe_says_the_list_does_not_refuse(self, legacy):
