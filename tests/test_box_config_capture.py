@@ -167,3 +167,21 @@ def test_not_a_git_repo_is_concern(tmp_path):
     shutil.rmtree(dest / ".git")
     verdict = _run(env, tmp_path)
     assert "CONCERN" in verdict and "NOT COMMITTED" in verdict
+
+
+def test_etc_meshforge_is_captured(tmp_path):
+    """2026-10-07: moc's /etc/meshforge/noc.yaml existed nowhere but the box —
+    the capture never listed /etc/meshforge, and the only other copy (a March
+    manual backup) had just been retired. Planted via the collector's
+    BOX_CAPTURE_ETC_MESHFORGE seam (unset over real ssh = /etc/meshforge)."""
+    dest, _, _, env = _setup(tmp_path)
+    etc = tmp_path / "etc-meshforge"
+    etc.mkdir()
+    (etc / "noc.yaml").write_text("noc: planted\n")
+    (etc / "huge.bin").write_bytes(b"\x00" * (300 * 1024))   # size cap still holds
+    env["BOX_CAPTURE_ETC_MESHFORGE"] = str(etc)
+    _run(env, tmp_path)
+    for box in ("self-box", "box-a", "box-b"):
+        files = _snapshot_files(dest, box)
+        assert any(f.endswith("etc-meshforge/noc.yaml") for f in files), files
+        assert not any(f.endswith("huge.bin") for f in files)

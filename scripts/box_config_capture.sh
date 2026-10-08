@@ -18,6 +18,7 @@
 #   user + root crontab                          -> _meta/crontab-*.txt
 #   /etc/reticulum/{config,interfaces,storage/transport_identity}
 #   /etc/meshtasticd (whole tree incl. ssl/, minus vendor available.d)
+#   /etc/meshforge (noc.yaml & co, files <=256 KB) — added 2026-10-07
 #   {/root,/var/lib/meshtasticd}/.portduino/**/*.proto  radio prefs (channels,
 #     owner, LoRa) — the user-meshtasticd boxes keep them under /var/lib
 #   /etc/systemd/system units + drop-ins for rnsd / meshtasticd / meshforge* /
@@ -80,6 +81,10 @@ done >>"$L"
 # owner, LoRa settings live in *.proto under /root/.portduino — or under
 # /var/lib/meshtasticd/.portduino where meshtasticd runs as its own user.
 $S find /etc/meshtasticd -type f -not -path '*/available.d/*' -size -257k 2>/dev/null >>"$L"
+# /etc/meshforge (noc.yaml & co) — uncaptured until 2026-10-07, when moc's
+# noc.yaml turned out to exist nowhere but the box. The env seam exists only
+# for the test shim; over real ssh it is unset and this reads /etc/meshforge.
+$S find "${BOX_CAPTURE_ETC_MESHFORGE:-/etc/meshforge}" -type f -size -257k 2>/dev/null >>"$L"
 $S find /root/.portduino /var/lib/meshtasticd/.portduino -name '*.proto' -type f -size -257k 2>/dev/null >>"$L"
 find /etc/systemd/system -maxdepth 2 -type f \( -path '*rnsd*' -o -path '*meshtasticd*' \
   -o -path '*meshforge*' -o -path '*meshanchor*' -o -path '*mosquitto*' -o -path '*lxmd*' \
