@@ -662,8 +662,10 @@ class EASAlertsPlugin(IntegrationPlugin):
         if _is_template_location(config):
             legacy = _read_legacy_location(get_real_user_home() / ".config" / "meshforge" / "eas_location.json")
             if legacy:
-                config.set("location", "latitude", str(legacy[0]))
-                config.set("location", "longitude", str(legacy[1]))
+                # read_dict, not set(): an ini with NO [location] reads as
+                # template too (review 2026-10-08: NoSectionError on load)
+                config.read_dict({"location": {"latitude": str(legacy[0]),
+                                               "longitude": str(legacy[1])}})
                 self._location_source = "eas_location.json (operator-set)"
             else:
                 self._location_source = "template"

@@ -95,3 +95,23 @@ def test_a_real_ini_location_wins_and_bad_legacy_files_are_ignored(tmp_path, mon
         assert ea._read_legacy_location(f) is None, bad
     p = _plugin(tmp_path, 21.3, -157.8)
     assert p.location_source() == "eas_alerts.ini"
+
+
+def test_an_ini_without_a_location_section_takes_the_legacy_point(tmp_path, monkeypatch):
+    """Non-author review 2026-10-08 (69e9c784 regression): an ini with no
+    [location] reads as template, and the legacy branch then config.set()s a
+    section that does not exist → NoSectionError, plugin fails to load."""
+    import json
+    import plugins.eas_alerts as ea
+    home = tmp_path / "home"
+    (home / ".config" / "meshforge").mkdir(parents=True)
+    (home / ".config" / "meshforge" / "eas_location.json").write_text(
+        json.dumps({"latitude": 19.7, "longitude": -155.08}))
+    monkeypatch.setattr(ea, "get_real_user_home", lambda: home)
+    ini = tmp_path / "eas_alerts.ini"
+    ini.write_text("[general]\nenabled = true\n")
+    p = EASAlertsPlugin()
+    p._config_path = ini
+    p._config = p._load_config()
+    assert p.location_is_template() is False
+    assert p.location_point() == "19.70, -155.08"
