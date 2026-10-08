@@ -12,7 +12,9 @@ from typing import List
 from backend import clear_screen
 from handler_protocol import BaseHandler
 from utils.paths import ReticulumPaths, get_real_user_home
-from utils.service_check import is_service_unit_installed
+import os
+
+from utils.service_check import service_unit_presence
 
 try:
     from utils.logging_config import set_log_level, get_current_log_level, cleanup_old_logs
@@ -23,6 +25,29 @@ except ImportError:
     _HAS_LOG_LEVEL = False
     _HAS_GET_LEVEL = False
     _HAS_CLEANUP = False
+
+
+#: systemd's coredump MESSAGE_ID (part of the match systemd builds for a unit filter).
+_COREDUMP_MESSAGE_ID = "fc2e22bc6ee647b6b90729ab34a250b1"
+
+
+def _operator_known() -> bool:
+    """False only when running as root with no SUDO_USER to name the operator."""
+    return os.geteuid() != 0 or os.environ.get("SUDO_USER", "") not in ("", "root")
+
+
+def _journal_uid() -> int:
+    """The OPERATOR's uid for user-unit journal matches: SUDO_USER's under
+    sudo (the normal TUI launch), else our own."""
+    if os.geteuid() == 0:
+        name = os.environ.get("SUDO_USER", "")
+        if name and name != "root":
+            try:
+                import pwd
+                return pwd.getpwnam(name).pw_uid
+            except KeyError:
+                pass
+    return os.getuid()
 
 
 class LogsHandler(BaseHandler):
@@ -133,34 +158,80 @@ class LogsHandler(BaseHandler):
         )
 
     def _mesh_journal_args(self):
-        """(journalctl match args, notes) for the mesh units THIS box has.
+        """(journalctl match terms, notes) for the mesh units THIS box has.
 
         A unit with no unit file made the journal's unit filter print "-- No
         entries --", which read as a quiet service; a USER-scope unit (nomadnet
-        on some boxes) never matches the system unit filter at all (2026-09-25). Absent units are
-        named, user-scope ones are read with --user-unit."""
-        args, absent, user = [], [], []
+        on some boxes) never matches the system unit filter at all (2026-09-25).
+
+        Matches are raw journal FIELD terms joined with ``+``, never ``-u`` /
+        ``--user-unit``: ``--user-unit`` filters on the CALLER's uid, so under
+        sudo (the normal launch) it matched nothing — measured 2026-10-08 on the
+        dev/manager box, same unit, operator 14 lines / root 0. The groups below are the
+        ones journalctl builds for ``-u``/``--user-unit``; counts matched on that
+        box (16 = 16, 14 = 14) over a window with no coredump entries.
+        A check that FAILS is "could not check", never "not installed" — and
+        that unit is still read (non-author review 2026-10-08)."""
+        terms, absent, user, unknown = [], [], [], []
+        uid = _journal_uid()
+
+        def add(*group):
+            if terms:
+                terms.append("+")
+            terms.extend(group)
+
+        # The groups journalctl itself builds for -u / --user-unit (systemd
+        # 257, SYSTEMD_LOG_LEVEL=debug): the unit's own lines, its manager's
+        # lines, its COREDUMPS and object messages — a meshtasticd core dump
+        # is exactly what the err+ screen exists for (review 2026-10-08).
+        def add_system(u):
+            add(f"_SYSTEMD_UNIT={u}.service")
+            add(f"UNIT={u}.service", "_PID=1")
+            add(f"COREDUMP_UNIT={u}.service", f"MESSAGE_ID={_COREDUMP_MESSAGE_ID}")
+            add(f"OBJECT_SYSTEMD_UNIT={u}.service", "_UID=0")
+
+        def add_user(u):
+            add(f"_SYSTEMD_USER_UNIT={u}.service", f"_UID={uid}")
+            add(f"USER_UNIT={u}.service", f"_UID={uid}")
+            add(f"COREDUMP_USER_UNIT={u}.service", f"_UID={uid}", "_UID=0")
+            add(f"OBJECT_SYSTEMD_USER_UNIT={u}.service", f"_UID={uid}", "_UID=0")
+
         for unit in self.MESH_UNITS:
-            if is_service_unit_installed(unit):
-                args += ['-u', unit]
-            elif is_service_unit_installed(unit, user=True):
-                args += ['--user-unit', unit]
+            sys_p = service_unit_presence(unit)
+            if sys_p == "installed":
+                add_system(unit)
+                continue
+            usr_p = service_unit_presence(unit, user=True)
+            if usr_p == "absent" and not _operator_known():
+                # root WITHOUT SUDO_USER asked ROOT's user manager — its
+                # "No files found" says nothing about the operator's units
+                usr_p = "unknown"
+            if usr_p == "installed":
+                add_user(unit)
                 user.append(unit)
+            elif "unknown" in (sys_p, usr_p):
+                add_system(unit)
+                add_user(unit)
+                unknown.append(unit)
             else:
                 absent.append(unit)
         notes = []
         if absent:
             notes.append(f"Not installed on this box: {', '.join(absent)} — no lines "
                          "from them means ABSENT, not quiet.")
+        if unknown:
+            notes.append(f"Could not check whether installed: {', '.join(unknown)} — "
+                         "read anyway; no lines from them is UNKNOWN, not quiet.")
         if user:
-            notes.append(f"User-scope unit(s): {', '.join(user)} (read with --user-unit).")
+            notes.append(f"User-scope unit(s): {', '.join(user)} (matched by the "
+                         f"operator's uid {uid}).")
         if 'rnsd' not in absent:
             notes.append("rnsd runs with --service and logs to its config dir's "
                          "'logfile', not the journal — see rnsd Logs.")
         if 'nomadnet' not in absent:
             notes.append("nomadnet logs to ~/.nomadnetwork/logfile; the journal holds "
                          "only its start/stop lines.")
-        return args, notes
+        return terms, notes
 
     def _show_units_output(self, title: str, base_cmd: list, timeout: int = 15) -> None:
         args, notes = self._mesh_journal_args()

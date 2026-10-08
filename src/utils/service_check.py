@@ -743,28 +743,40 @@ def is_service_unit_installed(
         timeout: Subprocess timeout in seconds (default: 5).
 
     Returns:
-        True if the unit file exists, False otherwise (including errors).
+        True if the unit file exists, False otherwise (including errors —
+        use ``service_unit_presence`` where "could not check" must not read
+        as "absent").
     """
-    # ``systemctl cat`` is read-only and never needs sudo — build argv
-    # directly so we don't regress the "plain systemctl" contract the
-    # TUI's auto-start checks depend on (Issue #45 keeps user=True
-    # opt-in while preserving the original system-scope behavior).
-    argv = (
-        ['systemctl', '--user', 'cat', service_name]
-        if user
-        else ['systemctl', 'cat', service_name]
-    )
+    return service_unit_presence(service_name, timeout=timeout, user=user) == "installed"
+
+
+def service_unit_presence(service_name: str, timeout: int = 5, user: bool = False) -> str:
+    """``installed`` | ``absent`` | ``unknown`` — the tri-state the bool hides.
+
+    ``absent`` ONLY when systemctl itself says "No files found"; every other
+    failure (a bus it could not reach, a timeout, systemctl missing) is
+    ``unknown``. Non-author review 2026-10-08 (VERIFIED): under sudo — the
+    normal TUI launch — plain ``systemctl --user`` reached ROOT's absent user
+    manager, the error read as False, and the Logs screen declared a RUNNING
+    nomadnet "Not installed". User scope therefore goes through
+    ``_operator_user_prefix()`` like every other user-scope call here.
+
+    ``systemctl cat`` is read-only and never needs sudo for SYSTEM scope —
+    argv stays plain (Issue #45)."""
+    argv = (_operator_user_prefix() + ['systemctl', '--user', 'cat', service_name]
+            if user else ['systemctl', 'cat', service_name])
     try:
-        result = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        return result.returncode == 0
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
-        logger.debug("is_service_unit_installed(%s) failed: %s", service_name, e)
-        return False
+        logger.debug("service_unit_presence(%s) failed: %s", service_name, e)
+        return "unknown"
+    if result.returncode == 0:
+        return "installed"
+    if "No files found" in (result.stderr or ""):
+        return "absent"
+    logger.debug("service_unit_presence(%s, user=%s): rc=%s %s", service_name, user,
+                 result.returncode, (result.stderr or "").strip()[:120])
+    return "unknown"
 
 
 def daemon_reload(timeout: int = 30, user: bool = False) -> Tuple[bool, str]:

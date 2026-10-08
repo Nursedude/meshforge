@@ -111,8 +111,8 @@ class TestLogsInApp:
         calls = []
         h._show_command_output = lambda title, cmd, **k: calls.append(cmd)
         h._capture_command = lambda cmd, timeout=15: calls.append(cmd) or "out"
-        with patch("handlers.logs.is_service_unit_installed",
-                   lambda u, **k: not k.get("user")), \
+        with patch("handlers.logs.service_unit_presence",
+                   lambda u, **k: "absent" if k.get("user") else "installed"), \
                 patch("handlers.logs.subprocess.run",
                       side_effect=AssertionError("terminal subprocess")):
             h._view_error_logs()
