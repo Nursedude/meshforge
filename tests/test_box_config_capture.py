@@ -185,3 +185,17 @@ def test_etc_meshforge_is_captured(tmp_path):
         files = _snapshot_files(dest, box)
         assert any(f.endswith("etc-meshforge/noc.yaml") for f in files), files
         assert not any(f.endswith("huge.bin") for f in files)
+
+
+def test_etc_meshanchor_is_captured(tmp_path):
+    """Sister gap, found the same day: meshanchor-server's /etc/meshanchor
+    (daemon.yaml, noc.yaml) was captured nowhere either."""
+    dest, _, _, env = _setup(tmp_path)
+    etc = tmp_path / "etc-meshanchor"
+    etc.mkdir()
+    (etc / "daemon.yaml").write_text("daemon: planted\n")
+    env["BOX_CAPTURE_ETC_MESHANCHOR"] = str(etc)
+    _run(env, tmp_path)
+    for box in ("self-box", "box-a", "box-b"):
+        assert any(f.endswith("etc-meshanchor/daemon.yaml")
+                   for f in _snapshot_files(dest, box))
