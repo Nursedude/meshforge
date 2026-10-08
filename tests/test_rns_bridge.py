@@ -6059,3 +6059,93 @@ class TestLxmfHistoryStoresText:
              patch.object(bridge, "_notify_message"):
             bridge._on_lxmf_receive(msg)
         assert store.call_args.kwargs["content"] == "hello"
+
+
+# ---------------------------------------------------------------------------
+# Periodic LXMF re-announce — back-port of MA 2f4ac8ba's stricter shape
+# (MA non-author review 2026-10-08: MF's inline loop did not stamp the clock
+# on a generic Exception → retried every 1 s forever; int(announce_interval)
+# was unguarded → a bad value bounced the whole RNS connection each tick)
+# ---------------------------------------------------------------------------
+
+class TestPeriodicReannounce:
+    def _arm(self, bridge, interval=300, last=0.0):
+        bridge._lxmf_router = MagicMock()
+        bridge._lxmf_source = MagicMock(hash=bytes.fromhex("3d" * 16))
+        bridge.config.rns.announce_interval = interval
+        bridge._last_lxmf_announce = last
+        bridge.rns_ingress_stamp = MagicMock()
+        return bridge._lxmf_router
+
+    @pytest.fixture
+    def egress_ok(self):
+        with patch("gateway._rns_bridge_connection.assert_rns_tx_allowed"):
+            yield
+
+    def test_no_reannounce_before_the_first_announce(self, bridge, egress_ok):
+        router = self._arm(bridge, last=None)
+        assert bridge._maybe_reannounce(now=10_000.0) is False
+        router.announce.assert_not_called()
+
+    def test_reannounces_on_the_interval_and_stamps_the_ledger(self, bridge, egress_ok):
+        router = self._arm(bridge, interval=300, last=0.0)
+        assert bridge._maybe_reannounce(now=299.0) is False
+        assert bridge._maybe_reannounce(now=300.0) is True
+        router.announce.assert_called_once_with(bytes.fromhex("3d" * 16))
+        bridge.rns_ingress_stamp.assert_called_once()
+        assert bridge._maybe_reannounce(now=301.0) is False
+
+    def test_interval_floor_and_bad_value(self, bridge, egress_ok):
+        router = self._arm(bridge, interval=5, last=0.0)
+        assert bridge._maybe_reannounce(now=59.0) is False
+        assert bridge._maybe_reannounce(now=60.0) is True
+        bridge.config.rns.announce_interval = "five minutes"
+        bridge._last_lxmf_announce = 0.0
+        assert bridge._maybe_reannounce(now=299.0) is False   # falls back to 300
+        assert bridge._maybe_reannounce(now=300.0) is True
+        assert router.announce.call_count == 2
+
+    def test_a_router_error_retries_at_the_interval_not_every_second(self, bridge, egress_ok):
+        router = self._arm(bridge, last=0.0)
+        router.announce.side_effect = RuntimeError("transport gone")
+        assert bridge._maybe_reannounce(now=300.0) is True
+        assert bridge._last_lxmf_announce == 300.0
+        assert bridge._maybe_reannounce(now=301.0) is False
+        assert router.announce.call_count == 1
+        bridge.rns_ingress_stamp.assert_not_called()
+
+    def test_a_tx_guard_refusal_never_kills_the_loop(self, bridge):
+        from utils.tx_guard import TransmitBlocked
+        router = self._arm(bridge, last=0.0)
+        with patch("gateway._rns_bridge_connection.assert_rns_tx_allowed",
+                   side_effect=TransmitBlocked("armed")):
+            assert bridge._maybe_reannounce(now=300.0) is True
+        router.announce.assert_not_called()
+        assert bridge._last_lxmf_announce == 300.0
+        bridge.rns_ingress_stamp.assert_not_called()   # parity: refusal ≠ live proof
+
+    def test_router_or_source_gone_mid_stop_is_a_no_op(self, bridge, egress_ok):
+        router = self._arm(bridge, last=0.0)
+        bridge._lxmf_router = None
+        assert bridge._maybe_reannounce(now=300.0) is False
+        bridge._lxmf_router = router
+        bridge._lxmf_source = None
+        assert bridge._maybe_reannounce(now=300.0) is False
+        router.announce.assert_not_called()
+
+    def test_an_infinite_interval_falls_back_instead_of_raising(self, bridge, egress_ok):
+        self._arm(bridge, interval=float("inf"), last=0.0)     # json: 1e999
+        assert bridge._maybe_reannounce(now=300.0) is True
+
+    def test_a_ledger_stamp_error_is_swallowed(self, bridge, egress_ok):
+        router = self._arm(bridge, last=0.0)
+        bridge.rns_ingress_stamp.side_effect = RuntimeError("disk")
+        assert bridge._maybe_reannounce(now=300.0) is True
+        router.announce.assert_called_once()
+
+    def test_the_rns_loop_calls_it(self):
+        import inspect
+        from gateway.rns_bridge import RNSMeshtasticBridge
+        src = inspect.getsource(RNSMeshtasticBridge._rns_loop)
+        assert "_maybe_reannounce()" in src
+        assert "self._lxmf_router.announce(" not in src   # no second inline copy

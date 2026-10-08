@@ -10,13 +10,14 @@ import signal as _signal_mod
 import socket
 import threading
 import time
+from typing import Optional
 from contextlib import contextmanager
 
 from utils.paths import get_real_user_home, ReticulumPaths
 from utils.rns_init import open_reticulum
 from utils.safe_import import safe_import
 from utils.service_check import check_service
-from utils.tx_guard import assert_rns_tx_allowed
+from utils.tx_guard import TransmitBlocked, assert_rns_tx_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -445,3 +446,52 @@ class RNSConnectionMixin:
         self._identity = None
         self._reticulum = None
         self._connected_rns = False
+
+    def _maybe_reannounce(self, now: Optional[float] = None) -> bool:
+        """Periodic LXMF re-announce on ``rns.announce_interval`` (floor 60 s)
+        so late-joining clients — and peer gateways that restarted — can
+        recall this gateway. First announce fires in ``_setup_lxmf``.
+
+        Back-port of MA 2f4ac8ba's shape (MA review 2026-10-08): the clock is
+        stamped BEFORE the attempt, so a refusal or transport error retries at
+        the interval, never every second; a bad interval value falls back to
+        300 instead of raising into the RNS loop (which bounced the whole
+        connection each tick); router/source are bound once because stop()
+        may None them on another thread. Returns True when an attempt was
+        due. Never raises."""
+        last = getattr(self, "_last_lxmf_announce", None)
+        router = getattr(self, "_lxmf_router", None)
+        source = getattr(self, "_lxmf_source", None)
+        if last is None or router is None or source is None:
+            return False
+        now = time.monotonic() if now is None else now
+        try:
+            interval = max(60, int(self.config.rns.announce_interval))
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            interval = 300   # OverflowError: json reads 1e999 as inf
+        if now - last < interval:
+            return False
+        self._last_lxmf_announce = now
+        try:
+            assert_rns_tx_allowed(kind="rns_announce",
+                                  detail="rns_bridge periodic LXMF re-announce")
+            router.announce(source.hash)
+            logger.info("LXMF re-announce sent (dest=%s)", source.hash.hex())
+        except TransmitBlocked as e:
+            # Deliberate catch (tx_guard docstring): already recorded+logged
+            # by the guard; letting it fly killed the loop (2026-08-09 review).
+            logger.warning("LXMF re-announce refused by tx_guard — "
+                           "skipping this cycle: %s", e)
+            return True
+        except Exception as e:  # noqa: BLE001 — the RNS loop must survive
+            logger.warning("LXMF re-announce failed: %s", e)
+            return True
+        # Re-stamp the ingress ledger on the announce cadence so a LIVE
+        # gateway's ledger is provably fresh and a dead gateway's goes stale →
+        # DARK on /fleet (non-author review 2026-10-07; stale floor
+        # fleet_truth.RNS_INGRESS_STALE_S, 3600 s).
+        try:
+            self.rns_ingress_stamp()
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"rns ingress stamp failed: {e}")
+        return True
