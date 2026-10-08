@@ -322,10 +322,13 @@ of sight at the midpoint."""
 
             eirp_watts = 10 ** ((eirp - 30) / 10)
 
-            from utils.rf import fcc_part15_247_check
+            from utils.rf import (FCC_PART15_247_SCOPE, fcc_part15_247_check,
+                                  fcc_part15_conducted_limit_dbm)
             ok, why = fcc_part15_247_check(tx, gain, loss)
-            legal = ("within Part 15.247 limits (conducted <= 30 dBm, EIRP <= 36 dBm)"
-                     if ok else "EXCEEDS Part 15.247: " + "; ".join(why))
+            limit = fcc_part15_conducted_limit_dbm(gain)
+            legal = ((f"within the Part 15.247 power limits (conducted <= {limit:.1f} dBm, "
+                      "EIRP <= 36 dBm)" if ok else "EXCEEDS Part 15.247: " + "; ".join(why))
+                     + f"\n  Scope: {FCC_PART15_247_SCOPE}.")
 
             text = f"""EIRP Calculator:
 

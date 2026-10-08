@@ -87,6 +87,7 @@ BUILDING_PENETRATION_DB = {
 
 # SNR demodulation thresholds per spreading factor (Semtech datasheet)
 SNR_THRESHOLD_DB = {
+    5: -2.5, 6: -5.0,   # SX126x demod limits; absent until 2026-10-08 (fell back to -15)
     7: -7.5, 8: -10.0, 9: -12.5,
     10: -15.0, 11: -17.5, 12: -20.0,
 }
@@ -1006,9 +1007,25 @@ def is_fast_available() -> bool:
     return _USE_FAST
 
 
+#: Scope of the check below, said wherever its verdict is shown. 1 W is
+#: (b)(2) FHSS (>=50 channels; 25-49 channels: 0.25 W) and (b)(3) digital
+#: modulation (>=500 kHz 6 dB bandwidth, (a)(2)); (b)(4) reduces (b)(1)-(3)
+#: above 6 dBi. A 125/250 kHz NON-hopping LoRa mode is neither (a)(1) nor
+#: (a)(2) — not judged here. eCFR text re-read 2026-10-08; not legal advice.
+FCC_PART15_247_SCOPE = ("judged against 15.247(b)(2) FHSS with >=50 hopping channels / "
+                        "(b)(3) digital modulation with >=500 kHz bandwidth, reduced per "
+                        "(b)(4); FHSS with 25-49 channels is limited to 24 dBm, and a "
+                        "125/250 kHz non-hopping LoRa mode is not judged here")
+
+
+def fcc_part15_conducted_limit_dbm(antenna_gain_dbi: float) -> float:
+    """30 dBm, less 1 dB per dB of antenna gain above 6 dBi (15.247(b)(4))."""
+    return 30.0 - max(0.0, antenna_gain_dbi - 6.0)
+
+
 def fcc_part15_247_check(tx_power_dbm: float, antenna_gain_dbi: float,
                          cable_loss_db: float = 0.0) -> Tuple[bool, List[str]]:
-    """US 902-928 MHz unlicensed (FCC 47 CFR 15.247(b)(3),(b)(4)) check.
+    """US 902-928 MHz unlicensed (FCC 47 CFR 15.247(b)(2)/(b)(3),(b)(4)) check.
 
     Limits: conducted output <= 30 dBm (1 W), reduced 1 dB for every dB of
     antenna gain above 6 dBi — which keeps EIRP at or under 36 dBm. Cable
@@ -1020,8 +1037,13 @@ def fcc_part15_247_check(tx_power_dbm: float, antenna_gain_dbi: float,
 
     Returns (within_limits, reasons) — reasons name each limit exceeded.
     """
+    import math
+    if not all(math.isfinite(v) for v in (tx_power_dbm, antenna_gain_dbi, cable_loss_db)):
+        # NaN compares False to every limit, so it read "within limits"
+        # (non-author review 2026-10-08).
+        raise ValueError("power, gain and cable loss must be finite numbers")
     reasons = []
-    conducted_limit = 30.0 - max(0.0, antenna_gain_dbi - 6.0)
+    conducted_limit = fcc_part15_conducted_limit_dbm(antenna_gain_dbi)
     if tx_power_dbm > conducted_limit:
         reasons.append(f"conducted {tx_power_dbm:.1f} dBm > {conducted_limit:.1f} dBm limit"
                        + (f" (30 dBm less {antenna_gain_dbi - 6.0:.1f} dB for gain over 6 dBi)"

@@ -762,8 +762,13 @@ class TestConstants:
     def test_snr_thresholds_range(self):
         """SNR thresholds should be negative (below noise floor)."""
         for sf, threshold in SNR_THRESHOLD_DB.items():
-            assert 7 <= sf <= 12
+            assert 5 <= sf <= 12      # SX126x: SF5-12 (SF5/6 added 2026-10-08)
             assert threshold < 0
+
+    def test_sf5_and_sf6_use_their_own_demod_limits(self):
+        # review 2026-10-08: SF5/6 fell back to -15 dB → 10+ dB optimistic
+        from utils.rf import SNR_THRESHOLD_DB
+        assert SNR_THRESHOLD_DB[5] == -2.5 and SNR_THRESHOLD_DB[6] == -5.0
 
     def test_sensitivity_decreases_with_sf(self):
         """Higher SF = lower sensitivity (more negative dBm)."""
@@ -817,6 +822,28 @@ class TestFccPart15_247:
     def test_one_watt_into_six_dbi_is_the_edge_and_legal(self):
         from utils.rf import fcc_part15_247_check
         assert fcc_part15_247_check(30.0, 6.0) == (True, [])
+
+    # non-author review 2026-10-08 (VERIFIED): NaN passed as "within limits";
+    # the pass text always said 30 dBm even when the applied limit was lower;
+    # and (b)(3)/(b)(4) cover FHSS or >=500 kHz digital modulation only.
+    def test_a_non_finite_input_is_refused_not_passed(self):
+        import math
+        import pytest
+        from utils.rf import fcc_part15_247_check
+        for args in ((math.nan, 0.0), (30.0, math.nan), (30.0, 6.0, math.inf)):
+            with pytest.raises(ValueError):
+                fcc_part15_247_check(*args)
+
+    def test_the_applied_limit_is_one_shared_number(self):
+        from utils.rf import fcc_part15_247_check, fcc_part15_conducted_limit_dbm
+        assert fcc_part15_conducted_limit_dbm(9.0) == 27.0
+        assert fcc_part15_conducted_limit_dbm(2.0) == 30.0
+        ok, why = fcc_part15_247_check(28.0, 9.0)
+        assert f"{fcc_part15_conducted_limit_dbm(9.0):.1f} dBm limit" in why[0]
+
+    def test_the_scope_cites_the_paragraphs_that_set_the_limits(self):
+        from utils.rf import FCC_PART15_247_SCOPE as s
+        assert "(b)(2)" in s and "(b)(3)" in s and "24 dBm" in s and "not judged" in s
 
     def test_high_gain_reduces_the_conducted_limit(self):
         from utils.rf import fcc_part15_247_check
