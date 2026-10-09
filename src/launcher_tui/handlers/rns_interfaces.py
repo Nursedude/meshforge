@@ -797,7 +797,11 @@ class RNSInterfacesHandler(BaseHandler):
         else:
             result = cmd_mod.disable_interface(iface_name)
 
-        if result.success:
+        if result.success and (result.data or {}).get('changed') is False:
+            # nothing written → nothing to restart (an rnsd restart is the
+            # #69 race trigger; review 2026-10-08)
+            self.ctx.dialog.msgbox(f"Interface already {action}d", result.message)
+        elif result.success:
             self.ctx.dialog.msgbox(
                 f"Interface {action.title()}d",
                 f"[[{iface_name}]] is now {action}d.\n\n"

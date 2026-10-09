@@ -577,46 +577,27 @@ def disable_interface(name: str) -> CommandResult:
 
 
 def _set_interface_enabled(name: str, enabled: bool) -> CommandResult:
-    """Set interface enabled state."""
+    """Set interface enabled state — every enable key in that ONE section.
+
+    Rewrote only ``enabled`` lines until 2026-10-08: on a canonical RNode
+    (``interface_enabled = True``) it changed nothing and reported success
+    (non-author review). Already in the requested state → ok, said so."""
+    from utils.rns_interface_flags import set_section_enabled
     result = read_config()
     if not result.success:
         return result
-
     content = result.data.get('content', '')
-    lines = content.split('\n')
-    new_lines = []
-    in_target_interface = False
-    found = False
-    enabled_updated = False
-
-    for line in lines:
-        stripped = line.strip()
-
-        # Check if entering target interface
-        if stripped == f'[[{name}]]':
-            in_target_interface = True
-            found = True
-            new_lines.append(line)
-            continue
-
-        # Check if leaving interface
-        if in_target_interface and stripped.startswith('[['):
-            in_target_interface = False
-
-        # Update enabled setting
-        if in_target_interface and stripped.startswith('enabled'):
-            indent = len(line) - len(line.lstrip())
-            new_lines.append(' ' * indent + f"enabled = {'yes' if enabled else 'no'}")
-            enabled_updated = True
-            continue
-
-        new_lines.append(line)
-
+    new_content, found, changed = set_section_enabled(content, name, enabled)
     if not found:
         return CommandResult.fail(f"Interface '{name}' not found")
-
-    new_content = '\n'.join(new_lines)
-    return write_config(new_content)
+    if not changed:
+        return CommandResult.ok(
+            f"[[{name}]] is already {'enabled' if enabled else 'disabled'} — nothing written",
+            data={'changed': False})
+    res = write_config(new_content)
+    if res.success:
+        res.data = {**(res.data or {}), 'changed': True}
+    return res
 
 
 # ============================================================================

@@ -38,7 +38,7 @@ def iter_enabled_interfaces(content: str):
 
         # Check if enabled (RNS uses both 'enabled' and 'interface_enabled')
         enabled_match = re.search(
-            r'^\s*(?:interface_)?enabled\s*=\s*(yes|true|1)',
+            r'^\s*(?:interface_)?enabled\s*=\s*(yes|true|on|1)\b',  # = _TRUE_WORDS
             body, re.IGNORECASE | re.MULTILINE
         )
         if not enabled_match:
@@ -209,17 +209,14 @@ def disable_interfaces_in_config(interface_names: list) -> list:
         logger.error("Cannot read RNS config: %s", e)
         return []
 
+    from utils.rns_interface_flags import set_section_enabled
     disabled = []
     for name in interface_names:
-        pattern = re.compile(
-            r'(^\s*\[\[' + re.escape(name) + r'\]\]\s*$'
-            r'.*?)'
-            r'(^\s*enabled\s*=\s*)(yes|true|1)',
-            re.MULTILINE | re.DOTALL | re.IGNORECASE
-        )
-        new_content, count = pattern.subn(r'\1\g<2>no', content)
-        if count > 0:
-            content = new_content
+        # Section-scoped (review 2026-10-08): the old DOTALL regex ran into the
+        # NEXT section when this one used `interface_enabled`, and disabled a
+        # working interface while reporting this one.
+        content, found, changed = set_section_enabled(content, name, False)
+        if changed:
             disabled.append(name)
 
     if disabled:
