@@ -415,7 +415,8 @@ def summarize(state: str, rows: Sequence[Dict], usb: Optional[List[str]],
     adjacent_na = bool(last_adj and last_adj.get("status") == "unsupported") or \
         row_dev not in ADJACENT_RX
     return dict(base, status="stale" if stale else "fresh", stale_windows=stale, adjacent_na=adjacent_na,
-                newest_ok_ts=max(known) if known else None, unknown_streak=streak,
+                newest_ok_ts=max(known) if known else None, fleet_runs_read=len(fleet),
+                unknown_streak=streak,
                 busy=busy, busy_runs=runs, foreign=foreign, carriers=carriers,
                 adjacent_ts=adj.get("ts") if adj else None, now=now)
 
@@ -435,7 +436,14 @@ def summary_line(s: Dict) -> str:
     if s["status"] == "unknown":
         body = f"⚪ UNKNOWN — data file {s.get('reason')}"
     elif s["status"] == "stale":
-        body = (f"🔴 STALE — newest ok capture {_age(now, s['newest_ok_ts'])} "
+        # The reader sees a bounded TAIL (rollup: SUMMARY_ROWS), so an absent
+        # ok is "none in what was read", never "never" (moc1 2026-10-08: it
+        # said "never" with an ok 6 h earlier in the journal).
+        if s.get("newest_ok_ts") is None:
+            newest = f"none in the {s.get('fleet_runs_read', 0)} runs read"
+        else:
+            newest = _age(now, s["newest_ok_ts"])
+        body = (f"🔴 STALE — newest ok capture {newest} "
                 f"({', '.join(s['stale_windows'])} stale)")
         if s.get("unknown_streak", 0) >= UNKNOWN_STREAK_ALERT:
             body += f" · last {s['unknown_streak']} runs captured nothing"

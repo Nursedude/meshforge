@@ -269,6 +269,19 @@ def test_fresh_failed_rows_do_not_make_the_line_fresh():
     assert "captured nothing" in v.summary_line(s)
 
 
+def test_no_ok_in_the_rows_read_is_not_never():
+    """2026-10-08: the rollup tails 14 rows, all from a wedged receiver, and
+    the line said 'newest ok capture never' while moc1's journal held an ok
+    from 15:21. The reader saw a WINDOW of the file, so it may only claim
+    what that window holds — 'none in the N runs read', never 'never'."""
+    dead_rows = [_row(si.run_fleet(dead, None, {}, []), NOW - 60 * k) for k in (3, 2, 1)]
+    s = v.summarize("ok", dead_rows, ["RTL-SDR"], now=NOW)
+    assert s["status"] == "stale" and s["newest_ok_ts"] is None
+    line = v.summary_line(s)
+    assert "never" not in line
+    assert "none in the 3 runs read" in line
+
+
 def test_a_future_timestamp_is_not_fresh():
     rows = [_row(si.run_fleet(quiet, None, {}, []), NOW + 3600)]
     assert v.summarize("ok", rows, ["Airspy"], now=NOW)["status"] == "stale"
