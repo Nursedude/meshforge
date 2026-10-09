@@ -493,6 +493,12 @@ def run_trace(
                         ping.seq, ping.peer_name, ping.path_retries_used,
                     )
 
+            # Close our links BEFORE exiting so the echoes drop their cached
+            # link to this (about to be dead) process — see teardown_active_links.
+            closed = teardown_active_links(RNS)
+            if closed:
+                logger.info("tracer: closed %d link(s) before exit", closed)
+
             # Sort results by seq so journal output is monotonic.
             results.sort(key=lambda r: r.seq)
             return results
@@ -500,6 +506,39 @@ def run_trace(
 
 # ---------------------------------------------------------------- state files
 
+
+
+def teardown_active_links(rns_module, settle_s: float = 0.3) -> int:
+    """Close every RNS link this one-shot process holds, before it exits.
+
+    Root-caused 2026-10-09 (the "why is moc4 9 s" question): the tracer is a
+    fresh process every 10 min with the SAME identity, and it just exited
+    without closing anything. The echo's LXMRouter keeps the direct link it
+    opened back to us cached for LINK_MAX_INACTIVITY = 600 s, and RNS does not
+    call a link stale until STALE_TIME = 720 s — both longer than our cadence.
+    So the echo's first ACK attempt on the NEXT fire goes out on a link whose
+    far end is dead, and LXMF's retry schedule (4 s job loop, 7 s path wait,
+    10 s delivery retry) became the measured RTT. Measured on the manager:
+    empty cache 25 ms; warm (dead) cache 5,960 ms and 6,902 ms. Over 7 d on
+    four boxes the sub-200 ms mode was 1-4% of fires.
+
+    ``Link.teardown()`` transmits a close packet; the peer's
+    ``delivery_link_closed`` drops its cache entry, so the next fire gets a
+    fresh link and a millisecond answer. The party that dies closes the door.
+    Returns the number of links closed; ``settle_s`` lets the close packets
+    leave via rnsd before the process goes away.
+    """
+    links = list(getattr(rns_module.Transport, "active_links", None) or [])
+    closed = 0
+    for link in links:
+        try:
+            link.teardown()
+            closed += 1
+        except Exception as exc:  # a link that cannot close is not our exit's problem
+            logger.debug("tracer: link teardown failed: %s", exc)
+    if closed and settle_s > 0:
+        time.sleep(settle_s)
+    return closed
 
 def _state_dir_default() -> Path:
     """``$XDG_STATE_HOME/meshforge/tracer`` (or ``~/.local/state/...``).
