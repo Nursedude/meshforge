@@ -3,9 +3,9 @@ MeshForge - LoRa Mesh Network Development & Operations Suite
 Version information and changelog
 """
 
-__version__ = "0.6.2-beta"
-__version_info__ = (0, 6, 2, 'beta')
-__release_date__ = "2026-06-12"
+__version__ = "0.6.3-beta"
+__version_info__ = (0, 6, 3, 'beta')
+__release_date__ = "2026-10-09"
 __app_name__ = "MeshForge"
 __app_description__ = "Mesh Network Operations Center & Development Ecosystem"
 __app_tagline__ = "Build. Test. Deploy. Monitor."
@@ -21,13 +21,31 @@ ALPHA_VERSION = "0.6.0-alpha"
 # Version history
 VERSION_HISTORY = [
     {
+        "version": "0.6.3-beta",
+        "date": "2026-10-09",
+        "status": "beta",
+        "changes": [
+            "GATEWAY: RNS→RF ingress allowlist — observe-first with an unlisted-sender ledger, then ENFORCE on both gateways (2026-10-08). Trust rides a VALIDATED LXMF signature, never a claimed source hash; an LXMF identity registry names every hash we print; measured inbound use per listed identity. A fresh gateway warms its peers' paths at connect (`RNS ingress warm-up:`) — it recalled 0 of 16 before, 15 of 16 within 5 s after.",
+            "GATEWAY: posture line states the real policy under enforce (which identities and peer gateways may reach RF); periodic re-announce no longer storms or bounces RNS on a bad interval.",
+            "GATEWAY: transport-truth / dedup arc — a logical content_id minted at ingress and carried across every leg, cross-box loop guard, durable reverse routing for bot replies, and human-vs-infrastructure duplicate classification (page only on human dups).",
+            "MESHCORE: the slot index is read from the wire's `channel_idx` (the old key was never sent, so every message read as slot 0); inbound Public-channel bridging refused by default; the TUI reads the gateway's own MeshCore state.",
+            "SDR: interference watch — `scripts/sdr_interference.py` captures the fleet LoRa windows every 5 min on two receivers (Airspy + RTL-SDR), with busy %, foreign carriers and IM3/alias labelling, analysis tested against real IQ. TUI RF & SDR › Interference Watch, fleet watchers pane and web fleet page. A receiver that yields no samples exits 1, and a wedge PAGES (`sdr_receiver_wedged_any`).",
+            "TUI: success-truth sweep over every action (a Truth column; screens judged against live answers by an independent oracle in a private-netns sandbox radio); new read-only screens — Delivery, TX Power Truth, Channel Load, RNode Interference, Fleet section, Fleet Posture; a saved deployment profile now actually filters the menu; MF018 backlog closed — logs, config edits, installs and service fixes stay in-app.",
+            "FLEET: declared posture (active / shed / dormant / detached, with a reason) honoured by sync, the watchers pane and the web tiles; ordered fleet shutdown/startup and a UPS-halt half; an update surface showing declared vs actual pins and reboot-owed.",
+            "RNS: fork baseline rolled to rns 1.3.8+mf.0 / lxmf 1.0.1+mf.1 (2026-07-19); #69 boot race root-caused — the readiness wait now requires the socket owner to be rnsd, not merely present; RNode access chokepoint (MF029) and one RNode profile for the domain.",
+            "SECURITY: map HTTP surface — DNS-rebinding and cross-site-write refusal, Host rule at dispatch, read gate on message endpoints, terrain endpoints no longer download on request; RF and RNS egress gated under pytest; PSK / credential redaction guard; MQTT parse surface hardened against hostile input.",
+            "INSTALL/UPDATES: unattended-upgrades provisioned and verified; `install_noc.sh --dry-run` fails closed; dependency advisories credit distro backports and take an EXPIRING accept list instead of pip-over-apt.",
+            "DOCS: uConsole AIO V2 removed from the hardware list (hardware not delivered); README/capabilities SDR rows describe what is live.",
+            "REMOVED (2026-10-01): gateway/rns_transport.py, the RNS-over-Meshtastic transport — it started, held a meshtasticd TCP connection and counted fragments, but no code ever handed a reassembled packet to RNS (no RNS Interface subclass), and its packet IDs collided for HEADER_2 traffic. Also removed: its CLI transport commands, the TUI bridge-mode entry, the rns_over_meshtastic.json template, the example config, the fleet-presets leg, and tests/test_rns_transport.py. The rns_transport config section still parses; gateway startup refuses enabled=true or bridge_mode=rns_transport with the reason. RNS over LoRa = an RNodeInterface in rnsd's config. No fleet box had it enabled (measured).",
+            "REMOVED (2026-09-06): MeshChatX TUI handler — handlers/meshchatx.py + _meshchatx_service_ops.py (1,272 lines), the `meshchatx` feature flag on every profile, and utils.paths.MeshChatXPaths. Operator decision: NomadNet is the supported LXMF client, as it always has been. MeshChatX stays installer-only (scripts/install_meshchatx.sh, which gained --uninstall and a socket-bound liveness check).",
+            "REMOVED (2026-09-06): tests/test_meshchatx_handler.py (25 tests). The installer's tests remain.",
+        ],
+    },
+    {
         "version": "0.6.2-beta",
         "date": "2026-06-12",
         "status": "beta",
         "changes": [
-            "REMOVED (2026-10-01): gateway/rns_transport.py, the RNS-over-Meshtastic transport — it started, held a meshtasticd TCP connection and counted fragments, but no code ever handed a reassembled packet to RNS (no RNS Interface subclass), and its packet IDs collided for HEADER_2 traffic. Also removed: its CLI transport commands, the TUI bridge-mode entry, the rns_over_meshtastic.json template, the example config, the fleet-presets leg, and tests/test_rns_transport.py. The rns_transport config section still parses; gateway startup refuses enabled=true or bridge_mode=rns_transport with the reason. RNS over LoRa = an RNodeInterface in rnsd's config. No fleet box had it enabled (measured).",
-            "REMOVED (2026-09-06): MeshChatX TUI handler — handlers/meshchatx.py + _meshchatx_service_ops.py (1,272 lines), the `meshchatx` feature flag on every profile, and utils.paths.MeshChatXPaths. Operator decision: NomadNet is the supported LXMF client, as it always has been. MeshChatX stays installer-only (scripts/install_meshchatx.sh, which gained --uninstall and a socket-bound liveness check).",
-            "REMOVED (2026-09-06): tests/test_meshchatx_handler.py (25 tests). The installer's tests remain.",
             "AREDN: Meshtastic↔AREDN bridge field-proven — Raven (the AREDN core team's ucode bridge) integrated on the AREDN-site collector box via its undocumented Debian platform port; full dependency chain (ucode interpreter + usign) built from source. Both directions verified over real RF (reverse leg received one hop away, SNR 6.25), then the persistent service passed a 24h soak gate clean: 0 restarts, RSS flat ~4 MB, forward store still ingesting at hour 23. Raven is INTEGRATED, not MeshForge-native — its Meshtastic leg rides UDP-over-LAN multicast (224.0.0.69:4403), never the PhoneAPI TCP stream, so Issue #17 contention is structurally absent. Pilot log, build recipe, and rollback path: .claude/plans/aredn_raven_moc5_pilot.md.",
             "AREDN: Three field lessons load-bearing for Phase 2 (Raven on the AREDN router itself): same-host pilots need an IP_MULTICAST_LOOP 0→1 patch (revert cross-host); the meshtasticd serving as Raven's radio must RELAY (CLIENT, not CLIENT_MUTE) or the AREDN→RF leg never keys the radio; Raven crash-loops (status 254, ~60s advert timer) without a `location` in raven.conf. Known Phase-2 item: packets on channels Raven holds no key for log a non-fatal decode exception — needs a null-guard before it lives on a router.",
             "FLEET: The bridge box's device.role flipped CLIENT_MUTE→CLIENT (permanent) so the reverse leg reaches the RF mesh; raven soak watch wired into the cron-verdict regime (Issue #78-covered) with a one-time Phase-2-ready ping. README: AREDN row shifted from awaiting-hardware monitoring to live monitoring + Raven bridge pilot.",

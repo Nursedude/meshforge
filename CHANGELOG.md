@@ -11,6 +11,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > authoritative changelog; keep both in sync (guarded by
 > `scripts/version_consistency_check.py`).
 
+## [0.6.3-beta] - 2026-10-09
+
+### Added
+- **Gateway**: RNS→RF ingress allowlist — observe-first with an unlisted-sender ledger, now enforcing on both gateways. Trust rides a validated LXMF signature, never a claimed source hash; an LXMF identity registry names every printed hash; per-identity inbound use is measured. A fresh gateway warms its peers' paths at connect (0/16 recalled before, 15/16 within 5 s after).
+- **Gateway**: transport-truth / dedup arc — logical `content_id` minted at ingress and carried across every leg, cross-box loop guard, durable reverse routing for bot replies, human-vs-infrastructure duplicate classification.
+- **SDR**: interference watch (`scripts/sdr_interference.py`) on two receivers (Airspy + RTL-SDR) — fleet LoRa windows every 5 min, busy %, foreign carriers, IM3/alias labels; TUI RF & SDR › Interference Watch, fleet watchers pane, web fleet page. A wedged receiver pages.
+- **TUI**: success-truth sweep over every action, judged against live answers by an independent oracle in a sandbox radio; read-only Delivery, TX Power Truth, Channel Load, RNode Interference, Fleet and Fleet Posture screens.
+- **Fleet**: declared posture (active / shed / dormant / detached, with a reason); ordered fleet shutdown/startup and a UPS-halt half; update surface for declared vs actual pins and reboot-owed.
+
+### Changed
+- **RNS**: fork baseline rns `1.3.8+mf.0` / lxmf `1.0.1+mf.1`; RNode access chokepoint (MF029) and one domain RNode profile.
+- **TUI**: a saved deployment profile actually filters the menu; MF018 backlog closed — logs, config edits, installs and service fixes stay in-app.
+- **Install/updates**: unattended-upgrades provisioned and verified; `install_noc.sh --dry-run` fails closed; dependency advisories credit distro backports and use an expiring accept list, never pip-over-apt.
+
+### Fixed
+- **MeshCore**: slot index read from the wire's `channel_idx` (the old key was never sent — every message read as slot 0).
+- **RNS**: #69 boot race — the readiness wait requires the socket owner to be rnsd, not merely present.
+- **Gateway**: periodic re-announce no longer storms or bounces RNS on a bad interval.
+
+### Removed
+- RNS-over-Meshtastic transport (`gateway/rns_transport.py`) — it never handed a packet to RNS; startup refuses `enabled=true` with the reason. RNS over LoRa = an RNodeInterface in rnsd's config.
+- MeshChatX TUI handler (NomadNet is the supported LXMF client; MeshChatX stays installer-only).
+- uConsole AIO V2 from the hardware list (hardware not delivered).
+
+### Security
+- Map HTTP surface: DNS-rebinding and cross-site-write refusal, Host rule at dispatch, read gate on message endpoints, terrain endpoints no longer download on request.
+- RF and RNS egress gated under pytest; PSK/credential redaction guard; MQTT parse surface hardened; MeshCore Public-channel inbound bridging refused by default.
+
 ## [0.6.2-beta] - 2026-06-12
 
 ### Added

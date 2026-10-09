@@ -2,7 +2,7 @@
 
 The full capability inventory. The README carries a summary; this is the detail behind it.
 
-## What Works (v0.6.2-beta)
+## What Works (v0.6.3-beta)
 
 ### Status Definitions
 

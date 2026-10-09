@@ -10,7 +10,7 @@ Working on MeshForge: tests, gates, and the contribution path.
 
 | Branch | Version | Focus |
 |--------|---------|-------|
-| `main` | `0.6.2-beta` | Meshtastic-primary NOC, production use |
+| `main` | `0.6.3-beta` | Meshtastic-primary NOC, production use |
 
 **Sister project:** [MeshAnchor](https://github.com/Nursedude/meshanchor) is the
 MeshCore-primary NOC — extracted from this repo on 2026-04-01.
