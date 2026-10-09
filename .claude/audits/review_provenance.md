@@ -3723,3 +3723,15 @@ ledger entries in `launcher_tui/live_truth.py` carry scope + evidence per action
 - `20213f06` / MA `faf610e2` — non-root rnsd configdir resolution. Attack: rnsd in a container / different mount namespace (`/etc/reticulum` seen by us ≠ by rnsd); `/proc/<pid>` stat uid vs rnsd's effective uid after a setuid drop.
 - `56f7b01c` — enable/disable deleted; confirm no dynamic `getattr(..., "enable")` consumer.
 - MA `d2b4c045` meshcore_public freshest-first cap — attack the sort key when `last_heard` is missing/None/future-dated (RTC-less Pi clock).
+
+## DONE 2026-10-09 (Fable 5.1) — the freeze review ran; the QUEUED 2026-09-17 inert-tier cut is answered
+
+Verdict + all re-derived numbers: `.claude/plans/post_freeze_harness_budget_2026_10_09.md` §8.
+One line: the freeze never bound (harness/day 5.6 → 10.8 under it), it is deleted
+not renewed; census 299/258/1 unchanged since 09-28; both all-inert classes drill
+`caught-both` (`inherited_app_drift` = cut candidate, `oracle_delivery_degraded` =
+parked with Ollama); the detector tier's real cost is **~16 ntfy pages/day**, 43% of
+them one rule (`tracer_peer_unreachable_any`, rate unmoved by its two in-freeze
+fixes) — that judgement is the next product question, not a `known_benign`.
+Measurement defect found en route: NUL corpses in 4 mini history files make
+`grep` read them as binary (my first count lost 287 of 850 fires).

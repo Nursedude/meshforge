@@ -57,9 +57,9 @@
 #     swap, never by trusting scp/ssh exit codes (calibrated_claims #7).
 #   * --check writes NOTHING anywhere and reports drift only.
 #
-# ⚠️ NOT CRON-WIRED, deliberately. `.claude/rules/harness_restraint.md` is in
-# force until 2026-10-09; a new verdict-wired cron is a new watched organ and
-# this arc does not need one. The mirror runs where it is actually load-bearing
+# ⚠️ NOT CRON-WIRED, deliberately. A new verdict-wired cron is a new watched
+# organ (feedback_my_footprint_is_the_constraint) and this arc does not need
+# one. The mirror runs where it is actually load-bearing
 # — inside `fleet_power.py down`, between the confirmed declaration and the
 # first poweroff — and by hand otherwise. Wiring it to a timer is a separate,
 # deliberate decision for after the freeze.

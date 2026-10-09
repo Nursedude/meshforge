@@ -331,7 +331,7 @@ def probe_tracer_peer_unreachable(
             ))
     if awaiting:
         # A returned box with no fire since is UNOBSERVED — not absent by
-        # design (never `inert`, harness_restraint #3), and bounded by
+        # design (never `inert`: a blindness subject is never benign), and bounded by
         # RETURN_WINDOW_S so it cannot latch (review W3, 10-06).
         if signals:
             for sig in signals:

@@ -208,3 +208,119 @@ AND drove a change), and the drill on the two all-inert classes.
 `delivered` = the RAK accepted it over SERIAL, not heard on RF (09-28: 3
 delivered / 1 arrived). An honest-claims gap in a PRODUCT counter — decide
 whether it earns a rename/second state.
+
+---
+
+## 8. THE REVIEW — 2026-10-09 (Fable 5.1) — freeze DELETED, not renewed
+
+Operator's brief for this session: *"be adversarial — critical — freezes are
+the last thing I want to do — this is AI dev."* Every number below was
+re-derived this session (scripts in the session scratchpad; the commit split is
+now `scripts/harness_share.py`). Nothing is carried from §1 or §7.
+
+### 8.1 Commit split (pinned §1 definition, `scripts/harness_share.py`)
+
+| window | commits | /day | harness | product | neither | harness/day | product/day | h:p |
+|---|---|---|---|---|---|---|---|---|
+| 08-10..09-09 pre-freeze | 320 | 10.7 | 168 (52%) | 72 (22%) | 80 (25%) | 5.6 | 2.4 | 2.33 |
+| 09-09..10-09 FREEZE | 728 | 24.3 | 323 (44%) | 294 (40%) | 111 (15%) | 10.8 | 9.8 | 1.10 |
+
+The freeze did not brake anything. Harness commits/day DOUBLED under it
+(5.6 → 10.8). The ratio moved only because product quadrupled (2.4 → 9.8/day).
+§2's diagnosis stands, now with the full window: the freeze gated NEW
+instruments while the work was fixes to EXISTING ones, each legitimately
+exempt. Two probes (`bridge_leg_down`, `peer_cron_verdict_stale`) and three
+seed rules (`bridge_leg_down_any`, `cron_verdict_concern_any`,
+`sdr_receiver_wedged_any`) were added in-freeze — every one forced by a real
+event (5.7 h dark leg; a watchdog-less box's failing crons; two RTL-SDR wedges).
+The exemption clause carried all of the right work and the freeze carried none
+of the wrong work. A rule that is obeyed perfectly and changes nothing is not a
+brake; it is a 5,141-char per-turn tax.
+
+### 8.2 Disposition census (`/var/lib/meshforge/watchdog.json` coverage, 9 boxes)
+
+62 classes · 558 cells · **299 clean / 258 inert / 1 indeterminate** — byte-for-byte
+the 09-28 interim (Sept: 61 · 314/234/1). Inert on EVERY box:
+`oracle_delivery_degraded` + `inherited_app_drift`. Drill
+(`falsifiability_drill.py --classes …`, exit 0): **both `caught-both`** — neither
+is blind. Reasons from the boxes themselves:
+- `inherited_app_drift` → "no inherited checkouts on this box" ×9. The
+  policy's subject left the fleet (RNS-Mgmt-Tool + Gateway-Tool archived
+  09-25). **CUT candidate** — delete probe + rule + its 7–9 named tests
+  (`watchdog_probes_env.py`, seeds, `test_watchdog_probes.py`,
+  `test_regression_guards.py`). Needs a deploy; not done in the review commit.
+- `oracle_delivery_degraded` → "oracle never wrote a log" ×7, idle ×2. Inert
+  because tier-L is PARKED by operator decision (09-07/09-18), not because the
+  class is wrong. **KEEP parked with its organ**; cut the day Ollama is removed,
+  together (24/31 collateral test failures in the drill say it shares fixtures).
+The 17 classes inert on 8 of 9 boxes are role-scoped (claw_* on moc2, the
+gateway family on moc) — inert-by-role is a correct `inert`, not waste. The
+architectural question §QUEUED asked — separate budgets for author-facing gates
+vs fleet-facing detectors — is answered by 8.3: the detector tier's cost is not
+commits, it is PAGES.
+
+### 8.3 The third measurement — what fired and was acted on (30 d, mini history, 9 boxes)
+
+- **37 rules fired · 850 edge_ups · 487 ntfy pages delivered + 63 failed
+  (`URLError`, WAN down) + 297 `propose_escalation`.** That is **~16 pages/day
+  to one phone.** This is the operator-hours number; the commit ratio never was.
+- **`tracer_peer_unreachable_any` = 369 edge_ups (43% of all), 307 pages, on 8
+  boxes.** Fixed TWICE in-freeze (`7edefbb8` blind-sibling hold, `5c5986a2`
+  returned_at) and the rate did not move: **12.4/day before 10-06, 11.7/day
+  after.** Both fixes cured a different failure mode (false pages after Resume).
+  Episode shape: median 10.0 min = ONE tracer tick (`OnCalendar *:00/10`), 62%
+  ≤ 15 min, 43 ≥ 60 min, several boxes share a 269–270 min max (one fleet event).
+  ⚠️ Not judged here. Two readings, and this is the next PRODUCT question:
+  (a) RNS paths between fleet boxes really drop ~12×/day — a finding about the
+  hub (`project_rns_is_the_hub_priority`), or (b) the probe pages on one missed
+  traceroute. Discriminator: a week of fires against `rnpath`/announce events at
+  both ends, then `persistent_cycles`. Not `known_benign`.
+- Commit-touched classes: 21 of 62. `cron_verdict_stale` 12 commits / 36 fires;
+  `delivery_confirmation_stall` 4 commits / **0 fires** (fixed while silent — the
+  09-10 ring finding); `service_inactive` 3 / 54; `rf_leg_silent` 3 / 42 (0 since
+  10-06 — the 17 dBm / antenna arc). `kernel_reboot_pending` 9 fires / 0 commits
+  = acted on by reboots, which git cannot see; the acted-on column is a proxy.
+- Judgment layer: 65 deltas resolved in-window, `known_benign` 29, five of them
+  keyword-match "blind/indeterminate" and **none is a `detector_blind` or
+  `indeterminate` subject** (aredn transient ×2, tracer persistent_active,
+  cron_verdict_concern by-design, a `drill` subject). Freeze §3 held.
+
+### 8.4 What the measurement found by failing (hfm #9, applied to the measurer)
+
+My first fire count read **563**, not 850: four history files carry the
+08-27 power-loss NUL class — **moc 368 B / moc3 3,180 B / kiai 1,487 B /
+meshanchor-server 3,802 B, one or two non-JSON lines each** — and `grep` without
+`-a` calls the file binary and stops at the first match. `history_write_stalled`
+reads `clean` on all of them (it measures writes, not corpses). JSON consumers
+(`brief.py`, `rollup.py`) skip the line silently with no witness.
+`scripts/mf5_soak_watch.py:171` uses `grep -c` on the same file. Owed: quarantine
+the NUL lines on the 4 boxes (operator go — fleet state files), `-a` or a
+JSON reader in every grep consumer, and a counter for skipped lines.
+
+### 8.5 Per-turn cost — the axis AI dev actually pays
+
+`@`-included into every turn of every session on every box, measured:
+CLAUDE.md 15,212 + persistent_issues 39,998 (**2 chars under its 40,000 cap**)
++ calibrated_claims 10,548 + honest_failure_modes 6,979 + harness_restraint
+5,141 + security 3,063 + testing 3,118 + model_advisor 2,452 = **86,511 chars
+≈ 20k+ tokens per turn** before a word of work. Commits are free in AI dev;
+tokens-per-turn and pages-per-day are not. Deleting the freeze file is −5,141
+per turn. `persistent_issues.md` at its cap is the next cut target (archive
+rows older than their guard), and `review_provenance.md` at 965 KB / 57
+touches a month is the 09-09 finding still true.
+
+### 8.6 Verdict and what replaced the freeze
+
+1. **Deleted** `.claude/rules/harness_restraint.md` and its `@` line; ROADMAP
+   rule rewritten. No renewal: the axis never bound, and the operator does not
+   want freezes. Nothing per-turn replaces it.
+2. **Landed** `scripts/harness_share.py` — the pinned definition, hand-run,
+   zero per-turn cost, NOT a gate (§3's pre-push line and N/M budget are
+   rejected: a ratio gate is a freeze in disguise).
+3. **Kept** from the freeze file, where it already lives: §3 "`known_benign` is
+   not available for a blindness subject" (`feedback_detector_blind_is_a_finding`,
+   review_provenance) and the END test (`feedback_domain_clarity_two_offerings`).
+4. **Owed, in order of operator-hours saved:** tracer judgement (8.3); NUL
+   quarantine (8.4); `inherited_app_drift` cut (8.2); persistent_issues
+   archive pass (8.5); the p2s `delivered` rename (§7, still open — not decided
+   here, scope was the freeze).

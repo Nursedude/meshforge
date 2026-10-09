@@ -280,9 +280,9 @@ class FederationPeerSource(Source):
                     # from a healthy fleet (hfm #9). `posture_expected_absence`
                     # is informational and pages nothing.
                     #
-                    # Freeze check (harness_restraint.md, active to 2026-10-09):
+                    # Footprint check (feedback_my_footprint_is_the_constraint):
                     # this is NOT a new signal class or detector. No rule is
-                    # seeded for this kind and none may be during the freeze —
+                    # seeded for this kind and none should be —
                     # it exists so the suppression above is VISIBLE rather than
                     # silent. The change it belongs to REMOVES pages by
                     # narrowing a detector that false-fires, which the freeze

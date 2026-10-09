@@ -9,7 +9,8 @@ domain would notice — nope". The leg sat dead 08:36→14:19 and nothing paged:
 no probe read bridge-leg state at all. (The gateway half — the leg never even
 noticed its radio was gone — is fixed in ``gateway.mesh_bridge``.) Added
 during the 2026-09-09 harness freeze BECAUSE a live drill proved the blind
-spot; see ``.claude/rules/harness_restraint.md`` §1.
+spot (the freeze was reviewed and deleted 2026-10-09; this probe was one of
+the two it could not stop, and that was counted in its favour).
 
 Evidence is the gateway's OWN periodic self-report (``bridge_cli`` prints
 ``<PRESET>: connected|disconnected`` per leg every ~30 s), read from the

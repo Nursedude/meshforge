@@ -199,9 +199,9 @@ def make_claim_id(ts: float, claim_text: str, head_full: str) -> str:
 #: end from a Stop-hook transcript, every production row folded to "unknown"
 #: without a log, and no reader anywhere rendered the tally. A writer with no
 #: reader beside a metric with no producer (honest_failure_modes #4), added
-#: inside the harness freeze. The measurement it wanted is the commit split
-#: harness_restraint.md re-runs on 2026-10-09 (git paths, not claim text);
-#: that is the honest instrument for the question. Old rows carrying
+#: inside the 2026-09 harness freeze. The measurement it wanted is the commit
+#: split `scripts/harness_share.py` runs (git paths, not claim text); that is
+#: the honest instrument for the question. Old rows carrying
 #: ``"end": "unknown"`` are tolerated by ``fold`` as any unknown key is.
 
 

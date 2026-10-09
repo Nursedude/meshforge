@@ -31,8 +31,8 @@ DECLARATIONS AGE, THEY DO NOT EXPIRE
 Unlike fleet_posture's dormancy (time-boxed, MANDATORY ``until``), a platform
 deviation is an architectural decision, not a temporary state — forcing an
 expiry would manufacture churn. But an indefinite declaration is exactly how a
-call becomes policy and the policy becomes its own warrant (the harness_restraint
-lesson). So a declaration carries ``reviewed``, and goes STALE after
+call becomes policy and the policy becomes its own warrant (the 2026-09-09
+freeze-review lesson: `known_benign` 3-for-3 wrong on blindness subjects). So a declaration carries ``reviewed``, and goes STALE after
 ``REVIEW_TTL_S`` — the deviation stays inert, the DECISION becomes visibly old.
 
 Files:

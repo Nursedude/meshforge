@@ -43,9 +43,9 @@ Usage (dry-run is the DEFAULT; you must opt IN to action with --apply):
     scripts/fleet_power.py down   <box>... --until +4h --reason "UPS install" --apply
     scripts/fleet_power.py resume [<box>...] --wait 30m --apply
 
-Freeze note: `.claude/rules/harness_restraint.md` bars new probes/gates/
-detectors until 2026-10-09. This is an OPERATOR TOOL whose stated END is the
-product -- the fleet surviving a power event -- not the harness. Exempt.
+END note: this is an OPERATOR TOOL whose stated END is the product -- the
+fleet surviving a power event -- not the harness. (Written under the 2026-09
+harness freeze, deleted 2026-10-09 after review; the END test outlived it.)
 """
 from __future__ import annotations
 

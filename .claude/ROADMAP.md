@@ -207,8 +207,12 @@ stranger: README-only install, no fleet registry, re-imaged before each rc.
 
 ## Rules that shape the roadmap
 
-- The harness freeze (until 2026-10-09) **never blocks a serious bug or a
-  fundamental architecture change** (`.claude/rules/harness_restraint.md`).
+- **No harness freeze** (the 09-09→10-09 freeze ended on its date; measured
+  10-09: it never bound — volume doubled under it and every in-freeze
+  instrument was exempt-and-right). Judge every change by its END; harness
+  work is welcome when it fixes a detector that is loud, blind, or aimed at
+  the wrong quantity. Measure the split with `scripts/harness_share.py`.
+  Record: `.claude/plans/post_freeze_harness_budget_2026_10_09.md` §8.
 - RNS-substrate changes land in MeshForge first, then port to MeshAnchor
   (`scripts/parity_check.py`).
 - Batch commits: one docs commit per session, code fixes grouped by logical
