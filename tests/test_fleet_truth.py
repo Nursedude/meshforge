@@ -1226,6 +1226,128 @@ class TestRnsIngressCell:
         assert "bridged anyway" in c["reason"]
         assert c["source"] == "ssh_spool.rns_ingress_ledger"
 
+    def test_fate_comes_from_the_entry_not_todays_policy(self):
+        """moc3 2026-10-09: two LISTED identities arrived signature-unverified
+        under observe on 10-08 (refused 0), the box switched to enforce, and
+        the cell read "2 unlisted RNS sender(s) … REFUSED (enforce)" — wrong
+        on both counts. Nothing was refused and neither sender was unlisted.
+        The ledger entry records what HAPPENED; the reader must say that."""
+        b = self._box(slo=self._slo(
+            policy="enforce", listed=16, updated_at=self.NOW - 5,
+            unlisted_recent=[
+                {"hash": "627f" + "f" * 28, "label": "MA bridge", "seen": 2,
+                 "refused": 0, "unverified": 2, "last_seen": self.NOW - 80000},
+                {"hash": "3dfb" + "f" * 28, "label": "moc gw", "seen": 1,
+                 "refused": 0, "unverified": 1, "last_seen": self.NOW - 82000}]))
+        c = b["subsystems"]["rns_ingress"]
+        assert c["state"] == ft.FAILED  # a claim we could not verify stays loud
+        assert "REFUSED" not in c["reason"]
+        assert "unlisted" not in c["reason"]
+        assert "listed identit" in c["reason"] and "unverified" in c["reason"]
+        assert "0 refused" in c["reason"] and "3 bridged while policy was not enforce" in c["reason"]
+
+    def test_mixed_entries_count_each_kind_and_fate(self):
+        b = self._box(slo=self._slo(
+            policy="enforce", listed=16, updated_at=self.NOW - 5,
+            unlisted_recent=[
+                {"hash": "abcd" + "0" * 28, "label": "stranger", "seen": 3,
+                 "refused": 3, "last_seen": self.NOW - 10},
+                {"hash": "3dfb" + "f" * 28, "label": "moc gw", "seen": 1,
+                 "refused": 0, "unverified": 1, "last_seen": self.NOW - 82000}]))
+        r = b["subsystems"]["rns_ingress"]["reason"]
+        assert "1 unlisted RNS sender(s)" in r and "1 listed identit" in r
+        assert "3 REFUSED" in r and "1 bridged while policy was not enforce" in r
+
+    def test_hostile_counters_never_raise_and_never_read_as_a_claim(self):
+        """Non-author review 2026-10-09: int(NaN) raised and the collector
+        blanked the WHOLE fleet document; a string/negative `seen` turned a
+        stranger into a listed claim. Unknown is never 0 and never quieter."""
+        for bad in ({"seen": float("nan"), "unverified": 1},
+                    {"seen": float("inf"), "refused": float("nan")},
+                    {"seen": "5", "unverified": 1},
+                    {"seen": -3, "unverified": 1},
+                    {"seen": True, "unverified": True}):
+            entry = dict({"hash": "abcd" + "0" * 28, "label": "x",
+                          "last_seen": self.NOW - 5}, **bad)
+            b = self._box(slo=self._slo(policy="enforce", listed=2,
+                                        updated_at=self.NOW - 5,
+                                        unlisted_recent=[entry]))
+            c = b["subsystems"]["rns_ingress"]
+            assert c["state"] == ft.FAILED, bad
+            assert "1 unlisted RNS sender(s)" in c["reason"], bad
+            assert "unreadable" in c["reason"], bad
+
+    def test_nan_through_the_raw_spool_leg_does_not_raise(self):
+        raw = {"schema": "rns_ingress_ledger/v1", "policy": "enforce", "listed": 9,
+               "updated_at": self.NOW - 30,
+               "senders": {"abcd" + "0" * 28: {"last_seen": self.NOW - 50,
+                                               "seen": float("nan"), "refused": 1}}}
+        b = self._box(status={"app": {"name": "meshforge"}},
+                      resolution_method="ssh_spool", spool_ingress=raw)
+        assert b["subsystems"]["rns_ingress"]["state"] == ft.FAILED
+
+    def test_a_non_dict_entry_is_dropped_with_a_witness_not_a_crash(self):
+        b = self._box(slo=self._slo(policy="enforce", listed=2,
+                                    updated_at=self.NOW - 5,
+                                    unlisted_recent=["notadict", None]))
+        c = b["subsystems"]["rns_ingress"]
+        assert c["state"] == ft.FAILED and "malformed" in c["reason"]
+
+    def test_bridged_is_per_kind_and_says_not_enforce_not_before(self):
+        """Fate per KIND: under observe a refused stranger + a bridged claim
+        must not tell you to 'add to the list' (the claim is listed), and the
+        bridged claim is the forgery-shaped case. Counts are lifetime."""
+        b = self._box(slo=self._slo(
+            policy="observe", listed=16, updated_at=self.NOW - 5,
+            unlisted_recent=[
+                {"hash": "abcd" + "0" * 28, "label": "stranger", "seen": 3,
+                 "refused": 3, "last_seen": self.NOW - 10},
+                {"hash": "3dfb" + "f" * 28, "label": "moc gw", "seen": 1,
+                 "refused": 0, "unverified": 1, "last_seen": self.NOW - 20}]))
+        r = b["subsystems"]["rns_ingress"]["reason"]
+        assert "add to the list" not in r
+        assert "lifetime" in r
+        assert "unverified claim(s) bridged" in r and "enforce" in r
+
+    def test_review2_hostile_stamps_and_ledgers_never_raise_or_lie(self):
+        """Second non-author review 2026-10-09: an overflowing stamp raised
+        (blanking the fleet document); an unprojectable ledger read "no
+        gateway on this box" — absent, a false claim about a box we HEARD."""
+        big = 10 ** 400
+        b = self._box(slo=self._slo(policy="enforce", listed=2, updated_at=big,
+                                    unlisted_recent=[]))
+        assert b["subsystems"]["rns_ingress"]["state"] == ft.DARK
+        raw = {"schema": "rns_ingress_ledger/v1", "policy": "enforce", "listed": 9,
+               "updated_at": self.NOW - 30,
+               "senders": {"abcd" + "0" * 28: {"last_seen": self.NOW - 50,
+                                               "seen": 1, "refused": float("nan")}}}
+        for clock in (None, {"peer_now": big, "fetched_at": self.NOW}):
+            b = self._box(status={"app": {"name": "meshforge"}}, spool_clock=clock,
+                          resolution_method="ssh_spool", spool_ingress=raw)
+            c = b["subsystems"]["rns_ingress"]
+            assert c.get("absent") is not True and c["state"] == ft.FAILED, c
+
+    def test_review2_counters_that_break_the_writer_invariants_are_unreadable(self):
+        def reason(*entries):
+            rs = [dict({"hash": "ab" + str(i) * 30, "label": f"e{i}",
+                        "last_seen": self.NOW - 5}, **e) for i, e in enumerate(entries)]
+            b = self._box(slo=self._slo(policy="enforce", listed=2,
+                                        updated_at=self.NOW - 5, unlisted_recent=rs))
+            return b["subsystems"]["rns_ingress"]["reason"]
+        r = reason({"seen": 3, "refused": 3}, {"seen": float("nan"), "refused": 0})
+        assert "the 1 readable" in r and "unreadable" in r
+        assert "unreadable" in reason({"seen": 2, "refused": 0, "unverified": "x"})
+        assert "counts unreadable" in reason({"seen": 1, "refused": 5})
+        assert "counts unreadable" in reason({"refused": 0})          # seen missing
+        assert "listed identit" not in reason({"seen": 1.9, "refused": 0,
+                                               "unverified": 1.2})
+
+    def test_review2_wrong_type_entry_list_is_never_healthy(self):
+        for bad in ({}, False, 0, "x"):
+            b = self._box(slo=self._slo(policy="enforce", listed=2,
+                                        updated_at=self.NOW - 5, unlisted_recent=bad))
+            assert b["subsystems"]["rns_ingress"]["state"] != ft.HEALTHY, bad
+
     def test_old_unlisted_sender_ages_out_of_the_window(self):
         raw = {"schema": "rns_ingress_ledger/v1", "policy": "enforce", "listed": 9,
                "updated_at": self.NOW - 30,

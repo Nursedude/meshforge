@@ -293,7 +293,7 @@ def project_ledger_doc(doc: Any, *, now: float,
             ts = float(v.get("last_seen"))
             if ts != ts:  # NaN
                 raise ValueError("nan")
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             # An UNPARSEABLE last_seen is unknown, and unknown is not old:
             # the sender stays in the window rather than silently ageing
             # out into "healthy" (non-author review 2026-10-07, hfm #1).
@@ -316,8 +316,8 @@ def project_ledger_doc(doc: Any, *, now: float,
             for k, v in recent],
         "use": _project_use(doc if isinstance(doc, dict) else {}, now),
         "unlisted_total": len([v for v in senders.values() if isinstance(v, dict)]),
-        "refused_total": sum(int(v.get("refused", 0) or 0) for v in senders.values()
-                             if isinstance(v, dict)),
+        "refused_total": sum(v["refused"] for v in senders.values()
+                             if isinstance(v, dict) and type(v.get("refused")) is int),
     }
 
 

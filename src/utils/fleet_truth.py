@@ -1071,6 +1071,17 @@ RNS_INGRESS_WINDOW_S = 86400.0
 RNS_INGRESS_STALE_S = 3600.0
 
 
+def _finite(v: Any) -> Optional[float]:
+    """A finite float from remote JSON, else None (bool, NaN, inf, 10**400)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    try:
+        f = float(v)
+    except OverflowError:
+        return None
+    return f if f == f and f not in (float("inf"), float("-inf")) else None
+
+
 def _rns_ingress_cell(slo: Optional[Dict[str, Any]],
                       spool_ingress: Optional[Dict[str, Any]], *,
                       now: float,
@@ -1110,11 +1121,10 @@ def _rns_ingress_cell(slo: Optional[Dict[str, Any]],
         # peer's notion of now (fetch pair carried by the collector); a skew
         # past the cron judge's threshold makes the ages unjudgeable.
         eff_now = now
-        pn = (spool_clock or {}).get("peer_now") if isinstance(spool_clock, dict) else None
-        fa = (spool_clock or {}).get("fetched_at") if isinstance(spool_clock, dict) else None
-        if (isinstance(pn, (int, float)) and not isinstance(pn, bool)
-                and isinstance(fa, (int, float)) and not isinstance(fa, bool)):
-            skew = float(pn) - float(fa)
+        sc = spool_clock if isinstance(spool_clock, dict) else {}
+        pn, fa = _finite(sc.get("peer_now")), _finite(sc.get("fetched_at"))
+        if pn is not None and fa is not None:
+            skew = pn - fa
             try:
                 from utils.fleet_truth_collector import PEER_CLOCK_SKEW_DARK_S as _skew_cap
             except Exception:  # noqa: BLE001
@@ -1129,8 +1139,10 @@ def _rns_ingress_cell(slo: Optional[Dict[str, Any]],
             from gateway.rns_ingress_policy import project_ledger_doc
             proj = project_ledger_doc(spool_ingress, now=eff_now,
                                       window_s=RNS_INGRESS_WINDOW_S)
-        except Exception:  # noqa: BLE001 — cannot project = cannot judge
-            proj = None
+        except Exception as e:  # noqa: BLE001 — a ledger we HAVE but cannot
+            # read is not "no gateway here" (non-author review 2026-10-09).
+            return cell(DARK, source=src, reason=f"ingress ledger present but "
+                        f"unprojectable ({type(e).__name__}) — read it on the gateway")
     if not isinstance(proj, dict):
         return cell(DARK, absent=True, source=src or "/fleet/slo.rns_ingress",
                     reason="no RNS ingress ledger: no gateway on this box, "
@@ -1138,7 +1150,7 @@ def _rns_ingress_cell(slo: Optional[Dict[str, Any]],
                            "declared) and has never stamped")
     policy = proj.get("policy")
     updated = proj.get("updated_at")
-    age = (eff_now - float(updated)) if isinstance(updated, (int, float)) else None
+    age = (eff_now - _finite(updated)) if _finite(updated) is not None else None
     if policy == "open":
         return cell(DARK, source=src, age_s=age, observed_at=updated,
                     reason="RNS→RF ingress OPEN — no allowlist declared on "
@@ -1158,18 +1170,83 @@ def _rns_ingress_cell(slo: Optional[Dict[str, Any]],
                            f"{RNS_INGRESS_STALE_S / 3600:.0f}h) — the gateway "
                            f"that enforced it is not re-stamping; nothing is "
                            f"enforcing now")
-    recent = proj.get("unlisted_recent") or []
+    raw_recent = proj.get("unlisted_recent")
+    raw_recent = [] if raw_recent is None or raw_recent == [] else raw_recent
+    if not isinstance(raw_recent, list):
+        raw_recent = [raw_recent]
+    # Remote input: a non-dict entry is dropped WITH a witness, never a raise.
+    recent = [r for r in raw_recent if isinstance(r, dict)]
+    malformed = len(raw_recent) - len(recent)
     listed = proj.get("listed")
     hours = int(RNS_INGRESS_WINDOW_S // 3600)
+    if malformed and not recent:
+        return cell(FAILED, source=src, age_s=age, observed_at=updated,
+                    reason=f"tripwire unjudgeable: the ingress ledger carries "
+                           f"{malformed} malformed entr(ies) in {hours}h — "
+                           f"read it on the gateway")
     if recent:
         labels = ", ".join(str(r.get("label") or str(r.get("hash", ""))[:4])
                            for r in recent[:6])
         more = f" (+{len(recent) - 6} more)" if len(recent) > 6 else ""
-        fate = ("REFUSED (enforce)" if policy == "enforce"
-                else "bridged anyway (observe) — add to the list or enforce")
+
+        def _n(r: Dict[str, Any], k: str) -> Optional[int]:
+            """A counter, or None when unreadable — never 0, which is inside
+            the healthy domain. Only `unverified` may be absent (the writer
+            omits it until first use)."""
+            if k not in r and k == "unverified":
+                return 0
+            f = _finite(r.get(k))
+            return int(f) if f is not None and f >= 0 and f == int(f) else None
+
+        # A CLAIM: every event was a LISTED identity arriving with its
+        # signature unverified. Anything not provably that is a stranger —
+        # the louder class (moc3 2026-10-09 read "2 unlisted … REFUSED" for
+        # two listed peers the gateway had bridged, refused=0).
+        def _is_claim(r: Dict[str, Any]) -> bool:
+            s, u = _n(r, "seen"), _n(r, "unverified")
+            return s is not None and u is not None and s >= 1 and u == s
+
+        claims = [r for r in recent if _is_claim(r)]
+        strangers = [r for r in recent if not _is_claim(r)]
+        unreadable = sum(1 for r in recent if None in
+                         (_n(r, "seen"), _n(r, "refused"), _n(r, "unverified")))
+
+        # Enforce refuses EVERY unlisted/unverified event (refused is stamped
+        # per event), so a bridged one happened while policy was not enforce.
+        def _seg(rs: List[Dict[str, Any]], head: str, open_words: str) -> str:
+            ok = [r for r in rs if _n(r, "seen") is not None and _n(r, "refused")
+                  is not None and _n(r, "refused") <= _n(r, "seen")]
+            if not ok:
+                return f"{head}: counts unreadable"
+            if len(ok) < len(rs):
+                head += f" (counts below are the {len(ok)} readable)"
+            ref = sum(_n(r, "refused") or 0 for r in ok)
+            br = sum(max((_n(r, "seen") or 0) - (_n(r, "refused") or 0), 0) for r in ok)
+            seg = f"{head}: " + (f"{ref} REFUSED" if ref else "0 refused")
+            if not br:
+                return seg + ", 0 bridged"
+            return seg + (f", {br} bridged while policy was not enforce"
+                          if policy == "enforce" else f", {br} {open_words}")
+
+        parts = []
+        if strangers:
+            parts.append(_seg(strangers, f"{len(strangers)} unlisted RNS sender(s)",
+                              "bridged anyway — add to the list or enforce"))
+        if claims:
+            parts.append(_seg(claims, f"{len(claims)} listed identit(ies) arriving "
+                                      f"signature-unverified",
+                              "unverified claim(s) bridged — the forgery-shaped "
+                              "case; enforce refuses them"))
+        notes = []
+        if unreadable:
+            notes.append(f"{unreadable} entr(ies) with unreadable counters")
+        if malformed:
+            notes.append(f"{malformed} malformed entr(ies) dropped")
+        note = f"; {', '.join(notes)}" if notes else ""
         return cell(FAILED, source=src, age_s=age, observed_at=updated,
-                    reason=f"tripwire: {len(recent)} unlisted RNS sender(s) "
-                           f"in {hours}h: {labels}{more} — {fate}")
+                    reason=f"tripwire in {hours}h: {labels}{more} — "
+                           f"{'; '.join(parts)}{note} (lifetime counts, "
+                           f"now policy={policy or '?'})")
     return cell(HEALTHY, source=src, age_s=age, observed_at=updated,
                 reason=f"allowlist of {listed if listed is not None else '?'} "
                        f"identit(ies), policy={policy or '?'}, 0 unlisted "
