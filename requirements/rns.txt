@@ -66,10 +66,15 @@
 #                     binds @rns and a refusal is retryable in-process; MF/MA
 #                     open_reticulum constructs join-only once it decided to
 #                     join rnsd (#69 race, R10). lxmf 1.0.1+mf.5 = pin follow.
+# lxmf 1.0.1+mf.6 (2026-10-09): a reply to a RECONNECTED peer (same identity,
+#                     new process) goes now — closed links are forgotten, a
+#                     backchannel arrival kicks outbound. Was 2–10 s per first
+#                     reply (dead cached link tried first, then timers); 18 ms
+#                     after. Bookkeeping only, no wire change. lxmf FORK.md.
 # MF-FORK-PIN rns 1.3.8+mf.4
-# MF-FORK-PIN lxmf 1.0.1+mf.5
+# MF-FORK-PIN lxmf 1.0.1+mf.6
 rns @ git+https://github.com/Nursedude/reticulum.git@c4f74c387d1a722b55a22063ccd794b80c67a177
-lxmf @ git+https://github.com/Nursedude/lxmf.git@06c00097f85ef060deed1d7968dd219c3f36e945
+lxmf @ git+https://github.com/Nursedude/lxmf.git@22e0a7ce042ca36c3938c7789932c14921895730
 
 # Cryptography / PyOpenSSL version alignment — BOTH bounds are load-bearing,
 # and the two packages MOVE TOGETHER. RNS's own constraint is only
