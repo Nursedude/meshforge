@@ -249,13 +249,36 @@
       "match": {
         "kind": "signal_class",
         "class": "user_timer_unit_failing",
-        "subject_glob": "*"
+        "subject_glob": "*",
+        "subject_exclude_globs": [
+          "meshforge-sdr.service"
+        ]
       },
       "action": {
         "kind": "propose_escalation"
       },
       "cooldown_s": 1800,
-      "annotation": "2026-07-19: an enabled USER timer's job is failing on EVERY firing (repeated failures, newest fresh, no success since). Invisible to the other user-unit legs -- a oneshot is inactive between firings by design (user_unit_inactive can't judge it) and it never crashloops (nomadnet_crashloop can't either). Origin: kiai's meshforge-tracer.timer exited 2 every 10 min for a WEEK unnoticed because its lab_peers file was missing. Check: systemctl --user status <unit>; journalctl --user -u <unit> -n 50. Usual cause is a missing input (config/peers file) -- the job then fails every cadence forever without paging anyone. Side-effect-free escalation; NO ntfy page."
+      "annotation": "2026-07-19: an enabled USER timer's job is failing on EVERY firing (repeated failures, newest fresh, no success since). Invisible to the other user-unit legs -- a oneshot is inactive between firings by design (user_unit_inactive can't judge it) and it never crashloops (nomadnet_crashloop can't either). Origin: kiai's meshforge-tracer.timer exited 2 every 10 min for a WEEK unnoticed because its lab_peers file was missing. Check: systemctl --user status <unit>; journalctl --user -u <unit> -n 50. Usual cause is a missing input (config/peers file) -- the job then fails every cadence forever without paging anyone. Side-effect-free escalation; NO ntfy page. 2026-10-08: meshforge-sdr.service is EXCLUDED here -- it pages via sdr_receiver_wedged_any."
+    },
+    {
+      "id": "sdr_receiver_wedged_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "user_timer_unit_failing",
+        "subject_glob": "meshforge-sdr.service"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[SDR] receiver wedged",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "satellite_antenna",
+          "warning"
+        ]
+      },
+      "cooldown_s": 21600,
+      "annotation": "2026-10-08 (operator: 'yes page the SDR wedge'): the SDR capture exits 1 when the receiver yields no samples (cd7f929c), so a wedged dongle reads as meshforge-sdr.service failing every firing. moc1's RTL-SDR wedged 10-07 20:11 and again 10-08 15:33 with NO USB event; 7.5 h unpaged under the catch-all escalation. Cure that worked twice: sudo usbreset <bus>/<dev> (lsusb | grep 0bda:2838); a sysfs re-auth did NOT. Suspected RF cross-over into the USB lead (short cable + ferrite planned). Check: systemctl --user status meshforge-sdr.service. Gap: the probe collapses the subject to 'N units' when two timers fail at once -- that case only escalates. 6 h cooldown: a wedge does not self-heal, one page per shift is enough."
     },
     {
       "id": "dep_version_drift_any",
