@@ -24,8 +24,8 @@ from typing import List, Optional, Tuple
 from handler_protocol import BaseHandler
 from utils.paths import get_real_user_home
 from utils.safe_import import safe_import
-from utils.service_check import (check_service, check_port, get_rns_shared_instance_info,
-                                 is_service_unit_installed)
+from utils.service_check import (ServiceState, check_service, check_port, get_rns_shared_instance_info,
+                                 service_unit_presence)
 
 logger = logging.getLogger(__name__)
 
@@ -324,9 +324,17 @@ class GatewayPreflightHandler(BaseHandler):
     def _gateway_running() -> Optional[bool]:
         """True/False from the service manager; None when it could not be asked."""
         try:
-            if not is_service_unit_installed("meshforge-gateway"):
+            # tri-state: a failed unit check is UNKNOWN, not "not running"
+            # (review 2026-10-08 — the bool reads errors as absent)
+            presence = service_unit_presence("meshforge-gateway")
+            if presence == "absent":
                 return False
-            return bool(check_service("meshforge-gateway").available)
+            if presence == "unknown":
+                return None
+            st = check_service("meshforge-gateway")
+            if getattr(st, "state", None) == ServiceState.UNKNOWN:
+                return None     # check_service could not ask (timeout/no systemctl)
+            return bool(st.available)
         except Exception as e:  # a failed check is UNKNOWN, never "not running"
             logger.debug("gateway running check failed: %s", e)
             return None

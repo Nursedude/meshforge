@@ -90,3 +90,25 @@ def test_listener_line_tri_state(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", fake({"state": "connected", "connected_since":
                         "2026-09-25T11:54:45", "messages_received": 0, "last_message_time": None}))
     assert hm._listener_line() == "connected since 2026-09-25 11:54, 0 received (none since connecting)"
+
+
+# Non-author review 2026-10-08 (VERIFIED with TZ=Pacific/Honolulu): rows carry
+# SQLite CURRENT_TIMESTAMP — UTC with no zone — compared against LOCAL now(),
+# so a 2 h old row read "0.0 h ago" and a future stamp (clock step on an
+# RTC-less Pi) read "0.0 h ago" too.
+
+def test_age_line_reads_sqlite_utc_as_utc():
+    from datetime import datetime, timedelta, timezone
+    two_h = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+    assert "(2.0 h ago)" in hm._age_line(two_h)
+
+
+def test_a_future_stamp_says_clock_skew_not_fresh():
+    from datetime import datetime, timedelta, timezone
+    ahead = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S")
+    out = hm._age_line(ahead)
+    assert "in the future" in out and "0.0 h ago" not in out
+
+
+def test_an_aware_stamp_does_not_raise():
+    assert "h ago" in hm._age_line("2020-01-01T00:00:00+00:00") or "d ago" in hm._age_line("2020-01-01T00:00:00+00:00")

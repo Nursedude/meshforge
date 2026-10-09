@@ -408,15 +408,23 @@ _RECORDING_NOTE = ("Recorded by the map daemon's MQTT listener: only channels wi
 
 
 def _age_line(stamp) -> str:
-    """'<timestamp> (N d ago)' — a history's age is part of what it says."""
+    """'<timestamp> (N d ago)' — a history's age is part of what it says.
+
+    Rows carry SQLite ``CURRENT_TIMESTAMP``: UTC with NO zone. Compared with
+    local ``now()`` the age was off by the UTC offset (HST: a 2 h old row read
+    "0.0 h ago"), and a future stamp read fresh (non-author review 2026-10-08)."""
     if not stamp:
         return "none"
-    from datetime import datetime
+    from datetime import datetime, timezone
     try:
-        then = datetime.fromisoformat(str(stamp).replace("Z", ""))
+        then = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
     except ValueError:
         return f"{stamp} (age unknown)"
-    secs = (datetime.now() - then).total_seconds()
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=timezone.utc)
+    secs = (datetime.now(timezone.utc) - then).total_seconds()
+    if secs < -60:
+        return f"{stamp} (in the future by {-secs / 3600:.1f} h — clock skew; age unknown)"
     if secs >= 86400:
         return f"{stamp} ({secs / 86400:.0f} d ago)"
     return f"{stamp} ({max(secs, 0) / 3600:.1f} h ago)"

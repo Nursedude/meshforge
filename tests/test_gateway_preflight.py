@@ -275,3 +275,23 @@ def test_unknown_gateway_state_is_not_ok(monkeypatch, tmp_path):
     from handlers import gateway_preflight as gp
     status, msg, _ = _identity_result(monkeypatch, tmp_path, None)
     assert status == gp._WARN and "UNKNOWN" in msg
+
+
+def test_gateway_running_is_unknown_when_the_unit_check_fails(monkeypatch):
+    """review 2026-10-08: a failed unit check read as "not running"."""
+    import handlers.gateway_preflight as gp
+    monkeypatch.setattr(gp, "service_unit_presence", lambda *a, **k: "unknown")
+    cls = next(v for v in vars(gp).values() if isinstance(v, type) and hasattr(v, "_gateway_running"))
+    assert cls._gateway_running() is None
+    monkeypatch.setattr(gp, "service_unit_presence", lambda *a, **k: "absent")
+    assert cls._gateway_running() is False
+
+
+def test_gateway_running_is_unknown_when_check_service_could_not_ask(monkeypatch):
+    import handlers.gateway_preflight as gp
+    from types import SimpleNamespace
+    monkeypatch.setattr(gp, "service_unit_presence", lambda *a, **k: "installed")
+    monkeypatch.setattr(gp, "check_service",
+                        lambda *a, **k: SimpleNamespace(available=False, state=gp.ServiceState.UNKNOWN))
+    cls = next(v for v in vars(gp).values() if isinstance(v, type) and hasattr(v, "_gateway_running"))
+    assert cls._gateway_running() is None
