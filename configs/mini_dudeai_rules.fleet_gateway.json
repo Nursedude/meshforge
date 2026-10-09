@@ -115,6 +115,7 @@
       "match": {
         "kind": "signal_class",
         "class": "tracer_peer_unreachable",
+        "severity": "degraded",
         "subject_glob": "*"
       },
       "action": {
