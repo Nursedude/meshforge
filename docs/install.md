@@ -216,19 +216,6 @@ The installer auto-detects connected USB devices.
 | **MeshStick** | Native USB | Official Meshtastic device |
 | **FTDI-based modules** | FT232 | Generic LoRa boards |
 
-### uConsole AIO V2 (Field Unit)
-
-The [HackerGadgets uConsole AIO V2](https://hackergadgets.com/products/uconsole-aio-v2) is a portable all-in-one mesh terminal. MeshForge auto-detects it and generates configs. Hardware arrives Q2 2026.
-
-| Component | Spec |
-|-----------|------|
-| **Compute** | CM5 8GB |
-| **LoRa** | SX1262 on SPI, 860-960MHz, 22dBm |
-| **RTL-SDR** | RTL2832U + R860, 100KHz-1.74GHz |
-| **GPS/GNSS** | Multi-constellation (GPS/BDS/GLONASS) |
-| **RTC** | PCF85063A with battery backup |
-| **Ethernet** | RJ45 Gigabit |
-
 ---
 
 ## Upgrading MeshForge

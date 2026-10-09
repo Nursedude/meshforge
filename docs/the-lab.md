@@ -86,7 +86,6 @@ Research into tactical messaging standards and the ATAK ecosystem:
 
 - MQTT zero-interference bridging design (the foundation of v0.5.4's gateway)
 - NGINX reliability patterns applied to mesh networking APIs
-- uConsole AIO V2 portable NOC design for field operations
 
 Full research library: [`.claude/research/`](../.claude/research/README.md)
 

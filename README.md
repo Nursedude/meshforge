@@ -203,8 +203,7 @@ research foundation.
 | Meshtastic Docs | [meshtastic.org/docs](https://meshtastic.org/docs/) | Primary radio network |
 | Reticulum Network | [reticulum.network](https://reticulum.network/) | Bridge target (encrypted transport) |
 | AREDN Mesh | [arednmesh.org](https://www.arednmesh.org/) | Monitoring integration |
-| RTL-SDR | [rtl-sdr.com](https://www.rtl-sdr.com/) | Signal-intercept groundwork in-tree, not wired to the TUI — unscheduled |
-| uConsole AIO V2 | [hackergadgets.com](https://hackergadgets.com/products/uconsole-aio-v2) | Field hardware — under evaluation, no ship date |
+| RTL-SDR / Airspy | [rtl-sdr.com](https://www.rtl-sdr.com/) | SDR interference watch live on two fleet boxes (channel busy %, foreign carriers, per-box freshness in the fleet watchers pane); signal-intercept decoders still unscheduled |
 | MeshCore | [meshcore.co](https://meshcore.co/) | Optional gateway handler on MeshForge; primary radio on [MeshAnchor](https://github.com/Nursedude/meshanchor) |
 
 ---

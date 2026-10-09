@@ -35,7 +35,6 @@ graph TB
         SPI[SPI HAT<br>Meshtoad, MeshAdv]
         USB[USB Radio<br>Heltec, T-Beam, RAK]
         SDR[RTL-SDR<br>Spectrum analysis]
-        UCONSOLE[uConsole AIO V2<br>LoRa+SDR+GPS all-in-one]
     end
 
     TUI --> LAUNCHER
@@ -58,8 +57,6 @@ graph TB
 
     MESHTASTICD --> SPI
     MESHTASTICD --> USB
-    MESHTASTICD --> UCONSOLE
-    SDR --> UCONSOLE
 
     style TUI fill:#2d5016,color:#fff
     style BROWSER fill:#2d5016,color:#fff
@@ -67,7 +64,6 @@ graph TB
     style GATEWAY fill:#1a3a5c,color:#fff
     style TRAFFIC fill:#3a1a5c,color:#fff
     style AI fill:#5c1a3a,color:#fff
-    style UCONSOLE fill:#5c4a1a,color:#fff
 ```
 
 ### Data Flow: MQTT Bridge (v0.5.4+)
@@ -208,7 +204,6 @@ src/
 │   ├── mqtt_decryptor.py   # AES-256-CTR packet decryption bridge
 │   ├── knowledge_base.py   # Core knowledge base + 20 topics
 │   ├── prometheus_exporter.py # Prometheus/Grafana metrics
-│   ├── uconsole.py        # uConsole AIO V2 hardware profile
 │   ├── aredn.py           # AREDN mesh client
 │   ├── paths.py           # Sudo-safe path resolution
 │   ├── watchdog_runner.py # Watchdog: one probe per field-learned failure class

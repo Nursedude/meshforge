@@ -64,7 +64,6 @@ Code works in testing but hasn't been validated in real-world deployments with a
 |----------|-------------|---------|
 | **AREDN** | Node discovery, link quality, service enumeration — live at an AREDN site; Meshtastic↔AREDN messaging via Raven bridge (pilot, field-proven 2026-06-11) | Raven on the production AREDN router itself (Phase 2) pending |
 | **Grafana Dashboards** | Pre-built JSON dashboards for Prometheus | Needs Grafana + Prometheus setup |
-| **uConsole AIO V2** | Hardware detection, GPIO power control, auto-config | Hardware under evaluation, **no ship date** (was "Q2 2026"; that quarter passed). The field-hardware role may instead be served by the break-away field eComm kit — see the field-kit arc. |
 
 ### MeshAnchor (Live — [Nursedude/meshanchor](https://github.com/Nursedude/meshanchor))
 
@@ -154,8 +153,8 @@ MeshForge retains MeshCore as an optional gateway handler.
 | Feature | Target | Status |
 |---------|--------|--------|
 | Historical playback (Live Map) | v0.6.x | Planned |
-| SDR signal intercept (RTL-SDR) | unscheduled | Groundwork present in-tree (`utils/intercept.py`: `rtl_433`, `rtl_fm`+`multimon-ng`, `dump1090`; `device_scanner.rtl_sdr_available`), **not wired to the TUI and not field-tested**. Originally scoped to the uConsole; the dependency was incidental — an RTL-SDR dongle runs on any Pi. Deliberately unscheduled until a driving requirement exists. |
-| Hardware support matrix | v0.7.0 | RAK, Heltec (uConsole contingent on it shipping) |
+| SDR signal intercept (RTL-SDR) | unscheduled | Groundwork present in-tree (`utils/intercept.py`: `rtl_433`, `rtl_fm`+`multimon-ng`, `dump1090`; `device_scanner.rtl_sdr_available`), **not wired to the TUI and not field-tested**. Separate from the SDR **interference watch** (`scripts/sdr_interference.py`), which is live: Airspy + RTL-SDR, fleet LoRa windows every 5 min, a wedged receiver pages. Deliberately unscheduled until a driving requirement exists. |
+| Hardware support matrix | v0.7.0 | RAK, Heltec |
 | GPS tracking + GPX export | v0.7.0 | Planned |
 | MeshForge ↔ MeshAnchor gateway | v0.8.0 | Inter-app bridging protocol |
 | Firmware flashing | v1.0.0 | High risk — needs extensive testing |
