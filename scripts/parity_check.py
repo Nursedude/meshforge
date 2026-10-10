@@ -91,6 +91,12 @@ BYTE_IDENTICAL = (
     # grow three implementations; a per-repo copy re-opens that. MeshForge is
     # the lead repo. See the module docstring for the any-target lesson.
     "src/utils/user_units.py",
+    # The rnsd plugin manifest (2026-10-10, R5): which interfaces/<type>.py
+    # rnsd will exec on its next start, by rnsd's own enable rules. Both repos
+    # judge the SAME shared rnsd on a box, so the twins must classify alike;
+    # its enable rule is the shared rns_interface_flags, pinned with it.
+    "src/utils/rnsd_plugin_manifest.py",
+    "src/utils/rns_interface_flags.py",
     # LXMFace deterministic-avatar port (2026-06-14): the pure algorithm, the
     # vendored client-side JS, and the upstream parity vectors. These produce a
     # node's face from its LXMF/RNS hash and MUST agree across both apps (and
