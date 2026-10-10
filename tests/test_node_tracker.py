@@ -1253,7 +1253,7 @@ class TestAnnounceHandlerRegistration:
     def test_no_catchall_alongside_aspect_handlers(self):
         """The known_aspects loop should NOT be followed by a None registration."""
         import inspect
-        from gateway import node_tracker
+        from gateway import _node_tracker_rns as node_tracker  # registration moved 2026-10-09 (MF025)
 
         src = inspect.getsource(node_tracker)
         # Locate the aspect-handler registration block.

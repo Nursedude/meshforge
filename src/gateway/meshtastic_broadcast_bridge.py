@@ -47,7 +47,6 @@ from __future__ import annotations
 
 import json
 import logging
-import signal as _signal_mod
 import threading
 import time
 from contextlib import contextmanager
@@ -93,19 +92,10 @@ def _suppress_signal_in_thread():
     Same fix the gateway uses: monkey-patch signal.signal to a no-op for
     the duration of the boot, then restore.
     """
-    if threading.current_thread() is threading.main_thread():
+    # Delegates to the ONE refcounted guard (2026-10-09; see _signal_guard).
+    from ._signal_guard import suppress_signal_off_main
+    with suppress_signal_off_main():
         yield
-        return
-    original = _signal_mod.signal
-
-    def _safe_signal(signalnum, handler):
-        return _signal_mod.SIG_DFL
-
-    _signal_mod.signal = _safe_signal
-    try:
-        yield
-    finally:
-        _signal_mod.signal = original
 
 
 _VERB_SUBSCRIBE = "subscribe"

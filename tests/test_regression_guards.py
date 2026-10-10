@@ -456,7 +456,7 @@ class TestConfigPathContract:
         # inline builder invisible to this guard (different config format,
         # no rpc_key 0600 hardening) — the map + gateway share one /tmp.
         for rel in ("gateway/_rns_bridge_connection.py",
-                    "gateway/node_tracker.py",
+                    "gateway/_node_tracker_rns.py",   # node_tracker attach, split 2026-10-09
                     "utils/_map_collector_rns.py"):
             fp = os.path.join(SRC_DIR, rel)
             with open(fp, encoding="utf-8") as fh:

@@ -882,6 +882,9 @@ class RNSMeshtasticBridge(
             'uptime_seconds': uptime,
             'statistics': self.stats.copy(),
             'node_stats': self.node_tracker.get_stats(),
+            # connected / retrying / attempts / last_error — a degraded
+            # discovery attach retries on its own now; this says so.
+            'node_rns_discovery': self.node_tracker.get_rns_attach_state(),
             'subsystems': self.health.get_subsystem_states(),
             'bridge_status': self.bridge_status.value,
             # Theme-A step 3 — gated so flag-off deploys never lazily

@@ -57,7 +57,7 @@ def test_indices_match_installed_rns():
 def test_no_tuple_hops_parse_remains():
     # hfm #5: the defect lived in three copies; none may come back.
     root = os.path.join(os.path.dirname(__file__), "..", "src", "gateway")
-    for name in ("network_topology.py", "node_tracker.py"):
+    for name in ("network_topology.py", "node_tracker.py", "_node_tracker_rns.py"):
         src = open(os.path.join(root, name), encoding="utf-8").read()
         assert "hops = path_data[1]" not in src, name
 

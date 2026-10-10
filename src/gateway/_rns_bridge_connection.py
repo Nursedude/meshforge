@@ -6,7 +6,6 @@ Extracted from rns_bridge.py for file size compliance (CLAUDE.md #6).
 
 import logging
 import os
-import signal as _signal_mod
 import socket
 import threading
 import time
@@ -115,22 +114,11 @@ class RNSConnectionMixin:
 
         On the main thread, this is a no-op passthrough.
         """
-        if threading.current_thread() is threading.main_thread():
+        # Delegates to the ONE refcounted guard (2026-10-09): independent
+        # swaps in overlapping threads could restore a no-op permanently.
+        from ._signal_guard import suppress_signal_off_main
+        with suppress_signal_off_main():
             yield
-            return
-
-        original = _signal_mod.signal
-
-        def _safe_signal(signalnum, handler):
-            # Cannot register signal handlers from non-main thread.
-            # Return default disposition; bridge has its own shutdown logic.
-            return _signal_mod.SIG_DFL
-
-        _signal_mod.signal = _safe_signal
-        try:
-            yield
-        finally:
-            _signal_mod.signal = original
 
     def _init_rns_main_thread(self):
         """Pre-initialize RNS from the main thread.
