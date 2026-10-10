@@ -12,7 +12,7 @@
 #
 #   ~/.config/meshforge/cron_freshness.conf   (KEY=value lines; read, never sourced)
 #     LOCAL_LABEL=<name for this box in alerts>        default: short hostname
-#     VERDICT_MANIFEST=<name:max_min name:max_min ...> crons judged from ~/cron_verdicts.log
+#     OFFLINE_CHECK_MAX_MIN=<min>                      fleet_offline_check's last verdict age (blank = skip)
 #     POWER_LOCAL_MAX_MIN=<min>                        ~/power_history.log age here (blank = skip)
 #     POWER_REMOTE_BOXES=<ssh-name ...>                same file on these boxes, via ssh
 #     POWER_REMOTE_MAX_MIN=<min>                       default 10
@@ -21,13 +21,15 @@
 # "nothing checked", never OK (an instrument that measured nothing must not
 # report health).
 #
-# ⚠️ OVERLAP, measured 2026-09-30, NOT resolved: the watchdog's
-# `cron_verdict_stale` (src/utils/watchdog_probes_cron.py) judges EVERY
-# cron_verdict-wired cron from the crontab (3x cadence, 2h floor) and read
-# `clean` live. This script's manifest is a hand-kept subset with TIGHTER
-# limits and a direct ntfy page. Whether it is redundant is UNKNOWN (mini's
-# history starts 09-04; the verdict log is trimmed) — see deferred ledger
-# `cron-freshness-overlap`. The power_history leg is unique to this script.
+# Narrowed 2026-10-09/10 (operator: "go with narrowing"; ledger
+# `cron-freshness-overlap`): the watchdog's `cron_verdict_stale`
+# (src/utils/watchdog_probes_cron.py) judges EVERY cron_verdict-wired cron
+# (3x cadence, 2h floor), so a generic per-cron manifest here paged twice
+# (brain_git_push, 10-07). What only this script does: fleet_offline_check
+# at a tighter limit (it is the 5-min fleet pager; a 2h floor is too loose)
+# and the power_history leg. Do not regrow a manifest — add a cron to the
+# watchdog's wiring instead. The retired VERDICT_MANIFEST key is REFUSED
+# with the migration, never ignored.
 #
 # Test seams (env): CRON_FRESHNESS_HOME, CRON_FRESHNESS_CONF, CRON_FRESHNESS_NTFY,
 # CRON_FRESHNESS_VERDICT, CRON_FRESHNESS_SSH, CRON_FRESHNESS_NOW.
@@ -53,7 +55,8 @@ REALERT_S=21600
 concern() { "$VERDICT" cron_freshness CONCERN "$1"; exit 0; }
 
 # --- config: known keys only, never `source`d ------------------------------
-LOCAL_LABEL=""; VERDICT_MANIFEST=""; POWER_LOCAL_MAX_MIN=""
+OFFLINE_CHECK=fleet_offline_check   # the one cron judged here (a repo script name, not an operator value)
+LOCAL_LABEL=""; OFFLINE_CHECK_MAX_MIN=""; POWER_LOCAL_MAX_MIN=""
 POWER_REMOTE_BOXES=""; POWER_REMOTE_MAX_MIN="10"
 [ -r "$CONF" ] || concern "no config at $CONF — nothing checked"
 while IFS= read -r line || [ -n "$line" ]; do
@@ -67,7 +70,8 @@ while IFS= read -r line || [ -n "$line" ]; do
     case "$val" in \"*\"|\'*\') val="${val:1:${#val}-2}" ;; esac                # unquote
     case "$key" in
         LOCAL_LABEL) LOCAL_LABEL="$val" ;;
-        VERDICT_MANIFEST) VERDICT_MANIFEST="$val" ;;
+        OFFLINE_CHECK_MAX_MIN) OFFLINE_CHECK_MAX_MIN="$val" ;;
+        VERDICT_MANIFEST) concern "VERDICT_MANIFEST in $CONF was retired 2026-10-10 (the watchdog cron_verdict_stale judges every wired cron) — set OFFLINE_CHECK_MAX_MIN=<min> for $OFFLINE_CHECK instead" ;;
         POWER_LOCAL_MAX_MIN) POWER_LOCAL_MAX_MIN="$val" ;;
         POWER_REMOTE_BOXES) POWER_REMOTE_BOXES="$val" ;;
         POWER_REMOTE_MAX_MIN) POWER_REMOTE_MAX_MIN="$val" ;;
@@ -83,10 +87,12 @@ case "$LOCAL_LABEL" in *[[:space:]]*) concern "LOCAL_LABEL '$LOCAL_LABEL' in $CO
 # word-split to nothing / two numbers, passed, and made `-gt` error →
 # the else branch read every file FRESH (readers, reproduced).
 case "$POWER_REMOTE_MAX_MIN" in ''|*[!0-9]*) concern "POWER_REMOTE_MAX_MIN '$POWER_REMOTE_MAX_MIN' in $CONF is not a whole number" ;; esac
-if [ -n "$POWER_LOCAL_MAX_MIN" ]; then
-    case "$POWER_LOCAL_MAX_MIN" in *[!0-9]*) concern "POWER_LOCAL_MAX_MIN '$POWER_LOCAL_MAX_MIN' in $CONF is not a whole number" ;; esac
-fi
-[ -n "$VERDICT_MANIFEST$POWER_LOCAL_MAX_MIN$POWER_REMOTE_BOXES" ] || \
+for _k in OFFLINE_CHECK_MAX_MIN POWER_LOCAL_MAX_MIN; do
+    _v="${!_k}"
+    [ -n "$_v" ] || continue
+    case "$_v" in *[!0-9]*) concern "$_k '$_v' in $CONF is not a whole number" ;; esac
+done
+[ -n "$OFFLINE_CHECK_MAX_MIN$POWER_LOCAL_MAX_MIN$POWER_REMOTE_BOXES" ] || \
     concern "$CONF configures nothing to check"
 
 # --- one run at a time: overlapping runs would interleave the state file ----
@@ -119,39 +125,33 @@ clear_state() {  # item recovered -> next staleness alerts immediately
     if awk -v k="$1" '$1!=k' "$STATE" > "$tmp"; then mv "$tmp" "$STATE"; else rm -f "$tmp"; fi
 }
 
-check_verdicts() {  # host verdict_log_content "name:max_min name:max_min ..."
-    local host="$1" content="$2" manifest="$3"
-    for spec in $manifest; do
-        name="${spec%%:*}"; max_min="${spec##*:}"
-        case "$max_min" in ''|*[!0-9]*)
-            note_stale "$host/$name" "bad manifest entry '$spec' (want name:minutes)"; continue ;;
-        esac
-        last_ts=$(printf '%s\n' "$content" | awk -v n="$name" '$2==n {ts=$1} END {print ts}')
-        if [ -z "$last_ts" ]; then
-            note_stale "$host/$name" "no verdict ever recorded"
-            continue
-        fi
-        last_s=$(date -d "$last_ts" +%s 2>/dev/null || echo 0)
-        age_min=$(( (NOW - last_s) / 60 ))
-        if [ "$age_min" -lt -5 ]; then
-            # honest_failure_modes #6: after a clock step back (RTC-less Pi,
-            # fake-hwclock) a NEGATIVE age is never -gt max, so every cron read
-            # fresh until real time caught up. Its age is unknowable — say so.
-            note_stale "$host/$name" "last verdict dated $(( -age_min ))m in the FUTURE — clock stepped? age unknowable"
-        elif [ "$age_min" -gt "$max_min" ]; then
-            note_stale "$host/$name" "last verdict ${age_min}m ago (max ${max_min}m)"
-        else
-            clear_state "$host/$name"
-        fi
-        # FAIL in the latest verdict is also worth surfacing once…
-        last_status=$(printf '%s\n' "$content" | awk -v n="$name" '$2==n {s=$3} END {print s}')
-        # …and a verdict that is no longer FAIL clears it, so the NEXT failure
-        # pages at once (it used to stay gated: /FAIL items were never cleared).
-        case "$last_status" in
-            FAIL*) note_stale "$host/$name/FAIL" "latest verdict: $last_status" ;;
-            *)     clear_state "$host/$name/FAIL" ;;
-        esac
-    done
+check_verdict() {  # host verdict_log_path name max_min
+    local host="$1" log="$2" name="$3" max_min="$4" last last_ts last_status
+    # One pass: "<ts> <status>" of the LAST line for this exact name.
+    last=$(awk -v n="$name" '$2==n {l=$1" "$3} END {print l}' "$log" 2>/dev/null)
+    last_ts="${last%% *}"; last_status="${last#* }"
+    if [ -z "$last_ts" ]; then
+        note_stale "$host/$name" "no verdict ever recorded"
+        return
+    fi
+    last_s=$(date -d "$last_ts" +%s 2>/dev/null || echo 0)
+    age_min=$(( (NOW - last_s) / 60 ))
+    if [ "$age_min" -lt -5 ]; then
+        # honest_failure_modes #6: after a clock step back (RTC-less Pi,
+        # fake-hwclock) a NEGATIVE age is never -gt max, so the cron read
+        # fresh until real time caught up. Its age is unknowable — say so.
+        note_stale "$host/$name" "last verdict dated $(( -age_min ))m in the FUTURE — clock stepped? age unknowable"
+    elif [ "$age_min" -gt "$max_min" ]; then
+        note_stale "$host/$name" "last verdict ${age_min}m ago (max ${max_min}m)"
+    else
+        clear_state "$host/$name"
+    fi
+    # FAIL in the latest verdict is also worth surfacing once, and a verdict
+    # that is no longer FAIL clears it, so the NEXT failure pages at once.
+    case "$last_status" in
+        FAIL*) note_stale "$host/$name/FAIL" "latest verdict: $last_status" ;;
+        *)     clear_state "$host/$name/FAIL" ;;
+    esac
 }
 
 check_file_age() {  # host path max_min mtime_epoch
@@ -171,8 +171,8 @@ check_file_age() {  # host path max_min mtime_epoch
 }
 
 # ── this box ─────────────────────────────────────────────────────────────
-[ -n "$VERDICT_MANIFEST" ] && \
-    check_verdicts "$LOCAL_LABEL" "$(cat "$H/cron_verdicts.log" 2>/dev/null)" "$VERDICT_MANIFEST"
+[ -n "$OFFLINE_CHECK_MAX_MIN" ] && \
+    check_verdict "$LOCAL_LABEL" "$H/cron_verdicts.log" "$OFFLINE_CHECK" "$OFFLINE_CHECK_MAX_MIN"
 [ -n "$POWER_LOCAL_MAX_MIN" ] && \
     check_file_age "$LOCAL_LABEL" "power_history.log" "$POWER_LOCAL_MAX_MIN" \
         "$(stat -c %Y "$H/power_history.log" 2>/dev/null || echo 0)"

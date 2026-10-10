@@ -22,6 +22,8 @@ sys.path.insert(0, str(_ROOT / "src"))
 import monitoring.meshforge_digest as dg  # noqa: E402
 
 RECORDER = '#!/bin/bash\nprintf "%s|" "$@" >> "{out}"; echo >> "{out}"\n'
+#: The ONE cron the verdict leg judges since 2026-10-09's narrowing.
+J = "fleet_offline_check"
 
 
 @pytest.fixture
@@ -89,6 +91,11 @@ def _iso(ago_s):
     ("POWER_REMOTE_BOXES=b\nPOWER_REMOTE_MAX_MIN=5 9\n", "POWER_REMOTE_MAX_MIN '5 9'"),
     ("POWER_LOCAL_MAX_MIN=5 9\n", "POWER_LOCAL_MAX_MIN '5 9'"),
     ("JUST SOME TEXT\n", "line without '='"),
+    ("OFFLINE_CHECK_MAX_MIN=ten\n", "OFFLINE_CHECK_MAX_MIN 'ten'"),
+    ("OFFLINE_CHECK_MAX_MIN=5 9\n", "OFFLINE_CHECK_MAX_MIN '5 9'"),
+    # retired 2026-10-10: refused with the migration, never silently ignored
+    # (ignored, the one cron it still judged would stop being judged at all)
+    ("VERDICT_MANIFEST=fleet_offline_check:20\n", "set OFFLINE_CHECK_MAX_MIN"),
 ])
 def test_unusable_config_is_concern_and_pages_nobody(box, body, why):
     if body is not None:
@@ -101,41 +108,73 @@ def test_unusable_config_is_concern_and_pages_nobody(box, body, why):
 
 def test_config_is_read_never_sourced(box):
     marker = box.tmp / "pwned"
-    box.conf.write_text(f"LOCAL_LABEL=$(touch {marker})\nVERDICT_MANIFEST=x:5\n")
-    box.verdicts(f"{_iso(60)} x OK")
+    box.conf.write_text(f"LOCAL_LABEL=$(touch {marker})\nOFFLINE_CHECK_MAX_MIN=5\n")
+    box.verdicts(f"{_iso(60)} {J} OK")
     box.run()
     assert not marker.exists(), "config value was EXECUTED — it must be data"
 
 
 # ── the verdict leg ────────────────────────────────────────────────────────
 
-def test_fresh_verdicts_stamp_ok_and_page_nobody(box):
-    box.config(LOCAL_LABEL="box-a", VERDICT_MANIFEST="job_a:30 job_b:30")
-    box.verdicts(f"{_iso(300)} job_a OK", f"{_iso(600)} job_b OK")
+def test_fresh_verdict_stamps_ok_and_pages_nobody(box):
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts(f"{_iso(300)} {J} OK")
     box.run()
     assert box.read("verdict") == "cron_freshness|OK|0 stale|\n"
     assert box.read("ntfy") == "" and box.alerts() == ""
 
 
-def test_stale_missing_failing_and_malformed_are_all_flagged(box):
-    box.config(LOCAL_LABEL="box-a", VERDICT_MANIFEST="old:30 never:30 bad:30 typo:")
-    box.verdicts(f"{_iso(3600)} old OK", f"{_iso(60)} bad FAIL(2)")
+def test_stale_is_flagged(box):
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts(f"{_iso(3600)} {J} OK")
     box.run()
     a = box.alerts()
     assert "CRON-FRESHNESS STALE:" in a
-    assert re.search(r"box-a/old: last verdict 6\dm ago \(max 30m\)", a), a
-    assert "box-a/never: no verdict ever recorded" in a
-    assert "box-a/bad/FAIL: latest verdict: FAIL(2)" in a
-    assert "box-a/typo: bad manifest entry 'typo:'" in a
-    assert box.read("verdict") == "cron_freshness|FAIL|4 stale|\n"
+    assert re.search(rf"box-a/{J}: last verdict 6\dm ago \(max 30m\)", a), a
+    assert box.read("verdict") == "cron_freshness|FAIL|1 stale|\n"
     assert box.read("ntfy").startswith("fleet cron gone silent|high|hourglass|")
+
+
+def test_never_recorded_is_flagged(box):
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts()
+    box.run()
+    assert f"box-a/{J}: no verdict ever recorded" in box.alerts()
+
+
+def test_a_fresh_fail_is_flagged_once_as_fail(box):
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts(f"{_iso(60)} {J} FAIL(2)")
+    box.run()
+    assert f"box-a/{J}/FAIL: latest verdict: FAIL(2)" in box.alerts()
+    assert box.read("verdict") == "cron_freshness|FAIL|1 stale|\n"
+
+
+def test_other_crons_are_not_judged_here(box):
+    """Narrowed 2026-10-09: every other wired cron belongs to the watchdog's
+    cron_verdict_stale (3x cadence, 2h floor). A stale or failing OTHER cron
+    must not page from this script — that was the duplicate page (10-07)."""
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts(f"{_iso(86400)} brain_git_push OK", f"{_iso(60)} brain_backup FAIL(1)",
+                 f"{_iso(60)} {J} OK")
+    box.run()
+    assert box.read("verdict") == "cron_freshness|OK|0 stale|\n"
+    assert box.read("ntfy") == "" and box.alerts() == ""
+
+
+def test_a_verdict_for_a_similarly_named_cron_is_not_ours(box):
+    """Exact name match: `fleet_offline_check_v2` must not stand in for it."""
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts(f"{_iso(60)} {J}_v2 OK")
+    box.run()
+    assert f"box-a/{J}: no verdict ever recorded" in box.alerts()
 
 
 def test_realert_gate_withholds_the_page_never_the_record(box):
     """2026-09-07 rule, kept: the 6h gate may withhold a NOTIFICATION, never
     the verdict — a persistently silent cron reads FAIL every hour."""
-    box.config(LOCAL_LABEL="box-a", VERDICT_MANIFEST="old:30")
-    box.verdicts(f"{_iso(7200)} old OK")
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts(f"{_iso(7200)} {J} OK")
     t = time.time()
     box.run(now=t)
     box.run(now=t + 3600)                      # 1h later: inside the 6h gate
@@ -146,24 +185,24 @@ def test_realert_gate_withholds_the_page_never_the_record(box):
 
 
 def test_a_recovered_cron_alerts_immediately_next_time(box):
-    box.config(LOCAL_LABEL="box-a", VERDICT_MANIFEST="j:30")
-    box.verdicts(f"{_iso(7200)} j OK")
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts(f"{_iso(7200)} {J} OK")
     box.run()
-    box.verdicts(f"{_iso(7200)} j OK", f"{_iso(60)} j OK")       # recovered
+    box.verdicts(f"{_iso(7200)} {J} OK", f"{_iso(60)} {J} OK")       # recovered
     box.run()
-    box.verdicts(f"{_iso(7200)} j OK", f"{_iso(3600)} j OK")     # silent again
+    box.verdicts(f"{_iso(7200)} {J} OK", f"{_iso(3600)} {J} OK")     # silent again
     box.run()
     assert box.read("ntfy").count("fleet cron gone silent") == 2
 
 
 def test_a_fail_that_clears_pages_again_on_the_next_fail(box):
     """FAIL → OK → FAIL inside 6h must page twice: the /FAIL item clears."""
-    box.config(LOCAL_LABEL="box-a", VERDICT_MANIFEST="j:30")
-    box.verdicts(f"{_iso(60)} j FAIL(1)")
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts(f"{_iso(60)} {J} FAIL(1)")
     box.run()
-    box.verdicts(f"{_iso(60)} j FAIL(1)", f"{_iso(30)} j OK")
+    box.verdicts(f"{_iso(60)} {J} FAIL(1)", f"{_iso(30)} {J} OK")
     box.run()
-    box.verdicts(f"{_iso(60)} j FAIL(1)", f"{_iso(30)} j OK", f"{_iso(10)} j FAIL(3)")
+    box.verdicts(f"{_iso(60)} {J} FAIL(1)", f"{_iso(30)} {J} OK", f"{_iso(10)} {J} FAIL(3)")
     box.run()
     assert box.read("ntfy").count("fleet cron gone silent") == 2, box.read("ntfy")
 
@@ -216,7 +255,7 @@ def test_realert_period_matches_the_digest_window():
 
 def test_alert_line_parses_in_the_digest(box):
     """The digest must be able to DATE what this script writes."""
-    box.config(LOCAL_LABEL="box-a", VERDICT_MANIFEST="never:30")
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
     box.verdicts()
     box.run()
     first = box.alerts().splitlines()[0]
@@ -254,10 +293,10 @@ def test_no_remote_box_answering_is_concern_one_is_named(box):
 
 
 def test_state_read_error_never_truncates_the_state(box):
-    box.config(LOCAL_LABEL="box-a", VERDICT_MANIFEST="j:30")
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
     st = box.home / ".cron_freshness_state"
-    st.write_text("box-a/other 1000\nbox-a/j/FAIL 1000\n")
-    box.verdicts(f"{_iso(60)} j OK")
+    st.write_text(f"box-a/other 1000\nbox-a/{J}/FAIL 1000\n")
+    box.verdicts(f"{_iso(60)} {J} OK")
     st.chmod(0o000)
     try:
         box.run()
@@ -268,18 +307,18 @@ def test_state_read_error_never_truncates_the_state(box):
 
 def test_state_keys_match_exactly_not_as_regex(box):
     """`grep "^$1 "` let the '.' in power_history.log match any character."""
-    box.config(LOCAL_LABEL="box-a", VERDICT_MANIFEST="a.b:30")
+    box.config(LOCAL_LABEL="box-a", POWER_LOCAL_MAX_MIN="10")
+    (box.home / "power_history.log").write_text("x\n")       # fresh → clear_state
     st = box.home / ".cron_freshness_state"
-    st.write_text("box-a/aXb 1000\n")
-    box.verdicts(f"{_iso(60)} a.b OK")
+    st.write_text("box-a/power_historyXlog 1000\n")
     box.run()
-    assert "box-a/aXb 1000" in st.read_text(), st.read_text()
+    assert "box-a/power_historyXlog 1000" in st.read_text(), st.read_text()
 
 
 def test_overlapping_runs_are_refused_not_interleaved(box):
     import fcntl
-    box.config(LOCAL_LABEL="box-a", VERDICT_MANIFEST="j:30")
-    box.verdicts(f"{_iso(7200)} j OK")
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts(f"{_iso(7200)} {J} OK")
     with open(box.home / ".cron_freshness_state.lock", "a") as lk:
         fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
         r = box.run()
@@ -296,8 +335,8 @@ def test_a_symlink_to_the_script_still_finds_its_repo(tmp_path):
     link = tmp_path / "cron_verdict_freshness.sh"
     link.symlink_to(SCRIPT)
     conf = tmp_path / "c.conf"
-    conf.write_text("LOCAL_LABEL=box-a\nVERDICT_MANIFEST=j:30\n")
-    (home / "cron_verdicts.log").write_text(f"{_iso(60)} j OK\n")
+    conf.write_text("LOCAL_LABEL=box-a\nOFFLINE_CHECK_MAX_MIN=30\n")
+    (home / "cron_verdicts.log").write_text(f"{_iso(60)} {J} OK\n")
     env = {k: v for k, v in os.environ.items() if not k.startswith("CRON_FRESHNESS_")}
     env.update(HOME=str(home), CRON_FRESHNESS_HOME=str(home), CRON_FRESHNESS_CONF=str(conf),
                CRON_VERDICT_LOG=str(home / "cron_verdicts.log"),
@@ -337,8 +376,8 @@ def test_a_login_banner_cannot_pose_as_the_answer(box):
 def test_a_future_timestamp_is_flagged_not_fresh(box, leg):
     """honest_failure_modes #6: a negative age was never -gt max → fresh."""
     if leg == "verdict":
-        box.config(LOCAL_LABEL="box-a", VERDICT_MANIFEST="j:30")
-        box.verdicts(f"{_iso(-3 * 86400)} j OK")
+        box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+        box.verdicts(f"{_iso(-3 * 86400)} {J} OK")
     else:
         box.config(LOCAL_LABEL="box-a", POWER_LOCAL_MAX_MIN="10")
         p = box.home / "power_history.log"
@@ -354,17 +393,17 @@ def test_whitespace_in_the_label_is_refused(box):
     """State keys are the first field: 'my box/j' never matched itself, so
     every run re-paged and the state grew a line per run (regression of MINE
     in the awk fold — the old grep handled it)."""
-    box.conf.write_text("LOCAL_LABEL=my box\nVERDICT_MANIFEST=j:30\n")
+    box.conf.write_text("LOCAL_LABEL=my box\nOFFLINE_CHECK_MAX_MIN=30\n")
     box.run()
     v = box.read("verdict")
     assert v.startswith("cron_freshness|CONCERN|") and "whitespace" in v, v
 
 
 def test_duplicate_state_keys_still_gate_and_page(box):
-    box.config(LOCAL_LABEL="box-a", VERDICT_MANIFEST="j:30")
-    box.verdicts(f"{_iso(7200)} j OK")
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts(f"{_iso(7200)} {J} OK")
     old = int(time.time() - 7 * 3600)
-    (box.home / ".cron_freshness_state").write_text(f"box-a/j {old - 100}\nbox-a/j {old}\n")
+    (box.home / ".cron_freshness_state").write_text(f"box-a/{J} {old - 100}\nbox-a/{J} {old}\n")
     r = box.run()
     assert "syntax error" not in r.stderr, r.stderr
     assert box.read("ntfy").count("fleet cron gone silent") == 1     # gate expired → pages
@@ -373,10 +412,10 @@ def test_duplicate_state_keys_still_gate_and_page(box):
 def test_duplicate_state_keys_use_the_newest_stamp(box):
     """Duplicated key whose NEWEST stamp is inside the 6h gate: no page. (A
     digit-guard alone reads the two-line value as 'unknown' and re-pages.)"""
-    box.config(LOCAL_LABEL="box-a", VERDICT_MANIFEST="j:30")
-    box.verdicts(f"{_iso(7200)} j OK")
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts(f"{_iso(7200)} {J} OK")
     now = int(time.time())
-    (box.home / ".cron_freshness_state").write_text(f"box-a/j {now - 30000}\nbox-a/j {now - 600}\n")
+    (box.home / ".cron_freshness_state").write_text(f"box-a/{J} {now - 30000}\nbox-a/{J} {now - 600}\n")
     box.run()
     assert box.read("ntfy") == "", box.read("ntfy")
     assert box.read("verdict").startswith("cron_freshness|FAIL|")      # the record is never withheld
