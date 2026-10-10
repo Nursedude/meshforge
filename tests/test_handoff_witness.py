@@ -372,3 +372,82 @@ def test_early_tagged_copy_resets_the_run_and_says_it_came_first(caplog):
     assert any("3.0s before the drop was processed" in m for m in msgs)
     assert any("recovered" in m for m in msgs)
     assert w.snapshot()['cross_preset_handoff_unheard_streak'] == 0
+
+
+# ── the journal can count hand-offs on its own (2026-10-10) ────────────────
+# At INFO (5d57ce56 honours the gateway's level) the bridge's cid-only DROP
+# line — the only record that a hand-off STARTED — is DEBUG, and so was the
+# witness's `not_handed_off` outcome: the moc journal for 07:06–11:10 read
+# 0 confirmed / 0 unheard, which cannot tell "no hand-offs" from "none owed".
+# Counters are in-process only. So: one INFO "noted" line per hand-off, and
+# every noted hand-off ends in exactly one INFO+ outcome line.
+
+_NOTED = "hand-off noted"
+_OUTCOMES = ("hand-off confirmed", "not heard by this box's secondary radio",
+             "hand-off UNOBSERVABLE", "was not a hand-off", "hand-off untracked")
+
+
+def _journal(caplog):
+    """What an INFO journal would hold: (noted, outcomes) line counts."""
+    msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.INFO]
+    return (sum(_NOTED in s for s in msgs),
+            sum(any(o in s for o in _OUTCOMES) for s in msgs))
+
+
+def test_every_noted_handoff_leaves_an_info_line(caplog):
+    w, clock, _ = _w()
+    with caplog.at_level(logging.INFO):
+        w.note("weather update one", "c1")
+    assert _journal(caplog)[0] == 1, [r.getMessage() for r in caplog.records]
+
+
+def test_not_handed_off_outcome_is_visible_at_info(caplog):
+    w, clock, _ = _w(handed_off=False)
+    with caplog.at_level(logging.INFO):
+        w.note("?status", "c1")
+        _expire(w, clock)
+    assert _journal(caplog) == (1, 1), [r.getMessage() for r in caplog.records]
+
+
+def test_overflow_is_visible_at_info(caplog):
+    w, clock, _ = _w(max_pending=1)
+    with caplog.at_level(logging.INFO):
+        w.note("first pending message", "c1")
+        w.note("second one overflows", "c2")
+    noted, outcomes = _journal(caplog)
+    assert noted == 2 and outcomes == 1, [r.getMessage() for r in caplog.records]
+
+
+def test_journal_alone_accounts_for_every_handoff(caplog):
+    """The 10-16 read's invariant: noted == outcomes, every path exercised —
+    confirmed (late copy), confirmed (copy heard first), unheard, blind,
+    not owed, overflow."""
+    owed = {"c-late": True, "c-early": True, "c-miss": True, "c-blind": True,
+            "c-notowed": False, "c-over": True}
+    clock = _Clock()
+    state = {"seeing": True}
+    w = HandoffWitness(observable=lambda: state["seeing"],
+                       handed_off=lambda cid: owed.get(cid, True),
+                       clock=clock, window_s=30.0, max_pending=4)
+    with caplog.at_level(logging.INFO):
+        w.observe("[RNS:moc3] copy heard before its drop")          # early copy
+        w.note("copy heard before its drop", "c-early")
+        w.note("late copy will arrive", "c-late")
+        w.note("this one is never heard", "c-miss")
+        w.note("not owed, an oracle query", "c-notowed")
+        w.note("blind window message here", "c-blind")
+        w.note("overflowing the pending list", "c-over")             # 5th pending > 4
+        clock.t += 5
+        w.observe("[RNS:moc3] late copy will arrive")
+        state["seeing"] = False
+        w.sweep()                                                    # marks the blind tick
+        state["seeing"] = True
+        clock.t += 31
+        w.sweep()
+    noted, outcomes = _journal(caplog)
+    total = sum(w.snapshot()[k] for k in (
+        "cross_preset_handoff_confirmed", "cross_preset_handoff_unconfirmed",
+        "cross_preset_handoff_unobservable", "cross_preset_handoff_not_handed_off",
+        "cross_preset_handoff_untracked"))
+    assert noted == 6 == outcomes == total, (noted, outcomes, total,
+                                             [r.getMessage() for r in caplog.records])

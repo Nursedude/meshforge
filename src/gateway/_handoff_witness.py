@@ -29,6 +29,13 @@ that called it a loop. This witness pairs events the bridge already sees:
                         logs the recovery. Each confirmation logs INFO + delay
                         (~15/day on moc).
 
+Journal accounting (2026-10-10): at the gateway's INFO level the bridge's own
+drop line is DEBUG, so ``note()`` logs one INFO "hand-off noted" line per
+hand-off, and each one ends in exactly ONE INFO+ outcome line (confirmed /
+not heard / UNOBSERVABLE / not a hand-off / untracked). A journal read alone
+gives the total and the split; the counters are in-process and reset on
+restart.
+
 The run ("in a row"), reviewed 2026-09-30 (C/D):
   * Only a TAGGED copy (``[RNS:…]`` etc., the peer's mark) resets it. An
     untagged copy can be native secondary-preset traffic ("test", a beacon
@@ -201,6 +208,11 @@ class HandoffWitness:
             return
         now = self._clock()
         blind = not self._seeing()
+        # INFO, one per hand-off: at the gateway's INFO level this is the ONLY
+        # journal record that a hand-off started (the bridge's drop line is
+        # DEBUG), so `noted` = total and each ends in exactly one INFO+ outcome.
+        logger.info(f"Cross-preset hand-off noted: left to the RNS path, "
+                    f"watching the secondary radio: {norm[:60]}")
         with self._lock:
             for i, (t, heard, tagged) in enumerate(self._early):
                 if (now - t <= EARLY_COPY_KEEP_S
@@ -210,11 +222,15 @@ class HandoffWitness:
                     break
             else:
                 prev = None
-            if prev is None and len(self._pending) >= self._max_pending:
+            overflow = prev is None and len(self._pending) >= self._max_pending
+            if overflow:
                 self.counts['cross_preset_handoff_untracked'] += 1
-                return
-            if prev is None:
+            elif prev is None:
                 self._pending.append([now, norm, content_id, blind])
+        if overflow:
+            logger.info(f"Cross-preset hand-off untracked: {self._max_pending} "
+                        f"already pending, delivery not witnessed: {norm[:60]}")
+            return
         if prev is not None:
             self._log_confirmed(norm, t - now, prev)   # negative: heard first
 
@@ -261,8 +277,8 @@ class HandoffWitness:
                 owed = True     # can't tell: never let doubt hide a loss
             if not owed:
                 key = 'cross_preset_handoff_not_handed_off'
-                logger.debug(f"cid-only drop was not a hand-off (consumed or "
-                             f"echo); nothing owed: {norm[:60]}")
+                logger.info(f"cid-only drop was not a hand-off (consumed or "
+                            f"echo); nothing owed: {norm[:60]}")
             elif blind:
                 key = 'cross_preset_handoff_unobservable'
                 logger.warning(
