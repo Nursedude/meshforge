@@ -13,6 +13,17 @@ from .base import CommandResult
 
 logger = logging.getLogger(__name__)
 
+# Relabelled, not removed or blocked (operator 2026-10-10). The plugin these
+# configure was retired in May (62c43328) and other users report the same
+# unreliability under load (research artifact rev 4.14).
+_MESHTASTIC_UNSUPPORTED = (
+    "UNSUPPORTED: the Meshtastic_Interface.py rnsd plugin was retired in "
+    "May 2026 and MeshForge no longer ships it. It worked, but not reliably, "
+    "and other users report the same under load. The module must be supplied "
+    "by hand in rnsd's interfaces/ directory, or rnsd logs an error and skips "
+    "this interface. For RNS over LoRa, use the RNode template."
+)
+
 
 def get_interface_templates() -> CommandResult:
     """
@@ -75,7 +86,8 @@ def get_interface_templates() -> CommandResult:
         },
         'meshtastic': {
             'name': 'Meshtastic Gateway',
-            'description': 'RNS over Meshtastic LoRa network',
+            'description': 'UNSUPPORTED (retired 2026-05) - RNS over Meshtastic LoRa',
+            'unsupported': _MESHTASTIC_UNSUPPORTED,
             'type': 'Meshtastic_Interface',
             'settings': {
                 'tcp_port': '127.0.0.1:4403',
@@ -85,7 +97,8 @@ def get_interface_templates() -> CommandResult:
         },
         'meshtastic_dual': {
             'name': 'Meshtastic Dual-Radio Gateway',
-            'description': 'Two radios: Short Turbo + Long Fast',
+            'description': 'UNSUPPORTED (retired 2026-05) - Two radios: Short Turbo + Long Fast',
+            'unsupported': _MESHTASTIC_UNSUPPORTED,
             'multi_interface': True,
             'interfaces': [
                 {

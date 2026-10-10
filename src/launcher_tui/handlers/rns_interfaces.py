@@ -625,6 +625,13 @@ class RNSInterfacesHandler(BaseHandler):
         if template.get('unavailable'):
             self.ctx.dialog.msgbox("Template unavailable", template['unavailable'])
             return
+        # A label, not a block (operator 2026-10-10): say why, then let the
+        # operator decide.
+        if template.get('unsupported'):
+            if not self.ctx.dialog.yesno(
+                    "Unsupported template",
+                    f"{template['unsupported']}\n\nContinue anyway?"):
+                return
 
         # Multi-interface templates have a different flow
         if template.get('multi_interface'):
