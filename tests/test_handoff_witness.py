@@ -158,14 +158,17 @@ def test_blind_and_not_owed_do_not_touch_the_streak():
     assert w.snapshot()['cross_preset_handoff_unheard_streak'] == 1
 
 
-def test_confirmation_leaves_a_debug_line_with_the_delay(caplog):
+def test_confirmation_leaves_an_info_line_with_the_delay(caplog):
+    """INFO, not DEBUG (2026-10-10): the gateway runs at INFO once its level
+    is honoured, and a confirmation is the witness's ONLY per-message success
+    record — at DEBUG the journal would show the misses and never the hits."""
     w, clock, _ = _w()
     w.note("handoff test 1", "c1")
     clock.t += 12
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.INFO):
         assert w.observe("[RNS:meshforge ] handoff test 1")
-    assert any("confirmed" in r.getMessage() and "12.0s" in r.getMessage()
-               for r in caplog.records)
+    assert any(r.levelno == logging.INFO and "confirmed" in r.getMessage()
+               and "12.0s" in r.getMessage() for r in caplog.records)
 
 
 def test_not_handed_off_is_neither_lost_nor_warned(caplog):

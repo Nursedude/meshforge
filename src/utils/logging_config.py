@@ -97,19 +97,18 @@ _log_settings = None
 
 
 def _get_log_settings():
-    """Get or create the logging SettingsManager (lazy to avoid circular imports)."""
+    """Get or create the logging SettingsManager (lazy to avoid circular imports).
+
+    No defaults, deliberately: a persisted level is operator intent and an
+    absent one is not. DEBUG defaults here overrode every caller's explicit
+    setup_logging(level=INFO) on boxes that never saved one — moc's gateway
+    wrote ~1,300 DEBUG lines/h to journald, capping retention at ~2 days
+    (2026-10-09).
+    """
     global _log_settings
     if _log_settings is None:
         from utils.common import SettingsManager
-        _log_settings = SettingsManager("logging", defaults={
-            "global_level": "DEBUG",
-            "component_levels": {
-                "hamclock": "DEBUG",
-                "rns": "DEBUG",
-                "meshtastic": "INFO",
-                "gateway": "DEBUG",
-            }
-        })
+        _log_settings = SettingsManager("logging")
     return _log_settings
 
 
@@ -304,15 +303,20 @@ def setup_logging(
 
 
 def _load_persisted_levels() -> None:
-    """Load log levels saved from a previous session."""
+    """Load log levels saved from a previous session.
+
+    Only what was actually saved is applied; with nothing saved the caller's
+    setup_logging() level stands.
+    """
     try:
         settings = _get_log_settings()
-        saved_global = settings.get("global_level", "DEBUG")
-        set_log_level(
-            getattr(logging, saved_global, logging.DEBUG),
-            persist=False,
-        )
-        for comp, level_name in settings.get("component_levels", {}).items():
+        saved_global = settings.get("global_level")
+        if saved_global:
+            set_log_level(
+                getattr(logging, saved_global, logging.DEBUG),
+                persist=False,
+            )
+        for comp, level_name in (settings.get("component_levels") or {}).items():
             set_log_level(
                 getattr(logging, level_name, logging.DEBUG),
                 component=comp,

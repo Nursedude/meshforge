@@ -26,7 +26,8 @@ that called it a loop. This witness pairs events the bridge already sees:
                         UNHEARD_STREAK_WARN in a row with no confirmation between
                         (an RNS or peer outage loses every hand-off; an RF miss
                         is isolated). The first confirmation after a warned run
-                        logs the recovery. Each confirmation logs DEBUG + delay.
+                        logs the recovery. Each confirmation logs INFO + delay
+                        (~15/day on moc).
 
 The run ("in a row"), reviewed 2026-09-30 (C/D):
   * Only a TAGGED copy (``[RNS:…]`` etc., the peer's mark) resets it. An
@@ -181,8 +182,8 @@ class HandoffWitness:
     def _log_confirmed(self, norm: str, delay_s: float, prev_streak: int) -> None:
         when = (f"after {delay_s:.1f}s" if delay_s >= 0
                 else f"{-delay_s:.1f}s before the drop was processed")
-        logger.debug(f"Cross-preset hand-off confirmed: heard on the secondary "
-                     f"radio {when}: {norm[:60]}")
+        logger.info(f"Cross-preset hand-off confirmed: heard on the secondary "
+                    f"radio {when}: {norm[:60]}")
         if prev_streak >= UNHEARD_STREAK_WARN:
             logger.warning(
                 "Cross-preset hand-off path recovered after "
