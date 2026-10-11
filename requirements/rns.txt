@@ -26,7 +26,7 @@
 # (upstream Carrier Switch, Dec 2025). Baseline history: field-proven
 # 1.2.5+mf.5 / 0.9.4+mf.0 until 2026-07-19; upstream 1.3.8 / 1.0.1 merged +
 # canaried + fleet-rolled 07-17..07-19 (see rns_138_merge_eval_2026_07_16.md).
-#   forks: github.com/Nursedude/reticulum  (branch meshforge, tag 1.3.8+mf.4)
+#   forks: github.com/Nursedude/reticulum  (branch meshforge, tag 1.3.8+mf.5)
 #          github.com/Nursedude/lxmf        (branch meshforge, tag 1.0.1+mf.5)
 # +mf.1 (2026-05-30): #68 fix — bound LocalClientInterface connect (no thread hang).
 # +mf.2 (2026-05-30): #72 fix — bound shared-instance RPC recv (no rnstatus hang).
@@ -71,9 +71,16 @@
 #                     backchannel arrival kicks outbound. Was 2–10 s per first
 #                     reply (dead cached link tried first, then timers); 18 ms
 #                     after. Bookkeeping only, no wire change. lxmf FORK.md.
-# MF-FORK-PIN rns 1.3.8+mf.4
+# 1.3.8 base, +mf.5 (2026-10-10): an external interface module that calls
+#                     RNS.panic() / sys.exit() while LOADING costs that interface,
+#                     not rnsd (SMCI's shape: panics when `import meshcore`
+#                     fails). Loader refuses it, unregisters + bounded detach
+#                     (RNS_DETACH_TIMEOUT), CRITICAL witness; a plugin cannot
+#                     swallow the panic. Five fresh non-author passes before the
+#                     tag; 3.11 proven on the canary. lxmf unchanged (mf.6).
+# MF-FORK-PIN rns 1.3.8+mf.5
 # MF-FORK-PIN lxmf 1.0.1+mf.6
-rns @ git+https://github.com/Nursedude/reticulum.git@c4f74c387d1a722b55a22063ccd794b80c67a177
+rns @ git+https://github.com/Nursedude/reticulum.git@3f91b93bdb1b7e994a84561f784c67ef4ad14fd3
 lxmf @ git+https://github.com/Nursedude/lxmf.git@22e0a7ce042ca36c3938c7789932c14921895730
 
 # Cryptography / PyOpenSSL version alignment — BOTH bounds are load-bearing,
