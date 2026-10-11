@@ -810,3 +810,32 @@ def test_autoreset_can_be_switched_off(rtl_box, monkeypatch):
     monkeypatch.setenv("MESHFORGE_SDR_AUTORESET", "0")
     rtl_box(); _, row = rtl_box(); rtl_box()
     assert rtl_box.resets.calls == [] and "off" in row["usb_reset_held"]
+
+
+def _stamp_of(monkeypatch, source):
+    orig = si.Path.read_text
+    monkeypatch.setattr(si.Path, "read_text", lambda self, *a, **k:
+                        source if self.name == "sdr_interference.py" else orig(self, *a, **k))
+    try:
+        return si.analysis_stamp()
+    finally:
+        monkeypatch.undo()
+
+
+def test_the_recovery_knobs_do_not_move_the_analysis_stamp(monkeypatch):
+    """26469f3d added three UPPER-CASE recovery constants; the stamp hashes
+    upper-case constants, so the deploy split every SDR box's recurrence
+    history (moc1 AND moc5) though no number a row carries changed."""
+    src = (_ROOT / "scripts" / "sdr_interference.py").read_text()
+    base = _stamp_of(monkeypatch, src)
+    for name in ("RTL_RESET_AFTER", "RTL_RESET_GIVE_UP", "USBRESET_TIMEOUT_S", "_UNSTAMPED_CONSTANTS"):
+        mutated = src.replace(f"\n{name} = ", f"\n{name} = 99 + ", 1)
+        assert mutated != src
+        assert _stamp_of(monkeypatch, mutated) == base, name
+
+
+def test_an_analysis_constant_still_moves_the_stamp(monkeypatch):
+    src = (_ROOT / "scripts" / "sdr_interference.py").read_text()
+    mutated = src.replace("\nBURSTS_AC = 4", "\nBURSTS_AC = 5", 1)
+    assert mutated != src
+    assert _stamp_of(monkeypatch, mutated) != _stamp_of(monkeypatch, src)

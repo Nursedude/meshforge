@@ -132,6 +132,10 @@ def airspy_capture(center_mhz: float, gain: int, tmpdir: str = "/dev/shm") -> Tu
 
 _STAMPED_FUNCS = ("judge_window", "run_fleet", "run_adjacent", "_window_status", "_products_mask",
                   "_line", "_skirt_of", "_label", "load_references", "set_reference")
+#: UPPER-CASE names that decide no number a row carries — hashing them split
+#: every SDR box's recurrence history on the 26469f3d deploy (2026-10-11).
+_UNSTAMPED_CONSTANTS = frozenset({"RTL_RESET_AFTER", "RTL_RESET_GIVE_UP", "USBRESET_TIMEOUT_S",
+                                  "_UNSTAMPED_CONSTANTS"})
 
 
 def analysis_stamp() -> str:
@@ -157,7 +161,8 @@ def analysis_stamp() -> str:
                     body = body[1:]
                 h.update(node.name.encode())
                 h.update("".join(ast.dump(n) for n in body).encode())
-            elif isinstance(node, ast.Assign) and all(isinstance(t, ast.Name) and t.id.isupper() for t in node.targets):
+            elif isinstance(node, ast.Assign) and all(isinstance(t, ast.Name) and t.id.isupper()
+                                                     and t.id not in _UNSTAMPED_CONSTANTS for t in node.targets):
                 h.update(ast.dump(node).encode())
     except (OSError, SyntaxError):
         h.update(b"unreadable-writer")

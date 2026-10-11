@@ -248,12 +248,14 @@ def render(state: str, rows: Sequence[Dict], now: Optional[float] = None) -> str
             out.append("  Never reset the USB hub: the LoRa radio shares it.")
 
     if row_device(fleet) == "rtl":
-        u = usb_resets(fleet)
+        # every fleet row, not the stamp-filtered set: a reset is a hardware
+        # fact, and a deploy that moves the analysis stamp must not hide it
+        u = usb_resets(fleet_all)
         if u["count"]:
-            out += ["", f"Auto USB reset: {u['count']} in the {len(fleet)} runs read · "
+            out += ["", f"Auto USB reset: {u['count']} in the {len(fleet_all)} runs read · "
                         + _reset_phrase(u, now)]
         else:
-            out += ["", f"Auto USB reset: none in the {len(fleet)} runs read "
+            out += ["", f"Auto USB reset: none in the {len(fleet_all)} runs read "
                         "(fires after 2 blind runs; off: MESHFORGE_SDR_AUTORESET=0)"]
         if u["held"]:
             out.append(f"  ⚠ HELD — {u['held']}")

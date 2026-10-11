@@ -520,3 +520,15 @@ def test_the_rtl_wedge_remediation_no_longer_forbids_the_reset_it_performs(rtl_w
         rtl_writer(NOW - 900 + 300 * k)
     t = v.render("ok", rtl_writer.rows, now=NOW)
     assert "Never reset the USB hub" not in t and "rtl_test" in t
+
+
+def test_a_reset_before_an_analysis_change_still_counts(rtl_writer):
+    """The pane filters RECURRENCE to the newest analysis stamp; reset history
+    is a hardware fact and must survive a deploy that moves the stamp."""
+    rtl_writer(NOW - 900); rtl_writer(NOW - 600)            # reset, old stamp
+    for r in rtl_writer.rows:
+        r["analysis"] = "old"
+    rtl_writer(NOW - 300, ok=True)
+    rtl_writer.rows[-1]["analysis"] = "new"
+    t = v.render("ok", rtl_writer.rows, now=NOW)
+    assert "Auto USB reset: 1 in the 3 runs read" in t and "recovered" in t
