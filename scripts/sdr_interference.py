@@ -87,6 +87,9 @@ def detect_device(pairs) -> Optional[str]:
     return "airspy" if "Airspy" in names else "rtl" if "RTL-SDR" in names else None
 CAPTURE_TIMEOUT_S = 5         # a 0.5 s burst takes ~1-2 s; 5 s is a dead device (review #3)
 ADJ_START, ADJ_STOP, ADJ_STEP = 870.2, 940.0, 2.4
+RTL_RESET_AFTER = 2           # blind fleet runs in a row before an automatic usbreset (operator 2026-10-11)
+RTL_RESET_GIVE_UP = 3         # futile resets per episode; then hold until a run returns samples
+USBRESET_TIMEOUT_S = 15
 ROLLING_ROWS = 288            # 24 h of 5-min runs for class B's rolling baseline
 MAX_BYTES = 20 * 1024 * 1024  # rotate to .1 past this
 
@@ -566,6 +569,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         t0 = time.monotonic()
+        hist: List[Dict] = []
         try:
             if absent_why:
                 row = dict(base, status="unknown", note=f"{absent_why} — nothing captured")
@@ -588,6 +592,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 row = dict(base, reference=ref_state, **run_fleet(capture, prev, refs, hist))
         except Exception as e:  # the witness row survives any analysis/IO bug (review #3)
             row = dict(base, status="error", note=f"{type(e).__name__}: {str(e)[:200]}")
+        if device == "rtl" and a.mode == "fleet" and not a.set_reference and not absent_why:
+            rtl_recover(hist, row)     # under run.lock: no capture can race the reset
         row["run_s"] = round(time.monotonic() - t0, 1)
         return _emit(path, row, a.stdout)
     finally:
@@ -616,6 +622,81 @@ def receiver_blind(row: Dict) -> Optional[str]:
                 return None
         reasons += list(w.get("reasons") or [])
     return "every burst in every window failed" + (f": {reasons[0]}" if reasons else "")
+
+
+def _usbreset_exec(target: str) -> subprocess.CompletedProcess:
+    """The one side effect (test seam). USBDEVFS_RESET needs write access to the
+    device node only — librtlsdr0's udev rule gives plugdev rw, so no sudo."""
+    return subprocess.run(["usbreset", target], capture_output=True, text=True,
+                          timeout=USBRESET_TIMEOUT_S)
+
+
+def _blind_episode(rows: Sequence[Dict]) -> Tuple[int, int]:
+    """(blind RTL fleet runs since the last reset, resets in this episode).
+
+    An episode is the run of blind rows back to the newest row that captured
+    something. Rows that say nothing about the receiver — skipped_overlap, the
+    rtl `unsupported` adjacent row, other devices — neither count nor end it.
+    Only rows whose bursts were ATTEMPTED count: no SDR on the bus or no
+    rtl_sdr installed is not a wedge, and a reset cannot cure it."""
+    streak = resets = 0
+    sealed = False
+    for r in reversed(rows):
+        if r.get("mode") != "fleet" or r.get("device") != "rtl" or not r.get("windows"):
+            continue
+        if not receiver_blind(r):
+            break
+        if r.get("usb_reset"):
+            resets += 1
+            sealed = True
+        if not sealed:
+            streak += 1
+    return streak, resets
+
+
+def rtl_recover(hist: Sequence[Dict], row: Dict) -> None:
+    """usbreset a wedged RTL-SDR after RTL_RESET_AFTER blind runs (2026-10-11).
+
+    moc1's E4000 dongle wedged three times (10-07 ~10 h, 10-08 ~8 h, 10-11
+    ~2 h): control path alive (`rtl_test` finds the tuner), bulk path dead
+    (0 bytes), no USB event — and a human `usbreset` cured it every time
+    (a sysfs re-authorize did not). Root cause UNKNOWN; the operator's RF-
+    coupling hypothesis waits on a short cable + ferrite.
+
+    Writes the attempt onto `row` (`usb_reset`) and the journal. `ok` means
+    usbreset exited 0, NOT that the receiver recovered — the next row is the
+    only evidence of that. Never raises: a failed reset is a witnessed fact."""
+    if not receiver_blind(row) or not row.get("windows"):
+        return
+    if os.environ.get("MESHFORGE_SDR_AUTORESET", "1").strip() == "0":
+        row["usb_reset_held"] = "auto-reset off (MESHFORGE_SDR_AUTORESET=0)"
+        return
+    streak, resets = _blind_episode(list(hist) + [row])
+    if streak < RTL_RESET_AFTER:
+        return
+    if resets >= RTL_RESET_GIVE_UP:
+        row["usb_reset_held"] = (f"{resets} resets this episode did not bring samples back — "
+                                 "holding until a run captures; reseat the dongle")
+        return
+    target = next((f"{v}:{p}" for v, p in (local_usb_pairs() or [])
+                   if sdr_view.SDR_USB_IDS.get((v, p)) == "RTL-SDR"), None)
+    attempt = {"attempt": resets + 1, "after_blind_runs": streak, "target": target}
+    if target is None:
+        # the dongle left the bus mid-run: nothing to reset, and not a wedge
+        row["usb_reset_held"] = "no RTL-SDR on the bus to reset"
+        return
+    try:
+        r = _usbreset_exec(target)
+        tail = (r.stderr or r.stdout or "").strip().splitlines()[-1:] or [""]
+        attempt.update(ok=r.returncode == 0, rc=r.returncode, detail=tail[0][:160])
+    except subprocess.TimeoutExpired:
+        attempt.update(ok=False, detail=f"usbreset hung past {USBRESET_TIMEOUT_S}s")
+    except OSError as e:
+        attempt.update(ok=False, detail=f"usbreset could not run: {e}")
+    row["usb_reset"] = attempt
+    print(f"sdr_interference: usbreset {target} after {streak} blind runs "
+          f"(attempt {attempt['attempt']}/{RTL_RESET_GIVE_UP}) -> "
+          f"{'ok' if attempt['ok'] else 'FAILED'}: {attempt['detail']}", file=sys.stderr)
 
 
 def _exit_code(row: Dict) -> int:

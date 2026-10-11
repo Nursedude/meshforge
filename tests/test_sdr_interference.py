@@ -677,3 +677,136 @@ def test_healthy_and_by_design_rows_are_never_blind():
     assert si.receiver_blind({"status": "ok", "windows": {}}) is None
     assert si.receiver_blind({"status": "unsupported", "note": "rtl adjacent"}) is None
     assert si.receiver_blind({"status": "skipped_overlap"}) is None
+
+
+# 2026-10-11 moc1: the RTL-SDR's bulk path wedged a THIRD time (10-07 ~10 h,
+# 10-08 ~8 h, 10-11 ~2 h); each episode ended only when a human ran
+# `usbreset`, which cured it every time (a sysfs re-authorize did not).
+# Operator 10-11: "build the auto-usbreset after 2 failed runs". The reset is
+# witnessed on the row that triggered it; that row still exits 1 (its data is
+# still blind) — the NEXT row is the evidence of recovery, never the reset rc.
+
+class _Resets:
+    def __init__(self, rc=0, stderr=""):
+        self.calls, self.rc, self.stderr = [], rc, stderr
+
+    def __call__(self, target):
+        self.calls.append(target)
+        return si.subprocess.CompletedProcess(["usbreset", target], self.rc, "", self.stderr)
+
+
+def _rtl_rx(center, gain):
+    return None, "rtl_sdr timed out after 5s"
+
+
+@pytest.fixture
+def rtl_box(ddir, monkeypatch, restore_device):
+    monkeypatch.setattr(si, "local_usb_pairs", lambda: [("1d6b", "0002"), ("0bda", "2838")])
+    monkeypatch.setattr(si.shutil, "which", lambda name, *_a, **_k: f"/usr/bin/{name}")
+    monkeypatch.delenv("MESHFORGE_SDR_AUTORESET", raising=False)
+    resets = _Resets()
+    monkeypatch.setattr(si, "_usbreset_exec", resets)
+    state = {"capture": _rtl_rx}
+    monkeypatch.setattr(si, "rtl_capture", lambda c, g: state["capture"](c, g))
+
+    def run(capture=_rtl_rx, mode="fleet"):
+        state["capture"] = capture
+        rc = si.main(["--mode", mode])
+        return rc, si.read_rows(ddir / "interference.jsonl")[-1]
+    run.resets = resets
+    return run
+
+
+def test_two_blind_rtl_runs_trigger_one_usbreset_and_still_fail_the_unit(rtl_box, capsys):
+    rc1, row1 = rtl_box()
+    assert rc1 == 1 and "usb_reset" not in row1 and rtl_box.resets.calls == []
+    rc2, row2 = rtl_box()
+    assert rc2 == 1                                   # this row's data is still blind
+    assert rtl_box.resets.calls == ["0bda:2838"]
+    assert row2["usb_reset"]["ok"] is True and row2["usb_reset"]["target"] == "0bda:2838"
+    assert row2["usb_reset"]["after_blind_runs"] == 2
+    assert "usbreset 0bda:2838" in capsys.readouterr().err   # the journal witness
+
+
+def test_the_streak_restarts_after_a_reset(rtl_box):
+    rtl_box(); rtl_box()                              # reset #1
+    rtl_box()
+    assert len(rtl_box.resets.calls) == 1             # one blind run since the reset
+    _, row = rtl_box()
+    assert len(rtl_box.resets.calls) == 2 and row["usb_reset"]["attempt"] == 2
+
+
+def test_a_run_with_samples_breaks_the_streak(rtl_box):
+    rtl_box()
+    rc, _ = rtl_box(quiet_capture)
+    assert rc == 0
+    rtl_box()
+    assert rtl_box.resets.calls == []
+
+
+def test_it_gives_up_after_three_futile_resets_until_samples_return(rtl_box):
+    for _ in range(6):
+        rtl_box()                                     # resets on runs 2, 4, 6
+    assert len(rtl_box.resets.calls) == 3
+    _, row = rtl_box(); _, row = rtl_box()
+    assert len(rtl_box.resets.calls) == 3             # held, and SAYS so
+    assert "usb_reset" not in row and "3" in row["usb_reset_held"]
+    rtl_box(quiet_capture)                            # recovered by other means
+    rtl_box(); rtl_box()
+    assert len(rtl_box.resets.calls) == 4             # the budget is per episode
+
+
+def test_overlap_and_unsupported_rows_neither_count_nor_break_the_streak(rtl_box, ddir):
+    rtl_box()
+    si.append_row(ddir / "interference.jsonl", {"mode": "fleet", "device": "rtl", "ts": 2.0,
+                                                "status": "skipped_overlap"})
+    rc, row = rtl_box(mode="adjacent")
+    assert row["status"] == "unsupported" and rtl_box.resets.calls == []
+    rtl_box()
+    assert rtl_box.resets.calls == ["0bda:2838"]
+
+
+def test_a_failed_usbreset_is_witnessed_never_raised(rtl_box, monkeypatch):
+    bad = _Resets(rc=1, stderr="Can't open device: Permission denied")
+    monkeypatch.setattr(si, "_usbreset_exec", bad)
+    rtl_box(); rc, row = rtl_box()
+    assert rc == 1 and row["usb_reset"]["ok"] is False
+    assert "Permission denied" in row["usb_reset"]["detail"]
+
+
+@pytest.mark.parametrize("exc", [si.subprocess.TimeoutExpired("usbreset", 15),
+                                 FileNotFoundError("usbreset")])
+def test_a_hung_or_missing_usbreset_is_witnessed_never_raised(rtl_box, monkeypatch, exc):
+    def boom(target):
+        raise exc
+    monkeypatch.setattr(si, "_usbreset_exec", boom)
+    rtl_box(); rc, row = rtl_box()
+    assert rc == 1 and row["usb_reset"]["ok"] is False and row["status"] == "unknown"
+
+
+def test_no_rtl_on_the_bus_is_not_reset(rtl_box, monkeypatch, ddir):
+    rtl_box()
+    monkeypatch.setattr(si, "local_usb_pairs", lambda: [("1d6b", "0002")])
+    rc, row = rtl_box()                               # auto: last device kept, nothing captured
+    assert rc == 1 and rtl_box.resets.calls == [] and "usb_reset" not in row
+
+
+def test_a_missing_rtl_sdr_binary_is_not_a_wedge(rtl_box, monkeypatch):
+    monkeypatch.setattr(si.shutil, "which",
+                        lambda name, *_a, **_k: None if name == "rtl_sdr" else f"/usr/bin/{name}")
+    rtl_box(); rtl_box(); rtl_box()
+    assert rtl_box.resets.calls == []
+
+
+def test_the_airspy_is_never_auto_reset(ddir, monkeypatch, restore_device):
+    resets = _Resets()
+    monkeypatch.setattr(si, "_usbreset_exec", resets)
+    for _ in range(3):
+        _fleet_main(ddir, monkeypatch, dead_capture)
+    assert resets.calls == []
+
+
+def test_autoreset_can_be_switched_off(rtl_box, monkeypatch):
+    monkeypatch.setenv("MESHFORGE_SDR_AUTORESET", "0")
+    rtl_box(); _, row = rtl_box(); rtl_box()
+    assert rtl_box.resets.calls == [] and "off" in row["usb_reset_held"]

@@ -19,8 +19,12 @@
 #
 # ⚠️ USER unit: probe_service_inactive cannot see it (#82). The witness is
 # the per-window age of the newest `ok` row, read by the TUI pane.
-# ⚠️ Never add a USB-reset "self-heal" here: the Airspy shares moc5's one
-# USB2 hub with the CH341 LoRa radio.
+# ⚠️ Never add a USB-reset "self-heal" for the AIRSPY: it shares moc5's one
+# USB2 hub with the CH341 LoRa radio. The ONE exception (operator 2026-10-11)
+# is the RTL-SDR, reset in-script (rtl_recover) after 2 blind runs: moc1's
+# E4000 wedged 3x and only a device-level usbreset cured it; its RTL and CH341
+# sit on separate root-hub ports and meshtasticd kept its PID through all
+# three resets. Off switch: Environment=MESHFORGE_SDR_AUTORESET=0
 
 [Unit]
 Description=MeshForge SDR interference watch (fleet windows)

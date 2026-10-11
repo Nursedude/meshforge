@@ -144,6 +144,10 @@ site (ECOMM kit: Starlink, inverters, generator) answers the field question.
   forever. N consecutive UNKNOWN → the pane prints the remediation
   (`airspy_info`; if "not found", reseat the Airspy) — in-app (MF018), never
   an auto-action. **Never a USB reset "self-heal": it is the radio's hub.**
+  *(Amended 2026-10-11, operator go: the RTL-SDR on moc1 IS auto-reset after
+  2 blind runs — `rtl_recover`; three bulk-path wedges, each cured only by a
+  device-level `usbreset`, radio on a separate root-hub port. The Airspy rule
+  above stands.)*
 - Surface: one read-only TUI pane on moc5. Per fleet channel and slice:
   class A/B/C/D findings with frequency, both B deltas, spur-map count,
   blocker_frames, and the blind-spot line always printed.
