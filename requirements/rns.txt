@@ -27,7 +27,7 @@
 # 1.2.5+mf.5 / 0.9.4+mf.0 until 2026-07-19; upstream 1.3.8 / 1.0.1 merged +
 # canaried + fleet-rolled 07-17..07-19 (see rns_138_merge_eval_2026_07_16.md).
 #   forks: github.com/Nursedude/reticulum  (branch meshforge, tag 1.3.8+mf.5)
-#          github.com/Nursedude/lxmf        (branch meshforge, tag 1.0.1+mf.5)
+#          github.com/Nursedude/lxmf        (branch meshforge, tag 1.0.1+mf.8)
 # +mf.1 (2026-05-30): #68 fix — bound LocalClientInterface connect (no thread hang).
 # +mf.2 (2026-05-30): #72 fix — bound shared-instance RPC recv (no rnstatus hang).
 # +mf.3 (2026-05-30): rnsd-SIGTERM fix — bound detach_interfaces() (CONTAINS but does
@@ -79,9 +79,13 @@
 #                     swallow the panic. Five fresh non-author passes before the
 #                     tag; 3.11 proven on the canary. lxmf unchanged (mf.6).
 # MF-FORK-PIN rns 1.3.8+mf.5
-# MF-FORK-PIN lxmf 1.0.1+mf.6
+# lxmf 1.0.1+mf.8 (2026-10-10): pin-only follow of rns +mf.5 (exact pin
+#                     rns==1.3.8+mf.5; mf.6's rns==mf.4 made a fresh install
+#                     ResolutionImpossible, CI run 38116130221). Carries mf.7's
+#                     backchannel kick (tagged 10-09, canaried once, now rolled).
+# MF-FORK-PIN lxmf 1.0.1+mf.8
 rns @ git+https://github.com/Nursedude/reticulum.git@3f91b93bdb1b7e994a84561f784c67ef4ad14fd3
-lxmf @ git+https://github.com/Nursedude/lxmf.git@22e0a7ce042ca36c3938c7789932c14921895730
+lxmf @ git+https://github.com/Nursedude/lxmf.git@d5a2c851d478c579f658d30c412f166c57226041
 
 # Cryptography / PyOpenSSL version alignment — BOTH bounds are load-bearing,
 # and the two packages MOVE TOGETHER. RNS's own constraint is only
