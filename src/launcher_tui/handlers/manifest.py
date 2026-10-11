@@ -848,7 +848,7 @@ HANDLER_MANIFEST = [
         "lifecycle": False,
         "error": None,
         "menu_items": [
-            ('sdr_watch', 'Interference Watch  what the Airspy timer saw (read-only)', None),
+            ('sdr_watch', 'Interference Watch  what the SDR timer saw (read-only)', None),
         ],
     },
     {

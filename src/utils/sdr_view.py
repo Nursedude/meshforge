@@ -180,6 +180,31 @@ def _recurrence(fleet: Sequence[Dict], window: str, key: str, freq_key: str,
     return seen, ok, first
 
 
+def usb_resets(fleet: Sequence[Dict]) -> Dict:
+    """What the writer's RTL auto-reset (sdr_interference.rtl_recover, operator
+    2026-10-11) did in these rows. ``recovered`` is read from the rows AFTER
+    the last reset — a capture, never usbreset's own rc. ``held`` is the newest
+    row's hold note while the receiver is still blind."""
+    resets = [(i, r) for i, r in enumerate(fleet) if r.get("usb_reset")]
+    out: Dict = {"count": len(resets), "held": None}
+    if resets:
+        i, r = resets[-1]
+        after = fleet[i + 1:]
+        out.update(last_ts=r.get("ts"), last=r["usb_reset"],
+                   recovered=any(x.get("status") not in ("unknown", "error") for x in after))
+    newest = fleet[-1] if fleet else {}
+    if newest.get("usb_reset_held") and newest.get("status") in ("unknown", "error"):
+        out["held"] = newest["usb_reset_held"]
+    return out
+
+
+def _reset_phrase(u: Dict, now: float) -> str:
+    last = u["last"]
+    if not last.get("ok"):
+        return f"last {_age(now, u.get('last_ts'))} FAILED: {last.get('detail') or 'no detail'}"
+    return f"last {_age(now, u.get('last_ts'))} → {'recovered' if u['recovered'] else 'still blind'}"
+
+
 def render(state: str, rows: Sequence[Dict], now: Optional[float] = None) -> str:
     now = time.time() if now is None else now
     out = ["SDR Interference Watch — what this box's SDR timer recorded (read-only)", ""]
@@ -215,8 +240,23 @@ def render(state: str, rows: Sequence[Dict], now: Optional[float] = None) -> str
         reason = next((w["reasons"][0] for w in fleet[-1].get("windows", {}).values() if w.get("reasons")),
                       fleet[-1].get("note", "no reason recorded"))
         out += [f"⚠ The last {streak} fleet runs captured NOTHING: {reason}",
-                "  Check: " + RX_CHECK.get(row_device(fleet), "the SDR's own probe tool on this box."),
-                "  Never reset the USB hub: the LoRa radio shares it."]
+                "  Check: " + RX_CHECK.get(row_device(fleet), "the SDR's own probe tool on this box.")]
+        if row_device(fleet) == "rtl":
+            out.append("  The writer resets the RTL-SDR's own USB device after 2 blind runs "
+                       "(see Auto USB reset below).")
+        else:
+            out.append("  Never reset the USB hub: the LoRa radio shares it.")
+
+    if row_device(fleet) == "rtl":
+        u = usb_resets(fleet)
+        if u["count"]:
+            out += ["", f"Auto USB reset: {u['count']} in the {len(fleet)} runs read · "
+                        + _reset_phrase(u, now)]
+        else:
+            out += ["", f"Auto USB reset: none in the {len(fleet)} runs read "
+                        "(fires after 2 blind runs; off: MESHFORGE_SDR_AUTORESET=0)"]
+        if u["held"]:
+            out.append(f"  ⚠ HELD — {u['held']}")
 
     # Per-window witness: age of the newest row whose WINDOW was ok
     out += ["", "Witness — newest OK capture per window (stale after 15 min = UNKNOWN):"]
@@ -416,7 +456,7 @@ def summarize(state: str, rows: Sequence[Dict], usb: Optional[List[str]],
         row_dev not in ADJACENT_RX
     return dict(base, status="stale" if stale else "fresh", stale_windows=stale, adjacent_na=adjacent_na,
                 newest_ok_ts=max(known) if known else None, fleet_runs_read=len(fleet),
-                unknown_streak=streak,
+                unknown_streak=streak, usb_reset=usb_resets(fleet),
                 busy=busy, busy_runs=runs, foreign=foreign, carriers=carriers,
                 adjacent_ts=adj.get("ts") if adj else None, now=now)
 
@@ -462,6 +502,11 @@ def summary_line(s: Dict) -> str:
             body += f" · adjacent {_age(now, adj_ts)}"
             if now - adj_ts > ADJACENT_STALE_S:
                 body += " (STALE)"
+    u = s.get("usb_reset") or {}
+    if u.get("held"):
+        tail.append(f"⚠️ auto USB reset HELD — {u['held']}")
+    elif u.get("count"):
+        tail.append(f"🔁 auto USB reset ×{u['count']} ({_reset_phrase(u, now)})")
     return head + " · ".join([body] + tail)
 
 

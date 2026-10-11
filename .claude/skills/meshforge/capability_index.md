@@ -154,7 +154,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | `freq` | Frequency Slots — Channel calculator |  | sweep | ✓ 2026-09-25 dev/manager box | RFToolsHandler |
 | `link` | Link Budget — FSPL, Fresnel, range |  | sweep | ✓ 2026-09-25 dev/manager box | RFToolsHandler |
 | `sdr` | SDR Monitor — RF awareness (SoapySDR) |  | sweep | ◐ 2026-09-24 Airspy host | SDRHandler |
-| `sdr_watch` | Interference Watch — what the Airspy timer saw (read-only) |  | sweep | ◐ 2026-09-25 Airspy host | SDRWatchHandler |
+| `sdr_watch` | Interference Watch — what the SDR timer saw (read-only) |  | sweep | ◐ 2026-09-25 Airspy host | SDRWatchHandler |
 | `site` | Site Planner — Coverage estimation |  | sweep | ◐ 2026-09-25 dev/manager box | SitePlannerHandler |
 
 ## `rns`

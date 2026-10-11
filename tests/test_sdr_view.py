@@ -428,3 +428,95 @@ def test_a_receiver_with_no_adjacent_pass_says_na_without_a_witness_row():
     assert "adjacent n/a" in line and "UNKNOWN" not in line
     assert "adjacent UNKNOWN" in v.summary_line(
         v.summarize("ok", _fresh_rows()[:1], ["Airspy"], now=NOW))   # Airspy still owes one
+
+
+# ---- the RTL auto-USB-reset, on every surface (operator 2026-10-11) -----------
+# "the work we do needs to be in the domain's apps — the TUI — as
+# functionality": a reset the writer did must be SEEN by an operator without
+# the assistant — in the TUI pane, the Fleet Watchers line and web /fleet
+# (both read summary_line). Rows come from the WRITER's own rtl_recover.
+
+def _rtl_dead(c, g):
+    return None, "rtl_sdr timed out after 5s"
+
+
+@pytest.fixture
+def rtl_writer(monkeypatch):
+    si.set_device("rtl")
+    monkeypatch.setattr(si, "local_usb_pairs", lambda: [("0bda", "2838")])
+    monkeypatch.delenv("MESHFORGE_SDR_AUTORESET", raising=False)
+    result = {"rc": 0, "stderr": ""}
+    monkeypatch.setattr(si, "_usbreset_exec", lambda t: si.subprocess.CompletedProcess(
+        ["usbreset", t], result["rc"], "", result["stderr"]))
+    rows = []
+
+    def run(ts, ok=False):
+        if ok:
+            row = _rtl_rows(ts)[0]
+        else:
+            row = dict(si.run_fleet(_rtl_dead, None, {}, []), v=1, ts=ts, host="x",
+                       mode="fleet", device="rtl")
+            si.rtl_recover(list(rows), row)
+        rows.append(row)
+        return row
+    run.rows, run.result = rows, result
+    yield run
+    si.set_device("airspy")
+
+
+def test_a_reset_that_brought_samples_back_reads_recovered_everywhere(rtl_writer):
+    rtl_writer(NOW - 900); r = rtl_writer(NOW - 600)
+    assert r["usb_reset"]["ok"] is True                    # the writer really reset
+    rtl_writer(NOW - 300, ok=True); rtl_writer(NOW - 60, ok=True)
+    line = v.summary_line(v.summarize("ok", rtl_writer.rows, ["RTL-SDR"], now=NOW))
+    assert "🟢 fresh" in line and "auto USB reset ×1" in line and "recovered" in line
+    t = v.render("ok", rtl_writer.rows, now=NOW)
+    assert "Auto USB reset" in t and "1 in the" in t and "recovered" in t
+
+
+def test_a_reset_that_did_not_help_reads_still_blind(rtl_writer):
+    for k in range(3):
+        rtl_writer(NOW - 900 + 300 * k)
+    s = v.summarize("ok", rtl_writer.rows, ["RTL-SDR"], now=NOW)
+    line = v.summary_line(s)
+    assert "STALE" in line and "auto USB reset ×1" in line and "still blind" in line
+    assert "still blind" in v.render("ok", rtl_writer.rows, now=NOW)
+
+
+def test_a_failed_usbreset_says_so_with_its_reason(rtl_writer):
+    rtl_writer.result.update(rc=1, stderr="Can't open device: Permission denied")
+    rtl_writer(NOW - 600); rtl_writer(NOW - 300)
+    line = v.summary_line(v.summarize("ok", rtl_writer.rows, ["RTL-SDR"], now=NOW))
+    t = v.render("ok", rtl_writer.rows, now=NOW)
+    for out in (line, t):
+        assert "FAILED" in out and "Permission denied" in out
+
+
+def test_a_held_reset_is_loud_on_the_line_and_the_pane(rtl_writer):
+    for k in range(8):                                     # 3 futile resets, then held
+        rtl_writer(NOW - 2400 + 300 * k)
+    assert "usb_reset_held" in rtl_writer.rows[-1]
+    line = v.summary_line(v.summarize("ok", rtl_writer.rows, ["RTL-SDR"], now=NOW))
+    t = v.render("ok", rtl_writer.rows, now=NOW)
+    for out in (line, t):
+        assert "HELD" in out and "reseat" in out
+
+
+def test_no_reset_is_silent_on_the_line_but_the_rtl_pane_says_none(rtl_writer):
+    rtl_writer(NOW - 60, ok=True)
+    line = v.summary_line(v.summarize("ok", rtl_writer.rows, ["RTL-SDR"], now=NOW))
+    assert "reset" not in line.lower()
+    assert "Auto USB reset: none in the" in v.render("ok", rtl_writer.rows, now=NOW)
+
+
+def test_the_airspy_pane_never_mentions_an_auto_reset_and_keeps_the_hub_rule():
+    rows = [_row(si.run_fleet(dead, None, {}, []), NOW - 300 * k) for k in (3, 2, 1)]
+    t = v.render("ok", rows, now=NOW)
+    assert "Auto USB reset" not in t and "Never reset the USB hub" in t
+
+
+def test_the_rtl_wedge_remediation_no_longer_forbids_the_reset_it_performs(rtl_writer):
+    for k in range(3):
+        rtl_writer(NOW - 900 + 300 * k)
+    t = v.render("ok", rtl_writer.rows, now=NOW)
+    assert "Never reset the USB hub" not in t and "rtl_test" in t

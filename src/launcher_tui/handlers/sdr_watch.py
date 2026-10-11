@@ -1,4 +1,4 @@
-"""SDR Watch Handler — what the Airspy timer recorded, on one screen.
+"""SDR Watch Handler — what the SDR timer recorded (Airspy or RTL-SDR), on one screen.
 
 Renders ``utils.sdr_view`` for THIS box: per-window witness (age of the
 newest OK capture — never merely the newest row), the latest fleet run's
@@ -6,7 +6,8 @@ interference classes with recurrence, class B's floor deltas, the hourly
 adjacent-band pass, and the blind spots every time.
 
 ⚠️ READ-ONLY. It reads the JSONL the ``meshforge-sdr`` user timer writes and
-never opens the Airspy — the device belongs to the timer. Distinct from the
+never opens the SDR — the device belongs to the timer. On an RTL box it also
+shows the writer's auto USB resets (2026-10-11) — it never performs one. Distinct from the
 older "SDR Monitor" (SoapySDR live capture, which falls back to a MOCK
 backend where SoapySDR is absent).
 """
@@ -25,14 +26,14 @@ if str(_SRC) not in sys.path:
 
 
 class SDRWatchHandler(BaseHandler):
-    """Interference the Airspy timer recorded — with witness and blind spots."""
+    """Interference the SDR timer recorded — with witness and blind spots."""
 
     handler_id = "sdr_watch"
     menu_section = "rf_sdr"
 
     def menu_items(self):
         return [
-            ("sdr_watch", "Interference Watch  what the Airspy timer saw (read-only)", None),
+            ("sdr_watch", "Interference Watch  what the SDR timer saw (read-only)", None),
         ]
 
     def execute(self, action):
