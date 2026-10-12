@@ -223,3 +223,62 @@ class TestConfig:
                  / "templates" / "openwrt" / "meshforge-scout").read_text()
         assert "tr -cd 'A-Za-z0-9._-' | cut -c1-64" in agent
         assert r"[A-Za-z0-9._-]{1,64}" in SCRIPT.read_text()
+
+
+class TestDeclaredPosture:
+    """A scout box DECLARED away (detached field kit, dormant) is expected to
+    be unreachable. 2026-10-11, the first real ecomm deploy: alaula was
+    declared detached for the BIARC demo and the cron still paged FAIL(1)
+    every 30 min for the whole window, while the watchdog probe already read
+    the same declaration as `inert`. Only the UNREACHABLE path is gated: a
+    declared box that answers is pulled as usual (fresh evidence on rejoin),
+    and an unreadable or invalid posture file pages as before (a broken
+    declaration must not silence anything)."""
+
+    def _declare(self, sb, box, state):
+        from utils import fleet_posture as fp
+        now = time.time()
+        doc = fp.declare({"boxes": {}}, box, state, now + 3600, now=now)
+        p = sb.home / "fleet_posture.json"
+        p.write_text(json.dumps(doc))
+        return {"MESHFORGE_FLEET_POSTURE": str(p), "SCOUT_BOX": "owrt-test"}
+
+    @pytest.mark.parametrize("state", ["detached", "dormant"])
+    def test_unreachable_while_declared_away_is_skipped_with_a_witness(self, sandbox, state):
+        env = self._declare(sandbox, "owrt-test", state)
+        run(sandbox, make_tick(maps=111))
+        before = mirrored(sandbox)
+        rc, log = run(sandbox, "", fetch_exit=255, env_extra=env)
+        assert rc == 0, log
+        last = log.strip().splitlines()[-1]
+        assert "SKIP" in last and state in last, last
+        assert mirrored(sandbox) == before
+
+    def test_declared_box_that_answers_is_pulled_as_usual(self, sandbox):
+        env = self._declare(sandbox, "owrt-test", "detached")
+        rc, log = run(sandbox, make_tick(maps=112), env_extra=env)
+        assert rc == 0, log
+        assert "OK owrt-test" in log.strip().splitlines()[-1]
+        assert mirrored(sandbox)["meshtasticd"]["maps"] == 112
+
+    def test_another_box_declared_does_not_silence_this_one(self, sandbox):
+        env = self._declare(sandbox, "some-other-box", "detached")
+        rc, log = run(sandbox, "", fetch_exit=255, env_extra=env)
+        assert rc == 1
+        assert "unreachable" in log
+
+    def test_unreadable_posture_file_still_pages(self, sandbox):
+        p = sandbox.home / "fleet_posture.json"
+        p.write_text("{not json")
+        rc, log = run(sandbox, "", fetch_exit=255,
+                      env_extra={"MESHFORGE_FLEET_POSTURE": str(p), "SCOUT_BOX": "owrt-test"})
+        assert rc == 1
+        assert "unreachable" in log
+
+    def test_box_name_derived_from_the_ssh_target_when_unset(self, sandbox):
+        env = self._declare(sandbox, "owrt-test", "detached")
+        env.pop("SCOUT_BOX")
+        env["SCOUT_SSH"] = "root@owrt-test.example.internal"
+        rc, log = run(sandbox, "", fetch_exit=255, env_extra=env)
+        assert rc == 0, log
+        assert "SKIP" in log.strip().splitlines()[-1]

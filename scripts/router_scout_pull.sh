@@ -22,6 +22,10 @@
 #   unreachable / garbage tick  -> FAIL (exit 1); the PREVIOUS mirrored
 #       tick is NEVER touched — it ages honestly and the watchdog's
 #       router_scout_degraded probe sees a stale mirror for what it is.
+#   unreachable while the box is DECLARED detached/dormant (fleet_posture)
+#                               -> SKIP (exit 0) with a witness line naming
+#       the declaration; mirror untouched. A declared box that answers is
+#       pulled as usual; an unreadable posture pages as above (2026-10-12).
 #
 # Consumers of the mirrored tick:
 #   ~/.local/share/meshforge/router_scout/<device>_tick.json
@@ -63,9 +67,42 @@ if [ -z "$REMOTE_TICK" ]; then
     exit 1
 fi
 
+# Declared posture of the scout box: "<state> <until>" when it is declared
+# SILENT (detached field kit / dormant), empty otherwise. ONE reader — the
+# Python SSOT (utils.fleet_posture), as fleet_offline_check.sh does — so expiry,
+# cap and clock rules agree by construction. Any reader failure, an invalid
+# file or an undeclared box prints nothing: the pull pages exactly as before.
+# The box name is SCOUT_BOX, else the host part of SCOUT_SSH (user@ and the
+# domain stripped) — the name an operator declares posture under.
+declared_away() {
+    local box="${SCOUT_BOX:-}"
+    if [ -z "$box" ]; then
+        box="${SSH_TARGET##* }"; box="${box##*@}"; box="${box%%.*}"
+    fi
+    [ -n "$box" ] || return 0
+    SCOUT_POSTURE_BOX="$box" PYTHONPATH="$(dirname "$0")/../src" timeout 20 python3 - <<'PYPOSTURE' 2>/dev/null
+import os
+try:
+    from utils import fleet_posture as fp
+    bp = fp.silenced_peer(os.environ["SCOUT_POSTURE_BOX"], fp.read_posture())
+    if bp is not None:
+        print("%s %s" % (bp.state, fp.fmt_ts(bp.until) if bp.until else "until-unknown"))
+except Exception:
+    pass
+PYPOSTURE
+}
+
 RAW="$(fetch_tick)"
 rc=$?
 if [ "$rc" -ne 0 ] || [ -z "$RAW" ]; then
+    away="$(declared_away)"
+    if [ -n "$away" ]; then
+        # Expected absence, not a failure — but never a silent one: the
+        # witness names the declaration, and the previous mirror ages as
+        # always (probe_router_scout_degraded reads the same posture: inert).
+        log "SKIP declared ${away% *} until ${away#* } — unreachable as declared (fetch rc=$rc); previous mirror left untouched"
+        exit 0
+    fi
     log "FAIL unreachable: fetch rc=$rc, ${#RAW} bytes — previous mirror left untouched"
     exit 1
 fi
