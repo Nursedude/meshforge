@@ -95,17 +95,30 @@ def test_meshtasticd_probe_failure_is_reported_not_fatal(tmp_path):
     empty `tmp.*` dir leaked into tmpfs per run — ~5/day on the manager box
     from the suite alone. A stub meshtasticd that exits 1 makes this
     deterministic regardless of the fence.
+
+    The probe only runs when a meshtasticd config.yaml exists, so the test
+    brings its own config dir (MESHFORGE_MESHTASTICD_CONFIG_DIR). It first
+    read /etc/meshtasticd: green on the author's box, red on CI for five
+    commits (the runner has no config.yaml, the branch never ran, and the
+    leak check below was vacuous there).
     """
     stub_bin = tmp_path / "bin"
     stub_bin.mkdir()
     stub = stub_bin / "meshtasticd"
     stub.write_text("#!/bin/sh\nexit 1\n")
     stub.chmod(0o755)
+    cfg_dir = tmp_path / "meshtasticd"
+    (cfg_dir / "config.d").mkdir(parents=True)
+    (cfg_dir / "available.d").mkdir()
+    (cfg_dir / "config.yaml").write_text("Lora:\n  Module: auto\nWebserver:\n  Port: 9443\n")
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     out = _verify(tmp_path, None,
                   PATH=f"{stub_bin}{os.pathsep}{os.environ.get('PATH', '')}",
-                  TMPDIR=str(scratch))
+                  TMPDIR=str(scratch),
+                  MESHFORGE_MESHTASTICD_CONFIG_DIR=str(cfg_dir))
+    # The script read THIS config, not the machine's: the probe branch ran.
+    assert f"{cfg_dir}/config.yaml" in out, out
     assert "Radio module" in out and "UNKNOWN" in out, out
     assert "Total checks:" in out, out  # the run reached its summary
     leaked = [p.name for p in scratch.iterdir() if p.name.startswith("tmp.")]

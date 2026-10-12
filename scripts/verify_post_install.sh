@@ -336,7 +336,9 @@ log ""
 # ─────────────────────────────────────────────────────────────────
 log "${BOLD}[3/6] meshtasticd Configuration${NC}"
 
-CONFIG_DIR="/etc/meshtasticd"
+# Overridable like MESHFORGE_NOC_YAML, so a test can bring its own config
+# instead of reading the machine's (tests/test_verify_install_mode.py).
+CONFIG_DIR="${MESHFORGE_MESHTASTICD_CONFIG_DIR:-/etc/meshtasticd}"
 # The checkout this script belongs to (its overlay_kind.py helper).
 VERIFY_SCRIPT_DIR="${VERIFY_SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 CONFIG_YAML="$CONFIG_DIR/config.yaml"
