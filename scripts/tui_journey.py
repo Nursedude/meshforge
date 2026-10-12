@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -342,22 +343,26 @@ def run_child(journey, timeout=60):
     # Own session: on timeout the WHOLE group dies (unshare → bash → sim +
     # child); subprocess.run's timeout kills only `unshare` and orphans the
     # rest (a hung 2026-09-27 run left the sim and the child running).
-    p = subprocess.Popen(cmd, cwd=str(REPO), env=env, stdout=subprocess.PIPE,
-                         stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
-        stdout, stderr = p.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
+        p = subprocess.Popen(cmd, cwd=str(REPO), env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, start_new_session=True)
         try:
-            os.killpg(p.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        p.communicate()
-        return {"error": f"did not return within {timeout}s (process group killed)"}
-    line = [l for l in stdout.splitlines() if l.startswith("__RESULT__")]
-    if not line:
-        tail = (stderr or stdout).strip().splitlines()
-        return {"error": "child produced no result: " + (tail[-1] if tail else "no output")}
-    return json.loads(line[0][len("__RESULT__"):])
+            stdout, stderr = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            p.communicate()
+            return {"error": f"did not return within {timeout}s (process group killed)"}
+        line = [l for l in stdout.splitlines() if l.startswith("__RESULT__")]
+        if not line:
+            tail = (stderr or stdout).strip().splitlines()
+            return {"error": "child produced no result: " + (tail[-1] if tail else "no output")}
+        return json.loads(line[0][len("__RESULT__"):])
+    finally:
+        # The child's TMPDIR; /tmp is tmpfs on the fleet (2026-10-11 leak sweep).
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def screen_text(r) -> str:

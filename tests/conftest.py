@@ -117,10 +117,20 @@ def _install_sudo_fence():
     return d
 
 
+def pytest_unconfigure(config):
+    """Release the host fence dir. /tmp is tmpfs on the fleet: one leaked
+    fence per pytest invocation had accumulated 3,719 dirs on the manager box
+    by 2026-10-11 (TestTempDirsAreReleased pins the class)."""
+    import shutil
+    d = getattr(config, "_mf_host_fence_dir", None)
+    if d:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def pytest_configure(config):
     """Register custom markers."""
     if os.environ.get("MF_TESTS_ALLOW_REAL_SUDO") != "1":
-        _install_sudo_fence()
+        config._mf_host_fence_dir = _install_sudo_fence()
     config.addinivalue_line(
         "markers", "hardware: mark test as requiring hardware (skipped in CI)"
     )

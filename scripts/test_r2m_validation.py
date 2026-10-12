@@ -36,7 +36,9 @@ binds ports — it joins rnsd's shared instance instead.
 from __future__ import annotations
 
 import argparse
+import atexit
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -59,6 +61,9 @@ loglevel = 4
 def _make_client_configdir() -> str:
     """Materialize a throwaway client-only RNS configdir."""
     d = tempfile.mkdtemp(prefix="meshforge_r2m_test_")
+    # Registered BEFORE RNS.Reticulum() registers its exit handler, so atexit's
+    # LIFO order runs RNS's teardown first and this removal after (tmpfs).
+    atexit.register(shutil.rmtree, d, ignore_errors=True)
     (Path(d) / "config").write_text(CLIENT_CONFIG)
     return d
 

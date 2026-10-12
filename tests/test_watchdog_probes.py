@@ -10485,7 +10485,11 @@ def _prop_enrolled_wants():
     verdict that flips with the host ([[feedback_tests_must_pin_ambient_state]],
     the exact trap the synth-soak port hit on 2026-08-09).
     """
-    d = Path(tempfile.mkdtemp(prefix="prop-wants-")) / "timers.target.wants"
+    import atexit
+    import shutil
+    root = Path(tempfile.mkdtemp(prefix="prop-wants-"))
+    atexit.register(shutil.rmtree, str(root), ignore_errors=True)  # tmpfs
+    d = root / "timers.target.wants"
     d.mkdir(parents=True)
     (d / _PROP_TIMER_UNIT).write_text("[Timer]\n", encoding="utf-8")
     return [str(d)]

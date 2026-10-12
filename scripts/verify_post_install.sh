@@ -372,7 +372,12 @@ if [[ -f "$CONFIG_YAML" ]]; then
     MODULE=""; MT_OUT=""
     if [[ -n "$MT_BIN" ]]; then
         MT_TMP=$(mktemp -d)
-        MT_OUT=$(timeout 20 unshare -rn "$MT_BIN" --output-yaml -c "$CONFIG_YAML" -d "$MT_TMP" 2>/dev/null)
+        # `|| true`: this file runs under `set -e`, and a meshtasticd that cannot
+        # answer (bad config, missing libs) exits non-zero — without it the
+        # whole verify aborted HERE with no summary and leaked $MT_TMP (tmpfs)
+        # on every run (2026-10-11). The empty-MODULE branch below is the
+        # intended report for that case.
+        MT_OUT=$(timeout 20 unshare -rn "$MT_BIN" --output-yaml -c "$CONFIG_YAML" -d "$MT_TMP" 2>/dev/null) || true
         rm -rf "$MT_TMP"
         MODULE=$(printf '%s\n' "$MT_OUT" | awk '/^Lora:/{l=1;next} /^[^ ]/{l=0} l && $1=="Module:"{print $2; exit}')
     fi

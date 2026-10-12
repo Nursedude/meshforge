@@ -329,8 +329,11 @@ class TestProbeResourceCanary:
         suite — enrolled on moc, absent everywhere else, i.e. a verdict that
         flips with the host ([[feedback_tests_must_pin_ambient_state]]).
         """
-        d = (pathlib.Path(tempfile.mkdtemp(prefix="canary-wants-"))
-             / "timers.target.wants")
+        import atexit
+        import shutil
+        root = pathlib.Path(tempfile.mkdtemp(prefix="canary-wants-"))
+        atexit.register(shutil.rmtree, str(root), ignore_errors=True)  # tmpfs
+        d = root / "timers.target.wants"
         d.mkdir(parents=True)
         (d / "meshforge-gateway-resource-canary.timer").write_text(
             "[Timer]\n", encoding="utf-8")

@@ -75,13 +75,41 @@ def test_missing_or_garbage_is_unknown_never_false(tmp_path):
                     "meshtasticd") == "unknown"
 
 
-def _verify(tmp_path, yaml_text):
+def _verify(tmp_path, yaml_text, **extra_env):
     noc = tmp_path / "noc.yaml"
     if yaml_text is not None:
         noc.write_text(yaml_text)
     r = subprocess.run(["bash", SCRIPT], capture_output=True, text=True, timeout=180,
-                       env=dict(os.environ, MESHFORGE_NOC_YAML=str(noc)))
+                       env=dict(os.environ, MESHFORGE_NOC_YAML=str(noc), **extra_env))
     return re.sub(r"\x1b\[[0-9;]*m", "", r.stdout + r.stderr)
+
+
+def test_meshtasticd_probe_failure_is_reported_not_fatal(tmp_path):
+    """A meshtasticd that cannot answer `--output-yaml` (bad config, refused
+    under the test host fence, missing libs) must be REPORTED as the script's
+    own "Radio module UNKNOWN" branch intends — not abort the run.
+
+    2026-10-11: the script runs under `set -e`, so the failing command
+    substitution killed it between `mktemp -d` and `rm -rf`: the summary never
+    printed (the operator saw checks stop mid-list with no verdict) and one
+    empty `tmp.*` dir leaked into tmpfs per run — ~5/day on the manager box
+    from the suite alone. A stub meshtasticd that exits 1 makes this
+    deterministic regardless of the fence.
+    """
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+    stub = stub_bin / "meshtasticd"
+    stub.write_text("#!/bin/sh\nexit 1\n")
+    stub.chmod(0o755)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    out = _verify(tmp_path, None,
+                  PATH=f"{stub_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+                  TMPDIR=str(scratch))
+    assert "Radio module" in out and "UNKNOWN" in out, out
+    assert "Total checks:" in out, out  # the run reached its summary
+    leaked = [p.name for p in scratch.iterdir() if p.name.startswith("tmp.")]
+    assert leaked == [], f"temp dir(s) left behind: {leaked}"
 
 
 def test_client_install_gets_skips_not_fails(tmp_path):

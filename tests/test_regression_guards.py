@@ -1271,19 +1271,18 @@ class TestDetectorHonesty:
     tests/test_host_probe_check.py.)
     """
 
-    def _collector(self):
-        import tempfile
-        from pathlib import Path
+    def _collector(self, d):
+        # `d` is pytest's tmp_path — released by pytest. A bare mkdtemp() here
+        # leaked 3 `map_settings.json` dirs into tmpfs per run (2026-10-11).
         from utils.map_data_collector import MapDataCollector
-        d = Path(tempfile.mkdtemp())
         return MapDataCollector(cache_dir=d, config_dir=d, enable_history=False)
 
-    def test_unknown_service_state_is_not_read_as_absent(self):
+    def test_unknown_service_state_is_not_read_as_absent(self, tmp_path):
         sys.path.insert(0, SRC_DIR)
         try:
             from unittest.mock import patch, MagicMock
             from utils.service_check import ServiceState
-            c = self._collector()
+            c = self._collector(tmp_path)
             with patch('utils.service_check.check_service') as cs:
                 cs.return_value = MagicMock(state=ServiceState.UNKNOWN)
                 # UNKNOWN is ambiguous → must read PRESENT (don't seize the radio).
@@ -1292,11 +1291,11 @@ class TestDetectorHonesty:
             if SRC_DIR in sys.path:
                 sys.path.remove(SRC_DIR)
 
-    def test_check_failure_is_not_read_as_absent(self):
+    def test_check_failure_is_not_read_as_absent(self, tmp_path):
         sys.path.insert(0, SRC_DIR)
         try:
             from unittest.mock import patch
-            c = self._collector()
+            c = self._collector(tmp_path)
             with patch('utils.service_check.check_service',
                        side_effect=OSError("boom")):
                 assert c._meshtasticd_present() is True
@@ -1304,12 +1303,12 @@ class TestDetectorHonesty:
             if SRC_DIR in sys.path:
                 sys.path.remove(SRC_DIR)
 
-    def test_only_not_installed_reads_as_absent(self):
+    def test_only_not_installed_reads_as_absent(self, tmp_path):
         sys.path.insert(0, SRC_DIR)
         try:
             from unittest.mock import patch, MagicMock
             from utils.service_check import ServiceState
-            c = self._collector()
+            c = self._collector(tmp_path)
             with patch('utils.service_check.check_service') as cs:
                 cs.return_value = MagicMock(state=ServiceState.NOT_INSTALLED)
                 assert c._meshtasticd_present() is False  # the ONLY absent state
@@ -2566,3 +2565,58 @@ class TestPrivilegedPycachePrefix:
         assert own_launch == [], (
             "scripts/meshforge-terminal.sh builds its own launch command instead of "
             "delegating: " + "; ".join(own_launch))
+
+
+class TestTempDirsAreReleased:
+    """Enforce: every ``tempfile.mkdtemp`` has a release path in the same module.
+
+    2026-10-11: ``/tmp`` on the fleet is tmpfs (RAM). Measured on the manager
+    box: 3,719 ``mf-host-fence-*`` dirs (the conftest sudo fence — one per
+    pytest invocation, never removed), 3,821 ``tmp*`` dirs holding a
+    ``map_settings.json`` (a collector helper here that called ``mkdtemp()``
+    with no teardown — 3 per run of this file) and 236 ``prop-wants-*`` dirs,
+    all leaked since 09-27 at ~250/day, inside the user slice's MemoryMax.
+    ``TemporaryDirectory`` and pytest's ``tmp_path`` clean up by construction;
+    a bare ``mkdtemp`` only does if the module ALSO owns an ``rmtree`` (direct,
+    ``addCleanup``, or ``atexit``). This guard is AST-based so its own source
+    does not match itself.
+    """
+
+    SCAN_DIRS = ("tests", "src", "scripts")
+
+    @staticmethod
+    def _mkdtemp_calls_without_release(path):
+        import ast as _ast
+        try:
+            tree = _ast.parse(open(path, encoding="utf-8").read(), filename=path)
+        except (SyntaxError, UnicodeDecodeError):
+            return []
+        calls, released = [], False
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Call):
+                fn = node.func
+                name = fn.attr if isinstance(fn, _ast.Attribute) else getattr(fn, "id", None)
+                if name == "mkdtemp":
+                    calls.append(node.lineno)
+            name = (node.attr if isinstance(node, _ast.Attribute)
+                    else node.id if isinstance(node, _ast.Name) else None)
+            if name in ("rmtree", "addCleanup"):
+                released = True
+        return [] if released else calls
+
+    def test_every_mkdtemp_module_owns_a_release(self):
+        violations = []
+        for sub in self.SCAN_DIRS:
+            for root, _dirs, files in os.walk(os.path.join(REPO_ROOT, sub)):
+                for f in files:
+                    if not f.endswith(".py"):
+                        continue
+                    p = os.path.join(root, f)
+                    for ln in self._mkdtemp_calls_without_release(p):
+                        violations.append(f"{os.path.relpath(p, REPO_ROOT)}:{ln}")
+        assert not violations, (
+            "tempfile.mkdtemp() with no rmtree/addCleanup in the module — the "
+            "dir leaks into tmpfs on every run (measured 7,776 dirs on 2026-10-11).\n"
+            "Use tmp_path / TemporaryDirectory, or register shutil.rmtree.\n\n"
+            + "\n".join(violations)
+        )
