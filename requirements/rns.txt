@@ -26,8 +26,8 @@
 # (upstream Carrier Switch, Dec 2025). Baseline history: field-proven
 # 1.2.5+mf.5 / 0.9.4+mf.0 until 2026-07-19; upstream 1.3.8 / 1.0.1 merged +
 # canaried + fleet-rolled 07-17..07-19 (see rns_138_merge_eval_2026_07_16.md).
-#   forks: github.com/Nursedude/reticulum  (branch meshforge, tag 1.3.8+mf.5)
-#          github.com/Nursedude/lxmf        (branch meshforge, tag 1.0.1+mf.8)
+#   forks: github.com/Nursedude/reticulum  (branch meshforge, tag 1.3.8+mf.7)
+#          github.com/Nursedude/lxmf        (branch meshforge, tag 1.0.1+mf.10)
 # +mf.1 (2026-05-30): #68 fix — bound LocalClientInterface connect (no thread hang).
 # +mf.2 (2026-05-30): #72 fix — bound shared-instance RPC recv (no rnstatus hang).
 # +mf.3 (2026-05-30): rnsd-SIGTERM fix — bound detach_interfaces() (CONTAINS but does
@@ -78,14 +78,31 @@
 #                     (RNS_DETACH_TIMEOUT), CRITICAL witness; a plugin cannot
 #                     swallow the panic. Five fresh non-author passes before the
 #                     tag; 3.11 proven on the canary. lxmf unchanged (mf.6).
-# MF-FORK-PIN rns 1.3.8+mf.5
+# 1.3.8 base, +mf.6 (2026-10-10): a PipeInterface child that stops draining costs
+#                     that interface, not rnsd — writer thread + bounded queue,
+#                     honest `online` (stock blocked the CALLER's thread, i.e.
+#                     Transport, on a full stdin pipe). +mf.7 (2026-10-12): a
+#                     child that is BEHIND costs a forwarding reader one 0.5 s
+#                     wait per congestion episode and stops flapping (caught-up
+#                     persists 0.5 s of offers; pipe sampled on waited puts;
+#                     offline offers counted; respawn closes the episode; the
+#                     rnstatus `Dropped` line says which). Six fresh non-author
+#                     passes across the arc, the final cut's pass TAG-READY
+#                     (2 formerly unpinned branches pinned red-first). No box
+#                     runs a PipeInterface today: this bump is substrate parity
+#                     for the SMCI-as-child canary, not a cure live anywhere.
+#                     Python 3.13 proven; 4 KB-page kernels unchecked.
+# MF-FORK-PIN rns 1.3.8+mf.7
 # lxmf 1.0.1+mf.8 (2026-10-10): pin-only follow of rns +mf.5 (exact pin
 #                     rns==1.3.8+mf.5; mf.6's rns==mf.4 made a fresh install
 #                     ResolutionImpossible, CI run 38116130221). Carries mf.7's
 #                     backchannel kick (tagged 10-09, canaried once, now rolled).
-# MF-FORK-PIN lxmf 1.0.1+mf.8
-rns @ git+https://github.com/Nursedude/reticulum.git@3f91b93bdb1b7e994a84561f784c67ef4ad14fd3
-lxmf @ git+https://github.com/Nursedude/lxmf.git@d5a2c851d478c579f658d30c412f166c57226041
+# lxmf 1.0.1+mf.10 (2026-10-12): pin-only follow of rns +mf.7 (exact pin
+#                     rns==1.3.8+mf.7; mf.9 = the never-pinned mf.6 follow).
+#                     No LXMF code change since mf.8.
+# MF-FORK-PIN lxmf 1.0.1+mf.10
+rns @ git+https://github.com/Nursedude/reticulum.git@e7c89573daa4a20df42343f46e4b7a9d81473d6b
+lxmf @ git+https://github.com/Nursedude/lxmf.git@29f992d63d657a4968d211d22c173a7d85ab7d64
 
 # Cryptography / PyOpenSSL version alignment — BOTH bounds are load-bearing,
 # and the two packages MOVE TOGETHER. RNS's own constraint is only
