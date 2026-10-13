@@ -147,6 +147,29 @@ stranger: README-only install, no fleet registry, re-imaged before each rc.
    MeshCore-Interface` 1.0.0 (research artifact rev 4, 10-01). Lands MA-first (its
    radio), contract shared; containment (R5/LATER #10) BEFORE it ships to anyone.
 
+**BEST-IN-CLASS ORDER (operator 2026-10-13, after the cloud-session white paper
+"Hub or Operations Center", artifact `JwQ2Fe5MuUJSbmtSvYUewo`).** Compete as a
+cross-mesh BRIDGE, not a multi-inbox client: lead on delivery truth and route,
+not on phone convenience. The cloud session's patch (`meshforge-moc-all-r3`,
+3,669 lines, audit bundle `2ent1ZJfgo5Yi2wZunJ8v1`) is an ARTIFACT, never applied
+whole; each item below lands on its own, re-tested here. In order:
+1. **BIC-3 web auth** (token/session, viewer/operator roles) BEFORE anything on
+   the web can transmit. Accept: an unauthenticated LAN POST is refused + logged.
+2. **BIC-1 `/inbox`** from the patch, after BIC-3. Sends read "handed to radio ·
+   unconfirmed", never "delivered".
+3. **BIC-15 operator line** (LXMF address, allowlisted read-only oracle + pages
+   over RNS) — fix first: an unreadable identity is silently RECREATED (new
+   address, corpse overwritten); quarantine + refuse + witness instead.
+4. **BIC-2 = NEXT #4 per-leg delivery truth**, shown per message, UNKNOWN first-class.
+5. **BIC-4 interop vs stock RNS 1.5.7**, both directions, real hardware → merge-forward
+   or stay-pinned decision record.
+6. **BIC-6 = NEXT #5 best-available-route.**
+7. **BIC-5 credibility sweep**: generated version/test counts, delete the unbuilt
+   `aprs_gateway` / `winlink_interface` / `plugin_marketplace` flags in `core/edition.py`.
+8. **HOLD BIC-13b/c** (per-box CA + `wss://`): a CA install per phone, an
+   unexplained wss handshake stall, a large surface. Revisit only when outside
+   users (BIC-14) ask for an installed app.
+
 **NEXT** (architecture; product work, not frozen)
 4. **Per-leg delivery measurement** (**1.0 gate 3**). Each transport leg reports delivered and
    failed counts over time. Observe before alarming: counters first, then a soak

@@ -3822,6 +3822,26 @@ ledger entries in `launcher_tui/live_truth.py` carry scope + evidence per action
 - `0511b410` — (a) CI red on `5c61ba30`: the dedupe tests needed RNS installed (stub RNS fixture; proved with a meta-path blocker); (b) Radio Health: unavailable HTTP API → None, not 0 (the false "web module mismatch" on every meshtasticd box).
 - **Flaky gate seen**: `test_tui_startup_honesty::TestStartupUpdateCheckNonBlocking::test_spawner_returns_fast_and_thread_sets_count` failed CI at 0.61 s vs a 0.5 s wall-clock bound, then passed on rerun of the SAME sha (run 36280295002). A timing bound on a shared runner is ambient state (feedback_tests_must_pin_ambient_state, 09-07 section) — make it deterministic.
 
+## QUEUED 2026-10-13 (Opus 5.5) — cloud-session patch `meshforge-moc-all-r3` (NOT applied; artifact only)
+
+**What to review** before ANY piece lands (order: `.claude/ROADMAP.md` best-in-class block).
+Source: audit bundle artifact `2ent1ZJfgo5Yi2wZunJ8v1` (`patches/meshforge-moc-all-r3.patch.txt`,
+sha256 `fb4b2db2…4290a`; `git apply --check` rc=0 on `3fd66bc1`). Evidence audit (Opus, read-only):
+- **F1 (code)** `gateway/operator_line.py::_load_or_create_identity`: unreadable identity →
+  warning + new identity + `to_file` over the corpse. Address changes silently; the
+  power-loss zero-byte class. Contrast `map_tls.py`, which refuses an unreadable CA.
+- **F2** CI replica ran as ROOT (`/tmp/claude-0`, `pytest-of-root`): its 22 "pre-existing
+  on base" failures are permission-refusal tests root cannot fail; `test_honesty_invariants
+  -k dry_run` = 14 passed rc=0 here as uid 1000. Every permission path in the patch is
+  only mock-tested.
+- **F3** wss handshake stall (×2) is not root-caused; the 40-cycle stress harness ran
+  `run_checks(on_wss_open=None)` — no concurrent broadcast, so not the failing path.
+- **F4** "node-tracker failure is a pre-existing race" rests on it passing in isolation only.
+- **F5** real-RNS warm-up fix: n=1 before, n=1 after.
+- Attack surfaces for the frontier pass: the trust gate's new `scheme` arg
+  (`_map_trust_gate.py`), `/inbox` send path vs BIC-3, `rns_bridge.py` hooks vs the
+  RNS→RF allowlist enforce on moc+moc3, the CA name constraints on iOS.
+
 ## QUEUED 2026-09-26 (Opus 5.5) — MA port of the capture-truth fixes: MA `c5375d34`
 
 **What to review** (author-applied, unreviewed; deployed + live-verified on meshanchor-server, see touch line 16:42):
