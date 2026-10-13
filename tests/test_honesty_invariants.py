@@ -837,12 +837,13 @@ DROPIN_PROVENANCE: dict = {
                                "`failed (start-limit-hit)` — lehua sat failed 1h22m on "
                                "2026-09-11 while an unattended retry proved the radio could "
                                "still come up. Physical root cause (cocked, unsupported HAT "
-                               "header) tracked separately; this only stops the latch.",
-    "journald.conf.d":         "95-meshforge-journal-cap (SystemMaxUse=1G; 95 so it sorts after the hand-placed 90-meshforge-persistent): hand-deployed by "
-                               "streaming the template over ssh + restarting systemd-journald; "
-                               "lehua first 2026-10-13, then the fleet. No installer names it, "
-                               "on purpose, until the roll is decided (it targets "
-                               "/etc/systemd/journald.conf.d/, not system/).",
+                               "header) tracked separately; this only stops the latch. "
+                               "30-log-filter (LogFilterPatterns= drops 'Packet History - insert' + "
+                               "'Sort took'): INSTALLED by update.sh on systemd >= 253; applies at "
+                               "meshtasticd's next start.",
+    "journald.conf.d":         "95-meshforge-journal-cap (SystemMaxUse=1G; 95 so it sorts after the hand-placed "
+                               "40-rpi-volatile-storage / 90-meshforge-persistent): INSTALLED by update.sh "
+                               "(restarts journald when it changes); rolled to all 10 boxes by hand 2026-10-13.",
 }
 
 

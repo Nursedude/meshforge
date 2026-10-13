@@ -320,6 +320,51 @@ if [[ -f "$MTD_NTP_TMPL" ]] && [[ -f /etc/systemd/system/meshtasticd.service \
     fi
 fi
 
+# Deploy the meshtasticd log filter drop-in. Drops the two highest-volume lines
+# ("Packet History - insert", "Sort took": 33-51% of meshtasticd's journal on
+# the LongFast boxes, read by nothing in MeshForge) while LogLevel stays info,
+# because our detectors read INFO lines. LogFilterPatterns= needs systemd >= 253
+# (moc4 runs 252), so older boxes are skipped and told so. meshtasticd is NOT
+# restarted here: the filter applies at its next start (measured 2026-10-13: a
+# daemon-reload alone does not apply it).
+MTD_LF_TMPL="$INSTALL_DIR/templates/systemd/meshtasticd.service.d/30-log-filter.conf"
+MTD_LF_DST="/etc/systemd/system/meshtasticd.service.d/30-log-filter.conf"
+if [[ -f "$MTD_LF_TMPL" ]] && [[ -f /etc/systemd/system/meshtasticd.service \
+      || -f /lib/systemd/system/meshtasticd.service \
+      || -f /usr/lib/systemd/system/meshtasticd.service ]]; then
+    MTD_LF_SDVER="$(systemctl --version 2>/dev/null | awk 'NR==1{print $2}')"
+    if [[ ! "$MTD_LF_SDVER" =~ ^[0-9]+$ ]] || (( MTD_LF_SDVER < 253 )); then
+        echo -e "  ${YELLOW}! meshtasticd log filter skipped: systemd ${MTD_LF_SDVER:-unknown} has no LogFilterPatterns= (needs 253)${NC}"
+    elif ! cmp -s "$MTD_LF_TMPL" "$MTD_LF_DST"; then
+        mkdir -p "$(dirname "$MTD_LF_DST")"
+        cp "$MTD_LF_TMPL" "$MTD_LF_DST"
+        chmod 644 "$MTD_LF_DST"
+        echo -e "  ${GREEN}✓ meshtasticd log filter drop-in installed (applies at meshtasticd's next start)${NC}"
+        SVC_UPDATED=true
+    else
+        echo -e "  ${GREEN}✓ meshtasticd log filter drop-in already current${NC}"
+    fi
+fi
+
+# Deploy the journald size cap drop-in. Every box was found at a hand-placed
+# 200M (2026-10-13): 2.5-4.7 days of history, so a weekly timer could never be
+# judged. 95- sorts after both hand-placed files (40-rpi-volatile-storage,
+# 90-meshforge-persistent), which are left alone. journald re-reads its config
+# only on restart, and a restart keeps services' log streams.
+JD_CAP_TMPL="$INSTALL_DIR/templates/systemd/journald.conf.d/95-meshforge-journal-cap.conf"
+JD_CAP_DST="/etc/systemd/journald.conf.d/95-meshforge-journal-cap.conf"
+if [[ -f "$JD_CAP_TMPL" ]]; then
+    if ! cmp -s "$JD_CAP_TMPL" "$JD_CAP_DST"; then
+        mkdir -p "$(dirname "$JD_CAP_DST")"
+        cp "$JD_CAP_TMPL" "$JD_CAP_DST"
+        chmod 644 "$JD_CAP_DST"
+        systemctl restart systemd-journald 2>/dev/null || true
+        echo -e "  ${GREEN}✓ journald size cap installed (SystemMaxUse=1G; journald restarted)${NC}"
+    else
+        echo -e "  ${GREEN}✓ journald size cap already current${NC}"
+    fi
+fi
+
 # Deploy the meshtasticd MUDP-leg self-heal guard (oneshot + timer). The guard
 # script self-gates: it no-ops unless meshtasticd is active AND the box has been
 # seen actually using UDP multicast (224.0.0.69:4403), so it is safe to install
