@@ -116,3 +116,33 @@ class TestPhoneApiDeferIssue17:
              patch("utils.meshtastic_connection.socket.socket") as mock_sock:
             assert mgr._resolve_mode() == ConnectionMode.TCP
             mock_sock.assert_not_called()
+
+
+class TestPhoneApiDeferNoGateway:
+    """2026-10-12, the manager box: no gateway, so every map collect cycle ran
+    is_available()'s connect (AUTO mode) beside the collector's own pre-check
+    and the real TCPInterface — three PhoneAPI accepts per session, each a
+    "Force close previous TCP connection". A LIVE daemon is exactly when the
+    connect contends; its unit state answers without touching the port. Any
+    other state keeps the real probe (a down daemon has no client to disturb,
+    and a meshtasticd outside systemd is still measured)."""
+
+    def test_meshtasticd_active_returns_true_without_probing(self):
+        mgr = _mgr()
+        with patch("utils.meshtastic_connection.check_service",
+                   _svc(**{"meshforge-gateway": ServiceState.NOT_INSTALLED,
+                           "meshtasticd": ServiceState.AVAILABLE})), \
+             patch("utils.meshtastic_connection.socket.socket") as mock_sock:
+            assert mgr.is_available() is True
+            mock_sock.assert_not_called()      # NO contending :4403 connect
+
+    def test_meshtasticd_failed_still_probes(self):
+        mgr = _mgr()
+        with patch("utils.meshtastic_connection.check_service",
+                   _svc(**{"meshforge-gateway": ServiceState.NOT_INSTALLED,
+                           "meshtasticd": ServiceState.FAILED})), \
+             patch("utils.meshtastic_connection.socket.socket") as mock_sock:
+            mock_sock.return_value.__enter__.return_value.connect.side_effect = \
+                ConnectionRefusedError()
+            assert mgr.is_available() is False
+            mock_sock.assert_called_once()     # measured, never assumed

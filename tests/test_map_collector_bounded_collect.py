@@ -185,14 +185,12 @@ class TestCliFallbackSkippedOnWedge:
             collector._meshtasticd_collect_wedged = True
             return []
 
-        sock = MagicMock()
-        sock.connect_ex.return_value = 0  # port open → reaches the TCP strategy
-
         with patch.object(collector, "_collect_via_http", return_value=[]), \
              patch.object(collector, "_gateway_owns_phoneapi", return_value=False), \
              patch.object(collector, "_collect_via_tcp_interface", side_effect=fake_tcp), \
              patch.object(collector, "_collect_via_cli") as cli, \
-             patch("utils._map_collector_meshtastic.socket.socket", return_value=sock):
+             patch("utils.meshtastic_connection.MeshtasticConnectionManager.is_available",
+                   return_value=True):
             out = collector._collect_meshtasticd()
 
         assert out == []
@@ -203,14 +201,12 @@ class TestCliFallbackSkippedOnWedge:
             collector._meshtasticd_collect_wedged = False
             return []
 
-        sock = MagicMock()
-        sock.connect_ex.return_value = 0
-
         with patch.object(collector, "_collect_via_http", return_value=[]), \
              patch.object(collector, "_gateway_owns_phoneapi", return_value=False), \
              patch.object(collector, "_collect_via_tcp_interface", side_effect=fake_tcp), \
              patch.object(collector, "_collect_via_cli", return_value=[]) as cli, \
-             patch("utils._map_collector_meshtastic.socket.socket", return_value=sock):
+             patch("utils.meshtastic_connection.MeshtasticConnectionManager.is_available",
+                   return_value=True):
             collector._collect_meshtasticd()
 
         cli.assert_called_once()
@@ -266,3 +262,42 @@ class TestMeshtasticdPresentGate:
     def test_check_raises_assumed_present(self, collector):
         with patch("utils.service_check.check_service", side_effect=OSError("boom")):
             assert collector._meshtasticd_present() is True
+
+
+class TestCollectorPrecheckDoesNotContend:
+    """2026-10-12: the collector's own "is the port open?" connect_ex was the
+    first of three PhoneAPI accepts per collect session. The pre-check now asks
+    the connection manager, which answers from the unit state when the daemon
+    is live — so a session costs one accept, the real TCPInterface."""
+
+    def test_live_daemon_precheck_opens_no_socket(self, collector):
+        from utils.service_check import ServiceState
+        states = {"meshtasticd": ServiceState.AVAILABLE}
+
+        def _check(name, *a, **k):
+            return MagicMock(state=states.get(name, ServiceState.NOT_INSTALLED))
+
+        with patch.object(collector, "_collect_via_http", return_value=[]), \
+             patch.object(collector, "_gateway_owns_phoneapi", return_value=False), \
+             patch.object(collector, "_collect_via_tcp_interface", return_value=[]) as tcp, \
+             patch.object(collector, "_collect_via_cli", return_value=[]), \
+             patch("utils.meshtastic_connection.check_service", _check), \
+             patch("socket.socket") as any_sock:
+            collector._collect_meshtasticd()
+
+        any_sock.assert_not_called()   # no socket from ANY module
+        tcp.assert_called_once()
+
+    def test_closed_port_still_records_unreachable(self, collector):
+        from utils.meshtastic_connection import MeshtasticConnectionManager
+        with patch.object(collector, "_collect_via_http", return_value=[]), \
+             patch.object(collector, "_gateway_owns_phoneapi", return_value=False), \
+             patch.object(collector, "_collect_via_tcp_interface") as tcp, \
+             patch.object(collector, "_collect_via_cli") as cli, \
+             patch.object(MeshtasticConnectionManager, "is_available",
+                          return_value=False):
+            assert collector._collect_meshtasticd() == []
+        tcp.assert_not_called()
+        cli.assert_not_called()
+        d = collector.get_source_diagnostics()["meshtasticd"]
+        assert d["reason_if_zero"] == "unreachable"

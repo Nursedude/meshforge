@@ -16,7 +16,6 @@ Expects the following on the host class:
 
 import json
 import logging
-import socket
 import subprocess
 import threading
 import time
@@ -131,27 +130,18 @@ class MeshtasticDataCollectorMixin:
             )
             return []
 
-        # Quick check if TCP port is open before attempting connection
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)
-            result = sock.connect_ex((host, port))
-            sock.close()
-            if result != 0:
-                logger.debug(f"meshtasticd not reachable at {host}:{port}")
-                self._record_diagnostic(
-                    "meshtasticd",
-                    attempted=0, yielded=0,
-                    reason_if_zero="unreachable",
-                    notes=f"{host}:{port} closed",
-                )
-                return []
-        except OSError:
+        # Is the daemon there at all? Asked through the connection manager, not
+        # a raw connect_ex (2026-10-12): a raw connect is a PhoneAPI accept
+        # meshtasticd force-closes, and it was one of THREE per collect session.
+        # is_available() answers from the unit state when the daemon is live
+        # and measures the port otherwise; it never raises.
+        if not get_connection_manager(host=host, port=port).is_available(timeout=2.0):
+            logger.debug(f"meshtasticd not reachable at {host}:{port}")
             self._record_diagnostic(
                 "meshtasticd",
                 attempted=0, yielded=0,
                 reason_if_zero="unreachable",
-                notes="socket check failed",
+                notes=f"{host}:{port} closed",
             )
             return []
 

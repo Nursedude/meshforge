@@ -405,6 +405,17 @@ class MeshtasticConnectionManager:
                 and _service_is_up("meshforge-gateway")):
             return _service_is_up("meshtasticd")
 
+        # 2026-10-12: the same contention without a gateway — every AUTO
+        # resolve on a non-gateway box connected here, one of three PhoneAPI
+        # accepts per map collect session. A live daemon is exactly when the
+        # connect contends; its unit answers. Anything else keeps the real
+        # probe: a down daemon has no client to disturb, and a meshtasticd
+        # outside systemd is measured, never assumed absent.
+        if (self.port == _MESHTASTICD_TCP_PORT
+                and self.host in _LOCAL_HOSTS
+                and _service_is_up("meshtasticd")):
+            return True
+
         try:
             with timed_boundary("meshtasticd.tcp_probe",
                                 target=f"{self.host}:{self.port}"):

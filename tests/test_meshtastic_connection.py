@@ -145,7 +145,8 @@ class TestMeshtasticConnectionManager:
 class TestConnectionStatus:
     """Tests for connection status checking"""
 
-    def test_is_available_when_port_open(self):
+    @patch('utils.meshtastic_connection._service_is_up', return_value=False)
+    def test_is_available_when_port_open(self, _svc_up):
         """is_available returns True when port is reachable"""
         from utils.meshtastic_connection import MeshtasticConnectionManager
 
@@ -158,7 +159,8 @@ class TestConnectionStatus:
             mgr = MeshtasticConnectionManager()
             assert mgr.is_available() is True
 
-    def test_is_available_when_port_closed(self):
+    @patch('utils.meshtastic_connection._service_is_up', return_value=False)
+    def test_is_available_when_port_closed(self, _svc_up):
         """is_available returns False when port is not reachable"""
         from utils.meshtastic_connection import MeshtasticConnectionManager
 
@@ -171,7 +173,8 @@ class TestConnectionStatus:
             mgr = MeshtasticConnectionManager()
             assert mgr.is_available() is False
 
-    def test_is_available_timeout(self):
+    @patch('utils.meshtastic_connection._service_is_up', return_value=False)
+    def test_is_available_timeout(self, _svc_up):
         """is_available returns False on timeout"""
         from utils.meshtastic_connection import MeshtasticConnectionManager
 
