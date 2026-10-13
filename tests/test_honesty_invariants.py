@@ -838,6 +838,11 @@ DROPIN_PROVENANCE: dict = {
                                "2026-09-11 while an unattended retry proved the radio could "
                                "still come up. Physical root cause (cocked, unsupported HAT "
                                "header) tracked separately; this only stops the latch.",
+    "journald.conf.d":         "90-meshforge-journal-cap (SystemMaxUse=1G): hand-deployed by "
+                               "streaming the template over ssh + restarting systemd-journald; "
+                               "lehua first 2026-10-13, then the fleet. No installer names it, "
+                               "on purpose, until the roll is decided (it targets "
+                               "/etc/systemd/journald.conf.d/, not system/).",
 }
 
 
