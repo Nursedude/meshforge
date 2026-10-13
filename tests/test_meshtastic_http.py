@@ -799,8 +799,16 @@ class TestMeshtasticdDefersToGatewayIssue17:
         with tempfile.TemporaryDirectory() as tmp:
             c = self._collector(tmp)
             c._collect_via_http = lambda host: []
-            with patch('socket.socket') as msock:
-                msock.return_value.connect_ex.return_value = 1  # port closed → fast []
+            # Port closed → fast []. The pre-check is is_available() since
+            # 2026-10-12: a live meshtasticd unit answers without a socket, so
+            # pin the unit DOWN (else this read the test box's real systemd)
+            # and refuse the probe's connect (a bare MagicMock connect
+            # "succeeds", and the collect then hung in TCPInterface for 30s+).
+            with patch('utils.meshtastic_connection._service_is_up',
+                       return_value=False), \
+                 patch('socket.socket') as msock:
+                msock.return_value.__enter__.return_value.connect.side_effect = \
+                    ConnectionRefusedError()
                 c._collect_meshtasticd()
                 assert msock.called   # reached Strategy 2 — NOT deferred
             d = c.get_source_diagnostics().get("meshtasticd", {})
