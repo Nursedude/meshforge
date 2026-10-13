@@ -278,6 +278,22 @@ def _probe_radio() -> Dict[str, Any]:
             "battery_pct": None,
         }
 
+    # 2026-10-12: the same contention without a gateway. A live daemon is
+    # exactly when connect_ex contends (meshtasticd force-closes the previous
+    # PhoneAPI client), and on the manager box three dude-claw crons polling
+    # /fleet/slo every 5 min made ~47% of its daily :4403 connects. An ACTIVE
+    # unit answers without touching the port; anything else — down, no unit
+    # here, systemctl error (`_systemctl_state` folds all three) — keeps the
+    # connect_ex MEASUREMENT, where a down daemon has no client to disturb and
+    # a meshtasticd outside systemd is still seen rather than assumed absent.
+    if _systemctl_state("meshtasticd") == "available":
+        return {
+            "connected": True,
+            "name": "meshtasticd",
+            "preset": None,
+            "battery_pct": None,
+        }
+
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(1.0)

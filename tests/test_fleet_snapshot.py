@@ -356,7 +356,17 @@ class TestProbeServicesParallel:
 # ─── Radio probe ───────────────────────────────────────────────────────
 
 
-def test_radio_probe_meshtasticd_listening():
+@pytest.fixture(autouse=False)
+def _meshtasticd_unit_not_active():
+    """The connect_ex path now runs only when meshtasticd's unit is NOT active
+    (2026-10-12). Without this pin these tests called the real systemctl and
+    their verdict depended on whether the test box runs meshtasticd."""
+    with patch.object(fleet_snapshot, "_systemctl_state",
+                      lambda unit, *a, **k: "not_running"):
+        yield
+
+
+def test_radio_probe_meshtasticd_listening(_meshtasticd_unit_not_active):
     mock_sock = MagicMock()
     mock_sock.__enter__.return_value = mock_sock
     mock_sock.connect_ex.return_value = 0  # success
@@ -366,7 +376,7 @@ def test_radio_probe_meshtasticd_listening():
     assert r["name"] == "meshtasticd"
 
 
-def test_radio_probe_falls_back_to_meshcore_symlink():
+def test_radio_probe_falls_back_to_meshcore_symlink(_meshtasticd_unit_not_active):
     """No meshtasticd, but /dev/ttyMeshCore present → connected via MeshCore."""
     mock_sock = MagicMock()
     mock_sock.__enter__.return_value = mock_sock
@@ -378,7 +388,7 @@ def test_radio_probe_falls_back_to_meshcore_symlink():
     assert r["name"] == "meshcore"
 
 
-def test_radio_probe_no_radio_returns_disconnected():
+def test_radio_probe_no_radio_returns_disconnected(_meshtasticd_unit_not_active):
     mock_sock = MagicMock()
     mock_sock.__enter__.return_value = mock_sock
     mock_sock.connect_ex.return_value = 1
@@ -1485,6 +1495,21 @@ class TestProbeRadioPhoneApiDeferIssue17:
             out = _probe_radio()
             assert out["connected"] is False     # honest: daemon down ≠ connected
             mock_sock.assert_not_called()
+
+    def test_non_gateway_box_meshtasticd_active_does_not_probe(self):
+        """2026-10-12, the manager box: no gateway, so every /fleet/slo build
+        connect_ex'd :4403 — three dude-claw crons polling every 5 min made
+        877 of 1,878 daily PhoneAPI connects there, each a force-close of the
+        previous client. A LIVE daemon is exactly when the connect contends;
+        its unit state answers the question without touching the port."""
+        with patch.object(fleet_snapshot, "_systemctl_state",
+                          self._states(**{"meshforge-gateway": "not_running",
+                                          "meshtasticd": "available"})), \
+             patch("utils.fleet_snapshot.socket.socket") as mock_sock:
+            out = _probe_radio()
+            assert out["connected"] is True
+            assert out["name"] == "meshtasticd"
+            mock_sock.assert_not_called()        # NO contending :4403 connect
 
     def test_non_gateway_box_still_probes_4403(self):
         with patch.object(fleet_snapshot, "_systemctl_state",
