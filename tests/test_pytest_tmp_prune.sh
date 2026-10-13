@@ -11,6 +11,9 @@ fails=0
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 VERDICTS="$TMP/verdicts.log"
+# Every invocation below must prune a FIXTURE, never the live session scratch
+# under /tmp/claude-<uid> — exported so no call site can forget it.
+export CLAUDE_TMP_BASE="$TMP/claude-none"
 
 mkrun() {  # $1 = number, $2 = optional lock age in seconds
   d="$BASE/pytest-$1"; mkdir -p "$d/some_test0"
@@ -228,6 +231,37 @@ if [ "$(id -u)" != 0 ]; then
   check "FAIL with no verdict sink exits 1 (the || guard becomes the witness)" \
     "$([ "$rc" = 1 ] && echo ok)"
 fi
+
+# ── Claude session scratch: idle session dirs are RAM too (2026-10-13) ───
+#
+# /tmp/claude-<uid>/<project>/<session-uuid>/ is never cleaned up; on the
+# manager 49 of them held 642 MB of tmpfs while user.slice paged
+# memory_cap_engaged. A dir is pruned only when NOTHING inside it changed for
+# the idle window, and only when its name is a session UUID — the shared
+# pycache tree beside them is not ours to delete.
+CB="$TMP/claude"; CLAUDE_TMP_BASE="$CB"
+OLD_S="11111111-2222-3333-4444-555555555555"
+LIVE_S="66666666-7777-8888-9999-aaaaaaaaaaaa"
+mkdir -p "$CB/-opt-meshforge/$OLD_S/scratchpad" "$CB/-opt-meshforge/$LIVE_S/scratchpad" \
+         "$CB/pycache/opt"
+echo x > "$CB/-opt-meshforge/$OLD_S/scratchpad/f"
+echo x > "$CB/-opt-meshforge/$LIVE_S/scratchpad/old"
+echo x > "$CB/-opt-meshforge/$LIVE_S/scratchpad/new"
+echo x > "$CB/pycache/opt/m.pyc"
+three_days_ago="@$(( $(date +%s) - 3*86400 ))"
+find "$CB" -exec touch -h -d "$three_days_ago" {} +
+touch "$CB/-opt-meshforge/$LIVE_S/scratchpad/new"   # one fresh file = in use
+BASE="$TMP/no-pytest-tree"                            # pytest leg has nothing
+out="$(run_pgrep 1)"
+check "idle session scratch dir is pruned" \
+  "$([ -d "$CB/-opt-meshforge/$OLD_S" ] && echo '' || echo ok)"
+check "a session dir with ANY fresh file is kept" \
+  "$([ -d "$CB/-opt-meshforge/$LIVE_S" ] && echo ok)"
+check "non-session dirs (pycache) are never touched" \
+  "$([ -f "$CB/pycache/opt/m.pyc" ] && echo ok)"
+check "the scratch leg runs even when there is no pytest tree" \
+  "$(echo "$out" | grep -q 'claude scratch: pruned 1 of 2' && echo ok)"
+CLAUDE_TMP_BASE="$TMP/claude-none"
 
 # ── it leaves a cron verdict so #78 can see it ───────────────────────────
 check "writes a cron_verdict line under its own name" \

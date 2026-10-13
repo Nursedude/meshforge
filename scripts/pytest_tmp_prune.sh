@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # pytest_tmp_prune.sh — keep pytest's temp tree bounded, because /tmp is RAM.
+# Also prunes idle Claude Code session scratch under /tmp/claude-<uid> (2026-10-13).
 #
 # WHY (2026-07-28, measured on the manager box): /tmp is a tmpfs on every
 # fleet Pi, so pytest's per-test temp tree is unreclaimable RAM, not disk. A
@@ -62,10 +63,45 @@ say() {  # $1 = status, $2 = message
   echo "pytest_tmp_prune: $1 — $2"
 }
 
+# ── Claude session scratch (2026-10-13) ─────────────────────────────────
+# Each Claude Code session gets /tmp/claude-<uid>/<project>/<session-uuid>/
+# and nothing ever removes it. Measured on the manager: 49 session dirs, 642 MB
+# of tmpfs, while user.slice paged memory_cap_engaged. A dir goes only when
+# NOTHING inside changed for CLAUDE_IDLE_DAYS (a live session writes there) and
+# only when its name is a session UUID — the shared pycache tree beside them
+# (PYTHONPYCACHEPREFIX) is not a session and is left alone. Fixed default path,
+# not $TMPDIR: inside a session TMPDIR can point INTO this tree.
+CLAUDE_BASE="${CLAUDE_TMP_BASE:-/tmp/claude-$(id -u)}"
+CLAUDE_IDLE_DAYS="${CLAUDE_TMP_IDLE_DAYS:-2}"
+c_total=0; c_pruned=0; c_failed=0; c_freed_kb=0
+if [ -d "$CLAUDE_BASE" ]; then
+  for d in "$CLAUDE_BASE"/*/*/; do
+    d="${d%/}"
+    [[ "$(basename "$d")" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || continue
+    c_total=$((c_total + 1))
+    # Any entry modified inside the window = in use. find erroring (unreadable)
+    # prints nothing, so guard on its exit too: unobservable is kept, not pruned.
+    recent="$(find "$d" -mmin -$((CLAUDE_IDLE_DAYS * 1440)) -print -quit 2>/dev/null)" || continue
+    [ -n "$recent" ] && continue
+    kb=$(du -sk "$d" 2>/dev/null | cut -f1)
+    if rm -rf "$d" 2>/dev/null; then
+      c_pruned=$((c_pruned + 1)); c_freed_kb=$((c_freed_kb + ${kb:-0}))
+    else
+      c_failed=$((c_failed + 1))
+    fi
+  done
+fi
+c_detail="claude scratch: pruned $c_pruned of $c_total session dir(s) idle > ${CLAUDE_IDLE_DAYS}d, freed $((c_freed_kb / 1024)) MB"
+[ "$c_failed" -gt 0 ] && c_detail="$c_detail, $c_failed could NOT be removed"
+
 # A box that never runs the suite has no tree. That is not an error and not a
 # silence to explain — it is nothing to do.
 if [ ! -d "$BASE" ]; then
-  say OK "no pytest temp tree at $BASE — nothing to do"
+  if [ "$c_failed" -gt 0 ]; then
+    say FAIL "no pytest temp tree at $BASE; $c_detail"
+    if [ "$SPOKE" = 1 ]; then exit 0; else exit 1; fi
+  fi
+  say OK "no pytest temp tree at $BASE — nothing to do; $c_detail"
   exit 0
 fi
 
@@ -140,6 +176,8 @@ remain=$(ls -d "$BASE"/pytest-[0-9]* 2>/dev/null | wc -l)
 detail="pruned $pruned of $total dir(s), freed ${freed_mb} MB, $remain remain"
 [ "$skipped_locked" -gt 0 ] && detail="$detail, $skipped_locked skipped (lock < ${LOCK_MAX_AGE_S}s, pytest IS running)"
 [ "$stranded" -gt 0 ] && detail="$detail, $stranded stranded (fresh lock, no live pytest — shutdown left it behind)"
+detail="$detail; $c_detail"
+failed=$((failed + c_failed))
 
 if [ "$failed" -gt 0 ]; then
   say FAIL "$detail, $failed could NOT be removed"
