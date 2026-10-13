@@ -160,7 +160,7 @@ except (subprocess.SubprocessError, FileNotFoundError, OSError):
 
 | Check | Status |
 |-------|--------|
-| MIT License | ✅ PASS |
+| MIT License | ❌ CORRECTED 2026-10-13 — RNS/LXMF are under the Reticulum License (MIT + two use restrictions), not MIT; see ATTRIBUTION.md and LICENSE-EXCEPTION.md |
 | No obfuscation | ✅ PASS |
 | Build from source | ✅ PASS |
 | Dependencies documented | ✅ PASS |
