@@ -65,7 +65,11 @@ class MeshtasticdTxPowerHandler(BaseHandler):
             logger.error("radio_txpower_truth unimportable: %s", exc)
             self.ctx.dialog.msgbox("TX Power Truth", f"Reader unavailable (import failed): {exc}")
             return
-        self.ctx.dialog.infobox("TX Power Truth", "Reading the service, journal and prefs file ...")
+        self.ctx.dialog.infobox("TX Power Truth",
+                                "Reading the service, journal and prefs file ...\n\n"
+                                "The first read after meshtasticd starts (or after the TUI\n"
+                                "starts) scans its whole journal - up to 2 minutes on a\n"
+                                "small box. Re-opening reads only what is new.")
         v = read_all()
         text = (f"Status: {v.status}\n{_EXPLAIN.get(v.status, '')}\n\n"
                 + "\n".join(v.lines))

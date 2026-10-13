@@ -53,7 +53,12 @@ from utils.observation import Failed, Observation, Seen, Unobservable, assert_ne
 UNIT = "meshtasticd"
 _LOCALCONFIG_LORA = 6
 _LORA_TX_POWER = 10
-JOURNAL_TIMEOUT_S = 20
+JOURNAL_TIMEOUT_S = 20            # a resumed read: only what is new since the last
+# The first read of an activation scans all of it, and reading — not the grep —
+# is the cost: ~3.3 s per journal-day on a Pi Zero 2 W (measured 2026-10-13),
+# so a 1G journal is tens of seconds there. One slow read, then resumes.
+JOURNAL_FULL_READ_TIMEOUT_S = 120
+_CURSOR_PREFIX = "-- cursor: "
 
 _RE_SET_RADIO = re.compile(r"Set radio: .*\bpower=(-?\d+)")
 _RE_FINAL = re.compile(r"Final Tx power: (-?\d+) dBm")
@@ -167,15 +172,14 @@ class JournalFacts:
     vfs_root: Optional[str]          # state root meshtasticd logged at its last start
 
 
-def parse_journal(lines: Iterable[str]) -> JournalFacts:
+def parse_journal(lines: Iterable[str], start: Optional[JournalFacts] = None) -> JournalFacts:
     """Lines as `<unix_ts> <host> <ident>: <message>` (journalctl -o
-    short-unix), oldest first. Matching is by substring, so host/ident vary."""
-    applied: Optional[int] = None
-    applied_ts: Optional[float] = None
-    chip: Optional[int] = None
-    pending: Optional[float] = None
-    lost: Optional[float] = None
-    vfs: Optional[str] = None
+    short-unix), oldest first. Matching is by substring, so host/ident vary.
+    `start` resumes the fold from an earlier pass: JournalFacts IS the whole
+    fold state, so two passes give exactly what one pass over both would."""
+    s = start or JournalFacts(None, None, None, None, None, None)
+    applied, applied_ts, chip = s.applied_power, s.applied_ts, s.chip_power
+    pending, lost, vfs = s.pending_since, s.lost_at, s.vfs_root
     for raw in lines:
         parts = raw.split(None, 1)
         if len(parts) < 2:
@@ -441,20 +445,58 @@ def read_saved(vfs_root: Optional[str]) -> Observation[int]:
             assert_never(unreachable)
 
 
-def _journal_since(since: str) -> Observation[JournalFacts]:
+# Where the last read stopped, per activation: (since, cursor, facts). In
+# memory only — this module never writes (see the AST guard in its tests), so
+# a new TUI process pays one full read.
+_resume: Optional[Tuple[str, str, JournalFacts]] = None
+
+
+def _run_journal(window: List[str], timeout: int) -> Observation[Tuple[List[str], Optional[str]]]:
     try:
-        r = subprocess.run(["journalctl", "-u", UNIT, "--since", since, "--no-pager",
-                            "-o", "short-unix", "--grep", JOURNAL_GREP],
-                           capture_output=True, text=True, timeout=JOURNAL_TIMEOUT_S)
+        r = subprocess.run(["journalctl", "-u", UNIT, *window, "--no-pager", "-o", "short-unix",
+                            "--show-cursor", "--grep", JOURNAL_GREP],
+                           capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as e:
         return Unobservable(f"journalctl: {e.__class__.__name__}")
     err = (r.stderr or "").strip()
     # rc=1 with no stderr = "no matching lines"; rc=1 WITH stderr is a real
-    # error (bad --since, journalctl built without --grep support).
+    # error (bad --since, a cursor that no longer seeks, journalctl built
+    # without --grep support).
     if r.returncode not in (0, 1) or (r.returncode == 1 and err):
         tail = err.splitlines()[-1:] or [""]
         return Unobservable(f"journalctl rc={r.returncode}: {tail[0][:140]}")
-    return Seen(parse_journal(r.stdout.splitlines()))
+    lines: List[str] = []
+    cursor: Optional[str] = None
+    for line in r.stdout.splitlines():
+        if line.startswith(_CURSOR_PREFIX):
+            cursor = line[len(_CURSOR_PREFIX):].strip() or None
+        else:
+            lines.append(line)
+    return Seen((lines, cursor))
+
+
+def _journal_since(since: str) -> Observation[JournalFacts]:
+    global _resume
+    held = _resume if _resume is not None and _resume[0] == since else None
+    _resume = None
+    obs: Observation[Tuple[List[str], Optional[str]]] = Unobservable("not read")
+    if held is not None:
+        obs = _run_journal(["--after-cursor", held[1]], JOURNAL_TIMEOUT_S)
+        if not isinstance(obs, Seen):
+            held = None                      # cursor gone or read failed: start over
+    if held is None:
+        obs = _run_journal(["--since", since], JOURNAL_FULL_READ_TIMEOUT_S)
+    match obs:
+        case Seen(value=got):
+            lines, cursor = got
+            facts = parse_journal(lines, start=held[2] if held else None)
+            if cursor:
+                _resume = (since, cursor, facts)
+            return Seen(facts)
+        case Unobservable() | Failed():
+            return obs
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def read_journal() -> Observation[JournalFacts]:

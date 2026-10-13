@@ -351,6 +351,107 @@ class TestLiveReaders:
         assert isinstance(rt.read_service(), Unobservable)
 
 
+# ── resumed journal reads ─────────────────────────────────────────────────
+# 2026-10-13, a Pi Zero 2 W: the query re-read meshtasticd's whole activation
+# on every open — 8.8-10.7 s over a 200M journal against a 20 s timeout, and
+# reading (not grep) is the cost (~3.3 s per journal-day). A 1G journal would
+# time out every time. journalctl's `--show-cursor` prints where it stopped
+# even when nothing matched (measured there), so a re-open reads only what is
+# new. The fold must give the same facts whether it saw the lines in one pass
+# or two — that is what makes resuming honest.
+
+C1 = "s=aa;i=10;b=bb;m=1;t=1;x=1"
+C2 = "s=aa;i=20;b=bb;m=2;t=2;x=2"
+TXN_LINES = WEB_OPEN[3:] + REBOOT + COMMIT_EDIT + CLI_COMMIT
+
+
+@pytest.fixture(autouse=True)
+def fresh_resume(monkeypatch):
+    monkeypatch.setattr(rt, "_resume", None, raising=False)
+
+
+def _recording_run(replies):
+    """replies: list of (rc, stdout, stderr), served in order; argv/timeouts recorded."""
+    calls = []
+
+    def run(argv, **kw):
+        calls.append((list(argv), kw.get("timeout")))
+        rc, out, err = replies[len(calls) - 1]
+        return subprocess.CompletedProcess(argv, rc, out, err)
+    return run, calls
+
+
+def _out(lines, cursor=None):
+    tail = [f"-- cursor: {cursor}"] if cursor else []
+    return "\n".join(list(lines) + tail) + "\n"
+
+
+class TestFoldResumes:
+    @pytest.mark.parametrize("cut", range(len(BOOT_30 + TXN_LINES) + 1))
+    def test_two_passes_equal_one(self, cut):
+        lines = BOOT_30 + TXN_LINES
+        assert rt.parse_journal(lines[cut:], start=rt.parse_journal(lines[:cut])) == rt.parse_journal(lines)
+
+
+class TestResumedRead:
+    def test_reopen_reads_after_the_cursor_not_from_the_start(self, monkeypatch):
+        run, calls = _recording_run([(0, _out(BOOT_30, C1), ""), (0, _out(WEB_OPEN[3:], C2), "")])
+        monkeypatch.setattr(subprocess, "run", run)
+        rt._journal_since("Sun 2026-10-04 16:41:02 HST")
+        match rt._journal_since("Sun 2026-10-04 16:41:02 HST"):
+            case Seen(value=f):
+                # boot facts from pass 1 survive; the transaction from pass 2 lands
+                assert f.applied_power == 30 and f.pending_since is not None
+            case other:
+                pytest.fail(f"expected Seen, got {other}")
+        argv2 = calls[1][0]
+        assert argv2[argv2.index("--after-cursor") + 1] == C1 and "--since" not in argv2
+
+    def test_a_new_activation_reads_from_its_own_start(self, monkeypatch):
+        run, calls = _recording_run([(0, _out(BOOT_30, C1), ""), (0, _out(CLI_COMMIT, C2), "")])
+        monkeypatch.setattr(subprocess, "run", run)
+        rt._journal_since("Sun 2026-10-04 16:41:02 HST")
+        rt._journal_since("Tue 2026-10-13 06:00:00 HST")
+        argv2 = calls[1][0]
+        assert "--after-cursor" not in argv2
+        assert argv2[argv2.index("--since") + 1] == "Tue 2026-10-13 06:00:00 HST"
+
+    def test_a_lost_cursor_falls_back_to_a_full_read(self, monkeypatch):
+        run, calls = _recording_run([(0, _out(BOOT_30, C1), ""),
+                                     (1, "", "Failed to seek to cursor: Invalid argument"),
+                                     (0, _out(CLI_COMMIT, C2), "")])
+        monkeypatch.setattr(subprocess, "run", run)
+        rt._journal_since("x")
+        match rt._journal_since("x"):
+            case Seen(value=f):
+                assert f.applied_power == 17
+            case other:
+                pytest.fail(f"expected Seen, got {other}")
+        assert "--since" in calls[2][0] and "--after-cursor" not in calls[2][0]
+
+    def test_no_cursor_printed_means_the_next_read_starts_over(self, monkeypatch):
+        run, calls = _recording_run([(0, _out(BOOT_30), ""), (0, _out(BOOT_30, C1), "")])
+        monkeypatch.setattr(subprocess, "run", run)
+        rt._journal_since("x")
+        rt._journal_since("x")
+        assert "--since" in calls[1][0] and "--after-cursor" not in calls[1][0]
+
+    def test_a_failed_full_read_leaves_nothing_to_resume(self, monkeypatch):
+        run, calls = _recording_run([(1, "", "Failed to parse timestamp: x"), (0, _out(BOOT_30, C1), "")])
+        monkeypatch.setattr(subprocess, "run", run)
+        assert isinstance(rt._journal_since("x"), Unobservable)
+        rt._journal_since("x")
+        assert "--after-cursor" not in calls[1][0]
+
+    def test_the_full_read_gets_more_time_than_a_resume(self, monkeypatch):
+        run, calls = _recording_run([(0, _out(BOOT_30, C1), ""), (1, _out([], C2), "")])
+        monkeypatch.setattr(subprocess, "run", run)
+        rt._journal_since("x")
+        rt._journal_since("x")
+        (_, cold), (_, warm) = calls
+        assert cold == rt.JOURNAL_FULL_READ_TIMEOUT_S > warm == rt.JOURNAL_TIMEOUT_S
+
+
 # ── TUI handler: blindness renders as blindness ───────────────────────────
 
 class TestHandler:
