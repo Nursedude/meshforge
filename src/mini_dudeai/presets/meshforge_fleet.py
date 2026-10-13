@@ -214,9 +214,10 @@ def _coverage_blind_extractor(data):
                 and 0 <= cov["judged"] < cov["enrolled"]):
             out.append({
                 "subject": cls,
-                "detail": (f"detector partially blind: judged "
-                           f"{cov['judged']} of {cov['enrolled']} enrolled "
-                           f"subject(s) — {reason}"),
+                # Short prefix: renderers cap the detail at 100-120 chars and
+                # the reason carries the WHICH (2026-10-12).
+                "detail": (f"partially blind, judged {cov['judged']} of "
+                           f"{cov['enrolled']}: {reason}"),
                 "class": cls,
                 "disp": disp,
             })

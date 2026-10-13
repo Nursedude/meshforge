@@ -11761,6 +11761,41 @@ class TestUserTimerCadenceAwareWindow:
         # escalating identically to a fully-observed healthy one.
         assert got.get("coverage") == {"judged": 1, "enrolled": 2}, got
 
+    def test_unjudged_name_survives_the_render_caps(self, tmp_path):
+        """2026-10-12, the manager box: the brief rendered "…no failing job.
+        Unjudged:" and stopped — brief.py cuts a condition detail at 120
+        chars, rollup.py at 100, and the extractor's prefix plus the probe's
+        restated counts spent all of it before the one thing the condition
+        exists to say. Pins the whole path: probe reason → blind extractor →
+        the tightest render cap."""
+        from utils.watchdog_probes_user import probe_user_timer_unit_failing
+        from mini_dudeai.presets.meshforge_fleet import (
+            _coverage_blind_extractor,
+        )
+        fast = [f"t{i}" for i in range(7)]
+        home = _user_timer_fixture(
+            tmp_path, {**{f"{n}.timer": None for n in fast},
+                       "meshforge-notes-prune.timer": None})
+        collect = _fresh_dispositions()
+        healthy = {"Failed with result": [],
+                   "Finished ": [self.NOW - 600, self.NOW - 1200]}
+        probe_user_timer_unit_failing(
+            user_home=home, now=self.NOW, debounce_ticks=1,
+            state_path=str(tmp_path / "s.json"),
+            ts_fn=_ts_fn({
+                **{f"{n}.service": healthy for n in fast},
+                "meshforge-notes-prune.service": {
+                    "Failed with result": [],
+                    "Finished ": [self.NOW - 2 * self.DAY]},
+            }),
+            coverage_fn=lambda unit, window=None: True,
+            cadences={**{f"{n}.timer": 600.0 for n in fast},
+                      "meshforge-notes-prune.timer": 7 * self.DAY})
+        out = _coverage_blind_extractor({"coverage": collect()})
+        assert len(out) == 1, out
+        rendered = out[0]["detail"][:100]   # rollup.py's cap; brief's is 120
+        assert "meshforge-notes-prune.service" in rendered, rendered
+
     def test_fully_judged_clean_reports_full_coverage(self, tmp_path):
         """judged == enrolled must read as full coverage, not a shortfall —
         the partial-blind consumer keys on judged < enrolled."""

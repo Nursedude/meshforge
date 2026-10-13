@@ -358,11 +358,14 @@ def probe_user_timer_unit_failing(
             # mini's blind extractor reads judged < enrolled, which is what
             # keeps a permanently half-blind box from escalating identically
             # to a fully-observed healthy one (the Pri-1 laundering).
+            # Names FIRST (2026-10-12): every renderer caps the detail (brief
+            # 120, rollup 100), and the counts are already in the structured
+            # field — ordered counts-first, the cap ate the names on every box.
             note_disposition(
                 "user_timer_unit_failing", "clean",
-                reason=(f"{observed_count} of {len(timers)} enrolled timer(s) "
-                        f"judged; no failing job. Unjudged: "
-                        + "; ".join(sorted(unjudged)[:3]))
+                reason=("Unjudged: " + "; ".join(sorted(unjudged)[:3])
+                        + f". {observed_count} of {len(timers)} enrolled "
+                        f"timer(s) judged; no failing job.")
                 if unjudged else None,
                 coverage={"judged": observed_count, "enrolled": len(timers)})
             return None
