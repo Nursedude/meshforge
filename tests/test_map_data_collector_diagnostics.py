@@ -44,7 +44,13 @@ def collector(tmp_path):
     def _blocked_socket(*_a, **_k):
         raise OSError("network blocked in unit test (collector fixture)")
 
-    with patch("socket.socket", _blocked_socket):
+    # A dead network is also a meshtasticd nobody can see. Since 0a38c8ff the
+    # meshtasticd pre-check answers from the UNIT when it is up — no socket —
+    # so on a box running a live meshtasticd the socket block alone let a real
+    # collect() through to the CLI-fallback SUBPROCESS (2026-10-13). Pin the
+    # unit down so the pre-check probes, hits the block, and says unreachable.
+    with patch("socket.socket", _blocked_socket), \
+         patch("utils.meshtastic_connection._service_is_up", return_value=False):
         yield c
 
 
@@ -1108,3 +1114,29 @@ class TestIsNodeOnlineNonNumericQA20260705:
         assert collector._coerce_epoch("garbage") == 0.0
         assert collector._coerce_epoch(None) == 0.0
         assert collector._coerce_epoch(True) == 0.0
+
+
+class TestCollectorFixtureIsHermeticOnARadioBox:
+    """2026-10-13: the fixture blocks ``socket.socket``, which used to stop the
+    meshtasticd leg at its connect_ex pre-check. Since 0a38c8ff that pre-check
+    answers from the meshtasticd UNIT when it is up — no socket — so on a box
+    running a live meshtasticd a real collect() got past the block, the
+    in-process TCPInterface was refused, and the CLI fallback ran
+    ``meshtastic --host localhost --info`` as a SUBPROCESS: a live PhoneAPI
+    session per full suite, which no socket patch can see. "Network blocked"
+    must hold on a radio box too."""
+
+    def test_live_unit_does_not_reach_the_cli_fallback(self, collector):
+        from utils.service_check import ServiceState
+        live = MagicMock(state=ServiceState.AVAILABLE)
+        with patch("utils.meshtastic_connection.check_service",
+                   return_value=live), \
+             patch.object(collector, "_collect_via_http", return_value=[]), \
+             patch.object(collector, "_gateway_owns_phoneapi", return_value=False), \
+             patch("utils._map_collector_meshtastic.subprocess.run",
+                   side_effect=AssertionError(
+                       "CLI fallback reached the live radio")) as run:
+            assert collector._collect_meshtasticd() == []
+        run.assert_not_called()
+        d = collector.get_source_diagnostics()["meshtasticd"]
+        assert d["reason_if_zero"] == "unreachable"

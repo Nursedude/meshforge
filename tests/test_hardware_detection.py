@@ -366,8 +366,17 @@ class TestRadioHealth:
     def test_radio_health_returns_command_result(self):
         """get_radio_health should return a CommandResult."""
         from commands.hardware import get_radio_health
-        # Even with all imports failing, should return safely
-        result = get_radio_health()
+        # Even with all imports failing, should return safely. MAKE them fail
+        # (2026-10-13): unpinned, this queried the box's live radio — under
+        # the class's allow_local_radio_tx opt-in, which asserts a mocked
+        # transport — and passed for a different reason on every box.
+        # A None entry in sys.modules makes the function-local import raise.
+        with patch.dict('sys.modules', {
+            'utils.service_check': None,
+            'utils.meshtastic_http': None,
+            'core.meshtastic_cli': None,
+        }):
+            result = get_radio_health()
         assert hasattr(result, 'success')
         assert hasattr(result, 'data')
         assert 'warnings' in result.data

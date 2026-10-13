@@ -190,6 +190,14 @@ class TestApplyGatewayTemplateTruthful:
 # ─────────────────────────────────────────────────────────────────────
 
 
+# The dialog pre-fills from `meshtastic --info`. Unpatched, that read ran the
+# REAL CLI against the box's live meshtasticd — a full PhoneAPI config session
+# per test (2026-10-13: 2 of the ~8 live sessions every full suite opened on
+# the manager box), and a verdict that depended on whether the box had a radio.
+_OWNER_INFO_READ = CommandResult.ok(
+    "OK", raw="Owner: OldName (OLDN)\nMy info: {}\n")
+
+
 class TestSetOwnerNameTruthful:
     """``_set_owner_name`` calls set_owner + set_owner_short on the device
     AND save_device_settings for local persistence. The device call is
@@ -205,7 +213,9 @@ class TestSetOwnerNameTruthful:
         h = _make_radio_handler()
         h.ctx.dialog._inputbox_returns = ["LongName", "SHRT"]
 
-        with patch.object(_mesh_cmd_module, 'set_owner',
+        with patch.object(_mesh_cmd_module, 'get_node_info',
+                          return_value=_OWNER_INFO_READ), \
+             patch.object(_mesh_cmd_module, 'set_owner',
                           return_value=CommandResult.ok("OK")), \
              patch.object(_mesh_cmd_module, 'set_owner_short',
                           return_value=CommandResult.ok("OK")), \
@@ -224,7 +234,9 @@ class TestSetOwnerNameTruthful:
         h = _make_radio_handler()
         h.ctx.dialog._inputbox_returns = ["LongName", "SHRT"]
 
-        with patch.object(_mesh_cmd_module, 'set_owner',
+        with patch.object(_mesh_cmd_module, 'get_node_info',
+                          return_value=_OWNER_INFO_READ), \
+             patch.object(_mesh_cmd_module, 'set_owner',
                           return_value=CommandResult.ok("OK")), \
              patch.object(_mesh_cmd_module, 'set_owner_short',
                           return_value=CommandResult.ok("OK")), \
