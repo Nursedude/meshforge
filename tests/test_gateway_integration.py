@@ -902,23 +902,29 @@ class TestRNSConnectionStability:
         assert bridge._connected_rns is False
         assert bridge._rns_init_failed_permanently is True
 
-    def test_rns_already_initialized_proceeds(self):
+    def test_rns_already_initialized_proceeds(self, tmp_path):
         """When RNS singleton exists, bridge should proceed to LXMF setup."""
         config = GatewayConfig()
         config.enabled = True
 
         from gateway.rns_bridge import RNSMeshtasticBridge
+        from _fake_rns_identity import make_identity_class
 
         bridge = RNSMeshtasticBridge(config=config)
         bridge._rns_pre_initialized = True
 
         mock_rns = MagicMock()
+        mock_rns.Identity = make_identity_class()  # library-faithful (BIC-15 F1)
         mock_lxmf = MagicMock()
 
+        # tmp home: this test used to read the REAL ~/.config/meshforge
+        # gateway_identity + lxmf_storage of whatever box ran it (2026-10-14).
         with patch('gateway._rns_bridge_connection._HAS_RNS', True), \
              patch('gateway._rns_bridge_connection._HAS_LXMF', True), \
              patch('gateway._rns_bridge_connection._RNS_mod', mock_rns), \
              patch('gateway._rns_bridge_connection._LXMF_mod', mock_lxmf), \
+             patch('gateway._rns_bridge_connection.get_real_user_home',
+                   return_value=tmp_path), \
              patch('gateway._rns_bridge_connection.check_service') as mock_svc:
 
             mock_svc.return_value = MagicMock(available=True)

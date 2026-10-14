@@ -26,6 +26,10 @@ from gateway.operator_line import (
 from gateway.operator_line_config import OperatorLineConfig
 from oracle import MAX_REPLY_BYTES, NocSnapshot, answer
 
+# Library-faithful identity fake (BIC-15 F1): from_file returns None on bad
+# bytes and never raises, like the pinned RNS.
+from _fake_rns_identity import make_identity_class
+
 OP = "a1" * 16
 OP2 = "b2" * 16
 STRANGER = "cc" * 16
@@ -259,7 +263,7 @@ def test_failed_page_delivery_leaves_a_witness():
 @pytest.fixture
 def fake_rns_lxmf():
     rns = MagicMock(name="RNS")
-    rns.Identity.from_file = MagicMock(side_effect=Exception("no file"))
+    rns.Identity = make_identity_class()
     rns.Transport.has_path = MagicMock(return_value=True)
     rns.Identity.recall = MagicMock(return_value=MagicMock(name="dest_identity"))
     rns.Destination.OUT, rns.Destination.SINGLE = "OUT", "SINGLE"

@@ -18,6 +18,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from gateway._rns_bridge_connection import RNSConnectionMixin  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _fake_rns_identity import make_identity_class  # noqa: E402
+
 
 class _Host(RNSConnectionMixin):
     """Minimal host carrying the attributes _setup_lxmf touches."""
@@ -57,6 +60,7 @@ class TestSetupLxmfRetryLeak(unittest.TestCase):
 
     def _mocks(self):
         mock_rns = MagicMock()
+        mock_rns.Identity = make_identity_class()  # library-faithful (F1)
         mock_lxmf = MagicMock()
         router = MagicMock()
         source = MagicMock()

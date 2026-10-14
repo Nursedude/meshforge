@@ -894,6 +894,11 @@ class RNSMeshtasticBridge(
             'active_sessions': (self._sessions.active_count()
                                 if self._sessions_on() else 0),
         }
+        # BIC-15: the operator line (None = not enabled on this box) and any
+        # refused-unreadable LXMF identity (F1) — a refusal must be SEEN.
+        status['operator_line'] = (self._operator_line.get_status()
+                                   if self._operator_line is not None else None)
+        status['lxmf_identity_error'] = getattr(self, '_lxmf_identity_error', None)
         # mqtt_bridge mode: meshtastic_connected is the BROKER session; the
         # radio is read separately so a stopped meshtasticd is not reported
         # as connected (2026-10-02). Absent key = handler has no such read.

@@ -598,7 +598,9 @@ class MeshtasticBroadcastBridge:
             "filtered_synth_ack": 0,
             "errors": 0,
             "skipped_backoff": 0,
+            "identity_refused": 0,
         }
+        self._identity_error: Optional[str] = None
 
     @property
     def is_running(self) -> bool:
@@ -617,7 +619,16 @@ class MeshtasticBroadcastBridge:
 
         try:
             self._storage_path.mkdir(parents=True, exist_ok=True)
-            self._identity = self._load_or_create_identity()
+            from gateway.identity_store import IdentityUnreadable
+            try:
+                self._identity = self._load_or_create_identity()
+            except IdentityUnreadable as e:
+                self._identity_error = str(e)
+                with self._stats_lock:
+                    self.stats["identity_refused"] += 1
+                logger.error("Meshtastic broadcast bridge NOT started: %s", e)
+                return False
+            self._identity_error = None
 
             # Power-loss-truncated ratchets crash register_delivery_identity()
             # AFTER Transport registration, wedging retries on 'already
@@ -710,20 +721,11 @@ class MeshtasticBroadcastBridge:
         _clear_active_bridge(self)
 
     def _load_or_create_identity(self):
-        path = self._identity_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        RNS = self._rns
-        if path.exists():
-            try:
-                return RNS.Identity.from_file(str(path))
-            except Exception as e:
-                logger.warning(
-                    "Could not load broadcast identity %s: %s — recreating",
-                    path, e,
-                )
-        identity = RNS.Identity()
-        identity.to_file(str(path))
-        return identity
+        # F1 (2026-10-14): an unreadable identity is REFUSED, never recreated —
+        # a new identity is a new address. See gateway/identity_store.py.
+        from gateway.identity_store import load_or_create_identity
+        return load_or_create_identity(
+            self._rns, self._identity_path, label="Meshtastic broadcast bridge")
 
     def _announce_loop(self) -> None:
         while self._running and not self._stop_event.is_set():
@@ -1124,6 +1126,7 @@ class MeshtasticBroadcastBridge:
 
         return {
             "running": self._running,
+            "identity_error": self._identity_error,
             "destination_hash": self.destination_hash_hex,
             "display_name": self._config.display_name,
             "channels": list(self._config.channels),

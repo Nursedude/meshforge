@@ -464,6 +464,19 @@ class TestGetStatus:
         assert status['uptime_seconds'] is not None
         assert status['uptime_seconds'] >= 0
 
+    def test_status_carries_operator_line_and_identity_refusal(self, bridge):
+        """BIC-15: a refused identity and the operator line must be SEEN."""
+        status = bridge.get_status()
+        assert status['operator_line'] is None          # not enabled here
+        assert status['lxmf_identity_error'] is None
+        bridge._lxmf_identity_error = "Gateway identity /x is unreadable (...)"
+        line = MagicMock()
+        line.get_status.return_value = {"running": False, "identity_error": "y"}
+        bridge._operator_line = line
+        status = bridge.get_status()
+        assert status['lxmf_identity_error'].startswith("Gateway identity /x")
+        assert status['operator_line'] == {"running": False, "identity_error": "y"}
+
     def test_status_contains_statistics(self, bridge):
         bridge.stats['messages_mesh_to_rns'] = 5
         status = bridge.get_status()

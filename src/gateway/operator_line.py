@@ -39,6 +39,7 @@ from utils.paths import get_real_user_home
 from utils.safe_import import safe_import
 from utils.tx_guard import assert_rns_tx_allowed
 
+from .identity_store import IdentityUnreadable, load_or_create_identity
 from .operator_line_config import OperatorLineConfig
 
 _RNS_mod, _HAS_RNS = safe_import("RNS")
@@ -183,7 +184,8 @@ class OperatorLine:
         self._warmup: Dict[str, int] = {}
         self.stats: Dict[str, int] = {k: 0 for k in (
             "answered", "strangers", "unverified", "cooled", "queue_full",
-            "pages", "deliver_failed", "nudged", "errors")}
+            "pages", "deliver_failed", "nudged", "errors", "identity_refused")}
+        self._identity_error: Optional[str] = None
 
     # -- properties ---------------------------------------------------------
     @property
@@ -256,7 +258,14 @@ class OperatorLine:
             return False
         try:
             self._storage_path.mkdir(parents=True, exist_ok=True)
-            identity = self._load_or_create_identity()
+            try:
+                identity = self._load_or_create_identity()
+            except IdentityUnreadable as e:
+                self._identity_error = str(e)
+                self._count("identity_refused")
+                logger.error("Operator line NOT started: %s", e)
+                return False
+            self._identity_error = None
             from gateway._rns_bridge_connection import quarantine_corrupt_ratchets
             from ._signal_guard import suppress_signal_off_main
             quarantine_corrupt_ratchets(self._storage_path)
@@ -316,16 +325,9 @@ class OperatorLine:
         t.start()
 
     def _load_or_create_identity(self):
-        path = self._identity_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists():
-            try:
-                return self._rns.Identity.from_file(str(path))
-            except Exception as e:
-                logger.warning("Operator line identity %s unreadable (%s) — recreating", path, e)
-        identity = self._rns.Identity()
-        identity.to_file(str(path))
-        return identity
+        # F1 (2026-10-14): an unreadable identity is REFUSED, never recreated —
+        # a new identity is a new address. See gateway/identity_store.py.
+        return load_or_create_identity(self._rns, self._identity_path, label="Operator line")
 
     def _announce(self) -> None:
         if self._destination_hash is None or self._router is None:
@@ -497,6 +499,7 @@ class OperatorLine:
             "watchdog_blind": self._alerts.blind, "active_alerts": len(self._alerts.active),
             "pending_page_lines": len(self._pending), "config_errors": list(self._cfg.errors),
             "warmup": dict(self._warmup),
+            "identity_error": self._identity_error,
             "stats": stats,
         }
 

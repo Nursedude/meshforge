@@ -43,6 +43,8 @@ from unittest.mock import MagicMock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent))
+from _fake_rns_identity import make_identity_class  # noqa: E402
 
 import gateway.message_queue as mq_mod
 import utils.watchdog_probes_liveness as wl
@@ -86,9 +88,7 @@ class _FakeBridged:
 
 def _fake_rns_lxmf():
     rns = MagicMock(name="RNS")
-    rns.Identity = MagicMock()
-    rns.Identity.from_file = MagicMock(side_effect=Exception("no file"))
-    rns.Identity.return_value = MagicMock(name="identity")
+    rns.Identity = make_identity_class()  # library-faithful (BIC-15 F1)
     rns.Transport = MagicMock()
     rns.Transport.has_path = MagicMock(return_value=True)
     rns.Identity.recall = MagicMock(return_value=MagicMock(name="dest_identity"))

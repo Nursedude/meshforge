@@ -17,6 +17,7 @@ from utils.rns_init import open_reticulum
 from utils.safe_import import safe_import
 from utils.service_check import check_service
 from utils.tx_guard import TransmitBlocked, assert_rns_tx_allowed
+from gateway.identity_store import IdentityUnreadable, load_or_create_identity
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +302,10 @@ class RNSConnectionMixin:
                 # Set up LXMF messaging on top of the RNS instance
                 self._setup_lxmf(RNS, LXMF)
 
+            except IdentityUnreadable as e:
+                # Not an rnsd fault: skip the rnsd diagnosis, say what it is.
+                logger.error("Gateway LXMF NOT started: %s", e)
+                self._connected_rns = False
             except Exception as e:
                 logger.error(f"Failed to connect to RNS: {e}")
                 try:
@@ -320,13 +325,17 @@ class RNSConnectionMixin:
         allow LXMF setup to be retried independently.
         """
         # Create or load identity
+        # F1 (2026-10-14): from_file returns None on a corrupt file (it never
+        # raises), and None used to flow on into register_delivery_identity.
+        # An unreadable identity is now REFUSED with the corpse kept — a new
+        # one would be a new address. See gateway/identity_store.py.
         identity_path = get_real_user_home() / ".config" / "meshforge" / "gateway_identity"
-        if identity_path.exists():
-            self._identity = RNS.Identity.from_file(str(identity_path))
-        else:
-            self._identity = RNS.Identity()
-            identity_path.parent.mkdir(parents=True, exist_ok=True)
-            self._identity.to_file(str(identity_path))
+        try:
+            self._identity = load_or_create_identity(RNS, identity_path, label="Gateway")
+        except IdentityUnreadable as e:
+            self._lxmf_identity_error = str(e)     # witness: get_status() carries it
+            raise
+        self._lxmf_identity_error = None
 
         # Create LXMF router
         storage_path = get_real_user_home() / ".config" / "meshforge" / "lxmf_storage"
