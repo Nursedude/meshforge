@@ -3902,7 +3902,34 @@ that fails on today's code: json lines on another channel only → today `channe
 file is PSK material (psk_leak_guard). The journal's per-channel topic history is the
 non-perturbing witness.
 
-## QUEUED 2026-10-14 (Opus 5.5) — NOC read grant session 2: TWO contextless reviewers on MF `bb816ecc` BEFORE deploy (spec gate)
+## QUEUED 2026-10-14 (Opus 5.5) — NOC read grant: non-author review of the REVIEW FIXES `e9b9f513..40abc477` BEFORE deploy (Fable-preferred: security fixes to the only authorized_keys writer)
+
+**Done 2026-10-14:** two contextless Opus reviewers on `bb816ecc` (sequential, per
+CLAUDE.md). A (security): 0 blocking, 6 should-fix, all REPRODUCED — F1 splitlines
+smuggle (a hidden key went LIVE after a rewrite, real sshd), F2 backslash decoy (revoke
+said "removed", key still authenticated), F3 any line naming the export = "grant", F4
+rate limit fails open ×3, F5 trim lost witness rows (57/200), F6 tripwire blind to JSON
+secrets; notes N1–N7. B (consumer path): legacy spool byte-identical (old vs new main()
+files equal), 0 blocking; one HTTP error blacked out all 10 sections; center-key-missing
+read as "grant revoked"; withheld section read "source absent"; deep JSON crashed the run.
+**Fixed test-first** in three commits: `e9b9f513` (F1–F3, B4), `ffd86273` (F4, F5, B1, B5),
+`40abc477` (F6, B2, B3, B6, B7, N1, N3, N4). F1/F2 are drill legs now — RED on bb816ecc,
+green here (drill 16/16); F5 on A's own repro: 57/46 rows → 200/200. N1 verified live on
+moc3/kiai/lehua/moc. Tripwire on live data from 5 boxes: 0 withheld.
+**Deferred, need design:** N2 (verify hashed known_hosts HMAC — fails closed today), N5
+(a custom AuthorizedKeysFile — refuse when `sshd -T` says so; needs root to read), N6
+(no lock vs a concurrent editor of authorized_keys), N7 (witness path follows
+XDG_STATE_HOME — `list` from a desktop session can read another file), B (HTTP 4xx JSON
+bodies now dropped where legacy curl kept them); B 3 for services/radio/schedules/ingress —
+only the watchdog + mini BLOCKS carry the box's own reason today, because the generic
+hook belongs in `fleet_truth.py`, which is byte-identical with MeshAnchor (parity_check
+caught my edit to it): land it in BOTH repos in session 3.
+**This pass:** attack the fixes, not the original — the byte-faithful writer (`_write`,
+surrogateescape, new-file owner under sudo), `_GRANT_OPTIONS` exactness vs what OpenSSH
+accepts, the fail-closed export (could a center be blinded by a benign condition?),
+`_SECRET_KEY` false positives on boxes other than these 5.
+
+## (superseded by the row above) NOC read grant session 2: TWO contextless reviewers on MF `bb816ecc` BEFORE deploy (spec gate)
 
 **State:** on `main`, NOT deployed, no grant written on any box. Spec status block
 lists the five deviations (helpers not moved; per-read identity instead of a

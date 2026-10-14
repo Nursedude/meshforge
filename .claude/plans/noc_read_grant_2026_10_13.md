@@ -24,7 +24,10 @@
 > unflagged lines keep the legacy shell read byte-for-byte until migrated
 > (switching all at once blinded 4 boxes for ~15 min on 10-14 — touch log).
 > Delete the legacy block when no unflagged target is left.
-> OWED before deploy: two contextless reviewers (queue row 2026-10-14). Then
+> Reviewed 2026-10-14 by two contextless reviewers (A security, B consumer path):
+> 0 blocking, all should-fix findings fixed test-first in `e9b9f513..40abc477`
+> (drill now 16/16). OWED before deploy: a non-author pass on those FIXES
+> (queue row "review of the REVIEW FIXES"). Then
 > Q16 migration per box (S12 order, `push <box> --confirm <box>`, then
 > `dedupe --apply` on moc3) — operator-consented, touch-logged.
 > Origin: MeshAnchor `/fleet` read DARK (3/8). Four stale peer IPs fixed the
