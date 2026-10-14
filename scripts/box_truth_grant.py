@@ -61,7 +61,8 @@ def cmd_list(home, _a):
         print("no NOC read grants on this box")
         return 0
     for r in rows:
-        warn = "" if r["blob_matches"] else "  ⚠ command fingerprint != key"
+        warn = ("  ⚠ FOREIGN — mentions the export but is NOT a restricted grant; "
+                "it may be UNRESTRICTED (revoke --fp … --force)") if r["foreign"] else ""
         print(f"{r['fingerprint']}  {r['comment']:<24} last read {_when(r['last_read_ts'])}"
               f" from {r['last_read_src'] or '-'}  [{r['file']}:{r['line']}"
               f"{' from=' + r['from'] if r['from'] else ''}]{warn}")

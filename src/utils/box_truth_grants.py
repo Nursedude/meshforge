@@ -22,6 +22,7 @@ import os
 import pwd
 import stat
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,7 +30,6 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from utils import box_truth as bt
 from utils.box_truth_collect import last_reads, witness_path
-from utils.paths import atomic_write_text_preserving
 
 AK_FILES = ("authorized_keys", "authorized_keys2")   # sshd -T default, measured
 DEFAULT_EXPORT = "/opt/meshforge/scripts/" + bt.EXPORT_BASENAME
@@ -44,8 +44,13 @@ class GrantRefused(Exception):
 class Line:
     path: Path
     index: int
-    raw: str
+    raw: str                      # surrogateescape-decoded: re-encodes byte-identical
     entry: Optional[bt.AuthorizedKey]
+
+    @property
+    def unparseable(self) -> bool:
+        s = self.raw.strip()
+        return self.entry is None and bool(s) and not s.startswith("#")
 
 
 @dataclass
@@ -86,17 +91,34 @@ def ssh_dir(home: Path) -> Path:
     return home / ".ssh"
 
 
+def _split_file(data: bytes) -> List[str]:
+    """Lines exactly as sshd sees them: split on b"\\n" ONLY. str.splitlines()
+    also splits U+2028, \\v, \\f, \\x1c-\\x1e and \\x85 — a key smuggled inside
+    another line's comment became its own LIVE line on the next rewrite
+    (review A F1, reproduced against a real sshd). surrogateescape keeps any
+    non-UTF-8 byte round-trippable instead of disabling the tool."""
+    text = data.decode("utf-8", "surrogateescape")
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
 def read_lines(home: Path) -> List[Line]:
     out: List[Line] = []
     for name in AK_FILES:
         p = ssh_dir(home) / name
         try:
-            text = p.read_text(encoding="utf-8")
+            data = p.read_bytes()
         except FileNotFoundError:
             continue
-        for i, raw in enumerate(text.splitlines()):
+        for i, raw in enumerate(_split_file(data)):
             out.append(Line(p, i, raw, bt.parse_authorized_keys_line(raw)))
     return out
+
+
+def _file_raws(home: Path, path: Path) -> List[str]:
+    return [ln.raw for ln in read_lines(home) if ln.path == path]
 
 
 def list_grants(home: Path, env: Optional[dict] = None) -> List[dict]:
@@ -105,12 +127,15 @@ def list_grants(home: Path, env: Optional[dict] = None) -> List[dict]:
     rows = []
     for ln in read_lines(home):
         e = ln.entry
-        if e is None or not e.is_grant:
+        if e is None or not (e.is_grant or e.foreign):
             continue
-        last = reads.get(e.grant_fp) or {}
-        rows.append({"fingerprint": e.grant_fp, "comment": e.comment,
+        last = reads.get(e.fingerprint) or {}
+        rows.append({"fingerprint": e.fingerprint, "comment": e.comment,
                      "file": ln.path.name, "line": ln.index + 1,
-                     "blob_matches": e.fingerprint == e.grant_fp,
+                     # foreign = mentions our export but is NOT our exact line:
+                     # it may be unrestricted. Never shown as a read-only grant.
+                     "foreign": e.foreign,
+                     "blob_matches": e.is_grant,
                      "from": _from_opt(e.options),
                      "export": _export_in(e.options),
                      "last_read_ts": last.get("ts"), "last_read_src": last.get("src")})
@@ -193,14 +218,32 @@ def preflight(home: Path, export_path: str, *, shell: Optional[str] = None) -> T
 # ── writes ───────────────────────────────────────────────────────────────
 
 def _write(path: Path, lines: List[str]) -> None:
+    """Temp + fsync + rename in ~/.ssh, every line re-encoded byte-identical
+    (surrogateescape), mode 0600, owner kept (or the dir's owner for a new
+    file written as root)."""
     d = path.parent
     if not d.exists():
         d.mkdir(mode=0o700)
     if path.is_symlink():                       # re-checked at the moment of write
         raise GrantRefused(f"{path} became a symlink — refusing")
-    atomic_write_text_preserving(path, "".join(ln + "\n" for ln in lines))
-    if path.stat().st_mode & 0o077:
-        os.chmod(path, 0o600)
+    data = b"".join(ln.encode("utf-8", "surrogateescape") + b"\n" for ln in lines)
+    st = path.stat() if path.exists() else os.stat(d)
+    fd, tmp = tempfile.mkstemp(dir=str(d), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        os.write(fd, data)
+        os.fsync(fd)
+        os.fchmod(fd, 0o600)
+        if os.geteuid() == 0:
+            os.fchown(fd, st.st_uid, st.st_gid)
+        os.close(fd)
+        fd = None
+        os.replace(tmp, path)
+    except BaseException:
+        if fd is not None:
+            os.close(fd)
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 
 
 def _log(home: Path, env: Optional[dict], row: dict) -> None:
@@ -213,6 +256,13 @@ def _log(home: Path, env: Optional[dict], row: dict) -> None:
             fh.write(json.dumps({"ts": time.time(), **row}, ensure_ascii=True) + "\n")
     except OSError:
         pass   # the CLI prints the same row; the authorized_keys change stands
+
+
+def _unparseable(lines: List[Line]) -> List[str]:
+    """An unparsed line is UNKNOWN, never 'no match' (review A F2): it may
+    carry this very key in a shape we misread."""
+    return [f"could not parse {ln.path.name}:{ln.index + 1} — inspect it by hand "
+            "before any grant change" for ln in lines if ln.unparseable]
 
 
 def plan_add(home: Path, pubkey: str, *, center: str, export_path: str = DEFAULT_EXPORT,
@@ -232,12 +282,17 @@ def plan_add(home: Path, pubkey: str, *, center: str, export_path: str = DEFAULT
                              f"{center!r} — expected noc:{center}")
     lines = read_lines(home)
     plan.existing_grants = sum(1 for ln in lines if ln.entry and ln.entry.is_grant)
+    plan.problems += _unparseable(lines)
     for ln in lines:
         e = ln.entry
         if e is None or e.fingerprint != key.fingerprint:
             continue
         where = f"{ln.path.name}:{ln.index + 1}"
-        if e.is_grant:
+        if e.foreign:
+            plan.problems.append(f"this key already has a line ({where}) that mentions the "
+                                 "export but is NOT a restricted grant — it may be "
+                                 "unrestricted; remove it first (revoke --force)")
+        elif e.is_grant:
             plan.problems.append(f"{key.fingerprint} is already granted ({where}, "
                                  f"export {_export_in(e.options)}) — one grant per "
                                  "fingerprint across apps (S5)")
@@ -261,8 +316,11 @@ def apply_add(home: Path, plan: Plan, confirm: str, *, env: Optional[dict] = Non
     if confirm != plan.confirm_tail:
         raise GrantRefused(f"confirmation {confirm!r} != {plan.confirm_tail} "
                            "(the fingerprint's last 8 characters)")
-    existing = [ln.raw for ln in read_lines(home) if ln.path == plan.target_file]
+    existing = _file_raws(home, plan.target_file)
     _write(plan.target_file, existing + [plan.line])
+    if _file_raws(home, plan.target_file) != existing + [plan.line]:
+        raise GrantRefused(f"read-after-write: {plan.target_file} does not read back as "
+                           "the prior lines + the grant — inspect it")
     # read-after-write (B3): the file must now carry exactly this grant, once.
     hits = [ln for ln in read_lines(home)
             if ln.entry and ln.entry.grant_fp == plan.fingerprint]
@@ -277,6 +335,7 @@ def plan_revoke(home: Path, fingerprint: str, *, force: bool = False) -> Plan:
     plan = Plan("revoke", ssh_dir(home) / AK_FILES[0], fingerprint=fingerprint)
     lines = read_lines(home)
     plan.existing_grants = sum(1 for ln in lines if ln.entry and ln.entry.is_grant)
+    plan.problems += _unparseable(lines)
     for ln in lines:
         if ln.entry is None or ln.entry.fingerprint != fingerprint:
             continue

@@ -228,3 +228,25 @@ def test_classify_rate_refusal_doc():
 def test_classify_timeout_and_overflow():
     assert bt.classify_transport(None, "", "", timed_out=True) == "unreachable"
     assert bt.classify_transport(0, "x", "", overflow=True) == "export_broken"
+
+
+def test_f3_built_line_with_from_is_a_grant():
+    k = bt.parse_noc_pubkey(_line())
+    line = bt.build_grant_line(k, "/opt/meshforge/scripts/box_truth_export.py", from_="192.0.2.0/24")
+    e = bt.parse_authorized_keys_line(line)
+    assert e.is_grant and not e.foreign
+
+
+def test_f3_grant_fp_must_match_the_key_blob():
+    k = bt.parse_noc_pubkey(_line())
+    other = bt.parse_noc_pubkey(_line(blob=_blob(key=b"\x22" * 32)))
+    line = bt.build_grant_line(k, "/opt/meshforge/scripts/box_truth_export.py")
+    swapped = line.replace(k.blob_b64, other.blob_b64)
+    e = bt.parse_authorized_keys_line(swapped)
+    assert not e.is_grant and e.foreign
+
+
+def test_b4_deep_nesting_is_a_valueerror_not_a_crash():
+    with pytest.raises(ValueError):
+        bt.parse_framed(bt.FRAME + "\n" + "[" * 100000 + "]" * 100000)
+    assert bt.classify_transport(0, bt.FRAME + "\n" + "[" * 100000, "") == "export_broken"

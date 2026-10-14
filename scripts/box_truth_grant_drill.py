@@ -218,12 +218,40 @@ def run_legs(T, port, host_fp, key_a, key_b, home, env):
     leg("A9 wrong host key -> identity_mismatch", r.outcome == "identity_mismatch" and r.doc is None,
         r.outcome)
 
+    # F1 (review A): a key smuggled after U+2028 inside another line's comment
+    # must stay inert across a rewrite (the A3 revoke below rewrites the file).
+    keygen(T / "smuggled", "smuggled")
+    smug = Path(str(T / "smuggled") + ".pub").read_text().strip()
+    ak = home / ".ssh" / "authorized_keys"
+    ak.write_bytes(ak.read_bytes() + ("ssh-ed25519 " + key_a.blob_b64 + " op\u2028" + smug + "\n").encode())
+    pre = ssh("smuggled", "127.0.0.1", "true")
+
     # A3 revoke -> refused_grant through the pinned reader
     rp = bg.plan_revoke(home, key_b.fingerprint)
     n = bg.apply_revoke(home, rp, rp.confirm_tail, env=env)
     r = br.read_box("127.0.0.1", host_fp, key_path=T / "center_b", runner=reader)
     leg("A3 revoke -> refused_grant", n == 1 and r.outcome == "refused_grant",
         f"removed {n}, then {r.outcome}: {br.describe(r)[:60]}")
+    post = ssh("smuggled", "127.0.0.1", "true")
+    leg("F1 smuggled key stays inert across a rewrite",
+        pre.returncode == 255 and post.returncode == 255,
+        f"before rc={pre.returncode}, after rc={post.returncode}")
+
+    # F2 (review A): a backslash decoy must not hide a live key from revoke
+    keygen(T / "decoyd", "decoyd")
+    keygen(T / "realk", "realk")
+    decoy = Path(str(T / "decoyd") + ".pub").read_text().strip()
+    real = Path(str(T / "realk") + ".pub").read_text().strip()
+    ak.write_bytes(ak.read_bytes() + f'command="echo \\\\" {decoy}" {real}\n'.encode())
+    live = ssh("realk", "127.0.0.1", "x")
+    real_fp = bt.parse_authorized_keys_line(real).fingerprint
+    rp = bg.plan_revoke(home, real_fp, force=True)
+    removed = bg.apply_revoke(home, rp, rp.confirm_tail, env=env) if not rp.problems else 0
+    dead = ssh("realk", "127.0.0.1", "x")
+    leg("F2 backslash decoy cannot hide a key from revoke",
+        live.returncode == 0 and removed == 1 and dead.returncode == 255,
+        f"live rc={live.returncode}, removed {removed}, after rc={dead.returncode}"
+        + (f" problems={rp.problems}" if rp.problems else ""))
 
 
 if __name__ == "__main__":

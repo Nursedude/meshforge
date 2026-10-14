@@ -208,3 +208,79 @@ def test_actions_are_logged(box):
     bg.apply_add(home, plan, plan.confirm_tail, env=env)
     log = Path(env["XDG_STATE_HOME"]) / "box_truth" / "grants.jsonl"
     assert '"action": "add"' in log.read_text()
+
+
+# ── review A (2026-10-14): hostile file contents ─────────────────────────
+
+def test_f1_rewrite_never_splits_on_unicode_line_separators(box):
+    """splitlines() split U+2028 — a key smuggled in a comment became its own
+    LIVE line after an unrelated add (reproduced against a real sshd)."""
+    home, _e, env = box
+    smuggled = INTERACTIVE + " " + _key(b"\x77", comment="smuggled").replace("noc:", "")
+    ak = home / ".ssh" / "authorized_keys"
+    ak.write_bytes((smuggled + "\n").encode("utf-8"))
+    before = ak.read_bytes()
+    plan = _plan(box)
+    assert not plan.problems, plan.problems
+    bg.apply_add(home, plan, plan.confirm_tail, env=env)
+    after = ak.read_bytes().split(b"\n")
+    assert after[0] == before.split(b"\n")[0]          # untouched line byte-identical
+    assert len([x for x in after if x]) == 2
+
+
+def test_f1_non_utf8_byte_does_not_disable_the_tool(box):
+    home, _e, env = box
+    ak = home / ".ssh" / "authorized_keys"
+    ak.write_bytes(INTERACTIVE.encode() + b" caf\xe9\n")
+    plan = _plan(box)
+    assert not plan.problems, plan.problems
+    bg.apply_add(home, plan, plan.confirm_tail, env=env)
+    assert ak.read_bytes().startswith(INTERACTIVE.encode() + b" caf\xe9\n")
+    rp = bg.plan_revoke(home, CENTER_FP)
+    assert bg.apply_revoke(home, rp, rp.confirm_tail, env=env) == 1
+    assert ak.read_bytes() == INTERACTIVE.encode() + b" caf\xe9\n"
+
+
+def test_f2_backslash_decoy_cannot_hide_a_key_from_revoke(box):
+    """OpenSSH escapes only \\" inside quotes; a parser that skipped any \\X
+    read this line as the decoy key, so revoke said 'removed' while the real
+    key kept authenticating (reproduced)."""
+    home, _e, env = box
+    plan = _plan(box)
+    bg.apply_add(home, plan, plan.confirm_tail, env=env)
+    decoy = _key(b"\x66", comment="decoy").replace("noc:", "")
+    tricky = f'command="echo \\\\" {decoy}" {CENTER}'
+    ak = home / ".ssh" / "authorized_keys"
+    ak.write_text(ak.read_text() + tricky + "\n")
+    e = bt.parse_authorized_keys_line(tricky)
+    assert e is not None and e.fingerprint == CENTER_FP
+    rp = bg.plan_revoke(home, CENTER_FP, force=True)
+    assert len(rp.removes) == 2
+    bg.apply_revoke(home, rp, rp.confirm_tail, env=env)
+    assert CENTER.split()[1] not in ak.read_text()
+
+
+def test_f2_unparseable_line_makes_add_and_revoke_refuse(box):
+    home, _e, env = box
+    ak = home / ".ssh" / "authorized_keys"
+    ak.write_text(INTERACTIVE + '\ncommand="unterminated ssh-ed25519 AAAA x\n')
+    assert any("could not parse" in p for p in _plan(box).problems)
+    assert any("could not parse" in p for p in bg.plan_revoke(home, CENTER_FP).problems)
+
+
+@pytest.mark.parametrize("opts", [
+    'command="/usr/bin/python3 -I {exp} --grant {fp} </dev/null"',                 # no restrict
+    'restrict,port-forwarding,pty,command="/usr/bin/python3 -I {exp} --grant {fp} </dev/null"',
+    'restrict,command="/bin/bash; {exp} --grant {fp}"',
+    'RESTRICT,COMMAND="/usr/bin/python3 -I {exp} --grant {fp} </dev/null"',
+])
+def test_f3_only_the_exact_built_line_is_a_grant(box, opts):
+    home, export, env = box
+    line = opts.format(exp=export, fp=CENTER_FP) + " " + CENTER
+    e = bt.parse_authorized_keys_line(line)
+    assert not e.is_grant and e.foreign
+    (home / ".ssh" / "authorized_keys").write_text(line + "\n")
+    rows = bg.list_grants(home, env)
+    assert rows and rows[0]["foreign"]                    # listed WITH a warning
+    rp = bg.plan_revoke(home, CENTER_FP)
+    assert rp.problems                                    # not ours: operator decides

@@ -176,9 +176,15 @@ class AuthorizedKey:
     blob_b64: str
     comment: str
     fingerprint: str
-    #: the fingerprint bound into OUR forced command, or None (not a grant)
+    #: the fingerprint bound into OUR forced command, or None (not a grant).
+    #: Set ONLY when the options are exactly what build_grant_line writes and
+    #: the bound fingerprint is this key's (review A F3).
     grant_fp: Optional[str]
     raw: str
+    #: mentions our export but is NOT exactly our line — unrestricted, extra
+    #: options, a different command, case-changed options, or a swapped key.
+    #: Listed with a warning; never treated as a read-only grant.
+    foreign: bool = False
 
     @property
     def is_grant(self) -> bool:
@@ -186,12 +192,17 @@ class AuthorizedKey:
 
 
 def _split_options(line: str) -> Tuple[str, str]:
-    """(options, rest) — options end at the first unquoted whitespace."""
+    """(options, rest) — options end at the first unquoted whitespace.
+
+    Inside quotes OpenSSH treats ONLY ``\\"`` as an escape (auth-options.c);
+    any other backslash is literal. Skipping every ``\\X`` let a crafted line
+    read as a decoy key, and revoke then 'removed' it while the real key kept
+    authenticating (review A F2, reproduced against a real sshd)."""
     in_q = False
     i = 0
     while i < len(line):
         ch = line[i]
-        if ch == "\\" and in_q:
+        if ch == "\\" and in_q and line[i + 1:i + 2] == '"':
             i += 2
             continue
         if ch == '"':
@@ -202,9 +213,12 @@ def _split_options(line: str) -> Tuple[str, str]:
     return line, ""
 
 
-_GRANT_IN_CMD = re.compile(
-    r'command="[^"]*/' + re.escape(EXPORT_BASENAME) + r"\s+" + re.escape(GRANT_ARG)
-    + r"\s+(SHA256:[A-Za-z0-9+/]{43})(?:\s|\")")
+#: EXACTLY the options build_grant_line writes (optional from=). Anything
+#: else that mentions the export is `foreign` (review A F3).
+_GRANT_OPTIONS = re.compile(
+    r'^restrict,(?:from="[0-9A-Fa-f.:/*?,]+",)?command="' + re.escape(PYTHON)
+    + r" -I /[A-Za-z0-9._/-]+/" + re.escape(EXPORT_BASENAME) + " " + re.escape(GRANT_ARG)
+    + r' (SHA256:[A-Za-z0-9+/]{43}) </dev/null"$')
 
 
 def parse_authorized_keys_line(line: str) -> Optional[AuthorizedKey]:
@@ -223,11 +237,14 @@ def parse_authorized_keys_line(line: str) -> Optional[AuthorizedKey]:
         blob = base64.b64decode(parts[1].encode("ascii"), validate=True)
     except (binascii.Error, ValueError, UnicodeEncodeError):
         return None
-    m = _GRANT_IN_CMD.search(options)
+    fp = fingerprint_of_blob(blob)
+    m = _GRANT_OPTIONS.match(options)
+    grant_fp = m.group(1) if m and m.group(1) == fp else None
+    foreign = grant_fp is None and EXPORT_BASENAME in options
     return AuthorizedKey(options=options, keytype=parts[0], blob_b64=parts[1],
                          comment=parts[2] if len(parts) > 2 else "",
-                         fingerprint=fingerprint_of_blob(blob),
-                         grant_fp=m.group(1) if m else None, raw=line.rstrip("\n"))
+                         fingerprint=fp, grant_fp=grant_fp, raw=line.rstrip("\n"),
+                         foreign=foreign)
 
 
 # ── framing ──────────────────────────────────────────────────────────────
@@ -247,7 +264,10 @@ def parse_framed(text: str) -> dict:
     if idx < 0:
         raise ValueError("no box_truth frame marker in output")
     body = text[idx + len(FRAME) + 1:].strip()
-    doc = json.loads(body)
+    try:
+        doc = json.loads(body)
+    except RecursionError:      # a peer's nesting must not crash the reader (review B 4)
+        raise ValueError("box_truth document nested too deeply") from None
     if not isinstance(doc, dict):
         raise ValueError("box_truth document is not an object")
     schema = doc.get("schema")
