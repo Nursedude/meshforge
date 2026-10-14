@@ -2,6 +2,11 @@
 
 > Status: **DESIGN AGREED** (operator, 2026-10-13, Q1–Q18 all on the
 > recommendation). Nothing built. Sessions 2 and 3 below build it.
+> **Security pass DONE 2026-10-14 (Fable 5.1, gate 10):**
+> `.claude/audits/noc_read_grant_security_pass_2026_10_14.md` — 8 blocking
+> amendments B1–B8 + 12 should-fix S1–S12, folded into the "Security-pass
+> amendments" section at the end of this file. Session 2 builds to the
+> AMENDED spec and the AMENDED acceptance list there, not to Q14 alone.
 > Origin: MeshAnchor `/fleet` read DARK (3/8). Four stale peer IPs fixed the
 > same night (7/8); the eighth, moc3, is map-less and MA has no way to read a
 > box without HTTP. MF reaches it only through a hand-rolled, UNRESTRICTED
@@ -92,3 +97,50 @@ center read access through a restricted ssh key; the grant is a TUI action.
 
 MA `/fleet` stays honestly DARK on moc3. meshanchor-server carries moc3's host
 key pin (verified against `expect_hostkey`, touch log 2026-10-13) — no grant.
+
+## Security-pass amendments (2026-10-14, Fable 5.1 — gate 10, binding on session 2)
+
+Full findings, measurements and the loopback drill transcript:
+`.claude/audits/noc_read_grant_security_pass_2026_10_14.md`. Each line below
+is a design DECISION that session 2 codes to; each is owed a test or an
+acceptance leg (named in the audit). The drill measured OpenSSH 10.0
+`restrict,command=` on VolcanoAI: the forced command runs for exec, pty,
+`sftp` subsystem and `-L` requests alike, receives the client's stdin and
+`SSH_ORIGINAL_COMMAND` verbatim (never executed), and `AcceptEnv LC_*`
+lets a client set `LC_*` variables in its environment; forwarding and agent
+are refused; `from=` refuses exactly like a revoke.
+
+| # | Decision | Answer |
+|---|---|---|
+| B1 | stdin / `SSH_ORIGINAL_COMMAND` | `command="/opt/<app>/scripts/box_truth_export.py --grant <fp> </dev/null"`; the export never dispatches on `SSH_ORIGINAL_COMMAND`, it records its first 120 bytes in the witness as data. Acceptance 5 covers `bash`, `-t`, `-s sftp`, stdin payload, `-A`, `-L`. |
+| B2 | client env (`AcceptEnv LC_*`) | `python3 -I`; every read/write `encoding="utf-8"`, stdout reconfigured utf-8/replace; the grant plan shows `sshd -T` `acceptenv` + `permituserenvironment`. Test: `LC_ALL=C` + non-ASCII reason → valid JSON. |
+| B3 | pasted pubkey = structured input | ONE shared validator: exactly one line `ssh-ed25519 <base64> [noc:<name>]`, blob decoded + wire-type checked, comment `^noc:[A-Za-z0-9._-]{1,64}$`, refuse `\r \n " ,` and any leading option. TUI shows the SHA256 fingerprint from the blob; **typed confirm = fingerprint's last 8 chars**, not the box name. Read-after-write re-parses the file. |
+| B4 | grant identity | The fingerprint, bound INTO `command=… --grant SHA256:<fp>`; witness row `{ts, fp, src, orig_cmd[:120], bytes, ms}`; list/revoke by fingerprint; comment is display-only. |
+| B5 | revoke semantics | By key blob across BOTH `AuthorizedKeysFile` paths (`authorized_keys`, `authorized_keys2`); refuse-loud (unless `--force`) on a matching line without our marker; report the count removed. Write = temp+fsync+rename in `~/.ssh`, 0600 preserved (`atomic_write_text_preserving`), lstat-refuse a symlink, check `~/.ssh` 0700. Reader passes `-o ControlMaster=no -o ControlPath=none` (kiai's stanza persists a master 10 min; a revoke would lag). |
+| B6 | center-side push | Calls the TARGET's `box_truth_grant.py add --pubkey '<line>' --center <name>` over the existing access — never edits `authorized_keys` remotely; refuses when the registry `expect_hostkey` for the target is missing or mismatched. Same for the bulk CLI. |
+| B7 | the center's private key | 0600 in `~/.ssh/<app>_noc_ed25519`, never under `~/.claude/ssh`, `fleet_backup.sh` asserted (test) not to sweep `~/.ssh`. `box_truth/v1` = an ALLOWLIST of the ten sections with a producer-side tripwire test (no `ssh-… AAAA`, `-----BEGIN`, `psk`, `token=`, `password` in any section). `box_truth_grant rotate` is a first-class verb (new key → re-grant all → verify → revoke old); the bulk CLI exists for revoke, not only migration. |
+| B8 | `from=` | Stays OFF by default (a renumbering would read as "grant refused" — measured). Replaced by: per-fingerprint rate limit in the export (refuse > 6 reads/60 s with a JSON refusal doc), "last read from `<src>`" as a column in the target TUI and the witness, and B7 rotation. `from=` remains an opt-in flag. |
+| S1 | spool outcome taxonomy | `transport: {outcome ∈ ok/refused_grant/identity_mismatch/unreachable/export_broken, rc, stderr_head}`; the collector renders each distinctly; "refused" says "(key or source)". |
+| S2 | host identity on pull | NOC `known_hosts` generated from `fleet_naming.json` `expect_hostkey`, `StrictHostKeyChecking=yes`; mismatch → `identity_mismatch`, never data. |
+| S3 | the control that can fail | Reader pinned: `-i <noc key> -o IdentitiesOnly=yes -o IdentityAgent=none`. Acceptance 3/5 use the pinned reader (the interactive keys Q16 keeps would otherwise satisfy the target after a revoke). |
+| S4 | login vs loopback | Test: every URL the export reads is in the map's unauthenticated VIEW set; a section that moves behind the BIC-3 session is read from its file/socket, never via loopback. |
+| S5 | dual-app box | Witness at `$XDG_STATE_HOME/box_truth/reads.jsonl` (app-independent); one grant per fingerprint across both apps' entries. |
+| S6 | shell startup / nologin | Export frames its document with a first-line marker `__BOX_TRUTH_V1__` (reader parses after it); grant CLI refuses when the login shell is not a real shell. |
+| S7 | target resource bound | `flock` on the witness so exports serialise, plus the B8 rate limit. |
+| S8 | center resource bound | Read ssh stdout through a pipe with `MAX_BODY_BYTES` (8 MiB) and the HTTP deadline; overflow → `export_broken`. |
+| S9 | center page injection | Guard test: every peer value interpolated inside an `innerHTML` assignment in `fleet.html` passes through `esc(` (25 sites, sampled clean; cookie already `HttpOnly; SameSite=Strict`). |
+| S10 | carve-out preconditions | Plan shows the exact line, fingerprint, file, existing grant count; CLI measures `~/.ssh` 0700, non-symlink, `sshd -T` readable (else UNKNOWN in the plan), real shell, export script present+executable at the embedded absolute path; read-after-write. |
+| S11 | zero grants on fresh install | Regression-guard test: no installer / `update.sh` / provisioning / fleet script writes `authorized_keys` outside the grant CLI. |
+| S12 | Q16 migration order | Per box: grant → verify with the pinned reader → repoint the writer → remove moc3's duplicate via revoke-by-blob; interactive lines stay; one touch-log line per box. |
+
+**Amended acceptance (supersedes Q14):**
+
+1. MA `/fleet` 8/8, moc3 `resolution_method: ssh_spool`.
+2. Writer stopped → moc3 DARK within `SPOOL_STALE_S` (≤ 6 min); `cron_verdict` pages.
+3. Revoke on moc3 → pinned reader → `transport.outcome == refused_grant`; the cell names the fix.
+4. moc3's TUI lists the grant: fingerprint, comment, last read time AND source address.
+5. Forced command: `bash`, `-t`, `-s sftp`, stdin payload, `-A`, `-L` → the same JSON, forward `000`; `LC_ALL=C` client → valid JSON.
+6. Fresh install: zero grants; the installer-write guard test is green.
+7. Two-line / option-prefixed / RSA paste → refused with the reason.
+8. `rotate` on the center → every target reads with the new key; the old key is refused.
+9. A target presenting a different host key → `identity_mismatch`, never rendered as data.
