@@ -23,10 +23,11 @@ bounded (S8), and ending in ONE named outcome (S1) written to the spool as
 
 Targets file: ~/.config/meshforge/truth_spool_targets — ``<alias> [noc]`` per
 line, '#' comments (``utils.box_truth_center``, shared with the grant CLI that
-writes it). ``noc`` = read with the pinned grant key only (S3); without it the
-read rides the operator's interactive access (legacy, until that box is
-migrated — S12). Absent/empty file = nothing to do (exit 0): boxes are OPTED
-IN here, this never guesses.
+writes it). ``noc`` = read with the pinned grant key only (S3). A line WITHOUT it is
+not read at all: its spool row says ``refused_grant`` and names the push
+that grants it (the interactive-key read was deleted 2026-10-14 once every
+target was pinned — S12 complete). Absent/empty file = nothing to do
+(exit 0): boxes are OPTED IN here, this never guesses.
 
 Exit codes: 0 = ran and wrote a spool file for every target (an unreachable
 target still gets an empty-handed spool file — the truth layer surfaces the
@@ -41,8 +42,6 @@ Crontab (manager box):
 
 import json
 import os
-import re  # noqa: F401  (legacy block)
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -56,138 +55,9 @@ from typing import Optional  # noqa: E402
 
 from utils import box_truth as bt  # noqa: E402
 from utils import box_truth_reader as br  # noqa: E402
-from utils.box_truth_center import read_targets, targets_path  # noqa: E402,F401
+from utils.box_truth_center import read_targets, targets_path  # noqa: E402
 from utils.fleet_truth_collector import SPOOL_SCHEMA, truth_spool_dir  # noqa: E402
 from utils.paths import atomic_write_text, get_real_user_home  # noqa: E402
-
-SSH_TIMEOUT_S = 30  # whole remote round-trip (tunnel handshake + 3 curls)
-
-# ── LEGACY read path (unmigrated targets only) ────────────────────────────
-# Kept BYTE-FOR-BYTE until every target is migrated to a grant (Q16/S12):
-# the export does not exist on a box until it is deployed there, and this
-# checkout IS the live writer on the manager — switching every target at once
-# blinded kiai/moc3/moc/lehua on 2026-10-14 within one cron tick. A target
-# moves to the export when its line gains `noc`; delete this block when none
-# is left without it. Known defect kept on purpose: `ls` exits 2 when either
-# tty glob is empty, so a ttyACM-only box spools usb_present=false here.
-#
-# Section delimiters for the single-ssh-call remote fetch. One ssh session
-# per box (the reverse-tunnel handshake is the expensive part), three
-# payloads separated by markers no JSON body can legitimately start with.
-_REMOTE_CMD = (
-    "echo __TRUTH_SLO__; curl -s -m 6 http://localhost:5000/fleet/slo || true; "
-    "echo; echo __TRUTH_STATUS__; curl -s -m 6 http://localhost:5000/api/status || true; "
-    "echo; echo __TRUTH_RAWWD__; cat /var/lib/meshforge/watchdog.json 2>/dev/null || true; "
-    # The box's OWN role declaration, read as a FILE — deliberately, because
-    # this is exactly the case where the HTTP surface does not exist. A
-    # gateway-only box declares `meshforge-map: disabled` (too heavy for a
-    # ~1GB board), so /fleet/slo and /api/status above legitimately return
-    # nothing and the NOC has no other way to learn WHY. Without this, a
-    # correctly-provisioned box is indistinguishable from a broken one and
-    # darkens the whole fleet verdict forever (2026-07-20).
-    "echo; echo __TRUTH_DEPLOY__; "
-    "cat ${XDG_CONFIG_HOME:-$HOME/.config}/meshforge/deployment.json 2>/dev/null || true; "
-    # ── Map-less enrichment (2026-07-22) ──────────────────────────────────
-    # A gateway-only box has no /api/status or /fleet/slo (the curls above
-    # return nothing), so mini/radio/services were accepted-blind on the
-    # monitor. These three NON-HTTP raw reads — the same class of read as
-    # raw_watchdog above — let a correctly-provisioned map-less gateway still
-    # report those subsystems. All perturb NOTHING: mini is a file, radio is a
-    # /proc LISTEN read (never a :4403 connect — #17/#75), services is
-    # systemctl state.
-    "echo; echo __TRUTH_RAWMINI__; cat $HOME/mini_dudeai_state.json 2>/dev/null || true; "
-    "echo; echo __TRUTH_RADIO__; "
-    # :4403 = 0x1133, LISTEN state 0A. /proc read only, never a connect.
-    "_t=$(awk '$4==\"0A\" && $2 ~ /:1133$/{f=1} END{print (f?\"true\":\"false\")}' "
-    "/proc/net/tcp /proc/net/tcp6 2>/dev/null); "
-    "ls /dev/ttyUSB* /dev/ttyACM* >/dev/null 2>&1 && _u=true || _u=false; "
-    "printf '{\"tcp_listening\":%s,\"usb_present\":%s}' \"${_t:-false}\" \"$_u\"; "
-    "echo; echo __TRUTH_SERVICES__; "
-    "{ printf '{'; _f=1; "
-    "for u in meshtasticd rnsd $(systemctl list-unit-files 'meshforge-*.service' "
-    "--no-legend 2>/dev/null | awk '{print $1}'); do "
-    "_a=$(systemctl is-active \"$u\" 2>/dev/null); _e=$(systemctl is-enabled \"$u\" 2>/dev/null); "
-    "[ $_f -eq 1 ] || printf ','; _f=0; "
-    "printf '\"%s\":{\"active\":\"%s\",\"enabled\":\"%s\"}' \"$u\" \"${_a:-unknown}\" \"${_e:-unknown}\"; "
-    "done; printf '}'; }"
-    # ── Cron schedules + verdicts (2026-09-07) ────────────────────────────
-    # A map-less box's cron verdicts were read by NOTHING. On lehua that was
-    # load-bearing: it has no map (so fleet_snapshot never publishes them) and
-    # no watchdog (so `probe_cron_verdict_stale`, the ONLY emitter of the
-    # signal class mini's rule matches, never runs). Its hourly self-healing
-    # hosts-block cron wrote an honest verdict into a file with no reader —
-    # a writer whose consuming half was never wired (honest_failure_modes #4).
-    #
-    # Shipped as RAW TEXT, deliberately: the judging lives in fleet_snapshot's
-    # parsers on the manager, so there is ONE implementation of "last verdict
-    # per name" and of the per-cron staleness cadence. Reproducing that in
-    # bash here would be a second copy, free to drift (#5).
-    #
-    # base64 because these are arbitrary text going inside a JSON string —
-    # crontab commands contain quotes, backslashes and `%`. Encoding sidesteps
-    # shell-to-JSON escaping entirely; a failed encode yields an empty string,
-    # which reads as unobservable rather than as an empty crontab.
-    #
-    # The awk reduces the log to its LAST TWO lines per name, oldest first.
-    #
-    # ⚠️ It sent ONE line per name until 2026-09-13, justified as "idempotent
-    # w.r.t. `_parse_cron_verdicts`", which computes last-per-name. That was
-    # true and it was the wrong parser. The fast-cron confirmation gate reads
-    # `_prior_verdict_statuses` — the SECOND-newest verdict per name — so with
-    # one line `prev` was always None, every FAIL on an hourly cron read
-    # "unconfirmed first failure ... awaiting next run", and the cell sat
-    # `dark` forever instead of ever reaching `failed`. Measured cost: lehua
-    # failed its hourly `fleet_hosts_drift` 26 consecutive times (2026-09-11 →
-    # 09-14) and the NOC never said so — on the one box that has no watchdog,
-    # i.e. the box this whole spool leg exists to give a voice.
-    #
-    # The lesson is the reduction's, not the parser's: a transport that
-    # summarises its payload must preserve every property its CONSUMERS read,
-    # not the one property its author happened to test (honest_failure_modes
-    # #5). Two lines is the minimum the confirmation gate can work with;
-    # oldest-first keeps `_parse_cron_verdicts`'s "last line per name wins"
-    # answer byte-identical. Both properties are pinned by tests now.
-    "; echo; echo __TRUTH_SCHEDULES__; "
-    "_ct=$(crontab -l 2>/dev/null | base64 -w0 2>/dev/null); "
-    "_cv=$(awk '{if ($2 in n) p[$2]=n[$2]; n[$2]=$0} "
-    "END{for(k in n){if (k in p) print p[k]; print n[k]}}' "
-    "\"$HOME/cron_verdicts.log\" 2>/dev/null | base64 -w0 2>/dev/null); "
-    "printf '{\"crontab_b64\":\"%s\",\"verdicts_b64\":\"%s\"}' \"${_ct:-}\" \"${_cv:-}\""
-    # ── The peer's OWN clock (2026-10-06) ─────────────────────────────────
-    # The schedules above are judged by comparing the PEER's verdict stamps
-    # (written by its clock) against THIS box's `now`. With no witness of
-    # the peer's clock, a peer days behind (RTC-less Pi after a WAN outage —
-    # the moc4 08-27 class) reads every cron stale and pages a healthy cron
-    # as failed; a peer ahead reads fresh forever. Read in the same round
-    # trip; `fetched_at` (this box, stamped after the ssh returns) is the
-    # pair it is judged against, so a healthy pair differs by the ssh
-    # duration only.
-    "; echo; echo __TRUTH_CLOCK__; printf '{\"now\":%s}' \"$(date +%s)\""
-    # ── RNS→RF ingress tripwire ledger (2026-10-06) ───────────────────────
-    # A map-less gateway (moc3) has no /fleet/slo to carry the projected
-    # ledger, so the RAW file rides the spool and fleet_truth projects it
-    # with the same function the map uses. Absent file → empty section →
-    # the cell reads absent, never healthy.
-    "; echo; echo __TRUTH_INGRESS__; "
-    # Data dir, not state dir: the gateway unit can only write there
-    # (ReadWritePaths; measured 2026-10-07) — same path as
-    # gateway.rns_ingress_policy.default_ledger_path().
-    "cat ${XDG_DATA_HOME:-$HOME/.local/share}/meshforge/rns_ingress_ledger.json "
-    "2>/dev/null || true"
-)
-_SECTIONS = ("__TRUTH_SLO__", "__TRUTH_STATUS__", "__TRUTH_RAWWD__",
-             "__TRUTH_DEPLOY__", "__TRUTH_RAWMINI__", "__TRUTH_RADIO__",
-             "__TRUTH_SERVICES__", "__TRUTH_SCHEDULES__", "__TRUTH_CLOCK__",
-             "__TRUTH_INGRESS__")
-_SECTION_KEYS = {"__TRUTH_SLO__": "slo", "__TRUTH_STATUS__": "status",
-                 "__TRUTH_RAWWD__": "raw_watchdog",
-                 "__TRUTH_DEPLOY__": "deployment",
-                 "__TRUTH_RAWMINI__": "raw_mini", "__TRUTH_RADIO__": "radio_probe",
-                 "__TRUTH_SERVICES__": "services",
-                 "__TRUTH_SCHEDULES__": "schedules",
-                 "__TRUTH_CLOCK__": "clock",
-                 "__TRUTH_INGRESS__": "ingress"}
-
 
 #: The ten box_truth/v1 sections, carried into the spool doc under the same
 #: keys the collector has always read (one allowlist: utils.box_truth).
@@ -284,54 +154,6 @@ def watchdog_expected(deployment_raw) -> "Optional[bool]":
     return _unit_expected(deployment_raw, _WATCHDOG_SERVICE)
 
 
-def parse_sections(blob: str) -> dict:
-    """Split the delimited remote output into {slo, status, raw_watchdog},
-    each json-parsed or None. Garbage in any section → None for that section
-    (unobservable, never a guess)."""
-    out = {"slo": None, "status": None, "raw_watchdog": None}
-    current = None
-    buf: list = []
-
-    def _flush():
-        if current is None:
-            return
-        text = "\n".join(buf).strip()
-        if not text:
-            return
-        try:
-            doc = json.loads(text)
-        except ValueError:
-            return
-        if isinstance(doc, dict):
-            out[_SECTION_KEYS[current]] = doc
-
-    for line in blob.splitlines():
-        if line.strip() in _SECTIONS:
-            _flush()
-            current = line.strip()
-            buf = []
-        else:
-            buf.append(line)
-    _flush()
-    return out
-
-
-def fetch_box_legacy(alias: str) -> dict:
-    """One bounded ssh round-trip. Any failure → all-None sections (the spool
-    records the attempt; the truth layer renders the darkness)."""
-    try:
-        proc = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
-             alias, _REMOTE_CMD],
-            capture_output=True, text=True, timeout=SSH_TIMEOUT_S,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return {"slo": None, "status": None, "raw_watchdog": None}
-    if proc.returncode != 0 and not proc.stdout:
-        return {"slo": None, "status": None, "raw_watchdog": None}
-    return parse_sections(proc.stdout)
-
-
 def sections_from_doc(doc: "Optional[dict]") -> dict:
     """box_truth/v1 sections -> the spool's section keys. Every key present;
     a non-object section is None (unobservable), never a guess."""
@@ -353,13 +175,26 @@ def _expect_of(alias: str) -> "tuple[Optional[str], Optional[str]]":
     return (host.expect_hostkey if host else None), None
 
 
-def fetch_box(target, *, home: Path, expect_of=_expect_of,
-              read=br.read_box) -> "tuple[dict, dict, dict]":
+def fetch_box(target, *, home: Path, expect_of=None,
+              read=None) -> "tuple[dict, dict, dict]":
     """One bounded, identity-checked read -> (sections, transport, meta).
     A pinned target (``noc`` in the targets file) reads with the grant key
     only (S3); any failure -> all-None sections + the outcome that says
-    which failure it was (S1)."""
-    key_path = br.noc_key_path(home) if target.pinned else None
+    which failure it was (S1). An UNPINNED target is never read: its row
+    is ``refused_grant`` with the push that would grant it, so the NOC
+    shows DARK-with-the-fix instead of a silently missing box."""
+    expect_of = expect_of or _expect_of
+    read = read or br.read_box
+    if not target.pinned:
+        res = br.ReadResult(
+            alias=target.alias, outcome="refused_grant", pinned=False,
+            stderr_head=(f"{target.alias} is not pinned in {targets_path(home)} — "
+                         f"grant it from this center: box_truth_grant.py push "
+                         f"{target.alias} --confirm {target.alias}"))
+        transport = res.transport()
+        transport["reason"] = res.stderr_head
+        return sections_from_doc(None), transport, {}
+    key_path = br.noc_key_path(home)
     expect, why = expect_of(target.alias)
     if key_path is not None and not key_path.exists():
         res = br.ReadResult(alias=target.alias, outcome="refused_grant", pinned=True,
@@ -399,11 +234,8 @@ def main() -> int:
 
     failures = 0
     for target in targets:
-        if target.pinned:
-            sections, transport, meta = fetch_box(target, home=home)
-            extra = {"transport": transport, "box_truth": meta}
-        else:
-            sections, extra = fetch_box_legacy(target.alias), {}
+        sections, transport, meta = fetch_box(target, home=home)
+        extra = {"transport": transport, "box_truth": meta}
         doc = {
             "schema": SPOOL_SCHEMA,
             "alias": target.alias,
@@ -427,8 +259,8 @@ def main() -> int:
                   file=sys.stderr)
             failures += 1
             continue
-        how = "pinned" if target.pinned else "legacy"
-        outcome = extra["transport"]["outcome"] if extra else "legacy"
+        how = "pinned" if target.pinned else "unpinned"
+        outcome = transport["outcome"]
         print(f"truth_spool: {target.alias} [{how}] {outcome}: "
               f"{'+'.join(got) if got else 'empty-handed'}")
 

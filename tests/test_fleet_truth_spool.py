@@ -32,38 +32,6 @@ def _load_spool_script():
     return mod
 
 
-class TestParseSections:
-    def test_all_three_sections(self):
-        mod = _load_spool_script()
-        blob = ("__TRUTH_SLO__\n" + json.dumps({"overall_status": "ready"}) +
-                "\n__TRUTH_STATUS__\n" + json.dumps({"app": {"name": "meshforge"}}) +
-                "\n__TRUTH_RAWWD__\n" + json.dumps({"ts": 1.0, "ok": True}))
-        out = mod.parse_sections(blob)
-        assert out["slo"] == {"overall_status": "ready"}
-        assert out["status"]["app"]["name"] == "meshforge"
-        assert out["raw_watchdog"]["ok"] is True
-
-    def test_garbage_section_is_none_not_guess(self):
-        mod = _load_spool_script()
-        blob = ("__TRUTH_SLO__\n<html>502 bad gateway</html>\n"
-                "__TRUTH_STATUS__\n" + json.dumps({"app": {}}) +
-                "\n__TRUTH_RAWWD__\n")
-        out = mod.parse_sections(blob)
-        assert out["slo"] is None
-        assert out["status"] == {"app": {}}
-        assert out["raw_watchdog"] is None
-
-    def test_empty_blob_all_none(self):
-        mod = _load_spool_script()
-        out = mod.parse_sections("")
-        assert out == {"slo": None, "status": None, "raw_watchdog": None}
-
-    def test_non_dict_json_is_none(self):
-        mod = _load_spool_script()
-        out = mod.parse_sections("__TRUTH_SLO__\n[1,2,3]\n")
-        assert out["slo"] is None
-
-
 class TestReadTargets:
     def test_comments_and_blanks_ignored(self, tmp_path):
         mod = _load_spool_script()
@@ -253,13 +221,6 @@ class TestHttpSurfaceExpected:
 
 
 class TestSpoolCarriesTheDeclaration:
-    def test_deployment_section_is_parsed(self):
-        mod = _load_spool_script()
-        raw = ("__TRUTH_SLO__\n\n__TRUTH_STATUS__\n\n__TRUTH_RAWWD__\n\n"
-               '__TRUTH_DEPLOY__\n{"role": "gateway-only"}\n')
-        out = mod.parse_sections(raw)
-        assert out["deployment"] == {"role": "gateway-only"}
-
     def test_collector_promotes_role_and_expectation(self, tmp_path):
         """End-to-end through the collector: a map-less box's role reaches the
         snapshot in the SAME shape an HTTP box reports it, so the builder needs
@@ -355,29 +316,12 @@ def _verdict(status, ago_s, now, name="fleet_hosts_drift"):
     return f"{ts} {name} {status} some message\n"
 
 
-class TestSpoolCarriesSchedules:
-
-    def test_schedules_is_a_parsed_section(self):
-        mod = _load_spool_script()
-        assert "__TRUTH_SCHEDULES__" in mod._SECTIONS
-        assert mod._SECTION_KEYS["__TRUTH_SCHEDULES__"] == "schedules"
-        blob = ('__TRUTH_SCHEDULES__\n'
-                '{"crontab_b64":"YQ==","verdicts_b64":"Yg=="}\n')
-        assert mod.parse_sections(blob)["schedules"] == {
-            "crontab_b64": "YQ==", "verdicts_b64": "Yg=="}
-
-    def test_remote_command_reads_both_artifacts(self):
-        mod = _load_spool_script()
-        assert "crontab -l" in mod._REMOTE_CMD
-        assert "cron_verdicts.log" in mod._REMOTE_CMD
-        assert "base64" in mod._REMOTE_CMD
-
-
 def _awk_reduce(full: str) -> str:
     """Reproduce the remote awk: last TWO lines per name, oldest first.
 
-    Mirrors `_REMOTE_CMD`'s awk exactly. Kept here so both properties the
-    reduction must preserve are tested against ONE model of it.
+    A MODEL of the export's `last_two_verdicts` (the shell awk it replaced
+    was deleted 2026-10-14). Kept here so both properties the reduction
+    must preserve are tested against ONE model of it.
     """
     newest, prior = {}, {}
     for ln in full.strip().split("\n"):
@@ -394,7 +338,7 @@ def _awk_reduce(full: str) -> str:
 
 
 class TestAwkReductionCannotChangeTheAnswer:
-    """The remote awk summarises the verdict log before shipping it. It must
+    """The export summarises the verdict log before shipping it. It must
     preserve EVERY property the manager-side consumers read — not just the one
     its author thought of.
 
@@ -415,47 +359,6 @@ class TestAwkReductionCannotChangeTheAnswer:
                 + _verdict("OK", 60, now))
         assert (_parse_cron_verdicts(full, now)
                 == _parse_cron_verdicts(_awk_reduce(full), now))
-
-    def test_the_REAL_awk_is_what_was_modelled(self, tmp_path):
-        """`_awk_reduce` above is a MODEL of the shipped awk. A model that
-        drifts from the artifact keeps the other two tests green while the
-        real transport is broken — the same self-confirming shape as the
-        2026-07-25 resolver lesson. So run the ACTUAL awk program, lifted out
-        of `_REMOTE_CMD`, and require it to agree with the model."""
-        import re
-        import shutil
-        import subprocess
-        awk_bin = shutil.which("awk")
-        if awk_bin is None:
-            pytest.skip("no awk on this host — cannot exercise the artifact")
-        spool_mod = _load_spool_script()
-        # Anchor on the verdict log: _REMOTE_CMD contains a SECOND awk (the
-        # /proc radio read), and an unanchored match lifts that one and
-        # silently reduces nothing. Found by this test failing on its own
-        # first run — which is the point of exercising the artifact.
-        pattern = r'''awk '([^']+)' "\$HOME/cron_verdicts\.log"'''
-        m = re.search(pattern, spool_mod._REMOTE_CMD)
-        assert m, "could not lift the cron-verdict awk program out of _REMOTE_CMD"
-        now = 1_800_000_000.0
-        full = (_verdict("OK", 7200, now)
-                + _verdict("FAIL", 3600, now, name="other")
-                + _verdict("FAIL", 1800, now)
-                + _verdict("FAIL", 60, now))
-        log = tmp_path / "cron_verdicts.log"
-        log.write_text(full)
-        out = subprocess.run([awk_bin, m.group(1), str(log)],
-                             capture_output=True, text=True, timeout=30)
-        assert out.returncode == 0, out.stderr
-        # Same content, per name, as the model — order across names is not
-        # part of the contract (both consumers key by name); order WITHIN a
-        # name is (oldest first), and both parsers are asserted on it.
-        from utils.fleet_snapshot import _parse_cron_verdicts
-        from utils.watchdog_probes_liveness import _prior_verdict_statuses
-        real, model = out.stdout, _awk_reduce(full)
-        assert (_parse_cron_verdicts(real, now)
-                == _parse_cron_verdicts(model, now))
-        assert _prior_verdict_statuses(real) == _prior_verdict_statuses(model)
-        assert _prior_verdict_statuses(real)["fleet_hosts_drift"] == "FAIL"
 
     def test_reduction_preserves_the_previous_verdict(self):
         """THE property the one-line reduction destroyed. Without this the
@@ -564,26 +467,6 @@ class TestSchedulesCellFromSpool:
         assert c_["source"] == "ssh_spool.cron_verdicts"
 
 
-class TestSpoolCarriesThePeerClock:
-    """2026-10-06 (frontier hunt, item 4): the peer leg judged a PEER's
-    verdict stamps (its clock) against the MANAGER's `now` with no skew
-    witness — a peer days behind (the moc4 08-27 class) reads every cron
-    stale and pages a healthy cron as failed; a peer ahead reads fresh
-    forever. The spool now carries the peer's own clock, read in the same
-    ssh round trip."""
-
-    def test_clock_is_a_parsed_section(self):
-        mod = _load_spool_script()
-        assert "__TRUTH_CLOCK__" in mod._SECTIONS
-        assert mod._SECTION_KEYS["__TRUTH_CLOCK__"] == "clock"
-        assert mod.parse_sections('__TRUTH_CLOCK__\n{"now":1800000000}\n')["clock"] == {
-            "now": 1800000000}
-
-    def test_remote_command_reads_the_peer_clock(self):
-        mod = _load_spool_script()
-        assert "date +%s" in mod._REMOTE_CMD
-
-
 class TestPeerJudgeRefusesASkewedClock:
 
     def test_peer_clock_far_ahead_is_dark_with_the_number(self, tmp_path):
@@ -635,18 +518,6 @@ class TestSpoolCarriesTheIngressLedger:
     """2026-10-06: the RNS→RF tripwire ledger rides the spool RAW for
     map-less gateways; fleet_truth projects it with the gateway's own
     function. Absent file → no section → the cell reads absent."""
-
-    def test_ingress_is_a_parsed_section(self):
-        mod = _load_spool_script()
-        assert "__TRUTH_INGRESS__" in mod._SECTIONS
-        assert mod._SECTION_KEYS["__TRUTH_INGRESS__"] == "ingress"
-        blob = ('__TRUTH_INGRESS__\n'
-                '{"schema":"rns_ingress_ledger/v1","policy":"observe","senders":{}}\n')
-        assert mod.parse_sections(blob)["ingress"]["policy"] == "observe"
-
-    def test_remote_command_cats_the_ledger(self):
-        mod = _load_spool_script()
-        assert "rns_ingress_ledger.json" in mod._REMOTE_CMD
 
     def test_collector_promotes_spool_ingress(self):
         raw = {"schema": "rns_ingress_ledger/v1", "policy": "enforce",
@@ -788,49 +659,6 @@ class TestSpoolTransportOutcomeReachesTheCell:
         assert "ssh spool fresh but empty-handed" in snap["error"]
 
 
-class TestOnlyMigratedTargetsUseTheExport:
-    """2026-10-14: switching EVERY target to the export at once blinded
-    kiai/moc3/moc/lehua within one cron tick — this checkout is the manager's
-    live writer, and the export did not exist on any target yet. A target
-    moves to the export only when its line carries `noc` (S12 order)."""
-
-    def _run(self, tmp_path, targets_text):
-        mod = _load_spool_script()
-        home = tmp_path / "home"
-        (home / ".config" / "meshforge").mkdir(parents=True)
-        (home / ".config" / "meshforge" / "truth_spool_targets").write_text(targets_text)
-        calls = []
-
-        def legacy(alias):
-            calls.append(("legacy", alias))
-            return {"slo": None, "status": None, "raw_watchdog": {"ok": True}}
-
-        def pinned(target, *, home):
-            calls.append(("export", target.alias))
-            return ({k: None for k in mod._SECTION_NAMES},
-                    {"outcome": "refused_grant", "reason": "grant refused"}, {})
-        with patch.object(mod, "get_real_user_home", return_value=home), \
-             patch.object(mod, "truth_spool_dir", return_value=tmp_path / "spool"), \
-             patch.object(mod, "fetch_box_legacy", side_effect=legacy), \
-             patch.object(mod, "fetch_box", side_effect=pinned), \
-             patch.object(mod, "http_surface_expected", return_value=None), \
-             patch.object(mod, "watchdog_expected", return_value=None):
-            assert mod.main() == 0
-        return calls, tmp_path / "spool"
-
-    def test_unflagged_targets_never_touch_the_export(self, tmp_path):
-        calls, _ = self._run(tmp_path, "kiai\nmoc3  # gateway\n")
-        assert calls == [("legacy", "kiai"), ("legacy", "moc3")]
-
-    def test_noc_flag_moves_one_box_and_records_transport(self, tmp_path):
-        calls, spool = self._run(tmp_path, "kiai\nmoc3 noc\n")
-        assert calls == [("legacy", "kiai"), ("export", "moc3")]
-        moc3 = json.loads((spool / "moc3.json").read_text())
-        kiai = json.loads((spool / "kiai.json").read_text())
-        assert moc3["transport"]["outcome"] == "refused_grant"
-        assert "transport" not in kiai          # legacy doc byte-shape unchanged
-
-
 class TestExportSectionErrorsReachTheCell:
     """Review B 3: a section the box WITHHELD (tripwire) or failed to read
     rendered as 'no data (source absent)' — asserting absence for a source
@@ -899,3 +727,54 @@ class TestPinnedReadExplainsCenterSideFaults:
                                           expect_of=lambda a: (None, "registry unreadable"))
         assert transport["outcome"] == "identity_unpinned"
         assert "registry unreadable" in transport["reason"]
+
+
+class TestUnflaggedTargetsRefuseLoudly:
+    """2026-10-14, every target pinned → the legacy interactive-key read was
+    DELETED. A target line without ``noc`` is not read at all — no
+    interactive ssh, no export call — and its spool row says why and what
+    to do, so ``/fleet`` shows it DARK with the fix rather than silently
+    absent (a box that drops out of the pane is the 07-20 class). Writing a
+    row rather than skipping is deliberate: a skipped target leaves a STALE
+    spool file that reads "unreachable" for the wrong reason."""
+
+    def _run(self, tmp_path, targets_text):
+        mod = _load_spool_script()
+        home = tmp_path / "home"
+        (home / ".config" / "meshforge").mkdir(parents=True)
+        (home / ".config" / "meshforge" / "truth_spool_targets").write_text(targets_text)
+        (home / ".ssh").mkdir(mode=0o700)
+        mod.br.noc_key_path(home).write_text("scratch")   # a readable center key
+        calls = []
+
+        def read(alias, expect, *, key_path=None, **_kw):
+            calls.append((alias, key_path is not None))
+            return mod.br.ReadResult(alias=alias, outcome="unreachable",
+                                     pinned=key_path is not None, stderr_head="timeout")
+        with patch.object(mod, "get_real_user_home", return_value=home), \
+             patch.object(mod, "truth_spool_dir", return_value=tmp_path / "spool"), \
+             patch.object(mod, "_expect_of", return_value=("SHA256:" + "A" * 43, None)), \
+             patch.object(mod.br, "read_box", side_effect=read), \
+             patch.object(mod, "http_surface_expected", return_value=None), \
+             patch.object(mod, "watchdog_expected", return_value=None):
+            assert mod.main() == 0
+        return mod, calls, tmp_path / "spool"
+
+    def test_unflagged_target_is_never_read_and_names_push(self, tmp_path):
+        mod, calls, spool = self._run(tmp_path, "kiai\nmoc3 noc  # gateway\n")
+        assert calls == [("moc3", True)]            # only the pinned target was read
+        kiai = json.loads((spool / "kiai.json").read_text())
+        t = kiai["transport"]
+        assert t["outcome"] == "refused_grant" and t["pinned"] is False
+        assert "box_truth_grant.py push kiai --confirm kiai" in t["reason"]
+        assert all(kiai[k] is None for k in mod._SECTION_NAMES)
+        moc3 = json.loads((spool / "moc3.json").read_text())
+        assert moc3["transport"]["outcome"] == "unreachable"
+
+    def test_legacy_read_path_is_gone(self):
+        mod = _load_spool_script()
+        for name in ("_REMOTE_CMD", "fetch_box_legacy", "parse_sections",
+                     "_SECTIONS", "_SECTION_KEYS", "SSH_TIMEOUT_S"):
+            assert not hasattr(mod, name), f"{name} still present"
+        src = Path(mod.__file__).read_text(encoding="utf-8")
+        assert "subprocess" not in src and "__TRUTH_" not in src
