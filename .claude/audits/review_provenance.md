@@ -3900,6 +3900,31 @@ that fails on today's code: json lines on another channel only → today `channe
 file is PSK material (psk_leak_guard). The journal's per-channel topic history is the
 non-perturbing witness.
 
+## QUEUED 2026-10-14 (Opus 5.5) — BIC-15 operator line: FRONTIER security pass (gate 10) on the spec + non-author review of MF `8b476945..4f94f92e`
+
+**State:** code on `main`, OFF on every box (`operator_line.enabled` default false,
+`operators []`). `8b476945` = cloud `opline.patch.txt` VERBATIM (sha256 `e1776642…`,
+matches the bundle's SHA256SUMS, byte-identical to r3's operator-line hunks).
+`4f94f92e` = F1 by this session, test-first. Spec with every claim tagged
+MEASURED/READ: `.claude/plans/bic15_operator_line_2026_10_14.md`.
+**F1 as measured (differs from the 10-13 audit row above):** pinned RNS
+`Identity.from_file` never raises (returns `None`), so the "recreating" branch was
+dead and `None` reached `register_delivery_identity` — red on the old code: the
+operator line and broadcast bridge STARTED on a zero-byte identity, the gateway
+REGISTERED with one. Same pattern in three loaders; all now use
+`gateway/identity_store.py` (refuse + keep corpse + witness; atomic 0600 create,
+read back). The cloud fixtures modelled `from_file` as raising.
+**Attack, in the spec's "Owed" list:** hostname in a second public announce on
+HawaiiNet; airtime of 9 boxes × announce/30 min + pages on LoRa RNodes; disclosure to
+a lost operator phone with no revoke short of editing gateway.json; is "listed hash +
+valid LXMF signature" sufficient for a page-capable line; page flooding by a flapping
+class. **Review the F1 commit too:** `identity_store._write_new` (hard-link no-clobber,
+dir fsync), the FileExistsError re-entry, and that the gateway's refusal path skips
+the rnsd diagnosis without hiding a real rnsd fault.
+**Deploy note:** F1 changes only the unhealthy path of the two live gateways
+(moc, moc3: 64-byte identities measured 10-14); their pre-deploy LXMF addresses are
+recorded in the touch log for the after-deploy comparison.
+
 ## ~~QUEUED~~ **CLOSED 2026-10-14** (Fable 5.1 design pass; see table row 2026-10-14) — was QUEUED 2026-10-13 (Opus 5.5): FRONTIER design-level security pass: NOC read grant (gate 10), BEFORE session 2 code
 
 **Verdict (Fable 5.1, 2026-10-14 ~02:00 HST): trust-path SHAPE sound — `restrict,command=` measured live doing what the spec assumes — but 8 BLOCKING design amendments (B1–B8) + 12 should-fix (S1–S12) before session 2 code; all folded into the spec's "Security-pass amendments" section + a 9-leg amended acceptance. Every named attack answered with a measurement: forced-command escape (drill: no shell, no forward, no agent; stdin + `SSH_ORIGINAL_COMMAND` + `LC_*` env DO reach it → B1/B2), leak (regex over all 10 sections: 0 credentials; cron lines + operator paths + 1 LAN IP → B7 allowlist+tripwire), grant spoofing (comment is center-chosen → B4 fp-in-command; paste is structured input → B3 one validator), revoke completeness (both AuthorizedKeysFile paths, blob-match, moc3 dup ×1 measured, ControlMaster lag → B5), `from=` trade-off (off; fails like a revoke; replaced → B8), center-side push via operator access (→ B6 target CLI + expect_hostkey), what `restrict` alone still permits (N1: the forced command for every session request incl. sftp; nothing else). Full text: `.claude/audits/noc_read_grant_security_pass_2026_10_14.md`.**

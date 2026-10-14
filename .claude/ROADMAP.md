@@ -164,6 +164,11 @@ whole; each item below lands on its own, re-tested here. In order:
 3. **BIC-15 operator line** (LXMF address, allowlisted read-only oracle + pages
    over RNS) — fix first: an unreadable identity is silently RECREATED (new
    address, corpse overwritten); quarantine + refuse + witness instead.
+   **CODE LANDED 10-14, OFF everywhere** `8b476945` (verbatim) + `4f94f92e` (F1
+   fixed in all THREE identity loaders; the real shape was `from_file` → `None`,
+   never an exception). Spec `.claude/plans/bic15_operator_line_2026_10_14.md`.
+   **Before any box enables it:** Fable security pass (gate 10, queued), a TUI /
+   fleet surface for its status, then the 4-leg live acceptance on one box.
 4. **BIC-2 = NEXT #4 per-leg delivery truth**, shown per message, UNKNOWN first-class.
 5. **BIC-4 interop vs stock RNS 1.5.7**, both directions, real hardware → merge-forward
    or stay-pinned decision record.
