@@ -205,6 +205,18 @@ whole; each item below lands on its own, re-tested here. In order:
     the Pis or the central trigger cannot reach them. APC feeds VolcanoAI, alaula, moc5, moc,
     hAP, 3 switches, router (operator 10-05); no APC on USB anywhere yet (measured).
 
+6d. **NOC read grant + `box_truth/v1` export** (operator 10-13, grilled Q1–Q18; spec
+    `plans/noc_read_grant_2026_10_13.md`). Any center (MF or MA, standalone or fleet)
+    reads any box, map-less included, once the box GRANTS that center a restricted ssh
+    key (`restrict,command=<export>`), made as a TUI action (2nd acting carve-out). Why:
+    MA cannot see a map-less box at all; MF sees moc3/kiai/moc/lehua only through
+    UNRESTRICTED keys shared with the Claude session. 3 sessions: (1) spec — DONE 10-13;
+    (2) MF: shared export + writer + grant CLI + migrate the 4 links, reviewers first;
+    (3) MA port + TUI both apps, then minor bump BOTH (MF 0.7.0-beta, MA 0.3.0-beta).
+    BEFORE session 2: a frontier design-level security pass (gate 10). Adds `box_truth/v1`
+    to gate 1. Accept: MA `/fleet` 8/8 with moc3 `ssh_spool`; `ssh -i <noc key> moc3 bash`
+    returns JSON, never a shell.
+
 **LATER**
 7. Mesh-issue rules for the *user's* mesh (MeshMonitor M1), with one thresholds
    file and a test that forbids harmful advice.
