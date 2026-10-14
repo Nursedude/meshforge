@@ -311,3 +311,15 @@ def test_login_answers_while_the_map_is_warming(server, monkeypatch):
     monkeypatch.setattr(MapRequestHandler, "is_warming", True)
     assert _req(srv, "GET", "/api/auth/status")[0] == 200
     assert _req(srv, "GET", "/login")[0] == 200
+
+
+def test_printed_commands_work_from_any_directory(server):
+    """The 401, login page and TUI print the CLI for the operator to paste into
+    whatever shell is open; repo-relative failed from $HOME (2026-10-13)."""
+    from pathlib import Path
+    cli = Path(web_auth.PAIR_COMMAND.split()[1])
+    assert cli.is_absolute() and cli.is_file(), cli
+    srv, _ = server
+    assert web_auth.PAIR_COMMAND.encode() in _req(srv, "GET", "/login")[1]
+    status, body, _ = _req(srv, "POST", "/api/radio/message", MSG, JSON)
+    assert status == 401 and str(cli).encode() in body

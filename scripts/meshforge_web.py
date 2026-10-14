@@ -43,8 +43,8 @@ def main(argv=None) -> int:
     if os.geteuid() == 0:
         print("Refused: run this as the operator (the user meshforge-map runs as), "
               "not root — a root-owned session file is one the map cannot read.\n"
-              "  e.g.  sudo -u <operator> python3 scripts/meshforge_web.py "
-              f"{args.action}", file=sys.stderr)
+              f"  e.g.  sudo -u <operator> python3 {web_auth.WEB_CLI} {args.action}",
+              file=sys.stderr)
         return 1
 
     store = web_auth.SessionStore()

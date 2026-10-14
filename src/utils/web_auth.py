@@ -41,7 +41,12 @@ PAIRING_MAX_TRIES = 5
 SESSION_IDLE_S = 30 * 86400
 TOUCH_EVERY_S = 3600          # last_used is persisted at most hourly
 COOKIE_NAME = "mf_operator"
-PAIR_COMMAND = f"python3 scripts/{CONFIG_DIR.name}_web.py pair"
+# ABSOLUTE, from where this checkout actually is: the operator reads these in a
+# 401, the login page or the TUI and pastes them into whatever shell they have
+# open — a repo-relative path failed from $HOME on first real use (2026-10-13).
+WEB_CLI = Path(__file__).resolve().parents[2] / "scripts" / f"{CONFIG_DIR.name}_web.py"
+PAIR_COMMAND = f"python3 {WEB_CLI} pair"
+REVOKE_COMMAND = f"python3 {WEB_CLI} revoke-all"
 
 
 class StoreUnavailable(Exception):

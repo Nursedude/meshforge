@@ -12,6 +12,7 @@ replacement: a request must pass all of them. Spec:
 """
 from __future__ import annotations
 
+import html
 import json
 from typing import Optional
 
@@ -30,7 +31,7 @@ button{margin-top:.8rem}code{background:#fff;border:1px solid #ccc;padding:0 .3e
 <h1>Operator login</h1>
 <p>Viewing needs no login. To send or change settings from this browser, run this on the box
 (SSH or console), then type the code it prints:</p>
-<p><code>python3 scripts/meshforge_web.py pair</code></p>
+<p><code>__PAIR__</code></p>
 <form id="f"><label for="c">Pairing code</label>
 <input id="c" autocomplete="one-time-code" maxlength="12" required autofocus>
 <button type="submit">Log in</button></form>
@@ -127,7 +128,7 @@ class AuthEndpointsMixin:
     # ── routes ──────────────────────────────────────────────────────────
 
     def _serve_login_page(self) -> None:
-        body = _LOGIN_PAGE.encode("utf-8")
+        body = _LOGIN_PAGE.replace("__PAIR__", html.escape(web_auth.PAIR_COMMAND)).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")

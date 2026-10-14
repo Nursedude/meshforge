@@ -208,7 +208,7 @@ class WebClientHandler(BaseHandler):
             f"  {web_auth.PAIR_COMMAND}\n"
             f"then open http://{local_ip}:5000/login and type the code.\n\n"
             "Log every browser out:\n"
-            "  python3 scripts/meshforge_web.py revoke-all",
+            f"  {web_auth.REVOKE_COMMAND}",
             height=20, width=68
         )
 
