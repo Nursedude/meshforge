@@ -284,6 +284,7 @@ class RNSMeshtasticBridge(
         # from _rns_loop after the first successful RNS connect so it
         # shares the process-wide RNS.Transport.
         self._meshtastic_broadcast = None
+        self._operator_line = None
 
         # Meshtastic handler (encapsulates connection and message handling)
         self._mesh_handler: Optional[MeshtasticHandler] = None
@@ -807,6 +808,7 @@ class RNSMeshtasticBridge(
                 self._meshtastic_broadcast.stop()
             except Exception as e:
                 logger.debug(f"Meshtastic broadcast stop error: {e}")
+        self._stop_operator_line()
         self._disconnect_rns()
 
         # Wait for threads, and VERIFY they went. join(timeout=N) returns None
@@ -1058,6 +1060,7 @@ class RNSMeshtasticBridge(
                                 )
                         # Start Meshtastic broadcast bridge plug-in (idempotent)
                         self._maybe_start_meshtastic_broadcast()
+                        self._maybe_start_operator_line()
                         # Make every listed/peer identity recallable in THIS
                         # process now, not at each peer's next announce — an
                         # enforcing RNS→RF allowlist refuses "source unknown"
@@ -1201,6 +1204,24 @@ class RNSMeshtasticBridge(
                 )
         except Exception as e:
             logger.error("Failed to start Meshtastic broadcast bridge: %s", e)
+
+    def _maybe_start_operator_line(self) -> None:
+        """Start the operator line (own LXMF identity) if enabled; idempotent."""
+        try:
+            if self._operator_line is None:
+                from .operator_line import create_from_gateway_config as _make_line
+                self._operator_line = _make_line(self.config)
+            if self._operator_line is not None and not self._operator_line.is_running:
+                self._operator_line.start()
+        except Exception as e:
+            logger.error("Failed to start operator line: %s", e)
+
+    def _stop_operator_line(self) -> None:
+        if self._operator_line is not None:
+            try:
+                self._operator_line.stop()
+            except Exception as e:
+                logger.debug(f"Operator line stop error: {e}")
 
     def _bridge_loop(self):
         """Main loop for message bridging.

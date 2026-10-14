@@ -14,6 +14,7 @@ from typing import Optional, List, Dict, Any, Tuple
 import logging
 
 from utils.safe_import import safe_import
+from gateway.operator_line_config import OperatorLineConfig
 from utils.paths import get_real_user_home, atomic_write_text_preserving
 from gateway.config_migrations import (
     CONFIG_SCHEMA_VERSION, check_schema_version, keep_pre_migration_copy,
@@ -736,6 +737,8 @@ class GatewayConfig:
     meshtastic_broadcast: MeshtasticBroadcastConfig = field(
         default_factory=MeshtasticBroadcastConfig
     )
+    # Operator line (LXMF address for allowlisted operators; off + closed by default)
+    operator_line: OperatorLineConfig = field(default_factory=OperatorLineConfig)
 
     # Logging
     log_level: str = "INFO"
@@ -887,6 +890,7 @@ class GatewayConfig:
                 default_route=data.get('default_route', 'bidirectional'),
                 telemetry=TelemetryConfig(**data.get('telemetry', {})),
                 meshtastic_broadcast=meshtastic_broadcast,
+                operator_line=OperatorLineConfig.from_dict(data.get('operator_line')),
                 log_level=data.get('log_level', 'INFO'),
                 log_messages=data.get('log_messages', True),
                 ai_diagnostics_enabled=data.get('ai_diagnostics_enabled', False),
@@ -963,6 +967,7 @@ class GatewayConfig:
                 'default_route': self.default_route,
                 'telemetry': asdict(self.telemetry),
                 'meshtastic_broadcast': asdict(self.meshtastic_broadcast),
+                'operator_line': self.operator_line.to_dict(),
                 'log_level': self.log_level,
                 'log_messages': self.log_messages,
                 'ai_diagnostics_enabled': self.ai_diagnostics_enabled,
