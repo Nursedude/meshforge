@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MeshForge Inbox</title>
+<link rel="icon" href="data:,">
+<style>
+/* BIC-1 browser inbox. Mesh text is UNTRUSTED: it is only ever set via
+   textContent, never innerHTML. No CDN — the map CSP allows 'self' + inline. */
+:root{--bg:#f4f6f8;--panel:#fff;--fg:#17202a;--muted:#5b6672;--rule:#d7dce1;--accent:#1d6fa5;
+  --in:#eef1f4;--out:#dcebf6;--ok:#1f7a4d;--warn:#9a6a00;--bad:#a12a2a;--unk:#5b5a86;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#11161b;--panel:#182028;--fg:#e3e8ec;--muted:#98a4af;
+  --rule:#2b3640;--accent:#6db3e3;--in:#1f2831;--out:#173247;--ok:#6cc79a;--warn:#e2b84f;--bad:#ee8b8b;--unk:#aeabe6;color-scheme:dark}}
+*{box-sizing:border-box}
+[hidden]{display:none!important}  /* form{display:flex} must not defeat the hidden attribute */
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;
+  padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0)}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--rule);background:var(--panel)}
+header h1{font-size:1.05rem;margin:0;font-weight:700}
+header .sp{flex:1}
+header a{color:var(--accent);font-size:.9rem}
+#status{font-size:.8rem;color:var(--muted)}
+#banner{display:none;margin:0;padding:10px 16px;background:var(--bad);color:#fff;font-size:.9rem}
+main{display:grid;grid-template-columns:minmax(240px,320px) 1fr;height:calc(100% - 50px)}
+#list{border-right:1px solid var(--rule);overflow-y:auto;background:var(--panel)}
+.thread{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid var(--rule);background:none;color:inherit;
+  padding:10px 14px;cursor:pointer;font:inherit}
+.thread:hover,.thread[aria-current="true"]{background:var(--in)}
+.thread:focus-visible,button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.row1{display:flex;gap:8px;align-items:baseline}
+.name{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.when{font-size:.75rem;color:var(--muted);white-space:nowrap}
+.preview{font-size:.85rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+.net{font:600 .66rem/1 ui-monospace,monospace;letter-spacing:.04em;text-transform:uppercase;padding:3px 5px;border-radius:3px;border:1px solid var(--rule);color:var(--muted)}
+#pane{display:flex;flex-direction:column;min-width:0;min-height:0}
+#pane-head{padding:10px 16px;border-bottom:1px solid var(--rule);display:flex;gap:10px;align-items:center}
+#pane-head .back{display:none;border:0;background:none;color:var(--accent);font:inherit;cursor:pointer;padding:0}
+#pane-title{font-weight:700;min-width:0;overflow-wrap:anywhere}
+#msgs{flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+.msg{max-width:min(78%,560px);padding:8px 11px;border-radius:10px;background:var(--in);overflow-wrap:anywhere;white-space:pre-wrap}
+.msg.out{align-self:flex-end;background:var(--out)}
+.meta{display:block;font-size:.72rem;color:var(--muted);margin-top:3px;white-space:normal}
+.st-handed_off{color:var(--warn)} .st-not_sent{color:var(--bad)} .st-received{color:var(--muted)}
+#empty{color:var(--muted);margin:auto;text-align:center;padding:24px}
+form{display:flex;gap:8px;padding:10px 16px;border-top:1px solid var(--rule);background:var(--panel)}
+textarea{flex:1;min-width:0;resize:none;height:44px;padding:10px;border:1px solid var(--rule);border-radius:8px;background:var(--bg);color:inherit;font:inherit}
+button.send{border:0;border-radius:8px;padding:0 16px;background:var(--accent);color:#fff;font:600 .95rem system-ui;cursor:pointer}
+button.send:disabled{opacity:.5;cursor:default}
+#count{font-size:.72rem;color:var(--muted);align-self:center;min-width:52px;text-align:right}
+#blocked{display:none;padding:10px 16px;border-top:1px solid var(--rule);color:var(--muted);font-size:.88rem}
+#note{font-size:.75rem;color:var(--muted);padding:0 16px 8px;background:var(--panel)}
+@media (max-width:720px){
+  main{grid-template-columns:1fr}
+  main.open #list{display:none} main:not(.open) #pane{display:none}
+  #pane-head .back{display:inline}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Inbox</h1><span id="status">loading…</span><span class="sp"></span><a href="/">Map</a>
+</header>
+<p id="banner" role="alert"></p>
+<main id="main">
+  <nav id="list" aria-label="Conversations"></nav>
+  <section id="pane" aria-live="polite">
+    <div id="pane-head"><button class="back" id="back" type="button">‹ All</button><span id="pane-title">Select a conversation</span></div>
+    <div id="msgs"><p id="empty">Messages this box has heard on Meshtastic and RNS appear here.</p></div>
+    <div id="blocked"></div>
+    <form id="compose" hidden>
+      <textarea id="text" maxlength="200" placeholder="Message" aria-label="Message"></textarea>
+      <span id="count">0/200</span>
+      <button class="send" id="send" type="submit">Send</button>
+    </form>
+    <div id="note" hidden>Sent messages show “handed to radio”: the radio accepted them. Delivery to the far end is not confirmed.</div>
+  </section>
+</main>
+<script>
+(function () {
+  "use strict";
+  var MAX = 200, POLL_MS = 10000;
+  var threads = [], current = null, enc = new TextEncoder();
+  var $ = function (id) { return document.getElementById(id); };
+  var STATE = { handed_off: "handed to radio · unconfirmed", not_sent: "NOT SENT", received: "" };
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;   // untrusted text: textContent only
+    return e;
+  }
+  function title(t) {
+    if (t.kind === "channel") return "Channel " + t.channel;
+    var p = t.partner || "?";
+    return t.network === "rns" ? p.slice(0, 8) + "…" + p.slice(-4) : p;
+  }
+  function when(ts) {
+    if (!ts) return "";
+    var d = new Date(ts.replace(" ", "T"));
+    if (isNaN(d)) return ts;
+    var same = d.toDateString() === new Date().toDateString();
+    return same ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                : d.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+
+  function renderList() {
+    var list = $("list");
+    list.replaceChildren();
+    if (!threads.length) { list.appendChild(el("p", "preview", "No conversations yet.")).style.padding = "14px"; return; }
+    threads.forEach(function (t) {
+      var b = el("button", "thread"); b.type = "button";
+      b.setAttribute("aria-current", current === t.key ? "true" : "false");
+      var r = el("div", "row1");
+      r.append(el("span", "net", t.network), el("span", "name", title(t)), el("span", "when", when(t.last_ts)));
+      b.append(r, el("div", "preview", t.preview));
+      b.addEventListener("click", function () { open(t.key); });
+      list.appendChild(b);
+    });
+  }
+
+  function renderPane() {
+    var t = threads.find(function (x) { return x.key === current; });
+    var msgs = $("msgs");
+    msgs.replaceChildren();
+    if (!t) { $("compose").hidden = true; $("note").hidden = true; $("blocked").style.display = "none"; return; }
+    $("pane-title").textContent = title(t) + (t.kind === "dm" ? "" : "  (broadcast)");
+    t.messages.forEach(function (m) {
+      var b = el("div", "msg " + m.direction, m.content);
+      var meta = el("span", "meta");
+      meta.append(document.createTextNode(when(m.ts)));
+      if (m.direction === "in" && t.kind === "channel") meta.append(document.createTextNode(" · " + m.from_id));
+      if (m.snr != null) meta.append(document.createTextNode(" · SNR " + m.snr));
+      if (m.state && STATE[m.state]) meta.append(document.createTextNode(" · "), el("span", "st-" + m.state, STATE[m.state]));
+      b.appendChild(meta);
+      msgs.appendChild(b);
+    });
+    msgs.scrollTop = msgs.scrollHeight;
+    $("compose").hidden = !t.can_send;
+    $("note").hidden = !t.can_send;
+    $("blocked").style.display = t.can_send ? "none" : "block";
+    $("blocked").textContent = t.send_blocked_reason || "";
+  }
+
+  function open(key) {
+    current = key;
+    $("main").classList.add("open");
+    try { history.replaceState(null, "", "#" + encodeURIComponent(key)); } catch (e) {}
+    renderList(); renderPane();
+  }
+
+  function setBanner(text) {
+    $("banner").textContent = text || "";
+    $("banner").style.display = text ? "block" : "none";
+  }
+
+  function load() {
+    return fetch("/api/inbox", { headers: { Accept: "application/json" } })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, j: j }; }); })
+      .then(function (res) {
+        if (res.j && res.j.state === "ok") {
+          threads = res.j.threads; setBanner("");
+          $("status").textContent = threads.length + " conversations · updated " + new Date().toLocaleTimeString();
+        } else if (res.status === 403) {
+          setBanner((res.j && res.j.detail) || "This box does not trust this device.");
+          $("status").textContent = "refused";
+        } else {
+          // Unobservable is not empty: keep the last view and say we are blind.
+          setBanner("Inbox unavailable: " + ((res.j && res.j.error) || "HTTP " + res.status) + ". Showing the last copy we had.");
+          $("status").textContent = "unavailable";
+        }
+        renderList(); renderPane();
+      })
+      .catch(function (e) {
+        setBanner("Cannot reach this MeshForge box (" + e.message + "). Showing the last copy we had.");
+        $("status").textContent = "offline";
+      });
+  }
+
+  $("text").addEventListener("input", function () {
+    var n = enc.encode(this.value).length;
+    $("count").textContent = n + "/" + MAX;
+    $("send").disabled = !this.value.trim() || n > MAX;
+  });
+  $("compose").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var t = threads.find(function (x) { return x.key === current; });
+    var text = $("text").value;
+    if (!t || !t.can_send || !text.trim()) return;
+    var body = { network: t.network, text: text, channel: t.channel || 0,
+                 destination: t.kind === "channel" ? "^all" : t.partner };
+    $("send").disabled = true;
+    fetch("/api/inbox/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.state === "handed_off") { $("text").value = ""; $("count").textContent = "0/" + MAX; setBanner(j.recorded ? "" : "Sent, but not saved to history: " + (j.record_error || "")); }
+        else if (j.error === "operator login required")
+          setBanner("Sending needs an operator login on this box: open /login (" + (j.how || "") + ")");
+        else setBanner(j.detail || j.error || "Send failed.");
+        return load();
+      })
+      .catch(function (e) { setBanner("Send failed: " + e.message); })
+      .finally(function () { $("send").disabled = !$("text").value.trim(); });
+  });
+  $("text").addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); $("compose").requestSubmit(); }
+  });
+  $("back").addEventListener("click", function () { $("main").classList.remove("open"); current = null; renderList(); });
+
+  var fromHash = decodeURIComponent((location.hash || "").slice(1));
+  load().then(function () { if (fromHash && threads.some(function (t) { return t.key === fromHash; })) open(fromHash); });
+  setInterval(function () { if (!document.hidden) load(); }, POLL_MS);
+  $("send").disabled = true;
+})();
+</script>
+</body>
+</html>

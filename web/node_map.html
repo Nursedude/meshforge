@@ -1440,6 +1440,11 @@
         <div class="loading-text" id="loading-text">Loading nodes...</div>
     </div>
 
+    <!-- BIC-1: the browser chat inbox (reading needs no login; sending does) -->
+    <a id="inbox-link" href="/inbox"
+       style="position:fixed;right:10px;bottom:54px;z-index:1200;font:12px system-ui,sans-serif;
+              background:rgba(23,32,42,.85);color:#e4e8ec;padding:4px 8px;border-radius:4px;
+              text-decoration:none">inbox</a>
     <!-- BIC-3: viewer / operator mode (viewing never needs a login) -->
     <a id="auth-badge" href="/login?next=/" onclick="authBadgeClick(event)"
        style="position:fixed;right:10px;bottom:28px;z-index:1200;font:12px system-ui,sans-serif;

@@ -141,6 +141,7 @@ def test_fleet_logs_need_a_session(server):
 
 @pytest.mark.parametrize("method,path", [
     ("POST", "/api/radio/message"), ("POST", "/api/settings"), ("POST", "/fleet/run-test"),
+    ("POST", "/api/inbox/send"),
     ("POST", "/api/v1/toradio"), ("POST", "/mesh/api/v1/toradio"),
     ("POST", "/json/blink"), ("POST", "/mesh/json/blink"),
     ("POST", "/restart"), ("POST", "/mesh/restart"),

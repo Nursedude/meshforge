@@ -574,6 +574,47 @@ def store_incoming(
         return CommandResult.fail(f"Failed to store message: {e}")
 
 
+def store_outgoing(
+    content: str,
+    network: str,
+    to_id: Optional[str],
+    channel: int = 0,
+    delivered: bool = False,
+) -> CommandResult:
+    """
+    Record a message THIS box sent by a path that did not store it itself
+    (the browser inbox transmits via ``send_text_direct_with_id``, BIC-1).
+
+    ``delivered`` keeps the column's existing meaning: the send call handed
+    the message to the radio/gateway — NOT that the far end received it.
+
+    Args:
+        content: Message text
+        network: "meshtastic" or "rns"
+        to_id: Destination node ID, or None for a channel broadcast
+        channel: Channel index the message went out on
+        delivered: True when the hand-off to the radio succeeded
+
+    Returns:
+        CommandResult with the new row id
+    """
+    try:
+        conn = _init_db()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO messages (network, from_id, to_id, content, channel, is_dm, delivered)
+            VALUES (?, 'local', ?, ?, ?, ?, ?)
+        ''', (network, to_id, content, channel, to_id is not None, bool(delivered)))
+        conn.commit()
+        message_id = cursor.lastrowid
+        conn.close()
+        _maybe_prune_messages()
+        return CommandResult.ok("Message recorded", data={'message_id': message_id})
+    except Exception as e:
+        logger.error(f"Failed to record outgoing message: {e}")
+        return CommandResult.fail(f"Failed to record outgoing message: {e}")
+
+
 def get_stats() -> CommandResult:
     """
     Get messaging statistics.

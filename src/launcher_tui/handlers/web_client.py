@@ -179,11 +179,13 @@ class WebClientHandler(BaseHandler):
             f"Access from OTHER devices on network:\n"
             f"  http://{local_ip}:5000/mesh/\n\n"
             f"MeshForge NOC Map:\n"
-            f"  http://{local_ip}:5000/\n\n"
+            f"  http://{local_ip}:5000/\n"
+            f"Chat inbox (send needs an operator login):\n"
+            f"  http://{local_ip}:5000/inbox\n\n"
             f"Requires graphical browser (JavaScript).\n"
             f"Port 5000 = MeshForge (web client + NOC)\n"
             f"Port 4403 = TCP API (CLI/SDK)",
-            height=18, width=60
+            height=20, width=60
         )
 
     def _show_operator_login(self, local_ip: str):

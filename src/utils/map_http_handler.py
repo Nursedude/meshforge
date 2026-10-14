@@ -19,6 +19,9 @@ Endpoints:
 - GET /api/messages/queue -> pending OUTBOUND messages from gateway queue
 - GET /api/messages/received -> RECEIVED inbound messages from mesh
 - GET /api/messages/rx-status -> MessageListener status (RX enabled?)
+- GET /inbox         -> web/inbox.html, the browser chat inbox (BIC-1)
+- GET /api/inbox     -> conversations across networks (503 when unreadable)
+- POST /api/inbox/send -> reply on a Meshtastic thread (RNS read-only for now)
 - GET /api/network/topology -> network topology for D3.js visualization
 - GET /api/status    -> server health check + history stats
 - GET /*             -> static files from web/
@@ -93,6 +96,7 @@ mimetypes.add_type('image/avif', '.avif')
 
 from utils._map_auth_endpoints import AuthEndpointsMixin
 from utils._map_fleet_endpoints import FleetEndpointsMixin
+from utils._map_inbox_endpoints import InboxEndpointsMixin
 from utils._map_meshtastic_proxy import MeshtasticProxyMixin
 from utils._map_node_endpoints import NodeDataEndpointsMixin
 from utils._map_radio_endpoints import RadioEndpointsMixin
@@ -225,6 +229,7 @@ def read_gate_self_coverage(allowed: Optional[List[str]]) -> Dict[str, Any]:
 
 class MapRequestHandler(
     AuthEndpointsMixin,
+    InboxEndpointsMixin,
     RadioEndpointsMixin,
     MeshtasticProxyMixin,
     VisualizationEndpointsMixin,
@@ -521,6 +526,7 @@ class MapRequestHandler(
             "/api/status", "/api/nodes/geojson", "/api/nodes/history",
             "/api/nodes/directory",
             "/api/messages/queue", "/api/messages/rx-status",
+            "/inbox", "/api/inbox",
             "/api/network/topology", "/api/network/rns/paths",
             "/api/network/interfaces",
             "/api/region-presets",
@@ -632,6 +638,10 @@ class MapRequestHandler(
             self._serve_weather()
         elif path_only == '/fleet':
             self._serve_fleet_page()
+        elif path_only == '/inbox':
+            self._serve_inbox_page()
+        elif path_only == '/api/inbox':
+            self._serve_inbox()
         elif path_only == '/fleet/slo':
             self._serve_fleet_slo()
         elif path_only == '/api/fleet/truth':
@@ -734,6 +744,8 @@ class MapRequestHandler(
         # ─────────────────────────────────────────────────────────────
         elif path_only == '/api/radio/message':
             self._handle_send_message()
+        elif path_only == '/api/inbox/send':
+            self._handle_inbox_send()
         # ─────────────────────────────────────────────────────────────
         # Fleet test runner — operator clicks dashboard button → fire
         # ─────────────────────────────────────────────────────────────
