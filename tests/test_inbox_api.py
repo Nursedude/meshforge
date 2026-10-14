@@ -116,6 +116,7 @@ def test_empty_store_is_ok_with_zero_threads():
     with patch.object(inbox_api.messaging, "get_messages",
                       return_value=CommandResult.ok("0", data={"messages": []})):
         out = inbox_api.read_inbox()
+    out.pop("rx")  # receive coverage, pinned by its own tests below
     assert out == {"state": "ok", "threads": [], "message_count": 0}
 
 
@@ -295,3 +296,24 @@ def test_timestamps_leave_as_utc_not_browser_local():
     # an already-zoned value is passed through untouched
     (t,) = inbox_api.build_threads([_row(timestamp="2026-10-13T10:32:24-10:00")])
     assert t["messages"][0]["ts"] == "2026-10-13T10:32:24-10:00"
+
+
+# ── receive coverage: the inbox says what this box can hear (2026-10-13) ──
+
+def test_inbox_carries_what_the_listener_can_hear():
+    st = {"state": "connected", "messages_received": 2, "channels_seen": {"3": 2},
+          "subscription": "mqtt localhost:1883 — every channel this radio uplinks as JSON"}
+    with patch.object(inbox_api.messaging, "get_messages",
+                      return_value=CommandResult.ok("ok", data={"messages": []})), \
+         patch("utils.message_listener.get_listener_status", return_value=st):
+        out = inbox_api.read_inbox()
+    assert out["state"] == "ok" and out["rx"]["channels_seen"] == {"3": 2}
+    assert out["rx"]["subscription"].startswith("mqtt")
+
+
+def test_unknown_listener_is_said_not_assumed():
+    with patch.object(inbox_api.messaging, "get_messages",
+                      return_value=CommandResult.ok("ok", data={"messages": []})), \
+         patch("utils.message_listener.get_listener_status", side_effect=RuntimeError("x")):
+        out = inbox_api.read_inbox()
+    assert out["rx"] == {"state": "unknown"}

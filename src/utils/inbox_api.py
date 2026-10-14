@@ -119,7 +119,22 @@ def read_inbox(limit: int = 500) -> Dict[str, Any]:
     if not result.success:
         return {"state": "unavailable", "error": result.message}
     rows = (result.data or {}).get("messages", [])
-    return {"state": "ok", "threads": build_threads(rows), "message_count": len(rows)}
+    return {"state": "ok", "threads": build_threads(rows), "message_count": len(rows),
+            "rx": _rx_coverage()}
+
+
+def _rx_coverage() -> Dict[str, Any]:
+    """What the receive path can actually hear (2026-10-13): an empty inbox
+    beside a radio that journals texts is a blind listener, not a quiet mesh.
+    The page names heard vs not-heard channels; unknown is said, not assumed."""
+    try:
+        from utils.message_listener import get_listener_status
+        st = get_listener_status()
+        return {k: st.get(k) for k in ("state", "messages_received", "channels_seen",
+                                       "subscription", "connected_since", "error")}
+    except Exception as e:
+        logger.debug("inbox: listener status unreadable: %s", e)
+        return {"state": "unknown"}
 
 
 def validate_send(data: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:

@@ -418,10 +418,15 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
 
         root = self._config.get("root_topic", DEFAULT_ROOT_TOPIC)
         channel = self._config.get("channel", DEFAULT_CHANNEL)
+        # The JSON leg may listen wider than the encrypted one: "+" = every
+        # channel the radio uplinks (the local subscriber's default since
+        # 2026-10-13 — a box whose radio uplinks only "meshforge" read
+        # "connected" with 0 messages while subscribed to LongFast).
+        json_channel = self._config.get("json_channel", channel)
 
         # Subscribe to JSON-formatted messages (easier to parse)
         # Topic format: msh/{region}/2/json/{channel}/#
-        topic = f"{root.rsplit('/', 1)[0]}/json/{channel}/#"
+        topic = f"{root.rsplit('/', 1)[0]}/json/{json_channel}/#"
         self._client.subscribe(topic)
         logger.info(f"Subscribed to: {topic}")
 
@@ -942,6 +947,9 @@ def create_local_subscriber(
         "password": "",
         "root_topic": root_topic,
         "channel": channel,
+        # JSON is this box's own radio's uplink: hear EVERY channel it sends.
+        # The encrypted leg stays on `channel` (decryption uses the default key).
+        "json_channel": "+",
         "key": DEFAULT_KEY,
         "use_tls": False,  # Local brokers typically don't use TLS
         "regions": ["US"],

@@ -25,7 +25,7 @@ Usage:
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Callable, List, Dict, Any
 from datetime import datetime
 
@@ -65,6 +65,12 @@ class ListenerStatus:
     messages_received: int = 0
     last_message_time: Optional[datetime] = None
     error: Optional[str] = None
+    # What this listener can actually SEE (2026-10-13): texts per channel
+    # index since start, and what it listens to. "connected" with an empty
+    # map is not "the mesh is quiet" — a channel the radio does not uplink
+    # never appears here, and the inbox/TUI say so.
+    channels_seen: Dict[str, int] = field(default_factory=dict)
+    subscription: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -73,7 +79,13 @@ class ListenerStatus:
             'messages_received': self.messages_received,
             'last_message_time': self.last_message_time.isoformat() if self.last_message_time else None,
             'error': self.error,
+            'channels_seen': dict(self.channels_seen),
+            'subscription': self.subscription,
         }
+
+    def note_channel(self, channel) -> None:
+        key = str(channel if isinstance(channel, int) else 0)
+        self.channels_seen[key] = self.channels_seen.get(key, 0) + 1
 
 
 class MessageListener:
@@ -250,6 +262,9 @@ class MessageListener:
 
             # Register callback for text messages
             self._mqtt_subscriber.register_message_callback(self._on_mqtt_message)
+            self._status.subscription = (
+                f"mqtt {self.mqtt_broker}:{self.mqtt_port} — every channel this "
+                f"radio uplinks as JSON (a channel without uplink is invisible here)")
 
             # Start the subscriber
             if self._mqtt_subscriber.start():
@@ -334,6 +349,7 @@ class MessageListener:
 
             # Subscribe to messages (works regardless of who owns connection)
             pub.subscribe(self._on_receive, "meshtastic.receive")
+            self._status.subscription = f"tcp {self.host} — every channel the radio decodes"
 
             self._status.state = CONNECTED
             self._status.connected_since = datetime.now()
@@ -465,6 +481,7 @@ class MessageListener:
 
         # Update status
         self._status.messages_received += 1
+        self._status.note_channel(channel)
         self._status.last_message_time = datetime.now()
 
         # Build message dict
@@ -638,6 +655,7 @@ class MessageListener:
             # Update status
             self._status.messages_received += 1
             self._status.last_message_time = datetime.now()
+            self._status.note_channel(mqtt_msg.channel)
 
             # Build message dict matching TCP format
             msg_data = {

@@ -199,13 +199,15 @@ class MessagingHandler(BaseHandler):
             # (live-truth pass 2026-09-25 — this used to say "start the listener").
             print(f"  {_RECORDING_NOTE}")
             print(f"  Listener: {_listener_line()}")
+            print(f"  {_INBOX_NOTE}")
             self.ctx.wait_for_enter()
             return
 
         print(f"  Showing {len(messages)} most recent — newest "
               f"{_age_line(messages[0].get('timestamp'))}")
         print(f"  {_RECORDING_NOTE}")
-        print(f"  Listener: {_listener_line()}\n")
+        print(f"  Listener: {_listener_line()}")
+        print(f"  {_INBOX_NOTE}\n")
         print(f"  {'Time':<20} {'From':<12} {'To':<12} {'Net':<6} Message")
         print(f"  {'-'*70}")
 
@@ -431,6 +433,8 @@ def _age_line(stamp) -> str:
 
 
 RX_STATUS_URL = "http://127.0.0.1:5000/api/messages/rx-status"
+_INBOX_NOTE = ("Browser inbox: http://<this-box>:5000/inbox — read, reply, or start a "
+               "channel/DM message (sending needs an operator login)")
 
 
 def _listener_line(timeout: float = 3.0) -> str:
@@ -451,4 +455,13 @@ def _listener_line(timeout: float = 3.0) -> str:
     since = str(st.get("connected_since") or "?")[:16].replace("T", " ")
     last = st.get("last_message_time")
     last_txt = f"last message {str(last)[:16].replace('T', ' ')}" if last else "none since connecting"
-    return f"connected since {since}, {st.get('messages_received', 0)} received ({last_txt})"
+    line = f"connected since {since}, {st.get('messages_received', 0)} received ({last_txt})"
+    # WHICH channels it hears (2026-10-13): "connected, 0 received" beside a
+    # radio journaling texts was a listener deaf to un-uplinked channels.
+    seen = st.get("channels_seen")
+    if isinstance(seen, dict):
+        heard = ", ".join(f"ch {k} ({v})" for k, v in sorted(seen.items(), key=lambda kv: int(kv[0])))
+        line += f"; hearing {heard}" if heard else "; no channel heard yet"
+    if str(st.get("subscription") or "").startswith("mqtt"):
+        line += " — MQTT uplink only: a channel without uplink never reaches the inbox"
+    return line

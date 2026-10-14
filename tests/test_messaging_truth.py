@@ -112,3 +112,22 @@ def test_a_future_stamp_says_clock_skew_not_fresh():
 
 def test_an_aware_stamp_does_not_raise():
     assert "h ago" in hm._age_line("2020-01-01T00:00:00+00:00") or "d ago" in hm._age_line("2020-01-01T00:00:00+00:00")
+
+
+def test_listener_line_names_the_channels_it_can_hear(monkeypatch):
+    """2026-10-13, one fleet box: "connected, 0 received" while the radio journaled
+    21 texts in 3 h — the listener heard only uplinked channels. The TUI line
+    must say WHICH channels it hears and that MQTT mode is uplink-only."""
+    import io as _io
+    import json as _json
+    import urllib.request
+    doc = {"state": "connected", "connected_since": "2026-10-13T18:33:51", "messages_received": 2,
+           "last_message_time": "2026-10-13T19:01:00", "channels_seen": {"3": 2},
+           "subscription": "mqtt localhost:1883 — every channel this radio uplinks as JSON"}
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda url, timeout=0: _io.BytesIO(_json.dumps(doc).encode()))
+    line = hm._listener_line()
+    assert "hearing ch 3 (2)" in line and "uplink" in line
+    doc.update(channels_seen={}, messages_received=0, last_message_time=None)
+    line = hm._listener_line()
+    assert "no channel heard yet" in line and "uplink" in line

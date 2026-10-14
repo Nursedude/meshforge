@@ -51,6 +51,15 @@ button.send:disabled{opacity:.5;cursor:default}
 #count{font-size:.72rem;color:var(--muted);align-self:center;min-width:52px;text-align:right}
 #blocked{display:none;padding:10px 16px;border-top:1px solid var(--rule);color:var(--muted);font-size:.88rem}
 #note{font-size:.75rem;color:var(--muted);padding:0 16px 8px;background:var(--panel)}
+#coverage{margin:0;padding:6px 16px;font-size:.78rem;color:var(--muted);border-bottom:1px solid var(--rule);background:var(--panel)}
+#coverage b{color:var(--fg);font-weight:600}
+header button{border:1px solid var(--accent);background:none;color:var(--accent);border-radius:6px;padding:3px 10px;font:600 .85rem system-ui;cursor:pointer}
+#newform{display:flex;flex-direction:column;gap:8px;padding:14px 16px;border-bottom:1px solid var(--rule);background:var(--panel)}
+#newform label{font-size:.8rem;color:var(--muted)}
+#newform select,#newform input{font:inherit;padding:8px;border:1px solid var(--rule);border-radius:8px;background:var(--bg);color:inherit}
+#newform .row{display:flex;gap:8px;flex-wrap:wrap}
+#newform .row button{border:0;border-radius:8px;padding:8px 14px;background:var(--accent);color:#fff;font:600 .9rem system-ui;cursor:pointer}
+#newform .row button.ghost{background:none;color:var(--accent);border:1px solid var(--rule)}
 @media (max-width:720px){
   main{grid-template-columns:1fr}
   main.open #list{display:none} main:not(.open) #pane{display:none}
@@ -60,13 +69,26 @@ button.send:disabled{opacity:.5;cursor:default}
 </head>
 <body>
 <header>
-  <h1>Inbox</h1><span id="status">loading…</span><span class="sp"></span><a href="/">Map</a>
+  <h1>Inbox</h1><span id="status">loading…</span><span class="sp"></span>
+  <button type="button" id="new">New message</button><a href="/">Map</a>
 </header>
 <p id="banner" role="alert"></p>
+<p id="coverage" aria-live="polite"></p>
 <main id="main">
   <nav id="list" aria-label="Conversations"></nav>
   <section id="pane" aria-live="polite">
     <div id="pane-head"><button class="back" id="back" type="button">‹ All</button><span id="pane-title">Select a conversation</span></div>
+    <form id="newform" hidden>
+      <label for="to">Send to</label>
+      <select id="to"></select>
+      <div id="dmrow" hidden>
+        <label for="node">Node (pick one this box has heard, or type !xxxxxxxx)</label>
+        <input id="node" list="nodes" placeholder="!a1b2c3d4" autocomplete="off" spellcheck="false">
+        <datalist id="nodes"></datalist>
+      </div>
+      <div class="row"><button type="submit">Start</button><button type="button" class="ghost" id="newcancel">Cancel</button></div>
+      <p class="preview" id="newerr" role="alert"></p>
+    </form>
     <div id="msgs"><p id="empty">Messages this box has heard on Meshtastic and RNS appear here.</p></div>
     <div id="blocked"></div>
     <form id="compose" hidden>
@@ -91,8 +113,9 @@ button.send:disabled{opacity:.5;cursor:default}
     if (text != null) e.textContent = text;   // untrusted text: textContent only
     return e;
   }
+  var chanNames = {}, drafts = {}, lastRx = null;
   function title(t) {
-    if (t.kind === "channel") return "Channel " + t.channel;
+    if (t.kind === "channel") return "Channel " + t.channel + (chanNames[t.channel] ? " · " + chanNames[t.channel] : "");
     var p = t.partner || "?";
     return t.network === "rns" ? p.slice(0, 8) + "…" + p.slice(-4) : p;
   }
@@ -145,6 +168,7 @@ button.send:disabled{opacity:.5;cursor:default}
 
   function open(key) {
     current = key;
+    $("newform").hidden = true;
     $("main").classList.add("open");
     try { history.replaceState(null, "", "#" + encodeURIComponent(key)); } catch (e) {}
     renderList(); renderPane();
@@ -161,6 +185,11 @@ button.send:disabled{opacity:.5;cursor:default}
       .then(function (res) {
         if (res.j && res.j.state === "ok") {
           threads = res.j.threads; setBanner("");
+          Object.keys(drafts).forEach(function (k) {
+            if (threads.some(function (t) { return t.key === k; })) delete drafts[k];
+            else threads.unshift(drafts[k]);
+          });
+          lastRx = res.j.rx || null; renderCoverage();
           $("status").textContent = threads.length + " conversations · updated " + new Date().toLocaleTimeString();
         } else if (res.status === 403) {
           setBanner((res.j && res.j.detail) || "This box does not trust this device.");
@@ -177,6 +206,72 @@ button.send:disabled{opacity:.5;cursor:default}
         $("status").textContent = "offline";
       });
   }
+
+  // ── what this box can hear (an empty inbox is not proof of a quiet mesh) ──
+  function renderCoverage() {
+    var c = $("coverage"), rx = lastRx;
+    c.replaceChildren();
+    if (!rx || rx.state === "unknown") { c.textContent = "Receive path: unknown — this page cannot tell what the box hears."; return; }
+    if (rx.state !== "connected") { c.textContent = "Receive path: " + rx.state + (rx.error ? " (" + rx.error + ")" : "") + " — nothing new will appear."; return; }
+    var seen = rx.channels_seen || {}, heard = Object.keys(seen).map(Number).sort();
+    var since = rx.connected_since ? new Date(rx.connected_since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "start";
+    var name = function (i) { return chanNames[i] ? chanNames[i] + " (" + i + ")" : "channel " + i; };
+    c.append(document.createTextNode("Hearing since " + since + ": "));
+    c.append(el("b", null, heard.length ? heard.map(name).join(", ") : "nothing yet"));
+    var known = Object.keys(chanNames).map(Number).filter(function (i) { return heard.indexOf(i) < 0; });
+    if (known.length) c.append(document.createTextNode(" · Not heard: " + known.map(name).join(", ")));
+    if (/^mqtt/.test(rx.subscription || "")) c.append(document.createTextNode(
+      " — this box listens to its radio's MQTT uplink; a channel without uplink never reaches this inbox."));
+  }
+
+  function loadChannels() {
+    return fetch("/api/radio/channels").then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        (j && j.channels || []).forEach(function (c) { if (c.role !== "DISABLED") chanNames[c.index] = c.name; });
+      }).catch(function () {}).then(function () { renderCoverage(); renderList(); });
+  }
+
+  // ── start a conversation: a channel, or a DM to a node ──
+  function openNew() {
+    var to = $("to"); to.replaceChildren();
+    var idx = Object.keys(chanNames).map(Number);
+    if (!idx.length) idx = [0, 1, 2, 3, 4, 5, 6, 7];   // names unknown: offer the indices
+    idx.forEach(function (i) { var o = el("option", null, "Channel " + i + (chanNames[i] ? " · " + chanNames[i] : "") + " (broadcast)"); o.value = "ch:" + i; to.appendChild(o); });
+    var dm = el("option", null, "Direct message to a node…"); dm.value = "dm"; to.appendChild(dm);
+    $("dmrow").hidden = true; $("newerr").textContent = ""; $("newform").hidden = false;
+    $("main").classList.add("open"); $("pane-title").textContent = "New message";
+    $("msgs").replaceChildren(); $("compose").hidden = true; $("note").hidden = true; $("blocked").style.display = "none";
+    fetch("/api/nodes/directory").then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+      var dl = $("nodes"); dl.replaceChildren();
+      (j && j.features || []).forEach(function (f) {
+        var p = f.properties || {};
+        if (p.network === "meshtastic" && /^![0-9a-f]{1,8}$/i.test(p.id || "")) {
+          var o = document.createElement("option"); o.value = p.id; o.label = p.name || ""; dl.appendChild(o);
+        }
+      });
+    }).catch(function () {});
+  }
+  $("new").addEventListener("click", openNew);
+  $("to").addEventListener("change", function () { $("dmrow").hidden = this.value !== "dm"; });
+  $("newcancel").addEventListener("click", function () { $("newform").hidden = true; current = null; $("main").classList.remove("open"); renderPane(); });
+  $("newform").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var v = $("to").value, t;
+    if (v === "dm") {
+      var id = ($("node").value || "").trim().toLowerCase();
+      if (!/^![0-9a-f]{1,8}$/.test(id)) { $("newerr").textContent = "A node id looks like !a1b2c3d4."; return; }
+      t = { key: "meshtastic:" + id, network: "meshtastic", kind: "dm", partner: id, channel: null };
+    } else {
+      var ch = Number(v.slice(3));
+      t = { key: "meshtastic:channel:" + ch, network: "meshtastic", kind: "channel", partner: null, channel: ch };
+    }
+    $("newform").hidden = true;
+    if (!threads.some(function (x) { return x.key === t.key; })) {
+      t.can_send = true; t.send_blocked_reason = null; t.messages = []; t.preview = "(new)"; t.last_ts = null; t.count = 0;
+      drafts[t.key] = t; threads.unshift(t);
+    }
+    open(t.key); $("text").focus();
+  });
 
   $("text").addEventListener("input", function () {
     var n = enc.encode(this.value).length;
@@ -209,6 +304,7 @@ button.send:disabled{opacity:.5;cursor:default}
   $("back").addEventListener("click", function () { $("main").classList.remove("open"); current = null; renderList(); });
 
   var fromHash = decodeURIComponent((location.hash || "").slice(1));
+  loadChannels();
   load().then(function () { if (fromHash && threads.some(function (t) { return t.key === fromHash; })) open(fromHash); });
   setInterval(function () { if (!document.hidden) load(); }, POLL_MS);
   $("send").disabled = true;
