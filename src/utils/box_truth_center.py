@@ -1,0 +1,298 @@
+"""The CENTER side of the NOC read grant — key, targets, push, rotate.
+
+A center reads other boxes' box_truth/v1 documents with ONE dedicated key
+(``~/.ssh/meshforge_noc_ed25519``, Q5/B7a). Getting that key granted on a box
+is either target-side (the box's own ``box_truth_grant.py add``) or this
+module's ``push`` over the operator's EXISTING access — which never edits a
+remote ``authorized_keys`` itself: it runs the target's grant CLI (B6), only
+after the target proved it is the box the registry names.
+
+The targets file (``~/.config/meshforge/truth_spool_targets``) is shared with
+the spool writer and is written HERE (Q11: the grant registers the target,
+the revoke unregisters it). A line is ``<alias> [noc]  # comment``; ``noc``
+means "read with the pinned grant key" (S3). Lines without it are legacy
+reads over interactive keys — kept working until each box is migrated (S12).
+
+Every function takes its ssh/subprocess seams as arguments so the tests can
+drive each step and each refusal without a network.
+"""
+from __future__ import annotations
+
+import os
+import re
+import shlex
+import socket
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, List, Optional, Tuple
+
+from utils import box_truth as bt
+from utils import box_truth_reader as br
+from utils.paths import atomic_write_text_preserving, get_real_user_home
+
+REMOTE_GRANT_CLI = "/opt/meshforge/scripts/box_truth_grant.py"
+SPOOL_SCRIPT = "/opt/meshforge/scripts/fleet_truth_spool.py"
+SPOOL_CRON_LINE = (
+    "*/2 * * * * /usr/bin/python3 /opt/meshforge/scripts/fleet_truth_spool.py "
+    '>"$HOME/.local/state/meshforge/cron_out/truth_spool.out" 2>&1; '
+    "/opt/meshforge/scripts/cron_verdict.sh truth_spool $?")
+PIN_FLAG = "noc"
+_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+# ── targets file (shared with scripts/fleet_truth_spool.py) ─────────────
+
+@dataclass(frozen=True)
+class Target:
+    alias: str
+    pinned: bool
+
+
+def targets_path(home: Optional[Path] = None) -> Path:
+    return (home or get_real_user_home()) / ".config" / "meshforge" / "truth_spool_targets"
+
+
+def read_targets(path: Path) -> List[Target]:
+    """One alias per line, optional ``noc`` flag, '#' comments. Absent = [].
+    Invalid lines are skipped LOUDLY on stderr (they ride into ssh argv and
+    a spool filename)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    out: List[Target] = []
+    for line in text.splitlines():
+        body = line.split("#", 1)[0].split()
+        if not body:
+            continue
+        alias, flags = body[0], body[1:]
+        if not _ALIAS_RE.match(alias) or any(f != PIN_FLAG for f in flags):
+            print(f"truth_spool: SKIP invalid target line {line.strip()!r} "
+                  f"(want '<alias> [{PIN_FLAG}]')", file=sys.stderr)
+            continue
+        out.append(Target(alias, PIN_FLAG in flags))
+    return out
+
+
+def set_target(path: Path, alias: str, *, pinned: Optional[bool]) -> None:
+    """Add/flag (``pinned`` bool) or remove (``pinned=None``) one alias,
+    preserving every other line and its comment."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        lines = []
+    out, found = [], False
+    for line in lines:
+        body, sep, comment = line.partition("#")
+        toks = body.split()
+        if toks and toks[0] == alias:
+            found = True
+            if pinned is None:
+                continue
+            new = alias + (f" {PIN_FLAG}" if pinned else "")
+            out.append(new + (f"   #{comment}" if sep else ""))
+        else:
+            out.append(line)
+    if not found and pinned is not None:
+        out.append(alias + (f" {PIN_FLAG}" if pinned else ""))
+    atomic_write_text_preserving(path, "".join(ln + "\n" for ln in out))
+
+
+# ── the center key (B7a) ─────────────────────────────────────────────────
+
+def center_name() -> str:
+    name = socket.gethostname().split(".")[0]
+    if not re.match(r"^[A-Za-z0-9._-]{1,64}$", name):
+        raise bt.KeyRejected(f"hostname {name!r} cannot form a noc: comment")
+    return name
+
+
+def load_center_key(home: Path) -> bt.NocKey:
+    pub = Path(str(br.noc_key_path(home)) + ".pub")
+    return bt.parse_noc_pubkey(pub.read_text(encoding="utf-8"))
+
+
+def create_center_key(home: Path, *, runner: Callable = subprocess.run,
+                      path: Optional[Path] = None) -> bt.NocKey:
+    """ssh-keygen a new unencrypted ed25519 key (cron reads it), 0600."""
+    path = path or br.noc_key_path(home)
+    if path.exists():
+        raise bt.KeyRejected(f"{path} exists — refusing to overwrite (use rotate)")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    runner(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C",
+            f"noc:{center_name()}", "-f", str(path)],
+           check=True, timeout=30, stdin=subprocess.DEVNULL)
+    os.chmod(path, 0o600)
+    return bt.parse_noc_pubkey(Path(str(path) + ".pub").read_text(encoding="utf-8"))
+
+
+# ── spool cron (Q12: installed by the tooling, never by hand) ───────────
+
+def ensure_spool_cron(*, runner: Callable = subprocess.run) -> str:
+    """Idempotent. Returns 'present' / 'installed'; raises on failure."""
+    cur = runner(["crontab", "-l"], capture_output=True, text=True, timeout=10)
+    text = cur.stdout if cur.returncode == 0 else ""
+    if "fleet_truth_spool.py" in text:
+        return "present"
+    new = text + ("" if not text or text.endswith("\n") else "\n") + SPOOL_CRON_LINE + "\n"
+    runner(["crontab", "-"], input=new, text=True, timeout=10, check=True)
+    back = runner(["crontab", "-l"], capture_output=True, text=True, timeout=10)
+    if SPOOL_CRON_LINE not in back.stdout:
+        raise RuntimeError("spool cron line not present after install (read-back failed)")
+    return "installed"
+
+
+# ── push / unpush / rotate / bulk-revoke ────────────────────────────────
+
+@dataclass
+class Report:
+    ok: bool = True
+    steps: List[str] = field(default_factory=list)
+
+    def step(self, text: str, ok: bool = True) -> bool:
+        self.steps.append(("  ok   " if ok else "  FAIL ") + text)
+        if not ok:
+            self.ok = False
+        return ok
+
+
+def _add_cmd(key: bt.NocKey, center: str) -> str:
+    return (f"{bt.PYTHON} -I {REMOTE_GRANT_CLI} add --pubkey {shlex.quote(key.line())} "
+            f"--center {shlex.quote(center)} --confirm {key.fingerprint[-8:]}")
+
+
+def _revoke_cmd(fp: str) -> str:
+    return (f"{bt.PYTHON} -I {REMOTE_GRANT_CLI} revoke --fp {shlex.quote(fp)} "
+            f"--confirm {fp[-8:]}")
+
+
+Exec = Callable[[str, Optional[str], str], br.ExecResult]
+Read = Callable[..., br.ReadResult]
+
+
+def _grant_on(alias: str, expect: Optional[str], key: bt.NocKey, center: str,
+              key_path: Path, rep: Report, exec_: Exec, read: Read) -> bool:
+    r = exec_(alias, expect, _add_cmd(key, center))
+    if not rep.step(f"{alias}: identity {expect} + grant {key.fingerprint}",
+                    r.outcome == "ok"):
+        rep.steps.append(f"         {r.outcome} rc={r.rc}: {r.stderr_head or r.stdout[-300:]}")
+        return False
+    rr = read(alias, expect, key_path=key_path)
+    if not rep.step(f"{alias}: pinned read with the granted key -> {rr.outcome}",
+                    rr.outcome == "ok"):
+        rep.steps.append(f"         {br.describe(rr)}")
+        return False
+    return True
+
+
+def push(alias: str, confirm: str, *, home: Path, expect: Optional[str],
+         exec_: Exec = br.exec_verified, read: Read = br.read_box,
+         cron: Callable[[], str] = ensure_spool_cron) -> Report:
+    """Grant this center's key on ONE target (Q18: target name typed), verify
+    a pinned read, register the target pinned, ensure the spool cron."""
+    rep = Report()
+    if confirm != alias:
+        rep.step(f"typed confirmation {confirm!r} != target {alias!r}", False)
+        return rep
+    if not expect:
+        rep.step(f"{alias}: no expect_hostkey in the registry — stamp it first "
+                 "(scripts/fleet_hostkey_stamp.py); refusing (B6)", False)
+        return rep
+    try:
+        key = load_center_key(home)
+    except (OSError, bt.KeyRejected) as e:
+        rep.step(f"center key unusable ({e}) — box_truth_grant.py center-key --create", False)
+        return rep
+    if not _grant_on(alias, expect, key, key.comment[4:], br.noc_key_path(home),
+                     rep, exec_, read):
+        return rep
+    set_target(targets_path(home), alias, pinned=True)
+    rep.step(f"{alias}: registered '{alias} {PIN_FLAG}' in {targets_path(home)}")
+    try:
+        rep.step(f"spool cron {cron()}")
+    except Exception as e:  # the grant stands; the missing writer is the finding
+        rep.step(f"spool cron: {e}", False)
+    return rep
+
+
+def unpush(alias: str, confirm: str, *, home: Path, expect: Optional[str],
+           exec_: Exec = br.exec_verified) -> Report:
+    rep = Report()
+    if confirm != alias:
+        rep.step(f"typed confirmation {confirm!r} != target {alias!r}", False)
+        return rep
+    try:
+        key = load_center_key(home)
+    except (OSError, bt.KeyRejected) as e:
+        rep.step(f"center key unusable ({e})", False)
+        return rep
+    r = exec_(alias, expect, _revoke_cmd(key.fingerprint))
+    if not rep.step(f"{alias}: revoke {key.fingerprint}", r.outcome == "ok"):
+        rep.steps.append(f"         {r.outcome} rc={r.rc}: {r.stderr_head or r.stdout[-300:]}")
+        return rep
+    set_target(targets_path(home), alias, pinned=None)
+    rep.step(f"{alias}: unregistered from {targets_path(home)}")
+    return rep
+
+
+def pinned_targets(home: Path) -> List[str]:
+    return [t.alias for t in read_targets(targets_path(home)) if t.pinned]
+
+
+def bulk_revoke(fp: str, confirm: str, *, home: Path,
+                expect_of: Callable[[str], Optional[str]],
+                exec_: Exec = br.exec_verified) -> Report:
+    """Revoke one fingerprint on every pinned target (a leaked key's cure)."""
+    rep = Report()
+    if confirm != fp[-8:]:
+        rep.step(f"confirmation {confirm!r} != {fp[-8:]}", False)
+        return rep
+    for alias in pinned_targets(home):
+        r = exec_(alias, expect_of(alias), _revoke_cmd(fp))
+        rep.step(f"{alias}: revoke {fp} -> {r.outcome} {r.stderr_head[:120]}",
+                 r.outcome == "ok")
+    return rep
+
+
+def rotate(confirm: str, *, home: Path, expect_of: Callable[[str], Optional[str]],
+           exec_: Exec = br.exec_verified, read: Read = br.read_box,
+           keygen: Callable[..., bt.NocKey] = create_center_key) -> Report:
+    """B7c: new key -> grant it everywhere -> verify a read with it ->
+    revoke the old -> swap the key files. Stops at the first failure with
+    the old key still granted and still in place (nothing goes dark)."""
+    rep = Report()
+    if confirm != "rotate":
+        rep.step("type --confirm rotate", False)
+        return rep
+    key_path = br.noc_key_path(home)
+    new_path = key_path.with_name(key_path.name + ".new")
+    try:
+        old = load_center_key(home)
+    except (OSError, bt.KeyRejected) as e:
+        rep.step(f"current center key unusable ({e})", False)
+        return rep
+    targets = pinned_targets(home)
+    if not targets:
+        rep.step("no pinned targets — nothing to rotate onto", False)
+        return rep
+    for p in (new_path, Path(str(new_path) + ".pub")):
+        if p.exists():
+            rep.step(f"{p} exists from an interrupted rotate — inspect, remove, re-run", False)
+            return rep
+    new = keygen(home, path=new_path)
+    rep.step(f"new key {new.fingerprint} at {new_path}")
+    for alias in targets:
+        if not _grant_on(alias, expect_of(alias), new, new.comment[4:], new_path,
+                         rep, exec_, read):
+            rep.steps.append(f"  STOP: old key {old.fingerprint} still granted and in place; "
+                             f"new grants so far: revoke with bulk-revoke --fp {new.fingerprint}")
+            return rep
+    for alias in targets:
+        r = exec_(alias, expect_of(alias), _revoke_cmd(old.fingerprint))
+        rep.step(f"{alias}: revoke old {old.fingerprint} -> {r.outcome}", r.outcome == "ok")
+    os.replace(new_path, key_path)
+    os.replace(str(new_path) + ".pub", str(key_path) + ".pub")
+    rep.step(f"key files swapped: {key_path} is now {new.fingerprint}")
+    return rep

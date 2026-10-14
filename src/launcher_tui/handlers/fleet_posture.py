@@ -10,7 +10,11 @@ is that tool's own dry run, shown first, then the same command with
 ⚠️ Doctrine: the TUI stays a surface (09-11). The operator amended it on
 2026-10-05 for THIS action only — declare + power off, via fleet_power.py,
 typed confirm. That amendment is not a precedent for any other writing
-handler; each needs its own justification.
+handler; each needs its own justification. One more has been granted
+(2026-10-13, NOC read grant Q8/Q17): grant / revoke of a center's restricted
+read key, under the same constraints — ONE CLI (``scripts/box_truth_grant.py``),
+plan first, typed confirm (the key fingerprint's last 8), logged. Those two
+are the only acting carve-outs.
 
 Where acting is offered: only where the SSOT lives — the posture file is NOT a
 mirror, it reads cleanly, and the fleet dependency graph

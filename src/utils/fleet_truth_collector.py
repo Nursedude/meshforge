@@ -251,7 +251,15 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
                 # from the spool FETCH, not from now.
                 answered_at = float(spool["fetched_at"])
             else:
-                error = (f"no response from {display} ({method}); "
+                # The writer records HOW its read ended (S1, 2026-10-14) — a
+                # revoked grant, a wrong host key and a dead box are three
+                # different fixes and must not share one "no response".
+                transport = spool.get("transport")
+                reason = (transport.get("reason")
+                          if isinstance(transport, dict)
+                          and transport.get("outcome") not in (None, "ok") else None)
+                error = (str(reason) if reason else
+                         f"no response from {display} ({method}); "
                          "ssh spool fresh but empty-handed")
         else:
             error = f"no response from {display} ({method})"

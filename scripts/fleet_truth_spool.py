@@ -5,17 +5,28 @@ Some fleet boxes are unreachable to the /api/fleet/truth HTTP fan-out BY
 NETWORK DESIGN: kiai sits behind the site NAT (ssh rides a reverse tunnel,
 direct :5000 is filtered), and moc3 runs no map service at all. This cron —
 run in the OPERATOR context, where the fleet ssh keys live (the /fleet/dups
-precedent: the sandboxed map service never sshes) — fetches each configured
-box's OWN localhost endpoints over ssh, plus its raw watchdog.json for
-map-less boxes, and writes one freshness-stamped spool file per box. The
+precedent: the sandboxed map service never sshes) — reads each configured
+box's box_truth/v1 document over ssh and writes one freshness-stamped spool
+file per box. The
 collector (utils.fleet_truth_collector) reads the spool ONLY when the direct
 fetch failed and only while fresh (SPOOL_STALE_S) — a dead cron makes the
 boxes read dark again, never last-known-healthy, and the cron_verdict wiring
 (#78) pages the dead cron itself.
 
-Targets file: ~/.config/meshforge/truth_spool_targets — one ssh alias per
-line, '#' comments. Absent/empty file = nothing to do (exit 0): boxes are
-OPTED IN here, this never guesses.
+The document (2026-10-14, NOC read grant): the box runs ITS OWN export
+(``scripts/box_truth_export.py``, ``utils.box_truth_collect``) — the inline
+shell string this cron used to send is gone, because a restricted grant can
+only run one fixed program. Every read goes through ``utils.box_truth_reader``:
+identity checked against the registry's ``expect_hostkey`` on every read (S2),
+bounded (S8), and ending in ONE named outcome (S1) written to the spool as
+``transport`` so the NOC can say "grant refused" instead of "no response".
+
+Targets file: ~/.config/meshforge/truth_spool_targets — ``<alias> [noc]`` per
+line, '#' comments (``utils.box_truth_center``, shared with the grant CLI that
+writes it). ``noc`` = read with the pinned grant key only (S3); without it the
+read rides the operator's interactive access (legacy, until that box is
+migrated — S12). Absent/empty file = nothing to do (exit 0): boxes are OPTED
+IN here, this never guesses.
 
 Exit codes: 0 = ran and wrote a spool file for every target (an unreachable
 target still gets an empty-handed spool file — the truth layer surfaces the
@@ -29,7 +40,7 @@ Crontab (manager box):
 """
 
 import json
-import re
+import re  # noqa: F401  (legacy block)
 import subprocess
 import sys
 import time
@@ -40,11 +51,25 @@ _SRC_DIR = _SCRIPT_DIR.parent / "src"
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
+from typing import Optional  # noqa: E402
+
+from utils import box_truth as bt  # noqa: E402
+from utils import box_truth_reader as br  # noqa: E402
+from utils.box_truth_center import read_targets, targets_path  # noqa: E402,F401
 from utils.fleet_truth_collector import SPOOL_SCHEMA, truth_spool_dir  # noqa: E402
 from utils.paths import atomic_write_text, get_real_user_home  # noqa: E402
 
 SSH_TIMEOUT_S = 30  # whole remote round-trip (tunnel handshake + 3 curls)
 
+# ── LEGACY read path (unmigrated targets only) ────────────────────────────
+# Kept BYTE-FOR-BYTE until every target is migrated to a grant (Q16/S12):
+# the export does not exist on a box until it is deployed there, and this
+# checkout IS the live writer on the manager — switching every target at once
+# blinded kiai/moc3/moc/lehua on 2026-10-14 within one cron tick. A target
+# moves to the export when its line gains `noc`; delete this block when none
+# is left without it. Known defect kept on purpose: `ls` exits 2 when either
+# tty glob is empty, so a ttyACM-only box spools usb_present=false here.
+#
 # Section delimiters for the single-ssh-call remote fetch. One ssh session
 # per box (the reverse-tunnel handshake is the expensive part), three
 # payloads separated by markers no JSON body can legitimately start with.
@@ -163,6 +188,11 @@ _SECTION_KEYS = {"__TRUTH_SLO__": "slo", "__TRUTH_STATUS__": "status",
                  "__TRUTH_INGRESS__": "ingress"}
 
 
+#: The ten box_truth/v1 sections, carried into the spool doc under the same
+#: keys the collector has always read (one allowlist: utils.box_truth).
+_SECTION_NAMES = bt.SECTIONS
+
+
 #: Service whose absence removes a box's whole HTTP truth surface
 #: (/api/status + /fleet/slo are both served by it).
 _HTTP_SURFACE_SERVICE = "meshforge-map"
@@ -253,39 +283,6 @@ def watchdog_expected(deployment_raw) -> "Optional[bool]":
     return _unit_expected(deployment_raw, _WATCHDOG_SERVICE)
 
 
-def targets_path() -> Path:
-    return get_real_user_home() / ".config" / "meshforge" / "truth_spool_targets"
-
-
-_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-
-
-def read_targets(path: Path) -> list:
-    """One ssh alias per line; comments/blanks ignored. Absent file = [].
-
-    Aliases are validated: they ride into ssh argv (a leading ``-`` would
-    parse as an ssh option — an option-injection hole) and shape the spool
-    filename (``/``/``..`` would traverse). An operator-owned file is a soft
-    trust boundary, not an excuse to skip input validation (security rules).
-    Rejected lines are skipped LOUDLY on stderr, never silently dropped.
-    """
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return []
-    out = []
-    for line in text.splitlines():
-        line = line.split("#", 1)[0].strip()
-        if not line:
-            continue
-        if not _ALIAS_RE.match(line):
-            print(f"truth_spool: SKIP invalid alias {line!r} "
-                  "(must match [A-Za-z0-9][A-Za-z0-9._-]*)", file=sys.stderr)
-            continue
-        out.append(line)
-    return out
-
-
 def parse_sections(blob: str) -> dict:
     """Split the delimited remote output into {slo, status, raw_watchdog},
     each json-parsed or None. Garbage in any section → None for that section
@@ -318,7 +315,7 @@ def parse_sections(blob: str) -> dict:
     return out
 
 
-def fetch_box(alias: str) -> dict:
+def fetch_box_legacy(alias: str) -> dict:
     """One bounded ssh round-trip. Any failure → all-None sections (the spool
     records the attempt; the truth layer renders the darkness)."""
     try:
@@ -334,8 +331,47 @@ def fetch_box(alias: str) -> dict:
     return parse_sections(proc.stdout)
 
 
+def sections_from_doc(doc: "Optional[dict]") -> dict:
+    """box_truth/v1 sections -> the spool's section keys. Every key present;
+    a non-object section is None (unobservable), never a guess."""
+    raw = (doc or {}).get("sections")
+    raw = raw if isinstance(raw, dict) else {}
+    return {k: (raw.get(k) if isinstance(raw.get(k), dict) else None)
+            for k in _SECTION_NAMES}
+
+
+def _expect_of(alias: str) -> "Optional[str]":
+    from utils.fleet_naming import load_registry_quiet
+    reg = load_registry_quiet()
+    host = reg.hosts.get(alias) if reg else None
+    return host.expect_hostkey if host else None
+
+
+def fetch_box(target, *, home: Path, expect_of=_expect_of,
+              read=br.read_box) -> "tuple[dict, dict, dict]":
+    """One bounded, identity-checked read -> (sections, transport, meta).
+    A pinned target (``noc`` in the targets file) reads with the grant key
+    only (S3); any failure -> all-None sections + the outcome that says
+    which failure it was (S1)."""
+    key_path = br.noc_key_path(home) if target.pinned else None
+    if key_path is not None and not key_path.exists():
+        res = br.ReadResult(alias=target.alias, outcome="refused_grant", pinned=True,
+                            stderr_head=f"center key {key_path} missing — "
+                                        "box_truth_grant.py center-key --create")
+    else:
+        res = read(target.alias, expect_of(target.alias), key_path=key_path)
+    transport = res.transport()
+    transport["reason"] = None if res.outcome == "ok" else br.describe(res)
+    meta = {}
+    if res.doc:
+        meta = {k: res.doc.get(k) for k in ("schema", "app", "app_version", "host",
+                                             "section_errors", "tripwire", "witness")}
+    return sections_from_doc(res.doc), transport, meta
+
+
 def main() -> int:
-    targets = read_targets(targets_path())
+    home = get_real_user_home()
+    targets = read_targets(targets_path(home))
     if not targets:
         print("truth_spool: no targets configured — nothing to do")
         return 0
@@ -348,13 +384,18 @@ def main() -> int:
         return 1
 
     failures = 0
-    for alias in targets:
-        sections = fetch_box(alias)
+    for target in targets:
+        if target.pinned:
+            sections, transport, meta = fetch_box(target, home=home)
+            extra = {"transport": transport, "box_truth": meta}
+        else:
+            sections, extra = fetch_box_legacy(target.alias), {}
         doc = {
             "schema": SPOOL_SCHEMA,
-            "alias": alias,
+            "alias": target.alias,
             "fetched_at": time.time(),
             **sections,
+            **extra,
         }
         # Resolved HERE, not at the NOC's render time: the role catalog and
         # the box's declaration are both in hand at this moment, and the
@@ -365,14 +406,17 @@ def main() -> int:
         doc["watchdog_expected"] = watchdog_expected(sections.get("deployment"))
         got = [k for k, v in sections.items() if v is not None]
         try:
-            atomic_write_text(spool_dir / f"{alias}.json",
+            atomic_write_text(spool_dir / f"{target.alias}.json",
                               json.dumps(doc, separators=(",", ":")) + "\n")
         except OSError as exc:
-            print(f"truth_spool: FATAL write failed for {alias}: {exc}",
+            print(f"truth_spool: FATAL write failed for {target.alias}: {exc}",
                   file=sys.stderr)
             failures += 1
             continue
-        print(f"truth_spool: {alias}: {'+'.join(got) if got else 'empty-handed'}")
+        how = "pinned" if target.pinned else "legacy"
+        outcome = extra["transport"]["outcome"] if extra else "legacy"
+        print(f"truth_spool: {target.alias} [{how}] {outcome}: "
+              f"{'+'.join(got) if got else 'empty-handed'}")
 
     return 1 if failures else 0
 

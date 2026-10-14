@@ -68,8 +68,9 @@ class TestReadTargets:
     def test_comments_and_blanks_ignored(self, tmp_path):
         mod = _load_spool_script()
         p = tmp_path / "targets"
-        p.write_text("# fan-out-unreachable boxes\nkiai\n\nmoc3  # no map\n")
-        assert mod.read_targets(p) == ["kiai", "moc3"]
+        p.write_text("# fan-out-unreachable boxes\nkiai\n\nmoc3 noc  # no map\n")
+        assert [(t.alias, t.pinned) for t in mod.read_targets(p)] == [
+            ("kiai", False), ("moc3", True)]
 
     def test_absent_file_is_empty(self, tmp_path):
         mod = _load_spool_script()
@@ -81,8 +82,8 @@ class TestReadTargets:
         mod = _load_spool_script()
         p = tmp_path / "targets"
         p.write_text("-oProxyCommand=evil\n../escape\nkiai\na/b\n")
-        assert mod.read_targets(p) == ["kiai"]
-        assert "SKIP invalid alias" in capsys.readouterr().err
+        assert [t.alias for t in mod.read_targets(p)] == ["kiai"]
+        assert "SKIP invalid target line" in capsys.readouterr().err
 
 
 def _write_spool(tmp_path, alias, *, age_s=10.0, **sections):
@@ -666,3 +667,160 @@ class TestSpoolCarriesTheIngressLedger:
              patch.object(c, "_resolve_peer", return_value=("moc", "dns")):
             snap = c._fetch_peer("moc", is_self=False, port=5000)
         assert snap["spool_ingress"] is None
+
+
+# ── box_truth/v1 path (pinned targets, 2026-10-14) ─────────────────────
+
+def _bt_doc(**sections):
+    return {"schema": "box_truth/v1", "sections": sections}
+
+
+class TestSectionsFromDoc:
+    """The spool keys come from the box_truth/v1 document (2026-10-14: the
+    inline shell string and its delimiter parser are gone)."""
+
+    def test_sections_carried_under_the_spool_keys(self):
+        mod = _load_spool_script()
+        out = mod.sections_from_doc(_bt_doc(
+            slo={"overall_status": "ready"}, status={"app": {"name": "meshforge"}},
+            raw_watchdog={"ts": 1.0, "ok": True}))
+        assert out["slo"] == {"overall_status": "ready"}
+        assert out["status"]["app"]["name"] == "meshforge"
+        assert out["raw_watchdog"]["ok"] is True
+
+    def test_garbage_section_is_none_not_guess(self):
+        mod = _load_spool_script()
+        out = mod.sections_from_doc(_bt_doc(slo="<html>502</html>", status={"app": {}}))
+        assert out["slo"] is None and out["status"] == {"app": {}}
+        assert out["raw_watchdog"] is None
+
+    def test_no_document_all_none(self):
+        mod = _load_spool_script()
+        out = mod.sections_from_doc(None)
+        assert set(out) == set(mod._SECTION_NAMES) and not any(out.values())
+
+    def test_non_dict_json_is_none(self):
+        mod = _load_spool_script()
+        assert mod.sections_from_doc(_bt_doc(slo=[1, 2, 3]))["slo"] is None
+
+
+class TestExportCarriesTheSameArtifacts:
+    """The export (pinned path) must carry every property the legacy
+    shell string carried — schedules, clock, the ingress ledger — read from
+    the same places."""
+
+    def test_export_reads_both_artifacts(self):
+        from utils import box_truth_collect as bcol
+        src = (Path(bcol.__file__)).read_text()
+        assert '["crontab", "-l"]' in src
+        assert "cron_verdicts.log" in src and "b64encode" in src
+
+    def test_export_reads_the_peer_clock(self):
+        from utils import box_truth_collect as bcol
+        assert 'sections["clock"] = {"now": int(time.time())}' in Path(bcol.__file__).read_text()
+
+    def test_export_reads_the_gateways_own_ledger_path(self, monkeypatch):
+        """ONE path, two consumers (hfm #5): the export must read exactly
+        where the gateway writes."""
+        from utils import box_truth_collect as bcol
+        from gateway import rns_ingress_policy as rip
+        from utils.paths import get_real_user_home
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+        src = bcol.Sources(home=get_real_user_home(), env={})
+        assert Path(rip.default_ledger_path()) == src.ingress_path
+
+    def test_the_REAL_export_reduction_is_what_was_modelled(self):
+        """`_awk_reduce` above is a MODEL of the shipped reduction. A model
+        that drifts from the artifact keeps the other two tests green while
+        the real transport is broken — the 2026-07-25 resolver lesson. So run
+        the ACTUAL function the export ships and require it to agree."""
+        from utils.box_truth_collect import last_two_verdicts
+        now = 1_800_000_000.0
+        full = (_verdict("OK", 7200, now)
+                + _verdict("FAIL", 3600, now, name="other")
+                + _verdict("FAIL", 1800, now)
+                + _verdict("FAIL", 60, now))
+        # Same content, per name, as the model — order across names is not
+        # part of the contract (both consumers key by name); order WITHIN a
+        # name is (oldest first), and both parsers are asserted on it.
+        from utils.fleet_snapshot import _parse_cron_verdicts
+        from utils.watchdog_probes_liveness import _prior_verdict_statuses
+        real, model = last_two_verdicts(full), _awk_reduce(full)
+        assert (_parse_cron_verdicts(real, now)
+                == _parse_cron_verdicts(model, now))
+        assert _prior_verdict_statuses(real) == _prior_verdict_statuses(model)
+        assert _prior_verdict_statuses(real)["fleet_hosts_drift"] == "FAIL"
+
+
+class TestSpoolTransportOutcomeReachesTheCell:
+    """S1 (security pass 2026-10-14): a fresh spool that recorded a FAILED
+    read must say which failure — never fold "grant refused" into "no
+    response" (Q11: the fix is named)."""
+
+    def _snap(self, transport):
+        spool = {"schema": c.SPOOL_SCHEMA, "alias": "moc3",
+                 "fetched_at": time.time() - 30.0,
+                 "slo": None, "status": None, "raw_watchdog": None,
+                 "transport": transport}
+        with patch.object(c, "_http_get_json", return_value=None), \
+             patch.object(c, "_resolve_peer", return_value=("moc3", "dns")), \
+             patch.object(c, "_read_spool", return_value=spool):
+            return c._fetch_peer("moc3", is_self=False, port=5000)
+
+    def test_refused_grant_names_the_fix(self):
+        snap = self._snap({"outcome": "refused_grant", "rc": 255,
+                           "reason": "grant refused on moc3 (key or source) — fix"})
+        assert snap["error"] == "grant refused on moc3 (key or source) — fix"
+        assert snap["status"] is None and snap["slo"] is None
+
+    def test_identity_mismatch_is_its_own_reason(self):
+        snap = self._snap({"outcome": "identity_mismatch",
+                           "reason": "identity mismatch on moc3: x — data discarded"})
+        assert snap["error"].startswith("identity mismatch on moc3")
+
+    def test_old_spool_without_transport_reads_as_before(self):
+        snap = self._snap(None)
+        assert "ssh spool fresh but empty-handed" in snap["error"]
+
+
+class TestOnlyMigratedTargetsUseTheExport:
+    """2026-10-14: switching EVERY target to the export at once blinded
+    kiai/moc3/moc/lehua within one cron tick — this checkout is the manager's
+    live writer, and the export did not exist on any target yet. A target
+    moves to the export only when its line carries `noc` (S12 order)."""
+
+    def _run(self, tmp_path, targets_text):
+        mod = _load_spool_script()
+        home = tmp_path / "home"
+        (home / ".config" / "meshforge").mkdir(parents=True)
+        (home / ".config" / "meshforge" / "truth_spool_targets").write_text(targets_text)
+        calls = []
+
+        def legacy(alias):
+            calls.append(("legacy", alias))
+            return {"slo": None, "status": None, "raw_watchdog": {"ok": True}}
+
+        def pinned(target, *, home):
+            calls.append(("export", target.alias))
+            return ({k: None for k in mod._SECTION_NAMES},
+                    {"outcome": "refused_grant", "reason": "grant refused"}, {})
+        with patch.object(mod, "get_real_user_home", return_value=home), \
+             patch.object(mod, "truth_spool_dir", return_value=tmp_path / "spool"), \
+             patch.object(mod, "fetch_box_legacy", side_effect=legacy), \
+             patch.object(mod, "fetch_box", side_effect=pinned), \
+             patch.object(mod, "http_surface_expected", return_value=None), \
+             patch.object(mod, "watchdog_expected", return_value=None):
+            assert mod.main() == 0
+        return calls, tmp_path / "spool"
+
+    def test_unflagged_targets_never_touch_the_export(self, tmp_path):
+        calls, _ = self._run(tmp_path, "kiai\nmoc3  # gateway\n")
+        assert calls == [("legacy", "kiai"), ("legacy", "moc3")]
+
+    def test_noc_flag_moves_one_box_and_records_transport(self, tmp_path):
+        calls, spool = self._run(tmp_path, "kiai\nmoc3 noc\n")
+        assert calls == [("legacy", "kiai"), ("export", "moc3")]
+        moc3 = json.loads((spool / "moc3.json").read_text())
+        kiai = json.loads((spool / "kiai.json").read_text())
+        assert moc3["transport"]["outcome"] == "refused_grant"
+        assert "transport" not in kiai          # legacy doc byte-shape unchanged
