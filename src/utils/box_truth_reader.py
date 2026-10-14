@@ -77,7 +77,7 @@ class ReadResult:
 def ssh_argv(alias: str, known_hosts: Path, *,
              key_path: Optional[Path] = None,
              command: str = REMOTE_COMMAND,
-             strict: bool = False) -> list:
+             strict: bool = False, learn: bool = False) -> list:
     if not _ALIAS_RE.match(alias or ""):
         raise ValueError(f"invalid ssh alias {alias!r}")
     argv = ["ssh", "-o", "BatchMode=yes", "-o", "LogLevel=ERROR",
@@ -88,7 +88,19 @@ def ssh_argv(alias: str, known_hosts: Path, *,
             "-o", f"HostKeyAlias={alias}",
             "-o", "HostKeyAlgorithms=ssh-ed25519",
             "-o", "UpdateHostKeys=no", "-o", "HashKnownHosts=no",
-            "-o", "ControlMaster=no", "-o", "ControlPath=none"]
+            "-o", "ControlMaster=no", "-o", "ControlPath=none",
+            # never hand anything to a box: no agent, no X11, no forwards, no
+            # local command — whatever a user ~/.ssh/config stanza says (A N1)
+            "-o", "ForwardAgent=no", "-o", "ForwardX11=no",
+            "-o", "ClearAllForwardings=yes", "-o", "PermitLocalCommand=no"]
+    if learn:
+        # Identity-learning connection to a box NOT YET VERIFIED: offer no
+        # credential at all. ssh records the host key before user auth, so
+        # the key is learned and the connection then fails auth (rc 255) —
+        # verified against a real sshd by review A (N1).
+        argv += ["-o", "PubkeyAuthentication=no", "-o", "PasswordAuthentication=no",
+                 "-o", "KbdInteractiveAuthentication=no", "-o", "GSSAPIAuthentication=no",
+                 "-o", "HostbasedAuthentication=no", "-o", "IdentityAgent=none"]
     if key_path is not None:
         argv += ["-i", str(key_path), "-o", "IdentitiesOnly=yes",
                  "-o", "IdentityAgent=none"]
@@ -249,8 +261,8 @@ def exec_verified(alias: str, expect_hostkey: Optional[str], command: str, *,
     with tempfile.TemporaryDirectory(prefix="box_truth_kh.") as td:
         kh = Path(td) / "known_hosts"
         try:
-            rc, _o, err, timed_out, _ov = runner(ssh_argv(alias, kh, command="true"),
-                                                 deadline_s)
+            rc, _o, err, timed_out, _ov = runner(
+                ssh_argv(alias, kh, command="true", learn=True), deadline_s)
         except (OSError, ValueError) as e:
             res.stderr_head = f"{type(e).__name__}: {e}"[:STDERR_HEAD]
             return res
@@ -281,6 +293,8 @@ def exec_verified(alias: str, expect_hostkey: Optional[str], command: str, *,
 def describe(res: ReadResult) -> str:
     """The cell text for a failed read — names the fix (Q11, S1)."""
     a = res.alias
+    if res.outcome == "refused_grant" and res.stderr_head.startswith("center key"):
+        return res.stderr_head            # the CENTER's fault, not the grant's (B 2)
     if res.outcome == "refused_grant":
         return (f"grant refused on {a} (key or source) — on {a}: "
                 "box_truth_grant.py list; from this center: "

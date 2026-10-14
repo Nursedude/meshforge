@@ -285,7 +285,32 @@ _SECRET_RES = (
     re.compile(r"\bpsk\s*[=:]\s*\S", re.IGNORECASE),
     re.compile(r"token=\S", re.IGNORECASE),
     re.compile(r"passw(?:or)?d\s*[=:]\s*\S", re.IGNORECASE),
+    # review A F6 (2026-10-14): shapes the first cut missed
+    re.compile(r"\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@", re.IGNORECASE),  # URI userinfo
+    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{10,}"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"(?:^|\s)(?:-u|--user)\s+[^\s:]+:\S+"),                     # curl -u user:pass
 )
+
+#: A JSON KEY that names a credential, holding a non-empty STRING, is a
+#: secret whatever the value looks like — 8 of the 10 sections are JSON, and
+#: `{"password": "x"}` never matched a `key=value` text pattern (review A F6).
+#: Flags (`token_set: true`) and empty values carry nothing to leak.
+_SECRET_KEY = re.compile(
+    r"(?:^|[_-])(?:pass(?:word|wd|phrase)?|psk|secret|token|api[_-]?key|"
+    r"private[_-]?key|credentials?)(?:$|[_-])", re.IGNORECASE)
+
+
+def _secret_keys(obj: Any):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if (isinstance(k, str) and _SECRET_KEY.search(k)
+                    and isinstance(v, str) and v.strip()):
+                yield k
+            yield from _secret_keys(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _secret_keys(v)
 
 
 def _strings(obj: Any, key: str = ""):
@@ -312,6 +337,10 @@ def secret_tripwire(sections: dict) -> List[Tuple[str, str]]:
     that a planted secret never leaves the box."""
     hits: List[Tuple[str, str]] = []
     for name, value in (sections or {}).items():
+        key = next(_secret_keys(value), None)
+        if key is not None:
+            hits.append((name, f"credential-named key {key!r}"))
+            continue
         for s in _strings(value):
             for rx in _SECRET_RES:
                 if rx.search(s):

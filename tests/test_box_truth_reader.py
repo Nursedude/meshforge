@@ -164,3 +164,36 @@ def test_refusal_reason_reaches_the_cell():
     busy = bt.frame_document({"schema": bt.SCHEMA, "refused": "busy", "reason": "lock held"})
     r = br.read_box("moc3", HOSTKEY_FP, runner=fake_ssh(0, busy))
     assert r.outcome == "rate_limited" and "lock held" in br.describe(r)
+
+
+def test_n1_identity_learn_presents_no_credentials():
+    """Review A N1: the 'learn the host key' connection authenticated with the
+    operator's agent on a not-yet-verified box. It now offers nothing — the
+    host key is recorded before user auth (verified by A on a real sshd)."""
+    seen = []
+
+    def run(argv, deadline):
+        seen.append(argv)
+        kh = next(a.split("=", 1)[1] for a in argv if a.startswith("UserKnownHostsFile="))
+        Path(kh).write_text(f"moc3 {HOSTKEY_LINE}\n")
+        return (255 if len(seen) == 1 else 0), b"", b"", False, False
+    r = br.exec_verified("moc3", HOSTKEY_FP, "true", runner=run)
+    assert r.outcome == "ok"
+    learn = " ".join(seen[0])
+    for opt in ("PubkeyAuthentication=no", "PasswordAuthentication=no",
+                "KbdInteractiveAuthentication=no", "GSSAPIAuthentication=no",
+                "IdentityAgent=none"):
+        assert opt in learn, opt
+    for argv in seen:
+        j = " ".join(argv)
+        for opt in ("ForwardAgent=no", "ForwardX11=no", "ClearAllForwardings=yes",
+                    "PermitLocalCommand=no"):
+            assert opt in j, opt
+    assert "PubkeyAuthentication=no" not in " ".join(seen[1])
+
+
+def test_b2_center_key_problem_is_named_not_grant_refused():
+    r = br.ReadResult("moc3", "refused_grant", pinned=True,
+                      stderr_head="center key /h/.ssh/meshforge_noc_ed25519 missing — "
+                                  "box_truth_grant.py center-key --create")
+    assert br.describe(r).startswith("center key /h/.ssh/meshforge_noc_ed25519 missing")

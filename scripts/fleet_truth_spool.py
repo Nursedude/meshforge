@@ -40,6 +40,7 @@ Crontab (manager box):
 """
 
 import json
+import os
 import re  # noqa: F401  (legacy block)
 import subprocess
 import sys
@@ -340,11 +341,16 @@ def sections_from_doc(doc: "Optional[dict]") -> dict:
             for k in _SECTION_NAMES}
 
 
-def _expect_of(alias: str) -> "Optional[str]":
-    from utils.fleet_naming import load_registry_quiet
+def _expect_of(alias: str) -> "tuple[Optional[str], Optional[str]]":
+    """(expect_hostkey, why-not). An unreadable registry is named as such —
+    never "stamp it", which is the wrong fix (review B 6)."""
+    from utils.fleet_naming import load_registry_quiet, registry_path
     reg = load_registry_quiet()
-    host = reg.hosts.get(alias) if reg else None
-    return host.expect_hostkey if host else None
+    if reg is None:
+        return None, (f"fleet_naming registry unreadable ({registry_path()}) — "
+                      "fix it: scripts/fleet_naming_audit.py")
+    host = reg.hosts.get(alias)
+    return (host.expect_hostkey if host else None), None
 
 
 def fetch_box(target, *, home: Path, expect_of=_expect_of,
@@ -354,12 +360,20 @@ def fetch_box(target, *, home: Path, expect_of=_expect_of,
     only (S3); any failure -> all-None sections + the outcome that says
     which failure it was (S1)."""
     key_path = br.noc_key_path(home) if target.pinned else None
+    expect, why = expect_of(target.alias)
     if key_path is not None and not key_path.exists():
         res = br.ReadResult(alias=target.alias, outcome="refused_grant", pinned=True,
                             stderr_head=f"center key {key_path} missing — "
                                         "box_truth_grant.py center-key --create")
+    elif key_path is not None and not os.access(key_path, os.R_OK):
+        res = br.ReadResult(alias=target.alias, outcome="refused_grant", pinned=True,
+                            stderr_head=f"center key {key_path} unreadable by this user "
+                                        "(created under sudo?) — chown it to the operator")
+    elif expect is None and why:
+        res = br.ReadResult(alias=target.alias, outcome="identity_unpinned",
+                            pinned=key_path is not None, stderr_head=why)
     else:
-        res = read(target.alias, expect_of(target.alias), key_path=key_path)
+        res = read(target.alias, expect, key_path=key_path)
     transport = res.transport()
     transport["reason"] = None if res.outcome == "ok" else br.describe(res)
     meta = {}

@@ -250,3 +250,34 @@ def test_b4_deep_nesting_is_a_valueerror_not_a_crash():
     with pytest.raises(ValueError):
         bt.parse_framed(bt.FRAME + "\n" + "[" * 100000 + "]" * 100000)
     assert bt.classify_transport(0, bt.FRAME + "\n" + "[" * 100000, "") == "export_broken"
+
+
+# ── review A F6: secrets stored as JSON keys/values ─────────────────────
+
+@pytest.mark.parametrize("section", [
+    {"password": "hunter2"},
+    {"psk": "AQ=="},
+    {"ntfy_token": "tk_abcdef123456"},
+    {"cfg": {"api_key": "x9"}},
+    {"url": "mqtt://user:pass@broker.example:1883"},
+    {"hdr": "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.e30.abc"},
+    {"k": "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUv"},
+])
+def test_f6_structured_secrets_trip(section):
+    assert bt.secret_tripwire({"raw_mini": section}), section
+
+
+def test_f6_curl_userinfo_in_b64_crontab_trips():
+    b64 = base64.b64encode(b"0 * * * * curl -u op:Secr3t https://x\n").decode()
+    assert bt.secret_tripwire({"schedules": {"crontab_b64": b64}})
+
+
+@pytest.mark.parametrize("section", [
+    {"auth": {"refusals": 0, "store": "ok", "sessions": 1}},   # map status block (measured)
+    {"token_set": True, "password_auth": False},               # flags, not secrets
+    {"psk": ""},                                                # empty = nothing to leak
+    {"url": "https://example.org/path"},
+    {"reason": "rnsd RPC token mismatch fixed"},
+])
+def test_f6_benign_shapes_do_not_withhold(section):
+    assert bt.secret_tripwire({"raw_mini": section}) == []

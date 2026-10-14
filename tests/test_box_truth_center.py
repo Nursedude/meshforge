@@ -248,3 +248,53 @@ def test_spool_cron_line_is_the_live_one():
     if "fleet_truth_spool.py" not in tab:
         pytest.skip("not a center")
     assert bc.SPOOL_CRON_LINE in tab
+
+
+# ── review A N3/N4 + review B 6/7 ───────────────────────────────────────
+
+def test_n3_bulk_revoke_refuses_a_malformed_fingerprint(home):
+    bc.set_target(bc.targets_path(home), "moc3", pinned=True)
+    f = Fleet()
+    bad = "SHA256:abc;id>/tmp/p"
+    rep = bc.bulk_revoke(bad, bad[-8:], home=home, expect_of=lambda a: EXPECT, exec_=f.exec_)
+    assert not rep.ok and f.cmds == []
+
+
+def test_n4_rotate_names_every_box_still_holding_the_old_key(home):
+    for a in ("moc3", "kiai"):
+        bc.set_target(bc.targets_path(home), a, pinned=True)
+    old_fp = bt.parse_noc_pubkey(_pub()).fingerprint
+
+    class Partial(Fleet):
+        def exec_(self, alias, expect, command):
+            if alias == "kiai" and " revoke " in command:
+                self.cmds.append((alias, expect, command))
+                return br.ExecResult(alias, "failed", rc=1, stdout="REFUSED")
+            return super().exec_(alias, expect, command)
+    rep = bc.rotate("rotate", home=home, expect_of=lambda a: EXPECT,
+                    exec_=Partial().exec_, read=Partial().read, keygen=_fake_keygen)
+    text = "\n".join(rep.steps)
+    assert not rep.ok
+    assert "OLD KEY STILL GRANTED on kiai" in text
+    assert f"bulk-revoke --fp {old_fp}" in text
+    assert "granted from their own side" in text
+
+
+def test_b6_commented_spool_line_is_not_present():
+    state = {"tab": "# " + bc.SPOOL_CRON_LINE + "\n"}
+
+    def run(argv, **kw):
+        if argv == ["crontab", "-l"]:
+            return SimpleNamespace(returncode=0, stdout=state["tab"])
+        state["tab"] = kw["input"]
+        return SimpleNamespace(returncode=0, stdout="")
+    assert bc.ensure_spool_cron(runner=run) == "installed"
+
+
+def test_b7_unregister_keeps_the_operator_comment_visible(tmp_path):
+    p = tmp_path / "t"
+    p.write_text("lehua noc  # AREDN field node; ssh alias carries :2200\n")
+    bc.set_target(p, "lehua", pinned=None)
+    text = p.read_text()
+    assert bc.read_targets(p) == []
+    assert "lehua" in text and ":2200" in text and text.lstrip().startswith("#")

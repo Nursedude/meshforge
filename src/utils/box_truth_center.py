@@ -90,6 +90,9 @@ def set_target(path: Path, alias: str, *, pinned: Optional[bool]) -> None:
         if toks and toks[0] == alias:
             found = True
             if pinned is None:
+                # Keep the operator's note visible, commented (review B 7).
+                out.append(f"# {alias} — unregistered by box_truth_grant unpush"
+                           + (f"; was: {comment.strip()}" if sep else ""))
                 continue
             new = alias + (f" {PIN_FLAG}" if pinned else "")
             out.append(new + (f"   #{comment}" if sep else ""))
@@ -125,6 +128,12 @@ def create_center_key(home: Path, *, runner: Callable = subprocess.run,
             f"noc:{center_name()}", "-f", str(path)],
            check=True, timeout=30, stdin=subprocess.DEVNULL)
     os.chmod(path, 0o600)
+    if os.geteuid() == 0:
+        # Under sudo a root-owned 0600 key is unreadable to the operator's
+        # cron, and every box would read "grant refused" (review B 2).
+        st = os.stat(home)
+        for p in (path, Path(str(path) + ".pub")):
+            os.chown(p, st.st_uid, st.st_gid)
     return bt.parse_noc_pubkey(Path(str(path) + ".pub").read_text(encoding="utf-8"))
 
 
@@ -134,8 +143,9 @@ def ensure_spool_cron(*, runner: Callable = subprocess.run) -> str:
     """Idempotent. Returns 'present' / 'installed'; raises on failure."""
     cur = runner(["crontab", "-l"], capture_output=True, text=True, timeout=10)
     text = cur.stdout if cur.returncode == 0 else ""
-    if "fleet_truth_spool.py" in text:
-        return "present"
+    if any("fleet_truth_spool.py" in ln and not ln.lstrip().startswith("#")
+           for ln in text.splitlines()):
+        return "present"            # a commented-out line is NOT present (B 6)
     new = text + ("" if not text or text.endswith("\n") else "\n") + SPOOL_CRON_LINE + "\n"
     runner(["crontab", "-"], input=new, text=True, timeout=10, check=True)
     back = runner(["crontab", "-l"], capture_output=True, text=True, timeout=10)
@@ -163,9 +173,14 @@ def _add_cmd(key: bt.NocKey, center: str) -> str:
             f"--center {shlex.quote(center)} --confirm {key.fingerprint[-8:]}")
 
 
+_FP_RE = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
+
+
 def _revoke_cmd(fp: str) -> str:
+    if not _FP_RE.match(fp or ""):          # A N3: never interpolate an unchecked fp
+        raise bt.KeyRejected(f"fingerprint {fp!r} malformed")
     return (f"{bt.PYTHON} -I {REMOTE_GRANT_CLI} revoke --fp {shlex.quote(fp)} "
-            f"--confirm {fp[-8:]}")
+            f"--confirm {shlex.quote(fp[-8:])}")
 
 
 Exec = Callable[[str, Optional[str], str], br.ExecResult]
@@ -246,6 +261,9 @@ def bulk_revoke(fp: str, confirm: str, *, home: Path,
                 exec_: Exec = br.exec_verified) -> Report:
     """Revoke one fingerprint on every pinned target (a leaked key's cure)."""
     rep = Report()
+    if not _FP_RE.match(fp or ""):
+        rep.step(f"fingerprint {fp!r} malformed — want SHA256:<43 chars>", False)
+        return rep
     if confirm != fp[-8:]:
         rep.step(f"confirmation {confirm!r} != {fp[-8:]}", False)
         return rep
@@ -289,10 +307,22 @@ def rotate(confirm: str, *, home: Path, expect_of: Callable[[str], Optional[str]
             rep.steps.append(f"  STOP: old key {old.fingerprint} still granted and in place; "
                              f"new grants so far: revoke with bulk-revoke --fp {new.fingerprint}")
             return rep
+    still_old = []
     for alias in targets:
         r = exec_(alias, expect_of(alias), _revoke_cmd(old.fingerprint))
-        rep.step(f"{alias}: revoke old {old.fingerprint} -> {r.outcome}", r.outcome == "ok")
+        if not rep.step(f"{alias}: revoke old {old.fingerprint} -> {r.outcome}",
+                        r.outcome == "ok"):
+            still_old.append(alias)
+    # Swap anyway: the new key reads every target (verified above), and the
+    # old one may be the leaked one — but SAY where it still opens a box (A N4).
     os.replace(new_path, key_path)
     os.replace(str(new_path) + ".pub", str(key_path) + ".pub")
     rep.step(f"key files swapped: {key_path} is now {new.fingerprint}")
+    for alias in still_old:
+        rep.steps.append(f"  ⚠ OLD KEY STILL GRANTED on {alias} — retry: "
+                         f"box_truth_grant.py bulk-revoke --fp {old.fingerprint} "
+                         f"--confirm {old.fingerprint[-8:]}")
+    rep.steps.append(f"  note: only targets in {targets_path(home)} were rotated; boxes "
+                     "granted from their own side keep the old key — run "
+                     "`box_truth_grant.py list` there")
     return rep

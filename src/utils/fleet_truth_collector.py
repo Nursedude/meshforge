@@ -182,6 +182,9 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
     # fleet_truth projects it. None = no ledger spooled.
     spool_ingress: Optional[Dict[str, Any]] = None
     spool_clock: Optional[Dict[str, Any]] = None
+    # The box's OWN account of a section it could not or would not send
+    # (box_truth/v1 section_errors, incl. tripwire withholds) — review B 3.
+    spool_section_errors: Optional[Dict[str, Any]] = None
 
     if slo is None and status is None:
         # Direct fan-out failed — try the ssh spool (fresh-only).
@@ -194,6 +197,9 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
             radio_probe = spool.get("radio_probe")
             if isinstance(spool.get("services"), dict):
                 spool_services = spool["services"]
+            _bt = spool.get("box_truth")
+            if isinstance(_bt, dict) and isinstance(_bt.get("section_errors"), dict):
+                spool_section_errors = _bt["section_errors"]
             if isinstance(spool.get("ingress"), dict):
                 spool_ingress = spool["ingress"]
                 # The ledger's stamps are the PEER's clock; carry the same
@@ -277,7 +283,32 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
         "spool_schedules": spool_schedules,
         "spool_ingress": spool_ingress,
         "spool_clock": spool_clock,
+        "spool_section_errors": spool_section_errors,
     }
+
+
+#: box_truth/v1 section -> the subsystem cell it feeds (for section_errors).
+_SECTION_SUBSYSTEM = {"raw_watchdog": "watchdog", "raw_mini": "mini",
+                      "services": "services", "radio_probe": "radio",
+                      "schedules": "schedules", "ingress": "rns_ingress"}
+
+
+def apply_export_section_errors(subsystems: Dict[str, Any], snap: Dict[str, Any],
+                                spool_observed: set, *, dark: str) -> None:
+    """Put the box's OWN reason on a dark cell whose section the export
+    reported as errored or WITHHELD (producer tripwire). Without this the cell
+    said "no data (source absent)" — asserting absence for a source that
+    exists (review B 3, 2026-10-14). A section the box reported as faulty is a
+    finding, so it joins ``spool_observed`` and is never an accepted blind spot."""
+    errs = snap.get("spool_section_errors")
+    if not isinstance(errs, dict):
+        return
+    for section, sub in _SECTION_SUBSYSTEM.items():
+        why = errs.get(section)
+        c = subsystems.get(sub)
+        if isinstance(why, str) and why and isinstance(c, dict) and c.get("state") == dark:
+            c["reason"] = f"box export, {section}: {why}"
+            spool_observed.add(sub)
 
 
 #: |peer clock − this box's clock| at spool-fetch time beyond which a peer's

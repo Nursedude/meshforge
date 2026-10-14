@@ -715,9 +715,14 @@ class TestExportCarriesTheSameArtifacts:
         assert '["crontab", "-l"]' in src
         assert "cron_verdicts.log" in src and "b64encode" in src
 
-    def test_export_reads_the_peer_clock(self):
+    def test_export_reads_the_peer_clock(self, tmp_path):
+        from types import SimpleNamespace
         from utils import box_truth_collect as bcol
-        assert 'sections["clock"] = {"now": int(time.time())}' in Path(bcol.__file__).read_text()
+        src = bcol.Sources(home=tmp_path, env={}, watchdog_path=tmp_path / "w",
+                           proc_tcp=(), dev_globs=(), http_get=lambda u: None,
+                           runner=lambda argv, **kw: SimpleNamespace(returncode=0, stdout=b""))
+        now = bcol.collect_sections(src)[0]["clock"]["now"]
+        assert isinstance(now, int) and abs(now - time.time()) < 5
 
     def test_export_reads_the_gateways_own_ledger_path(self, monkeypatch):
         """ONE path, two consumers (hfm #5): the export must read exactly
@@ -824,3 +829,59 @@ class TestOnlyMigratedTargetsUseTheExport:
         kiai = json.loads((spool / "kiai.json").read_text())
         assert moc3["transport"]["outcome"] == "refused_grant"
         assert "transport" not in kiai          # legacy doc byte-shape unchanged
+
+
+class TestExportSectionErrorsReachTheCell:
+    """Review B 3: a section the box WITHHELD (tripwire) or failed to read
+    rendered as 'no data (source absent)' — asserting absence for a source
+    that exists. The export's own reason now reaches the cell."""
+
+    def _truth(self, section_errors):
+        from utils import fleet_truth as ft
+        spool = {"schema": c.SPOOL_SCHEMA, "alias": "moc3",
+                 "fetched_at": time.time() - 30.0,
+                 "slo": None, "status": None,
+                 "raw_watchdog": {"ok": True, "written_at": time.time(),
+                                  "host": "moc3", "signals": []},
+                 "raw_mini": None,
+                 "transport": {"outcome": "ok"},
+                 "box_truth": {"section_errors": section_errors}}
+        with patch.object(c, "_http_get_json", return_value=None), \
+             patch.object(c, "_resolve_peer", return_value=("moc3", "dns")), \
+             patch.object(c, "_read_spool", return_value=spool):
+            snap = c._fetch_peer("moc3", is_self=False, port=5000)
+        return ft.build_box_truth(snap, now=time.time(), signal_classes=[])
+
+    def test_withheld_section_says_withheld(self):
+        t = self._truth({"raw_mini": "withheld: credential-shaped content (tripwire)"})
+        mini = t["subsystems"]["mini"]
+        assert mini["state"] == "dark"
+        assert "withheld" in mini["reason"] and "source absent" not in mini["reason"]
+
+    def test_no_section_errors_reads_as_before(self):
+        t = self._truth({})
+        assert t["subsystems"]["mini"]["reason"] == "no data (source absent)"
+
+
+class TestPinnedReadExplainsCenterSideFaults:
+    """Review B 2/6: a missing or unreadable center key, and an unreadable
+    registry, must not render as 'grant refused … push' / 'stamp it'."""
+
+    def test_missing_center_key_is_named(self, tmp_path):
+        mod = _load_spool_script()
+        from utils.box_truth_center import Target
+        _s, transport, _m = mod.fetch_box(Target("moc3", True), home=tmp_path,
+                                          expect_of=lambda a: ("SHA256:" + "H" * 43, None))
+        assert transport["reason"].startswith("center key")
+        assert "missing" in transport["reason"]
+
+    def test_unreadable_registry_is_named(self, tmp_path):
+        mod = _load_spool_script()
+        from utils.box_truth_center import Target
+        key = tmp_path / ".ssh" / "meshforge_noc_ed25519"
+        key.parent.mkdir()
+        key.write_text("k")
+        _s, transport, _m = mod.fetch_box(Target("moc3", True), home=tmp_path,
+                                          expect_of=lambda a: (None, "registry unreadable"))
+        assert transport["outcome"] == "identity_unpinned"
+        assert "registry unreadable" in transport["reason"]
