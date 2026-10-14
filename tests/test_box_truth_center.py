@@ -141,14 +141,36 @@ def test_push_whose_pinned_read_fails_does_not_register(home):
     assert bc.read_targets(bc.targets_path(home)) == []
 
 
-def test_unpush_revokes_and_unregisters(home):
+def test_unpush_revokes_and_leaves_the_target_unflagged(home):
     bc.set_target(bc.targets_path(home), "moc3", pinned=True)
     f = Fleet()
     rep = bc.unpush("moc3", "moc3", home=home, expect=EXPECT, exec_=f.exec_)
     assert rep.ok
     fp = bt.parse_noc_pubkey(_pub()).fingerprint
     assert f.cmds[0][2].endswith(f"revoke --fp {fp} --confirm {fp[-8:]}")
-    assert bc.read_targets(bc.targets_path(home)) == []
+    # Q11 amended 2026-10-14 (operator): a removed line made the spool writer
+    # skip the box, so /fleet served its last healthy snapshot for up to
+    # SPOOL_STALE_S after the revoke. Unflagged = read DARK with the re-grant
+    # named on the very next tick.
+    assert [(t.alias, t.pinned) for t in bc.read_targets(bc.targets_path(home))] \
+        == [("moc3", False)]
+
+
+def test_unpushed_target_reads_refused_grant_next_tick(home):
+    import importlib.util
+    path = Path(__file__).resolve().parent.parent / "scripts" / "fleet_truth_spool.py"
+    spec = importlib.util.spec_from_file_location("fleet_truth_spool_t", path)
+    spool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(spool)
+
+    bc.set_target(bc.targets_path(home), "moc3", pinned=True)
+    assert bc.unpush("moc3", "moc3", home=home, expect=EXPECT,
+                     exec_=Fleet().exec_).ok
+    targets = bc.read_targets(bc.targets_path(home))
+    assert [t.alias for t in targets] == ["moc3"], "unpushed box dropped from the writer"
+    _s, transport, _m = spool.fetch_box(targets[0], home=home)
+    assert transport["outcome"] == "refused_grant"
+    assert "box_truth_grant.py push moc3 --confirm moc3" in transport["reason"]
 
 
 # ── rotation (B7c, acceptance 8) ─────────────────────────────────────────

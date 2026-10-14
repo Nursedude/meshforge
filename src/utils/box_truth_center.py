@@ -8,10 +8,13 @@ remote ``authorized_keys`` itself: it runs the target's grant CLI (B6), only
 after the target proved it is the box the registry names.
 
 The targets file (``~/.config/meshforge/truth_spool_targets``) is shared with
-the spool writer and is written HERE (Q11: the grant registers the target,
-the revoke unregisters it). A line is ``<alias> [noc]  # comment``; ``noc``
-means "read with the pinned grant key" (S3). Lines without it are legacy
-reads over interactive keys — kept working until each box is migrated (S12).
+the spool writer and is written HERE (Q11: the grant registers the target
+pinned; the revoke leaves it UNFLAGGED — amended 2026-10-14 — so /fleet reads
+it DARK with the re-grant named on the next tick instead of serving its last
+healthy snapshot until SPOOL_STALE_S). A line is ``<alias> [noc]  # comment``;
+``noc`` means "read with the pinned grant key" (S3). A line without it is not
+read: its spool row is ``refused_grant`` (the interactive-key legacy read was
+deleted 2026-10-14). Delete the line by hand to stop watching a box at all.
 
 Every function takes its ssh/subprocess seams as arguments so the tests can
 drive each step and each refusal without a network.
@@ -247,8 +250,9 @@ def unpush(alias: str, confirm: str, *, home: Path, expect: Optional[str],
     if not rep.step(f"{alias}: revoke {key.fingerprint}", r.outcome == "ok"):
         rep.steps.append(f"         {r.outcome} rc={r.rc}: {r.stderr_head or r.stdout[-300:]}")
         return rep
-    set_target(targets_path(home), alias, pinned=None)
-    rep.step(f"{alias}: unregistered from {targets_path(home)}")
+    set_target(targets_path(home), alias, pinned=False)
+    rep.step(f"{alias}: left unflagged in {targets_path(home)} — /fleet reads it "
+             "DARK (refused_grant) next tick; delete the line to stop watching it")
     return rep
 
 

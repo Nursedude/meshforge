@@ -14,7 +14,7 @@ ON A CENTER (what I read):
   push TARGET --confirm TARGET          grant this center's key on TARGET via its own
                                         `add` (identity-checked first, B6), verify a
                                         pinned read, register TARGET, ensure the spool cron
-  unpush TARGET --confirm TARGET        revoke on TARGET + unregister
+  unpush TARGET --confirm TARGET        revoke on TARGET; target stays listed, unflagged (reads DARK)
   rotate --confirm rotate               new key everywhere -> verify -> revoke old -> swap
   bulk-revoke --fp SHA256:... --confirm <last 8>   revoke one key on every pinned target
 
