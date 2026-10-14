@@ -347,7 +347,7 @@ def classify_transport(rc: Optional[int], stdout: str, stderr: str, *,
         doc = parse_framed(stdout or "")
     except ValueError:
         return "export_broken"
-    if doc.get("refused") == "rate":
+    if doc.get("refused") in ("rate", "busy"):     # transient: try again later
         return "rate_limited"
     if doc.get("refused"):
         return "export_broken"

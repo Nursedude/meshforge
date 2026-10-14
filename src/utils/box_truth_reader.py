@@ -208,6 +208,14 @@ def read_box(alias: str, expect_hostkey: Optional[str], *,
         res.stderr_head = "host key not observed on this read — cannot prove identity"
     if res.outcome == "ok":
         res.doc = bt.parse_framed(stdout)
+    elif res.outcome in ("rate_limited", "export_broken") and rc == 0:
+        # The export refused and SAID WHY — carry its reason, not ssh's stderr.
+        try:
+            why = bt.parse_framed(stdout).get("reason")
+        except ValueError:
+            why = None
+        if isinstance(why, str) and why:
+            res.stderr_head = " ".join(why.split())[:STDERR_HEAD]
     res.ms = int((time.monotonic() - t0) * 1000)
     return res
 
@@ -282,10 +290,12 @@ def describe(res: ReadResult) -> str:
     if res.outcome == "identity_unpinned":
         return res.stderr_head
     if res.outcome == "export_broken":
+        if res.rc == 0 and res.stderr_head:      # the export answered and refused
+            return f"export on {a} refused: {res.stderr_head}"
         return (f"export broken on {a} (rc={res.rc}): {res.stderr_head or 'no frame'} "
                 f"— is {REMOTE_EXPORT} deployed there?")
     if res.outcome == "rate_limited":
-        return f"{a} rate-limited this center (> {bt.RATE_MAX} reads/{bt.RATE_WINDOW_S:.0f}s)"
+        return f"{a} refused this read for now: {res.stderr_head or 'rate limit'}"
     if res.outcome == "unreachable":
         return f"no response from {a} (ssh): {res.stderr_head or 'timeout'}"
     return f"{a}: {res.outcome}"

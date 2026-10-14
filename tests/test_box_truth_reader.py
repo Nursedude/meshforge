@@ -151,3 +151,16 @@ def test_noc_key_never_under_claude_dir(tmp_path):
     p = br.noc_key_path(tmp_path)
     assert p == tmp_path / ".ssh" / "meshforge_noc_ed25519"
     assert ".claude" not in p.parts
+
+
+def test_refusal_reason_reaches_the_cell():
+    """Review B: a refused export used to read as a generic failure. The
+    export's own reason is carried into describe()."""
+    doc = bt.frame_document({"schema": bt.SCHEMA, "refused": "witness",
+                             "reason": "read witness unwritable at /x — fix ownership/mode"})
+    r = br.read_box("moc3", HOSTKEY_FP, runner=fake_ssh(0, doc))
+    assert r.outcome == "export_broken"
+    assert br.describe(r) == "export on moc3 refused: read witness unwritable at /x — fix ownership/mode"
+    busy = bt.frame_document({"schema": bt.SCHEMA, "refused": "busy", "reason": "lock held"})
+    r = br.read_box("moc3", HOSTKEY_FP, runner=fake_ssh(0, busy))
+    assert r.outcome == "rate_limited" and "lock held" in br.describe(r)

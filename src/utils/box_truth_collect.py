@@ -34,6 +34,7 @@ import base64
 import errno
 import fcntl
 import glob
+import http.client
 import json
 import os
 import re
@@ -149,7 +150,8 @@ def _http(src: Sources, path: str) -> Tuple[Optional[dict], Optional[str]]:
     getter = src.http_get or _default_http_get
     try:
         return getter(f"http://localhost:{src.http_port}{path}"), None
-    except (urllib.error.URLError, OSError, ValueError, socket.timeout) as e:
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError,
+            socket.timeout) as e:
         # A map-less box has no listener — that is the normal case for the
         # boxes this whole leg exists for, and reads as absent, not error.
         reason = getattr(e, "reason", e)
@@ -193,11 +195,20 @@ def _services(src: Sources) -> Tuple[Optional[dict], Optional[str]]:
         f = line.split()
         if f and f[0] not in units:
             units.append(f[0])
-    rc, out = _run(src, ["systemctl", "show", "--property=ActiveState,UnitFileState",
-                         *units])
+    show = ["systemctl", "show", "--property=ActiveState,UnitFileState"]
+    rc, out = _run(src, show + units)
     if rc is None:
         return None, "systemctl show failed"
-    blocks = out.decode("utf-8", "replace").strip("\n").split("\n\n")
+    if rc == 0:
+        blocks = out.decode("utf-8", "replace").strip("\n").split("\n\n")
+    else:
+        # A bad unit name stops the batch after the units before it (measured
+        # 2026-10-14, review B 5) — ask each unit on its own instead of
+        # reading every later unit as unknown.
+        blocks = []
+        for unit in units:
+            urc, uout = _run(src, show + [unit])
+            blocks.append(uout.decode("utf-8", "replace").strip("\n") if urc == 0 else "")
     result: Dict[str, dict] = {}
     for i, unit in enumerate(units):
         props: Dict[str, str] = {}
@@ -251,32 +262,44 @@ def collect_sections(src: Sources) -> Tuple[Dict[str, Any], Dict[str, str]]:
     sections: Dict[str, Any] = {}
     errors: Dict[str, str] = {}
 
-    def put(name, pair):
-        val, err = pair
+    def put(name, reader, *args):
+        """One section's failure is THAT section's error, never the document's
+        (review B 1: one bad HTTP answer used to black out all ten)."""
+        try:
+            got = reader(*args)
+        except Exception as e:  # noqa: BLE001 - any reader crash, recorded below
+            sections[name] = None
+            errors[name] = f"{type(e).__name__}: {e}"[:200]
+            return
+        val, err = got if isinstance(got, tuple) else (got, None)
         sections[name] = val
         if err:
             errors[name] = err
 
-    put("slo", _http(src, HTTP_PATHS["slo"]))
-    put("status", _http(src, HTTP_PATHS["status"]))
-    put("raw_watchdog", _json_file(src.watchdog_path))
-    put("deployment", _json_file(src.deployment_path))
-    put("raw_mini", _json_file(src.mini_path))
-    sections["radio_probe"] = _radio_probe(src)
-    put("services", _services(src))
-    sections["schedules"] = _schedules(src)
-    sections["clock"] = {"now": int(time.time())}
-    put("ingress", _json_file(src.ingress_path))
+    put("slo", _http, src, HTTP_PATHS["slo"])
+    put("status", _http, src, HTTP_PATHS["status"])
+    put("raw_watchdog", _json_file, src.watchdog_path)
+    put("deployment", _json_file, src.deployment_path)
+    put("raw_mini", _json_file, src.mini_path)
+    put("radio_probe", _radio_probe, src)
+    put("services", _services, src)
+    put("schedules", _schedules, src)
+    put("clock", lambda: {"now": int(time.time())})
+    put("ingress", _json_file, src.ingress_path)
     assert tuple(sections) == bt.SECTIONS, "section order drifted from the allowlist"
     return sections, errors
 
 
 # ── the read witness (Q13, B4, B8, S7) ───────────────────────────────────
 
-def _read_rows(fh) -> List[dict]:
-    fh.seek(0)
+def read_witness(path: Path) -> List[dict]:
+    """Every parseable witness row, oldest first. [] when absent."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return []
     rows = []
-    for line in fh.read().decode("utf-8", "replace").splitlines():
+    for line in data.decode("utf-8", "replace").splitlines():
         try:
             row = json.loads(line)
         except ValueError:
@@ -284,15 +307,6 @@ def _read_rows(fh) -> List[dict]:
         if isinstance(row, dict):
             rows.append(row)
     return rows
-
-
-def read_witness(path: Path) -> List[dict]:
-    """Every parseable witness row, oldest first. [] when absent."""
-    try:
-        with open(path, "rb") as fh:
-            return _read_rows(fh)
-    except OSError:
-        return []
 
 
 def last_reads(path: Path) -> Dict[str, dict]:
@@ -304,34 +318,47 @@ def last_reads(path: Path) -> Dict[str, dict]:
     return out
 
 
-def _open_locked(path: Path):
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(str(path), os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
-    fh = os.fdopen(fd, "a+b")
+def lock_path(witness: Path) -> Path:
+    """A SEPARATE lock file that nothing ever replaces. The lock used to live
+    on reads.jsonl itself, which trim_witness replaces by rename — a waiter
+    then held a lock on an unlinked inode and its row was lost (review A F5:
+    200 reads -> ~55 rows)."""
+    return witness.with_name("reads.lock")
+
+
+def _acquire(witness: Path):
+    """(fd, locked). Raises OSError when the state dir is unusable."""
+    witness.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(str(lock_path(witness)), os.O_RDWR | os.O_CREAT, 0o600)
     deadline = time.monotonic() + LOCK_WAIT_S
     while True:
         try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return fh, True
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd, True
         except OSError:
             if time.monotonic() >= deadline:
-                return fh, False
+                return fd, False
             time.sleep(0.1)  # bounded wait in a one-shot CLI, not a daemon loop
 
 
-def _append(fh, row: dict) -> None:
-    fh.write((json.dumps(row, ensure_ascii=True, separators=(",", ":")) + "\n").encode("ascii"))
-    fh.flush()
+def _append(witness: Path, row: dict) -> None:
+    fd = os.open(str(witness), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.write(fd, (json.dumps(row, ensure_ascii=True, separators=(",", ":"))
+                      + "\n").encode("ascii"))
+    finally:
+        os.close(fd)
 
 
-def _trim(fh, path: Path) -> None:
-    rows = _read_rows(fh)
+def trim_witness(witness: Path) -> None:
+    """Keep the newest WITNESS_CAP rows once past WITNESS_TRIM_AT. Call only
+    while holding the lock (the lock file is never the one replaced)."""
+    rows = read_witness(witness)
     if len(rows) <= WITNESS_TRIM_AT:
         return
     keep = "".join(json.dumps(r, ensure_ascii=True, separators=(",", ":")) + "\n"
                    for r in rows[-WITNESS_CAP:])
-    # temp + fsync + rename, 0600 (mkstemp); the lock holder is the only writer
-    atomic_write_text(path, keep)
+    atomic_write_text(witness, keep)          # temp + fsync + rename, 0600
 
 
 _FP_ARG = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
@@ -345,10 +372,21 @@ def _app_version() -> str:
         return "unknown"
 
 
+def _refusal(kind: str, fp: Optional[str], reason: str) -> str:
+    return bt.frame_document({"schema": bt.SCHEMA, "refused": kind, "fp": fp,
+                              "reason": reason, "window_s": bt.RATE_WINDOW_S,
+                              "max": bt.RATE_MAX})
+
+
 def run_export(grant_fp: Optional[str], src: Sources, *,
                now: Optional[float] = None) -> str:
-    """Produce the framed document (or a refusal) and record the read.
-    Returns the text to write to stdout. Never raises for a data problem."""
+    """Produce the framed document — or a REFUSAL — and record the read.
+
+    Fails CLOSED (review A F4): a read that cannot be recorded is not served,
+    because the record IS the rate limit (B8) and the "last read from" a box
+    owner audits. Refusals: ``rate`` (over the limit), ``busy`` (another read
+    held the lock past LOCK_WAIT_S), ``witness`` (the state dir is unusable —
+    the reason names the path). Never raises for a data problem."""
     t0 = time.monotonic()
     ts = time.time() if now is None else now
     fp = grant_fp if grant_fp and _FP_ARG.match(grant_fp) else None
@@ -358,50 +396,46 @@ def run_export(grant_fp: Optional[str], src: Sources, *,
            "orig_cmd": src.env.get("SSH_ORIGINAL_COMMAND", "")[:ORIG_CMD_MAX]}
     if grant_fp and fp is None:
         row["fp_malformed"] = grant_fp[:80]
-
     wpath = src.witness_path
-    fh = None
-    witness = "ok"
-    try:
-        fh, locked = _open_locked(wpath)
-        if not locked:
-            witness = f"lock not acquired in {LOCK_WAIT_S:.0f}s"
-    except OSError as e:
-        witness = f"unwritable: {type(e).__name__}"
+
+    def ms():
+        return int((time.monotonic() - t0) * 1000)
 
     try:
-        if fh is not None:
-            recent = [r for r in _read_rows(fh)
+        lock_fd, locked = _acquire(wpath)
+    except OSError as e:
+        return _refusal("witness", fp, f"read witness unwritable at {wpath.parent}: "
+                                       f"{type(e).__name__} — fix ownership/mode")
+    try:
+        if not locked:
+            return _refusal("busy", fp, f"another read held the lock > {LOCK_WAIT_S:.0f}s")
+        try:
+            recent = [r for r in read_witness(wpath)
                       if r.get("fp") == fp and isinstance(r.get("ts"), (int, float))
                       and ts - bt.RATE_WINDOW_S < r["ts"] <= ts]
             if len(recent) >= bt.RATE_MAX:
-                text = bt.frame_document({"schema": bt.SCHEMA, "refused": "rate",
-                                          "fp": fp, "window_s": bt.RATE_WINDOW_S,
-                                          "max": bt.RATE_MAX})
-                _append(fh, {**row, "outcome": "refused_rate", "bytes": len(text),
-                             "ms": int((time.monotonic() - t0) * 1000)})
+                text = _refusal("rate", fp, f"> {bt.RATE_MAX} reads in "
+                                            f"{bt.RATE_WINDOW_S:.0f}s for this grant")
+                _append(wpath, {**row, "outcome": "refused_rate", "bytes": len(text),
+                                "ms": ms()})
+                trim_witness(wpath)            # refusals are bounded too (F4c)
                 return text
 
-        sections, errors = collect_sections(src)
-        tripped = bt.secret_tripwire(sections)
-        for name, _pat in tripped:
-            sections[name] = None
-            errors[name] = "withheld: credential-shaped content (tripwire)"
-        doc = {"schema": bt.SCHEMA, "app": "meshforge", "app_version": _app_version(),
-               "host": socket.gethostname(), "generated_at": ts, "grant": fp,
-               "sections": sections, "section_errors": errors,
-               "tripwire": sorted({n for n, _ in tripped}), "witness": witness}
-        text = bt.frame_document(doc)
-        if fh is not None:
-            try:
-                _append(fh, {**row, "outcome": "served", "bytes": len(text),
-                             "ms": int((time.monotonic() - t0) * 1000)})
-                _trim(fh, wpath)
-            except OSError as e:
-                # The read went unrecorded: say so in what we serve (hfm #9).
-                doc["witness"] = f"append failed: {type(e).__name__}"
-                text = bt.frame_document(doc)
-        return text
+            sections, errors = collect_sections(src)
+            tripped = bt.secret_tripwire(sections)
+            for name, _pat in tripped:
+                sections[name] = None
+                errors[name] = "withheld: credential-shaped content (tripwire)"
+            doc = {"schema": bt.SCHEMA, "app": "meshforge", "app_version": _app_version(),
+                   "host": socket.gethostname(), "generated_at": ts, "grant": fp,
+                   "sections": sections, "section_errors": errors,
+                   "tripwire": sorted({n for n, _ in tripped}), "witness": "ok"}
+            text = bt.frame_document(doc)
+            _append(wpath, {**row, "outcome": "served", "bytes": len(text), "ms": ms()})
+            trim_witness(wpath)
+            return text
+        except OSError as e:
+            return _refusal("witness", fp, f"read witness write failed at {wpath}: "
+                                           f"{type(e).__name__} — fix ownership/mode")
     finally:
-        if fh is not None:
-            fh.close()
+        os.close(lock_fd)

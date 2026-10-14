@@ -224,11 +224,15 @@ def test_witness_trims_to_cap(home, tmp_path, monkeypatch):
     assert len(rows) == 5 and rows[-1]["ts"] == 8.0
 
 
-def test_unwritable_witness_still_serves_and_says_so(home, tmp_path):
+def test_f4a_unwritable_witness_refuses_never_serves_unlimited(home, tmp_path):
+    """Review A F4a: an unwritable witness meant NO rate limit at all (10 reads
+    in 10 s -> 10 ok). Fail closed, with the reason the center can show."""
     env = {"XDG_STATE_HOME": "/proc/nonexistent-dir"}
-    doc = bt.parse_framed(bc.run_export(FP, _src(home, tmp_path, env=env)))
-    assert doc["witness"].startswith("unwritable")
-    assert doc["sections"]["deployment"] == {"role": "gateway-only"}
+    out = bc.run_export(FP, _src(home, tmp_path, env=env))
+    doc = bt.parse_framed(out)
+    assert doc["refused"] == "witness" and "unwritable" in doc["reason"]
+    assert "sections" not in doc
+    assert bt.classify_transport(0, out, "") == "export_broken"
 
 
 def test_malformed_grant_arg_is_recorded_not_trusted(home, tmp_path):
@@ -268,3 +272,88 @@ def test_script_is_executable_in_git():
     if not out:
         pytest.skip("not yet tracked")
     assert out.startswith("100755"), out
+
+
+# ── review A F4b/F4c/F5 + review B 1/5 ──────────────────────────────────
+
+def test_f4b_lock_not_acquired_refuses_busy(home, tmp_path, monkeypatch):
+    import fcntl
+    monkeypatch.setattr(bc, "LOCK_WAIT_S", 0.2)
+    src = _src(home, tmp_path)
+    lock = bc.lock_path(src.witness_path)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "a") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+        out = bc.run_export(FP, src)
+    doc = bt.parse_framed(out)
+    assert doc["refused"] == "busy"
+    assert bt.classify_transport(0, out, "") == "rate_limited"
+
+
+def test_f4c_refused_attempts_are_trimmed_too(home, tmp_path, monkeypatch):
+    monkeypatch.setattr(bc, "WITNESS_CAP", 5)
+    monkeypatch.setattr(bc, "WITNESS_TRIM_AT", 8)
+    src = _src(home, tmp_path)
+    for i in range(40):
+        bc.run_export(FP, src, now=1000.0 + i * 0.01)
+    assert len(bc.read_witness(src.witness_path)) <= 8
+
+
+def test_f5_a_waiter_appends_to_the_file_that_exists_after_a_trim(home, tmp_path, monkeypatch):
+    """Review A F5: the lock lived on reads.jsonl, which _trim REPLACES; a
+    waiter holding the old inode wrote into an unlinked file (200 reads ->
+    ~55 rows). The lock is a separate, never-replaced file now."""
+    import fcntl
+    import threading
+    monkeypatch.setattr(bc, "WITNESS_CAP", 2)
+    monkeypatch.setattr(bc, "WITNESS_TRIM_AT", 3)
+    src = _src(home, tmp_path)
+    w = src.witness_path
+    w.parent.mkdir(parents=True, exist_ok=True)
+    w.write_text("".join('{"ts": %d, "fp": "x", "outcome": "served"}\n' % i for i in range(5)))
+    lock = bc.lock_path(w)
+    assert lock != w
+    with open(lock, "a") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+        t = threading.Thread(target=bc.run_export, args=(FP, src), kwargs={"now": 999.0})
+        t.start()
+        t.join(0.3)
+        bc.trim_witness(w)                     # the holder trims: file replaced
+        fcntl.flock(held.fileno(), fcntl.LOCK_UN)
+    t.join(10)
+    assert any(r.get("fp") == FP for r in bc.read_witness(w)), "waiter's row lost"
+
+
+def test_b1_bad_http_answer_costs_one_section_not_the_box(home, tmp_path):
+    import http.client
+
+    def bad(url):
+        raise http.client.BadStatusLine("GARBAGE LINE")
+    out = bc.run_export(FP, _src(home, tmp_path, http_get=bad))
+    doc = bt.parse_framed(out)
+    assert doc["sections"]["slo"] is None and "BadStatusLine" in doc["section_errors"]["slo"]
+    assert doc["sections"]["deployment"] == {"role": "gateway-only"}
+
+
+def test_b1_any_section_reader_crash_is_that_sections_error(home, tmp_path):
+    def boom(argv, **kw):
+        raise RuntimeError("unexpected")
+    doc = bt.parse_framed(bc.run_export(FP, _src(home, tmp_path, runner=boom)))
+    assert doc["sections"]["services"] is None and "RuntimeError" in doc["section_errors"]["services"]
+    assert doc["sections"]["raw_mini"]["reason"] == "café ☕"
+
+
+def test_b5_partial_systemctl_show_falls_back_per_unit(home, tmp_path):
+    def run(argv, **kw):
+        if argv[:2] == ["systemctl", "list-unit-files"]:
+            return SimpleNamespace(returncode=0, stdout=b"meshforge-map.service enabled enabled\n")
+        if argv[:2] == ["systemctl", "show"] and len(argv) > 4:
+            return SimpleNamespace(returncode=1, stdout=b"ActiveState=active\nUnitFileState=enabled\n")
+        if argv[:2] == ["systemctl", "show"]:
+            unit = argv[-1]
+            st = {"meshtasticd": b"active", "rnsd": b"active", "meshforge-map.service": b"failed"}[unit]
+            return SimpleNamespace(returncode=0, stdout=b"ActiveState=" + st + b"\nUnitFileState=enabled\n")
+        return _fake_runner()(argv, **kw)
+    s, errors = bc.collect_sections(_src(home, tmp_path, runner=run))
+    assert s["services"]["meshforge-map.service"]["active"] == "failed"
+    assert s["services"]["rnsd"]["active"] == "active"
