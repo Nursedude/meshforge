@@ -1,8 +1,12 @@
 """Operator sessions for the map's web writes (BIC-3, 2026-10-13).
 
+BYTE-IDENTICAL in MeshForge and MeshAnchor: the app is read from
+``utils.common.CONFIG_DIR`` (``~/.config/meshforge`` or ``~/.config/meshanchor``),
+which names both the store's directory and the CLI (``scripts/<app>_web.py``).
+
 Viewing the map stays as it was (LAN trust, no login). Every state-changing
 request needs an OPERATOR session, minted by redeeming a one-time pairing code
-that only a shell on the box can create (``scripts/meshforge_web.py pair``).
+that only a shell on the box can create (``scripts/<app>_web.py pair``).
 
 Spec: ``.claude/plans/bic3_web_auth_2026_10_13.md``.
 
@@ -26,7 +30,7 @@ import time
 from pathlib import Path
 from typing import Optional, Tuple
 
-from utils.paths import get_real_user_home
+from utils.common import CONFIG_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +41,7 @@ PAIRING_MAX_TRIES = 5
 SESSION_IDLE_S = 30 * 86400
 TOUCH_EVERY_S = 3600          # last_used is persisted at most hourly
 COOKIE_NAME = "mf_operator"
-PAIR_COMMAND = "python3 scripts/meshforge_web.py pair"
+PAIR_COMMAND = f"python3 scripts/{CONFIG_DIR.name}_web.py pair"
 
 
 class StoreUnavailable(Exception):
@@ -45,7 +49,7 @@ class StoreUnavailable(Exception):
 
 
 def default_store_path() -> Path:
-    return get_real_user_home() / ".config" / "meshforge" / "web_sessions.json"
+    return CONFIG_DIR / "web_sessions.json"
 
 
 def _h(secret: str) -> str:

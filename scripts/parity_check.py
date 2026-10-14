@@ -113,6 +113,12 @@ BYTE_IDENTICAL = (
     # (fleet_truth_collector.py: MF = fleet_hosts + fleet_naming; MA =
     # fleet.json peers) — the collector is deliberately NOT parity.
     "src/utils/fleet_truth.py",
+    # BIC-3 operator session store (2026-10-13): hashed sessions + pairing codes
+    # behind both maps' default-deny write gate. App-neutral (CONFIG_DIR names
+    # the store dir and the CLI), so the twins must refuse, expire and fail
+    # closed identically. The gate mixin (_map_auth_endpoints.py) is NOT here:
+    # each repo's origin rule differs by design.
+    "src/utils/web_auth.py",
     # mini-dudeai GENERIC ENGINE CORE (second-brain arc WS-A, 2026-07-22). The
     # observation-only rule/cadence loop is now twinned onto MeshAnchor. These
     # modules carry ZERO app-specific imports (verified import-clean across the
