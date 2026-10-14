@@ -156,8 +156,11 @@ whole; each item below lands on its own, re-tested here. In order:
 1. **BIC-3 web auth** (token/session, viewer/operator roles) BEFORE anything on
    the web can transmit. Accept: an unauthenticated LAN POST is refused + logged.
    Grilled 10-13 (Q1–Q21): spec `.claude/plans/bic3_web_auth_2026_10_13.md`.
+   **DONE + DEPLOYED 10-13** MF `feec8e31..f86274ac`, MA `09c3eb0c..34b75362`; review queued.
 2. **BIC-1 `/inbox`** from the patch, after BIC-3. Sends read "handed to radio ·
    unconfirmed", never "delivered".
+   **DONE + DEPLOYED 10-13** `834012d8` (+ RX every-channel fix + New message `95623429`);
+   operator acceptance (a real send) still owed.
 3. **BIC-15 operator line** (LXMF address, allowlisted read-only oracle + pages
    over RNS) — fix first: an unreadable identity is silently RECREATED (new
    address, corpse overwritten); quarantine + refuse + witness instead.

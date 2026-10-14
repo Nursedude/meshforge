@@ -3842,6 +3842,37 @@ sha256 `fb4b2db2…4290a`; `git apply --check` rc=0 on `3fd66bc1`). Evidence aud
   (`_map_trust_gate.py`), `/inbox` send path vs BIC-3, `rns_bridge.py` hooks vs the
   RNS→RF allowlist enforce on moc+moc3, the CA name constraints on iOS.
 
+## QUEUED 2026-10-13 (Opus 5.5) — BIC-3 operator login, BIC-1 inbox, RX channel coverage: MF `feec8e31..95623429` (5), MA `09c3eb0c..34b75362` (3)
+
+**State:** author-applied, NOT reviewed by a non-author. Deployed fleet 9/9 @ `95623429`;
+full `honest_status` rc=0 (CI, fleet, MA twin `34b75362`, suite 15529 passed/3 skipped,
+lint, watchdog). BIC-1 landed from the cloud `bic1.patch` (sha matched the bundle's
+SHA256SUMS); BIC-3 and the RX fix were written here. Spec: `.claude/plans/bic3_web_auth_2026_10_13.md`.
+Live drills: bare POST → 401 on all 7 MF maps; pair → write → revoke-all → 401 on VolcanoAI;
+corrupt store refuses writes and keeps the corpse; a phone session survived a map restart;
+MA `run-test` / `/fleet/logs` / transmit → 401 on meshanchor-server; after the RX fix the
+listener counted a real text on channel 3 (`channels_seen {"3":1}`). **Operator acceptance
+still owed:** a real send from `/inbox` (keys the radio) — not done by the model on purpose.
+
+**What to attack:**
+- `utils/web_auth.py` (byte-identical MF/MA, `parity_check` BYTE_IDENTICAL): token compare,
+  hash-only store at 0600, `StoreUnavailable` → refuse (never "no sessions = open"),
+  cookie flags on plain http (lab-only by operator decision; no TLS yet = BIC-13b/c HOLD).
+- `utils/_map_auth_endpoints.py`: `SESSIONLESS_WRITES` / `OPERATOR_GETS` are ALLOWLISTS
+  of exemptions — check every POST route in `map_http_handler.py` + mixins is gated, and
+  that a NEW route defaults to gated. MA's `_origin_is_this_map` is shared with
+  `_reject_cross_site_write`: attack a Host/Origin mismatch through it.
+- `/api/inbox/send` → `send_text_direct_with_id`: validation (`inbox_api.validate_send`),
+  the 401 pin `test_send_without_an_operator_session_transmits_nothing`, and that
+  `handed_off` is never rendered as delivered.
+- RX fix `95623429`: `msh/2/json/+/#` on the LOCAL subscriber only — confirm the public
+  subscriber did not widen, and that `channels_seen` cannot grow unbounded (channel field
+  comes off the wire). The picker's one `/api/radio/channels` call per page load opens a
+  managed meshtasticd connection (#17 class) — measure, don't assume small.
+- **Behaviour change for the operator to confirm:** MA fleet dashboard cross-box Run Tests
+  now need a session on the TARGET box (`web/fleet.html` shows the pair command).
+- 403 on `/api/inbox` from moc1/2/4/5 seen from VolcanoAI = the pre-existing per-LAN
+  read gate (same as `/api/messages/received`), not BIC-3.
 ## QUEUED 2026-09-26 (Opus 5.5) — MA port of the capture-truth fixes: MA `c5375d34`
 
 **What to review** (author-applied, unreviewed; deployed + live-verified on meshanchor-server, see touch line 16:42):
