@@ -7,6 +7,26 @@
 > amendments B1–B8 + 12 should-fix S1–S12, folded into the "Security-pass
 > amendments" section at the end of this file. Session 2 builds to the
 > AMENDED spec and the AMENDED acceptance list there, not to Q14 alone.
+> **Session 2 BUILT 2026-10-14 (Opus 5.5), NOT DEPLOYED, NO GRANT WRITTEN
+> ANYWHERE:** `utils/box_truth{,_collect,_reader,_grants,_center}.py`,
+> `scripts/box_truth_{export,grant,grant_drill}.py`, spool writer refactored
+> onto the export, collector renders the S1 outcome, guards S9/S11/B7a.
+> Live drill against a private sshd: 14/14 legs ×2 runs (A3, A5 incl. `-tt`,
+> A9, B4, B8). Deviations: (1) the three payload helpers + `judge_spooled_schedules`
+> did NOT move into the shared module — they import MF's watchdog probes, so a
+> byte-identical module cannot carry them; that move is session 3's, with the MA
+> port. (2) S2 cannot generate known_hosts from the registry (it stores
+> FINGERPRINTS): the reader pins identity per read instead — fresh known_hosts,
+> learned key compared to `expect_hostkey`, data discarded on mismatch.
+> (3) Outcome vocabulary grew `identity_unpinned` + `rate_limited`. (4) Q12
+> cron: no installer manages crontabs, so `push` ensures the spool cron line.
+> (5) The writer moves PER TARGET: only `<alias> noc` lines read via the export;
+> unflagged lines keep the legacy shell read byte-for-byte until migrated
+> (switching all at once blinded 4 boxes for ~15 min on 10-14 — touch log).
+> Delete the legacy block when no unflagged target is left.
+> OWED before deploy: two contextless reviewers (queue row 2026-10-14). Then
+> Q16 migration per box (S12 order, `push <box> --confirm <box>`, then
+> `dedupe --apply` on moc3) — operator-consented, touch-logged.
 > Origin: MeshAnchor `/fleet` read DARK (3/8). Four stale peer IPs fixed the
 > same night (7/8); the eighth, moc3, is map-less and MA has no way to read a
 > box without HTTP. MF reaches it only through a hand-rolled, UNRESTRICTED
