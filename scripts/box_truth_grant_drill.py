@@ -54,6 +54,17 @@ def free_port():
     return port
 
 
+def _ssh_version():
+    """(major, minor) of the local OpenSSH, (0, 0) when unreadable."""
+    import re
+    try:
+        out = subprocess.run(["ssh", "-V"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return (0, 0)
+    m = re.search(r"OpenSSH_(\d+)\.(\d+)", out.stderr + out.stdout)
+    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
+
 def keygen(path, comment):
     subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", comment,
                     "-f", str(path)], check=True, timeout=30, stdin=subprocess.DEVNULL)
@@ -77,13 +88,21 @@ def main():
         key_a = keygen(T / "center_a", "noc:drill")
         key_b = keygen(T / "center_b", "noc:drill")
         port = free_port()
+        # OpenSSH >= 9.8 penalises a SOURCE after a few auth failures
+        # (PerSourcePenalties, default on): every later connection from
+        # 127.0.0.1 is refused regardless of authorized_keys. The drill's own
+        # refused-by-design legs (A3, F1, F2, A9) tripped it, so the legs
+        # after them read `refused` for the WRONG reason (found 2026-10-14
+        # when the P-legs all read refused on a config a standalone sshd
+        # accepted). A refusal this drill asserts must come from the file.
+        penalties = ["PerSourcePenalties no"] if _ssh_version() >= (9, 8) else []
         (T / "sshd_config").write_text("\n".join([
             f"Port {port}", "ListenAddress 127.0.0.1", f"HostKey {T / 'hostkey'}",
             f"AuthorizedKeysFile {home / '.ssh' / 'authorized_keys'}",
             f"PidFile {T / 'sshd.pid'}", "UsePAM no", "StrictModes no",
             "PasswordAuthentication no", "KbdInteractiveAuthentication no",
             "AcceptEnv LANG LC_*", f"SetEnv XDG_STATE_HOME={state}",
-            "Subsystem sftp /usr/lib/openssh/sftp-server", ""]))
+            "Subsystem sftp /usr/lib/openssh/sftp-server", *penalties, ""]))
 
         for k in (key_a, key_b):
             plan = bg.plan_add(home, k.line(), center="drill", export_path=EXPORT, sshd={})
@@ -252,6 +271,109 @@ def run_legs(T, port, host_fp, key_a, key_b, home, env):
         live.returncode == 0 and removed == 1 and dead.returncode == 255,
         f"live rc={live.returncode}, removed {removed}, after rc={dead.returncode}"
         + (f" problems={rp.problems}" if rp.problems else ""))
+
+    run_parser_legs(T, home, env, ssh)
+
+
+def run_parser_legs(T, home, env, ssh):
+    """P-legs (fix-review 2026-10-14): our authorized_keys PARSER vs the REAL
+    sshd on shapes no unit test models — the dangerous direction is sshd
+    honouring a key ours cannot see (under-report). Each shape rewrites the
+    scratch authorized_keys wholesale, so these run LAST. A lesson not turned
+    into a leg recurs; these were a one-off probe before this."""
+    ak = home / ".ssh" / "authorized_keys"
+    keys = {}
+    for n in ("pa", "pb", "pc", "pd", "pe", "pf", "pg"):
+        keygen(T / n, f"noc:{n}")
+        keys[n] = Path(str(T / n) + ".pub").read_text().strip()
+
+    def sshd_says(key):
+        p = ssh(key, "127.0.0.1", "true")
+        if p.returncode == 255:
+            return "refused"
+        try:
+            bt.parse_framed(p.stdout.decode("ascii", "replace"))
+            return "forced"
+        except ValueError:
+            return "interactive"
+
+    def ours(fp):
+        kinds = []
+        for ln in bg.read_lines(home):
+            if ln.unparseable:
+                kinds.append("unparseable")
+            elif ln.entry and ln.entry.fingerprint == fp:
+                kinds.append("grant" if ln.entry.is_grant else
+                             ("foreign" if ln.entry.foreign else "interactive"))
+        return ",".join(kinds) or "unseen"
+
+    def fp_of(pub):
+        return bt.parse_authorized_keys_line(pub).fingerprint
+
+    def grant_line(pub):
+        return bt.build_grant_line(bt.parse_noc_pubkey(pub), EXPORT)
+
+    def no_under_report(s, o):
+        return not (s != "refused" and o == "unseen")
+
+    # P1 CRLF-terminated grant: honoured by both; revoke through CRLF bites
+    ak.write_bytes((grant_line(keys["pa"]) + "\r\n").encode())
+    s, o = sshd_says("pa"), ours(fp_of(keys["pa"]))
+    rp = bg.plan_revoke(home, fp_of(keys["pa"]))
+    n = bg.apply_revoke(home, rp, rp.confirm_tail, env=env) if not rp.problems else -1
+    leg("P1 CRLF grant: sshd forced + ours grant + revoke bites",
+        s == "forced" and o == "grant" and n == 1 and sshd_says("pa") == "refused",
+        f"sshd={s} ours={o} removed={n}")
+    # P2 case-changed options: sshd is case-insensitive; ours must read foreign + refuse add
+    ak.write_bytes((grant_line(keys["pb"]).replace("restrict,command=", "Restrict,Command=") + "\n").encode())
+    s, o = sshd_says("pb"), ours(fp_of(keys["pb"]))
+    p = bg.plan_add(home, keys["pb"], center="pb", export_path=EXPORT, sshd={})
+    leg("P2 Restrict,Command= reads foreign, add refuses",
+        o == "foreign" and bool(p.problems), f"sshd={s} ours={o}")
+    # P3 no trailing newline, then apply_add: both keys live
+    ak.write_bytes(("# c\n" + keys["pc"]).encode())
+    p = bg.plan_add(home, keys["pd"], center="pd", export_path=EXPORT, sshd={})
+    try:
+        bg.apply_add(home, p, p.confirm_tail, env=env)
+        added = "ok"
+    except Exception as e:  # noqa: BLE001 - the leg reports it
+        added = f"{type(e).__name__}"
+    s_c, s_d = sshd_says("pc"), sshd_says("pd")
+    leg("P3 add after a no-EOL file: both keys live",
+        added == "ok" and s_c == "interactive" and s_d == "forced",
+        f"add={added} pc={s_c} pd={s_d}")
+    # P4 key after an embedded NUL: sshd must not honour it; ours must not under-report
+    ak.write_bytes(("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA x\x00"
+                    + keys["pe"] + "\n").encode())
+    s, o = sshd_says("pe"), ours(fp_of(keys["pe"]))
+    leg("P4 key after NUL: no under-report", no_under_report(s, o), f"sshd={s} ours={o}")
+    # P5 Python-whitespace that sshd does not split on, in two positions
+    t, b64, c = keys["pf"].split(" ")
+    bad = []
+    for ch, nm in (("\x1c", "FS"), ("\x0b", "VT"), ("\x0c", "FF"), ("\x85", "NEL"), (" ", "LS")):
+        for shape, text in (("mid", f"{t}{ch}{b64} {c}\n"), ("lead", f"{ch}{keys['pf']}\n")):
+            ak.write_bytes(text.encode())
+            s, o = sshd_says("pf"), ours(fp_of(keys["pf"]))
+            if not no_under_report(s, o):
+                bad.append(f"{nm}/{shape}: sshd={s} ours={o}")
+    leg("P5 non-sshd whitespace x10: no under-report", not bad, "; ".join(bad) or "10/10")
+    # P6 TAB / trailing comma / extra environment= AFTER the options. The
+    # options end at the closing quote of command="…" — the forced command
+    # itself contains spaces, so a split on the first space lands INSIDE it
+    # (the first cut of this leg did exactly that and tested the wrong shape).
+    line = grant_line(keys["pg"])
+    cut = line.index(" " + bt.KEYTYPE + " ")
+    opts, rest = line[:cut], line[cut + 1:]
+    ak.write_bytes((opts + "\t" + rest + "\n").encode())
+    s1, o1 = sshd_says("pg"), ours(fp_of(keys["pg"]))            # sshd: TAB is whitespace
+    ak.write_bytes((opts + ", " + rest + "\n").encode())
+    s2, o2 = sshd_says("pg"), ours(fp_of(keys["pg"]))            # sshd: parse error -> ignored
+    ak.write_bytes((line.replace("restrict,", 'restrict,environment="X=1",') + "\n").encode())
+    s3, o3 = sshd_says("pg"), ours(fp_of(keys["pg"]))            # ours: not EXACTLY our line
+    leg("P6 TAB / ', ' / environment= after options: agree or over-report only",
+        s1 == "forced" and o1 == "grant" and no_under_report(s2, o2)
+        and s3 == "forced" and o3 == "foreign",
+        f"tab sshd={s1} ours={o1}; comma sshd={s2} ours={o2}; env sshd={s3} ours={o3}")
 
 
 if __name__ == "__main__":
