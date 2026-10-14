@@ -327,3 +327,18 @@ def test_f7_sudo_add_hands_every_created_path_to_the_home_owner(tmp_path):
             f"{created} not handed to the home owner (chowned: {sorted(by_path)})"
     ak = home / ".ssh" / "authorized_keys"
     assert by_inode.get(os.stat(ak).st_ino) == owner, "authorized_keys not fchowned to the home owner"
+
+
+def test_dedupe_plan_counts_existing_grants(box):
+    """Live on moc3 2026-10-14: the dedupe plan rendered `grants now : 0`
+    beside a live grant — plan_dedupe never filled existing_grants, and a
+    reader could take the render as "no grant on this box"."""
+    home, export, env = box
+    plan = _plan(box)
+    bg.apply_add(home, plan, plan.confirm_tail, env=env)
+    ak = home / ".ssh" / "authorized_keys"
+    ak.write_text(ak.read_text() + INTERACTIVE + "\n")      # an exact duplicate to plan
+    dp = bg.plan_dedupe(home)
+    assert len(dp.removes) == 1
+    assert dp.existing_grants == 1
+    assert "grants now  : 1" in dp.render()

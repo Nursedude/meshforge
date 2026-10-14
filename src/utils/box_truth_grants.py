@@ -412,8 +412,10 @@ def plan_dedupe(home: Path) -> Plan:
     """Exact duplicate lines (same options, same key) — later copies removed.
     Never touches a line that differs in any byte (S12: moc3's duplicate)."""
     plan = Plan("dedupe", ssh_dir(home) / AK_FILES[0])
+    lines = read_lines(home)
+    plan.existing_grants = sum(1 for ln in lines if ln.entry and ln.entry.is_grant)
     seen = set()
-    for ln in read_lines(home):
+    for ln in lines:
         if ln.entry is None:
             continue
         k = ln.raw.strip()
