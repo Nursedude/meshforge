@@ -301,6 +301,11 @@ class StatusEndpointsMixin:
         # the collector-gated blocks so a warming/degraded server still
         # self-identifies.
         status["app"] = _build_app_block()
+        # BIC-3 operator gate: refusal count = its witness (counts only).
+        try:
+            status["auth"] = self.auth_status_block()
+        except Exception as e:  # unobservable != zero refusals
+            status["auth"] = {"state": "unobservable", "error": e.__class__.__name__}
 
         # Read-gate coherence — THE kiai CLASS (2026-09-20). The gated tier
         # (/api/los, /api/coverage) can refuse every real client while this

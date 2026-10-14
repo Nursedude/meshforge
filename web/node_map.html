@@ -1440,6 +1440,12 @@
         <div class="loading-text" id="loading-text">Loading nodes...</div>
     </div>
 
+    <!-- BIC-3: viewer / operator mode (viewing never needs a login) -->
+    <a id="auth-badge" href="/login?next=/" onclick="authBadgeClick(event)"
+       style="position:fixed;right:10px;bottom:28px;z-index:1200;font:12px system-ui,sans-serif;
+              background:rgba(23,32,42,.85);color:#e4e8ec;padding:4px 8px;border-radius:4px;
+              text-decoration:none;max-width:70vw">viewer · log in</a>
+
     <!-- Region picker (first-run modal) -->
     <div class="region-overlay" id="region-overlay"></div>
     <div class="region-modal" id="region-modal">
@@ -3978,6 +3984,44 @@
         });
     }
 
+    // ── BIC-3 operator login: show the mode, never fail silently ──────
+    function setAuthBadge(operator, note) {
+        const b = document.getElementById('auth-badge');
+        if (!b) return;
+        b.textContent = (operator ? 'operator · log out' : 'viewer · log in') + (note ? ' — ' + note : '');
+        b.dataset.operator = operator ? '1' : '';
+    }
+
+    async function refreshAuthBadge() {
+        try {
+            const r = await fetch('/api/auth/status');
+            const j = await r.json();
+            setAuthBadge(!!j.operator, j.store === 'unavailable' ? 'login store unreadable' : '');
+        } catch (e) {
+            setAuthBadge(false, 'login state unknown');
+        }
+    }
+
+    async function authBadgeClick(ev) {
+        const b = document.getElementById('auth-badge');
+        if (!b || !b.dataset.operator) return;  // viewer: follow the /login link
+        ev.preventDefault();
+        try {
+            await fetch('/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        } catch (e) {}
+        refreshAuthBadge();
+    }
+
+    function saveRegionToBox(region) {
+        fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ selected_region: region })
+        }).then(function(r) {
+            if (r.status === 401) setAuthBadge(false, 'region kept in this browser only; log in to set the box default');
+        }).catch(function() { setAuthBadge(false, 'could not reach the box to save the region'); });
+    }
+
     async function loadSavedRegion() {
         try {
             const resp = await fetch('/api/settings');
@@ -4012,12 +4056,8 @@
             map.setView([preset.map_center_lat, preset.map_center_lon], preset.map_default_zoom);
         }
 
-        // Persist to server
-        fetch('/api/settings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ selected_region: region })
-        }).catch(function() {});
+        // Persist to the box (operator only, BIC-3); this browser keeps it either way
+        saveRegionToBox(region);
 
         // Persist to localStorage as fallback
         try { localStorage.setItem('meshforge_selected_region', region); } catch (e) {}
@@ -4044,12 +4084,8 @@
             map.setView([preset.map_center_lat, preset.map_center_lon], preset.map_default_zoom);
         }
 
-        // Persist
-        fetch('/api/settings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ selected_region: regionKey })
-        }).catch(function() {});
+        // Persist to the box (operator only, BIC-3); this browser keeps it either way
+        saveRegionToBox(regionKey);
         try { localStorage.setItem('meshforge_selected_region', regionKey); } catch (e) {}
 
         // Reload
@@ -5606,6 +5642,7 @@
 
     // Startup: load presets, check saved region, then load data
     (async function init() {
+        refreshAuthBadge();
         await loadRegionPresets();
         await loadSavedRegion();
 

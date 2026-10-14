@@ -20,8 +20,31 @@ All responses are JSON. Errors include `error` field with description.
 
 ## Authentication
 
-Currently, the API is intended for local use and does not require authentication.
-For production deployments, consider placing behind a reverse proxy with auth.
+**Reads need no login** (they stay gated by the Host rule below and, for the
+sensitive tier, by the box's trusted LAN). **Every write needs an operator
+session** — default-deny: any `POST`/`PUT`, plus the side-effect reads
+`/fleet/logs`, `/api/v1/fromradio` and `/json/blink`. Without one the map
+answers `401`:
+
+```json
+{"error": "operator login required",
+ "how": "on the box: python3 scripts/meshforge_web.py pair, then open /login",
+ "detail": "no live operator session in this browser"}
+```
+
+Getting a session (once per box, per browser):
+
+1. On the box, as the operator (not sudo): `python3 scripts/meshforge_web.py pair`
+   prints a one-time code (8 characters, 5 minutes, burns after 5 wrong tries).
+2. Open `http://<box>:5000/login` from the box's LAN and type it. The browser
+   gets an `HttpOnly; SameSite=Strict` cookie that lasts 30 days from last use.
+3. `python3 scripts/meshforge_web.py revoke-all` logs every browser out;
+   `status` shows the session count.
+
+A write must also carry this page's `Origin` — a copied cookie in `curl` is
+refused. `GET /api/auth/status` tells a page which mode it is in, plus the
+refusal count. The cookie travels over plain HTTP: use this on a LAN you
+control, never a forwarded port.
 
 ### The Host rule (DNS-rebinding defence)
 

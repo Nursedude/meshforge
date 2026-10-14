@@ -91,6 +91,7 @@ mimetypes.add_type('image/webp', '.webp')
 mimetypes.add_type('image/avif', '.avif')
 
 
+from utils._map_auth_endpoints import AuthEndpointsMixin
 from utils._map_fleet_endpoints import FleetEndpointsMixin
 from utils._map_meshtastic_proxy import MeshtasticProxyMixin
 from utils._map_node_endpoints import NodeDataEndpointsMixin
@@ -223,6 +224,7 @@ def read_gate_self_coverage(allowed: Optional[List[str]]) -> Dict[str, Any]:
 
 
 class MapRequestHandler(
+    AuthEndpointsMixin,
     RadioEndpointsMixin,
     MeshtasticProxyMixin,
     VisualizationEndpointsMixin,
@@ -488,7 +490,8 @@ class MapRequestHandler(
         self._last_status = 0  # reset; send_response will overwrite
 
         try:
-            if not self._refuse_untrusted_host(path_only):
+            if not (self._refuse_untrusted_host(path_only)
+                    or self._refuse_without_operator('GET', path_only)):
                 self._dispatch_get(path_only)
         finally:
             try:
@@ -565,6 +568,14 @@ class MapRequestHandler(
         # produces a valid sample, not a 503.
         if path_only == '/metrics':
             self._serve_metrics()
+            return
+
+        # BIC-3 login needs no collector: answer it while warming too.
+        if path_only == '/login':
+            self._serve_login_page()
+            return
+        if path_only == '/api/auth/status':
+            self._serve_auth_status()
             return
 
         # Cold-start warming gate (F3). Issue: ThreadingHTTPServer
@@ -686,13 +697,18 @@ class MapRequestHandler(
     def do_POST(self):
         """Handle POST requests for radio control and meshtastic API proxy."""
         path_only = urlparse(self.path).path.rstrip('/')
-        if self._refuse_untrusted_host(path_only):
+        if (self._refuse_untrusted_host(path_only)
+                or self._refuse_without_operator('POST', path_only)):
             return
 
+        if path_only == '/login':
+            self._handle_login()
+        elif path_only == '/logout':
+            self._handle_logout()
         # ─────────────────────────────────────────────────────────────
         # Map settings API
         # ─────────────────────────────────────────────────────────────
-        if path_only == '/api/settings':
+        elif path_only == '/api/settings':
             self._handle_settings_update()
         # ─────────────────────────────────────────────────────────────
         # Meshtastic API Proxy - POST endpoints
@@ -728,7 +744,9 @@ class MapRequestHandler(
 
     def do_PUT(self):
         """Handle PUT requests (meshtastic web client uses PUT for toradio)."""
-        if self._refuse_untrusted_host(urlparse(self.path).path.rstrip('/')):
+        path_only = urlparse(self.path).path.rstrip('/')
+        if (self._refuse_untrusted_host(path_only)
+                or self._refuse_without_operator('PUT', path_only)):
             return
         if self.path.startswith('/api/v1/toradio'):
             self._proxy_toradio()

@@ -91,6 +91,7 @@ class WebClientHandler(BaseHandler):
                 ("open", "Open in Browser      Launch in default browser"),
                 ("url", "Show URLs            Copy to access from other devices"),
                 ("ssl", "SSL Certificate      Fix warnings / generate cert"),
+                ("login", "Operator Login       Who can send from the web"),
                 ("back", "Back"),
             ]
 
@@ -113,6 +114,7 @@ class WebClientHandler(BaseHandler):
                 "open": ("Launch Browser", lambda: self._launch_web_client_browser(localhost_url)),
                 "url": ("Show URLs", lambda: self._show_web_client_urls(local_ip)),
                 "ssl": ("SSL Help", lambda: self._show_ssl_certificate_help(local_ip)),
+                "login": ("Operator Login", lambda: self._show_operator_login(local_ip)),
             }
             entry = dispatch.get(choice)
             if entry:
@@ -182,6 +184,32 @@ class WebClientHandler(BaseHandler):
             f"Port 5000 = MeshForge (web client + NOC)\n"
             f"Port 4403 = TCP API (CLI/SDK)",
             height=18, width=60
+        )
+
+    def _show_operator_login(self, local_ip: str):
+        """BIC-3 login state — READ-ONLY (the TUI shows; the CLI mints codes)."""
+        import time
+        from utils import web_auth
+        try:
+            st = web_auth.SessionStore().status()
+            last = st["last_used"]
+            state = (f"Live operator sessions: {st['sessions']}\n"
+                     f"Last used:              "
+                     f"{'never' if last is None else time.strftime('%Y-%m-%d %H:%M', time.localtime(last))}\n"
+                     f"Pairing code pending:   {'yes' if st['pairing_pending'] else 'no'}")
+        except web_auth.StoreUnavailable as e:
+            state = f"UNKNOWN - the session store could not be read:\n{e}"
+        self.ctx.dialog.msgbox(
+            "Operator Login (web)",
+            "Viewing the map needs no login. Sending and changing settings\n"
+            "from a browser need an operator session.\n\n"
+            f"{state}\n\n"
+            "To log a browser in, at a shell on this box AS THE OPERATOR:\n"
+            f"  {web_auth.PAIR_COMMAND}\n"
+            f"then open http://{local_ip}:5000/login and type the code.\n\n"
+            "Log every browser out:\n"
+            "  python3 scripts/meshforge_web.py revoke-all",
+            height=20, width=68
         )
 
     def _show_ssl_certificate_help(self, local_ip: str):
