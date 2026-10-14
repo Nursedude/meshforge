@@ -217,17 +217,45 @@ def preflight(home: Path, export_path: str, *, shell: Optional[str] = None) -> T
 
 # ── writes ───────────────────────────────────────────────────────────────
 
+def _own_like_home(home: Path, *paths: Path) -> None:
+    """Under sudo (euid 0) hand every path this writer CREATES to the home's
+    owner — the same reference create_center_key uses (review B 2). Review
+    F7 (2026-10-14, measured): the writer left ~/.ssh and
+    ~/.local/state/box_truth/ root-owned 0700 and chowned only
+    authorized_keys; the forced command runs as the USER, could not open
+    reads.lock there, and every read refused `witness` — a blindness we
+    caused. No-op when not root."""
+    if os.geteuid() != 0:
+        return
+    st = os.stat(home)
+    for p in paths:
+        os.chown(p, st.st_uid, st.st_gid)
+
+
+def _mkdir_owned(home: Path, d: Path, mode: int) -> None:
+    """mkdir -p that gives every directory it CREATES to the home's owner
+    (parents at the umask default, the leaf at ``mode``)."""
+    missing: List[Path] = []
+    cur = d
+    while not cur.exists():
+        missing.append(cur)
+        cur = cur.parent
+    for p in reversed(missing):
+        p.mkdir(mode=mode if p == d else 0o777)
+    _own_like_home(home, *missing)
+
+
 def _write(path: Path, lines: List[str]) -> None:
     """Temp + fsync + rename in ~/.ssh, every line re-encoded byte-identical
-    (surrogateescape), mode 0600, owner kept (or the dir's owner for a new
-    file written as root)."""
+    (surrogateescape), mode 0600, owner kept (or the HOME's owner for a new
+    file written as root — never the dir's, which root may just have made)."""
     d = path.parent
-    if not d.exists():
-        d.mkdir(mode=0o700)
+    home = d.parent
+    _mkdir_owned(home, d, 0o700)
     if path.is_symlink():                       # re-checked at the moment of write
         raise GrantRefused(f"{path} became a symlink — refusing")
     data = b"".join(ln.encode("utf-8", "surrogateescape") + b"\n" for ln in lines)
-    st = path.stat() if path.exists() else os.stat(d)
+    st = path.stat() if path.exists() else os.stat(home)
     fd, tmp = tempfile.mkstemp(dir=str(d), prefix=f".{path.name}.", suffix=".tmp")
     try:
         os.write(fd, data)
@@ -250,10 +278,13 @@ def _log(home: Path, env: Optional[dict], row: dict) -> None:
     """Grant/revoke action log beside the read witness (Q8: logged)."""
     p = witness_path(home, env if env is not None else dict(os.environ)).with_name("grants.jsonl")
     try:
-        p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _mkdir_owned(home, p.parent, 0o700)
+        new = not p.exists()
         fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"ts": time.time(), **row}, ensure_ascii=True) + "\n")
+        if new:
+            _own_like_home(home, p)
     except OSError:
         pass   # the CLI prints the same row; the authorized_keys change stands
 

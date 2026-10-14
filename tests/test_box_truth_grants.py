@@ -284,3 +284,46 @@ def test_f3_only_the_exact_built_line_is_a_grant(box, opts):
     assert rows and rows[0]["foreign"]                    # listed WITH a warning
     rp = bg.plan_revoke(home, CENTER_FP)
     assert rp.problems                                    # not ours: operator decides
+
+
+def test_f7_sudo_add_hands_every_created_path_to_the_home_owner(tmp_path):
+    """Review F7 (Fable pass 2026-10-14, measured with geteuid patched to 0):
+    `apply_add` under sudo created ~/.ssh, ~/.local, ~/.local/state,
+    ~/.local/state/box_truth/ and grants.jsonl ROOT-owned and chowned only
+    authorized_keys. The forced command runs as the USER and cannot open
+    reads.lock in a root-owned 0700 dir — so the first grant read refused
+    `witness`, a blindness our own writer caused. Every path the writer
+    creates must belong to the home's owner (same reference as
+    create_center_key, review B 2)."""
+    home = tmp_path / "home"
+    home.mkdir()                                   # no ~/.ssh, no ~/.local yet
+    export = tmp_path / "box_truth_export.py"
+    export.write_text("x")
+    os.chmod(export, 0o755)
+    env = {"XDG_STATE_HOME": str(home / ".local" / "state")}
+    owner = (os.stat(home).st_uid, os.stat(home).st_gid)
+    by_path, by_inode = {}, {}
+
+    def chown(p, u, g, **_kw):
+        by_path[str(p)] = (u, g)
+
+    def fchown(fd, u, g):
+        by_inode[os.fstat(fd).st_ino] = (u, g)
+
+    from unittest import mock
+    with mock.patch.object(os, "geteuid", lambda: 0), \
+            mock.patch.object(os, "chown", chown), \
+            mock.patch.object(os, "fchown", fchown):
+        plan = bg.plan_add(home, CENTER, center="center1", export_path=str(export),
+                           shell="/bin/bash", sshd={})
+        assert not plan.problems, plan.problems
+        bg.apply_add(home, plan, plan.confirm_tail, env=env)
+
+    state = home / ".local" / "state" / "box_truth"
+    for created in (home / ".ssh", home / ".local", home / ".local" / "state",
+                    state, state / "grants.jsonl"):
+        assert created.exists(), created
+        assert by_path.get(str(created)) == owner, \
+            f"{created} not handed to the home owner (chowned: {sorted(by_path)})"
+    ak = home / ".ssh" / "authorized_keys"
+    assert by_inode.get(os.stat(ak).st_ino) == owner, "authorized_keys not fchowned to the home owner"
