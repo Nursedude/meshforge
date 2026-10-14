@@ -3916,7 +3916,22 @@ that fails on today's code: json lines on another channel only → today `channe
 file is PSK material (psk_leak_guard). The journal's per-channel topic history is the
 non-perturbing witness.
 
-## QUEUED 2026-10-14 (Fable 5.1) — full-suite-only flake: `test_node_tracker_rns_retry.py::TestRejoinWithoutRestart::test_degraded_attach_retries_until_connected` (root cause UNKNOWN)
+## CLOSED 2026-10-14 (Opus 5.5; queued by Fable 5.1) — full-suite-only flake: `test_node_tracker_rns_retry.py::TestRejoinWithoutRestart::test_degraded_attach_retries_until_connected`
+
+**Root cause (Opus 5.5, by reading then reproducing):** neither suspect below. `_attach_rns`
+(`_node_tracker_rns.py`) set `_rns_connected = True`, logged, and only THEN registered the
+announce handlers. The test polls the flag every 10 ms and asserts the count the moment it
+flips; a GIL switch inside the logging call (wider under full-suite load) let the poller run
+in that window → `0 == 3` with the flag True, the exact signature seen. Not test isolation —
+a real ordering defect: `get_rns_attach_state()` could report `connected` before discovery
+was wired. **Repro made deterministic**: `TestConnectedMeansRegistered20261014` samples
+`(connected, handler count)` at the "Connected" log line → RED on the old order with
+`[(True, 0)]`; GREEN after publishing the flag only after registration. The natural flake
+was NOT reproduced (it was seen once in ~2 full runs); the claim it is THIS window rests on
+the identical signature + the deterministic leg. If it recurs after this fix, this
+diagnosis was wrong — reopen and bisect the ORDER as planned below.
+
+*(original queue text follows)*
 
 **Seen:** honest_status full suite run 1 after the `9263ab3c` deploy — FAILED with
 `fake_rns.Transport.register_announce_handler.call_count` 0 (expected 3) while

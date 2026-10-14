@@ -197,6 +197,44 @@ class TestReviewFindings20261009:
                 p.stop()
 
 
+class TestConnectedMeansRegistered20261014:
+    """`connected` must not be published before discovery is wired.
+
+    The full-suite-only flake of test_degraded_attach_retries_until_connected
+    (queued 2026-10-14: register_announce_handler 0 == 3 while _rns_connected
+    was True) was this window: the attach set the flag, logged, and only then
+    registered handlers, so a poller woken in between saw "connected" with no
+    handlers. Suite load made the window wide enough; here sampling the state
+    at that exact log line makes it deterministic.
+    """
+
+    def test_connected_is_never_observed_before_handlers(self, tracker, fake_rns):
+        from src.gateway import _node_tracker_rns as ntr
+
+        seen = []
+        orig_info = ntr.logger.info
+
+        def _sample_info(msg, *a, **kw):
+            if msg == "Connected to existing rnsd instance":
+                # Sample what a status reader would see at this instant.
+                seen.append((tracker._rns_connected,
+                             fake_rns.Transport.register_announce_handler.call_count))
+            return orig_info(msg, *a, **kw)
+
+        live = MagicMock(name="Reticulum")
+        with patch.object(ntr.logger, "info", side_effect=_sample_info):
+            patches = _start(tracker, _env(lambda: [4242], [None, live]))
+            try:
+                assert _wait_for(lambda: tracker._rns_connected
+                                 and fake_rns.Transport.register_announce_handler.call_count == 3)
+            finally:
+                for p in patches:
+                    p.stop()
+        assert seen, "attach never reached the connected log line"
+        assert all(not connected or count == 3 for connected, count in seen), \
+            f"connected published before handlers registered: {seen}"
+
+
 class TestSharedSignalGuard:
 
     def test_overlapping_guards_restore_the_real_function(self):

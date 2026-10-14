@@ -227,9 +227,6 @@ class NodeTrackerRNSMixin:
                         f"@rns/{instance_name} absent or wedged")
                     self._rns_connected = False
                     return False
-                self._rns_connected = True
-                self._rns_attach_last_error = None
-                logger.info("Connected to existing rnsd instance")
 
                 # Register announce handlers for node discovery — once per
                 # process: RNS.Transport keeps them across our attach attempts.
@@ -240,6 +237,13 @@ class NodeTrackerRNSMixin:
                         logger.debug(f"Registered announce handler for aspect: {aspect}")
                     self._rns_handlers_registered = True
                     logger.info(f"Registered {len(known_aspects)} aspect-scoped announce handlers with rnsd")
+
+                # Publish "connected" only once discovery is wired: a status
+                # reader between the flag and the registration saw connected
+                # with no handlers (the 2026-10-14 full-suite flake).
+                self._rns_connected = True
+                self._rns_attach_last_error = None
+                logger.info("Connected to existing rnsd instance")
 
                 # Load known destinations from rnsd (may be empty initially)
                 self._load_known_rns_destinations(RNS)
