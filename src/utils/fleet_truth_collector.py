@@ -224,7 +224,18 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
             wde = spool.get("watchdog_expected")
             if isinstance(wde, bool):
                 watchdog_expected = wde
-            if status is None and (isinstance(raw_wd, dict) or isinstance(raw_mini, dict)):
+            # The box's OWN account of a block section it could not or would not
+            # send (box_truth/v1 section_errors: a read error, or WITHHELD by the
+            # producer tripwire) becomes a `read_error:` block, which the builder
+            # classifies DARK with that reason — never "source absent" for a
+            # source that exists (review B 3, 2026-10-14). Only the two BLOCK
+            # sections here: fleet_truth.py is byte-identical with MeshAnchor
+            # (parity_check), so the other sections' errors wait for session 3.
+            _errs = spool_section_errors or {}
+            _said = {k: f"read_error: box export — {_errs[k]}"
+                     for k in ("raw_watchdog", "raw_mini") if isinstance(_errs.get(k), str)}
+            if status is None and (isinstance(raw_wd, dict) or isinstance(raw_mini, dict)
+                                   or _said):
                 # Map-less box (moc3): synthesize the blocks we DO have from the
                 # raw non-HTTP reads, each through the SAME transform + staleness
                 # threshold the status handler uses (shared SSOT — a stale raw
@@ -236,6 +247,12 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
                     status["watchdog"] = watchdog_block_from_payload(raw_wd)
                 if isinstance(raw_mini, dict):
                     status["mini_dudeai"] = mini_block_from_payload(raw_mini)
+                # Set AFTER the transforms, as the block itself: a payload
+                # transform would not carry the box's reason through.
+                if "raw_watchdog" in _said and not isinstance(raw_wd, dict):
+                    status["watchdog"] = {"reason": _said["raw_watchdog"]}
+                if "raw_mini" in _said and not isinstance(raw_mini, dict):
+                    status["mini_dudeai"] = {"reason": _said["raw_mini"]}
                 # Carry the box's OWN role declaration through in the same
                 # shape an HTTP box reports it (/api/status.app.role), so the
                 # builder needs no map-less special case. Only ever set from
@@ -285,30 +302,6 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
         "spool_clock": spool_clock,
         "spool_section_errors": spool_section_errors,
     }
-
-
-#: box_truth/v1 section -> the subsystem cell it feeds (for section_errors).
-_SECTION_SUBSYSTEM = {"raw_watchdog": "watchdog", "raw_mini": "mini",
-                      "services": "services", "radio_probe": "radio",
-                      "schedules": "schedules", "ingress": "rns_ingress"}
-
-
-def apply_export_section_errors(subsystems: Dict[str, Any], snap: Dict[str, Any],
-                                spool_observed: set, *, dark: str) -> None:
-    """Put the box's OWN reason on a dark cell whose section the export
-    reported as errored or WITHHELD (producer tripwire). Without this the cell
-    said "no data (source absent)" — asserting absence for a source that
-    exists (review B 3, 2026-10-14). A section the box reported as faulty is a
-    finding, so it joins ``spool_observed`` and is never an accepted blind spot."""
-    errs = snap.get("spool_section_errors")
-    if not isinstance(errs, dict):
-        return
-    for section, sub in _SECTION_SUBSYSTEM.items():
-        why = errs.get(section)
-        c = subsystems.get(sub)
-        if isinstance(why, str) and why and isinstance(c, dict) and c.get("state") == dark:
-            c["reason"] = f"box export, {section}: {why}"
-            spool_observed.add(sub)
 
 
 #: |peer clock − this box's clock| at spool-fetch time beyond which a peer's

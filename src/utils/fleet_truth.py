@@ -836,8 +836,6 @@ def build_box_truth(
     subsystems["rns_ingress"] = _rns_ingress_cell(
         slo, spool_ingress, now=now, spool_clock=snap.get("spool_clock"))
 
-    from utils.fleet_truth_collector import apply_export_section_errors  # box's own why
-    apply_export_section_errors(subsystems, snap, spool_observed, dark=DARK)
     # Mark the cells whose ONLY window is the HTTP surface this box's declared
     # role deliberately does not run. Strictly gated: the flag is applied only
     # when the collector decided ``False`` from the box's OWN deployment.json

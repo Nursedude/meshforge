@@ -858,6 +858,20 @@ class TestExportSectionErrorsReachTheCell:
         assert mini["state"] == "dark"
         assert "withheld" in mini["reason"] and "source absent" not in mini["reason"]
 
+    def test_withheld_watchdog_on_a_box_with_no_other_block(self):
+        from utils import fleet_truth as ft
+        spool = {"schema": c.SPOOL_SCHEMA, "alias": "moc3", "fetched_at": time.time() - 30.0,
+                 "slo": None, "status": None, "raw_watchdog": None, "raw_mini": None,
+                 "transport": {"outcome": "ok"},
+                 "box_truth": {"section_errors": {"raw_watchdog": "withheld: tripwire"}}}
+        with patch.object(c, "_http_get_json", return_value=None), \
+             patch.object(c, "_resolve_peer", return_value=("moc3", "dns")), \
+             patch.object(c, "_read_spool", return_value=spool):
+            snap = c._fetch_peer("moc3", is_self=False, port=5000)
+        t = ft.build_box_truth(snap, now=time.time(), signal_classes=[])
+        assert t["subsystems"]["watchdog"]["state"] == "dark"
+        assert "withheld" in t["subsystems"]["watchdog"]["reason"]
+
     def test_no_section_errors_reads_as_before(self):
         t = self._truth({})
         assert t["subsystems"]["mini"]["reason"] == "no data (source absent)"
