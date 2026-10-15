@@ -252,6 +252,10 @@ def get_all_handlers() -> List[Type]:
     from handlers.fleet_posture import FleetPostureHandler
     handlers.append(FleetPostureHandler)
 
+    # Batch 21c — NOC Read Grants (2nd acting carve-out: box_truth_grant.py, typed confirm)
+    from handlers.noc_grants import NocGrantsHandler
+    handlers.append(NocGrantsHandler)
+
     # Batch 22 — mini-dudeai findings → in-app fixes (In-Domain loop-closer)
     from handlers.mini_dudeai import MiniDudeaiHandler
     handlers.append(MiniDudeaiHandler)

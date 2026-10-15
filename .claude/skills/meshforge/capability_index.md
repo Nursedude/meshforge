@@ -10,7 +10,7 @@
 > X?", grep this file for the capability, then open the handler under
 > `src/launcher_tui/handlers/`.
 
-**87 handlers · 119 menu actions · 12 sections** (all derived from `get_all_handlers()`, never hardcoded).
+**88 handlers · 120 menu actions · 12 sections** (all derived from `get_all_handlers()`, never hardcoded).
 
 A non-empty **Flag** names the deployment-profile feature that gates the action. Gated does NOT mean hidden: when the feature is off the row is still SHOWN, marked `[off]`, and refuses to run with an explanation naming the profile (`HandlerRegistry.mark_label` / `OFF_MARK`). Nothing is removed from the menu — someone new to the domain cannot go looking for a capability they have never been shown. Blank = never gated.
 
@@ -81,6 +81,7 @@ A non-empty **Flag** names the deployment-profile feature that gates the action.
 | `fleet_membership` | Fleet Membership — Declare standalone, or fleet + host list |  | sweep |  | FleetProvisionHandler |
 | `fleet_provision` | Fleet Architecture — Reproduce a box to a preset (preview + apply) |  | sweep |  | FleetProvisionHandler |
 | `fleet_watchers` | Fleet Watchers — All boxes: mini daemon, deltas, freshness |  | sweep |  | FleetWatchersHandler |
+| `noc_grants` | NOC Read Grants — who may read this box; what it reads |  | sweep |  | NocGrantsHandler |
 
 ## `main`
 

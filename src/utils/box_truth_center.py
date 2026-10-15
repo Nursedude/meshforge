@@ -84,7 +84,7 @@ def read_spool(alias: str, *, now: Optional[float] = None,
         return doc
     except (OSError, ValueError):
         return None
-_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")  # \Z: `$` admits a trailing newline
 
 
 # ── targets file (shared with scripts/fleet_truth_spool.py) ─────────────
@@ -185,7 +185,11 @@ def create_center_key(home: Path, *, runner: Callable = subprocess.run,
 # ── spool cron (Q12: installed by the tooling, never by hand) ───────────
 
 def ensure_spool_cron(*, runner: Callable = subprocess.run) -> str:
-    """Idempotent. Returns 'present' / 'installed'; raises on failure."""
+    """Idempotent. Returns 'present' / 'installed'; raises on failure. The
+    line's output dir is created first — a missing dir fails the shell
+    redirect, so the spool would never run (step-8 pass, F6)."""
+    (get_real_user_home() / ".local" / "state" / app.CONFIG_DIRNAME / "cron_out").mkdir(
+        parents=True, exist_ok=True)
     cur = runner(["crontab", "-l"], capture_output=True, text=True, timeout=10)
     text = cur.stdout if cur.returncode == 0 else ""
     if any("fleet_truth_spool.py" in ln and not ln.lstrip().startswith("#")

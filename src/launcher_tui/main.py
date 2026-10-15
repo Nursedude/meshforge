@@ -121,7 +121,7 @@ SECTION_ORDERINGS = {
     # A newcomer who does not yet know the vocabulary can still read the path.
     "fleet": [
         "fleet_membership", "fleet_provision", "fleet_watchers", "fleet_posture",
-        "fleet_backup",
+        "noc_grants", "fleet_backup",
     ],
     "system": [
         # Quick Status (read-only, one shot) leads: it was below the 24x80

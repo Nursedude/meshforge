@@ -296,7 +296,7 @@ def test_max_reply_bytes_pinned_to_canonical_payload_cap():
 
 
 def test_stale_thresholds_match_api_status_readers():
-    text = (_REPO / "src" / "utils" / "_map_status_endpoints.py").read_text(encoding="utf-8")
+    text = (_REPO / "src" / "utils" / "status_blocks.py").read_text(encoding="utf-8")  # shared since 2026-10-15
     # WATCHDOG_STALE_S (2026-07-19) and MINI_STALE_S (2026-07-22) both became
     # module-level SSOTs shared with the fleet-truth ssh-spool transforms; each
     # class attr is now an alias with no literal, so pin the module constants.

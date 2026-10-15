@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 87 handlers · 119 menu actions (derived from get_all_handlers(), never hand-edited).
+# 88 handlers · 120 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -609,6 +609,17 @@ HANDLER_MANIFEST = [
         "error": None,
         "menu_items": [
             ('network', 'Network Tools       Ping, ports, interfaces', None),
+        ],
+    },
+    {
+        "handler_id": 'noc_grants',
+        "module": 'handlers.noc_grants',
+        "class_name": 'NocGrantsHandler',
+        "menu_section": 'fleet',
+        "lifecycle": False,
+        "error": None,
+        "menu_items": [
+            ('noc_grants', 'NOC Read Grants     who may read this box; what it reads', None),
         ],
     },
     {

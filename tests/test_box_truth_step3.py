@@ -125,3 +125,23 @@ def test_read_spool_refuses_a_foreign_schema_or_missing_file(tmp_path):
     _spool(tmp_path, "b", {"schema": "other/v9", "fetched_at": 1000.0})
     assert bc.read_spool("b", now=1000.0, spool_dir=tmp_path) is None
     assert bc.read_spool("nope", now=1000.0, spool_dir=tmp_path) is None
+
+
+def test_a_target_alias_with_a_trailing_newline_is_skipped(tmp_path):
+    p = tmp_path / "targets"
+    p.write_text("moc3\n")
+    assert [t.alias for t in bc.read_targets(p)] == ["moc3"]
+    assert bc._ALIAS_RE.match("moc3\n") is None   # the call sites use .match
+
+
+def test_the_spool_cron_install_creates_its_log_dir(tmp_path, monkeypatch):
+    import subprocess
+    monkeypatch.setattr(bc, "get_real_user_home", lambda: tmp_path)
+    state = {"tab": ""}
+
+    def runner(argv, **k):
+        if argv[:2] == ["crontab", "-"]:
+            state["tab"] = k["input"]
+        return subprocess.CompletedProcess(argv, 0, state["tab"], "")
+    assert bc.ensure_spool_cron(runner=runner) == "installed"
+    assert (tmp_path / ".local" / "state" / app.CONFIG_DIRNAME / "cron_out").is_dir()

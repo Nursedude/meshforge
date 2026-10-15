@@ -50,7 +50,7 @@ REMOTE_EXPORT = app.INSTALL_DIR + "/scripts/" + bt.EXPORT_BASENAME
 #: (and records it as data); over an interactive key it runs the same export.
 REMOTE_COMMAND = f"{bt.PYTHON} -I {REMOTE_EXPORT}"
 
-_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")  # \Z: `$` admits a trailing newline
 
 
 def noc_key_path(home: Path) -> Path:

@@ -146,6 +146,9 @@ BYTE_IDENTICAL = (
     # library-faithful fake — one copy of the address-safety rule.
     "src/gateway/identity_store.py",
     "tests/_fake_rns_identity.py",
+    # the deferred move (2026-10-15): the status-block transforms both apps'
+    # status endpoints and ssh-spool fallbacks call — MA's copy had drifted.
+    "src/utils/status_blocks.py",
     # mini-dudeai GENERIC ENGINE CORE (second-brain arc WS-A, 2026-07-22). The
     # observation-only rule/cadence loop is now twinned onto MeshAnchor. These
     # modules carry ZERO app-specific imports (verified import-clean across the
