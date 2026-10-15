@@ -29,6 +29,7 @@ from utils.boundary_timing import timed_boundary
 from utils.safe_import import safe_import
 from utils.connection_manager import FIRST_HEARTBEAT_GRACE_S, await_first_heartbeat
 from utils.service_check import restart_service, check_service, ServiceState
+from utils._port_detection import tcp_port_listening
 from utils.tx_guard import assert_iface_tx_allowed
 
 logger = logging.getLogger(__name__)
@@ -400,10 +401,15 @@ class MeshtasticConnectionManager:
         # leaking past the collector's #17 defer — it guards _collect_meshtasticd
         # only). Answer from meshtasticd's service state instead: non-contending,
         # and honest — a down daemon still reads False (never masked).
+        # The ANSWER is the kernel's LISTEN table, not the unit: meshtasticd
+        # is Type=simple, so `active` precedes the listener (start window,
+        # crashloop, a moved API port), and a DEGRADED placeholder is
+        # active+exited with nothing serving (non-author pass 2026-10-15,
+        # A1/A2). Reading /proc measures without connecting.
         if (self.port == _MESHTASTICD_TCP_PORT
                 and self.host in _LOCAL_HOSTS
                 and _service_is_up("meshforge-gateway")):
-            return _service_is_up("meshtasticd")
+            return tcp_port_listening(self.port)
 
         # 2026-10-12: the same contention without a gateway — every AUTO
         # resolve on a non-gateway box connected here, one of three PhoneAPI
@@ -414,7 +420,7 @@ class MeshtasticConnectionManager:
         if (self.port == _MESHTASTICD_TCP_PORT
                 and self.host in _LOCAL_HOSTS
                 and _service_is_up("meshtasticd")):
-            return True
+            return tcp_port_listening(self.port)
 
         try:
             with timed_boundary("meshtasticd.tcp_probe",

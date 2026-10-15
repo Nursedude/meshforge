@@ -1481,6 +1481,7 @@ class TestProbeRadioPhoneApiDeferIssue17:
         with patch.object(fleet_snapshot, "_systemctl_state",
                           self._states(**{"meshforge-gateway": "available",
                                           "meshtasticd": "available"})), \
+             patch("utils.fleet_snapshot.tcp_port_listening", lambda port, **k: True), \
              patch("utils.fleet_snapshot.socket.socket") as mock_sock:
             out = _probe_radio()
             assert out["connected"] is True
@@ -1505,6 +1506,7 @@ class TestProbeRadioPhoneApiDeferIssue17:
         with patch.object(fleet_snapshot, "_systemctl_state",
                           self._states(**{"meshforge-gateway": "not_running",
                                           "meshtasticd": "available"})), \
+             patch("utils.fleet_snapshot.tcp_port_listening", lambda port, **k: True), \
              patch("utils.fleet_snapshot.socket.socket") as mock_sock:
             out = _probe_radio()
             assert out["connected"] is True

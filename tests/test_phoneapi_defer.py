@@ -50,6 +50,7 @@ class TestPhoneApiDeferIssue17:
         with patch("utils.meshtastic_connection.check_service",
                    _svc(**{"meshforge-gateway": ServiceState.AVAILABLE,
                            "meshtasticd": ServiceState.AVAILABLE})), \
+             patch("utils.meshtastic_connection.tcp_port_listening", lambda port, **k: True), \
              patch("utils.meshtastic_connection.socket.socket") as mock_sock:
             assert mgr.is_available() is True
             mock_sock.assert_not_called()      # NO contending :4403 connect
@@ -59,8 +60,24 @@ class TestPhoneApiDeferIssue17:
         with patch("utils.meshtastic_connection.check_service",
                    _svc(**{"meshforge-gateway": ServiceState.AVAILABLE,
                            "meshtasticd": ServiceState.NOT_INSTALLED})), \
+             patch("utils.meshtastic_connection.tcp_port_listening",
+                   lambda port, **k: False), \
              patch("utils.meshtastic_connection.socket.socket") as mock_sock:
+            # pinned: the answer reads the kernel LISTEN table (2026-10-15),
+            # so an unpinned run read THIS box's live :4403
             assert mgr.is_available() is False  # honest: daemon down ≠ available
+            mock_sock.assert_not_called()
+
+    def test_gateway_owns_phoneapi_listener_outside_systemd_is_available(self):
+        # a meshtasticd outside systemd is measured, never assumed absent
+        mgr = _mgr()
+        with patch("utils.meshtastic_connection.check_service",
+                   _svc(**{"meshforge-gateway": ServiceState.AVAILABLE,
+                           "meshtasticd": ServiceState.NOT_INSTALLED})), \
+             patch("utils.meshtastic_connection.tcp_port_listening",
+                   lambda port, **k: True), \
+             patch("utils.meshtastic_connection.socket.socket") as mock_sock:
+            assert mgr.is_available() is True
             mock_sock.assert_not_called()
 
     def test_non_gateway_box_still_probes_socket(self):
@@ -132,6 +149,7 @@ class TestPhoneApiDeferNoGateway:
         with patch("utils.meshtastic_connection.check_service",
                    _svc(**{"meshforge-gateway": ServiceState.NOT_INSTALLED,
                            "meshtasticd": ServiceState.AVAILABLE})), \
+             patch("utils.meshtastic_connection.tcp_port_listening", lambda port, **k: True), \
              patch("utils.meshtastic_connection.socket.socket") as mock_sock:
             assert mgr.is_available() is True
             mock_sock.assert_not_called()      # NO contending :4403 connect

@@ -67,6 +67,8 @@ import os
 import re
 import socket
 import subprocess
+
+from utils._port_detection import tcp_port_listening
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -270,9 +272,13 @@ def _probe_radio() -> Dict[str, Any]:
     # 2026-06-27 moc finding — the gateway itself never touches :4403; it uses
     # MQTT + HTTP-toradio). Report the radio from meshtasticd's service state
     # instead — non-contending, and honest: a down daemon still reads False.
+    # The radio's answer is the LISTEN socket in /proc (non-perturbing, the
+    # same read /api/status makes), never the unit alone: `active` precedes
+    # the listener (Type=simple) — non-author pass 2026-10-15, A1/A4.
     if _systemctl_state("meshforge-gateway") == "available":
         return {
-            "connected": _systemctl_state("meshtasticd") == "available",
+            "connected": (_systemctl_state("meshtasticd") == "available"
+                          and tcp_port_listening(4403)),
             "name": "meshtasticd",
             "preset": None,
             "battery_pct": None,
@@ -288,7 +294,7 @@ def _probe_radio() -> Dict[str, Any]:
     # a meshtasticd outside systemd is still seen rather than assumed absent.
     if _systemctl_state("meshtasticd") == "available":
         return {
-            "connected": True,
+            "connected": tcp_port_listening(4403),
             "name": "meshtasticd",
             "preset": None,
             "battery_pct": None,

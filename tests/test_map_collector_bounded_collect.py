@@ -282,6 +282,7 @@ class TestCollectorPrecheckDoesNotContend:
              patch.object(collector, "_collect_via_tcp_interface", return_value=[]) as tcp, \
              patch.object(collector, "_collect_via_cli", return_value=[]), \
              patch("utils.meshtastic_connection.check_service", _check), \
+             patch("utils.meshtastic_connection.tcp_port_listening", lambda port, **k: True), \
              patch("socket.socket") as any_sock:
             collector._collect_meshtasticd()
 
