@@ -124,3 +124,49 @@ def test_main_prints_depth_blind(tmp_path, monkeypatch, capsys):
     (tmp_path / "x" / "y" / "z").mkdir(parents=True)
     census.main(["--home", str(tmp_path), "--box", "b"])
     assert "BLIND (depth limit" in capsys.readouterr().out
+
+
+# ── non-author pass on the 10-07 arc (2026-10-15, finding 7) ─────────────
+
+def test_a_symlinked_dir_or_identity_is_named_never_silently_skipped(tmp_path, capsys):
+    home = tmp_path / "home"
+    outside = tmp_path / "etc_reticulum" / "storage"
+    (home / ".config" / "meshforge").mkdir(parents=True)
+    _ident(outside / "transport_identity")
+    _ident(tmp_path / "real_gateway_identity")
+    (home / ".reticulum").symlink_to(outside.parent)
+    (home / ".config" / "meshforge" / "gateway_identity").symlink_to(
+        tmp_path / "real_gateway_identity")
+    linked = census.scan_linked(home)
+    assert sorted(Path(p).name for p in linked) == [".reticulum", "gateway_identity"]
+    census.main(["--home", str(home), "--box", "t", "--no-system"])
+    out = capsys.readouterr().out
+    assert out.count("BLIND (symlink, not followed)") == 2, out
+
+
+def test_the_system_rnsd_configdir_is_walked(tmp_path, capsys):
+    sysroot = tmp_path / "etc" / "reticulum"
+    h = _ident(sysroot / "storage" / "transport_identity")
+    home = tmp_path / "home"
+    home.mkdir()
+    rows = census.scan_system((sysroot,))
+    assert [r["lxmf_delivery"] for r in rows] == [h]
+    assert rows[0]["app"] == "rnsd transport identity (system)"
+    assert str(Path("/etc/reticulum")) in [str(r) for r in census.SYSTEM_ROOTS]
+
+
+def test_an_unreadable_system_root_is_blind_not_absent(tmp_path, capsys, monkeypatch):
+    sysroot = tmp_path / "etc" / "reticulum"
+    sysroot.mkdir(parents=True)
+    monkeypatch.setattr(census, "SYSTEM_ROOTS", (sysroot,))
+    real = census.os.scandir
+
+    def deny(p):
+        if Path(p) == sysroot:
+            raise PermissionError(p)
+        return real(p)
+    monkeypatch.setattr(census.os, "scandir", deny)
+    home = tmp_path / "home"
+    home.mkdir()
+    census.main(["--home", str(home), "--box", "t"])
+    assert f"BLIND (unreadable, not empty): {sysroot}" in capsys.readouterr().out

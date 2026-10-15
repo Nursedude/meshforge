@@ -15,7 +15,11 @@ Fleet fan-out (from the manager):
   for b in $(awk '!/^#/{print $1}' ~/.config/meshforge/fleet_hosts); do
     ssh "$b" python3 /opt/meshforge/scripts/lxmf_identity_census.py --box "$b"
   done
-Run with sudo to include root-owned identities (e.g. a root rnsd's).
+Also walks the system rnsd configdir (``SYSTEM_ROOTS``: /etc/reticulum,
+where the fleet's rnsd keeps ``storage/transport_identity``). That key is
+root-owned, so without sudo it reads BLIND — run with sudo to name it.
+A symlink is never followed (loops, foreign trees) and never skipped
+silently: it is listed as ``BLIND (symlink, not followed)`` with its target.
 """
 from __future__ import annotations
 
@@ -71,13 +75,21 @@ def _app(rel: str) -> str:
     return base
 
 
+SYSTEM_ROOTS = (Path("/etc/reticulum"),)
+SYSTEM_HINTS = [("storage/transport_identity", "rnsd transport identity (system)")]
+
+
 def _walk(home: Path):
-    """(candidate files, unreadable dirs, depth-capped dirs) under ``home``.
+    """(candidate files, unreadable dirs, depth-capped dirs, symlinks) under
+    ``home``. A symlink is RETURNED, never silently dropped (non-author pass
+    2026-10-15: ``~/.reticulum -> /etc/reticulum`` read as zero identities).
+
 
     A dir NOT descended because of MAX_DEPTH is RETURNED, never silently
     dropped (2026-10-07: depth 6 hid the DR snapshot gateway keys)."""
     blind: List[str] = []
     capped: List[str] = []
+    linked: List[str] = []
     found: List[Path] = []
     stack = [(home, 0)]
     while stack:
@@ -92,6 +104,11 @@ def _walk(home: Path):
         for e in entries:
             try:
                 if e.is_symlink():
+                    # Only a link that could HIDE an identity is a blind spot:
+                    # a directory link, or a file link named like one. An
+                    # interpreter link in a venv is not (legibility).
+                    if e.is_dir() or "identity" in e.name.lower():
+                        linked.append(e.path)
                     continue
                 if e.is_dir():
                     rel = os.path.relpath(e.path, home)
@@ -106,7 +123,35 @@ def _walk(home: Path):
                     found.append(Path(e.path))
             except OSError:
                 continue
-    return found, blind, capped
+    return found, blind, capped, linked
+
+
+def scan_linked(home: Path) -> List[str]:
+    return _walk(Path(home))[3]
+
+
+def scan_system(roots=None) -> List[dict]:
+    """Identity rows under the system roots (each labelled by SYSTEM_HINTS)."""
+    import RNS
+    rows = []
+    for root in (SYSTEM_ROOTS if roots is None else roots):
+        root = Path(root)
+        if not root.is_dir():
+            continue
+        for p in sorted(_walk(root)[0]):
+            try:
+                ident = RNS.Identity.from_file(str(p))
+                if ident is None:
+                    continue
+                h = RNS.Destination.hash_from_name_and_identity("lxmf.delivery", ident)
+            except Exception:  # noqa: BLE001 — not an identity after all
+                continue
+            rel = os.path.relpath(p, root)
+            app = next((a for frag, a in SYSTEM_HINTS if rel.endswith(frag)),
+                       f"system ({root})")
+            rows.append({"path": str(p), "app": app, "lxmf_delivery": h.hex(),
+                         "copy": False})
+    return rows
 
 
 def scan_blind(home: Path) -> List[str]:
@@ -140,6 +185,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--home", type=Path, default=None)
     ap.add_argument("--box", default=None, help="label for the output")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--no-system", action="store_true",
+                    help="walk the home only, not " + ", ".join(map(str, SYSTEM_ROOTS)))
     a = ap.parse_args(argv)
     if a.home is None:
         _src = str(Path(__file__).resolve().parents[1] / "src")
@@ -154,9 +201,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"== {box}: UNKNOWN — RNS not importable here ({e}); "
               f"identities NOT scanned (unobservable, not absent)")
         return 2
-    _, blind, capped = _walk(Path(a.home))
+    _, blind, capped, linked = _walk(Path(a.home))
+    if not a.no_system:
+        rows += scan_system()
+        for root in SYSTEM_ROOTS:
+            if Path(root).exists():
+                _, b2, c2, l2 = _walk(Path(root))
+                blind += b2
+                capped += c2
+                linked += l2
     if a.json:
-        print(json.dumps({"box": box, "identities": rows, "blind": blind}, indent=2))
+        print(json.dumps({"box": box, "identities": rows, "blind": blind,
+                          "symlinks": linked}, indent=2))
         return 0
     live = [r for r in rows if not r["copy"]]
     print(f"== {box}: {len(live)} live identity file(s) under {a.home}"
@@ -166,6 +222,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"  {r['lxmf_delivery']}  {r['app']:<36} {r['path']}{tag}")
     for b in blind:
         print(f"  BLIND (unreadable, not empty): {b}")
+    for ln in linked:
+        try:
+            target = os.readlink(ln)
+        except OSError:
+            target = "?"
+        print(f"  BLIND (symlink, not followed): {ln} -> {target}")
     for c in capped[:20]:
         print(f"  BLIND (depth limit {MAX_DEPTH}, not searched): {c}")
     if len(capped) > 20:

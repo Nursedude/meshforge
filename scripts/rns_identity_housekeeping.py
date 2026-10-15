@@ -97,7 +97,8 @@ def build_rows(cfg_dir: Path, ledger_path: Path, *, now: float) -> List[dict]:
         last = (use or {}).get("last_inbound", {}).get(h)
         if use is None:
             verdict = "unknown (no ledger)"
-        elif not use.get("judgeable"):
+        elif not use.get("judgeable") or h in (use.get("too_early") or ()):
+            # per identity: listed for less than a full window
             verdict = "too early"
         elif last is not None and now - last <= USE_STALE_S:
             verdict = "active"
@@ -146,14 +147,37 @@ def remove(cfg_dir: Path, hashes: List[str], *, stamp: str) -> Dict[str, List[st
     missing = [h for h, where in found.items() if not where]
     if missing:
         raise ValueError(f"not in any list on this box: {missing}")
+    # gateway.json carries secrets (downlink PSK, MQTT password): the backup
+    # and the tmp are BORN with the original's mode and owner, never at umask
+    # (non-author pass 2026-10-15, finding 4).
+    st = os.stat(path)
+    mode = st.st_mode & 0o777
     backup = cfg_dir / f"gateway.json.bak-housekeeping-{stamp}"
-    backup.write_text(raw, encoding="utf-8")
-    mode = os.stat(path).st_mode & 0o777
+    _write_like(backup, raw, mode, st)
     tmp = cfg_dir / f".gateway.json.housekeeping-{os.getpid()}"
-    tmp.write_text(json.dumps(gw, indent=2) + "\n", encoding="utf-8")
-    os.chmod(tmp, mode)
-    os.replace(tmp, path)
+    try:
+        _write_like(tmp, json.dumps(gw, indent=2) + "\n", mode, st)
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
     return found
+
+
+def _write_like(dest: Path, text: str, mode: int, st: os.stat_result) -> None:
+    """Create ``dest`` exclusively at ``mode`` (umask can only narrow it,
+    then it is set exactly) with the original's owner when we may set it."""
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode & 0o600)
+    try:
+        os.fchmod(fd, mode)
+        if os.geteuid() == 0:
+            os.fchown(fd, st.st_uid, st.st_gid)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fd = -1
+            fh.write(text)
+    finally:
+        if fd != -1:
+            os.close(fd)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -176,6 +200,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"removed {h} from {', '.join(where)}")
         print(f"backup: gateway.json.bak-housekeeping-{stamp} — restart the "
               f"gateway to apply")
+        # No lock spans the other writers (non-author pass 2026-10-15,
+        # finding 5): a process that loaded gateway.json earlier writes the
+        # removed hash back on its next save.
+        print("⚠ a running TUI/launcher that loaded gateway.json before this "
+              "writes the removed hash BACK on its next save — close it, then "
+              "re-run this report to confirm the hash is gone")
         return 0
     rows = build_rows(cfg_dir, a.ledger or default_ledger(),
                       now=a.now if a.now is not None else time.time())

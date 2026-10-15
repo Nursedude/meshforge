@@ -243,6 +243,18 @@ class IngressLedger:
             self._doc["listed"] = int(listed)
             if identities is not None:
                 self._doc["listed_ids"] = list(identities)
+                # Per-identity clock (non-author pass 2026-10-15, finding 3):
+                # an identity is judged only after IT has been listed a full
+                # window, never on the ledger-wide watch. A hash that leaves
+                # the list and returns starts over. A ledger written before
+                # this key existed starts every clock now (too early, the
+                # safe direction — never a false "stale").
+                prev = self._doc.get("listed_since")
+                prev = prev if isinstance(prev, dict) else {}
+                self._doc["listed_since"] = {
+                    h.lower(): (prev[h.lower()] if isinstance(prev.get(h.lower()), (int, float))
+                                else now)
+                    for h in identities if isinstance(h, str)}
             if not isinstance(self._doc.get("watch_since"), (int, float)):
                 self._doc["watch_since"] = now
             self._doc["updated_at"] = now
@@ -337,13 +349,23 @@ def _project_use(doc: Dict[str, Any], now: float) -> Dict[str, Any]:
     ws = doc.get("watch_since")
     observed = (now - float(ws)) if isinstance(ws, (int, float)) else None
     judgeable = observed is not None and observed >= USE_STALE_S
+    since_doc = doc.get("listed_since") if isinstance(doc.get("listed_since"), dict) else None
+    listed_since: Dict[str, float] = {}
+    for h in ids:
+        v = since_doc.get(h.lower()) if since_doc is not None else None
+        # A ledger without the key (pre-2026-10-15) falls back to the watch.
+        listed_since[h] = (float(v) if isinstance(v, (int, float))
+                           else float(ws) if isinstance(ws, (int, float)) else now)
+    too_early = [h for h in ids
+                 if not judgeable or now - max(listed_since[h], float(ws)) < USE_STALE_S]
     no_inbound = None
     if judgeable:
-        no_inbound = [h for h in ids
-                      if h not in last or now - last[h] > USE_STALE_S]
+        no_inbound = [h for h in ids if h not in too_early
+                      and (h not in last or now - last[h] > USE_STALE_S)]
     return {"quantity": "inbound", "window_s": USE_STALE_S,
             "observed_s": observed, "judgeable": judgeable,
-            "listed_ids": ids, "last_inbound": last, "no_inbound": no_inbound}
+            "listed_ids": ids, "last_inbound": last, "no_inbound": no_inbound,
+            "listed_since": listed_since, "too_early": too_early}
 
 
 def read_ledger_projection(path: Optional[Path] = None, *,

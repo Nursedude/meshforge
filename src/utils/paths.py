@@ -206,8 +206,17 @@ class ReticulumPaths:
         as, we set 0o666 on files and 0o777 on dirs within storage/ so
         any local user can read/write. This is acceptable because:
         - /etc/reticulum/storage/ contains caches and ephemeral data
-        - The actual secrets (identity, keys) are in the parent config dir
         - This matches RNS's own behavior of creating world-readable storage
+
+        EXCEPT the private key: rnsd keeps it at ``storage/transport_identity``
+        (b8d5a8d4). An earlier version of this docstring said the secrets
+        live in the parent dir, and this walk set the key to 0666 — undoing
+        the permission foundation's 600 (non-author pass 2026-10-15, B1:
+        live on the manager box). An identity-named file is never widened; its
+        group/other WRITE bits are removed (that can never break rnsd's
+        read). The storage ROOT gets the sticky bit, so a non-owner can no
+        longer rename the key away and drop in their own (B2); rnsd owns the
+        dir (or is root), so its own renames are unaffected.
 
         Uses os.walk for full recursion — RNS may create subdirectories
         beyond the ones we explicitly know about (e.g. new cache categories).
@@ -221,10 +230,11 @@ class ReticulumPaths:
         try:
             for dirpath, dirnames, filenames in os.walk(str(storage_root)):
                 dp = Path(dirpath)
+                want = 0o1777 if dp == storage_root else 0o777
                 # Fix directory permissions
                 try:
-                    if dp.stat().st_mode & 0o777 != 0o777:
-                        dp.chmod(0o777)
+                    if dp.stat().st_mode & 0o7777 != want:
+                        dp.chmod(want)
                 except (PermissionError, OSError):
                     pass
 
@@ -233,6 +243,12 @@ class ReticulumPaths:
                     try:
                         fpath = dp / fname
                         current = fpath.stat().st_mode
+                        if "identity" in fname.lower():
+                            # a private key: never widened; shed shared WRITE
+                            narrowed = current & ~(stat.S_IWGRP | stat.S_IWOTH)
+                            if narrowed != current:
+                                fpath.chmod(stat.S_IMODE(narrowed))
+                            continue
                         if not (current & stat.S_IWOTH):
                             fpath.chmod(0o666)
                     except (PermissionError, OSError):

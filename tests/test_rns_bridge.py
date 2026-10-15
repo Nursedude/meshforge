@@ -5654,7 +5654,7 @@ class TestMeshOracleRnsWiring:
         bridge._oracle_rns = MagicMock()
         bridge._oracle_rns.handle.return_value = "dude-AI@x: nodes:?"
         h = bytes.fromhex("aabbccddeeff00112233445566778899")
-        msg = SimpleNamespace(source_hash=h, content="status", title=None,
+        msg = SimpleNamespace(signature_validated=True, source_hash=h, content="status", title=None,
                               stamp=None, fields=None)
         bridge._on_lxmf_receive(msg)
         bridge._oracle_rns.handle.assert_called_once_with(h.hex(), "status", 0)
@@ -5681,7 +5681,7 @@ class TestMeshOracleRnsWiring:
         peer = bytes.fromhex("3dfbdb5d24c6de195ae4f3c0f56b5ea5")
         bridge.config.rns.get_peer_gateway_destinations.return_value = [peer.hex()]
         bridge._router.should_bridge = lambda m: True
-        msg = SimpleNamespace(source_hash=peer, content="status", title="x via Meshtastic",
+        msg = SimpleNamespace(signature_validated=True, source_hash=peer, content="status", title="x via Meshtastic",
                               stamp=None, fields={"meshforge_from_id": "!deadbeef"})
         with patch("commands.messaging.store_incoming"):
             bridge._on_lxmf_receive(msg)
@@ -5701,7 +5701,7 @@ class TestMeshOracleRnsWiring:
         monkeypatch.setattr(bridge._oracle_rns, "_log_fn", records.append)
         peer = bytes.fromhex("3dfbdb5d24c6de195ae4f3c0f56b5ea5")
         bridge.config.rns.get_peer_gateway_destinations.return_value = [peer.hex()]
-        msg = SimpleNamespace(source_hash=peer, content="good morning", title=None,
+        msg = SimpleNamespace(signature_validated=True, source_hash=peer, content="good morning", title=None,
                               stamp=None, fields=None)
         with patch("commands.messaging.store_incoming"):
             bridge._on_lxmf_receive(msg)
@@ -5721,7 +5721,7 @@ class TestMeshOracleRnsWiring:
         bridge.config.rns.get_peer_gateway_destinations.return_value = [
             "3dfbdb5d24c6de195ae4f3c0f56b5ea5"]
         client = bytes.fromhex("5f1e34a77eb2b8e879a00fdc63dc53c3")
-        msg = SimpleNamespace(source_hash=client, content="status", title=None,
+        msg = SimpleNamespace(signature_validated=True, source_hash=client, content="status", title=None,
                               stamp=None, fields=None)
         bridge._on_lxmf_receive(msg)
         assert records[-1]["delivered"] is True and records[-1]["channel"] == 0
@@ -5758,7 +5758,7 @@ class TestContentIdCarryRnsLeg:
         from gateway.canonical_message import compute_content_id
         bridge._oracle_rns = None
         h = bytes.fromhex("aabbccddeeff00112233445566778899")
-        msg = SimpleNamespace(source_hash=h, content="sun", title=None,
+        msg = SimpleNamespace(signature_validated=True, source_hash=h, content="sun", title=None,
                               stamp=None, fields=None)
         captured = {}
         with patch.object(bridge, '_notify_message',
@@ -5774,7 +5774,7 @@ class TestContentIdCarryRnsLeg:
         from types import SimpleNamespace
         bridge._oracle_rns = None
         h = bytes.fromhex("aabbccddeeff00112233445566778899")
-        msg = SimpleNamespace(source_hash=h, content="sun", title=None,
+        msg = SimpleNamespace(signature_validated=True, source_hash=h, content="sun", title=None,
                               stamp=None,
                               fields={"meshforge_content_id": "c1:carried99"})
         captured = {}
@@ -6053,7 +6053,7 @@ class TestLxmfHistoryStoresText:
         from types import SimpleNamespace
         bridge._oracle_rns = None
         h = bytes.fromhex("aabbccddeeff00112233445566778899")
-        msg = SimpleNamespace(source_hash=h, content=b"dude-AI@moc3: wd:0 all clear",
+        msg = SimpleNamespace(signature_validated=True, source_hash=h, content=b"dude-AI@moc3: wd:0 all clear",
                               title=b"MeshForge Gateway", stamp=None, fields=None)
         with patch("commands.messaging.store_incoming") as store, \
              patch.object(bridge, "_notify_message"):
@@ -6066,7 +6066,7 @@ class TestLxmfHistoryStoresText:
         from types import SimpleNamespace
         bridge._oracle_rns = None
         h = bytes.fromhex("aabbccddeeff00112233445566778899")
-        msg = SimpleNamespace(source_hash=h, content="hello", title=None,
+        msg = SimpleNamespace(signature_validated=True, source_hash=h, content="hello", title=None,
                               stamp=None, fields=None)
         with patch("commands.messaging.store_incoming") as store, \
              patch.object(bridge, "_notify_message"):

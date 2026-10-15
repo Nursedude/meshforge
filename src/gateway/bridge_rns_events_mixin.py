@@ -121,10 +121,19 @@ class BridgeRnsEventsMixin:
     def _on_lxmf_receive(self, message):
         """Handle incoming LXMF message"""
         try:
-            # Update node info
             source_hash = message.source_hash
-            node = UnifiedNode.from_rns(source_hash)
-            self.node_tracker.add_node(node)
+            # The source hash is a CLAIM until LXMF validated its signature
+            # (unpack_from_bytes; forged → SIGNATURE_INVALID, never-announced
+            # → SOURCE_UNKNOWN). Every consumer that acts on WHO sent this
+            # runs on `verified`, not on the field (non-author pass on the
+            # 10-07 arc, 2026-10-15: the oracle and the attribution sinks ran
+            # before the ingress gate on the claimed hash).
+            verified = getattr(message, "signature_validated", False) is True
+
+            # Update node info — a forged claim is not evidence the node exists
+            if verified:
+                node = UnifiedNode.from_rns(source_hash)
+                self.node_tracker.add_node(node)
 
             # Capture LXMF message for traffic inspection. Sniffer symbols are
             # resolved off the hub so patch("gateway.rns_bridge.HAS_RNS_SNIFFER")
@@ -206,7 +215,15 @@ class BridgeRnsEventsMixin:
                     if isinstance(q, bytes):
                         q = q.decode('utf-8', errors='ignore')
                     src_hex = source_hash.hex().lower()
-                    if src_hex in self._peer_gateway_hash_set():
+                    if not verified:
+                        # Allowlist and cooldown key on the hash, so answering
+                        # a claim would reply to (and burn the cooldown of)
+                        # whoever it names. Declined with a witness; the
+                        # message still meets the ingress gate below.
+                        self._oracle_rns.decline(
+                            source_hash.hex(), q, reason="unverified_source",
+                            channel=0)
+                    elif src_hex in self._peer_gateway_hash_set():
                         # A PEER GATEWAY is never an oracle principal. It
                         # relays its whole RF segment as this one LXMF
                         # identity (raw text, attribution only in fields),
@@ -243,6 +260,8 @@ class BridgeRnsEventsMixin:
                 title = _lxmf_text(message.title)
                 if title:
                     content = f"[{title}] {content}"
+                if not verified:
+                    content = f"[unverified sender] {content}"
                 messaging.store_incoming(
                     from_id=source_hash.hex(),
                     content=content,
