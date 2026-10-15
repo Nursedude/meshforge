@@ -167,3 +167,103 @@ are refused; `from=` refuses exactly like a revoke.
 7. Two-line / option-prefixed / RSA paste → refused with the reason.
 8. `rotate` on the center → every target reads with the new key; the old key is refused.
 9. A target presenting a different host key → `identity_mismatch`, never rendered as data.
+
+## Session 3 brief (written 2026-10-14 ~16:40 HST by the arc's REVIEWER, Fable 5.1 — for an Opus BUILD session; builder ≠ reviewer)
+
+> Why this section exists: the operator asked whether to start session 3 at
+> 16:20 and the answer was no — it is a two-repo build plus a coordinated
+> bump, Opus-shaped, and this session reviewed the arc's fix commits and its
+> rollout, so building it here would leave no non-author. Everything below
+> was MEASURED this session unless tagged READ or ASSERT.
+
+### Where the arc stands (measured 2026-10-14)
+
+- MF `main` carries the whole trust path and it is LIVE: grants on moc, kiai,
+  lehua, moc3 (center key `SHA256:8B36…`, `noc:VolcanoAI`); the legacy
+  interactive-key spool read is DELETED (`a330d4e1`); an unflagged target reads
+  `refused_grant` naming the push; unpush → DARK next tick (`d98b7eaf`, drilled
+  live on lehua 14:22). Fleet 9/9 @ `d98b7eaf`. Non-author passes on the fix
+  commits, the rollout/deletion and the drill legs: all PASS (table rows
+  2026-10-14).
+- MeshAnchor `/opt/meshanchor` @ `34b75362` on meshanchor-server has **none of
+  it**: no `src/utils/box_truth*.py`, no `scripts/box_truth_*`, no spool writer
+  (`fleet_truth_spool.py` never existed there — a carried note said session 3
+  must "delete the same legacy block in MA"; there is nothing to delete),
+  **0 grant lines** in meshanchor-server's `authorized_keys`. MA's `/fleet` is
+  honestly DARK on moc3 by the Interim rule above, host-key pin only.
+- Versions today: MF `0.6.3-beta`, MA `0.2.0-beta`. The bump rule below is
+  unchanged: both or neither.
+- MF's TUI has NO grant/revoke handler yet; `handlers/fleet_posture.py` carries
+  the doctrine note that grants THIS action its acting carve-out (Q8/Q17): one
+  CLI, plan first, typed confirm = the fingerprint's last 8, logged.
+- The byte-lock parity gate exists in MF `.githooks/pre-push` ("Byte-lock
+  parity — the twin contract") and both repos run the parity-mirror execution
+  gate in `pre-commit`; `scripts/parity_check.py` `BYTE_IDENTICAL` lists
+  `canonical_message.py`, `fleet_truth.py`, … but NO box_truth module yet.
+  `parity_check.py` reads `in sync` today.
+- Adjacent, same shape, same session: MA
+  `src/gateway/lxmf_broadcast_bridge.py::_load_or_create_identity` is the exact
+  pre-F1 loader (`try: from_file … except: warn → to_file` recreate; `from_file`
+  returns None, never raises). `gateway/identity_store.py` + `tests/_fake_rns_identity.py`
+  + the refuse-and-witness tests port byte-identical. (`commands/rns.py:101`
+  is create-only and `utils/paths.py:345` checks None — NOT defects.)
+
+### The work, in the order that keeps it honest
+
+1. **Shared modules → MA, byte-identical, parity-locked FIRST.** Copy
+   `src/utils/box_truth.py`, `box_truth_reader.py`, `box_truth_grants.py`,
+   `box_truth_center.py` and the parts of `box_truth_collect.py` that do not
+   import MF's watchdog probes; add every copied path to `BYTE_IDENTICAL` in
+   **both** repos' `parity_check.py` in the same commit pair, so the existing
+   pre-push byte-lock covers them from the first push (this is what the
+   handoff's "both-repo builder hook" means — confirm MA's `pre-push` carries
+   the same byte-lock leg as MF's; if not, port that leg too). `parity_check`
+   must read `in sync` before step 2 starts. MF is the lead repo: a change
+   that must differ per app goes behind a seam, never into the shared file.
+2. **The deferred move (session 2's deviation 1).** The three payload helpers
+   + `judge_spooled_schedules` still import MF watchdog probes, so they could
+   not live in the shared module. Give them an app-side seam (MF's helpers,
+   MA's helpers, one shared caller) rather than copying MF's probes into MA.
+3. **MA export + grant CLI + spool writer + collector S1 render.**
+   `scripts/box_truth_export.py` (the forced command), `scripts/box_truth_grant.py`,
+   a spool writer (MA has no legacy path to keep — build it on the export
+   from day one), `fleet.json` `ssh` field, collector renders the S1 outcome.
+   Tests ported with the fake identity (`tests/_fake_rns_identity.py`).
+4. **F1 port** into `lxmf_broadcast_bridge.py` via `identity_store.py`, test
+   RED on the old code first (a zero-byte identity must REFUSE, corpse kept).
+5. **TUI grant / revoke / list in BOTH apps**, within the carve-out: render the
+   plan the CLI prints, typed confirm = last 8 of the fingerprint, call the ONE
+   CLI, log. Revoke and `list` must work from the TUI (sudo path): F7's
+   lesson — chown everything the writer creates under sudo. The TUI stays a
+   surface everywhere else.
+6. **Bump both, deploy both**: MF `0.7.0-beta`, MA `0.3.0-beta`, same session,
+   CI green for BOTH shas, `fleet_sync` THEN `fleet_pull`, full `honest_status`
+   rc=0, MA twin verified on meshanchor-server.
+7. **Acceptance from meshanchor-server as a SECOND center reading moc3**
+   (Q14 legs + the 9-leg amended acceptance): `center-key --create` on
+   meshanchor-server (chown under sudo), `push moc3 --confirm moc3` with the
+   operator's words, moc3 then carries TWO grant lines (one per center) —
+   `dedupe` must leave both; MA `/fleet` shows moc3 via `ssh_spool`/pinned;
+   revoke from meshanchor-server does not disturb VolcanoAI's grant. Touch-log
+   each box write.
+8. **Non-author pass BEFORE any grant is pushed from meshanchor-server** —
+   the most capable model available that day (operator rule 10-14), not a
+   name. Queue it in `review_provenance.md` when step 6 lands.
+
+### Do not
+
+- Do not let MA's spool writer re-grow a legacy interactive-key read; the
+  deleted MF path is the shape to refuse.
+- Do not edit `fleet_truth.py` for B3 without the split first: it is
+  byte-identical parity AND at the 1500-line cap (MF025) in both repos.
+- Do not bump one app alone; do not deploy MF's bump before MA's is ready.
+- Do not fake the step-8 review on a smaller model; queue it.
+
+### Carried, not in this session's scope
+
+Deferred designs from the fix-review (N2 hashed known_hosts HMAC — fails
+closed today; N5 custom `AuthorizedKeysFile`; N6 concurrent-editor lock; N7
+witness path under `XDG_STATE_HOME`; HTTP 4xx bodies dropped; B3 own-reason for
+services/radio/schedules/ingress). `reachable.source` is hardcoded `"fanout"`
+on every `/fleet` row (`fleet_truth.py:732/735`) — read `resolution_method`;
+fixing it is a both-repo edit behind the split.
