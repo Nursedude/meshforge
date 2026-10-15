@@ -12,23 +12,32 @@ test_meshtastic_broadcast_bridge.py.
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.operator_line import (
+# tests/ is a package (tests/__init__.py), so pytest's prepend import mode puts
+# the REPO ROOT on sys.path, not tests/. Every sibling that imports the fake
+# inserts tests/ itself; this file relied on one of them being collected
+# first and could not be run alone (collection error, review 2026-10-14).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from gateway.operator_line import (  # noqa: E402
     AlertTracker,
     OperatorLine,
     compose_page,
     create_from_gateway_config,
     get_active_operator_line,
 )
-from gateway.operator_line_config import OperatorLineConfig
-from oracle import MAX_REPLY_BYTES, NocSnapshot, answer
+from gateway.operator_line_config import OperatorLineConfig  # noqa: E402
+from oracle import MAX_REPLY_BYTES, NocSnapshot, answer  # noqa: E402
 
 # Library-faithful identity fake (BIC-15 F1): from_file returns None on bad
 # bytes and never raises, like the pinned RNS.
-from _fake_rns_identity import make_identity_class
+from _fake_rns_identity import make_identity_class  # noqa: E402
 
 OP = "a1" * 16
 OP2 = "b2" * 16
