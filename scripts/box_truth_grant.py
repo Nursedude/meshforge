@@ -176,6 +176,14 @@ def main(argv=None):
     p.add_argument("--confirm", required=True)
     a = ap.parse_args(argv)
 
+    # Grants live in the OPERATOR's ~/.ssh and crontab. Run as root (sudo),
+    # this tool created root-owned dirs in the operator's home and wrote
+    # root's crontab (delta read 2026-10-15) — refuse; the TUI already runs
+    # it as the operator.
+    if os.geteuid() == 0:
+        print("REFUSED: run box_truth_grant.py as your own user, not root — "
+              "grants live in your ~/.ssh and your crontab")
+        return 1
     home = get_real_user_home()
     if a.verb == "list":
         return cmd_list(home, a)

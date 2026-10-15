@@ -3,9 +3,9 @@ MeshForge - LoRa Mesh Network Development & Operations Suite
 Version information and changelog
 """
 
-__version__ = "0.6.3-beta"
-__version_info__ = (0, 6, 3, 'beta')
-__release_date__ = "2026-10-09"
+__version__ = "0.7.0-beta"
+__version_info__ = (0, 7, 0, 'beta')
+__release_date__ = "2026-10-15"
 __app_name__ = "MeshForge"
 __app_description__ = "Mesh Network Operations Center & Development Ecosystem"
 __app_tagline__ = "Build. Test. Deploy. Monitor."
@@ -20,6 +20,17 @@ ALPHA_VERSION = "0.6.0-alpha"
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "0.7.0-beta",
+        "date": "2026-10-15",
+        "status": "beta",
+        "changes": [
+            'NOC READ GRANT (box_truth/v1): a center reads a box through a restricted per-center ssh key whose forced command runs ONE export; the host key is pinned on every read; a box judges its own role; a fan-out-unreachable box is read into a fresh-only spool. One grant CLI (scripts/box_truth_grant.py) and a TUI screen (Fleet > NOC Read Grants: list / revoke / push / unpush, plan first, typed confirm). The spool writer and the grant CLI are the SAME file in MeshForge and MeshAnchor; a dormant checkout refuses to grant.',
+            "SECURITY (non-author passes 2026-10-15): a LAN GET with a body no longer writes to the radio through the /mesh/ alias; concurrent wrong login codes cannot burn the pairing code; an unverified LXMF sender is never treated as an identity (no oracle reply, no node, no contact, never relayed; RF tag [RNS:?xxxx]); rnsd's private key is never widened by the storage permission walk; the grant CLI refuses to run as root.",
+            "RADIO: 'meshtasticd active' is no longer 'radio reachable' — the radio cell and is_available() need the unit AND a loopback-reachable LISTEN socket (/proc, never a connect).",
+            "FIXED: per-identity use clock in the ingress ledger (a just-listed hash no longer reads stale); housekeeping backups keep the original's mode; the identity census names symlinks and walks /etc/reticulum; a failed channel read is 503, never 'no channels'; shared status_blocks (watchdog / mini / radio transforms) with future-timestamp and missing-timestamp legs.",
+        ],
+    },
     {
         "version": "0.6.3-beta",
         "date": "2026-10-09",

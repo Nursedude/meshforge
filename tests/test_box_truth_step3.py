@@ -111,6 +111,7 @@ def test_grant_add_refuses_on_a_box_this_app_does_not_run(monkeypatch, capsys, s
 
 def _spool(tmp_path, alias, doc):
     import json
+    doc = dict({"alias": alias}, **doc)        # the real writer always sets it
     (tmp_path / f"{alias}.json").write_text(json.dumps(doc))
 
 
@@ -145,3 +146,14 @@ def test_the_spool_cron_install_creates_its_log_dir(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(argv, 0, state["tab"], "")
     assert bc.ensure_spool_cron(runner=runner) == "installed"
     assert (tmp_path / ".local" / "state" / app.CONFIG_DIRNAME / "cron_out").is_dir()
+
+
+def test_the_grant_cli_refuses_root(monkeypatch, capsys):
+    # sudo created root-owned dirs in the operator's home and wrote root's
+    # crontab (delta read 2026-10-15); the TUI already drops to the operator
+    import box_truth_grant as cli
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+    called = []
+    monkeypatch.setattr(cli.bg, "list_grants", lambda *a, **k: called.append(1) or [])
+    assert cli.main(["list"]) == 1
+    assert not called and "root" in capsys.readouterr().out

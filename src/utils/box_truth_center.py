@@ -67,12 +67,16 @@ def read_spool(alias: str, *, now: Optional[float] = None,
     apps' collectors use, so freshness means the same thing everywhere."""
     import json
     import time
+    if not isinstance(alias, str) or not _ALIAS_RE.match(alias):
+        return None   # never a path built from an unvalidated alias (step-8 F5)
     try:
         path = (spool_dir or truth_spool_dir()) / f"{alias}.json"
         with open(path, "r", encoding="utf-8") as fh:
             doc = json.load(fh)
         if not isinstance(doc, dict) or doc.get("schema") != SPOOL_SCHEMA:
             return None
+        if doc.get("alias") != alias:
+            return None   # a doc about another box is never this box's truth (F1)
         fetched_at = doc.get("fetched_at")
         if not isinstance(fetched_at, (int, float)):
             return None

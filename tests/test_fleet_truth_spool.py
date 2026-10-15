@@ -718,3 +718,28 @@ class TestUnflaggedTargetsRefuseLoudly:
             assert not hasattr(mod, name), f"{name} still present"
         src = Path(mod.__file__).read_text(encoding="utf-8")
         assert "subprocess" not in src and "__TRUTH_" not in src
+
+
+# ── delta read 2026-10-15: MF parity of MA's F1/F5 spool-leg checks ───────
+
+def test_mf_reads_no_spool_doc_that_names_another_box(tmp_path, monkeypatch):
+    import json as _json
+    import time as _time
+    import utils.fleet_truth_collector as ftc
+    monkeypatch.setattr(ftc, "truth_spool_dir", lambda: tmp_path)
+    (tmp_path / "moc3.json").write_text(_json.dumps({
+        "schema": ftc.SPOOL_SCHEMA, "alias": "kiai", "fetched_at": _time.time(),
+        "status": {"x": 1}}))
+    assert ftc._read_spool("moc3") is None
+
+
+def test_mf_never_reads_a_spool_for_an_invalid_alias(tmp_path, monkeypatch):
+    import json as _json
+    import time as _time
+    import utils.fleet_truth_collector as ftc
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    monkeypatch.setattr(ftc, "truth_spool_dir", lambda: spool)
+    (tmp_path / "x.json").write_text(_json.dumps({     # planted OUTSIDE the spool dir
+        "schema": ftc.SPOOL_SCHEMA, "alias": "../x", "fetched_at": _time.time()}))
+    assert ftc._read_spool("../x") is None
