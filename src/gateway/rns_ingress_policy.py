@@ -338,7 +338,9 @@ def _project_use(doc: Dict[str, Any], now: float) -> Dict[str, Any]:
     empty list) until the watch has covered a full ``USE_STALE_S`` — an
     unwatched window is unknown, never "everyone active" (hfm #2). A clock
     that went backwards past ``watch_since`` is likewise unjudgeable (#6)."""
-    ids = [h for h in (doc.get("listed_ids") or []) if isinstance(h, str)]
+    # one spelling: stamp() keys listed_since lowercase, and so does every
+    # reader (delta review 2026-10-15: an uppercase hash read "stale")
+    ids = [h.lower() for h in (doc.get("listed_ids") or []) if isinstance(h, str)]
     seen = doc.get("listed_seen") if isinstance(doc.get("listed_seen"), dict) else {}
     last: Dict[str, float] = {}
     for k, v in seen.items():
@@ -353,9 +355,11 @@ def _project_use(doc: Dict[str, Any], now: float) -> Dict[str, Any]:
     listed_since: Dict[str, float] = {}
     for h in ids:
         v = since_doc.get(h.lower()) if since_doc is not None else None
-        # A ledger without the key (pre-2026-10-15) falls back to the watch.
-        listed_since[h] = (float(v) if isinstance(v, (int, float))
-                           else float(ws) if isinstance(ws, (int, float)) else now)
+        # No per-identity stamp (a ledger written before the key, or a hash
+        # the last stamp did not carry) = its clock has not started: too
+        # early, never stale (non-author read 2026-10-15: the watch fallback
+        # judged a just-added hash stale until the gateway re-stamped).
+        listed_since[h] = float(v) if isinstance(v, (int, float)) else now
     too_early = [h for h in ids
                  if not judgeable or now - max(listed_since[h], float(ws)) < USE_STALE_S]
     no_inbound = None

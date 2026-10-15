@@ -103,8 +103,20 @@ def check_port(port: int, host: str = 'localhost', timeout: float = 2.0) -> bool
                 pass  # Socket close errors are non-critical
 
 
+#: /proc local addresses a loopback client can reach: 0.0.0.0, 127.0.0.1,
+#: ::, ::1 and ::ffff:127.0.0.1 (each 32-bit word little-endian, as the kernel
+#: prints them).
+_LOOPBACK_REACHABLE = frozenset({
+    "00000000", "0100007F",
+    "00000000000000000000000000000000",
+    "00000000000000000000000001000000",
+    "0000000000000000FFFF00000100007F",
+})
+
+
 def tcp_port_listening(
-    port: int, *, proc_paths: tuple = ('/proc/net/tcp', '/proc/net/tcp6')
+    port: int, *, proc_paths: tuple = ('/proc/net/tcp', '/proc/net/tcp6'),
+    loopback_reachable: bool = False,
 ) -> bool:
     """Return True iff a local socket is in the LISTEN state on ``port``.
 
@@ -125,6 +137,10 @@ def tcp_port_listening(
     Args:
         port: TCP port number.
         proc_paths: kernel socket-table paths (overridable for tests).
+        loopback_reachable: count only a listener a LOCALHOST client can
+            reach (all-addresses or loopback). A listener bound to a LAN
+            address only is refused on 127.0.0.1 (non-author read
+            2026-10-15) and must not answer "reachable on localhost".
 
     Returns:
         True if something is LISTENing on ``port`` locally, else False.
@@ -140,6 +156,9 @@ def tcp_port_listening(
                     # local_address is "ADDR:PORT_HEX"; st 0A == TCP LISTEN.
                     if (len(parts) >= 4 and parts[3] == '0A'
                             and parts[1].endswith(hex_suffix)):
+                        if (loopback_reachable and parts[1][:-len(hex_suffix)].upper()
+                                not in _LOOPBACK_REACHABLE):
+                            continue
                         return True
         except (OSError, ValueError) as e:
             logger.debug(f"tcp_port_listening: {proc_path}: {e}")

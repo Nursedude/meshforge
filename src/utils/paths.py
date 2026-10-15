@@ -212,11 +212,14 @@ class ReticulumPaths:
         (b8d5a8d4). An earlier version of this docstring said the secrets
         live in the parent dir, and this walk set the key to 0666 — undoing
         the permission foundation's 600 (non-author pass 2026-10-15, B1:
-        live on the manager box). An identity-named file is never widened; its
-        group/other WRITE bits are removed (that can never break rnsd's
-        read). The storage ROOT gets the sticky bit, so a non-owner can no
-        longer rename the key away and drop in their own (B2); rnsd owns the
-        dir (or is root), so its own renames are unaffected.
+        live on the manager box). A key-shaped file — named like an identity,
+        or exactly 64 bytes (an RNS identity's size; storage/identities/*
+        hold them too) — is never widened; its group/other WRITE bits are
+        removed (that can never break rnsd's read). The storage dirs stay
+        0777: a sticky root was tried and reverted, because rnsd saves
+        known_destinations by tmp + os.replace there and a sticky dir refuses
+        that once the file belongs to another uid. So a local user can still
+        rename the key away (B2) — OPEN, a decision for the operator.
 
         Uses os.walk for full recursion — RNS may create subdirectories
         beyond the ones we explicitly know about (e.g. new cache categories).
@@ -230,11 +233,10 @@ class ReticulumPaths:
         try:
             for dirpath, dirnames, filenames in os.walk(str(storage_root)):
                 dp = Path(dirpath)
-                want = 0o1777 if dp == storage_root else 0o777
                 # Fix directory permissions
                 try:
-                    if dp.stat().st_mode & 0o7777 != want:
-                        dp.chmod(want)
+                    if dp.stat().st_mode & 0o777 != 0o777:
+                        dp.chmod(0o777)
                 except (PermissionError, OSError):
                     pass
 
@@ -243,7 +245,10 @@ class ReticulumPaths:
                     try:
                         fpath = dp / fname
                         current = fpath.stat().st_mode
-                        if "identity" in fname.lower():
+                        if ("identity" in fname.lower()
+                                or fpath.stat().st_size == 64):
+                            # an RNS private identity is exactly 64 bytes,
+                            # wherever it sits (storage/identities/<app>)
                             # a private key: never widened; shed shared WRITE
                             narrowed = current & ~(stat.S_IWGRP | stat.S_IWOTH)
                             if narrowed != current:

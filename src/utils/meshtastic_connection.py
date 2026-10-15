@@ -409,7 +409,12 @@ class MeshtasticConnectionManager:
         if (self.port == _MESHTASTICD_TCP_PORT
                 and self.host in _LOCAL_HOSTS
                 and _service_is_up("meshforge-gateway")):
-            return tcp_port_listening(self.port)
+            # unit AND a loopback-reachable listener — the same rule
+            # fleet_snapshot._probe_radio applies (non-author read
+            # 2026-10-15: an unknown program on the port is not meshtasticd,
+            # and a LAN-only bind is refused on localhost).
+            return (_service_is_up("meshtasticd")
+                    and tcp_port_listening(self.port, loopback_reachable=True))
 
         # 2026-10-12: the same contention without a gateway — every AUTO
         # resolve on a non-gateway box connected here, one of three PhoneAPI
@@ -420,7 +425,7 @@ class MeshtasticConnectionManager:
         if (self.port == _MESHTASTICD_TCP_PORT
                 and self.host in _LOCAL_HOSTS
                 and _service_is_up("meshtasticd")):
-            return tcp_port_listening(self.port)
+            return tcp_port_listening(self.port, loopback_reachable=True)
 
         try:
             with timed_boundary("meshtasticd.tcp_probe",

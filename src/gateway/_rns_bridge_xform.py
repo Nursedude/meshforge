@@ -709,6 +709,18 @@ class MessageTransformMixin:
             body = original_body  # working copy; @addr parsing strips below
 
             lxmf_fields = (msg.metadata or {}).get('lxmf_fields') or {}
+            # An UNVERIFIED source (LXMF could not validate its signature) is
+            # a claim: it never binds a contact, never drives reply routing,
+            # and its sender-supplied label fields are not trusted — its RF
+            # tag reads [RNS:?xxxx] (non-author read 2026-10-15). Absent flag
+            # = a producer that predates it: unchanged behaviour.
+            unverified = (msg.metadata or {}).get('source_verified') is False
+            if unverified:
+                lxmf_fields = {}
+                # the RF tag [RNS:?xxxx] carries the mark; drop the in-app one
+                if original_body.startswith("[unverified] "):
+                    original_body = original_body[len("[unverified] "):]
+                    body = original_body
             relayed_by = lxmf_fields.get('meshforge_relayed_by')
             # Relayed copies carry the original NomadNet's hash so the
             # [RNS:xxxx] prefix still attributes the operator, not the
@@ -724,7 +736,7 @@ class MessageTransformMixin:
             # Theme-A step 2: identity SSOT population (gated, throttled).
             # Only human-authored RNS originals — peer gateways and
             # bridge-origin copies must never become contacts.
-            if (self._identity_on() and msg.source_id
+            if (self._identity_on() and msg.source_id and not unverified
                     and not self._reply_excluded(
                         original_body, lxmf_fields, msg.source_id or '')):
                 rns_name = ""
@@ -771,7 +783,7 @@ class MessageTransformMixin:
             # precedence: explicit @addr (above, always wins) > echoed
             # meshforge_reply_to field > reply-context memory > identity
             # SSOT contact rung (step 2, needs its own flag too) > broadcast.
-            if (destination is None
+            if (destination is None and not unverified
                     and self._reply_routing_on()
                     and not self._reply_excluded(
                         original_body, lxmf_fields, msg.source_id or '')):
@@ -919,6 +931,8 @@ class MessageTransformMixin:
                 label = str(label)[:10]
             else:
                 label = (effective_source or '')[:4]
+            if unverified:
+                label = "?" + (msg.source_id or '')[:4]
             prefix = f"[RNS:{label}] "
             content = prefix + body
 
@@ -1106,6 +1120,11 @@ class MessageTransformMixin:
         R→M code path. The persistent-queue dedup window catches multi-path
         duplicates at receiving gateways.
         """
+        # A CLAIM is never relayed: its fields (incl. the relayed_by loop
+        # marker) are not trusted, so a relayed unverified copy would go out
+        # again as an original, signed by us (delta review 2026-10-15).
+        if (getattr(msg, 'metadata', None) or {}).get('source_verified') is False:
+            return
         try:
             peer_hexes = list(self.config.rns.get_peer_gateway_destinations())
         except (AttributeError, TypeError):

@@ -90,3 +90,14 @@ def test_a_genuine_sender_is_recorded_plainly(world, tmp_path, monkeypatch):
     b._on_lxmf_receive(LXMessage.unpack_from_bytes(d._genuine(w, "hello")))
     assert len(b.node_tracker.seen) == 1
     assert stored and not stored[0]["content"].startswith("[unverified")
+
+
+def test_an_observed_forgery_is_queued_marked_not_as_the_victim(world, tmp_path):
+    w = world
+    b = d._bridge(tmp_path, w.b.hash.hex(), policy="observe")
+    b._on_lxmf_receive(d._forged_as(w, "hello RF", w.b.hash))
+    assert b._rns_to_mesh_queue.qsize() == 1
+    msg = b._rns_to_mesh_queue.get_nowait()
+    assert msg.metadata["source_verified"] is False
+    assert msg.content.startswith("[unverified] ")
+    assert b.notified and b.notified[0].metadata["source_verified"] is False

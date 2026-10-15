@@ -68,8 +68,9 @@ class TestPhoneApiDeferIssue17:
             assert mgr.is_available() is False  # honest: daemon down ≠ available
             mock_sock.assert_not_called()
 
-    def test_gateway_owns_phoneapi_listener_outside_systemd_is_available(self):
-        # a meshtasticd outside systemd is measured, never assumed absent
+    def test_gateway_owns_phoneapi_listener_without_the_unit_is_not_available(self):
+        # under gateway ownership no connect may measure it, and an unknown
+        # program on the port is not meshtasticd (non-author read 2026-10-15)
         mgr = _mgr()
         with patch("utils.meshtastic_connection.check_service",
                    _svc(**{"meshforge-gateway": ServiceState.AVAILABLE,
@@ -77,7 +78,7 @@ class TestPhoneApiDeferIssue17:
              patch("utils.meshtastic_connection.tcp_port_listening",
                    lambda port, **k: True), \
              patch("utils.meshtastic_connection.socket.socket") as mock_sock:
-            assert mgr.is_available() is True
+            assert mgr.is_available() is False
             mock_sock.assert_not_called()
 
     def test_non_gateway_box_still_probes_socket(self):

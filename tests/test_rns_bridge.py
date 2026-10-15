@@ -6162,3 +6162,74 @@ class TestPeriodicReannounce:
         src = inspect.getsource(RNSMeshtasticBridge._rns_loop)
         assert "_maybe_reannounce()" in src
         assert "self._lxmf_router.announce(" not in src   # no second inline copy
+
+
+class TestUnverifiedSourceOnRf:
+    """Non-author read of 11388546 (2026-10-15): the BridgedMessage carried
+    the CLAIMED hash with no marker, so under observe a forgery reached RF as
+    `[RNS:<victim>]` and could bind the victim as a contact. An unverified
+    source is tagged `[RNS:?xxxx]`, never binds, never routes a reply, and
+    its sender-supplied label fields are not trusted."""
+
+    def _msg(self, verified, fields=None):
+        from gateway.rns_bridge import BridgedMessage
+        return BridgedMessage(
+            source_network="rns", source_id="abcdef0123456789abcdef0123456789",
+            destination_id=None, content="hello",
+            metadata={"lxmf_fields": fields or {}, "source_verified": verified})
+
+    def _send(self, bridge, msg):
+        sent = []
+        with patch.object(bridge, 'send_to_meshtastic',
+                          side_effect=lambda content, *a, **k: sent.append(content) or True), \
+             patch.object(bridge, '_identity_on', return_value=True), \
+             patch.object(bridge, '_identity_binder') as binder:
+            bridge._process_rns_to_mesh(msg)
+        return sent, binder
+
+    def test_unverified_is_tagged_and_never_binds(self, bridge):
+        sent, binder = self._send(bridge, self._msg(False, {
+            "meshforge_source_network": "meshtastic", "meshforge_from_short": "BOSS"}))
+        assert sent and sent[0].startswith("[RNS:?abcd] "), sent
+        binder.populate.assert_not_called()
+
+    def test_verified_keeps_its_plain_tag(self, bridge):
+        sent, binder = self._send(bridge, self._msg(True))
+        assert sent and sent[0].startswith("[RNS:abcd] "), sent
+        binder.populate.assert_called_once()
+
+
+class TestUnverifiedIsNeverRelayed:
+    """Delta review 2026-10-15: zeroing an unverified message's lxmf_fields
+    also dropped its `meshforge_relayed_by` loop marker, so an unverified
+    RELAYED copy was re-relayed to peers as an original. A claim is never
+    relayed, whatever its fields; and its RF copy is tagged once."""
+
+    def _relay(self, bridge, verified):
+        from types import SimpleNamespace
+        from gateway.rns_bridge import BridgedMessage
+        bridge.config.rns.get_peer_gateway_destinations = lambda: ["cd" * 16]
+        bridge._lxmf_source = SimpleNamespace(hash=bytes.fromhex("ef" * 16))
+        msg = BridgedMessage(source_network="rns", source_id="ab" * 16,
+                             destination_id=None, content="hi",
+                             metadata={"source_verified": verified, "lxmf_fields": {}})
+        with patch.object(bridge, "send_to_rns", return_value=True) as send:
+            bridge._maybe_relay_to_peers(msg, "hi")
+        return send
+
+    def test_a_verified_original_is_relayed(self, bridge):
+        assert self._relay(bridge, True).called           # the control
+
+    def test_a_claim_is_never_relayed_to_peers(self, bridge):
+        self._relay(bridge, False).assert_not_called()
+
+    def test_the_rf_copy_is_marked_once(self, bridge):
+        from gateway.rns_bridge import BridgedMessage
+        msg = BridgedMessage(source_network="rns", source_id="ab" * 16,
+                             destination_id=None, content="[unverified] hi",
+                             metadata={"source_verified": False, "lxmf_fields": {}})
+        sent = []
+        with patch.object(bridge, 'send_to_meshtastic',
+                          side_effect=lambda c, *a, **k: sent.append(c) or True):
+            bridge._process_rns_to_mesh(msg)
+        assert sent == ["[RNS:?abab] hi"], sent

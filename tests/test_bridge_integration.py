@@ -184,6 +184,7 @@ class TestRnsToMeshFlow:
         """LXMF message is queued for Meshtastic bridging."""
         lxmf_msg = MagicMock()
         lxmf_msg.source_hash = bytes.fromhex('abcdef0123456789')
+        lxmf_msg.signature_validated = True  # a genuine, signed LXMF message
         lxmf_msg.content = "Hello Meshtastic"
         lxmf_msg.title = "Test Title"
         lxmf_msg.stamp = time.time()
@@ -279,6 +280,7 @@ class TestRoundTrip:
         # Step 4: RNS node sends a reply
         rns_reply = MagicMock()
         rns_reply.source_hash = bytes.fromhex('deadbeef12345678')
+        rns_reply.signature_validated = True  # a genuine, signed LXMF message
         rns_reply.content = "WH6GXZ de KH6ABC 73"
         rns_reply.title = None
         rns_reply.stamp = time.time()
@@ -360,6 +362,7 @@ class TestRoundTrip:
                 # Now send an RNS reply
                 rns_msg = MagicMock()
                 rns_msg.source_hash = bytes.fromhex('aabbccdd11223344')
+                rns_msg.signature_validated = True  # a genuine, signed LXMF message
                 rns_msg.content = "Auto reply"
                 rns_msg.title = None
                 rns_msg.stamp = time.time()
@@ -412,6 +415,7 @@ class TestRoutingDecisions:
         # RNS message should NOT be queued (wrong direction)
         rns_msg = MagicMock()
         rns_msg.source_hash = bytes.fromhex('1122334455667788')
+        rns_msg.signature_validated = True  # a genuine, signed LXMF message
         rns_msg.content = "Should not bridge"
         rns_msg.title = None
         rns_msg.stamp = time.time()
@@ -557,6 +561,7 @@ class TestCallbackNotification:
 
         rns_msg = MagicMock()
         rns_msg.source_hash = bytes.fromhex('1122334455667788')
+        rns_msg.signature_validated = True  # a genuine, signed LXMF message
         rns_msg.content = "RNS callback test"
         rns_msg.title = None
         rns_msg.stamp = time.time()
@@ -749,6 +754,7 @@ class TestEdgeCases:
         """LXMF message title is preserved in BridgedMessage."""
         rns_msg = MagicMock()
         rns_msg.source_hash = bytes.fromhex('aabbccdd11223344')
+        rns_msg.signature_validated = True  # a genuine, signed LXMF message
         rns_msg.content = "Message body"
         rns_msg.title = "Important Alert"
         rns_msg.stamp = time.time()

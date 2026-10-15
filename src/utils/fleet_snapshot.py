@@ -278,7 +278,7 @@ def _probe_radio() -> Dict[str, Any]:
     if _systemctl_state("meshforge-gateway") == "available":
         return {
             "connected": (_systemctl_state("meshtasticd") == "available"
-                          and tcp_port_listening(4403)),
+                          and tcp_port_listening(4403, loopback_reachable=True)),
             "name": "meshtasticd",
             "preset": None,
             "battery_pct": None,
@@ -294,7 +294,7 @@ def _probe_radio() -> Dict[str, Any]:
     # a meshtasticd outside systemd is still seen rather than assumed absent.
     if _systemctl_state("meshtasticd") == "available":
         return {
-            "connected": tcp_port_listening(4403),
+            "connected": tcp_port_listening(4403, loopback_reachable=True),
             "name": "meshtasticd",
             "preset": None,
             "battery_pct": None,

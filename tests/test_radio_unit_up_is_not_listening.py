@@ -66,3 +66,35 @@ def test_fleet_slo_radio_reads_the_listener_not_the_unit():
     assert _probe("available", "available", listening=False) is False
     assert _probe("not_running", "available", listening=True) is True
     assert _probe("available", "available", listening=True) is True
+
+
+# ── non-author read of d6ef3ecc (2026-10-15, Fable 5.1) ──────────────────
+
+def _proc(tmp_path, *rows, v6=()):
+    hdr = "  sl  local_address rem_address   st\n"
+    t4, t6 = tmp_path / "tcp", tmp_path / "tcp6"
+    t4.write_text(hdr + "".join(f"   0: {a}:1133 00000000:0000 0A\n" for a in rows))
+    t6.write_text(hdr + "".join(f"   0: {a}:1133 00000000000000000000000000000000:0000 0A\n" for a in v6))
+    return (str(t4), str(t6))
+
+
+def test_a_lan_only_listener_is_not_reachable_on_loopback(tmp_path):
+    from utils._port_detection import tcp_port_listening
+    lan = _proc(tmp_path, "0A01A8C0")                       # 192.168.1.10 only
+    assert tcp_port_listening(4403, proc_paths=lan) is True  # something listens…
+    assert tcp_port_listening(4403, proc_paths=lan, loopback_reachable=True) is False
+
+
+def test_loopback_reachable_binds_are_accepted(tmp_path):
+    from utils._port_detection import tcp_port_listening
+    for rows, v6 in ((("00000000",), ()), (("0100007F",), ()),
+                     ((), ("00000000000000000000000000000000",)),
+                     ((), ("00000000000000000000000001000000",)),
+                     ((), ("0000000000000000FFFF00000100007F",))):
+        assert tcp_port_listening(4403, proc_paths=_proc(tmp_path, *rows, v6=v6),
+                                  loopback_reachable=True) is True, (rows, v6)
+
+
+def test_the_gateway_branch_still_needs_the_meshtasticd_unit():
+    # both radio consumers agree: unit up AND a loopback-reachable listener
+    assert _avail(True, ServiceState.NOT_RUNNING, listening=True) is False

@@ -39,6 +39,11 @@ def box(tmp_path):
         "schema": "rns_ingress_ledger/v1", "policy": "observe", "listed": 3,
         "updated_at": NOW - 60, "watch_since": NOW - 20 * DAY,
         "listed_ids": [ACTIVE, STALE, PEER],
+        # per-identity clocks, as IngressLedger.stamp() writes them since
+        # 2026-10-15 (a ledger without them reads "too early" — pinned in
+        # tests/test_identity_housekeeping_pins.py)
+        "listed_since": {ACTIVE: NOW - 20 * DAY, STALE: NOW - 20 * DAY,
+                         PEER: NOW - 20 * DAY},
         "listed_seen": {ACTIVE: {"last_seen": NOW - 1 * DAY, "seen": 40},
                         PEER: {"last_seen": NOW - 2 * DAY, "seen": 9}},
         "senders": {}}))

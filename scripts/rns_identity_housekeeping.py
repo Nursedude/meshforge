@@ -97,6 +97,10 @@ def build_rows(cfg_dir: Path, ledger_path: Path, *, now: float) -> List[dict]:
         last = (use or {}).get("last_inbound", {}).get(h)
         if use is None:
             verdict = "unknown (no ledger)"
+        elif h not in {x.lower() for x in (use.get("listed_ids") or [])}:
+            # the ledger clocks only the ingress allowlist; a peer or
+            # destination hash it never stamped has no use clock at all
+            verdict = "not watched"
         elif not use.get("judgeable") or h in (use.get("too_early") or ()):
             # per identity: listed for less than a full window
             verdict = "too early"
@@ -115,7 +119,8 @@ def build_rows(cfg_dir: Path, ledger_path: Path, *, now: float) -> List[dict]:
                      "observed_days": (None if not use or use.get("observed_s") is None
                                        else round(use["observed_s"] / 86400, 1)),
                      "window_days": days})
-    order = {"stale": 0, "too early": 1, "unknown (no ledger)": 2, "active": 3}
+    order = {"stale": 0, "too early": 1, "not watched": 2,
+             "unknown (no ledger)": 3, "active": 4}
     rows.sort(key=lambda r: (order.get(r["verdict"], 9), r["name"]))
     return rows
 

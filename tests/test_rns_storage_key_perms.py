@@ -45,6 +45,22 @@ def test_a_world_writable_key_loses_its_write_bits(tmp_path, monkeypatch):
     assert not (_mode(key) & (stat.S_IWGRP | stat.S_IWOTH)), oct(_mode(key))
 
 
-def test_storage_root_is_sticky_so_the_key_cannot_be_swapped(tmp_path, monkeypatch):
+def test_storage_root_is_not_made_sticky(tmp_path, monkeypatch):
+    # Sticky was tried and REVERTED (non-author read 2026-10-15): rnsd saves
+    # known_destinations by tmp + os.replace in this dir, which a sticky dir
+    # refuses once that file belongs to another uid — rnsd's own persistence
+    # would fail silently. The key-swap risk (B2) stays OPEN for a decision.
     storage, _, _ = _tree(tmp_path, monkeypatch, 0o600)
-    assert _mode(storage) & stat.S_ISVTX, oct(_mode(storage))
+    assert not (_mode(storage) & stat.S_ISVTX)
+
+
+def test_any_identity_sized_file_is_never_widened(tmp_path, monkeypatch):
+    # storage/identities/rncp was a live 64-byte private identity widened to
+    # 0666 by the name test; an RNS identity file is exactly 64 bytes.
+    storage, _, _ = _tree(tmp_path, monkeypatch, 0o600)
+    (storage / "identities").mkdir()
+    k = storage / "identities" / "rncp"
+    k.write_bytes(b"k" * 64)
+    os.chmod(k, 0o600)
+    ReticulumPaths._fix_storage_file_permissions()
+    assert _mode(k) == 0o600, oct(_mode(k))

@@ -196,12 +196,16 @@ class BridgeRnsEventsMixin:
                 source_network="rns",
                 source_id=source_hash.hex(),
                 destination_id=None,
-                content=message.content,
+                # an unverified source travels MARKED to every downstream
+                # consumer (RF, event bus, TUI) — non-author read 2026-10-15
+                content=(message.content if verified
+                         else "[unverified] " + _lxmf_text(message.content)),
                 title=message.title,
                 content_id=content_id,
                 metadata={
                     'lxmf_stamp': message.stamp,
                     'lxmf_fields': lxmf_fields,
+                    'source_verified': verified,
                 }
             )
 
