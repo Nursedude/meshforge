@@ -113,7 +113,7 @@ def fetch_box(target, *, home: Path, expect_of=None,
     if not target.pinned:
         res = br.ReadResult(
             alias=target.alias, outcome="refused_grant", pinned=False,
-            stderr_head=(f"{target.alias} is not pinned in {targets_path(home)} — "
+            stderr_head=(f"{target.alias} has no grant flag (noc) in {targets_path(home)} — "
                          f"grant it from this center: box_truth_grant.py push "
                          f"{target.alias} --confirm {target.alias}"))
         transport = res.transport()
@@ -182,7 +182,8 @@ def main() -> int:
                   file=sys.stderr)
             failures += 1
             continue
-        how = "pinned" if target.pinned else "unpinned"
+        # GRANT flag (`noc`), not the host-key pin — "pinned" means that elsewhere.
+        how = "granted" if target.pinned else "no grant"
         outcome = transport["outcome"]
         print(f"truth_spool: {target.alias} [{how}] {outcome}: "
               f"{'+'.join(got) if got else 'empty-handed'}")

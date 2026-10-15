@@ -711,6 +711,20 @@ class TestUnflaggedTargetsRefuseLoudly:
         moc3 = json.loads((spool / "moc3.json").read_text())
         assert moc3["transport"]["outcome"] == "unreachable"
 
+    def test_tick_line_names_the_grant_not_a_pin(self, tmp_path, capsys):
+        """2026-10-15: the tick line said ``[pinned]``/``[unpinned]`` for the
+        targets-file GRANT flag while ``identity_unpinned`` and the registry
+        ``expect_hostkey`` use "pinned" for the HOST KEY — same word, two
+        meanings, misread live in the step-7 drill. The line and the
+        refusal reason name the grant."""
+        mod, _calls, spool = self._run(tmp_path, "kiai\nmoc3 noc\n")
+        out = capsys.readouterr().out
+        assert "kiai [no grant] refused_grant" in out
+        assert "moc3 [granted] unreachable" in out
+        assert "pinned" not in out
+        reason = json.loads((spool / "kiai.json").read_text())["transport"]["reason"]
+        assert "not pinned" not in reason and "no grant flag" in reason
+
     def test_legacy_read_path_is_gone(self):
         mod = _load_spool_script()
         for name in ("_REMOTE_CMD", "fetch_box_legacy", "parse_sections",
