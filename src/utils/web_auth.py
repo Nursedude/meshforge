@@ -266,6 +266,53 @@ def clear_cookie_value() -> str:
     return f"{COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
 
 
+#: F4 (adversarial pass 2026-10-14): one hostile LAN client could spend the
+#: operator's shared 5-try pairing code in milliseconds. A per-client budget
+#: of wrong codes sits AHEAD of that burn, so a single client can no longer
+#: burn a code within its 5-minute life (two clients still can — accepted).
+LOGIN_TRIES_PER_CLIENT = 3
+LOGIN_TRY_WINDOW_S = 600.0
+
+
+class TryBudget:
+    """Sliding-window budget of WRONG tries per client key (in-memory, per
+    process). ``wait_s(key)`` is 0 when the client may try, else the seconds
+    until its oldest counted try leaves the window."""
+
+    def __init__(self, limit: int = LOGIN_TRIES_PER_CLIENT,
+                 window_s: float = LOGIN_TRY_WINDOW_S):
+        self.limit = int(limit)
+        self.window_s = float(window_s)
+        self._tries: dict = {}
+        self._lock = threading.Lock()
+
+    def _live(self, key: str, now: float) -> list:
+        cut = now - self.window_s
+        live = [t for t in self._tries.get(key, ()) if t > cut]
+        if live:
+            self._tries[key] = live
+        else:
+            self._tries.pop(key, None)
+        return live
+
+    def wait_s(self, key: str) -> float:
+        now = time.monotonic()
+        with self._lock:
+            live = self._live(key, now)
+            if len(live) < self.limit:
+                return 0.0
+            return max(0.0, live[0] + self.window_s - now)
+
+    def wrong(self, key: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            live = self._live(key, now)
+            live.append(now)
+            self._tries[key] = live
+            if len(self._tries) > 1024:      # a LAN cannot have this many clients
+                self._tries.clear()
+
+
 class RefusalLog:
     """Count every refusal (the witness on /api/status); log a client at most
     once a minute so a scripted hammer cannot flood the journal."""

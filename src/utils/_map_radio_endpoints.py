@@ -23,6 +23,8 @@ import math
 import mimetypes
 import re
 import socket
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -36,6 +38,11 @@ logger = logging.getLogger(__name__)
 
 # Default path where meshtasticd installs its web client files.
 MESHTASTICD_WEB_DIR = '/usr/share/meshtasticd/web'
+
+
+#: /api/radio/channels cache (F5, 2026-10-14): one radio handshake per TTL.
+CHANNELS_CACHE_TTL_S = 600.0
+_CHANNELS_CACHE_LOCK = threading.Lock()
 
 
 class RadioEndpointsMixin:
@@ -340,8 +347,25 @@ Webserver:
         except Exception as e:
             self._serve_json({"error": str(e)}, status=500)
 
+    #: (monotonic ts, payload) of the last good channel read, class-wide.
+    _radio_channels_cache = None
+
     def _serve_radio_channels(self):
-        """Serve channels from directly connected radio."""
+        """Serve channels from the connected radio — through a short cache.
+
+        Every uncached call is a full PhoneAPI client-config handshake on the
+        radio (measured 2026-10-14: 0.26 s + 3 meshtasticd ERROR lines), and
+        the inbox page asks on every load. On a gateway box the gateway's
+        own TCPInterface lives in another PROCESS, so the in-process
+        connection lock cannot serialise them (#17/#75). Channels change
+        rarely; the answer says how old it is. An error is never cached.
+        """
+        now = time.monotonic()
+        with _CHANNELS_CACHE_LOCK:
+            cached = type(self)._radio_channels_cache
+        if cached and now - cached[0] < CHANNELS_CACHE_TTL_S:
+            self._serve_json(dict(cached[1], cached_age_s=int(now - cached[0])))
+            return
         conn = self._get_radio_connection()
         if not conn:
             self._serve_json({"error": "meshtastic library not available"}, status=500)
@@ -349,14 +373,20 @@ Webserver:
 
         try:
             channels = conn.get_channels()
-            self._serve_json({
+            payload = {
                 "channels": channels,
                 "count": len(channels),
                 "connection_mode": conn.get_mode(),
-                "timestamp": datetime.now().isoformat()
-            })
+                "timestamp": datetime.now().isoformat(),
+                "cached_age_s": 0,
+                "cache_ttl_s": CHANNELS_CACHE_TTL_S,
+            }
         except Exception as e:
             self._serve_json({"error": str(e)}, status=500)
+            return
+        with _CHANNELS_CACHE_LOCK:
+            type(self)._radio_channels_cache = (time.monotonic(), payload)
+        self._serve_json(payload)
 
     def _serve_radio_status(self):
         """Serve radio connection status."""

@@ -84,7 +84,10 @@ class ListenerStatus:
         }
 
     def note_channel(self, channel) -> None:
-        key = str(channel if isinstance(channel, int) else 0)
+        # A channel the wire did not number is UNKNOWN — never counted as
+        # "0", which is the primary channel (adversarial pass 2026-10-14, F6).
+        key = (str(channel) if isinstance(channel, int) and not isinstance(channel, bool)
+               else "unknown")
         self.channels_seen[key] = self.channels_seen.get(key, 0) + 1
 
 

@@ -59,3 +59,12 @@ def test_a_fresh_listener_admits_it_has_seen_nothing():
     st = ml.MessageListener(store_messages=False).get_status().to_dict()
     assert st["channels_seen"] == {}
     assert "subscription" in st
+
+
+def test_a_channel_the_wire_did_not_number_is_unknown_not_primary():
+    """F6 (2026-10-14 pass): a non-int channel used to count as "0", i.e. as
+    the PRIMARY channel — a misread, not an unknown. Say unknown."""
+    st = ml.MessageListener(store_messages=False).get_status()
+    for ch in (None, "x", 3, 0):
+        st.note_channel(ch)
+    assert st.channels_seen == {"unknown": 2, "3": 1, "0": 1}

@@ -51,9 +51,15 @@ class MeshtasticProxyMixin:
     def _proxy_fromradio(self):
         """Serve multiplexed FromRadio packets via the API proxy.
 
+        Operator-gated HERE, whatever path dispatched to it (``/mesh/``
+        alias, encoded or suffixed spellings): reading fromradio DRAINS the
+        radio's queue (Issue #29), so it is a side effect.
+
         Each client gets its own stream of packets. The proxy ensures
         ACK packets reach every connected browser.
         """
+        if self._refuse_side_effect_get("/api/v1/fromradio"):
+            return
         if not self.api_proxy:
             self.send_error(503, "Meshtastic API proxy not running")
             return
@@ -131,7 +137,10 @@ class MeshtasticProxyMixin:
             self.send_error(500, str(e))
 
     def _proxy_json(self, path: str):
-        """Proxy a /json/* endpoint from meshtasticd."""
+        """Proxy a /json/* endpoint from meshtasticd. ``/json/blink`` acts on
+        the radio, so it is operator-gated HERE for every spelling."""
+        if path == "/json/blink" and self._refuse_side_effect_get("/json/blink"):
+            return
         if not self.api_proxy:
             # Fallback: try direct HTTP client
             try:

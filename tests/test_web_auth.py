@@ -34,6 +34,8 @@ def server(monkeypatch, store):
     monkeypatch.setattr(MapRequestHandler, "allowed_origins", LAN)
     monkeypatch.setattr(MapRequestHandler, "collector", None, raising=False)
     monkeypatch.setattr(MapRequestHandler, "auth_store", store, raising=False)
+    # F4: the wrong-code budget is class-wide; every test starts with a fresh one
+    monkeypatch.setattr(MapRequestHandler, "login_tries", web_auth.TryBudget(), raising=False)
     # pin ambient class state: another suite's MapServer.start() leaves
     # is_warming=True on the class (seen in the full run 2026-10-13)
     monkeypatch.setattr(MapRequestHandler, "is_warming", False)
@@ -169,16 +171,15 @@ def test_code_shape_is_typeable_and_unambiguous(store):
     assert not set(code) & set("01ILO")
 
 
-def test_five_wrong_codes_burn_the_pairing(server, store):
-    srv, _ = server
+def test_five_wrong_codes_burn_the_pairing(store):
+    """The SHARED burn (Q16) lives in the store: five wrong redemptions void
+    the code for everyone. Over HTTP a single client meets the per-client
+    budget first (F4, 2026-10-14) — see test_one_client_cannot_burn_a_pairing_code."""
     code = store.start_pairing()
-    for _ in range(5):
-        status, _, _ = _req(srv, "POST", "/login", json.dumps({"code": "WRONGXYZ"}),
-                            dict(JSON, Origin=_origin(srv)))
-        assert status == 401
-    status, _, _ = _req(srv, "POST", "/login", json.dumps({"code": code}),
-                        dict(JSON, Origin=_origin(srv)))
-    assert status == 401  # burned: the right code no longer works
+    for _ in range(web_auth.PAIRING_MAX_TRIES):
+        assert store.redeem("WRONGXYZ") is None
+    assert store.redeem(code) is None  # burned: the right code no longer works
+    assert store.status()["pairing_pending"] is False
 
 
 def test_a_code_works_once(server, store):
@@ -324,3 +325,114 @@ def test_printed_commands_work_from_any_directory(server):
     assert web_auth.PAIR_COMMAND.encode() in _req(srv, "GET", "/login")[1]
     status, body, _ = _req(srv, "POST", "/api/radio/message", MSG, JSON)
     assert status == 401 and str(cli).encode() in body
+
+
+# ── 9. the adversarial pass (2026-10-14, scripts/bic3_gate_drill.py) ──────
+# Each block below was an ATTACK that succeeded on `95623429`; flipped here
+# to assert the gate, red first.
+
+class _FakeProxy:
+    """Stands in for the meshtasticd API proxy: records what reached it."""
+    def __init__(self):
+        self.calls = []
+
+    def get_next_packet(self, client_id):
+        self.calls.append(("fromradio", client_id))
+        return b""
+
+    def proxy_json(self, path):
+        self.calls.append(("json", path))
+        return b"{}"
+
+
+@pytest.fixture
+def proxy(monkeypatch):
+    fake = _FakeProxy()
+    monkeypatch.setattr(MapRequestHandler, "api_proxy", fake, raising=False)
+    return fake
+
+
+@pytest.fixture
+def fresh_budget(monkeypatch):
+    monkeypatch.setattr(MapRequestHandler, "login_tries", web_auth.TryBudget(), raising=False)
+
+
+# F1 — OPERATOR_GETS is an exact-path list while GET dispatch matches by
+# prefix/alias: every spelling that reaches the fromradio DRAIN or blink must
+# meet the gate AT THE CONSUMER, not at the path string.
+@pytest.mark.parametrize("path", [
+    "/mesh/api/v1/fromradio?all=false", "/mesh/json/blink",
+    "/api/v1/fromradio%2Fx", "/api/v1/fromradio.x?all=false", "/api/v1/fromradio/extra",
+])
+def test_every_spelling_of_a_side_effect_get_is_refused(server, proxy, path):
+    srv, _ = server
+    status, _, _ = _req(srv, "GET", path, None, JSON)
+    assert status == 401, path
+    assert proxy.calls == []
+
+
+def test_an_operator_still_reaches_fromradio_and_blink_by_any_spelling(server, store, proxy):
+    srv, _ = server
+    cookie = _login(srv, store)
+    for path in ("/api/v1/fromradio?all=false", "/mesh/api/v1/fromradio?all=false",
+                 "/json/blink", "/mesh/json/blink"):
+        status, body, _ = _req(srv, "GET", path, None, {"Cookie": cookie})
+        assert status == 200, (path, body)
+    assert [c[0] for c in proxy.calls] == ["fromradio", "fromradio", "json", "json"]
+
+
+# F2 — the Origin check is CSRF defence (a browser cannot forge Origin). It is
+# NOT cookie-theft defence: a sniffed cookie replays with two forged headers
+# until BIC-13b puts TLS under the cookie. Pinned so the claim stays honest.
+def test_a_sniffed_cookie_replays_with_forged_host_and_origin_until_tls(server, store):
+    srv, _ = server
+    cookie = _login(srv, store)
+    port = srv.server_address[1]
+    status, _, _ = _req(srv, "POST", "/api/settings", "{}",
+                        dict(JSON, Cookie=cookie, Host=f"moc:{port}", Origin=f"http://moc:{port}"))
+    assert status != 401
+
+
+# F3 — `?next=/\evil.com` passed startsWith('/') && !startsWith('//'); browsers
+# read a backslash as a slash for http, so that was a post-login open redirect.
+def test_login_page_redirects_only_to_this_origin(server):
+    srv, _ = server
+    status, body, _ = _req(srv, "GET", "/login")
+    page = body.decode("utf-8")
+    assert status == 200
+    assert "new URL(" in page and "origin === location.origin" in page
+    assert "startsWith('//')" not in page
+
+
+# F4 — one hostile LAN client could spend the operator's 5-try pairing code in
+# milliseconds. A per-client wrong-code budget sits AHEAD of the shared burn.
+def test_one_client_cannot_burn_a_pairing_code(server, store, fresh_budget):
+    srv, _ = server
+    store.start_pairing()
+    statuses = [_req(srv, "POST", "/login", json.dumps({"code": "AAAAAAAA"}),
+                     dict(JSON, Origin=_origin(srv)))[0] for _ in range(6)]
+    assert statuses[:web_auth.LOGIN_TRIES_PER_CLIENT] == [401] * web_auth.LOGIN_TRIES_PER_CLIENT
+    assert set(statuses[web_auth.LOGIN_TRIES_PER_CLIENT:]) == {429}
+    assert store.status()["pairing_pending"] is True
+
+
+def test_a_blocked_client_cannot_redeem_even_the_right_code(server, store, fresh_budget):
+    srv, _ = server
+    code = store.start_pairing()
+    for _ in range(web_auth.LOGIN_TRIES_PER_CLIENT):
+        _req(srv, "POST", "/login", json.dumps({"code": "AAAAAAAA"}), dict(JSON, Origin=_origin(srv)))
+    status, _, cookie = _req(srv, "POST", "/login", json.dumps({"code": code}),
+                             dict(JSON, Origin=_origin(srv)))
+    assert status == 429 and cookie is None
+    assert store.status()["pairing_pending"] is True
+
+
+def test_the_budget_is_per_client_and_expires(monkeypatch):
+    b = web_auth.TryBudget(limit=2, window_s=100.0)
+    now = [1000.0]
+    monkeypatch.setattr(web_auth.time, "monotonic", lambda: now[0])
+    assert b.wait_s("a") == 0 and b.wait_s("b") == 0
+    b.wrong("a"); b.wrong("a")
+    assert b.wait_s("a") > 0 and b.wait_s("b") == 0
+    now[0] += 101
+    assert b.wait_s("a") == 0

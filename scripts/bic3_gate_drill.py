@@ -10,9 +10,14 @@ never counts an attack's success as green. Run it by hand:
     python3 -m pytest scripts/bic3_gate_drill.py -q -rA
     REPO=/opt/meshanchor python3 -m pytest scripts/bic3_gate_drill.py -q -rA   # the twin
 
-When the fixes land, every ATTACK must FAIL (flip them into ``tests/`` as the
-regression pins, asserting 401). Findings + verdict: review_provenance.md
-table row 2026-10-14 "BIC-3 OPERATOR LOGIN — non-author pass".
+Fixes landed 2026-10-15 (F1 gate at the consumer, F4 per-client budget):
+the regression pins live in ``tests/test_web_auth.py`` ("9. the adversarial
+pass"). From that commit on, every ``test_ATTACK_*`` here must FAIL except the
+two F2 pins (``copied_cookie_with_forged_origin``, ``operator_get_with_copied_
+cookie_and_no_origin``) — those encode the ACCEPTED LAN-sniffing exposure
+until BIC-13b TLS and keep passing by design. Any other ATTACK passing is a
+regression. Findings + verdict: review_provenance.md table row 2026-10-14
+"BIC-3 OPERATOR LOGIN — non-author pass".
 """
 import json
 import os
@@ -26,17 +31,29 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests"))
 from test_web_auth import server, store, _req, JSON, _login, _origin  # noqa: E402,F401
 from utils.map_http_handler import MapRequestHandler  # noqa: E402
+class _FakeProxy:
+    """Stands in for the meshtasticd API proxy OBJECT and records what reached
+    it. The consumer functions (`_proxy_fromradio`, `_proxy_json`) stay REAL —
+    the first cut of this drill replaced them with recorders, which also
+    removed the consumer-side gate the F1 fix put there, so the drill kept
+    reading "attack succeeds" after the fix (caught 2026-10-15)."""
+    def __init__(self):
+        self.calls = []
+
+    def get_next_packet(self, client_id):
+        self.calls.append(("fromradio", client_id))
+        return b""
+
+    def proxy_json(self, path):
+        self.calls.append(("json", path))
+        return b"{}"
+
+
 @pytest.fixture
 def proxy_on(monkeypatch):
-    monkeypatch.setattr(MapRequestHandler, "api_proxy", True, raising=False)
-    calls = []
-    monkeypatch.setattr(MapRequestHandler, "_proxy_fromradio",
-                        lambda self: (calls.append(("fromradio", self.path)),
-                                      self._serve_json({"drained": True})), raising=False)
-    monkeypatch.setattr(MapRequestHandler, "_proxy_json",
-                        lambda self, p: (calls.append(("json", p)),
-                                         self._serve_json({"blinked": p})), raising=False)
-    return calls
+    fake = _FakeProxy()
+    monkeypatch.setattr(MapRequestHandler, "api_proxy", fake, raising=False)
+    return fake.calls
 
 
 # F1a: the /mesh/ prefix reaches the SAME fromradio proxy with no operator session

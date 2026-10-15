@@ -213,11 +213,14 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
     c.replaceChildren();
     if (!rx || rx.state === "unknown") { c.textContent = "Receive path: unknown — this page cannot tell what the box hears."; return; }
     if (rx.state !== "connected") { c.textContent = "Receive path: " + rx.state + (rx.error ? " (" + rx.error + ")" : "") + " — nothing new will appear."; return; }
-    var seen = rx.channels_seen || {}, heard = Object.keys(seen).map(Number).sort();
+    var seen = rx.channels_seen || {};
+    var heard = Object.keys(seen).filter(function (k) { return /^\d+$/.test(k); }).map(Number).sort();
+    var unnumbered = seen["unknown"] || 0;   // texts the wire did not number (never shown as channel 0)
     var since = rx.connected_since ? new Date(rx.connected_since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "start";
     var name = function (i) { return chanNames[i] ? chanNames[i] + " (" + i + ")" : "channel " + i; };
     c.append(document.createTextNode("Hearing since " + since + ": "));
     c.append(el("b", null, heard.length ? heard.map(name).join(", ") : "nothing yet"));
+    if (unnumbered) c.append(document.createTextNode(" · " + unnumbered + " unnumbered"));
     var known = Object.keys(chanNames).map(Number).filter(function (i) { return heard.indexOf(i) < 0; });
     if (known.length) c.append(document.createTextNode(" · Not heard: " + known.map(name).join(", ")));
     if (/^mqtt/.test(rx.subscription || "")) c.append(document.createTextNode(
