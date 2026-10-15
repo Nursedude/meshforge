@@ -372,6 +372,9 @@ _OPERATOR_STORE_MODULES = (
     "gateway.message_queue",           # message_queue.db
     "commands.rns",                    # lxmf_storage/ (LXMF ratchets)
     "gateway._rns_bridge_connection",  # lxmf_storage/ (LXMF ratchets)
+    # operator_line_status.json (BIC-15 pane, 2026-10-15) + the line's default
+    # identity/storage — a test that omits status_path must not write the live one.
+    "gateway.operator_line",
     # templates/exported_<ts>.json — LITTER, a NEW file every run by design
     # ("timestamp suffix makes each export unique", so nothing ever
     # overwrites and nothing ever cleans up). 856 had accumulated since

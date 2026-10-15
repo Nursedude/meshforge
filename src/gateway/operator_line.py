@@ -22,10 +22,14 @@ work runs on a worker thread so the router's delivery callback never blocks
 on the snapshot read or a path request.
 
 Persistence: ``~/.config/meshforge/operator_line_identity`` and
-``~/.config/meshforge/operator_line_storage/``.
+``~/.config/meshforge/operator_line_storage/``. Status for the TUI (another
+process): ``~/.local/share/meshforge/operator_line_status.json`` — the data
+dir, the one the sandboxed gateway unit can write (#60); rendered by
+``utils.operator_line_view``.
 """
 from __future__ import annotations
 
+import json
 import logging
 import queue
 import threading
@@ -34,7 +38,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from utils.boundary_timing import call_boundary
-from utils.paths import get_real_user_home
+from utils.operator_line_view import STATUS_FILENAME, STATUS_SCHEMA
+from utils.paths import atomic_write_text, get_real_user_home
 from utils.safe_import import safe_import
 from utils.tx_guard import assert_rns_tx_allowed
 
@@ -55,6 +60,16 @@ _WORK_STOP = object()
 _NUDGE_S = 300.0
 #: LXMF's unverified_reason for "the sender's identity was never heard here".
 _SOURCE_UNKNOWN = 0x01
+#: S2 (gate-10 review): this line has no node directory, so its help must not
+#: advertise ``node`` — an instrument that offers a verb it cannot answer fails
+#: at legibility. Unknown queries get the same list.
+_LINE_HELP = "ask: status | whatsup | wd | link <lat,lon> <lat,lon> | help"
+_LINE_INTENTS = {"status", "whatsup", "wd", "node", "link"}
+
+
+def default_status_path() -> Path:
+    """The gateway's writable data dir (ProtectHome=read-only elsewhere, #60)."""
+    return get_real_user_home() / ".local" / "share" / "meshforge" / STATUS_FILENAME
 
 
 # ── alerts: pure ──────────────────────────────────────────────────────────
@@ -152,6 +167,8 @@ class OperatorLine:
         lxmf_module: Any = None,
         identity_path: Optional[Path] = None,
         storage_path: Optional[Path] = None,
+        status_path: Optional[Path] = None,
+        wall_fn: Callable[[], float] = time.time,
     ) -> None:
         self._cfg = cfg
         self._ops = set(cfg.operators)
@@ -164,6 +181,11 @@ class OperatorLine:
         self._identity_path = identity_path or (
             Path(cfg.identity_file) if cfg.identity_file else config_dir / "operator_line_identity")
         self._storage_path = storage_path or config_dir / "operator_line_storage"
+        self._status_path = status_path or default_status_path()
+        # Wall clock ONLY for what a human reads in the pane; every decision
+        # (cooldowns, page spacing) stays on the monotonic now_fn (hfm #6).
+        self._wall = wall_fn
+        self._last_page_wall: Optional[float] = None
         # BIC-15 B1: NO hostname. This rides in the CLEARTEXT announce on a public
         # RNS network and every hearer caches it; the box names itself inside
         # the encrypted reply/page body instead.
@@ -186,7 +208,8 @@ class OperatorLine:
         self._warmup: Dict[str, int] = {}
         self.stats: Dict[str, int] = {k: 0 for k in (
             "answered", "strangers", "unverified", "cooled", "queue_full",
-            "pages", "deliver_failed", "nudged", "errors", "identity_refused")}
+            "pages", "deliver_failed", "nudged", "errors", "identity_refused",
+            "status_write_errors")}
         self._identity_error: Optional[str] = None
 
     # -- properties ---------------------------------------------------------
@@ -221,8 +244,20 @@ class OperatorLine:
             self._last_reply[src] = now
         from oracle import answer
         query = (text or "").strip() or "help"
-        reply = answer(query, self._snapshot_fn())
+        intent = query.split()[0].lstrip("?").lower() or "status"
+        intent = {"s": "status", "sup": "whatsup", "watchdog": "wd"}.get(intent, intent)
+        snap = self._snapshot_fn()
+        if intent in _LINE_INTENTS:
+            reply = answer(query, snap)
+        else:
+            box = getattr(snap, "box", None)
+            reply = (f"dude-AI@{box}: " if box else "dude-AI: ") + _LINE_HELP
+            intent = "help" if intent == "help" else "unknown"
         self._count("answered")
+        # S1: an ANSWER leaves a witness — "was my line queried while the
+        # phone was gone?" must be answerable from the journal. Prefix only.
+        logger.info("Operator line ANSWERED %s… intent=%s bytes=%d",
+                    src[:8], intent, len(reply.encode("utf-8")))
         return reply
 
     # -- alerts ---------------------------------------------------------------
@@ -245,6 +280,7 @@ class OperatorLine:
         page = compose_page(getattr(snap, "box", None), self._pending)
         self._pending = []
         self._last_page = now
+        self._last_page_wall = self._wall()
         self._count("pages")
         for op in sorted(self._ops):
             if not self._deliver(op, page):
@@ -253,6 +289,13 @@ class OperatorLine:
 
     # -- lifecycle ------------------------------------------------------------
     def start(self) -> bool:
+        """Start, then publish the outcome — a refused start (zero-byte
+        identity: acceptance leg 4) must reach the pane, not only the log."""
+        ok = self._start()
+        self.publish_status()
+        return ok
+
+    def _start(self) -> bool:
         if self._running:
             return True
         if self._rns is None or self._lxmf is None:
@@ -294,6 +337,7 @@ class OperatorLine:
                 self._spawn("OperatorLine-Announce", self._announce_loop)
             if self._cfg.alerts_enabled and self._ops:
                 self._spawn("OperatorLine-Alerts", self._alert_loop)
+            self._spawn("OperatorLine-Status", self._status_loop)
             _set_active(self)
             return True
         except Exception as e:
@@ -318,6 +362,25 @@ class OperatorLine:
         self._lxmf_source = None
         self._destination_hash = None
         _clear_active(self)
+        self.publish_status()
+
+    # -- status for the TUI (another process) ----------------------------------
+    def publish_status(self) -> None:
+        """Write the status file; a failure is COUNTED, never raised (hfm #9)."""
+        doc = {"schema": STATUS_SCHEMA, "written_at": self._wall(), **self.get_status()}
+        try:
+            atomic_write_text(self._status_path, json.dumps(doc, separators=(",", ":")) + "\n")
+        except OSError as e:
+            self._count("status_write_errors")
+            if self.stats["status_write_errors"] == 1:
+                logger.warning("Operator line: status file %s unwritable (%s) — the TUI "
+                               "will read UNKNOWN", self._status_path, e)
+
+    def _status_loop(self) -> None:
+        while self._running:
+            if self._stop_event.wait(self._cfg.alert_poll_s):
+                return
+            self.publish_status()
 
     def _spawn(self, name: str, target: Callable[[], None]) -> None:
         t = threading.Thread(target=target, name=name, daemon=True)
@@ -502,6 +565,7 @@ class OperatorLine:
             "pending_page_lines": len(self._pending), "config_errors": list(self._cfg.errors),
             "warmup": dict(self._warmup),
             "identity_error": self._identity_error,
+            "last_page_at": self._last_page_wall, "alert_poll_s": self._cfg.alert_poll_s,
             "stats": stats,
         }
 

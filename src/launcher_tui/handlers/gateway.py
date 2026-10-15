@@ -87,6 +87,7 @@ class GatewayHandler(BaseHandler):
                 ("templates", "Load Template"),
                 ("validate", "Validate Config"),
                 ("audit", "Delivery Audit       Recent bridged msgs + NomadNet path"),
+                ("operator_line", "Operator Line        BIC-15 LXMF line: status, refusals"),
                 ("save", "Save Configuration"),
                 ("back", "Back"),
             ])
@@ -140,6 +141,7 @@ class GatewayHandler(BaseHandler):
                 "templates": ("Load Template", self._load_template),
                 "validate": ("Validate Config", self._validate_gateway_config),
                 "audit": ("Delivery Audit", self._show_delivery_audit),
+                "operator_line": ("Operator Line", self._show_operator_line),
             }
             entry = dispatch.get(choice)
             if entry:
@@ -217,6 +219,19 @@ class GatewayHandler(BaseHandler):
             lines.extend(["", f"CIRCUIT BREAKERS: (status unavailable: {e})"])
 
         self.ctx.dialog.msgbox("Gateway Status", "\n".join(lines), width=50, height=25)
+
+    def _show_operator_line(self, config):
+        """BIC-15: the line runs inside the gateway process; render the status
+        file it publishes (utils.operator_line_view — OFF / UNKNOWN / RUNNING).
+        Read-only: revoking is a gateway.json edit, shown as the knob."""
+        import time
+        from gateway.operator_line import default_status_path
+        from utils.operator_line_view import read_status, render_lines
+        path = default_status_path()
+        lines = render_lines(config.operator_line.enabled is True, read_status(path),
+                             now=time.time())
+        lines += ["", f"status file: {path}"]
+        self.ctx.dialog.msgbox("Operator Line", "\n".join(lines), width=78, height=22)
 
     def _mesh_bridge_leg_lines(self, config, lines_fn=None):
         """Per-leg rows for the cross-preset bridge: real endpoint + live state.

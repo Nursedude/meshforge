@@ -139,7 +139,11 @@ def test_operator_gets_the_oracle_answer():
 def test_empty_message_gets_help():
     snap = _snap()
     line, _ = _line(snap=snap)
-    assert line.respond(OP, "   ", signature_validated=True) == answer("help", snap)
+    # The LINE's help (S2, 2026-10-15): the oracle's, minus `node` — this line
+    # has no node directory, so it must not advertise the verb.
+    reply = line.respond(OP, "   ", signature_validated=True)
+    assert reply.startswith("dude-AI@moc3: ask: status") and "node" not in reply
+    assert reply != answer("help", snap)
 
 
 def test_unverified_sender_is_ignored_even_when_listed():
