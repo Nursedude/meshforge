@@ -303,6 +303,33 @@ class TryBudget:
                 return 0.0
             return max(0.0, live[0] + self.window_s - now)
 
+    def take(self, key: str) -> float:
+        """Reserve one try ATOMICALLY: 0 = a slot was taken (charge it now,
+        ``refund`` it if the code was right), else the seconds to wait.
+        Checking with ``wait_s`` and charging with ``wrong`` after the redeem
+        let N concurrent wrong codes from ONE client all pass the check and
+        spend the shared burn (non-author read 2026-10-15, N2)."""
+        now = time.monotonic()
+        with self._lock:
+            live = self._live(key, now)
+            if len(live) >= self.limit:
+                return max(0.0, live[0] + self.window_s - now)
+            live.append(now)
+            self._tries[key] = live
+            if len(self._tries) > 1024:      # a LAN cannot have this many clients
+                self._tries = {key: live}
+            return 0.0
+
+    def refund(self, key: str) -> None:
+        """Give back the newest reserved try (the code was right, or the store
+        could not judge it — neither is a wrong guess)."""
+        with self._lock:
+            live = self._tries.get(key)
+            if live:
+                live.pop()
+                if not live:
+                    self._tries.pop(key, None)
+
     def wrong(self, key: str) -> None:
         now = time.monotonic()
         with self._lock:

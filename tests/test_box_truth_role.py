@@ -183,3 +183,37 @@ def test_role_rides_the_framed_export(tmp_path):
     doc = bt.parse_framed(bc.run_export("SHA256:" + "A" * 43, src))
     assert doc["sections"]["role"]["expected"] == {"http_surface": False,
                                                    "watchdog": True}
+
+
+# ── non-author read 2026-10-15 (Opus 5.5) ────────────────────────────────
+# The fake above never resolves `inherits`, so it could not see that the real
+# provisioner raises KeyError(<PARENT>) for a missing parent — the section
+# then said the box's OWN role was "not in the catalog" and reported no error.
+
+_INHERITING_PROVISIONER = _PROVISIONER.replace(
+    "def resolve_role(catalog, role):\n    return catalog[\"roles\"][role]",
+    "def resolve_role(catalog, role):\n"
+    "    roles = catalog[\"roles\"]\n"
+    "    if role not in roles:\n"
+    "        raise KeyError(role)\n"
+    "    node = dict(roles[role])\n"
+    "    if node.get(\"inherits\"):\n"
+    "        parent = resolve_role(catalog, node[\"inherits\"])\n"
+    "        node[\"services\"] = dict(parent.get(\"services\", {}), **node.get(\"services\", {}))\n"
+    "    return node")
+
+
+def test_a_missing_parent_is_a_catalog_error_not_a_missing_role(tmp_path):
+    roles = {"child": {"inherits": "ghostparent", "services": FULL["services"]}}
+    sec, err = bc._role(_src(tmp_path, {"role": "child"}, roles, _INHERITING_PROVISIONER))
+    assert sec["expected"] == {"http_surface": None, "watchdog": None}
+    assert "not in the catalog" not in sec["why"], sec["why"]
+    assert err and "ghostparent" in err
+
+
+def test_an_undecidable_unit_names_itself_in_why(tmp_path):
+    roles = {"x": {"services": {app.HTTP_SURFACE_UNIT: 1, app.WATCHDOG_UNIT: "enabled"}}}
+    sec, err = bc._role(_src(tmp_path, {"role": "x"}, roles))
+    assert sec["expected"] == {"http_surface": None, "watchdog": True}
+    assert err is None
+    assert sec["why"] and app.HTTP_SURFACE_UNIT in sec["why"], sec["why"]

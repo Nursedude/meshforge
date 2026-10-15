@@ -200,7 +200,7 @@ class AuthEndpointsMixin:
         if data is None:
             return
         client = self._client_addr()
-        wait = self.login_tries.wait_s(client)
+        wait = self.login_tries.take(client)
         if wait > 0:
             self.auth_refusals.note(client, "POST", "/login", "wrong-code budget spent")
             self._serve_json({"error": "too many wrong codes from this client",
@@ -210,13 +210,14 @@ class AuthEndpointsMixin:
         try:
             token = self._auth().redeem(str(data.get("code", "")))
         except web_auth.StoreUnavailable as e:
+            self.login_tries.refund(client)
             self._refuse_operator("POST", "/login", str(e))
             return
         if not token:
-            self.login_tries.wrong(client)
             self._refuse_operator("POST", "/login",
                                   "that code is wrong, used, expired or burned — run pair again")
             return
+        self.login_tries.refund(client)   # a right code is not a wrong try
         body = json.dumps({"operator": True}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")

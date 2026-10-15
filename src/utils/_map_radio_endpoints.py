@@ -373,6 +373,15 @@ Webserver:
 
         try:
             channels = conn.get_channels()
+            if not channels:
+                # get_channels() answers [] when the radio could not be read
+                # (it never raises), and a live radio always has a primary
+                # channel — so empty is UNOBSERVED, never "no channels", and
+                # is never cached (non-author read 2026-10-15, N3).
+                self._serve_json({"error": "radio channels could not be read "
+                                           "(meshtasticd unreachable or busy)"},
+                                 status=503)
+                return
             payload = {
                 "channels": channels,
                 "count": len(channels),

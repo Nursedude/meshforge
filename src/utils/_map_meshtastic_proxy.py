@@ -97,7 +97,16 @@ class MeshtasticProxyMixin:
             self.end_headers()
 
     def _proxy_toradio(self):
-        """Forward ToRadio protobuf to meshtasticd via the proxy."""
+        """Forward ToRadio protobuf to meshtasticd via the proxy.
+
+        A WRITE to the radio, so it answers only the write methods: the
+        ``/mesh/`` alias dispatches GETs here too, and GET is outside the
+        default-deny write gate — a LAN ``GET`` with a body transmitted with
+        no session (non-author read 2026-10-15, N1). POST/PUT already met
+        ``_refuse_without_operator`` before dispatch."""
+        if getattr(self, "command", None) not in ("POST", "PUT"):
+            self.send_error(405, "toradio is a write: POST or PUT only")
+            return
         if not self.api_proxy:
             self.send_error(503, "Meshtastic API proxy not running")
             return

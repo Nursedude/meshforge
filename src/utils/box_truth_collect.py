@@ -331,9 +331,15 @@ def _role(src: Sources) -> Tuple[dict, Optional[str]]:
     try:
         mod = _load_provisioner(src.provisioner)
         role_def = mod.resolve_role(mod.load_roles(src.catalog), role)
-    except KeyError:
-        out["why"] = f"role {role!r} is not in the catalog {src.catalog}"
-        return out, None
+    except KeyError as e:
+        missing = e.args[0] if e.args else None
+        if missing == role:
+            out["why"] = f"role {role!r} is not in the catalog {src.catalog}"
+            return out, None
+        # A KeyError for ANOTHER name is a broken catalog (an `inherits` to a
+        # role that does not exist), not an undeclared role — a tooling error.
+        out["why"] = "role undecidable: provisioner or catalog unloadable"
+        return out, f"KeyError: catalog names {missing!r}, which it does not define"[:200]
     except Exception as e:  # noqa: BLE001 - tooling failure, reported as THIS section's error
         out["why"] = "role undecidable: provisioner or catalog unloadable"
         return out, f"{type(e).__name__}: {e}"[:200]
@@ -346,6 +352,13 @@ def _role(src: Sources) -> Tuple[dict, Optional[str]]:
     out["services"] = {str(k): str(v) for k, v in services.items()}
     out["expected"] = {"http_surface": unit_expected(services, src.http_surface_unit),
                        "watchdog": unit_expected(services, src.watchdog_unit)}
+    # Every None verdict says why (the section's contract): silent, or a
+    # state that is not a string.
+    gaps = [f"{u} {'silent' if u not in services else 'state ' + repr(services[u]) + ' is not a string'}"
+            for u in (src.http_surface_unit, src.watchdog_unit)
+            if unit_expected(services, u) is None]
+    if gaps:
+        out["why"] = f"role {role!r} undecidable for: " + "; ".join(gaps)
     return out, None
 
 
