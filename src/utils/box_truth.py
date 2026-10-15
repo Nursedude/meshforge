@@ -41,7 +41,8 @@ FRAME = "__BOX_TRUTH_V1__"
 #: The ALLOWLIST (B7b). A new section needs a row here — never a scan that
 #: lets everything not matching a denylist through (the 09-19 lesson).
 SECTIONS = ("slo", "status", "raw_watchdog", "deployment", "raw_mini",
-            "radio_probe", "services", "schedules", "clock", "ingress")
+            "radio_probe", "services", "schedules", "clock", "ingress",
+            "role")
 
 #: Closed vocabulary of how a read ended (S1). Consumers switch on it; grow
 #: it deliberately and update every consumer in the same change.

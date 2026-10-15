@@ -187,39 +187,11 @@ class TestWatchdogBlockFromPayload:
         assert b["ok"] is False
 
 
-# ── role-declared HTTP-surface expectation (2026-07-20) ──────────────────
-# A gateway-only box declares `meshforge-map: disabled` (too heavy for a ~1GB
-# board), which removes /api/status AND /fleet/slo — the only windows onto its
-# mini + services cells. The spool resolves that declaration into a decided
-# boolean so the NOC can accept the blind spot instead of darkening the whole
-# fleet verdict forever. `None` (undecidable) must never collapse to False.
-class TestHttpSurfaceExpected:
-    def test_gateway_only_role_declares_no_http_surface(self):
-        mod = _load_spool_script()
-        assert mod.http_surface_expected({"role": "gateway-only"}) is False
-
-    def test_a_map_running_role_expects_the_surface(self):
-        mod = _load_spool_script()
-        # Any catalog role that does NOT disable/absent meshforge-map.
-        assert mod.http_surface_expected({"role": "full-noc"}) in (True, None)
-
-    @pytest.mark.parametrize("deploy", [
-        None, {}, {"role": ""}, {"role": 123},
-        {"role": "no-such-role-in-the-catalog"}, "not-a-dict",
-    ])
-    def test_undecidable_is_none_never_false(self, deploy):
-        """THE anti-silence guard, at the source. False is what stops a dark
-        box tainting the verdict, so an absent/unknown/unreadable declaration
-        must stay None — guessing here would quiet a genuinely broken box."""
-        mod = _load_spool_script()
-        assert mod.http_surface_expected(deploy) is None
-
-    def test_unloadable_catalog_is_none(self):
-        mod = _load_spool_script()
-        with patch.object(mod, "Path", side_effect=RuntimeError("boom")):
-            assert mod.http_surface_expected({"role": "gateway-only"}) is None
-
-
+# ── role-declared expectations now arrive FROM THE BOX (session 3 step 2,
+# 2026-10-14): the export's `role` section carries the verdicts; the spool
+# only copies them through (tests/test_box_truth_spool_wiring.py). What
+# stays here is the COLLECTOR's half: the spool doc's fields reach the
+# snapshot unchanged, and an older doc without them reads undecided.
 class TestSpoolCarriesTheDeclaration:
     def test_collector_promotes_role_and_expectation(self, tmp_path):
         """End-to-end through the collector: a map-less box's role reaches the
@@ -251,36 +223,6 @@ class TestSpoolCarriesTheDeclaration:
              patch.object(c, "_http_get_json", return_value=None):
             snap = c._fetch_peer("moc3", is_self=False, port=5000)
         assert snap["http_surface_expected"] is None
-
-
-class TestWatchdogExpected:
-    """The watchdog exemption is judged from the box's DECLARED role, exactly
-    like the HTTP surface — and shares one helper with it so the two cannot
-    drift apart in what counts as "not expected"."""
-
-    def test_field_node_expects_no_watchdog(self):
-        mod = _load_spool_script()
-        assert mod.watchdog_expected({"role": "field-node"}) is False
-
-    def test_a_role_that_runs_one_expects_it(self):
-        mod = _load_spool_script()
-        assert mod.watchdog_expected({"role": "gateway-only"}) is True
-        assert mod.watchdog_expected({"role": "primary"}) is True
-
-    def test_map_and_watchdog_are_judged_INDEPENDENTLY(self):
-        """gateway-only runs no map but DOES run a watchdog. Collapsing the
-        two would silence the one core signal a map-less gateway still owes
-        us (moc3's watchdog arrives as a raw file over the spool)."""
-        mod = _load_spool_script()
-        assert mod.http_surface_expected({"role": "gateway-only"}) is False
-        assert mod.watchdog_expected({"role": "gateway-only"}) is True
-
-    def test_undecidable_stays_none_and_never_false(self):
-        """None is load-bearing: False stops the box tainting the verdict, so
-        guessing it would quiet a genuinely broken box."""
-        mod = _load_spool_script()
-        for raw in ({}, {"role": ""}, {"role": "no-such-role"}, None, "nope"):
-            assert mod.watchdog_expected(raw) is None, raw
 
 
 # --- cron verdicts for map-less boxes (2026-09-07) ----------------------------
@@ -754,9 +696,7 @@ class TestUnflaggedTargetsRefuseLoudly:
         with patch.object(mod, "get_real_user_home", return_value=home), \
              patch.object(mod, "truth_spool_dir", return_value=tmp_path / "spool"), \
              patch.object(mod, "_expect_of", return_value=("SHA256:" + "A" * 43, None)), \
-             patch.object(mod.br, "read_box", side_effect=read), \
-             patch.object(mod, "http_surface_expected", return_value=None), \
-             patch.object(mod, "watchdog_expected", return_value=None):
+             patch.object(mod.br, "read_box", side_effect=read):
             assert mod.main() == 0
         return mod, calls, tmp_path / "spool"
 

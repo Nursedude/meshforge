@@ -24,7 +24,8 @@ SHARED = ("box_truth.py", "box_truth_reader.py", "box_truth_grants.py",
 #: The contract: every name a shared module (or a shared test) reads.
 REQUIRED = ("APP", "INSTALL_DIR", "CONFIG_DIRNAME", "WATCHDOG_PATH",
             "UNIT_GLOB", "MINI_STATE_RELPATH", "NOC_KEY_BASENAME",
-            "GRANT_CLI_SEARCH", "app_version")
+            "GRANT_CLI_SEARCH", "HTTP_SURFACE_UNIT", "WATCHDOG_UNIT",
+            "ROLE_CATALOG", "PROVISIONER", "app_version")
 
 APP_NAMES = ("meshforge", "meshanchor")
 
@@ -108,6 +109,13 @@ def test_app_module_values_are_this_app():
     assert app.GRANT_CLI_SEARCH[0] == app.INSTALL_DIR
     assert sorted(app.GRANT_CLI_SEARCH) == ["/opt/meshanchor", "/opt/meshforge"]
     assert isinstance(app.app_version(), str) and app.app_version()
+    # The box judges its own role from ITS catalog through ITS provisioner;
+    # the HTTP surface is this app's map, the watchdog is the ONE box organ
+    # (MeshForge's) whichever app exports.
+    assert app.HTTP_SURFACE_UNIT == f"{app.APP}-map"
+    assert app.WATCHDOG_UNIT == "meshforge-watchdog"
+    assert app.ROLE_CATALOG == Path(app.INSTALL_DIR) / "docs" / "fleet_roles.yaml"
+    assert app.PROVISIONER == Path(app.INSTALL_DIR) / "scripts" / "provision_role.py"
 
 
 def test_install_dir_matches_this_checkout_on_a_deployed_box():

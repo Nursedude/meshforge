@@ -35,6 +35,18 @@ MINI_STATE_RELPATH = "mini_dudeai_state.json"
 NOC_KEY_BASENAME = "meshforge_noc_ed25519"
 #: Where a center looks for the TARGET's grant CLI, in order.
 GRANT_CLI_SEARCH = ("/opt/meshforge", "/opt/meshanchor")
+#: The box judges its OWN role (session 3 step 2, 2026-10-14): the export's
+#: ``role`` section resolves this app's declared role through this app's
+#: provisioner + catalog and reports whether these two units are expected.
+#: The unit whose absence removes this app's whole HTTP truth surface
+#: (``/api/status`` + ``/fleet/slo``).
+HTTP_SURFACE_UNIT = "meshforge-map"
+#: The box-health watchdog unit a role declares enabled / disabled / absent.
+#: ONE box organ for both apps (see WATCHDOG_PATH), so both seams name it.
+WATCHDOG_UNIT = "meshforge-watchdog"
+#: This app's role catalog, and the provisioner that resolves a role in it.
+ROLE_CATALOG = Path(INSTALL_DIR) / "docs" / "fleet_roles.yaml"
+PROVISIONER = Path(INSTALL_DIR) / "scripts" / "provision_role.py"
 
 
 def app_version() -> str:

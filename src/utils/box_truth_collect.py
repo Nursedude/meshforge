@@ -20,6 +20,14 @@ collector (``utils.fleet_truth_collector``) reads it unchanged:
   schedules      — crontab + the last TWO cron verdicts per name, base64
   clock          — this box's own clock
   ingress        — the RNS->RF ingress ledger
+  role           — the box's OWN verdict on what its declared role expects
+                   (session 3 step 2, 2026-10-14): the role name, the
+                   resolved ``services`` map it rests on, and
+                   ``expected.http_surface`` / ``expected.watchdog`` as
+                   tri-states. Judged HERE through this app's provisioner +
+                   catalog, so a center of either app reads a verdict and
+                   never needs the target app's catalog. ``why`` says what
+                   made it undecidable; None is never collapsed to False.
 
 Security-pass bindings (``.claude/audits/noc_read_grant_security_pass_2026_10_14.md``):
 B1 never reads stdin, never dispatches on SSH_ORIGINAL_COMMAND (recorded as
@@ -35,11 +43,13 @@ import errno
 import fcntl
 import glob
 import http.client
+import importlib.util
 import json
 import os
 import re
 import socket
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -58,6 +68,8 @@ HTTP_TIMEOUT_S = 6.0
 MAX_FILE_BYTES = 8 * 1024 * 1024
 SUBPROCESS_TIMEOUT_S = 10
 WATCHDOG_PATH = app.WATCHDOG_PATH
+#: Role-catalog unit states that mean "this box is not supposed to run it".
+NOT_EXPECTED = ("disabled", "absent")
 PROC_TCP = ("/proc/net/tcp", "/proc/net/tcp6")
 DEV_GLOBS = ("/dev/ttyUSB*", "/dev/ttyACM*")
 _MESHTASTIC_PORT_HEX = "1133"          # :4403, read from /proc only
@@ -80,6 +92,10 @@ class Sources:
     dev_globs: Tuple[str, ...] = DEV_GLOBS
     runner: Callable[..., Any] = subprocess.run
     http_get: Optional[Callable[[str], Optional[dict]]] = None
+    provisioner: Path = app.PROVISIONER
+    catalog: Path = app.ROLE_CATALOG
+    http_surface_unit: str = app.HTTP_SURFACE_UNIT
+    watchdog_unit: str = app.WATCHDOG_UNIT
 
     def _xdg(self, var: str, default: str) -> Path:
         v = self.env.get(var)
@@ -256,6 +272,83 @@ def _schedules(src: Sources) -> dict:
     return {"crontab_b64": ct, "verdicts_b64": cv}
 
 
+def unit_expected(services: Any, unit: str) -> Optional[bool]:
+    """Does a resolved role's ``services`` map expect ``unit`` to run?
+
+    True / False when the role says something about the unit; None when it
+    is silent, because silence is not a declaration. None is load-bearing
+    and must never collapse to False: False is what lets the fleet verdict
+    stop tainting on a gap, so guessing it would quiet a broken box."""
+    if not isinstance(services, dict):
+        return None
+    state = services.get(unit)
+    if not isinstance(state, str):
+        return None
+    return state.strip().lower() not in NOT_EXPECTED
+
+
+def _load_provisioner(path: Path):
+    """importlib-load this app's provisioner from its script path.
+
+    Registered in sys.modules BEFORE exec (py3.12+ @dataclass resolves
+    annotations via sys.modules[cls.__module__]; unregistered it raises
+    mid-import — the repo paid for this twice already). The provisioner
+    ``sys.exit``s at import when its YAML dependency is missing: SystemExit
+    is not an Exception, so it is turned into one here instead of killing
+    the export mid-document."""
+    spec = importlib.util.spec_from_file_location("box_truth_provisioner", str(path))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"no loader for {path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except SystemExit as e:
+        raise ImportError(f"{path.name} exited {e.code} at import") from None
+    return mod
+
+
+def _role(src: Sources) -> Tuple[dict, Optional[str]]:
+    """The box's own role verdict. Returns (section, error): the section is
+    ALWAYS a full object (expected tri-states present), ``why`` names what
+    made it undecidable; ``error`` is set only when the tooling failed
+    (provisioner/catalog unloadable), never for an absent or silent
+    declaration."""
+    out: Dict[str, Any] = {"app": app.APP, "name": None, "catalog": str(src.catalog),
+                           "services": None,
+                           "expected": {"http_surface": None, "watchdog": None},
+                           "why": None}
+    dep, dep_err = _json_file(src.deployment_path)
+    if dep is None:
+        out["why"] = (f"no role declared: deployment.json "
+                      f"{dep_err or 'absent'} at {src.deployment_path}")
+        return out, None
+    role = dep.get("role")
+    if not isinstance(role, str) or not role:
+        out["why"] = "no role declared in deployment.json"
+        return out, None
+    out["name"] = role
+    try:
+        mod = _load_provisioner(src.provisioner)
+        role_def = mod.resolve_role(mod.load_roles(src.catalog), role)
+    except KeyError:
+        out["why"] = f"role {role!r} is not in the catalog {src.catalog}"
+        return out, None
+    except Exception as e:  # noqa: BLE001 - tooling failure, reported as THIS section's error
+        out["why"] = "role undecidable: provisioner or catalog unloadable"
+        return out, f"{type(e).__name__}: {e}"[:200]
+    services = role_def.get("services") if isinstance(role_def, dict) else None
+    if not isinstance(services, dict):
+        out["why"] = f"role {role!r} declares no services"
+        return out, None
+    # Judged from the RAW map (a non-string state is undecidable, as the
+    # center always held); carried on the wire as strings.
+    out["services"] = {str(k): str(v) for k, v in services.items()}
+    out["expected"] = {"http_surface": unit_expected(services, src.http_surface_unit),
+                       "watchdog": unit_expected(services, src.watchdog_unit)}
+    return out, None
+
+
 def collect_sections(src: Sources) -> Tuple[Dict[str, Any], Dict[str, str]]:
     """(sections, section_errors). Every allowlisted key is present; a value
     of None means unobservable (the error map says why when it is an error,
@@ -287,6 +380,7 @@ def collect_sections(src: Sources) -> Tuple[Dict[str, Any], Dict[str, str]]:
     put("schedules", _schedules, src)
     put("clock", lambda: {"now": int(time.time())})
     put("ingress", _json_file, src.ingress_path)
+    put("role", _role, src)
     assert tuple(sections) == bt.SECTIONS, "section order drifted from the allowlist"
     return sections, errors
 

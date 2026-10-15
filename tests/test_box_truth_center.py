@@ -340,3 +340,20 @@ def test_remote_with_no_grant_cli_fails_loud_naming_the_dirs(two_dirs):
     p = _run_remote(bc._revoke_cmd(bt.parse_noc_pubkey(_pub()).fingerprint))
     assert p.returncode == 127 and p.stdout == ""
     assert "not installed under" in p.stderr and own in p.stderr and sib in p.stderr
+
+
+def test_remote_cli_is_one_simple_command_for_any_login_shell(two_dirs):
+    """The target's LOGIN shell parses what the center sends. A bare POSIX
+    `for…do…done` parses in bash/dash but not in fish or csh (non-author
+    pass on 3f4c9996, item 1); wrapped as `sh -c '<loop>'` every login shell
+    sees ONE simple command with one quoted argument. Measured here through
+    sh (the fleet's shells); fish/csh reasoned, not installed."""
+    import shlex
+    root, own, _sib = two_dirs
+    _install(root, "own")
+    cmd = bc._revoke_cmd("SHA256:" + "A" * 43)
+    words = shlex.split(cmd)
+    assert words[:2] == ["sh", "-c"] and len(words) == 3, words
+    assert words[2].startswith("for d in ")
+    p = _run_remote(cmd)
+    assert p.returncode == 0, p.stderr

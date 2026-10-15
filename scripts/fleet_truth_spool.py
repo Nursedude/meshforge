@@ -64,94 +64,24 @@ from utils.paths import atomic_write_text, get_real_user_home  # noqa: E402
 _SECTION_NAMES = bt.SECTIONS
 
 
-#: Service whose absence removes a box's whole HTTP truth surface
-#: (/api/status + /fleet/slo are both served by it).
-_HTTP_SURFACE_SERVICE = "meshforge-map"
-#: Service whose absence removes the box's LOCAL probe coverage. Judged
-#: separately from the HTTP surface: the spool reads watchdog.json as a raw
-#: FILE, so a map-less box that still runs a watchdog keeps owing us that
-#: signal (moc3). Only a role that declares the unit absent/disabled is
-#: exempt — and then the cell is `absent` (the organ is not here), never
-#: `accepted_blind` (which claims it may be running unseen).
-_WATCHDOG_SERVICE = "meshforge-watchdog"
-#: Role-catalog service states that mean "this box is not supposed to run it".
-_NOT_EXPECTED = ("disabled", "absent")
+def expected_from_role(role_section) -> "tuple[Optional[bool], Optional[bool]]":
+    """(http_surface_expected, watchdog_expected) as the BOX judged them.
 
+    Session 3 step 2 (2026-10-14): the export's ``role`` section carries the
+    target's own verdict, resolved on the target through ITS provisioner and
+    ITS catalog. This center copies it through and judges nothing — so a
+    center of either app reads a box of either app with no catalog crossing
+    the wire. None when the export predates the section, the box could not
+    decide (its ``why`` says what), or a value is not a bool: never coerced,
+    never False by default (False is what stops a dark box tainting the
+    fleet verdict)."""
+    exp = role_section.get("expected") if isinstance(role_section, dict) else None
+    if not isinstance(exp, dict):
+        return None, None
 
-def _unit_expected(deployment_raw, unit: str) -> "Optional[bool]":
-    """Does this box's DECLARED role expect ``unit`` to be running?
-
-    ``True`` / ``False`` when the box's own ``deployment.json`` names a role
-    the catalog knows AND that role says something about ``unit``; ``None``
-    when we cannot tell — no declaration, unknown role, unloadable catalog,
-    or a role that is simply silent about this unit.
-
-    ``None`` is load-bearing and must never collapse to ``False``: the NOC
-    treats "not expected" as a gap that stops tainting the fleet verdict, so
-    guessing it would silence a genuinely broken box. An undeclared box keeps
-    darkening the verdict, which is the honest default (honest_failure_modes
-    #2 — unobservable is not permission to look away).
-    """
-    if not isinstance(deployment_raw, dict):
-        return None
-    role = deployment_raw.get("role")
-    if not isinstance(role, str) or not role:
-        return None
-    try:
-        import importlib.util
-        script = Path(__file__).resolve().parent / "provision_role.py"
-        spec = importlib.util.spec_from_file_location("provision_role", script)
-        if spec is None or spec.loader is None:
-            return None
-        mod = importlib.util.module_from_spec(spec)
-        # Register BEFORE exec: py3.12+ @dataclass resolves annotations via
-        # sys.modules[cls.__module__], so an unregistered module raises
-        # AttributeError mid-import and this whole check silently degrades to
-        # "undecidable". Same pattern (and same comment) as
-        # watchdog_probes_drift._plan_role_actions — the repo already paid for
-        # this once; a test caught it the second time.
-        sys.modules[spec.name] = mod
-        spec.loader.exec_module(mod)
-        role_def = mod.resolve_role(mod.load_roles(mod.DEFAULT_ROLES_FILE), role)
-    except Exception:
-        return None            # catalog/tooling unavailable → indeterminate
-    services = role_def.get("services")
-    if not isinstance(services, dict):
-        return None
-    state = services.get(unit)
-    if not isinstance(state, str):
-        # The role catalog says nothing about this unit for this role. Silence
-        # is not a declaration — stay indeterminate rather than inventing one.
-        return None
-    return state.strip().lower() not in _NOT_EXPECTED
-
-
-def http_surface_expected(deployment_raw) -> "Optional[bool]":
-    """Does the declared role expect /api/status + /fleet/slo to exist?"""
-    return _unit_expected(deployment_raw, _HTTP_SURFACE_SERVICE)
-
-
-def watchdog_expected(deployment_raw) -> "Optional[bool]":
-    """Does the declared role expect a LOCAL watchdog on this box?
-
-    2026-08-31. Without this, a box whose role legitimately runs no watchdog
-    (the zero-class `field-node` tier — ~46 MB RSS does not fit a 512MB-class
-    board) darkened the fleet verdict FOREVER, because `watchdog` is a
-    core-observability subsystem and is deliberately NOT part of the
-    HTTP-surface exemption. A permanently-dark verdict is not a safe default:
-    it trains the reader to ignore `dark`, which costs more than the gap it
-    was flagging.
-
-    The distinction this restores is the domain's oldest one — `inert` (the
-    organ is not here, by declaration) is not `indeterminate` (we should be
-    able to see it and cannot). Only the second is a finding.
-
-    ⚠️ This does NOT make such a box unwatched: reachability always taints,
-    and `mini`, `services` and `radio` are still observed through the ssh
-    spool and still taint when they fail. What is given up is the box's LOCAL
-    probe coverage, which is exactly what the role declaration says it gave up.
-    """
-    return _unit_expected(deployment_raw, _WATCHDOG_SERVICE)
+    def tri(v):
+        return v if isinstance(v, bool) else None
+    return tri(exp.get("http_surface")), tri(exp.get("watchdog"))
 
 
 def sections_from_doc(doc: "Optional[dict]") -> dict:
@@ -243,13 +173,11 @@ def main() -> int:
             **sections,
             **extra,
         }
-        # Resolved HERE, not at the NOC's render time: the role catalog and
-        # the box's declaration are both in hand at this moment, and the
-        # consumer should read a decided boolean rather than re-derive it.
-        # None (undecidable) is written through as null, never as False.
-        doc["http_surface_expected"] = http_surface_expected(
-            sections.get("deployment"))
-        doc["watchdog_expected"] = watchdog_expected(sections.get("deployment"))
+        # Decided ON THE BOX (its export's `role` section) and copied through
+        # as the two fields the collector has always read. None (undecidable
+        # or an older export) is written as null, never as False.
+        doc["http_surface_expected"], doc["watchdog_expected"] = expected_from_role(
+            sections.get("role"))
         got = [k for k, v in sections.items() if v is not None]
         try:
             atomic_write_text(spool_dir / f"{target.alias}.json",

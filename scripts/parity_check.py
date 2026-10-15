@@ -135,6 +135,7 @@ BYTE_IDENTICAL = (
     "tests/test_box_truth_grants.py",
     "tests/test_box_truth_center.py",
     "tests/test_box_truth_export.py",
+    "tests/test_box_truth_role.py",
     # mini-dudeai GENERIC ENGINE CORE (second-brain arc WS-A, 2026-07-22). The
     # observation-only rule/cadence loop is now twinned onto MeshAnchor. These
     # modules carry ZERO app-specific imports (verified import-clean across the

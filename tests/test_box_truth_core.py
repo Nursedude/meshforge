@@ -166,10 +166,13 @@ def test_parse_framed_refuses_unknown_major():
 
 # ── B7b: allowlist + tripwire ────────────────────────────────────────────
 
-def test_sections_allowlist_is_the_ten_named():
+def test_sections_allowlist_is_the_eleven_named():
+    # `role` joined last (session 3 step 2, 2026-10-14): the box's own verdict
+    # on what its declared role expects — additive in v1, an older export
+    # simply lacks it and the center reads None.
     assert bt.SECTIONS == ("slo", "status", "raw_watchdog", "deployment",
                            "raw_mini", "radio_probe", "services", "schedules",
-                           "clock", "ingress")
+                           "clock", "ingress", "role")
 
 
 @pytest.mark.parametrize("planted", [

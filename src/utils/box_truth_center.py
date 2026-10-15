@@ -178,12 +178,18 @@ def _remote_grant_cli(args: str) -> str:
     """Run the TARGET's grant CLI with ``args`` (already quoted): the first
     ``app.GRANT_CLI_SEARCH`` dir that carries it, else exit 127 naming the
     dirs tried. The dirs are module constants; nothing caller-supplied is
-    interpolated outside ``args``."""
+    interpolated outside ``args``.
+
+    Wrapped as ``sh -c '<loop>'`` because the string is parsed by the
+    target account's LOGIN shell: a bare POSIX ``for…do…done`` parses in
+    bash/dash but not in fish or csh (non-author pass on 3f4c9996, item 1).
+    Every login shell sees one simple command with one quoted argument."""
     dirs = " ".join(shlex.quote(d) for d in app.GRANT_CLI_SEARCH)
     cli = f'"$d/scripts/{GRANT_CLI_BASENAME}"'
-    return (f"for d in {dirs}; do if [ -f {cli} ]; then "
+    loop = (f"for d in {dirs}; do if [ -f {cli} ]; then "
             f"exec {bt.PYTHON} -I {cli} {args}; fi; done; "
             f"echo \"{GRANT_CLI_BASENAME} not installed under {dirs}\" >&2; exit 127")
+    return f"sh -c {shlex.quote(loop)}"
 
 
 def _add_cmd(key: bt.NocKey, center: str) -> str:

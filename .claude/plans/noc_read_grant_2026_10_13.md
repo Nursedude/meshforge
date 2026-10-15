@@ -170,7 +170,39 @@ are refused; `from=` refuses exactly like a revoke.
 
 ## Session 3 brief (written 2026-10-14 ~16:40 HST by the arc's REVIEWER, Fable 5.1 — for an Opus BUILD session; builder ≠ reviewer)
 
-> **STATUS 2026-10-14 ~21:00 HST (Opus 5.5, builder): steps 0–1 DONE, steps 2–8 OPEN.**
+> **STATUS 2026-10-14 ~23:30 HST (Fable 5.1, builder of step 2 — operator's
+> "yes do 1" after the design round below): steps 0–2 DONE, steps 3–8 OPEN.**
+>
+> **Step 2 decisions (grilled 2026-10-14 ~22:40, operator took every
+> recommendation):** (Q1) **the BOX judges its own role** — the export gained
+> a `role` section (declared role, the resolved `services` map it rests on,
+> `expected.http_surface` / `expected.watchdog` tri-states, `why`), judged
+> on the box through ITS provisioner + ITS catalog via four new seam names
+> (`HTTP_SURFACE_UNIT`, `WATCHDOG_UNIT`, `ROLE_CATALOG`, `PROVISIONER`); the
+> spool writer copies the verdict through and carries NO catalog, NO
+> provisioner import (pinned by `test_spool_writer_no_longer_judges_roles`).
+> A center of either app reads a box of either app with no catalog crossing
+> the wire. (Q2) additive in `box_truth/v1`: an older export lacks the
+> section and reads None. (Q3) NO center-side fallback during the roll;
+> lehua's watchdog cell may read dark for ≤2 spool ticks until it pulls —
+> timed in the touch log. (Q4, item 3) **an export is the exporting APP's
+> truth about the box**: shared box organs (watchdog) are read where they
+> live; app organs (ingress) are the app's own. MA's absent ingress stays
+> DARK because MA has no RNS→RF allowlist — the fix is the queued MA
+> allowlist (review_provenance 2026-10-07 item 5), not the cell. (Q5, item
+> 4) MA's catalog DECLARES `meshforge-watchdog` per role (`enabled` for
+> meshanchor-noc, which runs it; a MeshAnchor-only role says `absent`), so
+> the box's verdict makes it inert there; MA's `fleet_truth` already honours
+> `watchdog_expected is False` — it arrives with MA's spool writer (step 3).
+> (Q6, item 2) CLI-by-file-presence stays until step 3, where the TARGET's
+> grant CLI must refuse when its own app has no running unit on the box (a
+> dormant checkout must not answer). Item 1 fixed: `_remote_grant_cli` is
+> `sh -c '<loop>'` (measured through sh; fish/csh reasoned). Measured:
+> role leg 45 ms, whole export 192 ms on the manager box.
+>
+> **Non-author pass on step 2 QUEUED** (review_provenance, builder = Fable
+> 5.1): the new section is PRODUCED on every granted box, so a wrong verdict
+> moves /fleet cells fleet-wide.
 > Step 0 (not in the original list, found needed): the five shared modules
 > carried 12 MeshForge literals, so a per-app seam came first —
 > `src/utils/box_truth_app.py` in EACH repo (same names, different values;
