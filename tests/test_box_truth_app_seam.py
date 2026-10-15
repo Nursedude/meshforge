@@ -25,7 +25,8 @@ SHARED = ("box_truth.py", "box_truth_reader.py", "box_truth_grants.py",
 REQUIRED = ("APP", "INSTALL_DIR", "CONFIG_DIRNAME", "WATCHDOG_PATH",
             "UNIT_GLOB", "MINI_STATE_RELPATH", "NOC_KEY_BASENAME",
             "GRANT_CLI_SEARCH", "HTTP_SURFACE_UNIT", "WATCHDOG_UNIT",
-            "ROLE_CATALOG", "PROVISIONER", "app_version")
+            "ROLE_CATALOG", "PROVISIONER", "app_version", "expect_hostkey_of",
+            "HOSTKEY_FIX")
 
 APP_NAMES = ("meshforge", "meshanchor")
 

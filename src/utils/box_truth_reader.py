@@ -189,8 +189,7 @@ def read_box(alias: str, expect_hostkey: Optional[str], *,
     res = ReadResult(alias=alias, outcome="unreachable", pinned=key_path is not None)
     if not expect_hostkey:
         res.outcome = "identity_unpinned"
-        res.stderr_head = ("no expect_hostkey in the fleet_naming registry for "
-                           f"{alias} — stamp it (scripts/fleet_hostkey_stamp.py) "
+        res.stderr_head = (f"no pinned host key for {alias} — {app.HOSTKEY_FIX} "
                            "before reading it")
         return res
     with tempfile.TemporaryDirectory(prefix="box_truth_kh.") as td:

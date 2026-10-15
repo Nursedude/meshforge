@@ -21,7 +21,7 @@ identity checked against the registry's ``expect_hostkey`` on every read (S2),
 bounded (S8), and ending in ONE named outcome (S1) written to the spool as
 ``transport`` so the NOC can say "grant refused" instead of "no response".
 
-Targets file: ~/.config/meshforge/truth_spool_targets — ``<alias> [noc]`` per
+Targets file: ~/.config/<app>/truth_spool_targets — ``<alias> [noc]`` per
 line, '#' comments (``utils.box_truth_center``, shared with the grant CLI that
 writes it). ``noc`` = read with the pinned grant key only (S3). A line WITHOUT it is
 not read at all: its spool row says ``refused_grant`` and names the push
@@ -36,8 +36,8 @@ darkness; box-down paging belongs to fleet_offline_check, not this organ);
 unreadable).
 
 Crontab (manager box):
-    */2 * * * * /usr/bin/python3 /opt/meshforge/scripts/fleet_truth_spool.py \
-        >/dev/null 2>&1; /opt/meshforge/scripts/cron_verdict.sh truth_spool $?
+    */2 * * * * /usr/bin/python3 <INSTALL_DIR>/scripts/fleet_truth_spool.py \
+        >/dev/null 2>&1; <INSTALL_DIR>/scripts/cron_verdict.sh truth_spool $?  (installed by the grant CLI: box_truth_center.SPOOL_CRON_LINE)
 """
 
 import json
@@ -55,8 +55,9 @@ from typing import Optional  # noqa: E402
 
 from utils import box_truth as bt  # noqa: E402
 from utils import box_truth_reader as br  # noqa: E402
-from utils.box_truth_center import read_targets, targets_path  # noqa: E402
-from utils.fleet_truth_collector import SPOOL_SCHEMA, truth_spool_dir  # noqa: E402
+from utils import box_truth_app as app  # noqa: E402
+from utils.box_truth_center import (  # noqa: E402
+    SPOOL_SCHEMA, read_targets, targets_path, truth_spool_dir)
 from utils.paths import atomic_write_text, get_real_user_home  # noqa: E402
 
 #: The ten box_truth/v1 sections, carried into the spool doc under the same
@@ -94,15 +95,9 @@ def sections_from_doc(doc: "Optional[dict]") -> dict:
 
 
 def _expect_of(alias: str) -> "tuple[Optional[str], Optional[str]]":
-    """(expect_hostkey, why-not). An unreadable registry is named as such —
-    never "stamp it", which is the wrong fix (review B 6)."""
-    from utils.fleet_naming import load_registry_quiet, registry_path
-    reg = load_registry_quiet()
-    if reg is None:
-        return None, (f"fleet_naming registry unreadable ({registry_path()}) — "
-                      "fix it: scripts/fleet_naming_audit.py")
-    host = reg.hosts.get(alias)
-    return (host.expect_hostkey if host else None), None
+    """(expect_hostkey, why-not) from THIS app's identity source (the seam:
+    MeshForge's fleet_naming registry, MeshAnchor's fleet.json ``ssh``)."""
+    return app.expect_hostkey_of(alias)
 
 
 def fetch_box(target, *, home: Path, expect_of=None,

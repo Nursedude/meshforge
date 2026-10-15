@@ -170,6 +170,16 @@ are refused; `from=` refuses exactly like a revoke.
 
 ## Session 3 brief (written 2026-10-14 ~16:40 HST by the arc's REVIEWER, Fable 5.1 — for an Opus BUILD session; builder ≠ reviewer)
 
+> **STATUS 2026-10-15 ~06:00 HST (Opus 5.5, builder of step 3 slice 1; reviewers of steps 0–2 were Fable): step 3 PARTLY BUILT, NOT deployed, non-author read QUEUED.**
+> Built (MF + MA, red-first, both suites before push):
+> - **Spool constants + reader are SHARED** (`box_truth_center.SPOOL_SCHEMA / SPOOL_STALE_S / truth_spool_dir() / read_spool()`); MF's collector re-exports them — one freshness rule for both apps (hfm #5).
+> - **The spool writer and the grant CLI are BYTE-IDENTICAL** in both apps (`scripts/fleet_truth_spool.py`, `scripts/box_truth_grant.py`, parity BYTE_IDENTICAL). Per-app values come from two new seam names: `expect_hostkey_of(alias)` (MF: fleet_naming registry; MA: `fleet.json` `peers[].ssh.expect_hostkey`, alias = `ssh.alias` else `name`, a malformed fingerprint is NO pin) and `HOSTKEY_FIX` (the fix text the shared refusals quote).
+> - **Q6 built:** `box_truth_collect.own_app_running()` — ANY active unit of the app, system OR user scope, every unit type; the grant CLI's `add` refuses on False AND on None (systemd unreadable). Measured before building: one granted box runs MF only as a user unit + a system timer (a services-only check would have refused it).
+> - **MA collector spool leg:** a dark `fleet.json` peer is read from the shared spool by its `ssh.alias` (fresh-only; S1 transport reason when empty-handed; the box's role verdicts carried as bool-or-absent). `self` never reads a spool.
+> **DEVIATION from Q11 (operator to confirm):** MA registration stays in the SHARED targets file (`~/.config/meshanchor/truth_spool_targets`, written by the shared grant code); `fleet.json` carries only the IDENTITY half (`ssh.expect_hostkey`, operator-written, tooling-read). Reason: a CLI rewriting the hand-edited `fleet.json` is the concurrent-editor hazard already deferred as N6, and a second registration format would split the byte-identical center.
+> **Step 4 BUILT (MA, red-first):** `lxmf_broadcast_bridge._load_or_create_identity` now uses the byte-identical `gateway/identity_store.py` (MF F1) — measured red on the old MA code: a zero-byte / 65-byte / 5-byte identity file made `start()` return **True** with identity None (`from_file` returns None, never raises). Now: refuse, corpse kept byte-for-byte, `identity_error` + `stats.identity_refused` + ERROR. 41 MA test fixtures modelled `from_file` as RAISING (pinning the author, the F1 lesson again) → now the library-faithful `tests/_fake_rns_identity.py`. `identity_store.py` + the fake are parity BYTE_IDENTICAL.
+> **Still open in step 3:** MA's spool leg carries `status`/`slo` only — synthesising watchdog/mini/radio blocks for a map-less target needs `watchdog_block_from_payload` / `radio_connection_from_probe` / `judge_spooled_schedules` on the MA side (= the "deferred move", work item 2); MA `_CORE_OBSERVABILITY` watchdog DARK on an MA-only box reached over HTTP (item 4); no spool cron on any MA center yet (installed by the first `push` from MA — step 7, operator's words). Steps 4–8 unchanged.
+
 > **STATUS 2026-10-14 ~23:30 HST (Fable 5.1, builder of step 2 — operator's
 > "yes do 1" after the design round below): steps 0–2 DONE, steps 3–8 OPEN.**
 >

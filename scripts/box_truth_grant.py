@@ -10,7 +10,7 @@ ON A TARGET BOX (who may read me):
   dedupe [--apply]                      remove exact duplicate authorized_keys lines
 
 ON A CENTER (what I read):
-  center-key [--create]                 show / create ~/.ssh/meshforge_noc_ed25519
+  center-key [--create]                 show / create ~/.ssh/<app>_noc_ed25519
   push TARGET --confirm TARGET          grant this center's key on TARGET via its own
                                         `add` (identity-checked first, B6), verify a
                                         pinned read, register TARGET, ensure the spool cron
@@ -34,7 +34,9 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from utils import box_truth as bt  # noqa: E402
+from utils import box_truth_app as app  # noqa: E402
 from utils import box_truth_center as bc  # noqa: E402
+from utils import box_truth_collect as bcol  # noqa: E402
 from utils import box_truth_grants as bg  # noqa: E402
 from utils import box_truth_reader as br  # noqa: E402
 from utils.paths import get_real_user_home  # noqa: E402
@@ -43,10 +45,7 @@ EXPORT_PATH = str(Path(os.path.realpath(__file__)).parent / bt.EXPORT_BASENAME)
 
 
 def _registry_expect(alias):
-    from utils.fleet_naming import load_registry_quiet
-    reg = load_registry_quiet()
-    host = reg.hosts.get(alias) if reg else None
-    return host.expect_hostkey if host else None
+    return app.expect_hostkey_of(alias)[0]
 
 
 def _when(ts):
@@ -70,6 +69,12 @@ def cmd_list(home, _a):
 
 
 def cmd_add(home, a):
+    # Q6: only an app that RUNS here may grant a read of this box.
+    running, why = bcol.own_app_running(bcol.Sources(home=home))
+    if running is not True:
+        print(f"REFUSED: {why} — run this box's grant from the app it runs "
+              f"(this is {app.APP} at {app.INSTALL_DIR})")
+        return 1
     plan = bg.plan_add(home, a.pubkey, center=a.center, export_path=EXPORT_PATH,
                        from_=a.from_)
     print(plan.render())

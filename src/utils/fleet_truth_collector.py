@@ -54,43 +54,18 @@ _IPV4_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
 # (+ raw watchdog.json for map-less boxes) into this spool. The collector
 # reads it ONLY when the direct fetch failed, and only while FRESH — a
 # stale spool reads dark, never last-known-healthy.
-SPOOL_SCHEMA = "truth_spool/v1"
-SPOOL_STALE_S = 360.0  # 3x the */2min cron cadence
-
-
-def truth_spool_dir() -> "Path":
-    """``$XDG_STATE_HOME/meshforge/truth_spool`` (operator-owned) — shared
-    constant between the cron writer and this reader."""
-    from pathlib import Path
-    from utils.paths import get_real_user_home
-    import os as _os
-    xdg = _os.environ.get("XDG_STATE_HOME")
-    base = Path(xdg) if xdg else get_real_user_home() / ".local" / "state"
-    return base / "meshforge" / "truth_spool"
+# The spool constants are SHARED with MeshAnchor and the writer (one constant
+# for both halves, hfm #5); re-exported here for the existing importers.
+from utils.box_truth_center import (  # noqa: E402,F401
+    SPOOL_SCHEMA, SPOOL_STALE_S, truth_spool_dir)
 
 
 def _read_spool(alias: str, *, now: Optional[float] = None) -> Optional[Dict[str, Any]]:
-    """Fresh spool doc for ``alias``, or None (absent / unreadable / stale /
-    wrong schema). Never raises."""
-    try:
-        path = truth_spool_dir() / f"{alias}.json"
-        with open(path, "r", encoding="utf-8") as fh:
-            doc = json.load(fh)
-        if not isinstance(doc, dict) or doc.get("schema") != SPOOL_SCHEMA:
-            return None
-        fetched_at = doc.get("fetched_at")
-        if not isinstance(fetched_at, (int, float)):
-            return None
-        wall_now = now if now is not None else time.time()
-        age = wall_now - fetched_at
-        # Clamp the backward branch too (honest_failure_modes #6, RTC-less
-        # fleet): a writer stamp AHEAD of this reader's clock is not evidence
-        # of freshness — it is a clock fault, and must read stale, never fresh.
-        if age < 0 or age > SPOOL_STALE_S:
-            return None  # stale spool = unobservable, never last-known-healthy
-        return doc
-    except (OSError, ValueError):
-        return None
+    """Fresh spool doc for ``alias`` or None — the SHARED reader
+    (``box_truth_center.read_spool``), through this module's
+    ``truth_spool_dir`` so a test that points it elsewhere still applies."""
+    from utils.box_truth_center import read_spool
+    return read_spool(alias, now=now, spool_dir=truth_spool_dir())
 
 
 def _mask_ip_alias(alias: str) -> str:

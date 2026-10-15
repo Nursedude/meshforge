@@ -105,7 +105,7 @@ def test_push_grants_via_target_cli_verifies_registers_and_wires_cron(home):
 
 @pytest.mark.parametrize("kw,why", [
     (dict(confirm="moc"), "typed confirmation"),
-    (dict(expect=None), "no expect_hostkey"),
+    (dict(expect=None), "no pinned host key"),
 ])
 def test_push_refuses_before_any_remote_command(home, kw, why):
     f = Fleet()

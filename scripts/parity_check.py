@@ -136,6 +136,16 @@ BYTE_IDENTICAL = (
     "tests/test_box_truth_center.py",
     "tests/test_box_truth_export.py",
     "tests/test_box_truth_role.py",
+    "tests/test_box_truth_step3.py",
+    # session 3 step 3 (2026-10-15): the spool writer and the grant CLI are
+    # the SAME file in both apps — per-app values come from the seam
+    # (box_truth_app.expect_hostkey_of / INSTALL_DIR / CONFIG_DIRNAME).
+    "scripts/fleet_truth_spool.py",
+    "scripts/box_truth_grant.py",
+    # step 4 (2026-10-15): the refuse-never-recreate identity loader and its
+    # library-faithful fake — one copy of the address-safety rule.
+    "src/gateway/identity_store.py",
+    "tests/_fake_rns_identity.py",
     # mini-dudeai GENERIC ENGINE CORE (second-brain arc WS-A, 2026-07-22). The
     # observation-only rule/cadence loop is now twinned onto MeshAnchor. These
     # modules carry ZERO app-specific imports (verified import-clean across the

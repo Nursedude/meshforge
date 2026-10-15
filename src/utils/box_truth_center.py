@@ -45,6 +45,45 @@ SPOOL_CRON_LINE = (
     f'>"$HOME/.local/state/{app.CONFIG_DIRNAME}/cron_out/truth_spool.out" 2>&1; '
     f"{app.INSTALL_DIR}/scripts/cron_verdict.sh truth_spool $?")
 PIN_FLAG = "noc"
+
+#: The truth spool (writer: scripts/fleet_truth_spool.py; reader: each app's
+#: fleet_truth_collector). ONE constant for both halves (hfm #5) — it lived
+#: in MeshForge's collector until session 3 step 3 (2026-10-15).
+SPOOL_SCHEMA = "truth_spool/v1"
+SPOOL_STALE_S = 360.0  # 3x the */2min cron cadence
+
+
+def truth_spool_dir() -> Path:
+    """``$XDG_STATE_HOME/<app>/truth_spool`` (operator-owned)."""
+    xdg = os.environ.get("XDG_STATE_HOME")
+    base = Path(xdg) if xdg else get_real_user_home() / ".local" / "state"
+    return base / app.CONFIG_DIRNAME / "truth_spool"
+
+
+def read_spool(alias: str, *, now: Optional[float] = None,
+               spool_dir: Optional[Path] = None) -> Optional[dict]:
+    """Fresh spool doc for ``alias``, or None (absent / unreadable / stale /
+    wrong schema / stamped in the future). Never raises. The ONE reader both
+    apps' collectors use, so freshness means the same thing everywhere."""
+    import json
+    import time
+    try:
+        path = (spool_dir or truth_spool_dir()) / f"{alias}.json"
+        with open(path, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+        if not isinstance(doc, dict) or doc.get("schema") != SPOOL_SCHEMA:
+            return None
+        fetched_at = doc.get("fetched_at")
+        if not isinstance(fetched_at, (int, float)):
+            return None
+        age = (now if now is not None else time.time()) - fetched_at
+        # a stamp AHEAD of this reader's clock is a clock fault, never
+        # evidence of freshness (honest_failure_modes #6, RTC-less fleet)
+        if age < 0 or age > SPOOL_STALE_S:
+            return None  # stale = unobservable, never last-known-healthy
+        return doc
+    except (OSError, ValueError):
+        return None
 _ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -236,8 +275,8 @@ def push(alias: str, confirm: str, *, home: Path, expect: Optional[str],
         rep.step(f"typed confirmation {confirm!r} != target {alias!r}", False)
         return rep
     if not expect:
-        rep.step(f"{alias}: no expect_hostkey in the registry — stamp it first "
-                 "(scripts/fleet_hostkey_stamp.py); refusing (B6)", False)
+        rep.step(f"{alias}: no pinned host key — {app.HOSTKEY_FIX}; "
+                 "refusing (B6)", False)
         return rep
     try:
         key = load_center_key(home)

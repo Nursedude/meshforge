@@ -238,6 +238,34 @@ def _services(src: Sources) -> Tuple[Optional[dict], Optional[str]]:
     return result, None
 
 
+def own_app_running(src: Sources) -> Tuple[Optional[bool], Optional[str]]:
+    """Q6 (spec, 2026-10-14): does THIS app run ANY unit on this box — a
+    service, a timer, system OR user scope? True / False / None-if-systemd-
+    could-not-say. A box can run an app through a user unit and a timer
+    alone (measured 2026-10-15: one granted box runs the app's mini as a
+    user unit plus a system timer, and no system service), so services are
+    not the test. A dormant checkout (files present, nothing of the app
+    active) must not answer a grant for a box it does not run, and an
+    unreadable systemd is never "running"."""
+    pattern = app.UNIT_GLOB.rsplit(".", 1)[0]          # every unit type
+    failed = []
+    for scope in ([], ["--user"]):
+        rc, out = _run(src, ["systemctl", *scope, "list-units", pattern,
+                             "--state=active", "--no-legend", "--plain"])
+        if rc is None or rc != 0:
+            failed.append("user" if scope else "system")
+            continue
+        names = [ln.split()[0] for ln in out.decode("utf-8", "replace").splitlines()
+                 if ln.strip()]
+        if names:
+            return True, None
+    if failed:
+        return None, (f"cannot tell whether {app.APP} runs here: systemctl "
+                      f"({', '.join(failed)} scope) did not answer")
+    return False, (f"no {app.APP} unit ({pattern}) is active on this box, "
+                   "system or user — a dormant checkout does not grant")
+
+
 def last_two_verdicts(text: str) -> str:
     """The last TWO lines per verdict name (field 2), oldest first. Two is
     the minimum the fast-cron confirmation gate reads (2026-09-13: one line

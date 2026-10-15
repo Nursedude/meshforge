@@ -49,6 +49,27 @@ ROLE_CATALOG = Path(INSTALL_DIR) / "docs" / "fleet_roles.yaml"
 PROVISIONER = Path(INSTALL_DIR) / "scripts" / "provision_role.py"
 
 
+#: How an operator pins a target's host key in THIS app's identity source —
+#: quoted by the shared reader/center when a target has none.
+HOSTKEY_FIX = ("stamp it into the fleet_naming registry: "
+               "scripts/fleet_hostkey_stamp.py")
+
+
+def expect_hostkey_of(alias: str):
+    """(expected host-key fingerprint, why-not) for a target ``alias`` from
+    THIS app's identity source — MeshForge: the fleet_naming registry's
+    ``expect_hostkey`` (stamped by scripts/fleet_hostkey_stamp.py). An
+    unreadable registry is NAMED, never "no key" (review B 6): the reader
+    then refuses the read as ``identity_unpinned`` with this reason."""
+    from utils.fleet_naming import load_registry_quiet, registry_path
+    reg = load_registry_quiet()
+    if reg is None:
+        return None, (f"fleet_naming registry unreadable ({registry_path()}) — "
+                      "fix it: scripts/fleet_naming_audit.py")
+    host = reg.hosts.get(alias)
+    return (host.expect_hostkey if host else None), None
+
+
 def app_version() -> str:
     try:
         from __version__ import __version__
