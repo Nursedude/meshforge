@@ -193,6 +193,28 @@ are refused; `from=` refuses exactly like a revoke.
 > export (the box judges its own role — likely right), or require MF on an MA
 > center. Three spool-WIRING tests moved to MF-only
 > `tests/test_box_truth_spool_wiring.py`; they port with step 3.
+>
+> **Non-author pass on steps 0–1 (2026-10-14 ~22:00, PASS, no defect) left
+> FOUR items for the builder of steps 2–4:**
+> (1) `box_truth_center.py` `_remote_grant_cli` sends a POSIX `for…do…done`
+> loop to the target's LOGIN shell. The old single command would likely
+> have parsed in fish/csh; the loop will not (reasoned — fish/csh not
+> installed to measure). It fails CLOSED (rc≠0 → `failed`, no grant), but
+> with a parse error instead of "not installed", and `box_truth_grants.py`'s
+> shell precheck refuses only nologin/false. Fix = wrap as
+> `sh -c <quoted loop>`, or refuse fish/csh in the precheck. Every fleet
+> account measured here is bash.
+> (2) The CLI is chosen by FILE PRESENCE (`[ -f ]`), not by which app the
+> box runs — a dormant sibling checkout carrying the CLI wins first. Moot
+> until MA ships `box_truth_grant.py`.
+> (3) The watchdog is BOX-level (MA `WATCHDOG_PATH` = MF's file) but the
+> ingress ledger is APP-level (`collect.py` ingress leg): on a both-apps box
+> MA's export reads ingress absent while MF's gateway writes it. Decide and
+> record which, before MA's collector leg is wired.
+> (4) MA `fleet_truth._CORE_OBSERVABILITY` includes `watchdog` and reads it
+> DARK when missing — on an MA-only box it is absent BY DESIGN and must read
+> `inert`. Separately (pre-existing, not this arc): MA `oracle/snapshot.py`
+> reads `/var/lib/meshanchor/watchdog.json`, which nothing writes.
 
 > Why this section exists: the operator asked whether to start session 3 at
 > 16:20 and the answer was no — it is a two-repo build plus a coordinated
