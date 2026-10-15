@@ -29,23 +29,62 @@ REQUIRED = ("APP", "INSTALL_DIR", "CONFIG_DIRNAME", "WATCHDOG_PATH",
 APP_NAMES = ("meshforge", "meshanchor")
 
 
+def _fold(n):
+    """The string a node evaluates to when it is built only from constants —
+    `"a" + "b"`, `"".join(["a", "b"])`, `b"..."` — else None. A lexical scan
+    of single Constants misses an app name split across pieces (non-author
+    review of 3f4c9996, planted: `+`, `.join` and bytes all read GREEN)."""
+    if isinstance(n, ast.Constant) and isinstance(n.value, (str, bytes)):
+        v = n.value
+        return v.decode("utf-8", "replace") if isinstance(v, bytes) else v
+    if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Add):
+        a, b = _fold(n.left), _fold(n.right)
+        return None if a is None or b is None else a + b
+    if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "join" and len(n.args) == 1
+            and isinstance(n.args[0], (ast.List, ast.Tuple))):
+        sep = _fold(n.func.value)
+        parts = [_fold(e) for e in n.args[0].elts]
+        if sep is not None and None not in parts:
+            return sep.join(parts)
+    return None
+
+
 def _code_string_literals(path: Path):
-    """String constants in CODE — docstrings (a bare string statement) are
-    prose and may name both apps; a literal the program USES may not."""
+    """Strings in CODE — docstrings (a bare string statement) are prose and
+    may name both apps; a string the program USES may not."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     prose = {id(n.value) for n in ast.walk(tree)
              if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)}
     for n in ast.walk(tree):
-        if (isinstance(n, ast.Constant) and isinstance(n.value, str)
-                and id(n) not in prose):
-            yield n.lineno, n.value
+        if id(n) in prose:
+            continue
+        s = _fold(n)
+        if s is not None:
+            yield n.lineno, s
+
+
+def _app_values():
+    """This app's own per-app VALUES and their basenames. One that names no
+    app — `mini_dudeai_state.json` — is still wrong for the sibling if a
+    shared module hardcodes it, and parity_check cannot see that: both copies
+    are byte-identical, and one of them is wrong."""
+    vals = set()
+    for name in REQUIRED:
+        v = getattr(app, name, None)
+        for item in (v if isinstance(v, (tuple, list)) else (v,)):
+            if isinstance(item, str):
+                vals.add(item)
+                vals.add(item.rstrip("/").rsplit("/", 1)[-1])
+    return {v for v in vals if len(v) > 3}
 
 
 def test_shared_modules_carry_no_app_name_literal():
+    values = _app_values()
     hits = []
     for name in SHARED:
         for line, s in _code_string_literals(ROOT / "src" / "utils" / name):
-            if any(a in s.lower() for a in APP_NAMES):
+            if any(a in s.lower() for a in APP_NAMES) or s in values:
                 hits.append(f"{name}:{line}: {s!r}")
     assert not hits, ("app-specific literal in a byte-identical module — move "
                       "it to utils/box_truth_app.py:\n  " + "\n  ".join(hits))
