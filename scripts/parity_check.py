@@ -119,6 +119,22 @@ BYTE_IDENTICAL = (
     # closed identically. The gate mixin (_map_auth_endpoints.py) is NOT here:
     # each repo's origin rule differs by design.
     "src/utils/web_auth.py",
+    # The NOC read grant (session 3, 2026-10-14). The five modules + the export
+    # entry + the shared tests are byte-identical; the ONE per-app file,
+    # src/utils/box_truth_app.py, is NOT listed — its NAMES are pinned by
+    # tests/test_box_truth_app_seam.py (itself listed), its VALUES differ.
+    "src/utils/box_truth.py",
+    "src/utils/box_truth_reader.py",
+    "src/utils/box_truth_grants.py",
+    "src/utils/box_truth_center.py",
+    "src/utils/box_truth_collect.py",
+    "scripts/box_truth_export.py",
+    "tests/test_box_truth_app_seam.py",
+    "tests/test_box_truth_core.py",
+    "tests/test_box_truth_reader.py",
+    "tests/test_box_truth_grants.py",
+    "tests/test_box_truth_center.py",
+    "tests/test_box_truth_export.py",
     # mini-dudeai GENERIC ENGINE CORE (second-brain arc WS-A, 2026-07-22). The
     # observation-only rule/cadence loop is now twinned onto MeshAnchor. These
     # modules carry ZERO app-specific imports (verified import-clean across the

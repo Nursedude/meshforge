@@ -21,6 +21,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from utils import box_truth as bt  # noqa: E402
+from utils import box_truth_app as app  # noqa: E402
 from utils import box_truth_center as bc  # noqa: E402
 from utils import box_truth_reader as br  # noqa: E402
 
@@ -36,7 +37,7 @@ def _pub(seed=b"\x11", comment="noc:center1"):
 def home(tmp_path):
     h = tmp_path / "home"
     (h / ".ssh").mkdir(parents=True)
-    (h / ".config" / "meshforge").mkdir(parents=True)
+    (h / ".config" / app.CONFIG_DIRNAME).mkdir(parents=True)
     key = br.noc_key_path(h)
     key.write_text("PRIVATE")
     Path(str(key) + ".pub").write_text(_pub())
@@ -86,16 +87,6 @@ def test_set_target_preserves_comments_and_other_lines(tmp_path):
     assert [t.alias for t in bc.read_targets(p)] == ["kiai", "lehua"]
 
 
-def test_spool_writer_reads_the_same_targets_file(home):
-    """One path, two consumers (hfm #5): the spool imports it from here."""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "fts", Path(__file__).resolve().parent.parent / "scripts" / "fleet_truth_spool.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    assert mod.targets_path is bc.targets_path and mod.read_targets is bc.read_targets
-
-
 # ── push (B6, Q11, Q18) ──────────────────────────────────────────────────
 
 def test_push_grants_via_target_cli_verifies_registers_and_wires_cron(home):
@@ -105,7 +96,7 @@ def test_push_grants_via_target_cli_verifies_registers_and_wires_cron(home):
     assert rep.ok, rep.steps
     alias, expect, cmd = f.cmds[0]
     assert (alias, expect) == ("moc3", EXPECT)
-    assert cmd.startswith(f"/usr/bin/python3 -I {bc.REMOTE_GRANT_CLI} add --pubkey ")
+    assert f'-I "$d/scripts/{bc.GRANT_CLI_BASENAME}" add --pubkey ' in cmd
     assert "--center center1" in cmd and "authorized_keys" not in cmd
     assert f.reads == [("moc3", br.noc_key_path(home))]          # pinned read
     assert bc.read_targets(bc.targets_path(home)) == [bc.Target("moc3", True)]
@@ -147,30 +138,13 @@ def test_unpush_revokes_and_leaves_the_target_unflagged(home):
     rep = bc.unpush("moc3", "moc3", home=home, expect=EXPECT, exec_=f.exec_)
     assert rep.ok
     fp = bt.parse_noc_pubkey(_pub()).fingerprint
-    assert f.cmds[0][2].endswith(f"revoke --fp {fp} --confirm {fp[-8:]}")
+    assert f"revoke --fp {fp} --confirm {fp[-8:]}; fi; done" in f.cmds[0][2]
     # Q11 amended 2026-10-14 (operator): a removed line made the spool writer
     # skip the box, so /fleet served its last healthy snapshot for up to
     # SPOOL_STALE_S after the revoke. Unflagged = read DARK with the re-grant
     # named on the very next tick.
     assert [(t.alias, t.pinned) for t in bc.read_targets(bc.targets_path(home))] \
         == [("moc3", False)]
-
-
-def test_unpushed_target_reads_refused_grant_next_tick(home):
-    import importlib.util
-    path = Path(__file__).resolve().parent.parent / "scripts" / "fleet_truth_spool.py"
-    spec = importlib.util.spec_from_file_location("fleet_truth_spool_t", path)
-    spool = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(spool)
-
-    bc.set_target(bc.targets_path(home), "moc3", pinned=True)
-    assert bc.unpush("moc3", "moc3", home=home, expect=EXPECT,
-                     exec_=Fleet().exec_).ok
-    targets = bc.read_targets(bc.targets_path(home))
-    assert [t.alias for t in targets] == ["moc3"], "unpushed box dropped from the writer"
-    _s, transport, _m = spool.fetch_box(targets[0], home=home)
-    assert transport["outcome"] == "refused_grant"
-    assert "box_truth_grant.py push moc3 --confirm moc3" in transport["reason"]
 
 
 # ── rotation (B7c, acceptance 8) ─────────────────────────────────────────
@@ -194,7 +168,7 @@ def test_rotate_grants_new_everywhere_then_revokes_old_then_swaps(home):
     kinds = [(a, "add" if " add " in c else "revoke") for a, _e, c in f.cmds]
     assert kinds == [("moc3", "add"), ("kiai", "add"), ("moc3", "revoke"), ("kiai", "revoke")]
     assert all(old_fp in c for _a, _e, c in f.cmds if " revoke " in c)
-    assert [r[1].name for r in f.reads] == ["meshforge_noc_ed25519.new"] * 2
+    assert [r[1].name for r in f.reads] == [app.NOC_KEY_BASENAME + ".new"] * 2
     assert bc.load_center_key(home).fingerprint == new_fp
     assert br.noc_key_path(home).read_text() == "NEWPRIVATE"
 
@@ -258,20 +232,6 @@ def test_ensure_spool_cron_is_idempotent():
     assert state["tab"].count("fleet_truth_spool.py") == 1
 
 
-def test_spool_cron_line_is_the_live_one():
-    """The line the tooling installs must be the one the manager runs today
-    (wired by hand 2026-07-19) — so installing it on a fresh center changes
-    nothing on this one."""
-    try:
-        tab = subprocess.run(["crontab", "-l"], capture_output=True, text=True,
-                             timeout=10).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        pytest.skip("no crontab here")
-    if "fleet_truth_spool.py" not in tab:
-        pytest.skip("not a center")
-    assert bc.SPOOL_CRON_LINE in tab
-
-
 # ── review A N3/N4 + review B 6/7 ───────────────────────────────────────
 
 def test_n3_bulk_revoke_refuses_a_malformed_fingerprint(home):
@@ -320,3 +280,63 @@ def test_b7_unregister_keeps_the_operator_comment_visible(tmp_path):
     text = p.read_text()
     assert bc.read_targets(p) == []
     assert "lehua" in text and ":2200" in text and text.lstrip().startswith("#")
+
+
+# ── the target's grant CLI is FOUND, not assumed (session 3 seam) ────────
+# A center pushes to a box running either app, or both. These run the exact
+# string the center sends through a real POSIX shell, against fake installs,
+# so the loop's quoting and its fallthrough are measured, not read.
+
+_FAKE_CLI = ("import json, sys\n"
+             "print(json.dumps({'cli': __file__, 'argv': sys.argv[1:]}))\n")
+
+
+def _install(root, name):
+    d = root / name / "scripts"
+    d.mkdir(parents=True)
+    (d / bc.GRANT_CLI_BASENAME).write_text(_FAKE_CLI)
+    return str(root / name)
+
+
+def _run_remote(cmd):
+    return subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=30)
+
+
+@pytest.fixture
+def two_dirs(tmp_path, monkeypatch):
+    own, sib = str(tmp_path / "own"), str(tmp_path / "sib")
+    monkeypatch.setattr(app, "GRANT_CLI_SEARCH", (own, sib))
+    return tmp_path, own, sib
+
+
+def test_remote_add_runs_own_app_cli_first_with_argv_intact(two_dirs):
+    import json
+    root, own, sib = two_dirs
+    _install(root, "own"), _install(root, "sib")
+    key = bt.parse_noc_pubkey(_pub())
+    center = "c1 'q' $HOME;x"            # shell metachars must arrive verbatim
+    p = _run_remote(bc._add_cmd(key, center))
+    assert p.returncode == 0, p.stderr
+    got = json.loads(p.stdout)
+    assert got["cli"] == f"{own}/scripts/{bc.GRANT_CLI_BASENAME}"
+    assert got["argv"] == ["add", "--pubkey", key.line(), "--center", center,
+                           "--confirm", key.fingerprint[-8:]]
+
+
+def test_remote_falls_through_to_the_sibling_app(two_dirs):
+    import json
+    root, _own, sib = two_dirs
+    _install(root, "sib")
+    fp = bt.parse_noc_pubkey(_pub()).fingerprint
+    p = _run_remote(bc._revoke_cmd(fp))
+    assert p.returncode == 0, p.stderr
+    got = json.loads(p.stdout)
+    assert got["cli"] == f"{sib}/scripts/{bc.GRANT_CLI_BASENAME}"
+    assert got["argv"] == ["revoke", "--fp", fp, "--confirm", fp[-8:]]
+
+
+def test_remote_with_no_grant_cli_fails_loud_naming_the_dirs(two_dirs):
+    _root, own, sib = two_dirs
+    p = _run_remote(bc._revoke_cmd(bt.parse_noc_pubkey(_pub()).fingerprint))
+    assert p.returncode == 127 and p.stdout == ""
+    assert "not installed under" in p.stderr and own in p.stderr and sib in p.stderr

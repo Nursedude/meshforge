@@ -23,9 +23,17 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from utils import box_truth as bt  # noqa: E402
+from utils import box_truth_app as app  # noqa: E402
 from utils import box_truth_collect as bc  # noqa: E402
 
 FP = "SHA256:" + "A" * 43
+
+
+def _mini(home):
+    """This app's mini state file — nested on MeshAnchor, so make its dir."""
+    p = home / app.MINI_STATE_RELPATH
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 def _fake_runner(calls=None, crontab=b"*/2 * * * * job\n", show=None):
@@ -35,7 +43,7 @@ def _fake_runner(calls=None, crontab=b"*/2 * * * * job\n", show=None):
         assert kw.get("timeout"), "every subprocess is bounded (MF004)"
         if argv[:2] == ["systemctl", "list-unit-files"]:
             return SimpleNamespace(returncode=0,
-                                   stdout=b"meshforge-map.service enabled enabled\n")
+                                   stdout=(app.APP + "-map.service enabled enabled\n").encode())
         if argv[:2] == ["systemctl", "show"]:
             return SimpleNamespace(returncode=0, stdout=show if show is not None else (
                 b"ActiveState=active\nUnitFileState=enabled\n\n"
@@ -50,10 +58,10 @@ def _fake_runner(calls=None, crontab=b"*/2 * * * * job\n", show=None):
 @pytest.fixture
 def home(tmp_path):
     h = tmp_path / "home"
-    (h / ".config" / "meshforge").mkdir(parents=True)
-    (h / ".config" / "meshforge" / "deployment.json").write_text(
+    (h / ".config" / app.CONFIG_DIRNAME).mkdir(parents=True)
+    (h / ".config" / app.CONFIG_DIRNAME / "deployment.json").write_text(
         json.dumps({"role": "gateway-only"}))
-    (h / "mini_dudeai_state.json").write_text(
+    _mini(h).write_text(
         json.dumps({"last_tick_ts": 1, "reason": "café ☕"}), encoding="utf-8")
     (h / "cron_verdicts.log").write_text(
         "1 a OK\n2 b OK\n3 a FAIL(1)\n4 a OK\n5 c OK\n")
@@ -88,7 +96,7 @@ def test_section_values_match_the_spool_shapes(home, tmp_path):
     assert s["services"] == {
         "meshtasticd": {"active": "active", "enabled": "enabled"},
         "rnsd": {"active": "inactive", "enabled": "unknown"},
-        "meshforge-map.service": {"active": "failed", "enabled": "disabled"}}
+        app.APP + "-map.service": {"active": "failed", "enabled": "disabled"}}
     assert base64.b64decode(s["schedules"]["crontab_b64"]) == b"*/2 * * * * job\n"
     assert isinstance(s["clock"]["now"], int)
     assert s["ingress"] is None
@@ -105,7 +113,7 @@ def test_usb_present_when_only_one_glob_matches(home, tmp_path):
 
 
 def test_corrupt_json_is_an_error_not_a_value(home, tmp_path):
-    (home / "mini_dudeai_state.json").write_text("{not json")
+    _mini(home).write_text("{not json")
     s, errors = bc.collect_sections(_src(home, tmp_path))
     assert s["raw_mini"] is None and "raw_mini" in errors
 
@@ -164,7 +172,7 @@ def test_n4_never_connects_to_the_radio():
 # ── B7b: tripwire withholds ──────────────────────────────────────────────
 
 def test_planted_secret_never_leaves_the_box(home, tmp_path):
-    (home / "mini_dudeai_state.json").write_text(
+    _mini(home).write_text(
         json.dumps({"note": "-----BEGIN OPENSSH PRIVATE KEY-----"}))
     doc = bt.parse_framed(bc.run_export(FP, _src(home, tmp_path)))
     assert doc["sections"]["raw_mini"] is None
@@ -346,14 +354,14 @@ def test_b1_any_section_reader_crash_is_that_sections_error(home, tmp_path):
 def test_b5_partial_systemctl_show_falls_back_per_unit(home, tmp_path):
     def run(argv, **kw):
         if argv[:2] == ["systemctl", "list-unit-files"]:
-            return SimpleNamespace(returncode=0, stdout=b"meshforge-map.service enabled enabled\n")
+            return SimpleNamespace(returncode=0, stdout=(app.APP + "-map.service enabled enabled\n").encode())
         if argv[:2] == ["systemctl", "show"] and len(argv) > 4:
             return SimpleNamespace(returncode=1, stdout=b"ActiveState=active\nUnitFileState=enabled\n")
         if argv[:2] == ["systemctl", "show"]:
             unit = argv[-1]
-            st = {"meshtasticd": b"active", "rnsd": b"active", "meshforge-map.service": b"failed"}[unit]
+            st = {"meshtasticd": b"active", "rnsd": b"active", app.APP + "-map.service": b"failed"}[unit]
             return SimpleNamespace(returncode=0, stdout=b"ActiveState=" + st + b"\nUnitFileState=enabled\n")
         return _fake_runner()(argv, **kw)
     s, errors = bc.collect_sections(_src(home, tmp_path, runner=run))
-    assert s["services"]["meshforge-map.service"]["active"] == "failed"
+    assert s["services"][app.APP + "-map.service"]["active"] == "failed"
     assert s["services"]["rnsd"]["active"] == "active"

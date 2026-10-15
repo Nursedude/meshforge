@@ -32,15 +32,18 @@ from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 from utils import box_truth as bt
+from utils import box_truth_app as app
 from utils import box_truth_reader as br
 from utils.paths import atomic_write_text_preserving, get_real_user_home
 
-REMOTE_GRANT_CLI = "/opt/meshforge/scripts/box_truth_grant.py"
-SPOOL_SCRIPT = "/opt/meshforge/scripts/fleet_truth_spool.py"
+#: The TARGET's grant CLI, found under the first ``app.GRANT_CLI_SEARCH``
+#: dir that has it — the target may run either app (or both).
+GRANT_CLI_BASENAME = "box_truth_grant.py"
+SPOOL_SCRIPT = app.INSTALL_DIR + "/scripts/fleet_truth_spool.py"
 SPOOL_CRON_LINE = (
-    "*/2 * * * * /usr/bin/python3 /opt/meshforge/scripts/fleet_truth_spool.py "
-    '>"$HOME/.local/state/meshforge/cron_out/truth_spool.out" 2>&1; '
-    "/opt/meshforge/scripts/cron_verdict.sh truth_spool $?")
+    f"*/2 * * * * /usr/bin/python3 {SPOOL_SCRIPT} "
+    f'>"$HOME/.local/state/{app.CONFIG_DIRNAME}/cron_out/truth_spool.out" 2>&1; '
+    f"{app.INSTALL_DIR}/scripts/cron_verdict.sh truth_spool $?")
 PIN_FLAG = "noc"
 _ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -54,7 +57,7 @@ class Target:
 
 
 def targets_path(home: Optional[Path] = None) -> Path:
-    return (home or get_real_user_home()) / ".config" / "meshforge" / "truth_spool_targets"
+    return (home or get_real_user_home()) / ".config" / app.CONFIG_DIRNAME / "truth_spool_targets"
 
 
 def read_targets(path: Path) -> List[Target]:
@@ -171,9 +174,21 @@ class Report:
         return ok
 
 
+def _remote_grant_cli(args: str) -> str:
+    """Run the TARGET's grant CLI with ``args`` (already quoted): the first
+    ``app.GRANT_CLI_SEARCH`` dir that carries it, else exit 127 naming the
+    dirs tried. The dirs are module constants; nothing caller-supplied is
+    interpolated outside ``args``."""
+    dirs = " ".join(shlex.quote(d) for d in app.GRANT_CLI_SEARCH)
+    cli = f'"$d/scripts/{GRANT_CLI_BASENAME}"'
+    return (f"for d in {dirs}; do if [ -f {cli} ]; then "
+            f"exec {bt.PYTHON} -I {cli} {args}; fi; done; "
+            f"echo \"{GRANT_CLI_BASENAME} not installed under {dirs}\" >&2; exit 127")
+
+
 def _add_cmd(key: bt.NocKey, center: str) -> str:
-    return (f"{bt.PYTHON} -I {REMOTE_GRANT_CLI} add --pubkey {shlex.quote(key.line())} "
-            f"--center {shlex.quote(center)} --confirm {key.fingerprint[-8:]}")
+    return _remote_grant_cli(f"add --pubkey {shlex.quote(key.line())} "
+                             f"--center {shlex.quote(center)} --confirm {key.fingerprint[-8:]}")
 
 
 _FP_RE = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
@@ -182,8 +197,8 @@ _FP_RE = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
 def _revoke_cmd(fp: str) -> str:
     if not _FP_RE.match(fp or ""):          # A N3: never interpolate an unchecked fp
         raise bt.KeyRejected(f"fingerprint {fp!r} malformed")
-    return (f"{bt.PYTHON} -I {REMOTE_GRANT_CLI} revoke --fp {shlex.quote(fp)} "
-            f"--confirm {shlex.quote(fp[-8:])}")
+    return _remote_grant_cli(f"revoke --fp {shlex.quote(fp)} "
+                             f"--confirm {shlex.quote(fp[-8:])}")
 
 
 Exec = Callable[[str, Optional[str], str], br.ExecResult]

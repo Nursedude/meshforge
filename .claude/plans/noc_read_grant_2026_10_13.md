@@ -170,6 +170,30 @@ are refused; `from=` refuses exactly like a revoke.
 
 ## Session 3 brief (written 2026-10-14 ~16:40 HST by the arc's REVIEWER, Fable 5.1 — for an Opus BUILD session; builder ≠ reviewer)
 
+> **STATUS 2026-10-14 ~21:00 HST (Opus 5.5, builder): steps 0–1 DONE, steps 2–8 OPEN.**
+> Step 0 (not in the original list, found needed): the five shared modules
+> carried 12 MeshForge literals, so a per-app seam came first —
+> `src/utils/box_truth_app.py` in EACH repo (same names, different values;
+> names pinned by `tests/test_box_truth_app_seam.py`). Step 1: the five
+> modules + `scripts/box_truth_export.py` + six shared tests are
+> byte-identical in MA and in MF `parity_check` BYTE_IDENTICAL.
+> **Corrections to this brief, measured:** `parity_check.py` lives ONLY in
+> MF (MA pre-push runs the lead repo's checker) — "both repos'
+> parity_check" is one file; MA has a BARE `meshanchor.service` (glob is
+> `meshanchor*.service`); MA runs no box-health watchdog (its
+> `fleet_watchdog` is a silence detector), so MA `WATCHDOG_PATH` = MF's file
+> on a both-apps box, absent on MA-only; a grant PUSH now runs the TARGET's
+> grant CLI (own app first, then sibling, else rc 127).
+> **Step 2's real design question** (not just "a seam"): the spool writer's
+> three helpers judge the TARGET's declared role by loading MF's
+> `scripts/provision_role.py` + role catalog and naming `meshforge-map` /
+> `meshforge-watchdog`. An MA center reading an MF target (moc3) needs MF's
+> catalog — present on the MA box via its `/opt/meshforge` checkout, absent
+> on a standalone MA box. Decide: ship the catalog judgment with the target's
+> export (the box judges its own role — likely right), or require MF on an MA
+> center. Three spool-WIRING tests moved to MF-only
+> `tests/test_box_truth_spool_wiring.py`; they port with step 3.
+
 > Why this section exists: the operator asked whether to start session 3 at
 > 16:20 and the answer was no — it is a two-repo build plus a coordinated
 > bump, Opus-shaped, and this session reviewed the arc's fix commits and its

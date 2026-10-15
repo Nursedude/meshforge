@@ -16,6 +16,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from utils import box_truth as bt  # noqa: E402
+from utils import box_truth_app as app  # noqa: E402
 from utils import box_truth_reader as br  # noqa: E402
 
 
@@ -149,7 +150,7 @@ def test_bounded_run_deadline_for_real():
 
 def test_noc_key_never_under_claude_dir(tmp_path):
     p = br.noc_key_path(tmp_path)
-    assert p == tmp_path / ".ssh" / "meshforge_noc_ed25519"
+    assert p == tmp_path / ".ssh" / app.NOC_KEY_BASENAME
     assert ".claude" not in p.parts
 
 
@@ -194,6 +195,6 @@ def test_n1_identity_learn_presents_no_credentials():
 
 def test_b2_center_key_problem_is_named_not_grant_refused():
     r = br.ReadResult("moc3", "refused_grant", pinned=True,
-                      stderr_head="center key /h/.ssh/meshforge_noc_ed25519 missing — "
+                      stderr_head=f"center key /h/.ssh/{app.NOC_KEY_BASENAME} missing — "
                                   "box_truth_grant.py center-key --create")
-    assert br.describe(r).startswith("center key /h/.ssh/meshforge_noc_ed25519 missing")
+    assert br.describe(r).startswith(f"center key /h/.ssh/{app.NOC_KEY_BASENAME} missing")

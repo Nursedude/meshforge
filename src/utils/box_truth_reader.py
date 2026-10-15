@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from utils import box_truth as bt
+from utils import box_truth_app as app
 
 MAX_BODY_BYTES = 8 * 1024 * 1024        # same cap as the HTTP leg (collector)
 MAX_STDERR_BYTES = 64 * 1024
@@ -43,8 +44,8 @@ READ_DEADLINE_S = 30.0                  # whole round trip (tunnel + export)
 CONNECT_TIMEOUT_S = 8
 STDERR_HEAD = 200
 
-NOC_KEY_BASENAME = "meshforge_noc_ed25519"
-REMOTE_EXPORT = "/opt/meshforge/scripts/" + bt.EXPORT_BASENAME
+NOC_KEY_BASENAME = app.NOC_KEY_BASENAME
+REMOTE_EXPORT = app.INSTALL_DIR + "/scripts/" + bt.EXPORT_BASENAME
 #: What the reader asks to run. Under a grant the forced command replaces it
 #: (and records it as data); over an interactive key it runs the same export.
 REMOTE_COMMAND = f"{bt.PYTHON} -I {REMOTE_EXPORT}"

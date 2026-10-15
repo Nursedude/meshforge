@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from utils import box_truth as bt
+from utils import box_truth_app as app
 from utils.paths import atomic_write_text
 
 #: The map's VIEW routes the export reads (S4 — a test pins that neither is
@@ -56,7 +57,7 @@ HTTP_PATHS = {"slo": "/fleet/slo", "status": "/api/status"}
 HTTP_TIMEOUT_S = 6.0
 MAX_FILE_BYTES = 8 * 1024 * 1024
 SUBPROCESS_TIMEOUT_S = 10
-WATCHDOG_PATH = Path("/var/lib/meshforge/watchdog.json")
+WATCHDOG_PATH = app.WATCHDOG_PATH
 PROC_TCP = ("/proc/net/tcp", "/proc/net/tcp6")
 DEV_GLOBS = ("/dev/ttyUSB*", "/dev/ttyACM*")
 _MESHTASTIC_PORT_HEX = "1133"          # :4403, read from /proc only
@@ -86,11 +87,11 @@ class Sources:
 
     @property
     def deployment_path(self) -> Path:
-        return self._xdg("XDG_CONFIG_HOME", ".config") / "meshforge" / "deployment.json"
+        return self._xdg("XDG_CONFIG_HOME", ".config") / app.CONFIG_DIRNAME / "deployment.json"
 
     @property
     def mini_path(self) -> Path:
-        return self.home / "mini_dudeai_state.json"
+        return self.home / app.MINI_STATE_RELPATH
 
     @property
     def verdicts_path(self) -> Path:
@@ -98,7 +99,7 @@ class Sources:
 
     @property
     def ingress_path(self) -> Path:
-        return (self._xdg("XDG_DATA_HOME", ".local/share") / "meshforge"
+        return (self._xdg("XDG_DATA_HOME", ".local/share") / app.CONFIG_DIRNAME
                 / "rns_ingress_ledger.json")
 
     @property
@@ -186,7 +187,7 @@ def _run(src: Sources, argv: List[str]) -> Tuple[Optional[int], bytes]:
 
 
 def _services(src: Sources) -> Tuple[Optional[dict], Optional[str]]:
-    rc, out = _run(src, ["systemctl", "list-unit-files", "meshforge-*.service",
+    rc, out = _run(src, ["systemctl", "list-unit-files", app.UNIT_GLOB,
                          "--no-legend"])
     if rc is None:
         return None, "systemctl list-unit-files failed"
@@ -365,11 +366,7 @@ _FP_ARG = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
 
 
 def _app_version() -> str:
-    try:
-        from __version__ import __version__
-        return str(__version__)
-    except Exception:
-        return "unknown"
+    return app.app_version()
 
 
 def _refusal(kind: str, fp: Optional[str], reason: str) -> str:
@@ -426,7 +423,7 @@ def run_export(grant_fp: Optional[str], src: Sources, *,
             for name, _pat in tripped:
                 sections[name] = None
                 errors[name] = "withheld: credential-shaped content (tripwire)"
-            doc = {"schema": bt.SCHEMA, "app": "meshforge", "app_version": _app_version(),
+            doc = {"schema": bt.SCHEMA, "app": app.APP, "app_version": _app_version(),
                    "host": socket.gethostname(), "generated_at": ts, "grant": fp,
                    "sections": sections, "section_errors": errors,
                    "tripwire": sorted({n for n, _ in tripped}), "witness": "ok"}

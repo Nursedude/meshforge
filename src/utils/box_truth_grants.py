@@ -29,10 +29,11 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from utils import box_truth as bt
+from utils import box_truth_app as app
 from utils.box_truth_collect import last_reads, witness_path
 
 AK_FILES = ("authorized_keys", "authorized_keys2")   # sshd -T default, measured
-DEFAULT_EXPORT = "/opt/meshforge/scripts/" + bt.EXPORT_BASENAME
+DEFAULT_EXPORT = app.INSTALL_DIR + "/scripts/" + bt.EXPORT_BASENAME
 _NOT_SHELLS = ("nologin", "false")
 
 
