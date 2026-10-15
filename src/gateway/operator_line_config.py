@@ -20,7 +20,7 @@ _HASH = re.compile(r"^[0-9a-f]{32}$")
 @dataclass
 class OperatorLineConfig:
     enabled: bool = False
-    display_name: str = ""            # "" → "MeshForge Operator (<hostname>)"
+    display_name: str = ""            # "" → "MeshForge Operator" (no hostname: cleartext announce, B1)
     operators: List[str] = field(default_factory=list)
     announce_interval_sec: int = 1800
     cooldown_s: float = 10.0          # per operator, between answers

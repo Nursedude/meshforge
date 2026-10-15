@@ -22,7 +22,7 @@ one alert path that survives the outage it reports.
 | Leg | Behaviour | Tag |
 |---|---|---|
 | Identity | own `~/.config/meshforge/operator_line_identity`, own `LXMRouter` (LXMF caps one delivery identity per router) | READ |
-| Announce | at start, then every `announce_interval_sec` (default 1800 s). Display name defaults to `MeshForge Operator (<hostname>)` | READ |
+| Announce | at start, then every `announce_interval_sec` (default 1800 s). Display name defaults to `MeshForge Operator` — no hostname (B1, landed 2026-10-14) | READ |
 | Inbound, unsigned / unknown source | dropped, counted `unverified`; a LISTED operator with "source unknown" gets one path request per 300 s so the next message validates | READ |
 | Inbound, signed stranger | dropped silently, counted `strangers` — no auto-reply (an auto-reply to anyone who heard the announce is an airtime amplifier) | READ |
 | Inbound, listed operator | per-operator cooldown 10 s, work queue max 64 (overflow counted `queue_full`), answered off the delivery thread | READ |
@@ -162,6 +162,13 @@ every verb); pinned LXMF `1.0.1+mf.8` / RNS `1.3.8+mf.5` read at source; moc
   history of the very phone the scenario loses.
 
 ### B1 — default display name leaks the hostname into a cleartext announce (spec Q1)
+
+> **LANDED 2026-10-14 (Opus 5.5, builder ≠ the gate-10 reviewer):** default is
+> now `MeshForge Operator`, `socket` import dropped; `test_default_display_name_keeps_the_hostname_out_of_the_announce`
+> plants a hostname and is RED on the old line. The gateway's
+> `MeshForge Gateway (<hostname>)` (same class) is NOT changed — already announced
+> fleet-wide, so its cache is spent; changing it is the operator's call. Next per
+> this verdict: ONE box, the operator's own identity, the 4 acceptance legs.
 
 `_display_name = cfg.display_name or f"MeshForge Operator ({socket.gethostname()})"`
 rides in announce `app_data` on HawaiiNet, a public RNS network, and every

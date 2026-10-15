@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import logging
 import queue
-import socket
 import threading
 import time
 from pathlib import Path
@@ -165,7 +164,10 @@ class OperatorLine:
         self._identity_path = identity_path or (
             Path(cfg.identity_file) if cfg.identity_file else config_dir / "operator_line_identity")
         self._storage_path = storage_path or config_dir / "operator_line_storage"
-        self._display_name = cfg.display_name or f"MeshForge Operator ({socket.gethostname()})"
+        # BIC-15 B1: NO hostname. This rides in the CLEARTEXT announce on a public
+        # RNS network and every hearer caches it; the box names itself inside
+        # the encrypted reply/page body instead.
+        self._display_name = cfg.display_name or "MeshForge Operator"
 
         self._router = None
         self._lxmf_source = None

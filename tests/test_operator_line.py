@@ -307,6 +307,27 @@ def test_start_registers_its_own_identity_and_announces(tmp_path, fake_rns_lxmf)
     assert get_active_operator_line() is None
 
 
+def test_default_display_name_keeps_the_hostname_out_of_the_announce(
+        tmp_path, fake_rns_lxmf, monkeypatch):
+    """BIC-15 B1 (gate-10 pass, 2026-10-14): display_name rides in the
+    CLEARTEXT announce app_data on a public regional RNS network, and every
+    node that hears it caches it — the first announce is irreversible. The box
+    names itself inside the ENCRYPTED reply/page body instead, so the unset
+    default must carry no hostname. A planted hostname proves it is not read."""
+    import socket
+    monkeypatch.setattr(socket, "gethostname", lambda: "planted-host-b1")
+    _, _, router = fake_rns_lxmf
+    line = _real_line(tmp_path, fake_rns_lxmf, cfg=_cfg(display_name=""))
+    try:
+        assert line.start() is True
+        announced = router.register_delivery_identity.call_args.kwargs["display_name"]
+        assert announced == "MeshForge Operator"
+        assert "planted-host-b1" not in announced
+        assert line.get_status()["display_name"] == "MeshForge Operator"
+    finally:
+        line.stop()
+
+
 def test_inbound_delivery_verifies_then_queues_the_work(tmp_path, fake_rns_lxmf):
     line = _real_line(tmp_path, fake_rns_lxmf)
     line.start()
