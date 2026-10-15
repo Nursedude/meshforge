@@ -124,3 +124,153 @@ coerced. `enabled: true` with no operators logs a warning and answers nobody.
 
 Sending onto Meshtastic from the line (stays with the bridge and its ingress
 policy). Remote access to the web UI (lab-only by operator choice, 10-13).
+
+## Security-pass verdict — gate 10 (Fable 5.1, 2026-10-14 ~16:00 HST, non-author)
+
+**Verdict: the trust model is sound — PASS for a single-box live acceptance
+once B1 lands. B1 is the only blocker, and it blocks because the FIRST
+announce is irreversible.** Every claim below is MEASURED (run or read at the
+pinned source this session) unless tagged CALC (a computation) or BELIEVED.
+
+Checks run: `test_operator_line.py` + `test_identity_store.py` + the five
+touched suites → 604 passed, rc=0; `lint --all` rc=0; the line's own default
+snapshot path executed on this box (`_default_snapshot()` → `answer()` for
+every verb); pinned LXMF `1.0.1+mf.8` / RNS `1.3.8+mf.5` read at source; moc
+(a live gateway) read: unit runs as the operator user, `ProtectHome=read-only`
++ `ReadWritePaths=~/.config/meshforge`, `gateway_identity` 0600 64 B, no
+`operator_line` key in its `gateway.json`.
+
+### The gate itself (spec Q4) — sufficient, measured at source
+
+- `LXMessage.unpack_from_bytes` sets `signature_validated=True` only when the
+  identity RECALLED for the claimed source hash validates the signature over
+  the signed part; otherwise `SIGNATURE_INVALID` or `SOURCE_UNKNOWN`.
+- A stranger cannot poison that recall: RNS `Identity.validate_announce`
+  recomputes `expected_hash` from the announced public key and refuses an
+  announce whose destination hash does not match. Binding a different key to
+  an operator's hash needs a hash preimage.
+- Replay of a captured valid message is dropped by the router before the
+  delivery callback (`lxmf_delivery`: `if not allow_duplicate and
+  self.has_message(message.hash)`).
+- Every reply and page is an RNS SINGLE-destination message: encrypted to
+  the operator's identity. Only the announce is cleartext.
+- Residual, accepted: a forged message CLAIMING a listed source while that
+  identity is unknown here triggers ONE broadcast path request per 300 s per
+  listed hash (`_nudge`). 1-in → 1-out, bounded, counted (`nudged`).
+- A per-operator shared secret is REJECTED: the LXMF identity is the factor,
+  the same model every LXMF app uses; a typed secret sits in the thread
+  history of the very phone the scenario loses.
+
+### B1 — default display name leaks the hostname into a cleartext announce (spec Q1)
+
+`_display_name = cfg.display_name or f"MeshForge Operator ({socket.gethostname()})"`
+rides in announce `app_data` on HawaiiNet, a public RNS network, and every
+node that hears it caches it — a later rename does not recall it. The box
+already names itself INSIDE the encrypted body (measured reply prefix
+`dude-AI@VolcanoAI:`, and `compose_page` prefixes `<box>:`), so nothing is
+lost by a non-identifying default. Fix: default to `MeshForge Operator` (or
+an empty display name). The gateway's `MeshForge Gateway (<hostname>)` is the
+same class; out of this pass's scope, same one-liner.
+
+### Spec Q2 — airtime: 1800 s is the quietest announcer on the box
+
+Measured defaults: gateway `rns.announce_interval` **300 s**, broadcast
+bridge **600 s**, operator line **1800 s**. The line adds one sixth of the
+gateway's announce load. CALC: a ~240 B LXMF delivery announce at SF7/250 kHz
+CR4/5 is ≈0.19 s on air (358 symbols × 0.512 ms + preamble); nine lines at
+1800 s = 18/h ≈ 3.4 s/h before transport rebroadcast (× (1+T) for T
+transport nodes sharing the channel). Keep 1800 s; the number worth
+questioning on this fleet is the gateway's 300 s. Pages: at most one per
+300 s per box per operator; `desired_method` defaults to DIRECT (link
+handshake, ≥3 packets) although every reply measured here fits one packet
+(max 91 B; cap 237 B) — see S6.
+
+### Spec Q3 — a lost phone: low-information, read-only, revoke is the gap
+
+What a listed identity can learn, measured on this box: `status` → node
+directory total, federation peers, watchdog/mini counts; `whatsup` → active
+signal CLASS names (e.g. `detector_blind_any`); `wd` → signal count/worst
+class; `link <lat,lon> <lat,lon>` → path math on coordinates the ASKER
+supplies; pages → degraded/wedge class names. No verb acts; there is no relay
+verb (test-pinned); nothing it answers reaches a radio. `node <id>` and
+`link <node-id> …` answer NOTHING on this surface today — see S2.
+Revoke today = edit `gateway.json` + restart the gateway (which also restarts
+the LXMF leg). That is the gap, not the disclosure: the in-app surface the
+spec already owes must carry **revoke** (write the config, restart the line
+only — `OperatorLine.stop()`/`start()` exist). BELIEVED, not exercised: the
+fork's `Reticulum.is_blackholed(identity)` (seen in `unpack_from_bytes`) is a
+box-wide RNS-level ban that would complement it.
+
+### Spec Q5 — page flooding: bounded in airtime, unbounded in attention
+
+`alert_min_interval_s=300` caps a box to one page per 5 min regardless of
+flap rate; coalesced lines read `+N more`. Worst case 288 pages/day/box per
+operator from one flapping class. Not an RF problem; a human one. Owed to
+BIC-2, not this gate: a flap damper (K transitions of one key inside W →
+one `FLAPPING <key>` line, then silence for that key for an hour).
+
+### F1 (`4f94f92e`) — reviewed, holds
+
+`_write_new`: `mkstemp` (0600) → `fsync` → `os.link` (EEXIST rather than
+clobber) → unlink tmp → dir fsync best-effort. `FileExistsError` re-entry
+loads the RACER's file and verifies it like any existing one. Dangling
+symlink refused; zero-byte refused with size in the message
+(`test_real_rns_zero_byte_identity_is_refused` uses the pinned RNS, not the
+fake). Gateway: `except IdentityUnreadable` precedes `except Exception`, so
+only that class skips the rnsd diagnosis; a real rnsd fault raises before
+`_setup_lxmf` and still takes the diagnosis branch; `_lxmf_identity_error`
+reaches `get_status()`. Nit: a non-EEXIST `OSError` from `os.link` (a
+filesystem without hard links) surfaces as a generic start failure without
+the `identity_error` witness — acceptable, the path is `~/.config` on ext4
+fleet-wide. Upstream nit, ours to own: LXMF `unpack_from_bytes` line 815
+assigns a LOCAL `signature_validated = False` in the SOURCE_UNKNOWN branch;
+harmless only because `__init__` initialises the attribute False.
+
+### Should-fix before the FLEET roll (not before the one-box acceptance)
+
+- **S0 (DONE by the reviewer, test-only, unreviewed by a third):**
+  `tests/test_operator_line.py` could not run alone — `tests/` is a package,
+  so pytest puts the repo root on `sys.path`, and the file imported
+  `_fake_rns_identity` without the `sys.path.insert` every sibling carries;
+  alone → collection error rc=2, after another file → 604 passed. It passed
+  in CI and the full suite only by collection order. Fixed in place; alone →
+  32 passed rc=0.
+- **S1 answered-query witness.** Every DROP is counted but an ANSWER leaves
+  only `answered += 1`: no source, no intent, no time. The lost-phone question
+  ("was my line queried while the phone was gone?") is unanswerable. One INFO
+  line per answer (source prefix, intent, bytes) and the Phase-1 responder's
+  audit append (`oracle_log_path`) — two lines.
+- **S2 `node <id>` is advertised and dead.** `_default_snapshot()` passes no
+  `nodes`, so the directory is empty (measured: `nodes in directory = 0`,
+  `node moc → lookup unavailable (no directory)`), yet `help` offers it. Either
+  drop `node` from THIS line's help, or wire the directory — and then decide
+  deliberately, because `link <node-id> <lat,lon>` becomes a DISTANCE ORACLE
+  on every node with a position, positions shared on private channels
+  included (three queries trilaterate). An instrument that advertises a verb
+  it cannot answer fails at legibility.
+- **S3 `pages` counts hand-offs, not deliveries.** `_deliver_lxmf` returns
+  True at `handle_outbound`; LXMF retries up to `MAX_DELIVERY_ATTEMPTS=5` and
+  then fails where the line cannot see. Register the message's delivery and
+  failed callbacks → `page_delivered` / `page_failed`; label the status field
+  `pages_handed_off` until then. BIC-2's leg, a counter now.
+- **S4 LXMF's own anti-spam is one argument away and unused.**
+  `register_delivery_identity(..., stamp_cost=None)`, router
+  `enforce_stamps=False`. The destination is announced on a public network and
+  inherits the gateway's exposure to link-establishment floods. An OPT-IN
+  `inbound_stamp_cost` (default 0 = off; Sideband/Columba support stamps) is
+  the lever to pull if `strangers` ever climbs. Do not turn it on by default:
+  it costs the operator's phone proof-of-work per message.
+- **S5 journal flood.** `Operator line IGNORED unverified sender …` is one INFO
+  line per inbound message; rate-limit per source (once per `_NUDGE_S`),
+  keep the counter.
+- **S6 airtime per reply.** `desired_method=OPPORTUNISTIC` for replies and
+  pages: LXMF falls back to DIRECT automatically when the content exceeds
+  `ENCRYPTED_PACKET_MAX_CONTENT`, so it is safe, and it turns a ≥3-packet
+  link exchange into one packet on LoRa for every answer measured here.
+
+### Carried forward unchanged
+
+Items 2 (in-app surface — now including **revoke**) and 3 (the 4-leg live
+acceptance on one box) of "Owed before ANY box enables it" stand. Order:
+B1 → enable on ONE box with the operator's own identity → the 4 legs →
+S1–S6 → fleet.
