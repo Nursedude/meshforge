@@ -923,20 +923,50 @@ def _journal_user_unit_has_lines(
     return bool((proc.stdout or "").strip())
 
 
-def _journal_head_ts(journalctl_path: str = "journalctl") -> Optional[float]:
-    """Epoch seconds of the OLDEST retained journal entry, or None.
+JOURNAL_DIRS = ("/var/log/journal", "/run/log/journal")
 
-    Answers WHY a cadence-sized window came back thin (2026-10-15, the manager box:
-    a weekly timer read "1 firing outcome in 17.5d" because a 200M cap had
-    kept ~6 days). ``--list-boots -o json`` is an index lookup (~25 ms on a
-    277M journal), and callers ask only in the unjudged path. None on any
-    failure — an unreadable head is unobservable, never a date.
+
+def _journal_head_ts(
+    journalctl_path: str = "journalctl",
+    *,
+    uid: Optional[int] = None,
+    journal_dirs=JOURNAL_DIRS,
+) -> Optional[float]:
+    """Epoch seconds of the OLDEST retained entry in ``uid``'s USER journal.
+
+    Answers WHY a cadence-sized window came back thin (2026-10-15, the
+    manager box: a weekly timer read "1 firing outcome in 17.5d" because a
+    200M cap had kept ~6 days). ``--list-boots -o json`` is an index lookup
+    (12-45 ms warm; 617 ms cold on a Pi 4), and callers ask only in the
+    unjudged path.
+
+    **Scoped to ``user-<uid>*.journal``** (R1, non-author read of
+    ``4ab12686``): ``USER_UNIT=`` outcome lines live ONLY in the user's own
+    files under the default ``SplitMode=uid``, and an unscoped
+    ``--list-boots`` takes the min over system+user files — 6 h early on the
+    manager, and when the system set reaches past the window while the user
+    set does not, it HIDES the truncation it exists to name. The files are
+    resolved here because a ``--file`` glob that matches nothing fails the
+    whole call (rc 1, measured).
+
+    None on any failure, with no uid, or with no file of that uid — the
+    all-files head is the wrong set, so it is never a fallback.
     """
+    if uid is None:
+        return None
+    import glob
+    files = sorted(
+        f for d in journal_dirs
+        for pat in (f"user-{int(uid)}.journal", f"user-{int(uid)}@*.journal")
+        for f in glob.glob(os.path.join(d, "*", pat)))
+    if not files:
+        return None
+    cmd = [journalctl_path]
+    for f in files:
+        cmd += ["--file", f]
+    cmd += ["--list-boots", "-o", "json", "--no-pager", "-q"]
     try:
-        proc = subprocess.run(
-            [journalctl_path, "--list-boots", "-o", "json", "--no-pager", "-q"],
-            capture_output=True, text=True, timeout=15,
-        )
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
     if proc.returncode != 0:

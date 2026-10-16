@@ -11931,33 +11931,137 @@ class TestUnjudgedNamesTheJournalStart:
 class TestJournalHeadTs:
     """The real head query — every behavioural test above injects it."""
 
-    def _patch(self, monkeypatch, *, rc=0, stdout="", stderr="", exc=None):
+    @staticmethod
+    def _journal_tree(tmp_path):
+        """A split journal (SplitMode=uid, the systemd default): system files,
+        the operator's user files, and another uid's — plus a volatile dir."""
+        persist = tmp_path / "var" / "machine"
+        volatile = tmp_path / "run" / "machine"
+        persist.mkdir(parents=True)
+        volatile.mkdir(parents=True)
+        for name in ("system.journal", "system@a-1-2.journal",
+                     "user-1000.journal", "user-1000@a-3-4.journal",
+                     "user-1001.journal", "user-10000.journal"):
+            (persist / name).write_text("")
+        (volatile / "user-1000.journal").write_text("")
+        return (str(tmp_path / "var"), str(tmp_path / "run"))
+
+    def _patch(self, monkeypatch, tmp_path, *, rc=0, stdout="", stderr="",
+               exc=None, calls=None):
+        import functools
         import subprocess as sp
         import utils.watchdog_probe_core as core
+        dirs = self._journal_tree(tmp_path)
 
         def fake_run(cmd, **kw):
             assert kw.get("timeout"), "MF004: journalctl call needs a timeout"
             assert "--list-boots" in cmd
+            if calls is not None:
+                calls.append(cmd)
             if exc is not None:
                 raise exc
             return sp.CompletedProcess(cmd, rc, stdout, stderr)
         monkeypatch.setattr(core.subprocess, "run", fake_run)
-        return core._journal_head_ts
+        return functools.partial(core._journal_head_ts, uid=1000,
+                                 journal_dirs=dirs)
 
-    def test_oldest_first_entry_across_boots(self, monkeypatch):
-        fn = self._patch(monkeypatch, stdout=(
+    def test_oldest_first_entry_across_boots(self, monkeypatch, tmp_path):
+        fn = self._patch(monkeypatch, tmp_path, stdout=(
             '[{"index":-1,"first_entry":1791000000000000},'
             '{"index":0,"first_entry":1791580550152410}]'))
         assert fn() == pytest.approx(1791000000.0)
 
-    def test_failure_is_unobservable_not_a_date(self, monkeypatch):
+    def test_failure_is_unobservable_not_a_date(self, monkeypatch, tmp_path):
         import subprocess as sp
-        assert self._patch(monkeypatch, rc=1, stderr="boom")() is None
-        assert self._patch(monkeypatch, stdout="not json")() is None
-        assert self._patch(monkeypatch, stdout="[]")() is None
+        assert self._patch(monkeypatch, tmp_path / "a", rc=1,
+                           stderr="boom")() is None
+        assert self._patch(monkeypatch, tmp_path / "b",
+                           stdout="not json")() is None
+        assert self._patch(monkeypatch, tmp_path / "c", stdout="[]")() is None
         assert self._patch(
-            monkeypatch, exc=sp.TimeoutExpired("journalctl", 15))() is None
-        assert self._patch(monkeypatch, exc=FileNotFoundError())() is None
+            monkeypatch, tmp_path / "d",
+            exc=sp.TimeoutExpired("journalctl", 15))() is None
+        assert self._patch(monkeypatch, tmp_path / "e",
+                           exc=FileNotFoundError())() is None
+
+    def test_head_reads_only_the_operators_user_files(self, monkeypatch,
+                                                      tmp_path):
+        """R1 (non-author read of 4ab12686, 2026-10-15): USER_UNIT= outcome
+        lines live ONLY in user-<uid>*.journal, but an unscoped --list-boots
+        took the min over system+user files: the system head, 6 h earlier on
+        the manager (later on moc3). The head must come from the SAME file
+        set the outcomes come from: this uid's files, persistent and
+        volatile, and never user-1001 / user-10000 (a prefix trap)."""
+        calls = []
+        self._patch(monkeypatch, tmp_path, stdout="[]", calls=calls)()
+        assert len(calls) == 1
+        cmd = calls[0]
+        files = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--file"]
+        names = sorted(f.rsplit("/", 1)[1] for f in files)
+        assert names == ["user-1000.journal", "user-1000.journal",
+                         "user-1000@a-3-4.journal"], files
+
+    def test_no_user_files_claims_nothing(self, monkeypatch, tmp_path):
+        """No file of this uid → no head, and journalctl is not run at all:
+        a --file glob matching nothing fails the WHOLE call (rc 1, measured),
+        and falling back to every file is the wrong set again."""
+        import functools
+        import utils.watchdog_probe_core as core
+        calls = []
+        self._patch(monkeypatch, tmp_path, calls=calls)
+        fn = functools.partial(core._journal_head_ts, uid=4242,
+                               journal_dirs=(str(tmp_path / "var"),))
+        assert fn() is None
+        assert calls == []
+
+    def test_no_uid_claims_nothing(self, monkeypatch, tmp_path):
+        import utils.watchdog_probe_core as core
+        calls = []
+        self._patch(monkeypatch, tmp_path, calls=calls)
+        assert core._journal_head_ts(
+            journal_dirs=(str(tmp_path / "var"),)) is None
+        assert calls == []
+
+
+class TestProbePassesTheOperatorUidToTheHead:
+    """R1 wiring: the probe's real head query must be asked for the SAME uid
+    whose USER_UNIT= lines it judged."""
+
+    NOW = 1_800_000_000.0
+
+    def _run(self, tmp_path, monkeypatch, **kw):
+        import utils.watchdog_probes_user as wpu
+        seen = []
+        monkeypatch.setattr(
+            wpu, "_journal_head_ts",
+            lambda **k: seen.append(k.get("uid")) or None)
+        monkeypatch.setattr(
+            wpu, "_journal_user_unit_ts",
+            lambda unit, pattern, window, journalctl_path="journalctl":
+                [] if pattern == "Failed with result" else [self.NOW - 3600])
+        home = kw.pop("user_home", "fixture")
+        if home == "fixture":
+            home = _user_timer_fixture(tmp_path, {"slow.timer": None})
+        _fresh_dispositions()
+        wpu.probe_user_timer_unit_failing(
+            user_home=home, now=self.NOW, debounce_ticks=1,
+            state_path=str(tmp_path / "s.json"),
+            coverage_fn=lambda unit, window=None: True,
+            cadences={"slow.timer": 7 * 86400.0}, **kw)
+        return seen
+
+    def test_resolved_operator_uid_reaches_the_head(self, tmp_path,
+                                                    monkeypatch):
+        import pwd
+        home = _user_timer_fixture(tmp_path, {"slow.timer": None})
+        monkeypatch.setattr(pwd, "getpwuid",
+                            lambda uid: type("P", (), {"pw_dir": home})())
+        assert self._run(tmp_path, monkeypatch, user_home=None,
+                         operator=(4321, "op")) == [4321]
+
+    def test_given_home_uses_its_owner(self, tmp_path, monkeypatch):
+        import os
+        assert self._run(tmp_path, monkeypatch) == [os.getuid()]
 
 
 class TestJournalUserUnitHasLines:

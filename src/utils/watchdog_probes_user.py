@@ -225,6 +225,7 @@ def probe_user_timer_unit_failing(
         now = time.time() if now is None else now
         sp = state_path or DEFAULT_USER_TIMER_FAILING_STATE
 
+        uid = None      # whose USER journal the outcomes (and head) come from
         if user_home is None:
             if operator is None:
                 try:
@@ -242,6 +243,11 @@ def probe_user_timer_unit_failing(
                 user_home = _pwd.getpwuid(uid).pw_dir
             except KeyError:
                 user_home = f"/home/{name}"
+        else:
+            try:
+                uid = os.stat(user_home).st_uid
+            except OSError:
+                uid = None      # no head claim; outcomes are judged as before
 
         timers = _enabled_user_timers(user_home)
         if timers is None:
@@ -257,7 +263,8 @@ def probe_user_timer_unit_failing(
         if journal_head_fn is None:
             if ts_fn is None:
                 def journal_head_fn():
-                    return _journal_head_ts(journalctl_path=journalctl_path)
+                    return _journal_head_ts(journalctl_path=journalctl_path,
+                                            uid=uid)
             else:
                 # An injected ts_fn is a FAKE journal; this box's real head
                 # would pair with it into a machine-dependent verdict.
