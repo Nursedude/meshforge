@@ -27,7 +27,7 @@
 # 1.2.5+mf.5 / 0.9.4+mf.0 until 2026-07-19; upstream 1.3.8 / 1.0.1 merged +
 # canaried + fleet-rolled 07-17..07-19 (see rns_138_merge_eval_2026_07_16.md).
 #   forks: github.com/Nursedude/reticulum  (branch meshforge, tag 1.3.8+mf.5)
-#          github.com/Nursedude/lxmf        (branch meshforge, tag 1.0.1+mf.11)
+#          github.com/Nursedude/lxmf        (branch meshforge, tag 1.0.1+mf.12)
 # +mf.1 (2026-05-30): #68 fix — bound LocalClientInterface connect (no thread hang).
 # +mf.2 (2026-05-30): #72 fix — bound shared-instance RPC recv (no rnstatus hang).
 # +mf.3 (2026-05-30): rnsd-SIGTERM fix — bound detach_interfaces() (CONTAINS but does
@@ -89,9 +89,15 @@
 #                     moc ~140/day). mf.8's code + that fix only; pins
 #                     rns==1.3.8+mf.5 (mf.9/mf.10 rns pin skipped on purpose,
 #                     see FORK.md). Canary moc1 4h: 0 vs control 28; rolled.
-# MF-FORK-PIN lxmf 1.0.1+mf.11
+# lxmf 1.0.1+mf.12 (2026-10-16): process_outbound reads direct_links /
+#                     backchannel_links with .get()/pop(h, None) (3 check-
+#                     then-use sites the closed callback can race) + that
+#                     callback snapshots before scanning. Never observed
+#                     live; closed by construction. Pins rns==1.3.8+mf.5.
+#                     Canary moc1 3h vs control moc2: 0 err, rx==tx; rolled.
+# MF-FORK-PIN lxmf 1.0.1+mf.12
 rns @ git+https://github.com/Nursedude/reticulum.git@3f91b93bdb1b7e994a84561f784c67ef4ad14fd3
-lxmf @ git+https://github.com/Nursedude/lxmf.git@b8357d8cfd818f92e64dc53c08b18a10b642ba34
+lxmf @ git+https://github.com/Nursedude/lxmf.git@4a4880af2ffa580afa9c8a9594ae26802c80ccc3
 
 # Cryptography / PyOpenSSL version alignment — BOTH bounds are load-bearing,
 # and the two packages MOVE TOGETHER. RNS's own constraint is only
