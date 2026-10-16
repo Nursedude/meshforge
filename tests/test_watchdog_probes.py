@@ -12023,6 +12023,265 @@ class TestJournalHeadTs:
         assert calls == []
 
 
+class TestJournalHeadRetriesPerFile:
+    """R4 (non-author read of 6f07ab4a, 2026-10-15): ONE truncated/empty file
+    in the --file list fails the WHOLE --list-boots call ("Failed to open
+    files: No data available", rc 1, measured), while journalctl's default
+    reader skips it. A power-loss corpse in the user set therefore erased
+    the date with no witness (hfm #9). On failure only, each file is asked
+    alone under ONE shared budget; the unreadable count is reported."""
+
+    GOOD_A = '[{"index":0,"first_entry":1791602362000000}]'
+    GOOD_B = '[{"index":0,"first_entry":1791700000000000}]'
+
+    def _setup(self, monkeypatch, tmp_path, per_file, *, clock=None,
+               step=0.0, raises=None):
+        import subprocess as sp
+        import utils.watchdog_probe_core as core
+        d = tmp_path / "var" / "m"
+        d.mkdir(parents=True)
+        for name in per_file:
+            (d / name).write_text("")
+        calls = []
+        t = [0.0]
+
+        def fake_run(cmd, **kw):
+            assert kw.get("timeout", 0) > 0, "MF004"
+            files = [cmd[i + 1].rsplit("/", 1)[1]
+                     for i, a in enumerate(cmd) if a == "--file"]
+            calls.append((files, kw["timeout"]))
+            t[0] += step
+            if raises is not None:
+                raise raises
+            if len(files) > 1:
+                bad = [f for f in files if per_file[f] is None]
+                if bad:
+                    return sp.CompletedProcess(
+                        cmd, 1, "", "Failed to open files: No data available")
+                merged = [b for f in files for b in json.loads(per_file[f])]
+                return sp.CompletedProcess(cmd, 0, json.dumps(merged), "")
+            out = per_file[files[0]]
+            if isinstance(out, BaseException):
+                raise out
+            if out is None:
+                return sp.CompletedProcess(
+                    cmd, 1, "", "Failed to open files: No data available")
+            return sp.CompletedProcess(cmd, 0, out, "")
+        monkeypatch.setattr(core.subprocess, "run", fake_run)
+        monkeypatch.setattr(core, "_monotonic", lambda: t[0])
+        w = {}
+        ts = core._journal_head_ts(uid=1000, journal_dirs=(str(tmp_path / "var"),),
+                                   witness=w)
+        return ts, w, calls
+
+    def test_one_corrupt_file_is_skipped_and_counted(self, monkeypatch,
+                                                     tmp_path):
+        ts, w, calls = self._setup(monkeypatch, tmp_path, {
+            "user-1000.journal": self.GOOD_B,
+            "user-1000@a.journal": self.GOOD_A,
+            "user-1000@corrupt.journal": None})
+        assert ts == pytest.approx(1791602362.0)
+        assert w.get("unreadable") == 1
+        assert len(calls) == 4          # the failed batch + 3 singles
+
+    def test_every_file_unreadable_is_none_with_a_count(self, monkeypatch,
+                                                        tmp_path):
+        ts, w, _ = self._setup(monkeypatch, tmp_path, {
+            "user-1000.journal": None, "user-1000@a.journal": None})
+        assert ts is None
+        assert w.get("unreadable") == 2
+
+    def test_healthy_set_is_one_call_and_no_witness(self, monkeypatch,
+                                                    tmp_path):
+        ts, w, calls = self._setup(monkeypatch, tmp_path, {
+            "user-1000.journal": self.GOOD_B,
+            "user-1000@a.journal": self.GOOD_A})
+        assert ts == pytest.approx(1791602362.0)
+        assert len(calls) == 1
+        assert w.get("unreadable", 0) == 0
+
+    def test_an_answered_empty_set_does_not_retry(self, monkeypatch,
+                                                  tmp_path):
+        """rc 0 with no usable boot is an ANSWER: asking each file again
+        would repeat it N times (caught live by the R1 scope test)."""
+        ts, w, calls = self._setup(monkeypatch, tmp_path, {
+            "user-1000.journal": "[]", "user-1000@a.journal": "[]"})
+        assert ts is None
+        assert len(calls) == 1
+        assert w.get("unreadable") == 0
+
+    def test_retries_share_one_budget(self, monkeypatch, tmp_path):
+        """Each call costs 6 s of a 15 s budget. Batch at t=0, singles at
+        t=6 and t=12 (timeout = the 3 s left), then the budget is gone: the
+        files never asked count as unreadable instead of stretching one tick
+        to N x 15 s. Sorted order asks @0 and @1 (both good); the 4 never
+        asked are UNASKED — not unreadable, which is a measured refusal."""
+        files = {f"user-1000@{i}.journal": self.GOOD_A for i in range(5)}
+        files["user-1000@corrupt.journal"] = None
+        ts, w, calls = self._setup(monkeypatch, tmp_path, files, step=6.0)
+        assert [len(f) for f, _ in calls] == [6, 1, 1], calls
+        assert [t for _, t in calls] == [15, 9, 3], calls
+        assert ts == pytest.approx(1791602362.0)
+        assert w.get("unreadable") == 0
+        assert w.get("unasked") == 4
+
+
+class TestJournalHeadNamesTheFailureKind:
+    """Second non-author read of the R4 patch, finding 1: "N file(s)
+    unreadable" was ASSERTED — journalctl missing or a timeout counted every
+    good file unreadable (measured: 6 of 6), sending the operator hunting
+    corpses instead of the wedge. A file is unreadable only when asked ALONE
+    and refused; a query-level failure is named as what it is."""
+
+    GOOD = '[{"index":0,"first_entry":1791602362000000}]'
+    files = {"user-1000.journal": GOOD, "user-1000@a.journal": GOOD}
+
+    def _run(self, monkeypatch, tmp_path, per_file, **kw):
+        return TestJournalHeadRetriesPerFile._setup(
+            None, monkeypatch, tmp_path, per_file, **kw)
+
+    def test_missing_journalctl_is_named_not_counted(self, monkeypatch,
+                                                     tmp_path):
+        ts, w, calls = self._run(monkeypatch, tmp_path, dict(self.files),
+                                 raises=FileNotFoundError())
+        assert ts is None
+        assert w.get("unreadable") == 0
+        assert w.get("query") == "journalctl unavailable"
+        assert len(calls) == 1          # no per-file retry can help
+
+    def test_timeout_is_named_not_counted(self, monkeypatch, tmp_path):
+        import subprocess as sp
+        ts, w, calls = self._run(monkeypatch, tmp_path, dict(self.files),
+                                 raises=sp.TimeoutExpired("journalctl", 15))
+        assert ts is None
+        assert w.get("unreadable") == 0
+        assert w.get("query") == "timed out"
+        assert len(calls) == 1
+
+    def test_single_refused_file_counts_one(self, monkeypatch, tmp_path):
+        """Mutation M5 survived: deleting the single-file count stayed green,
+        so a 1-file box (any fresh one) could regress to the silent class."""
+        ts, w, _ = self._run(monkeypatch, tmp_path,
+                             {"user-1000.journal": None})
+        assert ts is None
+        assert w.get("unreadable") == 1
+        assert w.get("query") is None
+
+    def test_answered_empty_single_is_not_unreadable(self, monkeypatch,
+                                                     tmp_path):
+        """Mutation M2 survived: counting a per-file ANSWER with no boots as
+        unread stayed green. An answer is not a refusal."""
+        ts, w, _ = self._run(monkeypatch, tmp_path, {
+            "user-1000.journal": self.GOOD, "user-1000@empty.journal": "[]",
+            "user-1000@corrupt.journal": None})
+        assert ts == pytest.approx(1791602362.0)
+        assert w.get("unreadable") == 1
+
+    def test_timeout_mid_retry_stops_and_is_named(self, monkeypatch,
+                                                  tmp_path):
+        import subprocess as sp
+        ts, w, calls = self._run(monkeypatch, tmp_path, {
+            "user-1000.journal": self.GOOD,
+            "user-1000@b.journal": sp.TimeoutExpired("journalctl", 9),
+            "user-1000@c.journal": self.GOOD,
+            "user-1000@corrupt.journal": None})
+        assert w.get("query") == "timed out"
+        assert ts == pytest.approx(1791602362.0)   # what WAS read still counts
+        assert w.get("unasked") == 2               # @c and @corrupt never asked
+        # Third read, mutation N1 survived: without the stop, @c and @corrupt
+        # WERE asked while the witness called them "not read".
+        assert len(calls) == 3, calls              # batch, .journal, @b
+        assert w.get("unreadable") == 0
+
+
+class TestJournalHeadIncludesTildeArchives:
+    """Second non-author read, finding 2: journald renames a file to ``~``
+    after an UNCLEAN stop (the fleet's power-loss mode) as well as on
+    corruption. A clean-enough ``~`` read alone gave rc 0 and the OLDEST
+    entry; omitting it moved the date 17 h LATER than the default reader's
+    (measured). With per-file retry a corrupt ``~`` just counts unreadable."""
+
+    def test_tilde_files_are_in_the_file_list(self, monkeypatch, tmp_path):
+        import subprocess as sp
+        import utils.watchdog_probe_core as core
+        d = tmp_path / "var" / "m"
+        d.mkdir(parents=True)
+        for name in ("user-1000.journal", "user-1000@a.journal~",
+                     "user-1000.journal~", "user-1001@b.journal~",
+                     "system@c.journal~"):
+            (d / name).write_text("")
+        seen = []
+
+        def fake_run(cmd, **kw):
+            seen.append([cmd[i + 1].rsplit("/", 1)[1]
+                         for i, a in enumerate(cmd) if a == "--file"])
+            return sp.CompletedProcess(cmd, 0, "[]", "")
+        monkeypatch.setattr(core.subprocess, "run", fake_run)
+        core._journal_head_ts(uid=1000, journal_dirs=(str(tmp_path / "var"),))
+        assert sorted(seen[0]) == ["user-1000.journal", "user-1000.journal~",
+                                   "user-1000@a.journal~"], seen
+
+
+class TestUnjudgedNamesUnreadableJournalFiles:
+    """R4, probe side: the count reaches the reason, so the date's absence
+    (or its partial basis) is never silent."""
+
+    NOW = 1_800_000_000.0
+    DAY = 86400.0
+
+    def _reason(self, tmp_path, head):
+        from utils.watchdog_probes_user import probe_user_timer_unit_failing
+        home = _user_timer_fixture(tmp_path, {"slow.timer": None})
+        collect = _fresh_dispositions()
+        probe_user_timer_unit_failing(
+            user_home=home, now=self.NOW, debounce_ticks=1,
+            state_path=str(tmp_path / "s.json"),
+            ts_fn=_ts_fn({"slow.service": {"Failed with result": [],
+                                           "Finished ": [self.NOW - 3600]}}),
+            coverage_fn=lambda unit, window=None: True,
+            journal_head_fn=lambda: head,
+            cadences={"slow.timer": 7 * self.DAY})
+        return collect().get("user_timer_unit_failing", {}).get("reason", "")
+
+    def test_partial_basis_is_named_beside_the_date(self, tmp_path):
+        import time
+        head = self.NOW - 6 * self.DAY
+        r = self._reason(tmp_path, (head, {"unreadable": 1}))
+        date = time.strftime("%Y-%m-%d", time.localtime(head))
+        assert f"journal starts {date} (1 file(s) unreadable)" in r, r
+
+    def test_no_readable_file_says_so(self, tmp_path):
+        r = self._reason(tmp_path, (None, {"unreadable": 2}))
+        assert "journal unreadable (2 file(s))" in r, r
+        assert "journal starts" not in r, r
+
+    def test_query_failure_is_named(self, tmp_path):
+        r = self._reason(tmp_path, (None, {"query": "timed out"}))
+        assert "journal query timed out" in r, r
+        assert "unreadable" not in r, r
+
+    def test_unasked_files_are_named_beside_the_date(self, tmp_path):
+        import time
+        head = self.NOW - 6 * self.DAY
+        r = self._reason(tmp_path, (head, {"unasked": 3}))
+        date = time.strftime("%Y-%m-%d", time.localtime(head))
+        assert f"journal starts {date} (3 file(s) not read)" in r, r
+
+    def test_query_failure_is_named_beside_the_date(self, tmp_path):
+        """Third read, mutation N9 survived: dropping the query note from the
+        date's basis stayed green."""
+        import time
+        head = self.NOW - 6 * self.DAY
+        r = self._reason(tmp_path, (head, {"query": "timed out"}))
+        date = time.strftime("%Y-%m-%d", time.localtime(head))
+        assert f"journal starts {date} (query timed out)" in r, r
+
+    def test_clean_read_adds_no_witness(self, tmp_path):
+        r = self._reason(tmp_path, (self.NOW - 6 * self.DAY, {}))
+        assert "journal starts" in r, r
+        assert "unreadable" not in r, r
+
+
 class TestProbePassesTheOperatorUidToTheHead:
     """R1 wiring: the probe's real head query must be asked for the SAME uid
     whose USER_UNIT= lines it judged."""

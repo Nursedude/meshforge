@@ -263,8 +263,10 @@ def probe_user_timer_unit_failing(
         if journal_head_fn is None:
             if ts_fn is None:
                 def journal_head_fn():
-                    return _journal_head_ts(journalctl_path=journalctl_path,
-                                            uid=uid)
+                    w = {}
+                    ts = _journal_head_ts(journalctl_path=journalctl_path,
+                                          uid=uid, witness=w)
+                    return ts, w
             else:
                 # An injected ts_fn is a FAKE journal; this box's real head
                 # would pair with it into a machine-dependent verdict.
@@ -273,12 +275,33 @@ def probe_user_timer_unit_failing(
         _head = []      # fetched once per tick, and only if something is unjudged
 
         def _journal_start(window_s):
+            """The why-prefix for an unjudged timer, or None."""
             if not _head:
-                _head.append(journal_head_fn())
-            head = _head[0]
-            if head is None or head <= now - window_s:
-                return None     # unobservable, or the journal covers the window
-            return time.strftime("%Y-%m-%d", time.localtime(head))
+                got = journal_head_fn()
+                # (ts, witness) from the real query; a bare ts from tests
+                _head.append(got if isinstance(got, tuple) else (got, {}))
+            head, w = _head[0]
+            w = w or {}
+            if head is None:
+                # Never silent when the read failed (R4): name the failure
+                # as what it is — a query-level failure is not N bad files.
+                if w.get("query"):
+                    return f"journal query {w['query']}"
+                if w.get("unreadable"):
+                    return f"journal unreadable ({w['unreadable']} file(s))"
+                return None
+            if head <= now - window_s:
+                return None     # the journal covers the window: not the cause
+            started = time.strftime("%Y-%m-%d", time.localtime(head))
+            basis = []
+            if w.get("unreadable"):
+                basis.append(f"{w['unreadable']} file(s) unreadable")
+            if w.get("unasked"):
+                basis.append(f"{w['unasked']} file(s) not read")
+            if w.get("query"):
+                basis.append(f"query {w['query']}")
+            return (f"journal starts {started} ({', '.join(basis)})"
+                    if basis else f"journal starts {started}")
 
         if ts_fn is None:
             def ts_fn(unit, pattern, window=lookback):
@@ -348,7 +371,7 @@ def probe_user_timer_unit_failing(
                 # journal inside a 17.5-day window).
                 started = _journal_start(window_s)
                 if started:
-                    why = f"journal starts {started}; {why}"
+                    why = f"{started}; {why}"
                 unjudged.append(f"{service} ({why})")
                 continue
 

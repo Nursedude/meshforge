@@ -924,6 +924,44 @@ def _journal_user_unit_has_lines(
 
 
 JOURNAL_DIRS = ("/var/log/journal", "/run/log/journal")
+JOURNAL_HEAD_BUDGET_S = 15.0
+_monotonic = time.monotonic     # patched by tests; durations never wall-clock
+
+
+def _list_boots_first(journalctl_path, files, timeout):
+    """``(status, head)`` for one ``--list-boots`` over ``files``.
+
+    ``status`` says WHY, because the caller's label depends on it (second
+    non-author read of R4: a missing binary and a timeout both used to count
+    every good file "unreadable"): ``ok`` (answered; ``head`` may still be
+    None for an answer with no usable boot), ``refused`` (rc≠0 — the only
+    status a per-file retry can help), ``timeout``, ``nobinary``.
+    """
+    cmd = [journalctl_path]
+    for f in files:
+        cmd += ["--file", f]
+    cmd += ["--list-boots", "-o", "json", "--no-pager", "-q"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return "timeout", None
+    except (FileNotFoundError, PermissionError):
+        return "nobinary", None
+    except OSError:
+        return "refused", None
+    if proc.returncode != 0:
+        return "refused", None
+    try:
+        boots = json.loads(proc.stdout or "")
+        firsts = [int(b["first_entry"]) for b in boots
+                  if isinstance(b, dict) and b.get("first_entry")]
+    except (ValueError, TypeError, KeyError):
+        return "ok", None
+    return "ok", (min(firsts) / 1e6 if firsts else None)
+
+
+_QUERY_LABEL = {"timeout": "timed out", "nobinary": "journalctl unavailable"}
 
 
 def _journal_head_ts(
@@ -931,6 +969,7 @@ def _journal_head_ts(
     *,
     uid: Optional[int] = None,
     journal_dirs=JOURNAL_DIRS,
+    witness: Optional[dict] = None,
 ) -> Optional[float]:
     """Epoch seconds of the OLDEST retained entry in ``uid``'s USER journal.
 
@@ -947,37 +986,66 @@ def _journal_head_ts(
     manager, and when the system set reaches past the window while the user
     set does not, it HIDES the truncation it exists to name. The files are
     resolved here because a ``--file`` glob that matches nothing fails the
-    whole call (rc 1, measured).
+    whole call (rc 1, measured). ``*.journal~`` IS included: journald gives
+    that suffix after an unclean stop (the fleet's power-loss mode) as well
+    as on corruption, and a readable one can hold the oldest entry (omitting
+    it moved the date 17 h late, measured).
+
+    **One bad file fails the whole call** (R4, non-author read of
+    ``6f07ab4a``): a truncated/empty file → ``Failed to open files: No data
+    available``, rc 1, where the default reader skips it. On a REFUSED batch
+    only, each file is asked alone under ONE shared ``JOURNAL_HEAD_BUDGET_S``.
+
+    ``witness`` (filled when given) says what the answer is built on —
+    ``unreadable``: files asked ALONE and refused; ``unasked``: files the
+    budget never reached; ``query``: a query-level failure ("timed out",
+    "journalctl unavailable") that no per-file retry can fix and that is
+    never counted as unreadable files (hfm #1, #9).
 
     None on any failure, with no uid, or with no file of that uid — the
     all-files head is the wrong set, so it is never a fallback.
     """
+    w = witness if witness is not None else {}
+    w.update(unreadable=0, unasked=0, query=None)
     if uid is None:
         return None
     import glob
+    u = int(uid)
     files = sorted(
         f for d in journal_dirs
-        for pat in (f"user-{int(uid)}.journal", f"user-{int(uid)}@*.journal")
+        for pat in (f"user-{u}.journal", f"user-{u}@*.journal",
+                    f"user-{u}.journal~", f"user-{u}@*.journal~")
         for f in glob.glob(os.path.join(d, "*", pat)))
     if not files:
         return None
-    cmd = [journalctl_path]
-    for f in files:
-        cmd += ["--file", f]
-    cmd += ["--list-boots", "-o", "json", "--no-pager", "-q"]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+    deadline = _monotonic() + JOURNAL_HEAD_BUDGET_S
+    status, head = _list_boots_first(journalctl_path, files,
+                                     JOURNAL_HEAD_BUDGET_S)
+    if status == "ok":
+        return head
+    if status != "refused":
+        w["query"] = _QUERY_LABEL[status]
         return None
-    if proc.returncode != 0:
+    if len(files) == 1:
+        w["unreadable"] = 1         # asked alone (it IS the batch), refused
         return None
-    try:
-        boots = json.loads(proc.stdout or "")
-        firsts = [int(b["first_entry"]) for b in boots
-                  if isinstance(b, dict) and b.get("first_entry")]
-    except (ValueError, TypeError, KeyError):
-        return None
-    return min(firsts) / 1e6 if firsts else None
+    heads = []
+    for i, f in enumerate(files):
+        left = deadline - _monotonic()
+        if left <= 0:
+            w["unasked"] = len(files) - i
+            break
+        status, h = _list_boots_first(journalctl_path, [f], left)
+        if status == "ok":
+            if h is not None:
+                heads.append(h)
+        elif status == "refused":
+            w["unreadable"] += 1
+        else:
+            w["query"] = _QUERY_LABEL[status]
+            w["unasked"] = len(files) - i - 1
+            break
+    return min(heads) if heads else None
 
 
 def _short_unix_ts(line: str) -> Optional[float]:
