@@ -11818,6 +11818,148 @@ class TestUserTimerCadenceAwareWindow:
         assert got.get("coverage") == {"judged": 1, "enrolled": 1}, got
 
 
+class TestUnjudgedNamesTheJournalStart:
+    """2026-10-15, the manager box: notes-prune (weekly) sat unjudged with "1
+    firing outcome(s) in 1514250s" while the job was healthy. The cause was
+    the JOURNAL — it began 2026-10-09, inside a 17.5-day window, because a
+    200M cap held ~6 days until 10-13. The line named the symptom and hid the
+    cause; the reader had to go measure retention by hand. The start date is
+    the one fact that turns "unjudged" into "unjudged because the journal is
+    short", and it is shown only when it truncates the window — otherwise it
+    explains nothing and spends the render cap."""
+
+    NOW = 1_800_000_000.0
+    DAY = 86400.0
+    WEEK = 7 * DAY
+
+    def _run(self, tmp_path, *, head, oks=None, extra_timers=0, calls=None):
+        from utils.watchdog_probes_user import probe_user_timer_unit_failing
+        fast = [f"t{i}" for i in range(extra_timers)]
+        home = _user_timer_fixture(
+            tmp_path, {**{f"{n}.timer": None for n in fast},
+                       "meshforge-notes-prune.timer": None})
+        healthy = {"Failed with result": [],
+                   "Finished ": [self.NOW - 600, self.NOW - 1200]}
+
+        def head_fn():
+            if calls is not None:
+                calls.append(1)
+            return head
+
+        collect = _fresh_dispositions()
+        probe_user_timer_unit_failing(
+            user_home=home, now=self.NOW, debounce_ticks=1,
+            state_path=str(tmp_path / "s.json"),
+            ts_fn=_ts_fn({
+                **{f"{n}.service": healthy for n in fast},
+                "meshforge-notes-prune.service": {
+                    "Failed with result": [],
+                    "Finished ": (oks if oks is not None
+                                  else [self.NOW - 4 * self.DAY])},
+            }),
+            coverage_fn=lambda unit, window=None: True,
+            journal_head_fn=head_fn,
+            cadences={**{f"{n}.timer": 600.0 for n in fast},
+                      "meshforge-notes-prune.timer": self.WEEK})
+        return collect
+
+    @staticmethod
+    def _date(ts):
+        import time
+        return time.strftime("%Y-%m-%d", time.localtime(ts))
+
+    def test_short_journal_names_its_start(self, tmp_path):
+        head = self.NOW - 6 * self.DAY
+        got = self._run(tmp_path, head=head)().get(
+            "user_timer_unit_failing", {})
+        assert f"journal starts {self._date(head)}" in got.get("reason", ""), got
+
+    def test_journal_start_survives_the_rollup_cap(self, tmp_path):
+        """The manager-box shape (7 judged + notes-prune), through the blind
+        extractor, cut at rollup.py's 100 chars: the date must still be
+        there, or the fix shows in neither surface the operator reads."""
+        from mini_dudeai.presets.meshforge_fleet import (
+            _coverage_blind_extractor,
+        )
+        head = self.NOW - 6 * self.DAY
+        collect = self._run(tmp_path, head=head, extra_timers=7)
+        out = _coverage_blind_extractor({"coverage": collect()})
+        assert len(out) == 1, out
+        rendered = out[0]["detail"][:100]
+        assert f"journal starts {self._date(head)}" in rendered, rendered
+
+    def test_deep_journal_adds_nothing(self, tmp_path):
+        """A journal that covers the whole window is not the cause — a timer
+        with one outcome there really did fire once (e.g. newly enabled)."""
+        got = self._run(tmp_path, head=self.NOW - 60 * self.DAY)().get(
+            "user_timer_unit_failing", {})
+        assert "journal starts" not in got.get("reason", ""), got
+        assert "1 firing outcome" in got.get("reason", ""), got
+
+    def test_unobservable_head_claims_nothing(self, tmp_path):
+        got = self._run(tmp_path, head=None)().get(
+            "user_timer_unit_failing", {})
+        assert "journal starts" not in got.get("reason", ""), got
+        assert "meshforge-notes-prune.service" in got.get("reason", ""), got
+
+    def test_judged_timers_never_ask_for_the_head(self, tmp_path):
+        """Footprint pin: the head query is the RARE path only."""
+        calls = []
+        self._run(tmp_path, head=self.NOW - 6 * self.DAY,
+                  oks=[self.NOW - self.WEEK, self.NOW - 2 * self.WEEK],
+                  calls=calls)
+        assert calls == []
+
+    def test_injected_journal_never_reads_the_real_head(self, tmp_path,
+                                                        monkeypatch):
+        """With ts_fn injected the journal is FAKE; pairing it with this box's
+        real journal start would be a verdict that changes with the machine."""
+        import utils.watchdog_probes_user as wpu
+        monkeypatch.setattr(
+            wpu, "_journal_head_ts",
+            lambda **kw: pytest.fail("real journal head read under a fake ts_fn"))
+        home = _user_timer_fixture(tmp_path, {"slow.timer": None})
+        wpu.probe_user_timer_unit_failing(
+            user_home=home, now=self.NOW, debounce_ticks=1,
+            state_path=str(tmp_path / "s.json"),
+            ts_fn=_ts_fn({"slow.service": {"Failed with result": [],
+                                           "Finished ": [self.NOW - 3600]}}),
+            coverage_fn=lambda unit, window=None: True,
+            cadences={"slow.timer": self.WEEK})
+
+
+class TestJournalHeadTs:
+    """The real head query — every behavioural test above injects it."""
+
+    def _patch(self, monkeypatch, *, rc=0, stdout="", stderr="", exc=None):
+        import subprocess as sp
+        import utils.watchdog_probe_core as core
+
+        def fake_run(cmd, **kw):
+            assert kw.get("timeout"), "MF004: journalctl call needs a timeout"
+            assert "--list-boots" in cmd
+            if exc is not None:
+                raise exc
+            return sp.CompletedProcess(cmd, rc, stdout, stderr)
+        monkeypatch.setattr(core.subprocess, "run", fake_run)
+        return core._journal_head_ts
+
+    def test_oldest_first_entry_across_boots(self, monkeypatch):
+        fn = self._patch(monkeypatch, stdout=(
+            '[{"index":-1,"first_entry":1791000000000000},'
+            '{"index":0,"first_entry":1791580550152410}]'))
+        assert fn() == pytest.approx(1791000000.0)
+
+    def test_failure_is_unobservable_not_a_date(self, monkeypatch):
+        import subprocess as sp
+        assert self._patch(monkeypatch, rc=1, stderr="boom")() is None
+        assert self._patch(monkeypatch, stdout="not json")() is None
+        assert self._patch(monkeypatch, stdout="[]")() is None
+        assert self._patch(
+            monkeypatch, exc=sp.TimeoutExpired("journalctl", 15))() is None
+        assert self._patch(monkeypatch, exc=FileNotFoundError())() is None
+
+
 class TestJournalUserUnitHasLines:
     """The real coverage query — the behavioral tests all inject it."""
 

@@ -54,6 +54,7 @@ from utils.timer_cadence import timer_cadences
 from utils.user_units import enabled_user_timers, timer_wants_dirs
 from utils.watchdog_probe_core import (
     Signal,
+    _journal_head_ts,
     _journal_user_unit_has_lines,
     _lookback_seconds as _core_lookback_seconds,
     note_disposition,
@@ -170,6 +171,7 @@ def probe_user_timer_unit_failing(
     journalctl_path: str = "journalctl",
     ts_fn=None,
     coverage_fn=None,
+    journal_head_fn=None,
     cadences: Optional[Dict[str, Optional[float]]] = None,
     now: Optional[float] = None,
 ) -> Optional[Signal]:
@@ -252,6 +254,25 @@ def probe_user_timer_unit_failing(
                              reason="no user timers enrolled")
             return None
 
+        if journal_head_fn is None:
+            if ts_fn is None:
+                def journal_head_fn():
+                    return _journal_head_ts(journalctl_path=journalctl_path)
+            else:
+                # An injected ts_fn is a FAKE journal; this box's real head
+                # would pair with it into a machine-dependent verdict.
+                def journal_head_fn():
+                    return None
+        _head = []      # fetched once per tick, and only if something is unjudged
+
+        def _journal_start(window_s):
+            if not _head:
+                _head.append(journal_head_fn())
+            head = _head[0]
+            if head is None or head <= now - window_s:
+                return None     # unobservable, or the journal covers the window
+            return time.strftime("%Y-%m-%d", time.localtime(head))
+
         if ts_fn is None:
             def ts_fn(unit, pattern, window=lookback):
                 return _journal_user_unit_ts(
@@ -314,6 +335,13 @@ def probe_user_timer_unit_failing(
                     # separates a DEAD channel from a live one that simply
                     # has not completed enough firings yet.
                     why = f"no journal lines at all in {window}"
+                # The date goes FIRST: the render caps (rollup 100, brief
+                # 120) cut the tail, and this is the fact that says WHY
+                # (2026-10-15: a 200M cap left a weekly timer 6 days of
+                # journal inside a 17.5-day window).
+                started = _journal_start(window_s)
+                if started:
+                    why = f"journal starts {started}; {why}"
                 unjudged.append(f"{service} ({why})")
                 continue
 

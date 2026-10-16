@@ -923,6 +923,33 @@ def _journal_user_unit_has_lines(
     return bool((proc.stdout or "").strip())
 
 
+def _journal_head_ts(journalctl_path: str = "journalctl") -> Optional[float]:
+    """Epoch seconds of the OLDEST retained journal entry, or None.
+
+    Answers WHY a cadence-sized window came back thin (2026-10-15, the manager box:
+    a weekly timer read "1 firing outcome in 17.5d" because a 200M cap had
+    kept ~6 days). ``--list-boots -o json`` is an index lookup (~25 ms on a
+    277M journal), and callers ask only in the unjudged path. None on any
+    failure — an unreadable head is unobservable, never a date.
+    """
+    try:
+        proc = subprocess.run(
+            [journalctl_path, "--list-boots", "-o", "json", "--no-pager", "-q"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        boots = json.loads(proc.stdout or "")
+        firsts = [int(b["first_entry"]) for b in boots
+                  if isinstance(b, dict) and b.get("first_entry")]
+    except (ValueError, TypeError, KeyError):
+        return None
+    return min(firsts) / 1e6 if firsts else None
+
+
 def _short_unix_ts(line: str) -> Optional[float]:
     """Parse the epoch timestamp from a ``-o short-unix`` journal line."""
     try:
