@@ -19,8 +19,12 @@ we **tell the truth when we cannot see**.
 - **RNS is the network stack and the hub.** Cross-mesh traffic goes RNS-first.
   Pairwise radio-to-radio bridges multiply into duplicates and false information.
   We own the RNS/LXMF forks (`requirements/rns.txt`, `MF-FORK-PIN`).
-- **`CanonicalMessage` is the contract** (`src/gateway/canonical_message.py`),
-  byte-identical with MeshAnchor.
+- **The bridge contract is `.claude/foundations/bridge_contract_matrix.md`**
+  (2026-10-16): per edge, what is kept / lost / translated, and the test that
+  pins it. Upstream versions are variables; that matrix is the constant.
+  `CanonicalMessage` (`src/gateway/canonical_message.py`, byte-identical with
+  MeshAnchor) is its shared type, but today only the MeshCore edges build it
+  (matrix F8).
 - **Two offerings:** STANDALONE (one box, one ham) and FLEET (nine boxes on two
   sites, operated as one). The **ECOMM kit** (alaula router + kiai NOC) is the
   fleet folded into a box that runs with no WAN.

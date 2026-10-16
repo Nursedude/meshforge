@@ -15,6 +15,7 @@ Quick navigation for AI assistants. Load only what you need.
 |------|---------|
 | `foundations/domain_architecture.md` | Core vs Plugin, privilege separation |
 | `foundations/meshforge_ecosystem.md` | All 5 repos, boundaries, APIs |
+| `foundations/bridge_contract_matrix.md` | **Bridge SSOT** — per edge: kept / lost / translated + pinning test; findings F1–F13 |
 | `foundations/tui_architecture.md` | Handler registry pattern, DialogBackend, adding features |
 | `foundations/ui_design_decisions.md` | TUI design principles |
 | `foundations/persistent_issues.md` | Recurring bugs & resolution patterns |
