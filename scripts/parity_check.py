@@ -97,6 +97,12 @@ BYTE_IDENTICAL = (
     # its enable rule is the shared rns_interface_flags, pinned with it.
     "src/utils/rnsd_plugin_manifest.py",
     "src/utils/rns_interface_flags.py",
+    # RNS→radio ingress allowlist (MeshAnchor port 2026-10-15): WHO may reach
+    # our radios through either app's bridge. One verdict, one ledger schema,
+    # one fleet projection — two copies that drift would judge the same
+    # sender differently on a box running both stacks. MeshAnchor passes its
+    # own ledger path (the module's default names MeshForge's data dir).
+    "src/gateway/rns_ingress_policy.py",
     # LXMFace deterministic-avatar port (2026-06-14): the pure algorithm, the
     # vendored client-side JS, and the upstream parity vectors. These produce a
     # node's face from its LXMF/RNS hash and MUST agree across both apps (and
