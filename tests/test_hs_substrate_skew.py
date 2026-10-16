@@ -295,3 +295,80 @@ def test_probe_child_never_reads_the_unit_list(planted):
         for p in (a, b):
             p.kill()
             p.wait()
+
+
+# ---- cure text names the STALE UNIT, not rnsd (2026-10-16) ---------------
+# The lxmf mf.11 roll left moc1's lxmd + nomadnet on mf.8; the WARN said
+# "restart rnsd one box at a time" — rnsd imports no LXMF, and that advice is
+# the #69 race trigger. The cure follows WHICH unit is behind.
+
+def test_summarize_lxmf_only_skew_never_prescribes_rnsd():
+    desc, cure = hs.summarize([
+        "moc1 SB lxmd.service lxmf=1.0.1+mf.11 0 entry",
+        "moc1 SB nomadnet.service lxmf=1.0.1+mf.11 0 entry",
+    ])
+    assert desc == " moc1:lxmd(lxmf,entry),nomadnet(lxmf,entry)"
+    assert "restart" in cure and "rnsd" in cure
+    assert "#69" not in cure and "→ rnsd →" not in cure
+
+
+def test_summarize_rnsd_behind_gets_the_69_order_and_names_its_box():
+    desc, cure = hs.summarize([
+        "moc SB rnsd.service rns=1.3.8+mf.7 2 entry",
+        "moc3 SB meshforge-echo.service rns=1.3.8+mf.7 2 repo",
+    ])
+    assert "moc:rnsd(rns,entry)" in desc and "moc3:meshforge-echo(rns,repo)" in desc
+    assert "#69" in cure and "moc" in cure.split("#69")[0]
+    assert "moc3" not in cure.split("#69")[0]
+
+
+def test_summarize_merges_two_dists_on_one_unit():
+    desc, _ = hs.summarize([
+        "kiai SB nomadnet.service rns=1.3.8+mf.7 1 entry",
+        "kiai SB nomadnet.service lxmf=1.0.1+mf.11 1 entry",
+    ])
+    assert desc == " kiai:nomadnet(rns+lxmf,entry)"
+
+
+def test_summarize_refuses_malformed_records_loudly():
+    desc, _ = hs.summarize(["moc SB", "garbage", ""])
+    assert "unparsed" in desc
+
+
+def test_main_summarize_prints_desc_and_cure():
+    import contextlib, io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        hs.main(["--summarize"], stdin=["moc1 SB lxmd.service lxmf=1.0.1+mf.11 0 entry\n"])
+    out = buf.getvalue().splitlines()
+    assert out[0].startswith("DESC ") and out[1].startswith("CURE ")
+
+
+def test_honest_status_takes_the_cure_from_summarize():
+    src = (Path(__file__).resolve().parent.parent / "scripts" / "honest_status.sh").read_text()
+    assert "--summarize" in src
+    assert "restart rnsd one box at a time (#69 order" not in src
+
+
+def test_summarize_mixed_run_never_says_rnsd_needs_no_restart():
+    """Review note 1: clients AND rnsd behind must not read 'rnsd needs no
+    restart' left-to-right."""
+    _, cure = hs.summarize([
+        "moc1 SB lxmd.service lxmf=1.0.1+mf.11 0 entry",
+        "moc SB rnsd.service rns=1.3.8+mf.7 2 entry",
+    ])
+    assert "needs no restart" not in cure and "#69" in cure
+
+
+@pytest.mark.parametrize("unit", ["rnsd@foo.service", "rnsd-user.service"])
+def test_summarize_templated_rnsd_still_gets_the_69_order(unit):
+    """Review note 3: a renamed rnsd must fail LOUD (the #69 order), never
+    quiet (the client cure)."""
+    _, cure = hs.summarize(["moc %s %s rns=1.3.8+mf.7 2 entry" % ("SB", unit)])
+    assert "#69" in cure and "needs no restart" not in cure
+
+
+def test_summarize_all_unparsed_says_so_in_the_cure():
+    """Review note 2: summarize RAN; an empty cure made bash claim it failed."""
+    _, cure = hs.summarize(["moc SB rnsd.service rns 2 entry"])
+    assert "unparsed" in cure and cure != ""

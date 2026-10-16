@@ -594,7 +594,7 @@ HS_SUB_F="$HS_HERE/hs_substrate_skew.py"
 [ -r "$HS_SUB_F" ] || { echo "honest_status: missing $HS_SUB_F" >&2; exit 3; }
 HS_SUB_B64=$(base64 -w0 < "$HS_SUB_F" 2>/dev/null || base64 < "$HS_SUB_F" | tr -d "\n")
 HS_SUB_WANT=$(awk '$1=="#" && $2=="MF-FORK-PIN" && $3 ~ /^[A-Za-z0-9._-]+$/ {printf "%s ", $3}' "$REPO/requirements/rns.txt" 2>/dev/null)
-sub_behind=0; sub_unknown=0; sub_desc=""; sub_unk_desc=""; sub_boxes=0; sub_none=""; sub_checked=0; sub_unjudged=0
+sub_behind=0; sub_unknown=0; sub_desc=""; sub_sb_recs=""; sub_unk_desc=""; sub_boxes=0; sub_none=""; sub_checked=0; sub_unjudged=0
 for b in $BOXES; do
   # A declared-dormant box is not asked (finding 24): this leg had no posture
   # check at all, so it paid a ConnectTimeout per switched-off box.
@@ -657,7 +657,11 @@ else echo HSNOREPO; fi")
     sub_behind=$((sub_behind+_sb)); sub_unknown=$((sub_unknown+_su)); sub_checked=$((sub_checked+_sc)); sub_unjudged=$((sub_unjudged+_sx))
     # One entry per unit: dist list + basis. `entry` = its own entry point
     # needs the dist (fact); `repo` = repo code that MAY import it (labelled).
-    [ "$_sb" -gt 0 ] && sub_desc="$sub_desc $b:$(printf '%s\n' "$body" | awk '$1=="SB"{u=$2; sub(/\.service$/,"",u); k=u"("$5")"; if(!(k in s)){s[k]=1; o=o k ","}} END{sub(/,$/,"",o); print o}')"
+    # Raw SB records, box-prefixed: hs_substrate_skew.py --summarize builds the
+    # per-unit desc AND the cure from them (the cure depends on WHICH unit is
+    # behind — only a behind rnsd owes the #69 order; 2026-10-16).
+    [ "$_sb" -gt 0 ] && sub_sb_recs="$sub_sb_recs$(printf '%s\n' "$body" | awk -v b="$b" '$1=="SB"{print b, $0}')
+"
     [ "$_su" -gt 0 ] && sub_unk_desc="$sub_unk_desc $b:$(printf '%s\n' "$body" | awk '$1=="SU"{u=$2; sub(/\.service$/,"",u); printf "%s[%s],", u, $3}' | sed 's/,$//')"
     [ "$_sb" = 0 ] && [ "$_su" = 0 ] && [ "$_sc" = 0 ] && [ "$_sx" = 0 ] && sub_none="$sub_none $b"
   fi
@@ -808,7 +812,13 @@ sub_unjudged_note=""; [ "$sub_unjudged" -gt 0 ] && sub_unjudged_note=" ; $sub_un
 if [ "$sub_boxes" = 0 ]; then
   unk "running substrate" "no box returned a substrate probe — not measured"
 elif [ "$sub_behind" -gt 0 ]; then
-  warnf "running substrate" "$sub_behind unit(s) RUN an older ${HS_SUB_WANT% } copy than is INSTALLED (process started before the install):${sub_desc} — entry = its own entry point needs it, repo = repo code that may import it; restart rnsd one box at a time (#69 order: clients down → rnsd → owner check → clients)${sub_unk_note}${sub_none_note}${sub_unjudged_note}"
+  sub_sum=$(printf '%s' "$sub_sb_recs" | python3 "$HS_SUB_F" --summarize 2>/dev/null)
+  sub_desc=$(printf '%s\n' "$sub_sum" | sed -n 's/^DESC//p')
+  sub_cure=$(printf '%s\n' "$sub_sum" | sed -n 's/^CURE //p')
+  # A summarizer that failed must not read as "no cure needed".
+  [ -n "$sub_desc" ] || sub_desc=" (unit list UNAVAILABLE — summarize failed)"
+  [ -n "$sub_cure" ] || sub_cure="cure UNAVAILABLE — summarize failed; restart only the units named in the SB records"
+  warnf "running substrate" "$sub_behind unit(s) RUN an older ${HS_SUB_WANT% } copy than is INSTALLED (process started before the install):${sub_desc} — (dist,basis): entry = its own entry point needs it, repo = repo code that may import it; ${sub_cure}${sub_unk_note}${sub_none_note}${sub_unjudged_note}"
 elif [ "$sub_checked" = 0 ]; then
   # Boxes answered and NOTHING was judged: that is not "all current". A
   # resolution bug (review A1/A2) lands exactly here, so it must not PASS.

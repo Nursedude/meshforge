@@ -393,8 +393,71 @@ def judge(unit, start, data, want, now):
     return lines
 
 
+def summarize(records):
+    """Manager-side: "<box> SB <unit> <dist>=<ver> <days> <basis>" lines →
+    (desc, cure). Pure; unit-tested.
+
+    The cure follows WHICH unit is behind (2026-10-16): the leg used to say
+    "restart rnsd one box at a time" for any skew, including an LXMF-only one
+    where rnsd imports nothing stale — and an rnsd restart is the #69 race
+    trigger. A client loads its RNS/LXMF when IT starts, so restarting the
+    named unit is the whole cure; the #69 order is owed only where rnsd
+    itself is behind.
+    """
+    order, units, bad = [], {}, 0
+    for line in records:
+        p = line.split()
+        if len(p) < 6 or p[1] != "SB" or "=" not in p[3]:
+            bad += line.strip() != ""
+            continue
+        box, unit, dist, basis = p[0], p[2], p[3].split("=", 1)[0], p[5]
+        if unit.endswith(".service"):
+            unit = unit[:-len(".service")]
+        if box not in units:
+            order.append(box)
+            units[box] = {}
+        d, b = units[box].setdefault(unit, ([], []))
+        if dist not in d:
+            d.append(dist)
+        if basis not in b:
+            b.append(basis)
+    desc = "".join(
+        " %s:%s" % (box, ",".join("%s(%s,%s)" % (u, "+".join(d), "/".join(b))
+                                  for u, (d, b) in units[box].items()))
+        for box in order)
+    if bad:
+        desc += " ; %d unparsed SB record(s)" % bad
+    # rnsd by STEM, not exact Id: a templated/renamed rnsd (rnsd@x, rnsd-user)
+    # missed here would get the client cure — quiet in the dangerous direction.
+    rnsd_boxes = [box for box in order if any(_is_rnsd(u) for u in units[box])]
+    clients = any(not _is_rnsd(u) for box in order for u in units[box])
+    parts = []
+    if clients:
+        parts.append("restart each named unit in its own scope (systemctl / "
+                     "systemctl --user) — it loads RNS/LXMF at its own start"
+                     + ("" if rnsd_boxes else "; rnsd needs no restart for it"))
+    if rnsd_boxes:
+        parts.append("rnsd itself is behind on %s: restart it one box at a "
+                     "time (#69 order: clients down → rnsd → owner check → "
+                     "clients)" % " ".join(rnsd_boxes))
+    if bad and not parts:
+        # summarize RAN; an empty cure would make the caller claim it failed.
+        parts.append("cure UNKNOWN — %d SB record(s) unparsed; read the raw "
+                     "records before restarting anything" % bad)
+    return desc, "; ".join(parts)
+
+
+def _is_rnsd(unit):
+    return unit == "rnsd" or unit.startswith(("rnsd@", "rnsd-"))
+
+
 def main(argv=None, stdin=None):
     args = [w for w in (argv if argv is not None else sys.argv[1:]) if w]
+    if "--summarize" in args:
+        desc, cure = summarize(stdin if stdin is not None else sys.stdin)
+        print("DESC" + desc, flush=True)
+        print("CURE " + cure, flush=True)
+        return 0
     # --no-descend: the caller supplies EXACT pids (a unit's own cgroup
     # members) — probe only those. The descendant walk is right for the
     # honest_status disclosure leg and wrong for anything that ACTS on the
