@@ -427,8 +427,11 @@ def repair_rns_shared_instance(handler) -> bool:
     # a non-root user) cannot read the auth tokens → auth mismatch.
     try:
         time.sleep(1)  # brief delay for rnsd to create files
-        ReticulumPaths._fix_storage_file_permissions()
+        note = ReticulumPaths.storage_walk_note(
+            ReticulumPaths._fix_storage_file_permissions())
         print("  Fixed file permissions for shared access")
+        if note:
+            print(f"  NOTE: {note}")
     except Exception as e:
         logger.debug("Post-restart permission fix: %s", e)
 
@@ -897,8 +900,18 @@ def fix_rns_storage_permissions(ctx) -> bool:
     try:
         if storage_dir.exists():
             if sudo_user and sudo_user != 'root':
-                mode = storage_dir.stat().st_mode
-                can_write = bool(mode & stat.S_IWOTH)
+                # Owned by the real user (the B2 ownership model) or
+                # world-writable (legacy). lstat: a symlinked storage/ is
+                # never "writable" — the walk refuses and names it.
+                import pwd
+                st = storage_dir.lstat()
+                try:
+                    owner_ok = (st.st_uid == pwd.getpwnam(sudo_user).pw_uid
+                                and st.st_mode & stat.S_IWUSR)
+                except KeyError:
+                    owner_ok = False
+                can_write = (stat.S_ISDIR(st.st_mode)
+                             and bool(owner_ok or st.st_mode & stat.S_IWOTH))
             else:
                 test_file = storage_dir / '.write_test'
                 try:
@@ -926,16 +939,15 @@ def fix_rns_storage_permissions(ctx) -> bool:
         target_user,
     )
     try:
-        old_umask = os.umask(0)
-        try:
-            storage_dir.chmod(0o777)
-            ReticulumPaths._fix_storage_file_permissions()
-        finally:
-            os.umask(old_umask)
+        # No chmod 0777 here (W10, 2026-10-15): the walk hands storage/ to
+        # rnsd's own user, and a root chmod would follow a symlinked storage/.
+        note = ReticulumPaths.storage_walk_note(
+            ReticulumPaths._fix_storage_file_permissions())
         ctx.dialog.msgbox(
             "Storage Permissions Fixed",
             "/etc/reticulum/storage/ permissions have been fixed.\n\n"
-            "NomadNet will use the system config (same as rnsd).",
+            "NomadNet will use the system config (same as rnsd)."
+            + (f"\n\nNOTE: {note}" if note else ""),
         )
         return True
     except (OSError, PermissionError) as e:

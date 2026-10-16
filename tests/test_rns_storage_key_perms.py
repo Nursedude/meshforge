@@ -335,3 +335,238 @@ def test_the_config_dir_tail_never_follows_a_planted_link(tmp_path, monkeypatch)
     os.symlink(secret, storage.parent / "identity")
     ReticulumPaths._fix_storage_file_permissions()
     assert _mode(secret) == 0o600, oct(_mode(secret))
+
+
+# ── Second non-author read of the symlink-safe walk (2026-10-15) ─────────────
+# W7: only chown was gated on nlink; a hardlink to an OUTSIDE inode the
+# attacker holds r+w on (protected_hardlinks=1 allows that) still had its MODE
+# changed — widened to 0666 by the legacy branch (re-armed by deleting the key
+# rnsd's user owns), and +o+r by the identity tail.
+# W8 (operator chose "never hand over", 2026-10-15): a root-owned file that is
+# NOT world-readable, moved into the tree by rnsd's user (32 root 0600 fleet
+# backups sit in that user's home), was fchowned to them on the next sudo TUI
+# start. Such a file is left exactly as it is, and a WARNING names it — so a
+# lock-out it might cause is on the record, not found outside the app.
+# W9: a subtree the walk cannot open (fd limit, unreadable dir) was skipped
+# silently.
+
+
+def _fake_root_owned(monkeypatch, paths):
+    """Make os.fstat report uid 0 for these inodes — the walk's only source of
+    ownership; a real root-owned file needs root to create."""
+    inos = {os.stat(p).st_ino for p in paths}
+    real = os.fstat
+
+    def fstat(fd):
+        st = real(fd)
+        if st.st_ino in inos:
+            vals = list(st[:10])
+            vals[4] = 0
+            return os.stat_result(vals)
+        return st
+    monkeypatch.setattr(os, "fstat", fstat)
+
+
+def test_a_hardlinked_outside_file_is_never_widened_by_the_legacy_branch(tmp_path, monkeypatch):
+    storage, outside = _owned_tree(tmp_path, monkeypatch, owner=None)
+    (storage / "transport_identity").unlink()        # key absent -> legacy
+    shared = outside / "root_grp_0660"
+    shared.write_bytes(b"s")
+    os.chmod(shared, 0o660)
+    os.link(shared, storage / "cache" / "hard")
+    ReticulumPaths._fix_storage_file_permissions()
+    assert _mode(shared) == 0o660, oct(_mode(shared))
+
+
+def test_a_hardlinked_outside_file_is_never_narrowed_either(tmp_path, monkeypatch):
+    storage, outside = _owned_tree(tmp_path, monkeypatch)
+    shared = outside / "grp_0660"
+    shared.write_bytes(b"s")
+    os.chmod(shared, 0o660)
+    os.link(shared, storage / "cache" / "hard")
+    ReticulumPaths._fix_storage_file_permissions()
+    assert _mode(shared) == 0o660, oct(_mode(shared))
+
+
+def test_the_tail_never_changes_a_hardlink_planted_as_identity(tmp_path, monkeypatch):
+    storage, outside = _owned_tree(tmp_path, monkeypatch)
+    shared = outside / "grp_0660"
+    shared.write_bytes(b"s")
+    os.chmod(shared, 0o660)
+    os.link(shared, storage.parent / "identity")
+    ReticulumPaths._fix_storage_file_permissions()
+    assert _mode(shared) == 0o660, oct(_mode(shared))
+
+
+def test_a_root_private_file_is_never_handed_over_and_is_named(tmp_path, monkeypatch, caplog):
+    storage, _ = _owned_tree(tmp_path, monkeypatch, as_root=True, owner=(4242, 4242))
+    private = storage / "cache" / "backup.tar.gz"
+    private.write_bytes(b"secret")
+    os.chmod(private, 0o600)
+    shared = storage / "cache" / "announce"
+    shared.write_bytes(b"a")
+    os.chmod(shared, 0o644)
+    _fake_root_owned(monkeypatch, [private, shared])
+    handed = []
+    real_fstat = os.fstat
+    monkeypatch.setattr(os, "fchown", lambda fd, u, g: handed.append(real_fstat(fd).st_ino))
+    with caplog.at_level("WARNING"):
+        ReticulumPaths._fix_storage_file_permissions()
+    assert private.stat().st_ino not in handed
+    assert shared.stat().st_ino in handed, "a root-made SHARED cache file must still be handed over"
+    assert "backup.tar.gz" in caplog.text, caplog.text
+
+
+def test_a_root_private_file_is_never_widened_by_the_legacy_branch(tmp_path, monkeypatch):
+    """The same file via the legacy branch (key deleted): 0600 -> 0666 would
+    make a root secret world-readable."""
+    storage, _ = _owned_tree(tmp_path, monkeypatch, owner=None)
+    (storage / "transport_identity").unlink()
+    private = storage / "cache" / "backup.tar.gz"
+    private.write_bytes(b"secret")
+    os.chmod(private, 0o600)
+    _fake_root_owned(monkeypatch, [private])
+    ReticulumPaths._fix_storage_file_permissions()
+    assert _mode(private) == 0o600, oct(_mode(private))
+
+
+def test_a_subtree_the_walk_cannot_open_is_named(tmp_path, monkeypatch, caplog):
+    if os.geteuid() == 0:
+        import pytest
+        pytest.skip("root opens a 000 dir")
+    storage, _ = _owned_tree(tmp_path, monkeypatch)
+    sealed = storage / "cache" / "sealed"
+    sealed.mkdir()
+    os.chmod(sealed, 0)
+    try:
+        with caplog.at_level("WARNING"):
+            ReticulumPaths._fix_storage_file_permissions()
+    finally:
+        os.chmod(sealed, 0o755)
+    assert "could not" in caplog.text.lower(), caplog.text
+
+
+# ── Third non-author read (2026-10-15): the follow-up's own gaps ─────────────
+
+def test_a_root_private_dir_is_left_alone_INCLUDING_its_children(tmp_path, monkeypatch):
+    """'Left exactly as it is' covers the SUBTREE: a root 0700 dir of root 0644
+    files is one root-made thing (sudo cp -r). Mutant M2 (dir check deleted)
+    survived the previous suite."""
+    storage, _ = _owned_tree(tmp_path, monkeypatch, as_root=True, owner=(4242, 4242))
+    d = storage / "cache" / "rootdir"
+    d.mkdir()
+    os.chmod(d, 0o700)
+    child = d / "shared_0644"
+    child.write_bytes(b"c")
+    os.chmod(child, 0o644)
+    # Fourth read, mutant survived: the direct child is protected by the
+    # dir-level `continue` alone; only a NESTED entry pins the prune.
+    (d / "nested").mkdir()
+    deep = d / "nested" / "deep_0666"
+    deep.write_bytes(b"d")
+    os.chmod(deep, 0o666)
+    _fake_root_owned(monkeypatch, [d, child])
+    handed = []
+    real_fstat = os.fstat
+    monkeypatch.setattr(os, "fchown", lambda fd, u, g: handed.append(real_fstat(fd).st_ino))
+    ReticulumPaths._fix_storage_file_permissions()
+    assert child.stat().st_ino not in handed, "child of a root-private dir was handed over"
+    assert d.stat().st_ino not in handed
+    assert _mode(deep) == 0o666, "the walk descended into a root-private dir"
+
+
+def test_a_walk_that_dies_at_the_fd_limit_is_named_not_silent(tmp_path, monkeypatch, caplog):
+    """EMFILE surfaces in fwalk's scandir(topfd), OUTSIDE its onerror — the
+    generator died into the walk's `except OSError: pass`, naming nothing.
+    The only W9 failure ROOT can actually hit (root opens a 000 dir)."""
+    import resource
+    storage, _ = _owned_tree(tmp_path, monkeypatch)
+    d = storage
+    for i in range(60):
+        d = d / f"L{i}"
+        d.mkdir()
+        f = d / "f"
+        f.write_bytes(b"x")
+        os.chmod(f, 0o666)
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (40, hard))
+    try:
+        with caplog.at_level("WARNING"):
+            ReticulumPaths._fix_storage_file_permissions()
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+    deepest = storage.joinpath(*[f"L{i}" for i in range(60)]) / "f"
+    unchecked = _mode(deepest) == 0o666
+    assert not unchecked or "could not" in caplog.text.lower(), (
+        f"deep file left 0o666 and nothing named it; log={caplog.text!r}")
+
+
+def test_an_unopened_subtree_is_named_by_its_FULL_path(tmp_path, monkeypatch, caplog):
+    if os.geteuid() == 0:
+        import pytest
+        pytest.skip("root opens a 000 dir")
+    storage, _ = _owned_tree(tmp_path, monkeypatch)
+    sealed = storage / "cache" / "deep" / "sealed"
+    sealed.mkdir(parents=True)
+    os.chmod(sealed, 0)
+    try:
+        with caplog.at_level("WARNING"):
+            ReticulumPaths._fix_storage_file_permissions()
+    finally:
+        os.chmod(sealed, 0o755)
+    assert os.path.join("cache", "deep", "sealed") in caplog.text, caplog.text
+
+
+def test_the_walk_returns_what_it_left_alone(tmp_path, monkeypatch):
+    """The TUI logs to FILE only (setup_logging log_to_console=False), so a
+    WARNING never reaches the operator's screen; callers print the summary."""
+    storage, _ = _owned_tree(tmp_path, monkeypatch, as_root=True, owner=(4242, 4242))
+    private = storage / "cache" / "backup.tar.gz"
+    private.write_bytes(b"s")
+    os.chmod(private, 0o600)
+    _fake_root_owned(monkeypatch, [private])
+    monkeypatch.setattr(os, "fchown", lambda *a: None)
+    summary = ReticulumPaths._fix_storage_file_permissions()
+    assert any("backup.tar.gz" in p for p in summary["left_alone"]), summary
+    note = ReticulumPaths.storage_walk_note(summary)
+    assert note and "backup.tar.gz" in note, note
+    assert ReticulumPaths.storage_walk_note({"left_alone": [], "unopened": []}) is None
+
+
+def test_no_tui_handler_chmods_storage_world_writable():
+    """W10: nomadnet.py re-set storage/ 0777 whenever it was NOT world-writable
+    — i.e. on every sudo NomadNet launch after the B2 roll — and as root that
+    chmod followed a symlinked storage/. The walk owns storage's modes now."""
+    import re
+    handlers = Path(__file__).resolve().parent.parent / "src" / "launcher_tui" / "handlers"
+    hits = []
+    for f in handlers.glob("*.py"):
+        for n, line in enumerate(f.read_text().splitlines(), 1):
+            code = line.split("#", 1)[0]
+            if re.search(r"storage\w*\.(chmod\(0o777|mkdir\(mode=0o777)", code):
+                hits.append(f"{f.name}:{n}")
+            # ...nor tell the operator to do it by hand (fourth read: MA's
+            # failure dialog still said `sudo chmod 777 /etc/reticulum/storage`).
+            if re.search(r"chmod\s+0?777\s+\S*reticulum/storage", line):
+                hits.append(f"{f.name}:{n} (cure text)")
+    assert hits == [], hits
+
+
+def test_ensure_system_dirs_refuses_a_symlinked_storage(tmp_path, monkeypatch):
+    """Fourth read F4: as root (the repair path) the mkdirs followed a
+    symlinked storage/ and created ratchets/, cache/ ... inside its target."""
+    base = tmp_path / "etc"
+    base.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    os.symlink(outside, base / "storage")
+    for name, rel in (("ETC_BASE", ""), ("ETC_STORAGE", "storage"),
+                      ("ETC_RATCHETS", "storage/ratchets"),
+                      ("ETC_RESOURCES", "storage/resources"),
+                      ("ETC_CACHE", "storage/cache"),
+                      ("ETC_ANNOUNCE_CACHE", "storage/cache/announces"),
+                      ("ETC_DISCOVERY", "storage/discovery"),
+                      ("ETC_INTERFACES", "interfaces")):
+        monkeypatch.setattr(ReticulumPaths, name, base / rel if rel else base)
+    assert ReticulumPaths.ensure_system_dirs() is False
+    assert list(outside.iterdir()) == [], list(outside.iterdir())

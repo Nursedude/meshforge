@@ -234,30 +234,19 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
         if etc_config.is_file():
             storage_dir = etc_rns / 'storage'
             try:
+                # The walk owns storage/'s modes (B2 roll + W10, 2026-10-15):
+                # it hands the tree to rnsd's own user — the user NomadNet
+                # runs as — so NomadNet can write without world-write. This
+                # used to chmod 0777 whenever storage/ was NOT world-writable,
+                # i.e. on every launch after the roll, and as root that chmod
+                # followed a symlinked storage/.
                 if storage_dir.exists():
-                    mode = storage_dir.stat().st_mode
-                    if not (mode & stat.S_IWOTH):
-                        # Fix permissions -- we're root (sudo), we can do this.
-                        # This prevents NomadNet from falling back to ~/.reticulum
-                        # which would cause config drift with rnsd.
-                        logger.info(
-                            f"/etc/reticulum/storage mode {oct(mode)} missing "
-                            f"world-writable bit, fixing to 0o777"
-                        )
-                        old_umask = os.umask(0)
-                        try:
-                            storage_dir.chmod(0o777)
-                        finally:
-                            os.umask(old_umask)
-                        # Also fix file permissions inside storage
-                        ReticulumPaths._fix_storage_file_permissions()
-                else:
-                    # Create storage dir with correct permissions
-                    old_umask = os.umask(0)
-                    try:
-                        storage_dir.mkdir(mode=0o777, parents=True, exist_ok=True)
-                    finally:
-                        os.umask(old_umask)
+                    note = ReticulumPaths.storage_walk_note(
+                        ReticulumPaths._fix_storage_file_permissions())
+                    if note:
+                        self._rns_storage_prep_warning = note
+                elif not ReticulumPaths.ensure_system_dirs():
+                    raise PermissionError(f"could not create {storage_dir}")
             except (OSError, PermissionError) as e:
                 # A failed perms-fix means NomadNet may not write or may drift
                 # to ~/.reticulum (config drift with rnsd). Stash it so the

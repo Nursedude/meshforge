@@ -168,6 +168,16 @@ class ReticulumPaths:
             Requires root/sudo to create directories in /etc.
         """
         try:
+            # A symlinked storage/ is refused BEFORE any mkdir (fourth read,
+            # F4): as root these mkdirs followed it and created ratchets/,
+            # cache/ ... inside the link's target. The walk refuses it too.
+            if cls.ETC_STORAGE.is_symlink():
+                import logging
+                logging.getLogger(__name__).warning(
+                    "RNS storage %s is a symlink — not creating directories "
+                    "through it. Replace it with a real directory owned by "
+                    "rnsd's user.", cls.ETC_STORAGE)
+                return False
             # Save and clear umask so mkdir gets the actual mode we request.
             # Default umask 0o022 would turn 0o777 into 0o755.
             old_umask = os.umask(0)
@@ -252,21 +262,35 @@ class ReticulumPaths:
         a warning; the tree is walked with ``os.fwalk`` (directory fds, no
         path re-resolution); each file is opened relative to its dir with
         ``O_NOFOLLOW|O_NONBLOCK`` and must be a regular file; every change is
-        ``fchmod``/``fchown`` on that fd; a multi-link file is never chowned
-        (a hardlink is another name for an outside file). The config-dir tail
-        gets the same treatment — /etc/reticulum is group-writable, so a link
-        planted as ``identity`` would otherwise be chmod-ed through.
+        ``fchmod``/``fchown`` on that fd; a multi-link file is never touched at
+        all — neither owner nor mode (W7: a hardlink is another name for an
+        OUTSIDE inode, and ``fs.protected_hardlinks`` still lets rnsd's user
+        link any file it holds r+w on). The config-dir tail gets the same
+        treatment — /etc/reticulum is group-writable, so a link planted as
+        ``identity`` would otherwise be chmod-ed through.
+
+        **A root-owned file that is not world-readable is left exactly as it
+        is** (W8, operator's call 2026-10-15): rnsd's user can MOVE such a
+        file into the tree (root 0600 fleet backups sit in its home), and
+        handing it over — or widening it in the legacy branch — would give
+        away a root secret. The walk cannot tell "root made it here" from
+        "moved in", so it refuses both and names each in one WARNING; a
+        root-made 0600 file rnsd needed would then show on the record, not
+        outside the app. Root-made SHARED files (0644 caches, the lock-out
+        the ownership rule exists for) are still handed over. A subtree the
+        walk cannot open is named too (W9), never skipped silently.
 
         Runs on every gateway connect and sudo TUI start, so it must agree
         with the hand roll — the old walk put 0777/0666 straight back.
         """
         import stat
 
+        summary = {"left_alone": [], "unopened": [], "refused": None}
         storage_root = cls.ETC_STORAGE
         try:
             root_st = storage_root.lstat()
         except OSError:
-            return
+            return summary
         if stat.S_ISLNK(root_st.st_mode):
             import logging
             logging.getLogger(__name__).warning(
@@ -274,9 +298,10 @@ class ReticulumPaths:
                 "runs as root; a link would redirect it outside the tree). "
                 "Replace it with a real directory owned by rnsd's user.",
                 storage_root)
-            return
+            summary["refused"] = f"{storage_root} is a symlink"
+            return summary
         if not stat.S_ISDIR(root_st.st_mode):
-            return
+            return summary
         owner = cls._rnsd_storage_owner()
         try:
             (storage_root / "transport_identity").lstat()
@@ -295,6 +320,21 @@ class ReticulumPaths:
             if owner is not None and as_root and (st.st_uid, st.st_gid) != owner:
                 os.fchown(fd, owner[0], owner[1])
 
+        def root_private(st) -> bool:
+            return st.st_uid == 0 and not (st.st_mode & stat.S_IROTH)
+
+        left_alone = summary["left_alone"]   # root-private, never handed over
+        unopened = summary["unopened"]       # subtrees left unchecked
+        dir_probe = (os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                     | getattr(os, "O_CLOEXEC", 0))
+        here = [str(storage_root)]           # the dir being processed
+
+        def _unopened(err: OSError) -> None:
+            # Only a race reaches this (each subdir is probed first, below);
+            # fwalk gives a bare name, so the best context is the last dir.
+            unopened.append(f"{here[0]}/…/{getattr(err, 'filename', '?')} "
+                            f"({err.strerror or err})")
+
         def dir_mode(current: int) -> int:
             if owner is not None:
                 return 0o755
@@ -309,16 +349,40 @@ class ReticulumPaths:
             return current & ~shed_write
 
         try:
-            for _dp, _dirs, filenames, dfd in os.fwalk(
-                    str(storage_root), follow_symlinks=False):
+            for dp, dirs, filenames, dfd in os.fwalk(
+                    str(storage_root), follow_symlinks=False,
+                    onerror=_unopened):
+                here[0] = dp
                 try:
                     dst = os.fstat(dfd)
+                except OSError:
+                    continue
+                if root_private(dst):
+                    # Left exactly as it is, SUBTREE included: a root 0700
+                    # dir of root files is one root-made thing (third read).
+                    left_alone.append(dp)
+                    dirs[:] = []
+                    continue
+                try:
                     hand_over(dfd, dst)
                     want = dir_mode(stat.S_IMODE(dst.st_mode))
                     if stat.S_IMODE(dst.st_mode) != want:
                         os.fchmod(dfd, want)
                 except OSError:
                     pass
+                # Probe each subdir HERE, where its full path is known: a
+                # failure (EACCES, or EMFILE at the fd limit — the one root can
+                # hit) is named by path and pruned, instead of killing fwalk's
+                # generator outside its onerror (third non-author read).
+                keep = []
+                for name in dirs:
+                    try:
+                        os.close(os.open(name, dir_probe, dir_fd=dfd))
+                        keep.append(name)
+                    except OSError as e:
+                        unopened.append(f"{os.path.join(dp, name)} "
+                                        f"({e.strerror or e})")
+                dirs[:] = keep
 
                 for fname in filenames:
                     try:
@@ -327,10 +391,12 @@ class ReticulumPaths:
                         continue    # a link (ELOOP), gone, or unreadable
                     try:
                         st = os.fstat(fd)
-                        if not stat.S_ISREG(st.st_mode):
+                        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
                             continue
-                        if st.st_nlink == 1:
-                            hand_over(fd, st)
+                        if root_private(st):
+                            left_alone.append(os.path.join(dp, fname))
+                            continue
+                        hand_over(fd, st)
                         want = file_mode(fname, st)
                         if want != stat.S_IMODE(st.st_mode):
                             os.fchmod(fd, want)
@@ -338,8 +404,24 @@ class ReticulumPaths:
                         pass        # Best effort — some files may be locked
                     finally:
                         os.close(fd)
-        except OSError:
-            pass  # Best effort
+        except OSError as e:
+            unopened.append(f"{here[0]} (walk stopped: {e.strerror or e})")
+
+        if left_alone or unopened:
+            import logging
+            log = logging.getLogger(__name__)
+            if left_alone:
+                log.warning(
+                    "RNS storage walk left %d root-owned private entr(y/ies) as "
+                    "they are (never handed to rnsd's user): %s%s — if rnsd "
+                    "needs one, fix its owner by hand.", len(left_alone),
+                    ", ".join(left_alone[:3]),
+                    " …" if len(left_alone) > 3 else "")
+            if unopened:
+                log.warning(
+                    "RNS storage walk could not open %d subtree(s), left "
+                    "unchecked: %s%s", len(unopened), ", ".join(unopened[:3]),
+                    " …" if len(unopened) > 3 else "")
 
         # Also fix files in the config directory itself (identity, config).
         # NomadNet and other RNS clients need to read the identity file to
@@ -355,13 +437,36 @@ class ReticulumPaths:
                 continue
             try:
                 st = os.fstat(fd)
-                if stat.S_ISREG(st.st_mode) and not (st.st_mode & stat.S_IROTH):
+                if (stat.S_ISREG(st.st_mode) and st.st_nlink == 1
+                        and not (st.st_mode & stat.S_IROTH)):
                     os.fchmod(fd, stat.S_IMODE(st.st_mode)
                               | stat.S_IROTH | stat.S_IRGRP)
             except OSError:
                 pass
             finally:
                 os.close(fd)
+        return summary
+
+    @staticmethod
+    def storage_walk_note(summary) -> Optional[str]:
+        """One operator-facing line for a walk summary, or None when clean.
+
+        The TUI logs to a FILE only, so the walk's WARNING never reaches the
+        screen; every caller prints this instead (third non-author read)."""
+        if not summary:
+            return None
+        parts = []
+        if summary.get("refused"):
+            parts.append(f"REFUSED — {summary['refused']}")
+        for key, label in (("left_alone", "root-owned private entr(y/ies) "
+                            "left as they are"),
+                           ("unopened", "subtree(s) not checked")):
+            items = summary.get(key) or []
+            if items:
+                more = " …" if len(items) > 3 else ""
+                parts.append(f"{len(items)} {label}: "
+                             f"{', '.join(items[:3])}{more}")
+        return "; ".join(parts) or None
 
     @classmethod
     def get_config_dir(cls) -> Path:

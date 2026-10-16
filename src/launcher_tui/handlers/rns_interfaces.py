@@ -462,8 +462,12 @@ class RNSInterfacesHandler(BaseHandler):
             # Storage: world-read/write (files 0o666, dirs 0o777)
             checked += 1
             try:
-                ReticulumPaths._fix_storage_file_permissions()
+                note = ReticulumPaths.storage_walk_note(
+                    ReticulumPaths._fix_storage_file_permissions())
                 print(f"    OK: storage/ — permissions fixed")
+                if note:
+                    issues_found += 1   # visible, never folded into "all correct"
+                    print(f"    NOTE: storage/ — {note}")
             except Exception as e:
                 issues_found += 1  # counted, or "All N checked … correct" follows a FAIL
                 print(f"    FAIL: storage/ — {e}")
@@ -521,11 +525,15 @@ class RNSInterfacesHandler(BaseHandler):
                 time.sleep(2)
                 if start_ok:
                     # Fix permissions on the auth tokens rnsd just regenerated.
+                    note = None
                     try:
-                        ReticulumPaths._fix_storage_file_permissions()
+                        note = ReticulumPaths.storage_walk_note(
+                            ReticulumPaths._fix_storage_file_permissions())
                     except Exception:
                         pass
                     print(f"  rnsd restarted and permissions re-applied")
+                    if note:
+                        print(f"  NOTE: {note}")
                 else:
                     print(f"  FAILED to restart rnsd: {start_msg}")
                     print(f"  rnsd may be left stopped — re-run this fix or use "
