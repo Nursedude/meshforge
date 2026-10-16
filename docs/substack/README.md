@@ -113,6 +113,8 @@ Published at: https://wh6gxznursedude.substack.com/
 ### October 2026
 - **2026-10-03 — [Measuring the Air: LoRa, Power, and Truth in a Two-Site Mesh](2026-10-03-measuring-the-air.md)** _(white paper, ~14 min — RF)_
   _We turned the site's Meshtastic radios from 30 to 17 dBm and the instruments said nothing changed. An SDR beside one radio showed why: its received level stayed within about 2 dB from setting 12 to 30 (we suspect its USB supply) and fell ~11 dB only at 7, where the worst path still went out direct. Two receivers found an RNode's constant −71 dBm "interference" was not in the air, and six of our own instruments turned out to be measuring something else. LoRa physics, three transports on one band, the 25% knee, and how it compares to published work. Live version: [Claude Doc](https://claude.ai/code/artifact/57c1f68a-62fa-40e8-9c39-981fc6134279)._
+- **2026-10-16 — [What We Are Is a Contract, Not a Version Number](2026-10-16-what-we-are-is-a-contract.md)** _(~6 min — bridges)_
+  _Meshtastic, MeshCore and RNS versions are upstream variables; what each bridge promises is the constant. Six rules, sixteen edges (kept / translated / lost / pinned by), and the thirteen findings writing it down turned up. Source of truth: `.claude/foundations/bridge_contract_matrix.md`._
 
 ---
 
