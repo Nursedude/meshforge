@@ -203,15 +203,20 @@ class ReticulumPaths:
 
         rnsd creates ``storage/transport_identity`` itself, so the key's owner
         IS rnsd's user (measured 2026-10-15: equal to the unit's ``User=`` on
-        all 9 rnsd boxes). None when there is no key yet (fresh box) or the
-        owner is root (rnsd as root: nothing measured says who else writes).
+        all 9 rnsd boxes). None when there is no key yet (fresh box), the
+        owner is root (rnsd as root: nothing measured says who else writes),
+        or the "key" is not a regular file — a symlink there names whoever
+        planted it, not rnsd (``lstat``, never ``stat``: W2, 2026-10-15).
         No subprocess, no systemctl: the file is the witness.
         """
+        import stat
         try:
-            st = (cls.ETC_STORAGE / "transport_identity").stat()
+            st = (cls.ETC_STORAGE / "transport_identity").lstat()
         except OSError:
             return None
-        return None if st.st_uid == 0 else (st.st_uid, st.st_gid)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid == 0:
+            return None
+        return (st.st_uid, st.st_gid)
 
     @classmethod
     def _fix_storage_file_permissions(cls):
@@ -228,14 +233,29 @@ class ReticulumPaths:
           * dirs are set 0755, files lose group/other WRITE, and a key-shaped
             file (identity-named, or exactly 64 bytes — an RNS private
             identity's size) is set 0600.
-        Nothing is ever widened in this mode. Not root: no chown; modes are
-        narrowed only on entries this process owns.
+        Not root: no chown; modes are narrowed only on entries this process
+        owns.
 
-        Owner unknown (no key yet) or root: the LEGACY shared-write fallback
-        (dirs 0777, files 0666) — still never widening a key. A sticky root
-        was tried and reverted (rnsd's tmp + os.replace of known_destinations
-        fails under it once that file is another uid's); ownership needs no
-        sticky bit.
+        Owner unknown: the LEGACY shared-write fallback (dirs 0777, files
+        0666, never widening a key) runs ONLY when the key is ABSENT — a fresh
+        box where rnsd must still create it. A key that exists but names no
+        usable owner (root-owned after one ``sudo cp``, or not a regular file)
+        changes NOTHING but narrowing (W3, 2026-10-15). A sticky root was
+        tried and reverted (rnsd's tmp + os.replace of known_destinations
+        fails under it once that file is another uid's).
+
+        **Symlink-safe** (non-author read 2026-10-15, W1/W2/W6). This runs as
+        ROOT on every sudo TUI start over a tree rnsd's user owns, so that user
+        can plant or swap links in it; a check-then-chmod followed a swapped
+        link 671/3000 times (measured) and a swapped PARENT dir redirected
+        ``cache/<name>`` outside. So: a symlinked storage root is refused with
+        a warning; the tree is walked with ``os.fwalk`` (directory fds, no
+        path re-resolution); each file is opened relative to its dir with
+        ``O_NOFOLLOW|O_NONBLOCK`` and must be a regular file; every change is
+        ``fchmod``/``fchown`` on that fd; a multi-link file is never chowned
+        (a hardlink is another name for an outside file). The config-dir tail
+        gets the same treatment — /etc/reticulum is group-writable, so a link
+        planted as ``identity`` would otherwise be chmod-ed through.
 
         Runs on every gateway connect and sudo TUI start, so it must agree
         with the hand roll — the old walk put 0777/0666 straight back.
@@ -243,50 +263,82 @@ class ReticulumPaths:
         import stat
 
         storage_root = cls.ETC_STORAGE
-        if not storage_root.is_dir():
+        try:
+            root_st = storage_root.lstat()
+        except OSError:
+            return
+        if stat.S_ISLNK(root_st.st_mode):
+            import logging
+            logging.getLogger(__name__).warning(
+                "RNS storage %s is a symlink — permission walk REFUSED (it "
+                "runs as root; a link would redirect it outside the tree). "
+                "Replace it with a real directory owned by rnsd's user.",
+                storage_root)
+            return
+        if not stat.S_ISDIR(root_st.st_mode):
             return
         owner = cls._rnsd_storage_owner()
+        try:
+            (storage_root / "transport_identity").lstat()
+            key_absent = False
+        except FileNotFoundError:
+            key_absent = True
+        except OSError:
+            key_absent = False
+        legacy = owner is None and key_absent
         as_root = os.geteuid() == 0
         shed_write = stat.S_IWGRP | stat.S_IWOTH
+        nofollow = (os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                    | getattr(os, "O_CLOEXEC", 0))
 
-        def keyish(fname: str, fpath: Path) -> bool:
-            return "identity" in fname.lower() or fpath.stat().st_size == 64
+        def hand_over(fd: int, st) -> None:
+            if owner is not None and as_root and (st.st_uid, st.st_gid) != owner:
+                os.fchown(fd, owner[0], owner[1])
 
-        def hand_over(path: Path) -> None:
-            if owner is not None and as_root:
-                st = path.lstat()
-                if (st.st_uid, st.st_gid) != owner:
-                    os.chown(path, owner[0], owner[1])
+        def dir_mode(current: int) -> int:
+            if owner is not None:
+                return 0o755
+            return 0o777 if legacy else current & ~shed_write
+
+        def file_mode(fname: str, st) -> int:
+            current = stat.S_IMODE(st.st_mode)
+            if "identity" in fname.lower() or st.st_size == 64:
+                return 0o600 if owner is not None else current & ~shed_write
+            if legacy:
+                return current | 0o666
+            return current & ~shed_write
 
         try:
-            for dirpath, dirnames, filenames in os.walk(str(storage_root)):
-                dp = Path(dirpath)
+            for _dp, _dirs, filenames, dfd in os.fwalk(
+                    str(storage_root), follow_symlinks=False):
                 try:
-                    hand_over(dp)
-                    want = 0o755 if owner is not None else 0o777
-                    if stat.S_IMODE(dp.stat().st_mode) != want:
-                        dp.chmod(want)
-                except (PermissionError, OSError):
+                    dst = os.fstat(dfd)
+                    hand_over(dfd, dst)
+                    want = dir_mode(stat.S_IMODE(dst.st_mode))
+                    if stat.S_IMODE(dst.st_mode) != want:
+                        os.fchmod(dfd, want)
+                except OSError:
                     pass
 
                 for fname in filenames:
                     try:
-                        fpath = dp / fname
-                        if fpath.is_symlink():
+                        fd = os.open(fname, nofollow, dir_fd=dfd)
+                    except OSError:
+                        continue    # a link (ELOOP), gone, or unreadable
+                    try:
+                        st = os.fstat(fd)
+                        if not stat.S_ISREG(st.st_mode):
                             continue
-                        hand_over(fpath)
-                        current = stat.S_IMODE(fpath.stat().st_mode)
-                        if keyish(fname, fpath):
-                            want = 0o600 if owner is not None else current & ~shed_write
-                        elif owner is not None:
-                            want = current & ~shed_write
-                        else:
-                            want = current | 0o666
-                        if want != current:
-                            fpath.chmod(want)
-                    except (PermissionError, OSError):
-                        pass  # Best effort — some files may be locked
-        except (PermissionError, OSError):
+                        if st.st_nlink == 1:
+                            hand_over(fd, st)
+                        want = file_mode(fname, st)
+                        if want != stat.S_IMODE(st.st_mode):
+                            os.fchmod(fd, want)
+                    except OSError:
+                        pass        # Best effort — some files may be locked
+                    finally:
+                        os.close(fd)
+        except OSError:
             pass  # Best effort
 
         # Also fix files in the config directory itself (identity, config).
@@ -294,16 +346,22 @@ class ReticulumPaths:
         # authenticate with rnsd's shared instance.  If the identity was
         # created by root (via sudo MeshForge), non-root users can't read
         # it and RNS generates a different identity → auth mismatch.
+        # No-follow (W6): this dir is group-writable, so a planted link here
+        # would make its target world-readable.
         for fname in ('identity', 'config'):
-            fpath = cls.ETC_BASE / fname
             try:
-                if fpath.exists():
-                    current = fpath.stat().st_mode
-                    # Make world-readable (not writable — only rnsd writes)
-                    if not (current & stat.S_IROTH):
-                        fpath.chmod(current | stat.S_IROTH | stat.S_IRGRP)
-            except (PermissionError, OSError):
+                fd = os.open(str(cls.ETC_BASE / fname), nofollow)
+            except OSError:
+                continue
+            try:
+                st = os.fstat(fd)
+                if stat.S_ISREG(st.st_mode) and not (st.st_mode & stat.S_IROTH):
+                    os.fchmod(fd, stat.S_IMODE(st.st_mode)
+                              | stat.S_IROTH | stat.S_IRGRP)
+            except OSError:
                 pass
+            finally:
+                os.close(fd)
 
     @classmethod
     def get_config_dir(cls) -> Path:

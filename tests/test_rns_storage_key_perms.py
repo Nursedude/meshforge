@@ -104,13 +104,18 @@ def test_known_owner_narrows_and_never_widens(tmp_path, monkeypatch):
 
 
 def test_as_root_the_tree_is_handed_to_rnsds_user(tmp_path, monkeypatch):
+    # Recorded by INODE: since the symlink-safe walk (W1) every chown is an
+    # fchown on an fd opened no-follow, so there is no path to record.
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     chowned = []
-    monkeypatch.setattr(os, "chown", lambda p, u, g: chowned.append((str(p), u, g)))
+    monkeypatch.setattr(os, "fchown",
+                        lambda fd, u, g: chowned.append((os.fstat(fd).st_ino, u, g)))
+    monkeypatch.setattr(os, "chown", lambda *a, **k: chowned.append(("path", a)))
     storage, key, table = _tight_tree(tmp_path, monkeypatch)
     ReticulumPaths._fix_storage_file_permissions()
-    got = {p for p, u, g in chowned if (u, g) == (4242, 4242)}
-    assert {str(storage), str(key), str(table)} <= got
+    got = {i for i, u, g in chowned if (u, g) == (4242, 4242)}
+    assert {storage.stat().st_ino, key.stat().st_ino, table.stat().st_ino} <= got
+    assert not [c for c in chowned if c[0] == "path"], "a path chown follows links"
 
 
 def test_not_root_never_chowns(tmp_path, monkeypatch):
@@ -123,14 +128,20 @@ def test_not_root_never_chowns(tmp_path, monkeypatch):
 
 
 def test_unknown_owner_keeps_the_shared_write_fallback(tmp_path, monkeypatch):
-    # No key yet (fresh box) or rnsd runs as root: nothing measured says who
-    # must write, so the legacy shared-write stays — keys are still never widened.
+    # No key YET (fresh box): rnsd must still create it, so the legacy
+    # shared-write stays — and any other identity-shaped file is never
+    # widened. Since W3 (2026-10-15) a key that EXISTS but names no usable
+    # owner does NOT reach this path; see the root-owned-key test.
     monkeypatch.setattr(os, "geteuid", lambda: 1000)
     storage, key, table = _tight_tree(tmp_path, monkeypatch, owner=None)
+    key.unlink()
+    other = storage / "identities_backup_identity"
+    other.write_bytes(b"k" * 64)
+    os.chmod(other, 0o644)
     os.chmod(table, 0o644)
     ReticulumPaths._fix_storage_file_permissions()
     assert _mode(table) == 0o666 and _mode(storage) == 0o777
-    assert not (_mode(key) & (stat.S_IWGRP | stat.S_IWOTH))
+    assert not (_mode(other) & (stat.S_IWGRP | stat.S_IWOTH))
 
 
 def test_owner_is_read_from_rnsds_own_key(tmp_path, monkeypatch):
@@ -147,3 +158,180 @@ def test_owner_is_read_from_rnsds_own_key(tmp_path, monkeypatch):
 def test_new_storage_dirs_are_not_born_world_writable():
     src = (Path(__file__).resolve().parent.parent / "src" / "utils" / "paths.py").read_text()
     assert "mkdir(mode=0o777" not in src
+
+
+# ── Symlink-safe walk (non-author read 2026-10-15, W1/W2/W3/W6) ──────────────
+# The walk runs as ROOT on every sudo TUI start, over a tree rnsd's user owns
+# (0755, theirs since the B2 roll) — so that user can plant or swap links in
+# it. A check-then-chmod followed a swapped link 671/3000 times (measured), a
+# symlinked storage/ root was walked through, and the identity/config tail
+# chmod-ed through a link planted in the group-writable /etc/reticulum.
+# These tests are implementation-agnostic: they plant the attack on a real
+# tree and read the VICTIM outside it, never the walk's internals.
+
+import threading  # noqa: E402
+
+
+def _owned_tree(tmp_path, monkeypatch, *, as_root=False, owner="me"):
+    storage = tmp_path / "etc" / "storage"
+    (storage / "cache").mkdir(parents=True)
+    key = storage / "transport_identity"
+    key.write_bytes(b"k" * 64)
+    os.chmod(key, 0o600)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setattr(ReticulumPaths, "ETC_STORAGE", storage)
+    monkeypatch.setattr(ReticulumPaths, "ETC_BASE", tmp_path / "etc")
+    who = (os.getuid(), os.getgid()) if owner == "me" else owner
+    monkeypatch.setattr(ReticulumPaths, "_rnsd_storage_owner",
+                        classmethod(lambda cls: who))
+    if as_root:
+        monkeypatch.setattr(os, "geteuid", lambda: 0)
+    return storage, outside
+
+
+def _race(storage, outside, swap, rounds=600):
+    """Run the walk ``rounds`` times while ``swap`` flips a link in a thread;
+    return how many rounds changed the victim outside the tree."""
+    victim = outside / "victim"
+    stop = threading.Event()
+
+    def flipper():
+        while not stop.is_set():
+            swap()
+
+    t = threading.Thread(target=flipper, daemon=True)
+    t.start()
+    hits = 0
+    try:
+        for _ in range(rounds):
+            os.chmod(victim, 0o666)
+            ReticulumPaths._fix_storage_file_permissions()
+            if _mode(victim) != 0o666:
+                hits += 1
+    finally:
+        stop.set()
+        t.join(5)
+    return hits
+
+
+def test_a_file_swapped_for_a_link_mid_walk_never_reaches_outside(tmp_path, monkeypatch):
+    storage, outside = _owned_tree(tmp_path, monkeypatch)
+    (outside / "victim").write_bytes(b"v")
+    entry = storage / "cache" / "entry"
+    entry.write_bytes(b"c")
+    os.chmod(entry, 0o644)
+    staged = storage / "cache" / ".staged"
+
+    def swap():
+        try:
+            os.symlink(outside / "victim", staged)
+            os.replace(staged, entry)          # entry -> symlink to victim
+            staged.write_bytes(b"c")
+            os.chmod(staged, 0o644)
+            os.replace(staged, entry)          # back to a real file
+        except OSError:
+            pass
+    assert _race(storage, outside, swap) == 0
+
+
+def test_a_DIRECTORY_swapped_for_a_link_mid_walk_never_reaches_outside(tmp_path, monkeypatch):
+    """Final-component no-follow is not enough: a swapped PARENT dir makes
+    storage/cache/<name> resolve to outside/<name>."""
+    storage, outside = _owned_tree(tmp_path, monkeypatch)
+    (outside / "victim").write_bytes(b"v")
+    cache = storage / "cache"
+    (cache / "victim").write_bytes(b"c")
+    os.chmod(cache / "victim", 0o644)
+    real = storage / ".cache_real"
+    link = storage / ".cache_link"
+    os.symlink(outside, link)
+
+    def swap():
+        try:
+            os.replace(cache, real)
+            os.replace(link, cache)            # cache -> symlink to outside
+            os.replace(cache, link)
+            os.replace(real, cache)            # back to the real dir
+        except OSError:
+            pass
+    assert _race(storage, outside, swap) == 0
+
+
+def test_a_symlinked_storage_root_is_refused(tmp_path, monkeypatch, caplog):
+    storage, outside = _owned_tree(tmp_path, monkeypatch)
+    victim_dir = outside / "victim_dir"
+    victim_dir.mkdir()
+    os.chmod(victim_dir, 0o700)
+    inner = victim_dir / "inner"
+    inner.write_bytes(b"x")
+    os.chmod(inner, 0o666)
+    real = storage.parent / "storage.real"
+    os.replace(storage, real)
+    os.symlink(victim_dir, storage)
+    with caplog.at_level("WARNING"):
+        ReticulumPaths._fix_storage_file_permissions()
+    assert _mode(victim_dir) == 0o700 and _mode(inner) == 0o666
+    assert any("symlink" in r.getMessage() for r in caplog.records), caplog.text
+
+
+def test_a_symlinked_key_names_no_owner(tmp_path, monkeypatch):
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    target = tmp_path / "elsewhere"
+    target.write_bytes(b"k" * 64)
+    os.symlink(target, storage / "transport_identity")
+    monkeypatch.setattr(ReticulumPaths, "ETC_STORAGE", storage)
+    assert ReticulumPaths._rnsd_storage_owner() is None
+
+
+def test_root_never_chowns_through_a_link_or_a_hardlink(tmp_path, monkeypatch):
+    """As root, ownership changes must land only on regular single-link files
+    and dirs inside the tree. A hardlink is another name for an OUTSIDE file."""
+    storage, outside = _owned_tree(tmp_path, monkeypatch, as_root=True,
+                                   owner=(4242, 4242))
+    victim = outside / "victim"
+    victim.write_bytes(b"v")
+    os.symlink(victim, storage / "cache" / "link")
+    os.link(victim, storage / "cache" / "hard")
+    victim_ino = victim.stat().st_ino
+    touched = []
+
+    def rec_path(p, u, g, *a, **k):
+        touched.append(os.stat(p, follow_symlinks=k.get("follow_symlinks", True)).st_ino)
+
+    def rec_fd(fd, u, g):
+        touched.append(os.fstat(fd).st_ino)
+    monkeypatch.setattr(os, "chown", rec_path)
+    monkeypatch.setattr(os, "lchown", lambda p, u, g: touched.append(os.lstat(p).st_ino))
+    monkeypatch.setattr(os, "fchown", rec_fd)
+    ReticulumPaths._fix_storage_file_permissions()
+    assert victim_ino not in touched
+    assert touched, "nothing was handed over at all — the test proves nothing"
+
+
+def test_a_root_owned_key_never_reopens_the_widening_path(tmp_path, monkeypatch):
+    """W3: owner unknown BECAUSE the key is root-owned (one ``sudo cp``) used
+    to widen the whole tree to 0777/0666. Only an ABSENT key (fresh box) may."""
+    storage, _ = _owned_tree(tmp_path, monkeypatch, owner=None)
+    table = storage / "destination_table"
+    table.write_bytes(b"t")
+    os.chmod(table, 0o644)
+    os.chmod(storage, 0o755)
+    ReticulumPaths._fix_storage_file_permissions()
+    assert _mode(table) == 0o644, oct(_mode(table))
+    assert _mode(storage) == 0o755, oct(_mode(storage))
+
+
+def test_the_config_dir_tail_never_follows_a_planted_link(tmp_path, monkeypatch):
+    """W6 (found while building this fix): /etc/reticulum is root:<rnsd user>
+    1775 and ``identity`` is usually ABSENT, so rnsd's user can plant
+    ``identity -> /etc/shadow``; the tail's chmod(+S_IROTH) made the target
+    world-readable on the next sudo TUI start."""
+    storage, outside = _owned_tree(tmp_path, monkeypatch)
+    secret = outside / "shadow"
+    secret.write_bytes(b"s")
+    os.chmod(secret, 0o600)
+    os.symlink(secret, storage.parent / "identity")
+    ReticulumPaths._fix_storage_file_permissions()
+    assert _mode(secret) == 0o600, oct(_mode(secret))
