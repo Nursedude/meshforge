@@ -173,15 +173,16 @@ class ReticulumPaths:
             old_umask = os.umask(0)
             try:
                 cls.ETC_BASE.mkdir(mode=0o755, parents=True, exist_ok=True)
-                # Storage directories need world-writable so rnsd (which may
-                # run as a non-root service user) can create and modify cache
-                # files, ratchets, and announce entries.
-                cls.ETC_STORAGE.mkdir(mode=0o777, parents=True, exist_ok=True)
-                cls.ETC_RATCHETS.mkdir(mode=0o777, parents=True, exist_ok=True)
-                cls.ETC_RESOURCES.mkdir(mode=0o777, parents=True, exist_ok=True)
-                cls.ETC_CACHE.mkdir(mode=0o777, parents=True, exist_ok=True)
-                cls.ETC_ANNOUNCE_CACHE.mkdir(mode=0o777, parents=True, exist_ok=True)
-                cls.ETC_DISCOVERY.mkdir(mode=0o777, parents=True, exist_ok=True)
+                # Born 0755, NOT world-writable (B2, 2026-10-15): the walk
+                # below hands the tree to rnsd's own user, so a writer outside
+                # that user is not needed and a world-writable dir lets any
+                # local user rename rnsd's key away.
+                cls.ETC_STORAGE.mkdir(mode=0o755, parents=True, exist_ok=True)
+                cls.ETC_RATCHETS.mkdir(mode=0o755, parents=True, exist_ok=True)
+                cls.ETC_RESOURCES.mkdir(mode=0o755, parents=True, exist_ok=True)
+                cls.ETC_CACHE.mkdir(mode=0o755, parents=True, exist_ok=True)
+                cls.ETC_ANNOUNCE_CACHE.mkdir(mode=0o755, parents=True, exist_ok=True)
+                cls.ETC_DISCOVERY.mkdir(mode=0o755, parents=True, exist_ok=True)
                 cls.ETC_INTERFACES.mkdir(mode=0o755, parents=True, exist_ok=True)
             finally:
                 os.umask(old_umask)
@@ -197,65 +198,92 @@ class ReticulumPaths:
             return False
 
     @classmethod
+    def _rnsd_storage_owner(cls):
+        """(uid, gid) rnsd runs as, read from its OWN key — or None.
+
+        rnsd creates ``storage/transport_identity`` itself, so the key's owner
+        IS rnsd's user (measured 2026-10-15: equal to the unit's ``User=`` on
+        all 9 rnsd boxes). None when there is no key yet (fresh box) or the
+        owner is root (rnsd as root: nothing measured says who else writes).
+        No subprocess, no systemctl: the file is the witness.
+        """
+        try:
+            st = (cls.ETC_STORAGE / "transport_identity").stat()
+        except OSError:
+            return None
+        return None if st.st_uid == 0 else (st.st_uid, st.st_gid)
+
+    @classmethod
     def _fix_storage_file_permissions(cls):
-        """Make all files under /etc/reticulum/storage/ world-readable/writable.
+        """Keep /etc/reticulum/storage/ usable by rnsd WITHOUT world-write.
 
-        rnsd may run as root or as a service user. When MeshForge (running
-        as sudo) creates files, they may be owned by root and inaccessible
-        to rnsd's service user. Rather than guessing which user rnsd runs
-        as, we set 0o666 on files and 0o777 on dirs within storage/ so
-        any local user can read/write. This is acceptable because:
-        - /etc/reticulum/storage/ contains caches and ephemeral data
-        - This matches RNS's own behavior of creating world-readable storage
+        B2 closed by OWNERSHIP (operator "go", 2026-10-15). Measured on all 9
+        rnsd boxes: rnsd and every non-root RNS consumer (nomadnet, lxmd, the
+        gateway, map services, mini, the MeshAnchor daemon) run as ONE user,
+        and that user owns rnsd's key. So when that owner is known
+        (``_rnsd_storage_owner``) and is not root:
+          * as root, every entry not owned by it is chowned to it — root-made
+            files (sudo TUI, a root lxmd) can no longer lock rnsd out, the
+            failure the old 0666/0777 widening existed to prevent;
+          * dirs are set 0755, files lose group/other WRITE, and a key-shaped
+            file (identity-named, or exactly 64 bytes — an RNS private
+            identity's size) is set 0600.
+        Nothing is ever widened in this mode. Not root: no chown; modes are
+        narrowed only on entries this process owns.
 
-        EXCEPT the private key: rnsd keeps it at ``storage/transport_identity``
-        (b8d5a8d4). An earlier version of this docstring said the secrets
-        live in the parent dir, and this walk set the key to 0666 — undoing
-        the permission foundation's 600 (non-author pass 2026-10-15, B1:
-        live on the manager box). A key-shaped file — named like an identity,
-        or exactly 64 bytes (an RNS identity's size; storage/identities/*
-        hold them too) — is never widened; its group/other WRITE bits are
-        removed (that can never break rnsd's read). The storage dirs stay
-        0777: a sticky root was tried and reverted, because rnsd saves
-        known_destinations by tmp + os.replace there and a sticky dir refuses
-        that once the file belongs to another uid. So a local user can still
-        rename the key away (B2) — OPEN, a decision for the operator.
+        Owner unknown (no key yet) or root: the LEGACY shared-write fallback
+        (dirs 0777, files 0666) — still never widening a key. A sticky root
+        was tried and reverted (rnsd's tmp + os.replace of known_destinations
+        fails under it once that file is another uid's); ownership needs no
+        sticky bit.
 
-        Uses os.walk for full recursion — RNS may create subdirectories
-        beyond the ones we explicitly know about (e.g. new cache categories).
+        Runs on every gateway connect and sudo TUI start, so it must agree
+        with the hand roll — the old walk put 0777/0666 straight back.
         """
         import stat
 
         storage_root = cls.ETC_STORAGE
         if not storage_root.is_dir():
             return
+        owner = cls._rnsd_storage_owner()
+        as_root = os.geteuid() == 0
+        shed_write = stat.S_IWGRP | stat.S_IWOTH
+
+        def keyish(fname: str, fpath: Path) -> bool:
+            return "identity" in fname.lower() or fpath.stat().st_size == 64
+
+        def hand_over(path: Path) -> None:
+            if owner is not None and as_root:
+                st = path.lstat()
+                if (st.st_uid, st.st_gid) != owner:
+                    os.chown(path, owner[0], owner[1])
 
         try:
             for dirpath, dirnames, filenames in os.walk(str(storage_root)):
                 dp = Path(dirpath)
-                # Fix directory permissions
                 try:
-                    if dp.stat().st_mode & 0o777 != 0o777:
-                        dp.chmod(0o777)
+                    hand_over(dp)
+                    want = 0o755 if owner is not None else 0o777
+                    if stat.S_IMODE(dp.stat().st_mode) != want:
+                        dp.chmod(want)
                 except (PermissionError, OSError):
                     pass
 
-                # Fix file permissions
                 for fname in filenames:
                     try:
                         fpath = dp / fname
-                        current = fpath.stat().st_mode
-                        if ("identity" in fname.lower()
-                                or fpath.stat().st_size == 64):
-                            # an RNS private identity is exactly 64 bytes,
-                            # wherever it sits (storage/identities/<app>)
-                            # a private key: never widened; shed shared WRITE
-                            narrowed = current & ~(stat.S_IWGRP | stat.S_IWOTH)
-                            if narrowed != current:
-                                fpath.chmod(stat.S_IMODE(narrowed))
+                        if fpath.is_symlink():
                             continue
-                        if not (current & stat.S_IWOTH):
-                            fpath.chmod(0o666)
+                        hand_over(fpath)
+                        current = stat.S_IMODE(fpath.stat().st_mode)
+                        if keyish(fname, fpath):
+                            want = 0o600 if owner is not None else current & ~shed_write
+                        elif owner is not None:
+                            want = current & ~shed_write
+                        else:
+                            want = current | 0o666
+                        if want != current:
+                            fpath.chmod(want)
                     except (PermissionError, OSError):
                         pass  # Best effort — some files may be locked
         except (PermissionError, OSError):
