@@ -249,7 +249,7 @@ def _active_units() -> Tuple[List[Tuple[bool, Dict[str, str]]], bool]:
             continue
         shown = subprocess.run(
             _systemctl_query_argv(['show', '-p', 'Id', '-p', 'MainPID', '-p',
-                                   'ControlGroup', '-p', 'Type', '-p', 'FragmentPath',
+                                   'ControlGroup', '-p', 'Type', '-p', 'FragmentPath', '-p', 'ExecStart',
                                    *names], user=user),
             capture_output=True, text=True, timeout=20)
         for rec in shown.stdout.split("\n\n"):
@@ -259,16 +259,216 @@ def _active_units() -> Tuple[List[Tuple[bool, Dict[str, str]]], bool]:
     return units, user_seen
 
 
-def _cgroup_pids(cgroup: str) -> List[int]:
+#: `tmux new-session` options that take an argument (tmux 3.3–3.5).
+_TMUX_NS_ARG_OPTS = ("-c", "-e", "-F", "-f", "-n", "-s", "-t", "-x", "-y")
+
+
+def _cgroup_pids(cgroup: str, sysfs: str = "/sys/fs/cgroup") -> List[int]:
     """Processes in the unit's OWN cgroup (v2). Not its descendants: a
-    session or a tmux scope forked from it lives in another cgroup."""
+    session or a tmux pane forked from it lives in another cgroup — the
+    tmux shape is folded in by ``_tmux_session_pids``, from tmux's own list."""
     if not cgroup:
         return []
     try:
-        with open(f"/sys/fs/cgroup{cgroup}/cgroup.procs") as fh:
+        with open(f"{sysfs}{cgroup}/cgroup.procs") as fh:
             return [int(x) for x in fh.read().split() if x.isdigit()]
     except OSError:
         return []
+
+
+def _proc_children(proc: str = "/proc") -> Dict[int, List[int]]:
+    """ppid -> child pids, one /proc pass (review 2026-10-16: per-unit
+    rebuilds cost ~290 ms a pass on a Pi 5; build it once, only if needed)."""
+    children: Dict[int, List[int]] = {}
+    try:
+        entries = [e for e in os.listdir(proc) if e.isdigit()]
+    except OSError:
+        return children
+    for e in entries:
+        try:
+            with open(f"{proc}/{e}/stat") as fh:
+                ppid = int(fh.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        children.setdefault(ppid, []).append(int(e))
+    return children
+
+
+def _exec_argv(execstart: str) -> List[str]:
+    """argv[] of a ``systemctl show -p ExecStart`` value (first command)."""
+    m = re.search(r"argv\[\]=(.*?) ;", execstart or "")
+    return m.group(1).split() if m else []
+
+
+def _proc_uid(pid: int, proc: str = "/proc") -> Optional[int]:
+    try:
+        with open(f"{proc}/{pid}/status") as fh:
+            for ln in fh:
+                if ln.startswith("Uid:"):
+                    return int(ln.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _tmux_session_pids(execstart: str, mainpid: int, children: Dict[int, List[int]],
+                       proc: str = "/proc") -> Optional[List[int]]:
+    """The panes of a ``tmux new-session -d -s <name>`` unit's OWN session,
+    plus their descendants, as tmux itself lists them.
+
+    WHY (2026-10-16): for that Type=forking shape the unit's cgroup holds only
+    the tmux server; the real process (meshcore-chat's python, nomadnet) is a
+    pane in ``tmux-spawn-<uuid>.scope`` — invisible to both consumers of
+    probe_substrate. Folding every tmux-spawn descendant was WRONG (review,
+    same day): the units use the default socket, so an operator's own
+    ``tmux new-session`` lands on the unit's server and its panes would be
+    classed — and restarted — as the unit. Only ``list-panes -s -t =<name>``
+    is the unit's set; a listed pid this server did not fork is refused.
+
+    Socket: ``-S``, else ``/tmp/tmux-<server uid>/<-L or default>``. A unit
+    whose socket lives elsewhere (``TMUX_TMPDIR``, ``PrivateTmp=``) fails the
+    listing and reads UNRESOLVED — named, never "no process".
+
+    -> [] not a tmux unit; None = a tmux unit whose panes could not be
+    listed (UNRESOLVED — callers must say so, never read it as "no process").
+    """
+    argv = _exec_argv(execstart)
+    if not argv or os.path.basename(argv[0]) != "tmux" or "new-session" not in argv:
+        return []
+    name, sock, label = None, None, "default"
+    ns = argv.index("new-session")
+    # tmux's own options only: globals before `new-session`, then its flags up
+    # to the first non-option token — the pane's shell command, whose own
+    # `-s`/`-L` are not tmux's (second read, 2026-10-16).
+    i = 1
+    while i < ns:
+        if argv[i] in ("-L", "-S", "-f") and i + 1 < ns:
+            if argv[i] == "-L":
+                label = argv[i + 1]
+            elif argv[i] == "-S":
+                sock = argv[i + 1]
+            i += 2
+            continue
+        i += 1
+    i = ns + 1
+    while i < len(argv) and argv[i].startswith("-"):
+        if argv[i] in _TMUX_NS_ARG_OPTS and i + 1 < len(argv):
+            if argv[i] == "-s":
+                name = argv[i + 1]
+            i += 2
+            continue
+        i += 1
+    uid = _proc_uid(mainpid, proc)
+    if not name or uid is None:
+        return None
+    if os.geteuid() not in (0, uid):
+        return None
+    sock = sock or f"/tmp/tmux-{uid}/{label}"
+    try:
+        # `=<name>:` — measured on tmux 3.5a, bare `=<name>` still PREFIX-
+        # matches in list-panes (only has-session honours it): `=nomad` found
+        # "nomadnet". With the colon it is exact (second read, 2026-10-16).
+        r = subprocess.run(["tmux", "-S", sock, "list-panes", "-s", "-t", f"={name}:",
+                            "-F", "#{pane_pid}"],
+                           capture_output=True, text=True, timeout=5)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if r.returncode != 0:
+        return None
+    mine = set(children.get(mainpid, []))
+    panes = [int(x) for x in r.stdout.split() if x.isdigit() and int(x) in mine]
+    if not panes:
+        return None
+    out, todo = list(panes), list(panes)
+    while todo:
+        for c in children.get(todo.pop(), []):
+            if c not in out:
+                out.append(c)
+                todo.append(c)
+    return out
+
+
+@dataclass
+class ProbedUnits:
+    """One substrate-probe pass over the active units' own cgroup pids."""
+    #: probe output rows, split, for units in ``scope_of`` only
+    rows: List[List[str]] = field(default_factory=list)
+    #: unit Id -> user scope, for every unit that was probed
+    scope_of: Dict[str, bool] = field(default_factory=dict)
+    skipped: List[str] = field(default_factory=list)   # never-hold / transient / oneshot
+    user_scope_seen: bool = True
+    #: tmux-wrapped units whose own session's panes could not be listed: their
+    #: real process was NOT probed (UNKNOWN — never read as "not a client")
+    tmux_unresolved: List[str] = field(default_factory=list)
+
+
+def probe_substrate(dists: Sequence[str] = ("rns",),
+                    probe: Path = SUBSTRATE_PROBE,
+                    include_rnsd: bool = False) -> Observation[ProbedUnits]:
+    """Run the substrate probe over every candidate ACTIVE unit's own cgroup.
+
+    The ONE enumeration both the #69 hold (measure_rns_clients) and the fork
+    roll's restart step (scripts/fork_roll_restart.py) consume — never a
+    second copy (hfm #5). Candidates exclude NEVER_HOLD_PREFIXES, transient
+    (/run) and oneshot units; rnsd only when ``include_rnsd``. A missing or
+    failing probe is Unobservable/Failed — never an empty row set.
+    """
+    if not probe.is_file():
+        return Unobservable(f"substrate probe not present at {probe}")
+    try:
+        units, user_seen = _active_units()
+    except (subprocess.SubprocessError, OSError) as e:
+        return Unobservable(f"could not enumerate active units: {e}")
+    if not units:
+        return Unobservable("no active units enumerated (manager unreachable?)")
+    out = ProbedUnits(user_scope_seen=user_seen)
+    lines: List[str] = []
+    children: Optional[Dict[int, List[int]]] = None
+    for is_user, u in units:
+        unit = u["Id"]
+        if unit == "rnsd.service" and not include_rnsd:
+            continue
+        if (unit.startswith(NEVER_HOLD_PREFIXES)
+                or u.get("FragmentPath", "").startswith("/run/")
+                or u.get("Type") == "oneshot"):
+            out.skipped.append(unit)
+            continue
+        pids = _cgroup_pids(u.get("ControlGroup", ""))
+        if not pids and u.get("MainPID", "0") not in ("", "0"):
+            pids = [int(u["MainPID"])]
+        if _exec_argv(u.get("ExecStart", ""))[:1] and \
+                os.path.basename(_exec_argv(u["ExecStart"])[0]) == "tmux":
+            if children is None:
+                children = _proc_children()
+            mp = u.get("MainPID", "0")
+            panes = (_tmux_session_pids(u["ExecStart"], int(mp), children)
+                     if mp.isdigit() and mp != "0" else None)
+            if panes is None:
+                out.tmux_unresolved.append(unit)
+            else:
+                pids += [p for p in panes if p not in pids]
+        out.scope_of[unit] = is_user
+        lines += [f"{_scope(is_user)} {unit} {p}" for p in pids]
+    if not lines:
+        return Unobservable("no candidate unit had a readable process")
+    try:
+        r = subprocess.run(["python3", str(probe), "--no-descend", *dists],
+                           input="\n".join(lines) + "\n",
+                           capture_output=True, text=True,
+                           timeout=MEASURE_TIMEOUT_S)
+    except (subprocess.SubprocessError, OSError) as e:
+        return Failed(f"substrate probe did not complete: {e}")
+    if r.returncode != 0:
+        return Failed(f"substrate probe rc={r.returncode}")
+    for ln in r.stdout.splitlines():
+        f = ln.split()
+        if len(f) < 3:
+            continue
+        if f[1] == "*":
+            return Failed(f"substrate probe: {' '.join(f[2:])}")
+        if f[1] in out.scope_of:
+            out.rows.append(f)
+    return Seen(out)
 
 
 def measure_rns_clients(probe: Path = SUBSTRATE_PROBE) -> Observation[MeasuredClients]:
@@ -281,51 +481,14 @@ def measure_rns_clients(probe: Path = SUBSTRATE_PROBE) -> Observation[MeasuredCl
     rnsd is excluded. A missing or failing probe is Unobservable/Failed —
     never an empty client set.
     """
-    if not probe.is_file():
-        return Unobservable(f"substrate probe not present at {probe}")
-    try:
-        units, user_seen = _active_units()
-    except (subprocess.SubprocessError, OSError) as e:
-        return Unobservable(f"could not enumerate active units: {e}")
-    if not units:
-        return Unobservable("no active units enumerated (manager unreachable?)")
-    out = MeasuredClients(user_scope_seen=user_seen)
-    lines: List[str] = []
-    scope_of: Dict[str, bool] = {}
-    for is_user, u in units:
-        unit = u["Id"]
-        if unit == "rnsd.service":
-            continue
-        if (unit.startswith(NEVER_HOLD_PREFIXES)
-                or u.get("FragmentPath", "").startswith("/run/")
-                or u.get("Type") == "oneshot"):
-            out.skipped.append(unit)
-            continue
-        pids = _cgroup_pids(u.get("ControlGroup", ""))
-        if not pids and u.get("MainPID", "0") not in ("", "0"):
-            pids = [int(u["MainPID"])]
-        scope_of[unit] = is_user
-        lines += [f"{_scope(is_user)} {unit} {p}" for p in pids]
-    if not lines:
-        return Unobservable("no candidate unit had a readable process")
-    try:
-        r = subprocess.run(["python3", str(probe), "--no-descend", "rns"],
-                           input="\n".join(lines) + "\n",
-                           capture_output=True, text=True,
-                           timeout=MEASURE_TIMEOUT_S)
-    except (subprocess.SubprocessError, OSError) as e:
-        return Failed(f"substrate probe did not complete: {e}")
-    if r.returncode != 0:
-        return Failed(f"substrate probe rc={r.returncode}")
-    for ln in r.stdout.splitlines():
-        f = ln.split()
-        if len(f) < 3:
-            continue
+    obs = probe_substrate(("rns",), probe)
+    if not isinstance(obs, Seen):
+        return obs   # Unobservable / Failed, carried as-is
+    p = obs.value
+    out = MeasuredClients(user_scope_seen=p.user_scope_seen, skipped=p.skipped)
+    scope_of = p.scope_of
+    for f in p.rows:
         unit = f[1]
-        if unit == "*":
-            return Failed(f"substrate probe: {' '.join(f[2:])}")
-        if unit not in scope_of:
-            continue
         key = (unit[:-len(".service")] if unit.endswith(".service") else unit,
                scope_of[unit])
         if f[0] in ("SB", "SC"):
@@ -338,6 +501,11 @@ def measure_rns_clients(probe: Path = SUBSTRATE_PROBE) -> Observation[MeasuredCl
         elif f[0] == "SX":
             out.unjudged += 1
     out.repo_only = [k for k in out.repo_only if k not in out.clients]
+    for unit in p.tmux_unresolved:
+        u = (unit[:-len(".service")] if unit.endswith(".service") else unit,
+             scope_of[unit], "tmux-panes-unresolved")
+        if u not in out.unprobed:
+            out.unprobed.append(u)
     return Seen(out)
 
 

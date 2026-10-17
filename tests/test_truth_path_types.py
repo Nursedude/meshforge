@@ -32,6 +32,7 @@ from utils.observation import (  # noqa: E402
 TRUTH_PATH = [
     "src/utils/observation.py",
     "scripts/gen_fleet_hosts.py",
+    "scripts/fork_roll_restart.py",
     "src/utils/rnsd_restart_order.py",
     "src/utils/claw_watch_verdict.py",
     "src/mini_dudeai/claw_rf_watch.py",
