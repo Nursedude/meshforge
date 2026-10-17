@@ -448,8 +448,14 @@ def test_real_wrapper_script_importing_nothing_relevant_stays_unjudged(planted):
     time.sleep(0.6)
     try:
         out = _run("other.service", p.pid)
-        assert "SX other.service rns" in out
-        assert not any(l.startswith(("SB ", "SC ")) for l in out)
+        # The claim is "no SCRIPT (or entry) basis from a script that imports
+        # nothing relevant". Whether `repo` applies depends on the interpreter's
+        # OWN path: honest_status runs the suite under /opt/meshforge/venv/bin/
+        # python, which makes this child repo-bound (argv[0]) — SX under system
+        # python3, `SC ... repo` under the venv. Measured both, 2026-10-16.
+        judged = [l for l in out if l.startswith(("SB ", "SC "))]
+        assert not any(l.endswith((" script", " entry")) for l in judged), out
+        assert judged or "SX other.service rns" in out
     finally:
         p.kill()
         p.wait()
