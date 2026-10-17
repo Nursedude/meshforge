@@ -5,6 +5,8 @@
 #   - scripts/meshforge-launcher.sh   launch_tui + launch_prometheus
 #   - scripts/meshforge-terminal.sh   delegates to meshforge-launcher.sh `tui` (2026-09-20)
 #   - tests/test_regression_guards.py TestPrivilegedPycachePrefix
+#   - scripts/fork_roll_restart.py + scripts/fork_roll_install.py — set
+#     sys.pycache_prefix themselves when euid 0 (2026-10-16)
 #
 # WHY THIS EXISTS (measured fleet-wide 2026-09-20). The documented primary
 # launch is `sudo python3 src/launcher_tui/main.py`. Python caches bytecode

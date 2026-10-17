@@ -31,12 +31,20 @@ Run it as root (sudo): the probe must read other uids' processes, and
 SUDO_USER routes user-scope restarts back to the operator's manager.
 """
 import argparse
+import os
 import subprocess
 import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Tuple
+
+# Root runs (sudo -n, the documented form) must not leave root-owned bytecode
+# in the repo: same cure and path as scripts/lib/pycache_prefix.sh (measured
+# 2026-10-16 — this script's first sudo dry run fleet-wide wrote a root .pyc
+# into src/utils/__pycache__ on 9 boxes). Set BEFORE the first-party imports.
+if os.geteuid() == 0 and not sys.pycache_prefix:
+    sys.pycache_prefix = os.environ.get("MF_ROOT_PYCACHE", "/var/cache/meshforge/pycache-root")
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
