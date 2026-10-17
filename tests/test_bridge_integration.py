@@ -117,9 +117,9 @@ class TestMeshToRnsFlow:
         msg = BridgedMessage(
             source_network="meshtastic",
             source_id="!abcd1234",
-            destination_id="!12345678",
+            destination_id=None,  # broadcast: an unresolved DM is refused (F14)
             content="Hello from mesh",
-            is_broadcast=False,
+            is_broadcast=True,
         )
 
         with patch.object(bridge, 'send_to_rns', return_value=True) as mock_send:
@@ -251,7 +251,7 @@ class TestRoundTrip:
         mesh_packet = {
             'decoded': {'portnum': 'TEXT_MESSAGE_APP', 'payload': b'CQ CQ de WH6GXZ'},
             'fromId': '!ba4bf9d0',
-            'toId': '!12345678',
+            'to': 0xFFFFFFFF, 'toId': '^all',  # CQ is a broadcast (lib shape, F7/F14)
             'rxSnr': 12.0,
             'channel': 0,
         }
@@ -706,9 +706,9 @@ class TestEdgeCases:
         msg = BridgedMessage(
             source_network="meshtastic",
             source_id="!1234567890abcdef",
-            destination_id="!dest1234",
+            destination_id=None,  # broadcast: an unresolved DM is refused (F14)
             content="Long ID test",
-            is_broadcast=False,
+            is_broadcast=True,
         )
 
         with patch.object(bridge, 'send_to_rns', return_value=True) as mock_send:

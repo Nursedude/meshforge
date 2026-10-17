@@ -22,6 +22,7 @@ Host class must provide:
 
 import logging
 import re
+import time
 from typing import Optional
 
 from utils.lxmface import seed_string_for_node
@@ -37,6 +38,20 @@ from .canonical_message import (
 from .message_queue import MessagePriority
 
 logger = logging.getLogger(__name__)
+
+# Bridge matrix F14 (operator 2026-10-16): a DM is never fanned to the
+# default LXMF list. When it was addressed to the gateway itself, the sender
+# gets ONE short on-air notice per window — truth told in-app, never the
+# content. <=200 bytes (one Meshtastic frame), no [RNS:] tag needed: it is a
+# DM to one node, and its MQTT echo is addressed to the SENDER, not to us.
+PRIVATE_REFUSED_NOTICE = (
+    "MeshForge gateway: your DM was not delivered - no open RNS conversation. "
+    "Post on the channel to reach RNS"
+)
+# Only TRUE where a session can open (rns.sessions_enabled) — on a
+# sessions-off box this advice is impossible (non-author read W2).
+PRIVATE_REFUSED_NOTICE_SESSIONS = ", or reply after an RNS user messages you"
+PRIVATE_NOTICE_WINDOW_S = 600.0
 
 # Synthetic / bridge-tag content prefixes excluded from reply routing.
 # [delivered:/[failed:/[timeout: are Issue #66 ACK synthetics; [Mesh:/[MC:/
@@ -196,6 +211,20 @@ class MessageTransformMixin:
         try:
             content = msg.content
 
+            # Our OWN node's DM coming back — e.g. the MQTT echo of an F14
+            # refusal notice. Not a user's DM: skip before any failure
+            # accounting so mesh_to_rns_private_refused / the health record
+            # mean "a user's DM was refused" (non-author read W1). Own-node
+            # BROADCASTS (web UI sends) still bridge, deliberately.
+            own = self._own_mesh_node_id()
+            if (own and not msg.is_broadcast
+                    and (msg.source_id or "").lower() == own):
+                with self._stats_lock:
+                    self.stats['mesh_to_rns_own_echo_skipped'] = (
+                        self.stats.get('mesh_to_rns_own_echo_skipped', 0) + 1)
+                logger.debug("Mesh→RNS: own-node DM echo skipped")
+                return
+
             long_name = ""
             short_name = ""
             if msg.source_id and getattr(self, 'node_tracker', None):
@@ -253,7 +282,9 @@ class MessageTransformMixin:
             # broadcast fan-out today's lookup miss would trigger. Flag
             # off / own-id unknown / synthetic content → fall through to
             # today's behavior unchanged. No-session → log + fall through
-            # (broadcast fallback, operator-ratified).
+            # (the 06-03 'broadcast fallback' was REVERSED by the operator
+            # 2026-10-16, bridge matrix F14: a no-session DM is refused below
+            # and the sender told — never fanned to the default list).
             own_id = self._own_mesh_node_id() if self._sessions_on() else None
             if (own_id and not msg.is_broadcast and msg.destination_id
                     and msg.destination_id.lower() == own_id
@@ -278,9 +309,10 @@ class MessageTransformMixin:
                         self.stats['messages_mesh_to_rns'] += 1
                         self.stats['mesh_to_rns_delivered'] += 1
                     self.health.record_message_sent("mesh_to_rns")
+                    # No content in the journal: a session DM is private.
                     logger.info(
                         f"Bridge Mesh→RNS (session): {title} -> "
-                        f"{peer_hex[:8]} — {content[:50]}")
+                        f"{peer_hex[:8]} ({len(content)} chars)")
                     return
                 if not peer_hex:
                     with self._stats_lock:
@@ -288,7 +320,7 @@ class MessageTransformMixin:
                             self.stats.get('session_dm_no_session', 0) + 1)
                     logger.info(
                         f"Mesh→RNS DM-to-gateway from {msg.source_id} with "
-                        f"no active session — broadcast fallback")
+                        f"no active session — refused, never fanned (F14)")
                 # peer send failure / bad hex also falls through to fan-out
 
             # Build destination list. Direct DM short-circuits to a single recipient;
@@ -300,6 +332,14 @@ class MessageTransformMixin:
                 if direct:
                     destinations.append(direct)
                     directed_m2r_dest = direct
+
+            if not destinations and msg.destination_id and not msg.is_broadcast:
+                # F14: a DM that resolved to no single recipient is REFUSED —
+                # the default list includes peer gateways that re-emit on RF,
+                # so a fan-out publishes it. (A non-broadcast with NO
+                # destination carries no private fact and keeps the fan-out.)
+                self._refuse_private_fanout(msg, content)
+                return
 
             if not destinations:
                 for hex_str in self.config.rns.get_lxmf_destinations():
@@ -379,6 +419,60 @@ class MessageTransformMixin:
             self.health.record_error("rns", e)
             self._requeue_failed_message(msg, "rns")
             self.health.record_message_failed("mesh_to_rns", requeued=True)
+
+    def _refuse_private_fanout(self, msg, content) -> None:
+        """Refuse a Mesh→RNS DM that has no single recipient (F14), leave a
+        witness, and — only when it was addressed to THIS gateway — tell the
+        sender once per window. Never raises; never logs the content."""
+        with self._stats_lock:
+            self.stats['mesh_to_rns_private_refused'] = (
+                self.stats.get('mesh_to_rns_private_refused', 0) + 1)
+            self.stats['mesh_to_rns_dropped'] += 1
+        logger.warning(
+            f"Mesh→RNS: refusing DM from {msg.source_id} to "
+            f"{msg.destination_id} — no single RNS recipient; a DM is never "
+            f"fanned to the default list (F14)")
+        self.health.record_message_failed("mesh_to_rns", requeued=False)
+
+        own_id = self._own_mesh_node_id()
+        src = (msg.source_id or "").lower()
+        if (not own_id or (msg.destination_id or "").lower() != own_id
+                or not src or src == own_id
+                or self._reply_excluded(content, {})):
+            return
+        now = time.monotonic()
+        with self._stats_lock:  # two threads reach here (queue + spill drain)
+            sent_at = getattr(self, '_private_notice_sent_at', None)
+            if sent_at is None:
+                sent_at = self._private_notice_sent_at = {}
+            last = sent_at.get(src)
+            if last is not None and 0 <= now - last < PRIVATE_NOTICE_WINDOW_S:
+                self.stats['mesh_to_rns_private_notice_suppressed'] = (
+                    self.stats.get('mesh_to_rns_private_notice_suppressed', 0) + 1)
+                return
+            sent_at[src] = now
+            if len(sent_at) > 512:
+                for k in sorted(sent_at, key=sent_at.get)[:256]:
+                    sent_at.pop(k, None)
+        text = PRIVATE_REFUSED_NOTICE + (
+            PRIVATE_REFUSED_NOTICE_SESSIONS if self._sessions_on() else "") + "."
+        channel = (msg.metadata or {}).get("channel")
+        if not isinstance(channel, int) or isinstance(channel, bool):
+            channel = getattr(getattr(self.config, 'meshtastic', None),
+                              'channel', 0)
+            if not isinstance(channel, int) or isinstance(channel, bool):
+                channel = 0
+        try:
+            ok = self.send_to_meshtastic(
+                text, destination=msg.source_id,
+                channel=channel)
+        except Exception as e:
+            logger.warning(f"Mesh→RNS: refusal notice to {msg.source_id} failed: {e}")
+            ok = False
+        key = ('mesh_to_rns_private_notice_sent' if ok
+               else 'mesh_to_rns_private_notice_failed')
+        with self._stats_lock:
+            self.stats[key] = self.stats.get(key, 0) + 1
 
     def _get_rns_destination(self, meshtastic_id: str) -> Optional[bytes]:
         """Look up RNS destination hash for a Meshtastic node ID.

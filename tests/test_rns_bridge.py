@@ -4071,8 +4071,9 @@ class TestIdentityFlagOffInertness:
 
 class TestSessionDmToGateway:
     """Theme-A step 3 — a Meshtastic DM to the gateway's own node routes
-    privately via the sender's active session; no-session falls back to
-    today's broadcast fan-out."""
+    privately via the sender's active session. No-session is REFUSED and
+    the sender told (bridge matrix F14, operator 2026-10-16 — reverses the
+    06-03 'broadcast fallback'): a DM is never fanned to the default list."""
 
     GATEWAY_ID = "!ebfa0001"
     PEER = "ab" * 16
@@ -4130,16 +4131,28 @@ class TestSessionDmToGateway:
         # step-1 memory kept warm for the peer's next reply
         assert bridge._reply_context.get(self.PEER) == "meshtastic:!aabb0042"
 
-    def test_no_session_falls_back_to_broadcast(self, bridge, tmp_path):
+    def test_no_session_refused_and_sender_told(self, bridge, tmp_path):
         self._enable(bridge, tmp_path)
         sends = []
 
         with patch.object(bridge, 'send_to_rns',
-                          side_effect=lambda *a, **k: sends.append(a) or True):
+                          side_effect=lambda *a, **k: sends.append(a) or True), \
+             patch.object(bridge, 'send_to_meshtastic',
+                          return_value=True) as notice:
             bridge._process_mesh_to_rns(self._dm())
 
         assert bridge.stats['session_dm_no_session'] == 1
-        assert len(sends) == 1  # the fan-out list (one configured dest)
+        assert sends == []  # NO fan-out of a DM
+        assert bridge.stats['mesh_to_rns_private_refused'] == 1
+        notice.assert_called_once()
+        args, kwargs = notice.call_args
+        text = args[0]
+        dest = kwargs.get('destination', args[1] if len(args) > 1 else None)
+        assert dest == "!aabb0042"
+        assert "not delivered" in text and "my private reply" not in text
+        assert "reply after an RNS user" in text  # sessions ON here
+        assert len(text.encode('utf-8')) <= 200
+        assert bridge.stats['mesh_to_rns_private_notice_sent'] == 1
 
     def test_send_failure_falls_back_to_fanout(self, bridge, tmp_path):
         sessions = self._enable(bridge, tmp_path)
@@ -4150,28 +4163,33 @@ class TestSessionDmToGateway:
             calls["n"] += 1
             return calls["n"] > 1  # session send fails, fan-out succeeds
 
-        with patch.object(bridge, 'send_to_rns', side_effect=first_fails):
+        with patch.object(bridge, 'send_to_rns', side_effect=first_fails), \
+             patch.object(bridge, 'send_to_meshtastic', return_value=True) as notice:
             bridge._process_mesh_to_rns(self._dm())
 
-        assert calls["n"] == 2  # session attempt + fan-out
+        assert calls["n"] == 1  # session attempt only — never a fan-out
         assert bridge.stats['session_routed_m2r'] == 0
-        assert bridge.stats['mesh_to_rns_delivered'] == 1
+        assert bridge.stats['mesh_to_rns_private_refused'] == 1
+        notice.assert_called_once()
 
     def test_flag_off_unchanged_and_db_never_opened(self, bridge):
         # Fixture MagicMock flag (truthy-not-True) → sessions OFF.
         from gateway.rns_bridge import BridgedMessage
         bridge.config.rns.get_lxmf_destinations.return_value = [self.DEST]
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None  # lookup misses
         msg = BridgedMessage(
             source_network="meshtastic", source_id="!aabb0042",
             destination_id=self.GATEWAY_ID, content="dm", is_broadcast=False,
         )
 
-        with patch.object(bridge, 'send_to_rns', return_value=True):
+        with patch.object(bridge, 'send_to_rns', return_value=True) as rns:
             bridge._process_mesh_to_rns(msg)
 
         assert bridge._sessions._initialized is False
         assert bridge.stats['session_routed_m2r'] == 0
         assert bridge.stats['session_dm_no_session'] == 0
+        rns.assert_not_called()  # sessions off: a DM is still never fanned
+        assert bridge.stats['mesh_to_rns_private_refused'] == 1
 
     def test_own_id_unset_unchanged(self, bridge, tmp_path):
         sessions = self._enable(bridge, tmp_path)
@@ -4180,11 +4198,13 @@ class TestSessionDmToGateway:
         sends = []
 
         with patch.object(bridge, 'send_to_rns',
-                          side_effect=lambda *a, **k: sends.append(a) or True):
+                          side_effect=lambda *a, **k: sends.append(a) or True), \
+             patch.object(bridge, 'send_to_meshtastic', return_value=True) as notice:
             bridge._process_mesh_to_rns(self._dm())
 
         assert bridge.stats['session_routed_m2r'] == 0
-        assert len(sends) == 1  # plain fan-out
+        assert sends == []  # refused, not fanned
+        notice.assert_not_called()  # own id unknown: can't tell it was to us
 
     def test_synthetic_content_excluded(self, bridge, tmp_path):
         sessions = self._enable(bridge, tmp_path)
@@ -4207,10 +4227,56 @@ class TestSessionDmToGateway:
             is_broadcast=False,
         )
 
-        with patch.object(bridge, 'send_to_rns', return_value=True):
+        with patch.object(bridge, 'send_to_rns', return_value=True) as rns, \
+             patch.object(bridge, 'send_to_meshtastic', return_value=True) as notice:
             bridge._process_mesh_to_rns(msg)
 
         assert bridge.stats['session_routed_m2r'] == 0
+        rns.assert_not_called()      # a DM between two other nodes: never fanned
+        notice.assert_not_called()   # not addressed to us: say nothing on air
+        assert bridge.stats['mesh_to_rns_private_refused'] == 1
+
+    def test_notice_rate_limited_per_sender(self, bridge, tmp_path):
+        self._enable(bridge, tmp_path)
+        with patch.object(bridge, 'send_to_rns', return_value=True), \
+             patch.object(bridge, 'send_to_meshtastic', return_value=True) as notice:
+            bridge._process_mesh_to_rns(self._dm())
+            bridge._process_mesh_to_rns(self._dm(content="again"))
+        assert notice.call_count == 1
+        assert bridge.stats['mesh_to_rns_private_refused'] == 2
+        assert bridge.stats['mesh_to_rns_private_notice_suppressed'] == 1
+
+    def test_no_notice_to_own_node_or_synthetic(self, bridge, tmp_path):
+        self._enable(bridge, tmp_path)
+        with patch.object(bridge, 'send_to_rns', return_value=True), \
+             patch.object(bridge, 'send_to_meshtastic', return_value=True) as notice:
+            bridge._process_mesh_to_rns(self._dm(source=self.GATEWAY_ID))
+            bridge._process_mesh_to_rns(self._dm(content="[delivered: abcd1234]",
+                                                 source="!aabb0099"))
+        notice.assert_not_called()
+
+    def test_notice_send_failure_is_witnessed_not_raised(self, bridge, tmp_path):
+        self._enable(bridge, tmp_path)
+        with patch.object(bridge, 'send_to_rns', return_value=True), \
+             patch.object(bridge, 'send_to_meshtastic',
+                          side_effect=RuntimeError("radio gone")):
+            bridge._process_mesh_to_rns(self._dm())
+        assert bridge.stats['mesh_to_rns_private_refused'] == 1
+        assert bridge.stats['mesh_to_rns_private_notice_failed'] == 1
+
+    def test_undirected_non_broadcast_keeps_fanout(self, bridge, tmp_path):
+        """Deliberate boundary: is_broadcast False with NO destination carries
+        no private fact (malformed frame) — refusing it could drop real
+        broadcasts, so it keeps the fan-out."""
+        from gateway.rns_bridge import BridgedMessage
+        self._enable(bridge, tmp_path)
+        msg = BridgedMessage(source_network="meshtastic", source_id="!aabb0042",
+                             destination_id=None, content="chatter",
+                             is_broadcast=False)
+        with patch.object(bridge, 'send_to_rns', return_value=True) as rns:
+            bridge._process_mesh_to_rns(msg)
+        assert rns.call_count == 1
+        assert bridge.stats.get('mesh_to_rns_private_refused', 0) == 0
 
 
 class TestSessionTouchPoints:
@@ -6233,3 +6299,42 @@ class TestUnverifiedIsNeverRelayed:
                           side_effect=lambda c, *a, **k: sent.append(c) or True):
             bridge._process_rns_to_mesh(msg)
         assert sent == ["[RNS:?abab] hi"], sent
+
+
+class TestF14ReviewFollowups:
+    """Non-author read of F14 (Fable 5.1, 2026-10-16): W1 own-echo, W2 advice."""
+
+    GATEWAY_ID = "!ebfa0001"
+
+    def _cfg(self, bridge, sessions):
+        bridge.config.rns.sessions_enabled = sessions
+        bridge.config.meshtastic.gateway_node_id = self.GATEWAY_ID
+        bridge.config.rns.get_lxmf_destinations.return_value = ["6b" * 16]
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
+
+    def _msg(self, src, dst, content="x"):
+        from gateway.rns_bridge import BridgedMessage
+        return BridgedMessage(source_network="meshtastic", source_id=src,
+                              destination_id=dst, content=content, is_broadcast=False)
+
+    def test_own_notice_echo_is_skipped_before_accounting(self, bridge):
+        self._cfg(bridge, sessions=False)
+        with patch.object(bridge, 'send_to_rns', return_value=True) as rns, \
+             patch.object(bridge, 'send_to_meshtastic', return_value=True) as notice:
+            bridge._process_mesh_to_rns(self._msg(self.GATEWAY_ID, "!aabb0042"))
+        rns.assert_not_called()
+        notice.assert_not_called()
+        assert bridge.stats.get('mesh_to_rns_private_refused', 0) == 0
+        assert bridge.stats['mesh_to_rns_own_echo_skipped'] == 1
+        bridge.health.record_message_failed.assert_not_called()
+
+    def test_sessions_off_notice_gives_no_impossible_advice(self, bridge):
+        from gateway._rns_bridge_xform import PRIVATE_REFUSED_NOTICE_SESSIONS
+        self._cfg(bridge, sessions=False)
+        with patch.object(bridge, 'send_to_rns', return_value=True), \
+             patch.object(bridge, 'send_to_meshtastic', return_value=True) as notice:
+            bridge._process_mesh_to_rns(self._msg("!aabb0042", self.GATEWAY_ID))
+        text = notice.call_args.args[0]
+        assert "not delivered" in text
+        assert PRIVATE_REFUSED_NOTICE_SESSIONS not in text
