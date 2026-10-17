@@ -300,6 +300,7 @@ class MessageTransformMixin:
                         dest_bytes = None
                 if dest_bytes and self.send_to_rns(
                         content, dest_bytes, title=title, fields=fields):
+                    sent_count = 1  # on the wire: a raise below must not requeue
                     self._sessions.touch(msg.source_id, peer_hex)
                     if self._reply_routing_on():
                         # Keep the step-1 R→M memory warm for the peer.
@@ -362,6 +363,7 @@ class MessageTransformMixin:
             peer_gateways = self._peer_gateway_hash_set() if record_ok else set()
 
             sent_count = 0
+            failed_legs = []
             for dest_hash in destinations:
                 if self.send_to_rns(content, dest_hash, title=title, fields=fields):
                     sent_count += 1
@@ -387,6 +389,15 @@ class MessageTransformMixin:
                             and not self._reply_excluded(content, {})):
                         self._sessions.touch(
                             msg.source_id, dest_hash.hex().lower())
+                else:
+                    failed_legs.append(dest_hash)
+
+            if sent_count and failed_legs:
+                # F4 review R5: one leg landing must not erase a sibling's
+                # retry — requeue only the legs that failed.
+                self._requeue_failed_message(
+                    msg, "rns", rns_destinations=failed_legs,
+                    title=title, fields=fields)
 
             if sent_count:
                 if len(destinations) > 1:
@@ -560,11 +571,14 @@ class MessageTransformMixin:
                 lxmf_fields.get('meshforge_from_id')
                 if isinstance(lxmf_fields, dict) else None,
                 content)
-            if destination == "rns" and rns_destinations:
+            if destination == "rns" and rns_destinations is not None:
+                # Resolved legs, possibly none — an empty list has nothing
+                # to retry at, and replaying it would only loop (review R3).
                 fields = dict(fields or {})
+                persisted = 0
                 for dest_hash in rns_destinations:
                     dest_hex = dest_hash.hex()
-                    self._persistent_queue.enqueue(
+                    persisted += bool(self._persistent_queue.enqueue(
                         payload={
                             'message': content,
                             # 'destination' keys the queue's dedup hash —
@@ -580,9 +594,12 @@ class MessageTransformMixin:
                         },
                         destination="rns",
                         priority=MessagePriority.HIGH,
-                    )
+                    ))
+                # enqueue() returns None on a dedup/queue-full drop: True
+                # here must mean a row exists (review R4).
+                return persisted > 0
             elif destination == "rns":
-                self._persistent_queue.enqueue(
+                return bool(self._persistent_queue.enqueue(
                     payload={
                         'source_id': source_id,
                         'destination_id': dest_id or "",
@@ -594,7 +611,7 @@ class MessageTransformMixin:
                     },
                     destination="rns_xform",
                     priority=MessagePriority.HIGH,
-                )
+                ))
             else:
                 self._persistent_queue.enqueue(
                     payload={

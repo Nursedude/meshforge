@@ -387,10 +387,8 @@ class RNSMeshtasticBridge(
         if HAS_PERSISTENT_QUEUE:
             try:
                 self._persistent_queue = PersistentMessageQueue()
-                # RNS sender registered here, Meshtastic sender after handler init
-                self._persistent_queue.register_sender(
-                    "rns", self._queue_send_rns
-                )
+                # RNS senders registered here, Meshtastic sender after handler init
+                self._register_rns_queue_senders(self._persistent_queue)
                 logger.info("Persistent message queue initialized")
             except Exception as e:
                 logger.warning(f"Failed to initialize persistent queue: {e}")
@@ -572,13 +570,6 @@ class RNSMeshtasticBridge(
             self._persistent_queue.register_sender(
                 "meshtastic", self._mesh_handler.queue_send,
                 min_spacing_s=MESHTASTIC_TX_MIN_SPACING_S,
-            )
-            # Hardening B: M→R in-memory overflow spills here under
-            # destination="rns_xform"; the worker re-runs the message
-            # through _process_mesh_to_rns so it gets fan-out to all
-            # configured LXMF destinations and proper stats accounting.
-            self._persistent_queue.register_sender(
-                "rns_xform", self._dispatch_rns_xform_spill
             )
 
         # Initialize MeshCore handler if configured and available

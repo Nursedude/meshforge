@@ -208,6 +208,17 @@ class BridgeSendMixin:
                 )
             return RnsSendResult(False, "send_error", str(e))
 
+    def _register_rns_queue_senders(self, queue) -> None:
+        """Register the two M→R queue senders. Both are gated on RNS being
+        connected, so rows wait out an outage instead of burning the
+        queue's 3-try budget on it (F4 review R2). "rns_xform" carries
+        Hardening B's queue-full spill and F4's whole-message replay; the
+        worker re-runs it through _process_mesh_to_rns."""
+        ready = lambda: bool(self._connected_rns)  # noqa: E731
+        queue.register_sender("rns", self._queue_send_rns, ready_fn=ready)
+        queue.register_sender("rns_xform", self._dispatch_rns_xform_spill,
+                              ready_fn=ready)
+
     def _queue_send_rns(self, payload: Dict) -> bool:
         """Send handler for persistent queue - RNS destination."""
         message = payload.get('message', '')
