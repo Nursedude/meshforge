@@ -208,6 +208,7 @@ class MessageTransformMixin:
         """
         with self._stats_lock:
             self.stats['mesh_to_rns_attempted'] += 1
+        sent_count = 0  # read by the except path: never requeue a sent copy
         try:
             content = msg.content
 
@@ -408,7 +409,11 @@ class MessageTransformMixin:
                 with self._stats_lock:
                     self.stats['errors'] += 1
                     self.stats['mesh_to_rns_dropped'] += 1
-                requeued = self._requeue_failed_message(msg, "rns")
+                # F4: retry each failed leg at the hash it already resolved
+                # to — never re-resolve, which could widen a DM's audience.
+                requeued = self._requeue_failed_message(
+                    msg, "rns", rns_destinations=destinations,
+                    title=title, fields=fields)
                 self.health.record_message_failed("mesh_to_rns", requeued=requeued)
 
         except Exception as e:
@@ -417,8 +422,15 @@ class MessageTransformMixin:
                 self.stats['errors'] += 1
                 self.stats['mesh_to_rns_dropped'] += 1
             self.health.record_error("rns", e)
-            self._requeue_failed_message(msg, "rns")
-            self.health.record_message_failed("mesh_to_rns", requeued=True)
+            requeued = False
+            if sent_count:
+                # Already on the wire: a retry would be a duplicate.
+                logger.warning("Mesh→RNS: raised after a send — not requeued")
+            elif (msg.metadata or {}).get('m2r_replay'):
+                logger.warning("Mesh→RNS: replay raised again — not requeued")
+            else:
+                requeued = self._requeue_failed_message(msg, "rns")
+            self.health.record_message_failed("mesh_to_rns", requeued=requeued)
 
     def _refuse_private_fanout(self, msg, content) -> None:
         """Refuse a Mesh→RNS DM that has no single recipient (F14), leave a
@@ -502,12 +514,20 @@ class MessageTransformMixin:
                 return dest
         return None
 
-    def _requeue_failed_message(self, msg, destination: str) -> bool:
+    def _requeue_failed_message(self, msg, destination: str,
+                                rns_destinations=None, title=None,
+                                fields=None) -> bool:
         """Persist a failed message to the persistent queue for later retry.
 
         Args:
             msg: The message that failed to send (BridgedMessage or CanonicalMessage).
             destination: Target network ("meshtastic", "rns", or "meshcore").
+            rns_destinations: for "rns", the LXMF hashes the send already
+                resolved — one "rns" row each, in the shape _queue_send_rns
+                reads (bridge matrix F4). Without them an "rns" message is
+                replayed whole through _process_mesh_to_rns ("rns_xform"),
+                so F14 and the broadcast fan-out decide again at retry time.
+            title, fields: the LXMF title/fields the live send carried.
 
         Returns:
             True if message was successfully persisted, False otherwise.
@@ -540,17 +560,53 @@ class MessageTransformMixin:
                 lxmf_fields.get('meshforge_from_id')
                 if isinstance(lxmf_fields, dict) else None,
                 content)
-            self._persistent_queue.enqueue(
-                payload={
-                    'message': content,
-                    'source_id': source_id,
-                    'destination_id': dest_id or "",
-                    'metadata': msg.metadata or {},
-                    'content_id': dedup_cid,
-                },
-                destination=destination,
-                priority=MessagePriority.HIGH,
-            )
+            if destination == "rns" and rns_destinations:
+                fields = dict(fields or {})
+                for dest_hash in rns_destinations:
+                    dest_hex = dest_hash.hex()
+                    self._persistent_queue.enqueue(
+                        payload={
+                            'message': content,
+                            # 'destination' keys the queue's dedup hash —
+                            # without it every leg of a fan-out collapses
+                            # into the first row.
+                            'destination': dest_hex,
+                            'destination_hash': dest_hex,
+                            'title': title,
+                            'fields': fields,
+                            'source_id': source_id,
+                            'content_id': (fields.get('meshforge_content_id')
+                                           or dedup_cid),
+                        },
+                        destination="rns",
+                        priority=MessagePriority.HIGH,
+                    )
+            elif destination == "rns":
+                self._persistent_queue.enqueue(
+                    payload={
+                        'source_id': source_id,
+                        'destination_id': dest_id or "",
+                        'content': content,
+                        'title': getattr(msg, 'title', None),
+                        'is_broadcast': bool(getattr(msg, 'is_broadcast', False)),
+                        'content_id': getattr(msg, 'content_id', '') or '',
+                        'metadata': metadata,
+                    },
+                    destination="rns_xform",
+                    priority=MessagePriority.HIGH,
+                )
+            else:
+                self._persistent_queue.enqueue(
+                    payload={
+                        'message': content,
+                        'source_id': source_id,
+                        'destination_id': dest_id or "",
+                        'metadata': msg.metadata or {},
+                        'content_id': dedup_cid,
+                    },
+                    destination=destination,
+                    priority=MessagePriority.HIGH,
+                )
             logger.debug(f"Failed message re-queued to persistent storage ({destination})")
             return True
         except Exception as e:

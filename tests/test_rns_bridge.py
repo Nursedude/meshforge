@@ -1119,6 +1119,7 @@ class TestProcessMeshToRNS:
             "6b1a0120941444587d7d1dc1bf6d64d7",
         ]
         bridge.node_tracker.get_node_by_mesh_id.return_value = None
+        bridge._connected_rns = True  # a spill waits while RNS is down (F4)
         payload = {
             'source_id': "!aabb0042",
             'destination_id': None,
@@ -5854,6 +5855,7 @@ class TestContentIdCarryRnsLeg:
         # A queue-full spill persists content_id (mqtt handler) and the requeue
         # worker reconstructs it, so the overflow copy stays correlatable.
         captured = {}
+        bridge._connected_rns = True  # a spill waits while RNS is down (F4)
         with patch.object(bridge, '_process_mesh_to_rns',
                           side_effect=lambda m: captured.setdefault('m', m)):
             bridge._dispatch_rns_xform_spill({

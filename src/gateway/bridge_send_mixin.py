@@ -290,10 +290,16 @@ class BridgeSendMixin:
                 RNS.Destination.SINGLE, "lxmf", "delivery"
             )
 
+            # F4: a requeued M→R row carries the origin title + fields the
+            # live send had; without them the retry arrives as an anonymous
+            # "MeshForge Gateway" message.
+            fields = payload.get('fields') or None
             lxm = bounded_call(
                 "rnsd.lxmessage_ctor",
                 LXMF.LXMessage,
-                destination, self._lxmf_source, message, "MeshForge Gateway",
+                destination, self._lxmf_source, message,
+                payload.get('title') or "MeshForge Gateway",
+                fields=fields,
                 target=hash_short, timeout_s=5.0, on_wedge=_on_wedge,
             )
 
@@ -343,14 +349,22 @@ class BridgeSendMixin:
         True so the queue marks the row delivered after dispatch (the
         underlying xform will re-spill or count drops on its own failure
         paths — we don't re-loop overflow back into rns_xform).
+
+        While RNS is disconnected it returns False instead, so the row
+        waits out the queue's backoff rather than replaying into a pipeline
+        that can only drop it (F4: the RNS-down requeue lands here).
         """
         # Lazy import — BridgedMessage is defined in rns_bridge, which
         # imports this mixin at module top (circular otherwise). Matches
         # the MessageTransformMixin idiom for the 2026-06-09 split.
         from . import rns_bridge as _rns_bridge_module
         BridgedMessage = _rns_bridge_module.BridgedMessage
+        if not self._connected_rns:
+            return False
         try:
-            metadata = payload.get('metadata') or {}
+            metadata = dict(payload.get('metadata') or {})
+            # A replay that raises again must not requeue itself forever.
+            metadata['m2r_replay'] = True
             msg = BridgedMessage(
                 source_network="meshtastic",
                 source_id=payload.get('source_id', '') or '',
@@ -359,7 +373,7 @@ class BridgeSendMixin:
                 title=payload.get('title'),
                 is_broadcast=bool(payload.get('is_broadcast', False)),
                 content_id=payload.get('content_id', '') or '',
-                metadata=dict(metadata),
+                metadata=metadata,
             )
             self._process_mesh_to_rns(msg)
             return True
