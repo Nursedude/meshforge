@@ -226,6 +226,21 @@ whole; each item below lands on its own, re-tested here. In order:
     to gate 1. Accept: MA `/fleet` 8/8 with moc3 `ssh_spool`; `ssh -i <noc key> moc3 bash`
     returns JSON, never a shell.
 
+6e. **Mesh→RNS `@address` — a mesh user can START a private conversation** (operator
+    2026-10-17; GRILL before build). Gap left by F14 (`7bbf6c82`, drilled live 10-17): a
+    DM to the gateway with no open session is refused + the sender told, so a mesh user's
+    only way into RNS is a PUBLIC channel post or waiting for an RNS user to write first.
+    RNS→Mesh already has `@address`; Mesh→RNS has none. Shape: a DM to the gateway
+    starting `@<name|hash-prefix> <text>` resolves to EXACTLY ONE RNS destination (identity
+    SSOT / contacts / announce names) and goes as one private LXMF send that opens the
+    session; no match or an ambiguous match → refuse + on-air notice naming why, never a
+    fan-out. Open questions: name source + collision rule (two announces, one name);
+    syntax clash with MeshCore's `@contact` leg and with the bridged-text `@` parse; does
+    a peer-GATEWAY hash count as addressable (default no — infra, not people); 200-byte
+    budget for the address + text; MA parity (MA tracks no own node id). Accept: handheld
+    DM `@<known name> hi` → arrives at exactly that NomadNet/MeshChatX inbox, session
+    opens, reply comes back as a DM; `@<unknown>` → notice, nothing sent.
+
 **LATER**
 7. Mesh-issue rules for the *user's* mesh (MeshMonitor M1), with one thresholds
    file and a test that forbids harmful advice.
