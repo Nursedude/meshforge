@@ -47,6 +47,25 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_BROADCAST_NUM = 0xFFFFFFFF
+
+
+def packet_is_broadcast(packet: dict) -> bool:
+    """Decide broadcast on the WIRE fact (bridge matrix F7, 2026-10-16).
+
+    The meshtastic library reports a broadcast's ``toId`` as ``'^all'``
+    (``meshtastic.BROADCAST_ADDR``, read from the installed lib), never
+    ``'!ffffffff'`` — comparing against the latter labelled every TCP-ingress
+    broadcast a DM and left the cross-box loop-guard registrations inert.
+    The numeric ``to`` wins when present; the strings are a fallback for
+    packets that carry only ``toId``.
+    """
+    to_num = packet.get('to')
+    if isinstance(to_num, int):
+        return to_num == _BROADCAST_NUM
+    return packet.get('toId') in ('^all', '!ffffffff')
+
+
 # pubsub is an external dependency (pypubsub) - keep safe_import
 pub, _HAS_PUBSUB = safe_import('pubsub', 'pub')
 
@@ -719,7 +738,7 @@ class MeshtasticHandler(BaseMessageHandler):
         # above and not re-bridged — the shared-segment case Phase-2's intra-box
         # registry alone can't cover. After the guard (never suppresses the
         # original); only when the flag armed loop_cid (inert off); broadcast-only.
-        if loop_cid and packet.get('toId') == '!ffffffff':
+        if loop_cid and packet_is_broadcast(packet):
             get_rf_tx_registry().register_content_id(loop_cid)
 
         # Mesh oracle (read-only): answer a query (status/whatsup/...) DIRECTED
@@ -738,7 +757,7 @@ class MeshtasticHandler(BaseMessageHandler):
                 logger.debug(f"mesh oracle handle error: {e}")
         # Past the oracle: really going to RNS — the hand-off marker for
         # mesh_bridge's witness (same as the MQTT leg; consumed queries never).
-        if loop_cid and packet.get('toId') == '!ffffffff':
+        if loop_cid and packet_is_broadcast(packet):
             get_rf_tx_registry().register_handoff(loop_cid)
 
         to_id = packet.get('toId')
@@ -747,7 +766,7 @@ class MeshtasticHandler(BaseMessageHandler):
             source_id=from_id,
             destination_id=to_id,
             content=text,
-            is_broadcast=to_id == '!ffffffff',
+            is_broadcast=packet_is_broadcast(packet),
             metadata={
                 'channel': packet.get('channel', 0),
                 'snr': packet.get('rxSnr'),

@@ -1437,3 +1437,44 @@ class TestMeshOracleWiring:
         responder = handler._build_oracle_responder()
         assert responder is not None
         assert responder._allowed_channels == {2}
+
+
+class TestBroadcastWireFact:
+    """Bridge matrix F7 (2026-10-16): the meshtastic library reports a
+    broadcast's toId as '^all' (meshtastic.BROADCAST_ADDR), never
+    '!ffffffff' — so every TCP-ingress broadcast was labelled a DM and the
+    two cross-box loop-guard registrations were inert on this leg."""
+
+    def test_predicate(self):
+        from gateway.meshtastic_handler import packet_is_broadcast
+        assert packet_is_broadcast({'to': 0xFFFFFFFF, 'toId': '^all'}) is True
+        assert packet_is_broadcast({'toId': '^all'}) is True
+        assert packet_is_broadcast({'toId': '!ffffffff'}) is True
+        assert packet_is_broadcast({'to': 0x1234abcd, 'toId': '!1234abcd'}) is False
+        assert packet_is_broadcast({'to': 0x1234abcd, 'toId': '^all'}) is False
+
+    def test_library_broadcast_is_labelled_broadcast(self, handler):
+        packet = {"to": 0xFFFFFFFF, "toId": "^all", "channel": 0}
+        handler._handle_text_message(packet, {"payload": b"hello all"}, "!a1b2c3d4")
+        msg = handler._message_queue.get_nowait()
+        assert msg.is_broadcast is True
+
+    def test_dm_is_labelled_dm(self, handler):
+        packet = {"to": 0x1234abcd, "toId": "!1234abcd", "channel": 0}
+        handler._handle_text_message(packet, {"payload": b"hi you"}, "!a1b2c3d4")
+        msg = handler._message_queue.get_nowait()
+        assert msg.is_broadcast is False
+
+    def test_loop_guard_registrations_arm_for_library_broadcast(self, handler):
+        """The two cross-box registrations were inert on TCP pre-F7."""
+        reg = MagicMock()
+        with patch("gateway.meshtastic_handler.true_origin_downlink_enabled",
+                   return_value=True), \
+             patch("gateway.meshtastic_handler.is_bridge_loop", return_value=False), \
+             patch("gateway.meshtastic_handler.get_rf_tx_registry", return_value=reg):
+            handler._oracle = None
+            handler._handle_text_message(
+                {"to": 0xFFFFFFFF, "toId": "^all", "channel": 0},
+                {"payload": b"hello all"}, "!a1b2c3d4")
+        reg.register_content_id.assert_called_once()
+        reg.register_handoff.assert_called_once()
