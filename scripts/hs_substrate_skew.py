@@ -129,8 +129,8 @@ elif entry_kind == "module":
     top = entry_val.split(".")[0]
     for d in md.distributions():
         if top in tops(d, d.metadata["Name"] or ""): owner = d; break
-if owner is not None:
-    seen, todo = set(), [norm(owner.metadata["Name"])]
+def clos(names):
+    seen, todo = set(), list(names)
     while todo:
         n = todo.pop()
         if n in seen: continue
@@ -140,7 +140,24 @@ if owner is not None:
         for r in (d.requires or []):
             if "extra ==" in r.replace('"', "").replace("'", ""): continue
             todo.append(norm(re.split(r"[\s<>=!~;\[(@]", r.strip(), maxsplit=1)[0]))
-    out["closure"] = sorted(seen)
+    return sorted(seen)
+if owner is not None:
+    out["closure"] = clos([norm(owner.metadata["Name"])])
+elif entry_kind == "script":
+    # A script that is no console script (a wrapper file): its OWN imports
+    # name what it loads. Reported as `script` basis, never `entry`.
+    try:
+        with open(entry_val, errors="replace") as fh: src = fh.read(262144)
+        names = set(re.findall(r"^[ \t]*from[ \t]+([A-Za-z_]\w*)", src, re.M))
+        for line in re.findall(r"^[ \t]*import[ \t]+([^\n#;]+)", src, re.M):
+            # `import a, b as c`: every name (a `\` continuation is not followed)
+            names.update(m.group(0) for m in
+                         (re.match(r"[A-Za-z_]\w*", x.strip()) for x in line.split(",")) if m)
+        owners = [norm(d.metadata["Name"]) for d in md.distributions()
+                  if d.metadata["Name"] and names & set(tops(d, d.metadata["Name"]))]
+        if owners: out["script_closure"] = clos(owners)
+    except (OSError, ValueError):
+        pass
 print(json.dumps(out))
 '''
 
@@ -374,6 +391,10 @@ def judge(unit, start, data, want, now):
             return ["SU %s bad-probe-output" % unit]
         if _norm(name) in closure:
             basis = "entry"
+        elif _norm(name) in set(_norm(n) for n in (data.get("script_closure") or [])):
+            # The process's script file imports a dist whose requirement
+            # closure holds it (a wrapper, e.g. nomadnet_wrapper.py).
+            basis = "script"
         elif data.get("repo_bound") and any(
                 repo_imports(data["repo_bound"], t) for t in names):
             # EVERY top-level name: rns ships CRNS + RNS, and grepping only

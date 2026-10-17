@@ -372,3 +372,100 @@ def test_summarize_all_unparsed_says_so_in_the_cure():
     """Review note 2: summarize RAN; an empty cure made bash claim it failed."""
     _, cure = hs.summarize(["moc SB rnsd.service rns 2 entry"])
     assert "unparsed" in cure and cure != ""
+
+
+# ---- script basis: a wrapper file that imports the app (2026-10-16) ---------
+# moc's nomadnet.service pane runs ~/.config/meshforge/nomadnet_wrapper.py
+# (copied verbatim from templates/python/nomadnet_wrapper.py) under pipx's
+# python. That file is no console script and no repo path, so the probe
+# judged NOTHING — nomadnet sat in the "could import, not judged" count on
+# moc/moc1/moc2/moc3 while honest_status read the substrate PASS, and the new
+# roll restart step (scripts/fork_roll_restart.py) would never restart it.
+# The script's OWN imports are a fact about what it loads: `script` basis.
+
+def test_judge_script_basis_when_the_wrapper_imports_the_app():
+    data = {"dists": {"lxmf": ["1.0.1+mf.12", 2000.0, "/s/LXMF/__init__.py"]},
+            "closure": None, "script_closure": ["nomadnet", "lxmf", "rns"],
+            "repo_bound": None}
+    assert hs.judge("nomadnet.service", 1000.0, data, ["lxmf"], 2000.0) == \
+        ["SB nomadnet.service lxmf=1.0.1+mf.12 0 script"]
+
+
+def test_judge_entry_outranks_script():
+    data = {"dists": {"rns": ["1", 2000.0, "/s/RNS/__init__.py"]},
+            "closure": ["rns"], "script_closure": ["rns"], "repo_bound": None}
+    assert hs.judge("x.service", 1000.0, data, ["rns"], 2000.0) == \
+        ["SB x.service rns=1 0 entry"]
+
+
+def _plant_app(site, imports_line):
+    """A fake `fakenomad` dist requiring rns, plus a wrapper script."""
+    app = site / "fakenomad"
+    app.mkdir()
+    (app / "__init__.py").write_text("")
+    di = site / "fakenomad-1.0.dist-info"
+    di.mkdir()
+    (di / "METADATA").write_text("Metadata-Version: 2.1\nName: fakenomad\nVersion: 1.0\n"
+                                 "Requires-Dist: rns\n")
+    (di / "top_level.txt").write_text("fakenomad\n")
+    w = site.parent / "cfg" / "nomad_wrapper.py"
+    w.parent.mkdir()
+    w.write_text(
+        "import os, time\n%s\n"
+        "owner = %d\n"
+        "while True:\n"
+        "    time.sleep(1)\n"
+        "    try:\n"
+        "        os.kill(owner, 0)\n"
+        "    except ProcessLookupError:\n"
+        "        break\n" % (imports_line, os.getpid()))
+    return w
+
+
+def test_real_wrapper_script_importing_the_app_is_judged(planted):
+    site, _script, di, pkg = planted
+    w = _plant_app(site, "from fakenomad import __name__ as _n")
+    p = subprocess.Popen([sys.executable, str(w)], cwd=str(site.parent),
+                         env=dict(os.environ, PYTHONPATH=str(site)),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.6)
+    try:
+        _future(di, pkg)
+        assert "SB nomadnet.service rns=9.9.9+mf.9 0 script" in _run("nomadnet.service", p.pid)
+    finally:
+        p.kill()
+        p.wait()
+
+
+def test_real_wrapper_script_importing_nothing_relevant_stays_unjudged(planted):
+    site, _script, di, pkg = planted
+    w = _plant_app(site, "import json")
+    # cwd pinned OUTSIDE the repo: inherited /opt/meshforge made it repo-bound
+    # (repo imports RNS) and the verdict depended on where pytest ran.
+    p = subprocess.Popen([sys.executable, str(w)], cwd=str(site.parent),
+                         env=dict(os.environ, PYTHONPATH=str(site)),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.6)
+    try:
+        out = _run("other.service", p.pid)
+        assert "SX other.service rns" in out
+        assert not any(l.startswith(("SB ", "SC ")) for l in out)
+    finally:
+        p.kill()
+        p.wait()
+
+
+def test_real_wrapper_comma_import_is_captured(planted):
+    """Fourth read: `import os, fakenomad` captured only `os`."""
+    site, _script, di, pkg = planted
+    w = _plant_app(site, "import json, fakenomad as _fn")
+    p = subprocess.Popen([sys.executable, str(w)], cwd=str(site.parent),
+                         env=dict(os.environ, PYTHONPATH=str(site)),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.6)
+    try:
+        _future(di, pkg)
+        assert "SB nomadnet.service rns=9.9.9+mf.9 0 script" in _run("nomadnet.service", p.pid)
+    finally:
+        p.kill()
+        p.wait()

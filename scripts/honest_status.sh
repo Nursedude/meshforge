@@ -818,7 +818,7 @@ elif [ "$sub_behind" -gt 0 ]; then
   # A summarizer that failed must not read as "no cure needed".
   [ -n "$sub_desc" ] || sub_desc=" (unit list UNAVAILABLE — summarize failed)"
   [ -n "$sub_cure" ] || sub_cure="cure UNAVAILABLE — summarize failed; restart only the units named in the SB records"
-  warnf "running substrate" "$sub_behind unit(s) RUN an older ${HS_SUB_WANT% } copy than is INSTALLED (process started before the install):${sub_desc} — (dist,basis): entry = its own entry point needs it, repo = repo code that may import it; ${sub_cure}${sub_unk_note}${sub_none_note}${sub_unjudged_note}"
+  warnf "running substrate" "$sub_behind unit(s) RUN an older ${HS_SUB_WANT% } copy than is INSTALLED (process started before the install):${sub_desc} — (dist,basis): entry = its own entry point needs it, script = its script file imports something that needs it, repo = repo code that may import it; ${sub_cure}${sub_unk_note}${sub_none_note}${sub_unjudged_note}"
 elif [ "$sub_checked" = 0 ]; then
   # Boxes answered and NOTHING was judged: that is not "all current". A
   # resolution bug (review A1/A2) lands exactly here, so it must not PASS.
