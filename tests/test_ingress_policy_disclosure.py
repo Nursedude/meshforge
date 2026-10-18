@@ -162,3 +162,41 @@ class TestDropWinsOverAllow:
             r = _router(self._rules())
             assert r.should_bridge(_msg(sid=STRANGER)) is False
             assert r.should_bridge(_msg(sid=PEER)) is True
+
+
+class TestDisabledGatewaySaysClosed:
+    """MeshAnchor #151 item 2/3 (KN4YDL, 2026-10-10): top-level ``enabled``
+    defaults False, ``should_bridge()`` then refuses EVERY message, and the
+    only trace was a DEBUG line the handlers word as "blocked by routing
+    rules". The posture line said OPEN. A refusing state must say so, name
+    the knob, and the first refusal must be visible at INFO."""
+
+    def _disabled(self):
+        cfg = GatewayConfig()
+        cfg.enabled = False
+        return mr.MessageRouter(cfg, {"bounced": 0}, threading.Lock())
+
+    def test_posture_line_says_closed_and_names_the_knob(self):
+        line = self._disabled().describe_ingress_policy()
+        assert "CLOSED" in line
+        assert "OPEN" not in line
+        assert '"enabled": true' in line
+
+    def test_disabled_posture_logs_at_warning(self, caplog):
+        with caplog.at_level(logging.INFO, logger=mr.logger.name):
+            self._disabled()
+        closed = [r for r in caplog.records if "CLOSED" in r.getMessage()]
+        assert closed and all(r.levelno == logging.WARNING for r in closed)
+
+    def test_first_refusal_is_info_then_quiet(self, caplog):
+        r = self._disabled()
+        caplog.clear()  # the constructor's CLOSED warning is a separate pin
+        with caplog.at_level(logging.DEBUG, logger=mr.logger.name):
+            assert r.should_bridge(_msg("meshcore", sid="")) is False
+            assert r.should_bridge(_msg("meshcore", sid="")) is False
+        loud = [x for x in caplog.records
+                if x.levelno >= logging.INFO and "enabled" in x.getMessage()]
+        assert len(loud) == 1, [x.getMessage() for x in caplog.records]
+
+    def test_enabled_gateway_unchanged(self):
+        assert "OPEN" in _router().describe_ingress_policy()

@@ -116,7 +116,11 @@ class MessageRouter:
         # journal). Measured 2026-10-06 on both live gateways: zero rules +
         # bidirectional + classifier = every sender on every network bridged,
         # and the line above was the only thing the gateway said about it.
-        logger.info(self.describe_ingress_policy())
+        # Disabled = refuses everything: WARNING, so it is not mistaken for
+        # a quiet healthy gateway (MeshAnchor #151 item 2).
+        (logger.warning if not self.config.enabled else logger.info)(
+            self.describe_ingress_policy())
+        self._disabled_refusal_seen = False
 
     def _rns_allowlist(self):
         """``(ids, policy)`` when an RNS→RF list is declared, else ``None``.
@@ -214,6 +218,12 @@ class MessageRouter:
           when ``default_route`` is bidirectional/all_to_all; a matching
           ``drop`` rule refuses it.
         """
+        if not self.config.enabled:
+            return ('Routing ingress policy: CLOSED - gateway.json top-level '
+                    '"enabled" is false, so every message on every network is '
+                    'refused (the Meshtastic/RNS bridge threads do not start; '
+                    'a MeshCore handler still receives and refuses); set '
+                    '"enabled": true to bridge')
         rules = [r for r in self.config.routing_rules if r.enabled]
         drop = [r for r in rules if r.direction == "drop"]
         allow = [r for r in rules if r.direction != "drop"]
@@ -262,7 +272,16 @@ class MessageRouter:
         - Medium confidence: Route with logging
         """
         if not self.config.enabled:
-            logger.debug("Routing: bridge disabled, dropping message")
+            # First refusal at INFO, the rest at DEBUG: the handlers word
+            # this drop "blocked by routing rules" (#151 item 3), so the
+            # router names the real cause once where an operator reads.
+            if not getattr(self, '_disabled_refusal_seen', False):
+                self._disabled_refusal_seen = True
+                logger.info('Routing: refusing every message - gateway.json '
+                            'top-level "enabled" is false (set "enabled": '
+                            'true to bridge); further refusals at DEBUG')
+            else:
+                logger.debug("Routing: bridge disabled, dropping message")
             return False
 
         # Use classifier if available

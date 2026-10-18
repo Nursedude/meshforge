@@ -328,6 +328,7 @@ class MQTTMeshInterface:
                 text=text,
                 host=self._config.host,
                 port=self._config.http_port,
+                tls=self._config.tls_for_port(self._config.http_port),
                 destination=dest_num,
                 channel_index=channelIndex,
             ):

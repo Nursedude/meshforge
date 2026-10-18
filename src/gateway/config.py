@@ -258,6 +258,10 @@ class MeshtasticConfig:
     # 443 was a wrong default that shipped in rendered fleet configs;
     # load() migrates it (see _migrate_stale_http_port).
     http_port: int = 9443
+    # TLS for that HTTP TX (#151 item 6): None = auto — plain HTTP on port
+    # 80 (a WiFi node's own web server), TLS on every other port (the
+    # meshtasticd 9443 shape). Set true/false to override.
+    http_tls: Optional[bool] = None
     # LoRa preset identifier (for documentation/display)
     # Values: LONG_FAST, LONG_SLOW, MEDIUM_FAST, MEDIUM_SLOW,
     #         SHORT_FAST, SHORT_SLOW, SHORT_TURBO
@@ -298,6 +302,14 @@ class MeshtasticConfig:
     # configs. Empty = default key (+ downlink_psk) only.
     channel_keys: List[str] = field(default_factory=list)
 
+
+
+    def tls_for_port(self, port: int) -> bool:
+        """Whether HTTP TX to ``port`` uses TLS (``http_tls`` wins; else
+        plain on 80 only)."""
+        if self.http_tls is not None:
+            return bool(self.http_tls)
+        return int(port) != 80
 
 @dataclass
 class MeshtasticBridgeConfig:

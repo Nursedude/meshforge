@@ -87,8 +87,10 @@ class OraclePhoneAPITap:
                 host = getattr(self.config.meshtastic, "host", "localhost")
                 http_port = getattr(self.config.meshtastic, "http_port", 9443) or 9443
                 idx = int(getattr(self.config.meshtastic, "channel", 0) or 0)
+                tls_for = getattr(self.config.meshtastic, "tls_for_port", None)
                 pkt = send_text_direct_with_id(
                     text=text, host=host, port=http_port,
+                    tls=tls_for(http_port) if tls_for else http_port != 80,
                     destination=None, channel_index=idx)
                 return pkt is not None
             except Exception as e:

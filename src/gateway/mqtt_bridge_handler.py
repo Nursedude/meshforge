@@ -1122,6 +1122,7 @@ class MQTTBridgeHandler(BaseMessageHandler):
             # rides /e/) can confirm it (Thread-2 step 4 / #74).
             pkt_id = send_text_direct_with_id(
                 text=message, host=host, port=http_port,
+                tls=self.config.meshtastic.tls_for_port(http_port),
                 destination=dest_num, channel_index=channel)
             if pkt_id is not None:
                 self._maybe_register_ack(pkt_id, dest_num, msg_id, record_sent)
