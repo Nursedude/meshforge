@@ -22,7 +22,9 @@ message_queue.py).
 - Witnesses fire only when the UPDATE changed the row (review F2: two
   process_once callers race), and one expiry pass handles at most
   _EXPIRE_BATCH rows per destination (review F5: 1000 rows stalled the
-  worker ~5 s).
+  worker ~5 s). The batch is oldest-first and the cap applies before the
+  age test, so 200 ancient (> 7 d, re-stamped) rows delay a real expiry by
+  one pass (_EXPIRE_EVERY_S) — bounded, by design.
 """
 
 import json
@@ -47,26 +49,39 @@ class MessageQueueOutageMixin:
     _clock_mono: Optional[float] = None
 
     def note_clock(self, wall: datetime, mono: float) -> None:
-        """Detect a wall-clock step between two ticks and shift pending rows."""
-        last_wall, last_mono = self._clock_wall, self._clock_mono
-        self._clock_wall, self._clock_mono = wall, mono
+        """Detect a wall-clock step between two ticks and shift queued rows'
+        created_at AND retry_after by it (a backward step otherwise strands a
+        deferred row for the step's length)."""
+        # Two process_once callers: read-compare-store the pair atomically so
+        # one step is applied once, never twice.
+        with self._lock:
+            last_wall, last_mono = self._clock_wall, self._clock_mono
+            self._clock_wall, self._clock_mono = wall, mono
         if last_wall is None or last_mono is None:
             return
         jump = (wall - last_wall).total_seconds() - (mono - last_mono)
         if abs(jump) <= CLOCK_JUMP_S:
             return
+        shift = timedelta(seconds=jump)
         with self._get_connection() as conn:
             rows = conn.execute(
-                "SELECT id, created_at FROM messages "
+                "SELECT id, created_at, retry_after FROM messages "
                 "WHERE status IN ('pending', 'in_progress')").fetchall()
             for row in rows:
                 try:
-                    shifted = (datetime.fromisoformat(row["created_at"])
-                               + timedelta(seconds=jump))
+                    created = (datetime.fromisoformat(row["created_at"])
+                               + shift).isoformat()
                 except (TypeError, ValueError):
                     continue
-                conn.execute("UPDATE messages SET created_at = ? WHERE id = ?",
-                             (shifted.isoformat(), row["id"]))
+                try:
+                    retry = ((datetime.fromisoformat(row["retry_after"])
+                              + shift).isoformat()
+                             if row["retry_after"] else None)
+                except (TypeError, ValueError):
+                    retry = row["retry_after"]
+                conn.execute(
+                    "UPDATE messages SET created_at = ?, retry_after = ? "
+                    "WHERE id = ?", (created, retry, row["id"]))
         with self._lock:
             self._stats["clock_jumps"] += 1
         logger.warning(
@@ -140,8 +155,12 @@ class MessageQueueOutageMixin:
 
     def _restamp(self, msg_id: str, now: datetime) -> None:
         with self._get_connection() as conn:
-            conn.execute("UPDATE messages SET created_at = ? WHERE id = ?",
-                         (now.isoformat(), msg_id))
+            changed = conn.execute(
+                "UPDATE messages SET created_at = ? "
+                "WHERE id = ? AND status = 'pending'",
+                (now.isoformat(), msg_id)).rowcount
+        if changed != 1:
+            return
         with self._lock:
             self._stats["age_unknown"] += 1
         logger.warning(

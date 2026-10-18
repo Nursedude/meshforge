@@ -657,6 +657,9 @@ class MessageTransformMixin:
                     },
                     destination="rns_xform",
                     priority=MessagePriority.NORMAL,
+                    # Always None today: the only no-hash requeue is the
+                    # except path, which refuses replays — kept so a future
+                    # caller cannot silently restart the 24 h.
                     created_at=first_enqueued,
                 ))
             else:

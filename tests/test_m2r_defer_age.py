@@ -448,3 +448,59 @@ class TestRequeueShape:
                 "SELECT created_at FROM messages WHERE destination = 'rns'"
             ).fetchone()[0]
         assert datetime.fromisoformat(created) == first
+
+
+class TestClockJumpReview:
+    # Fresh read of 87b0c33e: retry_after was never shifted; backward steps,
+    # in_progress rows and oldest-first expiry ordering were unpinned.
+
+    def test_a_backward_step_shifts_rows_and_their_retry_after(self, tmp_path):
+        q = _q(tmp_path)
+        mid = q.enqueue(payload={"message": "x", "destination": "1"},
+                        destination="a")
+        due = datetime.now() + timedelta(seconds=300)
+        with q._get_connection() as conn:
+            conn.execute("UPDATE messages SET retry_after = ? WHERE id = ?",
+                         (due.isoformat(), mid))
+        before = datetime.fromisoformat(_row(q, mid)["created_at"])
+        t0 = datetime.now()
+        q.note_clock(t0, 1000.0)
+        q.note_clock(t0 - timedelta(minutes=30) + timedelta(seconds=2), 1002.0)
+        row = _row(q, mid)
+        assert q.get_stats()["clock_jumps"] == 1
+        shifted = datetime.fromisoformat(row["created_at"])
+        assert abs((before - shifted).total_seconds() - 1800) < 5
+        moved = datetime.fromisoformat(row["retry_after"])
+        assert abs((due - moved).total_seconds() - 1800) < 5
+
+    def test_in_progress_rows_are_shifted_too(self, tmp_path):
+        q = _q(tmp_path)
+        mid = q.enqueue(payload={"message": "x", "destination": "1"},
+                        destination="a")
+        q.mark_in_progress(mid)
+        before = datetime.fromisoformat(_row(q, mid)["created_at"])
+        t0 = datetime.now()
+        q.note_clock(t0, 1000.0)
+        q.note_clock(t0 + timedelta(hours=5), 1002.0)
+        after = datetime.fromisoformat(_row(q, mid)["created_at"])
+        assert (after - before).total_seconds() > 5 * 3600 - 10
+
+    def test_expiry_takes_the_oldest_rows_first(self, tmp_path):
+        q = _q(tmp_path)
+        q.register_sender("a", lambda p: True, max_age_s=100)
+        young = [q.enqueue(payload={"message": f"y{i}", "destination": "1"},
+                           destination="a") for i in range(q._EXPIRE_BATCH)]
+        old = q.enqueue(payload={"message": "old", "destination": "1"},
+                        destination="a")
+        _age(q, old, timedelta(seconds=200))
+        assert q.expire_overdue() == 1
+        assert _row(q, old)["status"] == "dead_letter"
+        assert len(young) == q._EXPIRE_BATCH
+
+    def test_restamp_of_a_finished_row_is_not_counted(self, tmp_path):
+        q = _q(tmp_path)
+        mid = q.enqueue(payload={"message": "x", "destination": "1"},
+                        destination="a")
+        q.mark_delivered(mid)
+        q._restamp(mid, datetime.now())
+        assert q.get_stats()["age_unknown"] == 0
