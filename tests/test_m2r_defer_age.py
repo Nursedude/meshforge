@@ -265,3 +265,186 @@ def test_queued_seconds_never_reports_a_clock_jump(bridge, delta, expected):  # 
     stamp = (datetime.now() - delta).isoformat()
     got = bridge._queued_seconds({"_queue_created_at": stamp})
     assert got == expected if expected is None else abs(got - expected) <= 2
+
+
+# --- review of 3c10f362 (F2/F3/F5) + operator Q15–Q18 (2026-10-17) --------
+
+class TestReviewFixes:
+
+    def test_expire_of_a_row_already_delivered_leaves_no_witness(self, tmp_path):
+        # F2: a second process_once caller delivered the row between the
+        # SELECT and the UPDATE — it must not ALSO read as expired.
+        from gateway import delivery_counters as _dc
+        q = _q(tmp_path)
+        q.register_sender("a", lambda p: True, max_age_s=100)
+        mid = q.enqueue(payload={"message": "x", "destination": "1"},
+                        destination="a")
+        q.mark_delivered(mid)
+        assert q._expire(mid, "a", 200, 100) is False
+        assert q.get_stats()["expired_total"] == 0
+        assert not any(e.get("id") == mid and e.get("drop_reason") == "expired"
+                       for e in _dc.get_singleton().snapshot()["recent"])
+
+    def test_defer_of_a_finished_row_is_refused(self, tmp_path):
+        q = _q(tmp_path)
+        mid = q.enqueue(payload={"message": "x", "destination": "1"},
+                        destination="a")
+        q.mark_delivered(mid)
+        assert q.mark_deferred(mid, 30, "late") is False
+        assert _row(q, mid)["status"] == "delivered"
+        assert q.get_stats()["deferred_total"] == 0
+
+    def test_a_deferred_row_still_expires(self, tmp_path):
+        # M2: a 24 h-old row is almost always mid-deferral (retry_after in
+        # the future) — expiry must not skip it.
+        from gateway.message_queue import SendDeferred
+        q = _q(tmp_path)
+
+        def defer(p):
+            raise SendDeferred(300, "no path")
+        q.register_sender("a", defer, max_age_s=100)
+        mid = q.enqueue(payload={"message": "x", "destination": "1"},
+                        destination="a")
+        q.process_once()  # deferred 300 s
+        _age(q, mid, timedelta(seconds=200))
+        assert q.expire_overdue() == 1
+        assert _row(q, mid)["status"] == "dead_letter"
+
+    def test_expiry_re_arms_after_its_interval(self, tmp_path):
+        # M3: the throttle must re-arm, not run once per process lifetime.
+        q = _q(tmp_path)
+        q.register_sender("a", lambda p: True, ready_fn=lambda: False,
+                          max_age_s=100)
+        q.process_once()
+        mid = q.enqueue(payload={"message": "x", "destination": "1"},
+                        destination="a")
+        _age(q, mid, timedelta(seconds=200))
+        q.process_once()  # inside the interval: not yet
+        assert _row(q, mid)["status"] == "pending"
+        q._last_expire_mono -= q._EXPIRE_EVERY_S + 1
+        q.process_once()
+        assert _row(q, mid)["status"] == "dead_letter"
+
+    def test_an_overdue_row_is_expired_not_dispatched(self, tmp_path):
+        # M4: expiry runs BEFORE dispatch in the same pass.
+        q = _q(tmp_path)
+        sent = []
+        q.register_sender("a", lambda p: sent.append(p) or True, max_age_s=100)
+        mid = q.enqueue(payload={"message": "x", "destination": "1"},
+                        destination="a")
+        _age(q, mid, timedelta(seconds=200))
+        q.process_once()
+        assert sent == [] and _row(q, mid)["status"] == "dead_letter"
+
+    def test_oldest_pending_age_ignores_finished_rows(self, tmp_path):
+        # M5
+        q = _q(tmp_path)
+        old = q.enqueue(payload={"message": "x", "destination": "1"},
+                        destination="a")
+        _age(q, old, timedelta(days=2))
+        q.mark_delivered(old)
+        new = q.enqueue(payload={"message": "y", "destination": "2"},
+                        destination="a")
+        _age(q, new, timedelta(seconds=60))
+        assert 50 < q.get_stats()["oldest_pending_age_s"] < 90
+
+    def test_reregistering_without_max_age_clears_it(self, tmp_path):
+        # M6
+        q = _q(tmp_path)
+        q.register_sender("a", lambda p: True, max_age_s=100)
+        q.register_sender("a", lambda p: True)
+        mid = q.enqueue(payload={"message": "x", "destination": "1"},
+                        destination="a")
+        _age(q, mid, timedelta(seconds=200))
+        assert q.expire_overdue() == 0
+
+    def test_defer_delay_is_clamped(self):
+        # M7
+        from gateway.message_queue import SendDeferred
+        assert SendDeferred(0).delay_s == 1.0
+        assert SendDeferred(-5).delay_s == 1.0
+
+    def test_one_expiry_pass_is_bounded(self, tmp_path):
+        # F5: 1000 overdue rows stalled the worker ~5 s; a pass is capped.
+        q = _q(tmp_path)
+        q.register_sender("a", lambda p: True, max_age_s=100)
+        n = q._EXPIRE_BATCH + 5
+        ids = [q.enqueue(payload={"message": f"x{i}", "destination": "1"},
+                         destination="a") for i in range(n)]
+        old = (datetime.now() - timedelta(seconds=200)).isoformat()
+        with q._get_connection() as conn:
+            conn.execute("UPDATE messages SET created_at = ?", (old,))
+        assert q.expire_overdue() == q._EXPIRE_BATCH
+        assert q.expire_overdue() == 5
+        assert len(ids) == n
+
+
+class TestClockJump:
+    # Q15: detect the jump (Δwall vs Δmonotonic per tick) and shift pending
+    # rows by it, so age is time actually waited. The reviewer's probe: a
+    # +25 h NTP step expired 8 two-hour-old rows.
+
+    def test_a_forward_step_shifts_rows_instead_of_expiring_them(self, tmp_path):
+        q = _q(tmp_path)
+        q.register_sender("a", lambda p: True, max_age_s=86400)
+        ids = [q.enqueue(payload={"message": f"x{i}", "destination": "1"},
+                         destination="a") for i in range(8)]
+        for mid in ids:
+            _age(q, mid, timedelta(hours=2))
+        t0 = datetime.now()
+        q.note_clock(t0, 1000.0)
+        # 2 s of real time pass, but the wall clock steps +25 h
+        q.note_clock(t0 + timedelta(hours=25, seconds=2), 1002.0)
+        assert q.get_stats()["clock_jumps"] == 1
+        with patch("gateway.message_queue_outage_mixin.datetime") as dt:
+            dt.now.return_value = t0 + timedelta(hours=25, seconds=2)
+            dt.fromisoformat = datetime.fromisoformat
+            assert q.expire_overdue() == 0
+        assert {_row(q, m)["status"] for m in ids} == {"pending"}
+
+    def test_steady_time_is_not_a_jump(self, tmp_path):
+        q = _q(tmp_path)
+        t0 = datetime.now()
+        q.note_clock(t0, 1000.0)
+        q.note_clock(t0 + timedelta(seconds=30), 1030.0)
+        assert q.get_stats()["clock_jumps"] == 0
+
+    def test_process_once_feeds_the_clock(self, tmp_path):
+        q = _q(tmp_path)
+        q.process_once()
+        assert q._clock_wall is not None and q._clock_mono is not None
+
+
+class TestRequeueShape:
+
+    def test_requeued_m2r_rows_are_sheddable(self, bridge, queue):  # noqa: F811
+        # Q16: HIGH rows are never shed — one dead peer could fill the queue
+        # and reject new messages to every destination.
+        bridge._connected_rns = False
+        bridge._requeue_failed_message(_broadcast(), "rns")
+        bridge._requeue_failed_message(_dm(), "rns", rns_destinations=[DEST])
+        with queue._get_connection() as conn:
+            prios = {r[0] for r in conn.execute("SELECT priority FROM messages")}
+        assert prios == {2}  # MessagePriority.NORMAL
+
+    def test_replay_hop_keeps_the_first_enqueue_time(
+            self, bridge, queue):  # noqa: F811
+        # Q17: a gated rns_xform row that replays into a failed send must not
+        # restart its 24 h — the per-hash row keeps the original created_at.
+        bridge.config.rns.get_lxmf_destinations.return_value = [DEST.hex()]
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
+        bridge._connected_rns = False
+        # a no-destination fan-out (a failed broadcast is dropped, by design)
+        bridge._requeue_failed_message(_dm(dest_id=None), "rns")
+        first = (datetime.now() - timedelta(hours=3)).replace(microsecond=0)
+        with queue._get_connection() as conn:
+            conn.execute("UPDATE messages SET created_at = ?",
+                         (first.isoformat(),))
+        _connect(bridge)
+        with patch.object(bridge, "send_to_rns", return_value=False):
+            queue.process_once()
+        with queue._get_connection() as conn:
+            created = conn.execute(
+                "SELECT created_at FROM messages WHERE destination = 'rns'"
+            ).fetchone()[0]
+        assert datetime.fromisoformat(created) == first

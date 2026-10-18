@@ -21,6 +21,7 @@ Host class must provide:
 """
 
 import logging
+from datetime import datetime
 import re
 import time
 from typing import Optional
@@ -604,6 +605,17 @@ class MessageTransformMixin:
                 lxmf_fields.get('meshforge_from_id')
                 if isinstance(lxmf_fields, dict) else None,
                 content)
+            # ROADMAP 6f: M→R retry rows are NORMAL so a long single-peer
+            # outage sheds its OWN oldest rows under pressure, never fresh
+            # traffic (Q16), and a row continuing an older wait keeps its
+            # first enqueue time (Q17).
+            first_enqueued = None
+            if destination == "rns":
+                try:
+                    first_enqueued = datetime.fromisoformat(
+                        metadata.get('m2r_first_enqueued_at'))
+                except (TypeError, ValueError):
+                    first_enqueued = None
             if destination == "rns" and rns_destinations is not None:
                 # Resolved legs, possibly none — an empty list has nothing
                 # to retry at, and replaying it would only loop (review R3).
@@ -626,7 +638,8 @@ class MessageTransformMixin:
                                            or dedup_cid),
                         },
                         destination="rns",
-                        priority=MessagePriority.HIGH,
+                        priority=MessagePriority.NORMAL,
+                        created_at=first_enqueued,
                     ))
                 # enqueue() returns None on a dedup/queue-full drop: True
                 # here must mean a row exists (review R4).
@@ -643,7 +656,8 @@ class MessageTransformMixin:
                         'metadata': metadata,
                     },
                     destination="rns_xform",
-                    priority=MessagePriority.HIGH,
+                    priority=MessagePriority.NORMAL,
+                    created_at=first_enqueued,
                 ))
             else:
                 self._persistent_queue.enqueue(

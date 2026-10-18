@@ -13,8 +13,16 @@ message_queue.py).
   that are older than it become dead letters, each witnessed (counter,
   DROPPED ``expired`` delivery record, WARNING). Runs from process_once
   BEFORE the ready_fn gate, so a gated destination still ages out.
-- Clock guard: an age < 0 or > AGE_SANITY_CAP_S is a wall-clock jump, not
-  an age — the row is re-stamped once (``age_unknown``), never expired.
+- Clock jump (operator Q15): ``note_clock`` compares Δwall with Δmonotonic
+  every process_once tick; a step beyond CLOCK_JUMP_S shifts every pending
+  row's created_at by the jump (``clock_jumps``), so age stays time actually
+  waited. A step that happened while the process was down shows up as an
+  age < 0 or > AGE_SANITY_CAP_S: the row is re-stamped once
+  (``age_unknown``) — the backstop, never an expiry.
+- Witnesses fire only when the UPDATE changed the row (review F2: two
+  process_once callers race), and one expiry pass handles at most
+  _EXPIRE_BATCH rows per destination (review F5: 1000 rows stalled the
+  worker ~5 s).
 """
 
 import json
@@ -27,9 +35,43 @@ from .message_queue_models import AGE_SANITY_CAP_S
 
 logger = logging.getLogger(__name__)
 
+#: |Δwall − Δmonotonic| beyond this between two ticks is a clock step.
+CLOCK_JUMP_S = 60.0
+
 
 class MessageQueueOutageMixin:
     """Defer + expiry methods mixed into PersistentMessageQueue."""
+
+    _EXPIRE_BATCH = 200
+    _clock_wall: Optional[datetime] = None
+    _clock_mono: Optional[float] = None
+
+    def note_clock(self, wall: datetime, mono: float) -> None:
+        """Detect a wall-clock step between two ticks and shift pending rows."""
+        last_wall, last_mono = self._clock_wall, self._clock_mono
+        self._clock_wall, self._clock_mono = wall, mono
+        if last_wall is None or last_mono is None:
+            return
+        jump = (wall - last_wall).total_seconds() - (mono - last_mono)
+        if abs(jump) <= CLOCK_JUMP_S:
+            return
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT id, created_at FROM messages "
+                "WHERE status IN ('pending', 'in_progress')").fetchall()
+            for row in rows:
+                try:
+                    shifted = (datetime.fromisoformat(row["created_at"])
+                               + timedelta(seconds=jump))
+                except (TypeError, ValueError):
+                    continue
+                conn.execute("UPDATE messages SET created_at = ? WHERE id = ?",
+                             (shifted.isoformat(), row["id"]))
+        with self._lock:
+            self._stats["clock_jumps"] += 1
+        logger.warning(
+            f"Wall clock stepped {jump:+.0f}s against monotonic time — "
+            f"shifted {len(rows)} queued row(s) so their age stays real")
 
     def mark_deferred(self, msg_id: str, delay_s: float, reason: str = "") -> bool:
         with self._get_connection() as conn:
@@ -44,14 +86,16 @@ class MessageQueueOutageMixin:
                 payload = {}
             payload["_deferrals"] = int(payload.get("_deferrals", 0) or 0) + 1
             now = datetime.now()
-            conn.execute("""
+            changed = conn.execute("""
                 UPDATE messages
                 SET status = 'pending', payload = ?, updated_at = ?,
                     retry_after = ?, error_message = ?
-                WHERE id = ?
+                WHERE id = ? AND status IN ('pending', 'in_progress')
             """, (json.dumps(payload), now.isoformat(),
                   (now + timedelta(seconds=delay_s)).isoformat(),
-                  f"deferred: {reason}"[:200], msg_id))
+                  f"deferred: {reason}"[:200], msg_id)).rowcount
+        if changed != 1:
+            return False
         with self._lock:
             self._stats["deferred_total"] += 1
         logger.debug(f"Message {msg_id} deferred {delay_s:.0f}s ({reason})")
@@ -66,14 +110,15 @@ class MessageQueueOutageMixin:
                 rows = conn.execute("""
                     SELECT id, created_at FROM messages
                     WHERE destination = ? AND status = 'pending'
-                """, (destination,)).fetchall()
+                    ORDER BY created_at ASC LIMIT ?
+                """, (destination, self._EXPIRE_BATCH)).fetchall()
             for row in rows:
                 age = self._row_age_s(row["created_at"], now)
                 if age is None or age < 0 or age > AGE_SANITY_CAP_S:
                     self._restamp(row["id"], now)
                     continue
-                if age > max_age:
-                    self._expire(row["id"], destination, age, max_age)
+                if age > max_age and self._expire(
+                        row["id"], destination, age, max_age):
                     expired += 1
         return expired
 
@@ -104,14 +149,17 @@ class MessageQueueOutageMixin:
             f"re-stamped once, NOT expired")
 
     def _expire(self, msg_id: str, destination: str, age: float,
-                max_age: float) -> None:
+                max_age: float) -> bool:
         with self._get_connection() as conn:
-            conn.execute("""
+            changed = conn.execute("""
                 UPDATE messages
                 SET status = 'dead_letter', updated_at = ?, error_message = ?
                 WHERE id = ? AND status = 'pending'
             """, (datetime.now().isoformat(),
-                  f"expired after {age:.0f}s (max {max_age:.0f}s)", msg_id))
+                  f"expired after {age:.0f}s (max {max_age:.0f}s)",
+                  msg_id)).rowcount
+        if changed != 1:
+            return False  # delivered/claimed meanwhile: not ours to witness
         with self._lock:
             self._stats["expired_total"] += 1
         _dc.record(
@@ -122,3 +170,4 @@ class MessageQueueOutageMixin:
         logger.warning(
             f"Message {msg_id} ({destination}) EXPIRED after {age / 3600:.1f} h "
             f"undelivered — dead-lettered")
+        return True

@@ -72,6 +72,10 @@ BYTE_IDENTICAL = (
     "src/utils/observation.py",
     "scripts/hs_substrate_skew.py",
     "src/gateway/canonical_message.py",
+    # M→R queue outage behaviour (ROADMAP 6f, 2026-10-17): defer-don't-count,
+    # max age, clock-jump shift. Both bridges sit on one rnsd; two copies
+    # that drift = two different outage contracts (review F8).
+    "src/gateway/message_queue_outage_mixin.py",
     # The delivery-label vocabulary (2026-09-24, review C F7): which routing
     # lanes count as which transport in delivery_counters. Both repos' writers
     # and readers judge confirmation rates by it; a per-repo drift would make

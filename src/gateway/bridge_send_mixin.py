@@ -419,6 +419,10 @@ class BridgeSendMixin:
             queued_s = self._queued_seconds(payload)
             if queued_s is not None:
                 metadata['m2r_queued_s'] = queued_s
+            # Q17: a failed replay's retry rows keep the FIRST enqueue time.
+            if payload.get('_queue_created_at'):
+                metadata.setdefault('m2r_first_enqueued_at',
+                                    payload['_queue_created_at'])
             msg = BridgedMessage(
                 source_network="meshtastic",
                 source_id=payload.get('source_id', '') or '',

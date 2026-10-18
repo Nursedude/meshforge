@@ -168,6 +168,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
             "deferred_total": 0,
             "expired_total": 0,
             "age_unknown": 0,
+            "clock_jumps": 0,
             "delivered": 0,
             "failed": 0,
             "retried": 0,
@@ -381,7 +382,8 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
 
     def enqueue(self, payload: Dict[str, Any], destination: str,
                 priority: MessagePriority = MessagePriority.NORMAL,
-                max_retries: int = 3, deduplicate: bool = True) -> Optional[str]:
+                max_retries: int = 3, deduplicate: bool = True,
+                created_at: Optional[datetime] = None) -> Optional[str]:
         """
         Add a message to the queue.
 
@@ -461,6 +463,10 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
             max_retries=max_retries,
             content_hash=content_hash,
         )
+        if created_at is not None:
+            # A requeue that continues an older wait keeps its first enqueue
+            # time, so a max age counts from there (ROADMAP 6f, Q17).
+            message.created_at = created_at
 
         with self._get_connection() as conn:
             data = message.to_dict()
@@ -956,6 +962,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
 
         # Before the ready_fn gate, so a gated destination still ages out.
         now_mono = time.monotonic()
+        self.note_clock(datetime.now(), now_mono)
         if (self._send_max_age and (self._last_expire_mono is None
                 or now_mono - self._last_expire_mono >= self._EXPIRE_EVERY_S)):
             self._last_expire_mono = now_mono

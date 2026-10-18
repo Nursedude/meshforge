@@ -263,7 +263,11 @@ whole; each item below lands on its own, re-tested here. In order:
     after a soak baseline. (10) MF + MA together, reviewed before either deploys.
     Accept: red-first from the reviewer's probe (circuit open after reconnect → 8/8
     rows dead-lettered inside 60 s) now waits and delivers on recovery; a 24 h+ row
-    expires witnessed; an NTP step never mass-expires.
+    expires witnessed; a wall-clock step while running is DETECTED (Δwall vs
+    Δmonotonic) and queued rows shifted by it (operator Q15 — the first build's
+    age-only guard let a +25 h step expire 2 h-old rows); requeued rows NORMAL so
+    one dead peer cannot fill the queue (Q16); a replay hop keeps the first
+    enqueue time (Q17); one knob both twins (Q18).
     **Next, grilled separately:** (a) **propagation handoff** — after N deferrals hand
     to LXMF PROPAGATED via the configured node (moc/moc3 set `rns.propagation_node` but
     the bridge never uses it; MA has none); distinct "handed to propagation" state,
