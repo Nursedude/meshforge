@@ -63,6 +63,24 @@ say() {  # $1 = status, $2 = message
   echo "pytest_tmp_prune: $1 — $2"
 }
 
+# A failed rm must say WHICH dir and WHY, not only a count (2026-10-18: a
+# reviewer's sudo drill left root-owned dirs in its scratchpad; the verdict
+# said only "1 could NOT be removed"). rm -rf fails when a dir it must empty is
+# not writable, so the first non-writable dir left behind IS the blocker.
+STUCK=""   # first blocker seen this run, with its cure
+_note_stuck() {  # $1 = the dir rm -rf failed on
+  [ -n "$STUCK" ] && return
+  local b owner
+  b="$(find "$1" -type d ! -writable -print -quit 2>/dev/null)"
+  if [ -z "$b" ]; then STUCK="$1 (no non-writable dir found — re-run rm by hand to see the error)"; return; fi
+  owner="$(stat -c %U "$b" 2>/dev/null || echo '?')"
+  if [ "$owner" = "$(id -un)" ]; then
+    STUCK="$b (owner $owner, mode $(stat -c %A "$b" 2>/dev/null)) — clear: chmod -R u+w '$1' && rm -rf '$1'"
+  else
+    STUCK="$b (owner $owner, mode $(stat -c %A "$b" 2>/dev/null)) — clear: sudo rm -rf '$1'"
+  fi
+}
+
 # ── Claude session scratch (2026-10-13) ─────────────────────────────────
 # Each Claude Code session gets /tmp/claude-<uid>/<project>/<session-uuid>/
 # and nothing ever removes it. Measured on the manager: 49 session dirs, 642 MB
@@ -87,18 +105,19 @@ if [ -d "$CLAUDE_BASE" ]; then
     if rm -rf "$d" 2>/dev/null; then
       c_pruned=$((c_pruned + 1)); c_freed_kb=$((c_freed_kb + ${kb:-0}))
     else
-      c_failed=$((c_failed + 1))
+      c_failed=$((c_failed + 1)); _note_stuck "$d"
     fi
   done
 fi
 c_detail="claude scratch: pruned $c_pruned of $c_total session dir(s) idle > ${CLAUDE_IDLE_DAYS}d, freed $((c_freed_kb / 1024)) MB"
-[ "$c_failed" -gt 0 ] && c_detail="$c_detail, $c_failed could NOT be removed"
+# The failure count is appended ONCE, where the verdict is spoken — appending
+# it here too printed it twice on the full path (2026-10-18).
 
 # A box that never runs the suite has no tree. That is not an error and not a
 # silence to explain — it is nothing to do.
 if [ ! -d "$BASE" ]; then
   if [ "$c_failed" -gt 0 ]; then
-    say FAIL "no pytest temp tree at $BASE; $c_detail"
+    say FAIL "no pytest temp tree at $BASE; $c_detail, $c_failed could NOT be removed; first: $STUCK"
     if [ "$SPOKE" = 1 ]; then exit 0; else exit 1; fi
   fi
   say OK "no pytest temp tree at $BASE — nothing to do; $c_detail"
@@ -167,7 +186,7 @@ for d in "${dirs[@]}"; do
       stranded=$((stranded + 1))
     fi
   fi
-  if rm -rf "$d" 2>/dev/null; then pruned=$((pruned + 1)); else failed=$((failed + 1)); fi
+  if rm -rf "$d" 2>/dev/null; then pruned=$((pruned + 1)); else failed=$((failed + 1)); _note_stuck "$d"; fi
 done
 
 after_kb=$(du -sk "$BASE" 2>/dev/null | cut -f1); after_kb=${after_kb:-0}
@@ -180,7 +199,7 @@ detail="$detail; $c_detail"
 failed=$((failed + c_failed))
 
 if [ "$failed" -gt 0 ]; then
-  say FAIL "$detail, $failed could NOT be removed"
+  say FAIL "$detail, $failed could NOT be removed; first: $STUCK"
   # The verdict line above IS the failure report. Exit 0 so the crontab's
   # `|| ... wrapper_crashed` guard — reserved for dying before speaking —
   # does not append a second, FALSE verdict over it (the newest line is what

@@ -261,6 +261,34 @@ check "non-session dirs (pycache) are never touched" \
   "$([ -f "$CB/pycache/opt/m.pyc" ] && echo ok)"
 check "the scratch leg runs even when there is no pytest tree" \
   "$(echo "$out" | grep -q 'claude scratch: pruned 1 of 2' && echo ok)"
+
+# ── a scratch dir that cannot be removed NAMES itself (2026-10-18) ───────
+#
+# Measured on the manager: a reviewer session ran a drill under sudo with HOME
+# in its scratchpad, leaving root-owned dirs the user cron can never delete.
+# The verdict said "1 could NOT be removed, 1 could NOT be removed" — the
+# count twice, and neither which dir nor why — so triage meant re-deriving
+# both by hand. A failure must name the stuck path, its owner, and the command
+# that clears it. (Root ownership can't be fixtured unprivileged; a 555 dir
+# takes the same code path: the first non-writable dir left behind.)
+if [ "$(id -u)" != 0 ]; then
+  STUCK_S="bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+  mkdir -p "$CB/-opt-meshforge/$STUCK_S/scratchpad/ro"
+  echo x > "$CB/-opt-meshforge/$STUCK_S/scratchpad/ro/f"
+  chmod 555 "$CB/-opt-meshforge/$STUCK_S/scratchpad/ro"
+  find "$CB/-opt-meshforge/$STUCK_S" -exec touch -h -d "$three_days_ago" {} +
+  BASE="$TMP/stuck-tree"; mkdir -p "$BASE"; mkrun 1   # full path: both legs speak
+  out="$(run_pgrep 1)"
+  chmod 755 "$CB/-opt-meshforge/$STUCK_S/scratchpad/ro"   # let EXIT cleanup work
+  check "an unremovable scratch dir is a FAIL" \
+    "$(echo "$out" | grep -q 'FAIL' && echo ok)"
+  check "the failure count is said ONCE, not once per leg" \
+    "$([ "$(echo "$out" | grep -o 'could NOT be removed' | wc -l)" = 1 ] && echo ok)"
+  check "the FAIL names the stuck path" \
+    "$(echo "$out" | grep -q "$STUCK_S/scratchpad/ro" && echo ok)"
+  check "the FAIL names its owner and the command that clears it" \
+    "$(echo "$out" | grep -q "owner $(id -un)" && echo "$out" | grep -q 'chmod -R u+w' && echo ok)"
+fi
 CLAUDE_TMP_BASE="$TMP/claude-none"
 
 # ── it leaves a cron verdict so #78 can see it ───────────────────────────
