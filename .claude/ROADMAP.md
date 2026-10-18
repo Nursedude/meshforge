@@ -242,10 +242,17 @@ whole; each item below lands on its own, re-tested here. In order:
     opens, reply comes back as a DM; `@<unknown>` → notice, nothing sent.
 
 6f. **M→R queue outage behaviour — "defer, don't count" + 24 h max age (F2+F5)**
-    (operator 2026-10-17, grilled Q1–Q14; BUILDING both twins, MF lead). Measured
+    (operator 2026-10-17, grilled Q1–Q18; DEPLOYED both twins, MF lead). Measured
     (7 d journals): the RNS HUB never went down; the real outage is ONE destination
     offline for hours — MeshChatX `f0a6899b` 57 min–27.4 h, median ~4 h, circuit never
     closed on its own; moc's 14 dead letters were all `circuit open for f0a6899b`
+    ⚠️ **CORRECTED 2026-10-17 (re-derived):** that span measured how long moc's
+    IN-MEMORY circuit stayed OPEN until the next gateway restart reset it (9 opens,
+    each after a restart; 0 closes; 0 deliveries) — NOT a peer's offline time.
+    f0a6 is MeshChatX on VolcanoAI, `disabled`, last ran 2026-09-06; moc fans out to
+    it via `rns.default_lxmf_destination`. 6f's behaviour stands on its own merits,
+    but its f0a6 rows will EXPIRE at 24 h, never deliver. Finding (not fixed): the
+    circuit is per-process memory, so every restart re-opens it after 5 failures
     (the bridge queue has no RetryPolicy, so #74's "temporarily unavailable" raise
     burns the 3-try budget). Decisions: (1) a queue primitive — a sender DEFERS a row
     until T, `retry_count` untouched; only `rns`/`rns_xform` use it. (2) defer ONLY on
@@ -268,11 +275,23 @@ whole; each item below lands on its own, re-tested here. In order:
     age-only guard let a +25 h step expire 2 h-old rows); requeued rows NORMAL so
     one dead peer cannot fill the queue (Q16); a replay hop keeps the first
     enqueue time (Q17); one knob both twins (Q18).
-    **Next, grilled separately:** (a) **propagation handoff** — after N deferrals hand
-    to LXMF PROPAGATED via the configured node (moc/moc3 set `rns.propagation_node` but
-    the bridge never uses it; MA has none); distinct "handed to propagation" state,
-    node-unreachable behaviour, F14 privacy (the node STORES the message), ledger
-    semantics — the answer for the 27 h tail. (b) wake-on-announce (make a returning
+    **Next, grilled separately:** (a) **propagation handoff — SHELVED 2026-10-17 (no
+    consumer).** Grilled Q1–Q14 the same day; the 27 h tail it answered was the
+    measurement artifact above. **Reopen only when** a MEASURED intermittent peer
+    exists that fetches from our node `3968a2ee` (moc1 lxmd, stamp cost 16). Design
+    on file: shared code both twins, inert where `rns.propagation_node` is unset;
+    trigger = 30 min since FIRST deferral (one knob); distinct terminal `propagated`
+    state + counter + delivery disposition, never DELIVERED / `confirmation_rate`;
+    exclusive of direct (two LXMessages = two hashes, recipient shows both); node
+    unreachable (LXMF 5 attempts → FAILED) → back to deferred, uncounted, under the
+    24 h age; node = `3968`; no on-air notice v1; stamp time MEASURED on moc/moc3
+    before deciding, ≤1 stamp at a time; acceptance = a real client FETCHES the
+    message from the node. **Precondition #1:** `on_delivered`
+    (`bridge_ack_mixin.py`) must branch on `state` — LXMF fires the delivery
+    callback on SENT for a propagated message, so today's code would record
+    CONFIRMED and post "[delivered]" for a message only STORED (latent: no gateway
+    path sends PROPAGATED). Side finding: moc runs a 2nd lxmd (`8271dd…`) nothing
+    points at. (b) wake-on-announce (make a returning
     peer's deferred rows due at once) — only if the soak shows the ≤5 min cap matters.
 
 **LATER**
