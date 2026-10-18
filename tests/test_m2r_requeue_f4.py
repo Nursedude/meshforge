@@ -330,11 +330,31 @@ class TestSessionLegFailure:
         assert not notice.called, "sender was told a false F14 reason"
         assert bridge.stats.get("mesh_to_rns_private_refused") is None
         assert bridge.stats.get("session_m2r_requeued") == 1
+        import json
         with queue._get_connection() as conn:
-            rows = [r[0] for r in conn.execute(
+            rows = [json.loads(r[0]) for r in conn.execute(
                 "SELECT payload FROM messages WHERE destination = 'rns'")]
-        assert len(rows) == 1 and DEST.hex() in rows[0]
-        assert "via Meshtastic" in rows[0]  # title carried
+        assert len(rows) == 1 and rows[0]["destination_hash"] == DEST.hex()
+        assert "via Meshtastic" in rows[0]["title"]
+        assert rows[0]["fields"]["meshforge_from_id"] == "!aabb0042"
+        assert bridge.stats["errors"] == 1
+        bridge.health.record_message_failed.assert_called_with(
+            "mesh_to_rns", requeued=True)
+
+    def test_failed_session_send_that_cannot_queue_reports_requeued_false(
+            self, bridge, queue):  # noqa: F811
+        bridge.config.rns.sessions_enabled = True
+        bridge.config.meshtastic.gateway_node_id = "!00000001"
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
+        _connect(bridge)
+        bridge._sessions = MagicMock()
+        bridge._sessions.lookup.return_value = DEST.hex()
+        with patch.object(bridge, "send_to_rns", return_value=False):
+            bridge._process_mesh_to_rns(_dm(dest_id="!00000001"))
+            bridge._process_mesh_to_rns(_dm(dest_id="!00000001"))  # dedup
+        assert bridge.stats.get("session_m2r_dropped") == 1
+        bridge.health.record_message_failed.assert_called_with(
+            "mesh_to_rns", requeued=False)
 
 
 class TestPartialRequeueWitness:
@@ -368,6 +388,9 @@ class TestPartialRequeueWitness:
         with patch.object(bridge, "send_to_rns",
                           side_effect=lambda c, d, **k: d == DEST):
             bridge._process_mesh_to_rns(_broadcast())
+            # a requeue that PERSISTED is not a drop (review: inverted-
+            # condition mutant survived a count-only assert)
+            assert bridge.stats.get("mesh_to_rns_requeue_dropped") is None
             bridge._process_mesh_to_rns(_broadcast())
         assert len(_rows(queue, "rns")) == 1
         assert bridge.stats.get("mesh_to_rns_requeue_dropped") == 1
@@ -400,6 +423,19 @@ class TestQueueReadyGate:
         stats = q.get_stats()
         assert stats["gated_skips"] == 2
         assert stats["gated_destinations"] == ["a"]
+
+    def test_gated_destinations_clears_when_the_destination_recovers(
+            self, tmp_path):
+        # Review: a sticky list (`gated or previous`) survived — the field
+        # must say what the LAST pass saw.
+        q = self._q(tmp_path)
+        up = {"v": False}
+        q.register_sender("a", lambda p: True, ready_fn=lambda: up["v"])
+        q.process_once()
+        assert q.get_stats()["gated_destinations"] == ["a"]
+        up["v"] = True
+        q.process_once()
+        assert q.get_stats()["gated_destinations"] == []
 
     def test_a_raising_ready_fn_counts_as_not_ready(self, tmp_path):
         # Mutant M3 survived.
