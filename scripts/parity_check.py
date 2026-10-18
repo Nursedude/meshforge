@@ -223,6 +223,11 @@ BYTE_IDENTICAL = (
     # locked-module behavior invisibly (07-23 audit, lock-boundary finding).
     # It is app-generic (no app names), so lock it rather than shape-pin it.
     "src/mini_dudeai/cadence_fallback.py",
+    # The prune-cron installer both update.sh files (and MF's fleet_sync) call
+    # (2026-10-18). It derives its repo path at runtime and both twins share
+    # the meshforge state dir, so there is nothing per-repo in it to drift.
+    "scripts/ensure_prune_cron.sh",
+    "tests/test_ensure_prune_cron.sh",
 )
 
 # The fork-pin block is compared as a normalized sub-block: the lines that

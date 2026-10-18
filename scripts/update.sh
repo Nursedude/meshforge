@@ -458,6 +458,22 @@ if [[ -n "$REAL_USER" && -d "$INSTALL_DIR/templates/systemd" ]]; then
     echo -e "  ${GREEN}✓ User service templates deployed${NC}"
 fi
 
+# The pytest_tmp_prune cron (/tmp is RAM on the Pis). It was hand-installed box
+# by box and one box never got it (2026-10-18). Adds it only where no line
+# mentions the script; a commented line is a deliberate absence and is kept.
+# Same helper fleet_sync.sh runs on every fleet box.
+if [[ -n "$REAL_USER" && -f "$INSTALL_DIR/scripts/ensure_prune_cron.sh" ]]; then
+    if [[ "$(id -un)" == "${REAL_USER}" ]]; then
+        prune_out="$(timeout 30 bash "$INSTALL_DIR/scripts/ensure_prune_cron.sh" --apply 2>&1)"
+    else
+        prune_out="$(timeout 30 sudo -u "${REAL_USER}" -H bash "$INSTALL_DIR/scripts/ensure_prune_cron.sh" --apply 2>&1)"
+    fi
+    case "$prune_out" in
+        error*|"") echo -e "  ${YELLOW}⚠ prune cron: ${prune_out:-no output}${NC}" ;;
+        *)         echo -e "  ${GREEN}✓ prune cron: ${prune_out%%:*}${NC}" ;;
+    esac
+fi
+
 # Reload systemd if anything changed
 if $SVC_UPDATED; then
     systemctl daemon-reload 2>/dev/null || true

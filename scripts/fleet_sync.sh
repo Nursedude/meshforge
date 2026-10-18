@@ -633,6 +633,27 @@ promote_seed() {
     return 0
 }
 
+# ensure_prune_cron <short> <repo_path>
+# Installs the pytest_tmp_prune cron where no crontab line mentions it (lehua
+# never got the hand-installed one, 2026-10-18). A commented line is a
+# deliberate absence and is kept. A failed install WARNs, never FAILs: a cron
+# is not worth failing a code deploy over, but it must not go silent either.
+# (Recipe rule: this body must stay single-quote-free, see ~line 451.)
+ensure_prune_cron() {
+    local short="$1" repo="$2"
+    if [ ! -f "$repo/scripts/ensure_prune_cron.sh" ]; then
+        echo "SKIP $short no_tool"
+        return 0
+    fi
+    local out
+    out=$(timeout 30 bash "$repo/scripts/ensure_prune_cron.sh" --apply 2>&1)
+    case "$out" in
+        present*|opted_out*|added*) echo "PASS $short ${out%%:*}" ;;
+        *) echo "WARN $short $(printf "%s" "$out" | tr "\n" "|" | head -c 140)" ;;
+    esac
+    return 0
+}
+
 # Run all three syncs even if one fails so a broken meshforge-maps does not
 # mask a successful meshforge update. meshforge-map is the singular :5000
 # map daemon from this repo (separate from the :8808 sister meshforge-maps);
@@ -666,6 +687,7 @@ sync_repo meshforge-watchdog /opt/meshforge   meshforge-watchdog "$MF_PRE_HEAD" 
 # Promote the role seed BEFORE the mini restart, so the daemon comes up on
 # the merged rules instead of racing a later hand-promote (see promote_seed).
 promote_seed meshforge-mini-seed /opt/meshforge || rc1s=$?
+ensure_prune_cron meshforge-prune-cron /opt/meshforge
 sync_user_unit meshforge-mini-dudeai /opt/meshforge meshforge-mini-dudeai "$MF_PRE_HEAD" || rc1d=$?
 # Standalone dude-claw instance (second mini-dudeai daemon, claw-suffixed
 # state). Only the claw-brain box (moc1) runs it; everywhere else this is a
@@ -1304,6 +1326,15 @@ sync_local_unit meshforge-maps    /opt/meshforge-maps
 # Promote the role seed BEFORE the restart, so the daemon comes up on the
 # merged rules (self-side parity with the remote leg).
 promote_local_seed /opt/meshforge
+# Self-side twin of the remote ensure_prune_cron leg (keep in parity). Quiet
+# when the cron is already there; says so when it adds one or cannot.
+prune_out=$(timeout 30 bash /opt/meshforge/scripts/ensure_prune_cron.sh --apply 2>&1)
+case "$prune_out" in
+    present*|opted_out*) ;;
+    added*) printf '[%-30s] OK   %s\n' "self ($(hostname -s))" "prune cron added" ;;
+    *)      printf '[%-30s] WARN %s\n' "self ($(hostname -s))" "prune cron: $(printf '%s' "$prune_out" | tr '\n' '|' | head -c 120)"
+            action_warn=$((action_warn + 1)) ;;
+esac
 # mini-dudeai is a USER unit — restart it on the user bus when its code changed.
 sync_local_user_unit meshforge-mini-dudeai /opt/meshforge
 # Standalone dude-claw sibling (no-op on boxes without the unit).
