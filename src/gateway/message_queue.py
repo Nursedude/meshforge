@@ -53,8 +53,12 @@ from gateway.message_queue_models import (  # noqa: F401 — re-exports
     RetryDecision,
     RetryPolicy,
     QueuedMessage,
+    SendDeferred,
+    M2R_MAX_AGE_S,
+    AGE_SANITY_CAP_S,
 )
 from gateway.message_queue_lifecycle_mixin import MessageQueueLifecycleMixin
+from gateway.message_queue_outage_mixin import MessageQueueOutageMixin
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +67,7 @@ logger = logging.getLogger(__name__)
 _MSG_ID_SEQ = itertools.count()
 
 
-class PersistentMessageQueue(MessageQueueLifecycleMixin):
+class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin):
     """
     SQLite-backed persistent message queue.
 
@@ -76,6 +80,9 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
     """
 
     # Retry backoff: 5s, 15s, 45s
+    # ROADMAP 6f: how often process_once runs expire_overdue().
+    _EXPIRE_EVERY_S = 60.0
+
     RETRY_DELAYS = [5, 15, 45]
 
     # Deduplication window (seconds)
@@ -143,6 +150,10 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
         # Witness for the ready_fn gate: rows skipped untouched would
         # otherwise look like an idle queue (review F4).
         self._gated_destinations: List[str] = []
+        # ROADMAP 6f: per-destination max pending age (seconds), enforced by
+        # expire_overdue() from process_once at most every _EXPIRE_EVERY_S.
+        self._send_max_age: Dict[str, float] = {}
+        self._last_expire_mono: Optional[float] = None
         self._last_dispatch_ts: Dict[str, float] = {}  # destination -> time.monotonic()
         self._success_callbacks: List[Callable] = []
         self._failure_callbacks: List[Callable] = []
@@ -154,6 +165,9 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
         self._stats = {
             "enqueued": 0,
             "gated_skips": 0,
+            "deferred_total": 0,
+            "expired_total": 0,
+            "age_unknown": 0,
             "delivered": 0,
             "failed": 0,
             "retried": 0,
@@ -889,7 +903,8 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
     def register_sender(self, destination: str,
                         send_fn: Callable[[Dict], bool],
                         min_spacing_s: float = 0.0,
-                        ready_fn: Optional[Callable[[], bool]] = None) -> None:
+                        ready_fn: Optional[Callable[[], bool]] = None,
+                        max_age_s: Optional[float] = None) -> None:
         """
         Register a send function for a destination.
 
@@ -915,6 +930,12 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
             self._send_ready.pop(destination, None)
         else:
             self._send_ready[destination] = ready_fn
+        # max_age_s: pending rows older than this expire, witnessed
+        # (ROADMAP 6f); None = never.
+        if max_age_s is None:
+            self._send_max_age.pop(destination, None)
+        else:
+            self._send_max_age[destination] = float(max_age_s)
 
     def register_success_callback(self, callback: Callable[[QueuedMessage], None]) -> None:
         """Register callback for successful delivery."""
@@ -932,6 +953,16 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
             Number of messages processed
         """
         processed = 0
+
+        # Before the ready_fn gate, so a gated destination still ages out.
+        now_mono = time.monotonic()
+        if (self._send_max_age and (self._last_expire_mono is None
+                or now_mono - self._last_expire_mono >= self._EXPIRE_EVERY_S)):
+            self._last_expire_mono = now_mono
+            try:
+                self.expire_overdue()
+            except Exception as e:
+                logger.error(f"expire_overdue failed: {e}")
 
         gated: List[str] = []
         for destination, send_fn in self._send_callbacks.items():
@@ -971,6 +1002,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
                     # against — history_for(msg_id) joins all three.
                     dispatch_payload = {
                         **message.payload, '_queue_msg_id': message.id,
+                        '_queue_created_at': message.created_at.isoformat(),
                     }
                     # Stamp BEFORE the call: the transport's rate limiter
                     # counts attempts, including ones that error mid-send.
@@ -1013,6 +1045,11 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
                     else:
                         self.mark_failed(message.id, "Send returned False")
 
+                    processed += 1
+
+                except SendDeferred as d:
+                    # Transient (circuit open / no path): not an attempt.
+                    self.mark_deferred(message.id, d.delay_s, d.reason)
                     processed += 1
 
                 except Exception as e:
@@ -1095,6 +1132,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
             # Let **self._stats provide the real cumulative failure counter.
             "dead_letter": status_counts.get("dead_letter", 0),
             "gated_destinations": list(self._gated_destinations),
+            "oldest_pending_age_s": self.oldest_pending_age_s(),
             "queue_depth": queue_depth,
             "max_queue_size": self._max_queue_size,
             "queue_usage_pct": round(

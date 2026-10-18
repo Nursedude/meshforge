@@ -530,6 +530,7 @@ def probe_queue_backlog(
 _DELIVERY_FAILURE_REASONS = frozenset({
     "rns_delivery_failed", "retries_exhausted", "destination_unreachable",
     "delivery_timeout", "non_retriable_error", "circuit_open", "wedged",
+    "expired",
 })
 
 #: Protocols that HAVE a confirmation mechanism today. Membership means "an

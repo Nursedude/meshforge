@@ -69,6 +69,7 @@ class TestSharedConstantPinning:
     EXPECTED = frozenset({
         "rns_delivery_failed", "retries_exhausted", "destination_unreachable",
         "delivery_timeout", "non_retriable_error", "circuit_open", "wedged",
+        "expired",  # ROADMAP 6f
     })
 
     def test_aggregator_matches_expected(self):

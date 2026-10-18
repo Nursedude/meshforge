@@ -241,6 +241,36 @@ whole; each item below lands on its own, re-tested here. In order:
     DM `@<known name> hi` → arrives at exactly that NomadNet/MeshChatX inbox, session
     opens, reply comes back as a DM; `@<unknown>` → notice, nothing sent.
 
+6f. **M→R queue outage behaviour — "defer, don't count" + 24 h max age (F2+F5)**
+    (operator 2026-10-17, grilled Q1–Q14; BUILDING both twins, MF lead). Measured
+    (7 d journals): the RNS HUB never went down; the real outage is ONE destination
+    offline for hours — MeshChatX `f0a6899b` 57 min–27.4 h, median ~4 h, circuit never
+    closed on its own; moc's 14 dead letters were all `circuit open for f0a6899b`
+    (the bridge queue has no RetryPolicy, so #74's "temporarily unavailable" raise
+    burns the 3-try budget). Decisions: (1) a queue primitive — a sender DEFERS a row
+    until T, `retry_count` untouched; only `rns`/`rns_xform` use it. (2) defer ONLY on
+    circuit-open / no-path / wedge; every other error still counts (3 tries →
+    dead-letter). (3) circuit-open → defer to the circuit's recovery time; no-path +
+    wedge → 15 s doubling, 5 min cap, deferral count on the row. (4) `_queue_send_rns`
+    requests a path and defers — no in-worker 3 s busy-wait (live `send_to_rns` keeps
+    its wait). (5) max age 24 h (`MESHFORGE_M2R_MAX_AGE_S`, one constant both twins) for
+    deferred AND gated rows; expiry = dead-letter + DROPPED `expired` + counter +
+    WARNING, enforced pre-dispatch AND in periodic cleanup (gated rows are skipped by
+    `process_once`). (6) clock guard: age < 0 or > 7 d → re-stamp `created_at` once +
+    `age_unknown` counter. (7) late delivery is delivery — `meshforge_queued_s` LXMF
+    field, body untouched. (8) no on-air notice on expiry (v1). (9) counters only:
+    `deferred_total`, `expired_total`, oldest pending age in `get_stats()`; alarm only
+    after a soak baseline. (10) MF + MA together, reviewed before either deploys.
+    Accept: red-first from the reviewer's probe (circuit open after reconnect → 8/8
+    rows dead-lettered inside 60 s) now waits and delivers on recovery; a 24 h+ row
+    expires witnessed; an NTP step never mass-expires.
+    **Next, grilled separately:** (a) **propagation handoff** — after N deferrals hand
+    to LXMF PROPAGATED via the configured node (moc/moc3 set `rns.propagation_node` but
+    the bridge never uses it; MA has none); distinct "handed to propagation" state,
+    node-unreachable behaviour, F14 privacy (the node STORES the message), ledger
+    semantics — the answer for the 27 h tail. (b) wake-on-announce (make a returning
+    peer's deferred rows due at once) — only if the soak shows the ≤5 min cap matters.
+
 **LATER**
 7. Mesh-issue rules for the *user's* mesh (MeshMonitor M1), with one thresholds
    file and a test that forbids harmful advice.

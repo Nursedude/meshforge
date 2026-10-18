@@ -128,6 +128,8 @@ class DropReason(Enum):
     DELIVERY_TIMEOUT = "delivery_timeout"
     EVICTED_OVERFLOW = "evicted_overflow"
     INVALID_PAYLOAD = "invalid_payload"
+    # ROADMAP 6f: a queued row outlived its destination's max age undelivered.
+    EXPIRED = "expired"
     UNKNOWN = "unknown"
 
 
@@ -148,6 +150,7 @@ DELIVERY_FAILURE_REASONS = frozenset({
     DropReason.NON_RETRIABLE_ERROR.value,
     DropReason.CIRCUIT_OPEN.value,
     DropReason.WEDGED.value,
+    DropReason.EXPIRED.value,
 })
 
 

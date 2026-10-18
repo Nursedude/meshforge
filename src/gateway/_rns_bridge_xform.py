@@ -275,6 +275,10 @@ class MessageTransformMixin:
                 # cross-gateway dup-A correlation). '' when unminted.
                 "meshforge_content_id": getattr(msg, 'content_id', '') or '',
             }
+            # ROADMAP 6f: a replayed message says how long it waited.
+            queued_s = (msg.metadata or {}).get('m2r_queued_s')
+            if isinstance(queued_s, int) and not isinstance(queued_s, bool):
+                fields["meshforge_queued_s"] = queued_s
 
             # Theme-A step 3: a Meshtastic DM addressed to the gateway's
             # OWN node is the private-reply channel. When sessions are on

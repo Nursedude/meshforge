@@ -330,6 +330,12 @@ class CircuitBreakerRegistry:
         self._total_blocked = 0
         self._total_opened = 0
 
+    @property
+    def recovery_timeout(self) -> float:
+        """Seconds an open circuit waits before a half-open probe — the
+        queue defers an RNS row this long (ROADMAP 6f)."""
+        return self._recovery_timeout
+
     def _get_or_create(self, destination: str) -> CircuitBreaker:
         """Get or create a circuit breaker for a destination."""
         with self._lock:
