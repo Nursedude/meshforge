@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Behavior test for scripts/ensure_prune_cron.sh (2026-10-18).
 #
-# The pytest_tmp_prune cron was hand-installed box by box; lehua never got it
-# and nothing in the repo would have noticed. The helper adds it when — and
+# The pytest_tmp_prune cron was hand-installed box by box; one fleet box never
+# got it and nothing in the repo would have noticed. The helper adds it when — and
 # only when — no line mentions the script. The properties that matter: it never
 # duplicates (another minute, the MeshAnchor twin's path), it honours a
 # deliberate absence (a commented line), and it never alters another line.
@@ -79,6 +79,68 @@ check "other lines are preserved verbatim" \
 check "the prune line is appended" "$([ "$(count)" = 1 ] && echo ok)"
 check "a backup of the prior crontab is written" \
   "$(ls "$TMP/home/.local/state/meshforge/"crontab.bak-* >/dev/null 2>&1 && echo ok)"
+
+# ── opt-out needs a DELIBERATE token, not any passing mention (review F3) ─
+printf '%s\n# TODO pytest_tmp_prune later\n' "$OTHER" > "$STORE"
+out="$(run --apply)"
+check "a passing comment mention is NOT an opt-out" "$(echo "$out" | grep -q '^added' && echo ok)"
+check "…so the cron is added" "$([ "$(count)" = 1 ] && echo ok)"
+printf '# pytest_tmp_prune: capture via cron_capture_wire\n11 */6 * * * /opt/x/scripts/pytest_tmp_prune.sh >/dev/null 2>&1\n' > "$STORE"
+out="$(run --apply)"
+check "a doc comment above a live line reads present, not opted_out" \
+  "$(echo "$out" | grep -q '^present' && echo ok)"
+printf '#11 */6 * * * /opt/x/scripts/pytest_tmp_prune.sh >/dev/null 2>&1\n' > "$STORE"
+out="$(run --apply)"
+check "a commented-out invocation is a deliberate absence" "$(echo "$out" | grep -q '^opted_out' && echo ok)"
+printf '0 1 * * * logrotate /var/log/pytest_tmp_prune.sh.log\n' > "$STORE"
+out="$(run --apply)"
+check "a file merely NAMED like the script is not the cron" "$(echo "$out" | grep -q '^added' && echo ok)"
+
+# ── every live invocation SHAPE reads present — a miss APPENDS A DUPLICATE
+# cron on the next deploy, and the same miss on a commented-out line undoes a
+# deliberate absence (second review N1: quoted paths and `)` were missed).
+for shape in '"/opt/x/scripts/pytest_tmp_prune.sh" >/dev/null 2>&1' \
+             "'/opt/x/scripts/pytest_tmp_prune.sh' >/dev/null 2>&1" \
+             '(cd /opt/x && scripts/pytest_tmp_prune.sh)' \
+             '/usr/bin/env bash "/opt/x/scripts/pytest_tmp_prune.sh"' \
+             'bash /opt/x/scripts/pytest_tmp_prune.sh' \
+             'FOO=1 /opt/x/scripts/pytest_tmp_prune.sh 2>&1' \
+             '/opt/x/scripts/pytest_tmp_prune.sh>/dev/null'; do
+  printf '11 */6 * * * %s\n' "$shape" > "$STORE"
+  out="$(run --apply)"
+  check "live shape reads present: $shape" "$(echo "$out" | grep -q '^present' && echo ok)"
+  printf '# 11 */6 * * * %s\n' "$shape" > "$STORE"
+  out="$(run --apply)"
+  check "commented-out shape reads opted_out: $shape" "$(echo "$out" | grep -q '^opted_out' && echo ok)"
+done
+# The opt-out token is matched case-insensitively (second review N2).
+printf '# PYTEST_TMP_PRUNE: ABSENT\n' > "$STORE"
+out="$(run --apply)"
+check "the opt-out token is case-insensitive" "$(echo "$out" | grep -q '^opted_out' && echo ok)"
+
+# ── update.sh's caller: under set -e a helper error must not abort the
+# update, and only the three healthy statuses may print a green tick
+# (review F1/F2). The block is extracted from update.sh, so this pins the
+# real caller, not a copy of it.
+UPD="$HERE/../scripts/update.sh"
+FAKE="$TMP/fakeinstall"; mkdir -p "$FAKE/scripts"
+upd_run() {  # $1 = what the stub helper prints, $2 = its exit code
+  printf '#!/usr/bin/env bash\necho "%s"\nexit %s\n' "$1" "$2" > "$FAKE/scripts/ensure_prune_cron.sh"
+  { echo 'set -e'; echo "INSTALL_DIR='$FAKE'; REAL_USER=\"\$(id -un)\"; GREEN=; YELLOW=; NC="
+    sed -n '/^# The pytest_tmp_prune cron (\/tmp is RAM/,/^fi$/p' "$UPD"
+    echo 'echo AFTER_BLOCK'; } > "$TMP/upd_frag.sh"
+  bash "$TMP/upd_frag.sh" 2>&1
+}
+check "update.sh carries the prune block (extraction is not empty)" \
+  "$(sed -n '/^# The pytest_tmp_prune cron (\/tmp is RAM/,/^fi$/p' "$UPD" | grep -q ensure_prune_cron && echo ok)"
+out="$(upd_run 'error: crontab unreadable' 1)"
+check "a helper error does not abort update.sh" "$(echo "$out" | grep -q AFTER_BLOCK && echo ok)"
+check "…and is reported with a warning, not a tick" "$(echo "$out" | grep -q '⚠ prune cron: error' && echo ok)"
+out="$(upd_run 'sudo: a password is required' 1)"
+check "unrecognised output is a warning, never a green tick" \
+  "$(echo "$out" | grep -q '⚠' && ! echo "$out" | grep -q '✓' && echo ok)"
+out="$(upd_run 'added: 11 */6 ...' 0)"
+check "a healthy status prints the tick" "$(echo "$out" | grep -q '✓ prune cron: added' && echo ok)"
 
 # ── an unreadable crontab is an ERROR, never read as empty ──────────────
 printf '%s\n' "$OTHER" > "$STORE"; cp "$STORE" "$TMP/before"

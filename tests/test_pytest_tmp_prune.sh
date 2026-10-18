@@ -287,9 +287,30 @@ if [ "$(id -u)" != 0 ]; then
   check "the FAIL names the stuck path" \
     "$(echo "$out" | grep -q "$STUCK_S/scratchpad/ro" && echo ok)"
   check "the FAIL names its owner and the command that clears it" \
-    "$(echo "$out" | grep -q "owner $(id -un)" && echo "$out" | grep -q 'chmod -R u+w' && echo ok)"
+    "$(echo "$out" | grep -q "owner $(id -un)" && echo "$out" | grep -q 'chmod -R u+rwx' && echo ok)"
 fi
 CLAUDE_TMP_BASE="$TMP/claude-none"
+
+# ── the named cure must actually CLEAR the blocker (review F4, 2026-10-18) ─
+#
+# chmod -R u+w cannot descend a 000/111 dir (what permission tests leave), and
+# a writable-but-unreadable (300) dir blocks rm without being "non-writable".
+# Run the printed cure literally and require the dir to be gone.
+if [ "$(id -u)" != 0 ]; then
+  for mode in 000 111 300; do
+    BASE="$TMP/cure$mode"; mkdir -p "$BASE"
+    for n in 1 2 3 4 5; do mkrun $n; done
+    chmod "$mode" "$BASE/pytest-1/some_test0"
+    out="$(run_pgrep 1)"
+    check "mode $mode blocker is named (not 'no non-writable dir found')" \
+      "$(echo "$out" | grep -q 'pytest-1/some_test0 (owner' && echo ok)"
+    cure="$(echo "$out" | grep -m1 -o 'clear: chmod.*' | sed "s/^clear: //; s/;.*//")"
+    [ -n "$cure" ] && bash -c "$cure" >/dev/null 2>&1
+    check "mode $mode: the printed cure removes the run dir" \
+      "$([ -d "$BASE/pytest-1" ] && echo '' || echo ok)"
+    [ -d "$BASE/pytest-1/some_test0" ] && chmod 755 "$BASE/pytest-1/some_test0"
+  done
+fi
 
 # ── it leaves a cron verdict so #78 can see it ───────────────────────────
 check "writes a cron_verdict line under its own name" \

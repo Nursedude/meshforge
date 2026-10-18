@@ -464,13 +464,17 @@ fi
 # Same helper fleet_sync.sh runs on every fleet box.
 if [[ -n "$REAL_USER" && -f "$INSTALL_DIR/scripts/ensure_prune_cron.sh" ]]; then
     if [[ "$(id -un)" == "${REAL_USER}" ]]; then
-        prune_out="$(timeout 30 bash "$INSTALL_DIR/scripts/ensure_prune_cron.sh" --apply 2>&1)"
+        prune_out="$(timeout 30 bash "$INSTALL_DIR/scripts/ensure_prune_cron.sh" --apply 2>&1)" || true
     else
-        prune_out="$(timeout 30 sudo -u "${REAL_USER}" -H bash "$INSTALL_DIR/scripts/ensure_prune_cron.sh" --apply 2>&1)"
+        prune_out="$(timeout 30 sudo -u "${REAL_USER}" -H bash "$INSTALL_DIR/scripts/ensure_prune_cron.sh" --apply 2>&1)" || true
     fi
+    # `|| true`: this file runs under set -e, and a cron that cannot be
+    # installed must not abort the update before the user-unit restarts below
+    # (review F1). Only the three healthy statuses earn a tick; anything else —
+    # a helper error, sudo refusing, a timeout's empty output — warns (F2).
     case "$prune_out" in
-        error*|"") echo -e "  ${YELLOW}⚠ prune cron: ${prune_out:-no output}${NC}" ;;
-        *)         echo -e "  ${GREEN}✓ prune cron: ${prune_out%%:*}${NC}" ;;
+        present*|opted_out*|added*) echo -e "  ${GREEN}✓ prune cron: ${prune_out%%:*}${NC}" ;;
+        *) echo -e "  ${YELLOW}⚠ prune cron: ${prune_out:-no output (timeout 30s?)}${NC}" ;;
     esac
 fi
 

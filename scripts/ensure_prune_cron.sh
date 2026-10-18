@@ -2,7 +2,7 @@
 # ensure_prune_cron.sh — install the pytest_tmp_prune cron where it is missing.
 #
 # WHY (2026-10-18): the prune cron was hand-installed box by box and nothing in
-# the repo carried it; lehua never got it and no check could notice. /tmp is
+# the repo carried it; one fleet box never got it and no check could notice. /tmp is
 # RAM on every fleet Pi, so the first suite run or Claude session on such a box
 # would accumulate unreclaimed. Called by update.sh (any box) and fleet_sync.sh
 # (every fleet box, both legs) so the next box cannot be forgotten.
@@ -11,10 +11,13 @@
 # derives its watched set from the crontab, so a timer would silently drop the
 # prune out of the only probe that notices it stopped.
 #
-# Rules, in order — any line that MENTIONS the script decides:
-#   * a comment mentions it  -> opted_out  (a deliberate absence; never undone)
+# Rules, in order:
 #   * a live line runs it    -> present    (any minute, any repo path — the
 #                                           MeshAnchor twin's copy counts)
+#   * a DELIBERATE opt-out   -> opted_out  (never undone): a commented-out
+#     invocation of the script, or the token `# pytest_tmp_prune: absent`.
+#     A passing mention ("# TODO pytest_tmp_prune") is NOT one — reading any
+#     comment as opt-out would let a missing cron hide behind PASS (review F3).
 #   * neither                -> would_add / added
 # An unreadable crontab is an ERROR, never read as empty: writing over it would
 # replace a crontab we could not see.
@@ -47,12 +50,21 @@ if ! "$CRONTAB" -l >"$cur" 2>"$err"; then
     fi
 fi
 
-if grep -E '^[[:space:]]*#' "$cur" | grep -q 'pytest_tmp_prune'; then
-    echo "opted_out: a commented line mentions pytest_tmp_prune — deliberate absence, left alone"
+# The script name as a standalone word: no name character (alnum . _ -) on
+# either side. Quotes, `(`/`)`, redirects and operators all qualify, so every
+# invocation shape is seen; `pytest_tmp_prune.sh.log` is not it. A narrower
+# follow-set MISSED quoted paths — a miss here appends a duplicate cron, and on
+# a commented line undoes a deliberate absence (second review N1).
+RUNS='(^|[^[:alnum:]._-])pytest_tmp_prune\.sh([^[:alnum:]._-]|$)'
+live="$(grep -v -E '^[[:space:]]*#' "$cur" | grep -m1 -E "$RUNS")"
+if [ -n "$live" ]; then
+    echo "present: $(printf '%s' "$live" | cut -c1-80)"
     exit 0
 fi
-if grep -q 'pytest_tmp_prune\.sh' "$cur"; then
-    echo "present: $(grep -m1 'pytest_tmp_prune\.sh' "$cur" | cut -c1-80)"
+comments="$(grep -E '^[[:space:]]*#' "$cur")"
+if printf '%s\n' "$comments" | grep -q -E "$RUNS" \
+   || printf '%s\n' "$comments" | grep -qi -E 'pytest_tmp_prune:[[:space:]]*absent'; then
+    echo "opted_out: a commented-out prune line or '# pytest_tmp_prune: absent' — deliberate absence, left alone"
     exit 0
 fi
 

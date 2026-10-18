@@ -66,16 +66,18 @@ say() {  # $1 = status, $2 = message
 # A failed rm must say WHICH dir and WHY, not only a count (2026-10-18: a
 # reviewer's sudo drill left root-owned dirs in its scratchpad; the verdict
 # said only "1 could NOT be removed"). rm -rf fails when a dir it must empty is
-# not writable, so the first non-writable dir left behind IS the blocker.
+# not writable/readable/searchable, so the first such dir left behind IS the blocker.
 STUCK=""   # first blocker seen this run, with its cure
 _note_stuck() {  # $1 = the dir rm -rf failed on
   [ -n "$STUCK" ] && return
   local b owner
-  b="$(find "$1" -type d ! -writable -print -quit 2>/dev/null)"
+  # Writable is not enough: rm must also list (r) and enter (x) a dir, so a
+  # 000/111/300 dir blocks too (review F4).
+  b="$(find "$1" -type d \( ! -writable -o ! -readable -o ! -executable \) -print -quit 2>/dev/null)"
   if [ -z "$b" ]; then STUCK="$1 (no non-writable dir found — re-run rm by hand to see the error)"; return; fi
   owner="$(stat -c %U "$b" 2>/dev/null || echo '?')"
   if [ "$owner" = "$(id -un)" ]; then
-    STUCK="$b (owner $owner, mode $(stat -c %A "$b" 2>/dev/null)) — clear: chmod -R u+w '$1' && rm -rf '$1'"
+    STUCK="$b (owner $owner, mode $(stat -c %A "$b" 2>/dev/null)) — clear: chmod -R u+rwx '$1' && rm -rf '$1'"
   else
     STUCK="$b (owner $owner, mode $(stat -c %A "$b" 2>/dev/null)) — clear: sudo rm -rf '$1'"
   fi

@@ -634,9 +634,9 @@ promote_seed() {
 }
 
 # ensure_prune_cron <short> <repo_path>
-# Installs the pytest_tmp_prune cron where no crontab line mentions it (lehua
-# never got the hand-installed one, 2026-10-18). A commented line is a
-# deliberate absence and is kept. A failed install WARNs, never FAILs: a cron
+# Installs the pytest_tmp_prune cron where no crontab line runs it (one box
+# never got the hand-installed one, 2026-10-18). A commented-out prune line or
+# `# pytest_tmp_prune: absent` is a deliberate absence and is kept. A failed install WARNs, never FAILs: a cron
 # is not worth failing a code deploy over, but it must not go silent either.
 # (Recipe rule: this body must stay single-quote-free, see ~line 451.)
 ensure_prune_cron() {
@@ -647,6 +647,7 @@ ensure_prune_cron() {
     fi
     local out
     out=$(timeout 30 bash "$repo/scripts/ensure_prune_cron.sh" --apply 2>&1)
+    [ -n "$out" ] || out="no output (helper killed by timeout 30s?)"
     case "$out" in
         present*|opted_out*|added*) echo "PASS $short ${out%%:*}" ;;
         *) echo "WARN $short $(printf "%s" "$out" | tr "\n" "|" | head -c 140)" ;;
@@ -1329,6 +1330,7 @@ promote_local_seed /opt/meshforge
 # Self-side twin of the remote ensure_prune_cron leg (keep in parity). Quiet
 # when the cron is already there; says so when it adds one or cannot.
 prune_out=$(timeout 30 bash /opt/meshforge/scripts/ensure_prune_cron.sh --apply 2>&1)
+[ -n "$prune_out" ] || prune_out="no output (helper killed by timeout 30s?)"
 case "$prune_out" in
     present*|opted_out*) ;;
     added*) printf '[%-30s] OK   %s\n' "self ($(hostname -s))" "prune cron added" ;;
