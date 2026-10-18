@@ -53,9 +53,14 @@ class MessageQueueOutageMixin:
         created_at AND retry_after by it (a backward step otherwise strands a
         deferred row for the step's length)."""
         # Two process_once callers: read-compare-store the pair atomically so
-        # one step is applied once, never twice.
+        # one step is applied once, never twice. Callers sample outside the
+        # lock, so an older sample can land second: drop it (equal mono too —
+        # no elapsed time to compare), or it reads as the jump undone and the
+        # next tick re-applies the jump.
         with self._lock:
             last_wall, last_mono = self._clock_wall, self._clock_mono
+            if last_mono is not None and mono <= last_mono:
+                return
             self._clock_wall, self._clock_mono = wall, mono
         if last_wall is None or last_mono is None:
             return

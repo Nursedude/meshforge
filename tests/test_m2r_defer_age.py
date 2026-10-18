@@ -504,3 +504,29 @@ class TestClockJumpReview:
         q.mark_delivered(mid)
         q._restamp(mid, datetime.now())
         assert q.get_stats()["age_unknown"] == 0
+
+
+class TestClockStaleSample:
+    # Two process_once callers sample (wall, mono) OUTSIDE note_clock's lock,
+    # so the older sample can arrive second. Compared against the newer pair
+    # it reads as the jump undone and shifts every row back; stored, it makes
+    # the next tick re-detect the jump and shift them again.
+
+    # 1001.0: sampled earlier; 1002.0: same monotonic instant (review)
+    @pytest.mark.parametrize("late_mono", [1001.0, 1002.0])
+    def test_an_older_sample_arriving_late_is_dropped(self, tmp_path,
+                                                      late_mono):
+        q = _q(tmp_path)
+        mid = q.enqueue(payload={"message": "x", "destination": "1"},
+                        destination="a")
+        before = datetime.fromisoformat(_row(q, mid)["created_at"])
+        t0 = datetime.now()
+        q.note_clock(t0, 1000.0)
+        # caller B, sampled after a +5 h step, lands first
+        q.note_clock(t0 + timedelta(hours=5, seconds=2), 1002.0)
+        # caller A, sampled before the step, lands second
+        q.note_clock(t0 + timedelta(seconds=1), late_mono)
+        assert q.get_stats()["clock_jumps"] == 1
+        assert q._clock_mono == 1002.0
+        after = datetime.fromisoformat(_row(q, mid)["created_at"])
+        assert abs((after - before).total_seconds() - 5 * 3600) < 5
