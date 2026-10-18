@@ -306,3 +306,157 @@ class TestReviewFollowups:
                           side_effect=lambda c, d, **k: seen.update(k) or True):
             queue.process_once()
         assert seen["fields"]["meshforge_channel"] == 3
+
+
+# --- small batch after the fix-diff review (2026-10-17) --------------------
+
+class TestSessionLegFailure:
+
+    def test_failed_session_send_requeues_at_the_peer_never_f14(
+            self, bridge, queue):  # noqa: F811
+        # F1: a session-routed DM whose send fails was refused under F14 and
+        # the sender told "no open RNS conversation" while one existed.
+        bridge.config.rns.sessions_enabled = True
+        bridge.config.meshtastic.gateway_node_id = "!00000001"
+        bridge.config.rns.get_lxmf_destinations.return_value = [DEST_B.hex()]
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
+        _connect(bridge)
+        bridge._sessions = MagicMock()
+        bridge._sessions.lookup.return_value = DEST.hex()
+        with patch.object(bridge, "send_to_rns", return_value=False) as send, \
+                patch.object(bridge, "send_to_meshtastic") as notice:
+            bridge._process_mesh_to_rns(_dm(dest_id="!00000001"))
+        assert [c.args[1] for c in send.call_args_list] == [DEST]
+        assert not notice.called, "sender was told a false F14 reason"
+        assert bridge.stats.get("mesh_to_rns_private_refused") is None
+        assert bridge.stats.get("session_m2r_requeued") == 1
+        with queue._get_connection() as conn:
+            rows = [r[0] for r in conn.execute(
+                "SELECT payload FROM messages WHERE destination = 'rns'")]
+        assert len(rows) == 1 and DEST.hex() in rows[0]
+        assert "via Meshtastic" in rows[0]  # title carried
+
+
+class TestPartialRequeueWitness:
+
+    def test_partial_requeue_carries_title_and_fields(
+            self, bridge, queue):  # noqa: F811
+        # Mutant M4 survived: the partial path could drop title/fields.
+        import json
+        bridge.config.rns.get_lxmf_destinations.return_value = [
+            DEST.hex(), DEST_B.hex()]
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
+        _connect(bridge)
+        with patch.object(bridge, "send_to_rns",
+                          side_effect=lambda c, d, **k: d == DEST):
+            bridge._process_mesh_to_rns(_broadcast())
+        with queue._get_connection() as conn:
+            payload = json.loads(conn.execute(
+                "SELECT payload FROM messages WHERE destination = 'rns'"
+            ).fetchone()[0])
+        assert "via Meshtastic" in payload["title"]
+        assert payload["fields"]["meshforge_from_id"] == "!aabb0042"
+
+    def test_dedup_dropped_partial_requeue_leaves_a_witness(
+            self, bridge, queue):  # noqa: F811
+        # F3: the second identical partial requeue inside the dedup window was
+        # dropped with no bridge-level trace.
+        bridge.config.rns.get_lxmf_destinations.return_value = [
+            DEST.hex(), DEST_B.hex()]
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
+        _connect(bridge)
+        with patch.object(bridge, "send_to_rns",
+                          side_effect=lambda c, d, **k: d == DEST):
+            bridge._process_mesh_to_rns(_broadcast())
+            bridge._process_mesh_to_rns(_broadcast())
+        assert len(_rows(queue, "rns")) == 1
+        assert bridge.stats.get("mesh_to_rns_requeue_dropped") == 1
+
+
+class TestQueueReadyGate:
+
+    def _q(self, tmp_path):
+        from gateway.message_queue import PersistentMessageQueue
+        return PersistentMessageQueue(db_path=str(tmp_path / "gate.db"))
+
+    def test_a_not_ready_destination_does_not_starve_the_others(self, tmp_path):
+        # Mutant M1 survived: `continue` -> `break` stalled every destination
+        # registered after the gated one.
+        q = self._q(tmp_path)
+        sent = []
+        q.register_sender("a", lambda p: True, ready_fn=lambda: False)
+        q.register_sender("b", lambda p: sent.append(p) or True)
+        q.enqueue(payload={"message": "x", "destination": "1"}, destination="a")
+        q.enqueue(payload={"message": "y", "destination": "2"}, destination="b")
+        q.process_once()
+        assert [p["message"] for p in sent] == ["y"]
+
+    def test_gated_backlog_is_witnessed_in_stats(self, tmp_path):
+        q = self._q(tmp_path)
+        q.register_sender("a", lambda p: True, ready_fn=lambda: False)
+        q.enqueue(payload={"message": "x", "destination": "1"}, destination="a")
+        q.process_once()
+        q.process_once()
+        stats = q.get_stats()
+        assert stats["gated_skips"] == 2
+        assert stats["gated_destinations"] == ["a"]
+
+    def test_a_raising_ready_fn_counts_as_not_ready(self, tmp_path):
+        # Mutant M3 survived.
+        q = self._q(tmp_path)
+        sent = []
+
+        def boom():
+            raise RuntimeError("probe failed")
+        q.register_sender("a", lambda p: sent.append(p) or True, ready_fn=boom)
+        q.enqueue(payload={"message": "x", "destination": "1"}, destination="a")
+        q.process_once()
+        assert sent == []
+
+    def test_reregistering_without_ready_fn_clears_the_gate(self, tmp_path):
+        # Mutant M2 survived.
+        q = self._q(tmp_path)
+        sent = []
+        q.register_sender("a", lambda p: True, ready_fn=lambda: False)
+        q.register_sender("a", lambda p: sent.append(p) or True)
+        q.enqueue(payload={"message": "x", "destination": "1"}, destination="a")
+        q.process_once()
+        assert len(sent) == 1
+        assert q.get_stats()["gated_destinations"] == []
+
+
+def test_production_init_registers_both_rns_senders_gated():
+    # Mutant M5 survived: the fixture builds the bridge with
+    # HAS_PERSISTENT_QUEUE=False, so nothing pinned the production wiring.
+    from tests.test_rns_bridge import _mock_gateway_config
+    with patch("gateway.rns_bridge.GatewayConfig") as MockConfig, \
+         patch("gateway.rns_bridge.get_node_tracker"), \
+         patch("gateway.rns_bridge.BridgeHealthMonitor"), \
+         patch("gateway.rns_bridge.DeliveryTracker"), \
+         patch("gateway.rns_bridge.MeshtasticHandler"), \
+         patch("gateway.rns_bridge.ReconnectStrategy"), \
+         patch("gateway.rns_bridge.HAS_CIRCUIT_BREAKER", False), \
+         patch("gateway.rns_bridge.CircuitBreakerRegistry", None), \
+         patch("gateway.rns_bridge.HAS_PERSISTENT_QUEUE", True), \
+         patch("gateway.rns_bridge.PersistentMessageQueue") as MockQ, \
+         patch("gateway.message_routing.CLASSIFIER_AVAILABLE", False), \
+         patch("gateway.rns_bridge.HAS_SERVICE_CHECK", False), \
+         patch("gateway.rns_bridge.HAS_EVENT_BUS", False), \
+         patch("gateway.rns_bridge.HAS_RNS_SNIFFER", False):
+        cfg = _mock_gateway_config()
+        MockConfig.load.return_value = cfg
+        from gateway.rns_bridge import RNSMeshtasticBridge
+        b = RNSMeshtasticBridge(config=cfg)
+        try:
+            calls = {c.args[0]: c for c in
+                     MockQ.return_value.register_sender.call_args_list}
+            for dest in ("rns", "rns_xform"):
+                assert dest in calls, f"{dest} sender not registered"
+                ready = calls[dest].kwargs.get("ready_fn")
+                assert ready is not None, f"{dest} registered without a gate"
+                b._connected_rns = False
+                assert ready() is False
+                b._connected_rns = True
+                assert ready() is True
+        finally:
+            b.stop()

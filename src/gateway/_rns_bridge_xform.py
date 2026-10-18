@@ -316,6 +316,26 @@ class MessageTransformMixin:
                         f"Bridge Mesh→RNS (session): {title} -> "
                         f"{peer_hex[:8]} ({len(content)} chars)")
                     return
+                if dest_bytes:
+                    # The session resolved a peer and its send failed: retry
+                    # at THAT peer. Falling through would refuse it under F14
+                    # and tell the sender there is no conversation (F1).
+                    requeued = self._requeue_failed_message(
+                        msg, "rns", rns_destinations=[dest_bytes],
+                        title=title, fields=fields)
+                    with self._stats_lock:
+                        key = ('session_m2r_requeued' if requeued
+                               else 'session_m2r_dropped')
+                        self.stats[key] = self.stats.get(key, 0) + 1
+                        self.stats['errors'] += 1
+                        if not requeued:
+                            self.stats['mesh_to_rns_dropped'] += 1
+                    logger.warning(
+                        f"Mesh→RNS (session): send to {peer_hex[:8]} failed — "
+                        f"{'requeued at that peer' if requeued else 'NOT requeued (dedup/queue)'}")
+                    self.health.record_message_failed(
+                        "mesh_to_rns", requeued=requeued)
+                    return
                 if not peer_hex:
                     with self._stats_lock:
                         self.stats['session_dm_no_session'] = (
@@ -323,7 +343,7 @@ class MessageTransformMixin:
                     logger.info(
                         f"Mesh→RNS DM-to-gateway from {msg.source_id} with "
                         f"no active session — refused, never fanned (F14)")
-                # peer send failure / bad hex also falls through to fan-out
+                # a corrupt session (bad hex) falls through to F14's refusal
 
             # Build destination list. Direct DM short-circuits to a single recipient;
             # broadcast fans out to every default_lxmf_destination configured.
@@ -395,9 +415,18 @@ class MessageTransformMixin:
             if sent_count and failed_legs:
                 # F4 review R5: one leg landing must not erase a sibling's
                 # retry — requeue only the legs that failed.
-                self._requeue_failed_message(
-                    msg, "rns", rns_destinations=failed_legs,
-                    title=title, fields=fields)
+                if not self._requeue_failed_message(
+                        msg, "rns", rns_destinations=failed_legs,
+                        title=title, fields=fields):
+                    # Dedup/queue-full drop: the message was partly delivered,
+                    # so no health failure — but never silent (review F3).
+                    with self._stats_lock:
+                        self.stats['mesh_to_rns_requeue_dropped'] = (
+                            self.stats.get('mesh_to_rns_requeue_dropped', 0) + 1)
+                    logger.warning(
+                        "Mesh→RNS: retry of failed leg(s) "
+                        f"{[d.hex()[:8] for d in failed_legs]} NOT queued "
+                        "(dedup/queue)")
 
             if sent_count:
                 if len(destinations) > 1:

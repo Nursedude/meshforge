@@ -4155,14 +4155,19 @@ class TestSessionDmToGateway:
         assert len(text.encode('utf-8')) <= 200
         assert bridge.stats['mesh_to_rns_private_notice_sent'] == 1
 
-    def test_send_failure_falls_back_to_fanout(self, bridge, tmp_path):
+    def test_send_failure_is_retried_at_the_peer_not_refused(self, bridge, tmp_path):
+        # F4 small batch F1 (2026-10-17): a failed session send is retried at
+        # the session peer, never refused under F14 with a false "no open
+        # conversation" notice. This fixture has no persistent queue, so the
+        # retry cannot persist → session_m2r_dropped (queued case:
+        # tests/test_m2r_requeue_f4.py::TestSessionLegFailure).
         sessions = self._enable(bridge, tmp_path)
         sessions.touch("!aabb0042", self.PEER)
         calls = {"n": 0}
 
         def first_fails(content, dest_hash=None, title=None, fields=None):
             calls["n"] += 1
-            return calls["n"] > 1  # session send fails, fan-out succeeds
+            return calls["n"] > 1  # session send fails, fan-out would succeed
 
         with patch.object(bridge, 'send_to_rns', side_effect=first_fails), \
              patch.object(bridge, 'send_to_meshtastic', return_value=True) as notice:
@@ -4170,8 +4175,9 @@ class TestSessionDmToGateway:
 
         assert calls["n"] == 1  # session attempt only — never a fan-out
         assert bridge.stats['session_routed_m2r'] == 0
-        assert bridge.stats['mesh_to_rns_private_refused'] == 1
-        notice.assert_called_once()
+        assert bridge.stats.get('mesh_to_rns_private_refused', 0) == 0
+        assert bridge.stats['session_m2r_dropped'] == 1
+        notice.assert_not_called()
 
     def test_flag_off_unchanged_and_db_never_opened(self, bridge):
         # Fixture MagicMock flag (truthy-not-True) → sessions OFF.

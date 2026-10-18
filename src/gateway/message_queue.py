@@ -140,6 +140,9 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
         # Pacing the dispatch loop is the cure for the whole burst class.
         self._send_spacing: Dict[str, float] = {}
         self._send_ready: Dict[str, Callable[[], bool]] = {}
+        # Witness for the ready_fn gate: rows skipped untouched would
+        # otherwise look like an idle queue (review F4).
+        self._gated_destinations: List[str] = []
         self._last_dispatch_ts: Dict[str, float] = {}  # destination -> time.monotonic()
         self._success_callbacks: List[Callable] = []
         self._failure_callbacks: List[Callable] = []
@@ -150,6 +153,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
         # Stats
         self._stats = {
             "enqueued": 0,
+            "gated_skips": 0,
             "delivered": 0,
             "failed": 0,
             "retried": 0,
@@ -929,6 +933,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
         """
         processed = 0
 
+        gated: List[str] = []
         for destination, send_fn in self._send_callbacks.items():
             ready_fn = self._send_ready.get(destination)
             if ready_fn is not None:
@@ -938,6 +943,9 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
                     logger.debug(f"ready_fn for {destination} raised: {e}")
                     ready = False
                 if not ready:
+                    gated.append(destination)
+                    with self._lock:
+                        self._stats["gated_skips"] += 1
                     continue
             messages = self.get_pending(destination=destination, limit=batch_size)
             spacing = self._send_spacing.get(destination, 0.0)
@@ -1016,6 +1024,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
                             logger.debug(f"Failure callback error: {e2}")
                     processed += 1
 
+        self._gated_destinations = gated
         return processed
 
     def start_processing(self, interval: float = 1.0) -> None:
@@ -1085,6 +1094,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
             # degraded state -> valid-looking value -> false "no failures" claim).
             # Let **self._stats provide the real cumulative failure counter.
             "dead_letter": status_counts.get("dead_letter", 0),
+            "gated_destinations": list(self._gated_destinations),
             "queue_depth": queue_depth,
             "max_queue_size": self._max_queue_size,
             "queue_usage_pct": round(
