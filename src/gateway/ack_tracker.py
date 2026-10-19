@@ -93,7 +93,7 @@ class RoutingAck:
 
 
 # Meshtastic Routing.Error enum name → DropReason (closed taxonomy). Every
-# value here is a member of watchdog_probes._DELIVERY_FAILURE_REASONS so a
+# value here is a member of delivery_counters.DELIVERY_FAILURE_REASONS so a
 # NAK counts as a real delivery failure in the #74 confirmation-rate ring.
 # An unrecognized / future reason falls through to NON_RETRIABLE_ERROR — a
 # NAK is by definition a failed delivery; the raw enum is preserved in the

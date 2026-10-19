@@ -26,12 +26,11 @@ from gateway.delivery_counters import DropReason
 
 # The #74 probe only counts a `dropped` as a delivery failure when its
 # drop_reason is in this set. Every NAK we map MUST land here or the
-# confirmation-rate denominator silently under-counts failures. Mirrored
-# from watchdog_probes so a drift in either trips this test.
-_DELIVERY_FAILURE_REASONS = frozenset({
-    "rns_delivery_failed", "retries_exhausted", "destination_unreachable",
-    "delivery_timeout", "non_retriable_error", "circuit_open", "wedged",
-})
+# confirmation-rate denominator silently under-counts failures. IMPORTED from
+# the owner of the DropReason vocabulary — a hand copy here had already
+# drifted (it lacked "expired"; honest_failure_modes #5).
+from gateway.delivery_counters import (  # noqa: E402
+    DELIVERY_FAILURE_REASONS as _DELIVERY_FAILURE_REASONS)
 
 
 # ---------------------------------------------------------------------------
