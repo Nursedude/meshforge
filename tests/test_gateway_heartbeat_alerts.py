@@ -109,7 +109,7 @@ class TestAlertDeduplication:
         connected_hb.publish_alert("critical", "radio_failover", "down", "crashed")
 
         # Simulate time passing beyond dedup window
-        connected_hb._alert_dedup["radio_failover:down"] = time.time() - 120
+        connected_hb._alert_dedup["radio_failover:down"] = time.monotonic() - 120
 
         connected_hb.publish_alert("critical", "radio_failover", "down", "crashed again")
 

@@ -1398,17 +1398,20 @@ class MQTTBridgeHandler(BaseMessageHandler):
             return False
 
     def _is_duplicate(self, msg_id: str) -> bool:
-        """Check if message ID was seen recently (dedup)."""
-        now = time.time()
+        """Check if message ID was seen recently (dedup). Ages are MONOTONIC
+        (honest_failure_modes #6): a backward wall-clock step on an RTC-less
+        Pi made entries look young, stretching the window for hours."""
+        now = time.monotonic()
         with self._mqtt_lock:
-            if msg_id in self._recent_ids:
+            seen = self._recent_ids.get(msg_id)
+            if seen is not None and now - seen <= self._dedup_window:
                 return True
             self._recent_ids[msg_id] = now
         return False
 
     def _cleanup_dedup(self) -> None:
         """Remove expired entries from dedup cache."""
-        now = time.time()
+        now = time.monotonic()
         with self._mqtt_lock:
             expired = [
                 k for k, v in self._recent_ids.items()

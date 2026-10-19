@@ -577,7 +577,7 @@ class EASAlertsPlugin(IntegrationPlugin):
         self._poll_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._last_poll: Optional[datetime] = None
-        self._seen_alerts: Dict[str, datetime] = {}
+        self._seen_alerts: Dict[str, float] = {}  # id -> monotonic s
         self._alert_callbacks: List[Callable[[Alert], None]] = []
         self._current_alerts: List[Alert] = []
         # Per-source fetch outcomes. The ONLY place that may answer
@@ -845,18 +845,18 @@ class EASAlertsPlugin(IntegrationPlugin):
         max_alerts = self._config.getint('general', 'max_alerts_per_check', fallback=10)
 
         new_alerts = []
-        cutoff = datetime.now() - timedelta(seconds=dedupe_window)
+        now = time.monotonic()  # NTP steps must not re-send or mute (hfm #6)
 
         # Clean old seen alerts
         self._seen_alerts = {
             k: v for k, v in self._seen_alerts.items()
-            if v > cutoff
+            if now - v <= dedupe_window
         }
 
         for alert in all_alerts:
             if alert.id not in self._seen_alerts:
                 new_alerts.append(alert)
-                self._seen_alerts[alert.id] = datetime.now()
+                self._seen_alerts[alert.id] = now
 
         if max_alerts > 0:
             new_alerts = new_alerts[:max_alerts]

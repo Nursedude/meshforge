@@ -363,7 +363,7 @@ class GatewayHeartbeat:
 
         # Dedup — suppress same (service, event) within window
         key = f"{service}:{event}"
-        now = time.time()
+        now = time.monotonic()  # NTP steps must not move the window (hfm #6)
         if key in self._alert_dedup and now - self._alert_dedup[key] < self._alert_dedup_window:
             return
         self._alert_dedup[key] = now

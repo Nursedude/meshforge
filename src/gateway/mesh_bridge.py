@@ -26,7 +26,7 @@ import threading
 import time
 import logging
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime
 from dataclasses import dataclass, field, asdict
 from typing import Optional, Dict, Callable, Any, List
 
@@ -378,10 +378,12 @@ class MQTTMeshInterface:
                 return None
 
     def _is_duplicate(self, msg_id: str) -> bool:
-        """Check if message ID was seen recently."""
-        now = time.time()
+        """Check if message ID was seen recently (monotonic age: a wall-clock
+        step on an RTC-less Pi must not stretch or shrink the window)."""
+        now = time.monotonic()
         with self._mqtt_lock:
-            if msg_id in self._recent_ids:
+            seen = self._recent_ids.get(msg_id)
+            if seen is not None and now - seen <= self._dedup_window:
                 return True
             self._recent_ids[msg_id] = now
             # Cleanup old entries
@@ -449,7 +451,7 @@ class MeshtasticPresetBridge:
         )
 
         # Duplicate suppression
-        self._seen_messages: Dict[str, datetime] = {}
+        self._seen_messages: Dict[str, float] = {}  # key -> monotonic s
         self._seen_lock = threading.Lock()
 
         # Threads
@@ -808,14 +810,7 @@ class MeshtasticPresetBridge:
                 if self._stop_event.wait(10):
                     break
 
-                cutoff = datetime.now() - timedelta(
-                    seconds=self.bridge_config.dedup_window_sec
-                )
-
-                with self._seen_lock:
-                    expired = [k for k, v in self._seen_messages.items() if v < cutoff]
-                    for key in expired:
-                        del self._seen_messages[key]
+                self._expire_seen()
                 self._handoff.sweep()
 
             except Exception as e:
@@ -1219,13 +1214,27 @@ class MeshtasticPresetBridge:
     def _is_duplicate(self, msg: BridgedMeshMessage) -> bool:
         """Check if message was recently seen (loop prevention)."""
         key = msg.dedup_key
+        now = time.monotonic()
 
         with self._seen_lock:
-            if key in self._seen_messages:
+            seen = self._seen_messages.get(key)
+            if seen is not None and (
+                    now - seen <= self.bridge_config.dedup_window_sec):
                 return True
 
-            self._seen_messages[key] = datetime.now()
+            self._seen_messages[key] = now
             return False
+
+    def _expire_seen(self):
+        """Drop dedup entries older than the window. Ages are MONOTONIC
+        (honest_failure_modes #6): on an RTC-less Pi a backward NTP step
+        made wall-clock entries look young for the length of the step, so
+        a 60 s window became hours and legitimate repeats were dropped."""
+        cutoff = time.monotonic() - self.bridge_config.dedup_window_sec
+        with self._seen_lock:
+            expired = [k for k, v in self._seen_messages.items() if v < cutoff]
+            for key in expired:
+                del self._seen_messages[key]
 
     # ========================================
     # Queue Send Callbacks
