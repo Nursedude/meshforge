@@ -1,7 +1,8 @@
 # Proposal — one domain roadmap that every repo and every session can find (2026-10-19)
 
-**Status: DRAFT for operator review → then `mattpocock-skills:grilling` → then ROADMAP.md.**
-Nothing here is applied yet. Operator framing: *"continuity matters — users could
+**Status: DECIDED 2026-10-19 (operator, grilling — 25 decisions, recorded below; they SUPERSEDE
+the draft text where they differ).** Nothing applied to ROADMAP.md yet: the migration runs in a
+FRESH session (Q13). Operator framing: *"continuity matters — users could
 run maps via meshforge or standalone. it just works."* Origin: the outside research
 review artifact (2026-10-18) noted the domain would benefit from a more cohesive
 roadmap.
@@ -59,7 +60,8 @@ are this repo's."* The sister repos keep NO roadmap of their own.
 **R5 — Enforced, not remembered** (build:fix doctrine — gates, not prose):
 - lint: ROADMAP size cap (like MF012 for persistent_issues); fails loudly
 - test: every Now/Next item has an ID and a repo tag; `[maps]` items carry `maps:both`
-- `parity_check.py` gains a leg: each sister repo's CLAUDE.md carries the pointer
+- ~~`parity_check.py` pointer leg~~ — DROPPED (Q25: machinery watching one line; the
+  session-start NOW print does the real job)
 
 ## Before / after — three real items
 
@@ -104,3 +106,41 @@ NEXT
 3. Does `twin→MA` mean "MA within the same week" or "MA before the next MF release"?
 4. Should a `[maps]` item that only touches standalone (no plugin path) be allowed at all?
 5. Who may move an item between Now/Next/Later — operator only, or any session with a reason?
+
+## DECIDED — the 25 answers (operator, 2026-10-19; all "yes" to the recommendation)
+
+**Scope & home**
+- Q1 Repos in the one roadmap: MF, MA, maps, bot (`meshing_around_meshforge`), RNS/LXMF forks (`[fork]`). OUT: `RNS-Management-Tool`, `RNS-Meshtastic-Gateway-Tool` (ARCHIVED 2026-09-25, measured) — fix `foundations/meshforge_ecosystem.md`, which still lists them active.
+- Q2 Home stays meshforge `.claude/ROADMAP.md`; sister repos keep none, one pointer line each.
+
+**Items**
+- Q6 Every item: S / F / S+F.
+- Q10 Stable IDs (existing kept; new = family prefix); a test keeps them unique; never reused.
+- Q7 + Q18 Twin tags BOTH ways — `twin→MA` (MF leads: RNS, bridge, harness) / `twin→MF` (MA leads: MeshCore). The lead lands first; the item is DONE only when the twin lands too (or the operator declares the twin not applicable).
+- Q8 `[maps]` items: `maps:both` by default (plugin AND standalone 8808/8809 = acceptance); single-mode only with a written reason.
+- Q9 Upstream offer-backs = `[fork] offer-back` items in LATER; posting needs the operator's go.
+- Q14 An item = anything that outlives the session it was found in; same-session fixes go straight to provenance.
+
+**Flow**
+- Q3 The ROADMAP is the ONLY list of future work. Provenance = what happened; its `## QUEUED` sections are retired; handoffs cite IDs; `deferred_work.json` holds only timed reminders pointing at an ID.
+- Q4 Done leaves the list the same day → one provenance line `<ID> DONE <sha> — verdict`; never struck through in place.
+- Q5 NOW is the operator's (only the operator moves items in/out); sessions may ADD to NEXT/LATER with a reason and must say so in the handoff.
+- Q15 "Won't do": sessions propose with a reason; the operator confirms; until then the item stays.
+- Q16 The session-start hook prints ROADMAP NOW (ID + one line) in MF AND MA checkouts.
+
+**Structure & gates** (each built test-first, shown failing on today's file; non-author review of the gates)
+- Q17 Strategy sections (What we are / Why we win / 1.0 checks / Rules) stay, stale-fixes only; only Now/Next/Later is restructured; they count toward the cap.
+- Q11 Size cap = measured post-migration size × 1.25, lint-enforced, ratchet down only.
+- Q25 Pointer-parity gate DROPPED.
+
+**Public roadmap for users and testers**
+- Q19 `docs/roadmap.md`, linked from the top of the README; plain language; by reader — *If you run one box* (S) · *If you run several boxes* (F) · *Maps* ("works inside MeshForge or on its own") · *Sister projects*; a small `(ref ID)` per item.
+- Q20 GENERATED from the internal roadmap; an item appears only with a `public:` one-sentence line; a test fails if the committed file differs from the generator's output.
+- Q21 Three statuses, no dates: **Works today** (evidence required) · **Being tested — help wanted** · **Planned**.
+- Q22 "Help wanted: <hardware/setup> — <what to try>" on being-tested items, linking a **Test report** issue template (hardware, firmware, offering, steps, result, logs).
+- Q23 The template lives in MeshForge AND MeshAnchor, label `tester-report`; a report that moves a status is cited in provenance by issue number.
+- Q24 The public file is under MF014/MF015; the generator REFUSES a `public:` line that would fail them.
+
+**Migration** (Q12/Q13): fresh session · one content commit · today's 6 queued rows triaged (operator confirms any won't-do) · the two `v1.0_roadmap.md` copies deleted only after a line-by-line diff into "1.0 = these checks pass" · gates test-first + non-author review · MA/maps pointer lines via their own repos' commits and CI.
+
+**Open, not a design question:** whether testers come. A page does not recruit; linking it where hams already gather is the operator's call.
