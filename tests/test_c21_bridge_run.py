@@ -554,3 +554,25 @@ def test_channel0_is_written_after_the_transaction_not_inside_it():
     # a reboot wait + fresh connection between the commit and the channel write
     between = calls[calls.index("commit"):calls.index("channel:0")]
     assert any(c.startswith("wait:") for c in between) and "open" in between
+
+
+def test_configure_proves_the_config_survives_a_restart():
+    # MEASURED 2026-10-19: mpv4's readback agreed (0 mismatches), yet after a
+    # restart it was back on slot 0 / 30 dBm / default channel — the config
+    # lived in RAM only (the persistent_issues "uncommitted edit txn" class).
+    # Only a readback AFTER a reboot proves the radio will run the plan.
+    calls = []
+    results = iter([[], [("lora.channel_num", 80, 0)]])     # agrees, then reverts
+    verdict = c21.confirm_persisted(
+        "src_lf", "/dev/serial/by-path/x",
+        verify=lambda role, port: (calls.append("verify"), next(results))[1],
+        reboot=lambda port: calls.append("reboot"),
+        wait=lambda s: calls.append(f"wait:{s}"))
+    assert calls[:2] == ["verify", "reboot"] and calls[-1] == "verify"
+    assert verdict == [("lora.channel_num", 80, 0)]
+
+
+def test_a_config_that_survives_the_restart_is_confirmed():
+    verdict = c21.confirm_persisted("leg_lf", "p", verify=lambda r, p: [],
+                                    reboot=lambda p: None, wait=lambda s: None)
+    assert verdict == []

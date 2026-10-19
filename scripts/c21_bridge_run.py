@@ -653,6 +653,35 @@ def write_radio(plan: Dict[str, Any], port: str, *, opener=None, wait=None) -> N
         _close(iface)
 
 
+def _reboot_radio(port: str) -> None:
+    iface = _open(port)
+    try:
+        iface.localNode.reboot(2)
+    finally:
+        _close(iface)
+
+
+def confirm_persisted(role: str, port: str, *, verify=None, reboot=None,
+                      wait=None) -> List[Tuple[str, Any, Any]]:
+    """Mismatches after the radio RESTARTS — empty means the plan persisted.
+
+    MEASURED 2026-10-19 (mpv4): a readback straight after the write agreed,
+    yet after a restart the radio was back on slot 0 / 30 dBm / the default
+    channel — the settings lived in RAM only, so the running LoRa radio was
+    never retuned and both smoke runs lost every LF message. A readback
+    proves only what the radio HOLDS; surviving a restart proves what it RUNS.
+    """
+    verify = verify or _verify_role
+    reboot = reboot or _reboot_radio
+    wait = wait or (lambda s: threading.Event().wait(s))
+    first = verify(role, port)
+    if first:
+        return first
+    reboot(port)
+    wait(REBOOT_WAIT_S)
+    return verify(role, port)
+
+
 def cmd_configure(a) -> int:
     _refuse_if_held(a.port)
     plan = radio_plan(a.role, psk=_load_psk())
@@ -666,7 +695,7 @@ def cmd_configure(a) -> int:
     write_radio(plan, a.port)
     print(f"{a.role}: written; waiting {REBOOT_WAIT_S}s before the readback")
     threading.Event().wait(REBOOT_WAIT_S)
-    bad = _verify_role(a.role, a.port)
+    bad = confirm_persisted(a.role, a.port)   # readback, restart, readback
     if bad:
         for key, want, have in bad:
             print(f"MISMATCH {a.role} {key}: want {want!r}, radio says {have!r}")
@@ -674,7 +703,7 @@ def cmd_configure(a) -> int:
         return 1
     print(f"OK {a.role} {a.port}: {plan['lora.modem_preset']} slot "
           f"{plan['lora.channel_num']} = {plan['freq_mhz']} MHz (physics until a "
-          f"receiver confirms), {plan['lora.tx_power']} dBm, readback agrees")
+          f"receiver confirms), {plan['lora.tx_power']} dBm, readback agrees AND survived a restart")
     return 0
 
 
