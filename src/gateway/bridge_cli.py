@@ -307,10 +307,16 @@ def _format_counts(stats: dict) -> list:
         r2m_a = stats.get('rns_to_mesh_attempted', 0)
         r2m_d = stats.get('rns_to_mesh_dropped', 0)
         if m2r_a or r2m_a:
+            # A requeued M->R message is PENDING until the queue reports its
+            # outcome (_m2r_accounting) — name the gap, never leave it bare.
+            # Appended AFTER the R->M triplet: two parsers anchor on it.
+            m2r_pending = max(0, m2r_a - stats.get('mesh_to_rns_delivered', m2r)
+                              - m2r_d)
             lines.append(
                 f"  attempted/delivered/dropped — "
                 f"M->R: {m2r_a}/{m2r}/{m2r_d}  "
                 f"R->M: {r2m_a}/{r2m}/{r2m_d}"
+                + (f"  (M->R pending: {m2r_pending})" if m2r_pending else "")
             )
         return lines
 

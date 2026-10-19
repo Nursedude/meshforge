@@ -890,6 +890,10 @@ class MQTTBridgeHandler(BaseMessageHandler):
                         )
                         with self._stats_lock:
                             self.stats['errors'] += 1
+                            # a message lost before any attempt: count both
+                            # halves so attempted = delivered + dropped + pending
+                            self.stats['mesh_to_rns_attempted'] = (
+                                self.stats.get('mesh_to_rns_attempted', 0) + 1)
                             self.stats['mesh_to_rns_dropped'] += 1
 
         # Notify callback

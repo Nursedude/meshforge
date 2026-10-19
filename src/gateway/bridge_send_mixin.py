@@ -221,10 +221,14 @@ class BridgeSendMixin:
         worker re-runs it through _process_mesh_to_rns."""
         ready = lambda: bool(self._connected_rns)  # noqa: E731
         # ROADMAP 6f: deferred or gated M→R rows expire after M2R_MAX_AGE_S.
+        # on_terminal: each row's final outcome resolves the message it
+        # carries — delivered / dropped counted exactly once (_m2r_accounting).
         queue.register_sender("rns", self._queue_send_rns, ready_fn=ready,
-                              max_age_s=M2R_MAX_AGE_S)
+                              max_age_s=M2R_MAX_AGE_S,
+                              on_terminal=self._m2r_on_terminal)
         queue.register_sender("rns_xform", self._dispatch_rns_xform_spill,
-                              ready_fn=ready, max_age_s=M2R_MAX_AGE_S)
+                              ready_fn=ready, max_age_s=M2R_MAX_AGE_S,
+                              on_terminal=self._m2r_on_xform_terminal)
 
     @staticmethod
     def _m2r_defer_delay(payload: Dict) -> float:
@@ -433,11 +437,19 @@ class BridgeSendMixin:
                 content_id=payload.get('content_id', '') or '',
                 metadata=metadata,
             )
-            self._process_mesh_to_rns(msg)
-            return True
         except Exception as e:
             logger.error(f"rns_xform spill dispatch failed: {e}")
             return False
+        try:
+            self._process_mesh_to_rns(msg)
+        except Exception as e:  # noqa: BLE001
+            # The replay already claimed its origin: a retry of this row would
+            # count the message a second time. Done — with a witness.
+            with self._stats_lock:
+                self.stats['m2r_replay_raised'] = (
+                    self.stats.get('m2r_replay_raised', 0) + 1)
+            logger.error(f"rns_xform replay raised (not retried): {e}")
+        return True
 
     def enqueue_message(self, message: str, destination: str, dest_type: str = "meshtastic",
                         priority: str = "normal",

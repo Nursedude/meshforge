@@ -30,7 +30,7 @@ message_queue.py).
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Callable, Dict, Optional  # noqa: F401
 
 from gateway import delivery_counters as _dc
 from .message_queue_models import AGE_SANITY_CAP_S
@@ -121,6 +121,34 @@ class MessageQueueOutageMixin:
         logger.debug(f"Message {msg_id} deferred {delay_s:.0f}s ({reason})")
         return True
 
+    def _fire_terminal(self, destination: Optional[str],
+                       payload: Optional[Dict], outcome: str) -> None:
+        """Run the destination's terminal hook (``register_sender``'s
+        ``on_terminal``): once per row at every exit — delivered, dead-letter,
+        stale dead-letter, shed, expired. Never raises: a callback bug
+        is counted (``terminal_callback_errors``) and logged, never allowed
+        to undo the queue transition that already happened."""
+        # getattr: this file is byte-locked with MeshAnchor, whose queue has
+        # no terminal hooks yet — there this is a no-op.
+        cb = getattr(self, '_terminal_callbacks', {}).get(destination or "")
+        if cb is None:
+            return
+        try:
+            cb(dict(payload or {}), outcome)
+        except Exception as e:  # noqa: BLE001 — witness, never propagate
+            with self._lock:
+                self._stats["terminal_callback_errors"] += 1
+            logger.warning(
+                f"Queue terminal callback for {destination} ({outcome}) "
+                f"raised: {e}")
+
+    @staticmethod
+    def _row_payload(row) -> Dict:
+        try:
+            return json.loads(row["payload"]) if row and row["payload"] else {}
+        except (TypeError, ValueError):
+            return {}
+
     def expire_overdue(self) -> int:
         """Dead-letter rows older than their destination's max_age_s."""
         expired = 0
@@ -182,6 +210,8 @@ class MessageQueueOutageMixin:
             """, (datetime.now().isoformat(),
                   f"expired after {age:.0f}s (max {max_age:.0f}s)",
                   msg_id)).rowcount
+            row = conn.execute("SELECT payload FROM messages WHERE id = ?",
+                               (msg_id,)).fetchone() if changed == 1 else None
         if changed != 1:
             return False  # delivered/claimed meanwhile: not ours to witness
         with self._lock:
@@ -194,4 +224,5 @@ class MessageQueueOutageMixin:
         logger.warning(
             f"Message {msg_id} ({destination}) EXPIRED after {age / 3600:.1f} h "
             f"undelivered — dead-lettered")
+        self._fire_terminal(destination, self._row_payload(row), "dropped")
         return True

@@ -892,10 +892,12 @@ class TestProcessMeshToRNS:
             bridge._process_mesh_to_rns(msg)
 
         assert bridge.stats['errors'] == 1
-        # Hardening D: exception path also marks dropped
+        # Requeued = PENDING, not dropped: the queue reports the outcome
+        # later (2026-10-18 acceptance — exactly one of delivered/dropped;
+        # this used to count dropped AND let a later retry deliver).
         assert bridge.stats['mesh_to_rns_attempted'] == 1
         assert bridge.stats['mesh_to_rns_delivered'] == 0
-        assert bridge.stats['mesh_to_rns_dropped'] == 1
+        assert bridge.stats['mesh_to_rns_dropped'] == 0
         bridge.health.record_message_failed.assert_called_once_with("mesh_to_rns", requeued=True)
 
     def test_body_is_clean_identity_in_title(self, bridge):
@@ -2853,7 +2855,14 @@ class TestBridgeStartRefuses:
         must not silently fall through. Bridge refuses to start; service exits;
         operator sees the failure in journalctl. Prevents a recurrence of the
         2026-04-24 vail/Regional leak."""
+        # Import BEFORE caplog listens: the module's import-time get_logger()
+        # runs setup_logging() on first use, which clears the root handlers
+        # (caplog's included) — run alone, this test caught nothing; in-file
+        # it passed only because an earlier test had imported it first.
+        import logging
         from gateway._channel_resolver import ChannelResolutionError
+        caplog.clear()
+        logging.getLogger().addHandler(caplog.handler)
 
         with patch(
             "gateway._channel_resolver.apply_resolved_channel",

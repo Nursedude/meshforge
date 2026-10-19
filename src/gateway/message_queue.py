@@ -157,6 +157,8 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
         self._last_dispatch_ts: Dict[str, float] = {}  # destination -> time.monotonic()
         self._success_callbacks: List[Callable] = []
         self._failure_callbacks: List[Callable] = []
+        # on_terminal hooks per destination (see _fire_terminal)
+        self._terminal_callbacks: Dict[str, Callable[[Dict, str], None]] = {}
 
         # Initialize database
         self._init_db()
@@ -167,6 +169,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
             "gated_skips": 0,
             "deferred_total": 0,
             "expired_total": 0,
+            "terminal_callback_errors": 0,
             "age_unknown": 0,
             "clock_jumps": 0,
             "delivered": 0,
@@ -564,7 +567,8 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                 # don't pass it — keep this cheap by reusing the row
                 # we already have.
                 row = conn.execute(
-                    "SELECT destination FROM messages WHERE id = ?", (msg_id,),
+                    "SELECT destination, payload FROM messages WHERE id = ?",
+                    (msg_id,),
                 ).fetchone()
                 protocol = row["destination"] if row else None
                 _dc.record(
@@ -572,8 +576,13 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                     msg_id=msg_id,
                     protocol=protocol,
                 )
-                return True
+                terminal = (protocol, self._row_payload(row))
+            else:
+                terminal = None
+        if terminal is None:  # hook runs outside the connection
             return False
+        self._fire_terminal(terminal[0], terminal[1], "delivered")
+        return True
 
     def mark_failed(self, msg_id: str, error: str = "") -> bool:
         """
@@ -669,17 +678,20 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
 
             # Update in database
             data = message.to_dict()
-            conn.execute("""
+            changed = conn.execute("""
                 UPDATE messages
                 SET status = ?, updated_at = ?, retry_count = ?,
                     retry_after = ?, error_message = ?
-                WHERE id = ?
+                WHERE id = ? AND status NOT IN ('dead_letter', 'delivered')
             """, (
                 data["status"], data["updated_at"], data["retry_count"],
                 data["retry_after"], data["error_message"], msg_id
-            ))
+            )).rowcount
 
-            return True
+        if changed == 1 and message.status == MessageStatus.DEAD_LETTER:
+            self._fire_terminal(message.destination, message.payload,
+                                "dropped")
+        return changed == 1  # False: row already finished, nothing changed
 
     def set_retry_policy(self, policy: RetryPolicy) -> None:
         """
@@ -910,7 +922,9 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                         send_fn: Callable[[Dict], bool],
                         min_spacing_s: float = 0.0,
                         ready_fn: Optional[Callable[[], bool]] = None,
-                        max_age_s: Optional[float] = None) -> None:
+                        max_age_s: Optional[float] = None,
+                        on_terminal: Optional[Callable[[Dict, str], None]] = None,
+                        ) -> None:
         """
         Register a send function for a destination.
 
@@ -942,6 +956,11 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
             self._send_max_age.pop(destination, None)
         else:
             self._send_max_age[destination] = float(max_age_s)
+        # on_terminal(payload, "delivered"|"dropped"): once per row, at every exit
+        if on_terminal is None:
+            self._terminal_callbacks.pop(destination, None)
+        else:
+            self._terminal_callbacks[destination] = on_terminal
 
     def register_success_callback(self, callback: Callable[[QueuedMessage], None]) -> None:
         """Register callback for successful delivery."""
@@ -1181,14 +1200,16 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
         with self._get_connection() as conn:
             # Find candidates: pending, lowest priority first, oldest first
             cursor = conn.execute("""
-                SELECT id, destination FROM messages
+                SELECT id, destination, payload FROM messages
                 WHERE status = 'pending'
                 AND priority <= ?
                 ORDER BY priority ASC, created_at ASC
                 LIMIT ?
             """, (MessagePriority.NORMAL.value, count))
 
-            rows = [(row["id"], row["destination"]) for row in cursor.fetchall()]
+            fetched = cursor.fetchall()
+            rows = [(row["id"], row["destination"]) for row in fetched]
+            shed_payloads = [self._row_payload(row) for row in fetched]
             if not rows:
                 return 0
 
@@ -1208,13 +1229,14 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
         # forever, and the shed silently vanishes from the delivery-counter
         # populations. QUEUE_SHED existed in the closed taxonomy with no
         # recording site until 2026-07-09 (frontier review Pri-2).
-        for msg_id, destination in rows:
+        for (msg_id, destination), payload in zip(rows, shed_payloads):
             _dc.record(
                 _dc.DeliveryState.DROPPED,
                 msg_id=msg_id,
                 protocol=destination,
                 drop_reason=_dc.DropReason.QUEUE_SHED,
             )
+            self._fire_terminal(destination, payload, "dropped")
         return shed_count
 
     def _maybe_auto_cleanup(self) -> None:
@@ -1284,7 +1306,8 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
             if _SQLITE_SUPPORTS_RETURNING:
                 exhausted = [
                     {"id": r["id"], "destination": r["destination"],
-                     "retry_count": r["retry_count"]}
+                     "retry_count": r["retry_count"],
+                     "payload": self._row_payload(r)}
                     for r in conn.execute("""
                         UPDATE messages
                         SET status = 'dead_letter',
@@ -1292,7 +1315,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                             updated_at = ?, error_message = ?
                         WHERE status = 'in_progress' AND updated_at < ?
                         AND retry_count + 1 >= max_retries
-                        RETURNING id, destination, retry_count
+                        RETURNING id, destination, retry_count, payload
                     """, (now, self.STALE_RESET_ERROR, cutoff)).fetchall()
                 ]
             else:
@@ -1318,6 +1341,8 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                 drop_reason=_dc.DropReason.RETRIES_EXHAUSTED,
                 note=f"stale_in_progress retry_count={row['retry_count']}",
             )
+            self._fire_terminal(row["destination"], row.get("payload"),
+                                "dropped")
 
         dead_count = len(exhausted)
         total = reset_count + dead_count
@@ -1333,7 +1358,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
         only — the per-row UPDATE in _dead_letter_stale_per_row re-checks
         status so a concurrent transition is never witnessed as dropped."""
         return conn.execute("""
-            SELECT id, destination, retry_count FROM messages
+            SELECT id, destination, retry_count, payload FROM messages
             WHERE status = 'in_progress' AND updated_at < ?
             AND retry_count + 1 >= max_retries
         """, (cutoff,)).fetchall()
@@ -1356,7 +1381,8 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
             if changed:
                 out.append({"id": row["id"],
                             "destination": row["destination"],
-                            "retry_count": row["retry_count"] + 1})
+                            "retry_count": row["retry_count"] + 1,
+                            "payload": self._row_payload(row)})
         return out
 
     def get_dead_letters(self, limit: int = 100) -> List[QueuedMessage]:

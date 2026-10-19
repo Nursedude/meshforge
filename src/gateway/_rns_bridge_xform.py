@@ -207,8 +207,12 @@ class MessageTransformMixin:
         On send failure for non-broadcast messages, attempts to persist
         to the persistent queue for later retry.
         """
-        with self._stats_lock:
-            self.stats['mesh_to_rns_attempted'] += 1
+        # Every message ends in exactly ONE of delivered / dropped (see
+        # _m2r_accounting). A replay of an attempted message claims its
+        # origin: the attempt was already counted.
+        meta0 = msg.metadata if isinstance(msg.metadata, dict) else {}
+        attempt_counted = self._m2r_claim_replay(meta0.get('m2r_origin'))
+        outcome_counted = False
         sent_count = 0  # read by the except path: never requeue a sent copy
         try:
             content = msg.content
@@ -225,7 +229,13 @@ class MessageTransformMixin:
                     self.stats['mesh_to_rns_own_echo_skipped'] = (
                         self.stats.get('mesh_to_rns_own_echo_skipped', 0) + 1)
                 logger.debug("Mesh→RNS: own-node DM echo skipped")
+                if attempt_counted:  # cannot happen in practice; never leak
+                    self._m2r_count('dropped')
                 return
+            if not attempt_counted:  # an own echo is not a user message
+                with self._stats_lock:
+                    self.stats['mesh_to_rns_attempted'] += 1
+                attempt_counted = True
 
             long_name = ""
             short_name = ""
@@ -315,6 +325,7 @@ class MessageTransformMixin:
                             self.stats.get('session_routed_m2r', 0) + 1)
                         self.stats['messages_mesh_to_rns'] += 1
                         self.stats['mesh_to_rns_delivered'] += 1
+                    outcome_counted = True
                     self.health.record_message_sent("mesh_to_rns")
                     # No content in the journal: a session DM is private.
                     logger.info(
@@ -327,7 +338,9 @@ class MessageTransformMixin:
                     # and tell the sender there is no conversation (F1).
                     requeued = self._requeue_failed_message(
                         msg, "rns", rns_destinations=[dest_bytes],
-                        title=title, fields=fields)
+                        title=title, fields=fields,
+                        origin=self._m2r_new_origin(),
+                        session=(msg.source_id, peer_hex, reply_token))
                     with self._stats_lock:
                         key = ('session_m2r_requeued' if requeued
                                else 'session_m2r_dropped')
@@ -335,6 +348,7 @@ class MessageTransformMixin:
                         self.stats['errors'] += 1
                         if not requeued:
                             self.stats['mesh_to_rns_dropped'] += 1
+                    outcome_counted = True  # requeued = pending; never twice
                     logger.warning(
                         f"Mesh→RNS (session): send to {peer_hex[:8]} failed — "
                         f"{'requeued at that peer' if requeued else 'NOT requeued (dedup/queue)'}")
@@ -365,6 +379,7 @@ class MessageTransformMixin:
                 # the default list includes peer gateways that re-emit on RF,
                 # so a fan-out publishes it. (A non-broadcast with NO
                 # destination carries no private fact and keeps the fan-out.)
+                outcome_counted = True  # the refusal counts dropped itself
                 self._refuse_private_fanout(msg, content)
                 return
 
@@ -441,6 +456,7 @@ class MessageTransformMixin:
                 with self._stats_lock:
                     self.stats['messages_mesh_to_rns'] += 1
                     self.stats['mesh_to_rns_delivered'] += 1
+                outcome_counted = True
                 self.health.record_message_sent("mesh_to_rns")
             elif msg.is_broadcast:
                 # Broadcast that didn't land — debug-only, not an error. Could be no
@@ -449,87 +465,55 @@ class MessageTransformMixin:
                 logger.debug(f"Mesh→RNS broadcast not delivered: {content[:30]}...")
                 with self._stats_lock:
                     self.stats['mesh_to_rns_dropped'] += 1
+                outcome_counted = True
             else:
                 logger.warning(f"Failed to bridge Mesh→RNS: {content[:30]}...")
                 with self._stats_lock:
                     self.stats['errors'] += 1
-                    self.stats['mesh_to_rns_dropped'] += 1
                 # F4: retry each failed leg at the hash it already resolved
                 # to — never re-resolve, which could widen a DM's audience.
+                # Requeued = PENDING (the queue reports the outcome); only an
+                # un-queueable failure is dropped now.
                 requeued = self._requeue_failed_message(
                     msg, "rns", rns_destinations=destinations,
-                    title=title, fields=fields)
+                    title=title, fields=fields,
+                    origin=self._m2r_new_origin())
+                if not requeued:
+                    self._m2r_count('dropped')
+                outcome_counted = True
                 self.health.record_message_failed("mesh_to_rns", requeued=requeued)
 
         except Exception as e:
             logger.error(f"Error bridging Mesh→RNS: {e}")
             with self._stats_lock:
                 self.stats['errors'] += 1
-                self.stats['mesh_to_rns_dropped'] += 1
-            self.health.record_error("rns", e)
+                if not attempt_counted:  # raised before the attempt count
+                    self.stats['mesh_to_rns_attempted'] += 1
+            try:
+                self.health.record_error("rns", e)
+            except Exception:  # noqa: BLE001 — the outcome below must land
+                logger.exception("Mesh→RNS: health.record_error raised")
             requeued = False
             if sent_count:
                 # Already on the wire: a retry would be a duplicate.
                 logger.warning("Mesh→RNS: raised after a send — not requeued")
+                if not outcome_counted:
+                    self._m2r_count('delivered')
+            elif outcome_counted:
+                pass
             elif (msg.metadata or {}).get('m2r_replay'):
                 logger.warning("Mesh→RNS: replay raised again — not requeued")
+                self._m2r_count('dropped')
             else:
-                requeued = self._requeue_failed_message(msg, "rns")
-            self.health.record_message_failed("mesh_to_rns", requeued=requeued)
-
-    def _refuse_private_fanout(self, msg, content) -> None:
-        """Refuse a Mesh→RNS DM that has no single recipient (F14), leave a
-        witness, and — only when it was addressed to THIS gateway — tell the
-        sender once per window. Never raises; never logs the content."""
-        with self._stats_lock:
-            self.stats['mesh_to_rns_private_refused'] = (
-                self.stats.get('mesh_to_rns_private_refused', 0) + 1)
-            self.stats['mesh_to_rns_dropped'] += 1
-        logger.warning(
-            f"Mesh→RNS: refusing DM from {msg.source_id} to "
-            f"{msg.destination_id} — no single RNS recipient; a DM is never "
-            f"fanned to the default list (F14)")
-        self.health.record_message_failed("mesh_to_rns", requeued=False)
-
-        own_id = self._own_mesh_node_id()
-        src = (msg.source_id or "").lower()
-        if (not own_id or (msg.destination_id or "").lower() != own_id
-                or not src or src == own_id
-                or self._reply_excluded(content, {})):
-            return
-        now = time.monotonic()
-        with self._stats_lock:  # two threads reach here (queue + spill drain)
-            sent_at = getattr(self, '_private_notice_sent_at', None)
-            if sent_at is None:
-                sent_at = self._private_notice_sent_at = {}
-            last = sent_at.get(src)
-            if last is not None and 0 <= now - last < PRIVATE_NOTICE_WINDOW_S:
-                self.stats['mesh_to_rns_private_notice_suppressed'] = (
-                    self.stats.get('mesh_to_rns_private_notice_suppressed', 0) + 1)
-                return
-            sent_at[src] = now
-            if len(sent_at) > 512:
-                for k in sorted(sent_at, key=sent_at.get)[:256]:
-                    sent_at.pop(k, None)
-        text = PRIVATE_REFUSED_NOTICE + (
-            PRIVATE_REFUSED_NOTICE_SESSIONS if self._sessions_on() else "") + "."
-        channel = (msg.metadata or {}).get("channel")
-        if not isinstance(channel, int) or isinstance(channel, bool):
-            channel = getattr(getattr(self.config, 'meshtastic', None),
-                              'channel', 0)
-            if not isinstance(channel, int) or isinstance(channel, bool):
-                channel = 0
-        try:
-            ok = self.send_to_meshtastic(
-                text, destination=msg.source_id,
-                channel=channel)
-        except Exception as e:
-            logger.warning(f"Mesh→RNS: refusal notice to {msg.source_id} failed: {e}")
-            ok = False
-        key = ('mesh_to_rns_private_notice_sent' if ok
-               else 'mesh_to_rns_private_notice_failed')
-        with self._stats_lock:
-            self.stats[key] = self.stats.get(key, 0) + 1
+                requeued = self._requeue_failed_message(
+                    msg, "rns", origin=self._m2r_new_origin())
+                if not requeued:
+                    self._m2r_count('dropped')
+            try:
+                self.health.record_message_failed("mesh_to_rns",
+                                                  requeued=requeued)
+            except Exception:  # noqa: BLE001 — never escape after claiming
+                logger.exception("Mesh→RNS: health.record_message_failed raised")
 
     def _get_rns_destination(self, meshtastic_id: str) -> Optional[bytes]:
         """Look up RNS destination hash for a Meshtastic node ID.
@@ -561,7 +545,8 @@ class MessageTransformMixin:
 
     def _requeue_failed_message(self, msg, destination: str,
                                 rns_destinations=None, title=None,
-                                fields=None) -> bool:
+                                fields=None, origin=None,
+                                session=None) -> bool:
         """Persist a failed message to the persistent queue for later retry.
 
         Args:
@@ -573,6 +558,9 @@ class MessageTransformMixin:
                 replayed whole through _process_mesh_to_rns ("rns_xform"),
                 so F14 and the broadcast fan-out decide again at retry time.
             title, fields: the LXMF title/fields the live send carried.
+            origin, session: M→R outcome accounting (_m2r_accounting) — the
+                rows carry ``origin`` and the message is tracked PENDING on
+                as many rows as were actually persisted.
 
         Returns:
             True if message was successfully persisted, False otherwise.
@@ -621,31 +609,57 @@ class MessageTransformMixin:
                 # to retry at, and replaying it would only loop (review R3).
                 fields = dict(fields or {})
                 persisted = 0
-                for dest_hash in rns_destinations:
-                    dest_hex = dest_hash.hex()
-                    persisted += bool(self._persistent_queue.enqueue(
-                        payload={
-                            'message': content,
-                            # 'destination' keys the queue's dedup hash —
-                            # without it every leg of a fan-out collapses
-                            # into the first row.
-                            'destination': dest_hex,
-                            'destination_hash': dest_hex,
-                            'title': title,
-                            'fields': fields,
-                            'source_id': source_id,
-                            'content_id': (fields.get('meshforge_content_id')
-                                           or dedup_cid),
-                        },
-                        destination="rns",
-                        priority=MessagePriority.NORMAL,
-                        created_at=first_enqueued,
-                    ))
+                if origin:  # before the first row can reach a terminal
+                    self._m2r_track(origin, len(rns_destinations) or 1, session)
+                try:
+                    for dest_hash in rns_destinations:
+                        dest_hex = dest_hash.hex()
+                        try:
+                            persisted += bool(self._persistent_queue.enqueue(
+                                payload={
+                                    'message': content,
+                                    # 'destination' keys the queue's dedup
+                                    # hash — without it every leg of a
+                                    # fan-out collapses into the first row.
+                                    'destination': dest_hex,
+                                    'destination_hash': dest_hex,
+                                    'title': title,
+                                    'fields': fields,
+                                    'source_id': source_id,
+                                    'content_id': (
+                                        fields.get('meshforge_content_id')
+                                        or dedup_cid),
+                                    **({'m2r_origin': origin}
+                                       if origin else {}),
+                                },
+                                destination="rns",
+                                priority=MessagePriority.NORMAL,
+                                created_at=first_enqueued,
+                            ))
+                        except Exception as e:  # noqa: BLE001
+                            # A raising enqueue (sqlite locked / disk I/O)
+                            # is THIS leg not persisted — the legs already
+                            # written are live rows and keep it pending.
+                            with self._stats_lock:
+                                self.stats['m2r_requeue_enqueue_errors'] = (
+                                    self.stats.get(
+                                        'm2r_requeue_enqueue_errors', 0) + 1)
+                            logger.error(
+                                f"Mesh→RNS requeue: enqueue for "
+                                f"{dest_hex[:8]} raised: {e}")
+                finally:
+                    if origin:
+                        self._m2r_settle(origin, persisted)
                 # enqueue() returns None on a dedup/queue-full drop: True
                 # here must mean a row exists (review R4).
                 return persisted > 0
             elif destination == "rns":
-                return bool(self._persistent_queue.enqueue(
+                if origin:
+                    metadata = {**metadata, 'm2r_origin': origin}
+                    self._m2r_track(origin, 1, session)
+                ok = False
+                try:
+                    ok = bool(self._persistent_queue.enqueue(
                     payload={
                         'source_id': source_id,
                         'destination_id': dest_id or "",
@@ -661,7 +675,11 @@ class MessageTransformMixin:
                     # except path, which refuses replays — kept so a future
                     # caller cannot silently restart the 24 h.
                     created_at=first_enqueued,
-                ))
+                    ))
+                finally:
+                    if origin:  # a raise below still releases the origin
+                        self._m2r_settle(origin, 1 if ok else 0)
+                return ok
             else:
                 self._persistent_queue.enqueue(
                     payload={

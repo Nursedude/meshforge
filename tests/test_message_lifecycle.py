@@ -273,12 +273,15 @@ class TestFailedMessages:
                 max_retries=1,  # Only 1 retry before dead letter
             )
 
-            # Fail it multiple times to exhaust retries
+            # max_retries=1: the FIRST failure dead-letters the row. A late
+            # second mark_failed on the finished row is refused (returns
+            # False) and must not rewrite it (2026-10-18: it used to
+            # overwrite the dead row's error — the double-terminal class).
             q.mark_in_progress(msg_id)
-            q.mark_failed(msg_id, 'Test error 1')
+            assert q.mark_failed(msg_id, 'Test error 1') is True
 
             q.mark_in_progress(msg_id)
-            q.mark_failed(msg_id, 'Test error 2')  # Should go to dead_letter now
+            assert q.mark_failed(msg_id, 'Test error 2') is False
 
             q.record_lifecycle_event(
                 msg_id,
@@ -294,7 +297,7 @@ class TestFailedMessages:
 
         # Should have at least one dead letter message
         assert len(results) >= 1
-        assert results[0]['error_message'] == 'Test error 2'
+        assert results[0]['error_message'] == 'Test error 1'
 
 
 class TestLifecyclePurge:

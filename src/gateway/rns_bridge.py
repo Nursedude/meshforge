@@ -75,6 +75,7 @@ from .correlation_store import BridgeCorrelationStore
 from .meshcore_bridge_mixin import MeshCoreBridgeMixin
 from ._rns_bridge_connection import RNSConnectionMixin
 from ._rns_bridge_xform import MessageTransformMixin
+from ._m2r_accounting import M2RAccountingMixin
 from ._rns_bridge_aux import BridgeAuxMixin
 from .bridge_ack_mixin import BridgeAckMixin
 from .bridge_health_mixin import BridgeHealthMixin
@@ -187,6 +188,7 @@ class RNSMeshtasticBridge(
     RNSConnectionMixin,
     MeshCoreBridgeMixin,
     MessageTransformMixin,
+    M2RAccountingMixin,
     BridgeAuxMixin,
     BridgeAckMixin,
     BridgeHealthMixin,
@@ -1238,11 +1240,7 @@ class RNSMeshtasticBridge(
                     msg = self._mesh_to_rns_queue.get(timeout=0.1)
                     rns_state = self.health.get_subsystem_state("rns")
                     if rns_state in (SubsystemState.DISCONNECTED, SubsystemState.DISABLED):
-                        # RNS is down — queue for later delivery
-                        requeued = self._requeue_failed_message(msg, "rns")
-                        if requeued:
-                            self.health.record_message_queued_degraded()
-                            logger.debug("Mesh→RNS: RNS subsystem down, message queued")
+                        self._m2r_rns_down(msg)  # queue for later delivery
                     else:
                         self._process_mesh_to_rns(msg)
                     # Also route Meshtastic → MeshCore if handler active
