@@ -88,13 +88,16 @@ def _mock_observe(running, enabled, installed, masked=False):
         patch.object(pr, "check_systemd_service", return_value=(running, enabled)),
         patch.object(pr, "is_service_unit_installed", return_value=installed),
         patch.object(pr, "is_service_masked", return_value=masked),
+        # pinned: unpatched, the REAL `systemctl cat` decided verdicts (review 2026-10-19)
+        patch.object(pr, "service_unit_presence",
+                     return_value="installed" if installed else "absent"),
     )
 
 
 def _plan_one(unit, desired, running, enabled, installed, masked=False):
     role_def = {"services": {unit: desired}}
-    m1, m2, m3 = _mock_observe(running, enabled, installed, masked)
-    with m1, m2, m3:
+    m1, m2, m3, m4 = _mock_observe(running, enabled, installed, masked)
+    with m1, m2, m3, m4:
         return pr.plan(role_def)
 
 
@@ -141,8 +144,8 @@ class TestPlanServiceOverrides:
     def _plan_with_override(self, override, running, enabled, installed):
         # full-gateway expects meshforge-gateway enabled; the override waives it.
         role_def = {"services": {"meshforge-gateway": "enabled"}}
-        m1, m2, m3 = _mock_observe(running, enabled, installed)
-        with m1, m2, m3:
+        m1, m2, m3, m4 = _mock_observe(running, enabled, installed)
+        with m1, m2, m3, m4:
             return pr.plan(role_def, {"meshforge-gateway": override})
 
     def test_waiver_with_reason_is_nonblocking_advisory(self):
@@ -1433,6 +1436,10 @@ class TestRequiredUnitInstalledFromTemplate:
                          ("systemctl", "daemon-reload"), ("enable", "x", True)]
 
     # --- non-author review of c973c88e (2026-10-19) -------------------------
+
+    def test_presence_that_changed_between_observations_is_named_as_such(self):
+        (a,) = self._plan(template_exists=True, presence="installed")
+        assert a.verb == "warn" and "changed between observations" in a.detail
 
     def test_unobservable_presence_never_installs(self):
         # #1 CONFIRMED: a systemctl timeout read "not installed" and planned an

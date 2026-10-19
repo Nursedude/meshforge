@@ -682,11 +682,15 @@ def plan(role_def: dict, overrides: Optional[Dict[str, dict]] = None) -> List[Ac
                 # (non-author review of c973c88e, CONFIRMED by probe).
                 presence = service_unit_presence(unit)
                 tpl = _unit_template(unit)
-                if presence != "absent":
+                if presence == "unknown":
                     actions.append(Action(unit, "unknown", "enabled", "warn",
-                                          detail=f"unit presence UNOBSERVABLE "
-                                                 f"(systemctl cat: {presence}) — "
-                                                 f"not installing"))
+                                          detail="unit presence UNOBSERVABLE "
+                                                 "(systemctl cat failed) — not installing"))
+                elif presence != "absent":
+                    actions.append(Action(unit, "unknown", "enabled", "warn",
+                                          detail=f"unit presence changed between "
+                                                 f"observations (now {presence}) — "
+                                                 f"not installing; re-run"))
                 elif tpl is not None:
                     actions.append(Action(unit, "absent", "enabled", "install",
                                           detail=f"install from {tpl}"))
