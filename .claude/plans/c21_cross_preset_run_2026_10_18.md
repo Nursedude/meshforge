@@ -6,17 +6,24 @@ sustained cross-preset traffic to validate" (unproven since 2026-01-14,
 re-confirmed by the outside research review 2026-10-18). Matrix: the
 Meshtastic↔Meshtastic edge of `.claude/foundations/bridge_contract_matrix.md`.
 
-**Acceptance sentence (operator to approve or edit before the run):**
-"Over 24 h of scripted traffic both ways, every injected message is either
-delivered on the far leg or counted under a named drop reason. Duplicates
-are 0. Planted controls (a repeat and a pre-tagged loop) are dropped with
-their named reasons."
+**Acceptance sentence — APPROVED 2026-10-18 (operator: "your call go"; edited
+so an RF loss can never hide as, or be blamed on, the bridge):**
+"Over 24 h of scripted traffic both ways, every injected message is accounted
+for at each hop: either the bridge logged it as received or it is labelled
+RF-ingress loss. Each received message is then either heard by the far
+source radio, counted under a named bridge drop reason, or labelled
+RF-egress loss (the bridge logged the TX, the far radio did not hear it).
+Bridge-attributed unaccounted messages are 0, duplicates are 0, and the
+planted controls (a repeat and a pre-tagged loop) are dropped under their
+named reasons. RF losses are reported with their rate and any coincidence
+with moc4 HAT TX; they do not fail the bridge, but a rate above 5% per leg
+makes the run INCONCLUSIVE (re-site the radios), never a pass."
 
 ## Operator decisions (2026-10-18)
 - Host: **moc4** (Pi 4, 4 GB, RAK6421 HAT + sensors stay on fleet duty;
   `meshforge-gateway` inactive by role — NOT enabled; the test bridge runs
   as a transient `systemd-run` unit with its own config). 24 h undisturbed: yes.
-- Radios: spare Heltecs (several V3 + one V4) on **direct USB ports** (a hub
+- Radios: spare Heltecs (two V3 + two V4, Monday AM) on **direct USB ports** (a hub
   was declined: cross-over issues). Antennas on all. Best-effort spacing;
   moc4 is already surrounded by antennas.
 - Portables "meshforge v4" (near moc4) and "meshforge p5" (near moc5) stay on
@@ -30,8 +37,13 @@ their named reasons."
 |---|---|---|
 | V3 #1 | bridge primary (serial) | `MFLab` LONG_FAST, US slot 80 = 921.875 MHz |
 | V3 #2 | bridge secondary (serial) | `MFLab` SHORT_TURBO, US slot 45 = 924.25 MHz |
-| V4 | scripted source/sink, LF side | as primary |
-| V3 #3 | scripted source/sink, ST side | as secondary |
+| V4 #1 | scripted source/sink, LF side | as primary |
+| V4 #2 | scripted source/sink, ST side | as secondary |
+
+**Hardware (operator, 2026-10-18):** likely two V3 + two V4, installed on
+moc4 USB **Monday AM** (2026-10-20). The legs are the V3s (the model the
+bridge was already live-probed on); the sources are the V4s. ⚠️ The script
+must be BUILT and REVIEWED before then — nothing transmits until it is.
 
 All: random 256-bit PSK (never committed), ~1 dBm, hop_limit 1, MQTT uplink
 off, position off. Frequencies are PHYSICS (slot formula, reproduces fleet
