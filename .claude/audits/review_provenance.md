@@ -4499,3 +4499,10 @@ moc4 ran `meshforge-maps` active+enabled at `f8e8d2a` (role collector → maps d
 - **MeshCore→RNS:** single-shot path, failure logged only at DEBUG — add a drop counter + rate-limited WARNING (operator approved the small version, not yet built).
 - **maps:** no human-facing surface renders /api/core-health (hfm #11).
 - **Installer order:** MA install_noc reads $INSTALL_DIR templates before mf_git_sync — only bites when run outside /opt/meshanchor (now warned + documented).
+
+## 2026-10-18 · Opus 5.5 · MeshCore→RNS drop accounting — MA `31f9d2d9`, non-author reviewed 2 rounds (Fable 5.1), DEPLOYED
+- **Acceptance (operator-approved):** "A MeshCore→RNS message that doesn't go out is counted and said once at WARNING (rate-limited), never only a DEBUG line."
+- Reasons rns_down / rns_failed (DISABLED = permanent init failure, measured: the only setter) / unreachable / bad_destinations / config_unreadable / error; empty list on a loaded config = `meshcore_to_rns_not_configured` (INFO once, not a drop); health monitor told + exported; bridge_cli + TUI triplet.
+- Review R1 2 MED + 4 LOW, R2 2 MED (failed config load read "not configured"; TUI hid the all-dropped case behind a source-grep test) + 3 LOW — all fixed, each pinned red-without-fix. MA full suite 8492 passed; CI green; deployed, 7 MA units restarted.
+- **Live: UNKNOWN** — 0 MeshCore rx since the 18:30 HST restart (none in the prior 6 h), so the counters (created on first use) have not appeared yet. Check: `curl -s 127.0.0.1:8081/api/stats | grep meshcore_to_rns` on meshanchor-server after the next MeshCore message.
+- QUEUED from the review: MeshCore ingress `queue.Full` paths (meshcore_handler.py ~708/~879) WARN per message, uncounted — the MA sibling of MF `ff94052a`.
