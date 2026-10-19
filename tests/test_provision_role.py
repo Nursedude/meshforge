@@ -1393,8 +1393,9 @@ class TestRequiredUnitInstalledFromTemplate:
 
     ROLE = {"services": {"meshforge-watchdog": "enabled"}}
 
-    def _plan(self, template_exists):
+    def _plan(self, template_exists, presence="absent"):
         with patch.object(pr, "check_systemd_service", return_value=(False, False)), \
+             patch.object(pr, "service_unit_presence", return_value=presence), \
              patch.object(pr, "is_service_unit_installed", return_value=False), \
              patch.object(pr, "is_service_masked", return_value=False), \
              patch.object(pr, "_unit_template", return_value=(
@@ -1430,3 +1431,38 @@ class TestRequiredUnitInstalledFromTemplate:
             assert pr.apply_action(a) is True
         assert calls == [("write", "/etc/systemd/system/x.service"),
                          ("systemctl", "daemon-reload"), ("enable", "x", True)]
+
+    # --- non-author review of c973c88e (2026-10-19) -------------------------
+
+    def test_unobservable_presence_never_installs(self):
+        # #1 CONFIRMED: a systemctl timeout read "not installed" and planned an
+        # install that would OVERWRITE a hand-placed unit.
+        (a,) = self._plan(template_exists=True, presence="unknown")
+        assert a.verb == "warn" and a.required
+        assert "UNOBSERVABLE" in a.detail
+
+    def test_a_timer_installs_with_its_service_half(self, tmp_path):
+        # #2: writing only X.timer leaves enable --now failing on a missing trigger
+        (tmp_path / "g.timer").write_text("[Timer]\n")
+        (tmp_path / "g.service").write_text("[Service]\n")
+        written = []
+        with patch.object(pr, "SYSTEMD_TEMPLATE_DIR", tmp_path), \
+             patch.object(pr, "_sudo_write", side_effect=lambda p, c: (written.append(p), (True, "ok"))[1]), \
+             patch.object(pr, "_sudo_cmd_run", return_value=(True, "ok")), \
+             patch.object(pr, "enable_service", return_value=(True, "on")):
+            ok, _ = pr._install_unit("g.timer")
+        assert ok
+        assert written == ["/etc/systemd/system/g.service", "/etc/systemd/system/g.timer"]
+
+    def test_a_timer_without_its_service_template_is_not_installable(self, tmp_path):
+        (tmp_path / "g.timer").write_text("[Timer]\n")
+        with patch.object(pr, "SYSTEMD_TEMPLATE_DIR", tmp_path):
+            assert pr._unit_template("g.timer") is None
+
+    def test_user_scope_and_instance_templates_never_resolve_to_system_scope(self, tmp_path):
+        # #3: a -user body or an @ template written into /etc/systemd/system
+        for name in ("x-user.service", "y@.service"):
+            (tmp_path / name).write_text("[Unit]\n")
+        with patch.object(pr, "SYSTEMD_TEMPLATE_DIR", tmp_path):
+            assert pr._unit_template("x-user") is None
+            assert pr._unit_template("y@") is None

@@ -55,6 +55,7 @@ from utils.service_check import (  # noqa: E402
     check_systemd_service,
     is_service_unit_installed,
     is_service_masked,
+    service_unit_presence,
     enable_service,
     disable_service,
     stop_service,
@@ -675,8 +676,18 @@ def plan(role_def: dict, overrides: Optional[Dict[str, dict]] = None) -> List[Ac
             if not installed:
                 # 2026-10-19: this said "run install_noc.sh", which installs
                 # no watchdog unit — every fleet copy was hand-placed.
+                # Install ONLY on an observed "absent": a timeout or an
+                # unreachable bus also reads not-installed above, and
+                # installing then would overwrite a hand-placed unit
+                # (non-author review of c973c88e, CONFIRMED by probe).
+                presence = service_unit_presence(unit)
                 tpl = _unit_template(unit)
-                if tpl is not None:
+                if presence != "absent":
+                    actions.append(Action(unit, "unknown", "enabled", "warn",
+                                          detail=f"unit presence UNOBSERVABLE "
+                                                 f"(systemctl cat: {presence}) — "
+                                                 f"not installing"))
+                elif tpl is not None:
                     actions.append(Action(unit, "absent", "enabled", "install",
                                           detail=f"install from {tpl}"))
                 else:
@@ -903,12 +914,23 @@ def _install_dropin(key: str) -> "tuple[bool, str]":
 
 
 def _unit_template(unit: str) -> Optional[Path]:
-    """The repo template for a system unit, or None. Bare names are .service."""
+    """The repo template for a SYSTEM unit, or None. Bare names are .service.
+
+    Never resolves a user-scope (`-user`) or instance (`@`) template into
+    system scope, and a `.timer` resolves only when its `.service` half has
+    a template too (installing the timer alone leaves enable --now failing
+    on a missing trigger unit).
+    """
     name = unit if "." in unit else f"{unit}.service"
-    if "/" in name or name.startswith("."):
+    stem = name.rsplit(".", 1)[0]
+    if "/" in name or name.startswith(".") or "@" in name or stem.endswith("-user"):
         return None
     tpl = SYSTEMD_TEMPLATE_DIR / name
-    return tpl if tpl.is_file() else None
+    if not tpl.is_file():
+        return None
+    if name.endswith(".timer") and not (SYSTEMD_TEMPLATE_DIR / f"{stem}.service").is_file():
+        return None
+    return tpl
 
 
 def _install_unit(unit: str) -> "tuple[bool, str]":
@@ -917,14 +939,18 @@ def _install_unit(unit: str) -> "tuple[bool, str]":
     if tpl is None:
         return False, f"no template for {unit} in {SYSTEMD_TEMPLATE_DIR}"
     name = unit if "." in unit else f"{unit}.service"
-    try:
-        content = tpl.read_text()
-    except OSError as e:
-        return False, f"unreadable template {tpl}: {e}"
-    dest = SYSTEM_DROPIN_ROOT / name
-    ok, msg = _sudo_write(str(dest), content)
-    if not ok:
-        return False, f"write {dest} failed: {msg}"
+    files = [tpl]
+    if name.endswith(".timer"):   # the service half first: the timer triggers it
+        files.insert(0, SYSTEMD_TEMPLATE_DIR / (name[:-len(".timer")] + ".service"))
+    for src in files:
+        try:
+            content = src.read_text()
+        except OSError as e:
+            return False, f"unreadable template {src}: {e}"
+        dest = SYSTEM_DROPIN_ROOT / src.name
+        ok, msg = _sudo_write(str(dest), content)
+        if not ok:
+            return False, f"write {dest} failed: {msg}"
     ok, msg = _sudo_cmd_run(["systemctl", "daemon-reload"])
     if not ok:
         return False, f"wrote {dest} but daemon-reload FAILED: {msg}"
