@@ -525,3 +525,32 @@ def test_snapshot_round_trips_every_channel_and_config():
     assert [c.settings.name for c in chans2[:2]] == ["fleet0", "fleet1"]
     assert chans2[1].settings.psk == bytes([2]) * 32
     assert snap["node"]["id"] == "!b03da894" and snap["firmware"] == "2.7.15"
+
+
+def test_channel0_is_written_after_the_transaction_not_inside_it():
+    # MEASURED on the lab box 2026-10-19 (mpv4, n=2): set_channel sent inside
+    # begin/commit_edit_settings was LOST (lora applied, channel 0 unchanged);
+    # the same write alone, after the config reboot, stuck (readback clean).
+    from types import SimpleNamespace
+    calls = []
+
+    class Node:
+        localConfig, moduleConfig = _pbs()[0], _pbs()[1]
+        channels = [_pbs()[2]]
+        def getChannelByChannelIndex(self, i): return self.channels[i]
+        def beginSettingsTransaction(self): calls.append("begin")
+        def commitSettingsTransaction(self): calls.append("commit")
+        def writeConfig(self, s): calls.append(f"config:{s}")
+        def writeChannel(self, i): calls.append(f"channel:{i}")
+
+    def opener(port):
+        calls.append("open")
+        return SimpleNamespace(localNode=Node(), close=lambda: calls.append("close"))
+
+    c21.write_radio(c21.radio_plan("src_lf", psk=b"\x07" * 32), "/dev/serial/by-path/x",
+                    opener=opener, wait=lambda s: calls.append(f"wait:{s}"))
+    assert calls.index("channel:0") > calls.index("commit")
+    assert "channel:0" not in calls[calls.index("begin"):calls.index("commit")]
+    # a reboot wait + fresh connection between the commit and the channel write
+    between = calls[calls.index("commit"):calls.index("channel:0")]
+    assert any(c.startswith("wait:") for c in between) and "open" in between

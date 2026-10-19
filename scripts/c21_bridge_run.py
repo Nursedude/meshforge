@@ -499,6 +499,7 @@ CONTROL_GAP_S = 20        # controls never overlap the normal send before them
 assert INTERVAL_S / 2 > CONTROL_GAP_S + REPEAT_GAP_S, "cadence would collapse"
 DRAIN_S = 180             # after the last send, keep listening this long
 REBOOT_WAIT_S = 25        # a lora config write reboots the radio
+CHANNEL_SETTLE_S = 8      # let the lone set_channel land before the port closes
 CONTROL_SEQ_BASE = 100000
 EXIT = {"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}
 
@@ -616,6 +617,42 @@ def _preflight(pairs: List[Tuple[str, str]]) -> int:
     return 1 if bad else 0
 
 
+def write_radio(plan: Dict[str, Any], port: str, *, opener=None, wait=None) -> None:
+    """Write ``plan`` to the radio on ``port``: config in one settings
+    transaction, then — after the reboot it triggers, on a FRESH connection —
+    channel 0 on its own.
+
+    MEASURED 2026-10-19 on the lab box (V4, fw 2.7.26, lib 2.7.11, n=2):
+    set_channel sent INSIDE begin/commit_edit_settings was lost — lora
+    applied, channel 0 stayed the default — while the same write alone, after
+    the config reboot, read back clean. Why the firmware drops it is not
+    established; this order is the one that was observed to work.
+    """
+    opener = opener or _open
+    wait = wait or (lambda s: threading.Event().wait(s))
+    iface = opener(port)
+    try:
+        node = iface.localNode
+        apply_plan(plan, node.localConfig, node.moduleConfig,
+                   node.getChannelByChannelIndex(0))
+        node.beginSettingsTransaction()
+        for section in ("lora", "position", "mqtt"):
+            node.writeConfig(section)
+        node.commitSettingsTransaction()
+    finally:
+        _close(iface)
+    wait(REBOOT_WAIT_S)
+    iface = opener(port)
+    try:
+        node = iface.localNode
+        apply_plan(plan, node.localConfig, node.moduleConfig,
+                   node.getChannelByChannelIndex(0))
+        node.writeChannel(0)
+        wait(CHANNEL_SETTLE_S)
+    finally:
+        _close(iface)
+
+
 def cmd_configure(a) -> int:
     _refuse_if_held(a.port)
     plan = radio_plan(a.role, psk=_load_psk())
@@ -624,16 +661,10 @@ def cmd_configure(a) -> int:
         node = iface.localNode
         snap = _write_snapshot(iface, a.port)
         print(f"{a.role}: pre-run snapshot saved {snap} (0600; holds channel keys)")
-        apply_plan(plan, node.localConfig, node.moduleConfig,
-                   node.getChannelByChannelIndex(0))
-        node.beginSettingsTransaction()
-        for section in ("lora", "position", "mqtt"):
-            node.writeConfig(section)
-        node.writeChannel(0)
-        node.commitSettingsTransaction()
     finally:
         _close(iface)
-    print(f"{a.role}: written; waiting {REBOOT_WAIT_S}s for the radio to reboot")
+    write_radio(plan, a.port)
+    print(f"{a.role}: written; waiting {REBOOT_WAIT_S}s before the readback")
     threading.Event().wait(REBOOT_WAIT_S)
     bad = _verify_role(a.role, a.port)
     if bad:
