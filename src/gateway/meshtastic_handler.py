@@ -803,6 +803,12 @@ class MeshtasticHandler(BaseMessageHandler):
                     logger.warning("Mesh→RNS queue full, dropping message")
                     with self._stats_lock:
                         self.stats['errors'] += 1
+                        # A message lost before any attempt: count both halves
+                        # so attempted = delivered + dropped + pending.
+                        self.stats['mesh_to_rns_attempted'] = (
+                            self.stats.get('mesh_to_rns_attempted', 0) + 1)
+                        self.stats['mesh_to_rns_dropped'] = (
+                            self.stats.get('mesh_to_rns_dropped', 0) + 1)
 
         # Notify callback
         if self._message_callback:

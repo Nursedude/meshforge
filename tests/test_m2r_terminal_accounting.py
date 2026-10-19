@@ -433,3 +433,28 @@ class TestReviewRound2:
         mid = q.enqueue({"message": "a"}, destination="x", max_retries=1)
         assert q.mark_failed(mid, "first") is True    # -> dead_letter
         assert q.mark_failed(mid, "late") is False    # ignored, and says so
+
+
+def test_tcp_handler_counts_a_full_queue_drop():
+    """A Mesh->RNS message lost because the bridge's in-memory queue is full
+    was counted only as an error (the MQTT handler's spill-failure leg already
+    counts both halves). It is a message: attempted + dropped. (MeshAnchor
+    port review, 2026-10-18.)"""
+    import threading
+    from queue import Queue
+    from gateway.config import GatewayConfig
+    from gateway.meshtastic_handler import MeshtasticHandler
+    q = Queue(maxsize=1)
+    q.put_nowait(object())
+    stats = {"messages_mesh_to_rns": 0, "errors": 0}
+    h = MeshtasticHandler(
+        config=GatewayConfig(), node_tracker=MagicMock(), health=MagicMock(),
+        stop_event=threading.Event(), stats=stats,
+        stats_lock=threading.Lock(), message_queue=q,
+        message_callback=lambda m: None)
+    h._handle_text_message(
+        {"fromId": "!aabbccdd", "toId": "!ffffffff", "channel": 0},
+        {"payload": b"hello", "text": "hello"}, "!aabbccdd")
+    assert stats.get("errors") == 1, "precondition: the full-queue branch ran"
+    assert stats.get("mesh_to_rns_attempted") == 1
+    assert stats.get("mesh_to_rns_dropped") == 1
