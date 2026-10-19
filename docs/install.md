@@ -35,8 +35,10 @@ original (1st-gen) **Pi Zero W**. On a 512 MB board:
 ### Fresh Install
 
 ```bash
-git clone https://github.com/Nursedude/meshforge.git
-cd meshforge
+# Clone INTO /opt/meshforge: the installer installs and runs from there, so a
+# checkout anywhere else is not the code that gets installed.
+sudo git clone https://github.com/Nursedude/meshforge.git /opt/meshforge
+cd /opt/meshforge
 sudo bash scripts/install_noc.sh    # Full NOC stack install
 ```
 
@@ -69,9 +71,10 @@ MeshAnchor was extracted from MeshForge main on 2026-04-01. Both share the same
 TUI framework, gateway bridge, and RF tools. They differ in which radio is "home."
 
 ```bash
-git clone https://github.com/Nursedude/meshanchor.git
-cd meshanchor
-scripts/meshforge-launcher.sh
+sudo git clone https://github.com/Nursedude/meshanchor.git /opt/meshanchor
+cd /opt/meshanchor
+sudo bash scripts/install_noc.sh
+scripts/meshanchor-launcher.sh
 ```
 
 ### Deployment Profiles

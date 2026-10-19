@@ -115,13 +115,14 @@ missing venv, permission errors), one-click repair, and start/stop/logs/health.
 ## Quick start
 
 ```bash
-git clone https://github.com/Nursedude/meshforge.git
-cd meshforge
+sudo git clone https://github.com/Nursedude/meshforge.git /opt/meshforge
+cd /opt/meshforge
 sudo bash scripts/install_noc.sh      # guided install
 scripts/meshforge-launcher.sh   # the NOC
 ```
 
-Runs on **Pi 3B, Pi 4, or Pi 5** (64-bit). You don't need a Pi 4 to start — a
+Runs on **Pi 3B, Pi 4, or Pi 5** (64-bit) — all three run in the reference
+fleet today. You don't need a Pi 4 to start — a
 **Pi Zero 2 W** (~$15) is the recommended low-cost board for a lightweight or
 single-purpose node, because the software is tuned to fit the box.
 
@@ -137,16 +138,28 @@ python3 src/standalone.py
 
 ## What Works (v0.7.0-beta)
 
-Field-tested on a live multi-site fleet.
+Each line carries its tier from [docs/capabilities.md](docs/capabilities.md):
+**Field-Tested** = run on real radios and services in the reference fleet;
+**Beta** = automated tests pass, field validation still owed.
 
-- **Calibrated status** — probes report *working / broken / unobservable* as
-  three distinct states; the status gate quotes the check behind any green
-- **Gateway bridge** — Meshtastic ⇄ Reticulum via MQTT, zero radio interference
-- **NOC + coverage maps** — both protocols on one map, SNR-coloured links
-- **Traffic inspection** — packet dissection for Meshtastic, RNS, and MQTT
-- **RF engineering** — link budgets, Fresnel zones, terrain, site planning
-- **Radio config** — meshtastic CLI integration, transient and non-interfering
-- **AI diagnostics** — offline symptom→cause→fix; optional AI assist with your own Claude API key (in-TUI assistant) or subscription (Claude Code in the repo) — [how](docs/capabilities.md#ai-assist--optional-and-yours-to-configure)
+- **Calibrated status** *(Field-Tested)* — probes report *working / broken /
+  unobservable* as three distinct states; the status gate quotes the check
+  behind any green
+- **Gateway bridge** *(Field-Tested)* — Meshtastic ⇄ Reticulum via MQTT, zero
+  radio interference
+- **Live NOC map** *(Field-Tested)* — both protocols on one map, SNR-coloured
+  links, federation across fleet boxes
+- **RF engineering** *(Field-Tested)* — link budgets, Fresnel zones, terrain,
+  site planning
+- **Radio config** *(Field-Tested)* — meshtastic CLI integration, transient and
+  non-interfering
+- **Offline diagnostics** *(Field-Tested)* — symptom→cause→fix knowledge base
+- **Coverage maps** *(Beta)* — Folium coverage generation; needs real GPS
+  position data and internet for tiles
+- **Traffic inspection** *(Beta)* — packet dissection for Meshtastic, RNS, and
+  MQTT; needs real packet flow
+- **AI assist** *(Beta, optional)* — your own Claude API key (in-TUI assistant)
+  or subscription (Claude Code in the repo) — [how](docs/capabilities.md#ai-assist--optional-and-yours-to-configure)
 
 **The full inventory, with what's proven vs. what needs field validation:
 [docs/capabilities.md](docs/capabilities.md)**

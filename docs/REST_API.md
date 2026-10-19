@@ -1,6 +1,7 @@
 # MeshForge REST API Documentation
 
-> **Version:** 0.4.6-beta
+> **Last reviewed against:** 0.4.6-beta — endpoints added since may be missing
+> here; the live route table is `src/utils/map_http_handler.py`.
 > **Base URL:** `http://localhost:5000/api`
 
 ---

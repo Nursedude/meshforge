@@ -31,6 +31,7 @@ These features have been used in actual mesh deployments with physical radios an
 | **Standalone RF Tools** | Zero-dependency RF calculator, works without sudo or radio hardware |
 | **Multi-Mesh Gateway** | Meshtastic ↔ RNS/LXMF bridge via MQTT, composable-bridges model, refusal-on-inconsistency preflight, persistent SQLite queue. Field-deployed across the operator's 5-box LAN fleet + 1 cloud peer (since 2026-04-24) |
 | **Gateway + RNode** | rnsd RNodeInterface on USB LoRa radio alongside Meshtastic HAT; RNS-LoRa egress at 903.625 MHz / SF7 — validated on fleet-host-3 |
+| **Live NOC Map** | Browser view (`:5000`) with WebSocket updates, node markers, signal heatmap, `/fleet` page — running on 7 boxes of the reference fleet (measured 2026-10-18), field-validated since v0.6.0 |
 | **Dude-claw (standalone agent)** | mini-dudeai brain + WireClaw ESP32 edge over NATS: sensor polls → threshold rules → actuation + pages, end-to-end proven on a Heltec V4 (2026-06-11). Display fork (`0.4.0+dudeclaw.N`) paints fleet metrics onto the board's OLED via a cron-verdict-wired pusher; stdlib NATS client, no new runtime deps |
 
 ### Beta (Automated Tests Pass, Needs Field Validation)
@@ -43,7 +44,6 @@ Code works in testing but hasn't been validated in real-world deployments with a
 | **Dual-radio mesh_bridge serial** | Cross-preset bridge (LF HAT + ST USB) via `connection_type: "serial"` on secondary — code merged + unit-tested, live-probed on a fleet box's Heltec | Needs sustained cross-preset traffic to validate |
 | **MQTT Monitoring** | Nodeless mesh observation, protobuf decode, telemetry tracking, congestion alerts | Needs real MQTT traffic |
 | **Coverage Maps** | Interactive Folium maps, SNR-based link quality | **Priority QA target** — needs GPS position data. ⚠️ **NOT offline-capable** — see the offline note below |
-| **Live NOC Map** | Browser view with WebSocket updates, node markers, signal heatmap | **Priority QA target** — needs running bridge |
 | **Traffic Inspector** | Packet capture, protocol tree, display filters, path tracing | Needs real packet flow |
 | **Emergency Alerts** | NOAA/NWS weather, USGS volcano, FEMA iPAWS | API-dependent |
 | **Node Favorites** | Meshtastic 2.7+ favorites management, sync with device | Needs 2.7+ firmware |
@@ -78,7 +78,7 @@ These features are now in the [MeshAnchor](https://github.com/Nursedude/meshanch
 
 MeshForge retains MeshCore as an optional gateway handler.
 
-### Roadmap
+### Release history
 
 **Completed (v0.5.x — Stability & Reliability)**
 
@@ -109,7 +109,7 @@ MeshForge retains MeshCore as an optional gateway handler.
 | Federation across fleet | Each box's map sees every other box's nodes (24h freshness window) |
 | Federation self-pacing | Two-tier exponential backoff per peer (Issues #59/#65): permanently-failing peers stop drowning the rollup; tier-2 cap (60×) for long outages preserves recovery detection |
 | Federation directory gzip + size alarm | `/api/nodes/directory` 35 MB→4.7 MB on the wire (~7.6× compression); 40 MB alarm threshold (Issue #64) |
-| Coverage maps | Folium generation field-tested with real GPS position data |
+| Coverage maps | Folium generation shipped; validation with real GPS position data is still owed (Beta — see Known Limitations) |
 | Tiered node-directory retention | 30d for local origins, 7d for external bulk; 50k LRU cap |
 | Honest delivery counters (Issue #66) | Sender→destination ack tracking substrate; SQLite-backed schema + LXMF synthesis + sweep; observability via `scripts/issue66_ack_status.py` |
 | Sandbox preflight + audit (Issue #60) | Hardened systemd units fail loud at startup if `ReadWritePaths=` is missing a required dir; MF017 audit lints unit templates at PR time |
@@ -148,17 +148,9 @@ A class of "service running but not serving" failures was identified across the 
 MeshCore-primary features have moved to [MeshAnchor](https://github.com/Nursedude/meshanchor).
 MeshForge retains MeshCore as an optional gateway handler.
 
-**Future Releases (v0.6.x+)**
-
-| Feature | Target | Status |
-|---------|--------|--------|
-| Historical playback (Live Map) | v0.6.x | Planned |
-| SDR signal intercept (RTL-SDR) | unscheduled | Groundwork present in-tree (`utils/intercept.py`: `rtl_433`, `rtl_fm`+`multimon-ng`, `dump1090`; `device_scanner.rtl_sdr_available`), **not wired to the TUI and not field-tested**. Separate from the SDR **interference watch** (`scripts/sdr_interference.py`), which is live: Airspy + RTL-SDR, fleet LoRa windows every 5 min, a wedged receiver pages. Deliberately unscheduled until a driving requirement exists. |
-| Hardware support matrix | v0.7.0 | RAK, Heltec |
-| GPS tracking + GPX export | v0.7.0 | Planned |
-| MeshForge ↔ MeshAnchor gateway | v0.8.0 | Inter-app bridging protocol |
-| Firmware flashing | v1.0.0 | High risk — needs extensive testing |
-| v1.0 stable release | -- | After field-validated gateway + MeshAnchor ecosystem |
+**What's next** lives in ONE place: [`.claude/ROADMAP.md`](../.claude/ROADMAP.md)
+(the roadmap SSOT, with the 1.0 exit criteria). This file records what exists
+and how proven it is — never plans.
 
 ### Known Limitations
 
@@ -174,8 +166,8 @@ MeshForge retains MeshCore as an optional gateway handler.
 
 ### Testing Reality Check
 
-MeshForge has **~9,300 automated tests** (run `python3 -m pytest tests/ --co -q`
-for the live count) across <!--STAT:testfiles-->549<!--/STAT--> test files. However, automated tests
+MeshForge's automated tests (run `python3 -m pytest tests/ --co -q` for the
+live count — never a hand-typed number here) span <!--STAT:testfiles-->549<!--/STAT--> test files. However, automated tests
 validate code paths with mocks — they do not replace field testing. The following
 features have strong unit test coverage but have **not been run with real services
 and radios** in a live deployment:
@@ -264,7 +256,7 @@ python3 -m mini_dudeai --preset meshforge_fleet --dream   # nightly synthesis
 
 Interactive network visualization powered by Folium and Leaflet.js:
 
-### Static Coverage Maps (Stable)
+### Static Coverage Maps (Beta — real-GPS validation owed)
 
 - **Node markers** with status, battery, RSSI, hardware info
 - **SNR-based link coloring** — green (excellent) → red (marginal)
@@ -302,7 +294,7 @@ gen.generate("field_coverage.html")  # Opens in any browser
 > RNode, the oracle, RF math and tactical export. Terrain/SRTM works offline if
 > tiles are pre-warmed (`scripts/srtm_warm.py`).
 
-### Live NOC Map (Beta)
+### Live NOC Map (Field-Tested)
 
 Real-time browser-based network operations view at `http://localhost:5000`:
 
