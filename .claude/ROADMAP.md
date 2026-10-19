@@ -104,10 +104,10 @@ the check before changing a cell.
 | 4 | **No AI required** | Every gate passes with no API key and no Claude Code. AI features say plainly that they are not configured. | one stranger-drill run with no AI anywhere | NOT MEASURED |
 | 5 | **Stranger install drill** | VIRTUAL, every release: fresh image, README commands only, no dotfiles / hosts block / registry / AI. PHYSICAL, at rc1: one existing fleet board per supported type, clean user account + separate checkout (no wipe). Pass = the domain END (a message crosses mesh↔RNS and arrives; truth panes honest, incl. UNKNOWN), never "installer exit 0". | VIRTUAL: `gh workflow run stranger_drill.yml [-f installer_args=--client-only]` (observe mode); PHYSICAL: bare Pi 4 procedure (owed) | NOT MET — virtual run 2 (10-04, `37232491579`/`37232494058`): literal README install COMPLETES on bookworm + trixie arm64 with no TTY (rnsd/map/mosquitto up, 0 failed units); `--client-only` false red FIXED `9c76a19f` (verify reads `/etc/meshforge/noc.yaml` `managed:`; drill `37233965857` → "Installation OK with warnings", 0 FAIL) |
 | 6 | **Supported list = what gate 5 passed** | Pi 4 + Pi 5, Raspberry Pi OS bookworm / trixie 64-bit. Zero 2 W, Pi 3B, CM5 listed only if measured. Everything else "may work, untested", said so. | gate 5 results | NOT MET: README claims Pi 3B / Zero 2 W and install.md claims Ubuntu 22.04+, while `pyproject.toml` requires Python ≥3.11 (22.04 ships 3.10 — assertion, not measured here) |
-| 7 | **No-radio `monitor` deployment** | Container or VM, `monitor` profile (MQTT + RNS over TCP, no LoRa). LATER #8 moved up. Gateway / radio profiles stay hardware-only. | gate 5 virtual leg | NOT MET: no container exists |
+| 7 | **No-radio `monitor` deployment** | A plain VM or non-Pi Debian host runs the `monitor` profile (MQTT + RNS over TCP, no LoRa) from the README alone. **No shipped container image** (D2, operator "your call — watch our overhead", 2026-10-18): an image is a second product (base-image CVEs, systemd + rnsd in a container, a second install path that drifts). Gateway / radio profiles stay hardware-only. | gate 5 virtual leg, run without a radio (the drill's throwaway systemd box stands in for the VM) | NOT MET: the radio-less install has not been drilled |
 | 8 | **Resource budget** | RAM + SD writes per day, per profile, on the smallest supported box: baseline recorded now, "no worse than baseline" at rc1. The hardware we have is the hardware for ~a year. | baseline measurement (owed) | NOT MET: no baseline |
 | 9 | **"Report a problem"** | TUI action writes a redacted diagnostic bundle (versions, service states, last errors; no keys, no IPs per MF015) + an issue template it points to. The only way a silent stranger's broken install becomes evidence. | redaction test that plants a key/IP and proves it absent (owed) | NOT MET |
-| 10 | **Security** | Frontier pass: design-level NOW on the new surfaces (gate 9 redaction, gate 7 container exposure); full pass at rc1 on the shipping build. Zero open high findings at tag. | review_provenance row | NOT MET |
+| 10 | **Security** | Frontier pass: design-level NOW on the new surfaces (gate 9 redaction, gate 7 radio-less host exposure); full pass at rc1 on the shipping build. Zero open high findings at tag. | review_provenance row | NOT MET |
 
 **Context, recorded not gated:** hardware supply is constrained and prices are
 rising; the fleet's hardware is unlikely to change for ~a year, so virtual,
@@ -314,8 +314,9 @@ whole; each item below lands on its own, re-tested here. In order:
 **LATER**
 7. Mesh-issue rules for the *user's* mesh (MeshMonitor M1), with one thresholds
    file and a test that forbids harmful advice.
-8. Lower the install barrier (M5): the `monitor`-profile container MOVED to
-   1.0 gate 7 (2026-10-04); an OpenAPI spec over the map service stays here.
+8. Lower the install barrier (M5): the `monitor` profile MOVED to 1.0 gate 7
+   (2026-10-04) and is a VM/host install, not a container (D2, 2026-10-18);
+   an OpenAPI spec over the map service stays here.
 9. Virtual-node / one-owner-many-clients for the radio (M2), if R3 is go.
 10. **Contain rnsd plugins (R5)** — regardless of R3: a deploy-time manifest of
     what rnsd auto-loads from `interfaces/`, and an import failure must not kill

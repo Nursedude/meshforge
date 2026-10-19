@@ -4518,4 +4518,4 @@ moc4 ran `meshforge-maps` active+enabled at `f8e8d2a` (role collector → maps d
 - **MA port of the monotonic dedup** (mesh_bridge.py :358/:772/:1077, mqtt_bridge_handler.py :1024; heartbeat/EAS twins UNCHECKED) — next session, MF leads.
 - **C21 validation run, 2 radios (operator has 2 free; Mesh Bridge head-to-head SKIPPED for now):** one box, LongFast + ShortTurbo legs, scripted sustained traffic, per leg delivered / named drops / duplicates / airtime. Owed from the operator first: which box, and a private test channel at low power (keep load off HawaiiNet / fleet LongFast).
 - **Per-leg airtime budget** — after the C21 baseline; acceptance sentence before code.
-- **D2** "no Docker" vs gate 7 "Container or VM" — operator, open.
+- **D2 DECIDED** (operator "your call — watch our overhead"): no shipped container image; gate 7 = plain VM / non-Pi Debian host running the `monitor` profile from the README, proven by the stranger drill run radio-less. Owed: find the installer's radio-less flag set (`--skip-meshtasticd`? no `--profile` flag found in `install_noc.sh`) and dispatch the drill with it.
