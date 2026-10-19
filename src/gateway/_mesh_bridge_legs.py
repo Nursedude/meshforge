@@ -44,3 +44,26 @@ def build_downlink_injector(leg: MeshtasticConfig):
             "mesh_bridge %s downlink injector init failed: %s — "
             "falling back to toradio", leg.name, e)
         return None
+
+
+def bridge_event(verb: str, side: str, text: str, reason: str = "") -> None:
+    """One DEBUG line per text the bridge heard, dropped or forwarded.
+
+    ``mesh_bridge rx leg=<side>: <text>`` / ``mesh_bridge drop leg=<side>
+    reason=<reason>: <text>`` / ``mesh_bridge tx dest=<side>: <text>``. The
+    per-message record a run reconciles against (C21, 2026-10-19): before it
+    a duplicate drop only moved a counter. Format is parsed by
+    scripts/c21_bridge_run.py — change both together.
+    """
+    where = f"dest={side}" if verb == "tx" else f"leg={side}"
+    why = f" reason={reason}" if reason else ""
+    logger.debug("mesh_bridge %s %s%s: %s", verb, where, why, text[:120])
+
+
+def queue_drop_witness(ingress: str):
+    """on_terminal hook for a bridge queue: name a row the queue gave up on."""
+    def on_terminal(payload, outcome: str) -> None:
+        if outcome == "dropped":
+            bridge_event("drop", ingress, str((payload or {}).get("content", "")),
+                         "dead_letter")
+    return on_terminal

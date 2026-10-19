@@ -38,7 +38,8 @@ from .base_handler import (
 )
 from .config import GatewayConfig, MeshtasticBridgeConfig, MeshtasticConfig
 from ._handoff_witness import HandoffWitness
-from ._mesh_bridge_legs import build_downlink_injector
+from ._mesh_bridge_legs import (
+    bridge_event, build_downlink_injector, queue_drop_witness)
 from .message_queue import PersistentMessageQueue, MessagePriority, RetryPolicy
 from utils.safe_import import safe_import
 from utils.paths import get_real_user_home
@@ -443,12 +444,14 @@ class MeshtasticPresetBridge:
         )
 
         # Register sender callbacks for queue processing
+        # on_terminal: a row the queue gives up on (dead letter, expiry,
+        # shed) is a named drop on the leg it came IN on.
         self._primary_to_secondary.register_sender(
-            "secondary", self._send_to_secondary
-        )
+            "secondary", self._send_to_secondary,
+            on_terminal=queue_drop_witness("primary"))
         self._secondary_to_primary.register_sender(
-            "primary", self._send_to_primary
-        )
+            "primary", self._send_to_primary,
+            on_terminal=queue_drop_witness("secondary"))
 
         # Duplicate suppression
         self._seen_messages: Dict[str, float] = {}  # key -> monotonic s
@@ -1105,6 +1108,7 @@ class MeshtasticPresetBridge:
                 text = payload.decode('utf-8', errors='ignore')
             else:
                 text = str(payload)
+            bridge_event("rx", source, text)
 
             # Seen-on-RF registration (dual-path dedup, cross-BOX direction): a
             # broadcast heard on this leg IS on that radio's mesh, whoever TX'd
@@ -1144,6 +1148,7 @@ class MeshtasticPresetBridge:
                         else 'cross_preset_cid_only_dropped')
                 with self._stats_lock:
                     self.stats[stat] = self.stats.get(stat, 0) + 1
+                bridge_event("drop", source, text, stat[:-len("_dropped")])
                 if not tagged and source == "primary" and is_broadcast:
                     self._handoff.note(text, loop_cid)   # heard on secondary?
                 logger.debug(
@@ -1157,7 +1162,7 @@ class MeshtasticPresetBridge:
             if self.bridge_config.exclude_filter:
                 try:
                     if re.search(self.bridge_config.exclude_filter, text):
-                        return
+                        return bridge_event("drop", source, text, "exclude_filter")
                 except re.error:
                     pass
 
@@ -1165,7 +1170,7 @@ class MeshtasticPresetBridge:
             if self.bridge_config.message_filter:
                 try:
                     if not re.search(self.bridge_config.message_filter, text):
-                        return
+                        return bridge_event("drop", source, text, "message_filter")
                 except re.error:
                     pass
 
@@ -1190,7 +1195,7 @@ class MeshtasticPresetBridge:
             if self._is_duplicate(msg):
                 with self._stats_lock:
                     self.stats['duplicates_suppressed'] += 1
-                return
+                return bridge_event("drop", source, text, "duplicate")
 
             # Enqueue in persistent queue
             priority = (MessagePriority.HIGH if not msg.is_broadcast
@@ -1203,7 +1208,7 @@ class MeshtasticPresetBridge:
 
             if msg_id is None:
                 logger.debug(f"Message from {source} deduplicated by queue")
-                return
+                return bridge_event("drop", source, text, "queue_dedup")
 
             # Notify callbacks
             self._notify_message(msg)
@@ -1261,6 +1266,7 @@ class MeshtasticPresetBridge:
             logger.info(
                 f"mesh_bridge secondary forward suppressed (seen-on-RF "
                 f"dedup — already on secondary mesh): {msg.content[:50]}...")
+            bridge_event("drop", "primary", msg.content, "dual_path")
             return True
 
         success = self._forward_message(
@@ -1334,6 +1340,7 @@ class MeshtasticPresetBridge:
                 logger.info(
                     f"mesh_bridge forward suppressed (dual-path dedup [{hit}] — "
                     f"already on RF via rns_bridge): {msg.content[:50]}...")
+                bridge_event("drop", "secondary", msg.content, "dual_path")
                 return True
 
         success = self._forward_message(
@@ -1419,6 +1426,7 @@ class MeshtasticPresetBridge:
                     logger.info(
                         f"Bridged {msg.source_preset} -> {dest_name} "
                         f"(downlink as !{origin:08x}): {msg.content[:50]}...")
+                    bridge_event("tx", dest_name, msg.content)
                     return True
                 logger.debug(
                     "Downlink inject unavailable for %s — toradio fallback",
@@ -1442,6 +1450,7 @@ class MeshtasticPresetBridge:
                 )
 
             logger.info(f"Bridged {msg.source_preset} -> {dest_name}: {content[:50]}...")
+            bridge_event("tx", dest_name, content)
             return True
 
         except Exception as e:

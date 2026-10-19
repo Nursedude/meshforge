@@ -16,8 +16,21 @@ RF-egress loss (the bridge logged the TX, the far radio did not hear it).
 Bridge-attributed unaccounted messages are 0, duplicates are 0, and the
 planted controls (a repeat and a pre-tagged loop) are dropped under their
 named reasons. RF losses are reported with their rate and any coincidence
-with moc4 HAT TX; they do not fail the bridge, but a rate above 5% per leg
+with any other TX on the host; they do not fail the bridge, but a rate above 5% per leg
 makes the run INCONCLUSIVE (re-site the radios), never a pass."
+
+## Host change (operator, 2026-10-19) — supersedes the moc4 lines below
+- Host: **`meshforge-lab`** — a dedicated Pi 4B 4 GB, 32 GB SD, trixie,
+  NO radio HAT. Fleet member (role `lab`), DHCP, identity by host key,
+  posture `detached` before every move. moc4 stays on fleet duty, untouched.
+- Consequences: the HAT 5 V-rail abort canary and the HAT-TX coincidence
+  check are gone (no HAT). Acceptance sentence wording: "moc4 HAT TX" →
+  "any other TX on the host" (operator "good", 2026-10-19).
+- Radios: each side = one V3 bridge leg + one V4 source (LF: V3 leg, V4
+  source; ST: V3 leg, V4 source). A radio's preset is config, not hardware;
+  `configure` writes and reads it back.
+- Bonus: the radio-less install IS the owed D2 gate-7 drill — record the
+  installer flags it took.
 
 ## Operator decisions (2026-10-18)
 - Host: **moc4** (Pi 4, 4 GB, RAK6421 HAT + sensors stay on fleet duty;
@@ -81,3 +94,45 @@ moc's live bridge.
 
 ## Result
 Lands in the C21 capabilities row: proven, or not proven with the numbers.
+
+## Runbook — scripts/c21_bridge_run.py (built test-first 2026-10-19)
+
+Ports are ALWAYS `/dev/serial/by-id/...` (V3 = CP210x → ttyUSB, V4 =
+ESP32-S3 native USB → ttyACM; the numbers reshuffle on replug). Check first
+that ModemManager / brltty do not grab them: `ls -l /dev/serial/by-id/`.
+
+```bash
+S=scripts/c21_bridge_run.py
+python3 $S psk                                   # once: lab key, 0600, outside the repo
+python3 $S configure --role leg_lf --port <V3-a by-id>   # write + READ BACK; refuses on mismatch
+python3 $S configure --role leg_st --port <V3-b by-id>
+python3 $S configure --role src_lf --port <V4-a by-id>
+python3 $S configure --role src_st --port <V4-b by-id>
+python3 $S bridge  --run <id> --leg-lf <V3-a> --leg-st <V3-b>   # refuses on leftover queues
+python3 $S traffic --run <id> --src-lf <V4-a> --src-st <V4-b> --hours 24
+# ...24 h + 3 min drain; the traffic unit exits on its own
+python3 $S reconcile --run <id>   # exit 0 PASS / 1 FAIL / 2 INCONCLUSIVE / 3 PROVISIONAL (unfinished)
+systemctl --user stop c21-bridge-<id>
+```
+
+Run dir: `~/.local/share/meshforge/c21/<id>/` — `events.jsonl` (sends, far
+radios' RX, send errors, link loss), `bridge.log` (the bridge's own per-message
+`mesh_bridge rx|drop|tx` lines, DEBUG, this run only), `bridge_stats.jsonl`
+(counters each minute), `reconcile.json`. Controls: one repeat (lf2st, 5 s
+apart, must drop as `duplicate`) and one pre-tagged loop (st2lf, must drop as
+`already_bridged`) per hour. A smoke run first: `--hours 0.25` (7 each way, both controls
+at seq 3 and 4).
+
+⚠️ Frequencies are physics (firmware slot formula, which reproduces fleet LF
+ch20 = 906.875 and ST ch8 = 905.75) until a receiver confirms them: the moc1
+RTL-SDR / moc5 Airspy panes, or an SDR on the lab bench.
+
+**Before the first run on the lab box** (non-author review 2026-10-19):
+- `loginctl show-user $USER -p Linger` must say `yes`, or the transient
+  `--user` units die at logout (`sudo loginctl enable-linger $USER`).
+- `tx_power = 1` read back is the CONFIG value, not radiated power: the V4's
+  PA stage is physics until a receiver measures it. ~1 dBm at desk spacing
+  can overload a front end — spread the radios on extension cables.
+- Reconcile now also says INCONCLUSIVE, with the reason, when a radio's link
+  is lost, a bridge leg's USB link drops, or traffic stops before its
+  deadline; and names the other TX within 2 s of every RF loss.
