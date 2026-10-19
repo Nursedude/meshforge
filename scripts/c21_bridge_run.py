@@ -114,6 +114,9 @@ def _redact(v: Any) -> str:
 # --- the run's bridge config ------------------------------------------------
 
 BY_ID = "/dev/serial/by-id/"
+# by-path names the PHYSICAL port: Heltec V3 CP2102s all report serial 0001,
+# so by-id carries only one of two V3s (measured on the lab box 2026-10-19).
+SERIAL_DIRS = (BY_ID, "/dev/serial/by-path/")
 
 
 def write_bridge_config(path: Path, *, leg_lf: str, leg_st: str) -> None:
@@ -123,8 +126,8 @@ def write_bridge_config(path: Path, *, leg_lf: str, leg_st: str) -> None:
     replug, and a swapped leg would bridge each preset back onto itself.
     """
     for name, port in (("leg_lf", leg_lf), ("leg_st", leg_st)):
-        if not port.startswith(BY_ID):
-            raise ValueError(f"{name} must be a {BY_ID} path, got {port!r}")
+        if not port.startswith(SERIAL_DIRS):
+            raise ValueError(f"{name} must be a {BY_ID} or by-path path, got {port!r}")
     import json
     data = {
         "bridge_mode": "mesh_bridge",
@@ -457,6 +460,32 @@ def flatten_readback(local_config, module_config, channel0) -> Dict[str, Any]:
     }
 
 
+# --- pre-run snapshot: everything configure overwrites, restorable ----------
+
+def snapshot_dict(node: Dict[str, Any], firmware: str, local_config, module_config,
+                  channels) -> Dict[str, Any]:
+    """A radio's full config + all channels as JSON-safe data (protobuf b64).
+
+    Holds the fleet channel PSKs: write it 0600, outside the repo, never print it.
+    """
+    import base64
+    b64 = lambda m: base64.b64encode(m.SerializeToString()).decode()
+    return {"node": {"id": node.get("id"), "longName": node.get("longName"),
+                     "shortName": node.get("shortName"), "hwModel": node.get("hwModel")},
+            "firmware": firmware, "local_config": b64(local_config),
+            "module_config": b64(module_config), "channels": [b64(c) for c in channels]}
+
+
+def snapshot_protobufs(snap: Dict[str, Any]):
+    """(LocalConfig, LocalModuleConfig, [Channel]) back out of a snapshot."""
+    import base64
+    from meshtastic.protobuf import channel_pb2, localonly_pb2
+    lc = localonly_pb2.LocalConfig.FromString(base64.b64decode(snap["local_config"]))
+    mc = localonly_pb2.LocalModuleConfig.FromString(base64.b64decode(snap["module_config"]))
+    chans = [channel_pb2.Channel.FromString(base64.b64decode(c)) for c in snap["channels"]]
+    return lc, mc, chans
+
+
 # =============================================================================
 # Radio I/O, launcher and CLI. Thin by design: the logic above is unit-tested;
 # this part is proven by the run itself.
@@ -533,12 +562,68 @@ def cmd_psk(a) -> int:
     return 0
 
 
+def _snapshot_dir() -> Path:
+    return get_real_user_home() / ".local" / "share" / "meshforge" / "c21" / "radios"
+
+
+def _write_snapshot(iface, port: str) -> Path:
+    """Save everything configure is about to overwrite; refuse to go on without it."""
+    node = iface.localNode
+    info = (iface.getMyNodeInfo() or {}).get("user", {})
+    fw = getattr(iface.metadata, "firmware_version", "?") if iface.metadata else "?"
+    snap = snapshot_dict(info, fw, node.localConfig, node.moduleConfig, node.channels or [])
+    snap["port"] = port
+    snap["taken_wall"] = time.time()
+    d = _snapshot_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    os.chmod(d, 0o700)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    path = d / f"{str(info.get('id', 'unknown')).lstrip('!')}-{stamp}.json"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(snap, f)
+    return path
+
+
+def _verify_role(role: str, port: str) -> List[Tuple[str, Any, Any]]:
+    """Read the radio on ``port`` back against ``role``'s plan (fresh connection)."""
+    plan = radio_plan(role, psk=_load_psk())
+    iface = _open(port)
+    try:
+        node = iface.localNode
+        got = flatten_readback(node.localConfig, node.moduleConfig,
+                               node.getChannelByChannelIndex(0))
+    finally:
+        _close(iface)
+    return readback_mismatches(plan, got)
+
+
+def _preflight(pairs: List[Tuple[str, str]]) -> int:
+    """Each port must still hold the radio configured for its role.
+
+    by-path pins the PORT, not the radio: a cable moved after `configure`
+    would otherwise put a preset on the wrong side of the bridge.
+    """
+    bad = 0
+    for role, port in pairs:
+        mism = _verify_role(role, port)
+        for key, want, have in mism:
+            print(f"MISMATCH {role} {key}: want {want!r}, radio says {have!r}")
+        bad += bool(mism)
+    if bad:
+        print("REFUSED: a port no longer holds the radio configured for its role "
+              "(cable moved?) — re-run configure for it")
+    return 1 if bad else 0
+
+
 def cmd_configure(a) -> int:
     _refuse_if_held(a.port)
     plan = radio_plan(a.role, psk=_load_psk())
     iface = _open(a.port)
     try:
         node = iface.localNode
+        snap = _write_snapshot(iface, a.port)
+        print(f"{a.role}: pre-run snapshot saved {snap} (0600; holds channel keys)")
         apply_plan(plan, node.localConfig, node.moduleConfig,
                    node.getChannelByChannelIndex(0))
         node.beginSettingsTransaction()
@@ -550,14 +635,7 @@ def cmd_configure(a) -> int:
         _close(iface)
     print(f"{a.role}: written; waiting {REBOOT_WAIT_S}s for the radio to reboot")
     threading.Event().wait(REBOOT_WAIT_S)
-    iface = _open(a.port)
-    try:
-        node = iface.localNode
-        got = flatten_readback(node.localConfig, node.moduleConfig,
-                               node.getChannelByChannelIndex(0))
-    finally:
-        _close(iface)
-    bad = readback_mismatches(plan, got)
+    bad = _verify_role(a.role, a.port)
     if bad:
         for key, want, have in bad:
             print(f"MISMATCH {a.role} {key}: want {want!r}, radio says {have!r}")
@@ -590,6 +668,8 @@ def cmd_bridge(a) -> int:
         return 1
     for port in (a.leg_lf, a.leg_st):
         _refuse_if_held(port)
+    if _preflight([("leg_lf", a.leg_lf), ("leg_st", a.leg_st)]):
+        return 1
     d = _run_dir(a.run)
     d.mkdir(parents=True, exist_ok=True)
     write_bridge_config(d / "gateway.json", leg_lf=a.leg_lf, leg_st=a.leg_st)
@@ -631,6 +711,8 @@ def cmd_bridge_host(a) -> int:
 def cmd_traffic(a) -> int:
     for port in (a.src_lf, a.src_st):
         _refuse_if_held(port)
+    if _preflight([("src_lf", a.src_lf), ("src_st", a.src_st)]):
+        return 1
     _run_dir(a.run).mkdir(parents=True, exist_ok=True)
     argv = ["traffic-host", "--run", a.run, "--src-lf", a.src_lf,
             "--src-st", a.src_st, "--hours", str(a.hours)]
@@ -775,8 +857,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p = sub.add_parser("reconcile", help="verdict for a run")
     p.add_argument("--run", required=True)
     a = ap.parse_args(argv)
-    if a.cmd == "configure" and not a.port.startswith(BY_ID):
-        raise SystemExit(f"--port must be a {BY_ID} path")
+    for attr in ("port", "leg_lf", "leg_st", "src_lf", "src_st"):
+        val = getattr(a, attr, None)
+        if val is not None and not val.startswith(SERIAL_DIRS):
+            raise SystemExit(f"--{attr.replace('_', '-')} must be a /dev/serial/by-id or by-path path")
     return {"psk": cmd_psk, "configure": cmd_configure, "bridge": cmd_bridge,
             "bridge-host": cmd_bridge_host, "traffic": cmd_traffic,
             "traffic-host": cmd_traffic_host, "reconcile": cmd_reconcile}[a.cmd](a)

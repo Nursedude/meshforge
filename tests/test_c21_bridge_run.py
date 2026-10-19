@@ -491,3 +491,37 @@ def test_sent_and_heard_but_bookkept_as_dead_letter_is_named_truthfully():
     r = c21.reconcile(ev, run="r1")
     assert r["labels"][("r1", 41, "lf2st")] == "delivered_unrecorded"
     assert r["verdict"] == "FAIL"
+
+
+# --- lab radios (2026-10-19): by-path ports + a restorable pre-run snapshot --
+
+def test_by_path_ports_are_accepted_because_cp2102_serials_collide(tmp_path):
+    # both V3s report serial 0001, so by-id carries only ONE of them
+    lf = "/dev/serial/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.1:1.0-port0"
+    st = "/dev/serial/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.3:1.0-port0"
+    c21.write_bridge_config(tmp_path / "g.json", leg_lf=lf, leg_st=st)
+    cfg = c21.load_bridge_config(tmp_path / "g.json").mesh_bridge
+    assert (cfg.primary.serial_device, cfg.secondary.serial_device) == (lf, st)
+
+
+def test_snapshot_round_trips_every_channel_and_config():
+    from meshtastic.protobuf import channel_pb2, localonly_pb2
+    lc, mc = localonly_pb2.LocalConfig(), localonly_pb2.LocalModuleConfig()
+    lc.lora.channel_num, lc.lora.tx_power = 20, 22
+    mc.mqtt.enabled = True
+    chans = []
+    for i in range(8):
+        ch = channel_pb2.Channel(index=i)
+        if i < 2:
+            ch.role = ch.Role.PRIMARY if i == 0 else ch.Role.SECONDARY
+            ch.settings.name, ch.settings.psk = f"fleet{i}", bytes([i + 1]) * 32
+        chans.append(ch)
+    snap = c21.snapshot_dict({"id": "!b03da894", "longName": "meshforge p5"}, "2.7.15",
+                             lc, mc, chans)
+    import json
+    snap = json.loads(json.dumps(snap))                       # survives a file
+    lc2, mc2, chans2 = c21.snapshot_protobufs(snap)
+    assert (lc2.lora.channel_num, lc2.lora.tx_power, mc2.mqtt.enabled) == (20, 22, True)
+    assert [c.settings.name for c in chans2[:2]] == ["fleet0", "fleet1"]
+    assert chans2[1].settings.psk == bytes([2]) * 32
+    assert snap["node"]["id"] == "!b03da894" and snap["firmware"] == "2.7.15"
