@@ -1382,3 +1382,51 @@ class TestInstallDropin:
             assert pr.apply_action(a) is True
         m.assert_called_once_with(self.KEY)
         assert a.result == "installed"
+
+
+class TestRequiredUnitInstalledFromTemplate:
+    """2026-10-19 (meshforge-lab onboarding): a role-REQUIRED unit that is not
+    installed used to plan a warn saying "run install_noc.sh" — but nothing in
+    install_noc.sh (or any script) installs meshforge-watchdog.service; every
+    fleet copy was hand-placed. With a template in templates/systemd/, plan an
+    install; without one, say so instead of pointing at a script that can't."""
+
+    ROLE = {"services": {"meshforge-watchdog": "enabled"}}
+
+    def _plan(self, template_exists):
+        with patch.object(pr, "check_systemd_service", return_value=(False, False)), \
+             patch.object(pr, "is_service_unit_installed", return_value=False), \
+             patch.object(pr, "is_service_masked", return_value=False), \
+             patch.object(pr, "_unit_template", return_value=(
+                 Path("/repo/templates/systemd/meshforge-watchdog.service")
+                 if template_exists else None)):
+            return [a for a in pr.plan(self.ROLE) if a.item == "meshforge-watchdog"]
+
+    def test_missing_required_unit_with_a_template_plans_an_install(self):
+        (a,) = self._plan(template_exists=True)
+        assert (a.verb, a.current, a.desired) == ("install", "absent", "enabled")
+
+    def test_missing_required_unit_without_a_template_says_nothing_can_install_it(self):
+        (a,) = self._plan(template_exists=False)
+        assert a.verb == "warn" and "install_noc.sh" not in a.detail
+        assert "no template" in a.detail
+
+    def test_install_is_a_change_verb_so_role_drift_counts_it(self):
+        assert "install" in pr.PLAN_CHANGE_VERBS
+
+    def test_the_shipped_watchdog_template_is_found(self):
+        tpl = pr._unit_template("meshforge-watchdog")
+        assert tpl is not None and tpl.name == "meshforge-watchdog.service"
+
+    def test_apply_writes_the_unit_reloads_then_enables(self, tmp_path):
+        tpl = tmp_path / "x.service"
+        tpl.write_text("[Unit]\n")
+        calls = []
+        with patch.object(pr, "_unit_template", return_value=tpl), \
+             patch.object(pr, "_sudo_write", side_effect=lambda p, c: (calls.append(("write", p)), (True, "ok"))[1]), \
+             patch.object(pr, "_sudo_cmd_run", side_effect=lambda argv, timeout=30: (calls.append(tuple(argv)), (True, "ok"))[1]), \
+             patch.object(pr, "enable_service", side_effect=lambda u, start: (calls.append(("enable", u, start)), (True, "on"))[1]):
+            a = pr.Action("x", "absent", "enabled", "install")
+            assert pr.apply_action(a) is True
+        assert calls == [("write", "/etc/systemd/system/x.service"),
+                         ("systemctl", "daemon-reload"), ("enable", "x", True)]

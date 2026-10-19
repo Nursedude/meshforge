@@ -121,7 +121,7 @@ class Action:
 # independent hardcodes of this tuple diverged once already
 # (honest_failure_modes #5). foundation_actions() adds 'foundation'
 # separately — it is not a plan() verb.
-PLAN_CHANGE_VERBS = ("enable", "disable", "mask", "dropin")
+PLAN_CHANGE_VERBS = ("enable", "disable", "mask", "dropin", "install")
 
 
 # --------------------------------------------------------------------------
@@ -673,8 +673,17 @@ def plan(role_def: dict, overrides: Optional[Dict[str, dict]] = None) -> List[Ac
 
         if desired == "enabled":
             if not installed:
-                actions.append(Action(unit, "absent", "enabled", "warn",
-                                      detail=f"required unit not installed — run install_noc.sh"))
+                # 2026-10-19: this said "run install_noc.sh", which installs
+                # no watchdog unit — every fleet copy was hand-placed.
+                tpl = _unit_template(unit)
+                if tpl is not None:
+                    actions.append(Action(unit, "absent", "enabled", "install",
+                                          detail=f"install from {tpl}"))
+                else:
+                    actions.append(Action(unit, "absent", "enabled", "warn",
+                                          detail=f"required unit not installed and no template "
+                                                 f"in {SYSTEMD_TEMPLATE_DIR} — nothing in the "
+                                                 f"repo can install it"))
             elif running and enabled:
                 actions.append(Action(unit, cur, "enabled", "noop"))
             else:
@@ -893,6 +902,36 @@ def _install_dropin(key: str) -> "tuple[bool, str]":
     return True, f"installed {dest} + daemon-reload"
 
 
+def _unit_template(unit: str) -> Optional[Path]:
+    """The repo template for a system unit, or None. Bare names are .service."""
+    name = unit if "." in unit else f"{unit}.service"
+    if "/" in name or name.startswith("."):
+        return None
+    tpl = SYSTEMD_TEMPLATE_DIR / name
+    return tpl if tpl.is_file() else None
+
+
+def _install_unit(unit: str) -> "tuple[bool, str]":
+    """Write a role-required unit from its template, daemon-reload, enable --now."""
+    tpl = _unit_template(unit)
+    if tpl is None:
+        return False, f"no template for {unit} in {SYSTEMD_TEMPLATE_DIR}"
+    name = unit if "." in unit else f"{unit}.service"
+    try:
+        content = tpl.read_text()
+    except OSError as e:
+        return False, f"unreadable template {tpl}: {e}"
+    dest = SYSTEM_DROPIN_ROOT / name
+    ok, msg = _sudo_write(str(dest), content)
+    if not ok:
+        return False, f"write {dest} failed: {msg}"
+    ok, msg = _sudo_cmd_run(["systemctl", "daemon-reload"])
+    if not ok:
+        return False, f"wrote {dest} but daemon-reload FAILED: {msg}"
+    ok, msg = enable_service(unit, start=True)
+    return ok, f"installed {dest}; {msg}"
+
+
 def _sudo_cmd_run(argv: List[str], timeout: int = 30) -> "tuple[bool, str]":
     """Run one privileged command through the service_check sudo SSOT."""
     import subprocess
@@ -923,6 +962,8 @@ def apply_action(a: Action) -> bool:
         ok, msg = mask_service(a.item.split("mask:", 1)[1])
     elif a.verb == "dropin":
         ok, msg = _install_dropin(a.item.split("dropin:", 1)[1])
+    elif a.verb == "install":
+        ok, msg = _install_unit(a.item)
     elif a.verb == "foundation":
         try:
             from utils.fleet_foundation import apply_foundation
