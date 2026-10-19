@@ -4481,3 +4481,21 @@ System: meshanchor-daemon, meshanchor-map (23:36:44Z), meshanchor-fleet-collecto
 - **Residual LOW:** late `mark_failed` writes the queue's `failed` stat + a delivery_counters DROPPED before the guarded UPDATE (message_queue.py at the 1,500 cap → land in a mixin).
 - **#151 F4:** MA daemon auto-enables the bridge only with a LOCAL meshtasticd; mqtt_bridge/remote-node setups stay `enabled=false` (now said loudly). Extending it changes WHICH services run → operator decision.
 - **#151 F8 LOW:** legacy "mqtt" + new "meshtastic" rows pace independently while a pre-update backlog drains.
+
+## 2026-10-18 · Opus 5.5 · Domain audit (operator artifact "MeshForge Domain Audit") — Phase 0 + MA M→R port, all non-author reviewed (Fable 5.1), DEPLOYED
+- **Audit claims MEASURED before acting:** maps health view — CONFIRMED and worse (wrong tables AND wrong service_health columns; every read swallowed to []); MA installer Meshtastic-first — CONFIRMED; README "Pi 3B/4/5" overclaim — REFUTED (fleet runs Pi 3B moc3, Pi 4 ×6, Pi 5 ×2, Zero 2 W lehua: /proc/device-tree/model); Substack link — NOT decided (two live publications, operator to pick); Router R1–R6 — unverifiable here (bundle not in repo).
+- **MA M→R port** MA `7a811684` (+ MF twin `ff94052a`: TCP-handler queue.Full counted): review 1 round, 2 MED fixed (R2 pins ported; ingress Full uncounted). Deployed, 7 MA units restarted, honest_status rc=0.
+- **maps core-health** maps `811d1d2`: real schema + tri-state + contract test against MF's REAL producer (CI checks out MF). Review 2 rounds: R1 HIGH (duplicate `env:` dropped MESHFORGE_SRC) + 3 MED, R2 2 LOW — all fixed. Deployed moc/moc1/moc2 + **moc4 (was missing from fleet_hosts.meshforge-maps since 07-16 — box touch below)**. Live: moc `empty`, moc1/moc2/moc4 `no_db` — NO routine producer runs (MF agent undeployed); operator chose (c) honest-but-empty.
+- **Docs:** MF `12c39388`, MA `3fd84b20`, maps `b20a93a`, bot `be39657` (tiers on README claims, /opt clone path, live-count wording, one roadmap, Docker unsupported/removed, #151 settings documented).
+- **MA installer** MA `0609f665`: meshtasticd `auto` (fresh box skips; existing kept; disabled left alone), udev rule NOT installed by default (generic VID:PIDs), verifier skip-not-fail + valid JSON. Review 2 rounds: R1 2 HIGH (re-run demoted existing meshtasticd; generic udev rule) → reshaped; R2 4 LOW fixed.
+- **Tags:** `v0.7.0-beta` MF `13b9a739`, `v0.3.0-beta` MA `8d59f000`, `v0.7.4-beta` maps `d13dde4`, `v0.6.0` bot `e33911b` — each on its version-setting commit (pyproject read back), pushed and read back via the API. Record: `docs/compatibility.md`.
+
+## 2026-10-18 02:33Z · Opus 5.5 · BOX TOUCH moc4 — meshforge-maps deployed + restarted; ~/.config/meshforge/fleet_hosts.meshforge-maps += moc4
+moc4 ran `meshforge-maps` active+enabled at `f8e8d2a` (role collector → maps declared enabled in fleet_roles.yaml) but was absent from the maps deploy list since 07-16, so no maps deploy ever reached it. Backup `fleet_hosts.meshforge-maps.bak-20261018`. Pulled to `b20a93a1`, restarted (active, NRestarts=0); reader reads `no_db`. Reversal: drop the line.
+
+## QUEUED (2026-10-18, domain-audit arc)
+- **Operator decisions:** Substack link (nursedude vs wh6gxznursedude — both live); moc5 + kiai are `collector` (maps declared enabled) but the maps unit is NOT INSTALLED (`not-found`) — install, or fix the role; coverage maps: confirm whether Folium output was ever validated with real GPS (docs now say Beta everywhere).
+- **MeshCore udev rule:** `scripts/99-meshcore.rules` is generic (CP210x/CH340/ESP32-S3) + MODE 0666 — a serial-pinned, group-scoped rule is a design task.
+- **MeshCore→RNS:** single-shot path, failure logged only at DEBUG — add a drop counter + rate-limited WARNING (operator approved the small version, not yet built).
+- **maps:** no human-facing surface renders /api/core-health (hfm #11).
+- **Installer order:** MA install_noc reads $INSTALL_DIR templates before mf_git_sync — only bites when run outside /opt/meshanchor (now warned + documented).
