@@ -4,7 +4,9 @@
 > session notes (`~/.claude/plans/gateway-session-notes-*.md`) say what the last
 > session was doing on that box. This file says where the domain is going and why.
 > Owner: WH6GXZ (operator). Update it when a direction changes, not when a task ends.
-> Last set: 2026-10-04 — 1.0 exit criteria added (operator grilling, Opus 5.5).
+> Last set: 2026-10-18 — one-box router scope (D1), purpose test, competitor rows
+> (operator: "go on your advice", after the Nursedude Mesh Research review).
+> Previously: 2026-10-04 — 1.0 exit criteria added (operator grilling, Opus 5.5).
 > Previously: 2026-10-01 (operator words, Opus 5.5 session).
 
 ## What we are
@@ -18,6 +20,13 @@ we **tell the truth when we cannot see**.
 
 - **RNS is the network stack and the hub.** Cross-mesh traffic goes RNS-first.
   Pairwise radio-to-radio bridges multiply into duplicates and false information.
+- **One box with N radios is its own hub** (D1, 2026-10-18). On a single box the
+  bridge holds one dedup table and one airtime budget, so radio-to-radio on that
+  box does not multiply. This is the STANDALONE Meshtastic router and needs no
+  RNS (`requirements/core.txt` carries none; `mesh_bridge.py` imports none).
+  Across boxes or protocols, traffic stays RNS-first. Build it on
+  `src/gateway/mesh_bridge.py`; the research prototype `mt_router` re-solves the
+  loop guard, dedup, DMs and identity worse (review_provenance 2026-10-18).
   We own the RNS/LXMF forks (`requirements/rns.txt`, `MF-FORK-PIN`).
 - **The bridge contract is `.claude/foundations/bridge_contract_matrix.md`**
   (2026-10-16): per edge, what is kept / lost / translated, and the test that
@@ -39,6 +48,14 @@ we **tell the truth when we cannot see**.
 |---|---|---|
 | **MeshMonitor** (web NOC, Meshtastic+MeshCore+MQTT) | Web UI, Docker/Helm install, analysis of the user's mesh, virtual nodes | **Bridge** LXMF across meshes (they only observe RNS); RNode over the air (their RNode mode has never touched hardware); a TUI that works with the WAN down |
 | **SMCI / RNS_Over_Meshcore** (RNS-over-MeshCore plugins) | Ride community MeshCore repeaters; airtime budget; published per-hop numbers | Native RNode path; owned RNS fork + rnsd lifecycle cures (#68/#69/#72); fleet-measured reliability |
+| **Mesh Bridge** (IceNet-01; Node.js, Meshtastic-only) | Bridges encrypted channels across 2+ radios; ID dedup 2,000 / 1 h; MQTT both ways; systemd installer | NOT YET EARNED. Candidates: per-leg airtime budget (they limit only commands, 10/min), every message delivered-or-named-drop, true-origin identity + DMs, cross-box dedup. Claim nothing until a measured run |
+| **MeshDash** (self-hosted dashboard) | "Up to 16 Meshtastic radios"; 100+ endpoint REST API; Docker runner | Nothing on radio count: `mesh_bridge` has 2 legs today. N legs is build work, not config |
+
+**What best in class means here:** the most honest multi-radio router: every
+message accounted for, airtime respected, the truth told when we cannot see.
+Not the best dashboard — MeshMonitor and MeshDash are ahead there, and we do
+not compete on UI, SSO or API size. (Rows above from their own READMEs,
+2026-10-18; re-check before quoting.)
 
 Our moat is **months of mesh operations**: real failures root-caused on real
 radios and compiled into guards (`persistent_issues.md`). Source: research
@@ -323,6 +340,15 @@ whole; each item below lands on its own, re-tested here. In order:
 
 ## Rules that shape the roadmap
 
+- **Purpose test (2026-10-18), the anti-bloat rule.** Every piece of work names
+  (1) its END — a message arrives, or the truth is told in-app; (2) the 1.0 gate
+  or NEXT item it moves; (3) the row it changes in
+  `.claude/foundations/bridge_contract_matrix.md` or `docs/capabilities.md`.
+  Work that cannot name all three is bloat. A test, not a freeze.
+- **The biggest bloat is duplication between the twins**: MeshForge and
+  MeshAnchor share 410 source files, 212 within 10 lines of each other, about
+  75K duplicated lines (measured 2026-10-18). The cure is a shared base package
+  (one base, a subclass per radio) — its own arc, not a side task.
 - **No harness freeze** (the 09-09→10-09 freeze ended on its date; measured
   10-09: it never bound — volume doubled under it and every in-freeze
   instrument was exempt-and-right). Judge every change by its END; harness
