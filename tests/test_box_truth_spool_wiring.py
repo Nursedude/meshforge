@@ -91,6 +91,7 @@ def _real_src(tmp_path, deployment):
 @pytest.mark.parametrize("role, want", [
     ("gateway-only", {"http_surface": False, "watchdog": True}),   # moc3
     ("field-node", {"http_surface": False, "watchdog": False}),   # lehua
+    ("lab", {"http_surface": False, "watchdog": True}),           # C21 bench box
 ])
 def test_real_catalog_verdicts_match_what_the_center_used_to_decide(tmp_path, role, want):
     """The two live cases the center judged until today, now judged by the

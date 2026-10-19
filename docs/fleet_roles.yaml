@@ -267,6 +267,31 @@ roles:
     # already deliberately turned off once — the 2026-07-24 shape. A box that
     # wants it converged can say so in deployment.json `service_overrides`.
 
+  lab:
+    # A BENCH box for scripted radio experiments (added 2026-10-19 for the
+    # C21 cross-preset bridge run). It carries NO radio of its own: the
+    # experiment's USB radios are opened directly by the run script
+    # (scripts/c21_bridge_run.py), and the bridge under test runs as a
+    # transient `systemd-run --user` unit — never meshforge-gateway, so a
+    # converge sweep can never start a bridge here.
+    #
+    # Full fleet member (registry, hosts block, mini-dudeai) so the bench is
+    # watched like any box — but it is MOVABLE: declare posture `detached`
+    # before every move. Observability rides the watchdog + ssh truth-spool;
+    # no HTTP surface, same reasoning as field-node, without that tier's RAM
+    # excuse for dropping the watchdog.
+    board_tier: pi4_min_4gb
+    repo: meshforge
+    services:
+      meshtasticd: absent             # a meshtasticd would claim the bench radios' ports
+      rnsd: absent
+      mosquitto: absent
+      meshforge-gateway: absent       # the bridge under test is a transient unit
+      meshforge-map: absent
+      meshforge-maps: absent
+      meshforge-watchdog: enabled     # invariants.fail_loud_restart_clean holds here
+      meshtasticd-mudp-guard.timer: absent
+
   bot:
     fleet_member: false               # not a MeshForge node
     provisioned_by: meshing-around    # EXTERNAL: upstream SpudGunMan/meshing-around; provisioner skips

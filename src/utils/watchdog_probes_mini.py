@@ -351,6 +351,9 @@ _ROLE_TO_MINI_SEED = {
     # match signal classes that never arrive there and sit inert, which is the
     # correct reading of an absent organ rather than a false alarm.
     "field-node": "fleet_gateway",
+    # lab (2026-10-19, C21 bench): same reasoning as field-node — no gateway
+    # organ, so gateway-shaped rules sit inert rather than false-fire.
+    "lab": "fleet_gateway",
 }
 
 
