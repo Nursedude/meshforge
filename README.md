@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://nursedude.substack.com">Development Blog</a> |
+  <a href="https://wh6gxznursedude.substack.com">Development Blog</a> |
   <a href="https://github.com/Nursedude/meshforge/issues">Report Issues</a> |
   <a href="docs/development.md">Contribute</a>
 </p>
@@ -212,7 +212,7 @@ research foundation.
 
 | Resource | Link | Relation |
 |----------|------|----------|
-| Development Blog | [nursedude.substack.com](https://nursedude.substack.com) | Project updates |
+| Development Blog | [wh6gxznursedude.substack.com](https://wh6gxznursedude.substack.com) | Project updates |
 | Meshtastic Docs | [meshtastic.org/docs](https://meshtastic.org/docs/) | Primary radio network |
 | Reticulum Network | [reticulum.network](https://reticulum.network/) | Bridge target (encrypted transport) |
 | AREDN Mesh | [arednmesh.org](https://www.arednmesh.org/) | Monitoring integration |
