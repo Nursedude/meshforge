@@ -4519,3 +4519,14 @@ moc4 ran `meshforge-maps` active+enabled at `f8e8d2a` (role collector → maps d
 - **C21 validation run, 2 radios (operator has 2 free; Mesh Bridge head-to-head SKIPPED for now):** one box, LongFast + ShortTurbo legs, scripted sustained traffic, per leg delivered / named drops / duplicates / airtime. Owed from the operator first: which box, and a private test channel at low power (keep load off HawaiiNet / fleet LongFast).
 - **Per-leg airtime budget** — after the C21 baseline; acceptance sentence before code.
 - **D2 DECIDED** (operator "your call — watch our overhead"): no shipped container image; gate 7 = plain VM / non-Pi Debian host running the `monitor` profile from the README, proven by the stranger drill run radio-less. Owed: find the installer's radio-less flag set (`--skip-meshtasticd`? no `--profile` flag found in `install_noc.sh`) and dispatch the drill with it.
+
+## 2026-10-19 · Opus 5.5 (author) + Fable 5.1 (non-author, 3 passes) · C21 run script `294c733a` — DEPLOYED
+- **Built test-first** at operator-agreed seams: `scripts/c21_bridge_run.py` (configure/readback-refuse, bridge, traffic, reconcile) + `mesh_bridge` per-message `rx|drop|tx` DEBUG lines incl. dual-path + queue terminal drops (`on_terminal` → `dead_letter`). Consumer-path drills: real bridge → adapter → reconcile = PASS; same path with dedup broken = FAIL.
+- **Pass 1 (7 CONFIRMED, all fixed failing-first):** held-port scan reads None unprivileged → refused EVERY radio (would have stopped Monday at step 1); send_error blamed on the bridge; dead letters unnamed; short / link-lost runs read PASS; bridge-leg USB drop read as RF loss; TX-coincidence clause unimplemented; DEBUG spilled to journal. Author found: tuple-keyed json dump crashed reconcile on the first RF loss.
+- **Pass 2:** every pass-1 scenario re-probed closed; FAIL dominates notes. Refinements: `delivered_unrecorded`, drain-cut → not completed, cadence assert. **Pass 3:** those CONFIRMED, no new holes.
+- **Host change:** radio-less Pi 4B lab box (fleet member, role `lab`); HAT canary dropped; acceptance wording "moc4 HAT TX" → "any other TX on the host" (operator "good").
+- **Deploy VERIFIED:** CI success (run 39287989957), fleet 9/9 @294c733a, moc gateway restarted 07:04:08 > t0 07:03:58, full suite 16182 passed. honest_status rc=2: lehua transient unreachable (answered 3 min later, up 14 d), pre-existing dep WARN + VolcanoAI memory_health CONCERN.
+
+## QUEUED (2026-10-19)
+- **`utils/frequency.py` `US_SLOT_MAP` is wrong** — slot 20 → 920.625 MHz; the firmware formula (`meshtastic_modem.channel_centre_mhz`, which reproduces fleet LF ch20 = 906.875 / ST ch8 = 905.75) disagrees. Find its consumers, test-pin against the fleet literals, replace with the formula.
+- **C21 on the lab box** — Monday 2026-10-20: lab box up (Linger=yes, by-id ports, ModemManager/brltty clear), `configure` ×4, smoke `--hours 0.25`, then 24 h.
