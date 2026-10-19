@@ -102,16 +102,16 @@ ESP32-S3 native USB → ttyACM; the numbers reshuffle on replug). Check first
 that ModemManager / brltty do not grab them: `ls -l /dev/serial/by-id/`.
 
 ```bash
-S=scripts/c21_bridge_run.py
-python3 $S psk                                   # once: lab key, 0600, outside the repo
-python3 $S configure --role leg_lf --port <V3-a by-id>   # write + READ BACK; refuses on mismatch
-python3 $S configure --role leg_st --port <V3-b by-id>
-python3 $S configure --role src_lf --port <V4-a by-id>
-python3 $S configure --role src_st --port <V4-b by-id>
-python3 $S bridge  --run <id> --leg-lf <V3-a> --leg-st <V3-b>   # refuses on leftover queues
-python3 $S traffic --run <id> --src-lf <V4-a> --src-st <V4-b> --hours 24
+S=scripts/c21_bridge_run.py; PY=/opt/meshforge/venv/bin/python3   # system python3 has no pubsub (measured on the lab box 10-19)
+$PY $S psk                                   # once: lab key, 0600, outside the repo
+$PY $S configure --role leg_lf --port <V3-a by-id>   # write + READ BACK; refuses on mismatch
+$PY $S configure --role leg_st --port <V3-b by-id>
+$PY $S configure --role src_lf --port <V4-a by-id>
+$PY $S configure --role src_st --port <V4-b by-id>
+$PY $S bridge  --run <id> --leg-lf <V3-a> --leg-st <V3-b>   # refuses on leftover queues
+$PY $S traffic --run <id> --src-lf <V4-a> --src-st <V4-b> --hours 24
 # ...24 h + 3 min drain; the traffic unit exits on its own
-python3 $S reconcile --run <id>   # exit 0 PASS / 1 FAIL / 2 INCONCLUSIVE / 3 PROVISIONAL (unfinished)
+$PY $S reconcile --run <id>   # exit 0 PASS / 1 FAIL / 2 INCONCLUSIVE / 3 PROVISIONAL (unfinished)
 systemctl --user stop c21-bridge-<id>
 ```
 
