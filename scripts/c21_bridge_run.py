@@ -765,6 +765,7 @@ def cmd_traffic_host(a) -> int:
     radios = {"src_lf": _open(a.src_lf), "src_st": _open(a.src_st)}
     names = {id(i): n for n, i in radios.items()}
     lost = threading.Event()
+    closing = threading.Event()   # our own close fires connection.lost too
 
     def on_text(packet, interface):
         name = names.get(id(interface))
@@ -774,7 +775,7 @@ def cmd_traffic_host(a) -> int:
                     "snr": packet.get("rxSnr"), "rssi": packet.get("rxRssi")})
 
     def on_lost(interface=None):
-        if id(interface) in names:
+        if id(interface) in names and not closing.is_set():
             record({"ev": "link_lost", "radio": names[id(interface)]})
             lost.set()
 
@@ -819,6 +820,7 @@ def cmd_traffic_host(a) -> int:
             completed = False
     record({"ev": "traffic_end", "seq": seq, "link_lost": lost.is_set(),
             "completed": completed, "hours": a.hours})
+    closing.set()   # smoke1 2026-10-19: the close itself read as 'link lost'
     for iface in radios.values():
         _close(iface)
     del keep
