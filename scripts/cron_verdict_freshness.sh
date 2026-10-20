@@ -150,6 +150,31 @@ clear_state() {  # item recovered -> next staleness alerts immediately
     if awk -v k="$1" '$1!=k' "$STATE" > "$tmp"; then mv "$tmp" "$STATE"; else rm -f "$tmp"; fi
 }
 
+judge_age() {  # key max_min age_min what("last verdict"|"data file")
+    # FRESH must be PROVEN. In bash a comparison that errors is just false,
+    # and every earlier shape put fresh on the false branch — so each new
+    # input that broke the arithmetic (word-split limits, base-8 stamps,
+    # overflow) read as healthy. Here fresh is the one branch reached only
+    # by tests that SUCCEEDED; anything unprovable lands in a stale branch.
+    local key="$1" max="$2" age="$3" what="$4"
+    if [ "$age" -ge -5 ] 2>/dev/null && [ "$age" -le "$max" ] 2>/dev/null; then
+        clear_state "$key"
+    elif [ "$age" -lt -5 ] 2>/dev/null; then
+        # honest_failure_modes #6: after a clock step back (RTC-less Pi,
+        # fake-hwclock) a NEGATIVE age is never -gt max, so the cron read
+        # fresh until real time caught up. Its age is unknowable — say so.
+        note_stale "$key" "$what dated $(( -age ))m in the FUTURE — clock stepped? age unknowable"
+    elif [ "$age" -gt "$max" ] 2>/dev/null; then
+        if [ "$what" = "last verdict" ]; then
+            note_stale "$key" "last verdict ${age}m ago (max ${max}m)"
+        else
+            note_stale "$key" "data file ${age}m stale (max ${max}m)"
+        fi
+    else
+        note_stale "$key" "$what age unmeasurable ('$age') — not proven fresh"
+    fi
+}
+
 check_verdict() {  # host verdict_log_path name max_min
     local host="$1" log="$2" name="$3" max_min="$4" last last_ts last_status
     # One pass: "<ts> <status>" of the LAST line for this exact name.
@@ -160,17 +185,8 @@ check_verdict() {  # host verdict_log_path name max_min
         return
     fi
     last_s=$(date -d "$last_ts" +%s 2>/dev/null || echo 0)
-    age_min=$(( (NOW - last_s) / 60 ))
-    if [ "$age_min" -lt -5 ]; then
-        # honest_failure_modes #6: after a clock step back (RTC-less Pi,
-        # fake-hwclock) a NEGATIVE age is never -gt max, so the cron read
-        # fresh until real time caught up. Its age is unknowable — say so.
-        note_stale "$host/$name" "last verdict dated $(( -age_min ))m in the FUTURE — clock stepped? age unknowable"
-    elif [ "$age_min" -gt "$max_min" ]; then
-        note_stale "$host/$name" "last verdict ${age_min}m ago (max ${max_min}m)"
-    else
-        clear_state "$host/$name"
-    fi
+    age_min=$( { echo $(( (NOW - last_s) / 60 )); } 2>/dev/null )
+    judge_age "$host/$name" "$max_min" "$age_min" "last verdict"
     # FAIL in the latest verdict is also worth surfacing once, and a verdict
     # that is no longer FAIL clears it, so the NEXT failure pages at once.
     case "$last_status" in
@@ -185,14 +201,8 @@ check_file_age() {  # host path max_min mtime_epoch
         note_stale "$host/$path" "file missing/unreadable"
         return
     fi
-    age_min=$(( (NOW - mt) / 60 ))
-    if [ "$age_min" -lt -5 ]; then
-        note_stale "$host/$path" "data file dated $(( -age_min ))m in the FUTURE — clock stepped? age unknowable"
-    elif [ "$age_min" -gt "$max_min" ]; then
-        note_stale "$host/$path" "data file ${age_min}m stale (max ${max_min}m)"
-    else
-        clear_state "$host/$path"
-    fi
+    age_min=$( { echo $(( (NOW - mt) / 60 )); } 2>/dev/null )
+    judge_age "$host/$path" "$max_min" "$age_min" "data file"
 }
 
 # ── this box ─────────────────────────────────────────────────────────────

@@ -569,3 +569,18 @@ def test_a_box_dropped_from_the_config_forgets_its_count(box):
         _one_answers(box, now=t + i * 3600)
         box.run(now=t + i * 3600)                        # count restarts at 1
     assert box.read("verdict").splitlines()[-1].startswith("cron_freshness|OK|")
+
+
+# ── inversion (2026-10-20): a comparison that cannot be made reads STALE ──
+
+@pytest.mark.parametrize("answer", ["0800", "09"])
+def test_an_answer_the_arithmetic_cannot_read_is_stale_not_fresh(box, answer):
+    """A leading-zero mtime passes digits-only, `$(( ))` dies in base 8, the
+    age is empty, both `[ ]` tests error — and the else branch cleared the
+    item as FRESH. Fresh must be PROVEN; anything unprovable is stale."""
+    box.ssh.write_text(f"#!/bin/bash\necho {answer}\n")
+    box.config(POWER_REMOTE_BOXES="box-b", POWER_REMOTE_MAX_MIN="10")
+    box.run()
+    v = box.read("verdict")
+    assert v.startswith("cron_freshness|FAIL|"), v
+    assert "box-b/power_history.log" in box.alerts(), box.alerts()
