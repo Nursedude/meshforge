@@ -95,6 +95,16 @@ class TestCache:
         assert "boom" in t["fanout"].get("error", "")
         assert t["schema"] == "fleet_truth/v1"
 
+    def test_build_error_still_lists_the_known_blind_spots(self):
+        """2026-10-20 review: the dark fallback set structural_dark: [], so a
+        failed build made /fleet say 'registry empty — suspicious' and drop
+        every live blind spot exactly when the page was degraded. The
+        registry is static data; it needs no build."""
+        from utils.fleet_blind_spots import STRUCTURAL_DARK
+        with patch.object(c, "collect_snapshots", side_effect=RuntimeError("boom")):
+            t = c.get_fleet_truth(force=True)
+        assert t["structural_dark"] == STRUCTURAL_DARK
+
 
 class TestDeclaredPostureStamp:
     """2026-09-01 DORMANT arc batch 2: the collector reads the operator's

@@ -124,12 +124,15 @@ BYTE_IDENTICAL = (
     "tests/fixtures/lxmface_vectors.json",
     # Honest fleet-truth builder (Phase 4 of the fleet-truth arc, 2026-07-19):
     # the pure tri-state schema/classifier under both NOCs' /api/fleet/truth.
-    # Stdlib-pure, no domain imports — the classify_block default-dark contract
+    # No domain imports — the classify_block default-dark contract
     # and the worst-of roll-up MUST agree across the twins so the two domains'
     # truth documents mean the same thing. Each app keeps its OWN collector
     # (fleet_truth_collector.py: MF = fleet_hosts + fleet_naming; MA =
     # fleet.json peers) — the collector is deliberately NOT parity.
     "src/utils/fleet_truth.py",
+    # Its Known Blind Spots registry (split out 2026-10-20, MF025): pure data,
+    # stdlib-only, imported by fleet_truth.py — so it twins WITH it.
+    "src/utils/fleet_blind_spots.py",
     # BIC-3 operator session store (2026-10-13): hashed sessions + pairing codes
     # behind both maps' default-deny write gate. App-neutral (CONFIG_DIR names
     # the store dir and the CLI), so the twins must refuse, expire and fail
@@ -397,6 +400,34 @@ def _extract_def_dump(text, name):
     return None
 
 
+_FIRST_PARTY_PKGS = ("utils", "gateway", "mini_dudeai")
+
+
+def _first_party_imports(text):
+    """Repo-relative module paths a source text imports from the twinned
+    packages (``from utils.x import``, ``import utils.x``, nested or not).
+    Unparseable or absent text -> empty: the byte tier already reports it."""
+    if not text:
+        return set()
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return set()
+    out = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names = [node.module]
+        elif isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        else:
+            continue
+        for name in names:
+            parts = name.split(".")
+            if parts[0] in _FIRST_PARTY_PKGS and len(parts) >= 2:
+                out.add("src/" + "/".join(parts[:2]) + ".py")
+    return out
+
+
 def _fork_pin_block(text):
     """Extract the normalized parity-relevant lines from requirements/rns.txt:
     the ``# MF-FORK-PIN`` markers and the ``rns @ git+`` / ``lxmf @ git+``
@@ -529,6 +560,26 @@ def check_parity(mf=DEFAULT_MESHFORGE, ma=DEFAULT_MESHANCHOR):
                 findings.append(ParityFinding("calibgate", label, "drift",
                     "(function body differs — port the decision core, then re-run)"))
 
+    # ── Twin imports: what a twinned file imports must EXIST in both repos ──
+    # Identical bytes are not a working port: a twinned file that gains an
+    # import of a module only one repo has crashes the other on import, while
+    # every byte above reads OK (2026-10-20, fleet_truth -> fleet_blind_spots).
+    for rel in BYTE_IDENTICAL:
+        if not rel.endswith(".py"):
+            continue
+        deps = set()
+        for root in (mf, ma):
+            deps |= _first_party_imports(_read(os.path.join(root, rel)))
+        for dep in sorted(deps):
+            have = [os.path.isfile(os.path.join(root, dep)) for root in (mf, ma)]
+            label = f"{rel} -> {dep}"
+            if all(have):
+                findings.append(ParityFinding("twinimport", label, "ok"))
+            else:
+                findings.append(ParityFinding("twinimport", label, "missing",
+                    f"(mf={'ok' if have[0] else 'absent'} ma={'ok' if have[1] else 'absent'}) "
+                    "— port the module with the file, or the twin fails on import"))
+
     if any(f.status == "missing" for f in findings):
         overall = "missing"
     elif any(f.status == "drift" for f in findings):
@@ -544,6 +595,7 @@ _SECTION_HEADER = {
     "shape": "\nShape tier (symbol presence in both repos):",
     "probe": "\nRNS-wedge probes (each repo, own idiom):",
     "calibgate": "\nCalibration claim-gate shared core (detection vocabulary + decision fns):",
+    "twinimport": "\nTwin imports (what a twinned file imports exists in both repos):",
 }
 
 

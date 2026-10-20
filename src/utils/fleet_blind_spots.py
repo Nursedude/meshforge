@@ -10,6 +10,8 @@ from typing import Dict, List
 # These are the corners the domain KNOWS it is not watching — rendered as
 # permanent dark rows so they can never quietly read healthy. Adding/closing a
 # blind spot is a deliberate edit here (an SSOT), not an inference.
+# `since` is the date of the row's LATEST status change; a `detail` that opens
+# with a status word opens with the row's own status (test-pinned).
 # status: open (nothing watches it) | narrowed (watched in part; `dark` is the
 # residual) | accepted (unwatched by an operator decision) | closed (kept so a
 # closure is never a silent deletion; `dark` names who owns what remains).
@@ -19,7 +21,8 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
     {"id": "oracle_rns_send_blind",
      "status": "narrowed", "since": "2026-07-20",
      "dark": "the mesh leg's delivery is confirmable only through ACK consumption (#74 T2 step 4)",
-     "detail": "CLOSED for the RNS leg 2026-07-20 (row 2): send_to_rns returns an "
+     "detail": "NARROWED 2026-07-20 (row 2) — the RNS leg's original gap is closed: "
+               "send_to_rns returns an "
                "RnsSendResult — bool-compatible, so every truthiness call site is "
                "unchanged, plus a .reason (no_path | circuit_open | not_connected | "
                "no_lxmf_source | broadcast_unsupported | send_error) the oracle records "
@@ -94,8 +97,12 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
             "watchdog_probes_peer_rf.py :: probe_segment_peer_silent"},
     {"id": "lxmf_propagation_unadopted",
      "status": "closed", "since": "2026-07-20",
-     "dark": "adopted on both gateways; the configured node's liveness is owned by lxmf_propagation_node_unwatched",
-     "detail": "OPENED 2026-07-20 by the optional-organ sweep, and watched from the same "
+     "dark": "adopted 2026-07-20, re-measured on both gateway boxes 2026-10-20; the node's liveness is owned by the next row",
+     "detail": "CLOSED 2026-07-20 by adoption: rns.propagation_node was set on the gateway "
+               "boxes in the same push as probe_lxmf_propagation_node_dark, which owns the "
+               "configured node's liveness (next row). Re-measured 2026-10-20: both gateway "
+               "boxes' gateway.json carry it. The original record follows. "
+               "OPENED 2026-07-20 by the optional-organ sweep, and watched from the same "
                "day. Structural finding behind it: of ~50 signal classes, only ONE watched "
                "for an available-but-UNADOPTED capability — the domain is excellent at "
                "watching what it was TOLD about. This is the second such watcher. LXMF "
@@ -114,7 +121,8 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
     {"id": "lxmf_propagation_node_unwatched",
      "status": "narrowed", "since": "2026-07-21",
      "dark": "propagation-node liveness is passive: a dead node takes several announce periods (~18 h) to show",
-     "detail": "CLOSED 2026-07-20 the same day it was opened, and deliberately so. Setting "
+     "detail": "NARROWED 2026-07-21 — the original gap CLOSED 2026-07-20, the same day it "
+               "was opened, and deliberately so. Setting "
                "gateway.json rns.propagation_node makes lxmf_propagation_unused go INERT by "
                "design (one fault, one owner), so adoption ALONE would have traded a WATCHED "
                "gap for an UNWATCHED dependency — strictly worse than leaving it unadopted, "
@@ -138,7 +146,8 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
     {"id": "lxmf_store_and_forward_unproven",
      "status": "narrowed", "since": "2026-07-21",
      "dark": "the drill proves one small client pull; node-to-node peering and size/volume failures are unexercised",
-     "detail": "CLOSED 2026-07-21 (propagation arc slice 3). probe_lxmf_propagation_node_dark "
+     "detail": "NARROWED 2026-07-21 — the original gap closed by propagation arc slice 3. "
+               "probe_lxmf_propagation_node_dark "
                "watches whether the configured propagation node ANNOUNCES; it cannot see "
                "whether that node STORES AND FORWARDS. A node announcing perfectly while "
                "silently dropping every stored message reads clean forever — announce-liveness "

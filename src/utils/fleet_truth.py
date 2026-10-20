@@ -19,7 +19,9 @@ stale, or ``None`` source yields ``healthy``. "No data" can never read green
 (honest_failure_modes #1/#2: unobservable != healthy != resolved). Because a cell
 is an object and never a bool, a downstream renderer has nothing to truthy-coerce.
 
-Pure + stdlib-only (mirrors ``fleet_snapshot.py``): ``build_fleet_truth`` takes a
+Pure + stdlib-only (mirrors ``fleet_snapshot.py``); its one first-party import is
+the pure-data blind-spot registry ``fleet_blind_spots``, twinned with this file
+(parity_check byte-identical). ``build_fleet_truth`` takes a
 list of per-peer snapshots and returns the whole-domain schema; no HTTP here. The
 HTTP fan-out that produces the snapshots lives in ``fleet_truth_collector`` (Phase
 2); the coverage per-class disposition is enriched by a watchdog producer change

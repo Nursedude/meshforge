@@ -38,7 +38,9 @@ def test_main_repo_missing_exits_2(tmp_path):
 @pytest.mark.skipif(not _HAS_MESHANCHOR, reason="/opt/meshanchor not present")
 def test_in_sync_against_real_repos():
     pc = _load()
-    findings, overall = pc.check_parity("/opt/meshforge", "/opt/meshanchor")
+    # ROOT, not /opt/meshforge: run from a worktree or branch, the literal
+    # compared MAIN and read in_sync over the change under test (2026-10-20).
+    findings, overall = pc.check_parity(str(ROOT), "/opt/meshanchor")
     assert overall == "in_sync", [f.label for f in findings if f.status != "ok"]
     assert findings and all(f.status == "ok" for f in findings)
 
@@ -46,9 +48,41 @@ def test_in_sync_against_real_repos():
 @pytest.mark.skipif(not _HAS_MESHANCHOR, reason="/opt/meshanchor not present")
 def test_main_in_sync_exits_0(capsys):
     pc = _load()
-    rc = pc.main(["--meshforge", "/opt/meshforge", "--meshanchor", "/opt/meshanchor"])
+    rc = pc.main(["--meshforge", str(ROOT), "--meshanchor", "/opt/meshanchor"])
     assert rc == 0
     assert "RESULT: in sync." in capsys.readouterr().out
+
+
+def _twin_repos(tmp_path, ma_has_dep):
+    for side in ("mf", "ma"):
+        d = tmp_path / side / "src" / "utils"
+        d.mkdir(parents=True)
+        (d / "twinned.py").write_text("from utils.registry import ROWS\n")
+        if side == "mf" or ma_has_dep:
+            (d / "registry.py").write_text("ROWS = []\n")
+    return str(tmp_path / "mf"), str(tmp_path / "ma")
+
+
+def test_twinned_file_importing_a_module_the_twin_lacks_is_missing(tmp_path, monkeypatch):
+    """2026-10-20 (non-author review): the twinned fleet_truth.py gained an
+    import of a NEW module only MeshForge had. Byte-identical copies, and a
+    byte-for-byte port would crash the twin on import — parity must say so."""
+    pc = _load()
+    monkeypatch.setattr(pc, "BYTE_IDENTICAL", ("src/utils/twinned.py",))
+    mf, ma = _twin_repos(tmp_path, ma_has_dep=False)
+    findings, overall = pc.check_parity(mf, ma)
+    hits = [f for f in findings if f.section == "twinimport"]
+    assert [(f.label, f.status) for f in hits] == [
+        ("src/utils/twinned.py -> src/utils/registry.py", "missing")]
+    assert overall == "missing"
+
+
+def test_twinned_import_present_in_both_repos_is_ok(tmp_path, monkeypatch):
+    pc = _load()
+    monkeypatch.setattr(pc, "BYTE_IDENTICAL", ("src/utils/twinned.py",))
+    mf, ma = _twin_repos(tmp_path, ma_has_dep=True)
+    findings, _ = pc.check_parity(mf, ma)
+    assert not [f for f in findings if f.section == "twinimport" and f.status != "ok"]
 
 
 # ── Calibration claim-gate shared-core guard (self-audit-qa-arc §1) ──

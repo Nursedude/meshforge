@@ -30,6 +30,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from utils.logging_config import get_logger
+from utils.fleet_blind_spots import STRUCTURAL_DARK
 
 logger = get_logger(__name__)
 
@@ -551,7 +552,9 @@ def get_fleet_truth(*, port: int = DEFAULT_PORT, ttl_s: float = CACHE_TTL_S,
                 "fanout": {"hosts_declared": None, "hosts_answered": 0,
                            "ttl_s": ttl_s, "stale": True, "error": str(e)},
                 "counts": {"healthy": 0, "failed": 0, "dark": 0},
-                "boxes": [], "structural_dark": [],
+                # The registry is static data, not a build product: a failed
+                # build must not blank the blind spots when the page is dark.
+                "boxes": [], "structural_dark": STRUCTURAL_DARK,
             }
         _cache["truth"] = truth
         _cache["built_at"] = time.monotonic()

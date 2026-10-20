@@ -271,6 +271,25 @@ def test_blind_spot_fold_is_an_explicit_allowlist():
 
 def test_blind_spot_rows_are_one_line_with_prose_behind_details():
     body = _render_structural_dark_body()
-    assert "esc(sd.dark ||" in body, "the one-line residual is the visible text"
+    assert "esc(sd.dark)" in body, "the one-line residual is the visible text"
     assert "<details" in body and "esc(sd.detail)" in body
     assert "esc(sd.status" in body and "esc(sd.since" in body
+
+
+def test_closed_blind_spot_is_not_styled_dark():
+    """2026-10-20 review: inside the fold a closed row wore the same dark
+    span as a live blind spot. Status picks the class from a LITERAL map
+    (never string-built from data), and closed maps to its own class."""
+    body = _render_structural_dark_body()
+    m = re.search(r"const SD_CLASS = \{([^}]*)\}", body)
+    assert m, "status -> class must be a literal map"
+    assert re.search(r"closed:\s*'sd-closed'", m.group(1))
+    assert "SD_CLASS[sd.status]" in body
+
+
+def test_missing_one_liner_shows_a_marker_not_the_record():
+    """A row without `dark` (an older peer doc, a new row) must not pour its
+    whole record into the one-line summary."""
+    body = _render_structural_dark_body()
+    assert "sd.dark || sd.detail" not in body
+    assert "no one-line residual" in body

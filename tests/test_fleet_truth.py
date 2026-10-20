@@ -834,6 +834,18 @@ class TestFleetTruth:
         assert set(ft.STRUCTURAL_DARK_STATUSES) == {
             "open", "narrowed", "accepted", "closed"}
 
+    def test_structural_dark_record_opens_with_its_own_status(self):
+        """2026-10-20 review: a NARROWED chip over a record whose first word
+        was CLOSED. A record that opens with a status word must open with
+        the row's own status (REOPENED BY CHOICE is an accepted gap)."""
+        words = {"OPENED": "open", "NARROWED": "narrowed", "CLOSED": "closed",
+                 "ACCEPTED": "accepted", "REOPENED": "accepted"}
+        t = ft.build_fleet_truth([], now=NOW, signal_classes=[], noc_host="moc")
+        for row in t["structural_dark"]:
+            first = row["detail"].split()[0].rstrip(":").split("-")[0]
+            if first in words:
+                assert words[first] == row["status"], (row["id"], first)
+
     def test_structural_dark_is_not_all_folded(self):
         """A registry where every row is accepted/closed would render an
         empty visible pane — this domain HAS live blind spots."""

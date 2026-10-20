@@ -18,10 +18,16 @@ MF deploy chain of the day finishes — an untracked file reads as a dirty tree)
 
 ## Order (each slice: test first, non-author review before first deploy)
 1. **Blind-spot compaction.** Rows gain `status` (open|narrowed|accepted|closed),
-   `since`, one-line `summary`; prose stays as `detail`. Pane shows OPEN/NARROWED
-   one line each with age; ACCEPTED+CLOSED fold into one "N accepted/closed ▸"
-   line; detail behind a click. Test: a `closed` row never renders as dark; every
-   row has a known status (closed enum, hfm #7); empty open set still reads honestly.
+   `since` (date of the LATEST status change), one-line `dark` (what is STILL
+   unwatched); prose stays as `detail`. Pane shows OPEN/NARROWED one line each;
+   ACCEPTED+CLOSED fold into one "N accepted / closed" line; detail behind a
+   click. Tests: a `closed` row gets its own class, never the dark styling;
+   every row has a known status (closed enum, hfm #7); a record opening with a
+   status word opens with its own; a missing `dark` shows a marker, never the
+   record. **Built 2026-10-20 on a branch; non-author review found 8, all
+   fixed on the branch.** The registry is `utils/fleet_blind_spots.py`,
+   byte-identical with MeshAnchor alongside `fleet_truth.py` — land BOTH repos
+   together (`parity_check` now fails a twinned file whose import the twin lacks).
 2. **Box drawer (read-only).** Click a box → SHA vs HEAD, uptime, posture,
    `@rns/` owner, subsystem cells, escalations, cron verdicts, SDR line. Data from
    `/api/fleet/truth`; presentation only.
