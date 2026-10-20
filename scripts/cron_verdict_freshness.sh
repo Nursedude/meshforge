@@ -63,7 +63,7 @@ UNANSWERED_RUNS=3
 HOOK_T="${CRON_FRESHNESS_HOOK_TIMEOUT_S:-60}"
 case "$HOOK_T" in ''|*[!0-9]*) HOOK_T=60 ;; esac
 
-concern() { timeout "$HOOK_T" "$VERDICT" cron_freshness CONCERN "$1"; exit 0; }
+concern() { timeout "$HOOK_T" "$VERDICT" cron_freshness CONCERN "$1" 9>&-; exit 0; }
 
 # --- config: known keys only, never `source`d ------------------------------
 OFFLINE_CHECK=fleet_offline_check   # the one cron judged here (a repo script name, not an operator value)
@@ -112,7 +112,9 @@ done
     concern "$CONF configures nothing to check"
 
 # --- one run at a time: overlapping runs would interleave the state file ----
-exec 9>>"$STATE.lock"
+# A lock it cannot OPEN (unwritable home, full card) once failed flock on a
+# bad fd and was blamed on a "previous run": exit 0, no verdict, every hour.
+{ exec 9>>"$STATE.lock"; } 2>/dev/null || concern "cannot open $STATE.lock — this run measured nothing"
 flock -n 9 || { echo "cron_verdict_freshness: previous run still holds $STATE.lock" >&2; exit 0; }
 touch "$STATE"
 
@@ -184,9 +186,14 @@ check_verdict() {  # host verdict_log_path name max_min
         note_stale "$host/$name" "no verdict ever recorded"
         return
     fi
-    last_s=$(date -d "$last_ts" +%s 2>/dev/null || echo 0)
-    age_min=$( { echo $(( (NOW - last_s) / 60 )); } 2>/dev/null )
-    judge_age "$host/$name" "$max_min" "$age_min" "last verdict"
+    # An unparseable stamp is SAID, not turned into epoch 0 (a ~29M-minute "age").
+    last_s=$(date -d "$last_ts" +%s 2>/dev/null)
+    if [ -z "$last_s" ]; then
+        note_stale "$host/$name" "last verdict timestamp unparseable ('$last_ts')"
+    else
+        age_min=$( { echo $(( (NOW - last_s) / 60 )); } 2>/dev/null )
+        judge_age "$host/$name" "$max_min" "$age_min" "last verdict"
+    fi
     # FAIL in the latest verdict is also worth surfacing once, and a verdict
     # that is no longer FAIL clears it, so the NEXT failure pages at once.
     case "$last_status" in
@@ -220,11 +227,26 @@ for box in $POWER_REMOTE_BOXES; do
     # a box that answered "no file" is a dead power_capture, NOT an
     # unreachable box (reader T: it was filed as unanswered and read OK).
     # Last line only, so a login banner on stdout cannot pose as the answer.
-    mt=$(timeout 25 "$SSH" -o ConnectTimeout=8 -o BatchMode=yes "$box" \
-        "stat -c %Y ~/power_history.log 2>/dev/null || echo MISSING" 2>/dev/null | tail -n 1)
+    # The box answers "<mtime> <its own now>": the file is aged on the REMOTE
+    # clock, so skew between boxes (RTC-less Pis) cannot read as staleness.
+    ans=$(timeout 25 "$SSH" -o ConnectTimeout=8 -o BatchMode=yes -- "$box" \
+        's=$(stat -c %Y ~/power_history.log 2>/dev/null) && echo "$s $(date +%s)" || echo MISSING' \
+        2>/dev/null 9>&- | tail -n 1)
+    r_mt=""; r_now=""; r_extra=""
+    read -r r_mt r_now r_extra <<< "$ans"
+    mt=""
+    case "$r_mt:$r_now:$r_extra" in
+        MISSING::) mt=MISSING ;;
+        *:*:?*) ;;
+        [0-9]*:[0-9]*:)
+            case "$r_mt$r_now" in *[!0-9]*) ;; *)
+                [ ${#r_mt} -le 12 ] && [ ${#r_now} -le 12 ] && \
+                    mt=$( { echo $(( NOW - (10#$r_now - 10#$r_mt) )); } 2>/dev/null ) ;;
+            esac ;;
+    esac
     case "$mt" in
         MISSING) check_file_age "$box" "power_history.log" "$POWER_REMOTE_MAX_MIN" "0" ;;
-        ''|*[!0-9]*)
+        ''|*[!0-9-]*)
             # One unreachable box is fleet_offline_check's job — no page from us.
             # But it is never silent: it rides the verdict's evidence, and a
             # misspelled name (it never answers) cannot hide behind it forever.
@@ -255,7 +277,7 @@ if [ -n "$STALE" ]; then
     # The 6h gate arms only on a page that was SENT: stamping first meant one
     # failed push silenced the item for 6h with nobody told.
     if timeout "$HOOK_T" "$NTFY" "fleet cron gone silent" "high" "hourglass" \
-            "$(printf '%s' "$STALE" | head -c 800)"; then
+            "$(printf '%s' "$STALE" | head -c 800)" 9>&-; then
         for _key in "${STALE_KEYS[@]}"; do stamp_state "$_key"; done
     else
         printf '%s CRON-FRESHNESS page NOT sent (ntfy rc=%s) — retried next run\n' "$TS" "$?" >> "$ALERTS"
@@ -279,4 +301,4 @@ elif [ "$remote_n" -gt 0 ] && [ "$n_unanswered" -eq "$remote_n" ]; then
     _fs_st=CONCERN; _fs_ev="$_fs_ev — NO remote box answered (of $remote_n): the remote leg measured nothing"
 elif [ -n "$long_silent" ]; then _fs_st=CONCERN
 else _fs_st=OK; fi
-timeout "$HOOK_T" "$VERDICT" cron_freshness "$_fs_st" "$_fs_ev"
+timeout "$HOOK_T" "$VERDICT" cron_freshness "$_fs_st" "$_fs_ev" 9>&-

@@ -230,7 +230,7 @@ def test_remote_power_history_stale_flagged_unreachable_skipped(box):
     stale_mt = int(time.time() - 45 * 60)
     box.ssh.write_text(
         "#!/bin/bash\n"
-        f'case " $* " in *" box-b "*) echo {stale_mt} ;; *" box-c "*) exit 255 ;; esac\n')
+        f'case " $* " in *" box-b "*) echo {stale_mt} {int(time.time())} ;; *" box-c "*) exit 255 ;; esac\n')
     box.config(POWER_REMOTE_BOXES="box-b box-c", POWER_REMOTE_MAX_MIN="10")
     box.run()
     a = box.alerts()
@@ -270,7 +270,7 @@ def test_crlf_quotes_and_spaces_are_normalised_not_trusted(box):
     """A CRLF-edited or quoted config once turned `moc` into `moc\r` — an ssh
     miss, skipped quietly as 'unreachable', OK forever."""
     stale_mt = int(time.time() - 45 * 60)
-    box.ssh.write_text(f'#!/bin/bash\ncase " $* " in *" box-b "*) echo {stale_mt} ;; esac\n')
+    box.ssh.write_text(f'#!/bin/bash\ncase " $* " in *" box-b "*) echo {stale_mt} {int(time.time())} ;; esac\n')
     box.conf.write_bytes(b'LOCAL_LABEL = "box-a"\r\nPOWER_REMOTE_BOXES="box-b"\r\n'
                          b"POWER_REMOTE_MAX_MIN='10'\r\n")
     box.run()
@@ -286,7 +286,7 @@ def test_no_remote_box_answering_is_concern_one_is_named(box):
     v = box.read("verdict")
     assert v.startswith("cron_freshness|CONCERN|") and "NO remote box answered (of 2)" in v, v
     fresh = int(time.time() - 60)
-    box.ssh.write_text(f'#!/bin/bash\ncase " $* " in *" box-b "*) echo {fresh} ;; *) exit 255 ;; esac\n')
+    box.ssh.write_text(f'#!/bin/bash\ncase " $* " in *" box-b "*) echo {fresh} {int(time.time())} ;; *) exit 255 ;; esac\n')
     box.run()
     v = box.read("verdict").splitlines()[-1]
     assert v.startswith("cron_freshness|OK|") and "remote unanswered: box-c" in v, v
@@ -356,7 +356,7 @@ def test_a_box_that_answers_without_the_file_is_flagged_not_unanswered(box):
     fresh = int(time.time() - 60)
     box.ssh.write_text(
         "#!/bin/bash\n"
-        f'case " $* " in *" good "*) echo {fresh} ;; *" gone "*) echo MISSING ;; *) exit 255 ;; esac\n')
+        f'case " $* " in *" good "*) echo {fresh} {int(time.time())} ;; *" gone "*) echo MISSING ;; *) exit 255 ;; esac\n')
     box.config(POWER_REMOTE_BOXES="good gone down")
     box.run()
     assert "gone/power_history.log: file missing/unreadable" in box.alerts(), box.alerts()
@@ -366,7 +366,7 @@ def test_a_box_that_answers_without_the_file_is_flagged_not_unanswered(box):
 
 def test_a_login_banner_cannot_pose_as_the_answer(box):
     stale = int(time.time() - 45 * 60)
-    box.ssh.write_text(f'#!/bin/bash\necho "Welcome to box-b"\necho {stale}\n')
+    box.ssh.write_text(f'#!/bin/bash\necho "Welcome to box-b"\necho {stale} {int(time.time())}\n')
     box.config(POWER_REMOTE_BOXES="box-b")
     box.run()
     assert "box-b/power_history.log: data file 45m stale" in box.alerts()
@@ -521,7 +521,8 @@ def test_a_hung_page_cannot_hold_the_lock_forever(box):
 def _one_answers(box, answered=("box-b",), now=None):
     """box-b's file is fresh relative to the RUN's clock, not the wall's."""
     fresh = int((now or time.time()) - 60)
-    pats = " ".join(f'*" {b} "*) echo {fresh} ;;' for b in answered)
+    rnow = int(now or time.time())
+    pats = " ".join(f'*" {b} "*) echo {fresh} {rnow} ;;' for b in answered)
     box.ssh.write_text(f'#!/bin/bash\ncase " $* " in {pats} *) exit 255 ;; esac\n')
 
 
@@ -573,14 +574,61 @@ def test_a_box_dropped_from_the_config_forgets_its_count(box):
 
 # ── inversion (2026-10-20): a comparison that cannot be made reads STALE ──
 
-@pytest.mark.parametrize("answer", ["0800", "09"])
-def test_an_answer_the_arithmetic_cannot_read_is_stale_not_fresh(box, answer):
-    """A leading-zero mtime passes digits-only, `$(( ))` dies in base 8, the
-    age is empty, both `[ ]` tests error — and the else branch cleared the
-    item as FRESH. Fresh must be PROVEN; anything unprovable is stale."""
+@pytest.mark.parametrize("answer", ["0800", "09", "123 abc", "abc 123", "0800 -"])
+def test_an_answer_the_arithmetic_cannot_read_is_never_ok(box, answer):
+    """Leading zeros once passed digits-only and died in base 8; the age was
+    empty and the else branch cleared the item as FRESH. Fresh must be
+    PROVEN: a malformed answer is unanswered (named) or stale, never OK."""
     box.ssh.write_text(f"#!/bin/bash\necho {answer}\n")
     box.config(POWER_REMOTE_BOXES="box-b", POWER_REMOTE_MAX_MIN="10")
     box.run()
     v = box.read("verdict")
-    assert v.startswith("cron_freshness|FAIL|"), v
-    assert "box-b/power_history.log" in box.alerts(), box.alerts()
+    assert not v.startswith("cron_freshness|OK|"), v
+    assert "box-b" in v + box.alerts(), (v, box.alerts())
+
+
+# ── fifth contextless pass (2026-10-20) ────────────────────────────────────
+
+def test_a_lock_it_cannot_open_is_concern_not_a_silent_exit(box):
+    """An unwritable home made `exec 9>>lock` fail; flock then failed on a bad
+    fd and the run blamed a 'previous run', exited 0, wrote NO verdict."""
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts(f"{_iso(60)} {J} OK")
+    (box.home / ".cron_freshness_state.lock").mkdir()      # unopenable as a file
+    r = box.run()
+    v = box.read("verdict")
+    assert v.startswith("cron_freshness|CONCERN|") and "lock" in v, (v, r.stderr)
+    assert "previous run still holds" not in r.stderr, r.stderr
+
+
+def test_a_backgrounded_hook_child_cannot_hold_the_lock(box):
+    """`timeout` kills the hook, not a child it backgrounded — which inherited
+    fd 9 and kept the flock: the NEXT run exited 0 with no verdict."""
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts(f"{_iso(7200)} {J} OK")
+    stub = box.tmp / "stub_ntfy.sh"
+    stub.write_text(stub.read_text() + "sleep 20 >/dev/null 2>&1 &\n")   # off pytest's pipes
+    t = time.time()
+    box.run(now=t)
+    box.run(now=t + 7 * 3600)
+    assert box.read("verdict").splitlines() == ["cron_freshness|FAIL|1 stale|"] * 2
+
+
+def test_remote_age_is_measured_on_the_remote_clock(box):
+    """The remote mtime was aged against the MANAGER's clock, so a remote box
+    30 min behind read 30m stale on a file written a minute ago."""
+    remote_now = int(time.time()) - 1800                  # remote clock 30 min behind
+    box.ssh.write_text(f"#!/bin/bash\necho {remote_now - 60} {remote_now}\n")
+    box.config(POWER_REMOTE_BOXES="box-b", POWER_REMOTE_MAX_MIN="10")
+    box.run()
+    assert box.read("verdict") == "cron_freshness|OK|0 stale|\n", box.alerts()
+
+
+def test_an_unparseable_verdict_time_says_so_not_an_epoch_age(box):
+    """`|| echo 0` made a corrupt timestamp an age of ~29 million minutes."""
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts(f"garbage {J} OK")
+    box.run()
+    a = box.alerts()
+    assert f"box-a/{J}: last verdict timestamp unparseable ('garbage')" in a, a
+    assert box.read("verdict").startswith("cron_freshness|FAIL|")
