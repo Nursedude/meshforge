@@ -42,7 +42,7 @@ this is the long form. Re-count at each freeze review:
 | Define / decide / plan ("what is 1.0", "should we") | `mattpocock-skills:grilling` → result into `.claude/ROADMAP.md` | turns a wish into checks that can FAIL; an unmeasurable goal has no distance |
 | Module / seam / interface design | `mattpocock-skills:codebase-design`; decision record → `engineering:architecture` (ADR in `.claude/plans/adr_*.md`) | |
 | Upstream / library / protocol fact | `mattpocock-skills:research` | read the PINNED source, never the version string ("2.8 is newer" ≠ "2.8 is fixed") |
-| Diff ready / "review this" | `code-review` | ⚠️ SEQUENTIAL on VolcanoAI (see Fleet Facts); two contextless readers one after another keep the independence |
+| Diff ready / "review this" | `code-review medium <range>` (repo path in the args for another repo) | The skill FORKS one background agent with no context: that fork IS the non-author. Invoke it from the main session, never from a subagent (that nests a second agent). `low` skips tests and verification (returned nothing where `medium` found 8, 2026-10-20 pilot); use `medium`+. ⚠️ SEQUENTIAL on VolcanoAI (see Fleet Facts) |
 | RF / radio / traceroute / SNR / mesh behaviour | this skill → measure at BOTH ends (the originator's journal holds the back leg) | an app screen is a rendering, not a measurement; label physics as physics |
 | Box down / unreachable / probe blind | persistent_issues "Quick diagnostic tells" table, then `ssh` + the box's own `uptime` | you may have observed a PATH, not a box |
 | Session start / mid-session refresh | `/warmstart` | |
