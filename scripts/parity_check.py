@@ -72,6 +72,13 @@ BYTE_IDENTICAL = (
     "src/utils/observation.py",
     "scripts/hs_substrate_skew.py",
     "src/gateway/canonical_message.py",
+    # The routing decider + its default_route vocabulary (MeshAnchor #151,
+    # 2026-10-19). MeshAnchor had silently missed THREE MeshForge routing
+    # fixes (drop valid/honoured, drop-first, default_route) — so a "drop"
+    # workaround given to a tester was invalid config there. Both bridges
+    # must decide who crosses identically.
+    "src/utils/classifier.py",
+    "src/gateway/routing_vocab.py",
     # M→R queue outage behaviour (ROADMAP 6f, 2026-10-17): defer-don't-count,
     # max age, clock-jump shift. Both bridges sit on one rnsd; two copies
     # that drift = two different outage contracts (review F8).
