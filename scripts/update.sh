@@ -38,6 +38,9 @@ BRANCH=""
 SKIP_DESKTOP=false
 SKIP_DEPS=false
 
+# Kept for the post-pull self re-exec (lib/update_reexec.sh).
+_MF_ORIG_ARGS=("$@")
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -113,6 +116,12 @@ echo -e "Installation: ${GREEN}$INSTALL_DIR${NC}"
 # Get current state
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 CURRENT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+# Re-executed after updating itself: count changes from where the FIRST run
+# started, or the second run reports "Already up to date" for a real update.
+if [[ -n "${MESHFORGE_UPDATE_FROM:-}" ]] \
+        && git cat-file -e "${MESHFORGE_UPDATE_FROM}^{commit}" 2>/dev/null; then
+    CURRENT_COMMIT="$MESHFORGE_UPDATE_FROM"
+fi
 echo -e "Current branch: ${CYAN}$CURRENT_BRANCH${NC} ($CURRENT_COMMIT)"
 
 # ─────────────────────────────────────────────────────────────────
@@ -161,6 +170,13 @@ if git pull origin "$CURRENT_BRANCH" 2>&1; then
 else
     echo -e "${YELLOW}Warning: Pull failed, continuing with current code${NC}"
 fi
+
+# The pull may have replaced THIS script; bash would keep running the old text
+# (MeshAnchor #151 re-test). Re-run the new one, once.
+# shellcheck source=lib/update_reexec.sh
+. "$INSTALL_DIR/scripts/lib/update_reexec.sh"
+mf_reexec_if_self_changed "$CURRENT_COMMIT" "$(git rev-parse --short HEAD)" \
+    "$INSTALL_DIR" scripts/update.sh "${_MF_ORIG_ARGS[@]}"
 
 # ─────────────────────────────────────────────────────────────────
 # Step 2: Update Python dependencies
