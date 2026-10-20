@@ -41,7 +41,7 @@ Code works in testing but hasn't been validated in real-world deployments with a
 | Category | Capabilities | Notes |
 |----------|-------------|-------|
 | **Radio Failover** | Dual-radio state machine, automatic TX switchover at >25% channel utilization, anti-flap, HTTP health polling | Needs dual meshtasticd |
-| **Dual-radio mesh_bridge serial** | Cross-preset bridge (LF HAT + ST USB) via `connection_type: "serial"` on secondary — code merged + unit-tested, live-probed on a fleet box's Heltec | Needs sustained cross-preset traffic to validate |
+| **Dual-radio mesh_bridge serial** | Cross-preset bridge (LF HAT + ST USB) via `connection_type: "serial"` on secondary — code merged + unit-tested, live-probed on a fleet box's Heltec | **Bridge logic PROVEN serial+serial (C21 run `c21r1`, 24 h, 2026-10-19→20, reconcile PASS rc=0):** 1436/1436 delivered (718 each way), 48/48 planted controls (repeat, pre-tagged loop) dropped under their named reasons, 0 unaccounted, 0 duplicates, RF loss 0/718 on all four legs (ingress+egress, LF→ST and ST→LF). Lab radios at ~1 dBm, hop_limit 1. **Still unproven: the field topology's LF HAT/meshtasticd leg** — stage 1 was serial on both sides. Plan: `.claude/plans/c21_cross_preset_run_2026_10_18.md` |
 | **MQTT Monitoring** | Nodeless mesh observation, protobuf decode, telemetry tracking, congestion alerts | Needs real MQTT traffic |
 | **Coverage Maps** | Interactive Folium maps, SNR-based link quality | **Priority QA target** — needs GPS position data. ⚠️ **NOT offline-capable** — see the offline note below |
 | **Traffic Inspector** | Packet capture, protocol tree, display filters, path tracing | Needs real packet flow |
