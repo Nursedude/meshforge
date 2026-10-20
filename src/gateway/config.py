@@ -14,6 +14,9 @@ from typing import Optional, List, Dict, Any, Tuple
 import logging
 
 from utils.safe_import import safe_import
+from .routing_vocab import (  # noqa: F401 — re-exported (MF025 split)
+    DEFAULT_ROUTE_ALLOWLIST, DEFAULT_ROUTE_OPEN, DEFAULT_ROUTE_SOURCE,
+    validate_default_route)
 from gateway.operator_line_config import OperatorLineConfig
 from utils.paths import get_real_user_home, atomic_write_text_preserving
 from gateway.config_migrations import (
@@ -1283,6 +1286,10 @@ class GatewayConfig:
                 logger.debug("Config drift check failed: %s", e)
 
         # Determine if valid (only errors count, not warnings/info)
+        err = validate_default_route(self.default_route, "default_route")
+        if err:
+            errors.append(err)
+
         is_valid = not any(e.severity == "error" for e in errors)
 
         return is_valid, errors

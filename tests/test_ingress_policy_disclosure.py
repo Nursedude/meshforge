@@ -15,6 +15,9 @@ Three measured facts this file pins:
    ``source_filter`` restricts nothing and ``default_route`` is ignored —
    the knob the 09-18 queue entry pointed at is a decoy on the live path
    (the fifth decoy of that arc, same shape as ``desired_channels``).
+   ⚠️ Superseded for ``default_route`` by MeshAnchor #151 (2026-10-19):
+   both deciders now read it; with an OPEN value (the live shape) allow
+   rules still restrict nothing.
 2. The only refusing knob is a rule with ``direction: "drop"`` — and
    ``validate_direction`` rejected that word, while the legacy decider read
    it as "unknown direction = allow". A refusing rule that validation
@@ -61,12 +64,17 @@ class TestTheLiveShapeIsAllowAll:
                           ("meshtastic", None), ("meshcore", None)):
             assert r.should_bridge(_msg(src, dest=dest)) is True
 
-    def test_allow_rule_source_filter_does_not_restrict_under_classifier(self):
-        """Measured 2026-10-06: the knob the enumeration assumed."""
+    def test_allow_rule_source_filter_restricts_when_default_route_closes(self):
+        """Measured 2026-10-06: the knob the enumeration assumed was a decoy
+        (this test pinned stranger -> True). MeshAnchor #151 made the
+        classifier honour default_route like the legacy decider: a value
+        that does not open the RNS source makes the rules an allow-list.
+        Open default (every live gateway): test_routing_default_route_
+        allowlist.TestOpenDefaultIsUnchanged."""
         r = _router([RoutingRule(name="peers", direction="rns_to_mesh",
                                  source_filter="^abc")],
                     default_route="mesh_to_rns")
-        assert r.should_bridge(_msg(sid=STRANGER)) is True
+        assert r.should_bridge(_msg(sid=STRANGER)) is False
         assert r.should_bridge(_msg(sid=PEER)) is True
 
 
@@ -119,11 +127,22 @@ class TestTheRouterSaysItsPolicy:
         assert "drop" in line          # names the knob that would refuse
 
     def test_allow_rules_do_not_change_the_verdict_under_classifier(self, caplog):
+        """Open default_route: allow rules still restrict nothing, and the
+        line keeps saying so."""
+        line = self._line(caplog, rules=[RoutingRule(
+            name="peers", direction="rns_to_mesh", source_filter="^abc")],
+            default_route="bidirectional")
+        assert "OPEN" in line and "rules=1" in line
+        assert "do not restrict" in line
+
+    def test_closed_default_route_reads_allow_listed_under_classifier(self, caplog):
+        """MeshAnchor #151: the classifier honours default_route now; the
+        line must not keep claiming the rules restrict nothing."""
         line = self._line(caplog, rules=[RoutingRule(
             name="peers", direction="rns_to_mesh", source_filter="^abc")],
             default_route="mesh_to_rns")
-        assert "OPEN" in line and "rules=1" in line
-        assert "do not restrict" in line
+        assert "ALLOW-LISTED" in line and "rules=1" in line
+        assert "do not restrict" not in line
 
     def test_drop_rules_are_counted(self, caplog):
         line = self._line(caplog, rules=[RoutingRule(

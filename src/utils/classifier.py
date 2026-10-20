@@ -381,9 +381,16 @@ class RoutingClassifier(Classifier):
     Small buckets: bridge_to_rns, bridge_to_mesh, drop, queue
     """
 
-    def __init__(self, rules: List[Dict] = None, **kwargs):
+    def __init__(self, rules: List[Dict] = None, default_open=True,
+                 **kwargs):
         super().__init__(**kwargs)
         self.rules = rules or []
+        # default_route's switch (MeshAnchor #151): True = a message no rule
+        # matches still bridges; False = the rules are an allow-list; a set of
+        # source networks = open for those sources only; or a callable
+        # returning one of those, read per message. The legacy decider always
+        # had this; the classifier ignored it.
+        self.default_open = default_open
 
         # Confidence weights
         self.weights = {
@@ -447,6 +454,15 @@ class RoutingClassifier(Classifier):
                     reasons.append(f"Matched rule: {rule.get('name', 'unnamed')}")
                     metadata['matched_rules'].append(rule.get('name'))
                     break
+
+        d_open = self.default_open() if callable(self.default_open) \
+            else self.default_open
+        open_here = (d_open if isinstance(d_open, bool)
+                     else source_network in d_open)
+        if not metadata['matched_rules'] and not open_here:
+            category = RoutingCategory.DROP.value
+            reasons.append("No enabled rule matched; default_route is closed")
+            metadata['refused_no_rule'] = True
 
         # Source known check
         if source_id:
@@ -654,7 +670,8 @@ class NotificationClassifier(Classifier):
 def create_routing_system(
     rules: List[Dict] = None,
     bounce_threshold: float = 0.3,
-    fixes_path: Optional[Path] = None
+    fixes_path: Optional[Path] = None,
+    default_open=True,
 ) -> RoutingClassifier:
     """
     Create a configured routing classifier.
@@ -663,6 +680,8 @@ def create_routing_system(
         rules: List of routing rule dicts
         bounce_threshold: Confidence threshold for bouncer
         fixes_path: Path to persist user corrections
+        default_open: default_route's switch — True open, False allow-list,
+            or a set of source networks open by default
     """
     bouncer = Bouncer(BouncerConfig(
         threshold=bounce_threshold,
@@ -674,6 +693,7 @@ def create_routing_system(
 
     return RoutingClassifier(
         rules=rules or [],
+        default_open=default_open,
         bouncer=bouncer,
         fix_registry=fix_registry
     )
