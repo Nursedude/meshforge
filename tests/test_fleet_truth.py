@@ -816,7 +816,31 @@ class TestFleetTruth:
             assert row.get("id") and row.get("detail") and row.get("ref"), (
                 f"malformed structural-dark row: {row}")
         ids = {d["id"] for d in t["structural_dark"]}
-        assert "oracle_rns_send_blind" in ids   # still open (row 2, post-roll)
+        assert "oracle_rns_send_blind" in ids   # still live (narrowed, row 2)
+
+    def test_structural_dark_rows_carry_status_since_and_one_line_residual(self):
+        """10-20 compaction: every row says, in ONE line, what is STILL dark
+        (`dark`), with a status from a closed set and the date it last moved.
+        The long `detail` stays for the record. A `closed` row is kept only
+        so a closure is never a silent deletion; its line names who owns
+        what remains."""
+        import datetime
+        t = ft.build_fleet_truth([], now=NOW, signal_classes=[], noc_host="moc")
+        for row in t["structural_dark"]:
+            assert row.get("status") in ft.STRUCTURAL_DARK_STATUSES, row["id"]
+            datetime.date.fromisoformat(row.get("since", ""))
+            line = row.get("dark", "")
+            assert line and "\n" not in line and len(line) <= 200, row["id"]
+        assert set(ft.STRUCTURAL_DARK_STATUSES) == {
+            "open", "narrowed", "accepted", "closed"}
+
+    def test_structural_dark_is_not_all_folded(self):
+        """A registry where every row is accepted/closed would render an
+        empty visible pane — this domain HAS live blind spots."""
+        t = ft.build_fleet_truth([], now=NOW, signal_classes=[], noc_host="moc")
+        live = [r for r in t["structural_dark"]
+                if r["status"] in ("open", "narrowed")]
+        assert len(live) >= 3
 
     def test_empty_fleet_is_dark_not_healthy(self):
         t = ft.build_fleet_truth([], now=NOW, signal_classes=[], noc_host="moc",

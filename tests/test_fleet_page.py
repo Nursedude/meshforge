@@ -248,3 +248,29 @@ def test_resolution_chip_is_labelled():
     """The bare 'dns' chip read as a stray word on a dormant tile."""
     src = FLEET_HTML.read_text()
     assert 'title="name resolved via' in src
+
+
+def _render_structural_dark_body() -> str:
+    m = re.search(r"function renderStructuralDark\(doc\) \{(.*?)\n    \}\n",
+                  FLEET_HTML.read_text(), re.S)
+    assert m, "renderStructuralDark missing"
+    return m.group(1)
+
+
+def test_blind_spot_fold_is_an_explicit_allowlist():
+    """10-20: the Known Blind Spots pane was ~12 KB of prose. Rows now fold
+    away by status — but ONLY the two deliberate ones (accepted gap, closed
+    kept for the record). The fold is a literal allowlist, so a status the
+    page has never heard of stays VISIBLE (default-dark, like stClass)."""
+    body = _render_structural_dark_body()
+    m = re.search(r"const FOLDED = new Set\(\[([^\]]*)\]\)", body)
+    assert m, "fold set must be a literal Set"
+    assert sorted(re.findall(r"'(\w+)'", m.group(1))) == ["accepted", "closed"]
+    assert "!FOLDED.has(" in body, "visible rows = everything NOT in the fold"
+
+
+def test_blind_spot_rows_are_one_line_with_prose_behind_details():
+    body = _render_structural_dark_body()
+    assert "esc(sd.dark ||" in body, "the one-line residual is the visible text"
+    assert "<details" in body and "esc(sd.detail)" in body
+    assert "esc(sd.status" in body and "esc(sd.since" in body
