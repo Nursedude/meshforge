@@ -514,3 +514,58 @@ def test_a_hung_page_cannot_hold_the_lock_forever(box):
     assert r.returncode == 0, r.stderr
     assert time.monotonic() - t0 < 15
     assert box.read("verdict").startswith("cron_freshness|FAIL|")
+
+
+# ── #5 (operator 2026-10-20): a remote box that keeps not answering ───────
+
+def _one_answers(box, answered=("box-b",), now=None):
+    """box-b's file is fresh relative to the RUN's clock, not the wall's."""
+    fresh = int((now or time.time()) - 60)
+    pats = " ".join(f'*" {b} "*) echo {fresh} ;;' for b in answered)
+    box.ssh.write_text(f'#!/bin/bash\ncase " $* " in {pats} *) exit 255 ;; esac\n')
+
+
+def test_a_box_unanswered_three_runs_running_is_concern(box):
+    """One sibling answering kept a never-answering box (a typo, a dead sshd)
+    under OK forever. Three consecutive misses make the verdict CONCERN;
+    fewer stay OK, so a reboot blip is not an edge."""
+    box.config(POWER_REMOTE_BOXES="box-b box-c")
+    t = time.time()
+    for i in range(3):
+        _one_answers(box, now=t + i * 3600)
+        box.run(now=t + i * 3600)
+    v = box.read("verdict").splitlines()
+    assert v[0].startswith("cron_freshness|OK|") and v[1].startswith("cron_freshness|OK|"), v
+    assert v[2].startswith("cron_freshness|CONCERN|"), v
+    assert "box-c unanswered 3 runs in a row" in v[2], v
+    assert box.read("ntfy") == ""                 # a verdict, not a page from us
+
+
+def test_an_answer_resets_the_unanswered_run(box):
+    box.config(POWER_REMOTE_BOXES="box-b box-c")
+    t = time.time()
+    for i, answered in enumerate([("box-b",), ("box-b",), ("box-b", "box-c"),
+                                  ("box-b",), ("box-b",)]):
+        _one_answers(box, answered, now=t + i * 3600)
+        box.run(now=t + i * 3600)
+    assert box.read("verdict").splitlines()[-1].startswith("cron_freshness|OK|")
+
+
+def test_stale_still_reads_fail_and_names_the_silent_box(box):
+    box.config(POWER_REMOTE_BOXES="box-b box-c", POWER_LOCAL_MAX_MIN="10")
+    t = time.time()
+    for i in range(3):
+        _one_answers(box, now=t + i * 3600)
+        box.run(now=t + i * 3600)                 # no local power_history → stale
+    v = box.read("verdict").splitlines()[-1]
+    assert v.startswith("cron_freshness|FAIL|") and "box-c unanswered 3 runs in a row" in v, v
+
+
+def test_a_box_dropped_from_the_config_forgets_its_count(box):
+    box.config(POWER_REMOTE_BOXES="box-b box-c")
+    t = time.time()
+    for i, boxes in enumerate(["box-b box-c", "box-b box-c", "box-b", "box-b box-c"]):
+        box.config(POWER_REMOTE_BOXES=boxes)
+        _one_answers(box, now=t + i * 3600)
+        box.run(now=t + i * 3600)                        # count restarts at 1
+    assert box.read("verdict").splitlines()[-1].startswith("cron_freshness|OK|")

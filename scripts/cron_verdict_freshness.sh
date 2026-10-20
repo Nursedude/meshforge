@@ -45,6 +45,7 @@ VERDICT="${CRON_FRESHNESS_VERDICT:-$REPO_DIR/scripts/cron_verdict.sh}"
 SSH="${CRON_FRESHNESS_SSH:-ssh}"
 ALERTS="$H/fleet_alerts.log"
 STATE="$H/.cron_freshness_state"
+UNANS="$H/.cron_freshness_unanswered"   # "<box> <consecutive unanswered runs>"
 NOW="${CRON_FRESHNESS_NOW:-$(date +%s)}"
 case "$NOW" in ''|*[!0-9]*) NOW=$(date +%s) ;; esac
 TS=$(date -u -d "@$NOW" +%Y-%m-%dT%H:%M:%SZ)
@@ -52,6 +53,11 @@ NL=$'\n'
 # 6h. meshforge_digest.py's CRON_FRESHNESS_WINDOW_S = this + 2h (the hourly
 # cadence plus one late/skipped run of slack); tests pin the two together.
 REALERT_S=21600
+# A remote box unanswered this many runs IN A ROW makes the verdict CONCERN
+# (operator 2026-10-20): one answering sibling once kept a never-answering
+# box (a typo, a dead sshd) under OK forever. Fewer runs stay OK so a reboot
+# blip is not an edge; an outage is fleet_offline_check's page meanwhile.
+UNANSWERED_RUNS=3
 # NTFY and VERDICT are bounded: one hang once held the flock, and every later
 # run exited 0 without a verdict (fourth pass, 2026-10-20).
 HOOK_T="${CRON_FRESHNESS_HOOK_TIMEOUT_S:-60}"
@@ -217,6 +223,23 @@ for box in $POWER_REMOTE_BOXES; do
     esac
 done
 
+# Consecutive-miss count per configured box. Rewritten whole each run from
+# the configured list, so a box dropped from the config forgets its count.
+long_silent=""
+if [ "$remote_n" -gt 0 ]; then
+    _tmp=$(mktemp "$UNANS.XXXXXX") && {
+        for box in $POWER_REMOTE_BOXES; do
+            case " $unanswered " in *" $box "*) ;; *) continue ;; esac
+            n=$(awk -v k="$box" '$1==k {v=$2} END {print v}' "$UNANS" 2>/dev/null)
+            case "$n" in ''|*[!0-9]*|??????*) n=0 ;; esac
+            n=$((10#$n + 1))
+            echo "$box $n" >> "$_tmp"
+            [ "$n" -ge "$UNANSWERED_RUNS" ] && long_silent="$long_silent $box unanswered $n runs in a row;"
+        done
+        mv "$_tmp" "$UNANS" || rm -f "$_tmp"
+    }
+fi
+
 if [ -n "$STALE" ]; then
     printf '%s CRON-FRESHNESS STALE:%s\n' "$TS" "$STALE" >> "$ALERTS"
     # The 6h gate arms only on a page that was SENT: stamping first meant one
@@ -239,9 +262,11 @@ fi
 _fs_n=$(printf '%s' "$OBSERVED" | grep -c ':')
 _fs_ev="$_fs_n stale"
 [ -n "$unanswered" ] && _fs_ev="$_fs_ev; remote unanswered:$unanswered"
+[ -n "$long_silent" ] && _fs_ev="$_fs_ev —${long_silent%;}"
 n_unanswered=$(printf '%s' "$unanswered" | wc -w)
 if [ -n "$OBSERVED" ]; then _fs_st=FAIL
 elif [ "$remote_n" -gt 0 ] && [ "$n_unanswered" -eq "$remote_n" ]; then
     _fs_st=CONCERN; _fs_ev="$_fs_ev — NO remote box answered (of $remote_n): the remote leg measured nothing"
+elif [ -n "$long_silent" ]; then _fs_st=CONCERN
 else _fs_st=OK; fi
 timeout "$HOOK_T" "$VERDICT" cron_freshness "$_fs_st" "$_fs_ev"
