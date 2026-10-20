@@ -32,7 +32,8 @@
 # with the migration, never ignored.
 #
 # Test seams (env): CRON_FRESHNESS_HOME, CRON_FRESHNESS_CONF, CRON_FRESHNESS_NTFY,
-# CRON_FRESHNESS_VERDICT, CRON_FRESHNESS_SSH, CRON_FRESHNESS_NOW.
+# CRON_FRESHNESS_VERDICT, CRON_FRESHNESS_SSH, CRON_FRESHNESS_NOW,
+# CRON_FRESHNESS_HOOK_TIMEOUT_S.
 export PATH=/usr/local/bin:/usr/bin:/bin
 # readlink -f: a symlink to this script must still find ITS repo, or the
 # verdict and the page both point at files that do not exist (readers).
@@ -51,8 +52,12 @@ NL=$'\n'
 # 6h. meshforge_digest.py's CRON_FRESHNESS_WINDOW_S = this + 2h (the hourly
 # cadence plus one late/skipped run of slack); tests pin the two together.
 REALERT_S=21600
+# NTFY and VERDICT are bounded: one hang once held the flock, and every later
+# run exited 0 without a verdict (fourth pass, 2026-10-20).
+HOOK_T="${CRON_FRESHNESS_HOOK_TIMEOUT_S:-60}"
+case "$HOOK_T" in ''|*[!0-9]*) HOOK_T=60 ;; esac
 
-concern() { "$VERDICT" cron_freshness CONCERN "$1"; exit 0; }
+concern() { timeout "$HOOK_T" "$VERDICT" cron_freshness CONCERN "$1"; exit 0; }
 
 # --- config: known keys only, never `source`d ------------------------------
 OFFLINE_CHECK=fleet_offline_check   # the one cron judged here (a repo script name, not an operator value)
@@ -61,7 +66,10 @@ POWER_REMOTE_BOXES=""; POWER_REMOTE_MAX_MIN="10"
 [ -r "$CONF" ] || concern "no config at $CONF — nothing checked"
 while IFS= read -r line || [ -n "$line" ]; do
     line="${line%$'\r'}"                                   # CRLF-edited file
-    case "$line" in ''|[[:space:]]*'#'*|'#'*) continue ;; esac
+    # A comment is a line whose FIRST non-blank is '#'. `[[:space:]]*'#'*`
+    # matched any indented line holding a '#' anywhere, so
+    # "  OFFLINE_CHECK_MAX_MIN=10  # note" vanished and the run read OK.
+    case "${line#"${line%%[![:space:]]*}"}" in ''|'#'*) continue ;; esac
     case "$line" in *=*) ;; *) [ -z "${line//[[:space:]]/}" ] && continue
                               concern "line without '=' in $CONF: '$line'" ;; esac
     key="${line%%=*}"; val="${line#*=}"
@@ -86,11 +94,13 @@ case "$LOCAL_LABEL" in *[[:space:]]*) concern "LOCAL_LABEL '$LOCAL_LABEL' in $CO
 # Each limit is validated as a WHOLE string: a blank or "5 9" once
 # word-split to nothing / two numbers, passed, and made `-gt` error →
 # the else branch read every file FRESH (readers, reproduced).
-case "$POWER_REMOTE_MAX_MIN" in ''|*[!0-9]*) concern "POWER_REMOTE_MAX_MIN '$POWER_REMOTE_MAX_MIN' in $CONF is not a whole number" ;; esac
+# More than 9 digits overflows `[ -gt ]`, which errors into the same FRESH
+# branch, so a huge value is refused too (fourth pass, 2026-10-20).
+case "$POWER_REMOTE_MAX_MIN" in ''|*[!0-9]*|??????????*) concern "POWER_REMOTE_MAX_MIN '$POWER_REMOTE_MAX_MIN' in $CONF is not a whole number of at most 9 digits" ;; esac
 for _k in OFFLINE_CHECK_MAX_MIN POWER_LOCAL_MAX_MIN; do
     _v="${!_k}"
     [ -n "$_v" ] || continue
-    case "$_v" in *[!0-9]*) concern "$_k '$_v' in $CONF is not a whole number" ;; esac
+    case "$_v" in *[!0-9]*|??????????*) concern "$_k '$_v' in $CONF is not a whole number of at most 9 digits" ;; esac
 done
 [ -n "$OFFLINE_CHECK_MAX_MIN$POWER_LOCAL_MAX_MIN$POWER_REMOTE_BOXES" ] || \
     concern "$CONF configures nothing to check"
@@ -101,19 +111,28 @@ flock -n 9 || { echo "cron_verdict_freshness: previous run still holds $STATE.lo
 touch "$STATE"
 
 STALE=""      # the re-alert-GATED notification list
+STALE_KEYS=() # their state keys: stamped only once the page is SENT
 OBSERVED=""   # every stale item seen THIS run, ungated — the verdict stamps from this
 note_stale() {  # item detail
     OBSERVED="$OBSERVED$NL$1: $2"
     # LAST value for the key, digits only: a duplicated key (power loss, hand
     # edit) once made `last` two lines → arithmetic error → never paged again.
+    # 10#: a leading zero ("0800") once died in base 8 and silenced the item.
     last=$(awk -v k="$1" '$1==k {v=$2} END {print v}' "$STATE" 2>/dev/null)
-    case "$last" in *[!0-9]*) last="" ;; esac
-    if [ -z "$last" ] || [ $((NOW - last)) -ge $REALERT_S ]; then
+    case "$last" in *[!0-9]*|??????????????????*) last="" ;; esac
+    [ -n "$last" ] && last=$((10#$last))
+    # A stamp from the FUTURE (clock stepped back) is no evidence of a page
+    # sent: it once withheld every page until real time passed it.
+    if [ -z "$last" ] || [ "$last" -gt "$NOW" ] || [ $((NOW - last)) -ge $REALERT_S ]; then
         STALE="$STALE$NL$1: $2"
-        local tmp; tmp=$(mktemp "$STATE.XXXXXX") || return
-        awk -v k="$1" '$1!=k' "$STATE" > "$tmp" && echo "$1 $NOW" >> "$tmp" && mv "$tmp" "$STATE" \
-            || rm -f "$tmp"
+        STALE_KEYS+=("$1")
     fi
+}
+
+stamp_state() {  # key -> "<key> NOW", replacing any prior line
+    local tmp; tmp=$(mktemp "$STATE.XXXXXX") || return
+    awk -v k="$1" '$1!=k' "$STATE" > "$tmp" && echo "$1 $NOW" >> "$tmp" && mv "$tmp" "$STATE" \
+        || rm -f "$tmp"
 }
 
 clear_state() {  # item recovered -> next staleness alerts immediately
@@ -200,7 +219,14 @@ done
 
 if [ -n "$STALE" ]; then
     printf '%s CRON-FRESHNESS STALE:%s\n' "$TS" "$STALE" >> "$ALERTS"
-    "$NTFY" "fleet cron gone silent" "high" "hourglass" "$(printf '%s' "$STALE" | head -c 800)"
+    # The 6h gate arms only on a page that was SENT: stamping first meant one
+    # failed push silenced the item for 6h with nobody told.
+    if timeout "$HOOK_T" "$NTFY" "fleet cron gone silent" "high" "hourglass" \
+            "$(printf '%s' "$STALE" | head -c 800)"; then
+        for _key in "${STALE_KEYS[@]}"; do stamp_state "$_key"; done
+    else
+        printf '%s CRON-FRESHNESS page NOT sent (ntfy rc=%s) — retried next run\n' "$TS" "$?" >> "$ALERTS"
+    fi
 fi
 # Status FAIL when anything is stale (2026-09-07): this line stamped OK
 # unconditionally for its whole life, so the harness_audit leg that read it had
@@ -218,4 +244,4 @@ if [ -n "$OBSERVED" ]; then _fs_st=FAIL
 elif [ "$remote_n" -gt 0 ] && [ "$n_unanswered" -eq "$remote_n" ]; then
     _fs_st=CONCERN; _fs_ev="$_fs_ev — NO remote box answered (of $remote_n): the remote leg measured nothing"
 else _fs_st=OK; fi
-"$VERDICT" cron_freshness "$_fs_st" "$_fs_ev"
+timeout "$HOOK_T" "$VERDICT" cron_freshness "$_fs_st" "$_fs_ev"

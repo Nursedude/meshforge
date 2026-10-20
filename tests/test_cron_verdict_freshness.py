@@ -419,3 +419,98 @@ def test_duplicate_state_keys_use_the_newest_stamp(box):
     box.run()
     assert box.read("ntfy") == "", box.read("ntfy")
     assert box.read("verdict").startswith("cron_freshness|FAIL|")      # the record is never withheld
+
+
+# ── fourth contextless pass (2026-10-20): each case is a reader's drill ────
+
+def test_an_indented_key_with_a_trailing_comment_is_not_a_comment(box):
+    """`[[:space:]]*'#'*` matched ANY indented line containing '#', so the
+    5-min pager's limit vanished and the run stamped OK (drill A). Only a
+    line whose first non-blank is '#' is a comment."""
+    box.conf.write_text("POWER_REMOTE_BOXES=good\n  OFFLINE_CHECK_MAX_MIN=10  # tight pager\n")
+    box.verdicts(f"{_iso(3 * 86400)} {J} OK")
+    box.run()
+    v = box.read("verdict")
+    assert v.startswith("cron_freshness|CONCERN|") and "OFFLINE_CHECK_MAX_MIN" in v, v
+
+
+def test_an_indented_comment_is_still_a_comment(box):
+    box.conf.write_text("  # the 5-min pager\nOFFLINE_CHECK_MAX_MIN=30\n")
+    box.verdicts(f"{_iso(60)} {J} OK")
+    box.run()
+    assert box.read("verdict") == "cron_freshness|OK|0 stale|\n"
+
+
+@pytest.mark.parametrize("key", ["OFFLINE_CHECK_MAX_MIN", "POWER_LOCAL_MAX_MIN",
+                                 "POWER_REMOTE_MAX_MIN"])
+def test_a_limit_too_big_for_test_is_refused_not_fresh(box, key):
+    """Digits-only passed 99999999999999999999, `[ -gt ]` errored, and the
+    else branch read FRESH (drill C) — the class lines 86-88 say was fixed."""
+    extra = "POWER_REMOTE_BOXES=b\n" if key == "POWER_REMOTE_MAX_MIN" else ""
+    box.conf.write_text(f"{extra}{key}=99999999999999999999\n")
+    box.verdicts(f"{_iso(3 * 86400)} {J} OK")
+    r = box.run()
+    v = box.read("verdict")
+    assert v.startswith("cron_freshness|CONCERN|") and key in v, v
+    assert "integer expression expected" not in r.stderr, r.stderr
+
+
+def test_a_leading_zero_state_stamp_still_pages(box):
+    """`0800` passed the digit guard, then `$((NOW - last))` died in base 8:
+    no page, state never rewritten, silenced until recovery (drill D)."""
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts(f"{_iso(7200)} {J} OK")
+    (box.home / ".cron_freshness_state").write_text(f"box-a/{J} 0800\n")
+    r = box.run()
+    assert "value too great" not in r.stderr, r.stderr
+    assert box.read("ntfy").count("fleet cron gone silent") == 1
+
+
+def test_a_state_stamp_from_the_future_does_not_withhold_pages(box):
+    """honest_failure_modes #6 on the re-alert gate: a stamp written while the
+    clock ran ahead made NOW - last negative and withheld every page until
+    real time passed it (drill E: ~3 years)."""
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts(f"{_iso(7200)} {J} OK")
+    t = int(time.time())
+    (box.home / ".cron_freshness_state").write_text(f"box-a/{J} {t + 100 * 86400}\n")
+    box.run(now=t)
+    assert box.read("ntfy").count("fleet cron gone silent") == 1
+    assert box.read("verdict").startswith("cron_freshness|FAIL|")
+
+
+def test_a_failed_page_is_retried_next_run_not_gated(box):
+    """State advanced BEFORE the push and NTFY's exit was ignored, so one
+    failed push silenced the item for 6h. The gate arms only on a sent page."""
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts(f"{_iso(7200)} {J} OK")
+    stub = box.tmp / "stub_ntfy.sh"
+    good = stub.read_text()
+    stub.write_text(good + "exit 1\n")
+    t = time.time()
+    box.run(now=t)
+    assert "page NOT sent" in box.alerts(), box.alerts()
+    stub.write_text(good)
+    box.run(now=t + 3600)                      # 1h later: inside the 6h gate
+    assert box.read("ntfy").count("fleet cron gone silent") == 2
+    box.run(now=t + 7200)                      # sent → now the gate holds
+    assert box.read("ntfy").count("fleet cron gone silent") == 2
+
+
+def test_a_hung_page_cannot_hold_the_lock_forever(box):
+    """NTFY/VERDICT had no timeout: one hang held the flock and every later
+    run exited 0 silently. Both are bounded; the verdict still lands."""
+    box.config(LOCAL_LABEL="box-a", OFFLINE_CHECK_MAX_MIN="30")
+    box.verdicts(f"{_iso(7200)} {J} OK")
+    (box.tmp / "stub_ntfy.sh").write_text("#!/bin/bash\nsleep 30\n")
+    env = dict(os.environ, CRON_FRESHNESS_HOME=str(box.home),
+               CRON_FRESHNESS_CONF=str(box.conf),
+               CRON_FRESHNESS_NTFY=str(box.tmp / "stub_ntfy.sh"),
+               CRON_FRESHNESS_VERDICT=str(box.tmp / "stub_verdict.sh"),
+               CRON_FRESHNESS_SSH=str(box.ssh), CRON_FRESHNESS_HOOK_TIMEOUT_S="1")
+    t0 = time.monotonic()
+    r = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True,
+                       text=True, timeout=25)
+    assert r.returncode == 0, r.stderr
+    assert time.monotonic() - t0 < 15
+    assert box.read("verdict").startswith("cron_freshness|FAIL|")
