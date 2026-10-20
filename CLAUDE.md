@@ -43,7 +43,7 @@ measured 0/112 sessions, 2026-10-04; long form + re-count recipe: `meshforge` sk
 | build / change behaviour | `mattpocock-skills:tdd` — fails on old code first |
 | define / decide / plan | `mattpocock-skills:grilling` → `.claude/ROADMAP.md` |
 | upstream / protocol fact | `mattpocock-skills:research` — the pinned source, not the version |
-| diff ready / review | `code-review medium <range>` invoked by ME — it forks its own contextless reviewer (the non-author); never from inside a subagent (nests = fan-out); one at a time on the manager |
+| diff ready / review | `code-review medium <range>` invoked by ME — it forks its own contextless reviewer (the non-author); never from inside a subagent (nests). More than one agent on the manager: `scripts/fanout_headroom.py` GO + the `meshforge` skill's fan-out rule |
 | RF / radio / mesh / traceroute | `meshforge` skill — measure at BOTH ends |
 
 > Full security rules: `.claude/rules/security.md`

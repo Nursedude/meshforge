@@ -42,7 +42,7 @@ this is the long form. Re-count at each freeze review:
 | Define / decide / plan ("what is 1.0", "should we") | `mattpocock-skills:grilling` → result into `.claude/ROADMAP.md` | turns a wish into checks that can FAIL; an unmeasurable goal has no distance |
 | Module / seam / interface design | `mattpocock-skills:codebase-design`; decision record → `engineering:architecture` (ADR in `.claude/plans/adr_*.md`) | |
 | Upstream / library / protocol fact | `mattpocock-skills:research` | read the PINNED source, never the version string ("2.8 is newer" ≠ "2.8 is fixed") |
-| Diff ready / "review this" | `code-review medium <range>` (repo path in the args for another repo) | The skill FORKS one background agent with no context: that fork IS the non-author. Invoke it from the main session, never from a subagent (that nests a second agent). `low` skips tests and verification (returned nothing where `medium` found 8, 2026-10-20 pilot); use `medium`+. ⚠️ SEQUENTIAL on VolcanoAI (see Fleet Facts) |
+| Diff ready / "review this" | `code-review medium <range>` (repo path in the args for another repo) | The skill FORKS one background agent with no context: that fork IS the non-author. Invoke it from the main session, never from a subagent (that nests a second agent). `low` skips tests and verification (returned nothing where `medium` found 8, 2026-10-20 pilot); use `medium`+. More than one agent at once: the fan-out rule in Fleet Facts (preflight `scripts/fanout_headroom.py`) |
 | RF / radio / traceroute / SNR / mesh behaviour | this skill → measure at BOTH ends (the originator's journal holds the back leg) | an app screen is a rendering, not a measurement; label physics as physics |
 | Box down / unreachable / probe blind | persistent_issues "Quick diagnostic tells" table, then `ssh` + the box's own `uptime` | you may have observed a PATH, not a box |
 | Session start / mid-session refresh | `/warmstart` | |
@@ -120,12 +120,29 @@ greps miss `via_mqtt`, #75 trap). Service state = `check_service()` only.
 - **meshanchor-server** is the MeshAnchor-owned box: MA services + a read-only
   `/opt/meshforge` checkout for the lab/mini user units. No MF watchdog there —
   mini runs `MINI_DUDEAI_ENABLE_WATCHDOG=0` (declared absent ≠ error).
-- ⚠️ **No multi-agent fan-outs on VolcanoAI** (kernel-lockup class, 2/2 froze
-  the box) — one sequential agent at a time; no /deep-research fan-out here.
-  ⚠️ Carried WITHOUT its evidence (10-04: the incident record was not found).
-  Verify before relaxing: `git log -S'fan-out'` for the cause, then measure
-  headroom incl. swap (10-04: swap 2015/2047 MB used). Never test it BY fanning
-  out on the manager.
+- ⚠️ **Fan-out on VolcanoAI is MEASURED, not banned** (operator 2026-10-20:
+  *"if there's a reasonable reason for a multi-agent scan, mindful execution
+  and monitoring matters"*; replaces "never fan out", which was carried
+  without its evidence). The proven lockup (07-21) was MEMORY exhaustion
+  (Ollama: MemAvailable 650 MB/16 GB, PSI 7.4, load 1.2/core) → BCM watchdog
+  power-cycle; nothing agent-specific. The binding limit for agent work is
+  the **8 GB user-slice cap** (`user-1000.slice.d/10-memory-cap.conf`): a
+  runaway is OOM-killed INSIDE the slice (10-16: a 6.4 GB python3) — and that
+  slice also holds mini/lxmd/echo, so the victim can be the fleet watcher.
+  1. **Reason first** — say why one agent is not enough (independent readers,
+     breadth). Default stays ONE agent.
+  2. **Preflight** `python3 scripts/fanout_headroom.py` → GO (exit 0) only.
+     HOLD/UNKNOWN = don't. Ratios + lines live in that script, not here.
+  3. **Caps**: agents ≤ cores−1 (3 here); HEAVY local work (full suite,
+     builds, drills, timing-sensitive tests) ONE at a time, each under
+     `systemd-run --user -p MemoryMax=2G …` so an OOM kills the job, not the
+     session or mini. Concurrent load also turns timing tests into false reds.
+  4. **Watch for the duration** — a Monitor running the script `--quiet`
+     every 15 s; any `rc≥2` line = stop the agents (TaskStop), then read why.
+  5. **Record the peak** of the first fan-outs (per-agent cost is UNMEASURED
+     — agents run inside the claude process): it is the evidence that lets
+     the caps move. The rule moves by measurement, never by a good run.
+  ⚠️ `code-review` forks ONE agent itself: never invoke it from a subagent.
 - fleet_sync restarts gateways on `^src/` diffs — **never during a soak**; the
   no-restart deploy is targeted `git pull --ff-only` per box. Always pull every
   box after `git push` (divergence failure mode).
