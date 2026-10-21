@@ -97,6 +97,9 @@ _S9_SAFE = {
     "dpBoxes.map": "map of esc()d parts",
     "fanout.ttl_s": "number",
     "boxes.length": "count",
+    "folded.length": "count (Known Blind Spots fold)",
+    "folded.map(line)": "map of renderStructuralDark's line(), which esc()s every row field "
+                        "(pinned by test_fleet_page's blind-spot tests)",
     "cols.map": "map of esc()d parts",
     "alerts.map(esc)": "escaped",
     "doc.bearings.map": "map of esc()d parts",
