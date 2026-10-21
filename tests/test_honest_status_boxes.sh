@@ -575,7 +575,15 @@ check "and the lag is NAMED, never silent" \
 check "the headline does not place a lagging box AT HEAD" \
   "$(echo "$out" | grep -E 'fleet SHA drift' | grep -qE '[0-9]+/[0-9]+ @ ' || echo ok)"
 check "the headline says behind by audit records only" \
-  "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q '1 behind it by audit records only' && echo ok)"
+  "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q '1 box(es) behind it by audit records only' && echo ok)"
+# 2026-10-20 round 6: K was the BOX count but read as COMMITS behind ("10
+# behind it" for 10 boxes x 2 commits). 1 box x 2 commits tells them apart.
+_dd_commit ".claude/audits/review_provenance.md" "second touch row" >/dev/null
+out="$(FAKE_BOX_HEAD="$DD_BASE" HONEST_BOXES="box-behind" run)"
+check "the headline counts BOXES as boxes, never as commits" \
+  "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q '1 box(es) behind it by audit records only' && echo ok)"
+check "and names the commit lag separately (up to 2)" \
+  "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q 'up to 2 commit(s)' && echo ok)"
 DD_AUDIT="$(git -C "$FAKE_REPO" rev-parse HEAD)"
 _dd_commit "src/thing.py" "code change" >/dev/null
 out="$(FAKE_BOX_HEAD="$DD_AUDIT" HONEST_BOXES="box-behind" run)"
