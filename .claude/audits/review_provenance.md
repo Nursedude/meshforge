@@ -4625,3 +4625,14 @@ moc4 ran `meshforge-maps` active+enabled at `f8e8d2a` (role collector → maps d
 - **`e419b2d3` K wording:** headline now `N/N code-converged with <HEAD> — K box(es) behind it by audit records only, up to M commit(s) (no deploy owed)`; `SD_auditmax` = max per-box `rev-list --count` (`?` if any count is unreadable). Harness: new 1-box × 2-commit fixture; old code rc=1 (3 FAILs = the new/reworded checks) → new rc=0 (80 PASS). Live `--quick`: `10/10 code-converged with 55668389 — 10 box(es) behind it by audit records only, up to 1 commit(s)`. Display-only; live on VolcanoAI by working tree (the only host that runs it).
 - **MA vacuous witness test:** MA `af09489f` (row in MA provenance). Plant drill old rc=0 / new rc=1 / clean rc=0.
 - Still QUEUED from round 6: FAIL/UNKNOWN headlines count audit-only boxes AT HEAD; negative-grep check passes on a missing line; the other 8 slice-1 rows.
+- **Non-author review of `797df2ca` + MA `af09489f`** (contextless `code-review medium`, 1 pass, by RUNNING): harness rc=0 new / rc=1 old (3 FAILs = the new checks); `SD_auditmax` max VERIFIED in isolation (1,2 / 2,1 → 2; `?` and empty → `?`); MA test rc=0 (74), top-level + `async def` plants rc=1. 10 findings, none breaks today's behaviour → stop rule, all QUEUED below. Twin-leg reset BELIEVED (read, not tested).
+
+## QUEUED (2026-10-20, review of the two round-6 fixes — not fixed, by choice)
+- **[first] MA witness test: `if named_here: return` skips the understates check** as soon as ONE row lists meshanchor — the vacuity returns after one registry edit. Run the absence check over every row NOT naming this app, always.
+- **[first] the absence regex is column-0 anchored** — measured: a cited probe planted as an indented METHOD passes (rc=0). Drop the `^` anchor or parse with `ast`.
+- absence check matches by bare name repo-wide, ignoring the ref's `<file> ::` half (asymmetric with the positive half: false positive on an unrelated same-name helper, false negative on a renamed detector).
+- MF twin test lacks the other-half check though the registry is byte-identical (an `open` / meshanchor-only row citing an MF probe goes unflagged on MF). Port both halves to both twins together.
+- honest_status: FAIL/UNKNOWN headlines still `M/E @ <HEAD>` counting audit-only boxes AT HEAD (carried from round 6, now in the touched function).
+- harness: 1-box fixture leaves cross-box max, `?` propagation and the twin-leg `SD_auditmax` reset untested — add 2 boxes with lags 2,1 + a twin run; anchor `'— 1 box(es)'` (substring matches `11 box(es)`).
+- one unreadable count turns the headline into `up to ? commit(s)`, discarding the known max (say `≥N, 1 unknown`); rev-list exit 0 + empty output renders `audit-records-behind()` — normalise `lag` to `?` before both uses.
+- the lag `rev-list` re-walks the range `sha_behind_by_audit_records_only` just proved — have the helper return the count (one reader/writer).
