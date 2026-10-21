@@ -53,6 +53,37 @@ def test_main_in_sync_exits_0(capsys):
     assert "RESULT: in sync." in capsys.readouterr().out
 
 
+def test_fleet_truth_module_level_imports_are_twinned_too():
+    """2026-10-20 review round 4: with the twin-import tier CUT, a module-level
+    first-party import added to the byte-identical fleet_truth.py would port
+    byte-for-byte and crash the twin on import with every parity tier green.
+    Narrow on purpose: other twinned files import per-app seams by design
+    (box_truth_app, paths), so the rule is per-file, not a tier. Lazy and
+    try-guarded imports degrade and are not pinned."""
+    import ast
+    pc = _load()
+    rel = "src/utils/fleet_truth.py"
+    tree = ast.parse((ROOT / rel).read_text(encoding="utf-8"))
+    deps = set()
+    for node in tree.body:                      # module level only
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names = [node.module] + [f"{node.module}.{a.name}" for a in node.names]
+        elif isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        else:
+            continue
+        for name in names:
+            if name.split(".")[0] not in ("utils", "gateway", "mini_dudeai"):
+                continue
+            for cand in ("src/" + name.replace(".", "/") + ".py",
+                         "src/" + name.replace(".", "/") + "/__init__.py"):
+                if (ROOT / cand).is_file():
+                    deps.add(cand)
+    deps.discard("src/utils/__init__.py")       # the package itself, in both repos
+    assert deps, "pin went vacuous — fleet_truth imports its registry"
+    assert deps <= set(pc.BYTE_IDENTICAL), sorted(deps - set(pc.BYTE_IDENTICAL))
+
+
 # ── Calibration claim-gate shared-core guard (self-audit-qa-arc §1) ──
 
 def test_extract_literal_constant_tuple():

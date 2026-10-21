@@ -302,8 +302,8 @@ _SD_UNESCAPED_OK = (
     r"FOLDED\.has\(sd\.status\)",     # fold membership test
     r"SD_CLASS\[sd\.status\]",         # literal-map lookup; the CLASS is ours
     r"sd => sd\.dark\s*\?",            # truthiness test for the marker
-    r"sd\.scope === '\w+'",             # compared with a literal, never rendered
-    r"esc\(\(sd\.watched_in",            # escaped after the join
+    r"sd\.(?:scope|status) [!=]== '\w+'",  # compared with a literal, never rendered
+    r"Array\.isArray\(sd\.watched_in\)",  # type test before the escaped join
     r"isOpen\(sd\.id\)",                # Set lookup -> literal ' open'
 )
 
@@ -328,7 +328,9 @@ def test_blind_spot_watched_elsewhere_is_never_folded_or_struck():
     the page keeps elsewhere/unknown rows visible, marked, and off the
     closed styling."""
     body = _render_structural_dark_body()
-    assert "const offHere = sd => sd.scope === 'elsewhere' || sd.scope === 'unknown';" in body
+    # default-dark: a row with NO scope (an older server) is off-here too
+    assert "const offHere = sd => sd.status !== 'open' && sd.scope !== 'here';" in body
+    assert "Array.isArray(sd.watched_in)" in body, "a non-list must not throw the poll"
     assert "offHere(sd) ? 'sd-offhere' : (SD_CLASS[sd.status] || '')" in body
     assert "unwatched on this NOC" in body and "coverage scope not recorded" in body
 
@@ -339,4 +341,4 @@ def test_blind_spot_open_rows_survive_the_poll():
     body = _render_structural_dark_body()
     assert "querySelectorAll('details[open][data-sd]')" in body
     assert 'data-sd="\' + esc(sd.id) + \'"\' + isOpen(sd.id)' in body
-    assert "data-sd=\"__fold\"' + isOpen('__fold')" in body
+    assert "data-sd=\"fold:\"' + isOpen('fold:')" in body

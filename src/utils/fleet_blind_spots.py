@@ -18,13 +18,15 @@ from typing import Any, Dict, List, Optional
 # residual) | accepted (unwatched by an operator decision) | closed (kept so a
 # closure is never a silent deletion; `dark` names who owns what remains).
 # `dark` is the ONE line /fleet shows; `detail` is the record behind it.
-# `watched_in` (narrowed/closed rows): the apps whose probes back the status.
-# This registry is served by BOTH NOCs, so a status earned by MeshForge's
-# probes is not a claim about MeshAnchor's boxes — list an app only after
-# measuring that its probe runs there (2026-10-20: none of the 9 probes these
-# rows cite exist in MeshAnchor).
+# `watched_in` (every row but `open`): the apps whose probes back what the row
+# says IS watched. This registry is served by BOTH NOCs, so coverage earned by
+# MeshForge's probes is not a claim about MeshAnchor's boxes — list an app only
+# after measuring that its probe runs there (2026-10-20: none of the 9 probes
+# these rows cite exist in MeshAnchor; each repo's test checks the probes cited
+# by rows naming its own app). Accepted rows carry it too: the operator's
+# decision holds on every NOC, the detection it rests on does not.
 STRUCTURAL_DARK_STATUSES = ("open", "narrowed", "accepted", "closed")
-STRUCTURAL_DARK: List[Dict[str, str]] = [
+STRUCTURAL_DARK: List[Dict[str, Any]] = [
     {"id": "oracle_rns_send_blind",
      "status": "narrowed", "since": "2026-07-20",
      "watched_in": ["meshforge"],
@@ -44,6 +46,7 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
      "ref": "watchdog_probes_gateway_flow.py :: probe_oracle_delivery_degraded"},
     {"id": "cross_gateway_dups_unsuppressed",
      "status": "accepted", "since": "2026-07-19",
+     "watched_in": ["meshforge"],
      "dark": "cross-gateway duplicates are detected, never suppressed: redundancy over silence, by choice",
      "detail": "ACCEPTED-PERMANENT 2026-07-19 (operator): keep the detector, do NOT build "
                "cross-gateway coordination. The reason is COST ASYMMETRY, not a low rate — "
@@ -58,6 +61,7 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
      "ref": ".claude/research/cross_gateway_dup_design_inputs_2026_07_19.md"},
     {"id": "dep_version_drift_strays_blind",
      "status": "accepted", "since": "2026-07-19",
+     "watched_in": ["meshforge"],
      "dark": "stray copies of deps other than meshtastic/rns/lxmf are unwatched by design",
      "detail": "ACCEPTED-PERMANENT 2026-07-19 (row 3, operator decision on a fleet-wide "
                "survey): stray-env watch covers meshtastic (install-fragmentation) and "
@@ -129,7 +133,9 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
                "a node. RESIDUAL until adopted: offline-peer delivery stays best-effort, "
                "and once adopted this leg goes INERT — nothing yet checks that a "
                "CONFIGURED propagation node still answers (that would be a shape-A leg)",
-     "ref": "watchdog_probes_gateway.py :: probe_lxmf_propagation_unused"},
+     # The original adoption watcher (lxmf_propagation_unused) was removed
+     # 2026-08-08 in dfb862fc; the ref names what watches this corner NOW.
+     "ref": "watchdog_probes_gateway_lxmf.py :: probe_lxmf_propagation_node_dark"},
     {"id": "lxmf_propagation_node_unwatched",
      "status": "narrowed", "since": "2026-07-21",
      "watched_in": ["meshforge"],
@@ -186,6 +192,7 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
      "ref": "watchdog_probes_gateway.py :: probe_propagation_soak_degraded"},
     {"id": "aredn_configured_source_only",
      "status": "accepted", "since": "2026-08-08",
+     "watched_in": ["meshforge"],
      "dark": "a box that neither configures nor declares AREDN is invisible to AREDN coverage",
      "detail": "REOPENED BY CHOICE 2026-08-08 (signal-class yield audit). Was CLOSED "
                "2026-07-20 by probe_aredn_organ_undeclared, the positive-evidence leg "
@@ -241,15 +248,15 @@ def resolve_self_app() -> Optional[str]:
 
 
 def blind_spot_scope(row: Dict[str, Any], self_app: Optional[str]) -> str:
-    """Whether THIS NOC watches what a row's status says is watched.
+    """Whether THIS NOC watches what a row says is watched.
 
-    ``n/a`` — open (nothing watches it) or accepted (an operator decision, true
-    on every NOC). ``here`` — this app is in the row's ``watched_in``.
-    ``elsewhere`` — another app's probes back the status, so on this NOC the
-    corner is unwatched. ``unknown`` — no ``watched_in``, or this server cannot
-    name its own app: default-dark, never read as watched.
+    ``n/a`` — open: nothing watches it anywhere. ``here`` — this app is in the
+    row's ``watched_in``. ``elsewhere`` — another app's probes back it, so on
+    this NOC the corner is unwatched. ``unknown`` — no ``watched_in``, or this
+    server cannot name its own app. Default-dark: any status but ``open`` —
+    including one this code has never heard of — must EARN ``here``.
     """
-    if row.get("status") not in ("narrowed", "closed"):
+    if row.get("status") == "open":
         return "n/a"
     watched_in = row.get("watched_in")
     if not watched_in or self_app is None:

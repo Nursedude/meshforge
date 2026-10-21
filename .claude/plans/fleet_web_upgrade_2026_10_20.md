@@ -38,10 +38,17 @@ MF deploy chain of the day finishes — an untracked file reads as a dirty tree)
    crash is UNOBSERVABLE, not drift), use mktemp, and check the repo being
    pushed. **The twin-import parity tier was CUT in round 3**: four holes
    fixed, five more found — and the byte tier already reports the one-sided
-   landing, while MA's own suite fails on the ImportError. Round 3 needs its
-   OWN non-author pass before landing. **Landing order (hook-enforced, but
-   against WORKING TREES):** commit the MA half on MA main WITHOUT pushing →
-   commit + push MF → push MA.
+   landing, while MA's own suite fails on the ImportError. **Rounds 4+5:**
+   accepted rows carry `watched_in` too and scope is default-dark (only
+   `open` is n/a; a scope-less row from a not-yet-restarted server stays
+   visible); a watched_in row must cite probes its own repo defines (that
+   gate found a closed row citing a probe removed 2026-08-08); a hook whose
+   checker crashed now BLOCKS (only an absent twin warns); MF's hook takes
+   MESHANCHOR_REPO; fleet_truth.py's module-level imports pinned to twinned
+   files. **Round 5 is UNREVIEWED — the next session reviews it (non-author
+   by construction), checks /fleet in a browser, then lands.** **Landing
+   order (hook-enforced, against WORKING TREES):** commit the MA half on MA
+   main WITHOUT pushing → commit + push MF → push MA.
 2. **Box drawer (read-only).** Click a box → SHA vs HEAD, uptime, posture,
    `@rns/` owner, subsystem cells, escalations, cron verdicts, SDR line. Data from
    `/api/fleet/truth`; presentation only.

@@ -855,13 +855,43 @@ class TestFleetTruth:
         assert len(live) >= 3
 
     def test_structural_dark_status_names_the_app_that_earned_it(self):
-        """2026-10-20 review round 3: the registry is served by BOTH NOCs, and
-        every narrowed/closed status rests on MeshForge probes MeshAnchor does
-        not run. A row that claims coverage must say WHERE it is watched."""
+        """2026-10-20 review rounds 3+4: the registry is served by BOTH NOCs,
+        and every row but `open` rests on detection only MeshForge runs —
+        accepted rows too ("keep the detector"). A row that claims coverage
+        must say WHERE it is watched."""
         apps = {"meshforge", "meshanchor"}
         for row in ft.STRUCTURAL_DARK:
-            if row["status"] in ("narrowed", "closed"):
+            if row["status"] != "open":
                 assert row.get("watched_in") and set(row["watched_in"]) <= apps, row["id"]
+
+    def test_rows_naming_this_app_cite_probes_this_repo_has(self):
+        """`watched_in` is a MEASURED claim: a row listing this repo's app
+        must cite only probes defined here (2026-10-20 review round 4 — the
+        rule was prose). The registry is byte-identical, so each twin checks
+        the half that names it."""
+        import os
+        import re
+        app = ft.resolve_self_app()
+        assert app in ("meshforge", "meshanchor"), app
+        root = Path(__file__).resolve().parent.parent
+        defined = set()
+        for base in ("src", "scripts"):
+            for dp, _, files in os.walk(root / base):
+                for f in files:
+                    if f.endswith(".py"):
+                        text = (Path(dp) / f).read_text(encoding="utf-8", errors="replace")
+                        defined.update(re.findall(r"^def (probe_\w+)", text, re.M))
+        for row in ft.STRUCTURAL_DARK:
+            if app in (row.get("watched_in") or []):
+                cited = set(re.findall(r"probe_\w+", row["ref"]))
+                assert cited <= defined, (row["id"], sorted(cited - defined))
+
+    def test_structural_dark_ids_are_snake_case(self):
+        """Row ids key the page's open-state across polls, beside the fold's
+        own `fold:` key — an id can never collide with it."""
+        import re
+        for row in ft.STRUCTURAL_DARK:
+            assert re.fullmatch(r"[a-z0-9_]+", row["id"]), row["id"]
 
     def test_blind_spot_scope_is_per_noc_and_default_dark(self):
         row = {"status": "narrowed", "watched_in": ["meshforge"]}
@@ -870,12 +900,17 @@ class TestFleetTruth:
         assert ft.blind_spot_scope(row, None) == "unknown"
         assert ft.blind_spot_scope({"status": "closed"}, "meshforge") == "unknown"
         assert ft.blind_spot_scope({"status": "open"}, "meshanchor") == "n/a"
-        assert ft.blind_spot_scope({"status": "accepted"}, None) == "n/a"
+        # accepted is a decision, not detection: it must earn `here` too
+        assert ft.blind_spot_scope({"status": "accepted"}, "meshforge") == "unknown"
+        assert ft.blind_spot_scope({"status": "accepted", "watched_in": ["meshforge"]},
+                                   "meshanchor") == "elsewhere"
+        # a status this code has never heard of is default-dark, never n/a
+        assert ft.blind_spot_scope({"status": "partial"}, "meshforge") == "unknown"
 
     def test_served_rows_carry_a_scope_for_this_noc(self):
         rows = ft.structural_dark_rows("meshanchor")
         assert [r["id"] for r in rows] == [r["id"] for r in ft.STRUCTURAL_DARK]
-        assert {r["scope"] for r in rows if r["status"] in ("narrowed", "closed")} == {"elsewhere"}
+        assert {r["scope"] for r in rows if r["status"] != "open"} == {"elsewhere"}
         tagged = next(i for i, r in enumerate(rows) if "watched_in" in r)
         rows[tagged]["watched_in"].append("x")      # the inner list is a copy too
         assert "x" not in ft.STRUCTURAL_DARK[tagged]["watched_in"]

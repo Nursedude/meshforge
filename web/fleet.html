@@ -213,6 +213,8 @@
         .sd-accepted .id { color: var(--muted); }
         .sd-missing { color: var(--amber); font-style: italic; }
         .sd-scope { color: var(--amber); font-size: 11px; }
+        /* unwatched on THIS NOC: never the closed/accepted styling */
+        .sd-offhere { border-left: 2px solid var(--amber); padding-left: 6px; }
         .dns-table td { text-align: left; font-size: 12px; padding: 4px 8px; }
         .dns-method { font-weight: 700; color: var(--healthy); }
         .dns-method.warn { color: var(--amber); }
@@ -773,16 +775,17 @@
         const FOLDED = new Set(['accepted', 'closed']);
         // Status -> class from a literal map, never built from data.
         const SD_CLASS = { closed: 'sd-closed', accepted: 'sd-accepted' };
-        // scope (server-side, per NOC): a status earned by ANOTHER app's
-        // probes, or with no recorded scope, is unwatched HERE — never folded,
-        // never struck through.
-        const offHere = sd => sd.scope === 'elsewhere' || sd.scope === 'unknown';
-        const scopeNote = sd => sd.scope === 'elsewhere'
-            ? ' <span class="sd-scope">watched on ' + esc((sd.watched_in || []).join(', ')) +
+        // scope (server-side, per NOC). Default-dark: every row but `open`
+        // must EARN scope 'here' to fold or wear the closed styling — a row
+        // from an older server with NO scope (map not restarted after a pull)
+        // or another app's coverage stays visible and marked.
+        const offHere = sd => sd.status !== 'open' && sd.scope !== 'here';
+        const scopeNote = sd => !offHere(sd)
+            ? ''
+            : sd.scope === 'elsewhere' && Array.isArray(sd.watched_in)
+            ? ' <span class="sd-scope">watched on ' + esc(sd.watched_in.join(', ')) +
               ' only — unwatched on this NOC</span>'
-            : sd.scope === 'unknown'
-            ? ' <span class="sd-scope">coverage scope not recorded — treat as unwatched here</span>'
-            : '';
+            : ' <span class="sd-scope">coverage scope not recorded — treat as unwatched here</span>';
         const oneLine = sd => sd.dark
             ? '<span class="sd-dark">' + esc(sd.dark) + '</span>'
             : '<span class="sd-missing">no one-line residual in this row — open its record</span>';
@@ -799,7 +802,7 @@
         const live = rows.filter(sd => !folds(sd));
         const folded = rows.filter(folds);
         const foldBlock = folded.length
-            ? '<details class="sd-fold" data-sd="__fold"' + isOpen('__fold') + '><summary>' +
+            ? '<details class="sd-fold" data-sd="fold:"' + isOpen('fold:') + '><summary>' +
               folded.length + ' accepted / closed</summary>' + folded.map(line).join('') + '</details>'
             : '';
         el.innerHTML = rows.length

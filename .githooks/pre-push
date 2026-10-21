@@ -120,24 +120,38 @@ fi
 # WHY IT IS HERE: on 2026-09-09 I edited the byte-locked src/utils/fleet_truth.py
 # and pushed FOUR times without porting it. parity_check.py existed, took a
 # seventh of a second, and was not wired into any hook — the drift surfaced
-# hours later in honest_status. The checker's exit codes, read WITH its RESULT
-# line (2026-10-20 — exit 2 alone means two different things):
-#   0                         in sync                          -> pass
-#   1 + "RESULT: DRIFT"       a byte-locked file differs       -> BLOCK
-#   2 + "RESULT: MISSING"     twin present, lacks a twinned file -> BLOCK
-#   2 with no RESULT line     the twin repo is not on this box -> UNOBSERVABLE
-#   anything else             the checker itself failed        -> UNOBSERVABLE
-# Unobservable is never a pass and never a failure (honest_failure_modes #2).
+# hours later in honest_status. The checker's exit codes, read WITH its output
+# (2026-10-20 — exit 1 and 2 each mean more than one thing):
+#   0                          in sync                          -> pass
+#   1 + "RESULT: DRIFT"        a byte-locked file differs       -> BLOCK
+#   2 + "RESULT: MISSING"      twin present, lacks a file/symbol -> BLOCK
+#   2 + "repo root not found"  the twin is not on this box      -> UNOBSERVABLE
+#   anything else              the checker itself failed        -> BLOCK
+# Only an absent twin is unobservable (never a pass, never a failure,
+# honest_failure_modes #2). A checker that crashed observed NOTHING, so it
+# must not wave a push through (round 4: round 3's fix had made it fail-open).
 # LIMIT: it compares WORKING TREES — an uncommitted twin satisfies it.
+# MESHANCHOR_REPO points it at a twin worktree (default /opt/meshanchor).
 PARITY_RAN=no
 if [ -f "$REPO_ROOT/scripts/parity_check.py" ]; then
     echo "Pre-push: byte-lock parity (twin contract)..."
-    parity_out=$(mktemp "${TMPDIR:-/tmp}/mf_prepush_parity.XXXXXX")
+    if ! parity_out=$(mktemp "${TMPDIR:-/tmp}/mf_prepush_parity.XXXXXX"); then
+        echo "Pre-push: cannot create a temp file for the parity check — it did not run."
+        echo "Fix TMPDIR, or override (sparingly): git push --no-verify"
+        exit 1
+    fi
     # --meshforge: check the repo being PUSHED, not the literal /opt/meshforge.
     python3 "$REPO_ROOT/scripts/parity_check.py" --meshforge "$REPO_ROOT" \
-        >"$parity_out" 2>&1
+        --meshanchor "${MESHANCHOR_REPO:-/opt/meshanchor}" >"$parity_out" 2>&1
     prc=$?
-    if [ "$prc" -eq 1 ] && grep -q "^RESULT: DRIFT" "$parity_out"; then
+    if [ "$prc" -eq 0 ]; then
+        PARITY_RAN=yes
+    elif [ "$prc" -eq 2 ] && grep -q "repo root not found" "$parity_out" \
+            && ! grep -q "^RESULT:" "$parity_out"; then
+        echo "  WARN: parity UNOBSERVABLE — twin repo absent on this box:"
+        sed 's/^/        /' "$parity_out"
+        echo "        Not a pass and not a failure; port checks are on you."
+    elif [ "$prc" -eq 1 ] && grep -q "^RESULT: DRIFT" "$parity_out"; then
         cat "$parity_out"
         echo ""
         echo "Byte-locked file(s) DRIFTED from the twin. MeshForge is the lead repo:"
@@ -148,18 +162,22 @@ if [ -f "$REPO_ROOT/scripts/parity_check.py" ]; then
     elif [ "$prc" -eq 2 ] && grep -q "^RESULT: MISSING" "$parity_out"; then
         cat "$parity_out"
         echo ""
-        echo "A twinned file is MISSING on the side marked '=absent' above. Commit it"
-        echo "there (if that is MeshAnchor, commit WITHOUT pushing), then push this repo."
+        echo "A twinned file or symbol is MISSING. Byte-tier lines name the side"
+        echo "('=absent'); shape/forkpin/probe lines name the file to look in. Commit"
+        echo "the port there (if that is MeshAnchor, commit WITHOUT pushing), then push"
+        echo "this repo. Any DRIFT listed above is owed as well."
         echo "Note: this compares working trees — an uncommitted twin also satisfies it."
         echo "Override (sparingly): git push --no-verify"
         rm -f "$parity_out"
         exit 1
-    elif [ "$prc" -eq 0 ]; then
-        PARITY_RAN=yes
     else
-        echo "  WARN: parity UNOBSERVABLE (exit $prc) — twin repo absent, or the checker failed:"
-        tail -n 3 "$parity_out" | sed 's/^/        /'
-        echo "        Not a pass and not a failure; port checks are on you."
+        cat "$parity_out"
+        echo ""
+        echo "The parity CHECKER failed (exit $prc, no RESULT line) — it observed nothing,"
+        echo "so this push is not checked. Fix scripts/parity_check.py, then push."
+        echo "Override (sparingly): git push --no-verify"
+        rm -f "$parity_out"
+        exit 1
     fi
     rm -f "$parity_out"
 fi
