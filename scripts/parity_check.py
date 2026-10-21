@@ -401,31 +401,108 @@ def _extract_def_dump(text, name):
 
 
 _FIRST_PARTY_PKGS = ("utils", "gateway", "mini_dudeai")
+# A handler naming one of these catches a failed import: the code degrades by
+# design, so the import is optional, not a dependency the twin must carry.
+_IMPORT_GUARDS = {"ImportError", "ModuleNotFoundError", "Exception", "BaseException"}
+
+
+def _catches_import_failure(handlers):
+    for h in handlers:
+        if h.type is None:
+            return True
+        types = h.type.elts if isinstance(h.type, ast.Tuple) else [h.type]
+        if any(isinstance(t, ast.Name) and t.id in _IMPORT_GUARDS for t in types):
+            return True
+    return False
 
 
 def _first_party_imports(text):
-    """Repo-relative module paths a source text imports from the twinned
-    packages (``from utils.x import``, ``import utils.x``, nested or not).
-    Unparseable or absent text -> empty: the byte tier already reports it."""
+    """The HARD first-party imports of a source text, as ``(module, name)``
+    pairs — ``name`` is None for ``import M``. Imports inside a ``try`` whose
+    handler catches the import failure are optional and skipped.
+    Absent text -> empty set (the byte tier reports the file); text that does
+    not parse -> None, so the caller can say its imports went unchecked."""
     if not text:
         return set()
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        return set()
+        return None
+    guarded = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try) and _catches_import_failure(node.handlers):
+            for stmt in node.body:
+                guarded.update(id(sub) for sub in ast.walk(stmt))
     out = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            names = [node.module]
-        elif isinstance(node, ast.Import):
-            names = [a.name for a in node.names]
-        else:
+        if id(node) in guarded:
             continue
-        for name in names:
-            parts = name.split(".")
-            if parts[0] in _FIRST_PARTY_PKGS and len(parts) >= 2:
-                out.add("src/" + "/".join(parts[:2]) + ".py")
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            if node.module.split(".")[0] in _FIRST_PARTY_PKGS:
+                out.update((node.module, a.name) for a in node.names)
+        elif isinstance(node, ast.Import):
+            out.update((a.name, None) for a in node.names
+                       if a.name.split(".")[0] in _FIRST_PARTY_PKGS)
     return out
+
+
+def _module_file(root, dotted):
+    """The file a dotted first-party module resolves to under ``root/src``
+    (module or package), or None."""
+    base = os.path.join(root, "src", *dotted.split("."))
+    for cand in (base + ".py", os.path.join(base, "__init__.py")):
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def _top_level_names(text):
+    """Names a module binds at import time, and whether it can bind names this
+    reader cannot list (``import *`` or a module ``__getattr__``)."""
+    try:
+        tree = ast.parse(text or "")
+    except SyntaxError:
+        return set(), True
+    names, opaque = set(), False
+    todo = list(tree.body)
+    while todo:
+        node = todo.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+            opaque |= node.name == "__getattr__"
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                names.update(n.id for n in ast.walk(t) if isinstance(n, ast.Name))
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+        elif isinstance(node, ast.Import):
+            names.update((a.asname or a.name).split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                if a.name == "*":
+                    opaque = True
+                else:
+                    names.add(a.asname or a.name)
+        elif isinstance(node, (ast.If, ast.Try, ast.With)):
+            for field in ("body", "orelse", "finalbody", "handlers"):
+                todo.extend(getattr(node, field, []) or [])
+        elif isinstance(node, ast.ExceptHandler):
+            todo.extend(node.body)
+    return names, opaque
+
+
+def _resolve_import(root, module, name):
+    """'ok', or why this repo cannot satisfy ``from module import name``
+    (``import module`` when name is None)."""
+    if name is not None and _module_file(root, f"{module}.{name}"):
+        return "ok"                       # from pkg import submodule
+    path = _module_file(root, module)
+    if path is None:
+        return "module absent"
+    if name is None:
+        return "ok"
+    names, opaque = _top_level_names(_read(path))
+    return "ok" if (name in names or opaque) else f"no '{name}'"
 
 
 def _fork_pin_block(text):
@@ -568,17 +645,22 @@ def check_parity(mf=DEFAULT_MESHFORGE, ma=DEFAULT_MESHANCHOR):
         if not rel.endswith(".py"):
             continue
         deps = set()
-        for root in (mf, ma):
-            deps |= _first_party_imports(_read(os.path.join(root, rel)))
-        for dep in sorted(deps):
-            have = [os.path.isfile(os.path.join(root, dep)) for root in (mf, ma)]
-            label = f"{rel} -> {dep}"
-            if all(have):
+        for side, root in (("mf", mf), ("ma", ma)):
+            got = _first_party_imports(_read(os.path.join(root, rel)))
+            if got is None:
+                findings.append(ParityFinding("twinimport", f"{rel} ({side})", "drift",
+                    "(does not parse — its imports are unchecked)"))
+                continue
+            deps |= got
+        for module, name in sorted(deps, key=lambda d: (d[0], d[1] or "")):
+            res = [_resolve_import(root, module, name) for root in (mf, ma)]
+            label = f"{rel} -> {module}" + (f".{name}" if name else "")
+            if res == ["ok", "ok"]:
                 findings.append(ParityFinding("twinimport", label, "ok"))
             else:
                 findings.append(ParityFinding("twinimport", label, "missing",
-                    f"(mf={'ok' if have[0] else 'absent'} ma={'ok' if have[1] else 'absent'}) "
-                    "— port the module with the file, or the twin fails on import"))
+                    f"(mf={res[0]} ma={res[1]}) "
+                    "— port it with the file, or the twin fails on import"))
 
     if any(f.status == "missing" for f in findings):
         overall = "missing"
@@ -618,7 +700,12 @@ def main(argv=None):
 
     print(f"RNS parity: {mf}  <->  {ma}\n")
     seen_sections = set()
+    # Import edges that resolve are counted, not listed: one line per edge
+    # buried the one MISSING that matters.
+    edges_ok = sum(1 for f in findings if f.section == "twinimport" and f.status == "ok")
     for f in findings:
+        if f.section == "twinimport" and f.status == "ok":
+            continue
         # byte + forkpin render under the byte header; print headers once.
         header_key = "byte" if f.section == "forkpin" else f.section
         if header_key not in seen_sections:
@@ -626,6 +713,11 @@ def main(argv=None):
             seen_sections.add(header_key)
         suffix = f"  {f.detail}" if f.detail else ""
         print(f"  [{_TAG[f.status]}] {f.label}{suffix}")
+
+    if edges_ok:
+        if "twinimport" not in seen_sections:
+            print(_SECTION_HEADER["twinimport"])
+        print(f"  [{_TAG['ok']}] {edges_ok} import edge(s) resolve in both repos")
 
     print()
     if overall == "missing":

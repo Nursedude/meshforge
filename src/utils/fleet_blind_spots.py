@@ -97,11 +97,12 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
             "watchdog_probes_peer_rf.py :: probe_segment_peer_silent"},
     {"id": "lxmf_propagation_unadopted",
      "status": "closed", "since": "2026-07-20",
-     "dark": "adopted 2026-07-20, re-measured on both gateway boxes 2026-10-20; the node's liveness is owned by the next row",
+     "dark": "adopted 2026-07-20 on MeshForge's gateway boxes; the node's liveness is owned by the next row",
      "detail": "CLOSED 2026-07-20 by adoption: rns.propagation_node was set on the gateway "
                "boxes in the same push as probe_lxmf_propagation_node_dark, which owns the "
-               "configured node's liveness (next row). Re-measured 2026-10-20: both gateway "
-               "boxes' gateway.json carry it. The original record follows. "
+               "configured node's liveness (next row). Re-measured 2026-10-20 on the "
+               "MeshForge fleet only: both MeshForge gateway boxes' gateway.json carry "
+               "it; MeshAnchor's boxes were not measured. The original record follows. "
                "OPENED 2026-07-20 by the optional-organ sweep, and watched from the same "
                "day. Structural finding behind it: of ~50 signal classes, only ONE watched "
                "for an available-but-UNADOPTED capability — the domain is excellent at "

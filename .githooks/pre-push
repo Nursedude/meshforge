@@ -126,7 +126,9 @@ fi
 PARITY_RAN=no
 if [ -f "$REPO_ROOT/scripts/parity_check.py" ]; then
     echo "Pre-push: byte-lock parity (twin contract)..."
-    python3 "$REPO_ROOT/scripts/parity_check.py" >/tmp/.prepush_parity.out 2>&1
+    # --meshforge: check the repo being PUSHED, not the literal /opt/meshforge.
+    python3 "$REPO_ROOT/scripts/parity_check.py" --meshforge "$REPO_ROOT" \
+        >/tmp/.prepush_parity.out 2>&1
     prc=$?
     if [ "$prc" -eq 1 ]; then
         cat /tmp/.prepush_parity.out
@@ -138,6 +140,17 @@ if [ -f "$REPO_ROOT/scripts/parity_check.py" ]; then
         exit 1
     elif [ "$prc" -eq 0 ]; then
         PARITY_RAN=yes
+    elif grep -q "^RESULT: MISSING" /tmp/.prepush_parity.out; then
+        # Exit 2 is ALSO a present twin missing a file/symbol a twinned file
+        # needs (2026-10-20: this branch read "twin repo absent" and would have
+        # let fleet_truth.py land without fleet_blind_spots.py in MeshAnchor).
+        cat /tmp/.prepush_parity.out
+        echo ""
+        echo "The twin repo is HERE and lacks what a twinned file needs. Commit the"
+        echo "MeshAnchor half first (do not push it yet), then push this repo."
+        echo "Override (sparingly): git push --no-verify"
+        rm -f /tmp/.prepush_parity.out
+        exit 1
     else
         echo "  WARN: parity UNOBSERVABLE (exit $prc) — twin repo absent on this box."
         echo "        Not a pass and not a failure; port checks are on you."

@@ -73,7 +73,7 @@ def test_twinned_file_importing_a_module_the_twin_lacks_is_missing(tmp_path, mon
     findings, overall = pc.check_parity(mf, ma)
     hits = [f for f in findings if f.section == "twinimport"]
     assert [(f.label, f.status) for f in hits] == [
-        ("src/utils/twinned.py -> src/utils/registry.py", "missing")]
+        ("src/utils/twinned.py -> utils.registry.ROWS", "missing")]
     assert overall == "missing"
 
 
@@ -83,6 +83,90 @@ def test_twinned_import_present_in_both_repos_is_ok(tmp_path, monkeypatch):
     mf, ma = _twin_repos(tmp_path, ma_has_dep=True)
     findings, _ = pc.check_parity(mf, ma)
     assert not [f for f in findings if f.section == "twinimport" and f.status != "ok"]
+
+
+def _twin_with(tmp_path, twinned_src, mf_files, ma_files):
+    """Two repos sharing src/utils/twinned.py; each side gets its own files
+    ({repo-relative path: text})."""
+    roots = []
+    for side, files in (("mf", mf_files), ("ma", ma_files)):
+        root = tmp_path / side
+        for rel, text in {"src/utils/twinned.py": twinned_src, **files}.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(text)
+        roots.append(str(root))
+    return roots
+
+
+def _twinimport(pc, monkeypatch, roots):
+    monkeypatch.setattr(pc, "BYTE_IDENTICAL", ("src/utils/twinned.py",))
+    findings, overall = pc.check_parity(*roots)
+    # Only this tier: the temp repos carry none of the other tiers' files,
+    # so `overall` reads missing whatever this tier says.
+    return [(f.label, f.status) for f in findings
+            if f.section == "twinimport" and f.status != "ok"]
+
+
+def test_from_package_import_submodule_is_checked(tmp_path, monkeypatch):
+    """2026-10-20 review round 2: `from utils import mod` was skipped (one
+    dotted part), so the exact shape this tier exists for read clean."""
+    pc = _load()
+    roots = _twin_with(tmp_path, "from utils import registry\n",
+                       {"src/utils/registry.py": "ROWS = []\n"}, {})
+    assert _twinimport(pc, monkeypatch, roots) == [
+        ("src/utils/twinned.py -> utils.registry", "missing")]
+
+
+def test_nested_package_module_resolves(tmp_path, monkeypatch):
+    """`mini_dudeai.presets.x` was mapped to src/mini_dudeai/presets.py —
+    absent in BOTH repos, so correct code read missing."""
+    pc = _load()
+    files = {"src/mini_dudeai/__init__.py": "",
+             "src/mini_dudeai/presets/__init__.py": "",
+             "src/mini_dudeai/presets/fleet.py": "RULES = []\n"}
+    roots = _twin_with(tmp_path, "from mini_dudeai.presets.fleet import RULES\n",
+                       files, files)
+    assert _twinimport(pc, monkeypatch, roots) == []
+
+
+def test_imported_name_the_twin_module_lacks_is_missing(tmp_path, monkeypatch):
+    """The module existing is not the import working: the twin's copy must
+    BIND the name (PEER_CLOCK_SKEW_DARK_S read OK while MA had none)."""
+    pc = _load()
+    roots = _twin_with(tmp_path, "from utils.collector import NEW_CONST\n",
+                       {"src/utils/collector.py": "NEW_CONST = 1\n"},
+                       {"src/utils/collector.py": "OLD = 1\n"})
+    assert _twinimport(pc, monkeypatch, roots) == [
+        ("src/utils/twinned.py -> utils.collector.NEW_CONST", "missing")]
+
+
+def test_guarded_optional_import_is_not_a_dependency(tmp_path, monkeypatch):
+    """A try/except-ImportError import degrades by design on the twin."""
+    pc = _load()
+    src = ("try:\n    from utils.mf_only import X\n"
+           "except ImportError:\n    X = None\n")
+    roots = _twin_with(tmp_path, src, {"src/utils/mf_only.py": "X = 1\n"}, {})
+    assert _twinimport(pc, monkeypatch, roots) == []
+
+
+def test_unparseable_side_says_its_imports_went_unchecked(tmp_path, monkeypatch):
+    pc = _load()
+    roots = _twin_with(tmp_path, "import os\n", {}, {})
+    (tmp_path / "ma" / "src/utils/twinned.py").write_text("def broken(:\n")
+    assert ("src/utils/twinned.py (ma)", "drift") in _twinimport(pc, monkeypatch, roots)
+
+
+def test_resolving_edges_print_as_one_count(tmp_path, monkeypatch, capsys):
+    """26 '[OK] x -> y' lines buried the one MISSING that mattered."""
+    pc = _load()
+    roots = _twin_with(tmp_path, "from utils.registry import ROWS\n",
+                       {"src/utils/registry.py": "ROWS = []\n"},
+                       {"src/utils/registry.py": "ROWS = []\n"})
+    monkeypatch.setattr(pc, "BYTE_IDENTICAL", ("src/utils/twinned.py",))
+    pc.main(["--meshforge", roots[0], "--meshanchor", roots[1]])
+    out = capsys.readouterr().out
+    assert "-> utils.registry" not in out
+    assert "1 import edge(s) resolve in both repos" in out
 
 
 # ── Calibration claim-gate shared-core guard (self-audit-qa-arc §1) ──

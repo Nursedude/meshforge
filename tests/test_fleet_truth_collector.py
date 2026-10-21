@@ -104,6 +104,7 @@ class TestCache:
         with patch.object(c, "collect_snapshots", side_effect=RuntimeError("boom")):
             t = c.get_fleet_truth(force=True)
         assert t["structural_dark"] == STRUCTURAL_DARK
+        assert t["structural_dark"] is not STRUCTURAL_DARK  # cached + served: a copy
 
 
 class TestDeclaredPostureStamp:

@@ -293,3 +293,25 @@ def test_missing_one_liner_shows_a_marker_not_the_record():
     body = _render_structural_dark_body()
     assert "sd.dark || sd.detail" not in body
     assert "no one-line residual" in body
+
+
+#: The only places renderStructuralDark may read a row field WITHOUT esc():
+#: none of them puts the value into the HTML.
+_SD_UNESCAPED_OK = (
+    r"FOLDED\.has\(sd\.status\)",     # fold membership test
+    r"SD_CLASS\[sd\.status\]",         # literal-map lookup; the CLASS is ours
+    r"sd => sd\.dark\s*\?",            # truthiness test for the marker
+)
+
+
+def test_blind_spot_row_fields_are_escaped_in_the_renderer():
+    """2026-10-20 review round 2: S9's concatenation regex cannot see
+    `(live.map(line)…`, `oneLine(sd)` or `(SD_CLASS[...] || '')`, so it
+    could not catch a dropped esc() inside this renderer. Pin it here: every
+    sd.<field> is esc()d, or is one of the named non-rendering reads."""
+    body = _render_structural_dark_body()
+    rest = re.sub(r"esc\(sd\.\w+", "", body)
+    for ok in _SD_UNESCAPED_OK:
+        assert re.search(ok, rest), f"stale allowlist entry: {ok}"
+        rest = re.sub(ok, "", rest)
+    assert not re.findall(r"\bsd\.\w+", rest), re.findall(r"\bsd\.\w+", rest)

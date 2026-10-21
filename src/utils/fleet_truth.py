@@ -19,9 +19,12 @@ stale, or ``None`` source yields ``healthy``. "No data" can never read green
 (honest_failure_modes #1/#2: unobservable != healthy != resolved). Because a cell
 is an object and never a bool, a downstream renderer has nothing to truthy-coerce.
 
-Pure + stdlib-only (mirrors ``fleet_snapshot.py``); its one first-party import is
-the pure-data blind-spot registry ``fleet_blind_spots``, twinned with this file
-(parity_check byte-identical). ``build_fleet_truth`` takes a
+Pure + stdlib at module level (mirrors ``fleet_snapshot.py``): its one
+module-level first-party import is the pure-data blind-spot registry
+``fleet_blind_spots``, twinned with this file (parity_check byte-identical).
+Three more are lazy and guarded (``fleet_truth_collector``,
+``gateway.rns_ingress_policy``, ``__version__``); parity_check's twin-import
+tier is the list of record. ``build_fleet_truth`` takes a
 list of per-peer snapshots and returns the whole-domain schema; no HTTP here. The
 HTTP fan-out that produces the snapshots lives in ``fleet_truth_collector`` (Phase
 2); the coverage per-class disposition is enriched by a watchdog producer change
@@ -1321,7 +1324,9 @@ def build_fleet_truth(
         "declared_posture": dormant_boxes,
         "posture_drift": drift_boxes,
         "boxes": boxes,
-        "structural_dark": STRUCTURAL_DARK,
+        # Copies: the document is cached and served; editing it must never
+        # edit the registry it came from.
+        "structural_dark": [dict(row) for row in STRUCTURAL_DARK],
         # {box: [subsystems]} unobservable because that box's DECLARED role
         # runs no map server. Not alarms — disclosures. Empty is fully observed.
         "accepted_blind_spots": accepted,

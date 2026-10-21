@@ -854,6 +854,18 @@ class TestFleetTruth:
                 if r["status"] in ("open", "narrowed")]
         assert len(live) >= 3
 
+    def test_structural_dark_is_a_copy_not_the_registry(self):
+        """2026-10-20 review: the cached, served document held the registry
+        list itself — a consumer annotating a row edited the SSOT for the
+        life of the process."""
+        t = ft.build_fleet_truth([], now=NOW, signal_classes=[], noc_host="moc")
+        t["structural_dark"][0]["id"] = "edited"
+        t["structural_dark"].append({"id": "x"})
+        assert ft.STRUCTURAL_DARK[0]["id"] != "edited"
+        assert t["structural_dark"][:-1] != ft.STRUCTURAL_DARK
+        assert len(ft.build_fleet_truth([], now=NOW, signal_classes=[],
+                                        noc_host="moc")["structural_dark"]) == len(ft.STRUCTURAL_DARK)
+
     def test_empty_fleet_is_dark_not_healthy(self):
         t = ft.build_fleet_truth([], now=NOW, signal_classes=[], noc_host="moc",
                                  hosts_declared=2)
