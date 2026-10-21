@@ -453,6 +453,14 @@ if [[ -n "$REAL_USER" && -d "$INSTALL_DIR/templates/systemd" ]]; then
     for tmpl in "$INSTALL_DIR/templates/systemd/"*-user.service; do
         if [[ -f "$tmpl" ]]; then
             svc_name=$(basename "$tmpl" | sed 's/-user\.service/.service/')
+            # A template with an install-time placeholder (__CHAT_PANE_EXEC__,
+            # __MESHCHATX_EXEC__, ...) is RENDERED by its installer; a raw copy
+            # overwrote meshcore-chat's working unit and the next restart ran
+            # the literal token (2026-10-21). Leave it to the installer.
+            if grep -qE '__[A-Z][A-Z0-9_]+__' "$tmpl"; then
+                echo -e "  ${YELLOW}↷ ${svc_name}: not copied (rendered by its installer; re-run that installer to refresh)${NC}"
+                continue
+            fi
             cp "$tmpl" "$USER_SYSTEMD_DIR/$svc_name" 2>/dev/null || true
         fi
     done
