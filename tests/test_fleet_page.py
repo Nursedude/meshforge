@@ -266,7 +266,8 @@ def test_blind_spot_fold_is_an_explicit_allowlist():
     m = re.search(r"const FOLDED = new Set\(\[([^\]]*)\]\)", body)
     assert m, "fold set must be a literal Set"
     assert sorted(re.findall(r"'(\w+)'", m.group(1))) == ["accepted", "closed"]
-    assert "!FOLDED.has(" in body, "visible rows = everything NOT in the fold"
+    assert "rows.filter(sd => !folds(sd))" in body, "visible rows = everything NOT folded"
+    assert "FOLDED.has(sd.status) && !offHere(sd)" in body
 
 
 def test_blind_spot_rows_are_one_line_with_prose_behind_details():
@@ -301,6 +302,9 @@ _SD_UNESCAPED_OK = (
     r"FOLDED\.has\(sd\.status\)",     # fold membership test
     r"SD_CLASS\[sd\.status\]",         # literal-map lookup; the CLASS is ours
     r"sd => sd\.dark\s*\?",            # truthiness test for the marker
+    r"sd\.scope === '\w+'",             # compared with a literal, never rendered
+    r"esc\(\(sd\.watched_in",            # escaped after the join
+    r"isOpen\(sd\.id\)",                # Set lookup -> literal ' open'
 )
 
 
@@ -315,3 +319,24 @@ def test_blind_spot_row_fields_are_escaped_in_the_renderer():
         assert re.search(ok, rest), f"stale allowlist entry: {ok}"
         rest = re.sub(ok, "", rest)
     assert not re.findall(r"\bsd\.\w+", rest), re.findall(r"\bsd\.\w+", rest)
+
+
+def test_blind_spot_watched_elsewhere_is_never_folded_or_struck():
+    """2026-10-20 review round 3: the registry is served by BOTH NOCs, and a
+    status earned by MeshForge's probes folded and struck through on
+    MeshAnchor, whose boxes run none of them. scope is resolved server-side;
+    the page keeps elsewhere/unknown rows visible, marked, and off the
+    closed styling."""
+    body = _render_structural_dark_body()
+    assert "const offHere = sd => sd.scope === 'elsewhere' || sd.scope === 'unknown';" in body
+    assert "offHere(sd) ? 'sd-offhere' : (SD_CLASS[sd.status] || '')" in body
+    assert "unwatched on this NOC" in body and "coverage scope not recorded" in body
+
+
+def test_blind_spot_open_rows_survive_the_poll():
+    """2026-10-20 review round 3: innerHTML rebuilt on every 5 s poll
+    snapped an open record shut mid-read."""
+    body = _render_structural_dark_body()
+    assert "querySelectorAll('details[open][data-sd]')" in body
+    assert 'data-sd="\' + esc(sd.id) + \'"\' + isOpen(sd.id)' in body
+    assert "data-sd=\"__fold\"' + isOpen('__fold')" in body

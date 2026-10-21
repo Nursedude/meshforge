@@ -28,14 +28,20 @@ MF deploy chain of the day finishes — an untracked file reads as a dirty tree)
    fixed on the branch.** The registry is `utils/fleet_blind_spots.py`,
    byte-identical with MeshAnchor alongside `fleet_truth.py` — land BOTH repos
    together (`parity_check` now fails a twinned file whose import the twin lacks).
-   **Review round 2 (2026-10-20, two non-author reviewers, 18 findings):** MA
-   page renderer + tests ported, registry measurement scoped to MeshForge's
-   boxes, served list is a copy, import gate resolves real modules/names and
-   skips guarded imports, both pre-push hooks block a present-but-MISSING
-   twin and check the repo being pushed. Fixes need their OWN non-author pass
-   before landing. **Landing order (hook-enforced):** commit the MA half on
-   MA main WITHOUT pushing → commit + push MF → push MA. Either push alone
-   is refused by its own hook.
+   **Review rounds 2+3 (2026-10-20, four non-author reviews, 38 findings):**
+   MA page renderer + tests ported; served list is a copy; rows carry
+   `watched_in` and each NOC serves a per-row `scope` (here / elsewhere /
+   unknown / n/a) — a status earned by MeshForge probes is never folded or
+   struck through on MeshAnchor (measured: none of the 9 cited probes exist
+   there); open rows survive the 5 s poll; both pre-push hooks block a
+   present-but-MISSING twin, read exit codes WITH the RESULT line (a checker
+   crash is UNOBSERVABLE, not drift), use mktemp, and check the repo being
+   pushed. **The twin-import parity tier was CUT in round 3**: four holes
+   fixed, five more found — and the byte tier already reports the one-sided
+   landing, while MA's own suite fails on the ImportError. Round 3 needs its
+   OWN non-author pass before landing. **Landing order (hook-enforced, but
+   against WORKING TREES):** commit the MA half on MA main WITHOUT pushing →
+   commit + push MF → push MA.
 2. **Box drawer (read-only).** Click a box → SHA vs HEAD, uptime, posture,
    `@rns/` owner, subsystem cells, escalations, cron verdicts, SDR line. Data from
    `/api/fleet/truth`; presentation only.

@@ -1,9 +1,11 @@
 """The domain's KNOWN structural blind spots — the registry /fleet renders.
 
 Split out of fleet_truth.py 2026-10-20 (MF025 size cap) when each row gained
-`status`, `since` and a one-line `dark`. Pure data: fleet_truth re-exports it.
+`status`, `since` and a one-line `dark`. Pure data plus the pure functions
+that serve it (stdlib-only, so a collector's fallback can serve the registry
+when fleet_truth itself failed to build); fleet_truth re-exports them.
 """
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 # ── The domain's KNOWN structural blind spots (always dark, first-class) ──
 # Harvested from the annotations in watchdog_probe_core.py + harness_map.md.
@@ -16,10 +18,16 @@ from typing import Dict, List
 # residual) | accepted (unwatched by an operator decision) | closed (kept so a
 # closure is never a silent deletion; `dark` names who owns what remains).
 # `dark` is the ONE line /fleet shows; `detail` is the record behind it.
+# `watched_in` (narrowed/closed rows): the apps whose probes back the status.
+# This registry is served by BOTH NOCs, so a status earned by MeshForge's
+# probes is not a claim about MeshAnchor's boxes — list an app only after
+# measuring that its probe runs there (2026-10-20: none of the 9 probes these
+# rows cite exist in MeshAnchor).
 STRUCTURAL_DARK_STATUSES = ("open", "narrowed", "accepted", "closed")
 STRUCTURAL_DARK: List[Dict[str, str]] = [
     {"id": "oracle_rns_send_blind",
      "status": "narrowed", "since": "2026-07-20",
+     "watched_in": ["meshforge"],
      "dark": "the mesh leg's delivery is confirmable only through ACK consumption (#74 T2 step 4)",
      "detail": "NARROWED 2026-07-20 (row 2) — the RNS leg's original gap is closed: "
                "send_to_rns returns an "
@@ -61,6 +69,7 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
      "ref": ".claude/research/dep_stray_watch_scope_2026_07_19.md"},
     {"id": "user_unit_inactivity_blind",
      "status": "narrowed", "since": "2026-07-19",
+     "watched_in": ["meshforge"],
      "dark": "conditional/nested wants and non-operator users' units are unwatched",
      "detail": "always-on user .service daemons now watched (invocation-marker probe, "
                "closed 2026-07-19: parked-failed, stopped, and user-manager-down modes); "
@@ -69,6 +78,7 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
      "ref": "watchdog_probes_service.py :: probe_user_unit_inactive"},
     {"id": "mesh_rf_ota_egress_unproven",
      "status": "narrowed", "since": "2026-07-30",
+     "watched_in": ["meshforge"],
      "dark": "our RF egress is witnessed, delivery is not; unwatched nodes stay unwatched; per-node windows provisional",
      "detail": "NARROWED 2026-07-19 (row 9): the claws now witness the air from a SEPARATE "
                "radio on separate silicon (claw_rf_silent), so channel-wide RF silence is "
@@ -97,6 +107,7 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
             "watchdog_probes_peer_rf.py :: probe_segment_peer_silent"},
     {"id": "lxmf_propagation_unadopted",
      "status": "closed", "since": "2026-07-20",
+     "watched_in": ["meshforge"],
      "dark": "adopted 2026-07-20 on MeshForge's gateway boxes; the node's liveness is owned by the next row",
      "detail": "CLOSED 2026-07-20 by adoption: rns.propagation_node was set on the gateway "
                "boxes in the same push as probe_lxmf_propagation_node_dark, which owns the "
@@ -121,6 +132,7 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
      "ref": "watchdog_probes_gateway.py :: probe_lxmf_propagation_unused"},
     {"id": "lxmf_propagation_node_unwatched",
      "status": "narrowed", "since": "2026-07-21",
+     "watched_in": ["meshforge"],
      "dark": "propagation-node liveness is passive: a dead node takes several announce periods (~18 h) to show",
      "detail": "NARROWED 2026-07-21 — the original gap CLOSED 2026-07-20, the same day it "
                "was opened, and deliberately so. Setting "
@@ -146,6 +158,7 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
      "ref": "watchdog_probes_gateway.py :: probe_lxmf_propagation_node_dark"},
     {"id": "lxmf_store_and_forward_unproven",
      "status": "narrowed", "since": "2026-07-21",
+     "watched_in": ["meshforge"],
      "dark": "the drill proves one small client pull; node-to-node peering and size/volume failures are unexercised",
      "detail": "NARROWED 2026-07-21 — the original gap closed by propagation arc slice 3. "
                "probe_lxmf_propagation_node_dark "
@@ -191,6 +204,7 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
      "ref": "removed 2026-08-08; see .claude/audits/signal_class_yield_2026_08_08.md"},
     {"id": "claw_edge_rf_coverage_partial",
      "status": "narrowed", "since": "2026-07-19",
+     "watched_in": ["meshforge"],
      "dark": "a claw without its own mini is watched for liveness and battery, not its sensors",
      "detail": "NARROWED 2026-07-19 (row 7): claw edge nodes now have their OWN signals — "
                "claw_device_dark (fresh capture tick says the DEVICE didn't answer) and "
@@ -203,6 +217,7 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
      "ref": "watchdog_probes_liveness.py :: probe_claw_device_dark"},
     {"id": "federation_mapless_box_unwatched",
      "status": "narrowed", "since": "2026-07-19",
+     "watched_in": ["meshforge"],
      "dark": "a box with no local map has no federation vantage; a zero-peer federation is inert",
      "detail": "NARROWED 2026-07-19 (row 6): federation is now watched PER VANTAGE — every "
                "map-running box polls its OWN :5000 and escalates (never pages) an "
@@ -212,3 +227,44 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
                "and a box whose federation lists zero peers is inert — not covering",
      "ref": "mini_dudeai/presets/meshforge_fleet.py"},
 ]
+
+
+def resolve_self_app() -> Optional[str]:
+    """This server's own app identity ("meshforge" / "meshanchor"), resolved at
+    RUNTIME from __app_name__ — the same source /api/status.app uses — so this
+    byte-locked file names the right app in each twin. None when unresolvable."""
+    try:
+        from __version__ import __app_name__ as _self_app_raw
+        return (_self_app_raw or "").strip().lower() or None
+    except Exception:
+        return None
+
+
+def blind_spot_scope(row: Dict[str, Any], self_app: Optional[str]) -> str:
+    """Whether THIS NOC watches what a row's status says is watched.
+
+    ``n/a`` — open (nothing watches it) or accepted (an operator decision, true
+    on every NOC). ``here`` — this app is in the row's ``watched_in``.
+    ``elsewhere`` — another app's probes back the status, so on this NOC the
+    corner is unwatched. ``unknown`` — no ``watched_in``, or this server cannot
+    name its own app: default-dark, never read as watched.
+    """
+    if row.get("status") not in ("narrowed", "closed"):
+        return "n/a"
+    watched_in = row.get("watched_in")
+    if not watched_in or self_app is None:
+        return "unknown"
+    return "here" if self_app in watched_in else "elsewhere"
+
+
+def structural_dark_rows(self_app: Optional[str]) -> List[Dict[str, Any]]:
+    """The registry as served: COPIES (the truth document is cached and served,
+    and editing it must never edit the registry), each with its ``scope``."""
+    rows = []
+    for row in STRUCTURAL_DARK:
+        out = dict(row)
+        if "watched_in" in out:
+            out["watched_in"] = list(out["watched_in"])
+        out["scope"] = blind_spot_scope(row, self_app)
+        rows.append(out)
+    return rows

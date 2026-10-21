@@ -854,6 +854,32 @@ class TestFleetTruth:
                 if r["status"] in ("open", "narrowed")]
         assert len(live) >= 3
 
+    def test_structural_dark_status_names_the_app_that_earned_it(self):
+        """2026-10-20 review round 3: the registry is served by BOTH NOCs, and
+        every narrowed/closed status rests on MeshForge probes MeshAnchor does
+        not run. A row that claims coverage must say WHERE it is watched."""
+        apps = {"meshforge", "meshanchor"}
+        for row in ft.STRUCTURAL_DARK:
+            if row["status"] in ("narrowed", "closed"):
+                assert row.get("watched_in") and set(row["watched_in"]) <= apps, row["id"]
+
+    def test_blind_spot_scope_is_per_noc_and_default_dark(self):
+        row = {"status": "narrowed", "watched_in": ["meshforge"]}
+        assert ft.blind_spot_scope(row, "meshforge") == "here"
+        assert ft.blind_spot_scope(row, "meshanchor") == "elsewhere"
+        assert ft.blind_spot_scope(row, None) == "unknown"
+        assert ft.blind_spot_scope({"status": "closed"}, "meshforge") == "unknown"
+        assert ft.blind_spot_scope({"status": "open"}, "meshanchor") == "n/a"
+        assert ft.blind_spot_scope({"status": "accepted"}, None) == "n/a"
+
+    def test_served_rows_carry_a_scope_for_this_noc(self):
+        rows = ft.structural_dark_rows("meshanchor")
+        assert [r["id"] for r in rows] == [r["id"] for r in ft.STRUCTURAL_DARK]
+        assert {r["scope"] for r in rows if r["status"] in ("narrowed", "closed")} == {"elsewhere"}
+        tagged = next(i for i, r in enumerate(rows) if "watched_in" in r)
+        rows[tagged]["watched_in"].append("x")      # the inner list is a copy too
+        assert "x" not in ft.STRUCTURAL_DARK[tagged]["watched_in"]
+
     def test_structural_dark_is_a_copy_not_the_registry(self):
         """2026-10-20 review: the cached, served document held the registry
         list itself — a consumer annotating a row edited the SSOT for the

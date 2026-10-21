@@ -22,9 +22,9 @@ is an object and never a bool, a downstream renderer has nothing to truthy-coerc
 Pure + stdlib at module level (mirrors ``fleet_snapshot.py``): its one
 module-level first-party import is the pure-data blind-spot registry
 ``fleet_blind_spots``, twinned with this file (parity_check byte-identical).
-Three more are lazy and guarded (``fleet_truth_collector``,
-``gateway.rns_ingress_policy``, ``__version__``); parity_check's twin-import
-tier is the list of record. ``build_fleet_truth`` takes a
+Three more are lazy and guarded, and degrade when absent
+(``fleet_truth_collector``, ``gateway.rns_ingress_policy``, ``__version__``);
+nothing checks that a twin carries them. ``build_fleet_truth`` takes a
 list of per-peer snapshots and returns the whole-domain schema; no HTTP here. The
 HTTP fan-out that produces the snapshots lives in ``fleet_truth_collector`` (Phase
 2); the coverage per-class disposition is enriched by a watchdog producer change
@@ -38,7 +38,9 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 # The Known Blind Spots registry is pure data in its own module; re-exported here.
-from utils.fleet_blind_spots import STRUCTURAL_DARK, STRUCTURAL_DARK_STATUSES  # noqa: F401
+from utils.fleet_blind_spots import (  # noqa: F401
+    STRUCTURAL_DARK, STRUCTURAL_DARK_STATUSES, blind_spot_scope, resolve_self_app,
+    structural_dark_rows)
 
 # ── Cell states ──────────────────────────────────────────────────────────
 HEALTHY = "healthy"   # observed OK
@@ -1265,11 +1267,7 @@ def build_fleet_truth(
     # "meshforge" here and "meshanchor" in the twin without diverging. An
     # unresolvable identity disables the accusation entirely (below), which is
     # the safe direction: no diagnosis beats a wrong one.
-    try:
-        from __version__ import __app_name__ as _self_app_raw
-        self_app = (_self_app_raw or "").strip().lower() or None
-    except Exception:
-        self_app = None
+    self_app = resolve_self_app()
     skew: Dict[str, List[str]] = {}
     for b in boxes:
         extra = (b.get("coverage") or {}).get("unknown_to_server") or []
@@ -1324,9 +1322,7 @@ def build_fleet_truth(
         "declared_posture": dormant_boxes,
         "posture_drift": drift_boxes,
         "boxes": boxes,
-        # Copies: the document is cached and served; editing it must never
-        # edit the registry it came from.
-        "structural_dark": [dict(row) for row in STRUCTURAL_DARK],
+        "structural_dark": structural_dark_rows(self_app),
         # {box: [subsystems]} unobservable because that box's DECLARED role
         # runs no map server. Not alarms — disclosures. Empty is fully observed.
         "accepted_blind_spots": accepted,

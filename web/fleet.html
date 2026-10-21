@@ -212,6 +212,7 @@
         .sd-closed .id, .sd-closed .sd-dark { color: var(--muted); text-decoration: line-through; }
         .sd-accepted .id { color: var(--muted); }
         .sd-missing { color: var(--amber); font-style: italic; }
+        .sd-scope { color: var(--amber); font-size: 11px; }
         .dns-table td { text-align: left; font-size: 12px; padding: 4px 8px; }
         .dns-method { font-weight: 700; color: var(--healthy); }
         .dns-method.warn { color: var(--amber); }
@@ -761,29 +762,47 @@
 
     function renderStructuralDark(doc) {
         const rows = doc.structural_dark || [];
+        const el = document.getElementById('structural-dark');
+        // The pane is rebuilt every poll: carry the operator's open rows
+        // across it, or a record snaps shut mid-read (2026-10-20 review).
+        const openIds = new Set(Array.from(el.querySelectorAll('details[open][data-sd]'),
+            d => d.getAttribute('data-sd')));
         // One line per row: what is STILL dark. The fold is a literal
         // allowlist (operator decisions + closures kept for the record), so
         // a status this page has never heard of stays visible — default-dark.
         const FOLDED = new Set(['accepted', 'closed']);
         // Status -> class from a literal map, never built from data.
         const SD_CLASS = { closed: 'sd-closed', accepted: 'sd-accepted' };
+        // scope (server-side, per NOC): a status earned by ANOTHER app's
+        // probes, or with no recorded scope, is unwatched HERE — never folded,
+        // never struck through.
+        const offHere = sd => sd.scope === 'elsewhere' || sd.scope === 'unknown';
+        const scopeNote = sd => sd.scope === 'elsewhere'
+            ? ' <span class="sd-scope">watched on ' + esc((sd.watched_in || []).join(', ')) +
+              ' only — unwatched on this NOC</span>'
+            : sd.scope === 'unknown'
+            ? ' <span class="sd-scope">coverage scope not recorded — treat as unwatched here</span>'
+            : '';
         const oneLine = sd => sd.dark
             ? '<span class="sd-dark">' + esc(sd.dark) + '</span>'
             : '<span class="sd-missing">no one-line residual in this row — open its record</span>';
+        const isOpen = key => openIds.has(key) ? ' open' : '';
         const line = sd =>
-            '<details class="item sd-row ' + (SD_CLASS[sd.status] || '') + '"><summary>' +
+            '<details class="item sd-row ' + (offHere(sd) ? 'sd-offhere' : (SD_CLASS[sd.status] || '')) +
+            '" data-sd="' + esc(sd.id) + '"' + isOpen(sd.id) + '><summary>' +
             '<span class="sd-status">' + esc(sd.status || '?') + '</span> ' +
-            '<span class="id">' + esc(sd.id) + '</span> ' + oneLine(sd) +
+            '<span class="id">' + esc(sd.id) + '</span> ' + oneLine(sd) + scopeNote(sd) +
             ' <span class="sd-since">since ' + esc(sd.since || '?') + '</span>' +
             '</summary><div class="detail">' + esc(sd.detail) + '</div>' +
             '<div class="ref">' + esc(sd.ref) + '</div></details>';
-        const live = rows.filter(sd => !FOLDED.has(sd.status));
-        const folded = rows.filter(sd => FOLDED.has(sd.status));
+        const folds = sd => FOLDED.has(sd.status) && !offHere(sd);
+        const live = rows.filter(sd => !folds(sd));
+        const folded = rows.filter(folds);
         const foldBlock = folded.length
-            ? '<details class="sd-fold"><summary>' + folded.length +
-              ' accepted / closed</summary>' + folded.map(line).join('') + '</details>'
+            ? '<details class="sd-fold" data-sd="__fold"' + isOpen('__fold') + '><summary>' +
+              folded.length + ' accepted / closed</summary>' + folded.map(line).join('') + '</details>'
             : '';
-        document.getElementById('structural-dark').innerHTML = rows.length
+        el.innerHTML = rows.length
             ? (live.map(line).join('') ||
                '<div class="empty">no live blind spot listed — suspicious: re-read the folded rows</div>') + foldBlock
             : '<div class="empty">registry empty — suspicious: this domain HAS known blind spots</div>';

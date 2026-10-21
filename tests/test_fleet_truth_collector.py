@@ -103,8 +103,9 @@ class TestCache:
         from utils.fleet_blind_spots import STRUCTURAL_DARK
         with patch.object(c, "collect_snapshots", side_effect=RuntimeError("boom")):
             t = c.get_fleet_truth(force=True)
-        assert t["structural_dark"] == STRUCTURAL_DARK
+        assert [r["id"] for r in t["structural_dark"]] == [r["id"] for r in STRUCTURAL_DARK]
         assert t["structural_dark"] is not STRUCTURAL_DARK  # cached + served: a copy
+        assert all("scope" in r for r in t["structural_dark"]), "fallback keeps per-NOC scope"
 
 
 class TestDeclaredPostureStamp:
