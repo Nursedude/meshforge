@@ -261,7 +261,9 @@ pipx_install_meshchatx() {
     fi
     tag="${meta%%|*}"
     url="${meta##*|}"
-    wheel_path="/tmp/meshchatx-${tag}.whl"
+    # Keep the asset's real name: pipx/pip need a PEP 427 wheel filename
+    # (name-version-py-abi-plat); a renamed "meshchatx-<tag>.whl" is refused.
+    wheel_path="/tmp/$(basename "${url}")"
     echo "  release:  ${tag}"
     echo "  wheel:    ${url}"
 
