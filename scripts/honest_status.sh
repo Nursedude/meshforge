@@ -380,7 +380,7 @@ sha_behind_by_audit_records_only() {  # $1=repo $2=box-sha $3=headfull → 0 whe
 }
 sha_drift_measure() {  # $1=repo $2=headfull $3..=hosts → SD_* variables
   local repo="$1" headfull="$2" b raw up s; shift 2
-  SD_matched=0; SD_reached=0; SD_total=0; SD_norepo=0; SD_dormant=0; SD_desc=""
+  SD_matched=0; SD_reached=0; SD_total=0; SD_norepo=0; SD_dormant=0; SD_desc=""; SD_auditonly=0
   for b in "$@"; do
     SD_total=$((SD_total+1))
     if fleet_posture_is_silent "$b" 2>/dev/null; then SD_dormant=$((SD_dormant+1)); SD_desc="$SD_desc $b:dormant"; continue; fi
@@ -395,7 +395,7 @@ sha_drift_measure() {  # $1=repo $2=headfull $3..=hosts → SD_* variables
     SD_reached=$((SD_reached+1))
     if [ "$s" = "$headfull" ]; then SD_matched=$((SD_matched+1))
     elif sha_behind_by_audit_records_only "$repo" "$s" "$headfull"; then
-      SD_matched=$((SD_matched+1))
+      SD_matched=$((SD_matched+1)); SD_auditonly=$((SD_auditonly+1))
       SD_desc="$SD_desc $b:audit-records-behind($(git -C "$repo" rev-list --count "$s..$headfull" 2>/dev/null || echo '?'))"
     else SD_desc="$SD_desc $b:${s:0:7}"; fi
   done
@@ -406,6 +406,11 @@ sha_drift_verdict() {  # $1=label $2=head-display $3=repo $4=fail-hint (may be "
   if [ "$SD_drifted" -gt 0 ]; then bad "$1" "$SD_matched/$SD_expect @ $2;$SD_desc$4"
   elif [ "$SD_reached" -lt "$SD_expect" ]; then unk "$1" "$SD_matched/$SD_reached reachable of $SD_expect @ $2;$SD_desc"
   elif [ "$SD_reached" = 0 ]; then unk "$1" "no box carried $3;$SD_desc"
+  # A box behind HEAD by audit records only is converged on code but is NOT
+  # at HEAD — "N/N @ <HEAD>" named a sha no box had, and was read as "something
+  # pulled the fleet" (2026-10-20). Say behind, not at.
+  elif [ "$SD_auditonly" -gt 0 ]; then
+    ok "$1" "$SD_matched/$SD_expect code-converged with $2 — $SD_auditonly behind it by audit records only (no deploy owed)${SD_desc:+;$SD_desc}"
   else ok "$1" "$SD_matched/$SD_expect @ $2${SD_desc:+;$SD_desc}"; fi
 }
 sha_drift_measure "$REPO" "$HEADFULL" $PEERS

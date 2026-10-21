@@ -569,6 +569,13 @@ check "behind by an audit-record commit only → converged (PASS), not drift" \
   "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q 'PASS' && echo ok)"
 check "and the lag is NAMED, never silent" \
   "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q 'box-behind:audit-records-behind' && echo ok)"
+# 2026-10-20: the headline read "1/1 @ <HEAD>" — a sha NO box was at — and a
+# session reported "something pulled the fleet" from it. The headline must
+# say the boxes are BEHIND, not AT, the sha it names.
+check "the headline does not place a lagging box AT HEAD" \
+  "$(echo "$out" | grep -E 'fleet SHA drift' | grep -qE '[0-9]+/[0-9]+ @ ' || echo ok)"
+check "the headline says behind by audit records only" \
+  "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q '1 behind it by audit records only' && echo ok)"
 DD_AUDIT="$(git -C "$FAKE_REPO" rev-parse HEAD)"
 _dd_commit "src/thing.py" "code change" >/dev/null
 out="$(FAKE_BOX_HEAD="$DD_AUDIT" HONEST_BOXES="box-behind" run)"
