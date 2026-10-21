@@ -4636,3 +4636,18 @@ moc4 ran `meshforge-maps` active+enabled at `f8e8d2a` (role collector → maps d
 - harness: 1-box fixture leaves cross-box max, `?` propagation and the twin-leg `SD_auditmax` reset untested — add 2 boxes with lags 2,1 + a twin run; anchor `'— 1 box(es)'` (substring matches `11 box(es)`).
 - one unreadable count turns the headline into `up to ? commit(s)`, discarding the known max (say `≥N, 1 unknown`); rev-list exit 0 + empty output renders `audit-records-behind()` — normalise `lag` to `?` before both uses.
 - the lag `rev-list` re-walks the range `sha_behind_by_audit_records_only` just proved — have the helper return the count (one reader/writer).
+
+## 2026-10-21 · Opus 5.5 · witness test: the two [first] rows FIXED (MF `ed50682a` + MA `9f0b25be`, byte-identical body) + non-author reviewed 1 pass
+- **Fix:** both halves run on every row (no early `return`); probes found with `ast` (methods, async); one `compared` floor. Also closes "MF twin lacks the other-half check" (same body in both twins).
+- **Author plant drills, old → new:** MA indented-method cited probe rc 0→1; MA one row naming meshanchor + top-level cited probe 0→1; MF row dropping meshforge whose probe MF defines 0→1; clean trees 0→0 both. Slices MF 216 / MA 104 rc=0; lint rc=0 both.
+- **Non-author review** (contextless `code-review medium`, 1 pass, BY RUNNING, 14 plants in scratch worktrees): both [first] rows CONFIRMED fixed; real trees rc=0 both (MF 4.43s, MA 3.33s); 8 plants still pass → stop rule (test strength only, no running-code change), QUEUED below.
+
+## QUEUED (2026-10-21, review of the witness-test fix — not fixed, by choice)
+- **[first] presence half measures DEFINITION, not REGISTRATION** — `ast.walk` accepts a probe nested in a dead function / an unused class method / `if False:` (all rc=0). Root cure (calibrated_claims #7): check the probe is registered in the consumer of record (`dir(utils.watchdog_runner)`, as `test_watchdog_coverage` does) — subsumes the depth plants and the assignment-bound shape. MA has no MF runner: decide the MA-side consumer first.
+- **[first] absence half has no shape check** — a ref with `()` / trailing text, a bare probe name without `::`, or a `.py` path existing here, on a row NOT naming this app, all pass (rc=0). Apply the presence half's shape rules to both halves.
+- `.py`-path refs count as a full witness with no relation to the row (`__version__.py` passes); federation row rests on this today.
+- scan roots differ: `locate()` resolves the repo root, the absence scan covers only `src/`+`scripts/` (root / `web/` plants pass on MA).
+- `compared` floor is per-test, not per-half: today MF runs only presence, MA only absence. Add a synthetic-registry test of each half.
+- cost: ast over 721 files = 2.33s of 4.43s on a Pi 5 (Pi 4 BELIEVED 2–3×); cited files parsed twice. Cache per path or scope the scan.
+- altitude: `ref` is free text re-parsed by hand — a structured `witnesses: [{file, probe}]` beside the display ref makes malformed refs unrepresentable (byte-locked registry → both twins together).
+- carried: absence half matches by bare name repo-wide, ignoring the file half.
