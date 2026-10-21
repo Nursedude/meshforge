@@ -122,7 +122,7 @@ fi
 # seventh of a second, and was not wired into any hook — the drift surfaced
 # hours later in honest_status. The checker's exit codes, read WITH its output
 # (2026-10-20 — exit 1 and 2 each mean more than one thing):
-#   0                          in sync                          -> pass
+#   0 + "RESULT: in sync"      in sync                          -> pass
 #   1 + "RESULT: DRIFT"        a byte-locked file differs       -> BLOCK
 #   2 + "RESULT: MISSING"      twin present, lacks a file/symbol -> BLOCK
 #   2 + "repo root not found"  the twin is not on this box      -> UNOBSERVABLE
@@ -144,7 +144,9 @@ if [ -f "$REPO_ROOT/scripts/parity_check.py" ]; then
     python3 "$REPO_ROOT/scripts/parity_check.py" --meshforge "$REPO_ROOT" \
         --meshanchor "${MESHANCHOR_REPO:-/opt/meshanchor}" >"$parity_out" 2>&1
     prc=$?
-    if [ "$prc" -eq 0 ]; then
+    # exit 0 must SAY so: a checker that returned early compared nothing
+    # (2026-10-20 review round 5 — a stub `pass` read as "checked").
+    if [ "$prc" -eq 0 ] && grep -q "^RESULT: in sync" "$parity_out"; then
         PARITY_RAN=yes
     elif [ "$prc" -eq 2 ] && grep -q "repo root not found" "$parity_out" \
             && ! grep -q "^RESULT:" "$parity_out"; then

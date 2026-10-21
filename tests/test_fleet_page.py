@@ -332,7 +332,8 @@ def test_blind_spot_watched_elsewhere_is_never_folded_or_struck():
     assert "const offHere = sd => sd.status !== 'open' && sd.scope !== 'here';" in body
     assert "Array.isArray(sd.watched_in)" in body, "a non-list must not throw the poll"
     assert "offHere(sd) ? 'sd-offhere' : (SD_CLASS[sd.status] || '')" in body
-    assert "unwatched on this NOC" in body and "coverage scope not recorded" in body
+    assert "not on this NOC" in body and "coverage scope not recorded" in body
+    assert "unwatched on this NOC" not in body, "the residual is the dark line's claim, not scope's"
 
 
 def test_blind_spot_open_rows_survive_the_poll():

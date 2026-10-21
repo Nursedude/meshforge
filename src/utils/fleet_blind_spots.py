@@ -58,7 +58,8 @@ STRUCTURAL_DARK: List[Dict[str, Any]] = [
                "RESIDUAL/leading indicator: dual-homed-recipient COUNT is observable "
                "(routing state) even on the mesh leg where confirmation-based dup detection "
                "structurally cannot see",
-     "ref": ".claude/research/cross_gateway_dup_design_inputs_2026_07_19.md"},
+     "ref": "watchdog_probes_gateway.py :: probe_gateway_dup_degraded + "
+            ".claude/research/cross_gateway_dup_design_inputs_2026_07_19.md"},
     {"id": "dep_version_drift_strays_blind",
      "status": "accepted", "since": "2026-07-19",
      "watched_in": ["meshforge"],
@@ -70,7 +71,9 @@ STRUCTURAL_DARK: List[Dict[str, Any]] = [
                "venv copy shadowing system-dist is the designed state, so watching them "
                "would page on benign divergence or never fire against outgrown floors. "
                "Revisit only when a dep gains a second installer",
-     "ref": ".claude/research/dep_stray_watch_scope_2026_07_19.md"},
+     "ref": "watchdog_probes_drift.py :: probe_dep_install_fragmented + "
+            "watchdog_probes_rns_env.py :: probe_rns_env_coherence + "
+            ".claude/research/dep_stray_watch_scope_2026_07_19.md"},
     {"id": "user_unit_inactivity_blind",
      "status": "narrowed", "since": "2026-07-19",
      "watched_in": ["meshforge"],
@@ -161,7 +164,7 @@ STRUCTURAL_DARK: List[Dict[str, Any]] = [
                "refuses to STORE would still read clean — was CLOSED 2026-07-21 by "
                "propagation_soak_degraded (see the next row); this probe deliberately keeps "
                "owning announce-liveness only",
-     "ref": "watchdog_probes_gateway.py :: probe_lxmf_propagation_node_dark"},
+     "ref": "watchdog_probes_gateway_lxmf.py :: probe_lxmf_propagation_node_dark"},
     {"id": "lxmf_store_and_forward_unproven",
      "status": "narrowed", "since": "2026-07-21",
      "watched_in": ["meshforge"],
@@ -189,7 +192,7 @@ STRUCTURAL_DARK: List[Dict[str, Any]] = [
                "RESIDUAL: the drill proves the node serves a CLIENT that pulls; it does not "
                "exercise node-to-node peering, and it measures one small message, so a "
                "size- or volume-dependent failure would still read clean",
-     "ref": "watchdog_probes_gateway.py :: probe_propagation_soak_degraded"},
+     "ref": "watchdog_probes_propagation.py :: probe_propagation_soak_degraded"},
     {"id": "aredn_configured_source_only",
      "status": "accepted", "since": "2026-08-08",
      "watched_in": ["meshforge"],
@@ -208,7 +211,10 @@ STRUCTURAL_DARK: List[Dict[str, Any]] = [
                "2026-07-20. Recorded here rather than dropped, so the coverage claim "
                "stays honest -- an audit that silently deletes a row is the defect "
                "this file exists to prevent",
-     "ref": "removed 2026-08-08; see .claude/audits/signal_class_yield_2026_08_08.md"},
+     # the surviving legs (configured-source dark + declared-but-unconfigured)
+     # are both this one probe; the no-statement leg was removed 2026-08-08.
+     "ref": "watchdog_probes_aredn.py :: probe_aredn_source_dark + "
+            ".claude/audits/signal_class_yield_2026_08_08.md"},
     {"id": "claw_edge_rf_coverage_partial",
      "status": "narrowed", "since": "2026-07-19",
      "watched_in": ["meshforge"],

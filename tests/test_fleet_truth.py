@@ -866,25 +866,43 @@ class TestFleetTruth:
 
     def test_rows_naming_this_app_cite_probes_this_repo_has(self):
         """`watched_in` is a MEASURED claim: a row listing this repo's app
-        must cite only probes defined here (2026-10-20 review round 4 — the
-        rule was prose). The registry is byte-identical, so each twin checks
-        the half that names it."""
-        import os
+        must cite at least one CODE witness that exists here — a
+        `<file> :: probe_<name>` defined in THAT file, or a `.py` path — and
+        every probe it names must be one (2026-10-20 review round 5: the
+        round-4 version compared an empty set for rows citing no probe and
+        never checked the file half of a ref). The registry is
+        byte-identical, so each twin checks the half that names it."""
         import re
         app = ft.resolve_self_app()
         assert app in ("meshforge", "meshanchor"), app
         root = Path(__file__).resolve().parent.parent
-        defined = set()
-        for base in ("src", "scripts"):
-            for dp, _, files in os.walk(root / base):
-                for f in files:
-                    if f.endswith(".py"):
-                        text = (Path(dp) / f).read_text(encoding="utf-8", errors="replace")
-                        defined.update(re.findall(r"^def (probe_\w+)", text, re.M))
+
+        def locate(name):
+            for base in (root, root / "src", root / "src" / "utils", root / "scripts"):
+                if (base / name).is_file():
+                    return base / name
+            return None
+
         for row in ft.STRUCTURAL_DARK:
-            if app in (row.get("watched_in") or []):
-                cited = set(re.findall(r"probe_\w+", row["ref"]))
-                assert cited <= defined, (row["id"], sorted(cited - defined))
+            if app not in (row.get("watched_in") or []):
+                continue
+            witnesses = 0
+            for seg in (s.strip() for s in row["ref"].split(" + ")):
+                if "::" in seg:
+                    fname, probe = (x.strip() for x in seg.split("::", 1))
+                    path = locate(fname)
+                    assert path, (row["id"], fname)
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                    assert re.search(r"^(async )?def %s\(" % re.escape(probe), text, re.M), \
+                        (row["id"], probe, "not defined in", fname)
+                    witnesses += 1
+                else:
+                    # a probe named outside `file :: probe` is unverifiable
+                    assert not re.search(r"\bprobe_\w+", seg), (row["id"], seg)
+                    if seg.endswith(".py"):
+                        assert locate(seg), (row["id"], seg)
+                        witnesses += 1
+            assert witnesses, (row["id"], "cites no code witness", row["ref"])
 
     def test_structural_dark_ids_are_snake_case(self):
         """Row ids key the page's open-state across polls, beside the fold's

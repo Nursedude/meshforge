@@ -783,8 +783,10 @@
         const scopeNote = sd => !offHere(sd)
             ? ''
             : sd.scope === 'elsewhere' && Array.isArray(sd.watched_in)
-            ? ' <span class="sd-scope">watched on ' + esc(sd.watched_in.join(', ')) +
-              ' only — unwatched on this NOC</span>'
+            // the DETECTION is elsewhere — the row's `dark` line still names
+            // what no NOC watches (accepted rows: by decision, everywhere)
+            ? ' <span class="sd-scope">its detection runs on ' + esc(sd.watched_in.join(', ')) +
+              ' only — not on this NOC</span>'
             : ' <span class="sd-scope">coverage scope not recorded — treat as unwatched here</span>';
         const oneLine = sd => sd.dark
             ? '<span class="sd-dark">' + esc(sd.dark) + '</span>'
