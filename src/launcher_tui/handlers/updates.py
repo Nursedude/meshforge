@@ -972,12 +972,12 @@ class UpdatesHandler(BaseHandler):
         """Software Updates > User Unit Templates — read-only."""
         ok, verdict, lines = self._user_unit_verdict()
         body = [verdict, ""] + lines
-        if not ok:
-            body += ["", "RAW = the installed unit still carries its install-time",
-                     "placeholder and cannot start. STALE = a template fix has",
-                     "not reached this box. Each line names the command that",
-                     "fixes it; nothing here changes the box."]
-        self.ctx.dialog.msgbox("User Unit Templates", "\n".join(body), width=78)
+        body += ["", "RAW = the installed unit still carries its install-time",
+                 "placeholder and CANNOT START. DIFFERS (advisory) = it matches",
+                 "no template in this checkout: an older render, or a unit the",
+                 "other app (MeshForge/MeshAnchor) installed on this shared box.",
+                 "Each line names its fix; this screen never changes the box."]
+        self.ctx.dialog.textbox("User Unit Templates", "\n".join(body), width=78)
 
     def _show_update_report(self, steps, aborted: bool = False):
         """Per-step honest completion report — never a blanket 'Complete'."""

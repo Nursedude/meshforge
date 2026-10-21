@@ -107,22 +107,22 @@ def test_a_comment_only_difference_is_not_drift(tmp_path):
     assert uut.audit_unit(c, u).state == uut.CURRENT
 
 
-def test_a_rendered_unit_behind_its_template_is_stale(tmp_path):
+def test_a_rendered_unit_behind_its_template_differs(tmp_path):
     c = uut.classify_template(_tmpl(tmp_path, "pane-user.service",
                                     RENDERED_TMPL + "ExecStartPre=/bin/gate\n"))
     u = tmp_path / "u"
     u.mkdir()
     (u / "pane.service").write_text(RENDERED_TMPL.replace("__PANE_EXEC__", "/home/op/w.sh"))
     a = uut.audit_unit(c, u)
-    assert a.state == uut.STALE and "install_pane.sh" in a.detail
+    assert a.state == uut.DIFFERS and "install_pane.sh" in a.detail
 
 
-def test_a_glob_unit_behind_its_template_is_stale(tmp_path):
+def test_a_glob_unit_behind_its_template_differs(tmp_path):
     c = uut.classify_template(_tmpl(tmp_path, "plain-user.service", GLOB_TMPL))
     u = tmp_path / "u"
     u.mkdir()
     (u / "plain.service").write_text("[Service]\nExecStart=/bin/false\n")
-    assert uut.audit_unit(c, u).state == uut.STALE
+    assert uut.audit_unit(c, u).state == uut.DIFFERS
 
 
 # ── the CLI the shell copiers consume ──────────────────────────────────
@@ -209,3 +209,94 @@ def test_summarize_puts_the_worst_first_and_ignores_absent(tmp_path):
     assert not ok and verdict.startswith("1 BROKEN")
     assert lines[0].startswith("[RAW    ] pane.service") and len(lines) == 2
     assert uut.summarize([uut.UnitAudit(g, uut.ABSENT)])[:2] == (True, "no user-unit templates installed here")
+
+
+
+# ── round 2 (non-author review of 6935a36a) ─────────────────────────────
+
+AS_TMPL = ("# MF-DEPLOY: rendered PANE_EXEC by TUI: Pane > Install\n"
+           "# MF-DEPLOY-AS: shared.service\n"
+           "[Service]\nExecStart=/usr/bin/tmux new -d -s p '__PANE_EXEC__'\n")
+
+
+def test_installs_as_names_the_unit_and_shadows_a_plain_template_of_that_name(tmp_path):
+    _tmpl(tmp_path, "pane-user.service", AS_TMPL)
+    _tmpl(tmp_path, "shared-user.service", GLOB_TMPL)
+    by = {c.template.name: c for c in uut.templates(tmp_path / "t")}
+    assert by["pane-user.service"].unit == "shared.service"
+    assert by["shared-user.service"].kind == uut.KIND_SHADOWED
+
+
+def test_plan_never_raw_copies_a_shadowed_template(tmp_path, capsys):
+    _tmpl(tmp_path, "pane-user.service", AS_TMPL)
+    _tmpl(tmp_path, "shared-user.service", GLOB_TMPL)
+    uut.main(["plan", str(tmp_path / "t")])
+    assert not [l for l in capsys.readouterr().out.splitlines() if l.startswith("copy")]
+
+
+def test_a_unit_matching_ANY_candidate_template_is_current(tmp_path):
+    """Two templates can produce shared.service; the installed daemon variant
+    is current, not 'stale vs the tmux one'."""
+    _tmpl(tmp_path, "pane-user.service", AS_TMPL)
+    _tmpl(tmp_path, "shared-user.service", GLOB_TMPL)
+    u = tmp_path / "u"
+    u.mkdir()
+    (u / "shared.service").write_text(GLOB_TMPL)
+    rows = {r.cls.unit: r for r in uut.audit(tmp_path / "t", u)}
+    assert rows["shared.service"].state == uut.CURRENT
+
+
+def test_a_masked_unit_is_inert_not_drift(tmp_path):
+    c = uut.classify_template(_tmpl(tmp_path, "plain-user.service", GLOB_TMPL))
+    u = tmp_path / "u"
+    u.mkdir()
+    (u / "plain.service").symlink_to("/dev/null")
+    assert uut.audit_unit(c, u).state == uut.MASKED
+
+
+def test_blank_lines_and_crlf_are_not_drift(tmp_path):
+    c = uut.classify_template(_tmpl(tmp_path, "plain-user.service", GLOB_TMPL))
+    u = tmp_path / "u"
+    u.mkdir()
+    (u / "plain.service").write_text(GLOB_TMPL.replace("\n", "\r\n") + "\n\n")
+    assert uut.audit_unit(c, u).state == uut.CURRENT
+
+
+def test_a_typoed_declaration_is_unknown_with_the_template_cause_not_run_update(tmp_path):
+    c = uut.classify_template(_tmpl(tmp_path, "m-user.service",
+                                    "# MF-DEPLOY: rendered M by scripts/inst.sh\n"
+                                    "[Service]\nExecStart=__MM__\n"))
+    u = tmp_path / "u"
+    u.mkdir()
+    (u / "m.service").write_text("[Service]\nExecStart=/bin/x\n")
+    a = uut.audit_unit(c, u)
+    assert a.state == uut.UNKNOWN and "declaration" in a.detail and "update.sh" not in a.detail
+
+
+def test_differs_is_advisory_and_names_the_fix_only_if_this_app_owns_it(tmp_path):
+    g = uut.classify_template(_tmpl(tmp_path, "plain-user.service", GLOB_TMPL))
+    ok, verdict, lines = uut.summarize([uut.UnitAudit(g, uut.DIFFERS, "x"),
+                                        uut.UnitAudit(g, uut.CURRENT)])
+    assert ok and "advisory" in verdict
+    u = tmp_path / "u"
+    u.mkdir()
+    (u / "plain.service").write_text("[Service]\nExecStart=/bin/other\n")
+    assert "if this app owns it" in uut.audit_unit(g, u).detail
+
+
+def test_unknown_is_labelled_could_not_judge(tmp_path):
+    g = uut.classify_template(_tmpl(tmp_path, "plain-user.service", GLOB_TMPL))
+    ok, verdict, _ = uut.summarize([uut.UnitAudit(g, uut.UNKNOWN, "x")])
+    assert not ok and "could not judge" in verdict and "unreadable" not in verdict
+
+
+def test_a_raw_unit_no_template_produces_is_still_reported(tmp_path):
+    _tmpl(tmp_path, "plain-user.service", GLOB_TMPL)
+    u = tmp_path / "u"
+    u.mkdir()
+    (u / "leftover.service").write_text("[Service]\nExecStart=__OLD_EXEC__\n")
+    (u / "fine.service").write_text("[Service]\nExecStart=/bin/true\n")
+    rows = {r.cls.unit: r for r in uut.audit(tmp_path / "t", u)}
+    assert rows["leftover.service"].state == uut.RAW
+    assert rows["leftover.service"].cls.kind == uut.KIND_ORPHAN
+    assert "fine.service" not in rows

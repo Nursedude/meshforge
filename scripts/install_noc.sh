@@ -1677,7 +1677,7 @@ RNSD_SERVICE
             # One rule with update.sh + the TUI (utils.user_unit_templates): a
             # template its installer RENDERS is never copied raw (2026-10-21).
             # A plan that cannot run copies nothing.
-            if PYTHONPATH="$INSTALL_DIR/src" timeout 30 python3 -m utils.user_unit_templates plan \
+            if PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$INSTALL_DIR/src" timeout 30 python3 -m utils.user_unit_templates plan \
                     "$INSTALL_DIR/templates/systemd" 2>/dev/null \
                     | awk -F'\t' '$1=="copy" && $3=="nomadnet.service" {f=1} END {exit !f}'; then
                 cp "$INSTALL_DIR/templates/systemd/nomadnet-user.service" "$USER_SYSTEMD_DIR/nomadnet.service" 2>/dev/null || true

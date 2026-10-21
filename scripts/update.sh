@@ -460,7 +460,7 @@ if [[ -n "$REAL_USER" && -d "$INSTALL_DIR/templates/systemd" ]]; then
     # literal token). The plan is computed by the module the TUI uses too; if it
     # cannot run, NOTHING is copied and that is said — never a raw fallback.
     uut_rc=0
-    uut_plan="$(PYTHONPATH="$INSTALL_DIR/src" timeout 30 python3 -m utils.user_unit_templates plan "$INSTALL_DIR/templates/systemd" 2>&1)" || uut_rc=$?
+    uut_plan="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$INSTALL_DIR/src" timeout 30 python3 -m utils.user_unit_templates plan "$INSTALL_DIR/templates/systemd" 2>&1)" || uut_rc=$?
     if [[ $uut_rc -ne 0 ]]; then
         echo -e "  ${YELLOW}⚠ user-unit plan failed (rc=$uut_rc) — no *-user.service template copied: ${uut_plan:0:200}${NC}"
     else
@@ -470,7 +470,7 @@ if [[ -n "$REAL_USER" && -d "$INSTALL_DIR/templates/systemd" ]]; then
                 skip)
                     # say it only where the unit is installed, or where the
                     # template itself is wrong — not on every box every run
-                    if [[ "$uut_b" != "rendered" || -f "$USER_SYSTEMD_DIR/$uut_a" ]]; then
+                    if [[ "$uut_b" == "refused" || "$uut_b" == "unreadable" || -e "$USER_SYSTEMD_DIR/$uut_a" ]]; then
                         echo -e "  ${YELLOW}↷ ${uut_a}: not copied (${uut_b}) — ${uut_c}${NC}"
                     fi ;;
             esac
@@ -492,7 +492,11 @@ if [[ -n "$REAL_USER" && -d "$INSTALL_DIR/templates/systemd" ]]; then
     done
     chown -R "${REAL_USER}:" "$USER_SYSTEMD_DIR" 2>/dev/null || true
     USER_SVC_UPDATED=true
-    echo -e "  ${GREEN}✓ User service templates deployed${NC}"
+    if [[ $uut_rc -eq 0 ]]; then
+        echo -e "  ${GREEN}✓ User service templates deployed${NC}"
+    else
+        echo -e "  ${YELLOW}⚠ User service templates NOT refreshed (plan failed above)${NC}"
+    fi
 fi
 
 # The pytest_tmp_prune cron (/tmp is RAM on the Pis). It was hand-installed box

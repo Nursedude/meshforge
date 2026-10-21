@@ -85,7 +85,9 @@ def _pane(repo, home):
             patch("utils.paths.get_real_user_home", return_value=home):
         h._user_unit_audit()
         verdict = h._user_unit_verdict()
-    title, text = h.ctx.dialog.msgbox.call_args[0][:2]
+    # MeshForge's backend scrolls (textbox); MeshAnchor's has only msgbox.
+    shown = h.ctx.dialog.textbox if h.ctx.dialog.textbox.called else h.ctx.dialog.msgbox
+    title, text = shown.call_args[0][:2]
     return title, text, verdict
 
 
