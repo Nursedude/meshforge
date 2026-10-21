@@ -207,7 +207,7 @@ def test_summarize_puts_the_worst_first_and_ignores_absent(tmp_path):
             uut.UnitAudit(g, uut.ABSENT)]
     ok, verdict, lines = uut.summarize(rows)
     assert not ok and verdict.startswith("1 BROKEN")
-    assert lines[0].startswith("[RAW    ] pane.service") and len(lines) == 2
+    assert lines[0].startswith("[RAW    ] pane.service") and len(lines) == 1  # current is counted, not listed
     assert uut.summarize([uut.UnitAudit(g, uut.ABSENT)])[:2] == (True, "no user-unit templates installed here")
 
 
@@ -300,3 +300,100 @@ def test_a_raw_unit_no_template_produces_is_still_reported(tmp_path):
     assert rows["leftover.service"].state == uut.RAW
     assert rows["leftover.service"].cls.kind == uut.KIND_ORPHAN
     assert "fine.service" not in rows
+
+
+# ── round 3 (non-author review of 5bbba62a) ─────────────────────────────
+
+def _udir(tmp_path):
+    u = tmp_path / "u"
+    u.mkdir(exist_ok=True)
+    return u
+
+
+def test_deploy_plan_installs_the_default_variant_on_a_fresh_box(tmp_path):
+    """Round 2 left MA's daemon nomadnet with NO installer: a shadowed
+    template must still install where the unit is absent."""
+    _tmpl(tmp_path, "pane-user.service", AS_TMPL)
+    _tmpl(tmp_path, "shared-user.service", GLOB_TMPL)
+    acts = {(st.action, st.cls.template.name) for st in uut.deploy_plan(tmp_path / "t", _udir(tmp_path))}
+    assert ("copy", "shared-user.service") in acts
+
+
+def test_deploy_plan_refreshes_the_default_variant_in_place(tmp_path):
+    _tmpl(tmp_path, "pane-user.service", AS_TMPL)
+    _tmpl(tmp_path, "shared-user.service", GLOB_TMPL)
+    u = _udir(tmp_path)
+    (u / "shared.service").write_text("[Service]\nExecStart=/bin/older\n")
+    acts = {(st.action, st.cls.template.name) for st in uut.deploy_plan(tmp_path / "t", u)}
+    assert ("copy", "shared-user.service") in acts
+
+
+def test_deploy_plan_never_switches_a_rendered_variant(tmp_path):
+    _tmpl(tmp_path, "pane-user.service", AS_TMPL)
+    _tmpl(tmp_path, "shared-user.service", GLOB_TMPL)
+    u = _udir(tmp_path)
+    (u / "shared.service").write_text(AS_TMPL.replace("__PANE_EXEC__", "/home/op/w.sh"))
+    st = [s for s in uut.deploy_plan(tmp_path / "t", u) if s.cls.template.name == "shared-user.service"][0]
+    assert st.action == "skip" and st.say and "not switched" in st.reason
+
+
+def test_deploy_plan_never_writes_through_a_masked_unit(tmp_path):
+    _tmpl(tmp_path, "plain-user.service", GLOB_TMPL)
+    u = _udir(tmp_path)
+    (u / "plain.service").symlink_to("/dev/null")
+    st = uut.deploy_plan(tmp_path / "t", u)[0]
+    assert st.action == "skip" and "symlink" in st.reason
+
+
+def test_a_skip_is_said_only_where_installed_or_the_template_is_wrong(tmp_path):
+    _tmpl(tmp_path, "pane-user.service", RENDERED_TMPL)
+    _tmpl(tmp_path, "x-user.service", "[Service]\nExecStart=__X__\n")
+    u = _udir(tmp_path)
+    say = {st.cls.unit: st.say for st in uut.deploy_plan(tmp_path / "t", u)}
+    assert say == {"pane.service": False, "x.service": True}
+    (u / "pane.service").write_text("[Service]\n")  # some OTHER unit by that name
+    assert not {st.cls.unit: st.say for st in uut.deploy_plan(tmp_path / "t", u)}["pane.service"]
+    (u / "pane.service").write_text(RENDERED_TMPL.replace("__PANE_EXEC__", "/home/op/w.sh"))
+    assert {st.cls.unit: st.say for st in uut.deploy_plan(tmp_path / "t", u)}["pane.service"]
+
+
+def test_an_empty_render_is_broken_not_advisory(tmp_path):
+    c = uut.classify_template(_tmpl(tmp_path, "pane-user.service", RENDERED_TMPL))
+    u = _udir(tmp_path)
+    (u / "pane.service").write_text(RENDERED_TMPL.replace("__PANE_EXEC__", ""))
+    assert uut.audit_unit(c, u).state == uut.RAW
+
+
+def test_the_orphan_scan_ignores_other_apps_legitimate_braces_and_ats(tmp_path):
+    _tmpl(tmp_path, "plain-user.service", GLOB_TMPL)
+    u = _udir(tmp_path)
+    (u / "podman-foo.service").write_text("[Service]\nExecStart=/usr/bin/podman ps --format {{ID}}\n")
+    (u / "mailer.service").write_text("[Service]\nExecStart=/bin/mail -f ops@HOST@example\n")
+    assert {r.cls.unit for r in uut.audit(tmp_path / "t", u)} == {"plain.service"}
+
+
+def test_the_orphan_scan_reads_through_a_link_and_witnesses_the_unreadable(tmp_path):
+    _tmpl(tmp_path, "plain-user.service", GLOB_TMPL)
+    u = _udir(tmp_path)
+    real = tmp_path / "elsewhere.service"
+    real.write_text("[Service]\nExecStart=__RAW_TOKEN__\n")
+    (u / "linked.service").symlink_to(real)
+    (u / "bad.service").write_bytes(b"\xff\xfe\x00")
+    rows = {r.cls.unit: r.state for r in uut.audit(tmp_path / "t", u)}
+    assert rows["linked.service"] == uut.RAW and rows["bad.service"] == uut.UNKNOWN
+
+
+def test_one_unreadable_candidate_does_not_hide_a_matching_one(tmp_path):
+    bad = _tmpl(tmp_path, "pane-user.service", AS_TMPL)
+    good = uut.classify_template(_tmpl(tmp_path, "shared-user.service", GLOB_TMPL))
+    cands = [uut.classify_template(bad), good]
+    bad.write_bytes(b"\xff\xfe\x00")
+    u = _udir(tmp_path)
+    (u / "shared.service").write_text(GLOB_TMPL)
+    assert uut.audit_unit(cands, u).state == uut.CURRENT
+
+
+def test_summarize_lists_only_what_needs_a_look(tmp_path):
+    g = uut.classify_template(_tmpl(tmp_path, "plain-user.service", GLOB_TMPL))
+    ok, verdict, lines = uut.summarize([uut.UnitAudit(g, uut.CURRENT)] * 5 + [uut.UnitAudit(g, uut.DIFFERS, "x")])
+    assert len(lines) == 1 and "5 current" in verdict

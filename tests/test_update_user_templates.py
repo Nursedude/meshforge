@@ -98,3 +98,13 @@ def test_every_placeholder_template_in_this_repo_is_skipped(tmp_path):
     leaked = sorted(p.name for p in user.iterdir() if PLACEHOLDER.search(p.read_text()))
     assert not leaked, leaked
     assert len(list(user.iterdir())) >= 1, "the real plan copied nothing at all"
+
+
+def test_a_masked_unit_is_never_written_through(tmp_path):
+    """round 3: `cp` onto a /dev/null symlink writes into /dev/null."""
+    repo, user = _sandbox(tmp_path)
+    (user / "plain.service").symlink_to("/dev/null")
+    r = _run(repo, user)
+    assert "BLOCK_DONE" in r.stdout, r.stderr
+    assert (user / "plain.service").is_symlink()
+    assert "plain.service" in r.stdout and "symlink" in r.stdout

@@ -44,9 +44,9 @@ Byte-identical in MeshForge and MeshAnchor (parity_check).
 
 CLI (for the shell copiers; exit 0 unless the plan itself could not be made):
 
-    python3 -m utils.user_unit_templates plan <templates_dir>
+    python3 -m utils.user_unit_templates plan <templates_dir> [<user_unit_dir>]
         copy<TAB><template path><TAB><unit name>
-        skip<TAB><unit name><TAB><kind><TAB><detail>
+        skip<TAB><unit name><TAB><kind><TAB><reason><TAB><say 0|1>
     python3 -m utils.user_unit_templates audit <templates_dir> [<user_unit_dir>]
         one line per installed-or-templated unit; exit 1 if any installed unit
         is RAW, 2 if any could not be judged, else 0.
@@ -66,6 +66,7 @@ DECLARATION = re.compile(
 INSTALLS_AS = re.compile(r"^#\s*MF-DEPLOY-AS:\s*([A-Za-z0-9@._-]+\.service)\s*$", re.M)
 # Placeholder shapes seen in templates/installers. Lowercase __x__ is left out on
 # purpose: it collides with Python dunders (__main__, __pycache__) in ExecStart.
+OWN_TOKEN = re.compile(r"__[A-Z0-9][A-Z0-9_]*__")
 PLACEHOLDER = re.compile(r"__[A-Z0-9][A-Z0-9_]*__|@[A-Z][A-Z0-9_]*@|\{\{\s*[A-Za-z_][A-Za-z0-9_]*\s*\}\}")
 
 KIND_GLOB = "glob"
@@ -154,17 +155,87 @@ def templates(templates_dir: Path) -> List[TemplateClass]:
     return out
 
 
-def render(cls: TemplateClass, installed_text: str) -> Optional[str]:
-    """The template with its token replaced by the value the INSTALLED unit
-    carries on the same line, or None when the installed unit has no line of
-    that shape (another template, or another revision, produced it)."""
+@dataclass(frozen=True)
+class PlanStep:
+    action: str          # "copy" | "skip"
+    cls: TemplateClass
+    reason: str = ""
+    say: bool = False    # print the skip? (installed here, or the template is wrong)
+
+
+def deploy_plan(templates_dir: Path, user_dir: Optional[Path] = None) -> List[PlanStep]:
+    """What a generic copier may do with each template ON THIS BOX.
+
+    Never writes through a symlink (a masked unit is /dev/null — a copy chmods
+    it). A ``shadowed`` template refreshes its unit IN PLACE and never switches
+    variants: copied when the unit is absent or is not the rendered variant's;
+    left alone when the rendered variant installed it. Without ``user_dir``
+    a shadowed template is skipped (the safe answer when the target is unseen).
+    """
+    classes = templates(templates_dir)
+    rendered_for: Dict[str, List[TemplateClass]] = {}
+    for c in classes:
+        if c.kind == KIND_RENDERED:
+            rendered_for.setdefault(c.unit, []).append(c)
+    steps = []
+    for c in classes:
+        target = Path(user_dir) / c.unit if user_dir is not None else None
+        exists = bool(target is not None and (target.exists() or target.is_symlink()))
+        if c.kind in (KIND_GLOB, KIND_SHADOWED) and target is not None and target.is_symlink():
+            steps.append(PlanStep("skip", c, f"{c.unit} is a symlink (masked or linked) — "
+                                             f"never written through", True))
+        elif c.kind == KIND_GLOB:
+            steps.append(PlanStep("copy", c))
+        elif c.kind == KIND_SHADOWED:
+            if target is None:
+                steps.append(PlanStep("skip", c, c.detail + " (target unseen)", False))
+                continue
+            keep = None
+            if target.exists():
+                try:
+                    installed = target.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError) as e:
+                    steps.append(PlanStep("skip", c, f"cannot read installed {c.unit}: {e}", True))
+                    continue
+                for r in rendered_for.get(c.unit, []):
+                    try:
+                        if render(r, installed) is not None:
+                            keep = r
+                            break
+                    except (OSError, UnicodeDecodeError):
+                        keep = r  # cannot prove it is not theirs: leave it
+                        break
+            if keep is not None:
+                steps.append(PlanStep("skip", c, f"{c.unit} is the variant {keep.installer} "
+                                                 f"renders — kept, not switched", True))
+            else:
+                steps.append(PlanStep("copy", c))
+        elif c.kind == KIND_RENDERED:
+            # say it only where the installed unit IS this variant — not where
+            # a sibling (the shadowed default) owns the name, nor where absent
+            mine = False
+            if target is not None and target.is_file():
+                try:
+                    mine = render(c, target.read_text(encoding="utf-8")) is not None
+                except (OSError, UnicodeDecodeError):
+                    mine = True
+            steps.append(PlanStep("skip", c, c.detail, mine))
+        else:
+            steps.append(PlanStep("skip", c, c.detail, True))
+    return steps
+
+
+def render(cls: TemplateClass, installed_text: str):
+    """(template rendered with the value the INSTALLED unit carries on the
+    token's line, that value) — or None when the installed unit has no line
+    of that shape (another template, or another revision, produced it)."""
     text = cls.template.read_text(encoding="utf-8")
     for ln in _code_lines(text):
         if cls.token and cls.token in ln:
             pre, post = ln.split(cls.token, 1)
-            pat = re.compile("^" + re.escape(pre) + "(.+?)" + re.escape(post) + r"\s*$", re.M)
+            pat = re.compile("^" + re.escape(pre) + "(.*?)" + re.escape(post) + r"\s*$", re.M)
             m = pat.search(installed_text)
-            return text.replace(cls.token, m.group(1)) if m else None
+            return (text.replace(cls.token, m.group(1)), m.group(1)) if m else None
     return None
 
 
@@ -180,8 +251,8 @@ def _fixes(cands: Sequence[TemplateClass]) -> str:
     for c in cands:
         if c.kind == KIND_RENDERED:
             out.append(f"re-run {c.installer}")
-        elif c.kind == KIND_GLOB:
-            out.append(f"run update.sh ({c.template.name})")
+        elif c.kind in (KIND_GLOB, KIND_SHADOWED):
+            out.append(f"run update.sh (refreshes {c.template.name} in place)")
     return " or ".join(dict.fromkeys(out)) or "re-run the installer that renders it"
 
 
@@ -204,14 +275,24 @@ def audit_unit(cands: Union[TemplateClass, Sequence[TemplateClass]], user_dir: P
     judgeable = [c for c in cands if c.kind in (KIND_GLOB, KIND_SHADOWED, KIND_RENDERED)]
     if not judgeable:
         return UnitAudit(head, UNKNOWN, "; ".join(c.detail for c in cands))
+    errors = []
     for c in judgeable:
         try:
-            expected = (render(c, installed) if c.kind == KIND_RENDERED
-                        else c.template.read_text(encoding="utf-8"))
+            if c.kind == KIND_RENDERED:
+                got = render(c, installed)
+                if got is not None and not got[1].strip():
+                    return UnitAudit(c, RAW, f"its {c.token} line was rendered EMPTY — it cannot "
+                                             f"run the app; re-run {c.installer}")
+                expected = got[0] if got else None
+            else:
+                expected = c.template.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as e:
-            return UnitAudit(c, UNKNOWN, f"cannot read template: {e}")
+            errors.append(f"cannot read {c.template.name}: {e}")
+            continue
         if expected is not None and _code_lines(expected) == _code_lines(installed):
             return UnitAudit(c, CURRENT)
+    if errors:
+        return UnitAudit(head, UNKNOWN, "; ".join(errors))
     names = ", ".join(c.template.name for c in judgeable)
     return UnitAudit(head, DIFFERS,
                      f"matches no template here ({names}) — another app's unit or an older "
@@ -228,13 +309,18 @@ def audit(templates_dir: Path, user_dir: Path) -> List[UnitAudit]:
             for _, cs in sorted(by_unit.items())]
     # A raw unit no template here produces is still a unit that cannot start
     # (a leftover from an older install name, or the other app's) — say so.
+    # Only OUR token shape (__X__): @X@ / {{x}} are legitimate in other apps'
+    # units (podman --format {{ID}}), so they are judged only in our templates.
     for path in sorted(Path(user_dir).glob("*.service")) if Path(user_dir).is_dir() else []:
-        if path.name in by_unit or path.is_symlink():
+        if path.name in by_unit or os.path.realpath(path) == "/dev/null":
             continue
         try:
-            raw = placeholders_in_code(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError):
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            rows.append(UnitAudit(TemplateClass(path, path.name, KIND_ORPHAN), UNKNOWN,
+                                  f"cannot read {path.name}: {e}"))
             continue
+        raw = [t for ln in _code_lines(text) for t in OWN_TOKEN.findall(ln)]
         if raw:
             orphan = TemplateClass(path, path.name, KIND_ORPHAN)
             rows.append(UnitAudit(orphan, RAW, f"carries {raw[0]} and no template here installs "
@@ -265,7 +351,8 @@ def summarize(rows: List[UnitAudit]):
                else f"all {n[CURRENT]} installed user units current")
     order = {RAW: 0, UNKNOWN: 1, DIFFERS: 2, CURRENT: 3}
     lines = [f"[{r.state.upper():7}] {r.cls.unit}" + (f" — {r.detail}" if r.detail else "")
-             for r in sorted(installed, key=lambda r: (order[r.state], r.cls.unit))]
+             for r in sorted(installed, key=lambda r: (order[r.state], r.cls.unit))
+             if r.state != CURRENT]
     return ok, verdict, lines
 
 
@@ -283,11 +370,11 @@ def main(argv: List[str]) -> int:
         print(f"no templates dir: {tdir}", file=sys.stderr)
         return 2
     if argv[0] == "plan":
-        for c in templates(tdir):
-            if c.kind == KIND_GLOB:
-                print(f"copy\t{c.template}\t{c.unit}")
+        for st in deploy_plan(tdir, Path(argv[2]) if len(argv) > 2 else None):
+            if st.action == "copy":
+                print(f"copy\t{st.cls.template}\t{st.cls.unit}")
             else:
-                print(f"skip\t{c.unit}\t{c.kind}\t{c.detail}")
+                print(f"skip\t{st.cls.unit}\t{st.cls.kind}\t{st.reason}\t{int(st.say)}")
         return 0
     rows = audit(tdir, Path(argv[2]) if len(argv) > 2 else _default_user_dir())
     for r in rows:

@@ -120,3 +120,17 @@ def test_the_update_report_carries_a_user_units_line():
     import inspect
     src = inspect.getsource(UpdatesHandler)
     assert 'steps.append(("user units",) + self._user_unit_verdict()[:2])' in src
+
+
+def test_the_tui_copier_never_writes_through_a_masked_unit(tmp_path):
+    """round 3: shutil.copy2 through a /dev/null symlink chmods /dev/null."""
+    repo, home = _sandbox(tmp_path)
+    udir = home / ".config" / "systemd" / "user"
+    target = tmp_path / "masked-target"
+    target.write_text("")
+    target.chmod(0o666)
+    (udir / "plain.service").symlink_to(target)
+    ok, detail, _ = _refresh(repo, home)
+    assert ok
+    assert target.read_text() == "" and (target.stat().st_mode & 0o777) == 0o666
+    assert "plain.service not copied" in detail

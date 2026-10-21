@@ -1677,12 +1677,13 @@ RNSD_SERVICE
             # One rule with update.sh + the TUI (utils.user_unit_templates): a
             # template its installer RENDERS is never copied raw (2026-10-21).
             # A plan that cannot run copies nothing.
-            if PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$INSTALL_DIR/src" timeout 30 python3 -m utils.user_unit_templates plan \
-                    "$INSTALL_DIR/templates/systemd" 2>/dev/null \
-                    | awk -F'\t' '$1=="copy" && $3=="nomadnet.service" {f=1} END {exit !f}'; then
+            uut_line="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$INSTALL_DIR/src" timeout 30 python3 -m utils.user_unit_templates plan \
+                    "$INSTALL_DIR/templates/systemd" "$USER_SYSTEMD_DIR" 2>/dev/null \
+                    | awk -F'\t' '($1=="copy" && $3=="nomadnet.service") || ($1=="skip" && $2=="nomadnet.service" && $3!="rendered")' | head -1)" || true
+            if [[ "$uut_line" == copy* ]]; then
                 cp "$INSTALL_DIR/templates/systemd/nomadnet-user.service" "$USER_SYSTEMD_DIR/nomadnet.service" 2>/dev/null || true
             else
-                echo -e "  ${YELLOW}↷ nomadnet.service: not copied — rendered by scripts/install_nomadnet.sh (or the plan could not run)${NC}"
+                echo -e "  ${YELLOW}↷ nomadnet.service: not copied — $(echo "${uut_line:-the plan could not run}" | cut -f4)${NC}"
             fi
         fi
         chown -R "${REAL_USER}:" "$USER_SYSTEMD_DIR" 2>/dev/null || true
