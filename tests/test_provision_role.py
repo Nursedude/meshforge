@@ -1028,6 +1028,20 @@ class TestEnrollUserTimers:
         assert any("not raw-copyable" in l and "install_x.sh" in l for l in lines), lines
         assert calls == []
 
+    def test_a_masked_paired_service_is_never_written_through(self, tmp_path):
+        """round 4: provision_role is a copier too — never through a symlink."""
+        home = tmp_path / "home"
+        dest = home / ".config" / "systemd" / "user"
+        dest.mkdir(parents=True)
+        (dest / "meshforge-synth-soak.service").symlink_to("/dev/null")
+        calls = []
+        from unittest.mock import patch
+        with patch.object(pr, "user_timer_enrolled", return_value=False):
+            ok, lines = pr.enroll_user_timers({self.SYNTH: "enabled"},
+                                              home=str(home), runner=self._runner(calls))
+        assert not ok and any("symlink" in l for l in lines), lines
+        assert (dest / "meshforge-synth-soak.service").is_symlink() and calls == []
+
     def test_declared_absent_is_never_enrolled(self):
         """The safety argument: this enables ONLY what the role declares
         enabled, and never disables anything."""

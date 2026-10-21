@@ -319,13 +319,17 @@ def test_deploy_plan_installs_the_default_variant_on_a_fresh_box(tmp_path):
     assert ("copy", "shared-user.service") in acts
 
 
-def test_deploy_plan_refreshes_the_default_variant_in_place(tmp_path):
+def test_deploy_plan_never_refreshes_a_shared_name_in_place(tmp_path):
+    """round 4: every 'smart' in-place refresh of a name two templates share
+    switched someone's variant. A generic copier installs it only where absent."""
     _tmpl(tmp_path, "pane-user.service", AS_TMPL)
     _tmpl(tmp_path, "shared-user.service", GLOB_TMPL)
     u = _udir(tmp_path)
-    (u / "shared.service").write_text("[Service]\nExecStart=/bin/older\n")
-    acts = {(st.action, st.cls.template.name) for st in uut.deploy_plan(tmp_path / "t", u)}
-    assert ("copy", "shared-user.service") in acts
+    for installed in ("[Service]\nExecStart=/bin/older\n",
+                      AS_TMPL.replace("__PANE_EXEC__", "/home/op/w.sh -x 200")):
+        (u / "shared.service").write_text(installed)
+        acts = {(st.action, st.cls.template.name) for st in uut.deploy_plan(tmp_path / "t", u)}
+        assert ("skip", "shared-user.service") in acts, installed
 
 
 def test_deploy_plan_never_switches_a_rendered_variant(tmp_path):
@@ -333,8 +337,9 @@ def test_deploy_plan_never_switches_a_rendered_variant(tmp_path):
     _tmpl(tmp_path, "shared-user.service", GLOB_TMPL)
     u = _udir(tmp_path)
     (u / "shared.service").write_text(AS_TMPL.replace("__PANE_EXEC__", "/home/op/w.sh"))
-    st = [s for s in uut.deploy_plan(tmp_path / "t", u) if s.cls.template.name == "shared-user.service"][0]
-    assert st.action == "skip" and st.say and "not switched" in st.reason
+    plan = {s.cls.template.name: s for s in uut.deploy_plan(tmp_path / "t", u)}
+    assert plan["shared-user.service"].action == "skip" and not plan["shared-user.service"].say
+    assert plan["pane-user.service"].say  # ONE line says it: the variant that is installed
 
 
 def test_deploy_plan_never_writes_through_a_masked_unit(tmp_path):
@@ -342,7 +347,17 @@ def test_deploy_plan_never_writes_through_a_masked_unit(tmp_path):
     u = _udir(tmp_path)
     (u / "plain.service").symlink_to("/dev/null")
     st = uut.deploy_plan(tmp_path / "t", u)[0]
-    assert st.action == "skip" and "symlink" in st.reason
+    assert st.action == "skip" and "masked" in st.reason and not st.say
+
+
+def test_deploy_plan_never_writes_through_a_link_and_says_so(tmp_path):
+    _tmpl(tmp_path, "plain-user.service", GLOB_TMPL)
+    u = _udir(tmp_path)
+    other = tmp_path / "other-checkout.service"
+    other.write_text("[Service]\n")
+    (u / "plain.service").symlink_to(other)
+    st = uut.deploy_plan(tmp_path / "t", u)[0]
+    assert st.action == "skip" and "symlink" in st.reason and st.say
 
 
 def test_a_skip_is_said_only_where_installed_or_the_template_is_wrong(tmp_path):
@@ -397,3 +412,30 @@ def test_summarize_lists_only_what_needs_a_look(tmp_path):
     g = uut.classify_template(_tmpl(tmp_path, "plain-user.service", GLOB_TMPL))
     ok, verdict, lines = uut.summarize([uut.UnitAudit(g, uut.CURRENT)] * 5 + [uut.UnitAudit(g, uut.DIFFERS, "x")])
     assert len(lines) == 1 and "5 current" in verdict
+
+
+# ── round 4 (non-author review of c51c9855) ─────────────────────────────
+
+def test_the_execstart_reset_idiom_is_not_an_empty_render(tmp_path):
+    t = ("# MF-DEPLOY: rendered MX_EXEC by scripts/install_mx.sh\n"
+         "[Service]\nExecStart=__MX_EXEC__\n")
+    c = uut.classify_template(_tmpl(tmp_path, "mx-user.service", t))
+    u = _udir(tmp_path)
+    (u / "mx.service").write_text("[Service]\nExecStart=\nExecStart=/home/x/venv/bin/mx --headless\n")
+    assert uut.audit_unit(c, u).state != uut.RAW
+
+
+def test_a_dangling_link_is_not_ours_to_call_unknown(tmp_path):
+    _tmpl(tmp_path, "plain-user.service", GLOB_TMPL)
+    u = _udir(tmp_path)
+    (u / "foo.service").symlink_to(tmp_path / "nonexistent.service")
+    assert {r.cls.unit for r in uut.audit(tmp_path / "t", u)} == {"plain.service"}
+
+
+def test_a_raw_copy_of_the_rendered_variant_is_not_that_variant(tmp_path):
+    c = uut.classify_template(_tmpl(tmp_path, "pane-user.service", RENDERED_TMPL))
+    u = _udir(tmp_path)
+    (u / "pane.service").write_text(RENDERED_TMPL)  # raw: the token captured as the value
+    assert uut.render(c, (u / "pane.service").read_text()) is None
+    assert uut.audit_unit(c, u).state == uut.RAW
+    assert not uut.deploy_plan(tmp_path / "t", u)[0].say

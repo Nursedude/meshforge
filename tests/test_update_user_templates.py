@@ -107,4 +107,4 @@ def test_a_masked_unit_is_never_written_through(tmp_path):
     r = _run(repo, user)
     assert "BLOCK_DONE" in r.stdout, r.stderr
     assert (user / "plain.service").is_symlink()
-    assert "plain.service" in r.stdout and "symlink" in r.stdout
+    assert "plain.service" not in r.stdout  # masked is the operator's choice: silent

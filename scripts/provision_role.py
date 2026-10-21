@@ -527,6 +527,13 @@ def enroll_user_timers(declared: Dict[str, str],
         # One rule with update.sh + the TUI (utils.user_unit_templates): a
         # service its installer RENDERS is never copied raw (2026-10-21).
         svc_cls = uut.classify_template(svc_tmpl)
+        svc_dest = dest_dir / svc_tmpl.name.replace("-user.service", ".service")
+        masked = [d.name for d in (dest_dir / unit, svc_dest) if d.is_symlink()]
+        if masked:
+            ok = False
+            lines.append(f"[FAIL       ] {unit}: {', '.join(masked)} is a symlink (masked or "
+                         f"linked) — never written through; unmask it first")
+            continue
         if svc_cls.kind != uut.KIND_GLOB:
             ok = False
             lines.append(f"[FAIL       ] {unit}: {svc_tmpl.name} is not raw-copyable "

@@ -167,49 +167,33 @@ def deploy_plan(templates_dir: Path, user_dir: Optional[Path] = None) -> List[Pl
     """What a generic copier may do with each template ON THIS BOX.
 
     Never writes through a symlink (a masked unit is /dev/null — a copy chmods
-    it). A ``shadowed`` template refreshes its unit IN PLACE and never switches
-    variants: copied when the unit is absent or is not the rendered variant's;
-    left alone when the rendered variant installed it. Without ``user_dir``
+    it; a linked unit's target is another checkout's file). A ``shadowed``
+    template — its unit name is also a rendered variant's — is copied ONLY
+    where the unit is absent (a fresh install): a generic copier never chooses
+    between variants (review round 4: every "smart" refresh rule switched a
+    hand-edited or older rendered unit). Drift on such a unit shows as
+    advisory DIFFERS in the pane, and the operator picks. Without ``user_dir``
     a shadowed template is skipped (the safe answer when the target is unseen).
     """
     classes = templates(templates_dir)
-    rendered_for: Dict[str, List[TemplateClass]] = {}
-    for c in classes:
-        if c.kind == KIND_RENDERED:
-            rendered_for.setdefault(c.unit, []).append(c)
     steps = []
     for c in classes:
         target = Path(user_dir) / c.unit if user_dir is not None else None
-        exists = bool(target is not None and (target.exists() or target.is_symlink()))
         if c.kind in (KIND_GLOB, KIND_SHADOWED) and target is not None and target.is_symlink():
-            steps.append(PlanStep("skip", c, f"{c.unit} is a symlink (masked or linked) — "
-                                             f"never written through", True))
+            masked = os.path.realpath(target) == "/dev/null"
+            steps.append(PlanStep("skip", c, f"{c.unit} is " + (
+                "masked — the operator's choice" if masked else
+                "a symlink — never written through (its target is another file)"),
+                not masked))
         elif c.kind == KIND_GLOB:
             steps.append(PlanStep("copy", c))
         elif c.kind == KIND_SHADOWED:
-            if target is None:
-                steps.append(PlanStep("skip", c, c.detail + " (target unseen)", False))
-                continue
-            keep = None
-            if target.exists():
-                try:
-                    installed = target.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError) as e:
-                    steps.append(PlanStep("skip", c, f"cannot read installed {c.unit}: {e}", True))
-                    continue
-                for r in rendered_for.get(c.unit, []):
-                    try:
-                        if render(r, installed) is not None:
-                            keep = r
-                            break
-                    except (OSError, UnicodeDecodeError):
-                        keep = r  # cannot prove it is not theirs: leave it
-                        break
-            if keep is not None:
-                steps.append(PlanStep("skip", c, f"{c.unit} is the variant {keep.installer} "
-                                                 f"renders — kept, not switched", True))
-            else:
+            if target is not None and not target.exists():
                 steps.append(PlanStep("copy", c))
+            else:
+                steps.append(PlanStep("skip", c, c.detail + (" (target unseen)" if target is None
+                                                              else " — installed; not refreshed"),
+                                      False))
         elif c.kind == KIND_RENDERED:
             # say it only where the installed unit IS this variant — not where
             # a sibling (the shadowed default) owns the name, nor where absent
@@ -234,8 +218,13 @@ def render(cls: TemplateClass, installed_text: str):
         if cls.token and cls.token in ln:
             pre, post = ln.split(cls.token, 1)
             pat = re.compile("^" + re.escape(pre) + "(.*?)" + re.escape(post) + r"\s*$", re.M)
-            m = pat.search(installed_text)
-            return (text.replace(cls.token, m.group(1)), m.group(1)) if m else None
+            vals = [m.group(1) for m in pat.finditer(installed_text) if m.group(1) != cls.token]
+            if not vals:
+                return None
+            # `ExecStart=` then `ExecStart=<cmd>` is systemd's reset idiom: the
+            # value is the first NON-empty match; empty only if all are empty.
+            val = next((v for v in vals if v.strip()), vals[0])
+            return text.replace(cls.token, val), val
     return None
 
 
@@ -312,7 +301,7 @@ def audit(templates_dir: Path, user_dir: Path) -> List[UnitAudit]:
     # Only OUR token shape (__X__): @X@ / {{x}} are legitimate in other apps'
     # units (podman --format {{ID}}), so they are judged only in our templates.
     for path in sorted(Path(user_dir).glob("*.service")) if Path(user_dir).is_dir() else []:
-        if path.name in by_unit or os.path.realpath(path) == "/dev/null":
+        if path.name in by_unit or os.path.realpath(path) == "/dev/null" or not path.exists():
             continue
         try:
             text = path.read_text(encoding="utf-8")
