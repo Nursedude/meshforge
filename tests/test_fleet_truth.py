@@ -865,13 +865,17 @@ class TestFleetTruth:
                 assert row.get("watched_in") and set(row["watched_in"]) <= apps, row["id"]
 
     def test_rows_naming_this_app_cite_probes_this_repo_has(self):
-        """`watched_in` is a MEASURED claim: a row listing this repo's app
-        must cite at least one CODE witness that exists here — a
-        `<file> :: probe_<name>` defined in THAT file, or a `.py` path — and
-        every probe it names must be one (2026-10-20 review round 5: the
-        round-4 version compared an empty set for rows citing no probe and
-        never checked the file half of a ref). The registry is
-        byte-identical, so each twin checks the half that names it."""
+        """`watched_in` is a MEASURED claim, checked in both directions. A row
+        listing this repo's app must cite at least one CODE witness that
+        exists here — a `<file> :: probe_<name>` defined in THAT file, or a
+        `.py` path — and every probe it names must be one (2026-10-20 review
+        round 5). A row NOT listing this app must cite no probe defined here,
+        or `watched_in` understates this NOC (round 6). Both halves run on
+        every row, always: a `return` once one row named this app let one
+        registry edit bring the vacuity back, and a column-0 `def` regex
+        missed a probe written as a method (review of the round-6 fix).
+        The registry is byte-identical, so the twins run this same body."""
+        import ast
         import re
         app = ft.resolve_self_app()
         assert app in ("meshforge", "meshanchor"), app
@@ -883,17 +887,35 @@ class TestFleetTruth:
                     return base / name
             return None
 
+        def probes_defined(path):
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+            return {n.name for n in ast.walk(tree)
+                    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and n.name.startswith("probe_")}
+
+        here = set()
+        for base in (root / "src", root / "scripts"):
+            for path in base.rglob("*.py"):
+                here |= probes_defined(path)
+
+        compared = 0
         for row in ft.STRUCTURAL_DARK:
+            segs = [s.strip() for s in row["ref"].split(" + ")]
             if app not in (row.get("watched_in") or []):
+                for seg in segs:
+                    if "::" in seg:
+                        probe = seg.split("::", 1)[1].strip()
+                        assert probe not in here, (row["id"], probe,
+                                                   "defined here but watched_in omits", app)
+                        compared += 1
                 continue
             witnesses = 0
-            for seg in (s.strip() for s in row["ref"].split(" + ")):
+            for seg in segs:
                 if "::" in seg:
                     fname, probe = (x.strip() for x in seg.split("::", 1))
                     path = locate(fname)
                     assert path, (row["id"], fname)
-                    text = path.read_text(encoding="utf-8", errors="replace")
-                    assert re.search(r"^(async )?def %s\(" % re.escape(probe), text, re.M), \
+                    assert probe in probes_defined(path), \
                         (row["id"], probe, "not defined in", fname)
                     witnesses += 1
                 else:
@@ -903,6 +925,8 @@ class TestFleetTruth:
                         assert locate(seg), (row["id"], seg)
                         witnesses += 1
             assert witnesses, (row["id"], "cites no code witness", row["ref"])
+            compared += witnesses
+        assert compared, "no row cites a witness — this test compared nothing"
 
     def test_structural_dark_ids_are_snake_case(self):
         """Row ids key the page's open-state across polls, beside the fold's
