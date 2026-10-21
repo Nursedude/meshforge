@@ -1674,7 +1674,16 @@ RNSD_SERVICE
         mkdir -p "$USER_SYSTEMD_DIR"
         cp "$INSTALL_DIR/templates/systemd/rnsd-user.service" "$USER_SYSTEMD_DIR/rnsd.service" 2>/dev/null || true
         if [[ -f "$INSTALL_DIR/templates/systemd/nomadnet-user.service" ]]; then
-            cp "$INSTALL_DIR/templates/systemd/nomadnet-user.service" "$USER_SYSTEMD_DIR/nomadnet.service" 2>/dev/null || true
+            # One rule with update.sh + the TUI (utils.user_unit_templates): a
+            # template its installer RENDERS is never copied raw (2026-10-21).
+            # A plan that cannot run copies nothing.
+            if PYTHONPATH="$INSTALL_DIR/src" timeout 30 python3 -m utils.user_unit_templates plan \
+                    "$INSTALL_DIR/templates/systemd" 2>/dev/null \
+                    | awk -F'\t' '$1=="copy" && $3=="nomadnet.service" {f=1} END {exit !f}'; then
+                cp "$INSTALL_DIR/templates/systemd/nomadnet-user.service" "$USER_SYSTEMD_DIR/nomadnet.service" 2>/dev/null || true
+            else
+                echo -e "  ${YELLOW}↷ nomadnet.service: not copied — rendered by scripts/install_nomadnet.sh (or the plan could not run)${NC}"
+            fi
         fi
         chown -R "${REAL_USER}:" "$USER_SYSTEMD_DIR" 2>/dev/null || true
         echo -e "  ${GREEN}✓ User service templates deployed to ${USER_SYSTEMD_DIR}${NC}"

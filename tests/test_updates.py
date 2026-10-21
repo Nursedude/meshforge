@@ -748,6 +748,7 @@ class TestUpdateMeshforgeGitFlow:
         h = _handler()
         h.ctx.dialog.yesno = MagicMock(return_value=True)
         h._refresh_service_files = MagicMock(return_value=(True, 'meshforge.service'))
+        h._user_unit_verdict = MagicMock(return_value=(True, 'all current', []))  # pin: never the box's real units
         after = self._state(head='b' * 40, behind=0, update_available=False)
         with patch('handlers.updates.get_meshforge_git_state',
                    side_effect=[self._state(), after]), \
@@ -771,6 +772,7 @@ class TestUpdateMeshforgeGitFlow:
         h = _handler()
         h.ctx.dialog.yesno = MagicMock(return_value=True)
         h._refresh_service_files = MagicMock(return_value=(True, 'ok'))
+        h._user_unit_verdict = MagicMock(return_value=(True, 'all current', []))  # pin: never the box's real units
         after = self._state(head='b' * 40)
         with patch('handlers.updates.get_meshforge_git_state',
                    side_effect=[self._state(), after]), \
@@ -793,6 +795,7 @@ class TestUpdateMeshforgeGitFlow:
         h = _handler()
         h.ctx.dialog.yesno = MagicMock(return_value=True)
         h._refresh_service_files = MagicMock(return_value=(True, 'ok'))
+        h._user_unit_verdict = MagicMock(return_value=(True, 'all current', []))  # pin: never the box's real units
         after = self._state(head='b' * 40)
         with patch('handlers.updates.get_meshforge_git_state',
                    side_effect=[self._state(), after]), \

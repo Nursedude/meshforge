@@ -1005,6 +1005,29 @@ class TestEnrollUserTimers:
         landed = tmp_path / ".config" / "systemd" / "user" / self.SYNTH
         assert landed.read_text() == tmpl.read_text()
 
+    def test_a_rendered_service_template_is_refused_not_copied_raw(self, tmp_path):
+        """2026-10-21: every *-user.service copier obeys utils.user_unit_templates;
+        a service its installer renders must never be enrolled as a raw copy."""
+        tdir = tmp_path / "t"
+        tdir.mkdir()
+        timer = tdir / "meshforge-x.timer"
+        timer.write_text("[Timer]\nOnCalendar=daily\n")
+        svc = tdir / "meshforge-x-user.service"
+        svc.write_text("# MF-DEPLOY: rendered X_EXEC by scripts/install_x.sh\n"
+                       "[Service]\nExecStart=__X_EXEC__\n")
+        calls = []
+        home = tmp_path / "home"
+        from unittest.mock import patch
+        with patch.object(pr, "user_timer_template_pair", return_value=(timer, svc)), \
+                patch.object(pr, "user_timer_enrolled", return_value=False):
+            ok, lines = pr.enroll_user_timers({"meshforge-x.timer": "enabled"},
+                                              home=str(home), runner=self._runner(calls))
+        dest = home / ".config" / "systemd" / "user"
+        assert not ok
+        assert not (dest / "meshforge-x.service").exists()
+        assert any("not raw-copyable" in l and "install_x.sh" in l for l in lines), lines
+        assert calls == []
+
     def test_declared_absent_is_never_enrolled(self):
         """The safety argument: this enables ONLY what the role declares
         enabled, and never disables anything."""

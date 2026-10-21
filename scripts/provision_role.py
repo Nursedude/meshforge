@@ -51,6 +51,7 @@ except ImportError:
 
 from utils.paths import get_real_user_home  # noqa: E402
 from utils.user_units import resolve_operator_home, user_timer_enrolled  # noqa: E402
+from utils import user_unit_templates as uut  # noqa: E402
 from utils.service_check import (  # noqa: E402
     check_systemd_service,
     is_service_unit_installed,
@@ -522,6 +523,14 @@ def enroll_user_timers(declared: Dict[str, str],
                          f"({', '.join(missing)}) — this role declares a timer "
                          f"the repo does not carry; fix the declaration or add "
                          f"the template")
+            continue
+        # One rule with update.sh + the TUI (utils.user_unit_templates): a
+        # service its installer RENDERS is never copied raw (2026-10-21).
+        svc_cls = uut.classify_template(svc_tmpl)
+        if svc_cls.kind != uut.KIND_GLOB:
+            ok = False
+            lines.append(f"[FAIL       ] {unit}: {svc_tmpl.name} is not raw-copyable "
+                         f"({svc_cls.kind}: {svc_cls.detail})")
             continue
         try:
             dest_dir.mkdir(parents=True, exist_ok=True)

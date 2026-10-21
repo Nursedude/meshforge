@@ -1,4 +1,5 @@
 # MeshForge — NomadNet User Service (consolidated, tmux-detached)
+# MF-DEPLOY: rendered NOMADNET_EXEC by scripts/install_nomadnet.sh (--check / --refresh)
 # ================================================================
 #
 # Single NomadNet per box, wrapped in a detached tmux session so the

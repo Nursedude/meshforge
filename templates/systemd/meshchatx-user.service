@@ -1,4 +1,5 @@
 # MeshForge — MeshChatX User Service (web daemon, no tmux)
+# MF-DEPLOY: rendered MESHCHATX_EXEC by scripts/install_meshchatx.sh
 # ==========================================================
 #
 # MeshChatX is a third-party LXMF web chat client. Unlike NomadNet

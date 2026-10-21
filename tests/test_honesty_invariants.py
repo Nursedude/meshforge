@@ -2143,3 +2143,17 @@ class TestCIMinPythonMatchesPyproject:
         assert not missing, (
             f"requirements file(s) {sorted(missing)} are resolved by NOTHING — "
             f"add them to ci.yml's manifest-resolve job or exclude them explicitly")
+
+
+def test_template_provenance_agrees_with_the_templates_own_declaration():
+    """2026-10-21: two descriptions of how a template deploys — this manifest
+    and the template's `# MF-DEPLOY: rendered` line (utils.user_unit_templates,
+    the rule every copier obeys) — must agree: a declared-rendered template is
+    `installer` here, naming the same script."""
+    from utils import user_unit_templates as uut
+    for c in uut.templates(REPO / "templates" / "systemd"):
+        if c.kind != uut.KIND_RENDERED or not c.installer.startswith("scripts/"):
+            continue
+        kind, ref = TEMPLATE_PROVENANCE[c.template.name]
+        assert kind == "installer", (c.template.name, kind)
+        assert ref in c.installer, (c.template.name, ref, c.installer)

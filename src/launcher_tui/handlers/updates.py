@@ -70,6 +70,7 @@ class UpdatesHandler(BaseHandler):
                 ("meshtasticd", "Update meshtasticd"),
                 ("cli", "Update Meshtastic CLI"),
                 ("meshtastic-lib", "Update Meshtastic Library"),
+                ("user-units", "User Unit Templates   installed / raw / stale"),
                 ("firmware", "Update Node Firmware (Info)"),
                 ("back", "Back"),
             ]
@@ -91,6 +92,7 @@ class UpdatesHandler(BaseHandler):
                 "cli": ("Update CLI", self._update_cli),
                 "meshtastic-lib": ("Update Meshtastic Lib", self._update_meshtastic_lib),
                 "firmware": ("Firmware Info", self._firmware_info),
+                "user-units": ("User Unit Templates", self._user_unit_audit),
             }
             entry = dispatch.get(choice)
             if entry:
@@ -890,6 +892,7 @@ class UpdatesHandler(BaseHandler):
         self.ctx.dialog.infobox("Updating MeshForge", "Step 3/4: refreshing unit files...")
         ok, detail = self._refresh_service_files()
         steps.append(("unit files", ok, detail))
+        steps.append(("user units",) + self._user_unit_verdict()[:2])
 
         # Step 4: restart the services that host the updated code — the gap
         # that made updates look like no-ops (running daemons kept old code).
@@ -917,6 +920,7 @@ class UpdatesHandler(BaseHandler):
 
         meshforge_dir = repo_root()
         copied = []
+        skipped = []
         try:
             svc_src = meshforge_dir / 'scripts' / 'meshforge.service'
             svc_dst = Path('/etc/systemd/system/meshforge.service')
@@ -928,10 +932,16 @@ class UpdatesHandler(BaseHandler):
             templates_dir = meshforge_dir / 'templates' / 'systemd'
             if templates_dir.exists():
                 user_svc_dir.mkdir(parents=True, exist_ok=True)
-                for tmpl in templates_dir.glob('*-user.service'):
-                    svc_name = tmpl.name.replace('-user.service', '.service')
-                    shutil.copy2(str(tmpl), str(user_svc_dir / svc_name))
-                    copied.append(svc_name)
+                # One rule with update.sh (utils.user_unit_templates): an
+                # installer-RENDERED template is never copied raw — a raw copy
+                # overwrote meshcore-chat's working unit (2026-10-21).
+                from utils import user_unit_templates as uut
+                for cls in uut.templates(templates_dir):
+                    if cls.kind == uut.KIND_GLOB:
+                        shutil.copy2(str(cls.template), str(user_svc_dir / cls.unit))
+                        copied.append(cls.unit)
+                    elif cls.kind != uut.KIND_RENDERED or (user_svc_dir / cls.unit).exists():
+                        skipped.append(f"{cls.unit} not copied ({cls.kind}: {cls.detail})")
 
             if copied:
                 daemon_reload()
@@ -939,7 +949,35 @@ class UpdatesHandler(BaseHandler):
             return False, f"{', '.join(copied)} then failed: {e}"
         except Exception as e:
             return False, f"unit-file refresh error: {e}"
-        return True, ", ".join(copied) if copied else "none to refresh"
+        detail = ", ".join(copied) if copied else "none to refresh"
+        if skipped:
+            detail += "; " + "; ".join(skipped)
+        return True, detail
+
+    def _user_unit_verdict(self):
+        """(ok, verdict, lines) for this box's installed user units, judged
+        against this checkout's templates by utils.user_unit_templates — the
+        same rule every copier obeys. A raw placeholder unit cannot start and
+        sat silent for ~40 h on 2026-10-21; this is where the app says so."""
+        from utils import user_unit_templates as uut
+        from utils.paths import get_real_user_home
+        try:
+            rows = uut.audit(repo_root() / "templates" / "systemd",
+                             get_real_user_home() / ".config" / "systemd" / "user")
+        except Exception as e:
+            return False, f"UNKNOWN — audit could not run: {e}", []
+        return uut.summarize(rows)
+
+    def _user_unit_audit(self):
+        """Software Updates > User Unit Templates — read-only."""
+        ok, verdict, lines = self._user_unit_verdict()
+        body = [verdict, ""] + lines
+        if not ok:
+            body += ["", "RAW = the installed unit still carries its install-time",
+                     "placeholder and cannot start. STALE = a template fix has",
+                     "not reached this box. Each line names the command that",
+                     "fixes it; nothing here changes the box."]
+        self.ctx.dialog.msgbox("User Unit Templates", "\n".join(body), width=78)
 
     def _show_update_report(self, steps, aborted: bool = False):
         """Per-step honest completion report — never a blanket 'Complete'."""

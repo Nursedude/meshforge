@@ -135,6 +135,14 @@ BYTE_IDENTICAL = (
     # stdlib-only, imported by fleet_truth.py — so it twins WITH it. A one-sided
     # landing reads [MISSING] here, which the pre-push hooks block.
     "src/utils/fleet_blind_spots.py",
+    # User-unit template rule (2026-10-21): the ONE rule every *-user.service
+    # copier (update.sh, TUI Software Updates, install_noc.sh, provision_role)
+    # and the TUI "User Unit Templates" pane obey. Stdlib-only; its tests and
+    # update.sh's block test are byte-identical too.
+    "src/utils/user_unit_templates.py",
+    "tests/test_user_unit_templates.py",
+    "tests/test_update_user_templates.py",
+    "tests/test_updates_user_unit_refresh.py",
     # BIC-3 operator session store (2026-10-13): hashed sessions + pairing codes
     # behind both maps' default-deny write gate. App-neutral (CONFIG_DIR names
     # the store dir and the CLI), so the twins must refuse, expire and fail
