@@ -12461,7 +12461,8 @@ class TestFalsifiabilityPhase2:
         import utils.watchdog_probes_drift as d
         monkeypatch.setattr(d, "_enumerate_pkg_installs",
                             lambda pkg, user, **kw: {"system-dist": "2.7.9"})
-        with patch("utils.rns_tree_perms._read_rnsd_user", return_value=None):
+        with patch("utils.rns_tree_perms._read_rnsd_user", return_value=None), \
+                patch("utils.fleet_test_runner._find_operator_user", return_value=None):
             assert probe_dep_version_drift(floors=_DEP_FLOORS) is None
         assert _disp("dep_version_drift") == "indeterminate"
         assert "user-scope" in _reason("dep_version_drift")

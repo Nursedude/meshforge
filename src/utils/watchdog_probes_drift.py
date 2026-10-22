@@ -25,6 +25,9 @@ from typing import Dict, List, Optional, Tuple
 from utils.role_declaration import _load_provision_role
 from utils.watchdog_probe_core import (
     Signal,
+    _USER_SCOPE_DARK_REASON,
+    _user_scope_reason,
+    dep_scope_user,
     _SYSTEM_DIST_GLOBS,
     env_site_globs,
     SERVICE_ENV_LABELS,
@@ -592,14 +595,12 @@ def probe_dep_version_drift(
                          reason="no requirements floor parseable")
         return None  # no floor parseable → indeterminate, never false-alarm
 
+    scope_src = "caller"
     if service_user is None:
-        try:
-            from utils.rns_tree_perms import _read_rnsd_user
-            # MeshForge + rnsd share the service user on this fleet; this reads
-            # the env the apps actually import from (NOT root's).
-            service_user = _read_rnsd_user()
-        except Exception:
-            service_user = None
+        # MeshForge + rnsd share the service user on this fleet; this reads
+        # the env the apps actually import from (NOT root's). rnsd-less boxes
+        # fall back to the operator (dep_scope_user, 2026-10-22).
+        service_user, scope_src = dep_scope_user()
 
     user_scope_dark = False
     if installed is None:
@@ -640,10 +641,10 @@ def probe_dep_version_drift(
         if user_scope_dark:
             note_disposition(
                 "dep_version_drift", "indeterminate",
-                reason=("user-scope install locations unobservable "
-                        "(no non-root rnsd user)"))
+                reason=_USER_SCOPE_DARK_REASON)
         else:
-            note_disposition("dep_version_drift", "clean")
+            note_disposition("dep_version_drift", "clean",
+                             reason=_user_scope_reason(scope_src, service_user))
         return None
 
     detail = (
@@ -781,13 +782,10 @@ def probe_dep_install_fragmented(
             return None  # no reviewed floor → indeterminate, never alarm
 
         user_scope_dark = False
+        scope_src = "caller"
         if installs is None:
             if service_user is None:
-                try:
-                    from utils.rns_tree_perms import _read_rnsd_user
-                    service_user = _read_rnsd_user()
-                except Exception:
-                    service_user = None
+                service_user, scope_src = dep_scope_user()
             # _enumerate_pkg_installs SKIPS the user-site/user-pipx globs
             # whenever there is no resolvable non-root service user (no rnsd
             # unit, or rnsd runs as root) — the import-priority user-scope
@@ -801,10 +799,11 @@ def probe_dep_install_fragmented(
             if user_scope_dark:
                 note_disposition(
                     "dep_install_fragmented", "indeterminate",
-                    reason=("user-scope install locations unobservable "
-                            "(no non-root rnsd user)"))
+                    reason=_USER_SCOPE_DARK_REASON)
             else:
-                note_disposition("dep_install_fragmented", "clean")
+                note_disposition(
+                    "dep_install_fragmented", "clean",
+                    reason=_user_scope_reason(scope_src, service_user))
 
         if not installs or len(installs) < 2:
             _save_parity_streak(sp, 0)

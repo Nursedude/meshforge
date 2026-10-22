@@ -483,6 +483,8 @@ class TestDepFragmentUserScopeDark:
         with patch("utils.watchdog_probes_drift._enumerate_pkg_installs",
                    return_value={"venv": "2.7.9"}), \
              patch("utils.rns_tree_perms._read_rnsd_user",
+                   return_value=None), \
+             patch("utils.fleet_test_runner._find_operator_user",
                    return_value=None):
             sig = probe_dep_install_fragmented(
                 floor="2.7.9",

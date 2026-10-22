@@ -21,6 +21,9 @@ from utils.watchdog_probe_core import (
     _load_parity_streak,
     _read_pkg_version_at_dirs,
     _save_parity_streak,
+    _USER_SCOPE_DARK_REASON,
+    _user_scope_reason,
+    dep_scope_user,
     note_disposition,
 )
 
@@ -154,7 +157,7 @@ def probe_rns_env_coherence(
     malformed waiver file waives nothing.
 
     Honest failure modes: 0/1 observed locations per pkg → not incoherent,
-    never false-alarm; user scope unobservable (no non-root rnsd user) →
+    never false-alarm; user scope unobservable (no non-root rnsd user, no operator) →
     indeterminate, never claims clean coverage it didn't have; 2-tick
     debounce rides a mid-roll window. Never raises into the tick.
     """
@@ -162,13 +165,10 @@ def probe_rns_env_coherence(
         sp = state_path or DEFAULT_RNS_STRAY_DEBOUNCE_PATH
 
         user_scope_dark = False
+        scope_src = "caller"
         if installs is None:
             if service_user is None:
-                try:
-                    from utils.rns_tree_perms import _read_rnsd_user
-                    service_user = _read_rnsd_user()
-                except Exception:
-                    service_user = None
+                service_user, scope_src = dep_scope_user()
             user_scope_dark = not service_user or service_user == "root"
             installs = {p: _enumerate_lib_installs(p, service_user)
                         for p in pkgs}
@@ -194,8 +194,7 @@ def probe_rns_env_coherence(
             elif user_scope_dark:
                 note_disposition(
                     "rns_stray_env_drift", "indeterminate",
-                    reason=("user-scope install locations unobservable "
-                            "(no non-root rnsd user)"))
+                    reason=_USER_SCOPE_DARK_REASON)
             elif waived_hit:
                 # Clean only BECAUSE of the waiver — say so, every tick.
                 note_disposition(
@@ -203,7 +202,9 @@ def probe_rns_env_coherence(
                     reason=("coherent with %d waived location(s): %s"
                             % (len(waived_hit), ", ".join(waived_hit))))
             else:
-                note_disposition("rns_stray_env_drift", "clean")
+                note_disposition(
+                    "rns_stray_env_drift", "clean",
+                    reason=_user_scope_reason(scope_src, service_user))
             return None
 
         streak = _load_parity_streak(sp) + 1

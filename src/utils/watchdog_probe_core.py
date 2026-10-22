@@ -571,6 +571,50 @@ def _operator_home() -> Optional[str]:
         return None
 
 
+# ONE wording for the three dep_* classes' blind and clean reasons
+# (honest_failure_modes #5) — the reason is what tells an operator WHICH
+# user scope a clean verdict actually covered.
+_USER_SCOPE_DARK_REASON = ("user-scope install locations unobservable "
+                           "(no non-root rnsd user, no operator user)")
+
+
+def _user_scope_reason(source: str, user: Optional[str]) -> Optional[str]:
+    """Clean-verdict reason naming the user scope that was read, or None for
+    the ordinary rnsd-user / caller-supplied case."""
+    if source == "operator":
+        return f"user scope read as operator {user} (no rnsd user on this box)"
+    return None
+
+
+def dep_scope_user() -> Tuple[Optional[str], str]:
+    """``(user, source)`` whose user-site / user-pipx the dep_* probes
+    enumerate. ``source`` is ``rnsd`` / ``operator`` / ``none``.
+
+    rnsd's ``User=`` first — MeshForge and rnsd share the service user on this
+    fleet. Only when rnsd names NO user (a role that declares ``rnsd: absent``:
+    meshforge-lab, field-node) fall back to the operator, the same root-safe
+    source ``deployment_declaration_path`` uses for that shape. Before this the
+    user scope on those boxes was never enumerated and three classes read
+    ``indeterminate`` forever (2026-10-22). An explicit ``User=root`` is an
+    observation, not an absence — it is returned as-is.
+    """
+    try:
+        from utils.rns_tree_perms import _read_rnsd_user
+        user = _read_rnsd_user()
+    except Exception:  # noqa: BLE001 - unreadable unit → try the operator
+        user = None
+    if user:
+        return user, "rnsd"
+    try:
+        from utils.fleet_test_runner import _find_operator_user
+        op = _find_operator_user()
+    except Exception:  # noqa: BLE001 - unresolvable operator is not fatal
+        op = None
+    if op:
+        return op[1], "operator"
+    return None, "none"
+
+
 def _read_deployment_declaration_status(
     service_user,
 ) -> Tuple[str, Optional[str], dict]:
