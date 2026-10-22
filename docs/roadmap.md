@@ -45,4 +45,7 @@ Nothing on the list for this right now.
 
 ## Sister projects
 
-Nothing on the list for this right now.
+- **Being tested — help wanted** — The meshing_around_meshforge companion client (terminal UI over USB, TCP, MQTT or Bluetooth) needs testing on real radios. <sub>(ref BOT-HW)</sub>
+  - *Help wanted:* any Meshtastic radio over USB, TCP, MQTT or Bluetooth — connect the client, then unplug and replug or drop the network, and report what it showed
+- **Being tested — help wanted** — Email and SMS alerts from the companion client need testing with real mail and SMS providers. <sub>(ref BOT-NOTIFY)</sub>
+  - *Help wanted:* an SMTP account or an SMS gateway you already use — send a test alert, check rate limiting and quiet hours, and report what arrived

@@ -276,7 +276,20 @@ never applied whole — each item lands on its own, re-tested here.
 - **M2R-WAKE** [MF][MA] S+F twin→MA — wake-on-announce: make a returning peer's deferred M→R rows due at once — only if the 6f soak shows the ≤5 min cap matters. Propagation handoff SHELVED 10-17 (no consumer; design on file in the 6f provenance row; reopen only for a MEASURED intermittent peer that fetches from `3968a2ee`).
 - **JSONL** [MF][MA] S+F twin→MA — ONE append-only JSONL posture, `utils/jsonl_io.py`; move every copy onto it (`mini_dudeai/history.py`, `scripts/sdr_interference.py`, …) (operator 09-24 "queue B").
 - **HX-INERT** [MF][MA] S+F twin→MA — the inert-tier CUT (operator 10-22 "your call": keep, reframed): measure every detector class's disposition on every box; a class `inert` on ALL boxes is cut (with its tests + docs), a class `clean` anywhere is kept — the footprint rule (`clean` everywhere = KEEP, `inert` everywhere = CUT); removal only, never a new instrument
-- **BOT-REL** [bot] S — fold `meshing_around_meshforge/RELIABILITY_ROADMAP.md` (2026-02; 64 open checkboxes) into this list: each open line becomes an item or a proposed won't-do (operator confirms); then the file is retired (cohesion Q2: sister repos keep no roadmap)
+- **BOT-HW** [bot] S — verify the companion client on real radios: serial (USB disconnect/reconnect, T-Beam / T-Echo / Heltec, baud detection), TCP to meshtasticd (local + remote), MQTT (public-broker flow end to end, topic parsing, custom brokers), BLE (Linux + Pi discovery, pairing lifecycle, several devices)
+  Code for all four transports exists; none of these runs is recorded. No fleet box runs this client (measured 10-22, 0 of 11 — lehua's bot is the `meshing-around` fork), so this is a tester's item.
+  public: The meshing_around_meshforge companion client (terminal UI over USB, TCP, MQTT or Bluetooth) needs testing on real radios.
+  status: testing
+  help: any Meshtastic radio over USB, TCP, MQTT or Bluetooth — connect the client, then unplug and replug or drop the network, and report what it showed
+- **BOT-DATA** [bot] S — client data-model checks owed: message-history limits, encrypted messages, node online/offline accuracy + timeout thresholds, telemetry from real devices, a 50+ node mesh, proximity (haversine) zones, alert severity escalation
+- **BOT-TUI** [bot] S — client TUI checks owed: terminal sizes + colours, a test for the `PlainTextTUI` fallback (it exists, untested), Unicode/emoji, keyboard + shortcuts, the send flow end to end, long paste, CPU and memory over 24 h (message-history leaks), screen-rendering + web-API endpoint tests
+- **BOT-NOTIFY** [bot] S — notification checks owed (code exists): Gmail + custom SMTP, rate limiting, quiet hours, SMS via email gateways / Twilio / HTTP gateway, phone-number validation — needs accounts we do not run
+  public: Email and SMS alerts from the companion client need testing with real mail and SMS providers.
+  status: testing
+  help: an SMTP account or an SMS gateway you already use — send a test alert, check rate limiting and quiet hours, and report what arrived
+- **BOT-CFG** [bot] S — client config: a malformed-config test, migration from older config versions (MF gate 2's pattern: refuse a newer file loudly, keep a backup), the update workflow on a Pi Zero 2 W
+- **BOT-UP** [bot] S — upstream parity: interface2…9 multi-radio in the TUI + a combined dashboard; highlight bot commands + response previews; parse upstream `trap_list`; `[sentry]` radius detection matching upstream (interface2 + sentry code exists; behaviour vs upstream unverified)
+- **BOT-DOCS** [bot] S — **Proposed won't-do** (10-22, no reader or consumer measured): video walkthrough, FAQ, code-style guide, ADRs, contributing-guide polish, an 80% coverage target (a proxy, not an END), mypy. Keep only a troubleshooting guide + per-OS setup notes, written from BOT-HW tester reports when they arrive. Operator to confirm.
 - **HX-UNIT** [MF][MA] F — the unit-file divergence layer (queued 10-06): option B (`fleet_sync` REPORTS effective `systemctl show` vs the template's key directives, changes nothing). Partly answered by the 10-21 per-unit-name audit + TUI pane; remaining = the effective-directive diff.
 
 ## Rules that shape the roadmap
