@@ -98,7 +98,7 @@ the check before changing a cell.
 
 | # | Gate | Passes when | Check | Status 10-04 |
 |---|---|---|---|---|
-| 1 | **Contract frozen** | `CanonicalMessage` v1 (jointly with MeshAnchor), config formats, CLI entry points (`meshforge-launcher.sh`, `--profile`, `standalone.py`), and the REST endpoints our own consumers use are frozen. The REST doc is regenerated from code and test-pinned. NOT frozen: Python internals, TUI layout (the TUI is a surface, not an API). | `python3 scripts/parity_check.py` (exists) + a REST-doc drift test (owed) | PARTIAL: parity enforced; `docs/REST_API.md` header says 0.4.6-beta, no drift test |
+| 1 | **Contract frozen** | `CanonicalMessage` v1 (jointly with MeshAnchor), config formats, CLI entry points (`meshforge-launcher.sh`, `--profile`, `standalone.py`), and the REST endpoints our own consumers use are frozen. The REST doc is regenerated from code and test-pinned. NOT frozen: Python internals, TUI layout (the TUI is a surface, not an API). | `python3 scripts/parity_check.py` (exists) + `python3 scripts/rest_doc.py --check` / `tests/test_rest_doc.py` (exists, 10-22) | PARTIAL (10-22): parity enforced; REST index GENERATED + test-pinned (`6d6b4a0e`, 29 ghost endpoints removed). OWED: declaring the freeze itself (CanonicalMessage v1 with MA, config formats, CLI) |
 | 2 | **Config upgrades** | Auto-migrate with a backup; refuse LOUDLY on a config written by a newer version. Never silently reinterpret a file it does not understand. | migration test incl. a newer-version fixture (owed) | PARTIAL (10-05): **`gateway.json` MET** — `schema_version` stamped on save, newer/non-integer refused via `load_error` (save refuses, file untouched), first save over a legacy file keeps `gateway.json.pre-v1`; `tests/test_gateway_config_schema_version.py`. MeshAnchor twin MET (`1ca766af`). OWED: other config files (`deployment.json`, `noc.yaml`, settings) |
 | 3 | **Per-leg delivery truth** (NEXT #4) | No silent loss: every accepted message ends delivered, queued, or shown failed in-app. No false green: a leg-kill drill shows the leg down within N min (N from the detector cadence). 30-day soak on rc1. Rates are SHOWN, not gated (a rate measures RF weather, not software). | leg-kill drill + soak ledger (owed) | NOT MET: NEXT #4 not built |
 | 4 | **No AI required** | Every gate passes with no API key and no Claude Code. AI features say plainly that they are not configured. | one stranger-drill run with no AI anywhere | NOT MEASURED |
@@ -196,6 +196,8 @@ whole; each item below lands on its own, re-tested here. In order:
 6. **BIC-6 = NEXT #5 best-available-route.**
 7. **BIC-5 credibility sweep**: generated version/test counts, delete the unbuilt
    `aprs_gateway` / `winlink_interface` / `plugin_marketplace` flags in `core/edition.py`.
+   **DONE + DEPLOYED 10-22** MF `641ea0eb`/`87c1e90e`, MA `b5659edd`: the whole edition module
+   was dead (no consumer) and is deleted; the cited version is a generated sentinel.
 8. **HOLD BIC-13b/c** (per-box CA + `wss://`): a CA install per phone, an
    unexplained wss handshake stall, a large surface. Revisit only when outside
    users (BIC-14) ask for an installed app.
