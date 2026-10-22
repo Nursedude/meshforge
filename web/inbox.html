@@ -42,7 +42,7 @@ main{display:grid;grid-template-columns:minmax(240px,320px) 1fr;height:calc(100%
 .msg{max-width:min(78%,560px);padding:8px 11px;border-radius:10px;background:var(--in);overflow-wrap:anywhere;white-space:pre-wrap}
 .msg.out{align-self:flex-end;background:var(--out)}
 .meta{display:block;font-size:.72rem;color:var(--muted);margin-top:3px;white-space:normal}
-.st-handed_off{color:var(--warn)} .st-not_sent{color:var(--bad)} .st-received{color:var(--muted)}
+.st-handed_off{color:var(--warn)} .st-radio_echo{color:var(--muted)} .st-not_sent{color:var(--bad)} .st-received{color:var(--muted)}
 #empty{color:var(--muted);margin:auto;text-align:center;padding:24px}
 form{display:flex;gap:8px;padding:10px 16px;border-top:1px solid var(--rule);background:var(--panel)}
 textarea{flex:1;min-width:0;resize:none;height:44px;padding:10px;border:1px solid var(--rule);border-radius:8px;background:var(--bg);color:inherit;font:inherit}
@@ -107,7 +107,7 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
   var MAX = 200, POLL_MS = 10000;
   var threads = [], current = null, enc = new TextEncoder();
   var $ = function (id) { return document.getElementById(id); };
-  var STATE = { handed_off: "handed to radio · unconfirmed", not_sent: "NOT SENT", received: "" };
+  var STATE = { handed_off: "handed to radio · unconfirmed", radio_echo: "radio took it (uplink echo) · airtime unconfirmed", not_sent: "NOT SENT", received: "" };
 
   function el(tag, cls, text) {
     var e = document.createElement(tag);

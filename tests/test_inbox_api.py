@@ -117,7 +117,8 @@ def test_empty_store_is_ok_with_zero_threads():
                       return_value=CommandResult.ok("0", data={"messages": []})):
         out = inbox_api.read_inbox()
     out.pop("rx")  # receive coverage, pinned by its own tests below
-    assert out == {"state": "ok", "threads": [], "message_count": 0}
+    assert out == {"state": "ok", "threads": [], "message_count": 0,
+                   "shown_count": 0, "folded_count": 0}
 
 
 # ── send validation ───────────────────────────────────────────────────────
@@ -317,3 +318,99 @@ def test_unknown_listener_is_said_not_assumed():
          patch("utils.message_listener.get_listener_status", side_effect=RuntimeError("x")):
         out = inbox_api.read_inbox()
     assert out["rx"] == {"state": "unknown"}
+
+
+# ── one send, one row: radio echo + encrypted-leg duplicate (2026-10-21) ──
+# Measured on the operator box's store 10-21 evening (operator's iPhone): every send
+# appeared TWICE (the radio's own uplinked JSON read back as "received"), and
+# a LongFast send ALSO appeared under the regional primary (index 0) because the local
+# subscriber's encrypted leg re-decoded the same packet with no channel →
+# stored channel 0, to_id "". Row shapes below are the live rows' shapes.
+
+def _db(**kw):
+    base = {"id": 1, "timestamp": "2026-10-22 03:21:08", "network": "meshtastic",
+            "from_id": "!6201ce25", "to_id": None, "content": "Hey there ",
+            "channel": 1, "is_dm": False, "snr": None, "rssi": None, "delivered": True}
+    base.update(kw)
+    return base
+
+
+def test_own_radio_echo_folds_into_the_send_and_upgrades_its_state():
+    rows = [_db(id=1460, from_id="local"),                    # the send
+            _db(id=1459)]                                     # radio's JSON echo
+    (t,) = inbox_api.build_threads(rows)
+    assert t["key"] == "meshtastic:channel:1"
+    assert [(m["direction"], m["state"]) for m in t["messages"]] == [("out", "radio_echo")]
+    assert t["count"] == 1
+
+
+def test_encrypted_leg_duplicate_is_not_filed_under_channel_zero():
+    rows = [_db(id=1460, from_id="local"),
+            _db(id=1459),                                     # JSON leg, ch 1
+            _db(id=1458, to_id="", channel=0, is_dm=True),    # encrypted leg
+            # a FOREIGN sender, same two-leg duplication (row 1451 shape)
+            _db(id=1452, from_id="!851a9fe7", content="ola", snr=6.0, rssi=-80,
+                timestamp="2026-10-22 03:11:11"),
+            _db(id=1451, from_id="!851a9fe7", content="ola", to_id="", channel=0,
+                is_dm=True, timestamp="2026-10-22 03:11:11")]
+    threads = {t["key"]: t for t in inbox_api.build_threads(rows)}
+    assert set(threads) == {"meshtastic:channel:1"}           # nothing on the primary
+    assert [m["content"] for m in threads["meshtastic:channel:1"]["messages"]] == \
+        ["ola", "Hey there "]
+
+
+def test_echo_pairing_needs_same_channel_text_and_time():
+    # same text from another node on another channel, or a minute later, is a
+    # real message — never swallowed as an echo
+    rows = [_db(id=1, from_id="local", content="Test", channel=3),
+            _db(id=2, from_id="!0000beef", content="Test", channel=0),
+            _db(id=3, content="Test", channel=3, timestamp="2026-10-22 03:22:30"),
+            # a neighbour HEARD over the air (rx stats) saying the same thing
+            # on the same channel in the same second is a real message
+            _db(id=4, from_id="!0000beef", content="Test", channel=3, snr=4.0, rssi=-95)]
+    out = {t["key"]: [(m["direction"], m["state"]) for m in t["messages"]]
+           for t in inbox_api.build_threads(rows)}
+    assert out["meshtastic:channel:0"] == [("in", "received")]
+    assert out["meshtastic:channel:3"] == [("out", "handed_off"), ("in", "received"),
+                                           ("in", "received")]
+
+
+def test_an_unechoed_send_still_reads_unconfirmed():
+    (t,) = inbox_api.build_threads([_db(from_id="local")])
+    assert t["messages"][0]["state"] == "handed_off"
+
+
+def test_a_send_that_never_reached_the_radio_is_never_echo_confirmed():
+    (t,) = inbox_api.build_threads([_db(id=1, from_id="local", delivered=False), _db(id=2)])
+    assert [m["state"] for m in t["messages"]] == ["not_sent", "received"]
+
+
+def test_a_lone_encrypted_leg_row_is_kept():
+    # no JSON twin → it is the only witness of that message; keep it
+    (t,) = inbox_api.build_threads([_db(to_id="", channel=0, from_id="!0000beef")])
+    assert t["count"] == 1
+
+
+def test_encrypted_leg_copy_of_a_dm_is_dropped_too():
+    rows = [_db(id=1, from_id="!851a9fe7", to_id="!6201ce25", is_dm=True, content="dm",
+                snr=6.0, rssi=-80),
+            _db(id=2, from_id="!851a9fe7", to_id="", channel=0, is_dm=True, content="dm")]
+    (t,) = inbox_api.build_threads(rows)
+    assert t["key"] == "meshtastic:!851a9fe7" and t["count"] == 1
+
+
+def test_z_suffixed_timestamps_still_pair():
+    rows = [_db(id=1, from_id="local", timestamp="2026-10-22T03:21:08Z"),
+            _db(id=2, timestamp="2026-10-22T03:21:09Z")]
+    (t,) = inbox_api.build_threads(rows)
+    assert [m["state"] for m in t["messages"]] == ["radio_echo"]
+
+
+def test_inbox_counts_say_what_was_folded():
+    rows = [_db(id=1460, from_id="local"), _db(id=1459),
+            _db(id=1458, to_id="", channel=0, is_dm=True)]
+    with patch.object(inbox_api.messaging, "get_messages",
+                      return_value=CommandResult.ok("ok", data={"messages": rows})), \
+         patch("utils.message_listener.get_listener_status", return_value={}):
+        out = inbox_api.read_inbox()
+    assert (out["message_count"], out["shown_count"], out["folded_count"]) == (3, 1, 2)

@@ -14,6 +14,7 @@ Honesty rules this module keeps (honest_failure_modes #1, #2):
 """
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from commands import messaging
@@ -66,13 +67,92 @@ def _utc(ts: Optional[str]) -> Optional[str]:
 def _state(msg: Dict[str, Any]) -> str:
     if msg.get("from_id") != "local":
         return "received"
+    if msg.get("_radio_echo"):
+        return "radio_echo"
     return "handed_off" if msg.get("delivered") else "not_sent"
+
+
+#: An echo / second-leg copy of one packet lands within a second; 10 s is
+#: headroom, not a mesh round trip.
+ECHO_WINDOW_S = 10
+
+
+def _epoch(ts: Optional[str]) -> Optional[float]:
+    u = _utc(ts)
+    if not u:
+        return None
+    if u.endswith("Z"):  # fromisoformat before 3.11 rejects the Z suffix
+        u = u[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(u).astimezone(timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One send / one packet → one row (2026-10-21, measured on the store).
+
+    (a) the local MQTT subscriber's ENCRYPTED leg stored a second copy of a
+        JSON-leg text with no channel (→ 0) and to_id "" — drop it when its
+        JSON twin (same sender + text, within the window, wire recipient) is
+        present;
+    (b) an uplinked channel publishes this radio's OWN packet, which reads
+        back as "received" — fold it into the matching handed-off send (same
+        channel + text, within the window) and mark that send radio-echoed.
+        That proves the radio took the packet and uplinked it — NOT that it
+        reached the air (the uplink can precede TX) and never delivery.
+        An echo carries NO rx SNR/RSSI (the radio never received it); a node
+        HEARD over the air always does, so a neighbour repeating the same
+        text is never swallowed.
+    Matching is on stored facts only; an unmatched row is always kept.
+    Measured 10-21: 32 send/echo pairs, max gap 1 s.
+    """
+    rows = [m for m in messages if m.get("network") == "meshtastic"]
+    when = {id(m): _epoch(m.get("timestamp")) for m in rows}
+
+    def near(a, b):
+        ta, tb = when[id(a)], when[id(b)]
+        return ta is not None and tb is not None and abs(ta - tb) <= ECHO_WINDOW_S
+
+    by_sender: Dict[Tuple[Any, Any], List[Dict[str, Any]]] = {}
+    sends: Dict[Tuple[Any, Any], List[Dict[str, Any]]] = {}
+    for m in rows:
+        by_sender.setdefault((m.get("from_id"), m.get("content")), []).append(m)
+        if (m.get("from_id") == "local" and m.get("delivered")
+                and m.get("to_id") in BROADCAST_IDS):
+            sends.setdefault((m.get("channel"), m.get("content")), []).append(m)
+
+    drop = set()
+    for m in rows:
+        if m.get("from_id") == "local" or m.get("to_id") != "":
+            continue
+        if any(o is not m and o.get("to_id") != "" and near(o, m)
+               for o in by_sender[(m.get("from_id"), m.get("content"))]):
+            drop.add(id(m))
+
+    echoed, used = set(), set()
+    for m in rows:
+        if (id(m) in drop or m.get("from_id") == "local"
+                or m.get("to_id") not in BROADCAST_IDS
+                or m.get("snr") is not None or m.get("rssi") is not None):
+            continue
+        for o in sends.get((m.get("channel"), m.get("content")), ()):
+            if id(o) not in used and near(o, m):
+                echoed.add(id(m))
+                used.add(id(o))
+                break
+    out = []
+    for m in messages:
+        if id(m) in drop or id(m) in echoed:
+            continue
+        out.append(dict(m, _radio_echo=True) if id(m) in used else m)
+    return out
 
 
 def build_threads(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Group stored rows into conversations, newest conversation first."""
     threads: Dict[str, Dict[str, Any]] = {}
-    for msg in messages:
+    for msg in _fold_duplicates(messages):
         key, kind, partner, channel = _thread_key(msg)
         t = threads.get(key)
         if t is None:
@@ -119,7 +199,12 @@ def read_inbox(limit: int = 500) -> Dict[str, Any]:
     if not result.success:
         return {"state": "unavailable", "error": result.message}
     rows = (result.data or {}).get("messages", [])
-    return {"state": "ok", "threads": build_threads(rows), "message_count": len(rows),
+    threads = build_threads(rows)
+    shown = sum(t["count"] for t in threads)
+    # message_count = rows read from the store; folded = second copies of one
+    # packet (radio echo / encrypted leg) not shown as their own messages
+    return {"state": "ok", "threads": threads, "message_count": len(rows),
+            "shown_count": shown, "folded_count": len(rows) - shown,
             "rx": _rx_coverage()}
 
 

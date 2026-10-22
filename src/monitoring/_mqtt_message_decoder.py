@@ -65,6 +65,12 @@ def _clean_label(value: Any, max_len: int) -> Optional[str]:
     return None
 
 
+#: The JSON leg counts as live (and so carries every uplinked text) when it
+#: delivered any packet this recently. Nodeinfo/telemetry keep an uplinked
+#: radio's JSON leg far busier than this on a quiet channel.
+JSON_LEG_LIVE_S = 900
+
+
 class MQTTMessageDecoderMixin:
     """Mixin providing MQTT message decoding and node update methods."""
 
@@ -74,6 +80,7 @@ class MQTTMessageDecoderMixin:
             data = json.loads(payload.decode('utf-8'))
         except (json.JSONDecodeError, UnicodeDecodeError):
             return
+        self._json_last_rx_mono = time.monotonic()
 
         # Canonicalize wire identities ONCE at entry — live uplinks carry
         # from/to as NUMBERS, so every downstream handler and observer
@@ -151,6 +158,23 @@ class MQTTMessageDecoderMixin:
                 return
 
             self._ensure_node(sender_id)
+
+            # The local (own-radio) subscriber hears the JSON leg on EVERY
+            # channel, with the real channel index. This leg's decoded payload
+            # carries no channel, so emitting it filed a LongFast text under
+            # index 0 (the regional primary) as a DM — a second copy of a JSON row
+            # (2026-10-21, 5/5 rows measured). Skip it only while the JSON leg
+            # is MEASURABLY delivering: config alone is not coverage — with
+            # JSON off on the radio this leg is the only text path. Discovery
+            # above stays either way.
+            last_json = getattr(self, '_json_last_rx_mono', None)
+            if (getattr(self, '_config', {}).get("json_channel") == "+"
+                    and last_json is not None
+                    and time.monotonic() - last_json <= JSON_LEG_LIVE_S):
+                with self._stats_lock:
+                    self._stats["encrypted_text_json_covered"] = \
+                        self._stats.get("encrypted_text_json_covered", 0) + 1
+                return
 
             msg = MQTTMessage(
                 message_id=str(result.get("packet_id", "")),
