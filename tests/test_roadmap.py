@@ -116,6 +116,7 @@ def test_public_roadmap_groups_by_reader():
         "- **A-2** [MF] F — fleet\n  public: Fleet thing.\n  status: testing\n"
         "  help: two Pis — try it\n"
         "- **A-3** [MA] S — sister\n  public: Sister thing.\n  status: planned\n"
+        "- **A-7** [meshbot] S — live bot\n  public: Bot thing.\n  status: planned\n"
         "- **A-4** [MF] S — private, no public line\n"
         "- **A-5** [fork] S — fork only\n  public: Fork thing.\n  status: planned\n"
         "- **A-6** [MF] S+F — both\n  public: Both thing.\n  status: planned\n"))
@@ -126,6 +127,7 @@ def test_public_roadmap_groups_by_reader():
     assert one < out.index("One box thing") < several
     assert several < out.index("Fleet thing") < out.index("*Help wanted:* two Pis") < sister
     assert out.index("Sister thing") > sister
+    assert out.index("Bot thing") > sister                # [meshbot] is a sister project
     assert "private, no public line" not in out
     assert one < out.index("Fork thing") < several      # [fork] is not a sister project
     assert out.count("Both thing") == 2                  # S+F serves both readers

@@ -38,7 +38,7 @@ TEMPLATE_URL = ("https://github.com/Nursedude/meshforge/issues/new"
 
 SECTION_START = "## Now / Next / Later"
 TIERS = ("NOW", "NEXT", "LATER")
-REPOS = ("MF", "MA", "maps", "bot", "fork")
+REPOS = ("MF", "MA", "maps", "bot", "meshbot", "fork")
 STATUS_LABEL = {"works": "Works today",
                 "testing": "Being tested — help wanted",
                 "planned": "Planned"}
@@ -195,7 +195,7 @@ def _readers(it):
     """Which reader sections an item belongs in. Sister = ONLY sister repos
     (a [fork]-only item is MeshForge's own substrate, never a "sister
     project"); an S+F item serves both one-box and several-box readers."""
-    if set(it.repos) <= {"MA", "bot"}:
+    if set(it.repos) <= {"MA", "bot", "meshbot"}:
         return ["Sister projects"]
     if "maps" in it.repos:
         return ["Maps — works inside MeshForge or on its own"]
