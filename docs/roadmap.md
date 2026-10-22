@@ -28,7 +28,16 @@ you saw. A report that moves an item's status is credited by issue number.
 
 ## If you run several boxes
 
-Nothing on the list for this right now.
+- **Being tested — help wanted** — A chat page in the browser for the mesh, which says a message was handed to the radio, never that it was delivered, unless it was. <sub>(ref BIC-1)</sub>
+  - *Help wanted:* a Pi running meshtasticd and a phone browser on the same LAN — send and receive a few messages, tell us what the page claimed vs what arrived
+- **Planned** — For every message, MeshForge will say which network legs it crossed and whether each one delivered, failed, or cannot be seen. <sub>(ref BIC-2)</sub>
+- **Planned** — Prove MeshForge's pinned Reticulum talks to stock Reticulum in both directions on real radios. <sub>(ref BIC-4)</sub>
+- **Planned** — Pick the best working route between meshes from measured link health, not just hop count. <sub>(ref BIC-6)</sub>
+- **Planned** — One screen that shows whether the radio link is actually carrying traffic: airtime used, per-hop success, dead hops. <sub>(ref R8)</sub>
+- **Planned** — A central MeshForge or MeshAnchor can read the status of any box you grant, through a key that can only export status, never open a shell. <sub>(ref NRG)</sub>
+- **Planned** — Let a mesh radio user start a private conversation with someone on Reticulum by name. <sub>(ref ADDR-1)</sub>
+- **Planned** — A screen that tells a new Reticulum user exactly how to connect to your node. <sub>(ref CONNECT-1)</sub>
+- **Planned** — Automatic responders wait when the radio channel is busy. <sub>(ref M4)</sub>
 
 ## Maps — works inside MeshForge or on its own
 

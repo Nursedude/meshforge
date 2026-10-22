@@ -49,7 +49,12 @@ ITEM_RE = re.compile(
     r"(?P<offering>S\+F|S|F)"
     r"(?P<extra>(?: (?:twin→MA|twin→MF|maps:both|maps:[a-z]+\([^)]+\)|offer-back))*)"
     r" — (?P<title>\S.*)$")
-FIELD_RE = re.compile(r"^  (?P<key>public|status|help|evidence): (?P<val>\S.*)$")
+FIELDS = ("public", "status", "help", "evidence")
+FIELD_RE = re.compile(r"^  (?P<key>" + "|".join(FIELDS) + r"): (?P<val>\S.*)$")
+# A line that LOOKS like a field but is not exactly one (case, indent, spacing)
+# — absorbing it would silently drop the item from the public page (hfm #3).
+NEAR_FIELD_RE = re.compile(r"^\s+(?P<key>[A-Za-z]+)\s*:", re.I)
+PROVENANCE = ROOT / ".claude" / "audits" / "review_provenance.md"
 
 # MF015 (security.md): no operator LAN address in anything published.
 _PRIVATE_IP = re.compile(
@@ -92,6 +97,10 @@ def parse(text):
             errors.append(f"line {i}: numbered item — use `- **ID** [repo] S|F|S+F — title`")
             cur = None
             continue
+        if re.match(r"^[*+] ", line):
+            errors.append(f"line {i}: `{line[0]} ` bullet — items use `- ` (a `*` bullet skips every rule)")
+            cur = None
+            continue
         if line.startswith("- "):
             m = ITEM_RE.match(line)
             if tier is None:
@@ -107,7 +116,15 @@ def parse(text):
             continue
         f = FIELD_RE.match(line)
         if f and cur is not None:
+            if f.group("key") in cur.fields:
+                errors.append(f"line {i}: {cur.id} repeats `{f.group('key')}:`")
             cur.fields[f.group("key")] = f.group("val").strip()
+            continue
+        nf = NEAR_FIELD_RE.match(line)
+        if nf and nf.group("key").lower() in FIELDS and cur is not None:
+            errors.append(f"line {i}: {cur.id} malformed field (exactly "
+                          f"two spaces + lowercase `key: value`): {line.strip()[:50]}")
+            continue
         elif line.strip() and not line.startswith("  ") and not line.startswith("#"):
             cur = None  # a prose paragraph ends the item
     if "~~" in body:
@@ -135,6 +152,27 @@ def parse(text):
     return items, errors
 
 
+def provenance_pointer_problems(items, text):
+    """Every "→ ROADMAP `ID`" pointer in provenance names a LIVE item, or an
+    ID provenance itself records as DONE / WON'T DO. A pointer into nothing is
+    how three won't-do proposals vanished from both lists (non-author pass
+    2026-10-22)."""
+    live = {it.id for it in items}
+    closed = set()
+    for line in text.splitlines():
+        if "DONE" in line or "WON'T DO" in line:
+            closed.update(re.findall(r"`([A-Z][A-Z0-9]*(?:-[A-Za-z0-9]+)*)`", line))
+    out = []
+    for m in re.finditer(r"→ ROADMAP ((?:`[^`]+`(?: \+ )?)+)?", text):
+        if not m.group(1):
+            out.append(f"provenance pointer with no backticked ID: {text[m.start():m.start()+60]!r}")
+            continue
+        for rid in re.findall(r"`([^`]+)`", m.group(1)):
+            if rid not in live and rid not in closed:
+                out.append(f"provenance points at `{rid}`, which is neither a live item nor recorded DONE / WON'T DO")
+    return out
+
+
 def _publish_refusals(items):
     """Public text that would fail MF014 / MF015 (Q24) — never published."""
     spec = importlib.util.spec_from_file_location("mf_lint", ROOT / "scripts" / "lint.py")
@@ -153,12 +191,16 @@ def _publish_refusals(items):
     return out
 
 
-def _reader(it):
-    if "MF" not in it.repos and "maps" not in it.repos:
-        return "Sister projects"
+def _readers(it):
+    """Which reader sections an item belongs in. Sister = ONLY sister repos
+    (a [fork]-only item is MeshForge's own substrate, never a "sister
+    project"); an S+F item serves both one-box and several-box readers."""
+    if set(it.repos) <= {"MA", "bot"}:
+        return ["Sister projects"]
     if "maps" in it.repos:
-        return "Maps — works inside MeshForge or on its own"
-    return "If you run several boxes" if it.offering == "F" else "If you run one box"
+        return ["Maps — works inside MeshForge or on its own"]
+    return {"S": ["If you run one box"], "F": ["If you run several boxes"],
+            "S+F": ["If you run one box", "If you run several boxes"]}[it.offering]
 
 
 READERS = ("If you run one box", "If you run several boxes",
@@ -184,7 +226,7 @@ def render_public(items):
         "",
     ]
     for reader in READERS:
-        group = [it for it in pub if _reader(it) == reader]
+        group = [it for it in pub if reader in _readers(it)]
         lines += [f"## {reader}", ""]
         if not group:
             lines += ["Nothing on the list for this right now.", ""]
@@ -199,28 +241,33 @@ def render_public(items):
     return "\n".join(lines).rstrip() + "\n"
 
 
-def check():
-    """0 ok · 1 a rule failed or docs/roadmap.md drifted · 2 unobservable."""
+def problems():
+    """(rc, items, messages): rc 0 ok · 1 a rule failed or docs/roadmap.md
+    drifted · 2 unobservable. Shared by --check and lint MF030 (the hooks)."""
     try:
         items, errors = parse(ROADMAP.read_text(encoding="utf-8"))
-    except (OSError, LookupError) as e:
-        print(f"roadmap: UNKNOWN — {e}", file=sys.stderr)
-        return 2
-    refusals = _publish_refusals(items)
-    for e in errors + refusals:
-        print(f"  FAIL  {e}")
-    if errors or refusals:
-        return 1
+        errors += provenance_pointer_problems(items, PROVENANCE.read_text(encoding="utf-8"))
+        errors += _publish_refusals(items)
+    except Exception as e:  # noqa: BLE001 — unreadable / unloadable is UNKNOWN, never a rule failure
+        return 2, [], [f"UNKNOWN — {type(e).__name__}: {e}"]
+    if errors:
+        return 1, items, errors
     try:
         current = PUBLIC.read_text(encoding="utf-8")
     except OSError as e:
-        print(f"roadmap: UNKNOWN — cannot read {PUBLIC}: {e}", file=sys.stderr)
-        return 2
+        return 2, items, [f"UNKNOWN — cannot read {PUBLIC}: {e}"]
     if current != render_public(items):
-        print("roadmap: docs/roadmap.md DRIFT — run `python3 scripts/roadmap.py --update`")
-        return 1
-    print(f"roadmap: {len(items)} items ok, docs/roadmap.md current")
-    return 0
+        return 1, items, ["docs/roadmap.md DRIFT — run `python3 scripts/roadmap.py --update`"]
+    return 0, items, []
+
+
+def check():
+    rc, items, msgs = problems()
+    for m in msgs:
+        print(f"  FAIL  {m}" if rc == 1 else f"roadmap: {m}")
+    if rc == 0:
+        print(f"roadmap: {len(items)} items ok, docs/roadmap.md current")
+    return rc
 
 
 def main() -> int:
@@ -235,7 +282,9 @@ def main() -> int:
     try:
         items, errors = parse(ROADMAP.read_text(encoding="utf-8"))
     except (OSError, LookupError) as e:
-        print(f"roadmap: UNKNOWN — {e}", file=sys.stderr)
+        # stdout, not stderr: the SessionStart hook drops stderr, and a
+        # missing NOW line must not read as "nothing to report".
+        print(f"🗺️ ROADMAP NOW: UNKNOWN — {e}")
         return 2
     if a.now:
         now = [it for it in items if it.tier == "NOW"]
@@ -245,7 +294,11 @@ def main() -> int:
         if errors:
             print(f"  ⚠️ {len(errors)} roadmap rule failure(s) — run scripts/roadmap.py --check")
         return 0
-    refusals = _publish_refusals(items)
+    try:
+        refusals = _publish_refusals(items)
+    except Exception as e:  # noqa: BLE001
+        print(f"roadmap: UNKNOWN — {type(e).__name__}: {e}")
+        return 2
     if errors or refusals:
         for e in errors + refusals:
             print(f"  FAIL  {e}")

@@ -35,12 +35,13 @@ def test_the_real_roadmap_passes_every_rule():
     assert mod.check() == 0
 
 
-def test_real_roadmap_has_items_in_every_tier():
+def test_real_roadmap_check_is_not_vacuous():
+    # The pre-migration file parsed to ZERO items and passed every rule. Pin
+    # only that the parse sees something — never today's contents (a tier
+    # may legitimately empty out; non-author pass 2026-10-22).
     mod = _load()
     items, _ = mod.parse(mod.ROADMAP.read_text(encoding="utf-8"))
-    tiers = {it.tier for it in items}
-    assert tiers == {"NOW", "NEXT", "LATER"}, tiers
-    assert len(items) >= 10
+    assert items
 
 
 def test_good_item_parses():
@@ -115,7 +116,9 @@ def test_public_roadmap_groups_by_reader():
         "- **A-2** [MF] F — fleet\n  public: Fleet thing.\n  status: testing\n"
         "  help: two Pis — try it\n"
         "- **A-3** [MA] S — sister\n  public: Sister thing.\n  status: planned\n"
-        "- **A-4** [MF] S — private, no public line\n"))
+        "- **A-4** [MF] S — private, no public line\n"
+        "- **A-5** [fork] S — fork only\n  public: Fork thing.\n  status: planned\n"
+        "- **A-6** [MF] S+F — both\n  public: Both thing.\n  status: planned\n"))
     out = mod.render_public(items)
     one = out.index("## If you run one box")
     several = out.index("## If you run several boxes")
@@ -124,14 +127,72 @@ def test_public_roadmap_groups_by_reader():
     assert several < out.index("Fleet thing") < out.index("*Help wanted:* two Pis") < sister
     assert out.index("Sister thing") > sister
     assert "private, no public line" not in out
+    assert one < out.index("Fork thing") < several      # [fork] is not a sister project
+    assert out.count("Both thing") == 2                  # S+F serves both readers
 
 
-def test_now_prints_ids(capsys, monkeypatch):
+def test_now_prints_ids(capsys, monkeypatch, tmp_path):
     mod = _load()
+    f = tmp_path / "ROADMAP.md"
+    f.write_text(_doc(GOOD + "### NEXT\n- **Z-9** [MF] S — later thing\n"), encoding="utf-8")
+    monkeypatch.setattr(mod, "ROADMAP", f)
     monkeypatch.setattr(sys, "argv", ["roadmap.py", "--now"])
     assert mod.main() == 0
     out = capsys.readouterr().out
-    assert "ROADMAP NOW" in out and "R2" in out
+    assert "ROADMAP NOW (1)" in out and "R2" in out and "Z-9" not in out
+
+
+def test_now_unreadable_says_unknown_on_stdout(capsys, monkeypatch, tmp_path):
+    # The SessionStart hook drops stderr: a silent failure would read as an
+    # empty NOW.
+    mod = _load()
+    monkeypatch.setattr(mod, "ROADMAP", tmp_path / "missing.md")
+    monkeypatch.setattr(sys, "argv", ["roadmap.py", "--now"])
+    assert mod.main() == 2
+    assert "UNKNOWN" in capsys.readouterr().out
+
+
+def test_star_bullet_fails():
+    _, errors = _load().parse(_doc(GOOD + "* **X-1** [MF] S — sneaky\n"))
+    assert any("bullet" in e for e in errors)
+
+
+def test_near_miss_and_repeated_fields_fail():
+    mod = _load()
+    for bad in ("  Public: Capital key.\n", "    public: Four spaces.\n",
+                "  public : Space before colon.\n"):
+        _, errors = mod.parse(_doc(GOOD + bad))
+        assert any("malformed field" in e for e in errors), bad
+    _, errors = mod.parse(_doc(GOOD + "  public: One.\n  public: Two.\n  status: planned\n"))
+    assert any("repeats" in e for e in errors)
+
+
+def test_provenance_pointer_must_resolve():
+    mod = _load()
+    items, _ = mod.parse(_doc(GOOD))
+    assert mod.provenance_pointer_problems(items, "## x → ROADMAP `R2` (y)") == []
+    assert mod.provenance_pointer_problems(items, "## x → ROADMAP `GONE-1` (y)")
+    assert mod.provenance_pointer_problems(
+        items, "## x → ROADMAP `GONE-1` (y)\n- WON'T DO `GONE-1` — reason") == []
+    assert mod.provenance_pointer_problems(items, "## x → ROADMAP the thing (y)")
+
+
+def test_unloadable_lint_is_unknown_not_a_rule_failure(monkeypatch):
+    mod = _load()
+    def boom(_items):
+        raise AttributeError("load_local_operator_patterns renamed")
+    monkeypatch.setattr(mod, "_publish_refusals", boom)
+    rc, _items, msgs = mod.problems()
+    assert rc == 2 and "UNKNOWN" in msgs[0]
+
+
+def test_lint_runs_the_roadmap_gate():
+    spec = importlib.util.spec_from_file_location("mf_lint2", ROOT / "scripts" / "lint.py")
+    lint = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(lint)
+    assert lint.check_roadmap_rules() == []
+    assert "Trim" in lint.CONTEXT_DOC_REMEDY[".claude/ROADMAP.md"] or \
+        "trim" in lint.CONTEXT_DOC_REMEDY[".claude/ROADMAP.md"]
 
 
 def test_roadmap_size_is_capped_by_lint():
@@ -158,5 +219,5 @@ def test_provenance_holds_no_open_queue():
     # or `- QUEUED` bullet in provenance is a second list — add an item instead.
     import re
     text = (ROOT / ".claude" / "audits" / "review_provenance.md").read_text(encoding="utf-8")
-    open_rows = re.findall(r"^(?:## QUEUED|- QUEUED|- \*\*QUEUED)\b.*$", text, re.M)
+    open_rows = re.findall(r"^(?:#+\s*\**QUEUED|[-*]\s+\**QUEUED)\b.*$", text, re.M)
     assert not open_rows, [r[:80] for r in open_rows]

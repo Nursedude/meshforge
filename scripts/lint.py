@@ -29,6 +29,7 @@ Checks:
 - MF025: file-size ratchet — src/ python files over 1,500 lines (frozen 2026-07-13 baseline for the 5 known offenders, which may only shrink; split the file, never raise the cap)
 - MF026: config/state torn-write guard — os.O_TRUNC banned + non-atomic config `open("w")` ratcheted vs a frozen baseline (route through utils.paths.atomic_write_text; ported from the client repo's MED3 config-atomicity rule)
 - MF027: probe fail-dark guard — in probe_* functions, an except-handler returning None without note_disposition (THE #80 class: degraded state reads as 'all is well' forever; build:fix doctrine 2026-07-29)
+- MF030: domain roadmap rules (scripts/roadmap.py — item format, unique IDs, provenance pointers resolve, public text MF014/MF015-clean, docs/roadmap.md current; roadmap cohesion 2026-10-22)
 - MF029: RNode radio MODE changed outside the session chokepoint (CMD_PROMISC / RADIO_STATE written raw; must use utils.rnode_session.rnode_session — a mode outlives the process that set it, and a stranded promiscuous RNode stops receiving; self-inflicted 2026-09-08)
 - MF028: state-saver swallow guard — in watchdog `_save_*`/`_write_*`/`_persist_*` helpers, an except-handler that leaves NO witness (no call, no assignment, no non-None return). Ten savers swallowed with a bare `pass` on 2026-09-02; route through probe_core.note_state_write_failure
 
@@ -785,6 +786,15 @@ CONTEXT_DOC_LIMITS = {
     # ratchet DOWN only. Done items leave the list (Q4) — trim, never raise.
     '.claude/ROADMAP.md': 44_500,  # 35,657 B post-migration x 1.25 = 44,571
 }
+# The remedy differs per file: following persistent_issues' advice on the
+# roadmap would archive LIVE items (non-author pass 2026-10-22).
+CONTEXT_DOC_REMEDY = {
+    '.claude/foundations/persistent_issues.md':
+        "Move oldest resolved issues to the archive; do not raise the limit.",
+    '.claude/ROADMAP.md':
+        "A done item leaves the list (one provenance line); trim finished or "
+        "won't-do items, never archive live ones; do not raise the limit.",
+}
 
 
 def check_context_doc_sizes(repo_root: str = '.') -> List[LintIssue]:
@@ -802,9 +812,29 @@ def check_context_doc_sizes(repo_root: str = '.') -> List[LintIssue]:
             issues.append(LintIssue(
                 rel_path, 0, Severity.ERROR, "MF012",
                 f"File is {size:,} chars (limit {limit:,}). "
-                f"Move oldest resolved issues to the archive; do not raise the limit.",
+                + CONTEXT_DOC_REMEDY.get(rel_path, "Trim it; do not raise the limit."),
             ))
     return issues
+
+
+def check_roadmap_rules() -> List[LintIssue]:
+    """MF030: the domain roadmap's item rules + public-page drift, so the
+    pre-commit / pre-push hooks catch what only the full suite used to
+    (non-author pass 2026-10-22). Delegates to scripts/roadmap.py; UNKNOWN
+    is a WARNING (unobservable is never a pass, never a false rule failure)."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "mf_roadmap", os.path.join(script_dir, "roadmap.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        rc, _items, msgs = mod.problems()
+    except Exception as e:  # noqa: BLE001
+        return [LintIssue("scripts/roadmap.py", 0, Severity.WARNING, "MF030",
+                          f"roadmap check unavailable: {e}")]
+    sev = Severity.ERROR if rc == 1 else Severity.WARNING
+    return [LintIssue(".claude/ROADMAP.md", 0, sev, "MF030", m) for m in msgs]
 
 
 def check_version_consistency(repo_root: Optional[str] = None) -> List[LintIssue]:
@@ -1942,6 +1972,9 @@ def main():
     # guard). Whole-repo only — a one-file --staged PR shouldn't pay the audit.
     if not args.staged:
         issues.extend(check_version_consistency())
+
+    # MF030: roadmap item rules + docs/roadmap.md drift (repo-level, cheap).
+    issues.extend(check_roadmap_rules())
 
     # MF014: operator-value blocklist (broader than .py — scans templates/scripts/docs too)
     if args.staged:
