@@ -644,6 +644,12 @@ class MQTTBridgeHandler(BaseMessageHandler):
         # skip rather than collapsing distinct empties.
         dedup_key = msg_id if msg_id else mqtt_content_dedup_key(data)
         if dedup_key and self._is_duplicate(dedup_key):
+            if not msg_id:
+                # Witness for the fallback-key path (hfm #9): whether it ever
+                # fires on the fleet is unmeasured (2026-10-22).
+                self.stats['mqtt_fallback_dedup_dropped'] = (
+                    self.stats.get('mqtt_fallback_dedup_dropped', 0) + 1)
+                logger.debug("MQTT id-less duplicate dropped (fallback key)")
             return
 
         # Update node tracking

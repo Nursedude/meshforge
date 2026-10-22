@@ -1440,6 +1440,7 @@ class TestEmptyIdContentDedupIssue34:
     def _make_dedup_handler(self) -> MQTTBridgeHandler:
         h = MQTTBridgeHandler.__new__(MQTTBridgeHandler)
         h.config = MagicMock()  # bare mock → DM-to-gateway leg dormant
+        h.stats = {}
         h._recent_ids = {}
         h._dedup_window = 60
         h._mqtt_lock = threading.Lock()

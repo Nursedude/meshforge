@@ -146,6 +146,8 @@ class MQTTMeshInterface:
         self._mqtt_lock = threading.Lock()
         self._recent_ids: Dict[str, float] = {}
         self._dedup_window = 60
+        # Id-less duplicates dropped by the shared fallback key (hfm #9).
+        self.fallback_dedup_dropped = 0
 
     @property
     def is_connected(self) -> bool:
@@ -255,6 +257,10 @@ class MQTTMeshInterface:
             # (#34 hardening — same fix + shared key as MQTTBridgeHandler).
             dedup_key = msg_id if msg_id else mqtt_content_dedup_key(data)
             if dedup_key and self._is_duplicate(dedup_key):
+                if not msg_id:
+                    self.fallback_dedup_dropped += 1
+                    logger.debug(f"[{self._name}] MQTT id-less duplicate "
+                                 "dropped (fallback key)")
                 return
 
             if msg_type != 'text':
