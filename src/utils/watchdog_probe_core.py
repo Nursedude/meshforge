@@ -582,7 +582,7 @@ def _user_scope_reason(source: str, user: Optional[str]) -> Optional[str]:
     """Clean-verdict reason naming the user scope that was read, or None for
     the ordinary rnsd-user / caller-supplied case."""
     if source == "operator":
-        return f"user scope read as operator {user} (no rnsd user on this box)"
+        return f"user scope read as operator {user} (no rnsd unit on this box)"
     return None
 
 
@@ -591,20 +591,25 @@ def dep_scope_user() -> Tuple[Optional[str], str]:
     enumerate. ``source`` is ``rnsd`` / ``operator`` / ``none``.
 
     rnsd's ``User=`` first — MeshForge and rnsd share the service user on this
-    fleet. Only when rnsd names NO user (a role that declares ``rnsd: absent``:
-    meshforge-lab, field-node) fall back to the operator, the same root-safe
-    source ``deployment_declaration_path`` uses for that shape. Before this the
-    user scope on those boxes was never enumerated and three classes read
-    ``indeterminate`` forever (2026-10-22). An explicit ``User=root`` is an
-    observation, not an absence — it is returned as-is.
+    fleet. Only when there is NO rnsd unit at all (a role that declares
+    ``rnsd: absent``: meshforge-lab, field-node) fall back to the operator, the
+    same root-safe source ``deployment_declaration_path`` uses for that shape.
+    Before this the user scope on those boxes was never enumerated and three
+    classes read ``indeterminate`` forever (2026-10-22). ``_read_rnsd_user()``
+    is None for BOTH "no unit" and "unit read, no User=" (implicit root): the
+    latter is an observation of root, returned as ``root`` so it stays dark —
+    never re-labelled as the operator's scope (non-author pass, 2026-10-22).
     """
     try:
-        from utils.rns_tree_perms import _read_rnsd_user
+        from utils.rns_tree_perms import _read_rnsd_user, rnsd_unit_readable
         user = _read_rnsd_user()
-    except Exception:  # noqa: BLE001 - unreadable unit → try the operator
-        user = None
+        unit_present = rnsd_unit_readable()
+    except Exception:  # noqa: BLE001 - unresolvable → dark, never a guess
+        return None, "none"
     if user:
         return user, "rnsd"
+    if unit_present:
+        return "root", "rnsd"
     try:
         from utils.fleet_test_runner import _find_operator_user
         op = _find_operator_user()

@@ -596,7 +596,7 @@ def probe_dep_version_drift(
         return None  # no floor parseable → indeterminate, never false-alarm
 
     scope_src = "caller"
-    if service_user is None:
+    if service_user is None and installed is None:
         # MeshForge + rnsd share the service user on this fleet; this reads
         # the env the apps actually import from (NOT root's). rnsd-less boxes
         # fall back to the operator (dep_scope_user, 2026-10-22).

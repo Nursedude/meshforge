@@ -1,12 +1,13 @@
-"""Oracle-leg deferred finding (1), 2026-07-05 review, fixed 2026-10-22.
+"""Oracle-leg deferred finding (1), 2026-07-05 review — OBSERVE FIRST (2026-10-22).
 
 `mqtt_content_dedup_key` — the FALLBACK dedup key for a JSON packet with no
-`id` — omitted the packet's `timestamp`, so an id-less GENUINE repeat (the same
-text sent again inside the 60 s window) was dropped as if it were a QoS-1
-redelivery, with no witness. The same publish delivered twice (redelivery,
-retained, overlapping subscriptions) carries the SAME timestamp and must still
-collapse; a later send carries a new one and must not. The id path is
-unchanged. Every fallback-key drop is now counted.
+`id` — omits the packet's `timestamp`, so an id-less GENUINE repeat inside the
+60 s window is dropped as if it were a redelivery. Adding the timestamp would
+fix that but un-collapse one id-less packet uplinked by two radios (each stamps
+its own rx time) — the #34 case the key exists for (non-author pass,
+2026-10-22). How often either happens is unmeasured, so the key is unchanged
+and every fallback-key drop is now COUNTED, readable in the status surfaces.
+These tests pin the witness and the unchanged key.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from gateway.base_handler import mqtt_content_dedup_key  # noqa: E402
-from gateway.mesh_bridge import MQTTMeshInterface  # noqa: E402
+from gateway.mesh_bridge import MeshtasticPresetBridge, MQTTMeshInterface  # noqa: E402
 from gateway.mqtt_bridge_handler import MQTTBridgeHandler  # noqa: E402
 
 _TOPIC = "msh/2/json/meshforge/!aabb0042"
@@ -36,23 +37,18 @@ def _pkt(text="hello fleet", ts=None, with_id=False):
     return d
 
 
-class TestKey:
-    def test_timestamp_separates_genuine_repeats(self):
+class TestKeyUnchanged:
+    def test_two_uplinkers_of_one_packet_still_collapse(self):
+        # The #34 case: same packet, two radios, two rx timestamps.
         assert (mqtt_content_dedup_key(_pkt(ts=1792700000))
-                != mqtt_content_dedup_key(_pkt(ts=1792700005)))
-
-    def test_same_publish_same_key(self):
-        assert (mqtt_content_dedup_key(_pkt(ts=1792700000))
-                == mqtt_content_dedup_key(_pkt(ts=1792700000)))
-
-    def test_timestamp_alone_is_not_usable_content(self):
-        assert mqtt_content_dedup_key({"timestamp": 1792700000}) == ""
+                == mqtt_content_dedup_key(_pkt(ts=1792700001)))
 
 
 def _handler():
     h = MQTTBridgeHandler.__new__(MQTTBridgeHandler)
     h.config = MagicMock()
     h.stats = {}
+    h._stats_lock = threading.Lock()
     h._recent_ids = {}
     h._dedup_window = 60
     h._mqtt_lock = threading.Lock()
@@ -65,15 +61,8 @@ def _handler():
     return h
 
 
-class TestMQTTBridgeHandler:
-    def test_idless_genuine_repeat_bridges_twice(self):
-        h = _handler()
-        h._handle_json_message(_TOPIC, json.dumps(_pkt(ts=1792700000)).encode())
-        h._handle_json_message(_TOPIC, json.dumps(_pkt(ts=1792700007)).encode())
-        assert h._bridge_text_message.call_count == 2
-        assert h.stats.get("mqtt_fallback_dedup_dropped", 0) == 0
-
-    def test_idless_redelivery_dropped_and_counted(self):
+class TestMQTTBridgeHandlerWitness:
+    def test_idless_drop_is_counted(self):
         h = _handler()
         raw = json.dumps(_pkt(ts=1792700000)).encode()
         h._handle_json_message(_TOPIC, raw)
@@ -90,7 +79,7 @@ class TestMQTTBridgeHandler:
         assert h.stats.get("mqtt_fallback_dedup_dropped", 0) == 0
 
 
-class TestMQTTMeshInterface:
+class TestMQTTMeshInterfaceWitness:
     def _iface(self):
         cb = MagicMock()
         i = MQTTMeshInterface(config=MagicMock(), name="t",
@@ -98,15 +87,7 @@ class TestMQTTMeshInterface:
                               stop_event=threading.Event())
         return i, cb
 
-    def test_idless_genuine_repeat_forwarded_twice(self):
-        i, cb = self._iface()
-        for ts in (1792700000, 1792700007):
-            i._on_message(None, None, SimpleNamespace(
-                topic=_TOPIC, payload=json.dumps(_pkt(ts=ts)).encode()))
-        assert cb.call_count == 2
-        assert i.fallback_dedup_dropped == 0
-
-    def test_idless_redelivery_dropped_and_counted(self):
+    def test_idless_drop_is_counted(self):
         i, cb = self._iface()
         msg = SimpleNamespace(topic=_TOPIC,
                               payload=json.dumps(_pkt(ts=1792700000)).encode())
@@ -114,3 +95,18 @@ class TestMQTTMeshInterface:
         i._on_message(None, None, msg)
         assert cb.call_count == 1
         assert i.fallback_dedup_dropped == 1
+
+    def test_counter_reaches_bridge_status(self):
+        # A counter nobody reads is no witness (non-author pass, 2026-10-22).
+        i, _ = self._iface()
+        i.fallback_dedup_dropped = 3
+        b = MeshtasticPresetBridge.__new__(MeshtasticPresetBridge)
+        b.stats = {"start_time": None}
+        b.bridge_config = MagicMock()
+        b._running = True
+        b._primary_connected = b._secondary_connected = True
+        b._primary_interface, b._secondary_interface = i, object()
+        b._handoff = MagicMock(snapshot=MagicMock(return_value={}))
+        b._primary_to_secondary = MagicMock(get_queue_depth=MagicMock(return_value=0))
+        b._secondary_to_primary = MagicMock(get_queue_depth=MagicMock(return_value=0))
+        assert b.get_status()["statistics"]["mqtt_fallback_dedup_dropped"] == 3

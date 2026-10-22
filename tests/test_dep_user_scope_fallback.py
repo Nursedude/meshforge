@@ -9,8 +9,8 @@ an inert case.
 
 Cure: ONE helper, `dep_scope_user()`, falls back to the operator who owns the
 systemd --user manager — the same root-safe source `deployment_declaration_path`
-already falls back to on rnsd-absent boxes (09-08) — and only when rnsd names no
-user. The reason string says which scope was read, every tick.
+already falls back to on rnsd-absent boxes (09-08) — and only when there is NO
+rnsd unit at all (a readable unit with no User= is implicit root: stays dark). The reason string says which scope was read, every tick.
 """
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ from utils.watchdog_probes_rns_env import probe_rns_env_coherence  # noqa: E402
 
 _RNSD = "utils.rns_tree_perms._read_rnsd_user"
 _OP = "utils.fleet_test_runner._find_operator_user"
+_UNIT = "utils.rns_tree_perms.rnsd_unit_readable"
 
 
 def _entry(cls):
@@ -42,11 +43,11 @@ class TestDepScopeUser:
             assert dep_scope_user() == ("svc", "rnsd")
 
     def test_no_rnsd_user_falls_back_to_operator(self):
-        with patch(_RNSD, return_value=None), patch(_OP, return_value=(1000, "op")):
+        with patch(_RNSD, return_value=None), patch(_UNIT, return_value=False), patch(_OP, return_value=(1000, "op")):
             assert dep_scope_user() == ("op", "operator")
 
     def test_no_rnsd_user_and_no_operator_is_unresolved(self):
-        with patch(_RNSD, return_value=None), patch(_OP, return_value=None):
+        with patch(_RNSD, return_value=None), patch(_UNIT, return_value=False), patch(_OP, return_value=None):
             assert dep_scope_user() == (None, "none")
 
     def test_explicit_root_rnsd_is_not_replaced(self):
@@ -54,10 +55,17 @@ class TestDepScopeUser:
         with patch(_RNSD, return_value="root"), patch(_OP, return_value=(1000, "op")):
             assert dep_scope_user() == ("root", "rnsd")
 
-    def test_raising_rnsd_reader_still_falls_back(self):
+    def test_implicit_root_rnsd_stays_root_not_operator(self):
+        # Non-author pass 2026-10-22: a READABLE unit with no User= is rnsd
+        # running as root — an observation, never "no rnsd" (stays dark).
+        with patch(_RNSD, return_value=None), patch(_UNIT, return_value=True), \
+                patch(_OP, return_value=(1000, "op")):
+            assert dep_scope_user() == ("root", "rnsd")
+
+    def test_raising_rnsd_reader_is_unresolved_not_operator(self):
         with patch(_RNSD, side_effect=OSError("boom")), \
                 patch(_OP, return_value=(1000, "op")):
-            assert dep_scope_user() == ("op", "operator")
+            assert dep_scope_user() == (None, "none")
 
 
 class TestDepVersionDriftUserScope:
@@ -69,7 +77,7 @@ class TestDepVersionDriftUserScope:
         seen = []
         monkeypatch.setattr(d, "_enumerate_pkg_installs",
                             lambda pkg, user, **kw: seen.append(user) or {"system-dist": "9.9.9"})
-        with patch(_RNSD, return_value=None), patch(_OP, return_value=(1000, "op")):
+        with patch(_RNSD, return_value=None), patch(_UNIT, return_value=False), patch(_OP, return_value=(1000, "op")):
             assert probe_dep_version_drift(floors={"meshtastic": "2.0.0"}) is None
         assert seen == ["op"]
         e = _entry("dep_version_drift")
@@ -80,11 +88,32 @@ class TestDepVersionDriftUserScope:
         import utils.watchdog_probes_drift as d
         monkeypatch.setattr(d, "_enumerate_pkg_installs",
                             lambda pkg, user, **kw: {"system-dist": "9.9.9"})
-        with patch(_RNSD, return_value=None), patch(_OP, return_value=None):
+        with patch(_RNSD, return_value=None), patch(_UNIT, return_value=False), patch(_OP, return_value=None):
             assert probe_dep_version_drift(floors={"meshtastic": "2.0.0"}) is None
         e = _entry("dep_version_drift")
         assert e.get("disp") == "indeterminate"
         assert "unobservable" in (e.get("reason") or "")
+
+    def test_implicit_root_rnsd_box_stays_indeterminate(self, monkeypatch):
+        import utils.watchdog_probes_drift as d
+        monkeypatch.setattr(d, "_enumerate_pkg_installs",
+                            lambda pkg, user, **kw: {"system-dist": "9.9.9"})
+        with patch(_RNSD, return_value=None), patch(_UNIT, return_value=True), \
+                patch(_OP, return_value=(1000, "op")):
+            assert probe_dep_version_drift(floors={"meshtastic": "2.0.0"}) is None
+        e = _entry("dep_version_drift")
+        assert e.get("disp") == "indeterminate"
+        assert "read as operator" not in (e.get("reason") or "")
+
+    def test_injected_installed_never_claims_operator_scope(self):
+        with patch(_RNSD, return_value=None), patch(_UNIT, return_value=False), \
+                patch(_OP, return_value=(1000, "op")):
+            assert probe_dep_version_drift(
+                floors={"meshtastic": "2.0.0"},
+                installed={"meshtastic": "9.9.9"}) is None
+        e = _entry("dep_version_drift")
+        assert e.get("disp") == "clean"
+        assert "read as operator" not in (e.get("reason") or "")
 
     def test_rnsd_user_box_unchanged_plain_clean(self, monkeypatch):
         import utils.watchdog_probes_drift as d
@@ -106,7 +135,7 @@ class TestDepInstallFragmentedUserScope:
         seen = []
         monkeypatch.setattr(d, "_enumerate_pkg_installs",
                             lambda pkg, user, **kw: seen.append(user) or {"system-dist": "9.9.9"})
-        with patch(_RNSD, return_value=None), patch(_OP, return_value=(1000, "op")):
+        with patch(_RNSD, return_value=None), patch(_UNIT, return_value=False), patch(_OP, return_value=(1000, "op")):
             assert probe_dep_install_fragmented(
                 floor="2.0.0", state_path=str(tmp_path / "s.json")) is None
         assert seen == ["op"]
@@ -121,7 +150,7 @@ class TestDepInstallFragmentedUserScope:
                             lambda pkg, user, **kw: {"system-dist": "9.9.9",
                                                      "user-site": "1.0.0"})
         sp = str(tmp_path / "s.json")
-        with patch(_RNSD, return_value=None), patch(_OP, return_value=(1000, "op")):
+        with patch(_RNSD, return_value=None), patch(_UNIT, return_value=False), patch(_OP, return_value=(1000, "op")):
             probe_dep_install_fragmented(floor="2.0.0", state_path=sp)
             sig = probe_dep_install_fragmented(floor="2.0.0", state_path=sp)
         assert sig is not None and sig.cls == "dep_install_fragmented"
@@ -130,7 +159,7 @@ class TestDepInstallFragmentedUserScope:
         import utils.watchdog_probes_drift as d
         monkeypatch.setattr(d, "_enumerate_pkg_installs",
                             lambda pkg, user, **kw: {"system-dist": "9.9.9"})
-        with patch(_RNSD, return_value=None), patch(_OP, return_value=None):
+        with patch(_RNSD, return_value=None), patch(_UNIT, return_value=False), patch(_OP, return_value=None):
             probe_dep_install_fragmented(floor="2.0.0", state_path=str(tmp_path / "s.json"))
         assert _entry("dep_install_fragmented").get("disp") == "indeterminate"
 
@@ -144,7 +173,7 @@ class TestRnsStrayEnvUserScope:
         seen = []
         monkeypatch.setattr(r, "_enumerate_lib_installs",
                             lambda pkg, user, **kw: seen.append(user) or {"system-dist": "1.3.8"})
-        with patch(_RNSD, return_value=None), patch(_OP, return_value=(1000, "op")):
+        with patch(_RNSD, return_value=None), patch(_UNIT, return_value=False), patch(_OP, return_value=(1000, "op")):
             assert probe_rns_env_coherence(
                 state_path=str(tmp_path / "s.json"),
                 waivers_path=str(tmp_path / "w.json")) is None
@@ -157,7 +186,7 @@ class TestRnsStrayEnvUserScope:
         import utils.watchdog_probes_rns_env as r
         monkeypatch.setattr(r, "_enumerate_lib_installs",
                             lambda pkg, user, **kw: {"system-dist": "1.3.8"})
-        with patch(_RNSD, return_value=None), patch(_OP, return_value=None):
+        with patch(_RNSD, return_value=None), patch(_UNIT, return_value=False), patch(_OP, return_value=None):
             probe_rns_env_coherence(state_path=str(tmp_path / "s.json"),
                                       waivers_path=str(tmp_path / "w.json"))
         assert _entry("rns_stray_env_drift").get("disp") == "indeterminate"

@@ -146,8 +146,7 @@ class MQTTMeshInterface:
         self._mqtt_lock = threading.Lock()
         self._recent_ids: Dict[str, float] = {}
         self._dedup_window = 60
-        # Id-less duplicates dropped by the shared fallback key (hfm #9).
-        self.fallback_dedup_dropped = 0
+        self.fallback_dedup_dropped = 0  # id-less dups dropped (hfm #9 witness)
 
     @property
     def is_connected(self) -> bool:
@@ -257,10 +256,7 @@ class MQTTMeshInterface:
             # (#34 hardening — same fix + shared key as MQTTBridgeHandler).
             dedup_key = msg_id if msg_id else mqtt_content_dedup_key(data)
             if dedup_key and self._is_duplicate(dedup_key):
-                if not msg_id:
-                    self.fallback_dedup_dropped += 1
-                    logger.debug(f"[{self._name}] MQTT id-less duplicate "
-                                 "dropped (fallback key)")
+                self.fallback_dedup_dropped += 0 if msg_id else 1
                 return
 
             if msg_type != 'text':
@@ -722,7 +718,9 @@ class MeshtasticPresetBridge:
             },
             'direction': self.bridge_config.direction,
             'uptime_seconds': uptime,
-            'statistics': {**self.stats, **self._handoff.snapshot()},
+            'statistics': {**self.stats, **self._handoff.snapshot(), 'mqtt_fallback_dedup_dropped': sum(
+                i.fallback_dedup_dropped for i in (self._primary_interface, self._secondary_interface)
+                if isinstance(i, MQTTMeshInterface))},
             'queue': {
                 'p2s_pending': self._primary_to_secondary.get_queue_depth(),
                 's2p_pending': self._secondary_to_primary.get_queue_depth(),

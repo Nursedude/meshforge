@@ -239,14 +239,12 @@ def mqtt_content_dedup_key(data: dict) -> str:
     )
     if not any(p and p != '{}' for p in parts):
         return ""
-    # The publish's `timestamp` separates a GENUINE repeat (same text sent
-    # again inside the window) from a redelivery of the same publish (QoS-1,
-    # retained, overlapping subscriptions — those carry the SAME timestamp).
-    # Without it an id-less repeat was dropped silently (oracle-leg finding 1,
-    # 2026-07-05; fixed 2026-10-22). It never makes empty content usable.
-    # Tradeoff: one id-less packet published by TWO radios carries two rx
-    # timestamps and now bridges twice; sub-second repeats still collapse.
-    parts += (str(data.get('timestamp', '')),)
+    # NO `timestamp` here, deliberately (2026-10-22, oracle-leg finding 1):
+    # adding it would let an id-less genuine repeat through, but would also
+    # un-collapse one packet uplinked by TWO radios (each stamps its own rx
+    # time) — the #34 case this key exists for. How often either happens is
+    # unmeasured; the ingress sites now COUNT fallback-key drops
+    # (`mqtt_fallback_dedup_dropped`). Decide with that number, not a guess.
     raw = "\x1f".join(parts)
     return "c:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
