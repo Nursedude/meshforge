@@ -51,6 +51,7 @@ button.send:disabled{opacity:.5;cursor:default}
 #count{font-size:.72rem;color:var(--muted);align-self:center;min-width:52px;text-align:right}
 #blocked{display:none;padding:10px 16px;border-top:1px solid var(--rule);color:var(--muted);font-size:.88rem}
 #note{font-size:.75rem;color:var(--muted);padding:0 16px 8px;background:var(--panel)}
+.blind{color:var(--warn);font-size:.8rem;padding:4px 16px;background:var(--panel)}
 #coverage{margin:0;padding:6px 16px;font-size:.78rem;color:var(--muted);border-bottom:1px solid var(--rule);background:var(--panel)}
 #coverage b{color:var(--fg);font-weight:600}
 header button{border:1px solid var(--accent);background:none;color:var(--accent);border-radius:6px;padding:3px 10px;font:600 .85rem system-ui;cursor:pointer}
@@ -91,6 +92,7 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
     </form>
     <div id="msgs"><p id="empty">Messages this box has heard on Meshtastic and RNS appear here.</p></div>
     <div id="blocked"></div>
+    <div id="blind" class="blind" hidden></div>
     <form id="compose" hidden>
       <textarea id="text" maxlength="200" placeholder="Message" aria-label="Message"></textarea>
       <span id="count">0/200</span>
@@ -113,7 +115,7 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
     if (text != null) e.textContent = text;   // untrusted text: textContent only
     return e;
   }
-  var chanNames = {}, drafts = {}, lastRx = null;
+  var chanNames = {}, chanUplink = {}, drafts = {}, lastRx = null;
   function title(t) {
     if (t.kind === "channel") return "Channel " + t.channel + (chanNames[t.channel] ? " · " + chanNames[t.channel] : "");
     var p = t.partner || "?";
@@ -164,6 +166,10 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
     $("note").hidden = !t.can_send;
     $("blocked").style.display = t.can_send ? "none" : "block";
     $("blocked").textContent = t.send_blocked_reason || "";
+    var blindNow = t.kind === "channel" && chanUplink[t.channel] === false;
+    $("blind").hidden = !blindNow;
+    $("blind").textContent = blindNow ? "Incoming on this channel never reaches this page: the radio does "
+      + "not uplink it to MQTT. Only what you send from here appears — a silent thread is not a quiet channel." : "";
   }
 
   function open(key) {
@@ -222,7 +228,12 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
     c.append(el("b", null, heard.length ? heard.map(name).join(", ") : "nothing yet"));
     if (unnumbered) c.append(document.createTextNode(" · " + unnumbered + " unnumbered"));
     var known = Object.keys(chanNames).map(Number).filter(function (i) { return heard.indexOf(i) < 0; });
-    if (known.length) c.append(document.createTextNode(" · Not heard: " + known.map(name).join(", ")));
+    // A channel the radio never uplinks is BLIND here, not quiet — say which is which.
+    var blind = known.filter(function (i) { return chanUplink[i] === false; });
+    var quiet = known.filter(function (i) { return chanUplink[i] !== false; });
+    if (quiet.length) c.append(document.createTextNode(" · Not heard yet: " + quiet.map(name).join(", ")));
+    if (blind.length) c.append(document.createTextNode(" · "), el("b", "blind",
+      "BLIND here (no MQTT uplink on the radio): " + blind.map(name).join(", ")));
     if (/^mqtt/.test(rx.subscription || "")) c.append(document.createTextNode(
       " — this box listens to its radio's MQTT uplink; a channel without uplink never reaches this inbox."));
   }
@@ -230,7 +241,9 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
   function loadChannels() {
     return fetch("/api/radio/channels").then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) {
-        (j && j.channels || []).forEach(function (c) { if (c.role !== "DISABLED") chanNames[c.index] = c.name; });
+        (j && j.channels || []).forEach(function (c) {
+          if (c.role !== "DISABLED") { chanNames[c.index] = c.name; chanUplink[c.index] = c.uplink; }
+        });
       }).catch(function () {}).then(function () { renderCoverage(); renderList(); });
   }
 

@@ -385,6 +385,30 @@ class TestGetChannels:
             assert len(channels) == 1
             assert channels[0]['name'] == 'TestChannel'
 
+    def test_get_channels_reports_uplink_and_never_guesses_it(self):
+        """2026-10-21: the inbox reads RX only from the MQTT uplink, so a
+        channel without uplink is BLIND there; the page must be told which.
+        A field the radio does not carry is None (unknown), never False."""
+        from utils.meshtastic_connection import MeshtasticConnectionManager
+
+        def ch(name, uplink=...):
+            c = MagicMock()
+            c.role = 2
+            c.settings = MagicMock(spec=["name", "psk", "uplink_enabled"] if uplink is not ...
+                                   else ["name", "psk"])
+            c.settings.name, c.settings.psk = name, b"k"
+            if uplink is not ...:
+                c.settings.uplink_enabled = uplink
+            return c
+
+        iface = MagicMock()
+        iface.localNode = MagicMock()
+        iface.localNode.channels = [ch("Regional", True), ch("LongFast", False), ch("Old")]
+        with patch('utils.meshtastic_connection.MeshtasticConnectionManager._create_interface',
+                   return_value=iface):
+            got = {c["name"]: c["uplink"] for c in MeshtasticConnectionManager().get_channels()}
+        assert got == {"Regional": True, "LongFast": False, "Old": None}
+
     def test_get_channels_returns_empty_on_error(self):
         """get_channels returns empty list on connection error"""
         from utils.meshtastic_connection import MeshtasticConnectionManager

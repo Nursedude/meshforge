@@ -788,7 +788,8 @@ class MeshtasticConnectionManager:
                                 'index': idx,
                                 'role': 'DISABLED',
                                 'name': '',
-                                'psk': False
+                                'psk': False,
+                                'uplink': None
                             }
 
                             if hasattr(ch, 'role'):
@@ -805,6 +806,11 @@ class MeshtasticConnectionManager:
                                     channel_info['name'] = settings.name or f"Channel {idx}"
                                 if hasattr(settings, 'psk'):
                                     channel_info['psk'] = bool(settings.psk)
+                                # Whether this channel reaches MQTT: the inbox reads
+                                # RX ONLY from the uplink, so a channel without it is
+                                # BLIND there (2026-10-21: LongFast). None = unknown.
+                                up = getattr(settings, 'uplink_enabled', None)
+                                channel_info['uplink'] = up if isinstance(up, bool) else None
 
                             channels.append(channel_info)
                 return channels
