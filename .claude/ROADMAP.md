@@ -80,7 +80,9 @@ input to best-available-route, not the goal by itself.
 ## 1.0 = these checks pass (set 2026-10-04, operator grilling)
 
 **What 1.0 promises:** a stable contract AND a product a stranger can run
-without us. It covers the **STANDALONE** offering only. FLEET (and the ECOMM
+without us. **What it does NOT mean** (carried from the superseded 2026-01
+`v1.0_roadmap.md`, still true): feature-complete (features come in 1.x),
+bug-free (bugs get 1.0.x patches), or final (2.0 may break the contract). It covers the **STANDALONE** offering only. FLEET (and the ECOMM
 kit) is the lab that produces the evidence; it gets its own milestone later.
 
 **Why the gates look like this (measured 2026-10-04):** 22 stars, 0 forks, 21
@@ -100,7 +102,7 @@ the check before changing a cell.
 |---|---|---|---|---|
 | 1 | **Contract frozen** | `CanonicalMessage` v1 (jointly with MeshAnchor), config formats, CLI entry points (`meshforge-launcher.sh`, `--profile`, `standalone.py`), and the REST endpoints our own consumers use are frozen. The REST doc is regenerated from code and test-pinned. NOT frozen: Python internals, TUI layout (the TUI is a surface, not an API). | `python3 scripts/parity_check.py` (exists) + `python3 scripts/rest_doc.py --check` / `tests/test_rest_doc.py` (exists, 10-22) | PARTIAL (10-22): parity enforced; REST index GENERATED + test-pinned (`6d6b4a0e`, 29 ghost endpoints removed). OWED: declaring the freeze itself (CanonicalMessage v1 with MA, config formats, CLI) |
 | 2 | **Config upgrades** | Auto-migrate with a backup; refuse LOUDLY on a config written by a newer version. Never silently reinterpret a file it does not understand. | migration test incl. a newer-version fixture (owed) | PARTIAL (10-05): **`gateway.json` MET** — `schema_version` stamped on save, newer/non-integer refused via `load_error` (save refuses, file untouched), first save over a legacy file keeps `gateway.json.pre-v1`; `tests/test_gateway_config_schema_version.py`. MeshAnchor twin MET (`1ca766af`). OWED: other config files (`deployment.json`, `noc.yaml`, settings) |
-| 3 | **Per-leg delivery truth** (NEXT #4) | No silent loss: every accepted message ends delivered, queued, or shown failed in-app. No false green: a leg-kill drill shows the leg down within N min (N from the detector cadence). 30-day soak on rc1. Rates are SHOWN, not gated (a rate measures RF weather, not software). | leg-kill drill + soak ledger (owed) | NOT MET: NEXT #4 not built |
+| 3 | **Per-leg delivery truth** (BIC-2) | No silent loss: every accepted message ends delivered, queued, or shown failed in-app. No false green: a leg-kill drill shows the leg down within N min (N from the detector cadence). 30-day soak on rc1. Rates are SHOWN, not gated (a rate measures RF weather, not software). | leg-kill drill + soak ledger (owed) | NOT MET: BIC-2 not built |
 | 4 | **No AI required** | Every gate passes with no API key and no Claude Code. AI features say plainly that they are not configured. | one stranger-drill run with no AI anywhere | NOT MEASURED |
 | 5 | **Stranger install drill** | VIRTUAL, every release: fresh image, README commands only, no dotfiles / hosts block / registry / AI. PHYSICAL, at rc1: one existing fleet board per supported type, clean user account + separate checkout (no wipe). Pass = the domain END (a message crosses mesh↔RNS and arrives; truth panes honest, incl. UNKNOWN), never "installer exit 0". | VIRTUAL: `gh workflow run stranger_drill.yml [-f installer_args=--client-only]` (observe mode); PHYSICAL: bare Pi 4 procedure (owed) | NOT MET — virtual run 2 (10-04, `37232491579`/`37232494058`): literal README install COMPLETES on bookworm + trixie arm64 with no TTY (rnsd/map/mosquitto up, 0 failed units); `--client-only` false red FIXED `9c76a19f` (verify reads `/etc/meshforge/noc.yaml` `managed:`; drill `37233965857` → "Installation OK with warnings", 0 FAIL) |
 | 6 | **Supported list = what gate 5 passed** | Pi 4 + Pi 5, Raspberry Pi OS bookworm / trixie 64-bit. Zero 2 W, Pi 3B, CM5 listed only if measured. Everything else "may work, untested", said so. | gate 5 results | NOT MET: README claims Pi 3B / Zero 2 W and install.md claims Ubuntu 22.04+, while `pyproject.toml` requires Python ≥3.11 (22.04 ships 3.10 — assertion, not measured here) |
@@ -150,196 +152,132 @@ stranger: README-only install, no fleet registry, re-imaged before each rc.
 
 ## Now / Next / Later
 
-**NOW** (this sprint)
-1. moc3 antenna baseline → operator swaps the antenna (it stays SMALL) → repeat R2
-   with n≥5 per size, interference logged on every run.
-2. ~~**rnsd onto mf.4**~~ **MET 10-05** — honest_status leg `running substrate`
-   PASS twice on 10-05 (14:20, 15:06 runs): "60 units on 10 boxes run the rns lxmf
-   copy that is installed". ⚠️ Two caveats stay on the record, not averaged away:
-   24 units "could import it but were not judged (no entry/repo evidence)", and
-   lehua has "no watched dist resolvable" — UNKNOWN, not pass, for those.
-3. ~~**R3 decision due 10-07**~~ **DECIDED GO 10-05 (operator):** RNS over MeshCore
-   IS needed — *"same reason meshforge has it — think standalone … meshanchor is the
-   sister, why does meshforge get all the power."* MF already ships RNS over its
-   radio as an OPTION (`Meshtastic_Interface` templates, `commands/rns_templates.py`;
-   disabled on the fleet BY CHOICE, moc3 `.disabled`). MA has no MeshCore twin, so a
-   standalone MeshCore ham cannot put RNS on the radio they own. GO opens R4, R6, the
-   SMCI part of R5, LATER #9 and #14. Candidate transport: `afit21/Reticulum-Smart-
-   MeshCore-Interface` 1.0.0 (research artifact rev 4, 10-01). Lands MA-first (its
-   radio), contract shared; containment (R5/LATER #10) BEFORE it ships to anyone.
+**How this list works** (roadmap cohesion, decided 2026-10-19 — Q-numbers in
+`plans/roadmap_cohesion_proposal_2026_10_19.md`). This is the domain's ONLY list
+of future work, for every repo. One line per item:
+`- **ID** [repos] S|F|S+F [twin→MA|twin→MF] [maps:both] — title`, details
+indented under it. IDs are stable and never reused. **Done leaves the list the
+same day** as one provenance line `<ID> DONE <sha> — verdict`. **NOW is the
+operator's**: only the operator moves items in or out; sessions may ADD to
+NEXT / LATER with a reason and say so in the handoff. A "won't do" is proposed
+with a reason and stays until the operator confirms. An item with `public:` +
+`status:` appears in `docs/roadmap.md`, generated by `scripts/roadmap.py`
+(`--check` is CI-pinned by `tests/test_roadmap.py`). Repos: MF meshforge ·
+MA meshanchor · maps meshforge-maps · bot meshing_around_meshforge · fork
+the RNS/LXMF forks. Offering: S standalone · F fleet.
 
-**BEST-IN-CLASS ORDER (operator 2026-10-13, after the cloud-session white paper
-"Hub or Operations Center", artifact `JwQ2Fe5MuUJSbmtSvYUewo`).** Compete as a
-cross-mesh BRIDGE, not a multi-inbox client: lead on delivery truth and route,
-not on phone convenience. The cloud session's patch (`meshforge-moc-all-r3`,
-3,669 lines, audit bundle `2ent1ZJfgo5Yi2wZunJ8v1`) is an ARTIFACT, never applied
-whole; each item below lands on its own, re-tested here. In order:
-1. **BIC-3 web auth** (token/session, viewer/operator roles) BEFORE anything on
-   the web can transmit. Accept: an unauthenticated LAN POST is refused + logged.
-   Grilled 10-13 (Q1–Q21): spec `.claude/plans/bic3_web_auth_2026_10_13.md`.
-   **DONE + DEPLOYED 10-13** MF `feec8e31..f86274ac`, MA `09c3eb0c..34b75362`; review queued.
-2. **BIC-1 `/inbox`** from the patch, after BIC-3. Sends read "handed to radio ·
-   unconfirmed", never "delivered".
-   **DONE + DEPLOYED 10-13** `834012d8` (+ RX every-channel fix + New message `95623429`);
-   operator acceptance (a real send) still owed.
-3. **BIC-15 operator line** (LXMF address, allowlisted read-only oracle + pages
-   over RNS) — fix first: an unreadable identity is silently RECREATED (new
-   address, corpse overwritten); quarantine + refuse + witness instead.
-   **CODE LANDED 10-14, OFF everywhere** `8b476945` (verbatim) + `4f94f92e` (F1
-   fixed in all THREE identity loaders; the real shape was `from_file` → `None`,
-   never an exception). Spec `.claude/plans/bic15_operator_line_2026_10_14.md`.
-   **Before any box enables it:** Fable security pass (gate 10, queued), a TUI /
-   fleet surface for its status, then the 4-leg live acceptance on one box.
-4. **BIC-2 = NEXT #4 per-leg delivery truth**, shown per message, UNKNOWN first-class.
-5. **BIC-4 interop vs stock RNS 1.5.7**, both directions, real hardware → merge-forward
-   or stay-pinned decision record.
-6. **BIC-6 = NEXT #5 best-available-route.**
-7. **BIC-5 credibility sweep**: generated version/test counts, delete the unbuilt
-   `aprs_gateway` / `winlink_interface` / `plugin_marketplace` flags in `core/edition.py`.
-   **DONE + DEPLOYED 10-22** MF `641ea0eb`/`87c1e90e`, MA `b5659edd`: the whole edition module
-   was dead (no consumer) and is deleted; the cited version is a generated sentinel.
-8. **HOLD BIC-13b/c** (per-box CA + `wss://`): a CA install per phone, an
-   unexplained wss handshake stall, a large surface. Revisit only when outside
-   users (BIC-14) ask for an installed app.
+### NOW
 
-**NEXT** (architecture; product work, not frozen)
-4. **Per-leg delivery measurement** (**1.0 gate 3**). Each transport leg reports delivered and
-   failed counts over time. Observe before alarming: counters first, then a soak
-   baseline.
-5. **Best-available-route selection** (**1.1** — not a 1.0 gate). The router uses measured leg health so a
-   flaky RF leg cannot own paths. RNS interface modes do NOT do this (R9, read
-   from the fork's Transport.py: modes only shorten path expiry; RNS picks by
-   hops, then newest announce). Gate it with a breaker on the hand-off witness: an rnsd wedge
-   takes down all cross-mesh traffic.
-6. **One RF-leg pane** (R8): airtime against budget, per-hop success, dead-hop
-   events. The operator never leaves the app to learn whether RF carries RNS
-   (MF018).
+Operator's order. The best-in-class block (operator 2026-10-13, after the
+cloud-session white paper "Hub or Operations Center", artifact
+`JwQ2Fe5MuUJSbmtSvYUewo`): compete as a cross-mesh BRIDGE, not a multi-inbox
+client; lead on delivery truth and route. The cloud patch
+(`meshforge-moc-all-r3`, audit bundle `2ent1ZJfgo5Yi2wZunJ8v1`) is an ARTIFACT,
+never applied whole — each item lands on its own, re-tested here.
 
-6b. **Typed tri-state on the truth path** (ADR `plans/adr_truth_kernel_2026_10_02.md`,
-    measured: 23% of 128 incidents, κ 0.91): `Seen | Unobservable | Failed`, no
-    default collapse, mypy-exhaustive — first `hs_substrate_skew`, `watchdog_probe_core`,
-    `rns_init`, `service_check`. Every truth-path check also ships one test that
-    feeds an input where check and subject DISAGREE (F_SHARED = 27%). Compiled
-    rewrite REJECTED (2%); compiled kernel not now (scope 10/23).
+- **R2** [MF][MA] F — moc3 antenna baseline → swap (it stays SMALL) → repeat R2 with n≥5 per size, interference logged on every run
+  NEW antenna due Sat 2026-10-24 (operator 10-22). R2 = the RNode pair moc3↔VolcanoAI measured the way SMCI measures (MA `lab/lxmf_tracer` over the RNode-only path: delivered LXMF bps, RTT p50/p90, success rate); operator present, IP/TCP RNS legs held down so TCP cannot mask RF; baseline first (`rnstatus` rate = SF7/250), a control that can fail. Reminder `rnode-pair-measure-r2`. Feeds R8.
+- **BIC-1** [MF] S+F — `/inbox` browser chat; sends read "handed to radio · unconfirmed", never "delivered"
+  DEPLOYED 10-13 `834012d8` (+ RX every-channel `95623429`, dup/misfiling `adda3ff9`, BLIND-channel `0c3b08e8`; iPhone-verified 10-21). OWED: operator acceptance — one real send. Still unwitnessed: a NEW LongFast text from another node stays off the primary channel.
+  public: A chat page in the browser for the mesh, which says a message was handed to the radio, never that it was delivered, unless it was.
+  status: testing
+  help: a Pi running meshtasticd and a phone browser on the same LAN — send and receive a few messages, tell us what the page claimed vs what arrived
+- **BIC-15** [MF][MA] S+F twin→MA — operator line: an LXMF address with an allowlisted read-only oracle + pages over RNS
+  CODE LANDED 10-14, OFF everywhere (`8b476945` + `4f94f92e`: an unreadable identity is quarantined + refused, never silently recreated). Gate-10 pass `578bcbdf` PASS for one box once B1 landed (`945be488`); status pane `a0e7cc0c`; pane non-author read PASS-with-notes `bd5141d3`. OWED before any box enables it: those notes, then the 4-leg live acceptance on one box. Spec `.claude/plans/bic15_operator_line_2026_10_14.md`.
+- **BIC-2** [MF][MA] S+F twin→MA — per-leg delivery truth, shown per message, UNKNOWN first-class (= 1.0 gate 3)
+  Each transport leg reports delivered and failed counts over time. Observe before alarming: counters first, then a soak baseline. No silent loss, no false green (a leg-kill drill shows the leg down within N min).
+  public: For every message, MeshForge will say which network legs it crossed and whether each one delivered, failed, or cannot be seen.
+  status: planned
+- **BIC-4** [MF][fork] S+F — interop vs stock RNS 1.5.7, both directions, real hardware → merge-forward or stay-pinned decision record
+  public: Prove MeshForge's pinned Reticulum talks to stock Reticulum in both directions on real radios.
+  status: planned
+- **BIC-6** [MF] S+F — best-available-route: the router uses measured leg health so a flaky RF leg cannot own paths (1.1, not a 1.0 gate)
+  RNS interface modes do NOT do this (R9, read from the fork's Transport.py: modes only shorten path expiry; RNS picks by hops, then newest announce). Gate it with a breaker on the hand-off witness: an rnsd wedge takes down all cross-mesh traffic. Needs BIC-2's measurements first.
+  public: Pick the best working route between meshes from measured link health, not just hop count.
+  status: planned
+- **BIC-13** [MF] S+F — HOLD per-box CA + `wss://` (13b/c)
+  A CA install per phone, an unexplained wss handshake stall, a large surface. Revisit only when outside users (BIC-14) ask for an installed app.
 
-6c. **Fleet posture controls by REASON** (operator 10-05; `plans/fleet_posture_controls_2026_10_05.md`):
-    move/power → dormant, travel/hardware → detached (no new state); fleet_sync +
-    rollup honour posture; TUI declares AND powers off via `fleet_power.py` (09-11
-    surface doctrine amended for this action). P1-P3 SHIPPED 10-05 (`59257aaf`,
-    `1b0f672a`). P4 UPS auto-trigger waits for cabling — operator 10-05: cabling is a
-    work in progress; nearest Pis to a UPS are VolcanoAI + kiai, or the yurt
-    (Starlink + EcoFlow 1600). PHYSICS: the signal cable goes to a Pi POWERED BY THAT
-    UPS (its signal means "MY power is on battery"), and the switch/AP must outlast
-    the Pis or the central trigger cannot reach them. APC feeds VolcanoAI, alaula, moc5, moc,
-    hAP, 3 switches, router (operator 10-05); no APC on USB anywhere yet (measured).
+### NEXT
 
-6d. **NOC read grant + `box_truth/v1` export** (operator 10-13, grilled Q1–Q18; spec
-    `plans/noc_read_grant_2026_10_13.md`). Any center (MF or MA, standalone or fleet)
-    reads any box, map-less included, once the box GRANTS that center a restricted ssh
-    key (`restrict,command=<export>`), made as a TUI action (2nd acting carve-out). Why:
-    MA cannot see a map-less box at all; MF sees moc3/kiai/moc/lehua only through
-    UNRESTRICTED keys shared with the Claude session. 3 sessions: (1) spec — DONE 10-13;
-    (2) MF: shared export + writer + grant CLI + migrate the 4 links, reviewers first;
-    (3) MA port + TUI both apps, then minor bump BOTH (MF 0.7.0-beta, MA 0.3.0-beta).
-    BEFORE session 2: a frontier design-level security pass (gate 10). Adds `box_truth/v1`
-    to gate 1. Accept: MA `/fleet` 8/8 with moc3 `ssh_spool`; `ssh -i <noc key> moc3 bash`
-    returns JSON, never a shell.
+- **R8** [MF] S+F — one RF-leg pane: airtime against budget, per-hop success (never aggregate), dead-hop events — the operator never leaves the app to learn whether RF carries RNS (MF018)
+  With R7 (capture header). Reminder `rf-leg-view-r8`.
+  public: One screen that shows whether the radio link is actually carrying traffic: airtime used, per-hop success, dead hops.
+  status: planned
+- **TK-1** [MF][MA] S+F twin→MA — typed tri-state on the truth path: `Seen | Unobservable | Failed`, no default collapse, mypy-exhaustive
+  ADR `plans/adr_truth_kernel_2026_10_02.md` (measured: 23% of 128 incidents, κ 0.91). First `hs_substrate_skew`, `watchdog_probe_core`, `rns_init`, `service_check`. Every truth-path check also ships one test that feeds an input where check and subject DISAGREE (F_SHARED = 27%). Compiled rewrite REJECTED (2%); compiled kernel not now (scope 10/23).
+- **POS-4** [MF] F — fleet posture P4: UPS auto-trigger (posture by REASON, `plans/fleet_posture_controls_2026_10_05.md`; P1–P3 shipped 10-05 `59257aaf`/`1b0f672a`)
+  Waits for cabling (operator 10-05: work in progress; nearest Pis to a UPS are VolcanoAI + kiai, or the yurt — Starlink + EcoFlow 1600). PHYSICS: the signal cable goes to a Pi POWERED BY THAT UPS, and the switch/AP must outlast the Pis or the central trigger cannot reach them. APC feeds VolcanoAI, alaula, moc5, moc, hAP, 3 switches, router; no APC on USB anywhere yet (measured 10-05).
+- **POS-5** [MF] F — dormant posture: the remaining consumers (batches 1–3 shipped 09-01 `fe220772`/`a6cbfaf1`/`4b0e8b4d`). Reminder `dormant-posture-consumers-remaining`.
+- **NRG** [MF][MA] S+F twin→MA — NOC read grant + `box_truth/v1` export: any center reads any box once the box GRANTS it a restricted ssh key (`restrict,command=<export>`)
+  Spec `plans/noc_read_grant_2026_10_13.md` (grilled Q1–Q18). Steps 0–2 DEPLOYED 10-14; NEXT = non-author pass on step 2, then 3–8; then MA port + TUI both apps, minor bump BOTH (MF 0.7.0-beta, MA 0.3.0-beta — re-check, MF is already 0.7.0-beta). Adds `box_truth/v1` to gate 1. Accept: MA `/fleet` 8/8 with moc3 `ssh_spool`; `ssh -i <noc key> moc3 bash` returns JSON, never a shell.
+  public: A central MeshForge or MeshAnchor can read the status of any box you grant, through a key that can only export status, never open a shell.
+  status: planned
+- **ADDR-1** [MF][MA] S+F twin→MA — Mesh→RNS `@address`: a mesh user can START a private conversation (GRILL before build)
+  A DM to the gateway starting `@<name|hash-prefix> <text>` resolves to EXACTLY ONE RNS destination and goes as one private LXMF send that opens the session; no match / ambiguous → refuse + on-air notice, never a fan-out. Open: name source + collision rule; syntax clash with MeshCore's `@contact` and the bridged-text `@` parse; peer-GATEWAY hashes addressable (default no); 200-byte budget; MA parity. Accept: handheld DM `@<known name> hi` → arrives at exactly that inbox, reply comes back as a DM; `@<unknown>` → notice, nothing sent.
+  public: Let a mesh radio user start a private conversation with someone on Reticulum by name.
+  status: planned
+- **R4** [MA][MF] S+F twin→MF — RNS over MeshCore (R3 decided GO 10-05): radio ownership solved in the MA supervisor, then the SMCI transport
+  Candidate `afit21/Reticulum-Smart-MeshCore-Interface` 1.0.0; lands MA-first (its radio), contract shared; R5 containment BEFORE it ships to anyone. Reminder `smci-gates-r4-r5` (paused to 12-14).
+- **DEDUP-SUB** [MF][MA] F twin→MA — cross-gateway coordination-substrate suppression (the arc that actually SUPPRESSES the live cross-gateway dup that dedup STEP 6 proved). Reminder `dedup-coordination-substrate-arc` (blocked, 10-30).
+- **ORC-1** [MF] S+F — oracle-leg residuals: (1) id-less fallback dedup — COUNTERS deployed 10-22, decide from `mqtt_fallback_dedup_dropped` (zero → close as moot); (3) reply channel by name (low); a real multi-hop query answered by moc3's tap after a reconnect is still unwitnessed. Reminder `oracle-leg-hardening-arc-2026-07-05` (11-05).
+- **RPCK** [MF] F — rpc_key wizard live break-and-recover on moc4 (operator present, no roll in flight, space rnsd restarts #69). Reminder `rpc-key-break-test`.
+- **TUI-OWES** [MF][MA] S+F twin→MA — the TUI must not fall behind what we can do (hfm #11; operator 10-03). Open rows:
+  #4 SDR slot occupancy; #4b delivery above vs below the 25% knee; Channel Load follow-ups (per-module knee, duration estimate, sample-set bias); TX Power Truth admin-shutdown note; audit follow-ups; #6 RNS ingress pane (highest value); #7 gateway posture sentence in-app; #8 field-kit uplink row; #9 SDR receiver-blind reason; #10 paging-health row. Read-only, local-box-only, two contextless reviewers before first deploy.
+- **PULSE** [MF][MA] S+F twin→MA — traffic_pulse residual defects (reviewer B, tri-state adopter #3): #4 `_mqtt_node_facts` freshness gate; #6 negative clock deltas clamp to "fresh"; #7 lifetime `circuit_open` drives a present-tense ALERT; #8 `_diag_seen` ignores watchdog coverage; #9 `installed:false`+`read_error` reads "not installed"; #10 "0 duplicates" on zero ingress should read QUIET; #11 unobservable queue vanishes; handler cosmetics.
+- **UNIT-1** [MF][MA] S+F twin→MA — unit-file follow-ups from the 10-21 trap fix and four review rounds
+  [first] `stayed_up()` FAIL→UNKNOWN on an empty post-restart `show`; `_waived_pipx` keys on the full scoped label; `exec_program` reads through `bash -c`/`env` wrappers (MA's daemon/map); report UNKNOWN and FAIL both, never `max()`; launcher-variant boxes need a repair route; `_fixes` for shadowed; a symlink at a templated name is its own state; render after the LAST empty `ExecStart=`; reset-idiom compare. Not blocking: orphan links; install_noc/update.sh copies outside the plan; copy2 vs cp mode/TOCTOU; `svc_cls.unit`; raw RENDERED unit silent in update.sh; install_noc `echo -e`; regex/placeholder edge cases (#7, #9).
+- **INST-1** [MF] S — installer is not role-aware (gate 7): `install_noc.sh --client-only` starts meshforge-map + installs mosquitto (absent for `lab`), installs no watchdog; map's stop hook needs `sqlite3`. Read the role, or document `provision_role --apply` as the step.
+- **ENR-1** [MF] F — `fleet_sync` mini enrollment: a box whose mini never ran gets no `mini_dudeai.env` and no live rules file (seeded by hand on the lab). One enrollment script, test-first.
+- **FREQ-1** [MF] S+F — `utils/frequency.py` `US_SLOT_MAP` is wrong (slot 20 → 920.625 MHz; the firmware formula `meshtastic_modem.channel_centre_mhz` gives the fleet's 906.875 / 905.75). Find consumers, test-pin the fleet literals, replace with the formula.
+- **C21-W** [MF] S+F — mesh_bridge does not detect a leg whose serial link WEDGES without closing (only `connection.lost`); C21 reconcile would read it as RF loss.
+- **MC-Q** [MA] S+F — MeshCore ingress `queue.Full` paths (meshcore_handler ~708/~879) WARN per message, uncounted — MA sibling of MF `ff94052a`.
+- **GIT-OWN** [MA] F — find the writer that leaves root-owned objects in meshanchor-server's `/opt/meshanchor/.git` (fleet_pull `HEALED(46)` after 10-19 — re-poisoned every deploy is not clean).
+- **CRONF** [MF] F — `cron_verdict_freshness.sh` reader passes: 5 fail-opens fixed (`7173d488`…`67adc7cc`), still open — the operator's call on #5 (an unanswered remote box under OK). Reminder `cron-freshness-fourth-pass` (11-03).
+- **MAPS-AUD** [MF] S+F — deferred findings from the 07-05 maps-domain QA audit (44 found, ~30 fixed). Reminder `maps-audit-hardening-2026-07-05` (10-28).
+- **ECOMM** [MF] F — ECOMM kit (OpenWrt One + USB MeshToad + Starlink Mini) hot-swap made real (operator 09-15: in and out of the fleet). Reminder `ecomm-kit-hotswap-posture`.
+- **REV-SEC** [MF][MA] S+F — non-author reads owed (security-relevant): BIC-3 N1–N3 (MF `security(web): BIC-3 non-author N1-N3` + MA); the 10-07 identity arc fixes (MF `fix(identity)` + MA); the :4403 LISTEN fix (MF `fix(radio)`; MA port decision open)
+  Provenance § QUEUED 2026-10-15 ×3. `code-review medium <range>` from the main session.
+- **FLEET-S1** [MF][MA] S+F twin→MA — `/fleet` slice 1 + witness-test residuals, "not fixed, by choice" across review rounds 1–6 (10-20/21)
+  [first]: MA witness test vacuous + `if named_here: return` skip; absence regex column-0 anchored (indented METHOD passes); presence half measures DEFINITION not REGISTRATION; absence half has no shape check; honest_status FAIL/UNKNOWN headlines count audit-only boxes AT HEAD; pre-push "exit 0 must say in sync" is a string match (refuse/exit 2 on zero compared, in `parity_check.py`). Full lists: provenance § QUEUED 2026-10-20 (rounds, round 5, round 6, round-6 fixes) + 2026-10-21 (witness-test fix).
+- **INBOX-2** [MF] S+F — inbox follow-ups from the operator's 10-21 iPhone report: a channel post the fleet demonstrably heard shows "handed to radio · unconfirmed" FOREVER; the phone lost its web login with no pairing code on screen (server session intact)
+  Provenance § QUEUED 2026-10-21 evening.
+- **CONNECT-1** [MF] S+F — "How to connect" card (TUI + /fleet): our RNS TCP transport endpoint, network name, propagation-node address, allowlist posture — what a new Sideband / MeshChatX / NomadNet user needs (operator 10-21 "queue 1")
+  public: A screen that tells a new Reticulum user exactly how to connect to your node.
+  status: planned
+- **MCX-PIN** [MF][MA] S+F — pin MeshChatX's version: `install_meshchatx.sh` takes `releases/latest` from a third-party repo; pin a known-good tag, canary new releases (operator 10-21 "queue 3")
+- **DET-CFD** [MF][MA] S+F twin→MA — `channel_feed_dark` reads "dark" for a channel that was never uplinked — fix test-first (detector finding 10-14)
+- **CAP-1** [MF][MA] S+F twin→MA — capture / topology truth residuals (09-26): TUI Export refuses on every box (never runs the tracker) — redirect to the map service's data or retire; `5c61ba30` redelivery dedupe disproven — keep or remove; flaky wall-clock test `test_spawner_returns_fast`; MA twin gaps (`graph_observable`, shared-DB header, coverage `source_origin`, tile-cache wording)
+  Provenance § QUEUED 2026-09-26 ×4.
+- **MAPV-1** [MF][MA] S+F — operator call (09-26): meshanchor-server `/api/nodes/directory` serves ~50k world MeshCore features and the dev box federates them into a 29.8 MB `/api/nodes/geojson` (46 in Hawaii) — region-filter at the source or at federation
+- **REV-0925** [MF][MA][maps] S+F maps:both — finish the non-author read of the 09-25 messaging/RNS/map range (`c98dd56b..151eaa00`, MA twins, maps `5477d56`+`f8e8d2a`); partly read 10-08, `151eaa00` read 09-28, CSP + rnsd key read 10-15. Provenance § QUEUED 2026-09-25.
+- **M2R-MA** [MA] S+F — MA port of M→R accounting (no attempted/delivered/dropped triplet in MA) + the monotonic dedup (mesh_bridge :358/:772/:1077, mqtt_bridge_handler :1024; heartbeat/EAS twins unchecked); MF leads
+- **LOG-1** [MF][MA] S+F — the first `get_logger()` in a process clears root handlers a host configured another way (`setup_logging` `_initialized` guard); plus late `mark_failed` writes stats before the guarded UPDATE (message_queue.py at the 1,500 cap → a mixin). Provenance § QUEUED 2026-10-18.
+- **AUDIT-1018** [MF][MA][maps] S+F maps:both — domain-audit residuals (10-18): OPERATOR decisions — Substack link (two live), moc5 + kiai declared `collector` but the maps unit is NOT INSTALLED (install, or fix the role), #151 F4 (MA bridge auto-enable only with a LOCAL meshtasticd — changes WHICH services run); design tasks — a serial-pinned, group-scoped MeshCore udev rule (today generic + 0666), a human surface for maps `/api/core-health`
+- **SEC-URL3** [MF] F — urllib3 GHSA-vxq7-64xx-v4gw + GHSA-8988-9cw3-xx77 on the apt copies (moc2, lehua, moc4): wait for the Debian backport, never pip over apt. Reminder `urllib3-apt-backport-moc2-lehua-moc4` (11-12).
 
-6e. **Mesh→RNS `@address` — a mesh user can START a private conversation** (operator
-    2026-10-17; GRILL before build). Gap left by F14 (`7bbf6c82`, drilled live 10-17): a
-    DM to the gateway with no open session is refused + the sender told, so a mesh user's
-    only way into RNS is a PUBLIC channel post or waiting for an RNS user to write first.
-    RNS→Mesh already has `@address`; Mesh→RNS has none. Shape: a DM to the gateway
-    starting `@<name|hash-prefix> <text>` resolves to EXACTLY ONE RNS destination (identity
-    SSOT / contacts / announce names) and goes as one private LXMF send that opens the
-    session; no match or an ambiguous match → refuse + on-air notice naming why, never a
-    fan-out. Open questions: name source + collision rule (two announces, one name);
-    syntax clash with MeshCore's `@contact` leg and with the bridged-text `@` parse; does
-    a peer-GATEWAY hash count as addressable (default no — infra, not people); 200-byte
-    budget for the address + text; MA parity (MA tracks no own node id). Accept: handheld
-    DM `@<known name> hi` → arrives at exactly that NomadNet/MeshChatX inbox, session
-    opens, reply comes back as a DM; `@<unknown>` → notice, nothing sent.
+### LATER
 
-6f. **M→R queue outage behaviour — "defer, don't count" + 24 h max age (F2+F5)**
-    (operator 2026-10-17, grilled Q1–Q18; DEPLOYED both twins, MF lead). Measured
-    (7 d journals): the RNS HUB never went down; the real outage is ONE destination
-    offline for hours — MeshChatX `f0a6899b` 57 min–27.4 h, median ~4 h, circuit never
-    closed on its own; moc's 14 dead letters were all `circuit open for f0a6899b`
-    ⚠️ **CORRECTED 2026-10-17 (re-derived):** that span measured how long moc's
-    IN-MEMORY circuit stayed OPEN until the next gateway restart reset it (9 opens,
-    each after a restart; 0 closes; 0 deliveries) — NOT a peer's offline time.
-    f0a6 is MeshChatX on VolcanoAI, `disabled`, last ran 2026-09-06; moc fans out to
-    it via `rns.default_lxmf_destination`. 6f's behaviour stands on its own merits,
-    but its f0a6 rows will EXPIRE at 24 h, never deliver. Finding (not fixed): the
-    circuit is per-process memory, so every restart re-opens it after 5 failures
-    (the bridge queue has no RetryPolicy, so #74's "temporarily unavailable" raise
-    burns the 3-try budget). Decisions: (1) a queue primitive — a sender DEFERS a row
-    until T, `retry_count` untouched; only `rns`/`rns_xform` use it. (2) defer ONLY on
-    circuit-open / no-path / wedge; every other error still counts (3 tries →
-    dead-letter). (3) circuit-open → defer to the circuit's recovery time; no-path +
-    wedge → 15 s doubling, 5 min cap, deferral count on the row. (4) `_queue_send_rns`
-    requests a path and defers — no in-worker 3 s busy-wait (live `send_to_rns` keeps
-    its wait). (5) max age 24 h (`MESHFORGE_M2R_MAX_AGE_S`, one constant both twins) for
-    deferred AND gated rows; expiry = dead-letter + DROPPED `expired` + counter +
-    WARNING, enforced pre-dispatch AND in periodic cleanup (gated rows are skipped by
-    `process_once`). (6) clock guard: age < 0 or > 7 d → re-stamp `created_at` once +
-    `age_unknown` counter. (7) late delivery is delivery — `meshforge_queued_s` LXMF
-    field, body untouched. (8) no on-air notice on expiry (v1). (9) counters only:
-    `deferred_total`, `expired_total`, oldest pending age in `get_stats()`; alarm only
-    after a soak baseline. (10) MF + MA together, reviewed before either deploys.
-    Accept: red-first from the reviewer's probe (circuit open after reconnect → 8/8
-    rows dead-lettered inside 60 s) now waits and delivers on recovery; a 24 h+ row
-    expires witnessed; a wall-clock step while running is DETECTED (Δwall vs
-    Δmonotonic) and queued rows shifted by it (operator Q15 — the first build's
-    age-only guard let a +25 h step expire 2 h-old rows); requeued rows NORMAL so
-    one dead peer cannot fill the queue (Q16); a replay hop keeps the first
-    enqueue time (Q17); one knob both twins (Q18).
-    **Next, grilled separately:** (a) **propagation handoff — SHELVED 2026-10-17 (no
-    consumer).** Grilled Q1–Q14 the same day; the 27 h tail it answered was the
-    measurement artifact above. **Reopen only when** a MEASURED intermittent peer
-    exists that fetches from our node `3968a2ee` (moc1 lxmd, stamp cost 16). Design
-    on file: shared code both twins, inert where `rns.propagation_node` is unset;
-    trigger = 30 min since FIRST deferral (one knob); distinct terminal `propagated`
-    state + counter + delivery disposition, never DELIVERED / `confirmation_rate`;
-    exclusive of direct (two LXMessages = two hashes, recipient shows both); node
-    unreachable (LXMF 5 attempts → FAILED) → back to deferred, uncounted, under the
-    24 h age; node = `3968`; no on-air notice v1; stamp time MEASURED on moc/moc3
-    before deciding, ≤1 stamp at a time; acceptance = a real client FETCHES the
-    message from the node. **Precondition #1:** `on_delivered`
-    (`bridge_ack_mixin.py`) must branch on `state` — LXMF fires the delivery
-    callback on SENT for a propagated message, so today's code would record
-    CONFIRMED and post "[delivered]" for a message only STORED (latent: no gateway
-    path sends PROPAGATED). Side finding: moc runs a 2nd lxmd (`8271dd…`) nothing
-    points at. (b) wake-on-announce (make a returning
-    peer's deferred rows due at once) — only if the soak shows the ≤5 min cap matters.
-
-**LATER**
-7. Mesh-issue rules for the *user's* mesh (MeshMonitor M1), with one thresholds
-   file and a test that forbids harmful advice.
-8. Lower the install barrier (M5): the `monitor` profile MOVED to 1.0 gate 7
-   (2026-10-04) and is a VM/host install, not a container (D2, 2026-10-18);
-   an OpenAPI spec over the map service stays here.
-9. Virtual-node / one-owner-many-clients for the radio (M2), if R3 is go.
-10. **Contain rnsd plugins (R5)** — regardless of R3: a deploy-time manifest of
-    what rnsd auto-loads from `interfaces/`, and an import failure must not kill
-    rnsd (the moc3 zombie-plugin class). Ledger `rnsd-plugin-containment-r5`.
-11. **RF-window capture header (R7)**: every RF measurement window starts with an
-    effective-settings snapshot (rate, SF/BW/CR, noise, interference) — the
-    09-22 stored-params reversion would have shown in one.
-12. **Bots back off on a busy channel (M4)**: oracle/echo responders gate on the
-    radio's reported channel utilisation.
-13. **Pin wire formats to real bytes (M6)**: fixtures generated from the installed
-    library, never hand-written keys (the 09-18 `channel_idx` class).
-14. Upstream to SMCI (R6) — drafts only, and only if R3 is go; posting is the
-    operator's call.
-15. **Uplink HEADROOM on `/fleet` (operator 10-06)**: `utils/starlink_dish.py`
-    reads only the instantaneous `get_status` (one sample — read 0.5 Mbps down
-    while YouTube streamed in the tent: a between-bursts sample, not headroom).
-    Read the dish's own `get_history` ring buffer (per-second down/up bps,
-    PoP latency, drop) and render peak/p95 over the window beside the current
-    line. Read-only surface; the site has ONE dish, so this is the truth about
-    the single path every non-mesh service shares (Starlink Mini backup WAN is
-    the cure for that, separately).
+- **M1** [MF] S — mesh-issue rules for the *user's* mesh (MeshMonitor M1), with one thresholds file and a test that forbids harmful advice
+  public: Plain-language advice about problems on your own mesh, from one reviewed set of rules.
+  status: planned
+- **M5** [MF] S — the no-radio `monitor` profile on a plain VM / Debian host (= 1.0 gate 7; a VM install, NOT a container — D2, 2026-10-18); an OpenAPI spec over the map service
+  public: Run MeshForge's monitoring on a plain Debian machine or VM with no radio attached.
+  status: planned
+- **M2** [MF][MA] S+F — virtual-node / one-owner-many-clients for the radio (R3 is GO)
+- **R5** [MF][MA][fork] S+F twin→MA — contain rnsd plugins regardless of R3: a deploy-time manifest of what rnsd auto-loads from `interfaces/`, and an import failure must not kill rnsd (the moc3 zombie-plugin class). Reminder `smci-gates-r4-r5`.
+- **R7** [MF][MA] S+F — RF-window capture header: every RF measurement window starts with an effective-settings snapshot (rate, SF/BW/CR, noise, interference) — the 09-22 stored-params reversion would have shown in one. Rides R8.
+- **M4** [MF][MA] S+F — bots back off on a busy channel: oracle/echo responders gate on the radio's reported channel utilisation
+  public: Automatic responders wait when the radio channel is busy.
+  status: planned
+- **M6** [MF][MA] S+F — pin wire formats to real bytes: fixtures generated from the installed library, never hand-written keys (the 09-18 `channel_idx` class)
+- **R6** [fork] S offer-back — upstream to SMCI: drafts only; posting is the operator's call. Reminder `research-unledgered-recs`.
+- **UPL-1** [MF] F — uplink HEADROOM on `/fleet`: read the dish's own `get_history` ring buffer (per-second down/up, PoP latency, drop) and render peak/p95 beside the current line — `get_status` is one sample (read 0.5 Mbps while video streamed). Read-only.
+- **M2R-WAKE** [MF][MA] S+F twin→MA — wake-on-announce: make a returning peer's deferred M→R rows due at once — only if the 6f soak shows the ≤5 min cap matters. Propagation handoff SHELVED 10-17 (no consumer; design on file in the 6f provenance row; reopen only for a MEASURED intermittent peer that fetches from `3968a2ee`).
+- **JSONL** [MF][MA] S+F twin→MA — ONE append-only JSONL posture, `utils/jsonl_io.py`; move every copy onto it (`mini_dudeai/history.py`, `scripts/sdr_interference.py`, …) (operator 09-24 "queue B").
+- **HX-INERT** [MF][MA] S+F twin→MA — the inert-tier CUT (operator 10-22 "your call": keep, reframed): measure every detector class's disposition on every box; a class `inert` on ALL boxes is cut (with its tests + docs), a class `clean` anywhere is kept — the footprint rule (`clean` everywhere = KEEP, `inert` everywhere = CUT); removal only, never a new instrument
+- **BOT-REL** [bot] S — fold `meshing_around_meshforge/RELIABILITY_ROADMAP.md` (2026-02; 64 open checkboxes) into this list: each open line becomes an item or a proposed won't-do (operator confirms); then the file is retired (cohesion Q2: sister repos keep no roadmap)
+- **HX-UNIT** [MF][MA] F — the unit-file divergence layer (queued 10-06): option B (`fleet_sync` REPORTS effective `systemctl show` vs the template's key directives, changes nothing). Partly answered by the 10-21 per-unit-name audit + TUI pane; remaining = the effective-directive diff.
 
 ## Rules that shape the roadmap
 
@@ -362,6 +300,7 @@ whole; each item below lands on its own, re-tested here. In order:
   (`scripts/parity_check.py`).
 - Batch commits: one docs commit per session, code fixes grouped by logical
   change, at most one fleet deploy per session.
-- `.claude/plans/v1.0_roadmap.md` (2026-04) is **superseded** by this file; its
-  two v1.0 criteria (stable API, production-ready at a QTH) are made measurable
-  by the "1.0 = these checks pass" section above (2026-10-04).
+- The superseded `plans/v1.0_roadmap.md` copies (MF + MA) were DELETED 2026-10-22
+  after a line-by-line diff into "1.0 = these checks pass" (cohesion Q13); what
+  was not carried is listed in that day's provenance row. `git log --all --
+  .claude/plans/v1.0_roadmap.md` recovers them.

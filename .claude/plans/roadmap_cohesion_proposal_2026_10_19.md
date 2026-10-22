@@ -1,8 +1,9 @@
 # Proposal — one domain roadmap that every repo and every session can find (2026-10-19)
 
 **Status: DECIDED 2026-10-19 (operator, grilling — 25 decisions, recorded below; they SUPERSEDE
-the draft text where they differ).** Nothing applied to ROADMAP.md yet: the migration runs in a
-FRESH session (Q13). Operator framing: *"continuity matters — users could
+the draft text where they differ).** **MIGRATED 2026-10-22** (operator "go ahead"; same session as
+other work, by the operator's call over Q13) — gates `scripts/roadmap.py` + `tests/test_roadmap.py`;
+record in that day's provenance row. MA + maps pointer lines land in their own repos. Operator framing: *"continuity matters — users could
 run maps via meshforge or standalone. it just works."* Origin: the outside research
 review artifact (2026-10-18) noted the domain would benefit from a more cohesive
 roadmap.

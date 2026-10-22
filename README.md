@@ -10,6 +10,8 @@
   and an honest answer when it can't see.</em>
 </p>
 
+<p align="center"><a href="docs/roadmap.md"><strong>Roadmap</strong></a> — what we are building next, and where we need testers.</p>
+
 <p align="center">
   <a href="https://github.com/Nursedude/meshforge"><img src="https://img.shields.io/badge/version-0.7.0--beta-blue.svg" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green.svg" alt="License"></a>

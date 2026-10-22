@@ -6,6 +6,10 @@
           {
             "type": "command",
             "command": "PYTHONPATH=/opt/meshforge/src python3 -m mini_dudeai.warmstart --hook 2>/dev/null || true"
+          },
+          {
+            "type": "command",
+            "command": "python3 /opt/meshforge/scripts/roadmap.py --now 2>/dev/null || true"
           }
         ]
       }

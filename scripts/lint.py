@@ -781,6 +781,9 @@ def get_all_python_files(directory: str = 'src') -> List[str]:
 # DO NOT raise the limit to make a tripped check pass.
 CONTEXT_DOC_LIMITS = {
     '.claude/foundations/persistent_issues.md': 40_000,
+    # Roadmap cohesion Q11 (2026-10-19): measured post-migration size x 1.25,
+    # ratchet DOWN only. Done items leave the list (Q4) — trim, never raise.
+    '.claude/ROADMAP.md': 44_500,  # 35,657 B post-migration x 1.25 = 44,571
 }
 
 

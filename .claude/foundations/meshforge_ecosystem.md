@@ -323,7 +323,7 @@ MeshCore Heltec ◄──►┘        ▼
 |-----------|------------------|
 | Meshtastic | Heltec V3, TLORA, RAK, LilyGo T-Beam, T-Deck, etc. |
 | MeshCore | Heltec V3 (companion mode), other ESP32-based |
-| RNS/RNODE | 21+ board types (via RNS-Management-Tool) |
+| RNS/RNODE | 21+ board types (via upstream `rnodeconf`; the archived RNS-Management-Tool only wrapped it) |
 | Compute | RPi 3+, RPi 4, RPi 5, x86_64 Linux, Windows 11 |
 
 ---
@@ -351,14 +351,14 @@ Satellites that integrate with the NOC use `manifest.json` auto-discovery. The N
 | Protocol bridging / routing | meshforge (NOC) `gateway/` |
 | Map visualization / topology | meshforge-maps |
 | Bot alert types / notifications | meshing_around_meshforge |
-| RNS/NomadNet install/update scripts | RNS-Management-Tool |
+| RNS/NomadNet install/update scripts | meshforge — `requirements/rns.txt` + the install/update path (RNS-Management-Tool ARCHIVED 2026-09-25; out of the domain roadmap, roadmap cohesion Q1) |
 | RF calculations / link budgets | meshforge (NOC) `utils/rf.py` |
 | Service management (systemd) | meshforge (NOC) `utils/service_check.py` |
 | Node tracking / discovery | meshforge (NOC) `gateway/node_tracker.py` |
 | TUI menus / NOC interface | meshforge (NOC) `launcher_tui/` |
 | Static coverage maps | meshforge (NOC) `utils/coverage_map.py` |
 | Live interactive maps | meshforge-maps |
-| RNODE firmware flashing | RNS-Management-Tool |
+| RNODE firmware flashing | upstream `rnodeconf` (RNS-Management-Tool ARCHIVED 2026-09-25) |
 | MeshCore protocol handler | meshforge (NOC) `gateway/meshcore_handler.py` |
 
 ---

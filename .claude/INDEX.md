@@ -77,7 +77,7 @@ Quick navigation for AI assistants. Load only what you need.
 |------|---------|--------|
 | `plans/TODO_PRIORITIES.md` | **Current task priorities & branch strategy** | Active — start here |
 | `ROADMAP.md` | **Roadmap SSOT** — identity, competition, best-available-route gap, Now/Next/Later | Active |
-| `plans/v1.0_roadmap.md` | v1.0 criteria (roadmap superseded by `ROADMAP.md`) | Superseded |
+| `ROADMAP.md` | the domain's one roadmap (v1.0 criteria in "1.0 = these checks pass"; `plans/v1.0_roadmap.md` deleted 2026-10-22) | Active |
 | `plans/strategic_improvements.md` | Tiered improvement roadmap (Sprints A-C done) | Active |
 | `plans/missing_features.md` | TUI features gap tracker (most now have handlers) | Needs QTH testing |
 | `plans/noc_test_plan.md` | Lab infrastructure & testing procedures | Reference |
