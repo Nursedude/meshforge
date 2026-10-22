@@ -149,7 +149,7 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
     var t = threads.find(function (x) { return x.key === current; });
     var msgs = $("msgs");
     msgs.replaceChildren();
-    if (!t) { $("compose").hidden = true; $("note").hidden = true; $("blocked").style.display = "none"; return; }
+    if (!t) { $("compose").hidden = true; $("note").hidden = true; $("blocked").style.display = "none"; $("blind").hidden = true; return; }
     $("pane-title").textContent = title(t) + (t.kind === "dm" ? "" : "  (broadcast)");
     t.messages.forEach(function (m) {
       var b = el("div", "msg " + m.direction, m.content);
@@ -166,7 +166,10 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
     $("note").hidden = !t.can_send;
     $("blocked").style.display = t.can_send ? "none" : "block";
     $("blocked").textContent = t.send_blocked_reason || "";
-    var blindNow = t.kind === "channel" && chanUplink[t.channel] === false;
+    // Blind only where THIS box's receive path is the MQTT uplink (a TCP listener hears every
+    // decoded channel) and only for this radio's own Meshtastic channels (review 10-21).
+    var blindNow = t.kind === "channel" && t.network === "meshtastic" && chanUplink[t.channel] === false
+      && !!lastRx && /^mqtt/.test(lastRx.subscription || "");
     $("blind").hidden = !blindNow;
     $("blind").textContent = blindNow ? "Incoming on this channel never reaches this page: the radio does "
       + "not uplink it to MQTT. Only what you send from here appears — a silent thread is not a quiet channel." : "";
@@ -229,8 +232,9 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
     if (unnumbered) c.append(document.createTextNode(" · " + unnumbered + " unnumbered"));
     var known = Object.keys(chanNames).map(Number).filter(function (i) { return heard.indexOf(i) < 0; });
     // A channel the radio never uplinks is BLIND here, not quiet — say which is which.
-    var blind = known.filter(function (i) { return chanUplink[i] === false; });
-    var quiet = known.filter(function (i) { return chanUplink[i] !== false; });
+    var mqttRx = /^mqtt/.test(rx.subscription || "");
+    var blind = known.filter(function (i) { return mqttRx && chanUplink[i] === false; });
+    var quiet = known.filter(function (i) { return !(mqttRx && chanUplink[i] === false); });
     if (quiet.length) c.append(document.createTextNode(" · Not heard yet: " + quiet.map(name).join(", ")));
     if (blind.length) c.append(document.createTextNode(" · "), el("b", "blind",
       "BLIND here (no MQTT uplink on the radio): " + blind.map(name).join(", ")));
@@ -244,7 +248,7 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
         (j && j.channels || []).forEach(function (c) {
           if (c.role !== "DISABLED") { chanNames[c.index] = c.name; chanUplink[c.index] = c.uplink; }
         });
-      }).catch(function () {}).then(function () { renderCoverage(); renderList(); });
+      }).catch(function () {}).then(function () { renderCoverage(); renderList(); renderPane(); });
   }
 
   // ── start a conversation: a channel, or a DM to a node ──
@@ -256,7 +260,7 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
     var dm = el("option", null, "Direct message to a node…"); dm.value = "dm"; to.appendChild(dm);
     $("dmrow").hidden = true; $("newerr").textContent = ""; $("newform").hidden = false;
     $("main").classList.add("open"); $("pane-title").textContent = "New message";
-    $("msgs").replaceChildren(); $("compose").hidden = true; $("note").hidden = true; $("blocked").style.display = "none";
+    $("msgs").replaceChildren(); $("compose").hidden = true; $("note").hidden = true; $("blocked").style.display = "none"; $("blind").hidden = true;
     fetch("/api/nodes/directory").then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
       var dl = $("nodes"); dl.replaceChildren();
       (j && j.features || []).forEach(function (f) {
