@@ -3,9 +3,9 @@
 > **Generated against:** <!--STAT:version-->0.7.0-beta<!--/STAT--> — the endpoint index
 > below is GENERATED from the route code by `scripts/rest_doc.py` and pinned by
 > `tests/test_rest_doc.py`; a route added or removed without `--update` fails CI.
-> Until 2026-10-22 this page documented 29 endpoints (`/api/system/*`,
-> `/api/tools/*`, `/api/analytics/*`, `/api/service/*`, ...) that no server
-> routed; they were removed, not kept as "planned".
+> Until 2026-10-22 this page documented 29 endpoints (the system, tools,
+> analytics, service and config families) that no server routed; they were
+> removed, not kept as "planned".
 
 ---
 
@@ -81,82 +81,86 @@ then reads the API from your browser's trusted address.
 
 ### Map service — `meshforge-map`, port 5000
 
-| Method | Path | Served by |
-|---|---|---|
-| GET | `/` | Serve the node_map.html file. |
-| GET | `/api/auth/status` | Which mode is this browser in — so the page can show it. |
-| GET | `/api/coverage/*` | Serve terrain-aware coverage prediction for a location. |
-| GET | `/api/fleet/truth` | Serve the honest fleet-truth SSOT (`/api/fleet/truth`). |
-| GET | `/api/gateway/delivery` | Fork C — honest delivery lifecycle counters. |
-| GET | `/api/gateway/queue` | Queue backpressure stats for the watchdog (Issue #74). |
-| GET | `/api/inbox` | GET /api/inbox — conversations, gated like /api/messages/received. |
-| GET | `/api/los/*` | Serve line-of-sight analysis between two points. |
-| GET | `/api/messages/queue` | Serve pending messages from the gateway message queue. |
-| GET | `/api/messages/received*` | Serve received (inbound) messages from the messages database. |
-| GET | `/api/messages/rx-status` | Serve the RX (message listener) status. |
-| GET | `/api/network/interfaces` | Read-only snapshot of RNS.Transport.interfaces. |
-| GET | `/api/network/rns/paths` | Read-only snapshot of RNS Transport.path_table. |
-| GET | `/api/network/topology` | Serve network topology data for D3.js visualization. |
-| GET | `/api/nodes/directory` | Serve the persistent node directory as a GeoJSON FeatureCollection. |
-| GET | `/api/nodes/geojson` | Serve live node GeoJSON with optional bbox/region/preset filtering. |
-| GET | `/api/nodes/history` | Serve node history summary and unique nodes list. |
-| GET | `/api/nodes/snapshot*` | Serve a historical network snapshot for playback. |
-| GET | `/api/nodes/trajectory/*` | Serve trajectory GeoJSON for a specific node. |
-| GET | `/api/proxy/status` | Serve API proxy status and statistics. |
-| GET | `/api/radio/channels` | Serve channels from the connected radio — through a short cache. |
-| GET | `/api/radio/info` | Serve radio device information. |
-| GET | `/api/radio/nodes` | Serve nodes from directly connected radio. |
-| GET | `/api/radio/status` | Serve radio connection status. |
-| GET | `/api/region-presets` | Serve available region preset definitions. |
-| GET | `/api/settings` | Serve current map settings (selected region). |
-| GET | `/api/status` | Serve server status including radio connection info. |
-| GET | `/api/v1/fromradio*` | Serve multiplexed FromRadio packets via the API proxy. |
-| GET | `/api/weather` | Serve space weather and HF band conditions for map overlay. |
-| GET | `/api/websocket/status` | Serve WebSocket server status and connection info. |
-| GET | `/fleet` | Serve the honest fleet NOC visual (`/fleet` → web/fleet.html). |
-| GET | `/fleet/cascade` | Cascade detector snapshot — pre-failure fingerprints state. |
-| GET | `/fleet/delivery` | Serve THIS box's delivery view — the domain's END — as JSON. |
-| GET | `/fleet/dups` | Serve the cross-box dedup rollup (dedup/identity arc STEP 4c). |
-| GET | `/fleet/logs` | Return recent journalctl lines for an allowlisted unit. |
-| GET | `/fleet/slo` | Serve the MeshAnchor `/fleet/slo` peer contract. |
-| GET | `/fleet/tests` | Return the list of allowlisted tests + last-fire info per unit. |
-| GET | `/fleet/tracer-fires` | Return this host's recent tracer fires for one peer. |
-| GET | `/fleet/uplink` | Serve THIS box's Starlink obstruction map, live from the dish. |
-| GET | `/fleet/wan` | Serve the WAN ladder (utils.wan_path): latest run + 24h history. |
-| GET | `/healthz` | Cold-start-safe health endpoint. |
-| GET | `/inbox` | Serve the browser chat inbox (`/inbox` → web/inbox.html, BIC-1). |
-| GET | `/index.html` | Serve the node_map.html file. |
-| GET | `/json/blink` | Proxy a /json/* endpoint from meshtasticd. |
-| GET | `/json/nodes` | Proxy a /json/* endpoint from meshtasticd. |
-| GET | `/json/report` | Proxy a /json/* endpoint from meshtasticd. |
-| GET | `/lab/rollup` | Serve the lab rollup markdown produced by meshforge-lab-rollup. |
-| GET | `/lab/rollup/alphabetical` | Serve the lab rollup markdown produced by meshforge-lab-rollup. |
-| GET | `/lab/synth-rollup` | Serve the lab rollup markdown produced by meshforge-lab-rollup. |
-| GET | `/login` |  |
-| GET | `/mesh` | Serve the Meshtastic web client from disk. |
-| GET | `/mesh/*` | Serve the Meshtastic web client from disk. |
-| GET | `/metrics` | Prometheus scrape endpoint (/metrics). |
-| POST | `/api/inbox/send` | POST /api/inbox/send — same gates as /api/radio/message (it keys a licensed transmitter), then ``inbox_api`` validates, sends, records. |
-| POST | `/api/radio/message` | Handle POST /api/radio/message - send a message via radio. |
-| POST | `/api/settings` | Handle POST /api/settings — save map settings. |
-| POST | `/api/v1/toradio*` | Forward ToRadio protobuf to meshtasticd via the proxy. |
-| POST | `/fleet/run-test` | POST /fleet/run-test — fire an allowlisted lab unit. |
-| POST | `/json/blink` | Proxy a POST JSON endpoint to meshtasticd (blink, restart, etc.). |
-| POST | `/login` |  |
-| POST | `/logout` |  |
-| POST | `/mesh/api/v1/toradio*` | Forward ToRadio protobuf to meshtasticd via the proxy. |
-| POST | `/mesh/json/blink` | Proxy a POST JSON endpoint to meshtasticd (blink, restart, etc.). |
-| POST | `/mesh/restart` | Proxy a POST JSON endpoint to meshtasticd (blink, restart, etc.). |
-| POST | `/restart` | Proxy a POST JSON endpoint to meshtasticd (blink, restart, etc.). |
-| PUT | `/api/v1/toradio*` | Forward ToRadio protobuf to meshtasticd via the proxy. |
-| PUT | `/mesh/api/v1/toradio*` | Forward ToRadio protobuf to meshtasticd via the proxy. |
+| Method | Path | Login | Served by |
+|---|---|---|---|
+| GET | `/` | — | Serve the node_map.html file. |
+| GET | `/api/auth/status` | — | Which mode is this browser in — so the page can show it. |
+| GET | `/api/coverage/*` | — | Serve terrain-aware coverage prediction for a location. |
+| GET | `/api/fleet/truth` | — | Serve the honest fleet-truth SSOT (`/api/fleet/truth`). |
+| GET | `/api/gateway/delivery` | — | Fork C — honest delivery lifecycle counters. |
+| GET | `/api/gateway/queue` | — | Queue backpressure stats for the watchdog (Issue #74). |
+| GET | `/api/inbox` | — | GET /api/inbox — conversations, gated like /api/messages/received. |
+| GET | `/api/los/*` | — | Serve line-of-sight analysis between two points. |
+| GET | `/api/messages/queue` | — | Serve pending messages from the gateway message queue. |
+| GET | `/api/messages/received*` | — | Serve received (inbound) messages from the messages database. |
+| GET | `/api/messages/rx-status` | — | Serve the RX (message listener) status. |
+| GET | `/api/network/interfaces` | — | Read-only snapshot of RNS.Transport.interfaces. |
+| GET | `/api/network/rns/paths` | — | Read-only snapshot of RNS Transport.path_table. |
+| GET | `/api/network/topology` | — | Serve network topology data for D3.js visualization. |
+| GET | `/api/nodes/directory` | — | Serve the persistent node directory as a GeoJSON FeatureCollection. |
+| GET | `/api/nodes/geojson` | — | Serve live node GeoJSON with optional bbox/region/preset filtering. |
+| GET | `/api/nodes/history` | — | Serve node history summary and unique nodes list. |
+| GET | `/api/nodes/snapshot*` | — | Serve a historical network snapshot for playback. |
+| GET | `/api/nodes/trajectory/*` | — | Serve trajectory GeoJSON for a specific node. |
+| GET | `/api/proxy/status` | — | Serve API proxy status and statistics. |
+| GET | `/api/radio/channels` | — | Serve channels from the connected radio — through a short cache. |
+| GET | `/api/radio/info` | — | Serve radio device information. |
+| GET | `/api/radio/nodes` | — | Serve nodes from directly connected radio. |
+| GET | `/api/radio/status` | — | Serve radio connection status. |
+| GET | `/api/region-presets` | — | Serve available region preset definitions. |
+| GET | `/api/settings` | — | Serve current map settings (selected region). |
+| GET | `/api/status` | — | Serve server status including radio connection info. |
+| GET | `/api/v1/fromradio*` | operator | Serve multiplexed FromRadio packets via the API proxy. |
+| GET | `/api/weather` | — | Serve space weather and HF band conditions for map overlay. |
+| GET | `/api/websocket/status` | — | Serve WebSocket server status and connection info. |
+| GET | `/fleet` | — | Serve the honest fleet NOC visual (`/fleet` → web/fleet.html). |
+| GET | `/fleet/cascade` | — | Cascade detector snapshot — pre-failure fingerprints state. |
+| GET | `/fleet/delivery` | — | Serve THIS box's delivery view — the domain's END — as JSON. |
+| GET | `/fleet/dups` | — | Serve the cross-box dedup rollup (dedup/identity arc STEP 4c). |
+| GET | `/fleet/logs` | operator | Return recent journalctl lines for an allowlisted unit. |
+| GET | `/fleet/slo` | — | Serve the MeshAnchor `/fleet/slo` peer contract. |
+| GET | `/fleet/tests` | — | Return the list of allowlisted tests + last-fire info per unit. |
+| GET | `/fleet/tracer-fires` | — | Return this host's recent tracer fires for one peer. |
+| GET | `/fleet/uplink` | — | Serve THIS box's Starlink obstruction map, live from the dish. |
+| GET | `/fleet/wan` | — | Serve the WAN ladder (utils.wan_path): latest run + 24h history. |
+| GET | `/healthz` | — | Cold-start-safe health endpoint. |
+| GET | `/inbox` | — | Serve the browser chat inbox (`/inbox` → web/inbox.html, BIC-1). |
+| GET | `/index.html` | — | Serve the node_map.html file. |
+| GET | `/json/blink` | operator | Proxy a /json/* endpoint from meshtasticd. |
+| GET | `/json/nodes` | — | Proxy a /json/* endpoint from meshtasticd. ⚠️ meshtasticd never serves it (ESP32-only, #76) — expect 404 |
+| GET | `/json/report` | — | Proxy a /json/* endpoint from meshtasticd. ⚠️ meshtasticd never serves it (ESP32-only, #76) — expect 404 |
+| GET | `/lab/rollup` | — | Serve the lab rollup markdown produced by meshforge-lab-rollup. |
+| GET | `/lab/rollup/alphabetical` | — | Serve the lab rollup markdown produced by meshforge-lab-rollup. |
+| GET | `/lab/synth-rollup` | — | Serve the lab rollup markdown produced by meshforge-lab-rollup. |
+| GET | `/login` | — | The pairing-code login page (BIC-3). |
+| GET | `/mesh` | — | Serve the Meshtastic web client from disk. |
+| GET | `/mesh/*` | — | Serve the Meshtastic web client from disk. |
+| GET | `/metrics` | — | Prometheus scrape endpoint (/metrics). |
+| POST | `/api/inbox/send` | operator | POST /api/inbox/send — same gates as /api/radio/message (it keys a licensed transmitter), then ``inbox_api`` validates, sends, records. |
+| POST | `/api/radio/message` | operator | Handle POST /api/radio/message - send a message via radio. |
+| POST | `/api/settings` | operator | Handle POST /api/settings — save map settings. |
+| POST | `/api/v1/toradio*` | operator | Forward ToRadio protobuf to meshtasticd via the proxy. |
+| POST | `/fleet/run-test` | operator | POST /fleet/run-test — fire an allowlisted lab unit. |
+| POST | `/json/blink` | operator | Proxy a POST JSON endpoint to meshtasticd (blink, restart, etc.). |
+| POST | `/login` | — | Trade a one-time pairing code for an operator session cookie. |
+| POST | `/logout` | — | End this browser's operator session. |
+| POST | `/mesh/api/v1/toradio*` | operator | Forward ToRadio protobuf to meshtasticd via the proxy. |
+| POST | `/mesh/json/blink` | operator | Proxy a POST JSON endpoint to meshtasticd (blink, restart, etc.). |
+| POST | `/mesh/restart` | operator | Proxy a POST JSON endpoint to meshtasticd (blink, restart, etc.). |
+| POST | `/restart` | operator | Proxy a POST JSON endpoint to meshtasticd (blink, restart, etc.). |
+| PUT | `/api/v1/toradio*` | operator | Forward ToRadio protobuf to meshtasticd via the proxy. |
+| PUT | `/mesh/api/v1/toradio*` | operator | Forward ToRadio protobuf to meshtasticd via the proxy. |
+
+- `HEAD` on any path: HEAD on the static tree (stdlib) — behind the same Host rule.
+- `OPTIONS` on any path: Handle CORS preflight requests.
+- Any other `GET` path falls through to the stdlib static-file server over `web/`.
 
 ### Prometheus exporter — default port 9090
 
 | Method | Path | Served by |
 |---|---|---|
 | GET | `/` | Serve index page with available endpoints. |
-| GET | `/api/json/meshcore*` |  |
+| GET | `/api/json/meshcore*` | Serve ``/api/json/meshcore[/contacts]`` on a MetricsHTTPHandler. |
 | GET | `/api/json/metrics` | Serve metrics as JSON for Grafana Infinity plugin. |
 | GET | `/api/json/nodes` | Serve node data as JSON for Grafana. |
 | GET | `/api/json/status` | Serve system status as JSON. |
@@ -176,16 +180,19 @@ then reads the API from your browser's trusted address.
 | POST | `/api/v1/query_range*` | Serve Prometheus query_range API for Grafana time-series panels. |
 | POST | `/metrics` | Serve Prometheus metrics. |
 
+- `OPTIONS` on any path: Handle OPTIONS request (CORS preflight).
+
 ### Config API — `meshforge` daemon, 127.0.0.1:8081
 
 | Method | Path | Served by |
 |---|---|---|
-| DELETE | `/config/{dotted.path}` |  |
-| GET | `/config/_audit` |  |
-| GET | `/config/_paths` |  |
-| GET | `/config/{dotted.path}` |  |
-| POST | `/config/_reset` |  |
-| PUT | `/config/{dotted.path}` |  |
+| DELETE | `/config/{dotted.path}` | Delete configuration value at path (reset to default). |
+| GET | `/config/_audit` | Get recent configuration changes. |
+| GET | `/config/_paths` | List all configuration paths. |
+| GET | `/config/{dotted.path}` | Get configuration value by dot-notation path. |
+| PATCH | `/config/{dotted.path}` | Partially update configuration at path. |
+| POST | `/config/_reset` | Reset configuration to defaults. |
+| PUT | `/config/{dotted.path}` | Set configuration value at path. |
 
 <!-- END GENERATED -->
 

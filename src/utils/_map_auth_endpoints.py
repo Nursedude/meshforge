@@ -150,6 +150,7 @@ class AuthEndpointsMixin:
     # ── routes ──────────────────────────────────────────────────────────
 
     def _serve_login_page(self) -> None:
+        """The pairing-code login page (BIC-3)."""
         body = _LOGIN_PAGE.replace("__PAIR__", html.escape(web_auth.PAIR_COMMAND)).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -191,6 +192,7 @@ class AuthEndpointsMixin:
             return None
 
     def _handle_login(self) -> None:
+        """Trade a one-time pairing code for an operator session cookie."""
         if not self._client_is_trusted() or not self._origin_ok():
             self.auth_refusals.note(self._client_addr(), "POST", "/login", "untrusted origin/client")
             self._serve_json({"error": "forbidden",
@@ -228,6 +230,7 @@ class AuthEndpointsMixin:
         self.wfile.write(body)
 
     def _handle_logout(self) -> None:
+        """End this browser's operator session."""
         if not self._origin_ok():
             self._serve_json({"error": "forbidden", "detail": "log out from the map page"},
                              status=403)

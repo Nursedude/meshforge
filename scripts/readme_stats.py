@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""readme_stats.py — SSOT for the volatile structural counts cited in README.md.
+"""readme_stats.py — SSOT for the volatile structural counts (and the version)
+cited in README.md and the docs.
 
 The problem: README prose hardcodes numbers (test-file count, handler-module
 count) that drift the instant code changes, and nothing catches it. The
@@ -124,8 +125,11 @@ def _count_handler_modules() -> int | None:
     return n
 
 
-# key -> zero-arg computation returning the ground-truth int, or None when the
+# key -> zero-arg computation returning the ground-truth value, or None when the
 # stat does not apply to this repo (a repo with no such sentinel is unaffected).
+# The value's TYPE is the comparison contract (see _matches): an int is a count
+# (``1,234`` == 1234); a str — only ``version`` today — compares exactly, so a
+# new count must return an int, never a numeric string.
 def _count_research_docs() -> int | None:
     d = ROOT / ".claude" / "research"
     if not d.is_dir():
