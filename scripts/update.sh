@@ -240,9 +240,18 @@ SVC_UPDATED=false
 
 # Update meshforge.service from repo template (if it exists in /etc/systemd/system/)
 if [[ -f /etc/systemd/system/meshforge.service ]] && [[ -f "$INSTALL_DIR/scripts/meshforge.service" ]]; then
-    cp "$INSTALL_DIR/scripts/meshforge.service" /etc/systemd/system/meshforge.service
-    echo -e "  ${GREEN}✓ meshforge.service updated${NC}"
-    SVC_UPDATED=true
+    # Never replace a unit that runs a DIFFERENT PROGRAM under the same name
+    # (2026-10-21: the TUI launcher's unit overwrote the running NOC
+    # orchestrator's; the next restart crash-looped it 2,172 times).
+    sp_rc=0
+    sp_out="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$INSTALL_DIR/src" timeout 30 python3 -m utils.user_unit_templates same-program /etc/systemd/system/meshforge.service "$INSTALL_DIR/scripts/meshforge.service" 2>/dev/null)" || sp_rc=$?
+    if [[ $sp_rc -eq 0 ]]; then
+        cp "$INSTALL_DIR/scripts/meshforge.service" /etc/systemd/system/meshforge.service
+        echo -e "  ${GREEN}✓ meshforge.service updated${NC}"
+        SVC_UPDATED=true
+    else
+        echo -e "  ${YELLOW}⚠ meshforge.service NOT replaced — installed vs template: ${sp_out:-same-program check could not run (rc=$sp_rc)}; decide which program owns the name, then install it by hand${NC}"
+    fi
 fi
 
 # Update rnsd.service (system-level) if it exists

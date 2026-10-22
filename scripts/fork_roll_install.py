@@ -185,6 +185,21 @@ def verify(site: str, pin: Pin) -> Tuple[bool, str]:
     return (ver == pin.version and sha == pin.sha), got
 
 
+def _waived_pipx(path: Optional[str] = None) -> dict:
+    """{pipx venv name: reason} from the rns_stray_env_drift waiver file — ONE
+    declaration, read by the probe's own parser (a malformed file waives
+    nothing). Labels look like ``user-pipx:<venv>`` / ``root-pipx:<venv>``."""
+    sys.path.insert(0, str(ROOT / "src"))
+    from utils.watchdog_probes_rns_env import (DEFAULT_RNS_STRAY_WAIVERS_PATH,
+                                               _load_stray_waivers)
+    out = {}
+    for label, why in _load_stray_waivers(path or DEFAULT_RNS_STRAY_WAIVERS_PATH).items():
+        kind, _, name = label.partition(":")
+        if name and kind.endswith("pipx"):
+            out[name] = why
+    return out
+
+
 def run(dist: str, pin_file: Path, apply: bool, out: Callable[[str], None] = print) -> int:
     try:
         pin = read_pin(dist, pin_file)
@@ -201,8 +216,15 @@ def run(dist: str, pin_file: Path, apply: bool, out: Callable[[str], None] = pri
         out(f"  no env carries {dist} on this box — nothing installed (never adds an env)")
         return 0
     rc = 0
+    waived = _waived_pipx()
     for site in sites:
         env = classify(site)
+        if env.kind == "pipx" and env.pipx_name in waived:
+            # The SAME declaration the rns_stray_env_drift probe honours: an
+            # env the operator keeps on stock RNS on purpose (MeshChatX, the
+            # interop client, 2026-10-21) is never rolled.
+            out(f"  skip    pipx      {site}  WAIVED — {waived[env.pipx_name]}")
+            continue
         if env.kind == "unknown":
             out(f"  UNKNOWN env {site}: no install form — NOT installed; check it by hand")
             rc = max(rc, 2)

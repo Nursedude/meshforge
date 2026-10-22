@@ -925,8 +925,18 @@ class UpdatesHandler(BaseHandler):
             svc_src = meshforge_dir / 'scripts' / 'meshforge.service'
             svc_dst = Path('/etc/systemd/system/meshforge.service')
             if svc_src.exists() and svc_dst.exists():
-                shutil.copy2(str(svc_src), str(svc_dst))
-                copied.append("meshforge.service")
+                # Never replace a unit that runs a DIFFERENT PROGRAM under the
+                # same name (2026-10-21: the TUI launcher's unit overwrote the
+                # running NOC orchestrator's; the next restart crash-looped it).
+                from utils import user_unit_templates as uut
+                verdict, have, want = uut.same_program(svc_dst, svc_src)
+                if verdict in ("same", "none"):
+                    shutil.copy2(str(svc_src), str(svc_dst))
+                    copied.append("meshforge.service")
+                else:
+                    skipped.append(f"meshforge.service NOT replaced ({verdict}: installed runs "
+                                   f"{have or '?'}, template runs {want or '?'}) — decide "
+                                   f"which program owns the name")
 
             user_svc_dir = get_real_user_home() / '.config' / 'systemd' / 'user'
             templates_dir = meshforge_dir / 'templates' / 'systemd'

@@ -142,7 +142,7 @@ def test_two_dist_infos_in_one_site_fail(req, tmp_path):
 
 # ---- the run ----------------------------------------------------------------------
 
-def _run(sites, req, apply, install_rc=0, verify=None, owner="u"):
+def _run(sites, req, apply, install_rc=0, verify=None, owner="u", waived=None):
     lines = []
     calls = []
 
@@ -156,6 +156,7 @@ def _run(sites, req, apply, install_rc=0, verify=None, owner="u"):
         return R()
 
     with patch.object(fri, "survey", return_value=sites), \
+         patch.object(fri, "_waived_pipx", return_value=dict(waived or {})), \
          patch.object(fri, "_owner", return_value=owner), \
          patch.object(fri, "verify", side_effect=verify or (lambda s, p: (True, "ok"))), \
          patch.object(fri.subprocess, "run", side_effect=fake_run):
@@ -241,3 +242,28 @@ def test_a_find_that_errors_is_not_a_complete_survey():
     with patch.object(fri.subprocess, "run", return_value=R()):
         with pytest.raises(fri.SurveyError):
             fri.survey("lxmf")
+
+
+
+# ---- 2026-10-21: a waived (stock-by-design) pipx env is never rolled -----------
+
+MCX = "/home/u/.local/share/pipx/venvs/reticulum-meshchatx/lib/python3.13/site-packages"
+NOMAD = "/home/u/.local/share/pipx/venvs/nomadnet/lib/python3.13/site-packages"
+
+
+def test_a_waived_pipx_env_is_skipped_and_said(req):
+    rc, calls, text = _run([MCX, NOMAD], req, apply=True,
+                           waived={"reticulum-meshchatx": "stock RNS interop client"})
+    assert rc == 0, text
+    assert all("reticulum-meshchatx" not in " ".join(c) for c in calls), calls
+    assert any("nomadnet" in " ".join(c) for c in calls)
+    assert "WAIVED" in text and "stock RNS interop client" in text
+
+
+def test_waivers_are_read_from_the_probes_own_file(tmp_path):
+    f = tmp_path / "w.json"
+    f.write_text(json.dumps({"waived": {"user-pipx:reticulum-meshchatx": "interop",
+                                        "system-dist": "not a pipx label"}}))
+    assert fri._waived_pipx(str(f)) == {"reticulum-meshchatx": "interop"}
+    f.write_text("{not json")
+    assert fri._waived_pipx(str(f)) == {}  # malformed waives nothing

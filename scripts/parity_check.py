@@ -146,6 +146,9 @@ BYTE_IDENTICAL = (
     # MeshChatX client rpc_key step (2026-10-21) — the installers differ per
     # app, the block and its test do not.
     "tests/test_install_meshchatx_client_key.py",
+    # One unit name, one definition + the MeshChatX stock-RNS waiver (2026-10-21).
+    "tests/test_service_unit_single_definition.py",
+    "tests/test_install_meshchatx_stock_waiver.py",
     # BIC-3 operator session store (2026-10-13): hashed sessions + pairing codes
     # behind both maps' default-deny write gate. App-neutral (CONFIG_DIR names
     # the store dir and the CLI), so the twins must refuse, expire and fail

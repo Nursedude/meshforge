@@ -439,3 +439,36 @@ def test_a_raw_copy_of_the_rendered_variant_is_not_that_variant(tmp_path):
     assert uut.render(c, (u / "pane.service").read_text()) is None
     assert uut.audit_unit(c, u).state == uut.RAW
     assert not uut.deploy_plan(tmp_path / "t", u)[0].say
+
+
+# ── same name, different program (2026-10-21, meshanchor.service) ──────
+
+ORCH = ("[Service]\nExecStart=/opt/x/venv/bin/python -m core.orchestrator --start --monitor\n"
+        "ExecStop=/opt/x/venv/bin/python -m core.orchestrator --stop\n")
+LAUNCHER = "[Service]\nExecStart=/usr/bin/python3 /opt/x/src/launcher.py --no-services\n"
+
+
+def test_exec_program_reads_the_module_or_script_not_the_interpreter():
+    assert uut.exec_program(ORCH) == "python -m core.orchestrator"
+    assert uut.exec_program(LAUNCHER) == "python /opt/x/src/launcher.py"
+    assert uut.exec_program("[Service]\nExecStart=-/usr/bin/rnsd --service\n") == "/usr/bin/rnsd"
+    assert uut.exec_program("[Service]\nExecStart=\nExecStart=/bin/x\n") == "/bin/x"
+    assert uut.exec_program("[Service]\nType=oneshot\n") is None
+
+
+def test_the_launcher_over_the_orchestrator_is_different_and_refused(tmp_path):
+    """The exact 10-19 overwrite: same unit name, a different program."""
+    a, b = tmp_path / "installed.service", tmp_path / "template.service"
+    a.write_text(ORCH)
+    b.write_text(LAUNCHER)
+    assert uut.same_program(a, b)[0] == "different"
+    assert uut.main(["same-program", str(a), str(b)]) == 3   # never 1: python's import-failure code
+    b.write_text(ORCH.replace("--monitor", "--monitor --graceful"))
+    assert uut.same_program(a, b)[0] == "same"          # an arg change is a refresh
+    assert uut.main(["same-program", str(a), str(b)]) == 0
+    b.write_text("[Service]\n")
+    assert uut.main(["same-program", str(a), str(b)]) == 2  # a template that runs nothing never copies
+    a.write_text("[Service]\nEnvironment=X=1\n")           # a broken stub runs nothing
+    b.write_text(ORCH)
+    assert uut.same_program(a, b)[0] == "none"
+    assert uut.main(["same-program", str(a), str(b)]) == 0  # replacing it swaps no program

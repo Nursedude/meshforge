@@ -79,6 +79,11 @@ run_as_user_with_path() {
     fi
 }
 
+# Run as root: directly when we are, else `sudo -n` (never prompts).
+as_root() {
+    if [[ "$(id -u)" -eq 0 ]]; then "$@"; else sudo -n "$@"; fi
+}
+
 run_user_systemctl() {
     if [[ "$(id -un)" == "${REAL_USER}" ]]; then
         systemctl --user "$@"
@@ -620,6 +625,51 @@ PYEOF
             run_user_systemctl restart meshchatx ;;
         *)  echo "  WARN: ${client_out:-could not check ${client_cfg}} (rc=${client_rc})" >&2 ;;
     esac
+fi
+
+echo
+echo "=== Stock-RNS waiver (MeshChatX is the fleet's stock-RNS interop client) ==="
+# Operator decision 2026-10-21: MeshChatX stays on the STOCK rns/lxmf its pipx
+# venv resolves from PyPI — a current upstream client against our fork rnsd is
+# the interop truth (RPC measured compatible: interface-stats live, 0 errors).
+# ONE declaration, read by the rns_stray_env_drift probe AND fork_roll_install
+# (which never rolls a waived env). Other entries in the file are kept.
+waiver_file="${RNS_STRAY_WAIVERS:-/etc/meshforge/rns_stray_waivers.json}"
+waiver_rc=0
+waiver_out="$(as_root python3 -I - "${waiver_file}" <<'PYEOF'
+import json, os, sys
+path = sys.argv[1]
+label = "user-pipx:reticulum-meshchatx"
+why = ("MeshChatX — the fleet's stock-RNS interop client (operator 2026-10-21); "
+       "RPC to the fork rnsd measured compatible")
+doc = {}
+if os.path.exists(path):
+    try:
+        doc = json.load(open(path))
+    except ValueError:
+        print(f"{path} is malformed — not rewritten (a malformed file waives nothing)")
+        sys.exit(4)
+waived = doc.setdefault("waived", {})
+if not isinstance(waived, dict):
+    print(f"{path}: 'waived' is not an object — not rewritten"); sys.exit(4)
+if waived.get(label) == why:
+    print("already declared"); sys.exit(0)
+waived[label] = why
+os.makedirs(os.path.dirname(path), exist_ok=True)
+tmp = path + ".tmp"
+with open(tmp, "w") as fh:
+    json.dump(doc, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+os.replace(tmp, path)
+print(f"declared {label} in {path}")
+PYEOF
+)" || waiver_rc=$?
+if [[ ${waiver_rc} -eq 0 ]]; then
+    echo "  ${waiver_out}"
+else
+    echo "  WARN: stock-RNS waiver not written (rc=${waiver_rc}): ${waiver_out:-no root}" >&2
+    echo "        rns_stray_env_drift will page this box and the next fork roll would" >&2
+    echo "        convert MeshChatX to the fork; re-run this installer with sudo." >&2
 fi
 
 echo "=== Verifying ==="

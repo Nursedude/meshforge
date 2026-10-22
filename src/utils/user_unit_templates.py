@@ -50,6 +50,10 @@ CLI (for the shell copiers; exit 0 unless the plan itself could not be made):
     python3 -m utils.user_unit_templates audit <templates_dir> [<user_unit_dir>]
         one line per installed-or-templated unit; exit 1 if any installed unit
         is RAW, 2 if any could not be judged, else 0.
+    python3 -m utils.user_unit_templates same-program <installed> <template>
+        <same|different|unknown><TAB><installed program><TAB><template program>;
+        exit 0 same, 3 different, 2 unknown (1 = the check itself did not run) —
+        system-unit copiers replace only on 0.
 """
 from __future__ import annotations
 
@@ -345,12 +349,60 @@ def summarize(rows: List[UnitAudit]):
     return ok, verdict, lines
 
 
+def exec_program(text: str) -> Optional[str]:
+    """What a unit RUNS, for a same-name/different-program check: the first
+    non-empty ``ExecStart=`` command, prefixes (-@:+!) stripped. For a Python
+    interpreter it is the ``-m`` module or the script path — every unit here
+    runs ``python``, so the interpreter alone would make any two units "same".
+    None when the text carries no ExecStart."""
+    for ln in _code_lines(text):
+        if not ln.startswith("ExecStart="):
+            continue
+        argv = ln.split("=", 1)[1].strip().lstrip("-@:+!").split()
+        if not argv:
+            continue  # the `ExecStart=` reset idiom
+        if os.path.basename(argv[0]).startswith("python"):
+            rest = argv[1:]
+            for i, a in enumerate(rest):
+                if a == "-m" and i + 1 < len(rest):
+                    return f"python -m {rest[i + 1]}"
+                if not a.startswith("-"):
+                    return f"python {a}"
+        return argv[0]
+    return None
+
+
+def same_program(installed: Path, template: Path):
+    """(verdict, installed program, template program): verdict is 'same',
+    'none' (the installed unit runs nothing — e.g. a broken stub), 'different',
+    or 'unknown' (unreadable, or the TEMPLATE runs nothing). A copier replaces
+    a system unit only on 'same' or 'none' — 2026-10-21: update.sh replaced the running
+    NOC orchestrator's meshanchor.service with the TUI LAUNCHER's (same name,
+    different program); the next restart crash-looped it 2,172 times."""
+    try:
+        a = exec_program(Path(installed).read_text(encoding="utf-8"))
+        b = exec_program(Path(template).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return "unknown", None, None
+    if b is None:
+        return "unknown", a, b       # a template that runs nothing: never copy it
+    if a is None:
+        return "none", a, b          # nothing runs here: replacing swaps no program
+    return ("same" if a == b else "different"), a, b
+
+
 def _default_user_dir() -> Path:
     from utils.paths import get_real_user_home
     return get_real_user_home() / ".config" / "systemd" / "user"
 
 
 def main(argv: List[str]) -> int:
+    if len(argv) == 3 and argv[0] == "same-program":
+        verdict, a, b = same_program(Path(argv[1]), Path(argv[2]))
+        print(f"{verdict}\t{a or '?'}\t{b or '?'}")
+        # 3, not 1: python exits 1 when this module cannot even be imported,
+        # and a copier must never read "could not check" as "different".
+        return {"same": 0, "none": 0, "different": 3}.get(verdict, 2)
     if len(argv) < 2 or argv[0] not in ("plan", "audit"):
         print(__doc__.split("CLI", 1)[1], file=sys.stderr)
         return 2

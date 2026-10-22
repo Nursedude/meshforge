@@ -121,12 +121,40 @@ def _main_pid(unit: str, user: bool) -> str:
         return ""
 
 
+def _show(unit: str, user: bool) -> dict:
+    """ActiveState / SubState / MainPID / NRestarts, {} when unobservable."""
+    try:
+        r = subprocess.run(_systemctl_query_argv(
+            ["show", unit, "-p", "ActiveState", "-p", "SubState", "-p", "MainPID",
+             "-p", "NRestarts"], user=user), capture_output=True, text=True, timeout=10)
+        return dict(ln.split("=", 1) for ln in r.stdout.splitlines() if "=" in ln)
+    except (subprocess.SubprocessError, OSError):
+        return {}
+
+
+def stayed_up(after: dict, settled: dict) -> Tuple[Optional[bool], str]:
+    """(ok, why): a restart succeeded only if, after the settle window, the
+    unit is active/running on the SAME MainPID with NRestarts not climbing.
+    2026-10-21: "MainPID changed" passed for meshanchor.service while it
+    crash-looped (3.5 s after start) — 2,172 restarts before anyone looked."""
+    if not settled:
+        return None, "state unobservable after settle"
+    bad = []
+    if (settled.get("ActiveState"), settled.get("SubState")) != ("active", "running"):
+        bad.append(f"state {settled.get('ActiveState')}/{settled.get('SubState')}")
+    if settled.get("MainPID") != after.get("MainPID"):
+        bad.append(f"MainPID {after.get('MainPID')} -> {settled.get('MainPID')}")
+    if settled.get("NRestarts") != after.get("NRestarts"):
+        bad.append(f"NRestarts {after.get('NRestarts')} -> {settled.get('NRestarts')}")
+    return (not bad), ", ".join(bad)
+
+
 def _scope(user: bool) -> str:
     return "user" if user else "system"
 
 
 def run(dists: Sequence[str], apply: bool, out: Callable[[str], None] = print,
-        settle_s: float = 5.0) -> int:
+        settle_s: float = 15.0) -> int:
     obs = measure_stale(dists)
     if not isinstance(obs, Seen):
         why = getattr(obs, "why", str(obs))
@@ -136,6 +164,7 @@ def run(dists: Sequence[str], apply: bool, out: Callable[[str], None] = print,
     out(f"watched: {' '.join(dists)}; behind: "
         + (", ".join(f"{u} ({_scope(s)})" for u, s in st.targets) or "none"))
     rc = 0
+    restarted = []
     if apply:
         for unit, user in st.targets:
             active = _is_active(unit, user)
@@ -165,8 +194,18 @@ def run(dists: Sequence[str], apply: bool, out: Callable[[str], None] = print,
                 rc = max(rc, 1)
             else:
                 out(f"  restarted {unit} ({_scope(user)}) {before} -> {after}")
+                restarted.append((unit, user, _show(unit, user)))
         if st.targets and settle_s:
             threading.Event().wait(settle_s)
+        for unit, user, after_state in restarted:
+            up, why = stayed_up(after_state, _show(unit, user))
+            if up is None:
+                out(f"  UNKNOWN {unit} ({_scope(user)}): {why}")
+                rc = max(rc, 2)
+            elif not up:
+                out(f"  FAIL {unit} ({_scope(user)}): did not stay up after "
+                    f"{settle_s:g}s — {why} (crash loop? read its journal)")
+                rc = max(rc, 1)
         obs = measure_stale(dists)
         if not isinstance(obs, Seen):
             out(f"UNKNOWN — re-measure unavailable ({getattr(obs, 'why', obs)})")

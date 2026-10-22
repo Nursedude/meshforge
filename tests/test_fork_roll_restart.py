@@ -117,7 +117,9 @@ def test_measure_rns_clients_unchanged_by_the_shared_probe(tmp_path):
 class _Box:
     """A fake box: MainPIDs per unit, restart bumps the pid; measure is scripted."""
 
-    def __init__(self, measures, active=None, bump=True, restart_ok=True):
+    def __init__(self, measures, active=None, bump=True, restart_ok=True, crash=()):
+        self.crash = set(crash)       # units that crash-loop right after start
+        self.shown = {}
         self.measures = list(measures)
         self.pids = {}
         self.active = active or {}
@@ -133,6 +135,15 @@ class _Box:
 
     def main_pid(self, unit, user):
         return self.pids.setdefault(unit, 100)
+
+    def show(self, unit, user):
+        n = self.shown[unit] = self.shown.get(unit, 0) + 1
+        pid = self.pids.setdefault(unit, 100)
+        if unit in self.crash and n > 1:   # the post-settle read
+            return {"ActiveState": "activating", "SubState": "auto-restart",
+                    "MainPID": "0", "NRestarts": "3"}
+        return {"ActiveState": "active", "SubState": "running",
+                "MainPID": str(pid), "NRestarts": "0"}
 
     def restart(self, unit, user=False, timeout=30):
         self.restarted.append((unit, user))
@@ -151,6 +162,7 @@ def _run(box, apply=True):
     with patch.object(frr, "measure_stale", box.measure), \
          patch.object(frr, "_is_active", box.is_active), \
          patch.object(frr, "_main_pid", box.main_pid), \
+         patch.object(frr, "_show", box.show), \
          patch.object(frr, "restart_service", box.restart):
         rc = frr.run(("rns", "lxmf"), apply=apply, out=lines.append, settle_s=0)
     return rc, "\n".join(lines)
@@ -401,3 +413,23 @@ def test_restart_waits_as_long_as_the_unit_may_take_to_stop():
     with patch.object(frr, "stop_deadline_s", return_value=310):
         _run(box)
     assert seen["timeout"] >= 310
+
+
+# ── 2026-10-21: "MainPID changed" is not success ───────────────────────
+
+def test_a_unit_that_crash_loops_after_restart_is_FAIL_not_restarted():
+    """meshanchor.service passed 'MainPID changed' at 08:00:41 and crashed
+    3.5 s later — 2,172 restarts before anyone looked. After the settle
+    window the unit must still be active/running on the same MainPID."""
+    box = _Box([_stale([("meshanchor", False)]), _stale([])], crash={"meshanchor"})
+    rc, text = _run(box)
+    assert rc == 1, text
+    assert "did not stay up" in text and "auto-restart" in text
+
+
+def test_stayed_up_names_every_way_it_failed():
+    after = {"ActiveState": "active", "SubState": "running", "MainPID": "7", "NRestarts": "0"}
+    ok, why = frr.stayed_up(after, dict(after, MainPID="9", NRestarts="2"))
+    assert not ok and "MainPID 7 -> 9" in why and "NRestarts 0 -> 2" in why
+    assert frr.stayed_up(after, dict(after)) == (True, "")
+    assert frr.stayed_up(after, {})[0] is None

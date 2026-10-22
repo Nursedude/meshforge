@@ -1,3 +1,8 @@
+# meshforge.service — the NOC ORCHESTRATOR (core.orchestrator). ONE definition:
+# byte-identical to the unit scripts/install_noc.sh writes (test-pinned).
+# 2026-10-21: this file used to be the interactive TUI launcher under the
+# same name; update.sh/the TUI refresh copied it over a running orchestrator
+# and the next restart crash-looped meshanchor.service 2,172 times.
 [Unit]
 Description=MeshForge Mesh Network Operations Center
 Documentation=https://github.com/Nursedude/meshforge
@@ -7,19 +12,13 @@ Wants=meshtasticd.service rnsd.service
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/meshforge
-ExecStart=/usr/bin/python3 /opt/meshforge/src/launcher.py --no-services
+WorkingDirectory=/opt/meshforge/src
+# Orchestrator manages meshtasticd and rnsd (graceful: stay up even if services missing)
+ExecStart=/opt/meshforge/venv/bin/python -m core.orchestrator --start --monitor --graceful
+ExecStop=/opt/meshforge/venv/bin/python -m core.orchestrator --stop
 Restart=on-failure
 RestartSec=10
 
-# Security hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/var/log /tmp /home
-PrivateTmp=true
-
-# Environment
 Environment=PYTHONUNBUFFERED=1
 
 [Install]
