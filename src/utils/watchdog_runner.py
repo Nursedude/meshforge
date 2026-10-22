@@ -117,6 +117,7 @@ from utils.watchdog_probes import (
     probe_tracer_peer_unreachable,
     signal_to_dict,
 )
+from utils.watchdog_probes_rns import rns_stack_presence  # noqa: E402
 from utils.watchdog_probes_peer_cron import (  # noqa: E402
     probe_peer_cron_verdict_stale,
 )
@@ -301,11 +302,18 @@ def run_all_probes(
     # unreachable (binary lookup fails fast on RNS-less boxes — no
     # subprocess spawned).
     rns_status = run_rnstatus(timeout_s=8.0)
+    # ONE presence answer per tick for the three consumers (only needed on a
+    # fast failure; a timeout is never absence). 2026-10-21.
+    rns_presence = (rns_stack_presence()
+                    if getattr(rns_status, "parse_error", None)
+                    and not getattr(rns_status, "timed_out", False)
+                    else None)
 
     # RNS RPC unresponsive (2026-05-30): rnstatus itself hung though the
     # shared-instance socket accepts — the wedged-rnsd-RPC class the
     # connect-only shared-instance probe can't see (#68/#69 family).
-    sig = probe_rns_rpc_responsive(rnstatus_status=rns_status)
+    sig = probe_rns_rpc_responsive(rnstatus_status=rns_status,
+                                   rns_presence=rns_presence)
     if sig is not None:
         signals.append(sig)
 
@@ -321,11 +329,12 @@ def run_all_probes(
     # read healthy, because traffic was still flowing over TCP. Reuses the
     # rnstatus already fetched above: a second subprocess is the contention
     # class we spent this week curing.
-    sig = probe_rf_leg_silent(status=rns_status)
+    sig = probe_rf_leg_silent(status=rns_status, rns_presence=rns_presence)
     if sig is not None:
         signals.append(sig)
 
-    sig = probe_rns_interface_down_peer_reachable(rnstatus_status=rns_status)
+    sig = probe_rns_interface_down_peer_reachable(
+        rnstatus_status=rns_status, rns_presence=rns_presence)
     if sig is not None:
         signals.append(sig)
 

@@ -71,6 +71,75 @@ def _token_is_ours(token: str, instance_name: str) -> bool:
     return " " in instance_name and token == instance_name.split(" ", 1)[0]
 
 
+#: RNS's default TCP shared-instance ports (``shared_instance_type = tcp``):
+#: an instance served there binds no ``@rns/`` abstract socket.
+_RNS_TCP_SHARED_PORTS = ("37428", "37429")
+
+
+def _rns_tcp_shared_listening(
+    *, ss_path: str = "ss", ss_output: Optional[str] = None,
+) -> Optional[bool]:
+    """True if anything LISTENs on an RNS TCP shared-instance port, None when
+    the table is unobservable (never "no listener")."""
+    if ss_output is None:
+        try:
+            proc = subprocess.run([ss_path, "-tlnH"], capture_output=True,
+                                  text=True, timeout=5)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return None
+        if proc.returncode != 0:
+            return None
+        ss_output = proc.stdout
+    return any(re.search(rf":{port}\s", ss_output + " ")
+               for port in _RNS_TCP_SHARED_PORTS)
+
+
+def rns_stack_presence(
+    *, ss_output: Optional[str] = None, ss_tcp_output: Optional[str] = None,
+) -> str:
+    """``"absent"`` when this box hosts NO RNS stack BY DESIGN, else
+    ``"unknown"`` — the input to ``note_unit_presence_gate`` for the
+    rnstatus-consuming probes (2026-10-21).
+
+    meshforge-lab (role ``lab``: ``rnsd: absent``) read ``indeterminate`` on
+    three of these probes from its first tick, so ``detector_blind_any`` was
+    permanently active. ``absent`` needs BOTH halves:
+
+    * DECLARED — the box's effective role declaration says ``rnsd: absent``
+      (``role_declared_unit_state``; an unhonored override is unresolvable);
+    * OBSERVED — no ``@rns/`` listener bound and nothing on the TCP
+      shared-instance ports, so no rnsd, user-unit rnsd, host-fallback app or
+      ``shared_instance_type = tcp`` instance is serving RNS here.
+      Residual (stated, not hidden): a ``share_instance = No`` standalone RNS
+      binds neither — undeclared on an ``rnsd: absent`` box, and no
+      rnstatus can reach it either.
+
+    Never inferred from the rnstatus binary or the system unit: the root
+    watchdog cannot see a ``~/.local/bin`` rnstatus, and a user-unit rnsd has
+    no system unit (review of v1, 2026-10-21). Declared-enabled-but-missing
+    stays ``unknown`` and loud. Any error → ``unknown``.
+    """
+    try:
+        from utils.role_declaration import role_declared_unit_state
+        if role_declared_unit_state("rnsd") != "absent":
+            return "unknown"
+        tokens = _rns_listener_tokens(ss_output=ss_output)
+        if tokens is None or tokens:
+            return "unknown"
+        if _rns_tcp_shared_listening(ss_output=ss_tcp_output) is not False:
+            return "unknown"
+        return "absent"
+    except Exception:  # noqa: BLE001 - unresolvable presence is never absence
+        return "unknown"
+
+
+#: The reason every rnstatus consumer gives when ``rns_stack_presence`` says
+#: absent — ONE string so the three probes cannot drift apart.
+RNS_ABSENT_BY_DESIGN_REASON = (
+    "role declares rnsd absent and no @rns/ or TCP shared-instance listener; "
+    "no RNS stack on this box by design")
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Probe: RNS namespace collision (Issue #69)
 # ─────────────────────────────────────────────────────────────────────
@@ -929,6 +998,7 @@ def probe_rns_rpc_responsive(
     *,
     rnstatus_status: "Optional[RNSStatus]" = None,
     timeout_s: float = 8.0,
+    rns_presence: Optional[str] = None,
 ) -> Optional[Signal]:
     """Detect a wedged rnsd RPC: ``rnstatus`` itself hangs even though the
     shared-instance socket accepts the connection.
@@ -984,8 +1054,11 @@ def probe_rns_rpc_responsive(
             # the slow streak: "N CONSECUTIVE slow ticks" must not span an
             # rnsd restart (finding 2, 2026-09-09).
             _rpc_slow_streak = 0
-            note_disposition("rns_rpc_unresponsive", "indeterminate",
-                             reason="rnstatus failed fast (rnsd down or binary missing)")
+            note_unit_presence_gate(
+                "rns_rpc_unresponsive",
+                rns_presence or rns_stack_presence(),
+                absent_reason=RNS_ABSENT_BY_DESIGN_REASON,
+                unresolved_reason="rnstatus failed fast (rnsd down or binary missing)")
             return None
         return _judge_rnstatus_latency(status.duration_s)
 
@@ -1179,6 +1252,7 @@ def probe_rns_interface_down_peer_reachable(
     rnstatus_status: "Optional[RNSStatus]" = None,
     rnstatus_text: Optional[str] = None,
     reachable_timeout_s: float = 3.0,
+    rns_presence: Optional[str] = None,
 ) -> Optional[Signal]:
     """Detect a configured TCPInterface stuck ``Status: Down`` while its
     peer host:port is still TCP-reachable — the 2026-05-30 incident shape.
@@ -1223,8 +1297,13 @@ def probe_rns_interface_down_peer_reachable(
     # rns_rpc_unresponsive probe owns the rnstatus-timeout (wedged-RPC)
     # case (it keys on RNSStatus.timed_out, not on this parse_error).
     if status.parse_error:
-        note_disposition("rns_interface_down_peer_reachable", "indeterminate",
-                         reason="rnstatus errored; interface table unobservable")
+        # A timeout is something answering slowly (#72) — never absence.
+        note_unit_presence_gate(
+            "rns_interface_down_peer_reachable",
+            "unknown" if status.timed_out
+            else (rns_presence or rns_stack_presence()),
+            absent_reason=RNS_ABSENT_BY_DESIGN_REASON,
+            unresolved_reason="rnstatus errored; interface table unobservable")
         return None
     # N2 (2026-07-18): empty rnstatus output / unrecognized error text
     # yields parse_error=None WITH interfaces=[] — but a healthy rnstatus

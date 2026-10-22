@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from utils.role_declaration import _load_provision_role
 from utils.watchdog_probe_core import (
     Signal,
     _SYSTEM_DIST_GLOBS,
@@ -897,13 +898,7 @@ def _plan_role_actions(role: str, overrides: dict, meshforge_root: str):
     fleet_roles.yaml doesn't carry yet).
     """
     try:
-        import importlib.util
-        script = os.path.join(meshforge_root, "scripts", "provision_role.py")
-        spec = importlib.util.spec_from_file_location("provision_role", script)
-        import sys
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = mod  # register before exec (py3.12+ @dataclass eval; see probe_parity_drift)
-        spec.loader.exec_module(mod)
+        mod = _load_provision_role(meshforge_root)
         catalog = mod.load_roles(mod.DEFAULT_ROLES_FILE)
     except Exception:
         return None  # tool/catalog unavailable → indeterminate, don't alarm

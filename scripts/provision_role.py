@@ -253,6 +253,18 @@ def _honored_override_state(ov) -> Optional[str]:
     return state if state in VALID_UNIT_STATES else None
 
 
+def effective_unit_state(services: dict, overrides: dict, unit: str) -> Optional[str]:
+    """The EFFECTIVE declared state of ``unit``: an honored service_override
+    wins; an unhonored one is ``None`` (unresolvable, never the role's line);
+    with no override, the role's ``services`` value as written. ONE rule for
+    the converge's rnsd masking invariant and the watchdog's
+    RNS-absent-by-design gate (honest_failure_modes #5, 2026-10-21)."""
+    ov = (overrides or {}).get(unit)
+    if ov is None:
+        return services.get(unit)
+    return _honored_override_state(ov)
+
+
 def _override_action(unit: str, ov) -> Action:
     """Render one ``service_overrides`` entry as its single plan Action."""
     reason = (ov.get("reason") or "").strip() if isinstance(ov, dict) else ""
@@ -746,11 +758,10 @@ def plan(role_def: dict, overrides: Optional[Dict[str, dict]] = None) -> List[Ac
     # the TUI core step) then masked the very RNS host the waiver named as
     # owner — Issue #69 in reverse, executed by the converge. In dry-run the
     # same line paged role_drift forever over an honored exception.
-    rnsd_ov = overrides.get("rnsd")
-    if rnsd_ov is None:
-        rnsd_effective, dispute = services.get("rnsd"), ""
+    rnsd_effective = effective_unit_state(services, overrides, "rnsd")
+    if overrides.get("rnsd") is None:
+        dispute = ""
     else:
-        rnsd_effective = _honored_override_state(rnsd_ov)
         dispute = "" if rnsd_effective else (
             "a service_override for rnsd that is NOT honored (no reason, or a "
             "missing/misspelled state)")

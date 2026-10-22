@@ -89,6 +89,7 @@ from utils.watchdog_probe_core import (
     Signal,
     note_disposition,
     note_state_write_failure,
+    note_unit_presence_gate,
 )
 
 # The class name below is repeated as a LITERAL at every emit site, and that is
@@ -318,6 +319,7 @@ def probe_rf_leg_silent(
     gap_memory_ticks: int = GAP_MEMORY_TICKS,
     uncalibrated_ticks: int = UNCALIBRATED_SILENCE_TICKS,
     raw_timeout_s: float = RAW_STATS_TIMEOUT_S,
+    rns_presence: Optional[str] = None,
 ) -> Optional[Signal]:
     """Judge each RNode RF interface on bytes MOVED, not on interface state.
 
@@ -339,9 +341,19 @@ def probe_rf_leg_silent(
     # which read as "no RNode configured here" (inert) — a #72 wedge on the
     # RNode box rendered as absent-by-design for its whole duration.
     parse_error = getattr(status, "parse_error", None)
-    if parse_error or getattr(status, "timed_out", False):
+    if getattr(status, "timed_out", False):
         note_disposition("rf_leg_silent", "indeterminate",
                          reason=f"rnstatus unobservable: {parse_error or 'timed out'}")
+        return None
+    if parse_error:
+        # A fast failure on a box with no RNS stack by design is absence, not
+        # blindness (2026-10-21, meshforge-lab). A timeout above never is.
+        from utils.watchdog_probes_rns import (
+            RNS_ABSENT_BY_DESIGN_REASON, rns_stack_presence)
+        note_unit_presence_gate(
+            "rf_leg_silent", rns_presence or rns_stack_presence(),
+            absent_reason=RNS_ABSENT_BY_DESIGN_REASON,
+            unresolved_reason=f"rnstatus unobservable: {parse_error}")
         return None
 
     text_ifaces = [i for i in getattr(status, "interfaces", [])
