@@ -1,21 +1,29 @@
-# MeshForge REST API Documentation
+# MeshForge REST API
 
-> **Last reviewed against:** 0.4.6-beta — endpoints added since may be missing
-> here; the live route table is `src/utils/map_http_handler.py`.
-> **Base URL:** `http://localhost:5000/api`
+> **Generated against:** <!--STAT:version-->0.7.0-beta<!--/STAT--> — the endpoint index
+> below is GENERATED from the route code by `scripts/rest_doc.py` and pinned by
+> `tests/test_rest_doc.py`; a route added or removed without `--update` fails CI.
+> Until 2026-10-22 this page documented 29 endpoints (`/api/system/*`,
+> `/api/tools/*`, `/api/analytics/*`, `/api/service/*`, ...) that no server
+> routed; they were removed, not kept as "planned".
 
 ---
 
 ## Overview
 
-MeshForge provides a REST API for:
-- Node management and monitoring
-- Network configuration
-- Gateway bridge control
-- Analytics and metrics
-- Webhook event subscriptions
+Three HTTP servers ship with MeshForge:
 
-All responses are JSON. Errors include `error` field with description.
+- **Map service** (`meshforge-map`, port 5000) — the web map, the `/inbox`
+  chat page, the `/fleet` NOC page, node/network/message JSON, and a proxy to
+  meshtasticd's own HTTP API. Bound on the LAN; reads and writes are gated as
+  described below.
+- **Config API** (the `meshforge` daemon, `127.0.0.1:8081`, loopback only) —
+  read and write gateway settings by dotted path (`/config/rns.port`).
+- **Prometheus exporter** (default port 9090) — `/metrics` plus JSON and
+  Prometheus-query shims for Grafana.
+
+Responses are JSON unless the route serves a page. Errors carry an `error`
+field with a description.
 
 ---
 
@@ -66,476 +74,132 @@ then reads the API from your browser's trusted address.
 
 ## Endpoints
 
-### Nodes
-
-#### GET /api/nodes
-List all known mesh nodes.
-
-**Response:**
-```json
-{
-  "nodes": [
-    {
-      "id": "!abc12345",
-      "name": "MyNode",
-      "short_name": "MYND",
-      "hardware": "TBEAM",
-      "firmware": "2.3.0",
-      "last_seen": "2026-01-15T10:30:00Z",
-      "position": {
-        "latitude": 21.3069,
-        "longitude": -157.8583,
-        "altitude": 50
-      },
-      "metrics": {
-        "rssi": -85,
-        "snr": 8.5,
-        "battery_level": 85
-      }
-    }
-  ]
-}
-```
-
-#### GET /api/nodes/{node_id}
-Get details for a specific node.
-
-#### GET /api/nodes/{node_id}/telemetry
-Get telemetry history for a node.
-
-**Query params:**
-- `hours` - Hours of history (default: 24)
-
----
-
-### System
-
-#### GET /api/system/status
-Get system status overview.
-
-**Response:**
-```json
-{
-  "meshtasticd": {
-    "running": true,
-    "version": "2.3.0",
-    "uptime_seconds": 86400
-  },
-  "rnsd": {
-    "running": true,
-    "version": "0.7.0"
-  },
-  "gateway": {
-    "running": true,
-    "messages_bridged": 1234
-  },
-  "meshforge_version": "0.4.6-beta"
-}
-```
-
-#### GET /api/system/diagnostics
-Run system diagnostics.
-
----
-
-### Gateway
-
-#### GET /api/gateway/status
-Get gateway bridge status.
-
-**Response:**
-```json
-{
-  "running": true,
-  "uptime_seconds": 3600,
-  "meshtastic_connected": true,
-  "rns_connected": true,
-  "messages_bridged": 156,
-  "last_message": "2026-01-15T10:30:00Z"
-}
-```
-
-#### POST /api/gateway/start
-Start the gateway bridge.
-
-#### POST /api/gateway/stop
-Stop the gateway bridge.
-
-#### GET /api/gateway/queue
-Get pending message queue.
-
----
-
-### Configuration
-
-#### GET /api/config/meshtasticd
-Get meshtasticd configuration.
-
-#### PUT /api/config/meshtasticd
-Update meshtasticd configuration.
-
-#### GET /api/config/templates
-List available config templates.
-
-#### POST /api/config/templates/apply
-Apply a configuration template.
-
----
-
-### Network Tools
-
-#### GET /api/tools/ping/{node_id}
-Ping a mesh node.
-
-**Response:**
-```json
-{
-  "success": true,
-  "rtt_ms": 1250,
-  "hops": 2
-}
-```
-
-#### POST /api/tools/traceroute
-Trace route to a node.
-
-**Body:**
-```json
-{
-  "destination": "!abc12345"
-}
-```
-
-#### GET /api/tools/link-budget
-Calculate link budget.
-
-**Query params:**
-- `lat1`, `lon1` - Point 1 coordinates
-- `lat2`, `lon2` - Point 2 coordinates
-- `freq_mhz` - Frequency in MHz (default: 906)
-- `tx_power_dbm` - TX power (default: 20)
-- `antenna_gain_dbi` - Antenna gain (default: 2)
-
----
-
-### Analytics
-
-#### GET /api/analytics/coverage
-Get current coverage statistics.
-
-**Query params:**
-- `nodes` - JSON array of node objects with lat/lon (optional)
-
-**Response:**
-```json
-{
-  "total_nodes": 15,
-  "nodes_with_position": 12,
-  "bounding_box": {
-    "min_lat": 21.25,
-    "max_lat": 21.45,
-    "min_lon": -157.95,
-    "max_lon": -157.75
-  },
-  "center_point": {
-    "latitude": 21.35,
-    "longitude": -157.85
-  },
-  "estimated_area_km2": 150.5,
-  "average_node_spacing_km": 3.5,
-  "coverage_radius_km": 12.3
-}
-```
-
-#### GET /api/analytics/coverage/history
-Get coverage history over time.
-
-**Query params:**
-- `days` - Number of days (default: 7)
-
-#### GET /api/analytics/link-budget/history
-Get link budget measurement history.
-
-**Query params:**
-- `source` - Source node ID (optional)
-- `dest` - Destination node ID (optional)
-- `hours` - Hours of history (default: 24)
-
-**Response:**
-```json
-{
-  "period_hours": 24,
-  "sample_count": 48,
-  "samples": [
-    {
-      "timestamp": "2026-01-15T10:30:00Z",
-      "source_node": "!abc123",
-      "dest_node": "!def456",
-      "rssi_dbm": -95,
-      "snr_db": 5.5,
-      "distance_km": 8.2,
-      "packet_loss_pct": 2.5,
-      "link_quality": "good"
-    }
-  ]
-}
-```
-
-#### GET /api/analytics/link-budget/trends
-Get link budget trend analysis.
-
-**Query params:**
-- `source` - Source node ID (required)
-- `dest` - Destination node ID (required)
-- `hours` - Hours of data (default: 168)
-
-**Response:**
-```json
-{
-  "has_data": true,
-  "sample_count": 156,
-  "period_hours": 168,
-  "rssi": {
-    "avg": -92.5,
-    "min": -105,
-    "max": -82,
-    "trend": "stable"
-  },
-  "snr": {
-    "avg": 6.2,
-    "min": -2,
-    "max": 12,
-    "trend": "improving"
-  },
-  "quality_distribution": {
-    "excellent": 45,
-    "good": 89,
-    "fair": 18,
-    "bad": 4
-  }
-}
-```
-
-#### POST /api/analytics/link-budget
-Record a link budget measurement.
-
-**Body:**
-```json
-{
-  "source_node": "!abc123",
-  "dest_node": "!def456",
-  "rssi_dbm": -95,
-  "snr_db": 5.5,
-  "distance_km": 8.2,
-  "packet_loss_pct": 2.5,
-  "link_quality": "good"
-}
-```
-
-#### GET /api/analytics/health/history
-Get network health history.
-
-**Query params:**
-- `hours` - Hours of history (default: 24)
-
----
-
-### Webhooks
-
-MeshForge can send events to external HTTP endpoints.
-
-#### Event Types
-
-| Event | Description |
-|-------|-------------|
-| `node_online` | Node came online |
-| `node_offline` | Node went offline |
-| `message_received` | Message received |
-| `position_update` | Node position updated |
-| `telemetry_update` | Telemetry data received |
-| `alert_battery_low` | Low battery alert |
-| `alert_signal_poor` | Poor signal alert |
-| `alert_node_unreachable` | Node unreachable |
-| `gateway_status` | Gateway status change |
-| `service_status` | Service status change |
-
-#### Webhook Payload Format
-
-```json
-{
-  "event_type": "node_online",
-  "timestamp": "2026-01-15T10:30:00Z",
-  "source": "meshforge",
-  "version": "1.0",
-  "data": {
-    "node_id": "!abc12345",
-    "node_name": "MyNode"
-  }
-}
-```
-
-#### Headers
-
-| Header | Description |
-|--------|-------------|
-| `Content-Type` | `application/json` |
-| `User-Agent` | `MeshForge-Webhook/1.0` |
-| `X-MeshForge-Event` | Event type |
-| `X-MeshForge-Timestamp` | Event timestamp |
-| `X-MeshForge-Signature` | HMAC-SHA256 signature (if secret configured) |
-
-#### GET /api/analytics/webhooks
-List configured webhook endpoints.
-
-**Response:**
-```json
-{
-  "endpoints": [
-    {
-      "url": "https://example.com/webhook",
-      "name": "My Webhook",
-      "enabled": true,
-      "events": ["node_online", "node_offline"],
-      "timeout_seconds": 10,
-      "retry_count": 3
-    }
-  ],
-  "event_types": ["node_online", "node_offline", "..."]
-}
-```
-
-#### POST /api/analytics/webhooks
-Add a new webhook endpoint.
-
-**Body:**
-```json
-{
-  "url": "https://example.com/webhook",
-  "name": "My Webhook",
-  "events": ["node_online", "node_offline"],
-  "secret": "your-hmac-secret",
-  "timeout_seconds": 10,
-  "retry_count": 3,
-  "headers": {
-    "Authorization": "Bearer token123"
-  }
-}
-```
-
-#### DELETE /api/analytics/webhooks
-Remove a webhook endpoint.
-
-**Query params:**
-- `url` - Webhook URL to remove
-
-#### POST /api/analytics/webhooks/test
-Send a test event to a webhook.
-
-**Body:**
-```json
-{
-  "url": "https://example.com/webhook"
-}
-```
-
----
-
-### Service Management
-
-#### GET /api/service/{name}/status
-Get service status (meshtasticd, rnsd, etc.)
-
-#### POST /api/service/{name}/start
-Start a service.
-
-#### POST /api/service/{name}/stop
-Stop a service.
-
-#### POST /api/service/{name}/restart
-Restart a service.
-
----
-
-## Error Responses
-
-All errors return appropriate HTTP status codes with JSON body:
-
-```json
-{
-  "error": "Description of what went wrong"
-}
-```
-
-| Code | Meaning |
-|------|---------|
-| 400 | Bad request - invalid parameters |
-| 404 | Resource not found |
-| 409 | Conflict - resource already exists |
-| 500 | Internal server error |
-| 503 | Service unavailable |
-
----
-
-## Rate Limiting
-
-No rate limiting currently implemented. For production use, consider:
-- Nginx rate limiting
-- API gateway
-- Token bucket implementation
+`*` marks a prefix route: everything under it is handled by the same code.
+"Served by" is the first docstring sentence of the function that answers.
+
+<!-- BEGIN GENERATED: scripts/rest_doc.py --update — do not edit by hand -->
+
+### Map service — `meshforge-map`, port 5000
+
+| Method | Path | Served by |
+|---|---|---|
+| GET | `/` | Serve the node_map.html file. |
+| GET | `/api/auth/status` | Which mode is this browser in — so the page can show it. |
+| GET | `/api/coverage/*` | Serve terrain-aware coverage prediction for a location. |
+| GET | `/api/fleet/truth` | Serve the honest fleet-truth SSOT (`/api/fleet/truth`). |
+| GET | `/api/gateway/delivery` | Fork C — honest delivery lifecycle counters. |
+| GET | `/api/gateway/queue` | Queue backpressure stats for the watchdog (Issue #74). |
+| GET | `/api/inbox` | GET /api/inbox — conversations, gated like /api/messages/received. |
+| GET | `/api/los/*` | Serve line-of-sight analysis between two points. |
+| GET | `/api/messages/queue` | Serve pending messages from the gateway message queue. |
+| GET | `/api/messages/received*` | Serve received (inbound) messages from the messages database. |
+| GET | `/api/messages/rx-status` | Serve the RX (message listener) status. |
+| GET | `/api/network/interfaces` | Read-only snapshot of RNS.Transport.interfaces. |
+| GET | `/api/network/rns/paths` | Read-only snapshot of RNS Transport.path_table. |
+| GET | `/api/network/topology` | Serve network topology data for D3.js visualization. |
+| GET | `/api/nodes/directory` | Serve the persistent node directory as a GeoJSON FeatureCollection. |
+| GET | `/api/nodes/geojson` | Serve live node GeoJSON with optional bbox/region/preset filtering. |
+| GET | `/api/nodes/history` | Serve node history summary and unique nodes list. |
+| GET | `/api/nodes/snapshot*` | Serve a historical network snapshot for playback. |
+| GET | `/api/nodes/trajectory/*` | Serve trajectory GeoJSON for a specific node. |
+| GET | `/api/proxy/status` | Serve API proxy status and statistics. |
+| GET | `/api/radio/channels` | Serve channels from the connected radio — through a short cache. |
+| GET | `/api/radio/info` | Serve radio device information. |
+| GET | `/api/radio/nodes` | Serve nodes from directly connected radio. |
+| GET | `/api/radio/status` | Serve radio connection status. |
+| GET | `/api/region-presets` | Serve available region preset definitions. |
+| GET | `/api/settings` | Serve current map settings (selected region). |
+| GET | `/api/status` | Serve server status including radio connection info. |
+| GET | `/api/v1/fromradio*` | Serve multiplexed FromRadio packets via the API proxy. |
+| GET | `/api/weather` | Serve space weather and HF band conditions for map overlay. |
+| GET | `/api/websocket/status` | Serve WebSocket server status and connection info. |
+| GET | `/fleet` | Serve the honest fleet NOC visual (`/fleet` → web/fleet.html). |
+| GET | `/fleet/cascade` | Cascade detector snapshot — pre-failure fingerprints state. |
+| GET | `/fleet/delivery` | Serve THIS box's delivery view — the domain's END — as JSON. |
+| GET | `/fleet/dups` | Serve the cross-box dedup rollup (dedup/identity arc STEP 4c). |
+| GET | `/fleet/logs` | Return recent journalctl lines for an allowlisted unit. |
+| GET | `/fleet/slo` | Serve the MeshAnchor `/fleet/slo` peer contract. |
+| GET | `/fleet/tests` | Return the list of allowlisted tests + last-fire info per unit. |
+| GET | `/fleet/tracer-fires` | Return this host's recent tracer fires for one peer. |
+| GET | `/fleet/uplink` | Serve THIS box's Starlink obstruction map, live from the dish. |
+| GET | `/fleet/wan` | Serve the WAN ladder (utils.wan_path): latest run + 24h history. |
+| GET | `/healthz` | Cold-start-safe health endpoint. |
+| GET | `/inbox` | Serve the browser chat inbox (`/inbox` → web/inbox.html, BIC-1). |
+| GET | `/index.html` | Serve the node_map.html file. |
+| GET | `/json/blink` | Proxy a /json/* endpoint from meshtasticd. |
+| GET | `/json/nodes` | Proxy a /json/* endpoint from meshtasticd. |
+| GET | `/json/report` | Proxy a /json/* endpoint from meshtasticd. |
+| GET | `/lab/rollup` | Serve the lab rollup markdown produced by meshforge-lab-rollup. |
+| GET | `/lab/rollup/alphabetical` | Serve the lab rollup markdown produced by meshforge-lab-rollup. |
+| GET | `/lab/synth-rollup` | Serve the lab rollup markdown produced by meshforge-lab-rollup. |
+| GET | `/login` |  |
+| GET | `/mesh` | Serve the Meshtastic web client from disk. |
+| GET | `/mesh/*` | Serve the Meshtastic web client from disk. |
+| GET | `/metrics` | Prometheus scrape endpoint (/metrics). |
+| POST | `/api/inbox/send` | POST /api/inbox/send — same gates as /api/radio/message (it keys a licensed transmitter), then ``inbox_api`` validates, sends, records. |
+| POST | `/api/radio/message` | Handle POST /api/radio/message - send a message via radio. |
+| POST | `/api/settings` | Handle POST /api/settings — save map settings. |
+| POST | `/api/v1/toradio*` | Forward ToRadio protobuf to meshtasticd via the proxy. |
+| POST | `/fleet/run-test` | POST /fleet/run-test — fire an allowlisted lab unit. |
+| POST | `/json/blink` | Proxy a POST JSON endpoint to meshtasticd (blink, restart, etc.). |
+| POST | `/login` |  |
+| POST | `/logout` |  |
+| POST | `/mesh/api/v1/toradio*` | Forward ToRadio protobuf to meshtasticd via the proxy. |
+| POST | `/mesh/json/blink` | Proxy a POST JSON endpoint to meshtasticd (blink, restart, etc.). |
+| POST | `/mesh/restart` | Proxy a POST JSON endpoint to meshtasticd (blink, restart, etc.). |
+| POST | `/restart` | Proxy a POST JSON endpoint to meshtasticd (blink, restart, etc.). |
+| PUT | `/api/v1/toradio*` | Forward ToRadio protobuf to meshtasticd via the proxy. |
+| PUT | `/mesh/api/v1/toradio*` | Forward ToRadio protobuf to meshtasticd via the proxy. |
+
+### Prometheus exporter — default port 9090
+
+| Method | Path | Served by |
+|---|---|---|
+| GET | `/` | Serve index page with available endpoints. |
+| GET | `/api/json/meshcore*` |  |
+| GET | `/api/json/metrics` | Serve metrics as JSON for Grafana Infinity plugin. |
+| GET | `/api/json/nodes` | Serve node data as JSON for Grafana. |
+| GET | `/api/json/status` | Serve system status as JSON. |
+| GET | `/api/v1/label*` | Serve Prometheus label values API for Grafana variable queries. |
+| GET | `/api/v1/labels*` | Serve Prometheus labels API for Grafana compatibility. |
+| GET | `/api/v1/query*` | Serve Prometheus query API for Grafana compatibility. |
+| GET | `/api/v1/query_range*` | Serve Prometheus query_range API for Grafana time-series panels. |
+| GET | `/health` | Serve health check endpoint. |
+| GET | `/healthz` | Serve health check endpoint. |
+| GET | `/metrics` | Serve Prometheus metrics. |
+| POST | `/api/json/metrics` | Serve metrics as JSON for Grafana Infinity plugin. |
+| POST | `/api/json/nodes` | Serve node data as JSON for Grafana. |
+| POST | `/api/json/status` | Serve system status as JSON. |
+| POST | `/api/v1/label*` | Serve Prometheus label values API for Grafana variable queries. |
+| POST | `/api/v1/labels*` | Serve Prometheus labels API for Grafana compatibility. |
+| POST | `/api/v1/query*` | Serve Prometheus query API for Grafana compatibility. |
+| POST | `/api/v1/query_range*` | Serve Prometheus query_range API for Grafana time-series panels. |
+| POST | `/metrics` | Serve Prometheus metrics. |
+
+### Config API — `meshforge` daemon, 127.0.0.1:8081
+
+| Method | Path | Served by |
+|---|---|---|
+| DELETE | `/config/{dotted.path}` |  |
+| GET | `/config/_audit` |  |
+| GET | `/config/_paths` |  |
+| GET | `/config/{dotted.path}` |  |
+| POST | `/config/_reset` |  |
+| PUT | `/config/{dotted.path}` |  |
+
+<!-- END GENERATED -->
 
 ---
 
 ## Examples
 
-### cURL: Get node list
 ```bash
-curl http://localhost:5000/api/nodes
+# server + radio status (no login needed for reads)
+curl http://<box>:5000/api/status
+
+# live nodes as GeoJSON
+curl http://<box>:5000/api/nodes/geojson
+
+# one gateway setting, from the box itself
+curl http://127.0.0.1:8081/config/rns.port
 ```
-
-### cURL: Add webhook
-```bash
-curl -X POST http://localhost:5000/api/analytics/webhooks \
-  -H "Content-Type: application/json" \
-  -d '{
-    "url": "https://example.com/mesh-events",
-    "name": "My Integration",
-    "events": ["node_online", "node_offline"]
-  }'
-```
-
-### Python: Monitor nodes
-```python
-import requests
-
-response = requests.get('http://localhost:5000/api/nodes')
-nodes = response.json()['nodes']
-
-for node in nodes:
-    print(f"{node['name']}: RSSI={node['metrics']['rssi']} dBm")
-```
-
-### JavaScript: Get coverage
-```javascript
-fetch('/api/analytics/coverage')
-  .then(r => r.json())
-  .then(data => {
-    console.log(`Coverage area: ${data.estimated_area_km2} km²`);
-  });
-```
-
----
-
-## Changelog
-
-### v0.4.6-beta
-- Added analytics endpoints (coverage, link budget history)
-- Added webhook management API
-- Added link budget trend analysis
-
-### v0.4.5
-- Initial REST API implementation
-- Node, system, gateway endpoints
-
----
-
-*Made with aloha for the mesh community*
