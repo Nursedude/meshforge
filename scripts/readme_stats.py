@@ -144,10 +144,26 @@ def _count_research_docs() -> int | None:
 # Do not re-add it: a directory that mixes tracked docs with local scratch
 # cannot be sentinelled, only counted at the moment you look.
 
+def _read_version() -> str | None:
+    """The package version, read from ``src/__version__.py`` (a STRING
+    sentinel). BIC-5 credibility sweep, 2026-10-22: CLAUDE.md's branch table
+    said 0.6.2-beta against a 0.7.0-beta tree, with a note conceding the
+    table "goes stale" — a hand-typed version is the same drift as a
+    hand-typed count."""
+    f = ROOT / "src" / "__version__.py"
+    try:
+        m = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']',
+                      f.read_text(encoding="utf-8"), re.M)
+    except OSError:
+        return None
+    return m.group(1) if m else None
+
+
 COMPUTERS = {
     "testfiles": _count_test_files,
     "handlers": _count_handler_modules,
     "researchdocs": _count_research_docs,
+    "version": _read_version,
 }
 
 
@@ -156,6 +172,13 @@ def _norm(text: str) -> int | None:
         return int(text.replace(",", "").strip())
     except ValueError:
         return None
+
+
+def _matches(inner: str, actual) -> bool:
+    """Counts compare as ints (``1,234`` == 1234); strings compare exactly."""
+    if isinstance(actual, int):
+        return _norm(inner) == actual
+    return inner.strip() == actual
 
 
 def check() -> int:
@@ -186,8 +209,7 @@ def check() -> int:
             print(f"  UNKNOWN  {key}: value could not be computed in this repo")
             rc = max(rc, 2)
             continue
-        stated = _norm(inner)
-        if stated == actual:
+        if _matches(inner, actual):
             print(f"  ok       {key}: {actual}")
         else:
             print(f"  DRIFT    {key}: {src.name} says {inner!r}, tree has "
@@ -212,7 +234,7 @@ def update() -> int:
         actual = computer()
         if actual is None:
             return m.group(0)
-        if _norm(inner) != actual:
+        if not _matches(inner, actual):
             changed.append((key, inner, actual))
         return f"<!--STAT:{key}-->{actual}<!--/STAT-->"
 

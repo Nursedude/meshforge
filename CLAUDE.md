@@ -65,7 +65,7 @@ MeshForge is a **Mesh Operations Center (MOC)**: one interface over meshes that 
 
 | Branch | Version | Status |
 |--------|---------|--------|
-| `main` | `0.6.2-beta` | Stable — TUI, meshtasticd, RNS, RF tools, gateway, fleet organs. Field-tested. (Check `src/__version__.py` — this table goes stale.) |
+| `main` | `<!--STAT:version-->0.7.0-beta<!--/STAT-->` | Stable — TUI, meshtasticd, RNS, RF tools, gateway, fleet organs. Field-tested. (Version generated from `src/__version__.py`; `readme_stats.py --check` fails on drift.) |
 
 - **Sister project**: [MeshAnchor](https://github.com/Nursedude/meshanchor) — MeshCore-primary NOC, extracted from main on 2026-04-01.
 - `main` includes XTOC/ATAK/CoT, MQTT bridge, security hardening. Gateway bridge, coverage maps, NOC map have unit tests but need field validation.

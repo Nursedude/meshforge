@@ -91,7 +91,8 @@ class TestWiderSentinelScope:
         mod = _load()
         globs = {"researchdocs": ".claude/research/*.md",
                  "testfiles": "tests/test_*.py",
-                 "handlers": "src/launcher_tui/handlers/*.py"}
+                 "handlers": "src/launcher_tui/handlers/*.py",
+                 "version": "src/__version__.py"}
         # Closed-enum gate (honest_failure_modes #7): a NEW computer must fail
         # this test until someone declares what git glob reproduces it. Without
         # this line the test skips unknown keys and a future unstable counter
@@ -117,7 +118,15 @@ class TestWiderSentinelScope:
             # over the tracked files rather than being their length. This
             # still fails for the original reason: the computer globs the
             # filesystem, so an UNTRACKED handler file makes it exceed this.
-            if key == "handlers":
+            if key == "version":
+                # A string, not a count: the version a fresh clone carries.
+                import re as _re
+                assert tracked == ["src/__version__.py"]
+                expected = _re.search(
+                    r'^__version__\s*=\s*["\']([^"\']+)["\']',
+                    (mod.ROOT / tracked[0]).read_text(encoding="utf-8"),
+                    _re.M).group(1)
+            elif key == "handlers":
                 import re as _re
                 expected = sum(
                     len(_re.findall(r"^\s*handler_id\s*=",
@@ -151,3 +160,41 @@ class TestWiderSentinelScope:
         monkeypatch.setattr(mod, "README", tmp_path / "README.md")
         assert mod._doc_files() == []
         assert mod.COMPUTERS["researchdocs"]() is None
+
+
+class TestVersionSentinel:
+    """BIC-5 credibility sweep (2026-10-22): the version a doc cites is
+    GENERATED. CLAUDE.md's branch table said 0.6.2-beta while the tree was
+    0.7.0-beta, with a note admitting "this table goes stale"."""
+
+    def test_version_computer_reads_the_tree(self):
+        mod = _load()
+        import re
+        src = (mod.ROOT / "src" / "__version__.py").read_text(encoding="utf-8")
+        want = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', src, re.M).group(1)
+        assert mod.COMPUTERS["version"]() == want
+
+    def _plant(self, tmp_path, monkeypatch, stated):
+        mod = _load()
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "__version__.py").write_text(
+            '__version__ = "9.9.9-beta"\n', encoding="utf-8")
+        (tmp_path / "README.md").write_text(
+            "## What Works (v<!--STAT:version-->%s<!--/STAT-->)\n" % stated,
+            encoding="utf-8")
+        monkeypatch.setattr(mod, "ROOT", tmp_path)
+        monkeypatch.setattr(mod, "README", tmp_path / "README.md")
+        return mod
+
+    def test_stale_version_is_drift(self, tmp_path, monkeypatch):
+        assert self._plant(tmp_path, monkeypatch, "0.6.2-beta").check() == 1
+
+    def test_current_version_is_ok(self, tmp_path, monkeypatch):
+        assert self._plant(tmp_path, monkeypatch, "9.9.9-beta").check() == 0
+
+    def test_update_rewrites_the_version(self, tmp_path, monkeypatch):
+        mod = self._plant(tmp_path, monkeypatch, "0.6.2-beta")
+        assert mod.update() == 0
+        assert "<!--STAT:version-->9.9.9-beta<!--/STAT-->" in (
+            tmp_path / "README.md").read_text(encoding="utf-8")
+        assert mod.check() == 0

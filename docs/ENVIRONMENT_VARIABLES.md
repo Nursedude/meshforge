@@ -57,7 +57,6 @@ set via a unit drop-in and restart the gateway to apply; gateway-profile boxes o
 | `HONEST_VERDICT_PATH` | `mini_dudeai/warmstart.py` | honest_status verdict file consumed by the warm brief. |
 | `MESHFORGE_REPO` | `mini_dudeai/warmstart.py` | Repo root override for warm-brief pointers. |
 | `FLEET_HOSTS` | `utils/fleet_dup_collector.py` | Override for the fleet host list (`~/.config/meshforge/fleet_hosts`). |
-| `MESHFORGE_EDITION` | `core/edition.py` | Edition override (`pro` / `amateur` / `io`); wins over `edition.json` + marker files. |
 
 ## mini-dudeai
 

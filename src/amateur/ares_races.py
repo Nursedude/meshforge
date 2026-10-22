@@ -1,5 +1,5 @@
 """
-ARES/RACES Tools for MeshForge Amateur Radio Edition
+ARES/RACES Tools for MeshForge (amateur radio module)
 
 Provides Amateur Radio Emergency Service (ARES) and
 Radio Amateur Civil Emergency Service (RACES) functionality.

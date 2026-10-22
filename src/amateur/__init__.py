@@ -1,5 +1,5 @@
 """
-MeshForge Amateur Radio Edition Module
+MeshForge Amateur Radio Module
 
 Provides ham radio specific functionality:
 - Callsign management and lookup

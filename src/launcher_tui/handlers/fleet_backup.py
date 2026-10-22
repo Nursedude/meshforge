@@ -8,7 +8,7 @@ Provides TUI access to fleet backup/restore operations:
   - Rotate old backups
   - Fleet config setup wizard
 
-Feature-gated: requires "fleet_management" feature flag (PRO edition).
+Feature-gated: requires the "fleet_management" deployment-profile flag.
 """
 
 import logging

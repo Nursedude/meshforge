@@ -136,7 +136,7 @@ python3 src/standalone.py
 
 ---
 
-## What Works (v0.7.0-beta)
+## What Works (v<!--STAT:version-->0.7.0-beta<!--/STAT-->)
 
 Each line carries its tier from [docs/capabilities.md](docs/capabilities.md):
 **Field-Tested** = run on real radios and services in the reference fleet;

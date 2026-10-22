@@ -1,5 +1,5 @@
 """
-Callsign Management for MeshForge Amateur Radio Edition
+Callsign Management for MeshForge (amateur radio module)
 
 Provides callsign lookup, validation, and management features.
 """
