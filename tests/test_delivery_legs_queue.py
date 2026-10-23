@@ -175,6 +175,9 @@ _SOURCELESS_ENQUEUE = {
     # enqueue_message(): a generic public entry point whose callers pass
     # no origin (its no-queue twin is allowlisted in test_delivery_legs).
     ("bridge_send_mixin.py", "enqueue_message"),
+    # OfflineSyncEngine.enqueue: a different queue class (category-keyed
+    # telemetry sync), not the persistent message queue.
+    ("offline_sync.py", "enqueue"),
 }
 
 
@@ -182,9 +185,12 @@ def test_every_gateway_enqueue_names_a_source():
     import ast
     from pathlib import Path
 
-    gw = Path(__file__).resolve().parents[1] / "src" / "gateway"
+    # ALL of src/, not just gateway/: the live end-state check after the
+    # slice-2 deploy found the round-trip canary (src/lab/) enqueueing into
+    # the gateway's queue DB sourceless, on moc at 08:23:05 (10-23).
+    src = Path(__file__).resolve().parents[1] / "src"
     missing = []
-    for path in sorted(gw.glob("*.py")):
+    for path in sorted(src.rglob("*.py")):
         if path.name.startswith("message_queue"):
             continue      # the queue itself (requeue paths pass row source)
         tree = ast.parse(path.read_text())

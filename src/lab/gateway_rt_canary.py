@@ -238,6 +238,7 @@ def run_canary(args) -> CanaryResult:
         },
         destination="rns",
         priority=MessagePriority.NORMAL,
+        source="local",   # the box authored this probe: leg local>rns (BIC-2)
     )
     if not msg_id:
         # enqueue's two falsy causes: dedup (impossible — seq is unique

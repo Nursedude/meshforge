@@ -347,12 +347,12 @@ def run_canary(args) -> ResourceCanaryResult:
     queue.enqueue(
         payload={"message": make_ping_body(seq, sender),
                  "destination_hash": target},
-        destination="rns", priority=MessagePriority.NORMAL,
+        destination="rns", priority=MessagePriority.NORMAL, source="local",
     )
     big_id = queue.enqueue(
         payload={"message": make_bigping_body(seq, sender, reply_bytes),
                  "destination_hash": target},
-        destination="rns", priority=MessagePriority.NORMAL,
+        destination="rns", priority=MessagePriority.NORMAL, source="local",
     )
     if not big_id:
         return ResourceCanaryResult(
