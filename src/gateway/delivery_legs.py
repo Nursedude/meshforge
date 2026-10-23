@@ -34,9 +34,12 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Dict, Optional
 
-BUCKET_S = 900
-"""Bucket width. 15 min = the smallest window, so N in the leg-kill drill
-("leg shows down within N min") is bounded by one bucket."""
+BUCKET_S = 300
+"""Bucket width. A window sums every bucket that OVERLAPS it, so it can
+reach back up to one bucket further than its label: "15m" covers 15–20 min.
+That bounds N in the leg-kill drill ("leg shows down within N min") at
+window + BUCKET_S. (Was 900 until review R9, 10-23: "15m" summed up to
+30 min, so a killed leg kept showing sends for half an hour.)"""
 
 WINDOWS = (("15m", 900), ("1h", 3600), ("24h", 86400))
 """(label, seconds) served by ``view``. The largest bounds retention."""
@@ -45,6 +48,12 @@ RETAIN_S = WINDOWS[-1][1] + 2 * BUCKET_S
 """Rows older than this are pruned on insert."""
 
 UNKNOWN_SOURCE = "?"
+
+TRANSPORTS = frozenset({"meshtastic", "meshcore", "rns", "mqtt", "local"})
+"""Closed vocabulary for both ends of a leg (hfm #7). ``local`` = the
+gateway authored the message (oracle replies, synthetic ACKs). Anything
+else — a typo, a routing lane, a queue sender name like ``rns_xform`` —
+counts as ``?``: visible, never a new leg nobody reads."""
 
 OUTCOMES = ("queued", "sent", "confirmed", "failed", "dropped_other")
 """Closed vocabulary of what a bucket counts. ``failed`` = a delivery that
@@ -56,10 +65,13 @@ def leg_key(source: Optional[str], destination: Optional[str]) -> Optional[str]:
     """``src>dst``; None when there is no destination (nothing to count)."""
     if not destination:
         return None
-    return f"{source or UNKNOWN_SOURCE}>{destination}"
+
+    def _name(v):
+        return v if v in TRANSPORTS else UNKNOWN_SOURCE
+    return f"{_name(source)}>{_name(destination)}"
 
 
-def init_schema(conn: sqlite3.Connection, now: float) -> None:
+def init_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS leg_buckets ("
         " bucket_ts INTEGER NOT NULL,"
@@ -74,11 +86,6 @@ def init_schema(conn: sqlite3.Connection, now: float) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS leg_meta ("
         " key TEXT PRIMARY KEY, value REAL NOT NULL)"
-    )
-    conn.execute(
-        "INSERT INTO leg_meta(key, value) VALUES('since_ts', ?) "
-        "ON CONFLICT(key) DO NOTHING",
-        (now,),
     )
 
 
@@ -96,7 +103,16 @@ def partial_windows(since: Optional[float], now: float) -> list:
 
 
 def bump(conn: sqlite3.Connection, ts: float, leg: str, outcome: str) -> None:
-    """Count one event. Runs inside the caller's transaction."""
+    """Count one event. Runs inside the caller's transaction.
+
+    The FIRST bump stamps ``since_ts``. Not schema creation: the map daemon
+    (a reader) or an old gateway can create the tables hours before any
+    leg is counted, and that span must read partial (review R5)."""
+    conn.execute(
+        "INSERT INTO leg_meta(key, value) VALUES('since_ts', ?) "
+        "ON CONFLICT(key) DO NOTHING",
+        (ts,),
+    )
     bucket = int(ts // BUCKET_S) * BUCKET_S
     conn.execute(
         "INSERT INTO leg_buckets(bucket_ts, leg, outcome, count) "

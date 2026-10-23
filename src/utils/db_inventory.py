@@ -228,8 +228,9 @@ INVENTORY: List[DBSpec] = [
             "keying — dedup/identity arc STEP 4a, additive ALTER-migrated). "
             "Cross-process: gateway daemon writes, map daemon serves "
             "/api/gateway/delivery from the same file. BIC-2: leg_buckets "
-            "(15-min per-leg outcome counts, pruned on insert past 24 h + "
-            "2 buckets, gateway.delivery_legs) + leg_meta (since_ts)."
+            "(5-min per-leg outcome counts, pruned on insert past 24 h + "
+            "2 buckets, gateway.delivery_legs) + leg_meta (since_ts, set by "
+            "the first leg write); events gained a source column."
         ),
     ),
     DBSpec(

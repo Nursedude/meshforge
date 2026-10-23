@@ -197,6 +197,7 @@ class BridgeSendMixin:
             self._register_lxmf_delivery_callbacks(
                 lxm, msg_id, destination_hash, message[:50],
                 content_id=(fields or {}).get('meshforge_content_id', '') or '',
+                source=source,
             )
 
             assert_rns_tx_allowed(kind="lxmf_outbound",

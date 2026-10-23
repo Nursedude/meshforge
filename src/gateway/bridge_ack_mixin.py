@@ -12,6 +12,7 @@ Provided methods: ``_register_lxmf_delivery_callbacks``,
 """
 
 import logging
+from typing import Optional
 
 from gateway import delivery_counters as _dc
 
@@ -29,6 +30,7 @@ class BridgeAckMixin:
         destination_hash: bytes,
         msg_preview: str,
         content_id: str = "",
+        source: Optional[str] = None,
     ) -> None:
         """Wire CONFIRMED + DROPPED(rns_delivery_failed) onto an LXMessage.
 
@@ -66,6 +68,7 @@ class BridgeAckMixin:
                 protocol="rns",
                 content_id=content_id,
                 recipient=recipient,
+                source=source,  # same leg as its SENT (BIC-2 review R1)
             )
             self._maybe_emit_ack_for_msgid(msg_id, kind='delivered')
 
@@ -82,6 +85,7 @@ class BridgeAckMixin:
                 note=reason[:80],
                 content_id=content_id,
                 recipient=recipient,
+                source=source,
             )
             self._maybe_emit_ack_for_msgid(msg_id, kind='failed')
 

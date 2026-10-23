@@ -529,6 +529,8 @@ class DeliveryCounters:
                 # M→R fan-out to many recipients).
                 " content_id TEXT NOT NULL DEFAULT '',"
                 " recipient TEXT NOT NULL DEFAULT '',"
+                # BIC-2: the leg's origin transport, for the per-message trace.
+                " source TEXT NOT NULL DEFAULT '',"
                 " note TEXT NOT NULL DEFAULT ''"
                 ")"
             )
@@ -536,7 +538,7 @@ class DeliveryCounters:
             # a no-op when the table exists, so the new columns need ALTER).
             existing = {row[1] for row in
                         conn.execute("PRAGMA table_info(events)")}
-            for col in ("content_id", "recipient"):
+            for col in ("content_id", "recipient", "source"):
                 if col not in existing:
                     conn.execute(
                         f"ALTER TABLE events ADD COLUMN {col} "
@@ -548,7 +550,7 @@ class DeliveryCounters:
                 "CREATE INDEX IF NOT EXISTS idx_events_content_id "
                 "ON events(content_id)"
             )
-            delivery_legs.init_schema(conn, time.time())
+            delivery_legs.init_schema(conn)
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -836,8 +838,9 @@ class DeliveryCounters:
             # Event row.
             conn.execute(
                 "INSERT INTO events("
-                "ts, id, state, protocol, drop_reason, content_id, recipient, note"
-                ") VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                "ts, id, state, protocol, drop_reason, content_id, recipient, "
+                "source, note"
+                ") VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event.ts,
                     event.id,
@@ -846,12 +849,23 @@ class DeliveryCounters:
                     event.drop_reason.value if event.drop_reason else None,
                     event.content_id,
                     event.recipient,
+                    event.source or "",
                     event.note,
                 ),
             )
             leg = delivery_legs.leg_key(event.source, event.protocol)
             if leg:
-                delivery_legs.bump(conn, event.ts, leg, _leg_outcome(event))
+                # Fenced (review R7): legs are measure-only. A failure here
+                # must not roll back the core event; it leaves a witness the
+                # map daemon can read (an in-memory counter would not reach it).
+                try:
+                    delivery_legs.bump(conn, event.ts, leg, _leg_outcome(event))
+                except sqlite3.Error as e:
+                    logger.warning("delivery_counters: leg count failed: %s", e)
+                    conn.execute(
+                        "INSERT INTO counters(key, value) "
+                        "VALUES('legs.write_errors', 1) "
+                        "ON CONFLICT(key) DO UPDATE SET value = value + 1")
             # Ring cap via prune-on-insert. SELECT COUNT(*) is O(N) on
             # an unindexed scan but N is tiny (cap 500), and we only
             # pay it on the writes that are likely to push us over.
@@ -888,7 +902,7 @@ class DeliveryCounters:
                 ).fetchall()
                 events_rows = conn.execute(
                     "SELECT ts, id, state, protocol, drop_reason, "
-                    "content_id, recipient, note "
+                    "content_id, recipient, source, note "
                     "FROM events ORDER BY rowid DESC "
                     "LIMIT ?",
                     (max(0, recent_limit),),
@@ -919,10 +933,6 @@ class DeliveryCounters:
                      max(0, recent_limit)),
                 ).fetchall()
                 ring_capacity = self._ring_cap
-                now = time.time()
-                legs = delivery_legs.view(conn, now)
-                legs_since_ts = delivery_legs.since_ts(conn)
-                legs_partial = delivery_legs.partial_windows(legs_since_ts, now)
         except sqlite3.Error as e:
             logger.warning(
                 "delivery_counters: snapshot read failed (%s) — "
@@ -933,9 +943,6 @@ class DeliveryCounters:
             agg_rows = []
             terminal_rows = []
             ring_capacity = self._ring_cap
-            legs = None  # unobservable, never an empty (= quiet) leg view
-            legs_since_ts = None
-            legs_partial = None
             # G3 (2026-07-18, honest_failure_modes #2): a DB that became
             # unreadable AFTER startup must not serve a healthy-looking
             # health block (stale startup preflight True + local write
@@ -1010,7 +1017,7 @@ class DeliveryCounters:
         # tail a JSON dump and read the latest at the bottom.
         recent: List[Dict[str, Any]] = []
         for (ts, msg_id, state, protocol, drop_reason,
-                content_id, recipient, note) in reversed(events_rows):
+                content_id, recipient, source, note) in reversed(events_rows):
             d: Dict[str, Any] = {
                 "ts": ts,
                 "id": msg_id,
@@ -1022,6 +1029,8 @@ class DeliveryCounters:
                 d["content_id"] = content_id
             if recipient:
                 d["recipient"] = recipient
+            if source:
+                d["source"] = source
             if note:
                 d["note"] = note
             recent.append(d)
@@ -1088,6 +1097,8 @@ class DeliveryCounters:
                 health["db_unobservable"] = True
                 health["preflight_ok"] = None
 
+        legs, legs_since_ts, legs_partial, legs_write_errors = self._read_legs()
+
         return {
             "state_totals": state_totals,
             "drop_reasons": drop_reasons,
@@ -1104,8 +1115,27 @@ class DeliveryCounters:
             "legs": legs,
             "legs_since_ts": legs_since_ts,
             "legs_partial_windows": legs_partial,
+            "legs_write_errors": legs_write_errors,
             "health": health,
         }
+
+    def _read_legs(self):
+        """BIC-2 leg view, read on its OWN connection (review R6): a failure
+        here is legs-unobservable (None everywhere), never a blind core
+        snapshot."""
+        try:
+            with self._connect() as conn:
+                now = time.time()
+                since = delivery_legs.since_ts(conn)
+                row = conn.execute(
+                    "SELECT value FROM counters WHERE key = 'legs.write_errors'"
+                ).fetchone()
+                return (delivery_legs.view(conn, now), since,
+                        delivery_legs.partial_windows(since, now),
+                        int(row[0]) if row else 0)
+        except sqlite3.Error as e:
+            logger.warning("delivery_counters: leg view read failed: %s", e)
+            return None, None, None, None
 
     def recent(self, limit: Optional[int] = None) -> List[DeliveryEvent]:
         """Return recent events (newest last). ``limit`` clamps the

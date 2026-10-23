@@ -115,16 +115,26 @@ def test_a_lane_named_as_source_is_counted_under_its_transport(counters):
     assert "meshtastic>rns" in counters.snapshot()["legs"]
 
 
-def test_tracking_start_is_stamped_once_and_survives_a_restart(tmp_path):
+def test_tracking_start_is_stamped_by_the_first_leg_write_not_by_a_reader(
+        tmp_path):
+    # Review R5: the map daemon (a reader) opening the file first must not
+    # start the clock while an old gateway writes no leg counts at all.
     db = tmp_path / "dc.db"
+    reader = DeliveryCounters(db_path=db, run_preflight=False).snapshot()
+    assert reader["legs_since_ts"] is None
+    assert {"15m", "1h", "24h"} <= set(reader["legs_partial_windows"])
+
     before = time.time()
-    first = DeliveryCounters(db_path=db, run_preflight=False).snapshot()
-    since = first["legs_since_ts"]
+    DeliveryCounters(db_path=db, run_preflight=False).record(
+        DeliveryState.SENT, "m1", protocol="rns", source="meshtastic")
+    since = DeliveryCounters(db_path=db, run_preflight=False).snapshot()[
+        "legs_since_ts"]
     assert before - 1 <= since <= time.time() + 1
 
-    later = DeliveryCounters(db_path=db, run_preflight=False).snapshot()
-
-    assert later["legs_since_ts"] == since
+    DeliveryCounters(db_path=db, run_preflight=False).record(
+        DeliveryState.SENT, "m2", protocol="rns", source="meshtastic")
+    assert DeliveryCounters(db_path=db, run_preflight=False).snapshot()[
+        "legs_since_ts"] == since
 
 
 def test_windows_longer_than_tracking_are_named_partial(counters):
@@ -137,7 +147,7 @@ def test_windows_longer_than_tracking_are_named_partial(counters):
 # lifetime RNS `confirmed` (37,626) ran 4.6x RNS `sent` (8,081): every
 # direct send confirmed without ever being counted as sent.
 
-from unittest.mock import patch  # noqa: E402
+from unittest.mock import MagicMock, patch  # noqa: E402
 
 from tests.test_rns_bridge import bridge  # noqa: E402,F401 — fixture
 from tests.test_rns_bridge import TestSynAckCallbackSymmetry as _Sym  # noqa: E402
@@ -273,3 +283,107 @@ def test_every_state_and_drop_reason_maps_into_the_closed_outcome_set():
         for reason in reasons:
             ev = DeliveryEvent(ts=0.0, id="x", state=state, drop_reason=reason)
             assert _leg_outcome(ev) in OUTCOMES, (state, reason)
+
+
+
+# ── review round 1 (non-author, 10-23) ────────────────────────────────
+
+def _fire(bridge, which, **send_kw):
+    """Send directly, then fire the LXMF delivered/failed callback."""
+    import sys
+    from utils.tx_guard import allow_rns_egress
+    fake_rns, fake_lxmf, fake_lxm = _Sym._fake_rns_lxmf_modules()
+    _Sym()._prime_bridge_for_send(bridge)
+    with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}), \
+            allow_rns_egress():
+        assert bridge.send_to_rns("hello", b"\xab" * 16, **send_kw)
+    reg = (fake_lxm.register_delivery_callback if which == "delivered"
+           else fake_lxm.register_failed_callback)
+    reg.call_args[0][0](MagicMock(name="receipt"))
+
+
+def test_a_confirmation_lands_on_the_same_leg_as_its_send(bridge, singleton_db):
+    # R1: CONFIRMED went to ?>rns while SENT went to meshtastic>rns.
+    _fire(bridge, "delivered", source="meshtastic")
+
+    win = dc.get_singleton().snapshot()["legs"]["meshtastic>rns"]["15m"]
+
+    assert win["sent"] == 1 and win["confirmed"] == 1
+
+
+def test_a_delivery_failure_lands_on_the_same_leg_as_its_send(
+        bridge, singleton_db):
+    _fire(bridge, "failed", source="meshtastic")
+
+    legs = dc.get_singleton().snapshot()["legs"]
+
+    assert legs["meshtastic>rns"]["15m"]["failed"] == 1
+    assert "?>rns" not in legs
+
+
+def test_a_broken_leg_table_does_not_blind_the_core_snapshot(tmp_path):
+    # R6: legs are additive and measure-only; a read error there must not
+    # blank the counters, the confirmation view or the health block.
+    db = tmp_path / "dc.db"
+    c = DeliveryCounters(db_path=db, run_preflight=False)
+    c.record(DeliveryState.SENT, "m1", protocol="rns", source="meshtastic")
+    import sqlite3
+    with sqlite3.connect(db) as conn:
+        conn.execute("DROP TABLE leg_buckets")
+
+    snap = c.snapshot()
+
+    assert snap["legs"] is None
+    assert snap["state_totals"]["sent"] == 1
+    assert not snap["health"].get("db_unobservable")
+
+
+def test_a_leg_write_error_keeps_the_core_event_and_leaves_a_witness(
+        counters, monkeypatch):
+    # R7: a leg-bookkeeping failure must not roll back core accounting.
+    import sqlite3
+    from gateway import delivery_legs
+
+    def boom(*a, **k):
+        raise sqlite3.OperationalError("leg table broke")
+    monkeypatch.setattr(delivery_legs, "bump", boom)
+
+    counters.record(DeliveryState.SENT, "m1", protocol="rns",
+                    source="meshtastic")
+    snap = counters.snapshot()
+
+    assert snap["state_totals"]["sent"] == 1
+    assert snap["legs_write_errors"] == 1
+
+
+def test_an_events_source_is_persisted_for_the_per_message_trace(tmp_path):
+    # R8: to_dict() serialised source but the events table dropped it.
+    db = tmp_path / "dc.db"
+    DeliveryCounters(db_path=db, run_preflight=False).record(
+        DeliveryState.SENT, "m1", protocol="rns", source="meshtastic")
+
+    recent = DeliveryCounters(db_path=db, run_preflight=False).snapshot()[
+        "recent"]
+
+    assert recent[0]["source"] == "meshtastic"
+
+
+def test_the_15m_window_does_not_reach_back_20_minutes(counters):
+    # R9: 15-min buckets let "15m" sum up to 30 min of traffic, so a
+    # killed leg kept showing sends for half an hour.
+    counters.record(DeliveryState.SENT, "m1", protocol="rns",
+                    source="meshtastic", ts=time.time() - 20 * 60)
+
+    leg = counters.snapshot()["legs"]["meshtastic>rns"]
+
+    assert "15m" not in leg
+    assert leg["1h"]["sent"] == 1
+
+
+@pytest.mark.parametrize("source", ["Meshtastic", "mqtt_bridge", "radio"])
+def test_a_source_outside_the_transport_vocabulary_counts_as_unknown(
+        counters, source):
+    # R10 / hfm #7: a typo must not mint a new leg nobody reads.
+    counters.record(DeliveryState.SENT, "m1", protocol="rns", source=source)
+
+    assert set(counters.snapshot()["legs"]) == {"?>rns"}
