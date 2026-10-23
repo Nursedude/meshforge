@@ -261,6 +261,22 @@ def _reset_journal_scan_memo():
 
 
 @pytest.fixture(autouse=True)
+def _reset_lxmf_wedge_streaks():
+    """Clear ``probe_lxmf_process_wedge``'s per-(pattern, pid, tid) blocked
+    streaks between tests (DET-WEDGE, 2026-10-22). Module-global like the
+    journal memo above, and keyed on fake pids that many tests reuse, so a
+    case that primes it would make a later case fire a tick early."""
+    try:
+        from utils.watchdog_probes_rns import reset_lxmf_wedge_streaks
+    except ImportError:      # minimal-deps CI profile — nothing to reset
+        yield
+        return
+    reset_lxmf_wedge_streaks()
+    yield
+    reset_lxmf_wedge_streaks()
+
+
+@pytest.fixture(autouse=True)
 def _reset_node_tracker_singleton():
     """Give every test a fresh node-tracker singleton.
 

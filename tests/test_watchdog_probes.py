@@ -557,10 +557,13 @@ def _make_fake_proc(tmp_path, pid, cmdline_bytes, stack_text,
             (tdir / "stack").write_text(stack)
 
 
-def test_lxmf_process_wedge_finds_echo_worker_thread_wedge(tmp_path):
+def test_lxmf_process_wedge_finds_echo_worker_thread_wedge(tmp_path, monkeypatch):
     """Today's moc1 reconstruction: meshforge-echo.service's worker
     thread in unix_wait_for_peer. probe_lxmf_process_wedge walks
-    /proc, matches `lab.lxmf_echo` cmdline, scans all threads, fires."""
+    /proc, matches `lab.lxmf_echo` cmdline, scans all threads, fires.
+    Detection mechanics only: the N-tick confirmation (DET-WEDGE) is pinned
+    to 1 here and tested in test_lxmf_wedge_confirm.py."""
+    monkeypatch.setenv("MESHFORGE_LXMF_WEDGE_CONFIRM_TICKS", "1")
     # Process whose cmdline matches the echo pattern, worker wedged.
     _make_fake_proc(
         tmp_path, pid=10001,
@@ -605,8 +608,9 @@ def test_lxmf_process_wedge_ignores_lxmf_process_when_healthy(tmp_path):
     assert signals == []
 
 
-def test_lxmf_process_wedge_finds_multiple_wedged_processes(tmp_path):
+def test_lxmf_process_wedge_finds_multiple_wedged_processes(tmp_path, monkeypatch):
     """Both lab.lxmf_echo and lab.lxmf_tracer wedged → one signal each."""
+    monkeypatch.setenv("MESHFORGE_LXMF_WEDGE_CONFIRM_TICKS", "1")
     _make_fake_proc(
         tmp_path, pid=10001,
         cmdline_bytes=b"/usr/bin/python3\x00-m\x00lab.lxmf_echo\x00",

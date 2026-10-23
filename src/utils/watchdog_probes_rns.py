@@ -509,9 +509,8 @@ def probe_main_thread_wedge(
         severity="wedge",
         detail=(
             f"{thread_role} of pid={pid} blocked in kernel pattern "
-            f"{matched!r} — likely rnsd Unix socket wedge. "
-            f"Recovery: stop service, restart rnsd.service, then start "
-            f"service. See Issue #68."
+            f"{matched!r} — possible rnsd Unix socket wedge. "
+            + _wedge_cure_text(service_name)
         ),
         issue_ref=68,
         extra={
@@ -534,6 +533,62 @@ _LXMF_PROCESS_PATTERNS = (
     "lab.lxmf_tracer",
     "lab.lxmf_multi_user_synth",
 )
+
+# DET-WEDGE (2026-10-22): one stack snapshot cannot tell a wedge from a lab
+# load-run's own connect backpressure. Measured on moc: 58 fires on
+# lab.lxmf_multi_user_synth, ALL at :08 (the synth-soak timer is *:07), each
+# ~30 s and self-clearing; moc3's tracer/echo fires sat at the 10-min tracer
+# timer. A wedge persists; backpressure passes. So the SAME pid must have a
+# blocked thread on N consecutive ticks. Keyed per pid, not per tid: the scan
+# reports only the first blocked thread, and a wedged client may retry on a
+# fresh thread — a per-tid streak would never accumulate (review 2026-10-22).
+# Its own knob, not the RPC sibling's: a subprocess timeout and a kernel stack
+# state are different quantities, and an operator tuning one must not
+# silently retune the other (review 2026-10-22). In-memory for the same
+# reason as _rpc_timeout_streak: an on-disk streak can freeze below its
+# threshold. Cost: a watchdog restart during a live wedge re-confirms it,
+# delaying the page by N-1 ticks (~60 s at the default).
+_LXMF_WEDGE_CONFIRM_TICKS_ENV = "MESHFORGE_LXMF_WEDGE_CONFIRM_TICKS"
+_DEFAULT_LXMF_WEDGE_CONFIRM_TICKS = 3
+
+_lxmf_wedge_streaks: dict = {}
+
+
+def _lxmf_wedge_confirm_ticks() -> int:
+    """Consecutive blocked ticks before a lab process is called wedged.
+
+    Resolved per call so an operator can retune without a restart; an
+    unparseable or < 1 value falls back to the default.
+    """
+    raw = os.environ.get(_LXMF_WEDGE_CONFIRM_TICKS_ENV)
+    if raw is None:
+        return _DEFAULT_LXMF_WEDGE_CONFIRM_TICKS
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_LXMF_WEDGE_CONFIRM_TICKS
+    return value if value >= 1 else _DEFAULT_LXMF_WEDGE_CONFIRM_TICKS
+
+
+def reset_lxmf_wedge_streaks() -> None:
+    """Clear the per-(pattern, pid) blocked streaks. For tests."""
+    _lxmf_wedge_streaks.clear()
+
+
+def _wedge_cure_text(owner: str) -> str:
+    """The recovery text BOTH wedge legs share. Confirm rnsd before touching
+    it: a client blocked in unix_wait_for_peer is not proof rnsd is wedged,
+    and restarting rnsd is the #69 @rns ownership-race trigger."""
+    return (
+        "CONFIRM BEFORE ACTING — rnsd may be healthy: "
+        "`timeout 8 rnstatus >/dev/null; echo $?` (124 = rnsd RPC wedged, "
+        "0 = rnsd answers). On a gateway box also `sudo journalctl -u "
+        "meshforge-gateway --since -5min | grep 'rpc\\[rnsd\\.'` (sub-ms "
+        "round trips = healthy; no lines on a box with no gateway is not "
+        f"evidence). If rnsd answers, restart only {owner}. Restart rnsd "
+        "only on a confirmed wedge, then `sudo ss -xnpl | grep @rns/` — the "
+        "owner must be rnsd (#69). See Issue #68."
+    )
 
 
 def probe_lxmf_process_wedge(
@@ -566,6 +621,9 @@ def probe_lxmf_process_wedge(
     # Per PATTERN: every pid matching it must scan clean before the pattern
     # is a positive observation — a pattern is a subject shared by N pids.
     pattern_clean: dict = {}
+    needed = _lxmf_wedge_confirm_ticks()
+    blocked_now: dict = {}
+    pending: List[str] = []
     for entry in entries:
         if not entry.isdigit():
             continue
@@ -595,6 +653,20 @@ def probe_lxmf_process_wedge(
         pattern_clean[matched_pat] = False
         tid, kernel_pattern, excerpt = found
 
+        key = (matched_pat, pid)
+        streak = _lxmf_wedge_streaks.get(key, 0) + 1
+        blocked_now[key] = streak
+        if streak < needed:
+            # Observed, not yet decidable — never `clean` (hfm #2), and the
+            # pattern is not observed, so a held wedge stays held. Collected,
+            # not noted here: worst-wins keeps only the first reason, and a
+            # second blocked process may be the real wedge (review 10-22).
+            pending.append(
+                f"{matched_pat} pid={pid} tid={tid} {kernel_pattern!r} "
+                f"{streak}/{needed}"
+            )
+            continue
+
         thread_role = "main thread" if tid == pid else f"worker thread tid={tid}"
         signals.append(Signal(
             cls="main_thread_wedge",
@@ -602,20 +674,35 @@ def probe_lxmf_process_wedge(
             severity="wedge",
             detail=(
                 f"{thread_role} of pid={pid} ({matched_pat}) blocked in "
-                f"kernel pattern {kernel_pattern!r} — likely rnsd Unix "
-                f"socket wedge. Recovery: restart rnsd.service, then "
-                f"restart the owning user service. See Issue #68."
+                f"kernel pattern {kernel_pattern!r} on {streak} consecutive "
+                f"watchdog ticks — the same process, so not a lab run's "
+                f"transient backpressure. "
+                + _wedge_cure_text("the owning user service")
             ),
             issue_ref=68,
             extra={
                 "pid": pid,
                 "tid": tid,
+                "consecutive_ticks": streak,
                 "thread_role": "main" if tid == pid else "worker",
                 "pattern": kernel_pattern,
                 "cmdline": cmdline[:200],
                 "stack_excerpt": excerpt,
             },
         ))
+    # Only pids blocked THIS tick carry a streak forward; any pid that was
+    # not (healthy, exited, or a new run) re-arms the guard.
+    _lxmf_wedge_streaks.clear()
+    _lxmf_wedge_streaks.update(blocked_now)
+    if pending:
+        note_disposition(
+            "main_thread_wedge", "indeterminate",
+            reason=(
+                f"blocked below the {needed}-consecutive-tick wedge "
+                f"confirmation (a lab run's transient connect backpressure "
+                f"passes; a wedge persists): " + "; ".join(pending)
+            ),
+        )
     if not signals:
         note_disposition("main_thread_wedge", "clean")
     # A pattern is observed healthy only when EVERY pid that carried it
