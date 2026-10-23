@@ -92,7 +92,9 @@ class BridgeRnsEventsMixin:
             # (structural-dark row 2, oracle_rns_send_blind). It is still
             # bool-compatible, so `delivered` is unchanged.
             try:
-                return self.send_to_rns(text, destination_hash=bytes.fromhex(dest))
+                # The gateway authored this reply: its leg is local>rns.
+                return self.send_to_rns(text, destination_hash=bytes.fromhex(dest),
+                                        source="local")
             except Exception as e:
                 logger.debug(f"mesh oracle (rns) send failed: {e}")
                 return False

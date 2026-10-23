@@ -65,6 +65,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from gateway import delivery_legs
 from utils.db_helpers import connect_tuned
 from utils.delivery_labels import canonical_protocol, lane_of
 from utils.paths import atomic_write_text, get_real_user_home
@@ -152,6 +153,15 @@ DELIVERY_FAILURE_REASONS = frozenset({
     DropReason.WEDGED.value,
     DropReason.EXPIRED.value,
 })
+
+
+def _leg_outcome(event: "DeliveryEvent") -> str:
+    """The ``delivery_legs.OUTCOMES`` word for one event."""
+    if event.state != DeliveryState.DROPPED:
+        return event.state.value
+    if event.drop_reason and event.drop_reason.value in DELIVERY_FAILURE_REASONS:
+        return "failed"
+    return "dropped_other"
 
 
 def compute_confirmation_view(
@@ -368,6 +378,9 @@ class DeliveryEvent:
     # delivery recipient. '' when not threaded through this lifecycle path yet.
     content_id: str = ""
     recipient: str = ""
+    # BIC-2: the transport the message came FROM; with ``protocol`` it names
+    # the leg (``source>protocol``). None = the call site did not say.
+    source: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d = {
@@ -381,6 +394,8 @@ class DeliveryEvent:
             d["content_id"] = self.content_id
         if self.recipient:
             d["recipient"] = self.recipient
+        if self.source:
+            d["source"] = self.source
         if self.note:
             d["note"] = self.note
         return d
@@ -533,6 +548,7 @@ class DeliveryCounters:
                 "CREATE INDEX IF NOT EXISTS idx_events_content_id "
                 "ON events(content_id)"
             )
+            delivery_legs.init_schema(conn, time.time())
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -636,6 +652,7 @@ class DeliveryCounters:
         ts: Optional[float] = None,
         content_id: str = "",
         recipient: str = "",
+        source: Optional[str] = None,
     ) -> DeliveryEvent:
         """Record one lifecycle transition.
 
@@ -682,6 +699,7 @@ class DeliveryCounters:
             note=note,
             content_id=str(content_id or ""),
             recipient=str(recipient or ""),
+            source=canonical_protocol(source) or None,
         )
 
         try:
@@ -831,6 +849,9 @@ class DeliveryCounters:
                     event.note,
                 ),
             )
+            leg = delivery_legs.leg_key(event.source, event.protocol)
+            if leg:
+                delivery_legs.bump(conn, event.ts, leg, _leg_outcome(event))
             # Ring cap via prune-on-insert. SELECT COUNT(*) is O(N) on
             # an unindexed scan but N is tiny (cap 500), and we only
             # pay it on the writes that are likely to push us over.
@@ -898,6 +919,10 @@ class DeliveryCounters:
                      max(0, recent_limit)),
                 ).fetchall()
                 ring_capacity = self._ring_cap
+                now = time.time()
+                legs = delivery_legs.view(conn, now)
+                legs_since_ts = delivery_legs.since_ts(conn)
+                legs_partial = delivery_legs.partial_windows(legs_since_ts, now)
         except sqlite3.Error as e:
             logger.warning(
                 "delivery_counters: snapshot read failed (%s) — "
@@ -908,6 +933,9 @@ class DeliveryCounters:
             agg_rows = []
             terminal_rows = []
             ring_capacity = self._ring_cap
+            legs = None  # unobservable, never an empty (= quiet) leg view
+            legs_since_ts = None
+            legs_partial = None
             # G3 (2026-07-18, honest_failure_modes #2): a DB that became
             # unreadable AFTER startup must not serve a healthy-looking
             # health block (stale startup preflight True + local write
@@ -1073,6 +1101,9 @@ class DeliveryCounters:
             "first_event_ts": first_event_ts,
             "last_event_ts": last_event_ts,
             "ring_capacity": ring_capacity,
+            "legs": legs,
+            "legs_since_ts": legs_since_ts,
+            "legs_partial_windows": legs_partial,
             "health": health,
         }
 
@@ -1183,12 +1214,13 @@ def record(
     note: str = "",
     content_id: str = "",
     recipient: str = "",
+    source: Optional[str] = None,
 ) -> DeliveryEvent:
     """Module-level convenience — bumps the singleton's counters."""
     return get_singleton().record(
         state, msg_id,
         protocol=protocol, drop_reason=drop_reason, note=note,
-        content_id=content_id, recipient=recipient,
+        content_id=content_id, recipient=recipient, source=source,
     )
 
 

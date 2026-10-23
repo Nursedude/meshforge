@@ -314,7 +314,8 @@ class MessageTransformMixin:
                     except (ValueError, TypeError):
                         dest_bytes = None
                 if dest_bytes and self.send_to_rns(
-                        content, dest_bytes, title=title, fields=fields):
+                        content, dest_bytes, title=title, fields=fields,
+                        source=msg.source_network):
                     sent_count = 1  # on the wire: a raise below must not requeue
                     self._sessions.touch(msg.source_id, peer_hex)
                     if self._reply_routing_on():
@@ -405,7 +406,8 @@ class MessageTransformMixin:
             sent_count = 0
             failed_legs = []
             for dest_hash in destinations:
-                if self.send_to_rns(content, dest_hash, title=title, fields=fields):
+                if self.send_to_rns(content, dest_hash, title=title, fields=fields,
+                                    source=msg.source_network):
                     sent_count += 1
                     if record_ok:
                         dest_hex = dest_hash.hex().lower()
@@ -1426,6 +1428,7 @@ class MessageTransformMixin:
             try:
                 ok = self.send_to_rns(
                     body, dest_bytes, title=title, fields=relay_fields,
+                    source=msg.source_network,
                 )
             except Exception as e:
                 logger.warning(f"Relay to peer {peer_hex[:8]} raised: {e}")

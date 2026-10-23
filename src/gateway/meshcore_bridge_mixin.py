@@ -109,7 +109,8 @@ class MeshCoreBridgeMixin:
                         dests.append(bytes.fromhex(hex_str))
                     except ValueError:
                         logger.warning(f"Invalid default_lxmf_destination hex: {hex_str!r}")
-                sent_count = sum(1 for dh in dests if self.send_to_rns(bridged_content, dh))
+                sent_count = sum(1 for dh in dests if self.send_to_rns(bridged_content, dh,
+                                                                  source="meshcore"))
                 if sent_count:
                     if len(dests) > 1:
                         logger.info(f"Bridge MC→RNS {ch_tag}: {sent_count}/{len(dests)} dest(s) — {bridged_content[:50]}...")

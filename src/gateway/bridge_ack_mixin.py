@@ -189,7 +189,9 @@ class BridgeAckMixin:
                         f"({origin_address!r}) for msg_id={msg_id[:8]}"
                     )
                     return False
-                return bool(self.send_to_rns(text, destination_hash=dest_hash))
+                # A synthetic ACK the gateway authored: leg local>rns.
+                return bool(self.send_to_rns(text, destination_hash=dest_hash,
+                                             source="local"))
             logger.debug(
                 f"ack synthesis: unknown origin_network={origin_network!r} "
                 f"for msg_id={msg_id[:8]}"

@@ -914,7 +914,7 @@ class TestProcessMeshToRNS:
 
         captured = {}
 
-        def capture_send(content, dest_hash=None, title=None, fields=None):
+        def capture_send(content, dest_hash=None, title=None, fields=None, source=None):
             captured["content"] = content
             captured["title"] = title
             captured["fields"] = fields
@@ -943,7 +943,7 @@ class TestProcessMeshToRNS:
 
         captured = {}
 
-        def capture_send(content, dest_hash=None, title=None, fields=None):
+        def capture_send(content, dest_hash=None, title=None, fields=None, source=None):
             captured["title"] = title
             captured["fields"] = fields
             return True
@@ -972,7 +972,7 @@ class TestProcessMeshToRNS:
 
         captured = {}
 
-        def capture_send(content, dest_hash=None, title=None, fields=None):
+        def capture_send(content, dest_hash=None, title=None, fields=None, source=None):
             captured["fields"] = fields
             return True
 
@@ -999,7 +999,7 @@ class TestProcessMeshToRNS:
         )
         sent_to = []
 
-        def capture(content, dest_hash=None, title=None, fields=None):
+        def capture(content, dest_hash=None, title=None, fields=None, source=None):
             sent_to.append(dest_hash)
             return True
 
@@ -1030,7 +1030,7 @@ class TestProcessMeshToRNS:
         )
         sent_to = []
 
-        def capture(content, dest_hash=None, title=None, fields=None):
+        def capture(content, dest_hash=None, title=None, fields=None, source=None):
             sent_to.append(dest_hash)
             return True
 
@@ -1073,7 +1073,7 @@ class TestProcessMeshToRNS:
         )
         sent_to = []
 
-        def capture(content, dest_hash=None, title=None, fields=None):
+        def capture(content, dest_hash=None, title=None, fields=None, source=None):
             sent_to.append(dest_hash)
             return True
 
@@ -1102,7 +1102,7 @@ class TestProcessMeshToRNS:
         )
         sent_to = []
 
-        def capture(content, dest_hash=None, title=None, fields=None):
+        def capture(content, dest_hash=None, title=None, fields=None, source=None):
             sent_to.append(dest_hash)
             return True
 
@@ -1133,7 +1133,7 @@ class TestProcessMeshToRNS:
 
         sent = {}
 
-        def capture(content, dest_hash=None, title=None, fields=None):
+        def capture(content, dest_hash=None, title=None, fields=None, source=None):
             sent["content"] = content
             sent["dest_hash"] = dest_hash
             return True
@@ -3394,7 +3394,7 @@ class TestReplyRoutingMeshToRNS:
         bridge.node_tracker.get_node_by_mesh_id.return_value = None
         captured = {}
 
-        def capture_send(content, dest_hash=None, title=None, fields=None):
+        def capture_send(content, dest_hash=None, title=None, fields=None, source=None):
             captured["fields"] = fields
             return True
 
@@ -4112,7 +4112,7 @@ class TestSessionDmToGateway:
         sessions.touch("!aabb0042", self.PEER)
         sends = []
 
-        def capture(content, dest_hash=None, title=None, fields=None):
+        def capture(content, dest_hash=None, title=None, fields=None, source=None):
             sends.append((content, dest_hash, title, fields))
             return True
 
@@ -4174,7 +4174,7 @@ class TestSessionDmToGateway:
         sessions.touch("!aabb0042", self.PEER)
         calls = {"n": 0}
 
-        def first_fails(content, dest_hash=None, title=None, fields=None):
+        def first_fails(content, dest_hash=None, title=None, fields=None, source=None):
             calls["n"] += 1
             return calls["n"] > 1  # session send fails, fan-out would succeed
 
@@ -5831,7 +5831,7 @@ class TestContentIdCarryRnsLeg:
             content_id="c1:abc123", metadata={"channel": "meshforge"})
         captured = {}
 
-        def capture_send(content, dest_hash=None, title=None, fields=None):
+        def capture_send(content, dest_hash=None, title=None, fields=None, source=None):
             captured["fields"] = fields
             return True
 

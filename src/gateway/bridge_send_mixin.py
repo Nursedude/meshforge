@@ -20,6 +20,7 @@ from gateway.message_queue_models import (
     M2R_MAX_AGE_S,
     SendDeferred,
 )
+from gateway import delivery_counters as _dc
 from utils.tx_guard import assert_rns_tx_allowed
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,8 @@ class BridgeSendMixin:
         destination_hash: bytes = None,
         title: str = None,
         fields: dict = None,
+        *,
+        source: Optional[str] = None,
     ) -> RnsSendResult:
         """Send a message to RNS network via LXMF.
 
@@ -76,6 +79,9 @@ class BridgeSendMixin:
 
         Returns an :class:`RnsSendResult` — truthy exactly where the old bare
         ``bool`` was truthy, plus a ``reason`` the caller can classify on.
+
+        ``source`` is the transport the message came from; it names the
+        delivery leg (BIC-2). Omitted, the send counts under ``?>rns``.
         """
         if not self._connected_rns:
             logger.warning("Not connected to RNS")
@@ -201,6 +207,19 @@ class BridgeSendMixin:
                          timeout_s=15.0,
                          on_wedge=_on_wedge)
             self.record_send_success(hash_short)
+            # BIC-2: the direct path's SENT. Only the queue path recorded
+            # one, so CONFIRMED outran SENT 4.6x on moc (10-23). Fenced: the
+            # message is already out, and a bookkeeping error reported as a
+            # send failure would requeue it — a duplicate on the air.
+            try:
+                _dc.record(_dc.DeliveryState.SENT, msg_id=msg_id,
+                           protocol="rns", source=source,
+                           recipient=destination_hash.hex())
+            except Exception as e:  # noqa: BLE001
+                logger.warning("delivery counter SENT not recorded: %s", e)
+                with self._stats_lock:
+                    self.stats['delivery_record_errors'] = (
+                        self.stats.get('delivery_record_errors', 0) + 1)
             return RnsSendResult(True)
 
         except Exception as e:
