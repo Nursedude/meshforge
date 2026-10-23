@@ -167,7 +167,7 @@ and how proven it is — never plans.
 ### Testing Reality Check
 
 MeshForge's automated tests (run `python3 -m pytest tests/ --co -q` for the
-live count — never a hand-typed number here) span <!--STAT:testfiles-->570<!--/STAT--> test files. However, automated tests
+live count — never a hand-typed number here) span <!--STAT:testfiles-->572<!--/STAT--> test files. However, automated tests
 validate code paths with mocks — they do not replace field testing. The following
 features have strong unit test coverage but have **not been run with real services
 and radios** in a live deployment:

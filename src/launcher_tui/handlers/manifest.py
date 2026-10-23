@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 88 handlers · 120 menu actions (derived from get_all_handlers(), never hand-edited).
+# 88 handlers · 121 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -206,6 +206,7 @@ HANDLER_MANIFEST = [
         "error": None,
         "menu_items": [
             ('delivery', 'Delivery            did messages arrive? (source+age)', None),
+            ('delivery_legs', 'Delivery legs       per route: 15m / 1h / 24h counts', None),
         ],
     },
     {

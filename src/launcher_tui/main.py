@@ -83,7 +83,8 @@ TOP_LEVEL_CANCEL_LABEL = "Exit"
 SECTION_ORDERINGS = {
     "dashboard": [
         # The END first after status: did messages arrive (2026-09-23).
-        "status", "delivery", "weather", "network", "nodes", "health",
+        "status", "delivery", "delivery_legs", "weather", "network", "nodes",
+        "health",
         "datapath", "stack_health", "traffic_pulse",
         # "metrics" (Historical Trends + Prometheus + Grafana) retired
         # 2026-09-23: its DB had no writer anywhere (0 rows on every box).
