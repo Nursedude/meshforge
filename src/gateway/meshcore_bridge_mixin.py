@@ -165,7 +165,9 @@ class MeshCoreBridgeMixin:
                 from .canonical_message import _truncate_utf8
                 bridged_content = _truncate_utf8(bridged_content, 160)
 
-            # One derivation of the leg origin for every path (review R3).
+            # The leg (a TRANSPORT) via the one _leg_source derivation every
+            # send path uses (review R3). The stats / health keys below stay
+            # on src_net — they count ROUTING networks, a different axis.
             if self.send_to_meshcore(bridged_content,
                                      source=self._leg_source(msg)):
                 direction = f"{src_net[:4]}_to_meshcore"

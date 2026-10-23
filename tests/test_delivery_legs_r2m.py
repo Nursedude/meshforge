@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import threading
 from queue import Queue
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from gateway import delivery_counters as dc
 from gateway.ack_tracker import AckTracker
+from tests.test_rns_bridge import bridge  # noqa: F401 — fixture
 
 
 @pytest.fixture(autouse=True)
@@ -395,3 +396,96 @@ def test_mqtt_refuses_a_bool_as_a_packet_id(mq):
     ids = [e.id for e in dc.get_singleton().recent()]
     assert "mesh-00000001" not in ids
     assert mq._ack_tracker.pending_count() == 0
+
+
+# ── re-review of the slice-3 fixes (non-author, 10-23) ────────────────
+
+def test_a_meshcore_queue_row_ends_with_exactly_one_sent_on_its_own_id(
+        tmp_path):
+    # #9: through a REAL queue dispatch, not queue_send alone.
+    from gateway.message_queue import PersistentMessageQueue
+    h = _mc_handler()
+    h._connected = True
+    q = PersistentMessageQueue(db_path=str(tmp_path / "q.db"))
+    q.register_sender("meshcore", h.queue_send)
+    row = q.enqueue({"message": "hello", "destination": "abcd"}, "meshcore",
+                    source="rns")
+    q.process_once()
+    _mc_drain(h)
+    q.stop_processing()
+
+    states = [e.state.value for e in dc.get_singleton().history_for(row)]
+    assert states.count("sent") == 1
+    assert _legs()["rns>meshcore"]["15m"]["sent"] == 1
+
+
+def test_a_payload_id_never_outranks_the_queue_rows_id():
+    # #2: the queue recorded SENT on _queue_msg_id; a failure must land there.
+    from gateway.delivery_legs import LEG_SOURCE_KEY
+
+    class _Err:
+        type, payload = "command_error", {"code_string": "ERR_TIMEOUT"}
+
+        def is_error(self):
+            return True
+    h = _mc_handler()
+    h._connected = True
+    h.queue_send({"message": "x", "destination": "abcd", "id": "abc",
+                  "_queue_msg_id": "q-row", LEG_SOURCE_KEY: "rns"})
+
+    _mc_drain(h, send_evt=_Err())
+
+    assert dc.get_singleton().history_for("q-row")
+    assert not dc.get_singleton().history_for("abc")
+
+
+def test_meshcore_synthesized_ids_are_collision_free(monkeypatch):
+    # #3: the R5 fix had to reach every copy of the pattern.
+    import gateway.delivery_legs as dl
+    import gateway.meshcore_handler as mch
+    monkeypatch.setattr(dl.time, "time", lambda: 1792780000.123)
+    monkeypatch.setattr(mch.time, "time", lambda: 1792780000.123)
+    mch._record_tx("dropped", None, "non_retriable_error", "not connected")
+    mch._record_tx("dropped", None, "non_retriable_error", "not connected")
+
+    ids = [e.id for e in dc.get_singleton().recent()]
+    assert len(ids) == 2 and len(set(ids)) == 2
+
+
+def test_lxmf_synthesized_ids_are_collision_free(bridge, monkeypatch):
+    # #4: two direct send_to_rns calls in one millisecond (a fan-out).
+    import sys
+    import gateway.delivery_legs as dl
+    from tests.test_rns_bridge import TestSynAckCallbackSymmetry as _Sym
+    from utils.tx_guard import allow_rns_egress
+    monkeypatch.setattr(dl.time, "time", lambda: 1792780000.123)
+    fake_rns, fake_lxmf, _ = _Sym._fake_rns_lxmf_modules()
+    _Sym()._prime_bridge_for_send(bridge)
+    with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}), \
+            allow_rns_egress():
+        bridge.send_to_rns("a", b"\xab" * 16, source="meshtastic")
+        bridge.send_to_rns("b", b"\xcd" * 16, source="meshtastic")
+
+    ids = [e.id for e in dc.get_singleton().recent() if e.state.value == "sent"]
+    assert len(ids) == 2 and len(set(ids)) == 2
+
+
+def test_enqueue_message_does_not_store_its_source_twice(tmp_path):
+    # #6: kwargs["source"] must become the leg stamp only, not also a raw
+    # "source" key handed to every sender.
+    from gateway.delivery_legs import LEG_SOURCE_KEY
+    from gateway.message_queue import PersistentMessageQueue
+    q = PersistentMessageQueue(db_path=str(tmp_path / "q.db"))
+    seen = []
+    q.register_sender("meshtastic", lambda p: seen.append(p) or True)
+
+    class _Host:
+        _persistent_queue = q
+    from gateway.bridge_send_mixin import BridgeSendMixin
+    BridgeSendMixin.enqueue_message(_Host(), "hi", "!aabb0001",
+                                    dest_type="meshtastic", source="rns")
+    q.process_once()
+    q.stop_processing()
+
+    assert seen and seen[0].get(LEG_SOURCE_KEY) == "rns"
+    assert "source" not in seen[0]

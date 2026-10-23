@@ -144,7 +144,8 @@ def _record_tx(state: str, msg_id: Optional[str], reason: Optional[str] = None,
     startup, 2026-06-06). record() never raises."""
     try:
         from gateway import delivery_counters as dc
-        dc.record(dc.DeliveryState(state), msg_id or f"meshcore-{time.time():.3f}",
+        from gateway.delivery_legs import synth_id
+        dc.record(dc.DeliveryState(state), msg_id or synth_id("meshcore"),
                   protocol="meshcore", source=source,
                   drop_reason=dc.DropReason(reason) if reason else None,
                   note=note[:80])
@@ -901,7 +902,8 @@ class MeshCoreHandler(BaseMessageHandler):
                 # FAILS, on the row's own id (review R1: it read msg['id'],
                 # minted a fresh id and counted the row sent twice).
                 queued = bool(msg.get('_queue_msg_id'))
-                msg_id = msg.get('id') or msg.get('_queue_msg_id')
+                # The row's id wins: the queue recorded SENT on it (re-review #2).
+                msg_id = msg.get('_queue_msg_id') or msg.get('id')
                 # Lazy, matching _record_tx's style. (The 2026-06-06 startup
                 # deadlock was delivery_counters; delivery_legs is stdlib-only.)
                 from gateway.delivery_legs import payload_source

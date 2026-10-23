@@ -10,7 +10,6 @@ Provided methods: ``send_to_rns``, ``_queue_send_rns``,
 """
 
 import logging
-import time
 from dataclasses import dataclass
 from typing import Dict, Optional
 
@@ -194,7 +193,7 @@ class BridgeSendMixin:
                 on_wedge=_on_wedge,
             )
 
-            msg_id = f"lxmf-{int(time.time() * 1000)}"
+            msg_id = delivery_legs.synth_id("lxmf")
             self._register_lxmf_delivery_callbacks(
                 lxm, msg_id, destination_hash, message[:50],
                 content_id=(fields or {}).get('meshforge_content_id', '') or '',
@@ -385,7 +384,7 @@ class BridgeSendMixin:
             # queue plumbing (mostly tests).
             msg_id = (
                 payload.get('_queue_msg_id')
-                or f"lxmf-{int(time.time() * 1000)}"
+                or delivery_legs.synth_id("lxmf")
             )
             self._register_lxmf_delivery_callbacks(
                 lxm, msg_id, destination_hash, message[:50],
@@ -511,6 +510,9 @@ class BridgeSendMixin:
         Returns:
             Message ID if enqueued, None if queue unavailable
         """
+        # BIC-2: the leg stamp only — never a raw 'source' key handed to
+        # every sender as well (re-review #6).
+        leg_source = kwargs.pop('source', None)
         if not self._persistent_queue:
             # Fall back to direct send. ack_required is silently ignored
             # here — direct sends bypass the queue's pending-ack table,
@@ -519,13 +521,13 @@ class BridgeSendMixin:
             if dest_type == "meshtastic":
                 return "direct" if self.send_to_meshtastic(
                     message, destination, kwargs.get('channel', 0),
-                    source=kwargs.get('source')) else None
+                    source=leg_source) else None
             else:
                 dest_hash = kwargs.get('destination_hash')
                 if isinstance(dest_hash, str):
                     dest_hash = bytes.fromhex(dest_hash)
                 return "direct" if self.send_to_rns(
-                    message, dest_hash, source=kwargs.get('source')) else None
+                    message, dest_hash, source=leg_source) else None
 
         # Map priority string to enum. MessagePriority is read lazily off
         # gateway.rns_bridge (the safe_import result lives there) so the
@@ -551,7 +553,7 @@ class BridgeSendMixin:
             payload=payload,
             destination=dest_type,
             priority=msg_priority,
-            source=kwargs.get('source'),   # BIC-2: a caller may name its leg
+            source=leg_source,   # BIC-2: a caller may name its leg
         )
 
         # Issue #66: register the pending-ack record so the LXMF
