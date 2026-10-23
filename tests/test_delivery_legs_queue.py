@@ -267,3 +267,41 @@ def test_a_replayed_spill_sends_on_its_origin_leg_without_changing_routing(
 
     assert seen == ["meshtastic"]                 # routing input unchanged
     assert _legs()["mqtt>rns"]["15m"]["sent"] == 1
+
+
+# ── review of slice 2 (non-author, 10-23) ─────────────────────────────
+
+def test_a_late_mark_failed_on_a_dead_lettered_row_is_not_a_second_loss(queue):
+    # F5: the stale reset can dead-letter an in_progress row while a slow
+    # worker is still sending; its late mark_failed must not count again.
+    msg_id = queue.enqueue({"message": "hi"}, "rns", source="meshtastic",
+                           max_retries=1)
+    queue.mark_failed(msg_id, "no path")         # dead letter: one loss
+    queue.mark_failed(msg_id, "late worker")     # row already terminal
+
+    assert _legs()["meshtastic>rns"]["15m"]["failed"] == 1
+    assert dc.get_singleton().snapshot()["drop_reasons"][
+        "retries_exhausted"] == 1
+
+
+def test_live_mqtt_ingress_and_its_spill_count_on_the_same_leg(bridge):
+    # F1: live MQTT M->R messages carry source_network="meshtastic" (a
+    # routing input) and origin=MQTT; the spill was tagged "mqtt". One
+    # ingress must not split across two legs.
+    import sys
+    from gateway.bridge_health import MessageOrigin
+    from gateway.rns_bridge import BridgedMessage
+    from utils.tx_guard import allow_rns_egress
+    bridge.config.rns.get_lxmf_destinations.return_value = [
+        "522c4ac1d2f9964e03e3782ef5b0224c"]
+    fake_rns, fake_lxmf, _ = _Sym._fake_rns_lxmf_modules()
+    _Sym()._prime_bridge_for_send(bridge)
+    msg = BridgedMessage(source_network="meshtastic", source_id="!aabb0042",
+                         destination_id=None, content="hi via mqtt",
+                         is_broadcast=True, origin=MessageOrigin.MQTT)
+    with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}), \
+            allow_rns_egress():
+        bridge._process_mesh_to_rns(msg)
+
+    assert _legs()["mqtt>rns"]["15m"]["sent"] == 1
+    assert "meshtastic>rns" not in _legs()

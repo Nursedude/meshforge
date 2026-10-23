@@ -547,10 +547,16 @@ class MessageTransformMixin:
 
     @staticmethod
     def _leg_source(msg) -> str:
-        """BIC-2: the transport a message came in on. A replayed spill keeps
-        source_network="meshtastic" (routing input) and carries its real
-        origin — e.g. mqtt — in metadata."""
-        return (msg.metadata or {}).get('m2r_leg_source') or msg.source_network
+        """BIC-2: the transport a message came in on. source_network stays
+        "meshtastic" for MQTT ingress (a routing input), so the leg reads the
+        origin: a replayed spill carries it in metadata, a live MQTT message
+        as origin=MQTT — both land on mqtt>rns (review F1)."""
+        leg = (msg.metadata or {}).get('m2r_leg_source')
+        if leg:
+            return leg
+        if getattr(getattr(msg, 'origin', None), 'value', None) == 'mqtt':
+            return 'mqtt'
+        return msg.source_network
 
     def _requeue_failed_message(self, msg, destination: str,
                                 rns_destinations=None, title=None,

@@ -578,13 +578,14 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                     (msg_id,),
                 ).fetchone()
                 protocol = row["destination"] if row else None
+                payload = self._row_payload(row)
                 _dc.record(
                     _dc.DeliveryState.SENT,
                     msg_id=msg_id,
                     protocol=protocol,
-                    source=delivery_legs.payload_source(self._row_payload(row)),
+                    source=delivery_legs.payload_source(payload),
                 )
-                terminal = (protocol, self._row_payload(row))
+                terminal = (protocol, payload)
             else:
                 terminal = None
         if terminal is None:  # hook runs outside the connection
@@ -609,6 +610,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                 return False
 
             message = QueuedMessage.from_dict(dict(row))
+            drop = None  # recorded only if the guarded UPDATE lands (F5)
             message.retry_count += 1
             message.error_message = error
             message.updated_at = datetime.now()
@@ -636,14 +638,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                         reason = _dc.DropReason.NON_RETRIABLE_ERROR
                     else:
                         reason = _dc.DropReason.RETRIES_EXHAUSTED
-                    _dc.record(
-                        _dc.DeliveryState.DROPPED,
-                        msg_id=msg_id,
-                        protocol=message.destination,
-                        source=delivery_legs.payload_source(message.payload),
-                        drop_reason=reason,
-                        note=decision.reason[:80],
-                    )
+                    drop = (reason, decision.reason[:80])
                 else:
                     # Policy says retry with calculated delay
                     message.retry_after = datetime.now() + timedelta(seconds=decision.delay)
@@ -668,14 +663,8 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                     # Fork C: terminal drop in the no-policy fallback
                     # path. Always counted as retries-exhausted because
                     # we have no error classifier here.
-                    _dc.record(
-                        _dc.DeliveryState.DROPPED,
-                        msg_id=msg_id,
-                        protocol=message.destination,
-                        source=delivery_legs.payload_source(message.payload),
-                        drop_reason=_dc.DropReason.RETRIES_EXHAUSTED,
-                        note=f"retry_count={message.retry_count}",
-                    )
+                    drop = (_dc.DropReason.RETRIES_EXHAUSTED,
+                            f"retry_count={message.retry_count}")
                 else:
                     # Schedule retry with backoff
                     delay_idx = min(message.retry_count - 1, len(self.RETRY_DELAYS) - 1)
@@ -698,6 +687,15 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                 data["retry_after"], data["error_message"], msg_id
             )).rowcount
 
+        if changed == 1 and drop is not None:
+            # A late mark_failed on a row the stale reset already
+            # dead-lettered matches 0 rows: not a second loss (BIC-2 F5).
+            _dc.record(
+                _dc.DeliveryState.DROPPED, msg_id=msg_id,
+                protocol=message.destination,
+                source=delivery_legs.payload_source(message.payload),
+                drop_reason=drop[0], note=drop[1],
+            )
         if changed == 1 and message.status == MessageStatus.DEAD_LETTER:
             self._fire_terminal(message.destination, message.payload,
                                 "dropped")
