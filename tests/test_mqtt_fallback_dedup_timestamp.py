@@ -20,7 +20,7 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from gateway.base_handler import mqtt_content_dedup_key  # noqa: E402
+from gateway.base_handler import FallbackDropWitness, mqtt_content_dedup_key  # noqa: E402
 from gateway.mesh_bridge import MeshtasticPresetBridge, MQTTMeshInterface  # noqa: E402
 from gateway.mqtt_bridge_handler import MQTTBridgeHandler  # noqa: E402
 
@@ -49,6 +49,7 @@ def _handler():
     h.config = MagicMock()
     h.stats = {}
     h._stats_lock = threading.Lock()
+    h._fb_witness = FallbackDropWitness()
     h._recent_ids = {}
     h._dedup_window = 60
     h._mqtt_lock = threading.Lock()
@@ -94,12 +95,12 @@ class TestMQTTMeshInterfaceWitness:
         i._on_message(None, None, msg)
         i._on_message(None, None, msg)
         assert cb.call_count == 1
-        assert i.fallback_dedup_dropped == 1
+        assert i._fb_witness.count == 1
 
     def test_counter_reaches_bridge_status(self):
         # A counter nobody reads is no witness (non-author pass, 2026-10-22).
         i, _ = self._iface()
-        i.fallback_dedup_dropped = 3
+        i._fb_witness.count = 3
         b = MeshtasticPresetBridge.__new__(MeshtasticPresetBridge)
         b.stats = {"start_time": None}
         b.bridge_config = MagicMock()
@@ -127,23 +128,33 @@ class TestJournalWitness:
             h._handle_json_message(_TOPIC, raw)
         lines = [r for r in caplog.records if "fallback key" in r.getMessage()]
         assert len(lines) == 1 and lines[0].levelno == logging.INFO
-        assert "1 since start" in lines[0].getMessage()
+        assert "1 this process" in lines[0].getMessage()
 
     def test_rate_limited_then_logs_again_with_running_count(self, caplog, monkeypatch):
         import logging
         import gateway.base_handler as bh
         clock = [1000.0]
         monkeypatch.setattr(bh.time, "monotonic", lambda: clock[0])
-        owner = SimpleNamespace()
+        w = bh.FallbackDropWitness()
         with caplog.at_level(logging.INFO, logger="gateway.base_handler"):
-            n = bh.note_fallback_drop(owner, 0)
+            w.note()
             clock[0] += 10
-            n = bh.note_fallback_drop(owner, n)          # inside the window: silent
+            w.note()                                     # inside the window: silent
             clock[0] += bh.FALLBACK_DROP_LOG_INTERVAL_S
-            n = bh.note_fallback_drop(owner, n)          # window passed: logs, count 3
+            n = w.note()                                 # window passed: logs, count 3
         msgs = [r.getMessage() for r in caplog.records if "fallback key" in r.getMessage()]
-        assert n == 3
-        assert len(msgs) == 2 and "3 since start" in msgs[1]
+        assert n == 3 and w.count == 3
+        assert len(msgs) == 2 and "3 this process" in msgs[1]
+
+
+    def test_log_is_written_outside_the_witness_lock(self, monkeypatch):
+        # A slow journald must not stall other callers (non-author pass).
+        import gateway.base_handler as bh
+        w = bh.FallbackDropWitness()
+        held = []
+        monkeypatch.setattr(bh.logger, "info", lambda *a, **k: held.append(w._lock.locked()))
+        w.note()
+        assert held == [False]
 
     def test_interface_drop_logs_with_its_name(self, caplog):
         import logging
@@ -155,5 +166,5 @@ class TestJournalWitness:
             i._on_message(None, None, msg)
             i._on_message(None, None, msg)
         msgs = [r.getMessage() for r in caplog.records if "fallback key" in r.getMessage()]
-        assert i.fallback_dedup_dropped == 1
+        assert i._fb_witness.count == 1
         assert len(msgs) == 1 and "[leg-st]" in msgs[0]

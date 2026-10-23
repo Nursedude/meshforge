@@ -33,7 +33,7 @@ from typing import Optional, Dict, Callable, Any, List
 from .base_handler import (
     dual_path_dedup_enabled, dual_path_dedup_window_s,
     get_rf_tx_registry, get_secondary_rf_registry, is_bridge_loop,
-    is_already_bridged, mesh_origin_content_id, mqtt_content_dedup_key, note_fallback_drop,
+    is_already_bridged, mesh_origin_content_id, mqtt_content_dedup_key, FallbackDropWitness,
     true_origin_downlink_enabled, true_origin_loop_guard_window_s,
 )
 from .config import GatewayConfig, MeshtasticBridgeConfig, MeshtasticConfig
@@ -146,7 +146,7 @@ class MQTTMeshInterface:
         self._mqtt_lock = threading.Lock()
         self._recent_ids: Dict[str, float] = {}
         self._dedup_window = 60
-        self.fallback_dedup_dropped = 0  # id-less dups dropped (hfm #9 witness)
+        self._fb_witness = FallbackDropWitness(f"[{name}] ")  # id-less dups dropped (hfm #9)
 
     @property
     def is_connected(self) -> bool:
@@ -257,7 +257,7 @@ class MQTTMeshInterface:
             dedup_key = msg_id if msg_id else mqtt_content_dedup_key(data)
             if dedup_key and self._is_duplicate(dedup_key):
                 if not msg_id:  # counted + journaled (rate-limited INFO)
-                    self.fallback_dedup_dropped = note_fallback_drop(self, self.fallback_dedup_dropped, f"[{self._name}] ")
+                    self._fb_witness.note()
                 return
 
             if msg_type != 'text':
@@ -720,7 +720,7 @@ class MeshtasticPresetBridge:
             'direction': self.bridge_config.direction,
             'uptime_seconds': uptime,
             'statistics': {**self.stats, **self._handoff.snapshot(), 'mqtt_fallback_dedup_dropped': sum(
-                i.fallback_dedup_dropped for i in (self._primary_interface, self._secondary_interface)
+                i._fb_witness.count for i in (self._primary_interface, self._secondary_interface)
                 if isinstance(i, MQTTMeshInterface))},
             'queue': {
                 'p2s_pending': self._primary_to_secondary.get_queue_depth(),

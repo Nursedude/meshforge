@@ -244,31 +244,50 @@ def mqtt_content_dedup_key(data: dict) -> str:
     # un-collapse one packet uplinked by TWO radios (each stamps its own rx
     # time) — the #34 case this key exists for. How often either happens is
     # unmeasured; the ingress sites now COUNT fallback-key drops
-    # (`mqtt_fallback_dedup_dropped`). Decide with that number, not a guess.
+    # (`FallbackDropWitness`, journaled). Decide with that number, not a guess.
     raw = "\x1f".join(parts)
     return "c:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-# The id-less fallback-key drop witness (2026-10-22). The per-site counters
-# live only in the gateway process — nothing out of process could read them,
-# so the reachable witness is the journal: one INFO line on the first drop,
-# then at most one per interval, carrying the running count. Read with
-# `journalctl -u meshforge | grep "fallback key"`.
+# The id-less fallback-key drop witness (2026-10-22). A counter inside the
+# gateway is unreadable from outside (nothing publishes the stats dict), so
+# the reachable witness is the gateway's journal: one INFO line on the first
+# drop, then at most one per interval, carrying the per-process count — the
+# FIRST drop is always written, so zero-vs-nonzero is exact; totals are a
+# lower bound (drops after a window's line, or before a restart, are not).
+# Read (the gateway unit is `meshforge-gateway`, NOT `meshforge`):
+#   journalctl -u meshforge-gateway --since "<its restart onto this code>" \
+#     | grep "fallback key"
+# and confirm the same window HAS INFO lines (a WARNING-level box would hide
+# the witness): journalctl -u meshforge-gateway --since ... -p info..info | wc -l
 FALLBACK_DROP_LOG_INTERVAL_S = 600.0
 
 
-def note_fallback_drop(owner: Any, count: int, label: str = "") -> int:
-    """Count one id-less duplicate dropped by ``mqtt_content_dedup_key`` and
-    return the new count; log it at INFO, rate-limited per ``owner``
-    (monotonic, so a wall-clock step cannot silence or flood it)."""
-    count += 1
-    now = time.monotonic()
-    last = getattr(owner, "_fallback_drop_logged_at", None)
-    if last is None or now - last >= FALLBACK_DROP_LOG_INTERVAL_S:
-        owner._fallback_drop_logged_at = now
-        logger.info("%sMQTT id-less duplicate dropped (fallback key) — %d since start",
-                    label, count)
-    return count
+class FallbackDropWitness:
+    """Count + rate-limited INFO line for id-less duplicates dropped by
+    ``mqtt_content_dedup_key``. Owns its state and lock; the log line is
+    written OUTSIDE the lock (a slow journald must not stall callers).
+    Monotonic, so a wall-clock step can neither silence nor flood it."""
+
+    def __init__(self, label: str = ""):
+        self.count = 0
+        self._label = label
+        self._logged_at: Optional[float] = None
+        self._lock = threading.Lock()
+
+    def note(self) -> int:
+        with self._lock:
+            self.count += 1
+            n = self.count
+            now = time.monotonic()
+            log = (self._logged_at is None
+                   or now - self._logged_at >= FALLBACK_DROP_LOG_INTERVAL_S)
+            if log:
+                self._logged_at = now
+        if log:
+            logger.info("%sMQTT id-less duplicate dropped (fallback key) — "
+                        "%d this process", self._label, n)
+        return n
 
 
 # Registry TTL: entries older than this are pruned on every write, so it is

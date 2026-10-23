@@ -1442,6 +1442,8 @@ class TestEmptyIdContentDedupIssue34:
         h.config = MagicMock()  # bare mock → DM-to-gateway leg dormant
         h.stats = {}
         h._stats_lock = threading.Lock()
+        from gateway.base_handler import FallbackDropWitness
+        h._fb_witness = FallbackDropWitness()
         h._recent_ids = {}
         h._dedup_window = 60
         h._mqtt_lock = threading.Lock()

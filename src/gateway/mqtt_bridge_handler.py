@@ -43,7 +43,7 @@ from .ack_tracker import AckTracker, routing_error_to_drop_reason
 from .base_handler import (
     UNKNOWN_ORIGIN, BaseMessageHandler, dual_path_dedup_enabled,
     dual_path_dedup_window_s, get_rf_tx_registry, is_bridge_loop,
-    mesh_origin_content_id, mqtt_content_dedup_key, note_fallback_drop,
+    mesh_origin_content_id, mqtt_content_dedup_key, FallbackDropWitness,
     true_origin_downlink_enabled, true_origin_loop_guard_window_s,
 )
 from utils.meshtastic_se_crypto import (
@@ -170,6 +170,7 @@ class MQTTBridgeHandler(BaseMessageHandler):
 
         # Deduplication: track recent message IDs to avoid loops
         self._recent_ids: Dict[str, float] = {}
+        self._fb_witness = FallbackDropWitness()
         self._dedup_window = 60  # seconds
 
         # Hardening A: bridge channel deployment diagnostic. Set on the
@@ -645,12 +646,11 @@ class MQTTBridgeHandler(BaseMessageHandler):
         dedup_key = msg_id if msg_id else mqtt_content_dedup_key(data)
         if dedup_key and self._is_duplicate(dedup_key):
             if not msg_id:
-                # Witness for the fallback-key path (hfm #9): counted, and
-                # journaled at INFO (rate-limited) — the counter alone is
-                # in-process only (2026-10-22).
+                # Witness for the fallback-key path (hfm #9): journaled at INFO
+                # (rate-limited) — a stats counter alone is in-process only.
+                n = self._fb_witness.note()  # logs OUTSIDE _stats_lock
                 with self._stats_lock:
-                    self.stats['mqtt_fallback_dedup_dropped'] = note_fallback_drop(
-                        self, self.stats.get('mqtt_fallback_dedup_dropped', 0))
+                    self.stats['mqtt_fallback_dedup_dropped'] = n
             return
 
         # Update node tracking
