@@ -35,7 +35,8 @@ class MeshCoreBridgeMixin:
             self._meshcore_handler.run_loop()
 
     def send_to_meshcore(self, message: str, destination: str = None,
-                         channel: int = 0) -> bool:
+                         channel: int = 0, *,
+                         source: Optional[str] = None) -> bool:
         """Send a message to MeshCore network.
 
         Args:
@@ -49,7 +50,8 @@ class MeshCoreBridgeMixin:
         if not self._meshcore_handler:
             logger.warning("MeshCore handler not initialized")
             return False
-        return self._meshcore_handler.send_text(message, destination, channel)
+        return self._meshcore_handler.send_text(message, destination, channel,
+                                                source=source)
 
     def _process_meshcore_to_bridge(self, msg) -> None:
         """Process message from MeshCore → other networks (Meshtastic, RNS).
@@ -85,7 +87,8 @@ class MeshCoreBridgeMixin:
             mesh_state = self.health.get_subsystem_state("meshtastic")
             if mesh_state not in (SubsystemState.DISCONNECTED, SubsystemState.DISABLED):
                 if self.send_to_meshtastic(bridged_content,
-                                           channel=self.config.meshtastic.channel):
+                                           channel=self.config.meshtastic.channel,
+                                           source="meshcore"):
                     logger.info(f"Bridge MC→Mesh {ch_tag}: {bridged_content[:50]}...")
                     with self._stats_lock:
                         self.stats.setdefault('messages_meshcore_to_mesh', 0)
@@ -162,7 +165,7 @@ class MeshCoreBridgeMixin:
                 from .canonical_message import _truncate_utf8
                 bridged_content = _truncate_utf8(bridged_content, 160)
 
-            if self.send_to_meshcore(bridged_content):
+            if self.send_to_meshcore(bridged_content, source=src_net):
                 direction = f"{src_net[:4]}_to_meshcore"
                 logger.info(f"Bridge {net_prefix}→MC: {bridged_content[:50]}...")
                 with self._stats_lock:

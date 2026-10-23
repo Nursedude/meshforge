@@ -137,7 +137,7 @@ class MeshCoreSimulator:
 
 
 def _record_tx(state: str, msg_id: Optional[str], reason: Optional[str] = None,
-               note: str = "") -> None:
+               note: str = "", source: Optional[str] = None) -> None:
     """MeshCore egress → delivery_counters (2026-09-23, MA b3591e09 port):
     without it a MeshCore leg reads as silence on the Delivery screen. Lazy
     import (module-level delivery_counters imports deadlocked threaded
@@ -145,7 +145,7 @@ def _record_tx(state: str, msg_id: Optional[str], reason: Optional[str] = None,
     try:
         from gateway import delivery_counters as dc
         dc.record(dc.DeliveryState(state), msg_id or f"meshcore-{time.time():.3f}",
-                  protocol="meshcore",
+                  protocol="meshcore", source=source,
                   drop_reason=dc.DropReason(reason) if reason else None,
                   note=note[:80])
     except Exception as e:
@@ -174,10 +174,12 @@ def companion_error(evt: Any) -> Optional[str]:
     return "error"
 
 
-def _companion_refused(err: str, msg_id: Optional[str], what: str) -> bool:
+def _companion_refused(err: str, msg_id: Optional[str], what: str,
+                       source: Optional[str] = None) -> bool:
     """The ERROR Event IS the failure (review C 2026-09-23: MF recorded it as SENT)."""
     logger.warning(f"MeshCore {what} refused by the companion: {err}")
-    _record_tx("dropped", msg_id, "non_retriable_error", f"companion {err}")
+    _record_tx("dropped", msg_id, "non_retriable_error", f"companion {err}",
+               source=source)
     return False
 
 
@@ -318,7 +320,8 @@ class MeshCoreHandler(BaseMessageHandler):
             # rail; a stranger on a whitelisted channel would otherwise get
             # the whole channel spammed with a reply meant only for them).
             return self.send_text(text, destination=dest,
-                                  channel=channel or 0, dm_only=True)
+                                  channel=channel or 0, dm_only=True,
+                                  source="local")
 
         def _log(record: dict) -> None:
             try:
@@ -880,22 +883,29 @@ class MeshCoreHandler(BaseMessageHandler):
         try:
             dm_only = False
             msg_id = None
+            source = None   # BIC-2 leg origin; None counts under ?>meshcore
             if isinstance(msg, CanonicalMessage):
                 msg_id = msg.id
                 text = msg.to_meshcore_text()
                 dest = msg.destination_address
                 dm_only = bool((msg.metadata or {}).get('dm_only'))
+                source = (msg.metadata or {}).get('leg_source')
             elif isinstance(msg, dict):
                 text = msg.get('message', '')
                 dest = msg.get('destination')
                 dm_only = bool(msg.get('dm_only'))
                 msg_id = msg.get('id')
+                # Lazy, like _record_tx: module-level delivery imports here
+                # deadlocked threaded startup (2026-06-06).
+                from gateway.delivery_legs import payload_source
+                source = payload_source(msg)
             else:
                 text = str(msg)
                 dest = None
 
             success = await self._send_message(
-                text, dest, broadcast_fallback=not dm_only, msg_id=msg_id)
+                text, dest, broadcast_fallback=not dm_only, msg_id=msg_id,
+                source=source)
 
             if success:
                 with self._stats_lock:
@@ -922,7 +932,8 @@ class MeshCoreHandler(BaseMessageHandler):
 
     async def _send_message(self, text: str, destination: Optional[str] = None,
                             broadcast_fallback: bool = True,
-                            msg_id: Optional[str] = None) -> bool:
+                            msg_id: Optional[str] = None,
+                            source: Optional[str] = None) -> bool:
         """
         Send a text message to the MeshCore network.
 
@@ -945,8 +956,11 @@ class MeshCoreHandler(BaseMessageHandler):
         0 = Public. Refuse loudly until slot routing is ported from
         MeshAnchor (``bridge_target_channel``, refuse-when-unset).
         """
+        def _rec(*a, **k):   # BIC-2: every outcome on this send's leg
+            _record_tx(*a, source=source, **k)
+
         if not self._meshcore or not self._connected:
-            _record_tx("dropped", msg_id, "non_retriable_error", "not connected")
+            _rec("dropped", msg_id, "non_retriable_error", "not connected")
             return False
 
         # RF egress chokepoint — every MeshCore send funnels through here,
@@ -974,8 +988,8 @@ class MeshCoreHandler(BaseMessageHandler):
                         err = companion_error(send_evt)
                         if err is not None:
                             return _companion_refused(
-                                err, msg_id, f"DM {destination!r}")
-                        _record_tx("sent", msg_id, note=f"dm {destination}")
+                                err, msg_id, f"DM {destination!r}", source=source)
+                        _rec("sent", msg_id, note=f"dm {destination}")
                         return True
                 # A directed message to an unknown contact is DROPPED, never
                 # broadcast — for every caller, not just dm_only (MeshAnchor's
@@ -983,7 +997,7 @@ class MeshCoreHandler(BaseMessageHandler):
                 logger.warning(
                     f"MeshCore contact not found for {destination} — "
                     f"dropping (a DM is never broadcast)")
-                _record_tx("dropped", msg_id, "destination_unreachable",
+                _rec("dropped", msg_id, "destination_unreachable",
                            f"no contact {destination}")
                 return False
             if hasattr(self._meshcore, 'commands'):
@@ -992,7 +1006,7 @@ class MeshCoreHandler(BaseMessageHandler):
                     "outbound slot routing (the only slot it could name is "
                     "0 = Public). For MeshCore-primary bridging use "
                     "MeshAnchor (github.com/Nursedude/meshanchor).")
-                _record_tx("dropped", msg_id, "non_retriable_error",
+                _rec("dropped", msg_id, "non_retriable_error",
                            "no slot routing")
                 return False
             if hasattr(self._meshcore, 'send_channel_txt_msg'):
@@ -1000,12 +1014,12 @@ class MeshCoreHandler(BaseMessageHandler):
                 await self._meshcore.send_channel_txt_msg(text)
                 return True
             logger.error("MeshCore instance has no send method")
-            _record_tx("dropped", msg_id, "non_retriable_error", "no send method")
+            _rec("dropped", msg_id, "non_retriable_error", "no send method")
             return False
 
         except Exception as e:
             logger.error(f"Failed to send MeshCore message: {e}")
-            _record_tx("dropped", msg_id, "non_retriable_error", str(e))
+            _rec("dropped", msg_id, "non_retriable_error", str(e))
             return False
 
     # ── read-only snapshots for the status API (roadmap 1e, 2026-09-22) ──
@@ -1192,7 +1206,8 @@ class MeshCoreHandler(BaseMessageHandler):
         return None
 
     def send_text(self, message: str, destination: str = None,
-                  channel: int = 0, dm_only: bool = False) -> bool:
+                  channel: int = 0, dm_only: bool = False,
+                  *, source: Optional[str] = None) -> bool:
         """
         Send a text message to MeshCore (synchronous interface).
 
@@ -1219,7 +1234,8 @@ class MeshCoreHandler(BaseMessageHandler):
                 destination_address=destination,
                 is_broadcast=destination is None,
                 source_network=Protocol.MESHCORE.value,
-                metadata={"dm_only": True} if dm_only else {},
+                metadata={**({"dm_only": True} if dm_only else {}),
+                          **({"leg_source": source} if source else {})},
             )
             self._send_queue.put_nowait(msg)
             return True

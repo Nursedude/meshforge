@@ -1224,7 +1224,7 @@ class TestEServiceEnvelopeAckIngestion:
         dp.routing_error_name.return_value = "NONE"
         h._handle_routing_envelope(dp)
         rec.assert_called_once_with(DeliveryState.CONFIRMED,
-                                    msg_id="msg-7", protocol="meshtastic")
+                                    msg_id="msg-7", protocol="meshtastic", source=None)
         assert h.stats.get("mesh_ack_confirmed") == 1
 
     def test_ack_not_from_destination_does_not_confirm(self, monkeypatch):
@@ -1292,7 +1292,7 @@ class TestEServiceEnvelopeAckIngestion:
                             lambda *a, **k: dp)
         h._handle_protobuf_message("msh/2/e/LongFast/!x", b"\x01\x02")
         rec.assert_called_once_with(DeliveryState.CONFIRMED,
-                                    msg_id="msg-x", protocol="meshtastic")
+                                    msg_id="msg-x", protocol="meshtastic", source=None)
 
     def test_maybe_register_skips_broadcast(self):
         h = self._h()

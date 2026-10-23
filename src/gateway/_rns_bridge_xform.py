@@ -1315,6 +1315,7 @@ class MessageTransformMixin:
                     chunk,
                     destination=destination,
                     channel=self.config.meshtastic.channel,
+                    source=self._leg_source(msg),
                 )
             ]
             if not failed_chunks:

@@ -920,12 +920,14 @@ class RNSMeshtasticBridge(
                 status['meshtastic_radio'] = {'reachable': None, 'endpoint': '?'}
         return status
 
-    def send_to_meshtastic(self, message: str, destination: str = None, channel: int = 0) -> bool:
-        """Send a message to Meshtastic network."""
+    def send_to_meshtastic(self, message: str, destination: str = None, channel: int = 0,
+                           *, source: Optional[str] = None) -> bool:
+        """Send a message to Meshtastic network. ``source`` names the BIC-2 leg."""
         if not self._mesh_handler:
             logger.warning("Meshtastic handler not initialized")
             return False
-        return self._mesh_handler.send_text(message, destination, channel)
+        return self._mesh_handler.send_text(message, destination, channel,
+                                            source=source)
 
     # ACK/correlation methods inherited from BridgeAckMixin — see
     # bridge_ack_mixin.py: _register_lxmf_delivery_callbacks,

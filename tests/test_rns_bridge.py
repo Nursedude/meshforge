@@ -577,7 +577,8 @@ class TestSendToMeshtastic:
         bridge._mesh_handler.send_text.return_value = True
         result = bridge.send_to_meshtastic("Hello", "!dest", 2)
         assert result is True
-        bridge._mesh_handler.send_text.assert_called_once_with("Hello", "!dest", 2)
+        bridge._mesh_handler.send_text.assert_called_once_with(
+            "Hello", "!dest", 2, source=None)
 
     def test_returns_false_no_handler(self, bridge):
         bridge._mesh_handler = None
@@ -1226,7 +1227,7 @@ class TestProcessRNSToMesh:
         # First chunk sends; every remaining chunk fails.
         calls = {"n": 0}
 
-        def send(chunk, destination=None, channel=0):
+        def send(chunk, destination=None, channel=0, source=None):
             calls["n"] += 1
             return calls["n"] == 1
 
@@ -1251,7 +1252,7 @@ class TestProcessRNSToMesh:
         )
         captured = {}
 
-        def capture_send(content, destination=None, channel=0):
+        def capture_send(content, destination=None, channel=0, source=None):
             captured["content"] = content
             captured["destination"] = destination
             return True
@@ -1280,7 +1281,7 @@ class TestProcessRNSToMesh:
         )
         captured = {}
         with patch.object(bridge, 'send_to_meshtastic',
-                          side_effect=lambda content, destination=None, channel=0: captured.update(content=content) or True):
+                          side_effect=lambda content, destination=None, channel=0, source=None: captured.update(content=content) or True):
             bridge._process_rns_to_mesh(msg)
         # Tagged with the real origin, not the relaying gateway hash
         assert captured["content"].startswith("[RNS:BORG] ")
@@ -1304,7 +1305,7 @@ class TestProcessRNSToMesh:
         )
         captured = {}
         with patch.object(bridge, 'send_to_meshtastic',
-                          side_effect=lambda content, destination=None, channel=0: captured.update(content=content) or True):
+                          side_effect=lambda content, destination=None, channel=0, source=None: captured.update(content=content) or True):
             bridge._process_rns_to_mesh(msg)
         assert captured["content"].startswith("[RNS:a2e95ba4] ")
 
@@ -1318,7 +1319,7 @@ class TestProcessRNSToMesh:
         )
         captured = {}
         with patch.object(bridge, 'send_to_meshtastic',
-                          side_effect=lambda content, destination=None, channel=0: captured.update(content=content) or True):
+                          side_effect=lambda content, destination=None, channel=0, source=None: captured.update(content=content) or True):
             bridge._process_rns_to_mesh(msg)
         assert captured["content"].startswith("[RNS:abcd] ")
 
@@ -1331,7 +1332,7 @@ class TestProcessRNSToMesh:
         )
         captured = {}
 
-        def capture_send(content, destination=None, channel=0):
+        def capture_send(content, destination=None, channel=0, source=None):
             captured["content"] = content
             captured["destination"] = destination
             return True
@@ -1354,7 +1355,7 @@ class TestProcessRNSToMesh:
         )
         captured = {}
 
-        def capture_send(content, destination=None, channel=0):
+        def capture_send(content, destination=None, channel=0, source=None):
             captured["content"] = content
             captured["destination"] = destination
             return True
@@ -1376,7 +1377,7 @@ class TestProcessRNSToMesh:
         )
         captured = {}
 
-        def capture_send(content, destination=None, channel=0):
+        def capture_send(content, destination=None, channel=0, source=None):
             captured["content"] = content
             captured["destination"] = destination
             return True
@@ -1396,7 +1397,7 @@ class TestProcessRNSToMesh:
         )
         captured = {}
 
-        def capture_send(content, destination=None, channel=0):
+        def capture_send(content, destination=None, channel=0, source=None):
             captured["content"] = content
             captured["destination"] = destination
             return True
@@ -1416,7 +1417,7 @@ class TestProcessRNSToMesh:
         )
         captured = {}
 
-        def capture_send(content, destination=None, channel=0):
+        def capture_send(content, destination=None, channel=0, source=None):
             captured["content"] = content
             return True
 
@@ -1435,7 +1436,7 @@ class TestProcessRNSToMesh:
         )
         captured = {}
 
-        def capture_send(content, destination=None, channel=0):
+        def capture_send(content, destination=None, channel=0, source=None):
             captured["content"] = content
             captured["destination"] = destination
             return True
@@ -1582,7 +1583,7 @@ class TestRNSToMeshChunking:
         )
         sent = []
 
-        def capture_send(content, destination=None, channel=0):
+        def capture_send(content, destination=None, channel=0, source=None):
             sent.append(content)
             return True
 
@@ -1616,7 +1617,7 @@ class TestRNSToMeshChunking:
         )
         sent = []
         with patch.object(bridge, 'send_to_meshtastic',
-                          side_effect=lambda content, destination=None, channel=0: sent.append(content) or True):
+                          side_effect=lambda content, destination=None, channel=0, source=None: sent.append(content) or True):
             bridge._process_rns_to_mesh(msg)
 
         assert len(sent) >= 2
@@ -1633,7 +1634,7 @@ class TestRNSToMeshChunking:
         # First chunk succeeds, rest fail
         results = iter([True])
 
-        def flaky(content, destination=None, channel=0):
+        def flaky(content, destination=None, channel=0, source=None):
             try:
                 return next(results)
             except StopIteration:
@@ -1861,7 +1862,7 @@ class TestRelayOnReceive:
         )
         captured = {}
 
-        def capture_send(content, destination=None, channel=0):
+        def capture_send(content, destination=None, channel=0, source=None):
             captured["content"] = content
             return True
 
@@ -3130,6 +3131,7 @@ class TestAckSynthesisIssue66:
         assert ok is True
         mock_handler.send_text.assert_called_once_with(
             "[delivered: abcdef01]", destination="!aabbccdd", channel=0,
+            source="local",
         )
 
     def test_emit_ack_to_origin_meshcore_dispatches_to_handler(self, bridge):
@@ -3143,7 +3145,7 @@ class TestAckSynthesisIssue66:
         )
         assert ok is True
         mock_handler.send_text.assert_called_once_with(
-            "[failed: abcdef01]", destination="publickey-prefix",
+            "[failed: abcdef01]", destination="publickey-prefix", source="local",
         )
 
     def test_emit_ack_to_origin_rns_converts_hex_to_bytes(self, bridge):
@@ -3516,7 +3518,7 @@ class TestReplyRoutingRNSToMesh:
     def _capture(self, bridge, msg):
         captured = {}
 
-        def capture_send(content, destination=None, channel=0):
+        def capture_send(content, destination=None, channel=0, source=None):
             captured["content"] = content
             captured["destination"] = destination
             return True
@@ -3691,7 +3693,7 @@ class TestReplyRoutingEndToEnd:
         )
         captured = {}
 
-        def capture_send(content, destination=None, channel=0):
+        def capture_send(content, destination=None, channel=0, source=None):
             captured["content"] = content
             captured["destination"] = destination
             return True
@@ -3724,7 +3726,7 @@ class TestCorrelationRestartReplyRouting:
     def _capture(self, bridge, msg):
         captured = {}
 
-        def capture_send(content, destination=None, channel=0):
+        def capture_send(content, destination=None, channel=0, source=None):
             captured["content"] = content
             captured["destination"] = destination
             return True
@@ -3818,7 +3820,7 @@ class TestIdentityReplyContactRung:
     def _capture(self, bridge, msg):
         captured = {}
 
-        def capture_send(content, destination=None, channel=0):
+        def capture_send(content, destination=None, channel=0, source=None):
             captured["content"] = content
             captured["destination"] = destination
             return True
@@ -4661,7 +4663,7 @@ class TestTrueOriginDelivery:
         captured = {}
         with patch.object(bridge, '_get_true_origin_injector', return_value=inj), \
                 patch.object(bridge, 'send_to_meshtastic',
-                             side_effect=lambda content, destination=None, channel=0:
+                             side_effect=lambda content, destination=None, channel=0, source=None:
                                  captured.setdefault('sends', []).append(content) or True):
             bridge._process_rns_to_mesh(self._mesh_bcast("the joke text"))
         # Injected AS the true origin; NO [RNS:] fallback send happened.
@@ -4688,7 +4690,7 @@ class TestTrueOriginDelivery:
         captured = {}
         with patch.object(bridge, '_get_true_origin_injector', return_value=inj), \
                 patch.object(bridge, 'send_to_meshtastic',
-                             side_effect=lambda content, destination=None, channel=0:
+                             side_effect=lambda content, destination=None, channel=0, source=None:
                                  captured.setdefault('sends', []).append(content) or True):
             bridge._process_rns_to_mesh(self._mesh_bcast())
         inj.inject.assert_not_called()
@@ -4705,7 +4707,7 @@ class TestTrueOriginDelivery:
         captured = {}
         with patch.object(bridge, '_get_true_origin_injector', return_value=inj), \
                 patch.object(bridge, 'send_to_meshtastic',
-                             side_effect=lambda content, destination=None, channel=0:
+                             side_effect=lambda content, destination=None, channel=0, source=None:
                                  captured.setdefault('sends', []).append(content) or True):
             bridge._process_rns_to_mesh(msg)
         inj.inject.assert_not_called()
@@ -4718,7 +4720,7 @@ class TestTrueOriginDelivery:
         captured = {}
         with patch.object(bridge, '_get_true_origin_injector', return_value=inj), \
                 patch.object(bridge, 'send_to_meshtastic',
-                             side_effect=lambda content, destination=None, channel=0:
+                             side_effect=lambda content, destination=None, channel=0, source=None:
                                  captured.setdefault('sends', []).append(content) or True):
             bridge._process_rns_to_mesh(self._mesh_bcast("wx"))
         inj.inject.assert_called_once()
@@ -4737,7 +4739,7 @@ class TestTrueOriginDelivery:
         # no meshforge_from_id -> origin_num None -> fall back before inject
         with patch.object(bridge, '_get_true_origin_injector', return_value=inj), \
                 patch.object(bridge, 'send_to_meshtastic',
-                             side_effect=lambda content, destination=None, channel=0:
+                             side_effect=lambda content, destination=None, channel=0, source=None:
                                  captured.setdefault('sends', []).append(content) or True):
             bridge._process_rns_to_mesh(
                 self._mesh_bcast("x", meshforge_from_id=""))
@@ -4750,7 +4752,7 @@ class TestTrueOriginDelivery:
         captured = {}
         with patch.object(bridge, '_get_true_origin_injector', return_value=None), \
                 patch.object(bridge, 'send_to_meshtastic',
-                             side_effect=lambda content, destination=None, channel=0:
+                             side_effect=lambda content, destination=None, channel=0, source=None:
                                  captured.setdefault('sends', []).append(content) or True):
             bridge._process_rns_to_mesh(self._mesh_bcast())
         assert captured['sends'][0].startswith("[RNS:BORG] ")
@@ -4772,7 +4774,7 @@ class TestTrueOriginDelivery:
                 patch.object(bridge, '_resolve_mesh_destination',
                              return_value='!ebfa1b11') as resolve, \
                 patch.object(bridge, 'send_to_meshtastic',
-                             side_effect=lambda content, destination=None, channel=0:
+                             side_effect=lambda content, destination=None, channel=0, source=None:
                                  captured.setdefault('sends', []).append((content, destination)) or True):
             bridge._process_rns_to_mesh(
                 self._mesh_bcast("@!ebfa1b11 roger"))
@@ -4800,7 +4802,7 @@ class TestTrueOriginDelivery:
         with patch.object(bridge, '_resolve_mesh_destination',
                           return_value='!ebfa1b11'), \
                 patch.object(bridge, 'send_to_meshtastic',
-                             side_effect=lambda content, destination=None, channel=0:
+                             side_effect=lambda content, destination=None, channel=0, source=None:
                                  captured.setdefault('sends', []).append((content, destination)) or True):
             bridge._process_rns_to_mesh(msg)
         assert captured.get('sends'), "DM send must happen"

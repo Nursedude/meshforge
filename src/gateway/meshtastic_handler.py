@@ -20,6 +20,7 @@ from queue import Full
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from gateway import delivery_counters as _dc
+from gateway import delivery_legs
 from .ack_tracker import (
     AckTracker, parse_routing_ack, routing_error_to_drop_reason,
 )
@@ -180,7 +181,8 @@ class MeshtasticHandler(BaseMessageHandler):
             # a DM can target the wrong node and miss a remote asker. Broadcasting
             # on the channel reaches every node on it (incl. the real asker) —
             # consistent with the MQTT + MeshCore legs (private-channel model).
-            return self.send_text(text, destination=None, channel=channel)
+            return self.send_text(text, destination=None, channel=channel,
+                                  source="local")
 
         def _log(record: dict) -> None:
             try:
@@ -258,11 +260,15 @@ class MeshtasticHandler(BaseMessageHandler):
             return False
 
     def _register_ack_for_send(self, result, destination, msg_id,
-                               record_sent: bool) -> None:
-        """Arm ACK confirmation for a just-sent DM (Thread-2 step 4).
+                               record_sent: bool,
+                               source: Optional[str] = None) -> None:
+        """Record a successful send, then arm ACK confirmation for a DM.
 
-        No-op for broadcasts (no per-node ACK exists) and when ack
-        consumption is disabled. ``result`` is the meshtastic library's
+        BIC-2 slice 3: ``record_sent`` records SENT for EVERY successful
+        direct send — broadcasts and DMs with ack consumption off included
+        (a direct broadcast used to be counted nowhere) — on the leg
+        ``source>meshtastic``. ACK arming stays DM-only and needs ack
+        consumption (no per-node ACK exists for a broadcast). ``result`` is the meshtastic library's
         returned MeshPacket — its ``.id`` is the packet_id the recipient
         will echo as the ROUTING_APP ``request_id``.
 
@@ -274,29 +280,35 @@ class MeshtasticHandler(BaseMessageHandler):
         the eventual CONFIRMED is not an orphan.
         """
         try:
-            if not destination or not self._ack_consumption_enabled():
-                return
             packet_id = getattr(result, 'id', None)
-            if not isinstance(packet_id, int) or isinstance(packet_id, bool) \
-                    or packet_id <= 0:
-                return
+            has_pkt = (isinstance(packet_id, int)
+                       and not isinstance(packet_id, bool) and packet_id > 0)
             if not msg_id:
-                msg_id = f"mesh-{packet_id:08x}"
+                msg_id = (f"mesh-{packet_id:08x}" if has_pkt
+                          else f"mesh-{int(time.time() * 1000)}")
             if record_sent:
                 _dc.record(
                     _dc.DeliveryState.SENT,
                     msg_id=msg_id,
                     protocol="meshtastic",
+                    source=source,
                 )
+            if not (destination and has_pkt and self._ack_consumption_enabled()):
+                return
             # The send result's `.to` is the destination node number; the
             # caller's `destination` (a "!hex" id) is the fallback.
             dest_num = getattr(result, 'to', None)
             if not isinstance(dest_num, int) or isinstance(dest_num, bool):
                 dest_num = destination
             self._ack_tracker.register(packet_id, msg_id, protocol="meshtastic",
-                                       dest_num=dest_num)
+                                       dest_num=dest_num, source=source)
         except Exception as e:
-            logger.debug(f"Could not arm ACK tracking: {e}")
+            # The message is already on the air: never fail the send. The
+            # swallow leaves a witness (hfm #9).
+            logger.debug(f"Could not record/arm delivery tracking: {e}")
+            with self._stats_lock:
+                self.stats['delivery_record_errors'] = (
+                    self.stats.get('delivery_record_errors', 0) + 1)
 
     def run_loop(self) -> None:
         """
@@ -447,7 +459,8 @@ class MeshtasticHandler(BaseMessageHandler):
         self._interface = None
         self._connected = False
 
-    def send_text(self, message: str, destination: str = None, channel: int = 0) -> bool:
+    def send_text(self, message: str, destination: str = None, channel: int = 0,
+                  *, source: Optional[str] = None) -> bool:
         """
         Send a text message to Meshtastic network.
 
@@ -494,7 +507,8 @@ class MeshtasticHandler(BaseMessageHandler):
                 # Direct send path has no queue lifecycle — record SENT + arm
                 # ACK confirmation against a synthesized id (record_sent=True).
                 self._register_ack_for_send(
-                    result, destination, msg_id=None, record_sent=True)
+                    result, destination, msg_id=None, record_sent=True,
+                    source=source)
                 # Dual-path dedup: record broadcast TX so the OTHER path to
                 # this radio (mesh_bridge's cross-preset forward of the same
                 # content) can suppress its duplicate. Registration is
@@ -578,7 +592,8 @@ class MeshtasticHandler(BaseMessageHandler):
                 # QUEUED→SENT on one id for end-to-end lifecycle.
                 self._register_ack_for_send(
                     result, destination, msg_id=payload.get('_queue_msg_id'),
-                    record_sent=False)
+                    record_sent=False,
+                    source=delivery_legs.payload_source(payload))
                 # Dual-path dedup: see send_text — same registration for the
                 # persistent-queue dispatch path (the live R→M route).
                 if not destination:
@@ -665,16 +680,17 @@ class MeshtasticHandler(BaseMessageHandler):
                 return
             # A positive ACK counts only if the DM's destination sent it —
             # a relay's implicit ack is not delivery (ack_tracker docstring).
-            resolved = self._ack_tracker.resolve(
+            resolved = self._ack_tracker.resolve_leg(
                 ack.request_id, from_num=from_num, positive=ack.ok)
             if resolved is None:
                 return
-            msg_id, protocol = resolved
+            msg_id, protocol, source = resolved   # source: same leg as SENT
             if ack.ok:
                 _dc.record(
                     _dc.DeliveryState.CONFIRMED,
                     msg_id=msg_id,
                     protocol=protocol,
+                    source=source,
                 )
                 with self._stats_lock:
                     self.stats['mesh_ack_confirmed'] = (
@@ -689,6 +705,7 @@ class MeshtasticHandler(BaseMessageHandler):
                     _dc.DeliveryState.DROPPED,
                     msg_id=msg_id,
                     protocol=protocol,
+                    source=source,
                     drop_reason=reason,
                     note=f"meshtastic_nak:{ack.reason}"[:80],
                 )

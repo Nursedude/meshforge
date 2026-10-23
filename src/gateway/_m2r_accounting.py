@@ -231,7 +231,7 @@ class M2RAccountingMixin:
         try:
             ok = self.send_to_meshtastic(
                 text, destination=msg.source_id,
-                channel=channel)
+                channel=channel, source="local")   # the gateway authored it
         except Exception as e:
             logger.warning(f"Mesh→RNS: refusal notice to {msg.source_id} failed: {e}")
             ok = False

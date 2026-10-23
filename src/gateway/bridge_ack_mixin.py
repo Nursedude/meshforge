@@ -167,10 +167,10 @@ class BridgeAckMixin:
                         )
                         return False
                     return bool(self._mesh_handler.send_text(
-                        text, destination=None, channel=ch_idx,
+                        text, destination=None, channel=ch_idx, source="local",
                     ))
                 return bool(self._mesh_handler.send_text(
-                    text, destination=origin_address, channel=0,
+                    text, destination=origin_address, channel=0, source="local",
                 ))
             if origin_network == 'meshcore':
                 if not self._meshcore_handler:
@@ -180,7 +180,7 @@ class BridgeAckMixin:
                     )
                     return False
                 return bool(self._meshcore_handler.send_text(
-                    text, destination=origin_address,
+                    text, destination=origin_address, source="local",
                 ))
             if origin_network == 'rns':
                 # origin_address is the hex string form of the destination

@@ -415,7 +415,9 @@ def send_to_meshtastic(
         return CommandResult.fail("Not connected to Meshtastic")
 
     try:
-        success = bridge.send_to_meshtastic(message, destination, channel)
+        # The operator authored it: leg local>meshtastic (BIC-2).
+        success = bridge.send_to_meshtastic(message, destination, channel,
+                                            source="local")
         if success:
             dest_str = destination or "broadcast"
             return CommandResult.ok(f"Message sent to Meshtastic ({dest_str})")

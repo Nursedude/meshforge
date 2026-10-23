@@ -199,13 +199,15 @@ class AckTracker:
         self._ttl = _sanitize_positive(ttl_sec, DEFAULT_TTL_SEC)
         self._max = int(_sanitize_positive(max_pending, DEFAULT_MAX_PENDING))
         self._lock = threading.RLock()
-        # packet_id -> (msg_id, protocol, registered_monotonic_ts, dest_num)
-        self._pending: Dict[int, Tuple[str, str, float, Optional[int]]] = {}
+        # packet_id -> (msg_id, protocol, registered_monotonic_ts, dest_num,
+        #               leg source — BIC-2: the origin the SENT was counted on)
+        self._pending: Dict[int, Tuple[str, str, float, Optional[int],
+                                       Optional[str]]] = {}
         # Positive ACKs refused, by why (hfm #9: every swallow leaves a witness)
         self._rejected: Dict[str, int] = {}
 
     def register(self, packet_id, msg_id, protocol: str = "meshtastic",
-                 dest_num=None) -> bool:
+                 dest_num=None, source: Optional[str] = None) -> bool:
         """Remember that ``packet_id`` carries ``msg_id`` awaiting an ACK.
 
         ``dest_num`` is the DM's destination node number; without it a
@@ -224,7 +226,7 @@ class AckTracker:
             now = time.monotonic()
             dest = _node_num(dest_num)
             with self._lock:
-                self._pending[packet_id] = (msg_id, proto, now, dest)
+                self._pending[packet_id] = (msg_id, proto, now, dest, source)
                 self._expire_locked(now)
             return True
         except Exception as e:
@@ -233,7 +235,15 @@ class AckTracker:
 
     def resolve(self, request_id, from_num=None,
                 positive: bool = True) -> Optional[Tuple[str, str]]:
-        """Pop and return ``(msg_id, protocol)`` for an arriving ACK, or None.
+        """``(msg_id, protocol)`` — ``resolve_leg`` without the source."""
+        got = self.resolve_leg(request_id, from_num=from_num, positive=positive)
+        return None if got is None else (got[0], got[1])
+
+    def resolve_leg(self, request_id, from_num=None, positive: bool = True,
+                    ) -> Optional[Tuple[str, str, Optional[str]]]:
+        """Pop and return ``(msg_id, protocol, source)`` for an arriving ACK,
+        or None. ``source`` is the leg origin given at ``register`` (BIC-2),
+        so a CONFIRMED / DROPPED lands on the same leg as its SENT.
 
         ``positive`` True (an ACK) confirms only when ``from_num`` equals
         the registered destination; otherwise the ACK is refused, counted
@@ -253,7 +263,7 @@ class AckTracker:
                 entry = self._pending.get(request_id)
                 if entry is None:
                     return None
-                msg_id, proto, ts, dest = entry
+                msg_id, proto, ts, dest, source = entry
                 if (time.monotonic() - ts) > self._ttl:
                     del self._pending[request_id]
                     return None
@@ -274,7 +284,7 @@ class AckTracker:
                             f"dest={'?' if dest is None else f'{dest:#010x}'})")
                         return None
                 del self._pending[request_id]
-            return (msg_id, proto)
+            return (msg_id, proto, source)
         except Exception as e:
             logger.warning(f"ack resolve failed: {e}")
             return None
@@ -324,7 +334,7 @@ class AckTracker:
         """Remove TTL-expired entries, then oldest-evict down to the cap."""
         removed = 0
         cutoff = now - self._ttl
-        stale = [pid for pid, (_, _, ts, _) in self._pending.items()
+        stale = [pid for pid, (_, _, ts, _, _) in self._pending.items()
                  if ts < cutoff]
         for pid in stale:
             del self._pending[pid]
