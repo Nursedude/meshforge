@@ -47,25 +47,29 @@ class DeliveryHandler(BaseHandler):
         elif action == "delivery_legs":
             self._show_legs()
 
-    def _show(self):
+    @staticmethod
+    def _render_or_unknown(title, render, what):
+        """One UNKNOWN fallback for both actions (review #8): a screen that
+        could not see says so — it never shows nothing."""
         try:
-            from utils.delivery_view import gather, render
-            text = render(gather())
-        except Exception as e:  # the screen must say it could not see
-            logger.warning("delivery view failed: %s", e, exc_info=True)
-            text = ("Delivery — UNKNOWN\n\nThe delivery sources on this box "
-                    f"could not be read:\n  {type(e).__name__}: {e}\n\n"
+            return render()
+        except Exception as e:
+            logger.warning("%s view failed: %s", title, e, exc_info=True)
+            return (f"{title} — UNKNOWN\n\n{what} could not be read:\n"
+                    f"  {type(e).__name__}: {e}\n\n"
                     "UNKNOWN is not a pass. This screen never changes anything.")
-        self.ctx.dialog.msgbox("Delivery", text)
+
+    def _show(self):
+        def render():
+            from utils.delivery_view import gather, render as _render
+            return _render(gather())
+        self.ctx.dialog.msgbox("Delivery", self._render_or_unknown(
+            "Delivery", render, "The delivery sources on this box"))
 
     def _show_legs(self):
-        try:
+        def render():
             from utils.delivery_view import render_route_legs
-            text = render_route_legs()
-        except Exception as e:  # the screen must say it could not see
-            logger.warning("delivery legs view failed: %s", e, exc_info=True)
-            text = ("Delivery legs — UNKNOWN\n\nThe gateway's delivery record "
-                    f"could not be read:\n  {type(e).__name__}: {e}\n\n"
-                    "UNKNOWN is not a pass. This screen never changes anything.")
+            return render_route_legs()
         # textbox, not msgbox: routes x 3 windows scroll past one screen.
-        self.ctx.dialog.textbox("Delivery legs", text)
+        self.ctx.dialog.textbox("Delivery legs", self._render_or_unknown(
+            "Delivery legs", render, "The gateway's delivery record"))

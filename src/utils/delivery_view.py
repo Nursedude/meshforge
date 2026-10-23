@@ -565,28 +565,64 @@ def render(view: DeliveryView) -> str:
 # message crossed the bridge (``<src>><dst>`` transport). Read from the same
 # file the gateway publishes; every counter honesty rule must survive here.
 
+# Test-pinned to gateway.delivery_legs WINDOWS / OUTCOMES (hfm #5/#7): the
+# TUI must not import the gateway package (it pulls RNS), so the two share
+# the names by test, not by import.
 _ROUTE_WINDOWS = ("15m", "1h", "24h")
 _ROUTE_OUTCOMES = ("queued", "sent", "confirmed", "failed", "dropped_other")
+_ROUTE_WIDTH = 76   # the textbox is 78 columns; the caveats must not clip
+
+
+def _wrap(text: str, indent: str = "") -> List[str]:
+    import textwrap
+    return textwrap.wrap(text, width=_ROUTE_WIDTH, initial_indent=indent,
+                         subsequent_indent=indent + "  ") or [indent]
+
+
+def _int_count(v) -> Optional[int]:
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
 
 
 def _route_row(name: str, label: str, win) -> str:
-    if not isinstance(win, dict):
+    if win is None:
         return f"  {name:<20} {label:>4}  — nothing observed"
+    if not isinstance(win, dict):
+        return f"  {name:<20} {label:>4}  ? misshaped window (not shown)"
     cells = [win.get(k, 0) for k in _ROUTE_OUTCOMES]
-    cells = [c if isinstance(c, int) and not isinstance(c, bool) else "?"
-             for c in cells]
+    cells = [c if _int_count(c) is not None else "?" for c in cells]
     return (f"  {name:<20} {label:>4}  " +
             " ".join(f"{c!s:>{w}}" for c, w in zip(cells, (6, 5, 9, 6, 5))))
 
 
-def route_legs_leg(home: str, now: float, gw: str) -> Leg:
-    """The gateway's per-route counts as one screen section (BIC-2)."""
+def _window_reach(bucket_s) -> str:
+    """How far each window REALLY reaches back: it sums every bucket that
+    overlaps it, so up to one bucket past its label. Derived from the size
+    the writer publishes — from_ts is the oldest bucket that HAD events,
+    not the window's start (the live render read it as "15m spans 5 min")."""
+    b = _int_count(bucket_s)
+    if not b or b <= 0:
+        return ("Windows sum whole buckets; bucket size not published (an "
+                "older gateway) — window edges are approximate.")
+    secs = {"15m": 900, "1h": 3600, "24h": 86400}
+    parts = []
+    for label in _ROUTE_WINDOWS:
+        m = (secs[label] + b) // 60
+        parts.append(f"{m} min" if m < 180 else f"{m // 60} h {m % 60} min")
+    return (f"Windows sum whole {b // 60}-min buckets: 15m reaches up to "
+            f"{parts[0]}, 1h up to {parts[1]}, 24h up to {parts[2]}.")
+
+
+def route_legs_leg(home: str, now: float, gw) -> Leg:
+    """The gateway's per-route counts as one screen section (BIC-2).
+    ``gw`` is the gateway unit state, or a callable that resolves it — only
+    consulted when the record is absent (review #7: no systemctl on a fresh
+    record)."""
     title = "Delivery legs (per route: 15m / 1h / 24h)"
     path = os.path.join(home, _DELIVERY_SNAPSHOT_SUBPATH)
     snap, age, why = _read_published(path, "snapshot", now)
     if snap is None:
         if why == "absent":
-            return _missing_record_leg(title, path, gw)
+            return _missing_record_leg(title, path, gw() if callable(gw) else gw)
         return Leg(title, UNKNOWN, path, age, why=why)
     if "legs" not in snap:
         return Leg(title, UNKNOWN, path, age,
@@ -600,65 +636,89 @@ def route_legs_leg(home: str, now: float, gw: str) -> Leg:
                        "(legs unobservable) — no number is shown")
     leg = Leg(title, OK, path, age)
     since = _num(snap.get("legs_since_ts"))
-    if since is None:
-        leg.lines.append("Counting is armed but has not counted its first "
-                         "event yet — every window is empty by construction.")
+    partial_raw = snap.get("legs_partial_windows")
+    partial = ([w for w in partial_raw if w in _ROUTE_WINDOWS]
+               if isinstance(partial_raw, list) else list(_ROUTE_WINDOWS))
+    if since is None and not legs:
+        leg.lines += _wrap("Counting is armed but has not counted its first "
+                           "event yet — every window is empty by construction.")
+    elif since is None:
+        # leg_meta lost while buckets survived (review #4): counts exist, the
+        # start does not — every window is partial, never "empty".
+        leg.lines += _wrap("Counting start is UNKNOWN (its stamp is missing) — "
+                           "every window is PARTIAL.")
     else:
         leg.lines.append(f"Counting since {fmt_age(now - since)[:-4]} ago.")
-    partial = [w for w in (snap.get("legs_partial_windows") or [])
-               if w in _ROUTE_WINDOWS]
-    if partial and since is not None:
-        leg.lines.append(f"PARTIAL: {', '.join(partial)} reach back before "
-                         f"counting began — fewer events, not fewer losses.")
-    errors = snap.get("legs_write_errors")
-    if isinstance(errors, int) and errors > 0:
+        if partial:
+            leg.lines += _wrap(f"PARTIAL: {', '.join(partial)} reach back "
+                               f"before counting began — fewer events, not "
+                               f"fewer losses.")
+    errors = _int_count(snap.get("legs_write_errors"))
+    if errors:
         last = _num(snap.get("legs_last_write_error_ts"))
         when = f", last {fmt_age(now - last)}" if last is not None else ""
-        leg.lines.append(f"⚠ {errors} leg write error(s){when} — counts may "
-                         f"be LOW; the core delivery record is unaffected.")
+        leg.lines += _wrap(f"⚠ {errors} leg write error(s){when} — counts may "
+                           f"be LOW; the core delivery record is unaffected.")
     if not legs:
         if since is not None:
-            leg.lines.append("Counting, but no leg has counted an event inside 24h.")
+            leg.lines.append("Counting, but no leg has counted an event "
+                             "inside 24h.")
         return leg
     leg.lines.append("")
     leg.lines.append(f"  {'route':<20} {'win':>4}  queued  sent confirmed "
                      f"failed other")
     for name in sorted(legs):
+        windows = legs.get(name)
+        if not isinstance(windows, dict):
+            # One bad route is that route's problem, not the pane's (#1).
+            leg.lines.append(f"  {name:<20}       ? misshaped (not shown)")
+            continue
         for label in _ROUTE_WINDOWS:
-            leg.lines.append(_route_row(name, label,
-                                        (legs.get(name) or {}).get(label)))
+            leg.lines.append(_route_row(name, label, windows.get(label)))
     leg.lines.append("")
-    leg.lines.append("— = nothing observed in that window (not zero). A window "
-                     "sums 5-min buckets: \"15m\" covers 15–20 min.")
+    leg.lines += _wrap("— = nothing observed in that window (not zero).")
+    leg.lines += _wrap(_window_reach(snap.get("legs_bucket_s")))
     if any(n.startswith("?>") for n in legs):
-        leg.lines.append("?>… = the sender did not name its origin "
-                         "(counted, never guessed onto a real leg).")
-    leg.lines.append("sent − confirmed is NOT a loss count: broadcasts and "
-                     "un-acked DMs can never confirm. A loss is `failed`.")
+        leg.lines += _wrap("?>… = the sender did not name its origin "
+                           "(counted, never guessed onto a real leg).")
+    leg.lines += _wrap("sent − confirmed is NOT a loss count: broadcasts and "
+                       "un-acked DMs can never confirm. A loss is `failed`.")
     return leg
 
 
 def render_route_legs(home: Optional[str] = None, now: Optional[float] = None,
                       gateway_resolver=None, unit_enabled_fn=None) -> str:
-    """The per-route pane for THIS box. Read-only; never raises on bad data
-    (a section that cannot see says UNKNOWN)."""
+    """The per-route pane for THIS box. Read-only; a section that cannot see
+    says UNKNOWN, and one misshaped route never blinds the others."""
     now = time.time() if now is None else now
     if home is None:
         from utils.paths import get_real_user_home
         home = str(get_real_user_home())
-    gw = _gateway_state(gateway_resolver, unit_enabled_fn)
-    leg = route_legs_leg(home, now, gw)
+    leg = route_legs_leg(
+        home, now, lambda: _gateway_state(gateway_resolver, unit_enabled_fn))
     view = DeliveryView(host=socket.gethostname(), now=now, legs=[leg],
                         peer_records=[], peer_leftovers=[])
     lines = render(view).split("\n")
     lines[0] = "DELIVERY LEGS" + lines[0][len("DELIVERY"):]
+    # The shared headline speaks for the WHOLE Delivery screen ("arriving",
+    # "no gateway and no soak timer"); this pane measured one record, so it
+    # says only that (reviews: "arriving" 10-23, inert #3).
     if leg.status == OK:
-        # The shared headline would say "Messages are arriving" for a fresh
-        # section. This pane COUNTS; it judges no rate (observe before
-        # alarm), so it never borrows that verdict.
-        lines[1] = ("COUNTS ONLY — per-route events from this box's gateway; "
-                    "no rate is judged here. The verdict is the Delivery screen.")
-    return "\n".join(lines)
+        head = ("COUNTS ONLY — per-route events from this box's gateway; no "
+                "rate is judged here. The verdict is the Delivery screen.")
+    elif leg.status == INERT:
+        head = "INERT — " + leg.why
+    else:
+        head = ("UNKNOWN — the per-route record could not be read; do not "
+                "read this pane as the legs being quiet.")
+    lines[1:2] = _wrap(head)
+    out = []
+    for ln in lines:   # wrap the shared section's prose too (table rows fit)
+        if len(ln) <= 78 or ln.lstrip().startswith("source:"):
+            out.append(ln)
+        else:
+            out += _wrap(ln.strip(), ln[:len(ln) - len(ln.lstrip())])
+    return "\n".join(out)
 
 
 if __name__ == "__main__":  # pragma: no cover — operator/CLI convenience

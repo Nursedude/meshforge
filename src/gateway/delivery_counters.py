@@ -1131,6 +1131,7 @@ class DeliveryCounters:
             "ring_capacity": ring_capacity,
             "legs": legs,
             "legs_since_ts": legs_since_ts,
+            "legs_bucket_s": delivery_legs.BUCKET_S,   # readers derive reach
             "legs_partial_windows": legs_partial,
             "legs_write_errors": legs_write_errors,
             "legs_last_write_error_ts": legs_last_error_ts,

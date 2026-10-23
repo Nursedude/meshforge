@@ -184,3 +184,102 @@ def test_an_unknown_pane_keeps_the_unknown_headline(tmp_path):
     _publish(tmp_path, legs=None, health={"preflight_ok": True})
 
     assert "UNKNOWN" in _render(tmp_path).splitlines()[1]
+
+
+# ── review of the pane (non-author, 10-23) ────────────────────────────
+
+def test_one_misshaped_leg_does_not_blind_the_others(tmp_path):
+    # #1: a bad value for ONE route is that route's problem, not the pane's.
+    snap = _legs_snap({**LEGS, "rns>rns": ["not", "a", "dict"]})
+    snap["legs_partial_windows"] = 24                  # #6: and a bad partial
+    _publish(tmp_path, **snap)
+    leg = dv.route_legs_leg(str(tmp_path), NOW, "ok")
+    text = "\n".join(leg.lines)
+
+    assert leg.status == dv.OK
+    assert "meshtastic>rns" in text
+    assert "rns>rns" in text and "misshaped" in text
+
+
+def test_the_reader_shares_the_writers_window_and_outcome_names():
+    # #2 (hfm #5/#7): the pane reads what delivery_legs writes; a new window
+    # or outcome there must fail HERE until the pane shows it.
+    from gateway import delivery_legs as dl
+
+    assert dv._ROUTE_WINDOWS == tuple(w for w, _s in dl.WINDOWS)
+    assert dv._ROUTE_OUTCOMES == dl.OUTCOMES
+
+
+def test_an_inert_pane_says_only_what_it_measured(tmp_path):
+    # #3: the shared inert headline claimed "no soak timer" — never checked.
+    text = dv.render_route_legs(home=str(tmp_path), now=NOW,
+                                gateway_resolver=lambda u: ("absent", None),
+                                unit_enabled_fn=lambda u: True)
+
+    assert "soak" not in text.splitlines()[1]
+    assert "inert" in text.splitlines()[1].lower()
+
+
+def test_counts_without_a_start_time_are_partial_not_empty(tmp_path):
+    # #4: leg_meta lost while buckets survive — never "empty by construction"
+    # above a table of counts.
+    _publish(tmp_path, legs=LEGS, legs_since_ts=None,
+             legs_partial_windows=["15m", "1h", "24h"], legs_write_errors=0,
+             health={"preflight_ok": True})
+    text = "\n".join(dv.route_legs_leg(str(tmp_path), NOW, "ok").lines)
+
+    assert "empty by construction" not in text
+    assert "start is UNKNOWN" in text and "PARTIAL" in text
+
+
+def test_each_windows_reach_comes_from_the_published_bucket_size(tmp_path):
+    # #5, corrected by the LIVE render (10-23): from_ts is the oldest bucket
+    # that HAD events, not the window's start ("15m spans 5 min" was false).
+    # A window's true reach is its length + one bucket, from what the writer
+    # publishes — never a sentence that rots when BUCKET_S moves.
+    _publish(tmp_path, legs_bucket_s=300, **_legs_snap(LEGS))
+    text = " ".join(" ".join(
+        dv.route_legs_leg(str(tmp_path), NOW, "ok").lines).split())
+
+    assert "15m reaches up to 20 min" in text
+    assert "1h up to 65 min" in text
+    assert "spans" not in text
+
+
+def test_an_unpublished_bucket_size_says_the_edges_are_approximate(tmp_path):
+    _publish(tmp_path, **_legs_snap(LEGS))      # an older writer: no field
+    text = " ".join(" ".join(
+        dv.route_legs_leg(str(tmp_path), NOW, "ok").lines).split())
+
+    assert "bucket size not published" in text
+
+
+def test_a_bool_write_error_count_is_not_rendered_as_a_number(tmp_path):
+    _publish(tmp_path, **_legs_snap(LEGS, errors=True))
+    text = "\n".join(dv.route_legs_leg(str(tmp_path), NOW, "ok").lines)
+
+    assert "True leg write" not in text
+
+
+def test_every_line_fits_a_78_column_box(tmp_path):
+    # #9: the honesty caveats are exactly what a clipped line would lose.
+    _publish(tmp_path, **_legs_snap({**LEGS, "?>rns": LEGS["rns>meshtastic"]},
+                                    errors=3, last_err=NOW - 120,
+                                    partial=("1h", "24h")))
+    text = _render(tmp_path)
+
+    too_wide = [ln for ln in text.splitlines()
+                if len(ln) > 78 and not ln.lstrip().startswith("source:")]
+    assert not too_wide, too_wide
+
+
+def test_a_fresh_record_needs_no_gateway_unit_lookup(tmp_path):
+    # #7: the systemctl lookup only matters when the record is absent.
+    _publish(tmp_path, **_legs_snap(LEGS))
+
+    calls = []
+    dv.render_route_legs(home=str(tmp_path), now=NOW,
+                         gateway_resolver=lambda u: calls.append(u) or ("ok", 1),
+                         unit_enabled_fn=lambda u: calls.append(u) or True)
+
+    assert calls == []   # (_gateway_state swallows a raising resolver)

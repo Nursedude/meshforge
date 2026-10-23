@@ -472,3 +472,11 @@ def test_reset_for_tests_clears_the_leg_tables(counters):
     snap = counters.snapshot()
 
     assert snap["legs"] == {} and snap["legs_since_ts"] is None
+
+
+def test_the_snapshot_publishes_its_bucket_size(counters):
+    # The TUI pane derives each window's true reach (window + one bucket)
+    # from this, never from a hardcoded sentence (pane review #5).
+    from gateway import delivery_legs
+
+    assert counters.snapshot()["legs_bucket_s"] == delivery_legs.BUCKET_S
