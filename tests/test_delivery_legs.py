@@ -214,11 +214,7 @@ def test_a_counter_error_never_turns_a_sent_message_into_a_failure(
 
 # Callers that genuinely cannot know the origin. Each one counts under
 # ``?>rns`` — visible, never guessed. Adding to this list is a decision.
-_SOURCELESS_SEND_TO_RNS = {
-    # enqueue_message()'s no-queue fallback: a generic entry point whose
-    # callers pass no origin.
-    ("bridge_send_mixin.py", "enqueue_message"),
-}
+_SOURCELESS_SEND_TO_RNS: set = set()   # enqueue_message passes kwargs' source
 
 
 def test_every_gateway_send_to_rns_call_names_a_source():

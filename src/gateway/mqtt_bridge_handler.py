@@ -290,7 +290,7 @@ class MQTTBridgeHandler(BaseMessageHandler):
         it leaves a witness instead (hfm #9)."""
         try:
             _dc.record(_dc.DeliveryState.SENT,
-                       msg_id=msg_id or f"mesh-{int(time.time() * 1000)}",
+                       msg_id=msg_id or delivery_legs.synth_id("mesh"),
                        protocol="meshtastic", source=source)
         except Exception as e:
             logger.debug(f"delivery counter SENT not recorded: {e}")
@@ -309,7 +309,9 @@ class MQTTBridgeHandler(BaseMessageHandler):
         ACK arming stays DM-only and needs ack consumption. The queue path
         passes record_sent=False (SENT owned by mark_delivered).
         """
-        has_pkt = isinstance(packet_id, int) and packet_id > 0
+        has_pkt = (isinstance(packet_id, int)          # bool is an int: a
+                   and not isinstance(packet_id, bool)  # success flag is no id
+                   and packet_id > 0)
         if not msg_id and has_pkt:
             msg_id = f"mesh-{packet_id:08x}"
         if record_sent:

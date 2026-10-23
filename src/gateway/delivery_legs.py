@@ -31,6 +31,7 @@ let prune-on-insert delete real buckets. A stale clock stepping forward
 """
 from __future__ import annotations
 
+import itertools
 import logging
 import sqlite3
 import time
@@ -52,6 +53,16 @@ RETAIN_S = WINDOWS[-1][1] + 2 * BUCKET_S
 """Rows older than this are pruned on insert."""
 
 UNKNOWN_SOURCE = "?"
+
+_SYNTH_SEQ = itertools.count()
+
+
+def synth_id(prefix: str) -> str:
+    """A delivery id for a send that has no packet id. The process-wide
+    sequence keeps two sends in one millisecond apart (review R5); the
+    wall clock only orders them across restarts (hfm #6)."""
+    return f"{prefix}-{int(time.time() * 1000)}-{next(_SYNTH_SEQ) & 0xFFFF:04x}"
+
 
 LEG_SOURCE_KEY = "_leg_source"
 """Where a persistent-queue row carries its origin transport (BIC-2 slice

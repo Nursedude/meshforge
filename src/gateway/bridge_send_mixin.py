@@ -517,12 +517,15 @@ class BridgeSendMixin:
             # so there's nothing to register. The textual fall-back is
             # already best-effort.
             if dest_type == "meshtastic":
-                return "direct" if self.send_to_meshtastic(message, destination, kwargs.get('channel', 0)) else None
+                return "direct" if self.send_to_meshtastic(
+                    message, destination, kwargs.get('channel', 0),
+                    source=kwargs.get('source')) else None
             else:
                 dest_hash = kwargs.get('destination_hash')
                 if isinstance(dest_hash, str):
                     dest_hash = bytes.fromhex(dest_hash)
-                return "direct" if self.send_to_rns(message, dest_hash) else None
+                return "direct" if self.send_to_rns(
+                    message, dest_hash, source=kwargs.get('source')) else None
 
         # Map priority string to enum. MessagePriority is read lazily off
         # gateway.rns_bridge (the safe_import result lives there) so the
@@ -547,7 +550,8 @@ class BridgeSendMixin:
         msg_id = self._persistent_queue.enqueue(
             payload=payload,
             destination=dest_type,
-            priority=msg_priority
+            priority=msg_priority,
+            source=kwargs.get('source'),   # BIC-2: a caller may name its leg
         )
 
         # Issue #66: register the pending-ack record so the LXMF

@@ -285,7 +285,7 @@ class MeshtasticHandler(BaseMessageHandler):
                        and not isinstance(packet_id, bool) and packet_id > 0)
             if not msg_id:
                 msg_id = (f"mesh-{packet_id:08x}" if has_pkt
-                          else f"mesh-{int(time.time() * 1000)}")
+                          else delivery_legs.synth_id("mesh"))
             if record_sent:
                 _dc.record(
                     _dc.DeliveryState.SENT,

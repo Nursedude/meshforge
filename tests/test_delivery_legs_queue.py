@@ -172,9 +172,6 @@ def test_a_queued_rns_send_confirms_on_the_rows_leg(bridge, which, outcome):
 
 # Producers that cannot know the origin. Each counts under ``?>dst``.
 _SOURCELESS_ENQUEUE = {
-    # enqueue_message(): a generic public entry point whose callers pass
-    # no origin (its no-queue twin is allowlisted in test_delivery_legs).
-    ("bridge_send_mixin.py", "enqueue_message"),
     # OfflineSyncEngine.enqueue: a different queue class (category-keyed
     # telemetry sync), not the persistent message queue.
     ("offline_sync.py", "enqueue"),

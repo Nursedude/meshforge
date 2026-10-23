@@ -883,6 +883,7 @@ class MeshCoreHandler(BaseMessageHandler):
         try:
             dm_only = False
             msg_id = None
+            queued = False
             source = None   # BIC-2 leg origin; None counts under ?>meshcore
             if isinstance(msg, CanonicalMessage):
                 msg_id = msg.id
@@ -894,9 +895,15 @@ class MeshCoreHandler(BaseMessageHandler):
                 text = msg.get('message', '')
                 dest = msg.get('destination')
                 dm_only = bool(msg.get('dm_only'))
-                msg_id = msg.get('id')
-                # Lazy, like _record_tx: module-level delivery imports here
-                # deadlocked threaded startup (2026-06-06).
+                # A persistent-queue row: its id is _queue_msg_id, and the
+                # queue's mark_delivered already recorded SENT when queue_send
+                # handed it here — the worker records only its outcome if it
+                # FAILS, on the row's own id (review R1: it read msg['id'],
+                # minted a fresh id and counted the row sent twice).
+                queued = bool(msg.get('_queue_msg_id'))
+                msg_id = msg.get('id') or msg.get('_queue_msg_id')
+                # Lazy, matching _record_tx's style. (The 2026-06-06 startup
+                # deadlock was delivery_counters; delivery_legs is stdlib-only.)
                 from gateway.delivery_legs import payload_source
                 source = payload_source(msg)
             else:
@@ -905,7 +912,7 @@ class MeshCoreHandler(BaseMessageHandler):
 
             success = await self._send_message(
                 text, dest, broadcast_fallback=not dm_only, msg_id=msg_id,
-                source=source)
+                source=source, queued=queued)
 
             if success:
                 with self._stats_lock:
@@ -933,7 +940,8 @@ class MeshCoreHandler(BaseMessageHandler):
     async def _send_message(self, text: str, destination: Optional[str] = None,
                             broadcast_fallback: bool = True,
                             msg_id: Optional[str] = None,
-                            source: Optional[str] = None) -> bool:
+                            source: Optional[str] = None,
+                            queued: bool = False) -> bool:
         """
         Send a text message to the MeshCore network.
 
@@ -957,6 +965,8 @@ class MeshCoreHandler(BaseMessageHandler):
         MeshAnchor (``bridge_target_channel``, refuse-when-unset).
         """
         def _rec(*a, **k):   # BIC-2: every outcome on this send's leg
+            if queued and a and a[0] == "sent":
+                return       # the persistent queue already recorded SENT
             _record_tx(*a, source=source, **k)
 
         if not self._meshcore or not self._connected:

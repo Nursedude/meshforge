@@ -297,7 +297,6 @@ def test_a_companion_refusal_fails_on_its_leg():
 _NOT_HANDLERS = {"client", "cli", "_interface"}
 # Callers that cannot know the origin; each counts under ``?>dst``.
 _SOURCELESS_SEND = {
-    ("bridge_send_mixin.py", "enqueue_message"),   # generic public entry point
     # commands.gateway.send_to_meshtastic: the CLI command wrapper, which
     # stamps source="local" on the bridge call itself.
     ("messaging.py", "send_message"),
@@ -334,3 +333,65 @@ def test_every_direct_send_caller_names_a_source():
                                f"in {fn.name}()")
     assert not missing, ("direct send without source= counts under '?>dst': "
                          + ", ".join(sorted(set(missing))))
+
+
+# ── review of slice 3 (non-author, 10-23) ─────────────────────────────
+
+def test_a_queued_meshcore_row_is_not_counted_sent_twice():
+    # R1: queue_send hands the row to the async worker and the queue's
+    # mark_delivered records SENT; the worker must not record a second SENT
+    # on a fresh id (it read msg.get('id'), never _queue_msg_id).
+    from gateway.delivery_legs import LEG_SOURCE_KEY
+    h = _mc_handler()
+    h._connected = True
+    h.queue_send({"message": "hello", "destination": "abcd",
+                  "_queue_msg_id": "q-mc-1", LEG_SOURCE_KEY: "rns"})
+
+    _mc_drain(h)
+
+    assert "sent" not in _legs().get("rns>meshcore", {}).get("15m", {})
+
+
+def test_a_queued_meshcore_refusal_is_a_failure_on_the_rows_id():
+    from gateway.delivery_legs import LEG_SOURCE_KEY
+
+    class _Err:
+        type, payload = "command_error", {"code_string": "ERR_TIMEOUT"}
+
+        def is_error(self):
+            return True
+    h = _mc_handler()
+    h._connected = True
+    h.queue_send({"message": "hello", "destination": "abcd",
+                  "_queue_msg_id": "q-mc-2", LEG_SOURCE_KEY: "rns"})
+
+    _mc_drain(h, send_evt=_Err())
+
+    assert _legs()["rns>meshcore"]["15m"]["failed"] == 1
+    assert [e.id for e in dc.get_singleton().history_for("q-mc-2")] == ["q-mc-2"]
+
+
+def test_synthesized_ids_do_not_collide_within_one_millisecond(
+        mt, monkeypatch):
+    # R5: two chunks sent back to back with no packet id must not share an id
+    # (frozen clock: the collision is deterministic, not timing-dependent).
+    import gateway.meshtastic_handler as mh
+    monkeypatch.setattr(mh.time, "time", lambda: 1792780000.123)
+    mt._interface.sendText.return_value = MagicMock(id=None, to=None)
+    mt.send_text("chunk 1", source="rns")
+    mt.send_text("chunk 2", source="rns")
+
+    ids = [e.id for e in dc.get_singleton().recent() if e.state.value == "sent"]
+    assert len(ids) == 2 and len(set(ids)) == 2
+
+
+def test_mqtt_refuses_a_bool_as_a_packet_id(mq):
+    # R7: True is an int. AckTracker.register already refuses it, so no
+    # false ACK can arm; the residue is the handler minting "mesh-00000001"
+    # from a success flag (its meshtastic_handler twin excludes bool).
+    with _http(True):
+        mq.send_text("hi", destination="!aabb0001", source="rns")
+
+    ids = [e.id for e in dc.get_singleton().recent()]
+    assert "mesh-00000001" not in ids
+    assert mq._ack_tracker.pending_count() == 0

@@ -165,7 +165,9 @@ class MeshCoreBridgeMixin:
                 from .canonical_message import _truncate_utf8
                 bridged_content = _truncate_utf8(bridged_content, 160)
 
-            if self.send_to_meshcore(bridged_content, source=src_net):
+            # One derivation of the leg origin for every path (review R3).
+            if self.send_to_meshcore(bridged_content,
+                                     source=self._leg_source(msg)):
                 direction = f"{src_net[:4]}_to_meshcore"
                 logger.info(f"Bridge {net_prefix}→MC: {bridged_content[:50]}...")
                 with self._stats_lock:
