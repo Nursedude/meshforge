@@ -283,3 +283,71 @@ def test_a_fresh_record_needs_no_gateway_unit_lookup(tmp_path):
                          unit_enabled_fn=lambda u: calls.append(u) or True)
 
     assert calls == []   # (_gateway_state swallows a raising resolver)
+
+
+# ── re-review of the pane fixes (non-author, 10-23) ───────────────────
+
+_BOX_INTERIOR = 74     # dialog --textbox 78 wide, minus border + scrollbar
+
+
+def test_every_line_fits_the_textbox_interior(tmp_path):
+    # #1/#2: the shared render indents leg lines by 2 AFTER the wrap.
+    _publish(tmp_path, legs_bucket_s=300,
+             **_legs_snap({**LEGS, "?>rns": LEGS["rns>meshtastic"]},
+                          errors=3, last_err=NOW - 120, partial=("1h", "24h")))
+    text = _render(tmp_path)
+
+    assert not [ln for ln in text.splitlines() if len(ln) > _BOX_INTERIOR]
+
+
+def test_table_rows_are_never_wrapped_mid_columns(tmp_path):
+    # #3: a long route name is truncated, its row stays one line.
+    long_name = "meshtastic>rns-with-a-very-long-suffix"
+    _publish(tmp_path, **_legs_snap({long_name: LEGS["meshtastic>rns"]}))
+    rows = [ln for ln in _render(tmp_path).splitlines()
+            if ln.lstrip().startswith("meshtastic>rns") and " 1h " in ln]
+
+    assert len(rows) == 1 and rows[0].split()[-5:] == ["5", "5", "4", "1", "0"]
+
+
+def test_a_misshaped_partial_list_is_rederived_from_the_start_time(tmp_path):
+    # #4: with since known, partiality is computable — never "all partial".
+    snap = _legs_snap(LEGS, since_age=7200)
+    snap["legs_partial_windows"] = 24
+    _publish(tmp_path, **snap)
+    text = " ".join(" ".join(
+        dv.route_legs_leg(str(tmp_path), NOW, "ok").lines).split())
+
+    assert "PARTIAL: 24h reach" in text
+
+
+def test_a_negative_error_count_is_not_an_alarm(tmp_path):
+    _publish(tmp_path, **_legs_snap(LEGS, errors=-1))
+    text = "\n".join(dv.route_legs_leg(str(tmp_path), NOW, "ok").lines)
+
+    assert "write error" not in text
+
+
+def test_the_window_seconds_are_pinned_to_the_writer_too():
+    # #6: labels AND seconds, one artifact, one constant (hfm #5).
+    from gateway import delivery_legs as dl
+
+    assert dv._ROUTE_WINDOW_SECS == tuple(dl.WINDOWS)
+
+
+def test_a_sub_minute_bucket_size_is_stated_in_seconds(tmp_path):
+    # #8: "whole 0-min buckets" contradicted the reach it explained.
+    _publish(tmp_path, legs_bucket_s=30, **_legs_snap(LEGS))
+    text = " ".join(" ".join(
+        dv.route_legs_leg(str(tmp_path), NOW, "ok").lines).split())
+
+    assert "30-s buckets" in text and "0-min" not in text
+
+
+def test_an_inert_pane_says_its_why_once(tmp_path):
+    # #9: the headline and the section repeated the same sentence.
+    text = dv.render_route_legs(home=str(tmp_path), now=NOW,
+                                gateway_resolver=lambda u: ("absent", None),
+                                unit_enabled_fn=lambda u: True)
+
+    assert text.count("not a gateway") == 1

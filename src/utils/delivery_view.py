@@ -30,8 +30,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
+import textwrap
 import time
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
@@ -568,13 +570,18 @@ def render(view: DeliveryView) -> str:
 # Test-pinned to gateway.delivery_legs WINDOWS / OUTCOMES (hfm #5/#7): the
 # TUI must not import the gateway package (it pulls RNS), so the two share
 # the names by test, not by import.
-_ROUTE_WINDOWS = ("15m", "1h", "24h")
+_ROUTE_WINDOW_SECS = (("15m", 900), ("1h", 3600), ("24h", 86400))
+_ROUTE_WINDOWS = tuple(label for label, _s in _ROUTE_WINDOW_SECS)
 _ROUTE_OUTCOMES = ("queued", "sent", "confirmed", "failed", "dropped_other")
-_ROUTE_WIDTH = 76   # the textbox is 78 columns; the caveats must not clip
+# dialog --textbox is 78 wide incl. border + scrollbar: ~74 usable. The
+# shared render() indents section lines by 2 AFTER this wrap, so prose
+# wraps at 70 (re-review #1/#2: the caveats are what a clipped line loses).
+_BOX_INTERIOR = 74
+_ROUTE_WIDTH = _BOX_INTERIOR - 4
+_ROW = re.compile(r"^\s*(\S+\s+(15m|1h|24h)\s|route\s+win\s)")
 
 
 def _wrap(text: str, indent: str = "") -> List[str]:
-    import textwrap
     return textwrap.wrap(text, width=_ROUTE_WIDTH, initial_indent=indent,
                          subsequent_indent=indent + "  ") or [indent]
 
@@ -584,6 +591,8 @@ def _int_count(v) -> Optional[int]:
 
 
 def _route_row(name: str, label: str, win) -> str:
+    # A row is never wrapped (its cells would leave their headers, #3).
+    name = name if len(name) <= 20 else name[:19] + "…"
     if win is None:
         return f"  {name:<20} {label:>4}  — nothing observed"
     if not isinstance(win, dict):
@@ -603,13 +612,16 @@ def _window_reach(bucket_s) -> str:
     if not b or b <= 0:
         return ("Windows sum whole buckets; bucket size not published (an "
                 "older gateway) — window edges are approximate.")
-    secs = {"15m": 900, "1h": 3600, "24h": 86400}
-    parts = []
-    for label in _ROUTE_WINDOWS:
-        m = (secs[label] + b) // 60
-        parts.append(f"{m} min" if m < 180 else f"{m // 60} h {m % 60} min")
-    return (f"Windows sum whole {b // 60}-min buckets: 15m reaches up to "
-            f"{parts[0]}, 1h up to {parts[1]}, 24h up to {parts[2]}.")
+
+    def _dur(sec: int) -> str:
+        if sec % 60:
+            return f"{sec} s"
+        m = sec // 60
+        return f"{m} min" if m < 180 else f"{m // 60} h {m % 60} min"
+    unit = f"{b // 60}-min" if b % 60 == 0 else f"{b}-s"
+    reach = [f"{label} up to {_dur(sec + b)}" for label, sec in _ROUTE_WINDOW_SECS]
+    return (f"Windows sum whole {unit} buckets: {reach[0].replace(' up', ' reaches up', 1)}, "
+            + ", ".join(reach[1:]) + ".")
 
 
 def route_legs_leg(home: str, now: float, gw) -> Leg:
@@ -637,8 +649,13 @@ def route_legs_leg(home: str, now: float, gw) -> Leg:
     leg = Leg(title, OK, path, age)
     since = _num(snap.get("legs_since_ts"))
     partial_raw = snap.get("legs_partial_windows")
-    partial = ([w for w in partial_raw if w in _ROUTE_WINDOWS]
-               if isinstance(partial_raw, list) else list(_ROUTE_WINDOWS))
+    if isinstance(partial_raw, list):
+        partial = [w for w in partial_raw if w in _ROUTE_WINDOWS]
+    elif since is not None:   # misshaped, but computable from the start (#4)
+        partial = [label for label, sec in _ROUTE_WINDOW_SECS
+                   if since > now - sec]
+    else:
+        partial = list(_ROUTE_WINDOWS)
     if since is None and not legs:
         leg.lines += _wrap("Counting is armed but has not counted its first "
                            "event yet — every window is empty by construction.")
@@ -654,7 +671,7 @@ def route_legs_leg(home: str, now: float, gw) -> Leg:
                                f"before counting began — fewer events, not "
                                f"fewer losses.")
     errors = _int_count(snap.get("legs_write_errors"))
-    if errors:
+    if errors is not None and errors > 0:   # a negative count is no alarm
         last = _num(snap.get("legs_last_write_error_ts"))
         when = f", last {fmt_age(now - last)}" if last is not None else ""
         leg.lines += _wrap(f"⚠ {errors} leg write error(s){when} — counts may "
@@ -706,18 +723,22 @@ def render_route_legs(home: Optional[str] = None, now: Optional[float] = None,
     if leg.status == OK:
         head = ("COUNTS ONLY — per-route events from this box's gateway; no "
                 "rate is judged here. The verdict is the Delivery screen.")
-    elif leg.status == INERT:
-        head = "INERT — " + leg.why
+    elif leg.status == INERT:   # its why is printed once, in the section
+        head = "INERT — this box publishes no per-route record (why below)."
     else:
         head = ("UNKNOWN — the per-route record could not be read; do not "
                 "read this pane as the legs being quiet.")
     lines[1:2] = _wrap(head)
     out = []
-    for ln in lines:   # wrap the shared section's prose too (table rows fit)
-        if len(ln) <= 78 or ln.lstrip().startswith("source:"):
+    for ln in lines:   # the shared section's prose too; table rows never
+        if len(ln) <= _BOX_INTERIOR or _ROW.match(ln):
             out.append(ln)
         else:
-            out += _wrap(ln.strip(), ln[:len(ln) - len(ln.lstrip())])
+            ind = ln[:len(ln) - len(ln.lstrip())]
+            out += textwrap.wrap(ln.strip(), width=_BOX_INTERIOR,
+                                 initial_indent=ind,
+                                 subsequent_indent=ind + "  ",
+                                 break_long_words=True) or [ind]
     return "\n".join(out)
 
 
