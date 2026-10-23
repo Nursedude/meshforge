@@ -550,11 +550,14 @@ class MessageTransformMixin:
         """BIC-2: the transport a message came in on. source_network stays
         "meshtastic" for MQTT ingress (a routing input), so the leg reads the
         origin: a replayed spill carries it in metadata, a live MQTT message
-        as origin=MQTT — both land on mqtt>rns (review F1)."""
+        as origin=MQTT — both land on mqtt>rns (review F1). A leg is
+        "came in on > went out on", so an MQTT-origin message relayed to
+        peer gateways is mqtt>rns too (re-review #6, by design)."""
         leg = (msg.metadata or {}).get('m2r_leg_source')
         if leg:
             return leg
-        if getattr(getattr(msg, 'origin', None), 'value', None) == 'mqtt':
+        origin = getattr(msg, 'origin', None)
+        if getattr(origin, 'value', origin) == 'mqtt':   # enum or plain str
             return 'mqtt'
         return msg.source_network
 

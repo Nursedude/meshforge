@@ -305,3 +305,49 @@ def test_live_mqtt_ingress_and_its_spill_count_on_the_same_leg(bridge):
 
     assert _legs()["mqtt>rns"]["15m"]["sent"] == 1
     assert "meshtastic>rns" not in _legs()
+
+
+# ── re-review of the slice 2 fixes (non-author, 10-23) ────────────────
+
+def test_a_late_failure_after_the_stale_reset_dead_lettered_the_row(queue):
+    # The interleaving F5 names (re-review #8): a worker wedges past
+    # STALE_TIMEOUT, cleanup_stale dead-letters the in_progress row (its
+    # retries spent), then the slow worker returns a failure.
+    from datetime import datetime, timedelta
+    msg_id = queue.enqueue({"message": "hi"}, "rns", source="meshtastic",
+                           max_retries=1)
+    old = (datetime.now() - timedelta(seconds=queue.STALE_TIMEOUT + 60))
+    with queue._get_connection() as conn:
+        conn.execute("UPDATE messages SET status = 'in_progress', "
+                     "updated_at = ? WHERE id = ?", (old.isoformat(), msg_id))
+    queue.cleanup_stale()                       # dead letter: one loss
+    failed_before = queue._stats["failed"]
+
+    queue.mark_failed(msg_id, "late worker")    # row already terminal
+
+    assert _legs()["meshtastic>rns"]["15m"]["failed"] == 1
+    assert queue._stats["failed"] == failed_before   # re-review #1
+
+
+def test_the_queue_failed_stat_agrees_with_the_drop_count(queue):
+    # Re-review #1: the queue's own loss counter doubled while the delivery
+    # counter did not — two loss counters disagreeing.
+    msg_id = queue.enqueue({"message": "hi"}, "rns", source="meshtastic",
+                           max_retries=1)
+    queue.mark_failed(msg_id, "no path")
+    queue.mark_failed(msg_id, "late worker")
+
+    assert queue._stats["failed"] == 1
+
+
+@pytest.mark.parametrize("origin", ["mqtt", "MQTT_ENUM"])
+def test_mqtt_origin_is_read_whether_enum_or_string(bridge, origin):
+    # Re-review #5: an origin carried as a plain string must not silently
+    # put MQTT ingress back on meshtastic>rns.
+    from gateway.bridge_health import MessageOrigin
+    from gateway.rns_bridge import BridgedMessage
+    msg = BridgedMessage(source_network="meshtastic", source_id="!a",
+                         destination_id=None, content="x", is_broadcast=True)
+    msg.origin = MessageOrigin.MQTT if origin == "MQTT_ENUM" else origin
+
+    assert bridge._leg_source(msg) == "mqtt"

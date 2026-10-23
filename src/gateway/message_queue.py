@@ -610,7 +610,11 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                 return False
 
             message = QueuedMessage.from_dict(dict(row))
-            drop = None  # recorded only if the guarded UPDATE lands (F5)
+            # Recorded only if the guarded UPDATE lands (F5 + re-review #1):
+            # a late call on a terminal row is not a second loss anywhere.
+            drop = None
+            bumps: List[str] = []
+            note_log = None
             message.retry_count += 1
             message.error_message = error
             message.updated_at = datetime.now()
@@ -622,13 +626,11 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                 if not decision.retry:
                     # Policy says don't retry (permanent error or max attempts)
                     message.status = MessageStatus.DEAD_LETTER
-                    with self._lock:
-                        self._stats["failed"] += 1
-                        if "permanent_error" in decision.reason:
-                            self._stats["permanent_failures"] += 1
-                    logger.warning(
-                        f"Message {msg_id} moved to dead letter: {decision.reason}"
-                    )
+                    bumps.append("failed")
+                    if "permanent_error" in decision.reason:
+                        bumps.append("permanent_failures")
+                    note_log = (f"Message {msg_id} moved to dead letter: "
+                                f"{decision.reason}")
                     # Fork C: terminal drop. Distinguish "retries
                     # exhausted on a transient error" from "policy
                     # judged the error non-retriable on first attempt"
@@ -643,8 +645,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                     # Policy says retry with calculated delay
                     message.retry_after = datetime.now() + timedelta(seconds=decision.delay)
                     message.status = MessageStatus.PENDING
-                    with self._lock:
-                        self._stats["retried"] += 1
+                    bumps.append("retried")
                     logger.debug(
                         f"Message {msg_id} scheduled for retry in {decision.delay:.1f}s "
                         f"({decision.reason})"
@@ -654,12 +655,9 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                 if message.retry_count >= message.max_retries:
                     # Move to dead letter
                     message.status = MessageStatus.DEAD_LETTER
-                    with self._lock:
-                        self._stats["failed"] += 1
-                    logger.warning(
-                        f"Message {msg_id} moved to dead letter after "
-                        f"{message.retry_count} retries"
-                    )
+                    bumps.append("failed")
+                    note_log = (f"Message {msg_id} moved to dead letter after "
+                                f"{message.retry_count} retries")
                     # Fork C: terminal drop in the no-policy fallback
                     # path. Always counted as retries-exhausted because
                     # we have no error classifier here.
@@ -671,8 +669,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                     delay = self.RETRY_DELAYS[delay_idx]
                     message.retry_after = datetime.now() + timedelta(seconds=delay)
                     message.status = MessageStatus.PENDING
-                    with self._lock:
-                        self._stats["retried"] += 1
+                    bumps.append("retried")
                     logger.debug(f"Message {msg_id} scheduled for retry in {delay}s")
 
             # Update in database
@@ -687,6 +684,12 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                 data["retry_after"], data["error_message"], msg_id
             )).rowcount
 
+        if changed == 1:
+            with self._lock:
+                for key in bumps:
+                    self._stats[key] += 1
+            if note_log:
+                logger.warning(note_log)
         if changed == 1 and drop is not None:
             # A late mark_failed on a row the stale reset already
             # dead-lettered matches 0 rows: not a second loss (BIC-2 F5).
