@@ -43,7 +43,7 @@ from .ack_tracker import AckTracker, routing_error_to_drop_reason
 from .base_handler import (
     UNKNOWN_ORIGIN, BaseMessageHandler, dual_path_dedup_enabled,
     dual_path_dedup_window_s, get_rf_tx_registry, is_bridge_loop,
-    mesh_origin_content_id, mqtt_content_dedup_key,
+    mesh_origin_content_id, mqtt_content_dedup_key, note_fallback_drop,
     true_origin_downlink_enabled, true_origin_loop_guard_window_s,
 )
 from utils.meshtastic_se_crypto import (
@@ -645,12 +645,12 @@ class MQTTBridgeHandler(BaseMessageHandler):
         dedup_key = msg_id if msg_id else mqtt_content_dedup_key(data)
         if dedup_key and self._is_duplicate(dedup_key):
             if not msg_id:
-                # Witness for the fallback-key path (hfm #9): whether it ever
-                # fires on the fleet is unmeasured (2026-10-22).
+                # Witness for the fallback-key path (hfm #9): counted, and
+                # journaled at INFO (rate-limited) — the counter alone is
+                # in-process only (2026-10-22).
                 with self._stats_lock:
-                    self.stats['mqtt_fallback_dedup_dropped'] = (
-                        self.stats.get('mqtt_fallback_dedup_dropped', 0) + 1)
-                logger.debug("MQTT id-less duplicate dropped (fallback key)")
+                    self.stats['mqtt_fallback_dedup_dropped'] = note_fallback_drop(
+                        self, self.stats.get('mqtt_fallback_dedup_dropped', 0))
             return
 
         # Update node tracking

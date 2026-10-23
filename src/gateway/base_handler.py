@@ -249,6 +249,28 @@ def mqtt_content_dedup_key(data: dict) -> str:
     return "c:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+# The id-less fallback-key drop witness (2026-10-22). The per-site counters
+# live only in the gateway process — nothing out of process could read them,
+# so the reachable witness is the journal: one INFO line on the first drop,
+# then at most one per interval, carrying the running count. Read with
+# `journalctl -u meshforge | grep "fallback key"`.
+FALLBACK_DROP_LOG_INTERVAL_S = 600.0
+
+
+def note_fallback_drop(owner: Any, count: int, label: str = "") -> int:
+    """Count one id-less duplicate dropped by ``mqtt_content_dedup_key`` and
+    return the new count; log it at INFO, rate-limited per ``owner``
+    (monotonic, so a wall-clock step cannot silence or flood it)."""
+    count += 1
+    now = time.monotonic()
+    last = getattr(owner, "_fallback_drop_logged_at", None)
+    if last is None or now - last >= FALLBACK_DROP_LOG_INTERVAL_S:
+        owner._fallback_drop_logged_at = now
+        logger.info("%sMQTT id-less duplicate dropped (fallback key) — %d since start",
+                    label, count)
+    return count
+
+
 # Registry TTL: entries older than this are pruned on every write, so it is
 # the HARD ceiling on every window checked against the registry. The window
 # helpers below clamp to it — an operator window above the TTL would pass on

@@ -110,3 +110,50 @@ class TestMQTTMeshInterfaceWitness:
         b._primary_to_secondary = MagicMock(get_queue_depth=MagicMock(return_value=0))
         b._secondary_to_primary = MagicMock(get_queue_depth=MagicMock(return_value=0))
         assert b.get_status()["statistics"]["mqtt_fallback_dedup_dropped"] == 3
+
+
+class TestJournalWitness:
+    """The counters above live only in the gateway process — nothing out of
+    process could read them (measured 2026-10-22 on moc/moc3). The witness an
+    operator can actually reach is the journal: one INFO line on the first
+    fallback-key drop, then at most one per interval, carrying the count."""
+
+    def test_handler_first_drop_logs_info_with_count(self, caplog):
+        import logging
+        h = _handler()
+        raw = json.dumps(_pkt(ts=1792700000)).encode()
+        with caplog.at_level(logging.INFO, logger="gateway.base_handler"):
+            h._handle_json_message(_TOPIC, raw)
+            h._handle_json_message(_TOPIC, raw)
+        lines = [r for r in caplog.records if "fallback key" in r.getMessage()]
+        assert len(lines) == 1 and lines[0].levelno == logging.INFO
+        assert "1 since start" in lines[0].getMessage()
+
+    def test_rate_limited_then_logs_again_with_running_count(self, caplog, monkeypatch):
+        import logging
+        import gateway.base_handler as bh
+        clock = [1000.0]
+        monkeypatch.setattr(bh.time, "monotonic", lambda: clock[0])
+        owner = SimpleNamespace()
+        with caplog.at_level(logging.INFO, logger="gateway.base_handler"):
+            n = bh.note_fallback_drop(owner, 0)
+            clock[0] += 10
+            n = bh.note_fallback_drop(owner, n)          # inside the window: silent
+            clock[0] += bh.FALLBACK_DROP_LOG_INTERVAL_S
+            n = bh.note_fallback_drop(owner, n)          # window passed: logs, count 3
+        msgs = [r.getMessage() for r in caplog.records if "fallback key" in r.getMessage()]
+        assert n == 3
+        assert len(msgs) == 2 and "3 since start" in msgs[1]
+
+    def test_interface_drop_logs_with_its_name(self, caplog):
+        import logging
+        cb = MagicMock()
+        i = MQTTMeshInterface(config=MagicMock(), name="leg-st",
+                              message_callback=cb, stop_event=threading.Event())
+        msg = SimpleNamespace(topic=_TOPIC, payload=json.dumps(_pkt(ts=1792700000)).encode())
+        with caplog.at_level(logging.INFO, logger="gateway.base_handler"):
+            i._on_message(None, None, msg)
+            i._on_message(None, None, msg)
+        msgs = [r.getMessage() for r in caplog.records if "fallback key" in r.getMessage()]
+        assert i.fallback_dedup_dropped == 1
+        assert len(msgs) == 1 and "[leg-st]" in msgs[0]

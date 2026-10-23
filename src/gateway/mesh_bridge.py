@@ -33,7 +33,7 @@ from typing import Optional, Dict, Callable, Any, List
 from .base_handler import (
     dual_path_dedup_enabled, dual_path_dedup_window_s,
     get_rf_tx_registry, get_secondary_rf_registry, is_bridge_loop,
-    is_already_bridged, mesh_origin_content_id, mqtt_content_dedup_key,
+    is_already_bridged, mesh_origin_content_id, mqtt_content_dedup_key, note_fallback_drop,
     true_origin_downlink_enabled, true_origin_loop_guard_window_s,
 )
 from .config import GatewayConfig, MeshtasticBridgeConfig, MeshtasticConfig
@@ -256,7 +256,8 @@ class MQTTMeshInterface:
             # (#34 hardening — same fix + shared key as MQTTBridgeHandler).
             dedup_key = msg_id if msg_id else mqtt_content_dedup_key(data)
             if dedup_key and self._is_duplicate(dedup_key):
-                self.fallback_dedup_dropped += 0 if msg_id else 1
+                if not msg_id:  # counted + journaled (rate-limited INFO)
+                    self.fallback_dedup_dropped = note_fallback_drop(self, self.fallback_dedup_dropped, f"[{self._name}] ")
                 return
 
             if msg_type != 'text':
