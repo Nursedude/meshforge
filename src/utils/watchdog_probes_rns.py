@@ -547,27 +547,39 @@ _LXMF_PROCESS_PATTERNS = (
 # silently retune the other (review 2026-10-22). In-memory for the same
 # reason as _rpc_timeout_streak: an on-disk streak can freeze below its
 # threshold. Cost: a watchdog restart during a live wedge re-confirms it,
-# delaying the page by N-1 ticks (~60 s at the default).
+# delaying the page by N-1 ticks.
+#
+# Default 5, not the RPC sibling's 3 (re-review 2026-10-22, MEASURED from
+# mini edge_up/edge_down durations at the ~30 s cadence): the longest
+# transient was moc3 lab.lxmf_echo at 105.8 s (~4 consecutive blocked ticks,
+# the tracer driving it); moc's synth peaked at 62.8 s (10 of 163 runs at 2
+# ticks). Keyed per pid, a long-lived daemon accumulates across its threads,
+# so N must clear the longest burst. A real wedge persists until a restart —
+# hours — so ~150 s of confirmation costs nothing that matters.
 _LXMF_WEDGE_CONFIRM_TICKS_ENV = "MESHFORGE_LXMF_WEDGE_CONFIRM_TICKS"
-_DEFAULT_LXMF_WEDGE_CONFIRM_TICKS = 3
+_DEFAULT_LXMF_WEDGE_CONFIRM_TICKS = 5
 
 _lxmf_wedge_streaks: dict = {}
 
 
-def _lxmf_wedge_confirm_ticks() -> int:
-    """Consecutive blocked ticks before a lab process is called wedged.
-
-    Resolved per call so an operator can retune without a restart; an
-    unparseable or < 1 value falls back to the default.
-    """
-    raw = os.environ.get(_LXMF_WEDGE_CONFIRM_TICKS_ENV)
+def _env_confirm_ticks(env_name: str, default: int) -> int:
+    """One parser for every N-consecutive-ticks knob (hfm #5): resolved per
+    call so an operator can retune without a restart; an unparseable or < 1
+    value falls back to ``default``."""
+    raw = os.environ.get(env_name)
     if raw is None:
-        return _DEFAULT_LXMF_WEDGE_CONFIRM_TICKS
+        return default
     try:
         value = int(raw)
     except ValueError:
-        return _DEFAULT_LXMF_WEDGE_CONFIRM_TICKS
-    return value if value >= 1 else _DEFAULT_LXMF_WEDGE_CONFIRM_TICKS
+        return default
+    return value if value >= 1 else default
+
+
+def _lxmf_wedge_confirm_ticks() -> int:
+    """Consecutive blocked ticks before a lab process is called wedged."""
+    return _env_confirm_ticks(_LXMF_WEDGE_CONFIRM_TICKS_ENV,
+                              _DEFAULT_LXMF_WEDGE_CONFIRM_TICKS)
 
 
 def reset_lxmf_wedge_streaks() -> None:
@@ -580,14 +592,16 @@ def _wedge_cure_text(owner: str) -> str:
     it: a client blocked in unix_wait_for_peer is not proof rnsd is wedged,
     and restarting rnsd is the #69 @rns ownership-race trigger."""
     return (
-        "CONFIRM BEFORE ACTING — rnsd may be healthy: "
-        "`timeout 8 rnstatus >/dev/null; echo $?` (124 = rnsd RPC wedged, "
-        "0 = rnsd answers). On a gateway box also `sudo journalctl -u "
-        "meshforge-gateway --since -5min | grep 'rpc\\[rnsd\\.'` (sub-ms "
-        "round trips = healthy; no lines on a box with no gateway is not "
-        f"evidence). If rnsd answers, restart only {owner}. Restart rnsd "
-        "only on a confirmed wedge, then `sudo ss -xnpl | grep @rns/` — the "
-        "owner must be rnsd (#69). See Issue #68."
+        "CONFIRM BEFORE ACTING — rnsd may be healthy. On a gateway box, "
+        "`sudo journalctl -u meshforge-gateway --since -5min | grep "
+        "'rpc\\[rnsd\\.'`: sub-ms round trips = rnsd healthy (no lines on a "
+        "box with no gateway is not evidence). Elsewhere `timeout 8 rnstatus "
+        ">/dev/null; echo $?` — but 124 can be CPU starvation of the rnstatus "
+        "interpreter (check `uptime`; a lab load run IS load), so re-run it "
+        "after a minute on a quiet box: a wedge persists, contention passes. "
+        f"If rnsd answers, restart only {owner}. Restart rnsd only on a "
+        "confirmed wedge, then `sudo ss -xnpl | grep @rns/` — the owner must "
+        "be rnsd (#69). See Issue #68."
     )
 
 
@@ -624,76 +638,89 @@ def probe_lxmf_process_wedge(
     needed = _lxmf_wedge_confirm_ticks()
     blocked_now: dict = {}
     pending: List[str] = []
-    for entry in entries:
-        if not entry.isdigit():
-            continue
-        pid = int(entry)
-        try:
-            with open(f"{proc_root}/{pid}/cmdline", "rb") as fh:
-                cmdline = fh.read().replace(b"\x00", b" ").decode(
-                    "utf-8", errors="replace",
-                ).strip()
-        except OSError:
-            continue
-        if not cmdline:
-            continue
-        matched_pat = next(
-            (p for p in patterns if p in cmdline),
-            None,
-        )
-        if matched_pat is None:
-            continue
-
-        outcome: dict = {}
-        found = _scan_pid_task_stacks(pid, proc_root, outcome=outcome)
-        if found is None:
-            pattern_clean[matched_pat] = (pattern_clean.get(matched_pat, True)
-                                          and outcome.get("clean", False))
-            continue
-        pattern_clean[matched_pat] = False
-        tid, kernel_pattern, excerpt = found
-
-        key = (matched_pat, pid)
-        streak = _lxmf_wedge_streaks.get(key, 0) + 1
-        blocked_now[key] = streak
-        if streak < needed:
-            # Observed, not yet decidable — never `clean` (hfm #2), and the
-            # pattern is not observed, so a held wedge stays held. Collected,
-            # not noted here: worst-wins keeps only the first reason, and a
-            # second blocked process may be the real wedge (review 10-22).
-            pending.append(
-                f"{matched_pat} pid={pid} tid={tid} {kernel_pattern!r} "
-                f"{streak}/{needed}"
+    # The streak map is replaced in `finally`: a probe that raises mid-walk
+    # must not leave last tick's streaks to count a skipped tick as
+    # consecutive (re-review 2026-10-22). Pids not reached reset — the
+    # conservative side.
+    try:
+        for entry in entries:
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            try:
+                with open(f"{proc_root}/{pid}/cmdline", "rb") as fh:
+                    cmdline = fh.read().replace(b"\x00", b" ").decode(
+                        "utf-8", errors="replace",
+                    ).strip()
+            except OSError:
+                continue
+            if not cmdline:
+                continue
+            matched_pat = next(
+                (p for p in patterns if p in cmdline),
+                None,
             )
-            continue
+            if matched_pat is None:
+                continue
 
-        thread_role = "main thread" if tid == pid else f"worker thread tid={tid}"
-        signals.append(Signal(
-            cls="main_thread_wedge",
-            subject=matched_pat,
-            severity="wedge",
-            detail=(
-                f"{thread_role} of pid={pid} ({matched_pat}) blocked in "
-                f"kernel pattern {kernel_pattern!r} on {streak} consecutive "
-                f"watchdog ticks — the same process, so not a lab run's "
-                f"transient backpressure. "
-                + _wedge_cure_text("the owning user service")
-            ),
-            issue_ref=68,
-            extra={
-                "pid": pid,
-                "tid": tid,
-                "consecutive_ticks": streak,
-                "thread_role": "main" if tid == pid else "worker",
-                "pattern": kernel_pattern,
-                "cmdline": cmdline[:200],
-                "stack_excerpt": excerpt,
-            },
-        ))
-    # Only pids blocked THIS tick carry a streak forward; any pid that was
-    # not (healthy, exited, or a new run) re-arms the guard.
-    _lxmf_wedge_streaks.clear()
-    _lxmf_wedge_streaks.update(blocked_now)
+            outcome: dict = {}
+            found = _scan_pid_task_stacks(pid, proc_root, outcome=outcome)
+            if found is None:
+                pattern_clean[matched_pat] = (pattern_clean.get(matched_pat, True)
+                                              and outcome.get("clean", False))
+                if not outcome.get("clean", False):
+                    # Unreadable is not healthy (hfm #2): HOLD this pid's streak
+                    # rather than reset it, so one failed read in every N ticks
+                    # cannot keep a real wedge from ever confirming (re-review).
+                    prior = _lxmf_wedge_streaks.get((matched_pat, pid))
+                    if prior:
+                        blocked_now[(matched_pat, pid)] = prior
+                continue
+            pattern_clean[matched_pat] = False
+            tid, kernel_pattern, excerpt = found
+
+            key = (matched_pat, pid)
+            streak = _lxmf_wedge_streaks.get(key, 0) + 1
+            blocked_now[key] = streak
+            if streak < needed:
+                # Observed, not yet decidable — never `clean` (hfm #2), and the
+                # pattern is not observed, so a held wedge stays held. Collected,
+                # not noted here: worst-wins keeps only the first reason, and a
+                # second blocked process may be the real wedge (review 10-22).
+                pending.append(
+                    f"{matched_pat} pid={pid} tid={tid} {kernel_pattern!r} "
+                    f"{streak}/{needed}"
+                )
+                continue
+
+            thread_role = "main thread" if tid == pid else f"worker thread tid={tid}"
+            signals.append(Signal(
+                cls="main_thread_wedge",
+                subject=matched_pat,
+                severity="wedge",
+                detail=(
+                    f"{thread_role} of pid={pid} ({matched_pat}) blocked in "
+                    f"kernel pattern {kernel_pattern!r} on {streak} consecutive "
+                    f"watchdog ticks — the same process, so not a lab run's "
+                    f"transient backpressure. "
+                    + _wedge_cure_text("the owning user service")
+                ),
+                issue_ref=68,
+                extra={
+                    "pid": pid,
+                    "tid": tid,
+                    "consecutive_ticks": streak,
+                    "thread_role": "main" if tid == pid else "worker",
+                    "pattern": kernel_pattern,
+                    "cmdline": cmdline[:200],
+                    "stack_excerpt": excerpt,
+                },
+            ))
+    finally:
+        # Only pids blocked (or held unreadable) THIS tick carry a streak
+        # forward; any pid that was not (healthy, exited, a new run) re-arms.
+        _lxmf_wedge_streaks.clear()
+        _lxmf_wedge_streaks.update(blocked_now)
     if pending:
         note_disposition(
             "main_thread_wedge", "indeterminate",
@@ -1040,14 +1067,7 @@ def _rpc_confirm_ticks() -> int:
     observed (all <1 tick) while adding negligible latency to a real
     wedge that would otherwise persist for hours.
     """
-    raw = os.environ.get(_RPC_CONFIRM_TICKS_ENV)
-    if raw is None:
-        return _DEFAULT_RPC_CONFIRM_TICKS
-    try:
-        value = int(raw)
-    except ValueError:
-        return _DEFAULT_RPC_CONFIRM_TICKS
-    return value if value >= 1 else _DEFAULT_RPC_CONFIRM_TICKS
+    return _env_confirm_ticks(_RPC_CONFIRM_TICKS_ENV, _DEFAULT_RPC_CONFIRM_TICKS)
 
 
 def reset_rns_rpc_timeout_streak() -> None:
