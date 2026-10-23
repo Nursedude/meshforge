@@ -387,3 +387,92 @@ def test_a_source_outside_the_transport_vocabulary_counts_as_unknown(
     counters.record(DeliveryState.SENT, "m1", protocol="rns", source=source)
 
     assert set(counters.snapshot()["legs"]) == {"?>rns"}
+
+
+# ── review round 2 (non-author re-review of daa93e19, 10-23) ──────────
+
+def test_a_half_done_leg_write_is_undone_whole(counters, monkeypatch):
+    # F2: bump() is three statements; a failure partway must not leave a
+    # counted bucket beside a witness that says it was not counted.
+    import sqlite3
+    from gateway import delivery_legs
+    real = delivery_legs.bump
+
+    def half(conn, ts, leg, outcome):
+        real(conn, ts, leg, outcome)
+        raise sqlite3.OperationalError("prune failed")
+    monkeypatch.setattr(delivery_legs, "bump", half)
+
+    counters.record(DeliveryState.SENT, "m1", protocol="rns",
+                    source="meshtastic")
+    snap = counters.snapshot()
+
+    assert snap["state_totals"]["sent"] == 1          # core kept
+    assert "meshtastic>rns" not in snap["legs"]        # leg undone whole
+    assert snap["legs_since_ts"] is None               # stamp undone too
+    assert snap["legs_write_errors"] == 1
+
+
+def test_a_leg_error_that_rolled_back_the_core_write_is_a_core_write_error(
+        counters, monkeypatch):
+    # F1: SQLITE_FULL/IOERR roll the WHOLE transaction back. The core event
+    # is then gone, and record() must say so — not report success.
+    import sqlite3
+    from gateway import delivery_legs
+
+    def full(conn, ts, leg, outcome):
+        conn.execute("ROLLBACK")       # what SQLite does on SQLITE_FULL
+        raise sqlite3.OperationalError("database or disk is full")
+    monkeypatch.setattr(delivery_legs, "bump", full)
+
+    counters.record(DeliveryState.SENT, "m1", protocol="rns",
+                    source="meshtastic")
+    snap = counters.snapshot()
+
+    assert snap["health"]["consecutive_write_errors"] >= 1
+
+
+def test_tracking_start_is_the_write_time_not_a_backdated_event_ts(counters):
+    # F6: a replayed or clock-stepped first event must not pull since_ts
+    # back and make an uncovered span read whole.
+    before = time.time()
+    counters.record(DeliveryState.SENT, "m1", protocol="rns",
+                    source="meshtastic", ts=before - 3600)
+
+    assert counters.snapshot()["legs_since_ts"] >= before - 1
+
+
+def test_history_for_carries_the_source(counters):
+    # F4: the per-message trace dropped the persisted source.
+    counters.record(DeliveryState.SENT, "m1", protocol="rns",
+                    source="meshtastic")
+
+    assert [e.source for e in counters.history_for("m1")] == ["meshtastic"]
+
+
+def test_a_leg_write_error_carries_when_it_last_happened(counters, monkeypatch):
+    # F9: a lifetime count alone cannot tell "broke once" from "broken now".
+    import sqlite3
+    from gateway import delivery_legs
+
+    def boom(*a, **k):
+        raise sqlite3.OperationalError("leg table broke")
+    monkeypatch.setattr(delivery_legs, "bump", boom)
+    before = time.time()
+
+    counters.record(DeliveryState.SENT, "m1", protocol="rns",
+                    source="meshtastic")
+
+    assert counters.snapshot()["legs_last_write_error_ts"] >= before - 1
+
+
+def test_reset_for_tests_clears_the_leg_tables(counters):
+    # F10: since_ts now comes from the first bump; a reset that kept it
+    # would leak one test's legs into the next.
+    counters.record(DeliveryState.SENT, "m1", protocol="rns",
+                    source="meshtastic")
+
+    counters._reset_for_tests()
+    snap = counters.snapshot()
+
+    assert snap["legs"] == {} and snap["legs_since_ts"] is None

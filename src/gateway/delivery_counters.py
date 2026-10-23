@@ -855,17 +855,30 @@ class DeliveryCounters:
             )
             leg = delivery_legs.leg_key(event.source, event.protocol)
             if leg:
-                # Fenced (review R7): legs are measure-only. A failure here
-                # must not roll back the core event; it leaves a witness the
-                # map daemon can read (an in-memory counter would not reach it).
+                # Fenced in a SAVEPOINT (reviews R7, F1/F2): legs are
+                # measure-only, so a failure undoes the leg write WHOLE and
+                # keeps the core event. If SQLite already rolled back the
+                # whole transaction (FULL/IOERR), ROLLBACK TO raises and the
+                # core write fails loudly instead of committing a witness
+                # over a lost event. The witness is on disk so the map
+                # daemon can read it.
+                conn.execute("SAVEPOINT legs")
                 try:
                     delivery_legs.bump(conn, event.ts, leg, _leg_outcome(event))
+                    conn.execute("RELEASE legs")
                 except sqlite3.Error as e:
+                    conn.execute("ROLLBACK TO legs")
+                    conn.execute("RELEASE legs")
                     logger.warning("delivery_counters: leg count failed: %s", e)
                     conn.execute(
                         "INSERT INTO counters(key, value) "
                         "VALUES('legs.write_errors', 1) "
                         "ON CONFLICT(key) DO UPDATE SET value = value + 1")
+                    conn.execute(
+                        "INSERT INTO counters(key, value) "
+                        "VALUES('legs.last_write_error_ts', ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (round(time.time() * 1000),))
             # Ring cap via prune-on-insert. SELECT COUNT(*) is O(N) on
             # an unindexed scan but N is tiny (cap 500), and we only
             # pay it on the writes that are likely to push us over.
@@ -933,6 +946,7 @@ class DeliveryCounters:
                      max(0, recent_limit)),
                 ).fetchall()
                 ring_capacity = self._ring_cap
+                legs_view = delivery_legs.read(conn, time.time())
         except sqlite3.Error as e:
             logger.warning(
                 "delivery_counters: snapshot read failed (%s) — "
@@ -943,6 +957,7 @@ class DeliveryCounters:
             agg_rows = []
             terminal_rows = []
             ring_capacity = self._ring_cap
+            legs_view = (None, None, None, None, None)
             # G3 (2026-07-18, honest_failure_modes #2): a DB that became
             # unreadable AFTER startup must not serve a healthy-looking
             # health block (stale startup preflight True + local write
@@ -1097,7 +1112,8 @@ class DeliveryCounters:
                 health["db_unobservable"] = True
                 health["preflight_ok"] = None
 
-        legs, legs_since_ts, legs_partial, legs_write_errors = self._read_legs()
+        (legs, legs_since_ts, legs_partial, legs_write_errors,
+         legs_last_error_ts) = legs_view
 
         return {
             "state_totals": state_totals,
@@ -1116,26 +1132,9 @@ class DeliveryCounters:
             "legs_since_ts": legs_since_ts,
             "legs_partial_windows": legs_partial,
             "legs_write_errors": legs_write_errors,
+            "legs_last_write_error_ts": legs_last_error_ts,
             "health": health,
         }
-
-    def _read_legs(self):
-        """BIC-2 leg view, read on its OWN connection (review R6): a failure
-        here is legs-unobservable (None everywhere), never a blind core
-        snapshot."""
-        try:
-            with self._connect() as conn:
-                now = time.time()
-                since = delivery_legs.since_ts(conn)
-                row = conn.execute(
-                    "SELECT value FROM counters WHERE key = 'legs.write_errors'"
-                ).fetchone()
-                return (delivery_legs.view(conn, now), since,
-                        delivery_legs.partial_windows(since, now),
-                        int(row[0]) if row else 0)
-        except sqlite3.Error as e:
-            logger.warning("delivery_counters: leg view read failed: %s", e)
-            return None, None, None, None
 
     def recent(self, limit: Optional[int] = None) -> List[DeliveryEvent]:
         """Return recent events (newest last). ``limit`` clamps the
@@ -1145,14 +1144,16 @@ class DeliveryCounters:
             with self._connect() as conn:
                 if limit is None:
                     cursor = conn.execute(
-                        "SELECT ts, id, state, protocol, drop_reason, note "
+                        "SELECT ts, id, state, protocol, drop_reason, note, "
+                        "source "
                         "FROM events ORDER BY rowid ASC"
                     )
                 elif limit <= 0:
                     return []
                 else:
                     cursor = conn.execute(
-                        "SELECT ts, id, state, protocol, drop_reason, note "
+                        "SELECT ts, id, state, protocol, drop_reason, note, "
+                        "source "
                         "FROM events ORDER BY rowid DESC LIMIT ?",
                         (limit,),
                     )
@@ -1173,7 +1174,7 @@ class DeliveryCounters:
         try:
             with self._connect() as conn:
                 rows = conn.execute(
-                    "SELECT ts, id, state, protocol, drop_reason, note "
+                    "SELECT ts, id, state, protocol, drop_reason, note, source "
                     "FROM events WHERE id = ? ORDER BY rowid ASC",
                     (str(msg_id),),
                 ).fetchall()
@@ -1183,9 +1184,9 @@ class DeliveryCounters:
 
     @staticmethod
     def _row_to_event(
-        row: Tuple[float, str, str, Optional[str], Optional[str], str],
+        row: Tuple[float, str, str, Optional[str], Optional[str], str, str],
     ) -> DeliveryEvent:
-        ts, msg_id, state, protocol, drop_reason, note = row
+        ts, msg_id, state, protocol, drop_reason, note, source = row
         try:
             state_enum = DeliveryState(state)
         except ValueError:
@@ -1199,7 +1200,7 @@ class DeliveryCounters:
         return DeliveryEvent(
             ts=ts, id=msg_id, state=state_enum,
             protocol=canonical_protocol(protocol), drop_reason=dr_enum,
-            note=note or "",
+            note=note or "", source=source or None,
         )
 
     # ── test helpers ───────────────────────────────────────────
@@ -1210,6 +1211,8 @@ class DeliveryCounters:
             with self._connect() as conn:
                 conn.execute("DELETE FROM counters")
                 conn.execute("DELETE FROM events")
+                conn.execute("DELETE FROM leg_buckets")
+                conn.execute("DELETE FROM leg_meta")
                 conn.commit()
         except sqlite3.Error:
             pass

@@ -31,8 +31,12 @@ let prune-on-insert delete real buckets. A stale clock stepping forward
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
-from typing import Any, Dict, Optional
+import time
+from typing import Any, Dict, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 BUCKET_S = 300
 """Bucket width. A window sums every bucket that OVERLAPS it, so it can
@@ -105,13 +109,15 @@ def partial_windows(since: Optional[float], now: float) -> list:
 def bump(conn: sqlite3.Connection, ts: float, leg: str, outcome: str) -> None:
     """Count one event. Runs inside the caller's transaction.
 
-    The FIRST bump stamps ``since_ts``. Not schema creation: the map daemon
-    (a reader) or an old gateway can create the tables hours before any
-    leg is counted, and that span must read partial (review R5)."""
+    The FIRST bump stamps ``since_ts`` with the WRITE time. Not schema
+    creation: the map daemon (a reader) or an old gateway can create the
+    tables hours before any leg is counted (review R5). Not the event's ts:
+    a replayed or clock-stepped first event would pull the start back and
+    make an uncovered span read whole (review F6)."""
     conn.execute(
         "INSERT INTO leg_meta(key, value) VALUES('since_ts', ?) "
         "ON CONFLICT(key) DO NOTHING",
-        (ts,),
+        (time.time(),),
     )
     bucket = int(ts // BUCKET_S) * BUCKET_S
     conn.execute(
@@ -143,3 +149,25 @@ def view(conn: sqlite3.Connection, now: float) -> Dict[str, Any]:
             win[outcome] = int(n)
             win["from_ts"] = min(win.get("from_ts", first), first)
     return out
+
+
+def read(conn: sqlite3.Connection, now: float) -> Tuple:
+    """``(legs, since_ts, partial_windows, write_errors, last_error_ts)``.
+
+    Runs on the snapshot's connection (one read transaction, review F8) but
+    fenced (review R6): a failure is legs-unobservable — None everywhere —
+    never a blind core snapshot. The two write-error keys live in the
+    ``counters`` table ``delivery_counters`` owns.
+    """
+    try:
+        since = since_ts(conn)
+        kv = dict(conn.execute(
+            "SELECT key, value FROM counters WHERE key IN "
+            "('legs.write_errors', 'legs.last_write_error_ts')").fetchall())
+        last = kv.get("legs.last_write_error_ts")
+        return (view(conn, now), since, partial_windows(since, now),
+                int(kv.get("legs.write_errors", 0)),
+                last / 1000.0 if last is not None else None)
+    except sqlite3.Error as e:
+        logger.warning("delivery_legs: leg view read failed: %s", e)
+        return None, None, None, None, None
