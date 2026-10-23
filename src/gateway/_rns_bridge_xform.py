@@ -315,7 +315,7 @@ class MessageTransformMixin:
                         dest_bytes = None
                 if dest_bytes and self.send_to_rns(
                         content, dest_bytes, title=title, fields=fields,
-                        source=msg.source_network):
+                        source=self._leg_source(msg)):
                     sent_count = 1  # on the wire: a raise below must not requeue
                     self._sessions.touch(msg.source_id, peer_hex)
                     if self._reply_routing_on():
@@ -407,7 +407,7 @@ class MessageTransformMixin:
             failed_legs = []
             for dest_hash in destinations:
                 if self.send_to_rns(content, dest_hash, title=title, fields=fields,
-                                    source=msg.source_network):
+                                    source=self._leg_source(msg)):
                     sent_count += 1
                     if record_ok:
                         dest_hex = dest_hash.hex().lower()
@@ -545,6 +545,13 @@ class MessageTransformMixin:
                 return dest
         return None
 
+    @staticmethod
+    def _leg_source(msg) -> str:
+        """BIC-2: the transport a message came in on. A replayed spill keeps
+        source_network="meshtastic" (routing input) and carries its real
+        origin — e.g. mqtt — in metadata."""
+        return (msg.metadata or {}).get('m2r_leg_source') or msg.source_network
+
     def _requeue_failed_message(self, msg, destination: str,
                                 rns_destinations=None, title=None,
                                 fields=None, origin=None,
@@ -637,6 +644,7 @@ class MessageTransformMixin:
                                 destination="rns",
                                 priority=MessagePriority.NORMAL,
                                 created_at=first_enqueued,
+                                source=self._leg_source(msg),
                             ))
                         except Exception as e:  # noqa: BLE001
                             # A raising enqueue (sqlite locked / disk I/O)
@@ -677,6 +685,7 @@ class MessageTransformMixin:
                     # except path, which refuses replays — kept so a future
                     # caller cannot silently restart the 24 h.
                     created_at=first_enqueued,
+                    source=self._leg_source(msg),
                     ))
                 finally:
                     if origin:  # a raise below still releases the origin
@@ -693,6 +702,7 @@ class MessageTransformMixin:
                     },
                     destination=destination,
                     priority=MessagePriority.HIGH,
+                    source=self._leg_source(msg),
                 )
             logger.debug(f"Failed message re-queued to persistent storage ({destination})")
             return True
@@ -731,6 +741,7 @@ class MessageTransformMixin:
                     },
                     destination=target,
                     priority=MessagePriority.HIGH,
+                    source="rns",
                 ):
                     requeued += 1
             except Exception as e:
@@ -1234,6 +1245,7 @@ class MessageTransformMixin:
                         payload=payload,
                         destination="meshtastic",
                         priority=MessagePriority.NORMAL,
+                        source=self._leg_source(msg),
                     ):
                         enqueued += 1
                     elif self._persistent_queue.is_recent_duplicate(
@@ -1428,7 +1440,7 @@ class MessageTransformMixin:
             try:
                 ok = self.send_to_rns(
                     body, dest_bytes, title=title, fields=relay_fields,
-                    source=msg.source_network,
+                    source=self._leg_source(msg),
                 )
             except Exception as e:
                 logger.warning(f"Relay to peer {peer_hex[:8]} raised: {e}")

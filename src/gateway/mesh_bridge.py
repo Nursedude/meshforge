@@ -1208,7 +1208,7 @@ class MeshtasticPresetBridge:
             msg_id = queue.enqueue(
                 payload=msg.to_payload(),
                 destination=dest,
-                priority=priority,
+                priority=priority, source=source,
             )
 
             if msg_id is None:

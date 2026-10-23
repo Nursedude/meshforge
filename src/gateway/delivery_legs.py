@@ -53,6 +53,19 @@ RETAIN_S = WINDOWS[-1][1] + 2 * BUCKET_S
 
 UNKNOWN_SOURCE = "?"
 
+LEG_SOURCE_KEY = "_leg_source"
+"""Where a persistent-queue row carries its origin transport (BIC-2 slice
+2). One constant for the writer (``enqueue``) and every reader (the queue's
+lifecycle records, ``_queue_send_rns``), hfm #5."""
+
+
+def payload_source(payload: Any) -> Optional[str]:
+    """The origin a queue row's payload carries; None when it carries none."""
+    if isinstance(payload, dict):
+        v = payload.get(LEG_SOURCE_KEY)
+        return v if isinstance(v, str) and v else None
+    return None
+
 TRANSPORTS = frozenset({"meshtastic", "meshcore", "rns", "mqtt", "local"})
 """Closed vocabulary for both ends of a leg (hfm #7). ``local`` = the
 gateway authored the message (oracle replies, synthetic ACKs). Anything
@@ -63,6 +76,24 @@ OUTCOMES = ("queued", "sent", "confirmed", "failed", "dropped_other")
 """Closed vocabulary of what a bucket counts. ``failed`` = a delivery that
 was attempted and failed; ``dropped_other`` = benign drops (dedup,
 shedding, invalid payload) that are not delivery failures."""
+
+
+DISPATCH_DESTINATIONS = {"rns_xform": "rns"}
+"""Queue senders that are NOT transports: a row bound for one is traffic
+for the mapped transport, but its "sent" only hands it back to the
+pipeline, whose real send records the real SENT. Counting the dispatch
+too would double every spilled message; dropping the row's queued /
+failed outcomes would hide a loss that never reached the transport."""
+
+
+def leg_for(source: Optional[str], destination: Optional[str],
+            outcome: str) -> Optional[str]:
+    """The leg an outcome counts on; None when it counts on no leg."""
+    if destination in DISPATCH_DESTINATIONS:
+        if outcome == "sent":
+            return None
+        destination = DISPATCH_DESTINATIONS[destination]
+    return leg_key(source, destination)
 
 
 def leg_key(source: Optional[str], destination: Optional[str]) -> Optional[str]:

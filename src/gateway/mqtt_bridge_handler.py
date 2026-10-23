@@ -1398,6 +1398,7 @@ class MQTTBridgeHandler(BaseMessageHandler):
                 payload=payload,
                 destination="rns_xform",
                 priority=MessagePriority.NORMAL,
+                source="mqtt",
             )
             return msg_id is not None
         except Exception as e:

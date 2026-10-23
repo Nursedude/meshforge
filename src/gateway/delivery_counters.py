@@ -853,7 +853,8 @@ class DeliveryCounters:
                     event.note,
                 ),
             )
-            leg = delivery_legs.leg_key(event.source, event.protocol)
+            outcome = _leg_outcome(event)
+            leg = delivery_legs.leg_for(event.source, event.protocol, outcome)
             if leg:
                 # Fenced in a SAVEPOINT (reviews R7, F1/F2): legs are
                 # measure-only, so a failure undoes the leg write WHOLE and
@@ -864,7 +865,7 @@ class DeliveryCounters:
                 # daemon can read it.
                 conn.execute("SAVEPOINT legs")
                 try:
-                    delivery_legs.bump(conn, event.ts, leg, _leg_outcome(event))
+                    delivery_legs.bump(conn, event.ts, leg, outcome)
                     conn.execute("RELEASE legs")
                 except sqlite3.Error as e:
                     conn.execute("ROLLBACK TO legs")

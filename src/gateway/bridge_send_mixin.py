@@ -21,6 +21,7 @@ from gateway.message_queue_models import (
     SendDeferred,
 )
 from gateway import delivery_counters as _dc
+from gateway import delivery_legs
 from utils.tx_guard import assert_rns_tx_allowed
 
 logger = logging.getLogger(__name__)
@@ -390,6 +391,7 @@ class BridgeSendMixin:
                 lxm, msg_id, destination_hash, message[:50],
                 content_id=(payload.get('content_id')
                             or payload.get('meshforge_content_id') or ''),
+                source=delivery_legs.payload_source(payload),
             )
 
             assert_rns_tx_allowed(kind="lxmf_outbound",
@@ -440,6 +442,11 @@ class BridgeSendMixin:
             metadata = dict(payload.get('metadata') or {})
             # A replay that raises again must not requeue itself forever.
             metadata['m2r_replay'] = True
+            # BIC-2: the real origin (e.g. mqtt) for the leg; source_network
+            # below stays "meshtastic" because it is a routing input.
+            leg_source = delivery_legs.payload_source(payload)
+            if leg_source:
+                metadata['m2r_leg_source'] = leg_source
             queued_s = self._queued_seconds(payload)
             if queued_s is not None:
                 metadata['m2r_queued_s'] = queued_s

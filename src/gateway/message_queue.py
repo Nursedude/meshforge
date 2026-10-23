@@ -35,6 +35,7 @@ from utils.db_helpers import connect_tuned
 from utils.paths import atomic_write_text, get_real_user_home
 from utils.timeouts import MESSAGE_STALE as _MESSAGE_STALE_TIMEOUT
 from gateway import delivery_counters as _dc
+from gateway import delivery_legs
 
 # UPDATE ... RETURNING needs SQLite >= 3.35; cleanup_stale falls back to
 # per-row guarded UPDATEs below it (2026-07-26 review C5).
@@ -388,7 +389,8 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
     def enqueue(self, payload: Dict[str, Any], destination: str,
                 priority: MessagePriority = MessagePriority.NORMAL,
                 max_retries: int = 3, deduplicate: bool = True,
-                created_at: Optional[datetime] = None) -> Optional[str]:
+                created_at: Optional[datetime] = None,
+                source: Optional[str] = None) -> Optional[str]:
         """
         Add a message to the queue.
 
@@ -402,6 +404,9 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
         Returns:
             Message ID if enqueued, None if duplicate
         """
+        if source:
+            # BIC-2: the row remembers its leg for every later lifecycle event.
+            payload = {**payload, delivery_legs.LEG_SOURCE_KEY: source}
         content_hash = self._compute_hash(payload)
 
         # Check for duplicates
@@ -416,7 +421,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
             _dc.record(
                 _dc.DeliveryState.DROPPED,
                 msg_id=f"dedup-{content_hash[:8]}",
-                protocol=destination,
+                protocol=destination, source=source,
                 drop_reason=_dc.DropReason.DEDUP,
             )
             return None
@@ -444,7 +449,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                     _dc.record(
                         _dc.DeliveryState.DROPPED,
                         msg_id=f"rejected-{content_hash[:8]}",
-                        protocol=destination,
+                        protocol=destination, source=source,
                         drop_reason=_dc.DropReason.QUEUE_PRESSURE,
                         note=f"depth={depth}/{self._max_queue_size}",
                     )
@@ -497,7 +502,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
         _dc.record(
             _dc.DeliveryState.QUEUED,
             msg_id=msg_id,
-            protocol=destination,
+            protocol=destination, source=source,
         )
 
         return msg_id
@@ -577,6 +582,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                     _dc.DeliveryState.SENT,
                     msg_id=msg_id,
                     protocol=protocol,
+                    source=delivery_legs.payload_source(self._row_payload(row)),
                 )
                 terminal = (protocol, self._row_payload(row))
             else:
@@ -634,6 +640,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                         _dc.DeliveryState.DROPPED,
                         msg_id=msg_id,
                         protocol=message.destination,
+                        source=delivery_legs.payload_source(message.payload),
                         drop_reason=reason,
                         note=decision.reason[:80],
                     )
@@ -665,6 +672,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                         _dc.DeliveryState.DROPPED,
                         msg_id=msg_id,
                         protocol=message.destination,
+                        source=delivery_legs.payload_source(message.payload),
                         drop_reason=_dc.DropReason.RETRIES_EXHAUSTED,
                         note=f"retry_count={message.retry_count}",
                     )
@@ -1024,6 +1032,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                 _dc.DeliveryState.DROPPED,
                 msg_id=msg_id,
                 protocol=destination,
+                source=delivery_legs.payload_source(payload),
                 drop_reason=_dc.DropReason.QUEUE_SHED,
             )
             self._fire_terminal(destination, payload, "dropped")
@@ -1128,6 +1137,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                 _dc.DeliveryState.DROPPED,
                 msg_id=row["id"],
                 protocol=row["destination"],
+                source=delivery_legs.payload_source(row.get("payload")),
                 drop_reason=_dc.DropReason.RETRIES_EXHAUSTED,
                 note=f"stale_in_progress retry_count={row['retry_count']}",
             )
