@@ -88,6 +88,11 @@ BYTE_IDENTICAL = (
     # and readers judge confirmation rates by it; a per-repo drift would make
     # the twins count one radio under different labels. Dependency-free.
     "src/utils/delivery_labels.py",
+    # The per-leg delivery vocabulary + bucket store (BIC-2, 2026-10-23):
+    # TRANSPORTS, OUTCOMES, BUCKET_S, the leg key and the 15m/1h/24h windows.
+    # Both twins' counters write it and both TUIs read it; a drift would make
+    # one leg mean two things across a fleet that runs both. Dependency-free.
+    "src/gateway/delivery_legs.py",
     # The RNS-tree permission foundation SSOT (configdir/logfile/storage layout
     # for a non-root rnsd — the mf.4/#73 perms class). App-agnostic, stdlib-only,
     # delegated to by both rns_alignment (MeshForge) and fleet_foundation (both
