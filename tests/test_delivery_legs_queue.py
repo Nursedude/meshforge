@@ -145,6 +145,21 @@ def test_every_queue_lifecycle_record_names_a_source():
                          + ", ".join(missing))
 
 
+def test_the_queue_overrides_the_leg_hook_the_guard_trusts():
+    # The guard above accepts the outage mixin's ``**_leg_record_kwargs``
+    # spread; that is only a leg if MeshForge's queue overrides the shared
+    # default (which names nothing, for MeshAnchor). Review 10-23 #2.
+    from gateway.delivery_legs import LEG_SOURCE_KEY
+    from gateway.message_queue_outage_mixin import MessageQueueOutageMixin
+
+    assert (PersistentMessageQueue._leg_record_kwargs
+            is not MessageQueueOutageMixin._leg_record_kwargs)
+    q = PersistentMessageQueue.__new__(PersistentMessageQueue)
+    assert q._leg_record_kwargs({LEG_SOURCE_KEY: "meshtastic"}) == {
+        "source": "meshtastic"}
+    assert q._leg_record_kwargs({}) == {"source": None}
+
+
 # ── the queued M→R send confirms on the row's leg ─────────────────────
 
 from unittest.mock import MagicMock, patch  # noqa: E402
