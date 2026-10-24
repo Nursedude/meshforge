@@ -142,6 +142,14 @@ class MessageQueueOutageMixin:
                 f"Queue terminal callback for {destination} ({outcome}) "
                 f"raised: {e}")
 
+    def _leg_record_kwargs(self, payload: Optional[Dict]) -> Dict:
+        """Extra ``_dc.record`` kwargs naming a row's delivery leg (BIC-2).
+
+        This file is byte-locked with MeshAnchor, whose delivery counters
+        take no ``source=`` yet, so the shared default names nothing; a
+        queue whose counters carry legs overrides it (MeshForge's does)."""
+        return {}
+
     @staticmethod
     def _row_payload(row) -> Dict:
         try:
@@ -216,13 +224,15 @@ class MessageQueueOutageMixin:
             return False  # delivered/claimed meanwhile: not ours to witness
         with self._lock:
             self._stats["expired_total"] += 1
+        payload = self._row_payload(row)
         _dc.record(
             _dc.DeliveryState.DROPPED, msg_id=msg_id, protocol=destination,
             drop_reason=_dc.DropReason.EXPIRED,
             note=f"age={age:.0f}s max={max_age:.0f}s",
+            **self._leg_record_kwargs(payload),
         )
         logger.warning(
             f"Message {msg_id} ({destination}) EXPIRED after {age / 3600:.1f} h "
             f"undelivered — dead-lettered")
-        self._fire_terminal(destination, self._row_payload(row), "dropped")
+        self._fire_terminal(destination, payload, "dropped")
         return True

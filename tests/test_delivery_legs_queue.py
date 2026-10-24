@@ -74,10 +74,6 @@ def test_a_shed_row_counts_on_its_leg(queue):
     assert _legs()["meshtastic>rns"]["15m"]["dropped_other"] == 1
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "message_queue_outage_mixin.py is byte-locked with MeshAnchor "
-    "(parity_check); its EXPIRED record gains source= with the MA BIC-2 "
-    "port. strict: this turns red the moment it is fixed - delete the mark."))
 def test_an_expired_row_counts_failed_on_its_leg(queue):
     from datetime import datetime, timedelta
     queue.register_sender("rns", lambda p: True, max_age_s=100)
@@ -123,11 +119,19 @@ def test_every_queue_lifecycle_record_names_a_source():
     import ast
     from pathlib import Path
 
+    # The byte-locked outage mixin (MeshAnchor's counters take no source=
+    # yet) names the leg through the queue's ``_leg_record_kwargs`` hook.
+    def _names_leg(k):
+        if k.arg == "source":
+            return True
+        v = k.value
+        return (k.arg is None and isinstance(v, ast.Call)
+                and isinstance(v.func, ast.Attribute)
+                and v.func.attr == "_leg_record_kwargs")
+
     gw = Path(__file__).resolve().parents[1] / "src" / "gateway"
     missing = []
     for path in sorted(gw.glob("message_queue*.py")):
-        if path.name == "message_queue_outage_mixin.py":
-            continue   # byte-locked twin; see the strict xfails in this file
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if (isinstance(node, ast.Call)
@@ -135,7 +139,7 @@ def test_every_queue_lifecycle_record_names_a_source():
                     and node.func.attr == "record"
                     and isinstance(node.func.value, ast.Name)
                     and node.func.value.id == "_dc"
-                    and not any(k.arg == "source" for k in node.keywords)):
+                    and not any(_names_leg(k) for k in node.keywords)):
                 missing.append(f"{path.name}:{node.lineno}")
     assert not missing, ("queue lifecycle record without source=: "
                          + ", ".join(missing))
@@ -226,10 +230,6 @@ def test_an_rns_xform_dispatch_is_not_counted_as_a_send(queue):
     assert "?>?" not in _legs()
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "message_queue_outage_mixin.py is byte-locked with MeshAnchor "
-    "(parity_check); its EXPIRED record gains source= with the MA BIC-2 "
-    "port. strict: this turns red the moment it is fixed - delete the mark."))
 def test_an_expired_rns_xform_row_is_a_failure_on_its_rns_leg(queue):
     # It never reached send_to_rns: a real Mesh→RNS loss.
     from datetime import datetime, timedelta

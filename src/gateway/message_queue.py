@@ -188,6 +188,11 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
             "delivered_unrecorded": 0,
         }
 
+    def _leg_record_kwargs(self, payload: Optional[Dict]) -> Dict:
+        """The byte-locked outage mixin's EXPIRED record names the row's leg
+        through this (BIC-2; the mixin's shared default names nothing)."""
+        return {"source": delivery_legs.payload_source(payload)}
+
     @contextmanager
     def _get_connection(self):
         """Get database connection with context management.
