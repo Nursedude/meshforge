@@ -145,9 +145,10 @@ class MessageQueueOutageMixin:
     def _leg_record_kwargs(self, payload: Optional[Dict]) -> Dict:
         """Extra ``_dc.record`` kwargs naming a row's delivery leg (BIC-2).
 
-        This file is byte-locked with MeshAnchor, whose delivery counters
-        take no ``source=`` yet, so the shared default names nothing; a
-        queue whose counters carry legs overrides it (MeshForge's does)."""
+        This file is byte-locked with MeshAnchor. The shared default names
+        nothing; a queue whose rows carry their origin (``_leg_source``)
+        overrides it — MeshForge's does, MeshAnchor's does not yet, so its
+        expired rows count under ``?>dst``."""
         return {}
 
     @staticmethod

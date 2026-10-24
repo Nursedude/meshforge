@@ -1,7 +1,7 @@
 """BIC-2 slice 1 — per-leg delivery counts over 15 min / 1 h / 24 h.
 
 A leg is ``<source>><destination>`` transport (operator 2026-10-23:
-"transport + direction"). Counts live in 15-minute buckets inside the
+"transport + direction"). Counts live in 5-minute buckets (``BUCKET_S``) inside the
 existing delivery_counters.db so a gateway restart does not blind them
 (the DET-DCS class). Observe before alarm: these are counts only.
 
@@ -426,6 +426,10 @@ def test_a_leg_error_that_rolled_back_the_core_write_is_a_core_write_error(
     snap = counters.snapshot()
 
     assert snap["health"]["consecutive_write_errors"] >= 1
+    # MA review F2 (10-23): the witness names the REAL cause, not the
+    # "no such savepoint" the follow-on ROLLBACK TO raises.
+    assert "database or disk is full" in (
+        snap["health"]["last_write_error"] or "")
 
 
 def test_tracking_start_is_the_write_time_not_a_backdated_event_ts(counters):
@@ -480,3 +484,32 @@ def test_the_snapshot_publishes_its_bucket_size(counters):
     from gateway import delivery_legs
 
     assert counters.snapshot()["legs_bucket_s"] == delivery_legs.BUCKET_S
+
+
+# ── MA port review (contextless reviewer, 10-23) ──────────────────────
+
+def test_a_window_is_whole_once_counting_covers_it():
+    # F4: every other partial test runs with since_ts=None, where every
+    # window is partial by construction; an always-partial bug passed them.
+    from gateway.delivery_legs import partial_windows
+    now = 1_000_000.0
+    assert partial_windows(now - 20 * 60, now) == ["1h", "24h"]
+    assert partial_windows(now - 2 * 3600, now) == ["24h"]
+    assert partial_windows(now - 25 * 3600, now) == []
+
+
+def test_a_migration_that_lost_the_race_to_another_process_is_not_an_error(
+        tmp_path):
+    # F1: PRAGMA-then-ALTER is not atomic; the gateway and the map daemon
+    # migrate together on a deploy, and the loser's ALTER says "duplicate
+    # column name" out of the constructor.
+    import sqlite3
+    from gateway.delivery_counters import _add_column
+    conn = sqlite3.connect(str(tmp_path / "x.db"))
+    conn.execute("CREATE TABLE events (ts REAL)")
+    conn.execute("ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+
+    _add_column(conn, "events", "source")      # the other process won
+
+    with pytest.raises(sqlite3.OperationalError):
+        _add_column(conn, "no_such_table", "source")
