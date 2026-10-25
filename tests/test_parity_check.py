@@ -294,3 +294,33 @@ def test_reasons_unresolvable_keeps_extractor_cure():
     pc = _load()
     f = pc._reasons_finding("L", ("ok", frozenset({"a"})), ("unresolvable", None))
     assert f.status == "blind" and "teach it the form" in f.detail
+
+
+# ── 'absent' must mean NOT ASSIGNED ANYWHERE (non-author review #1 of 31a22563) ──
+# The top-level loop reads only a plain module-level Assign. An annotated or
+# nested assignment of the SAME constant is present and unread — the tool's
+# limit (blind, "teach it the form") — never "gone or renamed; port it".
+
+@pytest.mark.parametrize("form", [
+    "R: frozenset = frozenset({'a'})\n",
+    "if True:\n    R = frozenset({'a'})\n",
+    "try:\n    R = frozenset({'a'})\nexcept Exception:\n    pass\n",
+    "R, OTHER = frozenset({'a'}), 1\n",
+])
+def test_read_reason_set_present_but_unread_form_is_unresolvable(form):
+    pc = _load()
+    assert pc._read_reason_set(form, "R") == ("unresolvable", None)
+
+
+def test_read_reason_set_truly_absent_stays_absent():
+    pc = _load()
+    assert pc._read_reason_set("X = frozenset({'a'})\nprint(R)\n", "R") == ("absent", None)
+
+
+def test_reasons_annotated_constant_is_blind_not_drift(tmp_path):
+    pc = _load()
+    src = (ROOT / "src" / "gateway" / "delivery_counters.py").read_text()
+    planted = src.replace("DELIVERY_FAILURE_REASONS = ", "DELIVERY_FAILURE_REASONS: frozenset = ", 1)
+    assert planted != src
+    f = _reasons(pc.check_parity(str(ROOT), _ma_with(tmp_path, planted))[0])
+    assert f.status == "blind" and "teach it the form" in f.detail

@@ -459,6 +459,13 @@ def _read_reason_set(text, name):
             else:
                 return "unresolvable", None
         return "ok", frozenset(out)
+    # No plain top-level Assign. 'absent' must mean bound NOWHERE: an annotated,
+    # nested or tuple-target assignment of the name is present-but-unread — this
+    # tool's limit, never "gone, port it" (non-author review #1 of 31a22563).
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Name) and node.id == name
+                and isinstance(node.ctx, ast.Store)):
+            return "unresolvable", None
     return "absent", None
 
 
