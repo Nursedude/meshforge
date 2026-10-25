@@ -338,6 +338,16 @@ CLAIM_GATE_CORE_SYMBOLS = (
     "def marker_satisfies(",
 )
 
+# ── Delivery-failure reason vocabulary ───────────────────────────────
+# The drop reasons that count as a delivery FAILURE (the confirmation-rate
+# numerator). delivery_counters.py is an untracked-diverged twin, so only
+# this SET is compared: one reason counted as a failure on one side and
+# benign on the other is the same event read two ways (2026-10-24, the
+# UNSENDABLE twin alignment had to be checked by hand). Members are
+# ``DropReason.X.value``, resolved by _extract_reason_set.
+REASONS_FILE = "src/gateway/delivery_counters.py"
+REASONS_CONSTANT = "DELIVERY_FAILURE_REASONS"
+
 # The two RNS-wedge probes live in different modules in the two repos
 # (MeshForge: watchdog_probes.py pure-function Signal idiom; MeshAnchor:
 # active_health_probe.py HealthResult idiom). So we assert each repo
@@ -394,6 +404,53 @@ def _extract_literal_constant(text, name):
                     if isinstance(val, (tuple, list, set, frozenset)):
                         return frozenset(val)
                     return None
+    return None
+
+
+def _extract_reason_set(text, name):
+    """Value of a module-level ``name = frozenset({...})`` whose members are
+    string literals or ``Cls.MEMBER.value`` for a class in the same file whose
+    body assigns ``MEMBER = "<str>"`` (an Enum). Resolved by AST, no import —
+    delivery_counters pulls the gateway package. None when unparseable,
+    absent, or ANY member cannot be resolved: a partly-read set compared as
+    'ok' would be the false green this check exists to refuse."""
+    if text is None:
+        return None
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    classes = {}
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            classes[node.name] = {
+                t.id: st.value.value
+                for st in node.body if isinstance(st, ast.Assign)
+                and isinstance(st.value, ast.Constant)
+                and isinstance(st.value.value, str)
+                for t in st.targets if isinstance(t, ast.Name)}
+    for node in tree.body:
+        if not (isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == name for t in node.targets)):
+            continue
+        val = node.value
+        if (isinstance(val, ast.Call) and isinstance(val.func, ast.Name)
+                and val.func.id in ("frozenset", "set") and len(val.args) == 1):
+            val = val.args[0]
+        if not isinstance(val, (ast.Set, ast.Tuple, ast.List)):
+            return None
+        out = set()
+        for el in val.elts:
+            if isinstance(el, ast.Constant) and isinstance(el.value, str):
+                out.add(el.value)
+            elif (isinstance(el, ast.Attribute) and el.attr == "value"
+                  and isinstance(el.value, ast.Attribute)
+                  and isinstance(el.value.value, ast.Name)
+                  and el.value.attr in classes.get(el.value.value.id, {})):
+                out.add(classes[el.value.value.id][el.value.attr])
+            else:
+                return None
+        return frozenset(out)
     return None
 
 
@@ -514,6 +571,20 @@ def check_parity(mf=DEFAULT_MESHFORGE, ma=DEFAULT_MESHANCHOR):
             status = "ok" if sym in txt else "drift"
             findings.append(ParityFinding("probe", f"{rlabel}:{rel} :: {sym}", status))
 
+    # ── Delivery-failure reason vocabulary ──
+    ra = _extract_reason_set(_read(os.path.join(mf, REASONS_FILE)), REASONS_CONSTANT)
+    rb = _extract_reason_set(_read(os.path.join(ma, REASONS_FILE)), REASONS_CONSTANT)
+    label = f"{REASONS_FILE} :: {REASONS_CONSTANT}"
+    if ra is None or rb is None:
+        findings.append(ParityFinding("reasons", label, "missing",
+            f"(mf={'ok' if ra is not None else 'unreadable'} "
+            f"ma={'ok' if rb is not None else 'unreadable'})"))
+    elif ra == rb:
+        findings.append(ParityFinding("reasons", label, "ok"))
+    else:
+        findings.append(ParityFinding("reasons", label, "drift",
+            f"(mf-only={sorted(ra - rb)} ma-only={sorted(rb - ra)})"))
+
     # ── Calibration claim-gate shared core ──
     # The detection VOCABULARY must agree or the two gates judge the same closing
     # message differently. Compare the three constant SETS by AST (no import side
@@ -567,6 +638,7 @@ _SECTION_HEADER = {
     "byte": "Byte-identical tier:",
     "shape": "\nShape tier (symbol presence in both repos):",
     "probe": "\nRNS-wedge probes (each repo, own idiom):",
+    "reasons": "\nDelivery-failure reasons (the set, both twins):",
     "calibgate": "\nCalibration claim-gate shared core (detection vocabulary + decision fns):",
 }
 

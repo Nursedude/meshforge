@@ -123,3 +123,79 @@ def test_calibgate_section_wired_and_ok():
         [f.label for f in cg if f.status != "ok"]
     names = {f.label.split("::")[-1].strip() for f in cg if "::" in f.label}
     assert {"STRONG_CLAIMS", "CALIBRATION_MARKERS", "EVIDENCE_PATTERNS"} <= names
+
+
+# ── Delivery-failure reason vocabulary (2026-10-24) ─────────────────────
+# Both twins define DELIVERY_FAILURE_REASONS as ``DropReason.X.value``
+# members, not string literals, so _extract_literal_constant reads None on
+# both sides. The extractor resolves the members against the enum class in
+# the same file; anything it cannot resolve is None (reported 'missing').
+
+_ENUM_SRC = '''
+class DropReason(str, Enum):
+    A = "alpha"
+    B = "beta"
+    C = "gamma"
+
+REASONS = frozenset({
+    DropReason.A.value,
+    DropReason.B.value,
+    "literal",
+})
+'''
+
+
+def test_extract_reason_set_resolves_enum_members():
+    pc = _load()
+    assert pc._extract_reason_set(_ENUM_SRC, "REASONS") == \
+        frozenset({"alpha", "beta", "literal"})
+
+
+def test_extract_reason_set_unresolvable_is_none():
+    pc = _load()
+    bad_member = _ENUM_SRC.replace("DropReason.B.value", "DropReason.Z.value")
+    assert pc._extract_reason_set(bad_member, "REASONS") is None
+    assert pc._extract_reason_set(_ENUM_SRC, "MISSING") is None
+    assert pc._extract_reason_set("REASONS = frozenset(foo())", "REASONS") is None
+    assert pc._extract_reason_set("def (", "REASONS") is None
+    assert pc._extract_reason_set(None, "REASONS") is None
+
+
+def _ma_with(tmp_path, text):
+    """A fake MeshAnchor root carrying only delivery_counters.py — every OTHER
+    finding reads 'missing', so assert on the reasons finding alone."""
+    p = tmp_path / "ma" / "src" / "gateway" / "delivery_counters.py"
+    p.parent.mkdir(parents=True)
+    if text is not None:
+        p.write_text(text)
+    return str(tmp_path / "ma")
+
+
+def _reasons(findings):
+    (f,) = [f for f in findings if f.section == "reasons"]
+    return f
+
+
+def test_reasons_planted_drift_fires(tmp_path):
+    """A guard that never failed is not evidence: drop one reason from the
+    'MeshAnchor' copy and the leg must read drift, naming the reason."""
+    pc = _load()
+    src = (ROOT / "src" / "gateway" / "delivery_counters.py").read_text()
+    planted = src.replace("    DropReason.UNSENDABLE.value,\n", "", 1)
+    assert planted != src
+    f = _reasons(pc.check_parity(str(ROOT), _ma_with(tmp_path, planted))[0])
+    assert f.status == "drift" and "unsendable" in f.detail
+
+
+def test_reasons_absent_file_is_missing(tmp_path):
+    pc = _load()
+    f = _reasons(pc.check_parity(str(ROOT), _ma_with(tmp_path, None))[0])
+    assert f.status == "missing"
+
+
+@pytest.mark.skipif(not _HAS_MESHANCHOR, reason="/opt/meshanchor not present")
+def test_reasons_section_wired_and_ok():
+    pc = _load()
+    f = _reasons(pc.check_parity(str(ROOT), "/opt/meshanchor")[0])
+    assert f.status == "ok", f.detail
+    assert "DELIVERY_FAILURE_REASONS" in f.label

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from pathlib import Path
 from typing import List
 
 import pytest
@@ -990,6 +991,23 @@ class TestDeliveryFailureReasonsParity:
     def test_matches_watchdog_set(self):
         from utils.watchdog_probes_gateway import _DELIVERY_FAILURE_REASONS
         assert dc.DELIVERY_FAILURE_REASONS == _DELIVERY_FAILURE_REASONS
+
+    def test_matches_traffic_pulse_fallback(self):
+        """The third copy: traffic_pulse's import-failure fallback. It only
+        runs on a broken import graph, so no test ever executed it and it
+        could drift unseen — read the literal by AST instead."""
+        import ast
+        src = (Path(__file__).resolve().parent.parent / "src" / "monitoring"
+               / "traffic_pulse.py").read_text()
+        found = [ast.literal_eval(n.value.args[0])
+                 for n in ast.walk(ast.parse(src))
+                 if isinstance(n, ast.Assign)
+                 and any(isinstance(t, ast.Name)
+                         and t.id == "_DELIVERY_FAILURE_REASONS"
+                         for t in n.targets)
+                 and isinstance(n.value, ast.Call) and n.value.args]
+        assert len(found) == 1, found
+        assert frozenset(found[0]) == dc.DELIVERY_FAILURE_REASONS
 
     def test_all_members_are_real_drop_reasons(self):
         valid = {r.value for r in DropReason}
