@@ -157,6 +157,25 @@ def _save_parity_dirty_window(state_path: str, payload: dict) -> None:
         note_state_write_failure(state_path, e)
 
 
+def _parity_unreadable(findings):
+    """Every leg the check could not compare, by kind: ``(missing, blind)``
+    label lists. ONE reader for every branch of probe_parity_drift, so no
+    branch can name one kind and drop the other (review #1/#4, 2026-10-24)."""
+    def of(status):
+        return [f.label for f in findings if getattr(f, "status", None) == status]
+    return of("missing"), of("blind")
+
+
+def _parity_unreadable_note(missing, blind):
+    """'missing: a; extractor blind on b' — empty when every leg was read."""
+    parts = []
+    if missing:
+        parts.append(f"missing: {', '.join(missing)}")
+    if blind:
+        parts.append(f"extractor blind on {', '.join(blind)}")
+    return "; ".join(parts)
+
+
 def probe_parity_drift(
     *,
     meshforge_root: str = "/opt/meshforge",
@@ -253,16 +272,18 @@ def probe_parity_drift(
         note_disposition("parity_drift", "indeterminate",
                          reason="parity check raised")
         return None
+    missing, blind = _parity_unreadable(findings)
+    unread = _parity_unreadable_note(missing, blind)
+    # On the drift path a blind leg cannot be compared either — say so, or the
+    # drift list reads complete and the blindness surfaces only after the port.
+    also = f" | ALSO cannot compare ({unread}) — the drift list may be incomplete" if unread else ""
     if overall != "drift":
         _save_parity_streak(state_path, 0)  # in_sync / missing → streak broken
         _save_parity_dirty_window(dirty_state_path, {})
         if overall == "in_sync":
             note_disposition("parity_drift", "clean")
         else:
-            blind = [f.label for f in findings
-                     if getattr(f, "status", None) == "blind"]
-            why = (f"extractor blind on {', '.join(blind)}" if blind
-                   else f"parity result '{overall}'")
+            why = unread or f"parity result '{overall}'"
             note_disposition("parity_drift", "indeterminate",
                              reason=f"{why} — can't compare")
         return None
@@ -285,7 +306,7 @@ def probe_parity_drift(
                   f"debt are indistinguishable here") if rels else (
                   f"no repo-relative path recoverable from drift label(s): {items}")
         _save_parity_streak(state_path, 0)
-        note_disposition("parity_drift", "indeterminate", reason=reason)
+        note_disposition("parity_drift", "indeterminate", reason=reason + also)
         return None
 
     win = _load_parity_dirty_window(dirty_state_path)
@@ -309,14 +330,14 @@ def probe_parity_drift(
                 "parity_drift", "indeterminate",
                 reason=(f"drift confined to an uncommitted working tree "
                         f"(authoring window, {age / 60.0:.0f}m): "
-                        f"{', '.join(dirty)}"))
+                        f"{', '.join(dirty)}{also}"))
             return None
         detail = (
             f"MeshForge<->MeshAnchor parity edit PARKED uncommitted for "
             f"{age / 3600.0:.1f}h ({len(drifted)} item(s)): {items} | dirty in "
             f"working tree: {', '.join(dirty)} | not port debt — one twin was "
             f"edited and left uncommitted. Commit and port it, or revert: "
-            f"git -C {meshforge_root} status; python3 scripts/parity_check.py"
+            f"git -C {meshforge_root} status; python3 scripts/parity_check.py{also}"
         )
         return Signal(
             cls="parity_drift",
@@ -324,6 +345,7 @@ def probe_parity_drift(
             severity="degraded",
             detail=detail,
             extra={"mode": "uncommitted_parked", "drift_items": labels,
+                   "blind_items": blind,
                    "dirty_paths": dirty, "dirty_age_s": int(age)},
         )
 
@@ -335,14 +357,14 @@ def probe_parity_drift(
     _save_parity_streak(state_path, streak)
     if streak < debounce_ticks:
         note_disposition("parity_drift", "indeterminate",
-                         reason="committed drift candidate under debounce")
+                         reason="committed drift candidate under debounce" + also)
         return None  # committed drift seen, but not yet across consecutive ticks
 
     detail = (
         f"MeshForge<->MeshAnchor parity drift ({len(drifted)} item(s)): {items} | "
         f"COMMITTED in both trees, confirmed over {streak} consecutive ticks | "
         f"RNS-reliability files must match (MeshForge is the lead repo). Port the "
-        f"change, then verify: python3 scripts/parity_check.py"
+        f"change, then verify: python3 scripts/parity_check.py{also}"
     )
     return Signal(
         cls="parity_drift",
@@ -350,6 +372,6 @@ def probe_parity_drift(
         severity="degraded",
         detail=detail,
         extra={"mode": "committed_port_debt", "drift_items": labels,
-               "debounce_streak": streak},
+               "blind_items": blind, "debounce_streak": streak},
     )
 

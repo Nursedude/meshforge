@@ -13151,3 +13151,58 @@ def test_tracer_clean_reason_witnesses_excluded_init_errors(tmp_path):
     noted = collect_dispositions()["tracer_peer_unreachable"]
     assert noted["disp"] == "clean"
     assert "1 fire(s) excluded" in noted["reason"]
+
+
+# ── Every unreadable leg is named, on every branch (review #1 + #4 of 51b02209) ──
+# #1: missing + blind → the reason named only the blind leg, hiding the absent
+# file that actually drove 'missing'. #4: drift + blind → the blind leg vanished
+# from the Signal and every drift-path reason, surfacing only after the port.
+
+_BLIND_R = "src/gateway/delivery_counters.py :: R"
+
+
+def _parity_tick(tmp_path, findings, overall, **kw):
+    kw.setdefault("debounce_ticks", 1)
+    return probe_parity_drift(
+        meshanchor_root=str(tmp_path), check_fn=lambda mf, ma: (findings, overall),
+        state_path=str(tmp_path / "debounce.json"),
+        dirty_state_path=str(tmp_path / "dirty.json"), dirty_fn=_clean, **kw)
+
+
+def test_parity_missing_and_blind_reason_names_both(tmp_path):
+    from utils.watchdog_probe_core import reset_dispositions
+    reset_dispositions()
+    assert _parity_tick(tmp_path, [_pf("missing", "src/utils/rns_init.py"),
+                                   _pf("blind", _BLIND_R)], "missing") is None
+    why = _reason("parity_drift")
+    assert "rns_init.py" in why and "missing" in why
+    assert "delivery_counters.py" in why and "blind" in why
+
+
+def test_parity_missing_alone_reason_names_the_file(tmp_path):
+    from utils.watchdog_probe_core import reset_dispositions
+    reset_dispositions()
+    _parity_tick(tmp_path, [_pf("missing", "src/utils/rns_init.py")], "missing")
+    assert "rns_init.py" in _reason("parity_drift")
+
+
+def test_parity_drift_signal_names_a_blind_leg(tmp_path):
+    sig = _parity_tick(tmp_path, [_pf("drift", "src/utils/rns_init.py"),
+                                  _pf("blind", _BLIND_R)], "drift")
+    assert sig is not None and "rns_init.py" in sig.detail
+    assert "delivery_counters.py" in sig.detail and "blind" in sig.detail
+    assert sig.extra["blind_items"] == [_BLIND_R]
+
+
+def test_parity_drift_debounce_reason_names_a_blind_leg(tmp_path):
+    from utils.watchdog_probe_core import reset_dispositions
+    reset_dispositions()
+    assert _parity_tick(tmp_path, [_pf("drift", "src/utils/rns_init.py"),
+                                   _pf("blind", _BLIND_R)], "drift",
+                        debounce_ticks=2) is None
+    assert "delivery_counters.py" in _reason("parity_drift")
+
+
+def test_parity_drift_without_blind_adds_no_note(tmp_path):
+    sig = _parity_tick(tmp_path, [_pf("drift", "src/utils/rns_init.py")], "drift")
+    assert "blind" not in sig.detail and sig.extra["blind_items"] == []
