@@ -995,6 +995,14 @@ class TestDeliveryFailureReasonsParity:
         valid = {r.value for r in DropReason}
         assert dc.DELIVERY_FAILURE_REASONS <= valid
 
+    def test_unsendable_is_a_failure_and_invalid_payload_is_not(self):
+        # Twin-aligned with MeshAnchor (operator 2026-10-24): a message the
+        # gateway ACCEPTED and its destination's gate then refused is lost —
+        # a delivery failure. invalid_payload keeps its benign meaning.
+        assert DropReason.UNSENDABLE.value == "unsendable"
+        assert "unsendable" in dc.DELIVERY_FAILURE_REASONS
+        assert "invalid_payload" not in dc.DELIVERY_FAILURE_REASONS
+
 
 class TestContentIdRecipientSubstrate:
     """STEP 4a-i (dedup/identity arc): events carry content_id + recipient so

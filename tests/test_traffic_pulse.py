@@ -70,6 +70,7 @@ class TestSharedConstantPinning:
         "rns_delivery_failed", "retries_exhausted", "destination_unreachable",
         "delivery_timeout", "non_retriable_error", "circuit_open", "wedged",
         "expired",  # ROADMAP 6f
+        "unsendable",  # 2026-10-24, MeshAnchor twin: a gate-refused loss
     })
 
     def test_aggregator_matches_expected(self):
