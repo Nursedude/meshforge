@@ -469,6 +469,7 @@ def _read_reason_set(text, name):
     return "ok", frozenset(out)
 
 
+_PATTERN = getattr(ast, "pattern", ())
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda,
            ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 
@@ -484,18 +485,25 @@ def _module_bindings(tree, name):
 
     def binds(node):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            return any((a.asname or a.name.split(".")[0]) == name for a in node.names)
+            # a star import may bind it — unknowable here, so bound, never absent
+            return any((a.asname or a.name.split(".")[0]) in (name, "*") for a in node.names)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             return node.name == name
         if isinstance(node, ast.AnnAssign):
             return (node.value is not None and isinstance(node.target, ast.Name)
                     and node.target.id == name)
-        return any(isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store)
+        # match captures (MatchAs/MatchStar .name, MatchMapping .rest) are
+        # strings on a pattern node, not Name Stores; ast.pattern is 3.10+
+        return any((isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store))
+                   or (isinstance(n, _PATTERN)
+                       and name in (getattr(n, "name", None), getattr(n, "rest", None)))
                    for n in _walk_scope(node))
 
     def visit(stmts):
         for st in stmts:
-            if binds(st) or isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+            # `global name` in any def — a method's too — binds module scope
+            if binds(st) or isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                            ast.ClassDef)) and any(
                     isinstance(n, ast.Global) and name in n.names for n in ast.walk(st)):
                 found.append(st)
             if isinstance(st, _SCOPES):
@@ -504,6 +512,8 @@ def _module_bindings(tree, name):
                 visit(getattr(st, field, []))
             for handler in getattr(st, "handlers", []):
                 visit(handler.body)
+            for case in getattr(st, "cases", []):
+                visit(case.body)
 
     visit(tree.body)
     return found

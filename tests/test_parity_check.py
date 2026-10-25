@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 import re
+import sys
 
 import pytest
 
@@ -317,8 +318,19 @@ def test_reasons_unresolvable_keeps_extractor_cure():
     "R = frozenset({'a'})\nR |= {'b'}\n",
     "R = frozenset({'a'})\nR = R | {'b'}\n",
     "R = frozenset({'a'})\nif True:\n    R = frozenset({'b'})\n",
+    # third non-author pass (Fable, on 8fd752bc): match bodies and captures,
+    # `global` inside a METHOD, and a star import all bind module scope
+    "match 1:\n    case 1:\n        R = frozenset({'a'})\n",
+    "match 1:\n    case R:\n        pass\n",
+    "match [1]:\n    case [*R]:\n        pass\n",
+    "match {}:\n    case {**R}:\n        pass\n",
+    "class C:\n    def m(self):\n        global R\n        R = frozenset({'a'})\n",
+    "R = frozenset({'a'})\nclass C:\n    def m(self):\n        global R\n        R = frozenset()\n",
+    "from other import *\n",
 ])
 def test_read_reason_set_present_but_unread_form_is_unresolvable(form):
+    if form.startswith("match") and sys.version_info < (3, 10):
+        pytest.skip("match statement is 3.10+")
     pc = _load()
     assert pc._read_reason_set(form, "R") == ("unresolvable", None)
 
