@@ -1018,8 +1018,7 @@ class MeshCoreHandler(BaseMessageHandler):
                     "outbound slot routing (the only slot it could name is "
                     "0 = Public). For MeshCore-primary bridging use "
                     "MeshAnchor (github.com/Nursedude/meshanchor).")
-                _rec("dropped", msg_id, "non_retriable_error",
-                           "no slot routing")
+                _rec("dropped", msg_id, "unsendable", "no slot routing")
                 return False
             if hasattr(self._meshcore, 'send_channel_txt_msg'):
                 # Simulator: not egress, so never a delivery record (review A F5).

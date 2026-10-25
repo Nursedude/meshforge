@@ -849,7 +849,7 @@ class TestRealLibraryShape:
                for e in dc.get_singleton().recent() if e.protocol == "meshcore"]
         assert sorted(got) == sorted([
             ("sent", None), ("dropped", "destination_unreachable"),
-            ("dropped", "non_retriable_error")])
+            ("dropped", "unsendable")])
 
     def test_refusal_is_deliberate_not_a_crash(self, handler, caplog):
         """Reviewer drill 2026-09-23: with the ORIGINAL bug re-planted
@@ -875,6 +875,10 @@ class TestRealLibraryShape:
         assert any("REFUSED" in r.getMessage() for r in caplog.records)
         (ev,) = [e for e in dc.get_singleton().recent() if e.protocol == "meshcore"]
         assert ev.note == "no slot routing"
+        # MA twin alignment (2026-10-24): a channel send the gateway accepted
+        # and MeshForge cannot address is LOST, i.e. a delivery failure, under
+        # the same reason MeshAnchor records for an unroutable slot.
+        assert ev.drop_reason.value == "unsendable"
 
     def test_simulator_send_leaves_no_delivery_record(self, handler):
         """Review A F5: simulator sends are not egress and must not land in

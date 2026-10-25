@@ -136,7 +136,8 @@ class DropReason(Enum):
     # 2026-10-24 (operator, MeshAnchor lead): the destination's own gate
     # refused a message the gateway had ACCEPTED, as not sendable as
     # addressed (MeshCore: no slot 0..255). Lost, so a delivery failure —
-    # unlike INVALID_PAYLOAD, which stays benign. No MeshForge producer yet.
+    # unlike INVALID_PAYLOAD, which stays benign. MeshForge producer:
+    # meshcore_handler's channel-broadcast refusal (no outbound slot routing).
     UNSENDABLE = "unsendable"
     # ROADMAP 6f: a queued row outlived its destination's max age undelivered.
     EXPIRED = "expired"
