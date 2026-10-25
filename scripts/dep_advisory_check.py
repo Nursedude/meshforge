@@ -708,7 +708,7 @@ def apt_lines(host: str, apt: Optional[dict]):
         findings.append("%s apt: %s" % (host, msg))
     pend = apt.get("pending_security")
     if pend is None:
-        status.append("%-20s %-14s %-10s UNKNOWN — apt-get -s upgrade failed; pending updates unobservable"
+        status.append("%-20s %-14s %-10s UNKNOWN — apt-get -s full-upgrade failed; pending updates unobservable"
                       % (host, "apt", "-"))
         return status, findings, "%s/apt" % host
     stale = age is not None and age > APT_LISTS_STALE_H

@@ -42,6 +42,7 @@ case "$cmd" in
   *"random/boot_id"*)
     [ -e "$state/rebooted_$host" ] && echo new-boot || echo old-boot; exit 0 ;;
   *"list-units --type=service"*)
+    [ "$host" = blindbox ] && exit 0     # snapshot failed: no lines, no error
     echo "sys:rnsd.service"; echo "sys:meshtasticd.service"
     if [ ! -e "$state/rebooted_$host" ]; then
       echo "sys:colord.service"    # on-demand desktop daemon: must not count
@@ -49,8 +50,15 @@ case "$cmd" in
     fi
     exit 0 ;;
   *"ss -xnpl"*)
-    if [ -e "$state/rebooted_$host" ] && [ "$host" = squatbox ]; then echo python3
-    else echo rnsd; fi
+    # run the script's REAL owner pipeline over a fake ss table, so the
+    # parsing is tested, not a token the stub chose
+    rows='u_str LISTEN 0 0 @rns/default/rpc 1 * 0 users:(("rnsd",pid=10,fd=5))'
+    if [ -e "$state/rebooted_$host" ] && [ "$host" = squatbox ]; then
+      rows='u_str LISTEN 0 0 @rns/default 2 * 0 users:(("rnsd",pid=10,fd=4))
+u_str LISTEN 0 0 @rns/default/rpc 3 * 0 users:(("python3",pid=11,fd=6))'
+    fi
+    pipeline="${cmd#*grep \"@rns/\"}"
+    printf '%s\n' "$rows" | grep "@rns/" | bash -c "cat ${pipeline}"
     exit 0 ;;
   *"rm -f /var/log/mf_osupgrade.log"*)
     touch "$state/launched_$host"; exit 0 ;;
@@ -146,4 +154,13 @@ def test_rns_owned_by_a_squatter_is_not_recovered(stubbed):
     # #69: the @rns socket present is not the socket owned by rnsd.
     r = stubbed("squatbox", mode="reboot")
     assert "NOT RECOVERED" in r.stdout and "python3" in r.stdout, r.stdout
+    assert r.returncode == 1
+
+
+def test_a_failed_service_snapshot_never_reads_recovered(stubbed):
+    # review 2026-10-25 (Fable), CONFIRMED: empty pre == empty post read as
+    # RECOVERED, and the empty set also switched the rnsd check off.
+    r = stubbed("blindbox", mode="reboot")
+    assert "RECOVERED" not in r.stdout.replace("NOT RECOVERED", ""), r.stdout
+    assert "UNKNOWN" in r.stdout, r.stdout
     assert r.returncode == 1

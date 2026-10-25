@@ -234,14 +234,19 @@ do_upgrade() {
 # on all 10 boxes after 71-121 upgrades incl. firmware -- on Pi OS only
 # unattended-upgrades writes it, and only for kernels -- so the old gate
 # skipped every box. Naming the box is the decision; the marker is shown.
-REBOOT_POLLS="${MF_REBOOT_POLLS:-90}"   # x10 s = 15 min (moc took 154 s on 10-25)
+# Polls, each 10 s sleep + up to 60 s of bounded ssh: >= 15 min, ~100 min
+# worst case on a box that answers but never recovers (moc took 154 s 10-25).
+REBOOT_POLLS="${MF_REBOOT_POLLS:-90}"
 
 # Active services, system + user. Noise excluded: desktop/session daemons that
 # start on demand (colord read as "lost" on moc 10-25), one-shot timers'
 # services, and this roll's own units.
 SNAP_CMD='systemctl list-units --type=service --state=active --no-legend --plain | awk "{print \"sys:\"\$1}"; systemctl --user list-units --type=service --state=active --no-legend --plain 2>/dev/null | awk "{print \"usr:\"\$1}"'
 SNAP_NOISE='(user@|user-runtime-dir@|systemd-|getty@|serial-getty@|apt-daily|man-db|e2scrub|fstrim|logrotate|dpkg-db-backup|packagekit|fwupd|plymouth|rpi-eeprom-update|sshd-session|pipewire|wireplumber|filter-chain|gvfs|xdg-|at-spi|dconf|obex|pulse|gnome|kanshi|colord|dbus\.service$|run-.*\.service)'
-RNS_OWNER_CMD='sudo -n ss -xnpl 2>/dev/null | grep "@rns/" | grep -oE "users:\(\(\"[^\"]+" | head -1 | sed "s/.*\"//"'
+# EVERY @rns/ listener's owner, comma-joined: rnsd holds two rows and ss row
+# order is not a contract, so judging the first row let a squatter on the
+# other one pass (review 2026-10-25). Recovered only when this is exactly rnsd.
+RNS_OWNER_CMD='sudo -n ss -xnpl 2>/dev/null | grep "@rns/" | grep -oE "users:\(\(\"[^\"]+" | sed "s/.*\"//" | sort -u | paste -sd,'
 
 snap() { rsh "$1" 30 "$SNAP_CMD" | grep -vE "$SNAP_NOISE" | sort; }
 
@@ -253,6 +258,10 @@ do_reboot() {
         [ -z "$old" ] && { echo "SKIP $h — unreachable, state UNKNOWN"; RC=1; continue; }
         need=$(rsh "$h" 20 '[ -f /var/run/reboot-required ] && echo yes || echo no')
         pre=$(snap "$h")
+        # An empty snapshot is a FAILED observation, not "no services": empty
+        # pre == empty post read as RECOVERED and turned the rnsd check off
+        # (review 2026-10-25, Fable). No baseline = no reboot.
+        [ -z "$pre" ] && { echo "SKIP $h — service snapshot failed, state UNKNOWN; not rebooting"; RC=1; continue; }
         has_rns=0; grep -q '^sys:rnsd\.service$' <<<"$pre" && has_rns=1
         echo "--- $h: rebooting (reboot-required marker: ${need:-?}; $(grep -c . <<<"$pre") services; rnsd: $([ $has_rns = 1 ] && echo yes || echo no)) ---"
         t0=$(date +%s)
@@ -268,7 +277,7 @@ do_reboot() {
                     [ "$owner" = rnsd ] && t_rns=$(( $(date +%s)-t0 ))
                 fi
                 post=$(snap "$h")
-                [ -z "$t_set" ] && [ "$post" = "$pre" ] && t_set=$(( $(date +%s)-t0 ))
+                [ -z "$t_set" ] && [ -n "$post" ] && [ "$post" = "$pre" ] && t_set=$(( $(date +%s)-t0 ))
                 [ -n "$t_set" ] && { [ $has_rns = 0 ] || [ -n "$t_rns" ]; } && break
             fi
             sleep 10
