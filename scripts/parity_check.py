@@ -409,18 +409,25 @@ def _extract_literal_constant(text, name):
 
 
 def _extract_reason_set(text, name):
-    """Value of a module-level ``name = frozenset({...})`` whose members are
-    string literals or ``Cls.MEMBER.value`` for a class in the same file whose
-    body assigns ``MEMBER = "<str>"`` (an Enum). Resolved by AST, no import —
-    delivery_counters pulls the gateway package. None when unparseable,
-    absent, or ANY member cannot be resolved: a partly-read set compared as
-    'ok' would be the false green this check exists to refuse."""
+    """The set from _read_reason_set, or None for any non-'ok' state."""
+    return _read_reason_set(text, name)[1]
+
+
+def _read_reason_set(text, name):
+    """``(state, value)`` for a module-level ``name = frozenset({...})`` whose
+    members are string literals or ``Cls.MEMBER.value`` for a class in the same
+    file whose body assigns ``MEMBER = "<str>"`` (an Enum). Resolved by AST, no
+    import — delivery_counters pulls the gateway package. state is 'ok' |
+    'no_file' | 'unparseable' (SyntaxError) | 'absent' (no such assignment) |
+    'unresolvable' (a form or ANY member this tool cannot read: a partly-read
+    set compared as 'ok' would be the false green this check exists to refuse).
+    The states need different cures, so they stay distinct (review #2)."""
     if text is None:
-        return None
+        return "no_file", None
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        return None
+        return "unparseable", None
     classes = {}
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
@@ -439,7 +446,7 @@ def _extract_reason_set(text, name):
                 and val.func.id in ("frozenset", "set") and len(val.args) == 1):
             val = val.args[0]
         if not isinstance(val, (ast.Set, ast.Tuple, ast.List)):
-            return None
+            return "unresolvable", None
         out = set()
         for el in val.elts:
             if isinstance(el, ast.Constant) and isinstance(el.value, str):
@@ -450,9 +457,40 @@ def _extract_reason_set(text, name):
                   and el.value.attr in classes.get(el.value.value.id, {})):
                 out.add(classes[el.value.value.id][el.value.attr])
             else:
-                return None
-        return frozenset(out)
-    return None
+                return "unresolvable", None
+        return "ok", frozenset(out)
+    return "absent", None
+
+
+_REASONS_CURE = {
+    "unparseable": "SyntaxError — fix the file",
+    "unresolvable": "_extract_reason_set cannot read a member; teach it the form",
+}
+
+
+def _reasons_finding(label, a, b):
+    """Classify the reasons leg from each side's ``(state, value)``. A file
+    present on both sides with the constant on only one is the repos diverging
+    → drift (the shape tier's absent-symbol precedent). Anything this tool
+    cannot read → blind, ranked below drift (_overall), with the cure for the
+    state that caused it. Absent on BOTH → nothing diverged; the leg's own
+    REASONS_CONSTANT is stale → blind."""
+    (sa, ra), (sb, rb) = a, b
+    sides = f"mf={sa} ma={sb}"
+    if sa == sb == "ok":
+        if ra == rb:
+            return ParityFinding("reasons", label, "ok")
+        return ParityFinding("reasons", label, "drift",
+            f"(mf-only={sorted(ra - rb)} ma-only={sorted(rb - ra)})")
+    if {sa, sb} == {"ok", "absent"}:
+        return ParityFinding("reasons", label, "drift",
+            f"({sides} — the constant is gone or renamed on one side; port it)")
+    if sa == sb == "absent":
+        return ParityFinding("reasons", label, "blind",
+            f"({sides} — absent in both; REASONS_CONSTANT is stale, update it)")
+    cures = [_REASONS_CURE[s] for s in dict.fromkeys((sa, sb)) if s in _REASONS_CURE]
+    return ParityFinding("reasons", label, "blind",
+        f"({sides} — {'; '.join(cures) or 'cannot compare'})")
 
 
 def _extract_def_dump(text, name):
@@ -577,22 +615,14 @@ def check_parity(mf=DEFAULT_MESHFORGE, ma=DEFAULT_MESHANCHOR):
 
     # ── Delivery-failure reason vocabulary ──
     ta, tb = _read(os.path.join(mf, REASONS_FILE)), _read(os.path.join(ma, REASONS_FILE))
-    ra, rb = _extract_reason_set(ta, REASONS_CONSTANT), _extract_reason_set(tb, REASONS_CONSTANT)
     label = f"{REASONS_FILE} :: {REASONS_CONSTANT}"
     if ta is None or tb is None:
         findings.append(ParityFinding("reasons", label, "missing",
             f"(mf={'ok' if ta is not None else 'absent'} "
             f"ma={'ok' if tb is not None else 'absent'})"))
-    elif ra is None or rb is None:
-        findings.append(ParityFinding("reasons", label, "blind",
-            f"(mf={'ok' if ra is not None else 'unresolvable'} "
-            f"ma={'ok' if rb is not None else 'unresolvable'} — "
-            f"_extract_reason_set cannot read a member; teach it the form)"))
-    elif ra == rb:
-        findings.append(ParityFinding("reasons", label, "ok"))
     else:
-        findings.append(ParityFinding("reasons", label, "drift",
-            f"(mf-only={sorted(ra - rb)} ma-only={sorted(rb - ra)})"))
+        findings.append(_reasons_finding(label, _read_reason_set(ta, REASONS_CONSTANT),
+                                         _read_reason_set(tb, REASONS_CONSTANT)))
 
     # ── Calibration claim-gate shared core ──
     # The detection VOCABULARY must agree or the two gates judge the same closing

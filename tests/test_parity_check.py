@@ -247,3 +247,50 @@ def test_cli_names_a_blind_leg(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "[BLIND  ] R :: S" in out
     assert "BLIND" in out.split("RESULT:")[1] and "MISSING files" not in out
+
+
+# ── None is four states, not one (review #2 of 51b02209, 10-24) ──
+# 'blind' + "teach it the form" is the cure for an EXTRACTOR limit. A constant
+# that is gone from a present file is the repo diverging (the shape tier's
+# absent-symbol = drift precedent), and a SyntaxError is the FILE's defect —
+# both were mislabelled as parser limits and the first ranked below drift.
+
+def test_read_reason_set_names_each_state():
+    pc = _load()
+    assert pc._read_reason_set(_ENUM_SRC, "REASONS")[0] == "ok"
+    assert pc._read_reason_set(_ENUM_SRC, "MISSING") == ("absent", None)
+    assert pc._read_reason_set("def (", "REASONS") == ("unparseable", None)
+    assert pc._read_reason_set("REASONS = frozenset(foo())", "REASONS") == ("unresolvable", None)
+    assert pc._read_reason_set(None, "REASONS") == ("no_file", None)
+
+
+def test_reasons_constant_gone_from_present_file_is_drift(tmp_path):
+    pc = _load()
+    src = (ROOT / "src" / "gateway" / "delivery_counters.py").read_text()
+    planted = src.replace("DELIVERY_FAILURE_REASONS", "RENAMED_REASONS")
+    assert planted != src
+    f = _reasons(pc.check_parity(str(ROOT), _ma_with(tmp_path, planted))[0])
+    assert f.status == "drift"
+    assert "ma=absent" in f.detail and "teach it the form" not in f.detail
+
+
+def test_reasons_syntax_error_is_blind_with_file_cure(tmp_path):
+    pc = _load()
+    src = (ROOT / "src" / "gateway" / "delivery_counters.py").read_text()
+    f = _reasons(pc.check_parity(str(ROOT), _ma_with(tmp_path, src + "\ndef (\n"))[0])
+    assert f.status == "blind"
+    assert "ma=unparseable" in f.detail and "SyntaxError" in f.detail
+    assert "teach it the form" not in f.detail
+
+
+def test_reasons_absent_in_both_is_blind_stale_constant():
+    """Neither side has it: nothing diverged, the leg's own name is stale."""
+    pc = _load()
+    f = pc._reasons_finding("L", ("absent", None), ("absent", None))
+    assert f.status == "blind" and "REASONS_CONSTANT" in f.detail
+
+
+def test_reasons_unresolvable_keeps_extractor_cure():
+    pc = _load()
+    f = pc._reasons_finding("L", ("ok", frozenset({"a"})), ("unresolvable", None))
+    assert f.status == "blind" and "teach it the form" in f.detail
