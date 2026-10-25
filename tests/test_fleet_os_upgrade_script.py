@@ -30,7 +30,27 @@ host="${args[$i]}"; cmd="${args[*]:$((i+1))}"
 state="$STUB_STATE"
 case "$cmd" in
   *"apt-get -s full-upgrade"*)
-    [ "$host" = refusedbox ] && echo "1|pcmanfm|meshtasticd" || echo "0||meshtasticd"
+    # 4th field = the simulation's own exit code
+    case "$host" in
+      refusedbox) echo "1|pcmanfm|meshtasticd|0" ;;
+      simfailbox) echo "0||meshtasticd|100" ;;
+      *) echo "0||meshtasticd|0" ;;
+    esac
+    exit 0 ;;
+  *"systemctl reboot"*)
+    touch "$state/rebooted_$host"; exit 0 ;;
+  *"random/boot_id"*)
+    [ -e "$state/rebooted_$host" ] && echo new-boot || echo old-boot; exit 0 ;;
+  *"list-units --type=service"*)
+    echo "sys:rnsd.service"; echo "sys:meshtasticd.service"
+    if [ ! -e "$state/rebooted_$host" ]; then
+      echo "sys:colord.service"    # on-demand desktop daemon: must not count
+      [ "$host" = lostsvcbox ] && echo "sys:wayvnc.service"
+    fi
+    exit 0 ;;
+  *"ss -xnpl"*)
+    if [ -e "$state/rebooted_$host" ] && [ "$host" = squatbox ]; then echo python3
+    else echo rnsd; fi
     exit 0 ;;
   *"rm -f /var/log/mf_osupgrade.log"*)
     touch "$state/launched_$host"; exit 0 ;;
@@ -58,13 +78,14 @@ def stubbed(tmp_path):
     state = tmp_path / "state"
     state.mkdir()
 
-    def run(*boxes, deadline="2"):
+    def run(*boxes, deadline="2", mode="upgrade"):
         env = dict(os.environ,
                    PATH=f"{bindir}:{os.environ['PATH']}",
                    STUB_STATE=str(state),
-                   MF_UPGRADE_DEADLINE_S=deadline)
+                   MF_UPGRADE_DEADLINE_S=deadline,
+                   MF_REBOOT_POLLS="4")
         try:
-            return subprocess.run(["bash", str(SCRIPT), "upgrade", *boxes],
+            return subprocess.run(["bash", str(SCRIPT), mode, *boxes],
                                   capture_output=True, text=True, env=env,
                                   timeout=30)
         except subprocess.TimeoutExpired:
@@ -92,3 +113,37 @@ def test_the_clean_path_still_exits_zero(stubbed):
     r = stubbed("goodbox")
     assert "goodbox: MF_UPGRADE_RC=0" in r.stdout, r.stdout
     assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+
+
+def test_a_failed_simulation_is_refused_not_read_as_zero_removals(stubbed):
+    # review 2026-09-22 residual (5): an empty sim file grep-counts 0 Remv,
+    # and the detached run would then remove whatever it liked.
+    r = stubbed("simfailbox")
+    assert "simfailbox: REFUSING" in r.stdout and "simulation" in r.stdout, r.stdout
+    assert "simfailbox: launching" not in r.stdout
+    assert r.returncode == 1
+
+
+# reboot — 2026-10-25 fleet OS roll. /var/run/reboot-required was absent on
+# all 10 boxes after 71-121 upgrades incl. firmware (on Pi OS it is written by
+# unattended-upgrades, kernel-only), so the old gate skipped every one.
+def test_reboot_does_not_need_the_reboot_required_marker(stubbed):
+    r = stubbed("nomarkerbox", mode="reboot")
+    assert "SKIP" not in r.stdout, r.stdout
+    assert "RECOVERED" in r.stdout, r.stdout
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+
+
+def test_a_service_that_did_not_come_back_is_named(stubbed):
+    # lehua 10-25: wayvnc was running (runtime-only start), disabled at boot.
+    r = stubbed("lostsvcbox", mode="reboot")
+    assert "NOT RECOVERED" in r.stdout and "wayvnc.service" in r.stdout, r.stdout
+    assert "colord" not in r.stdout.split("NOT RECOVERED", 1)[1]
+    assert r.returncode == 1
+
+
+def test_rns_owned_by_a_squatter_is_not_recovered(stubbed):
+    # #69: the @rns socket present is not the socket owned by rnsd.
+    r = stubbed("squatbox", mode="reboot")
+    assert "NOT RECOVERED" in r.stdout and "python3" in r.stdout, r.stdout
+    assert r.returncode == 1

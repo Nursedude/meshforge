@@ -51,7 +51,7 @@
 #   scripts/fleet_os_upgrade.sh survey [box...]      # READ-ONLY (default)
 #   scripts/fleet_os_upgrade.sh seed <src> <dst>...  # LAN cache copy
 #   scripts/fleet_os_upgrade.sh upgrade <box>...     # [--allow-removals]
-#   scripts/fleet_os_upgrade.sh reboot <box>...      # serial, verified
+#   scripts/fleet_os_upgrade.sh reboot <box>...      # serial, recovery measured
 #
 # No --all. Naming the boxes is the point: this is the knowing act.
 #
@@ -162,10 +162,18 @@ do_upgrade() {
         local sim remv rl hold
         sim=$(timeout 300 ssh "${SSH_OPTS[@]}" "$h" '
             sudo apt-get update -qq >/dev/null 2>&1
-            sudo apt-get -s full-upgrade 2>/dev/null > /tmp/mf_sim.txt
-            echo "$(grep -c "^Remv " /tmp/mf_sim.txt)|$(grep "^Remv " /tmp/mf_sim.txt | awk "{print \$2}" | tr "\n" "," | sed "s/,$//")|$(apt-mark showhold | tr "\n" "," | sed "s/,$//")"' 2>/dev/null)
+            sudo apt-get -s full-upgrade 2>/dev/null > /tmp/mf_sim.txt; s=$?
+            echo "$(grep -c "^Remv " /tmp/mf_sim.txt)|$(grep "^Remv " /tmp/mf_sim.txt | awk "{print \$2}" | tr "\n" "," | sed "s/,$//")|$(apt-mark showhold | tr "\n" "," | sed "s/,$//")|$s"' 2>/dev/null)
         [ -z "$sim" ] && { echo "$h: UNREACHABLE — skipping"; RC=1; continue; }
-        IFS='|' read -r remv rl hold <<<"$sim"
+        local sim_rc
+        IFS='|' read -r remv rl hold sim_rc <<<"$sim"
+        # A failed simulation leaves an empty file, which grep-counts as 0
+        # removals; the detached run would then remove whatever it planned
+        # (review 2026-09-22 residual 5). No plan seen = no launch.
+        if [ "$sim_rc" != "0" ]; then
+            echo "$h: REFUSING — apt-get -s full-upgrade simulation failed (rc=${sim_rc:-none}); removals unknown"
+            RC=1; continue
+        fi
         holds_before+=("$h=$hold")
         if [ "$remv" != "0" ] && [ "$ALLOW_REMOVALS" != "1" ]; then
             echo "$h: REFUSING — plan removes $remv package(s): $rl"
@@ -217,32 +225,76 @@ do_upgrade() {
 }
 
 # ── reboot: serial, verified ─────────────────────────────────────────────
+# Recovery = the box answers on a NEW boot_id, rnsd owns @rns (where rnsd
+# exists), and the same services are running as before. Polled to those
+# criteria with timings, not judged after a fixed settle: on 09-19 a box
+# sampled at 38 s read meshforge-watchdog "inactive" that was merely late.
+#
+# No reboot-required gate. On 2026-10-25 /var/run/reboot-required was absent
+# on all 10 boxes after 71-121 upgrades incl. firmware -- on Pi OS only
+# unattended-upgrades writes it, and only for kernels -- so the old gate
+# skipped every box. Naming the box is the decision; the marker is shown.
+REBOOT_POLLS="${MF_REBOOT_POLLS:-90}"   # x10 s = 15 min (moc took 154 s on 10-25)
+
+# Active services, system + user. Noise excluded: desktop/session daemons that
+# start on demand (colord read as "lost" on moc 10-25), one-shot timers'
+# services, and this roll's own units.
+SNAP_CMD='systemctl list-units --type=service --state=active --no-legend --plain | awk "{print \"sys:\"\$1}"; systemctl --user list-units --type=service --state=active --no-legend --plain 2>/dev/null | awk "{print \"usr:\"\$1}"'
+SNAP_NOISE='(user@|user-runtime-dir@|systemd-|getty@|serial-getty@|apt-daily|man-db|e2scrub|fstrim|logrotate|dpkg-db-backup|packagekit|fwupd|plymouth|rpi-eeprom-update|sshd-session|pipewire|wireplumber|filter-chain|gvfs|xdg-|at-spi|dconf|obex|pulse|gnome|kanshi|colord|dbus\.service$|run-.*\.service)'
+RNS_OWNER_CMD='sudo -n ss -xnpl 2>/dev/null | grep "@rns/" | grep -oE "users:\(\(\"[^\"]+" | head -1 | sed "s/.*\"//"'
+
+snap() { rsh "$1" 30 "$SNAP_CMD" | grep -vE "$SNAP_NOISE" | sort; }
+
 do_reboot() {
     [ $# -eq 0 ] && die "reboot needs at least one box"
     for h in "$@"; do
-        local need old t0 nb back
-        need=$(rsh "$h" 20 '[ -f /var/run/reboot-required ] && echo yes || echo no')
-        [ "$need" != "yes" ] && { echo "SKIP $h — no reboot required"; continue; }
+        local need old t0 nb pre post has_rns owner t_ssh t_rns t_set
         old=$(rsh "$h" 20 'cat /proc/sys/kernel/random/boot_id')
         [ -z "$old" ] && { echo "SKIP $h — unreachable, state UNKNOWN"; RC=1; continue; }
+        need=$(rsh "$h" 20 '[ -f /var/run/reboot-required ] && echo yes || echo no')
+        pre=$(snap "$h")
+        has_rns=0; grep -q '^sys:rnsd\.service$' <<<"$pre" && has_rns=1
+        echo "--- $h: rebooting (reboot-required marker: ${need:-?}; $(grep -c . <<<"$pre") services; rnsd: $([ $has_rns = 1 ] && echo yes || echo no)) ---"
         t0=$(date +%s)
         rsh "$h" 20 'sudo systemctl reboot' >/dev/null 2>&1
-        sleep 20; back=0
-        for _ in $(seq 1 60); do
+        sleep 20
+        t_ssh=""; t_rns=""; t_set=""; owner=""
+        for _ in $(seq 1 "$REBOOT_POLLS"); do
             nb=$(rsh "$h" 15 'cat /proc/sys/kernel/random/boot_id')
-            [ -n "$nb" ] && [ "$nb" != "$old" ] && { back=1; break; }
+            if [ -n "$nb" ] && [ "$nb" != "$old" ]; then
+                [ -z "$t_ssh" ] && t_ssh=$(( $(date +%s)-t0 ))
+                if [ $has_rns = 1 ] && [ -z "$t_rns" ]; then
+                    owner=$(rsh "$h" 15 "$RNS_OWNER_CMD")
+                    [ "$owner" = rnsd ] && t_rns=$(( $(date +%s)-t0 ))
+                fi
+                post=$(snap "$h")
+                [ -z "$t_set" ] && [ "$post" = "$pre" ] && t_set=$(( $(date +%s)-t0 ))
+                [ -n "$t_set" ] && { [ $has_rns = 0 ] || [ -n "$t_rns" ]; } && break
+            fi
             sleep 10
         done
-        [ "$back" = 0 ] && { echo "!! $h DID NOT RETURN within 600s — state UNKNOWN"; RC=1; continue; }
-        # settle before judging: at 38 s units are still starting (09-19)
-        sleep 45
-        echo "--- $h back after $(( $(date +%s)-t0 ))s ---"
+        if [ -z "$t_ssh" ]; then
+            echo "!! $h DID NOT RETURN — state UNKNOWN"; RC=1; continue
+        fi
+        if [ -n "$t_set" ] && { [ $has_rns = 0 ] || [ -n "$t_rns" ]; }; then
+            echo "  RECOVERED ssh=+${t_ssh}s rns=+${t_rns:-n/a}s services=+${t_set}s"
+        else
+            echo "  !! $h NOT RECOVERED (ssh=+${t_ssh}s)"
+            [ $has_rns = 1 ] && [ -z "$t_rns" ] && echo "     @rns owner: '${owner:-none}' — must be rnsd (#69)"
+            if [ -z "$t_set" ]; then
+                echo "     service set differs from before the reboot (< before, > after):"
+                diff <(echo "$pre") <(echo "$post") | grep '^[<>]' | sed 's/^/       /'
+                echo "     A service that was started by hand and is disabled at boot is"
+                echo "     an operator decision -- do not restore it blindly."
+            fi
+            RC=1
+        fi
         timeout 60 ssh "${SSH_OPTS[@]}" "$h" '
             echo "  kernel=$(uname -r)  reboot_required=$([ -f /var/run/reboot-required ] && echo STILL_YES || echo no)"
             for u in meshtasticd rnsd meshforge-map meshforge-watchdog meshforge-gateway; do
               systemctl cat $u >/dev/null 2>&1 && echo "  $u=$(systemctl is-active $u) NRestarts=$(systemctl show -p NRestarts --value $u)"
             done
-            echo "  user_units_running=$(systemctl --user list-units --type=service --state=running --no-legend "meshforge*" 2>/dev/null | wc -l)"
+            echo "  failed units: $(systemctl --failed --no-legend --plain | awk "{print \$1}" | tr "\n" " ")"
             # rnstatus is often ONLY in ~/.local/bin, which is NOT on the
             # non-interactive ssh PATH (live-caught on kiai 2026-09-19: bare
             # `rnstatus` returned 127 -- "command not found" -- which reads

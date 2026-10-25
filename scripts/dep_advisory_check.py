@@ -249,15 +249,20 @@ for name in PKGS:
 apt = None
 if os.path.exists("/usr/bin/dpkg-query"):
     apt = {"unattended_upgrades": None, "pending_total": None,
-           "pending_security": None, "lists_age_h": None}
+           "pending_security": None, "pending_rpi": None, "lists_age_h": None}
     rc, out = _run(["dpkg-query", "-W", "-f=${Status}", "unattended-upgrades"])
     apt["unattended_upgrades"] = (
         "installed" if rc == 0 and out.strip() == "install ok installed" else "absent")
-    rc, out = _run(["apt-get", "-s", "upgrade"])
+    # full-upgrade, not upgrade: `upgrade` keeps back anything needing a NEW
+    # package, which is how every kernel arrives (2026-10-25 roll).
+    rc, out = _run(["apt-get", "-s", "full-upgrade"])
     if rc == 0:
         inst = [ln for ln in out.splitlines() if ln.startswith("Inst ")]
         apt["pending_total"] = len(inst)
         apt["pending_security"] = sum(1 for ln in inst if "security" in ln.lower())
+        # unattended-upgrades never takes these (Debian origins only):
+        # firmware, bootloader, kernels, the +rpt openssl.
+        apt["pending_rpi"] = sum(1 for ln in inst if "Raspberry Pi Foundation" in ln)
     try:
         newest = max((os.path.getmtime(p) for p in glob.glob("/var/lib/apt/lists/*")),
                      default=None)
@@ -717,8 +722,13 @@ def apt_lines(host: str, apt: Optional[dict]):
         status.append("%-20s %-14s %-10s FINDING — %s" % (host, "apt", "-", msg))
         findings.append("%s apt: %s" % (host, msg))
     elif not stale and uu != "absent":
-        status.append("%-20s %-14s %-10s clean — %d pending, 0 security (%s)"
-                      % (host, "apt", "-", apt.get("pending_total") or 0, age_s))
+        # Raspberry Pi archive: shown, not a finding, until a soak says what
+        # a normal backlog looks like (observe before alarm).
+        rpi = apt.get("pending_rpi")
+        rpi_s = (", %d from the Raspberry Pi archive (never auto-installed; "
+                 "roll with fleet_os_upgrade.sh)" % rpi) if rpi else ""
+        status.append("%-20s %-14s %-10s clean — %d pending, 0 security%s (%s)"
+                      % (host, "apt", "-", apt.get("pending_total") or 0, rpi_s, age_s))
     return status, findings, None
 
 

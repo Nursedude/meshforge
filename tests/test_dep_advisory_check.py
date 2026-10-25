@@ -492,6 +492,30 @@ class TestAptHygiene:
             "a box with no dpkg must produce no apt line at all (inert)")
 
 
+    # 2026-10-25 fleet OS roll: 122 updates had piled up per box while this
+    # read "0 security" — unattended-upgrades takes Debian origins only, so
+    # firmware, bootloader, kernels and the +rpt openssl never auto-install.
+    # Observe before alarm: a visible count, not (yet) a finding.
+    def test_rpi_archive_pending_is_shown_but_not_a_finding(self, home, monkeypatch):
+        rep = _report(apt={"unattended_upgrades": "installed", "pending_total": 9,
+                           "pending_security": 0, "pending_rpi": 7, "lists_age_h": 1})
+        rc, status, finding = _drive(home, monkeypatch, rep, [ADV_CVE_A])
+        assert rc == 0 and finding is None
+        assert "7 from the Raspberry Pi archive" in status
+
+    def test_rpi_count_absent_from_an_old_reporter_says_nothing(self, home, monkeypatch):
+        rep = _report(apt={"unattended_upgrades": "installed", "pending_total": 2,
+                           "pending_security": 0, "lists_age_h": 1})
+        rc, status, finding = _drive(home, monkeypatch, rep, [ADV_CVE_A])
+        assert rc == 0 and "Raspberry Pi" not in status
+
+    def test_reporter_simulates_full_upgrade_and_counts_by_rpi_label(self):
+        # `apt-get -s upgrade` keeps back anything that needs a NEW package —
+        # exactly how a kernel arrives — so the count would miss the class.
+        assert "apt-get\", \"-s\", \"full-upgrade" in dac._REMOTE_SRC
+        assert "Raspberry Pi Foundation" in dac._REMOTE_SRC
+
+
 class TestNamesAreCanonicalForTheAdvisoryDB:
     """Same drill as the range check (2026-09-06): the advisory DB does not
     normalise ``_`` to ``-``; PyPI does. ``--packages prometheus_client`` must
