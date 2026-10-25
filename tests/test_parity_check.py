@@ -349,8 +349,16 @@ def test_read_reason_set_truly_absent_stays_absent():
     "f = lambda R: R\n",
     # a bare annotation binds nothing at runtime
     "R: frozenset\n",
+    # the discriminating half of the import / match / method-global binds:
+    # binding ANOTHER name must not count, or an over-firing binds() reads a
+    # real rename as blind
+    "from other import X\n",
+    "match 1:\n    case X:\n        pass\n",
+    "class C:\n    def m(self):\n        global Q\n        Q = 1\n",
 ])
 def test_read_reason_set_other_scope_binding_stays_absent(form):
+    if form.startswith("match") and sys.version_info < (3, 10):
+        pytest.skip("match statement is 3.10+")
     pc = _load()
     assert pc._read_reason_set(form, "R") == ("absent", None)
 
