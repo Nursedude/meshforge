@@ -199,3 +199,51 @@ def test_reasons_section_wired_and_ok():
     f = _reasons(pc.check_parity(str(ROOT), "/opt/meshanchor")[0])
     assert f.status == "ok", f.detail
     assert "DELIVERY_FAILURE_REASONS" in f.label
+
+
+# ── A blind extractor must not mask another leg's drift (review #1, 10-24) ──
+# 'missing' out-ranks 'drift' for the whole run, and probe_parity_drift turns
+# 'missing' into indeterminate + a streak reset. A reasons leg whose file is
+# PRESENT but whose members the AST cannot resolve is a limit of this tool,
+# not an absent file, so it reads 'blind' and ranks BELOW drift.
+
+def _f(section, status, label="x"):
+    pc = _load()
+    return pc.ParityFinding(section, label, status)
+
+
+def test_reasons_unresolvable_member_is_blind_not_missing(tmp_path):
+    pc = _load()
+    src = (ROOT / "src" / "gateway" / "delivery_counters.py").read_text()
+    planted = src.replace("DropReason.UNSENDABLE.value", "DropReason.NOPE.value", 1)
+    assert planted != src
+    f = _reasons(pc.check_parity(str(ROOT), _ma_with(tmp_path, planted))[0])
+    assert f.status == "blind"
+    assert "ma=unresolvable" in f.detail and "mf=ok" in f.detail
+
+
+def test_overall_drift_outranks_blind():
+    pc = _load()
+    assert pc._overall([_f("reasons", "blind"), _f("byte", "drift")]) == "drift"
+
+
+def test_overall_blind_alone_cannot_compare():
+    pc = _load()
+    assert pc._overall([_f("byte", "ok"), _f("reasons", "blind")]) == "missing"
+
+
+def test_overall_missing_still_outranks_drift():
+    pc = _load()
+    assert pc._overall([_f("byte", "missing"), _f("shape", "drift")]) == "missing"
+    assert pc._overall([_f("byte", "ok")]) == "in_sync"
+
+
+def test_cli_names_a_blind_leg(monkeypatch, capsys):
+    """The RESULT line must not say 'MISSING files' when nothing is missing."""
+    pc = _load()
+    fake = [pc.ParityFinding("reasons", "R :: S", "blind", "(mf=ok ma=unresolvable)")]
+    monkeypatch.setattr(pc, "check_parity", lambda mf, ma: (fake, "missing"))
+    assert pc.main(["--meshforge", "a", "--meshanchor", "b"]) == 2
+    out = capsys.readouterr().out
+    assert "[BLIND  ] R :: S" in out
+    assert "BLIND" in out.split("RESULT:")[1] and "MISSING files" not in out

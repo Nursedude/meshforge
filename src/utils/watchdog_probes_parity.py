@@ -259,8 +259,12 @@ def probe_parity_drift(
         if overall == "in_sync":
             note_disposition("parity_drift", "clean")
         else:
+            blind = [f.label for f in findings
+                     if getattr(f, "status", None) == "blind"]
+            why = (f"extractor blind on {', '.join(blind)}" if blind
+                   else f"parity result '{overall}'")
             note_disposition("parity_drift", "indeterminate",
-                             reason=f"parity result '{overall}' — can't compare")
+                             reason=f"{why} — can't compare")
         return None
 
     drifted = [f for f in findings if getattr(f, "status", None) == "drift"]

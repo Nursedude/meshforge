@@ -2742,6 +2742,25 @@ def test_parity_drift_none_when_missing_is_indeterminate(tmp_path):
     assert sig is None
 
 
+def test_parity_drift_blind_leg_says_so(tmp_path):
+    """Review #1 (2026-10-24): a leg the parity tool cannot READ is not a
+    missing file. The disposition stays indeterminate (can't compare), but
+    the reason must name the blind leg, or the operator hunts for a file."""
+    from utils.watchdog_probe_core import reset_dispositions
+    reset_dispositions()
+    sig = probe_parity_drift(
+        meshanchor_root=str(tmp_path),
+        check_fn=lambda mf, ma: (
+            [_pf("ok", "a"), _pf("blind", "src/gateway/delivery_counters.py :: R")],
+            "missing"),
+        state_path=str(tmp_path / "debounce.json"),
+        dirty_state_path=str(tmp_path / "dirty.json"), dirty_fn=_clean)
+    assert sig is None
+    assert _disp("parity_drift") == "indeterminate"
+    assert "blind" in _reason("parity_drift")
+    assert "delivery_counters.py" in _reason("parity_drift")
+
+
 def test_parity_drift_none_when_check_raises(tmp_path):
     def boom(mf, ma):
         raise RuntimeError("parity tool blew up")

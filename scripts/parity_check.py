@@ -45,7 +45,8 @@ Exit codes:
     0  in sync (both tiers)
     1  byte-tier drift (a must-match file differs) OR a shape-tier symbol
        is missing
-    2  a repo or expected file is missing (can't compare)
+    2  a repo or expected file is missing, or a leg is BLIND (the file is
+       there but this tool cannot read the compared value) — can't compare
 """
 import argparse
 import ast
@@ -498,8 +499,10 @@ def _fork_pin_block(text):
 @dataclass
 class ParityFinding:
     """One parity comparison result. ``section`` groups the render; ``status`` is
-    one of 'ok'|'drift'|'missing'; ``detail`` is the formatted line suffix."""
-    section: str   # 'byte' | 'forkpin' | 'shape' | 'probe'
+    one of 'ok'|'drift'|'missing'|'blind'; ``detail`` is the formatted line
+    suffix. 'blind' = the file is present but this tool cannot read the
+    compared value (an extractor limit, not an absent file) — see _overall."""
+    section: str   # 'byte' | 'forkpin' | 'shape' | 'probe' | 'reasons' | 'calibgate'
     label: str
     status: str
     detail: str = ""
@@ -509,10 +512,11 @@ def check_parity(mf=DEFAULT_MESHFORGE, ma=DEFAULT_MESHANCHOR):
     """Pure parity comparison — no printing. Returns ``(findings, overall)`` where
     ``overall`` is one of:
       'repo_missing' — a repo root isn't a directory (can't compare at all)
-      'missing'      — both roots present but a tracked file/symbol is absent
+      'missing'      — both roots present but a tracked file/symbol is absent,
+                       or (with no drift anywhere) a leg is 'blind'
       'drift'        — a must-match file/symbol content-diverged (the real signal)
       'in_sync'      — everything matches
-    'missing' takes precedence over 'drift' (same as the CLI's exit-2-over-1).
+    'missing' takes precedence over 'drift', and 'drift' over 'blind' (_overall).
     ``main()`` renders this; the watchdog ``probe_parity_drift`` consumes it.
     """
     for root in (mf, ma):
@@ -572,13 +576,18 @@ def check_parity(mf=DEFAULT_MESHFORGE, ma=DEFAULT_MESHANCHOR):
             findings.append(ParityFinding("probe", f"{rlabel}:{rel} :: {sym}", status))
 
     # ── Delivery-failure reason vocabulary ──
-    ra = _extract_reason_set(_read(os.path.join(mf, REASONS_FILE)), REASONS_CONSTANT)
-    rb = _extract_reason_set(_read(os.path.join(ma, REASONS_FILE)), REASONS_CONSTANT)
+    ta, tb = _read(os.path.join(mf, REASONS_FILE)), _read(os.path.join(ma, REASONS_FILE))
+    ra, rb = _extract_reason_set(ta, REASONS_CONSTANT), _extract_reason_set(tb, REASONS_CONSTANT)
     label = f"{REASONS_FILE} :: {REASONS_CONSTANT}"
-    if ra is None or rb is None:
+    if ta is None or tb is None:
         findings.append(ParityFinding("reasons", label, "missing",
-            f"(mf={'ok' if ra is not None else 'unreadable'} "
-            f"ma={'ok' if rb is not None else 'unreadable'})"))
+            f"(mf={'ok' if ta is not None else 'absent'} "
+            f"ma={'ok' if tb is not None else 'absent'})"))
+    elif ra is None or rb is None:
+        findings.append(ParityFinding("reasons", label, "blind",
+            f"(mf={'ok' if ra is not None else 'unresolvable'} "
+            f"ma={'ok' if rb is not None else 'unresolvable'} — "
+            f"_extract_reason_set cannot read a member; teach it the form)"))
     elif ra == rb:
         findings.append(ParityFinding("reasons", label, "ok"))
     else:
@@ -624,16 +633,27 @@ def check_parity(mf=DEFAULT_MESHFORGE, ma=DEFAULT_MESHANCHOR):
                 findings.append(ParityFinding("calibgate", label, "drift",
                     "(function body differs — port the decision core, then re-run)"))
 
-    if any(f.status == "missing" for f in findings):
-        overall = "missing"
-    elif any(f.status == "drift" for f in findings):
-        overall = "drift"
-    else:
-        overall = "in_sync"
-    return findings, overall
+    return findings, _overall(findings)
 
 
-_TAG = {"ok": "OK     ", "drift": "DRIFT  ", "missing": "MISSING"}
+def _overall(findings):
+    """missing > drift > blind > in_sync. A BLIND leg is this tool failing to
+    read a file that is there, so it must never out-rank another leg's real
+    drift: the watchdog turns 'missing' into indeterminate + a streak reset,
+    and a parser limit would otherwise silence every other leg (review #1,
+    2026-10-24). Alone it still cannot be called in sync — it reports
+    'missing' (can't compare), keeping the overall vocabulary closed."""
+    statuses = {f.status for f in findings}
+    if "missing" in statuses:
+        return "missing"
+    if "drift" in statuses:
+        return "drift"
+    if "blind" in statuses:
+        return "missing"
+    return "in_sync"
+
+
+_TAG = {"ok": "OK     ", "drift": "DRIFT  ", "missing": "MISSING", "blind": "BLIND  "}
 _SECTION_HEADER = {
     "byte": "Byte-identical tier:",
     "shape": "\nShape tier (symbol presence in both repos):",
@@ -673,7 +693,10 @@ def main(argv=None):
 
     print()
     if overall == "missing":
-        print("RESULT: MISSING files/symbols — cannot fully compare.")
+        if not any(f.status == "missing" for f in findings):
+            print("RESULT: BLIND — a leg this tool cannot read; cannot fully compare.")
+        else:
+            print("RESULT: MISSING files/symbols — cannot fully compare.")
         return 2
     if overall == "drift":
         print("RESULT: DRIFT — port the flagged changes (MeshForge is the lead repo).")
