@@ -418,7 +418,7 @@ def _read_reason_set(text, name):
     members are string literals or ``Cls.MEMBER.value`` for a class in the same
     file whose body assigns ``MEMBER = "<str>"`` (an Enum). Resolved by AST, no
     import — delivery_counters pulls the gateway package. state is 'ok' |
-    'no_file' | 'unparseable' (SyntaxError) | 'absent' (no such assignment) |
+    'no_file' | 'unparseable' (SyntaxError) | 'absent' (not bound in module scope) |
     'unresolvable' (a form or ANY member this tool cannot read: a partly-read
     set compared as 'ok' would be the false green this check exists to refuse).
     The states need different cures, so they stay distinct (review #2)."""
@@ -437,41 +437,94 @@ def _read_reason_set(text, name):
                 and isinstance(st.value, ast.Constant)
                 and isinstance(st.value.value, str)
                 for t in st.targets if isinstance(t, ast.Name)}
-    for node in tree.body:
-        if not (isinstance(node, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id == name for t in node.targets)):
-            continue
-        val = node.value
-        if (isinstance(val, ast.Call) and isinstance(val.func, ast.Name)
-                and val.func.id in ("frozenset", "set") and len(val.args) == 1):
-            val = val.args[0]
-        if not isinstance(val, (ast.Set, ast.Tuple, ast.List)):
+    bindings = _module_bindings(tree, name)
+    if not bindings:
+        return "absent", None
+    # Read only a lone top-level Assign/AnnAssign. A second binding (|=, a
+    # conditional rebind, an import) means the value is not the literal: a
+    # first-Assign read would be a false 'ok' (review of 528afc79).
+    node = bindings[0]
+    readable = ((isinstance(node, ast.Assign)
+                 and all(isinstance(t, ast.Name) for t in node.targets))
+                or (isinstance(node, ast.AnnAssign) and node.value is not None))
+    if len(bindings) > 1 or node not in tree.body or not readable:
+        return "unresolvable", None
+    val = node.value
+    if (isinstance(val, ast.Call) and isinstance(val.func, ast.Name)
+            and val.func.id in ("frozenset", "set") and len(val.args) == 1):
+        val = val.args[0]
+    if not isinstance(val, (ast.Set, ast.Tuple, ast.List)):
+        return "unresolvable", None
+    out = set()
+    for el in val.elts:
+        if isinstance(el, ast.Constant) and isinstance(el.value, str):
+            out.add(el.value)
+        elif (isinstance(el, ast.Attribute) and el.attr == "value"
+              and isinstance(el.value, ast.Attribute)
+              and isinstance(el.value.value, ast.Name)
+              and el.value.attr in classes.get(el.value.value.id, {})):
+            out.add(classes[el.value.value.id][el.value.attr])
+        else:
             return "unresolvable", None
-        out = set()
-        for el in val.elts:
-            if isinstance(el, ast.Constant) and isinstance(el.value, str):
-                out.add(el.value)
-            elif (isinstance(el, ast.Attribute) and el.attr == "value"
-                  and isinstance(el.value, ast.Attribute)
-                  and isinstance(el.value.value, ast.Name)
-                  and el.value.attr in classes.get(el.value.value.id, {})):
-                out.add(classes[el.value.value.id][el.value.attr])
-            else:
-                return "unresolvable", None
-        return "ok", frozenset(out)
-    # No plain top-level Assign. 'absent' must mean bound NOWHERE: an annotated,
-    # nested or tuple-target assignment of the name is present-but-unread — this
-    # tool's limit, never "gone, port it" (non-author review #1 of 31a22563).
-    for node in ast.walk(tree):
-        if (isinstance(node, ast.Name) and node.id == name
-                and isinstance(node.ctx, ast.Store)):
-            return "unresolvable", None
-    return "absent", None
+    return "ok", frozenset(out)
+
+
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda,
+           ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+
+def _module_bindings(tree, name):
+    """Statements that bind ``name`` in MODULE scope, in source order: any
+    Store of it, an import alias, a def/class of that name, or ``global name``
+    inside a function. 'absent' must mean bound nowhere in the module — but a
+    local of the same name in a def/class/comprehension is another variable,
+    and counting it would mask a real rename as blind (review of 528afc79).
+    A bare ``name: T`` annotation binds nothing at runtime."""
+    found = []
+
+    def binds(node):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            return any((a.asname or a.name.split(".")[0]) == name for a in node.names)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return node.name == name
+        if isinstance(node, ast.AnnAssign):
+            return (node.value is not None and isinstance(node.target, ast.Name)
+                    and node.target.id == name)
+        return any(isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store)
+                   for n in _walk_scope(node))
+
+    def visit(stmts):
+        for st in stmts:
+            if binds(st) or isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+                    isinstance(n, ast.Global) and name in n.names for n in ast.walk(st)):
+                found.append(st)
+            if isinstance(st, _SCOPES):
+                continue
+            for field in ("body", "orelse", "finalbody"):
+                visit(getattr(st, field, []))
+            for handler in getattr(st, "handlers", []):
+                visit(handler.body)
+
+    visit(tree.body)
+    return found
+
+
+def _walk_scope(node):
+    """Like ast.walk over ONE statement's own expressions: nested statement
+    bodies are visited by _module_bindings, and new scopes are not entered."""
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        yield n
+        for c in ast.iter_child_nodes(n):
+            if isinstance(c, (ast.stmt, ast.ExceptHandler) + _SCOPES):
+                continue
+            stack.append(c)
 
 
 _REASONS_CURE = {
     "unparseable": "SyntaxError — fix the file",
-    "unresolvable": "_extract_reason_set cannot read a member; teach it the form",
+    "unresolvable": "_read_reason_set cannot read this binding or a member; teach it the form",
 }
 
 

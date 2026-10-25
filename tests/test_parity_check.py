@@ -8,6 +8,8 @@ import importlib.util
 import os
 from pathlib import Path
 
+import re
+
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -302,10 +304,19 @@ def test_reasons_unresolvable_keeps_extractor_cure():
 # limit (blind, "teach it the form") — never "gone or renamed; port it".
 
 @pytest.mark.parametrize("form", [
-    "R: frozenset = frozenset({'a'})\n",
     "if True:\n    R = frozenset({'a'})\n",
     "try:\n    R = frozenset({'a'})\nexcept Exception:\n    pass\n",
     "R, OTHER = frozenset({'a'}), 1\n",
+    # bound by import / def / class — present, just not an Assign (review of 528afc79)
+    "from other import R\n",
+    "from other import X as R\n",
+    "import other as R\n",
+    "def R():\n    pass\n",
+    # a later module-level rebind: reading only the first Assign would compare
+    # a set the module never ends up holding — a false 'ok'
+    "R = frozenset({'a'})\nR |= {'b'}\n",
+    "R = frozenset({'a'})\nR = R | {'b'}\n",
+    "R = frozenset({'a'})\nif True:\n    R = frozenset({'b'})\n",
 ])
 def test_read_reason_set_present_but_unread_form_is_unresolvable(form):
     pc = _load()
@@ -317,10 +328,62 @@ def test_read_reason_set_truly_absent_stays_absent():
     assert pc._read_reason_set("X = frozenset({'a'})\nprint(R)\n", "R") == ("absent", None)
 
 
-def test_reasons_annotated_constant_is_blind_not_drift(tmp_path):
+@pytest.mark.parametrize("form", [
+    # a binding in ANOTHER scope is not the module constant: a real rename
+    # must still read absent → drift, never be masked to blind
+    "def f():\n    R = set()\n    return R\n",
+    "class C:\n    R = frozenset({'a'})\n",
+    "X = [R for R in ()]\n",
+    "f = lambda R: R\n",
+    # a bare annotation binds nothing at runtime
+    "R: frozenset\n",
+])
+def test_read_reason_set_other_scope_binding_stays_absent(form):
+    pc = _load()
+    assert pc._read_reason_set(form, "R") == ("absent", None)
+
+
+def test_read_reason_set_global_declaration_counts_as_bound():
+    pc = _load()
+    src = "def f():\n    global R\n    R = frozenset({'a'})\n"
+    assert pc._read_reason_set(src, "R") == ("unresolvable", None)
+
+
+def test_read_reason_set_reads_annotated_constant():
+    pc = _load()
+    assert pc._read_reason_set("R: frozenset = frozenset({'a', 'b'})\n", "R") == (
+        "ok", frozenset({"a", "b"}))
+
+
+def test_reasons_annotated_constant_is_read_not_blind(tmp_path):
     pc = _load()
     src = (ROOT / "src" / "gateway" / "delivery_counters.py").read_text()
-    planted = src.replace("DELIVERY_FAILURE_REASONS = ", "DELIVERY_FAILURE_REASONS: frozenset = ", 1)
-    assert planted != src
+    # anchored to the module-level line, so a comment mentioning the name
+    # cannot absorb the plant
+    planted, n = re.subn(r"^DELIVERY_FAILURE_REASONS = ",
+                         "DELIVERY_FAILURE_REASONS: frozenset = ", src, count=1, flags=re.M)
+    assert n == 1
+    f = _reasons(pc.check_parity(str(ROOT), _ma_with(tmp_path, planted))[0])
+    assert f.status == "ok", f.detail
+
+
+def test_reasons_moved_to_import_is_blind_not_drift(tmp_path):
+    pc = _load()
+    src = (ROOT / "src" / "gateway" / "delivery_counters.py").read_text()
+    planted, n = re.subn(r"^DELIVERY_FAILURE_REASONS = ",
+                         "from gateway.reasons import DELIVERY_FAILURE_REASONS\n_MOVED = ",
+                         src, count=1, flags=re.M)
+    assert n == 1
     f = _reasons(pc.check_parity(str(ROOT), _ma_with(tmp_path, planted))[0])
     assert f.status == "blind" and "teach it the form" in f.detail
+
+
+def test_reasons_rename_beside_a_local_of_the_old_name_is_drift(tmp_path):
+    pc = _load()
+    src = (ROOT / "src" / "gateway" / "delivery_counters.py").read_text()
+    planted, n = re.subn(r"^DELIVERY_FAILURE_REASONS = ", "RENAMED_REASONS = ",
+                         src, count=1, flags=re.M)
+    assert n == 1
+    planted += "\n\ndef _legacy():\n    DELIVERY_FAILURE_REASONS = set()\n    return DELIVERY_FAILURE_REASONS\n"
+    f = _reasons(pc.check_parity(str(ROOT), _ma_with(tmp_path, planted))[0])
+    assert f.status == "drift" and "ma=absent" in f.detail
