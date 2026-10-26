@@ -12,7 +12,7 @@ bridge_send_mixin.py (2026-06-09 split).
 import threading
 import time
 import logging
-from queue import Queue, Empty, Full
+from queue import Queue, Empty
 from datetime import datetime
 from typing import Optional, Callable, Dict, Any
 from dataclasses import dataclass
@@ -1246,11 +1246,7 @@ class RNSMeshtasticBridge(
                     else:
                         self._process_mesh_to_rns(msg)
                     # Also route Meshtastic → MeshCore if handler active
-                    if self._meshcore_handler:
-                        try:
-                            self._bridge_to_meshcore_queue.put_nowait(msg)
-                        except Full:
-                            logger.debug("→MeshCore queue full, dropping Mesh→MC message")
+                    self._fan_out_to_meshcore(msg)
                 except Empty:
                     pass
 
@@ -1267,11 +1263,7 @@ class RNSMeshtasticBridge(
                     else:
                         self._process_rns_to_mesh(msg)
                     # Also route RNS → MeshCore if handler active
-                    if self._meshcore_handler:
-                        try:
-                            self._bridge_to_meshcore_queue.put_nowait(msg)
-                        except Full:
-                            logger.debug("→MeshCore queue full, dropping RNS→MC message")
+                    self._fan_out_to_meshcore(msg)
                 except Empty:
                     pass
 

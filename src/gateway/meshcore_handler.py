@@ -925,6 +925,10 @@ class MeshCoreHandler(BaseMessageHandler):
                 with self._stats_lock:
                     self.stats.setdefault('errors', 0)
                     self.stats['errors'] += 1
+                # The outcome, not the hand-off: the bridge no longer counts
+                # an ENQUEUE as sent (bridge matrix F5), so this is health's
+                # only view of a MeshCore send that did not air.
+                self.health.record_message_failed("to_meshcore", requeued=False)
 
         except TransmitBlocked as e:
             # Deliberate catch (see tx_guard docstring): the refusal is
@@ -1215,6 +1219,14 @@ class MeshCoreHandler(BaseMessageHandler):
                 return contact
 
         return None
+
+    @property
+    def can_broadcast(self) -> bool:
+        """True only for the simulator: MeshForge has no outbound slot
+        routing, so ``_send_message`` refuses every real channel broadcast
+        (bridge matrix F5). A config fact, fixed at construction — the
+        bridge fan-out reads it so it never enqueues what will be refused."""
+        return bool(self._simulation_mode)
 
     def send_text(self, message: str, destination: str = None,
                   channel: int = 0, dm_only: bool = False,

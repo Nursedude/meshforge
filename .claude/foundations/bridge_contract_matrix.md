@@ -128,12 +128,12 @@ adds `meshforge_relayed_by` / `origin_*` / `content_id`. *Pinned by:*
 
 **MF-5 Meshtastic / RNS → MeshCore** — fed for every MF-1/MF-2 message;
 internet- and MQTT-origin messages are dropped. Tag `[Mesh:<8>]` / `[RNS:<8>]`,
-160 B with an ellipsis. **F5** (effectively dead on real hardware: the
-health counter still says *sent* while, since 10-24, the delivery-leg ledger
-records the same message as *dropped, unsendable* —
-`meshcore_handler.py:1021`). *Pinned by:* only the refusal
+160 B with an ellipsis. **F5, fixed 10-26**: dead on real hardware BY
+DESIGN (no outbound slot routing) and now SAYS so — the fan-out never
+enqueues when `can_broadcast` is False and records `dropped, unsendable`;
+health no longer counts an enqueue as sent. *Pinned by:*
+`test_meshcore_fanout_truth.py`, the refusal
 (`test_meshcore_handler.py::test_channel_broadcast_refused_never_public`).
-The edge itself is **UNPINNED** (no test calls `_process_bridge_to_meshcore`).
 
 **MF-6 Meshtastic LongFast ↔ SHORT_TURBO** (`mesh_bridge.enabled`, default False).
 TEXT only; DM vs broadcast and the channel index are KEPT. Toradio path:
@@ -181,7 +181,8 @@ not-found `✗` notice. Split-horizon matches tags by SUBSTRING. **F1.**
 **MA-5 Meshtastic → RNS / MeshCore** — `[Mesh:<4>]` to RNS, `[Mesh:<8>]` to
 MeshCore. A Mesh→RNS echo guard landed 10-19 (a bridge-tagged line is not
 re-sent to RNS). A DM never goes out on a MeshCore channel (F2, fixed). The
-MeshCore fan-out is NOT gated by that guard. **F16.** *Pinned by:*
+MeshCore fan-out now applies the same predicate on its own leg (**F16,
+fixed 10-26**). *Pinned by:* `test_meshcore_fanout_truth.py`,
 `test_bridge_integration.py::test_process_mesh_to_rns_*`,
 `test_mesh_to_rns_echo_guard.py`, `test_bridge_private_to_channel.py`,
 `test_m2r_requeue_f4.py`.
@@ -228,7 +229,7 @@ before anyone acts on it. Fixed rows moved to "Fixed and pinned" below.
 |---|---|---|---|---|
 | F1 | MA-4 | `[unverified] ` is NOT stripped toward MeshCore → the text reads `[RNS:?abcd1234] [unverified] …` (the mark twice, 13 of 160 B) | BELIEVED; **narrowed 10-26** (artifact, measured there, not here): the "demotes a marked `@contact` DM" half is REFUTED — `parse_directed_reply` peels `[unverified]` like any leading tag | failing test → `strip_unverified_mark` where `src_label` gets its `?` |
 | F3 | MA-8 | `_reply_slot = int(env or bridge_target_channel) or 1` → **-1** at the default `bridge_target_channel=-1` (−1 is truthy) → `send_chan_msg(-1)` | VERIFIED by read; **latent** (live config = 1) | test at default config; treat <0 as "no channel reply" |
-| F5 | MF-5 / MA-4 | MeshCore `send_text` returns True on ENQUEUE (MF `meshcore_handler.py:1224`, MA `:1252-1261`); on MF the broadcast is then REFUSED on a real radio → the edge is dead and its health counter reports success | **MEASURED 10-26, narrowed**: the delivery-leg ledger now records the refusal (`meshcore_handler.py:1021` → `dropped, unsendable`) while health still says sent — two views of one message disagree (rule 5). Still no test calls `_process_bridge_to_meshcore` | delete MF-5, or make health follow the delivery outcome, not the enqueue |
+| F5 | MF-5 / MA-4 | MeshCore `send_text` returns True on ENQUEUE and the bridge recorded health *sent* there; on MF every real-radio broadcast is then refused (`dropped, unsendable`) — two views of one message disagreed (rule 5) | **FIXED 10-26 (both twins, test-first, non-author read)**: MF fan-out reads `MeshCoreHandler.can_broadcast` (simulator only) and records `dropped, unsendable` on the ledger WITHOUT enqueuing (never requeued); health counts only the TX worker's outcome (`to_meshcore` sent / failed) — the enqueue-time `mesh_to_meshcore`/`rns_to_meshcore` *sent* are gone in both twins (MA: generic + DM-reply sites). Pinned by `tests/test_meshcore_fanout_truth.py` (both repos). `stats['messages_*_to_meshcore']` still counts enqueues (no reader treats it as delivery) | — |
 | F6 | MF-1 | `config.py:280-285` documents a `gateway_node_id` self-echo drop that is not implemented (only the DM/session legs read it); `test_mqtt_bridge_handler.py:157 test_own_sender_no_rns_prefix_passes` pins the OPPOSITE; a stale comment at `mqtt_bridge_handler.py:735` still cites the filter | **MEASURED 10-26** (all three present) | delete the doc text + the stale comment; the tag loop guard covers the echo |
 | F8 | shared | CanonicalMessage is the "shared contract" but reaches only MeshCore; THREE Meshtastic budget literals: 237 `canonical_message.py:32`, 228 `utils/defaults.py:52`, 228 `utils/validation.py:73` | **MEASURED 10-26** (three, not two) | one constant (hfm #5); decide whether BridgedMessage IS the contract |
 | F9 | MA | the `content_id` field comment says "never used to suppress" while its docstring allows gated suppression | BELIEVED | reconcile in the byte-locked file (both twins) |
@@ -236,7 +237,7 @@ before anyone acts on it. Fixed rows moved to "Fixed and pinned" below.
 | F11 | MF-4 | no tag loop guard on MeshCore ingress — relies on the slot allowlist + Public refusal | BELIEVED | pin "a tagged MeshCore line is not re-bridged" |
 | F12 | MF-1 | `desired_method` never passed to `LXMessage` → the delivery method is the library default | **RESOLVED, MEASURED 10-26**: installed lxmf `1.0.1+mf.13` (fork `892047d5`) sets `desired_method = LXMessage.DIRECT` when None (`LXMessage.py:391-393`); no PROPAGATED fallback (FAILED after 5 attempts, per the artifact) | pass `desired_method=DIRECT` explicitly + pin, so a fork merge cannot change it silently |
 | F15 | shared (byte-locked) | `CanonicalMessage.from_meshtastic` decides broadcast as `to_id is None or to_id == '!ffffffff'` (`canonical_message.py:270`) — a lib-shaped packet with `toId='^all'` becomes a DM to `^all` even when numeric `to` is broadcast: the copy the F7 fix missed | **MEASURED 10-26** (line read; `cmp` MF↔MA identical); **latent**: no production caller of `CanonicalMessage.from_meshtastic` (grep: only `UnifiedNode.from_meshtastic`) | reuse the `packet_is_broadcast` rule in the locked file, both twins one commit, a `^all` case in `TestFromMeshtastic` |
-| F16 | MA-5 | the bridge loop puts EVERY Mesh→RNS message on the MeshCore queue right after `_process_mesh_to_rns`, whatever the 10-19 echo guard decided (MA `rns_bridge.py:877-881`); MeshCore split-horizon looks only for MeshCore markers, so an `[RNS:…]`-tagged Meshtastic line can reach MeshCore as `[Mesh:x] [RNS:…] …`; a full queue drops with `logger.debug` only, no counter | **MEASURED 10-26** (the fan-out + DEBUG-only drop read at MA `bca8b795`); the double-tag outcome is PLAUSIBLE until a test shows it | failing test with an RNS-tagged Meshtastic broadcast → fan out only what Mesh→RNS admitted; a counter on the queue-full drop |
+| F16 | MA-5 (and MF, same loop) | the bridge loop put EVERY Mesh→RNS / RNS→Mesh message on the MeshCore queue, whatever the echo guard decided; a full queue dropped at DEBUG, no counter. **Present in BOTH twins** (MF `rns_bridge.py` had the identical two sites), but live only on MA: MF's Meshtastic/MQTT ingress already drops bridge-tagged text before the Mesh→RNS queue (`meshtastic_handler.py`, `mqtt_bridge_handler.py`, `mesh_bridge.py` `is_bridge_loop`) | **FIXED 10-26 (both twins)**: one entry `_fan_out_to_meshcore` — origin filter, then `is_already_bridged` on Meshtastic-sourced text (`meshcore_fanout_echo_suppressed`), then (MF) `can_broadcast`, then enqueue; queue-full = `meshcore_fanout_dropped_queue_full` + WARNING once per 300 s per reason. Decided on the MeshCore leg's own facts, NOT on what Mesh→RNS admitted (the prescribed fix would have starved MeshCore whenever RNS was down). ⚠️ Trade-off kept: an already-bridged line (e.g. an MF-6 `[Mesh:<preset>]` forward) now reaches this box's MeshCore only via MA-4 | — |
 | F13 | MF-4/MA-1 | MeshCore channel senders are unverifiable but carry no `?` mark, while unverified RNS senders do — an asymmetry in rule 4 | design question | operator decision: mark, or document why not |
 | F2-note | MA-5 | deliberate trade: a `@contact` DM reply arriving while MeshCore is DOWN is now DROPPED (counter) instead of replayed — the replay is a channel send. Healthy path still delivers it as an MC DM | by design 2026-10-16 | later: persist DM replies with a `destination` key so replay goes as a DM |
 
