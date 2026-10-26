@@ -47,7 +47,12 @@ records the mode, and a missing row reads as LOSS only when that record says
 ``mqtt_bridge`` — otherwise (or once the queue's 1-day purge may have taken
 the row) it is UNKNOWN. ``send`` also refuses when gateway.json changed after
 the running meshforge-gateway started: the allowlist/mode on disk is not the
-one the live gateway loaded.
+one the live gateway loaded. ``--to`` must name THIS box's gateway: preflight,
+the start record and reconcile all read this box's config and queue.
+
+A run is "in progress" (the one ``mark`` targets) while the pid + kernel start
+time its ``start`` event recorded is still alive — a SIGKILLed sender never
+writes ``end``, so a missing ``end`` alone means nothing.
 
 Reconcile exit: 0 = every logged message terminal in THIS gateway's queue
 (sent or failed); 1 = something unaccounted, or the sender itself failed a
@@ -87,6 +92,9 @@ QUEUE_RECORD_MODE = "mqtt_bridge"
 # NTP step can skew it — it only ever turns FAIL into UNKNOWN).
 PURGE_SAFE_S = 20 * 3600
 GATEWAY_UNIT = "meshforge-gateway.service"
+# Written by append_log when the file it appends to ends mid-line (a kill
+# mid-write): the line before it is torn and read_log may skip it.
+REPAIR_EVENT = "repair_torn_line"
 
 
 def _cfg_dir() -> Path:
@@ -187,6 +195,24 @@ def gateway_preflight(src_hex: str, gw: dict,
     return 0, lines
 
 
+def target_check(to: Optional[str], local: Optional[str]
+                 ) -> Tuple[int, Optional[str], str]:
+    """(rc, dest, sentence). The drill may only target THIS box's gateway:
+    the preflight, the start record and reconcile all read this box's
+    gateway.json and queue, so a remote ``--to`` would be judged and
+    reconciled against the wrong gateway."""
+    if not local:
+        return 2, None, ("no local gateway identity "
+                         "(~/.config/meshforge/gateway_identity) — run the "
+                         "drill ON the gateway box")
+    if to and to.lower() != local.lower():
+        return 1, None, (f"--to {to} is not THIS box's gateway ({local}): "
+                         f"preflight, the start record and reconcile all read "
+                         f"this box's config and queue — run the drill on "
+                         f"the target gateway box instead")
+    return 0, local.lower(), ""
+
+
 def _relay_targets(peers: Iterable, own_hex: Optional[str]) -> List[str]:
     """The entries ``_maybe_relay_to_peers`` would actually send to: 32-hex,
     not this gateway's own hash. Duplicates are kept — so does the loop."""
@@ -211,6 +237,13 @@ def airtime_estimate(n_msgs: int, peers: Iterable,
     used = _relay_targets(peers, own_hex)
     mult = 1 + len(used)
     names = ", ".join(h[:8] for h in used) or "none"
+    if not own_hex and used:
+        # the gateway relays NOTHING without its own LXMF hash, and an own
+        # entry in the peer list cannot be excluded — so a range, not a point
+        return mult, used, (
+            f"airtime: own gateway identity unreadable — between {n_msgs} "
+            f"and {n_msgs * mult} RF lines (this gateway alone, up to + "
+            f"{len(used)} peer relay(s): {names})")
     return mult, used, (
         f"airtime: {n_msgs} message(s) × {mult} gateway(s) = up to "
         f"{n_msgs * mult} RF lines (this gateway + {len(used)} peer "
@@ -230,10 +263,19 @@ def classify(statuses: Iterable[str]) -> str:
 
 
 def append_log(path: Path, event: dict) -> None:
-    """One JSON line, fsync'd — the sender's log must survive a kill."""
+    """One JSON line, fsync'd — the sender's log must survive a kill. If the
+    file ends mid-line (a kill mid-write), terminate it and write a repair
+    record first, so the torn line is not fused with this one."""
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(event, sort_keys=True) + "\n")
+    out = json.dumps(event, sort_keys=True) + "\n"
+    with open(path, "a+b") as f:
+        if f.seek(0, os.SEEK_END):
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":
+                out = "\n" + json.dumps({"event": REPAIR_EVENT,
+                                         "ts": time.time()}) + "\n" + out
+        f.write(out.encode("utf-8"))
         f.flush()
         os.fsync(f.fileno())
 
@@ -242,32 +284,49 @@ class DrillLogError(Exception):
     """The log cannot be trusted as a whole — reconcile must say UNKNOWN."""
 
 
+def _parse_line(raw: bytes) -> dict:
+    """Strict: invalid UTF-8 is damage, never a replacement character that
+    would turn a token into a non-matching one (a false 'unaccounted')."""
+    ev = json.loads(raw.decode("utf-8"))
+    if not isinstance(ev, dict):
+        raise ValueError("not a JSON object")
+    return ev
+
+
 def read_log(path: Path) -> Tuple[List[dict], Optional[str]]:
-    """(events, note). A damaged FINAL line is a kill mid-write (or a
-    power-loss tail): tolerated, and named in ``note``. A missing file or a
-    damaged line anywhere else raises DrillLogError."""
+    """(events, note). A damaged line is tolerated, and named in ``note``,
+    only where a kill mid-write explains it: the FINAL line, or a line
+    followed by append_log's repair record. A missing file or a damaged line
+    anywhere else raises DrillLogError."""
     try:
-        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        data = Path(path).read_bytes()
     except OSError as e:
         raise DrillLogError(f"drill log unreadable ({path}): {e}") from e
-    rows = [(n, ln.strip()) for n, ln in enumerate(text.splitlines(), 1)
+    rows = [(n, ln.strip()) for n, ln in enumerate(data.split(b"\n"), 1)
             if ln.strip()]
-    out, note = [], None
+    out, notes = [], []
     for k, (n, line) in enumerate(rows):
         try:
-            ev = json.loads(line)
-            if not isinstance(ev, dict):
-                raise ValueError("not a JSON object")
-        except ValueError as e:
+            ev = _parse_line(line)
+        except ValueError as e:   # UnicodeDecodeError is a ValueError
             if k == len(rows) - 1:
-                note = (f"final line {n} torn ({e}); ignored — if it was a "
-                        f"send, that one message is not reconciled")
+                notes.append(f"final line {n} torn ({e}); ignored — if it "
+                             f"was a send, that one message is not reconciled")
                 break
+            try:
+                repaired = _parse_line(rows[k + 1][1]).get("event") == REPAIR_EVENT
+            except ValueError:
+                repaired = False
+            if repaired:
+                notes.append(f"line {n} torn by a kill mid-write and repaired "
+                             f"by the next append; ignored — if it was a "
+                             f"send, that one message is not reconciled")
+                continue
             raise DrillLogError(
                 f"drill log line {n} of {path} is corrupt ({e}) and is not "
                 f"the last line — the log cannot be trusted") from e
         out.append(ev)
-    return out, note
+    return out, ("; ".join(notes) or None)
 
 
 def _queue_rows(db_path: Path) -> List[Tuple[str, str, str, str]]:
@@ -293,7 +352,8 @@ def reconcile(log_path: Path, db_path: Path,
     counts = {"sent": 0, "failed": 0, "open": 0, "unaccounted": 0,
               "unobservable": 0}
     rep = {"counts": counts, "sender_errors": 0, "messages": [],
-           "marks": [], "error": None, "log_note": None, "peers": [],
+           "marks": [], "error": None, "log_note": None, "run_note": None,
+           "peers": [],
            "exit": 2}
     try:
         events, rep["log_note"] = read_log(log_path)
@@ -301,9 +361,20 @@ def reconcile(log_path: Path, db_path: Path,
         rep["error"] = str(e)
         return rep
     starts = [e for e in events if e.get("event") == "start"]
+    if len(starts) > 1:
+        # a reused --run-id: tokens repeat across runs and each run has its
+        # own bridge_mode, so no send can be matched to one record
+        rep["error"] = (f"log holds {len(starts)} start events (a reused "
+                        f"--run-id) — tokens collide across runs; reconcile "
+                        f"one run per log")
+        return rep
     mode = starts[-1].get("bridge_mode") if starts else None
     rep["bridge_mode"] = mode
     rep["peers"] = list(starts[-1].get("peers") or []) if starts else []
+    rep["run_note"] = (None if any(e.get("event") == "end" for e in events)
+                       else "no end event: the sender is still running or "
+                            "was killed — sends after its last log line are "
+                            "not in this record")
     record_ok = mode == QUEUE_RECORD_MODE
     sends = [e for e in events if e.get("event") == "send"]
     rep["marks"] = [e for e in events if e.get("event") == "mark"]
@@ -340,13 +411,10 @@ def reconcile(log_path: Path, db_path: Path,
                 updated.append(upd)
         verdict = classify(statuses)
         if verdict == "unaccounted":
-            if not record_ok:
+            why = _absence_unobservable(record_ok, mode, s.get("ts"), now)
+            if why:
                 verdict = "unobservable"
-                entry["why"] = (f"bridge_mode={mode}: the queue is not the "
-                                f"gateway's record")
-            elif now - float(s.get("ts") or 0) > PURGE_SAFE_S:
-                verdict = "unobservable"
-                entry["why"] = "older than the queue's 1-day purge window"
+                entry["why"] = why
         entry["verdict"] = verdict
         entry["queue_status"] = statuses
         entry["updated_at"] = max(updated) if updated else None
@@ -360,14 +428,30 @@ def reconcile(log_path: Path, db_path: Path,
     else:
         rep["exit"] = 0
     if counts["unobservable"] and not rep["error"]:
+        whys = sorted({m["why"] for m in rep["messages"] if m.get("why")})
         rep["error"] = (
             f"{counts['unobservable']} message(s) have no queue row and the "
-            f"absence cannot be read as loss: " + (
-                f"the run's start event records bridge_mode={mode}, and the "
-                f"queue is the record only in {QUEUE_RECORD_MODE}"
-                if not record_ok else
-                "reconcile ran past the queue's 1-day purge window"))
+            f"absence cannot be read as loss: " + "; ".join(whys))
     return rep
+
+
+def _absence_unobservable(record_ok: bool, mode, ts, now: float
+                          ) -> Optional[str]:
+    """Why a missing queue row is NOT evidence of loss, or None when it is.
+    The purge window is wall-clock on an RTC-less Pi, so a send stamped in
+    the future (clock stepped back) or with no stamp is UNKNOWN."""
+    if not record_ok:
+        return (f"bridge_mode={mode}: the queue is not the gateway's record "
+                f"(only {QUEUE_RECORD_MODE})")
+    if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+        return "send has no timestamp — its age vs the purge window is unknown"
+    age = now - float(ts)
+    if age < 0:
+        return (f"send stamped {-age:.0f}s in the future — the clock went "
+                f"backward, its age vs the purge window is unknown")
+    if age > PURGE_SAFE_S:
+        return "older than the queue's 1-day purge window"
+    return None
 
 
 # ── live parts (RNS / LXMF) ────────────────────────────────────────────────
@@ -429,13 +513,36 @@ def _local_gateway() -> dict:
         return {"error": f"gateway config unreadable: {e}"}
 
 
-def _gateway_unit_props() -> Optional[dict]:
-    """ActiveState + ActiveEnterTimestampMonotonic of the gateway unit, or
-    None when systemd could not be asked (UNKNOWN, never 'fine')."""
+def pick_unit_scope(system: Optional[dict], user: Optional[dict]
+                    ) -> Tuple[Optional[str], str]:
+    """Which systemd manager runs the gateway — ("system"|"user", "") or
+    (None, why). Scope is per UNIT and per box, so it is asked, not assumed:
+    the wrong manager answers ``inactive`` for a unit that is running."""
+    loaded = [name for name, p in (("system", system), ("user", user))
+              if p and p.get("LoadState") == "loaded"]
+    if len(loaded) == 1:
+        return loaded[0], ""
+    if len(loaded) == 2:
+        return None, (f"{GATEWAY_UNIT} is installed in BOTH the system and "
+                      f"the user manager — which one runs the gateway is "
+                      f"ambiguous")
+    if system is None or user is None:
+        return None, (f"could not ask the "
+                      f"{'system' if system is None else 'user'} manager "
+                      f"about {GATEWAY_UNIT}")
+    return None, f"{GATEWAY_UNIT} is not installed in either manager"
+
+
+def _unit_show(user: bool) -> Optional[dict]:
+    """``systemctl [--user] show`` of the gateway unit via service_check's
+    read-only argv builder, or None when that manager could not be asked."""
+    from utils.service_check import _systemctl_query_argv
     try:
         out = subprocess.run(
-            ["systemctl", "show", "-p", "ActiveState",
-             "-p", "ActiveEnterTimestampMonotonic", GATEWAY_UNIT],
+            _systemctl_query_argv(
+                ["show", "-p", "LoadState", "-p", "ActiveState",
+                 "-p", "ActiveEnterTimestampMonotonic", GATEWAY_UNIT],
+                user=user),
             capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -447,14 +554,19 @@ def _gateway_unit_props() -> Optional[dict]:
 
 
 def _live(gw: dict) -> Tuple[str, str]:
-    return live_config_check(gw.get("mtime"), _gateway_unit_props(),
+    scope, why = pick_unit_scope(_unit_show(False), _unit_show(True))
+    if scope is None:
+        return "unknown", why
+    props = _unit_show(scope == "user")
+    return live_config_check(gw.get("mtime"), props,
                              time.time(), time.monotonic())
 
 
 def _preflight(src_hex: str) -> Tuple[int, List[str], dict]:
     gw = _local_gateway()
-    live = ("unknown", "") if gw.get("error") else _live(gw)
-    rc, lines = gateway_preflight(src_hex, gw, live)
+    if gw.get("error"):
+        return (*gateway_preflight(src_hex, gw, ("unknown", "")), gw)
+    rc, lines = gateway_preflight(src_hex, gw, _live(gw))
     return rc, lines, gw
 
 
@@ -485,19 +597,47 @@ def cmd_mark(args) -> int:
     return 0
 
 
-def pick_mark_log(log_dir: Path) -> Tuple[Optional[Path], str]:
-    """The ONE run that is in progress (a ``start`` and no ``end``), never
-    "the newest filename" — ``--run-id`` names sort anywhere. 0 or >1 open
-    runs: refuse and ask for --log."""
+def _proc_starttime(pid: int) -> Optional[str]:
+    """Kernel start time (clock ticks since boot, /proc/<pid>/stat field 22)
+    — with the pid, it names ONE process: a reused pid has another."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    fields = stat.rsplit(")", 1)[-1].split()   # comm may hold spaces/parens
+    return fields[19] if len(fields) > 19 else None
+
+
+def _run_alive(pid, starttime) -> bool:
+    return (isinstance(pid, int) and bool(starttime)
+            and _proc_starttime(pid) == starttime)
+
+
+def _first_event(p: Path) -> Optional[dict]:
+    try:
+        with open(p, "rb") as f:
+            return _parse_line(f.readline())
+    except (OSError, ValueError):
+        return None
+
+
+def pick_mark_log(log_dir: Path, alive=_run_alive
+                  ) -> Tuple[Optional[Path], str]:
+    """The ONE run whose sender is still alive (the pid + kernel start time
+    its ``start`` event recorded), never "the newest filename" (``--run-id``
+    names sort anywhere) and never "no ``end``" (a SIGKILLed sender never
+    writes one). Reads only each log's first line. 0 or >1 live runs:
+    refuse and ask for --log."""
     open_runs, skipped = [], []
     for p in sorted(Path(log_dir).glob("*.jsonl")):
-        try:
-            events, _ = read_log(p)
-        except DrillLogError:
+        first = _first_event(p)
+        if first is None:
             skipped.append(p.name)
             continue
-        kinds = {e.get("event") for e in events}
-        if "start" in kinds and "end" not in kinds:
+        pid, started = first.get("pid"), first.get("pid_start")
+        if (first.get("event") == "start" and isinstance(pid, int)
+                and not isinstance(pid, bool) and started
+                and alive(pid, started)):
             open_runs.append(p)
     note = f" (unreadable, not judged: {', '.join(skipped)})" if skipped else ""
     if len(open_runs) == 1:
@@ -510,14 +650,24 @@ def pick_mark_log(log_dir: Path) -> Tuple[Optional[Path], str]:
                   f"--log <run.jsonl>")
 
 
+def fresh_run_log(log: Path) -> Tuple[bool, str]:
+    """A run log holds ONE run: tokens are run-id + seq, so a reused run id
+    would collide in reconcile."""
+    if Path(log).exists():
+        return False, (f"{log} already exists — a reused --run-id would mix "
+                       f"two runs' tokens in one log; pick a new --run-id")
+    return True, ""
+
+
 def cmd_send(args) -> int:
     import RNS
     ident = _load_identity()
     src_hex = _source_hex(ident)
-    dest_hex = args.to or _local_gateway_dest()
-    if not dest_hex:
-        print("FATAL: no --to and no local gateway identity")
-        return 2
+    local_dest = _local_gateway_dest()
+    rc, dest_hex, why = target_check(args.to, local_dest)
+    if rc:
+        print(f"REFUSED: {why}")
+        return rc
     rc, lines, gw = _preflight(src_hex)
     for ln in lines:
         print(ln)
@@ -526,9 +676,12 @@ def cmd_send(args) -> int:
 
     run_id = args.run_id or time.strftime("%Y%m%dT%H%M%S")
     log = _log_dir() / f"{run_id}.jsonl"
+    ok, why = fresh_run_log(log)
+    if not ok:
+        print(f"REFUSED: {why}")
+        return 1
     total = args.count or max(1, int(args.minutes * 60 // args.interval) + 1)
-    _mult, relay_to, air = airtime_estimate(total, gw.get("peers"),
-                                            _local_gateway_dest())
+    _, relay_to, air = airtime_estimate(total, gw.get("peers"), local_dest)
     print(air)
 
     from utils.paths import ReticulumPaths
@@ -562,7 +715,8 @@ def cmd_send(args) -> int:
                      "dest": dest_hex, "interval_s": args.interval,
                      "planned": total, "host": socket.gethostname(),
                      "bridge_mode": gw.get("bridge_mode"),
-                     "peers": relay_to,
+                     "peers": relay_to, "pid": os.getpid(),
+                     "pid_start": _proc_starttime(os.getpid()),
                      "ts": time.time()})
     print(f"run {run_id}: {total} msg every {args.interval:.0f}s → {dest_hex}")
     print(f"log: {log}")
@@ -611,6 +765,8 @@ def cmd_reconcile(args) -> int:
         print(f"UNKNOWN: {rep['error']}")
     if rep.get("log_note"):
         print(f"log: {rep['log_note']}")
+    if rep.get("run_note"):
+        print(f"run: {rep['run_note']}")
     timeline = sorted(
         [(m["ts"], f"#{m['seq']:<3} {m['verdict']:<12} {m.get('queue_status')}")
          for m in rep["messages"]]
@@ -642,7 +798,8 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("hash", help="print the drill hash + allowlist verdict")
     s = sub.add_parser("send", help="run the paced sender")
-    s.add_argument("--to", help="gateway LXMF hash (default: this box's)")
+    s.add_argument("--to", help="gateway LXMF hash — must be THIS box's "
+                   "(the default); a remote gateway is refused")
     s.add_argument("--interval", type=float, default=DEFAULT_INTERVAL_S)
     s.add_argument("--minutes", type=float, default=70.0)
     s.add_argument("--count", type=int, help="overrides --minutes")

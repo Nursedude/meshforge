@@ -299,28 +299,35 @@ class TestS3LiveGatewayLoadedTheConfig:
 
 
 class TestS4MarkPicksTheOpenRun:
+    # "open" = the sender recorded in start is alive (R1, third read)
     def _run(self, d, name, ended):
         p = d / f"{name}.jsonl"
-        drill.append_log(p, {"event": "start", "run_id": name, "ts": 1.0})
+        drill.append_log(p, {"event": "start", "run_id": name,
+                             "pid": 100 if ended else 200, "pid_start": "1",
+                             "ts": 1.0})
         if ended:
             drill.append_log(p, {"event": "end", "ts": 2.0})
         return p
 
+    @staticmethod
+    def _alive(pid, st):
+        return pid == 200
+
     def test_open_run_wins_over_a_later_sorting_ended_run(self, tmp_path):
         live = self._run(tmp_path, "20261025T080000", ended=False)
         self._run(tmp_path, "zz-custom-run-id", ended=True)
-        path, _ = drill.pick_mark_log(tmp_path)
+        path, _ = drill.pick_mark_log(tmp_path, alive=self._alive)
         assert path == live
 
     def test_two_open_runs_refuse(self, tmp_path):
         self._run(tmp_path, "a", ended=False)
         self._run(tmp_path, "b", ended=False)
-        path, why = drill.pick_mark_log(tmp_path)
+        path, why = drill.pick_mark_log(tmp_path, alive=self._alive)
         assert path is None and "--log" in why
 
     def test_no_open_run_refuses(self, tmp_path):
         self._run(tmp_path, "a", ended=True)
-        path, why = drill.pick_mark_log(tmp_path)
+        path, why = drill.pick_mark_log(tmp_path, alive=self._alive)
         assert path is None and "--log" in why
 
 
@@ -346,3 +353,184 @@ class TestS5PeerRelayAirtime:
         drill.cmd_reconcile(argparse.Namespace(log=str(log), db=str(db),
                                                json=False))
         assert "THIS gateway" in capsys.readouterr().out
+
+
+# ── third-read fixes 2026-10-25 (R1..R8, R10; R9 refuted) ───────────────────
+
+class TestR1KilledRunIsNotInProgress:
+    """A SIGKILLed sender never writes ``end``; liveness comes from the pid +
+    its kernel start time recorded in ``start``, not from a missing ``end``."""
+
+    def _run(self, d, name, pid, starttime, ended=False):
+        p = d / f"{name}.jsonl"
+        drill.append_log(p, {"event": "start", "run_id": name, "pid": pid,
+                             "pid_start": starttime, "ts": 1.0})
+        if ended:
+            drill.append_log(p, {"event": "end", "ts": 2.0})
+        return p
+
+    def test_dead_sender_without_end_is_not_open(self, tmp_path):
+        self._run(tmp_path, "killed", 4242, "111")
+        path, why = drill.pick_mark_log(tmp_path, alive=lambda pid, st: False)
+        assert path is None and "--log" in why
+
+    def test_live_sender_is_the_open_run_beside_a_killed_one(self, tmp_path):
+        self._run(tmp_path, "killed", 4242, "111")
+        live = self._run(tmp_path, "live", 5151, "222")
+        path, _ = drill.pick_mark_log(
+            tmp_path, alive=lambda pid, st: (pid, st) == (5151, "222"))
+        assert path == live
+
+    def test_pid_reused_by_another_process_is_not_alive(self):
+        me = drill._proc_starttime(__import__("os").getpid())
+        assert me is not None
+        assert drill._run_alive(__import__("os").getpid(), me)
+        assert not drill._run_alive(__import__("os").getpid(), me + "0")
+
+    def test_start_without_pid_is_never_judged_open(self, tmp_path):
+        p = tmp_path / "old.jsonl"
+        drill.append_log(p, {"event": "start", "run_id": "old", "ts": 1.0})
+        path, _ = drill.pick_mark_log(tmp_path, alive=lambda pid, st: True)
+        assert path is None
+
+    def test_reconcile_names_a_run_that_never_ended(self, tmp_path):
+        t1 = drill.make_token("r", 1)
+        db = _queue_db(tmp_path, [(drill.message_text(t1), SRC, "delivered",
+                                   "meshtastic")])
+        rep = drill.reconcile(_send_log(tmp_path, n=1), db)
+        assert rep["run_note"] and "end" in rep["run_note"]
+
+
+class TestR2TornLineThenAppend:
+    def test_append_after_a_torn_tail_does_not_fuse(self, tmp_path):
+        t1 = drill.make_token("r", 1)
+        log = _send_log(tmp_path, n=1)
+        with open(log, "a") as f:
+            f.write('{"event": "send", "seq": 2, "tok')   # kill mid-write
+        drill.append_log(log, {"event": "mark", "what": "x", "ts": 9.0})
+        db = _queue_db(tmp_path, [(drill.message_text(t1), SRC, "delivered",
+                                   "meshtastic")])
+        rep = drill.reconcile(log, db)
+        assert rep["exit"] == 0, rep["error"]
+        assert [m["what"] for m in rep["marks"]] == ["x"]
+        assert rep["log_note"] and "torn" in rep["log_note"]
+
+    def test_corrupt_middle_line_without_a_repair_record_is_still_unknown(
+            self, tmp_path):
+        log = _send_log(tmp_path, n=1)
+        log.write_text(log.read_text() + "garbage{\n"
+                       + json.dumps({"event": "mark", "what": "y", "ts": 1})
+                       + "\n")
+        rep = drill.reconcile(log, _queue_db(tmp_path, []))
+        assert rep["exit"] == 2
+
+
+class TestR3StrictDecode:
+    def test_invalid_utf8_mid_log_is_unknown_not_unaccounted(self, tmp_path):
+        log = tmp_path / "run.jsonl"
+        drill.append_log(log, {"event": "start", "run_id": "r", "source": SRC,
+                               "bridge_mode": "mqtt_bridge",
+                               "ts": time.time() - 600})
+        line = json.dumps({"event": "send", "seq": 1, "token": "bic2-r-0XX",
+                           "ts": time.time() - 500, "handoff": "handed",
+                           "source": SRC}).encode().replace(b"0XX", b"0\xff\xfe")
+        with open(log, "ab") as f:
+            f.write(line + b"\n")
+        drill.append_log(log, {"event": "end", "ts": time.time()})
+        rep = drill.reconcile(log, _queue_db(tmp_path, []))
+        assert rep["exit"] == 2
+        assert rep["counts"]["unaccounted"] == 0
+
+
+class TestR4ReusedRunId:
+    def test_two_start_events_are_unknown(self, tmp_path):
+        log = _send_log(tmp_path, n=1)
+        drill.append_log(log, {"event": "start", "run_id": "r", "source": SRC,
+                               "bridge_mode": "message_bridge",
+                               "ts": time.time()})
+        rep = drill.reconcile(log, _queue_db(tmp_path, []))
+        assert rep["exit"] == 2
+        assert "2 start" in rep["error"]
+        assert rep["counts"]["unaccounted"] == 0
+
+    def test_send_refuses_an_existing_run_log(self, tmp_path):
+        p = tmp_path / "r.jsonl"
+        p.write_text("{}\n")
+        ok, why = drill.fresh_run_log(p)
+        assert not ok and "--run-id" in why
+        assert drill.fresh_run_log(tmp_path / "new.jsonl")[0]
+
+
+class TestR5PurgeWindowClock:
+    def _one(self, tmp_path, ts):
+        p = tmp_path / "run.jsonl"
+        drill.append_log(p, {"event": "start", "run_id": "r", "source": SRC,
+                             "bridge_mode": "mqtt_bridge", "ts": 1.0})
+        ev = {"event": "send", "seq": 1, "token": drill.make_token("r", 1),
+              "handoff": "handed", "source": SRC}
+        if ts is not None:
+            ev["ts"] = ts
+        drill.append_log(p, ev)
+        return p
+
+    def test_send_from_the_future_is_unknown(self, tmp_path):
+        now = 1_000_000.0
+        rep = drill.reconcile(self._one(tmp_path, now + 3600),
+                              _queue_db(tmp_path, []), now=now)
+        assert rep["exit"] == 2 and rep["counts"]["unaccounted"] == 0
+        assert "backward" in rep["messages"][0]["why"]
+
+    def test_send_without_a_timestamp_is_unknown(self, tmp_path):
+        rep = drill.reconcile(self._one(tmp_path, None),
+                              _queue_db(tmp_path, []), now=1_000_000.0)
+        assert rep["exit"] == 2 and rep["counts"]["unaccounted"] == 0
+        assert "timestamp" in rep["messages"][0]["why"]
+
+
+class TestR6TargetIsThisGateway:
+    LOCAL = "d" * 32
+
+    def test_remote_to_is_refused(self):
+        rc, dest, why = drill.target_check("e" * 32, self.LOCAL)
+        assert rc == 1 and dest is None and "THIS box" in why
+
+    def test_to_equal_to_local_passes(self):
+        assert drill.target_check(self.LOCAL.upper(), self.LOCAL)[:2] == (
+            0, self.LOCAL)
+
+    def test_default_is_local(self):
+        assert drill.target_check(None, self.LOCAL)[:2] == (0, self.LOCAL)
+
+    def test_no_local_gateway_is_unknown(self):
+        rc, dest, _ = drill.target_check(None, None)
+        assert rc == 2 and dest is None
+
+
+class TestR7AirtimeWithoutOwnIdentity:
+    def test_unknown_own_hash_says_range_not_a_point(self):
+        mult, used, line = drill.airtime_estimate(10, ["a" * 32], None)
+        assert mult == 2 and used == ["a" * 32]
+        assert "unreadable" in line and "between 10 and 20" in line
+
+
+class TestR8UnitScope:
+    LOADED = {"LoadState": "loaded", "ActiveState": "active"}
+    ABSENT = {"LoadState": "not-found", "ActiveState": "inactive"}
+
+    def test_system_unit(self):
+        assert drill.pick_unit_scope(self.LOADED, self.ABSENT)[0] == "system"
+
+    def test_user_unit(self):
+        assert drill.pick_unit_scope(self.ABSENT, self.LOADED)[0] == "user"
+
+    def test_both_loaded_is_ambiguous(self):
+        scope, why = drill.pick_unit_scope(self.LOADED, self.LOADED)
+        assert scope is None and "BOTH" in why
+
+    def test_neither_is_not_installed(self):
+        scope, why = drill.pick_unit_scope(self.ABSENT, self.ABSENT)
+        assert scope is None and "not installed" in why
+
+    def test_unaskable_scope_is_unknown_when_other_is_absent(self):
+        scope, why = drill.pick_unit_scope(self.ABSENT, None)
+        assert scope is None and "could not ask" in why
