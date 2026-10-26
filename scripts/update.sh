@@ -529,9 +529,10 @@ if [[ -n "$REAL_USER" && -f "$INSTALL_DIR/scripts/ensure_prune_cron.sh" ]]; then
     esac
 fi
 
-# Opt-in login autostart (deployment.json desktop_autostart) on a console box.
-# Step 3 already installed the launcher; this is the same helper fleet_sync.sh
-# runs, so a standalone box and a fleet box converge identically (2026-10-25).
+# Opt-in login autostart (deployment.json desktop_autostart) on a console box —
+# the same helper fleet_sync.sh runs (2026-10-25). NOT identical to a fleet box:
+# step 3 above still installs the launcher on EVERY box, headless included,
+# where the fleet leg installs it only on graphical.target (queued, review F2).
 if [[ -n "$REAL_USER" && "$SKIP_DESKTOP" != "true" && -f "$INSTALL_DIR/scripts/ensure_desktop.sh" ]]; then
     if [[ "$(id -un)" == "${REAL_USER}" ]]; then
         desk_out="$(timeout 150 bash "$INSTALL_DIR/scripts/ensure_desktop.sh" --apply 2>&1)" || true

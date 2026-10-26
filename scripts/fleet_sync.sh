@@ -1369,7 +1369,8 @@ esac
 desk_out=$(timeout 150 bash /opt/meshforge/scripts/ensure_desktop.sh --apply 2>&1)
 [ -n "$desk_out" ] || desk_out="no output (helper killed by timeout 150s?)"
 if printf '%s\n' "$desk_out" | grep -qE '^(launcher|autostart): error' \
-   || ! printf '%s\n' "$desk_out" | grep -qE '^launcher: '; then
+   || ! printf '%s\n' "$desk_out" | grep -qE '^launcher: ' \
+   || ! printf '%s\n' "$desk_out" | grep -qE '^autostart: '; then
     printf '[%-30s] WARN %s\n' "self ($(hostname -s))" "desktop: $(printf '%s' "$desk_out" | tr '\n' '|' | head -c 140)"
     action_warn=$((action_warn + 1))
 elif printf '%s\n' "$desk_out" | grep -qE '^(launcher: installed|autostart: (written|removed))'; then

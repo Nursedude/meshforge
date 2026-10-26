@@ -42,9 +42,12 @@ cat > "$TMP/install-desktop" <<EOF
 #!/usr/bin/env bash
 echo called >> "$CALLS"
 [ "\${INSTALL_FAIL:-0}" = 1 ] && { echo "boom" >&2; exit 3; }
-mkdir -p "$APPS" "$BIN"
+[ "\${INSTALL_NOOP:-0}" = 1 ] && exit 0
+mkdir -p "$APPS" "$BIN" "$H/.local/share/applications"
 cp "$REPO/org.meshforge.app.desktop" "$APPS/org.meshforge.app.desktop"
+cp "$REPO/org.meshforge.app.desktop" "$H/.local/share/applications/org.meshforge.app.desktop"
 ln -sfn "$REPO/scripts/meshforge-terminal.sh" "$BIN/meshforge-terminal"
+ln -sfn "$REPO/scripts/meshforge-launcher.sh" "$BIN/meshforge"
 EOF
 chmod +x "$TMP/systemctl" "$TMP/sudo" "$TMP/install-desktop"
 
@@ -52,6 +55,7 @@ run() {
     SYSTEMCTL_BIN="$TMP/systemctl" SUDO_BIN="$TMP/sudo" \
     INSTALL_DESKTOP_BIN="$TMP/install-desktop" \
     DESKTOP_APPS_DIR="$APPS" DESKTOP_BIN_DIR="$BIN" HOME="$H" \
+    DESKTOP_INSTALL_DIR="${DESKTOP_INSTALL_DIR:-$REPO}" \
     bash "$SCRIPT" "$@" 2>&1
 }
 check() { if [ -n "$2" ]; then echo "PASS: $1"; else echo "FAIL: $1"; fails=1; fi; }
@@ -182,6 +186,47 @@ reset; declare_url "http://manager.example:5000/fleet"
 out="$(TARGET=multi-user.target run --apply)"
 check "headless box never writes autostart even when declared" "$([ ! -e "$AUTO/org.meshforge.fleet.desktop" ] && echo ok)"
 check "headless box says why autostart was skipped" "$(echo "$out" | grep '^autostart:' | grep -q 'headless' && echo ok)"
+
+# ── review 2026-10-25 (non-author, ddf617b8) ─────────────────────────────
+# F1: a JSON fleet_url with an embedded newline must not smuggle a 2nd line
+reset; printf '{"desktop_autostart": {"fleet_url": "http://m:5000/fleet\\nExec=sh -c evil"}}\n' > "$DEP"
+out="$(TARGET=graphical.target run --apply)"; rc=$?
+check "F1 newline in fleet_url reports autostart: error" "$(echo "$out" | grep -q '^autostart: error' && echo ok)"
+check "F1 newline in fleet_url writes no fleet entry" "$([ ! -e "$AUTO/org.meshforge.fleet.desktop" ] && echo ok)"
+check "F1 newline in fleet_url exits 1" "$([ "$rc" = 1 ] && echo ok)"
+check "F1 no smuggled Exec line anywhere in autostart" "$( ! grep -rqs 'evil' "$AUTO" && echo ok)"
+
+# F3: a stale per-user menu copy, or a frozen /usr/local/bin/meshforge, is not 'present'
+reset; TARGET=graphical.target run --apply >/dev/null
+echo "# stale" >> "$H/.local/share/applications/org.meshforge.app.desktop"
+out="$(TARGET=graphical.target run)"
+check "F3 stale per-user menu copy reads would_install" "$(echo "$out" | grep -q '^launcher: would_install' && echo ok)"
+reset; TARGET=graphical.target run --apply >/dev/null
+rm -f "$BIN/meshforge"; cp "$REPO/scripts/meshforge-launcher.sh" "$BIN/meshforge"
+out="$(TARGET=graphical.target run)"
+check "F3 frozen meshforge COPY (not a link) reads would_install" "$(echo "$out" | grep -q '^launcher: would_install' && echo ok)"
+
+# F5: python3 unavailable is its own error, never a 'bad URL'
+reset; declare_url "http://manager.example:5000/fleet"
+out="$(TARGET=graphical.target PYTHON_BIN="$TMP/no-such-python" run --apply)"; rc=$?
+check "F5 missing python reports autostart: error" "$(echo "$out" | grep -q '^autostart: error' && echo ok)"
+check "F5 missing python is not blamed on the URL" "$( ! echo "$out" | grep -q 'not a plain http' && echo ok)"
+check "F5 missing python exits 1" "$([ "$rc" = 1 ] && echo ok)"
+
+# F6: an installer that exits 0 but installs nothing is an error, not 'installed'
+reset
+out="$(TARGET=graphical.target INSTALL_NOOP=1 run --apply)"; rc=$?
+check "F6 no-op installer reports launcher: error" "$(echo "$out" | grep -q '^launcher: error' && echo ok)"
+check "F6 no-op installer never reads installed" "$( ! echo "$out" | grep -q '^launcher: installed' && echo ok)"
+check "F6 no-op installer exits 1" "$([ "$rc" = 1 ] && echo ok)"
+
+# F9: a checkout that is not the install dir is refused (install-desktop.sh
+# would move a real install dir aside to symlink this one in)
+reset
+out="$(TARGET=graphical.target DESKTOP_INSTALL_DIR="$TMP/elsewhere" run --apply)"; rc=$?
+check "F9 foreign checkout reports launcher: error" "$(echo "$out" | grep -q '^launcher: error' && echo ok)"
+check "F9 foreign checkout never calls the installer" "$([ "$(calls)" = 0 ] && echo ok)"
+check "F9 foreign checkout exits 1" "$([ "$rc" = 1 ] && echo ok)"
 
 echo "---"
 if [ "$fails" = 0 ]; then echo "ALL PASS"; exit 0; else echo "FAILED"; exit 1; fi

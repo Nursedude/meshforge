@@ -34,8 +34,14 @@ APPLY=0
 REPO="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 SYSTEMCTL="${SYSTEMCTL_BIN:-systemctl}"
 SUDO="${SUDO_BIN:-sudo}"
+PYTHON="${PYTHON_BIN:-python3}"
 APPS_DIR="${DESKTOP_APPS_DIR:-/usr/share/applications}"
 BIN_DIR="${DESKTOP_BIN_DIR:-/usr/local/bin}"
+# The checkout install-desktop.sh is allowed to install from. It symlinks
+# /opt/meshforge to its own PROJECT_DIR and moves a real directory there
+# aside first, so a converge leg run from any other checkout is refused
+# (review of ddf617b8, F9).
+INSTALL_DIR="${DESKTOP_INSTALL_DIR:-/opt/meshforge}"
 if [ -n "${INSTALL_DESKTOP_BIN:-}" ]; then
     INSTALLER=("$INSTALL_DESKTOP_BIN")
 else
@@ -58,20 +64,36 @@ elif [ "$target" != "graphical.target" ]; then
     echo "launcher: headless — default target $target (headless_unless_console), no launcher"
 else
     console=yes
-    term_link="$BIN_DIR/meshforge-terminal"
-    if cmp -s "$REPO/org.meshforge.app.desktop" "$APPS_DIR/org.meshforge.app.desktop" \
-       && [ -L "$term_link" ] \
-       && [ "$(readlink -f "$term_link")" = "$(readlink -f "$REPO/scripts/meshforge-terminal.sh")" ]; then
+    # Everything a menu click resolves through: the system entry, the per-user
+    # copy (it SHADOWS the system one), and both commands as LINKS into this
+    # checkout — a copy is the frozen-launcher class (review F3).
+    launcher_present() {
+        local d="org.meshforge.app.desktop" pair
+        cmp -s "$REPO/$d" "$APPS_DIR/$d" || return 1
+        cmp -s "$REPO/$d" "$HOME/.local/share/applications/$d" || return 1
+        for pair in "meshforge-terminal:meshforge-terminal.sh" "meshforge:meshforge-launcher.sh"; do
+            [ -L "$BIN_DIR/${pair%%:*}" ] || return 1
+            [ "$(readlink -f "$BIN_DIR/${pair%%:*}")" = "$(readlink -f "$REPO/scripts/${pair#*:}")" ] || return 1
+        done
+    }
+    if launcher_present; then
         echo "launcher: present"
+    elif [ "$(readlink -f "$REPO")" != "$(readlink -f "$INSTALL_DIR" 2>/dev/null)" ]; then
+        echo "launcher: error — this checkout ($REPO) is not $INSTALL_DIR; install-desktop.sh would re-point it, refused"
+        rc=1
     elif [ "$APPLY" = 0 ]; then
         echo "launcher: would_install — console box, launcher missing or stale"
     else
         mkdir -p "$STATE"
-        if timeout 120 "$SUDO" -n "${INSTALLER[@]}" >"$STATE/install-desktop.log" 2>&1; then
-            echo "launcher: installed"
-        else
+        if ! timeout 120 "$SUDO" -n "${INSTALLER[@]}" >"$STATE/install-desktop.log" 2>&1; then
             echo "launcher: error — install failed or sudo refused (log $STATE/install-desktop.log); by hand: sudo bash $REPO/scripts/install-desktop.sh"
             rc=1
+        elif ! launcher_present; then
+            # Exit 0 is the installer's claim; the files are the evidence (F6).
+            echo "launcher: error — installer exited 0 but the launcher is still missing or stale (log $STATE/install-desktop.log)"
+            rc=1
+        else
+            echo "launcher: installed"
         fi
     fi
 fi
@@ -87,8 +109,11 @@ if [ "$console" != yes ]; then
 fi
 
 # The declaration, read without guessing: undeclared | url <value> | error <why>.
-decl="$(python3 -I -c '
-import json, sys
+# The URL is validated HERE, on the whole string: a line-wise grep let an
+# embedded newline smuggle a second line into the .desktop file (review F1).
+mkdir -p "$STATE" 2>/dev/null
+decl="$("$PYTHON" -I -c '
+import json, re, sys
 p = sys.argv[1]
 try:
     with open(p, encoding="utf-8") as f:
@@ -104,8 +129,18 @@ if a is None:
     print("undeclared"); sys.exit(0)
 if not isinstance(a, dict) or not isinstance(a.get("fleet_url"), str):
     print("error desktop_autostart must be {\"fleet_url\": \"http://...\"}"); sys.exit(0)
-print("url " + a["fleet_url"])
-' "$DEPLOYMENT" 2>&1)"
+u = a["fleet_url"]
+if not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?", u):
+    print("error fleet_url not a plain http(s) URL: %s" % ascii(u)[:80]); sys.exit(0)
+print("url " + u)
+' "$DEPLOYMENT" 2>"$STATE/ensure_desktop.err")"
+prc=$?
+# Only the three shapes, on ONE line, count as an answer; a missing or
+# crashing interpreter is its own error, never a bad URL (review F5).
+if [ "$prc" != 0 ] || [ "$(printf '%s\n' "$decl" | wc -l)" != 1 ] \
+   || ! printf '%s' "$decl" | grep -qE '^(undeclared|url |error )'; then
+    decl="error could not read deployment.json ($PYTHON rc=$prc: $(head -c 100 "$STATE/ensure_desktop.err" 2>/dev/null | tr '\n' ' '))"
+fi
 
 # Our two entries, rendered; a file is OURS only when it carries the marker.
 tui_entry() {
