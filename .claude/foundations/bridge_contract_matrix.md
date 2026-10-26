@@ -13,6 +13,13 @@
 > becomes VERIFIED only through its pinning test. A cell with no test is
 > **UNPINNED**, and that is the worklist, not a footnote.
 >
+> **2026-10-26 sync** from an outside re-read (Bridge Contract Matrix artifact,
+> another session: two independent code reads at MF `176d7296` / MA `bca8b795`).
+> Its claims enter here as BELIEVED unless re-measured in THIS repo at MF
+> `738e4fd3` / MA `bca8b795` — those are marked **MEASURED 10-26** with what was
+> run (F5, F6, F8, F12, F15, F16, MA-5's guard test). Not re-measured: the F1
+> refutation, F3, F9.
+>
 > Paths: `MF:` = `/opt/meshforge/src/gateway/`, `MA:` = `/opt/meshanchor/src/gateway/`.
 > Line numbers drift; the test names are the durable anchor.
 
@@ -72,7 +79,11 @@ statement of what we are: radio metadata is measured at each end, never relayed.
   SQLite spill when the queue is full. **F4.**
 - *Loop:* tag check + optional `content_id` (`rns.true_origin_downlink_enabled`,
   default False); packet-id dedup. **F6.**
+- *Send method:* no `desired_method` is passed; the pinned fork (lxmf
+  `1.0.1+mf.13`) turns `None` into **DIRECT** (link) and never falls back to
+  PROPAGATED. **F12.**
 - *Pinned by:* `test_rns_bridge.py::TestProcessMeshToRNS`, `TestSessionDmToGateway`,
+  `TestF14ReviewFollowups`, `test_m2r_requeue_f4.py`,
   `test_mqtt_bridge_handler.py::TestIsAlreadyBridged`, `TestContentIdLoopGuardIngress`.
 
 **MF-2 RNS/LXMF → Meshtastic** — on by default with the gateway.
@@ -117,8 +128,10 @@ adds `meshforge_relayed_by` / `origin_*` / `content_id`. *Pinned by:*
 
 **MF-5 Meshtastic / RNS → MeshCore** — fed for every MF-1/MF-2 message;
 internet- and MQTT-origin messages are dropped. Tag `[Mesh:<8>]` / `[RNS:<8>]`,
-160 B with an ellipsis. **F5** (effectively dead on real hardware, and reports
-success). *Pinned by:* only the refusal
+160 B with an ellipsis. **F5** (effectively dead on real hardware: the
+health counter still says *sent* while, since 10-24, the delivery-leg ledger
+records the same message as *dropped, unsendable* —
+`meshcore_handler.py:1021`). *Pinned by:* only the refusal
 (`test_meshcore_handler.py::test_channel_broadcast_refused_never_public`).
 The edge itself is **UNPINNED** (no test calls `_process_bridge_to_meshcore`).
 
@@ -166,8 +179,12 @@ not-found `✗` notice. Split-horizon matches tags by SUBSTRING. **F1.**
 `test_meshcore_dm_reply.py`.
 
 **MA-5 Meshtastic → RNS / MeshCore** — `[Mesh:<4>]` to RNS, `[Mesh:<8>]` to
-MeshCore. No echo guard on Mesh→RNS. **F2.** *Pinned by:*
-`test_bridge_integration.py::test_process_mesh_to_rns_*`.
+MeshCore. A Mesh→RNS echo guard landed 10-19 (a bridge-tagged line is not
+re-sent to RNS). A DM never goes out on a MeshCore channel (F2, fixed). The
+MeshCore fan-out is NOT gated by that guard. **F16.** *Pinned by:*
+`test_bridge_integration.py::test_process_mesh_to_rns_*`,
+`test_mesh_to_rns_echo_guard.py`, `test_bridge_private_to_channel.py`,
+`test_m2r_requeue_f4.py`.
 
 **MA-6 Re-emit: MF broadcast bridges → MeshCore** (`meshtastic_reemit.enabled`,
 default False). Verified sources only, from `source_identities`; drops status
@@ -195,35 +212,54 @@ hop_count via_internet origin timestamp metadata ack_required ack_of reply_to`.
 **F8**: in production only the MeshCore edges construct it. Every
 Meshtastic/RNS edge on MF uses `BridgedMessage` (`rns_bridge.py:133-147`).
 `hop_count`, `ack_of` and `reply_to` are filled by no live edge.
+`from_meshtastic` still decides broadcast on the TEXT `toId` (**F15**, the copy
+the F7 fix missed); no production code calls it today.
 
 ---
 
 ## Findings — contract breaks and drift (the worklist)
 
-Status: **VERIFIED** = the author checked it this session; **BELIEVED** = an
-explorer's code read; **PLAUSIBLE** = needs a failing test before anyone
-acts on it. Nothing below is fixed yet.
+Status: **VERIFIED** = the author checked it; **MEASURED 10-26** = re-read
+at HEAD in this repo during the 10-26 sync; **BELIEVED** = a code read
+(explorer or the outside artifact); **PLAUSIBLE** = needs a failing test
+before anyone acts on it. Fixed rows moved to "Fixed and pinned" below.
 
 | # | Edge | Finding | Status | First move |
 |---|---|---|---|---|
-| F1 | MA-4 | `[unverified] ` is NOT stripped toward MeshCore → the text reads `[RNS:?abcd1234] [unverified] …`; `parse_directed_reply` on a marked `@contact` may demote a DM | BELIEVED (queued 10-16) | failing test → strip via the shared `strip_unverified_mark` |
-| F2 | MA-5 | a Meshtastic **DM** pulled off Mesh→RNS was fanned onto the MeshCore queue and sent on the bridge channel; the disconnect branch persisted DMs AND `@contact` replies for CHANNEL replay | **FIXED 2026-10-16** (MA, test-first: red on old code): `private_to_channel()` refuses at both consumers after the directed-DM leg, counter `meshcore_bridge_private_drop`; honours the `dm_replies_enabled` kill switch. **Latent live** (meshanchor-server has no Meshtastic radio) | `tests/test_bridge_private_to_channel.py`, `test_bridge_loop_disconnect_refuses_private_dm` |
+| F1 | MA-4 | `[unverified] ` is NOT stripped toward MeshCore → the text reads `[RNS:?abcd1234] [unverified] …` (the mark twice, 13 of 160 B) | BELIEVED; **narrowed 10-26** (artifact, measured there, not here): the "demotes a marked `@contact` DM" half is REFUTED — `parse_directed_reply` peels `[unverified]` like any leading tag | failing test → `strip_unverified_mark` where `src_label` gets its `?` |
 | F3 | MA-8 | `_reply_slot = int(env or bridge_target_channel) or 1` → **-1** at the default `bridge_target_channel=-1` (−1 is truthy) → `send_chan_msg(-1)` | VERIFIED by read; **latent** (live config = 1) | test at default config; treat <0 as "no channel reply" |
-| F4 | MF-1 | Failed M→R DMs requeued with `destination_id` while `_queue_send_rns` reads `destination_hash` → every retry returned False; retries also dropped title/fields. **Wider than first read:** the RNS-DOWN branch (`rns_bridge.py` bridge loop) and the except path wrote the same shape, so every M→R message during an RNS outage dead-lettered | **FIXED 2026-10-17 (MF, test-first: 5 red on old code)**: a failed leg requeues as one `rns` row PER RESOLVED HASH (`destination` key so a fan-out survives the queue's dedup) carrying title+fields; with no resolved hash (RNS down / raised before send) the whole message replays through `_process_mesh_to_rns` (`rns_xform`), so F14 + broadcast fan-out decide again at retry; the replay WAITS (returns False) while RNS is disconnected; a raise AFTER a send never requeues (duplicate); a replay that raises again never re-enqueues. Mutants ×5 each killed by one test. **MA ported 2026-10-17 `1307beb6`** (adds the `rns_xform` sender MA lacked; rows carry the exact `[Mesh:xxxx]`-prefixed text; 6 red→green, 5 mutants killed, MA full suite 8373 passed rc=0). **Non-author read DONE 10-17 (Fable 5.1): PASS-with-notes both, no privacy leak; R1–R5 fixed test-first both twins (rows wait out an RNS outage via a queue `ready_fn` gate; partial fan-out legs retried). Fresh read of the FIX diffs queued; NOT deployed** | `tests/test_m2r_requeue_f4.py`. Residual: the queue's no-policy budget (3 tries, 5/15/45 s) still dead-letters an outage > ~65 s — honestly, with a DROPPED record |
-| F5 | MF-5 / MA-4 | MeshCore `send_text` returns True on ENQUEUE (MF `meshcore_handler.py:1224`, MA `:1252-1261`); on MF the broadcast is then REFUSED on a real radio → the edge is dead and reports success | BELIEVED | decide: delete MF-5, or give it a target slot + delivered-not-queued |
-| F6 | MF-1 | `config.py:273-277` documents a `gateway_node_id` self-echo drop that is not implemented (only sessions read it) | BELIEVED | delete the doc text or implement + pin |
-| F7 | MF-1/6 | TCP ingress decided broadcast by `to_id == '!ffffffff'`, but the lib emits `'^all'` | **VERIFIED + FIXED 2026-10-16**: `meshtastic.BROADCAST_ADDR == '^all'` read from the installed lib on VolcanoAI + meshanchor-server, so every TCP broadcast was labelled a DM (and MF's two cross-box loop-guard registrations were inert on TCP). `packet_is_broadcast()` decides on numeric `to` in both twins. **Latent live**: moc/moc3 run `mqtt_bridge` (numeric check, correct) | `TestBroadcastWireFact` (MF), `TestPacketIsBroadcast` (MA) |
-| F8 | shared | CanonicalMessage is the "shared contract" but reaches only MeshCore; two Meshtastic budgets (237 vs 228) | BELIEVED | one constant (hfm #5); decide whether BridgedMessage IS the contract |
+| F5 | MF-5 / MA-4 | MeshCore `send_text` returns True on ENQUEUE (MF `meshcore_handler.py:1224`, MA `:1252-1261`); on MF the broadcast is then REFUSED on a real radio → the edge is dead and its health counter reports success | **MEASURED 10-26, narrowed**: the delivery-leg ledger now records the refusal (`meshcore_handler.py:1021` → `dropped, unsendable`) while health still says sent — two views of one message disagree (rule 5). Still no test calls `_process_bridge_to_meshcore` | delete MF-5, or make health follow the delivery outcome, not the enqueue |
+| F6 | MF-1 | `config.py:280-285` documents a `gateway_node_id` self-echo drop that is not implemented (only the DM/session legs read it); `test_mqtt_bridge_handler.py:157 test_own_sender_no_rns_prefix_passes` pins the OPPOSITE; a stale comment at `mqtt_bridge_handler.py:735` still cites the filter | **MEASURED 10-26** (all three present) | delete the doc text + the stale comment; the tag loop guard covers the echo |
+| F8 | shared | CanonicalMessage is the "shared contract" but reaches only MeshCore; THREE Meshtastic budget literals: 237 `canonical_message.py:32`, 228 `utils/defaults.py:52`, 228 `utils/validation.py:73` | **MEASURED 10-26** (three, not two) | one constant (hfm #5); decide whether BridgedMessage IS the contract |
 | F9 | MA | the `content_id` field comment says "never used to suppress" while its docstring allows gated suppression | BELIEVED | reconcile in the byte-locked file (both twins) |
 | F10 | MF-7 | the broadcast-bridge callback fires even when routing rules refuse | BELIEVED | decide: by design (subscribers opted in) → pin it; else gate |
 | F11 | MF-4 | no tag loop guard on MeshCore ingress — relies on the slot allowlist + Public refusal | BELIEVED | pin "a tagged MeshCore line is not re-bridged" |
-| F12 | MF-1 | `desired_method` never passed to `LXMessage` → the delivery method is the library default | UNKNOWN which default | read the pinned fork's LXMessage, then pin |
+| F12 | MF-1 | `desired_method` never passed to `LXMessage` → the delivery method is the library default | **RESOLVED, MEASURED 10-26**: installed lxmf `1.0.1+mf.13` (fork `892047d5`) sets `desired_method = LXMessage.DIRECT` when None (`LXMessage.py:391-393`); no PROPAGATED fallback (FAILED after 5 attempts, per the artifact) | pass `desired_method=DIRECT` explicitly + pin, so a fork merge cannot change it silently |
+| F15 | shared (byte-locked) | `CanonicalMessage.from_meshtastic` decides broadcast as `to_id is None or to_id == '!ffffffff'` (`canonical_message.py:270`) — a lib-shaped packet with `toId='^all'` becomes a DM to `^all` even when numeric `to` is broadcast: the copy the F7 fix missed | **MEASURED 10-26** (line read; `cmp` MF↔MA identical); **latent**: no production caller of `CanonicalMessage.from_meshtastic` (grep: only `UnifiedNode.from_meshtastic`) | reuse the `packet_is_broadcast` rule in the locked file, both twins one commit, a `^all` case in `TestFromMeshtastic` |
+| F16 | MA-5 | the bridge loop puts EVERY Mesh→RNS message on the MeshCore queue right after `_process_mesh_to_rns`, whatever the 10-19 echo guard decided (MA `rns_bridge.py:877-881`); MeshCore split-horizon looks only for MeshCore markers, so an `[RNS:…]`-tagged Meshtastic line can reach MeshCore as `[Mesh:x] [RNS:…] …`; a full queue drops with `logger.debug` only, no counter | **MEASURED 10-26** (the fan-out + DEBUG-only drop read at MA `bca8b795`); the double-tag outcome is PLAUSIBLE until a test shows it | failing test with an RNS-tagged Meshtastic broadcast → fan out only what Mesh→RNS admitted; a counter on the queue-full drop |
 | F13 | MF-4/MA-1 | MeshCore channel senders are unverifiable but carry no `?` mark, while unverified RNS senders do — an asymmetry in rule 4 | design question | operator decision: mark, or document why not |
-| F14 | MF-1/MA-1 | a Meshtastic DM with no single RNS recipient was fanned to `default_lxmf_destination` — a list that includes PEER GATEWAYS (measured 10-16: moc→`f68c2f56`, moc3→`3dfbdb5d`) which re-emit on RF; on MF this was the 06-03 'no session → broadcast fallback' (`0c21ff74`, ratified then) | **FIXED 2026-10-16 — operator REVERSED the fallback: "refuse + tell sender"**. MF+MA refuse (counter `mesh_to_rns_private_refused`, WARNING without content, health record); MF tells the sender once/600 s when the DM was to its own node (advice gated on sessions). Live exposure was moc (sessions ON, DM leg armed): 0 fallbacks in its journal since 10-10. Non-author read W1 (own-echo counted as failure) + W2 (impossible advice sessions-off) fixed test-first. Boundary: non-broadcast with NO destination keeps the fan-out | `TestSessionDmToGateway`, `TestF14ReviewFollowups` (MF); `TestMeshDmNeverFannedToDefaults` (MA) |
 | F2-note | MA-5 | deliberate trade: a `@contact` DM reply arriving while MeshCore is DOWN is now DROPPED (counter) instead of replayed — the replay is a channel send. Healthy path still delivers it as an MC DM | by design 2026-10-16 | later: persist DM replies with a `destination` key so replay goes as a DM |
 
-**Unpinned edges:** MF-5 (no test calls it), F7's TCP shape,
-MA-4's double mark. Each is a contract nobody would notice breaking.
+### Fixed and pinned (moved out of the worklist; history in git)
+
+- **F2** (MA-5) fixed 10-16 — a Meshtastic DM is refused off the MeshCore
+  queue, counter `meshcore_bridge_private_drop`. `test_bridge_private_to_channel.py`.
+- **F4** (MF-1 / MA-5) fixed 10-17, both twins — a failed leg requeues per
+  resolved hash with title+fields; no hash → replay that waits out an RNS
+  outage. Residual: an outage > ~65 s still dead-letters, with a DROPPED
+  record. `test_m2r_requeue_f4.py` (MF + MA).
+- **F7** (MF-1/6) fixed 10-16, both twins — `packet_is_broadcast()` decides on
+  numeric `to`. `TestBroadcastWireFact` (MF), `TestPacketIsBroadcast` (MA).
+  Its missed copy is F15.
+- **F14** (MF-1 / MA-1) fixed 10-16, both twins — a DM with no single RNS
+  recipient is refused, never fanned to `default_lxmf_destination`.
+  `TestSessionDmToGateway`, `TestF14ReviewFollowups` (MF);
+  `TestMeshDmNeverFannedToDefaults` (MA).
+- **F2-note** stays a deliberate trade (see above).
+
+**Unpinned edges:** MF-5 (no test calls it), MA-4's double mark (F1),
+`CanonicalMessage.from_meshtastic`'s broadcast rule (F15), MA-5's MeshCore
+fan-out (F16). Each is a contract nobody would notice breaking.
 
 ## How this file stays true
 
