@@ -43,6 +43,9 @@ case "$cmd" in
     [ -e "$state/rebooted_$host" ] && echo new-boot || echo old-boot; exit 0 ;;
   *"list-units --type=service"*)
     [ "$host" = blindbox ] && exit 0     # snapshot failed: no lines, no error
+    if [ "$host" = halfbox ]; then       # system leg failed, user leg answered
+      echo "sys:FAIL"; echo "usr:nomadnet.service"; exit 0
+    fi
     echo "sys:rnsd.service"; echo "sys:meshtasticd.service"
     if [ ! -e "$state/rebooted_$host" ]; then
       echo "sys:colord.service"    # on-demand desktop daemon: must not count
@@ -57,6 +60,7 @@ case "$cmd" in
       rows='u_str LISTEN 0 0 @rns/default 2 * 0 users:(("rnsd",pid=10,fd=4))
 u_str LISTEN 0 0 @rns/default/rpc 3 * 0 users:(("python3",pid=11,fd=6))'
     fi
+    [ "$host" = nosudobox ] && [ -e "$state/rebooted_$host" ] && { echo SUDO_REFUSED; exit 0; }
     pipeline="${cmd#*grep \"@rns/\"}"
     printf '%s\n' "$rows" | grep "@rns/" | bash -c "cat ${pipeline}"
     exit 0 ;;
@@ -163,4 +167,20 @@ def test_a_failed_service_snapshot_never_reads_recovered(stubbed):
     r = stubbed("blindbox", mode="reboot")
     assert "RECOVERED" not in r.stdout.replace("NOT RECOVERED", ""), r.stdout
     assert "UNKNOWN" in r.stdout, r.stdout
+    assert r.returncode == 1
+
+
+def test_a_half_failed_snapshot_is_unknown_not_recovered(stubbed):
+    # review of e37da0ca (Fable), CONFIRMED: the system leg failing while the
+    # user leg answered left a non-empty set, read RECOVERED, rnsd unchecked.
+    r = stubbed("halfbox", mode="reboot")
+    assert "RECOVERED" not in r.stdout.replace("NOT RECOVERED", ""), r.stdout
+    assert "UNKNOWN" in r.stdout and r.returncode == 1, r.stdout
+
+
+def test_a_sudo_refusal_is_unobservable_not_a_squatter(stubbed):
+    # the #69 hint says restart rnsd -- the race trigger -- so a refusal
+    # that only blinded THIS script must never wear it.
+    r = stubbed("nosudobox", mode="reboot")
+    assert "UNOBSERVABLE" in r.stdout and "(#69)" not in r.stdout, r.stdout
     assert r.returncode == 1

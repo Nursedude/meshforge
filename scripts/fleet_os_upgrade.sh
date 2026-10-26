@@ -241,12 +241,15 @@ REBOOT_POLLS="${MF_REBOOT_POLLS:-90}"
 # Active services, system + user. Noise excluded: desktop/session daemons that
 # start on demand (colord read as "lost" on moc 10-25), one-shot timers'
 # services, and this roll's own units.
-SNAP_CMD='systemctl list-units --type=service --state=active --no-legend --plain | awk "{print \"sys:\"\$1}"; systemctl --user list-units --type=service --state=active --no-legend --plain 2>/dev/null | awk "{print \"usr:\"\$1}"'
+# Each leg prints <leg>:FAIL when it cannot answer, so a half-failed snapshot
+# can never pass as a smaller healthy one (review of e37da0ca: a failed system
+# leg left only user units, read RECOVERED, and dropped the rnsd check).
+SNAP_CMD='{ systemctl list-units --type=service --state=active --no-legend --plain || echo FAIL; } | awk "{print \"sys:\"\$1}"; { systemctl --user list-units --type=service --state=active --no-legend --plain 2>/dev/null || echo FAIL; } | awk "{print \"usr:\"\$1}"'
 SNAP_NOISE='(user@|user-runtime-dir@|systemd-|getty@|serial-getty@|apt-daily|man-db|e2scrub|fstrim|logrotate|dpkg-db-backup|packagekit|fwupd|plymouth|rpi-eeprom-update|sshd-session|pipewire|wireplumber|filter-chain|gvfs|xdg-|at-spi|dconf|obex|pulse|gnome|kanshi|colord|dbus\.service$|run-.*\.service)'
 # EVERY @rns/ listener's owner, comma-joined: rnsd holds two rows and ss row
 # order is not a contract, so judging the first row let a squatter on the
 # other one pass (review 2026-10-25). Recovered only when this is exactly rnsd.
-RNS_OWNER_CMD='sudo -n ss -xnpl 2>/dev/null | grep "@rns/" | grep -oE "users:\(\(\"[^\"]+" | sed "s/.*\"//" | sort -u | paste -sd,'
+RNS_OWNER_CMD='sudo -n true 2>/dev/null || { echo SUDO_REFUSED; exit 0; }; sudo -n ss -xnpl 2>/dev/null | grep "@rns/" | grep -oE "\(\"[^\"]+\"" | tr -d "(\"" | sort -u | paste -sd,'
 
 snap() { rsh "$1" 30 "$SNAP_CMD" | grep -vE "$SNAP_NOISE" | sort; }
 
@@ -261,7 +264,9 @@ do_reboot() {
         # An empty snapshot is a FAILED observation, not "no services": empty
         # pre == empty post read as RECOVERED and turned the rnsd check off
         # (review 2026-10-25, Fable). No baseline = no reboot.
-        [ -z "$pre" ] && { echo "SKIP $h — service snapshot failed, state UNKNOWN; not rebooting"; RC=1; continue; }
+        if [ -z "$pre" ] || grep -q ':FAIL$' <<<"$pre"; then
+            echo "SKIP $h — service snapshot failed, state UNKNOWN; not rebooting"; RC=1; continue
+        fi
         has_rns=0; grep -q '^sys:rnsd\.service$' <<<"$pre" && has_rns=1
         echo "--- $h: rebooting (reboot-required marker: ${need:-?}; $(grep -c . <<<"$pre") services; rnsd: $([ $has_rns = 1 ] && echo yes || echo no)) ---"
         t0=$(date +%s)
@@ -289,7 +294,13 @@ do_reboot() {
             echo "  RECOVERED ssh=+${t_ssh}s rns=+${t_rns:-n/a}s services=+${t_set}s"
         else
             echo "  !! $h NOT RECOVERED (ssh=+${t_ssh}s)"
-            [ $has_rns = 1 ] && [ -z "$t_rns" ] && echo "     @rns owner: '${owner:-none}' — must be rnsd (#69)"
+            if [ $has_rns = 1 ] && [ -z "$t_rns" ]; then
+                if [ "$owner" = SUDO_REFUSED ]; then
+                    echo "     @rns owner: UNOBSERVABLE — sudo -n refused on $h; do NOT restart rnsd on this evidence"
+                else
+                    echo "     @rns owner: '${owner:-none}' — must be rnsd (#69)"
+                fi
+            fi
             if [ -z "$t_set" ]; then
                 echo "     service set differs from before the reboot (< before, > after):"
                 diff <(echo "$pre") <(echo "$post") | grep '^[<>]' | sed 's/^/       /'
