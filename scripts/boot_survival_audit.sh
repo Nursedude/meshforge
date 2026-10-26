@@ -145,6 +145,48 @@ when_down() {  # $1 scope, $2 unit → " during boot" / " after boot (<ts>)" / .
     echo " after boot ($ts)"
 }
 
+# ConditionResult=no is ALSO systemd's default before any condition is
+# evaluated (gcr-ssh-agent reads `no` with zero Condition lines — Fable read,
+# 2026-10-26), so `no` alone used to skip every enabled unit nothing started.
+# Echoes: refused   — a condition was EVALUATED and said no: skip, as before
+#         notpulled:<entry> — never evaluated and nothing that wants it is
+#                     active (a graphical unit on a headless box): not a
+#                     casualty; the CALLER records <entry> for the OK line
+#                     ($(...) is a subshell — an append in here is lost)
+#         judge[ (wanted by X, active)] — judge it; the note rides a casualty
+# An unanswered timestamp is not "evaluated" (hfm #2): it is judged.
+not_pulled=()
+_wanters() { echo "$(systemctl $1 show "$2" -p WantedBy --value 2>/dev/null) $(systemctl $1 show "$2" -p RequiredBy --value 2>/dev/null)"; }
+# Who should have started $2? An ACTIVE wanter, or a down wanter that is itself
+# wanted by something active — a target enabled into multi-user.target that
+# never came up leaves its units unstarted too (Fable C-1: one level missed
+# it). Bounded at $3 levels; echoes the chain, empty when nothing is up.
+_active_wanter() {  # $1 scope, $2 unit, $3 depth
+    local w sub
+    [ "$3" -gt 0 ] || return 0
+    for w in $(_wanters "$1" "$2"); do
+        if [ "$(systemctl $1 is-active "$w" 2>/dev/null)" = "active" ]; then
+            echo "$w, active"; return
+        fi
+    done
+    for w in $(_wanters "$1" "$2"); do
+        sub=$(_active_wanter "$1" "$w" $(($3 - 1)))
+        [ -n "$sub" ] && { echo "$w, down; it is wanted by $sub"; return; }
+    done
+}
+cond_state() {  # $1 scope, $2 unit
+    local scope="$1" u="$2" ct wb up
+    [ "$(systemctl $scope show "$u" -p ConditionResult --value 2>/dev/null)" = "no" ] \
+        || { echo judge; return; }
+    ct=$(systemctl $scope show "$u" -p ConditionTimestampMonotonic --value 2>/dev/null)
+    if _num "$ct" && [ "$ct" -gt 0 ]; then echo refused; return; fi
+    wb=$(_wanters "$scope" "$u")
+    up=$(_active_wanter "$scope" "$u" 3)
+    if [ -n "$up" ]; then echo "judge (wanted by $up)"; return; fi
+    wb=$(echo $wb | tr ' ' ',')
+    echo "notpulled:${scope:+usr:}$u(wanted by ${wb:-nothing})"
+}
+
 scan() {  # $1 = "" for system, "--user" for user manager
     local scope="$1" tag u state act typ
     # failed units are casualties regardless of enablement or type
@@ -191,28 +233,34 @@ scan() {  # $1 = "" for system, "--user" for user manager
             # regardless of enablement or type. Exempting it here drops only the
             # "idle is death" misreading.
             [ -n "$(systemctl $scope show "$u" -p TriggeredBy --value 2>/dev/null)" ] && continue
-            # A unit whose start was skipped by its own Condition* is not a
-            # casualty — the box told it not to run here.
-            [ "$(systemctl $scope show "$u" -p ConditionResult --value 2>/dev/null)" = "no" ] && continue
+            cond=$(cond_state "$scope" "$u")
+            case "$cond" in
+                refused) continue;;
+                notpulled:*) not_pulled+=("${cond#notpulled:}"); continue;;
+            esac
             act=$(systemctl $scope is-active "$u" 2>/dev/null)
             if [ "$act" = "active" ] || [ "$act" = "activating" ]; then
                 ok_count=$((ok_count+1))
             elif is_waived "$u"; then
                 waived_hits+=("${scope:+usr:}$u($act)")
             else
-                casualties+=("${scope:+usr:}$u enabled-but-$act$(when_down "$scope" "$u")")
+                casualties+=("${scope:+usr:}$u enabled-but-$act$(when_down "$scope" "$u")${cond#judge}")
             fi;;
         *.timer)
             # Timers carry Condition* too (smartmon without smartctl, snapd
-            # repair without snapd...) — a condition-refused timer is not dead.
-            [ "$(systemctl $scope show "$u" -p ConditionResult --value 2>/dev/null)" = "no" ] && continue
+            # repair without snapd...) — same rule as services (cond_state).
+            cond=$(cond_state "$scope" "$u")
+            case "$cond" in
+                refused) continue;;
+                notpulled:*) not_pulled+=("${cond#notpulled:}"); continue;;
+            esac
             act=$(systemctl $scope is-active "$u" 2>/dev/null)
             if [ "$act" = "active" ]; then
                 ok_count=$((ok_count+1))
             elif is_waived "$u"; then
                 waived_hits+=("${scope:+usr:}$u($act)")
             else
-                casualties+=("${scope:+usr:}$u enabled-but-$act$(when_down "$scope" "$u")")
+                casualties+=("${scope:+usr:}$u enabled-but-$act$(when_down "$scope" "$u")${cond#judge}")
             fi;;
         esac
     done < <(systemctl $scope list-unit-files --type=service,timer --no-legend --plain 2>/dev/null)
@@ -244,6 +292,7 @@ fi
 
 waived_note=""
 [ ${#waived_hits[@]} -gt 0 ] && waived_note=" waived:$(IFS=,; echo "${waived_hits[*]}")"
+[ ${#not_pulled[@]} -gt 0 ] && waived_note="$waived_note not-pulled-in:$(IFS=,; echo "${not_pulled[*]}")"
 
 if [ ${#casualties[@]} -gt 0 ]; then
     msg="$(IFS='; '; echo "${casualties[*]}")"
