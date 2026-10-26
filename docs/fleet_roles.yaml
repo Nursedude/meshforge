@@ -26,6 +26,7 @@ invariants:
   one_cloud_publisher: "The VPS snapshot push runs on exactly one node (singleton: cloud-publisher)."
   software_fits_the_box: "Memory-saving defaults stay ON on small boards; they are why constrained Pis bear the load."
   fail_loud_restart_clean: "Watchdog on every node; services systemd-supervised with Restart=."
+  headless_unless_console: "A box with no monitor+keyboard boots multi-user.target (no display manager, no VNC); graphical.target only on a console box (operator, 2026-10-25). Pi OS 'full' installs default to graphical — switch at provisioning. Package removal of the desktop stack is a separate, audited step: autoremove takes python3 libs and kernels with it."
   born_correct_permissions: "Every box runs services as the NON-ROOT operator user and owns its RNS config tree + app data-roots (see the `foundation` block). Established born (install_noc.sh) + enforced on every converge. The mf.4/#73 perms class."
 
 # The born-correct permission FOUNDATION every box must have (ratified 2026-06-01,
