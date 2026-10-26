@@ -655,6 +655,32 @@ ensure_prune_cron() {
     return 0
 }
 
+# ensure_desktop <short> <repo_path>
+# Converges the desktop launcher on CONSOLE boxes (default target
+# graphical.target) and the opt-in deployment.json autostart (2026-10-25: the
+# lab never got the launcher, because only update.sh installed it). Like the
+# prune cron, a failure WARNs: a launcher is not worth failing a code deploy,
+# but it must not go silent. (Recipe rule: body stays single-quote-free.)
+ensure_desktop() {
+    local short="$1" repo="$2"
+    if [ ! -f "$repo/scripts/ensure_desktop.sh" ]; then
+        echo "SKIP $short no_tool"
+        return 0
+    fi
+    local out bad
+    out=$(timeout 150 bash "$repo/scripts/ensure_desktop.sh" --apply 2>&1)
+    [ -n "$out" ] || out="no output (helper killed by timeout 150s?)"
+    bad=$(printf "%s\n" "$out" | grep -E "^(launcher|autostart): error")
+    if [ -n "$bad" ]; then
+        echo "WARN $short $(printf "%s" "$bad" | tr "\n" "|" | head -c 160)"
+    elif printf "%s\n" "$out" | grep -qE "^launcher: " && printf "%s\n" "$out" | grep -qE "^autostart: "; then
+        echo "PASS $short $(printf "%s\n" "$out" | sed -E "s/ —.*//" | tr "\n" " " | head -c 120)"
+    else
+        echo "WARN $short $(printf "%s" "$out" | tr "\n" "|" | head -c 160)"
+    fi
+    return 0
+}
+
 # Run all three syncs even if one fails so a broken meshforge-maps does not
 # mask a successful meshforge update. meshforge-map is the singular :5000
 # map daemon from this repo (separate from the :8808 sister meshforge-maps);
@@ -689,6 +715,7 @@ sync_repo meshforge-watchdog /opt/meshforge   meshforge-watchdog "$MF_PRE_HEAD" 
 # the merged rules instead of racing a later hand-promote (see promote_seed).
 promote_seed meshforge-mini-seed /opt/meshforge || rc1s=$?
 ensure_prune_cron meshforge-prune-cron /opt/meshforge
+ensure_desktop meshforge-desktop /opt/meshforge
 sync_user_unit meshforge-mini-dudeai /opt/meshforge meshforge-mini-dudeai "$MF_PRE_HEAD" || rc1d=$?
 # Standalone dude-claw instance (second mini-dudeai daemon, claw-suffixed
 # state). Only the claw-brain box (moc1) runs it; everywhere else this is a
@@ -1337,6 +1364,17 @@ case "$prune_out" in
     *)      printf '[%-30s] WARN %s\n' "self ($(hostname -s))" "prune cron: $(printf '%s' "$prune_out" | tr '\n' '|' | head -c 120)"
             action_warn=$((action_warn + 1)) ;;
 esac
+# Self-side twin of the remote ensure_desktop leg (keep in parity). Quiet when
+# nothing changed; says so when it installs, writes, removes, or cannot.
+desk_out=$(timeout 150 bash /opt/meshforge/scripts/ensure_desktop.sh --apply 2>&1)
+[ -n "$desk_out" ] || desk_out="no output (helper killed by timeout 150s?)"
+if printf '%s\n' "$desk_out" | grep -qE '^(launcher|autostart): error' \
+   || ! printf '%s\n' "$desk_out" | grep -qE '^launcher: '; then
+    printf '[%-30s] WARN %s\n' "self ($(hostname -s))" "desktop: $(printf '%s' "$desk_out" | tr '\n' '|' | head -c 140)"
+    action_warn=$((action_warn + 1))
+elif printf '%s\n' "$desk_out" | grep -qE '^(launcher: installed|autostart: (written|removed))'; then
+    printf '[%-30s] OK   %s\n' "self ($(hostname -s))" "desktop: $(printf '%s' "$desk_out" | sed -E 's/ —.*//' | tr '\n' ' ')"
+fi
 # mini-dudeai is a USER unit — restart it on the user bus when its code changed.
 sync_local_user_unit meshforge-mini-dudeai /opt/meshforge
 # Standalone dude-claw sibling (no-op on boxes without the unit).

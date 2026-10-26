@@ -529,6 +529,22 @@ if [[ -n "$REAL_USER" && -f "$INSTALL_DIR/scripts/ensure_prune_cron.sh" ]]; then
     esac
 fi
 
+# Opt-in login autostart (deployment.json desktop_autostart) on a console box.
+# Step 3 already installed the launcher; this is the same helper fleet_sync.sh
+# runs, so a standalone box and a fleet box converge identically (2026-10-25).
+if [[ -n "$REAL_USER" && "$SKIP_DESKTOP" != "true" && -f "$INSTALL_DIR/scripts/ensure_desktop.sh" ]]; then
+    if [[ "$(id -un)" == "${REAL_USER}" ]]; then
+        desk_out="$(timeout 150 bash "$INSTALL_DIR/scripts/ensure_desktop.sh" --apply 2>&1)" || true
+    else
+        desk_out="$(timeout 150 sudo -u "${REAL_USER}" -H bash "$INSTALL_DIR/scripts/ensure_desktop.sh" --apply 2>&1)" || true
+    fi
+    if [[ -z "$desk_out" ]] || grep -qE '^(launcher|autostart): error' <<<"$desk_out"; then
+        echo -e "  ${YELLOW}⚠ desktop: ${desk_out:-no output (timeout 150s?)}${NC}"
+    else
+        echo -e "  ${GREEN}✓ desktop: $(grep -E '^autostart: ' <<<"$desk_out" | sed -E 's/ —.*//')${NC}"
+    fi
+fi
+
 # Reload systemd if anything changed
 if $SVC_UPDATED; then
     systemctl daemon-reload 2>/dev/null || true
