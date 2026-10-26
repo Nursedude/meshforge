@@ -34,7 +34,7 @@
 # shape itself (documented fallback for edge boxes with no /opt/meshforge —
 # same consumer format, single constant below).
 #   exit 0 = OK, everything enabled is up
-#   exit 1 = CASUALTY list follows (the boot left something dead)
+#   exit 1 = CASUALTY list follows (something is down; each says WHEN)
 #   exit 2 = cannot observe (no systemctl) — UNKNOWN, never healthy
 #
 # Install on a box (writes both cron lines, idempotent):
@@ -100,6 +100,51 @@ is_waived() { local u="$1" w; for w in $waivers; do case "$u" in *"$w"*) return 
 
 casualties=() waived_hits=() ok_count=0 skips=""
 
+# WHEN a unit went down, on the MONOTONIC clock (us since boot — an RTC-less
+# Pi steps its wall clock, hfm #6): the unit's InactiveEnterTimestampMonotonic
+# against its manager's FinishTimestampMonotonic. 2026-10-26: 8 boxes paged
+# "boot left 1 unit(s) down" for a desktop portal that died 17 h AFTER boot,
+# when the headless switch took its display away — right FAIL, wrong cause.
+# 0 = never went inactive = it never STARTED (nothing died). A user manager
+# that (re)started after boot (no linger + a late login, a restart of
+# user@UID) has every unit inside ITS start window — never call that the boot
+# (Fable 3rd read, 2026-10-26). No answer is UNKNOWN, never "during boot"
+# (hfm #2). Grace >= the @reboot run's sleep 420 so the run that judges the
+# boot does not call a boot-time death "after boot".
+BOOT_GRACE_US=600000000
+_num() { case "$1" in ''|*[!0-9]*) return 1;; esac; }
+when_down() {  # $1 scope, $2 unit → " during boot" / " after boot (<ts>)" / ...
+    local scope="$1" u="$2" fin t sysfin start late="" ts nr
+    fin=$(systemctl $scope show -p FinishTimestampMonotonic --value 2>/dev/null)
+    t=$(systemctl $scope show "$u" -p InactiveEnterTimestampMonotonic --value 2>/dev/null)
+    if ! _num "$fin" || ! _num "$t" || [ "$fin" -eq 0 ]; then
+        echo " (when unobserved)"; return
+    fi
+    if [ -n "$scope" ]; then
+        sysfin=$(systemctl show -p FinishTimestampMonotonic --value 2>/dev/null)
+        start=$(systemctl $scope show -p UserspaceTimestampMonotonic --value 2>/dev/null)
+        # system boot unfinished (Finish=0) or unanswered → "late" cannot be
+        # judged; say so rather than assert a cause (Fable delta read A-1)
+        if ! _num "$sysfin" || [ "$sysfin" -eq 0 ]; then
+            echo " (when unobserved)"; return
+        fi
+        _num "$start" && [ "$start" -gt $((sysfin + BOOT_GRACE_US)) ] && late=1
+    fi
+    if [ "$t" -eq 0 ]; then
+        if [ -n "$late" ]; then echo " never started since the user manager (re)started"
+        else echo " never started this boot"; fi
+        return
+    fi
+    if [ -z "$late" ] && [ "$t" -le $((fin + BOOT_GRACE_US)) ]; then
+        echo " during boot"; return
+    fi
+    ts=$(systemctl $scope show "$u" -p InactiveEnterTimestamp --value 2>/dev/null)
+    nr=$(systemctl $scope show "$u" -p NRestarts --value 2>/dev/null)
+    _num "$nr" && [ "$nr" -gt 0 ] && ts="$ts, NRestarts=$nr"
+    [ -n "$late" ] && ts="$ts; user manager (re)started after boot"
+    echo " after boot ($ts)"
+}
+
 scan() {  # $1 = "" for system, "--user" for user manager
     local scope="$1" tag u state act typ
     # failed units are casualties regardless of enablement or type
@@ -117,7 +162,7 @@ scan() {  # $1 = "" for system, "--user" for user manager
         if [ "$(systemctl $scope show "$u" -p Transient --value 2>/dev/null)" = "yes" ]; then
             waived_hits+=("${scope:+usr:}$u(transient-failed)"); continue
         fi
-        if is_waived "$u"; then waived_hits+=("${scope:+usr:}$u(failed)"); else casualties+=("${scope:+usr:}$u FAILED"); fi
+        if is_waived "$u"; then waived_hits+=("${scope:+usr:}$u(failed)"); else casualties+=("${scope:+usr:}$u FAILED$(when_down "$scope" "$u")"); fi
     done < <(systemctl $scope list-units --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}' | grep -v '^●')
 
     while read -r u state _; do
@@ -155,7 +200,7 @@ scan() {  # $1 = "" for system, "--user" for user manager
             elif is_waived "$u"; then
                 waived_hits+=("${scope:+usr:}$u($act)")
             else
-                casualties+=("${scope:+usr:}$u enabled-but-$act")
+                casualties+=("${scope:+usr:}$u enabled-but-$act$(when_down "$scope" "$u")")
             fi;;
         *.timer)
             # Timers carry Condition* too (smartmon without smartctl, snapd
@@ -167,7 +212,7 @@ scan() {  # $1 = "" for system, "--user" for user manager
             elif is_waived "$u"; then
                 waived_hits+=("${scope:+usr:}$u($act)")
             else
-                casualties+=("${scope:+usr:}$u enabled-but-$act")
+                casualties+=("${scope:+usr:}$u enabled-but-$act$(when_down "$scope" "$u")")
             fi;;
         esac
     done < <(systemctl $scope list-unit-files --type=service,timer --no-legend --plain 2>/dev/null)
@@ -203,7 +248,7 @@ waived_note=""
 if [ ${#casualties[@]} -gt 0 ]; then
     msg="$(IFS='; '; echo "${casualties[*]}")"
     echo "CASUALTY(${#casualties[@]}): $msg"
-    verdict FAIL "boot left ${#casualties[@]} unit(s) down: $msg$waived_note$skips"
+    verdict FAIL "${#casualties[@]} unit(s) down: $msg$waived_note$skips"
     exit 1
 fi
 echo "OK: $ok_count enabled unit(s) active$waived_note$skips"

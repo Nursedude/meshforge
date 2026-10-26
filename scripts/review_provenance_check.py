@@ -333,7 +333,16 @@ def row_claims_subagent_read(mechanism):
                for m in re.finditer(SUBAGENT_READ_MARKER, low))
 
 
-def row_anchor_tokens(raw_line):
+def _is_repo_file(repo, tok):
+    """is_file() raises on an over-long or odd name (ENAMETOOLONG) — and a
+    raise here reaches main()'s catch-all, which passes EVERY leg open."""
+    try:
+        return (Path(repo) / tok.lstrip("/")).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def row_anchor_tokens(raw_line, repo=None):
     """What binds a transcript to a row: backticked FILES (>=2 path segments,
     an extension on the last) and shas, from the Scope and Fix-commits cells
     only. A bare dir (`tests/`), a URL, `and/or`, `10/10` or a skill name
@@ -344,8 +353,9 @@ def row_anchor_tokens(raw_line):
     out = []
     toks = []
     for tok in re.findall(r"`([^`]+)`", cells[1] + " " + cells[3]):
-        tok = re.sub(r":\d+(?:-\d+)?$", "", tok.strip())   # `foo.py:12`
-        toks += tok.split("..") if ".." in tok and "/" not in tok else [tok]
+        tok = re.sub(r"(?::\d+)+(?:-\d+)?(?:,\d+)*$", "", tok.strip())  # :12:3
+        toks += (re.split(r"\.{2,3}", tok) if ".." in tok and "/" not in tok
+                 else [tok])
     for tok in toks:
         if re.fullmatch(r"[0-9a-f]{7,40}", tok):
             out.append(tok)
@@ -354,6 +364,10 @@ def row_anchor_tokens(raw_line):
                                tok.lstrip("/"))
               and "/" in tok.lstrip("/")):
             out.append(tok)
+        elif (repo and "/" in tok.lstrip("/") and " " not in tok
+              and "://" not in tok and ".." not in tok
+              and _is_repo_file(repo, tok)):
+            out.append(tok)   # extension-less, but a real repo file
     return out
 
 
@@ -397,7 +411,9 @@ def transcript_witnesses(text, anchors, lo, hi):
         for item in content if isinstance(content, list) else ():
             if not (isinstance(item, dict) and item.get("type") == "tool_use"):
                 continue
-            field = SUBAGENT_READ_TOOLS.get(item.get("name"))
+            name = item.get("name")   # unhashable → TypeError → main()
+            field = (SUBAGENT_READ_TOOLS.get(name)  # passed EVERY leg open
+                     if isinstance(name, str) else None)
             inp = item.get("input")
             said = inp.get(field) if field and isinstance(inp, dict) else None
             if isinstance(said, str) and any(a in said for a in anchors):
@@ -715,7 +731,7 @@ def _row_commit_span(repo, rev_range):
     return (min(ts), max(ts)) if ts else None
 
 
-def make_subagent_witness(claude_dir, lo, hi, witness_path=None):
+def make_subagent_witness(claude_dir, lo, hi, witness_path=None, repo=None):
     """Return ``witness(raw_line) -> bool`` over the harness's subagent
     transcripts (``<claude_dir>/projects/*/*/subagents/agent-*.jsonl``),
     every project dir — a worktree checkout has a different project slug.
@@ -743,7 +759,7 @@ def make_subagent_witness(claude_dir, lo, hi, witness_path=None):
         return cache[p]
 
     def witness(raw_line):
-        anchors = row_anchor_tokens(raw_line)
+        anchors = row_anchor_tokens(raw_line, repo)
         if not anchors:
             return False
         for p in paths:
@@ -820,7 +836,7 @@ def run(repo, rev_range, base_ref, ledger_path, witness_path, scope_sink=None,
         witness = make_subagent_witness(
             claude_dir or _default_claude_dir(),
             lo=lo_ts - SUBAGENT_WITNESS_WINDOW_S, hi=hi_ts + 300,
-            witness_path=witness_path)
+            witness_path=witness_path, repo=repo)
         leg2_violations, leg2_warn = evaluate_leg2(prov_head, base_prov,
                                                    session_is_frontier,
                                                    subagent_witness=witness)

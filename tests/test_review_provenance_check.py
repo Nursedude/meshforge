@@ -1164,3 +1164,64 @@ class TestLeg2SubagentIntegration(unittest.TestCase):
             code, _, _ = self._run(repo, base, ledger,
                                    os.path.join(repo, "nope"))
             self.assertEqual(code, 1)
+
+
+class TestWitnessNeverCrashesTheGateOpen(unittest.TestCase):
+    """Fable 3rd read B1: an unhashable tool ``name`` raised TypeError, and
+    main()'s catch-all then PASSED EVERY LEG OPEN — one odd line in any
+    in-window transcript unlocked the gate."""
+
+    def test_odd_tool_names_are_skipped_not_raised(self):
+        now = _time.time()
+        for name in (["Read"], {"x": 1}, None, 7):
+            line = _json.dumps({
+                "isSidechain": True, "type": "assistant",
+                "timestamp": _iso(now - 60),
+                "message": {"model": "claude-fable-5-1", "content": [
+                    {"type": "tool_use", "name": name,
+                     "input": {"file_path": "scripts/foo.py"}}]}})
+            self.assertFalse(rpc.transcript_witnesses(
+                line, ["scripts/foo.py"], now - 3600, now + 300), name)
+
+    def test_odd_transcript_still_blocks_through_main(self):
+        with tempfile.TemporaryDirectory() as repo, \
+                tempfile.TemporaryDirectory() as cd:
+            base, ledger = TestLeg2SubagentIntegration._repo(
+                None, repo, "Fable subagent adversarial read")
+            _transcript(cd, said=[{"type": "tool_use", "name": ["Read"],
+                                   "input": {"file_path": "scripts/foo.py"}}])
+            code, _, _ = rpc.run(repo, f"{base}..HEAD", base,
+                                 ledger_path=ledger,
+                                 witness_path=os.path.join(repo, "w.log"),
+                                 claude_dir=cd)
+            self.assertEqual(code, 1)
+
+
+class TestAnchorShapesFableThirdRead(unittest.TestCase):
+    """B2: idioms the ledger uses that bound nothing — a block telling the
+    author to do what they did."""
+
+    def test_multi_suffix_and_triple_dot_range(self):
+        row = ("| 2026-10-26 | `src/a.py:12:3` `scripts/foo.py:12,40` "
+               "| m | `abc1234...def5678` | x |")
+        self.assertEqual(rpc.row_anchor_tokens(row),
+                         ["src/a.py", "scripts/foo.py", "abc1234", "def5678"])
+
+    def test_extensionless_repo_file_anchors_when_it_exists(self):
+        with tempfile.TemporaryDirectory() as repo:
+            _write(repo, ".githooks/pre-push", "#!/bin/sh\n")
+            row = "| 2026-10-26 | `.githooks/pre-push` `and/or` | m | x | y |"
+            self.assertEqual(rpc.row_anchor_tokens(row, repo=repo),
+                             [".githooks/pre-push"])
+            self.assertEqual(rpc.row_anchor_tokens(row), [])
+
+
+class TestAnchorNeverCrashesTheGateOpen(unittest.TestCase):
+    """Fable delta read B-1: is_file() on a 5000-char token raised
+    OSError(ENAMETOOLONG) → main() passed every leg open."""
+
+    def test_overlong_token_is_no_anchor_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as repo:
+            tok = "a/" + "b" * 5000 + "/c"
+            row = f"| 2026-10-26 | `{tok}` | m | x | y |"
+            self.assertEqual(rpc.row_anchor_tokens(row, repo=repo), [])
