@@ -90,7 +90,7 @@ class TestClassify:
 
 class TestReconcile:
     def _log(self, tmp_path, tokens, handoff="handed",
-             bridge_mode="mqtt_bridge", ts0=None):
+             bridge_mode="mqtt_bridge", ts0=None, receipts=True):
         p = tmp_path / "run.jsonl"
         ts0 = time.time() - 600 if ts0 is None else ts0
         drill.append_log(p, {"event": "start", "run_id": "r", "source": SRC,
@@ -99,6 +99,9 @@ class TestReconcile:
             drill.append_log(p, {"event": "send", "seq": i, "token": t,
                                  "ts": ts0 + i, "handoff": handoff,
                                  "source": SRC})
+            if receipts and handoff == "handed":
+                drill.append_log(p, {"event": "lxmf", "seq": i,
+                                     "state": "delivered", "ts": ts0 + i})
         drill.append_log(p, {"event": "end", "ts": ts0 + 500})
         return p
 
@@ -177,7 +180,7 @@ class TestReconcile:
 # ── review fixes 2026-10-25 (S1..S5) ───────────────────────────────────────
 
 def _send_log(tmp_path, n=1, bridge_mode="mqtt_bridge", ts0=None, start=True,
-              end=True):
+              end=True, receipts=True):
     p = tmp_path / "run.jsonl"
     ts0 = time.time() - 600 if ts0 is None else ts0
     if start:
@@ -187,6 +190,9 @@ def _send_log(tmp_path, n=1, bridge_mode="mqtt_bridge", ts0=None, start=True,
         drill.append_log(p, {"event": "send", "seq": i,
                              "token": drill.make_token("r", i),
                              "ts": ts0 + i, "handoff": "handed", "source": SRC})
+        if receipts:   # a normal run: LXMF proved the gateway took it
+            drill.append_log(p, {"event": "lxmf", "seq": i,
+                                 "state": "delivered", "ts": ts0 + i})
     if end:
         drill.append_log(p, {"event": "end", "ts": ts0 + 500})
     return p
@@ -542,11 +548,10 @@ class TestR8UnitScope:
         scope, why = drill.pick_unit_scope(self.ABSENT, None)
         assert scope is None and "could not ask" in why
 
-    def test_unaskable_scope_is_unknown_even_when_other_is_loaded(self):
-        # an unaskable manager cannot be ruled out: "BOTH" stays possible
-        for args in ((self.LOADED, None), (None, self.LOADED)):
-            scope, why = drill.pick_unit_scope(*args)
-            assert scope is None and "could not ask" in why
+    def test_unaskable_system_manager_is_unknown_even_when_user_is_loaded(self):
+        # PID 1 unaskable is not a normal run context: nothing can be ruled out
+        scope, why = drill.pick_unit_scope(None, self.LOADED)
+        assert scope is None and "could not ask" in why
 
 
 # ── fourth (non-author) read 2026-10-25, findings 1-9 (10 queued) ──────────
@@ -559,9 +564,11 @@ class TestFourthReadReconcileVerdicts:
         assert drill.reconcile(_send_log(tmp_path, n=1), db)["exit"] == 0
 
     def test_unaccounted_still_fails_despite_a_partial_record(self, tmp_path):
+        # a KNOWN loss (LXMF says the message left the sender) outranks
+        # "incomplete" — 5th read #2 narrowed this to evidenced sends
         rep = drill.reconcile(_send_log(tmp_path, n=1, end=False),
                               _queue_db(tmp_path, []))
-        assert rep["exit"] == 1   # a known loss outranks "incomplete"
+        assert rep["exit"] == 1
 
     def test_timeline_survives_a_send_without_ts(self, tmp_path, capsys):
         import argparse
@@ -628,3 +635,221 @@ class TestFourthReadScopeReuse:
         verdict, _ = drill._live({"mtime": 0.0})
         assert sorted(calls) == [False, True]
         assert verdict == "ok"
+
+
+# ── fifth (non-author) read 2026-10-26, findings 1/2/3/6 (4,5,7-10 queued) ──
+
+class TestFifthReadOnlyADeliveryReceiptMakesALoss:
+    """#2 + adversarial read: a missing row is a GATEWAY loss only when LXMF
+    proved the gateway took the message (``delivered``). No receipt — killed
+    sender, grace too short, still in LXMF's outbound queue — or a ``failed``
+    receipt (the sender's own RNS leg never established) is UNKNOWN."""
+
+    def test_handed_send_without_receipt_in_a_killed_run_is_unknown(
+            self, tmp_path):
+        rep = drill.reconcile(_send_log(tmp_path, n=1, end=False,
+                                        receipts=False),
+                              _queue_db(tmp_path, []))
+        assert rep["exit"] == 2
+        assert rep["counts"]["unaccounted"] == 0
+        assert rep["counts"]["unobservable"] == 1
+        assert "receipt" in rep["messages"][0]["why"]
+
+    def test_completed_run_without_receipt_is_unknown(self, tmp_path):
+        # an end only says the sender stopped, not that LXMF transmitted
+        rep = drill.reconcile(_send_log(tmp_path, n=1, receipts=False),
+                              _queue_db(tmp_path, []))
+        assert rep["exit"] == 2 and rep["counts"]["unobservable"] == 1
+        assert "--grace" in rep["messages"][0]["why"]
+
+    def test_failed_receipt_is_the_senders_leg_not_the_gateway(
+            self, tmp_path):
+        log = _send_log(tmp_path, n=1, receipts=False)
+        drill.append_log(log, {"event": "lxmf", "seq": 1, "state": "failed",
+                               "ts": time.time()})
+        rep = drill.reconcile(log, _queue_db(tmp_path, []))
+        assert rep["exit"] == 2 and rep["counts"]["unaccounted"] == 0
+        assert "FAILED" in rep["messages"][0]["why"]
+
+    def test_delivered_receipt_without_a_row_is_a_gateway_loss(
+            self, tmp_path):
+        rep = drill.reconcile(_send_log(tmp_path, n=1),
+                              _queue_db(tmp_path, []))
+        assert rep["exit"] == 1 and rep["counts"]["unaccounted"] == 1
+
+    def test_receipt_for_another_seq_is_not_evidence(self, tmp_path):
+        log = _send_log(tmp_path, n=2, receipts=False)
+        drill.append_log(log, {"event": "lxmf", "seq": 1,
+                               "state": "delivered", "ts": time.time()})
+        rep = drill.reconcile(log, _queue_db(tmp_path, []))
+        assert rep["counts"]["unaccounted"] == 1        # seq 1: proven loss
+        assert rep["counts"]["unobservable"] == 1       # seq 2: no receipt
+
+    def test_grace_wait_ignores_the_stop_signal(self):
+        t = time.monotonic()
+        drill.wait_grace(0.2)
+        assert time.monotonic() - t >= 0.19
+
+    def test_send_waits_the_grace_even_after_ctrl_c(self, tmp_path,
+                                                    monkeypatch):
+        """The consumer, not the helper: a Ctrl-C during the run must still
+        get the full grace wait before ``end`` is written."""
+        import argparse
+        import types
+        import utils.paths
+        import utils.rns_init
+        handlers, waits = {}, []
+        rns = types.ModuleType("RNS")
+        rns.Transport = types.SimpleNamespace(has_path=lambda h: True,
+                                              request_path=lambda h: None)
+        rns.Identity = types.SimpleNamespace(recall=lambda h: object())
+        rns.Destination = type("D", (), {"OUT": 1, "SINGLE": 1,
+                                         "__init__": lambda self, *a: None})
+        lx = types.ModuleType("LXMF")
+
+        class Msg:
+            DIRECT = 2
+
+            def __init__(self, *a, **k):
+                pass
+
+            def register_delivery_callback(self, cb):
+                pass
+
+            def register_failed_callback(self, cb):
+                pass
+
+        class Router:
+            def __init__(self, **k):
+                pass
+
+            def register_delivery_identity(self, *a, **k):
+                return object()
+
+            def handle_outbound(self, m):
+                handlers[drill.signal.SIGINT]()   # the operator hits Ctrl-C
+
+        lx.LXMessage, lx.LXMRouter = Msg, Router
+        monkeypatch.setitem(sys.modules, "RNS", rns)
+        monkeypatch.setitem(sys.modules, "LXMF", lx)
+        monkeypatch.setattr(drill.signal, "signal",
+                            lambda sig, h: handlers.__setitem__(
+                                sig, lambda: h(sig, None)))
+        monkeypatch.setattr(drill, "wait_grace", waits.append)
+        monkeypatch.setattr(drill, "get_real_user_home", lambda: tmp_path)
+        monkeypatch.setattr(utils.paths.ReticulumPaths,
+                            "ensure_rns_client_configdir",
+                            staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(utils.rns_init, "open_reticulum",
+                            lambda *a, **k: object())
+        log = tmp_path / "r.jsonl"
+        drill.fresh_run_log(log)
+        args = argparse.Namespace(count=3, minutes=1.0, interval=0.01,
+                                  grace=17.0)
+        rc = drill._run_send(args, log, "r", object(), SRC, "ab" * 16,
+                             "ab" * 16, {"peers": []}, "9")
+        assert rc == 0 and waits == [17.0]
+        events = drill.read_log(log)[0]
+        assert events[-1]["event"] == "end" and events[-1]["interrupted"]
+
+
+class TestFifthReadSystemUnitWithUnaskableUserManager:
+    """#1: plain root (no SUDO_USER, cron, systemd-run) cannot reach a user
+    bus; the fleet gateway is a SYSTEM unit that answered ``loaded``."""
+    LOADED = {"LoadState": "loaded", "ActiveState": "active"}
+
+    def test_system_loaded_user_unaskable_is_system_with_its_blind_spot(self):
+        scope, note = drill.pick_unit_scope(self.LOADED, None)
+        assert scope == "system"
+        assert "user manager" in note and "not ruled out" in note
+
+    def test_inactive_system_unit_with_unaskable_user_is_unknown(self):
+        # a leftover system unit file beside a user-scope gateway: the note
+        # admits the user unit is not ruled out, so this is not "system"
+        scope, why = drill.pick_unit_scope(
+            {"LoadState": "loaded", "ActiveState": "inactive"}, None)
+        assert scope is None and "could not ask" in why
+
+    def test_live_carries_the_blind_spot_into_the_preflight_line(
+            self, monkeypatch):
+        monkeypatch.setattr(drill, "_unit_show", lambda user: None if user else
+                            {"LoadState": "loaded", "ActiveState": "active",
+                             "ActiveEnterTimestampMonotonic": "1000000"})
+        verdict, why = drill._live({"mtime": 0.0})
+        assert verdict == "ok" and "user manager" in why
+
+
+class TestFifthReadClaimedLogReleasedOnAnyExit:
+    """#3: an exception or Ctrl-C between the claim and the start event must
+    not leave an empty claimed log that refuses the same --run-id forever."""
+
+    def test_interrupt_during_rns_setup_releases_the_claim(
+            self, tmp_path, monkeypatch):
+        import argparse
+        import types
+        import utils.paths
+        import utils.rns_init
+        monkeypatch.setitem(sys.modules, "RNS", types.ModuleType("RNS"))
+        monkeypatch.setitem(sys.modules, "LXMF", types.ModuleType("LXMF"))
+        monkeypatch.setattr(drill, "_load_identity", lambda: object())
+        monkeypatch.setattr(drill, "_source_hex", lambda i: SRC)
+        monkeypatch.setattr(drill, "_local_gateway_dest", lambda: "ab" * 16)
+        monkeypatch.setattr(drill, "_preflight",
+                            lambda src: (0, [], {"peers": []}))
+        monkeypatch.setattr(drill, "self_run_ref", lambda: (True, "9"))
+        monkeypatch.setattr(drill, "_log_dir", lambda: tmp_path)
+        monkeypatch.setattr(utils.paths.ReticulumPaths,
+                            "ensure_rns_client_configdir",
+                            staticmethod(lambda: tmp_path))
+
+        def boom(*_a, **_k):
+            raise KeyboardInterrupt
+        monkeypatch.setattr(utils.rns_init, "open_reticulum", boom)
+        args = argparse.Namespace(to=None, run_id="r1", count=1, minutes=1.0,
+                                  interval=10.0, grace=0.0)
+        with pytest.raises(KeyboardInterrupt):
+            drill.cmd_send(args)
+        assert not (tmp_path / "r1.jsonl").exists()
+
+
+class TestFifthReadRunIdStaysInTheLogDir:
+    """#6: --run-id names a file in the log dir; separators or ``..`` would
+    put the run where ``mark`` never looks (security.md: no ``..``)."""
+
+    @pytest.mark.parametrize("bad", ["../x", "a/b", "..", ".hidden", "",
+                                     "a b", "x" * 65, "/abs"])
+    def test_bad_run_id_is_refused(self, bad):
+        ok, why = drill.run_id_check(bad)
+        assert not ok and "--run-id" in why
+
+    @pytest.mark.parametrize("good", ["20261026T010203", "moc-drill_1",
+                                      "r1.a"])
+    def test_good_run_id_passes(self, good):
+        assert drill.run_id_check(good)[0]
+
+    def test_parser_rejects_a_traversal_run_id(self):
+        with pytest.raises(SystemExit) as e:
+            drill.main(["send", "--run-id", "../../tmp/x"])
+        assert e.value.code == 2
+
+
+class TestAdversarialReadTokenNamespace:
+    """A token must not match inside ANOTHER run's token: run ``r1`` seq 2
+    (``bic2-r1-002``) is a prefix of run ``r1-002x`` seq 1
+    (``bic2-r1-002x-001``) — a lost message would read as sent (exit 0)."""
+
+    def test_other_runs_token_does_not_account_for_this_send(self, tmp_path):
+        log = _send_log(tmp_path, n=2)       # run "r", seqs 1 and 2
+        other = drill.make_token("r-002x", 1)
+        t1 = drill.make_token("r", 1)
+        db = _queue_db(tmp_path, [
+            (drill.message_text(t1), SRC, "delivered", "meshtastic"),
+            (drill.message_text(other), SRC, "delivered", "meshtastic")])
+        rep = drill.reconcile(log, db)
+        assert rep["counts"]["unaccounted"] == 1 and rep["exit"] == 1
+
+    @pytest.mark.parametrize("suffix", ["x", ".a", "_b", "-c"])
+    def test_token_re_stops_at_any_run_id_character(self, suffix):
+        t = drill.make_token("r", 2)
+        assert not drill._token_re(t).search(f"BIC2 drill {t}{suffix}")
+        assert drill._token_re(t).search(drill.message_text(t))

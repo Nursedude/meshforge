@@ -117,8 +117,10 @@ def message_text(token: str) -> str:
 
 
 def _token_re(token: str) -> "re.Pattern[str]":
-    # a trailing digit would make seq 100 match inside seq 1000
-    return re.compile(re.escape(token) + r"(?![0-9])")
+    # no run-id character may follow: seq 100 must not match inside seq
+    # 1000, nor run "r1" seq 2 inside run "r1-002x" seq 1 (a loss read as
+    # sent); the charset is run_id_check's
+    return re.compile(re.escape(token) + r"(?![A-Za-z0-9._-])")
 
 
 def allowlist_preflight(source_hex: str, identities: List[str],
@@ -380,6 +382,12 @@ def reconcile(log_path: Path, db_path: Path,
                             "was killed — sends after its last log line are "
                             "not in this record")
     record_ok = mode == QUEUE_RECORD_MODE
+    # LXMF's delivery proof comes from the GATEWAY's process: the only
+    # evidence it took the message. ``failed`` = the sender's link never
+    # established (no path, a wedged RNS client) — the gateway got nothing.
+    lxmf = [e for e in events if e.get("event") == "lxmf"]
+    delivered = {e.get("seq") for e in lxmf if e.get("state") == "delivered"}
+    lxmf_failed = {e.get("seq") for e in lxmf if e.get("state") == "failed"}
     sends = [e for e in events if e.get("event") == "send"]
     rep["marks"] = [e for e in events if e.get("event") == "mark"]
     if not sends:
@@ -416,6 +424,13 @@ def reconcile(log_path: Path, db_path: Path,
         verdict = classify(statuses)
         if verdict == "unaccounted":
             why = _absence_unobservable(record_ok, mode, s.get("ts"), now)
+            if not why and s.get("seq") not in delivered:
+                why = ("LXMF reported this send FAILED — the sender's RNS "
+                       "leg never handed it to the gateway"
+                       if s.get("seq") in lxmf_failed else
+                       "no LXMF delivery receipt — the gateway's receipt of "
+                       "it is unobserved (sender killed, or --grace too "
+                       "short for LXMF's retries)")
             if why:
                 verdict = "unobservable"
                 entry["why"] = why
@@ -528,14 +543,21 @@ def _local_gateway() -> dict:
 
 def pick_unit_scope(system: Optional[dict], user: Optional[dict]
                     ) -> Tuple[Optional[str], str]:
-    """Which systemd manager runs the gateway — ("system"|"user", "") or
-    (None, why). Scope is per UNIT and per box, so it is asked, not assumed:
+    """Which systemd manager runs the gateway — ("system"|"user", note) or
+    (None, why); a non-empty note names what the scope could not rule out. Scope is per UNIT and per box, so it is asked, not assumed:
     the wrong manager answers ``inactive`` for a unit that is running."""
-    if system is None or user is None:
-        # an unaskable manager cannot be ruled out, so "BOTH" stays possible
-        return None, (f"could not ask the "
-                      f"{'system' if system is None else 'user'} manager "
-                      f"about {GATEWAY_UNIT}")
+    if system is None:
+        return None, f"could not ask the system manager about {GATEWAY_UNIT}"
+    if user is None:
+        # plain root (no SUDO_USER, cron, systemd-run) has no user bus to
+        # ask; a system unit that answered "loaded" is the gateway, and the
+        # one thing left unseen is said, not hidden (5th read #1)
+        if (system.get("LoadState") == "loaded"
+                and system.get("ActiveState") == "active"):
+            return "system", (f"the user manager could not be asked — a "
+                              f"second, user-scope {GATEWAY_UNIT} is not "
+                              f"ruled out")
+        return None, f"could not ask the user manager about {GATEWAY_UNIT}"
     loaded = [name for name, p in (("system", system), ("user", user))
               if p.get("LoadState") == "loaded"]
     if len(loaded) == 1:
@@ -572,8 +594,9 @@ def _live(gw: dict) -> Tuple[str, str]:
     scope, why = pick_unit_scope(shows["system"], shows["user"])
     if scope is None:
         return "unknown", why
-    return live_config_check(gw.get("mtime"), shows[scope],
-                             time.time(), time.monotonic())
+    verdict, sentence = live_config_check(gw.get("mtime"), shows[scope],
+                                          time.time(), time.monotonic())
+    return verdict, (f"{sentence} ({why})" if why else sentence)
 
 
 def _preflight(src_hex: str) -> Tuple[int, List[str], dict]:
@@ -678,6 +701,25 @@ def pick_mark_log(log_dir: Path, alive=_run_alive
                   f"--log <run.jsonl>")
 
 
+_RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def run_id_check(run_id: str) -> Tuple[bool, str]:
+    """A run id names ONE file in the log dir — no separator, no ``..``, no
+    leading dot — or the run lands where ``mark`` never looks."""
+    if _RUN_ID_RE.fullmatch(run_id or "") and ".." not in run_id:
+        return True, ""
+    return False, (f"--run-id {run_id!r} must be 1-64 of [A-Za-z0-9._-], "
+                   f"start with a letter or digit, and hold no '..'")
+
+
+def _run_id_arg(value: str) -> str:
+    ok, why = run_id_check(value)
+    if not ok:
+        raise argparse.ArgumentTypeError(why)
+    return value
+
+
 def fresh_run_log(log: Path) -> Tuple[bool, str]:
     """Claim the run log EXCLUSIVELY (O_EXCL, at the check — two senders
     started in the same second must not share one). A run log holds ONE
@@ -693,6 +735,13 @@ def fresh_run_log(log: Path) -> Tuple[bool, str]:
     return True, ""
 
 
+def wait_grace(seconds: float) -> None:
+    """Let the last LXMF receipts land. NOT the run's stop event: on Ctrl-C
+    that is already set, and skipping the wait sends ``end`` before the
+    final handed message has left — read later as a gateway loss."""
+    threading.Event().wait(max(0.0, seconds))
+
+
 def _release_unused(log: Path) -> None:
     """Drop a claimed run log that never got its start event."""
     try:
@@ -703,7 +752,6 @@ def _release_unused(log: Path) -> None:
 
 
 def cmd_send(args) -> int:
-    import RNS
     ident = _load_identity()
     src_hex = _source_hex(ident)
     local_dest = _local_gateway_dest()
@@ -722,11 +770,27 @@ def cmd_send(args) -> int:
         print(f"REFUSED: {pid_start}")
         return 2
     run_id = args.run_id or time.strftime("%Y%m%dT%H%M%S")
+    ok, why = run_id_check(run_id)
+    if not ok:
+        print(f"REFUSED: {why}")
+        return 2
     log = _log_dir() / f"{run_id}.jsonl"
     ok, why = fresh_run_log(log)
     if not ok:
         print(f"REFUSED: {why}")
         return 1
+    try:
+        return _run_send(args, log, run_id, ident, src_hex, local_dest,
+                         dest_hex, gw, pid_start)
+    finally:
+        # any exit before the start event (exception, Ctrl-C during RNS
+        # setup) must not leave an empty claim refusing this --run-id
+        _release_unused(log)
+
+
+def _run_send(args, log, run_id, ident, src_hex, local_dest, dest_hex, gw,
+              pid_start) -> int:
+    import RNS
     total = args.count or max(1, int(args.minutes * 60 // args.interval) + 1)
     _, relay_to, air = airtime_estimate(total, gw.get("peers"), local_dest)
     print(air)
@@ -736,7 +800,6 @@ def cmd_send(args) -> int:
     import LXMF
     if open_reticulum(ReticulumPaths.ensure_rns_client_configdir()) is None:
         print("FATAL: RNS unavailable/degraded (open_reticulum returned None)")
-        _release_unused(log)
         return 2
     store = get_real_user_home() / ".local" / "share" / "meshforge" / "bic2_drill_lxmf"
     store.mkdir(parents=True, exist_ok=True)
@@ -755,7 +818,6 @@ def cmd_send(args) -> int:
     dest_ident = RNS.Identity.recall(dest_hash)
     if dest_ident is None:
         print(f"FATAL: no path/identity for gateway {dest_hex}")
-        _release_unused(log)
         return 2
     dest = RNS.Destination(dest_ident, RNS.Destination.OUT,
                            RNS.Destination.SINGLE, "lxmf", "delivery")
@@ -796,7 +858,8 @@ def cmd_send(args) -> int:
         # fixed cadence from t0, so a slow hand-off never stretches the run
         stop.wait(max(0.0, t0 + seq * args.interval - time.monotonic()))
 
-    stop.wait(args.grace)   # let the last LXMF receipts land in the log
+    print(f"waiting {args.grace:.0f}s for the last LXMF receipts")
+    wait_grace(args.grace)
     append_log(log, {"event": "end", "sent": seq, "interrupted": stop.is_set(),
                      "ts": time.time()})
     print(f"done: {seq} logged. Reconcile once the queue settles:\n"
@@ -844,10 +907,14 @@ def cmd_reconcile(args) -> int:
           f"each put these messages on another gateway's RF and are NOT "
           f"reconciled here")
     if c["unaccounted"]:
-        print("unaccounted = no row in this queue under mqtt_bridge: a drop "
+        print("unaccounted = LXMF proved the gateway took it, yet no row in "
+              "this queue under mqtt_bridge: a drop "
               "(journal: 'dropped under queue pressure'), or a gateway that "
               "ran without its persistent queue — direct sends log "
-              "'Bridge RNS→Mesh:' without '(queued'")
+              "'Bridge RNS→Mesh:' without '(queued'; or LXMF ingress "
+              "dropped it after proving delivery (journal: 'ignored already "
+              "received', an invalid stamp, or an exception in the delivery "
+              "callback)")
     return rep["exit"]
 
 
@@ -861,7 +928,7 @@ def main(argv=None) -> int:
     s.add_argument("--interval", type=float, default=DEFAULT_INTERVAL_S)
     s.add_argument("--minutes", type=float, default=70.0)
     s.add_argument("--count", type=int, help="overrides --minutes")
-    s.add_argument("--run-id")
+    s.add_argument("--run-id", type=_run_id_arg)
     s.add_argument("--grace", type=float, default=30.0)
     m = sub.add_parser("mark", help="stamp an operator act into the log")
     m.add_argument("what", help="e.g. meshtasticd_stop / meshtasticd_start")
