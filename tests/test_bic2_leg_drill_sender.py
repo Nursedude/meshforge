@@ -9,6 +9,7 @@ reconcile that cannot say UNACCOUNTED would pass the drill by construction.
 import importlib.util
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -88,11 +89,15 @@ class TestClassify:
 
 
 class TestReconcile:
-    def _log(self, tmp_path, tokens, handoff="handed"):
+    def _log(self, tmp_path, tokens, handoff="handed",
+             bridge_mode="mqtt_bridge", ts0=None):
         p = tmp_path / "run.jsonl"
+        ts0 = time.time() - 600 if ts0 is None else ts0
+        drill.append_log(p, {"event": "start", "run_id": "r", "source": SRC,
+                             "bridge_mode": bridge_mode, "ts": ts0})
         for i, t in enumerate(tokens, 1):
             drill.append_log(p, {"event": "send", "seq": i, "token": t,
-                                 "ts": 1.0 + i, "handoff": handoff,
+                                 "ts": ts0 + i, "handoff": handoff,
                                  "source": SRC})
         return p
 
@@ -106,7 +111,7 @@ class TestReconcile:
         ])
         rep = drill.reconcile(self._log(tmp_path, [t1, t2]), db)
         assert rep["counts"] == {"sent": 1, "failed": 1, "open": 0,
-                                 "unaccounted": 0}
+                                 "unaccounted": 0, "unobservable": 0}
         assert rep["exit"] == 0
 
     def test_missing_row_is_unaccounted_and_fails(self, tmp_path):
@@ -166,3 +171,178 @@ class TestReconcile:
         before = db.read_bytes()
         drill.reconcile(self._log(tmp_path, [t1]), db)
         assert db.read_bytes() == before
+
+
+# ── review fixes 2026-10-25 (S1..S5) ───────────────────────────────────────
+
+def _send_log(tmp_path, n=1, bridge_mode="mqtt_bridge", ts0=None, start=True):
+    p = tmp_path / "run.jsonl"
+    ts0 = time.time() - 600 if ts0 is None else ts0
+    if start:
+        drill.append_log(p, {"event": "start", "run_id": "r", "source": SRC,
+                             "bridge_mode": bridge_mode, "ts": ts0})
+    for i in range(1, n + 1):
+        drill.append_log(p, {"event": "send", "seq": i,
+                             "token": drill.make_token("r", i),
+                             "ts": ts0 + i, "handoff": "handed", "source": SRC})
+    return p
+
+
+class TestS1QueueIsTheRecordOnlyUnderMqttBridge:
+    """The gateway queues RNS→Mesh only in bridge_mode=mqtt_bridge
+    (_rns_bridge_xform: direct send leaves no row on success and requeues a
+    failed chunk with source_id ''). A missing row is LOSS only there."""
+
+    def test_no_row_outside_mqtt_bridge_is_unknown_not_fail(self, tmp_path):
+        rep = drill.reconcile(_send_log(tmp_path, bridge_mode="message_bridge"),
+                              _queue_db(tmp_path, []))
+        assert rep["exit"] == 2
+        assert rep["counts"]["unaccounted"] == 0
+
+    def test_no_row_without_a_start_event_is_unknown(self, tmp_path):
+        rep = drill.reconcile(_send_log(tmp_path, start=False),
+                              _queue_db(tmp_path, []))
+        assert rep["exit"] == 2
+
+    def test_no_row_past_the_queue_purge_window_is_unknown(self, tmp_path):
+        # purge_old(days=1) deletes terminal rows ~24 h after updated_at
+        old = time.time() - 30 * 3600
+        rep = drill.reconcile(_send_log(tmp_path, ts0=old),
+                              _queue_db(tmp_path, []))
+        assert rep["exit"] == 2
+        assert rep["counts"]["unaccounted"] == 0
+
+    def test_send_preflight_refuses_a_non_queue_bridge_mode(self):
+        gw = {"error": None, "ids": [SRC], "policy": "enforce",
+              "bridge_mode": "message_bridge", "peers": []}
+        rc, lines = drill.gateway_preflight(SRC, gw, ("ok", "live ok"))
+        assert rc == 1
+        assert any("mqtt_bridge" in ln for ln in lines)
+
+    def test_send_preflight_passes_mqtt_bridge_listed_live(self):
+        gw = {"error": None, "ids": [SRC], "policy": "enforce",
+              "bridge_mode": "mqtt_bridge", "peers": []}
+        rc, _ = drill.gateway_preflight(SRC, gw, ("ok", "live ok"))
+        assert rc == 0
+
+
+class TestS2LogDamage:
+    def test_torn_final_line_is_tolerated_and_reported(self, tmp_path):
+        t1 = drill.make_token("r", 1)
+        log = _send_log(tmp_path, n=1)
+        with open(log, "a") as f:
+            f.write('{"event": "send", "seq": 2, "tok')   # kill mid-write
+        db = _queue_db(tmp_path, [(drill.message_text(t1), SRC, "delivered",
+                                   "meshtastic")])
+        rep = drill.reconcile(log, db)
+        assert rep["exit"] == 0
+        assert rep["log_note"] and "torn" in rep["log_note"]
+
+    def test_corrupt_middle_line_is_unknown(self, tmp_path):
+        log = _send_log(tmp_path, n=1)
+        text = log.read_text()
+        log.write_text("garbage{\n" + text)
+        rep = drill.reconcile(log, _queue_db(tmp_path, []))
+        assert rep["exit"] == 2
+        assert "line 1" in rep["error"]
+
+    def test_missing_log_is_unknown(self, tmp_path):
+        rep = drill.reconcile(tmp_path / "nope.jsonl", _queue_db(tmp_path, []))
+        assert rep["exit"] == 2
+        assert rep["error"]
+
+
+class TestS3LiveGatewayLoadedTheConfig:
+    NOW_WALL, NOW_MONO = 1_000_000.0, 5_000.0
+
+    def _props(self, started_mono_s, state="active"):
+        return {"ActiveState": state,
+                "ActiveEnterTimestampMonotonic": str(int(started_mono_s * 1e6))}
+
+    def test_config_edited_after_gateway_start_refuses(self):
+        # gateway started 1000 s ago, config edited 10 s ago
+        v, why = drill.live_config_check(
+            self.NOW_WALL - 10, self._props(self.NOW_MONO - 1000),
+            self.NOW_WALL, self.NOW_MONO)
+        assert v == "stale"
+        assert "restart meshforge-gateway" in why
+
+    def test_gateway_started_after_config_edit_passes(self):
+        v, _ = drill.live_config_check(
+            self.NOW_WALL - 1000, self._props(self.NOW_MONO - 10),
+            self.NOW_WALL, self.NOW_MONO)
+        assert v == "ok"
+
+    def test_gateway_not_active_refuses(self):
+        v, _ = drill.live_config_check(
+            self.NOW_WALL - 1000, self._props(self.NOW_MONO - 10, "inactive"),
+            self.NOW_WALL, self.NOW_MONO)
+        assert v == "stale"
+
+    def test_unreadable_unit_is_unknown(self):
+        v, _ = drill.live_config_check(self.NOW_WALL - 1000, None,
+                                       self.NOW_WALL, self.NOW_MONO)
+        assert v == "unknown"
+
+    def test_preflight_refuses_on_stale_live_config(self):
+        gw = {"error": None, "ids": [SRC], "policy": "enforce",
+              "bridge_mode": "mqtt_bridge", "peers": []}
+        rc, _ = drill.gateway_preflight(SRC, gw, ("stale", "restart it"))
+        assert rc == 1
+        rc, _ = drill.gateway_preflight(SRC, gw, ("unknown", "?"))
+        assert rc == 2
+
+    def test_unreadable_gateway_config_is_unknown(self):
+        rc, _ = drill.gateway_preflight(SRC, {"error": "JSONDecodeError"},
+                                        ("ok", "live ok"))
+        assert rc == 2
+
+
+class TestS4MarkPicksTheOpenRun:
+    def _run(self, d, name, ended):
+        p = d / f"{name}.jsonl"
+        drill.append_log(p, {"event": "start", "run_id": name, "ts": 1.0})
+        if ended:
+            drill.append_log(p, {"event": "end", "ts": 2.0})
+        return p
+
+    def test_open_run_wins_over_a_later_sorting_ended_run(self, tmp_path):
+        live = self._run(tmp_path, "20261025T080000", ended=False)
+        self._run(tmp_path, "zz-custom-run-id", ended=True)
+        path, _ = drill.pick_mark_log(tmp_path)
+        assert path == live
+
+    def test_two_open_runs_refuse(self, tmp_path):
+        self._run(tmp_path, "a", ended=False)
+        self._run(tmp_path, "b", ended=False)
+        path, why = drill.pick_mark_log(tmp_path)
+        assert path is None and "--log" in why
+
+    def test_no_open_run_refuses(self, tmp_path):
+        self._run(tmp_path, "a", ended=True)
+        path, why = drill.pick_mark_log(tmp_path)
+        assert path is None and "--log" in why
+
+
+class TestS5PeerRelayAirtime:
+    OWN = "c" * 32
+
+    def test_multiplier_counts_what_the_relay_loop_would_send_to(self):
+        peers = ["a" * 32, "b" * 32, self.OWN, "short", "z" * 32]
+        mult, used, line = drill.airtime_estimate(35, peers, self.OWN)
+        # own hash, wrong length and non-hex are skipped by _maybe_relay_to_peers
+        assert used == ["a" * 32, "b" * 32]
+        assert mult == 3
+        assert "105" in line and "aaaaaaaa" in line
+
+    def test_no_peers_is_local_only(self):
+        mult, used, _ = drill.airtime_estimate(35, [], self.OWN)
+        assert (mult, used) == (1, [])
+
+    def test_reconcile_states_its_scope(self, tmp_path, capsys):
+        import argparse
+        log = _send_log(tmp_path, n=1)
+        db = _queue_db(tmp_path, [])
+        drill.cmd_reconcile(argparse.Namespace(log=str(log), db=str(db),
+                                               json=False))
+        assert "THIS gateway" in capsys.readouterr().out
