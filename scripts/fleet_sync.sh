@@ -1368,9 +1368,10 @@ esac
 # nothing changed; says so when it installs, writes, removes, or cannot.
 desk_out=$(timeout 150 bash /opt/meshforge/scripts/ensure_desktop.sh --apply 2>&1)
 [ -n "$desk_out" ] || desk_out="no output (helper killed by timeout 150s?)"
-if printf '%s\n' "$desk_out" | grep -qE '^(launcher|autostart): error' \
-   || ! printf '%s\n' "$desk_out" | grep -qE '^launcher: ' \
-   || ! printf '%s\n' "$desk_out" | grep -qE '^autostart: '; then
+# ONE judgement shared with update.sh (scripts/lib/desktop.sh); an unloadable
+# lib leaves the function undefined, which reads as not-healthy (WARN).
+. /opt/meshforge/scripts/lib/desktop.sh
+if ! desktop_out_healthy "$desk_out" 2>/dev/null; then
     printf '[%-30s] WARN %s\n' "self ($(hostname -s))" "desktop: $(printf '%s' "$desk_out" | tr '\n' '|' | head -c 140)"
     action_warn=$((action_warn + 1))
 elif printf '%s\n' "$desk_out" | grep -qE '^(launcher: installed|autostart: (written|removed))'; then

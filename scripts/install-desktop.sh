@@ -16,6 +16,25 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 # Resolve actual path (follow symlinks)
 PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd -P)"
 
+# THE list of copied files, shared with ensure_desktop.sh's present check.
+. "$SCRIPT_DIR/lib/desktop.sh"
+
+# The install location. MESHFORGE_INSTALL_LINK exists for the test harness
+# only; this runs under sudo, which resets the environment.
+MF_LINK="${MESHFORGE_INSTALL_LINK:-/opt/meshforge}"
+
+# Refuse to displace a REAL install directory with this checkout. This used
+# to `mv` it to a .backup and symlink a worktree or second clone in its
+# place — every fleet service runs from that directory (review of 5aec69f1).
+# Checked BEFORE the root check so it refuses the same way for anyone.
+if [ -d "$MF_LINK" ] && [ ! -L "$MF_LINK" ] && [ "$(cd "$MF_LINK" && pwd -P)" != "$PROJECT_DIR" ]; then
+    echo "Refused: $MF_LINK is a real directory and this checkout is $PROJECT_DIR."
+    echo "  Installing from here would move $MF_LINK aside and symlink this checkout in its place."
+    echo "  Run the installer from the install itself: sudo bash $MF_LINK/scripts/install-desktop.sh"
+    echo "  (to really switch installs, move $MF_LINK aside yourself first, then re-run)"
+    exit 1
+fi
+
 echo "==========================================="
 echo "MeshForge Desktop Integration Installer"
 echo "==========================================="
@@ -42,58 +61,51 @@ echo
 
 # Create /opt/meshforge symlink (only if not already there)
 echo "Setting up /opt/meshforge..."
-if [ "$PROJECT_DIR" = "/opt/meshforge" ]; then
-    echo "  Already installed at /opt/meshforge"
-elif [ -L /opt/meshforge ]; then
+if [ "$PROJECT_DIR" = "$MF_LINK" ]; then
+    echo "  Already installed at $MF_LINK"
+elif [ -L "$MF_LINK" ]; then
     # Check if symlink points to correct location
-    CURRENT_TARGET="$(readlink -f /opt/meshforge 2>/dev/null || echo '')"
+    CURRENT_TARGET="$(readlink -f "$MF_LINK" 2>/dev/null || echo '')"
     if [ "$CURRENT_TARGET" = "$PROJECT_DIR" ]; then
-        echo "  Symlink already correct: /opt/meshforge -> $PROJECT_DIR"
+        echo "  Symlink already correct: $MF_LINK -> $PROJECT_DIR"
     else
-        rm /opt/meshforge
-        ln -sf "$PROJECT_DIR" /opt/meshforge
-        echo "  Updated symlink: /opt/meshforge -> $PROJECT_DIR"
+        rm "$MF_LINK"
+        ln -sf "$PROJECT_DIR" "$MF_LINK"
+        echo "  Updated symlink: $MF_LINK -> $PROJECT_DIR"
     fi
-elif [ -d /opt/meshforge ]; then
-    echo "Warning: /opt/meshforge exists as directory, backing up..."
-    mv /opt/meshforge /opt/meshforge.backup.$(date +%Y%m%d%H%M%S)
-    ln -sf "$PROJECT_DIR" /opt/meshforge
-    echo "  /opt/meshforge -> $PROJECT_DIR"
+elif [ -d "$MF_LINK" ]; then
+    # Unreachable: the guard above refused a foreign checkout, so a real
+    # directory here IS this checkout. Never move it aside.
+    echo "  Already installed at $MF_LINK"
 else
-    ln -sf "$PROJECT_DIR" /opt/meshforge
-    echo "  /opt/meshforge -> $PROJECT_DIR"
+    ln -sf "$PROJECT_DIR" "$MF_LINK"
+    echo "  $MF_LINK -> $PROJECT_DIR"
 fi
 
-# Install icon
-echo "Installing icon..."
-ICON_SIZES=(16 24 32 48 64 128 256)
-for size in "${ICON_SIZES[@]}"; do
-    ICON_DIR="/usr/share/icons/hicolor/${size}x${size}/apps"
-    mkdir -p "$ICON_DIR"
-
-    # Install SVG at all sizes (works on modern systems)
-    if [ -f "$PROJECT_DIR/assets/meshforge-icon.svg" ]; then
-        cp "$PROJECT_DIR/assets/meshforge-icon.svg" "$ICON_DIR/meshforge.svg"
-        # Also install with app_id name for desktop taskbar
-        cp "$PROJECT_DIR/assets/meshforge-icon.svg" "$ICON_DIR/org.meshforge.app.svg"
-    fi
-done
-
-# Install scalable SVG (required for desktop taskbar icon)
-echo "Installing scalable icon for desktop taskbar..."
-SCALABLE_DIR="/usr/share/icons/hicolor/scalable/apps"
-mkdir -p "$SCALABLE_DIR"
-if [ -f "$PROJECT_DIR/assets/meshforge-icon.svg" ]; then
-    cp "$PROJECT_DIR/assets/meshforge-icon.svg" "$SCALABLE_DIR/meshforge.svg"
-    cp "$PROJECT_DIR/assets/meshforge-icon.svg" "$SCALABLE_DIR/org.meshforge.app.svg"
+# The per-user menu copy is decided BEFORE the system entry is replaced: it is
+# ours to refresh only while absent or identical to the entry we installed
+# last; anything else is a menu edit — kept (review of 5aec69f1).
+DESKTOP_FILE="$PROJECT_DIR/org.meshforge.app.desktop"
+APPS_DIR="${DESKTOP_APPS_DIR:-/usr/share/applications}"
+INSTALLED_DESKTOP="$APPS_DIR/org.meshforge.app.desktop"
+USER_APPS_DIR="$REAL_HOME/.local/share/applications"
+REFRESH_USER_COPY=false
+if desktop_user_copy_is_ours "$INSTALLED_DESKTOP" "$USER_APPS_DIR/org.meshforge.app.desktop"; then
+    REFRESH_USER_COPY=true
 fi
 
-# Also install to pixmaps
-echo "Installing to pixmaps..."
-mkdir -p /usr/share/pixmaps
+# Install icons, the desktop entry, the polkit policy and the SSH login
+# message — every copied file, from THE shared list (scripts/lib/desktop.sh).
+echo "Installing icons, desktop file, polkit policy and login message..."
+# Remove old meshforge.desktop if it exists
+rm -f "$APPS_DIR/meshforge.desktop" 2>/dev/null || true
+while IFS="$(printf '\t')" read -r src dest; do
+    mkdir -p "$(dirname "$dest")"
+    cp "$src" "$dest"
+    chmod 644 "$dest"
+done < <(desktop_copies "$PROJECT_DIR")
+
 if [ -f "$PROJECT_DIR/assets/meshforge-icon.svg" ]; then
-    cp "$PROJECT_DIR/assets/meshforge-icon.svg" /usr/share/pixmaps/meshforge.svg
-    cp "$PROJECT_DIR/assets/meshforge-icon.svg" /usr/share/pixmaps/org.meshforge.app.svg
     # Create a PNG version for compatibility
     if command -v rsvg-convert &> /dev/null; then
         rsvg-convert -w 128 -h 128 "$PROJECT_DIR/assets/meshforge-icon.svg" > /usr/share/pixmaps/meshforge.png
@@ -104,29 +116,21 @@ if [ -f "$PROJECT_DIR/assets/meshforge-icon.svg" ]; then
     fi
 fi
 
-# Update desktop file to use installed icon
-echo "Installing desktop file..."
-DESKTOP_FILE="$PROJECT_DIR/org.meshforge.app.desktop"
-INSTALLED_DESKTOP="/usr/share/applications/org.meshforge.app.desktop"
-
-# Remove old meshforge.desktop if it exists
-rm -f /usr/share/applications/meshforge.desktop 2>/dev/null || true
-
-# Copy desktop file (Icon=org.meshforge.app matches desktop app_id)
-cp "$DESKTOP_FILE" "$INSTALLED_DESKTOP"
-chmod 644 "$INSTALLED_DESKTOP"
-
-# Also install to user's local applications (for menu)
-USER_APPS_DIR="$REAL_HOME/.local/share/applications"
+# Also install to user's local applications (for menu) — unless it is the
+# user's own edit (decided above, before the system entry changed).
 mkdir -p "$USER_APPS_DIR"
 rm -f "$USER_APPS_DIR/meshforge.desktop" 2>/dev/null || true
-cp "$INSTALLED_DESKTOP" "$USER_APPS_DIR/"
-chown "$REAL_USER:$REAL_USER" "$USER_APPS_DIR/org.meshforge.app.desktop"
+if [ "$REFRESH_USER_COPY" = true ]; then
+    cp "$INSTALLED_DESKTOP" "$USER_APPS_DIR/"
+    chown "$REAL_USER:$REAL_USER" "$USER_APPS_DIR/org.meshforge.app.desktop"
+else
+    echo "  Kept $USER_APPS_DIR/org.meshforge.app.desktop: it differs from the entry we installed (a menu edit). It shadows the system entry; rm it to use the system one."
+fi
 
 # Update desktop database
 echo "Updating desktop database..."
 if command -v update-desktop-database &> /dev/null; then
-    update-desktop-database /usr/share/applications 2>/dev/null || true
+    update-desktop-database "$APPS_DIR" 2>/dev/null || true
     update-desktop-database "$USER_APPS_DIR" 2>/dev/null || true
 fi
 
@@ -150,22 +154,14 @@ ln -sfn "$PROJECT_DIR/scripts/meshforge-launcher.sh" /usr/local/bin/meshforge
 ln -sfn "$PROJECT_DIR/scripts/meshforge-terminal.sh" /usr/local/bin/meshforge-terminal
 
 
-# Install polkit policy (for pkexec authentication)
-echo "Installing polkit policy..."
-POLKIT_DIR="/usr/share/polkit-1/actions"
-if [ -d "$POLKIT_DIR" ]; then
-    cp "$PROJECT_DIR/assets/org.meshforge.policy" "$POLKIT_DIR/"
-    chmod 644 "$POLKIT_DIR/org.meshforge.policy"
+# Polkit policy (for pkexec authentication) and the SSH login message were
+# copied with the shared list above, where their directories exist.
+if [ -d "${DESKTOP_SHARE_DIR:-/usr/share}/polkit-1/actions" ]; then
     echo "  Polkit policy installed - pkexec will prompt for password"
 else
     echo "  Warning: Polkit not found, desktop launcher may not work"
 fi
-
-# Install SSH login message
-echo "Installing SSH login message..."
-if [ -d /etc/profile.d ]; then
-    cp "$PROJECT_DIR/scripts/meshforge-profile.sh" /etc/profile.d/meshforge.sh
-    chmod 644 /etc/profile.d/meshforge.sh
+if [ -d "${DESKTOP_ETC_DIR:-/etc}/profile.d" ]; then
     echo "  SSH users will see MeshForge prompt on login"
 fi
 

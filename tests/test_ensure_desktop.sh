@@ -19,7 +19,7 @@ REPO="$(cd "$HERE/.." && pwd)"
 fails=0
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-APPS="$TMP/apps"; BIN="$TMP/bin"; H="$TMP/home"; CALLS="$TMP/installer.calls"
+APPS="$TMP/apps"; BIN="$TMP/bin"; SHARE="$TMP/share"; ETC="$TMP/etc"; H="$TMP/home"; CALLS="$TMP/installer.calls"
 AUTO="$H/.config/autostart"; DEP="$H/.config/meshforge/deployment.json"
 
 # Fake systemctl: `get-default` prints $TARGET, or fails when TARGET=FAIL.
@@ -36,16 +36,21 @@ cat > "$TMP/sudo" <<'EOF'
 [ "$1" = "-n" ] && shift
 exec "$@"
 EOF
-# Fake installer: records the call, installs what the real one would, or
-# fails when INSTALL_FAIL=1.
+# Fake installer: records the call, installs what the real one would (from
+# THE shared list, scripts/lib/desktop.sh), or fails when INSTALL_FAIL=1.
 cat > "$TMP/install-desktop" <<EOF
 #!/usr/bin/env bash
 echo called >> "$CALLS"
 [ "\${INSTALL_FAIL:-0}" = 1 ] && { echo "boom" >&2; exit 3; }
 [ "\${INSTALL_NOOP:-0}" = 1 ] && exit 0
-mkdir -p "$APPS" "$BIN" "$H/.local/share/applications"
-cp "$REPO/org.meshforge.app.desktop" "$APPS/org.meshforge.app.desktop"
-cp "$REPO/org.meshforge.app.desktop" "$H/.local/share/applications/org.meshforge.app.desktop"
+. "$REPO/scripts/lib/desktop.sh"
+U="$H/.local/share/applications/org.meshforge.app.desktop"
+own=0; desktop_user_copy_is_ours "$APPS/org.meshforge.app.desktop" "\$U" && own=1
+desktop_copies "$REPO" | while IFS="\$(printf '\t')" read -r s d; do
+    mkdir -p "\$(dirname "\$d")" && cp "\$s" "\$d"
+done
+if [ "\$own" = 1 ]; then mkdir -p "\$(dirname "\$U")"; cp "$REPO/org.meshforge.app.desktop" "\$U"; fi
+mkdir -p "$BIN"
 ln -sfn "$REPO/scripts/meshforge-terminal.sh" "$BIN/meshforge-terminal"
 ln -sfn "$REPO/scripts/meshforge-launcher.sh" "$BIN/meshforge"
 EOF
@@ -55,12 +60,18 @@ run() {
     SYSTEMCTL_BIN="$TMP/systemctl" SUDO_BIN="$TMP/sudo" \
     INSTALL_DESKTOP_BIN="$TMP/install-desktop" \
     DESKTOP_APPS_DIR="$APPS" DESKTOP_BIN_DIR="$BIN" HOME="$H" \
+    DESKTOP_SHARE_DIR="$SHARE" DESKTOP_ETC_DIR="$ETC" \
     DESKTOP_INSTALL_DIR="${DESKTOP_INSTALL_DIR:-$REPO}" \
     bash "$SCRIPT" "$@" 2>&1
 }
 check() { if [ -n "$2" ]; then echo "PASS: $1"; else echo "FAIL: $1"; fails=1; fi; }
 calls() { [ -f "$CALLS" ] && wc -l < "$CALLS" | tr -d ' ' || echo 0; }
-reset() { rm -rf "$APPS" "$BIN" "$H" "$CALLS"; mkdir -p "$H/.config/meshforge"; }
+# The optional install targets (polkit, profile.d) EXIST in the fake tree, so
+# the shared list expects them — the shape of a Pi desktop box.
+reset() {
+    rm -rf "$APPS" "$BIN" "$H" "$CALLS" "$SHARE" "$ETC"
+    mkdir -p "$H/.config/meshforge" "$SHARE/polkit-1/actions" "$ETC/profile.d"
+}
 declare_url() { printf '{"role": "lab", "desktop_autostart": {"fleet_url": "%s"}}\n' "$1" > "$DEP"; }
 
 # ── headless box: no launcher, installer never called ────────────────────
@@ -196,11 +207,9 @@ check "F1 newline in fleet_url writes no fleet entry" "$([ ! -e "$AUTO/org.meshf
 check "F1 newline in fleet_url exits 1" "$([ "$rc" = 1 ] && echo ok)"
 check "F1 no smuggled Exec line anywhere in autostart" "$( ! grep -rqs 'evil' "$AUTO" && echo ok)"
 
-# F3: a stale per-user menu copy, or a frozen /usr/local/bin/meshforge, is not 'present'
-reset; TARGET=graphical.target run --apply >/dev/null
-echo "# stale" >> "$H/.local/share/applications/org.meshforge.app.desktop"
-out="$(TARGET=graphical.target run)"
-check "F3 stale per-user menu copy reads would_install" "$(echo "$out" | grep -q '^launcher: would_install' && echo ok)"
+# F3: a frozen /usr/local/bin/meshforge is not 'present'. (Its per-user menu
+# leg was REVERSED by the 5aec69f1 review, R7 below: a differing per-user copy
+# is the user's menu edit — reported as shadowed, never reinstalled over.)
 reset; TARGET=graphical.target run --apply >/dev/null
 rm -f "$BIN/meshforge"; cp "$REPO/scripts/meshforge-launcher.sh" "$BIN/meshforge"
 out="$(TARGET=graphical.target run)"
@@ -227,6 +236,114 @@ out="$(TARGET=graphical.target DESKTOP_INSTALL_DIR="$TMP/elsewhere" run --apply)
 check "F9 foreign checkout reports launcher: error" "$(echo "$out" | grep -q '^launcher: error' && echo ok)"
 check "F9 foreign checkout never calls the installer" "$([ "$(calls)" = 0 ] && echo ok)"
 check "F9 foreign checkout exits 1" "$([ "$rc" = 1 ] && echo ok)"
+
+# ── review 2026-10-25 (non-author, 5aec69f1) ─────────────────────────────
+# R1: a foreign checkout must not write autostart entries pointing INTO it
+reset; declare_url "http://manager.example:5000/fleet"
+out="$(TARGET=graphical.target DESKTOP_INSTALL_DIR="$TMP/elsewhere" run --apply)"; rc=$?
+check "R1 foreign checkout writes no TUI autostart entry" "$([ ! -e "$AUTO/org.meshforge.app.desktop" ] && echo ok)"
+check "R1 foreign checkout reports autostart: error" "$(echo "$out" | grep -q '^autostart: error' && echo ok)"
+check "R1 foreign checkout exits 1 on --apply" "$([ "$rc" = 1 ] && echo ok)"
+
+# R2: install-desktop.sh itself refuses to displace a REAL install directory.
+# Runs the real installer NON-root only: the guard sits before the root check,
+# so a missing guard ends at "Please run as root" and can touch nothing.
+if [ "$(id -u)" != 0 ]; then
+    mkdir -p "$TMP/optmf"; touch "$TMP/optmf/keep"
+    out="$(MESHFORGE_INSTALL_LINK="$TMP/optmf" bash "$REPO/scripts/install-desktop.sh" 2>&1)"; rc=$?
+    check "R2 installer refuses a foreign checkout over a real install dir" "$(echo "$out" | grep -q '^Refused' && echo ok)"
+    check "R2 refusal says what to do" "$(echo "$out" | grep -qF "$TMP/optmf/scripts/install-desktop.sh" && echo ok)"
+    check "R2 refusal exits 1" "$([ "$rc" = 1 ] && echo ok)"
+    check "R2 the real install dir is untouched" "$([ -d "$TMP/optmf" ] && [ ! -L "$TMP/optmf" ] && [ -e "$TMP/optmf/keep" ] && echo ok)"
+    ln -sfn "$REPO" "$TMP/optlink"
+    out="$(MESHFORGE_INSTALL_LINK="$TMP/optlink" bash "$REPO/scripts/install-desktop.sh" 2>&1)"
+    check "R2 a SYMLINKED install link is not refused" "$( ! echo "$out" | grep -q '^Refused' && echo ok)"
+else
+    echo "SKIP: R2 (running as root — never run the real installer here)"
+fi
+
+# R3: every COPIED artifact is part of 'present', from the installer's own list
+reset; TARGET=graphical.target run --apply >/dev/null
+rm -f "$ETC/profile.d/meshforge.sh"
+out="$(TARGET=graphical.target run)"
+check "R3 missing /etc/profile.d login message reads would_install" "$(echo "$out" | grep -q '^launcher: would_install' && echo ok)"
+reset; TARGET=graphical.target run --apply >/dev/null
+echo "<!-- drift -->" >> "$SHARE/polkit-1/actions/org.meshforge.policy"
+out="$(TARGET=graphical.target run)"
+check "R3 stale polkit policy reads would_install" "$(echo "$out" | grep -q '^launcher: would_install' && echo ok)"
+reset; TARGET=graphical.target run --apply >/dev/null
+rm -f "$SHARE/icons/hicolor/scalable/apps/org.meshforge.app.svg"
+out="$(TARGET=graphical.target run)"
+check "R3 missing taskbar icon reads would_install" "$(echo "$out" | grep -q '^launcher: would_install' && echo ok)"
+
+# R4: update.sh and fleet_sync judge the helper's output with ONE function,
+# and output missing a status line is not healthy
+(
+    . "$REPO/scripts/lib/desktop.sh"
+    desktop_out_healthy "$(printf 'launcher: present\nautostart: undeclared\n')" && echo "R4OK1"
+    desktop_out_healthy "launcher: present" || echo "R4OK2"
+    desktop_out_healthy "" || echo "R4OK3"
+    desktop_out_healthy "$(printf 'launcher: present\nautostart: error — x\n')" || echo "R4OK4"
+) > "$TMP/r4" 2>&1
+check "R4 both lines, no error = healthy" "$(grep -q R4OK1 "$TMP/r4" && echo ok)"
+check "R4 no autostart line = NOT healthy" "$(grep -q R4OK2 "$TMP/r4" && echo ok)"
+check "R4 empty output = NOT healthy" "$(grep -q R4OK3 "$TMP/r4" && echo ok)"
+check "R4 an error line = NOT healthy" "$(grep -q R4OK4 "$TMP/r4" && echo ok)"
+check "R4 update.sh judges with desktop_out_healthy" "$(grep -qF 'desktop_out_healthy "$desk_out"' "$REPO/scripts/update.sh" && echo ok)"
+check "R4 fleet_sync self leg judges with desktop_out_healthy" "$(grep -qF 'desktop_out_healthy "$desk_out"' "$REPO/scripts/fleet_sync.sh" && echo ok)"
+
+# R5: the URL rule lives in ONE place (the Python validator)
+check "R5 URL regex appears once in ensure_desktop.sh" \
+    "$([ "$(grep -c 'https?://\[A-Za-z0-9' "$SCRIPT")" = 1 ] && echo ok)"
+
+# R6: an unusable state dir is reported as such, never as 'could not read
+# deployment.json' — the declaration does not need the state dir at all
+reset; TARGET=graphical.target run --apply >/dev/null
+mv "$H/.local/state/meshforge" "$TMP/state.moved"; echo x > "$H/.local/state/meshforge"
+declare_url "http://manager.example:5000/fleet"
+out="$(TARGET=graphical.target run --apply)"
+check "R6 state dir unusable: declaration is still read" "$( ! echo "$out" | grep -q 'could not read deployment.json' && echo ok)"
+check "R6 state dir unusable: autostart still written" "$(echo "$out" | grep -q '^autostart: written' && echo ok)"
+reset; mkdir -p "$H/.local/state"; echo x > "$H/.local/state/meshforge"
+out="$(TARGET=graphical.target run --apply)"
+check "R6 state dir unusable: launcher error names the state dir" "$(echo "$out" | grep '^launcher: error' | grep -q 'state dir' && echo ok)"
+check "R6 state dir unusable: installer not run blind" "$([ "$(calls)" = 0 ] && echo ok)"
+
+# R7: a per-user menu copy that differs is the USER'S edit — reported, kept
+reset; TARGET=graphical.target run --apply >/dev/null
+echo "# my menu edit" >> "$H/.local/share/applications/org.meshforge.app.desktop"
+out="$(TARGET=graphical.target run --apply)"; rc=$?
+check "R7 edited per-user copy reports launcher: shadowed" "$(echo "$out" | grep -q '^launcher: shadowed' && echo ok)"
+check "R7 edited per-user copy does not re-run the installer" "$([ "$(calls)" = 1 ] && echo ok)"
+check "R7 edited per-user copy is kept" "$(grep -q 'my menu edit' "$H/.local/share/applications/org.meshforge.app.desktop" && echo ok)"
+check "R7 shadowed exits 0" "$([ "$rc" = 0 ] && echo ok)"
+# ...a reinstall for ANOTHER reason still keeps it (the installer's rule)
+echo "# drift" >> "$APPS/org.meshforge.app.desktop"
+TARGET=graphical.target run --apply >/dev/null
+check "R7 reinstall keeps the user's edited copy" "$(grep -q 'my menu edit' "$H/.local/share/applications/org.meshforge.app.desktop" && echo ok)"
+# ...while our OWN stale copy (identical to the old system entry) is refreshed
+reset; TARGET=graphical.target run --apply >/dev/null
+echo "# old release" >> "$APPS/org.meshforge.app.desktop"
+echo "# old release" >> "$H/.local/share/applications/org.meshforge.app.desktop"
+TARGET=graphical.target run --apply >/dev/null
+check "R7 our own stale per-user copy is refreshed" \
+    "$(cmp -s "$REPO/org.meshforge.app.desktop" "$H/.local/share/applications/org.meshforge.app.desktop" && echo ok)"
+
+# R8: dry-run on a foreign checkout reports, it does not error
+reset
+out="$(TARGET=graphical.target DESKTOP_INSTALL_DIR="$TMP/elsewhere" run)"; rc=$?
+check "R8 foreign dry-run exits 0" "$([ "$rc" = 0 ] && echo ok)"
+check "R8 foreign dry-run says it would refuse" "$(echo "$out" | grep -q '^launcher: would_refuse' && echo ok)"
+check "R8 foreign dry-run prints no error line" "$( ! echo "$out" | grep -q ': error' && echo ok)"
+
+# R9: a headless box tells the truth about a launcher update.sh installed
+reset; TARGET=graphical.target run --apply >/dev/null
+out="$(TARGET=multi-user.target run)"
+check "R9 headless line does not deny an installed launcher" "$( ! echo "$out" | grep -q 'no launcher' && echo ok)"
+check "R9 headless line reports the launcher present" "$(echo "$out" | grep '^launcher: headless' | grep -q 'present' && echo ok)"
+reset
+out="$(TARGET=multi-user.target run)"
+check "R9 headless line reports an absent launcher as absent" "$(echo "$out" | grep '^launcher: headless' | grep -q 'absent' && echo ok)"
 
 echo "---"
 if [ "$fails" = 0 ]; then echo "ALL PASS"; exit 0; else echo "FAILED"; exit 1; fi

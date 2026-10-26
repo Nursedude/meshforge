@@ -530,19 +530,28 @@ if [[ -n "$REAL_USER" && -f "$INSTALL_DIR/scripts/ensure_prune_cron.sh" ]]; then
 fi
 
 # Opt-in login autostart (deployment.json desktop_autostart) on a console box —
-# the same helper fleet_sync.sh runs (2026-10-25). NOT identical to a fleet box:
-# step 3 above still installs the launcher on EVERY box, headless included,
-# where the fleet leg installs it only on graphical.target (queued, review F2).
+# the same helper fleet_sync.sh runs (2026-10-25). Step 3 above deliberately
+# still runs install-desktop.sh on EVERY box, headless included: besides the
+# menu entry it installs the `meshforge` command, the polkit policy and the
+# SSH login message, which headless boxes use. The helper converges only
+# console boxes and, on a headless one, reports what is there ("files
+# present") rather than claiming there is no launcher (review of 5aec69f1).
 if [[ -n "$REAL_USER" && "$SKIP_DESKTOP" != "true" && -f "$INSTALL_DIR/scripts/ensure_desktop.sh" ]]; then
     if [[ "$(id -un)" == "${REAL_USER}" ]]; then
         desk_out="$(timeout 150 bash "$INSTALL_DIR/scripts/ensure_desktop.sh" --apply 2>&1)" || true
     else
         desk_out="$(timeout 150 sudo -u "${REAL_USER}" -H bash "$INSTALL_DIR/scripts/ensure_desktop.sh" --apply 2>&1)" || true
     fi
-    if [[ -z "$desk_out" ]] || grep -qE '^(launcher|autostart): error' <<<"$desk_out"; then
-        echo -e "  ${YELLOW}⚠ desktop: ${desk_out:-no output (timeout 150s?)}${NC}"
+    # ONE judgement shared with fleet_sync's self leg: both status lines, no
+    # error. A helper killed by its timeout prints neither — not a tick.
+    # `|| true` (set -e): an unloadable lib leaves the function undefined,
+    # which the `if` reads as not-healthy — a warning, never an aborted update.
+    # shellcheck source=lib/desktop.sh
+    . "$INSTALL_DIR/scripts/lib/desktop.sh" || true
+    if desktop_out_healthy "$desk_out" 2>/dev/null; then
+        echo -e "  ${GREEN}✓ desktop: $(sed -E 's/ —.*//' <<<"$desk_out" | tr '\n' ' ')${NC}"
     else
-        echo -e "  ${GREEN}✓ desktop: $(grep -E '^autostart: ' <<<"$desk_out" | sed -E 's/ —.*//')${NC}"
+        echo -e "  ${YELLOW}⚠ desktop: ${desk_out:-no output (timeout 150s?)}${NC}"
     fi
 fi
 
