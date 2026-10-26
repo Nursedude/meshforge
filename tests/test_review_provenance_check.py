@@ -821,3 +821,346 @@ class TestLayerCScopeAnnouncement(unittest.TestCase):
                                         ledger_path="/nonexistent",
                                         witness_path=os.path.join(repo, "wit.log"))
             self.assertEqual(code, 0)
+
+
+
+
+# --------------------------------------------------------------------------- #
+# Leg 2 — a frontier SUBAGENT read on a non-frontier session (2026-10-26).    #
+# The session ledger only sees the parent model; the harness-written subagent #
+# transcript is the witness. Bound to the row by a file/sha from the row's    #
+# Scope or Fix cell that the SUBAGENT ITSELF named in its own tool calls —    #
+# the parent's prompt and the CLAUDE.md every transcript carries never count  #
+# (Fable non-author read 2026-10-26: 14/14 transcripts carried CLAUDE.md's    #
+# paths, so a whole-file substring bound nothing).                            #
+# --------------------------------------------------------------------------- #
+
+import json as _json  # noqa: E402
+import time as _time  # noqa: E402
+
+
+def _iso(ts):
+    return _time.strftime("%Y-%m-%dT%H:%M:%S.000Z", _time.gmtime(ts))
+
+
+def _read_call(path):
+    return [{"type": "tool_use", "name": "Read", "input": {"file_path": path}}]
+
+
+def _transcript(claude_dir, model="claude-fable-5-1", sidechain=True, ts=None,
+                prompt="CLAUDE.md names src/gateway/canonical_message.py",
+                said=None, name="agent-x.jsonl", line_type="assistant"):
+    d = os.path.join(claude_dir, "projects", "-opt-repo", "sess-1", "subagents")
+    os.makedirs(d, exist_ok=True)
+    ts = _time.time() - 60 if ts is None else ts
+    said = _read_call("/opt/repo/scripts/foo.py") if said is None else said
+    lines = [
+        {"isSidechain": sidechain, "type": "user", "timestamp": _iso(ts),
+         "message": {"role": "user", "content": prompt}},
+        {"isSidechain": sidechain, "type": line_type, "timestamp": _iso(ts),
+         "message": {"role": "assistant", "model": model, "content": said}},
+    ]
+    p = os.path.join(d, name)
+    with open(p, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(_json.dumps(x) for x in lines) + "\n")
+    return p
+
+
+SUB_ROW = ("| 2026-10-26 | fix in `scripts/foo.py` | Fable subagent adversarial "
+           "read | `d9878c32` | queued `src/other/thing.py` |")
+
+
+class TestSubagentWitnessPure(unittest.TestCase):
+    def test_row_claims_subagent_read(self):
+        self.assertTrue(rpc.row_claims_subagent_read("Fable subagent read"))
+        self.assertTrue(rpc.row_claims_subagent_read("a Fable sub-agent pass"))
+        self.assertFalse(rpc.row_claims_subagent_read("frontier deep review"))
+
+    def test_denied_subagent_is_not_a_claim(self):
+        self.assertFalse(rpc.row_claims_subagent_read(
+            "Fable 5.1 SESSION pass (no subagent)"))
+        self.assertFalse(rpc.row_claims_subagent_read("without a subagent"))
+
+    def test_anchors_come_from_scope_and_fix_cells_only(self):
+        a = rpc.row_anchor_tokens(SUB_ROW)
+        self.assertIn("scripts/foo.py", a)
+        self.assertIn("d9878c32", a)
+        self.assertNotIn("src/other/thing.py", a)   # residuals cell
+
+    def test_anchor_tokens_must_be_file_shaped(self):
+        row = ("| 2026-10-26 | `tests/` `and/or` `10/10` `TX/RX` "
+               "`https://github.com/x/y.py` `/code-review` `@rns/` "
+               "`foo.py` `src/a/b.py` | m | `none` | x |")
+        self.assertEqual(rpc.row_anchor_tokens(row), ["src/a/b.py"])
+
+    def test_line_suffix_and_sha_range_still_anchor(self):
+        row = ("| 2026-10-26 | `scripts/foo.py:12` `src/a/b.py:3-9` "
+               "| m | `d9878c32..9b6d80de` | x |")
+        self.assertEqual(rpc.row_anchor_tokens(row),
+                         ["scripts/foo.py", "src/a/b.py", "d9878c32",
+                          "9b6d80de"])
+
+    def test_short_hex_words_are_not_shas(self):
+        self.assertEqual(rpc.row_anchor_tokens(
+            "| 2026-10-26 | `cafe` `bad` `fab1e` | m | `abc12` | x |"), [])
+
+    def test_window_constant_is_a_day(self):
+        self.assertEqual(rpc.SUBAGENT_WITNESS_WINDOW_S, 24 * 3600)
+
+    def _w(self, text, anchors, lo=None, hi=None):
+        now = _time.time()
+        return rpc.transcript_witnesses(
+            text, anchors, lo=now - 3600 if lo is None else lo,
+            hi=now + 300 if hi is None else hi)
+
+    def _text(self, tmp, **kw):
+        with open(_transcript(tmp, **kw), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_subagent_that_read_the_file_witnesses(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertTrue(self._w(self._text(d), ["scripts/foo.py"]))
+
+    def test_anchor_only_in_the_parent_prompt_does_not_witness(self):
+        with tempfile.TemporaryDirectory() as d:
+            t = self._text(d, prompt="please review scripts/foo.py",
+                           said=_read_call("/opt/repo/src/x/other.py"))
+            self.assertFalse(self._w(t, ["scripts/foo.py"]))
+
+    def test_claude_md_paths_in_the_prompt_do_not_witness(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertFalse(self._w(self._text(d),
+                                     ["src/gateway/canonical_message.py"]))
+
+    def test_bash_that_runs_against_the_file_witnesses(self):
+        with tempfile.TemporaryDirectory() as d:
+            t = self._text(d, said=[{"type": "tool_use", "name": "Bash",
+                                     "input": {"command": "sed -n 1,40p "
+                                               "scripts/foo.py"}}])
+            self.assertTrue(self._w(t, ["scripts/foo.py"]))
+
+    def test_writing_or_reporting_a_path_is_not_reading_it(self):
+        # live 2026-10-26: the gate's own adversarial reviewer typed a path
+        # into its attack scripts (Write x3) and its hand-back — and so
+        # vouched for a row about a file it never opened
+        for said in (
+                [{"type": "tool_use", "name": "Write",
+                  "input": {"file_path": "/tmp/a.py",
+                            "content": "row = 'scripts/foo.py'"}}],
+                [{"type": "tool_use", "name": "Edit",
+                  "input": {"file_path": "scripts/foo.py"}}],
+                [{"type": "tool_use", "name": "SubagentHandback",
+                  "input": {"message": "reviewed scripts/foo.py"}}],
+                [{"type": "text", "text": "I read scripts/foo.py"}]):
+            with tempfile.TemporaryDirectory() as d:
+                t = self._text(d, said=said)
+                self.assertFalse(self._w(t, ["scripts/foo.py"]), said)
+
+    def test_only_the_field_that_names_a_file_counts(self):
+        # Fable 2nd read: a Bash `description` is prose, a Grep/Glob
+        # `pattern` is a string the model typed — neither opened the file
+        for said in (
+                [{"type": "tool_use", "name": "Bash",
+                  "input": {"command": "ls", "description": "Read scripts/foo.py"}}],
+                [{"type": "tool_use", "name": "Grep",
+                  "input": {"pattern": "scripts/foo.py", "path": "/opt/other"}}],
+                [{"type": "tool_use", "name": "Glob",
+                  "input": {"pattern": "scripts/foo.py"}}]):
+            with tempfile.TemporaryDirectory() as d:
+                self.assertFalse(self._w(self._text(d, said=said),
+                                         ["scripts/foo.py"]), said)
+        for said in (
+                [{"type": "tool_use", "name": "Grep",
+                  "input": {"pattern": "def x", "path": "/r/scripts/foo.py"}}],
+                [{"type": "tool_use", "name": "Glob",
+                  "input": {"pattern": "*.py", "path": "/r/scripts/foo.py"}}]):
+            with tempfile.TemporaryDirectory() as d:
+                self.assertTrue(self._w(self._text(d, said=said),
+                                        ["scripts/foo.py"]), said)
+
+    def test_anchor_in_the_line_but_outside_the_tool_input_does_not_count(self):
+        with tempfile.TemporaryDirectory() as d:
+            t = self._text(d, said=[
+                {"type": "text", "text": "scripts/foo.py"},
+                {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}])
+            self.assertFalse(self._w(t, ["scripts/foo.py"]))
+
+    def test_nonfrontier_model_does_not_witness(self):
+        with tempfile.TemporaryDirectory() as d:
+            t = self._text(d, model="claude-opus-5-5")
+            self.assertFalse(self._w(t, ["scripts/foo.py"]))
+
+    def test_main_thread_is_not_a_subagent(self):
+        with tempfile.TemporaryDirectory() as d:
+            t = self._text(d, sidechain=False)
+            self.assertFalse(self._w(t, ["scripts/foo.py"]))
+
+    def test_non_assistant_line_does_not_witness(self):
+        with tempfile.TemporaryDirectory() as d:
+            t = self._text(d, line_type="user")
+            self.assertFalse(self._w(t, ["scripts/foo.py"]))
+
+    def test_out_of_window_does_not_witness(self):
+        with tempfile.TemporaryDirectory() as d:
+            t = self._text(d, ts=_time.time() - 3 * 86400)
+            self.assertFalse(self._w(t, ["scripts/foo.py"]))
+
+    def test_future_stamp_does_not_witness(self):
+        with tempfile.TemporaryDirectory() as d:
+            t = self._text(d, ts=_time.time() + 86400)
+            self.assertFalse(self._w(t, ["scripts/foo.py"]))
+
+    def test_timestamp_without_z_is_not_trusted(self):
+        self.assertIsNone(rpc._parse_iso_ts("2026-10-26T17:00:56.607"))
+        self.assertIsNotNone(rpc._parse_iso_ts("2026-10-26T17:00:56.607Z"))
+
+    def test_no_anchors_never_witnesses(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertFalse(self._w(self._text(d), []))
+
+    def test_torn_and_garbage_lines_are_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            t = "not json\n{\"torn\": \n" + self._text(d)
+            self.assertTrue(self._w(t, ["scripts/foo.py"]))
+
+
+class TestLeg2SubagentIntegration(unittest.TestCase):
+    def _repo(self, repo, mechanism, commit_ts=None):
+        _init_repo(repo)
+        _write(repo, rpc.PROVENANCE_REL, PROV_HEADER + WORKLIST)
+        base = _commit(repo, "chore: base")
+        _write(repo, rpc.PROVENANCE_REL, PROV_HEADER
+               + f"| 2026-10-26 | fix in `scripts/foo.py` | {mechanism} | "
+                 f"`d9878c32` | none |\n" + WORKLIST)
+        env = dict(os.environ)
+        if commit_ts is not None:
+            env["GIT_COMMITTER_DATE"] = f"@{int(commit_ts)} +0000"
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True, timeout=30)
+        subprocess.run(["git", "commit", "-q", "-m", "docs: provenance"],
+                       cwd=repo, check=True, timeout=30, env=env)
+        ledger = os.path.join(repo, "ledger.jsonl")
+        with open(ledger, "w") as fh:
+            fh.write('{"kind":"claim","ts":100,"model_id":"claude-opus-5-5"}\n')
+        return base, ledger
+
+    def _run(self, repo, base, ledger, claude_dir):
+        return rpc.run(repo, f"{base}..HEAD", base, ledger_path=ledger,
+                       witness_path=os.path.join(repo, "wit.log"),
+                       claude_dir=claude_dir)
+
+    def test_witnessed_subagent_row_passes(self):
+        with tempfile.TemporaryDirectory() as repo, \
+                tempfile.TemporaryDirectory() as cd:
+            base, ledger = self._repo(repo, "Fable subagent adversarial read")
+            _transcript(cd)
+            code, out, _ = self._run(repo, base, ledger, cd)
+            self.assertEqual(code, 0, out)
+            with open(os.path.join(repo, "wit.log")) as fh:
+                self.assertIn("leg2 PASS via frontier subagent", fh.read())
+
+    def test_no_transcript_still_blocks_and_says_why(self):
+        with tempfile.TemporaryDirectory() as repo, \
+                tempfile.TemporaryDirectory() as cd:
+            base, ledger = self._repo(repo, "Fable subagent adversarial read")
+            code, out, _ = self._run(repo, base, ledger, cd)
+            self.assertEqual(code, 1)
+            self.assertIn("subagent transcript", "\n".join(out))
+
+    def test_prompt_only_transcript_still_blocks(self):
+        with tempfile.TemporaryDirectory() as repo, \
+                tempfile.TemporaryDirectory() as cd:
+            base, ledger = self._repo(repo, "Fable subagent adversarial read")
+            _transcript(cd, prompt="review scripts/foo.py",
+                        said=[{"type": "text", "text": "done"}])
+            code, _, _ = self._run(repo, base, ledger, cd)
+            self.assertEqual(code, 1)
+
+    def test_session_claim_without_subagent_word_still_blocks(self):
+        with tempfile.TemporaryDirectory() as repo, \
+                tempfile.TemporaryDirectory() as cd:
+            base, ledger = self._repo(repo, "frontier deep review")
+            _transcript(cd)
+            code, _, _ = self._run(repo, base, ledger, cd)
+            self.assertEqual(code, 1)
+
+    def test_denied_subagent_session_claim_still_blocks(self):
+        with tempfile.TemporaryDirectory() as repo, \
+                tempfile.TemporaryDirectory() as cd:
+            base, ledger = self._repo(repo, "Fable SESSION pass (no subagent)")
+            _transcript(cd)
+            code, _, _ = self._run(repo, base, ledger, cd)
+            self.assertEqual(code, 1)
+
+    def test_nonfrontier_subagent_transcript_still_blocks(self):
+        with tempfile.TemporaryDirectory() as repo, \
+                tempfile.TemporaryDirectory() as cd:
+            base, ledger = self._repo(repo, "Fable subagent adversarial read")
+            _transcript(cd, model="claude-opus-5-5")
+            code, _, _ = self._run(repo, base, ledger, cd)
+            self.assertEqual(code, 1)
+
+    def test_window_is_anchored_on_head_not_now(self):
+        # HEAD committed 10 days ago: a read 9 days ago is after HEAD → block;
+        # a read 10.5 days ago (12 h before HEAD) → pass
+        old = _time.time() - 10 * 86400
+        for read_ts, want in ((old + 86400, 1), (old - 12 * 3600, 0)):
+            with tempfile.TemporaryDirectory() as repo, \
+                    tempfile.TemporaryDirectory() as cd:
+                base, ledger = self._repo(repo, "Fable subagent read",
+                                          commit_ts=old)
+                p = _transcript(cd, ts=read_ts)
+                os.utime(p, (read_ts, read_ts))
+                code, out, _ = self._run(repo, base, ledger, cd)
+                self.assertEqual(code, want, (read_ts - old, out))
+
+    def test_window_follows_the_rows_commit_not_a_later_head(self):
+        # Fable 2nd read: read at T, row committed T+1h, unrelated commit
+        # at T+30h is HEAD → the honest row must still pass
+        t = _time.time() - 2 * 86400
+        with tempfile.TemporaryDirectory() as repo, \
+                tempfile.TemporaryDirectory() as cd:
+            base, ledger = self._repo(repo, "Fable subagent read",
+                                      commit_ts=t + 3600)
+            _write(repo, "src/later.py", "x = 1\n")
+            env = dict(os.environ,
+                       GIT_COMMITTER_DATE=f"@{int(t + 30 * 3600)} +0000")
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True,
+                           timeout=30)
+            subprocess.run(["git", "commit", "-q", "-m", "feat: later"],
+                           cwd=repo, check=True, timeout=30, env=env)
+            p = _transcript(cd, ts=t)
+            os.utime(p, (t, t))
+            code, out, _ = self._run(repo, base, ledger, cd)
+            self.assertEqual(code, 0, out)
+
+    def test_future_dated_row_commit_is_clamped_to_now(self):
+        # a clock that ran ahead must not stretch the window into the future
+        future = _time.time() + 3 * 86400
+        with tempfile.TemporaryDirectory() as repo, \
+                tempfile.TemporaryDirectory() as cd:
+            base, ledger = self._repo(repo, "Fable subagent read",
+                                      commit_ts=future)
+            p = _transcript(cd, ts=future - 3600)
+            code, _, _ = self._run(repo, base, ledger, cd)
+            self.assertEqual(code, 1)
+
+    def test_unreadable_transcript_blocks_not_crashes(self):
+        with tempfile.TemporaryDirectory() as repo, \
+                tempfile.TemporaryDirectory() as cd:
+            base, ledger = self._repo(repo, "Fable subagent adversarial read")
+            p = _transcript(cd)
+            os.chmod(p, 0)
+            try:
+                if os.access(p, os.R_OK):
+                    self.skipTest("running as root — mode 000 still readable")
+                code, _, _ = self._run(repo, base, ledger, cd)
+                self.assertEqual(code, 1)
+            finally:
+                os.chmod(p, 0o600)
+
+    def test_absent_claude_dir_blocks_not_crashes(self):
+        with tempfile.TemporaryDirectory() as repo:
+            base, ledger = self._repo(repo, "Fable subagent adversarial read")
+            code, _, _ = self._run(repo, base, ledger,
+                                   os.path.join(repo, "nope"))
+            self.assertEqual(code, 1)

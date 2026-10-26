@@ -20,6 +20,25 @@ Design: `.claude/plans/upshift_witness_design.md`. Three legs:
       model_id is non-frontier → block ("queue it as a worklist row instead").
       You may always QUEUE; you may not CLAIM the rationed frontier pass on a
       smaller model. Unknown/absent ledger model → warn, never block.
+      Exception (2026-10-26): a row whose Mechanism says a frontier SUBAGENT
+      did the read passes when the harness-written subagent transcript
+      witnesses it — a sidechain whose assistant lines carry a frontier model
+      id, active in the window, naming a path/sha the row names. The ledger
+      only ever sees the parent session's model, so before this the honest
+      row was unpublishable (``--no-verify`` twice, 6228ec51 and 9b6d80de).
+      Binding (rebuilt after a Fable non-author read the same day found the
+      first cut near-vacuous: every transcript carries CLAUDE.md and the
+      parent's prompt, so a whole-file substring matched 14/14): the anchor
+      is a FILE or sha from the row's Scope/Fix cells, and it must appear in
+      the input of one of the subagent's own READ tool calls (Read, Grep,
+      Glob, Bash — an allowlist, and only the field that names what was
+      opened; the gate's own reviewer vouched for a file it never opened by
+      WRITING its path into attack scripts). Window = the 24 h before the
+      push range's commits that touch the ledger. Honest limit: that proves "a frontier subagent
+      touched a file this row names" — not "THIS read"; live, the previous
+      session's Fable read of the same file 9 h earlier also qualified. The
+      transcript is a local file a session could write; the harness writes
+      it, so forging one is a deliberate act, never a slip.
 
   Structure leg (HARD on new damage, warn on old): a table row some parser
       would silently misread — a merged line (two rows on one line: hid a
@@ -63,6 +82,7 @@ The leg-2 block message names this path.
 from __future__ import annotations
 
 import argparse
+import calendar
 import json
 import os
 import re
@@ -138,6 +158,31 @@ FRONTIER_TIER_MARKERS = (
     r"\bfrontier\b",
     r"\bfable\b",
 )
+
+#: A Mechanism cell that says the frontier read was a SUBAGENT's (the parent
+#: session stays non-frontier) — the only rows the transcript witness can clear.
+SUBAGENT_READ_MARKER = r"\bsub-?agents?\b"
+
+#: The tool calls that READ a file. An ALLOWLIST: writing a path (Write, Edit),
+#: reporting it (the hand-back) or saying it in text is not reading it — the
+#: gate's own adversarial reviewer typed a path into its attack scripts and
+#: vouched for a row about a file it never opened (live, 2026-10-26). A new
+#: harness tool counts only once it is added here.
+SUBAGENT_READ_TOOLS = {"Read": "file_path", "Grep": "path", "Glob": "path",
+                       "Bash": "command"}
+#: ...and only the FIELD that names what was opened: a Bash ``description``
+#: is prose, a Grep/Glob ``pattern`` a string the model typed (Fable 2nd read).
+#: Honest limit: inside a Bash ``command`` an ``echo`` or heredoc body naming
+#: the path still counts — telling read verbs from writes is a parser, queued.
+
+#: How far before the row's commit a witnessing subagent may have run. Wall-clock
+#: (hfm #6): a generous window, clamped at "not after now" — the anchor binding,
+#: not the window, is what ties a transcript to a row.
+SUBAGENT_WITNESS_WINDOW_S = 24 * 3600
+
+#: Per-file read cap — a transcript is ~1 MB; never load an unbounded file in
+#: a pre-push hook.
+SUBAGENT_TRANSCRIPT_MAX_BYTES = 32 * 1024 * 1024
 
 #: Leg-3 nudge threshold — src lines (added+deleted) since the last provenance
 #: boundary. A NUDGE, not a judgment: it cannot know whether the change needed
@@ -278,14 +323,99 @@ def new_completed_rows(head_text, base_text):
     return [r for r in parse_completed_rows(head_text) if r[2] not in base_lines]
 
 
-def evaluate_leg2(head_text, base_text, session_is_frontier):
+def row_claims_subagent_read(mechanism):
+    """True if a Mechanism cell says the read was done by a subagent — and
+    does not DENY it ("Fable SESSION pass (no subagent)" claims the opposite)."""
+    if not mechanism:
+        return False
+    low = mechanism.lower()
+    return any(not _is_negated(low, m.start())
+               for m in re.finditer(SUBAGENT_READ_MARKER, low))
+
+
+def row_anchor_tokens(raw_line):
+    """What binds a transcript to a row: backticked FILES (>=2 path segments,
+    an extension on the last) and shas, from the Scope and Fix-commits cells
+    only. A bare dir (`tests/`), a URL, `and/or`, `10/10` or a skill name
+    binds nothing — CLAUDE.md, which every transcript carries, names those."""
+    cells = [c.strip() for c in (raw_line or "").strip().strip("|").split("|")]
+    if len(cells) < 5:
+        return []
+    out = []
+    toks = []
+    for tok in re.findall(r"`([^`]+)`", cells[1] + " " + cells[3]):
+        tok = re.sub(r":\d+(?:-\d+)?$", "", tok.strip())   # `foo.py:12`
+        toks += tok.split("..") if ".." in tok and "/" not in tok else [tok]
+    for tok in toks:
+        if re.fullmatch(r"[0-9a-f]{7,40}", tok):
+            out.append(tok)
+        elif ("://" not in tok and " " not in tok
+              and re.fullmatch(r"[\w.@~-]+(?:/[\w.@-]+)+\.[A-Za-z0-9]{1,8}",
+                               tok.lstrip("/"))
+              and "/" in tok.lstrip("/")):
+            out.append(tok)
+    return out
+
+
+def _parse_iso_ts(v):
+    if not isinstance(v, str) or not v.endswith("Z"):
+        return None
+    try:
+        return float(calendar.timegm(time.strptime(v[:19],
+                                                   "%Y-%m-%dT%H:%M:%S")))
+    except ValueError:
+        return None
+
+
+def transcript_witnesses(text, anchors, lo, hi):
+    """Pure: does this subagent transcript witness a frontier read for a row?
+    Needs a SIDECHAIN ``assistant`` line with a frontier model id, stamped
+    inside [lo, hi], whose own READ tool call (``SUBAGENT_READ_TOOLS``) names
+    one of the row's anchors. The parent's prompt and the CLAUDE.md every transcript
+    carries sit in user lines and never count. Torn or non-JSON lines are
+    skipped (a partial transcript can still witness)."""
+    if not anchors or not text:
+        return False
+    for line in text.splitlines():
+        if not any(a in line for a in anchors):
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict) or ev.get("type") != "assistant":
+            continue
+        if ev.get("isSidechain") is not True:
+            continue
+        msg = ev.get("message")
+        if not isinstance(msg, dict) or not is_frontier_model(msg.get("model")):
+            continue
+        ts = _parse_iso_ts(ev.get("timestamp"))
+        if ts is None or not lo <= ts <= hi:
+            continue
+        content = msg.get("content")
+        for item in content if isinstance(content, list) else ():
+            if not (isinstance(item, dict) and item.get("type") == "tool_use"):
+                continue
+            field = SUBAGENT_READ_TOOLS.get(item.get("name"))
+            inp = item.get("input")
+            said = inp.get(field) if field and isinstance(inp, dict) else None
+            if isinstance(said, str) and any(a in said for a in anchors):
+                return True
+    return False
+
+
+def evaluate_leg2(head_text, base_text, session_is_frontier,
+                  subagent_witness=None):
     """Pure leg-2 decision.
 
     Returns (violating_rows, warn_code). ``session_is_frontier`` is True /
     False / None (unknown). A frontier-tier NEW row:
       * unknown session model  → warn ("unknown-model"), never block
       * frontier session       → allowed (may stamp the pass it ran)
-      * non-frontier session   → blocked (queue it instead)
+      * non-frontier session   → blocked (queue it instead), UNLESS the row
+        claims a subagent read and ``subagent_witness(raw_line)`` finds the
+        transcript that proves it
     """
     new_rows = new_completed_rows(head_text, base_text)
     frontier_rows = [r for r in new_rows if row_claims_frontier_tier(r[1])]
@@ -295,7 +425,10 @@ def evaluate_leg2(head_text, base_text, session_is_frontier):
         return [], "unknown-model"
     if session_is_frontier:
         return [], None
-    return frontier_rows, None
+    return [r for r in frontier_rows
+            if not (subagent_witness is not None
+                    and row_claims_subagent_read(r[1])
+                    and subagent_witness(r[2]))], None
 
 
 # --------------------------------------------------------------------------- #
@@ -519,6 +652,14 @@ def _fmt_leg2_block(rows, model_id):
         "source=\"manual\") — calibrated_claims rule 6, quoted evidence), then",
         "re-push; this gate re-reads the ledger honestly.",
         "",
+        "If a frontier SUBAGENT did the read: say \"subagent\" in the Mechanism",
+        "cell and name, backticked in the Scope or Fix cell, a file or sha the",
+        "subagent itself opened. The gate looks for the harness's",
+        "subagent transcript (<claude_dir>/projects/*/*/subagents/) with a frontier model",
+        "whose own Read/Grep/Glob/Bash call names it, in the "
+        f"{SUBAGENT_WITNESS_WINDOW_S // 3600} h before the row's commit — none was",
+        "found for these row(s).",
+        "",
         "(Override, sparingly: git push --no-verify)",
     ]
     return "\n".join(lines)
@@ -545,7 +686,77 @@ def _fmt_structure_block(rows):
     return "\n".join(lines)
 
 
-def run(repo, rev_range, base_ref, ledger_path, witness_path, scope_sink=None):
+def _default_claude_dir():
+    env = os.environ.get("CLAUDE_CONFIG_DIR")
+    if env:
+        return env
+    home = os.environ.get("HOME") or os.path.expanduser("~")
+    return os.path.join(home, ".claude")
+
+
+def _head_commit_ts(repo):
+    out = _git(repo, ["log", "-1", "--format=%ct", "HEAD"])
+    try:
+        return float(out.strip()) if out else None
+    except ValueError:
+        return None
+
+
+def _row_commit_span(repo, rev_range):
+    """(oldest, newest) committer time of the push range's commits that touch
+    the provenance ledger, or None when the range is unreadable or empty."""
+    if not rev_range:
+        return None
+    out = _git(repo, ["log", "--format=%ct", rev_range, "--", PROVENANCE_REL])
+    try:
+        ts = [float(x) for x in (out or "").split()]
+    except ValueError:
+        return None
+    return (min(ts), max(ts)) if ts else None
+
+
+def make_subagent_witness(claude_dir, lo, hi, witness_path=None):
+    """Return ``witness(raw_line) -> bool`` over the harness's subagent
+    transcripts (``<claude_dir>/projects/*/*/subagents/agent-*.jsonl``),
+    every project dir — a worktree checkout has a different project slug.
+    Files untouched since ``lo`` are skipped unread; each file is read at most
+    once per run. An unreadable file or dir is simply no witness: the row then
+    blocks, which is the pre-fix behaviour."""
+    import glob
+    paths = []
+    for p in glob.glob(os.path.join(claude_dir, "projects", "*", "*",
+                                    "subagents", "agent-*.jsonl")):
+        try:
+            if os.path.getmtime(p) >= lo:
+                paths.append(p)
+        except OSError:
+            continue
+    cache = {}
+
+    def _text(p):
+        if p not in cache:
+            try:
+                with open(p, encoding="utf-8", errors="replace") as fh:
+                    cache[p] = fh.read(SUBAGENT_TRANSCRIPT_MAX_BYTES)
+            except OSError:
+                cache[p] = ""
+        return cache[p]
+
+    def witness(raw_line):
+        anchors = row_anchor_tokens(raw_line)
+        if not anchors:
+            return False
+        for p in paths:
+            if transcript_witnesses(_text(p), anchors, lo, hi):
+                append_witness("leg2 PASS via frontier subagent transcript "
+                               f"{os.path.basename(p)}", witness_path)
+                return True
+        return False
+    return witness
+
+
+def run(repo, rev_range, base_ref, ledger_path, witness_path, scope_sink=None,
+        claude_dir=None):
     """Execute all three legs. Returns (exit_code, out_lines, warn_lines).
 
     ``scope_sink`` (Layer C, 2026-09-07): an optional list the caller passes to
@@ -596,8 +807,23 @@ def run(repo, rev_range, base_ref, ledger_path, witness_path, scope_sink=None):
         warn.append(f"leg2: could not read {PROVENANCE_REL} at base '{base_ref}' "
                     "— skipping frontier-claim gate (can't tell which rows are new)")
     else:
+        # The read precedes the commit that records it: the window is the
+        # 24 h before the push range's commits that touch the ledger (HEAD
+        # only when the range can't be read), clamped to now — a future
+        # stamp is the clock's lie (hfm #6). A later unrelated commit must
+        # not push an honest read out of its own row's window.
+        now = time.time()
+        lo_ts, hi_ts = _row_commit_span(repo, rev_range) or (None, None)
+        if lo_ts is None:
+            lo_ts = hi_ts = _head_commit_ts(repo) or now
+        lo_ts, hi_ts = min(lo_ts, now), min(hi_ts, now)
+        witness = make_subagent_witness(
+            claude_dir or _default_claude_dir(),
+            lo=lo_ts - SUBAGENT_WITNESS_WINDOW_S, hi=hi_ts + 300,
+            witness_path=witness_path)
         leg2_violations, leg2_warn = evaluate_leg2(prov_head, base_prov,
-                                                   session_is_frontier)
+                                                   session_is_frontier,
+                                                   subagent_witness=witness)
         if leg2_warn == "unknown-model":
             warn.append("leg2: a NEW completed row claims a frontier-tier pass "
                         "but the ledger carries no model_id — warning, not "
