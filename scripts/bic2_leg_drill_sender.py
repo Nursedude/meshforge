@@ -57,12 +57,13 @@ writes ``end``, so a missing ``end`` alone means nothing.
 Reconcile exit: 0 = every logged message terminal in THIS gateway's queue
 (sent or failed); 1 = something unaccounted, or the sender itself failed a
 hand-off (a drill whose sender failed proves nothing); 2 = UNKNOWN (rows
-still open, rows unobservable, empty/damaged/missing log, or the queue DB
-unreadable) — never a pass. Peer gateways' relayed copies are NOT reconciled.
+still open, rows unobservable, empty/damaged/missing log, a skipped torn
+line, a run with no ``end`` event, or the queue DB unreadable) — never a pass. Peer gateways' relayed copies are NOT reconciled.
 """
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -270,6 +271,9 @@ def append_log(path: Path, event: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     out = json.dumps(event, sort_keys=True) + "\n"
     with open(path, "a+b") as f:
+        # mark (another process) and the sender both append: the tail check
+        # and the write must not interleave
+        fcntl.flock(f, fcntl.LOCK_EX)
         if f.seek(0, os.SEEK_END):
             f.seek(-1, os.SEEK_END)
             if f.read(1) != b"\n":
@@ -425,6 +429,15 @@ def reconcile(log_path: Path, db_path: Path,
         rep["exit"] = 1
     elif counts["open"] or counts["unobservable"]:
         rep["exit"] = 2
+    elif rep["log_note"] or rep["run_note"]:
+        # the record is incomplete: a skipped torn line may have been a
+        # handed send, and a run with no end may have sent past its log
+        rep["exit"] = 2
+        rep["error"] = ("the sender's record is incomplete — "
+                        + "; ".join(n for n in (rep["log_note"],
+                                                rep["run_note"]) if n)
+                        + " — every LOGGED message is terminal, but that is "
+                          "not 'none unaccounted'")
     else:
         rep["exit"] = 0
     if counts["unobservable"] and not rep["error"]:
@@ -518,18 +531,19 @@ def pick_unit_scope(system: Optional[dict], user: Optional[dict]
     """Which systemd manager runs the gateway — ("system"|"user", "") or
     (None, why). Scope is per UNIT and per box, so it is asked, not assumed:
     the wrong manager answers ``inactive`` for a unit that is running."""
+    if system is None or user is None:
+        # an unaskable manager cannot be ruled out, so "BOTH" stays possible
+        return None, (f"could not ask the "
+                      f"{'system' if system is None else 'user'} manager "
+                      f"about {GATEWAY_UNIT}")
     loaded = [name for name, p in (("system", system), ("user", user))
-              if p and p.get("LoadState") == "loaded"]
+              if p.get("LoadState") == "loaded"]
     if len(loaded) == 1:
         return loaded[0], ""
     if len(loaded) == 2:
         return None, (f"{GATEWAY_UNIT} is installed in BOTH the system and "
                       f"the user manager — which one runs the gateway is "
                       f"ambiguous")
-    if system is None or user is None:
-        return None, (f"could not ask the "
-                      f"{'system' if system is None else 'user'} manager "
-                      f"about {GATEWAY_UNIT}")
     return None, f"{GATEWAY_UNIT} is not installed in either manager"
 
 
@@ -554,11 +568,11 @@ def _unit_show(user: bool) -> Optional[dict]:
 
 
 def _live(gw: dict) -> Tuple[str, str]:
-    scope, why = pick_unit_scope(_unit_show(False), _unit_show(True))
+    shows = {"system": _unit_show(False), "user": _unit_show(True)}
+    scope, why = pick_unit_scope(shows["system"], shows["user"])
     if scope is None:
         return "unknown", why
-    props = _unit_show(scope == "user")
-    return live_config_check(gw.get("mtime"), props,
+    return live_config_check(gw.get("mtime"), shows[scope],
                              time.time(), time.monotonic())
 
 
@@ -608,9 +622,24 @@ def _proc_starttime(pid: int) -> Optional[str]:
     return fields[19] if len(fields) > 19 else None
 
 
+def _valid_run_ref(pid, starttime) -> bool:
+    """The one rule for what a ``start`` event's process reference must be."""
+    return (isinstance(pid, int) and not isinstance(pid, bool)
+            and isinstance(starttime, str) and bool(starttime))
+
+
 def _run_alive(pid, starttime) -> bool:
-    return (isinstance(pid, int) and bool(starttime)
-            and _proc_starttime(pid) == starttime)
+    return _valid_run_ref(pid, starttime) and _proc_starttime(pid) == starttime
+
+
+def self_run_ref(starttime_of=_proc_starttime) -> Tuple[bool, str]:
+    """(ok, this process's start time | why). Without it ``mark`` can never
+    find the run, so send refuses rather than write an unfindable one."""
+    st = starttime_of(os.getpid())
+    if not st:
+        return False, ("cannot read this process's start time from /proc — "
+                       "`mark` could never find the run; refusing")
+    return True, st
 
 
 def _first_event(p: Path) -> Optional[dict]:
@@ -635,8 +664,7 @@ def pick_mark_log(log_dir: Path, alive=_run_alive
             skipped.append(p.name)
             continue
         pid, started = first.get("pid"), first.get("pid_start")
-        if (first.get("event") == "start" and isinstance(pid, int)
-                and not isinstance(pid, bool) and started
+        if (first.get("event") == "start" and _valid_run_ref(pid, started)
                 and alive(pid, started)):
             open_runs.append(p)
     note = f" (unreadable, not judged: {', '.join(skipped)})" if skipped else ""
@@ -651,12 +679,27 @@ def pick_mark_log(log_dir: Path, alive=_run_alive
 
 
 def fresh_run_log(log: Path) -> Tuple[bool, str]:
-    """A run log holds ONE run: tokens are run-id + seq, so a reused run id
-    would collide in reconcile."""
-    if Path(log).exists():
+    """Claim the run log EXCLUSIVELY (O_EXCL, at the check — two senders
+    started in the same second must not share one). A run log holds ONE
+    run: tokens are run-id + seq, so a reused run id collides in reconcile."""
+    log = Path(log)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(log, "x"):
+            pass
+    except FileExistsError:
         return False, (f"{log} already exists — a reused --run-id would mix "
                        f"two runs' tokens in one log; pick a new --run-id")
     return True, ""
+
+
+def _release_unused(log: Path) -> None:
+    """Drop a claimed run log that never got its start event."""
+    try:
+        if log.stat().st_size == 0:
+            log.unlink()
+    except OSError:
+        pass
 
 
 def cmd_send(args) -> int:
@@ -674,6 +717,10 @@ def cmd_send(args) -> int:
     if rc:
         return rc
 
+    ok, pid_start = self_run_ref()
+    if not ok:
+        print(f"REFUSED: {pid_start}")
+        return 2
     run_id = args.run_id or time.strftime("%Y%m%dT%H%M%S")
     log = _log_dir() / f"{run_id}.jsonl"
     ok, why = fresh_run_log(log)
@@ -689,6 +736,7 @@ def cmd_send(args) -> int:
     import LXMF
     if open_reticulum(ReticulumPaths.ensure_rns_client_configdir()) is None:
         print("FATAL: RNS unavailable/degraded (open_reticulum returned None)")
+        _release_unused(log)
         return 2
     store = get_real_user_home() / ".local" / "share" / "meshforge" / "bic2_drill_lxmf"
     store.mkdir(parents=True, exist_ok=True)
@@ -707,6 +755,7 @@ def cmd_send(args) -> int:
     dest_ident = RNS.Identity.recall(dest_hash)
     if dest_ident is None:
         print(f"FATAL: no path/identity for gateway {dest_hex}")
+        _release_unused(log)
         return 2
     dest = RNS.Destination(dest_ident, RNS.Destination.OUT,
                            RNS.Destination.SINGLE, "lxmf", "delivery")
@@ -716,7 +765,7 @@ def cmd_send(args) -> int:
                      "planned": total, "host": socket.gethostname(),
                      "bridge_mode": gw.get("bridge_mode"),
                      "peers": relay_to, "pid": os.getpid(),
-                     "pid_start": _proc_starttime(os.getpid()),
+                     "pid_start": pid_start,
                      "ts": time.time()})
     print(f"run {run_id}: {total} msg every {args.interval:.0f}s → {dest_hex}")
     print(f"log: {log}")
@@ -767,12 +816,21 @@ def cmd_reconcile(args) -> int:
         print(f"log: {rep['log_note']}")
     if rep.get("run_note"):
         print(f"run: {rep['run_note']}")
+    def _ts(v):   # a send may carry no stamp (R5): never crash, never invent
+        return float(v) if isinstance(v, (int, float)) and not isinstance(
+            v, bool) else None
+
     timeline = sorted(
-        [(m["ts"], f"#{m['seq']:<3} {m['verdict']:<12} {m.get('queue_status')}")
+        [(_ts(m.get("ts")),
+          f"#{m['seq']!s:<3} {m['verdict']:<12} {m.get('queue_status')}")
          for m in rep["messages"]]
-        + [(k["ts"], f"---- MARK {k['what']}") for k in rep["marks"]])
+        + [(_ts(k.get("ts")), f"---- MARK {k.get('what')}")
+           for k in rep["marks"]],
+        key=lambda r: (r[0] is None, r[0] or 0.0))
     for ts, line in timeline:
-        print(f"{time.strftime('%H:%M:%S', time.localtime(ts))}  {line}")
+        when = ("--:--:--" if ts is None
+                else time.strftime('%H:%M:%S', time.localtime(ts)))
+        print(f"{when}  {line}")
     c = rep["counts"]
     verdict = {0: "PASS — none unaccounted", 1: "FAIL",
                2: "UNKNOWN — not a pass"}[rep["exit"]]

@@ -99,6 +99,7 @@ class TestReconcile:
             drill.append_log(p, {"event": "send", "seq": i, "token": t,
                                  "ts": ts0 + i, "handoff": handoff,
                                  "source": SRC})
+        drill.append_log(p, {"event": "end", "ts": ts0 + 500})
         return p
 
     def test_every_message_accounted(self, tmp_path):
@@ -175,7 +176,8 @@ class TestReconcile:
 
 # ── review fixes 2026-10-25 (S1..S5) ───────────────────────────────────────
 
-def _send_log(tmp_path, n=1, bridge_mode="mqtt_bridge", ts0=None, start=True):
+def _send_log(tmp_path, n=1, bridge_mode="mqtt_bridge", ts0=None, start=True,
+              end=True):
     p = tmp_path / "run.jsonl"
     ts0 = time.time() - 600 if ts0 is None else ts0
     if start:
@@ -185,6 +187,8 @@ def _send_log(tmp_path, n=1, bridge_mode="mqtt_bridge", ts0=None, start=True):
         drill.append_log(p, {"event": "send", "seq": i,
                              "token": drill.make_token("r", i),
                              "ts": ts0 + i, "handoff": "handed", "source": SRC})
+    if end:
+        drill.append_log(p, {"event": "end", "ts": ts0 + 500})
     return p
 
 
@@ -235,7 +239,8 @@ class TestS2LogDamage:
         db = _queue_db(tmp_path, [(drill.message_text(t1), SRC, "delivered",
                                    "meshtastic")])
         rep = drill.reconcile(log, db)
-        assert rep["exit"] == 0
+        # the torn line may have been a handed send: never a pass (4th read #1)
+        assert rep["exit"] == 2
         assert rep["log_note"] and "torn" in rep["log_note"]
 
     def test_corrupt_middle_line_is_unknown(self, tmp_path):
@@ -397,8 +402,9 @@ class TestR1KilledRunIsNotInProgress:
         t1 = drill.make_token("r", 1)
         db = _queue_db(tmp_path, [(drill.message_text(t1), SRC, "delivered",
                                    "meshtastic")])
-        rep = drill.reconcile(_send_log(tmp_path, n=1), db)
+        rep = drill.reconcile(_send_log(tmp_path, n=1, end=False), db)
         assert rep["run_note"] and "end" in rep["run_note"]
+        assert rep["exit"] == 2   # a partial record is never a pass (4th read #2)
 
 
 class TestR2TornLineThenAppend:
@@ -411,9 +417,10 @@ class TestR2TornLineThenAppend:
         db = _queue_db(tmp_path, [(drill.message_text(t1), SRC, "delivered",
                                    "meshtastic")])
         rep = drill.reconcile(log, db)
-        assert rep["exit"] == 0, rep["error"]
+        assert rep["exit"] == 2   # fused would raise; repaired is still not a pass
         assert [m["what"] for m in rep["marks"]] == ["x"]
         assert rep["log_note"] and "torn" in rep["log_note"]
+        assert "torn" in rep["error"]
 
     def test_corrupt_middle_line_without_a_repair_record_is_still_unknown(
             self, tmp_path):
@@ -534,3 +541,90 @@ class TestR8UnitScope:
     def test_unaskable_scope_is_unknown_when_other_is_absent(self):
         scope, why = drill.pick_unit_scope(self.ABSENT, None)
         assert scope is None and "could not ask" in why
+
+    def test_unaskable_scope_is_unknown_even_when_other_is_loaded(self):
+        # an unaskable manager cannot be ruled out: "BOTH" stays possible
+        for args in ((self.LOADED, None), (None, self.LOADED)):
+            scope, why = drill.pick_unit_scope(*args)
+            assert scope is None and "could not ask" in why
+
+
+# ── fourth (non-author) read 2026-10-25, findings 1-9 (10 queued) ──────────
+
+class TestFourthReadReconcileVerdicts:
+    def test_complete_run_with_every_message_sent_still_passes(self, tmp_path):
+        t1 = drill.make_token("r", 1)
+        db = _queue_db(tmp_path, [(drill.message_text(t1), SRC, "delivered",
+                                   "meshtastic")])
+        assert drill.reconcile(_send_log(tmp_path, n=1), db)["exit"] == 0
+
+    def test_unaccounted_still_fails_despite_a_partial_record(self, tmp_path):
+        rep = drill.reconcile(_send_log(tmp_path, n=1, end=False),
+                              _queue_db(tmp_path, []))
+        assert rep["exit"] == 1   # a known loss outranks "incomplete"
+
+    def test_timeline_survives_a_send_without_ts(self, tmp_path, capsys):
+        import argparse
+        p = tmp_path / "run.jsonl"
+        drill.append_log(p, {"event": "start", "run_id": "r", "source": SRC,
+                             "bridge_mode": "mqtt_bridge", "ts": 1.0})
+        drill.append_log(p, {"event": "send", "seq": 1, "source": SRC,
+                             "token": drill.make_token("r", 1),
+                             "handoff": "handed"})
+        drill.append_log(p, {"event": "mark", "what": "stop", "ts": 2.0})
+        drill.append_log(p, {"event": "end", "ts": 3.0})
+        rc = drill.cmd_reconcile(argparse.Namespace(
+            log=str(p), db=str(_queue_db(tmp_path, [])), json=False))
+        assert rc == 2
+        assert "--:--:--" in capsys.readouterr().out
+
+
+class TestFourthReadRunLog:
+    def test_fresh_run_log_claims_the_file_exclusively(self, tmp_path):
+        p = tmp_path / "sub" / "r.jsonl"
+        assert drill.fresh_run_log(p)[0]
+        assert p.exists()                       # claimed at the check
+        assert not drill.fresh_run_log(p)[0]    # a second claimant loses
+
+    def test_append_log_takes_an_exclusive_lock(self, tmp_path, monkeypatch):
+        import fcntl
+        seen = []
+        real = fcntl.flock
+        monkeypatch.setattr(drill.fcntl, "flock",
+                            lambda f, op: (seen.append(op), real(f, op)))
+        drill.append_log(tmp_path / "l.jsonl", {"event": "mark", "ts": 1})
+        assert fcntl.LOCK_EX in seen
+
+
+class TestFourthReadLiveness:
+    def test_run_alive_rejects_a_bool_pid_and_a_missing_start(self):
+        import os
+        st = drill._proc_starttime(os.getpid())
+        assert not drill._run_alive(True, st)
+        assert not drill._run_alive(os.getpid(), None)
+
+    def test_valid_run_ref_is_the_one_rule(self):
+        assert drill._valid_run_ref(5, "9")
+        for pid, st in ((True, "9"), (None, "9"), ("5", "9"), (5, None),
+                        (5, "")):
+            assert not drill._valid_run_ref(pid, st)
+
+    def test_send_refuses_when_its_own_start_time_is_unreadable(self):
+        ok, why = drill.self_run_ref(lambda pid: None)
+        assert not ok and "mark" in why
+        ok, ref = drill.self_run_ref(lambda pid: "77")
+        assert ok and ref == "77"
+
+
+class TestFourthReadScopeReuse:
+    def test_live_queries_each_manager_once(self, monkeypatch):
+        calls = []
+        def fake(user):
+            calls.append(user)
+            return ({"LoadState": "not-found"} if user else
+                    {"LoadState": "loaded", "ActiveState": "active",
+                     "ActiveEnterTimestampMonotonic": "1000000"})
+        monkeypatch.setattr(drill, "_unit_show", fake)
+        verdict, _ = drill._live({"mtime": 0.0})
+        assert sorted(calls) == [False, True]
+        assert verdict == "ok"
