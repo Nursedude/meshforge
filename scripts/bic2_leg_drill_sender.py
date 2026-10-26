@@ -340,7 +340,10 @@ def _queue_rows(db_path: Path) -> List[Tuple[str, str, str, str]]:
     from utils.db_helpers import connect_tuned
     if not Path(db_path).is_file():
         raise FileNotFoundError(str(db_path))
-    conn = connect_tuned(f"file:{db_path}?mode=ro", uri=True)
+    # as_uri() quotes ? and # — unquoted, sqlite cuts the URI there, drops
+    # mode=ro and CREATES the truncated path
+    conn = connect_tuned(Path(db_path).resolve().as_uri() + "?mode=ro",
+                         uri=True)
     try:
         return list(conn.execute(
             "SELECT destination, status, updated_at, payload FROM messages"))
@@ -359,7 +362,7 @@ def reconcile(log_path: Path, db_path: Path,
               "unobservable": 0}
     rep = {"counts": counts, "sender_errors": 0, "messages": [],
            "marks": [], "error": None, "log_note": None, "run_note": None,
-           "peers": [],
+           "unobservable_note": None, "peers": [],
            "exit": 2}
     try:
         events, rep["log_note"] = read_log(log_path)
@@ -455,11 +458,19 @@ def reconcile(log_path: Path, db_path: Path,
                           "not 'none unaccounted'")
     else:
         rep["exit"] = 0
-    if counts["unobservable"] and not rep["error"]:
+    if counts["unobservable"]:
         whys = sorted({m["why"] for m in rep["messages"] if m.get("why")})
-        rep["error"] = (
+        rep["unobservable_note"] = (
             f"{counts['unobservable']} message(s) have no queue row and the "
             f"absence cannot be read as loss: " + "; ".join(whys))
+    # ``error`` is the reason the verdict is UNKNOWN; a proven loss (FAIL)
+    # outranks the open and unobservable sends, so they are not its reason
+    if rep["exit"] == 2 and not rep["error"]:
+        rep["error"] = "; ".join(r for r in (
+            f"{counts['open']} message(s) still open in the queue "
+            f"(pending/in_progress) — reconcile again once it settles"
+            if counts["open"] else None,
+            rep["unobservable_note"]) if r) or None
     return rep
 
 
@@ -873,8 +884,17 @@ def cmd_reconcile(args) -> int:
     if args.json:
         print(json.dumps(rep, indent=1, sort_keys=True))
         return rep["exit"]
+    c = rep["counts"]
+    if rep["exit"] == 1:   # the operator reads the top line: lead with it
+        rest = "".join(f", {k}={c[k]}" for k in ("open", "unobservable")
+                       if c[k])
+        print(f"FAIL: {c['unaccounted']} proven loss(es), "
+              f"{rep['sender_errors']} sender error(s){rest}")
     if rep["error"]:
         print(f"UNKNOWN: {rep['error']}")
+    if (rep.get("unobservable_note")
+            and rep["unobservable_note"] not in (rep["error"] or "")):
+        print(f"unobservable: {rep['unobservable_note']}")
     if rep.get("log_note"):
         print(f"log: {rep['log_note']}")
     if rep.get("run_note"):
@@ -894,7 +914,6 @@ def cmd_reconcile(args) -> int:
         when = ("--:--:--" if ts is None
                 else time.strftime('%H:%M:%S', time.localtime(ts)))
         print(f"{when}  {line}")
-    c = rep["counts"]
     verdict = {0: "PASS — none unaccounted", 1: "FAIL",
                2: "UNKNOWN — not a pass"}[rep["exit"]]
     print(f"\nsent={c['sent']} failed={c['failed']} open={c['open']} "

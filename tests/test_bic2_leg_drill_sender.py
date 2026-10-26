@@ -853,3 +853,116 @@ class TestAdversarialReadTokenNamespace:
         t = drill.make_token("r", 2)
         assert not drill._token_re(t).search(f"BIC2 drill {t}{suffix}")
         assert drill._token_re(t).search(drill.message_text(t))
+
+
+class TestReconcileTopLineIsTheVerdict:
+    """The operator reads the TOP line. A proven loss is FAIL (rc 1), so the
+    first line must not open with ``UNKNOWN:`` — the unobservable sends that
+    a loss outranks are named on their own ``unobservable:`` line
+    (double-tap 2026-10-26)."""
+
+    def _mixed(self, tmp_path):
+        # seq 1 proven loss (delivered receipt, no row); seq 2 no receipt;
+        # seq 3 LXMF failed — no queue rows for any of them
+        log = _send_log(tmp_path, n=3, receipts=False)
+        lines = log.read_text().splitlines()
+        end = lines.pop()
+        log.write_text("\n".join(lines) + "\n")
+        drill.append_log(log, {"event": "lxmf", "seq": 1, "state": "delivered",
+                               "ts": time.time() - 590})
+        drill.append_log(log, {"event": "lxmf", "seq": 3, "state": "failed",
+                               "ts": time.time() - 590})
+        with open(log, "a") as f:
+            f.write(end + "\n")
+        return log, _queue_db(tmp_path, [])
+
+    def _out(self, tmp_path, capsys, log, db):
+        import argparse
+        rc = drill.cmd_reconcile(argparse.Namespace(log=str(log), db=str(db),
+                                                    json=False))
+        return rc, capsys.readouterr().out.splitlines()
+
+    def test_fail_with_unobservable_sends_leads_with_fail(self, tmp_path,
+                                                          capsys):
+        log, db = self._mixed(tmp_path)
+        rc, out = self._out(tmp_path, capsys, log, db)
+        assert rc == 1
+        assert out[0].startswith("FAIL")
+        assert not any(l.startswith("UNKNOWN") for l in out)
+        unobs = [l for l in out if l.startswith("unobservable:")]
+        assert len(unobs) == 1
+        assert "FAILED" in unobs[0] and "no LXMF delivery receipt" in unobs[0]
+
+    def test_fail_report_error_is_none_and_note_carries_the_whys(self,
+                                                                 tmp_path):
+        log, db = self._mixed(tmp_path)
+        rep = drill.reconcile(log, db)
+        assert rep["exit"] == 1
+        assert rep["counts"] == {"sent": 0, "failed": 0, "open": 0,
+                                 "unaccounted": 1, "unobservable": 2}
+        assert rep["error"] is None
+        assert "2 message(s)" in rep["unobservable_note"]
+
+    def test_unknown_run_still_leads_with_unknown(self, tmp_path, capsys):
+        log = _send_log(tmp_path, n=1, receipts=False)
+        rc, out = self._out(tmp_path, capsys, log, _queue_db(tmp_path, []))
+        assert rc == 2
+        assert out[0].startswith("UNKNOWN:")
+        assert not any(l.startswith("unobservable:") for l in out)  # no echo
+
+    def test_sender_error_fail_leads_with_fail(self, tmp_path, capsys):
+        t1 = drill.make_token("r", 1)
+        log = _send_log(tmp_path, n=1, receipts=False)
+        p = tmp_path / "run.jsonl"
+        lines = p.read_text().splitlines()
+        lines[1] = lines[1].replace('"handed"', '"error"')
+        p.write_text("\n".join(lines) + "\n")
+        rc, out = self._out(tmp_path, capsys, log, _queue_db(tmp_path, [
+            (drill.message_text(t1), SRC, "delivered", "meshtastic")]))
+        assert rc == 1 and out[0].startswith("FAIL")
+
+    def test_open_only_leads_with_unknown_and_names_the_reason(self, tmp_path,
+                                                               capsys):
+        # Fable read #1: rc 2 with no verdict line and error None
+        t1 = drill.make_token("r", 1)
+        log = _send_log(tmp_path, n=1)
+        db = _queue_db(tmp_path, [(drill.message_text(t1), SRC, "pending",
+                                   "meshtastic")])
+        rep = drill.reconcile(log, db)
+        assert rep["exit"] == 2 and rep["error"] and "open" in rep["error"]
+        rc, out = self._out(tmp_path, capsys, log, db)
+        assert rc == 2 and out[0].startswith("UNKNOWN:")
+
+    def test_open_beside_unobservable_names_both(self, tmp_path, capsys):
+        t1 = drill.make_token("r", 1)
+        log = _send_log(tmp_path, n=2, receipts=False)
+        db = _queue_db(tmp_path, [
+            (drill.message_text(t1), SRC, "pending", "meshtastic")])
+        rep = drill.reconcile(log, db)
+        assert rep["exit"] == 2
+        assert "open" in rep["error"] and "no queue row" in rep["error"]
+        rc, out = self._out(tmp_path, capsys, log, db)
+        assert rc == 2 and out[0].startswith("UNKNOWN:")
+        assert not any(l.startswith("unobservable:") for l in out)  # no echo
+
+    def test_fail_line_carries_open_and_unobservable_counts(self, tmp_path,
+                                                            capsys):
+        log, db = self._mixed(tmp_path)
+        _, out = self._out(tmp_path, capsys, log, db)
+        assert "unobservable=2" in out[0]
+
+
+class TestQueueRowsNeverCreatesAFile:
+    """Fable read #3: an unquoted ``file:`` URI truncates at ``?``, drops
+    ``mode=ro`` and sqlite CREATES the truncated path."""
+
+    def test_question_mark_in_the_path_writes_nothing(self, tmp_path):
+        d = tmp_path / "a?b"
+        d.mkdir()
+        db = _queue_db(d, [])
+        before = set(tmp_path.rglob("*"))
+        assert drill._queue_rows(db) == []      # read the REAL file
+        # a WAL reader's own -wal/-shm sidecars are sqlite's, not a write
+        sidecars = {db.with_name(db.name + x) for x in ("-wal", "-shm")}
+        assert set(tmp_path.rglob("*")) - before <= sidecars
+        assert not (tmp_path / "a").exists()    # the truncated path
