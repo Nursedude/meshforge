@@ -187,6 +187,51 @@ cond_state() {  # $1 scope, $2 unit
     echo "notpulled:${scope:+usr:}$u(wanted by ${wb:-nothing})"
 }
 
+# WHY an enabled unit never started, when a dependency failed. A start job
+# cancelled by a failed Requires=/BindsTo=/Requisite= dependency leaves the
+# unit inactive/dead with Result unchanged — never `failed`, so `--failed`
+# never lists it (research doc systemd_unit_state_semantics_2026_10_26 §5).
+# Two witnesses, neither required:
+#   STATE   — a Requires/BindsTo dep `failed` now, or a Requisite dep not
+#             active (no journal needed)
+#   JOURNAL — the manager logs the cancelled job with JOB_TYPE=start
+#             JOB_RESULT=dependency UNIT= (USER_UNIT= for --user); matched by
+#             FIELD, never by message text. Read only for a casualty.
+# An unreadable journal (audit user in neither adm nor systemd-journal)
+# claims nothing — never "no dependency failed" (hfm #2).
+dep_cause() {  # $1 scope, $2 unit → "" or " — <cause>"
+    local scope="$1" u="$2" d failed="" unmet="" field=UNIT rec mono exit_us j=""
+    for d in $(systemctl $scope show "$u" -p Requires --value 2>/dev/null) \
+             $(systemctl $scope show "$u" -p BindsTo --value 2>/dev/null); do
+        [ "$(systemctl $scope is-active "$d" 2>/dev/null)" = "failed" ] \
+            && failed="${failed:+$failed,}$d"
+    done
+    # Requisite= is unmet when the dep is merely not active — systemd does
+    # not start it, and nothing failed (Fable D-2)
+    for d in $(systemctl $scope show "$u" -p Requisite --value 2>/dev/null); do
+        [ "$(systemctl $scope is-active "$d" 2>/dev/null)" = "active" ] \
+            || unmet="${unmet:+$unmet,}$d"
+    done
+    # The NEWEST cancelled start this boot counts only if it is later than
+    # the unit's last start (InactiveExit, monotonic µs; 0 = never started):
+    # an early cancel followed by a clean run and stop is not the cause
+    # (Fable D-1). An unparseable time claims nothing.
+    [ -n "$scope" ] && field=USER_UNIT
+    rec=$(journalctl $scope -b -q --no-pager -o short-monotonic -n 1 "$field=$u" \
+              JOB_TYPE=start JOB_RESULT=dependency 2>/dev/null)
+    mono=$(printf '%s' "$rec" | sed -n '1s/^\[ *\([0-9]*\)\.\([0-9]\{6\}\)\].*/\1\2/p')
+    exit_us=$(systemctl $scope show "$u" -p InactiveExitTimestampMonotonic --value 2>/dev/null)
+    if _num "$mono" && _num "$exit_us" && [ "$mono" -gt "$exit_us" ]; then j=1; fi
+    if [ -n "$failed" ]; then
+        if [ -n "$j" ]; then echo " — start cancelled: required $failed failed"
+        else echo " — required $failed is failed"; fi
+    elif [ -n "$unmet" ]; then
+        echo " — ${j:+start cancelled: }requisite $unmet not active"
+    elif [ -n "$j" ]; then
+        echo " — start cancelled: a dependency failed (journal)"
+    fi
+}
+
 scan() {  # $1 = "" for system, "--user" for user manager
     local scope="$1" tag u state act typ
     # failed units are casualties regardless of enablement or type
@@ -244,7 +289,7 @@ scan() {  # $1 = "" for system, "--user" for user manager
             elif is_waived "$u"; then
                 waived_hits+=("${scope:+usr:}$u($act)")
             else
-                casualties+=("${scope:+usr:}$u enabled-but-$act$(when_down "$scope" "$u")${cond#judge}")
+                casualties+=("${scope:+usr:}$u enabled-but-$act$(when_down "$scope" "$u")${cond#judge}$(dep_cause "$scope" "$u")")
             fi;;
         *.timer)
             # Timers carry Condition* too (smartmon without smartctl, snapd
@@ -260,7 +305,7 @@ scan() {  # $1 = "" for system, "--user" for user manager
             elif is_waived "$u"; then
                 waived_hits+=("${scope:+usr:}$u($act)")
             else
-                casualties+=("${scope:+usr:}$u enabled-but-$act$(when_down "$scope" "$u")${cond#judge}")
+                casualties+=("${scope:+usr:}$u enabled-but-$act$(when_down "$scope" "$u")${cond#judge}$(dep_cause "$scope" "$u")")
             fi;;
         esac
     done < <(systemctl $scope list-unit-files --type=service,timer --no-legend --plain 2>/dev/null)
