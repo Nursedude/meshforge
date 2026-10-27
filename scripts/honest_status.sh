@@ -587,6 +587,7 @@ skew_desc=""; skew_behind=0; skew_unknown=0; skew_boxes=0; skew_udark=0
 skew_prose=0; skew_prose_desc=""
 skew_noattr=0; skew_noattr_desc=""
 skew_clock=0; skew_clock_desc=""
+skew_wall=0; skew_wall_desc=""
 # The attribution program is a real file so it can be unit-tested directly
 # (tests/test_honest_status_skew_attr.sh); ship it base64 so no quoting of an
 # awk program has to survive this remote command string.
@@ -594,6 +595,9 @@ HS_HERE="$(cd "$(dirname "$0")" && pwd)"
 HS_ATTR_F="$HS_HERE/hs_skew_attr.awk"
 [ -r "$HS_ATTR_F" ] || { echo "honest_status: missing $HS_ATTR_F" >&2; exit 3; }
 HS_ATTR_B64=$(base64 -w0 < "$HS_ATTR_F" 2>/dev/null || base64 < "$HS_ATTR_F" | tr -d "\n")
+# The box's monotonic clock reader is lib/code_paths.sh mf_mono_now, SHIPPED
+# (declare -f), never a second copy in this string — one reader (hfm #5).
+HS_MONO_B64=$(declare -f mf_mono_now | base64 -w0 2>/dev/null || declare -f mf_mono_now | base64 | tr -d "\n")
 # 2c's helper (running SUBSTRATE — see the block after this loop). The watched
 # distributions come from the fork-pin SSOT, never a second hardcode (hfm #5):
 # a dist pinned tomorrow is watched tomorrow. Unparseable SSOT => the helper
@@ -624,9 +628,17 @@ if [ -e $REPO/.git ]; then
   HCMM=\$(hs_codehead /opt/meshforge-maps); [ -n \"\$HCMM\" ] || HCMM=\$HTMM
   # This box\'s OWN wall clock, so the MANAGER can decide whether the skew
   # verdict is datable at all. See the CLOCK block on the manager side.
-  echo BOXNOW \$(date +%s)
+  # ONE clock read feeds both BOXNOW and the attributor: with the box\'s
+  # monotonic now + total suspend (lib/code_paths.sh mf_mono_now, shipped) and
+  # each unit\'s ActiveEnterTimestampMonotonic it dates starts step-immune
+  # (kiai 2026-10-27, see hs_skew_attr.awk). Unreadable => W per dated unit.
+  eval \"\$(printf %s '$HS_MONO_B64' | base64 -d)\"
+  HSNOW=\$(date +%s); read -r HSMONO HSSUSP <<HSMONOEOF
+\$(mf_mono_now)
+HSMONOEOF
+  echo BOXNOW \$HSNOW
   AWKF=\$(mktemp); printf %s '$HS_ATTR_B64' | base64 -d > \"\$AWKF\"
-  HSV=\"-v HTMF=\$HTMF -v HCMF=\$HCMF -v HTMA=\$HTMA -v HCMA=\$HCMA -v HTMM=\$HTMM -v HCMM=\$HCMM\"
+  HSV=\"-v HTMF=\$HTMF -v HCMF=\$HCMF -v HTMA=\$HTMA -v HCMA=\$HCMA -v HTMM=\$HTMM -v HCMM=\$HCMM -v BOXNOW=\$HSNOW -v BOXUP=\$HSMONO -v BOXSUSP=\$HSSUSP -v MONOSLACK=$MF_MONO_SLACK_S\"
   # ATTRIBUTION BY LOADED CODE, NEVER BY UNIT NAME. Enumerate EVERY active
   # service in both scopes; hs_skew_attr.awk drops the ones whose process
   # loads no repo code and judges the rest against the repo they actually
@@ -634,10 +646,10 @@ if [ -e $REPO/.git ]; then
   XRD=/run/user/\$(id -u)
   if XDG_RUNTIME_DIR=\$XRD systemctl --user list-units --no-pager >/dev/null 2>&1; then USOK=1; else USOK=0; echo USCOPEDARK; fi
   SU=\$(systemctl list-units --type=service --state=active --no-legend --no-pager 2>/dev/null | awk '{print \$1}')
-  [ -n \"\$SU\" ] && systemctl show -p Id -p ExecStart -p Environment -p WorkingDirectory -p ActiveEnterTimestamp --timestamp=unix \$SU 2>/dev/null | awk \$HSV -f \"\$AWKF\"
+  [ -n \"\$SU\" ] && systemctl show -p Id -p ExecStart -p Environment -p WorkingDirectory -p ActiveEnterTimestamp -p ActiveEnterTimestampMonotonic --timestamp=unix \$SU 2>/dev/null | awk \$HSV -f \"\$AWKF\"
   if [ \"\$USOK\" = 1 ]; then
     UU=\$(XDG_RUNTIME_DIR=\$XRD systemctl --user list-units --type=service --state=active --no-legend --no-pager 2>/dev/null | awk '{print \$1}')
-    [ -n \"\$UU\" ] && XDG_RUNTIME_DIR=\$XRD systemctl --user show -p Id -p ExecStart -p Environment -p WorkingDirectory -p ActiveEnterTimestamp --timestamp=unix \$UU 2>/dev/null | awk \$HSV -f \"\$AWKF\"
+    [ -n \"\$UU\" ] && XDG_RUNTIME_DIR=\$XRD systemctl --user show -p Id -p ExecStart -p Environment -p WorkingDirectory -p ActiveEnterTimestamp -p ActiveEnterTimestampMonotonic --timestamp=unix \$UU 2>/dev/null | awk \$HSV -f \"\$AWKF\"
   fi
   rm -f \"\$AWKF\"
   # 2c running SUBSTRATE: same unit enumeration, judged by the process's own
@@ -679,9 +691,17 @@ else echo HSNOREPO; fi")
   np=$(printf '%s\n' "$body" | grep -c '^P ' || true)
   nn=$(printf '%s\n' "$body" | grep -c '^N ' || true)
   skew_noattr=$((skew_noattr+nn))
-  # CLOCK (2026-09-18). `B` means "this unit started BEFORE its repo\'s newest
-  # code commit" -- a comparison between the COMMIT\'s wall clock and the
-  # BOX\'s wall clock at fork. It says something only while those two agree,
+  # W = monotonic dating was asked for and impossible on this box, so its units
+  # were dated on the forgeable wall stamp (hs_skew_attr.awk, 2026-10-27).
+  nw=$(printf '%s\n' "$body" | grep -c '^W ' || true)
+  # CLOCK (2026-09-18; updated 2026-10-27). `B` means "this unit started
+  # BEFORE its repo\'s newest code commit" -- a comparison between the
+  # COMMIT\'s wall clock and the BOX\'s wall clock. Since 2026-10-27 the start
+  # is BOXNOW minus the unit\'s monotonic age, so a clock step AFTER the unit
+  # started no longer contaminates it (kiai\'s "29d"); what remains is the
+  # box\'s clock NOW, which is exactly what the BOXNOW check below asks.
+  # Units still dated on the raw wall stamp say so via W (wall_note).
+  # The original 2026-09-18 reasoning, about the wall-clock comparison: It says something only while those two agree,
   # and on this fleet they do not: RTC-less Pis, fake-hwclock restoring a
   # stale time at boot, NTP unreachable through a WAN outage. moc4 ran ~8
   # days behind for days. Every attributed unit on such a box prints
@@ -740,6 +760,12 @@ else echo HSNOREPO; fi")
     skew_behind=$((skew_behind+nb)); skew_unknown=$((skew_unknown+nu))
   fi
   skew_prose=$((skew_prose+np))
+  # W only on a box whose clock is trusted: on a disagreeing one every dated
+  # unit is already UNKNOWN (clock_note), and a wall-dated "age" for it would
+  # contradict that (review 2026-10-27).
+  if [ "$nw" -gt 0 ] && [ -z "$box_clock_delta" ]; then
+    skew_wall=$((skew_wall+nw)); skew_wall_desc="$skew_wall_desc $b($nw)"
+  fi
   # ONE formatter for both buckets — two awk copies would drift the display
   # the first time a fourth repo prefix lands (honest_failure_modes #5).
   # The repo tag now comes from field 2 (the repo the unit's process ACTUALLY
@@ -776,19 +802,21 @@ prose_note=""
 # announces itself rather than silently shrinking coverage.
 clock_note=""
 [ "$skew_clock" -gt 0 ] && clock_note=" ; $skew_clock box(es) report a clock disagreeing with this one by more than ${MF_CLOCK_TOL_S}s${skew_clock_desc} — their units are UNKNOWN, not current and not behind (a commit date and a process start are two different clocks); fix the clock (timedatectl status) before reading their skew"
+wall_note=""
+[ "$skew_wall" -gt 0 ] && wall_note=" ; $skew_wall unit(s) dated on the WALL-CLOCK start stamp (no monotonic read on${skew_wall_desc}) — a clock stepped since boot makes those ages wrong in either direction"
 noattr_note=""
 [ "$skew_noattr" -gt 0 ] && noattr_note=" ; $skew_noattr unit(s) run a venv interpreter resolving to NO repo — an editable install there would be INVISIBLE to this leg${skew_noattr_desc}"
 if [ "$skew_boxes" = 0 ]; then
   disc "running-code skew" "no box answered with a repo — not measured"
 elif [ "$skew_behind" = 0 ] && [ "$skew_unknown" = 0 ]; then
-  disc "running-code skew" "$skew_boxes box(es): every ACTIVE mf/ma unit (system+user scope) started at/after its own repo's newest CODE commit${clock_note}${prose_note}${noattr_note}${udark_note}"
+  disc "running-code skew" "$skew_boxes box(es): every ACTIVE mf/ma unit (system+user scope) started at/after its own repo's newest CODE commit${clock_note}${wall_note}${prose_note}${noattr_note}${udark_note}"
 else
   # ${var:+...} expands whenever the var is NON-EMPTY, and "0" is non-empty —
   # so the naive form printed "; 0 unknown(no start time)" on every clean run.
   # Caught by drilling the branches with synthetic counts, not by reading.
   unk_note=""
   [ "$skew_unknown" -gt 0 ] && unk_note=" ; $skew_unknown unknown(no start time / no repo for the unit — NOT 'current')"
-  disc "running-code skew" "$skew_behind unit(s) behind their repo's newest CODE commit across $skew_boxes box(es)${skew_desc}${unk_note}${clock_note}${prose_note}${noattr_note}${udark_note} — disclosure, not a fault; they load it at next restart"
+  disc "running-code skew" "$skew_behind unit(s) behind their repo's newest CODE commit across $skew_boxes box(es)${skew_desc}${unk_note}${clock_note}${wall_note}${prose_note}${noattr_note}${udark_note} — disclosure, not a fault; they load it at next restart"
 fi
 
 # 2c. Running SUBSTRATE vs installed substrate (2026-10-02).

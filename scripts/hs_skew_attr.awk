@@ -11,7 +11,12 @@
 #                                   there would be invisible. A venv we CAN
 #                                   read is answered, never disclosed.
 #         nothing                   the unit loads no repo code — untracked
-# Vars  : HTMF/HTMA/HTMM (repo HEADs), HCMF/HCMA/HCMM (repo CODE-heads).
+# Vars  : HTMF/HTMA/HTMM (repo HEADs), HCMF/HCMA/HCMM (repo CODE-heads),
+#         BOXNOW/BOXUP/BOXSUSP/MONOSLACK (box epoch, box CLOCK_MONOTONIC
+#         now, box total suspend, slack; optional — with ActiveEnterTimestampMonotonic they date the
+#         start step-immune).
+#         "W <unit>"                 monotonic dating requested but impossible:
+#                                   this unit was dated on the wall stamp.
 #
 # WHY THIS FILE EXISTS (2026-09-02 audit). The leg used to decide BOTH
 # membership and repo by the unit's NAME (`^(meshforge|meshanchor)-`, then a
@@ -152,8 +157,32 @@ function decide(   hay, rp, i, n, parts, s, line, H, HC, iv) {
   # changes" (honest_failure_modes #1 — the degraded value must not overlap
   # the healthy domain).
   if (HC == "" || HC ~ /[^0-9]/) HC = H
+  # Date the start on the MONOTONIC clock when the caller gave us the box's
+  # clock (2026-10-27; formula + rationale: lib/code_paths.sh "UNIT START,
+  # STEP-IMMUNE" — that file's mf_mono_to_epoch is the twin, and a test pins
+  # that the two agree). ActiveEnterTimestamp is the wall clock AT START and is
+  # never rewritten when NTP later steps the clock (kiai: "29d behind" on
+  # 5-hour-old units). BOXUP = box CLOCK_MONOTONIC now; BOXSUSP = its total
+  # suspend (BOOTTIME - MONOTONIC). Suspended beyond MONOSLACK, or a start
+  # beyond BOXUP + MONOSLACK, cannot be dated -> U, never current.
+  wall = 0
+  if (BOXNOW != "") {
+    sl = (MONOSLACK ~ /^[0-9]+$/) ? MONOSLACK + 0 : 0
+    if (mono ~ /^[0-9]+$/ && mono + 0 > 0 && BOXNOW ~ /^[0-9]+$/ \
+        && BOXUP ~ /^[0-9]+(\.[0-9]+)?$/ && BOXSUSP ~ /^[0-9]+(\.[0-9]+)?$/) {
+      if (BOXSUSP + 0 > sl || mono / 1000000 > BOXUP + sl) { print "U " rp " " id; return }
+      ts = int(BOXNOW - (BOXUP - mono / 1000000))
+      if (ts + 0 <= 0) { print "U " rp " " id; return }
+    } else {
+      wall = 1     # monotonic dating asked for and impossible: see W below
+    }
+  }
   if (ts == "" || ts ~ /[^0-9]/)   { print "U " rp " " id; return }
   if (H  == "SKIP" || H ~ /[^0-9]/) { print "U " rp " " id; return }
+  # WITNESS (hfm #9): this unit is about to be DATED on the forgeable wall
+  # stamp. Printed only here, after every U exit, so a unit that is U anyway
+  # never also claims a wall-clock age (review 2026-10-27).
+  if (wall) print "W " id
   if      (ts + 0 < HC + 0) printf "B %s %s %d\n", rp, id, (HC - ts) / 86400
   else if (ts + 0 < H  + 0) printf "P %s %s %d\n", rp, id, (H  - ts) / 86400
 }
@@ -162,5 +191,6 @@ function decide(   hay, rp, i, n, parts, s, line, H, HC, iv) {
 /^Environment=/          { env = env " " substr($0, 13) }
 /^WorkingDirectory=/     { wd  = wd " " substr($0, 18) }
 /^ActiveEnterTimestamp=/ { ts  = substr($0, 22); sub(/^@/, "", ts) }
-/^$/                     { decide(); id=""; ex=""; env=""; wd=""; ts="" }
+/^ActiveEnterTimestampMonotonic=/ { mono = substr($0, 31) }
+/^$/                     { decide(); id=""; ex=""; env=""; wd=""; ts=""; mono="" }
 END                      { decide() }

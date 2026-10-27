@@ -128,6 +128,84 @@ out=$(printf 'Id=meshforge-watchdog.service\nExecStart={ argv[]=/usr/bin/python3
       | awk -v HTMF=2000 -v HCMF=2000 -v HTMA=3000 -v HCMA=3000 -v HTMM=4000 -v HCMM=4000 -f "$AWKF")
 expect "WorkingDirectory alone resolves the repo" "B /opt/meshforge meshforge-watchdog.service 0" "$out"
 
+# 11. START TIME FROM THE MONOTONIC CLOCK (2026-10-27). `ActiveEnterTimestamp`
+#     is the wall clock AT START and systemd never rewrites it after NTP steps
+#     the clock. kiai, RTC-less, booted 10-26 21:44 with its clock still
+#     reading 09-27: echo + mini-dudeai were stamped 09-27 and honest_status
+#     reported them "29d behind" while `ps` (btime-derived) showed them 5 h old
+#     on current code. The BOXNOW guard cannot see this — the clock was correct
+#     by the time we asked. Date the start the way ps does:
+#     start = BOXNOW - (BOXUP - ActiveEnterTimestampMonotonic/1e6).
+mrec() { # $1=id $2=realtime stamp $3=monotonic usec
+  printf 'Id=%s\nExecStart={ argv[]=/opt/meshforge/x ; }\nEnvironment=\nWorkingDirectory=\nActiveEnterTimestamp=@%s\nActiveEnterTimestampMonotonic=%s' "$1" "$2" "$3"
+}
+mrun() { # $1=record $2=BOXNOW $3=BOXUP (box CLOCK_MONOTONIC now, seconds)
+  printf '%s\n\n' "$1" | awk -v HTMF=2000 -v HCMF=2000 -v HTMA=3000 -v HCMA=3000 \
+      -v HTMM=4000 -v HCMM=4000 -v BOXNOW="$2" -v BOXUP="$3" -v BOXSUSP="${4:-0}" -v MONOSLACK=60 -f "$AWKF"
+}
+#     The kiai shape: stale-EARLY stamp (1000) but the unit really started at
+#     10000-(5000-4000)=9000, after the code head -> current, silent.
+out=$(mrun "$(mrec kiai-echo.service 1000 4000000000)" 10000 5000.12)
+expect "stale-early wall stamp, monotonic says current -> silent" "" "$out"
+#     The FALSE-GREEN direction: clock AHEAD at boot stamps 9999, but the unit
+#     really started at 3000-(2500-500)=1000, before the code head -> behind.
+out=$(mrun "$(mrec ahead.service 9999 500000000)" 3000 2500)
+expect "stale-late wall stamp, monotonic says behind -> B" "B /opt/meshforge ahead.service 0" "$out"
+#     No monotonic dating possible: the realtime stamp is all we have, and it
+#     is used — but a W witness says so, or a regression to the forgeable
+#     clock would be byte-identical to the fixed path (review 2026-10-27).
+#     (BOXNOW present, monotonic now unreadable = python3 failed on the box.
+#     An EMPTY BOXNOW is `date` failing, which the manager already reports as
+#     "clock unreadable" and reclassifies to U — no second witness needed.)
+out=$(mrun "$(mrec old.service 1000 4000000000)" 10000 "")
+expect "mono-now unreadable -> realtime stamp used, W witness" "W old.service
+B /opt/meshforge old.service 0" "$out"
+out=$(mrun "$(mrec zero.service 1000 0)" 10000 5000)
+expect "monotonic 0 (unset) -> realtime stamp used, W witness" "W zero.service
+B /opt/meshforge zero.service 0" "$out"
+#     Legacy callers that pass no box clock at all (every older case above)
+#     must not change: the W is emitted only when the caller asked for
+#     monotonic dating by supplying BOXNOW — checked by the 0..10 cases.
+#     Inconsistent: started far beyond the monotonic now. Cannot be dated ->
+#     U, never silently current.
+out=$(mrun "$(mrec bad.service 1000 9000000000)" 10000 5000)
+expect "monotonic start far beyond mono-now -> U" "U /opt/meshforge bad.service" "$out"
+#     SUSPEND: the box measured BOOTTIME-MONOTONIC beyond the slack, so a
+#     monotonic age is short by the suspended time -> cannot be dated -> U.
+out=$(mrun "$(mrec susp.service 1000 4000000000)" 10000 5000 172800)
+expect "box suspended beyond slack -> U, never current" "U /opt/meshforge susp.service" "$out"
+#     W is a claim about a DATED unit: one that is U anyway gets no W (review
+#     2026-10-27 #2 — the two notes contradicted each other).
+out=$(printf '%s\n\n' "$(printf 'Id=nots.service\nExecStart={ argv[]=/opt/meshforge/x ; }\nEnvironment=\nWorkingDirectory=\nActiveEnterTimestamp=')" \
+      | awk -v HTMF=2000 -v HCMF=2000 -v HTMA=3000 -v HCMA=3000 -v HTMM=4000 -v HCMM=4000 -v BOXNOW=10000 -v BOXUP="" -v BOXSUSP=0 -v MONOSLACK=60 -f "$AWKF")
+expect "unit with no stamp at all -> U only, no W" "U /opt/meshforge nots.service" "$out"
+#     The RACE: the unit (re)started a moment AFTER the probe read mono-now.
+#     Within MONOSLACK it is a real, current start — not incoherent.
+out=$(mrun "$(mrec race.service 1000 5002000000)" 10000 5000)
+expect "start just after mono-now (restart race) -> current" "" "$out"
+#     The P bucket and a NONZERO day count on the monotonic path: started at
+#     BOXNOW-(BOXUP-mono) = 200000-(190000-10000) = 20000 s epoch. With
+#     CODE=1000 and HEAD=200000 that is current on code, 2 days behind prose.
+out=$(printf '%s\n\n' "$(mrec p.service 1 10000000000)" | awk -v HTMF=200000 -v HCMF=1000 \
+      -v HTMA=3000 -v HCMA=3000 -v HTMM=4000 -v HCMM=4000 -v BOXNOW=200000 -v BOXUP=190000 -v BOXSUSP=0 -v MONOSLACK=60 -f "$AWKF")
+expect "monotonic path, P bucket, 2 days" "P /opt/meshforge p.service 2" "$out"
+out=$(printf '%s\n\n' "$(mrec b.service 999999 10000000000)" | awk -v HTMF=300000 -v HCMF=300000 \
+      -v HTMA=3000 -v HCMA=3000 -v HTMM=4000 -v HCMM=4000 -v BOXNOW=200000 -v BOXUP=190000 -v BOXSUSP=0 -v MONOSLACK=60 -f "$AWKF")
+expect "monotonic path, B bucket, 3 days (wall stamp ignored)" "B /opt/meshforge b.service 3" "$out"
+
+# 12. WIRING. The awk cases above inject the fields directly, so they would all
+#     still pass if honest_status stopped ASKING for them — the live leg would
+#     fall back to the forgeable stamp in silence. Pin the consumer's wiring.
+HS="$HERE/../scripts/honest_status.sh"
+expect "both scopes request ActiveEnterTimestampMonotonic" "2" \
+  "$(grep -c -- '-p ActiveEnterTimestamp -p ActiveEnterTimestampMonotonic --timestamp=unix' "$HS")"
+expect "HSV passes BOXNOW, BOXUP, BOXSUSP and MONOSLACK" "1" \
+  "$(grep -cF -- '-v BOXNOW=\$HSNOW -v BOXUP=\$HSMONO -v BOXSUSP=\$HSSUSP -v MONOSLACK=$MF_MONO_SLACK_S' "$HS")"
+expect "the remote reader is the lib's mf_mono_now, shipped (one definition)" "yes" \
+  "$(grep -q 'declare -f mf_mono_now' "$HS" && echo yes || echo no)"
+expect "the W witness is consumed by the manager" "yes" \
+  "$(grep -q "grep -c '^W '" "$HS" && echo yes || echo no)"
+
 # The wrapper (test_honest_status_shell.py) requires this exact line as well as
 
 # N. THE BLIND-SPOT WITNESS (2026-09-02). A repo `pip install -e`'d into a venv

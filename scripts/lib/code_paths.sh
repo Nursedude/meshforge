@@ -1,6 +1,7 @@
 # scripts/lib/code_paths.sh — THE definition of "code a running daemon loaded".
 #
-# Source this file; it defines two variables and two functions, no side effects.
+# Source this file; it defines three variables and five functions, no side effects
+# (beyond replacing a non-integer inherited MF_MONO_SLACK_S with its default).
 # MF_DAEMON_CODE_PATHS/mf_code_head say WHICH code dates a daemon;
 # MF_CLOCK_TOL_S/mf_clock_trust say whether this box's clock may date it AT ALL.
 #
@@ -190,4 +191,81 @@ mf_clock_trust() {
         return 0
     fi
     return 0
+}
+
+# ---------------------------------------------------------------------------
+# UNIT START, STEP-IMMUNE (2026-10-27).
+#
+# `ActiveEnterTimestamp` is the wall clock AT START, and systemd never rewrites
+# it when NTP later steps the clock. kiai (RTC-less) booted 10-26 21:44 on a
+# clock still reading 09-27: honest_status reported echo + mini-dudeai "29d
+# behind" while ps (btime-derived) showed them 5 h old on current code. The
+# BOXNOW / mf_clock_trust guards cannot see it — the clock was right by the
+# time anyone asked; only the STAMP was wrong.
+#
+# Date the start the way ps does, from the monotonic clock systemd stamps with:
+#     start = now_epoch - (mono_now_s - ActiveEnterTimestampMonotonic / 1e6)
+# This depends on the box's clock NOW only, which the existing guards check.
+# mono_now must be CLOCK_MONOTONIC, NOT /proc/uptime: uptime is CLOCK_BOOTTIME,
+# counts suspend, and would date every start early by the suspended time.
+# MONOTONIC has the mirror flaw (stops in suspend -> dates LATE), so the
+# box's total suspend is measured too and dating is refused beyond the slack.
+#
+# Consumers: fleet_pull.sh (map nag, via mf_unit_start_epoch) and
+# honest_status.sh (the same formula inside hs_skew_attr.awk, fed this file's
+# MF_MONO_SLACK_S and this file's mf_mono_now, shipped to the remote box).
+# ⚠️ NOT yet fleet_sync's restart deciders, which date by `stat /proc/<pid>`
+# (also a wall stamp) — queued 2026-10-27 as a deploy-decider change.
+
+#: A start up to this many seconds AFTER mono_now was read is a real start
+#: (the unit restarted while the probe ran), not incoherent input. Also the
+#: largest total suspend for which monotonic dating is still trusted.
+#: honest_status interpolates it into a REMOTE shell string, so anything that
+#: is not a plain integer is replaced here, at the one place it is defined.
+MF_MONO_SLACK_S="${MF_MONO_SLACK_S:-60}"
+case "$MF_MONO_SLACK_S" in ""|*[!0-9]*) MF_MONO_SLACK_S=60 ;; esac
+
+# mf_mono_now -> "<monotonic_s> <suspended_s>", or empty if unreadable.
+# monotonic_s is CLOCK_MONOTONIC (the clock systemd stamps *Monotonic with);
+# suspended_s is BOOTTIME - MONOTONIC, the total time this box has ever spent
+# suspended. MONOTONIC stops during suspend, so after one every monotonic age
+# is SHORT and a start dates LATE (false-green); the caller refuses to date
+# when suspended_s exceeds the slack. Measured, not assumed: the fleet is Pis
+# with no working suspend, so this is expected to read ~0 everywhere.
+# honest_status ships THIS definition to each box (declare -f) — one reader.
+mf_mono_now() {
+    python3 -c 'import time; m = time.monotonic(); print("%.6f %.6f" % (m, max(0.0, time.clock_gettime(time.CLOCK_BOOTTIME) - m)))' 2>/dev/null
+}
+
+# mf_mono_to_epoch <mono_usec> <now_epoch> <mono_now_s> <suspended_s> -> epoch,
+# or EMPTY when it cannot be dated: unset/0 or non-numeric input, a start
+# beyond mono_now + slack, a box suspended beyond the slack, or a computed
+# epoch <= 0. Empty is "cannot tell", never epoch 0 and never "current".
+# ⚠️ hs_skew_attr.awk implements the SAME formula (it runs on the remote box);
+# tests/test_code_paths_unit_start.sh pins that the two agree.
+mf_mono_to_epoch() {
+    local mono="${1:-}" now="${2:-}" mnow="${3:-}" susp="${4:-}"
+    case "$mono" in ""|0|*[!0-9]*) return 0 ;; esac
+    case "$now" in ""|*[!0-9]*) return 0 ;; esac
+    printf '%s' "$mnow" | grep -Eq '^[0-9]+(\.[0-9]+)?$' || return 0
+    printf '%s' "$susp" | grep -Eq '^[0-9]+(\.[0-9]+)?$' || return 0
+    awk -v m="$mono" -v n="$now" -v mn="$mnow" -v su="$susp" -v sl="$MF_MONO_SLACK_S" \
+        'BEGIN { s = m / 1000000; if (su + 0 > sl + 0 || s > mn + sl) exit
+                 e = int(n - (mn - s)); if (e <= 0) exit; printf "%d\n", e }'
+}
+
+# mf_unit_start_epoch <unit> [--user] -> the unit's start as epoch seconds,
+# dated on the monotonic clock; EMPTY when it cannot be dated.
+mf_unit_start_epoch() {
+    local unit="$1" scope="${2:-}" mono now mnow="" susp=""
+    if [ "$scope" = "--user" ]; then
+        mono="$(systemctl --user show -p ActiveEnterTimestampMonotonic --value "$unit" 2>/dev/null)"
+    else
+        mono="$(systemctl show -p ActiveEnterTimestampMonotonic --value "$unit" 2>/dev/null)"
+    fi
+    now="$(date +%s 2>/dev/null)"
+    read -r mnow susp <<EOF2
+$(mf_mono_now)
+EOF2
+    mf_mono_to_epoch "$mono" "$now" "$mnow" "$susp"
 }

@@ -204,13 +204,25 @@ fi
 if [ "$failures" -eq 0 ] && [ "$(basename "$REPO_DIR")" = "meshforge" ] \
    && [ "$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null)" = "$TARGET_SHA" ]; then
     if systemctl is-active --quiet meshforge-map 2>/dev/null; then
-        # Both sides in WALL-CLOCK epoch seconds. (First cut used
-        # ActiveEnterTimestampMonotonic, which is time-since-BOOT, not service
-        # uptime — comparing it against a commit age is incommensurate and made
-        # the note fire unconditionally. Caught the same evening; a nag that is
-        # not actually derived from anything is worse than no nag.)
-        map_started_raw=$(systemctl show meshforge-map -p ActiveEnterTimestamp --value 2>/dev/null)
-        map_started=$(date -d "$map_started_raw" +%s 2>/dev/null || echo 0)
+        # Both sides in WALL-CLOCK epoch seconds. History: the first cut
+        # compared ActiveEnterTimestampMonotonic (time since BOOT) directly
+        # against a commit age — incommensurate, the note fired unconditionally.
+        # The fix then was the wall stamp; the 2026-10-27 fix CONVERTS the
+        # monotonic stamp to an epoch (now - monotonic age), which is
+        # commensurate AND immune to a clock step after start.
+        # 2026-10-27: dated on the MONOTONIC clock (lib/code_paths.sh
+        # mf_unit_start_epoch) — ActiveEnterTimestamp is the wall clock at
+        # start, frozen there when NTP later steps it, so an RTC-less box that
+        # booted on a stale clock nagged about a current map forever (kiai,
+        # the honest_status twin of this defect). Wall stamp only as a fallback,
+        # and the note says which clock dated it.
+        map_dated_by="monotonic"
+        map_started="$(mf_unit_start_epoch meshforge-map)"
+        if [ -z "$map_started" ]; then
+            map_dated_by="wall-clock stamp"
+            map_started_raw=$(systemctl show meshforge-map -p ActiveEnterTimestamp --value 2>/dev/null)
+            map_started=$(date -d "$map_started_raw" +%s 2>/dev/null || echo 0)
+        fi
         # Daemon-loaded code only (lib/code_paths.sh), NOT the whole repo's
         # HEAD. This nagged about meshforge-map after 712ac491 — a commit that
         # touched one shell script and nothing the map could possibly load —
@@ -219,7 +231,9 @@ if [ "$failures" -eq 0 ] && [ "$(basename "$REPO_DIR")" = "meshforge" ] \
         head_ct=$(mf_code_head "$REPO_DIR" 2>/dev/null || echo 0)
         [ -n "$head_ct" ] || head_ct=0
         # Two clocks again (lib/code_paths.sh mf_clock_trust): map_started is
-        # THIS box's wall clock, head_ct is the wall clock of whichever box
+        # THIS box's wall clock (NOW, when monotonic-dated — so tell 1,
+        # "start in this box's future", can only fire on the wall-stamp
+        # fallback; tell 2, a commit in this box's future, still guards both), head_ct is the wall clock of whichever box
         # authored the commit. On a clock-stale box -- RTC-less Pi,
         # fake-hwclock, NTP unreachable -- map_started lands days in the past
         # and this nag fires on EVERY pull, forever, about a map that is
@@ -229,12 +243,12 @@ if [ "$failures" -eq 0 ] && [ "$(basename "$REPO_DIR")" = "meshforge" ] \
         map_clock_doubt="$(mf_clock_trust "$REPO_DIR" "${map_started:-0}")"
         # Only nag when HEAD is NEWER than the running process (the risky case).
         if [ -n "$map_clock_doubt" ]; then
-            echo "fleet_pull: NOTE — meshforge-map skew NOT checked: $map_clock_doubt"
+            echo "fleet_pull: NOTE — meshforge-map skew NOT checked: $map_clock_doubt (start dated by ${map_dated_by})"
             echo "            Fix the clock (timedatectl status). This is not a"
             echo "            claim that the map is current; it is UNKNOWN."
         elif [ "${map_started:-0}" -gt 0 ] && [ "${head_ct:-0}" -gt 0 ] \
            && [ "$map_started" -lt "$head_ct" ]; then
-            echo "fleet_pull: NOTE — meshforge-map on this box started before ${TARGET_SHORT};"
+            echo "fleet_pull: NOTE — meshforge-map on this box started before ${TARGET_SHORT} (start dated by ${map_dated_by});"
             echo "            it serves /api/fleet/truth from the code it booted with."
             echo "            Check 'server_class_skew' there (or the /fleet banner); if it is"
             echo "            non-empty, restart meshforge-map. No restart is done for you."
