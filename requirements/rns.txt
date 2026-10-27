@@ -86,7 +86,14 @@
 #                     mf.5 (NOT mf.10). Canary moc4 ~17h + a second ordered
 #                     restart (113 ms stop, no SIGKILL, rnsd owns both names);
 #                     fork drills OK both envs.
-# MF-FORK-PIN rns 1.3.8+mf.11
+# 1.3.9 base, +mf.0 (2026-10-26): upstream 1.3.9 merged onto 1.3.8+mf.11 (all
+#                     +mf patches carried). 1.3.9's withheld "critical" fix: an
+#                     rnsh auth bypass -> remote command execution in 1.3.8
+#                     (rnsh/session.py), pinned as fork test fbdcb5b1 (fails on
+#                     1.3.8+mf.11). Canary moc3 12h (10-26 19:39 -> 10-27
+#                     07:40): rnsd NRestarts 0, owns @rns/ + rpc, tracer 73/73
+#                     ok; interop vs STOCK 1.3.9 direct + public both ways.
+# MF-FORK-PIN rns 1.3.9+mf.0
 # lxmf 1.0.1+mf.8 (2026-10-10): pin-only follow of rns +mf.5 (exact pin
 #                     rns==1.3.8+mf.5; mf.6's rns==mf.4 made a fresh install
 #                     ResolutionImpossible, CI run 38116130221). Carries mf.7's
@@ -105,9 +112,12 @@
 #                     Canary moc1 3h vs control moc2: 0 err, rx==tx; rolled.
 # lxmf 1.0.1+mf.13 (2026-10-21): pin-only follow of rns +mf.11 (exact pin
 #                     rns==1.3.8+mf.11); mf.12's code unchanged.
-# MF-FORK-PIN lxmf 1.0.1+mf.13
-rns @ git+https://github.com/Nursedude/reticulum.git@29c72f385354fc9dc3a88ae5be64075712116a69
-lxmf @ git+https://github.com/Nursedude/lxmf.git@892047d5227e81038f7450714ce19ea0fd5b717a
+# lxmf 1.0.1+mf.14 (2026-10-26): pin-only follow of rns 1.3.9+mf.0 (exact pin
+#                     rns==1.3.9+mf.0 — mf.13's rns==1.3.8+mf.11 would break
+#                     `pip check` beside it); mf.12's code unchanged.
+# MF-FORK-PIN lxmf 1.0.1+mf.14
+rns @ git+https://github.com/Nursedude/reticulum.git@e915dcf4ef44a221792c6c1d4ef8d8a3b0170e7b
+lxmf @ git+https://github.com/Nursedude/lxmf.git@774c6434e3873f1833d454042eda0b61a16c76bc
 
 # Cryptography / PyOpenSSL version alignment — BOTH bounds are load-bearing,
 # and the two packages MOVE TOGETHER. RNS's own constraint is only
