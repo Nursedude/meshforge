@@ -48,6 +48,15 @@ SB="$TMP/bin"; mkdir -p "$SB"
 cat > "$SB/systemctl" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
+  *ActiveEnterTimestampMonotonic*)
+    # Answer only on the BUS the staged unit lives on, and for the user bus
+    # only when XDG_RUNTIME_DIR reached us: a real system-bus query for a user
+    # unit prints 0. Without this a dropped --user / XDG prefix stayed green.
+    case "$*" in *--user*) asked=user ;; *) asked=system ;; esac
+    if [ "$asked" = "${STUB_SCOPE:-system}" ] && \
+       { [ "$asked" = system ] || [ -n "${XDG_RUNTIME_DIR:-}" ]; }; then
+        echo "${STUB_MONO:-0}"
+    else echo 0; fi ;;
   *"-p MainPID"*)      echo "$STUB_PID" ;;
   *list-unit-files*)   echo "meshforge-test.service enabled" ;;
   *restart*)           touch "$STUB_MARKER"; exit 0 ;;
@@ -66,6 +75,29 @@ exec "$@"
 STUB
 chmod +x "$SB/sudo"
 export PATH="$SB:$PATH"
+
+# --- the monotonic clock (2026-10-27) --------------------------------------
+# The deciders date a unit's start from systemd's ActiveEnterTimestampMonotonic
+# (lib/code_paths.sh mf_pid_start_epoch), not the /proc/<pid> mtime, which is a
+# WALL stamp taken at fork. Pin mono_now so a fresh CI runner (uptime < 2h)
+# cannot make these cases unstageable. By default each staged pid gets the
+# unit start that matches it: pid 1 = booted ~28h ago, anything else = 1s ago.
+STUB_MNOW=100000
+MONOSTUB="$TMP/mono_stub.sh"
+cat > "$MONOSTUB" <<'STUB'
+mf_mono_now() { echo "${STUB_MNOW}.000000 0.000000"; }
+STUB
+scope_env() {  # $1 = local decider fn -> the bus its unit lives on
+    if [ "$1" = sync_local_user_unit ]; then
+        export STUB_SCOPE=user XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    else export STUB_SCOPE=system; fi
+}
+stub_mono_for() {  # $1 = pid -> STUB_MONO (usec) unless the case pinned one
+    if [ -n "${CASE_MONO:-}" ]; then STUB_MONO="$CASE_MONO"
+    elif [ "$1" = 1 ]; then STUB_MONO=1000000
+    else STUB_MONO=$(( (STUB_MNOW - 1) * 1000000 )); fi
+    export STUB_MONO STUB_MNOW
+}
 
 # --- a repo that is genuinely AT HEAD, with a datable code commit ---------
 mk_repo() {   # $1 = committer date for the src/ commit
@@ -86,10 +118,10 @@ mk_repo() {   # $1 = committer date for the src/ commit
 run_case() {  # $1=label $2=date $3=expect_restart(yes|no) $4=pid (default self)
     mk_repo "$2" || { echo "FAIL $1 repo setup"; fails=$((fails+1)); return; }
     export STUB_MARKER="$TMP/restarted.$1"; rm -f "$STUB_MARKER"
-    export STUB_PID="${4:-$$}"
+    export STUB_PID="${4:-$$}"; stub_mono_for "$STUB_PID"
     local head out
     head="$(git -C "$TMP/repo" rev-parse HEAD)"
-    out="$(cd "$TMP/repo" && . "$LIB" && . "$PAYLOAD" && \
+    out="$(export STUB_SCOPE=system; cd "$TMP/repo" && . "$LIB" && . "$MONOSTUB" && . "$PAYLOAD" && \
            sync_repo test "$TMP/repo" meshforge-test "$head" 2>&1)"
     if [ "$3" = "yes" ]; then
         if [ -f "$STUB_MARKER" ]; then echo "ok   $1 restarted despite no commits"
@@ -125,11 +157,11 @@ run_case behind  "$(date)" yes 1
 run_user_case() {  # $1=label $2=date $3=expect_restart(yes|no) $4=pid (default self)
     mk_repo "$2" || { echo "FAIL $1 repo setup"; fails=$((fails+1)); return; }
     export STUB_MARKER="$TMP/restarted.$1"; rm -f "$STUB_MARKER"
-    export STUB_PID="${4:-$$}"
+    export STUB_PID="${4:-$$}"; stub_mono_for "$STUB_PID"
     local head out
     head="$(git -C "$TMP/repo" rev-parse HEAD)"
     # pre_head == HEAD is the "pull applied nothing" case, same as sync_repo.
-    out="$(cd "$TMP/repo" && . "$LIB" && . "$UPAYLOAD" && \
+    out="$(unset XDG_RUNTIME_DIR; export STUB_SCOPE=user; cd "$TMP/repo" && . "$LIB" && . "$MONOSTUB" && . "$UPAYLOAD" && \
            sync_user_unit test "$TMP/repo" meshforge-test "$head" 2>&1)"
     if [ "$3" = "yes" ]; then
         if [ -f "$STUB_MARKER" ]; then echo "ok   $1 user unit restarted despite no commits"
@@ -168,13 +200,13 @@ run_clock_case() {  # $1=label $2=runner(sys|user)
     future="$(date -d '+1 hour' 2>/dev/null || date -v+1H)"
     mk_repo "$future" || { echo "FAIL $1 repo setup"; fails=$((fails+1)); return; }
     export STUB_MARKER="$TMP/restarted.$1"; rm -f "$STUB_MARKER"
-    export STUB_PID=1
+    export STUB_PID=1; stub_mono_for 1
     local head; head="$(git -C "$TMP/repo" rev-parse HEAD)"
     if [ "$2" = user ]; then
-        out="$(cd "$TMP/repo" && . "$LIB" && . "$UPAYLOAD" && \
+        out="$(unset XDG_RUNTIME_DIR; export STUB_SCOPE=user; cd "$TMP/repo" && . "$LIB" && . "$MONOSTUB" && . "$UPAYLOAD" && \
                sync_user_unit test "$TMP/repo" meshforge-test "$head" 2>&1)"
     else
-        out="$(cd "$TMP/repo" && . "$LIB" && . "$PAYLOAD" && \
+        out="$(export STUB_SCOPE=system; cd "$TMP/repo" && . "$LIB" && . "$MONOSTUB" && . "$PAYLOAD" && \
                sync_repo test "$TMP/repo" meshforge-test "$head" 2>&1)"
     fi
     if [ -f "$STUB_MARKER" ]; then
@@ -185,7 +217,7 @@ run_clock_case() {  # $1=label $2=runner(sys|user)
         # require the VERDICT, not just the absence of a restart.
         echo "FAIL $1 declined for some other reason, not clock doubt: $out"
         fails=$((fails+1))
-    elif ! printf %s "$out" | grep -q '^WARN '; then
+    elif ! printf %s "$out" | grep -q '^WARN .*clock_untrusted'; then
         # UNKNOWN must be loud. A silent decline re-opens the blindness this
         # file was written for, one box at a time (honest_failure_modes #2).
         echo "FAIL $1 named the clock but did not WARN: $out"
@@ -247,10 +279,10 @@ done
 run_self_case() {  # $1=label $2=fn $3=commit_date $4=pid $5=expect(restart|current|clock)
     mk_repo "$3" || { echo "FAIL $1 repo setup"; fails=$((fails+1)); return; }
     export STUB_MARKER="$TMP/restarted.$1"; rm -f "$STUB_MARKER"
-    export STUB_PID="$4"
+    export STUB_PID="$4"; stub_mono_for "$STUB_PID"
     local body out
     case "$2" in sync_local_unit) body="$SPAYLOAD" ;; *) body="$SUPAYLOAD" ;; esac
-    out="$(. "$LIB"; . "$SKIPFN"; . "$body"; \
+    out="$(scope_env "$2"; . "$LIB"; . "$MONOSTUB"; . "$SKIPFN"; . "$body"; \
            action_pass=0; action_fail=0; action_warn=0; action_skip=0; NO_RESTART=0; \
            "$2" meshforge-test "$TMP/repo" 2>&1)"
     case "$5" in
@@ -269,7 +301,7 @@ run_self_case() {  # $1=label $2=fn $3=commit_date $4=pid $5=expect(restart|curr
                 fails=$((fails+1))
             elif ! printf %s "$out" | grep -q clock_behind; then
                 echo "FAIL $1 declined for some other reason: $out"; fails=$((fails+1))
-            elif ! printf %s "$out" | grep -q ' WARN '; then
+            elif ! printf %s "$out" | grep -q ' WARN .*clock_behind'; then
                 echo "FAIL $1 named the clock but did not WARN: $out"; fails=$((fails+1))
             else echo "ok   $1 declined + WARNed instead of looping"; fi ;;
     esac
@@ -282,6 +314,70 @@ run_self_case self-clock-behind sync_local_unit      "$FUTURE"  1  clock
 run_self_case self-user-current sync_local_user_unit "$HOURAGO" $$ current
 run_self_case self-user-behind  sync_local_user_unit "$(date)"  1  restart
 run_self_case self-user-clock   sync_local_user_unit "$FUTURE"  1  clock
+
+# ===========================================================================
+# START DATING (2026-10-27). The deciders used to date the running process by
+# `stat -c %Y /proc/<pid>` -- a WALL stamp the kernel takes when the /proc
+# inode is first instantiated. A box whose clock was AHEAD at that moment
+# (RTC-less Pi, fake-hwclock, an NTP step) stamps an OLD process as recent, so
+# `code_ct <= started` reads CURRENT and the deploy never restarts it: a false
+# green, the SoT divergence honest_status was cured of the same day (kiai,
+# 29d). Staged here as the real shape: /proc says NOW (our own pid), systemd's
+# monotonic stamp says the unit came up 2h ago, the code is 1h old.
+TWOH_AGO_MONO=$(( (STUB_MNOW - 7200) * 1000000 ))
+CASE_MONO="$TWOH_AGO_MONO"
+run_case          mono-proc-forged-sys   "$HOURAGO" yes "$$"
+run_user_case     mono-proc-forged-user  "$HOURAGO" yes "$$"
+run_self_case     mono-proc-forged-self  sync_local_unit      "$HOURAGO" $$ restart
+run_self_case     mono-proc-forged-suser sync_local_user_unit "$HOURAGO" $$ restart
+# The mirror: /proc is OLD (pid 1, boot) but the unit restarted 1s ago -- it
+# runs current code and must NOT be restarted again.
+CASE_MONO=$(( (STUB_MNOW - 1) * 1000000 ))
+run_case          mono-recent-sys        "$HOURAGO" no 1
+run_self_case     mono-recent-self       sync_local_unit      "$HOURAGO" 1 current
+unset CASE_MONO
+
+# No monotonic stamp (0 = systemd has none): fall back to /proc, but SAY so --
+# a wall-dated verdict is the blindness above, so it must never be silent.
+fallback_case() {  # $1=label $2=fn
+    mk_repo "$HOURAGO" || { echo "FAIL $1 repo setup"; fails=$((fails+1)); return; }
+    export STUB_MARKER="$TMP/restarted.$1"; rm -f "$STUB_MARKER"
+    export STUB_PID=$$ STUB_MONO=0 STUB_MNOW
+    local head out; head="$(git -C "$TMP/repo" rev-parse HEAD)"
+    case "$2" in
+        sync_repo)      out="$(export STUB_SCOPE=system; cd "$TMP/repo" && . "$LIB" && . "$MONOSTUB" && . "$PAYLOAD" && \
+                               sync_repo test "$TMP/repo" meshforge-test "$head" 2>&1)" ;;
+        sync_user_unit) out="$(unset XDG_RUNTIME_DIR; export STUB_SCOPE=user; cd "$TMP/repo" && . "$LIB" && . "$MONOSTUB" && . "$UPAYLOAD" && \
+                               sync_user_unit test "$TMP/repo" meshforge-test "$head" 2>&1)" ;;
+        *) local body; case "$2" in sync_local_unit) body="$SPAYLOAD" ;; *) body="$SUPAYLOAD" ;; esac
+           out="$(scope_env "$2"; . "$LIB"; . "$MONOSTUB"; . "$SKIPFN"; . "$body"; \
+                  action_pass=0; action_fail=0; action_warn=0; action_skip=0; NO_RESTART=0; \
+                  "$2" meshforge-test "$TMP/repo" 2>&1)" ;;
+    esac
+    if [ -f "$STUB_MARKER" ]; then
+        echo "FAIL $1 fallback restarted a current process: $out"; fails=$((fails+1))
+    elif ! printf %s "$out" | grep -qE '(^| )WARN .*start_dated_wall'; then
+        echo "FAIL $1 fell back to a wall stamp SILENTLY: $out"; fails=$((fails+1))
+    elif ! printf %s "$out" | grep -qE 'unchanged|current \(no restart needed\)'; then
+        echo "FAIL $1 warned but never reached the decision: $out"; fails=$((fails+1))
+    else echo "ok   $1 fell back to /proc, WARNed, and still decided"; fi
+}
+fallback_case fallback-sys   sync_repo
+fallback_case fallback-user  sync_user_unit
+fallback_case fallback-self  sync_local_unit
+fallback_case fallback-suser sync_local_user_unit
+
+missing=""
+for f in "$PAYLOAD" "$UPAYLOAD" "$SPAYLOAD" "$SUPAYLOAD"; do
+    # the user-scope call carries an XDG_RUNTIME_DIR= prefix; still a CALL.
+    grep -qE '\$\((XDG_RUNTIME_DIR="[^"]*" )?mf_pid_start_epoch ' "$f" || missing="$missing $(basename "$f" .sh)"
+    if grep -qE '^[^#]*stat -c %Y "/proc/' "$f"; then missing="$missing $(basename "$f" .sh)(raw-stat)"; fi
+done
+if [ -z "$missing" ]; then
+    echo "ok   all four restart deciders date the start via mf_pid_start_epoch"
+else
+    echo "FAIL restart decider(s) still dating by a wall stamp:$missing"; fails=$((fails+1))
+fi
 
 # ALL FOUR deciders, not just the two the fix arrived through.
 # ⚠️ Match the CALL, not the NAME. The first cut of this grepped for the bare

@@ -130,7 +130,10 @@ MF_CLOCK_TOL_S="${MF_CLOCK_TOL_S:-300}"
 #
 # — and answers it by comparing two numbers from TWO DIFFERENT CLOCKS. `%ct` is
 # a wall-clock stamp written by whichever box authored the commit; the process
-# side is `stat -c %Y /proc/<pid>`, written by THIS box's wall clock at fork.
+# side was `stat -c %Y /proc/<pid>`, written by THIS box's wall clock when the
+# /proc inode was created. Since 2026-10-27 fleet_sync dates the process on the
+# monotonic clock instead (mf_pid_start_epoch), which removes the clock at
+# START from the question; THIS box's clock NOW, against the commit's, remains.
 # The comparison means something only while those two clocks agree.
 #
 # On this fleet they demonstrably do not. The Pis have no RTC, fake-hwclock
@@ -148,6 +151,10 @@ MF_CLOCK_TOL_S="${MF_CLOCK_TOL_S:-300}"
 #   1. The process claims to have started in this box's own FUTURE. Only a
 #      backward clock step produces that, and it voids `started` outright.
 #      (hfm #6: "persisted timestamps need a clock-went-backward branch".)
+#      ⚠️ Inert on the monotonic path: a mono-dated start is `now - age` and
+#      cannot sit in the future, so a backward step during a unit's life now
+#      costs at most ONE extra restart (which re-stamps it), never a loop.
+#      It still guards the /proc wall fallback.
 #   2. A commit in the repo is dated in this box's FUTURE. A commit cannot have
 #      been made later than now, so this box's clock is behind the clock that
 #      wrote it — precisely the disagreement that makes the comparison a lie.
@@ -214,8 +221,8 @@ mf_clock_trust() {
 # Consumers: fleet_pull.sh (map nag, via mf_unit_start_epoch) and
 # honest_status.sh (the same formula inside hs_skew_attr.awk, fed this file's
 # MF_MONO_SLACK_S and this file's mf_mono_now, shipped to the remote box).
-# ⚠️ NOT yet fleet_sync's restart deciders, which date by `stat /proc/<pid>`
-# (also a wall stamp) — queued 2026-10-27 as a deploy-decider change.
+# fleet_sync.sh's four restart deciders, via mf_pid_start_epoch below (they
+# dated by `stat /proc/<pid>` -- also a wall stamp -- until 2026-10-27).
 
 #: A start up to this many seconds AFTER mono_now was read is a real start
 #: (the unit restarted while the probe ran), not incoherent input. Also the
@@ -268,4 +275,22 @@ mf_unit_start_epoch() {
 $(mf_mono_now)
 EOF2
     mf_mono_to_epoch "$mono" "$now" "$mnow" "$susp"
+}
+
+# mf_pid_start_epoch <unit> <pid> [--user] -> "<epoch> mono" | "<epoch> wall",
+# or EMPTY when neither clock can date it. fleet_sync's restart deciders.
+# mono: mf_unit_start_epoch (systemd's monotonic stamp, immune to the clock
+#   having been wrong at start). wall: the /proc/<pid> mtime fallback -- a wall
+#   stamp the kernel takes at inode creation, which reads an old process as
+#   NEW on a box whose clock was ahead then (a deploy that never restarts it).
+#   The caller must WARN on `wall`; it is the blindness the mono path cures.
+# For --user, the caller sets XDG_RUNTIME_DIR in this function's environment.
+mf_pid_start_epoch() {
+    local unit="$1" pid="${2:-}" scope="${3:-}" e
+    e="$(mf_unit_start_epoch "$unit" $scope)"
+    if [ -n "$e" ]; then echo "$e mono"; return 0; fi
+    case "$pid" in ""|0|*[!0-9]*) return 0 ;; esac
+    e="$(stat -c %Y "/proc/$pid" 2>/dev/null)" || return 0
+    case "$e" in ""|*[!0-9]*) return 0 ;; esac
+    echo "$e wall"
 }

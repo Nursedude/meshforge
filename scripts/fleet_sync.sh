@@ -391,7 +391,11 @@ sync_repo() {
         started=""
         case "${pid:-0}" in
             ""|0|*[!0-9]*) : ;;
-            *) started="$(stat -c %Y "/proc/$pid" 2>/dev/null || true)" ;;
+            *) started="$(mf_pid_start_epoch "${unit}.service" "$pid")"
+               case "$started" in
+                   *" wall") echo "WARN $short $new_head start_dated_wall -- no monotonic start stamp for $unit, dated by the /proc mtime (a wall stamp: reads an old process as current if the clock was ahead when it started)" ;;
+               esac
+               started="${started%% *}" ;;
         esac
         case "${started:-}" in
             ""|*[!0-9]*)
@@ -498,7 +502,11 @@ sync_user_unit() {
         u_started=""
         case "${u_pid:-0}" in
             ""|0|*[!0-9]*) : ;;
-            *) u_started="$(stat -c %Y "/proc/$u_pid" 2>/dev/null || true)" ;;
+            *) u_started="$(XDG_RUNTIME_DIR="$u_xdg" mf_pid_start_epoch "${unit}.service" "$u_pid" --user)"
+               case "$u_started" in
+                   *" wall") echo "WARN $short $new_head start_dated_wall -- no monotonic start stamp for $unit, dated by the /proc mtime (a wall stamp: reads an old process as current if the clock was ahead when it started)" ;;
+               esac
+               u_started="${u_started%% *}" ;;
         esac
         case "${u_started:-}" in
             ""|*[!0-9]*)
@@ -1123,12 +1131,16 @@ sync_local_unit() {
         self_skip "$unit" "UNKNOWN no MainPID though the unit is active — restart-on-code-change is OFF for it" WARN
         return 0
     fi
-    # /proc/<pid> directory's mtime is the process creation time
-    # (kernel sets it on fork). Reliable on Linux; older than the
-    # daemon's first request handling, which is what we want.
-    daemon_started="$(stat -c %Y "/proc/$pid" 2>/dev/null || echo 0)"
-    if [ "$daemon_started" = "0" ]; then
-        self_skip "$unit" "UNKNOWN /proc/$pid unreadable — cannot tell if it is current" WARN
+    # Dated on the monotonic clock (lib/code_paths.sh mf_pid_start_epoch). The
+    # /proc/<pid> mtime used here until 2026-10-27 is a WALL stamp: a box whose
+    # clock was ahead when the daemon started reads an old daemon as current.
+    daemon_started="$(mf_pid_start_epoch "${unit}.service" "$pid")"
+    case "$daemon_started" in
+        *" wall") self_skip "$unit" "start_dated_wall -- no monotonic start stamp for $unit, dated by the /proc mtime (a wall stamp: reads an old process as current if the clock was ahead when it started)" WARN ;;
+    esac
+    daemon_started="${daemon_started%% *}"
+    if [ -z "$daemon_started" ]; then
+        self_skip "$unit" "UNKNOWN neither the monotonic start stamp nor /proc/$pid could date it — cannot tell if it is current" WARN
         return 0
     fi
 
@@ -1188,7 +1200,7 @@ sync_local_unit() {
 # USER-bus sibling of sync_local_unit. mini-dudeai runs as a `systemctl --user`
 # unit on this box too, so the sudo system-bus restart above can't reach it.
 # fleet_sync runs AS the operator here (not over SSH), so `systemctl --user`
-# works natively. Same proc-mtime vs newest-code-commit staleness check.
+# works natively. Same process-start vs newest-code-commit staleness check.
 # Self-side twin of promote_seed (remote leg, see ~line 435). Keep the two in
 # parity: the 2026-06-09 watchdog case is the standing lesson — the self leg
 # omitted a restart the remote leg had, so a code change reached all 5 remotes
@@ -1289,9 +1301,13 @@ sync_local_user_unit() {
         self_skip "$unit" "UNKNOWN no MainPID though the unit is active — restart-on-code-change is OFF for it" WARN
         return 0
     fi
-    daemon_started="$(stat -c %Y "/proc/$pid" 2>/dev/null || echo 0)"
-    if [ "$daemon_started" = "0" ]; then
-        self_skip "$unit" "UNKNOWN /proc/$pid unreadable — cannot tell if it is current" WARN
+    daemon_started="$(mf_pid_start_epoch "${unit}.service" "$pid" --user)"
+    case "$daemon_started" in
+        *" wall") self_skip "$unit" "start_dated_wall -- no monotonic start stamp for $unit, dated by the /proc mtime (a wall stamp: reads an old process as current if the clock was ahead when it started)" WARN ;;
+    esac
+    daemon_started="${daemon_started%% *}"
+    if [ -z "$daemon_started" ]; then
+        self_skip "$unit" "UNKNOWN neither the monotonic start stamp nor /proc/$pid could date it — cannot tell if it is current" WARN
         return 0
     fi
 
