@@ -40,7 +40,12 @@ INGRESS_PATH_NUDGE_S = 60.0
 _SOURCE_UNKNOWN = 0x01
 #: Seconds the warm-up waits for rnsd's path responses before re-measuring.
 INGRESS_WARMUP_SETTLE_S = 5.0
-#: Single-flight: one warm-up at a time however often RNS reconnects.
+# Re-ask the still-unknown after these waits (s). moc, 2026-10-27: right after
+# an rnsd restart the one-shot pass recalled 9/15 — rnsd had no paths YET — and
+# nothing re-asked until a gateway restart. Bounded: past ~7 min the peers'
+# own announces are the cure.
+INGRESS_WARMUP_RETRY_S = (30.0, 90.0, 300.0)
+#: Guards each bridge's warm-up state dict; single-flight is st["active"].
 _WARMUP_LOCK = threading.Lock()
 
 
@@ -355,63 +360,164 @@ class BridgeRnsEventsMixin:
                      target=dest.hex()[:8], timeout_s=5.0, exit_on_wedge=False)
         return "sent"
 
-    def rns_ingress_warmup(self, *, settle_s: float = INGRESS_WARMUP_SETTLE_S) -> dict:
+    def _rns_warmup_state(self):
+        """Per-bridge {"active": bool, "kick": Event}. At most ONE warm-up
+        thread per bridge: a reconnect while it runs KICKS it (fresh pass,
+        schedule restarted) and returns at once — no thread ever parks on a
+        lock behind a ``request_path`` that ``bounded_call`` cannot abort
+        (exit_on_wedge=False logs WEDGED and leaves the call running)."""
+        with _WARMUP_LOCK:
+            st = getattr(self, "_rns_warmup_st", None)
+            if st is None:
+                st = self._rns_warmup_st = {"active": False,
+                                            "kick": threading.Event()}
+            return st
+
+    def rns_ingress_warmup(self, *, settle_s: float = INGRESS_WARMUP_SETTLE_S,
+                           retry_delays_s: tuple = INGRESS_WARMUP_RETRY_S) -> dict:
         """At RNS connect: request a path for every listed/peer identity this
         process cannot recall, wait ``settle_s``, then RE-MEASURE — the line
         says how many are recallable AFTER, because "request sent" is not the
         END (rnsd silently ignores a request whose announce cache entry is
-        gone; review 2026-10-08). Single-flight; never raises; {} when open."""
-        if not _WARMUP_LOCK.acquire(blocking=False):
-            return {}
+        gone; review 2026-10-08). Still-unknown members are re-asked after
+        each of ``retry_delays_s`` — rnsd may not have the path YET after its
+        own restart (moc, 2026-10-27: 9/15) — one line per round, each round
+        re-measuring ALL members. A call while one runs kicks it and returns
+        {}. Never raises; {} when open."""
+        st = self._rns_warmup_state()
+        with _WARMUP_LOCK:
+            if st["active"]:
+                st["kick"].set()
+                # INFO with the age: a warm-up stuck in a request_path that
+                # bounded_call could not abort shows here as an age that
+                # only grows, reconnect after reconnect.
+                logger.info("RNS ingress warm-up already running (%.0fs): "
+                            "kicked for a fresh pass",
+                            _monotonic() - st.get("since", _monotonic()))
+                return {}
+            st["active"] = True
+            st["since"] = _monotonic()
+            st["kick"].clear()
+        out = {}
         try:
-            return self._rns_ingress_warmup_once(settle_s)
-        finally:
-            _WARMUP_LOCK.release()
+            while True:
+                try:
+                    out = self._rns_warmup_schedule(settle_s, retry_delays_s, st["kick"])
+                except Exception as e:  # noqa: BLE001 — never raises
+                    logger.warning(f"rns ingress warm-up aborted: {e}")
+                ev = getattr(self, "_stop_event", None)
+                with _WARMUP_LOCK:
+                    if not st["kick"].is_set() or (ev is not None and ev.is_set()):
+                        st["active"] = False
+                        return out
+                    st["kick"].clear()          # kicked as we finished: run again
+        except BaseException:
+            with _WARMUP_LOCK:
+                st["active"] = False
+            raise
 
-    def _rns_ingress_warmup_once(self, settle_s: float) -> dict:
+    def _rns_warmup_schedule(self, settle_s, retry_delays_s, kick) -> dict:
+        ev = getattr(self, "_stop_event", None)
+        # No stop event = no way to wait without a burst on rnsd's zero-backlog
+        # listener (#72): first pass only.
+        delays = tuple(max(0.0, float(d)) for d in (retry_delays_s or ())) if ev else ()
+        out, excluded = self._rns_warmup_round(settle_s, "", set())
+        i = 0
+        while out and i < len(delays):
+            if out["after"] is None or not (out["unknown"] - excluded):
+                break
+            woke = self._rns_warmup_wait(ev, kick, delays[i])
+            if woke == "stop":
+                break
+            if getattr(self, "_connected_rns", True) is False:
+                # RNS dropped: the reconnect starts (or kicks) the next pass
+                logger.info("RNS ingress warm-up retries ended: RNS disconnected")
+                break
+            if woke == "kick" or kick.is_set():  # a reconnect: fresh pass, schedule restarted
+                kick.clear()                    # absorbed by THIS round: no 2nd burst
+                r, excluded = self._rns_warmup_round(settle_s, " (reconnect)", set())
+                i = 0
+            else:
+                i += 1
+                r, excluded = self._rns_warmup_round(
+                    settle_s, f" retry {i}/{len(delays)}", excluded)
+            if not r:
+                break
+            for k in ("requested", "blocked", "failed"):
+                out[k] += r[k]
+            out["after"], out["unknown"] = r["after"], r["unknown"]
+            out["retries"] = out.get("retries", 0) + 1
+        out.pop("unknown", None)
+        return out
+
+    def _rns_warmup_wait(self, ev, kick, delay: float) -> str:
+        """``stop`` | ``kick`` | ``timeout``. Sliced so a kick or a stop is
+        seen within a second without a second Event per bridge."""
+        deadline = _monotonic() + delay
+        while True:
+            if ev.is_set():
+                return "stop"
+            if kick.is_set():
+                return "kick"
+            left = deadline - _monotonic()
+            if left <= 0:
+                return "timeout"
+            if ev.wait(min(1.0, left)):
+                return "stop"
+
+    def _rns_recallable(self, h: str) -> bool:
+        try:
+            return self._rns_recall_identity(bytes.fromhex(h)) is not None
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"rns ingress recall {h[:8]}: {e}")
+            return False
+
+    def _rns_warmup_round(self, settle_s, label, excluded):
+        """One round, measured over ALL current members (a member known last
+        round may have aged out). Asks every unknown member not in
+        ``excluded``. A tx_guard block joins ``excluded`` — a deliberate
+        posture. A raised request does not (``bounded_call`` does NOT raise
+        on a timeout — that call hangs; a raise is some other transient
+        error). -> (summary | {}, excluded)."""
         try:
             posture = self.rns_ingress_posture()
             if posture["policy"] == "open":
-                return {}
+                return {}, excluded
             members = sorted(set(posture["identities"])
                              | set(self._peer_gateway_hash_set()))
         except Exception as e:  # noqa: BLE001
             logger.warning(f"rns ingress warm-up skipped: {e}")
-            return {}
-
-        def recallable(h: str) -> bool:
+            return {}, excluded
+        n = len(members)
+        unknown = {h for h in members if not self._rns_recallable(h)}
+        before = n - len(unknown)
+        sent = blocked = failed = 0
+        for h in sorted(unknown - excluded):
             try:
-                return self._rns_recall_identity(bytes.fromhex(h)) is not None
-            except Exception as e:  # noqa: BLE001
-                logger.debug(f"rns ingress recall {h[:8]}: {e}")
-                return False
-
-        missing = [h for h in members if not recallable(h)]
-        requested = blocked = failed = 0
-        for h in missing:
-            try:
-                r = self._rns_request_path(bytes.fromhex(h))
-                requested += r == "sent"
-                blocked += r == "blocked"
+                res = self._rns_request_path(bytes.fromhex(h))
+                sent += res == "sent"
+                if res == "blocked":
+                    blocked += 1
+                    excluded = excluded | {h}
             except Exception as e:  # noqa: BLE001 — counted, never raised
                 failed += 1
                 logger.debug(f"rns ingress warm-up {h[:8]}: {e}")
-        if requested and settle_s > 0:
-            ev = getattr(self, "_stop_event", None)
-            if ev is not None:
-                ev.wait(settle_s)
-        still = [h for h in missing if not recallable(h)] if requested else missing
-        after = len(members) - len(still)
+        ev = getattr(self, "_stop_event", None)
+        stopped = bool(sent and settle_s > 0 and ev is not None and ev.wait(settle_s))
+        if sent and not stopped:
+            unknown = {h for h in unknown if not self._rns_recallable(h)}
         logger.info(
-            "RNS ingress warm-up: %d/%d recallable in-process before, %d/%d "
-            "after %d path request(s)%s%s%s", len(members) - len(missing),
-            len(members), after, len(members), requested,
-            f"; {blocked} blocked by tx_guard" if blocked else "",
+            "RNS ingress warm-up%s: %d/%d recallable in-process before, %s "
+            "after %d path request(s)%s%s%s", label, before, n,
+            "NOT re-measured (stopping)" if stopped else f"{n - len(unknown)}/{n}",
+            sent, f"; {blocked} blocked by tx_guard" if blocked else "",
             f"; {failed} FAILED" if failed else "",
-            f"; still unknown: {','.join(h[:8] for h in still)}" if still else "")
-        return {"members": len(members), "known": len(members) - len(missing),
-                "requested": requested, "blocked": blocked, "failed": failed,
-                "after": after}
+            f"; still unknown: {','.join(sorted(h[:8] for h in unknown))}"
+            if unknown else "")
+        return ({"members": n, "known": before, "requested": sent,
+                 "blocked": blocked, "failed": failed,
+                 "after": None if stopped else n - len(unknown),
+                 "retries": 0, "unknown": unknown}, excluded)
 
     def _rns_ingress_path_nudge(self, source_hex: str) -> None:
         """One path request per member hash per INGRESS_PATH_NUDGE_S, OFF the
