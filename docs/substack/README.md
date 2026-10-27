@@ -117,6 +117,8 @@ Published at: https://wh6gxznursedude.substack.com/
   _Meshtastic, MeshCore and RNS versions are upstream variables; what each bridge promises is the constant. Six rules, sixteen edges (kept / translated / lost / pinned by), and the thirteen findings writing it down turned up. Source of truth: `.claude/foundations/bridge_contract_matrix.md`._
 - **2026-10-25 — [1,436 of 1,436: Proving a Bridge Between Two Meshes That Cannot Hear Each Other](2026-10-25-1436-of-1436.md)** _(~9 min — bridges, lab)_ — final in repo; operator posts to Substack
   _The C21 lab run: a 24 h cross-preset bridge test written as a sentence that could fail, four radios, planted controls, PASS — and the five radio and instrument failures found on the way, none of them in the bridge. What it proves, what it does not (the HAT leg, desk-spacing RF), and what the TUI does and does not show yet._
+- **2026-10-27 — [Twenty-Four Minutes In](2026-10-27-twenty-four-minutes-in.md)** _(white paper, ~10 min — the collaboration)_
+  _Ten months, 5,797 commits, seven named Claude models: a measured timeline of how the repo got here, what the latest competitor and self-audit found (the harness now outweighs the gateway), and eight lessons for developers building with an AI._
 
 ---
 
