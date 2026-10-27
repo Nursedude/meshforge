@@ -69,6 +69,27 @@ def oversize_refused_count() -> int:
     with _oversize_lock:
         return _oversize_refused
 
+
+def refuse_if_oversize(text: str, destination, where: str) -> bool:
+    """True (and counted + WARNING) when ``text`` exceeds what the radio
+    accepts in one packet to ``destination`` (bridge matrix F18). A caller
+    that gets True must not try ANOTHER send path: the session fallback would
+    air it, and its connect() reads /api/v1/fromradio (#17/#75)."""
+    from .base_handler import mesh_onair_limit
+    global _oversize_refused
+    limit = mesh_onair_limit(destination)
+    size = len((text or '').encode('utf-8'))
+    if size <= limit:
+        return False
+    with _oversize_lock:
+        _oversize_refused += 1
+    kind = 'broadcast' if limit == mesh_onair_limit(None) else 'DM'
+    logger.warning(
+        f"{where}: REFUSED {size} B {kind} — over the {limit} B the radio "
+        f"accepts in one packet; it would be dropped. Chunk it "
+        f"(base_handler.chunk_for_mesh) or shorten it.")
+    return True
+
 # Protobuf imports are deferred to avoid hard dependency at module level
 _admin_pb2, _config_pb2, _mesh_pb2, _module_config_pb2, _portnums_pb2, _HAS_PB2 = safe_import(
     'meshtastic.protobuf',
@@ -158,22 +179,11 @@ def send_text_direct_with_id(
     assert_tx_allowed(host, port, kind="http_toradio",
                       detail=f"send_text_direct_with_id text={text[:40]!r}")
 
-    # Byte budget BEFORE the PUT (bridge matrix F18): HTTP 200 only means
+    # Byte limit BEFORE the PUT (bridge matrix F18): HTTP 200 only means
     # meshtasticd took the bytes — the firmware refuses an oversize packet
     # (TOO_LARGE) afterwards, inside the radio, so a 200 would report a send
-    # that never aired. A DM's budget is smaller than a broadcast's (F17).
-    from .base_handler import mesh_onair_limit
-    budget = mesh_onair_limit(destination)
-    size = len(text.encode('utf-8'))
-    if size > budget:
-        global _oversize_refused
-        with _oversize_lock:
-            _oversize_refused += 1
-        kind = 'broadcast' if budget == mesh_onair_limit(None) else 'DM'
-        logger.warning(
-            f"send_text_direct: REFUSED {size} B {kind} — over the {budget} B "
-            f"the radio accepts in one packet; it would be dropped. Chunk it "
-            f"(base_handler.chunk_for_mesh) or shorten it.")
+    # that never aired. A DM's limit is smaller than a broadcast's (F17).
+    if refuse_if_oversize(text, destination, "send_text_direct"):
         return None
 
     if not _pb2_available:
@@ -915,6 +925,10 @@ class MeshtasticProtobufClient(ProtobufAdminMixin):
         Returns:
             True if message was accepted by meshtasticd
         """
+        # Every gateway's FALLBACK sender — it had no byte check, so a refusal
+        # upstream used to air here anyway (F18 review).
+        if refuse_if_oversize(text, destination, "protobuf session send_text"):
+            return False
         if not _pb2_available:
             logger.error("Cannot send text: meshtastic protobuf not available")
             return False

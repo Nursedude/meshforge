@@ -1140,6 +1140,13 @@ class MQTTBridgeHandler(BaseMessageHandler):
         Fallback: Session-based protobuf client (legacy, only if direct
         send fails).
         """
+        # Over the radio's limit: refuse BEFORE either path — a None from the
+        # direct send reads as "meshtasticd down" below and would fall back to
+        # the session client (F18 review).
+        from .meshtastic_protobuf_client import refuse_if_oversize
+        if refuse_if_oversize(message, destination, "MQTT bridge send"):
+            return False
+
         # Convert hex node ID string to int (e.g. "!aabbccdd" -> 0xaabbccdd)
         dest_num = None
         if destination:

@@ -157,3 +157,93 @@ def test_a_broadcast_that_airs_today_is_not_newly_refused():
          patch.object(pc, "_pb2_available", False):
         pc.send_text_direct_with_id("x" * BCAST_LIMIT, destination=None)
     assert pc.oversize_refused_count() == before
+
+
+# --- F18 review: a refusal must not fall through to a path that airs it --- #
+
+def test_session_client_refuses_oversize_too():
+    """The session client is every gateway's fallback; it had no byte check."""
+    import gateway.meshtastic_protobuf_client as pc
+    c = pc.MeshtasticProtobufClient.__new__(pc.MeshtasticProtobufClient)
+    c.send_mesh_packet = MagicMock(side_effect=AssertionError("must not send"))
+    c._connected = True
+    before = pc.oversize_refused_count()
+    assert c.send_text("x" * (DM_LIMIT + 1), destination=0x11223344) is False
+    assert pc.oversize_refused_count() == before + 1
+
+
+def _spies(module):
+    """RECORDING spies at the names ``module`` really calls. Raising spies
+    proved nothing here: both gateway senders wrap each path in
+    ``except Exception`` and return False anyway (vacuous on old code)."""
+    import gateway.meshtastic_protobuf_client as pc
+    direct = MagicMock(return_value=None)
+    direct_bool = MagicMock(return_value=False)
+    session = MagicMock()
+    return direct, direct_bool, session, (
+        patch.object(pc, "send_text_direct_with_id", direct),
+        patch.object(pc, "send_text_direct", direct_bool),
+        patch.object(module, "_get_protobuf_client", session),
+        patch.object(module, "_HAS_PROTOBUF_CLIENT", True),
+    )
+
+
+def test_mesh_bridge_forward_refuses_before_either_path():
+    """The F17b forward: an over-limit text is refused BEFORE the direct send,
+    so the fromradio-reading session fallback never connects."""
+    import gateway.mesh_bridge as mb
+    iface = mb.MQTTMeshInterface.__new__(mb.MQTTMeshInterface)
+    iface._name = "test"
+    iface._config = MagicMock()
+    direct, direct_bool, session, ps = _spies(mb)
+    with ps[0], ps[1], ps[2], ps[3], patch.object(mb, "_HAS_PROTOBUF_CONFIG", True, create=True):
+        assert iface.sendText("x" * (BCAST_LIMIT + 1)) is False
+    direct.assert_not_called(); direct_bool.assert_not_called()
+    session.assert_not_called()
+
+
+def test_mqtt_handler_http_send_refuses_before_either_path():
+    import gateway.mqtt_bridge_handler as mq
+    h = mq.MQTTBridgeHandler.__new__(mq.MQTTBridgeHandler)
+    h.config = MagicMock()
+    h._load_balancer = None
+    direct, direct_bool, session, ps = _spies(mq)
+    with ps[0], ps[1], ps[2], ps[3]:
+        assert h._send_via_http_protobuf("x" * (DM_LIMIT + 1),
+                                         destination="!11223344") is False
+    direct.assert_not_called(); direct_bool.assert_not_called()
+    session.assert_not_called()
+
+
+def test_inbox_labels_a_broadcast_as_a_broadcast():
+    served = _inbox("x" * (BCAST_LIMIT + 1), "!ffffffff")
+    assert served[0][0] == 400
+    assert "broadcast" in served[0][1]["detail"]
+
+
+def test_cli_bare_hex_broadcast_gets_the_broadcast_limit():
+    """Bare-hex 'ffffffff' is parsed as broadcast by the send path — the guard must
+    read it the same way, not as a DM."""
+    from commands import meshtastic as cmd
+    with patch("gateway.meshtastic_protobuf_client.send_text_direct",
+               return_value=True) as sd:
+        res = cmd.send_message("x" * (DM_LIMIT + 5), dest="ffffffff")
+    assert res.success, res.message
+    sd.assert_called_once()
+
+
+def test_messaging_keeps_its_chunk_markers_inside_the_budget():
+    from commands import messaging
+    sent = []
+    fake = MagicMock()
+    fake.send_to_meshtastic.side_effect = \
+        lambda chunk, dest, ch: sent.append(chunk) or MagicMock(success=True)
+    with patch.object(messaging, "cmd_gateway", fake), \
+         patch.object(messaging, "connect_tuned", MagicMock()):
+        messaging.send_message("word " * 200, destination="!11223344",
+                               network="meshtastic")
+    assert len(sent) > 1
+    n = len(sent)
+    for i, chunk in enumerate(sent, 1):
+        assert chunk.startswith(f"[{i}/{n}] ")
+        assert len(chunk.encode("utf-8")) <= DM_BUDGET

@@ -322,6 +322,9 @@ class MQTTMeshInterface:
 
         Fallback: Session-based protobuf client (legacy).
         """
+        from .meshtastic_protobuf_client import refuse_if_oversize  # F18: before EITHER path
+        if refuse_if_oversize(text, destinationId, f"[{self._name}] mesh_bridge sendText"):
+            return False  # never the fromradio-reading session fallback (#17)
         dest_num = None
         if destinationId:
             dest_num = self._node_id_to_num(destinationId)
@@ -1103,9 +1106,7 @@ class MeshtasticPresetBridge:
             #   - the raw numeric `to` field (0xFFFFFFFF, or absent = 0)
             # Getting this wrong sends broadcasts as DMs and skips the
             # broadcast-only downlink-injection path (moc canary, 2026-06-03).
-            # The ONE rule (bridge matrix F15): the numeric `to` wins, the
-            # text ids are a fallback. The old OR read a numeric DM carrying
-            # a stray '^all' toId as a broadcast.
+            # The ONE rule (F15): numeric `to` wins; text ids are a fallback.
             is_broadcast = packet_is_broadcast(packet)
 
             payload = decoded.get('payload', b'')

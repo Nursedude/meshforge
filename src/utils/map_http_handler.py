@@ -850,7 +850,7 @@ class MapRequestHandler(
             if too_long:
                 self._serve_json({
                     "error": "Message too long for one radio packet",
-                    "detail": f"{too_long} ({'DM' if dest_num is not None else 'broadcast'} budget)",
+                    "detail": f"{too_long} ({'broadcast' if budget == mesh_onair_limit(None) else 'DM'} limit)",
                     "max_bytes": budget,
                 }, status=400)
                 return

@@ -429,6 +429,21 @@ HOP_LIMIT_BROADCAST = 3        # Public channel broadcasts
 HOP_LIMIT_EMERGENCY = 7        # Emergency/SAR messages
 
 
+def _parse_dest_num(dest: Optional[str]) -> Optional[int]:
+    """The node number ``send_message`` sends to — hex first, then decimal,
+    else None (= broadcast). ONE parse, shared by the byte-limit check and the
+    send, so both judge the same destination (F18 review)."""
+    if not dest:
+        return None
+    try:
+        return int(dest.lstrip('!'), 16)
+    except ValueError:
+        try:
+            return int(dest)
+        except ValueError:
+            return None
+
+
 def send_message(
     text: str,
     dest: Optional[str] = None,
@@ -462,7 +477,8 @@ def send_message(
     # Byte budget before EITHER send path (bridge matrix F18): when the direct
     # send refuses an oversize text, the CLI fallback below would air it.
     from gateway.base_handler import mesh_onair_limit
-    budget = mesh_onair_limit(dest)
+    dest_num = _parse_dest_num(dest)
+    budget = mesh_onair_limit(dest_num)
     size = len(text.encode('utf-8'))
     if size > budget:
         return CommandResult.fail(
@@ -494,17 +510,6 @@ def send_message(
     # the meshtasticd web client at :9443.
     try:
         from gateway.meshtastic_protobuf_client import send_text_direct
-
-        dest_num = None
-        if dest:
-            try:
-                cleaned = dest.lstrip('!')
-                dest_num = int(cleaned, 16)
-            except ValueError:
-                try:
-                    dest_num = int(dest)
-                except ValueError:
-                    dest_num = None
 
         if send_text_direct(
             text=text,

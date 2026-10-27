@@ -247,7 +247,13 @@ def send_message(
     # 160-character chunker let one multibyte "word" leave as 900 B.
     if network == "meshtastic":
         from gateway.base_handler import chunk_for_mesh, mesh_text_budget
-        chunks = chunk_for_mesh(content, max_bytes=mesh_text_budget(destination))
+        budget = mesh_text_budget(destination)
+        chunks = chunk_for_mesh(content, max_bytes=budget)
+        if len(chunks) > 1:
+            # Keep the "[i/N] " markers a reader on a radio relies on — and
+            # reserve their bytes, so a marked chunk still fits the budget.
+            chunks = chunk_for_mesh(content, max_bytes=budget - len("[99/99] "))
+            chunks = [f"[{i}/{len(chunks)}] {c}" for i, c in enumerate(chunks, 1)]
     else:
         chunks = _chunk_message(content)
 
