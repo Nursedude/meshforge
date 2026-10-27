@@ -1013,7 +1013,8 @@ class MeshtasticBroadcastBridge:
                 "lxmf",
                 "delivery",
             )
-            lxm = LXMF.LXMessage(destination, self._lxmf_source, body, title)
+            lxm = LXMF.LXMessage(destination, self._lxmf_source, body, title,
+                                 desired_method=LXMF.LXMessage.DIRECT)  # F12
 
             # finding-2 (2026-07-23): register a delivery/failed callback on
             # EVERY fan-out (not just the ack_required path) so real LXMF

@@ -87,7 +87,7 @@ class TestDirectedFailure:
         fake_rns, fake_lxmf = _fake_rns()
         # Leg A lands; leg B's LXMF build raises until it dead-letters.
         fake_lxmf.LXMessage.side_effect = (
-            lambda dest, src, msg, title, fields=None:
+            lambda dest, src, msg, title, fields=None, **_kw:
             (_ for _ in ()).throw(RuntimeError("leg B down"))
             if fake_rns.Destination.call_args.args[0] is fake_rns._b
             else MagicMock())

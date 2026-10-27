@@ -26,6 +26,25 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .bridge_health import MessageOrigin
 
+
+#: Meshtastic's broadcast node number on the wire.
+MESHTASTIC_BROADCAST_NUM = 0xFFFFFFFF
+
+
+def packet_is_broadcast(packet: dict) -> bool:
+    """Decide broadcast on the WIRE fact — the ONE rule (bridge matrix F7,
+    2026-10-16; F15, 2026-10-26: lives here so every consumer imports it).
+
+    The meshtastic library reports a broadcast's ``toId`` as ``'^all'``
+    (``meshtastic.BROADCAST_ADDR``), never ``'!ffffffff'``. The numeric
+    ``to`` wins when present; the strings are a fallback for packets that
+    carry only ``toId``.
+    """
+    to_num = packet.get('to')
+    if isinstance(to_num, int):
+        return to_num == MESHTASTIC_BROADCAST_NUM
+    return packet.get('toId') in ('^all', '!ffffffff')
+
 logger = logging.getLogger(__name__)
 
 # Protocol payload size limits (bytes)
@@ -257,19 +276,16 @@ class CanonicalMessage:
 
         # Source/destination addresses
         from_id = packet.get('fromId', '') or f"!{packet.get('from', 0):08x}"
-        to_id = packet.get('toId', '')
-        if not to_id and packet.get('to'):
-            to_raw = packet['to']
-            # Meshtastic broadcast address is 0xFFFFFFFF
-            if to_raw == 0xFFFFFFFF or to_raw == 4294967295:
-                to_id = None
-            else:
-                to_id = f"!{to_raw:08x}"
-
-        # Determine if broadcast
-        is_broadcast = to_id is None or to_id == '!ffffffff'
+        # Broadcast on the wire fact, never the text id (F15): the library's
+        # broadcast toId is '^all', which the old string test read as a DM.
+        is_broadcast = packet_is_broadcast(packet)
+        to_num = packet.get('to')
         if is_broadcast:
             to_id = None
+        elif isinstance(to_num, int) and to_num:
+            to_id = f"!{to_num:08x}"
+        else:
+            to_id = packet.get('toId', '')
 
         # Detect internet origin (MQTT)
         via_internet = packet.get('viaMqtt', False)

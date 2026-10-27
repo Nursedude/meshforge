@@ -548,7 +548,9 @@ class OperatorLine:
                 return False
             destination = RNS.Destination(ident, RNS.Destination.OUT, RNS.Destination.SINGLE,
                                           "lxmf", "delivery")
-            self._router.handle_outbound(LXMF.LXMessage(destination, self._lxmf_source, body, "MeshForge"))
+            self._router.handle_outbound(LXMF.LXMessage(
+                destination, self._lxmf_source, body, "MeshForge",
+                desired_method=LXMF.LXMessage.DIRECT))  # explicit (F12)
             return True
         except Exception as e:
             logger.warning("Operator line: send to %s… failed: %s", dest_hex[:8], e)

@@ -29,6 +29,7 @@ from .base_handler import (
     get_rf_tx_registry, is_bridge_loop, mesh_origin_content_id,
     true_origin_downlink_enabled, true_origin_loop_guard_window_s,
 )
+from .canonical_message import packet_is_broadcast  # the ONE rule (F15)
 from .config import GatewayConfig
 from .node_tracker import UnifiedNode
 from .reconnect import ReconnectStrategy
@@ -47,24 +48,6 @@ if TYPE_CHECKING:
     from .node_tracker import UnifiedNodeTracker
 
 logger = logging.getLogger(__name__)
-
-_BROADCAST_NUM = 0xFFFFFFFF
-
-
-def packet_is_broadcast(packet: dict) -> bool:
-    """Decide broadcast on the WIRE fact (bridge matrix F7, 2026-10-16).
-
-    The meshtastic library reports a broadcast's ``toId`` as ``'^all'``
-    (``meshtastic.BROADCAST_ADDR``, read from the installed lib), never
-    ``'!ffffffff'`` — comparing against the latter labelled every TCP-ingress
-    broadcast a DM and left the cross-box loop-guard registrations inert.
-    The numeric ``to`` wins when present; the strings are a fallback for
-    packets that carry only ``toId``.
-    """
-    to_num = packet.get('to')
-    if isinstance(to_num, int):
-        return to_num == _BROADCAST_NUM
-    return packet.get('toId') in ('^all', '!ffffffff')
 
 
 # pubsub is an external dependency (pypubsub) - keep safe_import
@@ -793,8 +776,8 @@ class MeshtasticHandler(BaseMessageHandler):
         # Store incoming message for UI/history
         try:
             from commands import messaging
-            # Convert broadcast marker to None
-            if to_id == '!ffffffff' or to_id == '^all':
+            # Convert broadcast marker to None — on the one rule (F15)
+            if packet_is_broadcast(packet):
                 to_id = None
             messaging.store_incoming(
                 from_id=from_id,

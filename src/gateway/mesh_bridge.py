@@ -36,6 +36,7 @@ from .base_handler import (
     is_already_bridged, mesh_origin_content_id, mqtt_content_dedup_key, FallbackDropWitness,
     true_origin_downlink_enabled, true_origin_loop_guard_window_s,
 )
+from .canonical_message import packet_is_broadcast  # the ONE rule (F15)
 from .config import GatewayConfig, MeshtasticBridgeConfig, MeshtasticConfig
 from ._handoff_witness import HandoffWitness
 from ._mesh_bridge_legs import (
@@ -1102,11 +1103,10 @@ class MeshtasticPresetBridge:
             #   - the raw numeric `to` field (0xFFFFFFFF, or absent = 0)
             # Getting this wrong sends broadcasts as DMs and skips the
             # broadcast-only downlink-injection path (moc canary, 2026-06-03).
-            to_num = packet.get('to')
-            is_broadcast = (
-                to_id in ('^all', '!ffffffff')
-                or to_num == 0xFFFFFFFF
-            )
+            # The ONE rule (bridge matrix F15): the numeric `to` wins, the
+            # text ids are a fallback. The old OR read a numeric DM carrying
+            # a stray '^all' toId as a broadcast.
+            is_broadcast = packet_is_broadcast(packet)
 
             payload = decoded.get('payload', b'')
             if isinstance(payload, bytes):

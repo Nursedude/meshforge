@@ -188,6 +188,7 @@ class BridgeSendMixin:
                 message,
                 title or "MeshForge Gateway",
                 fields=fields,
+                desired_method=LXMF.LXMessage.DIRECT,   # explicit (F12)
                 target=hash_short,
                 timeout_s=5.0,
                 on_wedge=_on_wedge,
@@ -373,6 +374,7 @@ class BridgeSendMixin:
                 destination, self._lxmf_source, message,
                 payload.get('title') or "MeshForge Gateway",
                 fields=fields,
+                desired_method=LXMF.LXMessage.DIRECT,   # explicit (F12)
                 target=hash_short, timeout_s=5.0, on_wedge=_on_wedge,
             )
 
