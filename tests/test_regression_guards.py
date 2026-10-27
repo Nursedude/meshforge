@@ -291,16 +291,22 @@ class TestFromradioContract:
         )
 
     def test_mesh_bridge_uses_stateless_tx(self):
-        """mesh_bridge.py primary TX path must be send_text_direct."""
-        filepath = os.path.join(SRC_DIR, 'gateway', 'mesh_bridge.py')
-        if not os.path.exists(filepath):
-            pytest.skip("mesh_bridge.py not found")
+        """The mesh bridge's MQTT-leg TX path must CALL send_text_direct.
+
+        MQTTMeshInterface.sendText lives in _mesh_bridge_mqtt.py since the
+        MF025 split; this guard used to read mesh_bridge.py and, after the
+        move, passed on a docstring mention alone. Match a call, not a word.
+        """
+        filepath = os.path.join(SRC_DIR, 'gateway', '_mesh_bridge_mqtt.py')
+        assert os.path.exists(filepath), (
+            "_mesh_bridge_mqtt.py missing — if sendText moved again, point "
+            "this guard at its new home; never let it skip")
 
         with open(filepath, 'r') as f:
             content = f.read()
 
-        assert 'send_text_direct' in content, (
-            "mesh_bridge.py should use send_text_direct() for TX "
+        assert re.search(r'\bsend_text_direct\(', content), (
+            "_mesh_bridge_mqtt.py should call send_text_direct() for TX "
             "(stateless HTTP, no fromradio contention)"
         )
 

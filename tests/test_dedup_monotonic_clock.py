@@ -19,6 +19,7 @@ code: 8 failed, 1 passed — the one that passes is the invariant the fix
 must keep (a repeat inside the window is still a duplicate).
 """
 
+import sys
 import threading
 import time as _real_time
 from datetime import datetime as _real_datetime, timedelta
@@ -76,6 +77,16 @@ def patched_mesh_bridge(clock, monkeypatch, tmp_path):
     monkeypatch.setattr(mb, "get_real_user_home", lambda: tmp_path)
     monkeypatch.setattr(mb, "time", _FakeTimeModule(clock))
     monkeypatch.setattr(mb, "datetime", _fake_datetime(clock))
+    # mesh_bridge is split across sibling modules (MF025) that each import
+    # ``time`` — patch every one, so a future split cannot quietly put its
+    # dedup back on the real clock.
+    import gateway._mesh_bridge_mqtt  # noqa: F401 — ensure it is in sys.modules
+    split = [m for n, m in list(sys.modules.items())
+             if n.startswith("gateway.") and "mesh_bridge" in n
+             and getattr(m, "time", None) is _real_time]
+    assert any(m.__name__ == "gateway._mesh_bridge_mqtt" for m in split)
+    for m in split:
+        monkeypatch.setattr(m, "time", _FakeTimeModule(clock))
     return mb
 
 

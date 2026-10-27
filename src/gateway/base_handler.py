@@ -210,7 +210,7 @@ def mqtt_content_dedup_key(data: dict) -> str:
     packet ``id``.
 
     Both MQTT ingress sites — ``MQTTBridgeHandler._handle_json_message`` and
-    ``mesh_bridge.MQTTMeshInterface._on_mqtt_message`` — guarded dedup with
+    ``_mesh_bridge_mqtt.MQTTMeshInterface._on_message`` — guarded dedup with
     ``if msg_id and self._is_duplicate(msg_id)``, where ``msg_id`` is
     ``str(data.get('id', ''))``. An id-less packet (some meshtasticd builds /
     malformed publishes omit ``id``) therefore skipped dedup ENTIRELY, so the

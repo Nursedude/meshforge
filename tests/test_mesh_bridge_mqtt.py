@@ -169,7 +169,7 @@ class TestBridgedMeshMessage:
 class TestMQTTMeshInterface:
     """Tests for MQTTMeshInterface."""
 
-    @patch('gateway.mesh_bridge._HAS_PAHO_MQTT', False)
+    @patch('gateway._mesh_bridge_mqtt._HAS_PAHO_MQTT', False)
     def test_connect_without_paho(self):
         from gateway.mesh_bridge import MQTTMeshInterface
         from gateway.config import MeshtasticConfig

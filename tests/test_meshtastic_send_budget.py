@@ -191,12 +191,12 @@ def _spies(module):
 def test_mesh_bridge_forward_refuses_before_either_path():
     """The F17b forward: an over-limit text is refused BEFORE the direct send,
     so the fromradio-reading session fallback never connects."""
-    import gateway.mesh_bridge as mb
-    iface = mb.MQTTMeshInterface.__new__(mb.MQTTMeshInterface)
+    import gateway._mesh_bridge_mqtt as mbm  # MQTTMeshInterface's home (MF025 split)
+    iface = mbm.MQTTMeshInterface.__new__(mbm.MQTTMeshInterface)
     iface._name = "test"
     iface._config = MagicMock()
-    direct, direct_bool, session, ps = _spies(mb)
-    with ps[0], ps[1], ps[2], ps[3], patch.object(mb, "_HAS_PROTOBUF_CONFIG", True, create=True):
+    direct, direct_bool, session, ps = _spies(mbm)
+    with ps[0], ps[1], ps[2], ps[3], patch.object(mbm, "_HAS_PROTOBUF_CONFIG", True):
         assert iface.sendText("x" * (BCAST_LIMIT + 1)) is False
     direct.assert_not_called(); direct_bool.assert_not_called()
     session.assert_not_called()
