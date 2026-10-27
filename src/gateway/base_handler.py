@@ -627,8 +627,9 @@ def chunk_for_mesh(message: str,
                    prefix: str = "") -> List[str]:
     """Split text into UTF-8-byte-bounded chunks for Meshtastic TX.
 
-    Meshtastic's on-air text payload is capped (``DATA_PAYLOAD_LEN`` = 237
-    bytes); meshtasticd silently truncates anything larger. Multi-line
+    Meshtastic's on-air text payload is capped (``DATA_PAYLOAD_LEN`` = 233
+    bytes; less on air once headers are counted — see canonical_message);
+    meshtasticd fails to decode a larger toradio payload and DROPS it. Multi-line
     bridge output relayed RNS→Mesh (e.g. the bot's ``leaderboard`` / ``wx``
     replies) used to be cut to one packet by ``_truncate_if_needed``,
     dropping every line past the cap. This chunker splits such content

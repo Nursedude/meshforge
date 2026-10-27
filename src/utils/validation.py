@@ -15,6 +15,8 @@ import re
 import logging
 from typing import Optional
 
+from utils.defaults import MAX_MESHTASTIC_MSG_LENGTH
+
 logger = logging.getLogger(__name__)
 
 
@@ -70,7 +72,8 @@ def validate_node_id(node_id: str) -> bool:
     return bool(re.match(r'^[a-fA-F0-9]+$', hex_part))
 
 
-def validate_message_length(message: str, max_bytes: int = 228) -> Optional[str]:
+def validate_message_length(message: str,
+                            max_bytes: int = MAX_MESHTASTIC_MSG_LENGTH) -> Optional[str]:
     """Validate message doesn't exceed byte limit.
 
     Meshtastic uses UTF-8 encoding, so multi-byte characters count more.

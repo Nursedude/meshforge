@@ -1,9 +1,10 @@
 """
 Tests for gateway.mqtt_bridge_handler.MQTTBridgeHandler.
 
-Focus: self-echo filter for the gateway's own RX rebroadcast (the bridge
-must drop messages it just sent, otherwise R→M loops back to RNS as a
-fresh M→R), the regression guard for Hardening E (deleted dead
+Focus: the echo-loop guard on the MQTT path (bridge-TAGGED text is
+already bridged and is dropped whoever sent it, otherwise R→M loops back
+to RNS as a fresh M→R; untagged text from the gateway's own node DOES
+bridge — there is no sender-based filter, bridge matrix F6), the regression guard for Hardening E (deleted dead
 publish_to_mqtt — see Issue #40), and Hardening B's persistent SQLite
 spill on in-memory queue overflow.
 
@@ -111,9 +112,9 @@ class TestHardeningBSpillOnFull:
 
 
 # ---------------------------------------------------------------------------
-# Self-echo filter — _bridge_text_message must drop the gateway's own TX
-# rebroadcast that meshtasticd republishes via MQTT (otherwise it loops back
-# to RNS as a fresh Mesh→RNS message).
+# Echo-loop guard — _bridge_text_message drops bridge-TAGGED text (the
+# gateway's own TX rebroadcast that meshtasticd republishes via MQTT, and a
+# sibling's injection) whoever sent it; untagged own-node text still bridges.
 # ---------------------------------------------------------------------------
 
 

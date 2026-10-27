@@ -48,7 +48,16 @@ def packet_is_broadcast(packet: dict) -> bool:
 logger = logging.getLogger(__name__)
 
 # Protocol payload size limits (bytes)
-MESHTASTIC_MAX_PAYLOAD = 237
+# Meshtastic DATA_PAYLOAD_LEN = 233: the Data.payload BUFFER bound in the
+# firmware the fleet runs (meshtasticd v2.7.26 protobufs/meshtastic/mesh.proto)
+# and the meshtastic lib — a toradio payload above it fails to decode and is
+# dropped (bridge matrix F8, 2026-10-26: this read a stale 237). It is NOT the
+# on-air text budget: the firmware refuses an encoded packet > 255 B with a
+# 16 B header (Router.cpp), +12 B for a PKI DM, and own packets carry a
+# bitfield — measured max text: 232 B broadcast, 220 B PKI DM, 215 B PKI DM
+# with reply_id. The egress text budget is utils.defaults
+# MAX_MESHTASTIC_MSG_LENGTH (228); its PKI-DM overshoot is matrix F17.
+MESHTASTIC_MAX_PAYLOAD = 233
 MESHCORE_MAX_PAYLOAD = 184
 MESHCORE_MAX_TEXT = 160  # Text message limit (payload minus headers)
 TRUNCATION_INDICATOR = "\u2026"  # Unicode ellipsis
@@ -195,7 +204,8 @@ class CanonicalMessage:
     # Logical content identity (dedup/identity arc) — ONE stable id per logical
     # message, stamped at first ingress (compute_content_id) and carried across
     # every transport leg. '' when not yet minted / no text to mint from.
-    # Measure-only: carried + counted, never used to suppress a copy.
+    # Carried + counted everywhere; SUPPRESSES a copy only inside the gated
+    # intra-box dual-path dedup window (see compute_content_id; bridge matrix F9).
     content_id: str = ""
 
     # Source

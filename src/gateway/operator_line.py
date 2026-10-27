@@ -51,7 +51,7 @@ _LXMF_mod, _HAS_LXMF = safe_import("LXMF")
 
 logger = logging.getLogger(__name__)
 
-#: Same cap as the oracle's reply (== one Meshtastic payload; fits LoRa LXMF).
+#: Same cap as the oracle's reply (== the Meshtastic egress text budget; fits LoRa LXMF).
 from oracle import MAX_REPLY_BYTES  # noqa: E402
 
 _PAGING = ("degraded", "wedge")

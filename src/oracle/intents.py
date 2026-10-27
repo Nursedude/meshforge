@@ -1,7 +1,7 @@
 """Pure intent engine for the mesh oracle (Phase 0).
 
 ``answer(query, snap)`` and ``is_query(text)`` are pure functions: query text +
-a read-only ``NocSnapshot`` in, a ≤237-byte reply string out. No I/O, no clock,
+a read-only ``NocSnapshot`` in, a ≤228-byte reply string out. No I/O, no clock,
 no network, no LLM — fully unit-testable with fixture snapshots.
 
 Calibration discipline (calibrated_claims.md / honest_failure_modes.md): every
@@ -25,10 +25,12 @@ from utils.rf import (
 
 from .snapshot import NocSnapshot, NodeRec
 
-# Reply byte budget. Kept local so the oracle has no gateway import; pinned
-# equal to gateway.canonical_message.MESHTASTIC_MAX_PAYLOAD by a test so the two
-# consumers of "the Meshtastic payload cap" cannot drift (honest_failure_modes #5).
-MAX_REPLY_BYTES = 237
+# Reply byte budget = the Meshtastic egress's single-packet TEXT budget, so a
+# reply is trimmed here at a word boundary instead of cut at the radio with an
+# ERROR (bridge matrix F8, 2026-10-26: this read 237, test-pinned EQUAL to the
+# stale wire constant — the wrong pair). Imported, never re-spelled (hfm #5);
+# pinned by tests/test_meshtastic_payload_budget.py. No gateway import.
+from utils.defaults import MAX_MESHTASTIC_MSG_LENGTH as MAX_REPLY_BYTES
 _ELLIPSIS = "…"
 
 # Default RF params for `link` estimates (fleet LongFast/US + typical node).
@@ -88,7 +90,7 @@ def is_query(text: str) -> bool:
 
 
 def answer(query: str, snap: NocSnapshot) -> str:
-    """Resolve a query against a read-only snapshot → a ≤237-byte reply."""
+    """Resolve a query against a read-only snapshot → a ≤MAX_REPLY_BYTES reply."""
     intent, args = _parse(query)
     if intent == "status":
         body = _status(snap)

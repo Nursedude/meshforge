@@ -5,7 +5,7 @@ Splits X1 messages into transport-sized chunks and reassembles
 them with out-of-order support and deduplication.
 
 Each transport has different payload limits:
-    Meshtastic: 228 bytes (237 total - ~9 header overhead)
+    Meshtastic: 228 bytes (the egress text budget; wire DATA_PAYLOAD_LEN = 233)
     MeshCore:   150 bytes (184 total - ~34 header)
     RNS/LXMF:  500 bytes
     SMS:        160 characters

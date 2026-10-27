@@ -277,11 +277,14 @@ class MeshtasticConfig:
     connection_type: str = ""
     # Serial device path when connection_type="serial". Empty = auto-detect.
     serial_device: str = ""
-    # The gateway's own Meshtastic node ID (e.g., "!ebfa1b11"). When set, inbound
-    # MQTT messages with `sender == gateway_node_id` are dropped to break the
-    # echo loop where meshtasticd republishes the gateway's own outbound TX as
-    # an incoming JSON/protobuf message — which would otherwise re-bridge back
-    # to RNS. Empty disables the filter (no echo dropping).
+    # The gateway's own Meshtastic node ID (e.g., "!ebfa1b11"), operator-supplied.
+    # Read as THIS box's identity by the DM / session legs and the MQTT handler.
+    # It does NOT drop inbound messages whose sender is this node: text typed
+    # in this box's own web UI / CLI must still reach RNS (pinned by
+    # test_mqtt_bridge_handler.py::test_own_sender_no_rns_prefix_passes). The
+    # echo loop is broken by the bridge-tag guard (is_already_bridged), not by
+    # sender (bridge matrix F6, 2026-10-26: this comment promised a filter that
+    # was never implemented). Empty = identity not declared.
     gateway_node_id: str = ""
     # Mesh injection mode for cross-bridge traffic forwarded onto THIS radio:
     #   "toradio"  (default) — HTTP /api/v1/toradio; `from` becomes the local

@@ -1,10 +1,10 @@
 """Tests for the dude-AI Mesh Oracle — Phase 0 (read-only intent engine).
 
 Phase 0 is the deterministic core: pure intent functions over a read-only
-``NocSnapshot``, ≤237-byte calibrated answers, NO mesh I/O and NO LLM. These
+``NocSnapshot``, ≤228-byte calibrated answers, NO mesh I/O and NO LLM. These
 tests pin: each intent's behaviour on fixture state; the honest-failure contract
-(unknown/stale never reads as healthy); the ≤237-byte budget + UTF-8-safe
-truncation; the cap pinned to the gateway's Meshtastic payload limit; the stale
+(unknown/stale never reads as healthy); the ≤228-byte budget + UTF-8-safe
+truncation; the cap pinned to the gateway's Meshtastic egress text budget; the stale
 thresholds matched to /api/status; and THE INVARIANT — the oracle is read-only
 (no transmit / mutate / shell-out anywhere in the package).
 
@@ -285,14 +285,17 @@ def test_truncation_noop_when_within_budget():
 # --------------------------------------------------------------------------- #
 # Constant + threshold pins (text-read, no heavy gateway/collector import)
 # --------------------------------------------------------------------------- #
-def test_max_reply_bytes_pinned_to_canonical_payload_cap():
-    # Single-source the Meshtastic payload cap. Read the constant from source
-    # text rather than importing gateway.canonical_message (its package __init__
-    # pulls RNS/LXMF — too heavy and CI-fragile for a unit test).
+def test_max_reply_bytes_fits_inside_the_wire_limit():
+    # The reply cap is the egress TEXT budget, strictly BELOW the wire limit
+    # (bridge matrix F8, 2026-10-26: this pinned the cap EQUAL to the wire
+    # constant, so 237 == 237 held while a 229-237 byte reply would be cut at
+    # the radio). Equality with the egress budget is pinned in
+    # test_meshtastic_payload_budget.py. Read from source text rather than
+    # importing gateway.canonical_message (keeps this file light).
     text = (_REPO / "src" / "gateway" / "canonical_message.py").read_text(encoding="utf-8")
     m = re.search(r"^MESHTASTIC_MAX_PAYLOAD\s*=\s*(\d+)", text, re.M)
     assert m, "MESHTASTIC_MAX_PAYLOAD not found"
-    assert MAX_REPLY_BYTES == int(m.group(1))
+    assert MAX_REPLY_BYTES < int(m.group(1))
 
 
 def test_stale_thresholds_match_api_status_readers():

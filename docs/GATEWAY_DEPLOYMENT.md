@@ -323,9 +323,11 @@ NomadNet operators.
 Each gateway has a distinct `rns.gateway_name` set in its `gateway.json`
 (`MeshForge Gateway (moc)` vs `MeshForge Gateway (fleet-host-3)`) so the
 two threads index separately in NomadNet's per-source view (Issue #35).
-The `meshtastic.gateway_node_id` self-echo filter is set per-box to its
-HAT's own node ID — `!32962f10` on moc, `!ebfa1b11` on fleet-host-3 —
-so neither gateway re-bridges its own outbound TX as a duplicate.
+`meshtastic.gateway_node_id` is set per-box to its HAT's own node ID —
+`!32962f10` on moc, `!ebfa1b11` on fleet-host-3 — so each gateway knows its
+own identity (DM / session legs). It is NOT an echo filter: neither gateway
+re-bridges its own outbound TX because the bridge-tag loop guard drops any
+`[RNS:…]`-tagged text, whoever sent it.
 
 If a third gateway is ever needed (e.g. hot standby), the recipe is the
 same `scripts/configure_gateway.sh <user>` + `scripts/install_gateway_service.sh <user>`,
@@ -400,11 +402,13 @@ NomadNet (the "echo filter").** When the gateway TXes a `[RNS:xxxx]
 the gateway's MQTT subscriber would see its own outbound TX and
 re-bridge it back to RNS as a fresh "incoming Mesh message." Every
 RNS-originated send would land twice in every NomadNet inbox. The
-filter (`meshtastic.gateway_node_id` in `gateway.json`) drops only
-messages where `sender == own_id` AND text starts with `[RNS:` —
-the unambiguous loopback signature. Plain web-UI / CLI sends from
-the gateway box (no `[RNS:]` prefix) are NOT filtered and DO bridge
-to RNS, so the operator's own sends still reach the fleet's NomadNets.
+guard is the bridge TAG, not the sender: any text that starts with a
+bridge tag (`[RNS:`, `[MC:`, `[Mesh:` …, `is_already_bridged`) is
+already bridged and is dropped — this box's own echo and a sibling
+gateway's injection alike. `meshtastic.gateway_node_id` filters
+nothing. Plain web-UI / CLI sends from the gateway box (no tag) DO
+bridge to RNS, so the operator's own sends still reach the fleet's
+NomadNets.
 
 **Why this is topology, not a workaround.** A single-gateway design
 deliberately collapses the role: the gateway box is *both* a Meshtastic

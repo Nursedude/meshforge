@@ -48,7 +48,7 @@ _MAX_LONG_NAME = 64
 _MAX_SHORT_NAME = 16
 _MAX_HW_MODEL = 48
 _MAX_ROLE = 32
-_MAX_TEXT_LEN = 2048  # LoRa text tops out ~237 bytes; generous ceiling
+_MAX_TEXT_LEN = 2048  # LoRa text tops out at 233 bytes (DATA_PAYLOAD_LEN); generous ceiling
 _MAX_MSG_ID_LEN = 64
 
 
@@ -598,7 +598,7 @@ class MQTTMessageDecoderMixin:
         # Type + size gate: a truthy non-string (attacker dict/list) passed
         # the old check and rode into the messages feed/DB as junk; an
         # unbounded string is a memory/storage vector (payload cap is 64 KB,
-        # real LoRa text ~237 bytes).
+        # real LoRa text <= 233 bytes).
         if not isinstance(text, str) or not text:
             return
         text = text[:_MAX_TEXT_LEN]

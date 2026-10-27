@@ -731,8 +731,10 @@ class MQTTBridgeHandler(BaseMessageHandler):
         # `sender` collapsed every multi-hop source (e.g. the bot, reached
         # over several hops) into whichever node last rebroadcast it, so all
         # of them surfaced as one identity downstream (and then one
-        # [RNS:<gw>] tag after the RNS hop). `sender` is still used below for
-        # the self-echo filter, which legitimately needs the last hop.
+        # [RNS:<gw>] tag after the RNS hop). `sender` is only the attribution
+        # fallback below, when `from` is unusable — there is no sender-based
+        # self-echo filter (bridge matrix F6): the bridge-tag loop guard
+        # (is_already_bridged) is what stops an echo.
         sender = data.get('sender', '')
         from_num = data.get('from', 0)
         # Type-guarded (review 2026-07-01): a non-int/negative `from` from a
