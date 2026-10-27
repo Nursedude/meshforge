@@ -53,7 +53,8 @@ MAX_PAYLOAD_BYTES = 65_536
 MAX_MESHTASTIC_MSG_LENGTH = 228
 # A DM's budget: the firmware adds 12 B for PKC on a DM (fleet radios are not
 # in licensed mode, so PKC is live) — measured max text 220 B, 215 B with
-# reply_id. Bridge matrix F17, 2026-10-26.
+# reply_id. Our senders set no reply_id today, so 215 keeps a deliberate 5 B
+# margin (one budget whatever a future sender adds). Bridge matrix F17, 2026-10-26.
 MAX_MESHTASTIC_DM_MSG_LENGTH = 215
 
 # =============================================================================

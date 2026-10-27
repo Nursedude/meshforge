@@ -125,3 +125,33 @@ def test_queue_egress_dm_chunks_fit_a_pki_dm(bridge):
         if dest is None:
             assert max(len(c.encode("utf-8")) for c in sent) > \
                 MAX_MESHTASTIC_DM_MSG_LENGTH
+
+
+class _Stop(BaseException):
+    """Escapes the handlers' own ``except Exception`` after the spy records."""
+
+
+@pytest.mark.parametrize("modname,clsname", [
+    ("gateway.meshtastic_handler", "MeshtasticHandler"),
+    ("gateway.mqtt_bridge_handler", "MQTTBridgeHandler"),
+])
+@pytest.mark.parametrize("entry", ["send_text", "queue_send"])
+def test_handler_entry_points_pass_the_destination(modname, clsname, entry):
+    """Review F17 #1: reverting ``destination=`` at any of the four handler
+    sites left every other F17 test green. Drive the real method to its
+    truncation call and assert the DM's destination reached it."""
+    import importlib
+    cls = getattr(importlib.import_module(modname), clsname)
+    h = cls.__new__(cls)
+    seen = {}
+
+    def spy(message, max_length=None, *, destination=None):
+        seen["destination"] = destination
+        raise _Stop()
+    h._truncate_if_needed = spy
+    with pytest.raises(_Stop):
+        if entry == "send_text":
+            h.send_text("x" * 300, destination="!11223344")
+        else:
+            h.queue_send({"message": "x" * 300, "destination": "!11223344"})
+    assert seen["destination"] == "!11223344"
