@@ -15,7 +15,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
-from utils.defaults import MAX_MESHTASTIC_MSG_LENGTH
+from utils.defaults import MAX_MESHTASTIC_DM_MSG_LENGTH, MAX_MESHTASTIC_MSG_LENGTH
 
 if TYPE_CHECKING:
     from .bridge_health import BridgeHealthMonitor
@@ -622,6 +622,20 @@ def get_secondary_rf_registry() -> RecentRfTxRegistry:
     return _rf_secondary_registry
 
 
+def mesh_text_budget(destination) -> int:
+    """The single-packet text budget for a Meshtastic send to ``destination``
+    (bridge matrix F17): a broadcast gets the broadcast budget, a DM the
+    smaller PKI-DM budget. Broadcast is decided by the ONE rule
+    (``canonical_message.packet_is_broadcast``); None / '' = broadcast."""
+    from .canonical_message import packet_is_broadcast
+    if destination is None or destination == '':
+        return MAX_MESHTASTIC_MSG_LENGTH
+    pkt = {'to': destination} if isinstance(destination, int) \
+        else {'toId': str(destination)}
+    return (MAX_MESHTASTIC_MSG_LENGTH if packet_is_broadcast(pkt)
+            else MAX_MESHTASTIC_DM_MSG_LENGTH)
+
+
 def chunk_for_mesh(message: str,
                    max_bytes: int = MAX_MESHTASTIC_MSG_LENGTH,
                    prefix: str = "") -> List[str]:
@@ -793,7 +807,8 @@ class BaseMessageHandler(ABC):
                 logger.error(f"Status callback error: {e}")
 
     def _truncate_if_needed(self, message: str,
-                            max_length: int = MAX_MESHTASTIC_MSG_LENGTH) -> str:
+                            max_length: Optional[int] = None, *,
+                            destination=None) -> str:
         """Last-resort byte-limit guard for a SINGLE Meshtastic packet.
 
         Callers that may handle multi-line/long content (e.g. the RNS→Mesh
@@ -801,6 +816,8 @@ class BaseMessageHandler(ABC):
         truncation drops data. If it does fire, that is a bug (a long send
         that bypassed chunking), so it logs at ERROR, not WARNING.
         """
+        if max_length is None:   # a DM's budget is smaller (F17)
+            max_length = mesh_text_budget(destination)
         msg_bytes = message.encode('utf-8')
         if len(msg_bytes) > max_length:
             logger.error(

@@ -29,7 +29,7 @@ from typing import Optional
 from utils.lxmface import seed_string_for_node
 
 from .base_handler import (
-    UNKNOWN_ORIGIN, chunk_for_mesh, dual_path_dedup_enabled,
+    UNKNOWN_ORIGIN, chunk_for_mesh, dual_path_dedup_enabled, mesh_text_budget,
     dual_path_dedup_window_s, get_rf_tx_registry, is_already_bridged,
     mesh_origin_content_id, true_origin_downlink_enabled,
 )
@@ -1204,7 +1204,9 @@ class MessageTransformMixin:
             # dual-radio box re-bridged a peer's relayed tails back onto
             # its primary RF. A short message yields a single chunk ==
             # prefix+body, so the common path is unchanged.
-            chunks = chunk_for_mesh(body, prefix=prefix)
+            # A DM gets the smaller PKI-DM budget (bridge matrix F17).
+            chunks = chunk_for_mesh(body, prefix=prefix,
+                                    max_bytes=mesh_text_budget(destination))
             if destination and reply_route:
                 tag = f" -> {destination} (reply:{reply_route})"
             elif destination:

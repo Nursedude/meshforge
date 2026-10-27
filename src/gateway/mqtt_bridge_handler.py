@@ -1097,7 +1097,7 @@ class MQTTBridgeHandler(BaseMessageHandler):
         Returns:
             True if message sent successfully, False otherwise.
         """
-        message = self._truncate_if_needed(message)
+        message = self._truncate_if_needed(message, destination=destination)
 
         # Try HTTP protobuf first (preferred — no TCP contention, no subprocess)
         if self._send_via_http_protobuf(message, destination, channel,
@@ -1293,8 +1293,9 @@ class MQTTBridgeHandler(BaseMessageHandler):
         Returns:
             True if sent successfully, False otherwise.
         """
-        message = self._truncate_if_needed(payload.get('message', ''))
         destination = payload.get('destination')
+        message = self._truncate_if_needed(payload.get('message', ''),
+                                           destination=destination)
         channel = payload.get('channel', 0)
 
         # Dispatch-time dual-path dedup re-check (gated, broadcast only).

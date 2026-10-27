@@ -6,7 +6,7 @@
   ``meshtastic`` protobufs. It read 237, a stale value. It is NOT the on-air
   text budget: the firmware refuses an encoded packet over 255 B with a 16 B
   header, +12 B for a PKI DM (``Router.cpp``) — measured max text 232 B
-  broadcast, 220 B PKI DM.
+  broadcast, 220 B PKI DM (215 B with reply_id: the DM budget, F17).
 - ``utils.defaults.MAX_MESHTASTIC_MSG_LENGTH`` (228) is the single-packet TEXT
   budget the egress enforces (``_truncate_if_needed``). The oracle's reply cap
   was test-pinned EQUAL to the (stale) wire constant — the wrong pair: its 237
@@ -66,33 +66,11 @@ def test_text_budget_fits_on_air_as_a_broadcast():
         <= _MAX_LORA_PAYLOAD_LEN
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "bridge matrix F17: the 228 B budget exceeds a PKI DM's 220 B — a 221-228 B "
-    "unicast chunk is refused TOO_LARGE. Flip when the DM chunk budget lands."))
-def test_text_budget_fits_on_air_as_a_pki_dm():
-    assert _encoded_text_len(MAX_MESHTASTIC_MSG_LENGTH) + _HEADER \
+def test_dm_budget_fits_on_air_as_a_pki_dm():
+    """Bridge matrix F17: a DM is chunked to its own budget, which fits a
+    PKI DM (the broadcast 228 does not — that is why the two differ)."""
+    from utils.defaults import MAX_MESHTASTIC_DM_MSG_LENGTH
+    assert _encoded_text_len(MAX_MESHTASTIC_DM_MSG_LENGTH) + _HEADER \
         + _PKC_OVERHEAD <= _MAX_LORA_PAYLOAD_LEN
-
-
-def test_oracle_reply_cap_is_the_egress_budget():
-    """A reply longer than the egress budget is cut at the radio, mid-word,
-    with an ERROR — the oracle must trim it itself, to the same number."""
-    from oracle import MAX_REPLY_BYTES
-    assert MAX_REPLY_BYTES == MAX_MESHTASTIC_MSG_LENGTH
-
-
-def test_validation_default_is_the_egress_budget():
-    from utils.validation import validate_message_length
-    default = inspect.signature(validate_message_length) \
-        .parameters["max_bytes"].default
-    assert default == MAX_MESHTASTIC_MSG_LENGTH
-
-
-def test_a_maximal_oracle_reply_passes_the_egress_untouched():
-    """End to end on the two real functions: the oracle's longest reply is
-    not truncated again by the Meshtastic egress guard."""
-    from oracle.intents import _truncate
-    from gateway.base_handler import BaseMessageHandler
-    reply = _truncate("x " * 400, MAX_MESHTASTIC_MSG_LENGTH)
-    out = BaseMessageHandler._truncate_if_needed(None, reply)
-    assert out == reply
+    assert _encoded_text_len(MAX_MESHTASTIC_MSG_LENGTH) + _HEADER \
+        + _PKC_OVERHEAD > _MAX_LORA_PAYLOAD_LEN

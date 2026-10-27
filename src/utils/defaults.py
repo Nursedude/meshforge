@@ -48,8 +48,13 @@ MAX_NODES = 10_000
 # Maximum message payload in bytes
 MAX_PAYLOAD_BYTES = 65_536
 
-# Maximum text message length (Meshtastic limit)
+# Maximum text message length (Meshtastic limit) — the BROADCAST egress text
+# budget (measured on-air max 232 B; see gateway.canonical_message).
 MAX_MESHTASTIC_MSG_LENGTH = 228
+# A DM's budget: the firmware adds 12 B for PKC on a DM (fleet radios are not
+# in licensed mode, so PKC is live) — measured max text 220 B, 215 B with
+# reply_id. Bridge matrix F17, 2026-10-26.
+MAX_MESHTASTIC_DM_MSG_LENGTH = 215
 
 # =============================================================================
 # Timeouts — canonical source is utils.timeouts

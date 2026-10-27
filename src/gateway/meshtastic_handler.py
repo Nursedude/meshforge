@@ -455,7 +455,7 @@ class MeshtasticHandler(BaseMessageHandler):
         Returns:
             True if message sent successfully, False otherwise.
         """
-        message = self._truncate_if_needed(message)
+        message = self._truncate_if_needed(message, destination=destination)
 
         if not self._connected:
             logger.warning("Not connected to Meshtastic")
@@ -520,8 +520,9 @@ class MeshtasticHandler(BaseMessageHandler):
         Returns:
             True if sent successfully, False otherwise.
         """
-        message = self._truncate_if_needed(payload.get('message', ''))
         destination = payload.get('destination')
+        message = self._truncate_if_needed(payload.get('message', ''),
+                                           destination=destination)
         channel = payload.get('channel', 0)
 
         # Dispatch-time dual-path dedup re-check (gated, broadcast only) —
