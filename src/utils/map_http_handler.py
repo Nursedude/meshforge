@@ -840,6 +840,21 @@ class MapRequestHandler(
                     self._serve_json({"error": "destination out of range"}, status=400)
                     return
 
+            # Byte budget before ANY send path, the TCP fallback included
+            # (bridge matrix F18): bytes, not characters, and a DM's budget is
+            # smaller (F17). The radio would drop it while we said "sent".
+            from gateway.base_handler import mesh_onair_limit
+            from utils.validation import validate_message_length
+            budget = mesh_onair_limit(dest_num)
+            too_long = validate_message_length(text, max_bytes=budget)
+            if too_long:
+                self._serve_json({
+                    "error": "Message too long for one radio packet",
+                    "detail": f"{too_long} ({'DM' if dest_num is not None else 'broadcast'} budget)",
+                    "max_bytes": budget,
+                }, status=400)
+                return
+
             # Prefer HTTP protobuf — no TCP contention with web UI
             try:
                 from gateway.meshtastic_protobuf_client import send_text_direct

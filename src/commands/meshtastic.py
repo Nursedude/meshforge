@@ -459,6 +459,17 @@ def send_message(
         - Higher hop_limit helps initial path discovery but creates traffic
         - Lower hop_limit reduces congestion once path is established
     """
+    # Byte budget before EITHER send path (bridge matrix F18): when the direct
+    # send refuses an oversize text, the CLI fallback below would air it.
+    from gateway.base_handler import mesh_onair_limit
+    budget = mesh_onair_limit(dest)
+    size = len(text.encode('utf-8'))
+    if size > budget:
+        return CommandResult.fail(
+            f"Message is {size} bytes; one radio packet carries at most "
+            f"{budget} bytes for a {'DM' if budget < mesh_onair_limit(None) else 'broadcast'}. "
+            f"Shorten it, or send it through messaging (which splits it).")
+
     # Build command args
     args = ["--ch-index", str(channel_index)]
 

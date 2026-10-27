@@ -242,8 +242,14 @@ def send_message(
         else:
             network = "meshtastic"  # Default to Meshtastic for broadcast
 
-    # Chunk message if needed
-    chunks = _chunk_message(content)
+    # Chunk message if needed. Meshtastic by BYTES, to the destination's
+    # single-packet budget (bridge matrix F18; a DM's is smaller, F17) — the
+    # 160-character chunker let one multibyte "word" leave as 900 B.
+    if network == "meshtastic":
+        from gateway.base_handler import chunk_for_mesh, mesh_text_budget
+        chunks = chunk_for_mesh(content, max_bytes=mesh_text_budget(destination))
+    else:
+        chunks = _chunk_message(content)
 
     try:
         # Get bridge instance (if available)

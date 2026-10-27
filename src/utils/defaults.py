@@ -56,6 +56,13 @@ MAX_MESHTASTIC_MSG_LENGTH = 228
 # reply_id. Our senders set no reply_id today, so 215 keeps a deliberate 5 B
 # margin (one budget whatever a future sender adds). Bridge matrix F17, 2026-10-26.
 MAX_MESHTASTIC_DM_MSG_LENGTH = 215
+# What the RADIO accepts — the refusal line, not a chunking target (bridge
+# matrix F18): measured max text of an own-node TEXT packet that fits the
+# firmware's 255 B frame (v2.7.26 Router.cpp; no reply_id — our senders set
+# none). Sends over these are refused before they reach meshtasticd, which
+# would otherwise answer 200 and drop the packet.
+MESHTASTIC_ONAIR_MAX_BROADCAST = 232
+MESHTASTIC_ONAIR_MAX_DM = 220
 
 # =============================================================================
 # Timeouts — canonical source is utils.timeouts

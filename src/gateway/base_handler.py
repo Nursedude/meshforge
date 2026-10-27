@@ -15,7 +15,8 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
-from utils.defaults import MAX_MESHTASTIC_DM_MSG_LENGTH, MAX_MESHTASTIC_MSG_LENGTH
+from utils.defaults import (MAX_MESHTASTIC_DM_MSG_LENGTH, MAX_MESHTASTIC_MSG_LENGTH,
+                            MESHTASTIC_ONAIR_MAX_BROADCAST, MESHTASTIC_ONAIR_MAX_DM)
 
 if TYPE_CHECKING:
     from .bridge_health import BridgeHealthMonitor
@@ -627,13 +628,25 @@ def mesh_text_budget(destination) -> int:
     (bridge matrix F17): a broadcast gets the broadcast budget, a DM the
     smaller PKI-DM budget. Broadcast is decided by the ONE rule
     (``canonical_message.packet_is_broadcast``); None / '' = broadcast."""
+    return (MAX_MESHTASTIC_MSG_LENGTH if _is_broadcast_dest(destination)
+            else MAX_MESHTASTIC_DM_MSG_LENGTH)
+
+
+def _is_broadcast_dest(destination) -> bool:
     from .canonical_message import packet_is_broadcast
     if destination is None or destination == '':
-        return MAX_MESHTASTIC_MSG_LENGTH
+        return True
     pkt = {'to': destination} if isinstance(destination, int) \
         else {'toId': str(destination)}
-    return (MAX_MESHTASTIC_MSG_LENGTH if packet_is_broadcast(pkt)
-            else MAX_MESHTASTIC_DM_MSG_LENGTH)
+    return packet_is_broadcast(pkt)
+
+
+def mesh_onair_limit(destination) -> int:
+    """The most text bytes the RADIO accepts in one packet to ``destination``
+    — the refusal line (bridge matrix F18), not a chunking target (use
+    ``mesh_text_budget`` to chunk)."""
+    return (MESHTASTIC_ONAIR_MAX_BROADCAST if _is_broadcast_dest(destination)
+            else MESHTASTIC_ONAIR_MAX_DM)
 
 
 def chunk_for_mesh(message: str,
