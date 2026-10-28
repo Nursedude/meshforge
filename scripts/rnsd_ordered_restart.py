@@ -89,11 +89,11 @@ def plan(out: Callable[[str], None] = print) -> int:
     inactive = []
     for unit, user in units:
         label = f"{unit} ({ro._scope(user)})"
-        active = ro._client_active(unit, user)
-        if active is None:
+        disposition = ro.client_disposition(unit, user)  # the hold's own decision
+        if disposition == "unobservable":
             out(f"  UNKNOWN {label}: state unobservable — would NOT be stopped")
             rc = max(rc, 2)
-        elif active:
+        elif disposition == "stop":
             out(f"  would stop {label}")
         else:
             inactive.append(label)

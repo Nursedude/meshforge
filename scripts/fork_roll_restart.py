@@ -53,7 +53,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from utils.observation import Failed, Observation, Seen, Unobservable  # noqa: E402
 from utils.rnsd_restart_order import (SUBSTRATE_PROBE, probe_substrate,  # noqa: E402
-                                      stop_deadline_s)
+                                      show_unit, stop_deadline_s)
 from utils.service_check import (_systemctl_query_argv, is_system_unit_active,  # noqa: E402
                                  is_user_unit_active, restart_service)
 
@@ -124,14 +124,9 @@ def _main_pid(unit: str, user: bool) -> str:
 
 
 def _show(unit: str, user: bool) -> dict:
-    """ActiveState / SubState / MainPID / NRestarts, {} when unobservable."""
-    try:
-        r = subprocess.run(_systemctl_query_argv(
-            ["show", unit, "-p", "ActiveState", "-p", "SubState", "-p", "MainPID",
-             "-p", "NRestarts"], user=user), capture_output=True, text=True, timeout=10)
-        return dict(ln.split("=", 1) for ln in r.stdout.splitlines() if "=" in ln)
-    except (subprocess.SubprocessError, OSError):
-        return {}
+    """ActiveState / SubState / MainPID / NRestarts, {} when unobservable —
+    the one definition lives in utils.rnsd_restart_order (residue (4))."""
+    return show_unit(unit, user)
 
 
 def stayed_up(after: dict, settled: dict) -> Tuple[Optional[bool], str]:

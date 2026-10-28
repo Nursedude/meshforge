@@ -42,7 +42,7 @@ class Box:
 
     def __init__(self):
         self.started = True
-        self.release = ro.ReleaseResult(rnsd_owns=True,
+        self.release = ro.ReleaseResult(rnsd_owns=True, rpc_ready=True,
                                         started=["meshforge-gateway (system)",
                                                  "nomadnet (user)"])
         self.hold = ro.ClientHold(stopped=[GW, NN], client_set="measured + floor",
@@ -238,6 +238,15 @@ class TestDryRun:
         assert "would stop meshforge-gateway (system)" in text
         assert "nomadnet (user): inactive" in text
 
+    def test_dry_run_and_hold_share_one_decision(self):
+        # residue (5): plan() used to re-implement the tri-state; a changed
+        # disposition must move the dry run AND the hold together.
+        with patch.object(ro, "client_disposition", lambda u, user: "unobservable"):
+            rc, text = self._plan()
+            hold = ro.hold_rns_clients(units=[GW])
+        assert rc == 2 and "would stop" not in text
+        assert hold.unobservable == [GW] and not hold.stopped
+
     def test_a_squatter_now_is_1(self):
         rc, text = self._plan(owns=False, owners=((555, "nomadnet"),))
         assert rc == 1
@@ -282,7 +291,8 @@ def test_rnsd_stop_waits_the_units_own_timeout():
                       lambda unit, **k: calls.append((unit, k)) or (True, "ok")), \
          patch.object(ro, "start_service", return_value=(True, "ok")), \
          patch.object(ro, "release_rns_clients",
-                      return_value=ro.ReleaseResult(rnsd_owns=True)):
+                      return_value=ro.ReleaseResult(rnsd_owns=True)), \
+         patch.object(ro, "show_unit", return_value={}):  # never the host's rnsd
         ro.ordered_restart_rnsd()
     assert calls == [("rnsd", {"timeout": 123})]
 

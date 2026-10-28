@@ -139,6 +139,19 @@ def stop_deadline_s(unit: str, user: bool) -> int:
     return int(min(t + STOP_TIMEOUT_MARGIN_S, STOP_TIMEOUT_CAP_S))
 
 
+def show_unit(unit: str, user: bool = False) -> Dict[str, str]:
+    """ActiveState / SubState / MainPID / NRestarts (read-only ``systemctl
+    show``), ``{}`` when unobservable. ONE definition: the ordered restart and
+    ``scripts/fork_roll_restart.py`` / ``rnsd_ordered_restart.py`` read it."""
+    try:
+        r = subprocess.run(_systemctl_query_argv(
+            ["show", unit, "-p", "ActiveState", "-p", "SubState", "-p", "MainPID",
+             "-p", "NRestarts"], user=user), capture_output=True, text=True, timeout=10)
+        return dict(ln.split("=", 1) for ln in r.stdout.splitlines() if "=" in ln)
+    except (subprocess.SubprocessError, OSError):
+        return {}
+
+
 def _client_active(unit: str, user: bool) -> Optional[bool]:
     """Tri-state state of one client unit; None = unobservable (never skip)."""
     try:
@@ -146,6 +159,16 @@ def _client_active(unit: str, user: bool) -> Optional[bool]:
     except Exception as e:
         logger.debug("client state check %s failed: %s", unit, e)
         return None
+
+
+def client_disposition(unit: str, user: bool) -> str:
+    """The ONE per-unit hold decision (residue (5)): ``stop`` (active),
+    ``skip`` (inactive) or ``unobservable`` (never stopped, never skipped as
+    if inactive — named to the operator). The hold and the dry run both ask it."""
+    active = _client_active(unit, user)
+    if active is None:
+        return "unobservable"
+    return "stop" if active else "skip"
 
 
 @dataclass
@@ -528,15 +551,33 @@ class ReleaseResult:
     left_stopped: List[str] = field(default_factory=list)
     owners: List[Tuple[int, str]] = field(default_factory=list)
     not_stopped: List[str] = field(default_factory=list)  # F2: hold.stop_failed
+    #: why rnsd itself did not cleanly restart ("" = it did, MEASURED by
+    #: judge_rnsd_restart). Ownership alone cannot say: the OLD rnsd owns too.
+    rnsd_problem: str = ""
+    #: rnsd's RPC listener ``@rns/<name>/rpc`` up (None = unobservable, or
+    #: never asked because ownership failed first). Residue (8).
+    rpc_ready: Optional[bool] = None
 
     @property
     def ok(self) -> bool:
         # F-A (second read, 2026-09-29): a client that could NOT be stopped is
         # in the F1 shape (job lands later, never restarted) — never "Fixed".
-        return (self.rnsd_owns is True and not self.start_failed
-                and not self.not_stopped)
+        return (self.rnsd_owns is True and self.rpc_ready is True
+                and not self.start_failed and not self.not_stopped
+                and not self.rnsd_problem)
 
     def summary(self) -> str:
+        lead = f"{self.rnsd_problem} " if self.rnsd_problem else ""
+        return lead + self._ownership_summary()
+
+    def _ownership_summary(self) -> str:
+        if self.rnsd_owns is True and self.rpc_ready is not True:
+            why = ("its RPC listener could not be observed (/proc/net/unix)"
+                   if self.rpc_ready is None else
+                   "its RPC listener never came up (still bringing up interfaces?)")
+            held = ", ".join(self.left_stopped) or "none"
+            return (f"rnsd owns the shared instance but {why} — left STOPPED so "
+                    f"they do not die on a refused RPC: {held}.")
         if self.rnsd_owns is True:
             line = "rnsd owns the shared instance."
             if self.started:
@@ -596,6 +637,36 @@ def rnsd_owns_listener(name: Optional[str] = None) -> Optional[bool]:
         return False
     foreign, inverted, vanished = _classify_listener_owners(owners, "/proc")
     return not (foreign or inverted or vanished)
+
+
+_SO_ACCEPTCON = 0x10000  # /proc/net/unix Flags bit: a LISTENING socket
+
+
+def rpc_listener_up(name: Optional[str] = None,
+                    proc_net_unix: str = "/proc/net/unix") -> Optional[bool]:
+    """Is rnsd's RPC listener ``@rns/<name>/rpc`` listening? None = unreadable.
+
+    Residue (8), 2026-10-27: RNS binds ``@rns/<name>`` first, brings up every
+    interface (an RNode serial open takes 2-5 s), and only THEN creates the
+    RPC listener — ownership of the data socket is not readiness. Read from
+    /proc/net/unix, not ss: ss truncates a spaced instance name at the first
+    space, so both sockets of "volcano ai rns" display as ``@rns/volcano``."""
+    target = f"@rns/{name or instance_name()}/rpc"
+    try:
+        with open(proc_net_unix, encoding="utf-8", errors="replace") as f:
+            next(f, None)  # header
+            for line in f:
+                cols = line.rstrip("\n").split(None, 7)
+                if len(cols) == 8 and cols[7] == target:
+                    try:
+                        if int(cols[3], 16) & _SO_ACCEPTCON:
+                            return True
+                    except ValueError:
+                        continue
+    except OSError as e:
+        logger.debug("RPC listener check: %s unreadable: %s", proc_net_unix, e)
+        return None
+    return False
 
 
 def terminate_pid(pid: int, wait_s: float = 3.0) -> bool:
@@ -664,14 +735,13 @@ def hold_rns_clients(units: Optional[Sequence[Tuple[str, bool]]] = None) -> Clie
         units, hold = plan_rns_client_hold()
     for unit, user in units:
         # BOTH scopes tri-state (review S2): a squatter-in-waiting is never
-        # skipped on a bool; None = unobservable, recorded.
-        active = _client_active(unit, user)
-        if active is None:
-            # unobservable ≠ inactive: not stopped (we cannot reach it), but
-            # recorded so the operator is told it may squat the socket.
+        # skipped on a bool; unobservable ≠ inactive — not stopped (we cannot
+        # reach it), but recorded so the operator is told it may squat.
+        disposition = client_disposition(unit, user)
+        if disposition == "unobservable":
             hold.unobservable.append((unit, user))
             continue
-        if not active:
+        if disposition == "skip":
             continue
         deadline = stop_deadline_s(unit, user)
         ok, msg = stop_service(unit, user=user, timeout=deadline)
@@ -701,16 +771,22 @@ def release_rns_clients(
     If it never does, leave them stopped and say which."""
     name = name or instance_name()
     wait = _wait or threading.Event().wait
-    owns = rnsd_owns_listener(name)
+
+    def ready() -> Tuple[Optional[bool], Optional[bool]]:
+        # ownership first (#69); the RPC listener is created LAST (residue 8)
+        o = rnsd_owns_listener(name)
+        return o, (rpc_listener_up(name) if o is True else None)
+
+    owns, rpc = ready()
     for _ in range(max(0, int(wait_s / poll_s))):
-        if owns is True:
+        if owns is True and rpc is True:
             break
         wait(poll_s)
-        owns = rnsd_owns_listener(name)
+        owns, rpc = ready()
 
-    result = ReleaseResult(rnsd_owns=owns)
+    result = ReleaseResult(rnsd_owns=owns, rpc_ready=rpc)
     result.not_stopped = [f"{u} ({_scope(user)}): {m}" for u, user, m in hold.stop_failed]
-    if owns is not True:
+    if owns is not True or rpc is not True:
         result.left_stopped = hold.names()
         result.owners = listener_owners(name) or []
         logger.warning("rnsd restart: %s", result.summary())
@@ -724,6 +800,30 @@ def release_rns_clients(
     return result
 
 
+def judge_rnsd_restart(before: Dict[str, str], after_start: Dict[str, str],
+                       after_wait: Dict[str, str]) -> str:
+    """"" when rnsd measurably restarted and stayed on one process through the
+    ownership wait; otherwise why not. Pure — the reads are the caller's.
+
+    after_start vs after_wait (not the pre-restart NRestarts): whether an
+    explicit start resets the counter does not matter for a window that
+    begins after that start (residue (2), 2026-10-27)."""
+    pid0, pid1, pid2 = (d.get("MainPID", "") for d in (before, after_start, after_wait))
+    if "" in (pid0, pid1, pid2):
+        return (f"rnsd restart UNVERIFIED: MainPID unobservable "
+                f"({pid0 or '?'} -> {pid1 or '?'} -> {pid2 or '?'}).")
+    if pid1 == "0" or pid2 == "0":
+        return (f"rnsd is not running after the restart "
+                f"({after_wait.get('ActiveState', '?')}/{after_wait.get('SubState', '?')}).")
+    if pid0 != "0" and pid1 == pid0:
+        return f"rnsd did not restart: MainPID unchanged ({pid0})."
+    n1, n2 = after_start.get("NRestarts", ""), after_wait.get("NRestarts", "")
+    if pid2 != pid1 or n1 != n2:
+        return (f"rnsd crashed during the ownership wait and systemd restarted it "
+                f"(MainPID {pid1} -> {pid2}, NRestarts {n1 or '?'} -> {n2 or '?'}).")
+    return ""
+
+
 def ordered_restart_rnsd(
     wait_s: float = DEFAULT_OWNERSHIP_WAIT_S,
     while_stopped: Optional[Callable[[], None]] = None,
@@ -732,6 +832,7 @@ def ordered_restart_rnsd(
 
     Returns ``(rnsd_started, release_result, hold)``.
     """
+    before = show_unit('rnsd')
     hold = hold_rns_clients()
     # The unit's own stop timeout, as for the clients (F1): a 30 s client wait
     # under a longer TimeoutStopSec races start_service against a queued stop.
@@ -743,5 +844,11 @@ def ordered_restart_rnsd(
     started, msg = start_service('rnsd')
     if not started:
         logger.warning("rnsd start failed: %s", msg)
+    after_start = show_unit('rnsd')
     release = release_rns_clients(hold, wait_s=wait_s)
+    # residue (1)+(2): `systemctl start` on a still-active unit is a no-op
+    # success, so a failed stop read as a repair — measure the process.
+    release.rnsd_problem = judge_rnsd_restart(before, after_start, show_unit('rnsd'))
+    if release.rnsd_problem:
+        logger.warning("rnsd restart: %s", release.rnsd_problem)
     return started, release, hold
