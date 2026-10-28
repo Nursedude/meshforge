@@ -192,6 +192,7 @@ never applied whole — each item lands on its own, re-tested here.
   public: For every message, MeshForge will say which network legs it crossed and whether each one delivered, failed, or cannot be seen.
   status: planned
 - **BIC-4** [MF][fork] S+F — interop vs stock RNS 1.5.7, both directions, real hardware → merge-forward or stay-pinned decision record
+  Peer (10-28): stock rns 1.5.7 venv on meshforge-lab; TCP/LXMF only, RF needs an RNode.
   public: Prove MeshForge's pinned Reticulum talks to stock Reticulum in both directions on real radios.
   status: planned
 - **BIC-6** [MF] S+F — best-available-route: the router uses measured leg health so a flaky RF leg cannot own paths (1.1, not a 1.0 gate)
@@ -310,6 +311,7 @@ never applied whole — each item lands on its own, re-tested here.
 - **MOB-1** [MF] S — phone pass on `/fleet` + the map (`/inbox` iPhone-verified 10-21)
 - **ALERT-1** [MF] S — Apprise as an optional alert sink beside ntfy (`safe_import`, never required)
 - **CONTRIB-1** [MF] S — CONTRIBUTING.md + good-first-issue labels (issue templates exist); pairs with gate 9 + CONNECT-1
+- **MESHSAT-1** [MF] F — PARKED 10-28: MeshSat v0.3 as an out-of-band leg. Hub seats, no modem = no new leg, adapter = upkeep. Reopen: modem AND MeshSat 1.0.
 - **LAND-1** [MF] S — monthly landscape check: peer repos' commits/releases/top issues + PyPI rns, diffed month to month; settle footprint before build
 
 ## Rules that shape the roadmap
