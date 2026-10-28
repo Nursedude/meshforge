@@ -402,6 +402,27 @@ _OPERATOR_STORE_MODULES = (
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _no_space_weather_network():
+    """No test may reach NOAA (tests/test_no_network_space_weather.py).
+
+    A real fetch started by a status-bar worker thread outlives its test; on
+    CI it segfaulted mid-SSL-handshake while a later test ran (exit 139, no
+    pytest summary): 7d6b46c7 and f9b5e0eb. A per-file patch of
+    ``status_bar.SpaceWeatherAPI`` missed ``src.launcher_tui.status_bar`` (a
+    second module object), so the stub sits below every alias. URLError is
+    what urlopen raises with no network — every call site handles it.
+    """
+    import urllib.error
+    from utils import space_weather
+
+    def _refuse(*_a, **_k):
+        raise urllib.error.URLError("network disabled in tests")
+
+    with patch.object(space_weather, "_urlopen", _refuse):
+        yield
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _isolate_operator_data_stores(tmp_path_factory):
     """Keep the suite out of the operator's message store, queue, correlation
     DB and LXMF ratchets.

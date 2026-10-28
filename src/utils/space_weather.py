@@ -153,6 +153,13 @@ def parse_planetary_a(lines) -> Optional[int]:
     return None
 
 
+def _urlopen(req: urllib.request.Request, timeout: float) -> Any:
+    """This module's ONE network seam. tests/conftest.py replaces it for the
+    whole session: a status-bar worker thread that outlived its test was
+    mid-SSL-handshake to NOAA when CI segfaulted (exit 139), twice."""
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 class SpaceWeatherAPI:
     """
     NOAA SWPC API client for space weather data.
@@ -202,7 +209,7 @@ class SpaceWeatherAPI:
             req.add_header('User-Agent', 'MeshForge/1.0 (Space Weather Monitor)')
             req.add_header('Accept', 'application/json')
 
-            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+            with _urlopen(req, timeout=self.timeout) as response:
                 data = json.loads(response.read().decode('utf-8'))
 
             # Cache result
@@ -332,7 +339,7 @@ class SpaceWeatherAPI:
             req = urllib.request.Request(url)
             req.add_header('User-Agent', 'MeshForge/1.0 (Space Weather Monitor)')
 
-            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+            with _urlopen(req, timeout=self.timeout) as response:
                 text = response.read().decode('utf-8')
 
             # Parse text file - look for lines with date and Ap value
@@ -364,7 +371,7 @@ class SpaceWeatherAPI:
         try:
             req = urllib.request.Request(url)
             req.add_header('User-Agent', 'MeshForge/1.0 (Space Weather Monitor)')
-            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+            with _urlopen(req, timeout=self.timeout) as response:
                 text = response.read().decode('utf-8')
         except (urllib.error.URLError, OSError, ValueError) as e:
             logger.warning(f"[SWPC] could not fetch daily solar indices: {e}")
