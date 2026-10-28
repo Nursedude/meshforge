@@ -43,12 +43,15 @@ class Box:
     def __init__(self):
         self.started = True
         self.release = ro.ReleaseResult(rnsd_owns=True, rpc_ready=True,
+                                        restart=ro.judge_rnsd_restart(
+                                            _state(100), _state(200), _state(200)),
                                         started=["meshforge-gateway (system)",
                                                  "nomadnet (user)"])
         self.hold = ro.ClientHold(stopped=[GW, NN], client_set="measured + floor",
                                   measured=True)
-        # successive _show() answers per unit: before, after, settled
-        self.shows = {"rnsd": [_state(100), _state(200), _state(200)],
+        # successive _show() answers per unit: after, settled (R5: the CLI
+        # no longer reads its own "before" — the library judged the restart)
+        self.shows = {"rnsd": [_state(200), _state(200)],
                       "meshforge-gateway": [_state(300), _state(300)],
                       "nomadnet": [_state(400), _state(400)]}
         self.final_owns = True
@@ -82,8 +85,7 @@ class TestApply:
         # review finding 4: rpc_ready None / an UNVERIFIED rnsd read as rc 1
         for rel in (ro.ReleaseResult(rnsd_owns=True, rpc_ready=None),
                     ro.ReleaseResult(rnsd_owns=True, rpc_ready=True,
-                                     rnsd_restart="unverified",
-                                     rnsd_problem="rnsd restart UNVERIFIED: x.")):
+                                     restart=ro.judge_rnsd_restart({}, {}, {}))):
             box = Box()
             box.release = rel
             rc, text = _apply(box)
@@ -98,7 +100,8 @@ class TestApply:
     def test_the_whole_order_held_is_exit_0(self):
         rc, text = _apply(Box())
         assert rc == 0, text
-        assert "rnsd 100 -> 200" in text
+        assert "MainPID 100 -> 200" in text
+        assert text.count("MainPID") == 1, text   # R5: judged once, printed once
         assert "RESULT: OK" in text
 
     def test_needs_root_and_touches_nothing_without_it(self):
@@ -135,18 +138,26 @@ class TestApply:
         rc, _ = _apply(box)
         assert rc == 1
 
-    def test_rnsd_mainpid_unchanged_is_1(self):
+    def _judged(self, before, after_start, after_wait, **k):
         box = Box()
-        box.shows["rnsd"] = [_state(100)]
+        box.release = ro.ReleaseResult(
+            rnsd_owns=True, rpc_ready=True,
+            restart=ro.judge_rnsd_restart(before, after_start, after_wait), **k)
+        return box
+
+    def test_rnsd_mainpid_unchanged_is_1(self):
+        box = self._judged(_state(100), _state(100), _state(100),
+                           left_stopped=["nomadnet (user)"])
+        box.release.started = []
         rc, text = _apply(box)
         assert rc == 1
         assert "unchanged" in text
 
     def test_rnsd_mainpid_unobservable_is_2(self):
-        box = Box()
-        box.shows["rnsd"] = [{}, _state(200), _state(200)]
-        rc, _ = _apply(box)
+        box = self._judged({}, _state(200), _state(200))
+        rc, text = _apply(box)
         assert rc == 2
+        assert "FAIL" not in text   # R5: no second, conflicting judgement
 
     def test_ownership_is_re_checked_after_the_clients_are_back(self):
         """#69: a guard that checks only before the clients start verifies at
@@ -172,7 +183,7 @@ class TestApply:
 
     def test_rnsd_dying_after_start_is_1(self):
         box = Box()
-        box.shows["rnsd"] = [_state(100), _state(200),
+        box.shows["rnsd"] = [_state(200),   # after the restart, then settled:
                              _state(0, active="failed", sub="failed")]
         rc, _ = _apply(box)
         assert rc == 1
@@ -209,16 +220,17 @@ class TestApply:
 
     def test_rnsd_down_before_is_a_state_not_a_blind_spot(self):
         """Review 2: MainPID 0 = rnsd was not running (the repair case)."""
-        box = Box()
-        box.shows["rnsd"] = [_state(0, active="failed", sub="failed"),
-                             _state(200), _state(200)]
+        box = self._judged(_state(0, active="failed", sub="failed"),
+                           _state(200), _state(200),
+                           started=["meshforge-gateway (system)", "nomadnet (user)"])
         rc, text = _apply(box)
         assert rc == 0, text
-        assert "was not running" in text
+        assert "MainPID 0 -> 200" in text
 
     def test_rnsd_down_after_is_1(self):
-        box = Box()
-        box.shows["rnsd"] = [_state(100), _state(0, active="failed", sub="failed")]
+        dead = _state(0, active="failed", sub="failed")
+        box = self._judged(_state(100), dead, dead)
+        box.release.started = []
         rc, _ = _apply(box)
         assert rc == 1
 
@@ -308,10 +320,12 @@ def test_rnsd_stop_waits_the_units_own_timeout():
                       lambda unit, **k: calls.append((unit, k)) or (True, "ok")), \
          patch.object(ro, "start_service", return_value=(True, "ok")), \
          patch.object(ro, "release_rns_clients",
-                      return_value=ro.ReleaseResult(rnsd_owns=True)), \
-         patch.object(ro, "show_unit", return_value={}):  # never the host's rnsd
+                      return_value=ro.ReleaseResult(rnsd_owns=True)) as release, \
+         patch.object(ro, "show_unit", return_value={"MainPID": "7"}):  # never the host's rnsd
         ro.ordered_restart_rnsd()
     assert calls == [("rnsd", {"timeout": 123})]
+    # F2: the baseline taken BEFORE the stop rides into release, which judges
+    assert release.call_args.kwargs["rnsd_before"] == {"MainPID": "7"}
 
 
 def test_main_defaults_to_the_dry_run():

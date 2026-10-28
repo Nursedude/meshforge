@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import Dict
 
 from utils.paths import get_real_user_home, ReticulumPaths
 from utils.service_check import (
@@ -20,7 +21,7 @@ from utils.service_check import (
 from utils.config_drift import detect_rnsd_config_drift
 from utils.rnsd_restart_order import (
     ClientHold, hold_rns_clients, instance_name, listener_owners,
-    ordered_restart_rnsd, release_rns_clients, terminate_pid,
+    ordered_restart_rnsd, release_rns_clients, show_unit, terminate_pid,
 )
 from ._rns_interface_mgr import find_blocking_interfaces, disable_interfaces_in_config
 
@@ -34,15 +35,19 @@ def restart_rnsd() -> bool:
     Returns True only if rnsd started, owns the shared instance, and every
     client it stopped came back.
     """
-    return restart_rnsd_reported()[0]
+    return restart_rnsd_reported()[0] is True
 
 
 def restart_rnsd_reported():
-    """:func:`restart_rnsd` plus a one-paragraph summary for a dialog."""
+    """:func:`restart_rnsd` plus a one-paragraph summary for a dialog.
+
+    The first item is the TRI-STATE verdict (R2, 2026-10-28): True repaired,
+    False a proven failure, None unobservable — the CLI's rc 2, which a bool
+    rendered as "Restart Failed"."""
     started, release, _hold = ordered_restart_rnsd()
     if not started:
         return False, "rnsd did not start. " + release.summary()
-    return release.ok, release.summary()
+    return release.verdict, release.summary()
 
 
 def _report_held(hold: ClientHold) -> None:
@@ -56,9 +61,11 @@ def _report_held(hold: ClientHold) -> None:
         print("  Start them from Service Control once rnsd is healthy.")
 
 
-def _release_and_report(hold: ClientHold, name: str) -> bool:
-    """Start the held clients only once rnsd owns ``@rns/<name>``."""
-    release = release_rns_clients(hold, name)
+def _release_and_report(hold: ClientHold, name: str,
+                        rnsd_before: Dict[str, str]) -> bool:
+    """Start the held clients only once rnsd owns ``@rns/<name>`` — and only
+    if rnsd measurably restarted against ``rnsd_before`` (F3)."""
+    release = release_rns_clients(hold, name, rnsd_before=rnsd_before)
     print(f"  {release.summary()}")
     return release.ok
 
@@ -342,6 +349,7 @@ def repair_rns_shared_instance(handler) -> bool:
         print(line)
 
     print("  Stopping rnsd...")
+    rnsd_before = show_unit('rnsd')   # F3: the release judges the restart against it
     success, msg = stop_service('rnsd')
     if not success:
         print(f"  Warning stopping rnsd: {msg}")
@@ -467,7 +475,7 @@ def repair_rns_shared_instance(handler) -> bool:
         info = get_rns_shared_instance_info()
         print(f"  Shared instance answers: {info['detail']}")
         # "Answers" is not "rnsd owns it" — a squatter answers too.
-        if not _release_and_report(hold, name):
+        if not _release_and_report(hold, name, rnsd_before=rnsd_before):
             print("\n  Repair INCOMPLETE — see above.")
             return False
         print("\n" + "=" * 50)
@@ -661,10 +669,12 @@ def _handle_rnsd_crash(ctx, hold: ClientHold = None, name: str = None) -> bool:
                     ['systemctl', 'reset-failed', 'rnsd'],
                     capture_output=True, timeout=5
                 )
+                rnsd_before = show_unit('rnsd')   # F3: crashed → MainPID 0
                 start_service('rnsd')
                 time.sleep(3)
                 if check_rns_shared_instance() and _release_and_report(
-                        hold or ClientHold(), name or instance_name()):
+                        hold or ClientHold(), name or instance_name(),
+                        rnsd_before=rnsd_before):
                     print("  SUCCESS: RNS shared instance is available")
                     print("\n" + "=" * 50)
                     print("RNS shared instance is now available!")
@@ -741,6 +751,7 @@ def _offer_disable_blocking(handler, post_blocking, hold: ClientHold = None,
     # --- post-write phase: the config IS modified from here on ----------
     try:
         print(f"  Disabled {len(disabled)} interface(s)")
+        rnsd_before = show_unit('rnsd')   # F3
         stop_service('rnsd')
         time.sleep(1)
         start_service('rnsd')
@@ -748,7 +759,8 @@ def _offer_disable_blocking(handler, post_blocking, hold: ClientHold = None,
         if wait_for_condition(check_rns_shared_instance, 15,
                               label="Waiting for shared instance") and \
                 _release_and_report(hold or ClientHold(),
-                                    name or instance_name()):
+                                    name or instance_name(),
+                                    rnsd_before=rnsd_before):
             si = get_rns_shared_instance_info()
             return ctx.report_action(
                 True,

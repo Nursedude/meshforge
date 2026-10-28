@@ -529,6 +529,23 @@ class TestPrelaunchDegradedFlow:
 
     @patch('utils.rns_init._probe_shared_instance_connect', return_value=False)
     @patch('handlers._nomadnet_rns_checks.get_rns_shared_instance_info')
+    def test_prelaunch_restart_unknown_is_not_reported_as_failed(self, mock_info, mock_probe):
+        """R2: an unobservable restart is UNKNOWN — named as such, launch proceeds."""
+        mock_info.return_value = {'available': True}
+        h = _make_nomadnet()
+        h.ctx.dialog._menu_returns = ["restart"]
+        shown = []
+        h.ctx.dialog.msgbox = lambda title, text, **k: shown.append((title, text))
+        with patch.object(h, '_get_rnsd_user', return_value='pi'):
+            with patch.dict(os.environ, {'SUDO_USER': 'pi'}):
+                with patch('handlers._rns_repair.restart_rnsd_reported',
+                           return_value=(None, 'RPC listener could not be observed')):
+                    result = h._check_rns_for_nomadnet()
+        assert result is True
+        assert shown and "Failed" not in shown[0][0] and "UNKNOWN" in shown[0][0]
+
+    @patch('utils.rns_init._probe_shared_instance_connect', return_value=False)
+    @patch('handlers._nomadnet_rns_checks.get_rns_shared_instance_info')
     def test_prelaunch_degraded_user_picks_continue(self, mock_info, mock_probe):
         """Degraded rnsd, user picks continue -> launches anyway."""
         mock_info.return_value = {'available': True}

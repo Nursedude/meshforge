@@ -15,7 +15,6 @@ import subprocess
 from pathlib import Path
 
 from utils.paths import get_real_user_home
-
 from utils.safe_import import safe_import
 
 get_rns_shared_instance_info, _ = safe_import(
@@ -189,6 +188,9 @@ class NomadNetRNSChecksMixin:
                     "rnsd restarted successfully.\n"
                     "Shared instance is available.",
                 )
+                return True
+            if ok is None:  # R2: UNKNOWN, not a failure — clients were released
+                self.ctx.dialog.msgbox("rnsd Restart UNKNOWN", detail)
                 return True
             self.ctx.dialog.msgbox(
                 "Restart Failed",

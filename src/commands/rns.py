@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass, field
 
-from .base import CommandResult
+from .base import CommandResult, ResultStatus
 from utils.backup_paths import reserve_backup_path
 from utils.boundary_timing import call_boundary
 from utils.safe_import import safe_import
@@ -753,8 +753,12 @@ def restart_rnsd() -> CommandResult:
     """
     from utils.rnsd_restart_order import ordered_restart_rnsd
     started, release, _hold = ordered_restart_rnsd()
-    if started and release.ok:
+    if started and release.verdict is True:
         return CommandResult.ok(release.summary())
+    if started and release.verdict is None:
+        # R2: unobservable is UNKNOWN (the CLI's rc 2) — never a pass, never ERROR
+        return CommandResult(success=False, status=ResultStatus.WARNING,
+                             message="UNKNOWN — " + release.summary())
     prefix = "" if started else "rnsd did not start. "
     return CommandResult.fail(prefix + release.summary())
 

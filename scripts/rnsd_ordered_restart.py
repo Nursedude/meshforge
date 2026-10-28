@@ -116,7 +116,6 @@ def apply(out: Callable[[str], None] = print, settle_s: float = 15.0,
             "--apply); nothing touched")
         return 2
     rc = 0
-    before = frr._show("rnsd", False).get("MainPID", "")
     started, release, hold = ro.ordered_restart_rnsd()
     for line in hold.report_lines():
         out(line)
@@ -133,21 +132,11 @@ def apply(out: Callable[[str], None] = print, settle_s: float = 15.0,
         rc = max(rc, 2)
     elif release.verdict is False:
         rc = max(rc, 1)
-    rnsd_after = frr._show("rnsd", False)
-    after = rnsd_after.get("MainPID", "")
-    if before == "" or after == "":
-        out(f"  UNKNOWN rnsd MainPID unobservable ({before or '?'} -> {after or '?'})")
-        rc = max(rc, 2)
-    elif after == "0":
-        out("  FAIL rnsd is not running after the restart")
-        rc = max(rc, 1)
-    elif before == "0":
-        out(f"  rnsd was not running; now {after}")
-    elif before == after:
-        out(f"  FAIL rnsd MainPID unchanged ({before}) — it did not restart")
-        rc = max(rc, 1)
-    else:
-        out(f"  rnsd {before} -> {after}")
+    # R5 (review 2026-10-28): the restart is judged ONCE, in the library
+    # (release.restart, folded into release.verdict above) — print its trace,
+    # never a second MainPID judgement that could disagree with it
+    out(f"  restart {release.rnsd_restart}: {release.restart.trace or 'no trace'}")
+    rnsd_after = frr._show("rnsd", False)   # the stay-up baseline below
     back = [(u, s) for u, s in hold.stopped
             if f"{u} ({ro._scope(s)})" in release.started]
     if len(back) != len(release.started):

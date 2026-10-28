@@ -232,7 +232,7 @@ class RNSDiagnosticsHandler(BaseHandler):
         # clients stop BEFORE rnsd and start only once rnsd owns @rns.
         from ._rns_repair import _clear_stale_auth_files
         from utils.rnsd_restart_order import (hold_rns_clients,
-                                              release_rns_clients)
+                                              release_rns_clients, show_unit)
         print("\n[3/7] Stopping RNS clients, clearing stale auth tokens...")
         print("  Measuring which running units load RNS (a few seconds)...")
         hold = hold_rns_clients()
@@ -254,6 +254,7 @@ class RNSDiagnosticsHandler(BaseHandler):
 
         # Step 6: Restart rnsd
         print("\n[6/7] Restarting rnsd...")
+        rnsd_before = show_unit('rnsd')   # F3: the release judges the restart
         success, msg = stop_service('rnsd')
         if not success:
             print(f"  Warning stopping rnsd: {msg}")
@@ -279,12 +280,15 @@ class RNSDiagnosticsHandler(BaseHandler):
         print("  Waiting for shared instance...")
         instance_ready = self._wait_for_rns_shared_instance(max_wait=15)
 
-        release = release_rns_clients(hold)
+        release = release_rns_clients(hold, rnsd_before=rnsd_before)
         print(f"  {release.summary()}")
-        if instance_ready and not release.ok:
-            instance_ready = False
+        verdict = release.verdict
 
-        if instance_ready:
+        if instance_ready and verdict is not True:
+            # the instance answered; the RESTART is what failed or went unseen
+            print("  Drift fix " + ("UNKNOWN" if verdict is None else "NOT confirmed")
+                  + " — the line above says why.")
+        elif instance_ready:
             si_info = get_rns_shared_instance_info(
                 ReticulumPaths.get_configured_instance_name()
             )
@@ -669,7 +673,7 @@ class RNSDiagnosticsHandler(BaseHandler):
 
             # Reload systemd and restart rnsd — clients first (#69 order).
             from utils.rnsd_restart_order import (hold_rns_clients,
-                                                  release_rns_clients)
+                                                  release_rns_clients, show_unit)
             print("  Measuring which running units load RNS (a few seconds)...")
             hold = hold_rns_clients()
             # F2 (re-review 2026-09-29): this site printed NOTHING from the hold,
@@ -678,6 +682,7 @@ class RNSDiagnosticsHandler(BaseHandler):
             # stopped, stop-failed, unobservable and unprobed units, in every site.
             for line in hold.report_lines():
                 print(line)
+            rnsd_before = show_unit('rnsd')   # F3
             stop_service('rnsd')
             # A stray rnsd outside the unit: match the process NAME exactly
             # (-x). `pkill -f rnsd` matched any cmdline containing "rnsd",
@@ -690,7 +695,7 @@ class RNSDiagnosticsHandler(BaseHandler):
             # Honest-signal: capture the restart result rather than discarding it.
             restart_ok, restart_msg = apply_config_and_restart('rnsd')
             threading.Event().wait(2)  # MF010: service restart stabilization
-            release = release_rns_clients(hold)
+            release = release_rns_clients(hold, rnsd_before=rnsd_before)
             if not release.ok:
                 restart_ok = False
                 restart_msg = f"{restart_msg}; {release.summary()}"
