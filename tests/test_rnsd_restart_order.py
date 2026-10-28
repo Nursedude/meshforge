@@ -218,11 +218,11 @@ class TestRnsdActuallyRestarted:
         up = {"ActiveState": "active", "SubState": "running"}
         assert ro.judge_rnsd_restart(dict(up, MainPID="1", NRestarts="0"),
                                      dict(up, MainPID="2", NRestarts="0"),
-                                     dict(up, MainPID="2", NRestarts="0")) == ""
+                                     dict(up, MainPID="2", NRestarts="0")) == ("ok", "")
         assert "not running" in ro.judge_rnsd_restart(
             dict(up, MainPID="1", NRestarts="0"),
             {"ActiveState": "failed", "SubState": "failed", "MainPID": "0", "NRestarts": "0"},
-            {"ActiveState": "failed", "SubState": "failed", "MainPID": "0", "NRestarts": "0"})
+            {"ActiveState": "failed", "SubState": "failed", "MainPID": "0", "NRestarts": "0"})[1]
 
 
 class TestRpcReadiness:
@@ -286,6 +286,58 @@ class TestRpcReadiness:
 
     def test_parser_unreadable_is_none(self, tmp_path):
         assert ro.rpc_listener_up("x", proc_net_unix=str(tmp_path / "nope")) is None
+
+
+class TestVerdict:
+    """Review of f9b5e0eb: ONE tri-state the CLI's exit code and `ok` both
+    read — an unobservable state is UNKNOWN (rc 2), never a proven FAIL."""
+
+    def _rel(self, **k):
+        base = dict(rnsd_owns=True, rpc_ready=True, rnsd_restart="ok")
+        base.update(k)
+        return ro.ReleaseResult(**base)
+
+    def test_clean_is_true(self):
+        assert self._rel().verdict is True and self._rel().ok
+
+    def test_unobservable_states_are_none(self):
+        assert self._rel(rpc_ready=None).verdict is None
+        assert self._rel(rnsd_owns=None).verdict is None
+        assert self._rel(rnsd_restart="unverified").verdict is None
+
+    def test_a_proven_failure_beats_an_unknown(self):
+        assert self._rel(rpc_ready=None, rnsd_restart="failed").verdict is False
+        assert self._rel(rnsd_owns=False).verdict is False
+        assert self._rel(start_failed=["x (user)"], rpc_ready=None).verdict is False
+
+    def test_unjudged_restart_is_neutral(self):
+        # release_rns_clients alone (the TUI's own stop/start paths) never
+        # judges rnsd — queued as review finding 3, not silently failed here
+        assert self._rel(rnsd_restart="not_judged").verdict is True
+
+    def test_judge_returns_the_state(self):
+        up = {"ActiveState": "active", "SubState": "running", "NRestarts": "0"}
+        assert ro.judge_rnsd_restart(dict(up, MainPID="1"), dict(up, MainPID="2"),
+                                     dict(up, MainPID="2")) == ("ok", "")
+        assert ro.judge_rnsd_restart({}, {}, {})[0] == "unverified"
+        assert ro.judge_rnsd_restart(dict(up, MainPID="1"), dict(up, MainPID="1"),
+                                     dict(up, MainPID="1"))[0] == "failed"
+
+    def test_clients_on_an_unrestarted_rnsd_are_named_as_such(self):
+        # finding 10: "Restarted clients" read as recovery
+        rel = self._rel(rnsd_restart="failed", rnsd_problem="rnsd did not restart: "
+                        "MainPID unchanged (100).", started=["nomadnet (user)"])
+        assert "Restarted clients" not in rel.summary()
+        assert "back on the rnsd that did NOT cleanly restart: nomadnet (user)" in rel.summary()
+
+    def test_unreadable_rpc_does_not_wait_the_full_window(self):
+        # finding 6: polling a read that can never answer cost 30 s
+        waits = []
+        with patch.object(ro, "rnsd_owns_listener", return_value=True), \
+             patch.object(ro, "rpc_listener_up", return_value=None):
+            rel = ro.release_rns_clients(ro.ClientHold(stopped=[("nomadnet", True)]),
+                                         name="x", wait_s=30, _wait=waits.append)
+        assert waits == [] and rel.rpc_ready is None and rel.verdict is None
 
 
 class TestOwnership:
@@ -641,7 +693,8 @@ class TestStopFollowsTheUnitsOwnTimeout:
     def test_release_is_not_ok_while_a_client_could_not_be_stopped(self):
         # F-A: the run-as-user site shows "rnsd Fixed" on `ok` alone.
         hold = ro.ClientHold(stop_failed=[("meshforge-map", False, "Timeout while stopping")])
-        with patch.object(ro, "rnsd_owns_listener", return_value=True):
+        with patch.object(ro, "rnsd_owns_listener", return_value=True), \
+             patch.object(ro, "rpc_listener_up", return_value=True):  # never the host's
             rel = ro.release_rns_clients(hold, name="default", wait_s=0)
         assert rel.ok is False and rel.not_stopped
 

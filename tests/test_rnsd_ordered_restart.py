@@ -78,6 +78,23 @@ def _apply(box, euid=0):
 
 
 class TestApply:
+    def test_unobservable_release_is_unknown_not_fail(self):
+        # review finding 4: rpc_ready None / an UNVERIFIED rnsd read as rc 1
+        for rel in (ro.ReleaseResult(rnsd_owns=True, rpc_ready=None),
+                    ro.ReleaseResult(rnsd_owns=True, rpc_ready=True,
+                                     rnsd_restart="unverified",
+                                     rnsd_problem="rnsd restart UNVERIFIED: x.")):
+            box = Box()
+            box.release = rel
+            rc, text = _apply(box)
+            assert rc == 2, text
+
+    def test_proven_release_failure_is_1(self):
+        box = Box()
+        box.release = ro.ReleaseResult(rnsd_owns=True, rpc_ready=False)
+        rc, text = _apply(box)
+        assert rc == 1, text
+
     def test_the_whole_order_held_is_exit_0(self):
         rc, text = _apply(Box())
         assert rc == 0, text

@@ -554,17 +554,33 @@ class ReleaseResult:
     #: why rnsd itself did not cleanly restart ("" = it did, MEASURED by
     #: judge_rnsd_restart). Ownership alone cannot say: the OLD rnsd owns too.
     rnsd_problem: str = ""
+    #: judge_rnsd_restart's state: "ok" | "failed" | "unverified", or
+    #: "not_judged" when only release_rns_clients ran (the TUI's own
+    #: stop/start paths — review finding 3, queued; neutral, not a pass claim).
+    rnsd_restart: str = "not_judged"
     #: rnsd's RPC listener ``@rns/<name>/rpc`` up (None = unobservable, or
     #: never asked because ownership failed first). Residue (8).
     rpc_ready: Optional[bool] = None
 
     @property
-    def ok(self) -> bool:
+    def verdict(self) -> Optional[bool]:
+        """True = repaired; False = a PROVEN failure; None = some part could
+        not be observed. A proven failure outranks an unknown. ONE reading
+        for ``ok`` and the CLI's exit code (review of f9b5e0eb, finding 4)."""
         # F-A (second read, 2026-09-29): a client that could NOT be stopped is
         # in the F1 shape (job lands later, never restarted) — never "Fixed".
-        return (self.rnsd_owns is True and self.rpc_ready is True
-                and not self.start_failed and not self.not_stopped
-                and not self.rnsd_problem)
+        if (self.rnsd_owns is False or self.start_failed or self.not_stopped
+                or self.rnsd_restart == "failed"
+                or (self.rnsd_owns is True and self.rpc_ready is False)):
+            return False
+        if (self.rnsd_owns is None or self.rpc_ready is None
+                or self.rnsd_restart == "unverified"):
+            return None
+        return True
+
+    @property
+    def ok(self) -> bool:
+        return self.verdict is True
 
     def summary(self) -> str:
         lead = f"{self.rnsd_problem} " if self.rnsd_problem else ""
@@ -580,7 +596,11 @@ class ReleaseResult:
                     f"they do not die on a refused RPC: {held}.")
         if self.rnsd_owns is True:
             line = "rnsd owns the shared instance."
-            if self.started:
+            if self.started and self.rnsd_restart == "failed":
+                # finding 10: they are back on the process the repair was for
+                line += (" Clients back on the rnsd that did NOT cleanly restart: "
+                         + ", ".join(self.started) + ".")
+            elif self.started:
                 line += " Restarted clients: " + ", ".join(self.started) + "."
             if self.start_failed:
                 line += " FAILED to restart: " + ", ".join(self.start_failed) + "."
@@ -779,8 +799,8 @@ def release_rns_clients(
 
     owns, rpc = ready()
     for _ in range(max(0, int(wait_s / poll_s))):
-        if owns is True and rpc is True:
-            break
+        if owns is True and rpc in (True, None):
+            break  # ready — or the RPC read is unobservable, which waiting cannot fix
         wait(poll_s)
         owns, rpc = ready()
 
@@ -801,27 +821,27 @@ def release_rns_clients(
 
 
 def judge_rnsd_restart(before: Dict[str, str], after_start: Dict[str, str],
-                       after_wait: Dict[str, str]) -> str:
-    """"" when rnsd measurably restarted and stayed on one process through the
-    ownership wait; otherwise why not. Pure — the reads are the caller's.
+                       after_wait: Dict[str, str]) -> Tuple[str, str]:
+    """``("ok", "")`` when rnsd measurably restarted and stayed on one process
+    through the ownership wait; else ``("failed" | "unverified", why)``. Pure.
 
     after_start vs after_wait (not the pre-restart NRestarts): whether an
     explicit start resets the counter does not matter for a window that
     begins after that start (residue (2), 2026-10-27)."""
     pid0, pid1, pid2 = (d.get("MainPID", "") for d in (before, after_start, after_wait))
     if "" in (pid0, pid1, pid2):
-        return (f"rnsd restart UNVERIFIED: MainPID unobservable "
-                f"({pid0 or '?'} -> {pid1 or '?'} -> {pid2 or '?'}).")
+        return "unverified", (f"rnsd restart UNVERIFIED: MainPID unobservable "
+                              f"({pid0 or '?'} -> {pid1 or '?'} -> {pid2 or '?'}).")
     if pid1 == "0" or pid2 == "0":
-        return (f"rnsd is not running after the restart "
+        return "failed", (f"rnsd is not running after the restart "
                 f"({after_wait.get('ActiveState', '?')}/{after_wait.get('SubState', '?')}).")
     if pid0 != "0" and pid1 == pid0:
-        return f"rnsd did not restart: MainPID unchanged ({pid0})."
+        return "failed", f"rnsd did not restart: MainPID unchanged ({pid0})."
     n1, n2 = after_start.get("NRestarts", ""), after_wait.get("NRestarts", "")
     if pid2 != pid1 or n1 != n2:
-        return (f"rnsd crashed during the ownership wait and systemd restarted it "
+        return "failed", (f"rnsd crashed during the ownership wait and systemd restarted it "
                 f"(MainPID {pid1} -> {pid2}, NRestarts {n1 or '?'} -> {n2 or '?'}).")
-    return ""
+    return "ok", ""
 
 
 def ordered_restart_rnsd(
@@ -848,7 +868,8 @@ def ordered_restart_rnsd(
     release = release_rns_clients(hold, wait_s=wait_s)
     # residue (1)+(2): `systemctl start` on a still-active unit is a no-op
     # success, so a failed stop read as a repair — measure the process.
-    release.rnsd_problem = judge_rnsd_restart(before, after_start, show_unit('rnsd'))
+    release.rnsd_restart, release.rnsd_problem = judge_rnsd_restart(
+        before, after_start, show_unit('rnsd'))
     if release.rnsd_problem:
         logger.warning("rnsd restart: %s", release.rnsd_problem)
     return started, release, hold

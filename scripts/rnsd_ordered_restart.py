@@ -129,9 +129,9 @@ def apply(out: Callable[[str], None] = print, settle_s: float = 15.0,
     if not started:
         out("  FAIL rnsd did not start")
         rc = max(rc, 1)
-    if release.rnsd_owns is None:
+    if release.verdict is None:      # unobservable is UNKNOWN, never a FAIL
         rc = max(rc, 2)
-    elif not release.ok:
+    elif release.verdict is False:
         rc = max(rc, 1)
     rnsd_after = frr._show("rnsd", False)
     after = rnsd_after.get("MainPID", "")
