@@ -168,6 +168,10 @@ class ClientHold:
     not_considered: List[str] = field(default_factory=list)
     #: where the hold set came from — "measured + floor" or "floor only: why".
     client_set: str = ""
+    #: True only when the client measurement ran; False = curated floor only.
+    measured: bool = False
+    #: False = the measurement could not see user-scope units (no SUDO_USER).
+    user_scope_seen: bool = True
 
     def names(self) -> List[str]:
         return [f"{u} ({_scope(user)})" for u, user in self.stopped]
@@ -611,44 +615,53 @@ def terminate_pid(pid: int, wait_s: float = 3.0) -> bool:
     return not os.path.exists(f"/proc/{pid}")
 
 
+def plan_rns_client_hold() -> Tuple[List[Tuple[str, bool]], ClientHold]:
+    """The units a hold would consider, and a ClientHold carrying only what
+    the measurement said (nothing stopped yet). hold_rns_clients() acts on it;
+    a dry run prints it — one plan, two consumers (hfm #5)."""
+    hold = ClientHold()
+    units = list(RNS_CLIENT_UNITS)
+    obs = measure_rns_clients()
+    match obs:
+        case Seen(value=m):
+            extra = [u for u in m.clients if u not in units]
+            units += extra
+            hold.unprobed = [x for x in m.unprobed if (x[0], x[1]) not in units]
+            hold.repo_only = [x for x in m.repo_only if x not in units]
+            hold.unjudged = m.unjudged
+            hold.measured, hold.user_scope_seen = True, m.user_scope_seen
+            # Report every skipped transient/oneshot unit — `run-*` too:
+            # systemd-run names one-offs run-uNN, exactly where a one-off
+            # RNS client lives. Only the system never-hold units are quiet.
+            quiet = tuple(x for x in NEVER_HOLD_PREFIXES if x != "run-")
+            hold.not_considered = [u for u in m.skipped if not u.startswith(quiet)]
+            hold.client_set = (
+                f"measured, service cgroups only ({len(m.clients)} units whose own entry point "
+                f"loads RNS" + (f", {len(extra)} beyond the curated floor"
+                                if extra else "") + ") + curated floor"
+                + "; a client run from a login/tmux session is not seen"
+                + ("" if m.user_scope_seen else
+                   " — USER scope NOT visible to this run (no SUDO_USER?): "
+                   "user-scope clients outside the floor would stay up"))
+        case Unobservable(why=w) | Failed(why=w):
+            hold.client_set = (f"curated floor ONLY — measurement unavailable "
+                               f"({w}); a client outside the floor would stay up")
+            logger.warning("rnsd restart: %s", hold.client_set)
+        case _ as unreachable:
+            assert_never(unreachable)
+    return units, hold
+
+
 def hold_rns_clients(units: Optional[Sequence[Tuple[str, bool]]] = None) -> ClientHold:
     """Stop every ACTIVE RNS client unit; remember which ones.
 
     ``units=None`` (every real caller): the MEASURED clients unioned with the
     RNS_CLIENT_UNITS floor. An explicit list is used as given (tests).
     """
-    hold = ClientHold()
     if units is not None:
-        units = list(units)
+        units, hold = list(units), ClientHold()
     else:
-        units = list(RNS_CLIENT_UNITS)
-        obs = measure_rns_clients()
-        match obs:
-            case Seen(value=m):
-                extra = [u for u in m.clients if u not in units]
-                units += extra
-                hold.unprobed = [x for x in m.unprobed if (x[0], x[1]) not in units]
-                hold.repo_only = [x for x in m.repo_only if x not in units]
-                hold.unjudged = m.unjudged
-                # Report every skipped transient/oneshot unit — `run-*` too:
-                # systemd-run names one-offs run-uNN, exactly where a one-off
-                # RNS client lives. Only the system never-hold units are quiet.
-                quiet = tuple(x for x in NEVER_HOLD_PREFIXES if x != "run-")
-                hold.not_considered = [u for u in m.skipped if not u.startswith(quiet)]
-                hold.client_set = (
-                    f"measured, service cgroups only ({len(m.clients)} units whose own entry point "
-                    f"loads RNS" + (f", {len(extra)} beyond the curated floor"
-                                    if extra else "") + ") + curated floor"
-                    + "; a client run from a login/tmux session is not seen"
-                    + ("" if m.user_scope_seen else
-                       " — USER scope NOT visible to this run (no SUDO_USER?): "
-                       "user-scope clients outside the floor would stay up"))
-            case Unobservable(why=w) | Failed(why=w):
-                hold.client_set = (f"curated floor ONLY — measurement unavailable "
-                                   f"({w}); a client outside the floor would stay up")
-                logger.warning("rnsd restart: %s", hold.client_set)
-            case _ as unreachable:
-                assert_never(unreachable)
+        units, hold = plan_rns_client_hold()
     for unit, user in units:
         # BOTH scopes tri-state (review S2): a squatter-in-waiting is never
         # skipped on a bool; None = unobservable, recorded.
@@ -720,7 +733,11 @@ def ordered_restart_rnsd(
     Returns ``(rnsd_started, release_result, hold)``.
     """
     hold = hold_rns_clients()
-    stop_service('rnsd')
+    # The unit's own stop timeout, as for the clients (F1): a 30 s client wait
+    # under a longer TimeoutStopSec races start_service against a queued stop.
+    stopped, msg = stop_service('rnsd', timeout=stop_deadline_s('rnsd', False))
+    if not stopped:
+        logger.warning("rnsd stop: %s", msg)
     if while_stopped is not None:
         while_stopped()
     started, msg = start_service('rnsd')

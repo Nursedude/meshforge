@@ -6,6 +6,8 @@ Step 2 of a fork roll, run ON the box after the install (step 1):
     sudo -n python3 scripts/fork_roll_restart.py            # dry run: the plan
     sudo -n python3 scripts/fork_roll_restart.py --apply    # restart, re-measure
 
+When it reports rnsd behind, step 3 is scripts/rnsd_ordered_restart.py --apply.
+
 WHY (2026-10-16). The lxmf mf.11 and mf.12 rolls each ended with
 honest_status's `running substrate` leg WARNing on the same six MeshAnchor
 units: the roll found its restart targets by process NAME (`pgrep -f
@@ -216,8 +218,8 @@ def run(dists: Sequence[str], apply: bool, out: Callable[[str], None] = print,
                 + ", ".join(f"{u} ({_scope(s)})" for u, s in st.targets))
             rc = max(rc, 1)
     if st.rnsd_behind:
-        out("  rnsd is behind: NOT restarted here — use the #69 order "
-            "(clients down → rnsd → owner check → clients), one box at a time")
+        out("  rnsd is behind: NOT restarted here — run the #69 order, one box at a "
+            "time: sudo -n python3 scripts/rnsd_ordered_restart.py --apply")
         rc = max(rc, 1)
     if not st.user_scope_seen:
         out("  UNKNOWN — user scope not visible (root without SUDO_USER?): "
