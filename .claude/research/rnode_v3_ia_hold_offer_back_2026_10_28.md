@@ -26,8 +26,9 @@ Carrier-free interference that has persisted continuously for
 `CSMA_INFR_MAX_HOLD_MS` (5 s, debounced over `CSMA_INFR_GAP_MS` = 500 ms gaps) no
 longer blocks TX. It is still reported to the host, DCD still blocks, and the V4
 LNA path is untouched. Patched v3 with IA on: 40/40 delivered, including all 11
-probes sent under -71, max 3.76 s. Builds for heltec32_v3 and heltec32_v4 on ESP32
-core 2.0.17.
+probes sent under -71, max 3.76 s. A second v3 unit, as sender with an RF-only receiver,
+with IA on: 40/40 delivered; the worst cases (4.5 s, 5.05 s) are the cap releasing. With IA off: 20/20.
+Builds for heltec32_v3 and heltec32_v4 on ESP32 core 2.0.17.
 
 Open questions for review:
 - Should the cap be per-board or a runtime setting?
