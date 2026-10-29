@@ -530,19 +530,41 @@ class TestPrelaunchDegradedFlow:
     @patch('utils.rns_init._probe_shared_instance_connect', return_value=False)
     @patch('handlers._nomadnet_rns_checks.get_rns_shared_instance_info')
     def test_prelaunch_restart_unknown_is_not_reported_as_failed(self, mock_info, mock_probe):
-        """R2: an unobservable restart is UNKNOWN — named as such, launch proceeds."""
+        """R2: an unobservable restart is UNKNOWN — named as such, and the
+        OPERATOR decides the launch (review of the MA port, SHOULD 1: with
+        ownership unobservable the clients were HELD, so launching silently
+        put NomadNet on an @rns nobody could see the owner of — #69)."""
         mock_info.return_value = {'available': True}
         h = _make_nomadnet()
         h.ctx.dialog._menu_returns = ["restart"]
-        shown = []
-        h.ctx.dialog.msgbox = lambda title, text, **k: shown.append((title, text))
+        h.ctx.dialog._yesno_returns = [True]
+        asked = []
+        h.ctx.dialog.yesno = (lambda title, text, **k:
+                              asked.append((title, text)) or True)
         with patch.object(h, '_get_rnsd_user', return_value='pi'):
             with patch.dict(os.environ, {'SUDO_USER': 'pi'}):
                 with patch('handlers._rns_repair.restart_rnsd_reported',
                            return_value=(None, 'RPC listener could not be observed')):
                     result = h._check_rns_for_nomadnet()
         assert result is True
-        assert shown and "Failed" not in shown[0][0] and "UNKNOWN" in shown[0][0]
+        assert asked and "Failed" not in asked[0][0] and "UNKNOWN" in asked[0][0]
+        assert "RPC listener could not be observed" in asked[0][1]
+
+    @patch('utils.rns_init._probe_shared_instance_connect', return_value=False)
+    @patch('handlers._nomadnet_rns_checks.get_rns_shared_instance_info')
+    def test_prelaunch_restart_unknown_declined_does_not_launch(self, mock_info, mock_probe):
+        """UNKNOWN + the operator says No → no launch (never a silent True)."""
+        mock_info.return_value = {'available': True}
+        h = _make_nomadnet()
+        h.ctx.dialog._menu_returns = ["restart"]
+        h.ctx.dialog.yesno = lambda title, text, **k: False
+        with patch.object(h, '_get_rnsd_user', return_value='pi'):
+            with patch.dict(os.environ, {'SUDO_USER': 'pi'}):
+                with patch('handlers._rns_repair.restart_rnsd_reported',
+                           return_value=(None, 'ownership could not be observed — '
+                                               'left STOPPED')):
+                    result = h._check_rns_for_nomadnet()
+        assert result is False
 
     @patch('utils.rns_init._probe_shared_instance_connect', return_value=False)
     @patch('handlers._nomadnet_rns_checks.get_rns_shared_instance_info')

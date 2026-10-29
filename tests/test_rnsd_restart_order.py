@@ -40,6 +40,7 @@ class Recorder:
         self.activating = 0           # ownership polls rnsd spends in ExecStartPre
         self.in_start_pre = False     # set by `start` when activating > 0
         self.owns_names = []          # instance name every ownership check asked about
+        self.stop_timeouts = {}       # unit -> the timeout its stop was given
 
     def system_active(self, unit, timeout=5):
         return (unit, False) in ACTIVE
@@ -49,6 +50,7 @@ class Recorder:
 
     def stop(self, unit, timeout=30, user=False):
         self.log.append(("stop", unit))
+        self.stop_timeouts[unit] = timeout
         if unit == "rnsd":
             if not self.stop_rnsd_ok:
                 return False, "Job for rnsd.service failed"
@@ -70,6 +72,7 @@ class Recorder:
         return True, "ok"
 
     def show(self, unit, user=False):
+        self.log.append(("show", unit))
         if self.show_value is not None:
             return dict(self.show_value)
         assert unit == "rnsd", unit
@@ -251,6 +254,20 @@ class TestRnsdActuallyRestarted:
         rec.rnsd_pid = 0
         started, release, _ = _run(rec, lambda: ro.ordered_restart_rnsd(wait_s=1))
         assert started and release.ok, release.summary()
+
+    def test_rnsd_stop_waits_its_own_stop_timeout(self):
+        # review of the MA port, SHOULD 2: a plain stop_service('rnsd') (30 s)
+        # under a longer TimeoutStopSec races the start against a queued stop
+        rec = Recorder()
+        _run(rec, lambda: ro.ordered_restart_rnsd(wait_s=1))
+        assert rec.stop_timeouts["rnsd"] == ro.stop_deadline_s("rnsd", False)
+
+    def test_baseline_is_read_before_rnsd_is_stopped(self):
+        # NIT 3: read after the stop, the baseline is MainPID 0, and a stop
+        # that did nothing can never read "MainPID unchanged"
+        rec = Recorder()
+        _run(rec, lambda: ro.ordered_restart_rnsd(wait_s=1))
+        assert _idx(rec.log, ("show", "rnsd")) < _idx(rec.log, ("stop", "rnsd")), rec.log
 
     def test_judge_is_pure(self):
         up = {"ActiveState": "active", "SubState": "running"}
@@ -692,6 +709,12 @@ class TestRepairWizardOrder:
         assert self._run_repair(rec, blocking=blocking, disabled=["RNode LoRa"]) is True
         assert rec.owns_names and set(rec.owns_names) == {"volcano"}, rec.owns_names
         assert ("start", "nomadnet") in rec.log
+
+    def test_repair_reads_the_baseline_before_stopping_rnsd(self, capsys):
+        # NIT 3 (review of the MA port), the wizard's own site
+        rec = Recorder()
+        self._run_repair(rec)
+        assert _idx(rec.log, ("show", "rnsd")) < _idx(rec.log, ("stop", "rnsd")), rec.log
 
     def test_repair_with_a_failed_rnsd_stop_keeps_clients_stopped(self, capsys):
         # F3: the wizard judged nothing — a failed stop + no-op start read as
