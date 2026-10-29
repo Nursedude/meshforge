@@ -1,118 +1,21 @@
 # Testing Rules
 
-## Running Tests
-
 ```bash
-# Run all tests
-python3 -m pytest tests/ -v
-
-# Run specific test file
-python3 -m pytest tests/test_rf.py -v             # RF calculations
-python3 -m pytest tests/test_rns_bridge.py -v     # Gateway bridge
-
-# Run with coverage
-python3 -m pytest tests/ --cov=src --cov-report=term-missing
-
-# Quick syntax check
-python3 -m py_compile src/**/*.py
+python3 scripts/lint.py --all && python3 -m pytest tests/ -q   # lint first
+python3 -m pytest tests/test_rf.py -v                          # one file
+python3 -m pytest tests/ --cov=src --cov-report=term-missing   # coverage
+python3 -m py_compile src/**/*.py                              # syntax
 ```
 
----
+- **Before a push that adds a file, run the FULL suite** — targeted runs miss
+  the guard tests. Capture the exit code to a file; a long run goes through
+  `systemd-run --user`, not a backgrounded shell.
+- Always test RF math, data parsing (edge cases), path utilities (sudo), and
+  business logic before TUI wiring; test handler logic apart from the TUI.
+- Mock external services (`patch('requests.get')`); patch `_HAS_*` flags,
+  not `sys.modules`. Shared fixtures live in `tests/conftest.py`.
+- Test pure functions first; set up with fixtures; test error conditions,
+  not just the happy path.
 
-## Test Locations
-
-```
-tests/                             # 3,160 tests across 90 files (as of 2026-04-19)
-├── conftest.py                    # Shared fixtures (mock_meshtastic, mock_rns, no_network)
-├── test_rns_bridge.py             # Gateway bridge (140 tests)
-├── test_rf.py                     # RF calculations (107 tests)
-├── test_meshtastic_protobuf.py    # Protobuf client (74 tests)
-├── test_message_queue.py          # SQLite queue (72 tests)
-├── test_status_bar.py             # TUI status bar (70 tests)
-├── test_node_tracker.py           # Node tracking (68 tests)
-├── test_mqtt_robustness.py        # MQTT reliability (66 tests)
-├── test_commands.py               # CLI commands (61 tests)
-├── ... (59 more test files)
-└── test_regression_guards.py      # Architectural regression prevention (15 tests)
-```
-
----
-
-## Writing Tests
-
-### Test pure functions first
-```python
-def test_haversine_distance():
-    """Test distance calculation between two points."""
-    # Known distance: SF to LA ~559 km
-    result = haversine_distance(37.7749, -122.4194, 34.0522, -118.2437)
-    assert 550 < result < 570
-```
-
-### Use fixtures for setup
-```python
-@pytest.fixture
-def sample_node():
-    return {"id": "!abc123", "lat": 37.7749, "lon": -122.4194}
-
-def test_node_processing(sample_node):
-    result = process_node(sample_node)
-    assert result.id == "!abc123"
-```
-
-### Test error conditions
-```python
-def test_invalid_coordinates():
-    with pytest.raises(ValueError):
-        haversine_distance(999, 999, 0, 0)
-```
-
----
-
-## Test Patterns for MeshForge
-
-### Mocking external services
-```python
-from unittest.mock import patch, MagicMock
-
-@patch('requests.get')
-def test_hamclock_fetch(mock_get):
-    mock_get.return_value.json.return_value = {"sfi": 150}
-    result = fetch_space_weather()
-    assert result["sfi"] == 150
-```
-
-### Testing path utilities
-```python
-@patch.dict(os.environ, {"SUDO_USER": "testuser"})
-def test_get_real_user_home_with_sudo():
-    result = get_real_user_home()
-    assert result == Path("/home/testuser")
-```
-
-### Testing handlers (test logic separately from TUI)
-```python
-# Prefer testing logic separately from UI
-def test_parse_node_data():
-    raw = '{"id": "!abc", "name": "Node1"}'
-    result = parse_node_data(raw)
-    assert result.name == "Node1"
-```
-
----
-
-## When to Write Tests
-
-1. **RF calculations** - Always test (critical for HAMs)
-2. **Data parsing** - Test edge cases
-3. **Path utilities** - Test sudo compatibility
-4. **Business logic** - Test before TUI handler integration
-
----
-
-## Linter as Pre-Test
-
-Run linter before tests:
-```bash
-python3 scripts/lint.py --all && python3 -m pytest tests/ -v
-```
+Counts and the old tree listing: `.claude/foundations/rules_evidence.md`
+(stale — count live with `pytest --collect-only -q`).

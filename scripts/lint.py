@@ -785,6 +785,15 @@ CONTEXT_DOC_LIMITS = {
     # Roadmap cohesion Q11 (2026-10-19): measured post-migration size x 1.25,
     # ratchet DOWN only. Done items leave the list (Q4) — trim, never raise.
     '.claude/ROADMAP.md': 44_500,  # 35,657 B post-migration x 1.25 = 44,571
+    # Context trim pass 2026-10-29: the rules files (26,160 B) were cut to
+    # their rules (12,1xx B after the non-author read); stories moved to foundations/rules_evidence.md.
+    # Caps = trimmed size x 1.15. Ratchet DOWN only.
+    # BYTES, not characters (os.path.getsize; the files carry → ≠ —).
+    '.claude/rules/calibrated_claims.md': 5_900,
+    '.claude/rules/honest_failure_modes.md': 4_100,
+    '.claude/rules/model_advisor.md': 1_800,
+    '.claude/rules/security.md': 1_300,
+    '.claude/rules/testing.md': 1_300,
 }
 # The remedy differs per file: following persistent_issues' advice on the
 # roadmap would archive LIVE items (non-author pass 2026-10-22).
@@ -797,21 +806,40 @@ CONTEXT_DOC_REMEDY = {
 }
 
 
-def check_context_doc_sizes(repo_root: str = '.') -> List[LintIssue]:
-    """MF012: enforce char-size caps on docs routinely loaded into model context."""
+def check_context_doc_sizes(repo_root: Optional[str] = None) -> List[LintIssue]:
+    """MF012: enforce char-size caps on docs routinely loaded into model context.
+
+    Claude Code loads EVERY ``.claude/rules/*.md`` into every turn, so a rules
+    file with no limit is an error (closed enum, closed consumer — hfm #7),
+    and a listed doc that vanished is an error, never a silent pass (hfm #1:
+    a rename would otherwise escape its cap unseen)."""
+    if repo_root is None:
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     issues: List[LintIssue] = []
+    rules_dir = os.path.join(repo_root, '.claude', 'rules')
+    for dirpath, _dirs, names in sorted(os.walk(rules_dir)):
+        for name in sorted(names):
+            rel = os.path.relpath(os.path.join(dirpath, name),
+                                  repo_root).replace(os.sep, '/')
+            if name.endswith('.md') and rel not in CONTEXT_DOC_LIMITS:
+                issues.append(LintIssue(
+                    rel, 0, Severity.ERROR, "MF012",
+                    "Loaded into every model turn but has no MF012 limit — "
+                    "add it to CONTEXT_DOC_LIMITS at its size x 1.15."))
     for rel_path, limit in CONTEXT_DOC_LIMITS.items():
         full = os.path.join(repo_root, rel_path)
-        if not os.path.isfile(full):
-            continue
         try:
             size = os.path.getsize(full)
-        except OSError:
+        except OSError as e:
+            issues.append(LintIssue(
+                rel_path, 0, Severity.ERROR, "MF012",
+                f"Capped context doc is unreadable or missing ({e}) — its "
+                f"cap cannot be checked; move the limit with the file."))
             continue
         if size > limit:
             issues.append(LintIssue(
                 rel_path, 0, Severity.ERROR, "MF012",
-                f"File is {size:,} chars (limit {limit:,}). "
+                f"File is {size:,} bytes (limit {limit:,}). "
                 + CONTEXT_DOC_REMEDY.get(rel_path, "Trim it; do not raise the limit."),
             ))
     return issues
@@ -1957,16 +1985,20 @@ def main():
         files = get_all_python_files('src')
 
     if not files:
-        print("No files to lint.")
-        return 0
+        # NOT an early return: a docs-only --staged commit (the pre-commit
+        # hook) still owes the repo-level checks below — MF012 and the
+        # staged MF014/MF022 scans. Returning here let a regrown rules file
+        # commit clean (non-author read 2026-10-29).
+        print("No Python files to lint.")
 
     # Run linter
     linter = MeshForgeLinter()
     issues = linter.lint_files(files)
 
-    # MF012: doc-size cap (skip in --staged mode — only relevant to whole-repo checks)
-    if not args.staged:
-        issues.extend(check_context_doc_sizes())
+    # MF012: per-turn context doc caps. Runs in --staged mode too (2026-10-29
+    # non-author read: skipping it there let a rules file regrow past its cap
+    # and commit clean); it is a handful of stat() calls.
+    issues.extend(check_context_doc_sizes())
 
     # MF024: version SSOT vs pyproject/README drift (repo-level; the 4-way-drift
     # guard). Whole-repo only — a one-file --staged PR shouldn't pay the audit.
