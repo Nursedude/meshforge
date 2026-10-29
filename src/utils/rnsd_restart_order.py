@@ -552,6 +552,14 @@ class RestartJudgement(NamedTuple):
     trace: str = ""   # "MainPID a -> b -> c, NRestarts x -> y" when observed
 
 
+#: ordered_restart_rnsd's ``started`` was False: start_service's client wait
+#: (30 s) can expire inside rnsd's ExecStartPre while the start job carries on.
+#: The release MEASURES the restart, so callers report this and follow the
+#: release verdict (review of 2cf548ae, SHOULD 2).
+START_NOT_CONFIRMED = ("rnsd start command did not confirm success (a client timeout "
+                       "inside ExecStartPre, or a refused start; see the log) — the "
+                       "verdict is the MEASURED restart. ")
+
 NOT_JUDGED = RestartJudgement("not_judged", "rnsd restart NOT JUDGED: no pre-restart "
                               "baseline was passed (rnsd_before).")
 
@@ -870,6 +878,16 @@ def _held(hold: ClientHold, name: str, result: ReleaseResult) -> ReleaseResult:
     return result
 
 
+#: systemd SubStates of a unit that has not yet started its main process
+#: (ExecCondition / ExecStartPre / ExecStart of a not-yet-ready unit)
+_PRE_START_SUBSTATES = ("condition", "start-pre", "start")
+
+
+def _pre_start(st: Dict[str, str]) -> bool:
+    return (st.get("MainPID") == "0" and st.get("ActiveState") == "activating"
+            and st.get("SubState") in _PRE_START_SUBSTATES)
+
+
 def judge_rnsd_restart(before: Dict[str, str], after_start: Dict[str, str],
                        after_wait: Dict[str, str]) -> RestartJudgement:
     """``state == "ok"`` when rnsd measurably restarted and stayed on one
@@ -887,12 +905,26 @@ def judge_rnsd_restart(before: Dict[str, str], after_start: Dict[str, str],
     if "" in (pid0, pid1, pid2):
         return J("unverified", f"rnsd restart UNVERIFIED: MainPID unobservable "
                                f"({pid0 or '?'} -> {pid1 or '?'} -> {pid2 or '?'}).")
-    if pid1 == "0" or pid2 == "0":
+    # systemd counts a Restart= cycle in NRestarts; auto-restart* is BETWEEN
+    # cycles (activating, MainPID 0) — a proven crash, never "still starting"
+    if n1 != n2 or any(d.get("SubState", "").startswith("auto-restart")
+                       for d in (after_start, after_wait)):
+        return J("failed", f"rnsd crashed after the restart and systemd's Restart= "
+                 f"cycled it (MainPID {pid1} -> {pid2}, NRestarts {n1 or '?'} -> {n2 or '?'}, "
+                 f"now {after_wait.get('ActiveState', '?')}/{after_wait.get('SubState', '?')}).")
+    # Review of 2cf548ae (#2): during ExecStartPre (wait_for_ipv6_ll.sh, up to
+    # 30 s) systemd reports activating with MainPID 0 — not started YET, not dead.
+    if pid2 == "0" and _pre_start(after_wait):
+        return J("unverified", f"rnsd restart UNCONFIRMED: rnsd is still starting "
+                 f"(activating/{after_wait.get('SubState', '?')}) after the wait.")
+    pre_start = _pre_start(after_start)
+    if pid2 == "0" or (pid1 == "0" and not pre_start):
+        dead = after_wait if pid2 == "0" else after_start
         return J("failed", f"rnsd is not running after the restart "
-                 f"({after_wait.get('ActiveState', '?')}/{after_wait.get('SubState', '?')}).")
-    if pid0 != "0" and pid1 == pid0:
+                 f"({dead.get('ActiveState', '?')}/{dead.get('SubState', '?')}).")
+    if pid0 != "0" and pid0 in (pid1, pid2):
         return J("failed", f"rnsd did not restart: MainPID unchanged ({pid0}).")
-    if pid2 != pid1 or n1 != n2:
+    if pid2 != pid1 and not pre_start:
         return J("failed", f"rnsd crashed during the ownership wait and systemd restarted it "
                  f"(MainPID {pid1} -> {pid2}, NRestarts {n1 or '?'} -> {n2 or '?'}).")
     return J("ok")

@@ -126,8 +126,8 @@ def apply(out: Callable[[str], None] = print, settle_s: float = 15.0,
         rc = max(rc, 2)
     out(f"  {release.summary()}")
     if not started:
-        out("  FAIL rnsd did not start")
-        rc = max(rc, 1)
+        # review SHOULD 2: not a FAIL on its own — the verdict below is measured
+        out(f"  NOTE {ro.START_NOT_CONFIRMED.strip()}")
     if release.verdict is None:      # unobservable is UNKNOWN, never a FAIL
         rc = max(rc, 2)
     elif release.verdict is False:

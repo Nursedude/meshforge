@@ -104,6 +104,15 @@ class TestApply:
         assert text.count("MainPID") == 1, text   # R5: judged once, printed once
         assert "RESULT: OK" in text
 
+    def test_start_timeout_with_a_measured_restart_is_not_a_fail(self):
+        # review SHOULD 2: start_service timed out inside ExecStartPre, the
+        # release measured the restart and released the clients
+        box = Box()
+        box.started = False
+        rc, text = _apply(box)
+        assert rc == 0, text
+        assert "FAIL" not in text and "start command" in text
+
     def test_needs_root_and_touches_nothing_without_it(self):
         box = Box()
         rc, text = _apply(box, euid=1000)
@@ -112,8 +121,13 @@ class TestApply:
         assert "root" in text
 
     def test_rnsd_did_not_start_is_1(self):
+        # the release proves it (MainPID 0) — `started` alone no longer
+        # decides rc (review of 2cf548ae, SHOULD 2)
         box = Box()
         box.started = False
+        box.release = ro.ReleaseResult(
+            rnsd_owns=False, left_stopped=["nomadnet (user)"],
+            restart=ro.judge_rnsd_restart(_state(100), _state(0), _state(0)))
         rc, text = _apply(box)
         assert rc == 1, text
 

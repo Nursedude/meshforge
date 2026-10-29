@@ -751,16 +751,18 @@ def restart_rnsd() -> CommandResult:
     """Restart the RNS daemon in the #69 repair order: RNS clients down →
     rnsd → rnsd OWNS @rns → clients up (left stopped and named otherwise).
     """
-    from utils.rnsd_restart_order import ordered_restart_rnsd
+    from utils.rnsd_restart_order import START_NOT_CONFIRMED, ordered_restart_rnsd
     started, release, _hold = ordered_restart_rnsd()
-    if started and release.verdict is True:
-        return CommandResult.ok(release.summary())
-    if started and release.verdict is None:
+    # review SHOULD 2: the release MEASURED the restart; `started` is only the
+    # start command's answer, which can time out inside ExecStartPre
+    text = ("" if started else START_NOT_CONFIRMED) + release.summary()
+    if release.verdict is True:
+        return CommandResult.ok(text)
+    if release.verdict is None:
         # R2: unobservable is UNKNOWN (the CLI's rc 2) — never a pass, never ERROR
         return CommandResult(success=False, status=ResultStatus.WARNING,
-                             message="UNKNOWN — " + release.summary())
-    prefix = "" if started else "rnsd did not start. "
-    return CommandResult.fail(prefix + release.summary())
+                             message="UNKNOWN — " + text)
+    return CommandResult.fail(text)
 
 
 # ============================================================================

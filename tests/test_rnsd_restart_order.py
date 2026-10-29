@@ -37,6 +37,9 @@ class Recorder:
         self.rpc_value = "follow"     # "follow" rnsd_up, or a fixed True/False/None
         self.owns_after_start = owns_after_start
         self.owns_value = owns_value  # override (e.g. None = unobservable)
+        self.activating = 0           # ownership polls rnsd spends in ExecStartPre
+        self.in_start_pre = False     # set by `start` when activating > 0
+        self.owns_names = []          # instance name every ownership check asked about
 
     def system_active(self, unit, timeout=5):
         return (unit, False) in ACTIVE
@@ -58,6 +61,9 @@ class Recorder:
         if unit == "rnsd":
             if self.start_dies:
                 return True, "ok"
+            if self.activating:       # start returns while ExecStartPre still runs
+                self.in_start_pre = True
+                return False, "Timeout while starting rnsd"
             self.rnsd_up = True
             if self.rnsd_pid == 0:   # starting an ACTIVE unit is a no-op success
                 self.rnsd_pid = 200
@@ -68,6 +74,9 @@ class Recorder:
             return dict(self.show_value)
         assert unit == "rnsd", unit
         pid = self.rnsd_pid
+        if self.in_start_pre:
+            return {"ActiveState": "activating", "SubState": "start-pre",
+                    "MainPID": "0", "NRestarts": str(self.rnsd_nrestarts)}
         return {"ActiveState": "active" if pid else "inactive",
                 "SubState": "running" if pid else "dead",
                 "MainPID": str(pid), "NRestarts": str(self.rnsd_nrestarts)}
@@ -83,6 +92,13 @@ class Recorder:
 
     def owns(self, name=None):
         self.log.append(("owns?", None))
+        self.owns_names.append(name)
+        if self.in_start_pre:
+            self.activating -= 1
+            if self.activating:
+                return False
+            self.in_start_pre = False                  # ExecStartPre done, rnsd runs
+            self.rnsd_up, self.rnsd_pid = True, 200
         if self.crash_in_wait and self.rnsd_pid == 200:
             self.rnsd_pid, self.rnsd_nrestarts = 201, self.rnsd_nrestarts + 1
         if self.owns_value is not None or not self.owns_after_start:
@@ -246,6 +262,79 @@ class TestRnsdActuallyRestarted:
             dict(up, MainPID="1", NRestarts="0"),
             {"ActiveState": "failed", "SubState": "failed", "MainPID": "0", "NRestarts": "0"},
             {"ActiveState": "failed", "SubState": "failed", "MainPID": "0", "NRestarts": "0"})[1]
+
+
+class TestRnsdActivating:
+    """Review of 2cf548ae, blocker #2: rnsd's ExecStartPre (wait_for_ipv6_ll.sh,
+    up to 30 s) runs with ActiveState=activating and MainPID 0. start_service
+    gives up after 30 s, so the release can begin while rnsd is still in its
+    pre-start. MainPID 0 there means "not started YET", not "dead"."""
+
+    def test_slow_execstartpre_is_waited_for_not_judged_dead(self):
+        rec = Recorder()
+        rec.activating = 3
+        _, release, _ = _run(rec, lambda: ro.ordered_restart_rnsd(wait_s=5))
+        assert release.ok, release.summary()
+        assert ("start", "nomadnet") in rec.log
+        assert release.rnsd_restart == "ok"
+        assert "100 -> 0 -> 200" in release.restart.trace
+
+    def test_still_activating_after_the_wait_is_unconfirmed_not_dead(self):
+        rec = Recorder()
+        rec.activating = 10_000
+        _, release, _ = _run(rec, lambda: ro.ordered_restart_rnsd(wait_s=0.01))
+        assert ("start", "nomadnet") not in rec.log   # never owned: held
+        assert release.verdict is False
+        assert release.rnsd_restart == "unverified"
+        assert "still starting" in release.summary()
+        assert "not running" not in release.summary()
+
+    def _st(self, active, pid, n="0", sub=None):
+        sub = sub or {"activating": "start-pre", "active": "running"}.get(active, "dead")
+        return {"ActiveState": active, "SubState": sub, "MainPID": pid, "NRestarts": n}
+
+    def test_judge_activating_then_running_is_ok(self):
+        j = ro.judge_rnsd_restart(self._st("active", "100"), self._st("activating", "0"),
+                                  self._st("active", "200"))
+        assert j.state == "ok", j
+
+    def test_judge_activating_then_systemd_restart_is_a_crash(self):
+        # ExecStartPre or the first start failed and Restart= fired: NRestarts moved
+        j = ro.judge_rnsd_restart(self._st("active", "100"), self._st("activating", "0"),
+                                  self._st("active", "300", n="1"))
+        assert j.state == "failed" and "crashed" in j.why
+
+    def test_judge_activating_then_old_pid_is_not_a_restart(self):
+        j = ro.judge_rnsd_restart(self._st("active", "100"), self._st("activating", "0"),
+                                  self._st("active", "100"))
+        assert j.state == "failed" and "unchanged" in j.why
+
+    def test_judge_auto_restart_after_the_wait_is_a_crash_not_still_starting(self):
+        # review SHOULD 1: activating/auto-restart is BETWEEN Restart= cycles
+        # (the Errno-99 status=255 exit this drop-in exists for) — proven crash
+        j = ro.judge_rnsd_restart(self._st("active", "100"), self._st("active", "200"),
+                                  self._st("activating", "0", n="1", sub="auto-restart"))
+        assert j.state == "failed" and "crashed" in j.why, j
+
+    def test_judge_auto_restart_queued_at_start_is_a_crash(self):
+        # review NIT 4: systemd >=254 has already counted it in NRestarts
+        j = ro.judge_rnsd_restart(self._st("active", "100"),
+                                  self._st("activating", "0", n="1", sub="auto-restart-queued"),
+                                  self._st("active", "300", n="1"))
+        assert j.state == "failed" and "crashed" in j.why, j
+
+    def test_judge_inactive_at_start_then_running_is_not_a_clean_restart(self):
+        # review NIT 3: only ACTIVATING excuses MainPID 0 at start (mutation pin)
+        j = ro.judge_rnsd_restart(self._st("active", "100"), self._st("inactive", "0"),
+                                  self._st("active", "300"))
+        assert j.state == "failed" and "not running" in j.why, j
+        assert "(inactive/dead)" in j.why, j   # NIT 4: names the state that WAS 0
+
+    def test_judge_dead_after_start_is_still_failed(self):
+        # the fix must not soften the real "start returned, nothing running" case
+        j = ro.judge_rnsd_restart(self._st("active", "100"), self._st("failed", "0"),
+                                  self._st("failed", "0"))
+        assert j.state == "failed" and "not running" in j.why
 
 
 class TestRpcReadiness:
@@ -531,7 +620,7 @@ class TestSystemUnitTriState:
 class TestRepairWizardOrder:
     """repair_rns_shared_instance must hold clients across the rnsd restart."""
 
-    def _run_repair(self, rec, instance_up=True):
+    def _run_repair(self, rec, instance_up=True, blocking=(), disabled=()):
         from handlers import _rns_repair as rr
         from handler_test_utils import make_handler_context
 
@@ -556,7 +645,9 @@ class TestRepairWizardOrder:
             patch.object(rr, "_preflight_share_instance"),
             patch.object(rr, "detect_rnsd_config_drift",
                          return_value=SimpleNamespace(drifted=False)),
-            patch.object(rr, "find_blocking_interfaces", return_value=[]),
+            patch.object(rr, "find_blocking_interfaces", return_value=list(blocking)),
+            patch.object(rr, "_confirm_disable_interfaces",
+                         return_value=(True, list(disabled))),
             patch.object(rr, "check_rns_shared_instance",
                          side_effect=lambda: rec.rnsd_up and instance_up),
             patch.object(rr, "get_rns_shared_instance_info",
@@ -591,6 +682,16 @@ class TestRepairWizardOrder:
         assert ("start", "meshforge-map") not in rec.log
         out = capsys.readouterr().out
         assert "LEFT STOPPED" in out and "nomadnet (user)" in out
+
+    def test_disabling_interfaces_does_not_change_the_instance_checked(self, capsys):
+        # `for name in disabled:` reused the instance-name variable, so after
+        # disabling an interface the release asked whether rnsd owned
+        # @rns/<interface name>, never true, and left every client stopped
+        rec = Recorder()
+        blocking = [("RNode LoRa", "port missing", "plug it in")]
+        assert self._run_repair(rec, blocking=blocking, disabled=["RNode LoRa"]) is True
+        assert rec.owns_names and set(rec.owns_names) == {"volcano"}, rec.owns_names
+        assert ("start", "nomadnet") in rec.log
 
     def test_repair_with_a_failed_rnsd_stop_keeps_clients_stopped(self, capsys):
         # F3: the wizard judged nothing — a failed stop + no-op start read as
@@ -683,6 +784,36 @@ class TestEveryRestartSiteIsOrdered:
             with patch.object(rr, "ordered_restart_rnsd",
                               return_value=(True, verdict_rel, ro.ClientHold())):
                 assert rr.restart_rnsd_reported()[0] is want
+
+    def test_start_timeout_in_execstartpre_follows_the_measured_release(self):
+        # review SHOULD 2: start_service's client wait (30 s) can expire inside
+        # ExecStartPre; the release then MEASURES rnsd restarted and released
+        # the clients. Neither surface may report that as "did not start".
+        from commands import rns
+        from handlers import _rns_repair as rr
+        rel = ro.ReleaseResult(rnsd_owns=True, rpc_ready=True,
+                               restart=ro.RestartJudgement("ok", ""))
+        with patch("utils.rnsd_restart_order.ordered_restart_rnsd",
+                   return_value=(False, rel, ro.ClientHold())):
+            result = rns.restart_rnsd()
+        assert result.success, result.message
+        assert "start command" in result.message
+        with patch.object(rr, "ordered_restart_rnsd",
+                          return_value=(False, rel, ro.ClientHold())):
+            verdict, text = rr.restart_rnsd_reported()
+        assert verdict is True and "start command" in text
+
+    def test_start_failed_and_release_failed_is_still_a_failure(self):
+        from commands import rns
+        from handlers import _rns_repair as rr
+        rel = ro.ReleaseResult(rnsd_owns=False,
+                               restart=ro.RestartJudgement("failed", "rnsd is not running"))
+        with patch("utils.rnsd_restart_order.ordered_restart_rnsd",
+                   return_value=(False, rel, ro.ClientHold())):
+            assert not rns.restart_rnsd().success
+        with patch.object(rr, "ordered_restart_rnsd",
+                          return_value=(False, rel, ro.ClientHold())):
+            assert rr.restart_rnsd_reported()[0] is False
 
     def _tui_site(self, handler_cls_path, method):
         import importlib

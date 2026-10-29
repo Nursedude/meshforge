@@ -20,6 +20,7 @@ from utils.service_check import (
 )
 from utils.config_drift import detect_rnsd_config_drift
 from utils.rnsd_restart_order import (
+    START_NOT_CONFIRMED,
     ClientHold, hold_rns_clients, instance_name, listener_owners,
     ordered_restart_rnsd, release_rns_clients, show_unit, terminate_pid,
 )
@@ -45,9 +46,10 @@ def restart_rnsd_reported():
     False a proven failure, None unobservable — the CLI's rc 2, which a bool
     rendered as "Restart Failed"."""
     started, release, _hold = ordered_restart_rnsd()
-    if not started:
-        return False, "rnsd did not start. " + release.summary()
-    return release.verdict, release.summary()
+    # review SHOULD 2: start_service's client wait can expire inside
+    # ExecStartPre — the release MEASURED the restart, so its verdict stands
+    note = "" if started else START_NOT_CONFIRMED
+    return release.verdict, note + release.summary()
 
 
 def _report_held(hold: ClientHold) -> None:
@@ -405,8 +407,8 @@ def repair_rns_shared_instance(handler) -> bool:
             print("  Proceeding without disabling (rnsd may hang)...\n")
         elif disabled:
             print(f"  Disabled {len(disabled)} blocking interface(s):")
-            for name in disabled:
-                print(f"    [{name}] set enabled = no")
+            for iface in disabled:  # not `name`: that is the instance checked below
+                print(f"    [{iface}] set enabled = no")
         # confirmed-but-failed already showed its own dialog witness
 
     # Clear systemd start limit
