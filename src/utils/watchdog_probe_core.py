@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -1425,7 +1426,18 @@ def _operator_cron_wired_uncached(token: str) -> Optional[bool]:
     return None if blind else False
 
 
-_rejected_tick_knobs: set = set()
+_rejected_knobs: set = set()
+_PLAIN_DECIMAL = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+
+
+def _warn_ignored_knob(env_name: str, raw: str, why: str, default) -> None:
+    """One WARNING per (knob, value): an ignored knob is a swallow that must
+    leave a witness (hfm #9), but not on every tick."""
+    if (env_name, raw) in _rejected_knobs:
+        return
+    _rejected_knobs.add((env_name, raw))
+    logger.warning("watchdog: %s=%r is not %s; IGNORED, using the default "
+                   "of %s", env_name, raw, why, default)
 
 
 def env_confirm_ticks(env_name: str, default: int) -> int:
@@ -1442,9 +1454,25 @@ def env_confirm_ticks(env_name: str, default: int) -> int:
     text = raw.strip()
     if text.isdigit() and text.isascii() and int(text) >= 1:
         return int(text)
-    if (env_name, raw) not in _rejected_tick_knobs:
-        _rejected_tick_knobs.add((env_name, raw))
-        logger.warning(
-            "watchdog: %s=%r is not a positive integer; IGNORED, using the "
-            "default of %d tick(s)", env_name, raw, default)
+    _warn_ignored_knob(env_name, raw, "a positive integer",
+                       f"{default} tick(s)")
+    return default
+
+
+def env_float_above(env_name: str, default: float, floor: float) -> float:
+    """A float knob: a plain decimal ("2.5", "4"), finite, above ``floor``.
+
+    float() alone accepts "inf" and "nan" — and "inf" passes a ``> floor``
+    check, so a multiplier knob could switch its alarm arm off unseen. It
+    also takes "1_0", "+3" and non-ASCII digits, which ``env_confirm_ticks``
+    rejects: one knob family, one notion of a valid value."""
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return default
+    text = raw.strip()
+    if _PLAIN_DECIMAL.fullmatch(text):
+        value = float(text)
+        if math.isfinite(value) and value > floor:
+            return value
+    _warn_ignored_knob(env_name, raw, f"a finite number above {floor}", default)
     return default

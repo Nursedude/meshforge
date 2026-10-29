@@ -67,6 +67,7 @@ from utils.watchdog_probe_core import (
     collect_dispositions,
     collect_observed_subjects,
     env_confirm_ticks,
+    env_float_above,
     note_subject_observed,
     note_disposition,
     reset_dispositions,
@@ -88,8 +89,12 @@ from utils.watchdog_probes_rns import (
     reset_lxmf_wedge_streaks,
     reset_rnstatus_baseline,
     probe_rns_shared_instance_responsive,
+    _lxmf_wedge_confirm_ticks,
+    _rnstatus_slow_factor,
+    _rpc_confirm_ticks,
 )
 from utils.watchdog_probes_rns_iface import (
+    _iface_down_confirm_ticks,
     probe_rns_interface_down_peer_reachable,
     reset_rns_iface_down_streaks,
     _tcp_reachable,
@@ -189,6 +194,8 @@ __all__ = [
     "signal_to_dict",
     "note_disposition",
     "env_confirm_ticks",
+    "env_float_above",
+    "resolve_watchdog_knobs",
     "reset_dispositions",
     "collect_dispositions",
     "collect_observed_subjects",
@@ -263,3 +270,18 @@ __all__ = [
     "probe_calibration_drift",
     "probe_local_brain_regressed",
 ]
+
+
+def resolve_watchdog_knobs() -> dict:
+    """The RNS-probe tuning knobs at their EFFECTIVE values, resolved now.
+
+    The daemon calls this at startup so an ignored value is witnessed before
+    the incident it would have mis-tuned, and logs the result — a daemon
+    that says its posture (2026-10-28). NOT every watchdog knob: the mini
+    probes' import-time knobs are not covered yet."""
+    return {
+        "rpc_confirm_ticks": _rpc_confirm_ticks(),
+        "lxmf_wedge_confirm_ticks": _lxmf_wedge_confirm_ticks(),
+        "iface_down_confirm_ticks": _iface_down_confirm_ticks(),
+        "rnstatus_slow_factor": _rnstatus_slow_factor(),
+    }

@@ -50,6 +50,7 @@ from utils.watchdog_probes import (
     Signal,
     collect_dispositions,
     collect_observed_subjects,
+    resolve_watchdog_knobs,
     note_disposition,
     reset_dispositions,
     probe_aredn_source_dark,
@@ -1187,6 +1188,8 @@ def run_loop(
     # holds it with extra.unobserved_hold (still blind), or re-fires it.
     rehydrated = tracker.rehydrate(_load_prior_signals(output_path))
     logger.info("watchdog: rehydrated %d signal(s) from prior state", rehydrated)
+    logger.info("watchdog: knobs %s", " ".join(
+        f"{k}={v}" for k, v in resolve_watchdog_knobs().items()))
     probe_count = 0
     rns_instance = _read_rns_instance_name()
     if rns_instance:

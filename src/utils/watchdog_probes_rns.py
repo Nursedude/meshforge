@@ -20,6 +20,7 @@ from utils.watchdog_probe_core import (  # noqa: F401
     Signal,
     _resolve_main_pid_status,
     env_confirm_ticks,
+    env_float_above,
     note_disposition,
     note_subject_observed,
     note_unit_presence_gate,
@@ -1021,14 +1022,8 @@ _RPC_LATENCY_SUBJECT = "rnsd:latency"
 
 def _rnstatus_slow_factor() -> float:
     """Multiple of this box's own median that counts as degraded."""
-    raw = os.environ.get(_RNSTATUS_SLOW_FACTOR_ENV)
-    if raw is None:
-        return _DEFAULT_RNSTATUS_SLOW_FACTOR
-    try:
-        value = float(raw)
-    except ValueError:
-        return _DEFAULT_RNSTATUS_SLOW_FACTOR
-    return value if value > 1.0 else _DEFAULT_RNSTATUS_SLOW_FACTOR
+    return env_float_above(_RNSTATUS_SLOW_FACTOR_ENV,
+                           _DEFAULT_RNSTATUS_SLOW_FACTOR, 1.0)
 
 
 def reset_rnstatus_baseline() -> None:

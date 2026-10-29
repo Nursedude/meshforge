@@ -18,9 +18,9 @@ _ENV = "MESHFORGE_TEST_CONFIRM_TICKS"
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):
     monkeypatch.delenv(_ENV, raising=False)
-    core._rejected_tick_knobs.clear()
+    core._rejected_knobs.clear()
     yield
-    core._rejected_tick_knobs.clear()
+    core._rejected_knobs.clear()
 
 
 @pytest.mark.parametrize("raw, expected", [
