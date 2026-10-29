@@ -82,6 +82,7 @@ from utils.paths import get_real_user_home  # noqa: E402
 
 DEFAULT_INTERVAL_S = 120.0   # acceptance: one message per 2 min
 PATH_WAIT_S = 10.0
+ANNOUNCE_SETTLE_S = 10.0   # let the gateway hear the drill's announce
 SENT_STATUSES = frozenset({"delivered"})
 FAILED_STATUSES = frozenset({"dead_letter", "failed"})
 # pending / in_progress / anything unknown = open: never terminal.
@@ -842,6 +843,26 @@ def _run_send(args, log, run_id, ident, src_hex, local_dest, dest_hex, gw,
                      "ts": time.time()})
     print(f"run {run_id}: {total} msg every {args.interval:.0f}s → {dest_hex}")
     print(f"log: {log}")
+    # Under enforce the gateway admits a listed hash only with a VALIDATED
+    # signature, and LXMF validates only a source it has heard announce —
+    # without this, message 1 is refused at the gate while the gateway's
+    # LXMRouter still proves it, and reconcile reads a LOSS (2026-10-29).
+    # SENT, not heard: the sender cannot observe the gateway's recall — the
+    # gateway journal's 'RNS ingress REFUSED' line is where a miss shows.
+    try:
+        router.announce(src.hash)
+    except Exception as e:  # noqa: BLE001 — a run whose announce failed
+        # would only measure the gate; record why and end it cleanly
+        append_log(log, {"event": "announce_sent", "ok": False,
+                         "error": f"{type(e).__name__}: {e}",
+                         "ts": time.time()})
+        append_log(log, {"event": "end", "sent": 0, "interrupted": False,
+                         "ts": time.time()})
+        print(f"FATAL: drill announce failed: {type(e).__name__}: {e}")
+        return 2
+    append_log(log, {"event": "announce_sent", "ok": True,
+                     "hash": src.hash.hex(), "ts": time.time()})
+    stop.wait(ANNOUNCE_SETTLE_S)
 
     def _lxmf_cb(seq, state):
         return lambda m: append_log(log, {"event": "lxmf", "seq": seq,
@@ -933,7 +954,9 @@ def cmd_reconcile(args) -> int:
               "'Bridge RNS→Mesh:' without '(queued'; or LXMF ingress "
               "dropped it after proving delivery (journal: 'ignored already "
               "received', an invalid stamp, or an exception in the delivery "
-              "callback)")
+              "callback); or the ingress gate refused the drill identity "
+              "as unverified because the gateway never heard its announce "
+              "(journal: 'RNS ingress REFUSED')")
     return rep["exit"]
 
 

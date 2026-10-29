@@ -724,7 +724,10 @@ class TestFifthReadOnlyADeliveryReceiptMakesALoss:
                 pass
 
             def register_delivery_identity(self, *a, **k):
-                return object()
+                return types.SimpleNamespace(hash=b"\x01" * 16)
+
+            def announce(self, h):
+                pass
 
             def handle_outbound(self, m):
                 handlers[drill.signal.SIGINT]()   # the operator hits Ctrl-C
@@ -736,6 +739,7 @@ class TestFifthReadOnlyADeliveryReceiptMakesALoss:
                             lambda sig, h: handlers.__setitem__(
                                 sig, lambda: h(sig, None)))
         monkeypatch.setattr(drill, "wait_grace", waits.append)
+        monkeypatch.setattr(drill, "ANNOUNCE_SETTLE_S", 0.0)
         monkeypatch.setattr(drill, "get_real_user_home", lambda: tmp_path)
         monkeypatch.setattr(utils.paths.ReticulumPaths,
                             "ensure_rns_client_configdir",
@@ -751,6 +755,110 @@ class TestFifthReadOnlyADeliveryReceiptMakesALoss:
         assert rc == 0 and waits == [17.0]
         events = drill.read_log(log)[0]
         assert events[-1]["event"] == "end" and events[-1]["interrupted"]
+
+
+class TestSenderAnnouncesBeforeFirstSend:
+    """2026-10-29 pre-drill read: under ``enforce`` a listed hash is admitted
+    only with ``signature_validated is True``, and LXMF can validate only a
+    source the gateway has heard announce. The drill identity never
+    announced, so message 1 was refused at the gate while the gateway's
+    LXMRouter still proved it — reconcile would read that as a LOSS."""
+
+    def _run(self, tmp_path, monkeypatch, calls, settle=0.0,
+             announce_error=None):
+        import argparse
+        import types
+        import utils.paths
+        import utils.rns_init
+        rns = types.ModuleType("RNS")
+        rns.Transport = types.SimpleNamespace(has_path=lambda h: True,
+                                              request_path=lambda h: None)
+        rns.Identity = types.SimpleNamespace(recall=lambda h: object())
+        rns.Destination = type("D", (), {"OUT": 1, "SINGLE": 1,
+                                         "__init__": lambda self, *a: None})
+        lx = types.ModuleType("LXMF")
+
+        class Msg:
+            DIRECT = 2
+
+            def __init__(self, *a, **k):
+                pass
+
+            def register_delivery_callback(self, cb):
+                pass
+
+            def register_failed_callback(self, cb):
+                pass
+
+        class Router:
+            def __init__(self, **k):
+                pass
+
+            def register_delivery_identity(self, *a, **k):
+                return types.SimpleNamespace(hash=b"\x01" * 16)
+
+            def announce(self, h):
+                if announce_error is not None:
+                    raise announce_error
+                calls.append(("announce", h, time.monotonic()))
+
+            def handle_outbound(self, m):
+                calls.append(("send", None, time.monotonic()))
+
+        lx.LXMessage, lx.LXMRouter = Msg, Router
+        monkeypatch.setitem(sys.modules, "RNS", rns)
+        monkeypatch.setitem(sys.modules, "LXMF", lx)
+        monkeypatch.setattr(drill.signal, "signal", lambda sig, h: None)
+        monkeypatch.setattr(drill, "wait_grace", lambda s: None)
+        monkeypatch.setattr(drill, "ANNOUNCE_SETTLE_S", settle)
+        monkeypatch.setattr(drill, "get_real_user_home", lambda: tmp_path)
+        monkeypatch.setattr(utils.paths.ReticulumPaths,
+                            "ensure_rns_client_configdir",
+                            staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(utils.rns_init, "open_reticulum",
+                            lambda *a, **k: object())
+        log = tmp_path / "r.jsonl"
+        drill.fresh_run_log(log)
+        args = argparse.Namespace(count=2, minutes=1.0, interval=0.01,
+                                  grace=0.0)
+        rc = drill._run_send(args, log, "r", object(), SRC, "ab" * 16,
+                             "ab" * 16, {"peers": []}, "9")
+        return rc, drill.read_log(log)[0]
+
+    def test_the_drill_identity_announces_before_message_one(
+            self, tmp_path, monkeypatch):
+        calls = []
+        rc, events = self._run(tmp_path, monkeypatch, calls)
+        assert rc == 0
+        assert calls[0][:2] == ("announce", b"\x01" * 16)
+        assert [c[0] for c in calls].count("announce") == 1
+        assert [c[0] for c in calls[1:]] == ["send", "send"]
+
+    def test_the_announce_leaves_a_witness_after_start(
+            self, tmp_path, monkeypatch):
+        rc, events = self._run(tmp_path, monkeypatch, [])
+        kinds = [e["event"] for e in events]
+        # `mark` finds the run by its FIRST event being `start`
+        assert kinds[0] == "start" and kinds[1] == "announce_sent"
+        assert kinds.index("announce_sent") < kinds.index("send")
+        assert events[1]["ok"] is True
+
+    def test_message_one_waits_the_settle_after_the_announce(
+            self, tmp_path, monkeypatch):
+        calls = []
+        rc, _ = self._run(tmp_path, monkeypatch, calls, settle=0.2)
+        assert rc == 0 and calls[1][0] == "send"
+        assert calls[1][2] - calls[0][2] >= 0.19
+
+    def test_a_failed_announce_ends_the_run_with_its_reason(
+            self, tmp_path, monkeypatch):
+        calls = []
+        rc, events = self._run(tmp_path, monkeypatch, calls,
+                               announce_error=OSError("no shared instance"))
+        assert rc == 2 and calls == []          # nothing handed off
+        kinds = [e["event"] for e in events]
+        assert kinds == ["start", "announce_sent", "end"]
+        assert events[1]["ok"] is False and "no shared instance" in events[1]["error"]
 
 
 class TestFifthReadSystemUnitWithUnaskableUserManager:
