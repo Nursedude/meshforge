@@ -287,8 +287,8 @@ never applied whole — each item lands on its own, re-tested here.
   public: Automatic responders wait when the radio channel is busy.
   status: planned
 - **M6** [MF][MA] S+F — pin wire formats to real bytes: fixtures generated from the installed library, never hand-written keys (the 09-18 `channel_idx` class)
-- **R6** [fork] S offer-back — upstream to SMCI: drafts only; posting is the operator's call.
-- **RNS-UP** [fork] S offer-back — upstream 3 fixes stock 1.5.7 lacks (mf.2 gateway KeyError, mf.3/4 `@rns` detach, mf.11 `rpc_listener`); drafts, operator posts
+- **R6** [fork] S offer-back — to SMCI: findings, operator reports.
+- **RNS-UP** [fork] S offer-back — 3 fixes stock 1.5.7 lacks (mf.2 gateway KeyError, mf.3/4 `@rns` detach, mf.11 `rpc_listener`) + RNode v3 IA hold: findings, operator reports (no AI code)
 - **UPL-1** [MF] F — uplink HEADROOM on `/fleet`: read the dish's own `get_history` ring buffer (per-second down/up, PoP latency, drop) and render peak/p95 beside the current line — `get_status` is one sample (read 0.5 Mbps while video streamed). Read-only.
 - **M2R-WAKE** [MF][MA] S+F twin→MA — wake-on-announce: make a returning peer's deferred M→R rows due at once — only if the 6f soak shows the ≤5 min cap matters. Propagation handoff SHELVED 10-17 (no consumer; design on file in the 6f provenance row; reopen only for a MEASURED intermittent peer that fetches from `3968a2ee`).
 - **JSONL** [MF][MA] S+F twin→MA — ONE append-only JSONL posture, `utils/jsonl_io.py`; move every copy onto it (`mini_dudeai/history.py`, `scripts/sdr_interference.py`, …) (operator 09-24 "queue B").
