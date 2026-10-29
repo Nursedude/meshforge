@@ -168,4 +168,4 @@ def test_bad_env_falls_back_to_default(monkeypatch):
 
 def test_knob_uses_the_shared_parser():
     """hfm #5: one parser for every N-consecutive-ticks knob."""
-    assert "_env_confirm_ticks" in wpr._iface_down_confirm_ticks.__code__.co_names
+    assert "env_confirm_ticks" in wpr._iface_down_confirm_ticks.__code__.co_names

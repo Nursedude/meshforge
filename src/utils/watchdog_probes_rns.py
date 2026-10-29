@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 from utils.watchdog_probe_core import (  # noqa: F401
     Signal,
     _resolve_main_pid_status,
+    env_confirm_ticks,
     note_disposition,
     note_subject_observed,
     note_unit_presence_gate,
@@ -562,23 +563,9 @@ _DEFAULT_LXMF_WEDGE_CONFIRM_TICKS = 5
 _lxmf_wedge_streaks: dict = {}
 
 
-def _env_confirm_ticks(env_name: str, default: int) -> int:
-    """One parser for every N-consecutive-ticks knob (hfm #5): resolved per
-    call so an operator can retune without a restart; an unparseable or < 1
-    value falls back to ``default``."""
-    raw = os.environ.get(env_name)
-    if raw is None:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return value if value >= 1 else default
-
-
 def _lxmf_wedge_confirm_ticks() -> int:
     """Consecutive blocked ticks before a lab process is called wedged."""
-    return _env_confirm_ticks(_LXMF_WEDGE_CONFIRM_TICKS_ENV,
+    return env_confirm_ticks(_LXMF_WEDGE_CONFIRM_TICKS_ENV,
                               _DEFAULT_LXMF_WEDGE_CONFIRM_TICKS)
 
 
@@ -1067,7 +1054,7 @@ def _rpc_confirm_ticks() -> int:
     observed (all <1 tick) while adding negligible latency to a real
     wedge that would otherwise persist for hours.
     """
-    return _env_confirm_ticks(_RPC_CONFIRM_TICKS_ENV, _DEFAULT_RPC_CONFIRM_TICKS)
+    return env_confirm_ticks(_RPC_CONFIRM_TICKS_ENV, _DEFAULT_RPC_CONFIRM_TICKS)
 
 
 def reset_rns_rpc_timeout_streak() -> None:

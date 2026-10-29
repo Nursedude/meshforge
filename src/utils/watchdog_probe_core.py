@@ -1423,3 +1423,28 @@ def _operator_cron_wired_uncached(token: str) -> Optional[bool]:
                 if token in (job.get("command") or ""):
                     return True
     return None if blind else False
+
+
+_rejected_tick_knobs: set = set()
+
+
+def env_confirm_ticks(env_name: str, default: int) -> int:
+    """One parser for every N-consecutive-ticks knob (hfm #5): resolved per
+    call so an operator can retune without a restart.
+
+    Only a plain positive integer is honoured. Anything else ("3.0", "1_000",
+    "0", "O") falls back to ``default`` and leaves a WARNING, once per bad
+    value: a knob that silently does nothing is a swallow with no witness
+    (hfm #9), and the operator believes the retune is live."""
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return default
+    text = raw.strip()
+    if text.isdigit() and text.isascii() and int(text) >= 1:
+        return int(text)
+    if (env_name, raw) not in _rejected_tick_knobs:
+        _rejected_tick_knobs.add((env_name, raw))
+        logger.warning(
+            "watchdog: %s=%r is not a positive integer; IGNORED, using the "
+            "default of %d tick(s)", env_name, raw, default)
+    return default

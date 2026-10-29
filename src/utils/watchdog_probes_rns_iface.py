@@ -13,10 +13,10 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 from utils.watchdog_probe_core import (
     Signal,
     _resolve_main_pid_status,
+    env_confirm_ticks,
     note_disposition,
     note_unit_presence_gate,
 )
-from utils.watchdog_probes_rns import _env_confirm_ticks
 from utils import tx_guard
 
 if TYPE_CHECKING:
@@ -81,7 +81,7 @@ _iface_down_rnsd_pid: List[Optional[int]] = [None]
 
 def _iface_down_confirm_ticks() -> int:
     """Consecutive Down + reachable ticks before an interface is wedged."""
-    return _env_confirm_ticks(_IFACE_DOWN_CONFIRM_TICKS_ENV,
+    return env_confirm_ticks(_IFACE_DOWN_CONFIRM_TICKS_ENV,
                               _DEFAULT_IFACE_DOWN_CONFIRM_TICKS)
 
 

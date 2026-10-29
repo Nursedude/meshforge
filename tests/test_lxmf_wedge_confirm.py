@@ -270,5 +270,5 @@ def test_cure_text_does_not_treat_rnstatus_124_as_proof(tmp_path, monkeypatch):
 
 
 def test_both_knobs_share_one_parser():
-    assert wpr._lxmf_wedge_confirm_ticks.__code__.co_names.count("_env_confirm_ticks") == 1
-    assert "_env_confirm_ticks" in wpr._rpc_confirm_ticks.__code__.co_names
+    assert wpr._lxmf_wedge_confirm_ticks.__code__.co_names.count("env_confirm_ticks") == 1
+    assert "env_confirm_ticks" in wpr._rpc_confirm_ticks.__code__.co_names
