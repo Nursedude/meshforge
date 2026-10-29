@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from utils import role_declaration as drift  # noqa: E402
 from utils import watchdog_probes_rf_leg as rf  # noqa: E402
 from utils import watchdog_probes_rns as wpr  # noqa: E402
+from utils import watchdog_probes_rns_iface as iface  # noqa: E402
 from utils.rns_status_parser import RNSStatus  # noqa: E402
 from utils.watchdog_probe_core import (  # noqa: E402
     collect_dispositions,
@@ -150,7 +151,7 @@ def test_rpc_responsive(presence, expected):
 
 @pytest.mark.parametrize("presence, expected", CASES)
 def test_interface_down_peer_reachable(presence, expected):
-    assert wpr.probe_rns_interface_down_peer_reachable(
+    assert iface.probe_rns_interface_down_peer_reachable(
         rnstatus_status=_binary_missing(), rns_presence=presence) is None
     assert _disp("rns_interface_down_peer_reachable")["disp"] == expected
 
@@ -167,7 +168,7 @@ def test_probes_compute_presence_when_not_given(tmp_path):
     """Standalone callers (no runner) still get the gate."""
     with patch.object(wpr, "rns_stack_presence", return_value="absent") as p:
         wpr.probe_rns_rpc_responsive(rnstatus_status=_binary_missing())
-        wpr.probe_rns_interface_down_peer_reachable(
+        iface.probe_rns_interface_down_peer_reachable(
             rnstatus_status=_binary_missing())
         rf.probe_rf_leg_silent(status=_binary_missing(),
                                state_path=str(tmp_path / "rf.json"))
@@ -186,7 +187,7 @@ def test_timeout_never_reads_absent(probe, tmp_path):
                                state_path=str(tmp_path / "rf.json"))
         cls = "rf_leg_silent"
     else:
-        wpr.probe_rns_interface_down_peer_reachable(
+        iface.probe_rns_interface_down_peer_reachable(
             rnstatus_status=timed, rns_presence="absent")
         cls = "rns_interface_down_peer_reachable"
     assert _disp(cls)["disp"] == "indeterminate"

@@ -81,13 +81,16 @@ from utils.watchdog_probe_core import (
 from utils.watchdog_probes_rns import (
     probe_lxmf_process_wedge,
     probe_main_thread_wedge,
-    probe_rns_interface_down_peer_reachable,
     probe_rns_namespace_collision,
     probe_rns_rpc_responsive,
     reset_rns_rpc_timeout_streak,
     reset_lxmf_wedge_streaks,
     reset_rnstatus_baseline,
     probe_rns_shared_instance_responsive,
+)
+from utils.watchdog_probes_rns_iface import (
+    probe_rns_interface_down_peer_reachable,
+    reset_rns_iface_down_streaks,
     _tcp_reachable,
 )
 from utils.watchdog_probes_rf_leg import probe_rf_leg_silent  # noqa: F401
@@ -196,6 +199,7 @@ __all__ = [
     "probe_rns_interface_down_peer_reachable",
     "probe_rns_rpc_responsive",
     "reset_rns_rpc_timeout_streak",
+    "reset_rns_iface_down_streaks",
     "reset_lxmf_wedge_streaks",
     "reset_rnstatus_baseline",
     "_tcp_reachable",

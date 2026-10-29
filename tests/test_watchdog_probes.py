@@ -836,13 +836,25 @@ class TestRnsInterfaceDownPeerReachable:
     answers rnstatus) and the peer host:port + L3 reachable, but the
     box's sole RNS uplink TCPInterface stuck Status: Down — fleet
     islanded until rnsd restart. The watchdog must catch this DIRECTLY,
-    not just indirectly via tracer_peer_unreachable."""
+    not just indirectly via tracer_peer_unreachable.
+
+    These pin parsing + qualification with the confirmation knob at 1;
+    the N-consecutive-ticks debounce is pinned in
+    tests/test_rns_iface_down_confirm.py."""
+
+    @pytest.fixture(autouse=True)
+    def _single_tick(self, monkeypatch):
+        from utils.watchdog_probes import reset_rns_iface_down_streaks
+        monkeypatch.setenv("MESHFORGE_RNS_IFACE_DOWN_CONFIRM_TICKS", "1")
+        reset_rns_iface_down_streaks()
+        yield
+        reset_rns_iface_down_streaks()
 
     def test_signal_class_registered(self):
         assert "rns_interface_down_peer_reachable" in SIGNAL_CLASSES
 
     def test_down_interface_peer_reachable_fires_wedge(self):
-        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=True):
+        with patch("utils.watchdog_probes_rns_iface._tcp_reachable", return_value=True):
             sig = probe_rns_interface_down_peer_reachable(
                 rnstatus_text=_RNSTATUS_DOWN_BLOCK,
             )
@@ -859,21 +871,21 @@ class TestRnsInterfaceDownPeerReachable:
     def test_down_interface_peer_unreachable_no_signal(self):
         """Genuine peer/network outage — owned by tracer_peer_unreachable,
         not this probe."""
-        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=False):
+        with patch("utils.watchdog_probes_rns_iface._tcp_reachable", return_value=False):
             sig = probe_rns_interface_down_peer_reachable(
                 rnstatus_text=_RNSTATUS_DOWN_BLOCK,
             )
         assert sig is None
 
     def test_up_interface_no_signal_even_if_reachable(self):
-        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=True):
+        with patch("utils.watchdog_probes_rns_iface._tcp_reachable", return_value=True):
             sig = probe_rns_interface_down_peer_reachable(
                 rnstatus_text=_RNSTATUS_UP_BLOCK,
             )
         assert sig is None
 
     def test_mixed_flags_only_the_down_reachable_interface(self):
-        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=True):
+        with patch("utils.watchdog_probes_rns_iface._tcp_reachable", return_value=True):
             sig = probe_rns_interface_down_peer_reachable(
                 rnstatus_text=_RNSTATUS_MIXED,
             )
@@ -884,7 +896,7 @@ class TestRnsInterfaceDownPeerReachable:
     def test_parser_pins_exact_incident_block(self):
         """The 192.0.2.38:4242 Regional RNS block must parse to
         host 192.0.2.38, port 4242."""
-        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=True):
+        with patch("utils.watchdog_probes_rns_iface._tcp_reachable", return_value=True):
             sig = probe_rns_interface_down_peer_reachable(
                 rnstatus_text=_RNSTATUS_DOWN_BLOCK,
             )
@@ -895,7 +907,7 @@ class TestRnsInterfaceDownPeerReachable:
     def test_non_tcp_interfaces_ignored(self):
         """RNodeInterface / Shared Instance / AutoInterface carry no
         host:port — never probed, never flagged."""
-        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=True):
+        with patch("utils.watchdog_probes_rns_iface._tcp_reachable", return_value=True):
             sig = probe_rns_interface_down_peer_reachable(
                 rnstatus_text=_RNSTATUS_NONTCP,
             )
@@ -904,7 +916,7 @@ class TestRnsInterfaceDownPeerReachable:
     def test_quiet_when_rnstatus_errored(self):
         """rnsd unreachable → rnstatus parse_error → no signal (a
         different probe owns 'rnsd is down')."""
-        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=True):
+        with patch("utils.watchdog_probes_rns_iface._tcp_reachable", return_value=True):
             sig = probe_rns_interface_down_peer_reachable(
                 rnstatus_text="Could not connect to local shared instance.",
             )
@@ -8861,7 +8873,7 @@ class TestRnsInterfaceTableUnobservable:
 
     def test_empty_rnstatus_output_is_indeterminate_not_clean(self):
         collect = _fresh_dispositions()
-        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=True):
+        with patch("utils.watchdog_probes_rns_iface._tcp_reachable", return_value=True):
             sig = probe_rns_interface_down_peer_reachable(rnstatus_text="")
         assert sig is None
         got = collect()["rns_interface_down_peer_reachable"]
@@ -8870,7 +8882,7 @@ class TestRnsInterfaceTableUnobservable:
 
     def test_unrecognized_error_text_is_indeterminate_not_clean(self):
         collect = _fresh_dispositions()
-        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=True):
+        with patch("utils.watchdog_probes_rns_iface._tcp_reachable", return_value=True):
             sig = probe_rns_interface_down_peer_reachable(
                 rnstatus_text="some banner nobody taught the parser\n")
         assert sig is None
@@ -8879,7 +8891,7 @@ class TestRnsInterfaceTableUnobservable:
 
     def test_real_interface_table_still_notes_clean(self):
         collect = _fresh_dispositions()
-        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=False):
+        with patch("utils.watchdog_probes_rns_iface._tcp_reachable", return_value=False):
             sig = probe_rns_interface_down_peer_reachable(
                 rnstatus_text=_RNSTATUS_UP_BLOCK)
         assert sig is None
