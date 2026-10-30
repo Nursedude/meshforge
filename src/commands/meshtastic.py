@@ -496,7 +496,8 @@ def auto_detect_connection(*, dev_dir=None, rns_configs=None) -> CommandResult:
             error="no_device")
     return CommandResult.fail(
         "No Meshtastic device found.\n\n"
-        "For USB radios: Connect device to USB port\n"
+        "For USB radios: connect it, then choose it once in Settings > "
+        "Meshtastic Connection > Serial Port (never auto-picked)\n"
         "For HAT radios: Start meshtasticd (Service Control)",
         error="no_device"
     )

@@ -301,3 +301,13 @@ def test_a_changed_saved_file_is_reloaded(default_state, monkeypatch):
     default_state.update(type="localhost", value="localhost")
     stamp["v"] = 2
     assert m.cli_transport_args() == ["--host", "localhost"]
+
+
+def test_no_usb_message_still_names_the_settings_path(monkeypatch, tmp_path):
+    # 10-30 CI: a runner has NO /dev/ttyUSB*|ttyACM*, so this branch is what
+    # CI (and a box with the radio unplugged) sees. With no auto-pick, a USB
+    # radio plugged in later must STILL be chosen in Settings — say so.
+    (tmp_path / "dev").mkdir()
+    monkeypatch.setattr(m, "_meshtasticd_tcp_up", lambda: False)
+    r = m.auto_detect_connection(dev_dir=tmp_path / "dev", rns_configs=[])
+    assert not r.success and "Settings > Meshtastic Connection" in r.message
