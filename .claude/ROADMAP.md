@@ -4,10 +4,7 @@
 > session notes (`~/.claude/plans/gateway-session-notes-*.md`) say what the last
 > session was doing on that box. This file says where the domain is going and why.
 > Owner: WH6GXZ (operator). Update it when a direction changes, not when a task ends.
-> Last set: 2026-10-18 — one-box router scope (D1), purpose test, competitor rows
-> (operator: "go on your advice", after the Nursedude Mesh Research review).
-> Previously: 2026-10-04 — 1.0 exit criteria added (operator grilling, Opus 5.5).
-> Previously: 2026-10-01 (operator words, Opus 5.5 session).
+> Last set: 2026-10-29 — monthly release cadence (operator). History: `git log`.
 
 ## What we are
 
@@ -46,7 +43,7 @@ we **tell the truth when we cannot see**.
 
 | Them | What they do well | What only we do |
 |---|---|---|
-| **MeshMonitor** (web NOC, Meshtastic+MeshCore+MQTT) | Web UI, Docker/Helm install, analysis of the user's mesh, virtual nodes | **Bridge** LXMF across meshes (they only observe RNS); RNode over the air (their RNode mode has never touched hardware); a TUI that works with the WAN down |
+| **MeshMonitor** (web NOC, Meshtastic+MeshCore+MQTT+RNS) | Web UI, Docker/Helm install, analysis of the user's mesh, virtual nodes, LXMF send/receive | **Bridge** LXMF across meshes (theirs relays MT↔MC text only, 4.17.2-rc5 read 10-29); a TUI that works with the WAN down |
 | **SMCI / RNS_Over_Meshcore** (RNS-over-MeshCore plugins) | Ride community MeshCore repeaters; airtime budget; published per-hop numbers | Native RNode path; owned RNS fork + rnsd lifecycle cures (#68/#69/#72); fleet-measured reliability |
 | **Mesh Bridge** (IceNet-01; Node.js, Meshtastic-only) | Bridges encrypted channels across 2+ radios; ID dedup 2,000 / 1 h; MQTT both ways; systemd installer | NOT YET EARNED. Candidates: per-leg airtime budget (they limit only commands, 10/min), every message delivered-or-named-drop, true-origin identity + DMs, cross-box dedup. Claim nothing until a measured run |
 | **MeshDash** (self-hosted dashboard) | "Up to 16 Meshtastic radios"; 100+ endpoint REST API; Docker runner | Nothing on radio count: `mesh_bridge` has 2 legs today. N legs is build work, not config |
@@ -97,6 +94,10 @@ soak runs ON rc1 → `1.0.0`. **No date.** Progress = N of 10 gates passing, eac
 by its check. A runnable gate script waits for the 2026-10-09 freeze review;
 until then this table is the record. Status is measured, never carried: re-run
 the check before changing a cell.
+
+**Release cadence (operator 2026-10-29):** monthly, tag X once the fleet
+ran X + later commits 7 days green and no `fix:` since repairs a defect
+in X — never HEAD; none → no release. Steps: `docs/compatibility.md`.
 
 | # | Gate | Passes when | Check | Status 10-04 |
 |---|---|---|---|---|
