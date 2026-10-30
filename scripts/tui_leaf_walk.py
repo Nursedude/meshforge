@@ -219,6 +219,48 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "Config Drift Check — detect_rnsd_config_drift() reads; the fix "
         "offer (_offer_drift_fix) prompts before migrating or restarting.",
 
+    # ---- configuration/ — all 9 read 2026-10-30 to the FIRST prompt. Every
+    # one opens with a menu (or the wizard's yesno) the stand-in cancels;
+    # every writer, editor hand-off, update and radio command sits behind
+    # it. DEPTH IS ONE LEVEL: the menus' contents (editbox hand-offs, apt,
+    # channel writes) are NOT proven here.
+    ("configuration", "meshforge"):
+        "settings.py _settings_menu: a menu first; connection/propagation/"
+        "loglevel/profile writers are behind it.",
+    ("configuration", "webhooks"):
+        "webhooks.py _webhooks_menu: a menu first; add/remove/toggle/test "
+        "(the test sends HTTP) are behind it.",
+    ("configuration", "config-api"):
+        "config_api.py _config_api_menu: a 0.5 s TCP connect probe of "
+        "127.0.0.1:8081 for the status line, then a menu; start/stop behind "
+        "it. Its on_startup() auto-start runs only from "
+        "HandlerRegistry.startup_all (handler_registry.py:571), never from "
+        "register() — the walk child only registers.",
+    ("configuration", "rnode"):
+        "rnode.py _rnode_menu: a menu first; detect/deep-scan (serial "
+        "probe) behind it.",
+    ("configuration", "backup"):
+        "device_backup.py _device_backup_menu: a menu first; create/full/"
+        "restore behind it.",
+    ("configuration", "channels"):
+        "channel_config.py: commands.meshtastic.ensure_connection() BEFORE "
+        "the menu — a 1 s bare TCP connect_ex/close on 127.0.0.1:4403 (no "
+        "protocol, no PhoneAPI handshake beyond accept; same class as "
+        "check_port) or a /dev glob; set_connection() writes module "
+        "globals only, nothing persisted. Then a menu; every channel write "
+        "behind it.",
+    ("configuration", "meshtasticd"):
+        "meshtasticd_config.py _meshtasticd_menu: menu_choices() is a pure "
+        "list, then a menu; service/config/editor actions behind it.",
+    ("configuration", "updates"):
+        "updates.py _updates_menu: version-checker import check, then a "
+        "menu; every apt/pip/git update behind it.",
+    ("configuration", "wizard"):
+        "first_run.py _run_first_run_wizard: yesno 'run the wizard?' — the "
+        "stand-in declines — then yesno 'skip and mark complete?', declined "
+        "too, so _mark_setup_complete() never runs. ⚠️ safe ONLY because "
+        "the stand-in declines both; a yes would write the setup marker.",
+
     # ---- rf_sdr/ — read 2026-09-16. handlers/rf_tools.py (565 lines) and
     # handlers/site_planner.py (294) contain ZERO subprocess, file-write,
     # network or sqlite calls, and their imports were followed by hand
@@ -264,15 +306,6 @@ NOT_WALKED: dict[tuple[str, str], str] = {
 #: gate test pins the count and rejects new entries.
 LEGACY_UNPROVEN: frozenset = frozenset({
     ('about', 'web'),
-    ('configuration', 'backup'),
-    ('configuration', 'channels'),
-    ('configuration', 'config-api'),
-    ('configuration', 'meshforge'),
-    ('configuration', 'meshtasticd'),
-    ('configuration', 'rnode'),
-    ('configuration', 'updates'),
-    ('configuration', 'webhooks'),
-    ('configuration', 'wizard'),
     ('dashboard', 'analytics'),
     ('dashboard', 'demo'),
     ('dashboard', 'health'),
