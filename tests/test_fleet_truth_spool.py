@@ -202,14 +202,13 @@ class TestSpoolCarriesTheDeclaration:
                "raw_watchdog": {"ok": True, "written_at": time.time(),
                                 "host": "moc3", "signals": []},
                "deployment": {"role": "gateway-only"},
-               "http_surface_expected": False, "radio_expected": False}
+               "http_surface_expected": False}
         (tmp_path / "moc3.json").write_text(json.dumps(doc))
         with patch.object(c, "truth_spool_dir", return_value=tmp_path), \
              patch.object(c, "_http_get_json", return_value=None):
             snap = c._fetch_peer("moc3", is_self=False, port=5000)
         assert snap["resolution_method"] == "ssh_spool"
         assert snap["http_surface_expected"] is False
-        assert snap["radio_expected"] is False
         assert snap["status"]["app"]["role"] == "gateway-only"
 
     def test_collector_defaults_expectation_to_none(self, tmp_path):
@@ -224,7 +223,6 @@ class TestSpoolCarriesTheDeclaration:
              patch.object(c, "_http_get_json", return_value=None):
             snap = c._fetch_peer("moc3", is_self=False, port=5000)
         assert snap["http_surface_expected"] is None
-        assert snap["radio_expected"] is None
 
 
 # --- cron verdicts for map-less boxes (2026-09-07) ----------------------------

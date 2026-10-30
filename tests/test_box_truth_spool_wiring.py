@@ -89,11 +89,9 @@ def _real_src(tmp_path, deployment):
 
 
 @pytest.mark.parametrize("role, want", [
-    ("gateway-only", {"http_surface": False, "watchdog": True, "radio": True}),  # moc3
-    ("field-node", {"http_surface": False, "watchdog": False, "radio": True}),  # lehua
-    # C21 bench box: no radio of its own (meshtasticd: absent), so its radio
-    # cell must read absent, never "not connected" (FAILED, 2026-10-30)
-    ("lab", {"http_surface": False, "watchdog": True, "radio": False}),
+    ("gateway-only", {"http_surface": False, "watchdog": True}),   # moc3
+    ("field-node", {"http_surface": False, "watchdog": False}),   # lehua
+    ("lab", {"http_surface": False, "watchdog": True}),           # C21 bench box
 ])
 def test_real_catalog_verdicts_match_what_the_center_used_to_decide(tmp_path, role, want):
     """The two live cases the center judged until today, now judged by the
@@ -116,8 +114,7 @@ def test_real_catalog_map_running_role_expects_the_surface_and_watchdog(tmp_path
 def test_real_catalog_unknown_role_is_none_with_the_reason(tmp_path):
     from utils import box_truth_collect as bcol
     s, errors = bcol.collect_sections(_real_src(tmp_path, {"role": "no-such-role"}))
-    assert s["role"]["expected"] == {"http_surface": None, "watchdog": None,
-                                     "radio": None}
+    assert s["role"]["expected"] == {"http_surface": None, "watchdog": None}
     assert "no-such-role" in s["role"]["why"]
 
 
@@ -156,8 +153,7 @@ def test_spool_doc_carries_the_box_verdict_end_to_end(tmp_path):
     (home / ".ssh").mkdir(mode=0o700)
     spool.br.noc_key_path(home).write_text("scratch")
     doc = {"schema": "box_truth/v1",
-           "sections": {"role": {"expected": {"http_surface": False, "watchdog": True,
-                                              "radio": False}},
+           "sections": {"role": {"expected": {"http_surface": False, "watchdog": True}},
                         "deployment": {"role": "gateway-only"}}}
 
     def read(alias, expect, *, key_path=None, **_kw):
@@ -170,23 +166,4 @@ def test_spool_doc_carries_the_box_verdict_end_to_end(tmp_path):
     out = json.loads((tmp_path / "spool" / "moc3.json").read_text())
     assert out["http_surface_expected"] is False
     assert out["watchdog_expected"] is True
-    assert out["radio_expected"] is False
     assert out["role"]["expected"]["watchdog"] is True
-
-
-@pytest.mark.parametrize("section, want", [
-    ({"expected": {"radio": False}}, False),
-    ({"expected": {"radio": True}}, True),
-    ({"expected": {"radio": None}}, None),
-    ({"expected": {"radio": 0}}, None),              # never coerced
-    ({"expected": {"http_surface": False, "watchdog": True}}, None),  # pre-radio export
-    ({"expected": None}, None),
-    (None, None),
-    ("nope", None),
-])
-def test_spool_reads_the_box_radio_verdict_and_nothing_else(section, want):
-    """An export older than the radio verdict carries no key: None, never
-    False, so a box that has not been redeployed keeps its radio cell
-    exactly as it was."""
-    spool = _load_spool()
-    assert spool.radio_expected_from_role(section) is want

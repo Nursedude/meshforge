@@ -83,26 +83,12 @@ def _src(tmp_path, deployment, roles, provisioner=_PROVISIONER, **kw):
     return bc.Sources(**base)
 
 
-def _radio(state):
-    """The radio unit's declaration, or nothing for an app whose radio is not
-    a unit (MeshAnchor's MeshCore radio is in-process: RADIO_UNIT is None)."""
-    return {app.RADIO_UNIT: state} if app.RADIO_UNIT else {}
-
-
-def _exp(http_surface, watchdog, radio=None):
-    """The full ``expected`` object. ``radio`` is the verdict THIS app can
-    reach: an app with no radio unit can never decide it, so it is None."""
-    return {"http_surface": http_surface, "watchdog": watchdog,
-            "radio": radio if app.RADIO_UNIT else None}
-
-
 MAPLESS = {"services": {app.HTTP_SURFACE_UNIT: "disabled",
-                        app.WATCHDOG_UNIT: "enabled", "rnsd": "enabled",
-                        **_radio("enabled")}}
+                        app.WATCHDOG_UNIT: "enabled", "rnsd": "enabled"}}
 FIELD = {"services": {app.HTTP_SURFACE_UNIT: "absent",
-                      app.WATCHDOG_UNIT: "absent", **_radio("absent")}}
+                      app.WATCHDOG_UNIT: "absent"}}
 FULL = {"services": {app.HTTP_SURFACE_UNIT: "enabled",
-                     app.WATCHDOG_UNIT: "enabled", **_radio("enabled")}}
+                     app.WATCHDOG_UNIT: "enabled"}}
 
 
 def test_role_is_an_allowlisted_section():
@@ -117,16 +103,16 @@ def test_the_box_judges_its_own_role(tmp_path):
     assert role["name"] == "mapless"
     assert role["catalog"] == str(src.catalog)
     assert role["services"] == MAPLESS["services"]
-    assert role["expected"] == _exp(False, True, radio=True)
+    assert role["expected"] == {"http_surface": False, "watchdog": True}
     assert role["why"] is None
     assert "role" not in errors
 
 
 @pytest.mark.parametrize("roles, want", [
-    ({"r": FIELD}, _exp(False, False, radio=False)),
-    ({"r": FULL}, _exp(True, True, radio=True)),
+    ({"r": FIELD}, {"http_surface": False, "watchdog": False}),
+    ({"r": FULL}, {"http_surface": True, "watchdog": True}),
     ({"r": {"services": {app.HTTP_SURFACE_UNIT: " Disabled "}}},
-     _exp(False, None)),
+     {"http_surface": False, "watchdog": None}),
 ])
 def test_declared_states_map_to_verdicts(tmp_path, roles, want):
     """disabled/absent = not expected; anything else declared = expected; a
@@ -150,7 +136,7 @@ def test_undecidable_is_none_with_the_reason_never_false(tmp_path, deployment, w
     roles = {"mapless": MAPLESS, "no-services": {"board_tier": "x"}}
     s, errors = bc.collect_sections(_src(tmp_path, deployment, roles))
     role = s["role"]
-    assert role["expected"] == _exp(None, None)
+    assert role["expected"] == {"http_surface": None, "watchdog": None}
     assert role["services"] is None
     assert why_has in role["why"]
     assert "role" not in errors, "an absent or silent declaration is not an error"
@@ -163,7 +149,7 @@ def test_a_provisioner_that_exits_at_import_is_an_error_not_a_crash(tmp_path):
     s, errors = bc.collect_sections(
         _src(tmp_path, {"role": "mapless"}, {"mapless": MAPLESS},
              provisioner=_EXITING_PROVISIONER))
-    assert s["role"]["expected"] == _exp(None, None)
+    assert s["role"]["expected"] == {"http_surface": None, "watchdog": None}
     assert "role" in errors and "exit" in errors["role"] and "2" in errors["role"]
     assert isinstance(s["clock"]["now"], int), "the rest of the document survived"
 
@@ -172,13 +158,13 @@ def test_a_missing_provisioner_or_catalog_is_an_error(tmp_path):
     src = _src(tmp_path, {"role": "mapless"}, {"mapless": MAPLESS})
     src.provisioner = tmp_path / "nowhere.py"
     s, errors = bc.collect_sections(src)
-    assert s["role"]["expected"] == _exp(None, None)
+    assert s["role"]["expected"] == {"http_surface": None, "watchdog": None}
     assert "role" in errors and "nowhere.py" in errors["role"]
 
     src = _src(tmp_path, {"role": "mapless"}, {"mapless": MAPLESS})
     src.catalog.unlink()
     s, errors = bc.collect_sections(src)
-    assert s["role"]["expected"] == _exp(None, None)
+    assert s["role"]["expected"] == {"http_surface": None, "watchdog": None}
     assert "role" in errors
 
 
@@ -189,13 +175,14 @@ def test_catalog_values_are_carried_as_strings(tmp_path):
     s, _e = bc.collect_sections(_src(tmp_path, {"role": "r"}, roles))
     assert s["role"]["services"] == {app.HTTP_SURFACE_UNIT: "True",
                                      app.WATCHDOG_UNIT: "None"}
-    assert s["role"]["expected"] == _exp(None, None)
+    assert s["role"]["expected"] == {"http_surface": None, "watchdog": None}
 
 
 def test_role_rides_the_framed_export(tmp_path):
     src = _src(tmp_path, {"role": "mapless"}, {"mapless": MAPLESS})
     doc = bt.parse_framed(bc.run_export("SHA256:" + "A" * 43, src))
-    assert doc["sections"]["role"]["expected"] == _exp(False, True, radio=True)
+    assert doc["sections"]["role"]["expected"] == {"http_surface": False,
+                                                   "watchdog": True}
 
 
 # ── non-author read 2026-10-15 (Opus 5.5) ────────────────────────────────
@@ -219,7 +206,7 @@ _INHERITING_PROVISIONER = _PROVISIONER.replace(
 def test_a_missing_parent_is_a_catalog_error_not_a_missing_role(tmp_path):
     roles = {"child": {"inherits": "ghostparent", "services": FULL["services"]}}
     sec, err = bc._role(_src(tmp_path, {"role": "child"}, roles, _INHERITING_PROVISIONER))
-    assert sec["expected"] == _exp(None, None)
+    assert sec["expected"] == {"http_surface": None, "watchdog": None}
     assert "not in the catalog" not in sec["why"], sec["why"]
     assert err and "ghostparent" in err
 
@@ -227,32 +214,6 @@ def test_a_missing_parent_is_a_catalog_error_not_a_missing_role(tmp_path):
 def test_an_undecidable_unit_names_itself_in_why(tmp_path):
     roles = {"x": {"services": {app.HTTP_SURFACE_UNIT: 1, app.WATCHDOG_UNIT: "enabled"}}}
     sec, err = bc._role(_src(tmp_path, {"role": "x"}, roles))
-    assert sec["expected"] == _exp(None, True)
+    assert sec["expected"] == {"http_surface": None, "watchdog": True}
     assert err is None
     assert sec["why"] and app.HTTP_SURFACE_UNIT in sec["why"], sec["why"]
-
-
-# ── radio expectation (2026-10-30) ───────────────────────────────────────
-# meshforge-lab declares `meshtasticd: absent` (a bench box with no radio of
-# its own) and /fleet rolled it up FAILED on "radio not connected". The box
-# now judges its radio the way it judges its map and watchdog, from the unit
-# THIS app's radio runs as. An app whose radio is not a unit can never decide
-# it, so it stays None — never False.
-
-def test_an_app_without_a_radio_unit_never_decides_the_radio(tmp_path):
-    src = _src(tmp_path, {"role": "mapless"}, {"mapless": MAPLESS})
-    src.radio_unit = None
-    sec, err = bc._role(src)
-    assert sec["expected"]["radio"] is None
-    assert err is None
-    assert sec["why"] is None, "an undecidable-by-design radio is not a gap"
-
-
-@pytest.mark.skipif(not app.RADIO_UNIT, reason="this app's radio is not a unit")
-def test_a_role_silent_about_the_radio_names_it_in_why(tmp_path):
-    roles = {"x": {"services": {app.HTTP_SURFACE_UNIT: "enabled",
-                                app.WATCHDOG_UNIT: "enabled"}}}
-    sec, err = bc._role(_src(tmp_path, {"role": "x"}, roles))
-    assert sec["expected"] == _exp(True, True, radio=None)
-    assert err is None
-    assert sec["why"] and app.RADIO_UNIT in sec["why"], sec["why"]

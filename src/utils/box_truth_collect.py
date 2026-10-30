@@ -96,9 +96,6 @@ class Sources:
     catalog: Path = app.ROLE_CATALOG
     http_surface_unit: str = app.HTTP_SURFACE_UNIT
     watchdog_unit: str = app.WATCHDOG_UNIT
-    #: None when this app's radio is not a unit (the radio verdict is then
-    #: undecidable by design and names no gap in ``why``).
-    radio_unit: Optional[str] = app.RADIO_UNIT
 
     def _xdg(self, var: str, default: str) -> Path:
         v = self.env.get(var)
@@ -347,8 +344,7 @@ def _role(src: Sources) -> Tuple[dict, Optional[str]]:
     declaration."""
     out: Dict[str, Any] = {"app": app.APP, "name": None, "catalog": str(src.catalog),
                            "services": None,
-                           "expected": {"http_surface": None, "watchdog": None,
-                                        "radio": None},
+                           "expected": {"http_surface": None, "watchdog": None},
                            "why": None}
     dep, dep_err = _json_file(src.deployment_path)
     if dep is None:
@@ -383,14 +379,12 @@ def _role(src: Sources) -> Tuple[dict, Optional[str]]:
     # center always held); carried on the wire as strings.
     out["services"] = {str(k): str(v) for k, v in services.items()}
     out["expected"] = {"http_surface": unit_expected(services, src.http_surface_unit),
-                       "watchdog": unit_expected(services, src.watchdog_unit),
-                       "radio": (unit_expected(services, src.radio_unit)
-                                 if src.radio_unit else None)}
+                       "watchdog": unit_expected(services, src.watchdog_unit)}
     # Every None verdict says why (the section's contract): silent, or a
     # state that is not a string.
     gaps = [f"{u} {'silent' if u not in services else 'state ' + repr(services[u]) + ' is not a string'}"
-            for u in (src.http_surface_unit, src.watchdog_unit, src.radio_unit)
-            if u and unit_expected(services, u) is None]
+            for u in (src.http_surface_unit, src.watchdog_unit)
+            if unit_expected(services, u) is None]
     if gaps:
         out["why"] = f"role {role!r} undecidable for: " + "; ".join(gaps)
     return out, None

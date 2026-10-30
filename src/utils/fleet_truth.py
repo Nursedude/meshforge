@@ -571,12 +571,7 @@ def build_box_truth(
                      age_s=age_s, source="fanout")
         app = None
     else:
-        # Name the transport that answered: a spool-read row is not a fan-out
-        # answer (the 2026-10-14 drill was aimed wrong by this label).
-        reach = cell(HEALTHY, age_s=age_s,
-                     source=("ssh_spool" if snap.get("resolution_method") == "ssh_spool"
-                             else "fanout"),
-                     observed_at=answered_at)
+        reach = cell(HEALTHY, age_s=age_s, source="fanout", observed_at=answered_at)
         app = (status or {}).get("app") if status else None
 
     # DECLARED POSTURE (2026-09-01, DORMANT arc batch 2). The collector stamps
@@ -721,19 +716,6 @@ def build_box_truth(
                 f"{_w.get('reason') or 'no data'} — this box's declared role "
                 "runs no watchdog (local probe coverage given up by design; "
                 "reachability, mini, services and radio still taint)")
-
-    # A role that declares NO radio (meshforge-lab, a bench box: meshtasticd
-    # absent) makes a not-connected or unobservable radio `absent`, the same
-    # contract as the watchdog above: only from the box's own verdict (False,
-    # never None), and a radio that IS connected stays an observation.
-    if snap.get("radio_expected") is False:
-        _r = subsystems.get("radio")
-        if isinstance(_r, dict) and _r.get("state") != HEALTHY:
-            _r["state"] = DARK
-            _r["absent"] = True
-            _r["reason"] = (
-                f"{_r.get('reason') or 'no radio'} — this box's declared role "
-                "runs no radio")
 
     coverage = merge_coverage(watchdog_block, signal_classes)
 

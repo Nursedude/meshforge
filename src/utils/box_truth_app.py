@@ -44,10 +44,6 @@ HTTP_SURFACE_UNIT = "meshforge-map"
 #: The box-health watchdog unit a role declares enabled / disabled / absent.
 #: ONE box organ for both apps (see WATCHDOG_PATH), so both seams name it.
 WATCHDOG_UNIT = "meshforge-watchdog"
-#: The unit this app's radio runs as. A role that declares it disabled /
-#: absent has NO radio by design (meshforge-lab, a bench box), so its
-#: radio cell reads absent instead of "not connected".
-RADIO_UNIT = "meshtasticd"
 #: This app's role catalog, and the provisioner that resolves a role in it.
 ROLE_CATALOG = Path(INSTALL_DIR) / "docs" / "fleet_roles.yaml"
 PROVISIONER = Path(INSTALL_DIR) / "scripts" / "provision_role.py"
