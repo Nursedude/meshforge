@@ -636,6 +636,19 @@ else
     echo -e "Bridge health: ${YELLOW}Not available${NC}"
 fi
 
+# The TUI's in-app config editor needs `dialog` (whiptail has no --editbox;
+# "Edit Config" silently did nothing on whiptail-only boxes 06-16..10-30).
+# Same helper fleet_sync.sh runs on every fleet box. update.sh is root, so no
+# sudo. Runs LAST, after every restart: an apt install (up to ~600 s on a
+# stale index) must not hold the services on old code. `|| true` (set -e): a failed apt must not abort the update; it warns.
+if [[ -f "$INSTALL_DIR/scripts/ensure_editor_pkg.sh" ]]; then
+    edpkg_out="$(timeout 700 bash "$INSTALL_DIR/scripts/ensure_editor_pkg.sh" --apply 2>&1)" || true
+    case "$edpkg_out" in
+        present*|added*|no_apt*) echo -e "  ${GREEN}✓ TUI editor package: ${edpkg_out%%:*}${NC}" ;;
+        *) echo -e "  ${YELLOW}⚠ TUI editor package: ${edpkg_out:-no output (timeout 700s?)}${NC}" ;;
+    esac
+fi
+
 # ─────────────────────────────────────────────────────────────────
 # Done
 # ─────────────────────────────────────────────────────────────────

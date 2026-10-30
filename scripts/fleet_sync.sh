@@ -663,6 +663,30 @@ ensure_prune_cron() {
     return 0
 }
 
+# ensure_editor_pkg <short> <repo_path>
+# Installs `dialog` where absent: the TUI in-app config editor needs it
+# (whiptail has no --editbox; Edit Config silently did nothing on
+# whiptail-only boxes 2026-06-16..10-30). Non-interactive sudo inside the
+# helper, so a box without NOPASSWD apt WARNs instead of hanging the deploy.
+# A failure WARNs, never FAILs: an editor package is not worth failing a
+# code deploy over, but it must not go silent.
+# (Recipe rule: this body must stay single-quote-free, see ~line 451.)
+ensure_editor_pkg() {
+    local short="$1" repo="$2"
+    if [ ! -f "$repo/scripts/ensure_editor_pkg.sh" ]; then
+        echo "SKIP $short no_tool"
+        return 0
+    fi
+    local out
+    out=$(timeout 700 bash "$repo/scripts/ensure_editor_pkg.sh" --apply 2>&1)
+    [ -n "$out" ] || out="no output (helper killed by timeout 700s?)"
+    case "$out" in
+        present*|added*|no_apt*) echo "PASS $short ${out%%:*}" ;;
+        *) echo "WARN $short $(printf "%s" "$out" | tr "\n" "|" | head -c 160)" ;;
+    esac
+    return 0
+}
+
 # ensure_desktop <short> <repo_path>
 # Converges the desktop launcher on CONSOLE boxes (default target
 # graphical.target) and the opt-in deployment.json autostart (2026-10-25: the
@@ -749,6 +773,9 @@ done
 sync_user_unit meshforge-echo /opt/meshforge meshforge-echo "$MF_PRE_HEAD" || rc1f=$?
 sync_user_unit nomadnet-silence-watch /opt/meshforge nomadnet-silence-watch "$MF_PRE_HEAD" || rc1g=$?
 sync_repo meshforge-maps  /opt/meshforge-maps  meshforge-maps    "$MFMAPS_PRE_HEAD" || rc2=$?
+# AFTER every restart above: an apt install (up to ~600 s on a stale index)
+# must never hold the mini/echo restarts on old code (review 10-30 #5).
+ensure_editor_pkg meshforge-editor-pkg /opt/meshforge
 
 # Smoke: catch rollup self-loopback in ~/.config/meshanchor/fleet.json.
 # An entry whose host resolves to this box (hostname / hostname.local /
