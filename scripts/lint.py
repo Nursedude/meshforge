@@ -781,7 +781,10 @@ def get_all_python_files(directory: str = 'src') -> List[str]:
 # archive file and leave a one-row summary in the in-file archived-issues table.
 # DO NOT raise the limit to make a tripped check pass.
 CONTEXT_DOC_LIMITS = {
-    '.claude/foundations/persistent_issues.md': 40_000,
+    # Context trim phase 2c (2026-10-29): 39,210 -> 24,275 B; every trimmed
+    # story verbatim in persistent_issues_archive.md (pinned by
+    # tests/test_persistent_issues_tells.py). Cap = trimmed x 1.15, ratchet DOWN.
+    '.claude/foundations/persistent_issues.md': 27_500,
     # Roadmap cohesion Q11 (2026-10-19): measured post-migration size x 1.25,
     # ratchet DOWN only. Done items leave the list (Q4) — trim, never raise.
     '.claude/ROADMAP.md': 44_500,  # 35,657 B post-migration x 1.25 = 44,571
@@ -802,7 +805,9 @@ CONTEXT_DOC_LIMITS = {
 # roadmap would archive LIVE items (non-author pass 2026-10-22).
 CONTEXT_DOC_REMEDY = {
     '.claude/foundations/persistent_issues.md':
-        "Move oldest resolved issues to the archive; do not raise the limit.",
+        "A resolved issue goes to the archive; a long tell row keeps symptom | "
+        "class | quick check | trap and moves its story to the archive "
+        "verbatim; do not raise the limit.",
     '.claude/ROADMAP.md':
         "A done item leaves the list (one provenance line); trim finished or "
         "won't-do items, never archive live ones; do not raise the limit.",
