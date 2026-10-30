@@ -102,3 +102,23 @@ def test_printed_traceback_on_stdout_is_said_unknown():
     r = _r()
     r["stdout"] = "x\nValueError: bad literal\n"
     assert tui_leaf_walk.classify(r)["status"] == "said-unknown"
+
+
+def test_result_marker_is_found_after_an_unterminated_prompt():
+    # 10-30: diagnose.py prints "Press Enter to continue..." with no newline,
+    # so the child's result line was glued onto it and read as "no result".
+    out = 'x\nPress Enter to continue...__RESULT__{"owned": true}\n'
+    assert tui_leaf_walk.extract_result(out) == {"owned": True}
+    assert tui_leaf_walk.extract_result("nothing here") is None
+
+
+def test_child_gets_a_closed_stdin(monkeypatch):
+    # a leaf that calls input() must get EOF, not block the walk until timeout
+    seen = {}
+    def fake_run(*a, **k):
+        seen.update(k)
+        return type("P", (), {"stdout": '__RESULT__{"owned": true, "dialogs": [], "errors": []}',
+                              "stderr": ""})()
+    monkeypatch.setattr(tui_leaf_walk.subprocess, "run", fake_run)
+    tui_leaf_walk.walk_one("about", "help")
+    assert seen.get("stdin") is tui_leaf_walk.subprocess.DEVNULL

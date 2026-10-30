@@ -261,6 +261,46 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "too, so _mark_setup_complete() never runs. ⚠️ safe ONLY because "
         "the stand-in declines both; a yes would write the setup marker.",
 
+    # ---- system/ — read 2026-10-30, each to its FIRST prompt.
+    ("system", "diagnose"):
+        "diagnostics.py: runs src/cli/diagnose.py (timeout 30): systemctl "
+        "is-active, lsof -i, `meshtastic --version` (opens no device), "
+        "rnstatus, pgrep, df, ip addr, rtl_test -t, a journal read. Reads.",
+    ("system", "run"):
+        "config_doctor.py _run_and_render: the _config_doctor_checks module "
+        "(789 lines, no subprocess/write/sudo/radio session) — check_service, "
+        "unit-file lookup, RNS shared-instance socket check, config reads. "
+        "'Read-only — no fixes applied' is its own banner.",
+    ("system", "details"):
+        "config_doctor.py _details_menu: the last results (or none), then a "
+        "menu the stand-in cancels.",
+    ("system", "daemon"):
+        "daemon.py _daemon_menu: reads /run/meshforge/meshforged.pid and "
+        "os.kill(pid, 0) — signal 0 is an existence check, sends nothing — "
+        "then a menu; start/stop behind it.",
+    ("system", "logs"):
+        "logs.py _logs_menu: a menu first; live follows / journal reads "
+        "behind it.",
+    ("system", "hardware"):
+        "hardware.py _hardware_menu: a menu first; detect / RNode probe / "
+        "Enable SPI (a config write) behind it.",
+    ("system", "network"):
+        "network_tools.py _network_menu: a menu first; traceroute / ss / "
+        "ping behind it.",
+    ("system", "review"):
+        "auto_review.py _auto_review_menu: a menu first; the code-review "
+        "agents behind it.",
+    ("system", "discover"):
+        "service_discovery.py: a menu first; local/network/USB scans "
+        "behind it.",
+    ("system", "starlink_status"):
+        "starlink.py -> utils.starlink_dish.get_dish_status: ONE gRPC "
+        "request, get_status (code 1004), to the dish. The module builds no "
+        "reboot/stow request — only 1004 and 2008 exist in it.",
+    ("system", "starlink_skymap"):
+        "starlink.py -> get_obstruction_map: request code 2008 "
+        "(dish_get_obstruction_map), read-only.",
+
     # ---- rf_sdr/ — read 2026-09-16. handlers/rf_tools.py (565 lines) and
     # handlers/site_planner.py (294) contain ZERO subprocess, file-write,
     # network or sqlite calls, and their imports were followed by hand
@@ -291,6 +331,16 @@ ALLOWLIST: dict[tuple[str, str], str] = {
 #: goes here or in ALLOWLIST — tests/test_tui_leaf_walk_gate.py fails on an
 #: action in neither.
 NOT_WALKED: dict[tuple[str, str], str] = {
+    ("system", "status"):
+        "Quick Status runs src/cli/status.py, which (when :4403 answers) runs "
+        "`meshtastic --host localhost --info` and `--nodes` before any prompt "
+        "— a TCP radio session on meshtasticd, the #17/#75 class. Read "
+        "2026-10-30 (it was a BARE CLI that could open the RNode until "
+        "99c4a15a).",
+    ("system", "shell"):
+        "Linux Shell runs an interactive $SHELL with no timeout after its "
+        "msgbox — it would block the walk on the child's stdin. Read "
+        "2026-10-30.",
     ("dashboard", "datapath"):
         "Data Path Check runs `meshtastic --host localhost --info` and "
         "MapDataCollector.collect() BEFORE any prompt: a radio session on "
@@ -377,19 +427,6 @@ LEGACY_UNPROVEN: frozenset = frozenset({
     ('rns', 'repair'),
     ('rns', 'sniffer'),
     ('rns', 'tools'),
-    ('system', 'daemon'),
-    ('system', 'details'),
-    ('system', 'diagnose'),
-    ('system', 'discover'),
-    ('system', 'hardware'),
-    ('system', 'logs'),
-    ('system', 'network'),
-    ('system', 'review'),
-    ('system', 'run'),
-    ('system', 'shell'),
-    ('system', 'starlink_skymap'),
-    ('system', 'starlink_status'),
-    ('system', 'status'),
 })
 
 
@@ -507,18 +544,31 @@ def walk_one(section, tag, timeout=90):
     src = CHILD % {"src": str(SRC), "tui": str(TUI), "section": section,
                    "tag": tag, "errtitles": sorted(SAFE_CALL_ERROR_TITLES)}
     try:
+        # stdin closed: a leaf that calls input() (diagnose.py's "Press
+        # Enter") gets EOF instead of blocking until the timeout (10-30).
         p = subprocess.run([sys.executable, "-c", src], cwd=str(REPO),
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, timeout=timeout,
+                           stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         return {"ok": False, "note": f"DID NOT RETURN within {timeout}s "
                                      f"— a leaf that hangs is the worst kind "
                                      f"of not-returning to its parent"}
-    line = [l for l in p.stdout.splitlines() if l.startswith("__RESULT__")]
-    if not line:
+    r = extract_result(p.stdout)
+    if r is None:
         tail = (p.stderr or p.stdout).strip().splitlines()
         return {"ok": False, "note": "child produced no result: "
                                      + (tail[-1] if tail else "no output")}
-    return classify(json.loads(line[0][len("__RESULT__"):]))
+    return classify(r)
+
+
+def extract_result(stdout):
+    """The child's __RESULT__ json, wherever it sits on its line — a leaf
+    that printed a prompt without a newline glues it on (10-30)."""
+    for ln in (stdout or "").splitlines():
+        i = ln.find("__RESULT__")
+        if i >= 0:
+            return json.loads(ln[i + len("__RESULT__"):])
+    return None
 
 
 #: A screen admitting it could not see. ``safe_call`` is not the only

@@ -69,10 +69,10 @@ def test_legacy_baseline_only_names_live_actions():
 
 
 def test_legacy_baseline_never_grows():
-    # 10-30 baseline 105 (121 - 15 allowlisted - 1 denylisted); 85 after the
+    # 10-30 baseline 105 (121 - 15 allowlisted - 1 denylisted); 72 after the
     # same-day diagnostics batch. Lower
     # this number when the baseline shrinks; it must never be raised.
-    assert len(w.LEGACY_UNPROVEN) <= 85
+    assert len(w.LEGACY_UNPROVEN) <= 72
 
 
 def test_every_reason_is_written():
