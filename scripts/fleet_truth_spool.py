@@ -85,6 +85,15 @@ def expected_from_role(role_section) -> "tuple[Optional[bool], Optional[bool]]":
     return tri(exp.get("http_surface")), tri(exp.get("watchdog"))
 
 
+def radio_expected_from_role(role_section) -> "Optional[bool]":
+    """The box's radio verdict, copied through like the two above. An export
+    older than the verdict has no ``radio`` key: None, never False, so a box
+    that has not been redeployed keeps its radio cell exactly as before."""
+    exp = role_section.get("expected") if isinstance(role_section, dict) else None
+    v = exp.get("radio") if isinstance(exp, dict) else None
+    return v if isinstance(v, bool) else None
+
+
 def sections_from_doc(doc: "Optional[dict]") -> dict:
     """box_truth/v1 sections -> the spool's section keys. Every key present;
     a non-object section is None (unobservable), never a guess."""
@@ -173,6 +182,7 @@ def main() -> int:
         # or an older export) is written as null, never as False.
         doc["http_surface_expected"], doc["watchdog_expected"] = expected_from_role(
             sections.get("role"))
+        doc["radio_expected"] = radio_expected_from_role(sections.get("role"))
         got = [k for k, v in sections.items() if v is not None]
         try:
             atomic_write_text(spool_dir / f"{target.alias}.json",

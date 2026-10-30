@@ -152,6 +152,9 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
     # Same tri-state contract as http_surface_expected: True / False /
     # None-if-undecidable, and None must NEVER become False.
     watchdog_expected: Optional[bool] = None
+    # Same contract again, for the box's radio (2026-10-30): False only from
+    # the box's own role, so an absent-by-design radio is not "not connected".
+    radio_expected: Optional[bool] = None
     spool_services: Optional[Dict[str, Any]] = None
     spool_schedules: Optional[Dict[str, Any]] = None
     # RAW rns_ingress_ledger.json from the spool (map-less gateways);
@@ -200,6 +203,9 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
             wde = spool.get("watchdog_expected")
             if isinstance(wde, bool):
                 watchdog_expected = wde
+            rde = spool.get("radio_expected")
+            if isinstance(rde, bool):
+                radio_expected = rde
             # The box's OWN account of a block section it could not or would not
             # send (box_truth/v1 section_errors: a read error, or WITHHELD by the
             # producer tripwire) becomes a `read_error:` block, which the builder
@@ -272,6 +278,7 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
         "answered_at": answered_at,
         "http_surface_expected": http_surface_expected,
         "watchdog_expected": watchdog_expected,
+        "radio_expected": radio_expected,
         "spool_services": spool_services,
         "spool_schedules": spool_schedules,
         "spool_ingress": spool_ingress,
