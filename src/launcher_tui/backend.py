@@ -35,6 +35,21 @@ class DialogError(Exception):
     """
 
 
+class EditorUnavailable(DialogError):
+    """No installed dialog tool can edit a file in-app.
+
+    whiptail has NO --editbox: it exits 1 "--editbox: unknown option",
+    which editbox() used to read as CANCEL — "Edit Config" silently did
+    nothing on every whiptail-only box from 2026-06-16 to 2026-10-30. The
+    caller (config_edit) OFFERS the install in-app (MF018) — this exception
+    names the gap, never a shell command.
+    """
+
+
+#: The apt package that gives a whiptail-only box an in-app editor.
+EDITOR_PACKAGE = "dialog"
+
+
 def clear_screen() -> None:
     """Clear the terminal including scrollback buffer.
 
@@ -95,7 +110,9 @@ class DialogBackend:
             return w
         return max(40, min(w, cols - 2))
 
-    def _run(self, args: List[str], timeout: Optional[int] = None) -> Tuple[int, str]:
+    def _run(self, args: List[str], timeout: Optional[int] = None, *,
+             tool: Optional[str] = None,
+             strip: bool = True) -> Tuple[int, str]:
         """
         Run dialog/whiptail command and return (returncode, output).
 
@@ -110,6 +127,11 @@ class DialogBackend:
                 so when the terminal disconnects the process receives SIGHUP
                 and terminates naturally — no timeout needed for orphan
                 prevention.
+            tool: Run THIS binary instead of ``self.backend`` — editbox
+                needs ``dialog`` on a whiptail box (whiptail has no
+                --editbox).
+            strip: Strip the captured output (right for a menu tag; wrong
+                for an edited file body, whose first-line indent matters).
         """
         import tempfile
 
@@ -146,7 +168,7 @@ class DialogBackend:
                 str_args = [_ANSI_RE.sub('', a) for a in str_args]
 
             # Build command as list args (safe, no shell needed)
-            cmd_parts = [self.backend] + str_args
+            cmd_parts = [tool or self.backend] + str_args
 
             # Flush stale input from terminal before launching dialog.
             # Without this, leftover keystrokes (Enter, ESC sequences) from
@@ -173,8 +195,13 @@ class DialogBackend:
                 )
 
             # Read the captured selection
-            with open(tmp_path, 'r') as f:
-                output = f.read().strip()
+            # utf-8 explicitly: an edited body may carry '°' or an emoji node
+            # name, and the locale (sudo, latin-1) must not decide; replace
+            # matches how config_edit read the original.
+            with open(tmp_path, 'r', encoding='utf-8', errors='replace') as f:
+                output = f.read()
+            if strip:
+                output = output.strip()
 
             if result.returncode != 0:
                 try:
@@ -444,17 +471,44 @@ class DialogBackend:
         caller (config_edit.edit_config_in_app) persists the returned text, so
         it controls permissions / atomic write / validation.
         """
+        # whiptail has NO --editbox (exits 1 "unknown option" — which this
+        # method used to return as CANCEL). Use dialog for this one call
+        # when it is installed; otherwise refuse LOUDLY (the caller offers
+        # the install in-app). which() per call, not cached at detection:
+        # an in-app install must be seen by the very next call.
+        if self.backend == 'dialog' or shutil.which('dialog'):
+            tool = 'dialog'
+        else:
+            raise EditorUnavailable(
+                f"No in-app editor on this box: "
+                f"{self.backend or 'no dialog tool'} cannot edit files "
+                f"(whiptail has no editbox); the '{EDITOR_PACKAGE}' package "
+                f"provides one.")
         h = height if height is not None else max(self.height, 20)
+        try:   # dialog errors out (255) on a window taller than the tty
+            h = max(8, min(h, os.get_terminal_size().lines - 2))
+        except (ValueError, OSError):
+            pass
         w = self._fit_width(width if width is not None else max(self.width, 72))
+        # The editor is dialog even on a whiptail-themed TUI: Enter inserts
+        # a newline, Tab reaches OK, Esc discards. Say it where they look.
+        shown = f"{title}  (Tab: OK · Esc: discard)"
         code, output = self._run([
-            '--title', title,
+            '--title', shown,
             '--editbox', str(file_path),
             str(h), str(w),
-        ])
+        ], tool=tool, strip=False)
         if code == 0:
             return output
         if code == -1:
             raise DialogError(f"editbox '{title}' failed (subprocess died)")
+        if code < 0:
+            # Killed by a signal — never an operator's cancel.
+            raise DialogError(f"editbox '{title}' killed by signal {-code}")
+        if code == 255 and output.strip():
+            # dialog reports ITS OWN errors as 255 — the same code as Esc —
+            # with the reason on stderr; Esc leaves stderr empty.
+            raise DialogError(f"editbox '{title}' failed: {output.strip()[:300]}")
         return None
 
     def textbox(self, title: str, text: str, height: int = None,

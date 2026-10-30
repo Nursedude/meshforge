@@ -520,13 +520,15 @@ class MeshForgeLauncher:
                       "apt-get install whiptail")
             else:
                 try:
-                    answer = input("Install whiptail now via apt? [y/N] ")
+                    answer = input("Install whiptail + dialog now via apt? [y/N] ")
                 except (EOFError, KeyboardInterrupt):
                     answer = ''
                 if answer.strip().lower() == 'y':
                     try:
                         rc = subprocess.run(
-                            ['apt-get', 'install', '-y', 'whiptail'],
+                            # dialog too: the in-app config editor
+                            # needs it (whiptail has no --editbox).
+                            ['apt-get', 'install', '-y', 'whiptail', 'dialog'],
                             timeout=300,
                         ).returncode
                     except (subprocess.SubprocessError, OSError) as e:

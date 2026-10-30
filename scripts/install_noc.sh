@@ -784,6 +784,8 @@ apt-get update -qq
 # cycle and silently skips the peer-cache code path. Installed via
 # apt (not pip) so the venv — which uses include-system-site-packages
 # — picks it up without needing --break-system-packages in the venv.
+# dialog: the TUI's in-app config editor (whiptail has NO --editbox; on a
+# whiptail-only box "Edit Config" silently did nothing 06-16..10-30).
 if mf_apt_install \
     python3 python3-pip python3-venv \
     python3-msgpack python3-yaml \
@@ -791,7 +793,7 @@ if mf_apt_install \
     git wget curl gnupg \
     libusb-1.0-0 \
     mosquitto mosquitto-clients \
-    tmux; then
+    tmux dialog; then
     echo -e "  ${GREEN}✓ System dependencies installed${NC}"
 else
     echo -e "  ${RED}✗ System dependency install failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2

@@ -610,31 +610,15 @@ class NomadNetServiceOpsMixin:
         clear_screen()
 
     def _apt_install(
-        self, package: str, timeout: int = 180,
+        self, package: str, timeout: int = 600,
     ) -> Tuple[bool, str]:
         """Install an apt package IN-APP; returns (ok, combined_output).
 
-        Mirrors the apt-install pattern used by ``scripts/install_noc.sh``.
-        When MeshForge is already root (`sudo python3 …`), we skip the
-        ``sudo`` prefix — that keeps the call working cleanly under the
-        Admin Mode privilege separation documented in CLAUDE.md.
+        Delegates to the shared ``utils.apt_packages.apt_install`` (lifted
+        from here 2026-10-30 so the in-app editor uses the same act).
         """
-        argv = (
-            ['apt-get', 'install', '-y', package]
-            if os.geteuid() == 0
-            else ['sudo', 'apt-get', 'install', '-y', package]
-        )
-        try:
-            proc = subprocess.run(
-                argv, capture_output=True, text=True, timeout=timeout,
-            )
-            out = (proc.stdout or '') + (proc.stderr or '')
-            return proc.returncode == 0, out.strip()
-        except subprocess.TimeoutExpired:
-            return False, f"apt-get install -y {package} timed out"
-        except (subprocess.SubprocessError, OSError,
-                FileNotFoundError) as e:
-            return False, f"apt-get install failed: {e}"
+        from utils.apt_packages import apt_install
+        return apt_install(package, timeout=timeout)
 
     def _install_user_unit(self, force: bool = False) -> None:
         """Render the unit template for THIS box's install layout and activate it.
