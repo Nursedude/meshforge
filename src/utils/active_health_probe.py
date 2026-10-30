@@ -393,7 +393,9 @@ class ActiveHealthProbe:
         """
         try:
             result = subprocess.run(
-                ["meshtastic", "--info"],
+                # Explicit host — a bare CLI auto-detects a serial port by
+                # USB VID and can open an RNode rnsd holds (10-30 audit).
+                ["meshtastic", "--host", "localhost", "--info"],
                 capture_output=True,
                 text=True,
                 timeout=10,

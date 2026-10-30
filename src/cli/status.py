@@ -181,7 +181,7 @@ def get_radio_info():
         if not cli_path:
             return info
         result = subprocess.run(
-            [cli_path, '--info'],
+            [cli_path, '--host', 'localhost', '--info'],
             capture_output=True, text=True, timeout=5
         )
         if result.returncode == 0:
@@ -210,7 +210,7 @@ def get_node_count():
         if not cli_path:
             return None
         result = subprocess.run(
-            [cli_path, '--nodes'],
+            [cli_path, '--host', 'localhost', '--nodes'],
             capture_output=True, text=True, timeout=5
         )
         if result.returncode == 0:

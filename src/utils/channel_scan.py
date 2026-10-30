@@ -239,13 +239,14 @@ class ChannelMonitor:
         channels = []
         try:
             from utils.cli import find_meshtastic_cli
+            from commands.meshtastic import cli_transport_args
             cli_path = find_meshtastic_cli()
             if not cli_path:
                 logger.debug("meshtastic CLI not available")
                 return channels
 
             result = subprocess.run(
-                [cli_path, '--info'],
+                [cli_path, *cli_transport_args(), '--info'],
                 capture_output=True, text=True, timeout=15
             )
             if result.returncode == 0:
@@ -255,7 +256,12 @@ class ChannelMonitor:
         except subprocess.TimeoutExpired:
             logger.debug("meshtastic --info timed out")
         except Exception as e:
-            logger.debug(f"Channel query failed: {e}")
+            # A refused transport (saved serial port is now an RNode) must be
+            # SEEN, not read as "no channels" (10-30 r5).
+            if type(e).__name__ == "TransportRefused":
+                logger.warning("Channel query refused: %s", e)
+            else:
+                logger.debug(f"Channel query failed: {e}")
 
         if channels:
             with self._lock:

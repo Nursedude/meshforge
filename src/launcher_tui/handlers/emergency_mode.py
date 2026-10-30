@@ -60,6 +60,37 @@ class EmergencyModeHandler(BaseHandler):
             logger.warning(f"CLI lookup failed in EMCOMM mode: {e}")
             return 'meshtastic'
 
+    def _emcomm_transport(self):
+        """(argv, host, port) for the CLI's transport — never empty, never raises.
+
+        A bare `meshtastic` CLI VID-autodetects a serial port and can open an
+        RNode rnsd holds (10-30 audit). Uses the connection chosen in
+        Settings > Meshtastic Connection (default meshtasticd on localhost);
+        host/port go to the TX guard so it records the real target. Lazy
+        import: EMCOMM must load and send even if that module is broken —
+        it then falls back to localhost.
+        """
+        try:
+            from commands.meshtastic import cli_transport_args
+            args = cli_transport_args()
+        except Exception as e:
+            # A REFUSAL (saved serial port is now an RNode) propagates: the
+            # caller prints it and sends NOTHING — never another radio.
+            if type(e).__name__ == "TransportRefused":
+                raise
+            logger.warning("EMCOMM transport resolve failed, using localhost: %s", e)
+            args = ["--host", "localhost"]
+        if len(args) > 1 and args[0] == "--host":
+            # Split at the LAST ':' (as Settings stores it); [ipv6]:port keeps
+            # its brackets until here (r4 #9).
+            val = args[1]
+            host, sep, port = val.rpartition(":")
+            if not sep or not port.isdigit() or (":" in host and not host.startswith("[")):
+                host, port = val, ""
+            host = host.strip("[]")
+            return args, host, int(port) if port else DEFAULT_MESH_TCP_PORT
+        return args, None, None
+
     def _emergency_mode(self):
         """Run emergency mode — simplified menu for field ops.
 
@@ -130,13 +161,14 @@ class EmergencyModeHandler(BaseHandler):
         print(f"Broadcasting: {full_msg}\n")
         try:
             cli_path = self._get_emcomm_cli()
-            assert_tx_allowed(None, None, kind="meshtastic_cli",
+            targs, thost, tport = self._emcomm_transport()
+            assert_tx_allowed(thost, tport, kind="meshtastic_cli",
                               detail="emergency_mode broadcast")
             # Honest-signal: gate "sent" on the real CLI exit code. A non-zero
             # return (no radio, radio busy, TX rejected) must NOT read as sent in
             # an EMCOMM scenario. Mirrors _emcomm_sos_beacon's returncode check.
             result = subprocess.run(
-                [cli_path, '--sendtext', full_msg],
+                [cli_path, *targs, '--sendtext', full_msg],
                 capture_output=True, text=True, timeout=30
             )
             if result.returncode == 0:
@@ -201,13 +233,14 @@ class EmergencyModeHandler(BaseHandler):
         print(f"Sending to {dest_clean}: {full_msg}\n")
         try:
             cli_path = self._get_emcomm_cli()
-            assert_tx_allowed(None, None, kind="meshtastic_cli",
+            targs, thost, tport = self._emcomm_transport()
+            assert_tx_allowed(thost, tport, kind="meshtastic_cli",
                               detail="emergency_mode directed")
             # Honest-signal: a directed emergency message must report the real
             # send result — a non-zero exit (unreachable dest, radio rejected,
             # TCP to meshtasticd failed) must NOT print "Message sent."
             result = subprocess.run(
-                [cli_path, '--dest', dest_clean, '--sendtext', full_msg],
+                [cli_path, *targs, '--dest', dest_clean, '--sendtext', full_msg],
                 capture_output=True, text=True, timeout=30
             )
             if result.returncode == 0:
@@ -233,8 +266,9 @@ class EmergencyModeHandler(BaseHandler):
         print("=== NODES ONLINE ===\n")
         try:
             cli_path = self._get_emcomm_cli()
+            targs, _, _ = self._emcomm_transport()
             subprocess.run(
-                [cli_path, '--nodes'],
+                [cli_path, *targs, '--nodes'],
                 timeout=30
             )
         except FileNotFoundError:
@@ -290,8 +324,9 @@ class EmergencyModeHandler(BaseHandler):
         print("=== MY POSITION ===\n")
         try:
             cli_path = self._get_emcomm_cli()
+            targs, _, _ = self._emcomm_transport()
             subprocess.run(
-                [cli_path, '--get', 'position'],
+                [cli_path, *targs, '--get', 'position'],
                 timeout=30
             )
         except FileNotFoundError:
@@ -343,10 +378,11 @@ class EmergencyModeHandler(BaseHandler):
                 print(f"  [{count}] Sending beacon... ", end="", flush=True)
                 try:
                     cli_path = self._get_emcomm_cli()
-                    assert_tx_allowed(None, None, kind="meshtastic_cli",
+                    targs, thost, tport = self._emcomm_transport()
+                    assert_tx_allowed(thost, tport, kind="meshtastic_cli",
                                       detail="emergency_mode SOS beacon")
                     result = subprocess.run(
-                        [cli_path, '--sendtext', beacon_msg],
+                        [cli_path, *targs, '--sendtext', beacon_msg],
                         capture_output=True, timeout=30
                     )
                     if result.returncode == 0:
@@ -358,6 +394,11 @@ class EmergencyModeHandler(BaseHandler):
                     break
                 except subprocess.TimeoutExpired:
                     print("TIMEOUT")
+                except Exception as e:
+                    # e.g. a refused transport: it refuses every time, so stop
+                    # and say why rather than loop or escape the screen.
+                    print(f"STOPPED ({e})")
+                    break
 
                 print(f"  Next beacon in 60s (Ctrl+C to stop)...")
                 # Poll every 1s so Ctrl+C is responsive (was 60s sleep)

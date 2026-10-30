@@ -232,28 +232,28 @@ class SettingsHandler(BaseHandler):
         if choice is None or choice == "back":
             return
         elif choice == "localhost":
-            ok = self._save_meshtasticd_connection("localhost", 4403)
+            ok, why = self._save_both("localhost", 4403, "localhost")
             self.ctx.report_action(
                 ok,
                 "Connection",
                 "Connection set to localhost:4403",
                 "Not Saved",
-                "Could not persist the meshtasticd connection — change NOT saved.",
+                why,
             )
         elif choice == "serial":
             port = self.ctx.dialog.inputbox("Serial Port", "Enter serial port:", "/dev/ttyUSB0")
             if port:
-                # Serial selection is NOT persisted by this handler: the
-                # meshtasticd settings backend only stores host/port (TCP), and
-                # there is no serial-port setter to write to. Claiming the
-                # connection was "set" would be a #74 false-green — so say
-                # plainly that nothing was saved (honest-failure-modes #1/#2).
-                self.ctx.dialog.msgbox(
-                    "Connection — Not Saved",
-                    f"Serial port selection ({port}) is not yet persisted here.\n\n"
-                    "Nothing was saved. Serial connection support for this "
-                    "setting is not implemented; use Local TCP or Remote Host, "
-                    "or configure the serial device in meshtasticd directly.",
+                # Persisted since 10-30: the meshtastic CLI never auto-picks a
+                # USB port any more (it could be an RNode), so this is how a
+                # USB-only box gets one. save_connection validates — an
+                # existing /dev node, never a Reticulum interface port — and
+                # its refusal text is shown verbatim (never a false "set").
+                from commands.meshtastic import save_connection
+                res = save_connection("serial", port.strip())
+                self.ctx.report_action(
+                    res.success,
+                    "Connection", f"Meshtastic CLI will use serial port {port.strip()}",
+                    "Not Saved", res.message,
                 )
         elif choice == "remote":
             host_input = self.ctx.dialog.inputbox("Remote Host", "Enter host:port:", "192.168.1.100:4403")
@@ -268,14 +268,33 @@ class SettingsHandler(BaseHandler):
                 else:
                     host = host_input
                     port = 4403
-                ok = self._save_meshtasticd_connection(host, port)
+                ok, why = self._save_both(host, port, f"{host}:{port}")
                 self.ctx.report_action(
                     ok,
                     "Connection",
                     f"Connection set to {host}:{port}",
                     "Not Saved",
-                    "Could not persist the meshtasticd connection — change NOT saved.",
+                    why,
                 )
+
+    def _save_both(self, host: str, port: int, cli_value: str):
+        """Save the map collector's AND the meshtastic CLI's connection
+        (before 10-30 Local/Remote steered only the map, never the CLI the
+        TUI calls). Returns (ok, failure_text) — the text names WHICH half
+        failed, so a half-save is never reported as "nothing saved" (r4 #6)."""
+        from commands.meshtastic import save_connection
+        map_ok = self._save_meshtasticd_connection(host, port)
+        cli = save_connection("localhost", cli_value)
+        if map_ok and cli.success:
+            return True, ""
+        if map_ok:
+            return False, ("The map's meshtasticd connection was saved, but the "
+                           f"meshtastic CLI connection was NOT: {cli.message}")
+        if cli.success:
+            return False, ("The meshtastic CLI connection was saved, but the map's "
+                           "meshtasticd connection was NOT (see the log).")
+        return False, ("Could not persist the meshtasticd connection — change "
+                       f"NOT saved. ({cli.message})")
 
     def _save_meshtasticd_connection(self, host: str, port: int) -> bool:
         """Save meshtasticd connection settings.

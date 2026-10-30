@@ -16,6 +16,8 @@ import os
 import sys
 from unittest.mock import patch
 
+import pytest
+
 # Ensure src + launcher_tui + tests dir importable (mirrors sibling tests).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'launcher_tui'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -36,6 +38,15 @@ class _StubCollector:
 
     def set_meshtasticd_connection(self, host, port):
         return type(self)._save_result
+
+
+@pytest.fixture(autouse=True)
+def _cli_save_ok(monkeypatch):
+    """Pin ambient state: the CLI-connection half of a save is stubbed OK
+    (tests that exercise it patch it themselves) — never ~/.config."""
+    from commands.base import CommandResult
+    monkeypatch.setattr("commands.meshtastic.save_connection",
+                        lambda t, v, **k: CommandResult.ok("saved"))
 
 
 def _make_handler(menu_choice, save_result, inputbox=None):
@@ -105,24 +116,51 @@ def test_remote_successful_save_shows_success():
 
 
 # ---------------------------------------------------------------------------
-# serial branch — makes NO write, so it must NOT claim the connection was set
+# serial branch — since 10-30 it SAVES (validated); a refusal says why
+# (the meshtastic CLI never auto-picks a USB port any more, so this is the
+# only way a USB-only box gets one — and an RNode port is refused here)
 # ---------------------------------------------------------------------------
 
-def test_serial_branch_does_not_claim_connection_set():
-    """The serial branch performs no write; it must say nothing was saved."""
+def _serial_handler(save_result):
+    from commands.base import CommandResult
     dialog = FakeDialog()
     dialog._menu_returns = ["serial"]
     dialog._inputbox_returns = ["/dev/ttyUSB0"]
     ctx = make_handler_context(dialog=dialog)
     handler = SettingsHandler()
     handler.set_context(ctx)
+    calls = []
+    res = (CommandResult.ok("saved") if save_result is True
+           else CommandResult.fail(save_result))
+    return handler, ctx, calls, (lambda t, v, **k: calls.append((t, v)) or res)
 
-    handler._configure_connection()
 
-    # Must not falsely claim the connection was set/saved.
-    assert ctx.dialog.last_msgbox_title != "Connection"
-    assert "Not Saved" in ctx.dialog.last_msgbox_title
-    assert "nothing was saved" in (ctx.dialog.last_msgbox_text or "").lower()
+def test_serial_branch_saves_through_the_validated_setter():
+    handler, ctx, calls, fake = _serial_handler(True)
+    with patch("commands.meshtastic.save_connection", fake):
+        handler._configure_connection()
+    assert calls == [("serial", "/dev/ttyUSB0")]
+    assert ctx.dialog.last_msgbox_title == "Connection"
+
+
+def test_serial_refusal_is_shown_with_its_reason_never_as_set():
+    reason = "Not saved: /dev/ttyUSB0 is a Reticulum interface port in /etc/reticulum/config"
+    handler, ctx, calls, fake = _serial_handler(reason)
+    with patch("commands.meshtastic.save_connection", fake):
+        handler._configure_connection()
+    assert ctx.dialog.last_msgbox_title == "Not Saved"
+    assert "Reticulum interface port" in (ctx.dialog.last_msgbox_text or "")
+
+
+@patch("utils.map_data_collector.MapDataCollector", _StubCollector)
+def test_localhost_cli_save_failure_is_not_reported_as_set():
+    # Both halves must persist: the map collector AND the CLI connection.
+    from commands.base import CommandResult
+    handler, ctx = _make_handler("localhost", save_result=True)
+    with patch("commands.meshtastic.save_connection",
+               lambda t, v, **k: CommandResult.fail("Not saved: settings file")):
+        handler._configure_connection()
+    assert ctx.dialog.last_msgbox_title == "Not Saved"
 
 
 # ---------------------------------------------------------------------------
@@ -143,3 +181,17 @@ def test_save_returns_false_when_collector_unavailable():
     handler.set_context(ctx)
 
     assert handler._save_meshtasticd_connection("localhost", 4403) is False
+
+
+@patch("utils.map_data_collector.MapDataCollector", _StubCollector)
+def test_half_saved_says_which_half():
+    # r4 #6: map saved + CLI refused must not read "NOT saved" for the map.
+    from commands.base import CommandResult
+    handler, ctx = _make_handler("remote", save_result=True, inputbox="10.0.0.5:4403")
+    with patch("commands.meshtastic.save_connection",
+               lambda t, v, **k: CommandResult.fail("Not saved: settings file")):
+        handler._configure_connection()
+    text = ctx.dialog.last_msgbox_text or ""
+    assert ctx.dialog.last_msgbox_title == "Not Saved"
+    assert "map" in text.lower() and "was saved" in text.lower()
+    assert "meshtastic cli" in text.lower() and "not saved: settings file" in text.lower()

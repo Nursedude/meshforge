@@ -161,9 +161,10 @@ class QuickActionsHandler(BaseHandler):
         clear_screen()
         print("=== Node List ===\n")
         try:
+            from commands.meshtastic import cli_transport_args
             cli_path = self.ctx.get_meshtastic_cli()
             subprocess.run(
-                [cli_path, '--nodes'],
+                [cli_path, *cli_transport_args(), '--nodes'],
                 timeout=30
             )
         except FileNotFoundError:

@@ -8,6 +8,7 @@ Used by both TUI and CLI interfaces.
 import subprocess
 import logging
 import os
+import re
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,14 +62,131 @@ def _find_cli() -> Optional[str]:
 
 
 def _get_connection_args() -> List[str]:
-    """Get connection arguments based on current settings."""
+    """Get connection arguments based on current settings — never [].
+
+    A transport-less CLI VID-autodetects a serial port and can open an
+    RNode rnsd holds (10-30 audit), so every branch names one.
+    """
+    _load_persisted_connection()
     if _connection_type == "localhost":
         return ["--host", _connection_value]
     elif _connection_type == "serial":
+        # Re-checked at USE, not just at save: ttyACM numbering swaps on
+        # replug/reboot, so a port saved as "the Meshtastic radio" can become
+        # the RNode rnsd holds (10-30 review r4 #2). Never hand that to the CLI.
+        # REFUSED, never re-routed: quietly sending to localhost instead
+        # would land a write/send on a different radio (r5 #2). A config we
+        # cannot read is blind, not clear (r5 #3).
+        configs = _rns_config_paths()
+        blind = [str(c) for c in configs if Path(c).exists() and not os.access(c, os.R_OK)]
+        if blind:
+            raise TransportRefused(
+                f"The saved Meshtastic serial port {_connection_value} cannot be "
+                f"checked: the Reticulum config {', '.join(blind)} is unreadable "
+                f"here, so it may be an RNode. Run as admin, or re-choose in "
+                f"Settings > Meshtastic Connection.")
+        declared = _rns_declared_ports(configs)
+        if _real(_connection_value) in declared:
+            raise TransportRefused(
+                f"The saved Meshtastic serial port {_connection_value} is NOW a "
+                f"Reticulum interface port ({declared[_real(_connection_value)]}) "
+                f"— an RNode (USB renumbering?). Nothing was sent. Re-choose it "
+                f"in Settings > Meshtastic Connection.")
         return ["--port", _connection_value]
-    elif _connection_type == "ble":
-        return []  # BLE requires special handling
+    elif _connection_type == "ble" and (_connection_value or "").strip():
+        # An EMPTY address falls through to the default rather than
+        # "--ble ''" (= whichever radio is nearby).
+        return ["--ble", _connection_value.strip()]
     return ["--host", "localhost"]
+
+
+class TransportRefused(Exception):
+    """The configured transport must not be used (a saved serial port that is
+    now an RNode, or cannot be proven not to be). Callers report it and send
+    NOTHING — never fall back to another radio."""
+
+
+def _guard_target():
+    """(host, port) for the TX guard — the SAME target the argv carries,
+    split at the last ':' (a saved remote is stored as host:port; passing it
+    whole gave the guard "h:4403:4403", r5 #1). Serial/BLE -> (None, None)."""
+    if _connection_type != "localhost":
+        return None, None
+    host, sep, port = _connection_value.rpartition(":")
+    if sep and port.isdigit() and ":" not in host:
+        return host, int(port)
+    return _connection_value, None
+
+
+def cli_transport_args() -> List[str]:
+    """The EXPLICIT transport every meshtastic CLI argv must carry.
+
+    With no --host/--port the CLI auto-detects a serial port by USB VID
+    (whitelistVids {0x239a, 0x303a}); an ESP32-S3 RNode is 0x303a and rnsd
+    holds its port without an exclusive lock, so a bare `meshtastic --info`
+    can open the RNode (TCSAFLUSH, DTR/RTS, wake bytes). Returns the
+    configured connection — the one chosen in Settings > Meshtastic
+    Connection, persisted — default --host localhost. It never picks a USB
+    port (operator 10-30). tests/test_meshtastic_cli_transport_guard.py
+    enforces every call site. Raises TransportRefused when the saved serial
+    port is (or may be) an RNode — the caller sends nothing.
+    """
+    return _get_connection_args()
+
+
+# -- the persisted CLI connection (Settings > Meshtastic Connection) --------
+#: Until 10-30 a serial choice could not be saved at all, so a USB-only box
+#: depended on the auto-pick that could hit an RNode. One small settings file.
+_CLI_SETTINGS = "meshtastic_cli"
+_persisted_loaded = False
+_persisted_seen_stamp = None
+#: True once set_connection() chose a target IN THIS PROCESS (that wins over
+#: the saved file). Auto-detect never sets it (r5 #7).
+_explicit_in_process = False
+
+
+def _persisted_stamp():
+    """mtime of the saved file (None if absent) — a long-lived process
+    reloads when another process saves a new choice (r5 #5)."""
+    try:
+        from utils.common import CONFIG_DIR
+        return os.path.getmtime(Path(CONFIG_DIR) / f"{_CLI_SETTINGS}.json")
+    except (OSError, ImportError):
+        return None
+
+
+def _read_persisted() -> Dict[str, Any]:
+    from utils.common import SettingsManager
+    return SettingsManager(_CLI_SETTINGS, defaults={}).all()
+
+
+def _write_persisted(conn_type: str, value: str) -> bool:
+    from utils.common import SettingsManager
+    sm = SettingsManager(_CLI_SETTINGS, defaults={})
+    sm.update({"type": conn_type, "value": value})
+    return bool(sm.save())
+
+
+def _load_persisted_connection() -> None:
+    """Apply the saved connection (again whenever the file changes); an
+    in-process choice (set_connection) always wins."""
+    global _connection_type, _connection_value, _persisted_loaded, _persisted_seen_stamp
+    if _explicit_in_process:
+        return
+    stamp = _persisted_stamp()
+    if _persisted_loaded and stamp == _persisted_seen_stamp:
+        return
+    _persisted_loaded, _persisted_seen_stamp = True, stamp
+    try:
+        saved = _read_persisted() or {}
+    except Exception as e:   # a broken settings file must not break the CLI
+        logger.warning("meshtastic CLI connection not loaded (%s) — using localhost", e)
+        return
+    t, v = saved.get("type"), saved.get("value")
+    if t in ("localhost", "serial", "ble") and isinstance(v, str) and v.strip():
+        _connection_type, _connection_value = t, v.strip()
+    else:
+        _connection_type, _connection_value = "localhost", "localhost"
 
 
 def _redact_secrets(argv):
@@ -108,10 +226,15 @@ def _run_command(args: List[str], timeout: int = 60, auto_detect: bool = True) -
     # host=None the guard records every CLI send as the local radio, which
     # both misnames a remote target in the blocked-attempts record and lets a
     # local-radio allowlist entry cover a send actually aimed elsewhere.
-    host = _connection_value if _connection_type == "localhost" else None
-    assert_cli_args_allowed(args, host, detail="commands.meshtastic._run_command")
+    _load_persisted_connection()   # the guard must judge the SAVED target (r4 #1)
+    try:
+        transport = _get_connection_args()
+    except TransportRefused as e:
+        return CommandResult.fail(str(e), error="transport_refused")
+    host, port = _guard_target()
+    assert_cli_args_allowed(args, host, port, detail="commands.meshtastic._run_command")
 
-    full_args = [cli_path] + _get_connection_args() + args
+    full_args = [cli_path] + transport + args
     cmd_str = ' '.join(_redact_secrets(full_args))
     logger.debug(f"Running: {cmd_str}")
 
@@ -132,8 +255,10 @@ def _run_command(args: List[str], timeout: int = 60, auto_detect: bool = True) -
         else:
             error_text = result.stderr or result.stdout
 
-            # Check for connection refused - try auto-detect
-            if auto_detect and 'Connection refused' in error_text:
+            # Connection refused: auto-detect ONLY from the unconfigured
+            # default. A saved/explicit target that refuses FAILS as itself —
+            # it must never be quietly re-run on the local radio (r4 #3).
+            if auto_detect and 'Connection refused' in error_text and _is_unconfigured():
                 logger.info("Connection refused, attempting auto-detect...")
                 detect_result = auto_detect_connection()
                 if detect_result.success:
@@ -148,12 +273,14 @@ def _run_command(args: List[str], timeout: int = 60, auto_detect: bool = True) -
                 # then surface the Python error string to the operator
                 # instead of this helpful message. Pattern-audit
                 # Finding #11 (2026-05-19).
+                # auto_detect's own text: the USB listing and "choose it in
+                # Settings" (r4 #4) — not a generic shell hint (MF018).
                 return CommandResult.not_available(
-                    message="Cannot connect to Meshtastic device.\n\n"
-                            "For USB radios: Ensure device is connected\n"
-                            "For HAT radios: Start meshtasticd service\n"
-                            "  sudo systemctl start meshtasticd",
-                    fix_hint="Check device connection or start meshtasticd",
+                    message="Cannot connect to Meshtastic device (meshtasticd "
+                            "did not answer).\n\n" + detect_result.message,
+                    fix_hint="Check the device, or start meshtasticd (Service "
+                             "Control); a USB radio is chosen in Settings > "
+                             "Meshtastic Connection",
                 )
 
             return CommandResult.fail(
@@ -201,6 +328,8 @@ def set_connection(conn_type: str, value: str) -> CommandResult:
 
     _connection_type = conn_type
     _connection_value = value
+    global _explicit_in_process
+    _explicit_in_process = True
 
     return CommandResult.ok(
         f"Connection set to {conn_type}: {value}",
@@ -227,52 +356,148 @@ def test_connection() -> CommandResult:
     )
 
 
-def auto_detect_connection() -> CommandResult:
-    """
-    Auto-detect the best connection method.
+def _is_unconfigured() -> bool:
+    """The untouched default (nothing saved, nothing set in-process)."""
+    _load_persisted_connection()
+    return (not _explicit_in_process
+            and (_connection_type, _connection_value) == ("localhost", "localhost"))
 
-    Checks in order:
-    1. TCP port 4403 (meshtasticd daemon)
-    2. USB serial devices (/dev/ttyUSB*, /dev/ttyACM*)
+
+#: hostname or IPv4, optional :port. Never a leading '-' (a CLI flag). No
+#: IPv6: the CLI splits --host on ':' and cannot parse it (r5 #6).
+_TCP_HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,252})(?::(\d{1,5}))?$")
+
+
+#: Reticulum configs whose interface ports are rnsd's (RNodeInterface,
+#: KISSInterface, SerialInterface). Resolved per call (MF001: real home).
+def _rns_config_paths() -> List[Path]:
+    home = get_real_user_home()
+    return [Path("/etc/reticulum/config"), home / ".reticulum" / "config",
+            home / ".config" / "reticulum" / "config"]
+
+
+def _meshtasticd_tcp_up() -> bool:
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", 4403), timeout=1.0):
+            return True
+    except OSError:
+        return False
+
+
+def _real(path) -> str:
+    try:
+        return os.path.realpath(str(path))
+    except OSError:
+        return str(path)
+
+
+def _rns_declared_ports(configs) -> Dict[str, str]:
+    """realpath -> config file, for every `port = /dev/...` a readable
+    Reticulum config declares (used to REFUSE and to LABEL, never to pick)."""
+    out: Dict[str, str] = {}
+    for cfg in configs:
+        try:
+            text = Path(cfg).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for mm in re.finditer(r"^\s*port\s*=\s*(/\S+)", text, re.M):
+            out[_real(mm.group(1))] = str(cfg)
+    return out
+
+
+def save_connection(conn_type: str, value: str, *, rns_configs=None,
+                    dev_root=None) -> CommandResult:
+    """Validate, persist and apply the CLI connection (Settings > Meshtastic
+    Connection). A serial port must be an existing node under /dev and NOT a
+    port a Reticulum config declares (an RNode). Nothing is written on a
+    refusal; a failed write is never reported as saved."""
+    value = (value or "").strip()
+    if conn_type not in ("localhost", "serial", "ble") or not value:
+        return CommandResult.fail(f"Not saved: invalid connection {conn_type!r} {value!r}")
+    if conn_type == "localhost":
+        mm = _TCP_HOST_RE.match(value)
+        if not mm or (mm.group(1) and not 1 <= int(mm.group(1)) <= 65535):
+            return CommandResult.fail(
+                f"Not saved: {value!r} is not host or host:port (IPv6 is not "
+                f"supported by the meshtastic CLI)")
+    if conn_type == "serial":
+        root = Path(dev_root) if dev_root else Path("/dev")
+        p = Path(value)
+        if not p.is_absolute() or ".." in p.parts or not str(p).startswith(str(root) + "/"):
+            return CommandResult.fail(f"Not saved: {value} is not a device under {root}/")
+        if not p.exists():
+            return CommandResult.fail(f"Not saved: {value} does not exist (is the radio plugged in?)")
+        configs = list(rns_configs if rns_configs is not None else _rns_config_paths())
+        blind = [str(c) for c in configs if Path(c).exists() and not os.access(c, os.R_OK)]
+        if blind:
+            # Exists but unreadable = blind, not clear (r4 #5).
+            return CommandResult.fail(
+                f"Not saved: the Reticulum config {', '.join(blind)} could not be "
+                f"read, so MeshForge cannot prove {value} is not an RNode. Run "
+                f"the TUI as admin to choose a serial port.")
+        declared = _rns_declared_ports(configs)
+        if _real(p) in declared:
+            return CommandResult.fail(
+                f"Not saved: {value} is a Reticulum interface port in "
+                f"{declared[_real(p)]} — that is an RNode rnsd uses, not a "
+                f"Meshtastic radio.")
+    if conn_type == "serial":
+        # Save the STABLE name when one exists: ttyUSB*/ttyACM* renumber on
+        # replug, /dev/serial/by-id/* does not (r4 #2).
+        byid = root / "serial" / "by-id"
+        try:
+            for link in sorted(byid.iterdir()):
+                if _real(link) == _real(value):
+                    value = str(link)
+                    break
+        except OSError:
+            pass
+    if not _write_persisted(conn_type, value):
+        return CommandResult.fail("Not saved: the settings file could not be written.")
+    set_connection(conn_type, value)
+    return CommandResult.ok(f"Meshtastic CLI connection saved: {conn_type} {value}",
+                            data={"type": conn_type, "value": value})
+
+
+def auto_detect_connection(*, dev_dir=None, rns_configs=None) -> CommandResult:
+    """
+    Auto-detect the connection: TCP 4403 (meshtasticd) — or NOTHING.
+
+    It never picks a USB serial port (operator 10-30). The old fallback took
+    the FIRST ttyUSB/ttyACM, and _run_command reaches here on any
+    "Connection refused" and re-runs the command with an explicit --port:
+    on the manager box that was the RNode rnsd holds. USB ports are LISTED
+    (Reticulum ones marked) so the operator can choose one once in Settings.
 
     Returns:
         CommandResult with data={'type': ..., 'value': ...} on success
     """
-    import socket
-
-    # Check if meshtasticd is running on port 4403
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(1.0)
-        result = sock.connect_ex(('127.0.0.1', 4403))
-        sock.close()
-        if result == 0:
-            set_connection("localhost", "127.0.0.1")
-            return CommandResult.ok(
-                "Using TCP connection to meshtasticd (port 4403)",
-                data={'type': 'localhost', 'value': '127.0.0.1', 'method': 'tcp'}
-            )
-    except Exception as e:
-        logger.debug(f"TCP connection check to meshtasticd failed: {e}")
-
-    # Check for USB serial devices
-    usb_paths = list(Path('/dev').glob('ttyUSB*')) + list(Path('/dev').glob('ttyACM*'))
-    if usb_paths:
-        # Sort to get consistent ordering
-        usb_paths.sort()
-        usb_port = str(usb_paths[0])
-        set_connection("serial", usb_port)
+    if _meshtasticd_tcp_up():
+        # The default already IS localhost; setting it would mark the box
+        # "configured" and disable later auto-detect (r5 #7).
         return CommandResult.ok(
-            f"Using USB serial connection ({usb_port})",
-            data={'type': 'serial', 'value': usb_port, 'method': 'usb'}
+            "Using TCP connection to meshtasticd (port 4403)",
+            data={'type': 'localhost', 'value': 'localhost', 'method': 'tcp'}
         )
-
-    # No connection found
+    dev = Path(dev_dir) if dev_dir else Path('/dev')
+    usb = sorted(list(dev.glob('ttyUSB*')) + list(dev.glob('ttyACM*')))
+    declared = _rns_declared_ports(rns_configs if rns_configs is not None
+                                   else _rns_config_paths())
+    if usb:
+        lines = [f"  {p}" + (f"  (Reticulum interface port — an RNode, not offered)"
+                             if _real(p) in declared else "") for p in usb]
+        return CommandResult.fail(
+            "meshtasticd is not answering on port 4403.\n\n"
+            "MeshForge never picks a USB serial port by itself — it can be an "
+            "RNode. If your Meshtastic radio is on USB, choose it once in "
+            "Settings > Meshtastic Connection > Serial Port.\n\n"
+            "USB serial ports on this box:\n" + "\n".join(lines),
+            error="no_device")
     return CommandResult.fail(
         "No Meshtastic device found.\n\n"
         "For USB radios: Connect device to USB port\n"
-        "For HAT radios: Start meshtasticd service\n"
-        "  sudo systemctl start meshtasticd",
+        "For HAT radios: Start meshtasticd (Service Control)",
         error="no_device"
     )
 
@@ -283,14 +508,20 @@ def ensure_connection() -> CommandResult:
 
     Call this before running commands to ensure proper connection.
     """
-    # If already connected to something other than default, test it
-    if _connection_type != "localhost" or _connection_value != "localhost":
+    _load_persisted_connection()   # see the saved choice first (r4 #8)
+    if not _is_unconfigured():
+        # A configured target is tested AS ITSELF; on failure it is reported,
+        # never swapped for an auto-detected one (r4 #3).
         test_result = test_connection()
         if test_result.success:
             return CommandResult.ok(
                 f"Connected via {_connection_type}: {_connection_value}",
                 data={'type': _connection_type, 'value': _connection_value}
             )
+        return CommandResult.fail(
+            f"The configured Meshtastic connection ({_connection_type}: "
+            f"{_connection_value}) is not answering. Change it in Settings > "
+            f"Meshtastic Connection.", error=test_result.error)
 
     # Auto-detect
     return auto_detect_connection()

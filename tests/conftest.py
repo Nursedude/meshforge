@@ -277,6 +277,46 @@ def _reset_lxmf_wedge_streaks():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_meshtastic_cli_connection():
+    """Every test starts from the DEFAULT meshtastic CLI connection and never
+    touches the real saved one (2026-10-30). commands.meshtastic now persists
+    the operator's choice (Settings > Meshtastic Connection) in
+    ~/.config/meshforge/meshtastic_cli.json and loads it lazily into module
+    globals — so without this, an operator's saved serial port would decide
+    test verdicts, a test could WRITE the operator's file, and one test's
+    set_connection would leak into the next. Both import aliases (see
+    _reset_node_tracker_singleton). Tests that exercise persistence patch
+    _read_persisted/_write_persisted themselves.
+    """
+    # Import it HERE (r5 #8): a test that imports it lazily, first in the
+    # run, would otherwise reach the operator's real file.
+    try:
+        import commands.meshtastic  # noqa: F401
+    except Exception:            # minimal-deps profile — nothing to isolate
+        pass
+    attrs = ("_connection_type", "_connection_value", "_persisted_loaded",
+             "_explicit_in_process", "_persisted_seen_stamp",
+             "_read_persisted", "_write_persisted", "_persisted_stamp")
+    saved = []
+    for name in ("commands.meshtastic", "src.commands.meshtastic"):
+        mod = sys.modules.get(name)
+        if mod is None or not hasattr(mod, "_persisted_loaded"):
+            continue
+        saved.append((mod, {a: getattr(mod, a) for a in attrs if hasattr(mod, a)}))
+        mod._connection_type, mod._connection_value = "localhost", "localhost"
+        mod._persisted_loaded = True               # nothing is read from disk
+        mod._explicit_in_process = False
+        mod._persisted_seen_stamp = None
+        mod._persisted_stamp = lambda: None
+        mod._read_persisted = lambda: {}
+        mod._write_persisted = lambda t, v: True   # nothing is written to disk
+    yield
+    for mod, vals in saved:
+        for a, v in vals.items():
+            setattr(mod, a, v)
+
+
+@pytest.fixture(autouse=True)
 def _reset_node_tracker_singleton():
     """Give every test a fresh node-tracker singleton.
 

@@ -938,6 +938,23 @@ class MeshtasticHandler(BaseMessageHandler):
         except Exception as e:
             logger.error(f"Error updating Meshtastic nodes: {e}")
 
+    def _cli_host(self) -> str:
+        """host[:port] for the meshtastic CLI — the configured port too, so a
+        second meshtasticd on 4404 is not probed on 4403 (10-30 review #4)."""
+        host = self.config.meshtastic.host
+        port = self._cli_port()
+        # The CLI splits --host on ':', so an IPv6 literal cannot carry a
+        # port — it gets the default port rather than an unparseable string.
+        if port == DEFAULT_MESH_TCP_PORT or ":" in host:
+            return host
+        return f"{host}:{port}"
+
+    def _cli_port(self) -> int:
+        try:
+            return int(getattr(self.config.meshtastic, "port", None) or DEFAULT_MESH_TCP_PORT)
+        except (TypeError, ValueError):
+            return DEFAULT_MESH_TCP_PORT
+
     def _test_cli(self) -> bool:
         """Test Meshtastic CLI availability."""
         try:
@@ -949,8 +966,10 @@ class MeshtasticHandler(BaseMessageHandler):
 
             # CLI shells out to meshtasticd; subprocess timeout is 10s
             with timed_boundary("meshtasticd.cli_info", threshold_s=10.0):
+                # Explicit host: a bare CLI auto-detects a serial port by
+                # USB VID and can open an RNode rnsd holds (10-30 audit).
                 result = subprocess.run(
-                    [cli_path, '--info'],
+                    [cli_path, '--host', self._cli_host(), '--info'],
                     capture_output=True,
                     timeout=10
                 )
@@ -964,13 +983,16 @@ class MeshtasticHandler(BaseMessageHandler):
         # RF egress chokepoint — outside the try, so a refusal cannot be
         # absorbed into the "CLI send failed" path. Subprocess egress is
         # invisible to any in-process socket tripwire.
-        assert_tx_allowed(self.config.meshtastic.host, DEFAULT_MESH_TCP_PORT,
+        # The SAME target the CLI is aimed at (_cli_host), port included.
+        assert_tx_allowed(self.config.meshtastic.host,
+                          DEFAULT_MESH_TCP_PORT if ":" in self.config.meshtastic.host
+                          else self._cli_port(),
                           kind="meshtastic_cli",
                           detail=f"meshtastic_handler._send_via_cli text={message[:40]!r}")
         try:
             from utils.cli import find_meshtastic_cli
             cli_path = find_meshtastic_cli() or 'meshtastic'
-            cmd = [cli_path, '--host', self.config.meshtastic.host, '--sendtext', message]
+            cmd = [cli_path, '--host', self._cli_host(), '--sendtext', message]
             if destination:
                 cmd.extend(['--dest', destination])
             if channel > 0:
