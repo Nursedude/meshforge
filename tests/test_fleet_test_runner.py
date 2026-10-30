@@ -261,7 +261,9 @@ def test_find_operator_user_skips_unreadable_foreign_uid(tmp_path, monkeypatch):
     orig_exists = Path.exists
 
     def fake_exists(self, *a, **kw):
-        if "104" in str(self):
+        # the exact /run/user/104 entry, never a substring: "104" in the
+        # whole path also matched pytest's own tmp dir (pytest-1040…1049)
+        if denied in (self, *self.parents):
             raise PermissionError(13, "Permission denied", str(self))
         return orig_exists(self, *a, **kw)
 
