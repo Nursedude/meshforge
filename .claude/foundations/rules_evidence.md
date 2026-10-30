@@ -591,3 +591,70 @@ Run linter before tests:
 ```bash
 python3 scripts/lint.py --all && python3 -m pytest tests/ -v
 ```
+
+---
+
+## `CLAUDE.md` — trimmed sections, full text as of `74b899e7` (2026-10-29)
+
+> Context trim phase 2b. CLAUDE.md keeps the rule; the story behind it lives here.
+
+### CRITICAL — Calibrated claims paragraph
+
+**Calibrated claims** (the discipline for what *I* say): never emit a bare
+"100% / verified / all green / it works / done" without a quoted external result.
+Tag every completion claim **VERIFIED** (a check ran this turn — quote its exit
+code), **BELIEVED** (written, not run — say so), or **UNKNOWN** (couldn't check —
+unobservable ≠ healthy). "Worked once" is not "reliable". Re-derive the count at
+the end; never patch a running tally. Check of record: `bash scripts/honest_status.sh`
+(`exit 0` = green; `exit 2`/UNKNOWN is never a pass).
+
+### Branch Strategy — bullets
+
+- Solo dev workflow: commit direct to `main`, push via `git push origin main`. PR/feature-branch flow was retired 2026-04-19 (caused more divergence than it prevented). A permission hook may still deny pushes; use `origin` remote rather than literal SSH URL.
+- **Trunk only (operator, 2026-09-23 — applies to MeshForge AND MeshAnchor):** commit direct to `main`, push right after every hook-passing commit, fleet boxes only ever pull. The gates (pre-commit/pre-push hooks, CI, `honest_status` fleet-SHA drift, non-author review) do the job PRs used to. A branch exists only as short-lived isolation (e.g. a reviewer subagent's worktree): it returns a PATCH that is applied to `main`, is never merged, and is deleted the same session. The pre-2026-09-23 branches were archived to `~/.local/share/meshforge/branch-archive/<repo>-branches-2026-09-23.bundle` (`git bundle list-heads`) and pruned; open Dependabot PR branches are left to Dependabot.
+- Alpha branch archived as tag `alpha-archived`.
+
+### Key Commands — launch block
+
+```bash
+# Launch
+scripts/meshforge-launcher.sh           # Primary interface (TUI) — use THIS, not
+#   a bare `sudo python3 src/launcher_tui/main.py`: the launcher sets
+#   PYTHONPYCACHEPREFIX so root's bytecode stops landing in the repo
+#   (scripts/lib/pycache_prefix.sh — that habit is what the chown sweeps kept curing).
+python3 src/standalone.py               # Zero-dependency RF tools
+# GTK4 desktop app REMOVED — the TUI is the only interface.
+# ⚠️ That does NOT mean "no desktop integration". org.meshforge.app.desktop +
+# scripts/meshforge-terminal.sh are a LAUNCHER for this same TUI (they contain
+# no GTK), installed by scripts/install-desktop.sh on every update.sh run, and
+# in active use on the desktop box. assets/org.meshforge.policy is live too —
+# it authorises pkexec for utils/system.py. Do not "clean up" any of it.
+# Categories=Network;HamRadio (NOT System — that buried it in System Tools).
+```
+
+### Pre-Push Check — the three paragraphs after the four lines
+
+**A push is NOT a deploy** (measured 2026-09-13; this line used to claim
+boxes "pull within seconds" and no such mechanism exists). Nothing
+auto-pulls: the only fleet cron is `fleet_sync.sh --memory-only` every 6h,
+which exits before any code deploy, and `.githooks/post-commit` fixes only
+the committing box — its own comment says it "cannot and must not reach
+across the fleet". The fleet moves when someone runs `scripts/fleet_sync.sh`
+THEN `scripts/fleet_pull.sh`, in that order: the reverse makes sync read
+every remote unit as "unchanged" and skip every restart while exiting 0.
+So `honest_status.sh`'s `fleet SHA drift` leg stays FAIL after a clean push
+until that deploy runs. That is the deploy still being owed, not a regression.
+
+**Hooks must be ON** (found OFF 2026-06-15 — `core.hooksPath` pointed at the
+empty `.git/hooks`, so the #29 spine was dormant): confirm
+`git config core.hooksPath` says `.githooks`. The pre-commit hook runs lint +
+regression guards + collection sweep; the pre-push hook re-runs lint +
+regression guards (the "can't push mis-wired work" gate) + a parent-CI advisory.
+
+**After pushing, verify it actually landed — don't trust the summary.** Run
+`bash scripts/honest_status.sh` — the operator-owned gate that re-derives state
+from external ground truth (CI conclusion for HEAD, per-box SHA convergence,
+full suite, lint, live `confirmation_rate ≤ 1.0`, watchdog signals). `exit 0`
+= fully verified; `UNKNOWN` (unreachable / CI-pending) is never counted as
+pass. `--quick` skips the local suite; `--strict` fails on fleet warnings.
+

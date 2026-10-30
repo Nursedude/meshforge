@@ -14,7 +14,7 @@ Checks:
 - MF009: RNS.Reticulum() without configdir (causes EADDRINUSE, Issue #12)
 - MF010: time.sleep() in daemon loops (must use _stop_event.wait(), H1)
 - MF011: Repair logic in _nomadnet_rns_checks.py (must be in _rns_repair.py/diagnostics)
-- MF012: Context-loaded doc size (persistent_issues.md must stay under 40k chars)
+- MF012: Context-loaded doc size in BYTES (CONTEXT_DOC_LIMITS: persistent_issues, ROADMAP, CLAUDE.md, rules/*)
 - MF013: Bare sqlite3.connect() outside db_helpers.py (must use connect_tuned)
 - MF014: Operator-specific values (hostnames, personal email, /home/<user>/) — break repo portability
 - MF016: @patch('src.utils.paths.…') in tests — production imports via bare 'utils.paths', divergent class objects
@@ -794,6 +794,9 @@ CONTEXT_DOC_LIMITS = {
     '.claude/rules/model_advisor.md': 1_800,
     '.claude/rules/security.md': 1_300,
     '.claude/rules/testing.md': 1_300,
+    # Context trim phase 2b (2026-10-29): 15,372 → 13,337 B, stories moved to
+    # foundations/rules_evidence.md. Cap = trimmed x 1.15. Ratchet DOWN only.
+    'CLAUDE.md': 15_300,
 }
 # The remedy differs per file: following persistent_issues' advice on the
 # roadmap would archive LIVE items (non-author pass 2026-10-22).
@@ -803,11 +806,15 @@ CONTEXT_DOC_REMEDY = {
     '.claude/ROADMAP.md':
         "A done item leaves the list (one provenance line); trim finished or "
         "won't-do items, never archive live ones; do not raise the limit.",
+    'CLAUDE.md':
+        "Keep the rule, move its story verbatim to "
+        ".claude/foundations/rules_evidence.md; never delete a rule; do not "
+        "raise the limit.",
 }
 
 
 def check_context_doc_sizes(repo_root: Optional[str] = None) -> List[LintIssue]:
-    """MF012: enforce char-size caps on docs routinely loaded into model context.
+    """MF012: enforce byte-size caps on docs routinely loaded into model context.
 
     Claude Code loads EVERY ``.claude/rules/*.md`` into every turn, so a rules
     file with no limit is an error (closed enum, closed consumer — hfm #7),
