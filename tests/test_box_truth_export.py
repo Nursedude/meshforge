@@ -271,7 +271,9 @@ def test_script_under_lc_all_c_with_hostile_stdin_and_orig_cmd(home, tmp_path):
     assert doc["sections"]["deployment"] == {"role": "gateway-only"}
     assert not canary.exists(), "SSH_ORIGINAL_COMMAND or stdin was executed"
     row = bc.read_witness(tmp_path / "state" / "box_truth" / "reads.jsonl")[0]
-    assert row["orig_cmd"] == f"touch {canary}"
+    # the witness caps orig_cmd at ORIG_CMD_MAX; the canary path grows with
+    # pytest's basetemp, so compare against the capped value
+    assert row["orig_cmd"] == f"touch {canary}"[:bc.ORIG_CMD_MAX]
 
 
 def test_script_is_executable_in_git():
