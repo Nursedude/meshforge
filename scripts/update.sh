@@ -393,6 +393,23 @@ if [[ -f "$JD_CAP_TMPL" ]]; then
     fi
 fi
 
+# Deploy the no-MPTCP sysctl drop-in. CVE-2026-98432 (2026-10-31): the fleet
+# uses no MPTCP, and the published exploit needs an MPTCP listener. Applies
+# this one file immediately; no service restart.
+MPTCP_TMPL="$INSTALL_DIR/templates/sysctl.d/90-meshforge-no-mptcp.conf"
+MPTCP_DST="/etc/sysctl.d/90-meshforge-no-mptcp.conf"
+if [[ -f "$MPTCP_TMPL" ]]; then
+    if ! cmp -s "$MPTCP_TMPL" "$MPTCP_DST"; then
+        mkdir -p "$(dirname "$MPTCP_DST")"
+        cp "$MPTCP_TMPL" "$MPTCP_DST"
+        chmod 644 "$MPTCP_DST"
+        sysctl -q -p "$MPTCP_DST" 2>/dev/null || true
+        echo -e "  ${GREEN}✓ MPTCP disabled (sysctl drop-in installed and applied)${NC}"
+    else
+        echo -e "  ${GREEN}✓ MPTCP sysctl drop-in already current${NC}"
+    fi
+fi
+
 # Deploy the meshtasticd MUDP-leg self-heal guard (oneshot + timer). The guard
 # script self-gates: it no-ops unless meshtasticd is active AND the box has been
 # seen actually using UDP multicast (224.0.0.69:4403), so it is safe to install
