@@ -70,7 +70,7 @@ def test_each_leg_shows_its_counts_per_window(tmp_path):
     row = next(ln for ln in leg.lines
                if ln.lstrip().startswith("meshtastic>rns") and " 1h " in ln)
     # inside an OBSERVED window a missing outcome is a true 0
-    assert row.split()[2:] == ["5", "5", "4", "1", "0"]
+    assert row.split()[2:] == ["5", "5", "4", "1", "0", "0"]
 
 
 def test_a_window_with_no_events_reads_dash_never_zero(tmp_path):
@@ -201,6 +201,18 @@ def test_one_misshaped_leg_does_not_blind_the_others(tmp_path):
     assert "rns>rns" in text and "misshaped" in text
 
 
+def test_refused_has_its_own_column(tmp_path):
+    # #4: a refusal shown as `other` would sit beside dedup and read benign.
+    legs = {"rns>meshtastic": {"15m": {"queued": 2, "sent": 2, "refused": 3,
+                                       "from_ts": NOW - 60}}}
+    _publish(tmp_path, **_legs_snap(legs))
+    lines = dv.route_legs_leg(str(tmp_path), NOW, "ok").lines
+    header = next(l for l in lines if l.lstrip().startswith("route"))
+    row = next(l for l in lines if "rns>meshtastic" in l and " 15m " in l)
+    assert header.split()[-1] == "refused"
+    assert row.split()[-1] == "3"
+    assert any("refused" in l and "ingress" in l for l in lines)
+
 def test_the_reader_shares_the_writers_window_and_outcome_names():
     # #2 (hfm #5/#7): the pane reads what delivery_legs writes; a new window
     # or outcome there must fail HERE until the pane shows it.
@@ -307,7 +319,7 @@ def test_table_rows_are_never_wrapped_mid_columns(tmp_path):
     rows = [ln for ln in _render(tmp_path).splitlines()
             if ln.lstrip().startswith("meshtastic>rns") and " 1h " in ln]
 
-    assert len(rows) == 1 and rows[0].split()[-5:] == ["5", "5", "4", "1", "0"]
+    assert len(rows) == 1 and rows[0].split()[-6:] == ["5", "5", "4", "1", "0", "0"]
 
 
 def test_a_misshaped_partial_list_is_rederived_from_the_start_time(tmp_path):

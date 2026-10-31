@@ -91,6 +91,19 @@ def test_delivery_failures_and_benign_drops_are_separate(counters):
     assert win["dropped_other"] == 1
 
 
+def test_an_ingress_refusal_is_its_own_outcome_never_failed_or_benign(counters):
+    # #4 (BIC-2 gate 3): a policy refusal is not an attempted delivery that
+    # failed (it must not page or move confirmation) and not a benign drop
+    # hidden beside dedup — it is the per-message truth the sender lacks.
+    counters.record(DeliveryState.DROPPED, "r", protocol="meshtastic",
+                    source="rns", drop_reason=dc.DropReason.INGRESS_REFUSED)
+
+    win = counters.snapshot()["legs"]["rns>meshtastic"]["15m"]
+
+    assert win["refused"] == 1
+    assert "failed" not in win and "dropped_other" not in win
+    assert dc.DropReason.INGRESS_REFUSED.value not in dc.DELIVERY_FAILURE_REASONS
+
 def test_a_lane_is_counted_under_its_transport(counters):
     counters.record(DeliveryState.SENT, "m1", protocol="secondary",
                     source="rns")

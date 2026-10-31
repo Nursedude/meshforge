@@ -141,6 +141,13 @@ class DropReason(Enum):
     UNSENDABLE = "unsendable"
     # ROADMAP 6f: a queued row outlived its destination's max age undelivered.
     EXPIRED = "expired"
+    # 2026-10-29 (BIC-2 gate 3, review #4): the RNS→RF ingress gate refused
+    # a message LXMF had ALREADY proven delivered to the gateway, so the
+    # sender reads "delivered". A policy decision, not an attempted delivery
+    # that failed — never in DELIVERY_FAILURE_REASONS (a stranger must not
+    # page or move the confirmation rate) — and not benign either: it counts
+    # as its own leg outcome, ``refused``.
+    INGRESS_REFUSED = "ingress_refused"
     UNKNOWN = "unknown"
 
 
@@ -185,6 +192,8 @@ def _leg_outcome(event: "DeliveryEvent") -> str:
     """The ``delivery_legs.OUTCOMES`` word for one event."""
     if event.state != DeliveryState.DROPPED:
         return event.state.value
+    if event.drop_reason == DropReason.INGRESS_REFUSED:
+        return "refused"
     if event.drop_reason and event.drop_reason.value in DELIVERY_FAILURE_REASONS:
         return "failed"
     return "dropped_other"
@@ -332,6 +341,12 @@ class DeliveryEvent:
 
 
 RING_BUFFER_CAP = 500
+# Ingress refusals keep their OWN pool in the events table, pruned apart
+# from the delivery rows (re-review 2026-10-29 #1): a stranger flood under
+# one shared cap deleted the confirmed terminals the stall probe judges.
+# RING_BUFFER_CAP bounds the delivery rows alone; the table holds at most
+# the sum. The exact refusal COUNT lives in the leg buckets, not here.
+REFUSAL_RING_CAP = 50
 """Maximum rows retained in the events table. Sized for ~1 hour of
 healthy gateway traffic on a 5-box fleet (a few dozen msgs/min peak);
 enough forensic context for incident investigation without bloating
@@ -816,15 +831,21 @@ class DeliveryCounters:
             # Ring cap via prune-on-insert. SELECT COUNT(*) is O(N) on
             # an unindexed scan but N is tiny (cap 500), and we only
             # pay it on the writes that are likely to push us over.
+            # Two pools, each pruned only by its own inserts: a refusal can
+            # never delete a delivery row, nor a delivery row a refusal.
+            refused = event.drop_reason == DropReason.INGRESS_REFUSED
+            pool = ("drop_reason = ?" if refused else "drop_reason IS NOT ?")
+            cap = REFUSAL_RING_CAP if refused else self._ring_cap
             count = conn.execute(
-                "SELECT COUNT(*) FROM events"
+                f"SELECT COUNT(*) FROM events WHERE {pool}",
+                (DropReason.INGRESS_REFUSED.value,),
             ).fetchone()[0]
-            if count > self._ring_cap:
-                excess = count - self._ring_cap
+            if count > cap:
                 conn.execute(
                     "DELETE FROM events WHERE rowid IN "
-                    "(SELECT rowid FROM events ORDER BY rowid ASC LIMIT ?)",
-                    (excess,),
+                    f"(SELECT rowid FROM events WHERE {pool} "
+                    "ORDER BY rowid ASC LIMIT ?)",
+                    (DropReason.INGRESS_REFUSED.value, count - cap),
                 )
             conn.commit()
 
@@ -875,9 +896,13 @@ class DeliveryCounters:
                 terminal_rows = conn.execute(
                     "SELECT ts, id, state, protocol, drop_reason "
                     "FROM events WHERE state IN (?, ?) "
+                    # A refusal is a policy decision, not a delivery outcome:
+                    # strangers could otherwise evict the terminals the #74
+                    # probe judges (review 2026-10-29 #1).
+                    "AND drop_reason IS NOT ? "
                     "ORDER BY rowid DESC LIMIT ?",
                     (DeliveryState.CONFIRMED.value, DeliveryState.DROPPED.value,
-                     max(0, recent_limit)),
+                     DropReason.INGRESS_REFUSED.value, max(0, recent_limit)),
                 ).fetchall()
                 ring_capacity = self._ring_cap
                 legs_view = delivery_legs.read(conn, time.time())

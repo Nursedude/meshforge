@@ -568,6 +568,27 @@ class TestParseDeliveryDB:
         assert d["confirmable_protocols"] == ["rns"]
         assert d["recent"][-1]["state"] == "confirmed"
 
+    def test_refusals_stay_out_of_the_fallback_terminal_ring(self, tmp_path,
+                                                             monkeypatch):
+        # BIC-2 #4 re-review #2: the DB fallback must filter what the
+        # snapshot filters, or this pane judges refusals as terminals.
+        p = tmp_path / "delivery_counters.db"
+        conn = connect_tuned(str(p))
+        conn.execute("CREATE TABLE counters (key TEXT PRIMARY KEY, value INTEGER)")
+        conn.execute("CREATE TABLE events (ts REAL, id TEXT, state TEXT, "
+                     "protocol TEXT, drop_reason TEXT, note TEXT)")
+        rows = [(1781000000.0 + i, f"c{i}", "confirmed", "rns", None, None)
+                for i in range(5)]
+        rows += [(1781000100.0 + i, f"r{i}", "dropped", "meshtastic",
+                  "ingress_refused", None) for i in range(300)]
+        conn.executemany("INSERT INTO events VALUES (?,?,?,?,?,?)", rows)
+        conn.commit()
+        conn.close()
+        monkeypatch.setattr(tp, "_db_path",
+                            lambda n: p if n == "delivery_counters" else None)
+        ring = tp._parse_delivery_db().value["recent_terminal"]
+        assert [r["id"] for r in ring] == [f"c{i}" for i in range(5)]
+
     def test_absent_db_returns_none(self, monkeypatch):
         monkeypatch.setattr(tp, "_db_path", lambda n: None)
         assert isinstance(tp._parse_delivery_db(), Unobservable)

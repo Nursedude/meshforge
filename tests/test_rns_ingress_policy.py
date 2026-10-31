@@ -120,7 +120,8 @@ def _fake_bridge(tmp_path, identities, policy):
     b._rns_ingress_ledger_path = tmp_path / "ledger.json"
     # bind the real mixin methods onto the fake
     for name in ("_on_lxmf_receive", "_rns_ingress_ledger",
-                 "rns_ingress_posture", "_rns_ingress_admits"):
+                 "rns_ingress_posture", "_rns_ingress_admits",
+                 "_record_ingress_refusal"):
         setattr(b, name, getattr(BridgeRnsEventsMixin, name).__get__(b))
     return b
 
@@ -415,3 +416,149 @@ def test_unparseable_last_seen_stays_in_the_window():
     p = pol.project_ledger_doc(doc, now=1_800_000_000.0)
     assert {r["hash"] for r in p["unlisted_recent"]} == {STRANGER, PEER, "ab" * 16}
     assert p["refused_total"] == 3
+
+
+# ── #4 (BIC-2 gate 3, review 2026-10-29): a refusal reaches the record ──
+# LXMF proves delivery in the gateway's router BEFORE this gate runs, so the
+# sender reads "delivered" for a message the bridge then refused. The sender
+# cannot be told (an unverified source is one whose key we lack), so the
+# per-message delivery record must carry it — not only a counter.
+
+class TestRefusalReachesTheDeliveryRecord:
+    @pytest.fixture
+    def recorded(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr("gateway.delivery_counters.record",
+                            lambda *a, **kw: calls.append((a, kw)))
+        return calls
+
+    def _msg(self, source_hex, *, msg_hash=b"\x11" * 32, validated=True):
+        m = _lxmf(source_hex)
+        m.hash = msg_hash
+        m.signature_validated = validated
+        return m
+
+    def test_enforce_refusal_is_one_dropped_ingress_refused_event(self, tmp_path, recorded):
+        from gateway import delivery_counters as dc
+        b = _fake_bridge(tmp_path, [LISTED], "enforce")
+        b._on_lxmf_receive(self._msg(STRANGER))
+        assert len(recorded) == 1
+        (state, msg_id), kw = recorded[0]
+        assert state == dc.DeliveryState.DROPPED
+        assert kw["drop_reason"] == dc.DropReason.INGRESS_REFUSED
+        assert msg_id == "11" * 32                      # the LXMF message hash
+        assert kw["protocol"] == "meshtastic" and kw["source"] == "rns"
+        assert kw["content_id"]                         # joins the M→R/R→M id
+
+    def test_an_unverified_member_is_recorded_and_named(self, tmp_path, recorded):
+        b = _fake_bridge(tmp_path, [LISTED], "enforce")
+        b._on_lxmf_receive(self._msg(LISTED, validated=None))
+        assert len(recorded) == 1
+        assert "unverified" in recorded[0][1]["note"]
+
+    def test_a_message_without_a_hash_still_gets_an_id(self, tmp_path, recorded):
+        b = _fake_bridge(tmp_path, [LISTED], "enforce")
+        m = self._msg(STRANGER)
+        del m.hash
+        b._on_lxmf_receive(m)
+        # never the OUTBOUND prefix (review 10-29 #3)
+        assert recorded[0][0][1].startswith("lxmf-in-")
+
+    def test_an_unverified_stranger_is_named_unlisted_like_the_journal(self, tmp_path, recorded):
+        # review 10-29 #2: "unverified" is the gate's verdict for a MEMBER
+        # claim only; a stranger without a valid signature is just unlisted.
+        b = _fake_bridge(tmp_path, [LISTED], "enforce")
+        b._on_lxmf_receive(self._msg(STRANGER, validated=None))
+        assert "not in bridge_source_identities" in recorded[0][1]["note"]
+
+    def test_recording_is_bounded_and_the_excess_is_witnessed(self, tmp_path, recorded, monkeypatch):
+        # review 10-29 #1: a public-net stranger must not be able to flood
+        # the delivery record; the gate itself is unchanged.
+        from gateway import bridge_rns_events_mixin as mx
+        clock = [1000.0]
+        monkeypatch.setattr(mx, "_monotonic", lambda: clock[0])
+        b = _fake_bridge(tmp_path, [LISTED], "enforce")
+        n = mx.INGRESS_REFUSAL_RECORD_MAX
+        for i in range(n + 5):
+            b._on_lxmf_receive(self._msg(STRANGER, msg_hash=bytes([i]) * 32))
+        assert len(recorded) == n
+        assert b.stats["rns_ingress_refusals_unrecorded"] == 5
+        assert b.stats["rns_to_mesh_refused_unlisted"] == n + 5
+        clock[0] += mx.INGRESS_REFUSAL_RECORD_WINDOW_S + 0.1
+        b._on_lxmf_receive(self._msg(STRANGER, msg_hash=b"\xee" * 32))
+        assert len(recorded) == n + 1
+
+
+def test_refusals_cannot_evict_the_terminals_the_stall_probe_judges(tmp_path, monkeypatch):
+    # review 10-29 #1 (the reviewer's flood, pinned): refusals are terminal
+    # DROPPED rows; in the shared terminal ring they pushed out the rns
+    # confirmations `delivery_confirmation_stall` (#74) needs.
+    from gateway import delivery_counters as dc
+    from utils.watchdog_probes_gateway import confirmation_window
+    c = dc.DeliveryCounters(db_path=tmp_path / "dc.db", run_preflight=False)
+    for i in range(30):
+        c.record(dc.DeliveryState.CONFIRMED, f"x{i}", protocol="rns",
+                 source="meshtastic")
+    for i in range(250):
+        c.record(dc.DeliveryState.DROPPED, f"r{i}", protocol="meshtastic",
+                 source="rns", drop_reason=dc.DropReason.INGRESS_REFUSED)
+    snap = c.snapshot()
+    assert confirmation_window(snap)["terminal"] == 30
+    assert not any(r.get("drop_reason") == "ingress_refused"
+                   for r in snap["recent_terminal"])
+    assert snap["legs"]["rns>meshtastic"]["15m"]["refused"] == 250
+
+
+def test_traffic_pulse_excludes_the_same_reason_from_its_terminal_ring():
+    # hfm #5: traffic_pulse mirrors the snapshot (it cannot import gateway).
+    from gateway import delivery_counters as dc
+    from monitoring import traffic_pulse as tp
+    assert tp._TERMINAL_RING_EXCLUDED_REASON == dc.DropReason.INGRESS_REFUSED.value
+
+    def test_observe_and_admitted_record_no_refusal(self, tmp_path, recorded):
+        _fake_bridge(tmp_path, [LISTED], "observe")._on_lxmf_receive(
+            self._msg(STRANGER))
+        _fake_bridge(tmp_path, [LISTED], "enforce")._on_lxmf_receive(
+            self._msg(LISTED))
+        assert recorded == []
+
+    def test_a_recorder_error_changes_nothing_about_the_refusal(self, tmp_path, monkeypatch):
+        def boom(*a, **kw):
+            raise RuntimeError("disk")
+        monkeypatch.setattr("gateway.delivery_counters.record", boom)
+        b = _fake_bridge(tmp_path, [LISTED], "enforce")
+        b._on_lxmf_receive(self._msg(STRANGER))
+        assert b._rns_to_mesh_queue.qsize() == 0
+        assert b.stats["rns_to_mesh_refused_unlisted"] == 1
+        assert len(b.notified) == 1
+
+
+def test_a_refusal_flood_never_prunes_a_delivery_row(tmp_path):
+    # re-review 10-29 #1: the terminal-ring FILTER was not enough — the
+    # physical prune-on-insert deleted the oldest rows whatever they were.
+    from gateway import delivery_counters as dc
+    c = dc.DeliveryCounters(db_path=tmp_path / "dc.db", run_preflight=False,
+                            ring_cap=40)
+    for i in range(30):
+        c.record(dc.DeliveryState.CONFIRMED, f"x{i}", protocol="rns",
+                 source="meshtastic")
+    for i in range(dc.REFUSAL_RING_CAP * 4):
+        c.record(dc.DeliveryState.DROPPED, f"r{i}", protocol="meshtastic",
+                 source="rns", drop_reason=dc.DropReason.INGRESS_REFUSED)
+    snap = c.snapshot()
+    assert len(snap["recent_terminal"]) == 30
+    import sqlite3
+    with sqlite3.connect(str(tmp_path / "dc.db")) as raw:
+        n_ref = raw.execute("SELECT COUNT(*) FROM events WHERE drop_reason = "
+                            "'ingress_refused'").fetchone()[0]
+        n_other = raw.execute("SELECT COUNT(*) FROM events WHERE drop_reason "
+                              "IS NOT 'ingress_refused'").fetchone()[0]
+    assert n_ref == dc.REFUSAL_RING_CAP          # bounded in its own pool
+    assert n_other == 30                         # nothing of ours evicted
+    # the delivery pool still prunes itself at its own cap
+    for i in range(20):
+        c.record(dc.DeliveryState.CONFIRMED, f"y{i}", protocol="rns",
+                 source="meshtastic")
+    with sqlite3.connect(str(tmp_path / "dc.db")) as raw:
+        assert raw.execute("SELECT COUNT(*) FROM events WHERE drop_reason "
+                           "IS NOT 'ingress_refused'").fetchone()[0] == 40

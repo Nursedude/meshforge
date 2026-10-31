@@ -83,10 +83,13 @@ gateway authored the message (oracle replies, synthetic ACKs). Anything
 else — a typo, a routing lane, a queue sender name like ``rns_xform`` —
 counts as ``?``: visible, never a new leg nobody reads."""
 
-OUTCOMES = ("queued", "sent", "confirmed", "failed", "dropped_other")
+OUTCOMES = ("queued", "sent", "confirmed", "failed", "dropped_other",
+            "refused")
 """Closed vocabulary of what a bucket counts. ``failed`` = a delivery that
 was attempted and failed; ``dropped_other`` = benign drops (dedup,
-shedding, invalid payload) that are not delivery failures."""
+shedding, invalid payload) that are not delivery failures; ``refused`` =
+the ingress policy declined a message the sender's transport had already
+reported delivered (neither a failed attempt nor benign)."""
 
 
 DISPATCH_DESTINATIONS = {"rns_xform": "rns"}

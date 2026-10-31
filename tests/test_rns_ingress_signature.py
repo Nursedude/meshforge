@@ -57,7 +57,7 @@ def _bridge(tmp_path, policy):
     b._rns_ingress_ledger_path = tmp_path / "ledger.json"
     b._lxmf_identity_registry_dir = tmp_path
     for name in ("_on_lxmf_receive", "_rns_ingress_ledger",
-                 "rns_ingress_posture", "_rns_ingress_admits",
+                 "rns_ingress_posture", "_rns_ingress_admits", "_record_ingress_refusal",
                  "_lxmf_identity_registry"):
         setattr(b, name, getattr(BridgeRnsEventsMixin, name).__get__(b))
     return b

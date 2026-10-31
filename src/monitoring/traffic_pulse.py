@@ -113,6 +113,9 @@ except Exception:  # pragma: no cover - exercised only on a broken import graph
 # into this monitoring tool. Test-pinned equal so the DB fallback judges the
 # same window the probe does (honest_failure_modes #5).
 _SNAPSHOT_RECENT_LIMIT = 200
+# Kept out of the terminal ring, as DeliveryCounters.snapshot() does —
+# gateway.delivery_counters.DropReason.INGRESS_REFUSED, test-pinned (hfm #5).
+_TERMINAL_RING_EXCLUDED_REASON = "ingress_refused"
 
 # Benign drops — capacity/duplicate management, NOT delivery failures.
 _BENIGN_DROP_REASONS = frozenset({
@@ -295,7 +298,9 @@ def _parse_delivery_db() -> Observation[Dict[str, Any]]:
                      "drop_reason": r["drop_reason"]}
                     for r in reversed(rows)]
         recent = _ring("", ())
-        recent_terminal = _ring("WHERE state IN (?, ?)", ("confirmed", "dropped"))
+        recent_terminal = _ring("WHERE state IN (?, ?) AND drop_reason IS NOT ?",
+                                ("confirmed", "dropped",
+                                 _TERMINAL_RING_EXCLUDED_REASON))
         # Honest confirmation accounting — mirrors
         # DeliveryCounters.compute_confirmation_view (Issue #74 display fix).
         # Can't import it (gateway/__init__ pulls RNS into this monitoring

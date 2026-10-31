@@ -63,7 +63,7 @@ def _host(tmp_path, policy="enforce", identities=(LISTED, KNOWN), known=(KNOWN,)
     for name in ("rns_ingress_warmup", "rns_ingress_posture",
                  "_rns_warmup_state", "_rns_recallable", "_rns_warmup_round",
                  "_rns_warmup_schedule", "_rns_warmup_wait",
-                 "_rns_ingress_admits", "_rns_ingress_ledger",
+                 "_rns_ingress_admits", "_record_ingress_refusal", "_rns_ingress_ledger",
                  "_lxmf_identity_registry", "_rns_ingress_path_nudge"):
         setattr(b, name, getattr(BridgeRnsEventsMixin, name).__get__(b))
     return b

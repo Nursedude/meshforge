@@ -572,7 +572,8 @@ def render(view: DeliveryView) -> str:
 # the names by test, not by import.
 _ROUTE_WINDOW_SECS = (("15m", 900), ("1h", 3600), ("24h", 86400))
 _ROUTE_WINDOWS = tuple(label for label, _s in _ROUTE_WINDOW_SECS)
-_ROUTE_OUTCOMES = ("queued", "sent", "confirmed", "failed", "dropped_other")
+_ROUTE_OUTCOMES = ("queued", "sent", "confirmed", "failed", "dropped_other",
+                   "refused")
 # dialog --textbox is 78 wide incl. border + scrollbar: ~74 usable. The
 # shared render() indents section lines by 2 AFTER this wrap, so prose
 # wraps at 70 (re-review #1/#2: the caveats are what a clipped line loses).
@@ -600,7 +601,7 @@ def _route_row(name: str, label: str, win) -> str:
     cells = [win.get(k, 0) for k in _ROUTE_OUTCOMES]
     cells = [c if _int_count(c) is not None else "?" for c in cells]
     return (f"  {name:<20} {label:>4}  " +
-            " ".join(f"{c!s:>{w}}" for c, w in zip(cells, (6, 5, 9, 6, 5))))
+            " ".join(f"{c!s:>{w}}" for c, w in zip(cells, (6, 5, 9, 6, 5, 7))))
 
 
 def _window_reach(bucket_s) -> str:
@@ -683,7 +684,7 @@ def route_legs_leg(home: str, now: float, gw) -> Leg:
         return leg
     leg.lines.append("")
     leg.lines.append(f"  {'route':<20} {'win':>4}  queued  sent confirmed "
-                     f"failed other")
+                     f"failed other refused")
     for name in sorted(legs):
         windows = legs.get(name)
         if not isinstance(windows, dict):
@@ -700,6 +701,11 @@ def route_legs_leg(home: str, now: float, gw) -> Leg:
                            "(counted, never guessed onto a real leg).")
     leg.lines += _wrap("sent − confirmed is NOT a loss count: broadcasts and "
                        "un-acked DMs can never confirm. A loss is `failed`.")
+    if any(isinstance(w, dict) and _int_count(w.get("refused"))
+           for ws in legs.values() if isinstance(ws, dict) for w in ws.values()):
+        leg.lines += _wrap("refused = the ingress allowlist declined it AFTER "
+                           "the sender's LXMF read it delivered — the sender "
+                           "was not told (journal: `RNS ingress REFUSED`).")
     return leg
 
 

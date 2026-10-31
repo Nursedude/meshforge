@@ -906,6 +906,10 @@ class RNSMeshtasticBridge(
                 'unlisted_recent': snap['unlisted_recent'],
                 'unlisted_total': snap['unlisted_total'],
                 'refused_total': snap['refused_total'],
+                # refusals past the delivery-record limiter (counted, not
+                # recorded per message) — the limiter's witness (hfm #9)
+                'refusals_unrecorded': self.stats.get(
+                    'rns_ingress_refusals_unrecorded', 0),
                 'window_s': snap['window_s'],
             }
         except Exception as e:  # noqa: BLE001 — status must not break
