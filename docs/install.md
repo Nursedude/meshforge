@@ -8,7 +8,7 @@ Hardware, install, first run, and upgrades. The short version lives in the [READ
 
 ### Hardware
 
-MeshForge runs on a Raspberry Pi. The tested baseline is a mix of **Pi 3B, Pi 4,
+MeshForge runs on a Raspberry Pi. Our own fleet runs a mix of **Pi 3B, Pi 4,
 and Pi 5** boards (all 64-bit / `aarch64`) — any of these runs the full NOC stack
 (map server, gateway bridge, Reticulum, MQTT) comfortably.
 
@@ -178,7 +178,7 @@ Main Menu (MeshForge NOC)
 | Component | Options |
 |-----------|---------|
 | **Computer** | Raspberry Pi 4/5 (recommended), Pi 3B+, Pi Zero 2W |
-| **OS** | Raspberry Pi OS Bookworm 64-bit, Debian 12+, Ubuntu 22.04+ |
+| **OS** | Raspberry Pi OS 64-bit, bookworm or trixie (both run in our fleet). Needs Python ≥ 3.11 (`pyproject.toml`); other Debian-based systems may work, untested |
 | **Radio (SPI)** | See SPI HATs table below |
 | **Radio (USB)** | See USB Radios table below |
 | **Optional** | RTL-SDR (spectrum analysis), GPS module, NanoVNA |
