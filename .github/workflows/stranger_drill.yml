@@ -27,6 +27,10 @@ on:
         description: "Extra args after the README's install command (empty = literal README)"
         required: false
         default: ""
+      profile:
+        description: "1.0 gate 7: after install, run `launcher.py --daemon --profile <this>` for 60 s and record what started (empty = skip). e.g. monitor"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -86,6 +90,8 @@ jobs:
 
       - name: Observe what the stranger got
         if: always()
+        env:
+          DRILL_PROFILE: ${{ inputs.profile }}
         run: |
           set +e
           x() { docker exec -u ham -w /home/ham/meshforge box bash -lc "$1" > "$2" 2>&1; echo $?; }
@@ -95,6 +101,15 @@ jobs:
           docker exec box systemctl list-units --all --no-legend --plain \
             'meshforge*' 'rnsd*' 'meshtasticd*' 'mosquitto*' > units.log 2>&1
           docker exec box bash -c 'env | grep -ci anthropic' > ai_env.log 2>&1
+          # 1.0 gate 4: with no key anywhere, the AI layer must SAY so, and the
+          # offline assistant must still answer (README: "no API key required").
+          AI_RC=$(x "cd src && timeout 60 python3 -c 'from utils.claude_assistant import check_availability, ClaudeAssistant; a = check_availability(); print(\"availability:\", a.api, \"|\", a.detail); r = ClaudeAssistant().ask(\"meshtasticd will not start\"); t = r.answer or \"\"; print(\"offline answer chars:\", len(t)); print(t[:400]); raise SystemExit(0 if a.api == \"no_key\" and t.strip() else 1)'" ai_offline.log)
+          # 1.0 gate 7: the chosen profile, headless, on a box with no radio.
+          # rc 124 = still running at 60 s (alive); anything else = it exited.
+          DAEMON_RC=skipped
+          if [ -n "$DRILL_PROFILE" ]; then
+            DAEMON_RC=$(x "sudo timeout 60 python3 src/launcher.py --daemon --profile \"$DRILL_PROFILE\"" daemon.log)
+          fi
           {
             echo "## Stranger drill — debian ${{ matrix.release }} arm64 @ ${GITHUB_SHA::8}"
             echo "_OBSERVE MODE — records what a stranger meets; not a gate yet._"
@@ -106,6 +121,8 @@ jobs:
             echo "| standalone.py --help | rc=$STANDALONE_RC |"
             echo "| failed systemd units | $(grep -c . failed_units.log) |"
             echo "| AI configured in env | $(cat ai_env.log) var(s) (expect 0) |"
+            echo "| gate 4: AI says not configured + offline answers | rc=$AI_RC (0 = both) — $(grep -m1 '^availability:' ai_offline.log) |"
+            echo "| gate 7: daemon --profile ${DRILL_PROFILE:-<none>} 60 s | rc=$DAEMON_RC (124 = alive at 60 s) — started: $(grep -o 'Started: [A-Za-z_]*' daemon.log 2>/dev/null | sed 's/Started: //' | paste -sd, -) |"
             echo
             echo '```'; cat units.log; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
