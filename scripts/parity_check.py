@@ -260,6 +260,13 @@ BYTE_IDENTICAL = (
     # the meshforge state dir, so there is nothing per-repo in it to drift.
     "scripts/ensure_prune_cron.sh",
     "tests/test_ensure_prune_cron.sh",
+    # MQTT-CFG S5 (2026-11-01): the ONE owner of `mqtt_nodeless.json`. Stdlib
+    # only — the config dir and the writer are INJECTED by each repo's
+    # per-app bindings in monitoring/mqtt_subscriber.py — so nothing in it is
+    # per-repo. Its test rides along (the calibration_ledger precedent): it
+    # pins only tmp dirs + the identical utils/mqtt_defaults.py.
+    "src/monitoring/mqtt_settings.py",
+    "tests/test_mqtt_settings.py",
 )
 
 # The fork-pin block is compared as a normalized sub-block: the lines that
