@@ -219,3 +219,10 @@ author: `atomic_write_text_preserving` keeps the old MODE as well as the owner,
 so `save()` forces 0600 after it. Open choices: 1 kept (unknown key →
 unreadable); 2 accepted with the explicit `msh/2/e` local root; 3 kept, capped
 at 6 named shapes.
+
+## Run record — 2026-11-01, VolcanoAI, `ada1fb67`
+A1 ✅ · A2 PARTIAL (json leg is `+` on localhost by Q14 — needs a non-local
+broker) · A3 ✅ (but baseline refuses identically — not discriminating) ·
+A4 ✅ (refusal predates S1; the new evidence is the named status + kilo) ·
+A5 ✅ · A6 guard ✅ / parity UNKNOWN until S5. Full row + baselines:
+`.claude/audits/review_provenance.md` 2026-11-01 "DEPLOY + MQTT-CFG acceptance".
