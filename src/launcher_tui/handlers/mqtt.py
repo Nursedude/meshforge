@@ -63,14 +63,18 @@ TelemetryPoller, get_telemetry_poller, _HAS_TELEMETRY_POLLER = safe_import(
 # ---------------------------------------------------------------------------
 
 def load_mqtt_config() -> Dict[str, Any]:
-    """Load MQTT configuration from file."""
-    config_path = get_real_user_home() / ".config" / "meshforge" / "mqtt_nodeless.json"
+    """Load MQTT configuration from file (the ONE shared path)."""
+    from monitoring.mqtt_subscriber import saved_mqtt_config_path
+    config_path = saved_mqtt_config_path()
     try:
         if config_path.exists():
             with open(config_path) as f:
                 return json.load(f)
     except Exception as e:
-        logger.debug("Error loading MQTT config: %s", e)
+        # a saved setting we could not read is not "never configured":
+        # say so at WARNING (the daemon reports it as saved-unreadable)
+        logger.warning("Saved MQTT settings unreadable (%s) — showing defaults: %s",
+                       config_path, e)
 
     return {
         'broker': 'mqtt.meshtastic.org',
@@ -87,7 +91,8 @@ def save_mqtt_config(config: Dict[str, Any]) -> bool:
     Returns True iff the write succeeded; False on any write failure (so a
     caller can't show "Saved" for a config that never hit disk — #74 class).
     """
-    config_path = get_real_user_home() / ".config" / "meshforge" / "mqtt_nodeless.json"
+    from monitoring.mqtt_subscriber import saved_mqtt_config_path
+    config_path = saved_mqtt_config_path()
     try:
         config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(config_path, 'w') as f:
@@ -444,7 +449,6 @@ class MQTTHandler(BaseHandler):
             # (it was duplicated here twice and absent from the daemon).
             from monitoring.mqtt_subscriber import subscriber_config_from_saved
             subscriber_config = subscriber_config_from_saved(config)
-            broker = subscriber_config["broker"]
 
             self._mqtt_subscriber = MQTTNodelessSubscriber(config=subscriber_config)
             self._mqtt_subscriber.start()

@@ -176,14 +176,17 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
         self._mesh_size_history: Dict[str, datetime] = {}
 
     def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from file or return defaults."""
-        config_path = get_real_user_home() / ".config" / "meshforge" / "mqtt_nodeless.json"
-
-        if config_path.exists():
+        """Load the saved settings through THE shared reader + translation
+        (it used to return the raw file, so a TUI-schema file — `topic`, no
+        `root_topic` — read differently here than in the TUI and daemon)."""
+        saved, err = load_saved_mqtt_config()
+        if saved is not None:
             try:
-                return json.loads(config_path.read_text())
-            except Exception as e:
-                logger.error(f"Failed to load MQTT nodeless config: {e}")
+                return subscriber_config_from_saved(saved)
+            except ValueError as e:
+                err = str(e)
+        if err:
+            logger.error(f"Failed to load MQTT nodeless config, using defaults: {err}")
 
         # Return defaults
         return {
@@ -207,9 +210,8 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
         The config may carry broker credentials — written 0600 (a plain
         write_text left the password world-readable on multi-user boxes).
         """
-        config_dir = get_real_user_home() / ".config" / "meshforge"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        config_path = config_dir / "mqtt_nodeless.json"
+        config_path = saved_mqtt_config_path()
+        config_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
             config_path.write_text(json.dumps(self._config, indent=2))
@@ -1023,10 +1025,18 @@ def create_public_subscriber(
 # --- the saved operator settings: ONE reader, ONE translation ---------------
 #
 # `mqtt_nodeless.json` is written in TWO schemas: the TUI's save_mqtt_config
-# writes `topic` ("msh/US/2/e/LongFast/#"); MQTTNodelessSubscriber.save_config
-# writes `root_topic`/`channel`/`use_tls`. The TUI used to translate the first
-# inline in two duplicate copies and the daemon read neither (review of
-# a30390ae, F1/F2). Every consumer goes through these two functions.
+# writes `topic` ("msh/US/2/e/LongFast/#", and its private-broker save ALSO
+# writes `root_topic`/`channel`); MQTTNodelessSubscriber.save_config writes
+# the subscriber schema (`root_topic`/`channel`/`use_tls`/`regions`/...).
+# Every reader goes through these functions: the TUI (load/save + both start
+# paths), the daemon, and the subscriber's own _load_config (kilo ingest
+# builds a default subscriber). Reviews of a30390ae + b8bcb7b5.
+
+#: Subscriber-schema keys kept as saved when present (the TUI schema never
+#: writes them; dropping them would silently change a subscriber's behaviour).
+_SUBSCRIBER_PASSTHROUGH = ("regions", "json_channel", "auto_reconnect",
+                           "reconnect_delay", "max_reconnect_delay")
+
 
 def saved_mqtt_config_path() -> Path:
     """Where the operator's saved MQTT settings live (sudo-safe home)."""
@@ -1038,12 +1048,14 @@ def load_saved_mqtt_config(path: Optional[Path] = None):
 
     Three states on purpose: an absent file is a normal "never configured";
     an unreadable one is an operator setting we FAILED to honour, which must
-    never read as either "absent" or a default broker (hfm #1).
+    never read as either "absent" or a default broker (hfm #1). Every step,
+    including the existence check (a PermissionError on a parent), stays
+    inside the contract.
     """
     p = path or saved_mqtt_config_path()
-    if not p.exists():
-        return None, None
     try:
+        if not p.exists():
+            return None, None
         data = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         return None, f"{p}: {type(e).__name__}: {e}"
@@ -1052,21 +1064,44 @@ def load_saved_mqtt_config(path: Optional[Path] = None):
     return data, None
 
 
+def _saved_str(saved: Dict[str, Any], key: str, default: str) -> str:
+    if key not in saved:
+        return default
+    v = saved[key]
+    if not isinstance(v, str) or not v.strip():
+        raise ValueError(f"mqtt_nodeless.json: {key!r} must be a non-empty "
+                         f"string, got {v!r}")
+    return v
+
+
+def _saved_port(saved: Dict[str, Any]) -> int:
+    v = saved.get("port", 8883)
+    if isinstance(v, bool):
+        raise ValueError(f"mqtt_nodeless.json: 'port' must be an integer, got {v!r}")
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str) and v.strip().isdigit():
+        return int(v.strip())
+    raise ValueError(f"mqtt_nodeless.json: 'port' must be an integer, got {v!r}")
+
+
 def subscriber_config_from_saved(saved: Dict[str, Any]) -> Dict[str, Any]:
     """The subscriber config for saved settings in EITHER schema.
 
-    TUI schema (`topic`): reproduces the TUI's former inline translation
-    exactly (pinned by tests/test_mqtt_saved_config.py). Subscriber schema
-    (`root_topic`, no `topic`): its root/channel/key are kept, never replaced
-    by the TUI defaults.
+    `root_topic` WINS when present (subscriber schema, and the TUI's
+    private-broker save that writes both). Otherwise `topic` is parsed
+    exactly as the TUI's former inline translation did (pinned by
+    tests/test_mqtt_saved_config.py). A value the author cannot have meant —
+    a null/non-string topic or broker, a non-integer port — raises
+    ValueError: refuse loudly, never absorb (hfm #3).
     """
-    broker = saved.get("broker", "mqtt.meshtastic.org")
-    port = saved.get("port", 8883)
-    if "root_topic" in saved and "topic" not in saved:
-        root_topic = saved["root_topic"]
-        channel = saved.get("channel") or "LongFast"
+    broker = _saved_str(saved, "broker", "mqtt.meshtastic.org")
+    port = _saved_port(saved)
+    if saved.get("root_topic") is not None:
+        root_topic = _saved_str(saved, "root_topic", "msh/US/2/e")
+        channel = _saved_str(saved, "channel", "LongFast") if saved.get("channel") else "LongFast"
     else:
-        topic = saved.get("topic", "msh/US/2/e/LongFast/#")
+        topic = _saved_str(saved, "topic", "msh/US/2/e/LongFast/#")
         parts = topic.rstrip("#").rstrip("/").split("/")
         if len(parts) >= 4:
             channel = parts[-1] if parts[-1] else "LongFast"
@@ -1077,7 +1112,7 @@ def subscriber_config_from_saved(saved: Dict[str, Any]) -> Dict[str, Any]:
         else:
             root_topic = "msh/US/2/e"
             channel = "LongFast"
-    return {
+    cfg = {
         "broker": broker,
         "port": port,
         "username": saved.get("username") or "",
@@ -1090,6 +1125,10 @@ def subscriber_config_from_saved(saved: Dict[str, Any]) -> Dict[str, Any]:
         "reconnect_delay": 2 if broker == "localhost" else 5,
         "max_reconnect_delay": 30 if broker == "localhost" else 60,
     }
+    for k in _SUBSCRIBER_PASSTHROUGH:
+        if k in saved:
+            cfg[k] = saved[k]
+    return cfg
 
 
 # Singleton instance management

@@ -154,14 +154,159 @@ def test_global_ini_broker_port_overlay_the_saved_settings(tmp_path, connect_ok)
     assert (cfg["broker"], cfg["port"]) == ("localhost", 1883)
     assert cfg["use_tls"] is False          # recomputed for the overlaid port
     assert cfg["root_topic"] == "msh/HI/2/e"  # the rest stays the operator's
-    assert st["config_source"] == "saved+global.ini"
+    assert st["config_source"] == "saved+override"
 
 
-def test_overlay_keeps_an_explicit_saved_use_tls(tmp_path, connect_ok):
+def test_overlaid_port_rederives_tls_over_a_saved_use_tls(tmp_path, connect_ok):
+    # review of b8bcb7b5 F3: every TUI save writes use_tls, so keeping it
+    # under an overlaid port meant TLS against plaintext :1883 (this test
+    # used to pin exactly that broken combination)
     p = tmp_path / "mqtt_nodeless.json"
-    p.write_text(json.dumps({"broker": "b", "use_tls": True}))
-    cfg, _ = _start(MQTTSubscriberService(saved_path=p, overlay={"port": 1883}))
+    p.write_text(json.dumps({"broker": "mqtt.meshtastic.org", "port": 8883,
+                             "use_tls": True, "topic": "msh/US/2/e/LongFast/#"}))
+    cfg, _ = _start(MQTTSubscriberService(saved_path=p,
+                                          overlay={"broker": "localhost", "port": 1883}))
+    assert (cfg["broker"], cfg["port"], cfg["use_tls"]) == ("localhost", 1883, False)
+
+
+def test_overlaid_broker_rederives_the_reconnect_delays(tmp_path, connect_ok):
+    # F4: delays belong to the FINAL broker, not the saved one
+    p = tmp_path / "mqtt_nodeless.json"
+    p.write_text(json.dumps({"broker": "mqtt.meshtastic.org", "port": 1883,
+                             "use_tls": False}))
+    cfg, _ = _start(MQTTSubscriberService(saved_path=p, overlay={"broker": "localhost"}))
+    assert (cfg["reconnect_delay"], cfg["max_reconnect_delay"]) == (2, 30)
+
+
+def test_saved_use_tls_kept_when_no_port_is_overlaid(tmp_path, connect_ok):
+    p = tmp_path / "mqtt_nodeless.json"
+    p.write_text(json.dumps({"broker": "b", "port": 8884, "use_tls": True}))
+    cfg, _ = _start(MQTTSubscriberService(saved_path=p, overlay={"broker": "c"}))
     assert cfg["use_tls"] is True
+
+
+# --- review of b8bcb7b5: F5 both schemas in one file, F6 types, F7 ----------
+
+def test_root_topic_wins_when_both_keys_are_saved():
+    # the TUI's private-broker save writes topic AND root_topic + channel
+    saved = {"topic": "msh/HI/Ops/#", "root_topic": "msh/HI", "channel": "Ops"}
+    out = subscriber_config_from_saved(saved)
+    assert (out["root_topic"], out["channel"]) == ("msh/HI", "Ops")
+
+
+def test_null_topic_is_refused_loudly():
+    with pytest.raises(ValueError, match="topic"):
+        subscriber_config_from_saved({"topic": None})
+
+
+def test_non_string_broker_is_refused_loudly():
+    with pytest.raises(ValueError, match="broker"):
+        subscriber_config_from_saved({"broker": 5})
+
+
+def test_digit_string_port_is_an_int_so_tls_is_right():
+    out = subscriber_config_from_saved({"port": "8883"})
+    assert out["port"] == 8883 and out["use_tls"] is True
+
+
+def test_garbage_port_is_refused_loudly():
+    with pytest.raises(ValueError, match="port"):
+        subscriber_config_from_saved({"port": "eighty"})
+
+
+def test_invalid_saved_types_read_as_unreadable_in_the_daemon(tmp_path, connect_ok):
+    p = tmp_path / "mqtt_nodeless.json"
+    p.write_text(json.dumps({"topic": None}))
+    cfg, st = _start(MQTTSubscriberService(broker="localhost", port=1883, saved_path=p))
+    assert st["config_source"] == "saved-unreadable"
+    assert cfg["broker"] == "localhost"
+
+
+def test_permission_error_on_exists_stays_in_the_contract(tmp_path):
+    p = tmp_path / "mqtt_nodeless.json"
+    with patch.object(type(p), "exists", side_effect=PermissionError("denied")):
+        saved, err = load_saved_mqtt_config(p)
+    assert saved is None and err and "PermissionError" in err
+
+
+# --- F8: the subscriber's own loader reads through the same translation ---
+
+def test_subscriber_default_construction_reads_a_tui_schema_file(tmp_path):
+    p = tmp_path / "mqtt_nodeless.json"
+    p.write_text(json.dumps({"broker": "b", "port": 1883,
+                             "topic": "msh/HI/2/e/LongFast/#"}))
+    with patch("monitoring.mqtt_subscriber.saved_mqtt_config_path", return_value=p):
+        s = MQTTNodelessSubscriber()
+    assert s._config["root_topic"] == "msh/HI/2/e"
+
+
+def test_subscriber_schema_extras_survive_the_subscribers_own_loader(tmp_path):
+    p = tmp_path / "mqtt_nodeless.json"
+    p.write_text(json.dumps({"broker": "b", "root_topic": "msh/EU_868/2/e",
+                             "channel": "LongFast", "regions": ["EU_868"],
+                             "json_channel": "+"}))
+    with patch("monitoring.mqtt_subscriber.saved_mqtt_config_path", return_value=p):
+        s = MQTTNodelessSubscriber()
+    assert s._config["regions"] == ["EU_868"]
+    assert s._config["json_channel"] == "+"
+
+
+# --- F9: one path, used by the TUI's own load/save -------------------------
+
+def test_tui_load_and_save_use_the_shared_path(tmp_path):
+    from launcher_tui.handlers import mqtt as tui_mqtt
+    p = tmp_path / "mqtt_nodeless.json"
+    with patch("monitoring.mqtt_subscriber.saved_mqtt_config_path", return_value=p):
+        assert tui_mqtt.save_mqtt_config({"broker": "x", "topic": "msh/US/2/e/LongFast/#"})
+        assert tui_mqtt.load_mqtt_config()["broker"] == "x"
+    assert p.exists()
+
+
+# --- F2/F10: which layer set broker/port is recorded once, on DaemonConfig ---
+
+def test_daemon_config_records_explicit_yaml_keys(tmp_path):
+    from daemon_config import DaemonConfig
+    y = tmp_path / "daemon.yaml"
+    y.write_text("mqtt_broker: broker.lan\n")
+    with patch("daemon_config.load_global_overrides", return_value={}):
+        cfg = DaemonConfig.load(y)
+    assert "mqtt_broker" in cfg.explicit_keys
+    assert "mqtt_port" not in cfg.explicit_keys
+
+
+def test_daemon_config_records_explicit_global_keys(tmp_path):
+    from daemon_config import DaemonConfig
+    with patch("daemon_config.load_global_overrides",
+               return_value={"mqtt_broker": "g", "mqtt_port": 1884}):
+        cfg = DaemonConfig.load(tmp_path / "absent.yaml")
+    assert {"mqtt_broker", "mqtt_port"} <= cfg.explicit_keys
+
+
+def test_mqtt_overlay_comes_from_explicit_keys_only(tmp_path):
+    from daemon import _mqtt_overlay
+    from daemon_config import DaemonConfig
+    with patch("daemon_config.load_global_overrides", return_value={}):
+        cfg = DaemonConfig.load(tmp_path / "absent.yaml")
+    assert _mqtt_overlay(cfg) == {}          # defaults are not "explicit"
+    cfg.mqtt_broker = "broker.lan"
+    cfg.explicit_keys.add("mqtt_broker")
+    assert _mqtt_overlay(cfg) == {"broker": "broker.lan"}
+
+
+# --- F1: the daemon unit runs as root with no SUDO_USER — blind, so LOUD ----
+
+def test_root_without_sudo_user_is_reported_not_silently_local(tmp_path, connect_ok, caplog):
+    svc = MQTTSubscriberService(broker="localhost", port=1883)
+    env = {k: v for k, v in os.environ.items() if k not in ("SUDO_USER", "LOGNAME")}
+    with patch.dict(os.environ, env, clear=True), \
+         patch("os.geteuid", return_value=0), \
+         patch("monitoring.mqtt_subscriber.saved_mqtt_config_path",
+               return_value=tmp_path / "root-home-absent.json"), \
+         caplog.at_level(logging.WARNING):
+        cfg, st = _start(svc)
+    assert st["config_source"] == "operator-home-unknown"
+    assert cfg["broker"] == "localhost"
+    assert any("SUDO_USER" in r.getMessage() for r in caplog.records)
 
 
 def test_no_saved_file_means_the_local_broker(tmp_path, connect_ok):

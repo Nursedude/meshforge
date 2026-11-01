@@ -34,6 +34,11 @@ PrivateTmp=true
 # Environment
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=/opt/meshforge/src
+# Runs as root with no SUDO_USER, so the daemon cannot find the operator's home:
+# saved MQTT settings (TUI → ~/.config/meshforge/mqtt_nodeless.json) read as
+# config_source "operator-home-unknown" (a WARNING, not a silent default).
+# To honour them, set the operator here:
+# Environment=SUDO_USER=<operator>
 
 [Install]
 WantedBy=multi-user.target

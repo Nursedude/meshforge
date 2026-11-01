@@ -67,6 +67,11 @@ class DaemonConfig:
     # --- PID ---
     pid_dir: str = "/run/meshforge"
 
+    # Attribute names an operator set EXPLICITLY (global.ini or daemon.yaml),
+    # recorded once here — after the merge, an explicit `localhost:1883`
+    # cannot be told apart from the dataclass default any other way.
+    explicit_keys: set = field(default_factory=set, repr=False, compare=False)
+
     @classmethod
     def load(
         cls,
@@ -135,6 +140,7 @@ class DaemonConfig:
         for attr_name, value in overrides.items():
             if hasattr(self, attr_name):
                 setattr(self, attr_name, value)
+                self.explicit_keys.add(attr_name)
 
     def _apply_profile(self, profile) -> None:
         """Apply deployment profile feature flags as defaults."""
@@ -196,6 +202,7 @@ class DaemonConfig:
         for yaml_key, attr_name in field_map.items():
             if yaml_key in data:
                 setattr(self, attr_name, data[yaml_key])
+                self.explicit_keys.add(attr_name)
 
         logger.debug(f"Loaded daemon config from {path}")
 
