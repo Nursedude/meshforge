@@ -191,14 +191,19 @@ class TestSetupCustomBrokerHonestSignal:
 # ---------------------------------------------------------------------------
 
 class TestApplyProfileHonestSignal:
-    def _profile(self):
-        class _P:
-            name = "p"
+    def _profile(self, **kw):
+        # a REAL profile (MQTT-CFG S3: it maps to intent via to_intent())
+        from utils.broker_profiles import BrokerProfile
+        return BrokerProfile(**{"name": "p", "broker_type": "private",
+                                "host": "broker.example", "port": 1883, **kw})
 
-            def to_tui_config(self):
-                return {}
-
-        return _P()
+    def test_apply_refuses_a_profile_that_cannot_be_subscribed(self):
+        h = _make_broker()
+        with patch("handlers.mqtt.load_mqtt_config", return_value={}), \
+             patch("handlers.mqtt.save_mqtt_config", return_value=True) as save:
+            h._apply_profile_to_mqtt(self._profile(root_topic="msh/HI"))
+        assert h.ctx.dialog.last_msgbox_title == "Not Applied"
+        assert not save.called
 
     def test_apply_write_failure_shows_failure_dialog(self):
         h = _make_broker()

@@ -114,18 +114,20 @@ class BrokerProfile:
             "max_reconnect_delay": 30 if self.host in ("localhost", "127.0.0.1") else 60,
         }
 
-    def to_tui_config(self) -> Dict[str, Any]:
-        """Convert to TUI mqtt_nodeless.json format."""
-        topic = self.topic_filter
-        if self.json_enabled and self.host in ("localhost", "127.0.0.1"):
-            topic = self.json_topic_filter
+    def to_intent(self) -> Dict[str, Any]:
+        """The saved-settings INTENT (monitoring.mqtt_settings) for this
+        profile — a direct field map, so nothing is parsed back out of a
+        topic string. The JSON leg is derived by the owner (a local broker
+        listens on every channel). TLS reads "auto" when it matches the port."""
         return {
             "broker": self.host,
             "port": self.port,
-            "topic": topic,
-            "username": self.username or None,
-            "password": self.password or None,
-            "use_tls": self.use_tls,
+            "tls": "auto" if self.use_tls == (self.port == 8883) else self.use_tls,
+            "username": self.username or "",
+            "password": self.password or "",
+            "root_topic": self.root_topic,
+            "channel": self.channel,
+            "key": self.encryption_key or "AQ==",
         }
 
     def to_meshtastic_cli_args(self) -> List[str]:

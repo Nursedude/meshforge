@@ -157,6 +157,16 @@ and record the planted failure.
 - Add the file to **MF's** `scripts/parity_check.py` byte-identical tier (MA
   has none, F12).
 
+**S5 MA inventory (read-only survey, 10-31 23:47 — the next session starts here):**
+the subscriber reads the RAW file (`/opt/meshanchor/src/monitoring/mqtt_subscriber.py:239`,
+so a TUI-shaped file with `topic` and no `root_topic` silently subscribes the
+defaults — the original two-schema bug, live in MA); a dead `save_config`
+(`:263`); TUI `load_mqtt_config`/`save_mqtt_config` (`handlers/mqtt.py:64,83`)
+where save returns None; the daemon builds a bare subscriber (`daemon.py:214`);
+no `mqtt_settings.py`. File absent on every box (Q15), so latent, not live.
+**Port only after the MF S1–S4 review** (the module must be final before a
+byte-identical copy — S2 already changed it once).
+
 **S6 — surface + records.** Update the MQTT row in `docs/capabilities.md` and
 the ROADMAP row. Write a provenance row per slice.
 

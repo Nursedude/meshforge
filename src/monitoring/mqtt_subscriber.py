@@ -406,6 +406,12 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
             }
             logger.error(f"MQTT connect failed: {error_msgs.get(rc, f'Error {rc}')}")
 
+    def subscriptions(self) -> List[str]:
+        """The topics this subscriber subscribes to (or will, on connect) —
+        public so the TUI status shows the LIVE ones, never a re-derivation."""
+        return mqtt_settings.subscriptions(self._config, DEFAULT_ROOT_TOPIC,
+                                           DEFAULT_CHANNEL)
+
     def _subscribe_topics(self) -> None:
         """Subscribe to Meshtastic MQTT topics."""
         if not self._client:
@@ -415,8 +421,7 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
         # status so what is shown is what is subscribed: the JSON leg
         # (msh/{region}/2/json/{json_channel}/# — "+" = every channel a local
         # radio uplinks, 2026-10-13) then the encrypted leg for discovery.
-        for topic in mqtt_settings.subscriptions(
-                self._config, DEFAULT_ROOT_TOPIC, DEFAULT_CHANNEL):
+        for topic in self.subscriptions():
             self._client.subscribe(topic)
             logger.info(f"Subscribed to: {topic}")
 

@@ -1221,7 +1221,6 @@ MF026_BASELINE = {
     'src/launcher_tui/handlers/ai_tools.py': 1,
     'src/launcher_tui/handlers/extensions.py': 1,
     'src/launcher_tui/handlers/fleet_backup.py': 1,
-    'src/launcher_tui/handlers/mqtt.py': 1,
     'src/monitor.py': 1,
     'src/plugins/eas_alerts.py': 1,
     'src/utils/webhooks.py': 1,

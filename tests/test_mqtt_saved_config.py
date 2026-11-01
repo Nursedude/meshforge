@@ -296,11 +296,10 @@ def test_unreadable_saved_file_makes_the_bare_subscriber_refuse(tmp_path):
 
 def test_tui_load_and_save_use_the_shared_path(tmp_path):
     from launcher_tui.handlers import mqtt as tui_mqtt
-    p = tmp_path / "mqtt_nodeless.json"
-    with patch("monitoring.mqtt_subscriber.mqtt_config_dir", return_value=p.parent):
-        assert tui_mqtt.save_mqtt_config({"broker": "x", "topic": "msh/US/2/e/LongFast/#"})
+    with patch("monitoring.mqtt_subscriber.mqtt_config_dir", return_value=tmp_path):
+        assert tui_mqtt.save_mqtt_config({**ms.defaults(), "broker": "x"})
         assert tui_mqtt.load_mqtt_config()["broker"] == "x"
-    assert p.exists()
+    assert (tmp_path / ms.FILENAME).exists()
 
 
 # --- F2/F10: which layer set broker/port is recorded once, on DaemonConfig ---
@@ -417,7 +416,7 @@ def test_suite_never_resolves_the_real_saved_settings_path():
     assert not str(tui_mqtt.get_real_user_home()).startswith(real_home)
 
 
-# --- MQTT-CFG S2: the TUI adapter round-trips until S3 moves the writers ----
+# --- MQTT-CFG S3: the TUI edits INTENT (the S2 menu-shape adapter is gone) ---
 
 def _tui(tmp_path):
     from launcher_tui.handlers import mqtt as tui_mqtt
@@ -428,49 +427,34 @@ def _tui(tmp_path):
 def test_tui_load_then_save_is_a_fixed_point(tmp_path):
     tui_mqtt, p = _tui(tmp_path)
     with p:
-        assert tui_mqtt.save_mqtt_config({
-            "broker": "b.example", "port": 1883, "topic": "msh/US/2/e/Ops/#",
-            "root_topic": "msh/US/2/e", "channel": "Ops", "username": "u",
-            "password": "p", "use_tls": False, "auto_start": True,
-            "auto_start_telemetry": False})
+        assert tui_mqtt.save_mqtt_config({**ms.defaults(), "broker": "b.example",
+                                          "port": 1883, "channel": "Ops",
+                                          "username": "u", "password": "p",
+                                          "auto_start": True})
         first = (tmp_path / ms.FILENAME).read_bytes()
         assert tui_mqtt.save_mqtt_config(tui_mqtt.load_mqtt_config())
     assert (tmp_path / ms.FILENAME).read_bytes() == first
 
 
-def test_tui_configure_topic_edit_takes_effect(tmp_path):
-    # the d583e37e F2 regression: Configure edits ONLY `topic`
+def test_tui_reads_a_legacy_file_and_the_next_save_converts_it(tmp_path):
+    (tmp_path / ms.FILENAME).write_text(json.dumps(
+        {"broker": "b", "port": 1883, "topic": "msh/US/2/e/Old/#", "use_tls": False}))
     tui_mqtt, p = _tui(tmp_path)
     with p:
-        assert tui_mqtt.save_mqtt_config({"broker": "b", "port": 1883,
-                                          "topic": "msh/US/2/e/Old/#"})
         cfg = tui_mqtt.load_mqtt_config()
-        cfg["topic"] = "msh/US/2/e/New/#"
-        assert tui_mqtt.save_mqtt_config(cfg)
+        assert cfg["channel"] == "Old"
+        assert tui_mqtt.save_mqtt_config({**cfg, "channel": "New"})
         assert tui_mqtt.load_mqtt_config()["channel"] == "New"
-
-
-def test_tui_local_preset_saves_the_local_root(tmp_path):
-    # exactly the dict the local preset builds (mqtt.py, choice == "local")
-    tui_mqtt, p = _tui(tmp_path)
-    with p:
-        assert tui_mqtt.save_mqtt_config({"broker": "localhost", "port": 1883,
-                                          "topic": "msh/2/json/LongFast/#",
-                                          "username": None, "password": None,
-                                          "use_tls": False})
-        cfg, err = tui_mqtt._saved_subscriber_config()
-    assert err is None
-    assert ms.subscriptions(cfg) == ["msh/2/json/+/#", "msh/2/e/LongFast/#"]
+    assert json.loads((tmp_path / ms.FILENAME).read_text())["schema_version"] == 1
+    assert (tmp_path / (ms.FILENAME + ".pre-v1")).exists()
 
 
 def test_tui_refused_save_returns_false_and_keeps_the_file(tmp_path):
     tui_mqtt, p = _tui(tmp_path)
     with p:
-        assert tui_mqtt.save_mqtt_config({"broker": "b", "port": 1883,
-                                          "topic": "msh/US/2/e/LongFast/#"})
+        assert tui_mqtt.save_mqtt_config(ms.defaults())
         before = (tmp_path / ms.FILENAME).read_bytes()
-        assert tui_mqtt.save_mqtt_config({"broker": "b", "port": 70000,
-                                          "topic": "msh/US/2/e/LongFast/#"}) is False
+        assert tui_mqtt.save_mqtt_config({**ms.defaults(), "port": 70000}) is False
     assert (tmp_path / ms.FILENAME).read_bytes() == before
 
 

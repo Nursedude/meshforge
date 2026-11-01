@@ -126,8 +126,10 @@ class TestBrokerProfile:
         config = profile.to_mqtt_config()
         assert config["reconnect_delay"] == 5
 
-    def test_to_tui_config(self):
-        """Test conversion to TUI config format."""
+    def test_to_intent(self):
+        """MQTT-CFG S3: a profile maps straight onto the saved-settings intent
+        (the local JSON leg is derived by mqtt_settings, not a topic string)."""
+        from monitoring import mqtt_settings
         profile = BrokerProfile(
             name="test",
             broker_type="private",
@@ -139,11 +141,17 @@ class TestBrokerProfile:
             channel="LongFast",
             json_enabled=True,
         )
-        config = profile.to_tui_config()
-        assert config["broker"] == "localhost"
-        assert config["port"] == 1883
-        # Local broker with json_enabled should use json topic
-        assert "json" in config["topic"]
+        intent = profile.to_intent()
+        assert mqtt_settings.validate(intent) == []
+        assert (intent["broker"], intent["port"], intent["tls"]) == ("localhost", 1883, "auto")
+        assert (intent["username"], intent["password"]) == ("meshforge", "secret")
+        cfg = mqtt_settings.subscriber_config(intent)
+        assert mqtt_settings.subscriptions(cfg)[0] == "msh/US/2/json/+/#"
+
+    def test_to_intent_keeps_an_explicit_tls_choice(self):
+        profile = BrokerProfile(name="t", broker_type="private", host="b",
+                                port=8883, use_tls=False)
+        assert profile.to_intent()["tls"] is False
 
     def test_to_meshtastic_cli_args(self):
         """Test generation of meshtastic CLI args."""

@@ -740,13 +740,22 @@ class BrokerHandler(BaseHandler):
         """Apply a broker profile to the MQTT subscriber configuration."""
         from handlers.mqtt import load_mqtt_config, save_mqtt_config
 
-        tui_config = profile.to_tui_config()
+        from monitoring import mqtt_settings
+        existing = load_mqtt_config()
+        intent = {**profile.to_intent(),
+                  'auto_start': existing.get('auto_start', False),
+                  'auto_start_telemetry': existing.get('auto_start_telemetry', True)}
+        errs = mqtt_settings.validate(intent)
+        if errs:
+            # refuse at the boundary, naming the field (MQTT-CFG) — a profile
+            # whose root/channel cannot be subscribed is not "applied"
+            self.ctx.dialog.msgbox(
+                "Not Applied",
+                f"Broker profile '{profile.name}' was saved but NOT applied to "
+                "the MQTT subscriber:\n\n" + "\n".join(errs))
+            return
 
-        existing_config = load_mqtt_config()
-        tui_config['auto_start'] = existing_config.get('auto_start', False)
-        tui_config['auto_start_telemetry'] = existing_config.get('auto_start_telemetry', True)
-
-        ok = save_mqtt_config(tui_config)
+        ok = save_mqtt_config(intent)
         if ok:
             logger.info("Applied broker profile '%s' to MQTT subscriber config", profile.name)
         else:

@@ -1487,7 +1487,7 @@ class TestConfigAtomicityMF026:
         # The frozen baseline must not silently grow; pin its documented size so
         # a future edit that adds headroom trips review.
         lint_mod = self._lint()
-        assert sum(lint_mod.MF026_BASELINE.values()) <= 9
+        assert sum(lint_mod.MF026_BASELINE.values()) <= 8  # MQTT-CFG S3 removed handlers/mqtt.py (2026-11-01)
 
 
 class TestNoUnsatisfiableCIPoll:
