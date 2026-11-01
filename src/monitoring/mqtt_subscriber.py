@@ -1097,10 +1097,21 @@ def subscriber_config_from_saved(saved: Dict[str, Any]) -> Dict[str, Any]:
     """
     broker = _saved_str(saved, "broker", "mqtt.meshtastic.org")
     port = _saved_port(saved)
+    use_pair = False
     if saved.get("root_topic") is not None:
         root_topic = _saved_str(saved, "root_topic", "msh/US/2/e")
         channel = _saved_str(saved, "channel", "LongFast") if saved.get("channel") else "LongFast"
-    else:
+        # The TUI's private save writes topic = f"{root_topic}/{channel}/#"
+        # together; its Configure menu later edits ONLY `topic`. So the pair
+        # wins when there is no topic or the two still agree; when they
+        # disagree, `topic` is the newer edit (review of d583e37e F2 — a
+        # plain "root_topic wins" made that edit silently do nothing).
+        if "topic" not in saved:
+            use_pair = True
+        else:
+            t = _saved_str(saved, "topic", "")
+            use_pair = t.rstrip("#").rstrip("/") == f"{root_topic}/{channel}"
+    if not use_pair:
         topic = _saved_str(saved, "topic", "msh/US/2/e/LongFast/#")
         parts = topic.rstrip("#").rstrip("/").split("/")
         if len(parts) >= 4:

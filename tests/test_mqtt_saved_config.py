@@ -295,18 +295,50 @@ def test_mqtt_overlay_comes_from_explicit_keys_only(tmp_path):
 
 # --- F1: the daemon unit runs as root with no SUDO_USER — blind, so LOUD ----
 
-def test_root_without_sudo_user_is_reported_not_silently_local(tmp_path, connect_ok, caplog):
+def _blind_check(tmp_path, resolved_home, root_home="/root"):
+    """Run the daemon's no-saved-file branch as root, with the RESOLVER's
+    answer pinned — the decision must come from it, not a second rule."""
+    import pwd as _pwd
+    from pathlib import Path as _P
     svc = MQTTSubscriberService(broker="localhost", port=1883)
-    env = {k: v for k, v in os.environ.items() if k not in ("SUDO_USER", "LOGNAME")}
-    with patch.dict(os.environ, env, clear=True), \
-         patch("os.geteuid", return_value=0), \
+    fake_pw = type("pw", (), {"pw_dir": root_home})()
+    with patch("os.geteuid", return_value=0), \
+         patch("daemon.get_real_user_home", return_value=_P(resolved_home)), \
+         patch.object(_pwd, "getpwuid", return_value=fake_pw), \
          patch("monitoring.mqtt_subscriber.saved_mqtt_config_path",
-               return_value=tmp_path / "root-home-absent.json"), \
-         caplog.at_level(logging.WARNING):
-        cfg, st = _start(svc)
-    assert st["config_source"] == "operator-home-unknown"
-    assert cfg["broker"] == "localhost"
+               return_value=tmp_path / "absent.json"):
+        _, st = _start(svc)
+    return st["config_source"]
+
+
+def test_root_whose_resolver_falls_back_to_root_home_is_blind(tmp_path, connect_ok, caplog):
+    # no SUDO_USER/LOGNAME, or SUDO_USER=root: the resolver returns root's own
+    # home — the operator's is unknowable, so "no file" is UNOBSERVED
+    with caplog.at_level(logging.WARNING):
+        assert _blind_check(tmp_path, "/root") == "operator-home-unknown"
     assert any("SUDO_USER" in r.getMessage() for r in caplog.records)
+
+
+def test_root_whose_resolver_found_the_operator_is_not_blind(tmp_path, connect_ok):
+    # review of d583e37e F1: LOGNAME=<operator> resolves the home; that home
+    # simply has no saved file — a plain local-default, no false WARNING
+    assert _blind_check(tmp_path, "/home/op") == "local-default"
+
+
+# --- review of d583e37e F2: the TUI Configure menu edits ONLY `topic` --------
+
+def test_topic_edited_after_a_private_save_wins_over_the_stale_pair():
+    saved = {"topic": "msh/US/2/e/LongFast/#",       # edited later
+             "root_topic": "msh/HI", "channel": "Ops"}  # stale private save
+    out = subscriber_config_from_saved(saved)
+    assert (out["root_topic"], out["channel"]) == ("msh/US/2/e", "LongFast")
+
+
+def test_consistent_private_save_keeps_its_short_root():
+    # the pair the TUI's private save writes together: topic == root/channel/#
+    saved = {"topic": "msh/HI/Ops/#", "root_topic": "msh/HI", "channel": "Ops"}
+    out = subscriber_config_from_saved(saved)
+    assert (out["root_topic"], out["channel"]) == ("msh/HI", "Ops")
 
 
 def test_no_saved_file_means_the_local_broker(tmp_path, connect_ok):

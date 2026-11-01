@@ -199,6 +199,20 @@ class MQTTSubscriberService(DaemonService):
         self._subscriber = None
         self.config_source = "not-started"
 
+    @staticmethod
+    def _operator_home_unknown() -> bool:
+        """True when running as root and get_real_user_home() — THE resolver,
+        not a second hand-written rule (review of d583e37e F1: it also honours
+        LOGNAME and refuses SUDO_USER=root) — answered root's own home."""
+        if os.geteuid() != 0:
+            return False
+        import pwd
+        try:
+            root_home = pwd.getpwuid(0).pw_dir
+        except KeyError:
+            return True
+        return str(get_real_user_home()) == root_home
+
     def _build_config(self) -> Dict[str, Any]:
         # Precedence (operator 2026-10-31): the operator's SAVED settings
         # (either schema, one translation) -> explicit daemon-config
@@ -234,10 +248,10 @@ class MQTTSubscriberService(DaemonService):
                 "MQTT saved settings unreadable — using the local broker "
                 f"{self._broker}:{self._port} instead: {err}")
             self.config_source = "saved-unreadable"
-        elif (self._saved_path is None and os.geteuid() == 0
-              and not os.environ.get("SUDO_USER")):
-            # Running as root with no SUDO_USER (the shipped
-            # meshforge-daemon.service): the operator's home is unknowable,
+        elif self._saved_path is None and self._operator_home_unknown():
+            # Running as root and the home resolver fell back to root's own
+            # home (the shipped meshforge-daemon.service: no SUDO_USER /
+            # LOGNAME, or SUDO_USER=root): the operator's home is unknowable,
             # so "no saved file" is UNOBSERVED, not "never configured".
             logger.warning(
                 "MQTT: running as root without SUDO_USER — cannot see the "
