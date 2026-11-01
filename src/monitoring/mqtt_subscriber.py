@@ -118,6 +118,10 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
         self._stop_event = threading.Event()
         self._reconnect_thread = None
         self._atexit_registered = False  # register the exit handler only once
+        # True only between a start() that succeeded and stop(). Read through
+        # is_running() — callers must never reach into private state (the
+        # daemon once read a `_running` attribute that never existed).
+        self._started = False
 
         # Data storage
         self._nodes: Dict[str, MQTTNode] = {}
@@ -218,15 +222,24 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
     def start(self) -> bool:
         """Start the MQTT subscriber."""
         if self._connected:
+            self._started = True
             return True
 
         self._stop_event.clear()
-        return self._connect()
+        ok = bool(self._connect())
+        self._started = ok
+        return ok
 
     def stop(self) -> None:
         """Stop the MQTT subscriber."""
+        self._started = False
         self._stop_event.set()
         self._disconnect()
+
+    def is_running(self) -> bool:
+        """Started and not stopped — the client loop owns reconnects, so this
+        is NOT "connected" (see is_connected()); a failed start reads False."""
+        return self._started and not self._stop_event.is_set()
 
     def _connect(self) -> bool:
         """Connect to MQTT broker."""
@@ -919,6 +932,7 @@ def create_local_subscriber(
     port: int = LOCAL_PORT,
     root_topic: str = LOCAL_ROOT_TOPIC,
     channel: str = DEFAULT_CHANNEL,
+    use_tls: bool = False,
 ) -> MQTTNodelessSubscriber:
     """
     Create an MQTT subscriber configured for a local broker (e.g., mosquitto).
@@ -951,7 +965,7 @@ def create_local_subscriber(
         # The encrypted leg stays on `channel` (decryption uses the default key).
         "json_channel": "+",
         "key": DEFAULT_KEY,
-        "use_tls": False,  # Local brokers typically don't use TLS
+        "use_tls": use_tls,  # local brokers are usually plaintext; caller decides
         "regions": ["US"],
         "auto_reconnect": True,
         "reconnect_delay": MQTT_LOCAL_RECONNECT_INITIAL,

@@ -184,9 +184,9 @@ class MQTTSubscriberService(DaemonService):
         try:
             from monitoring.mqtt_subscriber import create_local_subscriber
             self._subscriber = create_local_subscriber(
-                broker=self._broker, port=self._port
+                broker=self._broker, port=self._port,
+                use_tls=self._port == 8883,
             )
-            self._subscriber._config["use_tls"] = self._port == 8883
             # Report the subscriber's OWN result — never "Started" for a
             # subscriber that did not start. A False start has no background
             # retry (a raised connect error), so stop it: is_alive() then
@@ -197,6 +197,14 @@ class MQTTSubscriberService(DaemonService):
             return False
         except Exception as e:
             logger.error(f"MQTT subscriber start failed: {e}")
+            # an exception mid-start must not leave a half-built subscriber
+            # reading alive (the watchdog would never retry it)
+            sub, self._subscriber = self._subscriber, None
+            if sub is not None:
+                try:
+                    sub.stop()
+                except Exception as stop_err:
+                    logger.debug(f"MQTT subscriber cleanup after failed start: {stop_err}")
             return False
 
     def stop(self, timeout: float = 5.0) -> None:
@@ -208,11 +216,12 @@ class MQTTSubscriberService(DaemonService):
 
     def is_alive(self) -> bool:
         # Alive = started and not stopped (the subscriber reconnects on its
-        # own; a broker blip must not trigger a watchdog restart). This read
-        # a nonexistent `_running` attribute, so it was False forever.
+        # own; a broker blip must not trigger a watchdog restart). Through the
+        # PUBLIC is_running(): this once read a nonexistent private `_running`
+        # attribute, so it was False forever.
         if not self._subscriber:
             return False
-        return not self._subscriber._stop_event.is_set()
+        return self._subscriber.is_running()
 
     def get_status(self) -> dict:
         # `connected` is its own field: alive-but-disconnected is a state the
