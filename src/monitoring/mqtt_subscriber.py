@@ -954,7 +954,21 @@ def create_local_subscriber(
         subscriber.register_message_callback(my_handler)
         subscriber.start()
     """
-    config = {
+    return MQTTNodelessSubscriber(config=local_subscriber_config(
+        broker=broker, port=port, root_topic=root_topic, channel=channel,
+        use_tls=use_tls))
+
+
+def local_subscriber_config(
+    broker: str = LOCAL_BROKER,
+    port: int = LOCAL_PORT,
+    root_topic: str = LOCAL_ROOT_TOPIC,
+    channel: str = DEFAULT_CHANNEL,
+    use_tls: bool = False,
+) -> Dict[str, Any]:
+    """The local-broker subscriber config as a plain dict (public, so callers
+    that compose configs never build a subscriber to read its private state)."""
+    return {
         "broker": broker,
         "port": port,
         "username": "",
@@ -971,7 +985,6 @@ def create_local_subscriber(
         "reconnect_delay": MQTT_LOCAL_RECONNECT_INITIAL,
         "max_reconnect_delay": MQTT_LOCAL_RECONNECT_MAX,
     }
-    return MQTTNodelessSubscriber(config=config)
 
 
 def create_public_subscriber(
@@ -1005,6 +1018,78 @@ def create_public_subscriber(
         "max_reconnect_delay": MQTT_RECONNECT_MAX,
     }
     return MQTTNodelessSubscriber(config=config)
+
+
+# --- the saved operator settings: ONE reader, ONE translation ---------------
+#
+# `mqtt_nodeless.json` is written in TWO schemas: the TUI's save_mqtt_config
+# writes `topic` ("msh/US/2/e/LongFast/#"); MQTTNodelessSubscriber.save_config
+# writes `root_topic`/`channel`/`use_tls`. The TUI used to translate the first
+# inline in two duplicate copies and the daemon read neither (review of
+# a30390ae, F1/F2). Every consumer goes through these two functions.
+
+def saved_mqtt_config_path() -> Path:
+    """Where the operator's saved MQTT settings live (sudo-safe home)."""
+    return get_real_user_home() / ".config" / "meshforge" / "mqtt_nodeless.json"
+
+
+def load_saved_mqtt_config(path: Optional[Path] = None):
+    """``(dict, None)`` | ``(None, None)`` absent | ``(None, error)`` unreadable.
+
+    Three states on purpose: an absent file is a normal "never configured";
+    an unreadable one is an operator setting we FAILED to honour, which must
+    never read as either "absent" or a default broker (hfm #1).
+    """
+    p = path or saved_mqtt_config_path()
+    if not p.exists():
+        return None, None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return None, f"{p}: {type(e).__name__}: {e}"
+    if not isinstance(data, dict):
+        return None, f"{p}: expected a JSON object, got {type(data).__name__}"
+    return data, None
+
+
+def subscriber_config_from_saved(saved: Dict[str, Any]) -> Dict[str, Any]:
+    """The subscriber config for saved settings in EITHER schema.
+
+    TUI schema (`topic`): reproduces the TUI's former inline translation
+    exactly (pinned by tests/test_mqtt_saved_config.py). Subscriber schema
+    (`root_topic`, no `topic`): its root/channel/key are kept, never replaced
+    by the TUI defaults.
+    """
+    broker = saved.get("broker", "mqtt.meshtastic.org")
+    port = saved.get("port", 8883)
+    if "root_topic" in saved and "topic" not in saved:
+        root_topic = saved["root_topic"]
+        channel = saved.get("channel") or "LongFast"
+    else:
+        topic = saved.get("topic", "msh/US/2/e/LongFast/#")
+        parts = topic.rstrip("#").rstrip("/").split("/")
+        if len(parts) >= 4:
+            channel = parts[-1] if parts[-1] else "LongFast"
+            if "/json/" in topic:
+                root_topic = "/".join(parts[:-1]).replace("/json", "/e")
+            else:
+                root_topic = "/".join(parts[:-1])
+        else:
+            root_topic = "msh/US/2/e"
+            channel = "LongFast"
+    return {
+        "broker": broker,
+        "port": port,
+        "username": saved.get("username") or "",
+        "password": saved.get("password") or "",
+        "root_topic": root_topic,
+        "channel": channel,
+        "key": saved.get("key") or "AQ==",
+        "use_tls": saved.get("use_tls", port == 8883),
+        "auto_reconnect": True,
+        "reconnect_delay": 2 if broker == "localhost" else 5,
+        "max_reconnect_delay": 30 if broker == "localhost" else 60,
+    }
 
 
 # Singleton instance management

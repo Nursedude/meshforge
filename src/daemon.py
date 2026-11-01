@@ -36,7 +36,7 @@ import time
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 # Ensure src/ is in path
 _src_dir = Path(__file__).parent
@@ -165,28 +165,76 @@ class HealthProbeService(DaemonService):
         }
 
 
+def _explicit_global_mqtt() -> Dict[str, Any]:
+    """broker/port the operator set EXPLICITLY in global.ini [mqtt] — not the
+    DaemonConfig defaults, which cannot be told apart from an explicit
+    localhost:1883 once merged."""
+    from utils.global_config import load_global_overrides
+    o = load_global_overrides()
+    return {k: o[src] for k, src in (("broker", "mqtt_broker"), ("port", "mqtt_port"))
+            if o.get(src)}
+
+
 class MQTTSubscriberService(DaemonService):
     """Wraps MQTTNodelessSubscriber for packet monitoring."""
 
     name = "mqtt_subscriber"
 
-    def __init__(self, broker: str = "localhost", port: int = 1883):
+    def __init__(self, broker: str = "localhost", port: int = 1883,
+                 overlay: Optional[Dict[str, Any]] = None,
+                 saved_path=None):
+        """broker/port: the fallback when the operator saved no settings
+        (the installer's local mosquitto). overlay: broker/port the operator
+        set EXPLICITLY in global.ini [mqtt] — laid over the saved settings.
+        saved_path: override for tests (default: the real saved file)."""
         self._broker = broker
         self._port = port
+        self._overlay = {k: v for k, v in (overlay or {}).items()
+                         if k in ("broker", "port") and v}
+        self._saved_path = saved_path
         self._subscriber = None
+        self.config_source = "not-started"
+
+    def _build_config(self) -> Dict[str, Any]:
+        # Precedence (operator 2026-10-31): the operator's SAVED settings
+        # (either schema, one translation) -> global.ini broker/port on top ->
+        # no saved file = the local mosquitto. A saved file that cannot be
+        # read is LOUD and visible as config_source, never silently swapped
+        # for a different broker the operator did not choose.
+        from monitoring.mqtt_subscriber import (
+            load_saved_mqtt_config, local_subscriber_config,
+            subscriber_config_from_saved,
+        )
+        saved, err = load_saved_mqtt_config(self._saved_path)
+        if saved is not None:
+            cfg = subscriber_config_from_saved(saved)
+            source = "saved"
+            if self._overlay:
+                cfg.update(self._overlay)
+                if "use_tls" not in saved:
+                    cfg["use_tls"] = cfg["port"] == 8883
+                source = "saved+global.ini"
+            self.config_source = source
+            return cfg
+        if err:
+            logger.warning(
+                "MQTT saved settings unreadable — using the local broker "
+                f"{self._broker}:{self._port} instead: {err}")
+            self.config_source = "saved-unreadable"
+        else:
+            self.config_source = "local-default"
+        return local_subscriber_config(
+            broker=self._broker, port=self._port,
+            use_tls=self._port == 8883,
+        )
 
     def start(self) -> bool:
-        # The subscriber takes ONE config dict; the daemon's broker/port mean
-        # "a local broker" (installer-provisioned mosquitto), which is what
-        # create_local_subscriber builds. TLS follows the TUI's rule (8883).
-        # This used to pass broker=/port= straight to the constructor and
-        # failed every start, unseen until stranger drill 41253446297.
+        # The subscriber takes ONE config dict (this used to pass broker=/
+        # port= straight to the constructor and failed every start, unseen
+        # until stranger drill 41253446297). TLS follows the TUI's rule.
         try:
-            from monitoring.mqtt_subscriber import create_local_subscriber
-            self._subscriber = create_local_subscriber(
-                broker=self._broker, port=self._port,
-                use_tls=self._port == 8883,
-            )
+            from monitoring.mqtt_subscriber import MQTTNodelessSubscriber
+            self._subscriber = MQTTNodelessSubscriber(config=self._build_config())
             # Report the subscriber's OWN result — never "Started" for a
             # subscriber that did not start. A False start has no background
             # retry (a raised connect error), so stop it: is_alive() then
@@ -228,7 +276,10 @@ class MQTTSubscriberService(DaemonService):
         # operator must see, never folded into healthy.
         status = {"name": self.name, "alive": self.is_alive(),
                   "connected": bool(self._subscriber
-                                    and self._subscriber.is_connected())}
+                                    and self._subscriber.is_connected()),
+                  # WHICH settings it runs on: saved / saved+global.ini /
+                  # local-default / saved-unreadable (a failed read is visible)
+                  "config_source": self.config_source}
         if self._subscriber and hasattr(self._subscriber, 'get_stats'):
             status["stats"] = self._subscriber.get_stats()
         return status
@@ -891,7 +942,8 @@ class DaemonController:
         if cfg.mqtt_enabled:
             self._registry.register(
                 MQTTSubscriberService(
-                    broker=cfg.mqtt_broker, port=cfg.mqtt_port
+                    broker=cfg.mqtt_broker, port=cfg.mqtt_port,
+                    overlay=_explicit_global_mqtt(),
                 )
             )
 

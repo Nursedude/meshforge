@@ -138,34 +138,11 @@ class MQTTHandler(BaseHandler):
             if not _HAS_MQTT:
                 return
 
-            broker = config.get('broker', 'mqtt.meshtastic.org')
-            port = config.get('port', 8883)
-            topic = config.get('topic', 'msh/US/2/e/LongFast/#')
-
-            parts = topic.rstrip('#').rstrip('/').split('/')
-            if len(parts) >= 4:
-                channel = parts[-1] if parts[-1] else 'LongFast'
-                if '/json/' in topic:
-                    root_topic = '/'.join(parts[:-1]).replace('/json', '/e')
-                else:
-                    root_topic = '/'.join(parts[:-1])
-            else:
-                root_topic = 'msh/US/2/e'
-                channel = 'LongFast'
-
-            subscriber_config = {
-                "broker": broker,
-                "port": port,
-                "username": config.get('username') or "",
-                "password": config.get('password') or "",
-                "root_topic": root_topic,
-                "channel": channel,
-                "key": "AQ==",
-                "use_tls": config.get('use_tls', port == 8883),
-                "auto_reconnect": True,
-                "reconnect_delay": 2 if broker == 'localhost' else 5,
-                "max_reconnect_delay": 30 if broker == 'localhost' else 60,
-            }
+            # ONE translation of the saved settings, shared with the daemon
+            # (it was duplicated here twice and absent from the daemon).
+            from monitoring.mqtt_subscriber import subscriber_config_from_saved
+            subscriber_config = subscriber_config_from_saved(config)
+            broker = subscriber_config["broker"]
 
             self._mqtt_subscriber = MQTTNodelessSubscriber(config=subscriber_config)
             self._mqtt_subscriber.start()
@@ -463,34 +440,11 @@ class MQTTHandler(BaseHandler):
         self.ctx.dialog.infobox("Starting MQTT", "Connecting to MQTT broker...")
 
         try:
-            broker = config.get('broker', 'mqtt.meshtastic.org')
-            port = config.get('port', 8883)
-            topic = config.get('topic', 'msh/US/2/e/LongFast/#')
-
-            parts = topic.rstrip('#').rstrip('/').split('/')
-            if len(parts) >= 4:
-                channel = parts[-1] if parts[-1] else 'LongFast'
-                if '/json/' in topic:
-                    root_topic = '/'.join(parts[:-1]).replace('/json', '/e')
-                else:
-                    root_topic = '/'.join(parts[:-1])
-            else:
-                root_topic = 'msh/US/2/e'
-                channel = 'LongFast'
-
-            subscriber_config = {
-                "broker": broker,
-                "port": port,
-                "username": config.get('username') or "",
-                "password": config.get('password') or "",
-                "root_topic": root_topic,
-                "channel": channel,
-                "key": "AQ==",
-                "use_tls": config.get('use_tls', port == 8883),
-                "auto_reconnect": True,
-                "reconnect_delay": 2 if broker == 'localhost' else 5,
-                "max_reconnect_delay": 30 if broker == 'localhost' else 60,
-            }
+            # ONE translation of the saved settings, shared with the daemon
+            # (it was duplicated here twice and absent from the daemon).
+            from monitoring.mqtt_subscriber import subscriber_config_from_saved
+            subscriber_config = subscriber_config_from_saved(config)
+            broker = subscriber_config["broker"]
 
             self._mqtt_subscriber = MQTTNodelessSubscriber(config=subscriber_config)
             self._mqtt_subscriber.start()

@@ -42,8 +42,10 @@ def connect_fails():
 
 
 @pytest.fixture
-def svc():
-    s = MQTTSubscriberService(broker="localhost", port=1883)
+def svc(tmp_path):
+    # never the real saved file on the box running the suite
+    s = MQTTSubscriberService(broker="localhost", port=1883,
+                              saved_path=tmp_path / "absent.json")
     yield s
     s.stop()
 
@@ -56,9 +58,10 @@ def test_start_builds_the_real_subscriber_for_the_configured_broker(svc, connect
     assert cfg["use_tls"] is False
 
 
-def test_tls_port_turns_tls_on(connect_ok):
+def test_tls_port_turns_tls_on(connect_ok, tmp_path):
     # the TUI's rule (handlers/mqtt.py): 8883 is the TLS port
-    s = MQTTSubscriberService(broker="localhost", port=8883)
+    s = MQTTSubscriberService(broker="localhost", port=8883,
+                              saved_path=tmp_path / "absent.json")
     try:
         assert s.start() is True
         assert s._subscriber._config["use_tls"] is True
