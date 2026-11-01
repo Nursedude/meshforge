@@ -452,3 +452,46 @@ def test_module_is_stdlib_only():
             assert n.level == 0, "relative import"
             mods.add(n.module.split(".")[0])
     assert mods <= set(sys.stdlib_module_names), mods - set(sys.stdlib_module_names)
+
+
+# --- review of f09fd86d..47d236f8 (2026-11-01) --------------------------------
+
+def test_F1_save_over_an_unreadable_v1_file_keeps_its_bytes(tmp_path):
+    # a typo in a hand-edited v1 file + one Save used to lose the broker,
+    # credentials and key for good (backup only for NON-v1 files)
+    raw = _plant(tmp_path, {"schema_version": 1, **PRIVATE, "channel": "Long Fast"}).read_bytes()
+    assert ms.load(tmp_path).state == "unreadable"
+    assert _save(tmp_path, ms.defaults()).ok
+    backups = sorted(tmp_path.glob(ms.FILENAME + ".unreadable.*"))
+    assert [b.read_bytes() for b in backups] == [raw]
+    assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
+
+
+def test_F1_each_unreadable_save_keeps_its_own_backup(tmp_path):
+    _plant(tmp_path, "{one")
+    assert _save(tmp_path, PRIVATE).ok
+    _plant(tmp_path, "{two")
+    assert _save(tmp_path, PRIVATE).ok
+    got = sorted(b.read_text() for b in tmp_path.glob(ms.FILENAME + ".unreadable.*"))
+    assert got == ["{one", "{two"]
+
+
+def test_F8_credentials_are_never_written_at_the_old_mode(tmp_path):
+    # the owner-preserving writer copies the OLD mode onto the new file
+    # before the rename; the old file must already be 0600 by then
+    _plant(tmp_path, {"schema_version": 1, **PRIVATE}, mode=0o644)
+    seen = []
+
+    def writer(path, text):
+        if path.exists():
+            seen.append((path.name, stat.S_IMODE(path.stat().st_mode)))
+        atomic_write_text_preserving(path, text)
+
+    assert ms.save(tmp_path, {**PRIVATE, "channel": "Other"}, writer).ok
+    assert seen == [(ms.FILENAME, 0o600)]
+
+
+def test_F2_a_radio_root_gets_the_fix_suggested():
+    # a root the generic example text cannot contain (msh/US/2/e is the example)
+    errs = ms.validate({**PRIVATE, "root_topic": "msh/EU_868"})
+    assert errs and "msh/EU_868/2/e" in errs[0]

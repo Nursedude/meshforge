@@ -13,8 +13,9 @@ translator. The cure is at the WRITE boundary:
 * ``subscriptions()`` is the one derivation of the topics, from the
   SUBSCRIBER dict, so the subscriber and the TUI status cannot disagree.
 
-This file is BYTE-IDENTICAL in MeshForge and MeshAnchor (tracked by
-``scripts/parity_check.py``). It imports the standard library only; each
+This file is built to be BYTE-IDENTICAL in MeshForge and MeshAnchor
+(MQTT-CFG S5 ports it and adds it to ``scripts/parity_check.py``; until
+then the parity is a design intent, not a gated fact). It imports the standard library only; each
 repo passes its own config directory and its own owner-preserving atomic
 writer (``utils.paths.atomic_write_text_preserving``) — never a copy of it.
 
@@ -105,8 +106,12 @@ def validate(intent: Any) -> List[str]:
         r = intent["root_topic"]
         parts = r.split("/") if isinstance(r, str) else []
         if len(parts) < 2 or parts[-1] != "e" or not all(_topic_segment_ok(s) for s in parts):
+            hint = ""
+            if parts and all(_topic_segment_ok(s) for s in parts) and "2" not in parts:
+                # a RADIO's MQTT root (it publishes under <root>/2/e/...)
+                hint = f" — for a radio root of {r!r} enter {r}/2/e"
             errs.append("root_topic: must be a topic ending in \"/e\" with no "
-                        f"wildcards (e.g. msh/US/2/e), got {r!r}")
+                        f"wildcards (e.g. msh/US/2/e), got {r!r}{hint}")
     if "channel" in intent:
         c = intent["channel"]
         if not (c == "+" or isinstance(c, str) and _topic_segment_ok(c)):
@@ -183,10 +188,13 @@ def save(config_dir: Path, intent: Dict[str, Any], write: Writer) -> SaveResult:
 
     ``write`` is the repo's owner-preserving atomic writer: the TUI runs as
     root, and a fresh root-owned file in the operator's home would lock out
-    every operator-uid reader. That writer keeps the OLD mode too, so the
-    0600 (credentials) is applied after it. The first save over a file that
-    is not v1 keeps its bytes once as ``.pre-v1``; a NEWER file is never
-    overwritten.
+    every operator-uid reader. That writer copies the OLD mode onto the new
+    file, so an existing file is made 0600 BEFORE the write (credentials are
+    never on disk at a wider mode) and again after. A NEWER file is never
+    overwritten. Nothing the operator wrote is lost: a legacy file keeps its
+    bytes once as ``.pre-v1``; a file that does not load (``unreadable`` —
+    a typo in a hand-edit) keeps its bytes as ``.unreadable.<n>``, one per
+    save, never overwritten.
     """
     errs = validate(intent)
     if errs:
@@ -204,18 +212,32 @@ def save(config_dir: Path, intent: Dict[str, Any], write: Writer) -> SaveResult:
                     return SaveResult(False, error=(
                         f"{path}: schema_version {sv} was written by a newer "
                         "version; refusing to overwrite it"))
-            is_v1 = isinstance(data, dict) and data.get("schema_version") == SCHEMA_VERSION \
-                and _is_int(data.get("schema_version"))
-            if not is_v1 and not pre.exists():
+            loaded = load(config_dir)
+            backup = None
+            if loaded.state == "unreadable":
+                backup = _free_backup(config_dir)
+            elif loaded.legacy and not pre.exists():
+                backup = pre
+            if backup is not None:
                 raw = path.read_bytes().decode("utf-8", errors="backslashreplace")
-                write(pre, raw)
-                os.chmod(pre, 0o600)
+                write(backup, raw)
+                os.chmod(backup, 0o600)
+            os.chmod(path, 0o600)   # before the writer copies its mode (review F8)
         body = {"schema_version": SCHEMA_VERSION, **_normalized(intent)}
         write(path, json.dumps(body, indent=2) + "\n")
         os.chmod(path, 0o600)
     except OSError as e:
         return SaveResult(False, error=f"{path}: {type(e).__name__}: {e}")
     return SaveResult(True)
+
+
+def _free_backup(config_dir: Path) -> Path:
+    for n in range(1, 1000):
+        cand = config_dir / f"{FILENAME}.unreadable.{n}"
+        if not cand.exists():
+            return cand
+    raise OSError(f"{config_dir}: 999 unreadable-file backups already kept; "
+                  "clear some before saving again")
 
 
 def effective_tls(intent: Dict[str, Any]) -> bool:

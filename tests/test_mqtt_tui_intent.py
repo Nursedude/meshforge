@@ -119,3 +119,28 @@ def test_status_shows_the_live_subscriptions_and_the_saved_state(tmp_path):
     body = _msgboxes(ctx)[-1][1]
     assert "msh/XX/2/json/Live/#" in body and "msh/XX/2/e/Live/#" in body
     assert "UNREADABLE" in body
+
+
+# --- review of f09fd86d..47d236f8 (2026-11-01) --------------------------------
+
+@patch('handlers.mqtt.load_mqtt_config', return_value=dict(SAVED))
+@patch('handlers.mqtt.save_mqtt_config', return_value=True)
+def test_F5_an_unusable_detected_channel_falls_back_to_every_channel(save, _load):
+    # _detect_local_channel can return a longName fragment (09-20 class)
+    h, ctx = _handler()
+    ctx.dialog._menu_returns = ["local"]
+    with patch.object(type(h), "_detect_local_channel", return_value='Meshtastic 8d30",'):
+        h._configure_mqtt()
+    assert save.called and save.call_args[0][0]["channel"] == "+"
+
+
+def test_F6_auto_start_on_an_unreadable_file_is_loud_not_silent(tmp_path, caplog):
+    import logging
+    h, _ = _handler()
+    (tmp_path / ms.FILENAME).write_text('{"schema_version": 1, "auto_start": true')
+    with patch("monitoring.mqtt_subscriber.mqtt_config_dir", return_value=tmp_path), \
+         caplog.at_level(logging.ERROR):
+        h.on_startup()
+    assert h._mqtt_subscriber is None
+    assert any("unreadable" in r.getMessage() and r.levelno >= logging.ERROR
+               for r in caplog.records)

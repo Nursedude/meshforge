@@ -235,12 +235,15 @@ class MQTTSubscriberService(DaemonService):
             if not errs:
                 self.config_source = "saved+override" if self._overlay else "saved"
                 return mqtt_settings.subscriber_config(intent)
-            # the DAEMON config is wrong, not the operator's file: say so
+            # the DAEMON config is wrong, not the operator's file. Its fallback
+            # broker/port ARE the overridden values (one cfg feeds both), so
+            # the honest fallback is the installer's local broker (review F3)
             logger.warning(
                 "MQTT daemon broker/port override invalid — using the local "
-                f"broker {self._broker}:{self._port}: {'; '.join(errs)}")
+                f"broker localhost:1883: {'; '.join(errs)}")
             self.config_source = "override-invalid"
-            err = None
+            return local_subscriber_config(broker="localhost", port=1883,
+                                           use_tls=False)
         elif err:
             logger.warning(
                 "MQTT saved settings unreadable — using the local broker "

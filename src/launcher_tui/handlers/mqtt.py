@@ -138,17 +138,19 @@ class MQTTHandler(BaseHandler):
             return
 
         try:
+            # the file's STATE first: an unreadable file's auto_start is
+            # unknowable, and the defaults (auto_start off) must not turn that
+            # into a silent no-start (review F6)
+            subscriber_config, err = _saved_subscriber_config()
+            if err:
+                logger.error("MQTT auto-start NOT attempted — saved settings "
+                             "unreadable, so whether to auto-start is unknown: %s", err)
+                return
             config = load_mqtt_config()
             if not config.get('auto_start', False):
                 return
 
             if not _HAS_MQTT:
-                return
-
-            subscriber_config, err = _saved_subscriber_config()
-            if err:
-                logger.error("MQTT auto-start skipped — saved settings "
-                             "unreadable: %s", err)
                 return
             broker = subscriber_config["broker"]
 
@@ -561,8 +563,13 @@ class MQTTHandler(BaseHandler):
             keep = {k: config[k] for k in ("auto_start", "auto_start_telemetry")}
             if choice == "local":
                 intent = {**mqtt_settings.defaults(), **keep, "broker": "localhost",
-                          "port": 1883, "root_topic": "msh/2/e",
-                          "channel": self._detect_local_channel() or "+"}
+                          "port": 1883, "root_topic": "msh/2/e", "channel": "+"}
+                found = self._detect_local_channel()
+                if found and not mqtt_settings.validate({**intent, "channel": found}):
+                    intent["channel"] = found
+                elif found:   # a parse fragment is not a channel (review F5)
+                    logger.warning("Detected channel %r is not a topic segment — "
+                                   "listening on every channel (+)", found)
                 self._save_or_refuse(intent, "Local Mode Set",
                                      "Configured for the local mosquitto broker.\n\n"
                                      "Make sure mosquitto is running and meshtasticd's\n"

@@ -484,3 +484,14 @@ def test_overlaid_port_resets_an_explicit_saved_tls(tmp_path, connect_ok):
         "root_topic": "msh/US/2/e", "channel": "LongFast", "key": "AQ=="}))
     cfg, _ = _start(MQTTSubscriberService(saved_dir=tmp_path, overlay={"port": 1883}))
     assert (cfg["port"], cfg["use_tls"]) == (1883, False)
+
+
+def test_F3_an_invalid_override_falls_back_to_the_real_local_broker(tmp_path, connect_ok):
+    # the daemon passes cfg.mqtt_broker as BOTH the fallback and the overlay,
+    # so "fall back to the local broker" used the same invalid value
+    (tmp_path / ms.FILENAME).write_text(json.dumps({**ms.defaults(), "schema_version": 1}))
+    svc = MQTTSubscriberService(broker="bad host", port=1883, saved_dir=tmp_path,
+                                overlay={"broker": "bad host"})
+    cfg, st = _start(svc)
+    assert st["config_source"] == "override-invalid"
+    assert (cfg["broker"], cfg["port"], cfg["use_tls"]) == ("localhost", 1883, False)
