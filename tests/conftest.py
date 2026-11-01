@@ -438,6 +438,14 @@ _OPERATOR_STORE_MODULES = (
     # because sys.path carries src/ AND src/launcher_tui.
     "launcher_tui.handlers._gateway_preflight_template",
     "handlers._gateway_preflight_template",
+    # mqtt_nodeless.json — the operator's saved MQTT settings. 2026-10-31: a
+    # red-first test run against the OLD save_mqtt_config (hardcoded path)
+    # overwrote the manager box's real file with a test's {"broker": "x"}; the
+    # original was unrecoverable. Every module that resolves that path:
+    "monitoring.mqtt_subscriber",      # saved_mqtt_config_path / save_config
+    "launcher_tui.handlers.mqtt",      # load/save_mqtt_config (+ alias below)
+    "handlers.mqtt",
+    "daemon",                          # _operator_home_unknown reads the home
 )
 
 

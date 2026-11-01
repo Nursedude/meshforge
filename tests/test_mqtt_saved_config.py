@@ -359,3 +359,17 @@ def test_corrupt_saved_file_is_loud_and_visible(tmp_path, connect_ok, caplog):
     assert st["config_source"] == "saved-unreadable"
     assert any("mqtt_nodeless.json" in r.getMessage() and r.levelno >= logging.WARNING
                for r in caplog.records)
+
+
+# --- the suite itself must never resolve the operator's REAL saved file -----
+
+def test_suite_never_resolves_the_real_saved_settings_path():
+    # 2026-10-31: a red-first run of this file against the old hardcoded
+    # save_mqtt_config overwrote the manager box's real mqtt_nodeless.json. The
+    # conftest _OPERATOR_STORE_MODULES redirect is the gate; this pins it.
+    import pwd
+    from launcher_tui.handlers import mqtt as tui_mqtt
+    from monitoring import mqtt_subscriber
+    real_home = pwd.getpwuid(os.getuid()).pw_dir
+    assert not str(mqtt_subscriber.saved_mqtt_config_path()).startswith(real_home + "/")
+    assert not str(tui_mqtt.get_real_user_home()).startswith(real_home)
