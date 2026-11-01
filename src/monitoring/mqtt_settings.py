@@ -228,7 +228,44 @@ def save(config_dir: Path, intent: Dict[str, Any], write: Writer) -> SaveResult:
         os.chmod(path, 0o600)
     except OSError as e:
         return SaveResult(False, error=f"{path}: {type(e).__name__}: {e}")
+    handback_err = _hand_to_dir_owner(path, config_dir)
+    if handback_err:
+        return SaveResult(False, error=handback_err)
     return SaveResult(True)
+
+
+def _owner(p: Path) -> Tuple[int, int]:
+    st = os.stat(p)
+    return st.st_uid, st.st_gid
+
+
+def _hand_to_dir_owner(path: Path, config_dir: Path) -> Optional[str]:
+    """As root, give ``path`` to the owner of ``config_dir`` (review F1).
+
+    The writer KEEPS an existing file's owner, so a legacy file the old TUI
+    wrote as root stays root-owned — and 0600 then locks every operator-uid
+    reader out (the subscriber reads `unreadable` and refuses). The config
+    dir is the operator's own; its owner is who must be able to read the
+    file. A root-owned dir names no operator, so nothing is changed. None =
+    nothing to do or done; a string = written but NOT readable by the
+    operator, which must not be reported as saved."""
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return None
+    try:
+        want = _owner(config_dir)
+        have = _owner(path)
+    except OSError as e:
+        return (f"{path}: written, but its owner could not be checked: "
+                f"{type(e).__name__}: {e}")
+    if want[0] == 0 or have == want:
+        return None
+    try:
+        os.chown(path, want[0], want[1])
+    except OSError as e:
+        return (f"{path}: written, but could not hand it to the config dir's "
+                f"owner (uid {want[0]}): {type(e).__name__}: {e} — "
+                "operator-uid readers cannot open it")
+    return None
 
 
 def _free_backup(config_dir: Path) -> Path:

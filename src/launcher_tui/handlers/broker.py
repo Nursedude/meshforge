@@ -436,9 +436,9 @@ class BrokerHandler(BaseHandler):
 
         root_topic = self.ctx.dialog.inputbox(
             "Root Topic",
-            "MQTT root topic:\n\n"
+            "MQTT root topic (must end in /e):\n\n"
             "  msh/{region}/2/e  (standard)\n"
-            "  msh              (all regions)",
+            "  msh/2/e          (a local radio with no region prefix)",
             init=f"msh/{region}/2/e"
         ) or f"msh/{region}/2/e"
 

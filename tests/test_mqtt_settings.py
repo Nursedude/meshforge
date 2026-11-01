@@ -12,6 +12,7 @@ import json
 import os
 import stat
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -188,6 +189,58 @@ def test_a_world_readable_file_ends_0600(tmp_path):
     _plant(tmp_path, {"schema_version": 1, **PRIVATE}, mode=0o644)
     assert _save(tmp_path, {**PRIVATE, "channel": "Other"}).ok
     assert stat.S_IMODE(_file(tmp_path).stat().st_mode) == 0o600
+
+
+# --- review F1 (MA S5 pass, 2026-11-01): a ROOT-OWNED legacy file ----------
+# The old TUI (under sudo) wrote `root 644`; the owner-preserving writer keeps
+# root and save() forces 0600 -> operator-uid readers locked out, the
+# subscriber reads `unreadable` and refuses, because Save was pressed. As root,
+# save() hands the file to the CONFIG DIR's owner (the operator's own dir).
+
+def _as_root(monkeypatch, owners):
+    """euid 0; `owners` maps a path's name to its (uid, gid); chown recorded."""
+    calls = []
+    monkeypatch.setattr(ms.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(ms, "_owner", lambda p: owners.get(Path(p).name, (1000, 1000)), raising=False)
+    monkeypatch.setattr(ms.os, "chown", lambda p, u, g: calls.append((Path(p).name, u, g)))
+    return calls
+
+
+def _plain_writer(path, text):
+    Path(path).write_text(text)
+
+
+def test_F1_root_owned_file_is_handed_to_the_config_dirs_owner(tmp_path, monkeypatch):
+    _plant(tmp_path, {"schema_version": 1, **PRIVATE})
+    calls = _as_root(monkeypatch, {ms.FILENAME: (0, 0), tmp_path.name: (1000, 1000)})
+    assert ms.save(tmp_path, PRIVATE, _plain_writer).ok
+    assert (ms.FILENAME, 1000, 1000) in calls
+
+
+def test_F1_a_failed_handback_is_not_reported_as_saved(tmp_path, monkeypatch):
+    _plant(tmp_path, {"schema_version": 1, **PRIVATE})
+    _as_root(monkeypatch, {ms.FILENAME: (0, 0), tmp_path.name: (1000, 1000)})
+
+    def refuse(p, u, g):
+        raise PermissionError("EPERM")
+    monkeypatch.setattr(ms.os, "chown", refuse)
+    res = ms.save(tmp_path, PRIVATE, _plain_writer)
+    assert not res.ok and "owner" in res.error and "1000" in res.error
+
+
+def test_F1_a_root_owned_config_dir_is_not_a_handback_target(tmp_path, monkeypatch):
+    _plant(tmp_path, {"schema_version": 1, **PRIVATE})
+    calls = _as_root(monkeypatch, {ms.FILENAME: (0, 0), tmp_path.name: (0, 0)})
+    assert ms.save(tmp_path, PRIVATE, _plain_writer).ok
+    assert calls == []
+
+
+def test_F1_not_root_never_chowns(tmp_path, monkeypatch):
+    _plant(tmp_path, {"schema_version": 1, **PRIVATE})
+    calls = []
+    monkeypatch.setattr(ms.os, "chown", lambda *a: calls.append(a))
+    assert _save(tmp_path, PRIVATE).ok
+    assert calls == []
 
 
 def test_save_goes_through_the_injected_writer(tmp_path):

@@ -144,3 +144,25 @@ def test_F6_auto_start_on_an_unreadable_file_is_loud_not_silent(tmp_path, caplog
     assert h._mqtt_subscriber is None
     assert any("unreadable" in r.getMessage() and r.levelno >= logging.ERROR
                for r in caplog.records)
+
+
+def test_F3_custom_broker_form_suggests_only_roots_the_owner_accepts():
+    # review F3 (MA S5 pass, 2026-11-01): the custom-broker Root Topic prompt
+    # offered "msh (all regions)", which validate() refuses — the form
+    # suggested a value that can never be applied to the subscriber.
+    from handlers.broker import BrokerHandler
+    h = BrokerHandler()
+    ctx = make_handler_context()
+    h.set_context(ctx)
+    ctx.dialog._inputbox_returns = [
+        "my_broker", "mqtt.example.com", "1883", "", "US", "LongFast", "msh/US/2/e"]
+    with patch("handlers.broker.save_profiles", return_value=True), \
+         patch.object(h, "_apply_profile_to_mqtt"):
+        h._setup_custom_broker()
+    prompt = next(c[1][1] for c in ctx.dialog.calls
+                  if c[0] == "inputbox" and c[1][0] == "Root Topic")
+    suggested = [ln.split()[0].replace("{region}", "US")
+                 for ln in prompt.splitlines() if ln.startswith("  ") and ln.strip()]
+    assert suggested, prompt
+    for root in suggested:
+        assert ms.validate({**ms.defaults(), "root_topic": root}) == [], root
