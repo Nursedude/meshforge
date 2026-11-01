@@ -77,6 +77,11 @@ CASES = [
         "def _save_drill_streak(state_path, streak):\n"
         "    with open(state_path, 'w') as fh:\n"
         "        json.dump({'streak': int(streak)}, fh)\n")),
+    ("TestMqttSettingsSingleOwner", HEADER + (
+        "import json\n\n\n"
+        "def drill(home):\n"
+        "    with open(home / '.config' / 'meshforge' / 'mqtt_nodeless.json', 'w') as fh:\n"
+        "        json.dump({}, fh)\n")),
 ]
 
 results = []

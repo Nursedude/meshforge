@@ -2626,3 +2626,72 @@ class TestTempDirsAreReleased:
             "Use tmp_path / TemporaryDirectory, or register shutil.rmtree.\n\n"
             + "\n".join(violations)
         )
+
+
+class TestMqttSettingsSingleOwner:
+    """MQTT-CFG S4: `monitoring/mqtt_settings.py` is the ONLY owner of the
+    saved MQTT settings file. Several writers + two schemas cost three review
+    rounds of ~10 cases each (10-31); the cure lives at the write boundary,
+    and this keeps a second writer from growing back.
+
+    Outside the owner, code may not spell the filename (a path built from the
+    literal is a second writer or reader), and may import the owner's
+    FILENAME only where allowlisted with a reason. Comments and docstrings
+    are exempt — the AST never sees comments; docstrings are filtered."""
+
+    OWNER = "monitoring/mqtt_settings.py"
+    FILENAME_IMPORT_OK = {
+        "kilo/ingest.py": "names the file in its error message only",
+    }
+
+    @staticmethod
+    def _docstring_ids(tree):
+        ids = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)) and node.body:
+                first = node.body[0]
+                if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                    ids.add(id(first.value))
+        return ids
+
+    def _violations(self):
+        out = []
+        paths = [os.path.join(r, f) for r, d, fs in os.walk(SRC_DIR)
+                 if '__pycache__' not in r for f in fs if f.endswith('.py')]
+        for path in sorted(paths):
+            rel = os.path.relpath(path, SRC_DIR).replace(os.sep, "/")
+            if rel == self.OWNER:
+                continue
+            try:
+                tree = ast.parse(open(path, encoding="utf-8").read())
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            docs = self._docstring_ids(tree)
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                        and "mqtt_nodeless" in node.value and id(node) not in docs):
+                    out.append(f"{rel}:{node.lineno} spells the settings filename")
+                if (isinstance(node, ast.ImportFrom)
+                        and (node.module or "").endswith("mqtt_settings")
+                        and any(a.name == "FILENAME" for a in node.names)
+                        and rel not in self.FILENAME_IMPORT_OK):
+                    out.append(f"{rel}:{node.lineno} imports mqtt_settings.FILENAME")
+                if (isinstance(node, ast.Attribute) and node.attr == "FILENAME"
+                        and isinstance(node.value, ast.Name)
+                        and node.value.id in ("mqtt_settings", "ms")
+                        and rel not in self.FILENAME_IMPORT_OK):
+                    out.append(f"{rel}:{node.lineno} uses mqtt_settings.FILENAME")
+        return out
+
+    def test_only_the_owner_touches_the_settings_file(self):
+        v = self._violations()
+        assert not v, ("Saved MQTT settings have ONE owner "
+                       "(monitoring.mqtt_settings: load/save) — route through "
+                       "monitoring.mqtt_subscriber.load_settings/save_settings:\n  "
+                       + "\n  ".join(v))
+
+    def test_allowlist_has_no_dead_entries(self):
+        for rel in self.FILENAME_IMPORT_OK:
+            src = open(os.path.join(SRC_DIR, rel), encoding="utf-8").read()
+            assert "FILENAME" in src, f"{rel}: allowlisted but no longer uses FILENAME — drop it"
