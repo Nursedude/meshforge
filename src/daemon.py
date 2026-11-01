@@ -176,13 +176,25 @@ class MQTTSubscriberService(DaemonService):
         self._subscriber = None
 
     def start(self) -> bool:
+        # The subscriber takes ONE config dict; the daemon's broker/port mean
+        # "a local broker" (installer-provisioned mosquitto), which is what
+        # create_local_subscriber builds. TLS follows the TUI's rule (8883).
+        # This used to pass broker=/port= straight to the constructor and
+        # failed every start, unseen until stranger drill 41253446297.
         try:
-            from monitoring.mqtt_subscriber import MQTTNodelessSubscriber
-            self._subscriber = MQTTNodelessSubscriber(
+            from monitoring.mqtt_subscriber import create_local_subscriber
+            self._subscriber = create_local_subscriber(
                 broker=self._broker, port=self._port
             )
-            self._subscriber.start()
-            return True
+            self._subscriber._config["use_tls"] = self._port == 8883
+            # Report the subscriber's OWN result — never "Started" for a
+            # subscriber that did not start. A False start has no background
+            # retry (a raised connect error), so stop it: is_alive() then
+            # reads dead and the daemon watchdog owns the retry.
+            if self._subscriber.start():
+                return True
+            self._subscriber.stop()
+            return False
         except Exception as e:
             logger.error(f"MQTT subscriber start failed: {e}")
             return False
@@ -195,12 +207,19 @@ class MQTTSubscriberService(DaemonService):
                 logger.error(f"MQTT subscriber stop error: {e}")
 
     def is_alive(self) -> bool:
+        # Alive = started and not stopped (the subscriber reconnects on its
+        # own; a broker blip must not trigger a watchdog restart). This read
+        # a nonexistent `_running` attribute, so it was False forever.
         if not self._subscriber:
             return False
-        return getattr(self._subscriber, '_running', False)
+        return not self._subscriber._stop_event.is_set()
 
     def get_status(self) -> dict:
-        status = {"name": self.name, "alive": self.is_alive()}
+        # `connected` is its own field: alive-but-disconnected is a state the
+        # operator must see, never folded into healthy.
+        status = {"name": self.name, "alive": self.is_alive(),
+                  "connected": bool(self._subscriber
+                                    and self._subscriber.is_connected())}
         if self._subscriber and hasattr(self._subscriber, 'get_stats'):
             status["stats"] = self._subscriber.get_stats()
         return status
