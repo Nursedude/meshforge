@@ -226,3 +226,13 @@ broker) · A3 ✅ (but baseline refuses identically — not discriminating) ·
 A4 ✅ (refusal predates S1; the new evidence is the named status + kilo) ·
 A5 ✅ · A6 guard ✅ / parity UNKNOWN until S5. Full row + baselines:
 `.claude/audits/review_provenance.md` 2026-11-01 "DEPLOY + MQTT-CFG acceptance".
+
+## Run record — 2026-11-01, meshanchor-server, MA `b45e8a58` (13:13–13:54 HST)
+Baselines on MA `105d6052` (`git archive` → `/tmp/ma-accept/old`, scratch HOME,
+wrapper refused to launch unless the old resolver landed in scratch). A1 ✅ ·
+A2 PARTIAL (json `+` on localhost, Q14) · A3 ✅ **discriminating on MA** (the
+baseline WROTE 70000) · A4 ✅ (baseline: crashed in connect, said "pending" —
+NOT "connects to the default" as predicted) · A5 ✅ · A6 parity ✅ (sha
+`5cfb4f7e` both twins). End: the daemon, restarted on the saved file, moved its
+json leg LongFast→`+`. Row: `.claude/audits/review_provenance.md` 2026-11-01
+"MA MQTT-CFG acceptance".
