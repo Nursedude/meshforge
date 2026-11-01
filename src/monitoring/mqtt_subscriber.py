@@ -34,6 +34,7 @@ from collections import deque
 
 # Import centralized path utility for sudo compatibility
 from utils.paths import get_real_user_home
+from monitoring import mqtt_settings
 from utils.safe_import import safe_import
 from utils.timeouts import (
     MQTT_RECONNECT_INITIAL,
@@ -110,8 +111,11 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
 
         Args:
             config: Optional configuration dict. If not provided,
-                   loads from ~/.config/meshforge/mqtt_nodeless.json
+                   loads the saved settings (``mqtt_settings``); an
+                   UNREADABLE saved file sets ``config_error`` and start()
+                   then refuses — never a silent swap to the defaults.
         """
+        self.config_error: Optional[str] = None
         self._config = config or self._load_config()
         self._client = None
         self._connected = False
@@ -176,53 +180,29 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
         self._mesh_size_history: Dict[str, datetime] = {}
 
     def _load_config(self) -> Dict[str, Any]:
-        """Load the saved settings through THE shared reader + translation
-        (it used to return the raw file, so a TUI-schema file — `topic`, no
-        `root_topic` — read differently here than in the TUI and daemon)."""
-        saved, err = load_saved_mqtt_config()
-        if saved is not None:
-            try:
-                return subscriber_config_from_saved(saved)
-            except ValueError as e:
-                err = str(e)
-        if err:
-            logger.error(f"Failed to load MQTT nodeless config, using defaults: {err}")
+        """The saved settings through THE owner (``mqtt_settings``).
 
-        # Return defaults
-        return {
-            "broker": DEFAULT_BROKER,
-            "port": DEFAULT_PORT_TLS,
-            "username": "",
-            "password": "",
-            "root_topic": DEFAULT_ROOT_TOPIC,
-            "channel": DEFAULT_CHANNEL,
-            "key": DEFAULT_KEY,
-            "use_tls": True,
-            "regions": ["US"],  # Subscribe to these regions
-            "auto_reconnect": True,
-            "reconnect_delay": MQTT_RECONNECT_INITIAL,
-            "max_reconnect_delay": MQTT_RECONNECT_MAX,
-        }
-
-    def save_config(self) -> bool:
-        """Save current configuration to file.
-
-        The config may carry broker credentials — written 0600 (a plain
-        write_text left the password world-readable on multi-user boxes).
+        absent → the public-broker defaults (normal: never configured).
+        unreadable → the same defaults so the object still works for stats,
+        but ``config_error`` is set and start() refuses (MQTT-CFG F6): an
+        operator setting we failed to honour must not read as running.
         """
-        config_path = saved_mqtt_config_path()
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-
-        try:
-            config_path.write_text(json.dumps(self._config, indent=2))
-            config_path.chmod(0o600)
-            return True
-        except Exception as e:
-            logger.error(f"Failed to save MQTT nodeless config: {e}")
-            return False
+        loaded = load_settings()
+        if loaded.state == "ok":
+            return mqtt_settings.subscriber_config(loaded.intent)
+        if loaded.state == "unreadable":
+            self.config_error = loaded.error
+            logger.error("Saved MQTT settings unreadable — the subscriber "
+                         "will NOT start until fixed: %s", loaded.error)
+        return mqtt_settings.subscriber_config(mqtt_settings.defaults())
 
     def start(self) -> bool:
         """Start the MQTT subscriber."""
+        if self.config_error:
+            logger.error("MQTT subscriber not started — saved settings "
+                         "unreadable: %s", self.config_error)
+            self._started = False
+            return False
         if self._connected:
             self._started = True
             return True
@@ -431,25 +411,14 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
         if not self._client:
             return
 
-        root = self._config.get("root_topic", DEFAULT_ROOT_TOPIC)
-        channel = self._config.get("channel", DEFAULT_CHANNEL)
-        # The JSON leg may listen wider than the encrypted one: "+" = every
-        # channel the radio uplinks (the local subscriber's default since
-        # 2026-10-13 — a box whose radio uplinks only "meshforge" read
-        # "connected" with 0 messages while subscribed to LongFast).
-        json_channel = self._config.get("json_channel", channel)
-
-        # Subscribe to JSON-formatted messages (easier to parse)
-        # Topic format: msh/{region}/2/json/{channel}/#
-        topic = f"{root.rsplit('/', 1)[0]}/json/{json_channel}/#"
-        self._client.subscribe(topic)
-        logger.info(f"Subscribed to: {topic}")
-
-        # Also subscribe to encrypted topic for node discovery
-        # Topic format: msh/{region}/2/e/{channel}/#
-        enc_topic = f"{root}/{channel}/#"
-        self._client.subscribe(enc_topic)
-        logger.info(f"Subscribed to: {enc_topic}")
+        # ONE derivation (mqtt_settings.subscriptions), shared with the TUI
+        # status so what is shown is what is subscribed: the JSON leg
+        # (msh/{region}/2/json/{json_channel}/# — "+" = every channel a local
+        # radio uplinks, 2026-10-13) then the encrypted leg for discovery.
+        for topic in mqtt_settings.subscriptions(
+                self._config, DEFAULT_ROOT_TOPIC, DEFAULT_CHANNEL):
+            self._client.subscribe(topic)
+            logger.info(f"Subscribed to: {topic}")
 
     def _on_disconnect(self, client, userdata, rc):
         """MQTT disconnection callback."""
@@ -1022,124 +991,27 @@ def create_public_subscriber(
     return MQTTNodelessSubscriber(config=config)
 
 
-# --- the saved operator settings: ONE reader, ONE translation ---------------
+# --- the saved operator settings: per-repo bindings of mqtt_settings --------
 #
-# `mqtt_nodeless.json` is written in TWO schemas: the TUI's save_mqtt_config
-# writes `topic` ("msh/US/2/e/LongFast/#", and its private-broker save ALSO
-# writes `root_topic`/`channel`); MQTTNodelessSubscriber.save_config writes
-# the subscriber schema (`root_topic`/`channel`/`use_tls`/`regions`/...).
-# Every reader goes through these functions: the TUI (load/save + both start
-# paths), the daemon, and the subscriber's own _load_config (kilo ingest
-# builds a default subscriber). Reviews of a30390ae + b8bcb7b5.
+# `mqtt_settings` (byte-identical with MeshAnchor) owns the file: validate,
+# load (ok / absent / unreadable), save, the legacy conversion and the topic
+# derivation. These three lines are the only MeshForge-specific part: WHERE
+# the file lives (sudo-safe home) and WHICH writer keeps the operator's
+# ownership when the TUI saves as root. MQTT-CFG plan r2, S2.
 
-#: Subscriber-schema keys kept as saved when present (the TUI schema never
-#: writes them; dropping them would silently change a subscriber's behaviour).
-_SUBSCRIBER_PASSTHROUGH = ("regions", "json_channel", "auto_reconnect",
-                           "reconnect_delay", "max_reconnect_delay")
+def mqtt_config_dir() -> Path:
+    """The operator's MeshForge config dir (sudo-safe home)."""
+    return get_real_user_home() / ".config" / "meshforge"
 
 
-def saved_mqtt_config_path() -> Path:
-    """Where the operator's saved MQTT settings live (sudo-safe home)."""
-    return get_real_user_home() / ".config" / "meshforge" / "mqtt_nodeless.json"
+def load_settings() -> "mqtt_settings.Loaded":
+    return mqtt_settings.load(mqtt_config_dir())
 
 
-def load_saved_mqtt_config(path: Optional[Path] = None):
-    """``(dict, None)`` | ``(None, None)`` absent | ``(None, error)`` unreadable.
-
-    Three states on purpose: an absent file is a normal "never configured";
-    an unreadable one is an operator setting we FAILED to honour, which must
-    never read as either "absent" or a default broker (hfm #1). Every step,
-    including the existence check (a PermissionError on a parent), stays
-    inside the contract.
-    """
-    p = path or saved_mqtt_config_path()
-    try:
-        if not p.exists():
-            return None, None
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
-        return None, f"{p}: {type(e).__name__}: {e}"
-    if not isinstance(data, dict):
-        return None, f"{p}: expected a JSON object, got {type(data).__name__}"
-    return data, None
-
-
-def _saved_str(saved: Dict[str, Any], key: str, default: str) -> str:
-    if key not in saved:
-        return default
-    v = saved[key]
-    if not isinstance(v, str) or not v.strip():
-        raise ValueError(f"mqtt_nodeless.json: {key!r} must be a non-empty "
-                         f"string, got {v!r}")
-    return v
-
-
-def _saved_port(saved: Dict[str, Any]) -> int:
-    v = saved.get("port", 8883)
-    if isinstance(v, bool):
-        raise ValueError(f"mqtt_nodeless.json: 'port' must be an integer, got {v!r}")
-    if isinstance(v, int):
-        return v
-    if isinstance(v, str) and v.strip().isdigit():
-        return int(v.strip())
-    raise ValueError(f"mqtt_nodeless.json: 'port' must be an integer, got {v!r}")
-
-
-def subscriber_config_from_saved(saved: Dict[str, Any]) -> Dict[str, Any]:
-    """The subscriber config for saved settings in EITHER schema.
-
-    `root_topic` WINS when present (subscriber schema, and the TUI's
-    private-broker save that writes both). Otherwise `topic` is parsed
-    exactly as the TUI's former inline translation did (pinned by
-    tests/test_mqtt_saved_config.py). A value the author cannot have meant —
-    a null/non-string topic or broker, a non-integer port — raises
-    ValueError: refuse loudly, never absorb (hfm #3).
-    """
-    broker = _saved_str(saved, "broker", "mqtt.meshtastic.org")
-    port = _saved_port(saved)
-    use_pair = False
-    if saved.get("root_topic") is not None:
-        root_topic = _saved_str(saved, "root_topic", "msh/US/2/e")
-        channel = _saved_str(saved, "channel", "LongFast") if saved.get("channel") else "LongFast"
-        # The TUI's private save writes topic = f"{root_topic}/{channel}/#"
-        # together; its Configure menu later edits ONLY `topic`. So the pair
-        # wins when there is no topic or the two still agree; when they
-        # disagree, `topic` is the newer edit (review of d583e37e F2 — a
-        # plain "root_topic wins" made that edit silently do nothing).
-        if "topic" not in saved:
-            use_pair = True
-        else:
-            t = _saved_str(saved, "topic", "")
-            use_pair = t.rstrip("#").rstrip("/") == f"{root_topic}/{channel}"
-    if not use_pair:
-        topic = _saved_str(saved, "topic", "msh/US/2/e/LongFast/#")
-        parts = topic.rstrip("#").rstrip("/").split("/")
-        if len(parts) >= 4:
-            channel = parts[-1] if parts[-1] else "LongFast"
-            if "/json/" in topic:
-                root_topic = "/".join(parts[:-1]).replace("/json", "/e")
-            else:
-                root_topic = "/".join(parts[:-1])
-        else:
-            root_topic = "msh/US/2/e"
-            channel = "LongFast"
-    cfg = {
-        "broker": broker,
-        "port": port,
-        "username": saved.get("username") or "",
-        "password": saved.get("password") or "",
-        "root_topic": root_topic,
-        "channel": channel,
-        "key": saved.get("key") or "AQ==",
-        "use_tls": saved.get("use_tls", port == 8883),
-        "auto_reconnect": True,
-        "reconnect_delay": 2 if broker == "localhost" else 5,
-        "max_reconnect_delay": 30 if broker == "localhost" else 60,
-    }
-    for k in _SUBSCRIBER_PASSTHROUGH:
-        if k in saved:
-            cfg[k] = saved[k]
-    return cfg
+def save_settings(intent: Dict[str, Any]) -> "mqtt_settings.SaveResult":
+    from utils.paths import atomic_write_text_preserving
+    return mqtt_settings.save(mqtt_config_dir(), intent,
+                              atomic_write_text_preserving)
 
 
 # Singleton instance management

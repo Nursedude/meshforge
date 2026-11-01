@@ -305,7 +305,16 @@ def from_legacy(raw: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional
     if err:
         return None, err
     out["port"] = port
-    if "topic" in raw:
+    pair_agrees = (isinstance(raw.get("topic"), str)
+                   and isinstance(raw.get("root_topic"), str)
+                   and isinstance(raw.get("channel"), str)
+                   and raw["topic"].rstrip("#").rstrip("/")
+                   == f"{raw['root_topic']}/{raw['channel']}")
+    if pair_agrees:
+        # the private form writes topic == root/channel/#: the pair IS the
+        # intent, so a bad root is reported as the root (not "short topic")
+        root, channel = raw["root_topic"], raw["channel"]
+    elif "topic" in raw:
         root, channel, err = _legacy_topic(raw["topic"])
         if err:
             return None, err

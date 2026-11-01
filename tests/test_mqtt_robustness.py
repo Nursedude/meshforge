@@ -954,15 +954,6 @@ class TestFrontierReviewFixes20260709:
         })
         assert subscriber.get_messages() == []
 
-    def test_save_config_writes_0600(self, subscriber, tmp_path,
-                                     monkeypatch):
-        import monitoring.mqtt_subscriber as ms
-        monkeypatch.setattr(ms, "get_real_user_home", lambda: tmp_path)
-        assert subscriber.save_config() is True
-        mode = (tmp_path / ".config" / "meshforge"
-                / "mqtt_nodeless.json").stat().st_mode & 0o777
-        assert mode == 0o600
-
     def test_on_message_swallow_leaves_witness(self, subscriber,
                                                monkeypatch):
         """A repeating handler bug used to be invisible (debug-only) while

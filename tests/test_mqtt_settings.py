@@ -417,6 +417,14 @@ def test_ambiguous_legacy_is_unreadable_naming_the_field(raw, field):
     assert intent is None and field in err, err
 
 
+def test_a_consistent_pair_with_a_short_root_blames_the_root():
+    # the private form's own help offered `msh/HI`: topic msh/HI/Ops/# agrees
+    # with the pair, so the pair is the intent and the ROOT is what is wrong
+    intent, err = ms.from_legacy({"broker": "b", "port": 1883, "topic": "msh/HI/Ops/#",
+                                  "root_topic": "msh/HI", "channel": "Ops"})
+    assert intent is None and err.startswith("root_topic"), err
+
+
 def test_load_reports_a_legacy_file_and_writes_nothing(tmp_path):
     p = _plant(tmp_path, LEGACY["b_public_preset"][0])
     before = p.read_bytes()

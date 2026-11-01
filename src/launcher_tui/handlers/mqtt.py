@@ -62,45 +62,67 @@ TelemetryPoller, get_telemetry_poller, _HAS_TELEMETRY_POLLER = safe_import(
 # Module-level config helpers — shared with BrokerHandler
 # ---------------------------------------------------------------------------
 
-def load_mqtt_config() -> Dict[str, Any]:
-    """Load MQTT configuration from file (the ONE shared path)."""
-    from monitoring.mqtt_subscriber import saved_mqtt_config_path
-    config_path = saved_mqtt_config_path()
-    try:
-        if config_path.exists():
-            with open(config_path) as f:
-                return json.load(f)
-    except Exception as e:
-        # a saved setting we could not read is not "never configured":
-        # say so at WARNING (the daemon reports it as saved-unreadable)
-        logger.warning("Saved MQTT settings unreadable (%s) — showing defaults: %s",
-                       config_path, e)
-
+def _tui_view(intent: Dict[str, Any]) -> Dict[str, Any]:
+    """The saved INTENT in the shape the TUI menus edit (until S3 moves the
+    writers onto intent): a derived `topic`, `use_tls`, None for no creds."""
+    from monitoring import mqtt_settings
     return {
-        'broker': 'mqtt.meshtastic.org',
-        'port': 8883,
-        'topic': 'msh/US/2/e/LongFast/#',
-        'username': None,
-        'password': None
+        "broker": intent["broker"], "port": intent["port"],
+        "topic": f"{intent['root_topic']}/{intent['channel']}/#",
+        "root_topic": intent["root_topic"], "channel": intent["channel"],
+        "key": intent["key"],
+        "username": intent["username"] or None,
+        "password": intent["password"] or None,
+        "use_tls": mqtt_settings.effective_tls(intent),
+        "auto_start": intent["auto_start"],
+        "auto_start_telemetry": intent["auto_start_telemetry"],
     }
 
 
-def save_mqtt_config(config: Dict[str, Any]) -> bool:
-    """Save MQTT configuration to file.
+def load_mqtt_config() -> Dict[str, Any]:
+    """The saved settings for the menus (the ONE owner: mqtt_settings).
 
-    Returns True iff the write succeeded; False on any write failure (so a
-    caller can't show "Saved" for a config that never hit disk — #74 class).
-    """
-    from monitoring.mqtt_subscriber import saved_mqtt_config_path
-    config_path = saved_mqtt_config_path()
-    try:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_path, 'w') as f:
-            json.dump(config, f, indent=2)
-        return True
-    except Exception as e:
-        logger.error("Error saving MQTT config: %s", e)
+    An unreadable file shows the defaults for editing — a Save then keeps
+    the bad bytes as `.pre-v1` — but is logged at WARNING, and the Start
+    paths refuse it (`_saved_subscriber_config`)."""
+    from monitoring import mqtt_settings
+    from monitoring.mqtt_subscriber import load_settings
+    loaded = load_settings()
+    if loaded.state == "unreadable":
+        logger.warning("Saved MQTT settings unreadable — showing defaults: %s",
+                       loaded.error)
+    return _tui_view(loaded.intent if loaded.state == "ok"
+                     else mqtt_settings.defaults())
+
+
+def save_mqtt_config(config: Dict[str, Any]) -> bool:
+    """Save a menu-shaped config through the owner (validate, 0600, owner kept).
+
+    Returns True iff it was written; False when refused (a value the
+    settings cannot hold, logged naming the field) or when the write failed
+    (#74 class: never "Saved" for a config that never hit disk)."""
+    from monitoring import mqtt_settings
+    from monitoring.mqtt_subscriber import save_settings
+    intent, err = mqtt_settings.from_legacy(dict(config))
+    if err:
+        logger.error("MQTT settings NOT saved — %s", err)
         return False
+    res = save_settings(intent)
+    if not res.ok:
+        logger.error("MQTT settings NOT saved — %s", res.error)
+    return res.ok
+
+
+def _saved_subscriber_config():
+    """(subscriber config, None) | (None, error) — absent = the defaults,
+    unreadable = refused (MQTT-CFG F6), never a silent swap."""
+    from monitoring import mqtt_settings
+    from monitoring.mqtt_subscriber import load_settings
+    loaded = load_settings()
+    if loaded.state == "unreadable":
+        return None, loaded.error
+    intent = loaded.intent if loaded.state == "ok" else mqtt_settings.defaults()
+    return mqtt_settings.subscriber_config(intent), None
 
 
 class MQTTHandler(BaseHandler):
@@ -143,10 +165,11 @@ class MQTTHandler(BaseHandler):
             if not _HAS_MQTT:
                 return
 
-            # ONE translation of the saved settings, shared with the daemon
-            # (it was duplicated here twice and absent from the daemon).
-            from monitoring.mqtt_subscriber import subscriber_config_from_saved
-            subscriber_config = subscriber_config_from_saved(config)
+            subscriber_config, err = _saved_subscriber_config()
+            if err:
+                logger.error("MQTT auto-start skipped — saved settings "
+                             "unreadable: %s", err)
+                return
             broker = subscriber_config["broker"]
 
             self._mqtt_subscriber = MQTTNodelessSubscriber(config=subscriber_config)
@@ -441,14 +464,17 @@ class MQTTHandler(BaseHandler):
             self.ctx.dialog.msgbox("Already Running", "MQTT subscriber is already connected.")
             return
 
-        config = load_mqtt_config()
         self.ctx.dialog.infobox("Starting MQTT", "Connecting to MQTT broker...")
 
         try:
-            # ONE translation of the saved settings, shared with the daemon
-            # (it was duplicated here twice and absent from the daemon).
-            from monitoring.mqtt_subscriber import subscriber_config_from_saved
-            subscriber_config = subscriber_config_from_saved(config)
+            subscriber_config, err = _saved_subscriber_config()
+            if err:
+                self.ctx.dialog.msgbox(
+                    "MQTT Settings Unreadable",
+                    "The saved MQTT settings could not be used, so the "
+                    f"subscriber was NOT started:\n\n{err}\n\n"
+                    "Fix it in Configure and Save, or edit the file.")
+                return
 
             self._mqtt_subscriber = MQTTNodelessSubscriber(config=subscriber_config)
             self._mqtt_subscriber.start()

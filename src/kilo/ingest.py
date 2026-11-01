@@ -419,9 +419,16 @@ def collect_mqtt(conn, registry: List[KiloNode], seconds: float,
             rm = getattr(subscriber, "remove_packet_callback", None)
             if callable(rm):
                 rm(edge_buf.on_packet)
-        summary["error"] = ("subscriber failed to connect — broker down or "
-                            "misconfigured (~/.config/meshforge/"
-                            "mqtt_nodeless.json); nothing was observed")
+        cfg_err = getattr(subscriber, "config_error", None)
+        if isinstance(cfg_err, str) and cfg_err:
+            # a saved setting we could not honour — name it (MQTT-CFG F6)
+            summary["error"] = (f"saved MQTT settings unreadable: {cfg_err}; "
+                                "nothing was observed")
+        else:
+            from monitoring.mqtt_settings import FILENAME
+            summary["error"] = ("subscriber failed to connect — broker down or "
+                                f"misconfigured (~/.config/meshforge/{FILENAME}); "
+                                "nothing was observed")
         return summary
 
     seen: Dict[Tuple[str, str], Tuple[float, float]] = {}

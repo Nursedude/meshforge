@@ -186,16 +186,16 @@ class MQTTSubscriberService(DaemonService):
 
     def __init__(self, broker: str = "localhost", port: int = 1883,
                  overlay: Optional[Dict[str, Any]] = None,
-                 saved_path=None):
+                 saved_dir=None):
         """broker/port: the fallback when the operator saved no settings
         (the installer's local mosquitto). overlay: broker/port the operator
         set EXPLICITLY in the daemon's config (see _mqtt_overlay) — laid over
-        the saved settings. saved_path: override for tests."""
+        the saved settings. saved_dir: the settings dir, override for tests."""
         self._broker = broker
         self._port = port
         self._overlay = {k: v for k, v in (overlay or {}).items()
                          if k in ("broker", "port") and v}
-        self._saved_path = saved_path
+        self._saved_dir = saved_dir
         self._subscriber = None
         self.config_source = "not-started"
 
@@ -214,41 +214,39 @@ class MQTTSubscriberService(DaemonService):
         return str(get_real_user_home()) == root_home
 
     def _build_config(self) -> Dict[str, Any]:
-        # Precedence (operator 2026-10-31): the operator's SAVED settings
-        # (either schema, one translation) -> explicit daemon-config
-        # broker/port on top -> no saved file = the local mosquitto. A saved
-        # file that cannot be read or validated is LOUD and visible as
-        # config_source, never silently swapped for a broker nobody chose.
-        from monitoring.mqtt_subscriber import (
-            load_saved_mqtt_config, local_subscriber_config,
-            subscriber_config_from_saved,
-        )
-        saved, err = load_saved_mqtt_config(self._saved_path)
-        if saved is not None:
-            merged = dict(saved)
+        # Precedence (operator 2026-10-31): the operator's SAVED settings ->
+        # explicit daemon-config broker/port on top -> no saved file = the
+        # local mosquitto. A saved file that cannot be read or validated is
+        # LOUD and visible as config_source, never silently swapped for a
+        # broker nobody chose. The overlay lands on the INTENT, so what
+        # depends on it re-derives (b8bcb7b5 F3/F4): an explicit port puts
+        # TLS back on "auto"; the delays follow the final broker.
+        from monitoring import mqtt_settings
+        from monitoring.mqtt_subscriber import local_subscriber_config, mqtt_config_dir
+        loaded = mqtt_settings.load(self._saved_dir or mqtt_config_dir())
+        err = loaded.error
+        if loaded.state == "ok":
+            intent = dict(loaded.intent)
             if self._overlay:
-                merged.update(self._overlay)
-                # everything that DEPENDS on the overlaid broker/port is
-                # re-derived from the final values (review of b8bcb7b5 F3/F4):
-                # an explicit port decides TLS; a new broker decides delays
+                intent.update(self._overlay)
                 if "port" in self._overlay:
-                    merged.pop("use_tls", None)
-                if "broker" in self._overlay:
-                    merged.pop("reconnect_delay", None)
-                    merged.pop("max_reconnect_delay", None)
-            try:
-                cfg = subscriber_config_from_saved(merged)
-            except ValueError as e:
-                err = str(e)
-            else:
+                    intent["tls"] = "auto"
+            errs = mqtt_settings.validate(intent)
+            if not errs:
                 self.config_source = "saved+override" if self._overlay else "saved"
-                return cfg
-        if err:
+                return mqtt_settings.subscriber_config(intent)
+            # the DAEMON config is wrong, not the operator's file: say so
+            logger.warning(
+                "MQTT daemon broker/port override invalid — using the local "
+                f"broker {self._broker}:{self._port}: {'; '.join(errs)}")
+            self.config_source = "override-invalid"
+            err = None
+        elif err:
             logger.warning(
                 "MQTT saved settings unreadable — using the local broker "
                 f"{self._broker}:{self._port} instead: {err}")
             self.config_source = "saved-unreadable"
-        elif self._saved_path is None and self._operator_home_unknown():
+        elif self._saved_dir is None and self._operator_home_unknown():
             # Running as root and the home resolver fell back to root's own
             # home (the shipped meshforge-daemon.service: no SUDO_USER /
             # LOGNAME, or SUDO_USER=root): the operator's home is unknowable,
