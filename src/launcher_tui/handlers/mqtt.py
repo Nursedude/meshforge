@@ -102,22 +102,21 @@ def _saved_subscriber_config():
 _TLS_FROM_TAG = {"auto": "auto", "on": True, "off": False}
 
 
-def _tls_menu_rows(port: int):
-    auto_on = port == 8883
+def _tls_menu_rows(broker: str, port: int):
+    from monitoring import mqtt_settings
+    auto_on = mqtt_settings.effective_tls({"broker": broker, "port": port, "tls": "auto"})
     return [("auto", f"Auto -> {'on' if auto_on else 'off'} for port {port}"),
             ("on", "On   (TLS encrypted)"),
             ("off", "Off  (plain TCP)")]
 
 
 def _tls_tag(value: Any) -> Optional[str]:
-    """Saved tls value -> menu tag; None for anything not a valid tls (`is`:
-    1 == True, and a 1 on disk was never a choice the form offered)."""
-    if value == "auto":
-        return "auto"
-    if value is True:
-        return "on"
-    if value is False:
-        return "off"
+    """tls value -> menu tag, derived from _TLS_FROM_TAG; None for anything
+    not a valid tls (`is` for the bools: 1 == True, and a 1 on disk was never
+    a choice the form offered)."""
+    for tag, v in _TLS_FROM_TAG.items():
+        if v is value or (isinstance(v, str) and v == value):
+            return tag
     return None
 
 
@@ -127,12 +126,19 @@ def _host_key(host: Any) -> str:
 
 def _saved_tls_for_endpoint(broker: str, port: int) -> Optional[str]:
     """The menu tag of the tls SAVED ON DISK for this same broker:port, else
-    None. Reads load_settings() — never the form's config dict, which may
-    carry an unsaved Broker-row edit (the parked current-first follow-up
-    regressed on exactly that, 2026-11-01). absent / unreadable -> None."""
+    None — the ONLY source of the default (load_settings, read fresh).
+
+    Not the form's config dict: it may carry an unsaved Broker-row edit (the
+    parked current-first follow-up regressed on that, 2026-11-01), and a
+    stale form value would revert another writer's save while claiming to be
+    the operator's edit (Part B review r2 #3). An unsaved TLS-row edit is
+    therefore NOT honoured on Enter-through — no worse than any shipped
+    version; telling an edit from a carried value needs dirty-field state,
+    which is the F8 ownership grill's question. A legacy file's tls is a
+    CONVERSION, never claimed "(saved)" (r1 #2). absent/unreadable -> None."""
     from monitoring.mqtt_subscriber import load_settings
     loaded = load_settings()
-    disk = loaded.intent if loaded.state == "ok" else None
+    disk = loaded.intent if loaded.state == "ok" and not loaded.legacy else None
     if not disk or _host_key(disk.get("broker")) != _host_key(broker) \
             or disk.get("port") != port:
         return None
@@ -1113,8 +1119,9 @@ class MQTTHandler(BaseHandler):
         # and carrying the old value instead would follow the operator to a
         # broker it was never chosen for. (A plaintext-password warning
         # belongs at the save boundary for EVERY writer — queued, not here.)
-        tls = self._ask_private_tls(broker, int(port),
-                                    _saved_tls_for_endpoint(broker, int(port)))
+        port_n = int(port)
+        tls = self._ask_private_tls(broker, port_n,
+                                    _saved_tls_for_endpoint(broker, port_n))
         if tls is None:
             return
 
@@ -1143,7 +1150,7 @@ class MQTTHandler(BaseHandler):
         # config — never silently reset to defaults() (the class `tls` was).
         carried = {k: config[k] for k in mqtt_settings.INTENT_FIELDS if k in config}
         intent = {**mqtt_settings.defaults(), **carried,
-                  "broker": broker, "port": int(port), "tls": tls,
+                  "broker": broker, "port": port_n, "tls": tls,
                   "root_topic": root_topic.strip(), "channel": channel.strip(),
                   "username": username or "", "password": password or "",
                   "key": config.get('key') or "AQ=="}
@@ -1151,15 +1158,16 @@ class MQTTHandler(BaseHandler):
                              f"Root topic '{root_topic}' determines node scope.\n"
                              "Restart the MQTT subscriber to apply.")
 
-    def _ask_private_tls(self, broker: str, port: int, saved_tag=None):
+    def _ask_private_tls(self, broker: str, port: int,
+                         saved_tag: Optional[str] = None):
         """TLS for this broker:port — "auto" / True / False, or None = cancel.
 
-        Rows never reorder ("auto" first). `saved_tag` — the ON-DISK setting
-        for this SAME endpoint (`_saved_tls_for_endpoint`) — is highlighted via
-        --default-item and marked "(saved)", so Enter-through keeps it; with
-        no saved value for this endpoint, row 1 ("auto") is highlighted.
+        Rows never reorder ("auto" first). `saved_tag` — a menu tag from
+        `_saved_tls_for_endpoint` — is highlighted via --default-item and its
+        row marked "(saved)", so Enter-through keeps it; with none, row 1
+        ("auto"). A non-tag is the backend's to refuse loudly (row 1 + WARN).
         """
-        rows = _tls_menu_rows(port)
+        rows = _tls_menu_rows(broker, port)
         if saved_tag is not None:
             rows = [(t, f"{d}  (saved)" if t == saved_tag else d) for t, d in rows]
         choice = self.ctx.dialog.menu(
