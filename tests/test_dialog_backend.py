@@ -275,3 +275,41 @@ class TestCancelLabelInference:
         be = _make_backend([(0, "x")])
         be.menu("T", "text", [("return_home", "Back")])
         assert not [a for a in be._run_calls[0] if a.startswith('--cancel')]
+
+
+class TestMenuDefaultItem:
+    """menu(default_item=tag) — whiptail AND dialog both take --default-item
+    (2026-11-01, row tui-menu-default-item). Without it the FIRST row is the
+    highlighted one, so a keep-current menu either reorders its rows or
+    resets the current value on Enter-through (the TLS private-form gap)."""
+
+    def test_emits_default_item_before_the_menu_box(self):
+        for be_name in ('whiptail', 'dialog'):
+            be = _make_backend([(0, "on")])
+            be.backend = be_name
+            be.menu("T", "text", [("auto", "A"), ("on", "B"), ("off", "C")],
+                    default_item="on")
+            args = be._run_calls[0]
+            assert args[args.index('--default-item') + 1] == "on", be_name
+            assert args.index('--default-item') < args.index('--menu'), be_name
+
+    def test_no_flag_when_unset(self):
+        be = _make_backend([(0, "a")])
+        be.menu("T", "text", [("a", "A")])
+        assert '--default-item' not in be._run_calls[0]
+
+    def test_a_tag_not_in_the_choices_emits_nothing(self):
+        # a stale default must not make whiptail error out on a live menu
+        be = _make_backend([(0, "a")])
+        be.menu("T", "text", [("a", "A")], default_item="gone")
+        assert '--default-item' not in be._run_calls[0]
+
+
+def test_fake_dialog_refuses_a_default_item_that_is_not_a_tag():
+    # the harness must catch a handler passing a phantom default
+    import pytest as _pt
+    from handler_test_utils import FakeDialog
+    fd = FakeDialog()
+    fd.menu("T", "t", [("a", "A")], default_item="a")
+    with _pt.raises(AssertionError):
+        fd.menu("T", "t", [("a", "A")], default_item="nope")

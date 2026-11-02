@@ -341,7 +341,8 @@ class DialogBackend:
 
     def menu(self, title: str, text: str, choices: List[Tuple[str, str]],
              height: int = None, width: int = None, list_height: int = None,
-             cancel_label=_AUTO_CANCEL) -> Optional[str]:
+             cancel_label=_AUTO_CANCEL,
+             default_item: Optional[str] = None) -> Optional[str]:
         """
         Display a menu and return selected tag.
 
@@ -361,6 +362,11 @@ class DialogBackend:
                 deliberate opt-out for a menu that has a ``back`` row but
                 whose Cancel genuinely is not a back. Pass None to emit no
                 flag at all. See _infer_cancel_label().
+            default_item: Tag to HIGHLIGHT initially (``--default-item``,
+                same spelling in whiptail and dialog), so a keep-current
+                menu can keep a stable row order and still make Enter keep
+                the current value. A tag not among ``choices`` emits nothing
+                (and warns) — a stale default must never kill a live menu.
 
         Returns:
             Selected tag or None if cancelled
@@ -412,6 +418,12 @@ class DialogBackend:
         # [options] --menu text h w lh [tag item]...
         _label = self._infer_cancel_label(choices, cancel_label)
         args.extend(self._cancel_flag(_label) if _label else [])
+        if default_item is not None:
+            if any(tag == default_item for tag, _ in choices):
+                args.extend(['--default-item', default_item])
+            else:
+                logger.warning("menu '%s': default_item %r is not a tag — "
+                               "ignored", title, default_item)
         args.extend([
             '--menu', text,
             str(h), str(w), str(lh),

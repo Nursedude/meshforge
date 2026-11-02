@@ -50,6 +50,9 @@ class FakeDialog:
 
     def menu(self, title, text, choices, **kwargs):
         self._reject_ansi(title, text, *(c for pair in choices for c in pair))
+        d = kwargs.get('default_item')
+        assert d is None or any(t == d for t, _ in choices), (
+            f"menu '{title}': default_item {d!r} is not a tag")   # phantom default
         self.calls.append(('menu', (title, text, choices), kwargs))
         if self._menu_returns:
             return self._menu_returns.pop(0)
