@@ -29,6 +29,7 @@ from utils.mqtt_defaults import (
 )
 from utils.safe_import import safe_import
 from utils.paths import get_real_user_home
+from utils.meshtastic_info import parse_primary_channel_name
 
 logger = logging.getLogger(__name__)
 
@@ -567,11 +568,21 @@ class MQTTHandler(BaseHandler):
                 found = self._detect_local_channel()
                 if found and not mqtt_settings.validate({**intent, "channel": found}):
                     intent["channel"] = found
-                elif found:   # a parse fragment is not a channel (review F5)
+                    chan_note = f"Channel: {found} (read from the radio)"
+                elif found:   # not a usable topic segment (review F5)
                     logger.warning("Detected channel %r is not a topic segment — "
                                    "listening on every channel (+)", found)
+                    chan_note = (f"Channel: radio's name {found!r} is not usable "
+                                 "in a topic — listening on every channel (+)")
+                elif found == "":
+                    chan_note = ("Channel: the radio's primary is unnamed (preset "
+                                 "name) — listening on every channel (+)")
+                else:
+                    chan_note = ("Channel: could NOT read the radio — listening on "
+                                 "every channel (+)")
                 self._save_or_refuse(intent, "Local Mode Set",
-                                     "Configured for the local mosquitto broker.\n\n"
+                                     "Configured for the local mosquitto broker.\n"
+                                     f"{chan_note}\n\n"
                                      "Make sure mosquitto is running and meshtasticd's\n"
                                      "MQTT module is configured (Service Config ->\n"
                                      "MQTT Setup).")
@@ -982,27 +993,33 @@ class MQTTHandler(BaseHandler):
         return []
 
     def _detect_local_channel(self) -> Optional[str]:
-        """Detect primary channel name from local meshtasticd."""
+        """Channel 0's name from local meshtasticd: the name, "" when the
+        primary is unnamed (preset name), None when it could NOT be read.
+
+        Reads through the ONE `--info` parser (utils.meshtastic_info). The old
+        loop took the first line containing "name" — a node's longName — and
+        the Local preset saved channel 'NodeA",' (2026-11-01). A failed read
+        is a WARNING, never a quiet debug line: "+" because the radio could
+        not be read is not the same claim as "+" because it is unnamed.
+        """
         try:
             cli = shutil.which('meshtastic') or 'meshtastic'
             result = subprocess.run(
                 [cli, '--host', 'localhost', '--ch-index', '0', '--info'],
                 capture_output=True, text=True, timeout=15
             )
-
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
-                    if 'name' in line.lower():
-                        parts = line.split(':')
-                        if len(parts) >= 2:
-                            name = parts[1].strip().strip('"\'')
-                            if name and name.lower() not in ('none', ''):
-                                logger.debug("Detected channel: %s", name)
-                                return name
-        except Exception as e:
-            logger.debug("Could not detect channel: %s", e)
-
-        return None
+        except (subprocess.SubprocessError, OSError, ValueError) as e:   # ValueError: UnicodeDecodeError from text=True (r2 #1)
+            logger.warning("Channel detection: could not run meshtastic --info: %s", e)
+            return None
+        if result.returncode != 0:
+            logger.warning("Channel detection: meshtastic --info exited %s",
+                           result.returncode)
+            return None
+        name = parse_primary_channel_name(result.stdout)
+        if name is None:
+            logger.warning("Channel detection: no readable primary channel in "
+                           "meshtastic --info output")
+        return name
 
     def _configure_private_broker(self, config: Dict[str, Any]):
         """Guided setup for a private MQTT broker."""

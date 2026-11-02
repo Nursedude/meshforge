@@ -5,12 +5,12 @@ Converted from channel_config_mixin.py as part of the mixin-to-registry migratio
 """
 
 import sys
-import json
 import re
 import secrets
 import base64
 
 from handler_protocol import BaseHandler
+from utils.meshtastic_info import CH0_LINE, parse_primary_channel_name
 
 
 class ChannelConfigHandler(BaseHandler):
@@ -647,8 +647,8 @@ class ChannelConfigHandler(BaseHandler):
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed:\n{e}")
 
-    # Channel 0's line in `meshtastic --info`. MeshAnchor twin: same code.
-    _CH0_LINE = re.compile(r'Index 0: PRIMARY[^\n{]*(\{[^\n]*\})')
+    # Channel 0's line in `meshtastic --info` — SSOT utils.meshtastic_info.
+    _CH0_LINE = CH0_LINE
     # nanopb ChannelSettings.name max_size:12 — 11 UTF-8 bytes + NUL.
     CHANNEL_NAME_MAX_BYTES = 11
 
@@ -680,24 +680,10 @@ class ChannelConfigHandler(BaseHandler):
 
     @classmethod
     def _parse_primary_name(cls, info: str):
-        """Channel 0's name from `meshtastic --info`: "" when the primary is
-        unnamed (the firmware then shows its preset name), None when the
-        output carries no readable primary channel — a read that did not
-        happen. The CLI prints the channel through protobuf json_format
-        (ensure_ascii), so the object is JSON-DECODED: a regex capture handed
-        back escape text for any non-ASCII or quoted name (reader pair,
-        2026-09-29)."""
-        if not info or "Index 0: PRIMARY" not in info:
-            return None
-        m = cls._CH0_LINE.search(info)
-        if not m:
-            return None
-        try:
-            obj = json.loads(m.group(1))
-        except ValueError:
-            return None
-        name = obj.get("name", "") if isinstance(obj, dict) else None
-        return name if isinstance(name, str) else None
+        """Channel 0's name — "" unnamed, None unread. The ONE parser lives in
+        utils.meshtastic_info (moved 2026-11-01 so the MQTT and service-menu
+        detectors stop re-implementing it)."""
+        return parse_primary_channel_name(info)
 
     def _set_primary_channel(self):
         """Set primary channel name.

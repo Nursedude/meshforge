@@ -36,6 +36,7 @@ from utils._service_iptables import (
 
 # Sudo-safe home directory — first-party, always available (MF001)
 from utils.paths import get_real_user_home, ReticulumPaths
+from utils.meshtastic_info import parse_primary_channel_name
 
 # Import propagation module
 from commands import propagation
@@ -1001,17 +1002,20 @@ WantedBy=multi-user.target
                 capture_output=True, text=True, timeout=15
             )
 
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
-                    if 'name' in line.lower():
-                        parts = line.split(':')
-                        if len(parts) >= 2:
-                            name = parts[1].strip().strip('"\'')
-                            if name and name.lower() != 'none':
-                                return name
+            if result.returncode != 0:
+                logger.warning("Channel auto-detect: meshtastic --info exited %s",
+                               result.returncode)
+                return None
+            # The ONE --info parser (utils.meshtastic_info). The old loop took
+            # the first line containing "name" — a node's longName — so this
+            # screen announced a topic for channel 'NodeA",' (2026-11-01).
+            name = parse_primary_channel_name(result.stdout)
+            if name is None:
+                logger.warning("Channel auto-detect: no readable primary channel")
+            return name or None      # "" = unnamed (preset): every channel
 
         except (subprocess.SubprocessError, OSError, ValueError) as e:
-            logger.debug("Channel auto-detect failed: %s", e)
+            logger.warning("Channel auto-detect failed: %s", e)
 
         return None
 

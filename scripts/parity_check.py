@@ -267,6 +267,11 @@ BYTE_IDENTICAL = (
     # pins only tmp dirs + the identical utils/mqtt_defaults.py.
     "src/monitoring/mqtt_settings.py",
     "tests/test_mqtt_settings.py",
+    # The ONE `meshtastic --info` channel-0 parser (2026-11-01). Three sibling
+    # readers in each twin's launcher_tui/ (untracked, where defects hide)
+    # had drifted into first-"name"-line guessing; locking the shared reader
+    # keeps the cure from forking. Stdlib only, nothing per-repo.
+    "src/utils/meshtastic_info.py",
 )
 
 # The fork-pin block is compared as a normalized sub-block: the lines that

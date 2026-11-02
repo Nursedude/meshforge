@@ -129,7 +129,7 @@ def test_F5_an_unusable_detected_channel_falls_back_to_every_channel(save, _load
     # _detect_local_channel can return a longName fragment (09-20 class)
     h, ctx = _handler()
     ctx.dialog._menu_returns = ["local"]
-    with patch.object(type(h), "_detect_local_channel", return_value='Meshtastic 8d30",'):
+    with patch.object(type(h), "_detect_local_channel", return_value='Meshtastic 8d30",'):  # a SPACE: not a segment
         h._configure_mqtt()
     assert save.called and save.call_args[0][0]["channel"] == "+"
 
@@ -216,3 +216,116 @@ def test_fields_the_form_does_not_ask_are_carried_not_reset():
     # TLS review r1 #3 (altitude): build from the config, not defaults().
     save, _ = _private("auto", "auto")
     assert save.call_args[0][0]["auto_start"] is True
+
+
+# 2026-11-01 live drill on the manager box: the Local preset saved channel
+# 'NodeA",' — _detect_local_channel took the FIRST line containing "name"
+# of `meshtastic --info`, which is the node's "longName" in "Nodes in mesh"
+# (printed BEFORE "Channels:"), and the validator accepted the fragment.
+# Fixture shape = the pinned meshtastic 2.7.11 source: showInfo() prints
+# Owner / My info / Nodes in mesh (json, indent) first; node.showInfo() then
+# showChannels(): "  Index N: ROLE psk=<x> <one-line json, ALL fields>".
+INFO_FIXTURE = '''
+Connected to radio
+
+Owner: NodeA (NODA)
+My info: { "myNodeNum": 305419896, "rebootCount": 3 }
+
+Nodes in mesh: {
+  "!12345678": {
+    "num": 305419896,
+    "user": {
+      "id": "!12345678",
+      "longName": "NodeA",
+      "shortName": "NODA"
+    }
+  }
+}
+
+Preferences: { "device": { "role": "CLIENT" } }
+
+Module preferences: { "mqtt": { "enabled": true } }
+
+Channels:
+  Index 0: PRIMARY psk=secret { "channelNum": 0, "psk": "c2VjcmV0", "name": "Regional", "id": 0, "uplinkEnabled": true, "downlinkEnabled": false, "moduleSettings": { "positionPrecision": 13, "isClientMuted": false } }
+  Index 1: SECONDARY psk=default { "channelNum": 0, "psk": "AQ==", "name": "Other", "id": 0, "uplinkEnabled": false, "downlinkEnabled": false, "moduleSettings": { "positionPrecision": 0, "isClientMuted": false } }
+
+Primary channel URL: <redacted>
+'''
+
+
+class _Done:
+    def __init__(self, rc, out):
+        self.returncode, self.stdout = rc, out
+
+
+def _fake_subprocess(rc=0, out=INFO_FIXTURE, raises=None):
+    """A stand-in for the HANDLER module's `subprocess` name only — never the
+    shared module (a patch of `mod.subprocess.run` patches it for everyone)."""
+    import subprocess as real
+    from unittest.mock import MagicMock
+    m = MagicMock()
+    m.SubprocessError, m.TimeoutExpired = real.SubprocessError, real.TimeoutExpired
+    m.run.side_effect = raises if raises else (lambda *a, **k: _Done(rc, out))
+    return m
+
+
+def test_the_shared_parser_reads_channel_0_not_a_node_long_name():
+    from utils.meshtastic_info import parse_primary_channel_name
+    assert parse_primary_channel_name(INFO_FIXTURE) == "Regional"
+    assert parse_primary_channel_name(
+        INFO_FIXTURE.replace('"name": "Regional"', '"name": ""')) == ""
+    assert parse_primary_channel_name(INFO_FIXTURE.split("Channels:")[0]) is None
+
+
+def test_mqtt_detector_reads_the_primary_channel_through_the_shared_parser():
+    h, _ = _handler()
+    with patch('handlers.mqtt.subprocess', _fake_subprocess()):
+        assert h._detect_local_channel() == "Regional"
+
+
+def test_mqtt_detector_says_unnamed_vs_unread_apart(caplog):
+    import logging
+    import subprocess as real
+    h, _ = _handler()
+    unnamed = INFO_FIXTURE.replace('"name": "Regional"', '"name": ""')
+    with patch('handlers.mqtt.subprocess', _fake_subprocess(out=unnamed)):
+        assert h._detect_local_channel() == ""
+    for fake in (_fake_subprocess(rc=1), _fake_subprocess(out="no channels here"),
+                 _fake_subprocess(raises=real.TimeoutExpired("meshtastic", 15)),
+                 _fake_subprocess(raises=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad"))):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING), patch('handlers.mqtt.subprocess', fake):
+            assert h._detect_local_channel() is None
+        assert any(r.levelno >= logging.WARNING for r in caplog.records)
+
+
+def _local_preset(found):
+    with patch('handlers.mqtt.load_mqtt_config', return_value=dict(SAVED)), \
+         patch('handlers.mqtt.save_mqtt_config', return_value=True) as save:
+        h, ctx = _handler()
+        ctx.dialog._menu_returns = ["local"]
+        with patch.object(h, "_detect_local_channel", return_value=found):
+            h._configure_mqtt()
+    shown = " ".join(str(c[1]) for c in ctx.dialog.calls)
+    return save.call_args[0][0]["channel"], shown
+
+
+def test_local_preset_says_which_channel_claim_it_is_making():
+    # "+" because unnamed and "+" because unreadable are different claims (hfm #2).
+    for found, want_ch, want_note in (("Regional", "Regional", "read from the radio"),
+                                      ("", "+", "unnamed"),
+                                      (None, "+", "could NOT read")):
+        ch, shown = _local_preset(found)
+        assert ch == want_ch and want_note in shown, found
+
+
+def test_service_menu_detector_uses_the_shared_parser():
+    from handlers.service_menu import ServiceMenuHandler
+    h = ServiceMenuHandler()
+    h.set_context(make_handler_context())
+    with patch('handlers.service_menu.subprocess', _fake_subprocess()):
+        assert h._auto_detect_primary_channel() == "Regional"
+    unnamed = INFO_FIXTURE.replace('"name": "Regional"', '"name": ""')
+    with patch('handlers.service_menu.subprocess', _fake_subprocess(out=unnamed)):
+        assert h._auto_detect_primary_channel() is None     # display: every channel
