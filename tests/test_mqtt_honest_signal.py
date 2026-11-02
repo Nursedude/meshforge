@@ -102,6 +102,7 @@ def test_local_mode_write_success_shows_set(mock_save, mock_load):
 # Site: "Private Broker Configured"  (_configure_private_broker, called direct)
 # ---------------------------------------------------------------------------
 
+@patch('handlers.mqtt._saved_tls_for_endpoint', new=lambda broker, port: None)   # pin: no real disk read
 @patch('handlers.mqtt.save_mqtt_config', return_value=False)
 def test_private_broker_write_failure_shows_honest_failure(mock_save):
     """RED-FIRST: a failed write must NOT show 'Private Broker Configured'."""
@@ -119,6 +120,7 @@ def test_private_broker_write_failure_shows_honest_failure(mock_save):
     assert ctx.dialog.last_msgbox_title != "Private Broker Configured"
 
 
+@patch('handlers.mqtt._saved_tls_for_endpoint', new=lambda broker, port: None)   # pin: no real disk read
 @patch('handlers.mqtt.save_mqtt_config', return_value=True)
 def test_private_broker_write_success_shows_configured(mock_save):
     """Mirror: a successful write shows 'Private Broker Configured'."""

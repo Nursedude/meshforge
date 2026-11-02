@@ -144,6 +144,7 @@ def test_private_broker_invalid_host_not_saved(mock_save):
     assert not mock_save.called
 
 
+@patch('handlers.mqtt._saved_tls_for_endpoint', new=lambda broker, port: None)   # pin: no real disk read
 @patch('handlers.mqtt.save_mqtt_config', return_value=True)
 def test_private_broker_valid_host_proceeds_to_save(mock_save):
     """Mirror: a valid private broker + port flows through to a real save."""

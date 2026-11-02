@@ -96,6 +96,49 @@ def _saved_subscriber_config():
     return mqtt_settings.subscriber_config(intent), None
 
 
+# The private-form TLS menu — ONE tag vocabulary for the rows, the saved-value
+# mapping and the answer (hfm #5). A tag the menu lacks degrades to row 1
+# SILENTLY in whiptail, so a test pins every saved value to a row tag.
+_TLS_FROM_TAG = {"auto": "auto", "on": True, "off": False}
+
+
+def _tls_menu_rows(port: int):
+    auto_on = port == 8883
+    return [("auto", f"Auto -> {'on' if auto_on else 'off'} for port {port}"),
+            ("on", "On   (TLS encrypted)"),
+            ("off", "Off  (plain TCP)")]
+
+
+def _tls_tag(value: Any) -> Optional[str]:
+    """Saved tls value -> menu tag; None for anything not a valid tls (`is`:
+    1 == True, and a 1 on disk was never a choice the form offered)."""
+    if value == "auto":
+        return "auto"
+    if value is True:
+        return "on"
+    if value is False:
+        return "off"
+    return None
+
+
+def _host_key(host: Any) -> str:
+    return str(host or "").strip().rstrip(".").lower()
+
+
+def _saved_tls_for_endpoint(broker: str, port: int) -> Optional[str]:
+    """The menu tag of the tls SAVED ON DISK for this same broker:port, else
+    None. Reads load_settings() — never the form's config dict, which may
+    carry an unsaved Broker-row edit (the parked current-first follow-up
+    regressed on exactly that, 2026-11-01). absent / unreadable -> None."""
+    from monitoring.mqtt_subscriber import load_settings
+    loaded = load_settings()
+    disk = loaded.intent if loaded.state == "ok" else None
+    if not disk or _host_key(disk.get("broker")) != _host_key(broker) \
+            or disk.get("port") != port:
+        return None
+    return _tls_tag(disk.get("tls"))
+
+
 _ROOT_HELP = ("MQTT root topic (must end in /e — the JSON leg is derived from it):\n\n"
               "  msh/US/2/e   = US region\n"
               "  msh/EU_868/2/e = EU 868 region\n\n"
@@ -1070,7 +1113,8 @@ class MQTTHandler(BaseHandler):
         # and carrying the old value instead would follow the operator to a
         # broker it was never chosen for. (A plaintext-password warning
         # belongs at the save boundary for EVERY writer — queued, not here.)
-        tls = self._ask_private_tls(broker, int(port))
+        tls = self._ask_private_tls(broker, int(port),
+                                    _saved_tls_for_endpoint(broker, int(port)))
         if tls is None:
             return
 
@@ -1107,21 +1151,23 @@ class MQTTHandler(BaseHandler):
                              f"Root topic '{root_topic}' determines node scope.\n"
                              "Restart the MQTT subscriber to apply.")
 
-    def _ask_private_tls(self, broker: str, port: int):
+    def _ask_private_tls(self, broker: str, port: int, saved_tag=None):
         """TLS for this broker:port — "auto" / True / False, or None = cancel.
 
-        "auto" is listed FIRST (the highlighted row) and spells out what it
-        resolves to for this port.
+        Rows never reorder ("auto" first). `saved_tag` — the ON-DISK setting
+        for this SAME endpoint (`_saved_tls_for_endpoint`) — is highlighted via
+        --default-item and marked "(saved)", so Enter-through keeps it; with
+        no saved value for this endpoint, row 1 ("auto") is highlighted.
         """
-        auto_on = port == 8883
+        rows = _tls_menu_rows(port)
+        if saved_tag is not None:
+            rows = [(t, f"{d}  (saved)" if t == saved_tag else d) for t, d in rows]
         choice = self.ctx.dialog.menu(
             "TLS",
             f"Encrypt the connection to {broker}:{port}?\n\n"
             "Esc/Cancel abandons the private-broker setup (nothing saved).",
-            [("auto", f"Auto -> {'on' if auto_on else 'off'} for port {port}"),
-             ("on", "On   (TLS encrypted)"),
-             ("off", "Off  (plain TCP)")])
-        return {"auto": "auto", "on": True, "off": False}.get(choice)
+            rows, default_item=saved_tag)
+        return _TLS_FROM_TAG.get(choice)
 
     def _saved_state_line(self) -> str:
         """What the saved file IS — ok / legacy / absent / UNREADABLE."""

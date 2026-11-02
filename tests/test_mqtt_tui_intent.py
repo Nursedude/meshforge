@@ -181,6 +181,7 @@ def _private(saved_tls, tls_answer, inputs=PRIVATE):
              "username": "alice", "password": "s3cret", "tls": saved_tls,
              "auto_start": True}
     with patch('handlers.mqtt.load_mqtt_config', return_value=dict(saved)), \
+         patch('handlers.mqtt._saved_tls_for_endpoint', return_value=None), \
          patch('handlers.mqtt.save_mqtt_config', return_value=True) as save:
         h, ctx = _handler()
         ctx.dialog._menu_returns = ["private", tls_answer]
@@ -329,3 +330,88 @@ def test_service_menu_detector_uses_the_shared_parser():
     unnamed = INFO_FIXTURE.replace('"name": "Regional"', '"name": ""')
     with patch('handlers.service_menu.subprocess', _fake_subprocess(out=unnamed)):
         assert h._auto_detect_primary_channel() is None     # display: every channel
+
+
+# tui-menu-default-item PART B (2026-11-02): Enter-through on the SAME
+# endpoint must keep the SAVED tls. The default is read from the ON-DISK
+# settings (load_settings), never the form's config dict — the parked
+# current-first follow-up regressed on exactly that (an unsaved Broker-row
+# edit made the old endpoint's TLS look current). Rows never reorder.
+
+def _tls_call(menu_calls):
+    (title, _text, choices), kwargs = menu_calls[0]
+    return [t for t, _ in choices], kwargs.get('default_item'), choices
+
+
+def _private_disk(disk, tls_answer, inputs=PRIVATE, config=None):
+    from monitoring.mqtt_settings import Loaded
+    cfg = config if config is not None else (disk or ms.defaults())
+    loaded = Loaded(state="ok", intent=dict(disk)) if disk else Loaded(state="absent")
+    with patch('handlers.mqtt.load_mqtt_config', return_value=dict(cfg)), \
+         patch('monitoring.mqtt_subscriber.load_settings', return_value=loaded), \
+         patch('handlers.mqtt.save_mqtt_config', return_value=True) as save:
+        h, ctx = _handler()
+        ctx.dialog._menu_returns = ["private", tls_answer]
+        ctx.dialog._inputbox_returns = list(inputs)
+        h._configure_mqtt()
+    calls = [(c[1], c[2]) for c in ctx.dialog.calls if c[0] == 'menu' and c[1][0] == "TLS"]
+    return save, calls
+
+
+def _disk(broker="mqtt.example.com", port=1883, tls=True):
+    return {**ms.defaults(), "broker": broker, "port": port, "tls": tls,
+            "username": "alice", "password": "s3cret"}
+
+
+def test_same_endpoint_highlights_the_saved_tls_without_reordering():
+    for saved, tag in ((True, "on"), (False, "off"), ("auto", "auto")):
+        _, calls = _private_disk(_disk(tls=saved), tag)
+        tags, default, _ = _tls_call(calls)
+        assert tags == ["auto", "on", "off"], "row order is stable"
+        assert default == tag, (saved, default)
+
+
+def test_same_endpoint_match_normalises_host_case_and_trailing_dot():
+    # (the form refuses a host with spaces, so whitespace never reaches it)
+    _, calls = _private_disk(_disk(broker="MQTT.Example.com."), "on")
+    assert _tls_call(calls)[1] == "on"
+
+
+def test_default_comes_from_disk_not_the_unsaved_form_config():
+    # The parked regression: config says broker=mqtt.example.com tls=True
+    # (an unsaved in-menu edit) while DISK holds another endpoint.
+    disk = _disk(broker="old.example.org", port=8883, tls=False)
+    cfg = _disk(tls=True)
+    _, calls = _private_disk(disk, "auto", config=cfg)
+    assert _tls_call(calls)[1] is None
+
+
+def test_a_different_endpoint_or_no_saved_file_gets_no_default():
+    for disk in (_disk(broker="old.example.org"), _disk(port=8883), None):
+        _, calls = _private_disk(disk, "auto")
+        assert _tls_call(calls)[1] is None, disk
+
+
+def test_unreadable_saved_file_gets_no_default():
+    from monitoring.mqtt_settings import Loaded
+    bad = Loaded(state="unreadable", error="boom")
+    with patch('handlers.mqtt.load_mqtt_config', return_value=ms.defaults()), \
+         patch('monitoring.mqtt_subscriber.load_settings', return_value=bad), \
+         patch('handlers.mqtt.save_mqtt_config', return_value=True):
+        h, ctx = _handler()
+        ctx.dialog._menu_returns = ["private", "auto"]
+        ctx.dialog._inputbox_returns = list(PRIVATE)
+        h._configure_mqtt()
+    calls = [(c[1], c[2]) for c in ctx.dialog.calls if c[0] == 'menu' and c[1][0] == "TLS"]
+    assert _tls_call(calls)[1] is None
+
+
+def test_every_saved_tls_value_maps_to_a_menu_tag():
+    # review r1 #1 of part A: a stale default degrades to row 1 SILENTLY in
+    # the real binary — so a tag rename must fail HERE. The fake also
+    # refuses a phantom default_item.
+    from handlers import mqtt as m
+    tags = [t for t, _ in m._tls_menu_rows(1883)]
+    for saved in ("auto", True, False):
+        assert m._tls_tag(saved) in tags, saved
+    assert m._tls_tag(1) is None and m._tls_tag(0) is None and m._tls_tag(None) is None

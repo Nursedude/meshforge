@@ -190,7 +190,7 @@ def test_recovery_menu_offers_only_radio_configs(tmp_path):
     offered = []
 
     class FakeDialog:
-        def menu(self, title, text, choices):
+        def menu(self, title, text, choices, **kwargs):
             offered.extend(t for t, _ in choices)
             return "skip"
 

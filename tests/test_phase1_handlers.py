@@ -46,7 +46,7 @@ class FakeDialog:
         self.last_msgbox_title = title
         self.last_msgbox_text = text
 
-    def menu(self, title, text, choices):
+    def menu(self, title, text, choices, **kwargs):
         return self._menu_return
 
     def yesno(self, title, text):

@@ -66,7 +66,7 @@ def test_radio_menu_labels_and_apply_table_come_from_the_firmware(monkeypatch):
     h = mr.MeshtasticdRadioHandler.__new__(mr.MeshtasticdRadioHandler)
 
     class Dialog:
-        def menu(self, title, text, items):
+        def menu(self, title, text, items, **kwargs):
             seen["items"] = dict(items)
             return "MEDIUM_FAST"
 
