@@ -111,6 +111,7 @@ def test_private_broker_write_failure_shows_honest_failure(mock_save):
         "broker.example", "1883", "", "", "msh/US/2/e", "LongFast",
     ]
 
+    handler.ctx.dialog._menu_returns = ["auto"]   # TLS prompt (2026-11-01)
     handler._configure_private_broker({})
 
     assert mock_save.called
@@ -126,6 +127,7 @@ def test_private_broker_write_success_shows_configured(mock_save):
         "broker.example", "1883", "", "", "msh/US/2/e", "LongFast",
     ]
 
+    handler.ctx.dialog._menu_returns = ["auto"]   # TLS prompt (2026-11-01)
     handler._configure_private_broker({})
 
     assert mock_save.called

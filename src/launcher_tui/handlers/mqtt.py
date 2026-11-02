@@ -1026,9 +1026,10 @@ class MQTTHandler(BaseHandler):
         port = self.ctx.dialog.inputbox(
             "Broker Port",
             "Enter MQTT port:\n\n"
-            "  1883 = Plain TCP\n"
+            "  1883 = Plain TCP (usual)\n"
             "  1884 = Alternative plain TCP\n"
-            "  8883 = TLS encrypted",
+            "  8883 = TLS (usual)\n\n"
+            "You choose TLS on/off/auto next.",
             init=str(config.get('port', 1883))
         )
         if not port:
@@ -1045,6 +1046,16 @@ class MQTTHandler(BaseHandler):
 
         password = self.ctx.dialog.inputbox(
             "Password", "MQTT password (blank for none):", init='')
+
+        # TLS is ASKED for this broker:port, never inherited from another
+        # broker (mqtt-private-form-resets-tls, 2026-11-01). The old intent
+        # took "auto" from defaults() — a saved tls=on became OFF on 1883 —
+        # and carrying the old value instead would follow the operator to a
+        # broker it was never chosen for. (A plaintext-password warning
+        # belongs at the save boundary for EVERY writer — queued, not here.)
+        tls = self._ask_private_tls(broker, int(port))
+        if tls is None:
+            return
 
         root_topic = self.ctx.dialog.inputbox(
             "Root Topic",
@@ -1067,15 +1078,33 @@ class MQTTHandler(BaseHandler):
             channel = "LongFast"
 
         from monitoring import mqtt_settings
-        intent = {**mqtt_settings.defaults(), "broker": broker, "port": int(port),
+        # Every intent field the form does not ask is CARRIED from the form's
+        # config — never silently reset to defaults() (the class `tls` was).
+        carried = {k: config[k] for k in mqtt_settings.INTENT_FIELDS if k in config}
+        intent = {**mqtt_settings.defaults(), **carried,
+                  "broker": broker, "port": int(port), "tls": tls,
                   "root_topic": root_topic.strip(), "channel": channel.strip(),
                   "username": username or "", "password": password or "",
-                  "key": config.get('key') or "AQ==",
-                  "auto_start": config.get('auto_start', False),
-                  "auto_start_telemetry": config.get('auto_start_telemetry', True)}
+                  "key": config.get('key') or "AQ=="}
         self._save_or_refuse(intent, "Private Broker Configured",
                              f"Root topic '{root_topic}' determines node scope.\n"
                              "Restart the MQTT subscriber to apply.")
+
+    def _ask_private_tls(self, broker: str, port: int):
+        """TLS for this broker:port — "auto" / True / False, or None = cancel.
+
+        "auto" is listed FIRST (the highlighted row) and spells out what it
+        resolves to for this port.
+        """
+        auto_on = port == 8883
+        choice = self.ctx.dialog.menu(
+            "TLS",
+            f"Encrypt the connection to {broker}:{port}?\n\n"
+            "Esc/Cancel abandons the private-broker setup (nothing saved).",
+            [("auto", f"Auto -> {'on' if auto_on else 'off'} for port {port}"),
+             ("on", "On   (TLS encrypted)"),
+             ("off", "Off  (plain TCP)")])
+        return {"auto": "auto", "on": True, "off": False}.get(choice)
 
     def _saved_state_line(self) -> str:
         """What the saved file IS — ok / legacy / absent / UNREADABLE."""

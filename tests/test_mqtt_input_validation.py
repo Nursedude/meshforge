@@ -137,6 +137,7 @@ def test_private_broker_invalid_host_not_saved(mock_save):
     ctx.dialog._inputbox_returns = ["bad host!"]  # only the broker is read
 
     handler._configure_private_broker({})
+    assert not [c for c in ctx.dialog.calls if c[0] == 'menu' and c[1][0] == "TLS"]   # never reached
 
     titles = [c[1][0] for c in ctx.dialog.calls if c[0] == 'msgbox']
     assert "Invalid Host" in titles
@@ -152,6 +153,7 @@ def test_private_broker_valid_host_proceeds_to_save(mock_save):
         "broker.example.com", "1883", "", "", "msh/US/2/e", "LongFast",
     ]
 
+    handler.ctx.dialog._menu_returns = ["auto"]   # TLS prompt (2026-11-01)
     handler._configure_private_broker({})
 
     titles = [c[1][0] for c in ctx.dialog.calls if c[0] == 'msgbox']
@@ -175,6 +177,7 @@ def test_private_broker_out_of_range_port_not_saved(mock_save):
     ctx.dialog._inputbox_returns = ["broker.example.com", "99999"]
 
     handler._configure_private_broker({})
+    assert not [c for c in ctx.dialog.calls if c[0] == 'menu' and c[1][0] == "TLS"]   # never reached
 
     titles = [c[1][0] for c in ctx.dialog.calls if c[0] == 'msgbox']
     assert "Invalid Port" in titles

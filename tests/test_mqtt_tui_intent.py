@@ -166,3 +166,53 @@ def test_F3_custom_broker_form_suggests_only_roots_the_owner_accepts():
     assert suggested, prompt
     for root in suggested:
         assert ms.validate({**ms.defaults(), "root_topic": root}) == [], root
+
+
+# mqtt-private-form-resets-tls (F8 review r3 #6 / r5 #4, 2026-11-01): the
+# private form built its intent from defaults() and dropped `tls` — a saved
+# tls=on became "auto", which on 1883 is OFF: the password in PLAINTEXT.
+# Carrying the old value instead (TLS review r1 #1) would follow the operator
+# to a broker it was never chosen for. The form now ASKS, for this broker:port.
+PRIVATE = ["mqtt.example.com", "1883", "alice", "s3cret", "msh/US/2/e", "LongFast"]
+
+
+def _private(saved_tls, tls_answer, inputs=PRIVATE):
+    saved = {**ms.defaults(), "broker": "old.example.org", "port": 8883,
+             "username": "alice", "password": "s3cret", "tls": saved_tls,
+             "auto_start": True}
+    with patch('handlers.mqtt.load_mqtt_config', return_value=dict(saved)), \
+         patch('handlers.mqtt.save_mqtt_config', return_value=True) as save:
+        h, ctx = _handler()
+        ctx.dialog._menu_returns = ["private", tls_answer]
+        ctx.dialog._inputbox_returns = list(inputs)
+        h._configure_mqtt()
+    tls_menu = [c[1] for c in ctx.dialog.calls if c[0] == 'menu' and c[1][0] == "TLS"]
+    return save, tls_menu
+
+
+def test_the_private_form_asks_tls_and_saves_the_answer():
+    for answer, want in (("on", True), ("off", False), ("auto", "auto")):
+        save, menu = _private("auto", answer)
+        assert menu, "the form must ASK about TLS"
+        assert save.call_args[0][0]["tls"] == want, answer
+
+
+def test_an_old_brokers_tls_never_follows_to_the_new_broker():
+    # TLS review r1 #1: tls=False saved for old.example.org must not ride onto
+    # a new 8883 broker (plaintext password); the answer is what is saved.
+    save, _ = _private(False, "auto",
+                       inputs=["mqtt.example.com", "8883", "alice", "s3cret",
+                               "msh/US/2/e", "LongFast"])
+    out = save.call_args[0][0]
+    assert out["tls"] == "auto" and ms.effective_tls(out) is True
+
+
+def test_esc_at_tls_saves_nothing():
+    save, menu = _private("auto", None)
+    assert menu and not save.called
+
+
+def test_fields_the_form_does_not_ask_are_carried_not_reset():
+    # TLS review r1 #3 (altitude): build from the config, not defaults().
+    save, _ = _private("auto", "auto")
+    assert save.call_args[0][0]["auto_start"] is True
