@@ -1019,12 +1019,13 @@ def save_settings(intent: Dict[str, Any]) -> "mqtt_settings.SaveResult":
                               atomic_write_text_preserving)
 
 
-def save_settings_changes(base: Dict[str, Any],
-                          changes: Dict[str, Any]) -> "mqtt_settings.SaveResult":
-    """What a SCREEN calls (F8 Q2): only the fields the operator changed."""
+def save_settings_changes(base: Dict[str, Any], changes: Dict[str, Any],
+                          reset: bool = False) -> "mqtt_settings.SaveResult":
+    """What a SCREEN calls (F8 Q2): only the fields the operator changed;
+    ``reset`` = the explicit Reset over an unreadable file (r3 #1)."""
     from utils.paths import atomic_write_text_preserving
     return mqtt_settings.save_changes(mqtt_config_dir(), base, changes,
-                                      atomic_write_text_preserving)
+                                      atomic_write_text_preserving, reset=reset)
 
 
 # Singleton instance management

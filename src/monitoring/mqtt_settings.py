@@ -216,20 +216,33 @@ def load(config_dir: Path) -> Loaded:
 LOCK_TIMEOUT_S = 5.0
 
 
+def lock_target(config_dir: Path) -> Path:
+    """What every writer of ``config_dir`` locks (F8 Q9): its PARENT, always.
+
+    One target before and after the first save (review r3 #4: locking the
+    config dir itself — or its nearest existing ancestor while it was
+    absent — moved the target once the first save created it, so two
+    writers could hold different locks). A dir, not a lock file: nothing to
+    litter, and no root-owned 0600 lock file can lock an operator-uid
+    writer out. The parent is never created here (review r1 #5)."""
+    return Path(config_dir).parent
+
+
+def _missing_parent(config_dir: Path) -> Optional["SaveResult"]:
+    parent = lock_target(config_dir)
+    if parent.is_dir():
+        return None
+    return SaveResult(False, code="write", error=(
+        f"{parent} does not exist — create it as the operator (not via sudo), "
+        f"then save again; nothing was written"))
+
+
 @contextlib.contextmanager
 def _locked(config_dir: Path, timeout: float):
-    """Exclusive flock on the config DIR (F8 Q9) — yields True when held,
-    False after ``timeout``. The dir, not a lock file: nothing to litter,
-    and no root-owned 0600 lock file can lock an operator-uid writer out.
-
-    A dir that does not exist yet is NOT created here (review r1 #5: a
-    refused save must create nothing — under sudo that would be a
-    root-owned dir); its nearest EXISTING ancestor is locked instead, so a
-    first-ever save is excluded too (review r2 #7). ``_write`` creates it."""
-    target = Path(config_dir)
-    while not target.is_dir() and target.parent != target:
-        target = target.parent
-    fd = os.open(target, os.O_RDONLY)
+    """Exclusive flock on ``lock_target(config_dir)`` — yields True when
+    held, False after ``timeout``. The caller has checked the target exists
+    (``_missing_parent``); ``_write`` creates only the config dir itself."""
+    fd = os.open(lock_target(config_dir), os.O_RDONLY)
     try:
         deadline = time.monotonic() + timeout
         while True:
@@ -309,7 +322,8 @@ def same(a: Any, b: Any) -> bool:
 
 
 def save_changes(config_dir: Path, base: Dict[str, Any], changes: Dict[str, Any],
-                 write: Writer, lock_timeout: float = LOCK_TIMEOUT_S) -> SaveResult:
+                 write: Writer, lock_timeout: float = LOCK_TIMEOUT_S,
+                 reset: bool = False) -> SaveResult:
     """Apply only what a screen CHANGED onto the file as it is NOW (F8 Q2).
 
     ``base`` is the screen's ``editable().intent`` from when it opened;
@@ -326,22 +340,31 @@ def save_changes(config_dir: Path, base: Dict[str, Any], changes: Dict[str, Any]
     it; a bare string means the account the screen showed (``base`` +
     ``changes``) — else it refuses the same way (review r1 #2), naming the
     account being written in ``SaveResult.account`` (r2 #1). An unreadable
-    file refuses (Q15) — ``save()`` is the explicit Reset. All refusals
-    write nothing.
+    file refuses (Q15) unless ``reset``: the explicit Reset is THIS function
+    with the unreadable file read as the defaults (review r3 #1/#2) — the
+    same lock, the unreadable re-checked under it (a file fixed meanwhile
+    takes the normal path, nothing overwritten), the same password-account
+    rules, and ``_write`` keeps the bytes as ``.unreadable.<n>``. All
+    refusals write nothing.
     """
     config_dir = Path(config_dir)
+    refused = _missing_parent(config_dir)
+    if refused:
+        return refused
     try:
-        return _save_changes_locked(config_dir, base, changes, write, lock_timeout)
+        return _save_changes_locked(config_dir, base, changes, write,
+                                    lock_timeout, reset)
     except OSError as e:          # the lock itself (review r1 #4)
         return _lock_error(config_dir, e)
 
 
-def _save_changes_locked(config_dir, base, changes, write, lock_timeout) -> SaveResult:
+def _save_changes_locked(config_dir, base, changes, write, lock_timeout,
+                         reset) -> SaveResult:
     with _locked(config_dir, lock_timeout) as held:
         if not held:
             return _busy(config_dir)
         loaded = load(config_dir)
-        if loaded.state == "unreadable":
+        if loaded.state == "unreadable" and not reset:
             return SaveResult(False, code="unreadable", error=(
                 f"saved settings unreadable: {loaded.error} — nothing was "
                 "written. Fix the file, or choose Reset to rebuild it from "
@@ -388,8 +411,12 @@ def _save_changes_locked(config_dir, base, changes, write, lock_timeout) -> Save
 
 def save(config_dir: Path, intent: Dict[str, Any], write: Writer,
          lock_timeout: float = LOCK_TIMEOUT_S) -> SaveResult:
-    """The FULL write (F8 Q16): Reset and ``save_changes`` only — a screen
-    sends changes. Same lock, same refusals (validated inside ``_write``)."""
+    """The FULL write (F8 Q16) — never from a screen: a screen sends
+    changes, and Reset is ``save_changes(reset=True)`` (review r3 #1). Same
+    lock, same refusals (validated inside ``_write``)."""
+    refused = _missing_parent(Path(config_dir))
+    if refused:
+        return refused
     try:
         with _locked(Path(config_dir), lock_timeout) as held:
             if not held:
@@ -419,7 +446,7 @@ def _write(config_dir: Path, intent: Dict[str, Any], write: Writer) -> SaveResul
     path = config_dir / FILENAME
     pre = config_dir / (FILENAME + PRE_V1_SUFFIX)
     try:
-        config_dir.mkdir(parents=True, exist_ok=True)
+        config_dir.mkdir(exist_ok=True)   # its parent is the lock target (r3 #4)
         if path.exists():
             data, _err, _ = _read(path)
             if isinstance(data, dict) and "schema_version" in data:

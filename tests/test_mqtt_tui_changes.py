@@ -333,6 +333,33 @@ def test_Q15_reset_rebuilds_and_keeps_the_bytes(cfg):
     assert (cfg / f"{ms.FILENAME}.unreadable.1").read_text() == "{oops"
 
 
+def test_r3_1_reset_over_a_file_fixed_meanwhile_keeps_it(cfg):
+    """The operator fixed the file while the 'Settings Unreadable' menu was
+    up, then picked Reset: the fixed file (broker, password) must survive;
+    the edit goes through the normal conflict question (r3 #1)."""
+    (cfg / ms.FILENAME).write_text("{oops")
+    h, ctx = _handler(menus=["channel", "save"], inputs=["Mine"])
+    real_menu = ctx.dialog.menu
+
+    def menu(title, text, choices, **kw):
+        if title == "Settings Unreadable":
+            (cfg / ms.FILENAME).unlink()     # the operator fixed it meanwhile
+            _seed(cfg)
+            ctx.dialog.calls.append(("menu", (title, text, choices), kw))
+            return "reset"
+        if title.startswith("Changed Elsewhere"):
+            ctx.dialog.calls.append(("menu", (title, text, choices), kw))
+            return "mine"
+        return real_menu(title, text, choices, **kw)
+    ctx.dialog.menu = menu
+    h._configure_mqtt()
+    d = _disk(cfg)
+    assert (d["broker"], d["password"]) == (A["broker"], "s3cret"), "Reset overwrote a fixed file"
+    assert d["channel"] == "Mine"
+    assert _calls(ctx, "menu", "Changed Elsewhere: channel")
+    assert not list(cfg.glob(ms.FILENAME + ".unreadable.*"))
+
+
 # --- presets and profiles go through the same door -----------------------------------
 
 def test_local_preset_keeps_unasked_fields_and_saves(cfg):
@@ -362,7 +389,9 @@ def test_broker_profile_apply_keeps_auto_start_and_writes_its_password(cfg):
 HANDLERS = ROOT / "src" / "launcher_tui" / "handlers"
 SCREEN_FILES = ("mqtt.py", "_mqtt_configure.py", "broker.py")
 FULL_WRITERS = {"save_settings", "save_mqtt_config", "save"}
-RESET_FUNC = "reset_mqtt_settings"
+# Reset is save_changes(reset=True) since review r3 #1: NO screen function
+# may make a full write any more.
+RESET_FUNC = None
 
 
 def _violations(src: str):

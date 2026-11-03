@@ -46,22 +46,16 @@ def load_mqtt_editable():
     return view
 
 
-def save_mqtt_changes(base: Dict[str, Any], changes: Dict[str, Any]):
-    """``mqtt_settings.SaveResult``; refusals are logged, never "Saved" (#74)."""
+def save_mqtt_changes(base: Dict[str, Any], changes: Dict[str, Any],
+                      reset: bool = False):
+    """``mqtt_settings.SaveResult``; refusals are logged, never "Saved" (#74).
+    ``reset`` = the explicit Reset over an unreadable file (Q15) — the same
+    locked, account-checked door, never a second full write (review r3 #1)."""
     from monitoring.mqtt_subscriber import save_settings_changes
-    res = save_settings_changes(base, changes)
+    res = save_settings_changes(base, changes, reset=reset)
     if not res.ok:
-        logger.warning("MQTT settings NOT saved (%s) — %s", res.code, res.error)
-    return res
-
-
-def reset_mqtt_settings(intent: Dict[str, Any]):
-    """The explicit Reset over an unreadable file (Q15) — the ONLY full write
-    a screen may make (the Q16 guard pins this name)."""
-    from monitoring.mqtt_subscriber import save_settings
-    res = save_settings(intent)
-    if not res.ok:
-        logger.error("MQTT settings reset NOT written — %s", res.error)
+        logger.warning("MQTT settings NOT saved (%s%s) — %s", res.code,
+                       ", reset" if reset else "", res.error)
     return res
 
 
@@ -371,8 +365,9 @@ class MQTTConfigureMixin:
     def _commit(self, base: Dict[str, Any], changes: Dict[str, Any],
                 title: str, body: str) -> bool:
         from monitoring import mqtt_settings
+        reset = False
         while True:
-            res = save_mqtt_changes(base, changes)
+            res = save_mqtt_changes(base, changes, reset=reset)
             if res.ok:
                 self._report_saved(res.intent, title, body)
                 return True
@@ -409,13 +404,10 @@ class MQTTConfigureMixin:
                      ("reset", "Reset — rebuild the file from this screen")])
                 if pick != "reset":
                     return False
-                typed = _secret(changes)
-                full = {**mqtt_settings.defaults(), **_shown(base, changes),
-                        "password": typed.value if typed else ""}
-                res = reset_mqtt_settings(full)
-                if res.ok:
-                    self._report_saved(mqtt_settings.public_view(full), title, body)
-                    return True
+                # the owner re-checks under its lock: a file fixed meanwhile
+                # takes the normal path (conflicts asked), never overwritten
+                reset = True
+                continue
             if res.code == "invalid":        # the field is named (MQTT-CFG)
                 self.ctx.dialog.msgbox("Not Saved", "The settings were NOT saved:\n\n"
                                        + "\n".join(res.errors))

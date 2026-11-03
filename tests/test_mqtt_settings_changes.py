@@ -222,23 +222,24 @@ def test_Q15_legacy_applies_over_the_translation_and_keeps_pre_v1(tmp_path):
 # --- Q9: concurrent saves are excluded --------------------------------------
 
 def test_Q9_a_held_lock_refuses_after_the_timeout_and_writes_nothing(tmp_path):
-    _seed(tmp_path)
-    before = (tmp_path / ms.FILENAME).read_bytes()
-    fd = os.open(tmp_path, os.O_RDONLY)
+    d = tmp_path / "cfg"
+    _seed(d)
+    before = (d / ms.FILENAME).read_bytes()
+    fd = os.open(ms.lock_target(d), os.O_RDONLY)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        res = ms.save_changes(tmp_path, _base(tmp_path).intent, {"port": 1884}, W,
+        res = ms.save_changes(d, _base(d).intent, {"port": 1884}, W,
                               lock_timeout=0.2)
     finally:
         os.close(fd)
     assert not res.ok and res.code == "busy"
-    assert (tmp_path / ms.FILENAME).read_bytes() == before
+    assert (d / ms.FILENAME).read_bytes() == before
 
 
 def test_Q9_the_lock_is_released_after_a_save(tmp_path):
     _seed(tmp_path)
     assert ms.save_changes(tmp_path, _base(tmp_path).intent, {"port": 1884}, W).ok
-    fd = os.open(tmp_path, os.O_RDONLY)
+    fd = os.open(ms.lock_target(tmp_path), os.O_RDONLY)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)   # raises if still held
     finally:
@@ -248,7 +249,7 @@ def test_Q9_the_lock_is_released_after_a_save(tmp_path):
 def test_Q9_the_lock_is_released_after_a_refusal(tmp_path):
     _seed(tmp_path)
     ms.save_changes(tmp_path, _base(tmp_path).intent, {"port": 0}, W)
-    fd = os.open(tmp_path, os.O_RDONLY)
+    fd = os.open(ms.lock_target(tmp_path), os.O_RDONLY)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     finally:
@@ -256,14 +257,15 @@ def test_Q9_the_lock_is_released_after_a_refusal(tmp_path):
 
 
 def test_Q16_the_full_write_takes_the_same_lock(tmp_path):
-    fd = os.open(tmp_path, os.O_RDONLY)
+    d = tmp_path / "cfg"
+    fd = os.open(ms.lock_target(d), os.O_RDONLY)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        res = ms.save(tmp_path, dict(A), W, lock_timeout=0.2)
+        res = ms.save(d, dict(A), W, lock_timeout=0.2)
     finally:
         os.close(fd)
     assert not res.ok and res.code == "busy"
-    assert not (tmp_path / ms.FILENAME).exists()
+    assert not d.exists()
 
 
 def test_a_save_result_says_what_changed(tmp_path):
@@ -299,9 +301,10 @@ def test_r1_2_a_supplied_password_for_the_written_account_saves(tmp_path):
 
 
 def test_r1_4_a_lock_error_is_a_result_not_a_raise(tmp_path):
-    d = tmp_path / "cfg"
-    d.mkdir()
-    os.chmod(d, 0o000)
+    parent = tmp_path / "p"                    # the lock target (r3 #4)
+    parent.mkdir()
+    d = parent / "cfg"
+    os.chmod(parent, 0o000)
     try:
         if os.geteuid() == 0:
             pytest.skip("root reads a 000 dir")
@@ -310,7 +313,7 @@ def test_r1_4_a_lock_error_is_a_result_not_a_raise(tmp_path):
         res = ms.save(d, dict(A), W)
         assert not res.ok and res.code == "write"
     finally:
-        os.chmod(d, 0o700)
+        os.chmod(parent, 0o700)
 
 
 def test_r1_5_a_refused_save_creates_no_config_dir(tmp_path):
@@ -373,3 +376,118 @@ def test_r2_a_secret_value_is_what_is_written_never_its_repr(tmp_path):
                            {"password": ms.Secret("v4lue", acct)}, W).ok
     assert _disk(tmp_path)["password"] == "v4lue"
     assert "v4lue" not in repr(ms.Secret("v4lue", acct))
+
+
+# --- review r3 deploy blockers (grill record, next-session list) -----------
+
+def _hold(path):
+    fd = os.open(path, os.O_RDONLY)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+def test_r3_4_the_lock_target_is_the_config_dirs_parent(tmp_path):
+    assert ms.lock_target(tmp_path / "cfg") == tmp_path
+
+
+def test_r3_4_the_lock_target_does_not_move_after_the_first_save(tmp_path):
+    """Writer 1's first-ever save mkdirs the config dir; writer 2 must still
+    meet writer 1's lock (r3 #4: it used to lock the NEW dir instead)."""
+    d = tmp_path / "cfg"
+    assert ms.save_changes(d, _base(d).intent, {"port": 1884}, W).ok   # creates d
+    fd = _hold(tmp_path)                       # writer 1, still mid-save
+    try:
+        res = ms.save_changes(d, _base(d).intent, {"port": 1885}, W, lock_timeout=0.2)
+    finally:
+        os.close(fd)
+    assert not res.ok and res.code == "busy"
+    assert _disk(d)["port"] == 1884
+
+
+def test_r3_4_a_missing_parent_refuses_and_creates_nothing(tmp_path):
+    """Creating the parent would move the lock target for the next writer
+    (and under sudo leave a root-owned ~/.config) — refuse, say what to do."""
+    d = tmp_path / "absent" / "cfg"
+    res = ms.save_changes(d, ms.editable(ms.Loaded("absent")).intent, {"port": 1884}, W)
+    assert not res.ok and res.code == "write"
+    assert str(tmp_path / "absent") in res.error and "create" in res.error
+    assert not (tmp_path / "absent").exists()
+    res = ms.save(d, dict(A), W)
+    assert not res.ok and res.code == "write" and not (tmp_path / "absent").exists()
+
+
+def _unreadable(d, text="{not json"):
+    d.mkdir(exist_ok=True)
+    (d / ms.FILENAME).write_text(text)
+
+
+def test_r3_1_reset_over_a_file_fixed_meanwhile_does_not_overwrite_it(tmp_path):
+    """The screen saw `unreadable`; the operator fixed the file before
+    picking Reset. Reset re-checks under the lock: the file is readable, so
+    the changes go through the normal both-sides check — nothing is lost."""
+    d = tmp_path / "cfg"
+    _unreadable(d)
+    screen = _base(d)                          # defaults (unreadable)
+    (d / ms.FILENAME).unlink()                 # the operator fixed it meanwhile:
+    _seed(d)                                   # A
+    res = ms.save_changes(d, screen.intent, {"channel": "Mine"}, W, reset=True)
+    assert not res.ok and res.code == "conflict" and "channel" in res.conflicts
+    assert _disk(d)["broker"] == A["broker"] and _disk(d)["password"] == "s3cret"
+    assert not list(d.glob(ms.FILENAME + ".unreadable.*"))
+
+
+def test_r3_1_reset_merges_an_unconflicted_change_over_the_fixed_file(tmp_path):
+    d = tmp_path / "cfg"
+    _unreadable(d)
+    screen = _base(d)
+    (d / ms.FILENAME).unlink()
+    _seed(d)
+    assert ms.save_changes(d, screen.intent, {"auto_start": True}, W, reset=True).ok
+    disk = _disk(d)
+    assert disk["auto_start"] is True and disk["password"] == "s3cret"
+    assert disk["broker"] == A["broker"]
+
+
+def test_r3_1_reset_takes_the_lock(tmp_path):
+    d = tmp_path / "cfg"
+    _unreadable(d)
+    fd = _hold(tmp_path)
+    try:
+        res = ms.save_changes(d, _base(d).intent, {"channel": "X"}, W,
+                              lock_timeout=0.2, reset=True)
+    finally:
+        os.close(fd)
+    assert not res.ok and res.code == "busy"
+    assert (d / ms.FILENAME).read_text() == "{not json"
+
+
+def test_r3_1_reset_rebuilds_from_defaults_and_keeps_the_bytes(tmp_path):
+    d = tmp_path / "cfg"
+    _unreadable(d)
+    res = ms.save_changes(d, _base(d).intent, {"channel": "Regional"}, W, reset=True)
+    assert res.ok
+    disk = _disk(d)
+    assert disk["channel"] == "Regional" and disk["broker"] == ms.defaults()["broker"]
+    assert (d / f"{ms.FILENAME}.unreadable.1").read_text() == "{not json"
+
+
+def test_r3_2_reset_refuses_a_secret_typed_for_another_account(tmp_path):
+    d = tmp_path / "cfg"
+    _unreadable(d)
+    typed = ms.Secret("pwB", ("mqtt.b.example", "bob"))
+    res = ms.save_changes(d, _base(d).intent,
+                          {"broker": "mqtt.c.example", "username": "bob",
+                           "password": typed}, W, reset=True)
+    assert not res.ok and res.code == "password_owner_mismatch"
+    assert res.account == ("mqtt.c.example", "bob")
+    assert (d / ms.FILENAME).read_text() == "{not json"
+
+
+def test_r3_2_reset_writes_a_secret_for_the_account_it_names(tmp_path):
+    d = tmp_path / "cfg"
+    _unreadable(d)
+    acct = ("mqtt.c.example", "bob")
+    assert ms.save_changes(d, _base(d).intent,
+                           {"broker": "mqtt.c.example", "username": "bob",
+                            "password": ms.Secret("pwC", acct)}, W, reset=True).ok
+    assert _disk(d)["password"] == "pwC"
