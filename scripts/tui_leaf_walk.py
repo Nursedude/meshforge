@@ -132,6 +132,10 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "hazard).",
     ("about", "help"):
         "prints a static string and waits for Enter.",
+    ("about", "howto"):
+        "read 2026-11-03 (DOC-1, handlers/about.py _show_howtos): globs "
+        "docs/howto/*.md, read_text() each, a menu of titles, textbox of the "
+        "chosen file. Reads only; writes nothing.",
 
     # ---- dashboard/ delivery — read 2026-10-30, handlers/delivery.py in
     # full (75 lines) + utils/delivery_view.py (746): json reads of the
