@@ -72,3 +72,43 @@ the edit was made against — and can it ever move without asking? (reviewer
 shape: each kept edit carries its anchor, as `Secret` carries its account).
 When the screen opened readable and the file broke later, is Reset's record
 the defaults or the screen? Does validation run before the conflict check?
+
+## F8 v2 — LEASE model (grill 2026-11-03 06:54 HST, operator-led, Opus 5.5)
+
+**Fact that reopened the root (grep, main, 2026-11-03):** the only MQTT
+settings writer is `save_settings()` at `launcher_tui/handlers/mqtt.py:80`;
+`daemon.py` and `mqtt_subscriber.py` only read. Every "other writer" in the
+five round-5 paths was a second TUI screen.
+
+**Root cause, restated:** the merge model needed "a kept edit's anchor never
+moves" to hold across every refusal/Esc/retry path, and five rounds showed it
+did not. v2 removes the anchor instead of owning it.
+
+| # | Decision |
+|---|---|
+| V1 | One MQTT editor at a time: an `fcntl.flock` EDIT LEASE held for the edit session; a second opener is view-only. The OS releases it on process death. |
+| V2 | Reset when the file was readable at open and broke later = rebuild FROM THE SCREEN (shown first), password asked by name as Q7. File already unreadable at open → defaults, as Q15. |
+| V3 | The r4/r5 reviewer scratch tests stay the red-first acceptance: setup adapted to the lease, ASSERTION kept; each must fail on `e9fcae66` and pass on v2, or be written down as impossible under v2 with the reason. |
+| V4 | MQTT only; no generic multi-writer framework until the live drill passes (then a separate grill for `gateway.json` / profiles / `deployment.json`). |
+| V5 | Lease = the whole MQTT configure menu session; nested screens (presets, private form, TLS menu, profile apply) REUSE it; a screen opened outside the menu takes its own. |
+| V6 | Second opener: view-only, holder named (user, pid, tty, since); NO takeover; no idle expiry in F8. |
+| V7 | At lease acquire, fingerprint the file; at Save, a mismatch = written without the lease → refuse loudly, write nothing, no merge. |
+| V8 | DROP Q10, Q17, Q18, Q18r (merge machinery). KEEP Q3, Q5, Q6, Q7, Q8, Q15, Q16, Q19. Build from `85c99bc1`; the bundle is scenarios, not code. |
+| V9 | `mqtt_settings.save()` takes the lease as an argument and REFUSES without it; a guard test plants a lease-less write and expects the refusal. stdlib only (MA byte-identity). |
+| V10 | Lease file at the r3 #4 stable target (config dir's parent), via `get_real_user_home()`; a test runs a sudo-shaped holder vs a user-shaped opener; `_hand_to_dir_owner` stays UNKNOWN until the live drill. |
+| V12 | Acquire is `LOCK_NB` once (immediate view-only, never a pause). The holder writes user/pid/tty/since into the lease file; an unreadable record reads "held by an unknown session", never "free". |
+| V13 | Stop rule: ONE review finding of "a screen writes something it did not show" or "settings changed while the lease is held" parks the TUI half again → grill, not another fix. Message/legibility gaps are fixed in-round. |
+| V14 | Order: MF first → red-first build → full suite → non-author review with a NEUTRAL brief (find a write the screen did not show / a change under a held lease — never "confirm the lease cures it") → fixes → deploy + live drill NEXT session (brake) → MA byte copy + TUI twin, porting MA's test-isolation gate first. |
+
+**Acceptance (V11 — replaces Q14, agreed before code):** On the manager box,
+with two TUI sessions open, the first enters MQTT configure and the second is
+shown view-only, naming the holder. The first saves a change; the second,
+after the first leaves, opens and sees that change, and saves its own; both
+changes are on disk. A write attempted without the lease is refused and
+writes nothing. Changing the broker never carries or silently clears a
+password — the operator is asked first. Esc never writes.
+
+**Closed as moot by V1/V7/V8:** edit-anchor ownership; validation-before-
+conflict order (no conflict check remains). Model confidence in V1 is
+BELIEVED — the same reasoning produced the Q18 advice; the reviewer brief
+must not carry it.
