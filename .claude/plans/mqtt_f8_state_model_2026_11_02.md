@@ -133,3 +133,25 @@ must not carry it.
 - NEXT: (1) non-author r2 on `038c768d` (fixes are reviewer-unseen); (2)
   deploy (fleet_sync then fleet_pull) + the V11 live drill with two real
   whiptail sessions on the manager box — operator; (3) MA TUI twin (V14).
+
+### F8 v2 review r2 — 2026-11-03 12:44 HST (Fable, contextless, by running) — on `75543842^..038c768d`
+
+Scratch: `/tmp/claude-1000/f8v2-review2/test_r2.py` (6 reproductions). NOT fixed this
+session (V13 + the same-session brake). **OPERATOR RULING OWED on F1 before deploy.**
+- **F1 MEDIUM — V13 candidate:** profile apply over an UNREADABLE file -> "Reset now?"
+  writes auto_start/auto_start_telemetry from DEFAULTS, never shown (apply has no
+  settings screen). Author's recommendation: not a park — one grill question: Reset is
+  offered only from a screen that SHOWS the settings; profile apply over unreadable
+  refuses and points to MQTT Configure.
+- F2 LOW: a preset writes an Auto-Start toggle the toggle dialog said was unwritten.
+- F3 LOW (root, mock): a failed dir handback says "written" when nothing was.
+- F4 LOW: Reset after a break asks for "the saved password" when none was saved
+  (`password_saved` False known at open).
+- F5 LOW: Q19 dialog names the account at open, not the live file's.
+- F6 LOW pre-existing: a root-owned config dir left by an earlier root save -> root
+  save reports ok, file stays root 0600 (subscriber locked out). Pre-deploy check on
+  the manager box: `stat -c '%U %a' ~/.config/meshforge ~/.config/meshforge/mqtt_nodeless.json`.
+- F7 LOW: `test_q15_unreadable_at_open_save_asks_for_reset_then_writes` passes through
+  the fake inputbox default; pins neither the password ask nor the answer.
+- Held: no stale-screen write, no plaintext, holder always named, no fd leak, every
+  save path refuses a lease-less change.
