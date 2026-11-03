@@ -13,7 +13,11 @@ channel". Decisions answered "yes to all" from the operator's phone.
   `create_custom_profile` with a blank username -> `allow_anonymous true`
   (measured: anonymous on all interfaces). Product risk for NEW users.
 - No dedicated silent-subscriber probe found (grep; BELIEVED, not proven).
-- moc3 bridges `mqtt.meshtastic.org:1883` with `topic msh/US/# both 0`.
+- ~~moc3 bridges `mqtt.meshtastic.org:1883` `msh/US/# both`~~ — WRONG, corrected the same
+  session: that line came from `meshtastic-bridge.conf.disabled` (disabled 2026-03-30;
+  `include_dir` loads only `*.conf`; 0 bridge lines in 24 h of journal). My grep read a
+  file's PRESENCE, not the LOADED config. OPEN: memory says moc3 hears the public server —
+  by what path, if any (meshtasticd's own MQTT module?) — measure before S3 is reopened.
 - `meshtastic_protobuf_client` skips cert checks; every caller found uses its
   default `localhost` (low priority, out of this grill).
 - The fleet `meshforge` channel PSK was public in docs since 2026-04-24;
@@ -24,7 +28,7 @@ channel". Decisions answered "yes to all" from the operator's phone.
 |---|---|
 | S1 | Generated broker configs bind 127.0.0.1 by default; LAN only when the operator says a WiFi radio needs it; anonymous on a LAN listener is REFUSED. |
 | S2 | Password set + TLS off + non-loopback broker -> Save ASKS ("sends your password unencrypted to host:port"), default No; not a refusal. |
-| S3 | moc3 public bridge -> inbound only — after a read-only check that nothing depends on its outbound leg; box change needs the operator's go. |
+| S3 | MOOT as a mosquitto bridge (it is disabled). If moc3 reaches the public server another way, re-ask with that path measured. |
 | S4 | `meshforge` = a PUBLIC community channel; "Join the MeshForge channel" how-to (DOC-1) — only after an audit of what RF->RNS traffic can trigger. |
 | S5 | Silent subscriber: observe before alarm — "last message N min ago" in MQTT status + a watchdog counter; alarm only after a soak baseline. |
 | S6 | Order: S1+S2 red-first AFTER F8 v2 is deployed + drilled (same save boundary); S4's audit in parallel. |
