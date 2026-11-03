@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 88 handlers · 121 menu actions (derived from get_all_handlers(), never hand-edited).
+# 88 handlers · 122 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -29,6 +29,7 @@ HANDLER_MANIFEST = [
             ('changelog', 'Changelog           Release history', None),
             ('sysinfo', 'System Info         OS, Python, disk, uptime', None),
             ('deps', 'Dependencies        Package status', None),
+            ('howto', 'How-to Guides       Step by step, offline', None),
             ('help', 'Help                Documentation', None),
         ],
     },

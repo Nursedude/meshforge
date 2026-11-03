@@ -201,6 +201,8 @@ never applied whole — each item lands on its own, re-tested here.
   public: Pick the best working route between meshes from measured link health, not just hop count.
   status: planned
 - **BIC-13** [MF] S+F — HOLD per-box CA + `wss://` (13b/c)
+- **DOC-1** [MF][MA] S twin→MA — in-app how-tos, risky flows first
+  `plans/doc1_in_app_howtos_2026_11_03.md`
   A CA install per phone, an unexplained wss handshake stall, a large surface. Revisit only when outside users (BIC-14) ask for an installed app.
 
 ### NEXT
@@ -237,7 +239,6 @@ never applied whole — each item lands on its own, re-tested here.
   Also (lab mini delta review 10-22): only `update.sh` installs `95-meshforge-journal-cap.conf` (`Storage=persistent`), so meshforge-lab — never update.sh'd — runs Pi OS's `Storage=volatile`: `/var/log/journal` empty, every reboot wipes history, and `user_timer_unit_failing` sits `indeterminate` on the once-a-day dream timer. The installer must lay the same drop-in.
 - **ENR-1** [MF] F — `fleet_sync` mini enrollment: a box whose mini never ran gets no `mini_dudeai.env` and no live rules file (seeded by hand on the lab). One enrollment script, test-first.
 - **FREQ-MA** [MA] S+F — delete MA's dead `utils/frequency.py` (FREQ-1 twin)
-- **MQTT-CFG** [MF][MA] S+F twin→MA — one canonical `mqtt_nodeless.json` at save; readers stop guessing (grill)
 - **C21-W** [MF] S+F — mesh_bridge does not detect a leg whose serial link WEDGES without closing (only `connection.lost`); C21 reconcile would read it as RF loss.
 - **MC-Q** [MA] S+F — MeshCore ingress `queue.Full` paths (meshcore_handler ~708/~879) WARN per message, uncounted — MA sibling of MF `ff94052a`.
 - **GIT-OWN** [MA] F — find the writer that leaves root-owned objects in meshanchor-server's `/opt/meshanchor/.git` (fleet_pull `HEALED(46)` after 10-19 — re-poisoned every deploy is not clean).

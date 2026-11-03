@@ -379,3 +379,36 @@ class TestLoRaModulesConstant:
         for key, desc in LORA_MODULES.items():
             assert isinstance(desc, str)
             assert len(desc) > 0
+
+
+# ── DOC-1 audit findings (2026-11-03): Esc never writes; blank Busy clears ──
+
+class TestLoRaEscAndBlankBusy:
+
+    @patch('handlers.meshtasticd_lora.read_overlay')
+    @patch('handlers.meshtasticd_lora.write_overlay')
+    def test_esc_at_the_tcxo_menu_writes_nothing(self, mock_write, mock_read):
+        """Esc at DIO3 used to pop DIO3_TCXO_VOLTAGE and write — a Waveshare /
+        E22 board (TCXO 1.8 V) then fails radio init."""
+        mock_read.return_value = {'Lora': {'DIO2_AS_RF_SWITCH': True,
+                                           'DIO3_TCXO_VOLTAGE': 1.8}}
+        h = _make_handler()
+        h.ctx.dialog._yesno_returns = [True]
+        h.ctx.dialog._menu_returns = [None]           # Esc at the TCXO menu
+        with patch.object(h, '_offer_restart') as restart:
+            h._lora_set_dio()
+        assert not mock_write.called and not restart.called
+
+    @patch('handlers.meshtasticd_lora.read_overlay')
+    @patch('handlers.meshtasticd_lora.write_overlay')
+    def test_blank_busy_removes_the_busy_pin(self, mock_write, mock_read):
+        """The prompt says "leave empty for RF95"; blank kept the OLD pin."""
+        mock_read.return_value = {'Lora': {'CS': 21, 'IRQ': 16, 'Busy': 20, 'Reset': 18}}
+        mock_write.return_value = True
+        h = _make_handler()
+        h.ctx.dialog._inputbox_returns = ["7", "25", "", "22"]
+        with patch.object(h, '_offer_restart'):
+            h._lora_set_pins()
+        overlay = mock_write.call_args[0][0]
+        assert 'Busy' not in overlay['Lora']
+        assert (overlay['Lora']['CS'], overlay['Lora']['Reset']) == (7, 22)

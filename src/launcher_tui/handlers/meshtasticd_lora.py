@@ -184,6 +184,8 @@ class MeshtasticdLoRaHandler(BaseHandler):
             overlay['Lora']['IRQ'] = int(irq)
             if busy and busy.strip():
                 overlay['Lora']['Busy'] = int(busy)
+            else:   # "leave empty for RF95" means NO Busy pin (DOC-1)
+                overlay['Lora'].pop('Busy', None)
             overlay['Lora']['Reset'] = int(reset)
         except ValueError:
             self.ctx.dialog.msgbox("Error", "GPIO pins must be integers.")
@@ -224,6 +226,10 @@ class MeshtasticdLoRaHandler(BaseHandler):
             "modules with a TCXO oscillator.",
             choices
         )
+        if tcxo is None:
+            # Esc never writes: it used to fall through to "Disabled" and pop
+            # DIO3_TCXO_VOLTAGE — a TCXO board then fails radio init (DOC-1)
+            return
 
         if 'Lora' not in overlay:
             overlay['Lora'] = {}

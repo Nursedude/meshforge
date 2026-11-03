@@ -139,7 +139,7 @@ SECTION_ORDERINGS = {
         "review", "shell", "reboot",
     ],
     "extensions": ["mfmaps", "meshing"],
-    "about": ["version", "changelog", "sysinfo", "deps", "web", "help"],
+    "about": ["version", "changelog", "sysinfo", "deps", "web", "howto", "help"],
 }
 
 

@@ -34,6 +34,15 @@ home_lon = -155.1
 
 Missing or malformed file → no-op, never raises.
 
+### MQTT subscriber settings (`mqtt_nodeless.json`)
+
+`~/.config/meshforge/mqtt_nodeless.json` (0600) holds the MQTT subscriber's
+broker, port, TLS, root topic, channel, credentials and auto-start flags.
+The TUI writes it — **MQTT Monitor → Configure** — one editing session at a
+time; the subscriber and daemon read it. A file that does not load is
+reported UNREADABLE and never silently replaced with defaults.
+Step-by-step: [howto/mqtt_settings.md](howto/mqtt_settings.md).
+
 ### meshtasticd
 
 MeshForge writes hardware config overlays (never overwrites defaults):

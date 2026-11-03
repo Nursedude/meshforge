@@ -140,9 +140,9 @@ The configure script checks these and tells you what's missing.
 ### The `meshforge` channel
 
 All fleet boxes share a `meshforge` PSK so messages bridge cleanly across
-gateways. The existing fleet PSK (base64) is
-`JVq8FDehjzw0GCB9iVtbdI5Yuf9iB0nV` — check any fleet box with `meshtastic
---host localhost --info | grep meshforge`. Use the same PSK on new boxes.
+gateways. Read the existing fleet PSK from any fleet box —
+`meshtastic --host localhost --info | grep meshforge` — and use the same PSK
+on new boxes. (Never write the key itself into a doc: this repo is public.)
 
 Then enable MQTT flags (`configure_gateway.sh` does this automatically, but
 by hand it is):

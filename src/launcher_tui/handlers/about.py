@@ -14,6 +14,9 @@ from handler_protocol import BaseHandler
 
 logger = logging.getLogger(__name__)
 
+# DOC-1: one copy per guide, read on GitHub AND here (offline, no Claude).
+_HOWTO_DIR = Path(__file__).resolve().parents[3] / "docs" / "howto"
+
 
 class AboutHandler(BaseHandler):
     """About section — informational displays."""
@@ -27,6 +30,7 @@ class AboutHandler(BaseHandler):
             ("changelog", "Changelog           Release history", None),
             ("sysinfo", "System Info         OS, Python, disk, uptime", None),
             ("deps", "Dependencies        Package status", None),
+            ("howto", "How-to Guides       Step by step, offline", None),
             ("help", "Help                Documentation", None),
         ]
 
@@ -36,6 +40,7 @@ class AboutHandler(BaseHandler):
             "changelog": ("Changelog", self._show_changelog),
             "sysinfo": ("System Info", self._show_system_info),
             "deps": ("Dependencies", self._show_dependency_status),
+            "howto": ("How-to Guides", self._show_howtos),
             "help": ("Help", self._show_help),
         }
         entry = dispatch.get(action)
@@ -204,6 +209,39 @@ Made with aloha for the mesh community
 
         self.ctx.dialog.msgbox("Dependencies", "\n".join(lines), width=55, height=20)
 
+    def _show_howtos(self):
+        """List docs/howto/*.md by their title; show the chosen one whole."""
+        guides = sorted(_HOWTO_DIR.glob("*.md")) if _HOWTO_DIR.is_dir() else []
+        if not guides:
+            self.ctx.dialog.msgbox(
+                "How-to Guides",
+                f"No guides found in {_HOWTO_DIR}.\n\n"
+                "They ship with MeshForge in docs/howto/ — update MeshForge\n"
+                "(Configuration -> Updates) to get them.")
+            return
+        titles = {}
+        for g in guides:
+            try:
+                first = g.read_text(encoding="utf-8").splitlines()[0]
+            except (OSError, UnicodeDecodeError, IndexError):
+                first = g.stem
+            titles[g.stem] = first.lstrip("# ").strip() or g.stem
+        while True:
+            choice = self.ctx.dialog.menu(
+                "How-to Guides",
+                "Step-by-step guides for multi-step screens.\n"
+                "Same text as docs/howto/ on GitHub — works offline.",
+                [(g.stem, titles[g.stem]) for g in guides])
+            if choice is None:
+                return
+            path = _HOWTO_DIR / f"{choice}.md"
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as e:
+                self.ctx.dialog.msgbox("How-to Guides", f"Cannot read {path}:\n{e}")
+                continue
+            self.ctx.dialog.textbox(titles.get(choice, choice), text)
+
     def _show_help(self):
         """Show help documentation."""
         from backend import clear_screen
@@ -226,6 +264,7 @@ NAVIGATION:
   Tab     Move between buttons
 
 DOCUMENTATION:
+  About -> How-to Guides   step by step, offline
   https://github.com/Nursedude/meshforge
 
 SUPPORT:

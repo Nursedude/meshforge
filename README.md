@@ -190,6 +190,7 @@ what's proven and what isn't.
 | [Capabilities](docs/capabilities.md) | Full feature inventory, AI tiers, coverage maps |
 | [Architecture](docs/architecture.md) | How the pieces fit; where the code lives |
 | [Configuration](docs/configuration.md) | Every knob and its file |
+| [How-to guides](docs/howto/) | Step by step through the TUI's multi-step screens (MQTT settings, channels and keys, LoRa pins, node DB) — also in the TUI: About → How-to Guides |
 | [Development](docs/development.md) | Tests, gates, contributing |
 | [The Lab](docs/the-lab.md) | The dev fleet, live demo, research foundation |
 
