@@ -37,11 +37,14 @@ import fcntl
 import hashlib
 import hmac
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+_log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 FILENAME = "mqtt_nodeless.json"
@@ -289,7 +292,13 @@ def save(config_dir: Path, intent: Dict[str, Any], write: Writer,
                 code="password_owner_mismatch")
         intent["password"] = saved_pw
     try:
-        config_dir.mkdir(parents=True, exist_ok=True)
+        if not config_dir.is_dir():
+            # as root, a dir created here must be the operator's, or their
+            # own next save cannot write into it (review r1 #1)
+            config_dir.mkdir(parents=True, exist_ok=True)
+            dir_err = _hand_to_dir_owner(config_dir, config_dir.parent)
+            if dir_err:
+                return SaveResult(False, error=dir_err, code="handback")
         if path.exists():
             backup = None
             if loaded.state == "unreadable":
@@ -430,10 +439,12 @@ class EditLease:
     ``fingerprint`` is the file as the lease saw it; only ``save()`` under
     this lease moves it, to what it wrote."""
 
+    _fd: Optional[int] = None       # a half-built lease holds nothing (r1 #7)
+
     def __init__(self, config_dir: Path, path: Path, fd: int):
         self.config_dir = Path(config_dir)
         self.path = str(path)
-        self._fd: Optional[int] = fd
+        self._fd = fd
         file = self.config_dir / FILENAME
         self.fingerprint = _fingerprint(file)
         loaded = load(self.config_dir)
@@ -515,7 +526,9 @@ def acquire_lease(config_dir: Path, user: str, tty: str) -> LeaseResult:
                           "since": time.strftime("%Y-%m-%d %H:%M:%S %Z")})
         os.ftruncate(fd, 0)
         os.pwrite(fd, rec.encode("utf-8"), 0)
-        _hand_to_dir_owner(path, Path(config_dir).parent)
+        handback_err = _hand_to_dir_owner(path, Path(config_dir).parent)
+        if handback_err:   # held for THIS session; others may be locked out (r1 #5)
+            _log.warning("MQTT edit lease: %s", handback_err)
         return LeaseResult("held", lease=EditLease(config_dir, path, fd))
     except OSError as e:
         fcntl.flock(fd, fcntl.LOCK_UN)

@@ -94,8 +94,16 @@ def open_edit_lease(ctx, title: str):
 def confirm_password_change(ctx, lease, new_password: str, what: str) -> bool:
     """Q19: replacing or clearing a saved password is asked, naming whose."""
     from monitoring import mqtt_settings
-    if mqtt_settings.saved_password_relation(lease, new_password) != "differs":
+    relation = mqtt_settings.saved_password_relation(lease, new_password)
+    if relation in ("none", "same"):
         return True
+    if relation == "unknown":
+        # unreadable is not "no password" (review r1 #3, hfm #2)
+        return bool(ctx.dialog.yesno(
+            "Saved Password",
+            f"The saved settings file cannot be read, so whether it holds a "
+            f"password cannot be told. {what} would replace any saved "
+            "password.\n\nContinue?"))
     verb = "CLEARS" if new_password == "" else "REPLACES"
     owner = lease.saved_account
     who = f"{owner[1] or '(no user)'}@{owner[0]}" if owner else "the saved account"
@@ -255,8 +263,10 @@ class MQTTConfigFormMixin:
                     break
 
             elif choice == "private":
-                self._configure_private_broker(lease, config)
-                break
+                # abandoned (Esc / refused) -> back to the list, its unsaved
+                # edits intact (review r1 #2); saved or stale -> done
+                if self._configure_private_broker(lease, config) != REFUSED:
+                    break
 
             elif choice == "broker":
                 new_broker = self.ctx.dialog.inputbox(

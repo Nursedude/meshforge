@@ -813,3 +813,34 @@ def test_v10_a_home_with_no_config_dir_can_still_be_edited(tmp_path):
     with _lease(d) as lease:
         assert ms.save(d, dict(SAVED), W, lease).ok
     assert _disk(d)["broker"] == "mqtt.a.example"
+
+
+# --- F8 v2 review r1 (Fable, non-author, 2026-11-03) ----------------------
+
+def test_r1_1_a_config_dir_save_creates_is_handed_to_the_homes_owner(tmp_path, monkeypatch):
+    """r1 #1: as root, a first save that CREATES the config dir left it
+    root-owned, and the operator's own next save failed (reproduced live)."""
+    handed = []
+    real = ms._hand_to_dir_owner
+    monkeypatch.setattr(ms, "_hand_to_dir_owner",
+                        lambda p, d: handed.append((Path(p), Path(d))) or real(p, d))
+    d = tmp_path / "meshforge"
+    with _lease(d) as lease:
+        assert ms.save(d, dict(SAVED), W, lease).ok
+    assert (d, tmp_path) in handed
+
+
+def test_r1_7_a_half_built_lease_has_nothing_to_release(tmp_path, capsys):
+    lease = ms.EditLease.__new__(ms.EditLease)
+    lease.release()                               # no AttributeError
+    assert not lease.held
+
+
+def test_r1_5_a_failed_lease_handback_leaves_a_witness(tmp_path, monkeypatch, caplog):
+    import logging
+    monkeypatch.setattr(ms, "_hand_to_dir_owner", lambda p, d: f"{p}: chown refused")
+    with caplog.at_level(logging.WARNING):
+        r = ms.acquire_lease(tmp_path / "meshforge", user="op", tty="-")
+    assert r.state == "held"
+    assert any("chown refused" in rec.getMessage() for rec in caplog.records)
+    r.lease.release()

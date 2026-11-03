@@ -751,8 +751,9 @@ class BrokerHandler(BaseHandler):
 
         lease = open_edit_lease(self.ctx, "Apply Broker Profile")
         if lease is None:
-            logger.warning("Broker profile '%s' NOT applied — the MQTT settings "
-                           "are open for editing elsewhere", profile.name)
+            logger.warning("Broker profile '%s' NOT applied — could not take the "
+                           "MQTT edit lease (busy or error; the view-only screen "
+                           "said which)", profile.name)
             return
         with lease:
             existing = lease.view

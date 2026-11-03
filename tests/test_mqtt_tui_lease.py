@@ -487,3 +487,26 @@ def test_q16_no_tui_handler_writes_mqtt_settings_any_other_way():
              if re.search(r"\bsave_mqtt_config\(", f.read_text())
              and f.name not in ("mqtt.py", "_mqtt_config_form.py")]
     assert not calls, f"write MQTT settings via save_with_prompts, not: {calls}"
+
+
+# --- review r1 (Fable, non-author, 2026-11-03) ----------------------------
+
+def test_r1_2_esc_in_the_private_form_returns_to_the_list_with_edits_kept(cfg):
+    _seed(cfg)
+    h, ctx = _handler()
+    ctx.dialog._menu_returns = ["port", "private", "save"]
+    ctx.dialog._inputbox_returns = ["1884", None]          # Esc at broker
+    h._configure_mqtt()
+    assert _disk(cfg)["port"] == 1884                       # the list edit survived
+
+
+@pytest.mark.parametrize("menus", [["local"], ["public"]])
+def test_r1_3_a_preset_over_an_unreadable_file_asks_about_the_password(cfg, menus):
+    (cfg / ms.FILENAME).write_text('{"password": "s3cret", "broker": ')   # typo
+    h, ctx = _handler()
+    ctx.dialog._menu_returns = list(menus) + ["cancel"]
+    ctx.dialog._yesno_returns = [False]
+    h._configure_mqtt()
+    (title, text), = [c[1] for c in _calls(ctx, "yesno")]
+    assert title == "Saved Password" and "cannot be read" in text
+    assert (cfg / ms.FILENAME).read_text().startswith('{"password"')
