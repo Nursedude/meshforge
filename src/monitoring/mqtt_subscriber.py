@@ -1019,6 +1019,14 @@ def save_settings(intent: Dict[str, Any]) -> "mqtt_settings.SaveResult":
                               atomic_write_text_preserving)
 
 
+def save_settings_changes(base: Dict[str, Any],
+                          changes: Dict[str, Any]) -> "mqtt_settings.SaveResult":
+    """What a SCREEN calls (F8 Q2): only the fields the operator changed."""
+    from utils.paths import atomic_write_text_preserving
+    return mqtt_settings.save_changes(mqtt_config_dir(), base, changes,
+                                      atomic_write_text_preserving)
+
+
 # Singleton instance management
 
 _local_subscriber: Optional[MQTTNodelessSubscriber] = None

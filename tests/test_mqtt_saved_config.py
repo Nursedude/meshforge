@@ -297,7 +297,7 @@ def test_unreadable_saved_file_makes_the_bare_subscriber_refuse(tmp_path):
 def test_tui_load_and_save_use_the_shared_path(tmp_path):
     from launcher_tui.handlers import mqtt as tui_mqtt
     with patch("monitoring.mqtt_subscriber.mqtt_config_dir", return_value=tmp_path):
-        assert tui_mqtt.save_mqtt_config({**ms.defaults(), "broker": "x"})
+        assert tui_mqtt.save_mqtt_changes(tui_mqtt.load_mqtt_config(), {"broker": "x"}).ok
         assert tui_mqtt.load_mqtt_config()["broker"] == "x"
     assert (tmp_path / ms.FILENAME).exists()
 
@@ -427,12 +427,14 @@ def _tui(tmp_path):
 def test_tui_load_then_save_is_a_fixed_point(tmp_path):
     tui_mqtt, p = _tui(tmp_path)
     with p:
-        assert tui_mqtt.save_mqtt_config({**ms.defaults(), "broker": "b.example",
-                                          "port": 1883, "channel": "Ops",
-                                          "username": "u", "password": "p",
-                                          "auto_start": True})
+        assert tui_mqtt.save_mqtt_changes(tui_mqtt.load_mqtt_config(), {
+            "broker": "b.example", "port": 1883, "channel": "Ops",
+            "username": "u", "password": "p", "auto_start": True}).ok
         first = (tmp_path / ms.FILENAME).read_bytes()
-        assert tui_mqtt.save_mqtt_config(tui_mqtt.load_mqtt_config())
+        # F8 Q3: what a screen loads carries no password, and an empty change
+        # set rewrites the same bytes (the password is kept, not carried)
+        assert "password" not in tui_mqtt.load_mqtt_config()
+        assert tui_mqtt.save_mqtt_changes(tui_mqtt.load_mqtt_config(), {}).ok
     assert (tmp_path / ms.FILENAME).read_bytes() == first
 
 
@@ -443,7 +445,7 @@ def test_tui_reads_a_legacy_file_and_the_next_save_converts_it(tmp_path):
     with p:
         cfg = tui_mqtt.load_mqtt_config()
         assert cfg["channel"] == "Old"
-        assert tui_mqtt.save_mqtt_config({**cfg, "channel": "New"})
+        assert tui_mqtt.save_mqtt_changes(cfg, {"channel": "New"}).ok
         assert tui_mqtt.load_mqtt_config()["channel"] == "New"
     assert json.loads((tmp_path / ms.FILENAME).read_text())["schema_version"] == 1
     assert (tmp_path / (ms.FILENAME + ".pre-v1")).exists()
@@ -452,9 +454,10 @@ def test_tui_reads_a_legacy_file_and_the_next_save_converts_it(tmp_path):
 def test_tui_refused_save_returns_false_and_keeps_the_file(tmp_path):
     tui_mqtt, p = _tui(tmp_path)
     with p:
-        assert tui_mqtt.save_mqtt_config(ms.defaults())
+        assert tui_mqtt.save_mqtt_changes(tui_mqtt.load_mqtt_config(), {}).ok
         before = (tmp_path / ms.FILENAME).read_bytes()
-        assert tui_mqtt.save_mqtt_config({**ms.defaults(), "port": 70000}) is False
+        res = tui_mqtt.save_mqtt_changes(tui_mqtt.load_mqtt_config(), {"port": 70000})
+        assert res.ok is False and res.code == "invalid"
     assert (tmp_path / ms.FILENAME).read_bytes() == before
 
 

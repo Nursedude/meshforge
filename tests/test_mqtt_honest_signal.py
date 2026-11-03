@@ -16,11 +16,34 @@ import os
 import sys
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'launcher_tui'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from handler_test_utils import make_handler_context  # noqa: E402  (FakeDialog via ctx)
+from monitoring import mqtt_settings as ms  # noqa: E402
+from utils.paths import atomic_write_text_preserving as W  # noqa: E402
+
+
+# F8 (2026-11-02): screens write CHANGES through mqtt_settings.save_changes;
+# these drive the real file in a tmp dir. A failed write is a REAL OSError
+# from the writer, not a mocked False.
+@pytest.fixture
+def cfg(tmp_path):
+    with patch("monitoring.mqtt_subscriber.mqtt_config_dir", return_value=tmp_path):
+        yield tmp_path
+
+
+def _seed(d, **kw):
+    assert ms.save(d, {**ms.defaults(), **kw}, W).ok
+    return (d / ms.FILENAME).read_bytes()
+
+
+def _write_fails():
+    return patch("utils.paths.atomic_write_text_preserving",
+                 side_effect=OSError(28, "No space left on device"))
 
 
 def _make_handler():
@@ -36,30 +59,29 @@ def _make_handler():
 # Driven by FakeDialog menu return "save".
 # ---------------------------------------------------------------------------
 
-@patch('handlers.mqtt.load_mqtt_config', return_value={'broker': 'localhost'})
-@patch('handlers.mqtt.save_mqtt_config', return_value=False)
-def test_save_exit_write_failure_shows_honest_failure(mock_save, mock_load):
+def test_save_exit_write_failure_shows_honest_failure(cfg):
     """RED-FIRST: a failed write must NOT show the 'Saved' success dialog."""
+    before = _seed(cfg, broker="localhost")
     handler, ctx = _make_handler()
     ctx.dialog._menu_returns = ["save"]
 
-    handler._configure_mqtt()
+    with _write_fails():
+        handler._configure_mqtt()
 
-    assert mock_save.called
+    assert (cfg / ms.FILENAME).read_bytes() == before
     assert ctx.dialog.last_msgbox_title == "Save Failed"
     assert ctx.dialog.last_msgbox_title != "Saved"
 
 
-@patch('handlers.mqtt.load_mqtt_config', return_value={'broker': 'localhost'})
-@patch('handlers.mqtt.save_mqtt_config', return_value=True)
-def test_save_exit_write_success_shows_saved(mock_save, mock_load):
+def test_save_exit_write_success_shows_saved(cfg):
     """Mirror: a successful write shows the 'Saved' success dialog."""
+    _seed(cfg, broker="localhost")
     handler, ctx = _make_handler()
     ctx.dialog._menu_returns = ["save"]
 
     handler._configure_mqtt()
 
-    assert mock_save.called
+    assert ms.load(cfg).state == "ok"
     assert ctx.dialog.last_msgbox_title == "Saved"
 
 
@@ -68,71 +90,68 @@ def test_save_exit_write_success_shows_saved(mock_save, mock_load):
 # Driven by FakeDialog menu return "local".
 # ---------------------------------------------------------------------------
 
-@patch('handlers.mqtt.load_mqtt_config', return_value={'broker': 'mqtt.meshtastic.org'})
-@patch('handlers.mqtt.save_mqtt_config', return_value=False)
-def test_local_mode_write_failure_shows_honest_failure(mock_save, mock_load):
+def test_local_mode_write_failure_shows_honest_failure(cfg):
     """RED-FIRST: a failed write must NOT show 'Local Mode Set'."""
+    before = _seed(cfg)
     handler, ctx = _make_handler()
     ctx.dialog._menu_returns = ["local"]
 
     # _detect_local_channel touches the connection layer; stub it out.
-    with patch.object(handler, '_detect_local_channel', return_value=None):
+    with patch.object(handler, '_detect_local_channel', return_value=None), _write_fails():
         handler._configure_mqtt()
 
-    assert mock_save.called
+    assert (cfg / ms.FILENAME).read_bytes() == before
     assert ctx.dialog.last_msgbox_title == "Save Failed"
     assert ctx.dialog.last_msgbox_title != "Local Mode Set"
 
 
-@patch('handlers.mqtt.load_mqtt_config', return_value={'broker': 'mqtt.meshtastic.org'})
-@patch('handlers.mqtt.save_mqtt_config', return_value=True)
-def test_local_mode_write_success_shows_set(mock_save, mock_load):
+def test_local_mode_write_success_shows_set(cfg):
     """Mirror: a successful write shows 'Local Mode Set'."""
+    _seed(cfg)
     handler, ctx = _make_handler()
     ctx.dialog._menu_returns = ["local"]
 
     with patch.object(handler, '_detect_local_channel', return_value=None):
         handler._configure_mqtt()
 
-    assert mock_save.called
+    assert ms.load(cfg).intent["broker"] == "localhost"
     assert ctx.dialog.last_msgbox_title == "Local Mode Set"
 
 
 # ---------------------------------------------------------------------------
-# Site: "Private Broker Configured"  (_configure_private_broker, called direct)
+# Site: "Private Broker Configured"  (the Configure list's "private" row)
 # ---------------------------------------------------------------------------
 
-@patch('handlers.mqtt._saved_tls_for_endpoint', new=lambda broker, port: None)   # pin: no real disk read
-@patch('handlers.mqtt.save_mqtt_config', return_value=False)
-def test_private_broker_write_failure_shows_honest_failure(mock_save):
+def test_private_broker_write_failure_shows_honest_failure(cfg):
     """RED-FIRST: a failed write must NOT show 'Private Broker Configured'."""
+    before = _seed(cfg)
     handler, ctx = _make_handler()
     # inputbox sequence: broker, port, username, password, root_topic, channel
     ctx.dialog._inputbox_returns = [
         "broker.example", "1883", "", "", "msh/US/2/e", "LongFast",
     ]
 
-    handler.ctx.dialog._menu_returns = ["auto"]   # TLS prompt (2026-11-01)
-    handler._configure_private_broker({})
+    ctx.dialog._menu_returns = ["private", "auto"]   # TLS prompt (2026-11-01)
+    with _write_fails():
+        handler._configure_mqtt()
 
-    assert mock_save.called
+    assert (cfg / ms.FILENAME).read_bytes() == before
     assert ctx.dialog.last_msgbox_title == "Save Failed"
     assert ctx.dialog.last_msgbox_title != "Private Broker Configured"
 
 
-@patch('handlers.mqtt._saved_tls_for_endpoint', new=lambda broker, port: None)   # pin: no real disk read
-@patch('handlers.mqtt.save_mqtt_config', return_value=True)
-def test_private_broker_write_success_shows_configured(mock_save):
+def test_private_broker_write_success_shows_configured(cfg):
     """Mirror: a successful write shows 'Private Broker Configured'."""
+    _seed(cfg)
     handler, ctx = _make_handler()
     ctx.dialog._inputbox_returns = [
         "broker.example", "1883", "", "", "msh/US/2/e", "LongFast",
     ]
 
-    handler.ctx.dialog._menu_returns = ["auto"]   # TLS prompt (2026-11-01)
-    handler._configure_private_broker({})
+    ctx.dialog._menu_returns = ["private", "auto"]   # TLS prompt (2026-11-01)
+    handler._configure_mqtt()
 
-    assert mock_save.called
+    assert ms.load(cfg).intent["broker"] == "broker.example"
     assert ctx.dialog.last_msgbox_title == "Private Broker Configured"
 
 
@@ -147,15 +166,14 @@ def _menu_calls(ctx):
     return [c for c in ctx.dialog.calls if c[0] == 'menu']
 
 
-@patch('handlers.mqtt.load_mqtt_config', return_value={'broker': 'localhost'})
-@patch('handlers.mqtt.save_mqtt_config', return_value=True)
-def test_toggle_then_cancel_writes_nothing_and_the_form_said_so(mock_save, mock_load):
+def test_toggle_then_cancel_writes_nothing_and_the_form_said_so(cfg):
+    before = _seed(cfg, broker="localhost")
     handler, ctx = _make_handler()
     ctx.dialog._menu_returns = ["autostart", "cancel"]
 
     handler._configure_mqtt()
 
-    assert not mock_save.called
+    assert (cfg / ms.FILENAME).read_bytes() == before
     # The popup speaks in the future tense and names the discard path.
     assert "will be ENABLED after 'Save & Exit'" in ctx.dialog.last_msgbox_text
     assert "discards" in ctx.dialog.last_msgbox_text
@@ -168,9 +186,8 @@ def test_toggle_then_cancel_writes_nothing_and_the_form_said_so(mock_save, mock_
     assert cancel_rows == ["Cancel              (discard unsaved changes)"]
 
 
-@patch('handlers.mqtt.load_mqtt_config', return_value={'broker': 'localhost'})
-@patch('handlers.mqtt.save_mqtt_config', return_value=True)
-def test_clean_form_carries_no_unsaved_marker(mock_save, mock_load):
+def test_clean_form_carries_no_unsaved_marker(cfg):
+    before = _seed(cfg, broker="localhost")
     handler, ctx = _make_handler()
     ctx.dialog._menu_returns = ["cancel"]
 
@@ -179,17 +196,15 @@ def test_clean_form_carries_no_unsaved_marker(mock_save, mock_load):
     (only,) = _menu_calls(ctx)
     assert "UNSAVED" not in only[1][1]
     assert [d for t, d in only[1][2] if t == "cancel"] == ["Cancel"]
-    assert not mock_save.called
+    assert (cfg / ms.FILENAME).read_bytes() == before
 
 
-@patch('handlers.mqtt.load_mqtt_config',
-       return_value={'broker': 'localhost', 'auto_start_telemetry': True})
-@patch('handlers.mqtt.save_mqtt_config', return_value=True)
-def test_toggle_twice_is_clean_again(mock_save, mock_load):
+def test_toggle_twice_is_clean_again(cfg):
     """Dirty is a COMPARISON against disk, not a flag: undoing the edit clears it.
 
     The key must exist on disk for the round trip to be a no-op — a key the
     file never had is a real (if harmless) change, and the form says so."""
+    _seed(cfg, broker="localhost", auto_start_telemetry=True)
     handler, ctx = _make_handler()
     ctx.dialog._menu_returns = ["autotelem", "autotelem", "cancel"]
 
