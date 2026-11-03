@@ -20,9 +20,25 @@ repo passes its own config directory and its own owner-preserving atomic
 writer (``utils.paths.atomic_write_text_preserving``) — never a copy of it.
 
 **Any new field = a ``SCHEMA_VERSION`` bump.** An unknown key is refused.
+
+**F8 v2 — the EDIT LEASE** (grill ``.claude/plans/mqtt_f8_state_model_2026_11_02.md``
+§ F8 v2, V1-V14). One editor at a time: ``acquire_lease()`` takes an
+``fcntl.flock`` on a file BESIDE the config dir; a second opener reads
+``busy`` and the holder's record (or ``None`` = unknown — never "free").
+``save()`` refuses without a held lease for THIS dir (V9), and refuses when
+the file changed since the lease was taken — someone wrote it without the
+lease (V7) — except Reset over a file that BROKE after open, which rebuilds
+from the screen (V2). The saved password never leaves the file: a lease's
+``view`` carries ``KEEP`` (Q3), and KEEP across an account change refuses
+(Q7, account = normalized host + user, Q4/Q8). The merge model this replaces
+(per-field conflicts, Q10/Q17/Q18) was parked after five review rounds.
 """
+import fcntl
+import hashlib
+import hmac
 import json
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -63,6 +79,22 @@ class SaveResult:
     ok: bool
     errors: List[str] = field(default_factory=list)   # validation refusals
     error: Optional[str] = None                       # one-line summary
+    # why it was refused — one of: no_lease, changed_without_lease, invalid,
+    # newer, unreadable, password_owner_mismatch, password_unknown, io,
+    # handback (written, but not readable by the operator). None when ok.
+    code: Optional[str] = None
+    now_unreadable: bool = False    # changed_without_lease AND the file broke
+
+
+class _Keep:
+    """The saved password, unchanged — a screen never holds the value (Q3)."""
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "KEEP"
+
+
+KEEP = _Keep()
 
 
 def defaults() -> Dict[str, Any]:
@@ -183,8 +215,19 @@ def load(config_dir: Path) -> Loaded:
     return Loaded("ok", intent=_normalized(intent))
 
 
-def save(config_dir: Path, intent: Dict[str, Any], write: Writer) -> SaveResult:
-    """Validate, then write ``intent`` through ``write`` and force 0600.
+def save(config_dir: Path, intent: Dict[str, Any], write: Writer,
+         lease: Optional["EditLease"], reset: bool = False) -> SaveResult:
+    """Under a held ``lease``: check, validate, then write ``intent`` through
+    ``write`` and force 0600.
+
+    Refusals, in order (each writes nothing): ``no_lease`` (V9);
+    ``changed_without_lease`` — the file is not what the lease saw (V7);
+    ``reset`` overrides that ONLY when the file now fails to load (V2: the
+    screen is the last copy), never over another writer's readable file;
+    ``invalid``; ``newer``; ``unreadable`` — a file that did not load needs
+    an explicit ``reset`` (Q15); ``password_unknown`` — KEEP with no
+    readable saved password; ``password_owner_mismatch`` — KEEP across an
+    account change (Q7).
 
     ``write`` is the repo's owner-preserving atomic writer: the TUI runs as
     root, and a fresh root-owned file in the operator's home would lock out
@@ -196,23 +239,58 @@ def save(config_dir: Path, intent: Dict[str, Any], write: Writer) -> SaveResult:
     a typo in a hand-edit) keeps its bytes as ``.unreadable.<n>``, one per
     save, never overwritten.
     """
-    errs = validate(intent)
-    if errs:
-        return SaveResult(False, errs, "; ".join(errs))
     config_dir = Path(config_dir)
     path = config_dir / FILENAME
     pre = config_dir / (FILENAME + PRE_V1_SUFFIX)
+    if lease is None or not lease.held or not lease.covers(config_dir):
+        return SaveResult(False, error=(
+            "not saved: this screen does not hold the MQTT edit lease "
+            f"for {config_dir}"), code="no_lease")
+    loaded = load(config_dir)
+    if _fingerprint(path) != lease.fingerprint:
+        broke = loaded.state == "unreadable"
+        if not (reset and broke):
+            return SaveResult(False, error=(
+                f"{path} changed since this screen opened — written without "
+                "the edit lease" + (" and it no longer loads: "
+                                    f"{loaded.error}" if broke else
+                                    "; reopen to see it (nothing written)")),
+                code="changed_without_lease", now_unreadable=broke)
+    intent = dict(intent)
+    keep = intent.get("password") is KEEP
+    errs = validate({**intent, "password": ""} if keep else intent)
+    if errs:
+        return SaveResult(False, errs, "; ".join(errs), code="invalid")
+    data, _err, _ = _read(path)
+    if isinstance(data, dict) and "schema_version" in data:
+        sv = data["schema_version"]
+        if _is_int(sv) and sv > SCHEMA_VERSION:
+            return SaveResult(False, error=(
+                f"{path}: schema_version {sv} was written by a newer "
+                "version; refusing to overwrite it"), code="newer")
+    if loaded.state == "unreadable" and not reset:
+        return SaveResult(False, error=(
+            f"{path} does not load ({loaded.error}); Reset writes this "
+            "screen's settings and keeps the file as a backup"),
+            code="unreadable")
+    if keep:
+        who = "@".join(reversed(account(intent)))
+        if loaded.state == "unreadable":
+            return SaveResult(False, error=(
+                f"the saved password for {who} cannot be read (the file does "
+                "not load) — enter it (blank = none)"), code="password_unknown")
+        saved = loaded.intent if loaded.state == "ok" else None
+        saved_pw = saved["password"] if saved else ""
+        if saved_pw and account(saved) != account(intent):
+            return SaveResult(False, error=(
+                f"the saved password belongs to "
+                f"{'@'.join(reversed(account(saved)))}, not {who} — enter the "
+                f"password for {who} (blank = none)"),
+                code="password_owner_mismatch")
+        intent["password"] = saved_pw
     try:
         config_dir.mkdir(parents=True, exist_ok=True)
         if path.exists():
-            data, _err, _ = _read(path)
-            if isinstance(data, dict) and "schema_version" in data:
-                sv = data["schema_version"]
-                if _is_int(sv) and sv > SCHEMA_VERSION:
-                    return SaveResult(False, error=(
-                        f"{path}: schema_version {sv} was written by a newer "
-                        "version; refusing to overwrite it"))
-            loaded = load(config_dir)
             backup = None
             if loaded.state == "unreadable":
                 backup = _free_backup(config_dir)
@@ -227,10 +305,13 @@ def save(config_dir: Path, intent: Dict[str, Any], write: Writer) -> SaveResult:
         write(path, json.dumps(body, indent=2) + "\n")
         os.chmod(path, 0o600)
     except OSError as e:
-        return SaveResult(False, error=f"{path}: {type(e).__name__}: {e}")
+        lease.fingerprint = _fingerprint(path)   # whatever landed is ours
+        return SaveResult(False, error=f"{path}: {type(e).__name__}: {e}",
+                          code="io")
+    lease.fingerprint = _fingerprint(path)       # our own write, not a move
     handback_err = _hand_to_dir_owner(path, config_dir)
     if handback_err:
-        return SaveResult(False, error=handback_err)
+        return SaveResult(False, error=handback_err, code="handback")
     return SaveResult(True)
 
 
@@ -275,6 +356,190 @@ def _free_backup(config_dir: Path) -> Path:
             return cand
     raise OSError(f"{config_dir}: 999 unreadable-file backups already kept; "
                   "clear some before saving again")
+
+
+# --- the edit lease (F8 v2) ------------------------------------------------
+
+LEASE_SUFFIX = ".mqtt-edit.lease"
+_LOCAL_FOLD = "localhost"
+
+
+def account(intent: Dict[str, Any]) -> Tuple[str, str]:
+    """(host, user) a password belongs to (Q4/Q8). Host trimmed, lowercased,
+    trailing dot dropped, loopback names folded; no DNS. A blank user is
+    still an account."""
+    host = str(intent.get("broker") or "").strip().lower().rstrip(".")
+    if host in _LOCAL_BROKERS:
+        host = _LOCAL_FOLD
+    return host, str(intent.get("username") or "")
+
+
+def lease_path(config_dir: Path) -> Path:
+    """BESIDE the config dir (r3 #4): the dir may not exist before the first
+    save, and a stable target is what two openers must agree on."""
+    config_dir = Path(config_dir)
+    return config_dir.parent / f".{config_dir.name}{LEASE_SUFFIX}"
+
+
+def _fingerprint(path: Path) -> str:
+    try:
+        return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return "absent"
+    except OSError as e:
+        return f"error:{type(e).__name__}:{getattr(e, 'errno', '')}"
+
+
+@dataclass
+class Holder:
+    pid: int
+    user: str
+    tty: str
+    since: str
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, OverflowError):
+        return False
+    return True
+
+
+def _read_holder(fd: int) -> Optional[Holder]:
+    """The holder's own record — None when it cannot be trusted (V12)."""
+    try:
+        raw = os.pread(fd, 4096, 0).decode("utf-8")
+        rec = json.loads(raw)
+        h = Holder(int(rec["pid"]), str(rec["user"]), str(rec["tty"]),
+                   str(rec["since"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return h if h.pid > 0 and _pid_alive(h.pid) else None
+
+
+class EditLease:
+    """A HELD lease: what the screen opened on, and the lock that keeps it so.
+
+    ``view`` is the intent to edit — the defaults when the file is absent or
+    unreadable (``loaded_state`` says which) — with the password as KEEP.
+    ``fingerprint`` is the file as the lease saw it; only ``save()`` under
+    this lease moves it, to what it wrote."""
+
+    def __init__(self, config_dir: Path, path: Path, fd: int):
+        self.config_dir = Path(config_dir)
+        self.path = str(path)
+        self._fd: Optional[int] = fd
+        file = self.config_dir / FILENAME
+        self.fingerprint = _fingerprint(file)
+        loaded = load(self.config_dir)
+        self.loaded_state = loaded.state
+        self.loaded_error = loaded.error
+        self.legacy = loaded.legacy
+        base = loaded.intent if loaded.state == "ok" else defaults()
+        self.password_saved = bool(loaded.state == "ok" and base["password"])
+        self.saved_account = account(base) if loaded.state == "ok" else None
+        self.view: Dict[str, Any] = {**base, "password": KEEP}
+
+    @property
+    def held(self) -> bool:
+        return self._fd is not None
+
+    def covers(self, config_dir: Path) -> bool:
+        return Path(config_dir).resolve() == self.config_dir.resolve()
+
+    def release(self) -> None:
+        fd, self._fd = self._fd, None
+        if fd is None:
+            return
+        try:
+            os.ftruncate(fd, 0)          # no stale holder record (V12)
+        except OSError:
+            pass                         # the record is checked for liveness
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+    def __enter__(self) -> "EditLease":
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.release()
+
+    def __del__(self):
+        self.release()
+
+
+@dataclass
+class LeaseResult:
+    state: str                          # "held" | "busy" | "error"
+    lease: Optional[EditLease] = None
+    holder: Optional[Holder] = None     # busy: None = an unknown session
+    error: Optional[str] = None
+
+
+def acquire_lease(config_dir: Path, user: str, tty: str) -> LeaseResult:
+    """Try ONCE, no wait (V12): busy is answered at once, never a pause.
+
+    A missing parent (a fresh headless home with no ~/.config) is created —
+    save() always created its dir, so refusing here would block every edit
+    on such a box — and, as root, handed to the home's owner."""
+    path = lease_path(config_dir)
+    try:
+        if not path.parent.is_dir():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            err = _hand_to_dir_owner(path.parent, path.parent.parent)
+            if err:
+                return LeaseResult("error", error=err)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o644)
+    except OSError as e:
+        return LeaseResult("error", error=(
+            f"{path}: cannot open the MQTT edit lease: {type(e).__name__}: {e}"))
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        holder = _read_holder(fd)
+        os.close(fd)
+        return LeaseResult("busy", holder=holder)
+    except OSError as e:
+        os.close(fd)
+        return LeaseResult("error", error=f"{path}: flock: {type(e).__name__}: {e}")
+    try:
+        rec = json.dumps({"pid": os.getpid(), "user": user, "tty": tty,
+                          "since": time.strftime("%Y-%m-%d %H:%M:%S %Z")})
+        os.ftruncate(fd, 0)
+        os.pwrite(fd, rec.encode("utf-8"), 0)
+        _hand_to_dir_owner(path, Path(config_dir).parent)
+        return LeaseResult("held", lease=EditLease(config_dir, path, fd))
+    except OSError as e:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+        return LeaseResult("error", error=(
+            f"{path}: cannot record the MQTT edit lease: {type(e).__name__}: {e}"))
+
+
+def saved_password_relation(lease: EditLease, candidate: str) -> str:
+    """none / same / differs / unknown — the saved password vs a value a
+    preset or profile would write (Q19). Read from the file under the lease;
+    the value never leaves this function."""
+    if not lease.held:
+        return "unknown"
+    loaded = load(lease.config_dir)
+    if loaded.state == "absent":
+        return "none"
+    if loaded.state != "ok":
+        return "unknown"
+    saved = loaded.intent["password"]
+    if not saved:
+        return "none"
+    return "same" if hmac.compare_digest(saved.encode(), candidate.encode()) \
+        else "differs"
 
 
 def effective_tls(intent: Dict[str, Any]) -> bool:

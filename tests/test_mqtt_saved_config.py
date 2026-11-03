@@ -294,10 +294,18 @@ def test_unreadable_saved_file_makes_the_bare_subscriber_refuse(tmp_path):
 
 # --- F9: one path, used by the TUI's own load/save -------------------------
 
+def _tui_save(tui_mqtt, intent):
+    """The TUI write path under a fresh edit lease (F8 v2, V9) -> bool."""
+    r = tui_mqtt.acquire_mqtt_edit_lease()
+    assert r.state == "held", r
+    with r.lease as lease:
+        return tui_mqtt.save_mqtt_config(intent, lease).ok
+
+
 def test_tui_load_and_save_use_the_shared_path(tmp_path):
     from launcher_tui.handlers import mqtt as tui_mqtt
     with patch("monitoring.mqtt_subscriber.mqtt_config_dir", return_value=tmp_path):
-        assert tui_mqtt.save_mqtt_config({**ms.defaults(), "broker": "x"})
+        assert _tui_save(tui_mqtt, {**ms.defaults(), "broker": "x"})
         assert tui_mqtt.load_mqtt_config()["broker"] == "x"
     assert (tmp_path / ms.FILENAME).exists()
 
@@ -427,12 +435,12 @@ def _tui(tmp_path):
 def test_tui_load_then_save_is_a_fixed_point(tmp_path):
     tui_mqtt, p = _tui(tmp_path)
     with p:
-        assert tui_mqtt.save_mqtt_config({**ms.defaults(), "broker": "b.example",
+        assert _tui_save(tui_mqtt, {**ms.defaults(), "broker": "b.example",
                                           "port": 1883, "channel": "Ops",
                                           "username": "u", "password": "p",
                                           "auto_start": True})
         first = (tmp_path / ms.FILENAME).read_bytes()
-        assert tui_mqtt.save_mqtt_config(tui_mqtt.load_mqtt_config())
+        assert _tui_save(tui_mqtt, tui_mqtt.load_mqtt_config())
     assert (tmp_path / ms.FILENAME).read_bytes() == first
 
 
@@ -443,7 +451,7 @@ def test_tui_reads_a_legacy_file_and_the_next_save_converts_it(tmp_path):
     with p:
         cfg = tui_mqtt.load_mqtt_config()
         assert cfg["channel"] == "Old"
-        assert tui_mqtt.save_mqtt_config({**cfg, "channel": "New"})
+        assert _tui_save(tui_mqtt, {**cfg, "channel": "New"})
         assert tui_mqtt.load_mqtt_config()["channel"] == "New"
     assert json.loads((tmp_path / ms.FILENAME).read_text())["schema_version"] == 1
     assert (tmp_path / (ms.FILENAME + ".pre-v1")).exists()
@@ -452,9 +460,9 @@ def test_tui_reads_a_legacy_file_and_the_next_save_converts_it(tmp_path):
 def test_tui_refused_save_returns_false_and_keeps_the_file(tmp_path):
     tui_mqtt, p = _tui(tmp_path)
     with p:
-        assert tui_mqtt.save_mqtt_config(ms.defaults())
+        assert _tui_save(tui_mqtt, ms.defaults())
         before = (tmp_path / ms.FILENAME).read_bytes()
-        assert tui_mqtt.save_mqtt_config({**ms.defaults(), "port": 70000}) is False
+        assert _tui_save(tui_mqtt, {**ms.defaults(), "port": 70000}) is False
     assert (tmp_path / ms.FILENAME).read_bytes() == before
 
 

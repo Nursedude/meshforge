@@ -26,6 +26,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from handler_test_utils import FakeDialog, make_handler_context
+from monitoring import mqtt_settings as ms  # noqa: E402
+from mqtt_tui_seam import real_settings, write_failed  # noqa: E402
 
 
 def _make_broker():
@@ -199,16 +201,14 @@ class TestApplyProfileHonestSignal:
 
     def test_apply_refuses_a_profile_that_cannot_be_subscribed(self):
         h = _make_broker()
-        with patch("handlers.mqtt.load_mqtt_config", return_value={}), \
-             patch("handlers.mqtt.save_mqtt_config", return_value=True) as save:
+        with real_settings({}) as (save, _cfg):
             h._apply_profile_to_mqtt(self._profile(root_topic="msh/HI"))
         assert h.ctx.dialog.last_msgbox_title == "Not Applied"
         assert not save.called
 
     def test_apply_write_failure_shows_failure_dialog(self):
         h = _make_broker()
-        with patch("handlers.mqtt.load_mqtt_config", return_value={}), \
-             patch("handlers.mqtt.save_mqtt_config", return_value=False):
+        with real_settings({}, save_result=write_failed()):
             h._apply_profile_to_mqtt(self._profile())
 
         assert h.ctx.dialog.last_msgbox_title == "Apply Failed"
@@ -216,9 +216,9 @@ class TestApplyProfileHonestSignal:
     def test_apply_write_success_is_silent(self):
         """On success the apply stays quiet (callers show their own success)."""
         h = _make_broker()
-        with patch("handlers.mqtt.load_mqtt_config", return_value={}), \
-             patch("handlers.mqtt.save_mqtt_config", return_value=True):
+        with real_settings({}) as (save, cfg):
             h._apply_profile_to_mqtt(self._profile())
+            assert ms.load(cfg).intent["broker"] == "broker.example"
 
         # No failure dialog surfaced.
         assert h.ctx.dialog.last_msgbox_title is None

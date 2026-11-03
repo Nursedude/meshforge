@@ -5,7 +5,7 @@ Converted from broker_mixin.py as part of the mixin-to-registry migration.
 Provides broker profiles (private/public/custom), mosquitto service management,
 radio MQTT setup, and connection testing.
 
-Uses load_mqtt_config/save_mqtt_config from handlers.mqtt for cross-handler
+Applies profiles through the MQTT edit lease (handlers._mqtt_config_form) for cross-handler
 config access.
 """
 
@@ -737,39 +737,51 @@ class BrokerHandler(BaseHandler):
         self.ctx.dialog.msgbox("Radio MQTT Setup", "\n".join(lines), width=70)
 
     def _apply_profile_to_mqtt(self, profile):
-        """Apply a broker profile to the MQTT subscriber configuration."""
-        from handlers.mqtt import load_mqtt_config, save_mqtt_config
+        """Apply a broker profile to the MQTT subscriber configuration.
 
+        Not opened from MQTT Configuration, so it takes its OWN short edit
+        lease (F8 v2, V5): refused view-only while another session edits;
+        a profile that would replace or clear the saved password asks
+        first (Q19); every refusal is answered by the shared save prompts."""
+        from ._mqtt_config_form import (
+            REFUSED, SAVED, confirm_password_change, open_edit_lease,
+            save_with_prompts,
+        )
         from monitoring import mqtt_settings
-        existing = load_mqtt_config()
-        intent = {**profile.to_intent(),
-                  'auto_start': existing.get('auto_start', False),
-                  'auto_start_telemetry': existing.get('auto_start_telemetry', True)}
-        errs = mqtt_settings.validate(intent)
-        if errs:
-            # refuse at the boundary, naming the field (MQTT-CFG) — a profile
-            # whose root/channel cannot be subscribed is not "applied"
-            self.ctx.dialog.msgbox(
-                "Not Applied",
-                f"Broker profile '{profile.name}' was saved but NOT applied to "
-                "the MQTT subscriber:\n\n" + "\n".join(errs))
-            return
 
-        ok = save_mqtt_config(intent)
-        if ok:
+        lease = open_edit_lease(self.ctx, "Apply Broker Profile")
+        if lease is None:
+            logger.warning("Broker profile '%s' NOT applied — the MQTT settings "
+                           "are open for editing elsewhere", profile.name)
+            return
+        with lease:
+            existing = lease.view
+            intent = {**profile.to_intent(),
+                      'auto_start': existing['auto_start'],
+                      'auto_start_telemetry': existing['auto_start_telemetry']}
+            errs = mqtt_settings.validate(intent)
+            if errs:
+                # refuse at the boundary, naming the field (MQTT-CFG) — a profile
+                # whose root/channel cannot be subscribed is not "applied"
+                self.ctx.dialog.msgbox(
+                    "Not Applied",
+                    f"Broker profile '{profile.name}' was saved but NOT applied to "
+                    "the MQTT subscriber:\n\n" + "\n".join(errs))
+                return
+            if not confirm_password_change(self.ctx, lease, intent['password'],
+                                           f"Broker profile '{profile.name}'"):
+                return
+            outcome = save_with_prompts(
+                self.ctx, lease, intent, "Applied", "", report_success=False,
+                fail_title="Apply Failed",
+                fail_note=(f"Broker profile '{profile.name}' was saved but NOT "
+                           "applied to the MQTT subscriber"))
+        if outcome == SAVED:
             logger.info("Applied broker profile '%s' to MQTT subscriber config", profile.name)
         else:
-            logger.error(
-                "Failed to write MQTT subscriber config for broker profile '%s'",
-                profile.name,
-            )
-            self.ctx.report_action(
-                False,
-                "Applied", "",  # success path unreachable; ok is always False here
-                "Apply Failed",
-                "Could not write the MQTT subscriber config to disk — "
-                "the broker profile was saved but NOT applied to the subscriber.",
-            )
+            logger.error("Broker profile '%s' NOT applied to the MQTT subscriber "
+                         "config (%s)", profile.name,
+                         "refused" if outcome == REFUSED else "changed elsewhere")
 
     def _apply_mqtt_to_radio(self, profile):
         """Apply this broker's MQTT settings to the LOCAL radio IN-APP

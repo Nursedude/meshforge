@@ -30,6 +30,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from handler_test_utils import make_handler_context  # noqa: E402
+from monitoring import mqtt_settings as ms  # noqa: E402
+from mqtt_tui_seam import real_settings, write_failed  # noqa: E402,F401
 
 
 def _make_handler():
@@ -46,42 +48,40 @@ def _make_handler():
 # invalid-input branch loops back to the menu (continue).
 # ---------------------------------------------------------------------------
 
-@patch('handlers.mqtt.load_mqtt_config', return_value={'broker': 'mqtt.meshtastic.org'})
-@patch('handlers.mqtt.save_mqtt_config')
-def test_configure_mqtt_invalid_broker_not_saved(mock_save, mock_load):
-    """RED-FIRST: a hostname with a space is rejected, never assigned/saved."""
-    handler, ctx = _make_handler()
-    ctx.dialog._menu_returns = ["broker", "save"]
-    ctx.dialog._inputbox_returns = ["bad host!"]  # illegal space char
+def test_configure_mqtt_invalid_broker_not_saved():
+    with real_settings({'broker': 'mqtt.meshtastic.org'}) as (mock_save, _cfg):
+        """RED-FIRST: a hostname with a space is rejected, never assigned/saved."""
+        handler, ctx = _make_handler()
+        ctx.dialog._menu_returns = ["broker", "save"]
+        ctx.dialog._inputbox_returns = ["bad host!"]  # illegal space char
 
-    handler._configure_mqtt()
+        handler._configure_mqtt()
 
-    # Error dialog shown for the bad host.
-    titles = [c[1][0] for c in ctx.dialog.calls if c[0] == 'msgbox']
-    assert "Invalid Host" in titles
-    # The bad value never reached the persisted config: only the valid
-    # "save" path called save_mqtt_config, and its config has the ORIGINAL
-    # broker (the invalid edit was skipped via continue).
-    assert mock_save.call_count == 1
-    saved_cfg = mock_save.call_args[0][0]
-    assert saved_cfg['broker'] == 'mqtt.meshtastic.org'
-    assert saved_cfg['broker'] != 'bad host!'
+        # Error dialog shown for the bad host.
+        titles = [c[1][0] for c in ctx.dialog.calls if c[0] == 'msgbox']
+        assert "Invalid Host" in titles
+        # The bad value never reached the persisted config: only the valid
+        # "save" path called save_mqtt_config, and its config has the ORIGINAL
+        # broker (the invalid edit was skipped via continue).
+        assert mock_save.call_count == 1
+        saved_cfg = mock_save.call_args[0][0]
+        assert saved_cfg['broker'] == 'mqtt.meshtastic.org'
+        assert saved_cfg['broker'] != 'bad host!'
 
 
-@patch('handlers.mqtt.load_mqtt_config', return_value={'broker': 'mqtt.meshtastic.org'})
-@patch('handlers.mqtt.save_mqtt_config', return_value=True)
-def test_configure_mqtt_valid_broker_proceeds(mock_save, mock_load):
-    """Mirror: a valid hostname is assigned and saved unchanged."""
-    handler, ctx = _make_handler()
-    ctx.dialog._menu_returns = ["broker", "save"]
-    ctx.dialog._inputbox_returns = ["broker.example.com"]
+def test_configure_mqtt_valid_broker_proceeds():
+    with real_settings({'broker': 'mqtt.meshtastic.org'}) as (mock_save, _cfg):
+        """Mirror: a valid hostname is assigned and saved unchanged."""
+        handler, ctx = _make_handler()
+        ctx.dialog._menu_returns = ["broker", "save"]
+        ctx.dialog._inputbox_returns = ["broker.example.com"]
 
-    handler._configure_mqtt()
+        handler._configure_mqtt()
 
-    titles = [c[1][0] for c in ctx.dialog.calls if c[0] == 'msgbox']
-    assert "Invalid Host" not in titles
-    assert mock_save.call_count == 1
-    assert mock_save.call_args[0][0]['broker'] == "broker.example.com"
+        titles = [c[1][0] for c in ctx.dialog.calls if c[0] == 'msgbox']
+        assert "Invalid Host" not in titles
+        assert mock_save.call_count == 1
+        assert mock_save.call_args[0][0]['broker'] == "broker.example.com"
 
 
 # ---------------------------------------------------------------------------
@@ -89,38 +89,36 @@ def test_configure_mqtt_valid_broker_proceeds(mock_save, mock_load):
 # Old gate was .isdigit() only — accepted "0" and "99999".
 # ---------------------------------------------------------------------------
 
-@patch('handlers.mqtt.load_mqtt_config', return_value={'broker': 'localhost', 'port': 1883})
-@patch('handlers.mqtt.save_mqtt_config')
-def test_configure_mqtt_out_of_range_port_not_saved(mock_save, mock_load):
-    """RED-FIRST: "99999" passes .isdigit() but fails validate_port."""
-    handler, ctx = _make_handler()
-    ctx.dialog._menu_returns = ["port", "save"]
-    ctx.dialog._inputbox_returns = ["99999"]
+def test_configure_mqtt_out_of_range_port_not_saved():
+    with real_settings({'broker': 'localhost', 'port': 1883}) as (mock_save, _cfg):
+        """RED-FIRST: "99999" passes .isdigit() but fails validate_port."""
+        handler, ctx = _make_handler()
+        ctx.dialog._menu_returns = ["port", "save"]
+        ctx.dialog._inputbox_returns = ["99999"]
 
-    handler._configure_mqtt()
+        handler._configure_mqtt()
 
-    titles = [c[1][0] for c in ctx.dialog.calls if c[0] == 'msgbox']
-    assert "Invalid Port" in titles
-    assert mock_save.call_count == 1
-    saved_cfg = mock_save.call_args[0][0]
-    assert saved_cfg['port'] == 1883          # original, unchanged
-    assert saved_cfg['port'] != 99999
+        titles = [c[1][0] for c in ctx.dialog.calls if c[0] == 'msgbox']
+        assert "Invalid Port" in titles
+        assert mock_save.call_count == 1
+        saved_cfg = mock_save.call_args[0][0]
+        assert saved_cfg['port'] == 1883          # original, unchanged
+        assert saved_cfg['port'] != 99999
 
 
-@patch('handlers.mqtt.load_mqtt_config', return_value={'broker': 'localhost', 'port': 1883})
-@patch('handlers.mqtt.save_mqtt_config', return_value=True)
-def test_configure_mqtt_valid_port_proceeds(mock_save, mock_load):
-    """Mirror: an in-range port is assigned as an int and saved."""
-    handler, ctx = _make_handler()
-    ctx.dialog._menu_returns = ["port", "save"]
-    ctx.dialog._inputbox_returns = ["8883"]
+def test_configure_mqtt_valid_port_proceeds():
+    with real_settings({'broker': 'localhost', 'port': 1883}) as (mock_save, _cfg):
+        """Mirror: an in-range port is assigned as an int and saved."""
+        handler, ctx = _make_handler()
+        ctx.dialog._menu_returns = ["port", "save"]
+        ctx.dialog._inputbox_returns = ["8883"]
 
-    handler._configure_mqtt()
+        handler._configure_mqtt()
 
-    titles = [c[1][0] for c in ctx.dialog.calls if c[0] == 'msgbox']
-    assert "Invalid Port" not in titles
-    assert mock_save.call_count == 1
-    assert mock_save.call_args[0][0]['port'] == 8883
+        titles = [c[1][0] for c in ctx.dialog.calls if c[0] == 'msgbox']
+        assert "Invalid Port" not in titles
+        assert mock_save.call_count == 1
+        assert mock_save.call_args[0][0]['port'] == 8883
 
 
 # ---------------------------------------------------------------------------
@@ -130,13 +128,16 @@ def test_configure_mqtt_valid_port_proceeds(mock_save, mock_load):
 # is consumed and save is never reached.
 # ---------------------------------------------------------------------------
 
-@patch('handlers.mqtt.save_mqtt_config')
-def test_private_broker_invalid_host_not_saved(mock_save):
-    """RED-FIRST: an illegal private-broker hostname is rejected before save."""
-    handler, ctx = _make_handler()
-    ctx.dialog._inputbox_returns = ["bad host!"]  # only the broker is read
+def _lease(d):
+    return ms.acquire_lease(d, user="t", tty="-").lease
 
-    handler._configure_private_broker({})
+
+def test_private_broker_invalid_host_not_saved():
+    """RED-FIRST: an illegal private-broker hostname is rejected before save."""
+    with real_settings({}) as (mock_save, d):
+        handler, ctx = _make_handler()
+        ctx.dialog._inputbox_returns = ["bad host!"]  # only the broker is read
+        handler._configure_private_broker(_lease(d), {})
     assert not [c for c in ctx.dialog.calls if c[0] == 'menu' and c[1][0] == "TLS"]   # never reached
 
     titles = [c[1][0] for c in ctx.dialog.calls if c[0] == 'msgbox']
@@ -145,17 +146,18 @@ def test_private_broker_invalid_host_not_saved(mock_save):
 
 
 @patch('handlers.mqtt._saved_tls_for_endpoint', new=lambda broker, port: None)   # pin: no real disk read
-@patch('handlers.mqtt.save_mqtt_config', return_value=True)
-def test_private_broker_valid_host_proceeds_to_save(mock_save):
+def test_private_broker_valid_host_proceeds_to_save():
     """Mirror: a valid private broker + port flows through to a real save."""
-    handler, ctx = _make_handler()
-    # broker, port, username, password, root_topic, channel
-    ctx.dialog._inputbox_returns = [
-        "broker.example.com", "1883", "", "", "msh/US/2/e", "LongFast",
-    ]
-
-    handler.ctx.dialog._menu_returns = ["auto"]   # TLS prompt (2026-11-01)
-    handler._configure_private_broker({})
+    with real_settings({}) as (mock_save, d):
+        handler, ctx = _make_handler()
+        # broker, port, username, root_topic, channel (password: the menu)
+        ctx.dialog._inputbox_returns = [
+            "broker.example.com", "1883", "", "msh/US/2/e", "LongFast",
+        ]
+        handler.ctx.dialog._menu_returns = ["clear", "auto"]   # password, TLS
+        handler._configure_private_broker(_lease(d), {**ms.defaults(),
+                                                      "password": ms.KEEP})
+        assert ms.load(d).intent["broker"] == "broker.example.com"
 
     titles = [c[1][0] for c in ctx.dialog.calls if c[0] == 'msgbox']
     assert "Invalid Host" not in titles
@@ -171,13 +173,12 @@ def test_private_broker_valid_host_proceeds_to_save(mock_save):
 # Broker valid so flow reaches the port; "99999" must return before save.
 # ---------------------------------------------------------------------------
 
-@patch('handlers.mqtt.save_mqtt_config')
-def test_private_broker_out_of_range_port_not_saved(mock_save):
+def test_private_broker_out_of_range_port_not_saved():
     """RED-FIRST: "99999" passes the old .isdigit() gate but fails validate_port."""
-    handler, ctx = _make_handler()
-    ctx.dialog._inputbox_returns = ["broker.example.com", "99999"]
-
-    handler._configure_private_broker({})
+    with real_settings({}) as (mock_save, d):
+        handler, ctx = _make_handler()
+        ctx.dialog._inputbox_returns = ["broker.example.com", "99999"]
+        handler._configure_private_broker(_lease(d), {})
     assert not [c for c in ctx.dialog.calls if c[0] == 'menu' and c[1][0] == "TLS"]   # never reached
 
     titles = [c[1][0] for c in ctx.dialog.calls if c[0] == 'msgbox']

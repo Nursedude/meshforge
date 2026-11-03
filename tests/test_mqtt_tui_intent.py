@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from handler_test_utils import make_handler_context  # noqa: E402
 from monitoring import mqtt_settings as ms  # noqa: E402
+from mqtt_tui_seam import real_settings, write_failed  # noqa: E402,F401
 
 
 def _handler():
@@ -32,71 +33,69 @@ def _msgboxes(ctx):
 SAVED = {**ms.defaults(), "auto_start": True, "auto_start_telemetry": False}
 
 
-@patch('handlers.mqtt.load_mqtt_config', return_value=dict(SAVED))
-@patch('handlers.mqtt.save_mqtt_config', return_value=True)
-def test_configure_edits_root_and_channel_not_a_topic(save, _load):
-    h, ctx = _handler()
-    ctx.dialog._menu_returns = ["root", "channel", "save"]
-    ctx.dialog._inputbox_returns = ["msh/EU_868/2/e", "MediumFast"]
-    h._configure_mqtt()
-    saved = save.call_args[0][0]
-    assert (saved["root_topic"], saved["channel"]) == ("msh/EU_868/2/e", "MediumFast")
-    assert "topic" not in saved and "use_tls" not in saved
-    menu = [c for c in ctx.dialog.calls if c[0] == 'menu'][0]
-    tags = [t for t, _ in menu[1][2]]
-    assert "topic" not in tags and {"root", "channel", "tls"} <= set(tags)
-
-
-@patch('handlers.mqtt.load_mqtt_config', return_value=dict(SAVED))
-@patch('handlers.mqtt.save_mqtt_config', return_value=True)
-def test_tls_row_cycles_auto_on_off_and_says_what_auto_means(save, _load):
-    h, ctx = _handler()
-    ctx.dialog._menu_returns = ["tls", "tls", "tls", "cancel"]
-    h._configure_mqtt()
-    rows = [dict(c[1][2])["tls"] for c in ctx.dialog.calls if c[0] == 'menu']
-    assert "auto -> on" in rows[0]           # 8883 → TLS on
-    assert rows[1].endswith("on") and "auto" not in rows[1]
-    assert rows[2].endswith("off")
-    assert "auto" in rows[3]                 # back round to auto
-    assert not save.called                   # cancel discards
-
-
-@patch('handlers.mqtt.load_mqtt_config', return_value=dict(SAVED))
-@patch('handlers.mqtt.save_mqtt_config', return_value=True)
-def test_a_bad_root_is_refused_with_the_field_named_and_not_saved(save, _load):
-    h, ctx = _handler()
-    ctx.dialog._menu_returns = ["root", "save", "cancel"]
-    ctx.dialog._inputbox_returns = ["msh/HI"]
-    h._configure_mqtt()
-    assert not save.called
-    (title, body) = [(m[0], m[1]) for m in _msgboxes(ctx) if m[0] == "Not Saved"][0]
-    assert "root_topic" in body
-
-
-@patch('handlers.mqtt.load_mqtt_config', return_value=dict(SAVED))
-@patch('handlers.mqtt.save_mqtt_config', return_value=True)
-def test_local_preset_saves_the_local_root_and_keeps_auto_start(save, _load):
-    h, ctx = _handler()
-    ctx.dialog._menu_returns = ["local"]
-    with patch.object(type(h), "_detect_local_channel", return_value=None):
+def test_configure_edits_root_and_channel_not_a_topic():
+    with real_settings(dict(SAVED)) as (save, _cfg):
+        h, ctx = _handler()
+        ctx.dialog._menu_returns = ["root", "channel", "save"]
+        ctx.dialog._inputbox_returns = ["msh/EU_868/2/e", "MediumFast"]
         h._configure_mqtt()
-    saved = save.call_args[0][0]
-    assert (saved["broker"], saved["root_topic"], saved["channel"]) == ("localhost", "msh/2/e", "+")
-    # presets used to RESET auto-start silently; they keep the operator's choice
-    assert (saved["auto_start"], saved["auto_start_telemetry"]) == (True, False)
-    assert ms.validate(saved) == []
+        saved = save.call_args[0][0]
+        assert (saved["root_topic"], saved["channel"]) == ("msh/EU_868/2/e", "MediumFast")
+        assert "topic" not in saved and "use_tls" not in saved
+        menu = [c for c in ctx.dialog.calls if c[0] == 'menu'][0]
+        tags = [t for t, _ in menu[1][2]]
+        assert "topic" not in tags and {"root", "channel", "tls"} <= set(tags)
 
 
-@patch('handlers.mqtt.load_mqtt_config', return_value=dict(SAVED))
-@patch('handlers.mqtt.save_mqtt_config', return_value=True)
-def test_a_save_shows_what_the_subscriber_will_subscribe_to(save, _load):
-    h, ctx = _handler()
-    ctx.dialog._menu_returns = ["public"]
-    h._configure_mqtt()
-    saved = save.call_args[0][0]
-    shown = "\n".join(str(c) for c in ctx.dialog.calls)
-    for t in ms.subscriptions(ms.subscriber_config(saved)):
-        assert t in shown
+def test_tls_row_says_what_auto_means_and_opens_the_one_tls_menu():
+    # Q6 (F8 v2): the Configure row no longer cycles — it opens the same TLS
+    # menu as the private form; Esc there changes nothing; Cancel saves nothing.
+    with real_settings(dict(SAVED)) as (save, _cfg):
+        h, ctx = _handler()
+        ctx.dialog._menu_returns = ["tls", None, "cancel"]
+        h._configure_mqtt()
+        rows = [dict(c[1][2])["tls"] for c in ctx.dialog.calls
+                if c[0] == 'menu' and c[1][0] == "MQTT Configuration"]
+        assert "auto -> on" in rows[0] and rows[1] == rows[0]   # 8883 -> TLS on
+        assert [c[1][0] for c in ctx.dialog.calls if c[0] == 'menu'].count("TLS") == 1
+        assert not save.called
+
+
+def test_a_bad_root_is_refused_with_the_field_named_and_not_saved():
+    with real_settings(dict(SAVED)) as (save, _cfg):
+        h, ctx = _handler()
+        ctx.dialog._menu_returns = ["root", "save", "cancel"]
+        ctx.dialog._inputbox_returns = ["msh/HI"]
+        h._configure_mqtt()
+        # the OWNER refuses it (F8 v2: one write path) — nothing reaches disk
+        assert save.call_args[0][0]["root_topic"] == "msh/HI"
+        assert ms.load(_cfg).intent["root_topic"] == SAVED["root_topic"]
+        (title, body) = [(m[0], m[1]) for m in _msgboxes(ctx) if m[0] == "Not Saved"][0]
+        assert "root_topic" in body
+
+
+def test_local_preset_saves_the_local_root_and_keeps_auto_start():
+    with real_settings(dict(SAVED)) as (save, _cfg):
+        h, ctx = _handler()
+        ctx.dialog._menu_returns = ["local"]
+        with patch.object(type(h), "_detect_local_channel", return_value=None):
+            h._configure_mqtt()
+        saved = save.call_args[0][0]
+        assert (saved["broker"], saved["root_topic"], saved["channel"]) == ("localhost", "msh/2/e", "+")
+        # presets used to RESET auto-start silently; they keep the operator's choice
+        assert (saved["auto_start"], saved["auto_start_telemetry"]) == (True, False)
+        assert ms.validate(saved) == []
+
+
+def test_a_save_shows_what_the_subscriber_will_subscribe_to():
+    with real_settings(dict(SAVED)) as (save, _cfg):
+        h, ctx = _handler()
+        ctx.dialog._menu_returns = ["public"]
+        h._configure_mqtt()
+        saved = save.call_args[0][0]
+        shown = "\n".join(str(c) for c in ctx.dialog.calls)
+        for t in ms.subscriptions(ms.subscriber_config(saved)):
+            assert t in shown
 
 
 def test_status_shows_the_live_subscriptions_and_the_saved_state(tmp_path):
@@ -123,15 +122,14 @@ def test_status_shows_the_live_subscriptions_and_the_saved_state(tmp_path):
 
 # --- review of f09fd86d..47d236f8 (2026-11-01) --------------------------------
 
-@patch('handlers.mqtt.load_mqtt_config', return_value=dict(SAVED))
-@patch('handlers.mqtt.save_mqtt_config', return_value=True)
-def test_F5_an_unusable_detected_channel_falls_back_to_every_channel(save, _load):
-    # _detect_local_channel can return a longName fragment (09-20 class)
-    h, ctx = _handler()
-    ctx.dialog._menu_returns = ["local"]
-    with patch.object(type(h), "_detect_local_channel", return_value='Meshtastic 8d30",'):  # a SPACE: not a segment
-        h._configure_mqtt()
-    assert save.called and save.call_args[0][0]["channel"] == "+"
+def test_F5_an_unusable_detected_channel_falls_back_to_every_channel():
+    with real_settings(dict(SAVED)) as (save, _cfg):
+        # _detect_local_channel can return a longName fragment (09-20 class)
+        h, ctx = _handler()
+        ctx.dialog._menu_returns = ["local"]
+        with patch.object(type(h), "_detect_local_channel", return_value='Meshtastic 8d30",'):  # a SPACE: not a segment
+            h._configure_mqtt()
+        assert save.called and save.call_args[0][0]["channel"] == "+"
 
 
 def test_F6_auto_start_on_an_unreadable_file_is_loud_not_silent(tmp_path, caplog):
@@ -180,11 +178,10 @@ def _private(saved_tls, tls_answer, inputs=PRIVATE):
     saved = {**ms.defaults(), "broker": "old.example.org", "port": 8883,
              "username": "alice", "password": "s3cret", "tls": saved_tls,
              "auto_start": True}
-    with patch('handlers.mqtt.load_mqtt_config', return_value=dict(saved)), \
-         patch('handlers.mqtt._saved_tls_for_endpoint', return_value=None), \
-         patch('handlers.mqtt.save_mqtt_config', return_value=True) as save:
+    with real_settings(saved) as (save, _cfg), \
+         patch('handlers.mqtt._saved_tls_for_endpoint', return_value=None):
         h, ctx = _handler()
-        ctx.dialog._menu_returns = ["private", tls_answer]
+        ctx.dialog._menu_returns = ["private", "new", tls_answer]
         ctx.dialog._inputbox_returns = list(inputs)
         h._configure_mqtt()
     tls_menu = [c[1] for c in ctx.dialog.calls if c[0] == 'menu' and c[1][0] == "TLS"]
@@ -302,8 +299,7 @@ def test_mqtt_detector_says_unnamed_vs_unread_apart(caplog):
 
 
 def _local_preset(found):
-    with patch('handlers.mqtt.load_mqtt_config', return_value=dict(SAVED)), \
-         patch('handlers.mqtt.save_mqtt_config', return_value=True) as save:
+    with real_settings(SAVED) as (save, _cfg):
         h, ctx = _handler()
         ctx.dialog._menu_returns = ["local"]
         with patch.object(h, "_detect_local_channel", return_value=found):
@@ -347,11 +343,10 @@ def _private_disk(disk, tls_answer, inputs=PRIVATE, config=None):
     from monitoring.mqtt_settings import Loaded
     cfg = config if config is not None else (disk or ms.defaults())
     loaded = Loaded(state="ok", intent=dict(disk)) if disk else Loaded(state="absent")
-    with patch('handlers.mqtt.load_mqtt_config', return_value=dict(cfg)), \
-         patch('monitoring.mqtt_subscriber.load_settings', return_value=loaded), \
-         patch('handlers.mqtt.save_mqtt_config', return_value=True) as save:
+    with real_settings(cfg) as (save, _cfg), \
+         patch('monitoring.mqtt_subscriber.load_settings', return_value=loaded):
         h, ctx = _handler()
-        ctx.dialog._menu_returns = ["private", tls_answer]
+        ctx.dialog._menu_returns = ["private", "new", tls_answer]
         ctx.dialog._inputbox_returns = list(inputs)
         h._configure_mqtt()
     calls = [(c[1], c[2]) for c in ctx.dialog.calls if c[0] == 'menu' and c[1][0] == "TLS"]
@@ -395,11 +390,10 @@ def test_a_different_endpoint_or_no_saved_file_gets_no_default():
 def test_unreadable_saved_file_gets_no_default():
     from monitoring.mqtt_settings import Loaded
     bad = Loaded(state="unreadable", error="boom")
-    with patch('handlers.mqtt.load_mqtt_config', return_value=ms.defaults()), \
-         patch('monitoring.mqtt_subscriber.load_settings', return_value=bad), \
-         patch('handlers.mqtt.save_mqtt_config', return_value=True):
+    with real_settings(ms.defaults()), \
+         patch('monitoring.mqtt_subscriber.load_settings', return_value=bad):
         h, ctx = _handler()
-        ctx.dialog._menu_returns = ["private", "auto"]
+        ctx.dialog._menu_returns = ["private", "new", "auto"]
         ctx.dialog._inputbox_returns = list(PRIVATE)
         h._configure_mqtt()
     calls = [(c[1], c[2]) for c in ctx.dialog.calls if c[0] == 'menu' and c[1][0] == "TLS"]
@@ -431,9 +425,8 @@ def _enter_through(disk, config, inputs=PRIVATE, legacy=False):
     from monitoring.mqtt_settings import Loaded
     loaded = Loaded(state="ok", intent=dict(disk), legacy=legacy) if disk \
         else Loaded(state="absent")
-    with patch('handlers.mqtt.load_mqtt_config', return_value=dict(config)), \
-         patch('monitoring.mqtt_subscriber.load_settings', return_value=loaded), \
-         patch('handlers.mqtt.save_mqtt_config', return_value=True) as save:
+    with real_settings(config) as (save, _cfg), \
+         patch('monitoring.mqtt_subscriber.load_settings', return_value=loaded):
         h, ctx = _handler()
         fake_menu = ctx.dialog.menu
         seen = []
@@ -445,7 +438,7 @@ def _enter_through(disk, config, inputs=PRIVATE, legacy=False):
                 return kw.get('default_item') or choices[0][0]
             return fake_menu(title, text, choices, **kw)
         ctx.dialog.menu = menu
-        ctx.dialog._menu_returns = ["private"]
+        ctx.dialog._menu_returns = ["private", "new"]
         ctx.dialog._inputbox_returns = list(inputs)
         h._configure_mqtt()
     return save, seen

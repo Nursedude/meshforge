@@ -22,6 +22,7 @@ Usage:
 
 import json
 import logging
+import os
 import random
 import ssl
 import threading
@@ -1013,10 +1014,25 @@ def load_settings() -> "mqtt_settings.Loaded":
     return mqtt_settings.load(mqtt_config_dir())
 
 
-def save_settings(intent: Dict[str, Any]) -> "mqtt_settings.SaveResult":
+def acquire_edit_lease() -> "mqtt_settings.LeaseResult":
+    """The MQTT edit lease for this operator's config dir (F8 v2, V1/V10):
+    held / busy (holder named, or None = unknown) / error. Try once."""
+    from utils.paths import get_real_username
+    try:
+        tty = os.ttyname(0)
+    except OSError:
+        tty = "-"
+    return mqtt_settings.acquire_lease(mqtt_config_dir(),
+                                       user=get_real_username(), tty=tty)
+
+
+def save_settings(intent: Dict[str, Any], lease: "Optional[mqtt_settings.EditLease]",
+                  reset: bool = False) -> "mqtt_settings.SaveResult":
+    """Refused without a held lease (V9) — the lease is an argument, never
+    taken here, so no writer can skip it by accident."""
     from utils.paths import atomic_write_text_preserving
     return mqtt_settings.save(mqtt_config_dir(), intent,
-                              atomic_write_text_preserving)
+                              atomic_write_text_preserving, lease, reset=reset)
 
 
 # Singleton instance management
