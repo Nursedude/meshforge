@@ -197,34 +197,28 @@ class TestApplyProfileHonestSignal:
         return BrokerProfile(**{"name": "p", "broker_type": "private",
                                 "host": "broker.example", "port": 1883, **kw})
 
-    # F8 (2026-11-02): the apply writes CHANGES through mqtt_settings; these
-    # drive the real file in a tmp dir and a REAL writer failure.
-    def _cfg(self, tmp_path):
-        return patch("monitoring.mqtt_subscriber.mqtt_config_dir", return_value=tmp_path)
-
-    def test_apply_refuses_a_profile_that_cannot_be_subscribed(self, tmp_path):
-        from monitoring import mqtt_settings as ms
+    def test_apply_refuses_a_profile_that_cannot_be_subscribed(self):
         h = _make_broker()
-        with self._cfg(tmp_path):
+        with patch("handlers.mqtt.load_mqtt_config", return_value={}), \
+             patch("handlers.mqtt.save_mqtt_config", return_value=True) as save:
             h._apply_profile_to_mqtt(self._profile(root_topic="msh/HI"))
         assert h.ctx.dialog.last_msgbox_title == "Not Applied"
-        assert not (tmp_path / ms.FILENAME).exists()
+        assert not save.called
 
-    def test_apply_write_failure_shows_failure_dialog(self, tmp_path):
+    def test_apply_write_failure_shows_failure_dialog(self):
         h = _make_broker()
-        with self._cfg(tmp_path), patch("utils.paths.atomic_write_text_preserving",
-                                        side_effect=OSError(28, "No space left")):
+        with patch("handlers.mqtt.load_mqtt_config", return_value={}), \
+             patch("handlers.mqtt.save_mqtt_config", return_value=False):
             h._apply_profile_to_mqtt(self._profile())
 
         assert h.ctx.dialog.last_msgbox_title == "Apply Failed"
 
-    def test_apply_write_success_is_silent(self, tmp_path):
+    def test_apply_write_success_is_silent(self):
         """On success the apply stays quiet (callers show their own success)."""
-        from monitoring import mqtt_settings as ms
         h = _make_broker()
-        with self._cfg(tmp_path):
+        with patch("handlers.mqtt.load_mqtt_config", return_value={}), \
+             patch("handlers.mqtt.save_mqtt_config", return_value=True):
             h._apply_profile_to_mqtt(self._profile())
 
-        # No failure dialog surfaced; the profile is what is saved.
+        # No failure dialog surfaced.
         assert h.ctx.dialog.last_msgbox_title is None
-        assert ms.load(tmp_path).intent["broker"] == "broker.example"

@@ -21,13 +21,8 @@ writer (``utils.paths.atomic_write_text_preserving``) — never a copy of it.
 
 **Any new field = a ``SCHEMA_VERSION`` bump.** An unknown key is refused.
 """
-import contextlib
-import fcntl
-import hashlib
-import hmac
 import json
 import os
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -68,50 +63,6 @@ class SaveResult:
     ok: bool
     errors: List[str] = field(default_factory=list)   # validation refusals
     error: Optional[str] = None                       # one-line summary
-    # why it was refused: invalid | conflict | password_owner_mismatch |
-    # unreadable | busy | newer | write — None when ok
-    code: Optional[str] = None
-    conflicts: Dict[str, Tuple[Any, Any]] = field(default_factory=dict)  # field -> (saved, yours)
-    intent: Optional[Dict[str, Any]] = None   # what was WRITTEN, password removed
-    # password_owner_mismatch: the account being WRITTEN — answer with a
-    # Secret for exactly this account (review r2 #1)
-    account: Optional[Tuple[str, str]] = None
-    # conflict on "password" (Q17): the fingerprint of the password saved
-    # NOW — a screen that resolves the conflict answers with it
-    password_fp: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class Secret:
-    """A password AND the account it was typed for — one value, so no screen
-    can separate them (F8 review r2: the account kept in handler state went
-    stale three ways). ``save_changes`` writes it only for that account."""
-    value: str = field(repr=False)
-    account: Tuple[str, str]
-
-
-@dataclass
-class Editable:
-    """What a SCREEN holds (F8 Q3): the intent without the password."""
-    state: str                      # "ok" | "absent" | "unreadable"
-    intent: Dict[str, Any]
-    password_saved: bool = False
-    error: Optional[str] = None
-    legacy: bool = False
-    # which saved password the screen opened with (Q17) — a fingerprint,
-    # never the value; pass it to save_changes(base_password_fp=...)
-    password_fp: str = ""
-
-
-# Per-process key: a fingerprint is compared only inside the process that
-# made it (a screen and its own save), and is useless to anyone reading it.
-_FP_KEY = os.urandom(16)
-
-
-def password_fingerprint(password: str) -> str:
-    """An opaque tag for a password (F8 Q17) — equal iff the passwords are."""
-    return hmac.new(_FP_KEY, str(password).encode("utf-8"),
-                    hashlib.sha256).hexdigest()[:24]
 
 
 def defaults() -> Dict[str, Any]:
@@ -232,250 +183,7 @@ def load(config_dir: Path) -> Loaded:
     return Loaded("ok", intent=_normalized(intent))
 
 
-LOCK_TIMEOUT_S = 5.0
-
-
-def lock_target(config_dir: Path) -> Path:
-    """What every writer of ``config_dir`` locks (F8 Q9): its PARENT, always.
-
-    One target before and after the first save (review r3 #4: locking the
-    config dir itself — or its nearest existing ancestor while it was
-    absent — moved the target once the first save created it, so two
-    writers could hold different locks). A dir, not a lock file: nothing to
-    litter, and no root-owned 0600 lock file can lock an operator-uid
-    writer out. The parent is never created here (review r1 #5)."""
-    return Path(config_dir).parent
-
-
-def _missing_parent(config_dir: Path) -> Optional["SaveResult"]:
-    parent = lock_target(config_dir)
-    if parent.is_dir():
-        return None
-    return SaveResult(False, code="write", error=(
-        f"{parent} does not exist — create it as the operator (not via sudo), "
-        f"then save again; nothing was written"))
-
-
-@contextlib.contextmanager
-def _locked(config_dir: Path, timeout: float):
-    """Exclusive flock on ``lock_target(config_dir)`` — yields True when
-    held, False after ``timeout``. The caller has checked the target exists
-    (``_missing_parent``); ``_write`` creates only the config dir itself."""
-    fd = os.open(lock_target(config_dir), os.O_RDONLY)
-    try:
-        deadline = time.monotonic() + timeout
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    yield False
-                    return
-                time.sleep(0.05)
-        try:
-            yield True
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-    finally:
-        os.close(fd)
-
-
-def _lock_error(config_dir: Path, e: OSError) -> SaveResult:
-    return SaveResult(False, code="write", error=(
-        f"{Path(config_dir)}: could not lock for saving: {type(e).__name__}: {e}"))
-
-
-def _busy(config_dir: Path) -> SaveResult:
-    return SaveResult(False, code="busy", error=(
-        f"{Path(config_dir) / FILENAME}: another save is in progress — "
-        "nothing was written; try again"))
-
-
-def host_key(host: Any) -> str:
-    """One spelling per broker (F8 Q4): trimmed, lowercased, no trailing
-    dot, the loopback names folded. No DNS — a short name and its FQDN
-    stay different (the safe answer is to ask for the password again)."""
-    h = str(host or "").strip().rstrip(".").lower()
-    return "localhost" if h in _LOCAL_BROKERS else h
-
-
-def account(intent: Dict[str, Any]) -> Tuple[str, str]:
-    """Who a password belongs to (F8 Q4/Q8): (host, user); a blank user is
-    still an account (password-only brokers)."""
-    return host_key(intent.get("broker")), str(intent.get("username") or "")
-
-
-def account_label(intent: Dict[str, Any]) -> str:
-    return _label(account(intent))
-
-
-def _label(acct: Tuple[str, str]) -> str:
-    host, user = acct
-    return f"{user}@{host}" if user else f"(no username)@{host}"
-
-
-def label_of(acct: Tuple[str, str]) -> str:
-    """``account_label`` for an ``account()`` tuple (e.g. ``SaveResult.account``)."""
-    return _label(acct)
-
-
-def public_view(intent: Dict[str, Any]) -> Dict[str, Any]:
-    """``intent`` without the password — what a screen may hold (Q3)."""
-    return {k: v for k, v in intent.items() if k != "password"}
-
-
-def editable(loaded: Loaded) -> Editable:
-    """The screen's view of ``loaded`` (F8 Q3): never the password itself.
-    absent/unreadable -> the defaults (so it can be shown and fixed)."""
-    if loaded.state == "ok":
-        pw = loaded.intent.get("password", "")
-        return Editable("ok", public_view(loaded.intent),
-                        password_saved=bool(pw), legacy=loaded.legacy,
-                        password_fp=password_fingerprint(pw))
-    return Editable(loaded.state, public_view(defaults()), error=loaded.error,
-                    password_fp=password_fingerprint(defaults()["password"]))
-
-
-def same(a: Any, b: Any) -> bool:
-    # 1 == True: a type-blind compare would call tls True and port 1 equal
-    return type(a) is type(b) and a == b
-
-
-def save_changes(config_dir: Path, base: Dict[str, Any], changes: Dict[str, Any],
-                 write: Writer, lock_timeout: float = LOCK_TIMEOUT_S,
-                 reset: bool = False,
-                 base_password_fp: Optional[str] = None) -> SaveResult:
-    """Apply only what a screen CHANGED onto the file as it is NOW (F8 Q2).
-
-    ``base`` is the screen's ``editable().intent`` from when it opened;
-    ``changes`` the fields the operator edited. Under the lock (Q9) the file
-    is re-read; a field changed BOTH on disk since ``base`` and in
-    ``changes``, to different values, refuses the whole save with both
-    values (Q10, ``conflicts``); fields only one side changed merge.
-
-    The password (Q3/Q7): absent from ``changes`` = keep the saved one, but
-    only for the SAME account — a broker/username change with a saved
-    password refuses (``password_owner_mismatch``) before anything is
-    written; ``""`` clears; a string sets. A SUPPLIED password (or clear)
-    is written only for the account it was typed for — a ``Secret`` names
-    it; a bare string means the account the screen showed (``base`` +
-    ``changes``) — else it refuses the same way (review r1 #2), naming the
-    account being written in ``SaveResult.account`` (r2 #1). An unreadable
-    file refuses (Q15) unless ``reset``: the explicit Reset is THIS function
-    with the unreadable file read as the defaults (review r3 #1/#2) — the
-    same lock, the unreadable re-checked under it (a file fixed meanwhile
-    takes the normal path, nothing overwritten), the same password-account
-    rules, and ``_write`` keeps the bytes as ``.unreadable.<n>``. All
-    refusals write nothing.
-
-    The password joins the both-sides check (Q17) by FINGERPRINT:
-    ``base_password_fp`` is the screen's ``editable().password_fp``. A
-    password set or cleared here while the saved one changed since the
-    screen opened (to a different value) is a ``conflict`` on "password",
-    shown without either value; ``SaveResult.password_fp`` is what to answer
-    with. Sending a password without ``base_password_fp`` is refused
-    (``invalid``) — an unchecked password write is what F8 was.
-    """
-    config_dir = Path(config_dir)
-    refused = _missing_parent(config_dir)
-    if refused:
-        return refused
-    try:
-        return _save_changes_locked(config_dir, base, changes, write,
-                                    lock_timeout, reset, base_password_fp)
-    except OSError as e:          # the lock itself (review r1 #4)
-        return _lock_error(config_dir, e)
-
-
-def _pw_label(pw: str, mine: bool) -> str:
-    if not pw:
-        return "(no password)" if not mine else "(clear it - no password)"
-    return "(the password you entered)" if mine else "(a password saved elsewhere)"
-
-
-def _save_changes_locked(config_dir, base, changes, write, lock_timeout,
-                         reset, base_password_fp) -> SaveResult:
-    if "password" in changes and base_password_fp is None:
-        return SaveResult(False, code="invalid", errors=[
-            "password: sent without base_password_fp (which saved password "
-            "the screen opened with) — it cannot be checked; nothing was written"],
-            error="password: sent without base_password_fp — nothing was written")
-    with _locked(config_dir, lock_timeout) as held:
-        if not held:
-            return _busy(config_dir)
-        loaded = load(config_dir)
-        if loaded.state == "unreadable" and not reset:
-            return SaveResult(False, code="unreadable", error=(
-                f"saved settings unreadable: {loaded.error} — nothing was "
-                "written. Fix the file, or choose Reset to rebuild it from "
-                "this screen"))
-        current = loaded.intent if loaded.state == "ok" else defaults()
-        merged = {**current, **{k: v for k, v in changes.items() if k != "password"}}
-        keep = "password" not in changes
-        supplied = changes.get("password")
-        entered_for = {**base, **{k: v for k, v in changes.items() if k != "password"}}
-        if isinstance(supplied, Secret):
-            typed_for, supplied = supplied.account, supplied.value
-        else:
-            typed_for = account(entered_for)
-        merged["password"] = current.get("password", "") if keep else supplied
-        errs = validate(merged)
-        if errs:
-            return SaveResult(False, errs, "; ".join(errs), code="invalid")
-        conflicts = {k: (current.get(k), v) for k, v in changes.items()
-                     if k != "password" and k in base
-                     and not same(base[k], current.get(k))
-                     and not same(v, current.get(k))}
-        saved_pw = current.get("password", "")
-        saved_fp = password_fingerprint(saved_pw)
-        if not keep and base_password_fp != saved_fp \
-                and password_fingerprint(supplied) != saved_fp:
-            conflicts["password"] = (_pw_label(saved_pw, False),
-                                     _pw_label(supplied, True))
-        if conflicts:
-            return SaveResult(False, code="conflict", conflicts=conflicts,
-                              password_fp=saved_fp if "password" in conflicts else None,
-                              error=(
-                "changed elsewhere since this screen opened: " + ", ".join(
-                    f"{k} (saved: {s!r}, yours: {y!r})" for k, (s, y) in conflicts.items())
-                + " — nothing was written"))
-        if keep and current.get("password") and account(merged) != account(current):
-            return SaveResult(False, code="password_owner_mismatch",
-                              account=account(merged), error=(
-                f"the saved password belongs to {account_label(current)}, not "
-                f"{account_label(merged)} — enter the password for the new "
-                "account (blank = none); nothing was written"))
-        if not keep and account(merged) != typed_for:
-            return SaveResult(False, code="password_owner_mismatch",
-                              account=account(merged), error=(
-                f"the password was entered for {_label(typed_for)}, but the "
-                f"account being saved is {account_label(merged)} (changed "
-                "since it was typed) — nothing was written"))
-        res = _write(config_dir, merged, write)
-        if res.ok:
-            res.intent = public_view(_normalized(merged))
-        return res
-
-
-def save(config_dir: Path, intent: Dict[str, Any], write: Writer,
-         lock_timeout: float = LOCK_TIMEOUT_S) -> SaveResult:
-    """The FULL write (F8 Q16) — never from a screen: a screen sends
-    changes, and Reset is ``save_changes(reset=True)`` (review r3 #1). Same
-    lock, same refusals (validated inside ``_write``)."""
-    refused = _missing_parent(Path(config_dir))
-    if refused:
-        return refused
-    try:
-        with _locked(Path(config_dir), lock_timeout) as held:
-            if not held:
-                return _busy(config_dir)
-            return _write(Path(config_dir), intent, write)
-    except OSError as e:          # the lock itself (review r1 #4)
-        return _lock_error(config_dir, e)
-
-
-def _write(config_dir: Path, intent: Dict[str, Any], write: Writer) -> SaveResult:
+def save(config_dir: Path, intent: Dict[str, Any], write: Writer) -> SaveResult:
     """Validate, then write ``intent`` through ``write`` and force 0600.
 
     ``write`` is the repo's owner-preserving atomic writer: the TUI runs as
@@ -490,18 +198,18 @@ def _write(config_dir: Path, intent: Dict[str, Any], write: Writer) -> SaveResul
     """
     errs = validate(intent)
     if errs:
-        return SaveResult(False, errs, "; ".join(errs), code="invalid")
+        return SaveResult(False, errs, "; ".join(errs))
     config_dir = Path(config_dir)
     path = config_dir / FILENAME
     pre = config_dir / (FILENAME + PRE_V1_SUFFIX)
     try:
-        config_dir.mkdir(exist_ok=True)   # its parent is the lock target (r3 #4)
+        config_dir.mkdir(parents=True, exist_ok=True)
         if path.exists():
             data, _err, _ = _read(path)
             if isinstance(data, dict) and "schema_version" in data:
                 sv = data["schema_version"]
                 if _is_int(sv) and sv > SCHEMA_VERSION:
-                    return SaveResult(False, code="newer", error=(
+                    return SaveResult(False, error=(
                         f"{path}: schema_version {sv} was written by a newer "
                         "version; refusing to overwrite it"))
             loaded = load(config_dir)
@@ -519,10 +227,10 @@ def _write(config_dir: Path, intent: Dict[str, Any], write: Writer) -> SaveResul
         write(path, json.dumps(body, indent=2) + "\n")
         os.chmod(path, 0o600)
     except OSError as e:
-        return SaveResult(False, code="write", error=f"{path}: {type(e).__name__}: {e}")
+        return SaveResult(False, error=f"{path}: {type(e).__name__}: {e}")
     handback_err = _hand_to_dir_owner(path, config_dir)
     if handback_err:
-        return SaveResult(False, code="write", error=handback_err)
+        return SaveResult(False, error=handback_err)
     return SaveResult(True)
 
 

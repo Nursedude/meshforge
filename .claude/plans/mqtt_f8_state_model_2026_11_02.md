@@ -49,3 +49,26 @@ r3 #1/#2: Reset = a locked mode of `save_changes` (re-check unreadable under the
 Multi-writer settings files written as full snapshots from several screens
 (`gateway.json`, broker profiles, `deployment.json`): once `save_changes`
 passes its live drill it is the pattern for those.
+
+## PARKED — 2026-11-02 18:35 HST (stop rule, operator decision)
+
+Round 5 (contextless non-author, Fable) on `e9fcae66` found the F8 class
+AGAIN: any refused/abandoned Save re-anchors the screen's base to a fresh
+read while its kept edits survive, so the next Save overwrites the other
+writer — fields and password, no question (5 reproduced paths). Plus: Reset
+over a file that broke AFTER the screen opened writes the public defaults,
+not the screen (zero-byte power-loss class). Q18r covered only the conflict
+menu; Q18 itself is the mechanism.
+
+- Operator: revert on main + bundle; next attempt = a FRESH GRILL first.
+- Bundle (both review reports, MF+MA patches, reviewer scratch tests that
+  fail on e9fcae66): `~/.local/share/meshforge/parked/f8-state-model-2026-11-02/`.
+- Main's MQTT code = `85c99bc1` again (MF src/tests/docs; MA module byte
+  copy restored). Never deployed; the live config file was last written
+  2026-11-01 19:29, before F8 reached this box.
+
+**Grill opener (owner questions):** who owns an edit's ANCHOR — the value
+the edit was made against — and can it ever move without asking? (reviewer
+shape: each kept edit carries its anchor, as `Secret` carries its account).
+When the screen opened readable and the file broke later, is Reset's record
+the defaults or the screen? Does validation run before the conflict check?

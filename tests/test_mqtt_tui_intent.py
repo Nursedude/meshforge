@@ -5,12 +5,9 @@ through one boundary that refuses with the field named, else shows what the
 subscriber WILL subscribe to (the same derivation the subscriber runs); the
 status screen shows the LIVE subscriptions and the saved file's state.
 """
-import json
 import os
 import sys
 from unittest.mock import patch
-
-import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'launcher_tui'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -18,7 +15,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from handler_test_utils import make_handler_context  # noqa: E402
 from monitoring import mqtt_settings as ms  # noqa: E402
-from utils.paths import atomic_write_text_preserving as W  # noqa: E402
 
 
 def _handler():
@@ -36,30 +32,14 @@ def _msgboxes(ctx):
 SAVED = {**ms.defaults(), "auto_start": True, "auto_start_telemetry": False}
 
 
-# F8 state model (2026-11-02): these drive the REAL handler against a REAL
-# file in a tmp config dir and read the file back — the screens send changes
-# through mqtt_settings.save_changes, so a mocked save call proves nothing.
-@pytest.fixture
-def cfg(tmp_path):
-    with patch("monitoring.mqtt_subscriber.mqtt_config_dir", return_value=tmp_path):
-        yield tmp_path
-
-
-def _seed(d, intent):
-    assert ms.save(d, dict(intent), W).ok
-
-
-def _saved(d):
-    return json.loads((d / ms.FILENAME).read_text())
-
-
-def test_configure_edits_root_and_channel_not_a_topic(cfg):
-    _seed(cfg, SAVED)
+@patch('handlers.mqtt.load_mqtt_config', return_value=dict(SAVED))
+@patch('handlers.mqtt.save_mqtt_config', return_value=True)
+def test_configure_edits_root_and_channel_not_a_topic(save, _load):
     h, ctx = _handler()
     ctx.dialog._menu_returns = ["root", "channel", "save"]
     ctx.dialog._inputbox_returns = ["msh/EU_868/2/e", "MediumFast"]
     h._configure_mqtt()
-    saved = _saved(cfg)
+    saved = save.call_args[0][0]
     assert (saved["root_topic"], saved["channel"]) == ("msh/EU_868/2/e", "MediumFast")
     assert "topic" not in saved and "use_tls" not in saved
     menu = [c for c in ctx.dialog.calls if c[0] == 'menu'][0]
@@ -67,55 +47,53 @@ def test_configure_edits_root_and_channel_not_a_topic(cfg):
     assert "topic" not in tags and {"root", "channel", "tls"} <= set(tags)
 
 
-def test_tls_row_opens_the_tls_menu_and_says_what_auto_means(cfg):
-    # F8 Q6: the row used to CYCLE silently (auto -> on -> off); it now opens
-    # the same menu as the private form. Cancel still discards.
-    _seed(cfg, SAVED)
+@patch('handlers.mqtt.load_mqtt_config', return_value=dict(SAVED))
+@patch('handlers.mqtt.save_mqtt_config', return_value=True)
+def test_tls_row_cycles_auto_on_off_and_says_what_auto_means(save, _load):
     h, ctx = _handler()
-    ctx.dialog._menu_returns = ["tls", "on", "tls", "off", "cancel"]
+    ctx.dialog._menu_returns = ["tls", "tls", "tls", "cancel"]
     h._configure_mqtt()
-    rows = [dict(c[1][2])["tls"] for c in ctx.dialog.calls
-            if c[0] == 'menu' and c[1][0] == "MQTT Configuration"]
+    rows = [dict(c[1][2])["tls"] for c in ctx.dialog.calls if c[0] == 'menu']
     assert "auto -> on" in rows[0]           # 8883 → TLS on
     assert rows[1].endswith("on") and "auto" not in rows[1]
     assert rows[2].endswith("off")
-    tls = [c for c in ctx.dialog.calls if c[0] == 'menu' and c[1][0] == "TLS"]
-    assert "on for port 8883" in dict(tls[0][1][2])["auto"]
-    assert ms.load(cfg).intent["tls"] == "auto"   # cancel discards
+    assert "auto" in rows[3]                 # back round to auto
+    assert not save.called                   # cancel discards
 
 
-def test_a_bad_root_is_refused_with_the_field_named_and_not_saved(cfg):
-    _seed(cfg, SAVED)
-    before = (cfg / ms.FILENAME).read_bytes()
+@patch('handlers.mqtt.load_mqtt_config', return_value=dict(SAVED))
+@patch('handlers.mqtt.save_mqtt_config', return_value=True)
+def test_a_bad_root_is_refused_with_the_field_named_and_not_saved(save, _load):
     h, ctx = _handler()
     ctx.dialog._menu_returns = ["root", "save", "cancel"]
     ctx.dialog._inputbox_returns = ["msh/HI"]
     h._configure_mqtt()
-    assert (cfg / ms.FILENAME).read_bytes() == before
+    assert not save.called
     (title, body) = [(m[0], m[1]) for m in _msgboxes(ctx) if m[0] == "Not Saved"][0]
     assert "root_topic" in body
 
 
-def test_local_preset_saves_the_local_root_and_keeps_auto_start(cfg):
-    _seed(cfg, SAVED)
+@patch('handlers.mqtt.load_mqtt_config', return_value=dict(SAVED))
+@patch('handlers.mqtt.save_mqtt_config', return_value=True)
+def test_local_preset_saves_the_local_root_and_keeps_auto_start(save, _load):
     h, ctx = _handler()
     ctx.dialog._menu_returns = ["local"]
     with patch.object(type(h), "_detect_local_channel", return_value=None):
         h._configure_mqtt()
-    saved = ms.load(cfg)
-    assert saved.state == "ok"
-    i = saved.intent
-    assert (i["broker"], i["root_topic"], i["channel"]) == ("localhost", "msh/2/e", "+")
+    saved = save.call_args[0][0]
+    assert (saved["broker"], saved["root_topic"], saved["channel"]) == ("localhost", "msh/2/e", "+")
     # presets used to RESET auto-start silently; they keep the operator's choice
-    assert (i["auto_start"], i["auto_start_telemetry"]) == (True, False)
+    assert (saved["auto_start"], saved["auto_start_telemetry"]) == (True, False)
+    assert ms.validate(saved) == []
 
 
-def test_a_save_shows_what_the_subscriber_will_subscribe_to(cfg):
-    _seed(cfg, SAVED)
+@patch('handlers.mqtt.load_mqtt_config', return_value=dict(SAVED))
+@patch('handlers.mqtt.save_mqtt_config', return_value=True)
+def test_a_save_shows_what_the_subscriber_will_subscribe_to(save, _load):
     h, ctx = _handler()
     ctx.dialog._menu_returns = ["public"]
     h._configure_mqtt()
-    saved = ms.load(cfg).intent
+    saved = save.call_args[0][0]
     shown = "\n".join(str(c) for c in ctx.dialog.calls)
     for t in ms.subscriptions(ms.subscriber_config(saved)):
         assert t in shown
@@ -145,14 +123,15 @@ def test_status_shows_the_live_subscriptions_and_the_saved_state(tmp_path):
 
 # --- review of f09fd86d..47d236f8 (2026-11-01) --------------------------------
 
-def test_F5_an_unusable_detected_channel_falls_back_to_every_channel(cfg):
+@patch('handlers.mqtt.load_mqtt_config', return_value=dict(SAVED))
+@patch('handlers.mqtt.save_mqtt_config', return_value=True)
+def test_F5_an_unusable_detected_channel_falls_back_to_every_channel(save, _load):
     # _detect_local_channel can return a longName fragment (09-20 class)
-    _seed(cfg, SAVED)
     h, ctx = _handler()
     ctx.dialog._menu_returns = ["local"]
     with patch.object(type(h), "_detect_local_channel", return_value='Meshtastic 8d30",'):  # a SPACE: not a segment
         h._configure_mqtt()
-    assert _saved(cfg)["channel"] == "+"
+    assert save.called and save.call_args[0][0]["channel"] == "+"
 
 
 def test_F6_auto_start_on_an_unreadable_file_is_loud_not_silent(tmp_path, caplog):
@@ -197,47 +176,47 @@ def test_F3_custom_broker_form_suggests_only_roots_the_owner_accepts():
 PRIVATE = ["mqtt.example.com", "1883", "alice", "s3cret", "msh/US/2/e", "LongFast"]
 
 
-def _private(cfg, saved_tls, tls_answer, inputs=PRIVATE):
-    # the saved account is alice@old.example.org, so the form ASKS for the
-    # new account's password (F8 Q7) — the 4th input answers it
-    _seed(cfg, {**ms.defaults(), "broker": "old.example.org", "port": 8883,
-                "username": "alice", "password": "s3cret", "tls": saved_tls,
-                "auto_start": True})
-    before = (cfg / ms.FILENAME).read_bytes()
-    h, ctx = _handler()
-    ctx.dialog._menu_returns = ["private", tls_answer]
-    ctx.dialog._inputbox_returns = list(inputs)
-    h._configure_mqtt()
+def _private(saved_tls, tls_answer, inputs=PRIVATE):
+    saved = {**ms.defaults(), "broker": "old.example.org", "port": 8883,
+             "username": "alice", "password": "s3cret", "tls": saved_tls,
+             "auto_start": True}
+    with patch('handlers.mqtt.load_mqtt_config', return_value=dict(saved)), \
+         patch('handlers.mqtt._saved_tls_for_endpoint', return_value=None), \
+         patch('handlers.mqtt.save_mqtt_config', return_value=True) as save:
+        h, ctx = _handler()
+        ctx.dialog._menu_returns = ["private", tls_answer]
+        ctx.dialog._inputbox_returns = list(inputs)
+        h._configure_mqtt()
     tls_menu = [c[1] for c in ctx.dialog.calls if c[0] == 'menu' and c[1][0] == "TLS"]
-    wrote = (cfg / ms.FILENAME).read_bytes() != before
-    return ms.load(cfg).intent, tls_menu, wrote
+    return save, tls_menu
 
 
-def test_the_private_form_asks_tls_and_saves_the_answer(cfg):
+def test_the_private_form_asks_tls_and_saves_the_answer():
     for answer, want in (("on", True), ("off", False), ("auto", "auto")):
-        out, menu, _ = _private(cfg, "auto", answer)
+        save, menu = _private("auto", answer)
         assert menu, "the form must ASK about TLS"
-        assert out["tls"] == want, answer
+        assert save.call_args[0][0]["tls"] == want, answer
 
 
-def test_an_old_brokers_tls_never_follows_to_the_new_broker(cfg):
+def test_an_old_brokers_tls_never_follows_to_the_new_broker():
     # TLS review r1 #1: tls=False saved for old.example.org must not ride onto
     # a new 8883 broker (plaintext password); the answer is what is saved.
-    out, _, _ = _private(cfg, False, "auto",
-                         inputs=["mqtt.example.com", "8883", "alice", "s3cret",
-                                 "msh/US/2/e", "LongFast"])
+    save, _ = _private(False, "auto",
+                       inputs=["mqtt.example.com", "8883", "alice", "s3cret",
+                               "msh/US/2/e", "LongFast"])
+    out = save.call_args[0][0]
     assert out["tls"] == "auto" and ms.effective_tls(out) is True
 
 
-def test_esc_at_tls_saves_nothing(cfg):
-    _, menu, wrote = _private(cfg, "auto", None)
-    assert menu and not wrote
+def test_esc_at_tls_saves_nothing():
+    save, menu = _private("auto", None)
+    assert menu and not save.called
 
 
-def test_fields_the_form_does_not_ask_are_carried_not_reset(cfg):
+def test_fields_the_form_does_not_ask_are_carried_not_reset():
     # TLS review r1 #3 (altitude): build from the config, not defaults().
-    out, _, wrote = _private(cfg, "auto", "auto")
-    assert wrote and out["auto_start"] is True
+    save, _ = _private("auto", "auto")
+    assert save.call_args[0][0]["auto_start"] is True
 
 
 # 2026-11-01 live drill on the manager box: the Local preset saved channel
@@ -322,22 +301,23 @@ def test_mqtt_detector_says_unnamed_vs_unread_apart(caplog):
         assert any(r.levelno >= logging.WARNING for r in caplog.records)
 
 
-def _local_preset(cfg, found):
-    _seed(cfg, SAVED)
-    h, ctx = _handler()
-    ctx.dialog._menu_returns = ["local"]
-    with patch.object(h, "_detect_local_channel", return_value=found):
-        h._configure_mqtt()
+def _local_preset(found):
+    with patch('handlers.mqtt.load_mqtt_config', return_value=dict(SAVED)), \
+         patch('handlers.mqtt.save_mqtt_config', return_value=True) as save:
+        h, ctx = _handler()
+        ctx.dialog._menu_returns = ["local"]
+        with patch.object(h, "_detect_local_channel", return_value=found):
+            h._configure_mqtt()
     shown = " ".join(str(c[1]) for c in ctx.dialog.calls)
-    return _saved(cfg)["channel"], shown
+    return save.call_args[0][0]["channel"], shown
 
 
-def test_local_preset_says_which_channel_claim_it_is_making(cfg):
+def test_local_preset_says_which_channel_claim_it_is_making():
     # "+" because unnamed and "+" because unreadable are different claims (hfm #2).
     for found, want_ch, want_note in (("Regional", "Regional", "read from the radio"),
                                       ("", "+", "unnamed"),
                                       (None, "+", "could NOT read")):
-        ch, shown = _local_preset(cfg, found)
+        ch, shown = _local_preset(found)
         assert ch == want_ch and want_note in shown, found
 
 
@@ -352,46 +332,30 @@ def test_service_menu_detector_uses_the_shared_parser():
         assert h._auto_detect_primary_channel() is None     # display: every channel
 
 
-# tui-menu-default-item PART B (2026-11-02), re-cut for the F8 state model
-# the same day. Rows never reorder; the SAVED row is marked "(saved)"; the
-# HIGHLIGHTED row is the screen's current value for the SAME endpoint. Part B
-# could not honour an unsaved TLS-row edit (r1 #1 built, reverted on r2 #3:
-# a carried value was indistinguishable from an edit, so a stale form value
-# could revert another writer's save). Screens now send only CHANGES, so an
-# edit is an edit — the unsaved edit IS honoured (F8 grill Q1/Q2) and the old
-# "disk only" test is inverted below. An endpoint edit still never borrows a
-# TLS value; a legacy file's converted tls is never claimed "(saved)".
+# tui-menu-default-item PART B (2026-11-02): Enter-through on the SAME
+# endpoint must keep the SAVED tls. The default is read from the ON-DISK
+# settings (load_settings), never the form's config dict — the parked
+# current-first follow-up regressed on exactly that (an unsaved Broker-row
+# edit made the old endpoint's TLS look current). Rows never reorder.
 
-SAME = ["mqtt.example.com", "1883", "alice", "msh/US/2/e", "LongFast"]   # keep pw: no input
+def _tls_call(menu_calls):
+    (title, _text, choices), kwargs = menu_calls[0]
+    return [t for t, _ in choices], kwargs.get('default_item'), choices
 
 
-def _form(cfg, inputs=SAME, list_script=("private",), tls_answer="ENTER"):
-    """Run Configure -> (list_script) with title-routed menus: Password ->
-    keep, Settings Unreadable -> back, TLS -> tls_answer ("ENTER" = the
-    highlighted row, else row 1 — what the real binary does)."""
-    h, ctx = _handler()
-    fake_menu = ctx.dialog.menu
-    script = list(list_script)
-    answers = list(tls_answer) if isinstance(tls_answer, (list, tuple)) else [tls_answer]
-    seen = []
-
-    def menu(title, text, choices, **kw):
-        fake_menu(title, text, choices, **kw)          # records + phantom check
-        if title == "TLS":
-            seen.append((choices, kw.get('default_item')))
-            ans = answers.pop(0) if answers else "ENTER"
-            if ans == "ENTER":
-                return kw.get('default_item') or choices[0][0]
-            return ans
-        if title == "Password":
-            return "keep"
-        if title == "Settings Unreadable":
-            return "back"
-        return script.pop(0) if script else None
-    ctx.dialog.menu = menu
-    ctx.dialog._inputbox_returns = list(inputs)
-    h._configure_mqtt()
-    return seen
+def _private_disk(disk, tls_answer, inputs=PRIVATE, config=None):
+    from monitoring.mqtt_settings import Loaded
+    cfg = config if config is not None else (disk or ms.defaults())
+    loaded = Loaded(state="ok", intent=dict(disk)) if disk else Loaded(state="absent")
+    with patch('handlers.mqtt.load_mqtt_config', return_value=dict(cfg)), \
+         patch('monitoring.mqtt_subscriber.load_settings', return_value=loaded), \
+         patch('handlers.mqtt.save_mqtt_config', return_value=True) as save:
+        h, ctx = _handler()
+        ctx.dialog._menu_returns = ["private", tls_answer]
+        ctx.dialog._inputbox_returns = list(inputs)
+        h._configure_mqtt()
+    calls = [(c[1], c[2]) for c in ctx.dialog.calls if c[0] == 'menu' and c[1][0] == "TLS"]
+    return save, calls
 
 
 def _disk(broker="mqtt.example.com", port=1883, tls=True):
@@ -399,91 +363,133 @@ def _disk(broker="mqtt.example.com", port=1883, tls=True):
             "username": "alice", "password": "s3cret"}
 
 
-def test_same_endpoint_highlights_the_saved_tls_without_reordering(cfg):
+def test_same_endpoint_highlights_the_saved_tls_without_reordering():
     for saved, tag in ((True, "on"), (False, "off"), ("auto", "auto")):
-        _seed(cfg, _disk(tls=saved))
-        (choices, default), = _form(cfg)
-        assert [t for t, _ in choices] == ["auto", "on", "off"], "row order is stable"
+        _, calls = _private_disk(_disk(tls=saved), tag)
+        tags, default, _ = _tls_call(calls)
+        assert tags == ["auto", "on", "off"], "row order is stable"
         assert default == tag, (saved, default)
-        assert "(saved)" in dict(choices)[tag]
 
 
-def test_same_endpoint_match_normalises_host_case_and_trailing_dot(cfg):
+def test_same_endpoint_match_normalises_host_case_and_trailing_dot():
     # (the form refuses a host with spaces, so whitespace never reaches it)
-    _seed(cfg, _disk(broker="MQTT.Example.com."))
-    (choices, default), = _form(cfg)
-    assert default == "on" and "(saved)" in dict(choices)["on"]
+    _, calls = _private_disk(_disk(broker="MQTT.Example.com."), "on")
+    assert _tls_call(calls)[1] == "on"
 
 
-def test_an_unsaved_tls_edit_is_honoured_and_the_saved_row_still_marked(cfg):
-    # INVERTED by the F8 grill (was: "disk only, the unsaved edit is not
-    # honoured"). TLS row edit off (unsaved), then the private form: the
-    # screen's value is highlighted, the disk's is marked, Enter saves the edit.
-    _seed(cfg, _disk(tls=True))
-    choices, default = _form(cfg, list_script=("tls", "private"),
-                             tls_answer=["off", "ENTER"])[-1]
-    assert default == "off" and "(saved)" in dict(choices)["on"]
-    assert _saved(cfg)["tls"] is False
+def test_default_comes_from_disk_not_the_unsaved_form_config():
+    # The parked regression: config says broker=mqtt.example.com tls=True
+    # (an unsaved in-menu edit) while DISK holds another endpoint.
+    disk = _disk(broker="old.example.org", port=8883, tls=False)
+    cfg = _disk(tls=True)
+    _, calls = _private_disk(disk, "auto", config=cfg)
+    assert _tls_call(calls)[1] is None
 
 
-def test_an_unsaved_endpoint_edit_never_borrows_a_tls(cfg):
-    # the private form moves to mqtt.example.com; the saved tls belongs to
-    # old.example.org and must not follow (and the new account is asked its
-    # password — the 4th input)
-    _seed(cfg, _disk(broker="old.example.org", tls=True))
-    (choices, default), = _form(cfg, inputs=PRIVATE)
-    assert default is None and not any("(saved)" in d for _, d in choices)
-    assert _saved(cfg)["tls"] == "auto"
+def test_a_different_endpoint_or_no_saved_file_gets_no_default():
+    for disk in (_disk(broker="old.example.org"), _disk(port=8883), None):
+        _, calls = _private_disk(disk, "auto")
+        assert _tls_call(calls)[1] is None, disk
 
 
-def test_a_different_endpoint_or_no_saved_file_gets_no_default(cfg, tmp_path):
-    for disk, inputs in ((_disk(broker="old.example.org"), PRIVATE),
-                         (_disk(port=8883), SAME), (None, PRIVATE)):
-        (cfg / ms.FILENAME).unlink(missing_ok=True)
-        if disk:
-            _seed(cfg, disk)
-        (choices, default), = _form(cfg, inputs=inputs)
-        assert default is None, disk
-        assert not any("(saved)" in d for _, d in choices), disk
-
-
-def test_unreadable_saved_file_gets_no_default(cfg):
-    (cfg / ms.FILENAME).write_text("{boom")
-    (choices, default), = _form(cfg, inputs=PRIVATE)
-    assert default is None and not any("(saved)" in d for _, d in choices)
-    assert (cfg / ms.FILENAME).read_text() == "{boom"      # Back: nothing written
+def test_unreadable_saved_file_gets_no_default():
+    from monitoring.mqtt_settings import Loaded
+    bad = Loaded(state="unreadable", error="boom")
+    with patch('handlers.mqtt.load_mqtt_config', return_value=ms.defaults()), \
+         patch('monitoring.mqtt_subscriber.load_settings', return_value=bad), \
+         patch('handlers.mqtt.save_mqtt_config', return_value=True):
+        h, ctx = _handler()
+        ctx.dialog._menu_returns = ["private", "auto"]
+        ctx.dialog._inputbox_returns = list(PRIVATE)
+        h._configure_mqtt()
+    calls = [(c[1], c[2]) for c in ctx.dialog.calls if c[0] == 'menu' and c[1][0] == "TLS"]
+    assert _tls_call(calls)[1] is None
 
 
 def test_every_saved_tls_value_maps_to_a_menu_tag():
     # review r1 #1 of part A: a stale default degrades to row 1 SILENTLY in
     # the real binary — so a tag rename must fail HERE. The fake also
     # refuses a phantom default_item.
-    from handlers import _mqtt_configure as m
+    from handlers import mqtt as m
     tags = [t for t, _ in m._tls_menu_rows("b.example", 1883)]
     for saved in ("auto", True, False):
         assert m._tls_tag(saved) in tags, saved
     assert m._tls_tag(1) is None and m._tls_tag(0) is None and m._tls_tag(None) is None
 
 
-def test_enter_through_saves_the_saved_tls_for_the_same_endpoint(cfg):
+# Part B review r1+r2 (2026-11-02, contextless non-author passes).
+# The default is the DISK value only. r1 #1 (honour an unsaved TLS-row edit)
+# was built, then REVERTED on r2 #3: a stale form value would revert another
+# writer's save while claiming to be the operator's edit. Telling an edit from
+# a carried value needs dirty-field state -> the F8 ownership grill. An
+# unsaved ENDPOINT edit never borrows a TLS value (the parked regression). #2: a legacy file's
+# converted tls is never claimed as "(saved)". #3: the auto label uses the
+# subscriber's own rule. #7: Enter is simulated end to end (the fake returns
+# the default_item), so a highlight/save mismatch fails a test.
+
+def _enter_through(disk, config, inputs=PRIVATE, legacy=False):
+    from monitoring.mqtt_settings import Loaded
+    loaded = Loaded(state="ok", intent=dict(disk), legacy=legacy) if disk \
+        else Loaded(state="absent")
+    with patch('handlers.mqtt.load_mqtt_config', return_value=dict(config)), \
+         patch('monitoring.mqtt_subscriber.load_settings', return_value=loaded), \
+         patch('handlers.mqtt.save_mqtt_config', return_value=True) as save:
+        h, ctx = _handler()
+        fake_menu = ctx.dialog.menu
+        seen = []
+
+        def menu(title, text, choices, **kw):
+            if title == "TLS":                      # Enter = the highlighted row
+                seen.append((choices, kw.get('default_item')))
+                fake_menu(title, text, choices, **kw)
+                return kw.get('default_item') or choices[0][0]
+            return fake_menu(title, text, choices, **kw)
+        ctx.dialog.menu = menu
+        ctx.dialog._menu_returns = ["private"]
+        ctx.dialog._inputbox_returns = list(inputs)
+        h._configure_mqtt()
+    return save, seen
+
+
+def test_enter_through_saves_the_saved_tls_for_the_same_endpoint():
     for saved in (True, False, "auto"):
-        _seed(cfg, {**_disk(tls=saved), "channel": "Before"})
-        (choices, default), = _form(cfg)
-        assert _saved(cfg)["tls"] == saved, saved
-        assert _saved(cfg)["channel"] == "LongFast", "nothing saved: vacuous"
+        save, seen = _enter_through(_disk(tls=saved), _disk(tls=saved))
+        assert save.call_args[0][0]["tls"] == saved, saved
+        choices, default = seen[0]
         assert any("(saved)" in d for t, d in choices if t == default)
 
 
-def test_a_legacy_files_converted_tls_is_never_claimed_saved(cfg):
-    (cfg / ms.FILENAME).write_text(json.dumps(
-        {"broker": "mqtt.example.com", "port": 1883, "topic": "msh/US/2/e/LongFast/#",
-         "username": "alice", "password": "s3cret"}))
-    (choices, _default), = _form(cfg)
-    assert not any("(saved)" in d for _, d in choices)
+def test_an_unsaved_tls_edit_is_not_claimed_the_disk_value_is_highlighted():
+    # DECISION (r2 #3): disk only. The form's unsaved tls=False is NOT
+    # honoured on Enter-through (pre-existing; F8 grill) — and nothing is
+    # ever labelled an "unsaved edit" it might not be.
+    save, seen = _enter_through(_disk(tls=True), _disk(tls=False))
+    choices, default = seen[0]
+    assert default == "on" and "(saved)" in dict(choices)["on"]
+    assert save.call_args[0][0]["tls"] is True
+    assert not any("unsaved" in d for _, d in choices)
+
+
+def test_an_unsaved_endpoint_edit_never_borrows_a_tls():
+    # config moved to mqtt.example.com (unsaved) carrying the OLD endpoint's tls
+    save, seen = _enter_through(_disk(broker="old.example.org", tls=True),
+                                _disk(tls=True))
+    assert seen[0][1] is None and save.call_args[0][0]["tls"] == "auto"
+
+
+def test_no_saved_file_means_no_default_even_if_the_form_matches():
+    save, seen = _enter_through(None, _disk(tls=True))
+    assert seen[0][1] is None and save.call_args[0][0]["tls"] == "auto"
+
+
+def test_a_legacy_files_converted_tls_is_never_claimed_saved():
+    _, seen = _enter_through(_disk(tls="auto"), _disk(tls="auto"), legacy=True)
+    choices, default = seen[0]
+    assert default is None and not any("(saved)" in d for _, d in choices)
 
 
 def test_the_auto_row_uses_the_subscribers_tls_rule():
-    from handlers import _mqtt_configure as m
+    from handlers import mqtt as m
     with patch('monitoring.mqtt_settings.effective_tls', return_value=True):
         assert "on for port 1883" in dict(m._tls_menu_rows("b.example", 1883))["auto"]
     with patch('monitoring.mqtt_settings.effective_tls', return_value=False):
@@ -492,7 +498,7 @@ def test_the_auto_row_uses_the_subscribers_tls_rule():
 
 def test_the_auto_row_asks_the_rule_with_the_real_broker():
     # r2 #8: a partial intent would drift the moment effective_tls reads more
-    from handlers import _mqtt_configure as m
+    from handlers import mqtt as m
     seen = []
     with patch('monitoring.mqtt_settings.effective_tls',
                side_effect=lambda i: seen.append(dict(i)) or False):

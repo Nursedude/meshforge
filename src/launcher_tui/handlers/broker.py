@@ -5,7 +5,7 @@ Converted from broker_mixin.py as part of the mixin-to-registry migration.
 Provides broker profiles (private/public/custom), mosquitto service management,
 radio MQTT setup, and connection testing.
 
-Uses load_mqtt_editable/save_mqtt_changes from handlers.mqtt for cross-handler
+Uses load_mqtt_config/save_mqtt_config from handlers.mqtt for cross-handler
 config access.
 """
 
@@ -738,34 +738,24 @@ class BrokerHandler(BaseHandler):
 
     def _apply_profile_to_mqtt(self, profile):
         """Apply a broker profile to the MQTT subscriber configuration."""
-        from handlers.mqtt import load_mqtt_editable, save_mqtt_changes
+        from handlers.mqtt import load_mqtt_config, save_mqtt_config
 
-        # CHANGES only (F8 Q2): the profile's fields — its own credentials
-        # included, so no password is carried across accounts — and nothing
-        # else; auto_start/auto_start_telemetry stay whatever is saved.
-        from handlers._mqtt_configure import confirm_password_replace
-        view = load_mqtt_editable()
-        changes = profile.to_intent()
-        if not confirm_password_replace(self.ctx, view, view.intent,
-                                        changes.get("password") or "",
-                                        f"Apply profile {profile.name}"):
-            logger.info("Broker profile '%s' NOT applied — the saved MQTT "
-                        "password was kept (operator said No)", profile.name)
-            return                                   # Q19: No writes nothing
-        res = save_mqtt_changes(dict(view.intent), changes,
-                                password_fp=view.password_fp)   # Q17
-        if res.code in ("invalid", "conflict", "unreadable"):
+        from monitoring import mqtt_settings
+        existing = load_mqtt_config()
+        intent = {**profile.to_intent(),
+                  'auto_start': existing.get('auto_start', False),
+                  'auto_start_telemetry': existing.get('auto_start_telemetry', True)}
+        errs = mqtt_settings.validate(intent)
+        if errs:
             # refuse at the boundary, naming the field (MQTT-CFG) — a profile
             # whose root/channel cannot be subscribed is not "applied"
             self.ctx.dialog.msgbox(
                 "Not Applied",
                 f"Broker profile '{profile.name}' was saved but NOT applied to "
-                "the MQTT subscriber:\n\n" + ("\n".join(res.errors) or res.error)
-                + ("\n\n(Reset is under MQTT > Configure > Save.)"
-                   if res.code == "unreadable" else ""))   # review r2 #5
+                "the MQTT subscriber:\n\n" + "\n".join(errs))
             return
 
-        ok = res.ok
+        ok = save_mqtt_config(intent)
         if ok:
             logger.info("Applied broker profile '%s' to MQTT subscriber config", profile.name)
         else:
@@ -777,9 +767,8 @@ class BrokerHandler(BaseHandler):
                 False,
                 "Applied", "",  # success path unreachable; ok is always False here
                 "Apply Failed",
-                "The MQTT subscriber config was NOT written — the broker "
-                "profile was saved but NOT applied to the subscriber.\n\n"
-                f"{res.error or res.code}",   # busy says "try again" (review r1 #8)
+                "Could not write the MQTT subscriber config to disk — "
+                "the broker profile was saved but NOT applied to the subscriber.",
             )
 
     def _apply_mqtt_to_radio(self, profile):
