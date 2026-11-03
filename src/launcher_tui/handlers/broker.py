@@ -743,8 +743,9 @@ class BrokerHandler(BaseHandler):
         # CHANGES only (F8 Q2): the profile's fields — its own credentials
         # included, so no password is carried across accounts — and nothing
         # else; auto_start/auto_start_telemetry stay whatever is saved.
-        base = dict(load_mqtt_editable().intent)
-        res = save_mqtt_changes(base, profile.to_intent())
+        view = load_mqtt_editable()
+        res = save_mqtt_changes(dict(view.intent), profile.to_intent(),
+                                password_fp=view.password_fp)   # Q17
         if res.code in ("invalid", "conflict", "unreadable"):
             # refuse at the boundary, naming the field (MQTT-CFG) — a profile
             # whose root/channel cannot be subscribed is not "applied"

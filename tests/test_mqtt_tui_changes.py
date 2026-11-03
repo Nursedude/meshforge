@@ -551,8 +551,10 @@ def _interleaved(cfg, a_menus, a_inputs, other_menus, other_inputs, at_title="MQ
 
 def test_r2_1_the_mismatch_prompt_names_the_written_account_and_does_not_loop(cfg):
     _seed(cfg)
-    ctx = _interleaved(cfg, ["auth", "new", "save"], ["alice", "pwA", "pwX"],
+    # B also CLEARED the password: Q17 asks about that first ("mine")
+    ctx = _interleaved(cfg, ["auth", "new", "save", "mine"], ["alice", "pwA", "pwX"],
                        ["auth", "save"], ["xavier", ""])
+    assert _calls(ctx, "menu", "Changed Elsewhere: password")
     asked = [c for c in _calls(ctx, "inputbox") if c[1][0].startswith("Password for")]
     assert len(asked) == 1 and "xavier" in asked[0][1][0], asked
     d = _disk(cfg)
@@ -564,9 +566,11 @@ def test_r2_2_keep_saved_broker_never_writes_the_other_brokers_password(cfg):
     # A: broker -> B, then Auth types pwB FOR alice@B; B's screen saves broker
     # C first; A keeps the saved broker (C) at the conflict — pwB must not
     # follow to C: A is asked for C's password instead
-    ctx = _interleaved(cfg, ["broker", "auth", "save", "saved"],
+    # B also saved C's password: Q17 asks about that after the broker ("mine")
+    ctx = _interleaved(cfg, ["broker", "auth", "save", "saved", "mine"],
                        ["mqtt.b.example", "alice", "pwB", "pwC2"],
                        ["broker", "save"], ["mqtt.c.example", "pwC"])
+    assert _calls(ctx, "menu", "Changed Elsewhere: password")
     d = _disk(cfg)
     assert d["broker"] == "mqtt.c.example"
     assert d["password"] != "pwB", "B's password written for C"
@@ -592,3 +596,59 @@ def test_r2_8_esc_in_the_private_form_returns_to_the_list_keeping_its_edits(cfg)
     h, ctx = _handler(menus=["channel", "private", "save"], inputs=["Other", None])
     h._configure_mqtt()
     assert _disk(cfg)["channel"] == "Other"
+
+
+# --- Q17 / Q18 (operator 2026-11-02 pm) ----------------------------------------------
+
+def test_Q17_a_password_saved_elsewhere_is_a_shown_conflict_without_plaintext(cfg):
+    _seed(cfg)
+    a, actx = _handler()
+    script = iter(["auth", "new", "save", "saved", "cancel"])
+    inputs = iter(["alice", "pwA"])
+
+    def menu(title, text, choices, **kw):
+        actx.dialog.calls.append(("menu", (title, text, choices), kw))
+        tag = next(script, None)   # exhausted = Esc
+        if title == "MQTT Configuration" and tag == "save":
+            # B saves while A is open (a full write: red on old code for
+            # the behaviour, not a missing API)
+            assert ms.save(cfg, {**A, "password": "pwB"}, W).ok
+        return tag
+    actx.dialog.menu = menu
+    actx.dialog.inputbox = lambda title, text, init="", **kw: next(inputs, None)
+    a._configure_mqtt()
+    conf = _calls(actx, "menu", "Changed Elsewhere: password")
+    assert conf, "the password conflict was not shown"
+    shown = repr(conf)
+    for p in ("pwA", "pwB", "s3cret"):
+        assert p not in shown, f"plaintext {p!r} shown"
+    assert _disk(cfg)["password"] == "pwB", "'keep the saved' lost B's password"
+
+
+def test_Q18_an_abandoned_conflict_returns_to_a_fresh_read(cfg):
+    """A resolved one conflict (base mutated) then Esc'd the next; B had
+    also CLEARED the password. Back at the list, the auth row must not offer
+    'Keep the saved password' — none is saved any more (r3 #5)."""
+    _seed(cfg)
+    a, actx = _handler()
+    script = iter(["tls", "on", "port", "save", "mine", None,
+                   "auth", "cancel"])
+    inputs = iter(["1884", "alice", ""])
+
+    def menu(title, text, choices, **kw):
+        actx.dialog.calls.append(("menu", (title, text, choices), kw))
+        tag = next(script, None)   # exhausted = Esc
+        if title == "MQTT Configuration" and tag == "save":
+            # B's write needs nothing Q17 adds: this test is red on old code
+            # for the BEHAVIOUR (a stale password_saved), not a missing API
+            assert ms.save(cfg, {**A, "tls": False, "port": 1885, "password": ""}, W).ok
+        return tag
+    actx.dialog.menu = menu
+    actx.dialog.inputbox = lambda title, text, init="", **kw: next(inputs)
+    a._configure_mqtt()
+    assert _calls(actx, "menu", "Changed Elsewhere: tls")
+    assert _calls(actx, "menu", "Changed Elsewhere: port")
+    assert not _calls(actx, "menu", "Password"), \
+        "offered to keep a saved password that another screen cleared"
+    d = _disk(cfg)
+    assert (d["tls"], d["port"], d["password"]) == (False, 1885, ""), "Esc wrote"

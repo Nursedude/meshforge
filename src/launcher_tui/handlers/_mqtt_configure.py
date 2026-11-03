@@ -35,6 +35,13 @@ KEEP = object()
 
 # --- the one door to the file (Q16) ------------------------------------------
 
+def _fresh_view():
+    """(view, base): a fresh read and a private copy of its intent — taken
+    TOGETHER, so base and password_saved/password_fp never disagree (Q18)."""
+    view = load_mqtt_editable()
+    return view, dict(view.intent)
+
+
 def load_mqtt_editable():
     """The screen's view: ``mqtt_settings.Editable`` (no password)."""
     from monitoring import mqtt_settings
@@ -47,12 +54,15 @@ def load_mqtt_editable():
 
 
 def save_mqtt_changes(base: Dict[str, Any], changes: Dict[str, Any],
-                      reset: bool = False):
+                      reset: bool = False, password_fp: Optional[str] = None):
     """``mqtt_settings.SaveResult``; refusals are logged, never "Saved" (#74).
     ``reset`` = the explicit Reset over an unreadable file (Q15) — the same
-    locked, account-checked door, never a second full write (review r3 #1)."""
+    locked, account-checked door, never a second full write (review r3 #1).
+    ``password_fp`` = the view's ``password_fp`` (Q17); the owner refuses a
+    password sent without it."""
     from monitoring.mqtt_subscriber import save_settings_changes
-    res = save_settings_changes(base, changes, reset=reset)
+    res = save_settings_changes(base, changes, reset=reset,
+                                base_password_fp=password_fp)
     if not res.ok:
         logger.warning("MQTT settings NOT saved (%s%s) — %s", res.code,
                        ", reset" if reset else "", res.error)
@@ -147,8 +157,7 @@ class MQTTConfigureMixin:
     def _configure_mqtt(self):
         """Configure MQTT broker settings — edits are CHANGES until Save."""
         from monitoring import mqtt_settings
-        view = load_mqtt_editable()
-        base = dict(view.intent)
+        view, base = _fresh_view()
         changes: Dict[str, Any] = {}
 
         while True:
@@ -190,29 +199,33 @@ class MQTTConfigureMixin:
                 preset = {**mqtt_settings.defaults(), "broker": "localhost",
                           "port": 1883, "root_topic": "msh/2/e", "channel": "+"}
                 chan_note = self._local_channel_note(preset)
-                if self._commit_preset(base, preset, "", kept_auto, "Local Mode Set",
+                if self._commit_preset(view, base, preset, "", kept_auto, "Local Mode Set",
                                        "Configured for the local mosquitto broker.\n"
                                        f"{chan_note}\n\n"
                                        "Make sure mosquitto is running and meshtasticd's\n"
                                        "MQTT module is configured (Service Config ->\n"
                                        "MQTT Setup)."):
                     break
+                view, base = _fresh_view()       # Q18: never a half-resolved base
                 continue
 
             elif choice == "public":
                 preset = {**mqtt_settings.defaults(),
                           "username": MESHTASTIC_PUBLIC_USERNAME}
-                if self._commit_preset(base, preset, MESHTASTIC_PUBLIC_PASSWORD,
+                if self._commit_preset(view, base, preset, MESHTASTIC_PUBLIC_PASSWORD,
                                        kept_auto, "Public Mode Set",
                                        "Configured for the public Meshtastic broker —\n"
                                        "nodeless monitoring, no local radio needed."):
                     break
+                view, base = _fresh_view()       # Q18
                 continue
 
             elif choice == "private":
                 if self._configure_private_broker(view, base, changes):
                     break
-                continue                     # Esc/refused: the list keeps its edits
+                # Esc/refused: the list keeps its edits, over a FRESH read (Q18)
+                view, base = _fresh_view()
+                continue
 
             elif choice == "broker":
                 new_broker = self.ctx.dialog.inputbox(
@@ -282,9 +295,13 @@ class MQTTConfigureMixin:
                     "Nothing is written yet — 'Cancel' discards this change.")
 
             elif choice == "save":
-                if self._commit(base, changes, "Saved", "MQTT configuration saved.\n\n"
+                if self._commit(view, base, changes, "Saved", "MQTT configuration saved.\n\n"
                                 "Restart the subscriber for changes to take effect."):
                     break
+                # not saved (a conflict abandoned, a refusal): back to the list
+                # over a FRESH read — base and password_saved/password_fp
+                # re-derived together, never a half-mutated base (Q18, r3 #5)
+                view, base = _fresh_view()
 
     def _local_channel_note(self, preset: Dict[str, Any]) -> str:
         from monitoring import mqtt_settings
@@ -302,7 +319,7 @@ class MQTTConfigureMixin:
                     "name) — listening on every channel (+)")
         return "Channel: could NOT read the radio — listening on every channel (+)"
 
-    def _commit_preset(self, base, preset, password, kept_auto, title, body) -> bool:
+    def _commit_preset(self, view, base, preset, password, kept_auto, title, body) -> bool:
         """A preset is an explicit choice of EVERY field it sets, its
         credentials included — pinned, never dropped as "equal to what the
         screen opened", so a disk another writer changed meanwhile is a
@@ -313,7 +330,7 @@ class MQTTConfigureMixin:
                    if k not in AUTO_KEYS}
         _put_password(changes, password, mqtt_settings.account(preset))
         changes.update(kept_auto)
-        return self._commit(base, changes, title, body)
+        return self._commit(view, base, changes, title, body)
 
     # -- the password step (Q3/Q7/Q8) ----------------------------------------
 
@@ -362,12 +379,18 @@ class MQTTConfigureMixin:
 
     # -- the commit loop: answer every refusal, write nothing silently --------
 
-    def _commit(self, base: Dict[str, Any], changes: Dict[str, Any],
+    def _commit(self, view, base: Dict[str, Any], changes: Dict[str, Any],
                 title: str, body: str) -> bool:
+        """Save ``changes`` over ``base`` (the view's intent, maybe resolved);
+        ``view.password_fp`` says which saved password the screen opened with
+        (Q17). Works on ``base`` and a local fingerprint only — a False
+        return means the caller re-reads (Q18)."""
         from monitoring import mqtt_settings
         reset = False
+        password_fp = view.password_fp
         while True:
-            res = save_mqtt_changes(base, changes, reset=reset)
+            res = save_mqtt_changes(base, changes, reset=reset,
+                                    password_fp=password_fp)
             if res.ok:
                 self._report_saved(res.intent, title, body)
                 return True
@@ -393,7 +416,10 @@ class MQTTConfigureMixin:
                          ("saved", f"Keep the saved value ({_show(saved)})")])
                     if pick not in ("mine", "saved"):
                         return False
-                    base[k] = saved
+                    if k == "password":          # Q17: answer with what is saved NOW
+                        password_fp = res.password_fp
+                    else:
+                        base[k] = saved
                     if pick == "saved":
                         changes.pop(k, None)
                 continue
@@ -513,7 +539,7 @@ class MQTTConfigureMixin:
             return False
         form["channel"] = channel.strip() or "LongFast"
 
-        return self._commit(base, form, "Private Broker Configured",
+        return self._commit(view, base, form, "Private Broker Configured",
                      f"Root topic '{root_topic.strip() or 'msh/US/2/e'}' determines "
                      "node scope.\nRestart the MQTT subscriber to apply.")
 

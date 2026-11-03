@@ -427,9 +427,11 @@ def _tui(tmp_path):
 def test_tui_load_then_save_is_a_fixed_point(tmp_path):
     tui_mqtt, p = _tui(tmp_path)
     with p:
-        assert tui_mqtt.save_mqtt_changes(tui_mqtt.load_mqtt_config(), {
+        view = tui_mqtt.load_mqtt_editable()     # Q17: a password needs its fp
+        assert tui_mqtt.save_mqtt_changes(dict(view.intent), {
             "broker": "b.example", "port": 1883, "channel": "Ops",
-            "username": "u", "password": "p", "auto_start": True}).ok
+            "username": "u", "password": "p", "auto_start": True},
+            password_fp=view.password_fp).ok
         first = (tmp_path / ms.FILENAME).read_bytes()
         # F8 Q3: what a screen loads carries no password, and an empty change
         # set rewrites the same bytes (the password is kept, not carried)

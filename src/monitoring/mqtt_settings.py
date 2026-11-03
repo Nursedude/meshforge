@@ -23,6 +23,8 @@ writer (``utils.paths.atomic_write_text_preserving``) — never a copy of it.
 """
 import contextlib
 import fcntl
+import hashlib
+import hmac
 import json
 import os
 import time
@@ -74,6 +76,9 @@ class SaveResult:
     # password_owner_mismatch: the account being WRITTEN — answer with a
     # Secret for exactly this account (review r2 #1)
     account: Optional[Tuple[str, str]] = None
+    # conflict on "password" (Q17): the fingerprint of the password saved
+    # NOW — a screen that resolves the conflict answers with it
+    password_fp: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -93,6 +98,20 @@ class Editable:
     password_saved: bool = False
     error: Optional[str] = None
     legacy: bool = False
+    # which saved password the screen opened with (Q17) — a fingerprint,
+    # never the value; pass it to save_changes(base_password_fp=...)
+    password_fp: str = ""
+
+
+# Per-process key: a fingerprint is compared only inside the process that
+# made it (a screen and its own save), and is useless to anyone reading it.
+_FP_KEY = os.urandom(16)
+
+
+def password_fingerprint(password: str) -> str:
+    """An opaque tag for a password (F8 Q17) — equal iff the passwords are."""
+    return hmac.new(_FP_KEY, str(password).encode("utf-8"),
+                    hashlib.sha256).hexdigest()[:24]
 
 
 def defaults() -> Dict[str, Any]:
@@ -310,10 +329,12 @@ def editable(loaded: Loaded) -> Editable:
     """The screen's view of ``loaded`` (F8 Q3): never the password itself.
     absent/unreadable -> the defaults (so it can be shown and fixed)."""
     if loaded.state == "ok":
+        pw = loaded.intent.get("password", "")
         return Editable("ok", public_view(loaded.intent),
-                        password_saved=bool(loaded.intent.get("password")),
-                        legacy=loaded.legacy)
-    return Editable(loaded.state, public_view(defaults()), error=loaded.error)
+                        password_saved=bool(pw), legacy=loaded.legacy,
+                        password_fp=password_fingerprint(pw))
+    return Editable(loaded.state, public_view(defaults()), error=loaded.error,
+                    password_fp=password_fingerprint(defaults()["password"]))
 
 
 def same(a: Any, b: Any) -> bool:
@@ -323,7 +344,8 @@ def same(a: Any, b: Any) -> bool:
 
 def save_changes(config_dir: Path, base: Dict[str, Any], changes: Dict[str, Any],
                  write: Writer, lock_timeout: float = LOCK_TIMEOUT_S,
-                 reset: bool = False) -> SaveResult:
+                 reset: bool = False,
+                 base_password_fp: Optional[str] = None) -> SaveResult:
     """Apply only what a screen CHANGED onto the file as it is NOW (F8 Q2).
 
     ``base`` is the screen's ``editable().intent`` from when it opened;
@@ -346,6 +368,14 @@ def save_changes(config_dir: Path, base: Dict[str, Any], changes: Dict[str, Any]
     takes the normal path, nothing overwritten), the same password-account
     rules, and ``_write`` keeps the bytes as ``.unreadable.<n>``. All
     refusals write nothing.
+
+    The password joins the both-sides check (Q17) by FINGERPRINT:
+    ``base_password_fp`` is the screen's ``editable().password_fp``. A
+    password set or cleared here while the saved one changed since the
+    screen opened (to a different value) is a ``conflict`` on "password",
+    shown without either value; ``SaveResult.password_fp`` is what to answer
+    with. Sending a password without ``base_password_fp`` is refused
+    (``invalid``) — an unchecked password write is what F8 was.
     """
     config_dir = Path(config_dir)
     refused = _missing_parent(config_dir)
@@ -353,13 +383,24 @@ def save_changes(config_dir: Path, base: Dict[str, Any], changes: Dict[str, Any]
         return refused
     try:
         return _save_changes_locked(config_dir, base, changes, write,
-                                    lock_timeout, reset)
+                                    lock_timeout, reset, base_password_fp)
     except OSError as e:          # the lock itself (review r1 #4)
         return _lock_error(config_dir, e)
 
 
+def _pw_label(pw: str, mine: bool) -> str:
+    if not pw:
+        return "(no password)" if not mine else "(clear it - no password)"
+    return "(the password you entered)" if mine else "(a password saved elsewhere)"
+
+
 def _save_changes_locked(config_dir, base, changes, write, lock_timeout,
-                         reset) -> SaveResult:
+                         reset, base_password_fp) -> SaveResult:
+    if "password" in changes and base_password_fp is None:
+        return SaveResult(False, code="invalid", errors=[
+            "password: sent without base_password_fp (which saved password "
+            "the screen opened with) — it cannot be checked; nothing was written"],
+            error="password: sent without base_password_fp — nothing was written")
     with _locked(config_dir, lock_timeout) as held:
         if not held:
             return _busy(config_dir)
@@ -386,8 +427,16 @@ def _save_changes_locked(config_dir, base, changes, write, lock_timeout,
                      if k != "password" and k in base
                      and not same(base[k], current.get(k))
                      and not same(v, current.get(k))}
+        saved_pw = current.get("password", "")
+        saved_fp = password_fingerprint(saved_pw)
+        if not keep and base_password_fp != saved_fp \
+                and password_fingerprint(supplied) != saved_fp:
+            conflicts["password"] = (_pw_label(saved_pw, False),
+                                     _pw_label(supplied, True))
         if conflicts:
-            return SaveResult(False, code="conflict", conflicts=conflicts, error=(
+            return SaveResult(False, code="conflict", conflicts=conflicts,
+                              password_fp=saved_fp if "password" in conflicts else None,
+                              error=(
                 "changed elsewhere since this screen opened: " + ", ".join(
                     f"{k} (saved: {s!r}, yours: {y!r})" for k, (s, y) in conflicts.items())
                 + " — nothing was written"))

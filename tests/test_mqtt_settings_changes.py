@@ -45,6 +45,13 @@ def _base(d):
     return ms.editable(ms.load(d))
 
 
+def _sc(d, view, changes, w=None, **kw):
+    """save_changes as a SCREEN calls it: the view's intent AND the
+    fingerprint of the password it opened with (Q17)."""
+    return ms.save_changes(d, view.intent, changes, w or W,
+                           base_password_fp=view.password_fp, **kw)
+
+
 # --- Q3: the screen never holds the saved password -------------------------
 
 def test_editable_drops_the_password_and_says_whether_one_is_saved(tmp_path):
@@ -90,13 +97,13 @@ def test_same_account_keeps_the_saved_password_when_absent_from_changes(tmp_path
 
 def test_an_explicit_empty_password_clears_it(tmp_path):
     _seed(tmp_path)
-    assert ms.save_changes(tmp_path, _base(tmp_path).intent, {"password": ""}, W).ok
+    assert _sc(tmp_path, _base(tmp_path), {"password": ""}).ok
     assert _disk(tmp_path)["password"] == ""
 
 
 def test_a_new_password_is_written(tmp_path):
     _seed(tmp_path)
-    assert ms.save_changes(tmp_path, _base(tmp_path).intent, {"password": "n3w"}, W).ok
+    assert _sc(tmp_path, _base(tmp_path), {"password": "n3w"}).ok
     assert _disk(tmp_path)["password"] == "n3w"
 
 
@@ -116,8 +123,8 @@ def test_Q7_changing_the_account_with_a_kept_password_refuses_and_writes_nothing
 
 def test_Q7_changing_the_account_with_an_answer_saves(tmp_path):
     _seed(tmp_path)
-    res = ms.save_changes(tmp_path, _base(tmp_path).intent,
-                          {"broker": "mqtt.b.example", "password": ""}, W)
+    res = _sc(tmp_path, _base(tmp_path),
+                          {"broker": "mqtt.b.example", "password": ""})
     assert res.ok and _disk(tmp_path)["password"] == ""
 
 
@@ -284,10 +291,14 @@ def test_r1_2_a_supplied_password_is_refused_for_an_account_it_was_not_entered_f
     password too, not only a kept one)."""
     _seed(tmp_path)
     stale = _base(tmp_path)
-    assert ms.save_changes(tmp_path, _base(tmp_path).intent,
-                           {"broker": "mqtt.b.example", "password": ""}, W).ok
+    assert _sc(tmp_path, _base(tmp_path),
+                           {"broker": "mqtt.b.example", "password": ""}).ok
     before = (tmp_path / ms.FILENAME).read_bytes()
-    res = ms.save_changes(tmp_path, stale.intent, {"password": "for-A"}, W)
+    res = _sc(tmp_path, stale, {"password": "for-A"})
+    # the saved password changed too (cleared): Q17 asks about that FIRST
+    assert not res.ok and res.code == "conflict" and "password" in res.conflicts
+    stale.password_fp = res.password_fp        # "use mine"
+    res = _sc(tmp_path, stale, {"password": "for-A"})
     assert not res.ok and res.code == "password_owner_mismatch"
     assert (tmp_path / ms.FILENAME).read_bytes() == before
 
@@ -295,8 +306,8 @@ def test_r1_2_a_supplied_password_is_refused_for_an_account_it_was_not_entered_f
 def test_r1_2_a_supplied_password_for_the_written_account_saves(tmp_path):
     _seed(tmp_path)
     stale = _base(tmp_path)
-    assert ms.save_changes(tmp_path, _base(tmp_path).intent, {"channel": "Other"}, W).ok
-    assert ms.save_changes(tmp_path, stale.intent, {"password": "n3w"}, W).ok
+    assert _sc(tmp_path, _base(tmp_path), {"channel": "Other"}).ok
+    assert _sc(tmp_path, stale, {"password": "n3w"}).ok
     assert _disk(tmp_path)["password"] == "n3w"
 
 
@@ -333,26 +344,28 @@ def test_r1_9_the_screen_helpers_are_public():
 def test_r2_1_a_refusal_names_the_account_being_written_and_its_answer_saves(tmp_path):
     _seed(tmp_path)
     stale = _base(tmp_path)
-    assert ms.save_changes(tmp_path, _base(tmp_path).intent,
-                           {"username": "xavier", "password": ""}, W).ok
+    assert _sc(tmp_path, _base(tmp_path),
+                           {"username": "xavier", "password": ""}).ok
     typed = ms.Secret("for-alice", ms.account(stale.intent))
-    res = ms.save_changes(tmp_path, stale.intent, {"password": typed}, W)
+    res = _sc(tmp_path, stale, {"password": typed})
+    assert not res.ok and res.code == "conflict"     # Q17: cleared elsewhere
+    stale.password_fp = res.password_fp
+    res = _sc(tmp_path, stale, {"password": typed})
     assert not res.ok and res.code == "password_owner_mismatch"
     assert res.account == ("mqtt.a.example", "xavier")
-    res = ms.save_changes(tmp_path, stale.intent,
-                          {"password": ms.Secret("for-x", res.account)}, W)
+    res = _sc(tmp_path, stale,
+                          {"password": ms.Secret("for-x", res.account)})
     assert res.ok and _disk(tmp_path)["password"] == "for-x"
 
 
 def test_r2_2_a_secret_typed_for_B_is_never_written_for_C(tmp_path):
     _seed(tmp_path)
     b_acct = ("mqtt.b.example", "alice")
-    assert ms.save_changes(tmp_path, _base(tmp_path).intent,
-                           {"broker": "mqtt.c.example", "password": ""}, W).ok
+    assert _sc(tmp_path, _base(tmp_path),
+               {"broker": "mqtt.c.example", "password": ""}).ok
     # the screen "kept the saved value" for broker: base moved to C, broker
     # dropped — but the secret still names B
-    base = {**_base(tmp_path).intent}
-    res = ms.save_changes(tmp_path, base, {"password": ms.Secret("pwB", b_acct)}, W)
+    res = _sc(tmp_path, _base(tmp_path), {"password": ms.Secret("pwB", b_acct)})
     assert not res.ok and res.code == "password_owner_mismatch"
     assert _disk(tmp_path)["password"] == ""
 
@@ -372,8 +385,8 @@ def test_r2_7_a_first_ever_save_is_locked_too(tmp_path):
 def test_r2_a_secret_value_is_what_is_written_never_its_repr(tmp_path):
     _seed(tmp_path)
     acct = ms.account(A)
-    assert ms.save_changes(tmp_path, _base(tmp_path).intent,
-                           {"password": ms.Secret("v4lue", acct)}, W).ok
+    assert _sc(tmp_path, _base(tmp_path),
+                           {"password": ms.Secret("v4lue", acct)}).ok
     assert _disk(tmp_path)["password"] == "v4lue"
     assert "v4lue" not in repr(ms.Secret("v4lue", acct))
 
@@ -475,9 +488,9 @@ def test_r3_2_reset_refuses_a_secret_typed_for_another_account(tmp_path):
     d = tmp_path / "cfg"
     _unreadable(d)
     typed = ms.Secret("pwB", ("mqtt.b.example", "bob"))
-    res = ms.save_changes(d, _base(d).intent,
+    res = _sc(d, _base(d),
                           {"broker": "mqtt.c.example", "username": "bob",
-                           "password": typed}, W, reset=True)
+                           "password": typed}, reset=True)
     assert not res.ok and res.code == "password_owner_mismatch"
     assert res.account == ("mqtt.c.example", "bob")
     assert (d / ms.FILENAME).read_text() == "{not json"
@@ -487,7 +500,97 @@ def test_r3_2_reset_writes_a_secret_for_the_account_it_names(tmp_path):
     d = tmp_path / "cfg"
     _unreadable(d)
     acct = ("mqtt.c.example", "bob")
-    assert ms.save_changes(d, _base(d).intent,
+    assert _sc(d, _base(d),
                            {"broker": "mqtt.c.example", "username": "bob",
-                            "password": ms.Secret("pwC", acct)}, W, reset=True).ok
+                            "password": ms.Secret("pwC", acct)}, reset=True).ok
     assert _disk(d)["password"] == "pwC"
+
+
+# --- Q17: the password joins the both-sides check, by FINGERPRINT ----------
+
+PLAINTEXTS = ("s3cret", "pwA", "pwB")
+
+
+def _no_plaintext(res):
+    blob = repr(res) + (res.error or "") + repr(res.conflicts)
+    for p in PLAINTEXTS:
+        assert p not in blob, f"plaintext {p!r} leaked into the result"
+
+
+def test_Q17_editable_carries_a_fingerprint_not_the_password(tmp_path):
+    _seed(tmp_path)
+    view = _base(tmp_path)
+    assert view.password_fp and "s3cret" not in view.password_fp
+    assert view.password_fp == ms.password_fingerprint("s3cret")
+    assert ms.password_fingerprint("s3cret") != ms.password_fingerprint("other")
+    assert _base(tmp_path / "none").password_fp == ms.password_fingerprint("")
+
+
+def test_Q17_a_password_changed_on_disk_and_by_me_is_a_conflict(tmp_path):
+    _seed(tmp_path)
+    a = _base(tmp_path)
+    b = _base(tmp_path)
+    assert ms.save_changes(tmp_path, b.intent, {"password": "pwB"}, W,
+                           base_password_fp=b.password_fp).ok
+    before = (tmp_path / ms.FILENAME).read_bytes()
+    res = ms.save_changes(tmp_path, a.intent, {"password": "pwA"}, W,
+                          base_password_fp=a.password_fp)
+    assert not res.ok and res.code == "conflict" and "password" in res.conflicts
+    assert res.password_fp == ms.password_fingerprint("pwB")
+    _no_plaintext(res)
+    assert (tmp_path / ms.FILENAME).read_bytes() == before
+
+
+def test_Q17_answering_with_the_current_fingerprint_writes_mine(tmp_path):
+    _seed(tmp_path)
+    a = _base(tmp_path)
+    b = _base(tmp_path)
+    assert ms.save_changes(tmp_path, b.intent, {"password": "pwB"}, W,
+                           base_password_fp=b.password_fp).ok
+    res = ms.save_changes(tmp_path, a.intent, {"password": "pwA"}, W,
+                          base_password_fp=a.password_fp)
+    assert ms.save_changes(tmp_path, a.intent, {"password": "pwA"}, W,
+                           base_password_fp=res.password_fp).ok
+    assert _disk(tmp_path)["password"] == "pwA"
+
+
+def test_Q17_clearing_over_a_password_changed_on_disk_is_a_conflict(tmp_path):
+    _seed(tmp_path)
+    a = _base(tmp_path)
+    b = _base(tmp_path)
+    assert ms.save_changes(tmp_path, b.intent, {"password": "pwB"}, W,
+                           base_password_fp=b.password_fp).ok
+    res = ms.save_changes(tmp_path, a.intent, {"password": ""}, W,
+                          base_password_fp=a.password_fp)
+    assert not res.ok and res.code == "conflict" and "password" in res.conflicts
+    assert _disk(tmp_path)["password"] == "pwB"
+
+
+def test_Q17_both_sides_setting_the_same_password_is_no_conflict(tmp_path):
+    _seed(tmp_path)
+    a = _base(tmp_path)
+    b = _base(tmp_path)
+    assert ms.save_changes(tmp_path, b.intent, {"password": "pwB"}, W,
+                           base_password_fp=b.password_fp).ok
+    assert ms.save_changes(tmp_path, a.intent, {"password": "pwB"}, W,
+                           base_password_fp=a.password_fp).ok
+
+
+def test_Q17_a_disk_password_change_survives_my_unrelated_save(tmp_path):
+    _seed(tmp_path)
+    a = _base(tmp_path)
+    b = _base(tmp_path)
+    assert ms.save_changes(tmp_path, b.intent, {"password": "pwB"}, W,
+                           base_password_fp=b.password_fp).ok
+    assert ms.save_changes(tmp_path, a.intent, {"port": 1884}, W).ok
+    assert _disk(tmp_path)["password"] == "pwB"
+
+
+def test_Q17_a_password_sent_without_its_fingerprint_is_refused(tmp_path):
+    """A screen that sends a password but not WHICH saved password it opened
+    with cannot be checked — refuse loudly, never skip the check (hfm #3)."""
+    _seed(tmp_path)
+    before = (tmp_path / ms.FILENAME).read_bytes()
+    res = ms.save_changes(tmp_path, _base(tmp_path).intent, {"password": "pwA"}, W)
+    assert not res.ok and res.code == "invalid" and "base_password_fp" in res.error
+    assert (tmp_path / ms.FILENAME).read_bytes() == before

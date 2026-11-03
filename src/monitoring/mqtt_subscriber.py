@@ -1020,12 +1020,16 @@ def save_settings(intent: Dict[str, Any]) -> "mqtt_settings.SaveResult":
 
 
 def save_settings_changes(base: Dict[str, Any], changes: Dict[str, Any],
-                          reset: bool = False) -> "mqtt_settings.SaveResult":
+                          reset: bool = False,
+                          base_password_fp: Optional[str] = None
+                          ) -> "mqtt_settings.SaveResult":
     """What a SCREEN calls (F8 Q2): only the fields the operator changed;
-    ``reset`` = the explicit Reset over an unreadable file (r3 #1)."""
+    ``reset`` = the explicit Reset over an unreadable file (r3 #1);
+    ``base_password_fp`` = the view's ``password_fp`` (Q17)."""
     from utils.paths import atomic_write_text_preserving
     return mqtt_settings.save_changes(mqtt_config_dir(), base, changes,
-                                      atomic_write_text_preserving, reset=reset)
+                                      atomic_write_text_preserving, reset=reset,
+                                      base_password_fp=base_password_fp)
 
 
 # Singleton instance management
