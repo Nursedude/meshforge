@@ -112,3 +112,24 @@ password — the operator is asked first. Esc never writes.
 conflict order (no conflict check remains). Model confidence in V1 is
 BELIEVED — the same reasoning produced the Q18 advice; the reviewer brief
 must not carry it.
+
+### F8 v2 build — 2026-11-03 (Opus 5.5) — BUILT + reviewed r1; NOT deployed (V14 brake)
+
+- MF `75543842` (build) + `038c768d` (review r1 fixes); MA `ce853c9f` + `cd690b24`
+  (byte copy + INTERIM per-save lease binding — MA behaviour unchanged; the
+  stale-screen class stays OPEN in MA until its TUI twin holds the lease).
+- Evidence: full suite rc 0 (17512 passed) on the r1 tree; MA suite rc 0
+  (9318); 15/15 mutants caught on the build; CI success for `75543842`
+  (run 41689112766); live sudo drill A/B for r1 #1 (old: dir uid=0, operator
+  save refused; new: uid=1000, saved).
+- Review r1 (Fable, contextless, by running): NO V13-class finding (searched,
+  not proven absent). Fixed in-round: #1 root-created config dir, #2 Esc in
+  the private form kept list edits, #3 unreadable-file Q19 ask, #5 handback
+  witness, #6 log wording, #7 half-built lease. LEFT: #4 a post-replace chmod
+  error reads "NOT saved" while the file changed (exotic fs only).
+- Interpretation recorded (V2 x V7): under a lease, "readable at open, broke
+  later" can only be a lease-less writer; Save then offers the V2 rebuild only
+  when the file NO LONGER LOADS, and refuses (reopen) when it is readable.
+- NEXT: (1) non-author r2 on `038c768d` (fixes are reviewer-unseen); (2)
+  deploy (fleet_sync then fleet_pull) + the V11 live drill with two real
+  whiptail sessions on the manager box — operator; (3) MA TUI twin (V14).
