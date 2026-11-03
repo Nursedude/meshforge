@@ -364,11 +364,13 @@ def test_r3_1_reset_over_a_file_fixed_meanwhile_keeps_it(cfg):
 
 def test_local_preset_keeps_unasked_fields_and_saves(cfg):
     _seed(cfg)
-    h, _ = _handler(menus=["local"])
+    h, ctx = _handler(menus=["local"])
+    ctx.dialog._yesno_returns = [True]          # Q19: clearing s3cret is asked
     with patch.object(h, "_detect_local_channel", return_value=None):
         h._configure_mqtt()
     d = _disk(cfg)
     assert d["broker"] == "localhost" and d["auto_start"] is True
+    assert _calls(ctx, "yesno", "Saved Password")
 
 
 def test_broker_profile_apply_keeps_auto_start_and_writes_its_password(cfg):
@@ -377,9 +379,11 @@ def test_broker_profile_apply_keeps_auto_start_and_writes_its_password(cfg):
     from utils.broker_profiles import BrokerProfile
     h = BrokerHandler()
     h.set_context(make_handler_context())
+    h.ctx.dialog._yesno_returns = [True]        # Q19: replacing s3cret is asked
     p = BrokerProfile(name="t", broker_type="private", host="mqtt.p.example", port=1883, username="pat",
                       password="p-pw", root_topic="msh/HI/2/e", channel="Regional")
     h._apply_profile_to_mqtt(p)
+    assert _calls(h.ctx, "yesno", "Saved Password")
     d = _disk(cfg)
     assert (d["broker"], d["password"], d["auto_start"]) == ("mqtt.p.example", "p-pw", True)
 
@@ -522,6 +526,7 @@ def test_r1_8_a_busy_profile_apply_says_busy(cfg):
     from utils.broker_profiles import BrokerProfile
     h = BrokerHandler()
     h.set_context(make_handler_context())
+    h.ctx.dialog._yesno_returns = [True]        # Q19: clearing s3cret is asked
     p = BrokerProfile(name="t", broker_type="private", host="mqtt.p.example", port=1883)
     busy = ms.SaveResult(False, code="busy", error="another save is in progress — try again")
     with patch("monitoring.mqtt_subscriber.save_settings_changes", return_value=busy):
@@ -652,3 +657,140 @@ def test_Q18_an_abandoned_conflict_returns_to_a_fresh_read(cfg):
         "offered to keep a saved password that another screen cleared"
     d = _disk(cfg)
     assert (d["tls"], d["port"], d["password"]) == (False, 1885, ""), "Esc wrote"
+
+
+# --- round 4 (non-author, Fable) -> Q18r / Q19, operator 2026-11-02 17:58 HST ---------
+
+def _esc_then_save(cfg, a_script, a_inputs, b_writes, untouched):
+    """A edits, B saves meanwhile, A Esc's the conflict, then A presses Save
+    AGAIN. ``untouched(disk)`` is true until B has written."""
+    a, actx = _handler()
+    script = iter(a_script)
+    inputs = iter(a_inputs)
+
+    def menu(title, text, choices, **kw):
+        actx.dialog.calls.append(("menu", (title, text, choices), kw))
+        tag = next(script, None)
+        if title == "MQTT Configuration" and tag == "save" and untouched(_disk(cfg)):
+            assert ms.save(cfg, b_writes, W).ok
+        return tag
+    actx.dialog.menu = menu
+    actx.dialog.inputbox = lambda title, text, init="", **kw: next(inputs, init)
+    a._configure_mqtt()
+    return actx
+
+
+def test_Q18r_an_escd_field_conflict_is_dropped_never_saved_on_the_next_save(cfg):
+    _seed(cfg)
+    ctx = _esc_then_save(cfg, ["port", "save", None, "save"], ["1884"],
+                         {**A, "port": 1885}, lambda d: d["port"] == 1883)
+    assert len(_calls(ctx, "menu", "Changed Elsewhere: port")) == 1
+    assert _disk(cfg)["port"] == 1885, "the abandoned edit overwrote B on the next Save"
+
+
+def test_Q18r_an_escd_password_conflict_is_dropped_never_saved_on_the_next_save(cfg):
+    _seed(cfg)
+    ctx = _esc_then_save(cfg, ["auth", "new", "save", None, "save"], ["alice", "pwA"],
+                         {**A, "password": "pwB"}, lambda d: d["password"] == "s3cret")
+    assert len(_calls(ctx, "menu", "Changed Elsewhere: password")) == 1
+    assert _disk(cfg)["password"] == "pwB", "the abandoned password overwrote B's"
+
+
+def test_Q18r_a_non_conflicting_edit_survives_the_esc(cfg):
+    _seed(cfg)
+    _esc_then_save(cfg, ["channel", "port", "save", None, "save"], ["Ops", "1884"],
+                   {**A, "port": 1885}, lambda d: d["port"] == 1883)
+    d = _disk(cfg)
+    assert (d["port"], d["channel"]) == (1885, "Ops")
+
+
+def _pw_question(ctx):
+    return [c for c in ctx.dialog.calls if c[0] == "yesno" and "password" in c[1][1].lower()]
+
+
+@pytest.mark.parametrize("row", ["local", "public"])
+def test_Q19_a_preset_that_would_replace_a_saved_password_asks_and_no_writes_nothing(cfg, row):
+    _seed(cfg)
+    before = (cfg / ms.FILENAME).read_bytes()
+    h, ctx = _handler(menus=[row])
+    ctx.dialog._yesno_returns = [False]
+    with patch.object(h, "_detect_local_channel", return_value=None):
+        h._configure_mqtt()
+    asked = _pw_question(ctx)
+    assert asked and "alice@mqtt.a.example" in asked[0][1][1], "not asked first (Q14)"
+    assert "s3cret" not in repr(asked)
+    assert (cfg / ms.FILENAME).read_bytes() == before, "No wrote"
+
+
+def test_Q19_yes_applies_the_preset(cfg):
+    _seed(cfg)
+    h, ctx = _handler(menus=["local"])
+    ctx.dialog._yesno_returns = [True]
+    with patch.object(h, "_detect_local_channel", return_value=None):
+        h._configure_mqtt()
+    d = _disk(cfg)
+    assert (d["broker"], d["password"]) == ("localhost", "")
+
+
+def test_Q19_no_saved_password_means_no_question(cfg):
+    _seed(cfg, {**A, "password": ""})
+    h, ctx = _handler(menus=["local"])
+    with patch.object(h, "_detect_local_channel", return_value=None):
+        h._configure_mqtt()
+    assert not _pw_question(ctx)
+    assert _disk(cfg)["broker"] == "localhost"
+
+
+def _profile_handler():
+    from handlers.broker import BrokerHandler
+    h = BrokerHandler()
+    ctx = make_handler_context()
+    h.set_context(ctx)
+    return h, ctx
+
+
+def test_Q19_a_profile_with_a_blank_password_for_the_same_account_asks(cfg):
+    _seed(cfg)
+    from utils.broker_profiles import BrokerProfile
+    h, ctx = _profile_handler()
+    ctx.dialog._yesno_returns = [False]
+    p = BrokerProfile(name="t", broker_type="private", host="mqtt.a.example", port=1883,
+                      username="alice", password="", root_topic="msh/HI/2/e",
+                      channel="Regional")
+    h._apply_profile_to_mqtt(p)
+    assert _pw_question(ctx), "a blank-password profile wiped the saved one unasked"
+    assert _disk(cfg)["password"] == "s3cret"
+
+
+def test_Q19_a_profile_with_the_saved_password_needs_no_question(cfg):
+    _seed(cfg)
+    from utils.broker_profiles import BrokerProfile
+    h, ctx = _profile_handler()
+    p = BrokerProfile(name="t", broker_type="private", host="mqtt.a.example", port=1884,
+                      username="alice", password="s3cret", root_topic="msh/HI/2/e",
+                      channel="Regional")
+    h._apply_profile_to_mqtt(p)
+    assert not _pw_question(ctx)
+    assert _disk(cfg)["port"] == 1884
+
+
+def test_r4_3_reset_is_asked_again_if_the_file_breaks_again(cfg):
+    (cfg / ms.FILENAME).write_text("{garbage")
+    a, actx = _handler()
+    script = iter(["root", "save", "reset", "mine", "back"])
+    inputs = iter(["msh/X/2/e"])
+
+    def menu(title, text, choices, **kw):
+        actx.dialog.calls.append(("menu", (title, text, choices), kw))
+        tag = next(script, None)
+        if title == "Settings Unreadable" and tag == "reset":
+            (cfg / ms.FILENAME).unlink()
+            assert ms.save(cfg, {**A, "root_topic": "msh/Y/2/e"}, W).ok   # fixed meanwhile
+        if title.startswith("Changed Elsewhere"):
+            (cfg / ms.FILENAME).write_text("{garbage again")             # broken again
+        return tag
+    actx.dialog.menu = menu
+    actx.dialog.inputbox = lambda title, text, init="", **kw: next(inputs, init)
+    a._configure_mqtt()
+    assert len(_calls(actx, "menu", "Settings Unreadable")) == 2, "a re-broken file was read as defaults unasked"
+    assert (cfg / ms.FILENAME).read_text() == "{garbage again"

@@ -743,8 +743,16 @@ class BrokerHandler(BaseHandler):
         # CHANGES only (F8 Q2): the profile's fields — its own credentials
         # included, so no password is carried across accounts — and nothing
         # else; auto_start/auto_start_telemetry stay whatever is saved.
+        from handlers._mqtt_configure import confirm_password_replace
         view = load_mqtt_editable()
-        res = save_mqtt_changes(dict(view.intent), profile.to_intent(),
+        changes = profile.to_intent()
+        if not confirm_password_replace(self.ctx, view, view.intent,
+                                        changes.get("password") or "",
+                                        f"Apply profile {profile.name}"):
+            logger.info("Broker profile '%s' NOT applied — the saved MQTT "
+                        "password was kept (operator said No)", profile.name)
+            return                                   # Q19: No writes nothing
+        res = save_mqtt_changes(dict(view.intent), changes,
                                 password_fp=view.password_fp)   # Q17
         if res.code in ("invalid", "conflict", "unreadable"):
             # refuse at the boundary, naming the field (MQTT-CFG) — a profile

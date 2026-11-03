@@ -37,6 +37,8 @@ never writes.
 | Q16 | `save()` stays as the internal full write (Reset + inside `save_changes`); a guard fails if a TUI handler writes any other way. |
 | Q17 | (r3 #3, operator 2026-11-02 pm) The password joins the Q10 both-sides check: the owner keeps a FINGERPRINT of the saved password (never the value) in what a screen opens with; a password changed on disk since the screen opened AND by the screen refuses like any field. |
 | Q18 | (r3 #5, operator 2026-11-02 pm) A conflict resolved then abandoned (Esc) returns to the list with a FRESH read of the file — base and password_saved re-derived together, never a half-mutated base. |
+| Q18r | (round-4 non-author finding 1, operator 2026-11-02 17:58 HST — REVISES Q18) Esc at a "Changed Elsewhere" question DROPS the still-unanswered conflicting edits (password included) from the screen's changes; the list then re-reads fresh. Q18 as first built re-anchored a kept edit to the fresh read, so the next Save overwrote the other writer silently — the F8 class again. |
+| Q19 | (round-4 finding 2, operator 2026-11-02 17:58 HST) A preset (Local/Public) or a broker-profile apply that would REPLACE or CLEAR a saved password asks first (yes/no naming the account); No writes nothing. Q14 sentence 2 has no preset exemption. |
 
 ## Next session (blockers before deploy)
 

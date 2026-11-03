@@ -35,6 +35,23 @@ KEEP = object()
 
 # --- the one door to the file (Q16) ------------------------------------------
 
+def confirm_password_replace(ctx, view, base: Dict[str, Any], new_password: str,
+                             what: str) -> bool:
+    """Q19 (Q14 sentence 2): a preset or profile that would REPLACE or CLEAR
+    the saved password asks first, naming the account it belongs to. Never
+    shows either password; compares fingerprints (Q17). True = go ahead."""
+    from monitoring import mqtt_settings
+    if not view.password_saved or \
+            mqtt_settings.password_fingerprint(new_password) == view.password_fp:
+        return True
+    effect = ("CLEAR it (no password)" if not new_password
+              else "REPLACE it with a different password")
+    return bool(ctx.dialog.yesno(
+        "Saved Password",
+        f"A password is saved for {mqtt_settings.account_label(base)}.\n\n"
+        f"'{what}' will {effect}.\n\nContinue? (No writes nothing.)"))
+
+
 def _fresh_view():
     """(view, base): a fresh read and a private copy of its intent — taken
     TOGETHER, so base and password_saved/password_fp never disagree (Q18)."""
@@ -324,8 +341,11 @@ class MQTTConfigureMixin:
         credentials included — pinned, never dropped as "equal to what the
         screen opened", so a disk another writer changed meanwhile is a
         SHOWN conflict, not a silent merge of the preset's password onto
-        their broker (review r1 #1). Un-set fields (auto_start…) are untouched."""
+        their broker (review r1 #1). Un-set fields (auto_start…) are untouched.
+        Replacing or clearing a SAVED password is asked first (Q19)."""
         from monitoring import mqtt_settings
+        if not confirm_password_replace(self.ctx, view, base, password, title):
+            return False
         changes = {k: v for k, v in mqtt_settings.public_view(preset).items()
                    if k not in AUTO_KEYS}
         _put_password(changes, password, mqtt_settings.account(preset))
@@ -391,6 +411,7 @@ class MQTTConfigureMixin:
         while True:
             res = save_mqtt_changes(base, changes, reset=reset,
                                     password_fp=password_fp)
+            reset = False   # one Reset answers one unreadable read (round 4 #3)
             if res.ok:
                 self._report_saved(res.intent, title, body)
                 return True
@@ -407,7 +428,8 @@ class MQTTConfigureMixin:
                 _put_password(changes, pw, res.account)
                 continue
             if res.code == "conflict":
-                for k, (saved, yours) in res.conflicts.items():
+                pending = list(res.conflicts.items())
+                for i, (k, (saved, yours)) in enumerate(pending):
                     pick = self.ctx.dialog.menu(
                         f"Changed Elsewhere: {k}",
                         f"'{k}' was saved by another screen since this one "
@@ -415,6 +437,11 @@ class MQTTConfigureMixin:
                         [("mine", f"Use mine ({_show(yours)})"),
                          ("saved", f"Keep the saved value ({_show(saved)})")])
                     if pick not in ("mine", "saved"):
+                        # Q18r: the unanswered conflicting edits are DROPPED —
+                        # the caller re-reads, so a kept one would overwrite
+                        # the other writer on the next Save, unasked
+                        for unanswered, _ in pending[i:]:
+                            changes.pop(unanswered, None)
                         return False
                     if k == "password":          # Q17: answer with what is saved NOW
                         password_fp = res.password_fp
