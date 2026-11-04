@@ -324,3 +324,30 @@ saves `{new}` — every other profile and its password destroyed, no backup, suc
 ("Public Broker Set", "Profile Applied"). 6 `save_profiles` call sites; MA has a copy.
 Candidate shape (to grill, not decided): Q15's — tri-state load, refuse save over unreadable,
 explicit Reset keeping a `.unreadable.<n>` backup. Operator: "commit r6, then grill the wipe".
+
+### r7 — the profile-store WIPE fixed (Opus 5.5, author) — operator 2026-11-03: "your recs on all three - go"
+
+Rulings (all three recs): (1) a profile on disk that does not parse is CARRIED THROUGH a
+save byte-for-byte (never seen = never deleted; its `is_active` is cleared when another
+profile is active); (2) an UNREADABLE store (bad JSON, zero-byte, wrong shape, OSError)
+refuses every save — file untouched — and the Broker menu shows `⚠ PROFILE STORE
+UNREADABLE` + a `Reset Profile Store` item that renames it `.unreadable.<n>` (never
+deleted, Yes required); (3) writes go through `utils.paths.atomic_write_text` (unique temp,
+fsync, 0600 — the old fixed `.tmp` + no fsync is how a power cut makes the zero-byte corpse),
+and `load_profiles` tightens an existing group/world-readable store to 600 (live VolcanoAI
+store measured `664` 2026-11-03).
+- Also: `ensure_default_profiles` no longer shows UNSAVED defaults over an unreadable store
+  (the menu called it every pass — it would have overwritten the store just by opening);
+  a wrong-shape file no longer CRASHES the load (`AttributeError` on a list); every
+  "Save Failed" body names the unreadable state and the Reset.
+- API: `ProfileStoreStatus` (`absent`/`ok`/`unreadable` + `skipped`), `profile_store_status()`,
+  `reset_unreadable_profile_store()`. The 16 call sites are unchanged — the cure is at the
+  WRITE boundary.
+- Red-first: `tests/test_broker_profile_store_r7.py` 18 failed / 2 passed (controls) on
+  `ce203a13` (`git archive` copy, isolated HOME); 20/20 after.
+- Known limit: read-then-write is not locked (a second writer between the read and the
+  rename could still be overwritten) — single-writer TUI, accepted; name it if a daemon
+  ever writes this store.
+- OWED: non-author read; MeshAnchor twin (port its test-isolation gate first); deploy
+  + live check (plant a zero-byte store on one box → menu says UNREADABLE, setup refuses,
+  Reset keeps the backup; check the store's mode is 600 after the first open).

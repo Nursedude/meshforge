@@ -455,32 +455,95 @@ def _get_profiles_path() -> Path:
     return get_real_user_home() / ".config" / "meshforge" / PROFILES_FILENAME
 
 
+@dataclass
+class ProfileStoreStatus:
+    """What the profile store on disk IS — never inferred from an empty dict.
+
+    state: ``absent`` (no file — first run), ``ok`` (parsed), ``unreadable``
+    (bad JSON / wrong shape / OSError: every save REFUSES until Reset).
+    skipped: profiles present on disk that did not parse (a newer version's
+    field, a missing field) — carried through saves untouched (F8 v2 r7).
+    """
+    state: str
+    detail: str = ""
+    skipped: List[str] = field(default_factory=list)
+
+
+def _read_store(path: Path) -> Tuple[ProfileStoreStatus, Dict[str, Any]]:
+    """Read the raw store. Returns (status, raw profile dicts by name)."""
+    if not path.exists():
+        return ProfileStoreStatus("absent"), {}
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (ValueError, OSError) as e:   # JSONDecodeError/UnicodeDecodeError ⊂ ValueError
+        return ProfileStoreStatus("unreadable", f"{type(e).__name__}: {e}"), {}
+    if not isinstance(data, dict) or not isinstance(data.get("profiles", {}), dict):
+        return ProfileStoreStatus(
+            "unreadable", "not a profile store (wrong JSON shape)"), {}
+    return ProfileStoreStatus("ok"), dict(data.get("profiles", {}))
+
+
+def _parse_raw(raw: Dict[str, Any]) -> Tuple[Dict[str, BrokerProfile], List[str]]:
+    profiles, skipped = {}, []
+    for name, pdata in raw.items():
+        try:
+            profiles[name] = BrokerProfile(**pdata)
+        except TypeError as e:
+            logger.warning("Skipping malformed profile '%s' (kept on disk): %s", name, e)
+            skipped.append(name)
+    return profiles, skipped
+
+
+def profile_store_status() -> ProfileStoreStatus:
+    """The store's state, re-read now (the TUI shows it; saves obey it)."""
+    status, raw = _read_store(_get_profiles_path())
+    if status.state == "ok":
+        status.skipped = _parse_raw(raw)[1]
+    return status
+
+
 def load_profiles() -> Dict[str, BrokerProfile]:
     """Load broker profiles from config file.
+
+    An unreadable store loads as ``{}`` so callers never crash — but that
+    ``{}`` is NOT "no profiles": ``save_profiles`` refuses over it and
+    ``profile_store_status()`` says ``unreadable`` (hfm #1, F8 v2 r7).
 
     Returns:
         Dict mapping profile name to BrokerProfile
     """
-    profiles_path = _get_profiles_path()
-    profiles = {}
+    status, raw = _read_store(_get_profiles_path())
+    if status.state == "unreadable":
+        logger.error("Broker profile store unreadable (%s) — saves refused "
+                     "until Reset", status.detail)
+        return {}
+    _tighten_mode(_get_profiles_path())
+    return _parse_raw(raw)[0]
 
-    if profiles_path.exists():
-        try:
-            with open(profiles_path) as f:
-                data = json.load(f)
-            for name, pdata in data.get("profiles", {}).items():
-                try:
-                    profiles[name] = BrokerProfile(**pdata)
-                except TypeError as e:
-                    logger.warning("Skipping malformed profile '%s': %s", name, e)
-        except (json.JSONDecodeError, OSError) as e:
-            logger.error("Error loading broker profiles: %s", e)
 
-    return profiles
+def _tighten_mode(path: Path) -> None:
+    """The store holds passwords: a pre-r7 store was written at umask mode
+    (0664 measured live 2026-11-03). Tighten to 0600 on read — idempotent."""
+    try:
+        mode = path.stat().st_mode & 0o777
+        if mode & 0o077:
+            os.chmod(path, 0o600)
+            logger.warning("Broker profile store was mode %o (holds passwords) "
+                           "— tightened to 600: %s", mode, path)
+    except OSError as e:
+        logger.warning("Could not tighten broker profile store mode: %s", e)
 
 
 def save_profiles(profiles: Dict[str, BrokerProfile]) -> bool:
     """Save broker profiles to config file.
+
+    Refuses (returns False, file untouched) when the store on disk is
+    unreadable — a save over a failed read destroyed every profile
+    (pre-existing ``93727ab6``; F8 v2 r7). Profiles on disk that never parsed
+    are carried through byte-for-byte: the operator never saw them, so
+    their absence here is not a deletion. Written fsync'd, unique temp, 0600
+    (the store holds passwords).
 
     Args:
         profiles: Dict mapping profile name to BrokerProfile
@@ -489,26 +552,49 @@ def save_profiles(profiles: Dict[str, BrokerProfile]) -> bool:
         True if saved successfully
     """
     profiles_path = _get_profiles_path()
+    status, raw = _read_store(profiles_path)
+    if status.state == "unreadable":
+        logger.error("Refusing to save broker profiles over an unreadable "
+                     "store (%s): %s", status.detail, profiles_path)
+        return False
+    _, skipped = _parse_raw(raw)
+    any_active = any(p.is_active for p in profiles.values())
+    carried = {}
+    for name in skipped:
+        if name in profiles:
+            continue                      # the operator replaced it by name
+        entry = raw[name]
+        if any_active and isinstance(entry, dict) and entry.get("is_active"):
+            entry = {**entry, "is_active": False}
+        carried[name] = entry
+
+    data = {
+        "profiles": {**{name: asdict(p) for name, p in profiles.items()}, **carried},
+        "active_profile": next(
+            (name for name, p in profiles.items() if p.is_active), None
+        ),
+    }
     try:
-        profiles_path.parent.mkdir(parents=True, exist_ok=True)
-
-        data = {
-            "profiles": {name: asdict(p) for name, p in profiles.items()},
-            "active_profile": next(
-                (name for name, p in profiles.items() if p.is_active), None
-            ),
-        }
-
-        # Atomic write via temp file
-        tmp_path = profiles_path.with_suffix('.tmp')
-        with open(tmp_path, 'w') as f:
-            json.dump(data, f, indent=2)
-        tmp_path.rename(profiles_path)
-
+        atomic_write_text(profiles_path, json.dumps(data, indent=2))
         return True
     except OSError as e:
         logger.error("Error saving broker profiles: %s", e)
         return False
+
+
+def reset_unreadable_profile_store() -> Optional[Path]:
+    """Move an UNREADABLE store aside as ``<name>.unreadable.<n>`` (never
+    deleted) so setup can start fresh. Returns the backup path, or None when
+    the store is not unreadable (a readable store is never reset)."""
+    path = _get_profiles_path()
+    if _read_store(path)[0].state != "unreadable":
+        return None
+    n = 1
+    while (backup := path.with_name(f"{path.name}.unreadable.{n}")).exists():
+        n += 1
+    os.rename(path, backup)
+    logger.warning("Broker profile store reset; unreadable copy kept at %s", backup)
+    return backup
 
 
 def get_active_profile(profiles: Optional[Dict[str, BrokerProfile]] = None) -> Optional[BrokerProfile]:
@@ -788,10 +874,13 @@ def ensure_default_profiles() -> Dict[str, BrokerProfile]:
     Returns:
         Dict of all profiles (existing + newly created defaults)
     """
+    status = profile_store_status()
+    if status.state == "unreadable":
+        return {}                 # never show unsaved defaults over a failed read
     profiles = load_profiles()
 
-    # Create defaults if none exist
-    if not profiles:
+    # Create defaults only into a store that is really empty
+    if not profiles and not status.skipped:
         profiles["meshforge_private"] = create_private_profile()
         profiles["meshtastic_public"] = create_public_profile()
         save_profiles(profiles)

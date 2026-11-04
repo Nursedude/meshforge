@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
  get_active_profile, ensure_default_profiles, generate_mosquitto_conf,
  generate_mosquitto_acl, install_mosquitto_config, check_mosquitto_installed,
  check_mosquitto_running, restart_mosquitto, enable_mosquitto_at_boot,
- get_meshtastic_mqtt_setup_commands,
+ get_meshtastic_mqtt_setup_commands, profile_store_status,
+ reset_unreadable_profile_store,
  _HAS_BROKER_PROFILES) = safe_import(
     'utils.broker_profiles',
     'BrokerProfile', 'BrokerType', 'create_private_profile', 'create_public_profile',
@@ -33,7 +34,8 @@ logger = logging.getLogger(__name__)
     'get_active_profile', 'ensure_default_profiles', 'generate_mosquitto_conf',
     'generate_mosquitto_acl', 'install_mosquitto_config', 'check_mosquitto_installed',
     'check_mosquitto_running', 'restart_mosquitto', 'enable_mosquitto_at_boot',
-    'get_meshtastic_mqtt_setup_commands',
+    'get_meshtastic_mqtt_setup_commands', 'profile_store_status',
+    'reset_unreadable_profile_store',
 )
 
 
@@ -63,6 +65,7 @@ class BrokerHandler(BaseHandler):
             return
 
         while True:
+            store = profile_store_status()
             profiles = ensure_default_profiles()
             active = get_active_profile(profiles)
             active_name = active.display_name if active else "None"
@@ -83,21 +86,28 @@ class BrokerHandler(BaseHandler):
                 ("custom", "Add Custom Broker     Your own server"),
                 ("mosquitto", f"Mosquitto Service    {mosquitto_status}"),
                 ("radio", "Radio MQTT Setup      Configure device uplink"),
-                ("back", "Back"),
             ]
+            header = ("Manage MQTT broker for Meshtastic <-> RNS bridging.\n\n"
+                      "A private broker enables MeshForge as the central\n"
+                      "message hub between mesh networks.")
+            # F8 v2 r7: the store's real state, never an empty list that
+            # reads as "no profiles"
+            if store.state == "unreadable":
+                choices.insert(0, ("reset", "Reset Profile Store  UNREADABLE — keeps a backup"))
+                header = (f"⚠ PROFILE STORE UNREADABLE — {store.detail}\n"
+                          "Saves are refused so nothing is overwritten.\n\n" + header)
+            elif store.skipped:
+                header = (f"⚠ {len(store.skipped)} profile(s) on disk did not load "
+                          f"({', '.join(store.skipped)}) — kept untouched.\n\n" + header)
+            choices.append(("back", "Back"))
 
-            choice = self.ctx.dialog.menu(
-                "MQTT Broker Manager",
-                "Manage MQTT broker for Meshtastic <-> RNS bridging.\n\n"
-                "A private broker enables MeshForge as the central\n"
-                "message hub between mesh networks.",
-                choices
-            )
+            choice = self.ctx.dialog.menu("MQTT Broker Manager", header, choices)
 
             if choice is None or choice == "back":
                 break
 
             dispatch = {
+                "reset": ("Reset Profile Store", self._reset_profile_store),
                 "profiles": ("Broker Profiles", self._broker_profiles_menu),
                 "private": ("Private Broker Setup", self._setup_private_broker),
                 "public": ("Public Broker Setup", self._setup_public_broker),
@@ -110,6 +120,47 @@ class BrokerHandler(BaseHandler):
                 self.ctx.safe_call(*entry)
             else:
                 self.ctx.notify_unwired(choice, "BrokerHandler._broker_menu")
+
+    def _save_failed_text(self) -> str:
+        """The failure body for every profile save — names WHY when it can."""
+        store = profile_store_status()
+        if store.state == "unreadable":
+            return ("The broker profile store is UNREADABLE\n"
+                    f"({store.detail}).\n\n"
+                    "Nothing was written — the file is untouched.\n"
+                    "Broker Manager → Reset Profile Store keeps it as a\n"
+                    "backup and starts fresh.")
+        return "Could not write the broker profile to disk — change NOT saved."
+
+    def _reset_profile_store(self):
+        """Move an unreadable store aside (never deleted) — in-app remedy (MF018)."""
+        store = profile_store_status()
+        if store.state != "unreadable":
+            self.ctx.dialog.msgbox("Nothing to Reset",
+                                   "The broker profile store is readable — not reset.")
+            return
+        if self.ctx.dialog.yesno(
+                "Reset Profile Store?",
+                f"The broker profile store cannot be read:\n  {store.detail}\n\n"
+                "Reset moves it aside as a backup (it is NOT deleted) and\n"
+                "starts a fresh store with the default profiles.\n\n"
+                "Saved broker passwords inside it will need re-entering\n"
+                "unless you recover them from the backup.") is not True:
+            return
+        try:
+            backup = reset_unreadable_profile_store()
+        except OSError as e:
+            backup, err = None, str(e)
+        else:
+            err = "store was not unreadable when reset ran"
+        self.ctx.report_action(
+            backup is not None,
+            "Profile Store Reset",
+            f"Unreadable store kept at:\n  {backup}\n\n"
+            "A fresh store with the defaults is created on next open.",
+            "Reset Failed",
+            f"Could not move the store aside — nothing changed.\n{err}",
+        )
 
     def _broker_profiles_menu(self):
         """View and manage broker profiles."""
@@ -189,7 +240,7 @@ class BrokerHandler(BaseHandler):
                     ok,
                     "Activated", f"Profile '{name}' is now active.",
                     "Save Failed",
-                    "Could not write the broker profile to disk — change NOT saved.",
+                    self._save_failed_text(),
                 )
 
             elif choice == "apply":
@@ -223,7 +274,7 @@ class BrokerHandler(BaseHandler):
                         ok,
                         "Deleted", f"Profile '{name}' deleted.",
                         "Save Failed",
-                        "Could not write the broker profile to disk — change NOT saved.",
+                        self._save_failed_text(),
                     )
                     break
 
@@ -343,7 +394,7 @@ class BrokerHandler(BaseHandler):
             f"Region: {region}\n\n"
             f"Configure your Meshtastic radio:\n\n{cmds}",
             "Save Failed",
-            "Could not write the broker profile to disk — change NOT saved.",
+            self._save_failed_text(),
         )
 
         if saved_ok:      # r4 #3: a profile reported NOT saved is not applied
@@ -390,7 +441,7 @@ class BrokerHandler(BaseHandler):
             "Public broker enforces zero-hop policy\n"
             "(downlinked messages don't re-enter mesh).",
             "Save Failed",
-            "Could not write the broker profile to disk — change NOT saved.",
+            self._save_failed_text(),
         )
 
         if ok:            # r4 #3: a profile reported NOT saved is not applied
@@ -525,7 +576,7 @@ class BrokerHandler(BaseHandler):
             f"Channel: {channel}\n"
             f"Topic: {profile.topic_filter}",
             "Save Failed",
-            "Could not write the broker profile to disk — change NOT saved.",
+            self._save_failed_text(),
         )
 
         if ok:            # r4 #3: a profile reported NOT saved is not applied
