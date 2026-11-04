@@ -178,3 +178,47 @@ def test_F3_unknown_top_level_keys_survive_a_save(store):
     data = json.loads(store.read_text())
     assert data["schema_version"] == 2 and data["future"] == {"x": 1}
     assert sorted(data["profiles"]) == ["a", "b"]
+
+
+# ── r10b: the r10 non-author review (Fable 5.1, by running) ────────────────
+# F1 a refused Create said "nothing written" AND "Could not write"; F2 a
+# profile named `defaults` opened the Create dialog; F3 the Profiles screen
+# named setup items it does not have.
+
+def test_r10b_F1_refusal_over_a_filled_store_never_claims_a_failed_write(store):
+    h, ctx = _tui(yes=[True])
+    store.write_text(json.dumps({"profiles": {"a": _raw("a")}}))   # filled meanwhile
+    before = store.read_bytes()
+    h._create_default_profiles()
+    (box,) = [c[1] for c in ctx.dialog.calls if c[0] == "msgbox"]
+    assert "no longer empty" in box[1]
+    assert "Could not write" not in box[1]
+    assert store.read_bytes() == before
+
+
+@pytest.mark.skipif(ROOT, reason="root writes a 0500 dir")
+def test_r10b_F1_control_a_real_write_failure_still_says_so(store):
+    os.chmod(store.parent, 0o500)
+    try:
+        h, ctx = _tui(yes=[True])
+        h._create_default_profiles()
+    finally:
+        os.chmod(store.parent, 0o700)
+    (box,) = [c[1] for c in ctx.dialog.calls if c[0] == "msgbox"]
+    assert "Could not write" in box[1]
+
+
+def test_r10b_F2_a_profile_named_defaults_opens_its_own_detail(store):
+    store.write_text(json.dumps({"profiles": {"defaults": _raw("defaults")}}))
+    h, ctx = _tui(menu=["defaults", "back", "back"])
+    h._broker_profiles_menu()
+    assert _yesnos(ctx) == []
+    assert [m[0] for m in _menus(ctx)][1] == "Profile: defaults"
+
+
+def test_r10b_F3_profiles_screen_note_names_only_what_it_offers(store):
+    h, ctx = _tui(menu=["back"])
+    h._broker_profiles_menu()
+    (menu,) = _menus(ctx)
+    assert "setup item below" not in menu[1]
+    assert "Broker Manager" in menu[1]

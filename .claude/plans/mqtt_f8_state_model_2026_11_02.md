@@ -468,3 +468,32 @@ reviewer 2× `18 passed`; author re-ran — all 9 `test_F*` reproduce. Clean: r9
   red-first run on the OLD code (chmod u+rwx then find -delete; verified gone).
 - ROOT of F1/F2/F4 (and r7 F5, r8 #3): `ensure_default_profiles` AUTO-WRITES on render.
   **Operator ruling owed.** Fleet still on `8ed1700a`; r6–r9 pushed, not deployed.
+
+## F8 v2 r10 + review r10 + r10b (2026-11-04)
+
+- **r10 `b64f3a93`** (operator "Yes, go I'll follow your advice"): the
+  defaults auto-write is removed — screens load only; "Create Default
+  Profiles" is an explicit Yes/No item (r9 F1/F2); a JSON object with no
+  `profiles` key is `unreadable` (r9 F4); unknown top-level keys carried
+  (r9 F3). CI: first run CANCELLED at the 30-min job cap (every test ran,
+  no FAILURES; the `-rA` PASSES print crossed it), rerun SUCCESS 28m11s.
+  ⚠️ queued: the CI cap has ~2 min headroom — per-test timeout from a
+  `--durations` measurement, not a bigger cap.
+- **Review r10** (Fable 5.1 subagent, by running; 37/37 ×2,
+  `~/.local/share/meshforge/reviews/2026-11-03-f8v2/r10/`): no V13, no data
+  loss. F1 MED a refused Create said "nothing written" AND "Could not
+  write"; F2 LOW a profile named `defaults` opened Create; F3 LOW the
+  Profiles screen named setup items it lacks; F4 LOW (r8 F7, deliberate)
+  wording — opening a store **writes no BYTES**, it may still tighten the
+  file mode to 600 / chown it back (logged, not shown); F5 LOW a non-string
+  `active_profile` is replaced on save (→ store-format round).
+- **r10b**: F1 (one shared `DEFAULTS_WRITE_FAILED` constant; write-failure
+  text only when a write was attempted or the store is unreadable/denied),
+  F2 (a profile's own name wins over the `defaults` tag, which is offered
+  only over an empty store), F3 (per-screen note). Red-first 3 failed / 1
+  control passed on `b64f3a93`; the reviewer's F1–F3 now fail (cured),
+  its C1–C15 + F4/F5 still pass.
+- **Owed (fresh session):** a narrow non-author read of r10b → deploy
+  (fleet_sync THEN fleet_pull, honest_status exit 0) → live drill → MA twin
+  (port its test-isolation gate first). Queued: store-format round (r9
+  F5/F6, r10 F5, old F4 changed-since-read); F7–F9 deferred.

@@ -920,6 +920,8 @@ def get_meshtastic_mqtt_setup_commands(profile: BrokerProfile,
 # =============================================================================
 
 DEFAULT_PROFILE_NAMES = ("meshforge_private", "meshtastic_public")
+# r10b F1: the one refusal that ATTEMPTED a write — the TUI keys on it (hfm #5)
+DEFAULTS_WRITE_FAILED = "could not write the profile store"
 
 
 def create_default_profiles() -> Tuple[bool, str]:
@@ -943,6 +945,6 @@ def create_default_profiles() -> Tuple[bool, str]:
         DEFAULT_PROFILE_NAMES[1]: create_public_profile(),
     }
     if not save_profiles(profiles):
-        return False, "could not write the profile store"
+        return False, DEFAULTS_WRITE_FAILED
     logger.info("Created default broker profiles (operator confirmed)")
     return True, ""

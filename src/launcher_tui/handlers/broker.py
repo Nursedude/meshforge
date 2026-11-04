@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
  generate_mosquitto_acl, install_mosquitto_config, check_mosquitto_installed,
  check_mosquitto_running, restart_mosquitto, enable_mosquitto_at_boot,
  get_meshtastic_mqtt_setup_commands, profile_store_status,
- reset_unreadable_profile_store,
+ reset_unreadable_profile_store, DEFAULTS_WRITE_FAILED,
  _HAS_BROKER_PROFILES) = safe_import(
     'utils.broker_profiles',
     'BrokerProfile', 'BrokerType', 'create_private_profile', 'create_public_profile',
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
     'generate_mosquitto_acl', 'install_mosquitto_config', 'check_mosquitto_installed',
     'check_mosquitto_running', 'restart_mosquitto', 'enable_mosquitto_at_boot',
     'get_meshtastic_mqtt_setup_commands', 'profile_store_status',
-    'reset_unreadable_profile_store',
+    'reset_unreadable_profile_store', 'DEFAULTS_WRITE_FAILED',
 )
 
 
@@ -149,16 +149,24 @@ class BrokerHandler(BaseHandler):
                 "Neither is made active. Nothing is written if you say No.") is not True:
             return
         ok, why = create_default_profiles()
+        # r10b F1: over a READABLE store a refusal wrote nothing and the
+        # write-failure text would be false — only a real write failure (or
+        # an unreadable/denied store, whose text names the remedy) adds it
+        state = profile_store_status().state
+        refused_unwritten = (not ok and state in ("absent", "ok")
+                             and why != DEFAULTS_WRITE_FAILED)
         self.ctx.report_action(
             ok,
             "Defaults Created",
             "Saved: meshforge_private, meshtastic_public.\n"
             "Broker Profiles → select one → Set as Active Profile.",
             "Create Failed",
-            f"Default profiles NOT created — {why}.\n\n" + self._save_failed_text(),
+            # r10b F1: a refusal that wrote nothing never adds write-failure text
+            f"Default profiles NOT created — {why}." if refused_unwritten
+            else f"Default profiles NOT created — {why}.\n\n" + self._save_failed_text(),
         )
 
-    def _store_note(self, store, profiles) -> str:
+    def _store_note(self, store, profiles, screen: str = "manager") -> str:
         """One warning line for the store's real state ('' when healthy).
         Every screen that lists profiles shows it (r7, r8 F5/F6/F11)."""
         if store.state == "unreadable":
@@ -172,6 +180,9 @@ class BrokerHandler(BaseHandler):
         if not profiles and not store.skipped:
             # r10 (r9 F1): nothing auto-writes any more, so empty is a fact
             # to state, not a failure to infer
+            if screen == "profiles":   # r10b F3: name only what THIS screen offers
+                return ("No broker profiles saved yet — use Create Default Profiles\n"
+                        "here, or a setup item on Broker Manager.")
             return ("No broker profiles saved yet — use Create Default Profiles\n"
                     "or a setup item below.")
         if store.skipped:
@@ -233,7 +244,7 @@ class BrokerHandler(BaseHandler):
 
         while True:
             store = profile_store_status()
-            note = self._store_note(store, profiles)
+            note = self._store_note(store, profiles, screen="profiles")
             choices = []
             if self._store_is_empty(store, profiles):
                 choices.append(self._DEFAULTS_ITEM)
@@ -254,11 +265,13 @@ class BrokerHandler(BaseHandler):
             if choice is None or choice == "back":
                 break
 
-            if choice == "defaults":
-                self._create_default_profiles()
-                profiles = load_profiles()
-            elif choice in profiles:
+            # r10b F2: a profile's own name wins — the `defaults` tag is only
+            # offered when the store is empty, so no profile can shadow it
+            if choice in profiles:
                 self._profile_detail_menu(choice, profiles)
+                profiles = load_profiles()
+            elif choice == "defaults":
+                self._create_default_profiles()
                 profiles = load_profiles()
 
     def _profile_detail_menu(self, name: str, profiles: dict):
