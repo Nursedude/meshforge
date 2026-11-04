@@ -164,7 +164,8 @@ def save_with_prompts(ctx, lease, intent: Dict[str, Any], title: str, body: str,
                 cfg = mqtt_settings.subscriber_config(shown)
                 ctx.dialog.msgbox(
                     title, f"{body}\n\n  Broker: {cfg['broker']}:{cfg['port']}"
-                    f"  TLS: {'on' if cfg['use_tls'] else 'off'}\n"
+                    f"  TLS: {'on' if cfg['use_tls'] else 'off'}"
+                    f"{' (auto)' if shown.get('tls') == 'auto' else ''}\n"
                     f"  Account: {_who(shown)}\n"
                     f"  Channel key: {_key_kind(lease, shown)}\n"
                     f"  Auto-start: MQTT {'on' if intent.get('auto_start') else 'off'}"
@@ -217,9 +218,11 @@ def save_with_prompts(ctx, lease, intent: Dict[str, Any], title: str, body: str,
                     and not lease.password_saved):
                 # r2 F4: readable at open with no password, broke since —
                 # never claim a saved password "cannot be read"
+                why = ("the file no longer loads" if lease.loaded_state == "ok"
+                       else "no settings file existed then; one appeared and "
+                            "does not load")
                 ask = (f"No password was saved for {_who(intent)} when this "
-                       "screen opened (the file no longer loads) — enter one "
-                       "(blank = none)")
+                       f"screen opened ({why}) — enter one (blank = none)")
             typed = ctx.dialog.inputbox("Password", ask, init='')
             if typed is None:
                 return REFUSED

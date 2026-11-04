@@ -213,12 +213,14 @@ class TestApplyProfileHonestSignal:
 
         assert h.ctx.dialog.last_msgbox_title == "Apply Failed"
 
-    def test_apply_write_success_is_silent(self):
-        """On success the apply stays quiet (callers show their own success)."""
+    def test_apply_write_success_shows_what_it_wrote(self):
+        """r4 #2 (V15 shape, operator 2026-11-03): success SHOWS the summary
+        of what was written — the callers' own boxes never named the
+        account or key. Was: 'apply stays quiet on success'."""
         h = _make_broker()
         with real_settings({}) as (save, cfg):
             h._apply_profile_to_mqtt(self._profile())
             assert ms.load(cfg).intent["broker"] == "broker.example"
 
-        # No failure dialog surfaced.
-        assert h.ctx.dialog.last_msgbox_title is None
+        assert h.ctx.dialog.last_msgbox_title == "Profile Applied"
+        assert "Account:" in h.ctx.dialog.last_msgbox_text

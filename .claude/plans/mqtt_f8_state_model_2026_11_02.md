@@ -242,3 +242,17 @@ or password plaintext in any dialog/log across 24 scenarios. Part A (e3f89a31 it
 - **Operator ruling owed** before any fix: (a) #1/#2 by V15's shape (keep key; apply shows the
   summary) as one in-round fix, or (b) park the profile-apply half and grill. NOT deployed;
   e3f89a31 stays pushed-not-deployed.
+
+### r4 fixes — 2026-11-03 (Opus 5.5) — operator: "I agree fixing them the same way we did V 15"
+
+- #1 profile apply: a default/blank profile key (every factory writes `AQ==`) KEEPS the
+  saved key; only a key the profile really carries replaces it. #2 apply now SHOWS the save
+  summary ("Profile Applied": account, key kind, TLS, auto-start, topics) — reverses the old
+  "apply is silent on success" contract (`test_broker_honest_signal` updated, on purpose).
+  #3 the three `_setup_*` flows apply only when the profile save succeeded. #4 the
+  absent-at-open prompt names why ("no settings file existed then; one appeared and does not
+  load"). #5 summaries show the stored TLS mode ("TLS: off (auto)").
+- Red-first: 8 tests failed on `0ef3a668`. r4 scratch: b2b/b7 still fail BY DESIGN (b2b wants
+  the literal "TLS: auto"; b7 pinned the silent success the ruling replaced).
+- NOT deployed. NEXT: Fable r5, NARROW (this commit + re-run the r4 write table), same stop
+  rule; then deploy next session + live check a preset AND a profile apply over a custom key.

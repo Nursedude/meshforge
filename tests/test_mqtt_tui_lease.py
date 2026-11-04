@@ -514,6 +514,87 @@ class _Profile:
                 "username": "club", "password": self._pw}
 
 
+class _KeyProfile(_Profile):
+    def __init__(self, password, key):
+        super().__init__(password)
+        self._key = key
+
+    def to_intent(self):
+        return {**super().to_intent(), "key": self._key}
+
+
+@pytest.mark.parametrize("profile_key", ["AQ==", None, ""])
+def test_v15_profile_apply_keeps_the_saved_key(cfg, profile_key):
+    """r4 #1 (V13-class; operator 'fixing them the same way we did V15'):
+    a profile whose key is the default/blank KEEPS the saved custom key."""
+    _seed(cfg, {**A, "key": "customPSKbase64=="})
+    h, ctx = _broker()
+    ctx.dialog._yesno_returns = [True]
+    h._apply_profile_to_mqtt(_KeyProfile("clubpw", profile_key))
+    disk = _disk(cfg)
+    assert disk["broker"] == "mqtt.club.example"
+    assert disk["key"] == "customPSKbase64=="
+    (text,) = [c[1][1] for c in _calls(ctx, "msgbox", "Profile Applied")]
+    assert "Channel key: custom (kept)" in text
+    assert "customPSKbase64==" not in repr(ctx.dialog.calls)
+
+
+def test_v15_a_profile_with_its_own_key_writes_it_and_says_so(cfg):
+    _seed(cfg, {**A, "key": "customPSKbase64=="})
+    h, ctx = _broker()
+    ctx.dialog._yesno_returns = [True]
+    h._apply_profile_to_mqtt(_KeyProfile("clubpw", "profilePSK=="))
+    assert _disk(cfg)["key"] == "profilePSK=="
+    (text,) = [c[1][1] for c in _calls(ctx, "msgbox", "Profile Applied")]
+    assert "Channel key: custom\n" in text or text.rstrip().endswith("Channel key: custom")
+    assert "profilePSK==" not in repr(ctx.dialog.calls)
+
+
+def test_r4_2_public_setup_shows_the_account_it_writes(cfg):
+    """r4 #2: the auto-apply after Quick public setup names the account."""
+    with patch("handlers.broker.load_profiles", return_value={}), \
+            patch("handlers.broker.save_profiles", return_value=True):
+        h, ctx = _broker()
+        ctx.dialog._inputbox_returns = ["HI", "LongFast"]
+        h._setup_public_broker()
+    assert _disk(cfg)["username"] == "meshdev"
+    (text,) = [c[1][1] for c in _calls(ctx, "msgbox", "Profile Applied")]
+    assert "meshdev@mqtt.meshtastic.org" in text
+
+
+def test_r4_3_a_profile_reported_not_saved_is_never_applied(cfg):
+    with patch("handlers.broker.load_profiles", return_value={}), \
+            patch("handlers.broker.save_profiles", return_value=False):
+        h, ctx = _broker()
+        ctx.dialog._inputbox_returns = ["US", "LongFast"]
+        h._setup_public_broker()
+    assert any(c[1][0] == "Save Failed" for c in _calls(ctx, "msgbox"))
+    assert not (cfg / ms.FILENAME).exists()
+
+
+def test_r4_4_absent_at_open_prompt_never_says_no_longer_loads(cfg):
+    h, ctx = _handler()
+    ctx.dialog._menu_returns = ["channel", "save"]
+    ctx.dialog._inputbox_returns = ["Mine", ""]
+    ctx.dialog._yesno_returns = [True]
+    _fire_at(ctx, "MQTT Configuration", "channel",
+             lambda: (cfg / ms.FILENAME).write_text("{garbage"))
+    h._configure_mqtt()
+    (pw,) = [c[1][1] for c in _calls(ctx, "inputbox", "Password")]
+    assert "No password was saved" in pw and "no longer loads" not in pw
+    assert "no settings file existed" in pw
+
+
+def test_r4_5_summary_names_the_stored_tls_mode(cfg):
+    _seed(cfg, {**A, "tls": True, "password": ""})
+    h, ctx = _handler()
+    ctx.dialog._menu_returns = ["local"]
+    h._configure_mqtt()
+    assert _disk(cfg)["tls"] == "auto"
+    (text,) = [c[1][1] for c in _calls(ctx, "msgbox", "Local Mode Set")]
+    assert "TLS: off (auto)" in text
+
+
 def test_q19_a_profile_apply_asks_before_clearing_the_saved_password(cfg):
     """r4 #2 / test_profile_apply_without_password_clears_saved_silently."""
     _seed(cfg)

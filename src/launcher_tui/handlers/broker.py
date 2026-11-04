@@ -340,7 +340,8 @@ class BrokerHandler(BaseHandler):
             "Could not write the broker profile to disk — change NOT saved.",
         )
 
-        self._apply_profile_to_mqtt(profile)
+        if saved_ok:      # r4 #3: a profile reported NOT saved is not applied
+            self._apply_profile_to_mqtt(profile)
 
     def _setup_public_broker(self):
         """Quick setup for Meshtastic public broker."""
@@ -384,7 +385,8 @@ class BrokerHandler(BaseHandler):
             "Could not write the broker profile to disk — change NOT saved.",
         )
 
-        self._apply_profile_to_mqtt(profile)
+        if ok:            # r4 #3: a profile reported NOT saved is not applied
+            self._apply_profile_to_mqtt(profile)
 
     def _setup_custom_broker(self):
         """Guided setup for a custom MQTT broker."""
@@ -472,7 +474,8 @@ class BrokerHandler(BaseHandler):
             "Could not write the broker profile to disk — change NOT saved.",
         )
 
-        self._apply_profile_to_mqtt(profile)
+        if ok:            # r4 #3: a profile reported NOT saved is not applied
+            self._apply_profile_to_mqtt(profile)
 
     def _mosquitto_service_menu(self):
         """Manage the local mosquitto service."""
@@ -765,6 +768,12 @@ class BrokerHandler(BaseHandler):
             intent = {**profile.to_intent(),
                       'auto_start': existing['auto_start'],
                       'auto_start_telemetry': existing['auto_start_telemetry']}
+            # V15 (r4 #1): no profile screen shows a channel key and every
+            # factory writes the default — so a default/blank profile key
+            # KEEPS the saved one; only a key the profile really carries
+            # replaces it, and the summary below names which.
+            if intent.get('key') in (None, "", mqtt_settings.defaults()['key']):
+                intent['key'] = existing['key']
             errs = mqtt_settings.validate(intent)
             if errs:
                 # refuse at the boundary, naming the field (MQTT-CFG) — a profile
@@ -783,8 +792,11 @@ class BrokerHandler(BaseHandler):
                 logger.info("Broker profile '%s' NOT applied — the operator "
                             "declined the saved-password question", profile.name)
                 return
+            # r4 #2: show what was written (account, key kind, TLS, topics)
             outcome = save_with_prompts(
-                self.ctx, lease, intent, "Applied", "", report_success=False,
+                self.ctx, lease, intent, "Profile Applied",
+                f"Broker profile '{profile.name}' applied to the MQTT "
+                "subscriber.\nRestart the subscriber for changes to take effect.",
                 fail_title="Apply Failed", fail_note=note)
         if outcome == SAVED:
             logger.info("Applied broker profile '%s' to MQTT subscriber config", profile.name)
