@@ -197,7 +197,7 @@ def _tui(menu=(), yes=()):
 
 def test_defaults_are_never_fabricated_over_an_unreadable_store(store):
     store.write_text("")
-    assert bp.ensure_default_profiles() == {}
+    assert bp.create_default_profiles()[0] is False   # r10: explicit-only, still refused
     assert store.read_text() == ""
 
 
@@ -213,7 +213,10 @@ def test_broker_menu_says_unreadable_and_reset_keeps_a_backup(store):
     assert "reset" not in [k for k, _ in menus[1][2]]      # gone once reset
     backup = store.with_name("broker_profiles.json.unreadable.1")
     assert backup.read_text() == '{"profiles": {"a": '
-    assert sorted(_on_disk(store)) == ["meshforge_private", "meshtastic_public"]
+    # r10: after Reset the store is EMPTY until the operator says Yes to
+    # Create Default Profiles — the next menu offers it, nothing auto-writes
+    assert not store.exists()
+    assert "defaults" in [k for k, _ in menus[1][2]]
 
 
 def test_reset_declined_changes_nothing(store):

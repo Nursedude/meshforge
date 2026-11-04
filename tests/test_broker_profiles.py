@@ -23,7 +23,7 @@ from src.utils.broker_profiles import (
     save_profiles,
     get_active_profile,
     set_active_profile,
-    ensure_default_profiles,
+    create_default_profiles,
     check_mosquitto_installed,
     get_meshtastic_mqtt_setup_commands,
 )
@@ -383,14 +383,15 @@ class TestProfileStorage:
             assert profiles["two"].is_active is True
 
 
-class TestEnsureDefaultProfiles:
-    """Tests for default profile initialization."""
+class TestCreateDefaultProfiles:
+    """Default profiles are written only on an explicit call (F8 v2 r10)."""
 
     def test_creates_defaults_when_empty(self, tmp_path):
         """Test that default profiles are created when none exist."""
         with patch('src.utils.broker_profiles._get_profiles_path',
                    return_value=tmp_path / "broker_profiles.json"):
-            profiles = ensure_default_profiles()
+            assert create_default_profiles() == (True, "")
+            profiles = load_profiles()
             assert "meshforge_private" in profiles
             assert "meshtastic_public" in profiles
             assert profiles["meshforge_private"].broker_type == BrokerType.PRIVATE.value
@@ -404,8 +405,9 @@ class TestEnsureDefaultProfiles:
         with patch('src.utils.broker_profiles._get_profiles_path',
                    return_value=profiles_path):
             save_profiles(existing)
-            loaded = ensure_default_profiles()
-            assert "my_custom" in loaded
+            ok, _ = create_default_profiles()
+            assert ok is False                 # never merged into a non-empty store
+            assert list(load_profiles()) == ["my_custom"]
 
 
 class TestMosquittoChecks:

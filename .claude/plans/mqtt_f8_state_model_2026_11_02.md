@@ -446,3 +446,25 @@ zero-byte refusal, carry-through, F1/F9. Store gate holds (24-file audit: no tes
   (lint operator patterns, fleet.json); pkexec has no SUDO_USER so `chown_to_operator`
   would not hand back (shared util); F4 changed-since-read.
 - OWED: non-author read of r9; deploy NEXT session (brake) + live drill; MA twin.
+
+### F8 v2 review r9 (non-author, Fable 5.1 SUBAGENT, contextless, by running) on `53119ae5` — STOPPED (V13: F2/F4 pre-existing)
+
+Scratch (persisted): `~/.local/share/meshforge/reviews/2026-11-03-f8v2/r9/` (+SHA256SUMS, OK);
+reviewer 2× `18 passed`; author re-ran — all 9 `test_F*` reproduce. Clean: r9 #1/#2/#4/#5/#6/#7
+(locked dir, symlink to unwritable dir, link-through tighten/Reset, Esc ×8, wrong-shape ×5).
+- F1 MED r9 — after the operator deletes every profile, "Default profiles could not be saved"
+  over a healthy store (r9 #3 INFERRED failure from an empty list).
+- **F2 MED V13 pre-existing** — the next main-menu render silently RE-CREATES deleted defaults
+  (new random private password, no dialog). Same on first run: opening the menu writes a
+  store + password nobody was shown.
+- F3 MED pre-existing — every save drops unknown TOP-LEVEL keys (carry covers profiles only).
+- **F4 MED V13 pre-existing** — a JSON object with no `profiles` key reads `ok`/empty and the
+  first menu render overwrites it with defaults, no question.
+- F5 LOW/MED — active stored twice (flags + key); reader trusts flags; key rewritten silently.
+- F6 LOW — no schema version: a newer-shape store reads "UNREADABLE … wrong shape" + Reset.
+- F7 LOW — profile named `back`; F8 LOW — `mosquitto_pub -P <pw>` in argv; F9 LOW — "Show
+  Radio Setup Commands" runs the apply flow (gated by propose_remediation; legibility).
+- Author: cleaned 2 undeletable `/tmp/pytest-of-wh6gxz/garbage-*` 0600 dirs left by the r9 #7
+  red-first run on the OLD code (chmod u+rwx then find -delete; verified gone).
+- ROOT of F1/F2/F4 (and r7 F5, r8 #3): `ensure_default_profiles` AUTO-WRITES on render.
+  **Operator ruling owed.** Fleet still on `8ed1700a`; r6–r9 pushed, not deployed.

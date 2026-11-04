@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Import broker profiles
 (BrokerProfile, BrokerType, create_private_profile, create_public_profile,
  create_custom_profile, load_profiles, save_profiles, set_active_profile,
- get_active_profile, ensure_default_profiles, generate_mosquitto_conf,
+ get_active_profile, create_default_profiles, generate_mosquitto_conf,
  generate_mosquitto_acl, install_mosquitto_config, check_mosquitto_installed,
  check_mosquitto_running, restart_mosquitto, enable_mosquitto_at_boot,
  get_meshtastic_mqtt_setup_commands, profile_store_status,
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
     'utils.broker_profiles',
     'BrokerProfile', 'BrokerType', 'create_private_profile', 'create_public_profile',
     'create_custom_profile', 'load_profiles', 'save_profiles', 'set_active_profile',
-    'get_active_profile', 'ensure_default_profiles', 'generate_mosquitto_conf',
+    'get_active_profile', 'create_default_profiles', 'generate_mosquitto_conf',
     'generate_mosquitto_acl', 'install_mosquitto_config', 'check_mosquitto_installed',
     'check_mosquitto_running', 'restart_mosquitto', 'enable_mosquitto_at_boot',
     'get_meshtastic_mqtt_setup_commands', 'profile_store_status',
@@ -66,7 +66,9 @@ class BrokerHandler(BaseHandler):
 
         while True:
             store = profile_store_status()
-            profiles = ensure_default_profiles()
+            # r10 (r9 F1/F2, V13): opening a screen WRITES NOTHING — the
+            # defaults are an explicit item below, never an auto-write
+            profiles = load_profiles()
             active = get_active_profile(profiles)
             if active:
                 active_name = active.display_name[:20]
@@ -99,6 +101,8 @@ class BrokerHandler(BaseHandler):
             # reads as "no profiles"; Reset ONLY for unreadable (r8 F6)
             if store.state == "unreadable":
                 choices.insert(0, ("reset", "Reset Profile Store  UNREADABLE — keeps a backup"))
+            if self._store_is_empty(store, profiles):
+                choices.insert(0, self._DEFAULTS_ITEM)
             note = self._store_note(store, profiles)
             if note:
                 header = note + "\n\n" + header
@@ -111,6 +115,7 @@ class BrokerHandler(BaseHandler):
 
             dispatch = {
                 "reset": ("Reset Profile Store", self._reset_profile_store),
+                "defaults": ("Create Default Profiles", self._create_default_profiles),
                 "profiles": ("Broker Profiles", self._broker_profiles_menu),
                 "private": ("Private Broker Setup", self._setup_private_broker),
                 "public": ("Public Broker Setup", self._setup_public_broker),
@@ -124,6 +129,35 @@ class BrokerHandler(BaseHandler):
             else:
                 self.ctx.notify_unwired(choice, "BrokerHandler._broker_menu")
 
+    _DEFAULTS_ITEM = ("defaults", "Create Default Profiles  private + public — asks first")
+
+    @staticmethod
+    def _store_is_empty(store, profiles) -> bool:
+        """A readable store with no profiles at all (loaded or not)."""
+        return store.state in ("absent", "ok") and not profiles and not store.skipped
+
+    def _create_default_profiles(self):
+        """Write the two defaults on an explicit Yes (r10; Esc/No = nothing, Q5)."""
+        if self.ctx.dialog.yesno(
+                "Create Default Profiles?",
+                "Adds two broker profiles to the store:\n\n"
+                "  meshforge_private  PRIVATE  localhost:1883\n"
+                "      user meshforge — a NEW random password is generated\n"
+                "      and saved (file mode 600)\n"
+                "  meshtastic_public  PUBLIC   mqtt.meshtastic.org\n"
+                "      the public read-only credentials\n\n"
+                "Neither is made active. Nothing is written if you say No.") is not True:
+            return
+        ok, why = create_default_profiles()
+        self.ctx.report_action(
+            ok,
+            "Defaults Created",
+            "Saved: meshforge_private, meshtastic_public.\n"
+            "Broker Profiles → select one → Set as Active Profile.",
+            "Create Failed",
+            f"Default profiles NOT created — {why}.\n\n" + self._save_failed_text(),
+        )
+
     def _store_note(self, store, profiles) -> str:
         """One warning line for the store's real state ('' when healthy).
         Every screen that lists profiles shows it (r7, r8 F5/F6/F11)."""
@@ -136,9 +170,10 @@ class BrokerHandler(BaseHandler):
                     "Open Broker Manager once in Admin mode (sudo) — it hands "  # in-domain-ok: privilege separation — a root-owned store needs root to chown; the Admin-mode TUI does it on open (in_domain_principle.md)
                     "the file back to your user.")
         if not profiles and not store.skipped:
-            # r9 #3: ensure_default_profiles always writes defaults into an
-            # empty store, so an empty list here means that write FAILED
-            return "⚠ Default profiles could not be saved — none are on disk."
+            # r10 (r9 F1): nothing auto-writes any more, so empty is a fact
+            # to state, not a failure to infer
+            return ("No broker profiles saved yet — use Create Default Profiles\n"
+                    "or a setup item below.")
         if store.skipped:
             return (f"⚠ {len(store.skipped)} profile(s) on disk did not load "
                     f"({', '.join(store.skipped)}) — kept untouched.")
@@ -172,7 +207,7 @@ class BrokerHandler(BaseHandler):
                 "Reset Profile Store?",
                 f"The broker profile store cannot be read:\n  {store.detail}\n\n"
                 "Reset moves it aside as a backup (it is NOT deleted) and\n"
-                "starts a fresh store with the default profiles.\n\n"
+                "starts an empty store (add profiles afterwards).\n\n"
                 "Saved broker passwords inside it will need re-entering\n"
                 "unless you recover them from the backup.") is not True:
             return
@@ -186,18 +221,22 @@ class BrokerHandler(BaseHandler):
             backup is not None,
             "Profile Store Reset",
             f"Unreadable store kept at:\n  {backup}\n\n"
-            "A fresh store with the defaults is created on next open.",
+            "The store is now empty — Create Default Profiles or a\n"
+            "setup item adds profiles.",
             "Reset Failed",
             f"Could not move the store aside — nothing changed.\n{err}",
         )
 
     def _broker_profiles_menu(self):
         """View and manage broker profiles."""
-        profiles = ensure_default_profiles()
+        profiles = load_profiles()
 
         while True:
-            note = self._store_note(profile_store_status(), profiles)
+            store = profile_store_status()
+            note = self._store_note(store, profiles)
             choices = []
+            if self._store_is_empty(store, profiles):
+                choices.append(self._DEFAULTS_ITEM)
             for name, profile in profiles.items():
                 active_marker = " [ACTIVE]" if profile.is_active else ""
                 ptype = profile.broker_type.upper()[:4]
@@ -215,7 +254,10 @@ class BrokerHandler(BaseHandler):
             if choice is None or choice == "back":
                 break
 
-            if choice in profiles:
+            if choice == "defaults":
+                self._create_default_profiles()
+                profiles = load_profiles()
+            elif choice in profiles:
                 self._profile_detail_menu(choice, profiles)
                 profiles = load_profiles()
 

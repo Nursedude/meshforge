@@ -474,12 +474,21 @@ class ProfileStoreStatus:
     active: Optional[str] = None
 
 
+_STORE_KEYS = ("profiles", "active_profile")
+
+
 def _read_store(path: Path) -> Tuple[ProfileStoreStatus, Dict[str, Any]]:
     """Read the raw store. Returns (status, raw profile dicts by name)."""
+    status, raw, _ = _read_store_full(path)
+    return status, raw
+
+
+def _read_store_full(path: Path) -> Tuple[ProfileStoreStatus, Dict[str, Any], Dict[str, Any]]:
+    """(status, raw profile dicts by name, unknown top-level keys)."""
     try:
         # r9 #4: inside the try — exists() RAISES on an untraversable dir
         if not path.exists():
-            return ProfileStoreStatus("absent"), {}
+            return ProfileStoreStatus("absent"), {}, {}
         with open(path) as f:
             data = json.load(f)
     except PermissionError as e:
@@ -493,15 +502,19 @@ def _read_store(path: Path) -> Tuple[ProfileStoreStatus, Dict[str, Any]]:
             who = f"owner {owner}, mode {st.st_mode & 0o777:o}"
         except OSError:
             who = "owner unknown"
-        return ProfileStoreStatus("denied", f"permission denied ({who})"), {}
+        return ProfileStoreStatus("denied", f"permission denied ({who})"), {}, {}
     except (ValueError, OSError) as e:   # JSONDecodeError/UnicodeDecodeError ⊂ ValueError
-        return ProfileStoreStatus("unreadable", f"{type(e).__name__}: {e}"), {}
-    if not isinstance(data, dict) or not isinstance(data.get("profiles", {}), dict):
+        return ProfileStoreStatus("unreadable", f"{type(e).__name__}: {e}"), {}, {}
+    # r10 F4: an object with NO "profiles" key is not a profile store — it
+    # read as an ok EMPTY one and was overwritten (every writer since the
+    # first commit wrote the key, so its absence is not "no profiles")
+    if not isinstance(data, dict) or not isinstance(data.get("profiles"), dict):
         return ProfileStoreStatus(
-            "unreadable", "not a profile store (wrong JSON shape)"), {}
+            "unreadable", "not a profile store (wrong JSON shape)"), {}, {}
     active = data.get("active_profile")
+    extras = {k: v for k, v in data.items() if k not in _STORE_KEYS}
     return (ProfileStoreStatus("ok", active=active if isinstance(active, str) else None),
-            dict(data.get("profiles", {})))
+            dict(data["profiles"]), extras)
 
 
 def _parse_raw(raw: Dict[str, Any]) -> Tuple[Dict[str, BrokerProfile], List[str]]:
@@ -577,7 +590,7 @@ def save_profiles(profiles: Dict[str, BrokerProfile]) -> bool:
         True if saved successfully
     """
     profiles_path = _get_profiles_path()
-    status, raw = _read_store(profiles_path)
+    status, raw, extras = _read_store_full(profiles_path)
     if status.state in ("unreadable", "denied"):
         logger.error("Refusing to save broker profiles over a store that is "
                      "%s (%s): %s", status.state, status.detail, profiles_path)
@@ -594,6 +607,7 @@ def save_profiles(profiles: Dict[str, BrokerProfile]) -> bool:
         carried[name] = entry
 
     data = {
+        **extras,      # r10 F3: a newer version's top-level keys survive our save
         "profiles": {**{name: asdict(p) for name, p in profiles.items()}, **carried},
         # r9 #2: over loaded AND carried — an unloaded active profile stays active
         "active_profile": next(
@@ -905,24 +919,30 @@ def get_meshtastic_mqtt_setup_commands(profile: BrokerProfile,
 # Convenience: Initialize default profiles
 # =============================================================================
 
-def ensure_default_profiles() -> Dict[str, BrokerProfile]:
-    """Ensure default broker profiles exist. Creates them if missing.
+DEFAULT_PROFILE_NAMES = ("meshforge_private", "meshtastic_public")
 
-    Returns:
-        Dict of all profiles (existing + newly created defaults)
+
+def create_default_profiles() -> Tuple[bool, str]:
+    """Write the two default profiles — ONLY on the operator's explicit Yes.
+
+    F8 v2 r10 (r9 F1/F2, V13): this used to run on every Broker Manager open
+    (``ensure_default_profiles``), so an empty store silently grew two
+    profiles and a new private password nobody saw, and deleting them only
+    brought them back. Refuses unless the store is readable and EMPTY
+    (no loaded and no unloaded profiles) at the moment of the write.
+
+    Returns (ok, why-not).
     """
     status = profile_store_status()
     if status.state in ("unreadable", "denied"):
-        return {}                 # never show unsaved defaults over a failed read
-    profiles = load_profiles()
-
-    # Create defaults only into a store that is really empty
-    if not profiles and not status.skipped:
-        profiles["meshforge_private"] = create_private_profile()
-        profiles["meshtastic_public"] = create_public_profile()
-        if not save_profiles(profiles):
-            logger.error("Default broker profiles could NOT be saved — not listed")
-            return {}             # r8 F5: never list what was never written
-        logger.info("Created default broker profiles")
-
-    return profiles
+        return False, f"the profile store is {status.state} ({status.detail})"
+    if load_profiles() or status.skipped:
+        return False, "the profile store is no longer empty — nothing written"
+    profiles = {
+        DEFAULT_PROFILE_NAMES[0]: create_private_profile(),
+        DEFAULT_PROFILE_NAMES[1]: create_public_profile(),
+    }
+    if not save_profiles(profiles):
+        return False, "could not write the profile store"
+    logger.info("Created default broker profiles (operator confirmed)")
+    return True, ""

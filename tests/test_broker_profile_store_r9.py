@@ -131,11 +131,14 @@ def test_2_delete_keeps_an_unloaded_active_profile_active(store):
     assert st.active == "club" and "club" in st.skipped
 
 
-# ── #3 an empty list after the defaults write is never shown as healthy ────
+# ── #3 an empty list is never shown as healthy ─────────────────────────────
+# r10 superseded the inference: nothing auto-writes, so an empty store says
+# "No broker profiles" (pinned in test_broker_profile_store_r10.py).
 
 @pytest.mark.skipif(ROOT, reason="root writes a 0500 dir")
-def test_3_defaults_write_failure_over_empty_ok_store_warns(store):
+def test_3_empty_ok_store_is_named_empty_and_nothing_written(store):
     store.write_text(json.dumps({"profiles": {}}))
+    before = store.read_bytes()
     os.chmod(store.parent, 0o500)
     try:
         h, ctx = _tui(menu=["profiles", "back", "back"])
@@ -143,7 +146,8 @@ def test_3_defaults_write_failure_over_empty_ok_store_warns(store):
     finally:
         os.chmod(store.parent, 0o700)
     for m in _menus(ctx):
-        assert "could not be saved" in m[1], m[0]
+        assert "No broker profiles" in m[1], m[0]
+    assert store.read_bytes() == before
 
 
 # ── #4 an untraversable config dir is `denied`, never a crash ──────────────

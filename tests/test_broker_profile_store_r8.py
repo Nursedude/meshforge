@@ -217,11 +217,14 @@ def test_F6b_a_sudo_save_hands_the_store_back_to_the_operator(store):
 def test_F5_defaults_not_listed_when_their_write_failed(store):
     os.chmod(store.parent, 0o500)
     try:
-        assert bp.ensure_default_profiles() == {}
+        # r10: defaults are written only on an explicit Yes; a failed one
+        # lists nothing and the store stays absent
+        assert bp.create_default_profiles()[0] is False
         h, ctx = _tui(menu=["back"])
         h._broker_profiles_menu()
         (menu,) = [c[1] for c in ctx.dialog.calls if c[0] == "menu"]
-        assert "could not be saved" in menu[1]
+        assert [k for k, _ in menu[2]] == ["defaults", "back"]
+        assert not store.exists()
     finally:
         os.chmod(store.parent, 0o700)
     assert not store.exists()
