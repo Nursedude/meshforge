@@ -155,3 +155,26 @@ session (V13 + the same-session brake). **OPERATOR RULING OWED on F1 before depl
   the fake inputbox default; pins neither the password ask nor the answer.
 - Held: no stale-screen write, no plaintext, holder always named, no fd leak, every
   save path refuses a lease-less change.
+
+### F1 fix — 2026-11-03 (Opus 5.5) — operator ruling: Reset only from a screen that SHOWS the settings
+
+- `08e5d963`: profile apply over an unreadable file (at open, or broken mid-apply)
+  refuses, writes nothing, points to MQTT Configuration. Red-first (2 tests failed on
+  the old code), both halves sabotage-drilled, full suite rc 0 (17523 passed).
+- Non-author review (`code-review medium 39fcdd00..08e5d963`, contextless fork):
+  8 findings, NO V13-class (all legibility) -> fixed in-round:
+  #1/#2 a NEWER-schema file loads `unreadable` -> the refusal advised Reset of a valid
+  file; now apply skips Q19 over a non-loading file and lets `save()` classify
+  (`newer` before `unreadable`, neither writes); #3 STALE text named a Configuration
+  screen profile apply doesn't have + dropped `fail_note`; #4 refusal claimed a
+  backup that this path never makes; #5 "was saved but NOT applied" on Apply from the
+  menu (nothing saved); #6 refusal implemented twice -> one path; #7
+  `settings_screen=False` is now the SAFE default, the 3 Configure sites opt in;
+  #8 tests pin the branch (title + classifying phrase), not substrings.
+  4 F1 tests fail on `08e5d963`; default-flip mutant caught (3 red).
+- Reviewer r2 scratch P1 (`/tmp/claude-1000/f8v2-review2/test_r2.py`) now fails BY
+  DESIGN: it asserted the apply writes and shows auto_start; the ruling is refuse.
+- NOT deployed (brake: no same-session self-deploy of a review fix). NEXT: a
+  non-author read of the review-fix commit, then deploy (fleet_sync -> fleet_pull).
+- `mqtt_settings.py` untouched (MA byte parity holds); the TUI half reaches MA with
+  the V14 TUI twin.

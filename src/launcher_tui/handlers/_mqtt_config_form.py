@@ -113,25 +113,30 @@ def confirm_password_change(ctx, lease, new_password: str, what: str) -> bool:
 
 
 def unreadable_refusal(fail_note: str, error: str) -> str:
-    """The one refusal text for a screen that cannot offer Reset (r2 F1)."""
-    return (f"{fail_note}: the saved MQTT settings file is unreadable.\n\n"
-            f"{error}\n\nNothing was written. Open MQTT Configuration to see "
-            "the settings and reset the file there (the unreadable file is "
-            "kept as a backup).")
+    """The one refusal text for a caller with no settings screen (r2 F1).
+
+    States only what this path measured: the file did not load (`error`
+    says why — damaged, or written by a NEWER version) and nothing was
+    written. No backup is claimed: none is made here (review F1 #4)."""
+    return (f"{fail_note}: the saved MQTT settings file does not load.\n\n"
+            f"{error}\n\nNothing was written. Open MQTT Configuration to "
+            "review it; if the file is damaged, Reset is offered there.")
 
 
 def save_with_prompts(ctx, lease, intent: Dict[str, Any], title: str, body: str,
                       report_success: bool = True, fail_title: str = "Save Failed",
                       fail_note: str = "MQTT settings were NOT saved",
-                      allow_reset: bool = True) -> str:
+                      settings_screen: bool = False) -> str:
     """Save under the lease; answer each refusal with the question it needs.
 
     SAVED / REFUSED (nothing written; the screen may continue) / STALE (the
     file changed without the lease — the screen must close and reopen).
 
-    ``allow_reset=False`` is for a caller with NO settings screen (profile
-    apply, r2 F1): Reset/rebuild would write values nobody was shown, so an
-    unreadable file refuses and points to MQTT Configuration instead."""
+    ``settings_screen=True`` only from a screen that SHOWS the settings it
+    saves (MQTT Configuration and its nested forms): only those may offer
+    Reset/rebuild. The default refuses instead — a caller with no screen
+    (profile apply) would write values nobody was shown (r2 F1; the safe
+    default is review F1 #7)."""
     from monitoring import mqtt_settings
     from .mqtt import save_mqtt_config
     intent = dict(intent)
@@ -155,7 +160,7 @@ def save_with_prompts(ctx, lease, intent: Dict[str, Any], title: str, body: str,
             return REFUSED
         broke = (res.code == "unreadable"
                  or (res.code == "changed_without_lease" and res.now_unreadable))
-        if broke and not allow_reset:
+        if broke and not settings_screen:
             ctx.dialog.msgbox(fail_title, unreadable_refusal(fail_note, res.error))
             return REFUSED
         if res.code == "unreadable" and not reset:
@@ -175,10 +180,17 @@ def save_with_prompts(ctx, lease, intent: Dict[str, Any], title: str, body: str,
                     return REFUSED
                 reset = True
                 continue
-            ctx.dialog.msgbox(
-                "Not Saved — Changed Elsewhere",
-                f"{res.error}\n\nNothing was written. Leave MQTT Configuration "
-                "and open it again to see the current settings.")
+            if settings_screen:
+                ctx.dialog.msgbox(
+                    "Not Saved — Changed Elsewhere",
+                    f"{res.error}\n\nNothing was written. Leave MQTT Configuration "
+                    "and open it again to see the current settings.")
+            else:          # review F1 #3: no Configuration screen to leave
+                ctx.dialog.msgbox(
+                    fail_title,
+                    f"{fail_note}: the settings file changed while this ran.\n\n"
+                    f"{res.error}\n\nNothing was written. Try again to apply "
+                    "over the current settings.")
             return STALE
         if res.code in ("password_owner_mismatch", "password_unknown"):
             typed = ctx.dialog.inputbox("Password", res.error, init='')
@@ -364,7 +376,8 @@ class MQTTConfigFormMixin:
                 if save_with_prompts(
                         self.ctx, lease, config, "Saved",
                         "MQTT configuration saved.\n\n"
-                        "Restart the subscriber for changes to take effect.") != REFUSED:
+                        "Restart the subscriber for changes to take effect.",
+                        settings_screen=True) != REFUSED:
                     break
 
     def _apply_preset(self, lease, which: str, keep: Dict[str, Any]) -> str:
@@ -405,7 +418,8 @@ class MQTTConfigFormMixin:
                 "The Public Broker preset")
         if not confirm_password_change(self.ctx, lease, intent["password"], what):
             return REFUSED
-        return save_with_prompts(self.ctx, lease, intent, title, body)
+        return save_with_prompts(self.ctx, lease, intent, title, body,
+                                 settings_screen=True)
 
     def _configure_private_broker(self, lease, config: Dict[str, Any]) -> str:
         """Guided setup for a private MQTT broker. Esc at ANY prompt
@@ -493,7 +507,8 @@ class MQTTConfigFormMixin:
                   "key": config.get('key') or "AQ=="}
         return save_with_prompts(self.ctx, lease, intent, "Private Broker Configured",
                                  f"Root topic '{root_topic}' determines node scope.\n"
-                                 "Restart the MQTT subscriber to apply.")
+                                 "Restart the MQTT subscriber to apply.",
+                                 settings_screen=True)
 
     def _ask_private_tls(self, broker: str, port: int,
                          saved_tag: Optional[str] = None, mark: str = "(saved)"):

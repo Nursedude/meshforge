@@ -745,7 +745,7 @@ class BrokerHandler(BaseHandler):
         first (Q19); every refusal is answered by the shared save prompts."""
         from ._mqtt_config_form import (
             REFUSED, SAVED, confirm_password_change, open_edit_lease,
-            save_with_prompts, unreadable_refusal,
+            save_with_prompts,
         )
         from monitoring import mqtt_settings
 
@@ -756,17 +756,11 @@ class BrokerHandler(BaseHandler):
                            "said which)", profile.name)
             return
         with lease:
-            note = (f"Broker profile '{profile.name}' was saved but NOT "
-                    "applied to the MQTT subscriber")
-            if lease.loaded_state == "unreadable":
-                # r2 F1: refuse BEFORE asking anything — this screen shows no
-                # settings, so it cannot offer the Reset (auto_start unknown)
-                self.ctx.dialog.msgbox("Not Applied", unreadable_refusal(
-                    note, lease.loaded_error or "unreadable at open"))
-                logger.error("Broker profile '%s' NOT applied — MQTT settings "
-                             "file unreadable; reset it in MQTT Configuration",
-                             profile.name)
-                return
+            # never "was saved": Apply from the profile menu saves nothing
+            # (review F1 #5)
+            note = (f"Broker profile '{profile.name}' was NOT applied to the "
+                    "MQTT subscriber")
+            unreadable = lease.loaded_state == "unreadable"
             existing = lease.view
             intent = {**profile.to_intent(),
                       'auto_start': existing['auto_start'],
@@ -775,23 +769,29 @@ class BrokerHandler(BaseHandler):
             if errs:
                 # refuse at the boundary, naming the field (MQTT-CFG) — a profile
                 # whose root/channel cannot be subscribed is not "applied"
-                self.ctx.dialog.msgbox(
-                    "Not Applied",
-                    f"Broker profile '{profile.name}' was saved but NOT applied to "
-                    "the MQTT subscriber:\n\n" + "\n".join(errs))
+                self.ctx.dialog.msgbox("Not Applied",
+                                       f"{note}:\n\n" + "\n".join(errs))
                 return
-            if not confirm_password_change(self.ctx, lease, intent['password'],
-                                           f"Broker profile '{profile.name}'"):
+            # r2 F1: over a file that did not load, this screen cannot offer
+            # Reset (it shows no settings) — so no password question either:
+            # save() without reset refuses BEFORE any write and says which
+            # case it is (`newer` vs damaged, review F1 #1), and the default
+            # settings_screen=False turns that into the one refusal text.
+            if not unreadable and not confirm_password_change(
+                    self.ctx, lease, intent['password'],
+                    f"Broker profile '{profile.name}'"):
                 return
             outcome = save_with_prompts(
                 self.ctx, lease, intent, "Applied", "", report_success=False,
-                fail_title="Apply Failed", fail_note=note, allow_reset=False)
+                fail_title="Apply Failed", fail_note=note)
         if outcome == SAVED:
             logger.info("Applied broker profile '%s' to MQTT subscriber config", profile.name)
         else:
             logger.error("Broker profile '%s' NOT applied to the MQTT subscriber "
                          "config (%s)", profile.name,
-                         "refused" if outcome == REFUSED else "changed elsewhere")
+                         "settings file did not load at open" if unreadable
+                         else "refused" if outcome == REFUSED
+                         else "changed elsewhere")
 
     def _apply_mqtt_to_radio(self, profile):
         """Apply this broker's MQTT settings to the LOCAL radio IN-APP
