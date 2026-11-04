@@ -217,3 +217,28 @@ lease) NOT found; no plaintext; no unsafe default.
 - #7 RULED not V13 (author): profile apply over an ABSENT file writes the default
   auto-start values — identical to what every reader already applies; no behaviour change.
 - NOT deployed. NEXT: Fable r4 on the r3 fix commit, then deploy (fleet_sync -> fleet_pull).
+
+### F8 v2 review r4 — 2026-11-03 (Fable 5.1 SUBAGENT, contextless, by running) on `e3f89a31` + a field-by-field write sweep — STOPPED (agreed rule: V13-class -> nothing fixed tonight, operator rules)
+
+Scratch: `/tmp/claude-1000/f8v2-review4/test_r4.py` (24 tests; re-run by the author: 6 failed /
+18 passed, VERIFIED). Class 2 (change under a held lease) NOT found — every Configure action,
+Esc and declined question leaves the file byte-identical; one writer in src/+scripts/. No PSK
+or password plaintext in any dialog/log across 24 scenarios. Part A (e3f89a31 itself): only #4.
+- **#1 MEDIUM, V13-class** — broker PROFILE APPLY replaces a saved custom channel key with
+  `AQ==` (`broker_profiles.py:130` `to_intent` "key": encryption_key or "AQ=="; every factory
+  hardcodes AQ==; the profile detail screen never shows a key; apply shows no result).
+  Pre-existing since `0cfef4d7` (11-01). V15 covered the presets only — the "grep EVERY
+  branch" tell AGAIN. Fix shape = V15 for apply (keep the saved key unless the profile
+  carries an operator-set key), or apply shows the save summary.
+- **#2 LOW/MED, V13 by the letter** — `_setup_public_broker` auto-applies to the subscriber
+  (meshdev account, public password, root, key, tls auto) with `report_success=False`: the
+  account written is never shown. Fix shape: profile apply shows the presets' summary.
+- #3 LOW — every `_setup_*` flow applies to the subscriber even after "Save Failed … profile
+  NOT saved". #4 LOW (introduced by e3f89a31) — the absent-at-open prompt says "(the file no
+  longer loads)" for a file that never existed. #5 LOW — summaries print effective TLS on/off,
+  not the stored tri-state (`auto`).
+- Out of scope, noted: the private-broker "Setup Complete" box shows the NEW generated password
+  inside the radio setup commands (intentional radio-setup block).
+- **Operator ruling owed** before any fix: (a) #1/#2 by V15's shape (keep key; apply shows the
+  summary) as one in-round fix, or (b) park the profile-apply half and grill. NOT deployed;
+  e3f89a31 stays pushed-not-deployed.
