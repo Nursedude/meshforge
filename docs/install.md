@@ -177,7 +177,7 @@ Main Menu (MeshForge NOC)
 
 | Component | Options |
 |-----------|---------|
-| **Computer** | Raspberry Pi 4/5 (recommended), Pi 3B+, Pi Zero 2W |
+| **Computer** | Raspberry Pi 4/5 (recommended), Pi 3B+, Pi Zero 2W — all run in our fleet; the install is checked to complete on fresh OS images, not yet on each board from scratch |
 | **OS** | Raspberry Pi OS 64-bit, bookworm or trixie (both run in our fleet). Needs Python ≥ 3.11 (`pyproject.toml`); other Debian-based systems may work, untested |
 | **Radio (SPI)** | See SPI HATs table below |
 | **Radio (USB)** | See USB Radios table below |

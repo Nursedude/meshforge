@@ -128,6 +128,11 @@ fleet today. You don't need a Pi 4 to start — a
 **Pi Zero 2 W** (~$15) is the recommended low-cost board for a lightweight or
 single-purpose node, because the software is tuned to fit the box.
 
+**What "runs" means here:** these boards run MeshForge in our own fleet. The
+README install is checked to complete on fresh Raspberry Pi OS bookworm and
+trixie (64-bit) images, not yet on each board from scratch. Anything else (other
+boards, other Debian-based systems) may work, untested.
+
 Zero-dependency RF tools, no install required:
 
 ```bash
