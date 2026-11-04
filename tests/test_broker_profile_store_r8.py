@@ -29,12 +29,25 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'launche
 sys.path.insert(0, os.path.dirname(__file__))
 
 from handler_test_utils import make_handler_context  # noqa: E402
+import handlers.broker  # noqa: E402,F401  (patched by _mosquitto_pinned)
 from utils import broker_profiles as bp  # noqa: E402
 from utils.broker_profiles import (  # noqa: E402
     create_custom_profile, create_private_profile, create_public_profile,
     load_profiles,
 )
 from utils.paths import get_real_user_home  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _mosquitto_pinned():
+    """Pin the host's mosquitto state (CI 41809571004: the runner has none,
+    so Private setup returned at its first check and 4 tests failed there
+    while passing on a box with mosquitto). The real installer must never
+    run from a test — reaching it fails loudly."""
+    with patch("handlers.broker.check_mosquitto_installed", return_value=(True, "ok")), \
+            patch("handlers.broker.BrokerHandler._install_mosquitto",
+                  side_effect=AssertionError("a test reached the REAL mosquitto installer")):
+        yield
 
 
 @pytest.fixture
