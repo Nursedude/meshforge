@@ -256,3 +256,19 @@ or password plaintext in any dialog/log across 24 scenarios. Part A (e3f89a31 it
   the literal "TLS: auto"; b7 pinned the silent success the ruling replaced).
 - NOT deployed. NEXT: Fable r5, NARROW (this commit + re-run the r4 write table), same stop
   rule; then deploy next session + live check a preset AND a profile apply over a custom key.
+
+### F8 v2 review r5 (narrow) — 2026-11-03 (Fable 5.1 SUBAGENT, by running) on `cdf86fe4` + write table re-derived — STOPPED (agreed rule)
+
+Scratch: `/tmp/claude-1000/f8v2-review5/test_r5.py` (37 tests; author re-run: 7 failed / 30
+passed, VERIFIED). **No defect in the lines cdf86fe4 added.** Write table: every path × field
+is carried/typed/shown except ONE cell (#2). Class 2 NOT found; no plaintext.
+- **#1 MEDIUM, V13-class by the letter (Q5 "Esc never writes")** — `_setup_custom_broker`
+  (`broker.py:426-445`): Esc at Username/Password/Region/Channel/Root Topic reads as the
+  default (`inputbox(...) or "US"`), so the profile is saved+activated and the subscriber
+  file written — Esc on every remaining prompt still ends in "Profile Applied". Pre-existing
+  (`3b0c5bf4`, 2026-02-28); public/private setup flows guard each prompt and are clean.
+  Fix shape: `None` = abandon (return, nothing written) at every prompt, as the sibling flows do.
+- #2 LOW — profile apply over NO saved password writes the profile's password with no
+  question, and the summary names the account but not the password STATE. Fix: one summary
+  line `Password: set / none` (never the value).
+- **Operator ruling owed** (stop rule). NOT deployed; fleet still on `4bc60490`.
