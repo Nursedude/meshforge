@@ -98,6 +98,7 @@ did not. v2 removes the anchor instead of owning it.
 | V10 | Lease file at the r3 #4 stable target (config dir's parent), via `get_real_user_home()`; a test runs a sudo-shaped holder vs a user-shaped opener; `_hand_to_dir_owner` stays UNKNOWN until the live drill. |
 | V12 | Acquire is `LOCK_NB` once (immediate view-only, never a pause). The holder writes user/pid/tty/since into the lease file; an unreadable record reads "held by an unknown session", never "free". |
 | V13 | Stop rule: ONE review finding of "a screen writes something it did not show" or "settings changed while the lease is held" parks the TUI half again → grill, not another fix. Message/legibility gaps are fixed in-round. |
+| V15 | (r3 #1, 2026-11-03, operator "your call - i lean to fix"; author ruled) A Local/Public preset KEEPS the saved channel key (no screen row shows it, so replacing it was a write nobody saw) and every shown save summary names the key's KIND (default / custom (kept) / custom) and the account written - never the PSK. |
 | V14 | Order: MF first → red-first build → full suite → non-author review with a NEUTRAL brief (find a write the screen did not show / a change under a held lease — never "confirm the lease cures it") → fixes → deploy + live drill NEXT session (brake) → MA byte copy + TUI twin, porting MA's test-isolation gate first. |
 
 **Acceptance (V11 — replaces Q14, agreed before code):** On the manager box,
@@ -195,3 +196,24 @@ session (V13 + the same-session brake). **OPERATOR RULING OWED on F1 before depl
 - Reviewer scratch now: P1 + P2 fail BY DESIGN (P1 = F1 ruling; P2 pins the old toggle
   text), P3/P9 = deferred F3/F6, the rest pass.
 - NOT deployed. NEXT: one non-author read covering `07e1b492` + this commit, then deploy.
+
+### F8 v2 review r3 — 2026-11-03 (Fable 5.1 SUBAGENT, contextless, by running) on `39fcdd00..b1d3514f`
+
+Scratch: `/tmp/claude-1000/f8v2-review3/test_r3.py` (8 reproductions, 8 controls/held).
+Re-run by the author: 8 failed / 8 passed (VERIFIED). Class 2 (change under a held
+lease) NOT found; no plaintext; no unsafe default.
+- **#1 MEDIUM, V13-class by the record's letter** — Local/Public presets reset a saved
+  custom channel `key` to `AQ==`, shown nowhere; the decoder consumes it. PRE-EXISTING
+  since `75543842` (deployed). V13 fired; operator: "your call - i lean to fix" ->
+  author ruled option 2 (one grill question, then fix): **V15** above. Fixed.
+- #1b public preset summary now names the account it writes. #4 the F4 fix missed the
+  ABSENT-at-open branch — fixed. #5 Authentication row read "(none)" over an unreadable
+  file -> "(unknown — saved file unreadable)". #6 declined Q19 on profile apply now logs.
+- DEFERRED to the V14 MA-twin round with F3/F6: #2 Configure calls a NEWER-schema file
+  "broken" + offers a rebuild/backup it cannot do; #3 subtitle promises a Reset a newer
+  file never gets. Nothing is written in either (save() refuses `newer`); telling newer
+  from damaged needs a signal from `mqtt_settings.py` (MA byte parity), not error-text
+  matching in the TUI (hfm #5).
+- #7 RULED not V13 (author): profile apply over an ABSENT file writes the default
+  auto-start values — identical to what every reader already applies; no behaviour change.
+- NOT deployed. NEXT: Fable r4 on the r3 fix commit, then deploy (fleet_sync -> fleet_pull).

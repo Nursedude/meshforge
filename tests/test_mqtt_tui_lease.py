@@ -337,6 +337,82 @@ def test_v11_nit_changed_elsewhere_says_nothing_written_once(cfg):
         "nothing was written") == 1, text
 
 
+@pytest.mark.parametrize("preset", ["local", "public"])
+def test_v15_a_preset_keeps_the_saved_key_and_says_which(cfg, preset):
+    """r3 #1 (V13-class, operator 'your call — i lean to fix' -> V15): a
+    preset KEEPS the saved channel key and its summary names the kind
+    (default/custom) — never the PSK itself."""
+    _seed(cfg, {**A, "password": "", "key": "customPSKbase64=="})
+    h, ctx = _handler()
+    ctx.dialog._menu_returns = [preset]
+    ctx.dialog._yesno_returns = [True]
+    h._configure_mqtt()
+    disk = _disk(cfg)
+    assert disk["broker"] in ("localhost", "mqtt.meshtastic.org")
+    assert disk["key"] == "customPSKbase64=="
+    title = {"local": "Local Mode Set", "public": "Public Mode Set"}[preset]
+    (text,) = [c[1][1] for c in _calls(ctx, "msgbox", title)]
+    assert "Channel key: custom (kept)" in text
+    assert "customPSKbase64==" not in repr(ctx.dialog.calls)
+
+
+def test_v15_a_default_key_is_named_default(cfg):
+    _seed(cfg, {**A, "password": ""})
+    h, ctx = _handler()
+    ctx.dialog._menu_returns = ["local"]
+    h._configure_mqtt()
+    (text,) = [c[1][1] for c in _calls(ctx, "msgbox", "Local Mode Set")]
+    assert "Channel key: default" in text
+
+
+def test_r3_1b_public_preset_names_the_account_it_writes(cfg):
+    _seed(cfg, {**A, "password": ""})
+    h, ctx = _handler()
+    ctx.dialog._menu_returns = ["public"]
+    ctx.dialog._yesno_returns = [True]
+    h._configure_mqtt()
+    assert _disk(cfg)["username"] == "meshdev"
+    (text,) = [c[1][1] for c in _calls(ctx, "msgbox", "Public Mode Set")]
+    assert "meshdev@mqtt.meshtastic.org" in text
+
+
+def test_r3_4_absent_at_open_rebuild_never_claims_a_saved_password(cfg):
+    """r3 #4: the F4 fix missed the ABSENT-at-open branch."""
+    assert not (cfg / ms.FILENAME).exists()
+    h, ctx = _handler()
+    ctx.dialog._menu_returns = ["channel", "save"]
+    ctx.dialog._inputbox_returns = ["Mine", ""]
+    ctx.dialog._yesno_returns = [True]
+    _fire_at(ctx, "MQTT Configuration", "channel",
+             lambda: (cfg / ms.FILENAME).write_text("{garbage"))
+    h._configure_mqtt()
+    assert _disk(cfg)["channel"] == "Mine"
+    (pw,) = [c[1][1] for c in _calls(ctx, "inputbox", "Password")]
+    assert "cannot be read" not in pw and "No password was saved" in pw
+
+
+def test_r3_5_auth_row_over_an_unreadable_file_says_unknown(cfg):
+    (cfg / ms.FILENAME).write_text('{"password": "s3cret", "broker": ')
+    h, ctx = _handler()
+    ctx.dialog._menu_returns = ["cancel"]
+    h._configure_mqtt()
+    rows = _calls(ctx, "menu", "MQTT Configuration")[0][1][2]
+    (auth,) = [d for t, d in rows if t == "auth"]
+    assert "(none)" not in auth and "unknown" in auth
+
+
+def test_r3_6_declined_q19_on_profile_apply_leaves_a_log_witness(cfg, caplog):
+    import logging
+    _seed(cfg)
+    h, ctx = _broker()
+    ctx.dialog._yesno_returns = [False]
+    with caplog.at_level(logging.INFO):
+        h._apply_profile_to_mqtt(_Profile(""))
+    assert _disk(cfg) == {"schema_version": 1, **A}
+    assert any("NOT applied" in r.getMessage() and "declined" in r.getMessage()
+               for r in caplog.records), [r.getMessage() for r in caplog.records]
+
+
 # --- Q3 / Q7 / Q8: the password ------------------------------------------
 
 def test_q3_an_unrelated_edit_keeps_the_saved_password(cfg):

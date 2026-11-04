@@ -46,6 +46,15 @@ def _who(intent: Dict[str, Any]) -> str:
     return f"{user}@{host}" if user else f"(no user)@{host}"
 
 
+def _key_kind(lease, intent: Dict[str, Any]) -> str:
+    """default / custom (kept) / custom — the PSK itself is never shown."""
+    from monitoring import mqtt_settings
+    key = intent.get("key")
+    if key == mqtt_settings.defaults()["key"]:
+        return "default (public AQ==)"
+    return "custom (kept)" if key == lease.view.get("key") else "custom"
+
+
 def _holder_line(result) -> str:
     h = result.holder
     if h is None:
@@ -156,6 +165,8 @@ def save_with_prompts(ctx, lease, intent: Dict[str, Any], title: str, body: str,
                 ctx.dialog.msgbox(
                     title, f"{body}\n\n  Broker: {cfg['broker']}:{cfg['port']}"
                     f"  TLS: {'on' if cfg['use_tls'] else 'off'}\n"
+                    f"  Account: {_who(shown)}\n"
+                    f"  Channel key: {_key_kind(lease, shown)}\n"
                     f"  Auto-start: MQTT {'on' if intent.get('auto_start') else 'off'}"
                     f", telemetry {'on' if intent.get('auto_start_telemetry') else 'off'}\n"
                     "  Will subscribe:\n"
@@ -201,7 +212,8 @@ def save_with_prompts(ctx, lease, intent: Dict[str, Any], title: str, body: str,
             return STALE
         if res.code in ("password_owner_mismatch", "password_unknown"):
             ask = res.error
-            if (res.code == "password_unknown" and lease.loaded_state == "ok"
+            if (res.code == "password_unknown"
+                    and lease.loaded_state in ("ok", "absent")
                     and not lease.password_saved):
                 # r2 F4: readable at open with no password, broke since —
                 # never claim a saved password "cannot be read"
@@ -232,6 +244,8 @@ class MQTTConfigFormMixin:
     def _password_label(self, lease, value: Any) -> str:
         from monitoring import mqtt_settings
         if value is mqtt_settings.KEEP:
+            if lease.loaded_state == "unreadable":   # r3 #5, hfm #2
+                return "(unknown — saved file unreadable)"
             return "(saved)" if lease.password_saved else "(none)"
         return "(new, unsaved)" if value else "(none)"
 
@@ -302,7 +316,10 @@ class MQTTConfigFormMixin:
             if choice is None or choice == "cancel":
                 break
 
-            keep = {k: config[k] for k in ("auto_start", "auto_start_telemetry")}
+            # V15 (r3 #1): a preset keeps the channel key — no row shows it,
+            # so replacing it would be a write nobody was shown
+            keep = {k: config[k] for k in ("auto_start", "auto_start_telemetry",
+                                           "key")}
             if choice in ("local", "public"):
                 if self._apply_preset(lease, choice, keep) != REFUSED:
                     break

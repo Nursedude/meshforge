@@ -780,6 +780,8 @@ class BrokerHandler(BaseHandler):
             if not unreadable and not confirm_password_change(
                     self.ctx, lease, intent['password'],
                     f"Broker profile '{profile.name}'"):
+                logger.info("Broker profile '%s' NOT applied — the operator "
+                            "declined the saved-password question", profile.name)
                 return
             outcome = save_with_prompts(
                 self.ctx, lease, intent, "Applied", "", report_success=False,
