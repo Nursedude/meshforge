@@ -22,9 +22,10 @@ import json
 import logging
 import os
 import secrets
+import stat
 import string
 import subprocess
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, replace
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List
@@ -475,9 +476,10 @@ class ProfileStoreStatus:
 
 def _read_store(path: Path) -> Tuple[ProfileStoreStatus, Dict[str, Any]]:
     """Read the raw store. Returns (status, raw profile dicts by name)."""
-    if not path.exists():
-        return ProfileStoreStatus("absent"), {}
     try:
+        # r9 #4: inside the try — exists() RAISES on an untraversable dir
+        if not path.exists():
+            return ProfileStoreStatus("absent"), {}
         with open(path) as f:
             data = json.load(f)
     except PermissionError as e:
@@ -547,11 +549,13 @@ def _tighten_mode(path: Path) -> None:
     """The store holds passwords: a pre-r7 store was written at umask mode
     (0664 measured live 2026-11-03). Tighten to 0600 on read — idempotent."""
     try:
-        mode = path.stat().st_mode & 0o777
+        st = path.stat()
+        mode = st.st_mode & 0o777
+        want = 0o700 if stat.S_ISDIR(st.st_mode) else 0o600   # r9 #7: a dir stays enterable
         if mode & 0o077:
-            os.chmod(path, 0o600)
+            os.chmod(path, want)
             logger.warning("Broker profile store was mode %o (holds passwords) "
-                           "— tightened to 600: %s", mode, path)
+                           "— tightened to %o: %s", mode, want, path)
     except OSError as e:
         logger.warning("Could not tighten broker profile store mode: %s", e)
 
@@ -591,13 +595,19 @@ def save_profiles(profiles: Dict[str, BrokerProfile]) -> bool:
 
     data = {
         "profiles": {**{name: asdict(p) for name, p in profiles.items()}, **carried},
+        # r9 #2: over loaded AND carried — an unloaded active profile stays active
         "active_profile": next(
-            (name for name, p in profiles.items() if p.is_active), None
+            (name for name, p in profiles.items() if p.is_active),
+            next((name for name, e in carried.items()
+                  if isinstance(e, dict) and e.get("is_active")), None),
         ),
     }
     try:
-        atomic_write_text(profiles_path, json.dumps(data, indent=2))
-        chown_to_operator(profiles_path)   # r8 F6b: a sudo save stays the operator's
+        # r9 #6: write THROUGH a symlinked store — replacing the link would
+        # leave its target holding the old bytes (and old passwords)
+        target = profiles_path.resolve() if profiles_path.is_symlink() else profiles_path
+        atomic_write_text(target, json.dumps(data, indent=2))
+        chown_to_operator(target)   # r8 F6b: a sudo save stays the operator's
         return True
     except OSError as e:
         logger.error("Error saving broker profiles: %s", e)
@@ -655,11 +665,15 @@ def set_active_profile(name: str, profiles: Optional[Dict[str, BrokerProfile]] =
         logger.error("Profile '%s' not found", name)
         return False
 
-    # Deactivate all, activate target
+    # r9 #1: stage the flags on COPIES; the caller's dict (what the screen
+    # renders) changes only after the save succeeded
+    staged = {pname: replace(p, is_active=(pname == name))
+              for pname, p in profiles.items()}
+    if not save_profiles(staged):
+        return False
     for pname, profile in profiles.items():
         profile.is_active = (pname == name)
-
-    return save_profiles(profiles)
+    return True
 
 
 # =============================================================================

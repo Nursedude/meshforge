@@ -68,7 +68,12 @@ class BrokerHandler(BaseHandler):
             store = profile_store_status()
             profiles = ensure_default_profiles()
             active = get_active_profile(profiles)
-            active_name = active.display_name if active else "None"
+            if active:
+                active_name = active.display_name[:20]
+            elif store.active and store.active in store.skipped:
+                active_name = f"⚠ {store.active[:12]} (did not load)"   # r9 #5
+            else:
+                active_name = "None"
 
             installed, _ = check_mosquitto_installed()
             running, _ = check_mosquitto_running()
@@ -80,7 +85,7 @@ class BrokerHandler(BaseHandler):
                 mosquitto_status = "Installed (stopped)"
 
             choices = [
-                ("profiles", f"Broker Profiles     Active: {active_name[:20]}"),
+                ("profiles", f"Broker Profiles     Active: {active_name}"),
                 ("private", "Setup Private Broker  MeshForge mosquitto"),
                 ("public", "Use Public Broker     mqtt.meshtastic.org"),
                 ("custom", "Add Custom Broker     Your own server"),
@@ -130,8 +135,10 @@ class BrokerHandler(BaseHandler):
                     "Saves are refused; the file is NOT reset (it may be fine).\n"
                     "Open Broker Manager once in Admin mode (sudo) — it hands "  # in-domain-ok: privilege separation — a root-owned store needs root to chown; the Admin-mode TUI does it on open (in_domain_principle.md)
                     "the file back to your user.")
-        if store.state == "absent" and not profiles:
-            return "⚠ Default profiles could not be saved — nothing is on disk."
+        if not profiles and not store.skipped:
+            # r9 #3: ensure_default_profiles always writes defaults into an
+            # empty store, so an empty list here means that write FAILED
+            return "⚠ Default profiles could not be saved — none are on disk."
         if store.skipped:
             return (f"⚠ {len(store.skipped)} profile(s) on disk did not load "
                     f"({', '.join(store.skipped)}) — kept untouched.")

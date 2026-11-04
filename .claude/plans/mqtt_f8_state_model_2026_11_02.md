@@ -402,3 +402,47 @@ dir-as-store; zero-byte -> no defaults.
 - Deferred (as ruled): F4 changed-since-read (own round); F8, F3, F12.
 - VolcanoAI's real store left at 600 (operator).
 - OWED: non-author read of r8; then deploy NEXT session (brake) + live drill; MA twin.
+
+### F8 v2 review r8 (non-author, Fable 5.1 SUBAGENT, contextless, by running) on `5a555e71` — STOPPED (V13 by the letter: #1 pre-existing, #2 r8)
+
+Scratch (persisted): `~/.local/share/meshforge/reviews/2026-11-03-f8v2/r8/` (+SHA256SUMS, sums OK);
+reviewer 2× `34 passed, 10 skipped`; author re-ran the 9 FINDING tests — all reproduce. Clean:
+Esc at every prompt + every Replace (24 cases), post-save Install Esc, denied store (no Reset),
+zero-byte refusal, carry-through, F1/F9. Store gate holds (24-file audit: no test reached it).
+- **#1 MED, V13, pre-existing** — `set_active_profile` flips `is_active` in the caller's dict
+  BEFORE the save; a refused save leaves the detail screen saying "Active: Yes" (disk unchanged).
+- **#2 MED, V13, r8** — `active_profile` derived from LOADED profiles only: deleting a loaded
+  profile while the active one is unparsed writes `active_profile: null` and undoes F10.
+- #3 MED r8 — defaults write fails over an `ok` EMPTY store -> "Broker Profiles (0)", no ⚠.
+- #4 LOW/MED — untraversable config dir: `path.exists()` raises PermissionError outside the try
+  -> generic safe_call box; the `denied` state is bypassed.
+- #5 LOW r8 — main menu still "Active: None" for an unloaded active profile.
+- #6 LOW pre-existing — symlinked store: replace swaps the link for a file, target keeps old bytes.
+- #7 LOW r8 — Reset of a DIRECTORY store chmods the backup dir 0600 (owner can't enter).
+- #8 LOW, other class — 12 suite tests read the real `~/.config/meshforge/` (lint operator
+  patterns via `scripts/lint.py:698`, `fleet.json`) — read-only, verdict-affecting per box.
+- Note (BELIEVED): `chown_to_operator` keys on SUDO_USER only — a pkexec launch would not chown.
+- CI: `5a555e71` FAILED (4 r8 Private tests unpinned vs runner without mosquitto; 2 reached the
+  REAL installer) -> `c43d3d2e` pins it (reproduced CI's 4 locally; 227/227 with mosquitto forced
+  missing). **Operator ruling owed.** Fleet still on `8ed1700a`.
+
+### r9 — review r8 fixes #1–#7 (Opus 5.5, author) — operator 2026-11-04: "through R9 now then review as you advise"
+
+- #1 `set_active_profile` stages the flags on COPIES (`dataclasses.replace`); the caller's
+  dict — what the detail screen renders — changes only after the save succeeded.
+- #2 `active_profile` is derived over loaded AND carried profiles: an unloaded active
+  profile stays active through a delete (F10 holds).
+- #3 an empty list after `ensure_default_profiles` (no skipped) always reads
+  "Default profiles could not be saved — none are on disk", whatever the store state.
+- #4 `path.exists()` moved inside the try: an untraversable config dir is `denied`, the
+  Broker Manager opens and names it, no Reset.
+- #5 main menu: "Active: ⚠ <name> (did not load)" instead of "None".
+- #6 a symlinked store is written THROUGH the link (resolved target; link kept).
+- #7 `_tighten_mode` gives a DIRECTORY 0700 (a Reset backup dir stays enterable).
+- Red-first: `tests/test_broker_profile_store_r9.py` 8 failed / 1 passed (control) on
+  `c43d3d2e` (`git archive`, isolated HOME); 9/9 after. 236/236 broker/MQTT tests pass,
+  also with mosquitto forced missing. Its autouse fixture pins mosquitto from the start.
+- Queued as their own items (NOT r9): #8 suite reads of real `~/.config/meshforge/`
+  (lint operator patterns, fleet.json); pkexec has no SUDO_USER so `chown_to_operator`
+  would not hand back (shared util); F4 changed-since-read.
+- OWED: non-author read of r9; deploy NEXT session (brake) + live drill; MA twin.
