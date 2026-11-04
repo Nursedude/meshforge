@@ -497,3 +497,39 @@ reviewer 2× `18 passed`; author re-ran — all 9 `test_F*` reproduce. Clean: r9
   (fleet_sync THEN fleet_pull, honest_status exit 0) → live drill → MA twin
   (port its test-isolation gate first). Queued: store-format round (r9
   F5/F6, r10 F5, old F4 changed-since-read); F7–F9 deferred.
+
+## F8 v2 review r10b + deploy + live drill (2026-11-04, fresh session)
+
+- **Review r10b** (Fable 5.1 subagent, contextless brief, by running;
+  `~/.local/share/meshforge/reviews/2026-11-03-f8v2/r10b/` + SHA256SUMS):
+  F1–F3 claims HOLD (each FAIL on `b64f3a93`, PASS on `9b0b934a`); 26/26 on
+  head, 20/6 on parent (6 = expected flips); repo broker/MQTT files 775
+  passed; real store sha256/mtime identical before/after (isolation proven).
+  **Stop rule hit, PRE-EXISTING:** `create_default_profiles` TOCTOU — empty
+  check (`broker_profiles.py:940`) then `save_profiles` (carries only
+  UNPARSED entries) overwrites a PARSED profile another session saved in
+  between; the screen never names it. No lease covers this file (grep).
+  Operator ruled (11-04): deploy (the fleet's `8ed1700a` auto-wrote defaults
+  with no Yes — a larger exposure), fix the race next round.
+- **Deploy:** CI success `23c15548` (41892283304); `fleet_sync` rc=0 (10
+  hosts ok, 169 actions ok, t0 09:20:40) THEN `fleet_pull` rc=0 (10/10 @
+  `23c15548`); honest_status rc=0, 7/9 PASS + 2 pre-existing WARN (VolcanoAI cron_verdict_stale = pytest_tmp_prune; 1 dep advisory); suite 17638 passed on 23c15548.
+- **Live drill, moc4 (operator at the TUI, files read from OUTSIDE after
+  each step):** start = no store. A: open Broker Manager → nothing written
+  (only the TUI log); Create → **No** ×2 (09:41:29, 09:43:04) → nothing
+  written, log "Dialog exited 1"; **Yes** (09:38:51, run first, then A.1/A.2
+  re-run over a cleared store) → one write, 2 profiles, mode 600, log
+  "operator confirmed". B: 0-byte store (mode 600) → screen UNREADABLE with
+  the JSONDecodeError, Create not offered, "Saves are refused"; a Use Public
+  Broker save at 09:47:24 refused (log witness; refusal screen not seen by
+  the author); Reset (09:48:04) → original kept as `.unreadable.1` (0 B,
+  600, rename), store absent. **PASS.** Restored: no store; evidence in
+  moc4 `~/.local/share/meshforge/drill-f8v2-20261104/` (700).
+- **Next round (red-first, then a non-author read):** (1) the defaults
+  TOCTOU — save refuses unless the store is still empty (e.g.
+  `save_profiles(..., expect_empty=True)`); (2) a profile named `back`
+  cannot be opened (`broker.py:265` checks `back` before the lookup — the
+  F2 twin); (3) the success text hardcodes the two default names beside
+  `DEFAULT_PROFILE_NAMES` (hfm #5); (4) LOW wording: after Reset the screen
+  says "store is now empty" while the file is absent. Then the MA twin
+  (port its test-isolation gate first) and the store-format round.
