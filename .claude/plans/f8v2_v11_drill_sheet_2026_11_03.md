@@ -56,3 +56,21 @@ SEE: two auto_start lines; the lease file empty (or absent).
 - Restart the subscriber only if it was running before (MQTT Monitor → Stop → Start).
 
 Report: PASS/FAIL per step (1–7) and anything that surprised you.
+
+## RESULT — 2026-11-03 14:12–14:31 HST — **PASS** (operator at the keyboard; Opus 5.5 watching)
+Independent witness: a 1 s file watch (settings sha256 + lease record) the model ran
+read-only alongside the drill; holder confirmed by `ps` + `/proc/locks` (FLOCK WRITE).
+
+| Step | Result | Evidence |
+|---|---|---|
+| 0 | PASS | auto_start false / telemetry true; lease absent; watch baseline `f268aec60696` |
+| 1 | PASS | B: View Only naming pid 3692822 /dev/pts/4 since 14:18:41 = kernel lock holder |
+| 2 | PASS | A saved 14:21:55 (`296b20f97549`) under its lease; released 14:22:10 on OK |
+| 3 | PASS | B (pid 3698974 pts/5) saved 14:22:57; both fields changed; `diff` (minus auto_start) empty |
+| 4 | PASS | lease-less `echo >>` at 14:25:32 → A "Not Saved — Changed Elsewhere"; hash held; DrillX 0 |
+| 5 | N/A here | no saved MQTT password on this box → nothing to protect; tests cover it; live owed on a box WITH one |
+| 6 | PASS | lease file empty |
+| 7 | PASS | 2 restore passes (first missed one toggle — the watch's hash named which); final hash `f268aec60696`, `diff` RESTORED |
+
+Legibility finding (LOW, next build): the Changed Elsewhere box says "nothing written" twice.
+Ledger: claim `d204056393e2` (verified, manual).
