@@ -4,16 +4,17 @@
 > session notes (`~/.claude/plans/gateway-session-notes-*.md`) say what the last
 > session was doing on that box. This file says where the domain is going and why.
 > Owner: WH6GXZ (operator). Update it when a direction changes, not when a task ends.
-> Last set: 2026-10-29 — monthly release cadence (operator). History: `git log`.
+> Last set: 2026-11-04 — purpose + 30-day ship plan (operator). History: `git log`.
 
 ## What we are
 
-A **MOC: Mesh Operations Center.** One interface over meshes that cannot hear
-each other: Meshtastic, MeshCore, Reticulum (RNS), AREDN, MQTT, and IP backhaul
-(the site has a Starlink uplink). We are building toward serving the **best available
-route** for a message across whichever of those transports is up; until route
-selection ships (1.1), we **measure every leg and tell you which is up**. Always:
-we **tell the truth when we cannot see**.
+**Purpose** (operator 2026-11-04): MeshForge is the honest seam between networks
+that can't hear each other (Meshtastic, MeshCore, RNS, AREDN, MQTT, IP),
+for community mesh operators, starting with Hawaiʻi. Every edge it bridges declares
+what it keeps, loses and translates. Every message it carries ends as delivered,
+dropped where and why, or unknown, never a silent "sent." Edges are added only
+when they can meet that bar. A ham can run it without AI, and every AI that builds
+it is held to the same truth.
 
 - **RNS is the network stack and the hub.** Cross-mesh traffic goes RNS-first.
   Pairwise radio-to-radio bridges multiply into duplicates and false information.
@@ -171,41 +172,46 @@ the RNS/LXMF forks. Offering: S standalone · F fleet.
 
 ### NOW
 
-Operator's order. The best-in-class block (operator 2026-10-13, after the
-cloud-session white paper "Hub or Operations Center", artifact
-`JwQ2Fe5MuUJSbmtSvYUewo`): compete as a cross-mesh BRIDGE, not a multi-inbox
-client; lead on delivery truth and route. The cloud patch
-(`meshforge-moc-all-r3`, audit bundle `2ent1ZJfgo5Yi2wZunJ8v1`) is an ARTIFACT,
-never applied whole — each item lands on its own, re-tested here.
+Operator's order. **30-day ship plan 11-04 → 12-04**: a stranger installs,
+sends a message, sees the truth about it. No new probes/hooks/gates unless a
+product defect needs one.
 
-- **R2** [MF][MA] F — moc3 antenna baseline → swap (it stays SMALL) → repeat R2 with n≥5 per size, interference logged on every run
-  Antenna due Mon 10-26; dummy load then. R2 = the RNode pair moc3↔VolcanoAI measured the way SMCI measures (MA `lab/lxmf_tracer` over the RNode-only path: delivered LXMF bps, RTT p50/p90, success rate); operator present, IP/TCP RNS legs held down so TCP cannot mask RF; baseline first (`rnstatus` rate = SF7/250), a control that can fail. Reminder `rnode-pair-measure-r2`. Feeds R8.
+
+- **BIC-2** [MF][MA] S+F twin→MA — per-leg delivery truth, shown per message, UNKNOWN first-class (= 1.0 gate 3)
+  30-DAY (by 11-24): MF `/inbox` shows each message's legs: delivered / dropped (reason) / UNKNOWN; leg-kill drill → never "delivered". MA after.
+  Each transport leg reports delivered and failed counts over time. Observe before alarming: counters first, then a soak baseline. No silent loss, no false green (a leg-kill drill shows the leg down within N min).
+  COUNTERS LIVE MF+MA (done detail: review_provenance § BIC-2): `legs` on `/api/gateway/delivery`; TUI Dashboard → "Delivery legs" (counts only). Also export the legs via `prometheus_exporter.py` (0 delivery metrics 10-27) so outside dashboards show the truth. MeshCore queue-row ordering DEFERRED (operator 10-24). Queued: MA supervisor-path slice (inert). NEXT: MA TUI pane; MF-first twin fix (provenance § MA 2a + MA 2026-10-24 rows): preset-bridge `?` legs + `_leg_source` into byte-locked `delivery_legs`, MF copies of F2/F6, MF copies of 2b-review F4 (queued R→M hard-codes `source="rns"`), F8 (one SENT helper), F6 (per-CHUNK units — decide before any rate); (3) normalise the leg origin once at ingress; ⚠️ Drill FIRST (operator 10-25): injected sender + no-kill control, acceptance in provenance; then soak. ⚠️ Before any rate: broadcast SENTs can never confirm — split confirmable vs unconfirmable (= UNKNOWN first-class).
+  public: For every message, MeshForge will say which network legs it crossed and whether each one delivered, failed, or cannot be seen.
+  status: planned
+- **INBOX-2** [MF] S+F — inbox follow-ups from the operator's 10-21 iPhone report: a channel post the fleet demonstrably heard shows "handed to radio · unconfirmed" FOREVER; the phone lost its web login with no pairing code on screen (server session intact)
+  Provenance § QUEUED 2026-10-21 evening.
+- **DOC-HW** [MF] S — README/install.md claim only what is tested (gate 6): Pi 3B/Zero 2 W "fleet-run, not stranger-tested"; drop Ubuntu 22.04 (Py 3.10 < 3.11).
+- **REL-1** [MF] S — a release every month: tag + a changelog a ham can read; each runs the gate-5 virtual drill (brief 42fbS7, 10-27)
+  30-DAY: v0.8.0-beta = first GitHub Release by 12-04; gate-5 drill to END (README only, a message crosses mesh↔RNS).
 - **BIC-1** [MF] S+F — `/inbox` browser chat; sends read "handed to radio · unconfirmed", never "delivered"
   DEPLOYED 10-13 `834012d8` (+3 fixes, provenance; iPhone-verified 10-21). OWED: operator acceptance — one real send. Still unwitnessed: a NEW LongFast text from another node stays off the primary channel.
   public: A chat page in the browser for the mesh, which says a message was handed to the radio, never that it was delivered, unless it was.
   status: testing
   help: a Pi running meshtasticd and a phone browser on the same LAN — send and receive a few messages, tell us what the page claimed vs what arrived
-- **BIC-15** [MF][MA] S+F twin→MA — operator line: an LXMF address with an allowlisted read-only oracle + pages over RNS
-  CODE LANDED 10-14, OFF everywhere (`8b476945` + `4f94f92e`: an unreadable identity is quarantined + refused, never silently recreated). Gate-10 pass `578bcbdf` PASS for one box once B1 landed (`945be488`); status pane `a0e7cc0c`; pane non-author read PASS-with-notes `bd5141d3`. OWED before any box enables it: those notes, then the 4-leg live acceptance on one box. Spec `.claude/plans/bic15_operator_line_2026_10_14.md`.
-- **BIC-2** [MF][MA] S+F twin→MA — per-leg delivery truth, shown per message, UNKNOWN first-class (= 1.0 gate 3)
-  Each transport leg reports delivered and failed counts over time. Observe before alarming: counters first, then a soak baseline. No silent loss, no false green (a leg-kill drill shows the leg down within N min).
-  COUNTERS LIVE MF+MA (done detail: review_provenance § BIC-2): `legs` on `/api/gateway/delivery`; TUI Dashboard → "Delivery legs" (counts only). Also export the legs via `prometheus_exporter.py` (0 delivery metrics 10-27) so outside dashboards show the truth. MeshCore queue-row ordering DEFERRED (operator 10-24). Queued: MA supervisor-path slice (inert). NEXT: MA TUI pane; MF-first twin fix (provenance § MA 2a + MA 2026-10-24 rows): preset-bridge `?` legs + `_leg_source` into byte-locked `delivery_legs`, MF copies of F2/F6, MF copies of 2b-review F4 (queued R→M hard-codes `source="rns"`), F8 (one SENT helper), F6 (per-CHUNK units — decide before any rate); (3) normalise the leg origin once at ingress; ⚠️ Drill FIRST (operator 10-25): injected sender + no-kill control, acceptance in provenance; then soak. ⚠️ Before any rate: broadcast SENTs can never confirm — split confirmable vs unconfirmable (= UNKNOWN first-class).
-  public: For every message, MeshForge will say which network legs it crossed and whether each one delivered, failed, or cannot be seen.
-  status: planned
+- **DOC-1** [MF][MA] S twin→MA — in-app how-tos, risky flows first
+  `plans/doc1_in_app_howtos_2026_11_03.md`
+
+### NEXT
+
+PARKED 11-04, revisit 12-04:
+
+- **R2** [MF][MA] F — moc3 antenna baseline → swap (it stays SMALL) → repeat R2 with n≥5 per size, interference logged on every run
+  R2 = RNode pair moc3↔VolcanoAI measured SMCI-style (MA `lab/lxmf_tracer`, RNode-only path: LXMF bps, RTT p50/p90, success rate); operator present, TCP legs held down; baseline first (`rnstatus` SF7/250), a control that can fail; log the v3 interference-avoidance state. Reminder `rnode-pair-measure-r2`. Feeds R8.
 - **BIC-4** [MF][fork] S+F — interop vs stock RNS 1.5.7, both directions, real hardware → merge-forward or stay-pinned decision record
   Peer: stock rns 1.5.7 venv on meshforge-lab (TCP/LXMF; RF needs an RNode).
   public: Prove MeshForge's pinned Reticulum talks to stock Reticulum in both directions on real radios.
   status: planned
 - **BIC-6** [MF] S+F — best-available-route: the router uses measured leg health so a flaky RF leg cannot own paths (1.1, not a 1.0 gate)
-  RNS interface modes do NOT do this (R9, read from the fork's Transport.py: modes only shorten path expiry; RNS picks by hops, then newest announce). Gate it with a breaker on the hand-off witness: an rnsd wedge takes down all cross-mesh traffic. Needs BIC-2's measurements first.
+  RNS modes don't do this (R9: picks by hops, then newest announce). Breaker on the hand-off witness first (an rnsd wedge kills all cross-mesh traffic). Needs BIC-2's measurements.
   public: Pick the best working route between meshes from measured link health, not just hop count.
   status: planned
-- **BIC-13** [MF] S+F — HOLD per-box CA + `wss://` (13b/c)
-- **DOC-1** [MF][MA] S twin→MA — in-app how-tos, risky flows first
-  `plans/doc1_in_app_howtos_2026_11_03.md`
-  A CA install per phone, an unexplained wss handshake stall, a large surface. Revisit only when outside users (BIC-14) ask for an installed app.
-
-### NEXT
+- **BIC-15** [MF][MA] S+F twin→MA — operator line: an LXMF address with an allowlisted read-only oracle + pages over RNS
+  CODE LANDED 10-14, OFF everywhere (unreadable identity quarantined, never recreated). Gate-10 PASS `578bcbdf`; pane read PASS-with-notes `bd5141d3`. OWED before any box enables it: those notes + 4-leg live acceptance on one box. Spec `.claude/plans/bic15_operator_line_2026_10_14.md`.
 
 - **R8** [MF] S+F — one RF-leg pane: airtime against budget, per-hop success (never aggregate), dead-hop events — the operator never leaves the app to learn whether RF carries RNS (MF018)
   With R7 (capture header). Reminder `rf-leg-view-r8`.
@@ -249,8 +255,6 @@ never applied whole — each item lands on its own, re-tested here.
   Provenance § QUEUED 2026-10-15 ×3. `code-review medium <range>` from the main session.
 - **FLEET-S1** [MF][MA] S+F twin→MA — `/fleet` slice 1 + witness-test residuals, "not fixed, by choice" across review rounds 1–6 (10-20/21)
   [first]: MA witness test vacuous + `if named_here: return` skip; absence regex column-0 anchored (indented METHOD passes); presence half measures DEFINITION not REGISTRATION; absence half has no shape check; honest_status FAIL/UNKNOWN headlines count audit-only boxes AT HEAD; pre-push "exit 0 must say in sync" is a string match (refuse/exit 2 on zero compared, in `parity_check.py`). Full lists: provenance § QUEUED 2026-10-20 (rounds, round 5, round 6, round-6 fixes) + 2026-10-21 (witness-test fix).
-- **INBOX-2** [MF] S+F — inbox follow-ups from the operator's 10-21 iPhone report: a channel post the fleet demonstrably heard shows "handed to radio · unconfirmed" FOREVER; the phone lost its web login with no pairing code on screen (server session intact)
-  Provenance § QUEUED 2026-10-21 evening.
 - **CONNECT-1** [MF] S+F — "How to connect" card (TUI + /fleet): our RNS TCP transport endpoint, network name, propagation-node address, allowlist posture — what a new Sideband / MeshChatX / NomadNet user needs (operator 10-21 "queue 1")
   public: A screen that tells a new Reticulum user exactly how to connect to your node.
   status: planned
@@ -271,11 +275,12 @@ never applied whole — each item lands on its own, re-tested here.
 - **AUDIT-1018** [MF][MA][maps] S+F maps:both — domain-audit residuals (10-18): OPERATOR decisions — Substack link (two live), moc5 + kiai declared `collector` but the maps unit is NOT INSTALLED (install, or fix the role), #151 F4 (MA bridge auto-enable only with a LOCAL meshtasticd — changes WHICH services run); design tasks — a serial-pinned, group-scoped MeshCore udev rule (today generic + 0666), a human surface for maps `/api/core-health`
 - **SEC-URL3** [MF] F — urllib3 GHSA-vxq7-64xx-v4gw + GHSA-8988-9cw3-xx77 on the apt copies (moc2, lehua, moc4): wait for the Debian backport, never pip over apt. Reminder `urllib3-apt-backport-moc2-lehua-moc4` (11-12).
 
-- **REL-1** [MF] S — a release every month: tag + a changelog a ham can read; each runs the gate-5 virtual drill (brief 42fbS7, 10-27)
 - **TRH-1** [MF] S — traceroute history on the web map: the data is in `traceroute_history.db`, TUI-only today (capabilities: Live NOC map)
 
 ### LATER
 
+- **BIC-13** [MF] S+F — HOLD per-box CA + `wss://` (13b/c)
+  A CA install per phone, an unexplained wss handshake stall, a large surface. Revisit only when outside users (BIC-14) ask for an installed app.
 - **M1** [MF] S — mesh-issue rules for the *user's* mesh (MeshMonitor M1), with one thresholds file and a test that forbids harmful advice
   LATER: thresholds must be MEASURED first (BIC-2 soak, 25% knee).
   public: Plain-language advice about problems on your own mesh, from one reviewed set of rules.
