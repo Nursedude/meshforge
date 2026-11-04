@@ -178,3 +178,20 @@ session (V13 + the same-session brake). **OPERATOR RULING OWED on F1 before depl
   non-author read of the review-fix commit, then deploy (fleet_sync -> fleet_pull).
 - `mqtt_settings.py` untouched (MA byte parity holds); the TUI half reaches MA with
   the V14 TUI twin.
+
+### r2 LOWs — 2026-11-03 (Opus 5.5)
+
+- FIXED (TUI/tests only, red-first — each new test failed on `f2ab6a2c`):
+  F2 every save summary names the auto-start it wrote; the toggles say "on the next
+  save ('Save & Exit', or a Local/Public preset)". F4 rebuild after a break never
+  claims a saved password the screen knows was absent ("No password was saved for
+  user@host…"). F5 Q19 names the account in the file NOW. F7 the Q15 Reset test pins
+  the password ask + the typed answer. V11 nit: "Changed Elsewhere" says nothing-written
+  once.
+- DEFERRED to the V14 MA-twin round (both in `mqtt_settings.py`, MA byte parity —
+  a fix now forces an MA byte copy in the same push): F3 handback text says "written"
+  when nothing was; F6 root-owned config dir -> root save leaves the file root 0600.
+  F6 measured CLEAN on the manager box (`~/.config/meshforge` wh6gxz 700, file 600).
+- Reviewer scratch now: P1 + P2 fail BY DESIGN (P1 = F1 ruling; P2 pins the old toggle
+  text), P3/P9 = deferred F3/F6, the rest pass.
+- NOT deployed. NEXT: one non-author read covering `07e1b492` + this commit, then deploy.

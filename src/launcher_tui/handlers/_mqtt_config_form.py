@@ -105,7 +105,11 @@ def confirm_password_change(ctx, lease, new_password: str, what: str) -> bool:
             f"password cannot be told. {what} would replace any saved "
             "password.\n\nContinue?"))
     verb = "CLEARS" if new_password == "" else "REPLACES"
-    owner = lease.saved_account
+    # r2 F5: the relation was read from the file NOW; name that account,
+    # not the one seen at open (a lease-less edit may have changed it)
+    live = mqtt_settings.load(lease.config_dir)
+    owner = (mqtt_settings.account(live.intent) if live.state == "ok"
+             else lease.saved_account)
     who = f"{owner[1] or '(no user)'}@{owner[0]}" if owner else "the saved account"
     return bool(ctx.dialog.yesno(
         "Saved Password",
@@ -151,7 +155,10 @@ def save_with_prompts(ctx, lease, intent: Dict[str, Any], title: str, body: str,
                 cfg = mqtt_settings.subscriber_config(shown)
                 ctx.dialog.msgbox(
                     title, f"{body}\n\n  Broker: {cfg['broker']}:{cfg['port']}"
-                    f"  TLS: {'on' if cfg['use_tls'] else 'off'}\n  Will subscribe:\n"
+                    f"  TLS: {'on' if cfg['use_tls'] else 'off'}\n"
+                    f"  Auto-start: MQTT {'on' if intent.get('auto_start') else 'off'}"
+                    f", telemetry {'on' if intent.get('auto_start_telemetry') else 'off'}\n"
+                    "  Will subscribe:\n"
                     + "\n".join(f"    {t}" for t in mqtt_settings.subscriptions(cfg)))
             return SAVED
         if res.code == "invalid":
@@ -183,17 +190,25 @@ def save_with_prompts(ctx, lease, intent: Dict[str, Any], title: str, body: str,
             if settings_screen:
                 ctx.dialog.msgbox(
                     "Not Saved — Changed Elsewhere",
-                    f"{res.error}\n\nNothing was written. Leave MQTT Configuration "
-                    "and open it again to see the current settings.")
+                    f"{res.error}\n\nLeave MQTT Configuration and open it again "
+                    "to see the current settings.")
             else:          # review F1 #3: no Configuration screen to leave
                 ctx.dialog.msgbox(
                     fail_title,
                     f"{fail_note}: the settings file changed while this ran.\n\n"
-                    f"{res.error}\n\nNothing was written. Try again to apply "
-                    "over the current settings.")
+                    f"{res.error}\n\nTry again to apply over the current "
+                    "settings.")
             return STALE
         if res.code in ("password_owner_mismatch", "password_unknown"):
-            typed = ctx.dialog.inputbox("Password", res.error, init='')
+            ask = res.error
+            if (res.code == "password_unknown" and lease.loaded_state == "ok"
+                    and not lease.password_saved):
+                # r2 F4: readable at open with no password, broke since —
+                # never claim a saved password "cannot be read"
+                ask = (f"No password was saved for {_who(intent)} when this "
+                       "screen opened (the file no longer loads) — enter one "
+                       "(blank = none)")
+            typed = ctx.dialog.inputbox("Password", ask, init='')
             if typed is None:
                 return REFUSED
             intent["password"] = typed
@@ -354,7 +369,8 @@ class MQTTConfigFormMixin:
                 new_state = "ENABLED" if config['auto_start'] else "DISABLED"
                 self.ctx.dialog.msgbox(
                     "Auto-Start",
-                    f"MQTT auto-start will be {new_state} after 'Save & Exit'.\n\n"
+                    f"MQTT auto-start will be {new_state} on the next save\n"
+                    "('Save & Exit', or a Local/Public preset).\n\n"
                     "When enabled, MQTT subscriber will start\n"
                     "automatically when the TUI launches.\n\n"
                     "Nothing is written yet — 'Cancel' discards this change."
@@ -365,7 +381,8 @@ class MQTTConfigFormMixin:
                 new_state = "ENABLED" if config['auto_start_telemetry'] else "DISABLED"
                 self.ctx.dialog.msgbox(
                     "Auto Telemetry",
-                    f"TelemetryPoller auto-start will be {new_state} after 'Save & Exit'.\n\n"
+                    f"TelemetryPoller auto-start will be {new_state} on the next save\n"
+                    "('Save & Exit', or a Local/Public preset).\n\n"
                     "When enabled (and MQTT auto-start is on),\n"
                     "the TelemetryPoller will poll silent 2.7+\n"
                     "nodes in the background.\n\n"

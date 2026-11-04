@@ -257,12 +257,16 @@ def test_q15_unreadable_at_open_save_asks_for_reset_then_writes(cfg):
     (cfg / ms.FILENAME).write_text("{broken")
     h, ctx = _handler()
     ctx.dialog._menu_returns = ["channel", "save"]
-    ctx.dialog._inputbox_returns = ["Mine"]
+    ctx.dialog._inputbox_returns = ["Mine", "typedpw"]
     ctx.dialog._yesno_returns = [True]
     h._configure_mqtt()
     assert "UNREADABLE" in _calls(ctx, "menu", "MQTT Configuration")[0][1][1]
     assert [c[1][0] for c in _calls(ctx, "yesno")] == ["Settings Unreadable"]
-    assert _disk(cfg)["channel"] == "Mine"
+    # r2 F7: the password is ASKED (unknown — the file never loaded) and the
+    # typed answer is what lands, not the fake inputbox's default
+    pw = _calls(ctx, "inputbox", "Password")
+    assert len(pw) == 1 and "cannot be read" in pw[0][1][1]
+    assert _disk(cfg)["channel"] == "Mine" and _disk(cfg)["password"] == "typedpw"
     assert [b.read_text() for b in cfg.glob(ms.FILENAME + ".unreadable.*")] == ["{broken"]
 
 
@@ -273,6 +277,64 @@ def test_q15_unreadable_at_open_declining_reset_writes_nothing(cfg):
     ctx.dialog._yesno_returns = [False]
     h._configure_mqtt()
     assert (cfg / ms.FILENAME).read_text() == "{broken"
+
+
+def test_r2_f4_rebuild_never_claims_a_saved_password_that_never_was(cfg):
+    """r2 F4: readable at open with NO password, then broke — the screen
+    knows no password was saved; the prompt must not say one 'cannot be read'."""
+    _seed(cfg, {**A, "password": ""})
+    h, ctx = _handler()
+    ctx.dialog._menu_returns = ["channel", "save"]
+    ctx.dialog._inputbox_returns = ["Mine", ""]
+    ctx.dialog._yesno_returns = [True]
+    _fire_at(ctx, "MQTT Configuration", "channel",
+             lambda: (cfg / ms.FILENAME).write_text(""))
+    h._configure_mqtt()
+    assert _disk(cfg)["channel"] == "Mine" and _disk(cfg)["password"] == ""
+    (pw,) = [c[1][1] for c in _calls(ctx, "inputbox", "Password")]
+    assert "cannot be read" not in pw
+    assert "No password was saved" in pw and "alice@mqtt.a.example" in pw
+
+
+def test_r2_f2_a_preset_says_the_auto_start_it_writes(cfg):
+    """r2 F2: the Auto-Start toggle said 'after Save & Exit'; a preset then
+    wrote it. Every save summary now names the auto-start it wrote."""
+    _seed(cfg, {**A, "auto_start": False, "password": ""})
+    h, ctx = _handler()
+    ctx.dialog._menu_returns = ["autostart", "local"]
+    h._configure_mqtt()
+    assert _disk(cfg)["auto_start"] is True
+    (text,) = [c[1][1] for c in _calls(ctx, "msgbox", "Local Mode Set")]
+    assert "Auto-start: MQTT on" in text
+    toggle = _calls(ctx, "msgbox", "Auto-Start")[0][1][1]
+    assert "the next save" in toggle and "Save & Exit" in toggle
+
+
+def test_r2_f5_q19_names_the_live_files_account(cfg):
+    """r2 F5: a lease-less hand edit changed the account after open; Q19
+    names whose password it is NOW, not the account seen at open."""
+    _seed(cfg)
+    h, ctx = _handler()
+    ctx.dialog._menu_returns = ["local", "cancel"]
+    ctx.dialog._yesno_returns = [False]
+    _fire_at(ctx, "MQTT Configuration", "local", lambda: (cfg / ms.FILENAME).write_text(
+        json.dumps({"schema_version": 1, **A, "username": "zed", "password": "zpw"})))
+    h._configure_mqtt()
+    ((_t, text),) = [c[1][:2] for c in _calls(ctx, "yesno")]
+    assert "zed@mqtt.a.example" in text and "alice@" not in text
+
+
+def test_v11_nit_changed_elsewhere_says_nothing_written_once(cfg):
+    """V11 drill legibility nit: the Changed Elsewhere box said it twice."""
+    _seed(cfg)
+    h, ctx = _handler()
+    ctx.dialog._menu_returns = ["channel", "save"]
+    ctx.dialog._inputbox_returns = ["Mine"]
+    _fire_at(ctx, "MQTT Configuration", "channel", lambda: _hand_edit(cfg, port=1885))
+    h._configure_mqtt()
+    (text,) = [c[1][1] for c in _calls(ctx, "msgbox", "Not Saved — Changed Elsewhere")]
+    assert text.lower().count("nothing written") + text.lower().count(
+        "nothing was written") == 1, text
 
 
 # --- Q3 / Q7 / Q8: the password ------------------------------------------

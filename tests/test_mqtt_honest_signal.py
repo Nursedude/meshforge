@@ -156,7 +156,9 @@ def test_toggle_then_cancel_writes_nothing_and_the_form_said_so():
 
         assert not mock_save.called
         # The popup speaks in the future tense and names the discard path.
-        assert "will be ENABLED after 'Save & Exit'" in ctx.dialog.last_msgbox_text
+        # r2 F2: names EVERY save that writes it (a preset does too)
+        assert "will be ENABLED on the next save" in ctx.dialog.last_msgbox_text
+        assert "'Save & Exit', or a Local/Public preset" in ctx.dialog.last_msgbox_text
         assert "discards" in ctx.dialog.last_msgbox_text
         # The SECOND render (after the toggle) carries the unsaved marker on the
         # subtitle AND on the Cancel row the user is about to pick.
