@@ -734,12 +734,20 @@ def get_meshtastic_mqtt_setup_argv(
     return [set_cmd, ch_cmd]
 
 
-def get_meshtastic_mqtt_setup_commands(profile: BrokerProfile) -> str:
+MQTT_PASSWORD_PLACEHOLDER = "<MQTT_PASSWORD>"
+
+
+def get_meshtastic_mqtt_setup_commands(profile: BrokerProfile,
+                                       reveal_password: bool = False) -> str:
     """Render the radio MQTT setup as a human-readable command block.
 
     Renders from get_meshtastic_mqtt_setup_argv (the SSOT) so display and the
     in-app apply stay in lockstep. A local broker shows a <YOUR_SERVER_IP>
     placeholder (the radio needs the host's LAN IP, not localhost).
+
+    The password renders as MQTT_PASSWORD_PLACEHOLDER unless the caller passes
+    reveal_password=True after the operator ASKED (r6 #3, operator 2026-11-03):
+    a stored credential is never on screen by default. The argv is unchanged.
     """
     lines = [
         "# Configure Meshtastic radio MQTT module for this broker",
@@ -754,6 +762,13 @@ def get_meshtastic_mqtt_setup_commands(profile: BrokerProfile) -> str:
         host = "<YOUR_SERVER_IP>"
 
     set_cmd, ch_cmd = get_meshtastic_mqtt_setup_argv(profile, host=host)
+
+    if not reveal_password and "mqtt.password" in set_cmd:
+        i = set_cmd.index("mqtt.password") + 1
+        if i < len(set_cmd) and set_cmd[i]:
+            set_cmd = [*set_cmd[:i], MQTT_PASSWORD_PLACEHOLDER, *set_cmd[i + 1:]]
+            lines.append(f"# {MQTT_PASSWORD_PLACEHOLDER} = the password saved in "
+                         f"profile '{profile.name}' (not shown)")
 
     lines.append(" \\\n  ".join(set_cmd))
     lines.append("")

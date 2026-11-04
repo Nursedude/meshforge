@@ -244,7 +244,7 @@ class BrokerHandler(BaseHandler):
                 self._install_mosquitto()
             return
 
-        channel = self.ctx.dialog.inputbox(
+        channel = self._ask(
             "Channel Name",
             "Meshtastic channel for this broker:\n\n"
             "  LongFast    (default Meshtastic)\n"
@@ -253,10 +253,10 @@ class BrokerHandler(BaseHandler):
             "Must match your radio's primary channel.",
             init="LongFast"
         )
-        if not channel:
+        if channel is None:
             return
 
-        region = self.ctx.dialog.inputbox(
+        region = self._ask(
             "Region",
             "Meshtastic region code:\n\n"
             "  US      (902-928 MHz)\n"
@@ -265,30 +265,30 @@ class BrokerHandler(BaseHandler):
             "  Other supported regions as configured",
             init="US"
         )
-        if not region:
+        if region is None:
             return
 
-        username = self.ctx.dialog.inputbox(
+        username = self._ask(
             "MQTT Username",
             "Username for broker authentication:\n\n"
             "This is used by MeshForge and your gateway\n"
             "nodes to connect to the private broker.",
             init="meshforge"
         )
-        if not username:
+        if username is None:
             return
 
         from utils.broker_profiles import generate_password
         default_pw = generate_password(12)
 
-        password = self.ctx.dialog.inputbox(
+        password = self._ask(
             "MQTT Password",
             "Password for broker authentication:\n\n"
             "A random password has been generated.\n"
             "You can use it or enter your own.",
             init=default_pw
         )
-        if not password:
+        if password is None:
             return
 
         profile = create_private_profile(
@@ -303,6 +303,11 @@ class BrokerHandler(BaseHandler):
         for p in profiles.values():
             p.is_active = False
         profile.is_active = True
+        if not self._confirm_replace(
+                profiles, "meshforge_private",
+                f"user {username} and the password just entered"):
+            return
+        verb = "replaced" if "meshforge_private" in profiles else "created"
         profiles["meshforge_private"] = profile
         saved_ok = save_profiles(profiles)
 
@@ -330,9 +335,10 @@ class BrokerHandler(BaseHandler):
         self.ctx.report_action(
             saved_ok,
             "Setup Complete",
-            f"Private broker profile created and activated!\n\n"
+            f"Private broker profile {verb} and activated!\n\n"
             f"Broker: localhost:{profile.port}\n"
             f"User: {username}\n"
+            f"Password: set (not shown — the one you just entered)\n"
             f"Channel: {channel}\n"
             f"Region: {region}\n\n"
             f"Configure your Meshtastic radio:\n\n{cmds}",
@@ -345,20 +351,20 @@ class BrokerHandler(BaseHandler):
 
     def _setup_public_broker(self):
         """Quick setup for Meshtastic public broker."""
-        region = self.ctx.dialog.inputbox(
+        region = self._ask(
             "Region",
             "Meshtastic region:\n\n  US, EU_868, ANZ, etc.",
             init="US"
         )
-        if not region:
+        if region is None:
             return
 
-        channel = self.ctx.dialog.inputbox(
+        channel = self._ask(
             "Channel",
             "Channel to monitor:\n\n  LongFast (default, highest traffic)",
             init="LongFast"
         )
-        if not channel:
+        if channel is None:
             return
 
         profile = create_public_profile(region=region, channel=channel)
@@ -367,13 +373,15 @@ class BrokerHandler(BaseHandler):
         for p in profiles.values():
             p.is_active = False
         profile.is_active = True
+        verb = "replaced" if "meshtastic_public" in profiles else "created"
         profiles["meshtastic_public"] = profile
         ok = save_profiles(profiles)
 
         self.ctx.report_action(
             ok,
             "Public Broker Set",
-            f"Configured for Meshtastic public broker.\n\n"
+            f"Configured for Meshtastic public broker "
+            f"(profile 'meshtastic_public' {verb}).\n\n"
             f"Broker: mqtt.meshtastic.org:8883 (TLS)\n"
             f"Channel: {channel}\n"
             f"Region: {region}\n\n"
@@ -388,14 +396,43 @@ class BrokerHandler(BaseHandler):
         if ok:            # r4 #3: a profile reported NOT saved is not applied
             self._apply_profile_to_mqtt(profile)
 
+    def _ask(self, title: str, text: str, init: str = "") -> Optional[str]:
+        """One setup prompt under the r6 #4 rule (operator 2026-11-03):
+        None = Esc/Cancel = abandon the flow; BLANK (or whitespace) takes the
+        value shown pre-filled. Every setup flow asks through here."""
+        got = self.ctx.dialog.inputbox(title, text, init=init)
+        if got is None:
+            return None
+        return got.strip() or init
+
+    def _confirm_replace(self, profiles, name: str, what: str) -> bool:
+        """r6 #2: an existing profile is replaced only on an explicit Yes —
+        it carries an account (and maybe a password other nodes use)."""
+        old = profiles.get(name)
+        if old is None:
+            return True
+        who = f"{old.username}@{old.host}" if old.username else f"anonymous@{old.host}"
+        return self.ctx.dialog.yesno(
+            "Replace Profile?",
+            f"A broker profile named '{name}' already exists:\n\n"
+            f"  Broker: {old.host}:{old.port}\n"
+            f"  Account: {who}\n"
+            f"  Password: {'set' if old.password else 'none'}\n\n"
+            f"Replace it with {what}?\n"
+            "Its saved password is replaced too — nodes using it must be "
+            "reconfigured.\n\nNo = keep it; nothing is written.",
+        ) is True
+
     def _setup_custom_broker(self):
         """Guided setup for a custom MQTT broker."""
-        name = self.ctx.dialog.inputbox(
+        name = self._ask(
             "Profile Name", "Name for this broker profile:", init="my_broker")
         if not name:
             return
+        if not self._confirm_replace(load_profiles(), name, "this new setup"):
+            return
 
-        host = self.ctx.dialog.inputbox(
+        host = self._ask(
             "Broker Host",
             "MQTT broker hostname or IP:\n\n"
             "Examples:\n  mqtt.example.com\n  192.168.1.100\n  gt.wildc.net",
@@ -409,7 +446,7 @@ class BrokerHandler(BaseHandler):
             )
             return
 
-        port = self.ctx.dialog.inputbox(
+        port = self._ask(
             "Port",
             "MQTT port:\n\n  1883 = Plain TCP\n  8883 = TLS encrypted",
             init="1883"
@@ -423,32 +460,28 @@ class BrokerHandler(BaseHandler):
             )
             return
 
-        # r5 #1 (Q5 "Esc never writes"): None = Esc = abandon, nothing saved;
-        # only a BLANK answer takes the default (was `or "US"`, so Esc saved)
-        username = self.ctx.dialog.inputbox(
-            "Username", "MQTT username (blank for anonymous):")
+        # r5 #1 / r6 #4: None = Esc = abandon, nothing saved; only a BLANK
+        # answer takes the value shown (was `or "US"`, so Esc saved)
+        username = self._ask("Username", "MQTT username (blank for anonymous):")
         if username is None:
             return
 
         password = ""
         if username:
+            # not via _ask: blank here means NO password, never a default
             password = self.ctx.dialog.inputbox("Password", "MQTT password:")
             if password is None:
                 return
 
-        region = self.ctx.dialog.inputbox(
-            "Region", "Meshtastic region code:", init="US")
+        region = self._ask("Region", "Meshtastic region code:", init="US")
         if region is None:
             return
-        region = region or "US"
 
-        channel = self.ctx.dialog.inputbox(
-            "Channel", "Meshtastic channel name:", init="LongFast")
+        channel = self._ask("Channel", "Meshtastic channel name:", init="LongFast")
         if channel is None:
             return
-        channel = channel or "LongFast"
 
-        root_topic = self.ctx.dialog.inputbox(
+        root_topic = self._ask(
             "Root Topic",
             "MQTT root topic (must end in /e):\n\n"
             "  msh/{region}/2/e  (standard)\n"
@@ -457,7 +490,6 @@ class BrokerHandler(BaseHandler):
         )
         if root_topic is None:
             return
-        root_topic = root_topic or f"msh/{region}/2/e"
 
         profile = create_custom_profile(
             name=name,
@@ -475,14 +507,21 @@ class BrokerHandler(BaseHandler):
         for p in profiles.values():
             p.is_active = False
         profile.is_active = True
+        verb = "replaced" if name in profiles else "created"
         profiles[name] = profile
         ok = save_profiles(profiles)
 
+        # r6 #1: name every field the profile carries — the account and the
+        # TLS flag DERIVED from the port were written but never shown
+        who = f"{username}@{host}" if username else "anonymous"
         self.ctx.report_action(
             ok,
             "Custom Broker Saved",
-            f"Profile '{name}' created and activated.\n\n"
+            f"Profile '{name}' {verb} and activated.\n\n"
             f"Broker: {host}:{port}\n"
+            f"TLS: {'on' if profile.use_tls else 'off'} (from port {port})\n"
+            f"Account: {who}\n"
+            f"Password: {'set' if password else 'none'}\n"
             f"Channel: {channel}\n"
             f"Topic: {profile.topic_filter}",
             "Save Failed",
@@ -728,7 +767,15 @@ class BrokerHandler(BaseHandler):
             )
             return
 
-        cmds = get_meshtastic_mqtt_setup_commands(active)
+        # r6 #3 (operator 2026-11-03): the stored password renders only on an
+        # explicit Yes — Esc / No show the placeholder
+        reveal = bool(active.password) and self.ctx.dialog.yesno(
+            "Show Password?",
+            f"Profile '{active.name}' has a saved MQTT password.\n\n"
+            "Show it in plain text in the commands?\n\n"
+            "No = show <MQTT_PASSWORD> in its place.",
+        ) is True
+        cmds = get_meshtastic_mqtt_setup_commands(active, reveal_password=reveal)
 
         lines = [
             "MESHTASTIC RADIO MQTT SETUP",

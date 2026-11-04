@@ -283,3 +283,44 @@ is carried/typed/shown except ONE cell (#2). Class 2 NOT found; no plaintext.
 - NOT deployed (brake). NEXT SESSION (fresh context, by the author's call): a narrow
   non-author read of this commit, then deploy (fleet_sync THEN fleet_pull) + live checks:
   a preset AND a profile apply over a custom key; Esc in Custom setup writes nothing.
+
+### F8 v2 review r5b (narrow, non-author) — 2026-11-03 20:23–21:15 HST (Fable 5.1 SUBAGENT `claude-fable-5-1`, by running) on `1006c842` — CLEAN on the r5 lines; DEPLOYED
+
+Scratch (persisted): `~/.local/share/meshforge/reviews/2026-11-03-f8v2/r5b/` (+SHA256SUMS);
+61 tests, author re-run `1 failed, 60 passed` (the 1 = deliberate probe for #1). Clean: Esc at
+every prompt of custom/public/private setup writes nothing (incl. WITH a saved password);
+whiptail inputbox measured via pty (Esc/Cancel -> None, blank -> ""); `Password:` line vs disk
+across 16 paths; no password leak in any settings-file flow. UNKNOWN: `dialog` backend (not
+installed), root-only paths. All four findings PRE-EXISTING:
+- #1 LOW, V13 by the letter (PROFILE store, not settings): Custom "Saved" box omits the
+  profile's `username` + derived `use_tls=(port==8883)`; the only box shown when apply is refused.
+- #2 LOW: same-name custom setup silently replaces a profile, says "created".
+- #3 LOW, Q3-adjacent: private setup + Radio MQTT Setup show plaintext password in the radio
+  commands (the latter = the STORED profile password).
+- #4 LOW UX: public/private `if not x: return` — blank abandons instead of taking the default.
+- **Operator ruling (this session, before the 20:48 deploy t0): "Deploy now, fix #1 next."** Deployed `8ed1700a` (r5 + prune flap
+  fix): fleet_sync 169 ok/0 failed -> fleet_pull 10/10 -> honest_status 9/9 PASS exit 0.
+- NEXT: #1–#4 as one red-first round + non-author read; live checks (Esc in Custom setup;
+  Local preset + profile apply over a custom key) owed — operator's terminal.
+
+### r6 — r5b #1–#4 fixed (Opus 5.5, author) — operator rulings: #3 placeholder + explicit reveal; #4 Esc abandons, BLANK takes the value shown
+
+- #1 Custom "Saved" box names TLS (from port), Account, Password state. #2 Custom + Private
+  ask "Replace Profile?" when the name exists (No/Esc = nothing written); every setup box says
+  created/replaced. #3 `get_meshtastic_mqtt_setup_commands(reveal_password=False)` masks as
+  `<MQTT_PASSWORD>`; Radio MQTT Setup asks "Show Password?" (default No); argv SSOT unchanged.
+  #4 every setup prompt goes through `BrokerHandler._ask` (None = abandon, blank/whitespace =
+  the shown init); Custom's password stays raw (blank = no password).
+- Red-first: `tests/test_broker_setup_r6.py` 14 failed / 11 passed (controls) on the old code.
+  `test_broker_profiles::test_private_broker_commands` pinned the plaintext display -> updated
+  to the #3 ruling. r5b scratch: the 6 old-behaviour probes now fail, as they should.
+- NOT deployed: owes a non-author read.
+
+### FOUND during r6 — profile-store WIPE (V13-class, pre-existing `93727ab6` 2026-02-09) — stop rule: GRILL owed
+
+VERIFIED by running (`scratchpad/r6probe/test_wipe.py`): `load_profiles()` maps an UNREADABLE
+`broker_profiles.json` (truncated JSON / OSError) to `{}` (hfm #1), so the next setup flow
+saves `{new}` — every other profile and its password destroyed, no backup, success box shown
+("Public Broker Set", "Profile Applied"). 6 `save_profiles` call sites; MA has a copy.
+Candidate shape (to grill, not decided): Q15's — tri-state load, refuse save over unreadable,
+explicit Reset keeping a `.unreadable.<n>` backup. Operator: "commit r6, then grill the wipe".

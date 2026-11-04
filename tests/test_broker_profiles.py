@@ -456,7 +456,10 @@ class TestMeshtasticSetupCommands:
         assert "mqtt.username" in cmds
         assert "meshforge" in cmds
         assert "mqtt.password" in cmds
-        assert "secret123" in cmds
+        # r6 #3 (operator 2026-11-03): masked unless the caller asked
+        assert "secret123" not in cmds and "<MQTT_PASSWORD>" in cmds
+        assert "secret123" in get_meshtastic_mqtt_setup_commands(
+            profile, reveal_password=True)
         assert "uplink_enabled" in cmds
         assert "downlink_enabled" in cmds
 
