@@ -37,7 +37,7 @@ from utils.mqtt_defaults import (
     MESHTASTIC_PUBLIC_USERNAME,
 )
 
-from utils.paths import get_real_user_home, atomic_write_text
+from utils.paths import get_real_user_home, atomic_write_text, chown_to_operator
 from utils.service_check import check_service as _check_service, apply_config_and_restart as _apply_config_and_restart, enable_service as _enable_service
 
 logger = logging.getLogger(__name__)
@@ -460,13 +460,17 @@ class ProfileStoreStatus:
     """What the profile store on disk IS — never inferred from an empty dict.
 
     state: ``absent`` (no file — first run), ``ok`` (parsed), ``unreadable``
-    (bad JSON / wrong shape / OSError: every save REFUSES until Reset).
+    (bad JSON / wrong shape / OSError: every save REFUSES until Reset),
+    ``denied`` (permission — the file may be HEALTHY: saves refuse and Reset
+    is never offered; fix ownership instead — F8 v2 r8 F6).
     skipped: profiles present on disk that did not parse (a newer version's
     field, a missing field) — carried through saves untouched (F8 v2 r7).
+    active: the store's own ``active_profile`` name, parsed or not (r8 F10).
     """
     state: str
     detail: str = ""
     skipped: List[str] = field(default_factory=list)
+    active: Optional[str] = None
 
 
 def _read_store(path: Path) -> Tuple[ProfileStoreStatus, Dict[str, Any]]:
@@ -476,12 +480,26 @@ def _read_store(path: Path) -> Tuple[ProfileStoreStatus, Dict[str, Any]]:
     try:
         with open(path) as f:
             data = json.load(f)
+    except PermissionError as e:
+        try:
+            st = path.stat()
+            import pwd
+            try:
+                owner = pwd.getpwuid(st.st_uid).pw_name
+            except KeyError:
+                owner = str(st.st_uid)
+            who = f"owner {owner}, mode {st.st_mode & 0o777:o}"
+        except OSError:
+            who = "owner unknown"
+        return ProfileStoreStatus("denied", f"permission denied ({who})"), {}
     except (ValueError, OSError) as e:   # JSONDecodeError/UnicodeDecodeError ⊂ ValueError
         return ProfileStoreStatus("unreadable", f"{type(e).__name__}: {e}"), {}
     if not isinstance(data, dict) or not isinstance(data.get("profiles", {}), dict):
         return ProfileStoreStatus(
             "unreadable", "not a profile store (wrong JSON shape)"), {}
-    return ProfileStoreStatus("ok"), dict(data.get("profiles", {}))
+    active = data.get("active_profile")
+    return (ProfileStoreStatus("ok", active=active if isinstance(active, str) else None),
+            dict(data.get("profiles", {})))
 
 
 def _parse_raw(raw: Dict[str, Any]) -> Tuple[Dict[str, BrokerProfile], List[str]]:
@@ -513,12 +531,15 @@ def load_profiles() -> Dict[str, BrokerProfile]:
     Returns:
         Dict mapping profile name to BrokerProfile
     """
-    status, raw = _read_store(_get_profiles_path())
-    if status.state == "unreadable":
-        logger.error("Broker profile store unreadable (%s) — saves refused "
-                     "until Reset", status.detail)
+    path = _get_profiles_path()
+    status, raw = _read_store(path)
+    if status.state != "absent":
+        _tighten_mode(path)      # r8 F7: an unreadable store holds passwords too
+        chown_to_operator(path)  # r8 F6: Admin-mode open hands a root-owned store back
+    if status.state in ("unreadable", "denied"):
+        logger.error("Broker profile store %s (%s) — saves refused", status.state,
+                     status.detail)
         return {}
-    _tighten_mode(_get_profiles_path())
     return _parse_raw(raw)[0]
 
 
@@ -553,9 +574,9 @@ def save_profiles(profiles: Dict[str, BrokerProfile]) -> bool:
     """
     profiles_path = _get_profiles_path()
     status, raw = _read_store(profiles_path)
-    if status.state == "unreadable":
-        logger.error("Refusing to save broker profiles over an unreadable "
-                     "store (%s): %s", status.detail, profiles_path)
+    if status.state in ("unreadable", "denied"):
+        logger.error("Refusing to save broker profiles over a store that is "
+                     "%s (%s): %s", status.state, status.detail, profiles_path)
         return False
     _, skipped = _parse_raw(raw)
     any_active = any(p.is_active for p in profiles.values())
@@ -576,6 +597,7 @@ def save_profiles(profiles: Dict[str, BrokerProfile]) -> bool:
     }
     try:
         atomic_write_text(profiles_path, json.dumps(data, indent=2))
+        chown_to_operator(profiles_path)   # r8 F6b: a sudo save stays the operator's
         return True
     except OSError as e:
         logger.error("Error saving broker profiles: %s", e)
@@ -593,6 +615,7 @@ def reset_unreadable_profile_store() -> Optional[Path]:
     while (backup := path.with_name(f"{path.name}.unreadable.{n}")).exists():
         n += 1
     os.rename(path, backup)
+    _tighten_mode(backup)                 # r8 F7: the backup holds passwords
     logger.warning("Broker profile store reset; unreadable copy kept at %s", backup)
     return backup
 
@@ -875,7 +898,7 @@ def ensure_default_profiles() -> Dict[str, BrokerProfile]:
         Dict of all profiles (existing + newly created defaults)
     """
     status = profile_store_status()
-    if status.state == "unreadable":
+    if status.state in ("unreadable", "denied"):
         return {}                 # never show unsaved defaults over a failed read
     profiles = load_profiles()
 
@@ -883,7 +906,9 @@ def ensure_default_profiles() -> Dict[str, BrokerProfile]:
     if not profiles and not status.skipped:
         profiles["meshforge_private"] = create_private_profile()
         profiles["meshtastic_public"] = create_public_profile()
-        save_profiles(profiles)
+        if not save_profiles(profiles):
+            logger.error("Default broker profiles could NOT be saved — not listed")
+            return {}             # r8 F5: never list what was never written
         logger.info("Created default broker profiles")
 
     return profiles

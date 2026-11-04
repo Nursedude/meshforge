@@ -165,7 +165,8 @@ def test_r6_2_private_existing_accepted_says_replaced(cfg):
 
 def test_r6_2_public_existing_says_replaced(cfg):
     store = _Store({"meshtastic_public": create_public_profile()})
-    ctx = _run(store, "_setup_public_broker", ["HI", "LongFast"])
+    # r8 F9 (operator 2026-11-03): Public now ASKS before replacing — Yes here
+    ctx = _run(store, "_setup_public_broker", ["HI", "LongFast"], yes=[True])
     assert "replaced" in _text(ctx, "Public Broker Set")
 
 

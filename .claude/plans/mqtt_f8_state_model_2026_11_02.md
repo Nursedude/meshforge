@@ -351,3 +351,54 @@ store measured `664` 2026-11-03).
 - OWED: non-author read; MeshAnchor twin (port its test-isolation gate first); deploy
   + live check (plant a zero-byte store on one box → menu says UNREADABLE, setup refuses,
   Reset keeps the backup; check the store's mode is 600 after the first open).
+
+### F8 v2 review r7 (non-author, Fable 5.1 SUBAGENT, contextless, by running) on `ce203a13` + `196eb885` — STOPPED (V13: data loss without a Yes, introduced by r7)
+
+Scratch (persisted): `~/.local/share/meshforge/reviews/2026-11-03-f8v2/r7/` (+SHA256SUMS, sums OK);
+43 tests, reviewer 3×`43 passed`; author re-ran F1/F2/F6a — reproduce. Clean: Esc at every prompt
+of all 3 setup flows; Replace No/Esc; refused save over unreadable (all flows); password reveal;
+dir-as-store; zero-byte -> no defaults.
+- **F1 HIGH, r7** — same-name setup over an UNPARSED profile destroys it with no "Replace
+  Profile?" and says "created" (`_confirm_replace` sees parsed only; save drops carried-by-name).
+- **F6 MEDIUM, r7** — (a) PermissionError folded into `unreadable` -> Reset offered -> a HEALTHY
+  store moved aside, defaults written; (b) BELIEVED: sudo TUI writes root:root 0600 (no
+  `chown_to_operator`), so a no-sudo TUI then meets (a).
+- **F2 MEDIUM, pre-existing, made common by r7** — Private setup installs mosquitto passwd for a
+  profile whose save was REFUSED ("Install Config?" asked before "Save Failed").
+- F4 MED pre-existing (stale dict from another TUI instance destroys its profile, no
+  changed-since-read check); F5 MED (defaults listed though the write failed); F7 LOW (unreadable
+  store + its backup keep 0664); F8 LOW (unknown top-level keys dropped); F9 LOW (Public replaces
+  silently); F10/F11 LOW (unparsed active / unreadable store read as "none"/"(0)" in sub-screens);
+  F3 LOW (backend strips passwords; FakeDialog does not — fidelity gap); F12 LOW (profile named
+  `back` unreachable).
+- **Author finding — TEST LEAK into the live store (pre-existing, exposed by r7):**
+  `test_broker_honest_signal.py`, `test_broker_input_validation.py`, `test_mqtt_tui_intent.py`
+  call the real `load_profiles()` on the operator's home (canary HOME: 664 -> 600 for those 3
+  only). The r7 full suite tightened VolcanoAI's real store 664 -> 600 at 22:03:41 (ctime;
+  content + mtime 2026-03-13 unchanged — no write). Pre-r7, the same leak could WRITE defaults
+  into an empty real store. Gate owed: autouse conftest redirect of `_get_profiles_path`.
+- Fleet still on `8ed1700a` (r6/r7 NOT deployed). **Operator ruling owed.**
+
+### r8 — review r7 fixes (Opus 5.5, author) — operator 2026-11-03: "r8 as listed - go, keep the file at 600"
+
+- F1 `_confirm_replace` also sees profiles that did not LOAD ("on disk but could not be
+  loaded … Replace it?"; No/Esc = nothing written); the box says replaced, never created.
+- F6 new state `denied` (PermissionError — the file may be healthy): saves refuse, Reset is
+  NEVER offered; the screen names owner+mode and the in-app remedy — an Admin-mode open calls
+  `chown_to_operator` (load AND save), so a sudo-written store goes back to the operator.
+  (First wording sent the operator to a shell — MF018 refused it; fixed in-app.)
+- F2 Private setup offers the mosquitto install only after the profile SAVED.
+- F5 `ensure_default_profiles` lists defaults only if their save succeeded; screens say
+  "Default profiles could not be saved — nothing is on disk".
+- F7 mode tightened on an unreadable store too, and on the Reset backup.
+- F9 Public setup asks "Replace Profile?" (r6 test updated to answer Yes).
+- F10 an active profile that did not load is NAMED (Radio MQTT Setup, Test Connection), and an
+  unreadable/denied store is named there too — never "no profile is active".
+- F11 the Profiles sub-menu carries the same store note as the parent.
+- Leak gate: autouse `conftest._isolate_broker_profile_store` (both aliases, imported in the
+  fixture). Drill: the 3 leaking files vs a 664 decoy HOME — were 600, now 664 (VERIFIED).
+- Red-first: `tests/test_broker_profile_store_r8.py` 13 failed / 1 passed (control) on
+  `196eb885` (`git archive`, isolated HOME); 14/14 after.
+- Deferred (as ruled): F4 changed-since-read (own round); F8, F3, F12.
+- VolcanoAI's real store left at 600 (operator).
+- OWED: non-author read of r8; then deploy NEXT session (brake) + live drill; MA twin.

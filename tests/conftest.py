@@ -317,6 +317,35 @@ def _isolate_meshtastic_cli_connection():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_broker_profile_store(tmp_path_factory):
+    """Every test's broker profile store is a tmp file, never the operator's
+    ``~/.config/meshforge/broker_profiles.json`` (F8 v2 r8, 2026-11-03).
+
+    Three suite files called the real ``load_profiles()``: the r7 full suite
+    tightened the manager box's live store 664 -> 600, and before r7 the same leak
+    could WRITE defaults into an empty real store. Autouse, both import
+    aliases, imported HERE so a lazy first import cannot reach the real file
+    (the ``_isolate_meshtastic_cli_connection`` lesson). A test that patches
+    ``_get_profiles_path`` itself still wins — its patch nests inside this.
+    """
+    try:
+        import utils.broker_profiles  # noqa: F401
+    except Exception:            # minimal-deps profile — nothing to isolate
+        pass
+    path = tmp_path_factory.mktemp("broker_store") / "broker_profiles.json"
+    saved = []
+    for name in ("utils.broker_profiles", "src.utils.broker_profiles"):
+        mod = sys.modules.get(name)
+        if mod is None or not hasattr(mod, "_get_profiles_path"):
+            continue
+        saved.append((mod, mod._get_profiles_path))
+        mod._get_profiles_path = lambda _p=path: _p
+    yield
+    for mod, fn in saved:
+        mod._get_profiles_path = fn
+
+
+@pytest.fixture(autouse=True)
 def _reset_node_tracker_singleton():
     """Give every test a fresh node-tracker singleton.
 

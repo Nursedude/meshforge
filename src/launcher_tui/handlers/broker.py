@@ -90,15 +90,13 @@ class BrokerHandler(BaseHandler):
             header = ("Manage MQTT broker for Meshtastic <-> RNS bridging.\n\n"
                       "A private broker enables MeshForge as the central\n"
                       "message hub between mesh networks.")
-            # F8 v2 r7: the store's real state, never an empty list that
-            # reads as "no profiles"
+            # F8 v2 r7/r8: the store's real state, never an empty list that
+            # reads as "no profiles"; Reset ONLY for unreadable (r8 F6)
             if store.state == "unreadable":
                 choices.insert(0, ("reset", "Reset Profile Store  UNREADABLE — keeps a backup"))
-                header = (f"⚠ PROFILE STORE UNREADABLE — {store.detail}\n"
-                          "Saves are refused so nothing is overwritten.\n\n" + header)
-            elif store.skipped:
-                header = (f"⚠ {len(store.skipped)} profile(s) on disk did not load "
-                          f"({', '.join(store.skipped)}) — kept untouched.\n\n" + header)
+            note = self._store_note(store, profiles)
+            if note:
+                header = note + "\n\n" + header
             choices.append(("back", "Back"))
 
             choice = self.ctx.dialog.menu("MQTT Broker Manager", header, choices)
@@ -121,9 +119,33 @@ class BrokerHandler(BaseHandler):
             else:
                 self.ctx.notify_unwired(choice, "BrokerHandler._broker_menu")
 
+    def _store_note(self, store, profiles) -> str:
+        """One warning line for the store's real state ('' when healthy).
+        Every screen that lists profiles shows it (r7, r8 F5/F6/F11)."""
+        if store.state == "unreadable":
+            return (f"⚠ PROFILE STORE UNREADABLE — {store.detail}\n"
+                    "Saves are refused so nothing is overwritten.")
+        if store.state == "denied":
+            return (f"⚠ PROFILE STORE NOT ACCESSIBLE — {store.detail}\n"
+                    "Saves are refused; the file is NOT reset (it may be fine).\n"
+                    "Open Broker Manager once in Admin mode (sudo) — it hands "  # in-domain-ok: privilege separation — a root-owned store needs root to chown; the Admin-mode TUI does it on open (in_domain_principle.md)
+                    "the file back to your user.")
+        if store.state == "absent" and not profiles:
+            return "⚠ Default profiles could not be saved — nothing is on disk."
+        if store.skipped:
+            return (f"⚠ {len(store.skipped)} profile(s) on disk did not load "
+                    f"({', '.join(store.skipped)}) — kept untouched.")
+        return ""
+
     def _save_failed_text(self) -> str:
         """The failure body for every profile save — names WHY when it can."""
         store = profile_store_status()
+        if store.state == "denied":
+            return ("The broker profile store is NOT ACCESSIBLE\n"
+                    f"({store.detail}).\n\n"
+                    "Nothing was written — the file is untouched and may be fine.\n"
+                    "Open Broker Manager once in Admin mode (sudo) — it hands "  # in-domain-ok: privilege separation — a root-owned store needs root to chown; the Admin-mode TUI does it on open (in_domain_principle.md)
+                    "the file back to your user.")
         if store.state == "unreadable":
             return ("The broker profile store is UNREADABLE\n"
                     f"({store.detail}).\n\n"
@@ -167,6 +189,7 @@ class BrokerHandler(BaseHandler):
         profiles = ensure_default_profiles()
 
         while True:
+            note = self._store_note(profile_store_status(), profiles)
             choices = []
             for name, profile in profiles.items():
                 active_marker = " [ACTIVE]" if profile.is_active else ""
@@ -178,7 +201,7 @@ class BrokerHandler(BaseHandler):
 
             choice = self.ctx.dialog.menu(
                 f"Broker Profiles ({len(profiles)})",
-                "Select a profile to view/activate:",
+                (note + "\n\n" if note else "") + "Select a profile to view/activate:",
                 choices
             )
 
@@ -358,11 +381,13 @@ class BrokerHandler(BaseHandler):
                 profiles, "meshforge_private",
                 f"user {username} and the password just entered"):
             return
-        verb = "replaced" if "meshforge_private" in profiles else "created"
+        verb = self._verb(profiles, "meshforge_private")
         profiles["meshforge_private"] = profile
         saved_ok = save_profiles(profiles)
 
-        if os.geteuid() == 0:
+        if not saved_ok:
+            pass          # r8 F2: never install mosquitto for an unsaved profile
+        elif os.geteuid() == 0:
             if self.ctx.dialog.yesno(
                 "Install Config",
                 "Install mosquitto configuration now?\n\n"
@@ -421,10 +446,14 @@ class BrokerHandler(BaseHandler):
         profile = create_public_profile(region=region, channel=channel)
 
         profiles = load_profiles()
+        if not self._confirm_replace(               # r8 F9
+                profiles, "meshtastic_public",
+                f"the public broker on {region}/{channel}"):
+            return
         for p in profiles.values():
             p.is_active = False
         profile.is_active = True
-        verb = "replaced" if "meshtastic_public" in profiles else "created"
+        verb = self._verb(profiles, "meshtastic_public")
         profiles["meshtastic_public"] = profile
         ok = save_profiles(profiles)
 
@@ -456,12 +485,30 @@ class BrokerHandler(BaseHandler):
             return None
         return got.strip() or init
 
+    def _verb(self, profiles, name: str) -> str:
+        """created/replaced — counting a profile on disk that did not load
+        (r8 F1: replacing one said 'created')."""
+        if name in profiles or name in profile_store_status().skipped:
+            return "replaced"
+        return "created"
+
     def _confirm_replace(self, profiles, name: str, what: str) -> bool:
         """r6 #2: an existing profile is replaced only on an explicit Yes —
         it carries an account (and maybe a password other nodes use)."""
         old = profiles.get(name)
         if old is None:
-            return True
+            # r8 F1: a profile on disk that did not LOAD is still a profile —
+            # replacing it destroys it (and maybe a password nodes use)
+            if name not in profile_store_status().skipped:
+                return True
+            return self.ctx.dialog.yesno(
+                "Replace Profile?",
+                f"A broker profile named '{name}' is on disk but\n"
+                "could not be loaded by this version (a newer MeshForge\n"
+                "may have written it).\n"
+                "It may carry a saved password other nodes use.\n\n"
+                f"Replace it with {what}?\n\nNo = keep it; nothing is written.",
+            ) is True
         who = f"{old.username}@{old.host}" if old.username else f"anonymous@{old.host}"
         return self.ctx.dialog.yesno(
             "Replace Profile?",
@@ -558,7 +605,7 @@ class BrokerHandler(BaseHandler):
         for p in profiles.values():
             p.is_active = False
         profile.is_active = True
-        verb = "replaced" if name in profiles else "created"
+        verb = self._verb(profiles, name)
         profiles[name] = profile
         ok = save_profiles(profiles)
 
@@ -753,10 +800,7 @@ class BrokerHandler(BaseHandler):
         active = get_active_profile(profiles)
 
         if not active:
-            self.ctx.dialog.msgbox(
-                "No Active Profile",
-                "No broker profile is active.\nSet up a broker profile first."
-            )
+            self.ctx.dialog.msgbox("No Active Profile", self._no_active_text())
             return
 
         self.ctx.dialog.infobox("Testing", f"Connecting to {active.host}:{active.port}...")
@@ -806,16 +850,26 @@ class BrokerHandler(BaseHandler):
                 f"Connection to {active.host}:{active.port} timed out."
             )
 
+    def _no_active_text(self) -> str:
+        """Why there is no active profile — never 'none' when the store is
+        blind or the active one did not load (r8 F10)."""
+        store = profile_store_status()
+        if store.active and store.active in store.skipped:
+            return (f"The active profile '{store.active}' is on disk but\n"
+                    "could not be loaded by this version — kept untouched.\n"
+                    "Activate another profile, or update MeshForge.")
+        note = self._store_note(store, {})
+        if store.state in ("unreadable", "denied"):
+            return note
+        return "No broker profile is active.\nSet up a broker profile first."
+
     def _radio_mqtt_setup(self):
         """Show Meshtastic radio MQTT configuration commands."""
         profiles = load_profiles()
         active = get_active_profile(profiles)
 
         if not active:
-            self.ctx.dialog.msgbox(
-                "No Active Profile",
-                "No broker profile is active.\nSet up a broker profile first."
-            )
+            self.ctx.dialog.msgbox("No Active Profile", self._no_active_text())
             return
 
         # r6 #3 (operator 2026-11-03): the stored password renders only on an
