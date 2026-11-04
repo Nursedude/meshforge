@@ -291,6 +291,44 @@ if [ "$(id -u)" != 0 ]; then
 fi
 CLAUDE_TMP_BASE="$TMP/claude-none"
 
+# ── a failed removal must not READ AS LIVE on the next run (2026-11-03) ──
+#
+# Measured on the manager: rm -rf on a stuck session dir deletes everything it
+# CAN, which bumps the parent dirs' mtimes. The idle check counted dir mtimes,
+# so the pruner's OWN failed attempt read as "a live session wrote here": the
+# next run skipped the dir and said OK, and the FAIL returned 2 days later — a
+# flap that reads as self-healing. Controls: a stuck tree with a fresh FILE is
+# still live, and a fresh EMPTY session dir (no blocker) is still kept.
+if [ "$(id -u)" != 0 ]; then
+  CB="$TMP/claude-flap"; CLAUDE_TMP_BASE="$CB"
+  FLAP_S="12121212-3434-5656-7878-909090909090"
+  LIVEST_S="abababab-cdcd-efef-0101-232323232323"
+  EMPTY_S="45454545-6767-8989-0a0a-bcbcbcbcbcbc"
+  for s in "$FLAP_S" "$LIVEST_S"; do
+    mkdir -p "$CB/-p/$s/scratchpad/drill/ro" "$CB/-p/$s/scratchpad/other"
+    echo x > "$CB/-p/$s/scratchpad/drill/ro/f"
+    echo x > "$CB/-p/$s/scratchpad/other/g"
+    chmod 555 "$CB/-p/$s/scratchpad/drill/ro"
+  done
+  mkdir -p "$CB/-p/$EMPTY_S/scratchpad"
+  find "$CB" -exec touch -h -d "$three_days_ago" {} +
+  touch -h "$CB/-p/$EMPTY_S/scratchpad" "$CB/-p/$EMPTY_S"   # brand-new, no files yet
+  echo y > "$CB/-p/$LIVEST_S/scratchpad/other/fresh"        # live: a fresh FILE
+  BASE="$TMP/no-pytest-tree"
+  out1="$(run_pgrep 1)"
+  out2="$(run_pgrep 1)"                                      # the run that flapped
+  chmod 755 "$CB/-p/$FLAP_S/scratchpad/drill/ro" "$CB/-p/$LIVEST_S/scratchpad/drill/ro"
+  check "flap: first run on a stuck idle dir is a FAIL" \
+    "$(echo "$out1" | grep -q 'FAIL' && echo ok)"
+  check "flap: the NEXT run still FAILs (its own failed rm is not 'live')" \
+    "$(echo "$out2" | grep -q 'FAIL' && echo "$out2" | grep -q "$FLAP_S" && echo ok)"
+  check "flap control: a stuck tree with a fresh FILE is kept (live)" \
+    "$([ -f "$CB/-p/$LIVEST_S/scratchpad/other/fresh" ] && echo ok)"
+  check "flap control: a fresh EMPTY session dir is kept" \
+    "$([ -d "$CB/-p/$EMPTY_S/scratchpad" ] && echo ok)"
+  CLAUDE_TMP_BASE="$TMP/claude-none"
+fi
+
 # ── the named cure must actually CLEAR the blocker (review F4, 2026-10-18) ─
 #
 # chmod -R u+w cannot descend a 000/111 dir (what permission tests leave), and

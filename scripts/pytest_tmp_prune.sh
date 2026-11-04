@@ -101,7 +101,16 @@ if [ -d "$CLAUDE_BASE" ]; then
     c_total=$((c_total + 1))
     # Any entry modified inside the window = in use. find erroring (unreadable)
     # prints nothing, so guard on its exit too: unobservable is kept, not pruned.
-    recent="$(find "$d" -mmin -$((CLAUDE_IDLE_DAYS * 1440)) -print -quit 2>/dev/null)" || continue
+    # A tree holding a BLOCKER (a dir rm cannot empty) is judged on non-dir
+    # entries only (2026-11-03): our own failed rm deletes what it can, which
+    # bumps the parents' mtimes, so dir mtimes there read the PRUNER as a live
+    # session — the next run skipped it and said OK, then FAILed 2 days later.
+    # Without a blocker, dir mtimes still count (a fresh empty session is live).
+    notdir=()
+    if [ -n "$(find "$d" -type d \( ! -writable -o ! -readable -o ! -executable \) -print -quit 2>/dev/null)" ]; then
+      notdir=(! -type d)
+    fi
+    recent="$(find "$d" "${notdir[@]}" -mmin -$((CLAUDE_IDLE_DAYS * 1440)) -print -quit 2>/dev/null)" || continue
     [ -n "$recent" ] && continue
     kb=$(du -sk "$d" 2>/dev/null | cut -f1)
     if rm -rf "$d" 2>/dev/null; then
