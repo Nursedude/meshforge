@@ -1268,17 +1268,25 @@ class MapDataCollector(
         new_props = new["properties"]
         ex_props = existing["properties"]
 
-        # Handle is_online via most-recent last_heard
+        # Freshness moves as ONE unit: the most recently heard copy supplies
+        # last_heard, is_online AND the last_seen text. Moving only the first
+        # two served "199d ago" beside is_online=True (2026-11-04; twin of the
+        # cross_protocol_collapse fix, honest_failure_modes #5).
         new_lh = new_props.get("last_heard", 0) or 0
         ex_lh = ex_props.get("last_heard", 0) or 0
-        if new_lh > ex_lh:
+        fresher = new_lh > ex_lh
+        if fresher:
             ex_props["last_heard"] = new_lh
             if "is_online" in new_props:
                 ex_props["is_online"] = new_props["is_online"]
+            if new_props.get("last_seen") not in (None, ""):
+                ex_props["last_seen"] = new_props["last_seen"]
 
         # Merge other properties (prefer non-null to fill gaps)
         for key, value in new_props.items():
             if key in ("is_online", "last_heard"):
+                continue  # Already handled above
+            if key == "last_seen" and fresher:
                 continue  # Already handled above
             if value is not None and value != "" and value != "unknown":
                 existing_val = ex_props.get(key)

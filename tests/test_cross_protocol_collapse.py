@@ -205,6 +205,83 @@ class TestLastSeenMax:
         assert out[0]["properties"]["last_seen"] == 200
 
 
+# ---------- freshness across DISPLAY-TEXT last_seen (2026-11-04) ----------
+#
+# Live Meshtastic collectors write last_seen as TEXT ("5m ago") and carry
+# the comparable instant in last_heard (epoch). The numeric-only max above
+# skipped text silently, so a stale primary ("199d ago") hid a fresh
+# secondary: the manager box's map served a live node as "199d ago, offline"
+# while meshtasticd's own node DB held it at 0.30 d (honest_failure_modes #1).
+
+def _fresh(fid, name, *, last_seen, last_heard=None, is_online=None,
+           source_origin="local_radio"):
+    f = _f(fid, name, "meshtastic", 19.43142, -155.20891,
+           source_origin=source_origin, last_seen=last_seen)
+    if last_heard is not None:
+        f["properties"]["last_heard"] = last_heard
+    if is_online is not None:
+        f["properties"]["is_online"] = is_online
+    return f
+
+
+class TestFreshnessAcrossTextLastSeen:
+    NOW = 1_793_830_000.0
+
+    def test_stale_text_primary_does_not_hide_fresh_secondary(self):
+        # The 11-04 case: tracker copy first (stale text, no last_heard),
+        # live meshtasticd copy second (fresh text + last_heard + online).
+        feats = [
+            _fresh("mesh_!9666541f", "meshforge base1",
+                   last_seen="199d ago", is_online=False),
+            _fresh("!9666541f", "meshforge base1", last_seen="5m ago",
+                   last_heard=self.NOW - 300, is_online=True),
+        ]
+        out, n = collapse_cross_protocol(feats)
+        assert n == 1
+        p = out[0]["properties"]
+        assert p["last_seen"] == "5m ago"
+        assert p["last_heard"] == self.NOW - 300
+        assert p["is_online"] is True
+
+    def test_fresher_primary_keeps_its_own_freshness(self):
+        # Control: the primary is the fresher copy — nothing may regress it.
+        feats = [
+            _fresh("a", "N", last_seen="2m ago",
+                   last_heard=self.NOW - 120, is_online=True),
+            _fresh("b", "N", last_seen="3d ago",
+                   last_heard=self.NOW - 3 * 86400, is_online=False),
+        ]
+        out, _ = collapse_cross_protocol(feats)
+        p = out[0]["properties"]
+        assert p["last_seen"] == "2m ago"
+        assert p["last_heard"] == self.NOW - 120
+        assert p["is_online"] is True
+
+    def test_no_comparable_instant_keeps_primary(self):
+        # Control: neither copy has an instant — nothing is comparable, so
+        # nothing is invented; the primary stands as before.
+        feats = [
+            _fresh("a", "N", last_seen="4d ago"),
+            _fresh("b", "N", last_seen="1h ago"),
+        ]
+        out, _ = collapse_cross_protocol(feats)
+        assert out[0]["properties"]["last_seen"] == "4d ago"
+
+    def test_numeric_last_seen_vs_text_with_last_heard(self):
+        # Mixed shapes: a federated row's epoch last_seen vs a live copy's
+        # text + last_heard. The newer INSTANT wins whichever field holds it.
+        feats = [
+            _fresh("a", "N", last_seen=self.NOW - 10 * 86400),
+            _fresh("b", "N", last_seen="1m ago",
+                   last_heard=self.NOW - 60, is_online=True),
+        ]
+        out, _ = collapse_cross_protocol(feats)
+        p = out[0]["properties"]
+        assert p["last_seen"] == "1m ago"
+        assert p["last_heard"] == self.NOW - 60
+        assert p["is_online"] is True
+
+
 # ---------- protocol_meta keyed by network ----------
 
 class TestProtocolMetaPromotion:

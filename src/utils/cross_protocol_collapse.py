@@ -32,7 +32,9 @@ Merged feature shape:
     properties.networks = sorted unique list of network strings
     properties.protocol_meta = {network: <orig protocol_meta>, ...}
     properties.alt_ids = [list of non-primary (network, id) tuples]
-    properties.last_seen = max across merged
+    properties.last_seen / last_heard / is_online = from the copy heard
+        most recently (by last_heard, else a numeric last_seen); primary's
+        when neither copy carries an instant
     geometry = primary's geometry (highest source_origin priority)
     properties.id, properties.name = primary's
 
@@ -100,6 +102,27 @@ def _origin_rank(f: Dict[str, Any]) -> int:
     return _origin_priority(origin)
 
 
+# Fields that describe WHEN a node was last heard; they move as one unit so
+# a feature never pairs one copy's age text with another copy's online flag.
+_FRESHNESS_KEYS = ("last_seen", "last_heard", "is_online")
+
+
+def _freshness_instant(props: Dict[str, Any]) -> float | None:
+    """The comparable instant a feature was last heard, or None if unknown.
+
+    Prefers ``last_heard`` (epoch, set by live collectors; 0 means unknown),
+    then a numeric ``last_seen`` (epoch, federated/history rows). Display
+    text such as "5m ago" is never parsed — it has no instant of its own.
+    """
+    lh = props.get("last_heard")
+    if isinstance(lh, (int, float)) and not isinstance(lh, bool) and lh > 0:
+        return float(lh)
+    ls = props.get("last_seen")
+    if isinstance(ls, (int, float)) and not isinstance(ls, bool):
+        return float(ls)
+    return None
+
+
 def _merge_pair(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict[str, Any]:
     """Produce a new feature carrying both networks' identities.
 
@@ -152,12 +175,20 @@ def _merge_pair(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict[str,
     if alt_ids:
         p_props["alt_ids"] = alt_ids
 
-    # last_seen: MAX across both, treating None as -inf.
-    p_ls = p_props.get("last_seen")
-    s_ls = s_props.get("last_seen")
-    candidates = [v for v in (p_ls, s_ls) if isinstance(v, (int, float))]
-    if candidates:
-        p_props["last_seen"] = max(candidates)
+    # Freshness: the copy heard most recently supplies last_seen, last_heard
+    # and is_online TOGETHER. Compare INSTANTS, never display text: live
+    # collectors write last_seen as text ("5m ago") with the instant in
+    # last_heard, federated rows write last_seen as an epoch. Comparing only
+    # numeric last_seen skipped text silently and let a stale primary hide a
+    # fresh copy (2026-11-04: a live node served "199d ago" while meshtasticd held it
+    # at 0.30 d — honest_failure_modes #1). No instant on either side = not
+    # comparable: the primary stands, nothing is invented.
+    p_t = _freshness_instant(p_props)
+    s_t = _freshness_instant(s_props)
+    if s_t is not None and (p_t is None or s_t > p_t):
+        for key in _FRESHNESS_KEYS:
+            if key in s_props:
+                p_props[key] = s_props[key]
 
     p_props["collapsed"] = True
 
