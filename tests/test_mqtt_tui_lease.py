@@ -397,6 +397,46 @@ def test_v5_profile_apply_takes_its_own_lease_and_writes(cfg):
     assert ms.acquire_lease(cfg, user="x", tty="-").state == "held"
 
 
+def _assert_f1_refused(ctx, cfg, before: str):
+    """F1 (r2, operator ruling 2026-11-03): profile apply has no settings
+    screen, so it never offers Reset/rebuild — that would write auto_start
+    values nobody was shown. It refuses, writes nothing, names Configure."""
+    asked = [c[1][0] for c in _calls(ctx, "yesno")]
+    assert "Settings Unreadable" not in asked and "Settings File Broke" not in asked
+    assert (cfg / ms.FILENAME).read_text() == before
+    assert not list(cfg.glob(ms.FILENAME + ".unreadable.*"))
+    said = "\n".join(c[1][1] for c in _calls(ctx, "msgbox"))
+    assert "MQTT Configuration" in said and "NOT applied" in said
+
+
+def test_f1_profile_apply_over_an_unreadable_file_refuses_to_configure(cfg):
+    (cfg / ms.FILENAME).write_text("{broken")
+    h, ctx = _broker()
+    ctx.dialog._yesno_returns = [True, True, True]   # would say yes to anything
+    h._apply_profile_to_mqtt(_Profile("clubpw"))
+    _assert_f1_refused(ctx, cfg, "{broken")
+    assert _calls(ctx, "yesno") == []     # refused before any question
+
+
+def test_f1_profile_apply_when_the_file_breaks_mid_apply_refuses(cfg):
+    _seed(cfg)
+    h, ctx = _broker()
+    real = ctx.dialog.yesno
+    broke = []
+
+    def yesno(title, text, **kw):
+        if not broke:                       # during the Q19 question
+            broke.append(1)
+            (cfg / ms.FILENAME).write_text("")
+            return True
+        return real(title, text, **kw)
+    ctx.dialog.yesno = yesno
+    ctx.dialog._yesno_returns = [True, True]
+    h._apply_profile_to_mqtt(_Profile("clubpw"))
+    assert broke, "Q19 never asked — the test did not reach the mid-apply break"
+    _assert_f1_refused(ctx, cfg, "")
+
+
 def test_v6_profile_apply_while_another_session_edits_is_refused(cfg):
     _seed(cfg)
     held = ms.acquire_lease(cfg, user="alice", tty="pts/3").lease

@@ -112,13 +112,26 @@ def confirm_password_change(ctx, lease, new_password: str, what: str) -> bool:
         f"{what} {verb} the saved password for {who}.\n\nContinue?"))
 
 
+def unreadable_refusal(fail_note: str, error: str) -> str:
+    """The one refusal text for a screen that cannot offer Reset (r2 F1)."""
+    return (f"{fail_note}: the saved MQTT settings file is unreadable.\n\n"
+            f"{error}\n\nNothing was written. Open MQTT Configuration to see "
+            "the settings and reset the file there (the unreadable file is "
+            "kept as a backup).")
+
+
 def save_with_prompts(ctx, lease, intent: Dict[str, Any], title: str, body: str,
                       report_success: bool = True, fail_title: str = "Save Failed",
-                      fail_note: str = "MQTT settings were NOT saved") -> str:
+                      fail_note: str = "MQTT settings were NOT saved",
+                      allow_reset: bool = True) -> str:
     """Save under the lease; answer each refusal with the question it needs.
 
     SAVED / REFUSED (nothing written; the screen may continue) / STALE (the
-    file changed without the lease — the screen must close and reopen)."""
+    file changed without the lease — the screen must close and reopen).
+
+    ``allow_reset=False`` is for a caller with NO settings screen (profile
+    apply, r2 F1): Reset/rebuild would write values nobody was shown, so an
+    unreadable file refuses and points to MQTT Configuration instead."""
     from monitoring import mqtt_settings
     from .mqtt import save_mqtt_config
     intent = dict(intent)
@@ -139,6 +152,11 @@ def save_with_prompts(ctx, lease, intent: Dict[str, Any], title: str, body: str,
         if res.code == "invalid":
             ctx.dialog.msgbox("Not Saved", "The settings were NOT saved:\n\n"
                               + "\n".join(res.errors))
+            return REFUSED
+        broke = (res.code == "unreadable"
+                 or (res.code == "changed_without_lease" and res.now_unreadable))
+        if broke and not allow_reset:
+            ctx.dialog.msgbox(fail_title, unreadable_refusal(fail_note, res.error))
             return REFUSED
         if res.code == "unreadable" and not reset:
             if not ctx.dialog.yesno(
