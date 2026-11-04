@@ -423,18 +423,30 @@ class BrokerHandler(BaseHandler):
             )
             return
 
+        # r5 #1 (Q5 "Esc never writes"): None = Esc = abandon, nothing saved;
+        # only a BLANK answer takes the default (was `or "US"`, so Esc saved)
         username = self.ctx.dialog.inputbox(
             "Username", "MQTT username (blank for anonymous):")
+        if username is None:
+            return
 
         password = ""
         if username:
-            password = self.ctx.dialog.inputbox("Password", "MQTT password:") or ""
+            password = self.ctx.dialog.inputbox("Password", "MQTT password:")
+            if password is None:
+                return
 
         region = self.ctx.dialog.inputbox(
-            "Region", "Meshtastic region code:", init="US") or "US"
+            "Region", "Meshtastic region code:", init="US")
+        if region is None:
+            return
+        region = region or "US"
 
         channel = self.ctx.dialog.inputbox(
-            "Channel", "Meshtastic channel name:", init="LongFast") or "LongFast"
+            "Channel", "Meshtastic channel name:", init="LongFast")
+        if channel is None:
+            return
+        channel = channel or "LongFast"
 
         root_topic = self.ctx.dialog.inputbox(
             "Root Topic",
@@ -442,7 +454,10 @@ class BrokerHandler(BaseHandler):
             "  msh/{region}/2/e  (standard)\n"
             "  msh/2/e          (a local radio with no region prefix)",
             init=f"msh/{region}/2/e"
-        ) or f"msh/{region}/2/e"
+        )
+        if root_topic is None:
+            return
+        root_topic = root_topic or f"msh/{region}/2/e"
 
         profile = create_custom_profile(
             name=name,

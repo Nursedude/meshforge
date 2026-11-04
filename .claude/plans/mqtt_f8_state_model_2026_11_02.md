@@ -272,3 +272,14 @@ is carried/typed/shown except ONE cell (#2). Class 2 NOT found; no plaintext.
   question, and the summary names the account but not the password STATE. Fix: one summary
   line `Password: set / none` (never the value).
 - **Operator ruling owed** (stop rule). NOT deployed; fleet still on `4bc60490`.
+
+### r5 fixes — 2026-11-03 19:21 HST (Opus 5.5) — operator: "fix the Esc-still-saves bug … your call"
+
+- #1 `_setup_custom_broker`: Esc (`None`) at Username/Password/Region/Channel/Root Topic
+  abandons the flow — no profile saved, nothing written; a BLANK answer still takes the
+  default (control test). #2 every shown save summary now names the password STATE
+  (`kept (saved)` / `set` / `none`), never the value.
+- Red-first: 7 tests failed on `f232d150`; Fable's r5 scratch now 37/37 pass.
+- NOT deployed (brake). NEXT SESSION (fresh context, by the author's call): a narrow
+  non-author read of this commit, then deploy (fleet_sync THEN fleet_pull) + live checks:
+  a preset AND a profile apply over a custom key; Esc in Custom setup writes nothing.

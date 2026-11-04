@@ -55,6 +55,15 @@ def _key_kind(lease, intent: Dict[str, Any]) -> str:
     return "custom (kept)" if key == lease.view.get("key") else "custom"
 
 
+def _password_state(lease, intent: Dict[str, Any]) -> str:
+    """r5 #2: what the save did to the password — never the value."""
+    from monitoring import mqtt_settings
+    pw = intent.get("password")
+    if pw is mqtt_settings.KEEP:
+        return "kept (saved)" if lease.password_saved else "none"
+    return "set" if pw else "none"
+
+
 def _holder_line(result) -> str:
     h = result.holder
     if h is None:
@@ -167,6 +176,7 @@ def save_with_prompts(ctx, lease, intent: Dict[str, Any], title: str, body: str,
                     f"  TLS: {'on' if cfg['use_tls'] else 'off'}"
                     f"{' (auto)' if shown.get('tls') == 'auto' else ''}\n"
                     f"  Account: {_who(shown)}\n"
+                    f"  Password: {_password_state(lease, intent)}\n"
                     f"  Channel key: {_key_kind(lease, shown)}\n"
                     f"  Auto-start: MQTT {'on' if intent.get('auto_start') else 'off'}"
                     f", telemetry {'on' if intent.get('auto_start_telemetry') else 'off'}\n"

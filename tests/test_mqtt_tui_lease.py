@@ -595,6 +595,54 @@ def test_r4_5_summary_names_the_stored_tls_mode(cfg):
     assert "TLS: off (auto)" in text
 
 
+@pytest.mark.parametrize("esc_at,inputs", [
+    ("username", ["mine", "mqtt.b.example", "1883", None]),
+    ("password", ["mine", "mqtt.b.example", "1883", "bob", None]),
+    ("region", ["mine", "mqtt.b.example", "1883", "bob", "bobpw", None]),
+    ("channel", ["mine", "mqtt.b.example", "1883", "bob", "bobpw", "US", None]),
+    ("root", ["mine", "mqtt.b.example", "1883", "bob", "bobpw", "US", "LongFast", None]),
+    ("anonymous-then-region", ["mine", "mqtt.b.example", "1883", "", None]),
+])
+def test_r5_1_esc_anywhere_in_custom_setup_writes_nothing(cfg, esc_at, inputs):
+    """r5 #1 (Q5 'Esc never writes'): Esc used to read as the default
+    (`or "US"`), so the profile was saved and the subscriber file written."""
+    _seed(cfg, {**A, "password": ""})
+    before = (cfg / ms.FILENAME).read_bytes()
+    saved = []
+    with patch("handlers.broker.load_profiles", return_value={}), \
+            patch("handlers.broker.save_profiles",
+                  side_effect=lambda p: saved.append(p) or True):
+        h, ctx = _broker()
+        ctx.dialog._inputbox_returns = list(inputs)
+        ctx.dialog._yesno_returns = [True]
+        h._setup_custom_broker()
+    assert (cfg / ms.FILENAME).read_bytes() == before, f"Esc at {esc_at} wrote"
+    assert not saved, f"Esc at {esc_at} saved a profile"
+
+
+def test_r5_1_blank_answers_still_take_the_defaults(cfg):
+    """Control: BLANK (Enter on an empty field) is not Esc — anonymous user,
+    default region/channel/root still complete the setup."""
+    with patch("handlers.broker.load_profiles", return_value={}), \
+            patch("handlers.broker.save_profiles", return_value=True):
+        h, ctx = _broker()
+        ctx.dialog._inputbox_returns = ["mine", "mqtt.b.example", "1883", "", "", "", ""]
+        h._setup_custom_broker()
+    d = _disk(cfg)
+    assert d["broker"] == "mqtt.b.example" and d["username"] == ""
+    assert (d["channel"], d["root_topic"]) == ("LongFast", "msh/US/2/e")
+
+
+def test_r5_2_profile_apply_summary_names_the_password_state(cfg):
+    """r5 #2: no saved password -> no Q19; the summary must still say a
+    password was written (never the value)."""
+    h, ctx = _broker()
+    h._apply_profile_to_mqtt(_Profile("clubpw"))
+    assert _disk(cfg)["password"] == "clubpw"
+    (text,) = [c[1][1] for c in _calls(ctx, "msgbox", "Profile Applied")]
+    assert "Password: set" in text and "clubpw" not in repr(ctx.dialog.calls)
+
+
 def test_q19_a_profile_apply_asks_before_clearing_the_saved_password(cfg):
     """r4 #2 / test_profile_apply_without_password_clears_saved_silently."""
     _seed(cfg)
