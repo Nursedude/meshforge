@@ -1094,7 +1094,7 @@ class TestReviewR5:
     def test_manager_entry_is_not_host_shaped(self, home, monkeypatch):
         monkeypatch.setattr(dac, "fetch_reference_date", lambda url, timeout=20: (None, "x"))
         _, status, _ = _drive(home, monkeypatch, _report(apt=self._apt()), [])
-        assert "manager:security-archive-unreachable" in status.splitlines()[1]
+        assert dac.MANAGER_ARCHIVE_UNKNOWN in status.splitlines()[1]
 
     def test_the_reporter_sends_stamp_presence(self):
         assert '"update_stamp_present"' in dac._REMOTE_SRC
@@ -1719,3 +1719,18 @@ class TestReviewR6ReferenceUrl:
         views = _rendered_reporter_ns()["security_views"](str(tmp_path))
         assert sorted(v["file"] for v in views) == sorted(names)
         assert [v["file"] for v in views if dac.security_reference_url(v["file"]) is None] == []
+
+
+# r6 #9: the manager's UNKNOWN token is ONE constant (hfm #5). The module
+# docstring named a stale spelling; honest_status matches entries by the
+# `manager:` PREFIX, so the constant must keep it.
+class TestReviewR6ManagerToken:
+    def test_one_constant_and_the_prefix_honest_status_matches(self):
+        assert dac.MANAGER_ARCHIVE_UNKNOWN.startswith("manager:")
+        hs = open(os.path.join(_ROOT, "scripts", "honest_status.sh")).read()
+        assert "grep '^manager:'" in hs
+
+    def test_no_stale_spelling_in_the_source(self):
+        src = open(os.path.join(_ROOT, "scripts", "dep_advisory_check.py")).read()
+        assert "manager/security-archive" not in src
+        assert src.count('"%s"' % dac.MANAGER_ARCHIVE_UNKNOWN) == 1   # defined once

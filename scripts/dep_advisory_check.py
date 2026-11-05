@@ -73,7 +73,7 @@ LAG (both Debian's clock). An apt line then reads one of:
   ``UNKNOWN``      — the upgrade simulation failed
 When the MANAGER cannot read the security archive itself, the affected boxes
 read lower-bound with that reason, the header says it ONCE, and the run is
-UNKNOWN (exit 2, ``manager/security-archive``) — never green: it did not see
+UNKNOWN (exit 2, ``MANAGER_ARCHIVE_UNKNOWN`` in the header list) — never green: it did not see
 what it reports. Security views are recognised by file NAME (see
 ``utils/apt_lists.security_views``).
 
@@ -917,6 +917,10 @@ def fetch_reference_date(url: str, timeout: int = 20) -> Tuple[Optional[float], 
 #: view of the archive. Only "box" is counted as box lag (review r3 #4).
 CAUSE_BOX = "box"
 CAUSE_MANAGER = "manager"
+#: The header UNKNOWN-list entry for the manager's own blindness — ONE
+#: constant (r6 #9). Not host-shaped (r5 #7); honest_status names any
+#: `manager:` entry even when it cuts a long list (r6 #8), so keep the prefix.
+MANAGER_ARCHIVE_UNKNOWN = "manager:security-archive-unreachable"
 
 
 class LagVerdict(NamedTuple):
@@ -1218,8 +1222,7 @@ def main(argv=None) -> int:
     # was checked against it, so the run did not see what it reports — UNKNOWN
     # (rc 2, finding file kept), the same as a failed apt simulation (r4 #4).
     if reference.failures():
-        # Not host-shaped (r5 #7): every other entry is `host` or `host/pkg`.
-        unknown_hosts.append("manager:security-archive-unreachable")
+        unknown_hosts.append(MANAGER_ARCHIVE_UNKNOWN)
 
     header = ["# fleet dependency advisories — installed versions vs the "
               "GitHub advisory DB", "# boxes observed: %d/%d%s"
