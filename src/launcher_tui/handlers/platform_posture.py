@@ -292,11 +292,13 @@ class PlatformPostureHandler(BaseHandler):
         pending = self._pending_count()
         holds = self._holds()
 
-        try:
-            age_s = _time.time() - os.stat("/var/lib/apt/lists").st_mtime
-            age = f"{int(age_s // 3600)}h ago" if age_s >= 3600 else "under an hour ago"
-        except OSError:
-            age = None
+        # Newest list FILE, not the directory: apt touches lists/ and partial/
+        # even on a FAILED update, which used to read here as a fresh refresh.
+        # Same derivation as the fleet sweep (utils.apt_lists, one definition).
+        from utils.apt_lists import apt_lists_age_h
+        age_h = apt_lists_age_h("/var/lib/apt/lists", _time.time())
+        age = None if age_h is None else (
+            f"{age_h}h old" if age_h >= 1 else "under an hour old")
 
         lines = [
             f"Box:      {box}",
@@ -311,7 +313,7 @@ class PlatformPostureHandler(BaseHandler):
             lines.append("          That is not the same as 'nothing pending'.")
         else:
             lines.append(f"Pending:  {pending} package(s) upgradable")
-        lines.append(f"Lists:    {'refreshed ' + age if age else 'age UNKNOWN'}")
+        lines.append(f"Lists:    {'newest content ' + age if age else 'age UNKNOWN'}")
         if age is None or (pending is not None and pending == 0 and age is None):
             lines.append("          A count read from stale lists is not a current count.")
 

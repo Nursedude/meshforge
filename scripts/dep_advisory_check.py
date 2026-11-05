@@ -60,6 +60,18 @@ this widening was born from: ``unattended-upgrades`` absent, security updates
 pending, or package lists so stale that "pending" is only a lower bound. Each
 is a finding; a box with no dpkg at all is inert (nothing to say).
 
+"0 security pending" is only as current as the box's snapshot of the security
+archive. The reporter sends each ``*-security`` suite's InRelease ``Date:``;
+the manager fetches the archive's CURRENT Date once per run and judges the
+LAG (both Debian's clock). An apt line then reads one of:
+  ``clean``        — 0 security, view at most APT_SECURITY_VIEW_FRESH_H behind
+  ``lower-bound``  — 0 security, but the view trails further, or the lag cannot
+                     be measured (archive unreachable, Date unreadable, no
+                     security suite); not a finding, not UNKNOWN — the header
+                     counts these boxes as its own line
+  ``FINDING``      — security updates pending / stale lists / no unattended-upgrades
+  ``UNKNOWN``      — the upgrade simulation failed
+
 Manager-side. Mirrors ``ecosystem_ci_status.sh`` in shape and exit codes so it
 reads the same way at a terminal and wires into ``cron_verdict.sh`` identically.
 
@@ -93,6 +105,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import inspect
 import json
 import os
 import re
@@ -106,6 +119,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "src"))
 
 from utils.paths import get_real_user_home  # noqa: E402
 from utils.watchdog_probe_core import env_site_globs  # noqa: E402
+from utils import apt_lists  # noqa: E402
+
+#: The reporter runs on boxes with no checkout on sys.path, so it carries the
+#: shared functions' SOURCE (the TUI imports the same module).
+APT_LISTS_SRC = "\n\n".join(inspect.getsource(f) for f in (
+    apt_lists.apt_lists_age_h, apt_lists.parse_release_date, apt_lists.security_views))
 
 CLEAN = "clean"
 ADVISORY = "advisory"
@@ -138,6 +157,23 @@ DISTRO_PREFIX = "/usr/lib/python3/dist-packages"
 #: Package lists older than this make "pending updates" a lower bound only —
 #: the periodic ``apt-get update`` is not running, which is itself the finding.
 APT_LISTS_STALE_H = 7 * 24
+
+#: A box reads ``clean — 0 security`` only while the snapshot of the security
+#: archive it holds (its InRelease ``Date:``) is at most this far BEHIND the
+#: archive's current one; past it, or when either Date is unobservable, the
+#: zero is a LOWER BOUND, said in words — not a finding, not UNKNOWN (observe
+#: before alarm). LAG, not age: both Dates are Debian's clock, so a quiet
+#: archive cannot make a current box read stale and a box clock cannot forge
+#: it (review 2026-11-05). 24 h because a HEALTHY box's fetch lags about a
+#: day: ``apt-daily.timer`` is ``6,18:00`` + ``RandomizedDelaySec=12h``
+#: (measured on the manager box 2026-11-04). Origin: the 11-04 apt 3.0.4
+#: sweep, where only the box with a 2 h view showed the pending CVE fix.
+APT_SECURITY_VIEW_FRESH_H = 24
+
+#: Archives whose CURRENT InRelease the manager may fetch as the reference
+#: (validate before fetch). A security suite from any other host reads
+#: lower-bound "no reference" — honest, and visible, rather than guessed.
+SECURITY_REFERENCE_HOSTS = ("deb.debian.org", "security.debian.org")
 
 #: Read versions from the interpreter that HOSTS the services (rnsd's own
 #: python), not from whatever ``python3`` resolves to for the login shell.
@@ -246,6 +282,10 @@ for name in PKGS:
         rec["dpkg"] = _dpkg_for(rec["origin"])
     packages[name] = rec
 
+# ---- utils/apt_lists.py, embedded verbatim (ONE definition; the TUI imports it) ----
+%(apt_lists_src)s
+# ---- end utils/apt_lists.py
+
 apt = None
 if os.path.exists("/usr/bin/dpkg-query"):
     apt = {"unattended_upgrades": None, "pending_total": None,
@@ -263,13 +303,15 @@ if os.path.exists("/usr/bin/dpkg-query"):
         # unattended-upgrades never takes these (Debian origins only):
         # firmware, bootloader, kernels, the +rpt openssl.
         apt["pending_rpi"] = sum(1 for ln in inst if "Raspberry Pi Foundation" in ln)
+    apt["lists_age_h"] = apt_lists_age_h("/var/lib/apt/lists", time.time())
+    # Anything raised reading the security views blinds THIS leg only (the
+    # manager renders it lower-bound with the reason) — never the whole
+    # report, which would take the box's package advisories down with it.
     try:
-        newest = max((os.path.getmtime(p) for p in glob.glob("/var/lib/apt/lists/*")),
-                     default=None)
-        if newest:
-            apt["lists_age_h"] = int(max(0.0, time.time() - newest) / 3600)
-    except Exception:
-        pass
+        apt["security_views"] = security_views("/var/lib/apt/lists")
+    except Exception as exc:
+        apt["security_views"] = None
+        apt["security_views_error"] = "%%s: %%s" %% (type(exc).__name__, exc)
 # ---- every python env on this box, not just the one running this probe ----
 # calibrated_claims #7 at its widest: the consumer of record is not ONE
 # interpreter. On 2026-09-06 the manager box carried SIX cryptography copies (system
@@ -599,7 +641,8 @@ def collect_installed(host: str, packages, timeout: int = 90):
     src = _REMOTE_SRC % {"pkgs": list(packages), "import_names": IMPORT_NAMES,
                          "distro_prefix": DISTRO_PREFIX,
                          "env_globs": list(ENV_ROOT_GLOBS),
-                         "collective": list(COLLECTIVE_MARKERS)}
+                         "collective": list(COLLECTIVE_MARKERS),
+                         "apt_lists_src": APT_LISTS_SRC}
     if host.lower() in local_host_aliases():
         rc, out, err = _run([REMOTE_PYTHON, "-"], timeout=timeout,
                             stdin_text=src)
@@ -693,12 +736,17 @@ def partition_distro(advisories, dpkg: Optional[dict], accepted: Dict[str, Tuple
     return patched, acc, expired, open_
 
 
-def apt_lines(host: str, apt: Optional[dict]):
-    """(status_lines, finding_lines, unknown_key|None) for one box's apt
-    hygiene. ``apt`` None = no dpkg on that box = inert, nothing to say."""
+def apt_lines(host: str, apt: Optional[dict], reference=None):
+    """(status_lines, finding_lines, unknown_key|None, lower_bound) for one
+    box's apt hygiene. ``apt`` None = no dpkg on that box = inert, nothing to
+    say. ``reference(url) -> (archive_date_ts|None, reason|None)`` supplies
+    the security archive's CURRENT Date; ``lower_bound`` is True when the
+    box's "0 security" is only true as of a lagging or unmeasured view."""
     if not isinstance(apt, dict):
-        return [], [], None
-    status, findings = [], []
+        return [], [], None, False
+    if reference is None:
+        reference = cached_reference()
+    status, findings, lower_bound = [], [], False
     uu = apt.get("unattended_upgrades")
     age = apt.get("lists_age_h")
     age_s = ("lists %sh old" % age) if age is not None else "lists age unknown"
@@ -710,7 +758,7 @@ def apt_lines(host: str, apt: Optional[dict]):
     if pend is None:
         status.append("%-20s %-14s %-10s UNKNOWN — apt-get -s full-upgrade failed; pending updates unobservable"
                       % (host, "apt", "-"))
-        return status, findings, "%s/apt" % host
+        return status, findings, "%s/apt" % host, False
     stale = age is not None and age > APT_LISTS_STALE_H
     if stale:
         msg = ("package lists %sh stale — periodic apt-get update is not running; "
@@ -727,9 +775,83 @@ def apt_lines(host: str, apt: Optional[dict]):
         rpi = apt.get("pending_rpi")
         rpi_s = (", %d from the Raspberry Pi archive (never auto-installed; "
                  "roll with fleet_os_upgrade.sh)" % rpi) if rpi else ""
-        status.append("%-20s %-14s %-10s clean — %d pending, 0 security%s (%s)"
-                      % (host, "apt", "-", apt.get("pending_total") or 0, rpi_s, age_s))
-    return status, findings, None
+        total = apt.get("pending_total") or 0
+        lag_s, why = security_view_lag(apt, reference)
+        if lag_s is not None and lag_s <= APT_SECURITY_VIEW_FRESH_H * 3600:
+            status.append("%-20s %-14s %-10s clean — %d pending, 0 security%s "
+                          "(security view %dh behind the archive, %s)"
+                          % (host, "apt", "-", total, rpi_s, lag_s // 3600, age_s))
+        else:
+            # A zero from a view that is far behind the security archive — or
+            # whose lag cannot be measured — is not "clean": a fix published
+            # since that view is invisible from this box.
+            sec_s = ("a security view %dh behind the archive" % (lag_s // 3600)
+                     if lag_s is not None else "an unmeasured security view (%s)" % why)
+            status.append("%-20s %-14s %-10s lower-bound — %d pending, 0 security "
+                          "as of %s; a fix published since is invisible here%s (%s)"
+                          % (host, "apt", "-", total, sec_s, rpi_s, age_s))
+            lower_bound = True
+    return status, findings, None, lower_bound
+
+
+def security_reference_url(list_file: str) -> Optional[str]:
+    """The archive's CURRENT InRelease URL for one lists file name, or None
+    when the host is not on SECURITY_REFERENCE_HOSTS or the name is not a
+    plain ``<host>_<path>_dists_<suite>_InRelease``."""
+    m = re.match(r"^([A-Za-z0-9.-]+)_([A-Za-z0-9._%-]*)_dists_([a-z0-9-]+)_InRelease$",
+                 list_file or "")
+    if not m or m.group(1) not in SECURITY_REFERENCE_HOSTS:
+        return None
+    path = m.group(2).replace("_", "/").replace("%5f", "_")
+    if ".." in path.split("/"):
+        return None
+    return "https://%s/%s/dists/%s/InRelease" % (m.group(1), path, m.group(3))
+
+
+def fetch_reference_date(url: str, timeout: int = 20) -> Tuple[Optional[float], Optional[str]]:
+    """(epoch of the archive's current Date, None) or (None, reason)."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:   # nosec: allowlisted host
+            head = resp.read(16384).decode("utf-8", "replace")
+    except Exception as exc:                 # any transport failure = unobservable
+        return None, "archive unreachable: %s" % type(exc).__name__
+    ts = apt_lists.parse_release_date(head)
+    return (ts, None) if ts is not None else (None, "archive Date unreadable")
+
+
+def security_view_lag(apt: dict, reference) -> Tuple[Optional[int], str]:
+    """(seconds the box's STALEST security view trails the archive, "") or
+    (None, why). Any one unmeasurable suite makes the whole box unmeasured —
+    a fresh sibling suite never vouches for a blind one."""
+    views = apt.get("security_views")
+    if views is None:
+        return None, apt.get("security_views_error") or "no security view reported"
+    if not views:
+        return None, "no *-security suite in the lists"
+    worst = 0
+    for v in views:
+        if not isinstance(v, dict) or v.get("date_ts") is None:
+            return None, "%s Date unreadable" % (v.get("file") if isinstance(v, dict) else "?")
+        url = security_reference_url(v.get("file"))
+        if url is None:
+            return None, "no reference archive for %s" % v.get("file")
+        ref_ts, err = reference(url)
+        if ref_ts is None:
+            return None, err or "archive Date unobservable"
+        worst = max(worst, int(max(0.0, ref_ts - v["date_ts"])))
+    return worst, ""
+
+
+def cached_reference():
+    """One fetch per archive URL per run, shared by every box."""
+    cache: Dict[str, Tuple[Optional[float], Optional[str]]] = {}
+
+    def ref(url):
+        if url not in cache:
+            cache[url] = fetch_reference_date(url)
+        return cache[url]
+    return ref
 
 
 def main(argv=None) -> int:
@@ -804,7 +926,8 @@ def main(argv=None) -> int:
     findings: List[str] = []
     observed = 0
     unknown_hosts: List[str] = []
-    n_patched = n_accepted = 0
+    n_patched = n_accepted = n_lower = 0
+    reference = cached_reference()           # one archive fetch per run, all boxes
 
     for host in hosts:
         installed, apt, envs, herr = collect_installed(host, args.packages)
@@ -948,7 +1071,8 @@ def main(argv=None) -> int:
                     findings.append("%s %s %s: %s — %s"
                                     % (host, pkg, shown_v, summarize(advs), tag))
 
-        a_status, a_findings, a_unknown = apt_lines(host, apt)
+        a_status, a_findings, a_unknown, a_lower = apt_lines(host, apt, reference)
+        n_lower += int(a_lower)
         lines.extend(a_status)
         findings.extend(a_findings)
         if a_unknown:
@@ -962,6 +1086,12 @@ def main(argv=None) -> int:
               "# distro-patched (CVE named in the package's Debian changelog): %d; "
               "accepted via %s: %d" % (n_patched, accept_file, n_accepted)]
     header += ["# WARN %s" % w for w in accept_warnings]
+    # The blind spot as its own line (calibrated_claims: never average it away).
+    if n_lower:
+        header.append("# apt: %d box(es) read 0 security as a LOWER BOUND — their "
+                      "security view trails the archive by more than %dh or cannot "
+                      "be measured; a fix published since is invisible to this sweep"
+                      % (n_lower, APT_SECURITY_VIEW_FRESH_H))
     _write(status_file, header + lines)
     if not args.quiet:
         print("\n".join(header + lines))

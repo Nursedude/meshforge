@@ -33,6 +33,27 @@ _spec.loader.exec_module(dac)
 
 ADV_HIGH = [{"ghsa_id": "GHSA-xxxx-yyyy-zzzz", "severity": "high"}]
 
+#: The security archive's "current" Date every test sees (2026-11-04 21:43:53Z,
+#: the trixie-security Date measured live 11-05). Tests never touch the network.
+ARCHIVE_TS = 1793828633.0
+SEC_FILE = "deb.debian.org_debian-security_dists_trixie-security_InRelease"
+REFERENCE_FETCHES = []
+
+
+@pytest.fixture(autouse=True)
+def _no_network_reference(monkeypatch):
+    del REFERENCE_FETCHES[:]
+
+    def fake(url, timeout=20):
+        REFERENCE_FETCHES.append(url)
+        return ARCHIVE_TS, None
+    monkeypatch.setattr(dac, "fetch_reference_date", fake)
+
+
+def _view(lag_h=1.0, file=SEC_FILE, date_ts="lag"):
+    return {"file": file, "suite": "stable-security",
+            "date_ts": (ARCHIVE_TS - lag_h * 3600) if date_ts == "lag" else date_ts}
+
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
@@ -483,9 +504,11 @@ class TestAptHygiene:
 
     def test_healthy_apt_is_clean_and_a_non_deb_box_is_silent(self, home, monkeypatch):
         rep = _report(apt={"unattended_upgrades": "installed", "pending_total": 2,
-                           "pending_security": 0, "lists_age_h": 1})
+                           "pending_security": 0, "lists_age_h": 1,
+                           "security_views": [_view(1)]})
         rc, status, finding = _drive(home, monkeypatch, rep, [ADV_CVE_A])
         assert rc == 0 and finding is None and "0 security" in status
+        assert re.search(r"^boxA\s+apt\s+-\s+clean ", status, re.M)
         rc, status, finding = _drive(home, monkeypatch, _report(apt=None), [ADV_CVE_A])
         assert rc == 0
         assert not re.search(r"^boxA\s+apt\s", status, re.M), (
@@ -514,6 +537,209 @@ class TestAptHygiene:
         # exactly how a kernel arrives — so the count would miss the class.
         assert "apt-get\", \"-s\", \"full-upgrade" in dac._REMOTE_SRC
         assert "Raspberry Pi Foundation" in dac._REMOTE_SRC
+
+
+# 2026-11-04 apt 3.0.4 (CVE-2026-109518): the sweep flagged ONLY moc (lists
+# 2 h old) while six trixie boxes carried the same pending security fix behind
+# 15-31 h old lists, each reading a bare `clean — 0 security`. "0 security" is
+# only as current as the box's view of the security archive; a fix published
+# after that view is invisible (honest_failure_modes #1/#2).
+class TestZeroSecurityIsOnlyAsFreshAsTheSecurityView:
+    def _apt(self, **kw):
+        apt = {"unattended_upgrades": "installed", "pending_total": 0,
+               "pending_security": 0, "lists_age_h": 31}
+        apt.update(kw)
+        return apt
+
+    @staticmethod
+    def _apt_line(status):
+        return [ln for ln in status.splitlines() if re.match(r"^boxA\s+apt\s", ln)]
+
+    def _line(self, home, monkeypatch, **kw):
+        rc, status, finding = _drive(home, monkeypatch, _report(apt=self._apt(**kw)), [])
+        (line,) = self._apt_line(status)
+        return rc, status, finding, line
+
+    def test_a_view_31h_behind_the_archive_is_a_lower_bound_not_clean(self, home, monkeypatch):
+        rc, status, finding, line = self._line(home, monkeypatch, security_views=[_view(31)])
+        assert " clean " not in line, "a view 31 h behind must not read clean: " + line
+        assert "lower-bound" in line and "31h behind the archive" in line
+        # observe before alarm: wording + a header count, not a finding or UNKNOWN
+        assert rc == 0 and finding is None
+        assert "# apt: 1 box(es) read 0 security as a LOWER BOUND" in status
+
+    def test_a_view_close_behind_the_archive_is_clean_and_names_its_lag(self, home, monkeypatch):
+        rc, status, finding, line = self._line(home, monkeypatch, security_views=[_view(3)])
+        assert " clean " in line and "security view 3h behind the archive" in line
+        assert "LOWER BOUND" not in status
+        assert rc == 0 and finding is None
+
+    # review r1 #1: a QUIET archive (Date days old, nothing published since)
+    # must not make a current box read stale — lag, not age.
+    def test_a_quiet_archive_does_not_make_a_current_box_lower_bound(self, home, monkeypatch):
+        old = ARCHIVE_TS - 72 * 3600
+        monkeypatch.setattr(dac, "fetch_reference_date", lambda url, timeout=20: (old, None))
+        _, _, _, line = self._line(home, monkeypatch, security_views=[_view(date_ts=old)])
+        assert " clean " in line and "0h behind" in line
+
+    # review r1 #3: compare SECONDS — 24 h 50 min is past a 24 h window.
+    def test_the_window_is_the_one_constant_compared_in_seconds(self, home, monkeypatch):
+        w = dac.APT_SECURITY_VIEW_FRESH_H
+        _, _, _, at = self._line(home, monkeypatch, security_views=[_view(w)])
+        _, _, _, past = self._line(home, monkeypatch, security_views=[_view(w + 50 / 60)])
+        assert " clean " in at
+        assert "lower-bound" in past, "24h50m must not floor to 24 h and pass"
+
+    # review r1 #2: one unmeasurable suite blinds the box; a fresh sibling never vouches.
+    def test_an_unreadable_sibling_suite_makes_the_box_unmeasured(self, home, monkeypatch):
+        other = SEC_FILE.replace("trixie-security", "extra-security")
+        _, _, _, line = self._line(home, monkeypatch, security_views=[
+            _view(1), _view(file=other, date_ts=None)])
+        assert "lower-bound" in line and "Date unreadable" in line
+
+    def test_the_stalest_suite_bounds_the_claim(self, home, monkeypatch):
+        other = SEC_FILE.replace("trixie-security", "bookworm-security")
+        _, _, _, line = self._line(home, monkeypatch,
+                                   security_views=[_view(1), _view(30, file=other)])
+        assert "lower-bound" in line and "30h behind" in line
+
+    @pytest.mark.parametrize("views,why", [
+        (None, "no security view reported"),
+        ([], "no *-security suite in the lists"),
+        ([_view(1, file="mirror.example_debian-security_dists_trixie-security_InRelease")],
+         "no reference archive"),
+    ])
+    def test_unmeasurable_views_are_lower_bound_with_the_reason(self, home, monkeypatch,
+                                                                views, why):
+        _, _, _, line = self._line(home, monkeypatch, security_views=views)
+        assert " clean " not in line and "lower-bound" in line and why in line
+
+    def test_a_reporter_side_error_is_named(self, home, monkeypatch):
+        _, _, _, line = self._line(home, monkeypatch, security_views=None,
+                                   security_views_error="PermissionError: denied")
+        assert "lower-bound" in line and "PermissionError" in line
+
+    def test_an_unreachable_archive_is_lower_bound_not_clean(self, home, monkeypatch):
+        monkeypatch.setattr(dac, "fetch_reference_date",
+                            lambda url, timeout=20: (None, "archive unreachable: URLError"))
+        _, _, _, line = self._line(home, monkeypatch, security_views=[_view(0)])
+        assert "lower-bound" in line and "archive unreachable" in line
+
+    def test_one_fetch_per_archive_url_per_run(self, home, monkeypatch):
+        _drive(home, monkeypatch, _report(apt=self._apt(security_views=[_view(1)])), [],
+               hosts=("boxA", "boxB", "boxC"))
+        assert REFERENCE_FETCHES == [
+            "https://deb.debian.org/debian-security/dists/trixie-security/InRelease"]
+
+    def test_rpi_backlog_still_shows_on_a_lower_bound_line(self, home, monkeypatch):
+        _, _, _, line = self._line(home, monkeypatch, pending_rpi=7,
+                                   security_views=[_view(40)])
+        assert "lower-bound" in line and "7 from the Raspberry Pi archive" in line
+
+    @pytest.mark.parametrize("name,url", [
+        (SEC_FILE, "https://deb.debian.org/debian-security/dists/trixie-security/InRelease"),
+        ("security.debian.org_debian-security_dists_bookworm-security_InRelease",
+         "https://security.debian.org/debian-security/dists/bookworm-security/InRelease"),
+        ("evil.example_debian-security_dists_trixie-security_InRelease", None),
+        ("deb.debian.org_.._dists_trixie-security_InRelease", None),
+        ("not-a-list-name", None),
+    ])
+    def test_reference_url_is_allowlisted_and_validated(self, name, url):
+        assert dac.security_reference_url(name) == url
+
+
+def _rendered_reporter_ns():
+    """Exec ONLY the embedded utils/apt_lists block of the RENDERED template,
+    so the functions under test are the ones the boxes actually run."""
+    src = dac._REMOTE_SRC % {"pkgs": [], "import_names": {}, "distro_prefix": "/x",
+                             "env_globs": [], "collective": [],
+                             "apt_lists_src": dac.APT_LISTS_SRC}
+    a = src.index("# ---- utils/apt_lists.py, embedded verbatim")
+    b = src.index("# ---- end utils/apt_lists.py", a)
+    ns = {}
+    exec(compile(src[a:b], "<apt-lists>", "exec"), ns)
+    return ns
+
+
+class TestReporterReadsTheSecurityArchiveDate:
+    NOW = _dt.datetime(2026, 11, 5, tzinfo=_dt.timezone.utc).timestamp()
+
+    @pytest.fixture(autouse=True)
+    def _fns(self):
+        self.ns = _rendered_reporter_ns()
+
+    def _views(self, d):
+        return self.ns["security_views"](str(d))
+
+    def _age(self, d):
+        return self.ns["apt_lists_age_h"](str(d), self.NOW)
+
+    def _inrelease(self, d, name, suite, date):
+        f = d / name
+        # real shape: PGP armor, a BLANK line, then the Release paragraph
+        f.write_text("-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA512\n\n"
+                     "Origin: Debian\nSuite: %s\nDate: %s\nValid-Until: x\n" % (suite, date))
+        return f
+
+    def test_reads_only_security_suites_with_debians_date(self, tmp_path):
+        self._inrelease(tmp_path, SEC_FILE, "stable-security", "Wed, 04 Nov 2026 21:43:53 UTC")
+        self._inrelease(tmp_path, "deb.debian.org_debian_dists_trixie-updates_InRelease",
+                        "stable-updates", "Wed, 04 Nov 2026 23:00:00 UTC")
+        assert self._views(tmp_path) == [
+            {"file": SEC_FILE, "suite": "stable-security", "date_ts": ARCHIVE_TS}]
+
+    def test_an_unparseable_date_is_kept_as_none_never_dropped(self, tmp_path):
+        self._inrelease(tmp_path, SEC_FILE, "stable-security", "yesterday-ish")
+        assert self._views(tmp_path) == [
+            {"file": SEC_FILE, "suite": "stable-security", "date_ts": None}]
+
+    def test_no_security_suite_is_an_empty_list(self, tmp_path):
+        self._inrelease(tmp_path, "deb.debian.org_debian_dists_trixie_InRelease",
+                        "stable", "Wed, 04 Nov 2026 23:00:00 UTC")
+        assert self._views(tmp_path) == []
+
+    def test_an_unreadable_lists_dir_raises_for_the_caller_to_witness(self, tmp_path):
+        with pytest.raises(OSError):
+            self._views(tmp_path / "missing")
+
+    # review r1 #6 + the TUI twin: lock, auxfiles and partial/ are touched by a
+    # FAILED or locked update — only list files may age the lists.
+    def test_list_age_ignores_lock_partial_and_auxfiles(self, tmp_path):
+        f = tmp_path / "deb.debian.org_debian_dists_trixie_main_binary-arm64_Packages"
+        f.write_text("x")
+        os.utime(f, (self.NOW - 10 * 86400, self.NOW - 10 * 86400))
+        for extra in ("partial", "auxfiles"):
+            (tmp_path / extra).mkdir()
+            os.utime(tmp_path / extra, (self.NOW - 60, self.NOW - 60))
+        (tmp_path / "lock").write_text("")
+        os.utime(tmp_path / "lock", (self.NOW - 60, self.NOW - 60))
+        assert self._age(tmp_path) == 240
+
+    def test_list_age_with_no_list_file_is_unknown(self, tmp_path):
+        (tmp_path / "lock").write_text("")
+        assert self._age(tmp_path) is None
+
+    def test_the_reporter_ships_the_shared_source_and_the_field(self):
+        assert "def security_views" in dac.APT_LISTS_SRC
+        assert '"security_views"' in dac._REMOTE_SRC
+
+    def test_the_shared_module_is_stdlib_only_with_local_imports(self):
+        # It runs on boxes with no checkout: a module-level or first-party
+        # import would only fail THERE.
+        import ast
+        tree = ast.parse(dac.APT_LISTS_SRC)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                mod = getattr(node, "module", None) or node.names[0].name
+                assert mod.split(".")[0] in {"os", "email"}, mod
+
+
+class TestTuiListAgeUsesTheSharedDerivation:
+    def test_platform_screen_does_not_stat_the_lists_directory(self):
+        src = open(os.path.join(_ROOT, "src", "launcher_tui", "handlers",
+                                "platform_posture.py")).read()
+        assert 'os.stat("/var/lib/apt/lists")' not in src
+        assert "from utils.apt_lists import apt_lists_age_h" in src
 
 
 class TestNamesAreCanonicalForTheAdvisoryDB:
