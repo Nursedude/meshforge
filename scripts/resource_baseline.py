@@ -44,7 +44,8 @@ from typing import Dict, List, Optional
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "src"))
 
-from utils.fleet_hosts import resolve_fleet_hosts  # noqa: E402
+from utils.fleet_hosts import (  # noqa: E402
+    FleetHostsUnreadable, resolve_fleet_hosts)
 from utils.paths import get_real_user_home  # noqa: E402
 
 OK = "OK"
@@ -161,7 +162,12 @@ def _out_dir() -> str:
 
 def cmd_capture(label: str) -> int:
     local = socket.gethostname()
-    hosts = [h for h in resolve_fleet_hosts() if h.lower() != local.lower()]
+    try:
+        fleet = resolve_fleet_hosts()
+    except FleetHostsUnreadable as e:   # r7e #2: a self-only baseline is not the fleet's
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
+    hosts = [h for h in fleet if h.lower() != local.lower()]
     rows = []
     now = _dt.datetime.now().astimezone().isoformat(timespec="seconds")
     for name, target in [(local, None)] + [(h, h) for h in hosts]:

@@ -27,6 +27,13 @@ injected — tests pass ``env={"HOME": ...}`` and ``etc_dir=`` so no assertion
 ever depends on the machine running the suite
 (feedback_tests_must_pin_ambient_state).
 
+A tier that is ABSENT passes to the next one. A tier that is PRESENT but
+cannot be read — permission, a directory, a dangling symlink — raises
+:class:`FleetHostsUnreadable` naming the path, and so does a read that
+fails after resolution (r7e #2, operator 2026-11-05: "quietly failing is
+not an answer"). Falling through would hand the caller the NEXT tier's
+list — a different fleet, reported as the fleet.
+
 File format: hosts separated by whitespace/newlines; ``#`` starts a comment
 anywhere on the line, so ``"moc1  # retired"`` parses as host ``moc1``.
 """
@@ -51,11 +58,48 @@ def parse_fleet_hosts_text(text: str) -> List[str]:
     return hosts
 
 
-def _readable_file(p: Path) -> bool:
+class FleetHostsUnreadable(OSError):
+    """A fleet host list EXISTS at ``path`` but cannot be read.
+
+    An ``OSError`` so a caller's existing ``except OSError`` around a read
+    still refuses; every caller of the resolver must turn it into its own
+    refusal / UNKNOWN, never into "no fleet"."""
+
+    def __init__(self, path: Path, reason: str):
+        self.path = Path(path)
+        self.reason = reason
+        super().__init__(
+            "fleet host list %s exists but is unreadable (%s) - refusing to "
+            "fall through to another list" % (self.path, reason))
+
+
+def _present(p: Path) -> bool:
+    """Something occupies the path — a dangling symlink counts."""
     try:
-        return p.is_file() and os.access(p, os.R_OK)
-    except OSError:
+        return os.path.lexists(p)
+    except (OSError, ValueError):
         return False
+
+
+def _usable(p: Path) -> bool:
+    """True = a readable regular file; False = absent; raises when present
+    but unusable."""
+    try:
+        if p.is_file() and os.access(p, os.R_OK):
+            return True
+    except OSError as exc:
+        raise FleetHostsUnreadable(p, exc.strerror or str(exc)) from exc
+    if not _present(p):
+        return False
+    if p.is_symlink() and not p.exists():
+        why = "dangling symlink"
+    elif p.is_dir():
+        why = "a directory, not a file"
+    elif p.exists() and not p.is_file():
+        why = "not a regular file"
+    else:
+        why = "permission denied"
+    raise FleetHostsUnreadable(p, why)
 
 
 def resolve_fleet_hosts_file(
@@ -65,14 +109,15 @@ def resolve_fleet_hosts_file(
     etc_dir: str = DEFAULT_ETC_DIR,
 ) -> Optional[Path]:
     """The file that wins the resolution order, or ``None`` if no list exists
-    (including a SET-but-unresolvable env override — authoritative, no
-    fall-through)."""
+    (including a SET-but-ABSENT env override — authoritative, no
+    fall-through). Raises :class:`FleetHostsUnreadable` when the winning
+    candidate — or any tier above it — is present but unreadable."""
     env_map: Mapping[str, str] = os.environ if env is None else env
     for key in ENV_OVERRIDE_KEYS:
         val = env_map.get(key)
         if val:
             p = Path(val)
-            return p if _readable_file(p) else None
+            return p if _usable(p) else None
     base = os.path.basename(os.path.normpath(repo_dir or DEFAULT_REPO_DIR))
     if env is None:
         from utils.paths import get_real_user_home
@@ -87,7 +132,7 @@ def resolve_fleet_hosts_file(
         candidates.append(home / ".config" / "meshforge" / "fleet_hosts")
     candidates.append(Path(etc_dir) / "fleet_hosts")
     for c in candidates:
-        if _readable_file(c):
+        if _usable(c):
             return c
     return None
 
@@ -100,14 +145,15 @@ def resolve_fleet_hosts(
 ) -> List[str]:
     """The host list, or ``[]`` when no list resolves. ``[]`` conflates
     absent-list with empty-list on purpose — callers that must refuse a
-    silent no-op (fleet_pull's posture) check ``resolve_fleet_hosts_file``."""
+    silent no-op (fleet_pull's posture) check ``resolve_fleet_hosts_file``.
+    An unreadable list RAISES :class:`FleetHostsUnreadable` — never ``[]``."""
     f = resolve_fleet_hosts_file(repo_dir, env=env, etc_dir=etc_dir)
     if f is None:
         return []
     try:
         return parse_fleet_hosts_text(f.read_text(encoding="utf-8", errors="replace"))
-    except OSError:
-        return []
+    except OSError as exc:
+        raise FleetHostsUnreadable(f, getattr(exc, "strerror", None) or str(exc)) from exc
 
 
 # --- the generated /etc/hosts fleet block -------------------------------------

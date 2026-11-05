@@ -351,7 +351,11 @@ def main(argv=None) -> int:
             return 2
         hosts = sorted(registry.hosts)
     else:
-        hosts_path = fleet_hosts_file()
+        try:
+            hosts_path = fleet_hosts_file()
+        except OSError as e:   # FleetHostsUnreadable (r7e #2) — never a lower tier
+            print(f"fleet_naming_audit: {e} (could not verify)", file=sys.stderr)
+            return 2
         if hosts_path is None:
             print("fleet_naming_audit: no fleet_hosts file found — nothing to "
                   "audit (could not verify)", file=sys.stderr)

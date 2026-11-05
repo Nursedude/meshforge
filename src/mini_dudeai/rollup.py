@@ -1017,6 +1017,18 @@ def main(argv: list[str] | None = None) -> int:
     now_ts = time.time()
     _no_data = ("No local mini state and no fleet_hosts list found "
                 "(set $MESHFORGE_FLEET_HOSTS or create ~/.config/meshforge/fleet_hosts).")
+    from utils.fleet_hosts import FleetHostsUnreadable
+    try:
+        return _main_render(args, now_ts, _no_data)
+    except FleetHostsUnreadable as e:
+        # r7e #2: a local-only pane would read as a fleet of one.
+        title = "fleet deep feed" if args.deep else "fleet watchers"
+        print(f"# mini-dudeai {title}\n\n❌ UNKNOWN — {e}. "
+              f"No fleet pane rendered.")
+        return 2
+
+
+def _main_render(args, now_ts, _no_data) -> int:
     if args.deep:
         results = collect_fleet_deep(now_ts)
         if not results:

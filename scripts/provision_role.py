@@ -1229,8 +1229,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     if args.fleet_check:
-        from utils.fleet_hosts import resolve_fleet_hosts_file
-        _hosts_file = resolve_fleet_hosts_file()
+        from utils.fleet_hosts import (FleetHostsUnreadable,
+                                       resolve_fleet_hosts_file)
+        try:
+            _hosts_file = resolve_fleet_hosts_file()
+        except FleetHostsUnreadable as e:   # r7e #2: never judge a lower tier's fleet
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
         hosts = parse_fleet_hosts(_hosts_file) if _hosts_file else []
         role_map = gather_fleet_roles(hosts, read_role())
         print("# fleet role assignment")

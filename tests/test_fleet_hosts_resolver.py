@@ -243,3 +243,161 @@ class TestWrappersDelegate:
     def test_dup_collector_parser_delegates(self):
         from utils.fleet_dup_collector import parse_fleet_hosts
         assert parse_fleet_hosts("moc  # x\nmoc3\n") == ["moc", "moc3"]
+
+
+# ── r7e #2: a PRESENT-but-unreadable tier errors, never falls through ────
+#
+# Operator 2026-11-05: "quietly failing is not an answer". Before this, a
+# tier that EXISTED but could not be read was skipped as if absent, so a
+# root-only /etc per-repo list (or a chmod slip on the per-repo home list)
+# silently handed every consumer the NEXT tier's list — a different fleet,
+# reported as the fleet. Absent stays "next tier"; present-but-unreadable
+# (permission, a directory, a dangling symlink) is an ERROR naming the path.
+
+import pytest  # noqa: E402
+
+from utils.fleet_hosts import FleetHostsUnreadable  # noqa: E402
+
+_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
+needs_nonroot = pytest.mark.skipif(_ROOT, reason="root reads a mode-000 file")
+
+
+def _unreadable(p: Path) -> Path:
+    p.chmod(0)
+    return p
+
+
+class TestPresentButUnreadableTier:
+    @needs_nonroot
+    def test_unreadable_higher_tier_raises_not_falls_through(self, tmp_path):
+        home, etc = _tree(tmp_path, {
+            "home/.config/meshforge/fleet_hosts.meshforge": "per-repo\n",
+            "home/.config/meshforge/fleet_hosts": "generic\n",
+        })
+        bad = _unreadable(home / ".config/meshforge/fleet_hosts.meshforge")
+        env = {"HOME": str(home)}
+        with pytest.raises(FleetHostsUnreadable) as ei:
+            resolve_fleet_hosts_file("/opt/meshforge", env=env, etc_dir=str(etc))
+        assert ei.value.path == bad and str(bad) in str(ei.value)
+        with pytest.raises(FleetHostsUnreadable):
+            resolve_fleet_hosts("/opt/meshforge", env=env, etc_dir=str(etc))
+
+    @needs_nonroot
+    def test_unreadable_etc_tier_raises_even_with_a_generic_home_list(self, tmp_path):
+        """THE realistic shape: a root-only /etc per-repo list read by the
+        operator — the old resolver silently used ~/.config's generic one."""
+        home, etc = _tree(tmp_path, {
+            "etc/fleet_hosts.meshforge": "etc-per-repo\n",
+            "home/.config/meshforge/fleet_hosts": "generic\n",
+        })
+        _unreadable(etc / "fleet_hosts.meshforge")
+        with pytest.raises(FleetHostsUnreadable):
+            resolve_fleet_hosts("/opt/meshforge", env={"HOME": str(home)},
+                                etc_dir=str(etc))
+
+    @needs_nonroot
+    def test_unreadable_last_tier_raises_not_no_list(self, tmp_path):
+        home, etc = _tree(tmp_path, {"etc/fleet_hosts": "x\n"})
+        _unreadable(etc / "fleet_hosts")
+        with pytest.raises(FleetHostsUnreadable):
+            resolve_fleet_hosts_file(env={"HOME": str(home)}, etc_dir=str(etc))
+
+    def test_a_directory_at_a_tier_path_raises(self, tmp_path):
+        home, etc = _tree(tmp_path, {"home/.config/meshforge/fleet_hosts": "g\n"})
+        (home / ".config/meshforge/fleet_hosts.meshforge").mkdir()
+        with pytest.raises(FleetHostsUnreadable):
+            resolve_fleet_hosts_file(env={"HOME": str(home)}, etc_dir=str(etc))
+
+    def test_a_dangling_symlink_at_a_tier_path_raises(self, tmp_path):
+        home, etc = _tree(tmp_path, {"home/.config/meshforge/fleet_hosts": "g\n"})
+        (home / ".config/meshforge/fleet_hosts.meshforge").symlink_to(tmp_path / "gone")
+        with pytest.raises(FleetHostsUnreadable):
+            resolve_fleet_hosts_file(env={"HOME": str(home)}, etc_dir=str(etc))
+
+    @needs_nonroot
+    def test_unreadable_env_override_raises(self, tmp_path):
+        home, etc = _tree(tmp_path, {"ov": "x\n"})
+        _unreadable(tmp_path / "ov")
+        with pytest.raises(FleetHostsUnreadable):
+            resolve_fleet_hosts_file(
+                env={"HOME": str(home), "MESHFORGE_FLEET_HOSTS": str(tmp_path / "ov")},
+                etc_dir=str(etc))
+
+    def test_absent_tiers_still_fall_through(self, tmp_path):
+        """Absent is not unreadable: the chain keeps its order."""
+        home, etc = _tree(tmp_path, {"home/.config/meshforge/fleet_hosts": "g\n"})
+        assert resolve_fleet_hosts(env={"HOME": str(home)}, etc_dir=str(etc)) == ["g"]
+
+    def test_a_read_failure_after_resolve_raises_not_empty(self, tmp_path, monkeypatch):
+        """resolve_fleet_hosts used to answer [] (= 'no fleet') on an OSError
+        between resolve and read."""
+        home, etc = _tree(tmp_path, {"home/.config/meshforge/fleet_hosts": "g\n"})
+
+        def boom(self, *a, **k):
+            raise PermissionError(13, "denied")
+        monkeypatch.setattr(Path, "read_text", boom)
+        with pytest.raises(FleetHostsUnreadable):
+            resolve_fleet_hosts(env={"HOME": str(home)}, etc_dir=str(etc))
+
+    def test_it_is_an_oserror(self):
+        assert issubclass(FleetHostsUnreadable, OSError)
+
+
+def _run_shell_rc(repo_dir: str, env: dict):
+    script = ('set -u; . "{lib}"; fleet_hosts_resolve "$1"; rc=$?; '
+              'printf "rc=%s\\nfile=%s\\nerr=%s\\n" "$rc" "$FLEET_HOSTS_FILE" '
+              '"${{FLEET_HOSTS_ERROR:-}}"').format(lib=_LIB)
+    full_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    full_env.update(env)
+    p = subprocess.run(["bash", "-c", script, "bash", repo_dir],
+                       capture_output=True, text=True, timeout=30, env=full_env)
+    out = dict(ln.split("=", 1) for ln in p.stdout.splitlines() if "=" in ln)
+    return out, p.stderr
+
+
+class TestShellUnreadableParity:
+    @needs_nonroot
+    def test_unreadable_higher_tier_rc2_names_the_path(self, tmp_path):
+        home, _ = _tree(tmp_path, {
+            "home/.config/meshforge/fleet_hosts.meshforge": "per-repo\n",
+            "home/.config/meshforge/fleet_hosts": "generic\n",
+        })
+        bad = _unreadable(home / ".config/meshforge/fleet_hosts.meshforge")
+        out, err = _run_shell_rc("/opt/meshforge", {"HOME": str(home)})
+        assert out["rc"] == "2" and out["file"] == ""
+        assert str(bad) in out["err"] and str(bad) in err, (out, err)
+        with pytest.raises(FleetHostsUnreadable) as ei:   # python agrees
+            resolve_fleet_hosts_file(env={"HOME": str(home)},
+                                     etc_dir=str(tmp_path / "no-etc"))
+        assert ei.value.path == bad
+
+    def test_directory_at_tier_rc2(self, tmp_path):
+        home, _ = _tree(tmp_path, {"home/.config/meshforge/fleet_hosts": "g\n"})
+        (home / ".config/meshforge/fleet_hosts.meshforge").mkdir()
+        out, _ = _run_shell_rc("/opt/meshforge", {"HOME": str(home)})
+        assert out["rc"] == "2"
+
+    def test_dangling_symlink_rc2(self, tmp_path):
+        home, _ = _tree(tmp_path, {"home/.config/meshforge/fleet_hosts": "g\n"})
+        (home / ".config/meshforge/fleet_hosts.meshforge").symlink_to(tmp_path / "gone")
+        out, _ = _run_shell_rc("/opt/meshforge", {"HOME": str(home)})
+        assert out["rc"] == "2"
+
+    @needs_nonroot
+    def test_unreadable_override_rc2(self, tmp_path):
+        _tree(tmp_path, {"ov": "x\n"})
+        _unreadable(tmp_path / "ov")
+        out, _ = _run_shell_rc("/opt/meshforge",
+                               {"MESHFORGE_FLEET_HOSTS": str(tmp_path / "ov")})
+        assert out["rc"] == "2"
+
+    def test_no_list_is_still_rc1_with_no_error(self, tmp_path):
+        home, _ = _tree(tmp_path, {})
+        out, err = _run_shell_rc("/opt/meshforge", {"HOME": str(home)})
+        assert out["rc"] == "1" and out["err"] == ""
+
+    def test_missing_override_is_still_rc1(self, tmp_path):
+        home, _ = _tree(tmp_path, {"home/.config/meshforge/fleet_hosts": "real\n"})
+        out, _ = _run_shell_rc("/opt/meshforge",
+                               {"HOME": str(home), "MESHFORGE_FLEET_HOSTS": str(tmp_path / "nope")})
+        assert out["rc"] == "1"

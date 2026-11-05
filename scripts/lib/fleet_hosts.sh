@@ -16,6 +16,9 @@
 #     echo "$FLEET_HOSTS_FILE"   # the file that won the resolution order
 #     echo "$FLEET_HOSTS_LIST"   # hosts, one per line, comments stripped
 #   fi                            # rc 1 = no list found anywhere
+#                                 # rc 2 = a list EXISTS but is unreadable:
+#                                 #   $FLEET_HOSTS_ERROR says which and why,
+#                                 #   and the lib has already said it on stderr
 #
 # Resolution order (per-repo list wins over the generic one):
 #   $MESHFORGE_FLEET_HOSTS   — AUTHORITATIVE when set: a missing/unreadable
@@ -29,6 +32,13 @@
 #   ~/.config/meshforge/fleet_hosts
 #   /etc/meshforge/fleet_hosts
 #
+# A tier that is ABSENT passes to the next one. A tier that is PRESENT but
+# unreadable (permission, a directory, a dangling symlink) FAILS the resolve
+# with rc 2 — r7e #2, operator 2026-11-05: "quietly failing is not an answer".
+# Falling through handed every consumer the NEXT tier's list: a different
+# fleet, reported as the fleet. Every consumer already refuses on a non-zero
+# rc; the stderr line here is what makes the refusal say the real reason.
+#
 # HOME may be UNSET (cron/daemon context, set -u): the user-config tiers are
 # then SKIPPED, never defaulted. The old copies disagreed here — fleet_pull
 # aborted on bare $HOME while honest_status silently read /root's list; both
@@ -40,17 +50,32 @@
 #
 # set -u safe. POSIX sh compatible (no arrays, no bashisms).
 
+# _fh_usable PATH — 0 readable regular file; 1 absent; 2 present but
+# unusable (sets FLEET_HOSTS_ERROR and says it on stderr). Mirrors
+# utils.fleet_hosts._usable.
+_fh_usable() {
+  if [ -f "$1" ] && [ -r "$1" ]; then return 0; fi
+  if [ ! -e "$1" ] && [ ! -L "$1" ]; then return 1; fi
+  if [ -L "$1" ] && [ ! -e "$1" ]; then _fh_why="dangling symlink"
+  elif [ -d "$1" ]; then _fh_why="a directory, not a file"
+  elif [ ! -f "$1" ]; then _fh_why="not a regular file"
+  else _fh_why="permission denied"; fi
+  FLEET_HOSTS_ERROR="fleet host list $1 exists but is unreadable ($_fh_why) - refusing to fall through to another list"
+  printf 'fleet_hosts: %s\n' "$FLEET_HOSTS_ERROR" >&2
+  return 2
+}
+
 fleet_hosts_resolve() {
   FLEET_HOSTS_FILE=""
   FLEET_HOSTS_LIST=""
+  FLEET_HOSTS_ERROR=""
   _fh_rb="$(basename "${1:-/opt/meshforge}")"
   for _fh_env in "${MESHFORGE_FLEET_HOSTS:-}" "${FLEET_HOSTS:-}"; do
     if [ -n "$_fh_env" ]; then
-      if [ -f "$_fh_env" ] && [ -r "$_fh_env" ]; then
-        FLEET_HOSTS_FILE="$_fh_env"
-        break
-      fi
-      return 1   # explicit override that doesn't resolve = no list, loudly
+      _fh_usable "$_fh_env"; _fh_rc=$?
+      [ "$_fh_rc" -eq 0 ] || return "$_fh_rc"  # authoritative: no fall-through
+      FLEET_HOSTS_FILE="$_fh_env"
+      break
     fi
   done
   if [ -z "$FLEET_HOSTS_FILE" ]; then
@@ -58,7 +83,10 @@ fleet_hosts_resolve() {
                  "/etc/meshforge/fleet_hosts.$_fh_rb" \
                  "${HOME:+$HOME/.config/meshforge/fleet_hosts}" \
                  /etc/meshforge/fleet_hosts; do
-      [ -n "$_fh_f" ] && [ -f "$_fh_f" ] && [ -r "$_fh_f" ] && { FLEET_HOSTS_FILE="$_fh_f"; break; }
+      [ -n "$_fh_f" ] || continue
+      _fh_usable "$_fh_f"; _fh_rc=$?
+      [ "$_fh_rc" -eq 2 ] && return 2
+      [ "$_fh_rc" -eq 0 ] && { FLEET_HOSTS_FILE="$_fh_f"; break; }
     done
   fi
   [ -n "$FLEET_HOSTS_FILE" ] || return 1

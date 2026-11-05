@@ -61,8 +61,14 @@ def _default_fleet_hosts() -> Path:
     the resolution chain (converged onto utils.fleet_hosts 2026-07-29). The
     hardcoded path stays only as the display/help default when NO list
     resolves anywhere."""
-    from utils.fleet_hosts import resolve_fleet_hosts_file
-    p = resolve_fleet_hosts_file()
+    from utils.fleet_hosts import FleetHostsUnreadable, resolve_fleet_hosts_file
+    try:
+        p = resolve_fleet_hosts_file()
+    except FleetHostsUnreadable as e:
+        # Import time must not crash (--boxes still works). Default to the
+        # UNREADABLE path itself so a run without --boxes reads it, fails,
+        # and refuses — never a lower tier's list (r7e #2).
+        return e.path
     return p if p else _real_home() / ".config" / "meshforge" / "fleet_hosts"
 
 
@@ -187,6 +193,13 @@ def main() -> int:
     else:
         boxes = _boxes_from_fleet_hosts(Path(args.fleet_hosts))
     if not boxes:
+        fh = Path(args.fleet_hosts)
+        if os.path.lexists(fh) and not os.access(fh, os.R_OK):
+            # r7e #2: present-but-unreadable is not "create one".
+            print(f"error: fleet host list {fh} exists but is unreadable — "
+                  f"refusing to guess the fleet. Fix its permissions or "
+                  f"pass --boxes.", file=sys.stderr)
+            return 2
         print(f"error: no boxes to watch. Pass --boxes or create "
               f"{args.fleet_hosts} (see scripts/fleet_sync.sh docs).",
               file=sys.stderr)

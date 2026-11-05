@@ -129,8 +129,8 @@ from utils.paths import get_real_user_home  # noqa: E402
 from utils.watchdog_probe_core import env_site_globs  # noqa: E402
 from utils import apt_lists  # noqa: E402
 from utils.fleet_hosts import (  # noqa: E402
-    ENV_OVERRIDE_KEYS as FLEET_ENV_OVERRIDE_KEYS, parse_fleet_hosts_text,
-    resolve_fleet_hosts_file)
+    ENV_OVERRIDE_KEYS as FLEET_ENV_OVERRIDE_KEYS, FleetHostsUnreadable,
+    parse_fleet_hosts_text, resolve_fleet_hosts_file)
 
 #: The reporter runs on boxes with no checkout on sys.path, so it carries the
 #: shared functions' SOURCE (the TUI imports the same module).
@@ -549,7 +549,10 @@ def read_fleet_hosts(explicit: Optional[str] = None) -> Tuple[List[str], Optiona
     if explicit:
         path = explicit
     else:
-        found = resolve_fleet_hosts_file()
+        try:
+            found = resolve_fleet_hosts_file()
+        except FleetHostsUnreadable as exc:   # r7e #2: never a fall-through
+            return [], str(exc)
         if found is None:
             for key in FLEET_ENV_OVERRIDE_KEYS:
                 if os.environ.get(key):

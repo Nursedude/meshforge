@@ -205,7 +205,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
-    rollup = build_fleet_dup_rollup()
+    import sys
+    from utils.fleet_hosts import FleetHostsUnreadable
+    try:
+        rollup = build_fleet_dup_rollup()
+    except FleetHostsUnreadable as e:
+        # r7e #2: a local-only rollup would read as the fleet's. Write
+        # nothing — the prior rollup's age and this cron's verdict carry it.
+        print(f"fleet_dup_view: NOT written — {e}", file=sys.stderr)
+        return 2
     ok = write_rollup(rollup, path=Path(args.out) if args.out else None)
     if not args.quiet:
         print(

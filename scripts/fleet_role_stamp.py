@@ -60,7 +60,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from utils.fleet_naming import registry_path  # noqa: E402
 from utils.fleet_hosts import (  # noqa: E402
-    resolve_fleet_hosts, resolve_fleet_hosts_file)
+    FleetHostsUnreadable, resolve_fleet_hosts, resolve_fleet_hosts_file)
 
 # Operator-configurable, no host/key hardcoded here (MF014) — same convention
 # as provision_role.py.
@@ -162,8 +162,12 @@ def main(argv=None) -> int:
     # resolve_fleet_hosts() returns [] for BOTH "no list" and "empty list";
     # this organ must refuse a silent no-op, so ask the file resolver which
     # it is (the fleet_pull posture).
-    hosts_file = resolve_fleet_hosts_file()
-    hosts = resolve_fleet_hosts()
+    try:
+        hosts_file = resolve_fleet_hosts_file()
+        hosts = resolve_fleet_hosts()
+    except FleetHostsUnreadable as e:   # r7e #2: refuse, never a lower tier
+        print(f"FAIL: {e} — changing nothing")
+        return 1
     if hosts_file is None:
         print("FAIL: no fleet_hosts file resolved — this is a MANAGER-side "
               "organ; running it elsewhere is miswiring")
