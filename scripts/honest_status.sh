@@ -1246,6 +1246,24 @@ for pair in "advisories:.meshforge-dep-advisories:.meshforge-dep-ADVISORY:instal
   # UNKNOWN and outranks a finding, as a missing half does above.
   _dep_blind=$(grep -m1 '^# boxes observed:.*UNKNOWN:' "$spath" 2>/dev/null \
                | sed 's/.*UNKNOWN:[[:space:]]*//')
+  # An unjudgeable update-stamp (`<host>/apt-update-stamp`: unreadable or
+  # dated in the future) KEEPS the run UNKNOWN (operator, r7 #8) — but a
+  # future stamp is most often that box's clock BEHIND, and the running-code
+  # skew leg above already MEASURED every answering box's clock against this
+  # manager (`skew_clock_desc`: " host(delta) …"). Point at that reading; no
+  # second detector (hfm #5). Built from the FULL list, before the cut below.
+  # Silence here is NOT "clock fine": the skew leg only sees boxes that
+  # answered with a repo.
+  _dep_clk=""
+  for _dep_tok in $(printf '%s' "$_dep_blind" | tr ',' ' '); do
+    case "$_dep_tok" in */apt-update-stamp) ;; *) continue ;; esac
+    _dep_h="${_dep_tok%/apt-update-stamp}"
+    case "${skew_clock_desc:-} " in
+      *" ${_dep_h}("*)
+        _dep_d="${skew_clock_desc#*" ${_dep_h}("}"; _dep_d="${_dep_d%%)*}"
+        _dep_clk="${_dep_clk}; ${_dep_h}: clock disagrees with this manager (${_dep_d}, running-code skew leg) — the likely reason its stamp is unjudgeable; fix the clock first (timedatectl status)" ;;
+    esac
+  done
   # A long list is cut for the one-line note — but the cut is SAID, with the
   # entry count, and any `manager:` entry (the sweep's own blindness, a
   # different class from a box's, appended LAST so first to be cut) is
@@ -1266,7 +1284,7 @@ for pair in "advisories:.meshforge-dep-advisories:.meshforge-dep-ADVISORY:instal
     else
       _dep_seen="findings uncounted — status file predates the count line"
     fi
-    dep_note="$dep_note ${dwhat}:PARTIAL-VIEW(unknown: ${_dep_blind}; ${_dep_seen})"; dep_state="unk"; continue
+    dep_note="$dep_note ${dwhat}:PARTIAL-VIEW(unknown: ${_dep_blind}; ${_dep_seen}${_dep_clk})"; dep_state="unk"; continue
   fi
   if [ -f "$fpath" ]; then
     # `grep -c … || echo 0` yielded the TWO-line value $'0\n0' on a file with

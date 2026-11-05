@@ -250,8 +250,32 @@ printf "# fleet dependency advisories\n# boxes observed: 11/11  UNKNOWN: lehua\n
 : > "$TMP/h20/.meshforge-dep-ranges"
 check_note "short blind list: no cut marker" "$TMP/h20" UNKNOWN "unknown: lehua;" "total"
 
+# 22-25. r7 #8 (operator 2026-11-05): an unjudgeable update-stamp KEEPS the run
+#     UNKNOWN, and when the running-code skew leg (run earlier in this script)
+#     MEASURED that same box's clock disagreeing with the manager, the note
+#     points at it — a future-dated stamp is most often a box clock behind.
+#     The leg reads `skew_clock_desc` (" host(delta) …"); no new detector.
+#     Host match is exact (moc ≠ moc1), and the pointer is built from the FULL
+#     blind list, so the 80-char cut cannot drop it.
+stamp_hdr() { printf "# fleet dependency advisories\n# boxes observed: 11/11  UNKNOWN: %s\n# scope: fleet\n# findings this run: 0\n" "$1"; }
+CLOCK_PTR="clock disagrees with this manager"
+mk h22; stamp_hdr "moc/apt-update-stamp" > "$TMP/h22/.meshforge-dep-advisories"; : > "$TMP/h22/.meshforge-dep-ranges"
+export skew_clock_desc=" kiai(clock unreadable) moc(-700s)"
+check_note "stamp unknown + that box's clock skewed" "$TMP/h22" UNKNOWN "moc: ${CLOCK_PTR} (-700s"
+export skew_clock_desc=" kiai(-700s)"
+check_note "stamp unknown, OTHER box skewed: silent" "$TMP/h22" UNKNOWN "unknown: moc/apt-update-stamp" "$CLOCK_PTR"
+mk h23; stamp_hdr "moc1/apt-update-stamp" > "$TMP/h23/.meshforge-dep-advisories"; : > "$TMP/h23/.meshforge-dep-ranges"
+export skew_clock_desc=" moc(-700s)"
+check_note "host match is exact (moc != moc1)" "$TMP/h23" UNKNOWN "unknown: moc1/apt-update-stamp" "$CLOCK_PTR"
+mk h24; stamp_hdr "${long_list}, kiai/apt-update-stamp" > "$TMP/h24/.meshforge-dep-advisories"; : > "$TMP/h24/.meshforge-dep-ranges"
+export skew_clock_desc=" kiai(-90000s)"
+check_note "pointer survives the 80-char cut" "$TMP/h24" UNKNOWN "kiai: ${CLOCK_PTR} (-90000s"
+mk h25; stamp_hdr "kiai/urllib3" > "$TMP/h25/.meshforge-dep-advisories"; : > "$TMP/h25/.meshforge-dep-ranges"
+check_note "skewed box, non-stamp blind spot: silent" "$TMP/h25" UNKNOWN "unknown: kiai/urllib3" "$CLOCK_PTR"
+unset skew_clock_desc
+
 if [ "$fails" -ne 0 ]; then
   echo "test_honest_status_dep_leg: $fails failure(s)"
   exit 1
 fi
-echo "ALL PASS — test_honest_status_dep_leg: all 21 states behaved as specified"
+echo "ALL PASS — test_honest_status_dep_leg: all 26 states behaved as specified"
