@@ -1684,3 +1684,38 @@ class TestReviewR6FindingCount:
             update_stamp_present=True, update_stamp_age_h=None)), [])
         assert rc == 2 and finding is not None          # the kept file
         assert self._count(status) == 0
+
+
+# r6 #10: apt names a list file by writing every `/` as `_` and a literal
+# `_` as `%5f`. The URL builder's path and dist groups excluded `_`, so every
+# view r5 #8 newly matched (`…_dists_<x>_<y>-security_InRelease`) and every
+# multi-component archive path read "no reference archive" — a box-side
+# UNKNOWN invented by the parser — and its `.replace('_', '/')` was dead.
+class TestReviewR6ReferenceUrl:
+    @pytest.mark.parametrize("name,url", [
+        ("deb.debian.org_debian-security_dists_foo_bar-security_InRelease",
+         "https://deb.debian.org/debian-security/dists/foo/bar-security/InRelease"),
+        ("deb.debian.org_debian_security_dists_trixie-security_InRelease",
+         "https://deb.debian.org/debian/security/dists/trixie-security/InRelease"),
+        ("deb.debian.org_my%5frepo_dists_trixie-security_InRelease",
+         "https://deb.debian.org/my_repo/dists/trixie-security/InRelease"),
+        # traversal stays refused in EITHER group, however it is spelled
+        ("deb.debian.org_debian_.._dists_trixie-security_InRelease", None),
+        ("deb.debian.org_debian-security_dists_.._trixie-security_InRelease", None),
+        ("deb.debian.org_debian-security_dists__InRelease", None),
+    ])
+    def test_apt_filename_encoding_round_trips(self, name, url):
+        assert dac.security_reference_url(name) == url
+
+    def test_every_name_the_view_matcher_accepts_gets_a_url(self, tmp_path):
+        # The two ends of one artifact share ONE notion of a security view
+        # (hfm #5): whatever security_views() keeps on an allowlisted host,
+        # security_reference_url() must be able to name.
+        names = ["deb.debian.org_debian-security_dists_trixie-security_InRelease",
+                 "deb.debian.org_debian-security_dists_foo_bar-security_InRelease",
+                 "security.debian.org_debian_security_dists_x_y_z-security_InRelease"]
+        for n in names:
+            (tmp_path / n).write_text("Date: Wed, 04 Nov 2026 21:43:53 UTC\n")
+        views = _rendered_reporter_ns()["security_views"](str(tmp_path))
+        assert sorted(v["file"] for v in views) == sorted(names)
+        assert [v["file"] for v in views if dac.security_reference_url(v["file"]) is None] == []

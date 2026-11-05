@@ -869,16 +869,20 @@ def apt_lines(host: str, apt: Optional[dict], reference) -> AptLines:
 
 def security_reference_url(list_file: str) -> Optional[str]:
     """The archive's CURRENT InRelease URL for one lists file name, or None
-    when the host is not on SECURITY_REFERENCE_HOSTS or the name is not a
-    plain ``<host>_<path>_dists_<suite>_InRelease``."""
-    m = re.match(r"^([A-Za-z0-9.-]+)_([A-Za-z0-9._%-]*)_dists_([a-z0-9-]+)_InRelease$",
+    when the host is not on SECURITY_REFERENCE_HOSTS or the name does not
+    decode. apt writes every ``/`` as ``_`` and a literal ``_`` as ``%5f``;
+    BOTH the archive path and the dist may span components (r6 #10: the dist
+    group excluded ``_``, so every nested view r5 #8 matched read "no
+    reference archive"). The FIRST ``_dists_`` splits path from dist."""
+    m = re.match(r"^([A-Za-z0-9.-]+)_([A-Za-z0-9._%-]*?)_dists_([A-Za-z0-9._%-]+)_InRelease$",
                  list_file or "")
     if not m or m.group(1) not in SECURITY_REFERENCE_HOSTS:
         return None
-    path = m.group(2).replace("_", "/").replace("%5f", "_")
-    if ".." in path.split("/"):
+    path, dist = (g.replace("_", "/").replace("%5f", "_") for g in m.group(2, 3))
+    # Every component non-empty and never `..` — no traversal, no `//`.
+    if any(c in ("", "..") for part in (path, dist) for c in part.split("/")):
         return None
-    return "https://%s/%s/dists/%s/InRelease" % (m.group(1), path, m.group(3))
+    return "https://%s/%s/dists/%s/InRelease" % (m.group(1), path, dist)
 
 
 class _AllowlistRedirect(urllib.request.HTTPRedirectHandler):
