@@ -329,8 +329,14 @@ class PlatformPostureHandler(BaseHandler):
             lines.append("Updated:  UNKNOWN - update-stamp unreadable or dated in the future")
         else:
             lines.append("Updated:  NEVER recorded - no successful periodic apt-get update")
-        if stale or not stamp_present:
+        if stale:
             lines.append("          A count read from stale lists is not a current count.")
+        elif not stamp_present:
+            # An absent stamp says nothing about list age (a manual/cron
+            # apt-get update skips it) — it says apt.systemd.daily, which also
+            # runs unattended-upgrades, never succeeded (r6 #5, operator #2a).
+            lines.append("          unattended-upgrades may never have run either; fresh")
+            lines.append("          lists from a manual apt-get update install nothing.")
         elif upd_h is None:
             lines.append("          Freshness UNKNOWN - cannot tell whether that count is current.")
 
