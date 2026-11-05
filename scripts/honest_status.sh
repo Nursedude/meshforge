@@ -1237,6 +1237,18 @@ for pair in "advisories:.meshforge-dep-advisories:.meshforge-dep-ADVISORY:instal
   if grep -v '^#' "$spath" 2>/dev/null | head -1 | grep -q '^UNKNOWN'; then
     dep_note="$dep_note ${dwhat}:$(grep -v '^#' "$spath" | head -1 | cut -c1-60)"; dep_state="unk"; continue
   fi
+  # A run that LOOKED but could not see PART of the fleet lists its blind
+  # spots in the header (`# boxes observed: N/M  UNKNOWN: …` — a box
+  # unreachable, a package query timed out, the manager unable to read the
+  # security archive). This leg used to read only the first body line and
+  # the finding file, so a partial view read as a clean bill (operator
+  # decision 2026-11-04, dep-advisory review r5 #1). Partial blindness is
+  # UNKNOWN and outranks a finding, as a missing half does above.
+  _dep_blind=$(grep -m1 '^# boxes observed:.*UNKNOWN:' "$spath" 2>/dev/null \
+               | sed 's/.*UNKNOWN:[[:space:]]*//' | cut -c1-80)
+  if [ -n "$_dep_blind" ]; then
+    dep_note="$dep_note ${dwhat}:PARTIAL-VIEW(unknown: ${_dep_blind})"; dep_state="unk"; continue
+  fi
   if [ -f "$fpath" ]; then
     # `grep -c … || echo 0` yielded the TWO-line value $'0\n0' on a file with
     # no findings (grep -c prints its 0 AND exits 1), and any finding file at

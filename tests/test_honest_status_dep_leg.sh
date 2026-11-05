@@ -165,8 +165,35 @@ printf '# scope: fleet\nUNKNOWN: gh CLI missing or unauthenticated — the fleet
 printf '# header\nmoc cryptography 46.0.5: GHSA-x(high)\n' > "$TMP/h9/.meshforge-dep-ADVISORY"
 check "fleet run that never looked" "$TMP/h9" UNKNOWN
 
+# 13. Operator decision 2026-11-04 (dep-advisory review r5 #1): a run that
+#     LOOKED but could not see PART of the fleet — the manager could not read
+#     the security archive, a box was unreachable, one package's advisory
+#     query timed out — writes its blind spots to the header's UNKNOWN list.
+#     The leg read only the body's first line + the finding file, so a
+#     partial view read as a clean bill. Partial blindness is UNKNOWN.
+mk h13
+printf '# fleet dependency advisories\n# boxes observed: 10/10  UNKNOWN: moc4/jinja2, manager:security-archive-unreachable\n# scope: fleet\nmoc apt - clean\n' \
+  > "$TMP/h13/.meshforge-dep-advisories"
+: > "$TMP/h13/.meshforge-dep-ranges"
+check "partial view (header UNKNOWN list)" "$TMP/h13" UNKNOWN
+
+# 14. ...and partial blindness outranks a finding beside it (same rule as 6).
+mk h14
+cp "$TMP/h13/.meshforge-dep-advisories" "$TMP/h14/"
+: > "$TMP/h14/.meshforge-dep-ranges"
+printf '# header\nkiai apt: 3 security update(s) pending\n' > "$TMP/h14/.meshforge-dep-ADVISORY"
+check "partial view outranks a finding" "$TMP/h14" UNKNOWN
+
+# 15. A complete view that SAYS so still passes — the new rule must key on
+#     the UNKNOWN list, not on the presence of a `boxes observed` line.
+mk h15
+printf '# fleet dependency advisories\n# boxes observed: 10/10\n# scope: fleet\nmoc apt - clean\n' \
+  > "$TMP/h15/.meshforge-dep-advisories"
+: > "$TMP/h15/.meshforge-dep-ranges"
+check "complete view with observed header" "$TMP/h15" PASS
+
 if [ "$fails" -ne 0 ]; then
   echo "test_honest_status_dep_leg: $fails failure(s)"
   exit 1
 fi
-echo "ALL PASS — test_honest_status_dep_leg: all 9 states behaved as specified"
+echo "ALL PASS — test_honest_status_dep_leg: all 15 states behaved as specified"
