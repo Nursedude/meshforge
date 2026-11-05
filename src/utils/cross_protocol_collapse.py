@@ -32,11 +32,11 @@ Merged feature shape:
     properties.networks = sorted unique list of network strings
     properties.protocol_meta = {network: <orig protocol_meta>, ...}
     properties.alt_ids = [list of non-primary (network, id) tuples]
-    properties.last_seen / last_heard / is_online = from the copy heard
-        most recently (by last_heard, else a numeric last_seen), moving as
-        one unit; primary's when neither copy carries an instant. A
-        FEDERATED copy carries no instant (its last_seen is the peer's
-        poll time), so it never supplies freshness
+    properties.last_seen / last_heard / is_online = chosen ONCE over every
+        original copy (_apply_freshness): newest plausible LOCAL instant,
+        else best-ranked local display text, else the primary's; moving as
+        one unit. A FEDERATED copy is never evidence (its last_seen is the
+        peer's poll time)
     geometry = primary's geometry (highest source_origin priority)
     properties.id, properties.name = primary's
 
@@ -123,15 +123,13 @@ def _plausible_instant(v: Any, now: float) -> float | None:
     return float(v)
 
 
-def _peer_freshness_only(props: Dict[str, Any]) -> bool:
-    """True when this feature's freshness fields are a PEER'S, not ours.
+def _is_peer_copy(props: Dict[str, Any]) -> bool:
+    """True for a FEDERATED copy — its freshness fields are a peer's."""
+    return bool(props.get("federated"))
 
-    A federated feature carries the peer's poll stamp — unless a local
-    copy's freshness has since been merged into it (``freshness_from`` =
-    "local", review r3 F-R3-1); then its fields are local evidence even
-    though the feature itself stays federated.
-    """
-    return bool(props.get("federated")) and props.get("freshness_from") != "local"
+
+def _has_text(v: Any) -> bool:
+    return isinstance(v, str) and v.strip() != ""
 
 
 def _freshness_instant(props: Dict[str, Any], now: float) -> float | None:
@@ -146,7 +144,7 @@ def _freshness_instant(props: Dict[str, Any], now: float) -> float | None:
     local-origin rows with `now` — not when anyone heard the node. Letting
     it race served 200d-silent nodes as heard a minute ago (2026-11-04).
     """
-    if _peer_freshness_only(props):
+    if _is_peer_copy(props):
         return None
     lh = _plausible_instant(props.get("last_heard"), now)
     if lh is not None:
@@ -154,8 +152,60 @@ def _freshness_instant(props: Dict[str, Any], now: float) -> float | None:
     return _plausible_instant(props.get("last_seen"), now)
 
 
+def _apply_freshness(out_props: Dict[str, Any],
+                     ranked: List[Dict[str, Any]], now: float) -> None:
+    """Choose last_seen / last_heard / is_online ONCE over every copy.
+
+    ``ranked`` holds the ORIGINAL properties of every copy, best origin rank
+    first (``ranked[0]`` is the primary, whose fields ``out_props`` already
+    carries). Choosing once — never folding pair by pair — is what makes the
+    answer independent of member order and needs no provenance marker
+    (review r4 of 7f952820: a marker in the property namespace was
+    forgeable, F1; pairwise folding leaked order, F3).
+
+    1. Only LOCAL copies are evidence. A federated copy's last_seen is the
+       peer's poll time, never a hearing (r2 F-R2-1).
+    2. A local copy with a plausible instant: the newest wins (ties → best
+       rank, then input order).
+    3. Else a local copy with real display text: the best-ranked one wins —
+       a value that is neither (0, a future epoch, a bool) is not evidence
+       (r4 F2).
+    4. No local evidence: the primary stands; nothing is invented.
+
+    The winner's fields move as ONE unit: last_heard becomes the instant it
+    won on (or is cleared for a text-only win), so no stale or forged
+    last_heard stays beside its flag (r2 F-R2-2, F-R2-9). A winner that is
+    the primary itself leaves its fields as they are.
+    """
+    local = [p for p in ranked if not _is_peer_copy(p)]
+    winner: Dict[str, Any] | None = None
+    instant: float | None = None
+    for p in local:
+        t = _freshness_instant(p, now)
+        if t is not None and (instant is None or t > instant):
+            winner, instant = p, t
+    if winner is None:
+        winner = next((p for p in local if _has_text(p.get("last_seen"))), None)
+    if winner is None or winner is ranked[0]:
+        return
+    text = winner.get("last_seen")
+    out_props["last_seen"] = text if _has_text(text) else instant
+    if "is_online" in winner:
+        out_props["is_online"] = winner["is_online"]
+    else:
+        # The winner makes no online claim; another copy's flag must not
+        # stand beside its fields (r4 F4: a peer's True beside "200d ago").
+        # False is the non-claim the federation builder already uses.
+        out_props["is_online"] = False
+    if instant is not None:
+        out_props["last_heard"] = instant
+    else:
+        out_props.pop("last_heard", None)
+
+
 def _merge_pair(primary: Dict[str, Any], secondary: Dict[str, Any],
-                now: float | None = None) -> Dict[str, Any]:
+                now: float | None = None,
+                freshness: bool = True) -> Dict[str, Any]:
     """Produce a new feature carrying both networks' identities.
 
     Caller has already chosen which side is `primary` (higher
@@ -207,49 +257,13 @@ def _merge_pair(primary: Dict[str, Any], secondary: Dict[str, Any],
     if alt_ids:
         p_props["alt_ids"] = alt_ids
 
-    # Freshness: the copy heard most recently supplies last_seen, last_heard
-    # and is_online TOGETHER. Compare INSTANTS, never display text: live
-    # collectors write last_seen as text ("5m ago") with the instant in
-    # last_heard, federated rows write last_seen as an epoch. Comparing only
-    # numeric last_seen skipped text silently and let a stale primary hide a
-    # fresh copy (2026-11-04: a live node served "199d ago" while meshtasticd held it
-    # at 0.30 d — honest_failure_modes #1). No instant on either side = not
-    # comparable: the primary stands, nothing is invented.
-    # A FEDERATED copy never wins: its stamp is the peer's poll time, not a
-    # hearing (review r2 F-R2-1; _freshness_instant returns None for it), and
-    # its is_online=False is a deliberate non-claim (r1 F1).
-    # The winner's fields move as ONE unit: last_heard becomes the instant
-    # the winner was chosen on, so the primary's stale last_heard never
-    # stays beside the winner's flag (r2 F-R2-2) and a forged last_heard
-    # beside a plausible last_seen is never copied (F-R2-9); a winner with
-    # no last_seen text gets its instant as the value (r1 F3).
-    # A primary whose freshness is only a peer's yields to ANY local evidence,
-    # even display text with no instant (r3 F-R3-2: it stood on the peer's
-    # poll stamp and discarded the local "200d ago"). Once local freshness
-    # has moved in, it is marked so later merges compare it as an instant
-    # instead of letting whichever member comes next win (r3 F-R3-1).
-    if now is None:
-        now = time.time()
-    p_t = _freshness_instant(p_props, now)
-    s_t = _freshness_instant(s_props, now)
-    if _peer_freshness_only(s_props):
-        wins = False
-    elif _peer_freshness_only(p_props):
-        wins = s_t is not None or s_props.get("last_seen") not in (None, "")
-    else:
-        wins = s_t is not None and (p_t is None or s_t > p_t)
-    if wins:
-        for key in ("last_seen", "is_online"):
-            if key in s_props:
-                p_props[key] = s_props[key]
-        if s_t is not None:
-            p_props["last_heard"] = s_t
-        else:
-            p_props.pop("last_heard", None)
-        if s_props.get("last_seen") in (None, ""):
-            p_props["last_seen"] = s_t
-        if p_props.get("federated"):
-            p_props["freshness_from"] = "local"
+    # Freshness is chosen once per node by collapse_cross_protocol over the
+    # ORIGINAL copies (freshness=False there); a direct pair call decides it
+    # over just these two.
+    if freshness:
+        if now is None:
+            now = time.time()
+        _apply_freshness(p_props, [primary.get("properties") or {}, s_props], now)
 
     p_props["collapsed"] = True
 
@@ -342,7 +356,14 @@ def collapse_cross_protocol(
         if i in members_of:
             merged = f
             for member_idx in sorted(members_of[i]):
-                merged = _merge_pair(merged, features[member_idx], now=now)
+                merged = _merge_pair(merged, features[member_idx],
+                                     freshness=False)
+            ranked = [i] + sorted(members_of[i],
+                                  key=lambda m: (-_origin_rank(features[m]), m))
+            _apply_freshness(
+                merged["properties"],
+                [features[k].get("properties") or {} for k in ranked],
+                time.time() if now is None else now)
             # If the primary feature carried no name at this point but
             # was identified by bucket-by-name, retain its original
             # name in properties — _merge_pair preserves it via

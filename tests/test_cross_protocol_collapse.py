@@ -464,6 +464,83 @@ class TestFreshnessReviewR3:
         assert out[0]["properties"]["last_seen"] == self.NOW - 60
 
 
+class TestFreshnessChosenOncePerNode:
+    """Review r4 of 7f952820 (2026-11-04): pairwise folding needed a marker
+    and leaked order. Freshness is now chosen ONCE over every original copy."""
+    NOW = 1_793_830_000.0
+    D = 86400.0
+
+    def _fed(self, **extra):
+        f = _fresh("!a", "N", last_seen=self.NOW - 60, is_online=False,
+                   source_origin="local_radio")
+        f["properties"]["federated"] = True
+        f["properties"].update(extra)
+        return f
+
+    def _unit(self, feats):
+        out, _ = collapse_cross_protocol(feats, now=self.NOW)
+        assert len(out) == 1
+        p = out[0]["properties"]
+        return (p.get("last_seen"), p.get("last_heard"), p.get("is_online"))
+
+    def test_F1_peer_supplied_marker_is_not_local_evidence(self):
+        # A federated SECONDARY that arrives carrying freshness_from="local"
+        # (the shape the old collapse emitted) must still never supply.
+        local = _fresh("a", "N", last_seen=self.NOW - 30 * self.D,
+                       is_online=False)
+        fed = self._fed(freshness_from="local", is_online=True)
+        fed["properties"]["source_origin"] = "node_tracker"
+        # The local primary wins, so its own fields stand untouched.
+        assert self._unit([local, fed]) == (self.NOW - 30 * self.D, None, False)
+
+    def test_F4_winner_without_flag_does_not_inherit_a_peer_online(self):
+        local = _fresh("a", "N", last_seen="200d ago",
+                       source_origin="node_tracker")
+        assert self._unit([self._fed(is_online=True), local]) == (
+            "200d ago", None, False)
+
+    def test_F1_peer_supplied_marker_on_primary_still_yields(self):
+        local = _fresh("a", "N", last_seen=self.NOW - 30 * self.D,
+                       is_online=False, source_origin="node_tracker")
+        assert self._unit([self._fed(freshness_from="local"), local]) == (
+            self.NOW - 30 * self.D, self.NOW - 30 * self.D, False)
+
+    @pytest.mark.parametrize("bad", [0, -5, NOW + 7 * D, True, [1, 2], {"x": 1}])
+    def test_F2_implausible_local_value_is_not_evidence(self, bad):
+        local = _fresh("a", "N", last_seen=bad, is_online=True,
+                       source_origin="node_tracker")
+        last_seen, _, online = self._unit([self._fed(), local])
+        assert online is False
+        assert last_seen == self.NOW - 60  # nothing local to stand on
+
+    def test_F3_text_only_locals_resolve_by_rank_not_order(self):
+        a = _fresh("m", "N", last_seen="5m ago", is_online=True,
+                   source_origin="mqtt_local")
+        b = _fresh("t", "N", last_seen="200d ago", is_online=False,
+                   source_origin="node_tracker")
+        for members in ([a, b], [b, a]):
+            assert self._unit([self._fed()] + members) == ("5m ago", None, True)
+
+    def test_every_member_order_gives_one_answer(self):
+        import itertools
+        fresh = _fresh("f", "N", last_seen="5m ago", last_heard=self.NOW - 300,
+                       is_online=True, source_origin="node_tracker")
+        text = _fresh("t", "N", last_seen="200d ago", is_online=False,
+                      source_origin="mqtt_local")
+        stale = _f("s", "N", "rns", source_origin="rns_path_table",
+                   last_seen=self.NOW - 30 * self.D)
+        stale["properties"]["is_online"] = False
+        answers = {self._unit(list(perm)) for perm in
+                   itertools.permutations([self._fed(), fresh, text, stale])}
+        assert answers == {("5m ago", self.NOW - 300, True)}
+
+    def test_output_carries_no_provenance_marker(self):
+        fresh = _fresh("f", "N", last_seen="5m ago", last_heard=self.NOW - 300,
+                       is_online=True, source_origin="node_tracker")
+        out, _ = collapse_cross_protocol([self._fed(), fresh], now=self.NOW)
+        assert "freshness_from" not in out[0]["properties"]
+
+
 # ---------- protocol_meta keyed by network ----------
 
 class TestProtocolMetaPromotion:
