@@ -66,6 +66,10 @@ def apt_lists_age_h(lists_dir, now):
             m = os.stat(os.path.join(lists_dir, name)).st_mtime
         except OSError:
             continue
+        if m - now > 600:
+            # The SERVER's Last-Modified ahead of this box's clock: the clock
+            # is behind (RTC-less Pi) — unknowable, never "0h fresh" (r3 #8).
+            continue
         newest = m if newest is None else max(newest, m)
     if newest is None:
         return None
@@ -112,6 +116,11 @@ def security_views(lists_dir):
             if line.startswith("Suite:"):
                 suite = line.split(":", 1)[1].strip()
                 break
+        if not suite and "-security_InRelease" in name:
+            # Readable but no Suite: — a truncated / zero-byte power-loss
+            # corpse. Its NAME says security: unknown, never dropped (r3 #1).
+            views.append({"file": name, "suite": None, "date_ts": None})
+            continue
         if not suite or not suite.endswith("-security"):
             continue
         views.append({"file": name, "suite": suite,

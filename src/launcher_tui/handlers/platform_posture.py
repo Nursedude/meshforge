@@ -305,7 +305,8 @@ class PlatformPostureHandler(BaseHandler):
         age = None if age_h is None else (
             f"{age_h}h old" if age_h >= 1 else "under an hour old")
         judged_h = upd_h if upd_h is not None else age_h
-        stale = judged_h is None or judged_h > APT_LISTS_STALE_H
+        # Unknown is its own claim, never "stale" (review r3 #7).
+        stale = judged_h is not None and judged_h > APT_LISTS_STALE_H
 
         lines = [
             f"Box:      {box}",
@@ -326,6 +327,8 @@ class PlatformPostureHandler(BaseHandler):
                                      "no periodic update-stamp (success UNKNOWN)"))
         if stale:
             lines.append("          A count read from stale lists is not a current count.")
+        elif judged_h is None:
+            lines.append("          Freshness UNKNOWN - cannot tell whether that count is current.")
 
         if holds is None:
             lines.append("Holds:    UNKNOWN - could not read apt-mark.")

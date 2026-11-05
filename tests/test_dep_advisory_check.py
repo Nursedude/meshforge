@@ -795,24 +795,106 @@ class TestReviewR2:
         assert lower and "no reference supplied" in status[0]
 
     # r2 #7: validate before fetch must survive a redirect.
+    # r3 #5: a REAL Request, and the refusal pinned by type + message — with
+    # req=None any AttributeError satisfied `raises(Exception)`, so deleting
+    # the allowlist check could not fail this test.
     def test_a_redirect_off_the_allowlist_is_refused(self):
+        import urllib.error
+        import urllib.request
         h = dac._AllowlistRedirect()
-        with pytest.raises(Exception):
-            h.redirect_request(None, None, 302, "Found", {},
+        req = urllib.request.Request("https://deb.debian.org/a")
+        with pytest.raises(urllib.error.URLError, match="off the allowlist.*evil.example"):
+            h.redirect_request(req, None, 302, "Found", {},
                                "https://evil.example/debian-security/dists/x/InRelease")
+        with pytest.raises(urllib.error.URLError, match="off the allowlist"):
+            h.redirect_request(req, None, 302, "Found", {},
+                               "http://deb.debian.org/debian-security/dists/x/InRelease")
         assert h.redirect_request(
-            _FakeReq("https://deb.debian.org/a"), None, 302, "Found", {},
+            req, None, 302, "Found", {},
             "https://security.debian.org/debian-security/dists/x/InRelease") is not None
 
 
-class _FakeReq:
-    """Just enough of urllib.request.Request for HTTPRedirectHandler."""
-    def __init__(self, url):
-        import urllib.request
-        self._r = urllib.request.Request(url)
+# Non-author review r3 (2026-11-04, `/code-review medium 8532e31a..0ea7df21`).
+class TestReviewR3:
+    NOW = _dt.datetime(2026, 11, 5, tzinfo=_dt.timezone.utc).timestamp()
 
-    def __getattr__(self, name):
-        return getattr(self._r, name)
+    def _apt(self, **kw):
+        apt = {"unattended_upgrades": "installed", "pending_total": 0,
+               "pending_security": 0, "lists_age_h": 2, "security_views": [_view(1)]}
+        apt.update(kw)
+        return apt
+
+    # r3 #1: a READABLE but truncated security InRelease (0-byte power-loss
+    # corpse, persistent_issues 08-27) has no Suite: — it must stay an
+    # unknown view by NAME, never vanish into "no security suite".
+    @pytest.mark.parametrize("body", ["", "-----BEGIN PGP SIGNED MESSAGE-----\n"])
+    def test_a_truncated_security_inrelease_is_kept_unknown(self, tmp_path, body):
+        (tmp_path / SEC_FILE).write_text(body)
+        ns = _rendered_reporter_ns()
+        assert ns["security_views"](str(tmp_path)) == [
+            {"file": SEC_FILE, "suite": None, "date_ts": None}]
+
+    # r3 #2: "[]" is also a configured source that never fetched — the
+    # finding must not tell the operator to add what is already there.
+    def test_no_suite_finding_names_both_causes(self, home, monkeypatch):
+        _, _, finding = _drive(home, monkeypatch,
+                               _report(apt=self._apt(security_views=[])), [])
+        assert "never fetched" in finding and "apt-get update" in finding
+
+    # r3 #4: the manager's blindness is ONE cause — it must not ALSO be
+    # counted as N boxes whose "view trails the archive".
+    def test_manager_blindness_is_not_counted_as_box_lag(self, home, monkeypatch):
+        monkeypatch.setattr(dac, "fetch_reference_date",
+                            lambda url, timeout=20: (None, "archive unreachable: x"))
+        _, status, _ = _drive(home, monkeypatch, _report(apt=self._apt()), [],
+                              hosts=("boxA", "boxB"))
+        assert "# apt: the MANAGER" in status
+        assert "LOWER BOUND" not in status, "the box count must exclude manager blindness"
+
+    def test_box_lag_is_still_counted_beside_manager_blindness(self, home, monkeypatch):
+        # one box lags on a suite the manager CAN read; another suite is blind
+        def ref(url, timeout=20):
+            return (None, "archive unreachable: x") if "bookworm" in url else (ARCHIVE_TS, None)
+        monkeypatch.setattr(dac, "fetch_reference_date", ref)
+        _, status, _ = _drive(home, monkeypatch,
+                              _report(apt=self._apt(security_views=[_view(40)])), [])
+        assert "# apt: 1 box(es) read 0 security as a LOWER BOUND" in status
+
+    # r3 #6: the refusal's words survive to the operator, not just a type name.
+    def test_fetch_keeps_the_reason_text(self, monkeypatch):
+        import urllib.error
+
+        class Opener:
+            def open(self, url, timeout):
+                raise urllib.error.URLError("redirect off the allowlist refused: portal.local")
+        monkeypatch.undo()                     # the real fetch, a fake opener
+        monkeypatch.setattr(dac.urllib.request, "build_opener", lambda *a: Opener())
+        ts, err = dac.fetch_reference_date("https://deb.debian.org/x")
+        assert ts is None and "portal.local" in err
+
+    # r3 #8: list mtimes are the SERVER's clock; on a box whose clock is behind
+    # they are in the FUTURE — unknown, never "0h fresh" (hfm #6, same rule
+    # as update_stamp_age_h).
+    def test_future_list_mtimes_are_unknown_not_fresh(self, tmp_path):
+        f = tmp_path / "deb.debian.org_debian_dists_trixie_main_binary-arm64_Packages"
+        f.write_text("x")
+        os.utime(f, (self.NOW + 3 * 86400, self.NOW + 3 * 86400))
+        assert _rendered_reporter_ns()["apt_lists_age_h"](str(tmp_path), self.NOW) is None
+
+    # r3 #9: kept defensive — an empty view list must never compute lag 0.
+    def test_lag_of_an_empty_view_list_is_unmeasured_not_zero(self):
+        lag, why, cause = dac.security_view_lag({"security_views": []},
+                                                lambda u: (ARCHIVE_TS, None))
+        assert lag is None and why and cause == dac.CAUSE_BOX
+
+    def test_a_box_defect_is_named_even_when_the_manager_is_blind(self):
+        # The manager's blindness must never HIDE a box-side defect: box causes
+        # are judged over every view before any reference is consulted.
+        other = SEC_FILE.replace("trixie-security", "bookworm-security")
+        lag, why, cause = dac.security_view_lag(
+            {"security_views": [_view(1), _view(file=other, date_ts=None)]},
+            lambda u: (None, "archive unreachable: x"))
+        assert cause == dac.CAUSE_BOX and "Date unreadable" in why
 
 
 class TestReviewR2Reporter:
@@ -866,6 +948,9 @@ class TestTuiListAgeUsesTheSharedDerivation:
                                 "platform_posture.py")).read()
         assert "APT_LISTS_STALE_H" in src and "update_stamp_age_h" in src
         assert "pending == 0 and age is None" not in src
+        # r3 #7: unknown is not stale — the caveat must not assert staleness
+        # when neither the stamp nor the lists could be read.
+        assert "stale = judged_h is None or" not in src
         assert dac.APT_LISTS_STALE_H is __import__("utils.apt_lists").apt_lists.APT_LISTS_STALE_H
 
     def test_platform_screen_does_not_stat_the_lists_directory(self):
