@@ -81,6 +81,33 @@ def apt_lists_age_h(lists_dir, now):
     return int(max(0.0, now - newest) / 3600)
 
 
+def apt_lists_future_n(lists_dir, now):
+    """How many list files ``apt_lists_age_h`` SKIPPED as dated more than
+    10 min in the future, or None when the directory cannot be read.
+
+    r6 #4: on a box whose clock is BEHIND, every freshly fetched file is
+    future-dated, so the age came from some OLD file and read as a confident
+    "lists 400h old". Every display of that age says this count beside it.
+    Same tolerance and same file filter as apt_lists_age_h (literal here: the
+    reporter embeds these functions' source, not the module)."""
+    import os
+    try:
+        names = os.listdir(lists_dir)
+    except OSError:
+        return None
+    n = 0
+    for name in names:
+        if "_dists_" not in name:
+            continue
+        try:
+            m = os.stat(os.path.join(lists_dir, name)).st_mtime
+        except OSError:
+            continue
+        if m - now > 600:
+            n += 1
+    return n
+
+
 def parse_release_date(text):
     """Epoch seconds of the ``Date:`` field of a (In)Release text, or None.
     The PGP armour before the paragraph is skipped by reading every line.

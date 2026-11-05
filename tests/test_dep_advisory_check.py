@@ -1734,3 +1734,44 @@ class TestReviewR6ManagerToken:
         src = open(os.path.join(_ROOT, "scripts", "dep_advisory_check.py")).read()
         assert "manager/security-archive" not in src
         assert src.count('"%s"' % dac.MANAGER_ARCHIVE_UNKNOWN) == 1   # defined once
+
+
+# r6 #4: a box whose clock is BEHIND sees every freshly fetched list file
+# dated in the future; those are skipped (list age is display-only, r5), so
+# the age came from some OLD file and read as a confident "lists 400h old".
+# The skip must be SAID, with its count, wherever the age is shown.
+class TestReviewR6FutureListFiles:
+    NOW = _dt.datetime(2026, 11, 5, tzinfo=_dt.timezone.utc).timestamp()
+
+    def test_the_reporter_counts_future_dated_list_files(self, tmp_path):
+        for i, off in enumerate((3 * 86400, 2 * 86400, -400 * 3600)):
+            f = tmp_path / ("deb.debian.org_debian_dists_s%d_InRelease" % i)
+            f.write_text("x")
+            os.utime(f, (self.NOW + off, self.NOW + off))
+        (tmp_path / "lock").write_text("")
+        ns = _rendered_reporter_ns()
+        assert ns["apt_lists_future_n"](str(tmp_path), self.NOW) == 2
+        assert ns["apt_lists_age_h"](str(tmp_path), self.NOW) == 400
+
+    def test_an_unreadable_dir_is_unknown_not_zero(self, tmp_path):
+        ns = _rendered_reporter_ns()
+        assert ns["apt_lists_future_n"](str(tmp_path / "nope"), self.NOW) is None
+
+    def test_the_reporter_sends_the_count(self):
+        assert '"lists_future_n"' in dac._REMOTE_SRC
+
+    def test_the_status_line_says_the_skip(self):
+        apt = {"unattended_upgrades": "installed", "pending_total": 0,
+               "pending_security": 0, "lists_age_h": 400, "lists_future_n": 12,
+               "security_views": [_view(1)]}
+        apt.update(STAMP_OK)
+        line = "\n".join(dac.apt_lines("boxA", apt, lambda u: (ARCHIVE_TS, None)).status)
+        assert "lists 400h old excluding 12 future-dated file(s)" in line
+
+    def test_no_note_when_none_were_skipped(self):
+        apt = {"unattended_upgrades": "installed", "pending_total": 0,
+               "pending_security": 0, "lists_age_h": 2, "lists_future_n": 0,
+               "security_views": [_view(1)]}
+        apt.update(STAMP_OK)
+        line = "\n".join(dac.apt_lines("boxA", apt, lambda u: (ARCHIVE_TS, None)).status)
+        assert "future-dated" not in line

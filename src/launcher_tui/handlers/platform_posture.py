@@ -297,11 +297,12 @@ class PlatformPostureHandler(BaseHandler):
         # Same derivation as the fleet sweep (utils.apt_lists, one definition).
         # "Is the periodic update running?" is the success-only update-stamp,
         # judged on the SAME constant the fleet sweep uses (review r2 #6).
-        from utils.apt_lists import (APT_LISTS_STALE_H, UPDATE_STAMP,
-                                     apt_lists_age_h, update_stamp_age_h)
+        from utils import apt_lists as _al
+        from utils.apt_lists import APT_LISTS_STALE_H, UPDATE_STAMP
         now = _time.time()
-        age_h = apt_lists_age_h("/var/lib/apt/lists", now)
-        upd_h = update_stamp_age_h(UPDATE_STAMP, now)
+        age_h = _al.apt_lists_age_h("/var/lib/apt/lists", now)
+        upd_h = _al.update_stamp_age_h(UPDATE_STAMP, now)
+        fut_n = _al.apt_lists_future_n("/var/lib/apt/lists", now)
         age = None if age_h is None else (
             f"{age_h}h old" if age_h >= 1 else "under an hour old")
         # Judged on the stamp ALONE, as the fleet sweep does (r5 #4): list
@@ -323,6 +324,9 @@ class PlatformPostureHandler(BaseHandler):
         else:
             lines.append(f"Pending:  {pending} package(s) upgradable")
         lines.append(f"Lists:    {'newest content ' + age if age else 'age UNKNOWN'}")
+        if fut_n:
+            # r6 #4: the age skipped these; a clock behind makes it an OLD file's.
+            lines.append(f"          excluding {fut_n} future-dated file(s) - box clock behind?")
         if upd_h is not None:
             lines.append(f"Updated:  last successful periodic update {upd_h}h ago")
         elif stamp_present:
