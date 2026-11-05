@@ -1728,7 +1728,7 @@ class TestReviewR6ManagerToken:
     def test_one_constant_and_the_prefix_honest_status_matches(self):
         assert dac.MANAGER_ARCHIVE_UNKNOWN.startswith("manager:")
         hs = open(os.path.join(_ROOT, "scripts", "honest_status.sh")).read()
-        assert "grep '^manager:'" in hs
+        assert "manager:*) _dep_mgr=" in hs     # the cut's prefix match (r7 #7)
 
     def test_no_stale_spelling_in_the_source(self):
         src = open(os.path.join(_ROOT, "scripts", "dep_advisory_check.py")).read()
@@ -1844,3 +1844,26 @@ class TestReviewR7:
             else (ARCHIVE_TS, None))
         line = "\n".join(out.status)
         assert "also unmeasured: manager: archive unreachable: timeout" in line
+
+
+# r7c #3 / r7a #6: dep_advisory_check carried a THIRD fleet_hosts resolver —
+# a copy the 07-29 convergence (utils.fleet_hosts + lib/fleet_hosts.sh, held
+# together by tests/test_fleet_hosts_resolver.py) never reached. It read
+# "moc1  # retired" as a host and let a set-but-missing override fall through
+# to the box's real list. It now delegates; its (hosts, error) contract stays.
+class TestFleetHostListDelegates:
+    def test_an_inline_comment_yields_the_host(self, home):
+        f = home / "hosts"
+        f.write_text("moc1  # retired 07-28\nmoc3\n")
+        assert dac.read_fleet_hosts(explicit=str(f)) == (["moc1", "moc3"], None)
+
+    def test_a_set_but_missing_override_is_an_error_not_a_fallthrough(
+            self, home, monkeypatch):
+        monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(home / "nope"))
+        hosts, err = dac.read_fleet_hosts()
+        assert hosts == [] and err and "MESHFORGE_FLEET_HOSTS" in err
+
+    def test_no_private_candidate_list(self):
+        src = open(os.path.join(_ROOT, "scripts", "dep_advisory_check.py")).read()
+        assert "resolve_fleet_hosts_file" in src
+        assert '"fleet_hosts.meshforge"' not in src

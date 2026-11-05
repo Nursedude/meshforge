@@ -128,6 +128,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "src"))
 from utils.paths import get_real_user_home  # noqa: E402
 from utils.watchdog_probe_core import env_site_globs  # noqa: E402
 from utils import apt_lists  # noqa: E402
+from utils.fleet_hosts import (  # noqa: E402
+    ENV_OVERRIDE_KEYS as FLEET_ENV_OVERRIDE_KEYS, parse_fleet_hosts_text,
+    resolve_fleet_hosts_file)
 
 #: The reporter runs on boxes with no checkout on sys.path, so it carries the
 #: shared functions' SOURCE (the TUI imports the same module).
@@ -536,29 +539,32 @@ def _run(cmd: List[str], timeout: int, stdin_text: Optional[str] = None):
 
 
 def read_fleet_hosts(explicit: Optional[str] = None) -> Tuple[List[str], Optional[str]]:
-    """Same precedence as scripts/fleet_pull.sh — ONE notion of who the fleet
-    is. Returns (hosts, error); an unreadable list is an error, never []."""
-    home = str(get_real_user_home())
-    candidates = [explicit] if explicit else [
-        os.environ.get("MESHFORGE_FLEET_HOSTS"),
-        os.path.join(home, ".config", "meshforge", "fleet_hosts.meshforge"),
-        "/etc/meshforge/fleet_hosts.meshforge",
-        os.path.join(home, ".config", "meshforge", "fleet_hosts"),
-        "/etc/meshforge/fleet_hosts",
-    ]
-    for path in candidates:
-        if not path or not os.path.isfile(path):
-            continue
-        try:
-            with open(path, "r", encoding="utf-8") as fh:
-                hosts = [ln.strip() for ln in fh
-                         if ln.strip() and not ln.strip().startswith("#")]
-        except OSError as exc:
-            return [], "fleet host list %s unreadable: %s" % (path, exc)
-        if not hosts:
-            return [], "fleet host list %s is empty" % path
-        return hosts, None
-    return [], "no fleet host list found (looked in ~/.config/meshforge and /etc/meshforge)"
+    """Who the fleet is, from the ONE shared resolver (``utils.fleet_hosts``,
+    held to ``scripts/lib/fleet_hosts.sh`` by test_fleet_hosts_resolver).
+    r7c #3: this was a private third copy that read "moc1  # x" as a host and
+    let a set-but-missing override fall through to the box's real list.
+    Default repo dir on purpose: the ``.meshforge`` tier, as before, even when
+    run from a worktree. Returns (hosts, error); an unreadable or empty list
+    is an error, never []."""
+    if explicit:
+        path = explicit
+    else:
+        found = resolve_fleet_hosts_file()
+        if found is None:
+            for key in FLEET_ENV_OVERRIDE_KEYS:
+                if os.environ.get(key):
+                    return [], ("fleet host list override %s=%s unreadable "
+                                "(authoritative - no fall-through)" % (key, os.environ[key]))
+            return [], "no fleet host list found (looked in ~/.config/meshforge and /etc/meshforge)"
+        path = str(found)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            hosts = parse_fleet_hosts_text(fh.read())
+    except OSError as exc:
+        return [], "fleet host list %s unreadable: %s" % (path, exc)
+    if not hosts:
+        return [], "fleet host list %s is empty" % path
+    return hosts, None
 
 
 def read_accepted(path: str, today: Optional[_dt.date] = None):
