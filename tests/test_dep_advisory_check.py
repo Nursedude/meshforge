@@ -1867,3 +1867,16 @@ class TestFleetHostListDelegates:
         src = open(os.path.join(_ROOT, "scripts", "dep_advisory_check.py")).read()
         assert "resolve_fleet_hosts_file" in src
         assert '"fleet_hosts.meshforge"' not in src
+
+    # r7e #8: a MISSING override file was reported "unreadable" — permissions
+    # are the wrong thing to go check.
+    def test_a_missing_override_says_missing(self, home, monkeypatch):
+        monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(home / "nope"))
+        assert "is missing or unreadable" in dac.read_fleet_hosts()[1]
+
+    # r7e #7: the shared resolver reads with errors="replace"; a stray byte
+    # in a comment must not crash the sweep before it can write UNKNOWN.
+    def test_a_stray_byte_does_not_crash(self, home):
+        f = home / "hosts"
+        f.write_bytes(b"# caf\xe9 box\nmoc\n")
+        assert dac.read_fleet_hosts(explicit=str(f)) == (["moc"], None)

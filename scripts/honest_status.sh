@@ -1300,7 +1300,9 @@ for pair in "advisories:.meshforge-dep-advisories:.meshforge-dep-ADVISORY:instal
       if [ "${#_dep_try}" -gt 80 ] && [ -n "$_dep_short" ]; then _dep_full=1; continue; fi
       _dep_short="$_dep_try"
     done
-    _dep_blind="${_dep_short} … (${_dep_total} total${_dep_mgr:+; incl. ${_dep_mgr}})"
+    # "…" only when a box entry was actually LEFT OUT (r7e #3): an overflow
+    # made only by the manager entry omits nothing, and "…" would say it did.
+    _dep_blind="${_dep_short}${_dep_full:+ …} (${_dep_total} total${_dep_mgr:+; incl. ${_dep_mgr}})"
   fi
   if [ -n "$_dep_blind" ]; then
     # Still say what the run DID see (r6 #7) — but from the header's
