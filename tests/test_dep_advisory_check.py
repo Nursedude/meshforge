@@ -1063,13 +1063,14 @@ class TestReviewR5:
             update_stamp_present=True, update_stamp_age_h=6, lists_age_h=1300)), [])
         assert finding is None and "stale" not in status
 
-    # r5 #5 + #6: a box-side unknown decides the verdict BEFORE any reference
-    # fetch — no spurious manager failure (rc 2), no hidden corrupt view.
-    def test_a_box_side_unknown_never_consults_the_manager(self):
+    # r5 #5 kept: a manager failure never HIDES a corrupt view. (r5's other
+    # half — "never consult the manager once a box-side unknown is seen" —
+    # was REVERSED by r6 #3: it hid a measured sibling's lag. See TestReviewR6.)
+    def test_a_box_side_unknown_is_not_hidden_by_manager_blindness(self):
         other = SEC_FILE.replace("trixie-security", "bookworm-security")
         v = dac.security_view_lag(
-            {"security_views": [_view(40), _view(file=other, date_ts=None)]},
-            lambda u: pytest.fail("reference consulted after the verdict was fixed"))
+            {"security_views": [_view(1), _view(file=other, date_ts=None)]},
+            lambda u: (None, "archive unreachable: x"))
         assert v.cause == dac.CAUSE_BOX and "Date unreadable" in v.why
 
     # r5 #8: a security dist with an extra path component still counts.
@@ -1543,3 +1544,57 @@ class TestAVersionlessMetadataDirIsReadBeforeBeingCalledUnknown:
                           lambda cmd: (1, ""))
         recs = envs[0]["packages"]["cryptography"]
         assert [r["version"] for r in recs] == [None], recs
+
+
+# Non-author review r6 (2026-11-04, `/code-review medium b8f90e2d..56397e87`),
+# fixed in a fresh session. #3: r5's box-side-first early return REVERSED
+# r4 #1 — a corrupt view returned before a sibling's lag was measured, so a
+# view trailing by days was hidden behind "Date unreadable". Order now:
+# measure every view that CAN be measured, then
+# measured-past-window > box-unknown > manager-unknown, every reason shown.
+class TestReviewR6:
+    OTHER = SEC_FILE.replace("trixie-security", "bookworm-security")
+    THIRD = SEC_FILE.replace("trixie-security", "forky-security")
+
+    def _apt(self, views):
+        return {"unattended_upgrades": "installed", "pending_total": 0,
+                "pending_security": 0, "lists_age_h": 2,
+                "update_stamp_present": True, "update_stamp_age_h": 3,
+                "security_views": views}
+
+    def test_measured_lag_wins_over_a_box_side_unknown_sibling(self):
+        v = dac.security_view_lag(
+            {"security_views": [_view(file=self.OTHER, date_ts=None), _view(40)]},
+            lambda u: (ARCHIVE_TS, None))
+        assert v.cause == dac.CAUSE_BOX
+        assert v.lag_s is not None and v.lag_s // 3600 == 40
+        assert "Date unreadable" in v.why          # the second reason is SHOWN
+
+    def test_box_unknown_beats_manager_unknown_and_names_both(self):
+        v = dac.security_view_lag(
+            {"security_views": [_view(file=self.OTHER, date_ts=None), _view(1)]},
+            lambda u: (None, "archive unreachable: timeout"))
+        assert v.cause == dac.CAUSE_BOX and v.lag_s is None
+        assert "Date unreadable" in v.why and "archive unreachable" in v.why
+
+    def test_measured_lag_wins_and_names_box_and_manager_reasons(self):
+        def ref(url):
+            return (None, "archive unreachable: timeout") if "forky" in url else (ARCHIVE_TS, None)
+        v = dac.security_view_lag(
+            {"security_views": [_view(file=self.OTHER, date_ts=None), _view(40),
+                                _view(1, file=self.THIRD)]}, ref)
+        assert v.cause == dac.CAUSE_BOX and v.lag_s // 3600 == 40
+        assert "Date unreadable" in v.why and "archive unreachable" in v.why
+
+    def test_a_measured_view_within_the_window_beside_a_box_unknown_is_box_unknown(self):
+        v = dac.security_view_lag(
+            {"security_views": [_view(2), _view(file=self.OTHER, date_ts=None)]},
+            lambda u: (ARCHIVE_TS, None))
+        assert v.cause == dac.CAUSE_BOX and v.lag_s is None and "Date unreadable" in v.why
+
+    def test_the_rendered_line_shows_the_lag_and_the_unknown_sibling(self):
+        a = dac.apt_lines("boxA", self._apt([_view(file=self.OTHER, date_ts=None), _view(40)]),
+                          lambda u: (ARCHIVE_TS, None))
+        line = "\n".join(a.status)
+        assert a.lower_bound_cause == dac.CAUSE_BOX
+        assert "40h behind the archive" in line and "Date unreadable" in line

@@ -836,7 +836,10 @@ def apt_lines(host: str, apt: Optional[dict], reference) -> AptLines:
             # A zero from a view that is far behind the security archive — or
             # whose lag cannot be measured — is not "clean": a fix published
             # since that view is invisible from this box.
-            sec_s = ("a security view %dh behind the archive" % lag_h
+            # Both reasons when both exist (r6 #3): the lag that won the rank
+            # AND the unknown sibling it outranked.
+            sec_s = ("a security view %dh behind the archive%s"
+                     % (lag_h, " (also unmeasured: %s)" % why if why else "")
                      if lag_s is not None else "an unmeasured security view (%s)" % why)
             status.append("%-20s %-14s %-10s lower-bound — %d pending, 0 security "
                           "as of %s; a fix published since is invisible here%s (%s)"
@@ -901,16 +904,21 @@ class LagVerdict(NamedTuple):
 
 
 def security_view_lag(apt: dict, reference) -> LagVerdict:
-    """The box's ONE verdict, in two passes:
+    """The box's ONE verdict. Every view the box CAN measure is measured —
+    a blind sibling never stops the measurement (r6 #3: r5's box-side early
+    return reversed r4 #1, hiding a view days behind behind "Date
+    unreadable"). Then, by rank:
 
-    1. Box-side, NO network: every view's Date and reference URL. Any view
-       unknown ON THE BOX fixes the verdict (CAUSE_BOX, that reason) before
-       the manager is consulted — so a manager failure can neither hide the
-       corrupt view nor turn a run UNKNOWN over a box it decided nothing
-       for (r5 #5/#6). A fresh sibling never vouches for a blind view.
-    2. Reference: a MEASURED lag past the window → CAUSE_BOX with the lag
-       (wins over a manager-blind sibling, r4 #1); else any manager-blind
-       view → CAUSE_MANAGER; else clean (cause None).
+      * a MEASURED lag past the window → CAUSE_BOX with that lag
+      * else any view unknown ON THE BOX → CAUSE_BOX, lag None
+      * else any view the MANAGER could not read → CAUSE_MANAGER
+      * else clean (cause None)
+
+    ``why`` carries EVERY unknown reason (box first, then manager), joined
+    with "; " — the winning rank never erases a second defect. A fresh
+    sibling never vouches for a blind view. Trade-off accepted: a box with
+    a corrupt view still fetches for its measurable siblings, so a manager
+    failure there turns the run UNKNOWN — honest, that sibling was unread.
     """
     views = apt.get("security_views")
     if views is None:
@@ -918,27 +926,30 @@ def security_view_lag(apt: dict, reference) -> LagVerdict:
                           or "no security view reported", CAUSE_BOX)
     if not views:                            # defensive: apt_lines reports [] as a finding
         return LagVerdict(None, "no *-security suite in the lists", CAUSE_BOX)
-    targets = []
+    measured, box_why, manager_why = [], [], []
     for v in views:
         name = v.get("file") if isinstance(v, dict) else "?"
         if not isinstance(v, dict) or v.get("date_ts") is None:
-            return LagVerdict(None, "%s Date unreadable" % name, CAUSE_BOX)
+            box_why.append("%s Date unreadable" % name)
+            continue
         url = security_reference_url(name)
         if url is None:
-            return LagVerdict(None, "no reference archive for %s" % name, CAUSE_BOX)
-        targets.append((url, v["date_ts"]))
-    measured, manager_why = [], None
-    for url, date_ts in targets:
+            box_why.append("no reference archive for %s" % name)
+            continue
         ref_ts, err = reference(url)
         if ref_ts is None:
-            manager_why = manager_why or err or "archive Date unobservable"
+            manager_why.append(err or "archive Date unobservable")
             continue
-        measured.append(int(max(0.0, ref_ts - date_ts)))
+        measured.append(int(max(0.0, ref_ts - v["date_ts"])))
+    # dict.fromkeys: one shared archive failure is said once, order kept.
+    why = "; ".join(dict.fromkeys(box_why + manager_why))
     worst = max(measured) if measured else None
     if worst is not None and worst > APT_SECURITY_VIEW_FRESH_H * 3600:
-        return LagVerdict(worst, "", CAUSE_BOX)
+        return LagVerdict(worst, why, CAUSE_BOX)
+    if box_why:
+        return LagVerdict(None, why, CAUSE_BOX)
     if manager_why:
-        return LagVerdict(None, manager_why, CAUSE_MANAGER)
+        return LagVerdict(None, why, CAUSE_MANAGER)
     return LagVerdict(worst, "", None)
 
 
