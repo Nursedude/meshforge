@@ -68,8 +68,10 @@ def apt_lists_age_h(lists_dir, now):
             continue
         if m - now > 600:
             # The SERVER's Last-Modified ahead of this box's clock: the clock
-            # is behind (RTC-less Pi) — unknowable, never "0h fresh" (r3 #8).
-            continue
+            # is behind (RTC-less Pi). Then NO list age is trustworthy — not
+            # "the oldest of the rest", which reads a quiet archive as stale
+            # on a box that just updated (r3 #8 → r4 #3).
+            return None
         newest = m if newest is None else max(newest, m)
     if newest is None:
         return None
@@ -91,38 +93,33 @@ def parse_release_date(text):
 
 
 def security_views(lists_dir):
-    """[{"file", "suite", "date_ts"}] for every ``*-security`` InRelease here.
-    ``date_ts`` None = the view exists but its Date could not be read — kept,
-    never dropped, so one bad suite cannot leave a fresh sibling to vouch for
-    the box. An unreadable directory raises OSError: the caller must render
-    that as unobservable, not as "no security suite"."""
+    """[{"file", "suite", "date_ts"}] for every security-suite InRelease here.
+
+    A view is a security view by its FILE NAME (``…_dists_<suite>-security_
+    InRelease`` — the name apt itself derives from sources.list), never by
+    the ``Suite:`` line inside it: a power-loss truncation can cut the file
+    anywhere, including inside that line, and must never make the view
+    vanish (r2 #4 → r3 #1 → r4 #5 — three patches of one class, closed by
+    not reading the field). Contents only supply ``suite`` (display) and
+    ``date_ts``; ``date_ts`` None = unreadable or unparseable, kept, so one
+    bad suite cannot leave a fresh sibling to vouch for the box. An
+    unreadable DIRECTORY raises OSError for the caller to witness."""
     import os
+    import re
     views = []
     for name in sorted(os.listdir(lists_dir)):
-        if not name.endswith("_InRelease") or "_dists_" not in name:
+        if not re.search(r"_dists_[^_]+-security_InRelease$", name):
             continue
         try:
             with open(os.path.join(lists_dir, name), errors="replace") as fh:
                 head = fh.read(16384)
         except OSError:
-            # Unreadable: keep it as an unknown view only if its NAME says it
-            # is a security suite — an unreadable Raspberry Pi or grafana list
-            # says nothing about the security view (review r2 #4).
-            if "-security_InRelease" in name:
-                views.append({"file": name, "suite": None, "date_ts": None})
-            continue
+            head = ""
         suite = None
         for line in head.splitlines():
             if line.startswith("Suite:"):
-                suite = line.split(":", 1)[1].strip()
+                suite = line.split(":", 1)[1].strip() or None
                 break
-        if not suite and "-security_InRelease" in name:
-            # Readable but no Suite: — a truncated / zero-byte power-loss
-            # corpse. Its NAME says security: unknown, never dropped (r3 #1).
-            views.append({"file": name, "suite": None, "date_ts": None})
-            continue
-        if not suite or not suite.endswith("-security"):
-            continue
         views.append({"file": name, "suite": suite,
-                      "date_ts": parse_release_date(head)})
+                      "date_ts": parse_release_date(head) if head else None})
     return views

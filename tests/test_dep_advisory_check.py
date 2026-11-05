@@ -38,6 +38,10 @@ ADV_HIGH = [{"ghsa_id": "GHSA-xxxx-yyyy-zzzz", "severity": "high"}]
 ARCHIVE_TS = 1793828633.0
 SEC_FILE = "deb.debian.org_debian-security_dists_trixie-security_InRelease"
 REFERENCE_FETCHES = []
+#: The real fetch, saved BEFORE the autouse fake — a test that needs it
+#: restores this one attribute, never `monkeypatch.undo()` (r4 #8: undo()
+#: strips every isolation patch, the network fake included).
+_REAL_FETCH = dac.fetch_reference_date
 
 
 @pytest.fixture(autouse=True)
@@ -730,7 +734,7 @@ class TestReporterReadsTheSecurityArchiveDate:
         for node in ast.walk(tree):
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 mod = getattr(node, "module", None) or node.names[0].name
-                assert mod.split(".")[0] in {"os", "email"}, mod
+                assert mod.split(".")[0] in {"os", "email", "re"}, mod
 
 
 # Non-author review r2 (2026-11-04, `/code-review medium 937e914a..8532e31a`).
@@ -787,12 +791,13 @@ class TestReviewR2:
         assert "%dh behind" % w in self._apt_lines(at)[0]
         assert "%dh behind" % (w + 1) in self._apt_lines(past)[0]
 
-    # r2 #10: a formatting helper never does network I/O by default.
-    def test_apt_lines_without_a_reference_does_no_io(self, monkeypatch):
-        monkeypatch.setattr(dac, "fetch_reference_date",
-                            lambda *a, **k: pytest.fail("hidden network fetch"))
-        status, _, _, lower = dac.apt_lines("boxA", self._apt())
-        assert lower and "no reference supplied" in status[0]
+    # r2 #10 → r4 #6: a formatting helper never does network I/O by default —
+    # and a silent "no reference" default made the box vanish from every
+    # tally. The reference is REQUIRED: forgetting it is a TypeError, not a
+    # quietly unobservable box.
+    def test_apt_lines_requires_a_reference(self):
+        with pytest.raises(TypeError):
+            dac.apt_lines("boxA", self._apt())
 
     # r2 #7: validate before fetch must survive a redirect.
     # r3 #5: a REAL Request, and the refusal pinned by type + message — with
@@ -851,14 +856,21 @@ class TestReviewR3:
         assert "# apt: the MANAGER" in status
         assert "LOWER BOUND" not in status, "the box count must exclude manager blindness"
 
+    # r4 #1/#2: the MIXED case, actually built this time — trixie measured
+    # 40 h behind (readable archive) + bookworm whose archive the manager
+    # cannot read. The measured box lag must win: shown AND counted.
     def test_box_lag_is_still_counted_beside_manager_blindness(self, home, monkeypatch):
-        # one box lags on a suite the manager CAN read; another suite is blind
+        other = SEC_FILE.replace("trixie-security", "bookworm-security")
+
         def ref(url, timeout=20):
             return (None, "archive unreachable: x") if "bookworm" in url else (ARCHIVE_TS, None)
         monkeypatch.setattr(dac, "fetch_reference_date", ref)
-        _, status, _ = _drive(home, monkeypatch,
-                              _report(apt=self._apt(security_views=[_view(40)])), [])
+        _, status, _ = _drive(home, monkeypatch, _report(apt=self._apt(
+            security_views=[_view(40), _view(1, file=other)])), [])
+        line = [ln for ln in status.splitlines() if re.match(r"^boxA\s+apt\s", ln)][0]
+        assert "40h behind the archive" in line, line
         assert "# apt: 1 box(es) read 0 security as a LOWER BOUND" in status
+        assert "# apt: the MANAGER" in status, "the blind suite is still said once"
 
     # r3 #6: the refusal's words survive to the operator, not just a type name.
     def test_fetch_keeps_the_reason_text(self, monkeypatch):
@@ -867,7 +879,7 @@ class TestReviewR3:
         class Opener:
             def open(self, url, timeout):
                 raise urllib.error.URLError("redirect off the allowlist refused: portal.local")
-        monkeypatch.undo()                     # the real fetch, a fake opener
+        monkeypatch.setattr(dac, "fetch_reference_date", _REAL_FETCH)   # this one only
         monkeypatch.setattr(dac.urllib.request, "build_opener", lambda *a: Opener())
         ts, err = dac.fetch_reference_date("https://deb.debian.org/x")
         assert ts is None and "portal.local" in err
@@ -888,13 +900,80 @@ class TestReviewR3:
         assert lag is None and why and cause == dac.CAUSE_BOX
 
     def test_a_box_defect_is_named_even_when_the_manager_is_blind(self):
-        # The manager's blindness must never HIDE a box-side defect: box causes
-        # are judged over every view before any reference is consulted.
+        # The manager's blindness must never HIDE a box-side defect.
         other = SEC_FILE.replace("trixie-security", "bookworm-security")
         lag, why, cause = dac.security_view_lag(
             {"security_views": [_view(1), _view(file=other, date_ts=None)]},
             lambda u: (None, "archive unreachable: x"))
         assert cause == dac.CAUSE_BOX and "Date unreadable" in why
+
+
+# Non-author review r4 (2026-11-04, `/code-review medium 0ea7df21..07d79afc`).
+# r4 broke the patch-per-edge loop: views are security by NAME only, and each
+# box's verdict is decided ONCE over every view's own state.
+class TestReviewR4:
+    NOW = _dt.datetime(2026, 11, 5, tzinfo=_dt.timezone.utc).timestamp()
+
+    def _apt(self, **kw):
+        apt = {"unattended_upgrades": "installed", "pending_total": 0,
+               "pending_security": 0, "lists_age_h": 2, "security_views": [_view(1)]}
+        apt.update(kw)
+        return apt
+
+    # r4 #5: truncation can cut INSIDE the Suite: value — security is decided
+    # by the file NAME, so no truncation point can drop the view.
+    @pytest.mark.parametrize("body", [
+        "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA512\n\nOrigin: Debian\nSuite: stable-secu",
+        "Origin: Debian\nSuite: stable-security\nDate: Wed, 04 Nov 20"])
+    def test_truncation_anywhere_keeps_the_view_unknown(self, tmp_path, body):
+        (tmp_path / SEC_FILE).write_text(body)
+        views = _rendered_reporter_ns()["security_views"](str(tmp_path))
+        assert len(views) == 1 and views[0]["file"] == SEC_FILE
+        assert views[0]["date_ts"] is None
+
+    # r4 #3: ANY list file from the future means the box clock is behind, so
+    # no list age is trustworthy — not "the oldest of the rest" (which reads a
+    # quiet 09-12 archive as 1300 h stale on a box that just updated).
+    def test_any_future_list_mtime_makes_the_age_unknown(self, tmp_path):
+        new = tmp_path / "deb.debian.org_debian-security_dists_trixie-security_InRelease"
+        old = tmp_path / "deb.debian.org_debian_dists_trixie_InRelease"
+        for f, t in ((new, self.NOW + 3 * 86400), (old, self.NOW - 1300 * 3600)):
+            f.write_text("x")
+            os.utime(f, (t, t))
+        assert _rendered_reporter_ns()["apt_lists_age_h"](str(tmp_path), self.NOW) is None
+
+    # r4 #4: a sweep that could not measure ANY security currency is not green.
+    def test_manager_blindness_makes_the_run_unknown_not_green(self, home, monkeypatch):
+        monkeypatch.setattr(dac, "fetch_reference_date",
+                            lambda url, timeout=20: (None, "archive unreachable: x"))
+        _finding(home).write_text("# a prior finding\n")
+        rc, status, _ = _drive(home, monkeypatch, _report(apt=self._apt()), [])
+        assert rc == 2, "the manager's blindness must not exit 0"
+        assert "security-archive" in status.splitlines()[1]
+        assert _finding(home).exists(), "a partial view must not erase the finding file"
+
+    # r4 #7: one record = one line, whatever the exception text holds.
+    def test_reason_text_is_one_line(self, monkeypatch):
+        import urllib.error
+
+        class Opener:
+            def open(self, url, timeout):
+                raise urllib.error.URLError("line one\nline two\r\tthree")
+        monkeypatch.setattr(dac, "fetch_reference_date", _REAL_FETCH)
+        monkeypatch.setattr(dac.urllib.request, "build_opener", lambda *a: Opener())
+        _, err = dac.fetch_reference_date("https://deb.debian.org/x")
+        assert "\n" not in err and "\r" not in err and "line one line two three" in err
+
+    # r4 #9: the cause is its own NAMED field — no truthy string a boolean
+    # reader can mistake for box lag.
+    def test_apt_lines_returns_a_named_cause(self):
+        res = dac.apt_lines("boxA", self._apt(security_views=[_view(40)]),
+                            lambda u: (ARCHIVE_TS, None))
+        assert res.lower_bound_cause == dac.CAUSE_BOX
+        blind = dac.apt_lines("boxA", self._apt(), lambda u: (None, "x"))
+        assert blind.lower_bound_cause == dac.CAUSE_MANAGER
+        ok = dac.apt_lines("boxA", self._apt(), lambda u: (ARCHIVE_TS, None))
+        assert ok.lower_bound_cause is None
 
 
 class TestReviewR2Reporter:

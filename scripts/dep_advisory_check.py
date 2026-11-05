@@ -66,11 +66,16 @@ the manager fetches the archive's CURRENT Date once per run and judges the
 LAG (both Debian's clock). An apt line then reads one of:
   ``clean``        — 0 security, view at most APT_SECURITY_VIEW_FRESH_H behind
   ``lower-bound``  — 0 security, but the view trails further, or the lag cannot
-                     be measured (archive unreachable, Date unreadable, no
-                     security suite); not a finding, not UNKNOWN — the header
-                     counts these boxes as its own line
-  ``FINDING``      — security updates pending / stale lists / no unattended-upgrades
+                     be measured ON THE BOX (Date unreadable, no reference
+                     archive); not a finding — the header counts these boxes
+  ``FINDING``      — security updates pending / no successful periodic update
+                     for 7 d / no security suite / no unattended-upgrades
   ``UNKNOWN``      — the upgrade simulation failed
+When the MANAGER cannot read the security archive itself, the affected boxes
+read lower-bound with that reason, the header says it ONCE, and the run is
+UNKNOWN (exit 2, ``manager/security-archive``) — never green: it did not see
+what it reports. Security views are recognised by file NAME (see
+``utils/apt_lists.security_views``).
 
 Manager-side. Mirrors ``ecosystem_ci_status.sh`` in shape and exit codes so it
 reads the same way at a terminal and wires into ``cron_verdict.sh`` identically.
@@ -115,7 +120,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "src"))
@@ -742,20 +747,24 @@ def partition_distro(advisories, dpkg: Optional[dict], accepted: Dict[str, Tuple
     return patched, acc, expired, open_
 
 
-def apt_lines(host: str, apt: Optional[dict], reference=None):
-    """(status_lines, finding_lines, unknown_key|None, lower_bound) for one
-    box's apt hygiene. ``apt`` None = no dpkg on that box = inert, nothing to
-    say. ``reference(url) -> (archive_date_ts|None, reason|None)`` supplies
-    the security archive's CURRENT Date; ``lower_bound`` is False, or the
-    cause (CAUSE_BOX / CAUSE_MANAGER) when the
-    box's "0 security" is only true as of a lagging or unmeasured view."""
+class AptLines(NamedTuple):
+    status: List[str]
+    findings: List[str]
+    unknown: Optional[str]
+    #: None = not a lower bound; else WHY it is one — CAUSE_BOX (counted as
+    #: box lag) or CAUSE_MANAGER (the sweep's own blindness, said in the
+    #: header). A named field, never a truthy flag a reader can mis-sum (r4 #9).
+    lower_bound_cause: Optional[str]
+
+
+def apt_lines(host: str, apt: Optional[dict], reference) -> AptLines:
+    """One box's apt hygiene. ``apt`` None = no dpkg on that box = inert,
+    nothing to say. ``reference(url) -> (archive_date_ts|None, reason|None)``
+    supplies the security archive's CURRENT Date — REQUIRED: a silent
+    default made the box vanish from every tally (r2 #10 → r4 #6)."""
     if not isinstance(apt, dict):
-        return [], [], None, False
-    if reference is None:
-        # No hidden network I/O in a formatting helper (review r2 #10): main()
-        # passes the one fetching reference explicitly.
-        reference = lambda url: (None, "no reference supplied")  # noqa: E731
-    status, findings, lower_bound = [], [], False
+        return AptLines([], [], None, None)
+    status, findings, lower_bound = [], [], None
     uu = apt.get("unattended_upgrades")
     age = apt.get("lists_age_h")
     upd = apt.get("update_stamp_age_h")
@@ -770,7 +779,7 @@ def apt_lines(host: str, apt: Optional[dict], reference=None):
     if pend is None:
         status.append("%-20s %-14s %-10s UNKNOWN — apt-get -s full-upgrade failed; pending updates unobservable"
                       % (host, "apt", "-"))
-        return status, findings, "%s/apt" % host, False
+        return AptLines(status, findings, "%s/apt" % host, None)
     # "Not running" is judged on apt.systemd.daily's success-only stamp; list
     # CONTENT age (server Last-Modified) ages through a quiet archive and is
     # the judge only on a box that has no stamp (review r2 #5).
@@ -812,7 +821,7 @@ def apt_lines(host: str, apt: Optional[dict], reference=None):
         # Hours ROUNDED UP: a clean line can never print a number above the
         # window, nor a lower-bound line one at or below it (review r2 #9).
         lag_h = -(-lag_s // 3600) if lag_s is not None else None
-        if lag_s is not None and lag_s <= APT_SECURITY_VIEW_FRESH_H * 3600:
+        if cause is None:                    # every view measured, within the window
             status.append("%-20s %-14s %-10s clean — %d pending, 0 security%s "
                           "(security view %dh behind the archive, %s)"
                           % (host, "apt", "-", total, rpi_s, lag_h, age_s))
@@ -825,10 +834,8 @@ def apt_lines(host: str, apt: Optional[dict], reference=None):
             status.append("%-20s %-14s %-10s lower-bound — %d pending, 0 security "
                           "as of %s; a fix published since is invisible here%s (%s)"
                           % (host, "apt", "-", total, sec_s, rpi_s, age_s))
-            # CAUSE_MANAGER is the sweep's own blindness, said once in the
-            # header — never counted as this box's lag (review r3 #4).
-            lower_bound = cause or CAUSE_BOX
-    return status, findings, None, lower_bound
+            lower_bound = cause
+    return AptLines(status, findings, None, lower_bound)
 
 
 def security_reference_url(list_file: str) -> Optional[str]:
@@ -865,7 +872,10 @@ def fetch_reference_date(url: str, timeout: int = 20) -> Tuple[Optional[float], 
             head = resp.read(16384).decode("utf-8", "replace")
     except Exception as exc:                 # any transport failure = unobservable
         # Keep the words — a refused redirect names its host (review r3 #6).
-        return None, "archive unreachable: %s: %s" % (type(exc).__name__, str(exc)[:160])
+        # One record = one line: collapse every whitespace run, newlines and
+        # tabs included, before the words reach a line-oriented file (r4 #7).
+        words = " ".join(str(exc).split())[:160]
+        return None, "archive unreachable: %s: %s" % (type(exc).__name__, words)
     ts = apt_lists.parse_release_date(head)
     return (ts, None) if ts is not None else (None, "archive Date unreadable")
 
@@ -877,31 +887,46 @@ CAUSE_MANAGER = "manager"
 
 
 def security_view_lag(apt: dict, reference) -> Tuple[Optional[int], str, Optional[str]]:
-    """(seconds the box's STALEST security view trails the archive, "", None)
-    or (None, why, CAUSE_BOX|CAUSE_MANAGER). Any one unmeasurable suite makes
-    the whole box unmeasured — a fresh sibling never vouches for a blind one.
-    Box-side causes are judged over EVERY view before the manager's reference
-    is consulted, so the manager's blindness can never hide a box defect."""
+    """The box's ONE verdict, decided after every view has its own state
+    (measured lag / unknown ON the box / unknown to the MANAGER) — r4 broke
+    a loop of early returns where each fix's ordering hid the next case.
+
+    Returns (lag_s, why, cause):
+      * (worst, "", None)          every view measured, all within the window → clean
+      * (worst, "", CAUSE_BOX)     some MEASURED view trails past the window —
+                                   wins over any unknown sibling (r4 #1)
+      * (None, why, CAUSE_BOX)     a view unknown on the box (Date unreadable,
+                                   no reference archive) — a fresh sibling
+                                   never vouches for a blind one
+      * (None, why, CAUSE_MANAGER) only the manager's archive read failed
+    """
     views = apt.get("security_views")
     if views is None:
         return None, apt.get("security_views_error") or "no security view reported", CAUSE_BOX
     if not views:                            # defensive: apt_lines reports [] as a finding
         return None, "no *-security suite in the lists", CAUSE_BOX
-    urls = []
+    measured, box_why, manager_why = [], None, None
     for v in views:
+        name = v.get("file") if isinstance(v, dict) else "?"
         if not isinstance(v, dict) or v.get("date_ts") is None:
-            return (None, "%s Date unreadable" % (v.get("file") if isinstance(v, dict) else "?"),
-                    CAUSE_BOX)
-        url = security_reference_url(v.get("file"))
+            box_why = box_why or "%s Date unreadable" % name
+            continue
+        url = security_reference_url(name)
         if url is None:
-            return None, "no reference archive for %s" % v.get("file"), CAUSE_BOX
-        urls.append((url, v["date_ts"]))
-    worst = 0
-    for url, date_ts in urls:
+            box_why = box_why or "no reference archive for %s" % name
+            continue
         ref_ts, err = reference(url)
         if ref_ts is None:
-            return None, err or "archive Date unobservable", CAUSE_MANAGER
-        worst = max(worst, int(max(0.0, ref_ts - date_ts)))
+            manager_why = manager_why or err or "archive Date unobservable"
+            continue
+        measured.append(int(max(0.0, ref_ts - v["date_ts"])))
+    worst = max(measured) if measured else None
+    if worst is not None and worst > APT_SECURITY_VIEW_FRESH_H * 3600:
+        return worst, "", CAUSE_BOX
+    if box_why:
+        return None, box_why, CAUSE_BOX
+    if manager_why:
+        return None, manager_why, CAUSE_MANAGER
     return worst, "", None
 
 
@@ -1136,12 +1161,18 @@ def main(argv=None) -> int:
                     findings.append("%s %s %s: %s — %s"
                                     % (host, pkg, shown_v, summarize(advs), tag))
 
-        a_status, a_findings, a_unknown, a_lower = apt_lines(host, apt, reference)
-        n_lower += int(a_lower == CAUSE_BOX)
+        a_status, a_findings, a_unknown, a_cause = apt_lines(host, apt, reference)
+        n_lower += int(a_cause == CAUSE_BOX)
         lines.extend(a_status)
         findings.extend(a_findings)
         if a_unknown:
             unknown_hosts.append(a_unknown)
+
+    # The manager could not read the security archive: no box's "0 security"
+    # was checked against it, so the run did not see what it reports — UNKNOWN
+    # (rc 2, finding file kept), the same as a failed apt simulation (r4 #4).
+    if reference.failures():
+        unknown_hosts.append("manager/security-archive")
 
     header = ["# fleet dependency advisories — installed versions vs the "
               "GitHub advisory DB", "# boxes observed: %d/%d%s"
