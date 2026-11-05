@@ -1279,8 +1279,13 @@ class MapDataCollector(
             ex_props["last_heard"] = new_lh
             if "is_online" in new_props:
                 ex_props["is_online"] = new_props["is_online"]
-            if new_props.get("last_seen") not in (None, ""):
-                ex_props["last_seen"] = new_props["last_seen"]
+            # A placeholder ("unknown"/"cached") is not a reading (review r1
+            # F5): the instant stands in, never the old copy's text.
+            new_ls = new_props.get("last_seen")
+            if new_ls in (None, "", "unknown", "cached"):
+                ex_props["last_seen"] = new_lh
+            else:
+                ex_props["last_seen"] = new_ls
 
         # Merge other properties (prefer non-null to fill gaps)
         for key, value in new_props.items():

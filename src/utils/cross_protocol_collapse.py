@@ -47,8 +47,10 @@ aredn_worldmap ≈ mqtt_global > public_fallback).
 from __future__ import annotations
 
 import math
+import time
 from typing import Any, Dict, List, Tuple
 
+from utils._map_collector_config import _ONLINE_FUTURE_SKEW_TOLERANCE_S
 from utils.node_history import _origin_priority
 
 
@@ -107,23 +109,38 @@ def _origin_rank(f: Dict[str, Any]) -> int:
 _FRESHNESS_KEYS = ("last_seen", "last_heard", "is_online")
 
 
-def _freshness_instant(props: Dict[str, Any]) -> float | None:
+def _plausible_instant(v: Any, now: float) -> float | None:
+    """An epoch-seconds value usable as "last heard", else None.
+
+    Rejects bools, non-numbers, 0/negative sentinels (review r1 F6) and
+    stamps more than the shared skew tolerance in the FUTURE — a forged or
+    skewed clock is unknown, not fresh (review r1 F2, hfm #6; the same
+    tolerance the collector's online check uses).
+    """
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    if not math.isfinite(v) or v <= 0:
+        return None
+    if v > now + _ONLINE_FUTURE_SKEW_TOLERANCE_S:
+        return None
+    return float(v)
+
+
+def _freshness_instant(props: Dict[str, Any], now: float) -> float | None:
     """The comparable instant a feature was last heard, or None if unknown.
 
     Prefers ``last_heard`` (epoch, set by live collectors; 0 means unknown),
     then a numeric ``last_seen`` (epoch, federated/history rows). Display
     text such as "5m ago" is never parsed — it has no instant of its own.
     """
-    lh = props.get("last_heard")
-    if isinstance(lh, (int, float)) and not isinstance(lh, bool) and lh > 0:
-        return float(lh)
-    ls = props.get("last_seen")
-    if isinstance(ls, (int, float)) and not isinstance(ls, bool):
-        return float(ls)
-    return None
+    lh = _plausible_instant(props.get("last_heard"), now)
+    if lh is not None:
+        return lh
+    return _plausible_instant(props.get("last_seen"), now)
 
 
-def _merge_pair(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict[str, Any]:
+def _merge_pair(primary: Dict[str, Any], secondary: Dict[str, Any],
+                now: float | None = None) -> Dict[str, Any]:
     """Produce a new feature carrying both networks' identities.
 
     Caller has already chosen which side is `primary` (higher
@@ -183,12 +200,22 @@ def _merge_pair(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict[str,
     # fresh copy (2026-11-04: a live node served "199d ago" while meshtasticd held it
     # at 0.30 d — honest_failure_modes #1). No instant on either side = not
     # comparable: the primary stands, nothing is invented.
-    p_t = _freshness_instant(p_props)
-    s_t = _freshness_instant(s_props)
+    # Review r1: a FEDERATED copy's is_online=False is a deliberate
+    # non-claim ("federation only knows what the peer claimed"), so it never
+    # moves (F1); a winner with no last_seen text gets its instant as the
+    # value, so a stale text never survives beside the winner's flag (F3).
+    if now is None:
+        now = time.time()
+    p_t = _freshness_instant(p_props, now)
+    s_t = _freshness_instant(s_props, now)
     if s_t is not None and (p_t is None or s_t > p_t):
         for key in _FRESHNESS_KEYS:
+            if key == "is_online" and s_props.get("federated"):
+                continue
             if key in s_props:
                 p_props[key] = s_props[key]
+        if s_props.get("last_seen") in (None, ""):
+            p_props["last_seen"] = s_t
 
     p_props["collapsed"] = True
 
@@ -201,6 +228,7 @@ def _merge_pair(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict[str,
 
 def collapse_cross_protocol(
     features: List[Dict[str, Any]],
+    now: float | None = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
     """Collapse same-name features across protocols.
 
@@ -280,7 +308,7 @@ def collapse_cross_protocol(
         if i in members_of:
             merged = f
             for member_idx in sorted(members_of[i]):
-                merged = _merge_pair(merged, features[member_idx])
+                merged = _merge_pair(merged, features[member_idx], now=now)
             # If the primary feature carried no name at this point but
             # was identified by bucket-by-name, retain its original
             # name in properties — _merge_pair preserves it via

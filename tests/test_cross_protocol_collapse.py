@@ -282,6 +282,52 @@ class TestFreshnessAcrossTextLastSeen:
         assert p["is_online"] is True
 
 
+class TestFreshnessReviewR1:
+    """Non-author review r1 of c21d82fd (2026-11-04), findings F1/F2/F3/F6."""
+    NOW = 1_793_830_000.0
+
+    def test_F1_federated_copy_never_moves_is_online(self):
+        # A federated copy's is_online=False is a deliberate NON-claim
+        # ("federation only knows what the peer claimed"); a newer federated
+        # instant must not turn a locally-online node "offline".
+        local = _fresh("a", "N", last_seen="2m ago", is_online=True)
+        fed = _fresh("b", "N", last_seen=self.NOW - 60, is_online=False)
+        fed["properties"]["federated"] = True
+        out, _ = collapse_cross_protocol([local, fed], now=self.NOW)
+        assert out[0]["properties"]["is_online"] is True
+
+    def test_F2_future_instant_is_not_fresh(self):
+        # A last_heard past now + skew tolerance is forged/skewed, not fresh.
+        good = _fresh("a", "N", last_seen="1m ago",
+                      last_heard=self.NOW - 60, is_online=True)
+        future = _fresh("b", "N", last_seen="0s ago",
+                        last_heard=self.NOW + 86400, is_online=False)
+        out, _ = collapse_cross_protocol([good, future], now=self.NOW)
+        p = out[0]["properties"]
+        assert p["last_heard"] == self.NOW - 60
+        assert p["is_online"] is True
+
+    def test_F3_winner_without_text_does_not_keep_stale_text(self):
+        # Winner has last_heard + is_online but NO last_seen: the primary's
+        # stale text must not survive beside the winner's online flag.
+        stale = _fresh("a", "N", last_seen="199d ago", is_online=False)
+        win = _fresh("b", "N", last_seen="x", last_heard=self.NOW - 30,
+                     is_online=True)
+        del win["properties"]["last_seen"]
+        out, _ = collapse_cross_protocol([stale, win], now=self.NOW)
+        p = out[0]["properties"]
+        assert p["last_seen"] != "199d ago"
+        assert p["is_online"] is True
+
+    def test_F6_zero_or_negative_last_seen_is_not_an_instant(self):
+        online = _fresh("a", "N", last_seen="2m ago", is_online=True)
+        zero = _fresh("b", "N", last_seen=0, is_online=False)
+        out, _ = collapse_cross_protocol([online, zero], now=self.NOW)
+        p = out[0]["properties"]
+        assert p["last_seen"] == "2m ago"
+        assert p["is_online"] is True
+
+
 # ---------- protocol_meta keyed by network ----------
 
 class TestProtocolMetaPromotion:

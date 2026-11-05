@@ -51,6 +51,17 @@ def test_older_copy_changes_no_freshness_field(tmp_path):
         "2m ago", NOW - 120, True)
 
 
+def test_r1_F5_fresher_copy_with_placeholder_text_keeps_good_text(tmp_path):
+    # Review r1 F5: _make_feature writes "unknown" when no text is passed;
+    # a placeholder is not a reading and must not overwrite real text.
+    existing = _feat(last_seen="2h ago", last_heard=NOW - 7200, is_online=False)
+    new = _feat(last_seen="unknown", last_heard=NOW - 60, is_online=True)
+    _collector(tmp_path)._merge_feature(existing, new)
+    p = existing["properties"]
+    assert p["last_heard"] == NOW - 60
+    assert p["last_seen"] != "unknown"
+
+
 def test_gap_fill_of_other_fields_unchanged(tmp_path):
     # Control: the fill-gaps rule for non-freshness fields still holds.
     existing = _feat(last_seen="2m ago", last_heard=NOW - 120, is_online=True)
