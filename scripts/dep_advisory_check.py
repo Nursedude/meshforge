@@ -132,8 +132,7 @@ from utils import apt_lists  # noqa: E402
 #: The reporter runs on boxes with no checkout on sys.path, so it carries the
 #: shared functions' SOURCE (the TUI imports the same module).
 APT_LISTS_SRC = "\n\n".join(inspect.getsource(f) for f in (
-    apt_lists.update_stamp_age_h, apt_lists.apt_lists_age_h,
-    apt_lists.apt_lists_future_n,
+    apt_lists.update_stamp_age_h, apt_lists.apt_lists_scan,
     apt_lists.parse_release_date, apt_lists.security_views))
 
 CLEAN = "clean"
@@ -313,8 +312,8 @@ if os.path.exists("/usr/bin/dpkg-query"):
         # unattended-upgrades never takes these (Debian origins only):
         # firmware, bootloader, kernels, the +rpt openssl.
         apt["pending_rpi"] = sum(1 for ln in inst if "Raspberry Pi Foundation" in ln)
-    apt["lists_age_h"] = apt_lists_age_h("/var/lib/apt/lists", time.time())
-    apt["lists_future_n"] = apt_lists_future_n("/var/lib/apt/lists", time.time())
+    apt["lists_age_h"], apt["lists_future_n"] = apt_lists_scan(
+        "/var/lib/apt/lists", time.time())
     apt["update_stamp_age_h"] = update_stamp_age_h(
         "/var/lib/apt/periodic/update-stamp", time.time())
     apt["update_stamp_present"] = os.path.exists("/var/lib/apt/periodic/update-stamp")

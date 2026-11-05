@@ -27,7 +27,7 @@ import utils.apt_lists as apt_lists                               # noqa: E402
 STALE_LISTS = "A count read from stale lists is not a current count."
 
 
-def _render(monkeypatch, stamp_present, upd_h, lists_h=2):
+def _render(monkeypatch, stamp_present, upd_h, lists_h=2, future_n=0):
     real_exists = os.path.exists
 
     def exists(p):
@@ -39,11 +39,8 @@ def _render(monkeypatch, stamp_present, upd_h, lists_h=2):
 
     monkeypatch.setattr(os.path, "exists", exists)
     monkeypatch.setattr(apt_lists, "update_stamp_age_h", lambda path, now: upd_h)
-    monkeypatch.setattr(apt_lists, "apt_lists_age_h", lambda path, now: lists_h)
-    # Pinned: the real call would read THIS box's /var/lib/apt/lists. A test
-    # that needs a count overrides it after (setattr order: last wins).
-    if not getattr(apt_lists.apt_lists_future_n, "_test_override", False):
-        monkeypatch.setattr(apt_lists, "apt_lists_future_n", lambda path, now: 0)
+    monkeypatch.setattr(apt_lists, "apt_lists_scan",
+                        lambda path, now: (lists_h, future_n))
     dialog = FakeDialog()
     h = PlatformPostureHandler()
     h.set_context(make_handler_context(dialog=dialog))
@@ -80,8 +77,5 @@ def test_a_fresh_stamp_carries_no_caveat(monkeypatch):
 
 # r6 #4, the TUI half: the skipped future-dated files are said beside the age.
 def test_future_dated_list_files_are_said(monkeypatch):
-    fake = lambda path, now: 7  # noqa: E731
-    fake._test_override = True
-    monkeypatch.setattr(apt_lists, "apt_lists_future_n", fake)
-    text = _render(monkeypatch, stamp_present=True, upd_h=3, lists_h=400)
+    text = _render(monkeypatch, stamp_present=True, upd_h=3, lists_h=400, future_n=7)
     assert "excluding 7 future-dated file(s)" in text

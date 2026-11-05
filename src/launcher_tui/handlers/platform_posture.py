@@ -297,18 +297,17 @@ class PlatformPostureHandler(BaseHandler):
         # Same derivation as the fleet sweep (utils.apt_lists, one definition).
         # "Is the periodic update running?" is the success-only update-stamp,
         # judged on the SAME constant the fleet sweep uses (review r2 #6).
+        # ONE import style (r7 #9): every name read off the module at call time.
         from utils import apt_lists as _al
-        from utils.apt_lists import APT_LISTS_STALE_H, UPDATE_STAMP
         now = _time.time()
-        age_h = _al.apt_lists_age_h("/var/lib/apt/lists", now)
-        upd_h = _al.update_stamp_age_h(UPDATE_STAMP, now)
-        fut_n = _al.apt_lists_future_n("/var/lib/apt/lists", now)
+        age_h, fut_n = _al.apt_lists_scan("/var/lib/apt/lists", now)
+        upd_h = _al.update_stamp_age_h(_al.UPDATE_STAMP, now)
         age = None if age_h is None else (
             f"{age_h}h old" if age_h >= 1 else "under an hour old")
         # Judged on the stamp ALONE, as the fleet sweep does (r5 #4): list
         # content age is display only. Unknown is its own claim (r3 #7).
-        stamp_present = os.path.exists(UPDATE_STAMP)
-        stale = upd_h is not None and upd_h > APT_LISTS_STALE_H
+        stamp_present = os.path.exists(_al.UPDATE_STAMP)
+        stale = upd_h is not None and upd_h > _al.APT_LISTS_STALE_H
 
         lines = [
             f"Box:      {box}",

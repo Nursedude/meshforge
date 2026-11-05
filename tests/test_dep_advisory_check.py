@@ -681,7 +681,7 @@ class TestReporterReadsTheSecurityArchiveDate:
         return self.ns["security_views"](str(d))
 
     def _age(self, d):
-        return self.ns["apt_lists_age_h"](str(d), self.NOW)
+        return self.ns["apt_lists_scan"](str(d), self.NOW)[0]
 
     def _inrelease(self, d, name, suite, date):
         f = d / name
@@ -897,7 +897,7 @@ class TestReviewR3:
         f = tmp_path / "deb.debian.org_debian_dists_trixie_main_binary-arm64_Packages"
         f.write_text("x")
         os.utime(f, (self.NOW + 3 * 86400, self.NOW + 3 * 86400))
-        assert _rendered_reporter_ns()["apt_lists_age_h"](str(tmp_path), self.NOW) is None
+        assert _rendered_reporter_ns()["apt_lists_scan"](str(tmp_path), self.NOW)[0] is None
 
     # r3 #9: kept defensive — an empty view list must never compute lag 0.
     def test_lag_of_an_empty_view_list_is_unmeasured_not_zero(self):
@@ -946,7 +946,7 @@ class TestReviewR4:
         for f, t in ((new, self.NOW + 3600 * 2), (cur, self.NOW - 2 * 3600)):
             f.write_text("x")
             os.utime(f, (t, t))
-        assert _rendered_reporter_ns()["apt_lists_age_h"](str(tmp_path), self.NOW) == 2
+        assert _rendered_reporter_ns()["apt_lists_scan"](str(tmp_path), self.NOW)[0] == 2
 
     # r4 #4: a sweep that could not measure ANY security currency is not green.
     def test_manager_blindness_makes_the_run_unknown_not_green(self, home, monkeypatch):
@@ -1117,8 +1117,8 @@ class TestTuiListAgeUsesTheSharedDerivation:
         src = open(os.path.join(_ROOT, "src", "launcher_tui", "handlers",
                                 "platform_posture.py")).read()
         assert 'os.stat("/var/lib/apt/lists")' not in src
-        assert "from utils.apt_lists import" in src
-        assert 'apt_lists_age_h("/var/lib/apt/lists"' in src
+        assert "from utils import apt_lists as _al" in src
+        assert 'apt_lists_scan("/var/lib/apt/lists"' in src
 
 
 class TestNamesAreCanonicalForTheAdvisoryDB:
@@ -1750,12 +1750,11 @@ class TestReviewR6FutureListFiles:
             os.utime(f, (self.NOW + off, self.NOW + off))
         (tmp_path / "lock").write_text("")
         ns = _rendered_reporter_ns()
-        assert ns["apt_lists_future_n"](str(tmp_path), self.NOW) == 2
-        assert ns["apt_lists_age_h"](str(tmp_path), self.NOW) == 400
+        assert ns["apt_lists_scan"](str(tmp_path), self.NOW) == (400, 2)
 
     def test_an_unreadable_dir_is_unknown_not_zero(self, tmp_path):
         ns = _rendered_reporter_ns()
-        assert ns["apt_lists_future_n"](str(tmp_path / "nope"), self.NOW) is None
+        assert ns["apt_lists_scan"](str(tmp_path / "nope"), self.NOW) == (None, None)
 
     def test_the_reporter_sends_the_count(self):
         assert '"lists_future_n"' in dac._REMOTE_SRC
@@ -1775,3 +1774,37 @@ class TestReviewR6FutureListFiles:
         apt.update(STAMP_OK)
         line = "\n".join(dac.apt_lines("boxA", apt, lambda u: (ARCHIVE_TS, None)).status)
         assert "future-dated" not in line
+
+
+# Non-author review r7 (2026-11-05 00:44 row, `56397e87..3e9dfb18`).
+# Accepted input, stated once: the reporter's apt dict, built from file NAMES
+# apt itself writes under /var/lib/apt/lists (`<host>_<path>_dists_<dist>_…`,
+# `/`→`_`, literal `_`→`%5f`).
+class TestReviewR7:
+    NOW = _dt.datetime(2026, 11, 5, tzinfo=_dt.timezone.utc).timestamp()
+
+    # r7 #1: age and the future-dated count came from TWO walks with their own
+    # copy of the filter + 600 s tolerance — two consumers of one artifact
+    # (hfm #5). ONE pass returns both; the duplicates are gone.
+    def test_one_scan_returns_age_and_future_count(self, tmp_path):
+        for i, off in enumerate((3 * 86400, 2 * 86400, -400 * 3600)):
+            f = tmp_path / ("deb.debian.org_debian_dists_s%d_InRelease" % i)
+            f.write_text("x")
+            os.utime(f, (self.NOW + off, self.NOW + off))
+        (tmp_path / "lock").write_text("")
+        ns = _rendered_reporter_ns()
+        assert ns["apt_lists_scan"](str(tmp_path), self.NOW) == (400, 2)
+        assert ns["apt_lists_scan"](str(tmp_path / "nope"), self.NOW) == (None, None)
+        assert "apt_lists_age_h" not in ns and "apt_lists_future_n" not in ns
+
+    def test_the_reporter_walks_the_lists_once(self):
+        assert dac._REMOTE_SRC.count("apt_lists_scan(") == 1
+        assert "apt_lists_age_h" not in dac._REMOTE_SRC
+
+    # r7 #4 REFUTED by measurement: both halves decode `_`→`/` and rejoin at
+    # `/dists/`, so WHICH `_dists_` splits the name cannot change the URL.
+    # Pinned so a future "fix" that refuses or re-splits must justify itself.
+    def test_the_split_point_cannot_change_the_url(self):
+        assert dac.security_reference_url(
+            "deb.debian.org_a_dists_b_dists_trixie-security_InRelease") == \
+            "https://deb.debian.org/a/dists/b/dists/trixie-security/InRelease"

@@ -11,7 +11,7 @@ these functions on boxes that have no MeshForge checkout on ``sys.path``.
 
 Two quantities, never one:
 
-* ``lists_age_h`` — hours since the newest LIST file changed. apt stamps each
+* ``lists_age_h`` (``apt_lists_scan``) — hours since the newest LIST file changed. apt stamps each
   list with the server's ``Last-Modified``, so this is "the newest content we
   hold", which ages through a quiet archive too (Debian's main stable
   InRelease was dated 2026-09-12 on 11-05) — so it is SHOWN, and judges
@@ -53,15 +53,26 @@ def update_stamp_age_h(stamp_path, now):
     return int(max(0.0, now - m) / 3600)
 
 
-def apt_lists_age_h(lists_dir, now):
-    """Hours since the newest list file under ``lists_dir`` changed, or None
-    when there is no list file or the directory cannot be read."""
+def apt_lists_scan(lists_dir, now):
+    """``(age_h, future_n)`` from ONE walk of ``lists_dir``, or
+    ``(None, None)`` when the directory cannot be read.
+
+    ``age_h`` — hours since the newest list file changed (None: no list file
+    counted). ``future_n`` — how many list files were SKIPPED as dated more
+    than 10 min in the future: a server Last-Modified ahead of this box's
+    clock (box clock behind, or one skewed third-party server). Skipped, not
+    blinding: list age is DISPLAY ONLY since r5 — the stale finding judges the
+    update-stamp alone (r3 #8/r4 #3/r5 #4). But on a box whose clock is
+    BEHIND every fresh file is future-dated, so the age came from an OLD file
+    — every display of the age says ``future_n`` beside it (r6 #4).
+    One pass, one filter, one tolerance (r7 #1: two walks each carried a
+    copy — hfm #5)."""
     import os
     try:
         names = os.listdir(lists_dir)
     except OSError:
-        return None
-    newest = None
+        return None, None
+    newest, future_n = None, 0
     for name in names:
         if "_dists_" not in name:          # lock, partial/, auxfiles: not lists
             continue
@@ -70,42 +81,11 @@ def apt_lists_age_h(lists_dir, now):
         except OSError:
             continue
         if m - now > 600:
-            # A server Last-Modified ahead of this box's clock (box clock
-            # behind, or one skewed third-party server). Skipped: list age is
-            # DISPLAY ONLY since r5 — the stale finding judges the update-stamp
-            # alone — so one odd file must not blind the box (r3 #8/r4 #3/r5 #4).
+            future_n += 1
             continue
         newest = m if newest is None else max(newest, m)
-    if newest is None:
-        return None
-    return int(max(0.0, now - newest) / 3600)
-
-
-def apt_lists_future_n(lists_dir, now):
-    """How many list files ``apt_lists_age_h`` SKIPPED as dated more than
-    10 min in the future, or None when the directory cannot be read.
-
-    r6 #4: on a box whose clock is BEHIND, every freshly fetched file is
-    future-dated, so the age came from some OLD file and read as a confident
-    "lists 400h old". Every display of that age says this count beside it.
-    Same tolerance and same file filter as apt_lists_age_h (literal here: the
-    reporter embeds these functions' source, not the module)."""
-    import os
-    try:
-        names = os.listdir(lists_dir)
-    except OSError:
-        return None
-    n = 0
-    for name in names:
-        if "_dists_" not in name:
-            continue
-        try:
-            m = os.stat(os.path.join(lists_dir, name)).st_mtime
-        except OSError:
-            continue
-        if m - now > 600:
-            n += 1
-    return n
+    age_h = None if newest is None else int(max(0.0, now - newest) / 3600)
+    return age_h, future_n
 
 
 def parse_release_date(text):
