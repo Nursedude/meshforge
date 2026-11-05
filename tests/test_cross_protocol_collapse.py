@@ -268,8 +268,9 @@ class TestFreshnessAcrossTextLastSeen:
         assert out[0]["properties"]["last_seen"] == "4d ago"
 
     def test_numeric_last_seen_vs_text_with_last_heard(self):
-        # Mixed shapes: a federated row's epoch last_seen vs a live copy's
-        # text + last_heard. The newer INSTANT wins whichever field holds it.
+        # Mixed shapes: a cache/history row's epoch last_seen vs a live
+        # copy's text + last_heard. The newer INSTANT wins whichever field
+        # holds it. (A FEDERATED epoch is not an instant — TestFreshnessReviewR2.)
         feats = [
             _fresh("a", "N", last_seen=self.NOW - 10 * 86400),
             _fresh("b", "N", last_seen="1m ago",
@@ -325,6 +326,92 @@ class TestFreshnessReviewR1:
         out, _ = collapse_cross_protocol([online, zero], now=self.NOW)
         p = out[0]["properties"]
         assert p["last_seen"] == "2m ago"
+        assert p["is_online"] is True
+
+
+class TestFreshnessReviewR2:
+    """Non-author review r2 of c21d82fd^..5783fbac (2026-11-04), F-R2-1/2.
+
+    A federated copy's last_seen is the PEER'S collection time
+    (node_history._build_directory_row stamps local-origin rows with `now`),
+    not when the node was heard — it is not a freshness instant at all.
+    """
+    NOW = 1_793_830_000.0
+    D = 86400.0
+
+    @staticmethod
+    def _fed(f):
+        f["properties"]["federated"] = True
+        f["properties"]["federated_from"] = "peer"
+        return f
+
+    def test_R2_1_peer_poll_stamp_does_not_freshen_a_silent_node(self):
+        # Live 14:46: 7 nodes reading "200d ago" locally were served with
+        # one shared poll stamp from a peer — a 200d-silent node as heard.
+        tracker = _fresh("mesh_!e213a228", "N", last_seen="200d ago",
+                         is_online=False)
+        fed = self._fed(_fresh("!e213a228", "N", last_seen=self.NOW - 60,
+                               is_online=False))
+        out, n = collapse_cross_protocol([tracker, fed], now=self.NOW)
+        assert n == 1
+        p = out[0]["properties"]
+        assert p["last_seen"] == "200d ago"
+        assert p["is_online"] is False
+        assert p.get("last_heard") is None
+
+    def test_R2_1_federated_primary_does_not_hide_a_fresh_local_copy(self):
+        # F-R2-6: rank must not decide is_online. A federated primary has no
+        # instant, so the local copy's heard time and flag supply freshness
+        # — the same answer whichever side outranks the other.
+        def pair(fed_origin, local_origin):
+            local = _fresh("a", "N", last_seen="2m ago",
+                           last_heard=self.NOW - 120, is_online=True,
+                           source_origin=local_origin)
+            fed = self._fed(_fresh("b", "N", last_seen=self.NOW - 60,
+                                   is_online=False, source_origin=fed_origin))
+            out, _ = collapse_cross_protocol([local, fed], now=self.NOW)
+            return out[0]["properties"]
+
+        fed_primary = pair("local_radio", "node_tracker")
+        local_primary = pair("node_tracker", "local_radio")
+        for p in (fed_primary, local_primary):
+            assert p["last_seen"] == "2m ago"
+            assert p["last_heard"] == self.NOW - 120
+            assert p["is_online"] is True
+
+    def test_R2_1_federated_copy_leaves_a_stale_local_reading_whole(self):
+        local = _fresh("a", "N", last_seen="199d ago",
+                       last_heard=self.NOW - 199 * self.D, is_online=False)
+        fed = self._fed(_fresh("b", "N", last_seen=self.NOW - 300,
+                               is_online=False))
+        out, _ = collapse_cross_protocol([local, fed], now=self.NOW)
+        p = out[0]["properties"]
+        assert p["last_seen"] == "199d ago"
+        assert p["last_heard"] == self.NOW - 199 * self.D
+
+    def test_R2_2_winner_without_last_heard_replaces_the_stale_one(self):
+        # A non-federated winner carrying only an epoch last_seen: its flag
+        # moved, so the primary's 199d last_heard must not stay beside it
+        # (the popup reads last_heard first).
+        local = _fresh("a", "N", last_seen="199d ago",
+                       last_heard=self.NOW - 199 * self.D, is_online=False)
+        other = _fresh("b", "N", last_seen=self.NOW - 120, is_online=True,
+                       source_origin="node_tracker")
+        out, _ = collapse_cross_protocol([local, other], now=self.NOW)
+        p = out[0]["properties"]
+        assert p["is_online"] is True
+        assert p["last_heard"] == self.NOW - 120
+
+    def test_R2_2_winner_carries_its_plausible_instant_not_a_forged_one(self):
+        # F-R2-9: the winner is chosen on a plausible instant (its last_seen);
+        # a future last_heard beside it must not be copied into the result.
+        stale = _fresh("a", "N", last_seen="3d ago",
+                       last_heard=self.NOW - 3 * self.D, is_online=False)
+        win = _fresh("b", "N", last_seen=self.NOW - 60,
+                     last_heard=self.NOW + 2 * self.D, is_online=True)
+        out, _ = collapse_cross_protocol([stale, win], now=self.NOW)
+        p = out[0]["properties"]
+        assert p["last_heard"] == self.NOW - 60
         assert p["is_online"] is True
 
 

@@ -33,8 +33,10 @@ Merged feature shape:
     properties.protocol_meta = {network: <orig protocol_meta>, ...}
     properties.alt_ids = [list of non-primary (network, id) tuples]
     properties.last_seen / last_heard / is_online = from the copy heard
-        most recently (by last_heard, else a numeric last_seen); primary's
-        when neither copy carries an instant
+        most recently (by last_heard, else a numeric last_seen), moving as
+        one unit; primary's when neither copy carries an instant. A
+        FEDERATED copy carries no instant (its last_seen is the peer's
+        poll time), so it never supplies freshness
     geometry = primary's geometry (highest source_origin priority)
     properties.id, properties.name = primary's
 
@@ -104,11 +106,6 @@ def _origin_rank(f: Dict[str, Any]) -> int:
     return _origin_priority(origin)
 
 
-# Fields that describe WHEN a node was last heard; they move as one unit so
-# a feature never pairs one copy's age text with another copy's online flag.
-_FRESHNESS_KEYS = ("last_seen", "last_heard", "is_online")
-
-
 def _plausible_instant(v: Any, now: float) -> float | None:
     """An epoch-seconds value usable as "last heard", else None.
 
@@ -130,9 +127,16 @@ def _freshness_instant(props: Dict[str, Any], now: float) -> float | None:
     """The comparable instant a feature was last heard, or None if unknown.
 
     Prefers ``last_heard`` (epoch, set by live collectors; 0 means unknown),
-    then a numeric ``last_seen`` (epoch, federated/history rows). Display
-    text such as "5m ago" is never parsed — it has no instant of its own.
+    then a numeric ``last_seen`` (epoch, cache/history rows). Display text
+    such as "5m ago" is never parsed — it has no instant of its own.
+
+    A FEDERATED copy has no instant (review r2 F-R2-1): its last_seen is
+    the PEER'S collection time — node_history._build_directory_row stamps
+    local-origin rows with `now` — not when anyone heard the node. Letting
+    it race served 200d-silent nodes as heard a minute ago (2026-11-04).
     """
+    if props.get("federated"):
+        return None
     lh = _plausible_instant(props.get("last_heard"), now)
     if lh is not None:
         return lh
@@ -200,20 +204,23 @@ def _merge_pair(primary: Dict[str, Any], secondary: Dict[str, Any],
     # fresh copy (2026-11-04: a live node served "199d ago" while meshtasticd held it
     # at 0.30 d — honest_failure_modes #1). No instant on either side = not
     # comparable: the primary stands, nothing is invented.
-    # Review r1: a FEDERATED copy's is_online=False is a deliberate
-    # non-claim ("federation only knows what the peer claimed"), so it never
-    # moves (F1); a winner with no last_seen text gets its instant as the
-    # value, so a stale text never survives beside the winner's flag (F3).
+    # A FEDERATED copy never wins: its stamp is the peer's poll time, not a
+    # hearing (review r2 F-R2-1; _freshness_instant returns None for it), and
+    # its is_online=False is a deliberate non-claim (r1 F1).
+    # The winner's fields move as ONE unit: last_heard becomes the instant
+    # the winner was chosen on, so the primary's stale last_heard never
+    # stays beside the winner's flag (r2 F-R2-2) and a forged last_heard
+    # beside a plausible last_seen is never copied (F-R2-9); a winner with
+    # no last_seen text gets its instant as the value (r1 F3).
     if now is None:
         now = time.time()
     p_t = _freshness_instant(p_props, now)
     s_t = _freshness_instant(s_props, now)
     if s_t is not None and (p_t is None or s_t > p_t):
-        for key in _FRESHNESS_KEYS:
-            if key == "is_online" and s_props.get("federated"):
-                continue
+        for key in ("last_seen", "is_online"):
             if key in s_props:
                 p_props[key] = s_props[key]
+        p_props["last_heard"] = s_t
         if s_props.get("last_seen") in (None, ""):
             p_props["last_seen"] = s_t
 
