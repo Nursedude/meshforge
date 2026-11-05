@@ -24,6 +24,7 @@ from __future__ import annotations
 import glob
 import os
 import subprocess
+import sys
 
 import pytest
 
@@ -35,12 +36,18 @@ _HARNESSES = sorted(
 )
 
 
+#: Each harness's wall-clock budget — the subprocess timeout AND the pytest
+#: per-test timeout below (one constant: the CLI cap must never undercut it).
+_HARNESS_BUDGET_S = 300
+
+
+@pytest.mark.timeout(_HARNESS_BUDGET_S)   # beats CI's --timeout=30 (marker > CLI)
 @pytest.mark.parametrize("script", _HARNESSES)
 def test_shell_harness_passes(script):
     path = os.path.join(_HERE, script)
     assert os.path.isfile(path), f"{script} missing"
     proc = subprocess.run(
-        ["bash", path], capture_output=True, text=True, timeout=300,
+        ["bash", path], capture_output=True, text=True, timeout=_HARNESS_BUDGET_S,
         cwd=_HERE,
     )
     # The harnesses print PASS:/FAIL: per assertion and exit non-zero on any
@@ -51,3 +58,26 @@ def test_shell_harness_passes(script):
         f"{proc.stdout}\n{proc.stderr}"
     )
     assert "ALL PASS" in proc.stdout, f"{script}: no ALL PASS line\n{proc.stdout}"
+
+
+# 2026-11-05 (deferred `ci-per-test-timeout-vs-shell-harness`): CI runs
+# `pytest --timeout=30 --timeout-method=thread`, which OVERRODE this test's
+# own 300 s subprocess budget. test_honest_status_boxes.sh measures ~36 s on
+# the dev Pi (2/2) and ~25-35 s on CI, so 5 of 10 CI runs on 11-04/05 died
+# "suite crashed before reporting" (the thread method kills the whole run).
+# The per-test marker must equal the subprocess budget — ONE constant.
+def test_the_harness_runner_carries_its_own_budget_as_its_timeout():
+    marks = [m for m in getattr(test_shell_harness_passes, "pytestmark", [])
+             if m.name == "timeout"]
+    assert marks and marks[0].args[0] == _HARNESS_BUDGET_S
+
+
+def test_the_marker_beats_a_lower_cli_cap():
+    # Behaviour, not wiring: under --timeout=1 a harness that runs ~7 s must
+    # still pass, i.e. pytest-timeout honours the marker over the CLI flag.
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", os.path.abspath(__file__), "-q",
+         "-p", "no:cacheprovider", "--timeout=1", "--timeout-method=thread",
+         "-k", "test_shell_harness_passes and test_exit_code_mask_guard"],
+        capture_output=True, text=True, timeout=_HARNESS_BUDGET_S, cwd=_HERE)
+    assert proc.returncode == 0 and "1 passed" in proc.stdout, proc.stdout[-1500:]
