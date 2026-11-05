@@ -299,6 +299,16 @@ mk h28; printf "# fleet dependency advisories\n# boxes observed: 11/11  UNKNOWN:
 export skew_clock_desc=" moc(-700s)"
 check_note "tab/space/CR around a token tolerated" "$TMP/h28" UNKNOWN "NOW: moc(-700s) (" "moc(-700s) moc("
 unset skew_clock_desc
+# r7d: the list is normalised ONCE where it is read, so the printed note,
+# the 80-char cut and the pointer parse one string: no CR reaches the
+# operator's line, and messy separators still count and name the manager.
+out28=$(HOME="$TMP/h28" bash -c "source '$TMP/harness.sh'; source '$TMP/leg.sh'" 2>&1)
+checks=$((checks+1))
+if [ "$(printf "%s" "$out28" | awk '{print $1}')" = UNKNOWN ] && ! printf "%s" "$out28" | grep -q $'\r'; then
+  printf '  ok   %-38s %s\n' "no CR reaches the printed note" "UNKNOWN"
+else printf '  FAIL %-38s CR in the note\n      %s\n' "no CR reaches the printed note" "$(printf "%s" "$out28" | cat -A)"; fails=$((fails+1)); fi
+mk h29; printf "# fleet dependency advisories\n# boxes observed: 11/11  UNKNOWN: moc4/jinja2@/usr/local/lib/python3.11/dist-packages,\tmoc1/cryptography@/root/.local/x,kiai/urllib3 ,\tmanager:security-archive-unreachable\r\n# scope: fleet\n# findings this run: 0\n" > "$TMP/h29/.meshforge-dep-advisories"; : > "$TMP/h29/.meshforge-dep-ranges"
+check_note "messy separators: cut counts right" "$TMP/h29" UNKNOWN "(4 total; incl. manager:security-archive-unreachable)"
 
 if [ "$fails" -ne 0 ]; then
   echo "test_honest_status_dep_leg: $fails failure(s)"

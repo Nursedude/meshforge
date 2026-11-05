@@ -1245,7 +1245,12 @@ for pair in "advisories:.meshforge-dep-advisories:.meshforge-dep-ADVISORY:instal
   # decision 2026-11-04, dep-advisory review r5 #1). Partial blindness is
   # UNKNOWN and outranks a finding, as a missing half does above.
   _dep_blind=$(grep -m1 '^# boxes observed:.*UNKNOWN:' "$spath" 2>/dev/null \
-               | sed 's/.*UNKNOWN:[[:space:]]*//')
+               | sed 's/.*UNKNOWN:[[:space:]]*//' | tr -d '\r' \
+               | sed -E 's/[[:space:]]*,[[:space:]]*/, /g; s/[[:space:]]+$//')
+  # ^ normalised ONCE, here (r7d): the note, the cut and the clock pointer
+  # below all parse this one string. The writer (dep_advisory_check.py) joins
+  # with ", " and \n today; a CR left in would overwrite the verdict on the
+  # operator's terminal, and two parsers of one header disagree on its count.
   # An unjudgeable update-stamp (`<host>/apt-update-stamp`) KEEPS the run
   # UNKNOWN (operator, r7 #8). The running-code skew leg above already
   # MEASURED every answering box's clock against this manager
