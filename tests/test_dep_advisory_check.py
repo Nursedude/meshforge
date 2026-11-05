@@ -1370,14 +1370,68 @@ class TestScopedRunNeverClobbersTheFleetRecord:
         assert dac.run_scope(None, "/some/list", full)[0] == "narrow"
         assert dac.run_scope(None, None, ["cryptography"])[0] == "narrow"
         # the default list in any order is still the fleet
-        assert dac.run_scope(None, None, list(reversed(full))) == ("fleet", None)
+        assert dac.run_scope(None, None, list(reversed(full)), env={}) == ("fleet", None)
+
+    # r7e #1 (operator 2026-11-05: "should a fleet chosen by an environment
+    # variable count as a narrow run ... I would say yes"). The var stays the
+    # authoritative SELECTOR of which boxes are looked at; it no longer speaks
+    # for the whole fleet, so its run lands in .scoped, never the canonical pair.
+    @pytest.mark.parametrize("key", ["MESHFORGE_FLEET_HOSTS", "FLEET_HOSTS"])
+    def test_an_env_selected_fleet_list_is_narrow(self, key):
+        full = list(dac.DEFAULT_PACKAGES)
+        scope, why = dac.run_scope(None, None, full, env={key: "/x/list"})
+        assert scope == "narrow"
+        assert key in why and "/x/list" in why
+
+    def test_an_empty_env_var_is_not_a_selector(self):
+        full = list(dac.DEFAULT_PACKAGES)
+        assert dac.run_scope(None, None, full,
+                             env={"MESHFORGE_FLEET_HOSTS": ""}) == ("fleet", None)
+
+    def test_run_scope_reads_the_process_env_by_default(self, monkeypatch):
+        monkeypatch.setenv("FLEET_HOSTS", "/y/list")
+        monkeypatch.delenv("MESHFORGE_FLEET_HOSTS", raising=False)
+        assert dac.run_scope(None, None, list(dac.DEFAULT_PACKAGES))[0] == "narrow"
+
+    def test_env_selected_run_never_touches_the_canonical_pair(self, home, monkeypatch):
+        """End state, through main(): the var picks the boxes, the run completes
+        normally, and its record lands in the .scoped sibling."""
+        import json as _json
+        s0, f0 = self._plant_fleet_record(home)
+        hosts = home / "fleet_hosts"
+        hosts.write_text("moc\n")
+        monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(hosts))
+        monkeypatch.setattr(dac.socket, "gethostname", lambda: "moc")
+
+        def fake_run(cmd, timeout, stdin_text=None):
+            if cmd[:3] == ["gh", "auth", "status"]:
+                return 0, "", ""
+            if cmd[0] == "gh":
+                return 0, _json.dumps(ADV_HIGH), ""
+            return 0, _json.dumps({"cryptography": "46.0.7"}), ""
+
+        monkeypatch.setattr(dac, "_run", fake_run)
+        rc = dac.main(["--quiet"])
+        assert rc == 1
+        assert "# scope: NARROW" in _status(home).read_text()
+        assert "MESHFORGE_FLEET_HOSTS" in _status(home).read_text()
+        assert _status(home, scoped=False).read_bytes() == s0
+        assert _finding(home, scoped=False).read_bytes() == f0
+
+    @staticmethod
+    def _fleet_list_via_resolver(home, monkeypatch, text):
+        """Drive a true FLEET run: the list comes from the resolver's file
+        tiers (seamed), never from an env override (r7e #1 made that narrow)."""
+        hosts = home / "fleet_hosts"
+        hosts.write_text(text)
+        for k in dac.FLEET_ENV_OVERRIDE_KEYS:
+            monkeypatch.delenv(k, raising=False)
+        monkeypatch.setattr(dac, "resolve_fleet_hosts_file", lambda: hosts)
 
     def test_unnarrowed_run_writes_the_canonical_pair_with_the_stamp(
             self, home, monkeypatch):
         import json as _json
-        hosts = home / "fleet_hosts"
-        hosts.write_text("moc\nmoc1\n")
-        monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(hosts))
+        self._fleet_list_via_resolver(home, monkeypatch, "moc\nmoc1\n")
         monkeypatch.setattr(dac.socket, "gethostname", lambda: "moc")
 
         def fake_run(cmd, timeout, stdin_text=None):
@@ -1399,9 +1453,7 @@ class TestScopedRunNeverClobbersTheFleetRecord:
             self, home, monkeypatch):
         """gh unauthenticated: the canonical file must read 'fleet run, never
         looked' (UNKNOWN under the stamp) — not 'not a fleet run'."""
-        hosts = home / "fleet_hosts"
-        hosts.write_text("moc\n")
-        monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(hosts))
+        self._fleet_list_via_resolver(home, monkeypatch, "moc\n")
         _install_runner(monkeypatch, gh_auth_rc=1)
         rc = dac.main(["--quiet"])
         assert rc == 2

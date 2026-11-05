@@ -1293,18 +1293,32 @@ FLEET_SCOPE_STAMP = "# scope: fleet"
 SCOPED_SUFFIX = ".scoped"
 
 
-def run_scope(only_hosts, hosts_file, packages) -> Tuple[str, Optional[str]]:
+def run_scope(only_hosts, hosts_file, packages,
+              env=None) -> Tuple[str, Optional[str]]:
     """``("fleet", None)`` for the unnarrowed daily run, else ``("narrow", why)``.
 
     Anything that changes WHICH boxes or WHICH packages are judged makes the
     run an answer to a question, not the fleet record: an explicit host, a
     non-default host list, or a package subset. An accept list does not — it
-    changes how findings are classified, not what was looked at."""
+    changes how findings are classified, not what was looked at.
+
+    r7e #1 (operator 2026-11-05): a host list chosen by an environment
+    override (``MESHFORGE_FLEET_HOSTS`` / ``FLEET_HOSTS``) is NARROW too. The
+    var stays the authoritative selector of which boxes are looked at; it
+    just no longer speaks for the whole fleet, so it can never overwrite the
+    canonical record. Only consulted when no flag already chose the hosts —
+    ``--host`` / ``--hosts-file`` win over the var in ``read_fleet_hosts``."""
+    env_map = os.environ if env is None else env
     why = []
     if only_hosts:
         why.append("hosts=%s" % ",".join(only_hosts))
     if hosts_file:
         why.append("hosts-file=%s" % hosts_file)
+    if not only_hosts and not hosts_file:
+        for key in FLEET_ENV_OVERRIDE_KEYS:
+            if env_map.get(key):
+                why.append("%s=%s" % (key, env_map[key]))
+                break
     if set(packages) != set(DEFAULT_PACKAGES):
         why.append("packages=%s" % ",".join(packages))
     return ("narrow", "; ".join(why)) if why else ("fleet", None)
