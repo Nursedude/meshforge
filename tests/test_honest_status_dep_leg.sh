@@ -192,8 +192,48 @@ printf '# fleet dependency advisories\n# boxes observed: 10/10\n# scope: fleet\n
 : > "$TMP/h15/.meshforge-dep-ranges"
 check "complete view with observed header" "$TMP/h15" PASS
 
+# check_note: the verdict AND a substring (or, with a leading '!', its
+# absence) in the leg's note — #7 is about what the note SAYS, not the verdict.
+check_note() { # label, fake-home, expected-verdict, need, [forbid]
+  local label="$1" fhome="$2" want="$3" need="$4" forbid="${5:-}" out got
+  out=$(HOME="$fhome" bash -c "source '$TMP/harness.sh'; source '$TMP/leg.sh'" 2>&1)
+  got=$(printf '%s' "$out" | awk '{print $1}')
+  if [ "$got" = "$want" ] && printf '%s' "$out" | grep -qF -- "$need" \
+     && { [ -z "$forbid" ] || ! printf '%s' "$out" | grep -qF -- "$forbid"; }; then
+    printf '  ok   %-38s %s\n' "$label" "$want"
+  else
+    printf '  FAIL %-38s expected=%s +"%s" -"%s" got=%s\n      %s\n' \
+      "$label" "$want" "$need" "$forbid" "$got" "$out"
+    fails=$((fails+1))
+  fi
+}
+
+# 16-18. Dep-advisory review r6 #7: PARTIAL-VIEW `continue`d before counting,
+#     so the findings the run DID see vanished from the note. The count must
+#     come from THIS run — a partial run with no findings deliberately KEEPS
+#     the previous finding file, so counting that file would report last
+#     run's findings as current. The writer states `# findings this run: N`.
+partial_hdr='# fleet dependency advisories\n# boxes observed: 10/11  UNKNOWN: lehua\n# scope: fleet\n'
+mk h16
+printf "${partial_hdr}"'# findings this run: 3\nkiai apt - FINDING\n' > "$TMP/h16/.meshforge-dep-advisories"
+: > "$TMP/h16/.meshforge-dep-ranges"
+printf '# header\na\nb\nc\n' > "$TMP/h16/.meshforge-dep-ADVISORY"
+check_note "partial view keeps its finding count" "$TMP/h16" UNKNOWN "3 finding(s) among the boxes seen"
+
+mk h17
+printf "${partial_hdr}"'# findings this run: 0\nmoc apt - clean\n' > "$TMP/h17/.meshforge-dep-advisories"
+: > "$TMP/h17/.meshforge-dep-ranges"
+printf '# header\nold1\nold2\n' > "$TMP/h17/.meshforge-dep-ADVISORY"
+check_note "partial: count from THIS run, not leftover" "$TMP/h17" UNKNOWN "0 finding(s) among the boxes seen" "2 finding"
+
+mk h18
+printf "${partial_hdr}"'moc apt - clean\n' > "$TMP/h18/.meshforge-dep-advisories"
+: > "$TMP/h18/.meshforge-dep-ranges"
+printf '# header\nold1\nold2\n' > "$TMP/h18/.meshforge-dep-ADVISORY"
+check_note "partial, older writer: count said unknown" "$TMP/h18" UNKNOWN "findings uncounted" "2 finding"
+
 if [ "$fails" -ne 0 ]; then
   echo "test_honest_status_dep_leg: $fails failure(s)"
   exit 1
 fi
-echo "ALL PASS — test_honest_status_dep_leg: all 15 states behaved as specified"
+echo "ALL PASS — test_honest_status_dep_leg: all 18 states behaved as specified"

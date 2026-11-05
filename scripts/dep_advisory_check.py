@@ -1222,6 +1222,10 @@ def main(argv=None) -> int:
               % (observed, len(hosts),
                  ("  UNKNOWN: " + ", ".join(unknown_hosts)) if unknown_hosts else ""),
               scope_stamp,
+              # THIS run's count, said in the record honest_status reads (r6
+              # #7): a partial run with no findings keeps the previous finding
+              # file, so counting that file would report last run's findings.
+              "# findings this run: %d" % len(findings),
               "# distro-patched (CVE named in the package's Debian changelog): %d; "
               "accepted via %s: %d" % (n_patched, accept_file, n_accepted)]
     header += ["# WARN %s" % w for w in accept_warnings]

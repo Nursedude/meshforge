@@ -1645,3 +1645,42 @@ class TestReviewR6StampUnknown:
         a = dac.apt_lines("boxA", self._apt(), lambda u: (ARCHIVE_TS, None))
         line = next(s for s in a.status if "update-stamp" in s)
         assert "not reported" in line
+
+
+# r6 #7 (writer half): honest_status's PARTIAL-VIEW branch must say how many
+# findings the run saw, but a partial run with NO findings deliberately keeps
+# the previous finding file — so the count cannot come from that file. The
+# status header states THIS run's count; honest_status reads it.
+class TestReviewR6FindingCount:
+    def _apt(self, **kw):
+        apt = {"unattended_upgrades": "installed", "pending_total": 0,
+               "pending_security": 0, "lists_age_h": 2, "security_views": [_view(1)]}
+        apt.update(STAMP_OK)
+        apt.update(kw)
+        return apt
+
+    @staticmethod
+    def _count(status):
+        hits = [ln for ln in status.splitlines() if ln.startswith("# findings this run: ")]
+        assert len(hits) == 1, status
+        return int(hits[0].split(": ", 1)[1].split()[0])
+
+    def test_clean_run_states_zero(self, home, monkeypatch):
+        rc, status, _ = _drive(home, monkeypatch, _report(apt=self._apt()), [])
+        assert rc == 0 and self._count(status) == 0
+
+    def test_findings_run_states_its_count(self, home, monkeypatch):
+        rc, status, finding = _drive(home, monkeypatch, _report(apt=self._apt(
+            pending_security=2, unattended_upgrades="absent")), [])
+        n = len([ln for ln in finding.splitlines() if ln and not ln.startswith("#")])
+        assert rc == 1 and self._count(status) == n == 2
+
+    def test_partial_run_states_this_runs_count_not_the_kept_file(self, home, monkeypatch):
+        # A first run leaves 2 findings; a second, partial (stamp unknown) run
+        # finds nothing and KEEPS that file — its header must still say 0.
+        _drive(home, monkeypatch, _report(apt=self._apt(
+            pending_security=2, unattended_upgrades="absent")), [])
+        rc, status, finding = _drive(home, monkeypatch, _report(apt=self._apt(
+            update_stamp_present=True, update_stamp_age_h=None)), [])
+        assert rc == 2 and finding is not None          # the kept file
+        assert self._count(status) == 0

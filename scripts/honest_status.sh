@@ -1247,7 +1247,16 @@ for pair in "advisories:.meshforge-dep-advisories:.meshforge-dep-ADVISORY:instal
   _dep_blind=$(grep -m1 '^# boxes observed:.*UNKNOWN:' "$spath" 2>/dev/null \
                | sed 's/.*UNKNOWN:[[:space:]]*//' | cut -c1-80)
   if [ -n "$_dep_blind" ]; then
-    dep_note="$dep_note ${dwhat}:PARTIAL-VIEW(unknown: ${_dep_blind})"; dep_state="unk"; continue
+    # Still say what the run DID see (r6 #7) — but from the header's
+    # `# findings this run: N`, never the finding file: a partial run with no
+    # findings KEEPS the previous file, so counting it reports last run's.
+    _dep_n=$(sed -n 's/^# findings this run: \([0-9][0-9]*\).*/\1/p' "$spath" 2>/dev/null | head -1)
+    if [ -n "$_dep_n" ]; then
+      _dep_seen="${_dep_n} finding(s) among the boxes seen"
+    else
+      _dep_seen="findings uncounted — status file predates the count line"
+    fi
+    dep_note="$dep_note ${dwhat}:PARTIAL-VIEW(unknown: ${_dep_blind}; ${_dep_seen})"; dep_state="unk"; continue
   fi
   if [ -f "$fpath" ]; then
     # `grep -c … || echo 0` yielded the TWO-line value $'0\n0' on a file with
