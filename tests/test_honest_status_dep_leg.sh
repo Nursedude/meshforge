@@ -310,6 +310,21 @@ else printf '  FAIL %-38s CR in the note\n      %s\n' "no CR reaches the printed
 mk h29; printf "# fleet dependency advisories\n# boxes observed: 11/11  UNKNOWN: moc4/jinja2@/usr/local/lib/python3.11/dist-packages,\tmoc1/cryptography@/root/.local/x,kiai/urllib3 ,\tmanager:security-archive-unreachable\r\n# scope: fleet\n# findings this run: 0\n" > "$TMP/h29/.meshforge-dep-advisories"; : > "$TMP/h29/.meshforge-dep-ranges"
 check_note "messy separators: cut counts right" "$TMP/h29" UNKNOWN "(4 total; incl. manager:security-archive-unreachable)"
 
+# 30-32. r7 #7/#6b: the cut was by CHARACTER — a single first entry over 80
+#     chars (a pipx site-packages path is ~85) printed mid-path; an entry
+#     ending exactly at col 80 was dropped though whole. Now whole entries
+#     are packed, and an entry too long alone keeps its identity (`host/pkg@…`).
+blind_hdr() { printf "# fleet dependency advisories\n# boxes observed: 11/11  UNKNOWN: %s\n# scope: fleet\n# findings this run: 0\n" "$1"; }
+pipx_tok="kiai/meshtastic@/root/.local/share/pipx/venvs/meshtastic/lib/python3.11/site-packages"
+mk h30; blind_hdr "${pipx_tok}, lehua, manager:security-archive-unreachable" > "$TMP/h30/.meshforge-dep-advisories"; : > "$TMP/h30/.meshforge-dep-ranges"
+check_note "over-long entry keeps its identity" "$TMP/h30" UNKNOWN "unknown: kiai/meshtastic@…, lehua … (3 total; incl. manager:" "site-pa"
+# The first two entries end EXACTLY at col 80 and must survive whole.
+t1="moc4/jinja2@/usr/local/lib/python3.11/dist-packages"; t2="moc1/abcdefghijklmnopqrstuv"
+mk h31; blind_hdr "${t1}, ${t2}, kiai/urllib3" > "$TMP/h31/.meshforge-dep-advisories"; : > "$TMP/h31/.meshforge-dep-ranges"
+check_note "an entry ending inside the limit is kept" "$TMP/h31" UNKNOWN "unknown: ${t1}, ${t2} … (3 total)"
+mk h32; blind_hdr "${t1}, moc1/x, manager:security-archive-unreachable" > "$TMP/h32/.meshforge-dep-advisories"; : > "$TMP/h32/.meshforge-dep-ranges"
+check_note "manager named once, never twice" "$TMP/h32" UNKNOWN "incl. manager:security-archive-unreachable)" "unreachable, "
+
 if [ "$fails" -ne 0 ]; then
   echo "test_honest_status_dep_leg: $fails failure(s)"
   exit 1

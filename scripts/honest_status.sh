@@ -1282,10 +1282,24 @@ for pair in "advisories:.meshforge-dep-advisories:.meshforge-dep-ADVISORY:instal
   # entry count, and any `manager:` entry (the sweep's own blindness, a
   # different class from a box's, appended LAST so first to be cut) is
   # always named (r6 #8). Matched by prefix, so no token is duplicated here.
+  # Packed by WHOLE entry (r7 #7/#6b): a character cut printed a single
+  # over-80 first entry mid-path (a pipx site-packages path is ~85) and
+  # dropped an entry ending exactly at col 80. An entry too long alone keeps
+  # its identity, `host/pkg@…`; `manager:` entries go only in "incl.".
   if [ "${#_dep_blind}" -gt 80 ]; then
-    _dep_total=$(printf '%s' "$_dep_blind" | awk -F', ' '{print NF}')
-    _dep_mgr=$(printf '%s' "$_dep_blind" | tr ',' '\n' | sed 's/^ *//' | grep '^manager:' | paste -sd' ' -)
-    _dep_short=$(printf '%s' "$_dep_blind" | cut -c1-80 | sed 's/, [^,]*$//')
+    IFS=',' read -ra _dep_all <<<"$_dep_blind"   # normalised ", " above
+    _dep_total=${#_dep_all[@]}; _dep_mgr=""; _dep_short=""; _dep_full=""
+    for _dep_tok in "${_dep_all[@]}"; do   # no break: the manager entry is LAST
+      _dep_tok="${_dep_tok# }"
+      case "$_dep_tok" in manager:*) _dep_mgr="${_dep_mgr:+$_dep_mgr }$_dep_tok"; continue ;; esac
+      [ -n "$_dep_full" ] && continue
+      if [ "${#_dep_tok}" -gt 80 ]; then
+        case "$_dep_tok" in *@*) _dep_tok="${_dep_tok%%@*}@…" ;; *) _dep_tok="${_dep_tok:0:77}…" ;; esac
+      fi
+      _dep_try="${_dep_short:+$_dep_short, }$_dep_tok"
+      if [ "${#_dep_try}" -gt 80 ] && [ -n "$_dep_short" ]; then _dep_full=1; continue; fi
+      _dep_short="$_dep_try"
+    done
     _dep_blind="${_dep_short} … (${_dep_total} total${_dep_mgr:+; incl. ${_dep_mgr}})"
   fi
   if [ -n "$_dep_blind" ]; then
