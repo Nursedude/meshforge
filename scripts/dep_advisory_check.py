@@ -785,7 +785,7 @@ def apt_lines(host: str, apt: Optional[dict], reference) -> AptLines:
     # (r2 #5 → r5 #4). List CONTENT age (server Last-Modified) ages through a
     # quiet archive and can be skewed by one third-party server: display only.
     present = apt.get("update_stamp_present")      # None = an older reporter
-    stale, stale_msg = False, ""
+    stale, stale_msg, unknown = False, "", None
     if upd is not None:
         stale = upd > APT_LISTS_STALE_H
         stale_msg = ("no successful periodic apt-get update in %sh (update-stamp); "
@@ -794,10 +794,20 @@ def apt_lines(host: str, apt: Optional[dict], reference) -> AptLines:
         stale = True
         stale_msg = ("no update-stamp — no successful periodic apt-get update was "
                      "ever recorded (apt.systemd.daily); pending counts are a lower bound")
-    elif present is True:
-        status.append("%-20s %-14s %-10s update-stamp age UNKNOWN — present but "
-                      "unreadable or dated in the future (box clock behind?)"
-                      % (host, "apt", "-"))
+    else:
+        # No readable age and NOT reported absent: present-but-unreadable /
+        # future-dated (r6 #1), or a report with no presence field (r6 #6).
+        # The "periodic update running?" judgement is UNOBSERVABLE — it goes
+        # on the UNKNOWN list (rc 2), never status text beside a clean box
+        # (hfm #1/#2). The security line below may still read clean: view lag
+        # measures list freshness independently of the stamp.
+        why = ("present but unreadable or dated in the future (box clock behind?)"
+               if present is True else
+               "not reported by this box's reporter (no update_stamp_present field)")
+        status.append("%-20s %-14s %-10s UNKNOWN — update-stamp age: %s; whether "
+                      "periodic apt-get update runs is unobservable"
+                      % (host, "apt", "-", why))
+        unknown = "%s/apt-update-stamp" % host
     if stale:
         status.append("%-20s %-14s %-10s FINDING — %s" % (host, "apt", "-", stale_msg))
         findings.append("%s apt: %s" % (host, stale_msg))
@@ -845,7 +855,7 @@ def apt_lines(host: str, apt: Optional[dict], reference) -> AptLines:
                           "as of %s; a fix published since is invisible here%s (%s)"
                           % (host, "apt", "-", total, sec_s, rpi_s, age_s))
             lower_bound = cause
-    return AptLines(status, findings, None, lower_bound)
+    return AptLines(status, findings, unknown, lower_bound)
 
 
 def security_reference_url(list_file: str) -> Optional[str]:

@@ -37,6 +37,10 @@ ADV_HIGH = [{"ghsa_id": "GHSA-xxxx-yyyy-zzzz", "severity": "high"}]
 #: the trixie-security Date measured live 11-05). Tests never touch the network.
 ARCHIVE_TS = 1793828633.0
 SEC_FILE = "deb.debian.org_debian-security_dists_trixie-security_InRelease"
+#: The stamp shape the CURRENT reporter sends for a box whose periodic update
+#: ran 3h ago. Fixtures not ABOUT the stamp carry it: a report with no stamp
+#: field is an UNKNOWN by r6 #6, so a bare fixture now tests that instead.
+STAMP_OK = {"update_stamp_present": True, "update_stamp_age_h": 3}
 REFERENCE_FETCHES = []
 #: The real fetch, saved BEFORE the autouse fake — a test that needs it
 #: restores this one attribute, never `monkeypatch.undo()` (r4 #8: undo()
@@ -482,35 +486,35 @@ class TestAcceptList:
 class TestAptHygiene:
     def test_absent_unattended_upgrades_is_a_finding(self, home, monkeypatch):
         rep = _report(apt={"unattended_upgrades": "absent", "pending_total": 3,
-                           "pending_security": 0, "lists_age_h": 2})
+                           "pending_security": 0, **STAMP_OK, "lists_age_h": 2})
         rc, status, finding = _drive(home, monkeypatch, rep, [ADV_CVE_A])
         assert rc == 1 and finding
         assert "unattended-upgrades ABSENT" in finding
 
     def test_pending_security_updates_are_a_finding(self, home, monkeypatch):
         rep = _report(apt={"unattended_upgrades": "installed", "pending_total": 40,
-                           "pending_security": 35, "lists_age_h": 6})
+                           "pending_security": 35, **STAMP_OK, "lists_age_h": 6})
         rc, status, finding = _drive(home, monkeypatch, rep, [ADV_CVE_A])
         assert rc == 1 and finding and "35 security update(s) pending" in finding
 
     def test_stale_lists_are_a_finding_and_counts_are_a_lower_bound(self, home, monkeypatch):
         # r5: judged on the success-only update-stamp, not list content age.
         rep = _report(apt={"unattended_upgrades": "installed", "pending_total": 0,
-                           "pending_security": 0, "lists_age_h": 2,
+                           "pending_security": 0, **STAMP_OK, "lists_age_h": 2,
                            "update_stamp_present": True, "update_stamp_age_h": 400})
         rc, status, finding = _drive(home, monkeypatch, rep, [ADV_CVE_A])
         assert rc == 1 and finding and "in 400h" in finding and "lower bound" in finding
 
     def test_failed_apt_simulation_is_unknown_not_clean(self, home, monkeypatch):
         rep = _report(apt={"unattended_upgrades": "installed", "pending_total": None,
-                           "pending_security": None, "lists_age_h": 1})
+                           "pending_security": None, **STAMP_OK, "lists_age_h": 1})
         rc, status, finding = _drive(home, monkeypatch, rep, [ADV_CVE_A])
         assert rc == 2, "pending updates unobservable must not read as a clean box"
         assert "boxA/apt" in status.splitlines()[1]
 
     def test_healthy_apt_is_clean_and_a_non_deb_box_is_silent(self, home, monkeypatch):
         rep = _report(apt={"unattended_upgrades": "installed", "pending_total": 2,
-                           "pending_security": 0, "lists_age_h": 1,
+                           "pending_security": 0, **STAMP_OK, "lists_age_h": 1,
                            "security_views": [_view(1)]})
         rc, status, finding = _drive(home, monkeypatch, rep, [ADV_CVE_A])
         assert rc == 0 and finding is None and "0 security" in status
@@ -527,14 +531,14 @@ class TestAptHygiene:
     # Observe before alarm: a visible count, not (yet) a finding.
     def test_rpi_archive_pending_is_shown_but_not_a_finding(self, home, monkeypatch):
         rep = _report(apt={"unattended_upgrades": "installed", "pending_total": 9,
-                           "pending_security": 0, "pending_rpi": 7, "lists_age_h": 1})
+                           "pending_security": 0, "pending_rpi": 7, **STAMP_OK, "lists_age_h": 1})
         rc, status, finding = _drive(home, monkeypatch, rep, [ADV_CVE_A])
         assert rc == 0 and finding is None
         assert "7 from the Raspberry Pi archive" in status
 
     def test_rpi_count_absent_from_an_old_reporter_says_nothing(self, home, monkeypatch):
         rep = _report(apt={"unattended_upgrades": "installed", "pending_total": 2,
-                           "pending_security": 0, "lists_age_h": 1})
+                           "pending_security": 0, **STAMP_OK, "lists_age_h": 1})
         rc, status, finding = _drive(home, monkeypatch, rep, [ADV_CVE_A])
         assert rc == 0 and "Raspberry Pi" not in status
 
@@ -553,7 +557,7 @@ class TestAptHygiene:
 class TestZeroSecurityIsOnlyAsFreshAsTheSecurityView:
     def _apt(self, **kw):
         apt = {"unattended_upgrades": "installed", "pending_total": 0,
-               "pending_security": 0, "lists_age_h": 31}
+               "pending_security": 0, **STAMP_OK, "lists_age_h": 31}
         apt.update(kw)
         return apt
 
@@ -743,7 +747,7 @@ class TestReporterReadsTheSecurityArchiveDate:
 class TestReviewR2:
     def _apt(self, **kw):
         apt = {"unattended_upgrades": "installed", "pending_total": 0,
-               "pending_security": 0, "lists_age_h": 2, "security_views": [_view(1)]}
+               "pending_security": 0, **STAMP_OK, "lists_age_h": 2, "security_views": [_view(1)]}
         apt.update(kw)
         return apt
 
@@ -827,7 +831,7 @@ class TestReviewR3:
 
     def _apt(self, **kw):
         apt = {"unattended_upgrades": "installed", "pending_total": 0,
-               "pending_security": 0, "lists_age_h": 2, "security_views": [_view(1)]}
+               "pending_security": 0, **STAMP_OK, "lists_age_h": 2, "security_views": [_view(1)]}
         apt.update(kw)
         return apt
 
@@ -1056,7 +1060,8 @@ class TestReviewR5:
     def test_a_present_but_unreadable_stamp_is_unknown_not_a_finding(self, home, monkeypatch):
         rc, status, finding = _drive(home, monkeypatch, _report(apt=self._apt(
             update_stamp_present=True, update_stamp_age_h=None, lists_age_h=900)), [])
-        assert finding is None and "update-stamp age UNKNOWN" in status
+        assert finding is None and "UNKNOWN — update-stamp age" in status
+        assert rc == 2                       # r6 #1: reaches the UNKNOWN list
 
     def test_list_age_alone_never_makes_the_stale_finding(self, home, monkeypatch):
         rc, status, finding = _drive(home, monkeypatch, _report(apt=self._apt(
@@ -1598,3 +1603,45 @@ class TestReviewR6:
         line = "\n".join(a.status)
         assert a.lower_bound_cause == dac.CAUSE_BOX
         assert "40h behind the archive" in line and "Date unreadable" in line
+
+
+# r6 #1 + #6 (hfm #1/#2): a stamp that cannot be judged — present but
+# unreadable / future-dated, or a report that carries no stamp field at all —
+# must reach the UNKNOWN list (rc 2), never sit as status text beside a box
+# that otherwise reads clean. One rule: no readable age AND not reported
+# absent = UNKNOWN.
+class TestReviewR6StampUnknown:
+    def _apt(self, **kw):
+        apt = {"unattended_upgrades": "installed", "pending_total": 0,
+               "pending_security": 0, "lists_age_h": 2, "security_views": [_view(1)]}
+        apt.update(kw)
+        return apt
+
+    @pytest.mark.parametrize("kw", [
+        {"update_stamp_present": True, "update_stamp_age_h": None},   # #1 unreadable / future
+        {"update_stamp_age_h": None},                                 # #6 field missing
+        {},                                                           # #6 both missing
+    ])
+    def test_an_unjudgeable_stamp_is_an_unknown_entry(self, kw):
+        a = dac.apt_lines("boxA", self._apt(**kw), lambda u: (ARCHIVE_TS, None))
+        assert a.unknown == "boxA/apt-update-stamp"
+        assert any("UNKNOWN" in s and "update-stamp" in s for s in a.status)
+        assert a.findings == []
+
+    @pytest.mark.parametrize("kw", [
+        {"update_stamp_present": True, "update_stamp_age_h": None},
+        {"update_stamp_age_h": None},
+    ])
+    def test_the_run_is_unknown_not_clean(self, home, monkeypatch, kw):
+        rc, status, finding = _drive(home, monkeypatch, _report(apt=self._apt(**kw)), [])
+        assert rc == 2 and finding is None
+        assert "boxA/apt-update-stamp" in status.splitlines()[1]
+
+    def test_a_missing_presence_field_with_a_readable_age_is_judged(self):
+        a = dac.apt_lines("boxA", self._apt(update_stamp_age_h=5), lambda u: (ARCHIVE_TS, None))
+        assert a.unknown is None and any("clean" in s for s in a.status)
+
+    def test_the_missing_field_says_so_not_unreadable(self):
+        a = dac.apt_lines("boxA", self._apt(), lambda u: (ARCHIVE_TS, None))
+        line = next(s for s in a.status if "update-stamp" in s)
+        assert "not reported" in line
