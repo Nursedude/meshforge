@@ -1246,24 +1246,31 @@ for pair in "advisories:.meshforge-dep-advisories:.meshforge-dep-ADVISORY:instal
   # UNKNOWN and outranks a finding, as a missing half does above.
   _dep_blind=$(grep -m1 '^# boxes observed:.*UNKNOWN:' "$spath" 2>/dev/null \
                | sed 's/.*UNKNOWN:[[:space:]]*//')
-  # An unjudgeable update-stamp (`<host>/apt-update-stamp`: unreadable or
-  # dated in the future) KEEPS the run UNKNOWN (operator, r7 #8) — but a
-  # future stamp is most often that box's clock BEHIND, and the running-code
-  # skew leg above already MEASURED every answering box's clock against this
-  # manager (`skew_clock_desc`: " host(delta) …"). Point at that reading; no
-  # second detector (hfm #5). Built from the FULL list, before the cut below.
-  # Silence here is NOT "clock fine": the skew leg only sees boxes that
-  # answered with a repo.
+  # An unjudgeable update-stamp (`<host>/apt-update-stamp`) KEEPS the run
+  # UNKNOWN (operator, r7 #8). The running-code skew leg above already
+  # MEASURED every answering box's clock against this manager
+  # (`skew_clock_desc`: " host(delta) …"); when a stamp-blind host is in it,
+  # say so ONCE, listing the hosts — no second detector, and no second copy
+  # of the clock remedy (that lives in the skew leg's clock_note, hfm #5).
+  # It is CO-OCCURRENCE, never a cause (r7b review): the token also means "old
+  # reporter, no stamp field"; the delta may be `clock unreadable` or AHEAD;
+  # and the clock is read NOW while the stamp was judged at sweep time.
+  # Built from the FULL list, before the cut below. Silence is NOT "clock
+  # fine": the skew leg sees only boxes that answered with a repo, under its
+  # own host list.
   _dep_clk=""
-  for _dep_tok in $(printf '%s' "$_dep_blind" | tr ',' ' '); do
+  IFS=',' read -ra _dep_toks <<<"$_dep_blind"   # no word-split, no glob
+  for _dep_tok in "${_dep_toks[@]}"; do
+    _dep_tok="${_dep_tok# }"
     case "$_dep_tok" in */apt-update-stamp) ;; *) continue ;; esac
     _dep_h="${_dep_tok%/apt-update-stamp}"
     case "${skew_clock_desc:-} " in
       *" ${_dep_h}("*)
         _dep_d="${skew_clock_desc#*" ${_dep_h}("}"; _dep_d="${_dep_d%%)*}"
-        _dep_clk="${_dep_clk}; ${_dep_h}: clock disagrees with this manager (${_dep_d}, running-code skew leg) — the likely reason its stamp is unjudgeable; fix the clock first (timedatectl status)" ;;
+        _dep_clk="${_dep_clk} ${_dep_h}(${_dep_d})" ;;
     esac
   done
+  [ -n "$_dep_clk" ] && _dep_clk="; stamp-blind box(es) whose clock is off vs this manager NOW:${_dep_clk} (running-code skew leg; measured this run, not when the stamp was judged)"
   # A long list is cut for the one-line note — but the cut is SAID, with the
   # entry count, and any `manager:` entry (the sweep's own blindness, a
   # different class from a box's, appended LAST so first to be cut) is

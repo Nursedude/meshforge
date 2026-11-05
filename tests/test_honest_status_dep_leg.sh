@@ -23,7 +23,7 @@ set -u
 unset HONEST_BOXES MESHFORGE_FLEET_HOSTS HONEST_VERDICT_PATH HONEST_WD_PATH HONEST_WD_STALE_S
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/../scripts/honest_status.sh"
-fails=0
+fails=0; checks=0
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
@@ -52,7 +52,7 @@ warnf() { printf 'WARN %s\n' "$2"; }
 EOF
 
 check() { # label, fake-home, expected-verdict
-  local label="$1" fhome="$2" want="$3" out got
+  local label="$1" fhome="$2" want="$3" out got; checks=$((checks+1))
   out=$(HOME="$fhome" bash -c "source '$TMP/harness.sh'; source '$TMP/leg.sh'" 2>&1)
   got=$(printf '%s' "$out" | awk '{print $1}')
   if [ "$got" = "$want" ]; then
@@ -195,7 +195,7 @@ check "complete view with observed header" "$TMP/h15" PASS
 # check_note: the verdict AND a substring (or, with a leading '!', its
 # absence) in the leg's note — #7 is about what the note SAYS, not the verdict.
 check_note() { # label, fake-home, expected-verdict, need, [forbid]
-  local label="$1" fhome="$2" want="$3" need="$4" forbid="${5:-}" out got
+  local label="$1" fhome="$2" want="$3" need="$4" forbid="${5:-}" out got; checks=$((checks+1))
   out=$(HOME="$fhome" bash -c "source '$TMP/harness.sh'; source '$TMP/leg.sh'" 2>&1)
   got=$(printf '%s' "$out" | awk '{print $1}')
   if [ "$got" = "$want" ] && printf '%s' "$out" | grep -qF -- "$need" \
@@ -250,18 +250,20 @@ printf "# fleet dependency advisories\n# boxes observed: 11/11  UNKNOWN: lehua\n
 : > "$TMP/h20/.meshforge-dep-ranges"
 check_note "short blind list: no cut marker" "$TMP/h20" UNKNOWN "unknown: lehua;" "total"
 
-# 22-25. r7 #8 (operator 2026-11-05): an unjudgeable update-stamp KEEPS the run
-#     UNKNOWN, and when the running-code skew leg (run earlier in this script)
-#     MEASURED that same box's clock disagreeing with the manager, the note
-#     points at it — a future-dated stamp is most often a box clock behind.
-#     The leg reads `skew_clock_desc` (" host(delta) …"); no new detector.
-#     Host match is exact (moc ≠ moc1), and the pointer is built from the FULL
-#     blind list, so the 80-char cut cannot drop it.
+# 22-28. r7 #8 (operator 2026-11-05): an unjudgeable update-stamp KEEPS the run
+#     UNKNOWN; when the running-code skew leg (run earlier in this script)
+#     MEASURED a stamp-blind box's clock off vs the manager, the note says so
+#     ONCE, listing host(delta). Co-occurrence, never a cause (r7b review: the
+#     token also means "old reporter"; the delta may be unreadable or AHEAD;
+#     the clock is read now, the stamp judged at sweep time). Exact host
+#     match (moc != moc1); built from the FULL list, so the 80-char cut
+#     cannot drop it.
 stamp_hdr() { printf "# fleet dependency advisories\n# boxes observed: 11/11  UNKNOWN: %s\n# scope: fleet\n# findings this run: 0\n" "$1"; }
-CLOCK_PTR="clock disagrees with this manager"
+CLOCK_PTR="clock is off vs this manager NOW"
 mk h22; stamp_hdr "moc/apt-update-stamp" > "$TMP/h22/.meshforge-dep-advisories"; : > "$TMP/h22/.meshforge-dep-ranges"
 export skew_clock_desc=" kiai(clock unreadable) moc(-700s)"
-check_note "stamp unknown + that box's clock skewed" "$TMP/h22" UNKNOWN "moc: ${CLOCK_PTR} (-700s"
+check_note "stamp unknown + that box's clock skewed" "$TMP/h22" UNKNOWN "${CLOCK_PTR}: moc(-700s) (" "kiai("
+check_note "pointer claims no cause" "$TMP/h22" UNKNOWN "not when the stamp was judged" "likely reason"
 export skew_clock_desc=" kiai(-700s)"
 check_note "stamp unknown, OTHER box skewed: silent" "$TMP/h22" UNKNOWN "unknown: moc/apt-update-stamp" "$CLOCK_PTR"
 mk h23; stamp_hdr "moc1/apt-update-stamp" > "$TMP/h23/.meshforge-dep-advisories"; : > "$TMP/h23/.meshforge-dep-ranges"
@@ -269,13 +271,32 @@ export skew_clock_desc=" moc(-700s)"
 check_note "host match is exact (moc != moc1)" "$TMP/h23" UNKNOWN "unknown: moc1/apt-update-stamp" "$CLOCK_PTR"
 mk h24; stamp_hdr "${long_list}, kiai/apt-update-stamp" > "$TMP/h24/.meshforge-dep-advisories"; : > "$TMP/h24/.meshforge-dep-ranges"
 export skew_clock_desc=" kiai(-90000s)"
-check_note "pointer survives the 80-char cut" "$TMP/h24" UNKNOWN "kiai: ${CLOCK_PTR} (-90000s"
+check_note "pointer survives the 80-char cut" "$TMP/h24" UNKNOWN "${CLOCK_PTR}: kiai(-90000s) ("
 mk h25; stamp_hdr "kiai/urllib3" > "$TMP/h25/.meshforge-dep-advisories"; : > "$TMP/h25/.meshforge-dep-ranges"
 check_note "skewed box, non-stamp blind spot: silent" "$TMP/h25" UNKNOWN "unknown: kiai/urllib3" "$CLOCK_PTR"
+# Same-host unreadable / ahead: reported as measured, never as "behind".
+mk h26; stamp_hdr "kiai/apt-update-stamp, moc/apt-update-stamp" > "$TMP/h26/.meshforge-dep-advisories"; : > "$TMP/h26/.meshforge-dep-ranges"
+export skew_clock_desc=" kiai(clock unreadable) moc(900s)"
+check_note "same-host unreadable+ahead, said as measured" "$TMP/h26" UNKNOWN "${CLOCK_PTR}: kiai(clock unreadable) moc(900s) (" "behind"
+out26=$(HOME="$TMP/h26" bash -c "source '$TMP/harness.sh'; source '$TMP/leg.sh'" 2>&1)
+n26=$(printf '%s' "$out26" | grep -o "$CLOCK_PTR" | wc -l)
+checks=$((checks+1))
+if [ "$n26" = 1 ]; then printf '  ok   %-38s %s\n' "two hosts, ONE pointer" "1"
+else printf '  FAIL %-38s want 1 pointer, got %s\n      %s\n' "two hosts, ONE pointer" "$n26" "$out26"; fails=$((fails+1)); fi
+# A glob character in a blind token is not expanded against the CWD: run the
+# leg from a dir holding the file the glob WOULD match, so the old unquoted
+# word-split turns `moc/apt-update-stam?` into a stamp token and fires.
+mk h27; stamp_hdr "moc/apt-update-stam?" > "$TMP/h27/.meshforge-dep-advisories"; : > "$TMP/h27/.meshforge-dep-ranges"
+mkdir -p "$TMP/g27/moc"; : > "$TMP/g27/moc/apt-update-stamp"
+export skew_clock_desc=" moc(-700s)"
+out27=$(cd "$TMP/g27" && HOME="$TMP/h27" bash -c "source '$TMP/harness.sh'; source '$TMP/leg.sh'" 2>&1)
+checks=$((checks+1))
+if ! printf "%s" "$out27" | grep -qF -- "-700s"; then printf '  ok   %-38s %s\n' "glob chars in a token stay literal" "UNKNOWN"
+else printf '  FAIL %-38s token was glob-expanded\n      %s\n' "glob chars in a token stay literal" "$out27"; fails=$((fails+1)); fi
 unset skew_clock_desc
 
 if [ "$fails" -ne 0 ]; then
   echo "test_honest_status_dep_leg: $fails failure(s)"
   exit 1
 fi
-echo "ALL PASS — test_honest_status_dep_leg: all 26 states behaved as specified"
+echo "ALL PASS — test_honest_status_dep_leg: all ${checks} states behaved as specified"
