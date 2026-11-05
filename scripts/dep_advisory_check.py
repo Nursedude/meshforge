@@ -315,6 +315,7 @@ if os.path.exists("/usr/bin/dpkg-query"):
     apt["lists_age_h"] = apt_lists_age_h("/var/lib/apt/lists", time.time())
     apt["update_stamp_age_h"] = update_stamp_age_h(
         "/var/lib/apt/periodic/update-stamp", time.time())
+    apt["update_stamp_present"] = os.path.exists("/var/lib/apt/periodic/update-stamp")
     # Anything raised reading the security views blinds THIS leg only (the
     # manager renders it lower-bound with the reason) — never the whole
     # report, which would take the box's package advisories down with it.
@@ -780,17 +781,23 @@ def apt_lines(host: str, apt: Optional[dict], reference) -> AptLines:
         status.append("%-20s %-14s %-10s UNKNOWN — apt-get -s full-upgrade failed; pending updates unobservable"
                       % (host, "apt", "-"))
         return AptLines(status, findings, "%s/apt" % host, None)
-    # "Not running" is judged on apt.systemd.daily's success-only stamp; list
-    # CONTENT age (server Last-Modified) ages through a quiet archive and is
-    # the judge only on a box that has no stamp (review r2 #5).
+    # "Not running" is judged ONLY on apt.systemd.daily's success-only stamp
+    # (r2 #5 → r5 #4). List CONTENT age (server Last-Modified) ages through a
+    # quiet archive and can be skewed by one third-party server: display only.
+    present = apt.get("update_stamp_present")      # None = an older reporter
+    stale, stale_msg = False, ""
     if upd is not None:
         stale = upd > APT_LISTS_STALE_H
         stale_msg = ("no successful periodic apt-get update in %sh (update-stamp); "
                      "pending counts are a lower bound" % upd)
-    else:
-        stale = age is not None and age > APT_LISTS_STALE_H
-        stale_msg = ("package lists %sh stale — periodic apt-get update is not running; "
-                     "pending counts are a lower bound" % age)
+    elif present is False:
+        stale = True
+        stale_msg = ("no update-stamp — no successful periodic apt-get update was "
+                     "ever recorded (apt.systemd.daily); pending counts are a lower bound")
+    elif present is True:
+        status.append("%-20s %-14s %-10s update-stamp age UNKNOWN — present but "
+                      "unreadable or dated in the future (box clock behind?)"
+                      % (host, "apt", "-"))
     if stale:
         status.append("%-20s %-14s %-10s FINDING — %s" % (host, "apt", "-", stale_msg))
         findings.append("%s apt: %s" % (host, stale_msg))
@@ -886,48 +893,53 @@ CAUSE_BOX = "box"
 CAUSE_MANAGER = "manager"
 
 
-def security_view_lag(apt: dict, reference) -> Tuple[Optional[int], str, Optional[str]]:
-    """The box's ONE verdict, decided after every view has its own state
-    (measured lag / unknown ON the box / unknown to the MANAGER) — r4 broke
-    a loop of early returns where each fix's ordering hid the next case.
+class LagVerdict(NamedTuple):
+    """Named, never a positional tuple with a truthy cause (r5 #9)."""
+    lag_s: Optional[int]
+    why: str
+    cause: Optional[str]
 
-    Returns (lag_s, why, cause):
-      * (worst, "", None)          every view measured, all within the window → clean
-      * (worst, "", CAUSE_BOX)     some MEASURED view trails past the window —
-                                   wins over any unknown sibling (r4 #1)
-      * (None, why, CAUSE_BOX)     a view unknown on the box (Date unreadable,
-                                   no reference archive) — a fresh sibling
-                                   never vouches for a blind one
-      * (None, why, CAUSE_MANAGER) only the manager's archive read failed
+
+def security_view_lag(apt: dict, reference) -> LagVerdict:
+    """The box's ONE verdict, in two passes:
+
+    1. Box-side, NO network: every view's Date and reference URL. Any view
+       unknown ON THE BOX fixes the verdict (CAUSE_BOX, that reason) before
+       the manager is consulted — so a manager failure can neither hide the
+       corrupt view nor turn a run UNKNOWN over a box it decided nothing
+       for (r5 #5/#6). A fresh sibling never vouches for a blind view.
+    2. Reference: a MEASURED lag past the window → CAUSE_BOX with the lag
+       (wins over a manager-blind sibling, r4 #1); else any manager-blind
+       view → CAUSE_MANAGER; else clean (cause None).
     """
     views = apt.get("security_views")
     if views is None:
-        return None, apt.get("security_views_error") or "no security view reported", CAUSE_BOX
+        return LagVerdict(None, apt.get("security_views_error")
+                          or "no security view reported", CAUSE_BOX)
     if not views:                            # defensive: apt_lines reports [] as a finding
-        return None, "no *-security suite in the lists", CAUSE_BOX
-    measured, box_why, manager_why = [], None, None
+        return LagVerdict(None, "no *-security suite in the lists", CAUSE_BOX)
+    targets = []
     for v in views:
         name = v.get("file") if isinstance(v, dict) else "?"
         if not isinstance(v, dict) or v.get("date_ts") is None:
-            box_why = box_why or "%s Date unreadable" % name
-            continue
+            return LagVerdict(None, "%s Date unreadable" % name, CAUSE_BOX)
         url = security_reference_url(name)
         if url is None:
-            box_why = box_why or "no reference archive for %s" % name
-            continue
+            return LagVerdict(None, "no reference archive for %s" % name, CAUSE_BOX)
+        targets.append((url, v["date_ts"]))
+    measured, manager_why = [], None
+    for url, date_ts in targets:
         ref_ts, err = reference(url)
         if ref_ts is None:
             manager_why = manager_why or err or "archive Date unobservable"
             continue
-        measured.append(int(max(0.0, ref_ts - v["date_ts"])))
+        measured.append(int(max(0.0, ref_ts - date_ts)))
     worst = max(measured) if measured else None
     if worst is not None and worst > APT_SECURITY_VIEW_FRESH_H * 3600:
-        return worst, "", CAUSE_BOX
-    if box_why:
-        return None, box_why, CAUSE_BOX
+        return LagVerdict(worst, "", CAUSE_BOX)
     if manager_why:
-        return None, manager_why, CAUSE_MANAGER
-    return worst, "", None
+        return LagVerdict(None, manager_why, CAUSE_MANAGER)
+    return LagVerdict(worst, "", None)
 
 
 def cached_reference():
@@ -1172,7 +1184,8 @@ def main(argv=None) -> int:
     # was checked against it, so the run did not see what it reports — UNKNOWN
     # (rc 2, finding file kept), the same as a failed apt simulation (r4 #4).
     if reference.failures():
-        unknown_hosts.append("manager/security-archive")
+        # Not host-shaped (r5 #7): every other entry is `host` or `host/pkg`.
+        unknown_hosts.append("manager:security-archive-unreachable")
 
     header = ["# fleet dependency advisories — installed versions vs the "
               "GitHub advisory DB", "# boxes observed: %d/%d%s"

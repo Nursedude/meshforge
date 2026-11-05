@@ -304,9 +304,10 @@ class PlatformPostureHandler(BaseHandler):
         upd_h = update_stamp_age_h(UPDATE_STAMP, now)
         age = None if age_h is None else (
             f"{age_h}h old" if age_h >= 1 else "under an hour old")
-        judged_h = upd_h if upd_h is not None else age_h
-        # Unknown is its own claim, never "stale" (review r3 #7).
-        stale = judged_h is not None and judged_h > APT_LISTS_STALE_H
+        # Judged on the stamp ALONE, as the fleet sweep does (r5 #4): list
+        # content age is display only. Unknown is its own claim (r3 #7).
+        stamp_present = os.path.exists(UPDATE_STAMP)
+        stale = upd_h is not None and upd_h > APT_LISTS_STALE_H
 
         lines = [
             f"Box:      {box}",
@@ -322,12 +323,15 @@ class PlatformPostureHandler(BaseHandler):
         else:
             lines.append(f"Pending:  {pending} package(s) upgradable")
         lines.append(f"Lists:    {'newest content ' + age if age else 'age UNKNOWN'}")
-        lines.append("Updated:  " + (f"last successful periodic update {upd_h}h ago"
-                                     if upd_h is not None else
-                                     "no periodic update-stamp (success UNKNOWN)"))
-        if stale:
+        if upd_h is not None:
+            lines.append(f"Updated:  last successful periodic update {upd_h}h ago")
+        elif stamp_present:
+            lines.append("Updated:  UNKNOWN - update-stamp unreadable or dated in the future")
+        else:
+            lines.append("Updated:  NEVER recorded - no successful periodic apt-get update")
+        if stale or not stamp_present:
             lines.append("          A count read from stale lists is not a current count.")
-        elif judged_h is None:
+        elif upd_h is None:
             lines.append("          Freshness UNKNOWN - cannot tell whether that count is current.")
 
         if holds is None:

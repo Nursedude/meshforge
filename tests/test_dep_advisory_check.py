@@ -494,10 +494,12 @@ class TestAptHygiene:
         assert rc == 1 and finding and "35 security update(s) pending" in finding
 
     def test_stale_lists_are_a_finding_and_counts_are_a_lower_bound(self, home, monkeypatch):
+        # r5: judged on the success-only update-stamp, not list content age.
         rep = _report(apt={"unattended_upgrades": "installed", "pending_total": 0,
-                           "pending_security": 0, "lists_age_h": 400})
+                           "pending_security": 0, "lists_age_h": 2,
+                           "update_stamp_present": True, "update_stamp_age_h": 400})
         rc, status, finding = _drive(home, monkeypatch, rep, [ADV_CVE_A])
-        assert rc == 1 and finding and "400h stale" in finding and "lower bound" in finding
+        assert rc == 1 and finding and "in 400h" in finding and "lower bound" in finding
 
     def test_failed_apt_simulation_is_unknown_not_clean(self, home, monkeypatch):
         rep = _report(apt={"unattended_upgrades": "installed", "pending_total": None,
@@ -931,16 +933,16 @@ class TestReviewR4:
         assert len(views) == 1 and views[0]["file"] == SEC_FILE
         assert views[0]["date_ts"] is None
 
-    # r4 #3: ANY list file from the future means the box clock is behind, so
-    # no list age is trustworthy — not "the oldest of the rest" (which reads a
-    # quiet 09-12 archive as 1300 h stale on a box that just updated).
-    def test_any_future_list_mtime_makes_the_age_unknown(self, tmp_path):
-        new = tmp_path / "deb.debian.org_debian-security_dists_trixie-security_InRelease"
-        old = tmp_path / "deb.debian.org_debian_dists_trixie_InRelease"
-        for f, t in ((new, self.NOW + 3 * 86400), (old, self.NOW - 1300 * 3600)):
+    # r4 #3 → r5 #4: list age is DISPLAY ONLY now (the stale finding judges
+    # the update-stamp alone), so a future-dated file is just skipped — one
+    # skewed third-party server must not blind the whole box's age.
+    def test_a_future_dated_file_is_skipped_not_blinding(self, tmp_path):
+        new = tmp_path / "repo.example_debian_dists_stable_InRelease"
+        cur = tmp_path / "deb.debian.org_debian_dists_trixie-updates_InRelease"
+        for f, t in ((new, self.NOW + 3600 * 2), (cur, self.NOW - 2 * 3600)):
             f.write_text("x")
             os.utime(f, (t, t))
-        assert _rendered_reporter_ns()["apt_lists_age_h"](str(tmp_path), self.NOW) is None
+        assert _rendered_reporter_ns()["apt_lists_age_h"](str(tmp_path), self.NOW) == 2
 
     # r4 #4: a sweep that could not measure ANY security currency is not green.
     def test_manager_blindness_makes_the_run_unknown_not_green(self, home, monkeypatch):
@@ -1017,6 +1019,79 @@ class TestReviewR2Reporter:
     def test_the_reporter_sends_the_update_stamp(self):
         assert '"update_stamp_age_h"' in dac._REMOTE_SRC
         assert "/var/lib/apt/periodic/update-stamp" in dac._REMOTE_SRC
+
+
+# Non-author review r5 (2026-11-04, `/code-review medium 07d79afc..b8f90e2d`).
+class TestReviewR5:
+    def _apt(self, **kw):
+        apt = {"unattended_upgrades": "installed", "pending_total": 0,
+               "pending_security": 0, "lists_age_h": 2, "security_views": [_view(1)]}
+        apt.update(kw)
+        return apt
+
+    # r5 #2/#3 (MEASURED by the reviewer): truncation inside the time or the
+    # zone parses to a plausible WRONG instant — "…21:4" → 21:04, "…21:43:53 U"
+    # → a NAIVE datetime read in the box's local zone (HST = 10 h off). Only a
+    # complete, zoned RFC 2822 Date is a Date.
+    @pytest.mark.parametrize("value", [
+        "Wed, 04 Nov 2026 21:43:53 U", "Wed, 04 Nov 2026 21:4", "Wed, 04 Nov 2026",
+        "Wed, 04 Nov 2026 21:43:53", "Wed, 04 Nov 2026 21:43:53 UT"])
+    def test_a_truncated_date_is_unknown_never_a_wrong_instant(self, value):
+        assert dac.apt_lists.parse_release_date("Date: %s\n" % value) is None
+
+    @pytest.mark.parametrize("value", [
+        "Wed, 04 Nov 2026 21:43:53 UTC", "Wed, 04 Nov 2026 21:43:53 +0000",
+        "Wed, 4 Nov 2026 21:43:53 UTC"])
+    def test_a_complete_zoned_date_parses(self, value):
+        assert dac.apt_lists.parse_release_date("Date: %s\n" % value) == ARCHIVE_TS
+
+    # r5 #4: the stamp is the ONLY stale judge. Absent = no successful
+    # periodic update ever recorded = a FINDING; present but unreadable / in
+    # the future = UNKNOWN, said, not a finding.
+    def test_an_absent_update_stamp_is_a_finding(self, home, monkeypatch):
+        rc, _, finding = _drive(home, monkeypatch, _report(apt=self._apt(
+            update_stamp_present=False, lists_age_h=3)), [])
+        assert rc == 1 and finding and "update-stamp" in finding
+
+    def test_a_present_but_unreadable_stamp_is_unknown_not_a_finding(self, home, monkeypatch):
+        rc, status, finding = _drive(home, monkeypatch, _report(apt=self._apt(
+            update_stamp_present=True, update_stamp_age_h=None, lists_age_h=900)), [])
+        assert finding is None and "update-stamp age UNKNOWN" in status
+
+    def test_list_age_alone_never_makes_the_stale_finding(self, home, monkeypatch):
+        rc, status, finding = _drive(home, monkeypatch, _report(apt=self._apt(
+            update_stamp_present=True, update_stamp_age_h=6, lists_age_h=1300)), [])
+        assert finding is None and "stale" not in status
+
+    # r5 #5 + #6: a box-side unknown decides the verdict BEFORE any reference
+    # fetch — no spurious manager failure (rc 2), no hidden corrupt view.
+    def test_a_box_side_unknown_never_consults_the_manager(self):
+        other = SEC_FILE.replace("trixie-security", "bookworm-security")
+        v = dac.security_view_lag(
+            {"security_views": [_view(40), _view(file=other, date_ts=None)]},
+            lambda u: pytest.fail("reference consulted after the verdict was fixed"))
+        assert v.cause == dac.CAUSE_BOX and "Date unreadable" in v.why
+
+    # r5 #8: a security dist with an extra path component still counts.
+    def test_a_nested_security_dist_is_still_a_security_view(self, tmp_path):
+        name = "deb.example.org_debian_dists_foo_bar-security_InRelease"
+        (tmp_path / name).write_text("Suite: bar-security\nDate: Wed, 04 Nov 2026 21:43:53 UTC\n")
+        views = _rendered_reporter_ns()["security_views"](str(tmp_path))
+        assert [v["file"] for v in views] == [name]
+
+    # r5 #9: the lag verdict is a NAMED result too.
+    def test_security_view_lag_returns_named_fields(self):
+        v = dac.security_view_lag({"security_views": [_view(3)]}, lambda u: (ARCHIVE_TS, None))
+        assert (v.lag_s // 3600, v.why, v.cause) == (3, "", None)
+
+    # r5 #7: the manager entry in the UNKNOWN list cannot be read as a host.
+    def test_manager_entry_is_not_host_shaped(self, home, monkeypatch):
+        monkeypatch.setattr(dac, "fetch_reference_date", lambda url, timeout=20: (None, "x"))
+        _, status, _ = _drive(home, monkeypatch, _report(apt=self._apt()), [])
+        assert "manager:security-archive-unreachable" in status.splitlines()[1]
+
+    def test_the_reporter_sends_stamp_presence(self):
+        assert '"update_stamp_present"' in dac._REMOTE_SRC
 
 
 class TestTuiListAgeUsesTheSharedDerivation:

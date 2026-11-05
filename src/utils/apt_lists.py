@@ -19,8 +19,11 @@ Two quantities, never one:
   ``auxfiles`` are excluded — a failed or locked update touches those.
 * ``update_stamp_age_h`` — hours since ``apt.systemd.daily`` last SUCCEEDED
   an ``apt-get update`` (it touches ``/var/lib/apt/periodic/update-stamp``
-  only on success). This backs the "periodic update is not running" finding.
-  It is the box's clock: a stamp in the future reads unknown, never fresh.
+  only on success). This is the ONLY judge of the "periodic update is not
+  running" finding (r5 #4); an ABSENT stamp is itself that finding. It is
+  the box's clock: a stamp in the future reads unknown, never fresh.
+  Residual (r3 #3): apt exits 0 on a per-source ``W: Failed to fetch``, so
+  one failing non-security source still refreshes the stamp.
 * ``security_views`` — for each ``*-security`` suite, the ``Date:`` Debian
   signed into the ``InRelease`` this box holds. Compared with the archive's
   CURRENT Date (both are Debian's clock, never the box's), it says how far
@@ -67,11 +70,11 @@ def apt_lists_age_h(lists_dir, now):
         except OSError:
             continue
         if m - now > 600:
-            # The SERVER's Last-Modified ahead of this box's clock: the clock
-            # is behind (RTC-less Pi). Then NO list age is trustworthy — not
-            # "the oldest of the rest", which reads a quiet archive as stale
-            # on a box that just updated (r3 #8 → r4 #3).
-            return None
+            # A server Last-Modified ahead of this box's clock (box clock
+            # behind, or one skewed third-party server). Skipped: list age is
+            # DISPLAY ONLY since r5 — the stale finding judges the update-stamp
+            # alone — so one odd file must not blind the box (r3 #8/r4 #3/r5 #4).
+            continue
         newest = m if newest is None else max(newest, m)
     if newest is None:
         return None
@@ -80,15 +83,26 @@ def apt_lists_age_h(lists_dir, now):
 
 def parse_release_date(text):
     """Epoch seconds of the ``Date:`` field of a (In)Release text, or None.
-    The PGP armour before the paragraph is skipped by reading every line."""
+    The PGP armour before the paragraph is skipped by reading every line.
+
+    Only a COMPLETE, ZONED RFC 2822 date is a date (r5 #2/#3, measured by the
+    reviewer): a power-loss cut inside the time parses "…21:4" as 21:04, and
+    a cut inside the zone ("…21:43:53 U") yields a NAIVE datetime that
+    ``timestamp()`` reads in the box's local zone — 10 h off on an HST box.
+    Either would be a plausible WRONG instant, worse than unknown."""
     import email.utils
+    import re
     for line in text.splitlines():
         if line.startswith("Date:"):
+            value = line.split(":", 1)[1].strip()
+            if not re.match(r"^[A-Z][a-z]{2}, \d{1,2} [A-Z][a-z]{2} \d{4} "
+                            r"\d{2}:\d{2}:\d{2} (UTC|GMT|[+-]\d{4})$", value):
+                return None
             try:
-                return email.utils.parsedate_to_datetime(
-                    line.split(":", 1)[1].strip()).timestamp()
+                dt = email.utils.parsedate_to_datetime(value)
             except Exception:              # any parse failure is "unknown"
                 return None
+            return dt.timestamp() if dt.tzinfo is not None else None
     return None
 
 
@@ -105,10 +119,10 @@ def security_views(lists_dir):
     bad suite cannot leave a fresh sibling to vouch for the box. An
     unreadable DIRECTORY raises OSError for the caller to witness."""
     import os
-    import re
     views = []
     for name in sorted(os.listdir(lists_dir)):
-        if not re.search(r"_dists_[^_]+-security_InRelease$", name):
+        # Any dist path depth: `…_dists_<x>_<y>-security_InRelease` too (r5 #8).
+        if "_dists_" not in name or not name.endswith("-security_InRelease"):
             continue
         try:
             with open(os.path.join(lists_dir, name), errors="replace") as fh:
