@@ -232,8 +232,26 @@ printf "${partial_hdr}"'moc apt - clean\n' > "$TMP/h18/.meshforge-dep-advisories
 printf '# header\nold1\nold2\n' > "$TMP/h18/.meshforge-dep-ADVISORY"
 check_note "partial, older writer: count said unknown" "$TMP/h18" UNKNOWN "findings uncounted" "2 finding"
 
+# 19-20. r6 #8: the blind list was cut at 80 chars with NO marker, and the
+#     manager entry — appended LAST, and a different class (the sweep's own
+#     blindness, not a box's) — is the likeliest cut. A cut must say so with
+#     the entry count, and the manager entry is always named.
+long_list="moc4/jinja2@/usr/local/lib/python3.11/dist-packages, moc1/cryptography@/root/.local/x, kiai/urllib3, manager:security-archive-unreachable"
+mk h19
+printf "# fleet dependency advisories\n# boxes observed: 11/11  UNKNOWN: ${long_list}\n# scope: fleet\n# findings this run: 0\n" \
+  > "$TMP/h19/.meshforge-dep-advisories"
+: > "$TMP/h19/.meshforge-dep-ranges"
+check_note "long blind list names the manager entry" "$TMP/h19" UNKNOWN "manager:security-archive-unreachable"
+check_note "long blind list says it was cut" "$TMP/h19" UNKNOWN "(4 total"
+
+mk h20
+printf "# fleet dependency advisories\n# boxes observed: 11/11  UNKNOWN: lehua\n# scope: fleet\n# findings this run: 0\n" \
+  > "$TMP/h20/.meshforge-dep-advisories"
+: > "$TMP/h20/.meshforge-dep-ranges"
+check_note "short blind list: no cut marker" "$TMP/h20" UNKNOWN "unknown: lehua;" "total"
+
 if [ "$fails" -ne 0 ]; then
   echo "test_honest_status_dep_leg: $fails failure(s)"
   exit 1
 fi
-echo "ALL PASS — test_honest_status_dep_leg: all 18 states behaved as specified"
+echo "ALL PASS — test_honest_status_dep_leg: all 21 states behaved as specified"

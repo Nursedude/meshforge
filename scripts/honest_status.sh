@@ -1245,7 +1245,17 @@ for pair in "advisories:.meshforge-dep-advisories:.meshforge-dep-ADVISORY:instal
   # decision 2026-11-04, dep-advisory review r5 #1). Partial blindness is
   # UNKNOWN and outranks a finding, as a missing half does above.
   _dep_blind=$(grep -m1 '^# boxes observed:.*UNKNOWN:' "$spath" 2>/dev/null \
-               | sed 's/.*UNKNOWN:[[:space:]]*//' | cut -c1-80)
+               | sed 's/.*UNKNOWN:[[:space:]]*//')
+  # A long list is cut for the one-line note — but the cut is SAID, with the
+  # entry count, and any `manager:` entry (the sweep's own blindness, a
+  # different class from a box's, appended LAST so first to be cut) is
+  # always named (r6 #8). Matched by prefix, so no token is duplicated here.
+  if [ "${#_dep_blind}" -gt 80 ]; then
+    _dep_total=$(printf '%s' "$_dep_blind" | awk -F', ' '{print NF}')
+    _dep_mgr=$(printf '%s' "$_dep_blind" | tr ',' '\n' | sed 's/^ *//' | grep '^manager:' | paste -sd' ' -)
+    _dep_short=$(printf '%s' "$_dep_blind" | cut -c1-80 | sed 's/, [^,]*$//')
+    _dep_blind="${_dep_short} … (${_dep_total} total${_dep_mgr:+; incl. ${_dep_mgr}})"
+  fi
   if [ -n "$_dep_blind" ]; then
     # Still say what the run DID see (r6 #7) — but from the header's
     # `# findings this run: N`, never the finding file: a partial run with no
