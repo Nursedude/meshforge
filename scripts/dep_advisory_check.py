@@ -804,7 +804,9 @@ def apt_lines(host: str, apt: Optional[dict], reference) -> AptLines:
         stale_msg = ("no update-stamp — apt.systemd.daily never recorded a successful "
                      "periodic update, so unattended-upgrades may never have run either "
                      "(fresh lists from a manual/cron apt-get update do not install "
-                     "anything); pending counts are a lower bound")
+                     "anything)")
+        # No "pending counts are a lower bound" here (r7 #2): an absent stamp
+        # says nothing about list age — the security view lag below does.
     else:
         # No readable age and NOT reported absent: present-but-unreadable /
         # future-dated (r6 #1), or a report with no presence field (r6 #6).
@@ -971,7 +973,9 @@ def security_view_lag(apt: dict, reference) -> LagVerdict:
             continue
         ref_ts, err = reference(url)
         if ref_ts is None:
-            manager_why.append(err or "archive Date unobservable")
+            # Labelled (r7 #3): on a box's line this is the MANAGER's
+            # blindness, never the box's.
+            manager_why.append("manager: %s" % (err or "archive Date unobservable"))
             continue
         measured.append(int(max(0.0, ref_ts - v["date_ts"])))
     # dict.fromkeys: one shared archive failure is said once, order kept.

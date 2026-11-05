@@ -1808,3 +1808,39 @@ class TestReviewR7:
         assert dac.security_reference_url(
             "deb.debian.org_a_dists_b_dists_trixie-security_InRelease") == \
             "https://deb.debian.org/a/dists/b/dists/trixie-security/InRelease"
+
+    def _apt(self, **kw):
+        apt = {"unattended_upgrades": "installed", "pending_total": 0,
+               "pending_security": 0, "lists_age_h": 2, "security_views": [_view(1)]}
+        apt.update(STAMP_OK)
+        apt.update(kw)
+        return apt
+
+    # r7 #2: an ABSENT stamp says nothing about the lists (a manual/cron
+    # `apt-get update` refreshes them without the stamp — operator r6 #2a), so
+    # "pending counts are a lower bound" is unearned there. The TUI dropped it
+    # in r6 #5; the sweep kept it. A STALE stamp still says it (it is earned).
+    def test_absent_stamp_finding_does_not_claim_a_lower_bound(self):
+        out = dac.apt_lines("boxA", self._apt(update_stamp_present=False,
+                                              update_stamp_age_h=None),
+                            lambda u: (ARCHIVE_TS, None))
+        never = [f for f in out.findings if "no update-stamp" in f]
+        assert len(never) == 1 and "lower bound" not in never[0]
+
+    def test_stale_stamp_finding_still_claims_the_lower_bound(self):
+        out = dac.apt_lines("boxA", self._apt(update_stamp_age_h=400),
+                            lambda u: (ARCHIVE_TS, None))
+        assert any("lower bound" in f for f in out.findings)
+
+    # r7 #3: "(also unmeasured: …)" printed the MANAGER's archive failure on a
+    # box's line with no label — read as the box's defect. Each reason names
+    # whose blindness it is.
+    def test_a_manager_reason_beside_a_box_lag_is_labelled(self):
+        other = SEC_FILE.replace("trixie-security", "forky-security")
+        apt = self._apt(security_views=[_view(400), _view(file=other)])
+        out = dac.apt_lines(
+            "boxA", apt,
+            lambda u: (None, "archive unreachable: timeout") if "forky" in u
+            else (ARCHIVE_TS, None))
+        line = "\n".join(out.status)
+        assert "also unmeasured: manager: archive unreachable: timeout" in line
