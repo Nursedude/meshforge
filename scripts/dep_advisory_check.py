@@ -792,8 +792,13 @@ def apt_lines(host: str, apt: Optional[dict], reference) -> AptLines:
                      "pending counts are a lower bound" % upd)
     elif present is False:
         stale = True
-        stale_msg = ("no update-stamp — no successful periodic apt-get update was "
-                     "ever recorded (apt.systemd.daily); pending counts are a lower bound")
+        # Kept a finding beside fresh lists (operator r6 #2a): a manual or
+        # cron `apt-get update` refreshes lists but never runs
+        # unattended-upgrades, which apt.systemd.daily also drives.
+        stale_msg = ("no update-stamp — apt.systemd.daily never recorded a successful "
+                     "periodic update, so unattended-upgrades may never have run either "
+                     "(fresh lists from a manual/cron apt-get update do not install "
+                     "anything); pending counts are a lower bound")
     else:
         # No readable age and NOT reported absent: present-but-unreadable /
         # future-dated (r6 #1), or a report with no presence field (r6 #6).
@@ -827,7 +832,11 @@ def apt_lines(host: str, apt: Optional[dict], reference) -> AptLines:
         msg = "%d security update(s) pending (%s)" % (pend, age_s)
         status.append("%-20s %-14s %-10s FINDING — %s" % (host, "apt", "-", msg))
         findings.append("%s apt: %s" % (host, msg))
-    elif not stale and not no_suite and uu != "absent":
+    elif not no_suite:
+        # The lag verdict renders beside ANY other finding (operator r6 #2b,
+        # 2026-11-05): it is an independent measurement, and a stale stamp or
+        # absent unattended-upgrades must never hide a view days behind the
+        # archive — the r6 #3 class. Pinned by test_dep_advisory_state_table.
         # Raspberry Pi archive: shown, not a finding, until a soak says what
         # a normal backlog looks like (observe before alarm).
         rpi = apt.get("pending_rpi")

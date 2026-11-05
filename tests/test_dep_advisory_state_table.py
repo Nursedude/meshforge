@@ -13,8 +13,8 @@ and compares the rendered verdict with ``spec()`` below. ``spec()`` is the
 decision record: read it top to bottom to know what any box will say. A
 mismatch prints EVERY disagreeing row at once, so a class is seen as a class.
 
-DECISION rows (operator-owned, marked ``DECISION`` in spec()) pin today's
-behaviour until decided — changing one is a decision, not a refactor.
+DECIDED rows (operator calls, marked ``DECIDED`` in spec()) say who decided
+and when — changing one is a new decision, not a refactor.
 """
 
 import importlib.util
@@ -93,7 +93,10 @@ def spec(uu, pending, stamp, views):
     if stamp == "stale":
         f.add("stale")
     elif stamp == "absent":
-        f.add("never")                      # DECISION r6 #2: absent stamp = finding
+        # DECIDED r6 #2a (operator 2026-11-05): an absent stamp stays a
+        # finding even beside fresh lists — apt.systemd.daily, which runs
+        # unattended-upgrades, never recorded a success.
+        f.add("never")
     elif stamp in ("unreadable", "missing"):
         unknown = "apt-update-stamp"        # r6 #1 / #6
     if views == ():
@@ -101,9 +104,11 @@ def spec(uu, pending, stamp, views):
     if pending > 0:
         f.add("pending")
         return frozenset(f), unknown, None
-    # DECISION r6 #2: today no security line is rendered beside a stale /
-    # never-updated stamp, a missing suite, or absent unattended-upgrades.
-    if f & {"stale", "never", "no_suite", "uu_absent"}:
+    # DECIDED r6 #2b (operator 2026-11-05): the lag line renders beside ANY
+    # other finding — it is an independent measurement, and a winning reason
+    # never erases a second defect (the r6 #3 class). Only a missing suite
+    # has no view to judge.
+    if views == ():
         return frozenset(f), unknown, None
     if views is None:
         return frozenset(f), unknown, ("lower-bound", "box", False, ("reporter",))
