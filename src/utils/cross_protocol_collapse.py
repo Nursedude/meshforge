@@ -123,6 +123,17 @@ def _plausible_instant(v: Any, now: float) -> float | None:
     return float(v)
 
 
+def _peer_freshness_only(props: Dict[str, Any]) -> bool:
+    """True when this feature's freshness fields are a PEER'S, not ours.
+
+    A federated feature carries the peer's poll stamp — unless a local
+    copy's freshness has since been merged into it (``freshness_from`` =
+    "local", review r3 F-R3-1); then its fields are local evidence even
+    though the feature itself stays federated.
+    """
+    return bool(props.get("federated")) and props.get("freshness_from") != "local"
+
+
 def _freshness_instant(props: Dict[str, Any], now: float) -> float | None:
     """The comparable instant a feature was last heard, or None if unknown.
 
@@ -135,7 +146,7 @@ def _freshness_instant(props: Dict[str, Any], now: float) -> float | None:
     local-origin rows with `now` — not when anyone heard the node. Letting
     it race served 200d-silent nodes as heard a minute ago (2026-11-04).
     """
-    if props.get("federated"):
+    if _peer_freshness_only(props):
         return None
     lh = _plausible_instant(props.get("last_heard"), now)
     if lh is not None:
@@ -212,17 +223,33 @@ def _merge_pair(primary: Dict[str, Any], secondary: Dict[str, Any],
     # stays beside the winner's flag (r2 F-R2-2) and a forged last_heard
     # beside a plausible last_seen is never copied (F-R2-9); a winner with
     # no last_seen text gets its instant as the value (r1 F3).
+    # A primary whose freshness is only a peer's yields to ANY local evidence,
+    # even display text with no instant (r3 F-R3-2: it stood on the peer's
+    # poll stamp and discarded the local "200d ago"). Once local freshness
+    # has moved in, it is marked so later merges compare it as an instant
+    # instead of letting whichever member comes next win (r3 F-R3-1).
     if now is None:
         now = time.time()
     p_t = _freshness_instant(p_props, now)
     s_t = _freshness_instant(s_props, now)
-    if s_t is not None and (p_t is None or s_t > p_t):
+    if _peer_freshness_only(s_props):
+        wins = False
+    elif _peer_freshness_only(p_props):
+        wins = s_t is not None or s_props.get("last_seen") not in (None, "")
+    else:
+        wins = s_t is not None and (p_t is None or s_t > p_t)
+    if wins:
         for key in ("last_seen", "is_online"):
             if key in s_props:
                 p_props[key] = s_props[key]
-        p_props["last_heard"] = s_t
+        if s_t is not None:
+            p_props["last_heard"] = s_t
+        else:
+            p_props.pop("last_heard", None)
         if s_props.get("last_seen") in (None, ""):
             p_props["last_seen"] = s_t
+        if p_props.get("federated"):
+            p_props["freshness_from"] = "local"
 
     p_props["collapsed"] = True
 

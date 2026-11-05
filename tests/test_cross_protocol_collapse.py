@@ -415,6 +415,55 @@ class TestFreshnessReviewR2:
         assert p["is_online"] is True
 
 
+class TestFreshnessReviewR3:
+    """Non-author review r3 of cfbab83a (2026-11-04), F-R3-1/F-R3-2."""
+    NOW = 1_793_830_000.0
+    D = 86400.0
+
+    def _fed(self):
+        f = _fresh("!a", "N", last_seen=self.NOW - 60, is_online=False,
+                   source_origin="local_radio")
+        f["properties"]["federated"] = True
+        return f
+
+    @pytest.mark.parametrize("order", ["fresh_then_stale", "stale_then_fresh"])
+    def test_R3_1_three_way_under_federated_primary_is_order_free(self, order):
+        # After a local copy's freshness moves into a federated primary, the
+        # merged node's freshness IS local evidence — a staler member merged
+        # next must not override it (order-dependent before this fix).
+        fresh = _fresh("mesh_!a", "N", last_seen="5m ago",
+                       last_heard=self.NOW - 300, is_online=True,
+                       source_origin="node_tracker")
+        stale = _f("rns_a", "N", "rns", source_origin="rns_path_table",
+                   last_seen=self.NOW - 30 * self.D)
+        stale["properties"]["is_online"] = False
+        members = [fresh, stale] if order == "fresh_then_stale" else [stale, fresh]
+        out, n = collapse_cross_protocol([self._fed()] + members, now=self.NOW)
+        assert n == 2
+        p = out[0]["properties"]
+        assert (p["last_seen"], p["last_heard"], p["is_online"]) == (
+            "5m ago", self.NOW - 300, True)
+
+    def test_R3_2_federated_primary_yields_to_local_text_evidence(self):
+        # Local copy has only display text (tracker shape, no instant); the
+        # outranking federated copy must not stand on the peer's poll stamp.
+        local = _fresh("mesh_!a", "N", last_seen="200d ago", is_online=False,
+                       source_origin="node_tracker")
+        out, _ = collapse_cross_protocol([self._fed(), local], now=self.NOW)
+        p = out[0]["properties"]
+        assert p["last_seen"] == "200d ago"
+        assert p["is_online"] is False
+        assert p.get("last_heard") is None
+
+    def test_R3_2_both_federated_primary_stands(self):
+        # Control: no local evidence at all — nothing is invented.
+        other = _f("rns_a", "N", "rns", source_origin="rns_path_table",
+                   last_seen=self.NOW - 10)
+        other["properties"]["federated"] = True
+        out, _ = collapse_cross_protocol([self._fed(), other], now=self.NOW)
+        assert out[0]["properties"]["last_seen"] == self.NOW - 60
+
+
 # ---------- protocol_meta keyed by network ----------
 
 class TestProtocolMetaPromotion:
