@@ -1261,16 +1261,18 @@ for pair in "advisories:.meshforge-dep-advisories:.meshforge-dep-ADVISORY:instal
   _dep_clk=""
   IFS=',' read -ra _dep_toks <<<"$_dep_blind"   # no word-split, no glob
   for _dep_tok in "${_dep_toks[@]}"; do
-    _dep_tok="${_dep_tok# }"
+    _dep_tok="${_dep_tok#"${_dep_tok%%[![:space:]]*}"}"   # trim both ends
+    _dep_tok="${_dep_tok%"${_dep_tok##*[![:space:]]}"}"   # ([:space:] has CR)
     case "$_dep_tok" in */apt-update-stamp) ;; *) continue ;; esac
     _dep_h="${_dep_tok%/apt-update-stamp}"
+    case "${_dep_clk} " in *" ${_dep_h}("*) continue ;; esac   # once per host
     case "${skew_clock_desc:-} " in
       *" ${_dep_h}("*)
         _dep_d="${skew_clock_desc#*" ${_dep_h}("}"; _dep_d="${_dep_d%%)*}"
         _dep_clk="${_dep_clk} ${_dep_h}(${_dep_d})" ;;
     esac
   done
-  [ -n "$_dep_clk" ] && _dep_clk="; stamp-blind box(es) whose clock is off vs this manager NOW:${_dep_clk} (running-code skew leg; measured this run, not when the stamp was judged)"
+  [ -n "$_dep_clk" ] && _dep_clk="; stamp-blind box(es) whose clock disagrees with, or could not be read by, this manager NOW:${_dep_clk} (box minus manager, negative = box behind; running-code skew leg; read this run, not when the stamp was judged)"
   # A long list is cut for the one-line note — but the cut is SAID, with the
   # entry count, and any `manager:` entry (the sweep's own blindness, a
   # different class from a box's, appended LAST so first to be cut) is

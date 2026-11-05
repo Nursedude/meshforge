@@ -259,11 +259,11 @@ check_note "short blind list: no cut marker" "$TMP/h20" UNKNOWN "unknown: lehua;
 #     match (moc != moc1); built from the FULL list, so the 80-char cut
 #     cannot drop it.
 stamp_hdr() { printf "# fleet dependency advisories\n# boxes observed: 11/11  UNKNOWN: %s\n# scope: fleet\n# findings this run: 0\n" "$1"; }
-CLOCK_PTR="clock is off vs this manager NOW"
+CLOCK_PTR="clock disagrees with, or could not be read by, this manager NOW"
 mk h22; stamp_hdr "moc/apt-update-stamp" > "$TMP/h22/.meshforge-dep-advisories"; : > "$TMP/h22/.meshforge-dep-ranges"
 export skew_clock_desc=" kiai(clock unreadable) moc(-700s)"
 check_note "stamp unknown + that box's clock skewed" "$TMP/h22" UNKNOWN "${CLOCK_PTR}: moc(-700s) (" "kiai("
-check_note "pointer claims no cause" "$TMP/h22" UNKNOWN "not when the stamp was judged" "likely reason"
+check_note "pointer claims no cause" "$TMP/h22" UNKNOWN "negative = box behind" "likely reason"
 export skew_clock_desc=" kiai(-700s)"
 check_note "stamp unknown, OTHER box skewed: silent" "$TMP/h22" UNKNOWN "unknown: moc/apt-update-stamp" "$CLOCK_PTR"
 mk h23; stamp_hdr "moc1/apt-update-stamp" > "$TMP/h23/.meshforge-dep-advisories"; : > "$TMP/h23/.meshforge-dep-ranges"
@@ -277,11 +277,11 @@ check_note "skewed box, non-stamp blind spot: silent" "$TMP/h25" UNKNOWN "unknow
 # Same-host unreadable / ahead: reported as measured, never as "behind".
 mk h26; stamp_hdr "kiai/apt-update-stamp, moc/apt-update-stamp" > "$TMP/h26/.meshforge-dep-advisories"; : > "$TMP/h26/.meshforge-dep-ranges"
 export skew_clock_desc=" kiai(clock unreadable) moc(900s)"
-check_note "same-host unreadable+ahead, said as measured" "$TMP/h26" UNKNOWN "${CLOCK_PTR}: kiai(clock unreadable) moc(900s) (" "behind"
+check_note "same-host unreadable+ahead, said as measured" "$TMP/h26" UNKNOWN "${CLOCK_PTR}: kiai(clock unreadable) moc(900s) (" "likely reason"
 out26=$(HOME="$TMP/h26" bash -c "source '$TMP/harness.sh'; source '$TMP/leg.sh'" 2>&1)
 n26=$(printf '%s' "$out26" | grep -o "$CLOCK_PTR" | wc -l)
 checks=$((checks+1))
-if [ "$n26" = 1 ]; then printf '  ok   %-38s %s\n' "two hosts, ONE pointer" "1"
+if [ "$n26" = 1 ] && [ "$(printf "%s" "$out26" | awk '{print $1}')" = UNKNOWN ]; then printf '  ok   %-38s %s\n' "two hosts, ONE pointer" "1"
 else printf '  FAIL %-38s want 1 pointer, got %s\n      %s\n' "two hosts, ONE pointer" "$n26" "$out26"; fails=$((fails+1)); fi
 # A glob character in a blind token is not expanded against the CWD: run the
 # leg from a dir holding the file the glob WOULD match, so the old unquoted
@@ -291,8 +291,13 @@ mkdir -p "$TMP/g27/moc"; : > "$TMP/g27/moc/apt-update-stamp"
 export skew_clock_desc=" moc(-700s)"
 out27=$(cd "$TMP/g27" && HOME="$TMP/h27" bash -c "source '$TMP/harness.sh'; source '$TMP/leg.sh'" 2>&1)
 checks=$((checks+1))
-if ! printf "%s" "$out27" | grep -qF -- "-700s"; then printf '  ok   %-38s %s\n' "glob chars in a token stay literal" "UNKNOWN"
+if [ "$(printf "%s" "$out27" | awk '{print $1}')" = UNKNOWN ] && printf "%s" "$out27" | grep -qF "unknown: moc/apt-update-stam?" && ! printf "%s" "$out27" | grep -qF -- "-700s"; then printf '  ok   %-38s %s\n' "glob chars in a token stay literal" "UNKNOWN"
 else printf '  FAIL %-38s token was glob-expanded\n      %s\n' "glob chars in a token stay literal" "$out27"; fails=$((fails+1)); fi
+# r7c: whitespace/CR around a token (old tr+word-split tolerated it) and a
+# host listed twice — the pointer names it once.
+mk h28; printf "# fleet dependency advisories\n# boxes observed: 11/11  UNKNOWN: kiai/x,\tmoc/apt-update-stamp , moc/apt-update-stamp\r\n# scope: fleet\n# findings this run: 0\n" > "$TMP/h28/.meshforge-dep-advisories"; : > "$TMP/h28/.meshforge-dep-ranges"
+export skew_clock_desc=" moc(-700s)"
+check_note "tab/space/CR around a token tolerated" "$TMP/h28" UNKNOWN "NOW: moc(-700s) (" "moc(-700s) moc("
 unset skew_clock_desc
 
 if [ "$fails" -ne 0 ]; then
