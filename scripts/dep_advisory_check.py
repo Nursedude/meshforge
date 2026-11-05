@@ -112,6 +112,9 @@ import re
 import socket
 import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import Dict, List, Optional, Tuple
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -124,7 +127,8 @@ from utils import apt_lists  # noqa: E402
 #: The reporter runs on boxes with no checkout on sys.path, so it carries the
 #: shared functions' SOURCE (the TUI imports the same module).
 APT_LISTS_SRC = "\n\n".join(inspect.getsource(f) for f in (
-    apt_lists.apt_lists_age_h, apt_lists.parse_release_date, apt_lists.security_views))
+    apt_lists.update_stamp_age_h, apt_lists.apt_lists_age_h,
+    apt_lists.parse_release_date, apt_lists.security_views))
 
 CLEAN = "clean"
 ADVISORY = "advisory"
@@ -154,9 +158,9 @@ IMPORT_NAMES = {"pyopenssl": "OpenSSL", "pyyaml": "yaml"}
 #: which CVEs are fixed in it.
 DISTRO_PREFIX = "/usr/lib/python3/dist-packages"
 
-#: Package lists older than this make "pending updates" a lower bound only —
-#: the periodic ``apt-get update`` is not running, which is itself the finding.
-APT_LISTS_STALE_H = 7 * 24
+#: No successful periodic update for this long makes "pending updates" a lower
+#: bound only — itself the finding. ONE constant, shared with the TUI.
+APT_LISTS_STALE_H = apt_lists.APT_LISTS_STALE_H
 
 #: A box reads ``clean — 0 security`` only while the snapshot of the security
 #: archive it holds (its InRelease ``Date:``) is at most this far BEHIND the
@@ -304,6 +308,8 @@ if os.path.exists("/usr/bin/dpkg-query"):
         # firmware, bootloader, kernels, the +rpt openssl.
         apt["pending_rpi"] = sum(1 for ln in inst if "Raspberry Pi Foundation" in ln)
     apt["lists_age_h"] = apt_lists_age_h("/var/lib/apt/lists", time.time())
+    apt["update_stamp_age_h"] = update_stamp_age_h(
+        "/var/lib/apt/periodic/update-stamp", time.time())
     # Anything raised reading the security views blinds THIS leg only (the
     # manager renders it lower-bound with the reason) — never the whole
     # report, which would take the box's package advisories down with it.
@@ -745,11 +751,16 @@ def apt_lines(host: str, apt: Optional[dict], reference=None):
     if not isinstance(apt, dict):
         return [], [], None, False
     if reference is None:
-        reference = cached_reference()
+        # No hidden network I/O in a formatting helper (review r2 #10): main()
+        # passes the one fetching reference explicitly.
+        reference = lambda url: (None, "no reference supplied")  # noqa: E731
     status, findings, lower_bound = [], [], False
     uu = apt.get("unattended_upgrades")
     age = apt.get("lists_age_h")
+    upd = apt.get("update_stamp_age_h")
     age_s = ("lists %sh old" % age) if age is not None else "lists age unknown"
+    if upd is not None:
+        age_s += ", last successful update %sh ago" % upd
     if uu == "absent":
         msg = "unattended-upgrades ABSENT — security updates are not applied automatically"
         status.append("%-20s %-14s %-10s FINDING — %s" % (host, "apt", "-", msg))
@@ -759,17 +770,33 @@ def apt_lines(host: str, apt: Optional[dict], reference=None):
         status.append("%-20s %-14s %-10s UNKNOWN — apt-get -s full-upgrade failed; pending updates unobservable"
                       % (host, "apt", "-"))
         return status, findings, "%s/apt" % host, False
-    stale = age is not None and age > APT_LISTS_STALE_H
+    # "Not running" is judged on apt.systemd.daily's success-only stamp; list
+    # CONTENT age (server Last-Modified) ages through a quiet archive and is
+    # the judge only on a box that has no stamp (review r2 #5).
+    if upd is not None:
+        stale = upd > APT_LISTS_STALE_H
+        stale_msg = ("no successful periodic apt-get update in %sh (update-stamp); "
+                     "pending counts are a lower bound" % upd)
+    else:
+        stale = age is not None and age > APT_LISTS_STALE_H
+        stale_msg = ("package lists %sh stale — periodic apt-get update is not running; "
+                     "pending counts are a lower bound" % age)
     if stale:
-        msg = ("package lists %sh stale — periodic apt-get update is not running; "
-               "pending counts are a lower bound" % age)
+        status.append("%-20s %-14s %-10s FINDING — %s" % (host, "apt", "-", stale_msg))
+        findings.append("%s apt: %s" % (host, stale_msg))
+    # A box with NO security suite cannot see a security update at all — a
+    # configuration finding, never a mere lagging view (review r2 #2).
+    no_suite = apt.get("security_views") == []
+    if no_suite:
+        msg = ("no *-security suite in the apt lists — this box cannot see a "
+               "security update; add the distro's security source")
         status.append("%-20s %-14s %-10s FINDING — %s" % (host, "apt", "-", msg))
         findings.append("%s apt: %s" % (host, msg))
     if pend > 0:
         msg = "%d security update(s) pending (%s)" % (pend, age_s)
         status.append("%-20s %-14s %-10s FINDING — %s" % (host, "apt", "-", msg))
         findings.append("%s apt: %s" % (host, msg))
-    elif not stale and uu != "absent":
+    elif not stale and not no_suite and uu != "absent":
         # Raspberry Pi archive: shown, not a finding, until a soak says what
         # a normal backlog looks like (observe before alarm).
         rpi = apt.get("pending_rpi")
@@ -777,15 +804,18 @@ def apt_lines(host: str, apt: Optional[dict], reference=None):
                  "roll with fleet_os_upgrade.sh)" % rpi) if rpi else ""
         total = apt.get("pending_total") or 0
         lag_s, why = security_view_lag(apt, reference)
+        # Hours ROUNDED UP: a clean line can never print a number above the
+        # window, nor a lower-bound line one at or below it (review r2 #9).
+        lag_h = -(-lag_s // 3600) if lag_s is not None else None
         if lag_s is not None and lag_s <= APT_SECURITY_VIEW_FRESH_H * 3600:
             status.append("%-20s %-14s %-10s clean — %d pending, 0 security%s "
                           "(security view %dh behind the archive, %s)"
-                          % (host, "apt", "-", total, rpi_s, lag_s // 3600, age_s))
+                          % (host, "apt", "-", total, rpi_s, lag_h, age_s))
         else:
             # A zero from a view that is far behind the security archive — or
             # whose lag cannot be measured — is not "clean": a fix published
             # since that view is invisible from this box.
-            sec_s = ("a security view %dh behind the archive" % (lag_s // 3600)
+            sec_s = ("a security view %dh behind the archive" % lag_h
                      if lag_s is not None else "an unmeasured security view (%s)" % why)
             status.append("%-20s %-14s %-10s lower-bound — %d pending, 0 security "
                           "as of %s; a fix published since is invisible here%s (%s)"
@@ -808,11 +838,23 @@ def security_reference_url(list_file: str) -> Optional[str]:
     return "https://%s/%s/dists/%s/InRelease" % (m.group(1), path, m.group(3))
 
 
+class _AllowlistRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to an https URL on SECURITY_REFERENCE_HOSTS —
+    "validate before fetch" must survive a 30x (review r2 #7): a CDN or
+    captive portal pointing elsewhere would otherwise supply Debian's Date."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        p = urllib.parse.urlparse(newurl)
+        if p.scheme != "https" or p.hostname not in SECURITY_REFERENCE_HOSTS:
+            raise urllib.error.URLError("redirect off the allowlist refused: %s" % p.hostname)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def fetch_reference_date(url: str, timeout: int = 20) -> Tuple[Optional[float], Optional[str]]:
     """(epoch of the archive's current Date, None) or (None, reason)."""
-    import urllib.request
+    opener = urllib.request.build_opener(_AllowlistRedirect())
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:   # nosec: allowlisted host
+        with opener.open(url, timeout=timeout) as resp:   # nosec: allowlisted host
             head = resp.read(16384).decode("utf-8", "replace")
     except Exception as exc:                 # any transport failure = unobservable
         return None, "archive unreachable: %s" % type(exc).__name__
@@ -844,13 +886,16 @@ def security_view_lag(apt: dict, reference) -> Tuple[Optional[int], str]:
 
 
 def cached_reference():
-    """One fetch per archive URL per run, shared by every box."""
+    """One fetch per archive URL per run, shared by every box. ``ref.failures``
+    maps each URL the MANAGER could not read to why — one cause, said once in
+    the header, never smeared across N boxes as if each lagged (review r2 #8)."""
     cache: Dict[str, Tuple[Optional[float], Optional[str]]] = {}
 
     def ref(url):
         if url not in cache:
             cache[url] = fetch_reference_date(url)
         return cache[url]
+    ref.failures = lambda: {u: e for u, (ts, e) in cache.items() if ts is None}
     return ref
 
 
@@ -1087,6 +1132,10 @@ def main(argv=None) -> int:
               "accepted via %s: %d" % (n_patched, accept_file, n_accepted)]
     header += ["# WARN %s" % w for w in accept_warnings]
     # The blind spot as its own line (calibrated_claims: never average it away).
+    for url, err in sorted(reference.failures().items()):
+        header.append("# apt: the MANAGER could not read the security archive "
+                      "(%s: %s) — lag behind it is unmeasurable on every box that "
+                      "uses it; that is this sweep's blindness, not box lag" % (url, err))
     if n_lower:
         header.append("# apt: %d box(es) read 0 security as a LOWER BOUND — their "
                       "security view trails the archive by more than %dh or cannot "

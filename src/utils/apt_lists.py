@@ -13,15 +13,41 @@ Two quantities, never one:
 
 * ``lists_age_h`` — hours since the newest LIST file changed. apt stamps each
   list with the server's ``Last-Modified``, so this is "the newest content we
-  hold", which ages through a quiet archive too: it backs only the 7-day
-  "periodic update is not running" finding. ``partial/``, ``lock`` and
+  hold", which ages through a quiet archive too (Debian's main stable
+  InRelease was dated 2026-09-12 on 11-05) — so it is SHOWN, and judges
+  staleness only on a box with no update-stamp. ``partial/``, ``lock`` and
   ``auxfiles`` are excluded — a failed or locked update touches those.
+* ``update_stamp_age_h`` — hours since ``apt.systemd.daily`` last SUCCEEDED
+  an ``apt-get update`` (it touches ``/var/lib/apt/periodic/update-stamp``
+  only on success). This backs the "periodic update is not running" finding.
+  It is the box's clock: a stamp in the future reads unknown, never fresh.
 * ``security_views`` — for each ``*-security`` suite, the ``Date:`` Debian
   signed into the ``InRelease`` this box holds. Compared with the archive's
   CURRENT Date (both are Debian's clock, never the box's), it says how far
   behind the security archive this box's "0 security pending" is.
 """
 from __future__ import annotations
+
+#: No SUCCESSFUL periodic ``apt-get update`` for this long means the periodic
+#: update is not running — pending counts are a lower bound. Shared by the
+#: fleet sweep and the TUI platform screen (one constant, hfm #5).
+APT_LISTS_STALE_H = 7 * 24
+
+#: Where apt.systemd.daily records its last SUCCESSFUL list update.
+UPDATE_STAMP = "/var/lib/apt/periodic/update-stamp"
+
+
+def update_stamp_age_h(stamp_path, now):
+    """Hours since the update-stamp was touched, or None (absent, unreadable,
+    or more than 10 min in the future — a clock that went backward)."""
+    import os
+    try:
+        m = os.stat(stamp_path).st_mtime
+    except OSError:
+        return None
+    if m - now > 600:
+        return None
+    return int(max(0.0, now - m) / 3600)
 
 
 def apt_lists_age_h(lists_dir, now):
@@ -75,7 +101,11 @@ def security_views(lists_dir):
             with open(os.path.join(lists_dir, name), errors="replace") as fh:
                 head = fh.read(16384)
         except OSError:
-            views.append({"file": name, "suite": None, "date_ts": None})
+            # Unreadable: keep it as an unknown view only if its NAME says it
+            # is a security suite — an unreadable Raspberry Pi or grafana list
+            # says nothing about the security view (review r2 #4).
+            if "-security_InRelease" in name:
+                views.append({"file": name, "suite": None, "date_ts": None})
             continue
         suite = None
         for line in head.splitlines():

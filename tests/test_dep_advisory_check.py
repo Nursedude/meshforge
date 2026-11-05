@@ -605,7 +605,6 @@ class TestZeroSecurityIsOnlyAsFreshAsTheSecurityView:
 
     @pytest.mark.parametrize("views,why", [
         (None, "no security view reported"),
-        ([], "no *-security suite in the lists"),
         ([_view(1, file="mirror.example_debian-security_dists_trixie-security_InRelease")],
          "no reference archive"),
     ])
@@ -734,12 +733,147 @@ class TestReporterReadsTheSecurityArchiveDate:
                 assert mod.split(".")[0] in {"os", "email"}, mod
 
 
+# Non-author review r2 (2026-11-04, `/code-review medium 937e914a..8532e31a`).
+class TestReviewR2:
+    def _apt(self, **kw):
+        apt = {"unattended_upgrades": "installed", "pending_total": 0,
+               "pending_security": 0, "lists_age_h": 2, "security_views": [_view(1)]}
+        apt.update(kw)
+        return apt
+
+    @staticmethod
+    def _apt_lines(status):
+        return [ln for ln in status.splitlines() if re.match(r"^boxA\s+apt\s", ln)]
+
+    # r2 #2: a box with NO security suite cannot see a security update at all —
+    # that is a configuration finding, not a lagging view.
+    def test_no_security_suite_is_a_finding(self, home, monkeypatch):
+        rc, status, finding = _drive(home, monkeypatch,
+                                     _report(apt=self._apt(security_views=[])), [])
+        assert rc == 1 and finding and "no *-security suite" in finding
+        assert not any("lower-bound" in ln for ln in self._apt_lines(status)), \
+            "one cause, one line — not a finding AND a lower-bound"
+
+    # r2 #5: list mtimes are the SERVER's Last-Modified — Debian's main stable
+    # InRelease was dated 2026-09-12 on 11-05. The 7-day finding must read the
+    # success-only `update-stamp` apt.systemd.daily touches, not content age.
+    def test_quiet_archive_with_a_fresh_update_stamp_is_not_stale(self, home, monkeypatch):
+        rc, status, finding = _drive(home, monkeypatch, _report(apt=self._apt(
+            lists_age_h=1300, update_stamp_age_h=5)), [])
+        assert rc == 0 and finding is None and "stale" not in status
+
+    def test_an_old_update_stamp_is_the_stale_finding(self, home, monkeypatch):
+        rc, status, finding = _drive(home, monkeypatch, _report(apt=self._apt(
+            lists_age_h=3, update_stamp_age_h=200)), [])
+        assert rc == 1 and finding and "no successful periodic apt-get update in 200h" in finding
+
+    # r2 #8: the manager's OWN blindness is one cause, said once in the header.
+    def test_unreachable_archive_is_named_once_as_the_managers_blindness(self, home, monkeypatch):
+        monkeypatch.setattr(dac, "fetch_reference_date",
+                            lambda url, timeout=20: (None, "archive unreachable: URLError"))
+        rc, status, _ = _drive(home, monkeypatch, _report(apt=self._apt()), [],
+                               hosts=("boxA", "boxB"))
+        hdr = [ln for ln in status.splitlines() if ln.startswith("# apt: the MANAGER")]
+        assert len(hdr) == 1 and "archive unreachable" in hdr[0]
+
+    # r2 #9: the number and the verdict must never disagree — 24h00m clean
+    # and 24h59m lower-bound must not both print "24h".
+    def test_displayed_hours_never_contradict_the_verdict(self, home, monkeypatch):
+        _, at, _ = _drive(home, monkeypatch, _report(apt=self._apt(
+            security_views=[_view(dac.APT_SECURITY_VIEW_FRESH_H)])), [])
+        _, past, _ = _drive(home, monkeypatch, _report(apt=self._apt(
+            security_views=[_view(dac.APT_SECURITY_VIEW_FRESH_H + 59 / 60)])), [])
+        w = dac.APT_SECURITY_VIEW_FRESH_H
+        assert "%dh behind" % w in self._apt_lines(at)[0]
+        assert "%dh behind" % (w + 1) in self._apt_lines(past)[0]
+
+    # r2 #10: a formatting helper never does network I/O by default.
+    def test_apt_lines_without_a_reference_does_no_io(self, monkeypatch):
+        monkeypatch.setattr(dac, "fetch_reference_date",
+                            lambda *a, **k: pytest.fail("hidden network fetch"))
+        status, _, _, lower = dac.apt_lines("boxA", self._apt())
+        assert lower and "no reference supplied" in status[0]
+
+    # r2 #7: validate before fetch must survive a redirect.
+    def test_a_redirect_off_the_allowlist_is_refused(self):
+        h = dac._AllowlistRedirect()
+        with pytest.raises(Exception):
+            h.redirect_request(None, None, 302, "Found", {},
+                               "https://evil.example/debian-security/dists/x/InRelease")
+        assert h.redirect_request(
+            _FakeReq("https://deb.debian.org/a"), None, 302, "Found", {},
+            "https://security.debian.org/debian-security/dists/x/InRelease") is not None
+
+
+class _FakeReq:
+    """Just enough of urllib.request.Request for HTTPRedirectHandler."""
+    def __init__(self, url):
+        import urllib.request
+        self._r = urllib.request.Request(url)
+
+    def __getattr__(self, name):
+        return getattr(self._r, name)
+
+
+class TestReviewR2Reporter:
+    NOW = _dt.datetime(2026, 11, 5, tzinfo=_dt.timezone.utc).timestamp()
+
+    @pytest.fixture(autouse=True)
+    def _fns(self):
+        self.ns = _rendered_reporter_ns()
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads anything")
+    def test_an_unreadable_non_security_list_does_not_blind_the_box(self, tmp_path):
+        # r2 #4: e.g. a power-loss-truncated, 0-perm Raspberry Pi InRelease.
+        f = tmp_path / "archive.raspberrypi.com_debian_dists_trixie_InRelease"
+        f.write_text("x")
+        f.chmod(0)
+        try:
+            assert self.ns["security_views"](str(tmp_path)) == []
+        finally:
+            f.chmod(0o644)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads anything")
+    def test_an_unreadable_security_list_is_kept_unknown(self, tmp_path):
+        f = tmp_path / SEC_FILE
+        f.write_text("x")
+        f.chmod(0)
+        try:
+            assert self.ns["security_views"](str(tmp_path)) == [
+                {"file": SEC_FILE, "suite": None, "date_ts": None}]
+        finally:
+            f.chmod(0o644)
+
+    def test_update_stamp_age(self, tmp_path):
+        s = tmp_path / "update-stamp"
+        s.write_text("")
+        os.utime(s, (self.NOW - 5 * 3600, self.NOW - 5 * 3600))
+        assert self.ns["update_stamp_age_h"](str(s), self.NOW) == 5
+        assert self.ns["update_stamp_age_h"](str(tmp_path / "none"), self.NOW) is None
+        os.utime(s, (self.NOW + 86400, self.NOW + 86400))     # clock went backward (hfm #6)
+        assert self.ns["update_stamp_age_h"](str(s), self.NOW) is None
+
+    def test_the_reporter_sends_the_update_stamp(self):
+        assert '"update_stamp_age_h"' in dac._REMOTE_SRC
+        assert "/var/lib/apt/periodic/update-stamp" in dac._REMOTE_SRC
+
+
 class TestTuiListAgeUsesTheSharedDerivation:
+    # r2 #6: the old caveat `age is None or (pending == 0 and age is None)`
+    # could never fire on an OLD age; both surfaces now share one constant.
+    def test_tui_reads_the_shared_stale_constant_and_the_update_stamp(self):
+        src = open(os.path.join(_ROOT, "src", "launcher_tui", "handlers",
+                                "platform_posture.py")).read()
+        assert "APT_LISTS_STALE_H" in src and "update_stamp_age_h" in src
+        assert "pending == 0 and age is None" not in src
+        assert dac.APT_LISTS_STALE_H is __import__("utils.apt_lists").apt_lists.APT_LISTS_STALE_H
+
     def test_platform_screen_does_not_stat_the_lists_directory(self):
         src = open(os.path.join(_ROOT, "src", "launcher_tui", "handlers",
                                 "platform_posture.py")).read()
         assert 'os.stat("/var/lib/apt/lists")' not in src
-        assert "from utils.apt_lists import apt_lists_age_h" in src
+        assert "from utils.apt_lists import" in src
+        assert 'apt_lists_age_h("/var/lib/apt/lists"' in src
 
 
 class TestNamesAreCanonicalForTheAdvisoryDB:

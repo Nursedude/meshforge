@@ -295,10 +295,17 @@ class PlatformPostureHandler(BaseHandler):
         # Newest list FILE, not the directory: apt touches lists/ and partial/
         # even on a FAILED update, which used to read here as a fresh refresh.
         # Same derivation as the fleet sweep (utils.apt_lists, one definition).
-        from utils.apt_lists import apt_lists_age_h
-        age_h = apt_lists_age_h("/var/lib/apt/lists", _time.time())
+        # "Is the periodic update running?" is the success-only update-stamp,
+        # judged on the SAME constant the fleet sweep uses (review r2 #6).
+        from utils.apt_lists import (APT_LISTS_STALE_H, UPDATE_STAMP,
+                                     apt_lists_age_h, update_stamp_age_h)
+        now = _time.time()
+        age_h = apt_lists_age_h("/var/lib/apt/lists", now)
+        upd_h = update_stamp_age_h(UPDATE_STAMP, now)
         age = None if age_h is None else (
             f"{age_h}h old" if age_h >= 1 else "under an hour old")
+        judged_h = upd_h if upd_h is not None else age_h
+        stale = judged_h is None or judged_h > APT_LISTS_STALE_H
 
         lines = [
             f"Box:      {box}",
@@ -314,7 +321,10 @@ class PlatformPostureHandler(BaseHandler):
         else:
             lines.append(f"Pending:  {pending} package(s) upgradable")
         lines.append(f"Lists:    {'newest content ' + age if age else 'age UNKNOWN'}")
-        if age is None or (pending is not None and pending == 0 and age is None):
+        lines.append("Updated:  " + (f"last successful periodic update {upd_h}h ago"
+                                     if upd_h is not None else
+                                     "no periodic update-stamp (success UNKNOWN)"))
+        if stale:
             lines.append("          A count read from stale lists is not a current count.")
 
         if holds is None:
