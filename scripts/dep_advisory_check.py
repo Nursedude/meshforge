@@ -572,8 +572,8 @@ def read_fleet_hosts(explicit: Optional[str] = None) -> Tuple[List[str], Optiona
         return [], "fleet host list %s does not exist" % path
     except OSError as exc:
         return [], "fleet host list %s unreadable: %s" % (path, exc)
-    if not hosts:
-        return [], "fleet host list %s is empty" % path
+    # (no `if not hosts` here: THE reader already refuses an empty list with
+    # LISTS_NO_HOSTS - measured 2026-11-06, empty/comment-only/whitespace)
     return hosts, None
 
 

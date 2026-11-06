@@ -357,3 +357,15 @@ def test_dep_advisory_survives_a_wording_failure(monkeypatch, tmp_path):
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
     hosts, err = dac.read_fleet_hosts()
     assert hosts == [] and "could not be worded" in err
+
+
+@pytest.mark.parametrize("body", ["", "# only a comment\n\n", "   \n\t\n"])
+def test_dep_advisory_empty_list_says_the_readers_words(tmp_path, body):
+    """The removed `is empty` branch was unreachable: THE reader refuses an
+    empty list first. Pin the message actually produced."""
+    from utils.fleet_hosts import LISTS_NO_HOSTS
+    dac = _load_script("dep_advisory_check")
+    f = tmp_path / "hosts"
+    f.write_text(body)
+    hosts, err = dac.read_fleet_hosts(explicit=str(f))
+    assert hosts == [] and LISTS_NO_HOSTS in err and str(f) in err, err
