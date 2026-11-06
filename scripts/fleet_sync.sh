@@ -100,17 +100,7 @@ fleet_hosts_resolve "/opt/meshforge" && FLEET_FILE="$FLEET_HOSTS_FILE"
 [ -n "${FLEET_HOSTS_ERROR:-}" ] && exit 2
 
 if [[ -z "$FLEET_FILE" ]]; then
-    cat >&2 <<EOF
-$SELF: no fleet host list found.
-
-Create one at \$HOME/.config/meshforge/fleet_hosts (one host per line, '#'
-comments allowed). Example:
-
-    cp contrib/fleet/fleet_hosts.example ~/.config/meshforge/fleet_hosts
-    \$EDITOR ~/.config/meshforge/fleet_hosts
-
-Or set \$MESHFORGE_FLEET_HOSTS to a different path.
-EOF
+    fleet_hosts_absent_say "$SELF"
     exit 2
 fi
 

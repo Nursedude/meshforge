@@ -1015,9 +1015,15 @@ def main(argv: list[str] | None = None) -> int:
                         "default posture pane).")
     args = p.parse_args(argv)
     now_ts = time.time()
-    _no_data = ("No local mini state and no fleet_hosts list found "
-                "(set $MESHFORGE_FLEET_HOSTS or create ~/.config/meshforge/fleet_hosts).")
-    from utils.fleet_hosts import FleetHostsUnreadable
+    from utils.fleet_hosts import FleetHostsUnreadable, explain_absent
+    # THE resolver's words (2026-11-06): a hand-typed "create
+    # ~/.config/meshforge/fleet_hosts" was false under a set override.
+    try:
+        _why, _advice = explain_absent()
+    except (OSError, ValueError) as e:   # wording only; never blocks the pane
+        _why, _advice = "no fleet_hosts list found (reason unavailable: %s)" % e, []
+    _no_data = "No local mini state and %s.%s" % (
+        _why, "".join("\n" + a for a in _advice))
     try:
         return _main_render(args, now_ts, _no_data)
     except FleetHostsUnreadable as e:
