@@ -887,3 +887,82 @@ def test_address_shaped_name_does_not_teach_a_digit_label(tmp_path, monkeypatch)
     assert "10.0.0.1" in known           # the address itself is a real peer id
     assert "10" not in known
     assert "meshforge-10" not in known
+
+
+# --- r7f F8: an UNREADABLE fleet_hosts leaves a witness ----------------------
+# r7e #2 made the shared resolver raise FleetHostsUnreadable; this module's
+# `except Exception: pass` turned that into "registry 1 said nothing" — the
+# same value as "no fleet_hosts on this box" (every member box, by design).
+# Still FAILS OPEN (more proposals, never fewer), but now it SAYS so.
+
+import pytest  # noqa: E402
+
+_BLIND = "fleet host list /x/fleet_hosts is unreadable (permission denied)"
+
+
+def _known_ex(tmp_path, monkeypatch, fleet_hosts_path, hosts_text=""):
+    from mini_dudeai.dreams import _known_fleet_subjects_ex
+    monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(fleet_hosts_path))
+    monkeypatch.delenv("FLEET_HOSTS", raising=False)
+    hp = tmp_path / "hosts"
+    hp.write_text(hosts_text, encoding="utf-8")
+    return _known_fleet_subjects_ex(hosts_path=str(hp))
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 file")
+def test_unreadable_fleet_hosts_is_named_not_swallowed(tmp_path, monkeypatch):
+    f = tmp_path / "fleet_hosts"
+    f.write_text("boxa\n")
+    f.chmod(0)
+    try:
+        known, readable, blind = _known_ex(tmp_path, monkeypatch, f, _BLOCK)
+    finally:
+        f.chmod(0o600)
+    assert blind and str(f) in blind and "unreadable" in blind
+    assert readable is True            # the /etc/hosts block still answered
+    assert "boxa" in known             # ... from the block, fail-open intact
+
+
+def test_absent_fleet_hosts_is_not_a_witness(tmp_path, monkeypatch):
+    """Absent BY DESIGN on every member box: silence, never a page."""
+    _, _, blind = _known_ex(tmp_path, monkeypatch, tmp_path / "nope", _BLOCK)
+    assert blind is None
+
+
+def test_two_value_api_is_unchanged(tmp_path, monkeypatch):
+    known, readable = _known(tmp_path, monkeypatch, _BLOCK)
+    assert readable is True and "boxa" in known
+
+
+def test_blind_registry_emits_a_detector_witness_even_with_no_memory():
+    """The witness must not depend on there being a new subject to propose."""
+    st = _state({})
+    out = detect_new_subject(st, [], NOW, HOST,
+                             known_fn=lambda: (set(), False, _BLIND))
+    assert len(out) == 1
+    d = out[0]
+    assert d["kind"] == "detector_error"
+    assert d["key"] == "detector_error::detect_new_subject::fleet_hosts_unreadable"
+    assert _BLIND in d["summary"] and d["evidence"]["error"] == _BLIND
+    assert "permission" in d["proposed_action"].lower()
+
+
+def test_new_subject_evidence_carries_the_blindness():
+    out = _ns({"r::meshforge-boxa": _rs("r", "meshforge-boxa", fire_count=1,
+                                        fire_count_24h=1, fires_window=[NOW - 100])},
+              _seen(r__settled=NOW - 30 * 86400,
+                    **{"r__meshforge-boxa": NOW - 100}),
+              known=(set(), False, _BLIND))
+    kinds = sorted(d["kind"] for d in out)
+    assert kinds == ["detector_error", "new_subject"]
+    ns = next(d for d in out if d["kind"] == "new_subject")
+    assert ns["evidence"]["fleet_hosts_unreadable"] == _BLIND
+
+
+def test_readable_registry_adds_no_witness_and_evidence_says_none():
+    out = _ns({"r::newbox": _rs("r", "newbox", fire_count=1, fire_count_24h=1,
+                                fires_window=[NOW - 100])},
+              _seen(r__settled=NOW - 30 * 86400, r__newbox=NOW - 100),
+              known=({"boxa"}, True, None))
+    assert [d["kind"] for d in out] == ["new_subject"]
+    assert out[0]["evidence"]["fleet_hosts_unreadable"] is None

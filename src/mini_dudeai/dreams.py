@@ -159,7 +159,19 @@ def detect_chronic_flap(state: dict, history: list[dict], now_ts: float,
 
 
 def _known_fleet_subjects(hosts_path: str = "/etc/hosts") -> tuple[set, bool]:
-    """(known subject names, registry_readable).
+    """``(known, readable)`` — the two-value API; see ``_known_fleet_subjects_ex``."""
+    known, readable, _blind = _known_fleet_subjects_ex(hosts_path)
+    return known, readable
+
+
+def _known_fleet_subjects_ex(hosts_path: str = "/etc/hosts") -> tuple[set, bool, str | None]:
+    """(known subject names, registry_readable, fleet_hosts_blind).
+
+    ``fleet_hosts_blind`` (r7f F8, 2026-11-05) is ``None`` when registry 1
+    answered OR is absent (absent BY DESIGN on every member box — silence),
+    and the reason string when a fleet_hosts list exists but could not be
+    read. Before, that error was swallowed into the same value as "absent":
+    still fail-open, but with no witness (honest_failure_modes #9).
 
     Names as mini writes subjects: the bare host, and the ``meshforge-<host>``
     form the fleet rules use. Self is included — ``fleet_hosts`` excludes the
@@ -190,11 +202,12 @@ def _known_fleet_subjects(hosts_path: str = "/etc/hosts") -> tuple[set, bool]:
         import socket
         from utils.fleet_hosts import (parse_hosts_block, resolve_fleet_hosts,
                                        resolve_fleet_hosts_file)
-    except Exception:
-        return set(), False
+    except Exception as e:
+        return set(), False, f"registry code not importable: {type(e).__name__}: {e}"
 
     known: set = set()
     readable = False
+    blind: str | None = None
 
     def _add(name: str) -> None:
         """A name in every form mini writes subjects: as given, its bare
@@ -223,8 +236,11 @@ def _known_fleet_subjects(hosts_path: str = "/etc/hosts") -> tuple[set, bool]:
         if resolve_fleet_hosts_file() is not None:
             names = list(resolve_fleet_hosts() or [])
             readable = True
-    except Exception:
-        pass  # unreadable -> fewer names known -> MORE proposals, not fewer
+    except Exception as e:
+        # unreadable -> fewer names known -> MORE proposals, not fewer — and
+        # SAID (r7f F8): FleetHostsUnreadable names the path; anything else
+        # is a registry-1 failure of its own.
+        blind = str(e) or type(e).__name__
     try:
         names.append(socket.gethostname())  # self is never a discovery
     except OSError:
@@ -264,7 +280,7 @@ def _known_fleet_subjects(hosts_path: str = "/etc/hosts") -> tuple[set, bool]:
         if any(h in known or h.split(".", 1)[0] in known for h in hostnames):
             known.add(addr.lower())
 
-    return known, readable
+    return known, readable, blind
 
 
 # A subject minted per event — ``<host>@<boot_id-prefix>`` from the
@@ -310,13 +326,30 @@ def detect_new_subject(state: dict, history: list[dict], now_ts: float,
     """
     out: list[dict] = []
     cutoff = now_ts - lookback_s
-    seen = state.get("subjects_seen")
-    if not isinstance(seen, dict) or not seen:
-        return out  # no durable memory — abstain rather than call everything new
 
     # Injectable so a test's verdict cannot depend on the fleet registry of
     # whichever box runs the suite (feedback_tests_must_pin_ambient_state).
-    known, registry_readable = (known_fn or _known_fleet_subjects)()
+    # An injected fn may return the two-value form (no blindness known).
+    reg = (known_fn or _known_fleet_subjects_ex)()
+    known, registry_readable = reg[0], reg[1]
+    blind = reg[2] if len(reg) > 2 else None
+    if blind:
+        # r7f F8: the witness, independent of whether any subject is new —
+        # an existing kind (this detector IS partly blind), no new class.
+        out.append(_delta(
+            kind="detector_error",
+            key="detector_error::detect_new_subject::fleet_hosts_unreadable",
+            summary=f"detect_new_subject is blind to the fleet_hosts registry: {blind}",
+            evidence={"detector": "detect_new_subject", "error": blind},
+            proposed_action=("Fix the fleet_hosts list's permissions/type (or "
+                             "remove it) — until then known fleet members can be "
+                             "proposed as new subjects (fails open)."),
+            confidence="high", now_ts=now_ts, host=host,
+        ))
+
+    seen = state.get("subjects_seen")
+    if not isinstance(seen, dict) or not seen:
+        return out  # no durable memory — abstain rather than call everything new
 
     # Earliest sighting per rule, from the same durable map — one source for
     # "when did this rule start", never a second bookkeeping copy to drift.
@@ -363,6 +396,7 @@ def detect_new_subject(state: dict, history: list[dict], now_ts: float,
                 # Why this one was NOT suppressed — so a reader can tell a real
                 # topology finding from a registry that could not be read.
                 "fleet_registry_readable": registry_readable,
+                "fleet_hosts_unreadable": blind,
                 "known_fleet_subjects": len(known),
                 "rule_first_seen_iso": _iso(born) if born else None,
             },
