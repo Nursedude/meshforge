@@ -104,6 +104,12 @@ def read_fleet_hosts_file(path: "Path | str", *, allow_empty: bool = False) -> L
       must SHOW the file's contents (the TUI wizard) passes allow_empty."""
     p = Path(path)
     try:
+        # stat BEFORE opening (Fable, standalone arc #5): opening a FIFO
+        # blocks forever — it hung the whole TUI Fleet Membership menu.
+        st = os.stat(p)
+        if not stat.S_ISREG(st.st_mode):
+            raise FleetHostsUnreadable(p, "a directory, not a file"
+                                       if stat.S_ISDIR(st.st_mode) else "not a regular file")
         text = p.read_text(encoding="utf-8", errors="replace")
     except (FileNotFoundError, NotADirectoryError) as exc:
         if os.path.lexists(p):
@@ -112,6 +118,8 @@ def read_fleet_hosts_file(path: "Path | str", *, allow_empty: bool = False) -> L
             # _usable refuses it. Only a truly absent path is "absent".
             raise FleetHostsUnreadable(p, "dangling symlink") from exc
         raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(p)) from exc
+    except FleetHostsUnreadable:
+        raise                      # already says what and why — never re-wrap
     except OSError as exc:
         raise FleetHostsUnreadable(p, exc.strerror or str(exc)) from exc
     hosts = _parse_fleet_hosts_text(text, p)
@@ -214,18 +222,38 @@ def resolve_fleet_hosts_file(
     *,
     env: Optional[Mapping[str, str]] = None,
     etc_dir: str = DEFAULT_ETC_DIR,
+    skip: "Optional[Path | str]" = None,
 ) -> Optional[Path]:
     """The file that wins the resolution order, or ``None`` if no list exists
     (including a SET-but-ABSENT env override — authoritative, no
     fall-through). Raises :class:`FleetHostsUnreadable` when the winning
-    candidate — or any tier above it — is present but unreadable."""
+    candidate — or any tier above it — is present but unreadable.
+
+    ``skip`` answers "what WOULD the tools see if this file were gone?" (the
+    TUI's Go-standalone preview): a candidate naming the same file is
+    treated as absent — an override equal to it then yields NO list, exactly
+    as it will once the file is moved."""
     env_map: Mapping[str, str] = os.environ if env is None else env
+    skip_real = os.path.realpath(str(skip)) if skip is not None else None
+
+    def gone(p: Path) -> bool:
+        if skip_real is None or os.path.realpath(str(p)) != skip_real:
+            return False
+        if os.path.islink(str(p)):
+            # a SYMLINK to the skipped file does not vanish with it — it
+            # DANGLES, and the tools refuse it (Fable standalone r4 #1)
+            raise FleetHostsUnreadable(p, "dangling symlink")
+        return True
     for key in ENV_OVERRIDE_KEYS:
         val = env_map.get(key)
         if val:
             p = Path(val)
+            if gone(p):
+                return None
             return p if _usable(p) else None
     for c in _tier_candidates(repo_dir, env, etc_dir):
+        if gone(c):
+            continue
         if _usable(c):
             return c
     return None

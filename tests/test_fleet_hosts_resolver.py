@@ -1064,3 +1064,24 @@ class TestEmptyListRefused:
         out, err = _sh_full({"PATH": "%s:%s" % (fake, os.environ.get("PATH", "")),
                              "MESHFORGE_FLEET_HOSTS": str(f), "HOME": str(tmp_path)})
         assert out["rc"] == "2" and out["file"] == "", (out, err)
+
+
+
+def test_the_reader_never_opens_a_fifo(tmp_path):
+    """Fable standalone-arc #5 (VERIFIED): opening a FIFO blocked forever —
+    it hung the whole TUI Fleet Membership menu. Run in a subprocess so the
+    OLD code fails by timeout instead of hanging the suite."""
+    fifo = tmp_path / "fl"
+    os.mkfifo(fifo)
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "import sys; sys.path.insert(0, %r)\n"
+        "from utils.fleet_hosts import read_fleet_hosts_file, FleetHostsUnreadable\n"
+        "try:\n    read_fleet_hosts_file(%r)\nexcept FleetHostsUnreadable as e:\n    print('REFUSED', e.reason)\n"
+        % (str(_LIB.parent.parent.parent / "src"), str(fifo)))
+    try:
+        p = subprocess.run([sys.executable, "-I", str(probe)], capture_output=True,
+                           text=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        pytest.fail("the reader blocked on a FIFO")
+    assert "REFUSED not a regular file" in p.stdout, (p.stdout, p.stderr)

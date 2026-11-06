@@ -102,6 +102,7 @@ class FleetProvisionHandler(BaseHandler):
 
         while True:
             st = fm.membership_state()
+            note = fm.tools_note(st)          # once per loop (E2)
             if st["mode"] == "unreadable":
                 # r11: never "standalone" for a list that EXISTS — and no
                 # Edit: it would pre-fill nothing and overwrite the file.
@@ -112,16 +113,16 @@ class FleetProvisionHandler(BaseHandler):
                 head = (f"Mode: FLEET — {len(st['hosts'])} box(es): "
                         f"{', '.join(st['hosts'][:6])}"
                         + (" …" if len(st["hosts"]) > 6 else ""))
-            elif (st.get("resolved_error") or st.get("resolved_absent_why")
-                  or (st.get("resolved_file") and st["resolved_file"] != st["path"])):
-                # the tools do NOT agree with "this box only" (r17, Fable r16 O1)
+            elif note:
+                # the TOOLS disagree with "this box only" — the shared view
+                # says how (r17 O1; r3 #3: never a string path compare)
                 head = "Mode: this wizard's file is empty or absent."
             else:
                 head = ("Mode: STANDALONE — no fleet host list. Rollup and "
                         "fleet tools cover this box only.")
-            if st["mode"] != "fleet" and st["mode"] != "unreadable" and st["disabled_exists"]:
+            if st["mode"] != "fleet" and st["mode"] != "unreadable" and st.get("disabled_restorable"):
                 head += "\n(a disabled host list exists — Edit restores it)"
-            head += fm.tools_note(st)
+            head += note
             choices = [] if st["mode"] == "unreadable" else [
                 ("edit", "Edit host list   ssh aliases, comma/space separated"),
                 ("probe", "Probe hosts      ssh-check each declared box")]
@@ -158,6 +159,11 @@ class FleetProvisionHandler(BaseHandler):
                 prompt += f"\n(the disabled list could not be read: {dis['error']})"
             init = ", ".join(dis["hosts"])
         prompt += fm.tools_note(st)   # r15 F2: say when the tools read another file
+        if os.path.islink(st["path"]):
+            # r5 O1: Go standalone refuses a symlinked list; Edit writes a
+            # regular file — say so BEFORE, not only in the result.
+            prompt += (f"\n⚠ {st['path']} is a symlink (to {os.readlink(st['path'])}); "
+                       "saving REPLACES the link with a regular file.")
         text = self.ctx.dialog.inputbox("Fleet Membership", prompt, init=init)
         if text is None:
             return
@@ -183,13 +189,23 @@ class FleetProvisionHandler(BaseHandler):
                 "Fleet Membership",
                 f"Write {len(hosts)} host(s)?\n\n{summary}{warn}"):
             return
-        fm.write_fleet_hosts(st["path"], hosts)
+        try:
+            fm.write_fleet_hosts(st["path"], hosts)
+        except OSError as e:
+            # r6 O1: stay in the menu with the truth — not a generic dialog
+            # with privilege advice that is wrong for a USER config file.
+            self.ctx.dialog.msgbox("Fleet Membership",
+                                   f"Could not write {st['path']}: {e}\nNothing was changed.")
+            return
+        # What the TOOLS now see — the shared view (Fable standalone r4 #2:
+        # "Fleet panes pick this up" was claimed while the tools read
+        # another tier, or no list at all behind an absent override).
         self.ctx.dialog.msgbox(
             "Fleet Membership",
-            f"Wrote {st['path']} ({len(hosts)} hosts). Fleet panes pick "
-            "this up on next run — verify via Fleet → Fleet Watchers. "
-            "mini units on --preset auto follow this declaration at their "
-            "next restart.")
+            f"Wrote {st['path']} ({len(hosts)} hosts).\n\n"
+            + fm.describe_view(fm.tools_view(), st["path"])
+            + "\n\nVerify via Fleet → Fleet Watchers. mini units on --preset "
+            "auto re-decide at their next restart.")
 
     def _membership_probe(self, fm, st) -> None:
         if not st["hosts"]:
@@ -207,20 +223,50 @@ class FleetProvisionHandler(BaseHandler):
               "wrong alias. Keys/aliases live in ~/.ssh/config.")
 
     def _membership_standalone(self, fm, st) -> None:
-        if not self.ctx.dialog.yesno(
-                "Fleet Membership",
-                f"Set the host list aside?\n\n{st['path']}\n→ "
-                f"{st['path']}{fm.DISABLED_SUFFIX}\n\nReversible: 'Edit host "
-                "list' offers the saved list back.",
-                default_no=True):
+        # The prompt states EXACTLY what will happen (Fable r20 #2-#4/#7):
+        # the plan is computed first and re-checked before anything moves.
+        plan = fm.plan_standalone(st["path"])
+        if plan["action"] == "noop":
+            self.ctx.dialog.msgbox("Fleet Membership",
+                                   "Already standalone — no host list present.")
             return
-        moved = fm.declare_standalone(st["path"])
-        self.ctx.dialog.msgbox(
-            "Fleet Membership",
-            "Already standalone — no host list present." if moved is None
-            else (f"Standalone declared. List preserved at:\n{moved}\n\n"
-                  "mini units on --preset auto switch to the standalone "
-                  "preset at their next restart."))
+        if plan["action"] == "refuse":
+            self.ctx.dialog.msgbox("Fleet Membership",
+                                   f"Refused: {plan['why']}")
+            return
+        if plan["action"] == "remove_empty":
+            try:   # #7: only a READABLE list with hosts is "the saved list"
+                saved_hosts = fm.read_fleet_hosts_file(plan["saved"])
+            except OSError:
+                saved_hosts = []
+            ask = (f"Remove {plan['path']}?\n\nIt names no hosts — any fleet "
+                   "tool that reads THIS file refuses it. Nothing is lost"
+                   + (f"; the saved list {plan['saved']} is kept." if saved_hosts else "."))
+        else:
+            ask = (f"Set the host list aside?\n\n{plan['path']}\n→ {plan['saved']}"
+                   + (f"\n\nThe list ALREADY saved there is kept as:\n{plan['backup']}"
+                      if plan["backup"] else "")
+                   + "\n\nReversible: 'Edit host list' offers the saved list back.")
+        if plan.get("after_view"):
+            ask += "\n\n" + fm.describe_view(plan["after_view"], plan["path"], after=True)
+        if not self.ctx.dialog.yesno("Fleet Membership", ask, default_no=True):
+            return
+        res = fm.declare_standalone(st["path"], expect=plan)
+        if res["action"] == "refuse":
+            msg = f"Refused: {res['why']}"
+        elif res["action"] == "partial":
+            msg = f"FAILED PART-WAY: {res['why']}"
+        elif res["action"] == "remove_empty":
+            msg = f"Removed the empty list {res['path']}."
+        else:
+            msg = (f"This box's wizard list was set aside. List preserved at:\n{res['saved']}"
+                   + (f"\nThe previously saved list is at:\n{res['backup']}" if res["backup"] else ""))
+        if res["action"] != "refuse":
+            # say what the fleet TOOLS see NOW — the resolver's own answer
+            # (r3 #1: a partial's after-note claimed "no list").
+            msg += "\n\n" + fm.describe_view(fm.tools_view(), st["path"])
+            msg += ("\n\nmini units on --preset auto re-decide at their next restart.")
+        self.ctx.dialog.msgbox("Fleet Membership", msg)
 
     # ------------------------------------------------------------------
     # loading

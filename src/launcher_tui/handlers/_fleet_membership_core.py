@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import subprocess
+import tempfile
+import time
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
@@ -75,56 +78,108 @@ def membership_state(hosts_path: Optional[str] = None) -> dict:
         pass
     except FleetHostsUnreadable as e:
         error = str(e)
-    # The wizard manages ONE file; the fleet tools resolve several tiers
-    # (r13, Fable r12 #6). Say so when they differ, never "this box only".
-    resolved_file, resolved_error, resolved_absent_why = "", "", ""
-    if hosts_path is None:
-        from utils.fleet_hosts import ENV_OVERRIDE_KEYS, resolve_fleet_hosts
-        from utils.fleet_hosts import resolve_fleet_hosts_file
-        try:
-            rf = resolve_fleet_hosts_file()
-            resolved_file = str(rf) if rf is not None else ""
-            if rf is not None:
-                resolve_fleet_hosts()   # r17: an EMPTY list is refused too
-            else:
-                # r17 (Fable r16 F1): a SET override pointing nowhere makes
-                # every tool see NO list — never indistinguishable from
-                # "the tools agree with this file".
-                for key in ENV_OVERRIDE_KEYS:
-                    if os.environ.get(key):
-                        resolved_absent_why = ("$%s=%s does not exist "
-                                               "(authoritative)" % (key, os.environ[key]))
-                        break
-        except FleetHostsUnreadable as e:
-            resolved_error = str(e)
+    # What the fleet TOOLS see — asked of THE resolver, one source for the
+    # head, the Edit prompt, the Go-standalone prompt and its result.
+    view = tools_view() if hosts_path is None else {"kind": "na", "file": "",
+                                                     "hosts": [], "why": "", "path": ""}
+    resolved_file = view["file"] if view["kind"] == "list" else ""
+    resolved_error = view["why"] if view["kind"] in ("refuse", "unknown") else ""
+    resolved_error_path = view["path"] if view["kind"] == "refuse" else ""
+    resolved_absent_why = view["why"] if view["kind"] == "none" else ""
     return {
         "mode": "unreadable" if error else ("fleet" if hosts else "standalone"),
         "error": error,
+        "view": view,
         "resolved_file": resolved_file,
         "resolved_error": resolved_error,
+        "resolved_error_path": resolved_error_path,
         "resolved_absent_why": resolved_absent_why,
         "hosts": hosts,
         "path": path,
         "exists": os.path.lexists(path),
         "disabled_exists": Path(path + DISABLED_SUFFIX).exists(),
+        "disabled_restorable": _restorable(path + DISABLED_SUFFIX),
     }
 
 
+def _restorable(p: str) -> bool:
+    """A saved list Edit can actually offer back: readable, with hosts
+    (Fable standalone r6 O2: a socket at .disabled read as 'Edit restores it')."""
+    try:
+        return bool(read_fleet_hosts_file(p))
+    except OSError:
+        return False
+
+
+def tools_view(skip: "Optional[str]" = None) -> dict:
+    """What the fleet TOOLS see (or WOULD see with ``skip`` gone), asked of
+    THE resolver — never re-derived here (Fable standalone r3: three hand-
+    assembled sentences each guessed the resolver's rules and were wrong:
+    "the first readable one", a string path compare, a partial's after-note).
+    kind: list | refuse | none | unknown."""
+    from utils.fleet_hosts import ENV_OVERRIDE_KEYS, resolve_fleet_hosts_file
+    v = {"kind": "none", "file": "", "hosts": [], "why": "", "path": ""}
+    try:
+        rf = resolve_fleet_hosts_file(skip=skip)
+        if rf is None:
+            for key in ENV_OVERRIDE_KEYS:
+                if os.environ.get(key):
+                    v["why"] = "$%s=%s does not exist (authoritative)" % (key, os.environ[key])
+                    break
+            return v
+        v["file"] = str(rf)
+        v["hosts"] = read_fleet_hosts_file(rf)
+        v["kind"] = "list"
+    except FleetHostsUnreadable as e:
+        v.update(kind="refuse", path=str(e.path), file=str(e.path), why=str(e))
+    except FileNotFoundError as e:
+        name = e.filename or "(unknown)"
+        v.update(kind="refuse", path=str(e.filename or ""),
+                 why="fleet host list %s vanished while being read" % name)
+    except Exception as e:   # advisory: say it could not be checked
+        v.update(kind="unknown", why=str(e))
+    return v
+
+
+def _same_file(a: str, b: str) -> bool:
+    return bool(a) and bool(b) and os.path.realpath(a) == os.path.realpath(b)
+
+
+def describe_view(v: dict, wizard_path: str, *, after: bool = False) -> str:
+    """ONE sentence for a tools view — the only place that words it."""
+    lead = "After this, the fleet tools" if after else "The fleet tools"
+    if v["kind"] == "list":
+        n = len(v["hosts"])
+        if _same_file(v["file"], wizard_path):
+            return f"{lead} read THIS file ({n} host(s))."
+        return (f"{lead} read {v['file']} ({n} host(s)) — NOT this file "
+                f"({wizard_path})"
+                # the box-verdict belongs to the AFTER prompt only (r4 #3);
+                # elsewhere the actionable truth is what editing changes
+                + ("; this box STAYS in a fleet." if after
+                   else ". Editing here does not change them."))
+    if v["kind"] == "refuse":
+        return f"{lead} REFUSE their list: {v['why']}"
+    if v["kind"] == "none":
+        return (f"{lead} see NO list" + (f": {v['why']}" if v["why"] else "")
+                + (" — this box is standalone." if after else "."))
+    return f"Could not check what the fleet tools see ({v['why']})."
+
+
 def tools_note(st: dict) -> str:
-    """One honest line for the dialog when the fleet TOOLS do not read this
-    wizard's file (r15, Fable r14 F2: in FLEET mode the head showed the
-    wizard's list while every tool used another one). "" when they agree."""
-    if st.get("resolved_error"):
-        if st.get("mode") == "unreadable" and str(st.get("path")) in st["resolved_error"]:
-            return ""   # r17 (Fable r16 O2): the head already said it, for this file
-        return f"\n⚠ The fleet tools REFUSE their list: {st['resolved_error']}"
-    if st.get("resolved_absent_why"):
-        return f"\n⚠ The fleet tools see NO list: {st['resolved_absent_why']}"
-    rf = st.get("resolved_file")
-    if rf and rf != st.get("path"):
-        return (f"\n⚠ The fleet tools read {rf} — NOT this file "
-                f"({st.get('path')}). Editing here does not change them.")
-    return ""
+    """The head/Edit note: "" when the tools agree with this file (they read
+    it), or when the head already refused THIS file; else one ⚠ line."""
+    v = st.get("view")
+    if not v or v["kind"] == "na":
+        return ""
+    path = str(st.get("path"))
+    if v["kind"] == "list" and _same_file(v["file"], path):
+        return ""
+    if v["kind"] == "refuse" and st.get("mode") == "unreadable" and _same_file(v["path"], path):
+        return ""
+    if v["kind"] == "none" and not v["why"]:
+        return ""   # no list anywhere and none named: the head says STANDALONE
+    return "\n⚠ " + describe_view(v, path)
 
 
 def write_fleet_hosts(hosts_path: str, hosts: List[str]) -> None:
@@ -135,33 +190,159 @@ def write_fleet_hosts(hosts_path: str, hosts: List[str]) -> None:
     """
     path = Path(hosts_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(_HEADER + "".join(h + "\n" for h in hosts))
-    tmp.replace(path)
+    # A UNIQUE temp name, created exclusively (Fable standalone r6 F1): the
+    # fixed "fleet_hosts.tmp" FOLLOWED a symlink/hardlink planted there and
+    # wrote through into the saved list; two wizard sessions also shared it
+    # (honest_failure_modes #8). mkstemp refuses an existing name.
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        mode = 0o644
+    fd, tmpname = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".",
+                                   suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(_HEADER + "".join(h + "\n" for h in hosts))
+        os.chmod(tmpname, mode)
+        os.replace(tmpname, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmpname)
+        except OSError:
+            pass
+        raise
     _chown_to_real_user(path)
 
 
-def declare_standalone(hosts_path: str) -> Optional[str]:
-    """Rename fleet_hosts aside (reversible). None = was already standalone.
+def _utc_stamp() -> str:
+    """The backup suffix clock — one seam, so tests pin it without patching
+    the global ``time`` module (a global patch recursed and hung pytest)."""
+    return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
 
-    r19 (Fable r18 F4): an EXISTING file naming no hosts is refused by every
-    fleet tool, so this is the in-app cure for it — but renaming it over a
-    SAVED ``.disabled`` list would destroy the saved hosts. An empty current
-    file is therefore removed (it names nobody) and the saved list kept."""
+
+def plan_standalone(hosts_path: str, *, with_after: bool = True) -> dict:
+    """What "Go standalone" WILL do, decided without touching anything — the
+    dialog shows exactly this, and declare_standalone re-plans before acting
+    (Fable r20, own arc). Input table (C = current file, D = saved
+    ``.disabled``):
+
+    =================  ========================================================
+    C absent           noop (already standalone)
+    C unusable         refuse — dangling link, unreadable, corrupt: never
+                       promoted over a saved list, never "already standalone"
+    C empty            remove C (it names nobody); D, if any, untouched
+    C has hosts        D absent -> C becomes D
+                       D a file -> D kept as D.<UTC stamp>, then C becomes D
+                       D anything else (a directory...) -> refuse
+    =================  ========================================================
+    """
     path = Path(hosts_path)
-    if not path.exists():
-        return None
     target = Path(hosts_path + DISABLED_SUFFIX)
-    if target.exists():
-        try:
-            empty = not read_fleet_hosts_file(path, allow_empty=True)
-        except FleetHostsUnreadable:
-            empty = False
-        if empty:
-            path.unlink()
-            return str(target)
-    path.replace(target)
-    return str(target)
+    plan = {"action": "noop", "path": str(path), "saved": str(target),
+            "backup": "", "why": "", "after_view": None}
+    if not os.path.lexists(path):
+        return plan
+    if path.is_symlink():
+        # #2: moving a symlink made D a self-loop (C -> D) or a pointer into
+        # another tier — a "preserved" list nobody can read.
+        plan.update(action="refuse",
+                    why="%s is a symlink (to %s) — change it by hand; nothing "
+                        "was changed" % (path, os.readlink(path)))
+        return plan
+    try:
+        hosts = read_fleet_hosts_file(path, allow_empty=True)
+    except (FleetHostsUnreadable, FileNotFoundError) as e:
+        plan.update(action="refuse", why=str(e))
+        return plan
+    if not hosts:
+        plan.update(action="remove_empty")
+        if with_after:
+            _plan_others(plan, path)
+        return plan
+    if os.path.lexists(target):
+        if target.is_symlink() or not target.is_file():
+            plan.update(action="refuse",
+                        why="%s exists and is not a regular file — move it "
+                            "aside by hand; nothing was changed" % target)
+            return plan
+        stamp = _utc_stamp()
+        backup, n = "%s.%s" % (target, stamp), 1
+        while os.path.lexists(backup):          # #3: never reuse a name
+            n += 1
+            backup = "%s.%s.%d" % (target, stamp, n)
+        plan.update(backup=backup)
+    plan.update(action="move")
+    if with_after:
+        _plan_others(plan, path)
+    return plan
+
+
+def _plan_others(plan: dict, path: Path) -> None:
+    """What the tools WILL see once this file is gone — the resolver's own
+    answer with ``skip`` (Fable standalone r3 #2). A move ALSO changes the
+    saved list and its backup: if the tools would read either of those, the
+    preview cannot be predicted from "C is gone" alone, so it says so
+    instead of guessing (Fable standalone r5 F1 — it said "standalone" for a
+    box that ends up in a fleet)."""
+    if plan.get("action") == "move":
+        from utils.fleet_hosts import DEFAULT_ETC_DIR, ENV_OVERRIDE_KEYS, _tier_candidates
+        moved = {os.path.realpath(x) for x in (plan["saved"], plan["backup"]) if x}
+        names = [os.environ[k] for k in ENV_OVERRIDE_KEYS if os.environ.get(k)][:1]
+        if not names:
+            try:
+                names = [str(t) for t in _tier_candidates(None, None, DEFAULT_ETC_DIR)]
+            except Exception:
+                names = []
+        for n in names:
+            if os.path.realpath(n) in moved:
+                plan["after_view"] = {"kind": "unknown", "file": "", "hosts": [], "path": "",
+                                      "why": "%s names where this move puts a list" % n}
+                return
+    plan["after_view"] = tools_view(skip=str(path))
+
+
+def declare_standalone(hosts_path: str, expect: Optional[dict] = None) -> dict:
+    """Carry out plan_standalone. If ``expect`` (the plan the operator saw)
+    no longer matches what the files say, nothing is touched and the result
+    is a refusal — the operator confirmed a different action.
+
+    Order matters for crash-safety: the saved list is moved to its backup
+    name BEFORE the current list takes its place, so a crash between the
+    two steps loses nothing."""
+    plan = plan_standalone(hosts_path, with_after=False)   # E1: preview unused here
+    if expect is not None:
+        if (plan["action"], bool(plan["backup"])) != (
+                expect.get("action"), bool(expect.get("backup"))):
+            return dict(plan, action="refuse",
+                        why="the files changed since you confirmed — nothing was changed")
+        if expect.get("backup"):
+            plan["backup"] = expect["backup"]   # #4: the name the operator SAW
+    if plan["backup"] and os.path.lexists(plan["backup"]):
+        return dict(plan, action="refuse",
+                    why="%s already exists — nothing was changed" % plan["backup"])
+    try:
+        if plan["action"] == "remove_empty":
+            Path(hosts_path).unlink()
+        elif plan["action"] == "move":
+            if plan["backup"]:
+                Path(plan["saved"]).rename(plan["backup"])
+            try:
+                Path(hosts_path).replace(plan["saved"])
+            except OSError as e:
+                if plan["backup"]:              # #6: put the saved list back
+                    try:
+                        Path(plan["backup"]).rename(plan["saved"])
+                    except OSError as e2:
+                        # round 2 #2: the files DID change — say where they are
+                        return dict(plan, action="partial",
+                                    why="%s; putting the saved list back also failed (%s). "
+                                        "The saved list is now at %s (not %s); the current "
+                                        "list is still at %s." % (e, e2, plan["backup"],
+                                                                   plan["saved"], hosts_path))
+                raise
+    except OSError as e:
+        return dict(plan, action="refuse", why="%s — nothing was changed" % e)
+    return plan
 
 
 def probe_hosts(hosts: List[str],

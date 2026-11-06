@@ -723,5 +723,5 @@ def test_r19_going_standalone_never_destroys_a_saved_list(tmp_path):
     wiz.write_text("")
     saved = tmp_path / ("wizard" + fm.DISABLED_SUFFIX)
     saved.write_text("a.invalid\nb.invalid\n")
-    assert fm.declare_standalone(str(wiz)) == str(saved)
+    assert fm.declare_standalone(str(wiz))["action"] == "remove_empty"
     assert not wiz.exists() and saved.read_text() == "a.invalid\nb.invalid\n"
