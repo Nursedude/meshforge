@@ -176,6 +176,17 @@ out="$(MESHFORGE_FLEET_HOSTS="$TMP/nope" run)"
 check "absent fleet_hosts says SELF ONLY out loud" \
   "$(echo "$out" | grep -q 'SELF ONLY' && echo ok)"
 
+# ── 2b. r7f F6: a PRESENT-but-unreadable list says so — never "not found" ─
+if [ "$(id -u)" != 0 ]; then
+  locked="$TMP/locked_hosts"; printf 'box-good\n' > "$locked"; chmod 000 "$locked"
+  out="$(MESHFORGE_FLEET_HOSTS="$locked" run 2>&1)"
+  chmod 600 "$locked"
+  check "unreadable fleet_hosts is named unreadable in the provenance line" \
+    "$(echo "$out" | grep 'fleet legs cover' | grep -q 'unreadable' && echo ok)"
+  check "and is not reported as 'no fleet_hosts found'" \
+    "$(echo "$out" | grep -q 'no fleet_hosts found' && echo '' || echo ok)"
+fi
+
 # ── 3. up-but-no-repo is its own state, not 'unreachable' ────────────────
 printf 'box-good\nbox-norepo\n' > "$hosts"
 out="$(MESHFORGE_FLEET_HOSTS="$hosts" HONEST_BOXES="box-good box-norepo" run)"

@@ -132,7 +132,11 @@ fi
 [[ $issues -gt 0 ]] && body+=$'\n'"($issues box(es) unreachable)"
 [[ "$baseline_ok" != 1 ]] && body+=$'\n'"⚠ origin/main baseline unavailable (git fetch failed) — git-drift shown as '?' this run"
 if [[ "$hosts_missing" == 1 ]]; then
+    if [[ -n "${FLEET_HOSTS_ERROR:-}" ]]; then   # r7f F6: the phone never sees stderr
+        body+=$'\n'"⚠ ${FLEET_HOSTS_ERROR} — digest covers ONLY $(hostname); the rest of the fleet is UNMONITORED this run"
+    else
     body+=$'\n'"⚠ NO fleet hosts file found (checked \$MESHFORGE_FLEET_HOSTS, ~/.config/meshforge/fleet_hosts, /etc/meshforge/fleet_hosts) — digest covers ONLY $(hostname); the rest of the fleet is UNMONITORED this run"
+    fi
 fi
 
 if ! curl -fsS -m 15 -H "Title: Weekly updates posture" -H "Priority: min" \

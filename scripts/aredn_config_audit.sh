@@ -32,6 +32,9 @@ SELF="$(basename "$0")"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fleet_hosts.sh"
 FLEET_FILE=""
 fleet_hosts_resolve "/opt/meshforge" && FLEET_FILE="$FLEET_HOSTS_FILE"
+# r7f F6: rc 2 = the list exists but is unreadable; the lib said why on
+# stderr. Refuse here — the "create one" text below would be wrong.
+[ -n "${FLEET_HOSTS_ERROR:-}" ] && exit 2
 
 if [[ -z "$FLEET_FILE" ]]; then
     cat >&2 <<EOF

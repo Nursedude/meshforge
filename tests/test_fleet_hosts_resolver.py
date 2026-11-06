@@ -401,3 +401,71 @@ class TestShellUnreadableParity:
         out, _ = _run_shell_rc("/opt/meshforge",
                                {"HOME": str(home), "MESHFORGE_FLEET_HOSTS": str(tmp_path / "nope")})
         assert out["rc"] == "1"
+
+
+# ── r7e #2 review (r7f): the twins agree on an UNCHECKABLE tier ──────────
+
+
+class TestUncheckableTierParity:
+    """r7f F2: a tier under a directory the caller cannot search cannot be
+    proven absent. Measured before the fix: python raised, the shell lib read
+    it as ABSENT (rc 1) and would fall through — the two twins disagreed on
+    the exact r7e #2 class. Both must refuse."""
+
+    @needs_nonroot
+    def test_both_refuse_a_tier_under_an_unsearchable_dir(self, tmp_path):
+        home, _ = _tree(tmp_path, {
+            "home/.config/meshforge/fleet_hosts.meshforge": "per\n",
+        })
+        locked = home / ".config" / "meshforge"
+        locked.chmod(0)
+        try:
+            out, err = _run_shell_rc("/opt/meshforge", {"HOME": str(home)})
+            with pytest.raises(FleetHostsUnreadable) as ei:
+                resolve_fleet_hosts_file(env={"HOME": str(home)},
+                                         etc_dir=str(tmp_path / "no-etc"))
+        finally:
+            locked.chmod(0o755)
+        assert out["rc"] == "2", (out, err)
+        assert "not searchable" in out["err"]
+        assert "not searchable" in str(ei.value)
+        # the message must not claim knowledge it cannot have
+        assert "exists" not in str(ei.value) and "exists" not in out["err"]
+
+    @needs_nonroot
+    def test_unsearchable_grandparent_also_refuses_in_both(self, tmp_path):
+        home, _ = _tree(tmp_path, {})
+        (home / ".config").mkdir()
+        (home / ".config").chmod(0)
+        try:
+            out, _ = _run_shell_rc("/opt/meshforge", {"HOME": str(home)})
+            with pytest.raises(FleetHostsUnreadable):
+                resolve_fleet_hosts_file(env={"HOME": str(home)},
+                                         etc_dir=str(tmp_path / "no-etc"))
+        finally:
+            (home / ".config").chmod(0o755)
+        assert out["rc"] == "2"
+
+    def test_a_file_where_a_parent_dir_should_be_is_absent_in_both(self, tmp_path):
+        """ENOTDIR = the path cannot exist; both twins pass to the next tier."""
+        home, _ = _tree(tmp_path, {"home/.config": "i am a file\n"})
+        out, _ = _run_shell_rc("/opt/meshforge", {"HOME": str(home)})
+        assert out["rc"] == "1"
+        assert resolve_fleet_hosts_file(env={"HOME": str(home)},
+                                        etc_dir=str(tmp_path / "no-etc")) is None
+
+
+class TestShellReadAfterResolve:
+    def test_a_failed_read_after_resolve_is_rc2_not_an_empty_list(self, tmp_path):
+        """r7f F4: python raises on a read failure after resolve; the shell
+        lib must not answer rc 0 with an empty list."""
+        home, _ = _tree(tmp_path, {"home/.config/meshforge/fleet_hosts": "g\n"})
+        fake = tmp_path / "bin"
+        fake.mkdir()
+        (fake / "sed").write_text("#!/bin/sh\necho 'sed: read error' >&2\nexit 4\n")
+        (fake / "sed").chmod(0o755)
+        out, err = _run_shell_rc("/opt/meshforge", {
+            "HOME": str(home),
+            "PATH": f"{fake}:{os.environ.get('PATH', '/usr/bin:/bin')}"})
+        assert out["rc"] == "2", (out, err)
+        assert out["file"] == "" and "fleet_hosts" in out["err"]

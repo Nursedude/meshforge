@@ -95,7 +95,13 @@ else
   # box that is not the manager lands here, because fleet_hosts is authored on
   # the manager and mirrored nowhere (verified 2026-07-28: moc/moc1/moc3 have
   # no such file). The gate was self-certifying on 8 of 9 boxes.
-  BOXES="$SELF"; BOXES_SRC="SELF ONLY — no fleet_hosts found, fleet legs cover 1 box"
+  if [ -n "${FLEET_HOSTS_ERROR:-}" ]; then
+    # r7f F6: the list EXISTS (or cannot be checked) — "not found" would send
+    # the operator to create a file that is already there.
+    BOXES="$SELF"; BOXES_SRC="SELF ONLY — $FLEET_HOSTS_ERROR; fleet legs cover 1 box"
+  else
+    BOXES="$SELF"; BOXES_SRC="SELF ONLY — no fleet_hosts found, fleet legs cover 1 box"
+  fi
   FLEET_SSOT=0
 fi
 

@@ -163,7 +163,16 @@ def build_fleet_dup_rollup(
         local_host = socket.gethostname()
     if hosts is None:
         hf = fleet_hosts_file()
-        hosts = parse_fleet_hosts(hf.read_text(encoding="utf-8")) if hf else []
+        hosts = []
+        if hf:
+            # errors="replace" like the shared resolver; a read failure is the
+            # r7e #2 refusal, never a traceback or an empty fleet (r7f F5).
+            from utils.fleet_hosts import FleetHostsUnreadable
+            try:
+                text = hf.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                raise FleetHostsUnreadable(hf, exc.strerror or str(exc)) from exc
+            hosts = parse_fleet_hosts(text)
         # Include the local box (the manager may itself be a gateway); the
         # fleet_hosts file excludes self by convention.
         if local_host not in hosts:

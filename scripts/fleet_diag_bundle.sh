@@ -65,6 +65,7 @@ if [[ -z "$HOSTS" ]]; then
     # Resolve in THIS shell (not a $(...) subshell) so the lib's result
     # variables survive to be read here.
     if ! fleet_hosts_resolve "/opt/meshforge"; then
+        [ -n "${FLEET_HOSTS_ERROR:-}" ] && exit 2   # r7f F6: lib said why
         echo "$SELF: no host list found — set MESHFORGE_FLEET_HOSTS or create ~/.config/meshforge/fleet_hosts" >&2
         exit 2
     fi

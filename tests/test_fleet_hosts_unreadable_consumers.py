@@ -129,24 +129,60 @@ def test_rollup_pane_is_unknown_not_a_fleet_of_one(raising, capsys):
     assert rollup.main(["--deep"]) == 2
 
 
-def test_mini_daemon_refuses_to_guess_a_preset(raising):
+def test_mini_daemon_refuses_only_when_the_list_decides_the_preset(raising, monkeypatch):
+    """r7f F1: with NATS configured the list picks standalone vs fleet, so an
+    unreadable list must refuse the start."""
     from mini_dudeai import daemon
+    monkeypatch.setenv("MINI_DUDEAI_NATS_SERVER", "nats://x:4222")
     with pytest.raises(SystemExit) as ei:
         daemon.main(["--preset", "auto"])
     assert str(BAD) in str(ei.value.code)
 
 
-def test_mini_preset_rule_raises_for_the_watchdog_to_see(raising):
-    """The watchdog probe catches this as `unresolvable` — it must RAISE,
-    never resolve to a preset."""
+def test_mini_preset_rule_raises_when_nats_makes_the_list_decisive(raising):
+    """The watchdog probe catches this as `unresolvable`."""
     from mini_dudeai.daemon import _resolve_preset_name
     with pytest.raises(FleetHostsUnreadable):
-        _resolve_preset_name("auto", {"HOME": "/x"}, announce=False)
+        _resolve_preset_name("auto", {"HOME": "/x", "MINI_DUDEAI_NATS_SERVER": "n"},
+                             announce=False)
+
+
+def test_mini_preset_rule_without_nats_starts_the_fleet_preset_and_says_why(
+        raising, capsys):
+    """r7f F1: without NATS both branches of the rule land on meshforge_fleet,
+    so the list cannot change the answer — refusing would blind the night
+    watcher over a permission slip. It starts, and the journal line names the
+    unreadable list."""
+    from mini_dudeai.daemon import _resolve_preset_name
+    assert _resolve_preset_name("auto", {"HOME": "/x"}) == "meshforge_fleet"
+    out = capsys.readouterr().out
+    assert str(BAD) in out and "UNREADABLE" in out
 
 
 def test_nomadnet_watch_import_default_is_the_unreadable_path(raising):
     from monitoring import nomadnet_silence_watch as nsw
     assert nsw._default_fleet_hosts() == BAD
+
+
+def test_nomadnet_watch_set_but_missing_override_is_not_replaced_by_home(
+        monkeypatch, tmp_path):
+    """r7f F3: the authoritative override pointing nowhere must stay the
+    default (so the run refuses) — never the operator's generic list."""
+    from monitoring import nomadnet_silence_watch as nsw
+    monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(tmp_path / "missing"))
+    monkeypatch.delenv("FLEET_HOSTS", raising=False)
+    assert nsw._default_fleet_hosts() == tmp_path / "missing"
+
+
+def test_nomadnet_watch_directory_list_gets_the_refusal(monkeypatch, tmp_path, capsys):
+    """r7f F7: a directory at the list path is unreadable, not 'create one'."""
+    from monitoring import nomadnet_silence_watch as nsw
+    d = tmp_path / "fleet_hosts"
+    d.mkdir()
+    monkeypatch.setattr(sys, "argv", ["nsw", "--fleet-hosts", str(d)])
+    assert nsw.main() == 2
+    err = capsys.readouterr().err
+    assert "unreadable" in err and "create" not in err
 
 
 def test_watchdog_orphaned_exclusion_probe_is_indeterminate(raising, tmp_path):
@@ -158,6 +194,44 @@ def test_watchdog_orphaned_exclusion_probe_is_indeterminate(raising, tmp_path):
     assert probe_mini_rule_orphaned_exclusion(mini_home=str(tmp_path)) is None
     d = collect_dispositions()["mini_rule_orphaned_exclusion"]
     assert d["disp"] == "indeterminate" and str(BAD) in d["reason"]
+
+
+def test_watchdog_probe_other_resolver_errors_are_indeterminate_too(monkeypatch, tmp_path):
+    """r7f F10: ANY resolver failure leaves the peer universe unknowable —
+    never an empty one that calls owned exclusions orphaned."""
+    from utils.watchdog_probe_core import collect_dispositions, reset_dispositions
+    from utils.watchdog_probes_mini import probe_mini_rule_orphaned_exclusion
+
+    def bad(*_a, **_k):
+        raise ValueError("embedded null byte")
+    monkeypatch.setattr(fh, "resolve_fleet_hosts", bad)
+    (tmp_path / "mini_dudeai_rules.json").write_text(json.dumps({"rules": [
+        {"id": "r1", "match": {"kind": "x", "subject_exclude_globs": ["*a*"]}}]}))
+    reset_dispositions()
+    assert probe_mini_rule_orphaned_exclusion(mini_home=str(tmp_path)) is None
+    assert collect_dispositions()["mini_rule_orphaned_exclusion"]["disp"] == "indeterminate"
+
+
+def test_fleet_dup_collector_bad_bytes_and_read_errors_refuse(tmp_path, monkeypatch, capsys):
+    """r7f F5: its own strict read turned a stray byte into a traceback."""
+    import utils.fleet_dup_collector as fdc
+    hf = tmp_path / "fleet_hosts"
+    hf.write_bytes(b"moc  # caf\xe9\nmoc1\n")
+    monkeypatch.setattr(fdc, "fleet_hosts_file", lambda: hf)
+    seen = {}
+
+    def views(hosts, **_k):
+        seen["hosts"] = list(hosts)
+        return [], []
+    monkeypatch.setattr(fdc, "collect_box_views", views)
+    fdc.build_fleet_dup_rollup(local_host="self")
+    assert seen["hosts"] == ["self", "moc", "moc1"]
+
+    def boom(self, *a, **k):
+        raise PermissionError(13, "denied")
+    monkeypatch.setattr(Path, "read_text", boom)
+    with pytest.raises(FleetHostsUnreadable):
+        fdc.build_fleet_dup_rollup(local_host="self")
 
 
 def test_fleet_truth_build_never_raises_and_says_why(raising, monkeypatch):

@@ -40,6 +40,7 @@ anywhere on the line, so ``"moc1  # retired"`` parses as host ``moc1``.
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 from typing import List, Mapping, Optional, Tuple
 
@@ -69,37 +70,43 @@ class FleetHostsUnreadable(OSError):
         self.path = Path(path)
         self.reason = reason
         super().__init__(
-            "fleet host list %s exists but is unreadable (%s) - refusing to "
-            "fall through to another list" % (self.path, reason))
+            "fleet host list %s is unreadable (%s) - refusing to fall "
+            "through to another list" % (self.path, reason))
 
 
-def _present(p: Path) -> bool:
-    """Something occupies the path — a dangling symlink counts."""
-    try:
-        return os.path.lexists(p)
-    except (OSError, ValueError):
-        return False
+#: A tier we cannot prove absent. Shared wording with the shell twin.
+UNCHECKABLE = "cannot be checked: a parent directory is not searchable"
 
 
 def _usable(p: Path) -> bool:
-    """True = a readable regular file; False = absent; raises when present
-    but unusable."""
+    """True = a readable regular file; False = provably absent (ENOENT, or a
+    non-directory where a parent should be); raises when present but
+    unusable OR uncheckable. Explicit ``lstat`` rather than ``Path.is_file``
+    — the latter's error handling differs by Python version (3.14 swallows
+    EACCES), and a tier under an unsearchable directory must never read as
+    absent (r7f F2: the shell twin did exactly that)."""
     try:
-        if p.is_file() and os.access(p, os.R_OK):
-            return True
-    except OSError as exc:
-        raise FleetHostsUnreadable(p, exc.strerror or str(exc)) from exc
-    if not _present(p):
+        st = os.lstat(p)
+    except (FileNotFoundError, NotADirectoryError):
         return False
-    if p.is_symlink() and not p.exists():
-        why = "dangling symlink"
-    elif p.is_dir():
-        why = "a directory, not a file"
-    elif p.exists() and not p.is_file():
-        why = "not a regular file"
-    else:
-        why = "permission denied"
-    raise FleetHostsUnreadable(p, why)
+    except PermissionError as exc:
+        raise FleetHostsUnreadable(p, UNCHECKABLE) from exc
+    except (OSError, ValueError) as exc:
+        raise FleetHostsUnreadable(p, getattr(exc, "strerror", None) or str(exc)) from exc
+    if stat.S_ISLNK(st.st_mode):
+        try:
+            st = os.stat(p)
+        except (FileNotFoundError, NotADirectoryError) as exc:
+            raise FleetHostsUnreadable(p, "dangling symlink") from exc
+        except OSError as exc:
+            raise FleetHostsUnreadable(p, "symlink target " + UNCHECKABLE) from exc
+    if stat.S_ISDIR(st.st_mode):
+        raise FleetHostsUnreadable(p, "a directory, not a file")
+    if not stat.S_ISREG(st.st_mode):
+        raise FleetHostsUnreadable(p, "not a regular file")
+    if not os.access(p, os.R_OK):
+        raise FleetHostsUnreadable(p, "permission denied")
+    return True
 
 
 def resolve_fleet_hosts_file(

@@ -74,6 +74,7 @@ rsh() { timeout "${2:-60}" ssh "${SSH_OPTS[@]}" "$1" "${3:-true}" 2>/dev/null; }
 
 all_hosts() {
     if fleet_hosts_resolve "$REPO"; then printf '%s\n' "$FLEET_HOSTS_LIST"
+    elif [ -n "${FLEET_HOSTS_ERROR:-}" ]; then die "$FLEET_HOSTS_ERROR"  # r7f F6
     else die "no fleet_hosts list found; name boxes explicitly"; fi
 }
 

@@ -642,21 +642,15 @@ def probe_mini_rule_orphaned_exclusion(
         # verdict must not depend on which boxes this fleet happens to have.
         if fleet_hosts is None and not injected:
             try:
-                from utils.fleet_hosts import (FleetHostsUnreadable,
-                                               resolve_fleet_hosts)
-            except Exception:
-                FleetHostsUnreadable, resolve_fleet_hosts = None, None
-            if resolve_fleet_hosts is not None:
-                try:
-                    fleet_hosts = resolve_fleet_hosts()
-                except FleetHostsUnreadable as exc:
-                    # r7e #2: the peer universe is unknowable, not empty — an
-                    # empty one would call owned exclusions orphaned.
-                    note_disposition(cls, "indeterminate",
-                                     reason=f"peer universe unknowable: {exc}")
-                    return None
-                except Exception:
-                    fleet_hosts = None
+                from utils.fleet_hosts import resolve_fleet_hosts
+                fleet_hosts = resolve_fleet_hosts()
+            except Exception as exc:
+                # r7e #2 / r7f F10: ANY failure leaves the peer universe
+                # unknowable, not empty — an empty one calls owned exclusions
+                # orphaned (measured: a false `degraded` before the fix).
+                note_disposition(cls, "indeterminate",
+                                 reason=f"peer universe unknowable: {exc}")
+                return None
         universe = _mini_peer_universe(observed, fleet_hosts or [])
 
         rules = [r for r in live_rules if isinstance(r, dict) and r.get("id")]

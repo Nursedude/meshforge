@@ -58,6 +58,7 @@ esac
 # honors this script's documented $FLEET_HOSTS override as the legacy alias.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fleet_hosts.sh"
 if ! fleet_hosts_resolve "/opt/meshforge"; then
+    [ -n "${FLEET_HOSTS_ERROR:-}" ] && exit 2   # r7f F6: lib said why on stderr
     echo "error: no fleet_hosts file found." >&2
     echo "  Set \$FLEET_HOSTS or create ~/.config/meshforge/fleet_hosts" >&2
     exit 2

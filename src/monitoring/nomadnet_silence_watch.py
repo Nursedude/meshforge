@@ -69,6 +69,13 @@ def _default_fleet_hosts() -> Path:
         # UNREADABLE path itself so a run without --boxes reads it, fails,
         # and refuses — never a lower tier's list (r7e #2).
         return e.path
+    if p is None:
+        # r7f F3: a SET-but-missing override is authoritative — keep it as the
+        # default so the run refuses, never the operator's generic list.
+        from utils.fleet_hosts import ENV_OVERRIDE_KEYS
+        for key in ENV_OVERRIDE_KEYS:
+            if os.environ.get(key):
+                return Path(os.environ[key])
     return p if p else _real_home() / ".config" / "meshforge" / "fleet_hosts"
 
 
@@ -194,7 +201,7 @@ def main() -> int:
         boxes = _boxes_from_fleet_hosts(Path(args.fleet_hosts))
     if not boxes:
         fh = Path(args.fleet_hosts)
-        if os.path.lexists(fh) and not os.access(fh, os.R_OK):
+        if os.path.lexists(fh) and not (fh.is_file() and os.access(fh, os.R_OK)):
             # r7e #2: present-but-unreadable is not "create one".
             print(f"error: fleet host list {fh} exists but is unreadable — "
                   f"refusing to guess the fleet. Fix its permissions or "

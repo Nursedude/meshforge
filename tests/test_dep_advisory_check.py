@@ -1924,7 +1924,10 @@ class TestFleetHostListDelegates:
     # are the wrong thing to go check.
     def test_a_missing_override_says_missing(self, home, monkeypatch):
         monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(home / "nope"))
-        assert "is missing or unreadable" in dac.read_fleet_hosts()[1]
+        err = dac.read_fleet_hosts()[1]
+        # r7f F9: an unreadable override now raises earlier (its own message);
+        # this branch can only mean MISSING — never send the operator to chmod.
+        assert "is missing" in err and "unreadable" not in err, err
 
     # r7e #7: the shared resolver reads with errors="replace"; a stray byte
     # in a comment must not crash the sweep before it can write UNKNOWN.

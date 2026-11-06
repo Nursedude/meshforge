@@ -556,8 +556,9 @@ def read_fleet_hosts(explicit: Optional[str] = None) -> Tuple[List[str], Optiona
         if found is None:
             for key in FLEET_ENV_OVERRIDE_KEYS:
                 if os.environ.get(key):
-                    return [], ("fleet host list override %s=%s is missing or "
-                                "unreadable (authoritative - no fall-through)"
+                    # Unreadable raised above (r7e #2); here it is MISSING.
+                    return [], ("fleet host list override %s=%s is missing "
+                                "(authoritative - no fall-through)"
                                 % (key, os.environ[key]))
             return [], "no fleet host list found (looked in ~/.config/meshforge and /etc/meshforge)"
         path = str(found)

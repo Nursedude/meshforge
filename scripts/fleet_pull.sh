@@ -76,6 +76,7 @@ if ! GIT_HEAL_SRC="$(cat "$GIT_HEAL_LIB" 2>/dev/null)" || [ -z "$GIT_HEAL_SRC" ]
 fi
 
 if ! fleet_hosts_resolve "$REPO_DIR"; then
+    [ -n "${FLEET_HOSTS_ERROR:-}" ] && exit 2   # r7f F6: lib said why on stderr
     echo "fleet_pull: no fleet_hosts list found (set \$MESHFORGE_FLEET_HOSTS or create ~/.config/meshforge/fleet_hosts[.$REPO_BASE])." >&2
     exit 2
 fi

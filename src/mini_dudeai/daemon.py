@@ -71,8 +71,23 @@ def _resolve_preset_name(name: str, env=None, *, announce: bool = True) -> str:
         return name
     from .rollup import resolve_fleet_hosts
     env = os.environ if env is None else env
-    hosts = resolve_fleet_hosts(env=env)
-    if hosts:
+    from utils.fleet_hosts import FleetHostsUnreadable
+    try:
+        hosts = resolve_fleet_hosts(env=env)
+        unreadable = None
+    except FleetHostsUnreadable as e:
+        # r7f F1: refuse ONLY when the list decides the answer. Without NATS
+        # every branch below lands on meshforge_fleet, so refusing would just
+        # blind the night watcher over a permission slip.
+        if env.get("MINI_DUDEAI_NATS_SERVER"):
+            raise
+        hosts, unreadable = [], e
+    if unreadable is not None:
+        resolved = "meshforge_fleet"
+        why = (f"fleet host list UNREADABLE ({unreadable}); without "
+               f"MINI_DUDEAI_NATS_SERVER the list cannot change the preset - "
+               f"fix the list")
+    elif hosts:
         resolved, why = "meshforge_fleet", f"{len(hosts)} fleet host(s) declared"
     elif env.get("MINI_DUDEAI_NATS_SERVER"):
         resolved, why = "standalone", "no fleet hosts declared; NATS configured"

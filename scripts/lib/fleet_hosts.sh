@@ -50,19 +50,38 @@
 #
 # set -u safe. POSIX sh compatible (no arrays, no bashisms).
 
-# _fh_usable PATH — 0 readable regular file; 1 absent; 2 present but
-# unusable (sets FLEET_HOSTS_ERROR and says it on stderr). Mirrors
-# utils.fleet_hosts._usable.
+_fh_refuse() {   # PATH WHY
+  FLEET_HOSTS_ERROR="fleet host list $1 is unreadable ($2) - refusing to fall through to another list"
+  printf 'fleet_hosts: %s\n' "$FLEET_HOSTS_ERROR" >&2
+  return 2
+}
+
+# _fh_usable PATH — 0 readable regular file; 1 provably absent; 2 present
+# but unusable, OR uncheckable (sets FLEET_HOSTS_ERROR, says it on stderr).
+# Mirrors utils.fleet_hosts._usable — same reasons, same words.
 _fh_usable() {
   if [ -f "$1" ] && [ -r "$1" ]; then return 0; fi
-  if [ ! -e "$1" ] && [ ! -L "$1" ]; then return 1; fi
+  if [ ! -e "$1" ] && [ ! -L "$1" ]; then
+    # [ -e ] is also false when a parent cannot be searched (EACCES) — that
+    # is NOT absence (r7f F2: python refused, this lib fell through). Walk up
+    # to the nearest directory that answers: searchable = the path is truly
+    # absent below it; not searchable = we cannot know.
+    _fh_d="$(dirname -- "$1")"
+    while :; do
+      if [ -d "$_fh_d" ]; then
+        [ -x "$_fh_d" ] && return 1
+        _fh_refuse "$1" "cannot be checked: a parent directory is not searchable"
+        return 2
+      fi
+      { [ "$_fh_d" = "/" ] || [ "$_fh_d" = "." ]; } && return 1
+      _fh_d="$(dirname -- "$_fh_d")"
+    done
+  fi
   if [ -L "$1" ] && [ ! -e "$1" ]; then _fh_why="dangling symlink"
   elif [ -d "$1" ]; then _fh_why="a directory, not a file"
   elif [ ! -f "$1" ]; then _fh_why="not a regular file"
   else _fh_why="permission denied"; fi
-  FLEET_HOSTS_ERROR="fleet host list $1 exists but is unreadable ($_fh_why) - refusing to fall through to another list"
-  printf 'fleet_hosts: %s\n' "$FLEET_HOSTS_ERROR" >&2
-  return 2
+  _fh_refuse "$1" "$_fh_why"
 }
 
 fleet_hosts_resolve() {
@@ -97,6 +116,13 @@ fleet_hosts_resolve() {
   # implementations of one SSOT disagreeing on the same file is the exact drift
   # this shared lib exists to end (honest_failure_modes #5), and it would have
   # split the deploy tools from the gate that verifies them.
-  FLEET_HOSTS_LIST="$(sed 's/#.*//' "$FLEET_HOSTS_FILE" | tr -s ' \t\r' '\n' | grep -v '^$')"
+  # The read itself is checked (r7f F4): a failure here used to answer rc 0
+  # with an EMPTY list ("the file lists nobody") while python raised.
+  if ! _fh_raw="$(sed 's/#.*//' "$FLEET_HOSTS_FILE")"; then
+    _fh_refuse "$FLEET_HOSTS_FILE" "read failed"
+    FLEET_HOSTS_FILE=""
+    return 2
+  fi
+  FLEET_HOSTS_LIST="$(printf '%s\n' "$_fh_raw" | tr -s ' \t\r' '\n' | grep -v '^$')"
   return 0
 }
