@@ -361,6 +361,23 @@ _EXAMPLE = Path(__file__).resolve().parents[2] / "contrib" / "fleet" / "fleet_ho
 def explain_absent(repo_dir: Optional[str] = None, *,
                    env: Optional[Mapping[str, str]] = None,
                    etc_dir: str = DEFAULT_ETC_DIR) -> Tuple[str, List[str]]:
+    """THE words for "no list resolved" - see ``_explain_absent``. NEVER
+    raises and the why is always ONE line (review 2026-11-06: callers put it
+    in a one-line status file, and a wording failure must not turn a "could
+    not check" refusal into a traceback or leave a stale verdict standing)."""
+    try:
+        why, advice = _explain_absent(repo_dir, env=env, etc_dir=etc_dir)
+    except Exception as exc:   # wording only - the refusal itself must survive
+        why = "no fleet list found (the reason could not be worded: %s: %s)" % (
+            type(exc).__name__, exc)
+        advice = []   # no advice beats advice built on inputs we could not read
+    flat = lambda s: s.replace("\r", " ").replace("\n", " ")
+    return flat(why), [flat(a) for a in advice]
+
+
+def _explain_absent(repo_dir: Optional[str] = None, *,
+                   env: Optional[Mapping[str, str]] = None,
+                   etc_dir: str = DEFAULT_ETC_DIR) -> Tuple[str, List[str]]:
     """THE words for "no list resolved": ``(why, advice_lines)``. Every
     consumer (``--shell`` rc 10 -> the shell lib's ``fleet_hosts_absent_say``,
     the rollup pane) says these — never its own hand-typed advice.

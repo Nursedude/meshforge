@@ -1927,7 +1927,11 @@ class TestFleetHostListDelegates:
         err = dac.read_fleet_hosts()[1]
         # r7f F9: an unreadable override now raises earlier (its own message);
         # this branch can only mean MISSING — never send the operator to chmod.
-        assert "is missing" in err and "unreadable" not in err, err
+        # 2026-11-06: the words are THE resolver's (explain_absent) — the
+        # meaning pinned here is unchanged: MISSING + authoritative, the path
+        # named, never "unreadable".
+        assert "does not exist" in err and "authoritative" in err, err
+        assert str(home / "nope") in err and "unreadable" not in err, err
 
     # r7e #7: the shared resolver reads with errors="replace"; a stray byte
     # in a comment must not crash the sweep before it can write UNKNOWN.

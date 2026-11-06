@@ -130,6 +130,7 @@ from utils.watchdog_probe_core import env_site_globs  # noqa: E402
 from utils import apt_lists  # noqa: E402
 from utils.fleet_hosts import (  # noqa: E402
     ENV_OVERRIDE_KEYS as FLEET_ENV_OVERRIDE_KEYS, FleetHostsUnreadable,
+    explain_absent,
     read_fleet_hosts_file, resolve_fleet_hosts_file)
 
 #: The reporter runs on boxes with no checkout on sys.path, so it carries the
@@ -554,13 +555,10 @@ def read_fleet_hosts(explicit: Optional[str] = None) -> Tuple[List[str], Optiona
         except FleetHostsUnreadable as exc:   # r7e #2: never a fall-through
             return [], str(exc)
         if found is None:
-            for key in FLEET_ENV_OVERRIDE_KEYS:
-                if os.environ.get(key):
-                    # Unreadable raised above (r7e #2); here it is MISSING.
-                    return [], ("fleet host list override %s=%s is missing "
-                                "(authoritative - no fall-through)"
-                                % (key, os.environ[key]))
-            return [], "no fleet host list found (looked in ~/.config/meshforge and /etc/meshforge)"
+            # THE resolver's one-line why (2026-11-06; the hand-typed text
+            # omitted the per-repo tiers). The why ONLY: this lands in the
+            # one-line status file, so never the multi-line advice.
+            return [], explain_absent()[0]
         path = str(found)
     try:
         # THE reader (r11): errors="replace" for comment bytes; a corrupt
@@ -568,6 +566,10 @@ def read_fleet_hosts(explicit: Optional[str] = None) -> Tuple[List[str], Optiona
         hosts = read_fleet_hosts_file(path)
     except FleetHostsUnreadable as exc:
         return [], str(exc)
+    except FileNotFoundError:
+        # review 2026-11-06: a missing --hosts-file is MISSING, never
+        # "unreadable" (that sends the operator to chmod - r7e #8)
+        return [], "fleet host list %s does not exist" % path
     except OSError as exc:
         return [], "fleet host list %s unreadable: %s" % (path, exc)
     if not hosts:

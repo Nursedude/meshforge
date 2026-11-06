@@ -221,3 +221,139 @@ def test_rollup_pane_absent_list_still_explains(monkeypatch, tmp_path, capsys):
     assert rollup.main([]) == 0
     out = capsys.readouterr().out
     assert str(missing) in out and "authoritative" in out, out
+
+
+# ── the python consumers (queue item, 2026-11-06) ───────────────────────
+# The TUI's tools_view is deliberately NOT here: its empty `why` is
+# load-bearing (tools_note line "no list anywhere and none named: the head
+# says STANDALONE") and the TUI wizard is itself the create path.
+
+_LOADED: dict = {}
+
+
+def _load_script(name: str):
+    """Loaded ONCE per session (review 2026-11-06: a fresh exec per test left
+    several live copies, and a patch on one never reaches another)."""
+    if name in _LOADED:
+        return _LOADED[name]
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        f"_absent_{name}", ROOT / "scripts" / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        sys.modules.pop(spec.name, None)
+        raise
+    _LOADED[name] = mod
+    return mod
+
+
+def _no_subprocess(monkeypatch, mod):
+    """Even if a list DID resolve under some code version, nothing runs."""
+    import subprocess as _sp
+
+    def refuse(*a, **k):
+        raise AssertionError("subprocess called from a no-list test: %r" % (a[:1],))
+    monkeypatch.setattr(_sp, "run", refuse)
+    if hasattr(mod, "subprocess"):
+        monkeypatch.setattr(mod.subprocess, "run", refuse)
+
+
+def _pin_no_list(monkeypatch, tmp_path, override: bool):
+    import utils.fleet_hosts as fh
+    for k in fh.ENV_OVERRIDE_KEYS:
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("utils.paths.get_real_user_home", lambda: tmp_path / "home")
+    if override:
+        monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(tmp_path / "x.invalid"))
+    # no-override callers also stub resolve -> None: a real /etc tier on this
+    # box must never make a list resolve here
+
+
+def test_rns_alignment_under_override_names_it_not_tiers_it_never_checked(
+        monkeypatch, tmp_path, capsys):
+    ra = _load_script("rns_alignment")
+    _no_subprocess(monkeypatch, ra)
+    _pin_no_list(monkeypatch, tmp_path, override=True)
+    assert ra._audit_fleet() == 2
+    err = capsys.readouterr().err
+    assert str(tmp_path / "x.invalid") in err and "authoritative" in err, err
+    # no tier list at all - the override is the only thing consulted
+    assert "checked " not in err and ".config/meshforge" not in err, err
+
+
+def test_rns_alignment_no_override_says_the_resolvers_words(monkeypatch, tmp_path, capsys):
+    import utils.fleet_hosts as fh
+    ra = _load_script("rns_alignment")
+    _no_subprocess(monkeypatch, ra)
+    _pin_no_list(monkeypatch, tmp_path, override=False)
+    monkeypatch.setattr(ra, "resolve_fleet_hosts_file", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(fh, "resolve_fleet_hosts_file", lambda *a, **k: None)
+    assert ra._audit_fleet() == 2
+    err = capsys.readouterr().err
+    assert "checked " in err and "Create one at" in err, err
+
+
+def test_dep_advisory_reason_is_the_resolvers_one_line_why(monkeypatch, tmp_path):
+    """The reason lands in ~/.meshforge-dep-advisories (a status file read
+    as ONE line) — so the why only, never the multi-line advice."""
+    import utils.fleet_hosts as fh
+    dac = _load_script("dep_advisory_check")
+    _pin_no_list(monkeypatch, tmp_path, override=False)
+    monkeypatch.setattr(dac, "resolve_fleet_hosts_file", lambda *a, **k: None)
+    hosts, err = dac.read_fleet_hosts()
+    want, _advice = fh.explain_absent()
+    assert hosts == [] and err == want, (err, want)
+    assert "\n" not in err and "Create" not in err
+
+
+def test_dep_advisory_override_reason_unchanged_in_meaning(monkeypatch, tmp_path):
+    dac = _load_script("dep_advisory_check")
+    _pin_no_list(monkeypatch, tmp_path, override=True)
+    monkeypatch.setattr(dac, "resolve_fleet_hosts_file", lambda *a, **k: None)
+    hosts, err = dac.read_fleet_hosts()
+    assert hosts == [] and str(tmp_path / "x.invalid") in err and "authoritative" in err
+
+
+def test_explain_absent_never_raises_and_says_so(monkeypatch):
+    """review 2026-11-06 #1/#2: a wording failure must not become a
+    traceback (rns_alignment rc 1 = 'misaligned') or skip the UNKNOWN write
+    (dep_advisory leaves a stale 'clean' standing)."""
+    import utils.fleet_hosts as fh
+
+    def boom(*a, **k):
+        raise RuntimeError("no home for this uid")
+    monkeypatch.setattr(fh, "_explain_absent", boom)
+    why, advice = fh.explain_absent()
+    assert "could not be worded" in why and "RuntimeError" in why
+    assert advice == []
+
+
+def test_the_why_is_one_line_even_from_a_newline_home(tmp_path):
+    """review #5: the why lands in a one-line status file."""
+    odd = tmp_path / "a\nb"
+    why, advice = explain_absent("/opt/meshforge", env={"HOME": str(odd)},
+                                 etc_dir=str(tmp_path / "etc"))
+    for line in [why] + advice:
+        assert "\n" not in line and "\r" not in line, line
+
+
+def test_dep_advisory_missing_hosts_file_is_missing_not_unreadable(tmp_path):
+    """review #3 (pre-existing, same function): --hosts-file /typo."""
+    dac = _load_script("dep_advisory_check")
+    hosts, err = dac.read_fleet_hosts(explicit=str(tmp_path / "typo.invalid"))
+    assert hosts == [] and "does not exist" in err and "unreadable" not in err, err
+
+
+def test_dep_advisory_survives_a_wording_failure(monkeypatch, tmp_path):
+    dac = _load_script("dep_advisory_check")
+    _pin_no_list(monkeypatch, tmp_path, override=False)
+    monkeypatch.setattr(dac, "resolve_fleet_hosts_file", lambda *a, **k: None)
+    import utils.fleet_hosts as fh
+    monkeypatch.setattr(fh, "_explain_absent",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    hosts, err = dac.read_fleet_hosts()
+    assert hosts == [] and "could not be worded" in err

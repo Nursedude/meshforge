@@ -56,7 +56,7 @@ def _audit_fleet() -> int:
     # Resolution + parsing via utils.fleet_hosts, THE resolver (was one of
     # ~13 independent chain copies, and this one also used raw Path.home(),
     # which under sudo reads /root's config — the MF001 class; 2026-07-29).
-    from utils.fleet_hosts import (FleetHostsUnreadable,
+    from utils.fleet_hosts import (FleetHostsUnreadable, explain_absent,
                                    read_fleet_hosts_file,
                                    resolve_fleet_hosts_file)
     try:
@@ -65,8 +65,13 @@ def _audit_fleet() -> int:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
     if hosts_file is None:
-        print("ERROR: no fleet_hosts list found (checked $MESHFORGE_FLEET_HOSTS, "
-              "~/.config/meshforge/, /etc/meshforge/)", file=sys.stderr)
+        # THE resolver's words (2026-11-06): the hand-typed "checked
+        # $MESHFORGE_FLEET_HOSTS, ~/.config/meshforge/, /etc/meshforge/" named
+        # tiers a set override never lets it check.
+        why, advice = explain_absent()
+        print("ERROR: " + why, file=sys.stderr)
+        for line in advice:
+            print(line, file=sys.stderr)
         return 2
     try:
         hosts = read_fleet_hosts_file(hosts_file)
