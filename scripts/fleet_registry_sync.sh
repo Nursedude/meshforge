@@ -56,7 +56,19 @@ REG="$HOME/.config/meshforge/fleet_naming.json"
 REG_REL=".config/meshforge/fleet_naming.json"
 # Env override exists so the skip/unreachable legs can be DRILLED against a
 # planted host list (guard_drill doctrine) without touching the real one.
-HOSTS_FILE="${FLEET_REGISTRY_SYNC_HOSTS:-$HOME/.config/meshforge/fleet_hosts}"
+# THE shared resolver (r13, Fable r12 #1-#3): this was a private reader —
+# `[ -f ]` + `done < file` read an UNREADABLE list as zero hosts (a vacuous
+# OK), a hard-coded ~/.config path skipped the override/per-repo/etc tiers,
+# and `tr -d [:space:]` glued "a b" into ONE host. The script's own drill
+# override stays authoritative, passed to the lib as the override.
+. "$HERE/lib/fleet_hosts.sh"
+_fh_rc=0
+if [ -n "${FLEET_REGISTRY_SYNC_HOSTS:-}" ]; then
+    MESHFORGE_FLEET_HOSTS="$FLEET_REGISTRY_SYNC_HOSTS" fleet_hosts_resolve "$(cd "$HERE/.." && pwd)" || _fh_rc=$?
+else
+    fleet_hosts_resolve "$(cd "$HERE/.." && pwd)" || _fh_rc=$?
+fi
+HOSTS_FILE="${FLEET_HOSTS_FILE:-${FLEET_REGISTRY_SYNC_HOSTS:-the fleet host list}}"
 LOCK="${FLEET_REGISTRY_SYNC_LOCK:-${TMPDIR:-/tmp}/fleet_registry_sync.lock}"
 SSH_OPTS=(-o ConnectTimeout=10 -o BatchMode=yes)
 
@@ -67,8 +79,17 @@ say() { "$VERDICT" "$NAME" "$1" "$2"; }
 exec 9>"$LOCK" 2>/dev/null || true
 flock -w 30 9 2>/dev/null || true
 
-if [ ! -f "$HOSTS_FILE" ]; then
-    say FAIL "no fleet_hosts at $HOSTS_FILE — this organ runs on the manager only"
+if [ "$_fh_rc" = 2 ]; then
+    say FAIL "$FLEET_HOSTS_ERROR"
+    exit 0
+fi
+if [ "$_fh_rc" != 0 ]; then
+    say FAIL "${FLEET_HOSTS_WHY:-no fleet host list} — this organ runs on the manager only"
+    exit 0
+fi
+if [ -z "$FLEET_HOSTS_LIST" ]; then
+    # zero hosts must not read "every fleet copy matches" (r13)
+    say FAIL "fleet host list $HOSTS_FILE lists no hosts — nothing was checked"
     exit 0
 fi
 if [ ! -f "$REG" ]; then
@@ -114,7 +135,6 @@ fi
 # otherwise swallow the rest of the host list (first live run processed
 # exactly ONE box and reported it honestly — the verdict caught its own bug).
 while IFS= read -r host <&3; do
-    host="${host%%#*}"; host="$(echo "$host" | tr -d '[:space:]')"
     [ -z "$host" ] && continue
     if fleet_posture_is_silent "$host" 2>/dev/null; then
         dormant+=("$host")
@@ -159,7 +179,7 @@ while IFS= read -r host <&3; do
         failed+=("$host")
         echo "$host: heal transfer/swap failed"
     fi
-done 3< "$HOSTS_FILE"
+done 3< <(printf '%s\n' "$FLEET_HOSTS_LIST")
 
 join() { local IFS=,; echo "$*"; }
 

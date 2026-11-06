@@ -33,9 +33,12 @@ def _state(host, confirmed, *, ts=NOW, unconfirmable_sent=0):
 
 
 class TestParseFleetHosts:
-    def test_strips_comments_and_blanks(self):
-        txt = "# header\nmoc\n\nmoc3   # gateway\n  \nmoc5\n"
-        assert col.parse_fleet_hosts(txt) == ["moc", "moc3", "moc5"]
+    def test_strips_comments_and_blanks(self, tmp_path):
+        # r11: the collector reads through THE reader (no text parser of its own)
+        from utils.fleet_hosts import read_fleet_hosts_file
+        f = tmp_path / "fleet_hosts"
+        f.write_text("# header\nmoc\n\nmoc3   # gateway\n  \nmoc5\n")
+        assert read_fleet_hosts_file(f) == ["moc", "moc3", "moc5"]
 
 
 class TestCollectBoxViews:

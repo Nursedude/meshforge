@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -257,3 +258,470 @@ def test_mini_daemon_pinned_preset_never_imports_the_fleet_resolver(monkeypatch)
     with pytest.raises(SystemExit) as ei:
         daemon.main(["--preset", "meshforge_fleet"])
     assert ei.value.code == 0 and seen["name"] == "meshforge_fleet"
+
+
+
+# ── r11: every reader refuses a CORRUPT list by name (r10 + Fable) ───────
+
+
+@pytest.fixture
+def corrupt(tmp_path, monkeypatch):
+    """A corrupt list whose readable entry is a RESERVED name (.invalid,
+    RFC 2606) — never a real box. 2026-11-05: a red run of these tests
+    against the OLD code read 'moc1' as a one-box fleet and the nomadnet
+    watcher polled the real moc1 over ssh (read-only). A fixture must not
+    be able to reach the fleet under ANY version of the code."""
+    f = tmp_path / "fleet_hosts"
+    f.write_bytes(b"box.invalid\n\0\0\0\0\n")
+    monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(f))
+    monkeypatch.delenv("FLEET_HOSTS", raising=False)
+    # and no ssh can leave this process, whatever the code under test does
+    fake = tmp_path / "nossh"
+    fake.mkdir()
+    (fake / "ssh").write_text("#!/bin/sh\necho 'ssh stubbed by test' >&2\nexit 255\n")
+    (fake / "ssh").chmod(0o755)
+    monkeypatch.setenv("PATH", "%s:%s" % (fake, os.environ.get("PATH", "")))
+    return f
+
+
+def _noreach_env(corrupt):
+    return {"PATH": os.environ["PATH"], "HOME": str(corrupt.parent),
+            "MESHFORGE_FLEET_HOSTS": str(corrupt)}
+
+
+def test_r11_provision_role_fleet_check_is_not_ok_over_no_fleet(corrupt, capsys):
+    pr = _load("provision_role")
+    assert pr.main(["--fleet-check"]) == 2
+    err = capsys.readouterr().err
+    assert str(corrupt) in err and "not a host name" in err
+
+
+def test_r11_tui_membership_is_unreadable_never_standalone(corrupt):
+    from launcher_tui.handlers import _fleet_membership_core as fm
+    st = fm.membership_state(str(corrupt))
+    assert st["mode"] == "unreadable" and str(corrupt) in st["error"]
+    assert fm.membership_state(str(corrupt) + ".absent")["mode"] == "standalone"
+
+
+def test_r11_tui_edit_cannot_overwrite_a_list_it_could_not_read(corrupt):
+    from launcher_tui.handlers import _fleet_membership_core as fm
+    from launcher_tui.handlers.fleet_provision import FleetProvisionHandler
+    before = corrupt.read_bytes()
+    seen = []
+
+    class _D:
+        def msgbox(self, title, text): seen.append(text)
+        def inputbox(self, *a, **k): raise AssertionError("Edit opened over an unreadable list")
+
+    h = FleetProvisionHandler.__new__(FleetProvisionHandler)
+    h.ctx = type("C", (), {"dialog": _D()})()
+    h._membership_edit(fm, fm.membership_state(str(corrupt)))
+    assert corrupt.read_bytes() == before and "Refused" in seen[0]
+
+
+@pytest.mark.timeout(30)
+def test_r11_nomadnet_says_unreadable_not_create(corrupt, monkeypatch, capsys):
+    from monitoring import nomadnet_silence_watch as nsw
+    monkeypatch.setattr(sys, "argv", ["nsw", "--fleet-hosts", str(corrupt)])
+    assert nsw.main() == 2
+    err = capsys.readouterr().err
+    assert "not a host name" in err and "create" not in err
+
+
+def test_r11_nomadnet_a_comment_byte_is_harmless(tmp_path):
+    """Fable r10 #1 (VERIFIED): a 0xFF inside a comment was an uncaught
+    UnicodeDecodeError — the strict read."""
+    from monitoring import nomadnet_silence_watch as nsw
+    f = tmp_path / "fleet_hosts"
+    f.write_bytes(b"a.invalid  # caf\xff\nb.invalid\n")
+    assert nsw._boxes_from_fleet_hosts(f, include_self=False) == ["a.invalid", "b.invalid"]
+
+
+def test_r11_fleet_naming_audit_refuses_rc2_not_a_traceback(corrupt, monkeypatch, capsys):
+    fna = _load("fleet_naming_audit")
+    monkeypatch.setattr(fna, "fleet_hosts_file", lambda: corrupt)
+    assert fna.main([]) == 2
+    assert "not a host name" in capsys.readouterr().err
+
+
+def test_r11_fleet_posture_guard_names_the_refusal(corrupt):
+    fp = _load("fleet_posture")
+    bridges, note = fp._bridge_boxes()
+    assert bridges is None and "FleetHostsUnreadable" in note
+
+
+def test_r11_fleet_platform_refuses_a_one_box_fleet(corrupt, monkeypatch, capsys):
+    fpl = _load("fleet_platform")
+    monkeypatch.setattr(fpl, "load_catalog", lambda *_a: (object(), []))
+    monkeypatch.setattr(fpl, "load_declarations", lambda *_a: ({}, "ok"))
+    monkeypatch.setattr(fpl, "observe", lambda *_a: pytest.fail("observed a one-box fleet"))
+    args = type("A", (), {"catalog": None, "declared": None, "local": False})()
+    assert fpl.cmd_show(args) == 2
+    assert "not a host name" in capsys.readouterr().out
+
+
+def test_r11_dep_advisory_names_the_file(corrupt):
+    dac = _load("dep_advisory_check")
+    hosts, err = dac.read_fleet_hosts(str(corrupt))
+    assert hosts == [] and str(corrupt) in err and "not a host name" in err
+
+
+def test_r11_fleet_os_upgrade_survey_refuses_not_an_empty_survey(corrupt):
+    import subprocess
+    p = subprocess.run(["bash", str(ROOT / "scripts" / "fleet_os_upgrade.sh"), "survey"],
+                       capture_output=True, text=True, timeout=60, env=_noreach_env(corrupt))
+    assert p.returncode != 0 and "BOX" not in p.stdout, (p.returncode, p.stdout, p.stderr)
+    assert "not a host name" in p.stderr
+
+
+def test_r11_soak_check_refuses_rather_than_checking_nobody(corrupt):
+    import subprocess
+    p = subprocess.run(["bash", str(ROOT / "scripts" / "soak_check_fleet_2026_05_14.sh"), "check"],
+                       capture_output=True, text=True, timeout=60, env=_noreach_env(corrupt))
+    assert p.returncode == 2 and "refusing" in p.stderr, (p.returncode, p.stderr)
+
+
+
+# ── r13 (Fable r12): the three private SHELL readers + digest + TUI ──────
+
+
+def _sh_env(tmp_path, **extra):
+    nossh = tmp_path / "nossh"
+    nossh.mkdir(exist_ok=True)
+    (nossh / "ssh").write_text("#!/bin/sh\nexit 255\n")
+    (nossh / "ssh").chmod(0o755)
+    (nossh / "scp").write_text("#!/bin/sh\nexit 255\n")
+    (nossh / "scp").chmod(0o755)
+    stub = tmp_path / "verdict.sh"
+    stub.write_text('#!/bin/sh\necho "VERDICT $1 $2 $3"\n')
+    stub.chmod(0o755)
+    env = {"PATH": "%s:%s" % (nossh, os.environ.get("PATH", "")), "HOME": str(tmp_path),
+           "BOX_CAPTURE_VERDICT": str(stub)}
+    env.update(extra)
+    return env, stub
+
+
+def _run_script(name, env, *args):
+    import subprocess
+    return subprocess.run(["bash", str(ROOT / "scripts" / name), *args],
+                          capture_output=True, text=True, timeout=120, env=env)
+
+
+@pytest.mark.parametrize("name,var", [
+    ("fleet_registry_sync.sh", "FLEET_REGISTRY_SYNC_HOSTS"),
+    ("fleet_posture_sync.sh", "FLEET_POSTURE_SYNC_HOSTS"),
+])
+def test_r13_sync_organs_never_ok_over_an_unreadable_list(tmp_path, name, var):
+    """Fable r12 #1 (VERIFIED) / #3: `done 3< "$HOSTS_FILE"` on an
+    unreadable list ran ZERO times and the cron verdict read OK."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads a mode-000 file")
+    bad = tmp_path / "fl"
+    bad.write_text("a.invalid\n")
+    bad.chmod(0)
+    env, _ = _sh_env(tmp_path, **{var: str(bad)})
+    try:
+        p = _run_script(name, env)
+    finally:
+        bad.chmod(0o600)
+    both = p.stdout + p.stderr
+    assert "unreadable" in both and " OK " not in both, both
+
+
+def test_r13_box_capture_refuses_an_unreadable_list(tmp_path):
+    """Fable r12 #2 (VERIFIED): unreadable -> silently self-only."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads a mode-000 file")
+    bad = tmp_path / "fl"
+    bad.write_text("a.invalid\n")
+    bad.chmod(0)
+    env, _ = _sh_env(tmp_path, MESHFORGE_FLEET_HOSTS=str(bad),
+                     BOX_CAPTURE_ROOT=str(tmp_path / "dest"), BOX_CAPTURE_SELF="self.invalid")
+    try:
+        p = _run_script("box_config_capture.sh", env)
+    finally:
+        bad.chmod(0o600)
+    assert "VERDICT box_config_capture FAIL" in p.stdout and "unreadable" in p.stdout, p.stdout + p.stderr
+    assert not (tmp_path / "dest").exists() or not any((tmp_path / "dest").rglob("*.tgz"))
+
+
+def test_r13_digest_warns_on_an_empty_list(tmp_path):
+    """Fable r12 #9: a list with no hosts gave a quiet one-box digest."""
+    empty = tmp_path / "fl"
+    empty.write_text("# nobody yet\n")
+    env, _ = _sh_env(tmp_path, MESHFORGE_FLEET_HOSTS=str(empty), MESHFORGE_NTFY_TOPIC="t")
+    sb = tmp_path / "nossh"
+    (sb / "curl").write_text('#!/bin/sh\nprev=""; for a in "$@"; do [ "$prev" = "-d" ] && printf "%s" "$a" > "$CURL_BODY_OUT"; prev="$a"; done\nexit 0\n')
+    (sb / "curl").chmod(0o755)
+    for c in ("git", "apt-cache", "dpkg-query", "apt-mark", "pgrep"):
+        (sb / c).write_text("#!/bin/sh\nexit 0\n")
+        (sb / c).chmod(0o755)
+    env["CURL_BODY_OUT"] = str(tmp_path / "body")
+    p = _run_script("weekly_updates_digest.sh", env)
+    body = (tmp_path / "body").read_text()
+    assert p.returncode == 2 and "lists no hosts" in body, (p.returncode, body)
+
+
+def test_r13_tui_names_the_list_the_fleet_tools_use(tmp_path, monkeypatch):
+    """Fable r12 #6: with the list in another tier the TUI said STANDALONE
+    — "fleet tools cover this box only" — while every tool used a fleet."""
+    from launcher_tui.handlers import _fleet_membership_core as fm
+    other = tmp_path / "per-repo-list"
+    other.write_text("a.invalid\n")
+    monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(other))
+    monkeypatch.setattr(fm, "default_hosts_path", lambda: str(tmp_path / "wizard"))
+    st = fm.membership_state()
+    assert st["mode"] == "standalone" and st["resolved_file"] == str(other)
+
+
+# ── r15 (Fable r14) ────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("content,override", [
+    (b"", True),                       # zero-byte (power-loss truncation)
+    (b"# nobody yet\n", True),         # comments only
+    (None, True),                      # override pointing NOWHERE
+])
+def test_r15_box_capture_never_ok_over_one_box(tmp_path, content, override):
+    """Fable r14 F1 (VERIFIED): all three read 'OK captured 1 box(es)'."""
+    fl = tmp_path / "fl"
+    if content is not None:
+        fl.write_bytes(content)
+    env, _ = _sh_env(tmp_path, MESHFORGE_FLEET_HOSTS=str(fl),
+                     BOX_CAPTURE_ROOT=str(tmp_path / "dest"), BOX_CAPTURE_SELF="self.invalid")
+    p = _run_script("box_config_capture.sh", env)
+    assert "VERDICT box_config_capture FAIL" in p.stdout and "NOT captured" in p.stdout, p.stdout + p.stderr
+    assert not (tmp_path / "dest").exists()
+
+
+def test_r15_digest_names_an_existing_empty_list_as_existing(tmp_path):
+    """Fable r14 O3: it read 'NO fleet hosts file found (<file> lists no hosts)'."""
+    empty = tmp_path / "fl"
+    empty.write_text("# nobody yet\n")
+    env, _ = _sh_env(tmp_path, MESHFORGE_FLEET_HOSTS=str(empty), MESHFORGE_NTFY_TOPIC="t")
+    sb = tmp_path / "nossh"
+    (sb / "curl").write_text('#!/bin/sh\nprev=""; for a in "$@"; do [ "$prev" = "-d" ] && printf "%s" "$a" > "$CURL_BODY_OUT"; prev="$a"; done\nexit 0\n')
+    (sb / "curl").chmod(0o755)
+    for c in ("git", "apt-cache", "dpkg-query", "apt-mark", "pgrep"):
+        (sb / c).write_text("#!/bin/sh\nexit 0\n")
+        (sb / c).chmod(0o755)
+    env["CURL_BODY_OUT"] = str(tmp_path / "body")
+    _run_script("weekly_updates_digest.sh", env)
+    body = (tmp_path / "body").read_text()
+    assert "lists no hosts" in body and "NO fleet hosts file found" not in body, body
+
+
+def test_r15_tui_fleet_mode_says_when_the_tools_read_another_file(tmp_path, monkeypatch):
+    """Fable r14 F2 (VERIFIED): FLEET mode showed the wizard's list while
+    every tool read another one; Edit must warn too."""
+    from launcher_tui.handlers import _fleet_membership_core as fm
+    from launcher_tui.handlers.fleet_provision import FleetProvisionHandler
+    wiz = tmp_path / "wizard"
+    wiz.write_text("wiz1.invalid\n")
+    other = tmp_path / "tools-list"
+    other.write_text("a.invalid\n")
+    monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(other))
+    monkeypatch.setattr(fm, "default_hosts_path", lambda: str(wiz))
+    st = fm.membership_state()
+    assert st["mode"] == "fleet" and str(other) in fm.tools_note(st)
+    heads, prompts = [], []
+
+    class _D:
+        def menu(self, title, text, choices):
+            heads.append(text)
+            return "back"
+        def inputbox(self, title, text, init=""):
+            prompts.append(text)
+            return None
+        def msgbox(self, *a): pass
+
+    h = FleetProvisionHandler.__new__(FleetProvisionHandler)
+    h.ctx = type("C", (), {"dialog": _D()})()
+    h._membership_menu()
+    assert "Mode: FLEET" in heads[0] and str(other) in heads[0] and "NOT this file" in heads[0]
+    h._membership_edit(fm, st)
+    assert str(other) in prompts[0]
+
+
+def test_r15_tui_a_corrupt_disabled_list_is_said_not_silently_empty(tmp_path, monkeypatch):
+    """Fable r14 O4."""
+    from launcher_tui.handlers import _fleet_membership_core as fm
+    from launcher_tui.handlers.fleet_provision import FleetProvisionHandler
+    wiz = tmp_path / "wizard"
+    (tmp_path / ("wizard" + fm.DISABLED_SUFFIX)).write_bytes(b"\0\0\0\n")
+    monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(tmp_path / "none"))
+    monkeypatch.setattr(fm, "default_hosts_path", lambda: str(wiz))
+    prompts = []
+
+    class _D:
+        def inputbox(self, title, text, init=""):
+            prompts.append(text)
+            return None
+        def msgbox(self, *a): pass
+
+    h = FleetProvisionHandler.__new__(FleetProvisionHandler)
+    h.ctx = type("C", (), {"dialog": _D()})()
+    h._membership_edit(fm, fm.membership_state())
+    assert "could not be read" in prompts[0]
+
+
+
+# ── r17 (Fable r16) ────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("content", [b"", b"# nobody\n"])
+def test_r17_health_never_clears_red_over_an_empty_list(tmp_path, content):
+    """Fable r16 F2 (VERIFIED): an empty list -> 0 red -> `rm -f RED` -> rc 0;
+    a zero-byte truncation cleared a standing fleet RED twice a day."""
+    fl = tmp_path / "fl"
+    fl.write_bytes(content)
+    red = tmp_path / ".meshforge-fleet-RED"
+    red.write_text("standing RED\n")
+    env, _ = _sh_env(tmp_path, MESHFORGE_FLEET_HOSTS=str(fl))
+    p = _run_script("fleet_runtime_health.sh", env)
+    assert p.returncode == 2 and "lists no hosts" in p.stderr, (p.returncode, p.stderr)
+    assert red.read_text() == "standing RED\n"
+
+
+def test_r17_sync_refuses_an_empty_list_before_doing_anything(tmp_path):
+    """Fable r16 F3: the 6h --memory-only cron reported success syncing
+    nobody (fleet_pull already refused this case)."""
+    fl = tmp_path / "fl"
+    fl.write_text("# nobody\n")
+    env, _ = _sh_env(tmp_path, MESHFORGE_FLEET_HOSTS=str(fl))
+    p = _run_script("fleet_sync.sh", env, "--memory-only")
+    assert p.returncode == 2 and "lists no hosts" in p.stderr, (p.returncode, p.stdout, p.stderr)
+
+
+def test_r17_tui_says_the_tools_see_no_list_when_an_override_points_nowhere(tmp_path, monkeypatch):
+    """Fable r16 F1 (VERIFIED): wizard has hosts + override -> nowhere read
+    as plain FLEET while every tool saw no list."""
+    from launcher_tui.handlers import _fleet_membership_core as fm
+    wiz = tmp_path / "wizard"
+    wiz.write_text("moc1.invalid\n")
+    monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(tmp_path / "nope"))
+    monkeypatch.setattr(fm, "default_hosts_path", lambda: str(wiz))
+    st = fm.membership_state()
+    assert st["mode"] == "fleet" and "see NO list" in fm.tools_note(st)
+
+
+def test_r17_tui_standalone_head_and_disabled_hint_come_back(tmp_path, monkeypatch):
+    """Fable r16 O1: with the tools AGREEING (no list anywhere) the true
+    'this box only' head and the disabled-list hint were dropped."""
+    from launcher_tui.handlers import _fleet_membership_core as fm
+    from launcher_tui.handlers.fleet_provision import FleetProvisionHandler
+    wiz = tmp_path / "wizard"
+    (tmp_path / ("wizard" + fm.DISABLED_SUFFIX)).write_text("a.invalid\n")
+    monkeypatch.delenv("MESHFORGE_FLEET_HOSTS", raising=False)
+    monkeypatch.delenv("FLEET_HOSTS", raising=False)
+    monkeypatch.setattr(fm, "default_hosts_path", lambda: str(wiz))
+    import utils.fleet_hosts as fhm
+    monkeypatch.setattr(fhm, "resolve_fleet_hosts_file", lambda *a, **k: None)
+    heads = []
+
+    class _D:
+        def menu(self, title, text, choices):
+            heads.append(text)
+            return "back"
+
+    h = FleetProvisionHandler.__new__(FleetProvisionHandler)
+    h.ctx = type("C", (), {"dialog": _D()})()
+    h._membership_menu()
+    assert "STANDALONE" in heads[0] and "Edit restores it" in heads[0], heads[0]
+
+
+def test_r17_tui_unreadable_head_says_it_once(tmp_path, monkeypatch):
+    """Fable r16 O2: the same refusal twice in two vocabularies."""
+    from launcher_tui.handlers import _fleet_membership_core as fm
+    wiz = tmp_path / "wizard"
+    wiz.mkdir()
+    monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(wiz))
+    monkeypatch.setattr(fm, "default_hosts_path", lambda: str(wiz))
+    st = fm.membership_state()
+    assert st["mode"] == "unreadable" and fm.tools_note(st) == ""
+
+
+
+# ── r19 (Fable r18): resolve-then-READ consumers refuse an empty list too ──
+
+
+@pytest.fixture
+def empty_list(tmp_path, monkeypatch):
+    f = tmp_path / "fleet_hosts"
+    f.write_text("# all boxes retired\n")
+    monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(f))
+    monkeypatch.delenv("FLEET_HOSTS", raising=False)
+    nossh = tmp_path / "nossh"
+    nossh.mkdir()
+    (nossh / "ssh").write_text("#!/bin/sh\nexit 255\n")
+    (nossh / "ssh").chmod(0o755)
+    monkeypatch.setenv("PATH", "%s:%s" % (nossh, os.environ.get("PATH", "")))
+    return f
+
+
+def test_r19_fleet_check_is_not_ok_over_an_empty_list(empty_list, capsys):
+    pr = _load("provision_role")
+    assert pr.main(["--fleet-check"]) == 2
+    assert "lists no hosts" in capsys.readouterr().err
+
+
+def test_r19_rns_alignment_is_not_aligned_over_an_empty_list(empty_list, capsys):
+    ra = _load("rns_alignment")
+    assert ra._audit_fleet() == 2
+    assert "lists no hosts" in capsys.readouterr().err
+
+
+def test_r19_naming_audit_is_not_zero_findings_over_an_empty_list(empty_list, monkeypatch, capsys):
+    fna = _load("fleet_naming_audit")
+    monkeypatch.setattr(fna, "fleet_hosts_file", lambda: empty_list)
+    assert fna.main([]) == 2
+    assert "lists no hosts" in capsys.readouterr().err
+
+
+def test_r19_dup_collector_holds_the_prior_rollup_over_an_empty_list(empty_list, tmp_path, capsys):
+    import utils.fleet_dup_collector as fdc
+    out = tmp_path / "view.json"
+    out.write_text('{"prior": true}')
+    assert fdc.main(["--out", str(out), "--quiet"]) == 2
+    assert out.read_text() == '{"prior": true}'
+
+
+@pytest.mark.timeout(30)   # on OLD code this is a forever watch loop
+def test_r19_nomadnet_refuses_an_empty_list(empty_list, monkeypatch, capsys):
+    from monitoring import nomadnet_silence_watch as nsw
+    monkeypatch.setattr(sys, "argv", ["nsw", "--fleet-hosts", str(empty_list)])
+    assert nsw.main() == 2
+    assert "lists no hosts" in capsys.readouterr().err
+
+
+def test_r19_tui_offers_the_cure_for_an_empty_list(tmp_path, monkeypatch):
+    """Fable r18 F4 (VERIFIED): every tool refused the empty file while the
+    TUI named a 'Go standalone' it did not offer."""
+    from launcher_tui.handlers import _fleet_membership_core as fm
+    from launcher_tui.handlers.fleet_provision import FleetProvisionHandler
+    wiz = tmp_path / "wizard"
+    wiz.write_text("")
+    monkeypatch.delenv("MESHFORGE_FLEET_HOSTS", raising=False)
+    monkeypatch.delenv("FLEET_HOSTS", raising=False)
+    monkeypatch.setattr(fm, "default_hosts_path", lambda: str(wiz))
+    seen = []
+
+    class _D:
+        def menu(self, title, text, choices):
+            seen.append([c[0] for c in choices])
+            return "back"
+
+    h = FleetProvisionHandler.__new__(FleetProvisionHandler)
+    h.ctx = type("C", (), {"dialog": _D()})()
+    h._membership_menu()
+    assert "standalone" in seen[0], seen
+
+
+def test_r19_going_standalone_never_destroys_a_saved_list(tmp_path):
+    from launcher_tui.handlers import _fleet_membership_core as fm
+    wiz = tmp_path / "wizard"
+    wiz.write_text("")
+    saved = tmp_path / ("wizard" + fm.DISABLED_SUFFIX)
+    saved.write_text("a.invalid\nb.invalid\n")
+    assert fm.declare_standalone(str(wiz)) == str(saved)
+    assert not wiz.exists() and saved.read_text() == "a.invalid\nb.invalid\n"

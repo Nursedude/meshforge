@@ -55,14 +55,6 @@ def fleet_hosts_file() -> Optional[Path]:
     return resolve_fleet_hosts_file()
 
 
-def parse_fleet_hosts(text: str) -> List[str]:
-    """Hosts from a fleet_hosts document; ``#`` comments and blanks ignored.
-    Delegates to the shared parser (whitespace-split after comment-strip,
-    identical to the shell lib's pipeline)."""
-    from utils.fleet_hosts import parse_fleet_hosts_text
-    return parse_fleet_hosts_text(text)
-
-
 def rollup_state_path() -> Path:
     """``$XDG_STATE_HOME/meshforge/fleet_dup_view.json`` (operator-owned)."""
     xdg = os.environ.get("XDG_STATE_HOME")
@@ -165,14 +157,13 @@ def build_fleet_dup_rollup(
         hf = fleet_hosts_file()
         hosts = []
         if hf:
-            # errors="replace" like the shared resolver; a read failure is the
+            # THE reader (r11 seam): a read failure or corrupt entry is the
             # r7e #2 refusal, never a traceback or an empty fleet (r7f F5).
-            from utils.fleet_hosts import FleetHostsUnreadable
+            from utils.fleet_hosts import FleetHostsUnreadable, read_fleet_hosts_file
             try:
-                text = hf.read_text(encoding="utf-8", errors="replace")
-            except OSError as exc:
-                raise FleetHostsUnreadable(hf, exc.strerror or str(exc)) from exc
-            hosts = parse_fleet_hosts(text)
+                hosts = read_fleet_hosts_file(hf)
+            except FileNotFoundError as exc:   # vanished since it resolved
+                raise FleetHostsUnreadable(hf, "vanished after it was resolved") from exc
         # Include the local box (the manager may itself be a gateway); the
         # fleet_hosts file excludes self by convention.
         if local_host not in hosts:

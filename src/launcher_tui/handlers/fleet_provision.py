@@ -102,18 +102,33 @@ class FleetProvisionHandler(BaseHandler):
 
         while True:
             st = fm.membership_state()
-            if st["mode"] == "fleet":
+            if st["mode"] == "unreadable":
+                # r11: never "standalone" for a list that EXISTS — and no
+                # Edit: it would pre-fill nothing and overwrite the file.
+                head = (f"Mode: UNREADABLE — {st['error']}\nFix the file "
+                        "(permissions, or the bad entry) — Edit is disabled "
+                        "so it cannot overwrite a list it could not read.")
+            elif st["mode"] == "fleet":
                 head = (f"Mode: FLEET — {len(st['hosts'])} box(es): "
                         f"{', '.join(st['hosts'][:6])}"
                         + (" …" if len(st["hosts"]) > 6 else ""))
+            elif (st.get("resolved_error") or st.get("resolved_absent_why")
+                  or (st.get("resolved_file") and st["resolved_file"] != st["path"])):
+                # the tools do NOT agree with "this box only" (r17, Fable r16 O1)
+                head = "Mode: this wizard's file is empty or absent."
             else:
                 head = ("Mode: STANDALONE — no fleet host list. Rollup and "
                         "fleet tools cover this box only.")
-                if st["disabled_exists"]:
-                    head += "\n(a disabled host list exists — Edit restores it)"
-            choices = [("edit", "Edit host list   ssh aliases, comma/space separated"),
-                       ("probe", "Probe hosts      ssh-check each declared box")]
-            if st["mode"] == "fleet":
+            if st["mode"] != "fleet" and st["mode"] != "unreadable" and st["disabled_exists"]:
+                head += "\n(a disabled host list exists — Edit restores it)"
+            head += fm.tools_note(st)
+            choices = [] if st["mode"] == "unreadable" else [
+                ("edit", "Edit host list   ssh aliases, comma/space separated"),
+                ("probe", "Probe hosts      ssh-check each declared box")]
+            if st["mode"] == "fleet" or (st["mode"] == "standalone" and st.get("exists")):
+                # r19 (Fable r18 F4): an EXISTING empty list is refused by
+                # every tool — "Go standalone" is its in-app cure, so it is
+                # offered, and the empty-Edit message below is true.
                 choices.append(("standalone",
                                 "Go standalone    set host list aside (reversible)"))
             choices.append(("back", "Back"))
@@ -129,14 +144,21 @@ class FleetProvisionHandler(BaseHandler):
                 self._membership_standalone(fm, st)
 
     def _membership_edit(self, fm, st) -> None:
+        if st["mode"] == "unreadable":   # defence in depth (r11)
+            self.ctx.dialog.msgbox("Fleet Membership",
+                                   f"Refused: {st['error']}\nNothing was changed.")
+            return
         init = ", ".join(st["hosts"])
+        prompt = ("Boxes this one should see (ssh aliases/hostnames). Empty = "
+                  "standalone.")
         if not st["hosts"] and st["disabled_exists"]:
-            init = ", ".join(
-                fm.membership_state(st["path"] + fm.DISABLED_SUFFIX)["hosts"])
-        text = self.ctx.dialog.inputbox(
-            "Fleet Membership",
-            "Boxes this one should see (ssh aliases/hostnames). Empty = "
-            "standalone.", init=init)
+            dis = fm.membership_state(st["path"] + fm.DISABLED_SUFFIX)
+            if dis["mode"] == "unreadable":
+                # r15 (Fable r14 O4): never a silent empty prefill
+                prompt += f"\n(the disabled list could not be read: {dis['error']})"
+            init = ", ".join(dis["hosts"])
+        prompt += fm.tools_note(st)   # r15 F2: say when the tools read another file
+        text = self.ctx.dialog.inputbox("Fleet Membership", prompt, init=init)
         if text is None:
             return
         try:

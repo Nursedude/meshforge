@@ -1105,12 +1105,13 @@ def write_role(role: str) -> None:
 def parse_fleet_hosts(path: Path) -> List[str]:
     """Host list from a fleet_hosts file — parsing delegates to
     ``utils.fleet_hosts`` (THE resolver; this was one of ~13 independent
-    chain copies, converged 2026-07-29). [] on a missing/unreadable file."""
-    from utils.fleet_hosts import parse_fleet_hosts_text
+    chain copies, converged 2026-07-29). [] ONLY for an absent file; an
+    unreadable or corrupt list RAISES FleetHostsUnreadable (r11, review
+    r10: "fleet invariants OK" over an empty fleet)."""
+    from utils.fleet_hosts import read_fleet_hosts_file
     try:
-        return parse_fleet_hosts_text(path.read_text(encoding="utf-8",
-                                                     errors="replace"))
-    except OSError:
+        return read_fleet_hosts_file(path)
+    except FileNotFoundError:
         return []
 
 
@@ -1236,7 +1237,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         except FleetHostsUnreadable as e:   # r7e #2: never judge a lower tier's fleet
             print(f"ERROR: {e}", file=sys.stderr)
             return 2
-        hosts = parse_fleet_hosts(_hosts_file) if _hosts_file else []
+        try:
+            hosts = parse_fleet_hosts(_hosts_file) if _hosts_file else []
+        except FleetHostsUnreadable as e:   # r11: never "OK" over no fleet
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
         role_map = gather_fleet_roles(hosts, read_role())
         print("# fleet role assignment")
         for host, role in role_map.items():

@@ -359,7 +359,7 @@ class TestFleetHostsShellStripsCarriageReturn:
         """A CRLF file made every SHELL consumer ssh to "moc1\\r" while every
         PYTHON consumer read "moc1" — the deploy tools and the gate that
         verifies them disagreeing about who is in the fleet."""
-        from utils.fleet_hosts import parse_fleet_hosts_text
+        from utils.fleet_hosts import read_fleet_hosts_file
         f = tmp_path / "fleet_hosts"
         f.write_bytes(b"moc1\r\nmoc2\r\n# c\r\n")
         lib = os.path.join(ROOT, "scripts", "lib", "fleet_hosts.sh")
@@ -381,7 +381,7 @@ class TestFleetHostsShellStripsCarriageReturn:
             "every ssh would target 'moc1\\r' while Python consumers read "
             "'moc1'" % raw)
         shell = [h for h in raw.split("\n") if h]
-        py = parse_fleet_hosts_text(f.read_text())
+        py = read_fleet_hosts_file(f)
         assert shell == py, (
             "shell %r != python %r — one SSOT, two answers" % (shell, py))
 

@@ -57,7 +57,7 @@ def _audit_fleet() -> int:
     # ~13 independent chain copies, and this one also used raw Path.home(),
     # which under sudo reads /root's config — the MF001 class; 2026-07-29).
     from utils.fleet_hosts import (FleetHostsUnreadable,
-                                   parse_fleet_hosts_text,
+                                   read_fleet_hosts_file,
                                    resolve_fleet_hosts_file)
     try:
         hosts_file = resolve_fleet_hosts_file()
@@ -69,7 +69,7 @@ def _audit_fleet() -> int:
               "~/.config/meshforge/, /etc/meshforge/)", file=sys.stderr)
         return 2
     try:
-        hosts = parse_fleet_hosts_text(hosts_file.read_text())
+        hosts = read_fleet_hosts_file(hosts_file)
     except OSError as e:
         print(f"ERROR: {hosts_file}: {e}", file=sys.stderr)
         return 2

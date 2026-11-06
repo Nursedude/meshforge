@@ -54,7 +54,9 @@ fleet_hosts_resolve "/opt/meshforge" && FLEET_FILE="$FLEET_HOSTS_FILE"
 [ -n "${FLEET_HOSTS_ERROR:-}" ] && exit 2
 
 if [ -z "$FLEET_FILE" ]; then
-    echo "$SELF: no fleet host list found at \$MESHFORGE_FLEET_HOSTS, ~/.config/meshforge/fleet_hosts, or /etc/meshforge/fleet_hosts" >&2
+    # The resolver's own words (r10): what it checked, incl. per-repo tiers
+    # and "HOME is unset" — never a hand-typed list of places.
+    echo "$SELF: ${FLEET_HOSTS_WHY:-no fleet host list found}" >&2
     exit 2
 fi
 

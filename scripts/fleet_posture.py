@@ -42,8 +42,12 @@ def _bridge_boxes():
         import provision_role as pr
         from pathlib import Path
         catalog = pr.load_roles(pr.DEFAULT_ROLES_FILE)
-        hosts_file = Path(os.path.expanduser("~/.config/meshforge/fleet_hosts"))
-        if not hosts_file.exists():
+        # THE resolver (Fable r10 #3): the hard-coded ~/.config path ignored
+        # the overrides and /etc tiers and read /root's under sudo. An
+        # unreadable list raises -> the advisory except below names it.
+        from utils.fleet_hosts import resolve_fleet_hosts_file
+        hosts_file = resolve_fleet_hosts_file()
+        if hosts_file is None:
             return None, "no fleet_hosts here — mesh-less refusal skipped (not the manager)"
         # self_role is REQUIRED (provision_role.gather_fleet_roles(hosts,
         # self_role, ssh_cmd=...)). Omitting it raised TypeError every run and

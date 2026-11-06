@@ -91,11 +91,13 @@ def _boxes_from_fleet_hosts(path: Path, include_self: bool = True) -> list[str]:
     a watcher we usually do want to monitor self too, so we prepend the
     box's own hostname unless include_self=False.
     """
-    from utils.fleet_hosts import parse_fleet_hosts_text
+    from utils.fleet_hosts import read_fleet_hosts_file
     try:
-        aliases = parse_fleet_hosts_text(path.read_text())
-    except (FileNotFoundError, OSError):
+        aliases = read_fleet_hosts_file(path)
+    except FileNotFoundError:
         return []
+    # FleetHostsUnreadable propagates (r11): main() says "unreadable", never
+    # "create <file>" about a file that exists.
     if include_self:
         # Lowercased to match the convention in fleet_hosts (moc, moc1, ...).
         self_name = socket.gethostname().lower()
@@ -198,7 +200,12 @@ def main() -> int:
     if args.boxes:
         boxes = [b.strip() for b in args.boxes.split(",") if b.strip()]
     else:
-        boxes = _boxes_from_fleet_hosts(Path(args.fleet_hosts))
+        from utils.fleet_hosts import FleetHostsUnreadable
+        try:
+            boxes = _boxes_from_fleet_hosts(Path(args.fleet_hosts))
+        except FleetHostsUnreadable as e:   # r11: corrupt/unreadable, by name
+            print(f"error: {e}. Fix the file or pass --boxes.", file=sys.stderr)
+            return 2
     if not boxes:
         fh = Path(args.fleet_hosts)
         if os.path.lexists(fh) and not (fh.is_file() and os.access(fh, os.R_OK)):

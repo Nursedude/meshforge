@@ -78,7 +78,6 @@ POSTURE="${MESHFORGE_FLEET_POSTURE:-$HOME/.config/meshforge/fleet_posture.json}"
 POSTURE_REL="${FLEET_POSTURE_SYNC_REL:-.config/meshforge/fleet_posture.json}"
 # Env overrides so the skip / unreachable / seed legs can be DRILLED against a
 # planted host list without touching the real fleet (guard_drill doctrine).
-HOSTS_FILE="${FLEET_POSTURE_SYNC_HOSTS:-$HOME/.config/meshforge/fleet_hosts}"
 SSH_OPTS=(-o ConnectTimeout=10 -o BatchMode=yes)
 
 CHECK=0; QUIET=0
@@ -93,8 +92,29 @@ done
 
 say() { [ "$QUIET" -eq 1 ] || echo "$1"; }
 
-if [ ! -f "$HOSTS_FILE" ]; then
-    echo "fleet_posture_sync: no fleet_hosts at $HOSTS_FILE — this organ runs on the manager only" >&2
+# THE shared resolver (r13, Fable r12 #1-#3): this was a private reader —
+# `[ -f ]` + `done < file` read an UNREADABLE list as zero hosts (a vacuous
+# OK), a hard-coded ~/.config path skipped the override/per-repo/etc tiers,
+# and `tr -d [:space:]` glued "a b" into ONE host. The script's own drill
+# override stays authoritative, passed to the lib as the override.
+. "$HERE/lib/fleet_hosts.sh"
+_fh_rc=0
+if [ -n "${FLEET_POSTURE_SYNC_HOSTS:-}" ]; then
+    MESHFORGE_FLEET_HOSTS="$FLEET_POSTURE_SYNC_HOSTS" fleet_hosts_resolve "$(cd "$HERE/.." && pwd)" || _fh_rc=$?
+else
+    fleet_hosts_resolve "$(cd "$HERE/.." && pwd)" || _fh_rc=$?
+fi
+HOSTS_FILE="${FLEET_HOSTS_FILE:-${FLEET_POSTURE_SYNC_HOSTS:-the fleet host list}}"
+if [ "$_fh_rc" = 2 ]; then
+    echo "fleet_posture_sync: $FLEET_HOSTS_ERROR" >&2
+    exit 2
+fi
+if [ "$_fh_rc" != 0 ]; then
+    echo "fleet_posture_sync: ${FLEET_HOSTS_WHY:-no fleet host list} — this organ runs on the manager only" >&2
+    exit 2
+fi
+if [ -z "$FLEET_HOSTS_LIST" ]; then
+    echo "fleet_posture_sync: $HOSTS_FILE lists no hosts — no audience box carries anything" >&2
     exit 2
 fi
 
@@ -135,7 +155,6 @@ trap '[ -n "$STAGE" ] && rm -f "$STAGE"' EXIT
 ok_boxes=() healed=() seeded=() withdrawn=() unreachable=() failed=() skipped=() drift=()
 
 while IFS= read -r host <&3; do
-    host="${host%%#*}"; host="$(echo "$host" | tr -d '[:space:]')"
     [ -z "$host" ] && continue
 
     # A box that is itself declared dormant/detached is the TARGET of the
@@ -206,7 +225,7 @@ while IFS= read -r host <&3; do
         failed+=("$host")
         say "$host: transfer/swap failed — it does NOT have the declaration"
     fi
-done 3< "$HOSTS_FILE"
+done 3< <(printf '%s\n' "$FLEET_HOSTS_LIST")
 
 join() { local IFS=,; echo "$*"; }
 summary="mode=$MODE ok=${#ok_boxes[@]}"

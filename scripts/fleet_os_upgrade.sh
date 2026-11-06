@@ -80,7 +80,14 @@ all_hosts() {
 
 # ── survey: read-only ────────────────────────────────────────────────────
 do_survey() {
-    local hosts=("$@"); [ ${#hosts[@]} -eq 0 ] && mapfile -t hosts < <(all_hosts)
+    local hosts=("$@") _list
+    if [ ${#hosts[@]} -eq 0 ]; then
+        # Resolve in THIS shell (r10): `die` inside `< <(all_hosts)` exited
+        # only the subshell — a refused list became an empty survey, rc 0.
+        _list="$(all_hosts)" || exit 1
+        [ -n "$_list" ] || die "the fleet host list has no hosts; name boxes explicitly"
+        mapfile -t hosts <<< "$_list"
+    fi
     printf '%-20s %-9s %-6s %-5s %-8s %s\n' BOX BASE PEND REMV REBOOT HOLDS
     for h in "${hosts[@]}"; do
         out=$(timeout 300 ssh "${SSH_OPTS[@]}" "$h" '

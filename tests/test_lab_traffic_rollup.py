@@ -45,7 +45,7 @@ def rollup_env(tmp_path):
 
     Lays out:
       $HOME/.local/state/meshforge/tracer/  — caller writes fire JSON here
-      $HOME/.config/meshforge/fleet_hosts   — empty (script only does local)
+      $HOME/.config/meshforge/fleet_hosts   — this box only (script only does local)
 
     Returns (env_dict, tracer_dir, run_fn). run_fn invokes the script
     with the env baked in and returns (stdout, stderr, returncode).
@@ -56,10 +56,20 @@ def rollup_env(tmp_path):
     state.mkdir(parents=True)
     config.mkdir(parents=True)
     fleet_hosts = config / "fleet_hosts"
-    fleet_hosts.write_text("", encoding="utf-8")
+    # "local only" = a list naming ONLY this box (the script skips its own
+    # name — no ssh). An EMPTY list is refused since r17: "a fleet of zero"
+    # is what a power-loss truncation looks like, not a declaration.
+    import socket
+    fleet_hosts.write_text(socket.gethostname().split(".")[0] + "\n", encoding="utf-8")
 
+    # No ssh can leave this fixture whatever hostname -s says (Fable r18 O4).
+    nossh = tmp_path / "nossh"
+    nossh.mkdir()
+    (nossh / "ssh").write_text("#!/bin/sh\nexit 255\n")
+    (nossh / "ssh").chmod(0o755)
     base_env = {
         **os.environ,
+        "PATH": "%s:%s" % (nossh, os.environ.get("PATH", "")),
         "HOME": str(home),
         "XDG_STATE_HOME": str(home / ".local" / "state"),
         "FLEET_HOSTS": str(fleet_hosts),

@@ -38,7 +38,6 @@ from utils.fleet_platform import (  # noqa: E402
     DRIFT, INERT, OK, UNKNOWN, Declaration, canonical_box, declared_path,
     judge_box, load_catalog, load_declarations, same_box, summarize,
 )
-from utils.paths import get_real_user_home  # noqa: E402
 
 SSH_BASE = ["ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes",
             "-o", "StrictHostKeyChecking=accept-new"]
@@ -161,13 +160,14 @@ def observe(hosts: List[str], local_name: str) -> Dict[str, Dict]:
 
 
 def fleet_hosts() -> List[str]:
-    p = get_real_user_home() / ".config" / "meshforge" / "fleet_hosts"
-    try:
-        lines = p.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    return [ln.split("#", 1)[0].strip() for ln in lines
-            if ln.split("#", 1)[0].strip()]
+    """THE resolver (r11 seam; found by the one-reader guard): this was a
+    private reader — a hard-coded ~/.config path (no overrides, no /etc
+    tier) and a line parser where "moc1 moc2" was ONE host, with
+    `except OSError: return []` turning an unreadable list into "no fleet".
+    [] when no list resolves; an unreadable/corrupt list RAISES
+    FleetHostsUnreadable (cmd_show refuses with rc 2)."""
+    from utils.fleet_hosts import resolve_fleet_hosts
+    return resolve_fleet_hosts()
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +182,16 @@ def cmd_show(args) -> int:
     decls, status = load_declarations(args.declared)
 
     local = os.uname().nodename
-    hosts = resolve_hosts([local] if args.local else (fleet_hosts() or [local]),
+    if args.local:
+        listed: List[str] = []
+    else:
+        from utils.fleet_hosts import FleetHostsUnreadable
+        try:
+            listed = fleet_hosts()
+        except FleetHostsUnreadable as e:   # never a one-box "fleet"
+            print(f"FAIL: {e}")
+            return 2
+    hosts = resolve_hosts([local] if args.local else (listed or [local]),
                           local)
 
     obs = observe(hosts, local)

@@ -41,6 +41,12 @@ if fleet_hosts_resolve "/opt/meshforge"; then
     while IFS= read -r line; do
         [[ -n "$line" ]] && hosts+=("$line")
     done <<< "$FLEET_HOSTS_LIST"
+    if [ ${#hosts[@]} -eq 0 ]; then
+        # a list with no hosts drops the fleet exactly like a missing one
+        # (r13, Fable r12 #9) — never a quiet one-box digest
+        hosts_missing=1
+        hosts_empty=1
+    fi
 else
     hosts_missing=1
 fi
@@ -134,8 +140,12 @@ fi
 if [[ "$hosts_missing" == 1 ]]; then
     if [[ -n "${FLEET_HOSTS_ERROR:-}" ]]; then   # r7f F6: the phone never sees stderr
         body+=$'\n'"⚠ ${FLEET_HOSTS_ERROR} — digest covers ONLY $(hostname); the rest of the fleet is UNMONITORED this run"
+    elif [[ "${hosts_empty:-0}" == 1 ]]; then
+        # r15: the file EXISTS and lists nobody — not "no file found"
+        body+=$'\n'"⚠ fleet host list $FLEET_HOSTS_FILE lists no hosts — digest covers ONLY $(hostname); the rest of the fleet is UNMONITORED this run"
     else
-    body+=$'\n'"⚠ NO fleet hosts file found (checked \$MESHFORGE_FLEET_HOSTS, ~/.config/meshforge/fleet_hosts, /etc/meshforge/fleet_hosts) — digest covers ONLY $(hostname); the rest of the fleet is UNMONITORED this run"
+    # The resolver's own words (r10) — what it actually checked.
+    body+=$'\n'"⚠ NO fleet hosts file found (${FLEET_HOSTS_WHY:-no fleet list}) — digest covers ONLY $(hostname); the rest of the fleet is UNMONITORED this run"
     fi
 fi
 

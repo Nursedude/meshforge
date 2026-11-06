@@ -130,7 +130,7 @@ from utils.watchdog_probe_core import env_site_globs  # noqa: E402
 from utils import apt_lists  # noqa: E402
 from utils.fleet_hosts import (  # noqa: E402
     ENV_OVERRIDE_KEYS as FLEET_ENV_OVERRIDE_KEYS, FleetHostsUnreadable,
-    parse_fleet_hosts_text, resolve_fleet_hosts_file)
+    read_fleet_hosts_file, resolve_fleet_hosts_file)
 
 #: The reporter runs on boxes with no checkout on sys.path, so it carries the
 #: shared functions' SOURCE (the TUI imports the same module).
@@ -540,7 +540,7 @@ def _run(cmd: List[str], timeout: int, stdin_text: Optional[str] = None):
 
 def read_fleet_hosts(explicit: Optional[str] = None) -> Tuple[List[str], Optional[str]]:
     """Who the fleet is, from the ONE shared resolver (``utils.fleet_hosts``,
-    held to ``scripts/lib/fleet_hosts.sh`` by test_fleet_hosts_resolver).
+    which the shell lib also calls — one implementation).
     r7c #3: this was a private third copy that read "moc1  # x" as a host and
     let a set-but-missing override fall through to the box's real list.
     Default repo dir on purpose: the ``.meshforge`` tier, as before, even when
@@ -563,10 +563,11 @@ def read_fleet_hosts(explicit: Optional[str] = None) -> Tuple[List[str], Optiona
             return [], "no fleet host list found (looked in ~/.config/meshforge and /etc/meshforge)"
         path = str(found)
     try:
-        # errors="replace", as utils.fleet_hosts reads it (r7e #7): one stray
-        # byte in a comment must not crash the sweep before it writes UNKNOWN.
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            hosts = parse_fleet_hosts_text(fh.read())
+        # THE reader (r11): errors="replace" for comment bytes; a corrupt
+        # entry or read failure is refused with the path named.
+        hosts = read_fleet_hosts_file(path)
+    except FleetHostsUnreadable as exc:
+        return [], str(exc)
     except OSError as exc:
         return [], "fleet host list %s unreadable: %s" % (path, exc)
     if not hosts:

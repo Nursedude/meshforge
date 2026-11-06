@@ -61,9 +61,19 @@ _HS_CODEPATHS="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/cod
 . "$_HS_CODEPATHS"
 _HS_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/fleet_hosts.sh"
 _hs_resolved=0
+# r8 review #3/#4: the rc says WHICH absence this is. Unset first, so a
+# parent's exported FLEET_HOSTS_* can never speak for a resolve that did
+# not run here.
+unset FLEET_HOSTS_FILE FLEET_HOSTS_LIST FLEET_HOSTS_ERROR FLEET_HOSTS_WHY
+_hs_rrc="not run"
 if [ -f "$_HS_LIB" ]; then
-  . "$_HS_LIB"
-  fleet_hosts_resolve "$REPO" && _hs_resolved=1
+  . "$_HS_LIB"   # sourced always: the twin leg uses it too
+  # HONEST_BOXES overrides the list: don't resolve (one python start saved,
+  # and no refusal line on stderr about a list this run does not use — r10).
+  if [ -z "${HONEST_BOXES:-}" ]; then
+    _hs_rrc=0; fleet_hosts_resolve "$REPO" || _hs_rrc=$?
+    [ "$_hs_rrc" = 0 ] && _hs_resolved=1
+  fi
 fi
 if [ -n "${HONEST_BOXES:-}" ]; then
   BOXES="$HONEST_BOXES"; BOXES_SRC="HONEST_BOXES override"; FLEET_SSOT=1
@@ -99,8 +109,13 @@ else
     # r7f F6: the list EXISTS (or cannot be checked) — "not found" would send
     # the operator to create a file that is already there.
     BOXES="$SELF"; BOXES_SRC="SELF ONLY — $FLEET_HOSTS_ERROR; fleet legs cover 1 box"
+  elif [ "$_hs_rrc" = 1 ]; then
+    # r8 review #3: the resolver's own words (a set override pointing
+    # nowhere, or which tiers it checked), not a guess.
+    BOXES="$SELF"; BOXES_SRC="SELF ONLY — ${FLEET_HOSTS_WHY:-no fleet_hosts found}; fleet legs cover 1 box"
   else
-    BOXES="$SELF"; BOXES_SRC="SELF ONLY — no fleet_hosts found, fleet legs cover 1 box"
+    # r8 review #4: the resolver never answered (lib missing / rc $_hs_rrc).
+    BOXES="$SELF"; BOXES_SRC="SELF ONLY — the fleet_hosts resolver did not run ($_HS_LIB, rc $_hs_rrc) — fleet unknown; fleet legs cover 1 box"
   fi
   FLEET_SSOT=0
 fi
@@ -473,16 +488,29 @@ else
     if [ -r "$_HS_LIB" ]; then
       . "$_HS_LIB"
       unset MESHFORGE_FLEET_HOSTS FLEET_HOSTS
-      if fleet_hosts_resolve "$TWIN_REPO"; then
+      if fleet_hosts_resolve "$TWIN_REPO" 2>/dev/null; then
         printf '%s\n' "FILE=$FLEET_HOSTS_FILE"
         printf '%s\n' "$FLEET_HOSTS_LIST" | sed 's/^/HOST=/'
+      else
+        # A REFUSED list must not read "no list resolved"; rc 1 carries the
+        # resolver's own WHY.
+        printf '%s\n' "ERR=${FLEET_HOSTS_ERROR:-}"
+        printf '%s\n' "WHY=${FLEET_HOSTS_WHY:-}"
       fi
+    else
+      # r8 review #2 (r9): the resolver never ran — not a statement about
+      # the sister repo's list.
+      printf '%s\n' "ERR=fleet_hosts resolver $_HS_LIB is not readable - the twin list was never checked"
     fi
   )
   _twin_file=$(printf '%s\n' "$_twin_out" | sed -n 's/^FILE=//p')
   _twin_rb=$(basename "$TWIN_REPO")
-  if [ -z "$_twin_file" ]; then
-    unk "twin fleet SHA" "no host list resolved for $TWIN_REPO — cannot tell where the sister repo is deployed"
+  _twin_err=$(printf '%s\n' "$_twin_out" | sed -n 's/^ERR=//p')
+  if [ -z "$_twin_file" ] && [ -n "$_twin_err" ]; then
+    unk "twin fleet SHA" "$_twin_err — cannot tell where the sister repo is deployed"
+  elif [ -z "$_twin_file" ]; then
+    _twin_why=$(printf '%s\n' "$_twin_out" | sed -n 's/^WHY=//p')
+    unk "twin fleet SHA" "${_twin_why:-no host list resolved for $TWIN_REPO} — cannot tell where the sister repo is deployed"
   elif [ "$(basename "$_twin_file")" != "fleet_hosts.$_twin_rb" ]; then
     unk "twin fleet SHA" "resolved the GENERIC $(basename "$_twin_file") for $_twin_rb — refusing to judge the sister repo against the wrong denominator (create fleet_hosts.$_twin_rb)"
   else

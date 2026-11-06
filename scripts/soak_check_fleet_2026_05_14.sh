@@ -62,7 +62,10 @@ RESULT_FILE="${HOME}/soak-check-meshforge-2026-05-14-result.txt"
 # sets FLEET_HOSTS_FILE/FLEET_HOSTS_LIST; on no-list they stay empty and
 # read_hosts() emits nothing, preserving this script's original posture.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fleet_hosts.sh"
-fleet_hosts_resolve "/opt/meshforge" || true
+# rc 1 (no list) keeps the original self-only posture; rc 2 (a list that
+# exists but is refused) must not silently soak-check nobody (Fable r10 #8).
+_fh_rc=0; fleet_hosts_resolve "/opt/meshforge" || _fh_rc=$?
+[ "$_fh_rc" = 2 ] && { echo "soak_check: refusing - ${FLEET_HOSTS_ERROR}" >&2; exit 2; }
 LOCAL_MAP_PORT=5000
 
 MODE="${1:-}"

@@ -44,7 +44,8 @@ from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from utils.fleet_dup_collector import fleet_hosts_file, parse_fleet_hosts  # noqa: E402
+from utils.fleet_dup_collector import fleet_hosts_file  # noqa: E402
+from utils.fleet_hosts import read_fleet_hosts_file  # noqa: E402
 from utils.fleet_naming import (  # noqa: E402
     Registry, Resolution, default_resolver, load_registry, resolve,
 )
@@ -360,7 +361,11 @@ def main(argv=None) -> int:
             print("fleet_naming_audit: no fleet_hosts file found — nothing to "
                   "audit (could not verify)", file=sys.stderr)
             return 2
-        hosts = parse_fleet_hosts(hosts_path.read_text(encoding="utf-8"))
+        try:
+            hosts = read_fleet_hosts_file(hosts_path)
+        except OSError as e:   # refused/vanished — r11: rc 2, never a traceback
+            print(f"fleet_naming_audit: {e} (could not verify)", file=sys.stderr)
+            return 2
 
     doc = run_audit(hosts, registry, errors,
                     verify_identity=args.verify_identity)

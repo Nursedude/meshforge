@@ -50,7 +50,6 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERDICT="${BOX_CAPTURE_VERDICT:-$HERE/cron_verdict.sh}"
 NAME=box_config_capture
-HOSTS_FILE="${MESHFORGE_FLEET_HOSTS:-$HOME/.config/meshforge/fleet_hosts}"
 DEST_ROOT="${BOX_CAPTURE_ROOT:-$HOME/fleet-configs}"
 SELF="${BOX_CAPTURE_SELF:-$(hostname)}"
 MIN_FILES=3   # fewer than this = the fetch did not really happen
@@ -107,13 +106,31 @@ $S tar -czf - --ignore-failed-read --transform "s,^${T#/},_meta," -T "$L.ok" "$T
 rm -rf "$T" "$L" "$L.ok"
 EOF
 
-hosts=("$SELF")
-if [ -f "$HOSTS_FILE" ]; then
-    while IFS= read -r line; do
-        line="${line%%#*}"; line="${line//[[:space:]]/}"
-        [ -n "$line" ] && [ "$line" != "$SELF" ] && hosts+=("$line")
-    done < "$HOSTS_FILE"
+# THE shared resolver (r13, Fable r12 #2): the private `[ -f ] … done <
+# file` read an UNREADABLE list as "self only" (Permission denied on stderr,
+# a 1-box OK verdict) and glued "a b" into ONE host. rc 1 (no list) keeps
+# the self-only capture this script always did on non-manager boxes.
+. "$HERE/lib/fleet_hosts.sh"
+_fh_rc=0; fleet_hosts_resolve "$(cd "$HERE/.." && pwd)" || _fh_rc=$?
+if [ "$_fh_rc" = 2 ]; then
+    say FAIL "$FLEET_HOSTS_ERROR — fleet NOT captured"
+    exit 0
 fi
+# r15 (Fable r14 F1, VERIFIED): an EXISTING list with no hosts (a power-loss
+# zero-byte truncation) and an override pointing NOWHERE both read "OK
+# captured 1 box(es)". Only "no list here at all" keeps the self-only capture.
+if [ "$_fh_rc" = 0 ] && [ -z "$FLEET_HOSTS_LIST" ]; then
+    say FAIL "fleet host list $FLEET_HOSTS_FILE lists no hosts — fleet NOT captured"
+    exit 0
+fi
+if [ "$_fh_rc" = 1 ] && [ -n "${MESHFORGE_FLEET_HOSTS:-}${FLEET_HOSTS:-}" ]; then
+    say FAIL "${FLEET_HOSTS_WHY:-the fleet host list override points nowhere} — fleet NOT captured"
+    exit 0
+fi
+hosts=("$SELF")
+while IFS= read -r line; do
+    [ -n "$line" ] && [ "$line" != "$SELF" ] && hosts+=("$line")
+done <<< "$FLEET_HOSTS_LIST"
 
 captured=() captured_dirs=() failed=() nosudo=()
 for h in "${hosts[@]}"; do

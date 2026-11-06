@@ -179,7 +179,20 @@ class TestParseUntil:
 class TestCli:
     def _run(self, tmp_path, *args):
         env = dict(os.environ)
-        env["HOME"] = str(tmp_path)                    # no fleet_hosts → bridge leg skipped, SAID
+        env["HOME"] = str(tmp_path)
+        # No fleet list → bridge leg skipped, SAID. HOME alone is NOT
+        # isolation: the shared resolver reads the REAL user's home
+        # (get_real_user_home), so a set-but-ABSENT override is the pin
+        # (authoritative, no fall-through). 2026-11-05: before this pin,
+        # r11's switch to the resolver made this CLI test read the real list
+        # and ssh `--print-role` to the real fleet (read-only).
+        env["MESHFORGE_FLEET_HOSTS"] = str(tmp_path / "no-fleet-list")
+        env.pop("FLEET_HOSTS", None)
+        nossh = tmp_path / "nossh"
+        nossh.mkdir(exist_ok=True)
+        (nossh / "ssh").write_text("#!/bin/sh\nexit 255\n")
+        (nossh / "ssh").chmod(0o755)
+        env["PATH"] = "%s:%s" % (nossh, env.get("PATH", ""))
         env[fp.POSTURE_ENV] = str(tmp_path / "fleet_posture.json")
         return subprocess.run([sys.executable, str(CLI), *args], capture_output=True,
                               text=True, timeout=60, env=env)

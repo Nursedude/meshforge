@@ -350,7 +350,7 @@ for variant in empty comments-only; do
   out="$(MESHFORGE_FLEET_HOSTS="$TMP/hostlist_none" HONEST_WD_PATH="$WD_FIX" \
          FAKE_CURL_JSON='{"confirmation_rate": 0.5}' run)"
   check "[$variant] provenance says the list has NO HOSTS, not that a fleet was found" \
-    "$(echo "$out" | grep -q 'no hosts listed' && echo ok)"
+    "$(echo "$out" | grep -qE 'no hosts listed|lists no hosts' && echo ok)"   # r17: the resolver's words
   check "[$variant] drift leg is UNKNOWN, not a self-confirmed PASS" \
     "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q 'UNKNOWN' && echo ok)"
   check "[$variant] watchdog leg is UNKNOWN — one box is not a fleet" \
@@ -490,6 +490,24 @@ out="$(MESHFORGE_FLEET_HOSTS="$hosts" HONEST_TWIN_REPO="$TWIN" FAKE_TWIN_REPO="$
 check "twin leg: without a declaration the down box is unreach → UNKNOWN (control)" \
   "$(echo "$out" | grep 'twin fleet SHA' | grep 'UNKNOWN' | grep -q 'box-down:unreach' && echo ok)"
 rm -f "$FAKE_HOME/.config/meshforge/fleet_hosts.twin"
+# r8 review #8: a REFUSED sister list is named, not "no host list resolved".
+mkdir "$FAKE_HOME/.config/meshforge/fleet_hosts.twin"
+out="$(MESHFORGE_FLEET_HOSTS="$hosts" HONEST_TWIN_REPO="$TWIN" FAKE_TWIN_REPO="$TWIN" FAKE_TWIN_HEAD="$TWIN_HEAD" \
+       MESHFORGE_FLEET_POSTURE="$TMP/absent.json" run)"
+check "twin leg: an unreadable sister list is named unreadable (r8)" \
+  "$(echo "$out" | grep 'twin fleet SHA' | grep -q 'unreadable' && echo ok)"
+check "twin leg: and never 'no host list resolved'" \
+  "$(echo "$out" | grep 'twin fleet SHA' | grep -q 'no host list resolved' && echo '' || echo ok)"
+rmdir "$FAKE_HOME/.config/meshforge/fleet_hosts.twin"
+# r9 #2: an ABSENT sister list says what the resolver checked.
+out="$(MESHFORGE_FLEET_HOSTS="$hosts" HONEST_TWIN_REPO="$TWIN" FAKE_TWIN_REPO="$TWIN" FAKE_TWIN_HEAD="$TWIN_HEAD" \
+       MESHFORGE_FLEET_POSTURE="$TMP/absent.json" run)"
+check "twin leg: an absent sister list names what was checked (r9)" \
+  "$(echo "$out" | grep 'twin fleet SHA' | grep -q 'no fleet list found (checked' && echo ok)"
+# r9 #3: a SET override pointing nowhere is named on the main leg.
+out="$(MESHFORGE_FLEET_HOSTS="$TMP/typo-path" run)"
+check "main leg: a set-but-missing override is named, not 'no fleet_hosts found' (r9)" \
+  "$(echo "$out" | grep -q 'MESHFORGE_FLEET_HOSTS=.*does not exist' && echo ok)"
 
 # ── finding 11/18: the marker comes from the shared builder + predicate ──
 # The tree flag was computed by a bash copy here and NOT AT ALL in

@@ -29,9 +29,13 @@ case "\$*" in
 esac
 exit 0
 EOF
-    for c in apt-cache dpkg-query apt-mark ssh timeout pgrep; do
+    for c in apt-cache dpkg-query apt-mark ssh pgrep; do
         printf '#!/bin/bash\nexit 0\n' > "$sb/$c"
     done
+    # timeout is NOT stubbed (operator 2026-11-05, r9 #8): the real one
+    # runs the stubbed ssh AND the fleet_hosts lib's python resolver with
+    # its bound intact. An exit-0 stub silently skipped the resolve; a
+    # `shift; exec` stub dropped the bound and broke on any option.
     printf '#!/bin/bash\necho testbox\n' > "$sb/hostname"
     chmod +x "$sb"/*
 }
