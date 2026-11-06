@@ -168,6 +168,8 @@ def test_rollup_pane_uses_the_resolver_words(monkeypatch, tmp_path):
     monkeypatch.setattr(fh, "explain_absent",
                         lambda *a, **k: calls.append(1) or ("WHY-MARK", ["ADVICE-MARK"]))
     import mini_dudeai.rollup as rollup
+    # pin: NO list resolves (never this box's real one)
+    monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(tmp_path / "x.invalid"))
     seen = {}
     monkeypatch.setattr(rollup, "_main_render",
                         lambda args, now, no_data: seen.setdefault("t", no_data) and 0)
@@ -190,3 +192,32 @@ def test_one_message_no_consumer_hardcodes_its_own_advice():
     assert not offenders, offenders
     rollup = (ROOT / "src" / "mini_dudeai" / "rollup.py").read_text()
     assert "create ~/.config/meshforge/fleet_hosts" not in rollup
+
+
+def test_rollup_pane_never_calls_a_list_it_just_read_absent(monkeypatch, tmp_path, capsys):
+    """MA port review (2026-11-06, REPRODUCED there): the pane printed
+    explain_absent() whenever postures was empty — but a list that EXISTS
+    and names only this box (or nobody reachable) also yields no postures.
+    It then said "no fleet list found ... Create one at <that very file>"."""
+    import utils.fleet_hosts as fh
+    import mini_dudeai.rollup as rollup
+    lst = tmp_path / "fleet_hosts"
+    lst.write_text("localhost\n")
+    monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(lst))
+    monkeypatch.setattr(fh, "explain_absent",
+                        lambda *a, **k: pytest.fail("explain_absent for a list that exists"))
+    monkeypatch.setattr(rollup, "collect_fleet", lambda now: [])
+    assert rollup.main([]) == 0
+    out = capsys.readouterr().out
+    assert str(lst) in out and "names no other box" in out, out
+    assert "Create" not in out and "does not exist" not in out, out
+
+
+def test_rollup_pane_absent_list_still_explains(monkeypatch, tmp_path, capsys):
+    import mini_dudeai.rollup as rollup
+    missing = tmp_path / "x.invalid"
+    monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(missing))
+    monkeypatch.setattr(rollup, "collect_fleet", lambda now: [])
+    assert rollup.main([]) == 0
+    out = capsys.readouterr().out
+    assert str(missing) in out and "authoritative" in out, out

@@ -1015,23 +1015,34 @@ def main(argv: list[str] | None = None) -> int:
                         "default posture pane).")
     args = p.parse_args(argv)
     now_ts = time.time()
-    from utils.fleet_hosts import FleetHostsUnreadable, explain_absent
-    # THE resolver's words (2026-11-06): a hand-typed "create
-    # ~/.config/meshforge/fleet_hosts" was false under a set override.
+    from utils.fleet_hosts import FleetHostsUnreadable
     try:
-        _why, _advice = explain_absent()
-    except (OSError, ValueError) as e:   # wording only; never blocks the pane
-        _why, _advice = "no fleet_hosts list found (reason unavailable: %s)" % e, []
-    _no_data = "No local mini state and %s.%s" % (
-        _why, "".join("\n" + a for a in _advice))
-    try:
-        return _main_render(args, now_ts, _no_data)
+        return _main_render(args, now_ts, _no_data_text())
     except FleetHostsUnreadable as e:
         # r7e #2: a local-only pane would read as a fleet of one.
         title = "fleet deep feed" if args.deep else "fleet watchers"
         print(f"# mini-dudeai {title}\n\n❌ UNKNOWN — {e}. "
               f"No fleet pane rendered.")
         return 2
+
+
+def _no_data_text() -> str:
+    """Why the pane is EMPTY. An empty pane has two causes that must never
+    read alike (MA port review 2026-11-06, reproduced): NO list resolved ->
+    THE resolver's words (``explain_absent``, never hand-typed advice), or a
+    list that EXISTS but names no other box (meshanchor-server's authored
+    list is ``localhost``) -> name that file. Telling the operator to
+    "create" a file that was just read is the defect this replaced.
+    ``FleetHostsUnreadable`` propagates to ``main``'s refusal."""
+    from utils.fleet_hosts import explain_absent, resolve_fleet_hosts_file
+    f = resolve_fleet_hosts_file()
+    if f is not None:
+        return ("No local mini state, and fleet list %s names no other box." % f)
+    try:
+        why, advice = explain_absent()
+    except (OSError, ValueError) as e:   # wording only; never blocks the pane
+        why, advice = "no fleet_hosts list found (reason unavailable: %s)" % e, []
+    return "No local mini state and %s.%s" % (why, "".join("\n" + a for a in advice))
 
 
 def _main_render(args, now_ts, _no_data) -> int:
