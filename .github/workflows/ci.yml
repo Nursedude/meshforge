@@ -172,7 +172,14 @@ jobs:
     # and a gate that watches the test suite's runtime is machinery watching
     # machinery. The number is already in front of a human twice -- this job's
     # duration in the CI UI, and honest_status's `full suite` line.
-    timeout-minutes: 30  # Kill job if tests hang (measurements + rationale above)
+    #
+    # 45, not 30 (raised 2026-11-06, operator). The third false red of this
+    # shape: 3.11 ran 28m19s on 70dc5ab0, then a96a1fb0 (+~6 s of tests) was
+    # killed at 30m18s and reported `cancelled` — runner variance of ~2 min
+    # on a suite sitting at ~29 min. Same reasoning as above: clear of normal
+    # runtime, not a notch above it. The per-test timeout (above) is still
+    # the right hang guard and is still owed a --durations measurement.
+    timeout-minutes: 45  # Kill job if tests hang (measurements + rationale above)
     permissions:
       contents: read
       pull-requests: write   # for the PR-comment failure diagnostic below
