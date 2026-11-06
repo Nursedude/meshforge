@@ -241,3 +241,19 @@ def test_fleet_truth_build_never_raises_and_says_why(raising, monkeypatch):
     monkeypatch.setattr("mini_dudeai.rollup.resolve_fleet_hosts", _boom)
     with pytest.raises(FleetHostsUnreadable):
         ftc.collect_snapshots()
+
+
+def test_mini_daemon_pinned_preset_never_imports_the_fleet_resolver(monkeypatch):
+    """r7g F3: only `auto` consults the list; a pinned preset must start
+    where `utils` is not importable, as it did before r7e #2."""
+    from mini_dudeai import daemon
+    monkeypatch.setitem(sys.modules, "utils.fleet_hosts", None)  # import -> ImportError
+    seen = {}
+
+    def fake_import(name):
+        seen["name"] = name
+        raise SystemExit(0)
+    monkeypatch.setattr(daemon, "_import_preset", fake_import)
+    with pytest.raises(SystemExit) as ei:
+        daemon.main(["--preset", "meshforge_fleet"])
+    assert ei.value.code == 0 and seen["name"] == "meshforge_fleet"

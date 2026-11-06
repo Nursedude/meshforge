@@ -469,3 +469,48 @@ class TestShellReadAfterResolve:
             "PATH": f"{fake}:{os.environ.get('PATH', '/usr/bin:/bin')}"})
         assert out["rc"] == "2", (out, err)
         assert out["file"] == "" and "fleet_hosts" in out["err"]
+
+
+# ── r7g (non-author pass on the MA port): symlink reasons agree ───────────
+
+
+class TestSymlinkReasonParity:
+    """r7g F1: a symlink LOOP read "a parent directory is not searchable" in
+    python and "dangling symlink" in the shell — the twins promise the same
+    reason in the same words, and the operator's next move depends on it."""
+
+    def _both(self, tmp_path, link):
+        out, err = _run_shell_rc("/opt/meshforge",
+                                 {"MESHFORGE_FLEET_HOSTS": str(link),
+                                  "HOME": str(tmp_path)})
+        with pytest.raises(FleetHostsUnreadable) as ei:
+            resolve_fleet_hosts_file(env={"MESHFORGE_FLEET_HOSTS": str(link)})
+        assert out["rc"] == "2", (out, err)
+        return ei.value.reason, out["err"]
+
+    def test_symlink_loop(self, tmp_path):
+        link = tmp_path / "loop"
+        link.symlink_to(link)
+        py, sh = self._both(tmp_path, link)
+        assert py == "symlink loop" and "(symlink loop)" in sh, (py, sh)
+
+    def test_dangling(self, tmp_path):
+        link = tmp_path / "lnk"
+        link.symlink_to(tmp_path / "gone")
+        py, sh = self._both(tmp_path, link)
+        assert py == "dangling symlink" and "(dangling symlink)" in sh, (py, sh)
+
+    @needs_nonroot
+    def test_target_under_an_unsearchable_dir(self, tmp_path):
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        (locked / "t").write_text("x\n")
+        link = tmp_path / "lnk"
+        link.symlink_to(locked / "t")
+        locked.chmod(0)
+        try:
+            py, sh = self._both(tmp_path, link)
+        finally:
+            locked.chmod(0o755)
+        want = "symlink target cannot be checked: a parent directory is not searchable"
+        assert py == want and "(%s)" % want in sh, (py, sh)

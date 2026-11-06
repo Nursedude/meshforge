@@ -65,7 +65,8 @@ _fh_usable() {
     # [ -e ] is also false when a parent cannot be searched (EACCES) — that
     # is NOT absence (r7f F2: python refused, this lib fell through). Walk up
     # to the nearest directory that answers: searchable = the path is truly
-    # absent below it; not searchable = we cannot know.
+    # absent below it; not searchable = we cannot know. Terminates: dirname
+    # always ends at "/" or "." — both directories (r7g F9).
     _fh_d="$(dirname -- "$1")"
     while :; do
       if [ -d "$_fh_d" ]; then
@@ -73,11 +74,17 @@ _fh_usable() {
         _fh_refuse "$1" "cannot be checked: a parent directory is not searchable"
         return 2
       fi
-      { [ "$_fh_d" = "/" ] || [ "$_fh_d" = "." ]; } && return 1
       _fh_d="$(dirname -- "$_fh_d")"
     done
   fi
-  if [ -L "$1" ] && [ ! -e "$1" ]; then _fh_why="dangling symlink"
+  if [ -L "$1" ] && [ ! -e "$1" ]; then
+    # r7g F1: [ -e ] is false for a dangling link, a loop AND a target under
+    # an unsearchable dir — ask the kernel which (C locale = fixed strerror).
+    case "$(LC_ALL=C cat -- "$1" 2>&1 >/dev/null)" in
+      *"symbolic links"*) _fh_why="symlink loop" ;;
+      *"ermission denied"*) _fh_why="symlink target cannot be checked: a parent directory is not searchable" ;;
+      *) _fh_why="dangling symlink" ;;
+    esac
   elif [ -d "$1" ]; then _fh_why="a directory, not a file"
   elif [ ! -f "$1" ]; then _fh_why="not a regular file"
   else _fh_why="permission denied"; fi

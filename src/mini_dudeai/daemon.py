@@ -168,7 +168,9 @@ def main(argv: list[str] | None = None) -> int:
                         "or config.interval_s or 30.")
     args = p.parse_args(argv)
 
-    if args.preset:
+    if args.preset == "auto":
+        # Only `auto` consults the fleet list; a pinned preset never imports
+        # the resolver (r7g F3).
         from utils.fleet_hosts import FleetHostsUnreadable
         try:
             resolved_preset = _resolve_preset_name(args.preset)
@@ -176,6 +178,9 @@ def main(argv: list[str] | None = None) -> int:
             # r7e #2: refuse to start rather than guess a preset from a list
             # that exists and could not be read.
             raise SystemExit(f"mini-dudeai: preset auto cannot be resolved — {e}")
+    elif args.preset:
+        resolved_preset = _resolve_preset_name(args.preset)
+    if args.preset:
         build_engine = _import_preset(resolved_preset)
         engine = build_engine()
         interval = args.interval if args.interval is not None else 30.0

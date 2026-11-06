@@ -39,6 +39,7 @@ anywhere on the line, so ``"moc1  # retired"`` parses as host ``moc1``.
 """
 from __future__ import annotations
 
+import errno
 import os
 import stat
 from pathlib import Path
@@ -98,8 +99,14 @@ def _usable(p: Path) -> bool:
             st = os.stat(p)
         except (FileNotFoundError, NotADirectoryError) as exc:
             raise FleetHostsUnreadable(p, "dangling symlink") from exc
-        except OSError as exc:
+        except PermissionError as exc:
             raise FleetHostsUnreadable(p, "symlink target " + UNCHECKABLE) from exc
+        except OSError as exc:
+            # r7g F1: ELOOP is a loop, not a permission problem; same words
+            # as the shell twin.
+            why = ("symlink loop" if exc.errno == errno.ELOOP
+                   else exc.strerror or str(exc))
+            raise FleetHostsUnreadable(p, why) from exc
     if stat.S_ISDIR(st.st_mode):
         raise FleetHostsUnreadable(p, "a directory, not a file")
     if not stat.S_ISREG(st.st_mode):
