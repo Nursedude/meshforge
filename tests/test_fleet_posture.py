@@ -325,6 +325,12 @@ class TestBridgeBoxesCaller:
         monkeypatch.setenv("HOME", str(tmp_path))
         (tmp_path / ".config" / "meshforge").mkdir(parents=True)
         (tmp_path / ".config" / "meshforge" / "fleet_hosts").write_text("moc\nmoc3\n")
+        # HOME alone is NOT isolation: the shared resolver reads the REAL
+        # user's home (2026-11-06 CI: these passed locally only by reading the
+        # operator's real list). The authoritative override is the pin.
+        monkeypatch.setenv("MESHFORGE_FLEET_HOSTS",
+                           str(tmp_path / ".config" / "meshforge" / "fleet_hosts"))
+        monkeypatch.delenv("FLEET_HOSTS", raising=False)
         calls = []
         self._fake_pr(monkeypatch, {"(self)": "primary", "moc": "gateway-only"}, calls)
         mod = self._load_cli()
@@ -341,6 +347,12 @@ class TestBridgeBoxesCaller:
         monkeypatch.setenv("HOME", str(tmp_path))
         (tmp_path / ".config" / "meshforge").mkdir(parents=True)
         (tmp_path / ".config" / "meshforge" / "fleet_hosts").write_text("moc\n")
+        # HOME alone is NOT isolation: the shared resolver reads the REAL
+        # user's home (2026-11-06 CI: these passed locally only by reading the
+        # operator's real list). The authoritative override is the pin.
+        monkeypatch.setenv("MESHFORGE_FLEET_HOSTS",
+                           str(tmp_path / ".config" / "meshforge" / "fleet_hosts"))
+        monkeypatch.delenv("FLEET_HOSTS", raising=False)
         calls = []
         self._fake_pr(monkeypatch, {"(self)": "gateway-only", "moc": "disabled-role"}, calls)
         mod = self._load_cli()

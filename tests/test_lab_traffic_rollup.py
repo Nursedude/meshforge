@@ -73,6 +73,9 @@ def rollup_env(tmp_path):
         "HOME": str(home),
         "XDG_STATE_HOME": str(home / ".local" / "state"),
         "FLEET_HOSTS": str(fleet_hosts),
+        # the higher-precedence key must not leak in from the caller's env
+        # (it outranks FLEET_HOSTS and would replace this fixture's list)
+        "MESHFORGE_FLEET_HOSTS": "",
         # Pin "now" for deterministic age bucketing.
         "NOW_OVERRIDE": "1778890800",
     }
