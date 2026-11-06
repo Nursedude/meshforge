@@ -1,6 +1,6 @@
 # Maps honesty arc — phases (from the 2026-11-06 maps audit)
 
-Source: claude.ai doc "MeshForge Maps (:5000) — Deep Research, Audit & Plan" (artifact UieYc41forRdEiQuSBrsA1), audited on the manager 11-06 — provenance row "Maps deep-research doc audited". ROADMAP item: `MAP-H` (one line; MF012 cap). Order: honesty → one source of truth → performance → features. Land in MF first, port under `parity_check.py`.
+Source: claude.ai doc "MeshForge Maps (:5000) — Deep Research, Audit & Plan" (artifact UieYc41forRdEiQuSBrsA1), audited on the manager 11-06 — provenance row "Maps deep-research doc audited". ROADMAP item: `MAP-H` (one line; MF012 cap) — **in NOW, operator 2026-11-06 ("promote MAP-H into NOW"), MeshForge-scoped**: H3, H4, H5 + the AREDN walk, H9. The maps/MA rows (H6 lqm, H7, H8) and phases 2–4 below are NOT in NOW. **Progress log = the doc's "Progress — read this first" table**: every session that moves MAP-H adds a dated row there (commit · deployed? · next), in the same session as the commit. Order: honesty → one source of truth → performance → features. Land in MF first, port under `parity_check.py`.
 
 ## Phase 1 — MAP-H: stop the map lying
 
@@ -19,3 +19,16 @@ map features no other mesh map has: a blindness layer (each collector's heard fo
 
 - F5: the other Python readers of `reason_if_zero` still carry their own lists — `node_counts.py:89` (any reason ≠ ok → count None, so `no_positions`/`no_data` disagree with the map), `watchdog_probes_aredn.py:296`, `map_metrics.py:188` (counts `no_positions` as an error). Move each onto `utils.map_source_reasons.reason_state` — red-first, one consumer per commit; `node_counts` is a TUI/fleet-line behaviour change, so name it.
 - A source that returns without calling `_record_diagnostic` now HOLDS last cycle's reason (the F2 pre-stamp keeps it). Every collector records today (BELIEVED, by grep); a test that fails when one doesn't would make it a guarantee.
+
+## H3 — acceptance, written BEFORE code (2026-11-06; build in a fresh session)
+
+Measured today: `collect()` cache-miss path does `with self._collect_lock:` (`map_data_collector.py:692`) — every HTTP caller with a stale cache BLOCKS, no deadline, behind a collect that can run 45 s TCP + 15 s CLI + source caps + the serial AREDN walk; a background refresher (`:373-428`, non-blocking acquire) already exists. `map_http_handler.py:591` answers EVERY path, `/` included, with JSON 503 while `is_warming`.
+
+Pass = ALL of these, each a test that FAILS on `c639e260` first:
+1. A request thread NEVER waits on `_collect_lock`: with the lock held by a planted 30 s collect, `collect()` from a handler returns within 1 s — the last snapshot when one exists, else a "warming" signal. (Only the background refresher and prewarm collect.)
+2. The served snapshot carries its age (`X-Snapshot-Age` header + a field in `/api/status`) — a stale snapshot is SAID, never passed off as fresh (the H1 banner reads it).
+3. While warming, `/` serves the map HTML (200); only `/api/*` answer 503 `warming`; the page shows the H1 blind banner "warming up (cold start)" and retries.
+4. ONE overall collect deadline (setting, default ~20 s): a source past it records `collect_timeout` and the collect finishes with the rest.
+5. Live, on the lab box (not a gateway): 50 parallel `curl /api/nodes/geojson` during a cold start → thread count flat (`ls /proc/<pid>/task | wc -l` before/after), p99 < 1 s, and a browser shows the banner, not a raw JSON page.
+Control that can fail: the same 50-curl drill on `c639e260` must show the pile-up (threads climb, p99 ≫ 1 s), or the drill is not measuring the defect.
+Not in scope: changing what the background refresher collects. Review: contextless non-author pass before deploy (concurrency = upshift; queue a frontier read if this session is not one).
