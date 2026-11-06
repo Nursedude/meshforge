@@ -28,6 +28,11 @@ def _no_real_posture(tmp_path, monkeypatch):
     """collect_fleet reads the declared posture; never the operator's real file
     (a test verdict must not depend on what the operator declared today)."""
     monkeypatch.setenv("MESHFORGE_FLEET_POSTURE", str(tmp_path / "no-posture.json"))
+    # Never the REAL dish (Fable r2 2026-11-06: 22 live gRPC calls to the
+    # site's Starlink per run via an unmocked get_dish_status) — a verdict
+    # must not depend on, nor touch, the box's network.
+    import mini_dudeai.rollup as _rollup
+    monkeypatch.setattr(_rollup, "_render_uplink", lambda: "")
 
 _CLAW_DOC = {
     "captured_at": NOW - 10, "ok": True, "device": "dudeclaw-01",
