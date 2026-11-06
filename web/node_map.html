@@ -325,7 +325,8 @@
             display: none;
         }
         /* Data Sources section (T2.3) — collapsible per-source health row.
-           Status dot color encodes reason_if_zero from /api/status diagnostics.
+           Status dot = the reason's STATE (utils/map_source_reasons.py);
+           no_positions / no_data keep their own dot (contributing nothing).
         */
         .sources-section {
             margin-top: 6px;
@@ -368,13 +369,24 @@
             margin-right: 6px;
             vertical-align: middle;
         }
+        /* One dot per reason STATE (utils/map_source_reasons.py). */
         .source-dot.ok          { background: #4caf50; }
-        .source-dot.stale       { background: #ffb74d; }   /* stale_cached */
-        .source-dot.no_positions{ background: #ffb74d; }
-        .source-dot.unreachable { background: #f44336; }
-        .source-dot.not_configured,
-        .source-dot.source_disabled,
-        .source-dot.no_data     { background: #607d8b; }   /* gray = inactive by design */
+        /* Blind state: the node fetch failed; markers are the last good ones. */
+        .map-blind .leaflet-marker-pane,
+        .map-blind .leaflet-overlay-pane { filter: grayscale(1) opacity(0.55); }
+        #map-blind-banner {
+            position: fixed; top: 56px; left: 50%; transform: translateX(-50%);
+            z-index: 2000; max-width: calc(100% - 32px);
+            background: #3e2723; color: #ffcc80; border: 1px solid #ff9800;
+            padding: 8px 14px; border-radius: 6px; font-size: 13px;
+        }
+        .source-dot.stale       { background: #ffb74d; }   /* failed, holding last-known */
+        .source-dot.warn,
+        .source-dot.unreachable { background: #f44336; }   /* unreachable: claw rows */
+        .source-dot.no_positions{ background: #ffb74d; }   /* answered, no GPS */
+        .source-dot.no_data     { background: #607d8b; }   /* answered, empty */
+        .source-dot.inactive    { background: #607d8b; }   /* gray = inactive by design */
+        .source-dot.unobservable{ background: transparent; border: 1px dashed #b0bec5; }
         .data-age {
             font-size: 9px;
             color: #6e7e8e;
@@ -4100,63 +4112,11 @@
         refreshNodes();
     }
 
-    async function refreshNodes() {
-        // Show loading on first load or region change
-        if (state.firstLoad) {
-            const preset = state.regionPresets[state.selectedRegion];
-            const regionLabel = preset ? preset.label : '';
-            showLoading(regionLabel
-                ? 'Loading ' + regionLabel + ' nodes...'
-                : 'Loading nodes...');
-        }
-
-        // 1. Check for embedded data (injected by GTK panel)
-        if (window.meshforgeData) {
-            loadNodes(window.meshforgeData);
-            updateApiStatus(true);
-            hideLoading();
-            return;
-        }
-
-        // 2. Try local API with bbox + preset filtering
-        try {
-            let geoUrl = '/api/nodes/geojson';
-            const params = [];
-            const bbox = _getActiveBbox();
-            if (bbox) params.push('bbox=' + bbox);
-            // Push View preset to the server so the response is preset-shaped
-            // instead of the full federation union (~30 MB / 60K features).
-            // The client-side switch in _processOneFeature still runs as
-            // defense-in-depth — it'll be a near-no-op on filtered data.
-            const presetEl = document.getElementById('filter-preset');
-            const preset = presetEl ? presetEl.value : 'custom';
-            if (preset && preset !== 'custom') params.push('preset=' + encodeURIComponent(preset));
-            if (params.length) geoUrl += '?' + params.join('&');
-            const response = await fetch(geoUrl);
-            if (response.ok) {
-                loadNodes(await response.json());
-                updateApiStatus(true);
-                hideLoading();
-                return;
-            }
-            updateApiStatus(false, `HTTP ${response.status}`);
-        } catch (e) {
-            updateApiStatus(false, e.message);
-        }
-
-        hideLoading();
-
-        // 3. Check URL params
-        const params = new URLSearchParams(window.location.search);
-        if (params.has('data')) {
-            try {
-                loadNodes(JSON.parse(decodeURIComponent(params.get('data'))));
-                return;
-            } catch (e) { /* bad data */ }
-        }
-
-        // 4. Demo data for development/preview
-        loadNodes({
+    // Development/preview nodes. Loaded ONLY with ?demo=1 — never as a
+    // fallback: a failed fetch used to draw these (an online 'Honolulu
+    // Gateway') and the marker diff then removed the real nodes (maps
+    // audit H1, 2026-11-06).
+    const DEMO_GEOJSON = {
             "type": "FeatureCollection",
             "features": [
                 {
@@ -4226,7 +4186,117 @@
                     }
                 }
             ]
-        });
+    };
+
+    // ---- Blind state (maps audit H1) ------------------------------------
+    // When the node fetch fails the map is BLIND. It keeps the last good
+    // markers (greyed) and says since when and why. It never invents nodes
+    // and never clears the real ones.
+    function showMapBlind(reason) {
+        if (!state.blindSince) state.blindSince = new Date();
+        const b = state.blindSince;
+        const sameDay = b.toDateString() === new Date().toDateString();
+        const since = (sameDay ? '' : b.toLocaleDateString([], {month: 'short', day: 'numeric'}) + ' ')
+            + b.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+        const held = state.markers ? state.markers.size : 0;
+        let banner = document.getElementById('map-blind-banner');
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.id = 'map-blind-banner';
+            banner.setAttribute('role', 'alert');
+            document.body.appendChild(banner);
+        }
+        banner.textContent = `Map blind since ${since} — ${reason}. `
+            + (held > 0 ? `Showing the last ${held} nodes it saw (greyed); retrying.`
+                        : 'No nodes loaded yet; retrying.');
+        document.body.classList.add('map-blind');
+    }
+
+    function clearMapBlind() {
+        state.blindSince = null;
+        document.body.classList.remove('map-blind');
+        const banner = document.getElementById('map-blind-banner');
+        if (banner) banner.remove();
+    }
+
+    async function refreshNodes() {
+        // Show loading on first load or region change
+        if (state.firstLoad) {
+            const preset = state.regionPresets[state.selectedRegion];
+            const regionLabel = preset ? preset.label : '';
+            showLoading(regionLabel
+                ? 'Loading ' + regionLabel + ' nodes...'
+                : 'Loading nodes...');
+        }
+
+        // 1. Check for embedded data (injected by GTK panel)
+        if (window.meshforgeData) {
+            loadNodes(window.meshforgeData);
+            updateApiStatus(true);
+            hideLoading();
+            return;
+        }
+
+        // 2. Try local API with bbox + preset filtering
+        let failReason = 'no answer from the map server';
+        try {
+            let geoUrl = '/api/nodes/geojson';
+            const params = [];
+            const bbox = _getActiveBbox();
+            if (bbox) params.push('bbox=' + bbox);
+            // Push View preset to the server so the response is preset-shaped
+            // instead of the full federation union (~30 MB / 60K features).
+            // The client-side switch in _processOneFeature still runs as
+            // defense-in-depth — it'll be a near-no-op on filtered data.
+            const presetEl = document.getElementById('filter-preset');
+            const preset = presetEl ? presetEl.value : 'custom';
+            if (preset && preset !== 'custom') params.push('preset=' + encodeURIComponent(preset));
+            if (params.length) geoUrl += '?' + params.join('&');
+            const response = await fetch(geoUrl);
+            if (response.ok) {
+                loadNodes(await response.json());
+                clearMapBlind();
+                updateApiStatus(true);
+                hideLoading();
+                return;
+            }
+            failReason = `HTTP ${response.status}`;
+            if (response.status === 503) {
+                try {
+                    const body = await response.json();
+                    if (body && body.state === 'warming') {
+                        failReason = 'map server warming up (cold start)';
+                    }
+                } catch (e) { /* not the warming body */ }
+            }
+            updateApiStatus(false, failReason);
+        } catch (e) {
+            failReason = e.message || 'fetch failed';
+            updateApiStatus(false, failReason);
+        }
+
+        hideLoading();
+
+        // 3. Check URL params
+        const params = new URLSearchParams(window.location.search);
+        if (params.has('data')) {
+            try {
+                loadNodes(JSON.parse(decodeURIComponent(params.get('data'))));
+                showMapBlind(failReason + ' — showing the ?data= payload from the URL, not live nodes');
+                return;
+            } catch (e) { /* bad data */ }
+        }
+
+        // 4. Demo data — development/preview only, never a fallback.
+        if (params.has('demo')) {
+            loadNodes(DEMO_GEOJSON);
+            showMapBlind(failReason + ' — showing DEMO nodes (?demo=1), not live nodes');
+            return;
+        }
+
+        // 5. The map cannot see. Keep the last good markers on screen (a
+        // blank or invented map would both be lies) and say so.
+        showMapBlind(failReason);
     }
 
     // ============================================
@@ -5340,26 +5410,38 @@
     // Each network count row (Meshtastic / RNS / AREDN / MeshCore) has a
     // health badge span next to its number. The badge pulls state from
     // /api/status.source_diagnostics.{source}.reason_if_zero and the
-    // matching notes string. Taxonomy comes from map_data_collector:
-    //   ok              -> no badge (healthy)
-    //   no_positions    -> no badge (data is flowing, GPS absent — not broken)
-    //   no_data         -> no badge (empty but unconfigured/unused)
-    //   not_configured  -> grey — (source intentionally off or unset)
-    //   source_disabled -> grey — (feature-flagged off)
-    //   unreachable     -> yellow ⚠ (real problem: upstream broken / rnsd down)
+    // matching notes string. The reason -> state table is
+    // SOURCE_REASON_STATE below (a pinned copy of utils/map_source_reasons.py):
+    //   ok                 -> no badge (no_positions / no_data are ok too)
+    //   inactive           -> grey — (off by design)
+    //   stale, warn        -> ⚠ (the source failed; stale = holding last-known)
+    //   unobservable       -> ⚠ (a reason the table does not know — never ok)
     //
     // The mapping from network to contributing sources is deliberate:
     // Meshtastic counts pull from meshtasticd + mqtt; RNS from rns_direct +
     // unified_tracker; AREDN from local aredn + aredn_worldmap; MeshCore
     // from meshcore_public + operator_positions. A network is "warn" if
-    // ANY of its sources is unreachable; "disabled" if ALL are off; "ok"
-    // otherwise.
+    // ANY of its sources is warn / stale / unobservable; "disabled" if ALL
+    // are off; "ok" otherwise.
     const SOURCE_MAP = {
         meshtastic: ['meshtasticd', 'mqtt'],
         rns: ['rns_direct', 'unified_tracker'],
         aredn: ['aredn', 'aredn_worldmap'],
         meshcore: ['meshcore_public'],
     };
+
+    // The collector's reason vocabulary — a copy of utils/map_source_reasons.py
+    // SOURCE_REASON_STATE, pinned equal by tests/test_map_source_honesty.py.
+    // Keep it strict JSON (the test parses it). A reason NOT listed here is
+    // 'unobservable': we do not know what it means, so we never draw healthy.
+    const SOURCE_REASON_STATE = {"ok": "ok", "no_positions": "ok", "no_data": "ok", "not_configured": "inactive", "source_disabled": "inactive", "deferred_to_gateway": "inactive", "stale_cached": "stale", "unreachable": "warn", "collect_timeout": "warn", "lock_contended": "warn", "slow_sysinfo": "warn"};
+
+    function reasonState(reason) {
+        if (!reason || !Object.prototype.hasOwnProperty.call(SOURCE_REASON_STATE, reason)) {
+            return 'unobservable';
+        }
+        return SOURCE_REASON_STATE[reason];
+    }
 
     function computeHealth(diagnostics, sources) {
         let warnNotes = [];
@@ -5369,12 +5451,16 @@
             const d = diagnostics[src];
             if (!d) continue;
             const reason = d.reason_if_zero;
-            if (reason === 'ok' || reason === 'no_positions' || reason === 'no_data') {
+            const state = reasonState(reason);
+            if (state === 'ok') {
                 okCount++;
-            } else if (reason === 'unreachable') {
-                warnNotes.push(`${src}: ${d.notes || reason}`);
-            } else if (reason === 'not_configured' || reason === 'source_disabled') {
+            } else if (state === 'inactive') {
                 disabledNotes.push(`${src}: ${d.notes || reason}`);
+            } else if (state === 'unobservable') {
+                warnNotes.push(`${src}: unobservable — unknown reason '${reason || 'none'}'`);
+            } else {
+                // warn, stale: the source failed (stale = holding last-known data)
+                warnNotes.push(`${src}: ${d.notes || reason}`);
             }
         }
         if (warnNotes.length > 0) {
@@ -5440,14 +5526,15 @@
         for (const src of allSources) {
             const d = diagnostics[src];
             if (!d) continue;
-            const reason = d.reason_if_zero || 'ok';
-            const dotClass = ['ok', 'stale_cached', 'no_positions', 'unreachable',
-                              'not_configured', 'source_disabled', 'no_data']
-                              .includes(reason) ? reason : 'ok';
-            // stale_cached uses .stale dot class
-            const dotKey = dotClass === 'stale_cached' ? 'stale' : dotClass;
-            if (reason === 'unreachable') warnCount++;
-            else if (reason === 'ok' || reason === 'stale_cached') okCount++;
+            const reason = d.reason_if_zero || '';
+            // The dot is the reason's STATE (map_source_reasons); an unknown
+            // reason draws the 'unobservable' dot, never the green ok one.
+            const st = reasonState(reason);
+            // ok-state reasons that contribute NOTHING keep their own dot, so
+            // the list still tells "flowing" from "answered, but empty".
+            const dotKey = (reason === 'no_positions' || reason === 'no_data') ? reason : st;
+            if (st === 'warn' || st === 'stale' || st === 'unobservable') warnCount++;
+            else if (st === 'ok') okCount++;
             const lat = d.latency_ms != null ? `${d.latency_ms}ms` : '—';
             const yieldedTxt = d.yielded != null
                 ? (d.attempted != null && d.attempted !== d.yielded

@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 from utils.safe_import import safe_import
 from utils.paths import get_real_user_home
 from utils.common import SettingsManager
+from utils.map_source_reasons import is_known_reason
 from gateway.node_tracker import get_node_tracker
 from monitoring.mqtt_subscriber import get_local_subscriber
 
@@ -566,6 +567,20 @@ class MapDataCollector(
             reason_if_zero = "ok"
         elif yielded == 0 and reason_if_zero is None:
             reason_if_zero = "no_positions" if attempted > 0 else "unreachable"
+        if not is_known_reason(reason_if_zero):
+            # hfm #3: the browser renders a reason outside the vocabulary as
+            # `unobservable`; say so here too, so the new reason gets a state
+            # in utils.map_source_reasons instead of silently degrading.
+            # Once per (source, reason) per process — a collect runs every
+            # ~30 s and must not bury the journal.
+            warned = self.__dict__.setdefault("_unknown_reason_warned", set())
+            if (source, reason_if_zero) not in warned:
+                warned.add((source, reason_if_zero))
+                logger.warning(
+                    "map source %s: reason_if_zero=%r is outside the reason "
+                    "vocabulary (utils.map_source_reasons) — the map shows it "
+                    "as unobservable", source, reason_if_zero,
+                )
         existing = self._source_diagnostics.get(source, {})
         entry = {
             "attempted": attempted,
@@ -606,7 +621,14 @@ class MapDataCollector(
         # carry-over; if the source raises before recording, the except branch
         # below completes the synthetic diagnostic so the degraded source keeps
         # a witness instead of a bare latency stub.
-        self._source_diagnostics[source] = {"latency_ms": 0}
+        # A NEW dict that keeps the last cycle's reason/notes: /api/status
+        # reads diagnostics without the collect lock, and a bare
+        # {"latency_ms": 0} stub mid-collect read as "no reason" — a healthy
+        # source flickered to unobservable/ok every cycle (hfm #2: hold the
+        # last-known state). The source's own _record_diagnostic replaces it.
+        prior = dict(self._source_diagnostics.get(source) or {})
+        prior["latency_ms"] = 0
+        self._source_diagnostics[source] = prior
         try:
             result = fn(*args, **kwargs)
             elapsed_ms = int((time.perf_counter() - start) * 1000)
@@ -617,8 +639,10 @@ class MapDataCollector(
         except Exception as e:
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             entry = self._source_diagnostics.get(source, {})
-            entry.setdefault("attempted", 0)
-            entry.setdefault("yielded", 0)
+            # Explicit zeros: the pre-stamp now carries last cycle's counts,
+            # and "yielded 50 · unreachable" would be a false number.
+            entry["attempted"] = 0
+            entry["yielded"] = 0
             entry["reason_if_zero"] = "unreachable"
             entry["notes"] = f"exception during collect: {type(e).__name__}"
             entry["latency_ms"] = elapsed_ms

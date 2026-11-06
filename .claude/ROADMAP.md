@@ -197,6 +197,8 @@ product defect needs one.
 
 ### NEXT
 
+- **MAP-H** [MF][MA][maps] S+F maps:both — map never draws healthy when blind; H1+H2 built 11-06; rest: `plans/maps_audit_2026_11_06.md`
+
 PARKED 11-04, revisit 12-04:
 
 - **R2** [MF][MA] F — moc3 antenna baseline → swap (it stays SMALL) → repeat R2 with n≥5 per size, interference logged on every run
