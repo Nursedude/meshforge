@@ -12,7 +12,16 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+from utils.http_listener import LISTEN_BACKLOG
+
 logger = logging.getLogger(__name__)
+
+
+class MetricsTCPServer(socketserver.TCPServer):
+    """The :9090 scrape listener: single-threaded TCPServer, burst-deep
+    accept queue (stock is 5; MAP-H H13 follow-up 2026-11-07)."""
+
+    request_queue_size = LISTEN_BACKLOG
 
 
 class MetricsServer:
@@ -37,7 +46,7 @@ class MetricsServer:
         from utils.prometheus_exporter import PrometheusExporter
         self.port = port
         self.exporter = exporter or PrometheusExporter()
-        self._server: Optional[socketserver.TCPServer] = None
+        self._server: Optional[MetricsTCPServer] = None
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> bool:
@@ -57,7 +66,7 @@ class MetricsServer:
                 {'exporter': self.exporter}
             )
 
-            self._server = socketserver.TCPServer(("127.0.0.1", self.port), handler_class)
+            self._server = MetricsTCPServer(("127.0.0.1", self.port), handler_class)
             self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
             self._thread.start()
 
@@ -73,7 +82,10 @@ class MetricsServer:
         """Stop the metrics server."""
         if self._server:
             self._server.shutdown()
+            self._server.server_close()  # release the bound fd now, not at GC
             self._server = None
+            if self._thread:
+                self._thread.join(timeout=5.0)
             logger.info("Prometheus metrics server stopped")
 
     @property

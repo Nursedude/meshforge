@@ -8,7 +8,6 @@ cache turns N page loads into one handshake per TTL; the answer says its age.
 import json
 import sys
 import threading
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -19,6 +18,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from utils import _map_radio_endpoints as re_mod  # noqa: E402
 from utils.map_http_handler import MapRequestHandler  # noqa: E402
+from utils.map_data_service import _make_http_server  # noqa: E402  (the live listener class)
 
 from test_web_auth import _req  # noqa: E402
 
@@ -44,7 +44,7 @@ def server(monkeypatch):
     monkeypatch.setattr(MapRequestHandler, "collector", None, raising=False)
     monkeypatch.setattr(MapRequestHandler, "is_warming", False, raising=False)
     monkeypatch.setattr(MapRequestHandler, "_radio_channels_cache", None, raising=False)
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), MapRequestHandler)
+    srv = _make_http_server("127.0.0.1", 0)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield srv
     srv.shutdown()

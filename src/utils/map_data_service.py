@@ -40,6 +40,7 @@ from typing import Any, Dict, List, Optional
 
 # Re-export for backward compatibility
 from utils.map_data_collector import MapDataCollector
+from utils.http_listener import LISTEN_BACKLOG
 from utils.map_http_handler import MapRequestHandler
 from utils.safe_import import safe_import
 
@@ -128,13 +129,10 @@ def _operator_position():
 
 
 class MapHTTPServer(ThreadingHTTPServer):
-    """The map's listener. One thread per request, and an accept queue that
-    holds a burst (H13, 2026-11-06): Python's default ``request_queue_size``
-    is 5, so of 50 simultaneous requests ~8 waited a full 1 s TCP SYN retry
-    before the server saw them (measured: connect 1.01-1.04 s, answer <= 30 ms).
-    The kernel still caps this at ``net.core.somaxconn``."""
+    """The map's listener: one thread per request, and a burst-deep accept
+    queue (H13 — why and the measurement: ``utils.http_listener``)."""
 
-    request_queue_size = 128
+    request_queue_size = LISTEN_BACKLOG
     # daemon_threads is already True on ThreadingHTTPServer (3.7+): shutdown
     # never waits for in-flight handlers.
 

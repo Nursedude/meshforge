@@ -12,7 +12,6 @@ transmitter and the store are replaced by recorders.
 import http.client
 import json
 import threading
-from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 
 import pytest
@@ -20,6 +19,7 @@ import pytest
 from commands.base import CommandResult
 from utils import inbox_api
 from utils.map_http_handler import MapRequestHandler
+from utils.map_data_service import _make_http_server  # the live listener class
 
 
 def _row(**kw):
@@ -162,7 +162,7 @@ def server(monkeypatch, tmp_path):
     monkeypatch.setattr(MapRequestHandler, "is_warming", False)
     monkeypatch.setattr(MapRequestHandler, "allowed_origins", LAN)
     monkeypatch.setattr(MapRequestHandler, "collector", None, raising=False)
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), MapRequestHandler)
+    srv = _make_http_server("127.0.0.1", 0)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     srv.store = store
     sent, stored = [], []

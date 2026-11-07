@@ -15,12 +15,12 @@ Contract pinned here through a real HTTP server and the real dispatch:
 import http.client
 import json
 import threading
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
 from utils.map_http_handler import MapRequestHandler
+from utils.map_data_service import _make_http_server  # the live listener class
 
 WEB = Path(__file__).resolve().parents[1] / "web"
 
@@ -36,7 +36,7 @@ def warming_server(monkeypatch):
     monkeypatch.setattr(MapRequestHandler, "warming_started_at", 1.0)
     monkeypatch.setattr(MapRequestHandler, "web_dir", str(WEB))
     monkeypatch.setattr(MapRequestHandler, "collector", _CollectorMustNotBeTouched())
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), MapRequestHandler)
+    srv = _make_http_server("127.0.0.1", 0)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield srv
     srv.shutdown()

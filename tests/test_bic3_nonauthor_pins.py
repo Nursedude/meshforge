@@ -19,7 +19,6 @@ import http.client
 import json
 import sys
 import threading
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -31,6 +30,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 from utils import web_auth  # noqa: E402
 from utils import meshtastic_connection as mc  # noqa: E402
 from utils.map_http_handler import MapRequestHandler  # noqa: E402
+from utils.map_data_service import _make_http_server  # noqa: E402  (the live listener class)
 
 from test_web_auth import JSON, _origin, _req, server, store  # noqa: E402,F401
 
@@ -91,7 +91,7 @@ def test_a_failed_channel_read_is_not_cached_as_no_channels(monkeypatch):
     monkeypatch.setattr(mc.MeshtasticConnectionManager, "with_connection", broken)
     monkeypatch.setattr(mc.MeshtasticConnectionManager, "get_mode", lambda self: "tcp")
     monkeypatch.setattr(MapRequestHandler, "_get_radio_connection", lambda self: conn)
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), MapRequestHandler)
+    srv = _make_http_server("127.0.0.1", 0)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         _req(srv, "GET", "/api/radio/channels")

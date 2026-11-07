@@ -15,7 +15,6 @@ real operator session, so it cannot rot behind the login.
 import http.client
 import json
 import threading
-from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 
 import pytest
@@ -23,6 +22,7 @@ import pytest
 from utils import map_http_handler as mh  # noqa: F401
 from utils import web_auth
 from utils.map_http_handler import MapRequestHandler
+from utils.map_data_service import _make_http_server  # the live listener class
 
 LAN = ["http://localhost", "http://127.0.0.1", "http://192.0.2."]
 
@@ -33,7 +33,7 @@ def server(monkeypatch, tmp_path):
     monkeypatch.setattr(MapRequestHandler, "auth_store", store)
     monkeypatch.setattr(MapRequestHandler, "allowed_origins", LAN)
     monkeypatch.setattr(MapRequestHandler, "collector", None, raising=False)
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), MapRequestHandler)
+    srv = _make_http_server("127.0.0.1", 0)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
     sent = []

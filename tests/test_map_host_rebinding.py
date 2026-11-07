@@ -9,7 +9,6 @@ a test never reads the box's real messages (2026-09-23 class).
 """
 import http.client
 import threading
-from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -17,6 +16,7 @@ import pytest
 
 from utils import map_http_handler as mh
 from utils.map_http_handler import MapRequestHandler
+from utils.map_data_service import _make_http_server  # the live listener class
 
 LAN = ["http://localhost", "http://127.0.0.1", "http://192.0.2."]
 _EMPTY = SimpleNamespace(success=True, data={"messages": []})
@@ -25,7 +25,7 @@ _EMPTY = SimpleNamespace(success=True, data={"messages": []})
 @pytest.fixture
 def server(monkeypatch):
     monkeypatch.setattr(MapRequestHandler, "allowed_origins", LAN)
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), MapRequestHandler)
+    srv = _make_http_server("127.0.0.1", 0)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     with patch("utils.map_http_handler._HAS_MSG_QUEUE", False), \
          patch("utils.map_http_handler.messaging.get_messages", return_value=_EMPTY) as gm:
@@ -98,7 +98,7 @@ def test_standalone_map_with_no_lan_origins_still_checks_host(monkeypatch):
     # rebinding case — the Host rule must not depend on a LAN being set
     # (Fable re-review 2026-09-28 #4, mutant M2 survived)
     monkeypatch.setattr(MapRequestHandler, "allowed_origins", None)
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), MapRequestHandler)
+    srv = _make_http_server("127.0.0.1", 0)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         with patch("utils.map_http_handler._HAS_MSG_QUEUE", False), \

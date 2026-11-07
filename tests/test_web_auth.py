@@ -11,13 +11,13 @@ import json
 import os
 import threading
 import time
-from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 
 import pytest
 
 from utils import web_auth
 from utils.map_http_handler import MapRequestHandler
+from utils.map_data_service import _make_http_server  # the live listener class
 
 LAN = ["http://localhost", "http://127.0.0.1", "http://192.0.2."]
 MSG = json.dumps({"text": "auth probe", "destination": "^all"})
@@ -39,7 +39,7 @@ def server(monkeypatch, store):
     # pin ambient class state: another suite's MapServer.start() leaves
     # is_warming=True on the class (seen in the full run 2026-10-13)
     monkeypatch.setattr(MapRequestHandler, "is_warming", False)
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), MapRequestHandler)
+    srv = _make_http_server("127.0.0.1", 0)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     sent = []
 

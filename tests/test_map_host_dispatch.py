@@ -14,12 +14,12 @@ import http.client
 import inspect
 import re
 import threading
-from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 
 import pytest
 
 from utils.map_http_handler import MapRequestHandler
+from utils.map_data_service import _make_http_server  # the live listener class
 
 LAN = ["http://localhost", "http://127.0.0.1", "http://192.0.2."]
 EVIL = "evil.example:5000"
@@ -55,7 +55,7 @@ def server(monkeypatch):
         self._serve_json({"ok": True})
 
     monkeypatch.setattr(MapRequestHandler, "_dispatch_get", fake_dispatch)
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), MapRequestHandler)
+    srv = _make_http_server("127.0.0.1", 0)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     sent = []
     with patch("gateway.meshtastic_protobuf_client.send_text_direct",

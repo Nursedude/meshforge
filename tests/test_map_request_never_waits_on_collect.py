@@ -26,13 +26,13 @@ import http.client
 import json
 import threading
 import time
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
 from utils.map_data_collector import MapDataCollector, Snapshot
 from utils.map_http_handler import MapRequestHandler
+from utils.map_data_service import _make_http_server  # the live listener class
 
 FC = {"type": "FeatureCollection", "features": [
     {"type": "Feature", "geometry": {"type": "Point", "coordinates": [-155.0, 19.7]},
@@ -117,7 +117,7 @@ def server(collector, monkeypatch):
     # /api/status probes this box's radio; a test never touches it (tx_guard refuses)
     monkeypatch.setattr(MapRequestHandler, "_get_local_radio_config", lambda self: {})
     monkeypatch.setattr(MapRequestHandler, "_get_radio_status_summary", lambda self: {})
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), MapRequestHandler)
+    srv = _make_http_server("127.0.0.1", 0)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield srv
     srv.shutdown()
