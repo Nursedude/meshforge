@@ -104,10 +104,19 @@ def _resolved(node, aliases):
 
 def _queue_size_from_constant(cls: ast.ClassDef) -> bool:
     for stmt in cls.body:
-        if isinstance(stmt, ast.Assign) and any(
-                _nm(t) == "request_queue_size" for t in stmt.targets):
+        targets = stmt.targets if isinstance(stmt, ast.Assign) else \
+            [stmt.target] if isinstance(stmt, ast.AnnAssign) else []
+        if any(_nm(t) == "request_queue_size" for t in targets):
             return _nm(stmt.value) == "LISTEN_BACKLOG"
     return False
+
+
+def _imports_the_shared_constant(tree) -> bool:
+    # The NAME alone is forgeable: a module-local `LISTEN_BACKLOG = 5` reads
+    # right to the class check (Fable review 2026-11-07 #3).
+    return any(isinstance(n, ast.ImportFrom) and n.module == "utils.http_listener"
+               and any(a.name == "LISTEN_BACKLOG" and a.asname is None for a in n.names)
+               for n in ast.walk(tree))
 
 
 def _scan_sources(sources: dict) -> list:
@@ -144,6 +153,9 @@ def _scan_sources(sources: dict) -> list:
                 if not _queue_size_from_constant(n):
                     problems.append(f"{k}:{n.lineno}: class {n.name} must set "
                                     "request_queue_size = LISTEN_BACKLOG")
+                elif not _imports_the_shared_constant(t):
+                    problems.append(f"{k}:{n.lineno}: class {n.name} reads a LISTEN_BACKLOG "
+                                    "not imported from utils.http_listener")
     return problems
 
 
@@ -177,15 +189,45 @@ def test_guard_catches_planted_violations(planted):
     assert _scan(planted), planted
 
 
+_IMPORT = "from utils.http_listener import LISTEN_BACKLOG\n"
+
+
 def test_guard_passes_the_sanctioned_shape():
-    assert _scan("class A(ThreadingHTTPServer):\n    request_queue_size = LISTEN_BACKLOG\n"
-                 "class B(A):\n    request_queue_size = LISTEN_BACKLOG\n") == []
+    assert _scan(_IMPORT + "class A(ThreadingHTTPServer):\n    request_queue_size = LISTEN_BACKLOG\n"
+                 "class B(A):\n    request_queue_size: int = LISTEN_BACKLOG\n") == []
+
+
+def test_guard_refuses_a_local_constant_of_the_same_name():
+    assert _scan("LISTEN_BACKLOG = 5\nclass A(ThreadingHTTPServer):\n"
+                 "    request_queue_size = LISTEN_BACKLOG\n") == \
+        ["<planted>:2: class A reads a LISTEN_BACKLOG not imported from utils.http_listener"]
+
+
+def test_metrics_stop_releases_the_bound_fd_and_joins():
+    # Fable review 2026-11-07 #1: stop() used to leave the listening fd open
+    # until GC (no server_close); nothing observed it.
+    import socket
+    from utils.metrics_server import MetricsServer
+    srv = MetricsServer(port=0, exporter=object())
+    assert srv.start()
+    sock = srv._server.socket
+    port = sock.getsockname()[1]
+    thread = srv._thread
+    srv.stop()
+    assert sock.fileno() == -1, "stop() left the listening fd open"
+    assert not thread.is_alive(), "stop() returned before serve_forever exited"
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", port))  # rebindable now, not after GC
+    finally:
+        s.close()
 
 
 def test_guard_follows_a_listener_across_modules():
     # review 2026-11-07 (#2): a subclass of ANOTHER module's listener shrinking
     # the queue must be caught (MapHTTPServer imported elsewhere).
-    srcs = {"a.py": "class MapHTTPServer(ThreadingHTTPServer):\n"
+    srcs = {"a.py": "from utils.http_listener import LISTEN_BACKLOG\n"
+                    "class MapHTTPServer(ThreadingHTTPServer):\n"
                     "    request_queue_size = LISTEN_BACKLOG\n",
             "b.py": "from a import MapHTTPServer\n"
                     "class Y(MapHTTPServer):\n    request_queue_size = 5\n"}
