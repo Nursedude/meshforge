@@ -45,6 +45,7 @@ from utils._map_collector_meshcore import MeshCorePublicCollectorMixin
 from utils._map_collector_federation import FederationDataCollectorMixin
 from utils._map_collector_trackers import TrackerDataCollectorMixin
 from utils._map_collector_config import MapCollectorConfigMixin
+from utils._map_collector_deadline import CollectDeadlineMixin
 from utils.node_history import _origin_priority
 from utils._map_collector_snapshot import (  # noqa: F401  (re-export)
     MapSnapshotMixin, Snapshot, SnapshotWarming,
@@ -52,6 +53,7 @@ from utils._map_collector_snapshot import (  # noqa: F401  (re-export)
 
 
 class MapDataCollector(
+    CollectDeadlineMixin,
     MapSnapshotMixin,
     RNSDataCollectorMixin,
     PublicDataFallbackMixin,
@@ -136,7 +138,11 @@ class MapDataCollector(
     # call in a worker and abandons the wait after this cap, returning the rest
     # of the collect. Must exceed a box's legitimate cold sync (moc5's CH341
     # USB-SPI radio: 14-19s) with margin; raise in map_settings.json on a box
-    # with an even slower radio.
+    # with an even slower radio. Since MAP-H H3 #4 the collect deadline
+    # (collect_deadline_seconds) bounds it too: raising this knob past what is
+    # left of that deadline does nothing — raise both. A cap-shrinking variant
+    # was tried and reverted 2026-11-07: it labelled a budget squeeze "likely
+    # wedged meshtasticd" (Fable r3); the generic collect_timeout stays true.
     DEFAULT_MESHTASTICD_TCP_COLLECT_TIMEOUT_SECONDS = 45
 
     def __init__(self,
@@ -211,6 +217,9 @@ class MapDataCollector(
                 "meshtasticd_port": self.DEFAULT_MESHTASTICD_PORT,
                 "meshtasticd_tcp_collect_timeout_seconds":
                     self.DEFAULT_MESHTASTICD_TCP_COLLECT_TIMEOUT_SECONDS,
+                # ONE overall collect deadline (MAP-H H3 #4): a source past it
+                # reads collect_timeout and the cycle publishes without it.
+                "collect_deadline_seconds": self.DEFAULT_COLLECT_DEADLINE_SECONDS,
                 "aredn_node_ips": [],  # e.g. ["10.54.25.1", "10.1.0.1"]
                 # Operator-assigned positions for nodes that don't self-report GPS
                 # (MeshCore advertisements carry no position by protocol design).
@@ -611,6 +620,8 @@ class MapDataCollector(
         # than at every collector site so a new collector source
         # automatically gets metric coverage by virtue of using the
         # standard diagnostic path.
+        if self._in_abandoned_worker():
+            return  # a late source's metric would contradict the published collect_timeout
         try:
             from utils import map_metrics
             map_metrics.record_collect(source, yielded, reason_if_zero or "unknown")
@@ -618,6 +629,12 @@ class MapDataCollector(
             pass
 
     def _timed_collect(self, source: str, fn, *args, **kwargs):
+        """Run one source: timed + isolated (below), bounded by what is left of
+        this collect's deadline (``_bounded_source``, MAP-H H3 #4)."""
+        return self._bounded_source(
+            source, lambda: self._timed_collect_inline(source, fn, *args, **kwargs))
+
+    def _timed_collect_inline(self, source: str, fn, *args, **kwargs):
         """Run `fn`, record its wall-time latency under `source`, and ISOLATE it.
 
         The collector function still calls `_record_diagnostic` itself; this

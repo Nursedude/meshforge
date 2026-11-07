@@ -42,9 +42,17 @@ class MapSnapshotMixin:
     """Mixed into MapDataCollector; call ``_init_snapshot_state()`` in __init__."""
 
     # The kicked refresh waits this long for a running collect, then re-checks.
-    _SNAPSHOT_REFRESH_LOCK_WAIT_S = 60.0
+    # None = derived: longer than the worst-case collect (MAP-H H3 #4: deadline
+    # + floor x sources = 95 s at defaults; a fixed 60 s falsely warned "a
+    # collect may be wedged" on a collect progressing by design — Fable r2 #1).
+    _SNAPSHOT_REFRESH_LOCK_WAIT_S: Optional[float] = None
     # A lock-wait timeout is a WEDGE signal; warn at most this often (r2#2).
     _LOCK_TIMEOUT_WARN_EVERY_S = 600.0
+
+    def _refresh_lock_wait_s(self) -> float:
+        if self._SNAPSHOT_REFRESH_LOCK_WAIT_S is not None:
+            return self._SNAPSHOT_REFRESH_LOCK_WAIT_S
+        return self._worst_case_collect_s() + 15.0
 
     def _init_snapshot_state(self) -> None:
         self._snapshot_state: Optional[tuple] = None  # (geojson, mono, generation)
@@ -78,12 +86,15 @@ class MapSnapshotMixin:
 
     def _run_collect_witnessed(self):
         """Run ``_collect_locked()`` (caller holds ``_collect_lock``) with a witness."""
+        self._arm_collect_deadline()  # MAP-H H3 #4: ONE deadline per collect
         try:
             result = self._collect_locked()
         except Exception as e:
             self._collect_failures += 1
             self._last_collect_error = f"{type(e).__name__}: {e}"[:200]
             raise
+        finally:
+            self._disarm_collect_deadline()
         self._last_collect_error = None
         return result
 
@@ -155,7 +166,7 @@ class MapSnapshotMixin:
         if (out["state"] == "stale" and state is not None and last_to is not None
                 and last_to >= state[1]):
             out["stale_reason"] = (
-                f"collect lock held > {self._SNAPSHOT_REFRESH_LOCK_WAIT_S:.0f} s "
+                f"collect lock held > {self._refresh_lock_wait_s():.0f} s "
                 f"({self._refresh_lock_timeouts}x) -- a collect may be wedged")
         return out
 
@@ -180,7 +191,7 @@ class MapSnapshotMixin:
             logger.warning(
                 "map snapshot refresh waited %.0f s for _collect_lock and gave up "
                 "(%d time(s)); a collect may be wedged -- the map serves its last "
-                "snapshot and says its age", self._SNAPSHOT_REFRESH_LOCK_WAIT_S,
+                "snapshot and says its age", self._refresh_lock_wait_s(),
                 self._refresh_lock_timeouts)
 
     def _snapshot_refresh(self) -> None:
@@ -190,7 +201,7 @@ class MapSnapshotMixin:
         is never dropped behind a collect that re-checked its cache and did not
         refresh; the re-check means one that DID refresh is not repeated.
         """
-        if not self._collect_lock.acquire(timeout=self._SNAPSHOT_REFRESH_LOCK_WAIT_S):
+        if not self._collect_lock.acquire(timeout=self._refresh_lock_wait_s()):
             self._note_lock_timeout()  # a wedged holder: witness it; the next request kicks again
             return
         try:
