@@ -53,7 +53,9 @@ it is held to the same truth.
 message accounted for, airtime respected, the truth told when we cannot see.
 Not the best dashboard — MeshMonitor and MeshDash are ahead there, and we do
 not compete on UI, SSO or API size. (Rows above from their own READMEs,
-2026-10-18; re-check before quoting.)
+2026-10-18; re-check before quoting.) **Landscape 11-04:** mesh-api + AMMB also
+relay MT↔MC text, CoreScope owns MeshCore analytics: lead with the RNS hub +
+per-leg delivery truth (`research/landscape_2026_11_04.md`).
 
 Our moat is **months of mesh operations**: real failures root-caused on real
 radios and compiled into guards (`persistent_issues.md`). Source: research
@@ -92,8 +94,7 @@ our own config. So the gates make the lab stand in for the silent stranger.
 
 **Path:** `1.0.0-rc1` when every gate below passes except the soak → the 30-day
 soak runs ON rc1 → `1.0.0`. **No date.** Progress = N of 10 gates passing, each
-by its check. A runnable gate script waits for the 2026-10-09 freeze review;
-until then this table is the record. Status is measured, never carried: re-run
+by its check. This table is the record. Status is measured, never carried: re-run
 the check before changing a cell.
 
 **Release cadence (operator 2026-10-29):** monthly, tag X once the fleet
@@ -223,7 +224,7 @@ PARKED 11-04, revisit 12-04:
   Waits for cabling (operator 10-05: work in progress; nearest Pis to a UPS are VolcanoAI + kiai, or the yurt — Starlink + EcoFlow 1600). PHYSICS: the signal cable goes to a Pi POWERED BY THAT UPS, and the switch/AP must outlast the Pis or the central trigger cannot reach them. APC feeds VolcanoAI, alaula, moc5, moc, hAP, 3 switches, router; no APC on USB anywhere yet (measured 10-05). moc2 + moc4 share one NON-UPS power strip (operator 10-22): a short cut there rebooted both 10-19 ~07:00 (journals end abruptly 06:59:25 / 07:00:06, both back 07:00:26 / 07:00:31; no other box rebooted).
 - **POS-5** [MF] F — dormant posture: the remaining consumers (batches 1–3 shipped 09-01 `fe220772`/`a6cbfaf1`/`4b0e8b4d`). Reminder `dormant-posture-consumers-remaining`.
 - **NRG** [MF][MA] S+F twin→MA — NOC read grant + `box_truth/v1` export: any center reads any box once the box GRANTS it a restricted ssh key (`restrict,command=<export>`)
-  Spec `plans/noc_read_grant_2026_10_13.md` (grilled Q1–Q18). Steps 0–2 DEPLOYED 10-14; NEXT = non-author pass on step 2, then 3–8; then MA port + TUI both apps, minor bump BOTH (MF 0.7.0-beta, MA 0.3.0-beta — re-check, MF is already 0.7.0-beta). Adds `box_truth/v1` to gate 1. Accept: MA `/fleet` 8/8 with moc3 `ssh_spool`; `ssh -i <noc key> moc3 bash` returns JSON, never a shell.
+  Spec `plans/noc_read_grant_2026_10_13.md` (grilled Q1–Q18). Steps 0–2 DEPLOYED 10-14; NEXT = non-author pass on step 2, then 3–8; then MA port + TUI both apps, minor bump BOTH. Adds `box_truth/v1` to gate 1. Accept: MA `/fleet` 8/8 with moc3 `ssh_spool`; `ssh -i <noc key> moc3 bash` returns JSON, never a shell.
   public: A central MeshForge or MeshAnchor can read the status of any box you grant, through a key that can only export status, never open a shell.
   status: planned
 - **ADDR-1** [MF][MA] S+F twin→MA — Mesh→RNS `@address`: a mesh user can START a private conversation (GRILL before build)

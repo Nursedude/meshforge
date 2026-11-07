@@ -1,0 +1,144 @@
+<!-- TEMPLATE for scripts/roadmap_html.py — the published roadmap PAGE (a claude.ai artifact).
+     Generated output is never committed; regenerate from .claude/ROADMAP.md. -->
+<title>MeshForge Roadmap</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=Source+Sans+3:wght@400;600&display=swap">
+<style>
+/* Layout: an operations log — a sticky tier/repo console over a single reading column; items first, the full SSOT below. */
+:root{
+  --bg:#f5f7f7; --panel:#ffffff; --fg:#17232a; --muted:#5b6b73; --rule:#d5dde0;
+  --accent:#0f6f74; --accent-soft:#e1efef;
+  --now:#a3560b; --now-soft:#fbeedd; --later:#6a7479;
+  --ok:#2d7a3e; --warn:#a33a1f;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+  --sans:"Source Sans 3",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --serif:"Source Serif 4",Georgia,serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0f1619; --panel:#162126; --fg:#dbe5e8; --muted:#8fa1a8; --rule:#26353b;
+  --accent:#5cc3c4; --accent-soft:#163033; --now:#f0a65a; --now-soft:#33240f; --later:#9aa6ab;
+  --ok:#77c98a; --warn:#f08a6c; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f1619; --panel:#162126; --fg:#dbe5e8; --muted:#8fa1a8; --rule:#26353b;
+  --accent:#5cc3c4; --accent-soft:#163033; --now:#f0a65a; --now-soft:#33240f; --later:#9aa6ab;
+  --ok:#77c98a; --warn:#f08a6c; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font:16px/1.55 var(--sans)}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--panel)}
+.wrap{max-width:860px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+header.top{padding-block:28px 12px}
+header.top h1{font:600 clamp(26px,5vw,36px)/1.15 var(--serif);margin:0;text-wrap:balance}
+header.top .sub{color:var(--muted);margin:6px 0 0;font-size:15px}
+.prov{font:12.5px/1.5 var(--mono);color:var(--muted);margin-top:10px}
+.prov code{font:inherit;color:var(--fg)}
+.warn{color:var(--warn)}
+.console{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--panel);border-block:1px solid var(--rule)}
+.console .wrap{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding-block:10px}
+.seg{display:flex;gap:4px;flex-wrap:wrap}
+button{font:600 13px var(--mono);border:1px solid var(--rule);background:transparent;color:var(--fg);padding:5px 10px;border-radius:4px;cursor:pointer}
+button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--panel)}
+button:focus-visible,input:focus-visible,summary:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.tier-btn .n{font-weight:400;opacity:.75;margin-left:4px;font-variant-numeric:tabular-nums}
+input[type=search]{flex:1 1 180px;min-width:0;font:14px var(--sans);padding:6px 10px;border:1px solid var(--rule);border-radius:4px;background:var(--bg);color:var(--fg)}
+.lbl{font:600 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+main{padding-block:18px 60px}
+h2.tierhead{font:600 13px var(--mono);letter-spacing:.1em;text-transform:uppercase;margin:26px 0 8px;display:flex;gap:10px;align-items:baseline}
+h2.tierhead small{font-weight:400;letter-spacing:0;text-transform:none;color:var(--muted);font-family:var(--sans);font-size:14px}
+h2.tierhead[data-t=NOW]{color:var(--now)} h2.tierhead[data-t=NEXT]{color:var(--accent)} h2.tierhead[data-t=LATER]{color:var(--later)}
+ul.items{list-style:none;margin:0;padding:0;border-top:1px solid var(--rule)}
+li.item{border-bottom:1px solid var(--rule)}
+li.item[data-tier=NOW]{background:var(--now-soft)}
+summary{display:grid;grid-template-columns:7.5em 1fr;gap:2px 12px;padding:10px 4px;cursor:pointer;list-style:none}
+summary::-webkit-details-marker{display:none}
+.iid{font:600 13px/1.6 var(--mono);color:var(--accent);grid-row:span 2}
+li.item[data-tier=NOW] .iid{color:var(--now)}
+.ititle{min-width:0}
+.ititle code,.idetail code{font:13px var(--mono);background:var(--accent-soft);padding:0 3px;border-radius:3px;overflow-wrap:anywhere}
+.chips{display:flex;flex-wrap:wrap;gap:4px}
+.chip{font:11.5px/1.6 var(--mono);padding:0 6px;border-radius:3px;border:1px solid var(--rule);color:var(--muted)}
+.chip.repo{color:var(--fg)}
+.st-works{border-color:var(--ok);color:var(--ok)} .st-testing{border-color:var(--now);color:var(--now)} .st-planned{color:var(--muted)}
+details[open] summary{border-bottom:1px dashed var(--rule)}
+.idetail{padding:6px 4px 14px calc(7.5em + 16px);min-width:0;font-size:15px}
+.idetail p{margin:.4em 0} .pub b{font:600 11px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-right:6px}
+.muted{color:var(--muted)}
+.empty-note{color:var(--muted);padding:12px 4px}
+section.doc{margin-top:48px;border-top:3px double var(--rule);padding-top:16px}
+.toc{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:14px;margin:8px 0 18px}
+.toc a{color:var(--accent)}
+.doc h2{font:600 22px/1.25 var(--serif);margin:34px 0 8px;text-wrap:balance;scroll-margin-top:70px}
+.doc h3{font:600 13px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:22px 0 6px}
+.doc p,.doc li{max-width:68ch}
+.doc blockquote{margin:0;padding:4px 14px;border-left:3px solid var(--accent);color:var(--muted)}
+.doc code{font:13px var(--mono);background:var(--accent-soft);padding:0 3px;border-radius:3px;overflow-wrap:anywhere}
+.doc pre{overflow-x:auto;background:var(--panel);border:1px solid var(--rule);padding:10px;border-radius:4px}
+.doc pre code{background:none;padding:0}
+.tbl{overflow-x:auto}
+.doc table{border-collapse:collapse;font-size:14px}
+.doc th,.doc td{border:1px solid var(--rule);padding:4px 8px;vertical-align:top;text-align:left}
+a{color:var(--accent)}
+@media (max-width:560px){summary{grid-template-columns:1fr}.iid{grid-row:auto}.idetail{padding-left:4px}}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+</style>
+
+<header class="top"><div class="wrap">
+  <h1>MeshForge Roadmap</h1>
+  <p class="sub">The domain's one list of future work — MeshForge, MeshAnchor, maps, bots, forks. This page is a read-only view; the file in the repo is the source.</p>
+  <div class="prov">@@PROV@@</div>
+</div></header>
+
+<div class="console"><div class="wrap">
+  <div class="seg" role="group" aria-label="Tier">
+@@TIER_BUTTONS@@
+  </div>
+  <div class="seg" role="group" aria-label="Repo"><span class="lbl" style="align-self:center">repo</span>@@REPO_BUTTONS@@</div>
+  <input type="search" id="q" placeholder="Search IDs, titles, details" aria-label="Search the roadmap">
+</div></div>
+
+<main><div class="wrap">
+  <div id="tiers"></div>
+  <ul class="items" id="pool" hidden>@@POOL@@</ul>
+  <p class="empty-note" id="none" hidden>No items match. Clear the search or the repo filter.</p>
+
+  <section class="doc" id="doc">
+    <span class="lbl">Full roadmap text</span>
+    <nav class="toc">@@TOC@@</nav>
+@@DOC@@
+  </section>
+</div></main>
+
+<script>
+(function(){
+  const blurb={NOW:"the operator's order — only the operator moves items in or out",NEXT:"queued, with a reason",LATER:"wanted, not scheduled"};
+  const pool=document.getElementById('pool'), host=document.getElementById('tiers');
+  const all=[...pool.children]; const lists={};
+  for(const t of ["NOW","NEXT","LATER"]){
+    const h=document.createElement('h2'); h.className='tierhead'; h.dataset.t=t;
+    h.innerHTML=t+' <small>'+blurb[t]+'</small>';
+    const ul=document.createElement('ul'); ul.className='items';
+    all.filter(li=>li.dataset.tier===t).forEach(li=>ul.appendChild(li));
+    host.append(h,ul); lists[t]={h,ul};
+  }
+  pool.remove();
+  document.querySelectorAll('.doc table').forEach(t=>{const d=document.createElement('div');d.className='tbl';t.replaceWith(d);d.appendChild(t)});
+  let tier="ALL"; const repos=new Set(); const q=document.getElementById('q');
+  function apply(){
+    const s=q.value.trim().toLowerCase(); let shown=0;
+    for(const t in lists){
+      let n=0;
+      lists[t].ul.querySelectorAll('li.item').forEach(li=>{
+        const ok=(tier==="ALL"||tier===t)&&(!repos.size||li.dataset.repos.split(' ').some(r=>repos.has(r)))&&(!s||li.dataset.q.includes(s));
+        li.hidden=!ok; if(ok){n++; if(s) li.querySelector('details').open=true;}
+      });
+      lists[t].h.hidden=lists[t].ul.hidden=(n===0); shown+=n;
+    }
+    document.getElementById('none').hidden=shown>0;
+  }
+  document.querySelectorAll('.tier-btn').forEach(b=>b.addEventListener('click',()=>{
+    tier=b.dataset.tier; document.querySelectorAll('.tier-btn').forEach(x=>x.setAttribute('aria-pressed',x===b)); apply();}));
+  document.querySelectorAll('.rf').forEach(b=>b.addEventListener('click',()=>{
+    const r=b.dataset.repo; repos.has(r)?repos.delete(r):repos.add(r); b.setAttribute('aria-pressed',repos.has(r)); apply();}));
+  q.addEventListener('input',apply);
+  apply();
+})();
+</script>
