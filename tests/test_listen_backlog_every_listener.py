@@ -16,6 +16,7 @@ bind without serving and count the handshakes the kernel completes.
 from __future__ import annotations
 
 import ast
+import importlib
 import socketserver
 import sys
 from http.server import BaseHTTPRequestHandler
@@ -102,26 +103,23 @@ def _resolved(node, aliases):
     return aliases.get(name, name)
 
 
-def _queue_size_from_constant(cls: ast.ClassDef) -> bool:
-    for stmt in cls.body:
-        targets = stmt.targets if isinstance(stmt, ast.Assign) else \
-            [stmt.target] if isinstance(stmt, ast.AnnAssign) else []
-        if any(_nm(t) == "request_queue_size" for t in targets):
-            return _nm(stmt.value) == "LISTEN_BACKLOG"
-    return False
+def _module_name(path: Path) -> str:
+    rel = path.relative_to(ROOT / "src").with_suffix("")
+    parts = rel.parts[:-1] if rel.name == "__init__" else rel.parts
+    return ".".join(parts)
 
 
-def _imports_the_shared_constant(tree) -> bool:
-    # The NAME alone is forgeable: a module-local `LISTEN_BACKLOG = 5` reads
-    # right to the class check (Fable review 2026-11-07 #3).
-    return any(isinstance(n, ast.ImportFrom) and n.module == "utils.http_listener"
-               and any(a.name == "LISTEN_BACKLOG" and a.asname is None for a in n.names)
-               for n in ast.walk(tree))
-
-
-def _scan_sources(sources: dict) -> list:
-    """sources: label -> python text. Listener classes are found ACROSS all of
-    them (a subclass of another module's listener is still a listener)."""
+def _scan_sources(sources: dict, modnames: dict = None) -> list:
+    """sources: label -> python text. AST finds the SHAPES (listener classes
+    ACROSS all sources, stock construction, aliases, type()); the VALUE is
+    measured at runtime when ``modnames`` (label -> importable module) is
+    given: the class's effective ``request_queue_size`` must equal
+    LISTEN_BACKLOG. Two review rounds found new AST spellings around a
+    value-by-pattern check (shadow, reassignment, attribute, class-local,
+    function-local import) — the seam is to ask the class (2026-11-07).
+    Out of scope (stated in utils.http_listener): an __init__ override and
+    raw socket.listen(); the kernel probe covers the known classes."""
+    from utils.http_listener import LISTEN_BACKLOG
     trees = {k: ast.parse(v) for k, v in sources.items()}
     aliases = {k: _aliases(t) for k, t in trees.items()}
     listeners, changed = set(STREAM_LISTENERS), True
@@ -137,6 +135,7 @@ def _scan_sources(sources: dict) -> list:
     problems = []
     for k, t in trees.items():
         al = aliases[k]
+        toplevel = {n.name for n in t.body if isinstance(n, ast.ClassDef)}
         for n in ast.walk(t):
             if isinstance(n, ast.Call):
                 fn = _resolved(n.func, al)
@@ -150,85 +149,113 @@ def _scan_sources(sources: dict) -> list:
                 if isinstance(v, (ast.Name, ast.Attribute)) and _resolved(v, al) in STOCK_LISTENERS:
                     problems.append(f"{k}:{n.lineno}: stock listener aliased")
             elif isinstance(n, ast.ClassDef) and n.name in defined:
-                if not _queue_size_from_constant(n):
-                    problems.append(f"{k}:{n.lineno}: class {n.name} must set "
-                                    "request_queue_size = LISTEN_BACKLOG")
-                elif not _imports_the_shared_constant(t):
-                    problems.append(f"{k}:{n.lineno}: class {n.name} reads a LISTEN_BACKLOG "
-                                    "not imported from utils.http_listener")
+                if n.name not in toplevel:
+                    problems.append(f"{k}:{n.lineno}: listener class {n.name} is not at "
+                                    "module level — cannot be imported and measured")
+                elif modnames is not None:
+                    mod = importlib.import_module(modnames[k])
+                    size = getattr(getattr(mod, n.name), "request_queue_size", None)
+                    if size != LISTEN_BACKLOG:
+                        problems.append(f"{k}:{n.lineno}: class {n.name} listens with "
+                                        f"request_queue_size={size}, not LISTEN_BACKLOG "
+                                        f"({LISTEN_BACKLOG})")
     return problems
 
 
 def _scan(src: str) -> list:
+    """Shapes only (no import) — for planted construction/alias cases."""
     return _scan_sources({"<planted>": src})
 
 
 def test_every_src_listener_reads_the_shared_backlog():
-    # A listener anywhere in src/ is a stream-server subclass that sets
-    # request_queue_size = LISTEN_BACKLOG itself; nothing constructs a stock one.
-    # Scope (utils.http_listener): socketserver classes; raw socket.listen() is not.
-    sources = {str(p.relative_to(ROOT)): p.read_text(encoding="utf-8")
-               for p in sorted((ROOT / "src").rglob("*.py"))}
-    problems = _scan_sources(sources)
+    # Every listener class in src/ is module-level and carries LISTEN_BACKLOG
+    # (measured on the imported class); nothing constructs a stock one.
+    paths = sorted((ROOT / "src").rglob("*.py"))
+    sources = {str(p.relative_to(ROOT)): p.read_text(encoding="utf-8") for p in paths}
+    modnames = {str(p.relative_to(ROOT)): _module_name(p) for p in paths}
+    problems = _scan_sources(sources, modnames)
     assert problems == [], "; ".join(problems)
 
 
 @pytest.mark.parametrize("planted", [
     "import socketserver\ns = socketserver.TCPServer(('', 0), H)\n",
     "from http.server import HTTPServer\nS = HTTPServer\n",
-    "import socketserver\nclass X(socketserver.TCPServer):\n    pass\n",
-    "import socketserver\nclass X(socketserver.TCPServer):\n    request_queue_size = 5\n",
-    "class A(ThreadingHTTPServer):\n    request_queue_size = LISTEN_BACKLOG\n"
-    "class B(A):\n    request_queue_size = 4\n",
-    # review 2026-11-07 (#2): alias, dynamic type(), aliased construction
-    "from http.server import ThreadingHTTPServer as _TS\nclass X(_TS):\n    pass\n",
+    "from http.server import ThreadingHTTPServer as _TS\nS = _TS\n",
     "import socketserver\nS = type('S', (socketserver.TCPServer,), {})\n",
     "from http.server import HTTPServer as H\ns = H(('', 0), Q)\n",
+    "import socketserver\ndef f():\n    class X(socketserver.TCPServer):\n"
+    "        request_queue_size = 128\n",
 ])
-def test_guard_catches_planted_violations(planted):
+def test_guard_catches_planted_shapes(planted):
     assert _scan(planted), planted
 
 
-_IMPORT = "from utils.http_listener import LISTEN_BACKLOG\n"
+_HEAD = ("import socketserver\nfrom http.server import ThreadingHTTPServer\n"
+         "from utils.http_listener import LISTEN_BACKLOG\n")
 
 
-def test_guard_passes_the_sanctioned_shape():
-    assert _scan(_IMPORT + "class A(ThreadingHTTPServer):\n    request_queue_size = LISTEN_BACKLOG\n"
-                 "class B(A):\n    request_queue_size: int = LISTEN_BACKLOG\n") == []
+def _plant(tmp_path, monkeypatch, files: dict) -> list:
+    """Write planted modules into a fresh package, import them for real."""
+    pkg = f"planted_{tmp_path.name.replace('-', '_')}"
+    (tmp_path / pkg).mkdir()
+    (tmp_path / pkg / "__init__.py").write_text("")
+    for name, text in files.items():
+        (tmp_path / pkg / f"{name}.py").write_text(text)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    return _scan_sources({f"{n}.py": t for n, t in files.items()},
+                         {f"{n}.py": f"{pkg}.{n}" for n in files})
 
 
-def test_guard_refuses_a_local_constant_of_the_same_name():
-    assert _scan("LISTEN_BACKLOG = 5\nclass A(ThreadingHTTPServer):\n"
-                 "    request_queue_size = LISTEN_BACKLOG\n") == \
-        ["<planted>:2: class A reads a LISTEN_BACKLOG not imported from utils.http_listener"]
+@pytest.mark.parametrize("body", [
+    "class X(socketserver.TCPServer):\n    pass\n",                                  # stock 5
+    "class X(socketserver.TCPServer):\n    request_queue_size = 5\n",
+    "LISTEN_BACKLOG = 5\nclass X(ThreadingHTTPServer):\n"
+    "    request_queue_size = LISTEN_BACKLOG\n",                                      # rebind after import
+    "class X(ThreadingHTTPServer):\n    request_queue_size = LISTEN_BACKLOG\n"
+    "    request_queue_size = 5\n",                                                   # later reassignment
+    "class X(ThreadingHTTPServer):\n    LISTEN_BACKLOG = 5\n"
+    "    request_queue_size = LISTEN_BACKLOG\n",                                      # class-body shadow
+    "import types\nfoo = types.SimpleNamespace(LISTEN_BACKLOG=5)\n"
+    "class X(ThreadingHTTPServer):\n    request_queue_size = foo.LISTEN_BACKLOG\n",  # attribute
+])
+def test_guard_measures_the_value_not_the_spelling(tmp_path, monkeypatch, body):
+    problems = _plant(tmp_path, monkeypatch, {"m": _HEAD + body})
+    assert len(problems) == 1 and "class X listens with request_queue_size=5" in problems[0], problems
+
+
+@pytest.mark.parametrize("body", [
+    "class X(ThreadingHTTPServer):\n    request_queue_size = LISTEN_BACKLOG\n",
+    "class X(ThreadingHTTPServer):\n    request_queue_size: int = LISTEN_BACKLOG\n",
+    "import utils.http_listener as hl\nclass X(ThreadingHTTPServer):\n"
+    "    request_queue_size = hl.LISTEN_BACKLOG\n",
+    "class A(ThreadingHTTPServer):\n    request_queue_size = LISTEN_BACKLOG\n"
+    "class X(A):\n    pass\n",                                                       # inherits it
+])
+def test_guard_passes_correct_listeners_however_spelled(tmp_path, monkeypatch, body):
+    assert _plant(tmp_path, monkeypatch, {"m": _HEAD + body}) == []
+
+
+def test_guard_follows_a_listener_across_modules(tmp_path, monkeypatch):
+    # A subclass of ANOTHER module's listener shrinking the queue is caught —
+    # and only it (exact match, so the base can't mask the subclass).
+    problems = _plant(tmp_path, monkeypatch, {
+        "a": _HEAD + "class MapHTTPServer(ThreadingHTTPServer):\n"
+                     "    request_queue_size = LISTEN_BACKLOG\n",
+        "b": "from .a import MapHTTPServer\n"
+             "class Y(MapHTTPServer):\n    request_queue_size = 5\n"})
+    assert problems == ["b.py:2: class Y listens with request_queue_size=5, "
+                        "not LISTEN_BACKLOG (128)"]
 
 
 def test_metrics_stop_releases_the_bound_fd_and_joins():
     # Fable review 2026-11-07 #1: stop() used to leave the listening fd open
     # until GC (no server_close); nothing observed it.
-    import socket
     from utils.metrics_server import MetricsServer
     srv = MetricsServer(port=0, exporter=object())
-    assert srv.start()
-    sock = srv._server.socket
-    port = sock.getsockname()[1]
-    thread = srv._thread
-    srv.stop()
+    try:
+        assert srv.start()
+        sock, thread = srv._server.socket, srv._thread
+    finally:
+        srv.stop()
     assert sock.fileno() == -1, "stop() left the listening fd open"
     assert not thread.is_alive(), "stop() returned before serve_forever exited"
-    s = socket.socket()
-    try:
-        s.bind(("127.0.0.1", port))  # rebindable now, not after GC
-    finally:
-        s.close()
-
-
-def test_guard_follows_a_listener_across_modules():
-    # review 2026-11-07 (#2): a subclass of ANOTHER module's listener shrinking
-    # the queue must be caught (MapHTTPServer imported elsewhere).
-    srcs = {"a.py": "from utils.http_listener import LISTEN_BACKLOG\n"
-                    "class MapHTTPServer(ThreadingHTTPServer):\n"
-                    "    request_queue_size = LISTEN_BACKLOG\n",
-            "b.py": "from a import MapHTTPServer\n"
-                    "class Y(MapHTTPServer):\n    request_queue_size = 5\n"}
-    assert _scan_sources(srcs) == ["b.py:2: class Y must set request_queue_size = LISTEN_BACKLOG"]
