@@ -34,7 +34,7 @@ import logging
 import os
 import socket
 import threading
-from http.server import HTTPServer, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -125,6 +125,23 @@ def _operator_position():
         return _load_operator_position()
     except Exception:
         return None
+
+
+class MapHTTPServer(ThreadingHTTPServer):
+    """The map's listener. One thread per request, and an accept queue that
+    holds a burst (H13, 2026-11-06): Python's default ``request_queue_size``
+    is 5, so of 50 simultaneous requests ~8 waited a full 1 s TCP SYN retry
+    before the server saw them (measured: connect 1.01-1.04 s, answer <= 30 ms).
+    The kernel still caps this at ``net.core.somaxconn``."""
+
+    request_queue_size = 128
+    # daemon_threads is already True on ThreadingHTTPServer (3.7+): shutdown
+    # never waits for in-flight handlers.
+
+
+def _make_http_server(host: str, port: int) -> MapHTTPServer:
+    """THE one way the map binds its listener (both start paths)."""
+    return MapHTTPServer((host, port), MapRequestHandler)
 
 
 class MapServer:
@@ -219,7 +236,7 @@ class MapServer:
         if config_dir is not None:
             collector_kwargs["config_dir"] = config_dir
         self.collector = MapDataCollector(**collector_kwargs)
-        self._server: Optional[ThreadingHTTPServer] = None
+        self._server: Optional[MapHTTPServer] = None  # only via _make_http_server()
         self._terrain_warm_started = False
         self._thread: Optional[threading.Thread] = None
         self._message_listener_started = False
@@ -716,14 +733,14 @@ class MapServer:
         # warmup thread after bind.
         self._init_rns_main_thread()
 
-        # ThreadingHTTPServer: one thread per request so a slow endpoint
+        # MapHTTPServer (ThreadingHTTPServer): one thread per request so a slow endpoint
         # (e.g. /api/nodes/geojson returning 20MB for ~38k MeshCore features)
-        # no longer blocks subsequent requests. daemon_threads=True ensures
-        # server shutdown doesn't wait for in-flight handlers. The collector
+        # no longer blocks subsequent requests. Its daemon threads mean
+        # server shutdown doesn't wait for in-flight handlers; a 128-deep
+        # accept queue holds a burst (H13). The collector
         # itself serializes concurrent callers internally (see
         # MapDataCollector.collect's lock) so multi-threading here is safe.
-        self._server = ThreadingHTTPServer((self.host, self.port), MapRequestHandler)
-        self._server.daemon_threads = True
+        self._server = _make_http_server(self.host, self.port)
         logger.info(
             f"Map server bound on http://{self.host}:{self.port} "
             f"(warming); /healthz available, other paths 503 until "
@@ -797,7 +814,7 @@ class MapServer:
           3. Start WebSocket + message listener (cheap; no RNS).
           4. _init_rns_main_thread(): cheap RNS singleton init on the
              main thread (Issue #44 — signal.signal must be main).
-          5. Bind ThreadingHTTPServer immediately. /healthz starts
+          5. Bind the listener (_make_http_server) immediately. /healthz starts
              returning 200 here.
           6. Spawn the warmup thread — runs the slow first collect and
              atomic-swaps is_warming → False on completion.
@@ -830,8 +847,7 @@ class MapServer:
         # Cheap main-thread RNS init (Issue #44). NO full collect.
         self._init_rns_main_thread()
 
-        self._server = ThreadingHTTPServer((self.host, self.port), MapRequestHandler)
-        self._server.daemon_threads = True
+        self._server = _make_http_server(self.host, self.port)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         logger.info(
