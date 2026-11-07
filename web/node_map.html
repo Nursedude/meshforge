@@ -4255,7 +4255,15 @@
             const response = await fetch(geoUrl);
             if (response.ok) {
                 loadNodes(await response.json());
-                clearMapBlind();
+                // MAP-H H3 #2: the server serves its last snapshot and SAYS its
+                // age; past the server's own stale line the map is not live.
+                const snapAge = parseFloat(response.headers.get('X-Snapshot-Age'));
+                const staleAfter = parseFloat(response.headers.get('X-Snapshot-Stale-After'));
+                if (snapAge > staleAfter) {
+                    showMapBlind(`map data is ${Math.round(snapAge / 60)} min old — the collector has not refreshed it`);
+                } else {
+                    clearMapBlind();
+                }
                 updateApiStatus(true);
                 hideLoading();
                 return;
@@ -4266,6 +4274,9 @@
                     const body = await response.json();
                     if (body && body.state === 'warming') {
                         failReason = 'map server warming up (cold start)';
+                    } else if (body && body.state === 'blind') {
+                        // no snapshot because the collector keeps FAILING (not a cold start)
+                        failReason = 'map collector failing: ' + String(body.reason || 'unknown error').slice(0, 160);
                     }
                 } catch (e) { /* not the warming body */ }
             }

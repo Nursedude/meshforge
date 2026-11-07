@@ -159,8 +159,10 @@ class ResponseByteCache:
             return raw, gz
 
     def clear(self) -> None:
-        """Drop all cached entries. Used by tests; not needed in prod
-        because TTL expiry handles invalidation on its own."""
+        """Drop all cached entries. Production: the map collector clears its
+        generation-keyed geojson cache on every snapshot publish (MAP-H H3) --
+        ``get()`` never deletes an expired entry, so without this every past
+        generation's bytes stay resident."""
         with self._entries_lock:
             self._entries.clear()
 

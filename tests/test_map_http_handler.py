@@ -1357,6 +1357,24 @@ def _make_geojson_handler(
                 raise RuntimeError("simulated collect failure")
             return payload
 
+        # MAP-H H3 #1: handlers read the snapshot; counting it as a collect
+        # keeps "one build per TTL window" meaning the same thing.
+        def snapshot_or_warming(self):
+            # A BUILD reads snapshot.geojson once; counting that read as a
+            # collect keeps "one build per TTL key" meaning the same thing.
+            from utils.map_data_collector import Snapshot
+            outer = self
+
+            class _CountingSnap(Snapshot):
+                @property
+                def geojson(self):
+                    return outer.collect()
+
+            return _CountingSnap(None, 0.0, 1)
+
+        def snapshot_stale_after(self):
+            return 600.0
+
     h.collector = _Collector()
     h._query = query or {}
     return h
@@ -1664,6 +1682,24 @@ def _make_topology_handler(
             if raise_on_collect:
                 raise RuntimeError("simulated collect failure")
             return payload
+
+        # MAP-H H3 #1: handlers read the snapshot; counting it as a collect
+        # keeps "one build per TTL window" meaning the same thing.
+        def snapshot_or_warming(self):
+            # A BUILD reads snapshot.geojson once; counting that read as a
+            # collect keeps "one build per TTL key" meaning the same thing.
+            from utils.map_data_collector import Snapshot
+            outer = self
+
+            class _CountingSnap(Snapshot):
+                @property
+                def geojson(self):
+                    return outer.collect()
+
+            return _CountingSnap(None, 0.0, 1)
+
+        def snapshot_stale_after(self):
+            return 600.0
 
     h.collector = _Collector()
     return h

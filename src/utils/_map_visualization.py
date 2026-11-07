@@ -78,7 +78,8 @@ class VisualizationEndpointsMixin:
             "links_only", ["0"])[0].lower() in ("1", "true", "yes")
 
         def _build() -> tuple:
-            geojson = self.collector.collect()
+            # MAP-H H3 #1: never wait on _collect_lock (SnapshotWarming -> 503).
+            geojson = self.collector.snapshot_or_warming().geojson
             nodes: list = []
             links: list = []
             aredn_links_added = set()  # Track AREDN links to avoid duplicates
@@ -215,6 +216,10 @@ class VisualizationEndpointsMixin:
             raw_bytes, gzip_bytes, _was_built = cache.get_or_build(
                 "links" if links_only else None, _build)
         except Exception as e:
+            from utils.map_data_collector import SnapshotWarming  # lazy: import cycle
+            if isinstance(e, SnapshotWarming):
+                self._serve_snapshot_unavailable("/api/network/topology", e)
+                return
             logger.error(f"topology build failed: {e}")
             self._serve_json(
                 {"error": str(e)[:200], "nodes": [], "links": []},

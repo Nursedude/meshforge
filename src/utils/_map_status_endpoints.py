@@ -266,6 +266,10 @@ class StatusEndpointsMixin:
         # Per-source collection diagnostics from the most recent collect() call.
         # Operators use this to answer "why is source X empty" without a code reader.
         if self.collector:
+            try:  # MAP-H H3 #2: how old is what the map is showing
+                status["snapshot"] = self.collector.snapshot_status()
+            except Exception as e:
+                status["snapshot"] = {"state": "unobservable", "error": e.__class__.__name__}
             try:
                 status["source_diagnostics"] = self.collector.get_source_diagnostics()
             except Exception as e:

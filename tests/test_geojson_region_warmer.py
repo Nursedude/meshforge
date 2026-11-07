@@ -104,6 +104,10 @@ class _StubCollector:
     def collect(self):
         return self._fc
 
+    def snapshot_or_warming(self):  # the request-path read (MAP-H H3 #1)
+        from utils.map_data_collector import Snapshot
+        return Snapshot(self._fc, 0.0, 1)
+
 
 class TestBuildGeojsonResponse:
     def test_region_filter_drops_outside_features(self):
@@ -148,13 +152,18 @@ def _make_collector(tmp_path, warm_regions):
     return c
 
 
+def _snap(fc):
+    from utils.map_data_collector import Snapshot
+    return Snapshot(fc, 0.0, 7)
+
+
 class TestWarmGeojsonRegions:
     def test_warms_configured_region(self, tmp_path):
         c = _make_collector(tmp_path, ["hawaii"])
-        with patch.object(c, "collect", return_value=_fc(_IN_HI, _OUT_HI)):
+        with patch.object(c, "peek_snapshot", return_value=_snap(_fc(_IN_HI, _OUT_HI))):
             c._warm_geojson_regions()
         # Cache key must match _serve_geojson's (bbox, region, preset).
-        hit = c._geojson_response_cache.get((None, "hawaii", None))
+        hit = c._geojson_response_cache.get((7, None, "hawaii", None))
         assert hit is not None
         body = json.loads(hit[0].decode())
         assert {f["properties"]["id"] for f in body["features"]} == {"in1"}
@@ -162,23 +171,23 @@ class TestWarmGeojsonRegions:
 
     def test_empty_list_is_noop(self, tmp_path):
         c = _make_collector(tmp_path, [])
-        with patch.object(c, "collect", return_value=_fc(_IN_HI)) as m:
+        with patch.object(c, "peek_snapshot", return_value=_snap(_fc(_IN_HI))) as m:
             c._warm_geojson_regions()
         assert m.call_count == 0  # never even built
         assert c._geojson_response_cache.stats()["warmed_count"] == 0
-        assert c._geojson_response_cache.get((None, "hawaii", None)) is None
+        assert c._geojson_response_cache.get((7, None, "hawaii", None)) is None
 
     def test_unknown_region_skipped_without_crash(self, tmp_path):
         c = _make_collector(tmp_path, ["atlantis"])
-        with patch.object(c, "collect", return_value=_fc(_IN_HI)):
+        with patch.object(c, "peek_snapshot", return_value=_snap(_fc(_IN_HI))):
             c._warm_geojson_regions()  # must not raise
         assert c._geojson_response_cache.stats()["warmed_count"] == 0
-        assert c._geojson_response_cache.get((None, "atlantis", None)) is None
+        assert c._geojson_response_cache.get((7, None, "atlantis", None)) is None
 
     def test_warmed_slice_served_to_request_path(self, tmp_path):
         """After warming, the request build path hits the warm entry."""
         c = _make_collector(tmp_path, ["hawaii"])
-        with patch.object(c, "collect", return_value=_fc(_IN_HI, _OUT_HI)):
+        with patch.object(c, "peek_snapshot", return_value=_snap(_fc(_IN_HI, _OUT_HI))):
             c._warm_geojson_regions()
         built = {"n": 0}
 
@@ -187,7 +196,7 @@ class TestWarmGeojsonRegions:
             return b"COLD", None
 
         _raw, _gz, was_built = c._geojson_response_cache.get_or_build(
-            (None, "hawaii", None), _req_build
+            (7, None, "hawaii", None), _req_build
         )
         assert was_built is False
         assert built["n"] == 0

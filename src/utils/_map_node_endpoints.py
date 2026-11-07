@@ -266,9 +266,10 @@ def build_geojson_response(
     preset_key: Optional[str],
     bbox_str: Optional[str],
     gzip_min_bytes: int,
+    snapshot=None,
 ) -> tuple:
     """Build ``(raw_bytes, gzip_bytes_or_None)`` for a geojson response slice:
-    ``collector.collect()`` → View-preset filter → region/bbox filter →
+    the published snapshot → View-preset filter → region/bbox filter →
     cross-protocol collapse → ``json.dumps`` + ``gzip``.
 
     Extracted from ``_serve_geojson`` (Issue #71 regional-slice precompute) so a
@@ -278,7 +279,11 @@ def build_geojson_response(
     geojson build — the handler and the warmer must never diverge, or warmed
     bytes would differ from what a live request would compute for the same key.
     """
-    geojson = collector.collect()
+    # MAP-H H3: build from the snapshot the CALLER read once (its generation
+    # keys the cache, its age is the header); never wait on _collect_lock.
+    if snapshot is None:
+        snapshot = collector.snapshot_or_warming()
+    geojson = snapshot.geojson
 
     # View preset filter — applied before bbox so federation's 50K features
     # collapse to the preset slice (often <5K) before any geometry walk.
@@ -409,7 +414,6 @@ class NodeDataEndpointsMixin:
         preset_key = _safe_query_param(query, "preset") or None
         region_key = _safe_query_param(query, "region") or None
         bbox_str = _safe_query_param(query, "bbox") or None
-        cache_key = (bbox_str, region_key, preset_key)
 
         if self.collector is None:
             # Without a collector there's nothing to cache or serve —
@@ -419,14 +423,28 @@ class NodeDataEndpointsMixin:
             return
 
         cache = self.collector._geojson_response_cache
+        from utils.map_data_collector import SnapshotWarming  # lazy: import cycle
+        try:  # MAP-H H3: ONE read -- bytes, cache key and age header all from it
+            snap = self.collector.snapshot_or_warming()
+        except SnapshotWarming as w:
+            self._serve_snapshot_unavailable("/api/nodes/geojson", w)
+            return
+        except Exception as e:  # the snapshot read itself failed: say so, never hang
+            logger.error(f"geojson snapshot read failed: {e}")
+            self._serve_json({"type": "FeatureCollection", "features": [],
+                              "properties": {"error": str(e)[:200]}}, status=500)
+            return
+        # The generation keys the cache: bytes built from an older snapshot are
+        # never served under a newer snapshot's age (review r1 #3).
+        cache_key = (snap.generation, bbox_str, region_key, preset_key)
 
         def _build() -> tuple:
             # Single source of the geojson build (Issue #71): the same function
             # the background warmer calls, so warmed bytes are byte-identical to
-            # what a live request computes for the same (bbox, region, preset).
+            # what a live request computes for the same key.
             return build_geojson_response(
                 self.collector, region_key, preset_key, bbox_str,
-                self._GZIP_MIN_BYTES,
+                self._GZIP_MIN_BYTES, snapshot=snap,
             )
 
         try:
@@ -445,7 +463,20 @@ class NodeDataEndpointsMixin:
             )
             return
 
-        self._send_prebuilt_json(raw_bytes, gzip_bytes, status=200)
+        # MAP-H H3 #2: the served snapshot SAYS its age (the page banner reads it).
+        self._send_prebuilt_json(raw_bytes, gzip_bytes, status=200, extra_headers={
+            "X-Snapshot-Age": f"{snap.age_s:.1f}",
+            "X-Snapshot-Stale-After": f"{self.collector.snapshot_stale_after():.0f}",
+        })
+
+    def _serve_snapshot_unavailable(self, path: str, w) -> None:
+        """No snapshot: a cold start says warming; a FAILING collector says blind
+        with its error -- never 'warming' for hours (review r1 #1, hfm #1/#2)."""
+        if w.reason is None:
+            self._serve_warming_503(path)
+            return
+        self._serve_json({"error": "snapshot_unavailable", "state": "blind",
+                          "path": path, "reason": w.reason}, status=503)
 
     def _serve_region_presets(self):
         """Serve available region preset definitions."""

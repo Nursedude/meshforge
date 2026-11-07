@@ -46,9 +46,13 @@ from utils._map_collector_federation import FederationDataCollectorMixin
 from utils._map_collector_trackers import TrackerDataCollectorMixin
 from utils._map_collector_config import MapCollectorConfigMixin
 from utils.node_history import _origin_priority
+from utils._map_collector_snapshot import (  # noqa: F401  (re-export)
+    MapSnapshotMixin, Snapshot, SnapshotWarming,
+)
 
 
 class MapDataCollector(
+    MapSnapshotMixin,
     RNSDataCollectorMixin,
     PublicDataFallbackMixin,
     MeshtasticDataCollectorMixin,
@@ -159,6 +163,10 @@ class MapDataCollector(
         # Lock here means the second caller waits briefly and then gets
         # the freshly-populated cache from the first caller's run.
         self._collect_lock = threading.Lock()
+
+        # MAP-H H3: request threads read the published snapshot (one owner:
+        # _map_collector_snapshot) and NEVER wait on _collect_lock.
+        self._init_snapshot_state()
 
         # Periodic background refresh state — started via
         # start_periodic_refresh() from the daemon entry point so unit
@@ -425,15 +433,15 @@ class MapDataCollector(
                 # rather than queue up redundant work behind it.
                 continue
             try:
-                self._collect_locked()
+                self._run_collect_witnessed()
             except Exception:
                 logger.exception("Periodic map data refresh failed")
             finally:
                 self._collect_lock.release()
             # Warm the configured region slices AFTER releasing the collect
-            # lock (Issue #71) — build_geojson_response's collect() re-acquires
-            # the lock and returns the just-refreshed cache cheaply. No-op when
-            # geojson_warm_regions is empty (the default).
+            # lock (Issue #71) from the just-published snapshot (read once, no
+            # kick, keyed by its generation). No-op when geojson_warm_regions
+            # is empty (the default).
             try:
                 self._warm_geojson_regions()
             except Exception:
@@ -480,20 +488,27 @@ class MapDataCollector(
         # 10 KB gzip threshold matches MapRequestHandler._GZIP_MIN_BYTES; it is
         # immaterial here since warmed region slices are multi-KB (always gzipped).
         gzip_min = 10 * 1024
+        # Read the published snapshot ONCE, never kicking a refresh: a failed
+        # periodic collect must not trigger a second one from here (review r1 #5).
+        snap = self.peek_snapshot()
+        if snap is None:
+            logger.debug("geojson warmer: no snapshot published yet; skipping")
+            return
         for region_key in regions:
             if not isinstance(region_key, str) or region_key not in REGION_PRESETS:
                 logger.warning(
                     "geojson warmer: skipping unknown region %r", region_key
                 )
                 continue
-            # Key MUST match _serve_geojson's (bbox_str, region_key, preset_key)
-            # for ?region=<key> with no bbox/preset, or a request would miss it.
-            key = (None, region_key, None)
+            # Key MUST match _serve_geojson's (generation, bbox_str, region_key,
+            # preset_key) for ?region=<key> with no bbox/preset, or a request
+            # would miss it; the generation pins the bytes to THIS snapshot.
+            key = (snap.generation, None, region_key, None)
             try:
                 self._geojson_response_cache.prime(
                     key,
                     lambda rk=region_key: build_geojson_response(
-                        self, rk, None, None, gzip_min
+                        self, rk, None, None, gzip_min, snapshot=snap
                     ),
                     ttl_s=ttl_s,
                 )
@@ -696,7 +711,15 @@ class MapDataCollector(
                     time.time() - self._last_collect < max_age_seconds):
                 return self._cached_geojson
 
-            return self._collect_locked()
+            result = self._run_collect_witnessed()
+        # A collect()-driven publish (prewarm, TUI, exporters) cleared the
+        # generation-keyed cache; re-warm the region slices like every other
+        # driver does, AFTER releasing the lock (review r3#1, Issue #71).
+        try:
+            self._warm_geojson_regions()
+        except Exception:
+            logger.exception("geojson region warm failed")
+        return result
 
     def _apply_external_bulk_bbox(
         self,
@@ -1041,8 +1064,7 @@ class MapDataCollector(
         logger.info(f"MapDataCollector latencies: total={total_ms}ms — {', '.join(latency_parts)}")
 
         # Cache result
-        self._cached_geojson = geojson
-        self._last_collect = time.time()
+        self._publish_snapshot(geojson)  # atomic (geojson, mono, generation)
         self._save_cache(geojson)
 
         # Record to history database. Pass BOTH positioned features AND

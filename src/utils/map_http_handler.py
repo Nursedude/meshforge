@@ -115,6 +115,9 @@ from utils._map_node_endpoints import (  # noqa: F401
 )
 from utils.region_presets import REGION_PRESETS  # noqa: F401
 
+# Pages served while warming (MAP-H H3 #3). path_only is rstrip('/'), so "/" is "".
+_WARMING_PAGE_ROUTES = frozenset({'', '/index.html', '/fleet', '/inbox'})
+
 
 # App-identifying HTTP Server: header (cross-domain fleet presence, Layer 0).
 # MeshForge and MeshAnchor serve identically-shaped HTTP APIs on :5000; this
@@ -587,8 +590,10 @@ class MapRequestHandler(
         # Cold-start warming gate (F3). Issue: ThreadingHTTPServer
         # binds AFTER _prewarm_collector() finishes, so :5000 was
         # connection-refused for 10-30s on cold start. We now bind
-        # first and surface the warming state explicitly.
-        if self.is_warming:
+        # first and surface the warming state explicitly. MAP-H H3 #3: the
+        # PAGES and their static files still load (each renders the data
+        # 503 as blind + retries); only data answers 503.
+        if self.is_warming and not self._serves_while_warming(path_only):
             self._serve_warming_503(path_only)
             return
 
@@ -1066,6 +1071,22 @@ class MapRequestHandler(
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass  # scraper bailed; nothing to do
 
+    def _serves_while_warming(self, path_only: str) -> bool:
+        """A page route, or an existing file under web_dir (never /api, proxies)."""
+        if path_only in _WARMING_PAGE_ROUTES:
+            return True
+        if path_only.startswith(('/api/', '/mesh', '/json/')) or path_only == '/api':
+            return False
+        if not self.web_dir:
+            return False  # static serves from web_dir; without one there is no root to check
+        base = Path(self.web_dir)
+        try:
+            target = (base / unquote(path_only).lstrip('/')).resolve()
+            target.relative_to(base.resolve())
+        except (ValueError, OSError):
+            return False
+        return target.is_file()
+
     def _serve_warming_503(self, path_only: str):
         """503 response for any non-/healthz path while warming.
 
@@ -1152,6 +1173,7 @@ class MapRequestHandler(
         raw_bytes: bytes,
         gzip_bytes: Optional[bytes],
         status: int = 200,
+        extra_headers: Optional[Dict[str, str]] = None,
     ) -> None:
         """Emit a JSON response from already-serialized bytes (Issue #70).
 
@@ -1177,6 +1199,8 @@ class MapRequestHandler(
         self.send_header('Vary', 'Accept-Encoding')
         self._send_cors_header()
         self.send_header('Cache-Control', 'no-cache')
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         try:
             self.wfile.write(data)
