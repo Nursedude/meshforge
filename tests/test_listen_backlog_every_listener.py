@@ -200,7 +200,8 @@ def test_the_guard_itself_refuses_a_stock_listener_in_a_src_tree(tmp_path, monke
         "class X(ThreadingHTTPServer):\n    pass\n")
     monkeypatch.syspath_prepend(str(tmp_path))
     assert _guard_problems(tmp_path) == [
-        f"{pkg}/zz.py:2: class X listens with request_queue_size=5, not LISTEN_BACKLOG (128)"]
+        f"{pkg}/zz.py:2: class X listens with request_queue_size=5, "
+        f"not LISTEN_BACKLOG ({LISTEN_BACKLOG})"]
 
 
 @pytest.mark.parametrize("planted", [
@@ -209,6 +210,8 @@ def test_the_guard_itself_refuses_a_stock_listener_in_a_src_tree(tmp_path, monke
     "from http.server import ThreadingHTTPServer as _TS\nS = _TS\n",
     "import socketserver\nS = type('S', (socketserver.TCPServer,), {})\n",
     "from http.server import HTTPServer as H\ns = H(('', 0), Q)\n",
+    "from wsgiref.simple_server import make_server\ns = make_server('', 0, app)\n",
+    "from wsgiref import simple_server\nms = simple_server.make_server\n",
     "import socketserver\ndef f():\n    class X(socketserver.TCPServer):\n"
     "        request_queue_size = 128\n",
 ])
@@ -270,7 +273,7 @@ def test_guard_follows_a_listener_across_modules(tmp_path, monkeypatch):
         "b": "from .a import MapHTTPServer\n"
              "class Y(MapHTTPServer):\n    request_queue_size = 5\n"})
     assert problems == ["b.py:2: class Y listens with request_queue_size=5, "
-                        "not LISTEN_BACKLOG (128)"]
+                        f"not LISTEN_BACKLOG ({LISTEN_BACKLOG})"]
 
 
 def test_metrics_stop_releases_the_bound_fd_and_joins():

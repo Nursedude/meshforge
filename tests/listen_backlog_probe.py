@@ -79,7 +79,12 @@ STOCK_LISTENERS = frozenset({
     "UDPServer", "ThreadingUDPServer",
     # stdlib listener SUBCLASSES, also on queue 5 (Fable review 2026-11-07 #3)
     "WSGIServer", "SimpleXMLRPCServer", "DocXMLRPCServer",
-    "make_server",  # wsgiref.simple_server.make_server() builds a WSGIServer
+    # wsgiref.simple_server.make_server() builds a stock WSGIServer. Refused
+    # OUTRIGHT, aliases included, in both guards: a server_class= carve-out was
+    # tried 2026-11-07 and opened alias/stock-class/map-guard holes (contextless
+    # review, run). Compliant path: subclass WSGIServer with
+    # request_queue_size = LISTEN_BACKLOG and construct it directly.
+    "make_server",
 })
 # Datagram servers have no accept queue: constructing one is flagged, but a
 # subclass is not required to set request_queue_size.
