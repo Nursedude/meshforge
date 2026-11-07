@@ -28,8 +28,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests"))
 
+from utils.http_listener import LISTEN_BACKLOG  # noqa: E402
 from listen_backlog_probe import (  # noqa: E402,F401
-    BURST, STOCK_LISTENERS, STREAM_LISTENERS, _completed_connects, nm as _nm, pytestmark)
+    BURST, STOCK_LISTENERS, STREAM_LISTENERS, _completed_connects, needs_accept_queue_probe, nm as _nm)
 
 
 class _Quiet(BaseHTTPRequestHandler):
@@ -44,6 +45,7 @@ def test_shared_constant_is_the_maps_value():
     assert MapHTTPServer.request_queue_size == LISTEN_BACKLOG
 
 
+@needs_accept_queue_probe
 def test_config_api_listener_queues_a_whole_burst():
     from utils.config_api import ConfigAPITCPServer
     srv = ConfigAPITCPServer(("127.0.0.1", 0), _Quiet)
@@ -56,6 +58,7 @@ def test_config_api_listener_queues_a_whole_burst():
         srv.server_close()
 
 
+@needs_accept_queue_probe
 def test_metrics_listener_queues_a_whole_burst():
     from utils.metrics_server import MetricsTCPServer
     srv = MetricsTCPServer(("127.0.0.1", 0), _Quiet)
@@ -73,6 +76,8 @@ def test_config_api_start_binds_through_the_backlog_class():
     try:
         assert srv.start()
         assert isinstance(srv._server, ConfigAPITCPServer)
+        # the LIVE instance, not a class attr (#4: start() could shrink it)
+        assert srv._server.request_queue_size == LISTEN_BACKLOG
     finally:
         srv.stop()
 
@@ -83,6 +88,8 @@ def test_metrics_start_binds_through_the_backlog_class():
     try:
         assert srv.start()
         assert isinstance(srv._server, MetricsTCPServer)
+        # the LIVE instance, not a class attr (#4: start() could shrink it)
+        assert srv._server.request_queue_size == LISTEN_BACKLOG
     finally:
         srv.stop()
 
@@ -103,8 +110,8 @@ def _resolved(node, aliases):
     return aliases.get(name, name)
 
 
-def _module_name(path: Path) -> str:
-    rel = path.relative_to(ROOT / "src").with_suffix("")
+def _module_name(path: Path, src_root: Path) -> str:
+    rel = path.relative_to(src_root).with_suffix("")
     parts = rel.parts[:-1] if rel.name == "__init__" else rel.parts
     return ".".join(parts)
 
@@ -167,14 +174,33 @@ def _scan(src: str) -> list:
     return _scan_sources({"<planted>": src})
 
 
+def _guard_problems(src_root: Path) -> list:
+    """THE guard: every .py under src_root, shapes by AST, values by import.
+    The repo test and its drill both call this (Fable review 2026-11-07 #1:
+    the call site dropping ``modnames`` passed every planted test)."""
+    paths = sorted(src_root.rglob("*.py"))
+    sources = {str(p.relative_to(src_root)): p.read_text(encoding="utf-8") for p in paths}
+    modnames = {str(p.relative_to(src_root)): _module_name(p, src_root) for p in paths}
+    return _scan_sources(sources, modnames)
+
+
 def test_every_src_listener_reads_the_shared_backlog():
     # Every listener class in src/ is module-level and carries LISTEN_BACKLOG
     # (measured on the imported class); nothing constructs a stock one.
-    paths = sorted((ROOT / "src").rglob("*.py"))
-    sources = {str(p.relative_to(ROOT)): p.read_text(encoding="utf-8") for p in paths}
-    modnames = {str(p.relative_to(ROOT)): _module_name(p) for p in paths}
-    problems = _scan_sources(sources, modnames)
+    problems = _guard_problems(ROOT / "src")
     assert problems == [], "; ".join(problems)
+
+
+def test_the_guard_itself_refuses_a_stock_listener_in_a_src_tree(tmp_path, monkeypatch):
+    pkg = f"plantedsrc_{tmp_path.name.replace('-', '_')}"
+    (tmp_path / pkg).mkdir()
+    (tmp_path / pkg / "__init__.py").write_text("")
+    (tmp_path / pkg / "zz.py").write_text(
+        "from http.server import ThreadingHTTPServer\n"
+        "class X(ThreadingHTTPServer):\n    pass\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    assert _guard_problems(tmp_path) == [
+        f"{pkg}/zz.py:2: class X listens with request_queue_size=5, not LISTEN_BACKLOG (128)"]
 
 
 @pytest.mark.parametrize("planted", [

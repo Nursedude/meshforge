@@ -26,12 +26,16 @@ def _somaxconn():
 # below the burst, the map is correct and the probe cannot show it — skip with
 # the reason, never a red that blames the code (ambient state, pinned here).
 _SOMAXCONN = _somaxconn()
-pytestmark = [
-    pytest.mark.skipif(not sys.platform.startswith("linux"),
-                       reason="accept-queue semantics measured on Linux (the fleet)"),
-    pytest.mark.skipif((_SOMAXCONN or 0) < BURST,
-                       reason=f"net.core.somaxconn={_SOMAXCONN} < {BURST}: the kernel caps the backlog"),
-]
+# Applied to the KERNEL-PROBE tests only, never module-wide: a module skip
+# also silenced the AST guards, which need no kernel (Fable review 2026-11-07).
+_ON_LINUX = pytest.mark.skipif(not sys.platform.startswith("linux"),
+                               reason="accept-queue semantics measured on Linux (the fleet)")
+_DEEP_ENOUGH = pytest.mark.skipif((_SOMAXCONN or 0) < BURST,
+                                  reason=f"net.core.somaxconn={_SOMAXCONN} < {BURST}: the kernel caps the backlog")
+
+
+def needs_accept_queue_probe(fn):
+    return _ON_LINUX(_DEEP_ENOUGH(fn))
 
 
 def _completed_connects(server, n=BURST, wait_s=0.5) -> int:
@@ -73,6 +77,9 @@ STOCK_LISTENERS = frozenset({
     "HTTPServer", "ThreadingHTTPServer", "TCPServer", "ThreadingTCPServer",
     "ForkingTCPServer", "UnixStreamServer", "ThreadingUnixStreamServer",
     "UDPServer", "ThreadingUDPServer",
+    # stdlib listener SUBCLASSES, also on queue 5 (Fable review 2026-11-07 #3)
+    "WSGIServer", "SimpleXMLRPCServer", "DocXMLRPCServer",
+    "make_server",  # wsgiref.simple_server.make_server() builds a WSGIServer
 })
 # Datagram servers have no accept queue: constructing one is flagged, but a
 # subclass is not required to set request_queue_size.

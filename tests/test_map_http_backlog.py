@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from listen_backlog_probe import BURST, STOCK_LISTENERS, _completed_connects, nm as _nm, pytestmark  # noqa: E402,F401
+from listen_backlog_probe import BURST, STOCK_LISTENERS, _completed_connects, nm as _nm, needs_accept_queue_probe  # noqa: E402,F401
 
 
 class _Quiet(BaseHTTPRequestHandler):
@@ -37,6 +37,7 @@ class _Backlog5(ThreadingHTTPServer):
     request_queue_size = 5
 
 
+@needs_accept_queue_probe
 def test_control_a_backlog_of_five_drops_a_burst():
     srv = _Backlog5(("127.0.0.1", 0), _Quiet)
     try:
@@ -45,6 +46,7 @@ def test_control_a_backlog_of_five_drops_a_burst():
         srv.server_close()
 
 
+@needs_accept_queue_probe
 def test_map_server_queues_a_whole_burst():
     from utils import map_data_service as mds
     srv = mds._make_http_server("127.0.0.1", 0)
