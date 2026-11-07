@@ -15,6 +15,7 @@ import ast
 import errno
 import selectors
 import socket
+import socketserver
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -55,7 +56,12 @@ def _completed_connects(server, n=BURST, wait_s=0.5) -> int:
     sel = selectors.DefaultSelector()
     try:
         for _ in range(n):
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            except OSError as e:
+                if e.errno in (errno.EMFILE, errno.ENFILE):
+                    pytest.skip(f"fd limit below the {n}-connect burst ({e})")
+                raise
             s.setblocking(False)
             rc = s.connect_ex((host, port))
             assert rc in (0, errno.EINPROGRESS), rc
@@ -99,6 +105,14 @@ def test_map_server_queues_a_whole_burst():
     from utils import map_data_service as mds
     srv = mds._make_http_server("127.0.0.1", 0)
     try:
+        # The backlog must not cost what the listener already had: one daemon
+        # thread per request (a slow endpoint never blocks the rest; stop()
+        # never waits on a hung handler) and HTTPServer's bind (server_name /
+        # server_port the handler reads). Review 2026-11-06: an HTTPServer base,
+        # daemon_threads=False or a ThreadingTCPServer base all passed without it.
+        assert isinstance(srv, ThreadingHTTPServer)
+        assert isinstance(srv, socketserver.ThreadingMixIn)
+        assert srv.daemon_threads is True
         assert _completed_connects(srv) == BURST
     finally:
         srv.server_close()
