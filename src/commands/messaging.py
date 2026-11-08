@@ -32,7 +32,7 @@ from typing import Optional, List, Dict, Any, Callable
 from dataclasses import dataclass, field
 
 from .base import CommandResult
-from utils.db_helpers import connect_tuned
+from utils.db_helpers import connect_tuned, ensure_column
 from utils.paths import get_real_user_home
 
 from utils.event_bus import emit_message
@@ -70,6 +70,7 @@ class Message:
     snr: Optional[float] = None
     rssi: Optional[int] = None
     delivered: bool = False
+    packet_id: Optional[int] = None  # the radio's id; outgoing rows (INBOX-2)
 
     def to_dict(self) -> dict:
         return {
@@ -84,6 +85,7 @@ class Message:
             'snr': self.snr,
             'rssi': self.rssi,
             'delivered': self.delivered,
+            'packet_id': self.packet_id,
         }
 
 
@@ -92,6 +94,29 @@ def _get_db_path() -> Path:
     db_dir = get_real_user_home() / ".config" / "meshforge"
     db_dir.mkdir(parents=True, exist_ok=True)
     return db_dir / "messages.db"
+
+
+#: Meshtastic packet ids are 32-bit and never 0 (0 = "not assigned").
+_PACKET_ID_MAX = 0xFFFFFFFF
+
+
+#: DB paths whose schema this process already brought current — the
+#: migration probe runs once per path per process, not on every RX store.
+_schema_current: set = set()
+
+
+def _valid_packet_id(packet_id) -> Optional[int]:
+    """The id if it can be a real Meshtastic packet id, else None. An
+    impossible value is logged LOUDLY (hfm #3) — the message row is still
+    kept, with the id unknown."""
+    if packet_id is None:
+        return None
+    if (isinstance(packet_id, bool) or not isinstance(packet_id, int)
+            or not 0 < packet_id <= _PACKET_ID_MAX):
+        logger.warning("messages: refusing impossible packet_id %r "
+                       "(stored as unknown)", packet_id)
+        return None
+    return packet_id
 
 
 def _init_db() -> sqlite3.Connection:
@@ -112,9 +137,19 @@ def _init_db() -> sqlite3.Connection:
             is_dm BOOLEAN DEFAULT 1,
             snr REAL,
             rssi INTEGER,
-            delivered BOOLEAN DEFAULT 0
+            delivered BOOLEAN DEFAULT 0,
+            packet_id INTEGER
         )
     ''')
+    if str(db_path) not in _schema_current:
+        try:
+            ensure_column(conn, "messages", "packet_id", "INTEGER")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_packet_id "
+                         "ON messages(packet_id) WHERE packet_id IS NOT NULL")
+        except Exception:
+            conn.close()  # never leak the fd on a failed migration (#73)
+            raise
+        _schema_current.add(str(db_path))
 
     conn.execute('''
         CREATE INDEX IF NOT EXISTS idx_messages_timestamp
@@ -469,6 +504,7 @@ def get_messages(
                 snr=row['snr'],
                 rssi=row['rssi'],
                 delivered=bool(row['delivered']),
+                packet_id=row['packet_id'],
             )
             messages.append(msg.to_dict())
 
@@ -592,6 +628,7 @@ def store_outgoing(
     to_id: Optional[str],
     channel: int = 0,
     delivered: bool = False,
+    packet_id: Optional[int] = None,
 ) -> CommandResult:
     """
     Record a message THIS box sent by a path that did not store it itself
@@ -606,20 +643,27 @@ def store_outgoing(
         to_id: Destination node ID, or None for a channel broadcast
         channel: Channel index the message went out on
         delivered: True when the hand-off to the radio succeeded
+        packet_id: The radio's id for this packet (``send_text_direct_with_id``),
+            None when unknown — the key that joins a send to any box's RX
+            record (INBOX-2). Kept as the radio gave it.
 
     Returns:
         CommandResult with the new row id
     """
     try:
         conn = _init_db()
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO messages (network, from_id, to_id, content, channel, is_dm, delivered)
-            VALUES (?, 'local', ?, ?, ?, ?, ?)
-        ''', (network, to_id, content, channel, to_id is not None, bool(delivered)))
-        conn.commit()
-        message_id = cursor.lastrowid
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO messages (network, from_id, to_id, content, channel,
+                                      is_dm, delivered, packet_id)
+                VALUES (?, 'local', ?, ?, ?, ?, ?, ?)
+            ''', (network, to_id, content, channel, to_id is not None,
+                  bool(delivered), _valid_packet_id(packet_id)))
+            conn.commit()
+            message_id = cursor.lastrowid
+        finally:
+            conn.close()
         _maybe_prune_messages()
         return CommandResult.ok("Message recorded", data={'message_id': message_id})
     except Exception as e:

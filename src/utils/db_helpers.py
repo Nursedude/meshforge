@@ -119,3 +119,32 @@ def connect_tuned(
     # synchronous is per-connection and legal read-only; harmless either way.
     conn.execute("PRAGMA synchronous=NORMAL")
     return conn
+
+
+def ensure_column(conn: sqlite3.Connection, table: str, column: str,
+                  decl: str) -> bool:
+    """Add ``column`` (``decl`` = its type/default) to a table created before
+    it existed. Returns True when this call added it.
+
+    Several processes open the same DB (map, TUI, gateway on a deploy), so
+    PRAGMA-then-ALTER can race: the loser's ALTER fails. That failure is
+    tolerated ONLY when a re-read shows the column is really there — a
+    locked / read-only / corrupt DB still raises (an error-string match would
+    also tolerate a half-migrated DB in another locale). ``table``/``column``
+    /``decl`` are code constants, never user input.
+
+    The one helper for additive columns (2026-11-07). Older private copies
+    still live in delivery_counters, node_history, message_queue and
+    meshtastic_broadcast_bridge — queued to move here."""
+    def present() -> bool:
+        return column in {r[1] for r in
+                          conn.execute(f"PRAGMA table_info({table})")}
+    if present():
+        return False
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+    except sqlite3.OperationalError:
+        if not present():
+            raise
+        return False
+    return True

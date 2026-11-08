@@ -260,7 +260,7 @@ def send(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     handed_off = packet_id is not None
     rec = messaging.store_outgoing(
         content=params["text"], network="meshtastic", to_id=params["to_id"],
-        channel=params["channel"], delivered=handed_off)
+        channel=params["channel"], delivered=handed_off, packet_id=packet_id)
     body = {
         "state": "handed_off" if handed_off else "not_sent",
         "detail": ("Handed to the radio. Delivery is unconfirmed." if handed_off

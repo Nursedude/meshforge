@@ -247,6 +247,9 @@ def test_reply_goes_out_on_the_thread_channel_and_is_recorded(server):
     assert "delivered" not in out
     assert stored[0]["delivered"] is True and stored[0]["channel"] == 0
     assert stored[0]["to_id"] is None and stored[0]["network"] == "meshtastic"
+    # INBOX-2 step 1: the radio's packet id is KEPT — the one wire fact that
+    # joins this send to any fleet box's RX record (it used to be discarded).
+    assert stored[0]["packet_id"] == 4242
 
 
 def test_dm_asks_for_ack(server):
@@ -266,6 +269,7 @@ def test_failed_transmit_is_recorded_as_not_sent(server):
     assert status == 502
     assert json.loads(raw)["state"] == "not_sent"
     assert stored[0]["delivered"] is False
+    assert stored[0]["packet_id"] is None
 
 
 def test_hostile_page_cannot_send(server):
