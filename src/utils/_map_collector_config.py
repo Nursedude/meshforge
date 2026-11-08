@@ -91,10 +91,11 @@ class MapCollectorConfigMixin:
         """Get online status threshold in seconds.
 
         Nodes heard within this threshold are considered online.
-        Default: 15 minutes (900 seconds).
+        Default: 120 minutes = firmware's NUM_ONLINE_SECS (map_data_collector.FIRMWARE_ONLINE_WINDOW_S).
         """
-        if self._settings:
-            minutes = self._settings.get("online_status_threshold_minutes", self.DEFAULT_ONLINE_THRESHOLD_MINUTES)
+        settings = getattr(self, "_settings", None)
+        if settings:
+            minutes = settings.get("online_status_threshold_minutes", self.DEFAULT_ONLINE_THRESHOLD_MINUTES)
         else:
             minutes = self.DEFAULT_ONLINE_THRESHOLD_MINUTES
         return int(minutes * 60)
@@ -115,12 +116,13 @@ class MapCollectorConfigMixin:
         """Get online threshold for a specific network source.
 
         Per-source thresholds allow different timeout windows per network type:
-        - meshtastic: 15 min (frequent heartbeats)
-        - mqtt: 15 min (real-time broker)
+        - meshtastic: 120 min (firmware's own online window)
+        - mqtt: 15 min (no map consumer — MQTT markers are Meshtastic nodes, judged by `meshtastic`)
         - rns: 30 min (announces less frequently)
         - aredn: 60 min (scans are infrequent)
 
-        Falls back to the global online_status_threshold_minutes setting.
+        Each source has its OWN default; it does NOT fall back to the global
+        online_status_threshold_minutes (review 11-08 — the old text said so).
 
         Args:
             source: Network source type ("meshtastic", "mqtt", "rns", "aredn")
@@ -137,8 +139,9 @@ class MapCollectorConfigMixin:
             "public_fallback": self.DEFAULT_PUBLIC_FALLBACK_THRESHOLD_MINUTES,
         }
         default = defaults.get(source, self.DEFAULT_ONLINE_THRESHOLD_MINUTES)
-        if self._settings:
-            minutes = self._settings.get(key, default)
+        settings = getattr(self, "_settings", None)
+        if settings:
+            minutes = settings.get(key, default)
         else:
             minutes = default
         return int(minutes * 60)

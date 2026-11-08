@@ -959,6 +959,9 @@ class UnifiedNodeTracker(NodeTrackerRNSMixin):
                     "snr": node.snr,
                     "battery": node.telemetry.battery_level,
                     "last_seen": node.get_age_string(),
+                    # epoch of the same instant — consumers judge freshness
+                    # by their own window (map, 2026-11-08), not a string
+                    "last_heard": node.last_seen.timestamp() if node.last_seen else None,
                 }
             }
             features.append(feature)

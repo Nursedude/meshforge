@@ -2741,6 +2741,25 @@
     // Node Rendering
     // ============================================
 
+    // 2026-11-08: a Meshtastic node is "online" if heard within the window the
+    // server judged it by (firmware's 2 h by default) — the page says which
+    // window, never a bare "Offline" (a healthy node is silent between broadcasts).
+    function meshtasticWindowText() {
+        const g = state.currentGeoJSON && state.currentGeoJSON.properties;
+        const m = g ? g.meshtastic_online_window_minutes : null;
+        if (typeof m !== 'number' || !isFinite(m) || m <= 0) return null;
+        return (m % 60 === 0) ? (m / 60) + ' h' : m + ' min';
+    }
+
+    function nodeStatusText(props) {
+        // a peer's node was judged by the PEER (its own window); this box only
+        // knows its radio did not hear it (review 11-08 F6)
+        if (props.federated) return 'Not heard by this box\'s radio';
+        const w = props.network === 'meshtastic' ? meshtasticWindowText() : null;
+        if (props.is_online) return w ? 'Online · heard ≤ ' + w : 'Online';
+        return w ? 'Not heard in ' + w : 'Offline';
+    }
+
     function getNodeColor(props) {
         if (props.network === 'aredn') return props.is_online ? '#ff7043' : '#4a2010';
         if (props.network === 'rns') return props.is_online ? '#26c6da' : '#1a3a40';
@@ -2979,7 +2998,7 @@
                 <div class="info-grid">
                     <div class="info-label">Status</div>
                     <div class="info-value ${props.is_online ? 'status-online' : 'status-offline'}">
-                        ${props.is_online ? '● Online' : '○ Offline'}
+                        ${props.is_online ? '● ' : '○ '}${nodeStatusText(props)}
                     </div>
                     ${roleSafe ? `<div class="info-label">Role</div><div class="info-value">${roleSafe}</div>` : ''}
                     ${props.is_gateway ? `<div class="info-label">Type</div><div class="info-value status-gateway">Gateway</div>` : ''}
@@ -5972,7 +5991,7 @@
         badge.textContent = (props.network || 'meshtastic').toUpperCase();
 
         const status = document.getElementById('card-status');
-        status.textContent = props.is_online ? 'Online' : 'Offline';
+        status.textContent = nodeStatusText(props);
         status.className = 'value ' + (props.is_online ? 'online' : 'offline');
 
         document.getElementById('card-last-seen').textContent = props.last_seen || '--';

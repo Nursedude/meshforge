@@ -873,6 +873,7 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
                         "rssi": node.rssi,
                         "battery": node.battery_level,
                         "last_seen": node.get_age_string(),
+                        "last_heard": node.last_seen.timestamp() if node.last_seen else None,
                         "hardware": node.hardware_model,
                         "role": node.role,
                         "hops_away": node.hops_away,

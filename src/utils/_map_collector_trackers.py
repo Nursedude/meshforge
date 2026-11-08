@@ -38,6 +38,19 @@ def _hub():
 class TrackerDataCollectorMixin:
     """UnifiedNodeTracker, MQTT subscriber, and cache-file sources for MapDataCollector."""
 
+    def _normalize_meshtastic_props(self, props: Dict) -> None:
+        """ONE rule for a Meshtastic marker from a non-radio source (2026-11-08):
+        the canonical ``!xxxxxxxx`` id (H15) and is_online re-judged from the
+        node's own heard time with the map's window (firmware's 2 h). The
+        tracker / MQTT subscriber / node cache each judged by their OWN window
+        (15 min). No heard time -> never online: a cache is not evidence."""
+        if not isinstance(props, dict) or (props.get("network") or "").lower() != "meshtastic":
+            return
+        if props.get("id") in (None, ""):
+            return  # id-less: the collect drops it; never mint an 'unknown' key (review r3)
+        props["id"] = self._canonical_meshtastic_id(props.get("id"), 0)
+        props["is_online"] = self._is_node_online(props.get("last_heard"), source="meshtastic")
+
     def _collect_unified_tracker(self) -> List[Dict]:
         """Collect nodes from the UnifiedNodeTracker singleton.
 

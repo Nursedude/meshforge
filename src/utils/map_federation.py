@@ -108,6 +108,17 @@ DEFAULT_BACKOFF_EXTENDED_THRESHOLD = 40     # failures past which tier-2 cap app
 DEFAULT_BACKOFF_EXTENDED_MAX_MULTIPLIER = 60  # tier-2 cap: 60× poll_interval (≈1 hr)
 
 
+def canonical_node_id(net, nid):
+    """MAP-H H15: one radio, one id — THE rule (local collector + federation
+    ingest both call it). The gateway tracker spells a Meshtastic radio
+    ``mesh_!xxxxxxxx`` (gateway/node_models.py); meshtasticd and peers say
+    ``!xxxxxxxx``; a peer's directory keeps old-spelling rows for its 30-day
+    retention. Other networks are untouched."""
+    if net == "meshtastic" and isinstance(nid, str) and nid.startswith("mesh_!"):
+        return nid[len("mesh_"):]
+    return nid
+
+
 def _wal_path_for(db_path: Path) -> Path:
     """SQLite WAL companion path next to the main DB file."""
     return db_path.with_name(db_path.name + "-wal")
@@ -270,6 +281,7 @@ def _extract_features(directory_payload: Dict[str, Any], peer: str) -> List[Dict
         net = props.get("network")
         if not nid or not net:
             continue
+        nid = canonical_node_id(net, nid)
         geom = feat.get("geometry") or {}
         coords = geom.get("coordinates") if isinstance(geom, dict) else None
         lat = lon = alt = None
@@ -304,6 +316,7 @@ def _extract_features(directory_payload: Dict[str, Any], peer: str) -> List[Dict
         net = entry.get("network")
         if not nid or not net:
             continue
+        nid = canonical_node_id(net, nid)
         out.append({
             "network": net,
             "id": nid,

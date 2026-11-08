@@ -21,6 +21,7 @@ import threading
 import time
 from typing import Dict, List, Optional
 
+from utils.map_federation import canonical_node_id
 from utils.meshtastic_http import get_http_client
 from utils.meshtastic_connection import (
     get_connection_manager, safe_close_interface,
@@ -260,7 +261,8 @@ class MeshtasticDataCollectorMixin:
         total = 0
         if hasattr(interface, 'nodes') and interface.nodes:
             now = time.time()
-            online_threshold = self.get_online_threshold_seconds()
+            # the SAME window the page names for Meshtastic markers (review 11-08 F4)
+            online_threshold = self.get_source_threshold_seconds("meshtastic")
             total = len(interface.nodes)
             for node_id, node_data in interface.nodes.items():
                 feature = self._parse_tcp_node(node_id, node_data, now, online_threshold)
@@ -439,6 +441,10 @@ class MeshtasticDataCollectorMixin:
         lesson)."""
         if isinstance(id_val, str) and id_val.startswith('!'):
             return id_val
+        # MAP-H H15 (2026-11-08): the tracker's `mesh_!xxxxxxxx` — ONE rule,
+        # shared with federation ingest (utils.map_federation.canonical_node_id)
+        if isinstance(id_val, str) and id_val.startswith('mesh_!'):
+            return canonical_node_id("meshtastic", id_val)
         try:
             n = int(num)
         except (TypeError, ValueError):
@@ -448,7 +454,7 @@ class MeshtasticDataCollectorMixin:
         return str(id_val) if id_val not in (None, '') else 'unknown'
 
     def _parse_tcp_node(self, node_id: str, data: dict, now: float,
-                        online_threshold_seconds: int = 900) -> Optional[Dict]:
+                        online_threshold_seconds: Optional[int] = None) -> Optional[Dict]:
         """Parse a single node from the TCP interface nodes dict.
 
         Handles both float (latitude) and integer (latitudeI) coordinate formats.
@@ -483,8 +489,11 @@ class MeshtasticDataCollectorMixin:
             last_heard = 0
             age_seconds = None
 
+        if online_threshold_seconds is None:   # no private default (was 900)
+            online_threshold_seconds = self.get_source_threshold_seconds("meshtastic")
+        # `<`, as the SSOT _is_node_online (review 11-08 F7: two rules at the edge)
         is_online = (age_seconds is not None
-                     and age_seconds <= online_threshold_seconds)
+                     and age_seconds < online_threshold_seconds)
 
         if age_seconds is not None:
             age_seconds = max(0, age_seconds)

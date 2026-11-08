@@ -36,6 +36,15 @@ from monitoring.mqtt_subscriber import get_local_subscriber
 _RNS, _HAS_RNS = safe_import('RNS')
 _msgpack, _HAS_MSGPACK = safe_import('msgpack')
 
+#: A Meshtastic node is "online" if heard within this window — FIRMWARE'S own
+#: rule (v2.7.26.54e0d8d src/mesh/NodeDB.cpp:1692, read 2026-11-08):
+#:     #define NUM_ONLINE_SECS (60 * 60 * 2) // 2 hrs to consider someone offline
+#: Nodes broadcast position/telemetry/nodeinfo every 15 min - 3 h, so the old
+#: 15-min window drew healthy nodes red between broadcasts while the radio
+#: counted them online (operator 2026-11-08). Map-only: the gateway tracker
+#: keeps its own window for every network (named divergence).
+FIRMWARE_ONLINE_WINDOW_S = 60 * 60 * 2
+
 
 from utils._map_collector_rns import RNSDataCollectorMixin
 from utils._map_collector_public import PublicDataFallbackMixin
@@ -75,13 +84,13 @@ class MapDataCollector(
     Settings (in ~/.config/meshforge/map_settings.json):
     - node_cache_max_age_hours: Max age for node_cache.json (default: 48)
     - rns_cache_max_age_hours: Max age for RNS temp cache (default: 1)
-    - online_status_threshold_minutes: Minutes since lastHeard to consider online (default: 15)
+    - online_status_threshold_minutes: Minutes since lastHeard to consider online (default: 120 = firmware)
     """
 
     # Default cache ages in hours
     DEFAULT_NODE_CACHE_MAX_AGE_HOURS = 48
     DEFAULT_RNS_CACHE_MAX_AGE_HOURS = 24  # Increased from 1 hour
-    DEFAULT_ONLINE_THRESHOLD_MINUTES = 15
+    DEFAULT_ONLINE_THRESHOLD_MINUTES = FIRMWARE_ONLINE_WINDOW_S // 60
     # MeshCore public map (~12 MB / 30 k nodes / 30 s timeout) is the dominant
     # collect() cost. Public API contract is "changes hourly", so caching the
     # parsed feature list for 10 min keeps the map fresh enough while sparing
@@ -101,8 +110,8 @@ class MapDataCollector(
     # non-critical fallback, so on deadline we serve stale cache.
     DEFAULT_MESHCORE_PUBLIC_MAX_SECONDS = 30
     # Per-source online thresholds (minutes) — configurable via map_settings.json
-    DEFAULT_MESHTASTIC_THRESHOLD_MINUTES = 15
-    DEFAULT_MQTT_THRESHOLD_MINUTES = 15
+    DEFAULT_MESHTASTIC_THRESHOLD_MINUTES = FIRMWARE_ONLINE_WINDOW_S // 60
+    DEFAULT_MQTT_THRESHOLD_MINUTES = 15  # no map consumer: MQTT markers are judged by the meshtastic window
     DEFAULT_RNS_THRESHOLD_MINUTES = 30   # RNS announces less frequently
     DEFAULT_AREDN_THRESHOLD_MINUTES = 60  # AREDN scans are infrequent
     DEFAULT_PUBLIC_FALLBACK_THRESHOLD_MINUTES = 240  # meshmap.net reports less frequently
@@ -306,6 +315,11 @@ class MapDataCollector(
             # fix-shape decision.
             stale_defaults={
                 "federation_timeout_seconds": [5],
+                # 2026-11-08: the pre-firmware-window default, persisted by the
+                # old SettingsManager on three fleet boxes — drop it so 120
+                # applies. A value an operator chose (anything but 15) stays.
+                "online_status_threshold_minutes": [15],
+                "meshtastic_threshold_minutes": [15],
             },
         )
 
@@ -845,6 +859,7 @@ class MapDataCollector(
         # Tagging is per-feature inside _collect_unified_tracker (mixed RNS + Meshtastic).
         tracker_unified_features = self._timed_collect("unified_tracker", self._collect_unified_tracker)
         for f in tracker_unified_features:
+            self._normalize_meshtastic_props(f.get("properties"))
             fid = f["properties"].get("id", "")
             if fid:
                 features[fid] = f
@@ -886,6 +901,7 @@ class MapDataCollector(
             "mqtt_local",
         )
         for f in mqtt_features:
+            self._normalize_meshtastic_props(f.get("properties"))
             fid = f["properties"].get("id", "")
             if fid and fid not in features:
                 features[fid] = f
@@ -899,6 +915,7 @@ class MapDataCollector(
             "node_tracker",
         )
         for f in tracker_features:
+            self._normalize_meshtastic_props(f.get("properties"))
             fid = f["properties"].get("id", "")
             if fid and fid not in features:
                 features[fid] = f
@@ -1023,6 +1040,9 @@ class MapDataCollector(
                 "directory": directory_stats,
                 "federation": federation_block,
                 "online_threshold_minutes": self.get_online_threshold_seconds() // 60,
+                # the window that judged every Meshtastic marker — the page
+                # names it instead of saying "Offline" (2026-11-08)
+                "meshtastic_online_window_minutes": self.get_source_threshold_seconds("meshtastic") // 60,
             }
         }
 

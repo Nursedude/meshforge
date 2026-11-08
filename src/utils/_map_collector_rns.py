@@ -620,6 +620,10 @@ class RNSDataCollectorMixin:
             is_gateway=node.get("is_gateway", False),
             via_mqtt=node.get("via_mqtt", False),
             last_seen=node.get("last_seen", ""),
+            # the cache DOES hold when the node was heard (UnifiedNode.to_dict:
+            # ISO last_seen) — carry it, or the 2 h window judges a node heard
+            # 10 min ago "Not heard in 2 h" (review r3, 2026-11-08)
+            last_heard=self._coerce_epoch(node.get("last_heard") or node.get("last_seen")) or None,
         )
 
     def _rns_cache_to_feature(self, node: Dict) -> Optional[Dict]:
