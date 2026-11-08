@@ -85,7 +85,9 @@ def _ts(e: dict) -> Optional[float]:
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return None
     v = float(v)
-    return v if math.isfinite(v) else None
+    # ts <= 0 is an absent-value sentinel, not a 1970 event (the 56.7-year
+    # `now - 0` class, hfm #6): unknown age, never "older outside".
+    return v if math.isfinite(v) and v > 0 else None
 
 
 def confirmation_window(payload: dict, *, now: Optional[float] = None,
@@ -138,6 +140,7 @@ def confirmation_window(payload: dict, *, now: Optional[float] = None,
     confirmed = failed = out_of_window = undated = 0
     s_confirmed = s_failed = 0
     oldest = newest = None
+    reaches_past_window = False   # ANY dated entry older than the cutoff
     for e in ring or ():
         if not isinstance(e, dict):
             continue
@@ -148,6 +151,7 @@ def confirmation_window(payload: dict, *, now: Optional[float] = None,
             ts = None           # clock artifact: keep the evidence, not its age
         if ts is not None and ts < cutoff:
             out_of_window += judged
+            reaches_past_window = True
             continue
         in_window.append(e)
         if not judged:
@@ -177,7 +181,9 @@ def confirmation_window(payload: dict, *, now: Optional[float] = None,
     # and nothing aged out, so the oldest judged event is a ring edge, not
     # the window edge — the label must say which bound applied.
     # Either ring: a full legacy `recent` ring is count-bounded too (Fable r2).
-    truncated = ring_total >= SERVED_TERMINAL_LIMIT and out_of_window == 0
+    # ANY entry past the edge — even a non-confirmable one — proves the ring
+    # reaches the window edge, so it is age-bounded (Fable MA r1 L2).
+    truncated = ring_total >= SERVED_TERMINAL_LIMIT and not reaches_past_window
     span_s = (newest - oldest) if (oldest is not None and newest is not None) else None
     return {"confirmable": confirmable, "ring_source": ring_source,
             "ring": in_window if ring is not None else None,

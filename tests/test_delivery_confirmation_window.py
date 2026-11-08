@@ -185,3 +185,21 @@ def test_full_legacy_ring_is_count_bounded_too():
 def test_ring_total_counts_entries_not_junk():
     w = confirmation_window(_payload(["junk"] * 200 + [_ev(0)]), now=NOW)
     assert w["ring_total"] == 1 and w["truncated"] is False
+
+
+def test_full_ring_reaching_past_the_edge_is_age_bounded():
+    """Fable MA r1 L2 (shared code): old NON-confirmable entries in a full ring
+    still prove the ring reaches past the window edge — not "count-bounded"."""
+    from utils._delivery_confirmation_window import format_window
+    ring = ([_ev(8 * DAY, "dropped", "meshtastic", "unsendable")] * 150
+            + [_ev(i * 600) for i in range(50)])
+    w = confirmation_window(_payload(ring), now=NOW)
+    assert w["out_of_window"] == 0 and w["truncated"] is False
+    assert format_window(w).startswith("last 7 d")
+
+
+@pytest.mark.parametrize("ts", [0, 0.0, -5])
+def test_epoch_zero_ts_is_undated_not_ancient(ts):
+    """Fable MA r2 INFO: `now - 0` is the absent-value sentinel class."""
+    w = confirmation_window(_payload([_ev(0, ts=ts)]), now=NOW)
+    assert (w["undated"], w["out_of_window"]) == (1, 0)
