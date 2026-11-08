@@ -37,6 +37,39 @@ MEASURED same minute (`/api/nodes/geojson`, 49,921 features, read-only):
   Phase 3 (link animation + choppy redraw: operator-observed 11-08 — `linkLayer.clearLayers()` every
   update, no in-flight guard; MEASURE in a browser before building).
 
+### ⚠️ CORRECTED 2026-11-08 08:14 — H14's premise was the WRONG QUANTITY (attempt 1 NOT shipped)
+Non-author `code-review medium` finding 1, then MEASURED: a federated `last_seen` is the PEER'S
+COLLECTOR WRITE TIME (`node_history.py` stamps every local-origin directory row `now` each cycle,
+by design), not when its radio heard the node. moc2 federates moc3 at "55 min ago" while moc2's
+own `last_heard` for moc3 is 478 h. So "37 / 37 heard < 2 h" measured bookkeeping; attempt 1
+(`presence` from that stamp) would have painted dead nodes green. Patch kept in the session
+scratchpad only. Before any fleet-presence state: the federation export must carry the peer's
+RADIO hearing time with its own trust (and a frozen-clock peer must read unobservable).
+What IS true, measured the same hour:
+- **H4 is the bigger cause of false "Offline":** VolcanoAI's radio says `num_online_nodes=92`
+  (firmware: heard ≤ 2 h); the map has 24 local meshtastic nodes heard ≤ 2 h, 13 ≤ 15 min, and
+  **166 / 388 with no or zero `last_heard`**. Explain the 92-vs-24 gap first (which source drops
+  lastHeard), then H4 red-first. Also a definitional gap: map "Offline" = not heard in 15 min
+  (`online_status_threshold_minutes`), firmware "online" = 2 h — the label must say which.
+- **moc2 meshtasticd clock frozen:** 10 / 10 JSON lines `"timestamp":0` (started 10-26 20:58,
+  persistent-issues "started before NTP sync" row) — its nodedb `lastHeard` is frozen, so every
+  box federating moc2's view inherits it. Cure = restart meshtasticd on moc2 now NTP is synced
+  (operator go). moc3 + VolcanoAI clean (0 / 10, 0 / 78).
+- H15 (`mesh_` prefix) stands, but per review it is ALSO split inside federation itself
+  (`map_federation.py` merges peers on the raw id) — canonicalise once at the federation edge.
+- Review also: other surfaces read raw `is_online` (status card, sidebar, topology, links) —
+  any new state must go through ONE reader.
+
+### SHIPPED 2026-11-08 `940ada70` — the 2 h window + H15 one id (operator "2h to match firmware")
+Firmware `NodeDB.cpp:1692` NUM_ONLINE_SECS = 2 h, read at source; ONE seam in `collect()`
+(`_normalize_meshtastic_props`), ONE id rule (`map_federation.canonical_node_id`). Reviews r1
+code-review medium · r2 Fable by running · r3 Fable by running CLEAN (+3 fixed). Full suite
+18440 passed. QUEUED (not this commit): (1) `_load_cache` zeroes is_online at its own 900 s —
+reached only when every source is empty; (2) the gateway `UnifiedNodeTracker` window stays
+15 min for every network → the TUI can still say offline where the map says online (named
+divergence; decide per network, not by copy); (3) a probe for the `wait_for_ntp_sync.sh`
+fail-open witness (moc2 sat 13 days with every node's lastHeard frozen and nothing read it).
+
 ## Queued from the round-1 non-author review of H1+H2 (2026-11-06)
 
 - F5: the other Python readers of `reason_if_zero` still carry their own lists — `node_counts.py:89` (any reason ≠ ok → count None, so `no_positions`/`no_data` disagree with the map), `watchdog_probes_aredn.py:296`, `map_metrics.py:188` (counts `no_positions` as an error). Move each onto `utils.map_source_reasons.reason_state` — red-first, one consumer per commit; `node_counts` is a TUI/fleet-line behaviour change, so name it.
