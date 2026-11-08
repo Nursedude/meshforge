@@ -60,7 +60,7 @@ from utils.box_truth_center import (  # noqa: E402
     SPOOL_SCHEMA, read_targets, targets_path, truth_spool_dir)
 from utils.paths import atomic_write_text, get_real_user_home  # noqa: E402
 
-#: The ten box_truth/v1 sections, carried into the spool doc under the same
+#: The box_truth/v1 sections (bt.SECTIONS), carried into the spool doc under the same
 #: keys the collector has always read (one allowlist: utils.box_truth).
 _SECTION_NAMES = bt.SECTIONS
 

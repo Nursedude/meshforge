@@ -28,6 +28,10 @@ collector (``utils.fleet_truth_collector``) reads it unchanged:
                    catalog, so a center of either app reads a verdict and
                    never needs the target app's catalog. ``why`` says what
                    made it undecidable; None is never collapsed to False.
+  rx_heard       — which text packets this box's radio decoded, as
+                   ``[from, id, rx_ts]`` from its own meshtasticd journal,
+                   never message text (INBOX-2 step 2, 2026-11-08;
+                   ``utils.box_truth_rx``). Read under the export flock.
 
 Security-pass bindings (``.claude/audits/noc_read_grant_security_pass_2026_10_14.md``):
 B1 never reads stdin, never dispatches on SSH_ORIGINAL_COMMAND (recorded as
@@ -59,6 +63,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from utils import box_truth as bt
 from utils import box_truth_app as app
+from utils import box_truth_rx as rx
 from utils.paths import atomic_write_text
 
 #: The map's VIEW routes the export reads (S4 — a test pins that neither is
@@ -121,6 +126,10 @@ class Sources:
     @property
     def witness_path(self) -> Path:
         return witness_path(self.home, self.env)
+
+    @property
+    def rx_state_path(self) -> Path:
+        return rx.state_path_for(self.witness_path)
 
 
 def witness_path(home: Path, env: Mapping[str, str]) -> Path:
@@ -390,7 +399,8 @@ def _role(src: Sources) -> Tuple[dict, Optional[str]]:
     return out, None
 
 
-def collect_sections(src: Sources) -> Tuple[Dict[str, Any], Dict[str, str]]:
+def collect_sections(src: Sources, *, now: Optional[float] = None
+                     ) -> Tuple[Dict[str, Any], Dict[str, str]]:
     """(sections, section_errors). Every allowlisted key is present; a value
     of None means unobservable (the error map says why when it is an error,
     and is silent when the source is simply absent on this box)."""
@@ -422,6 +432,8 @@ def collect_sections(src: Sources) -> Tuple[Dict[str, Any], Dict[str, str]]:
     put("clock", lambda: {"now": int(time.time())})
     put("ingress", _json_file, src.ingress_path)
     put("role", _role, src)
+    put("rx_heard", lambda: rx.read_rx_heard(
+        src.rx_state_path, src.runner, now=time.time() if now is None else now))
     assert tuple(sections) == bt.SECTIONS, "section order drifted from the allowlist"
     return sections, errors
 
@@ -553,7 +565,7 @@ def run_export(grant_fp: Optional[str], src: Sources, *,
                 trim_witness(wpath)            # refusals are bounded too (F4c)
                 return text
 
-            sections, errors = collect_sections(src)
+            sections, errors = collect_sections(src, now=ts)
             tripped = bt.secret_tripwire(sections)
             for name, _pat in tripped:
                 sections[name] = None

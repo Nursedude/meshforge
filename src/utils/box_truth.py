@@ -42,7 +42,7 @@ FRAME = "__BOX_TRUTH_V1__"
 #: lets everything not matching a denylist through (the 09-19 lesson).
 SECTIONS = ("slo", "status", "raw_watchdog", "deployment", "raw_mini",
             "radio_probe", "services", "schedules", "clock", "ingress",
-            "role")
+            "role", "rx_heard")
 
 #: Closed vocabulary of how a read ended (S1). Consumers switch on it; grow
 #: it deliberately and update every consumer in the same change.

@@ -170,6 +170,9 @@ BYTE_IDENTICAL = (
     "src/utils/box_truth_grants.py",
     "src/utils/box_truth_center.py",
     "src/utils/box_truth_collect.py",
+    # INBOX-2 step 2 (2026-11-08): the rx_heard ring + its tests.
+    "src/utils/box_truth_rx.py",
+    "tests/test_box_truth_rx.py",
     "scripts/box_truth_export.py",
     "tests/test_box_truth_app_seam.py",
     "tests/test_box_truth_core.py",
