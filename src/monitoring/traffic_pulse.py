@@ -95,13 +95,19 @@ CONF_WEDGE = 0.10
 # `recent` while the probe read `recent_terminal`, so on a moc3-shape gateway
 # it said "too small to judge" about data the probe judged). None only on a
 # broken import graph, which _honest_confirmation reports as unobservable.
-_confirmation_window: Optional[Callable[[dict], dict]]
+_confirmation_window: Optional[Callable[..., dict]]
+_JUDGED_SQL: Optional[str]
+_JUDGED_ARGS: Optional[Tuple[str, ...]]
 try:
     from utils.watchdog_probes_gateway import _DELIVERY_FAILURE_REASONS
     from utils.watchdog_probes_gateway import confirmation_window as _cw
+    from utils.watchdog_probes_gateway import (
+        JUDGED_TERMINAL_ARGS as _ja, JUDGED_TERMINAL_SQL as _js)
     _confirmation_window = _cw
+    _JUDGED_SQL, _JUDGED_ARGS = _js, _ja
 except Exception:  # pragma: no cover - exercised only on a broken import graph
     _confirmation_window = None
+    _JUDGED_SQL, _JUDGED_ARGS = None, None   # unobservable anyway: no window reader
     _DELIVERY_FAILURE_REASONS = frozenset({
         "rns_delivery_failed", "retries_exhausted", "destination_unreachable",
         "delivery_timeout", "non_retriable_error", "circuit_open", "wedged",
@@ -298,9 +304,15 @@ def _parse_delivery_db() -> Observation[Dict[str, Any]]:
                      "drop_reason": r["drop_reason"]}
                     for r in reversed(rows)]
         recent = _ring("", ())
-        recent_terminal = _ring("WHERE state IN (?, ?) AND drop_reason IS NOT ?",
-                                ("confirmed", "dropped",
-                                 _TERMINAL_RING_EXCLUDED_REASON))
+        # The served snapshot's predicate, imported (2026-11-07): refusals AND
+        # benign drops never take a slot. Broken import → old predicate; the
+        # verdict is unobservable then regardless (_confirmation_window None).
+        if _JUDGED_SQL is not None and _JUDGED_ARGS is not None:
+            recent_terminal = _ring(f"WHERE {_JUDGED_SQL}", _JUDGED_ARGS)
+        else:
+            recent_terminal = _ring("WHERE state IN (?, ?) AND drop_reason IS NOT ?",
+                                    ("confirmed", "dropped",
+                                     _TERMINAL_RING_EXCLUDED_REASON))
         # Honest confirmation accounting — mirrors
         # DeliveryCounters.compute_confirmation_view (Issue #74 display fix).
         # Can't import it (gateway/__init__ pulls RNS into this monitoring
@@ -850,7 +862,7 @@ def _diag_seen(status_blob: Dict[str, Any]) -> Dict[str, Any]:
                       "No active watchdog signals."}
 
 
-def _honest_confirmation(delivery: dict) -> Dict[str, Any]:
+def _honest_confirmation(delivery: dict, now: Optional[float] = None) -> Dict[str, Any]:
     """Judge ONLY confirmable protocols' real terminal outcomes (#74).
 
     Returns a status + windowed rate, NEVER the cross-population
@@ -874,7 +886,7 @@ def _honest_confirmation(delivery: dict) -> Dict[str, Any]:
                 "confirmable": sorted(confirmable),
                 "detail": "Confirmation window reader failed to import — "
                           "not judging rather than counting a second way."}
-    win = _confirmation_window(delivery)
+    win = _confirmation_window(delivery, now=now)   # one clock (Fable r1 F1)
     if win["ring_source"] is None:
         return {"status": UNOBSERVABLE, "reason": "no_recent_ring",
                 "confirmable": sorted(confirmable), "detail": "No recent-event ring."}
@@ -966,7 +978,7 @@ def _qa_seen(delivery: Dict[str, Any], now: datetime) -> Dict[str, Any]:
     benign_drops = sum(int(drops.get(r, 0) or 0) for r in _BENIGN_DROP_REASONS)
     circuit_open = int(drops.get("circuit_open", 0) or 0)
 
-    confirmation = _honest_confirmation(delivery)
+    confirmation = _honest_confirmation(delivery, now=now.timestamp())
     queue = _queue_facts()
 
     # Freshness — counters are cumulative; if nothing has happened in a long

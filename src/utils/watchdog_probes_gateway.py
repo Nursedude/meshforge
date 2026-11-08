@@ -562,15 +562,21 @@ def probe_queue_backlog(
 # ─────────────────────────────────────────────────────────────────────
 
 
-# Drop reasons that mean a delivery was ATTEMPTED and FAILED — the
-# denominator-mates of `confirmed` for a confirmable protocol. Benign
-# drops (dedup, capacity shedding) are NOT delivery failures and must
-# never count against the confirmation rate.
-_DELIVERY_FAILURE_REASONS = frozenset({
-    "rns_delivery_failed", "retries_exhausted", "destination_unreachable",
-    "delivery_timeout", "non_retriable_error", "circuit_open", "wedged",
-    "expired", "unsendable",
-})
+# _DELIVERY_FAILURE_REASONS and confirmation_window() moved to
+# utils._delivery_confirmation_window (2026-11-07, MF025 + the 7-day window);
+# re-exported here so every consumer (TUI Delivery, traffic_pulse, tests)
+# keeps one name.
+from utils._delivery_confirmation_window import (  # noqa: E402,F401
+    _DELIVERY_FAILURE_REASONS,
+    DELIVERY_STALL_WINDOW_S,
+    COLLAPSE_COUNTER_WINDOW_S,
+    COLLAPSE_COUNTER_MIN_TERMINAL,
+    JUDGED_TERMINAL_ARGS,
+    JUDGED_TERMINAL_SQL,
+    confirmation_window,
+    format_window,
+    is_judged_terminal,
+)
 
 #: Protocols that HAVE a confirmation mechanism today. Membership means "an
 #: absence of `confirmed` events for this protocol is a fact about the
@@ -594,55 +600,6 @@ def _count(bucket, proto) -> int:
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return 0
     return int(v) if v > 0 else 0
-
-
-def confirmation_window(payload: dict) -> dict:
-    """The windowed confirmation count ``probe_delivery_confirmation_stall``
-    judges, as a pure function of a delivery snapshot — ONE implementation for
-    the probe and the TUI Delivery screen (honest_failure_modes #5).
-
-    Keys: ``confirmable`` (sorted protocols that have ever confirmed),
-    ``ring_source`` (``recent_terminal`` | ``recent`` | None when neither ring
-    is a list), ``ring`` (the list judged, or None), ``confirmed``, ``failed``
-    (drops whose reason is a real delivery failure), ``terminal`` (their sum).
-
-    Prefer the terminal-only ring (2026-09-10). ``recent`` is a general-purpose
-    FIFO: on a gateway whose traffic is mostly a protocol that can never
-    confirm, it fills with queued/sent events and evicts the confirmable
-    terminals needed here. moc3 sat permanently ``indeterminate`` on 4 usable
-    events out of 200 while the same ring held 49 — and a TOTAL confirmation
-    collapse would have read identically. Older gateways (and older snapshot
-    files) carry no ``recent_terminal``; fall back to ``recent`` rather than
-    going blind on the box that has not rolled yet."""
-    by_proto = payload.get("state_by_protocol") or {}
-    if not isinstance(by_proto, dict):
-        by_proto = {}
-    confirmed_by_proto = by_proto.get("confirmed") or {}
-    if not isinstance(confirmed_by_proto, dict):
-        confirmed_by_proto = {}
-    confirmable = sorted(
-        p for p, c in confirmed_by_proto.items()
-        if isinstance(c, (int, float)) and not isinstance(c, bool) and c > 0
-    )
-    ring = payload.get("recent_terminal")
-    ring_source: Optional[str] = "recent_terminal"
-    if not isinstance(ring, list):
-        ring = payload.get("recent")
-        ring_source = "recent"
-    if not isinstance(ring, list):
-        ring, ring_source = None, None
-    confirmed = failed = 0
-    for e in ring or ():
-        if not isinstance(e, dict) or e.get("protocol") not in confirmable:
-            continue
-        st = e.get("state")
-        if st == "confirmed":
-            confirmed += 1
-        elif st == "dropped" and e.get("drop_reason") in _DELIVERY_FAILURE_REASONS:
-            failed += 1
-    return {"confirmable": confirmable, "ring_source": ring_source,
-            "ring": ring, "confirmed": confirmed, "failed": failed,
-            "terminal": confirmed + failed}
 
 
 def _never_confirmed_signal(by_proto: dict) -> Optional[Signal]:
@@ -848,12 +805,14 @@ def probe_delivery_confirmation_stall(
             "delivery_confirmation_stall", "indeterminate",
             reason=(f"too few confirmable terminal events to judge "
                     f"({terminal} of {min_terminal} required in "
-                    f"{len(recent)} `{ring_source}` events){stale}"))
+                    f"{len(recent)} in-window of {win['ring_total']} `{ring_source}` events; "
+                    f"{format_window(win)}){stale}"))
         return None
 
     ring_rate = ring_confirmed / terminal
     if ring_rate > rate_degraded:
-        note_disposition("delivery_confirmation_stall", "clean")
+        note_disposition("delivery_confirmation_stall", "clean",
+                         reason=format_window(win))
         return None
 
     severity = "wedge" if ring_rate <= rate_wedge else "degraded"
@@ -876,6 +835,8 @@ def probe_delivery_confirmation_stall(
             "terminal": terminal,
             "ring_rate": round(ring_rate, 3),
             "cumulative_confirmation_rate": payload.get("confirmation_rate"),
+            "window_s": win["window_s"],
+            "collapse_counter": win["collapse"],
         },
     )
 

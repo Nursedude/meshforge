@@ -217,6 +217,16 @@ class TestDeliveryLeg:
         assert "200 confirmed / 0 failed of 200 -> 100.0%" in text
         assert v.headline().startswith("Messages are arriving")
 
+    def test_window_uses_the_screens_clock_not_the_wall(self, tmp_path, monkeypatch):
+        """Fable r1 F1 (2026-11-07): delivery_leg judged the 7-day window on
+        time.time() while every other line used its `now` — this file's
+        fixed-NOW ring would age out on ~2027-01-22 and read TOO FEW."""
+        from utils import _delivery_confirmation_window as m
+        monkeypatch.setattr(m.time, "time", lambda: NOW + 30 * 86400.0)
+        _gateway_box(tmp_path)
+        text = dv.render(_gather(tmp_path))
+        assert "200 confirmed / 0 failed of 200 -> 100.0%" in text
+
     @pytest.mark.parametrize("age", [dv._DELIVERY_SNAPSHOT_FRESH_S + 1,
                                      -(dv._DELIVERY_SNAPSHOT_FUTURE_SLOP_S + 1)])
     def test_stale_or_future_record_prints_no_number(self, tmp_path, age):

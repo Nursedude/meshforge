@@ -15,8 +15,11 @@ CONTENT_ID_VIEW_PAIR_CAP = 250
 sorted confirmed-count DESC so any local duplicate (count>1) sorts to the
 top and is never truncated away, and ``confirmed_truncated`` surfaces the
 drop honestly (no silent cap — honest_failure_modes #9). The events ring
-itself is capped at ``RING_BUFFER_CAP`` rows, so confirmed pairs are
-already bounded; this is a second belt for a pathological burst."""
+itself is capped (≤ 2×``RING_BUFFER_CAP`` + refusals since the 2026-11-07
+pool split), so confirmed pairs are already bounded; this is a second belt
+for a pathological burst. Since that split, judged terminals outlive their
+queued/sent rows on a busy box, so the confirmed-pair window is longer and
+box-dependent — it can only find MORE true local dups, never invent one."""
 
 
 def compute_content_id_view(

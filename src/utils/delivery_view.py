@@ -45,6 +45,7 @@ from utils.watchdog_probes_gateway import (
     _DELIVERY_SNAPSHOT_SUBPATH,
     _QUEUE_STATS_SUBPATH,
     confirmation_window,
+    format_window,
 )
 from utils.watchdog_probes_gateway_flow import (
     PROPAGATION_SOAK_TIMER_UNIT,
@@ -278,7 +279,7 @@ def delivery_leg(home: str, now: float, gw: str) -> Leg:
                    f"{health.get('preflight_error') or 'snapshot read failed'}")
         return leg
 
-    win = confirmation_window(snap)
+    win = confirmation_window(snap, now=now)   # ONE clock per screen (Fable r1 F1)
     if not win["confirmable"]:
         # Nothing here PROVES an arrival: a fresh record with no confirmable
         # protocol must not let the headline say "arriving" (review
@@ -305,11 +306,13 @@ def delivery_leg(home: str, now: float, gw: str) -> Leg:
                 f"{win['failed']} failed — TOO FEW to judge "
                 f"({t} of {DELIVERY_STALL_MIN_TERMINAL} needed). Quiet, not "
                 f"proven healthy.")
+            leg.lines.append(f"  {format_window(win)}")
         else:
             rate = win["confirmed"] / t
             leg.lines.append(
                 f"Recent window ({protos}): {win['confirmed']} confirmed / "
                 f"{win['failed']} failed of {t} -> {rate:.1%}")
+            leg.lines.append(f"  {format_window(win)}")
             if rate <= _RATE_DEGRADED:
                 leg.failing = True
                 leg.lines.append(

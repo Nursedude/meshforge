@@ -33,7 +33,8 @@ closes the per-process gap that an in-memory singleton can't bridge
 without losing the architectural separation between the two daemons.
 Counters become true monotonic across the gateway's lifetime — restart
 no longer zeroes the operator's view. The events ring is FIFO-bounded
-at ``RING_BUFFER_CAP`` rows via prune-on-insert.
+via prune-on-insert in three pools (judged terminals and other rows at
+``RING_BUFFER_CAP`` each, refusals at ``REFUSAL_RING_CAP``; 2026-11-07).
 
 Scope: this module is **observability only** — it does not change
 control flow, never validates state transitions, never raises. A
@@ -69,6 +70,11 @@ from gateway import delivery_legs
 from gateway.delivery_content_id_view import (  # noqa: F401 — re-export (MF025 split)
     CONTENT_ID_VIEW_PAIR_CAP,
     compute_content_id_view,
+)
+from utils._delivery_confirmation_window import (  # the ONE judged-terminal predicate
+    JUDGED_TERMINAL_ARGS,
+    JUDGED_TERMINAL_SQL,
+    is_judged_terminal,
 )
 from utils.db_helpers import connect_tuned
 from utils.delivery_labels import canonical_protocol, lane_of
@@ -344,10 +350,13 @@ RING_BUFFER_CAP = 500
 # Ingress refusals keep their OWN pool in the events table, pruned apart
 # from the delivery rows (re-review 2026-10-29 #1): a stranger flood under
 # one shared cap deleted the confirmed terminals the stall probe judges.
-# RING_BUFFER_CAP bounds the delivery rows alone; the table holds at most
-# the sum. The exact refusal COUNT lives in the leg buckets, not here.
+# RING_BUFFER_CAP bounds EACH delivery pool (terminal, in-flight — split
+# 2026-11-07); the table holds at most 2×RING_BUFFER_CAP + REFUSAL_RING_CAP.
+# The exact refusal COUNT lives in the leg buckets, not here.
 REFUSAL_RING_CAP = 50
-"""Maximum rows retained in the events table. Sized for ~1 hour of
+"""Maximum rows retained PER DELIVERY POOL of the events table (judged
+terminals, other — split 2026-11-07; the table holds ≤ 2× this + the refusal
+cap). Originally sized for ~1 hour of
 healthy gateway traffic on a 5-box fleet (a few dozen msgs/min peak);
 enough forensic context for incident investigation without bloating
 the DB. Per-id history rolls into the queue's durable
@@ -357,6 +366,13 @@ the DB. Per-id history rolls into the queue's durable
 Pruned on insert via ``DELETE FROM events WHERE rowid IN (oldest)``,
 so the cap is enforced even when the gateway runs for weeks."""
 
+
+#: Pool predicates for the prune-on-insert (2026-11-07). Disjoint and
+#: exhaustive: refusal (``drop_reason = 'ingress_refused'``, any state) ·
+#: judged terminal (JUDGED_TERMINAL_SQL) · other (neither). NULL-safe.
+_OTHER_POOL_SQL = ("COALESCE(drop_reason, '') != ? AND NOT ("
+                   + JUDGED_TERMINAL_SQL + ")")
+_OTHER_POOL_ARGS = (DropReason.INGRESS_REFUSED.value,) + JUDGED_TERMINAL_ARGS
 
 SNAPSHOT_RECENT_LIMIT = 200
 """Events served in the snapshot's ``recent`` ring (must stay ≤
@@ -828,24 +844,41 @@ class DeliveryCounters:
                         "VALUES('legs.last_write_error_ts', ?) "
                         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                         (round(time.time() * 1000),))
-            # Ring cap via prune-on-insert. SELECT COUNT(*) is O(N) on
-            # an unindexed scan but N is tiny (cap 500), and we only
-            # pay it on the writes that are likely to push us over.
+            # Ring cap via prune-on-insert. SELECT COUNT(*) is an unindexed
+            # scan on EVERY insert over ≤ ~1050 rows: measured 2026-11-07 at
+            # ~1 ms on moc3's Pi 3 (~135 µs on a Pi 5) — ~11 ms/hour at moc3's
+            # write rate. Cheap enough not to index.
             # Two pools, each pruned only by its own inserts: a refusal can
             # never delete a delivery row, nor a delivery row a refusal.
-            refused = event.drop_reason == DropReason.INGRESS_REFUSED
-            pool = ("drop_reason = ?" if refused else "drop_reason IS NOT ?")
-            cap = REFUSAL_RING_CAP if refused else self._ring_cap
+            # 2026-11-07: THREE disjoint pools. JUDGED terminals (a
+            # confirmation, or a drop for a real delivery failure — the rows
+            # the #74 stall probe judges) are split from everything else: on
+            # moc3 Meshtastic queued/sent filled the one shared pool in ~26 h
+            # and deleted the RNS terminals, so the probe sat blind on 2 of
+            # 20 events. Benign drops stay with in-flight rows so a dedup
+            # burst cannot evict a judged row either (review r1 #1). Each
+            # delivery pool is capped at ring_cap; refusals (any state) keep
+            # their own small pool. One predicate: is_judged_terminal() /
+            # JUDGED_TERMINAL_SQL, pinned equal by test.
+            dr = event.drop_reason.value if event.drop_reason else None
+            if dr == DropReason.INGRESS_REFUSED.value:
+                pool, cap = "COALESCE(drop_reason, '') = ?", REFUSAL_RING_CAP
+                args: Tuple[Any, ...] = (DropReason.INGRESS_REFUSED.value,)
+            elif is_judged_terminal(event.state.value, dr):
+                pool, cap = JUDGED_TERMINAL_SQL, self._ring_cap
+                args = JUDGED_TERMINAL_ARGS
+            else:
+                pool, cap = _OTHER_POOL_SQL, self._ring_cap
+                args = _OTHER_POOL_ARGS
             count = conn.execute(
-                f"SELECT COUNT(*) FROM events WHERE {pool}",
-                (DropReason.INGRESS_REFUSED.value,),
+                f"SELECT COUNT(*) FROM events WHERE {pool}", args,
             ).fetchone()[0]
             if count > cap:
                 conn.execute(
                     "DELETE FROM events WHERE rowid IN "
                     f"(SELECT rowid FROM events WHERE {pool} "
                     "ORDER BY rowid ASC LIMIT ?)",
-                    (DropReason.INGRESS_REFUSED.value, count - cap),
+                    args + (count - cap,),
                 )
             conn.commit()
 
@@ -878,7 +911,7 @@ class DeliveryCounters:
                 # dedup/identity arc STEP 4b: aggregate the WHOLE ring (not
                 # just recent_limit) by (content_id, recipient, state) so the
                 # content_id_view counts dups/misses across the full window.
-                # Bounded — the ring is pruned to RING_BUFFER_CAP rows.
+                # Bounded — ≤ 2×RING_BUFFER_CAP + REFUSAL_RING_CAP rows.
                 agg_rows = conn.execute(
                     "SELECT content_id, recipient, state, COUNT(*) "
                     "FROM events GROUP BY content_id, recipient, state"
@@ -895,14 +928,12 @@ class DeliveryCounters:
                 # held 49 rns terminals over 25.9 h. Bounded by the same limit.
                 terminal_rows = conn.execute(
                     "SELECT ts, id, state, protocol, drop_reason "
-                    "FROM events WHERE state IN (?, ?) "
-                    # A refusal is a policy decision, not a delivery outcome:
-                    # strangers could otherwise evict the terminals the #74
-                    # probe judges (review 2026-10-29 #1).
-                    "AND drop_reason IS NOT ? "
+                    # The SAME predicate the prune pool uses (2026-11-07): a
+                    # refusal (10-29 #1) and a benign drop are not outcomes the
+                    # #74 probe judges, so they never take a served slot.
+                    f"FROM events WHERE {JUDGED_TERMINAL_SQL} "
                     "ORDER BY rowid DESC LIMIT ?",
-                    (DeliveryState.CONFIRMED.value, DeliveryState.DROPPED.value,
-                     DropReason.INGRESS_REFUSED.value, max(0, recent_limit)),
+                    JUDGED_TERMINAL_ARGS + (max(0, recent_limit),),
                 ).fetchall()
                 ring_capacity = self._ring_cap
                 legs_view = delivery_legs.read(conn, time.time())

@@ -10,6 +10,7 @@ runs mqtt_bridge mode, so there is no capturable local-radio packet stream;
 SNR/battery arrive over MQTT and land as per-node observations.
 """
 import json
+import time
 from datetime import datetime
 
 import pytest
@@ -604,11 +605,15 @@ class TestParseDeliveryDB:
         conn.executemany("INSERT INTO counters VALUES (?,?)", [
             ("state.confirmed", 22), ("state_proto.confirmed.rns", 22),
             ("state.sent", 250), ("state_proto.sent.primary", 250)])
-        rows = [(1781000000.0 + i, f"r{i}", "confirmed", "rns", None, None)
+        # Dated relative to NOW (2026-11-07): confirmation_window judges the
+        # last 7 days, and fixed epoch stamps aged out of it — a test whose
+        # verdict depended on the wall clock. The SHAPE is the point here.
+        t0 = time.time() - 3600.0
+        rows = [(t0 + i, f"r{i}", "confirmed", "rns", None, None)
                 for i in range(22)]
-        rows += [(1781000100.0 + i, f"f{i}", "dropped", "rns",
+        rows += [(t0 + 100 + i, f"f{i}", "dropped", "rns",
                   "retries_exhausted", None) for i in range(3)]
-        rows += [(1781001000.0 + i, f"m{i}", "sent" if i % 2 else "queued",
+        rows += [(t0 + 1000 + i, f"m{i}", "sent" if i % 2 else "queued",
                   "primary", None, None) for i in range(250)]
         conn.executemany("INSERT INTO events VALUES (?,?,?,?,?,?)", rows)
         conn.commit()
