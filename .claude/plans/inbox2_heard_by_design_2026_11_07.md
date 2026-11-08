@@ -8,7 +8,8 @@ Operator: "go with fleet RX evidence — your call on design" (2026-11-07).
 |---|---|---|---|
 | 2026-11-07 | (design only) | — | step 1: inbox keeps `packet_id` |
 | 2026-11-08 | step 1: `messages.packet_id` `54304040` | YES fleet 10/10, honest_status exit 0 01:34 | step 2: box_truth `rx_heard` section (twin, Fable by running before deploy) |
-| 2026-11-08 | step 2: `utils/box_truth_rx.py` + section `rx_heard` (MF + MA twin, this commit) | NO — Fable by running first, then per-target | step 3: center join + tri-state |
+| 2026-11-08 | step 2: `utils/box_truth_rx.py` + section `rx_heard` MF `2da1bfe9` + MA `d608f1ca` | YES — canary lehua 2 ticks, then fleet 10/10 + MA 1/1; FULL honest_status exit 0 06:03 | step 3: center join + tri-state |
+| 2026-11-08 | live drill (no code): operator posted `Wx` on ch 3 from `/inbox` 06:21:51 | row 4920 `local` packet_id 3128482533 (`0xba78dae5`); by-hand id join over the spool: lehua · kiai · moc HEARD +1.1 s, moc3 covered-not-heard (SHORT_TURBO), meshforge-lab unobservable | step 3 (fresh session) |
 
 ## Measured before design (2026-11-07, read-only)
 - 61 inbox sends 10-13 → 11-07, **61 channel posts, 0 DMs** (operator: "dm's are rare -
@@ -97,6 +98,10 @@ Operator: "go with fleet RX evidence — your call on design" (2026-11-07).
   `unobservable` whatever the code does. Granting is a box write → operator's words.
 - A center dark > 6 h drops a still-valid cursor (bounded walk) and loses hearings in that
   gap; `--after-cursor` + `--until=@` is accepted (lehua) if slicing is ever wanted.
+
+- Every inbox send writes TWO rows: `local` (carries `packet_id`) + a `!6201ce25` echo with
+  `packet_id` NULL (rows 4919/4920, 11-08). Join from the `local` row; never count the echo
+  as a second send.
 
 ## Steps
 1. inbox keeps `packet_id` (messages.db column, guarded ALTER). MF only.
