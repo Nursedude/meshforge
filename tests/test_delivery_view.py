@@ -227,6 +227,17 @@ class TestDeliveryLeg:
         text = dv.render(_gather(tmp_path))
         assert "200 confirmed / 0 failed of 200 -> 100.0%" in text
 
+    def test_span_line_reads_stamps_like_the_window(self, tmp_path):
+        """Fable MA r3 LOW (2026-11-07): a ts=0 entry is 'unknown age' to the
+        window; the span line measured it and printed 500000.0 h."""
+        snap = _snapshot(confirmed=25)
+        snap["snapshot"]["recent_terminal"].append(
+            {"ts": 0, "id": "z", "state": "confirmed", "protocol": "rns"})
+        _gateway_box(tmp_path, snap=snap)
+        text = dv.render(_gather(tmp_path))
+        assert "of unknown age" in text
+        assert "500000" not in text
+
     @pytest.mark.parametrize("age", [dv._DELIVERY_SNAPSHOT_FRESH_S + 1,
                                      -(dv._DELIVERY_SNAPSHOT_FUTURE_SLOP_S + 1)])
     def test_stale_or_future_record_prints_no_number(self, tmp_path, age):

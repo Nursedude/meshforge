@@ -47,6 +47,7 @@ from utils.watchdog_probes_gateway import (
     confirmation_window,
     format_window,
 )
+from utils._delivery_confirmation_window import event_ts
 from utils.watchdog_probes_gateway_flow import (
     PROPAGATION_SOAK_TIMER_UNIT,
     SYNTH_SOAK_TIMER_UNIT,
@@ -355,7 +356,8 @@ def delivery_leg(home: str, now: float, gw: str) -> Leg:
 
 
 def _ring_span(ring, now: float) -> str:
-    ts = [_num(e.get("ts")) for e in ring or () if isinstance(e, dict)]
+    # The window's own stamp reader — one verdict per entry on this screen.
+    ts = [event_ts(e, now) for e in ring or () if isinstance(e, dict)]
     ts = [t for t in ts if t is not None]
     if not ts:
         return ""

@@ -80,6 +80,18 @@ COLLAPSE_COUNTER_WINDOW_S = 72 * 3600.0
 COLLAPSE_COUNTER_MIN_TERMINAL = 5
 
 
+def event_ts(e: dict, now: Optional[float] = None) -> Optional[float]:
+    """The ONE reading of an event's age stamp, for the window AND the TUI
+    span line (2026-11-07: the span line parsed it a second way and printed
+    "over 500000.0 h" beside "1 of unknown age"). None = unknown age: not a
+    finite positive number, or — given ``now`` — stamped beyond FUTURE_SLOP_S
+    ahead (a clock artifact)."""
+    v = _ts(e)
+    if v is not None and now is not None and v > now + FUTURE_SLOP_S:
+        return None
+    return v
+
+
 def _ts(e: dict) -> Optional[float]:
     v = e.get("ts")
     if isinstance(v, bool) or not isinstance(v, (int, float)):
@@ -146,9 +158,7 @@ def confirmation_window(payload: dict, *, now: Optional[float] = None,
             continue
         judged = (e.get("protocol") in confirmable
                   and is_judged_terminal(e.get("state"), e.get("drop_reason")))
-        ts = _ts(e)
-        if ts is not None and ts > now + FUTURE_SLOP_S:
-            ts = None           # clock artifact: keep the evidence, not its age
+        ts = event_ts(e, now)   # beyond slop → None: keep the evidence, not its age
         if ts is not None and ts < cutoff:
             out_of_window += judged
             reaches_past_window = True
