@@ -51,6 +51,29 @@ def _commit(repo, message):
     return out.stdout.strip()
 
 
+def _head(repo):
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                          capture_output=True, text=True, check=True,
+                          timeout=30).stdout.strip()
+
+
+def _claim_line(repo, model_id, ts=None, head_full=None):
+    """One ledger ``claim`` line stamped with a commit IN ``repo`` (HEAD by
+    default) — the gate counts only claims whose head_full is in the history
+    of the repo it judges (2026-11-07: the ledger is box-wide, shared by every
+    repo's sessions).
+
+    ``ts`` is an OFFSET in seconds from ``now - 1000``, so the default is
+    fresh for the 14-day session cap and a larger offset is newer."""
+    import json as _json
+    import time as _time
+    ev = {"kind": "claim", "ts": _time.time() + (ts or 0) - 1000,
+          "head_full": _head(repo) if head_full is None else head_full}
+    if model_id is not None:
+        ev["model_id"] = model_id
+    return _json.dumps(ev) + "\n"
+
+
 # A minimal but shape-accurate provenance file (completed table + worklist).
 PROV_HEADER = (
     "# Review provenance ledger\n\n"
@@ -84,23 +107,208 @@ class TestPureFrontierModel(unittest.TestCase):
 
 
 class TestNewestLedgerModel(unittest.TestCase):
-    def test_picks_max_ts_claim(self):
+    """The session model is the newest claim that names a commit IN the
+    judged repo. The ledger is box-wide (every repo's sessions share
+    ``~/calibration_ledger.jsonl``); a claim about another repo's HEAD says
+    nothing about who is pushing here (2026-11-07, re-derived: 149 claims —
+    143 MF, 2 MA (hand-logged Fable, 09-18), 4 neither; MA's automatic gate
+    logs none, so MA's gate was judging its sessions by MF's last model)."""
+    A, B, C = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "cccccccccccccccccccccccccccccccccccccccc"
+
+    def test_picks_max_ts_claim_among_repo_commits(self):
         events = [
-            {"kind": "claim", "ts": 10, "model_id": "claude-fable-5"},
-            {"kind": "claim", "ts": 30, "model_id": "claude-opus-4-8[1m]"},
-            {"kind": "claim", "ts": 20, "model_id": "claude-haiku-4-5"},
+            {"kind": "claim", "ts": 10, "model_id": "claude-fable-5", "head_full": self.A},
+            {"kind": "claim", "ts": 30, "model_id": "claude-opus-4-8[1m]", "head_full": self.A},
+            {"kind": "claim", "ts": 20, "model_id": "claude-haiku-4-5", "head_full": self.A},
             {"kind": "verdict", "claim_id": "x", "ts": 99, "outcome": "held"},
         ]
-        self.assertEqual(rpc.newest_ledger_model_id(events), "claude-opus-4-8[1m]")
+        self.assertEqual(rpc.newest_ledger_model_id(events, {self.A}),
+                         "claude-opus-4-8[1m]")
+
+    def test_newer_claim_about_another_repo_does_not_count(self):
+        events = [
+            {"kind": "claim", "ts": 10, "model_id": "claude-fable-5", "head_full": self.A},
+            {"kind": "claim", "ts": 30, "model_id": "claude-opus-4-8[1m]", "head_full": self.B},
+        ]
+        self.assertEqual(rpc.newest_ledger_model_id(events, {self.A}),
+                         "claude-fable-5")
 
     def test_no_claims_is_none(self):
         self.assertIsNone(rpc.newest_ledger_model_id(
-            [{"kind": "verdict", "ts": 5, "claim_id": "x", "outcome": "held"}]))
+            [{"kind": "verdict", "ts": 5, "claim_id": "x", "outcome": "held"}],
+            {self.A}))
 
     def test_ignores_non_numeric_ts(self):
-        events = [{"kind": "claim", "ts": "bad", "model_id": "x"},
-                  {"kind": "claim", "ts": 5, "model_id": "claude-fable-5"}]
-        self.assertEqual(rpc.newest_ledger_model_id(events), "claude-fable-5")
+        events = [{"kind": "claim", "ts": "bad", "model_id": "x", "head_full": self.A},
+                  {"kind": "claim", "ts": 5, "model_id": "claude-fable-5", "head_full": self.A}]
+        self.assertEqual(rpc.newest_ledger_model_id(events, {self.A}),
+                         "claude-fable-5")
+
+    def test_session_model_reasons_are_distinct(self):
+        now = 10_000_000.0
+        foreign = [{"kind": "claim", "ts": now, "model_id": "claude-opus-5-5",
+                    "head_full": self.B}]
+        self.assertEqual(rpc.ledger_session_model(foreign, set(), now),
+                         (None, "no-repo-claim"))
+        self.assertEqual(rpc.ledger_session_model(foreign, None, now),
+                         (None, "git-unreadable"))
+        nomodel = [{"kind": "claim", "ts": now, "head_full": self.A}]
+        self.assertEqual(rpc.ledger_session_model(nomodel, {self.A}, now),
+                         (None, "no-model-id"))
+        ok = [{"kind": "claim", "ts": now - 60, "model_id": "claude-fable-5",
+               "head_full": self.A}]
+        self.assertEqual(rpc.ledger_session_model(ok, {self.A}, now),
+                         ("claude-fable-5", None))
+        self.assertEqual(rpc.ledger_session_model([], set(), now),
+                         (None, "no-claims"))
+        self.assertEqual(rpc.ledger_session_model([], None, now),
+                         (None, "no-claims"))
+        for reason in ("no-claims", "git-unreadable", "no-repo-claim",
+                       "bad-ts", "stale-claim",
+                       "future-claim", "no-model-id"):
+            self.assertIn(reason, rpc._UNKNOWN_MODEL_WHY)
+
+    def test_age_cap_edges(self):
+        # The MA shape measured 2026-11-07: its newest repo claim was a
+        # 7-week-old hand-logged Fable record — it must not read "frontier".
+        now = 10_000_000.0
+        cap = rpc.SESSION_CLAIM_MAX_AGE_S
+        slop = rpc.SESSION_CLAIM_FUTURE_SLOP_S
+
+        def at(ts):
+            return rpc.ledger_session_model(
+                [{"kind": "claim", "ts": ts, "model_id": "claude-fable-5-1",
+                  "head_full": self.A}], {self.A}, now)
+        self.assertEqual(at(now - cap), ("claude-fable-5-1", None))
+        self.assertEqual(at(now - cap - 1), (None, "stale-claim"))
+        self.assertEqual(at(now - 49 * 86400), (None, "stale-claim"))
+        self.assertEqual(at(now + slop), ("claude-fable-5-1", None))
+        self.assertEqual(at(now + slop + 1), (None, "future-claim"))
+        self.assertEqual(at(float("nan")), (None, "bad-ts"))
+        self.assertEqual(at("2026-11-07"), (None, "bad-ts"))
+        self.assertEqual(at(True), (None, "bad-ts"))
+
+    def test_future_stamp_is_skipped_not_latched(self):
+        # One far-future stamp (ms epoch / stepped clock) must not become the
+        # max forever and hold the gate in warn-mode (code-review 2026-11-07).
+        now = 10_000_000.0
+        ev = [{"kind": "claim", "ts": now - 100, "model_id": "claude-opus-5-5",
+               "head_full": self.A},
+              {"kind": "claim", "ts": now * 1000, "model_id": "claude-fable-5-1",
+               "head_full": self.A}]
+        self.assertEqual(rpc.ledger_session_model(ev, {self.A}, now),
+                         ("claude-opus-5-5", None))
+        self.assertEqual(rpc.future_repo_claims(ev, {self.A}, now), 1)
+        self.assertEqual(rpc.future_repo_claims(ev, None, now), 0)
+
+    def test_malformed_values_never_raise(self):
+        # Fable r2 (2026-11-07): an unhashable head_full or a 400-digit int ts
+        # raised inside the gate, and main() PASSES OPEN on any exception.
+        now = 10_000_000.0
+        good = {"kind": "claim", "ts": now - 5, "model_id": "claude-opus-5-5",
+                "head_full": self.A}
+        for bad in ({"kind": "claim", "ts": now, "head_full": ["x"]},
+                    {"kind": "claim", "ts": now, "head_full": {"a": 1}},
+                    {"kind": "claim", "ts": 10 ** 400, "head_full": self.A},
+                    {"kind": "claim", "ts": -10 ** 400, "head_full": self.A},
+                    {"kind": "claim", "ts": now * 1000, "head_full": self.A}):
+            with self.subTest(bad=str(bad)[:60]):
+                ev = [good, bad]
+                self.assertEqual(rpc.ledger_session_model(ev, {self.A}, now),
+                                 ("claude-opus-5-5", None))
+                rpc.future_repo_claims(ev, {self.A}, now)
+                rpc.newest_ledger_model_id(ev, {self.A})
+        self.assertIsNone(rpc.newest_ledger_model_id([good], None))
+
+    def test_non_claim_events_never_decide(self):
+        now = 10_000_000.0
+        ev = [{"kind": "claim", "ts": now - 50, "model_id": "claude-opus-5-5",
+               "head_full": self.A},
+              {"kind": "annotation", "ts": now - 1,
+               "model_id": "claude-fable-5-1", "head_full": self.A}]
+        self.assertEqual(rpc.ledger_session_model(ev, {self.A}, now),
+                         ("claude-opus-5-5", None))
+
+    def test_bad_ts_beside_a_good_one_reads_the_good_one(self):
+        now = 10_000_000.0
+        ev = [{"kind": "claim", "ts": float("nan"), "model_id": "x",
+               "head_full": self.A},
+              {"kind": "claim", "ts": now - 5, "model_id": "claude-opus-5-5",
+               "head_full": self.A}]
+        self.assertEqual(rpc.ledger_session_model(ev, {self.A}, now),
+                         ("claude-opus-5-5", None))
+
+    def test_only_full_hex_shas_are_candidates(self):
+        # A revspec/prefix must never reach git as a lookup: "HEAD" resolves
+        # in EVERY repo, so a claim carrying it would count everywhere.
+        events = [{"kind": "claim", "ts": 1, "head_full": h}
+                  for h in ("HEAD", self.A[:12], self.A.upper(), None, 7,
+                            self.A + "\n", self.C)]
+        self.assertEqual(rpc.ledger_candidate_shas(events), [self.C])
+
+
+class TestLedgerCommitsInRepo(unittest.TestCase):
+    """The I/O leg: one ``git cat-file --batch-check``; only COMMIT objects
+    count; git failure is None (unknown), never an empty set."""
+
+    def test_resolves_commits_only(self):
+        with tempfile.TemporaryDirectory() as repo, \
+                tempfile.TemporaryDirectory() as other:
+            _init_repo(repo)
+            _write(repo, "f.txt", "x\n")
+            here = _commit(repo, "c1")
+            blob = subprocess.run(["git", "rev-parse", "HEAD:f.txt"], cwd=repo,
+                                  capture_output=True, text=True, check=True,
+                                  timeout=30).stdout.strip()
+            _init_repo(other)
+            _write(other, "g.txt", "y\n")
+            there = _commit(other, "c2")
+            events = [{"kind": "claim", "ts": 1, "head_full": s}
+                      for s in (here, there, blob, "HEAD")]
+            self.assertEqual(rpc.ledger_commits_in_repo(repo, events), {here})
+
+    def test_fetched_foreign_commit_is_not_this_repos_history(self):
+        # The MA shape: MA carries a ``meshforge`` remote, so after a fetch
+        # MF's commits are OBJECTS in MA. They are not MA's history.
+        with tempfile.TemporaryDirectory() as repo, \
+                tempfile.TemporaryDirectory() as other:
+            _init_repo(other)
+            _write(other, "g.txt", "y\n")
+            there = _commit(other, "twin work")
+            _init_repo(repo)
+            _write(repo, "f.txt", "x\n")
+            here = _commit(repo, "c1")
+            _run(repo, "git", "remote", "add", "twin", other)
+            _run(repo, "git", "fetch", "-q", "twin")
+            kind = subprocess.run(["git", "cat-file", "-t", there], cwd=repo,
+                                  capture_output=True, text=True,
+                                  timeout=30).stdout.strip()
+            self.assertEqual(kind, "commit", "precondition: object present")
+            events = [{"kind": "claim", "ts": 1, "head_full": s}
+                      for s in (here, there)]
+            self.assertEqual(rpc.ledger_commits_in_repo(repo, events), {here})
+
+    def test_deep_history_counts(self):
+        # Reachability is the WHOLE history, not a recent window.
+        with tempfile.TemporaryDirectory() as repo:
+            _init_repo(repo)
+            _write(repo, "f.txt", "0\n")
+            first = _commit(repo, "c0")
+            for i in range(1, 8):
+                _write(repo, "f.txt", f"{i}\n")
+                _commit(repo, f"c{i}")
+            events = [{"kind": "claim", "ts": 1, "head_full": first}]
+            self.assertEqual(rpc.ledger_commits_in_repo(repo, events), {first})
+
+    def test_git_failure_is_none(self):
+        with tempfile.TemporaryDirectory() as notrepo:
+            events = [{"kind": "claim", "ts": 1, "head_full": "a" * 40}]
+            self.assertIsNone(rpc.ledger_commits_in_repo(notrepo, events))
+
+    def test_no_candidates_is_empty_set_without_git(self):
+        # Nothing to look up is a KNOWN empty answer, even outside a repo.
+        with tempfile.TemporaryDirectory() as notrepo:
+            self.assertEqual(rpc.ledger_commits_in_repo(notrepo, []), set())
 
 
 class TestCommitClaimsReview(unittest.TestCase):
@@ -380,7 +588,7 @@ class TestLeg2Integration(unittest.TestCase):
         path = os.path.join(repo, "ledger.jsonl")
         with open(path, "w", encoding="utf-8") as fh:
             if model_id is not None:
-                fh.write('{"kind":"claim","ts":100,"model_id":"%s"}\n' % model_id)
+                fh.write(_claim_line(repo, model_id))
         return path
 
     def test_nonfrontier_stamping_frontier_row_blocks(self):
@@ -410,6 +618,132 @@ class TestLeg2Integration(unittest.TestCase):
             self.assertEqual(code, 0, "unknown model must not block")
             self.assertTrue(any("leg2" in w for w in warn), warn)
 
+    def _foreign_sha(self, other):
+        _init_repo(other)
+        _write(other, "x.txt", "x\n")
+        return _commit(other, "other repo work")
+
+    def test_newer_foreign_frontier_claim_does_not_excuse_this_repo(self):
+        # Box-wide newest = Fable in ANOTHER repo; this repo's newest = Opus.
+        # Old gate: Fable → pass. Right answer: Opus → block.
+        with tempfile.TemporaryDirectory() as repo, \
+                tempfile.TemporaryDirectory() as other:
+            base = self._repo_with_new_frontier_row(repo, "frontier deep review")
+            ledger = os.path.join(repo, "ledger.jsonl")
+            with open(ledger, "w", encoding="utf-8") as fh:
+                fh.write(_claim_line(repo, "claude-opus-5-5", ts=100))
+                fh.write(_claim_line(repo, "claude-fable-5-1", ts=200,
+                                     head_full=self._foreign_sha(other)))
+            code, out, _ = rpc.run(repo, f"{base}..HEAD", base, ledger_path=ledger,
+                                   witness_path=os.path.join(repo, "wit.log"))
+            self.assertEqual(code, 1, f"foreign Fable must not excuse; out={out}")
+
+    def test_newer_foreign_opus_claim_does_not_block_this_repo(self):
+        with tempfile.TemporaryDirectory() as repo, \
+                tempfile.TemporaryDirectory() as other:
+            base = self._repo_with_new_frontier_row(repo, "frontier deep review")
+            ledger = os.path.join(repo, "ledger.jsonl")
+            with open(ledger, "w", encoding="utf-8") as fh:
+                fh.write(_claim_line(repo, "claude-fable-5-1", ts=100))
+                fh.write(_claim_line(repo, "claude-opus-5-5", ts=200,
+                                     head_full=self._foreign_sha(other)))
+            code, out, _ = rpc.run(repo, f"{base}..HEAD", base, ledger_path=ledger,
+                                   witness_path=os.path.join(repo, "wit.log"))
+            self.assertEqual(code, 0, f"foreign Opus must not block; out={out}")
+
+    def test_only_foreign_claims_is_unknown_warn_not_block(self):
+        # The MeshAnchor shape: the ledger holds only the twin's claims.
+        with tempfile.TemporaryDirectory() as repo, \
+                tempfile.TemporaryDirectory() as other:
+            base = self._repo_with_new_frontier_row(repo, "frontier deep review")
+            ledger = os.path.join(repo, "ledger.jsonl")
+            wit = os.path.join(repo, "wit.log")
+            with open(ledger, "w", encoding="utf-8") as fh:
+                fh.write(_claim_line(repo, "claude-opus-5-5", ts=200,
+                                     head_full=self._foreign_sha(other)))
+            code, out, warn = rpc.run(repo, f"{base}..HEAD", base,
+                                      ledger_path=ledger, witness_path=wit)
+            self.assertEqual(code, 0, f"unknown must not block; out={out}")
+            joined = "\n".join(warn)
+            self.assertIn("leg2", joined)
+            self.assertIn("names a commit in this repo", joined)
+            with open(wit, encoding="utf-8") as fh:
+                self.assertIn("leg2 WARN unknown model (no-repo-claim)", fh.read())
+
+    def test_stale_repo_claim_is_unknown_warn_not_block(self):
+        with tempfile.TemporaryDirectory() as repo:
+            base = self._repo_with_new_frontier_row(repo, "frontier deep review")
+            ledger = os.path.join(repo, "ledger.jsonl")
+            with open(ledger, "w", encoding="utf-8") as fh:
+                fh.write(_claim_line(repo, "claude-opus-5-5",
+                                     ts=-(rpc.SESSION_CLAIM_MAX_AGE_S + 3600)))
+            wit = os.path.join(repo, "wit.log")
+            code, _, warn = rpc.run(repo, f"{base}..HEAD", base,
+                                    ledger_path=ledger, witness_path=wit)
+            self.assertEqual(code, 0, "a stale Opus reading must not block")
+            self.assertTrue(any("older than 14 days" in w for w in warn), warn)
+            with open(wit, encoding="utf-8") as fh:
+                self.assertIn("leg2 WARN unknown model (stale-claim)", fh.read())
+
+    def test_future_stamped_claim_is_witnessed_and_skipped(self):
+        with tempfile.TemporaryDirectory() as repo:
+            base = self._repo_with_new_frontier_row(repo, "frontier deep review")
+            ledger = os.path.join(repo, "ledger.jsonl")
+            with open(ledger, "w", encoding="utf-8") as fh:
+                fh.write(_claim_line(repo, "claude-opus-5-5"))
+                fh.write(_claim_line(repo, "claude-fable-5-1", ts=10 ** 9))
+            wit = os.path.join(repo, "wit.log")
+            code, _, warn = rpc.run(repo, f"{base}..HEAD", base,
+                                    ledger_path=ledger, witness_path=wit)
+            self.assertEqual(code, 1, "the fresh Opus claim still governs")
+            self.assertTrue(any("stamped in the future" in w for w in warn), warn)
+            with open(wit, encoding="utf-8") as fh:
+                self.assertIn("future-stamped claim(s) skipped", fh.read())
+
+    def test_malformed_ledger_line_does_not_pass_the_gate_open(self):
+        with tempfile.TemporaryDirectory() as repo:
+            base = self._repo_with_new_frontier_row(repo, "frontier deep review")
+            for bad in ('{"kind":"claim","ts":%d,"head_full":["x"],'
+                        '"model_id":"claude-fable-5-1"}\n' % (2 * 10 ** 9),
+                        '{"kind":"claim","ts":1%s,"head_full":"%s",'
+                        '"model_id":"claude-fable-5-1"}\n' % ("0" * 400,
+                                                              _head(repo))):
+                with self.subTest(bad=bad[:50]):
+                    ledger = os.path.join(repo, "ledger.jsonl")
+                    with open(ledger, "w", encoding="utf-8") as fh:
+                        fh.write(_claim_line(repo, "claude-opus-5-5"))
+                        fh.write(bad)
+                    code, out, _ = rpc.run(
+                        repo, f"{base}..HEAD", base, ledger_path=ledger,
+                        witness_path=os.path.join(repo, "wit.log"))
+                    self.assertEqual(code, 1, f"must still block; out={out}")
+
+    def test_missing_ledger_names_the_ledger_not_other_repos(self):
+        with tempfile.TemporaryDirectory() as repo:
+            base = self._repo_with_new_frontier_row(repo, "frontier deep review")
+            wit = os.path.join(repo, "wit.log")
+            code, _, warn = rpc.run(repo, f"{base}..HEAD", base,
+                                    ledger_path=os.path.join(repo, "nope.jsonl"),
+                                    witness_path=wit)
+            self.assertEqual(code, 0)
+            self.assertTrue(any("holds no claims at all" in w for w in warn),
+                            warn)
+            with open(wit, encoding="utf-8") as fh:
+                self.assertIn("leg2 WARN unknown model (no-claims)", fh.read())
+
+    def test_head_revspec_claim_is_not_a_repo_claim(self):
+        with tempfile.TemporaryDirectory() as repo:
+            base = self._repo_with_new_frontier_row(repo, "frontier deep review")
+            ledger = os.path.join(repo, "ledger.jsonl")
+            with open(ledger, "w", encoding="utf-8") as fh:
+                fh.write(_claim_line(repo, "claude-fable-5-1", head_full="HEAD"))
+            code, _, warn = rpc.run(repo, f"{base}..HEAD", base,
+                                    ledger_path=ledger,
+                                    witness_path=os.path.join(repo, "wit.log"))
+            self.assertEqual(code, 0)
+            self.assertTrue(any("names a commit in this repo" in w for w in warn),
+                            warn)
+
 
 class TestLeg3Integration(unittest.TestCase):
     def _big_src_diff_repo(self, repo, lines):
@@ -427,7 +761,7 @@ class TestLeg3Integration(unittest.TestCase):
             self._big_src_diff_repo(repo, rpc.UNREVIEWED_SRC_LINES_NUDGE + 100)
             ledger = os.path.join(repo, "ledger.jsonl")
             with open(ledger, "w") as fh:
-                fh.write('{"kind":"claim","ts":100,"model_id":"claude-opus-4-8[1m]"}\n')
+                fh.write(_claim_line(repo, "claude-opus-4-8[1m]"))
             base = subprocess.run(["git", "rev-list", "--max-parents=0", "HEAD"],
                                   cwd=repo, capture_output=True, text=True, timeout=30).stdout.strip()
             code, out, _ = rpc.run(repo, f"{base}..HEAD", base, ledger_path=ledger,
@@ -435,12 +769,30 @@ class TestLeg3Integration(unittest.TestCase):
             self.assertEqual(code, 0, "leg3 never blocks")
             self.assertIn("leg 3", "\n".join(out))
 
+    def test_big_diff_unknown_model_silent(self):
+        # Leg 3 nudges only a KNOWN non-frontier session; unknown (stale /
+        # foreign / no claims) stays silent — pinned because the 14-day cap
+        # makes unknown common (Fable r2 mutant M21 survived unpinned).
+        with tempfile.TemporaryDirectory() as repo:
+            self._big_src_diff_repo(repo, rpc.UNREVIEWED_SRC_LINES_NUDGE + 100)
+            ledger = os.path.join(repo, "ledger.jsonl")
+            with open(ledger, "w") as fh:
+                fh.write(_claim_line(repo, "claude-opus-5-5",
+                                     ts=-(rpc.SESSION_CLAIM_MAX_AGE_S + 3600)))
+            base = subprocess.run(["git", "rev-list", "--max-parents=0", "HEAD"],
+                                  cwd=repo, capture_output=True, text=True,
+                                  timeout=30).stdout.strip()
+            code, out, _ = rpc.run(repo, f"{base}..HEAD", base, ledger_path=ledger,
+                                   witness_path=os.path.join(repo, "wit.log"))
+            self.assertEqual(code, 0)
+            self.assertNotIn("leg 3", "\n".join(out))
+
     def test_big_diff_frontier_silent(self):
         with tempfile.TemporaryDirectory() as repo:
             self._big_src_diff_repo(repo, rpc.UNREVIEWED_SRC_LINES_NUDGE + 100)
             ledger = os.path.join(repo, "ledger.jsonl")
             with open(ledger, "w") as fh:
-                fh.write('{"kind":"claim","ts":100,"model_id":"claude-fable-5"}\n')
+                fh.write(_claim_line(repo, "claude-fable-5"))
             base = subprocess.run(["git", "rev-list", "--max-parents=0", "HEAD"],
                                   cwd=repo, capture_output=True, text=True, timeout=30).stdout.strip()
             code, out, _ = rpc.run(repo, f"{base}..HEAD", base, ledger_path=ledger,
@@ -516,8 +868,7 @@ class TestLeg3QueuingDoesNotSilence(unittest.TestCase):
             _commit(repo, "docs: queue unreviewed window for frontier")
             ledger = os.path.join(repo, "ledger.jsonl")
             with open(ledger, "w") as fh:
-                fh.write('{"kind":"claim","ts":100,'
-                         '"model_id":"claude-opus-4-8[1m]"}\n')
+                fh.write(_claim_line(repo, "claude-opus-4-8[1m]"))
             base = subprocess.run(
                 ["git", "rev-list", "--max-parents=0", "HEAD"], cwd=repo,
                 capture_output=True, text=True, timeout=30).stdout.strip()
@@ -569,7 +920,32 @@ class TestLeg2BlockMessage(unittest.TestCase):
         msg = rpc._fmt_leg2_block(rows, "claude-opus-4-8")
         self.assertIn("record_claim", msg)
         self.assertIn("source=\"manual\"", msg)
+        self.assertIn("head_full", msg)  # a claim must name THIS repo's HEAD
         self.assertIn("--no-verify", msg)  # override stays documented, last
+
+    def test_sanctioned_unblock_written_by_the_real_writer_counts(self):
+        # Reader/writer pair (hfm #4): the record the message tells you to
+        # write, written by the REAL record_claim, must flip the gate.
+        from unittest import mock
+        src = os.path.join(os.path.dirname(__file__), "..", "src")
+        with mock.patch.object(sys, "path", [src] + sys.path):
+            from mini_dudeai.calibration_ledger import record_claim
+        with tempfile.TemporaryDirectory() as repo:
+            base = TestLeg2Integration()._repo_with_new_frontier_row(
+                repo, "frontier deep review")
+            ledger = os.path.join(repo, "ledger.jsonl")
+            with open(ledger, "w", encoding="utf-8") as fh:
+                fh.write(_claim_line(repo, "claude-opus-5-5", ts=100))
+            wit = os.path.join(repo, "wit.log")
+            code, _, _ = rpc.run(repo, f"{base}..HEAD", base,
+                                 ledger_path=ledger, witness_path=wit)
+            self.assertEqual(code, 1, "precondition: Opus blocks")
+            record_claim("frontier pass ran", "verified", "drill evidence",
+                         _head(repo), model_id="claude-fable-5-1",
+                         source="manual", path=ledger)
+            code, out, _ = rpc.run(repo, f"{base}..HEAD", base,
+                                   ledger_path=ledger, witness_path=wit)
+            self.assertEqual(code, 0, out)
 
 
 class TestCliSubprocess(unittest.TestCase):
@@ -660,7 +1036,7 @@ class TestTableStructureIntegration(unittest.TestCase):
     def _ledger(self, repo):
         path = os.path.join(repo, "ledger.jsonl")
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write('{"kind":"claim","ts":100,"model_id":"claude-fable-5"}\n')
+            fh.write(_claim_line(repo, "claude-fable-5"))
         return path
 
     def test_new_malformed_row_blocks(self):
@@ -727,7 +1103,7 @@ class TestLeg3CountsScripts(unittest.TestCase):
             _commit(repo, "feat: large scripts change (no review claim)")
             ledger = os.path.join(repo, "ledger.jsonl")
             with open(ledger, "w") as fh:
-                fh.write('{"kind":"claim","ts":100,"model_id":"claude-opus-4-8[1m]"}\n')
+                fh.write(_claim_line(repo, "claude-opus-4-8[1m]"))
             base = subprocess.run(["git", "rev-list", "--max-parents=0", "HEAD"],
                                   cwd=repo, capture_output=True, text=True,
                                   timeout=30).stdout.strip()
@@ -1040,7 +1416,7 @@ class TestLeg2SubagentIntegration(unittest.TestCase):
                        cwd=repo, check=True, timeout=30, env=env)
         ledger = os.path.join(repo, "ledger.jsonl")
         with open(ledger, "w") as fh:
-            fh.write('{"kind":"claim","ts":100,"model_id":"claude-opus-5-5"}\n')
+            fh.write(_claim_line(repo, "claude-opus-5-5"))
         return base, ledger
 
     def _run(self, repo, base, ledger, claude_dir):

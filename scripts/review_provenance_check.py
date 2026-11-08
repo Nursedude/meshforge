@@ -20,6 +20,12 @@ Design: `.claude/plans/upshift_witness_design.md`. Three legs:
       model_id is non-frontier → block ("queue it as a worklist row instead").
       You may always QUEUE; you may not CLAIM the rationed frontier pass on a
       smaller model. Unknown/absent ledger model → warn, never block.
+      "Newest" counts only claims whose ``head_full`` is a COMMIT in the repo
+      being judged (2026-11-07): the ledger is box-wide, and MeshAnchor logs
+      no claims, so its gate was judging MA sessions by MF's last model — a
+      borrowed reading, both directions wrong. No claim for this repo, or
+      its newest is older than 14 days (SESSION_CLAIM_MAX_AGE_S) or
+      future-stamped → unknown → warn (the warning names the reason).
       Exception (2026-10-26): a row whose Mechanism says a frontier SUBAGENT
       did the read passes when the harness-written subagent transcript
       witnesses it — a sidechain whose assistant lines carry a frontier model
@@ -66,7 +72,7 @@ unresolvable git base. Every leg that fires appends one witness line to
 ``~/upshift_witness.log`` (#9 — the "did the guard ever run" question).
 
 Honest limit (documented, not hidden): the session model is inferred from the
-ledger's newest ``claim`` event, the only deterministic signal available in the
+ledger's newest ``claim`` event for THIS repo, the only deterministic signal available in the
 hook environment (no transcript, no live model id). It lags by one claim — a
 session that stamps a frontier row BEFORE logging any claim is judged by the
 prior session's model. Direction matters (live-caught 2026-07-16, the gate's
@@ -75,7 +81,8 @@ but a stale-NON-frontier read FALSE-BLOCKS the first genuine frontier session
 after an interregnum — exactly the session most likely to stamp a frontier
 row. The sanctioned unblock is NOT --no-verify: record the session's real
 VERIFIED claim to the calibration ledger first (``record_claim(...,
-model_id=<this session's frontier id>, source="manual")`` — calibrated_claims
+head_full=<this repo's HEAD>, model_id=<this session's frontier id>,
+source="manual")`` — calibrated_claims
 rule 6, quoted evidence required), then re-push; the gate re-reads honestly.
 The leg-2 block message names this path.
 """
@@ -203,21 +210,152 @@ def is_frontier_model(model_id):
     return any(model_id.startswith(p) for p in FRONTIER_MODEL_PREFIXES)
 
 
-def newest_ledger_model_id(events):
-    """model_id of the newest ``claim`` event (max ts). None if no claim carries
-    one — recorded absence, never a fabricated default."""
-    best_ts = None
-    best_model = None
+#: A ledger ``head_full`` that may be looked up: a FULL lowercase hex object id
+#: (sha1 or sha256). Anything else — "HEAD", a prefix, a ref name — would be a
+#: revspec, and "HEAD" resolves in EVERY repo.
+FULL_SHA_RE = re.compile(r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+
+
+#: A repo claim older than this cannot name who is pushing NOW (2026-11-07:
+#: MA's newest repo claim was a 7-week-old hand-logged Fable record, which
+#: would have read every MA session as frontier). 14 d measured against MF's
+#: own claim cadence: largest gaps 18.6 d and 15.1 d in ~5 months, so MF
+#: keeps its reading outside those two windows.
+SESSION_CLAIM_MAX_AGE_S = 14 * 86400
+#: Clock slop before a FUTURE-stamped claim is refused (hfm #6 — RTC-less Pis,
+#: NTP steps: a claim from the future is the clock's lie, not a session).
+SESSION_CLAIM_FUTURE_SLOP_S = 300
+
+
+#: Reader-facing text for each ``ledger_session_model`` unknown reason.
+_UNKNOWN_MODEL_WHY = {
+    "no-claims": "the calibration ledger holds no claims at all (missing or "
+                 "empty file? check --ledger / $CALIBRATION_LEDGER_PATH / HOME)",
+    "git-unreadable": "git could not say which ledger claims are commits in "
+                      "this repo",
+    "no-repo-claim": "no calibration-ledger claim names a commit in this repo "
+                     "(the ledger is box-wide; other repos' claims don't count)",
+    "stale-claim": "this repo's newest ledger claim is older than "
+                   f"{SESSION_CLAIM_MAX_AGE_S // 86400} days, so it cannot "
+                   "name who is pushing now",
+    "future-claim": "this repo's only dated ledger claims are stamped in "
+                    "the future (clock stepped?)",
+    "bad-ts": "this repo's ledger claims carry no usable ts (malformed "
+              "record — find and repair it)",
+    "no-model-id": "this repo's newest ledger claim carries no model_id",
+}
+
+
+def ledger_candidate_shas(events):
+    """Distinct ``head_full`` values of ``claim`` events that are full hex shas
+    (input order). Pure — the list ``ledger_commits_in_repo`` hands to git."""
+    seen = {}
     for ev in events:
         if not isinstance(ev, dict) or ev.get("kind") != "claim":
             continue
+        h = ev.get("head_full")
+        if isinstance(h, str) and FULL_SHA_RE.match(h):
+            seen.setdefault(h, None)
+    return list(seen)
+
+
+def newest_ledger_model_id(events, repo_commits):
+    """model_id of the newest ``claim`` event (max ts) whose ``head_full`` is a
+    commit in the judged repo (``repo_commits``). The ledger is BOX-wide —
+    every repo's sessions share it — so a claim about another repo's HEAD says
+    nothing about who is pushing here. None if no such claim carries one —
+    recorded absence, never a fabricated default. Age is judged by
+    ``ledger_session_model``, the gate's one entry point."""
+    newest = _newest_repo_claim(events, repo_commits or set())
+    return None if newest is None else newest.get("model_id")
+
+
+#: Plausible epoch-seconds bound: a ts beyond it (ms epoch, a 400-digit JSON
+#: int) is malformed, not a date — and float math on a huge int raises.
+_TS_ABS_MAX = 1e11
+
+
+def _valid_ts(ts):
+    if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+        return False
+    try:
+        f = float(ts)
+    except (OverflowError, ValueError):
+        return False
+    return f == f and abs(f) < _TS_ABS_MAX
+
+
+def _repo_claims(events, repo_commits):
+    """This repo's ``claim`` events. ``head_full`` must be a STRING before the
+    set lookup — a list/dict there is unhashable, and a TypeError in a
+    pre-push gate is caught by main() and PASSES OPEN (Fable r2 2026-11-07)."""
+    if not repo_commits:
+        return []
+    return [ev for ev in events
+            if isinstance(ev, dict) and ev.get("kind") == "claim"
+            and isinstance(ev.get("head_full"), str)
+            and ev.get("head_full") in repo_commits]
+
+
+def _newest_repo_claim(events, repo_commits, now=None):
+    """Newest repo claim by ts. With ``now``, a FUTURE-stamped claim (beyond
+    the slop) is skipped, never selected: one far-future stamp (ms epoch, a
+    clock stepped forward) would otherwise be the max forever and latch every
+    later read (code-review 2026-11-07). The caller surfaces the skip."""
+    best = None
+    for ev in _repo_claims(events, repo_commits):
         ts = ev.get("ts")
-        if not isinstance(ts, (int, float)):
+        if not _valid_ts(ts):
             continue
-        if best_ts is None or ts >= best_ts:
-            best_ts = ts
-            best_model = ev.get("model_id")
-    return best_model
+        if now is not None and float(ts) - now > SESSION_CLAIM_FUTURE_SLOP_S:
+            continue
+        if best is None or float(ts) >= float(best["ts"]):
+            best = ev
+    return best
+
+
+def future_repo_claims(events, repo_commits, now):
+    """Count of this repo's claims stamped beyond the clock slop — skipped by
+    selection, reported so the skip has a witness (hfm #9)."""
+    if repo_commits is None:
+        return 0
+    return sum(1 for ev in _repo_claims(events, repo_commits)
+               if _valid_ts(ev.get("ts"))
+               and float(ev["ts"]) - now > SESSION_CLAIM_FUTURE_SLOP_S)
+
+
+def ledger_session_model(events, repo_commits, now,
+                         max_age_s=SESSION_CLAIM_MAX_AGE_S):
+    """(model_id, reason). ``reason`` is None when a model was read, else WHY
+    the session tier is unknown — each a different fix for the reader:
+      * ``no-claims``      — the ledger holds no claim at all (missing/empty
+        file, wrong --ledger path, a different HOME under sudo)
+      * ``git-unreadable`` — could not ask git which claims are in this repo
+      * ``no-repo-claim``  — no claim names a commit in this repo's history
+      * ``bad-ts``         — this repo's claims exist but none has a usable ts
+      * ``future-claim``   — this repo's only dated claims are future-stamped
+      * ``stale-claim``    — this repo's newest claim is older than max_age_s
+      * ``no-model-id``    — this repo's newest claim carries no model_id
+    Unknown is never collapsed into frontier or non-frontier (hfm #1/#2)."""
+    if not any(isinstance(ev, dict) and ev.get("kind") == "claim"
+               for ev in events):
+        return None, "no-claims"
+    if repo_commits is None:
+        return None, "git-unreadable"
+    mine = _repo_claims(events, repo_commits)
+    if not mine:
+        return None, "no-repo-claim"
+    if not any(_valid_ts(ev.get("ts")) for ev in mine):
+        return None, "bad-ts"
+    newest = _newest_repo_claim(events, repo_commits, now=now)
+    if newest is None:
+        return None, "future-claim"
+    if now - float(newest["ts"]) > max_age_s:
+        return None, "stale-claim"
+    model = newest.get("model_id")
+    if not isinstance(model, str) or not model:
+        return None, "no-model-id"
+    return model, None
 
 
 def _is_negated(low, start):
@@ -486,6 +624,32 @@ def _load_ledger_events(path):
     return out
 
 
+def ledger_commits_in_repo(repo, events, timeout=10):
+    """The subset of the ledger's candidate shas REACHABLE FROM ``repo``'s
+    HEAD — this repo's own history. Not object existence: MeshAnchor carries
+    a ``meshforge`` remote, so after one ``git fetch meshforge`` every MF
+    commit is an object there and MA would borrow MF's model again
+    (code-review 2026-11-07). One ``git rev-list HEAD`` (~15 ms, 6k commits);
+    only local commit objects are walked, so no promisor lazy-fetch. The twins
+    share history up to 2026-04-01; the ledger's first claim is 2026-06-16.
+    None when git cannot answer (unknown, never an empty set: an empty set
+    would read as "no claim here" when the truth is "couldn't look")."""
+    cands = ledger_candidate_shas(events)
+    if not cands:
+        return set()
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo), "rev-list", "HEAD"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    history = set(out.stdout.split())
+    return {c for c in cands if c in history}
+
+
 def commits_in_range(repo, rev_range):
     """[(full_sha, raw_message)] for the range, or None if git can't resolve
     it (e.g. base ref not fetched — unobservable, the caller warns+skips)."""
@@ -664,8 +828,10 @@ def _fmt_leg2_block(rows, model_id):
         "If this session genuinely IS a frontier pass (the ledger model lags by",
         "one claim — common on the first frontier session after an interregnum):",
         "record the pass's real VERIFIED claim to the calibration ledger first",
-        "(record_claim(..., model_id=<this session's frontier id>,",
-        "source=\"manual\") — calibrated_claims rule 6, quoted evidence), then",
+        "(record_claim(..., head_full=<THIS repo's `git rev-parse HEAD`>,",
+        "model_id=<this session's frontier id>, source=\"manual\") —",
+        "calibrated_claims rule 6, quoted evidence; a claim naming another",
+        "repo's commit does not count here), then",
         "re-push; this gate re-reads the ledger honestly.",
         "",
         "If a frontier SUBAGENT did the read: say \"subagent\" in the Mechanism",
@@ -816,7 +982,17 @@ def run(repo, rev_range, base_ref, ledger_path, witness_path, scope_sink=None,
     # --- Leg 2 -------------------------------------------------------------
     leg2_violations = []
     events = _load_ledger_events(ledger_path)
-    model_id = newest_ledger_model_id(events)
+    _now = time.time()
+    _repo_commits = ledger_commits_in_repo(repo, events)
+    model_id, model_unknown = ledger_session_model(events, _repo_commits,
+                                                   now=_now)
+    _future = future_repo_claims(events, _repo_commits, _now)
+    if _future:
+        warn.append(f"ledger: {_future} claim(s) for this repo are stamped in "
+                    "the future and were skipped when reading the session "
+                    "model (clock stepped, or a ms-epoch ts) — repair them")
+        append_witness(f"ledger WARN {_future} future-stamped claim(s) skipped",
+                       witness_path)
     session_is_frontier = is_frontier_model(model_id)
     base_prov = _read_provenance_at(repo, base_ref)
     if base_prov is None:
@@ -841,9 +1017,15 @@ def run(repo, rev_range, base_ref, ledger_path, witness_path, scope_sink=None,
                                                    session_is_frontier,
                                                    subagent_witness=witness)
         if leg2_warn == "unknown-model":
+            why = _UNKNOWN_MODEL_WHY.get(model_unknown, str(model_unknown))
             warn.append("leg2: a NEW completed row claims a frontier-tier pass "
-                        "but the ledger carries no model_id — warning, not "
-                        "blocking (unobservable ≠ violation)")
+                        f"but this session's model is unknown — {why}. "
+                        "Warning, not blocking (unobservable ≠ violation). To "
+                        "be judged, record this session's real VERIFIED claim "
+                        "with this repo's HEAD (record_claim(..., model_id=..., "
+                        "head_full=<git rev-parse HEAD>, source=\"manual\")).")
+            append_witness(f"leg2 WARN unknown model ({model_unknown})",
+                           witness_path)
 
     # --- Structure leg (hard on NEW damage, warn on pre-existing) ----------
     # A malformed row is invisible to every parser of this file — a merged
