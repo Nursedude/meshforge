@@ -228,6 +228,9 @@ class MeshtasticDataCollectorMixin:
                         "hw_model": node.hw_model,
                         "snr": node.snr,
                         "last_heard": node.last_heard,
+                        # H14 r2 F4: without it collect() defaults False and
+                        # an MQTT-only node reads as heard by this radio.
+                        "via_mqtt": node.via_mqtt,
                     })
 
             # Append (not overwrite) so entries added by other sources
@@ -245,6 +248,36 @@ class MeshtasticDataCollectorMixin:
             logger.debug(f"HTTP collection error: {e}")
             return []
 
+    def _own_node_id(self, interface):
+        """This radio's own node id from the EXISTING connection
+        (``myInfo.my_node_num``, else ``localNode.nodeNum``), or None.
+        Never inferred from traffic (MAP-H H14 r3 F6)."""
+        for obj, attr in ((getattr(interface, 'myInfo', None), 'my_node_num'),
+                          (getattr(interface, 'localNode', None), 'nodeNum')):
+            num = getattr(obj, attr, None) if obj is not None else None
+            if isinstance(num, int) and not isinstance(num, bool) and num > 0:
+                return self._canonical_meshtastic_id("", num)
+        return None
+
+    @staticmethod
+    def _stamp_radio_heard(props, self_id):
+        """H14 r3: ``radio_last_heard`` = THIS radio's hearing time, set ONLY
+        here (the radio's nodedb drain). ``last_heard`` is freshest-across-
+        sources after ``_merge_feature`` (an MQTT copy overwrites it, F10), so
+        node_history reads this one prop instead. MQTT-downlinked nodes get
+        none; the radio's OWN row is tagged ``is_self`` and gets none — it
+        advances on TX, so it would vouch for a deaf radio (F6)."""
+        if not isinstance(props, dict):
+            return
+        if self_id is not None and props.get("id") == self_id:
+            props["is_self"] = True
+            return
+        if props.get("via_mqtt"):
+            return
+        lh = props.get("last_heard")
+        if isinstance(lh, (int, float)) and not isinstance(lh, bool) and lh > 0:
+            props["radio_last_heard"] = float(lh)
+
     def _drain_interface_nodes(self, interface, source, post_feature=None):
         """Read nodes off a connected interface into LOCAL lists.
 
@@ -261,6 +294,7 @@ class MeshtasticDataCollectorMixin:
         total = 0
         if hasattr(interface, 'nodes') and interface.nodes:
             now = time.time()
+            self_id = self._own_node_id(interface)
             # the SAME window the page names for Meshtastic markers (review 11-08 F4)
             online_threshold = self.get_source_threshold_seconds("meshtastic")
             total = len(interface.nodes)
@@ -269,12 +303,14 @@ class MeshtasticDataCollectorMixin:
                 if feature:
                     if post_feature is not None:
                         post_feature(feature)
+                    self._stamp_radio_heard(feature["properties"], self_id)
                     features.append(feature)
                 else:
                     no_pos_info = self._extract_node_info_without_position(
                         node_id, node_data, now, online_threshold
                     )
                     if no_pos_info:
+                        self._stamp_radio_heard(no_pos_info, self_id)
                         no_position.append(no_pos_info)
             logger.debug(
                 "%s: %d with GPS, %d without GPS (total: %d)",
@@ -588,6 +624,9 @@ class MeshtasticDataCollectorMixin:
             "voltage": device_metrics.get('voltage'),
             "hops_away": data.get('hopsAway'),
             "via_mqtt": data.get('viaMqtt', False),
+            # H14 (review r1 F1): the radio's heard epoch, so a GPS-less node's
+            # directory row carries radio_heard too (most nodes have no GPS).
+            "last_heard": last_heard,
         }
 
     def _collect_via_cli(self) -> List[Dict]:

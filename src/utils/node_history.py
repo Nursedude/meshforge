@@ -28,7 +28,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils.db_helpers import connect_tuned
+from utils.db_helpers import connect_tuned, ensure_column
+from utils.peer_radio_heard import coerce_radio_ts
 from utils.paths import get_real_user_home
 from utils.node_history_config import (
     DEFAULT_RETENTION_SECONDS,
@@ -276,6 +277,10 @@ class NodeHistoryDB:
                         PRIMARY KEY (network, node_id)
                     )
                 """)
+                # MAP-H H14 (2026-11-08): the node's last-heard time BY THIS
+                # BOX'S RADIO — a different quantity from last_seen (the
+                # directory write stamp). NULL = no radio hearing recorded.
+                ensure_column(conn, "nodes", "radio_heard", "REAL")
                 conn.execute("""
                     CREATE INDEX IF NOT EXISTS idx_nodes_last_seen
                     ON nodes(last_seen)
@@ -432,6 +437,28 @@ class NodeHistoryDB:
             meta_json,
         )
 
+    @staticmethod
+    def _radio_heard_of(props: Dict[str, Any], now: float) -> Optional[float]:
+        """This box's RADIO last-heard epoch for one feature, or None (MAP-H
+        H14). Only a local_radio feature this box produced itself counts: a
+        federated copy carries a PEER's claim (relaying it would launder it
+        into ours), and MQTT / cache / firehose origins are not this radio.
+        A zero, non-finite or future stamp is no hearing time."""
+        if props.get("federated") or props.get("federated_from"):
+            return None
+        if props.get("source_origin") != "local_radio":
+            return None
+        # meshtasticd's nodedb tags MQTT-downlinked nodes local_radio too; a
+        # node this box only got over MQTT was NOT heard by its radio (review
+        # r1 F2 — moc3's broker bridges the public server).
+        if props.get("via_mqtt") or props.get("is_self"):
+            return None
+        # ONLY the radio drain's own stamp (H14 r3 F10): last_heard is
+        # freshest-across-sources after the collector's merge, so an MQTT
+        # copy would move it; tracker/cache features carry none (F5).
+        ts = coerce_radio_ts(props.get("radio_last_heard"), now)
+        return ts if ts is not None and ts <= now else None
+
     def _apply_features_to_directory(self, features: List[Dict[str, Any]],
                                      now: float) -> int:
         """UPSERT every feature into the `nodes` directory table.
@@ -473,6 +500,7 @@ class NodeHistoryDB:
                 last_lat, last_lon, last_altitude,
                 name, role, hardware,
                 source_origin, protocol_meta,
+                self._radio_heard_of(feat.get("properties") or {}, now),
                 new_priority,        # used by ON CONFLICT branch
             ))
         if not rows:
@@ -525,8 +553,8 @@ class NodeHistoryDB:
                 network, node_id, first_seen, last_seen,
                 last_lat, last_lon, last_altitude,
                 name, role, hardware,
-                source_origin, protocol_meta, obs_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                source_origin, protocol_meta, radio_heard, obs_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             ON CONFLICT(network, node_id) DO UPDATE SET
                 last_seen = MAX(nodes.last_seen, excluded.last_seen),
                 last_lat = COALESCE(excluded.last_lat, nodes.last_lat),
@@ -541,6 +569,13 @@ class NodeHistoryDB:
                     ELSE nodes.source_origin
                 END,
                 protocol_meta = CASE WHEN excluded.protocol_meta != '' THEN excluded.protocol_meta ELSE nodes.protocol_meta END,
+                -- H14: monotonic, and a stamp-less write never erases one
+                -- (two-arg MAX() with a NULL returns NULL in SQLite).
+                radio_heard = CASE
+                    WHEN excluded.radio_heard IS NULL THEN nodes.radio_heard
+                    WHEN nodes.radio_heard IS NULL THEN excluded.radio_heard
+                    ELSE MAX(nodes.radio_heard, excluded.radio_heard)
+                END,
                 obs_count = nodes.obs_count + 1
         """
 
@@ -1326,7 +1361,7 @@ class NodeHistoryDB:
                 SELECT network, node_id, first_seen, last_seen,
                        last_lat, last_lon, last_altitude,
                        name, role, hardware,
-                       source_origin, protocol_meta, obs_count
+                       source_origin, protocol_meta, obs_count, radio_heard
                 FROM nodes
                 """
             ).fetchall()
@@ -1344,6 +1379,9 @@ class NodeHistoryDB:
                 "last_seen": row["last_seen"],
                 "last_seen_age_s": max(0.0, now - row["last_seen"]) if row["last_seen"] else None,
                 "obs_count": row["obs_count"] or 0,
+                # H14: this box's RADIO last-heard (None = none recorded) —
+                # never last_seen, which is the write stamp.
+                "radio_heard": row["radio_heard"],
             }
             if row["last_lat"] is not None and row["last_lon"] is not None:
                 feature = {

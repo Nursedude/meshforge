@@ -10,7 +10,10 @@ Expects the following on the host class (MapDataCollector):
 
 import json
 import logging
+import time
 from typing import Any, Dict, List
+
+from utils.peer_radio_heard import peer_heard_verdict, peer_radio_trust
 
 logger = logging.getLogger(__name__)
 
@@ -293,6 +296,31 @@ class FederationDataCollectorMixin:
                 origin = entry.get("source_origin")
                 local_index[(net, nid)] = (_hub()._origin_priority(origin), None, idx)
 
+        # MAP-H H14: each peer's radio as a witness PER NETWORK, judged on this
+        # box's clock with THAT network's online window (r1 F3/F4), memoised
+        # once per merge.
+        now = time.time()
+        peer_names = {host: st.peer_name for host, st in snap.peer_status.items()}
+        trust_by_net: Dict[str, Dict[str, tuple]] = {}
+
+        def _trust_for(net):
+            if net not in trust_by_net:
+                window_s = self.get_source_threshold_seconds(net)
+                trust_by_net[net] = (window_s, {
+                    host: peer_radio_trust(
+                        st.radio_exported,
+                        (st.radio_newest_by_network or {}).get(net), now, window_s,
+                        ok=st.ok, in_backoff=st.in_backoff)
+                    for host, st in snap.peer_status.items()})
+            return trust_by_net[net]
+
+        def _peer_heard(entry):
+            heard_by = entry.get("radio_heard_by") or {}
+            if not heard_by:
+                return None
+            window_s, trust = _trust_for(entry.get("network"))
+            return peer_heard_verdict(heard_by, trust, peer_names, now, window_s)
+
         by_network: Dict[str, int] = {}
         with_pos = 0
         without_pos = 0
@@ -307,7 +335,17 @@ class FederationDataCollectorMixin:
                 local_priority, local_fkey, local_pl_idx = local
                 fed_priority = _hub()._origin_priority(entry.get("source_origin"))
                 if fed_priority <= local_priority:
-                    continue  # local-wins — skip federated copy (original behavior)
+                    # local-wins — skip the federated copy (original behavior),
+                    # but keep what the PEERS' radios heard (H14): the local
+                    # stub's is_online stays THIS radio's judgement.
+                    verdict = _peer_heard(entry)
+                    if verdict is not None:
+                        if local_fkey is not None:
+                            features[local_fkey].setdefault("properties", {})[
+                                "peer_heard"] = verdict
+                        elif local_pl_idx is not None:
+                            position_less[local_pl_idx]["peer_heard"] = verdict
+                    continue
                 # Federated peer carries a higher-trust origin: drop the
                 # local stub so the federated entry can take its place.
                 if local_fkey is not None:
@@ -319,6 +357,7 @@ class FederationDataCollectorMixin:
             lat = entry.get("lat")
             lon = entry.get("lon")
             seen_by = entry.get("seen_by_peers") or [entry.get("federated_from")]
+            verdict = _peer_heard(entry)
             if self._is_valid_coordinate(lat, lon):
                 # Federated-only feature: render as map marker. Use a
                 # namespaced dict key to avoid clashing with local id-keys.
@@ -351,10 +390,13 @@ class FederationDataCollectorMixin:
                         "is_gateway": False,
                     },
                 }
+                if verdict is not None:
+                    feature["properties"]["peer_heard"] = verdict
                 features[f"federated:{net}:{nid}"] = feature
                 with_pos += 1
             else:
                 position_less.append({
+                    **({"peer_heard": verdict} if verdict is not None else {}),
                     "id": entry["id"],
                     "name": entry.get("name") or entry["id"],
                     "network": entry["network"],
@@ -396,6 +438,14 @@ class FederationDataCollectorMixin:
                 "in_backoff": s.in_backoff,
                 "backoff_multiplier": s.backoff_multiplier,
                 "next_eligible_poll_ts": s.next_eligible_poll_ts,
+                # H14: is this peer's radio a witness right now, per network,
+                # and why not. Every network it reports, plus meshtastic.
+                "radio_newest_by_network": dict(s.radio_newest_by_network or {}),
+                "radio_witness": {
+                    net: {"ok": _trust_for(net)[1].get(s.hostname, (False, ""))[0],
+                          "reason": _trust_for(net)[1].get(s.hostname, (False, ""))[1]}
+                    for net in sorted(set(s.radio_newest_by_network or {}) | {"meshtastic"})
+                },
             })
 
         return {

@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from utils.node_history import _origin_priority
+from utils.peer_radio_heard import ingest_radio_ts
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +172,15 @@ class FederationPeerStatus:
     # federator's node_map UI. None when the peer has no claw or the probe
     # failed — a missing card, never a stale-looking one.
     claw: Optional[Dict[str, Any]] = None
+    # MAP-H H14 (2026-11-08): does this peer's directory export its RADIO
+    # last-heard times at all (old code does not), and the newest one across
+    # every row. The consumer judges the peer's radio a witness only while
+    # that newest sits inside the online window — a frozen-clock or deaf
+    # peer reads unobservable (utils.peer_radio_heard).
+    radio_exported: bool = False
+    # {network: newest radio_heard} — trust is per (peer, network): one fresh
+    # MeshCore row must not vouch for a frozen Meshtastic radio (review r1 F3).
+    radio_newest_by_network: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -248,6 +258,15 @@ def _peer_url(peer: str, port: int = DEFAULT_PORT, path: str = "/api/nodes/direc
     return f"http://{peer}:{port}{path}"
 
 
+def _carry_radio_heard(src: Dict[str, Any], dst: Dict[str, Any]) -> None:
+    """H14: copy the peer's RADIO last-heard when its directory exports the
+    key at all (absent key = old-code peer, kept absent so the consumer can
+    tell "doesn't say" from "says none"). Junk becomes None, never a time; a
+    future stamp is kept so the consumer can NAME the skew (review r1 F5)."""
+    if "radio_heard" in src:
+        dst["radio_heard"] = ingest_radio_ts(src.get("radio_heard"))
+
+
 def _extract_features(directory_payload: Dict[str, Any], peer: str) -> List[Dict[str, Any]]:
     """Convert a /api/nodes/directory response into a flat list of node dicts.
 
@@ -302,6 +321,7 @@ def _extract_features(directory_payload: Dict[str, Any], peer: str) -> List[Dict
             "source_origin": props.get("source_origin") or "",
             "federated_from": peer,
         })
+        _carry_radio_heard(props, out[-1])
 
     # Position-less entries
     for entry in directory_payload.get("nodes_without_position") or []:
@@ -330,6 +350,7 @@ def _extract_features(directory_payload: Dict[str, Any], peer: str) -> List[Dict
             "source_origin": entry.get("source_origin") or "",
             "federated_from": peer,
         })
+        _carry_radio_heard(entry, out[-1])
     return out
 
 
@@ -774,13 +795,29 @@ class FederationCollector:
                         )
                 status.peer_name = self._peer_names.get(peer)
                 status.resolution_method = self._resolution_methods.get(peer)
+                # H14: per-peer radio witness summary, read off THIS poll's rows.
+                status.radio_exported = any("radio_heard" in e for e in entries)
+                newest: Dict[str, float] = {}
+                for e in entries:
+                    ts = e.get("radio_heard")
+                    if ts is not None and ts > newest.get(e["network"], 0.0):
+                        newest[e["network"]] = ts
+                status.radio_newest_by_network = newest
                 new_status[peer] = status
 
                 for entry in entries:
+                    # H14: every peer's radio claim survives the merge, whichever
+                    # peer's entry wins it (the winner rule is about trust in the
+                    # ROW, not about whose radio heard the node).
+                    claim = entry.get("radio_heard")
                     key = (entry["network"], entry["id"])
                     existing = merged.get(key)
+                    heard_by = dict((existing or {}).get("radio_heard_by") or {})
+                    if claim is not None:
+                        heard_by[peer] = claim
                     if existing is None:
                         entry["seen_by_peers"] = [peer]
+                        entry["radio_heard_by"] = heard_by
                         merged[key] = entry
                     else:
                         # Higher source_origin priority wins over newer
@@ -806,8 +843,10 @@ class FederationCollector:
                             if peer not in new_seen:
                                 new_seen.append(peer)
                             entry["seen_by_peers"] = new_seen
+                            entry["radio_heard_by"] = heard_by
                             merged[key] = entry
                         else:
+                            existing["radio_heard_by"] = heard_by
                             seen = existing.get("seen_by_peers", [])
                             if peer not in seen:
                                 seen.append(peer)

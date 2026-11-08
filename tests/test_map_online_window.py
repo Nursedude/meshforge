@@ -187,7 +187,8 @@ def test_status_text_reads_the_window_for_meshtastic_only():
     body = _js_body("nodeStatusText")
     assert "meshtastic_online_window_minutes" in _js_body("meshtasticWindowText")
     assert "props.network === 'meshtastic'" in body
-    assert "'Not heard in '" in body
+    # H14: 'here' — a peer's hearing can now follow on the same line
+    assert "'Not heard here in '" in body
 
 
 def test_popup_and_status_card_use_the_one_status_reader():

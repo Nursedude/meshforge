@@ -2751,13 +2751,36 @@
         return (m % 60 === 0) ? (m / 60) + ' h' : m + ' min';
     }
 
+    // MAP-H H14 (2026-11-08): what a PEER's radio heard, judged server-side
+    // (utils.peer_radio_heard) — never last_seen, which is the peer's directory
+    // write time. A frozen-clock / deaf peer arrives as 'unobservable' and is
+    // said so, never as heard or not heard. Appended; never changes is_online.
+    function peerHeardText(ph) {
+        if (!ph || typeof ph !== 'object') return '';
+        const by = String(ph.by || 'a peer');
+        if (ph.state === 'unobservable') {
+            return ' · ' + by + '\'s radio unobservable' + (ph.reason ? ' (' + ph.reason + ')' : '');
+        }
+        // age_s is the SERVER's (the clock that judged heard/not_heard) — never
+        // the browser's, a third clock the verdict never consulted (r1 F6)
+        const age = ph.age_s;
+        if (typeof age !== 'number' || !isFinite(age) || age < 0) return '';
+        const ago = age < 60 ? age + ' s' : age < 3600 ? Math.floor(age / 60) + ' min'
+            : age < 86400 ? Math.floor(age / 3600) + ' h' : Math.floor(age / 86400) + ' d';
+        const unv = ph.unverified ? ' (unverified: ' + ph.unverified + ')' : '';
+        if (ph.state === 'heard') return ' · heard by ' + by + ' ' + ago + ' ago' + unv;
+        if (ph.state === 'not_heard') return ' · ' + by + ' last heard it ' + ago + ' ago' + unv;
+        return '';
+    }
+
     function nodeStatusText(props) {
         // a peer's node was judged by the PEER (its own window); this box only
         // knows its radio did not hear it (review 11-08 F6)
-        if (props.federated) return 'Not heard by this box\'s radio';
+        if (props.federated) return 'Not heard by this box\'s radio' + peerHeardText(props.peer_heard);
         const w = props.network === 'meshtastic' ? meshtasticWindowText() : null;
+        const peer = props.is_online ? '' : peerHeardText(props.peer_heard);
         if (props.is_online) return w ? 'Online · heard ≤ ' + w : 'Online';
-        return w ? 'Not heard in ' + w : 'Offline';
+        return (w ? 'Not heard here in ' + w : 'Offline') + peer;
     }
 
     function getNodeColor(props) {
@@ -2998,12 +3021,12 @@
                 <div class="info-grid">
                     <div class="info-label">Status</div>
                     <div class="info-value ${props.is_online ? 'status-online' : 'status-offline'}">
-                        ${props.is_online ? '● ' : '○ '}${nodeStatusText(props)}
+                        ${props.is_online ? '● ' : '○ '}${escHtml(nodeStatusText(props))}
                     </div>
                     ${roleSafe ? `<div class="info-label">Role</div><div class="info-value">${roleSafe}</div>` : ''}
                     ${props.is_gateway ? `<div class="info-label">Type</div><div class="info-value status-gateway">Gateway</div>` : ''}
                     ${props.via_mqtt ? `<div class="info-label">Via</div><div class="info-value" style="color:#ab47bc">MQTT</div>` : ''}
-                    <div class="info-label">Last heard</div>
+                    <div class="info-label">Last heard here</div>
                     <div class="info-value">${lastHeardSafe}</div>
                     ${channelHtml}
                     ${hopHtml}
@@ -3918,14 +3941,16 @@
             const id = node.id || '';
             const online = node.is_online;
             const lastSeen = node.last_seen || '';
+            // H14 r2 F3: GPS-less nodes are most of them — say the peer hearing here too
+            const peer = online ? '' : peerHeardText(node.peer_heard).replace(/^ · /, '');
             const dotColor = online ? '#66bb6a' : '#555';
 
             html += `<div style="padding: 3px 0; border-bottom: 1px solid #1a2a3a; display: flex; justify-content: space-between; align-items: center;">
                 <span style="display: flex; align-items: center; gap: 6px;">
                     <span style="width: 6px; height: 6px; border-radius: 50%; background: ${dotColor};"></span>
-                    <span style="color: #ccc;">${name}</span>
+                    <span style="color: #ccc;">${escHtml(name)}</span>
                 </span>
-                <span style="color: #666; font-size: 9px;">${lastSeen}</span>
+                <span style="color: #666; font-size: 9px;">${escHtml(lastSeen)}${peer ? ' · ' + escHtml(peer) : ''}</span>
             </div>`;
         }
         list.innerHTML = html;

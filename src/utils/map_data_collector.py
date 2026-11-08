@@ -1157,6 +1157,12 @@ class MapDataCollector(
                         "network": entry.get("network", "unknown"),
                         "is_online": entry.get("is_online", False),
                         "source_origin": origin,
+                        # H14 (review r1 F1, r3 F10): without these the
+                        # directory's radio_heard stays NULL for every GPS-less
+                        # node; only the radio drain's stamp is ever read.
+                        "radio_last_heard": entry.get("radio_last_heard"),
+                        "via_mqtt": entry.get("via_mqtt", False),
+                        "is_self": entry.get("is_self", False),
                     },
                 })
             if history_features:
