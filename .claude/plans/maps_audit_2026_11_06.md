@@ -15,6 +15,28 @@ Markers are already diffed (audit reframed the complaint): links `clearLayers()`
 ## Phase 4 — features no other map has (was MAP-X)
 map features no other mesh map has: a blindness layer (each collector's heard footprint hatches grey when it goes dark), heard-by edges (a line only for a packet a fleet box received, SNR + age), the best-available-route overlay (BIC-6 drawn), two-ended link view (A's TX beside B's RX), 24 h scrubber over `node_history`, a truth badge per value (measured / relayed / asserted), `/map/selftest`. From the 11-06 maps audit; after MAP-H + MAP-SOT.
 
+## H14 + H15 — the map draws SEEN nodes as dead (operator 2026-11-08, MEASURED)
+
+Operator report 11-08 07:2x: on VolcanoAI :5000 "most nodes that say off are not — off as far as
+transport but available, listening, getting metrics". Popup for moc3: `○ Offline · Last heard 203d ago`.
+MEASURED same minute (`/api/nodes/geojson`, 49,921 features, read-only):
+- **H14** — 37 Meshtastic nodes a fleet PEER heard < 2 h ago, **37 / 37 `is_online: false`**.
+  `_map_collector_federation.py:349` hard-codes `is_online: False` ("don't claim freshness").
+  moc3's federated copy: `last_seen` 5 min old, `seen_by_peers` moc2 · moc1 · moc5 → drawn Offline.
+  The inverse of H1/H2 and the same lie: a state the map did not measure. Our own fleet box decoding the
+  node on its radio IS a measurement. Fix = a third state, not `true`: "heard by moc2 4 min ago"
+  (the peer's clock → hfm #6: clamp future, tag skew), distinct from "heard here".
+- **H15** — 4 nodes drawn TWICE: a local stub `mesh_!ebfa1b11` ("203d ago", VolcanoAI's own nodedb —
+  VolcanoAI is LongFast, moc3 is SHORT_TURBO, so this radio can NEVER hear it) beside the fresh federated
+  `!ebfa1b11`. The local-vs-federated `local_index` misses on the `mesh_` id prefix; the popup the operator
+  opened was the stale one. (WB7N Extra Wismesh Tag, Little Brother 2, Meshtastic 8065, meshforge moc3.)
+- Wording: a node this radio cannot hear (declared other segment) must not read "Offline" — "not heard
+  by this box's radio · heard by <peer> <age>". Same closed vocabulary as INBOX-2 step 3
+  (`utils/inbox_heard.py`: heard / not_heard / unobservable / cannot_hear) — one vocabulary, hfm #5.
+- Order (operator 11-08 "prioritize accordingly"): H14 + H15 (honesty, red-first) → H12 → H4 → H5 →
+  Phase 3 (link animation + choppy redraw: operator-observed 11-08 — `linkLayer.clearLayers()` every
+  update, no in-flight guard; MEASURE in a browser before building).
+
 ## Queued from the round-1 non-author review of H1+H2 (2026-11-06)
 
 - F5: the other Python readers of `reason_if_zero` still carry their own lists — `node_counts.py:89` (any reason ≠ ok → count None, so `no_positions`/`no_data` disagree with the map), `watchdog_probes_aredn.py:296`, `map_metrics.py:188` (counts `no_positions` as an error). Move each onto `utils.map_source_reasons.reason_state` — red-first, one consumer per commit; `node_counts` is a TUI/fleet-line behaviour change, so name it.

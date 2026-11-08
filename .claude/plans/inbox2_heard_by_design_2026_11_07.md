@@ -10,6 +10,7 @@ Operator: "go with fleet RX evidence — your call on design" (2026-11-07).
 | 2026-11-08 | step 1: `messages.packet_id` `54304040` | YES fleet 10/10, honest_status exit 0 01:34 | step 2: box_truth `rx_heard` section (twin, Fable by running before deploy) |
 | 2026-11-08 | step 2: `utils/box_truth_rx.py` + section `rx_heard` MF `2da1bfe9` + MA `d608f1ca` | YES — canary lehua 2 ticks, then fleet 10/10 + MA 1/1; FULL honest_status exit 0 06:03 | step 3: center join + tri-state |
 | 2026-11-08 | live drill (no code): operator posted `Wx` on ch 3 from `/inbox` 06:21:51 | row 4920 `local` packet_id 3128482533 (`0xba78dae5`); by-hand id join over the spool: lehua · kiai · moc HEARD +1.1 s, moc3 covered-not-heard (SHORT_TURBO), meshforge-lab unobservable | step 3 (fresh session) |
+| 2026-11-08 | step 3: `utils/inbox_heard.py` pure join + closed states (heard · not_heard · unobservable · cannot_hear), 36 tests red-first, 4 mutants killed | NO — inert (no caller yet). Live read-only replay of the 06:21 `Wx` post vs the spools: 6 LongFast heard +1.1 s, moc3 cannot_hear, lab unobservable = the by-hand join | step 4: TUI + `/inbox` line; declared segment source = each box's `~/.config/meshforge/rf_segment_peers.json` `segment` (present on moc2/moc3 — absent elsewhere = undeclared, never guessed); acceptance 1–4 |
 
 ## Measured before design (2026-11-07, read-only)
 - 61 inbox sends 10-13 → 11-07, **61 channel posts, 0 DMs** (operator: "dm's are rare -
