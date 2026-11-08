@@ -185,7 +185,7 @@ product defect needs one.
   public: For every message, MeshForge will say which network legs it crossed and whether each one delivered, failed, or cannot be seen.
   status: planned
 - **INBOX-2** [MF] S+F — inbox follow-ups from the operator's 10-21 iPhone report: a channel post the fleet demonstrably heard shows "handed to radio · unconfirmed" FOREVER; the phone lost its web login with no pairing code on screen (server session intact)
-  Provenance § QUEUED 2026-10-21 evening.
+  Steps 1-3 LIVE 11-08 `4002f79a`; next: TUI+/inbox.
 - **REL-1** [MF] S — a release every month: tag + a changelog a ham can read; each runs the gate-5 virtual drill (brief 42fbS7, 10-27)
   30-DAY: v0.8.0-beta = first GitHub Release by 12-04; gate-5 drill to END (README only, a message crosses mesh↔RNS).
 - **BIC-1** [MF] S+F — `/inbox` browser chat; sends read "handed to radio · unconfirmed", never "delivered"
@@ -195,7 +195,7 @@ product defect needs one.
   help: a Pi running meshtasticd and a phone browser on the same LAN — send and receive a few messages, tell us what the page claimed vs what arrived
 - **DOC-1** [MF][MA] S twin→MA — in-app how-tos, risky flows first
   `plans/doc1_in_app_howtos_2026_11_03.md`
-- **MAP-H** [MF] S+F — map never draws healthy when blind (op 11-06); H1-H3 `7ad440fe`; next H12 H4 H5. maps/MA: `plans/maps_audit_2026_11_06.md`
+- **MAP-H** [MF] S+F — map never draws healthy when blind (op 11-06); 2h+H15 `940ada70`; next H14 H12. `plans/maps_audit_2026_11_06.md`
 
 ### NEXT
 
