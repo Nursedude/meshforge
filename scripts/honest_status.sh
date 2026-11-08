@@ -976,31 +976,67 @@ else bad "lint" "exit $rc — $(grep -E '\[E\]' $HS_TMP/lint.log | tail -1)"; fi
 
 # 5. Live honesty assert — no displayed confirmation_rate may exceed 1.0
 #    (the exact #74 false-green: a rate that read 1.64 = ">164% confirmed").
-viol=""; checked=0; det=""; cr_unreach=0
+viol=""; checked=0; det=""; cr_unreach=0; cr_blind=0
 for b in $BOXES; do
   # Liveness token, as the SHA leg has had since 2026-07-28: an empty answer
   # used to mean "no map served here" AND "the box did not answer", and the
   # leg printed PASS over a fleet with an unreachable box silently dropped
   # (§3 drill 2026-09-07). Down is UNKNOWN; up-with-no-map is nothing to check.
   if fleet_posture_is_silent "$b" 2>/dev/null; then det="$det $b:dormant"; continue; fi
-  raw=$(run_on "$b" "echo HSUP; curl -s --max-time 8 http://localhost:5000/api/gateway/delivery 2>/dev/null")
+  # The snapshot leg (2026-11-07): a gateway-ONLY box (moc3: no map by design)
+  # answers :5000 with nothing, but its gateway publishes the same
+  # confirmation_rate to delivery_snapshot.json. Until this the leg skipped it
+  # as "no map served here" and printed "N checked" with the one gateway-only
+  # box silently missing — the 08-09 sibling-branch tell (the watchdog probe
+  # learned this fallback; this leg never did). The box's OWN clock rides along
+  # so freshness is judged on the writer's clock, not ours.
+  # `curl -f` (r2 F1): a 5xx body — the map's own JSON error envelope — is not
+  # a rate. Without -f it shadowed the snapshot and read `none` → PASS, while
+  # the watchdog (HTTPError → file fallback) read the snapshot: two consumers,
+  # two verdicts on one box. Now a failing map falls through like it does there.
+  raw=$(run_on "$b" "echo HSUP; curl -sf --max-time 8 http://localhost:5000/api/gateway/delivery 2>/dev/null; echo; echo HSSNAP; date +%s; cat ~/.local/share/meshforge/delivery_snapshot.json 2>/dev/null; echo; echo HSEND")
   [ "$(printf '%s\n' "$raw" | sed -n '1p')" = "HSUP" ] || { cr_unreach=$((cr_unreach+1)); det="$det $b:unreach"; continue; }
-  j=$(printf '%s\n' "$raw" | sed -n '2,$p')
-  [ -z "$j" ] && continue   # up, no map served here — not a failure, just nothing to check
-  checked=$((checked+1))
-  v=$(printf '%s' "$j" | python3 -c 'import sys,json
-try: d=json.load(sys.stdin)
-except Exception: print("PARSE"); sys.exit()
-r=d.get("confirmation_rate")
-if r is None: print("none")
-elif isinstance(r,(int,float)) and not isinstance(r,bool) and r>1.0: print("VIOL=%.3f"%r)
-else: print("%.3f"%r if isinstance(r,(int,float)) else "shape?")' 2>/dev/null)
-  det="$det $b:$v"
-  case "$v" in VIOL*) viol="$viol$b:$v ";; esac
+  # r3 F10: a session that died AFTER the liveness token (a wedged :5000 holds
+  # it the whole --max-time) left every later section empty and read `box:-`
+  # → PASS. The box must reach the END marker, or it did not answer.
+  printf '%s\n' "$raw" | grep -qx HSEND || { cr_unreach=$((cr_unreach+1)); det="$det $b:truncated"; continue; }
+  raw=$(printf '%s\n' "$raw" | sed '/^HSEND$/,$d')
+  j=$(printf '%s\n' "$raw" | sed -n '2,/^HSSNAP$/p' | sed '/^HSSNAP$/d' | sed '/^[[:space:]]*$/d')
+  if [ -n "$j" ]; then
+    src="api"; sfx=""
+    v=$(printf '%s' "$j" | python3 "$HS_HERE/lib/conf_rate_verdict.py" api 2>&1 | tail -1)
+  else
+    snap=$(printf '%s\n' "$raw" | sed -n '/^HSSNAP$/,$p' | sed '1d')
+    snap_now=$(printf '%s\n' "$snap" | sed -n '1p')
+    snap_body=$(printf '%s\n' "$snap" | sed -n '2,$p')
+    # Up, no map answered AND no gateway snapshot: nothing to check here —
+    # but NAMED, never dropped. A non-numeric clock line beside an empty body
+    # is a snapshot whose `date` line went missing (r2 F6), not an absence.
+    # The snapshot path follows the ssh user's ~: run this gate as the
+    # operator (the gateway's own user), not under sudo.
+    if [ -z "$snap_body" ] && { [ -z "$snap_now" ] || [[ "$snap_now" =~ ^[0-9]+$ ]]; }; then
+      det="$det $b:-"; continue
+    fi
+    src="snapshot"; sfx="(snapshot)"
+    v=$(printf '%s' "$snap_body" | HS_SNAP_NOW="$snap_now" \
+        python3 "$HS_HERE/lib/conf_rate_verdict.py" snapshot 2>&1 | tail -1)
+  fi
+  # ONE verdict for both sources (r2: the two inline judges disagreed on the
+  # same value and the API one fail-OPENED). Freshness rules come from
+  # judge_gateway_state(), the watchdog's own (honest_failure_modes #5).
+  case "$v" in
+    OK:*)    checked=$((checked+1)); det="$det $b:${v#OK:}$sfx" ;;
+    NONE)    checked=$((checked+1)); det="$det $b:none$sfx" ;;
+    VIOL:*)  checked=$((checked+1)); det="$det $b:VIOL=${v#VIOL:}$sfx"; viol="$viol$b:VIOL=${v#VIOL:}$sfx " ;;
+    BLIND:*) cr_blind=$((cr_blind+1)); det="$det $b:${v#BLIND:}" ;;
+    *)       # the verdict program printed no token: OUR instrument, unobservable
+             cr_blind=$((cr_blind+1)); det="$det $b:$src-verdict-no-token($(printf '%s' "$v" | tr -s ' \t\n' ' ' | cut -c1-80))" ;;
+  esac
 done
 if [ -n "$viol" ]; then bad "live conf_rate<=1.0" "$viol"
 elif [ "$cr_unreach" -gt 0 ]; then unk "live conf_rate<=1.0" "$checked checked, $cr_unreach box(es) unreachable — not a fleet-wide assertion;$det"
-elif [ "$checked" = 0 ]; then unk "live conf_rate<=1.0" "no box served /api/gateway/delivery"
+elif [ "$cr_blind" -gt 0 ]; then unk "live conf_rate<=1.0" "$checked checked, $cr_blind box(es) whose rate could not testify (stale/broken source or verdict failed) — not a fleet-wide assertion;$det"
+elif [ "$checked" = 0 ]; then unk "live conf_rate<=1.0" "no box served /api/gateway/delivery or a fresh gateway snapshot;$det"
 elif [ "$FLEET_SSOT" = 0 ]; then
   # A violation found here is still real (the bad branch above stands), but
   # "no violation" over one box is not the fleet-wide assertion this leg names.

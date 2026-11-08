@@ -48,7 +48,25 @@ cmd="${!#}"
 # The conf_rate leg carries a liveness token since 2026-09-07 (echo HSUP; curl).
 # Every UP personality answers it; box-down stays unreachable for it too.
 case "$box" in box-down) exit 255 ;; esac
-case "$cmd" in *curl*) echo "HSUP"; [ -n "${FAKE_CURL_JSON:-}" ] && printf '%s' "$FAKE_CURL_JSON"; exit 0 ;; esac
+# A gateway-only box (moc3: gateway, no map by design) answers the leg from the
+# gateway-published snapshot file instead; FAKE_SNAP_JSON scripts that file's
+# content, emitted only when the leg asks for it (HSSNAP marker, 2026-11-07).
+# box-gwonly is a gateway-only box: :5000 never answers it, even when the rest
+# of the fleet's maps do (the mixed-fleet case a single-box run cannot reach).
+# FAKE_CURL_STATUS=500 imitates real curl: the error BODY reaches stdout only
+# when the leg forgot -f (r2 F1 — the map's JSON error envelope shadowed the
+# snapshot and read PASS).
+# FAKE_SSH_CUT truncates the conf_rate answer the way a dropped session does
+# (r3 F10): after_up = only the liveness token; after_snap = through HSSNAP.
+case "$cmd" in *curl*) echo "HSUP"
+  [ "${FAKE_SSH_CUT:-}" = after_up ] && [ "$box" = box-gwonly ] && exit 255
+  _cf=1; [ "${FAKE_CURL_STATUS:-200}" -ge 400 ] && [[ "$cmd" == *"curl -sf"* ]] && _cf=0
+  [ "$_cf" = 1 ] && [ "$box" != box-gwonly ] && [ -n "${FAKE_CURL_JSON:-}" ] && printf '%s' "$FAKE_CURL_JSON"
+  case "$cmd" in *HSSNAP*) echo; echo "HSSNAP"
+    [ "${FAKE_SSH_CUT:-}" = after_snap ] && [ "$box" = box-gwonly ] && exit 255
+    date +%s; [ -n "${FAKE_SNAP_JSON:-}" ] && printf '%s\n' "$FAKE_SNAP_JSON" ;; esac
+  case "$cmd" in *HSEND*) echo; echo "HSEND" ;; esac
+  exit 0 ;; esac
 case "$box" in
   box-down) exit 255 ;;                       # unreachable
   box-norepo)                                  # up; no repo, no watchdog UNIT
@@ -67,7 +85,7 @@ case "$box" in
       *WDSEP*) echo "$(date +%s)"; echo "active"; echo "loaded"; echo "---WDSEP---"
                echo "{\"ts\": $(date +%s), \"signals\": []}" ;;
     esac ;;
-  box-good)
+  box-good|box-gwonly)
     case "$cmd" in
       # The SHA leg asks per REPO: the twin leg's command names the sister
       # repo, and this box answers with THAT repo's head (finding 13 test).
@@ -137,7 +155,7 @@ run() {  # env: HONEST_BOXES / MESHFORGE_FLEET_HOSTS as needed
   # state must not reach a verdict (feedback_tests_must_pin_ambient_state).
   PATH="$SB:$PATH" HOME="$FAKE_HOME" XDG_STATE_HOME="" \
     MESHFORGE_REPO="$FAKE_REPO" FAKE_HEAD="$FAKE_HEAD" \
-    FAKE_CURL_JSON="${FAKE_CURL_JSON:-}" HONEST_WD_PATH="${HONEST_WD_PATH:-}" \
+    FAKE_CURL_JSON="${FAKE_CURL_JSON:-}" FAKE_SNAP_JSON="${FAKE_SNAP_JSON:-}" FAKE_CURL_STATUS="${FAKE_CURL_STATUS:-}" FAKE_SSH_CUT="${FAKE_SSH_CUT:-}" HONEST_SNAP_SRC="${HONEST_SNAP_SRC:-}" HONEST_WD_PATH="${HONEST_WD_PATH:-}" \
     HONEST_TWIN_REPO="${HONEST_TWIN_REPO:-$TMP/no-twin}" \
     FAKE_TWIN_REPO="${FAKE_TWIN_REPO:-}" FAKE_TWIN_HEAD="${FAKE_TWIN_HEAD:-}" \
     FAKE_BOX_HEAD="${FAKE_BOX_HEAD:-}" \
@@ -633,5 +651,90 @@ git -C "$FAKE_REPO" checkout -q - && git -C "$FAKE_REPO" reset -q --hard "$DD_TI
 out="$(FAKE_BOX_HEAD="$DD_SIDE" HONEST_BOXES="box-behind" run)"
 check "a box AHEAD/diverged (not an ancestor), even by audit files → FAIL" \
   "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q 'FAIL' && echo ok)"
+
+# ── gateway-only box: the conf_rate leg reads the SNAPSHOT (2026-11-07) ──
+# moc3 runs a gateway and no map BY DESIGN, so :5000 answers nothing and the
+# leg skipped it as "no map served here" — while its gateway published
+# confirmation_rate to ~/.local/share/meshforge/delivery_snapshot.json all
+# along (the watchdog probe has read that fallback since 08-09; this leg
+# never learned it — the 08-09 sibling-branch tell). "8 checked" read as
+# whole-fleet coverage with the one gateway-only box silently missing.
+_snap() { printf '{"schema": 1, "host": "x", "ts": %s, "snapshot": {"confirmation_rate": %s}}' "$1" "$2"; }
+NOW="$(date +%s)"
+out="$(HONEST_BOXES="box-good" FAKE_SNAP_JSON="$(_snap "$NOW" 0.981)" run)"
+check "gateway-only box is CHECKED from its snapshot, named with the rate" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep -q 'box-good:0.981(snapshot)' && echo ok)"
+check "and the leg passes on it (1 checked)" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep -q 'PASS.*1 checked' && echo ok)"
+out="$(HONEST_BOXES="box-good" FAKE_SNAP_JSON="$(_snap "$NOW" 1.64)" run)"
+check "a snapshot rate > 1.0 FAILS the leg — it is judged, not just listed" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep -q 'FAIL' && echo ok)"
+out="$(HONEST_BOXES="box-good" FAKE_SNAP_JSON="$(_snap "$((NOW - 3600))" 0.981)" run)"
+check "a STALE snapshot is not a live check — named, not counted" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep -q 'box-good:snapshot-stale' && echo ok)"
+check "and the stale rate is never printed as if live" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep -q 'box-good:0.981' || echo ok)"
+# review r1 F1/F9: the corpse BESIDE a healthy map box — a single-box run
+# forces UNKNOWN through checked=0 and so could never see this PASS.
+out="$(HONEST_BOXES="box-good box-gwonly" FAKE_CURL_JSON='{"confirmation_rate": 0.5}' \
+       FAKE_SNAP_JSON="$(_snap "$((NOW - 3600))" 0.981)" run)"
+check "stale gateway snapshot beside a healthy map box → UNKNOWN, never PASS" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep -q 'UNKNOWN' && echo ok)"
+check "and it names the gateway-only box as the gap" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep -q 'box-gwonly:snapshot-stale' && echo ok)"
+out="$(HONEST_BOXES="box-good box-gwonly" FAKE_CURL_JSON='{"confirmation_rate": 0.5}' \
+       FAKE_SNAP_JSON="$(_snap "$NOW" 0.981)" run)"
+check "fresh snapshot beside a map box → PASS, 2 checked, each by its own source" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep -E 'PASS.*2 checked' | grep 'box-good:0.500' | grep -q 'box-gwonly:0.981(snapshot)' && echo ok)"
+# review r1 F5/F9: OUR reader failing is UNKNOWN with its cause, never a skip.
+out="$(HONEST_BOXES="box-good box-gwonly" FAKE_CURL_JSON='{"confirmation_rate": 0.5}' \
+       FAKE_SNAP_JSON="$(_snap "$NOW" 0.981)" HONEST_SNAP_SRC="$TMP/no-src" run)"
+check "snapshot reader unimportable → UNKNOWN, named with the cause" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep 'UNKNOWN' | grep -q 'box-gwonly:snapshot-reader-unimportable(ModuleNotFoundError' && echo ok)"
+# review r1 F3: up, no map, no snapshot — named, not silently dropped.
+out="$(HONEST_BOXES="box-good box-gwonly" FAKE_CURL_JSON='{"confirmation_rate": 0.5}' run)"
+check "a box serving neither map nor snapshot is NAMED (box:-), not dropped" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep -q 'box-gwonly:-' && echo ok)"
+# review r1 F4: json accepts NaN; a non-finite rate is a dishonest display.
+out="$(HONEST_BOXES="box-good" FAKE_SNAP_JSON="$(_snap "$NOW" NaN)" run)"
+check "a NaN snapshot rate FAILS the leg" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep -q 'FAIL' && echo ok)"
+out="$(HONEST_BOXES="box-good" FAKE_CURL_JSON='{"confirmation_rate": NaN}' run)"
+check "a NaN API rate FAILS the leg (r>1.0 is False for NaN)" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep -q 'FAIL' && echo ok)"
+out="$(HONEST_BOXES="box-good" FAKE_SNAP_JSON='{"ts": "garbage", "snapshot": {}}' run)"
+check "a garbage-ts snapshot is named by its EXACT code (snapshot-no_ts)" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep 'UNKNOWN' | grep -q 'box-good:snapshot-no_ts' && echo ok)"
+# r2 F1: a failing map (HTTP 500 + JSON error body) must fall through to the
+# snapshot, as the watchdog does — here the snapshot's violation must be seen.
+out="$(HONEST_BOXES="box-good" FAKE_CURL_STATUS=500 \
+       FAKE_CURL_JSON='{"error": "delivery_counters_unavailable", "reason": "boom"}' \
+       FAKE_SNAP_JSON="$(_snap "$NOW" 1.64)" run)"
+check "map 5xx falls through to the snapshot (curl -f): its 1.64 FAILS the leg" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep 'FAIL' | grep -q 'box-good:VIOL=1.64(snapshot)' && echo ok)"
+# r2 F2: the API branch fail-OPENED on what it could not parse.
+for body in '<html>502 Bad Gateway</html>' 'null' '[]' '42' '{"error": "x"}' '{"other": 1}'; do
+  out="$(HONEST_BOXES="box-good box-gwonly" FAKE_CURL_JSON="$body" FAKE_SNAP_JSON="$(_snap "$NOW" 0.9)" run)"
+  check "API body [$body] → UNKNOWN (blind), never PASS/checked" \
+    "$(echo "$out" | grep -E 'conf_rate' | grep 'UNKNOWN' | grep -q 'box-good:api-' && echo ok)"
+done
+out="$(HONEST_BOXES="box-good" FAKE_CURL_JSON="{\"confirmation_rate\": 1$(printf '0%.0s' $(seq 400))}" run)"
+check "a 401-digit int rate FAILS (no float overflow swallowed into PASS)" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep -q 'FAIL' && echo ok)"
+# r3 F10: a session cut after the liveness token must not read "nothing here".
+for cut in after_up after_snap; do
+  out="$(HONEST_BOXES="box-good box-gwonly" FAKE_CURL_JSON='{"confirmation_rate": 0.5}' \
+         FAKE_SNAP_JSON="$(_snap "$NOW" 1.64)" FAKE_SSH_CUT="$cut" run)"
+  check "ssh cut $cut → UNKNOWN naming box-gwonly:truncated, never PASS" \
+    "$(echo "$out" | grep -E 'conf_rate' | grep 'UNKNOWN' | grep -q 'box-gwonly:truncated' && echo ok)"
+done
+# r2 F3: one value, one verdict, whichever source carried it.
+out_a="$(HONEST_BOXES="box-good" FAKE_CURL_JSON='{"confirmation_rate": "1.64"}' run)"
+out_s="$(HONEST_BOXES="box-good" FAKE_SNAP_JSON="$(_snap "$NOW" '"1.64"')" run)"
+check "a string rate FAILS from the API AND from the snapshot (same verdict)" \
+  "$(echo "$out_a" | grep -E 'conf_rate' | grep -q 'FAIL' && echo "$out_s" | grep -E 'conf_rate' | grep -q 'FAIL' && echo ok)"
+out="$(HONEST_BOXES="box-good" FAKE_SNAP_JSON="$(_snap "$NOW" 1.64)" FAKE_CURL_JSON='{"confirmation_rate": 0.5}' run)"
+check "the live :5000 API still wins over the snapshot when a map answers" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep -q 'box-good:0.500' && echo ok)"
 
 if [ "$fails" = 0 ]; then echo "ALL PASS"; exit 0; else echo "FAILED"; exit 1; fi

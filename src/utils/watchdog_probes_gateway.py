@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import socket
 import subprocess
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 from urllib.request import urlopen
 from urllib.error import URLError
 from http.client import HTTPException
@@ -100,20 +101,58 @@ def _read_gateway_state_file(
             wrapped = json.load(fh)
     except (OSError, ValueError, TypeError):
         return None, f"{api} unreachable and {noun} state file unreadable"
-    if not isinstance(wrapped, dict) or not isinstance(
-            wrapped.get(key), dict):
+    payload, code, age = judge_gateway_state(wrapped, now=now, key=key)
+    if code == "misshaped":
         return None, f"{api} unreachable and {noun} state file misshaped"
-    ts = wrapped.get("ts")
-    if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+    if code == "no_ts":
         return None, f"{api} unreachable and {noun} state ts missing/garbage"
-    age = now - float(ts)
-    if age < -_DELIVERY_SNAPSHOT_FUTURE_SLOP_S:
+    if code == "future":
         return None, (f"{api} unreachable and {noun} state ts is in the "
                       "future — clock artifact, not an observation")
-    if age > _DELIVERY_SNAPSHOT_FRESH_S:
+    if code == "no_clock":
+        return None, f"{api} unreachable and judging clock non-finite"
+    if code == "stale":
         return None, (f"{api} unreachable and {noun} state stale "
                       f"({int(age)}s) — gateway not publishing")
-    return wrapped[key], None
+    return payload, None
+
+
+#: Closed vocabulary of why a gateway-published state envelope cannot testify.
+#: honest_status.sh's conf_rate leg prints these codes verbatim as
+#: ``snapshot-<code>`` and treats every one as BLIND (no per-code switch to
+#: drift); pinned by test_gateway_state_judge.py.
+GATEWAY_STATE_BLIND_CODES = ("misshaped", "no_ts", "no_clock", "future", "stale")
+
+
+def judge_gateway_state(
+    wrapped: Any, *, now: float, key: str,
+) -> Tuple[Optional[dict], Optional[str], Optional[float]]:
+    """``(payload, blind_code, age_s)`` for an already-parsed state envelope.
+
+    The ONE freshness/shape judgement for ``{schema, host, ts, <key>: {...}}``
+    envelopes, shared by the watchdog's file fallback above and by
+    honest_status.sh, which reads the file over ssh and judges it on the
+    BOX's clock (2026-11-07). ``blind_code`` is one of
+    :data:`GATEWAY_STATE_BLIND_CODES`, or None when the payload testifies.
+    """
+    if (not isinstance(now, (int, float)) or isinstance(now, bool)
+            or not math.isfinite(now)):
+        # A NaN "now" made both age comparisons False → a corpse testified
+        # (r2 F4). The shared API refuses it; time.time() never trips this.
+        return None, "no_clock", None
+    if not isinstance(wrapped, dict) or not isinstance(
+            wrapped.get(key), dict):
+        return None, "misshaped", None
+    ts = wrapped.get("ts")
+    if (not isinstance(ts, (int, float)) or isinstance(ts, bool)
+            or not math.isfinite(float(ts))):
+        return None, "no_ts", None
+    age = now - float(ts)
+    if age < -_DELIVERY_SNAPSHOT_FUTURE_SLOP_S:
+        return None, "future", age
+    if age > _DELIVERY_SNAPSHOT_FRESH_S:
+        return None, "stale", age
+    return wrapped[key], None, age
 
 
 def _fetch_delivery_payload(
