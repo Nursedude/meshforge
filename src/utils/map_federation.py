@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from utils.node_history import _origin_priority
-from utils.peer_radio_heard import ingest_radio_ts
+from utils.peer_radio_heard import ingest_radio_ts, peer_radio_trust
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +190,115 @@ class FederationSnapshot:
     peer_status: Dict[str, FederationPeerStatus] = field(default_factory=dict)
     last_sync: Optional[float] = None      # most recent successful peer sync
     last_attempt: Optional[float] = None   # most recent attempt across all peers
+
+
+NO_WINDOW_REASON = "network has no online window on this box"
+
+
+def witness_networks(known_networks: Any) -> set:
+    """The networks a peer's radio may be judged on: the collector's
+    online-window vocabulary plus meshtastic. ONE definition for the row and
+    the node verdict (review r2: meshcore was judged by the verdict with a
+    default window while the row called it unknown)."""
+    return set(known_networks or ()) | {"meshtastic"}
+
+
+def peer_status_radio_trust(s: "FederationPeerStatus", net: Optional[str],
+                            now: float, window_for: Callable[[str], float],
+                            known_networks: Any) -> Tuple[bool, str]:
+    """(trusted, reason) for peer ``s``'s radio on ``net`` — the ONE call both
+    the geojson merge and the /api/status block make (MAP-H H14). A network
+    outside the vocabulary is REFUSED with that reason, never judged with
+    some default window (hfm #3); ``window_for`` is not even asked."""
+    if net not in witness_networks(known_networks):
+        return False, NO_WINDOW_REASON
+    window_s = window_for(net)
+    return peer_radio_trust(
+        s.radio_exported, (s.radio_newest_by_network or {}).get(net), now,
+        window_s, ok=s.ok, in_backoff=s.in_backoff)
+
+
+def serialize_peer_status(s: "FederationPeerStatus",
+                          trust_for: Callable[["FederationPeerStatus", str],
+                                              Tuple[bool, str]],
+                          known_networks: Any,
+                          *, include_claw: bool = True) -> Dict[str, Any]:
+    """One FederationPeerStatus -> one ``federation.peer_status[]`` row.
+
+    The ONLY serializer: /api/status and the geojson federation block both
+    call it, so the two views cannot drift again (they did — /api/status
+    lacked the H14 radio witness, geojson lacked resolution_method;
+    honest_failure_modes #5). ``trust_for(s, net)`` = (ok, reason) for this
+    peer's radio on ``net`` (the geojson merge passes its memo, so the
+    peer_heard verdicts and this row are one computation).
+
+    The witness is judged only for ``known_networks`` (the collector's
+    online-window vocabulary) plus meshtastic; any other network a peer
+    reports is COUNTED, not judged and not absorbed (hfm #3). A trust call
+    that raises yields that network ``ok: False`` with the reason said — the
+    row, and every other peer's row, survive (hfm #1/#9)."""
+    reported = set(s.radio_newest_by_network or {})
+    known = witness_networks(known_networks)
+    witness: Dict[str, Dict[str, Any]] = {}
+    for net in sorted((reported & known) | {"meshtastic"}):
+        try:
+            ok, reason = trust_for(s, net)
+        except Exception as e:  # noqa: BLE001 — said in the row, never fatal
+            logger.warning("radio witness for %s/%s unjudgeable: %s",
+                           s.hostname, net, e)
+            ok, reason = False, "witness window unreadable on this box"
+        witness[net] = {"ok": ok, "reason": reason}
+    row = {
+        "hostname": s.hostname,
+        "peer_name": s.peer_name,
+        # fleet_naming method for how the operator's entry became this
+        # hostname (Arc 2): dns/bare/ip_fallback/ip_literal/unresolved;
+        # None when the naming layer isn't wired.
+        "resolution_method": getattr(s, "resolution_method", None),
+        "ok": s.ok,
+        "last_sync": s.last_sync,
+        "last_attempt": s.last_attempt,
+        "last_error": s.last_error,
+        "last_count": s.last_count,
+        "last_latency_ms": s.last_latency_ms,
+        "consecutive_failures": s.consecutive_failures,
+        # Backoff state (Issue #59/#65): a peer intentionally not polled
+        # stays a labeled row, never a mysteriously-absent one — read by the
+        # mini-dudeai FederationPeerSource and the operator.
+        "in_backoff": s.in_backoff,
+        "backoff_multiplier": s.backoff_multiplier,
+        "next_eligible_poll_ts": s.next_eligible_poll_ts,
+        # H14: is this peer's radio a witness right now, per network, and
+        # why not.
+        "radio_newest_by_network": {
+            n: t for n, t in (s.radio_newest_by_network or {}).items()
+            if n in known},
+        "radio_witness": witness,
+        "radio_unknown_networks": len(reported - known),
+    }
+    if include_claw:
+        # Federated dude-claw edge telemetry (None on claw-less peers) — read
+        # by the node_map claw card from /api/status. Left out of the geojson
+        # row: no geojson consumer reads it, and that payload is the hot one.
+        row["claw"] = getattr(s, "claw", None)
+    return row
+
+
+def federation_envelope(federation: Any, snap: "FederationSnapshot",
+                        non_federating: Any,
+                        peer_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The keys BOTH federation blocks (/api/status and geojson) carry when
+    federation is enabled; each builder adds its own extras on top.
+    ``non_federating`` rides here so a peer deliberately not polled never
+    shares the silence of one watched and fine (hfm #9, 2026-09-02)."""
+    return {
+        "enabled": True,
+        "peers": list(federation.peers),
+        "peer_status": peer_rows,
+        "last_sync": snap.last_sync,
+        "last_attempt": snap.last_attempt,
+        "non_federating": dict(non_federating or {}),
+    }
 
 
 def get_local_hostnames() -> List[str]:

@@ -16,6 +16,42 @@ import time
 
 logger = logging.getLogger(__name__)
 
+# (key, repr(value)) pairs already warned about as unusable — once per distinct
+# bad value, not per call (the getters run on every geojson/status build).
+_WARNED_BAD_THRESHOLD: set = set()
+
+# Upper bound on any online window: one year. Above it a window is not a
+# window (1e30 min "judges" every frozen peer fresh; 1e308 * 60 overflows
+# int() and crashes collection) — review 11-08 r3.
+MAX_THRESHOLD_MINUTES = 365 * 24 * 60
+
+
+def _usable_minutes(key: str, minutes, default):
+    """``minutes`` if it is a positive finite number, else ``default``.
+
+    A setting the author cannot have meant (hfm #3) — a string ("120" * 60
+    is a 180-digit window that passes every frozen peer as a witness), a
+    bool, null, NaN/inf, <= 0 — is refused LOUDLY (a WARNING per distinct
+    bad value; the journal line is the witness) and the default is used
+    (review 11-08 r1 F2, r2: both threshold getters share this)."""
+    try:
+        usable = (not isinstance(minutes, bool)
+                  and isinstance(minutes, (int, float))
+                  and math.isfinite(minutes)
+                  and 0 < minutes <= MAX_THRESHOLD_MINUTES)
+    except OverflowError:  # a 400-digit JSON int overflows inside isfinite
+        usable = False
+    if not usable:
+        mark = (key, repr(minutes)[:80])
+        if mark not in _WARNED_BAD_THRESHOLD:
+            _WARNED_BAD_THRESHOLD.add(mark)
+            logger.warning(
+                "settings %s=%s is not a number of minutes in (0, %d] — "
+                "using the default %s min", key, mark[1],
+                MAX_THRESHOLD_MINUTES, default)
+        return default
+    return minutes
+
 # A last_heard more than this many seconds in the FUTURE is implausible (upstream
 # clock skew / a hostile injected stamp) and must not read as "online". Matches
 # the ±300s tolerance used by _map_collector_meshtastic and cloud_map_freshness.
@@ -98,7 +134,8 @@ class MapCollectorConfigMixin:
             minutes = settings.get("online_status_threshold_minutes", self.DEFAULT_ONLINE_THRESHOLD_MINUTES)
         else:
             minutes = self.DEFAULT_ONLINE_THRESHOLD_MINUTES
-        return int(minutes * 60)
+        return int(_usable_minutes("online_status_threshold_minutes", minutes,
+                                   self.DEFAULT_ONLINE_THRESHOLD_MINUTES) * 60)
 
     def set_online_threshold_minutes(self, minutes: int) -> None:
         """Set online status threshold in minutes.
@@ -131,20 +168,26 @@ class MapCollectorConfigMixin:
             Threshold in seconds
         """
         key = f"{source}_threshold_minutes"
-        defaults = {
+        default = self._threshold_defaults().get(
+            source, self.DEFAULT_ONLINE_THRESHOLD_MINUTES)
+        settings = getattr(self, "_settings", None)
+        minutes = settings.get(key, default) if settings else default
+        return int(_usable_minutes(key, minutes, default) * 60)
+
+    def _threshold_defaults(self) -> dict:
+        """{source: default minutes} — the ONE vocabulary of sources that own
+        an online window (threshold_sources() reads it)."""
+        return {
             "meshtastic": self.DEFAULT_MESHTASTIC_THRESHOLD_MINUTES,
             "mqtt": self.DEFAULT_MQTT_THRESHOLD_MINUTES,
             "rns": self.DEFAULT_RNS_THRESHOLD_MINUTES,
             "aredn": self.DEFAULT_AREDN_THRESHOLD_MINUTES,
             "public_fallback": self.DEFAULT_PUBLIC_FALLBACK_THRESHOLD_MINUTES,
         }
-        default = defaults.get(source, self.DEFAULT_ONLINE_THRESHOLD_MINUTES)
-        settings = getattr(self, "_settings", None)
-        if settings:
-            minutes = settings.get(key, default)
-        else:
-            minutes = default
-        return int(minutes * 60)
+
+    def threshold_sources(self) -> tuple:
+        """Network names that own an online window."""
+        return tuple(self._threshold_defaults())
 
     @staticmethod
     def _coerce_epoch(v) -> float:

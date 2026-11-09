@@ -13,7 +13,10 @@ import logging
 import time
 from typing import Any, Dict, List
 
-from utils.peer_radio_heard import peer_heard_verdict, peer_radio_trust
+from utils.map_federation import (
+    federation_envelope, peer_status_radio_trust, serialize_peer_status,
+    witness_networks)
+from utils.peer_radio_heard import peer_heard_verdict
 
 logger = logging.getLogger(__name__)
 
@@ -303,14 +306,18 @@ class FederationDataCollectorMixin:
         peer_names = {host: st.peer_name for host, st in snap.peer_status.items()}
         trust_by_net: Dict[str, Dict[str, tuple]] = {}
 
+        known_nets = self.threshold_sources()
+
         def _trust_for(net):
+            # One vocabulary for the node verdict and the peer row: a network
+            # with no online window here is refused (NO_WINDOW_REASON) by
+            # peer_status_radio_trust, never judged with a default window.
             if net not in trust_by_net:
-                window_s = self.get_source_threshold_seconds(net)
+                window_s = (self.get_source_threshold_seconds(net)
+                            if net in witness_networks(known_nets) else None)
                 trust_by_net[net] = (window_s, {
-                    host: peer_radio_trust(
-                        st.radio_exported,
-                        (st.radio_newest_by_network or {}).get(net), now, window_s,
-                        ok=st.ok, in_backoff=st.in_backoff)
+                    host: peer_status_radio_trust(
+                        st, net, now, lambda _n: window_s, known_nets)
                     for host, st in snap.peer_status.items()})
             return trust_by_net[net]
 
@@ -418,45 +425,18 @@ class FederationDataCollectorMixin:
                 p for i, p in enumerate(position_less) if i not in position_less_drop
             ]
 
-        peer_status_list = []
-        for s in snap.peer_status.values():
-            peer_status_list.append({
-                "hostname": s.hostname,
-                "peer_name": s.peer_name,
-                "ok": s.ok,
-                "last_sync": s.last_sync,
-                "last_attempt": s.last_attempt,
-                "last_error": s.last_error,
-                "last_count": s.last_count,
-                "last_latency_ms": s.last_latency_ms,
-                "consecutive_failures": s.consecutive_failures,
-                # Backoff state (Issue #59/#65). Present on FederationPeerStatus
-                # but never plumbed to /api/status until the 2026-07-05 QA audit
-                # — so the mini-dudeai FederationPeerSource (reads in_backoff /
-                # backoff_multiplier) and the operator couldn't tell "actively
-                # failing" from "in backoff, not polled for the next hour".
-                "in_backoff": s.in_backoff,
-                "backoff_multiplier": s.backoff_multiplier,
-                "next_eligible_poll_ts": s.next_eligible_poll_ts,
-                # H14: is this peer's radio a witness right now, per network,
-                # and why not. Every network it reports, plus meshtastic.
-                "radio_newest_by_network": dict(s.radio_newest_by_network or {}),
-                "radio_witness": {
-                    net: {"ok": _trust_for(net)[1].get(s.hostname, (False, ""))[0],
-                          "reason": _trust_for(net)[1].get(s.hostname, (False, ""))[1]}
-                    for net in sorted(set(s.radio_newest_by_network or {}) | {"meshtastic"})
-                },
-            })
-
-        return {
-            "enabled": True,
-            "peers": list(self._federation.peers),
-            "peer_status": peer_status_list,
-            "last_sync": snap.last_sync,
-            "last_attempt": snap.last_attempt,
+        rows = [
+            serialize_peer_status(
+                s, lambda st, net: _trust_for(net)[1].get(st.hostname, (False, "")),
+                known_nets, include_claw=False)
+            for s in snap.peer_status.values()
+        ]
+        block = federation_envelope(
+            self._federation, snap, getattr(self, "_non_federating", {}), rows)
+        block.update({
             "by_network": by_network,
             "total": with_pos + without_pos,
             "with_position": with_pos,
             "without_position": without_pos,
-            "non_federating": dict(getattr(self, "_non_federating", {}) or {}),
-        }
+        })
+        return block

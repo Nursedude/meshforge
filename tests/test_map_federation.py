@@ -967,11 +967,11 @@ class TestResolutionMethodPlumbing:
                 .resolution_method == "dns")
 
     def test_serializer_exposes_resolution_method(self):
-        from utils._map_status_endpoints import _serialize_peer_status
-        d = _serialize_peer_status(FederationPeerStatus(
-            hostname="peer1.example.internal", resolution_method="dns"))
+        from utils.map_federation import serialize_peer_status
+        d = serialize_peer_status(FederationPeerStatus(
+            hostname="peer1.example.internal", resolution_method="dns"), lambda _s, _n: (True, ""), ())
         assert d["resolution_method"] == "dns"
-        d2 = _serialize_peer_status(FederationPeerStatus(hostname="x"))
+        d2 = serialize_peer_status(FederationPeerStatus(hostname="x"), lambda _s, _n: (True, ""), ())
         assert d2["resolution_method"] is None
 
     def test_unmapped_peer_keeps_name_none_through_poll(self):

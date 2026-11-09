@@ -158,3 +158,27 @@ def test_collector_absent_does_not_crash():
     block = h.payload()["federation"]
     assert block["enabled"] is False
     assert block["non_federating"] == {}
+
+
+def test_collector_without_window_methods_keeps_peer_rows():
+    """11-08: a collector that cannot name its online-window vocabulary (or
+    its windows) must degrade the radio-witness CELLS, never erase
+    peer_status — mini reads an absent list as a quiet fleet (hfm #1/#9)."""
+    from utils.map_federation import FederationPeerStatus
+    snap = MagicMock()
+    snap.last_sync = None
+    snap.last_attempt = None
+    snap.by_node = {}
+    snap.peer_status = {"moc2": FederationPeerStatus(
+        hostname="moc2", peer_name="moc2", ok=False, consecutive_failures=4)}
+    fed = MagicMock()
+    fed.peers = ["moc2"]
+    fed.get_snapshot.return_value = snap
+    c = _collector(federation=fed, non_federating={})
+
+    block = _Harness(c).payload()["federation"]
+    assert "error" not in block
+    (row,) = block["peer_status"]
+    assert row["hostname"] == "moc2" and row["consecutive_failures"] == 4
+    assert row["radio_witness"]["meshtastic"] == {
+        "ok": False, "reason": "witness window unreadable on this box"}

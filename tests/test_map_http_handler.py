@@ -370,17 +370,17 @@ class TestFederationClawSerialization:
     moc2's claw, not just moc2's own map."""
 
     def test_peer_status_dict_includes_claw(self):
-        from utils._map_status_endpoints import _serialize_peer_status
+        from utils.map_federation import serialize_peer_status
         from utils.map_federation import FederationPeerStatus
         claw = {"installed": True, "ok": True, "device": "dudeclaw-01"}
-        d = _serialize_peer_status(FederationPeerStatus(
-            hostname="moc2", peer_name="moc2", ok=True, claw=claw))
+        d = serialize_peer_status(FederationPeerStatus(
+            hostname="moc2", peer_name="moc2", ok=True, claw=claw), lambda _s, _n: (True, ""), ())
         assert d["hostname"] == "moc2" and d["claw"] == claw
 
     def test_peer_status_dict_claw_none_by_default(self):
-        from utils._map_status_endpoints import _serialize_peer_status
+        from utils.map_federation import serialize_peer_status
         from utils.map_federation import FederationPeerStatus
-        d = _serialize_peer_status(FederationPeerStatus(hostname="moc1"))
+        d = serialize_peer_status(FederationPeerStatus(hostname="moc1"), lambda _s, _n: (True, ""), ())
         assert d["claw"] is None
         # sanity: still carries the pre-existing fields
         assert "in_backoff" in d and "consecutive_failures" in d

@@ -34,6 +34,8 @@ from utils.safe_import import safe_import
 # First-party direct import (MF005): non-contending LISTEN check that replaces
 # the old contending connect_ex(:4403) probe in _get_radio_status_summary (#75).
 from utils._port_detection import tcp_port_listening
+from utils.map_federation import (
+    federation_envelope, peer_status_radio_trust, serialize_peer_status)
 
 _get_connection_manager, _ConnectionMode, _HAS_MESHTASTIC_CONN = safe_import(
     'utils.meshtastic_connection', 'get_connection_manager', 'ConnectionMode'
@@ -48,36 +50,48 @@ from utils.status_blocks import (  # noqa: E402,F401
     radio_connection_from_probe, watchdog_block_from_payload)
 
 
-def _serialize_peer_status(s: Any) -> Dict[str, Any]:
-    """Serialize one FederationPeerStatus into the /api/status.federation
-    peer_status[] shape. Extracted so the field set (and the federated `claw`
-    block the node_map claw card reads) is unit-testable without standing up
-    the whole status handler."""
-    return {
-        "hostname": s.hostname,
-        "peer_name": s.peer_name,
-        # fleet_naming method for how the operator's entry became this
-        # hostname (Arc 2): dns/bare/ip_fallback/ip_literal/unresolved;
-        # None when the naming layer isn't wired.
-        "resolution_method": getattr(s, "resolution_method", None),
-        "ok": s.ok,
-        "last_sync": s.last_sync,
-        "last_attempt": s.last_attempt,
-        "last_error": s.last_error,
-        "last_count": s.last_count,
-        "last_latency_ms": s.last_latency_ms,
-        "consecutive_failures": s.consecutive_failures,
-        # Backoff state (Issue #59): a peer the collector is intentionally
-        # not polling right now still appears here, with these fields set,
-        # so the operator sees a labeled row rather than a mysteriously-
-        # absent peer.
-        "in_backoff": s.in_backoff,
-        "backoff_multiplier": s.backoff_multiplier,
-        "next_eligible_poll_ts": s.next_eligible_poll_ts,
-        # Federated dude-claw edge telemetry (None on claw-less peers) — read
-        # by the node_map claw card so the federator shows a peer's claw.
-        "claw": getattr(s, "claw", None),
-    }
+def build_federation_status(collector: Any,
+                            now: Optional[float] = None) -> Dict[str, Any]:
+    """The ``/api/status.federation`` block. Its envelope and rows come from
+    the SAME functions the geojson federation block uses
+    (``map_federation.federation_envelope`` / ``serialize_peer_status``),
+    judged with this collector's per-network online windows — so the two
+    views of one peer cannot drift (hfm #5).
+
+    `non_federating` rides EVERY branch (2026-09-02): a peer we deliberately
+    stopped watching must never occupy the same silence as one that is
+    watched and fine (honest_failure_modes #9)."""
+    non_fed = dict(getattr(collector, "_non_federating", {}) or {}) \
+        if collector else {}
+    if not (collector and getattr(collector, "_federation", None)):
+        return {"enabled": False, "peers": [], "peer_status": [],
+                "non_federating": non_fed}
+    try:
+        snap = collector._federation.get_snapshot()
+        t = time.time() if now is None else now
+
+        # The witness is optional: a collector that cannot name its window
+        # vocabulary degrades the ROWS (meshtastic only, each trust call
+        # guarded in serialize_peer_status), never the block (r1 F1, 11-08).
+        try:
+            known = collector.threshold_sources()
+        except Exception as e:  # noqa: BLE001 — said in the log, rows survive
+            logger.warning("federation status: window vocabulary unreadable: %s", e)
+            known = ()
+
+        def _trust(st, net):
+            return peer_status_radio_trust(
+                st, net, t, collector.get_source_threshold_seconds, known)
+
+        rows = [serialize_peer_status(s, _trust, known)
+                for s in snap.peer_status.values()]
+        block = federation_envelope(collector._federation, snap, non_fed, rows)
+        block["federated_node_count"] = len(snap.by_node)
+        return block
+    except Exception as e:
+        logger.warning(f"federation status lookup failed: {e}")
+        return {"enabled": True, "error": str(e)[:200],
+                "non_federating": non_fed}
 
 
 def _read_deployment_role(app_name: str) -> Optional[str]:
@@ -292,40 +306,9 @@ class StatusEndpointsMixin:
         # Federation health (Issue #49 follow-up). Surfaces per-peer
         # status so monitoring can alert on stale federation: a peer
         # in `consecutive_failures > 3` for >5min means we're missing
-        # whatever directory entries that box was contributing.
-        # `non_federating` rides EVERY branch (2026-09-02). A peer whose
-        # declared role serves no map is dropped from the poll list before the
-        # collector is built, so it vanishes from `peers` and `peer_status`
-        # entirely — and a peer we deliberately stopped watching must never
-        # occupy the same silence as one that is watched and fine
-        # (honest_failure_modes #9). This block is built INDEPENDENTLY of
-        # _merge_federation's; both are consumers of the same fact, so both
-        # carry the key or the operator's view and the geojson disagree.
-        non_fed = dict(getattr(self.collector, "_non_federating", {}) or {}) \
-            if self.collector else {}
-        if self.collector and getattr(self.collector, "_federation", None):
-            try:
-                snap = self.collector._federation.get_snapshot()
-                status["federation"] = {
-                    "enabled": True,
-                    "peers": list(self.collector._federation.peers),
-                    "last_sync": snap.last_sync,
-                    "last_attempt": snap.last_attempt,
-                    "federated_node_count": len(snap.by_node),
-                    "non_federating": non_fed,
-                    "peer_status": [
-                        _serialize_peer_status(s)
-                        for s in snap.peer_status.values()
-                    ],
-                }
-            except Exception as e:
-                logger.debug(f"federation status lookup failed: {e}")
-                status["federation"] = {"enabled": True, "error": str(e)[:200],
-                                        "non_federating": non_fed}
-        else:
-            status["federation"] = {"enabled": False, "peers": [],
-                                    "peer_status": [],
-                                    "non_federating": non_fed}
+        # whatever directory entries that box was contributing. Rows share
+        # ONE serializer with _merge_federation (see build_federation_status).
+        status["federation"] = build_federation_status(self.collector)
 
         # Include radio connection status + LOCAL radio config
         # (helps operators diff heterogeneous fleet boxes — e.g. LongFast vs SHORT_TURBO)

@@ -745,3 +745,262 @@ class TestReviewRound4Guards:
                           lambda self, f, pl, *a, **k: {}):
             c.collect(max_age_seconds=0)
         assert _dir_row(c._history, "!0000e1e1")["radio_heard"] is None
+
+
+class TestOnePeerStatusSerializer:
+    """The /api/status federation block and the geojson federation block
+    are two consumers of one FederationPeerStatus. They drifted: /api/status
+    lacked radio_newest_by_network / radio_witness (H14), and geojson lacked
+    resolution_method. ONE serializer + ONE envelope now feed both (hfm #5)."""
+
+    def _peer(self, now):
+        return _st("10.0.0.2", "moc2", now - 30, resolution_method="dns",
+                   claw={"installed": True})
+
+    def test_status_block_carries_radio_witness(self, collector):
+        from utils._map_status_endpoints import build_federation_status
+        now = _time.time()
+        _stub(collector, {}, {"10.0.0.2": self._peer(now)})
+        block = build_federation_status(collector, now=now)
+        (row,) = block["peer_status"]
+        assert row["radio_newest_by_network"]["meshtastic"] == pytest.approx(now - 30)
+        assert row["radio_witness"]["meshtastic"] == {"ok": True, "reason": ""}
+        assert row["claw"] == {"installed": True}     # /api/status keeps claw
+
+    def test_status_block_says_why_not_a_witness(self, collector):
+        from utils._map_status_endpoints import build_federation_status
+        now = _time.time()
+        _stub(collector, {}, {"moc2": _st("moc2", "moc2", now - 478 * 3600)})
+        (row,) = build_federation_status(collector, now=now)["peer_status"]
+        assert row["radio_witness"]["meshtastic"]["ok"] is False
+        assert "frozen clock" in row["radio_witness"]["meshtastic"]["reason"]
+
+    def test_both_builders_emit_the_same_row_and_envelope(self, collector):
+        from utils._map_status_endpoints import build_federation_status
+        now = _time.time()
+        _stub(collector, {}, {"10.0.0.2": self._peer(now)})
+        status = build_federation_status(collector, now=now)
+        geo = collector._merge_federation({}, [])
+        status_row = dict(status["peer_status"][0])
+        assert status_row.pop("claw") == {"installed": True}
+        assert status_row == geo["peer_status"][0]
+        assert "claw" not in geo["peer_status"][0]   # hot payload stays lean
+        assert geo["peer_status"][0]["resolution_method"] == "dns"
+        for k in ("enabled", "peers", "last_sync", "last_attempt",
+                  "non_federating"):
+            assert status[k] == geo[k], k
+
+    def test_threshold_raise_keeps_every_row(self, collector):
+        """review 11-08 F1: the witness is optional — a window lookup that
+        raises must not erase peer_status (mini reads [] as a quiet fleet)."""
+        from utils._map_status_endpoints import build_federation_status
+        now = _time.time()
+        _stub(collector, {}, {"a": _st("a", "a", now - 30),
+                              "b": _st("b", "b", None, ok=False)})
+        with patch.object(collector, "get_source_threshold_seconds",
+                          side_effect=TypeError("bad window")):
+            block = build_federation_status(collector, now=now)
+        assert "error" not in block
+        rows = {r["hostname"]: r for r in block["peer_status"]}
+        assert set(rows) == {"a", "b"}
+        w = rows["a"]["radio_witness"]["meshtastic"]
+        assert w == {"ok": False, "reason": "witness window unreadable on this box"}
+        assert rows["b"]["ok"] is False                 # health row survives
+
+    def test_unknown_network_counted_not_judged(self, collector):
+        """review 11-08 F3: a peer's foreign network names are counted, never
+        judged with a default window or allowed to grow the row."""
+        from utils._map_status_endpoints import build_federation_status
+        now = _time.time()
+        st = FederationPeerStatus(
+            hostname="p", peer_name="p", ok=True, radio_exported=True,
+            radio_newest_by_network={"meshtastic": now - 30, "rns": now - 30,
+                                     **{f"x{i}": now for i in range(50)}})
+        _stub(collector, {}, {"p": st})
+        (row,) = build_federation_status(collector, now=now)["peer_status"]
+        assert set(row["radio_witness"]) == {"meshtastic", "rns"}
+        assert set(row["radio_newest_by_network"]) == {"meshtastic", "rns"}
+        assert row["radio_unknown_networks"] == 50
+
+    def test_status_block_disabled_and_error_shapes_kept(self, collector):
+        from utils._map_status_endpoints import build_federation_status
+        collector._federation = None
+        assert build_federation_status(collector)["enabled"] is False
+        assert build_federation_status(None)["peer_status"] == []
+        fc = MagicMock(spec=FederationCollector)
+        fc.get_snapshot.side_effect = RuntimeError("boom")
+        collector._federation = fc
+        err = build_federation_status(collector)
+        assert err["enabled"] is True and "boom" in err["error"]
+        assert "non_federating" in err
+
+
+class TestThresholdSettingValidation:
+    """review 11-08 F2: `"120" * 60` is a 180-digit window that passes every
+    frozen peer as a witness. Unusable settings fall back to the default."""
+
+    @pytest.mark.parametrize("bad", ["120", True, None, float("nan"),
+                                     float("inf"), 0, -5, [120]])
+    def test_bad_value_uses_source_default(self, collector, bad):
+        default = collector.get_source_threshold_seconds("meshtastic")
+        collector._settings.set("meshtastic_threshold_minutes", bad)
+        assert collector.get_source_threshold_seconds("meshtastic") == default
+
+    def test_good_value_still_honoured(self, collector):
+        collector._settings.set("meshtastic_threshold_minutes", 30)
+        assert collector.get_source_threshold_seconds("meshtastic") == 1800
+        collector._settings.set("meshtastic_threshold_minutes", 2.5)
+        assert collector.get_source_threshold_seconds("meshtastic") == 150
+
+    def test_vocabulary_is_the_defaults(self, collector):
+        assert set(collector.threshold_sources()) == {
+            "meshtastic", "mqtt", "rns", "aredn", "public_fallback"}
+
+
+class TestReviewRound2Seam:
+    """review 11-08 r2 (Fable by running): one witness vocabulary for the
+    node verdict and the peer row; per-peer trust; per-source windows."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_warn_set(self):
+        import utils._map_collector_config as cfg
+        cfg._WARNED_BAD_THRESHOLD.clear()
+        yield
+        cfg._WARNED_BAD_THRESHOLD.clear()
+
+    def test_meshcore_refused_by_verdict_and_row_alike(self, collector):
+        """r2 #1: the verdict judged meshcore 'heard' with a default window
+        while the row called the network unknown."""
+        now = _time.time()
+        _stub(collector, {("meshcore", "meshcore:ab"): {
+            "id": "meshcore:ab", "network": "meshcore", "lat": 19.5,
+            "lon": -155.0, "last_seen": now - 30, "source_origin": "local_radio",
+            "federated_from": "ma1", "seen_by_peers": ["ma1"],
+            "radio_heard_by": {"ma1": now - 30}}},
+            {"ma1": _st("ma1", "ma1", now - 30, net="meshcore")})
+        features: dict = {}
+        block = collector._merge_federation(features, [])
+        (feat,) = features.values()
+        ph = feat["properties"]["peer_heard"]
+        assert ph["state"] == "unobservable"
+        assert "no online window" in ph["reason"]
+        row = block["peer_status"][0]
+        assert row["radio_unknown_networks"] == 1
+        assert "meshcore" not in row["radio_witness"]
+
+    def test_radio_less_peer_still_gets_meshtastic_row(self, collector):
+        """r2 mutant F: the implicit meshtastic row is the answer to 'is
+        this peer a witness at all' for a peer with no rows."""
+        from utils._map_status_endpoints import build_federation_status
+        _stub(collector, {}, {"p": _st("p", "p", None)})
+        (row,) = build_federation_status(collector)["peer_status"]
+        assert row["radio_witness"]["meshtastic"] == {
+            "ok": False, "reason": "peer has no radio-heard rows on this network"}
+
+    def test_status_judges_each_network_with_its_own_window(self, collector):
+        """r2 mutant J: rns (30 min) heard 45 min ago is stale, while the
+        same age on meshtastic (120 min) is fresh."""
+        from utils._map_status_endpoints import build_federation_status
+        now = _time.time()
+        st = FederationPeerStatus(
+            hostname="p", peer_name="p", ok=True, radio_exported=True,
+            radio_newest_by_network={"meshtastic": now - 2700, "rns": now - 2700})
+        _stub(collector, {}, {"p": st})
+        (row,) = build_federation_status(collector, now=now)["peer_status"]
+        assert row["radio_witness"]["meshtastic"]["ok"] is True
+        assert row["radio_witness"]["rns"]["ok"] is False
+
+    def test_two_peers_keep_their_own_trust_in_both_builders(self, collector):
+        """r2 mutant K: trust_for must key on the peer, not the first one."""
+        from utils._map_status_endpoints import build_federation_status
+        now = _time.time()
+        _stub(collector, {}, {"fresh": _st("fresh", "fresh", now - 30),
+                              "frozen": _st("frozen", "frozen", now - 478 * 3600)})
+        status = {r["hostname"]: r for r in
+                  build_federation_status(collector, now=now)["peer_status"]}
+        geo = {r["hostname"]: r for r in
+               collector._merge_federation({}, [])["peer_status"]}
+        for rows in (status, geo):
+            assert rows["fresh"]["radio_witness"]["meshtastic"]["ok"] is True
+            assert rows["frozen"]["radio_witness"]["meshtastic"]["ok"] is False
+
+    @pytest.mark.parametrize("source,default_min", [
+        ("rns", 30), ("aredn", 60), ("mqtt", 15), ("public_fallback", 240)])
+    def test_bad_value_falls_back_to_THAT_sources_default(
+            self, collector, source, default_min):
+        """r2 mutant M: the fallback is the source's own default."""
+        collector._settings.set(f"{source}_threshold_minutes", "120")
+        assert collector.get_source_threshold_seconds(source) == default_min * 60
+
+    def test_global_online_threshold_validated_too(self, collector):
+        """r2 #2: the sibling getter had the same `"120" * 60` defect."""
+        collector._settings.set("online_status_threshold_minutes", "120")
+        assert collector.get_online_threshold_seconds() == \
+            collector.DEFAULT_ONLINE_THRESHOLD_MINUTES * 60
+
+    def test_warns_once_per_distinct_bad_value(self, collector, caplog):
+        """r2 #3 / mutant L: the WARNING is the witness; a second distinct
+        bad value on the same key warns again, a repeat does not."""
+        import logging
+        caplog.set_level(logging.WARNING, logger="utils._map_collector_config")
+        key = "meshtastic_threshold_minutes"
+        for bad in ("120", "120", None):
+            collector._settings.set(key, bad)
+            collector.get_source_threshold_seconds("meshtastic")
+        lines = [r for r in caplog.records if key in r.getMessage()]
+        assert len(lines) == 2
+
+
+class TestReviewRound3Pins:
+    """review 11-08 r3 (Fable by running): validator upper bound; the two
+    `known` arguments and the poll-state reasons pinned THROUGH the seam."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_warn_set(self):
+        import utils._map_collector_config as cfg
+        cfg._WARNED_BAD_THRESHOLD.clear()
+        yield
+        cfg._WARNED_BAD_THRESHOLD.clear()
+
+    @pytest.mark.parametrize("huge", [1e308, 10 ** 400, 1e30,
+                                      365 * 24 * 60 + 1])
+    def test_absurd_window_refused_not_crashed(self, collector, huge):
+        default = collector.get_source_threshold_seconds("meshtastic")
+        collector._settings.set("meshtastic_threshold_minutes", huge)
+        assert collector.get_source_threshold_seconds("meshtastic") == default
+        collector._settings.set("online_status_threshold_minutes", huge)
+        assert collector.get_online_threshold_seconds() == \
+            collector.DEFAULT_ONLINE_THRESHOLD_MINUTES * 60
+
+    def test_one_year_is_still_honoured(self, collector):
+        collector._settings.set("meshtastic_threshold_minutes", 365 * 24 * 60)
+        assert collector.get_source_threshold_seconds("meshtastic") == \
+            365 * 24 * 3600
+
+    def test_known_non_meshtastic_network_can_be_a_witness_in_both(self, collector):
+        """r3 mutant M: an empty `known` passed to the trust call (but not to
+        the serializer) refused rns silently. rns heard 10 min ago is OK."""
+        from utils._map_status_endpoints import build_federation_status
+        now = _time.time()
+        _stub(collector, {}, {"p": _st("p", "p", now - 600, net="rns")})
+        status = build_federation_status(collector, now=now)["peer_status"][0]
+        geo = collector._merge_federation({}, [])["peer_status"][0]
+        for row in (status, geo):
+            assert row["radio_witness"]["rns"] == {"ok": True, "reason": ""}
+
+    @pytest.mark.parametrize("kw,reason", [
+        ({"ok": False}, "peer fetch failed this cycle"),
+        ({"in_backoff": True}, "peer in federation backoff (not polled)"),
+    ])
+    def test_poll_state_reason_survives_the_seam(self, collector, kw, reason):
+        """r3 mutants R/S: a failed or backed-off poll carries no rows, so
+        radio_exported is False — the reason must still name the POLL, not
+        'old code' (r1 F7)."""
+        from utils._map_status_endpoints import build_federation_status
+        now = _time.time()
+        _stub(collector, {}, {"p": _st("p", "p", None, exported=False, **kw)})
+        status = build_federation_status(collector, now=now)["peer_status"][0]
+        geo = collector._merge_federation({}, [])["peer_status"][0]
+        for row in (status, geo):
+            assert row["radio_witness"]["meshtastic"] == {"ok": False,
+                                                          "reason": reason}
