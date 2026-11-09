@@ -24,6 +24,9 @@ _WARNED_BAD_THRESHOLD: set = set()
 # window (1e30 min "judges" every frozen peer fresh; 1e308 * 60 overflows
 # int() and crashes collection) — review 11-08 r3.
 MAX_THRESHOLD_MINUTES = 365 * 24 * 60
+# Lower bound: one second. Below it int(minutes * 60) truncates to a 0 s
+# window — every node offline, every peer radio "frozen" (review 11-08 r4).
+MIN_THRESHOLD_MINUTES = 1 / 60
 
 
 def _usable_minutes(key: str, minutes, default):
@@ -38,7 +41,7 @@ def _usable_minutes(key: str, minutes, default):
         usable = (not isinstance(minutes, bool)
                   and isinstance(minutes, (int, float))
                   and math.isfinite(minutes)
-                  and 0 < minutes <= MAX_THRESHOLD_MINUTES)
+                  and MIN_THRESHOLD_MINUTES <= minutes <= MAX_THRESHOLD_MINUTES)
     except OverflowError:  # a 400-digit JSON int overflows inside isfinite
         usable = False
     if not usable:
@@ -46,7 +49,7 @@ def _usable_minutes(key: str, minutes, default):
         if mark not in _WARNED_BAD_THRESHOLD:
             _WARNED_BAD_THRESHOLD.add(mark)
             logger.warning(
-                "settings %s=%s is not a number of minutes in (0, %d] — "
+                "settings %s=%s is not a number of minutes in [1/60, %d] — "
                 "using the default %s min", key, mark[1],
                 MAX_THRESHOLD_MINUTES, default)
         return default

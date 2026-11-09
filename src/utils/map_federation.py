@@ -872,8 +872,9 @@ class FederationCollector:
                 else:
                     due_peers.append(peer)
 
-        # Skipped peers: carry forward prior status unchanged except for a
-        # refreshed snapshot so the in_backoff flag stays visible.
+        # Skipped peers: carry forward prior status (so the in_backoff flag
+        # stays visible), except the gateway-deferral hold, which counts the
+        # skipped poll like any other poll with no fresh answer.
         for peer in skipped_peers:
             with self._lock:
                 prior = self._snapshot.peer_status.get(peer)
@@ -882,6 +883,11 @@ class FederationCollector:
             carried = FederationPeerStatus(**asdict(prior))
             carried.peer_name = self._peer_names.get(peer)
             carried.resolution_method = self._resolution_methods.get(peer)
+            # A skipped (backoff) poll got no fresh deferral answer either:
+            # count it and apply the hold bound, or a backed-off peer would
+            # read "held 3 poll(s)" for N>>3 polls (review r3 F1).
+            carried.radio_deferred, carried.status_probe_misses = None, 0
+            _carry_deferral(carried, prior)
             new_status[peer] = carried
 
         if not due_peers:

@@ -1271,6 +1271,13 @@ class TestFederationPanelExecuted:
                                               "reason": DEFERRED_REASON}},
              "meshtasticd_deferred_to_gateway": True, "status_probe_misses": 2},
             {"radio_witness": {"meshtastic": {"ok": False, "reason": {"x": 1}}}},
+            # r3 M14/M15: no suffix unless deferred === true AND misses > 0
+            {"radio_witness": {"meshtastic": {"ok": False, "reason": "r"}},
+             "meshtasticd_deferred_to_gateway": False, "status_probe_misses": 2},
+            {"radio_witness": {"meshtastic": {"ok": False, "reason": "r"}},
+             "meshtasticd_deferred_to_gateway": True, "status_probe_misses": 0},
+            {"radio_witness": {"meshtastic": {"ok": False, "reason": "r"}},
+             "meshtasticd_deferred_to_gateway": "true", "status_probe_misses": 2},
         ]
         page = tmp_path / "w.html"
         page.write_text(
@@ -1299,6 +1306,8 @@ class TestFederationPanelExecuted:
         assert out[7][0] == ("📻 not a radio witness — " + DEFERRED_REASON
                              + " · last answer held 2 poll(s)")
         assert out[8][0] == "📻 not a radio witness — reason unknown"
+        for i in (9, 10, 11):
+            assert out[i][0] == "📻 not a radio witness — r", out[i]
 
 
 def _js_fn(name):
@@ -1320,3 +1329,65 @@ def test_deferral_constant_is_a_reason_the_collector_emits():
     from utils.map_source_reasons import DEFERRED_TO_GATEWAY, reason_state
     assert DEFERRED_TO_GATEWAY in _emitted_reason_literals()
     assert reason_state(DEFERRED_TO_GATEWAY) == "inactive"
+
+
+class TestReviewR3FollowUps:
+    """item-2 r3 (Fable) F1 + survivor pins, and r4 (item 1) sub-minute."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_warn_set(self):
+        import utils._map_collector_config as cfg
+        cfg._WARNED_BAD_THRESHOLD.clear()
+        yield
+        cfg._WARNED_BAD_THRESHOLD.clear()
+
+    def test_backoff_skipped_polls_count_and_expire_the_hold(self):
+        """r3 F1: a backed-off peer's carried row froze at 'held 3' forever."""
+        from utils.map_federation import (DEFERRAL_HOLD_MAX_POLLS,
+                                          FederationCollector)
+        fc = FederationCollector(["moc"], poll_interval=0, timeout=1.0)
+        fc._snapshot.peer_status["moc"] = FederationPeerStatus(
+            hostname="moc", ok=False, in_backoff=True,
+            next_eligible_poll_ts=_time.time() + 86400,
+            radio_deferred=True, status_probe_misses=1)
+        seen = []
+        with patch("utils.map_federation._fetch_peer_directory_and_claw",
+                   side_effect=AssertionError("a backed-off peer was polled")):
+            for _ in range(DEFERRAL_HOLD_MAX_POLLS + 1):
+                fc.poll_once()
+                st = fc.get_snapshot().peer_status["moc"]
+                seen.append((st.radio_deferred, st.status_probe_misses))
+        assert seen[:DEFERRAL_HOLD_MAX_POLLS - 1] == [
+            (True, i) for i in range(2, DEFERRAL_HOLD_MAX_POLLS + 1)]
+        assert seen[-1] == (None, 0)
+
+    def test_deferral_scoped_to_meshtastic_at_the_trust_call(self):
+        """r3 M4: another network with no rows must never read 'defers'."""
+        from utils.map_federation import peer_status_radio_trust
+        now = _time.time()
+        st = FederationPeerStatus(hostname="moc", ok=True, radio_exported=True,
+                                  radio_deferred=True)
+        assert peer_status_radio_trust(st, "rns", now, lambda _n: 1800,
+                                       ("rns",))[1] == \
+            "peer has no radio-heard rows on this network"
+        assert peer_status_radio_trust(st, "meshtastic", now, lambda _n: 7200,
+                                       ())[1] == DEFERRED_REASON
+
+    @pytest.mark.parametrize("payload", [[1, 2], None, "str", 1])
+    def test_non_dict_status_payload_is_unknown(self, payload):
+        """r3 M5."""
+        from tests._federation_net_guard import REAL_STATUS_EXTRAS
+        with patch("utils.map_federation.urllib.request.urlopen",
+                   return_value=_status_resp(payload)):
+            assert REAL_STATUS_EXTRAS("moc", timeout=1.0) == (None, None)
+
+    @pytest.mark.parametrize("tiny", [0.001, 5e-324, 1 / 61])
+    def test_sub_second_window_refused(self, collector, tiny):
+        """item-1 r4: int(minutes * 60) truncated these to a 0 s window."""
+        default = collector.get_source_threshold_seconds("meshtastic")
+        collector._settings.set("meshtastic_threshold_minutes", tiny)
+        assert collector.get_source_threshold_seconds("meshtastic") == default
+
+    def test_one_second_window_still_honoured(self, collector):
+        collector._settings.set("meshtastic_threshold_minutes", 1 / 60)
+        assert collector.get_source_threshold_seconds("meshtastic") == 1
