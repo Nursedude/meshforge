@@ -56,6 +56,7 @@ from utils._map_collector_trackers import TrackerDataCollectorMixin
 from utils._map_collector_config import MapCollectorConfigMixin
 from utils._map_collector_deadline import CollectDeadlineMixin
 from utils.node_history import _origin_priority
+from utils.peer_radio_heard import strip_radio_stamp
 from utils._map_collector_snapshot import (  # noqa: F401  (re-export)
     MapSnapshotMixin, Snapshot, SnapshotWarming,
 )
@@ -989,7 +990,9 @@ class MapDataCollector(
         # Source 7: Last-known cache (fill gaps). node_tracker tier — the
         # cache is whatever this box has previously seen locally.
         if not features:
-            cache_features = self._tag_source_origin(self._load_cache(), "node_tracker")
+            # The cache is not this cycle's radio: no H14 stamp survives it.
+            cache_features = self._tag_source_origin(
+                strip_radio_stamp(self._load_cache()), "node_tracker")
             for f in cache_features:
                 fid = f["properties"].get("id", "")
                 if fid:

@@ -54,6 +54,20 @@ def coerce_radio_ts(value: Any, now: float) -> Optional[float]:
     return ts
 
 
+def strip_radio_stamp(features: Any) -> Any:
+    """Drop ``radio_last_heard`` from features that did NOT come off this
+    box's radio drain THIS cycle (a cache replay, a relayed aggregate), in
+    place; returns ``features``. The stamp is a claim about one drain; a
+    replayed copy keeps its first ``source_origin`` tag (``local_radio``), so
+    without this its old stamp would read as a hearing now (2026-11-09: the
+    live manager cache held 222 such features)."""
+    for f in features or ():
+        props = f.get("properties") if isinstance(f, dict) else None
+        if isinstance(props, dict):
+            props.pop("radio_last_heard", None)
+    return features
+
+
 def ingest_radio_ts(value: Any) -> Optional[float]:
     """Ingest-side shape check only: a finite epoch > 0, else None. A FUTURE
     stamp is KEPT here so ``peer_radio_trust`` can name the skew ("clock

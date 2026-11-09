@@ -191,6 +191,14 @@ class TestDirectoryRadioHeard:
         hist.record_observations([_radio_feat("!f", _t.time() + 86400)])
         assert _dir_row(hist, "!f")["radio_heard"] is None
 
+    def test_small_future_skew_is_null_too(self, hist):
+        """coerce_radio_ts keeps <= 300 s of skew; the directory still refuses
+        to STORE a hearing time after now (a mutant dropping that guard
+        survived the +1 d test — found porting to MeshAnchor, 2026-11-09)."""
+        import time as _t
+        hist.record_observations([_radio_feat("!s", _t.time() + 120)])
+        assert _dir_row(hist, "!s")["radio_heard"] is None
+
     def test_monotonic_and_null_never_erases(self, hist):
         import time as _t
         now = _t.time()
@@ -1391,3 +1399,31 @@ class TestReviewR3FollowUps:
     def test_one_second_window_still_honoured(self, collector):
         collector._settings.set("meshtastic_threshold_minutes", 1 / 60)
         assert collector.get_source_threshold_seconds("meshtastic") == 1
+
+
+# ── 2026-11-09 (MA port review F4, measured: the live manager cache held 222
+# local_radio features WITH radio_last_heard) — a replayed cache feature keeps
+# its first source_origin tag, so its old stamp would read as THIS cycle's
+# radio hearing. Only the drain stamps; a replay must arrive stamp-less.
+
+class TestCacheReplayNeverStamps:
+    def test_replayed_cached_stamp_writes_no_radio_heard(self, tmp_path):
+        home = tmp_path / "home"
+        cfg = home / ".config" / "meshforge"
+        cfg.mkdir(parents=True)
+        with patch("utils.map_data_collector.get_real_user_home", return_value=home):
+            c = MapDataCollector(cache_dir=tmp_path / "cache",
+                                 enable_history=True, config_dir=cfg)
+        cached = _radio_feat("!0000cace", _time.time() - 600)
+        assert cached["properties"]["source_origin"] == "local_radio"
+
+        with patch.object(MapDataCollector, "_timed_collect",
+                          lambda self, name, fn, *a, **kw: []), \
+             patch.object(MapDataCollector, "_load_cache",
+                          lambda self: [cached]), \
+             patch.object(MapDataCollector, "_merge_federation",
+                          lambda self, f, pl, *a, **k: {}):
+            geo = c.collect(max_age_seconds=0)
+        assert any(f["properties"]["id"] == "!0000cace" for f in geo["features"]), \
+            "precondition: the cache replay ran"
+        assert _dir_row(c._history, "!0000cace")["radio_heard"] is None
