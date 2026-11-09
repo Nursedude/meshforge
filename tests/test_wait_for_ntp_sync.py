@@ -50,6 +50,10 @@ class TestGate:
         assert rc == 0
         assert elapsed < 2
         assert "TIMEOUT" not in err
+        # 2026-11-09: the gate speaks on EVERY run, so a start with no gate
+        # line means the gate did not run (meshtasticd_clock_unrated reads
+        # that absence as unknown, never as clean).
+        assert "wait_for_ntp_sync: clock synchronized after 0s" in err
 
     def test_an_unsynced_clock_waits_the_budget_then_fails_open(self, tmp_path):
         """THE case this exists for."""
@@ -91,8 +95,16 @@ class TestGate:
 
     def test_the_witness_names_the_consequence_and_the_fix(self, tmp_path):
         _, err, _ = run(tmp_path, UNSYNCED, budget=1)
-        assert "no node's lastHeard will advance" in err
         assert "sudo systemctl restart meshtasticd" in err
+        # 2026-11-09: the consequence is a RISK, not a certainty — lehua's gate
+        # timed out and its radio read 33 nodes online. The witness says MAY
+        # and names the check that tells the two apart (the one the
+        # meshtasticd_clock_unrated probe reads).
+        assert "may" in err
+        assert "will advance" not in err
+        assert "num_online_nodes" in err
+        # The probe keys on this exact mark (hfm #5; test_watchdog_clock_unrated).
+        assert "wait_for_ntp_sync: TIMEOUT" in err
 
     def test_predicate_is_meshtasticds_own_command(self):
         """Gate and consumer must agree on 'synchronized' (hfm #5). The firmware

@@ -242,7 +242,11 @@ def main() -> int:
               + "; ".join(f"`{k}` {pol[k]}" for k in
                           ("both", "fire-only", "none-only", "unknown") if k in pol)
               + ".\n")
-        gaps = [r for r in rows if r["polarity"] != "both"]
+        # Observe-only classes never fire BY DESIGN (watchdog_probe_core
+        # OBSERVE_ONLY_CLASSES) — "not shown firing" is not a gap for them (r8).
+        from utils.watchdog_probe_core import OBSERVE_ONLY_CLASSES
+        gaps = [r for r in rows if r["polarity"] != "both"
+                and r["cls"] not in OBSERVE_ONLY_CLASSES]
         if gaps:
             print(f"#### Phase-2 worklist — {len(gaps)} classes not shown in BOTH polarities\n")
             for r in gaps:

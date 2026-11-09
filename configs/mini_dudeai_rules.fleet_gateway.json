@@ -321,17 +321,17 @@
       "annotation": "2026-06-03: live systemd unit state diverges from the box's declared role (fleet_roles.yaml + deployment.json overrides) — the moc2 legibility class. Documented service_overrides do NOT fire. Fix: review python3 scripts/provision_role.py, then sudo --apply or correct the declared role. Side-effect-free escalation; NO ntfy page (degraded, not an outage)."
     },
     {
-      "id": "inherited_app_drift_any",
+      "id": "meshtasticd_clock_unrated_any",
       "match": {
         "kind": "signal_class",
-        "class": "inherited_app_drift",
+        "class": "meshtasticd_clock_unrated",
         "subject_glob": "*"
       },
       "action": {
         "kind": "propose_escalation"
       },
       "cooldown_s": 1800,
-      "annotation": "2026-06-21 upstream-app ownership Action 5: an INHERITED (non-Nursedude-origin) upstream app checkout carries an unversioned tracked-file CODE patch — a hand-edit that exists in no repo we control and is one `git pull` from silent deletion (the rescued .32 + dev-box bot patches were exactly this; policy §4.2). Fix: rescue the patch into an owned fork or the tracked overlay (Nursedude/fleet-overlays), or upstream it as a PR, then converge the checkout clean and record the pin in fleet-overlays/PINS.md. Side-effect-free escalation; NO ntfy page (degraded, latent version-control hygiene debt, not an outage)."
+      "annotation": "2026-11-09: meshtasticd started before NTP sync (the wait_for_ntp_sync gate timed out at this start) AND its node DB reads 0 online while it hears traffic \u2014 lastHeard frozen, every node reads offline (moc4 5.8 d 10-02; moc2 13 d 10-26). Fix once `timedatectl` shows synchronized: sudo systemctl restart meshtasticd. OBSERVE-ONLY today: the probe never emits this class (journal is mesh-writable, review r5) — this rule is the routing for its promotion. Side-effect-free escalation; NO ntfy. Replaces inherited_app_drift_any (class retired 11-09)."
     },
     {
       "id": "rns_rpc_unresponsive_any",

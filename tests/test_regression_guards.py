@@ -2203,6 +2203,12 @@ class TestSignalClassBudget:
     # unreadable): oracle_delivery_degraded and inherited_app_drift inert
     # 9/9 — but oracle_delivery_degraded guards src/oracle, the runtime of
     # the queued ECOMM MeshCore bot, so it was NOT cut blind.
+    # 2026-11-09: stays 62 — meshtasticd_clock_unrated REPLACES
+    # inherited_app_drift (operator decision; re-measured: inert on 9/9
+    # watchdog boxes "no inherited checkouts", and a direct listing found zero
+    # non-Nursedude checkouts on all 11 incl. lehua + meshanchor-server; moc5's
+    # four from the 08-08 audit are gone). This PAYS for the new class only:
+    # the two older debts (rf_leg_silent, bridge_leg_down) are still owed.
     SIGNAL_CLASS_BUDGET = 62
 
     @staticmethod

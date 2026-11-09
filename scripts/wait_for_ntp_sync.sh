@@ -35,16 +35,24 @@ synced() {
 
 while [ "$i" -lt "$BUDGET" ]; do
     if synced; then
-        [ "$i" -gt 0 ] && echo "wait_for_ntp_sync: clock synchronized after ${i}s" >&2
+        # ALWAYS speak (2026-11-09), even at 0 s: a start whose journal holds no
+        # gate line then means the gate did NOT run — the watchdog's
+        # meshtasticd_clock_unrated probe reads that absence as unknown.
+        echo "wait_for_ntp_sync: clock synchronized after ${i}s" >&2
         exit 0
     fi
     i=$((i + 1))
     sleep 1
 done
 
+# 2026-11-09: the consequence is a RISK, not a certainty — lehua's gate timed
+# out (10-26) and its radio read 17 -> 33 nodes online from the first telemetry
+# line. The watchdog's meshtasticd_clock_unrated probe reads THIS line plus the
+# telemetry below, and pages only when both agree.
 echo "wait_for_ntp_sync: TIMEOUT after ${BUDGET}s — system clock not NTP-synchronized." \
      "Starting meshtasticd anyway (fail-open). THIS LINE IS THE WITNESS: meshtasticd" \
-     "will rate its clock Device quality, stamp received packets with rx_time 0, and" \
-     "no node's lastHeard will advance (every node reads offline) until it restarts." \
+     "may rate its clock Device quality, stamp received packets with rx_time 0, and" \
+     "freeze every node's lastHeard (all read offline) until it restarts. CHECK:" \
+     "its DeviceTelemetry lines read num_online_nodes=0 while it logs '[Router] Received'." \
      "FIX once 'timedatectl' shows synchronized: sudo systemctl restart meshtasticd." >&2
 exit 0

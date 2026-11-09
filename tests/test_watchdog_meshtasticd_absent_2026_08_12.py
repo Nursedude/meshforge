@@ -45,6 +45,9 @@ from utils.watchdog_probes_gateway import (  # noqa: E402
 from utils.watchdog_probes_gateway_flow import (  # noqa: E402
     probe_gateway_delivery_degraded,
 )
+from utils.watchdog_probes_clock import (  # noqa: E402
+    probe_meshtasticd_clock_unrated,
+)
 from utils.watchdog_probes_rns import probe_main_thread_wedge  # noqa: E402
 from utils.watchdog_probes_service import (  # noqa: E402
     probe_fd_exhaustion,
@@ -174,6 +177,8 @@ OBSERVERS = [
     ("mqtt_root_drift", probe_mqtt_root_drift),
     ("meshtasticd_phoneapi_wedge", probe_meshtasticd_phoneapi_wedge),
     ("meshtasticd_vsz_leak", probe_meshtasticd_vsz_leak),
+    # 2026-11-09: the NTP-gate witness reader observes meshtasticd too.
+    ("meshtasticd_clock_unrated", probe_meshtasticd_clock_unrated),
 ]
 
 

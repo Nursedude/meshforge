@@ -94,8 +94,9 @@ def _git_dirty_paths(root: str, rels, *, timeout_s: int = 15) -> Tuple[set, str]
     A chmod sweep (the 2026-08-29 identity-key tightening was one) could
     therefore silence the probe rather than merely noise it, which is the blind
     direction this whole retarget exists to avoid. Mirrors the same two flags
-    ``_git_tracked_modifications`` in ``watchdog_probes_env`` has carried all
-    along — that file had the cure while this one shipped the bug.
+    ``_git_tracked_modifications`` in ``watchdog_probes_env`` carried all
+    along — that file had the cure while this one shipped the bug (that helper
+    retired with inherited_app_drift, 2026-11-09).
     """
     if not rels:
         return set(), "ok"

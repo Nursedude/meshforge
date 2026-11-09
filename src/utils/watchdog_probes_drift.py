@@ -1375,16 +1375,6 @@ from utils.watchdog_probes_env import (  # noqa: E402,F401 (back-compat re-expor
     _read_configured_aredn_ips_state,
     _fetch_local_status_json,
     probe_aredn_source_dark,
-    DEFAULT_INHERITED_DRIFT_DEBOUNCE_PATH,
-    _OWNED_ORIGIN_MARKER,
-    _INHERITED_SCAN_EXCLUDE,
-    _BENIGN_TRACKED_BASENAMES,
-    _read_git_origin_url,
-    _git_tracked_modifications,
-    _real_code_patches,
-    _iter_inherited_checkouts,
-    _resolve_operator_home,
-    probe_inherited_app_drift,
 )
 
 

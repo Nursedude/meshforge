@@ -79,7 +79,7 @@ from utils.watchdog_probes import (
     probe_lxmf_propagation_node_dark,
     probe_fd_exhaustion,
     probe_history_write_failure,
-    probe_inherited_app_drift,
+    probe_meshtasticd_clock_unrated,
     probe_host_memory_pressure,
     default_host_memory_thresholds_path,
     probe_memory_cap_engaged,
@@ -423,6 +423,15 @@ def run_all_probes(
     if sig is not None:
         signals.append(sig)
 
+    # meshtasticd started on an unsynced clock (2026-11-09) — the NTP gate's
+    # fail-open witness for the CURRENT invocation AND its consequence (0 nodes
+    # online while RX flows). OBSERVE-ONLY: never returns a Signal (the
+    # journal is mesh-writable, review r5) — it records a disposition. Self-
+    # guards inert where meshtasticd is absent; head read once per invocation.
+    sig = probe_meshtasticd_clock_unrated()
+    if sig is not None:
+        signals.append(sig)
+
     # Permission-foundation drift (mf.4/#73 perms class) — only meaningful on a
     # box that runs rnsd. Derives the rnsd user from its unit, so it's correct in
     # this root context; surfaces a re-provision that recreated /etc/reticulum
@@ -488,20 +497,6 @@ def run_all_probes(
     # moc2 lesson, 2026-06-03) — only undeclared divergence fires, debounced
     # 2 ticks to ride out fleet-roll windows.
     sig = probe_role_drift()
-    if sig is not None:
-        signals.append(sig)
-
-    # Inherited-app drift (Action 5, 2026-06-21 upstream-app ownership) — an
-    # INHERITED (non-Nursedude-origin) upstream app checkout carrying an
-    # unversioned tracked-file CODE patch: a hand-edit that exists in no repo we
-    # control and is one `git pull` from silent deletion (the rescued
-    # .32 + dev-box bot patches were exactly this; policy §4.2). Scans the top
-    # level of the operator home + /opt, classifies owned-vs-inherited by
-    # .git/config, and filters untracked artifacts + machine-generated manifests
-    # so only a real source patch fires. NOT gated on any service — inherited
-    # apps can live on any box; self-guards None (INERT) when there are none
-    # (moc1/2/3). 2-tick debounced.
-    sig = probe_inherited_app_drift()
     if sig is not None:
         signals.append(sig)
 

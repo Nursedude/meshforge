@@ -260,7 +260,21 @@ class TestSignalClassWiring:
         # Non-vacuity: the closure must actually have found classes.
         assert len(reachable) >= 20, (
             f"only {len(reachable)} classes reachable — checker likely broke")
-        missing = set(SIGNAL_CLASSES) - reachable
+        from utils.watchdog_probe_core import OBSERVE_ONLY_CLASSES
+        both = OBSERVE_ONLY_CLASSES & reachable
+        assert not both, (
+            f"{sorted(both)} declared OBSERVE-ONLY yet emitted by a wired probe "
+            f"— promote it by removing it from OBSERVE_ONLY_CLASSES")
+        unknown = OBSERVE_ONLY_CLASSES - set(SIGNAL_CLASSES)
+        assert not unknown, f"OBSERVE_ONLY_CLASSES not in SIGNAL_CLASSES: {sorted(unknown)}"
+        # An observe-only class is still WIRED: its probe is CALLED in
+        # run_all_probes — read from the AST call set, never the text (r8: a
+        # `# TODO probe_x()` comment satisfied a regex with the probe unwired).
+        entry_calls = _parse_func_table(runner_src)["run_all_probes"][1]
+        for cls in OBSERVE_ONLY_CLASSES:
+            assert f"probe_{cls}" in entry_calls, (
+                f"observe-only class {cls}: probe_{cls}() is not called in run_all_probes")
+        missing = set(SIGNAL_CLASSES) - reachable - OBSERVE_ONLY_CLASSES
         assert not missing, (
             f"SIGNAL_CLASSES member(s) {sorted(missing)} are emitted by NO "
             f"probe called in run_all_probes — the probe exists but its call "

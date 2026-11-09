@@ -142,7 +142,6 @@ from utils.watchdog_probes_drift import (
     probe_claw_watched_node_silent,
     probe_segment_peer_silent,
     probe_claw_uplink_node_moved,
-    probe_inherited_app_drift,
     probe_ntfy_loopback,
     probe_ntfy_ack_stale,
     probe_foundation_drift,
@@ -157,8 +156,9 @@ from utils.watchdog_probes_drift import (
     _plan_role_actions,
     _declared_root_status,
     _read_declared_root_topic,
-    _read_git_origin_url,
-    _real_code_patches,
+)
+from utils.watchdog_probes_clock import (
+    probe_meshtasticd_clock_unrated,
 )
 from utils.watchdog_probes_gateway import (
     probe_delivery_confirmation_stall,
@@ -250,7 +250,7 @@ __all__ = [
     "probe_peer_cron_verdict_stale",
     "probe_kernel_reboot_pending",
     "probe_aredn_source_dark",
-    "probe_inherited_app_drift",
+    "probe_meshtasticd_clock_unrated",
     "probe_fleet_box_unreachable",
     "probe_host_frozen",
     "probe_claw_device_dark",
