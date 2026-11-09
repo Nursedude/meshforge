@@ -70,6 +70,19 @@ reached only when every source is empty; (2) the gateway `UnifiedNodeTracker` wi
 divergence; decide per network, not by copy); (3) a probe for the `wait_for_ntp_sync.sh`
 fail-open witness (moc2 sat 13 days with every node's lastHeard frozen and nothing read it).
 
+### SHIPPED 2026-11-08 `9672ca99` — H14 done right: the peer's RADIO heard time, with its own trust
+Seam: the radio nodedb drain stamps `radio_last_heard` (never via_mqtt; own row `is_self` from the
+EXISTING connection's myInfo) → `node_history.radio_heard` (reads ONLY that prop) → directory export →
+federation `radio_heard_by` + per-peer `radio_newest_by_network` → `utils.peer_radio_heard` trusts a
+peer's radio per NETWORK only while its newest sits inside that network's window (frozen clock / deaf /
+old code / failed / backoff / clock ahead = unobservable, named) → `props.peer_heard` on the local
+winner or federated entry; is_online untouched; one page reader. Reviews r1 medium · r2–r4 Fable
+subagent by running (r3: MQTT merge laundering + own-node self-attest; r4 CLEAN). LIVE 14:25: moc3 on
+the manager reads "heard by meshforge-moc2 30 min ago" (was only "204d"); honest_status exit 0 @
+`32bd0b81`. QUEUED: gateway boxes (moc, moc3) are not witnesses — their maps defer the radio to the
+gateway (#17), so the reason should say so and the gateway's tracker needs its own trust;
+`/api/status` peer_status (`_map_status_endpoints.py`) lacks the witness fields; MA twin port.
+
 ## Queued from the round-1 non-author review of H1+H2 (2026-11-06)
 
 - F5: the other Python readers of `reason_if_zero` still carry their own lists — `node_counts.py:89` (any reason ≠ ok → count None, so `no_positions`/`no_data` disagree with the map), `watchdog_probes_aredn.py:296`, `map_metrics.py:188` (counts `no_positions` as an error). Move each onto `utils.map_source_reasons.reason_state` — red-first, one consumer per commit; `node_counts` is a TUI/fleet-line behaviour change, so name it.
