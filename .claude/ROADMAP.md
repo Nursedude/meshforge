@@ -195,7 +195,7 @@ product defect needs one.
   help: a Pi running meshtasticd and a phone browser on the same LAN — send and receive a few messages, tell us what the page claimed vs what arrived
 - **DOC-1** [MF][MA] S twin→MA — in-app how-tos, risky flows first
   `plans/doc1_in_app_howtos_2026_11_03.md`
-- **MAP-H** [MF] S+F — map never draws healthy when blind; H15 `940ada70` H14 `9672ca99`; next H12 H4. `plans/maps_audit_2026_11_06.md`
+- **MAP-H** [MF] S+F — map never draws healthy when blind; H15 `940ada70` H14 `50283000`; next H12 H4. `plans/maps_audit_2026_11_06.md`
 
 ### NEXT
 

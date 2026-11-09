@@ -70,6 +70,12 @@ reached only when every source is empty; (2) the gateway `UnifiedNodeTracker` wi
 divergence; decide per network, not by copy); (3) a probe for the `wait_for_ntp_sync.sh`
 fail-open witness (moc2 sat 13 days with every node's lastHeard frozen and nothing read it).
 
+### SHIPPED 2026-11-08 evening — H14 follow-ups `c284516e` `50283000` `e9b1064f` (deployed 10/10 `9cf8812f`; `e9b1064f` deploy at push)
+- ONE peer_status serializer + envelope + trust call + witness vocabulary for `/api/status` and geojson (they had drifted); online-window settings validated once (`_usable_minutes`, [1 s, 1 yr]).
+- A gateway box (moc) now reads "peer's map defers its radio to its gateway (#17)" — from the peer's own `source_diagnostics`, ONE status probe per poll, tri-state, hold ≤ 3 polls; the federation panel says it per peer. LIVE VERIFIED 19:31 incl. the SERVED page JS in chromium.
+- `tests/_federation_net_guard.py`: 14 pre-existing poll tests were making real GETs every run — closed.
+- Open: r3 F2 (stamped rows from before a gateway restart hide a fresh deferral as "frozen"); MA port; gateway tracker as its own witness.
+
 ### SHIPPED 2026-11-08 `9672ca99` — H14 done right: the peer's RADIO heard time, with its own trust
 Seam: the radio nodedb drain stamps `radio_last_heard` (never via_mqtt; own row `is_self` from the
 EXISTING connection's myInfo) → `node_history.radio_heard` (reads ONLY that prop) → directory export →
