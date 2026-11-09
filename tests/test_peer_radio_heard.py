@@ -13,6 +13,8 @@ import math
 
 import pytest
 
+from tests._federation_net_guard import _no_real_peer_http  # noqa: F401 — autouse
+
 from utils.peer_radio_heard import (
     coerce_radio_ts,
     peer_heard_verdict,
@@ -491,7 +493,7 @@ class TestReviewRound1:
         t = _time.time()
         st = FederationPeerStatus(hostname="p", ok=True, last_sync=t, last_attempt=t)
         with patch("utils.map_federation.fetch_peer_directory", return_value=(rows, st)), \
-             patch("utils.map_federation._fetch_peer_claw", return_value=None):
+             patch("utils.map_federation._fetch_peer_status_extras", return_value=(None, None)):
             fc.poll_once()
         got = fc.get_snapshot().peer_status["p"].radio_newest_by_network
         assert got == {"meshtastic": pytest.approx(now - 9000, abs=1.0),
@@ -623,7 +625,7 @@ class TestReviewRound2:
 
         with patch("utils.map_federation.fetch_peer_directory",
                    side_effect=lambda peer, *a, **kw: resp[peer]), \
-             patch("utils.map_federation._fetch_peer_claw", return_value=None), \
+             patch("utils.map_federation._fetch_peer_status_extras", return_value=(None, None)), \
              patch("utils.map_federation.as_completed", side_effect=in_order):
             fc.poll_once()
         got = fc.get_snapshot().by_node[("meshtastic", "!n")]["radio_heard_by"]
@@ -1004,3 +1006,317 @@ class TestReviewRound3Pins:
         for row in (status, geo):
             assert row["radio_witness"]["meshtastic"] == {"ok": False,
                                                           "reason": reason}
+
+
+# ── MAP-H H14 queue item: a gateway box's map is not a radio witness BY DESIGN
+
+import json  # noqa: E402
+
+from utils.peer_radio_heard import DEFERRED_REASON  # noqa: E402
+
+
+def _status_resp(payload):
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=cm)
+    cm.__exit__ = MagicMock(return_value=False)
+    cm.status = 200
+    cm.read = MagicMock(return_value=json.dumps(payload).encode("utf-8"))
+    return cm
+
+
+def _diag(reason):
+    return {"source_diagnostics": {"meshtasticd": {
+        "attempted": 0, "yielded": 0, "reason_if_zero": reason}}}
+
+
+class TestGatewayDeferredWitness:
+    """A box whose map defers meshtasticd to its gateway (#17) has no radio
+    rows by design. The manager said "no radio-heard rows" — true but it reads
+    as a fault. The peer's /api/status (already fetched each poll for the
+    claw) says `deferred_to_gateway`; the witness reason now says so."""
+
+    @pytest.mark.parametrize("payload,expected", [
+        (_diag("deferred_to_gateway"), True),
+        (_diag("ok"), False),
+        (_diag("no_positions"), False),          # answered: vocabulary "ok"
+        (_diag("collect_timeout"), None),        # leg could not RUN: unknown
+        (_diag("lock_contended"), None),
+        # review r2: a known reason the leg REACHED is decisive — `unreachable`
+        # (meshtasticd down, gateway check already passed) is NOT deferring
+        (_diag("unreachable"), False),
+        (_diag("not_configured"), False),
+        (_diag("stale_cached"), False),
+        (_diag("no_nodes"), None),               # outside the vocabulary
+        ({"source_diagnostics": {"meshtasticd": {}}}, None),
+        ({"source_diagnostics": {}}, None),      # no meshtasticd leg: unknown
+        ({}, None),                              # old peer: unknown
+        ({"source_diagnostics": "x"}, None),     # garbage: unknown, no raise
+    ])
+    def test_status_extras_reads_the_deferral(self, payload, expected):
+        from tests._federation_net_guard import REAL_STATUS_EXTRAS as _fetch_peer_status_extras
+        with patch("utils.map_federation.urllib.request.urlopen",
+                   return_value=_status_resp(payload)):
+            claw, deferred = _fetch_peer_status_extras("moc", timeout=1.0)
+        assert deferred is expected and claw is None
+
+    def test_status_fetch_failure_is_unknown_not_false(self):
+        from tests._federation_net_guard import REAL_STATUS_EXTRAS as _fetch_peer_status_extras
+        with patch("utils.map_federation.urllib.request.urlopen",
+                   side_effect=OSError("refused")):
+            assert _fetch_peer_status_extras("moc", timeout=1.0) == (None, None)
+
+    def test_one_status_fetch_feeds_claw_and_deferral(self):
+        from utils.map_federation import _fetch_peer_directory_and_claw
+        good = FederationPeerStatus(hostname="moc", ok=True)
+        payload = {**_diag("deferred_to_gateway"),
+                   "claw": {"installed": True, "device": "c1"}}
+        from tests._federation_net_guard import REAL_STATUS_EXTRAS
+        with patch("utils.map_federation.fetch_peer_directory",
+                   return_value=([], good)), \
+             patch("utils.map_federation._fetch_peer_status_extras",
+                   REAL_STATUS_EXTRAS), \
+             patch("utils.map_federation.urllib.request.urlopen",
+                   return_value=_status_resp(payload)) as m:
+            _, status = _fetch_peer_directory_and_claw("moc", 1.0)
+        assert m.call_count == 1
+        assert status.radio_deferred is True
+        assert status.claw == {"installed": True, "device": "c1"}
+
+    @pytest.mark.parametrize("newest_age,ok,reason", [
+        (None, False, DEFERRED_REASON),               # no rows: by design
+        # review r1: a benign label never hides a real finding
+        (478 * 3600, False,
+         "peer radio heard nothing in the window (frozen clock or deaf)"),
+        (-3600, False, "peer radio clock is ahead of this box"),
+        (30, True, ""),                               # fresh rows still count
+    ])
+    def test_trust_names_the_deferral(self, newest_age, ok, reason):
+        now = _time.time()
+        newest = None if newest_age is None else now - newest_age
+        assert peer_radio_trust(True, newest, now, 7200,
+                                deferred=True) == (ok, reason)
+
+    def test_old_code_gateway_peer_still_reads_old_code(self):
+        """review r1: source_diagnostics predates H14, so a pre-H14 gateway
+        peer says deferred=True while exporting no radio times at all."""
+        now = _time.time()
+        assert peer_radio_trust(False, None, now, 7200, deferred=True)[1] == \
+            "peer does not export radio hearing times (old code)"
+
+    def _poll_seq(self, extras_seq):
+        """Poll one peer N times, the status probe answering extras_seq[i]."""
+        from utils.map_federation import FederationCollector
+        fc = FederationCollector(["moc"], poll_interval=0, timeout=1.0)
+        out = []
+        for extras in extras_seq:
+            t = _time.time()
+            st = FederationPeerStatus(hostname="moc", ok=True, last_sync=t,
+                                      last_attempt=t)
+            with patch("utils.map_federation.fetch_peer_directory",
+                       return_value=([], st)), \
+                 patch("utils.map_federation._fetch_peer_status_extras",
+                       return_value=extras):
+                fc.poll_once()
+            got = fc.get_snapshot().peer_status["moc"]
+            out.append((got.radio_deferred, got.status_probe_misses))
+        return out
+
+    def test_deferral_held_through_a_missed_probe_with_a_witness(self):
+        """review r1 F3: a failed/undecisive status probe must not flap the
+        by-design label to "no rows"; the miss count says it is held."""
+        seq = self._poll_seq([(None, True), (None, None), (None, None),
+                              (None, False)])
+        assert seq == [(True, 0), (True, 1), (True, 2), (False, 0)]
+
+    def test_hold_is_bounded(self):
+        """review r2 #1: never hold a by-design label forever."""
+        from utils.map_federation import DEFERRAL_HOLD_MAX_POLLS as n
+        seq = self._poll_seq([(None, True)] + [(None, None)] * (n + 2))
+        assert seq[:n + 1] == [(True, i) for i in range(n + 1)]
+        assert seq[n + 1:] == [(None, 0), (None, 0)]
+
+    def test_nothing_held_nothing_counted(self):
+        """review r2 #4: a peer with no meshtasticd leg never climbs."""
+        assert self._poll_seq([(None, None)] * 4) == [(None, 0)] * 4
+
+    def test_crash_path_holds_too(self):
+        """review r2 #3: a crashed poll must not drop the hold."""
+        from utils.map_federation import FederationCollector
+        fc = FederationCollector(["moc"], poll_interval=0, timeout=1.0)
+        t = _time.time()
+        st = FederationPeerStatus(hostname="moc", ok=True, last_sync=t,
+                                  last_attempt=t)
+        with patch("utils.map_federation.fetch_peer_directory",
+                   return_value=([], st)), \
+             patch("utils.map_federation._fetch_peer_status_extras",
+                   return_value=(None, True)):
+            fc.poll_once()
+        with patch("utils.map_federation._fetch_peer_directory_and_claw",
+                   side_effect=RuntimeError("boom")):
+            fc.poll_once()
+        got = fc.get_snapshot().peer_status["moc"]
+        assert "crash" in got.last_error
+        assert (got.radio_deferred, got.status_probe_misses) == (True, 1)
+
+    def test_held_count_reaches_the_row(self):
+        """review r2 #2: the hold witness is pinned on the ROW, nonzero."""
+        from utils.map_federation import FederationCollector, serialize_peer_status
+        fc = FederationCollector(["moc"], poll_interval=0, timeout=1.0)
+        for extras in [(None, True), (None, None), (None, None)]:
+            t = _time.time()
+            st = FederationPeerStatus(hostname="moc", ok=True, last_sync=t,
+                                      last_attempt=t, radio_exported=True)
+            with patch("utils.map_federation.fetch_peer_directory",
+                       return_value=([], st)), \
+                 patch("utils.map_federation._fetch_peer_status_extras",
+                       return_value=extras):
+                fc.poll_once()
+        row = serialize_peer_status(fc.get_snapshot().peer_status["moc"],
+                                    lambda _s, _n: (False, DEFERRED_REASON), ())
+        assert row["status_probe_misses"] == 2
+        assert row["meshtasticd_deferred_to_gateway"] is True
+
+    def test_http_exception_is_caught_not_a_crash(self):
+        """review r2 #3: IncompleteRead is not an OSError; it escaped and
+        voided a GOOD directory fetch as 'crash'."""
+        import http.client
+        from tests._federation_net_guard import REAL_STATUS_EXTRAS
+        with patch("utils.map_federation.urllib.request.urlopen",
+                   side_effect=http.client.IncompleteRead(b"x")):
+            assert REAL_STATUS_EXTRAS("moc", timeout=1.0) == (None, None)
+
+    def test_unknown_or_false_deferral_keeps_old_reasons(self):
+        now = _time.time()
+        for d in (None, False):
+            assert peer_radio_trust(True, None, now, 7200, deferred=d)[1] == \
+                "peer has no radio-heard rows on this network"
+
+    def test_poll_failure_outranks_deferral(self):
+        now = _time.time()
+        assert peer_radio_trust(True, None, now, 7200, ok=False,
+                                deferred=True)[1] == "peer fetch failed this cycle"
+
+    def test_deferral_is_meshtastic_only(self, collector):
+        """It is the meshtasticd leg that defers; an rns radio on the same
+        box is judged on its own rows."""
+        from utils._map_status_endpoints import build_federation_status
+        now = _time.time()
+        st = FederationPeerStatus(
+            hostname="moc", peer_name="moc", ok=True, radio_exported=True,
+            radio_newest_by_network={"rns": now - 30}, radio_deferred=True)
+        _stub(collector, {}, {"moc": st})
+        (row,) = build_federation_status(collector, now=now)["peer_status"]
+        assert row["radio_witness"]["meshtastic"]["reason"] == DEFERRED_REASON
+        assert row["radio_witness"]["rns"] == {"ok": True, "reason": ""}
+        # A STALE rns radio on the same box keeps its OWN reason — the
+        # meshtasticd deferral must not explain another radio's silence.
+        st.radio_newest_by_network = {"rns": now - 478 * 3600}
+        (row,) = build_federation_status(collector, now=now)["peer_status"]
+        assert "frozen clock" in row["radio_witness"]["rns"]["reason"]
+
+    def test_both_builders_say_it(self, collector):
+        from utils._map_status_endpoints import build_federation_status
+        now = _time.time()
+        st = FederationPeerStatus(hostname="moc", peer_name="moc", ok=True,
+                                  radio_exported=True, radio_deferred=True)
+        _stub(collector, {}, {"moc": st})
+        s = build_federation_status(collector, now=now)["peer_status"][0]
+        g = collector._merge_federation({}, [])["peer_status"][0]
+        for row in (s, g):
+            assert row["radio_witness"]["meshtastic"] == {
+                "ok": False, "reason": DEFERRED_REASON}
+            assert row["meshtasticd_deferred_to_gateway"] is True
+            assert row["status_probe_misses"] == 0
+
+
+class TestFederationPanelSaysWitness:
+    """The witness verdict lands IN the app: the map's federation panel says,
+    per peer, whether its radio is a witness and why not (gateway deferral
+    included). Executed in headless chromium at authoring time; pinned here."""
+
+    def test_panel_renders_the_witness_line_escaped(self):
+        body = _js_body("updateFederationPanel")
+        assert "peerWitnessText(p)" in body
+        assert "${escapeHtml(wit.text)}" in body
+        assert 'title="${escapeHtml(wit.title)}"' in body
+
+    def test_witness_text_never_claims_from_absence(self):
+        body = _js_body("peerWitnessText")
+        assert "radio witness: unknown" in body          # old server / no block
+        assert "m.ok === true" in body                   # no truthy coercion
+        assert "cell(n).ok === true" in body             # tooltip agrees
+        assert "m.reason" in body
+
+
+class TestFederationPanelExecuted:
+    """review r1 F9: the static pins prove PRESENCE; this RUNS the page's own
+    peerWitnessText in headless chromium (skipped where none is installed —
+    an absent browser is said, never passed)."""
+
+    def test_witness_text_runs_on_hostile_and_old_payloads(self, tmp_path):
+        import shutil
+        import subprocess
+        browser = shutil.which("chromium") or shutil.which("chromium-browser")
+        if not browser:
+            pytest.skip("no headless chromium on this box — JS not executed")
+        cases = [
+            {"radio_witness": {"meshtastic": {"ok": True, "reason": ""}}},
+            {"radio_witness": {"meshtastic": {"ok": False,
+                                              "reason": DEFERRED_REASON}}},
+            {"radio_witness": {"meshtastic": None, "rns": None}},
+            {"radio_witness": {"meshtastic": {"ok": "yes"}}},
+            {"radio_witness": "garbage"},
+            {}, None,
+            {"radio_witness": {"meshtastic": {"ok": False,
+                                              "reason": DEFERRED_REASON}},
+             "meshtasticd_deferred_to_gateway": True, "status_probe_misses": 2},
+            {"radio_witness": {"meshtastic": {"ok": False, "reason": {"x": 1}}}},
+        ]
+        page = tmp_path / "w.html"
+        page.write_text(
+            "<html><body><pre id=o></pre><script>%s\n%s\n"
+            "try{document.getElementById('o').textContent=JSON.stringify("
+            "%s.map(p=>{const w=peerWitnessText(p);return [w.text,w.ok,w.title]}));}"
+            "catch(e){document.getElementById('o').textContent='JSERR '+e;}"
+            "</script></body></html>" % (
+                "function " + _js_fn("peerWitnessText"),
+                "function " + _js_fn("escapeHtml"), json.dumps(cases)))
+        r = subprocess.run([browser, "--headless", "--disable-gpu",
+                            "--no-sandbox", "--dump-dom", page.as_uri()],
+                           capture_output=True, text=True, timeout=90)
+        m = re.search(r'<pre id="o">(.*?)</pre>', r.stdout, re.S)
+        assert m, r.stderr[-500:]
+        assert not m.group(1).startswith("JSERR"), m.group(1)
+        out = json.loads(m.group(1).replace("&amp;", "&").replace(
+            "&lt;", "<").replace("&gt;", ">").replace("&quot;", '"'))
+        assert out[0][:2] == ["📻 radio witness", True]
+        assert out[1][0] == "📻 not a radio witness — " + DEFERRED_REASON
+        assert out[1][1] is False
+        assert out[2][:2] == ["📻 radio witness: unknown", False]   # null cell
+        assert out[3][1] is False and out[3][2] == "meshtastic: not a witness"
+        assert out[4][:2] == ["📻 radio witness: unknown", False]
+        assert out[5][:2] == out[6][:2] == ["📻 radio witness: unknown", False]
+        assert out[7][0] == ("📻 not a radio witness — " + DEFERRED_REASON
+                             + " · last answer held 2 poll(s)")
+        assert out[8][0] == "📻 not a radio witness — reason unknown"
+
+
+def _js_fn(name):
+    """`name(args) { body }` of a page function, for execution."""
+    m = re.search(r"function (%s\([^)]*\)\s*\{)" % name, _HTML)
+    assert m, name
+    depth, i = 1, m.end()
+    while depth:
+        depth += {"{": 1, "}": -1}.get(_HTML[i], 0)
+        i += 1
+    return _HTML[m.start(1):i]
+
+
+def test_deferral_constant_is_a_reason_the_collector_emits():
+    """Producer and consumer of `deferred_to_gateway` share ONE value (hfm #5,
+    review r1 F7). The collector keeps the literal so the honesty scan sees
+    it; this pins the consumer's constant to what that scan finds."""
+    from tests.test_map_source_honesty import _emitted_reason_literals
+    from utils.map_source_reasons import DEFERRED_TO_GATEWAY, reason_state
+    assert DEFERRED_TO_GATEWAY in _emitted_reason_literals()
+    assert reason_state(DEFERRED_TO_GATEWAY) == "inactive"

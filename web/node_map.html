@@ -5680,12 +5680,34 @@
             const errBadge = p.last_error
                 ? ` <span style="color:#f44336;font-size:9px;" title="${escapeHtml(p.last_error)}">⚠</span>`
                 : '';
-            return `<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0;font-size:10px;">
+            const wit = peerWitnessText(p);
+            return `<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0 0;font-size:10px;">
                 <span><span style="color:${statusColor};">●</span> ${escapeHtml(p.hostname)}${errBadge}</span>
                 <span style="color:#888;">${p.last_count || 0} · ${lastSync}</span>
-            </div>`;
+            </div>
+            <div style="padding:0 0 2px 12px;font-size:9px;color:${wit.ok ? '#4caf50' : '#888'};" title="${escapeHtml(wit.title)}">${escapeHtml(wit.text)}</div>`;
         });
         list.innerHTML = rows.join('') || '<div style="color:#888;font-size:10px;">No peers configured</div>';
+    }
+
+    // Is this peer's Meshtastic radio a witness for nodes THIS box can't hear
+    // (MAP-H H14)? Says why not — e.g. a gateway box's map defers its radio
+    // to the gateway BY DESIGN. Every network's verdict rides the tooltip.
+    // An absent block (old server) reads unknown, never "witness".
+    function peerWitnessText(p) {
+        const w = (p && p.radio_witness) || {};
+        const nets = Object.keys(w).sort();
+        const cell = n => (w[n] && typeof w[n] === 'object') ? w[n] : {};
+        const title = nets.map(n => `${n}: ${cell(n).ok === true ? 'witness' : (cell(n).reason || 'not a witness')}`).join('\n');
+        const m = w.meshtastic && typeof w.meshtastic === 'object' ? w.meshtastic : null;
+        if (!m) return {text: '📻 radio witness: unknown', ok: false, title: title || 'this server does not report radio witnesses'};
+        if (m.ok === true) return {text: '📻 radio witness', ok: true, title: title};
+        // A deferral answer HELD through polls with no fresh one says so
+        // (bounded server-side) — a held label is not a fresh claim.
+        const misses = Number(p.status_probe_misses);
+        const held = (p.meshtasticd_deferred_to_gateway === true && Number.isFinite(misses) && misses > 0)
+            ? ` · last answer held ${misses} poll(s)` : '';
+        return {text: `📻 not a radio witness — ${typeof m.reason === 'string' && m.reason ? m.reason : 'reason unknown'}${held}`, ok: false, title: title};
     }
 
     // Light-touch HTML escape used only for tooltip values; not exposed

@@ -126,7 +126,7 @@ class MeshtasticDataCollectorMixin:
             self._record_diagnostic(
                 "meshtasticd",
                 attempted=0, yielded=0,
-                reason_if_zero="deferred_to_gateway",
+                reason_if_zero="deferred_to_gateway",  # == map_source_reasons.DEFERRED_TO_GATEWAY (test-pinned)
                 notes="meshforge-gateway active — :4403 single-consumer (#17); nodes via MQTT",
             )
             return []

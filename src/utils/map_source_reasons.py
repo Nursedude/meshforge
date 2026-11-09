@@ -24,6 +24,12 @@ from typing import Dict, Optional
 
 STATES = ("ok", "inactive", "stale", "warn", "unobservable")
 
+#: The meshtasticd leg's reason when the map hands the radio to the gateway
+#: (#17). Federation reads it to say a gateway box's map is not a radio
+#: witness by design. The collector writes it as a LITERAL so
+#: test_map_source_honesty's scan sees it; a test pins the two equal.
+DEFERRED_TO_GATEWAY = "deferred_to_gateway"
+
 # Written as plain string pairs so the JS copy can be strict JSON.
 SOURCE_REASON_STATE: Dict[str, str] = {
     "ok": "ok",

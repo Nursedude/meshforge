@@ -16,6 +16,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from tests._federation_net_guard import _no_real_peer_http  # noqa: F401 — autouse
+
 from pathlib import Path
 
 from utils.map_federation import (
@@ -27,7 +29,7 @@ from utils.map_federation import (
     DEFAULT_WAL_SKIP_THRESHOLD_BYTES,
     _peer_url,
     _extract_features,
-    _fetch_peer_claw,
+    _fetch_peer_status_extras,
     _fetch_peer_directory_and_claw,
     _wal_path_for,
     fetch_peer_directory,
@@ -189,7 +191,7 @@ class TestFederatedClaw:
     def test_fetch_peer_claw_installed_returns_block(self):
         with patch("utils.map_federation.urllib.request.urlopen",
                    return_value=_mock_status_resp(_INSTALLED_CLAW)):
-            block = _fetch_peer_claw("moc2", timeout=1.0)
+            block = _fetch_peer_status_extras("moc2", timeout=1.0)[0]
         assert block is not None and block["device"] == "dudeclaw-01"
         assert block["device_info"]["uptime_s"] == 109368
 
@@ -197,7 +199,7 @@ class TestFederatedClaw:
         with patch("utils.map_federation.urllib.request.urlopen",
                    return_value=_mock_status_resp({"installed": False,
                                                    "reason": "no_state_file"})):
-            assert _fetch_peer_claw("moc1", timeout=1.0) is None
+            assert _fetch_peer_status_extras("moc1", timeout=1.0)[0] is None
 
     def test_fetch_peer_claw_keeps_block_when_only_a_secondary_is_installed(self):
         """07-24 audit: keying off the TOP-LEVEL installed flag dropped the whole
@@ -208,7 +210,7 @@ class TestFederatedClaw:
                                      "device": "dudeclaw-02"}]}
         with patch("utils.map_federation.urllib.request.urlopen",
                    return_value=_mock_status_resp(block_in)):
-            block = _fetch_peer_claw("moc2", timeout=1.0)
+            block = _fetch_peer_status_extras("moc2", timeout=1.0)[0]
         assert block is not None
         assert block["secondaries"][0]["device"] == "dudeclaw-02"
 
@@ -219,7 +221,7 @@ class TestFederatedClaw:
                                      "reason": "claw_unreachable: no answer"}]}
         with patch("utils.map_federation.urllib.request.urlopen",
                    return_value=_mock_status_resp(block_in)):
-            block = _fetch_peer_claw("moc2", timeout=1.0)
+            block = _fetch_peer_status_extras("moc2", timeout=1.0)[0]
         assert [s["device"] for s in block["secondaries"]] == ["dudeclaw-02"]
 
     def test_fetch_peer_claw_all_absent_still_returns_none(self):
@@ -227,12 +229,12 @@ class TestFederatedClaw:
                    return_value=_mock_status_resp(
                        {"installed": False, "reason": "no_state_file",
                         "secondaries": [{"installed": False}]})):
-            assert _fetch_peer_claw("moc1", timeout=1.0) is None
+            assert _fetch_peer_status_extras("moc1", timeout=1.0)[0] is None
 
     def test_fetch_peer_claw_http_error_returns_none(self):
         with patch("utils.map_federation.urllib.request.urlopen",
                    return_value=_mock_status_resp(_INSTALLED_CLAW, status=500)):
-            assert _fetch_peer_claw("moc2", timeout=1.0) is None
+            assert _fetch_peer_status_extras("moc2", timeout=1.0)[0] is None
 
     def test_fetch_peer_claw_over_cap_body_skipped_with_distinct_warning(
             self, caplog):
@@ -251,7 +253,7 @@ class TestFederatedClaw:
         with patch("utils.map_federation.urllib.request.urlopen",
                    return_value=cm), \
              caplog.at_level(logging.WARNING, logger="utils.map_federation"):
-            assert _fetch_peer_claw("moc2", timeout=1.0) is None
+            assert _fetch_peer_status_extras("moc2", timeout=1.0)[0] is None
         msgs = [r.getMessage() for r in caplog.records]
         assert any("exceeds cap" in m and "skipped" in m for m in msgs)
         cm.read.assert_called_once_with(_CLAW_STATUS_MAX_BYTES + 1)
@@ -260,16 +262,17 @@ class TestFederatedClaw:
         def boom(*a, **kw):
             raise OSError("refused")
         with patch("utils.map_federation.urllib.request.urlopen", side_effect=boom):
-            assert _fetch_peer_claw("moc2", timeout=0.5) is None
+            assert _fetch_peer_status_extras("moc2", timeout=0.5)[0] is None
 
     def test_wrapper_attaches_claw_on_ok(self):
         ok_status = FederationPeerStatus(hostname="moc2", ok=True)
         with patch("utils.map_federation.fetch_peer_directory",
                    return_value=(["e"], ok_status)), \
-             patch("utils.map_federation._fetch_peer_claw",
-                   return_value=_INSTALLED_CLAW) as m:
+             patch("utils.map_federation._fetch_peer_status_extras",
+                   return_value=(_INSTALLED_CLAW, False)) as m:
             entries, status = _fetch_peer_directory_and_claw("moc2", 1.0, DEFAULT_PORT)
         assert status.claw == _INSTALLED_CLAW and entries == ["e"]
+        assert status.radio_deferred is False
         m.assert_called_once()
 
     def test_wrapper_skips_claw_when_directory_failed(self):
@@ -277,9 +280,9 @@ class TestFederatedClaw:
                                           last_error="HTTP 500")
         with patch("utils.map_federation.fetch_peer_directory",
                    return_value=([], bad_status)), \
-             patch("utils.map_federation._fetch_peer_claw") as m:
+             patch("utils.map_federation._fetch_peer_status_extras") as m:
             entries, status = _fetch_peer_directory_and_claw("moc2", 1.0, DEFAULT_PORT)
-        assert status.claw is None
+        assert status.claw is None and status.radio_deferred is None
         m.assert_not_called()  # don't probe a peer whose directory just failed
 
 

@@ -28,6 +28,7 @@ Lifecycle:
 import json
 import logging
 import gzip
+import http.client
 import os
 import socket
 import threading
@@ -40,6 +41,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from utils.node_history import _origin_priority
+from utils.map_source_reasons import DEFERRED_TO_GATEWAY, reason_state
 from utils.peer_radio_heard import ingest_radio_ts, peer_radio_trust
 
 logger = logging.getLogger(__name__)
@@ -181,6 +183,14 @@ class FederationPeerStatus:
     # {network: newest radio_heard} — trust is per (peer, network): one fresh
     # MeshCore row must not vouch for a frozen Meshtastic radio (review r1 F3).
     radio_newest_by_network: Dict[str, float] = field(default_factory=dict)
+    # Does the peer's map defer meshtasticd to its gateway (#17)? Read from
+    # the peer's /api/status source_diagnostics in the SAME fetch as the claw
+    # block. True / False / None = could not ask (never a claim).
+    radio_deferred: Optional[bool] = None
+    # Consecutive polls with no FRESH deferral answer (status fetch failed or
+    # the leg's reason was not decisive); radio_deferred is then HELD from the
+    # last answer, and this count is the witness (hfm #2/#9).
+    status_probe_misses: int = 0
 
 
 @dataclass
@@ -215,7 +225,10 @@ def peer_status_radio_trust(s: "FederationPeerStatus", net: Optional[str],
     window_s = window_for(net)
     return peer_radio_trust(
         s.radio_exported, (s.radio_newest_by_network or {}).get(net), now,
-        window_s, ok=s.ok, in_backoff=s.in_backoff)
+        window_s, ok=s.ok, in_backoff=s.in_backoff,
+        # The map's meshtasticd leg is what defers; scope the label to it so
+        # no other network's reason can ever read "defers to its gateway".
+        deferred=s.radio_deferred if net == "meshtastic" else None)
 
 
 def serialize_peer_status(s: "FederationPeerStatus",
@@ -274,6 +287,10 @@ def serialize_peer_status(s: "FederationPeerStatus",
             n: t for n, t in (s.radio_newest_by_network or {}).items()
             if n in known},
         "radio_witness": witness,
+        # Meshtastic-only by name: it is the map's meshtasticd leg that
+        # defers; other radios are judged on their own rows.
+        "meshtasticd_deferred_to_gateway": getattr(s, "radio_deferred", None),
+        "status_probe_misses": getattr(s, "status_probe_misses", 0),
         "radio_unknown_networks": len(reported - known),
     }
     if include_claw:
@@ -554,14 +571,22 @@ _CLAW_FETCH_TIMEOUT = 4.0
 _CLAW_STATUS_MAX_BYTES = 512 * 1024
 
 
-def _fetch_peer_claw(peer: str, timeout: float = _CLAW_FETCH_TIMEOUT,
-                     port: int = DEFAULT_PORT) -> Optional[Dict[str, Any]]:
-    """Best-effort GET of a peer's /api/status.claw block (the dude-claw edge
-    telemetry) for the federated claw card. Returns the block only when the
-    peer reports an INSTALLED claw; None on any error or claw-less peer.
+def _fetch_peer_status_extras(
+    peer: str, timeout: float = _CLAW_FETCH_TIMEOUT, port: int = DEFAULT_PORT,
+) -> Tuple[Optional[Dict[str, Any]], Optional[bool]]:
+    """ONE best-effort GET of a peer's /api/status -> (claw, radio_deferred).
 
-    Cosmetic + bounded: short timeout, never raises, never retries — a slow or
-    broken claw probe yields no card, it does not slow or break the directory
+    ``claw`` = the dude-claw block when the peer reports an installed claw,
+    else None. ``radio_deferred`` = True when the peer's map defers
+    meshtasticd to its gateway (``source_diagnostics.meshtasticd.
+    reason_if_zero == DEFERRED_TO_GATEWAY``), False only when that leg says
+    it ANSWERED (a reason the shared vocabulary rates ``ok``), None for
+    anything else — fetch failed, old peer, no leg, or a leg that could not
+    run (``collect_timeout`` / ``lock_contended`` …): unknown is never a
+    claim (hfm #2, review r1).
+
+    Cosmetic + bounded: short timeout, never raises, never retries — a slow
+    or broken probe yields nothing, it does not slow or break the directory
     poll that called it.
     """
     url = _peer_url(peer, port=port, path="/api/status")
@@ -570,21 +595,74 @@ def _fetch_peer_claw(peer: str, timeout: float = _CLAW_FETCH_TIMEOUT,
             url, headers={"User-Agent": "MeshForge/federation"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             if resp.status != 200:
-                return None
+                return None, None
             # cap+1 so an over-cap body is DETECTED (B8): reading exactly the
             # cap truncated it, json failed, and the claw silently vanished
             # behind the generic debug line below.
             raw = resp.read(_CLAW_STATUS_MAX_BYTES + 1)
         if len(raw) > _CLAW_STATUS_MAX_BYTES:
             logger.warning(
-                "peer claw status exceeds cap — skipped (peer=%s, "
+                "peer status exceeds cap — skipped (peer=%s, "
                 "cap=%d bytes)", peer, _CLAW_STATUS_MAX_BYTES)
-            return None
-        block = (json.loads(raw.decode("utf-8")) or {}).get("claw")
+            return None, None
+        payload = json.loads(raw.decode("utf-8")) or {}
     except (urllib.error.URLError, urllib.error.HTTPError, socket.timeout,
-            OSError, ValueError) as e:
-        logger.debug("claw probe of %s failed (benign): %s", peer, e)
+            OSError, ValueError, http.client.HTTPException) as e:
+        # HTTPException (IncompleteRead, BadStatusLine) is NOT an OSError: it
+        # escaped, voided a GOOD directory fetch as "crash" (review r2).
+        logger.debug("status probe of %s failed (benign): %s", peer, e)
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+    return _claw_from_status(payload.get("claw")), _deferred_from_status(payload)
+
+
+#: meshtasticd-leg reasons that say the cycle did not run far enough to know
+#: whether the map defers (deadline sink / TCP lock busy).
+_UNDECISIVE_REASONS = frozenset({"collect_timeout", "lock_contended"})
+
+#: Polls a deferral answer may be HELD without a fresh one before it reads
+#: unknown again (review r2: never hold a by-design label forever).
+DEFERRAL_HOLD_MAX_POLLS = 3
+
+
+def _carry_deferral(status: "FederationPeerStatus",
+                    prior: Optional["FederationPeerStatus"]) -> None:
+    """Hold the last deferral ANSWER through a poll that got none (probe
+    failed, crashed, or the leg was undecisive), for at most
+    DEFERRAL_HOLD_MAX_POLLS polls; ``status_probe_misses`` counts the held
+    polls and is the witness (hfm #2/#9). Nothing held → nothing counted."""
+    if status.radio_deferred is not None or prior is None:
+        return
+    if prior.radio_deferred is None:
+        return
+    misses = prior.status_probe_misses + 1
+    if misses > DEFERRAL_HOLD_MAX_POLLS:
+        return                       # too old to hold: unknown again
+    status.radio_deferred = prior.radio_deferred
+    status.status_probe_misses = misses
+
+
+def _deferred_from_status(payload: Dict[str, Any]) -> Optional[bool]:
+    diags = payload.get("source_diagnostics")
+    leg = diags.get("meshtasticd") if isinstance(diags, dict) else None
+    if not isinstance(leg, dict):
         return None
+    reason = leg.get("reason_if_zero")
+    if reason == DEFERRED_TO_GATEWAY:
+        return True
+    # A KNOWN reason the leg reached is decisive: it got past the gateway
+    # check, so the map is not deferring — `unreachable` (meshtasticd down)
+    # included; holding "defers" through it would hide a dead radio behind a
+    # by-design label (review r2). Only a cycle that could not RUN, or a
+    # reason outside the vocabulary, says nothing.
+    if (isinstance(reason, str) and reason_state(reason) != "unobservable"
+            and reason not in _UNDECISIVE_REASONS):
+        return False
+    return None
+
+
+def _claw_from_status(block: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(block, dict):
         return None
     # "Installed" means the BOX has at least one claw — the primary OR any
@@ -608,7 +686,8 @@ def _fetch_peer_directory_and_claw(
     unreachable — no point probing) and can never fail this call."""
     entries, status = fetch_peer_directory(peer, timeout, port)
     if status.ok:
-        status.claw = _fetch_peer_claw(peer, port=port)
+        status.claw, status.radio_deferred = _fetch_peer_status_extras(
+            peer, port=port)
     return entries, status
 
 
@@ -841,6 +920,7 @@ class FederationCollector:
                         peer_name=self._peer_names.get(peer),
                         resolution_method=self._resolution_methods.get(peer),
                     )
+                    _carry_deferral(status, prior)
                     in_b, mult, next_t = self._compute_backoff(
                         status.consecutive_failures, attempt_ts,
                     )
@@ -912,6 +992,7 @@ class FederationCollector:
                     if ts is not None and ts > newest.get(e["network"], 0.0):
                         newest[e["network"]] = ts
                 status.radio_newest_by_network = newest
+                _carry_deferral(status, prior)
                 new_status[peer] = status
 
                 for entry in entries:

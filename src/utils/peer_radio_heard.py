@@ -29,6 +29,10 @@ HEARD = "heard"
 NOT_HEARD = "not_heard"
 UNOBSERVABLE = "unobservable"
 
+#: A gateway box's map hands meshtasticd to the gateway (#17 single-consumer),
+#: so it has no radio rows BY DESIGN — said as that, never as a fault.
+DEFERRED_REASON = "peer's map defers its radio to its gateway (#17)"
+
 
 def coerce_radio_ts(value: Any, now: float) -> Optional[float]:
     """A plausible hearing epoch, or None. Rejects bool, non-finite, <= 0, and
@@ -66,16 +70,32 @@ def ingest_radio_ts(value: Any) -> Optional[float]:
 
 def peer_radio_trust(exported: bool, newest: Any, now: float,
                      window_s: float, *, ok: bool = True,
-                     in_backoff: bool = False) -> Tuple[bool, str]:
+                     in_backoff: bool = False,
+                     deferred: Optional[bool] = None) -> Tuple[bool, str]:
     """(trusted, reason) for one peer's radio ON ONE NETWORK as a witness at
     ``now``. ``newest`` = that peer's newest radio_heard on that network
     (review r1 F3: one fresh MeshCore row must not vouch for a frozen
     Meshtastic radio). A failed or backed-off poll is said as such, never as
-    "old code" (r1 F7)."""
+    "old code" (r1 F7).
+
+    ``deferred`` = the peer said its map defers this radio to its gateway
+    (True), said it does not (False), or could not be asked (None). Only a
+    True changes anything, and only ONE reason: a peer that exports radio
+    rows but has none on this network. Every real fault keeps its own reason
+    — stale/frozen, clock ahead, unreadable, old code (review r1: a benign
+    label must never hide a finding) — and fresh rows still count."""
     if in_backoff:
         return False, "peer in federation backoff (not polled)"
     if not ok:
         return False, "peer fetch failed this cycle"
+    if deferred is True and exported and newest is None:
+        return False, DEFERRED_REASON
+    return _radio_trust(exported, newest, now, window_s)
+
+
+def _radio_trust(exported: bool, newest: Any, now: float,
+                 window_s: float) -> Tuple[bool, str]:
+    """The row-evidence half of peer_radio_trust (poll state already ok)."""
     if not exported:
         return False, "peer does not export radio hearing times (old code)"
     if newest is None:
