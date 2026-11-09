@@ -47,8 +47,8 @@ done
 
 # 2026-11-09: the consequence is a RISK, not a certainty — lehua's gate timed
 # out (10-26) and its radio read 17 -> 33 nodes online from the first telemetry
-# line. The watchdog's meshtasticd_clock_unrated probe reads THIS line plus the
-# telemetry below, and pages only when both agree.
+# line. The watchdog's meshtasticd_clock_unrated probe reads THIS line (and the
+# telemetry below, labelled unverified) — OBSERVE-ONLY: it reports, never pages.
 echo "wait_for_ntp_sync: TIMEOUT after ${BUDGET}s — system clock not NTP-synchronized." \
      "Starting meshtasticd anyway (fail-open). THIS LINE IS THE WITNESS: meshtasticd" \
      "may rate its clock Device quality, stamp received packets with rx_time 0, and" \

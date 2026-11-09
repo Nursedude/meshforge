@@ -105,6 +105,22 @@ def frozen(res):
     sig, disp, _ = res
     assert sig is None, "observe-only: the probe must never return a Signal"
     return bool(disp) and disp["disp"] == "indeterminate" and wc.FROZEN_MARK in disp["reason"]
+
+
+def shape(res):
+    """WHICH branch spoke — ONE seam for every acceptance edge (Fable 5.2
+    review 11-09 F1: since r5, frozen / online / blind all read
+    ``indeterminate``, so a test asserting only the disposition no longer
+    pinned the edge — mutants dropping the >=2-senders rule or the 2 h age
+    bound survived 87/87). Exactly one mark must match."""
+    sig, disp, _ = res
+    assert sig is None, "observe-only: the probe must never return a Signal"
+    reason = (disp or {}).get("reason", "")
+    marks = {"frozen": wc.FROZEN_MARK, "blind": wc.BLIND_MARK,
+             "online": wc.ONLINE_MARK}
+    hits = [name for name, mark in marks.items() if mark in reason]
+    assert len(hits) <= 1, f"ambiguous reason, marks {hits}: {reason!r}"
+    return hits[0] if hits else None
 FROZEN = [(ago(1800), tele(0)), (ago(1700), rx()), (ago(1600), rx("Admin", "0x1")),
           (ago(1200), rx("nodeinfo", "0x47115e4f")), (ago(1100), rx("routing", OWN)),
           (ago(900), tele(0))]
@@ -151,8 +167,8 @@ class TestAcceptance:
 
     @pytest.mark.parametrize("window", [[], [(ago(60), tele(0))], [(ago(60), rx())]])
     def test_no_telemetry_pair_is_indeterminate(self, window):
-        sig, disp, _ = run(HEAD_WITNESS, window)
-        assert sig is None and disp["disp"] == "indeterminate"
+        res = run(HEAD_WITNESS, window)
+        assert res[1]["disp"] == "indeterminate" and shape(res) == "blind"
 
     def test_only_the_last_two_telemetry_lines_count(self):
         recovered = [(ago(3000), tele(0)), (ago(2900), rx()), (ago(2000), tele(0)),
@@ -180,8 +196,9 @@ class TestReviewR1:
         quiet segment must not read as 'clock unrated'."""
         own_only = [(ago(1800), tele(0)), (ago(1700), rx("routing", OWN)),
                     (ago(900), tele(0)), (ago(800), rx("position", OWN))]
-        sig, disp, _ = run(HEAD_WITNESS, own_only)
-        assert sig is None and disp["disp"] == "indeterminate"
+        res = run(HEAD_WITNESS, own_only)
+        assert res[1]["disp"] == "indeterminate" and shape(res) == "blind"
+        assert res[1]["reason"].count("'rx_senders': 1") == 1
 
     def test_rx_before_the_older_telemetry_line_does_not_count(self):
         old_rx = [(ago(3000), rx()), (ago(2900), rx("text", "0x2")),
@@ -194,8 +211,9 @@ class TestReviewR1:
         now' cannot be judged."""
         w = [(ago(age_s + 900), tele(0)), (ago(age_s + 100), rx()),
              (ago(age_s + 50), rx("text", "0x2")), (ago(age_s), tele(0))]
-        sig, disp, _ = run(HEAD_WITNESS, w)
-        assert sig is None and disp["disp"] == "indeterminate"
+        res = run(HEAD_WITNESS, w)
+        assert res[1]["disp"] == "indeterminate" and shape(res) == "blind"
+        assert "newest_telemetry_age_s" in res[1]["reason"]
 
     def test_long_telemetry_interval_still_judged(self):
         """F8: 90-min telemetry spacing — the newest two are still read."""
@@ -214,10 +232,34 @@ class TestReviewR1:
         assert "sudo systemctl restart meshtasticd" in disp["reason"]
         assert calls["window"] == 1
 
-    def test_gate_silent_start_with_nodes_online_is_clean(self):
-        sig, disp, _ = run(HEAD_GATE_SILENT, LEHUA)
-        assert sig is None and disp["disp"] == "clean"
+    def test_gate_silent_start_with_nodes_online_is_indeterminate(self):
+        """Fable 5.2 review 11-09 F2 (operator: indeterminate): the r5 lesson
+        holds on EVERY branch — journal telemetry is mesh-writable, so it
+        cannot excuse an UNWITNESSED start any more than a witnessed one. One
+        forged ``num_online_nodes=7`` line used to flip a frozen gate-silent
+        start to ``clean``. The reason names the count as unverified and the
+        one-time cure (a restart now runs the always-speaking gate)."""
+        res = run(HEAD_GATE_SILENT, LEHUA)
+        disp = res[1]
+        assert disp["disp"] == "indeterminate" and shape(res) == "online"
         assert "no NTP-gate line" in disp["reason"]
+        assert "35 node(s)" in disp["reason"] and "unverified" in disp["reason"]
+        assert "restart meshtasticd" in disp["reason"]
+
+    def test_one_forged_online_line_never_clears_a_frozen_silent_start(self):
+        """F2's drill, pinned: frozen window + ONE newer telemetry-shaped line
+        with a non-zero count must never read clean."""
+        forged = FROZEN + [(ago(60), tele(7))]
+        res = run(HEAD_GATE_SILENT, forged)
+        assert res[1]["disp"] == "indeterminate"
+
+    def test_no_journal_consequence_reads_clean(self):
+        """Only the authenticated gate line can make this class clean."""
+        for head in (HEAD_WITNESS, HEAD_GATE_SILENT):
+            for window in (FROZEN, LEHUA, []):
+                wc._HEAD_CACHE.clear(); wc._CONSEQUENCE_CACHE.clear()
+                res = run(head, window)
+                assert res[1]["disp"] == "indeterminate", (head, window)
 
     def test_empty_head_is_not_cached(self):
         """F1: a just-started unit's lines may not be flushed yet."""

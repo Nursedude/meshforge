@@ -27,9 +27,11 @@ valid time). So this probe FIRES only on witness AND consequence:
 The gate prints a line on EVERY run since 11-09 (``synchronized after Ns``,
 including 0 s). A start whose head holds NO gate line (gate did not run, its
 lines rotated out, or the start predates the always-speaking gate) is never
-read clean on that absence: the consequence decides (nodes online -> clean;
-the frozen shape -> indeterminate, said loudly; nothing to judge ->
-indeterminate). systemd's own ExecStartPre record cannot answer "did the gate
+read clean on that absence — nor on journal telemetry, which is mesh-writable
+(below): every consequence shape is indeterminate, named by its mark (frozen
+shape said loudly; nodes online named unverified, with the one-time cure — a
+restart lets the always-speaking gate record the start; nothing to judge).
+Only the authenticated gate line reads clean (Fable 5.2 review 11-09 F2). systemd's own ExecStartPre record cannot answer "did the gate
 run" — it read ``status=0/0 start_time=[n/a]`` on moc4 and lehua (11-09).
 
 Cure: ``sudo systemctl restart meshtasticd`` once ``timedatectl`` shows
@@ -77,6 +79,11 @@ GATE_COMM = "wait_for_ntp_sy"
 #: The disposition-reason marker for the frozen SHAPE (witness + journal
 #: telemetry 0/0 + foreign RX) — the would-be page, observe-only.
 FROZEN_MARK = "UNVERIFIED FROZEN SHAPE"
+#: The other two consequence shapes, each named in its reason so the three
+#: ``indeterminate`` branches stay distinguishable — to the tests (Fable 5.2
+#: review 11-09 F1) and to an operator reading the coverage block.
+ONLINE_MARK = "UNVERIFIED ONLINE"
+BLIND_MARK = "CONSEQUENCE UNJUDGEABLE"
 WITNESS_MARK = "wait_for_ntp_sync: TIMEOUT"
 #: How far past the main start the head read goes before it stops (the gate
 #: finishes BEFORE the main start; this only bounds the read).
@@ -457,18 +464,26 @@ def probe_meshtasticd_clock_unrated(
            "no NTP-gate line is readable for this start (gate did not run, its "
            "lines rotated out, or the start predates the always-speaking gate)")
     if verdict == "online":
-        # A witnessed start stays INDETERMINATE: the gate's failure is
-        # authenticated, the "nodes online" that would excuse it is not (r5).
+        # INDETERMINATE on EVERY head: the "nodes online" that would excuse the
+        # start is journal text, and the journal is mesh-writable (r5) — one
+        # forged line used to flip a frozen gate-silent start to clean (Fable
+        # 5.2 review 11-09 F2). Only the authenticated gate line reads clean.
+        verify = ("once `timedatectl` shows synchronized, sudo systemctl restart "
+                  "meshtasticd re-rates the clock" if head == "witness" else
+                  "sudo systemctl restart meshtasticd once lets the gate record "
+                  "this start (then this reads clean on its authenticated line)")
         note_disposition(
-            "meshtasticd_clock_unrated", "indeterminate" if head == "witness" else "clean",
-            reason=(f"{why}, and journal-derived telemetry (unverified) reads "
-                    f"{max(facts['online_last_two'])} node(s) online (last two: "
-                    f"{facts['online_last_two']})"))
+            "meshtasticd_clock_unrated", "indeterminate",
+            reason=(f"{ONLINE_MARK}: {why}, and journal-derived telemetry (unverified) "
+                    f"reads {max(facts['online_last_two'])} node(s) online (last two: "
+                    f"{facts['online_last_two']}) — journal text cannot excuse the "
+                    f"start; to verify: {verify}"))
         return None
     if verdict == "blind":
         note_disposition(
             "meshtasticd_clock_unrated", "indeterminate",
-            reason=f"{why}; no fresh telemetry/foreign RX to judge the consequence ({facts})")
+            reason=(f"{BLIND_MARK}: {why}; no fresh telemetry/foreign RX to judge "
+                    f"the consequence ({facts})"))
         return None
     # The frozen SHAPE. OBSERVE-ONLY (operator 11-09, review r5): the journal
     # telemetry it rests on is mesh-writable, so it is SAID, never paged.
