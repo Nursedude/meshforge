@@ -16,7 +16,16 @@
 # account has no password and no key: it exists but cannot log in.
 #
 # Usage, as root on the box:
-#   bash fleet_admin_account.sh --host <expected-hostname> --user <admin-user> [--dry-run]
+#   bash fleet_admin_account.sh --host <expected-hostname> --user <admin-user> \
+#        [--desk-user <desktop-login>] [--dry-run]
+#
+# --desk-user (operator 2026-11-10, meshforge-pro + pilina — lab boxes with a
+# KDE desktop): the admin user above has NO password, so a desktop polkit
+# prompt ("authenticate as an administrator", e.g. installing an app in
+# Discover) can never succeed through it. This adds an EXISTING desk login to
+# `sudo` — confirmed with its OWN password, never NOPASSWD, no sudoers file —
+# the group Debian's stock sudoers rule (%sudo) and polkit (unix-group:sudo)
+# both treat as admin. Opt-in: a box without a desktop keeps its shape.
 #   (no sudo yet? `su -c 'bash fleet_admin_account.sh ...'` in a real
 #    terminal — su needs a TTY for the root password)
 #
@@ -29,11 +38,12 @@
 # is proven. Safe to re-run: every step checks first.
 set -euo pipefail
 
-HOST="" U="" DRY=0
+HOST="" U="" DRY=0 DESK="" DESK_SET=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --host) HOST="${2:-}"; shift 2 ;;
         --user) U="${2:-}"; shift 2 ;;
+        --desk-user) DESK="${2:-}"; DESK_SET=1; shift 2 || shift ;;
         --dry-run) DRY=1; shift ;;
         *) echo "FAIL: unknown argument '$1'"; exit 1 ;;
     esac
@@ -43,6 +53,16 @@ done
 [[ "$U" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || {
     echo "FAIL: '$U' is not a plain Linux user name"; exit 1; }
 [ "$U" != root ] || { echo "FAIL: the admin user cannot be root"; exit 1; }
+if [ "$DESK_SET" = 1 ]; then
+    [ -n "$DESK" ] || { echo "FAIL: --desk-user needs a user name"; exit 1; }
+    [[ "$DESK" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || {
+        echo "FAIL: desk user '$DESK' is not a plain Linux user name"; exit 1; }
+    [ "$DESK" != root ] || { echo "FAIL: the desk user cannot be root"; exit 1; }
+    [ "$DESK" != "$U" ] || {
+        echo "FAIL: --desk-user must differ from --user (the admin stays key-only)"; exit 1; }
+    id "$DESK" >/dev/null 2>&1 || {
+        echo "FAIL: desk user '$DESK' does not exist — this script never creates the desk login"; exit 1; }
+fi
 
 ACTUAL=$(hostname)
 [ "$ACTUAL" = "$HOST" ] || {
@@ -56,6 +76,11 @@ if [ "$DRY" = 1 ]; then
     echo "  groups $GROUPS_WANTED"
     echo "  sudo   $SUDOERS = '$U ALL=(ALL) NOPASSWD: ALL' (visudo-validated first)"
     echo "  ssh    NO key installed — the operator places it by hand"
+    if [ "$DESK_SET" = 1 ]; then
+        echo "  desk   $DESK -> group sudo, confirmed with its OWN password"
+        echo "         (never NOPASSWD, no sudoers file; refused unless it has a password)"
+        echo "         then: log out of the desktop and back in"
+    fi
     exit 0
 fi
 [ "$(id -u)" -eq 0 ] || { echo "FAIL: run as root (or --dry-run)"; exit 1; }
@@ -94,6 +119,28 @@ echo "ok   $SUDOERS installed + full visudo -c passed"
 # proof, as the new user
 su -s /bin/bash -c 'sudo -n true' "$U" && echo "PASS: $U has passwordless sudo" \
     || { echo "FAIL: $U sudo -n did not succeed"; exit 1; }
+# 4. desk user (opt-in): an admin by its OWN password, for the desktop's polkit
+if [ "$DESK_SET" = 1 ]; then
+    ST=$(passwd -S "$DESK" | awk '{print $2}')
+    [ "$ST" = P ] || {
+        echo "FAIL: desk user $DESK has no usable password (passwd -S: $ST) — a desktop"
+        echo "      prompt would have nothing to check. Set one first: passwd $DESK"; exit 1; }
+    grep -Eqs '^[[:space:]]*%sudo[[:space:]]' /etc/sudoers || {
+        echo "FAIL: /etc/sudoers has no %sudo rule — the sudo group would grant nothing"; exit 1; }
+    usermod -aG sudo "$DESK"
+    id -nG "$DESK" | tr ' ' '\n' | grep -qx sudo || {
+        echo "FAIL: $DESK is not in sudo after usermod"; exit 1; }
+    echo "ok   desk user $DESK in sudo (its own password; no NOPASSWD)"
+    if grep -Rqs 'unix-group:sudo' /usr/share/polkit-1/rules.d /etc/polkit-1/rules.d; then
+        echo "ok   polkit treats unix-group:sudo as admin — desktop installs will ask $DESK's password"
+    else
+        echo "WARN: no polkit rule naming unix-group:sudo found — desktop prompts may still"
+        echo "      ask for another account; check /usr/share/polkit-1/rules.d"
+    fi
+    echo "NEXT (desk): $DESK logs out of the desktop and back in (group membership"
+    echo "     is read at login)."
+fi
+
 echo "NEXT (operator, by hand, as root): place the admin PUBLIC key in $U's ssh"
 echo "     login keys under its home (dir 700, file 600, owned by $U), then prove"
 echo "     key login from the manager BEFORE disabling sshd password auth."

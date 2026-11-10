@@ -73,3 +73,52 @@ def test_missing_or_unknown_arguments_are_refused(argv, says):
 def test_a_bad_user_name_is_refused(user, says):
     r = _run(*_args(user=user), "--dry-run")
     assert r.returncode == 1 and says in r.stdout
+
+
+# ---- --desk-user (operator 11-10, meshforge-pro + pilina): the KDE login ----
+#
+# The admin user is key-only with NO password, so a desktop polkit prompt
+# ("authenticate as an administrator") can never succeed through it; the desk
+# login was not an admin at all. --desk-user adds an EXISTING desk login to
+# `sudo` — its own password, never NOPASSWD — which is the group Debian's
+# polkit treats as admin (unix-group:sudo) and its stock sudoers rule names.
+
+import getpass
+
+ME = getpass.getuser()
+
+
+def test_dry_run_with_a_desk_user_prints_its_plan():
+    r = _run(*_args(), "--desk-user", ME, "--dry-run")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"desk   {ME}" in r.stdout
+    assert "its OWN password" in r.stdout and "never NOPASSWD" in r.stdout
+    assert "log out of the desktop" in r.stdout
+
+
+@pytest.mark.parametrize("desk, says", [
+    ("fleetadmin", "must differ from --user"),
+    ("root", "cannot be root"),
+    ("Bad User", "not a plain Linux user name"),
+    ("", "needs a user name"),
+])
+def test_a_bad_desk_user_is_refused(desk, says):
+    r = _run(*_args(), "--desk-user", desk, "--dry-run")
+    assert r.returncode == 1 and says in r.stdout, r.stdout
+
+
+def test_a_desk_user_that_does_not_exist_is_refused_never_created():
+    """The desk login is the installer's first user; this script never makes one."""
+    r = _run(*_args(), "--desk-user", "nosuchdeskuser", "--dry-run")
+    assert r.returncode == 1 and "does not exist" in r.stdout and "never creates" in r.stdout
+
+
+def test_without_desk_user_the_plan_has_no_desk_line():
+    """Opt-in only: the fleet Pis (no desktop) keep exactly their shape."""
+    r = _run(*_args(), "--dry-run")
+    assert r.returncode == 0 and "desk " not in r.stdout
+
+
+def test_desk_user_as_the_last_argument_with_no_value_is_refused():
+    r = _run(*_args(), "--dry-run", "--desk-user")
+    assert r.returncode == 1 and "needs a user name" in r.stdout
