@@ -394,6 +394,54 @@ def judge_consequence(entries: List[Tuple[int, str]],
     return "fire", facts
 
 
+#: The two cures a consequence reason can carry (one table, review r3).
+CURE_RERATE = ("once `timedatectl` shows synchronized, sudo systemctl restart "
+               "meshtasticd re-rates the clock")
+CURE_NEXT_START = ("sudo systemctl restart meshtasticd when convenient — the next "
+                   "start's gate line should be authenticated (BELIEVED: the gate "
+                   "lingers so journald keeps its _COMM; unmeasured under systemd)")
+
+
+def compose_reason(head: str, said: Optional[str], verdict: str, facts: dict) -> str:
+    """The ONE reason writer for the consequence branches — every
+    (head x what-the-gate-line-said x shape) cell is pinned as a table
+    (Fable 5.2 review r3 11-09: per-branch assertions missed cells three
+    rounds running). Every cell is ``indeterminate``; only the authenticated
+    gate line reads clean, and that branch never reaches here.
+
+    The CURE follows what the gate line SAYS, not whether journald kept its
+    _COMM (r3 F1): a TIMEOUT — authenticated or not — gets the re-rate cure;
+    a synchronized line or no line gets "restart when convenient"."""
+    timed_out = head == "witness" or (head == "gate_unauthenticated" and said == "TIMEOUT")
+    if head == "witness":
+        why = "the NTP gate timed out at this start"
+    elif head == "gate_unauthenticated":
+        why = ("this start's NTP-gate line is present but unauthenticated (it reads "
+               f"{said}; journald recorded no _COMM — the gate exited before "
+               "journald read it)")
+    else:
+        why = ("no NTP-gate line is readable for this start (gate did not run, its "
+               "lines rotated out, or the start predates the always-speaking gate)")
+    if verdict == "online":
+        # Journal text is mesh-writable (r5): it never excuses a start (r1 F2).
+        n1, n2 = facts["online_last_two"]
+        cure = CURE_RERATE if timed_out else CURE_NEXT_START
+        return (f"{ONLINE_MARK}: {why}, and journal-derived telemetry (unverified) "
+                f"reads {n1} then {n2} node(s) online (last two: "
+                f"{facts['online_last_two']}) — journal text cannot excuse the "
+                f"start; to verify: {cure}")
+    if verdict == "blind":
+        return (f"{BLIND_MARK}: {why}; no fresh telemetry/foreign RX to judge "
+                f"the consequence ({facts})")
+    # The frozen SHAPE. OBSERVE-ONLY (operator 11-09, review r5): SAID, never paged.
+    return (f"{FROZEN_MARK}: {why}; journal-derived telemetry (UNVERIFIED — "
+            f"the journal is mesh-writable) reads 0 nodes online while "
+            f"{facts.get('rx_senders')} sender(s) are heard "
+            f"({facts.get('rx_lines')} RX line(s)) — LIKELY started before "
+            f"NTP sync; check the radio's own node list (TIMEOUT or not) — if "
+            f"every node reads offline: {CURE_RERATE}")
+
+
 def probe_meshtasticd_clock_unrated(
     *,
     unit: str = "meshtasticd.service",
@@ -486,55 +534,6 @@ def probe_meshtasticd_clock_unrated(
         _CONSEQUENCE_CACHE.clear()
         _CONSEQUENCE_CACHE[invocation] = (now, (verdict, facts))
 
-    if head == "witness":
-        why = "the NTP gate timed out at this start"
-    elif head == "gate_unauthenticated":
-        why = ("this start's NTP-gate line is present but unauthenticated (it reads "
-               f"{said}; journald recorded no _COMM — the gate exited before "
-               "journald read it)")
-    else:
-        why = ("no NTP-gate line is readable for this start (gate did not run, its "
-               "lines rotated out, or the start predates the always-speaking gate)")
-    if verdict == "online":
-        # INDETERMINATE on EVERY head: the "nodes online" that would excuse the
-        # start is journal text, and the journal is mesh-writable (r5) — one
-        # forged line used to flip a frozen gate-silent start to clean (Fable
-        # 5.2 review 11-09 F2). Only the authenticated gate line reads clean.
-        if head == "witness":
-            verify = ("once `timedatectl` shows synchronized, sudo systemctl "
-                      "restart meshtasticd re-rates the clock")
-        elif head == "gate_unauthenticated":
-            verify = ("no restart needed for this — a restart cannot authenticate "
-                      "this start's line; the gate now lingers after speaking so "
-                      "the next start's line keeps its _COMM")
-        else:
-            verify = ("the NEXT start records an authenticated gate line (clean "
-                      "if the gate reads synchronized; a TIMEOUT is a witness): "
-                      "sudo systemctl restart meshtasticd when convenient")
-        n1, n2 = facts["online_last_two"]
-        note_disposition(
-            "meshtasticd_clock_unrated", "indeterminate",
-            reason=(f"{ONLINE_MARK}: {why}, and journal-derived telemetry (unverified) "
-                    f"reads {n1} then {n2} node(s) online (last two: "
-                    f"{facts['online_last_two']}) — journal text cannot excuse the "
-                    f"start; to verify: {verify}"))
-        return None
-    if verdict == "blind":
-        note_disposition(
-            "meshtasticd_clock_unrated", "indeterminate",
-            reason=(f"{BLIND_MARK}: {why}; no fresh telemetry/foreign RX to judge "
-                    f"the consequence ({facts})"))
-        return None
-    # The frozen SHAPE. OBSERVE-ONLY (operator 11-09, review r5): the journal
-    # telemetry it rests on is mesh-writable, so it is SAID, never paged.
-    cure = ("check the radio's own node list (TUI / map) — if every node reads "
-            "offline: once `timedatectl` shows synchronized, sudo systemctl "
-            "restart meshtasticd")
-    note_disposition(
-        "meshtasticd_clock_unrated", "indeterminate",
-        reason=(f"{FROZEN_MARK}: {why}; journal-derived telemetry (UNVERIFIED — "
-                f"the journal is mesh-writable) reads 0 nodes online while "
-                f"{facts.get('rx_senders')} sender(s) are heard "
-                f"({facts.get('rx_lines')} RX line(s)) — LIKELY started before "
-                f"NTP sync; {cure}"))
+    note_disposition("meshtasticd_clock_unrated", "indeterminate",
+                     reason=compose_reason(head, said, verdict, facts))
     return None

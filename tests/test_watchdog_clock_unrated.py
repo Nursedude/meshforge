@@ -259,8 +259,8 @@ class TestReviewR1:
         assert "restart meshtasticd" in disp["reason"]
         # r2 F3: the head-specific cure — the NEXT start records the line;
         # a gate-silent start is never told its clock gets re-rated.
-        assert "NEXT start" in disp["reason"]
-        assert "re-rates the clock" not in disp["reason"]
+        assert wc.CURE_NEXT_START in disp["reason"]
+        assert wc.CURE_RERATE not in disp["reason"]
 
     def test_one_forged_online_line_never_clears_a_frozen_silent_start(self):
         """F2's drill, pinned: frozen window + ONE newer telemetry-shaped line
@@ -284,9 +284,8 @@ class TestReviewR1:
     def test_an_unauthenticated_gate_line_is_named_not_called_absent(self):
         """r2 F1: journald can lose the gate's _COMM (the gate exits before
         journald reads it). The line is PRESENT but unauthenticated — never
-        "no NTP-gate line is readable", and never "restart" as its cure (a
-        restart cannot make this start's line authentic; the gate now
-        lingers so the next start's keeps _COMM)."""
+        "no NTP-gate line is readable". r3 F1: the CURE follows what the line
+        SAYS (a TIMEOUT gets the re-rate cure), not the _COMM race."""
         for head, says in ((HEAD_GATE_UNAUTH, "synchronized"),
                            (HEAD_WITNESS_UNAUTH, "TIMEOUT")):
             wc._HEAD_CACHE.clear(); wc._CONSEQUENCE_CACHE.clear()
@@ -296,7 +295,9 @@ class TestReviewR1:
             assert "no NTP-gate line is readable" not in reason
             assert "unauthenticated" in reason and "_COMM" in reason
             assert f"it reads {says}" in reason
-            assert "no restart" in reason and "re-rates the clock" not in reason
+            want = wc.CURE_RERATE if says == "TIMEOUT" else wc.CURE_NEXT_START
+            other = wc.CURE_NEXT_START if says == "TIMEOUT" else wc.CURE_RERATE
+            assert want in reason and other not in reason
         # only a GATE line's own witness bit says TIMEOUT — a comm-less
         # telemetry/RX line in the head (truthy count/kind) must not
         # (mutant: `c[1]` without `c[0] == "gate"` survived 93/93)
@@ -857,6 +858,59 @@ class TestShapeSeam:
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_") \
                     and node.name != "test_every_indeterminate_assertion_names_its_shape":
                 seg = ast.get_source_segment(src, node) or ""
-                if '"indeterminate"' in seg and "shape(" not in seg:
+                calls = any(isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+                            and c.func.id == "shape" for c in ast.walk(node))
+                # r3 F3: a CALL, not the substring (a docstring "shape(" passed)
+                if '"indeterminate"' in seg and not calls:
                     bare.append(node.name)
         assert bare == [], f"assert the shape too (shape(res) == ... / is None): {bare}"
+
+
+#: Every head the probe can hand compose_reason, with what the operator
+#: must be told. The forged row: an unauth "synchronized" line plus a
+#: FOREIGN-comm TIMEOUT (a mesh payload) — must still read synchronized.
+HEAD_UNAUTH_SYNC_FORGED = HEAD_GATE_UNAUTH + [(START + 4 * S, WITNESS, MTD)]
+HEAD_TABLE = [
+    # (name, head entries, why fragment, timed_out)
+    ("witness", HEAD_WITNESS, "the NTP gate timed out at this start", True),
+    ("unauth_timeout", HEAD_WITNESS_UNAUTH, "unauthenticated (it reads TIMEOUT", True),
+    ("unauth_sync", HEAD_GATE_UNAUTH, "unauthenticated (it reads synchronized", False),
+    ("unauth_sync_forged", HEAD_UNAUTH_SYNC_FORGED, "unauthenticated (it reads synchronized", False),
+    ("silent", HEAD_GATE_SILENT, "no NTP-gate line is readable", False),
+]
+SHAPE_TABLE = [("online", LEHUA), ("frozen", FROZEN), ("blind", [])]
+
+
+class TestReasonTable:
+    """Review r3 (Fable 5.2, 11-09): the SAME defect kind three rounds
+    running — per-branch assertions missed (head x shape) cells. So the whole
+    input space is enumerated here: 5 heads x 3 shapes x 2 ticks (the second
+    reads the head from cache). One writer (compose_reason), one table."""
+
+    @pytest.mark.parametrize("shape_name,window", SHAPE_TABLE)
+    @pytest.mark.parametrize("name,head,why,timed_out", HEAD_TABLE)
+    def test_cell(self, name, head, why, timed_out, shape_name, window):
+        reasons = []
+        for tick in range(2):
+            if tick == 0:
+                wc._HEAD_CACHE.clear()
+            wc._CONSEQUENCE_CACHE.clear()      # re-judge the window, keep the head
+            res = run(head, window)
+            disp = res[1]
+            assert disp["disp"] == "indeterminate", (name, shape_name, tick)
+            assert shape(res) == shape_name, (name, shape_name, tick)
+            assert why in disp["reason"], (name, shape_name, tick)
+            for other_why in {w for _, _, w, _ in HEAD_TABLE} - {why}:
+                assert other_why not in disp["reason"], (name, shape_name, other_why)
+            if shape_name == "online":
+                want = wc.CURE_RERATE if timed_out else wc.CURE_NEXT_START
+                other = wc.CURE_NEXT_START if timed_out else wc.CURE_RERATE
+                assert want in disp["reason"] and other not in disp["reason"]
+            elif shape_name == "frozen":
+                assert wc.CURE_RERATE in disp["reason"]
+                assert wc.CURE_NEXT_START not in disp["reason"]
+            else:
+                assert wc.CURE_RERATE not in disp["reason"]
+                assert wc.CURE_NEXT_START not in disp["reason"]
+            reasons.append(disp["reason"])
+        assert reasons[0] == reasons[1], "the cached tick must say the same thing"
