@@ -382,11 +382,17 @@ def judge_consequence(entries: List[Tuple[int, str]],
             senders.add(c[2])
     facts["rx_lines"] = rx
     facts["rx_senders"] = len(senders)
-    facts["rx_read"] = sum(1 for _, c in classified if c[0] == "rx")
-    if rx == 0 and facts["rx_read"] >= RX_LINES_READ:
-        # Every RX line read is newer than the last telemetry line: the read
-        # saturated, so "no RX in the window" is not an observation (r4 F3).
+    rx_read = [m for m, c in classified if c[0] == "rx"]
+    facts["rx_read"] = len(rx_read)
+    if len(rx_read) >= RX_LINES_READ and min(rx_read) > t_old:
+        # COVERAGE, not a count (review r6, the same kind twice — r4 F3 / r5
+        # #1 tested `rx == 0`): a capped read whose oldest line is newer than
+        # the OLDER telemetry reading did not cover the window, so ANY sender
+        # count from it is partial — "only 1 heard" is not an observation.
+        # A read that reaches back past t_old covered it (a radio deaf for
+        # the whole window reads quiet/deaf, honestly).
         facts["rx_read_saturated"] = True
+        facts["rx_read_starts_after_older_s"] = (min(rx_read) - t_old) // 1_000_000
     if len(senders) < MIN_DISTINCT_SENDERS:
         # Zero online and nothing heard from another node: a quiet or deaf
         # radio (its own packets log as Received too) — not this class.
@@ -417,9 +423,10 @@ def _blind_cause(facts: dict) -> str:
     radio's own packets (it logs them as Received too, and its own id is never
     inferred from traffic), so the text never calls them "other" (r5 #2)."""
     if facts.get("rx_read_saturated"):
-        return (f"the RX read saturated — all {facts.get('rx_read')} newest RX lines "
-                "are newer than the newest telemetry line, so whether other nodes "
-                "were heard between the readings is UNKNOWN on this tick")
+        return (f"the RX read saturated — the {facts.get('rx_read')} newest RX lines "
+                f"reach back only to {facts.get('rx_read_starts_after_older_s')} s "
+                "after the older telemetry reading, so who was heard between the "
+                "readings is UNKNOWN on this tick")
     if "telemetry_lines" in facts:
         return (f"fewer than 2 DeviceTelemetry lines this start "
                 f"({facts['telemetry_lines']} read)")

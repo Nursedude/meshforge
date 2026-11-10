@@ -247,3 +247,49 @@ class TestReviewR5:
         elapsed = time.monotonic() - t0
         assert p.returncode == 0 and "TIMEOUT after" in p.stderr
         assert elapsed < 2 + 5 + 1 + 2, elapsed     # budget + one cut call + linger + slack
+
+
+class TestReviewR6:
+    def test_the_timeout_line_reports_wall_seconds(self, tmp_path):
+        """r6 C1: the elapsed number is pinned (a `${BUDGET}s` mutant survived)."""
+        stub = tmp_path / "timedatectl"
+        stub.write_text("#!/bin/sh\nsleep 2.5\necho 'System clock synchronized: no'\n")
+        stub.chmod(0o755)
+        env = {"PATH": f"{tmp_path}:/usr/bin:/bin", "HOME": str(tmp_path)}
+        p = subprocess.run(["sh", str(SCRIPT), "2"], capture_output=True, text=True,
+                           timeout=60, env=env)
+        import re
+        n = int(re.search(r"TIMEOUT after (\d+)s", p.stderr).group(1))
+        # one 2.5 s call + 1 s sleep overshoots a budget of 2: the WALL number
+        # (>= 3) differs from the budget (a `${BUDGET}s` mutant survived r6)
+        assert 3 <= n <= 6, p.stderr
+
+    def test_a_timedatectl_ignoring_term_is_killed(self, tmp_path):
+        """r6 F4: `timeout -k`: a child that ignores SIGTERM is still cut."""
+        stub = tmp_path / "timedatectl"
+        stub.write_text("#!/bin/sh\ntrap '' TERM\nsleep 30\n")
+        stub.chmod(0o755)
+        env = {"PATH": f"{tmp_path}:/usr/bin:/bin", "HOME": str(tmp_path)}
+        t0 = time.monotonic()
+        p = subprocess.run(["sh", str(SCRIPT), "2"], capture_output=True, text=True,
+                           timeout=60, env=env)
+        elapsed = time.monotonic() - t0
+        assert p.returncode == 0 and "TIMEOUT after" in p.stderr
+        assert elapsed < 2 + 7 + 1 + 1 + 2, elapsed
+
+    def test_no_timeout_binary_still_asks_timedatectl(self, tmp_path):
+        """r6 F5: without `timeout` on PATH, "cannot ask" must not read as
+        "not synchronized" — the gate asks timedatectl directly."""
+        import shutil
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        for tool in ("grep", "sleep"):
+            (bindir / tool).symlink_to(shutil.which(tool))
+        stub = bindir / "timedatectl"
+        stub.write_text("#!/bin/sh\necho 'System clock synchronized: yes'\n")
+        stub.chmod(0o755)
+        sh = shutil.which("sh")
+        p = subprocess.run([sh, str(SCRIPT), "4"], capture_output=True, text=True,
+                           timeout=30, env={"PATH": str(bindir), "HOME": str(tmp_path)})
+        assert p.returncode == 0
+        assert "clock synchronized after 0s" in p.stderr, p.stderr

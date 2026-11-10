@@ -29,28 +29,36 @@ set -u
 BUDGET="${1:-60}"
 i=0
 
-# MONOTONIC deadline (2026-11-09, Fable 5.2 review r5 #4): the budget used to
-# count ITERATIONS, so a slow timedatectl (D-Bus at boot) stretched it past
-# TimeoutStartSec=120, systemd killed the gate before its witness, and
+# MONOTONIC deadline (2026-11-09, Fable 5.2 reviews r5 #4 + r6): the budget
+# used to count ITERATIONS, so a slow timedatectl (D-Bus at boot) stretched it
+# past TimeoutStartSec=120, systemd killed the gate before its witness, and
 # Restart= looped. /proc/uptime is monotonic (never NTP-stepped — this gate
-# runs exactly while the wall clock may jump) and is read with the `read`
-# builtin, so no external tool can fail here. Centiseconds, so "after 0s"
-# never rounds up. Without /proc/uptime it falls back to counting.
-uptime_cs() {
+# runs exactly while the wall clock may jump), read with the `read` builtin
+# so no external tool can fail here. WHOLE seconds only: the integer part
+# never carries a leading zero (r6 F3: centiseconds like "089" are an octal
+# error in dash). Anything not all-digits falls back to counting iterations.
+uptime_s() {
     _u=""
-    read -r _u _rest < /proc/uptime 2>/dev/null || return 1
+    { read -r _u _rest < /proc/uptime; } 2>/dev/null || return 1
+    _u="${_u%%.*}"
     case "$_u" in
-        *.*) echo "${_u%.*}${_u#*.}" ;;
-        *) return 1 ;;
+        ''|*[!0-9]*) return 1 ;;
     esac
+    _u="${_u#"${_u%%[!0]*}"}"          # leading zeros are octal in $(( ))
+    echo "${_u:-0}"
 }
-START_CS=$(uptime_cs) || START_CS=""
+START_S=$(uptime_s) || START_S=""
 elapsed_s() {
-    if [ -n "$START_CS" ] && _now=$(uptime_cs); then
-        echo $(( (_now - START_CS) / 100 ))
-    else
-        echo "$i"
+    _e=""
+    if [ -n "$START_S" ] && _now=$(uptime_s); then
+        _e=$(( _now - START_S ))
     fi
+    # Never let an unparseable clock end the loop early or blank the witness
+    # (r6 F3: "TIMEOUT after s" without one timedatectl call): count instead.
+    case "$_e" in
+        ''|*[!0-9]*) echo "$i" ;;
+        *) echo "$_e" ;;
+    esac
 }
 
 # LINGER after speaking (2026-11-09, Fable 5.2 review r2 F1): journald reads
@@ -61,9 +69,17 @@ elapsed_s() {
 # loaded boot — it delays meshtasticd's start by 1 s.
 LINGER=1
 
+# Each call bounded too, and KILLED if it ignores TERM (r6 F4): worst case
+# BUDGET + 7 s + 1 s sleep + LINGER, under TimeoutStartSec. Without the
+# `timeout` binary (coreutils is Essential; r6 F5) ask timedatectl directly
+# rather than read "cannot ask" as "not synchronized".
+if command -v timeout >/dev/null 2>&1; then
+    BOUND="timeout -k 2 5"
+else
+    BOUND=""
+fi
 synced() {
-    # each call bounded too: worst case BUDGET + 5 s + LINGER, < TimeoutStartSec
-    [ "$(timeout 5 timedatectl status 2>/dev/null | grep synchronized | grep -c yes)" = "1" ]
+    [ "$($BOUND timedatectl status 2>/dev/null | grep synchronized | grep -c yes)" = "1" ]
 }
 
 while [ "$i" -lt "$BUDGET" ] && [ "$(elapsed_s)" -lt "$BUDGET" ]; do
@@ -71,7 +87,7 @@ while [ "$i" -lt "$BUDGET" ] && [ "$(elapsed_s)" -lt "$BUDGET" ]; do
         # ALWAYS speak (2026-11-09), even at 0 s: a start whose journal holds no
         # gate line then means the gate did NOT run — the watchdog's
         # meshtasticd_clock_unrated probe reads that absence as unknown.
-        echo "wait_for_ntp_sync: clock synchronized after $(elapsed_s)s" >&2
+        echo "wait_for_ntp_sync: clock synchronized after ${i}s" >&2
         sleep "$LINGER" 2>/dev/null
         exit 0
     fi

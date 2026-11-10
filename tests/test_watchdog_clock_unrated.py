@@ -907,7 +907,18 @@ CONSEQUENCE_CASES = [
     # r5 #1: every RX line read is newer than the newest telemetry line
     ("blind_saturated", [(ago(1800), tele(0)), (ago(900), tele(0))]
      + [(ago(800) + i, rx("position", "0x9")) for i in range(1000)],
-     "blind", "the RX read saturated — all 1000 newest RX lines are newer than the newest telemetry line"),
+     "blind", "the RX read saturated — the 1000 newest RX lines reach back only to 1000 s after the older telemetry reading"),
+    # r6 F1: PARTLY saturated — 1 RX line inside the window, 999 after it.
+    # "only 1 sender heard" would not be an observation.
+    ("blind_partial_saturated", [(ago(1800), tele(0)), (ago(1500), rx("position", "0x5")),
+                                 (ago(900), tele(0))]
+     + [(ago(800) + i, rx("position", f"0x{i % 200:x}")) for i in range(999)],
+     "blind", "the RX read saturated — the 1000 newest RX lines reach back only to 300 s after the older telemetry reading"),
+    # r6 F2: a read that reaches back PAST the older reading covered the
+    # window — a radio deaf for the whole window is quiet/deaf, honestly.
+    ("blind_deaf", [(ago(5000) + i, rx("position", "0x9")) for i in range(1000)]
+     + [(ago(1800), tele(0)), (ago(900), tele(0))],
+     "blind", "0 nodes online but only 0 distinct sender(s) heard between the readings"),
 ]
 PATHS = ("fresh", "head_cached", "both_cached")
 
@@ -934,7 +945,7 @@ def spec(timed_out, head_name, shape_name, case_name=""):
         never.append(nxt)
         if timed_out:
             must += ["the gate timed out, so", check, rerate]
-        elif case_name == "blind_saturated":
+        elif case_name in ("blind_saturated", "blind_partial_saturated"):
             # r5 #1: UNKNOWN on this tick is never "no action"
             must += [check, rerate]
             never.append("nothing points at a fault")
