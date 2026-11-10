@@ -368,6 +368,19 @@ class MeshtasticPresetBridge:
             logger.warning("Mesh bridge not enabled in config")
             return False
 
+        # A previous run's leg thread can outlive stop()'s 5 s join (blocked in
+        # the library's connect). Starting now would clear _stop_event and let
+        # it resume BESIDE the new one — two loops per leg, stranded handles
+        # (r4 F2). Refuse, and say why; start again once it has exited.
+        alive = [t.name for t in (self._primary_thread, self._secondary_thread)
+                 if t is not None and t.is_alive()]
+        if alive:
+            logger.error(
+                f"Mesh bridge NOT started: the previous run's leg thread(s) "
+                f"{alive} have not exited yet (still inside a connect) — retry "
+                f"in a few seconds")
+            return False
+
         logger.info("Starting Meshtastic preset bridge...")
         for label, leg in (("Primary", self.bridge_config.primary),
                            ("Secondary", self.bridge_config.secondary)):
@@ -840,9 +853,9 @@ class MeshtasticPresetBridge:
             endpoint = f"{config.host}:{config.port}"
             conn_lock = connection_lock_for(config.host, config.port)
             if not conn_lock.acquire(timeout=_LOCK_WAIT_S):
-                other = "the OTHER bridge leg" if any(
-                    h is conn_lock for h in self._tcp_lock_holds.values()) else \
-                    "another component"
+                with self._leg_lock:     # read the holds map under its lock (r4 F4)
+                    ours = any(h is conn_lock for h in self._tcp_lock_holds.values())
+                other = "the OTHER bridge leg" if ours else "another component"
                 logger.error(
                     f"TCP connection lock for {endpoint} busy — {other} holds "
                     f"that radio's one TCP slot"

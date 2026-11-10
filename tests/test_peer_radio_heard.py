@@ -1256,17 +1256,32 @@ class TestFederationPanelSaysWitness:
         assert "m.reason" in body
 
 
+def _js_engine():
+    """Which engine runs the page's JS here: ``node`` first, then headless
+    chromium, else None. peerWitnessText/escapeHtml are PURE (no document,
+    window, fetch — measured 11-10), so any engine runs them identically.
+
+    node first because headless chromium HUNG on a trivial inline page in 5 of
+    ~10 CI runs (11-09..11-10; stderr empty or D-Bus noise; always ~1 s on
+    the dev box) — root cause UNKNOWN, NOT fixed here: this stops the gate
+    depending on it. The engine is the test id, so CI's -v log says which ran."""
+    import shutil
+    if shutil.which("node"):
+        return "node"
+    if shutil.which("chromium") or shutil.which("chromium-browser"):
+        return "chromium"
+    return None
+
+
 class TestFederationPanelExecuted:
     """review r1 F9: the static pins prove PRESENCE; this RUNS the page's own
-    peerWitnessText in headless chromium (skipped where none is installed —
-    an absent browser is said, never passed)."""
+    peerWitnessText (node or headless chromium — see _js_engine; skipped where
+    neither is installed — an absent engine is said, never passed)."""
 
-    def test_witness_text_runs_on_hostile_and_old_payloads(self, tmp_path):
-        import shutil
-        import subprocess
-        browser = shutil.which("chromium") or shutil.which("chromium-browser")
-        if not browser:
-            pytest.skip("no headless chromium on this box — JS not executed")
+    @pytest.mark.parametrize("engine", [_js_engine() or "none"])
+    def test_witness_text_runs_on_hostile_and_old_payloads(self, tmp_path, engine):
+        if engine == "none":
+            pytest.skip("no node and no headless chromium on this box — JS not executed")
         cases = [
             {"radio_witness": {"meshtastic": {"ok": True, "reason": ""}}},
             {"radio_witness": {"meshtastic": {"ok": False,
@@ -1287,21 +1302,11 @@ class TestFederationPanelExecuted:
             {"radio_witness": {"meshtastic": {"ok": False, "reason": "r"}},
              "meshtasticd_deferred_to_gateway": "true", "status_probe_misses": 2},
         ]
-        page = tmp_path / "w.html"
-        page.write_text(
-            "<html><body><pre id=o></pre><script>%s\n%s\n"
-            "try{document.getElementById('o').textContent=JSON.stringify("
-            "%s.map(p=>{const w=peerWitnessText(p);return [w.text,w.ok,w.title]}));}"
-            "catch(e){document.getElementById('o').textContent='JSERR '+e;}"
-            "</script></body></html>" % (
-                "function " + _js_fn("peerWitnessText"),
-                "function " + _js_fn("escapeHtml"), json.dumps(cases)))
-        stdout, stderr = _dump_dom(browser, page.as_uri(), tmp_path)
-        m = re.search(r'<pre id="o">(.*?)</pre>', stdout, re.S)
-        assert m, stderr[-500:]
-        assert not m.group(1).startswith("JSERR"), m.group(1)
-        out = json.loads(m.group(1).replace("&amp;", "&").replace(
-            "&lt;", "<").replace("&gt;", ">").replace("&quot;", '"'))
+        funcs = "function %s\nfunction %s\n" % (
+            _js_fn("peerWitnessText"), _js_fn("escapeHtml"))
+        run = ("JSON.stringify(%s.map(p=>{const w=peerWitnessText(p);"
+               "return [w.text,w.ok,w.title]}))" % json.dumps(cases))
+        out = _run_page_js(engine, funcs, run, tmp_path)
         assert out[0][:2] == ["📻 radio witness", True]
         assert out[1][0] == "📻 not a radio witness — " + DEFERRED_REASON
         assert out[1][1] is False
@@ -1314,6 +1319,36 @@ class TestFederationPanelExecuted:
         assert out[8][0] == "📻 not a radio witness — reason unknown"
         for i in (9, 10, 11):
             assert out[i][0] == "📻 not a radio witness — r", out[i]
+
+
+def _run_page_js(engine, funcs, expr, tmp_path):
+    """Evaluate ``expr`` (a JSON.stringify(...) expression) after ``funcs`` in
+    ``engine``; return the decoded value. A JS exception is a readable red."""
+    import shutil
+    import subprocess
+    if engine == "node":
+        script = tmp_path / "w.js"
+        script.write_text(funcs + "try{process.stdout.write(" + expr + ");}"
+                          "catch(e){process.stdout.write('JSERR '+e);}\n")
+        proc = subprocess.run([shutil.which("node"), str(script)],
+                              capture_output=True, text=True, timeout=20)
+        assert proc.returncode == 0, proc.stderr[-500:]
+        text = proc.stdout
+    else:
+        browser = shutil.which("chromium") or shutil.which("chromium-browser")
+        page = tmp_path / "w.html"
+        page.write_text(
+            "<html><body><pre id=o></pre><script>" + funcs +
+            "try{document.getElementById('o').textContent=" + expr + ";}"
+            "catch(e){document.getElementById('o').textContent='JSERR '+e;}"
+            "</script></body></html>")
+        stdout, stderr = _dump_dom(browser, page.as_uri(), tmp_path)
+        m = re.search(r'<pre id="o">(.*?)</pre>', stdout, re.S)
+        assert m, stderr[-500:]
+        text = m.group(1).replace("&amp;", "&").replace("&lt;", "<").replace(
+            "&gt;", ">").replace("&quot;", '"')
+    assert not text.startswith("JSERR"), text
+    return json.loads(text)
 
 
 def _dump_dom(browser, uri, profile_dir, attempt_timeout=10.0, attempts=2):

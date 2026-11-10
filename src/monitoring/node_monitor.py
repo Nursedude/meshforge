@@ -26,8 +26,7 @@ if not logger.handlers:
     logger.setLevel(logging.WARNING)
 
 from utils.meshtastic_connection import (
-    MESHTASTIC_CONNECTION_LOCK, connection_lock_for, wait_for_cooldown,
-    safe_close_interface,
+    connection_lock_for, wait_for_cooldown, safe_close_interface,
 )
 from utils.safe_import import safe_import
 from utils.tx_guard import assert_iface_tx_allowed
@@ -297,11 +296,15 @@ class NodeMonitor:
     def _release_global_lock(self):
         """Release the connection lock this monitor took, if it holds one"""
         if getattr(self, '_holds_global_lock', False):
-            lock = getattr(self, '_held_lock', None) or MESHTASTIC_CONNECTION_LOCK
-            try:
-                lock.release()
-            except RuntimeError:
-                pass  # Already released
+            # Exactly the lock connect() took — never a fallback: guessing the
+            # global lock would free the LOCAL daemon's slot for a remote
+            # monitor (r4 F3). No record → release nothing.
+            lock = getattr(self, '_held_lock', None)
+            if lock is not None:
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass  # Already released
             self._holds_global_lock = False
             self._held_lock = None
 

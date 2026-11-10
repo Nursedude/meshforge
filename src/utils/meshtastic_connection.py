@@ -332,32 +332,76 @@ _endpoint_locks: Dict[tuple, threading.Lock] = {}
 _endpoint_locks_guard = threading.Lock()
 
 
+def _is_this_box(ip) -> bool:
+    """True if ``ip`` reaches a daemon on THIS box: loopback, unspecified
+    (0.0.0.0 / ::), or an address this box owns — tested by binding to it
+    (succeeds only for a local address), no interface list needed."""
+    if ip.is_loopback or ip.is_unspecified:
+        return True
+    fam = socket.AF_INET if ip.version == 4 else socket.AF_INET6
+    probe = socket.socket(fam, socket.SOCK_STREAM)
+    try:
+        probe.bind((str(ip), 0))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def _endpoint_key(host, port):
+    """(where, port) naming the meshtasticd a (host, port) REACHES, or None if
+    it cannot be told. Decided on ADDRESSES, not spellings (r4 F1: a 3-name
+    tuple let ``localhost`` and ``127.1`` / ``0.0.0.0`` / the box's own
+    hostname take different locks for ONE daemon). Resolution is what the
+    connect that follows does anyway (``/etc/hosts`` first)."""
+    import ipaddress
+    h = (host or "localhost").strip().strip("[]").rstrip(".").lower() or "localhost"
+    p = int(port) if port not in (None, "", 0) else DEFAULT_MESHTASTICD_TCP_PORT
+    try:
+        infos = socket.getaddrinfo(h, p, type=socket.SOCK_STREAM)
+        addrs = []
+        for info in infos:
+            ip = ipaddress.ip_address(str(info[4][0]).split("%", 1)[0])
+            mapped = getattr(ip, "ipv4_mapped", None)
+            addrs.append(mapped if mapped is not None else ip)
+    except (OSError, UnicodeError, ValueError):
+        return None
+    if not addrs:
+        return None
+    if any(_is_this_box(ip) for ip in addrs):
+        return ("local", p)
+    v4 = sorted(str(a) for a in addrs if a.version == 4)
+    return (v4[0] if v4 else sorted(str(a) for a in addrs)[0], p)
+
+
 def connection_lock_for(host: str, port: int = DEFAULT_MESHTASTICD_TCP_PORT) -> threading.Lock:
     """The lock that guards the ONE TCP slot of the meshtasticd at (host, port).
 
     meshtasticd serves one TCP client (Issue #17), so a slot belongs to an
-    ENDPOINT, not to the process. The local daemon — a ``_LOCAL_HOSTS`` name on
-    ``DEFAULT_MESHTASTICD_TCP_PORT`` — keeps ``MESHTASTIC_CONNECTION_LOCK``, which
-    every existing holder already takes, so local behaviour is unchanged. Any
-    other endpoint gets its own lock: two radios never block each other (the
-    two-TCP-leg bridge could never connect its second leg — BR-T #13,
-    2026-11-10), one radio is still guarded.
+    ENDPOINT, not to the process (the two-TCP-leg bridge could never connect
+    its second leg — BR-T #13, 2026-11-10). The endpoint is decided on the
+    ADDRESSES the host resolves to (``_endpoint_key``):
 
-    Aliases are folded: the ``_LOCAL_HOSTS`` names are one host, and names are
-    case-insensitive. NOT folded (residual): a remote daemon reached by two
-    different names or by name and IP gets two locks — resolving here would
-    put DNS on every connect.
+    - this box (loopback, 0.0.0.0, an address it owns) on
+      ``DEFAULT_MESHTASTICD_TCP_PORT`` → ``MESHTASTIC_CONNECTION_LOCK``, the
+      lock every local holder already takes: local behaviour is unchanged
+      under ANY spelling of local;
+    - cannot be resolved → ``MESHTASTIC_CONNECTION_LOCK`` too: when the
+      endpoint cannot be told, exclude MORE, never less;
+    - anything else → its own lock per (address, port): two radios never
+      block each other.
+
+    Residual: a dual-stack remote host named once by its IPv6 literal and once
+    by a name resolving to IPv4 too gets two locks (IPv4 is preferred as key).
     """
-    h = (host or "localhost").strip().lower()
-    if h in _LOCAL_HOSTS:
-        h = "localhost"
-    p = int(port or DEFAULT_MESHTASTICD_TCP_PORT)
-    if h == "localhost" and p == DEFAULT_MESHTASTICD_TCP_PORT:
+    key = _endpoint_key(host, port)
+    if key is None or key == ("local", DEFAULT_MESHTASTICD_TCP_PORT):
         return MESHTASTIC_CONNECTION_LOCK
     with _endpoint_locks_guard:
-        lock = _endpoint_locks.get((h, p))
+        lock = _endpoint_locks.get(key)
         if lock is None:
-            lock = _endpoint_locks[(h, p)] = threading.Lock()
+            lock = _endpoint_locks[key] = threading.Lock()
         return lock
 
 

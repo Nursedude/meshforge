@@ -63,8 +63,8 @@ def config():
     cfg.bridge_mode = "mesh_bridge"
     cfg.mesh_bridge = MeshtasticBridgeConfig(
         enabled=True,
-        primary=MeshtasticConfig(host="primary.invalid", port=4403, preset="LONG_FAST"),
-        secondary=MeshtasticConfig(host="secondary.invalid", port=4404,
+        primary=MeshtasticConfig(host="192.0.2.1", port=4403, preset="LONG_FAST"),   # TEST-NET-1: never local, no DNS
+        secondary=MeshtasticConfig(host="192.0.2.2", port=4404,
                                    preset="SHORT_TURBO"),
         direction="bidirectional",
         add_prefix=True,
@@ -448,7 +448,7 @@ def test_tcp_leg_connects_to_its_configured_port(bridge, leg, port):
     assert ok
     kwargs = ctor.call_args.kwargs
     assert kwargs.get("portNumber") == port
-    assert kwargs.get("hostname") == f"{leg}.invalid"
+    assert kwargs.get("hostname") == {"primary": "192.0.2.1", "secondary": "192.0.2.2"}[leg]
 
 
 # ------------------------------------- r2: one writer for leg state ---
