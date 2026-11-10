@@ -219,7 +219,84 @@ class TestTcpLinkLost:
         assert _tx_lines(caplog) == []
         assert any(r.levelno == logging.ERROR and "REFUSED" in r.getMessage()
                    for r in caplog.records)
-        assert bridge._primary_connected is False     # and the loop reconnects
+
+    def test_a_refusal_leaves_the_leg_to_the_library(self, bridge):
+        """11-10 review F1: tearing the leg down on a refusal, during the
+        library's own 1 s ``_reconnect()`` window, closed an interface whose
+        reader then opened a fresh socket nobody owned (a zombie on
+        meshtasticd's ONE TCP slot). A refusal refuses; only connection.lost
+        tears a leg down."""
+        iface = _real_tcp_iface()
+        bridge._primary_interface, bridge._primary_connected = iface, True
+        with patch("gateway.mesh_bridge.assert_iface_tx_allowed"), \
+             patch.object(type(iface), "sendText"), \
+             patch.object(type(iface), "close") as close:
+            assert bridge._send_to_primary(_msg().to_payload()) is False
+        assert close.call_count == 0
+        assert bridge._primary_interface is iface
+        assert bridge._primary_connected is True
+        assert bridge.stats["link_lost"] == 0
+
+    def test_one_loss_seen_by_two_threads_is_one_loss(self, bridge):
+        """11-10 review F2: a second teardown arriving while the first is still
+        inside close() must find the leg already taken — one count, one close."""
+        from pubsub import pub
+        iface, ok, _ = _connect_tcp(bridge, "primary", lambda p: None, MagicMock())
+        bridge._primary_interface, bridge._primary_connected = iface, ok
+        second = []
+
+        def close_slowly():
+            if second:          # once only: on broken code the second teardown
+                return          # closes again, which must not recurse (hang)
+            second.append(None)
+            t = threading.Thread(target=lambda: pub.sendMessage(
+                "meshtastic.connection.lost", interface=iface))
+            t.start()
+            t.join(5)
+            second.append(t.is_alive())
+
+        iface.close.side_effect = close_slowly
+        pub.sendMessage("meshtastic.connection.lost", interface=iface)
+        assert second == [None, False]
+        assert bridge.stats["link_lost"] == 1
+        assert iface.close.call_count == 1
+
+    def test_a_late_loss_never_takes_the_handle_that_replaced_it(self, bridge):
+        """The claim is identity-checked INSIDE the lock: a reconnect that swaps
+        in a new handle between the lost handler's first look and its claim
+        must leave the new handle alone."""
+        old, new = MagicMock(), MagicMock()
+        bridge._primary_interface, bridge._primary_connected = new, True
+        assert bridge._take_leg("primary", expected=old) is None
+        assert bridge._primary_interface is new
+        assert bridge._primary_connected is True
+        assert bridge._take_leg("primary", expected=new) is new
+        assert bridge._primary_interface is None
+        assert bridge._primary_connected is False
+
+    def test_planned_stop_on_a_tcp_leg_says_tcp(self, bridge, caplog):
+        from pubsub import pub
+        caplog.set_level(logging.INFO, logger="gateway.mesh_bridge")
+        iface, ok, _ = _connect_tcp(bridge, "primary", lambda p: None, MagicMock())
+        bridge._primary_interface, bridge._primary_connected = iface, ok
+        bridge._stop_event.set()
+        pub.sendMessage("meshtastic.connection.lost", interface=iface)
+        assert bridge.stats["link_lost"] == 0
+        assert any("primary tcp link closed" in r.getMessage() for r in caplog.records)
+
+    def test_downlink_inject_does_not_need_the_socket(self, bridge):
+        """11-10 review F4: the true-origin downlink goes through the broker,
+        not the TCP socket — a dead socket must not refuse it."""
+        iface = _real_tcp_iface()
+        bridge._primary_interface, bridge._primary_connected = iface, True
+        bridge._primary_downlink = MagicMock()
+        bridge._primary_downlink.inject.return_value = True
+        with patch("gateway.mesh_bridge.assert_iface_tx_allowed"), \
+             patch.object(bridge, "_ensure_nodeinfo", create=True), \
+             patch.object(type(iface), "sendText") as send:
+            assert bridge._send_to_primary(_msg().to_payload()) is True
+        assert bridge._primary_downlink.inject.call_count == 1
+        assert send.call_count == 0
 
     def test_a_live_socket_is_not_refused(self, bridge, caplog):
         """Control: a real TCPInterface WITH a socket goes through."""
@@ -246,6 +323,7 @@ class TestTcpLinkLost:
                 _msg(source_preset="LONG_FAST").to_payload()) is False
         assert send.call_count == 0
         assert bridge.stats["messages_primary_to_secondary"] == 0
+        assert bridge._secondary_interface is iface        # left to the library
 
 
 # ------------------------------------------------ #11 lock on disconnect ---
@@ -261,6 +339,45 @@ class TestTcpLockReleasedOnDisconnect:
         setattr(bridge, f"_{leg}_connected", True)
         getattr(bridge, f"_disconnect_{leg}")()
         assert not MESHTASTIC_CONNECTION_LOCK.locked()
+        assert bridge._tcp_lock_owner is None          # 11-10 review M1
+
+    def test_a_stale_handle_never_frees_another_holders_lock(self, bridge):
+        """M1: after a release, the OLD handle must no longer count as owner —
+        or a late second teardown frees whoever holds the lock next."""
+        from utils.meshtastic_connection import MESHTASTIC_CONNECTION_LOCK
+        iface, ok, _ = _connect_tcp(bridge, "primary", lambda p: None, MagicMock())
+        bridge._primary_interface, bridge._primary_connected = iface, ok
+        bridge._disconnect_primary()
+        assert MESHTASTIC_CONNECTION_LOCK.acquire(timeout=1)    # someone else's
+        try:
+            bridge._release_tcp_lock_if_owner(iface)            # late, stale
+            assert MESHTASTIC_CONNECTION_LOCK.locked()
+        finally:
+            MESHTASTIC_CONNECTION_LOCK.release()
+
+    def test_release_of_an_already_unlocked_lock_is_witnessed_not_raised(
+            self, bridge, caplog):
+        """M4: if something released our hold out from under us, teardown must
+        say so and carry on, not raise out of a disconnect."""
+        caplog.set_level(logging.WARNING, logger="gateway.mesh_bridge")
+        iface = MagicMock()
+        bridge._tcp_lock_owner = iface                 # owner, lock NOT held
+        bridge._release_tcp_lock_if_owner(iface)
+        assert bridge._tcp_lock_owner is None
+        assert any("already released" in r.getMessage() for r in caplog.records)
+
+    def test_a_connect_that_fails_after_construction_leaves_nothing_held(
+            self, bridge):
+        """11-10 review F5: _notify_status raising after the interface exists
+        must release the lock, forget the owner AND close the interface."""
+        from utils.meshtastic_connection import MESHTASTIC_CONNECTION_LOCK
+        bridge._notify_status = MagicMock(side_effect=RuntimeError("status boom"))
+        made = MagicMock()
+        iface, ok, _ = _connect_tcp(bridge, "primary", lambda p: None, made)
+        assert (iface, ok) == (None, False)
+        assert not MESHTASTIC_CONNECTION_LOCK.locked()
+        assert bridge._tcp_lock_owner is None
+        made.close.assert_called_once()
 
     def test_lost_then_reconnect_succeeds(self, bridge):
         from pubsub import pub
@@ -272,14 +389,15 @@ class TestTcpLockReleasedOnDisconnect:
         assert ok2 is True and again is not None
         assert time.monotonic() - t0 < 5      # not the 10 s lock wait
 
-    def test_loop_error_branch_then_reconnect_succeeds(self, bridge):
-        """The OTHER way a leg goes down: ``_primary_loop``'s except sets
-        ``_primary_connected = False`` without a disconnect, leaving the old
+    @pytest.mark.parametrize("leg", ["primary", "secondary"])   # M2: both legs
+    def test_loop_error_branch_then_reconnect_succeeds(self, bridge, leg):
+        """The OTHER way a leg goes down: the leg loop's except sets
+        ``_<leg>_connected = False`` without a disconnect, leaving the old
         handle holding the lock. The next connect must not wait on it."""
         from pubsub import pub as real_pub
-        iface, ok, _ = _connect_tcp(bridge, "primary", lambda p: None, MagicMock())
-        bridge._primary_interface, bridge._primary_connected = iface, ok
-        bridge._primary_connected = False            # what the loop's except does
+        iface, ok, _ = _connect_tcp(bridge, leg, lambda p: None, MagicMock())
+        setattr(bridge, f"_{leg}_interface", iface)
+        setattr(bridge, f"_{leg}_connected", False)  # what the loop's except does
         fake_tcp = MagicMock()
         fake_tcp.TCPInterface = MagicMock(return_value=MagicMock())
         t0 = time.monotonic()
@@ -290,8 +408,8 @@ class TestTcpLockReleasedOnDisconnect:
              patch("gateway.mesh_bridge._pub", real_pub), \
              patch("utils.meshtastic_connection.wait_for_cooldown"), \
              patch("utils.service_check.check_service"):
-            bridge._connect_primary()
-        assert bridge._primary_connected is True
+            getattr(bridge, f"_connect_{leg}")()
+        assert getattr(bridge, f"_{leg}_connected") is True
         assert time.monotonic() - t0 < 5
         iface.close.assert_called_once()             # the stale handle was closed
 
