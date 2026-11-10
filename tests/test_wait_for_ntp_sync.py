@@ -238,7 +238,10 @@ class TestReviewR5:
         """r5 #4: a timedatectl that never answers (D-Bus wedged at boot) is
         cut at 5 s per call, so the gate still speaks before TimeoutStartSec."""
         stub = tmp_path / "timedatectl"
-        stub.write_text("#!/bin/sh\nsleep 30\necho 'System clock synchronized: yes'\n")
+        # `exec`: the stub IS the hung process (real timedatectl is one
+        # process) — a forked child would outlive the kill and hold the
+        # $(...) pipe open, a fixture artefact (CI c8e503d0 hung 30 s).
+        stub.write_text("#!/bin/sh\nexec sleep 30\n")
         stub.chmod(0o755)
         env = {"PATH": f"{tmp_path}:/usr/bin:/bin", "HOME": str(tmp_path)}
         t0 = time.monotonic()
@@ -267,7 +270,9 @@ class TestReviewR6:
     def test_a_timedatectl_ignoring_term_is_killed(self, tmp_path):
         """r6 F4: `timeout -k`: a child that ignores SIGTERM is still cut."""
         stub = tmp_path / "timedatectl"
-        stub.write_text("#!/bin/sh\ntrap '' TERM\nsleep 30\n")
+        # `exec` keeps the ignored TERM on the ONE process timeout watches
+        # (see the hung test above: a forked child is a fixture artefact).
+        stub.write_text("#!/bin/sh\ntrap '' TERM\nexec sleep 30\n")
         stub.chmod(0o755)
         env = {"PATH": f"{tmp_path}:/usr/bin:/bin", "HOME": str(tmp_path)}
         t0 = time.monotonic()
