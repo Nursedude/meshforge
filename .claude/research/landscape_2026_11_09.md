@@ -161,3 +161,7 @@ Operator decisions, NOT taken:
 ## Appendix — moved out of ROADMAP `DET-WEDGE` to make room (verbatim, 2026-10-22)
 
 Measured on moc: 58 lifetime `main_thread_wedge_any` fires on `lab.lxmf_multi_user_synth`, ALL at :08 (synth-soak timer `*:07`), mean active ~30 s, self-clearing, 1–2/day 10-06..10-19, none since (unexplained). moc3 (same review): `lab.lxmf_tracer` + `lab.lxmf_echo` fires cluster at minute :x0 — the 10-min tracer timer, so the long-running echo blocks while the tracer drives it; not only short load runs. One-snapshot signal, no confirm ticks. Cure shape = the RNS-RPC sibling (`eb8a6529`): N consecutive ticks on the SAME pid/tid before signalling, and cure text that says "check `rpc[rnsd.` round trips first", never restart-first. Accept: a planted 30 s block does not fire; a held block on one tid fires within N ticks.
+
+## Appendix — moved out of ROADMAP `DET-DCS` to make room (verbatim, 2026-10-22)
+
+Measured on moc3: blind 09-22→09-28 (~6 d), 10-12→10-16 (~3.6 d), and again now (6 of 20) after the 10-21/22 deploy restarts — a total confirmation collapse cannot be seen for days after any deploy. Honest (`indeterminate`, not clean), but a probe indeterminate for days is a finding. Cure shape: persist the terminal ring across restarts (write the snapshot, reload on start), and/or a traffic-scaled minimum. Accept: restart the gateway on a box with a full ring → the probe judges on the next tick, never `indeterminate` from the restart alone.

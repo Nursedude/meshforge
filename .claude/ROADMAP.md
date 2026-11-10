@@ -4,7 +4,7 @@
 > session notes (`~/.claude/plans/gateway-session-notes-*.md`) say what the last
 > session was doing on that box. This file says where the domain is going and why.
 > Owner: WH6GXZ (operator). Update it when a direction changes, not when a task ends.
-> Last set: 2026-11-04 — purpose + 30-day ship plan (operator). History: `git log`.
+> Last set: 2026-11-10 — ONE thing + the lead (operator). History: `git log`.
 
 ## What we are
 
@@ -53,9 +53,12 @@ it is held to the same truth.
 message accounted for, airtime respected, the truth told when we cannot see.
 Not the best dashboard — MeshMonitor and MeshDash are ahead there, and we do
 not compete on UI, SSO or API size. (Rows above from their own READMEs,
-2026-10-18; re-check before quoting.) **Landscape 11-04:** mesh-api + AMMB also
-relay MT↔MC text, CoreScope owns MeshCore analytics: lead with the RNS hub +
-per-leg delivery truth (`research/landscape_2026_11_04.md`; 11-09 audit: `landscape_2026_11_09.md`).
+2026-10-18; re-check before quoting.) **The ONE thing (operator 11-10):** two
+meshes that can't hear each other, joined, with the truth about each message.
+Lead with that; RNS second, as how it scales across boxes. One sentence made
+true, one screen (a message's life), one release. STOP: dashboard breadth, new
+detectors without a product defect, new edges before the 2-leg bridge is honest
+(`research/landscape_2026_11_04.md`, `landscape_2026_11_09.md`).
 
 Our moat is **months of mesh operations**: real failures root-caused on real
 radios and compiled into guards (`persistent_issues.md`). Source: research
@@ -178,8 +181,8 @@ product defect needs one.
 
 
 - **BIC-2** [MF][MA] S+F twin→MA — per-leg delivery truth, shown per message, UNKNOWN first-class (= 1.0 gate 3)
-  30-DAY (by 11-24): MF `/inbox` shows each message's legs: delivered / dropped (reason) / UNKNOWN; leg-kill drill → never "delivered". MA after.
-  Each transport leg reports delivered and failed counts over time. Observe before alarming: counters first, then a soak baseline. No silent loss, no false green (a leg-kill drill shows the leg down within N min).
+  30-DAY (by 11-24), NARROWED (operator 11-10): `/inbox` broadcast heard-by, UNKNOWN shown, echo-fold fix + unknown-state default (`INBOX-T` F1/F2/F11); never "delivered". A FLEET truth: a one-box stranger reads "cannot see" — confirm the one-box relay-heard state before promising it for 12-04. DMs + bridged legs: design the cross-process ack path first, then a new date. MA after.
+  Observe before alarming: counters first, then a soak baseline (pass rule: gate 3).
   COUNTERS LIVE MF+MA (done detail: review_provenance § BIC-2): `legs` on `/api/gateway/delivery`; TUI Dashboard → "Delivery legs" (counts only). Also export the legs via `prometheus_exporter.py` (0 delivery metrics 10-27) so outside dashboards show the truth. MeshCore queue-row ordering DEFERRED (operator 10-24). Queued: MA supervisor-path slice (inert). NEXT: MA TUI pane; MF-first twin fix (provenance § MA 2a + MA 2026-10-24 rows): preset-bridge `?` legs + `_leg_source` into byte-locked `delivery_legs`, MF copies of F2/F6, MF copies of 2b-review F4 (queued R→M hard-codes `source="rns"`), F8 (one SENT helper), F6 (per-CHUNK units — decide before any rate); (3) normalise the leg origin once at ingress; ⚠️ Drill FIRST (operator 10-25): injected sender + no-kill control, acceptance in provenance; then soak. ⚠️ Before any rate: broadcast SENTs can never confirm — split confirmable vs unconfirmable (= UNKNOWN first-class).
   public: For every message, MeshForge will say which network legs it crossed and whether each one delivered, failed, or cannot be seen.
   status: planned
@@ -262,7 +265,7 @@ PARKED 11-04, revisit 12-04:
 - **MCX-PIN** [MF][MA] S+F — pin MeshChatX's version: `install_meshchatx.sh` takes `releases/latest` from a third-party repo; pin a known-good tag, canary new releases (operator 10-21 "queue 3")
 - **DET-CFD** [MF][MA] S+F twin→MA — `channel_feed_dark` reads "dark" for a channel that was never uplinked — fix test-first (detector finding 10-14)
 - **DET-DCS** [MF] F — `delivery_confirmation_stall` goes blind for DAYS after every gateway restart on a low-traffic box: the `recent_terminal` ring (`delivery_counters.py`) is in-memory and needs 20 confirmable terminals — fix test-first (detector finding 10-22, moc3 mini delta review)
-  Measured on moc3: blind 09-22→09-28 (~6 d), 10-12→10-16 (~3.6 d), and again now (6 of 20) after the 10-21/22 deploy restarts — a total confirmation collapse cannot be seen for days after any deploy. Honest (`indeterminate`, not clean), but a probe indeterminate for days is a finding. Cure shape: persist the terminal ring across restarts (write the snapshot, reload on start), and/or a traffic-scaled minimum. Accept: restart the gateway on a box with a full ring → the probe judges on the next tick, never `indeterminate` from the restart alone.
+  Measured detail + cure shape + acceptance: `research/landscape_2026_11_09.md` appendix.
 - **DET-WEDGE** [MF] F — `probe_lxmf_process_wedge` (`watchdog_probes_rns.py`) calls a lab load-run's own transient `unix_wait_for_peer` an rnsd wedge, and its cure text says "restart rnsd" (the #69 race trigger) — fix test-first (detector finding 10-22, moc mini delta review)
   Measured detail + cure shape: `research/landscape_2026_11_09.md` appendix.
   DEPLOYED 10-23 `213c6952` (detail: provenance 2026-10-22). OWED: no `main_thread_wedge` fire at moc :08 / moc3 :x0 through 10-30; the unit leg `probe_main_thread_wedge` still judges one snapshot.
@@ -323,6 +326,7 @@ PARKED 11-04, revisit 12-04:
 - **ALERT-1** [MF] S — Apprise as an optional alert sink beside ntfy (`safe_import`, never required)
 - **CONTRIB-1** [MF] S — CONTRIBUTING.md + good-first-issue labels (issue templates exist); pairs with gate 9 + CONNECT-1
 - **MESHSAT-1** [MF] F — PARKED 10-28: MeshSat v0.3. Hub seats, no modem = no new leg. Reopen: modem AND MeshSat 1.0.
+- **PILINA** [bot] S — Pilina (DM a node, get notices with receipts; own repo + build plan, artifact C9aWkjs): a second product — not before REL-1 ships (operator 11-10)
 - **LAND-1** [MF] S — monthly landscape check: peer repos' commits/releases/top issues + PyPI rns, diffed month to month; settle footprint before build
 
 ## Rules that shape the roadmap
