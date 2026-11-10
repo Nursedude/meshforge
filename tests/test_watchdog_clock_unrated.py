@@ -141,7 +141,7 @@ class TestAcceptance:
         assert "sudo systemctl restart meshtasticd" in reason
         assert "timedatectl" in reason
         assert "UNVERIFIED" in reason and "mesh-writable" in reason
-        assert "3 sender(s)" in reason and "3 RX line(s)" in reason   # Admin excluded
+        assert "3 other sender(s)" in reason and "3 RX line(s)" in reason   # Admin excluded
 
     def test_lehua_witness_but_nodes_online_is_indeterminate_not_frozen(self):
         """r5 revision: the witness is authenticated, the excusing node count
@@ -209,7 +209,7 @@ class TestReviewR1:
                     (ago(900), tele(0)), (ago(800), rx("position", OWN))]
         res = run(HEAD_WITNESS, own_only)
         assert res[1]["disp"] == "indeterminate" and shape(res) == "blind"
-        assert res[1]["reason"].count("'rx_senders': 1") == 1
+        assert "only 1 other sender(s) heard" in res[1]["reason"]
 
     def test_rx_before_the_older_telemetry_line_does_not_count(self):
         old_rx = [(ago(3000), rx()), (ago(2900), rx("text", "0x2")),
@@ -224,7 +224,7 @@ class TestReviewR1:
              (ago(age_s + 50), rx("text", "0x2")), (ago(age_s), tele(0))]
         res = run(HEAD_WITNESS, w)
         assert res[1]["disp"] == "indeterminate" and shape(res) == "blind"
-        assert "newest_telemetry_age_s" in res[1]["reason"]
+        assert "the newest telemetry line is" in res[1]["reason"]   # r4 F3: named, not a dict
 
     def test_long_telemetry_interval_still_judged(self):
         """F8: 90-min telemetry spacing — the newest two are still read."""
@@ -239,7 +239,9 @@ class TestReviewR1:
         res = run(HEAD_GATE_SILENT, FROZEN)
         sig, disp, calls = res
         assert disp["disp"] == "indeterminate" and shape(res) == "frozen"
-        assert "LIKELY started before NTP" in disp["reason"]
+        # r4 F4: no gate line cannot earn "LIKELY" — only a TIMEOUT can
+        assert "possibly started before NTP sync" in disp["reason"]
+        assert "LIKELY" not in disp["reason"]
         assert wc.FROZEN_MARK in disp["reason"]
         assert "sudo systemctl restart meshtasticd" in disp["reason"]
         assert calls["window"] == 1
@@ -881,36 +883,102 @@ HEAD_TABLE = [
 SHAPE_TABLE = [("online", LEHUA), ("frozen", FROZEN), ("blind", [])]
 
 
-class TestReasonTable:
-    """Review r3 (Fable 5.2, 11-09): the SAME defect kind three rounds
-    running — per-branch assertions missed (head x shape) cells. So the whole
-    input space is enumerated here: 5 heads x 3 shapes x 2 ticks (the second
-    reads the head from cache). One writer (compose_reason), one table."""
+#: Every consequence input the probe can reach, by WHAT IT IS (review r4):
+#: (name, window, shape, cause fragment the reason must carry).
+CONSEQUENCE_CASES = [
+    ("online", LEHUA, "online", "32 then 35 node(s) online"),
+    ("frozen", FROZEN, "frozen", "3 other sender(s) are heard (3 RX line(s))"),
+    # senders != lines, so a swapped count cannot hide (r4 F2 mutant survived
+    # on FROZEN, where both are 3)
+    ("frozen_busy", [(ago(1800), tele(0)), (ago(1700), rx()), (ago(1650), rx()),
+                     (ago(1600), rx("text", "0x2")), (ago(1500), rx()), (ago(900), tele(0))],
+     "frozen", "2 other sender(s) are heard (4 RX line(s))"),
+    ("blind_few", [], "blind", "fewer than 2 DeviceTelemetry lines this start (0 read)"),
+    ("blind_stale", [(ago(3 * 3600 + 900), tele(0)), (ago(3 * 3600 + 100), rx()),
+                     (ago(3 * 3600 + 50), rx("text", "0x2")), (ago(3 * 3600), tele(0))],
+     "blind", "the newest telemetry line is 10800 s old (over the 2 h bound)"),
+    ("blind_future", [(ago(-120 + 900), tele(0)), (ago(-120 + 100), rx()),
+                      (ago(-120 + 50), rx("text", "0x2")), (ago(-120), tele(0))],
+     "blind", "the newest telemetry line is stamped 120 s AHEAD of now"),
+    ("blind_quiet", [(ago(1800), tele(0)), (ago(1700), rx("routing", OWN)),
+                     (ago(900), tele(0))],
+     "blind", "0 nodes online but only 1 other sender(s) heard"),
+]
+PATHS = ("fresh", "head_cached", "both_cached")
 
-    @pytest.mark.parametrize("shape_name,window", SHAPE_TABLE)
-    @pytest.mark.parametrize("name,head,why,timed_out", HEAD_TABLE)
-    def test_cell(self, name, head, why, timed_out, shape_name, window):
-        reasons = []
-        for tick in range(2):
-            if tick == 0:
-                wc._HEAD_CACHE.clear()
-            wc._CONSEQUENCE_CACHE.clear()      # re-judge the window, keep the head
+
+def spec(timed_out, head_name, shape_name):
+    """The INDEPENDENT expectation — written from the acceptance, not from
+    compose_reason: (fragments that must appear, fragments that must not)."""
+    must, never = [], []
+    rerate, nxt, check = wc.CURE_RERATE, wc.CURE_NEXT_START, "check the radio's own node list"
+    if shape_name == "online":
+        (must if timed_out else never).append(rerate)
+        (never if timed_out else must).append(nxt)
+        never.append(check)
+    elif shape_name == "frozen":
+        must += [check, rerate]
+        never.append(nxt)
+        if timed_out:
+            must.append("LIKELY started before NTP sync")
+        else:
+            never.append("LIKELY")
+            must.append("possibly started before NTP sync" if head_name == "silent"
+                        else "cause UNKNOWN (the gate says synchronized)")
+    else:
+        never.append(nxt)
+        if timed_out:
+            must += ["the gate timed out, so", check, rerate]
+        else:
+            must.append("nothing points at a fault — no action")
+            never += [check, rerate]
+    never += ["probe bug", "None", "{"]
+    return must, never
+
+
+class TestReasonSpec:
+    """Review r4 (Fable 5.2, 11-09): the input space ENUMERATED, including the
+    path production runs on ~29 of 30 ticks (head AND consequence cached —
+    r4 F1). 3 paths x 5 heads x 6 consequence cases = 90 cells, each checked
+    against spec(), and every path must say the same thing."""
+
+    @pytest.mark.parametrize("case", CONSEQUENCE_CASES, ids=[c[0] for c in CONSEQUENCE_CASES])
+    @pytest.mark.parametrize("name,head,why,timed_out", HEAD_TABLE, ids=[h[0] for h in HEAD_TABLE])
+    def test_cell(self, name, head, why, timed_out, case):
+        _, window, shape_name, cause = case
+        wc._HEAD_CACHE.clear(); wc._CONSEQUENCE_CACHE.clear()
+        reasons = {}
+        for path in PATHS:
+            if path == "head_cached":
+                wc._CONSEQUENCE_CACHE.clear()
             res = run(head, window)
-            disp = res[1]
-            assert disp["disp"] == "indeterminate", (name, shape_name, tick)
-            assert shape(res) == shape_name, (name, shape_name, tick)
-            assert why in disp["reason"], (name, shape_name, tick)
+            disp, calls = res[1], res[2]
+            where = (name, case[0], path)
+            assert disp["disp"] == "indeterminate", where
+            assert shape(res) == shape_name, where
+            if path == "both_cached":
+                assert calls["head"] == 0 and calls["window"] == 0, where
+            elif path == "head_cached":
+                assert calls["head"] == 0 and calls["window"] == 1, where
+            reason = disp["reason"]
+            assert why in reason and cause in reason, (where, reason)
             for other_why in {w for _, _, w, _ in HEAD_TABLE} - {why}:
-                assert other_why not in disp["reason"], (name, shape_name, other_why)
-            if shape_name == "online":
-                want = wc.CURE_RERATE if timed_out else wc.CURE_NEXT_START
-                other = wc.CURE_NEXT_START if timed_out else wc.CURE_RERATE
-                assert want in disp["reason"] and other not in disp["reason"]
-            elif shape_name == "frozen":
-                assert wc.CURE_RERATE in disp["reason"]
-                assert wc.CURE_NEXT_START not in disp["reason"]
-            else:
-                assert wc.CURE_RERATE not in disp["reason"]
-                assert wc.CURE_NEXT_START not in disp["reason"]
-            reasons.append(disp["reason"])
-        assert reasons[0] == reasons[1], "the cached tick must say the same thing"
+                assert other_why not in reason, (where, other_why)
+            must, never = spec(timed_out, name if name == "silent" else "x", shape_name)
+            for frag in must:
+                assert frag in reason, (where, frag, reason)
+            for frag in never:
+                assert frag not in reason, (where, frag, reason)
+            reasons[path] = reason
+        assert len(set(reasons.values())) == 1, reasons
+
+    @pytest.mark.parametrize("args", [
+        ("gate_clean", None, "blind", {}), ("gate_forged", None, "online", {}),
+        ("witness", None, "bogus", {}), ("gate_unauthenticated", None, "online",
+                                         {"online_last_two": [1, 2]})])
+    def test_outside_the_closed_enums_is_a_probe_bug(self, args):
+        """r4 F5 / hfm #7: never the gate-silent text, never a frozen page."""
+        out = wc.compose_reason(*args)
+        assert out.startswith("probe bug:")
+        for mark in (wc.FROZEN_MARK, wc.ONLINE_MARK, wc.BLIND_MARK, "no NTP-gate line"):
+            assert mark not in out

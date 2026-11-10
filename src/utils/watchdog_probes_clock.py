@@ -402,17 +402,45 @@ CURE_NEXT_START = ("sudo systemctl restart meshtasticd when convenient — the n
                    "lingers so journald keeps its _COMM; unmeasured under systemd)")
 
 
+#: The node-list check that must precede any restart on journal evidence
+#: (the journal is mesh-writable; review r4 F2 pins it in every cell).
+CHECK_NODE_LIST = ("check the radio's own node list (TUI / map) — if every node "
+                   "reads offline: ")
+HEADS = ("witness", "gate_unauthenticated", "gate_silent")
+#: judge_consequence's verdicts — "fire" is the frozen SHAPE (observe-only).
+VERDICTS = ("online", "fire", "blind")
+
+
+def _blind_cause(facts: dict) -> str:
+    """Name WHICH of the four blind causes (review r4 F3) — never a raw dict."""
+    if "telemetry_lines" in facts:
+        return (f"fewer than 2 DeviceTelemetry lines this start "
+                f"({facts['telemetry_lines']} read)")
+    if "newest_telemetry_age_s" in facts:
+        age = facts["newest_telemetry_age_s"]
+        if age < 0:
+            return f"the newest telemetry line is stamped {-age} s AHEAD of now"
+        return f"the newest telemetry line is {age} s old (over the 2 h bound)"
+    return (f"0 nodes online but only {facts.get('rx_senders', 0)} other sender(s) "
+            f"heard between the readings (a quiet segment or a deaf radio)")
+
+
 def compose_reason(head: str, said: Optional[str], verdict: str, facts: dict) -> str:
-    """The ONE reason writer for the consequence branches — every
-    (head x what-the-gate-line-said x shape) cell is pinned as a table
-    (Fable 5.2 review r3 11-09: per-branch assertions missed cells three
-    rounds running). Every cell is ``indeterminate``; only the authenticated
-    gate line reads clean, and that branch never reaches here.
+    """The ONE reason writer for the consequence branches, checked against an
+    independent spec over every reachable input x cache path (review r4).
+    Every cell is ``indeterminate``; only the authenticated gate line reads
+    clean, and that branch never reaches here.
 
     The CURE follows what the gate line SAYS, not whether journald kept its
-    _COMM (r3 F1): a TIMEOUT — authenticated or not — gets the re-rate cure;
-    a synchronized line or no line gets "restart when convenient"."""
-    timed_out = head == "witness" or (head == "gate_unauthenticated" and said == "TIMEOUT")
+    _COMM (r3 F1): a TIMEOUT — authenticated or not — gets the re-rate cure,
+    always behind the node-list check when the evidence is the journal;
+    otherwise "restart when convenient". An input outside the closed enums is
+    a PROBE BUG and says so (hfm #7, r4 F5) — never the gate-silent text."""
+    if head not in HEADS or verdict not in VERDICTS or (
+            head == "gate_unauthenticated" and said not in ("TIMEOUT", "synchronized")):
+        return (f"probe bug: unknown head/said/verdict {head!r}/{said!r}/{verdict!r} "
+                "— this class cannot say what it saw")
+    timed_out = head == "witness" or said == "TIMEOUT"
     if head == "witness":
         why = "the NTP gate timed out at this start"
     elif head == "gate_unauthenticated":
@@ -431,15 +459,25 @@ def compose_reason(head: str, said: Optional[str], verdict: str, facts: dict) ->
                 f"{facts['online_last_two']}) — journal text cannot excuse the "
                 f"start; to verify: {cure}")
     if verdict == "blind":
-        return (f"{BLIND_MARK}: {why}; no fresh telemetry/foreign RX to judge "
-                f"the consequence ({facts})")
+        # r4 F3: a TIMED-OUT start the journal cannot judge still names the
+        # next step (moc logs telemetry ~9 h apart: blind by age most ticks).
+        action = (f"; the gate timed out, so {CHECK_NODE_LIST}{CURE_RERATE}"
+                  if timed_out else "; nothing points at a fault — no action")
+        return (f"{BLIND_MARK}: {why}; the consequence cannot be judged: "
+                f"{_blind_cause(facts)}{action}")
     # The frozen SHAPE. OBSERVE-ONLY (operator 11-09, review r5): SAID, never paged.
+    # r4 F4: "LIKELY started before NTP sync" only when the gate timed out.
+    if timed_out:
+        cause = "LIKELY started before NTP sync"
+    elif head == "gate_silent":
+        cause = "possibly started before NTP sync (no gate line to say)"
+    else:
+        cause = "cause UNKNOWN (the gate says synchronized)"
     return (f"{FROZEN_MARK}: {why}; journal-derived telemetry (UNVERIFIED — "
             f"the journal is mesh-writable) reads 0 nodes online while "
-            f"{facts.get('rx_senders')} sender(s) are heard "
-            f"({facts.get('rx_lines')} RX line(s)) — LIKELY started before "
-            f"NTP sync; check the radio's own node list (TIMEOUT or not) — if "
-            f"every node reads offline: {CURE_RERATE}")
+            f"{facts['rx_senders']} other sender(s) are heard "
+            f"({facts['rx_lines']} RX line(s)) — {cause}; "
+            f"{CHECK_NODE_LIST}{CURE_RERATE}")
 
 
 def probe_meshtasticd_clock_unrated(
