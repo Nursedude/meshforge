@@ -485,7 +485,7 @@ def test_the_lost_line_the_bridge_writes_is_the_line_c21_parses(caplog):
     b._stats_lock = threading.Lock()
     b.stats = {"link_lost": 0}
     b._leg_lock = threading.Lock()
-    b._tcp_lock_owner = None
+    b._tcp_lock_holds = {}
     iface = MagicMock()
     b._notify_status = lambda s: None
     caplog.set_level(logging.WARNING, logger="gateway.mesh_bridge")

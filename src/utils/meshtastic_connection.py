@@ -323,6 +323,43 @@ def _force_close_socket(interface) -> None:
 _MESHTASTICD_TCP_PORT = 4403
 _LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 
+# The local meshtasticd's TCP port — the slot MESHTASTIC_CONNECTION_LOCK guards.
+DEFAULT_MESHTASTICD_TCP_PORT = 4403
+
+# One lock per NON-local endpoint (BR-T #13). Created on first ask, never
+# dropped: a few Lock objects for the life of the process.
+_endpoint_locks: Dict[tuple, threading.Lock] = {}
+_endpoint_locks_guard = threading.Lock()
+
+
+def connection_lock_for(host: str, port: int = DEFAULT_MESHTASTICD_TCP_PORT) -> threading.Lock:
+    """The lock that guards the ONE TCP slot of the meshtasticd at (host, port).
+
+    meshtasticd serves one TCP client (Issue #17), so a slot belongs to an
+    ENDPOINT, not to the process. The local daemon — a ``_LOCAL_HOSTS`` name on
+    ``DEFAULT_MESHTASTICD_TCP_PORT`` — keeps ``MESHTASTIC_CONNECTION_LOCK``, which
+    every existing holder already takes, so local behaviour is unchanged. Any
+    other endpoint gets its own lock: two radios never block each other (the
+    two-TCP-leg bridge could never connect its second leg — BR-T #13,
+    2026-11-10), one radio is still guarded.
+
+    Aliases are folded: the ``_LOCAL_HOSTS`` names are one host, and names are
+    case-insensitive. NOT folded (residual): a remote daemon reached by two
+    different names or by name and IP gets two locks — resolving here would
+    put DNS on every connect.
+    """
+    h = (host or "localhost").strip().lower()
+    if h in _LOCAL_HOSTS:
+        h = "localhost"
+    p = int(port or DEFAULT_MESHTASTICD_TCP_PORT)
+    if h == "localhost" and p == DEFAULT_MESHTASTICD_TCP_PORT:
+        return MESHTASTIC_CONNECTION_LOCK
+    with _endpoint_locks_guard:
+        lock = _endpoint_locks.get((h, p))
+        if lock is None:
+            lock = _endpoint_locks[(h, p)] = threading.Lock()
+        return lock
+
 
 def _service_is_up(name: str) -> bool:
     """True iff systemd reports ``name`` AVAILABLE or DEGRADED.

@@ -53,6 +53,9 @@ _meshtastic, _HAS_MESHTASTIC = safe_import('meshtastic')
 _meshtastic_tcp, _HAS_MESHTASTIC_TCP = safe_import('meshtastic.tcp_interface')
 _meshtastic_serial, _HAS_MESHTASTIC_SERIAL = safe_import('meshtastic.serial_interface')
 _pub, _HAS_PUBSUB = safe_import('pubsub', 'pub')
+# How long a TCP leg waits for its endpoint's connection lock (one slot per
+# meshtasticd, Issue #17) before it gives up this attempt and the leg loop retries.
+_LOCK_WAIT_S = 10
 # The library CLASSES, imported apart from the modules above (tests replace
 # those modules with fakes): the write-target check below asks what the
 # library's own _writeBytes gates on, so it must recognise the real types.
@@ -79,10 +82,14 @@ def _write_target_gone(interface) -> bool:
 
 
 def _library_gave_up(interface) -> bool:
-    """True when a meshtastic library stream interface has given the link up
-    for good: its ``_disconnected()`` (run when the reader thread exits) clears
-    ``isConnected``, and nothing in the library sets it again on that object.
-    During the library's own 1 s ``_reconnect()`` it stays SET, so a
+    """True when a meshtastic library stream interface reads not-connected:
+    its ``_disconnected()`` clears ``isConnected`` — when the reader thread
+    exits (the link is gone for good), and also on a ``FromRadio.rebooted``,
+    after which the library re-configs the SAME object and sets it again (r3
+    finding 2: an earlier docstring claimed "nothing sets it again"). Both also
+    publish ``connection.lost``, so an installed leg is torn down and
+    reconnected either way; this read only decides a leg that MISSED that
+    event. During the library's own 1 s ``_reconnect()`` it stays SET, so a
     self-healing link is never judged dead. Non-library interfaces: False.
 
     The backstop for a missed ``connection.lost`` (11-10 review r2 F-A: one
@@ -223,13 +230,14 @@ class MeshtasticPresetBridge:
         self._stream_rx_keepalive: Dict[str, Callable] = {}
         # Same weak-listener rule for the link-lost listener (below).
         self._stream_lost_keepalive: Dict[str, Callable] = {}
-        # The TCP interface that holds MESHTASTIC_CONNECTION_LOCK (a plain,
-        # non-reentrant Lock taken by _connect_tcp for the connection's life).
-        # One lock → at most one holder; released when THAT handle is torn
-        # down, never otherwise (BR-T #11).
-        self._tcp_lock_owner = None
+        # TCP handle -> the endpoint connection lock it holds (a plain,
+        # non-reentrant Lock from connection_lock_for, taken by _connect_tcp
+        # for the connection's life). Each lock has at most one holder here;
+        # released when THAT handle is torn down, never otherwise (BR-T #11;
+        # per endpoint since #13, so two legs can hold two locks).
+        self._tcp_lock_holds: Dict[Any, threading.Lock] = {}
         # Guards leg handles (_primary/_secondary_interface + _connected) and
-        # _tcp_lock_owner across the leg loops, the bridge loop and the
+        # _tcp_lock_holds across the leg loops, the bridge loop and the
         # library's publishing thread. Held only for swaps, never across I/O.
         # The ONLY writers of leg state are _install_leg / _take_leg /
         # _mark_leg_down (gate: TestLegStateHasOneWriter).
@@ -237,6 +245,7 @@ class MeshtasticPresetBridge:
         # Kind ("serial" / "tcp") of each stream leg, recorded at attach — the
         # one source for its log lines (LOST, planned close).
         self._stream_kind: Dict[str, str] = {}
+
 
         # Statistics
         self._stats_lock = threading.Lock()
@@ -597,7 +606,7 @@ class MeshtasticPresetBridge:
         # the reconnect waits on it forever (BR-T #11, second branch).
         if self._primary_interface is not None:
             self._disconnect_primary()
-        self._install_leg("primary", *self._connect_interface(
+        self._install_or_close("primary", *self._connect_interface(
             self.bridge_config.primary,
             "primary",
             self._on_primary_receive
@@ -607,7 +616,7 @@ class MeshtasticPresetBridge:
         """Connect to secondary Meshtastic interface."""
         if self._secondary_interface is not None:   # see _connect_primary
             self._disconnect_secondary()
-        self._install_leg("secondary", *self._connect_interface(
+        self._install_or_close("secondary", *self._connect_interface(
             self.bridge_config.secondary,
             "secondary",
             self._on_secondary_receive
@@ -615,13 +624,28 @@ class MeshtasticPresetBridge:
 
     # ---- the ONE writer set for leg state (gate: TestLegStateHasOneWriter) --
 
-    def _install_leg(self, leg: str, interface, connected: bool) -> None:
+    def _install_leg(self, leg: str, interface, connected: bool) -> bool:
         """Set ``leg``'s handle and connected flag together, under _leg_lock
         (11-10 review r2 F-B: a loss handled between two separate stores left
-        connected=True with no handle — "reconnecting", forever)."""
+        connected=True with no handle — "reconnecting", forever).
+
+        Refuses (returns False, installs nothing) once stop() has begun: stop()
+        sets _stop_event BEFORE its teardown takes this lock, so a connect still
+        in flight either lands first and is torn down, or sees the event here —
+        never a handle installed after the teardown (r3 finding 1: socket open
+        and the connection lock held after stop())."""
         with self._leg_lock:
+            if interface is not None and self._stop_event.is_set():
+                return False
             setattr(self, f"_{leg}_interface", interface)
             setattr(self, f"_{leg}_connected", bool(connected) and interface is not None)
+            return True
+
+    def _install_or_close(self, leg: str, interface, connected: bool) -> None:
+        """Install a fresh connect, or — if stop() got there first — close it
+        (releasing its connection lock) instead of leaving it to nobody."""
+        if not self._install_leg(leg, interface, connected):
+            self._close_taken(leg, interface)
 
     def _mark_leg_down(self, leg: str) -> None:
         """Mark ``leg`` disconnected without detaching its handle (the next
@@ -800,7 +824,7 @@ class MeshtasticPresetBridge:
             )
 
             from utils.meshtastic_connection import (
-                MESHTASTIC_CONNECTION_LOCK, wait_for_cooldown
+                connection_lock_for, wait_for_cooldown
             )
             from utils.service_check import check_service
 
@@ -809,9 +833,22 @@ class MeshtasticPresetBridge:
             if not status.available:
                 logger.warning("meshtasticd pre-flight: %s (attempting connection anyway)", status.message)
 
-            # Acquire global lock to prevent connection thrashing
-            if not MESHTASTIC_CONNECTION_LOCK.acquire(timeout=10):
-                logger.error("TCP connection lock busy — another component owns it")
+            # THIS endpoint's lock (BR-T #13): meshtasticd serves one TCP
+            # client per endpoint (Issue #17). Per-endpoint, so the default
+            # two-TCP-leg bridge connects both legs; the local daemon's is
+            # still MESHTASTIC_CONNECTION_LOCK.
+            endpoint = f"{config.host}:{config.port}"
+            conn_lock = connection_lock_for(config.host, config.port)
+            if not conn_lock.acquire(timeout=_LOCK_WAIT_S):
+                other = "the OTHER bridge leg" if any(
+                    h is conn_lock for h in self._tcp_lock_holds.values()) else \
+                    "another component"
+                logger.error(
+                    f"TCP connection lock for {endpoint} busy — {other} holds "
+                    f"that radio's one TCP slot"
+                    + (" (both legs point at the same radio: check mesh_bridge "
+                       "primary/secondary host+port)" if other.startswith("the OTHER")
+                       else ""))
                 return None, False
 
             interface = None
@@ -822,7 +859,7 @@ class MeshtasticPresetBridge:
                 interface = _meshtastic_tcp.TCPInterface(
                     hostname=config.host, portNumber=config.port)
                 with self._leg_lock:
-                    self._tcp_lock_owner = interface
+                    self._tcp_lock_holds[interface] = conn_lock
                 # Held listener + interface filter + link-loss (BR-T #8/#10):
                 # the bare closure here was garbage-collected after connect.
                 self._attach_stream_listeners(interface, name, callback, "tcp")
@@ -841,9 +878,8 @@ class MeshtasticPresetBridge:
                     except Exception as close_err:
                         logger.debug(f"Error closing half-made {name}: {close_err}")
                     with self._leg_lock:
-                        if self._tcp_lock_owner is interface:
-                            self._tcp_lock_owner = None
-                MESHTASTIC_CONNECTION_LOCK.release()
+                        self._tcp_lock_holds.pop(interface, None)
+                conn_lock.release()
                 raise
 
         except Exception as e:
@@ -892,18 +928,19 @@ class MeshtasticPresetBridge:
         self._mark_leg_down("secondary")
 
     def _release_tcp_lock_if_owner(self, interface) -> None:
-        """Release MESHTASTIC_CONNECTION_LOCK iff ``interface`` is the handle
-        _connect_tcp took it for (BR-T #11). It is a plain Lock: never
-        released, the next reconnect waited 10 s on this process's own hold and
-        failed, forever; released for the wrong handle, it would free ANOTHER
-        component's hold. Owner check-and-clear is one step under _leg_lock."""
+        """Release the endpoint lock ``interface`` took in _connect_tcp, iff it
+        holds one (BR-T #11/#13). A plain Lock: never released, the next
+        reconnect waited 10 s on this process's own hold and failed, forever;
+        released for the wrong handle, it would free ANOTHER holder's slot.
+        Lookup-and-forget is one step under _leg_lock."""
+        if interface is None:
+            return
         with self._leg_lock:
-            if interface is None or interface is not self._tcp_lock_owner:
-                return
-            self._tcp_lock_owner = None
-        from utils.meshtastic_connection import MESHTASTIC_CONNECTION_LOCK
+            held = self._tcp_lock_holds.pop(interface, None)
+        if held is None:
+            return
         try:
-            MESHTASTIC_CONNECTION_LOCK.release()
+            held.release()
         except RuntimeError:
             # already unlocked: someone released it out from under us — say so
             logger.warning("TCP connection lock was already released "
