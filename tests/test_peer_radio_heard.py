@@ -1327,6 +1327,7 @@ def _dump_dom(browser, uri, profile_dir, attempt_timeout=10.0, attempts=2):
     red, never a suite crash and never a pass."""
     import signal
     import subprocess
+    said = []
     for n in range(attempts):
         proc = subprocess.Popen(
             [browser, "--headless", "--disable-gpu", "--no-sandbox",
@@ -1344,12 +1345,15 @@ def _dump_dom(browser, uri, profile_dir, attempt_timeout=10.0, attempts=2):
             except ProcessLookupError:
                 pass
             try:
-                proc.communicate(timeout=2)
+                _, err = proc.communicate(timeout=2)
             except subprocess.TimeoutExpired:
-                pass  # a member escaped the group; the bound still holds
+                err = "(stderr unreadable: a group member escaped and holds the pipe)"
+            # the browser's own words are the only witness of WHY (hfm #9)
+            said.append(f"attempt {n + 1}: stderr tail: "
+                        f"{(err or '').strip()[-800:] or '(empty)'}")
     pytest.fail(f"headless browser hung {attempts}× past {attempt_timeout:g} s "
                 f"({browser}) — the page JS was NOT executed; this is the "
-                "browser, not peerWitnessText")
+                "browser, not peerWitnessText.\n" + "\n".join(said))
 
 
 class TestDumpDomIsBounded:
@@ -1381,6 +1385,18 @@ class TestDumpDomIsBounded:
         for pid in alive:
             os.kill(pid, 9)
         assert not alive, f"grandchild(ren) leaked past the timeout: {alive}"
+
+    def test_a_hang_carries_the_browsers_own_stderr(self, tmp_path):
+        """CI hung 3 of 6 runs (a6712122, 7b0b9e9d, 4657ddf8) and every
+        failure said only "hung": the kill discarded chromium's stderr, the
+        one witness of WHY (hfm #9). The failure must carry its tail."""
+        stub = tmp_path / "talking-hung-browser"
+        stub.write_text("#!/bin/sh\necho 'STUB-WHY: bus connect failed' >&2\n"
+                        "exec sleep 300\n")
+        stub.chmod(0o755)
+        with pytest.raises(pytest.fail.Exception) as exc:
+            _dump_dom(str(stub), "file:///x", tmp_path, attempt_timeout=1.0)
+        assert "STUB-WHY: bus connect failed" in str(exc.value)
 
 
 def _js_fn(name):
