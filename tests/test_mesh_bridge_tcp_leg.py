@@ -274,15 +274,23 @@ class TestTcpLinkLost:
         assert bridge._primary_interface is None
         assert bridge._primary_connected is False
 
-    def test_planned_stop_on_a_tcp_leg_says_tcp(self, bridge, caplog):
+    def test_the_real_stop_path_says_planned_close(self, bridge, caplog):
+        """11-10 review r2 F-C: the old test sent connection.lost by hand while
+        the handle was still assigned — a path stop() never takes. Drive stop()
+        itself: the close must read planned, by the leg's kind, and not count."""
         from pubsub import pub
         caplog.set_level(logging.INFO, logger="gateway.mesh_bridge")
         iface, ok, _ = _connect_tcp(bridge, "primary", lambda p: None, MagicMock())
-        bridge._primary_interface, bridge._primary_connected = iface, ok
-        bridge._stop_event.set()
-        pub.sendMessage("meshtastic.connection.lost", interface=iface)
+        bridge._install_leg("primary", iface, ok)
+        # what the library does when stop() closes it: publish connection.lost
+        iface.close.side_effect = lambda: pub.sendMessage(
+            "meshtastic.connection.lost", interface=iface)
+        bridge._running = True
+        bridge.stop()
         assert bridge.stats["link_lost"] == 0
-        assert any("primary tcp link closed" in r.getMessage() for r in caplog.records)
+        assert any("primary tcp link closed" in r.getMessage() and "stopping" in
+                   r.getMessage() for r in caplog.records)
+        assert not any("LOST" in r.getMessage() for r in caplog.records)
 
     def test_downlink_inject_does_not_need_the_socket(self, bridge):
         """11-10 review F4: the true-origin downlink goes through the broker,
@@ -436,3 +444,237 @@ def test_tcp_leg_connects_to_its_configured_port(bridge, leg, port):
     kwargs = ctor.call_args.kwargs
     assert kwargs.get("portNumber") == port
     assert kwargs.get("hostname") == f"{leg}.invalid"
+
+
+# ------------------------------------- r2: one writer for leg state ---
+
+class TestLegStateHasOneWriter:
+    """11-10 review r1 F2 and r2 F-A/F-B were ONE defect kind twice: a leg's
+    handle/connected pair written non-atomically from several places. The seam:
+    every write goes through ``_install_leg`` / ``_take_leg`` / ``_mark_leg_down``
+    under ``_leg_lock``; this gate refuses a new writer anywhere else."""
+
+    LEG_FIELDS = {"_primary_interface", "_secondary_interface",
+                  "_primary_connected", "_secondary_connected"}
+    WRITERS = {"__init__", "_install_leg", "_take_leg", "_mark_leg_down"}
+
+    def test_only_the_seam_writes_leg_state(self):
+        import inspect
+        import gateway.mesh_bridge as mb
+        offenders = self._offenders(inspect.getsource(mb))
+        assert offenders == [], offenders
+
+    @pytest.mark.parametrize("planted", [
+        "        self._primary_connected = False\n",
+        "        self._secondary_interface, self._secondary_connected = x, True\n",
+        "        setattr(self, '_primary_interface', None)\n",
+    ])
+    def test_the_gate_catches_a_planted_writer(self, planted):
+        """The REAL gate must be able to FAIL: plant each writer shape outside
+        the seam and require a hit; the same line inside a writer is allowed."""
+        outside = "class B:\n    def _primary_loop(self):\n" + planted
+        inside = "class B:\n    def _install_leg(self):\n" + planted
+        assert self._offenders(outside)
+        assert self._offenders(inside) == []
+
+    def _offenders(self, source):
+        import ast
+        tree = ast.parse(source)
+        offenders = []
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(fn):
+                targets = []
+                if isinstance(node, ast.Assign):
+                    targets = node.targets
+                elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+                    targets = [node.target]
+                flat = []
+                for t in targets:
+                    flat.extend(t.elts if isinstance(t, ast.Tuple) else [t])
+                for t in flat:
+                    if (isinstance(t, ast.Attribute) and t.attr in self.LEG_FIELDS
+                            and isinstance(t.value, ast.Name) and t.value.id == "self"
+                            and fn.name not in self.WRITERS):
+                        offenders.append(f"{fn.name}:{node.lineno} {t.attr}")
+                # setattr(self, f"_{leg}_...") is the seam's own idiom: allowed
+                # only inside the writers
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id == "setattr" and fn.name not in self.WRITERS
+                        and node.args and isinstance(node.args[0], ast.Name)
+                        and node.args[0].id == "self"):
+                    offenders.append(f"{fn.name}:{node.lineno} setattr(self, …)")
+        return offenders
+
+    def test_take_leg_holds_the_leg_lock(self, bridge):
+        """M10: the claim is atomic only under the lock."""
+        entered = []
+
+        class Recording:
+            def __enter__(self):
+                entered.append(True)
+            def __exit__(self, *a):
+                return False
+
+        bridge._primary_interface, bridge._primary_connected = MagicMock(), True
+        bridge._leg_lock = Recording()
+        bridge._take_leg("primary")
+        assert entered == [True]
+
+    def test_install_leg_holds_the_leg_lock(self, bridge):
+        entered = []
+
+        class Recording:
+            def __enter__(self):
+                entered.append(True)
+            def __exit__(self, *a):
+                return False
+
+        bridge._leg_lock = Recording()
+        bridge._install_leg("primary", MagicMock(), True)
+        assert entered == [True]
+
+    def test_mark_down_with_no_handle_still_marks_down(self, bridge):
+        """M32: connected=True with no handle (a state F-B could make) must not
+        survive a disconnect."""
+        bridge._primary_interface, bridge._primary_connected = None, True
+        bridge._disconnect_primary()
+        assert bridge._primary_connected is False
+
+
+class TestLossCountedOnlyByTheClaimant:
+
+    def test_a_racer_that_loses_the_claim_counts_nothing(self, bridge, caplog):
+        """M41: the identity pre-check passed, the claim did not — no count,
+        no LOST line (the winner already said it)."""
+        caplog.set_level(logging.INFO, logger="gateway.mesh_bridge")
+        iface = MagicMock()
+        bridge._primary_interface, bridge._primary_connected = iface, True
+        with patch.object(bridge, "_take_leg", return_value=None):
+            bridge._on_stream_link_lost("primary", iface, "tcp")
+        assert bridge.stats["link_lost"] == 0
+        assert not any("LOST" in r.getMessage() for r in caplog.records)
+
+    def test_the_loss_site_claims_only_the_handle_it_was_told_about(self, bridge):
+        """M7: the claim at the loss site is identity-checked."""
+        iface = MagicMock()
+        bridge._primary_interface, bridge._primary_connected = iface, True
+        with patch.object(bridge, "_take_leg", wraps=bridge._take_leg) as take:
+            bridge._on_stream_link_lost("primary", iface, "tcp")
+        assert take.call_args.kwargs.get("expected") is iface
+
+    def test_a_close_that_raises_still_frees_the_lock(self, bridge):
+        """M40: a failing close() is swallowed and the lock still released."""
+        from utils.meshtastic_connection import MESHTASTIC_CONNECTION_LOCK
+        iface, ok, _ = _connect_tcp(bridge, "primary", lambda p: None, MagicMock())
+        bridge._install_leg("primary", iface, ok)
+        iface.close.side_effect = OSError("close boom")
+        bridge._disconnect_primary()
+        assert not MESHTASTIC_CONNECTION_LOCK.locked()
+        assert bridge._primary_interface is None
+
+    def test_serial_connect_site_names_serial(self, bridge, caplog):
+        """M34: the production leg (moc's USB secondary) must log
+        'secondary serial link LOST' — pinned at the connect site."""
+        from pubsub import pub as real_pub
+        caplog.set_level(logging.INFO, logger="gateway.mesh_bridge")
+        fake_iface = MagicMock()
+        fake_serial = MagicMock()
+        fake_serial.SerialInterface = MagicMock(return_value=fake_iface)
+        cfg = MeshtasticConfig(preset="SHORT_TURBO", connection_type="serial",
+                               serial_device="/dev/null.invalid")
+        with patch("gateway.mesh_bridge._HAS_MESHTASTIC", True), \
+             patch("gateway.mesh_bridge._HAS_MESHTASTIC_SERIAL", True), \
+             patch("gateway.mesh_bridge._HAS_PUBSUB", True), \
+             patch("gateway.mesh_bridge._meshtastic_serial", fake_serial), \
+             patch("gateway.mesh_bridge._pub", real_pub):
+            iface, ok = bridge._connect_serial(cfg, "secondary", lambda p: None)
+        bridge._install_leg("secondary", iface, ok)
+        real_pub.sendMessage("meshtastic.connection.lost", interface=iface)
+        assert any("secondary serial link LOST" in r.getMessage()
+                   for r in caplog.records)
+
+
+# ---------------------- r2 F-A: a missed connection.lost is never terminal ---
+
+class TestLegLoopNoticesALibraryThatGaveUp:
+
+    def _one_tick(self, bridge, leg):
+        bridge._running = True
+        bridge._stop_event = MagicMock()
+        bridge._stop_event.wait = lambda t: True      # one pass, then stop
+        bridge._stop_event.is_set = lambda: False
+        getattr(bridge, f"_{leg}_loop")()
+
+    def test_a_loss_during_connect_is_caught_on_the_next_tick(self, bridge):
+        """F-A: connection.lost fired BEFORE the handle was installed, so the
+        identity check dropped it, and the leg read connected on a dead handle
+        forever. The library's own isConnected says it gave up; the leg loop
+        reads it every tick."""
+        iface = _real_tcp_iface()          # isConnected NOT set: the dead state
+        assert not iface.isConnected.is_set()
+        bridge._install_leg("primary", iface, True)
+        with patch.object(type(iface), "close"):
+            self._one_tick(bridge, "primary")
+        assert bridge._primary_connected is False
+        assert bridge._primary_interface is None
+        assert bridge.stats["link_lost"] == 1
+
+    def test_a_live_library_link_is_left_alone(self, bridge):
+        iface = _real_tcp_iface()
+        iface.isConnected.set()
+        iface.socket = MagicMock()
+        bridge._install_leg("primary", iface, True)
+        self._one_tick(bridge, "primary")
+        assert bridge._primary_interface is iface
+        assert bridge._primary_connected is True
+        assert bridge.stats["link_lost"] == 0
+
+    def test_mid_reconnect_is_left_to_the_library(self, bridge):
+        """The library's own 1 s _reconnect: socket None, isConnected still SET
+        (only _disconnected clears it) — not dead, do not tear down (r1 F1)."""
+        iface = _real_tcp_iface()
+        iface.isConnected.set()
+        bridge._install_leg("primary", iface, True)
+        self._one_tick(bridge, "primary")
+        assert bridge._primary_interface is iface
+        assert bridge.stats["link_lost"] == 0
+
+    def test_a_non_library_leg_is_never_judged(self, bridge):
+        """MQTT legs / fakes: not a meshtastic stream interface → untouched."""
+        iface = MagicMock()
+        bridge._install_leg("secondary", iface, True)
+        self._one_tick(bridge, "secondary")
+        assert bridge._secondary_interface is iface
+
+
+class TestRound3Pins:
+    """Survivors of the r3 mutant pass, pinned."""
+
+    def test_an_event_named_isconnected_on_a_non_library_leg_is_not_judged(
+            self, bridge):
+        """Only the meshtastic library's stream interfaces carry the
+        isConnected contract; anything else with the same attribute name is
+        not read as 'gave up'."""
+        from gateway.mesh_bridge import _library_gave_up
+
+        class LookAlike:
+            isConnected = threading.Event()        # never set
+
+        assert _library_gave_up(LookAlike()) is False
+
+    def test_no_handle_is_never_installed_as_connected(self, bridge):
+        bridge._install_leg("primary", None, True)
+        assert bridge._primary_connected is False
+
+    def test_a_lost_event_during_stop_reads_planned_by_kind(self, bridge, caplog):
+        """stop() sets the event, then tears down: a connection.lost landing in
+        between still reads planned, with the leg's kind."""
+        caplog.set_level(logging.INFO, logger="gateway.mesh_bridge")
+        iface = MagicMock()
+        bridge._install_leg("primary", iface, True)
+        bridge._stop_event.set()
+        bridge._on_stream_link_lost("primary", iface, "tcp")
+        assert bridge.stats["link_lost"] == 0
+        assert any("primary tcp link closed" in r.getMessage() for r in caplog.records)
