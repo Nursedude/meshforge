@@ -466,6 +466,38 @@ def test_a_bridge_leg_link_loss_is_named_not_left_to_read_as_rf_loss():
     assert any("primary" in n and "link" in n for n in r["notes"])
 
 
+def test_a_tcp_leg_link_loss_is_named_too():
+    """BR-T #10: the tcp leg now logs link loss in the same shape."""
+    line = "2026-11-10 09:00:00,000 secondary tcp link LOST (secondary) — link gone; reconnecting"
+    e = c21.bridge_event_from_log(line)
+    assert e["ev"] == "bridge_link_lost" and e["leg"] == "secondary"
+
+
+def test_the_lost_line_the_bridge_writes_is_the_line_c21_parses(caplog):
+    """One artifact, two consumers (hfm #5): drive the REAL writer and feed
+    its own line to the reader, so neither can drift alone."""
+    import logging
+    from unittest.mock import MagicMock
+    import gateway.mesh_bridge as mb
+    b = mb.MeshtasticPresetBridge.__new__(mb.MeshtasticPresetBridge)
+    import threading
+    b._stop_event = threading.Event()
+    b._stats_lock = threading.Lock()
+    b.stats = {"link_lost": 0}
+    iface = MagicMock()
+    b._primary_interface, b._secondary_interface = iface, None
+    b._disconnect_primary = lambda: None
+    b._notify_status = lambda s: None
+    caplog.set_level(logging.WARNING, logger="gateway.mesh_bridge")
+    for kind in ("serial", "tcp"):
+        caplog.clear()
+        b._on_stream_link_lost("lab", iface, kind)
+        msg = [r.getMessage() for r in caplog.records if "LOST" in r.getMessage()]
+        assert len(msg) == 1
+        e = c21.bridge_event_from_log("2026-11-10 09:00:00,000 " + msg[0])
+        assert e and e["ev"] == "bridge_link_lost" and e["leg"] == "primary", kind
+
+
 def test_an_rf_loss_names_the_transmissions_that_overlapped_it():
     lost = dict(_send(41), wall=1000.0)
     near = dict(_send(41, "st2lf"), wall=1001.5)       # 1.5 s later: overlaps

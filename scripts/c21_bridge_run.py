@@ -376,7 +376,9 @@ def _label(rec: Dict[str, Any]) -> str:
 # Format written by gateway._mesh_bridge_legs.bridge_event — change both together.
 
 _STAMP_RE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),(\d{3}) ")
-_LOST_RE = re.compile(r"(?P<side>primary|secondary) serial link LOST")
+# Written by gateway.mesh_bridge._on_stream_link_lost as "<leg> <kind> link LOST"
+# — serial since 2026-09-27, tcp since BR-T #10 (2026-11-10). Change both together.
+_LOST_RE = re.compile(r"(?P<side>primary|secondary) (?:serial|tcp) link LOST")
 _EVENT_RE = re.compile(
     r"mesh_bridge (?P<verb>rx|drop|tx) (?:leg|dest)=(?P<side>primary|secondary)"
     r"(?: reason=(?P<reason>\w+))?: (?P<text>.*)$")
