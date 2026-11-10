@@ -206,9 +206,23 @@ _FS_EVENTS = {"open", "os.listdir", "os.scandir", "os.mkdir", "os.rename",
               "shutil.rmtree"}
 # Interpreter/library reads under the home (a user-site install, the repo
 # checked out under ~) are the harness, not the handler.
-_EXEMPT = tuple(str(p) for p in {_REPO, *[Path(p).resolve() for p in sys.path
-                                          if p and Path(p).is_absolute()]}
-                if str(p).startswith(str(_REAL_HOME)))
+def _harness_roots(repo: Path, sys_path, prefix, real_home: Path) -> tuple:
+    """The under-home trees that are the HARNESS (interpreter + repo).
+
+    sys.path covers a venv's site-packages but not its `share/` data
+    (xyzservices' providers.json), so a venv ROOT under home counts too —
+    only when it IS a venv (pyvenv.cfg) and strictly below home, never the
+    home itself: that would exempt the very reads this witness exists for."""
+    trees = {repo, *[Path(p).resolve() for p in sys_path
+                     if p and Path(p).is_absolute()]}
+    venv = Path(prefix).resolve()
+    if venv != real_home and (venv / "pyvenv.cfg").is_file():
+        trees.add(venv)
+    return tuple(str(p) for p in trees if str(p).startswith(str(real_home))
+                 and p != real_home)
+
+
+_EXEMPT = _harness_roots(_REPO, sys.path, sys.prefix, _REAL_HOME)
 
 
 def _fs_audit(event, args):
@@ -1008,6 +1022,33 @@ def test_sweep_never_touched_the_real_home(dead_externals):
     # The import-time constant the second review caught, rewritten:
     import utils.common as _common
     assert Path(_common.CONFIG_DIR).is_relative_to(dead_externals)
+
+
+def test_a_venv_under_home_is_harness_but_home_itself_never_is(tmp_path):
+    """meshforge-pro 2026-11-09: a venv at ~/mf-venv-test put
+    `<prefix>/share/xyzservices/providers.json` (folium's tile list) under the
+    real home, outside every sys.path entry — 6 sweep tests read a library's
+    data file as the handler touching the operator's home. The venv root is
+    the interpreter's own tree; home itself, or a non-venv prefix, is not."""
+    home = tmp_path / "home"
+    venv = home / "mf-venv"
+    (venv / "lib").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    repo = tmp_path / "elsewhere" / "repo"
+    roots = _harness_roots(repo, [str(venv / "lib")], str(venv), home)
+    assert str(venv) in roots
+    # never the home itself, even if a prefix resolved there
+    (home / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    assert str(home) not in _harness_roots(repo, [], str(home), home)
+    # …nor via a sys.path entry that IS home (PYTHONPATH=~): that would
+    # exempt every read under it, the old code's quiet hole
+    assert str(home) not in _harness_roots(repo, [str(home)], "/usr", home)
+    # a prefix under home that is NOT a venv (no pyvenv.cfg) is not exempted
+    bare = home / "not-a-venv"
+    bare.mkdir()
+    assert str(bare) not in _harness_roots(repo, [], str(bare), home)
+    # a system interpreter outside home adds nothing
+    assert _harness_roots(repo, [], "/usr", home) == ()
 
 
 class _Py313Globber:
