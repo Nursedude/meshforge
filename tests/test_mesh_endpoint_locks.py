@@ -448,3 +448,21 @@ class TestR5Pins:
         nm._held_lock, nm._holds_global_lock = taken, True
         nm._release_global_lock()
         assert nm._holds_global_lock is False
+
+
+def test_a_leg_waits_out_a_brief_hold_on_its_port():
+    """r6 M37: _LOCK_WAIT_S is the leg's patience. A holder that lets go 0.3 s
+    later (a node_monitor reconnect, a short-lived send) must not fail the
+    connect — a near-zero wait turned every brief overlap into a 10 s retry."""
+    from utils.meshtastic_connection import connection_lock_for
+    lk = connection_lock_for("192.0.2.10", 4420)
+    assert lk.acquire(timeout=1)
+    t = threading.Timer(0.3, lambda: lk.locked() and lk.release())
+    t.start()
+    try:
+        b = _bridge(("192.0.2.10", 4420), ("192.0.2.20", 4421))
+        _connect(b, "primary")
+        assert b._primary_connected
+    finally:
+        t.cancel()
+        t.join(1)
