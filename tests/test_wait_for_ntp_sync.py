@@ -12,6 +12,7 @@ real clock state.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -200,3 +201,49 @@ class TestLinger:
             assert p.poll() is None, "the gate exited right after speaking"
             p.communicate(timeout=10)
             assert p.returncode == 0
+
+
+class TestReviewR5:
+    def test_the_gate_is_directly_executable(self, tmp_path):
+        """r5 #5: systemd EXECUTES it (ExecStartPre=-/opt/.../wait_for_ntp_sync.sh);
+        every other test runs `sh SCRIPT`, so a lost exec bit passed 132/132 —
+        and `-` swallows the 203/EXEC, so the gate would silently never run."""
+        assert os.access(SCRIPT, os.X_OK), "wait_for_ntp_sync.sh lost its exec bit"
+        env = _stub(tmp_path, SYNCED)
+        p = subprocess.run([str(SCRIPT), "5"], capture_output=True, text=True,
+                           timeout=30, env=env)
+        assert p.returncode == 0 and "clock synchronized after" in p.stderr
+
+    def test_the_probe_comm_is_this_scripts_kernel_comm(self):
+        """The probe authenticates gate lines by journald _COMM — the kernel's
+        15-char comm of THIS file's name. Renaming the script breaks it."""
+        import utils.watchdog_probes_clock as wc
+        assert wc.GATE_COMM == os.path.basename(str(SCRIPT))[:15]
+
+    def test_a_slow_timedatectl_cannot_outrun_the_budget(self, tmp_path):
+        """r5 #4: the budget is WALL time on the monotonic clock, not loop
+        iterations: a 1.5 s timedatectl, budget 4 -> done well under 4 x 2.5 s."""
+        stub = tmp_path / "timedatectl"
+        stub.write_text("#!/bin/sh\nsleep 1.5\necho 'System clock synchronized: no'\n")
+        stub.chmod(0o755)
+        env = {"PATH": f"{tmp_path}:/usr/bin:/bin", "HOME": str(tmp_path)}
+        t0 = time.monotonic()
+        p = subprocess.run(["sh", str(SCRIPT), "4"], capture_output=True, text=True,
+                           timeout=60, env=env)
+        elapsed = time.monotonic() - t0
+        assert p.returncode == 0 and "TIMEOUT after" in p.stderr
+        assert elapsed < 4 + 2.5 + 1 + 1.5, elapsed     # budget + one call + linger + slack
+
+    def test_a_hung_timedatectl_is_cut_off_per_call(self, tmp_path):
+        """r5 #4: a timedatectl that never answers (D-Bus wedged at boot) is
+        cut at 5 s per call, so the gate still speaks before TimeoutStartSec."""
+        stub = tmp_path / "timedatectl"
+        stub.write_text("#!/bin/sh\nsleep 30\necho 'System clock synchronized: yes'\n")
+        stub.chmod(0o755)
+        env = {"PATH": f"{tmp_path}:/usr/bin:/bin", "HOME": str(tmp_path)}
+        t0 = time.monotonic()
+        p = subprocess.run(["sh", str(SCRIPT), "2"], capture_output=True, text=True,
+                           timeout=60, env=env)
+        elapsed = time.monotonic() - t0
+        assert p.returncode == 0 and "TIMEOUT after" in p.stderr
+        assert elapsed < 2 + 5 + 1 + 2, elapsed     # budget + one cut call + linger + slack

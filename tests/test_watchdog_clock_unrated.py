@@ -141,7 +141,7 @@ class TestAcceptance:
         assert "sudo systemctl restart meshtasticd" in reason
         assert "timedatectl" in reason
         assert "UNVERIFIED" in reason and "mesh-writable" in reason
-        assert "3 other sender(s)" in reason and "3 RX line(s)" in reason   # Admin excluded
+        assert "3 distinct sender(s) are heard, this radio's own included (3 RX line(s))" in reason   # Admin excluded
 
     def test_lehua_witness_but_nodes_online_is_indeterminate_not_frozen(self):
         """r5 revision: the witness is authenticated, the excusing node count
@@ -209,7 +209,8 @@ class TestReviewR1:
                     (ago(900), tele(0)), (ago(800), rx("position", OWN))]
         res = run(HEAD_WITNESS, own_only)
         assert res[1]["disp"] == "indeterminate" and shape(res) == "blind"
-        assert "only 1 other sender(s) heard" in res[1]["reason"]
+        assert "only 1 distinct sender(s) heard between the readings, this radio's own included" in res[1]["reason"]
+        assert "other sender" not in res[1]["reason"]   # r5 #2: own id is never inferred
 
     def test_rx_before_the_older_telemetry_line_does_not_count(self):
         old_rx = [(ago(3000), rx()), (ago(2900), rx("text", "0x2")),
@@ -887,12 +888,12 @@ SHAPE_TABLE = [("online", LEHUA), ("frozen", FROZEN), ("blind", [])]
 #: (name, window, shape, cause fragment the reason must carry).
 CONSEQUENCE_CASES = [
     ("online", LEHUA, "online", "32 then 35 node(s) online"),
-    ("frozen", FROZEN, "frozen", "3 other sender(s) are heard (3 RX line(s))"),
+    ("frozen", FROZEN, "frozen", "3 distinct sender(s) are heard, this radio's own included (3 RX line(s))"),
     # senders != lines, so a swapped count cannot hide (r4 F2 mutant survived
     # on FROZEN, where both are 3)
     ("frozen_busy", [(ago(1800), tele(0)), (ago(1700), rx()), (ago(1650), rx()),
                      (ago(1600), rx("text", "0x2")), (ago(1500), rx()), (ago(900), tele(0))],
-     "frozen", "2 other sender(s) are heard (4 RX line(s))"),
+     "frozen", "2 distinct sender(s) are heard, this radio's own included (4 RX line(s))"),
     ("blind_few", [], "blind", "fewer than 2 DeviceTelemetry lines this start (0 read)"),
     ("blind_stale", [(ago(3 * 3600 + 900), tele(0)), (ago(3 * 3600 + 100), rx()),
                      (ago(3 * 3600 + 50), rx("text", "0x2")), (ago(3 * 3600), tele(0))],
@@ -902,20 +903,24 @@ CONSEQUENCE_CASES = [
      "blind", "the newest telemetry line is stamped 120 s AHEAD of now"),
     ("blind_quiet", [(ago(1800), tele(0)), (ago(1700), rx("routing", OWN)),
                      (ago(900), tele(0))],
-     "blind", "0 nodes online but only 1 other sender(s) heard"),
+     "blind", "0 nodes online but only 1 distinct sender(s) heard between the readings, this radio's own included"),
+    # r5 #1: every RX line read is newer than the newest telemetry line
+    ("blind_saturated", [(ago(1800), tele(0)), (ago(900), tele(0))]
+     + [(ago(800) + i, rx("position", "0x9")) for i in range(1000)],
+     "blind", "the RX read saturated — all 1000 newest RX lines are newer than the newest telemetry line"),
 ]
 PATHS = ("fresh", "head_cached", "both_cached")
 
 
-def spec(timed_out, head_name, shape_name):
+def spec(timed_out, head_name, shape_name, case_name=""):
     """The INDEPENDENT expectation — written from the acceptance, not from
     compose_reason: (fragments that must appear, fragments that must not)."""
     must, never = [], []
     rerate, nxt, check = wc.CURE_RERATE, wc.CURE_NEXT_START, "check the radio's own node list"
     if shape_name == "online":
-        (must if timed_out else never).append(rerate)
+        # r5 #3: a timed-out start's cure sits BEHIND the node-list check
+        (must if timed_out else never).extend([check, rerate])
         (never if timed_out else must).append(nxt)
-        never.append(check)
     elif shape_name == "frozen":
         must += [check, rerate]
         never.append(nxt)
@@ -929,10 +934,14 @@ def spec(timed_out, head_name, shape_name):
         never.append(nxt)
         if timed_out:
             must += ["the gate timed out, so", check, rerate]
+        elif case_name == "blind_saturated":
+            # r5 #1: UNKNOWN on this tick is never "no action"
+            must += [check, rerate]
+            never.append("nothing points at a fault")
         else:
             must.append("nothing points at a fault — no action")
             never += [check, rerate]
-    never += ["probe bug", "None", "{"]
+    never += ["probe bug", "None", "{", "other sender"]
     return must, never
 
 
@@ -964,7 +973,7 @@ class TestReasonSpec:
             assert why in reason and cause in reason, (where, reason)
             for other_why in {w for _, _, w, _ in HEAD_TABLE} - {why}:
                 assert other_why not in reason, (where, other_why)
-            must, never = spec(timed_out, name if name == "silent" else "x", shape_name)
+            must, never = spec(timed_out, name if name == "silent" else "x", shape_name, case[0])
             for frag in must:
                 assert frag in reason, (where, frag, reason)
             for frag in never:

@@ -412,7 +412,14 @@ VERDICTS = ("online", "fire", "blind")
 
 
 def _blind_cause(facts: dict) -> str:
-    """Name WHICH of the four blind causes (review r4 F3) — never a raw dict."""
+    """Name WHICH blind cause (review r4 F3; r5: the saturated read too) —
+    never a raw dict. ``rx_senders`` counts DISTINCT senders and includes this
+    radio's own packets (it logs them as Received too, and its own id is never
+    inferred from traffic), so the text never calls them "other" (r5 #2)."""
+    if facts.get("rx_read_saturated"):
+        return (f"the RX read saturated — all {facts.get('rx_read')} newest RX lines "
+                "are newer than the newest telemetry line, so whether other nodes "
+                "were heard between the readings is UNKNOWN on this tick")
     if "telemetry_lines" in facts:
         return (f"fewer than 2 DeviceTelemetry lines this start "
                 f"({facts['telemetry_lines']} read)")
@@ -421,8 +428,9 @@ def _blind_cause(facts: dict) -> str:
         if age < 0:
             return f"the newest telemetry line is stamped {-age} s AHEAD of now"
         return f"the newest telemetry line is {age} s old (over the 2 h bound)"
-    return (f"0 nodes online but only {facts.get('rx_senders', 0)} other sender(s) "
-            f"heard between the readings (a quiet segment or a deaf radio)")
+    return (f"0 nodes online but only {facts.get('rx_senders', 0)} distinct "
+            f"sender(s) heard between the readings, this radio's own included "
+            f"(a quiet segment or a deaf radio)")
 
 
 def compose_reason(head: str, said: Optional[str], verdict: str, facts: dict) -> str:
@@ -453,7 +461,9 @@ def compose_reason(head: str, said: Optional[str], verdict: str, facts: dict) ->
     if verdict == "online":
         # Journal text is mesh-writable (r5): it never excuses a start (r1 F2).
         n1, n2 = facts["online_last_two"]
-        cure = CURE_RERATE if timed_out else CURE_NEXT_START
+        # r5 #3: a witness does not prove the consequence (lehua: timed out,
+        # 17 -> 35 online) — the node list decides before any restart.
+        cure = f"{CHECK_NODE_LIST}{CURE_RERATE}" if timed_out else CURE_NEXT_START
         return (f"{ONLINE_MARK}: {why}, and journal-derived telemetry (unverified) "
                 f"reads {n1} then {n2} node(s) online (last two: "
                 f"{facts['online_last_two']}) — journal text cannot excuse the "
@@ -461,8 +471,13 @@ def compose_reason(head: str, said: Optional[str], verdict: str, facts: dict) ->
     if verdict == "blind":
         # r4 F3: a TIMED-OUT start the journal cannot judge still names the
         # next step (moc logs telemetry ~9 h apart: blind by age most ticks).
-        action = (f"; the gate timed out, so {CHECK_NODE_LIST}{CURE_RERATE}"
-                  if timed_out else "; nothing points at a fault — no action")
+        if timed_out:
+            action = f"; the gate timed out, so {CHECK_NODE_LIST}{CURE_RERATE}"
+        elif facts.get("rx_read_saturated"):
+            # r5 #1: UNKNOWN is not "nothing points at a fault".
+            action = f"; {CHECK_NODE_LIST}{CURE_RERATE}"
+        else:
+            action = "; nothing points at a fault — no action"
         return (f"{BLIND_MARK}: {why}; the consequence cannot be judged: "
                 f"{_blind_cause(facts)}{action}")
     # The frozen SHAPE. OBSERVE-ONLY (operator 11-09, review r5): SAID, never paged.
@@ -475,7 +490,7 @@ def compose_reason(head: str, said: Optional[str], verdict: str, facts: dict) ->
         cause = "cause UNKNOWN (the gate says synchronized)"
     return (f"{FROZEN_MARK}: {why}; journal-derived telemetry (UNVERIFIED — "
             f"the journal is mesh-writable) reads 0 nodes online while "
-            f"{facts['rx_senders']} other sender(s) are heard "
+            f"{facts['rx_senders']} distinct sender(s) are heard, this radio's own included "
             f"({facts['rx_lines']} RX line(s)) — {cause}; "
             f"{CHECK_NODE_LIST}{CURE_RERATE}")
 

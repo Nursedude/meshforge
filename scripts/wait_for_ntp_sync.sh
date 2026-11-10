@@ -29,6 +29,30 @@ set -u
 BUDGET="${1:-60}"
 i=0
 
+# MONOTONIC deadline (2026-11-09, Fable 5.2 review r5 #4): the budget used to
+# count ITERATIONS, so a slow timedatectl (D-Bus at boot) stretched it past
+# TimeoutStartSec=120, systemd killed the gate before its witness, and
+# Restart= looped. /proc/uptime is monotonic (never NTP-stepped — this gate
+# runs exactly while the wall clock may jump) and is read with the `read`
+# builtin, so no external tool can fail here. Centiseconds, so "after 0s"
+# never rounds up. Without /proc/uptime it falls back to counting.
+uptime_cs() {
+    _u=""
+    read -r _u _rest < /proc/uptime 2>/dev/null || return 1
+    case "$_u" in
+        *.*) echo "${_u%.*}${_u#*.}" ;;
+        *) return 1 ;;
+    esac
+}
+START_CS=$(uptime_cs) || START_CS=""
+elapsed_s() {
+    if [ -n "$START_CS" ] && _now=$(uptime_cs); then
+        echo $(( (_now - START_CS) / 100 ))
+    else
+        echo "$i"
+    fi
+}
+
 # LINGER after speaking (2026-11-09, Fable 5.2 review r2 F1): journald reads
 # a line's trusted _COMM from /proc/<pid> LAZILY, and the watchdog's
 # meshtasticd_clock_unrated probe authenticates this gate's lines by that
@@ -38,15 +62,16 @@ i=0
 LINGER=1
 
 synced() {
-    [ "$(timedatectl status 2>/dev/null | grep synchronized | grep -c yes)" = "1" ]
+    # each call bounded too: worst case BUDGET + 5 s + LINGER, < TimeoutStartSec
+    [ "$(timeout 5 timedatectl status 2>/dev/null | grep synchronized | grep -c yes)" = "1" ]
 }
 
-while [ "$i" -lt "$BUDGET" ]; do
+while [ "$i" -lt "$BUDGET" ] && [ "$(elapsed_s)" -lt "$BUDGET" ]; do
     if synced; then
         # ALWAYS speak (2026-11-09), even at 0 s: a start whose journal holds no
         # gate line then means the gate did NOT run — the watchdog's
         # meshtasticd_clock_unrated probe reads that absence as unknown.
-        echo "wait_for_ntp_sync: clock synchronized after ${i}s" >&2
+        echo "wait_for_ntp_sync: clock synchronized after $(elapsed_s)s" >&2
         sleep "$LINGER" 2>/dev/null
         exit 0
     fi
@@ -58,7 +83,7 @@ done
 # out (10-26) and its radio read 17 -> 33 nodes online from the first telemetry
 # line. The watchdog's meshtasticd_clock_unrated probe reads THIS line (and the
 # telemetry below, labelled unverified) — OBSERVE-ONLY: it reports, never pages.
-echo "wait_for_ntp_sync: TIMEOUT after ${BUDGET}s — system clock not NTP-synchronized." \
+echo "wait_for_ntp_sync: TIMEOUT after $(elapsed_s)s — system clock not NTP-synchronized." \
      "Starting meshtasticd anyway (fail-open). THIS LINE IS THE WITNESS: meshtasticd" \
      "may rate its clock Device quality, stamp received packets with rx_time 0, and" \
      "freeze every node's lastHeard (all read offline) until it restarts. CHECK:" \
