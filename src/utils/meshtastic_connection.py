@@ -326,82 +326,44 @@ _LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 # The local meshtasticd's TCP port — the slot MESHTASTIC_CONNECTION_LOCK guards.
 DEFAULT_MESHTASTICD_TCP_PORT = 4403
 
-# One lock per NON-local endpoint (BR-T #13). Created on first ask, never
-# dropped: a few Lock objects for the life of the process.
-_endpoint_locks: Dict[tuple, threading.Lock] = {}
-_endpoint_locks_guard = threading.Lock()
-
-
-def _is_this_box(ip) -> bool:
-    """True if ``ip`` reaches a daemon on THIS box: loopback, unspecified
-    (0.0.0.0 / ::), or an address this box owns — tested by binding to it
-    (succeeds only for a local address), no interface list needed."""
-    if ip.is_loopback or ip.is_unspecified:
-        return True
-    fam = socket.AF_INET if ip.version == 4 else socket.AF_INET6
-    probe = socket.socket(fam, socket.SOCK_STREAM)
-    try:
-        probe.bind((str(ip), 0))
-        return True
-    except OSError:
-        return False
-    finally:
-        probe.close()
-
-
-def _endpoint_key(host, port):
-    """(where, port) naming the meshtasticd a (host, port) REACHES, or None if
-    it cannot be told. Decided on ADDRESSES, not spellings (r4 F1: a 3-name
-    tuple let ``localhost`` and ``127.1`` / ``0.0.0.0`` / the box's own
-    hostname take different locks for ONE daemon). Resolution is what the
-    connect that follows does anyway (``/etc/hosts`` first)."""
-    import ipaddress
-    h = (host or "localhost").strip().strip("[]").rstrip(".").lower() or "localhost"
-    p = int(port) if port not in (None, "", 0) else DEFAULT_MESHTASTICD_TCP_PORT
-    try:
-        infos = socket.getaddrinfo(h, p, type=socket.SOCK_STREAM)
-        addrs = []
-        for info in infos:
-            ip = ipaddress.ip_address(str(info[4][0]).split("%", 1)[0])
-            mapped = getattr(ip, "ipv4_mapped", None)
-            addrs.append(mapped if mapped is not None else ip)
-    except (OSError, UnicodeError, ValueError):
-        return None
-    if not addrs:
-        return None
-    if any(_is_this_box(ip) for ip in addrs):
-        return ("local", p)
-    v4 = sorted(str(a) for a in addrs if a.version == 4)
-    return (v4[0] if v4 else sorted(str(a) for a in addrs)[0], p)
+# One lock per TCP PORT other than the local default (BR-T #13). Created on
+# first ask, never dropped: a few Lock objects for the life of the process.
+_port_locks: Dict[int, threading.Lock] = {}
+_port_locks_guard = threading.Lock()
 
 
 def connection_lock_for(host: str, port: int = DEFAULT_MESHTASTICD_TCP_PORT) -> threading.Lock:
-    """The lock that guards the ONE TCP slot of the meshtasticd at (host, port).
+    """The lock that guards a meshtasticd TCP slot (one client per daemon,
+    Issue #17) — keyed by PORT, never by host.
 
-    meshtasticd serves one TCP client (Issue #17), so a slot belongs to an
-    ENDPOINT, not to the process (the two-TCP-leg bridge could never connect
-    its second leg — BR-T #13, 2026-11-10). The endpoint is decided on the
-    ADDRESSES the host resolves to (``_endpoint_key``):
+    Why not by host (BR-T #13 reviews r4 + r5, 11-10): "which daemon does this
+    host reach?" cannot be decided from a name — ``127.1``/``0.0.0.0``/the box's
+    own name, a transient resolver failure, zone ids, multi-address names and
+    NAT fronts each split ONE daemon across two locks in a review by running
+    (two clients on one slot = the #17 thrash). One daemon listens on ONE port,
+    so every spelling of it lands on one port, and therefore one lock:
 
-    - this box (loopback, 0.0.0.0, an address it owns) on
-      ``DEFAULT_MESHTASTICD_TCP_PORT`` → ``MESHTASTIC_CONNECTION_LOCK``, the
-      lock every local holder already takes: local behaviour is unchanged
-      under ANY spelling of local;
-    - cannot be resolved → ``MESHTASTIC_CONNECTION_LOCK`` too: when the
-      endpoint cannot be told, exclude MORE, never less;
-    - anything else → its own lock per (address, port): two radios never
-      block each other.
+    - port ``DEFAULT_MESHTASTICD_TCP_PORT`` (4403) → ``MESHTASTIC_CONNECTION_LOCK``,
+      the lock local holders always took;
+    - any other port → that port's own lock (the default two-TCP-leg bridge,
+      localhost:4403 + localhost:4404, connects BOTH legs — #13);
+    - two different radios on the SAME port share a lock: the second waits and
+      says so. That over-excludes — the safe direction — and is never MORE
+      exclusive than before #13, when every endpoint shared one lock.
 
-    Residual: a dual-stack remote host named once by its IPv6 literal and once
-    by a name resolving to IPv4 too gets two locks (IPv4 is preferred as key).
+    ``host`` is accepted and deliberately unused: no resolver, no I/O, nothing
+    to fail. A port that is not a number keys as the default (most exclusive).
     """
-    key = _endpoint_key(host, port)
-    if key is None or key == ("local", DEFAULT_MESHTASTICD_TCP_PORT):
+    try:
+        p = int(port) if port not in (None, "", 0) else DEFAULT_MESHTASTICD_TCP_PORT
+    except (TypeError, ValueError):
+        p = DEFAULT_MESHTASTICD_TCP_PORT
+    if p == DEFAULT_MESHTASTICD_TCP_PORT:
         return MESHTASTIC_CONNECTION_LOCK
-    with _endpoint_locks_guard:
-        lock = _endpoint_locks.get(key)
+    with _port_locks_guard:
+        lock = _port_locks.get(p)
         if lock is None:
-            lock = _endpoint_locks[key] = threading.Lock()
+            lock = _port_locks[p] = threading.Lock()
         return lock
 
 

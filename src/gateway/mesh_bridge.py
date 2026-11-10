@@ -846,22 +846,26 @@ class MeshtasticPresetBridge:
             if not status.available:
                 logger.warning("meshtasticd pre-flight: %s (attempting connection anyway)", status.message)
 
-            # THIS endpoint's lock (BR-T #13): meshtasticd serves one TCP
-            # client per endpoint (Issue #17). Per-endpoint, so the default
-            # two-TCP-leg bridge connects both legs; the local daemon's is
-            # still MESHTASTIC_CONNECTION_LOCK.
+            # THIS port's lock (BR-T #13): meshtasticd serves one TCP client
+            # (Issue #17) and a daemon listens on one port, so the lock is per
+            # PORT — the default two-TCP-leg bridge (4403 + 4404) connects both
+            # legs; 4403 is still MESHTASTIC_CONNECTION_LOCK.
             endpoint = f"{config.host}:{config.port}"
             conn_lock = connection_lock_for(config.host, config.port)
             if not conn_lock.acquire(timeout=_LOCK_WAIT_S):
                 with self._leg_lock:     # read the holds map under its lock (r4 F4)
                     ours = any(h is conn_lock for h in self._tcp_lock_holds.values())
                 other = "the OTHER bridge leg" if ours else "another component"
+                # The lock is per PORT (connection_lock_for): say so, and the
+                # way out — the operator cannot see a lock.
                 logger.error(
-                    f"TCP connection lock for {endpoint} busy — {other} holds "
-                    f"that radio's one TCP slot"
-                    + (" (both legs point at the same radio: check mesh_bridge "
-                       "primary/secondary host+port)" if other.startswith("the OTHER")
-                       else ""))
+                    f"TCP connection lock for {endpoint} busy — {other} holds the "
+                    f"lock for TCP port {config.port} (one meshtasticd client per "
+                    f"port, Issue #17)"
+                    + (" — both legs use that port: if they are the same radio, "
+                       "check mesh_bridge primary/secondary host+port; if they "
+                       "are two radios, give them different ports or use MQTT"
+                       if ours else ""))
                 return None, False
 
             interface = None

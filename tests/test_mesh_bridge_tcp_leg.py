@@ -46,7 +46,7 @@ def _isolate(tmp_path, monkeypatch):
     assert not MESHTASTIC_CONNECTION_LOCK.locked(), "lock held before the test"
     yield
     import utils.meshtastic_connection as mc
-    for lk in [MESHTASTIC_CONNECTION_LOCK] + list(mc._endpoint_locks.values()):
+    for lk in [MESHTASTIC_CONNECTION_LOCK] + list(mc._port_locks.values()):
         if lk.locked():   # per-endpoint since BR-T #13: release them ALL
             lk.release()
     for topic in ("meshtastic.receive", "meshtastic.connection.lost"):

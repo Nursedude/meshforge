@@ -197,9 +197,9 @@ class NodeMonitor:
             logger.warning("Already connected")
             return True
 
-        # Acquire THIS endpoint's lock — meshtasticd serves one TCP client per
-        # endpoint (Issue #17; per-endpoint since BR-T #13). The local daemon's
-        # is still MESHTASTIC_CONNECTION_LOCK.
+        # Acquire THIS port's lock — meshtasticd serves one TCP client (Issue
+        # #17); per port since BR-T #13 (connection_lock_for). Port 4403's is
+        # still MESHTASTIC_CONNECTION_LOCK.
         lock = self._connection_lock()
         if not lock.acquire(timeout=timeout):
             logger.error(
