@@ -44,9 +44,9 @@ it is held to the same truth.
 
 | Them | What they do well | What only we do |
 |---|---|---|
-| **MeshMonitor** (web NOC, Meshtastic+MeshCore+MQTT+RNS) | Web UI, Docker/Helm install, analysis of the user's mesh, virtual nodes, LXMF send/receive | **Bridge** LXMF across meshes (theirs relays MT↔MC text only, 4.17.2-rc5 read 10-29); a TUI that works with the WAN down |
+| **MeshMonitor** (web NOC, Meshtastic+MeshCore+MQTT+RNS) | Web UI, Docker/Helm install, analysis of the user's mesh, virtual nodes, LXMF send/receive | **Bridge** LXMF across meshes (theirs relays MT↔MC text only, 4.17.2-rc5 read 10-29); an SSH TUI on a thin link (they run offline too) |
 | **SMCI / RNS_Over_Meshcore** (RNS-over-MeshCore plugins) | Ride community MeshCore repeaters; airtime budget; published per-hop numbers | Native RNode path; owned RNS fork + rnsd lifecycle cures (#68/#69/#72); fleet-measured reliability |
-| **Mesh Bridge** (IceNet-01; Node.js, Meshtastic-only) | Bridges encrypted channels across 2+ radios; ID dedup 2,000 / 1 h; MQTT both ways; systemd installer | NOT YET EARNED. Candidates: per-leg airtime budget (they limit only commands, 10/min), every message delivered-or-named-drop, true-origin identity + DMs, cross-box dedup. Claim nothing until a measured run |
+| **Mesh Bridge** (IceNet-01; Node.js, Meshtastic-only) | Bridges encrypted channels across 2+ radios; ID dedup 2,000 / 1 h; MQTT both ways; systemd installer | NOT YET EARNED. One measured run (`c21r1`, 1436/1436, serial+serial lab). 11-09 review: failed write counted sent, dedup sender+text (theirs: by ID), no DM refusal → `BR-T`. Claim only that run |
 | **MeshDash** (self-hosted dashboard) | "Up to 16 Meshtastic radios"; 100+ endpoint REST API; Docker runner | Nothing on radio count: `mesh_bridge` has 2 legs today. N legs is build work, not config |
 
 **What best in class means here:** the most honest multi-radio router: every
@@ -55,12 +55,11 @@ Not the best dashboard — MeshMonitor and MeshDash are ahead there, and we do
 not compete on UI, SSO or API size. (Rows above from their own READMEs,
 2026-10-18; re-check before quoting.) **Landscape 11-04:** mesh-api + AMMB also
 relay MT↔MC text, CoreScope owns MeshCore analytics: lead with the RNS hub +
-per-leg delivery truth (`research/landscape_2026_11_04.md`).
+per-leg delivery truth (`research/landscape_2026_11_04.md`; 11-09 audit: `landscape_2026_11_09.md`).
 
 Our moat is **months of mesh operations**: real failures root-caused on real
 radios and compiled into guards (`persistent_issues.md`). Source: research
 artifact rev 4.4, <https://claude.ai/artifact/5wKgtARxZTss7Dsgwrh6Ep>.
-Re-check competitor SHAs before quoting it; they move fast.
 
 ## The central architecture gap — best available route
 
@@ -105,7 +104,7 @@ in X — never HEAD; none → no release. Steps: `docs/compatibility.md`.
 |---|---|---|---|---|
 | 1 | **Contract frozen** | `CanonicalMessage` v1 (jointly with MeshAnchor), config formats, CLI entry points (`meshforge-launcher.sh`, `--profile`, `standalone.py`), and the REST endpoints our own consumers use are frozen. The REST doc is regenerated from code and test-pinned. NOT frozen: Python internals, TUI layout (the TUI is a surface, not an API). | `python3 scripts/parity_check.py` (exists) + `python3 scripts/rest_doc.py --check` / `tests/test_rest_doc.py` (exists, 10-22) | PARTIAL (10-22): parity enforced; REST index GENERATED + test-pinned (`6d6b4a0e`, 29 ghost endpoints removed). OWED: declaring the freeze itself (CanonicalMessage v1 with MA, config formats, CLI) |
 | 2 | **Config upgrades** | Auto-migrate with a backup; refuse LOUDLY on a config written by a newer version. Never silently reinterpret a file it does not understand. | migration test incl. a newer-version fixture (owed) | PARTIAL (10-05): **`gateway.json` MET** — `schema_version` stamped on save, newer/non-integer refused via `load_error` (save refuses, file untouched), first save over a legacy file keeps `gateway.json.pre-v1`; `tests/test_gateway_config_schema_version.py`. MeshAnchor twin MET (`1ca766af`). OWED: other config files (`deployment.json`, `noc.yaml`, settings) |
-| 3 | **Per-leg delivery truth** (BIC-2) | No silent loss: every accepted message ends delivered, queued, or shown failed in-app. No false green: a leg-kill drill shows the leg down within N min (N from the detector cadence). 30-day soak on rc1. Rates are SHOWN, not gated (a rate measures RF weather, not software). | leg-kill drill + soak ledger (owed) | NOT MET: BIC-2 not built |
+| 3 | **Per-leg delivery truth** (BIC-2) | No silent loss: every accepted message ends delivered, queued, or shown failed in-app. No false green: a leg-kill drill shows the leg down within N min (N from the detector cadence). 30-day soak on rc1. Rates are SHOWN, not gated (a rate measures RF weather, not software). | leg-kill drill + soak ledger (owed) | NOT MET (11-09): leg counters live; per-message view + leg-kill drill owed |
 | 4 | **No AI required** | Every gate passes with no API key and no Claude Code. AI features say plainly that they are not configured. | one stranger-drill run with no AI anywhere | PARTIAL 10-31 drill: says `no_key`; offline answers |
 | 5 | **Stranger install drill** | VIRTUAL, every release: fresh image, README commands only, no dotfiles / hosts block / registry / AI. PHYSICAL, at rc1: one existing fleet board per supported type, clean user account + separate checkout (no wipe). Pass = the domain END (a message crosses mesh↔RNS and arrives; truth panes honest, incl. UNKNOWN), never "installer exit 0". | VIRTUAL: `gh workflow run stranger_drill.yml [-f installer_args=--client-only]` (observe mode); PHYSICAL: bare Pi 4 procedure (owed) | NOT MET — virtual run 2 (10-04, `37232491579`/`37232494058`): literal README install COMPLETES on bookworm + trixie arm64 with no TTY (rnsd/map/mosquitto up, 0 failed units); `--client-only` false red FIXED `9c76a19f` (verify reads `/etc/meshforge/noc.yaml` `managed:`; drill `37233965857` → "Installation OK with warnings", 0 FAIL) |
 | 6 | **Supported list = what gate 5 passed** | Pi 4 + Pi 5, Raspberry Pi OS bookworm / trixie 64-bit. Zero 2 W, Pi 3B, CM5 listed only if measured. Everything else "may work, untested", said so. | gate 5 results | NOT MET: boards are fleet-run, not installed from scratch (physical gate 5 owed); README + install.md now say so (DOC-HW, 11-04). Ubuntu 22.04 claim gone since `fd4617f0` |
@@ -185,7 +184,7 @@ product defect needs one.
   public: For every message, MeshForge will say which network legs it crossed and whether each one delivered, failed, or cannot be seen.
   status: planned
 - **INBOX-2** [MF] S+F — inbox follow-ups from the operator's 10-21 iPhone report: a channel post the fleet demonstrably heard shows "handed to radio · unconfirmed" FOREVER; the phone lost its web login with no pairing code on screen (server session intact)
-  Steps 1-3 LIVE 11-08 `4002f79a`; next: TUI+/inbox.
+  Steps 1-3 landed 11-08 `4002f79a` but NO caller: page still unconfirmed (11-09). Next: TUI+/inbox.
 - **REL-1** [MF] S — a release every month: tag + a changelog a ham can read; each runs the gate-5 virtual drill (brief 42fbS7, 10-27)
   30-DAY: v0.8.0-beta = first GitHub Release by 12-04; gate-5 drill to END (README only, a message crosses mesh↔RNS).
 - **BIC-1** [MF] S+F — `/inbox` browser chat; sends read "handed to radio · unconfirmed", never "delivered"
@@ -204,7 +203,7 @@ PARKED 11-04, revisit 12-04:
 - **R2** [MF][MA] F — moc3 antenna baseline → swap (it stays SMALL) → repeat R2 with n≥5 per size, interference logged on every run
   R2 = RNode pair moc3↔VolcanoAI measured SMCI-style (MA `lab/lxmf_tracer`, RNode-only path: LXMF bps, RTT p50/p90, success rate); operator present, TCP legs held down; baseline first (`rnstatus` SF7/250), a control that can fail; log the v3 interference-avoidance state. Reminder `rnode-pair-measure-r2`. Feeds R8.
 - **BIC-4** [MF][fork] S+F — interop vs stock RNS 1.5.7, both directions, real hardware → merge-forward or stay-pinned decision record
-  Peer: stock rns 1.5.7 venv on meshforge-lab (TCP/LXMF; RF needs an RNode).
+  Peer: stock rns 1.5.7 venv on meshforge-lab (TCP/LXMF; RF needs an RNode). Upstream is 1.6.0 (11-07), 12 PyPI releases past our 1.3.9 base: retarget.
   public: Prove MeshForge's pinned Reticulum talks to stock Reticulum in both directions on real radios.
   status: planned
 - **BIC-6** [MF] S+F — best-available-route: the router uses measured leg health so a flaky RF leg cannot own paths (1.1, not a 1.0 gate)
@@ -264,7 +263,7 @@ PARKED 11-04, revisit 12-04:
 - **DET-DCS** [MF] F — `delivery_confirmation_stall` goes blind for DAYS after every gateway restart on a low-traffic box: the `recent_terminal` ring (`delivery_counters.py`) is in-memory and needs 20 confirmable terminals — fix test-first (detector finding 10-22, moc3 mini delta review)
   Measured on moc3: blind 09-22→09-28 (~6 d), 10-12→10-16 (~3.6 d), and again now (6 of 20) after the 10-21/22 deploy restarts — a total confirmation collapse cannot be seen for days after any deploy. Honest (`indeterminate`, not clean), but a probe indeterminate for days is a finding. Cure shape: persist the terminal ring across restarts (write the snapshot, reload on start), and/or a traffic-scaled minimum. Accept: restart the gateway on a box with a full ring → the probe judges on the next tick, never `indeterminate` from the restart alone.
 - **DET-WEDGE** [MF] F — `probe_lxmf_process_wedge` (`watchdog_probes_rns.py`) calls a lab load-run's own transient `unix_wait_for_peer` an rnsd wedge, and its cure text says "restart rnsd" (the #69 race trigger) — fix test-first (detector finding 10-22, moc mini delta review)
-  Measured on moc: 58 lifetime `main_thread_wedge_any` fires on `lab.lxmf_multi_user_synth`, ALL at :08 (synth-soak timer `*:07`), mean active ~30 s, self-clearing, 1–2/day 10-06..10-19, none since (unexplained). moc3 (same review): `lab.lxmf_tracer` + `lab.lxmf_echo` fires cluster at minute :x0 — the 10-min tracer timer, so the long-running echo blocks while the tracer drives it; not only short load runs. One-snapshot signal, no confirm ticks. Cure shape = the RNS-RPC sibling (`eb8a6529`): N consecutive ticks on the SAME pid/tid before signalling, and cure text that says "check `rpc[rnsd.` round trips first", never restart-first. Accept: a planted 30 s block does not fire; a held block on one tid fires within N ticks.
+  Measured detail + cure shape: `research/landscape_2026_11_09.md` appendix.
   DEPLOYED 10-23 `213c6952` (detail: provenance 2026-10-22). OWED: no `main_thread_wedge` fire at moc :08 / moc3 :x0 through 10-30; the unit leg `probe_main_thread_wedge` still judges one snapshot.
 - **CAP-1** [MF][MA] S+F twin→MA — capture / topology truth residuals (09-26): TUI Export refuses on every box (never runs the tracker) — redirect to the map service's data or retire; `5c61ba30` redelivery dedupe disproven — keep or remove; flaky wall-clock test `test_spawner_returns_fast`; MA twin gaps (`graph_observable`, shared-DB header, coverage `source_origin`, tile-cache wording)
   Provenance § QUEUED 2026-09-26 ×4.
@@ -276,6 +275,9 @@ PARKED 11-04, revisit 12-04:
 - **AUDIT-1018** [MF][MA][maps] S+F maps:both — domain-audit residuals (10-18): OPERATOR decisions — Substack link (two live), moc5 + kiai declared `collector` but the maps unit is NOT INSTALLED (install, or fix the role), #151 F4 (MA bridge auto-enable only with a LOCAL meshtasticd — changes WHICH services run); design tasks — a serial-pinned, group-scoped MeshCore udev rule (today generic + 0666), a human surface for maps `/api/core-health`
 - **SEC-URL3** [MF] F — urllib3 GHSA-vxq7-64xx-v4gw + GHSA-8988-9cw3-xx77 on the apt copies (moc2, lehua, moc4): wait for the Debian backport, never pip over apt. Reminder `urllib3-apt-backport-moc2-lehua-moc4` (11-12).
 
+- **BR-T** [MF] S+F — `mesh_bridge` says more than it saw (11-09 review by running): failed MQTT-leg write counted sent, no DM refusal, dedup by sender+text, default TCP leg RX dead; 9 findings, `research/landscape_2026_11_09.md` §B. Before a release names the bridge. Session-added.
+- **INBOX-T** [MF] S+F — `/inbox` + leg-counter truth, F1–F13 (echo fold hides a stranger's row; one id in two terminal buckets): same doc §C–D. Before BIC-2's view. Session-added.
+- **SHOW-1** [MF] S — README shows the one unique screen (a message's legs); today logo + badges only. Session-added.
 - **TRH-1** [MF] S — traceroute history on the web map: the data is in `traceroute_history.db`, TUI-only today (capabilities: Live NOC map)
 
 ### LATER
@@ -344,7 +346,5 @@ PARKED 11-04, revisit 12-04:
   (`scripts/parity_check.py`).
 - Batch commits: one docs commit per session, code fixes grouped by logical
   change, at most one fleet deploy per session.
-- The superseded `plans/v1.0_roadmap.md` copies (MF + MA) were DELETED 2026-10-22
-  after a line-by-line diff into "1.0 = these checks pass" (cohesion Q13); what
-  was not carried is listed in that day's provenance row. `git log --all --
-  .claude/plans/v1.0_roadmap.md` recovers them.
+- Superseded `plans/v1.0_roadmap.md` (MF + MA) DELETED 2026-10-22 after a diff into
+  "1.0 = these checks pass" (Q13; not-carried list: that day's provenance row; `git log --all`).

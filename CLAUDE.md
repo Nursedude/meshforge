@@ -248,7 +248,7 @@ UNKNOWN is never a pass. `--quick` skips the local suite; `--strict` fails on fl
 | `plans/qa_field_testing_plan.md` | Gateway, maps, MeshCore field-test protocol |
 | `plans/standalone_wireclaw_variant.md` | mini-dudeai standalone (Pi-brain + ESP32-edge, chat-compiler) design |
 | `INDEX.md` | Full doc index with quick lookups |
-| `research/README.md` | <!--STAT:researchdocs-->57<!--/STAT--> technical deep dives (RNS, AREDN, RF, etc.) |
+| `research/README.md` | <!--STAT:researchdocs-->58<!--/STAT--> technical deep dives (RNS, AREDN, RF, etc.) |
 
 ---
 
