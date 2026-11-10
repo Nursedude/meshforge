@@ -185,6 +185,7 @@ product defect needs one.
   status: planned
 - **INBOX-2** [MF] S+F — inbox follow-ups from the operator's 10-21 iPhone report: a channel post the fleet demonstrably heard shows "handed to radio · unconfirmed" FOREVER; the phone lost its web login with no pairing code on screen (server session intact)
   Steps 1-3 landed 11-08 `4002f79a` but NO caller: page still unconfirmed (11-09). Next: TUI+/inbox.
+- **BR-T** [MF] S+F — `mesh_bridge` says more than it saw (11-09 review by running): failed MQTT-leg write counted sent, no DM refusal, dedup by sender+text, default TCP leg RX dead; 9 findings, `research/landscape_2026_11_09.md` §B. Before REL-1 (operator 11-10).
 - **REL-1** [MF] S — a release every month: tag + a changelog a ham can read; each runs the gate-5 virtual drill (brief 42fbS7, 10-27)
   30-DAY: v0.8.0-beta = first GitHub Release by 12-04; gate-5 drill to END (README only, a message crosses mesh↔RNS).
 - **BIC-1** [MF] S+F — `/inbox` browser chat; sends read "handed to radio · unconfirmed", never "delivered"
@@ -275,7 +276,6 @@ PARKED 11-04, revisit 12-04:
 - **AUDIT-1018** [MF][MA][maps] S+F maps:both — domain-audit residuals (10-18): OPERATOR decisions — Substack link (two live), moc5 + kiai declared `collector` but the maps unit is NOT INSTALLED (install, or fix the role), #151 F4 (MA bridge auto-enable only with a LOCAL meshtasticd — changes WHICH services run); design tasks — a serial-pinned, group-scoped MeshCore udev rule (today generic + 0666), a human surface for maps `/api/core-health`
 - **SEC-URL3** [MF] F — urllib3 GHSA-vxq7-64xx-v4gw + GHSA-8988-9cw3-xx77 on the apt copies (moc2, lehua, moc4): wait for the Debian backport, never pip over apt. Reminder `urllib3-apt-backport-moc2-lehua-moc4` (11-12).
 
-- **BR-T** [MF] S+F — `mesh_bridge` says more than it saw (11-09 review by running): failed MQTT-leg write counted sent, no DM refusal, dedup by sender+text, default TCP leg RX dead; 9 findings, `research/landscape_2026_11_09.md` §B. Before a release names the bridge. Session-added.
 - **INBOX-T** [MF] S+F — `/inbox` + leg-counter truth, F1–F13 (echo fold hides a stranger's row; one id in two terminal buckets): same doc §C–D. Before BIC-2's view. Session-added.
 - **SHOW-1** [MF] S — README shows the one unique screen (a message's legs); today logo + badges only. Session-added.
 - **TRH-1** [MF] S — traceroute history on the web map: the data is in `traceroute_history.db`, TUI-only today (capabilities: Live NOC map)
