@@ -288,6 +288,52 @@ def _box_path(p):
     return None
 
 
+_REAL_SCANDIR = os.scandir
+_REAL_LSTAT = os.lstat
+
+
+def _late_bound(fn, os_name: str) -> bool:
+    """A Python function that looks `os.<os_name>` up at CALL time, so the
+    module-level os patches already reach it."""
+    code = getattr(fn, "__code__", None)
+    return (code is not None and getattr(fn, "__globals__", {}).get("os") is os
+            and "os" in code.co_names and os_name in code.co_names)
+
+
+def _globber_early_bound(globber, real_scandir, real_lstat) -> list:
+    """The glob._StringGlobber attributes that must be patched on the CLASS.
+
+    A closed enum over the shapes CPython has shipped — an attribute is
+    either the real os function bound at class creation (3.12/3.13: patch
+    it) or a late-bound Python wrapper (3.14: `scandir` wraps os.scandir and
+    yields tuples, `lexists` is genericpath.lexists → os.lstat; patching it
+    breaks it). Anything else fails the wall: silently skipping an early
+    binding lets Path.glob read the real /dev (2026-09-22)."""
+    def classify(attr, real, os_name):
+        fn = getattr(globber, attr)
+        if fn is real:
+            return [attr]
+        if _late_bound(fn, os_name):
+            return []
+        pytest.fail(f"glob._StringGlobber.{attr} has an unknown shape ({fn!r}) on "
+                    f"Python {sys.version.split()[0]} — teach _globber_early_bound "
+                    "whether it binds os early (patch it) or late (leave it)")
+
+    if not hasattr(globber, "scandir"):
+        pytest.fail("glob._StringGlobber has no `scandir` on Python "
+                    f"{sys.version.split()[0]} — the box-state wall cannot see how "
+                    "Path.glob lists directories; teach _globber_early_bound")
+    patch = classify("scandir", real_scandir, "scandir")
+    if hasattr(globber, "lstat"):
+        patch += classify("lstat", real_lstat, "lstat")
+    elif hasattr(globber, "lexists"):
+        patch += classify("lexists", None, "lstat")
+    else:
+        pytest.fail("glob._StringGlobber has neither `lstat` nor `lexists` on "
+                    f"Python {sys.version.split()[0]} — teach _globber_early_bound")
+    return patch
+
+
 def _kill_box_state(monkeypatch, empty_dir: Path):
     import io
 
@@ -339,8 +385,10 @@ def _kill_box_state(monkeypatch, empty_dir: Path):
     import glob as _glob_mod
     globber = getattr(_glob_mod, "_StringGlobber", None)
     if globber is not None:
-        monkeypatch.setattr(globber, "scandir", staticmethod(lists(os.scandir)))
-        monkeypatch.setattr(globber, "lstat", staticmethod(reads(os.lstat)))
+        wrap = {"scandir": lists, "lstat": reads}
+        for attr in _globber_early_bound(globber, _REAL_SCANDIR, _REAL_LSTAT):
+            monkeypatch.setattr(globber, attr,
+                                staticmethod(wrap[attr](getattr(os, attr))))
 
 
 def _rehome(val, home: Path):
@@ -960,6 +1008,57 @@ def test_sweep_never_touched_the_real_home(dead_externals):
     # The import-time constant the second review caught, rewritten:
     import utils.common as _common
     assert Path(_common.CONFIG_DIR).is_relative_to(dead_externals)
+
+
+class _Py313Globber:
+    """glob._StringGlobber on 3.12/3.13: os functions bound at class creation."""
+    lstat = staticmethod(os.lstat)
+    scandir = staticmethod(os.scandir)
+
+
+class _Py314Globber:
+    """glob._StringGlobber on 3.14.0 (Lib/glob.py:518): `scandir` is a wrapper
+    that looks os.scandir up at CALL time, and `lexists` is
+    genericpath.lexists, which calls os.lstat at call time — the module-level
+    os patches already reach both."""
+    lexists = staticmethod(os.path.lexists)
+
+    @staticmethod
+    def scandir(path):
+        with os.scandir(path) as scandir_it:
+            entries = list(scandir_it)
+        return ((entry, entry.name, entry.path) for entry in entries)
+
+
+def test_globber_313_shape_patches_both_class_bindings():
+    assert sorted(_globber_early_bound(_Py313Globber, os.scandir, os.lstat)) \
+        == ["lstat", "scandir"]
+
+
+def test_globber_314_shape_needs_no_class_patch():
+    """3.14 removed `lstat` and made `scandir` yield (entry, name, path)
+    tuples. Patching the raw os.scandir onto it crashed the unpack and
+    setattr of the missing `lstat` errored 247 tests on meshforge-pro
+    (2026-11-09) — the late-bound members must be LEFT alone."""
+    assert _globber_early_bound(_Py314Globber, os.scandir, os.lstat) == []
+
+
+def test_globber_unknown_shape_fails_loud():
+    """A closed enum: a globber we cannot classify must fail the wall, never
+    silently skip it — an unpatched early binding reads the real /dev."""
+    class NoScandir:
+        lexists = staticmethod(os.path.lexists)
+
+    class ForeignLstat:
+        scandir = staticmethod(os.scandir)
+        lstat = staticmethod(lambda p: None)
+
+    class NoExistence:
+        scandir = staticmethod(os.scandir)
+
+    for shape in (NoScandir, ForeignLstat, NoExistence):
+        with pytest.raises(pytest.fail.Exception, match="glob._StringGlobber"):
+            _globber_early_bound(shape, os.scandir, os.lstat)
 
 
 def test_box_state_is_absent_and_the_witness_can_fail(dead_externals, tmp_path, monkeypatch):
