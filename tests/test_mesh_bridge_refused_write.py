@@ -53,6 +53,14 @@ def _tx_lines(caplog):
             and r.getMessage().startswith("mesh_bridge tx ")]
 
 
+def _refused_lines(caplog):
+    """The ERROR line is the only operator-visible witness of a refusal
+    (11-10 non-author review: a mutant that deleted it survived)."""
+    return [r.getMessage() for r in caplog.records
+            if r.name == "gateway.mesh_bridge" and r.levelno == logging.ERROR
+            and "REFUSED" in r.getMessage()]
+
+
 class TestRefusedWriteIsNotSent:
 
     def test_false_from_the_interface_is_a_failed_forward(self, bridge, caplog):
@@ -64,16 +72,31 @@ class TestRefusedWriteIsNotSent:
             assert bridge._forward_message(_msg(), iface, True, "primary") is False
         assert iface.sendText.call_count == 1      # it was attempted, and refused
         assert _tx_lines(caplog) == []             # no "tx" line for a write that failed
+        assert len(_refused_lines(caplog)) == 1    # and the operator is told
         assert bridge.stats["errors"] == errors_before + 1
 
     def test_refused_dm_is_a_failed_forward_too(self, bridge, caplog):
         caplog.set_level(logging.DEBUG, logger="gateway.mesh_bridge")
         iface = MagicMock()
         iface.sendText.return_value = False
+        errors_before = bridge.stats["errors"]
         msg = _msg(destination_id="!0b0b0b0b", is_broadcast=False, content="dm")
         with patch("gateway.mesh_bridge.assert_iface_tx_allowed"):
             assert bridge._forward_message(msg, iface, True, "secondary") is False
         assert _tx_lines(caplog) == []
+        assert len(_refused_lines(caplog)) == 1
+        assert bridge.stats["errors"] == errors_before + 1
+
+    def test_refused_write_is_not_counted_delivered_to_secondary(self, bridge):
+        """The other direction's counter (11-10 review: unpinned)."""
+        iface = MagicMock()
+        iface.sendText.return_value = False
+        bridge._secondary_interface = iface
+        bridge._secondary_connected = True
+        with patch("gateway.mesh_bridge.assert_iface_tx_allowed"):
+            assert bridge._send_to_secondary(
+                _msg(source_preset="LONG_FAST").to_payload()) is False
+        assert bridge.stats["messages_primary_to_secondary"] == 0
 
     def test_refused_write_is_not_counted_delivered(self, bridge):
         """End of the consumer path: the per-direction counter and the caller's verdict."""
@@ -122,3 +145,4 @@ class TestRefusedWriteIsNotSent:
         with patch("gateway.mesh_bridge.assert_iface_tx_allowed"):
             assert bridge._forward_message(_msg(), iface, True, "primary") is True
         assert len(_tx_lines(caplog)) == 1
+        assert _refused_lines(caplog) == []
