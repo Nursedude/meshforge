@@ -1296,11 +1296,9 @@ class TestFederationPanelExecuted:
             "</script></body></html>" % (
                 "function " + _js_fn("peerWitnessText"),
                 "function " + _js_fn("escapeHtml"), json.dumps(cases)))
-        r = subprocess.run([browser, "--headless", "--disable-gpu",
-                            "--no-sandbox", "--dump-dom", page.as_uri()],
-                           capture_output=True, text=True, timeout=90)
-        m = re.search(r'<pre id="o">(.*?)</pre>', r.stdout, re.S)
-        assert m, r.stderr[-500:]
+        stdout, stderr = _dump_dom(browser, page.as_uri(), tmp_path)
+        m = re.search(r'<pre id="o">(.*?)</pre>', stdout, re.S)
+        assert m, stderr[-500:]
         assert not m.group(1).startswith("JSERR"), m.group(1)
         out = json.loads(m.group(1).replace("&amp;", "&").replace(
             "&lt;", "<").replace("&gt;", ">").replace("&quot;", '"'))
@@ -1316,6 +1314,73 @@ class TestFederationPanelExecuted:
         assert out[8][0] == "📻 not a radio witness — reason unknown"
         for i in (9, 10, 11):
             assert out[i][0] == "📻 not a radio witness — r", out[i]
+
+
+def _dump_dom(browser, uri, profile_dir, attempt_timeout=10.0, attempts=2):
+    """(stdout, stderr) of `browser --dump-dom uri`, bounded at
+    attempts × attempt_timeout (+ a 2 s drain each) — under CI's 30 s cap.
+
+    The browser runs in its OWN session and a timeout kills the whole
+    process GROUP: killing only the direct child leaves renderer
+    grandchildren holding the pipe, and communicate() waits on them
+    forever. A hung browser is pytest.fail with its reason — a readable
+    red, never a suite crash and never a pass."""
+    import signal
+    import subprocess
+    for n in range(attempts):
+        proc = subprocess.Popen(
+            [browser, "--headless", "--disable-gpu", "--no-sandbox",
+             "--disable-dev-shm-usage", "--no-first-run",
+             "--no-default-browser-check",
+             f"--user-data-dir={profile_dir / f'chromium-profile-{n}'}",
+             "--dump-dom", uri],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            start_new_session=True)
+        try:
+            return proc.communicate(timeout=attempt_timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass  # a member escaped the group; the bound still holds
+    pytest.fail(f"headless browser hung {attempts}× past {attempt_timeout:g} s "
+                f"({browser}) — the page JS was NOT executed; this is the "
+                "browser, not peerWitnessText")
+
+
+class TestDumpDomIsBounded:
+    """CI hung this test past its 30 s per-test cap TWICE (a6712122,
+    7b0b9e9d) — pytest-timeout's thread method then kills the WHOLE suite
+    with no summary. subprocess.run(timeout=) kills only the direct child;
+    communicate() then waits on any grandchild (chromium's renderer/zygote)
+    still holding the pipe. The helper must return inside its own bound
+    even then, and say the browser hung — never crash the run."""
+
+    def test_a_grandchild_holding_the_pipe_cannot_outlive_the_bound(self, tmp_path):
+        import time
+        stub = tmp_path / "hung-browser"
+        pids = tmp_path / "grandchild.pids"
+        stub.write_text(f"#!/bin/sh\nsleep 300 &\necho $! >> {pids}\nexec sleep 300\n")
+        stub.chmod(0o755)
+        t0 = time.monotonic()
+        with pytest.raises(pytest.fail.Exception, match="hung"):
+            _dump_dom(str(stub), "file:///x", tmp_path, attempt_timeout=1.0)
+        # 2 attempts × 1 s; a child-only kill also waits out each 2 s drain
+        assert time.monotonic() - t0 < 4, "the group was not killed"
+        alive = []
+        for pid in map(int, pids.read_text().split()):
+            try:
+                os.kill(pid, 0)
+                alive.append(pid)
+            except ProcessLookupError:
+                pass
+        for pid in alive:
+            os.kill(pid, 9)
+        assert not alive, f"grandchild(ren) leaked past the timeout: {alive}"
 
 
 def _js_fn(name):
