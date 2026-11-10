@@ -97,6 +97,12 @@ MTD = "meshtasticd"
 HEAD_WITNESS = [(START - 2 * S, WITNESS, GATE), (START + S, RTC, MTD)]
 HEAD_GATE_CLEAN = [(START - 18 * S, SYNCED_AFTER, GATE), (START + S, RTC, MTD)]
 HEAD_GATE_SILENT = [(START + S, RTC, MTD)]     # no gate line at all
+#: The gate's line WITHOUT journald's _COMM: the gate exited before journald
+#: read /proc/<pid>/comm (Fable 5.2 review r2 11-09: 8/30 and 19/30 kept it on
+#: the 0 s fast path, 30/30 with a 0.3 s linger).
+HEAD_GATE_UNAUTH = [(START - S, "wait_for_ntp_sync: clock synchronized after 0s", None),
+                    (START + S, RTC, MTD)]
+HEAD_WITNESS_UNAUTH = [(START - 2 * S, WITNESS, None), (START + S, RTC, MTD)]
 
 
 def frozen(res):
@@ -143,8 +149,11 @@ class TestAcceptance:
         res = run(HEAD_WITNESS, LEHUA)
         assert not frozen(res)
         disp = res[1]
-        assert disp["disp"] == "indeterminate"
-        assert "35 node(s)" in disp["reason"] and "unverified" in disp["reason"]
+        assert disp["disp"] == "indeterminate" and shape(res) == "online"
+        assert "32 then 35 node(s)" in disp["reason"] and "unverified" in disp["reason"]
+        # a WITNESSED start's cure re-rates the clock; it never promises clean
+        assert "re-rates the clock" in disp["reason"]
+        assert "reads clean" not in disp["reason"]
 
     def test_gate_line_without_timeout_is_clean_and_never_reads_the_window(self):
         sig, disp, calls = run(HEAD_GATE_CLEAN, FROZEN)
@@ -160,8 +169,9 @@ class TestAcceptance:
 
     def test_gate_not_loaded_is_indeterminate(self):
         props = dict(PROPS, DropInPaths="/etc/systemd/system/meshtasticd.service.d/30-log-filter.conf")
-        sig, disp, calls = run(HEAD_WITNESS, FROZEN, props=props)
-        assert sig is None and disp["disp"] == "indeterminate"
+        res = run(HEAD_WITNESS, FROZEN, props=props)
+        sig, disp, calls = res
+        assert disp["disp"] == "indeterminate" and shape(res) is None
         assert wc.GATE_DROPIN in disp["reason"]
         assert calls["head"] == 0
 
@@ -184,10 +194,11 @@ class TestAcceptance:
         one_zero = [(ago(1800), tele(7)), (ago(1000), rx()), (ago(950), rx("text", "0x2")),
                     (ago(900), tele(0))]
         res = run(HEAD_WITNESS, one_zero)
-        assert not frozen(res)
+        assert shape(res) == "online"
         disp = res[1]
-        # r1 F6: the reason must not say "0 node(s) online — rated well enough"
-        assert "7 node(s)" in disp["reason"] and "[7, 0]" in disp["reason"]
+        # r1 F6: never "0 node(s) online — rated well enough"; r2 F4: never
+        # "reads 7 online" when the NEWEST reading is 0 — both, in order.
+        assert "7 then 0 node(s)" in disp["reason"] and "[7, 0]" in disp["reason"]
 
 
 class TestReviewR1:
@@ -225,8 +236,9 @@ class TestReviewR1:
         """F2/F7: no gate line (gate did not run, rotated, or pre-11-09 gate):
         the CONSEQUENCE decides — frozen shape is indeterminate, said loudly,
         never paged on inference and never 'clean'."""
-        sig, disp, calls = run(HEAD_GATE_SILENT, FROZEN)
-        assert sig is None and disp["disp"] == "indeterminate"
+        res = run(HEAD_GATE_SILENT, FROZEN)
+        sig, disp, calls = res
+        assert disp["disp"] == "indeterminate" and shape(res) == "frozen"
         assert "LIKELY started before NTP" in disp["reason"]
         assert wc.FROZEN_MARK in disp["reason"]
         assert "sudo systemctl restart meshtasticd" in disp["reason"]
@@ -245,26 +257,71 @@ class TestReviewR1:
         assert "no NTP-gate line" in disp["reason"]
         assert "35 node(s)" in disp["reason"] and "unverified" in disp["reason"]
         assert "restart meshtasticd" in disp["reason"]
+        # r2 F3: the head-specific cure — the NEXT start records the line;
+        # a gate-silent start is never told its clock gets re-rated.
+        assert "NEXT start" in disp["reason"]
+        assert "re-rates the clock" not in disp["reason"]
 
     def test_one_forged_online_line_never_clears_a_frozen_silent_start(self):
         """F2's drill, pinned: frozen window + ONE newer telemetry-shaped line
         with a non-zero count must never read clean."""
         forged = FROZEN + [(ago(60), tele(7))]
         res = run(HEAD_GATE_SILENT, forged)
-        assert res[1]["disp"] == "indeterminate"
+        # r2 F2: the [0, 7] pair is ONLINE — pins `n1 or n2`, not `n1` alone
+        assert res[1]["disp"] == "indeterminate" and shape(res) == "online"
 
     def test_no_journal_consequence_reads_clean(self):
         """Only the authenticated gate line can make this class clean."""
-        for head in (HEAD_WITNESS, HEAD_GATE_SILENT):
+        want = {id(FROZEN): "frozen", id(LEHUA): "online"}
+        for head in (HEAD_WITNESS, HEAD_GATE_SILENT, HEAD_GATE_UNAUTH,
+                     HEAD_WITNESS_UNAUTH):
             for window in (FROZEN, LEHUA, []):
                 wc._HEAD_CACHE.clear(); wc._CONSEQUENCE_CACHE.clear()
                 res = run(head, window)
                 assert res[1]["disp"] == "indeterminate", (head, window)
+                assert shape(res) == want.get(id(window), "blind"), (head, window)
+
+    def test_an_unauthenticated_gate_line_is_named_not_called_absent(self):
+        """r2 F1: journald can lose the gate's _COMM (the gate exits before
+        journald reads it). The line is PRESENT but unauthenticated — never
+        "no NTP-gate line is readable", and never "restart" as its cure (a
+        restart cannot make this start's line authentic; the gate now
+        lingers so the next start's keeps _COMM)."""
+        for head, says in ((HEAD_GATE_UNAUTH, "synchronized"),
+                           (HEAD_WITNESS_UNAUTH, "TIMEOUT")):
+            wc._HEAD_CACHE.clear(); wc._CONSEQUENCE_CACHE.clear()
+            res = run(head, LEHUA)
+            reason = res[1]["reason"]
+            assert res[1]["disp"] == "indeterminate" and shape(res) == "online"
+            assert "no NTP-gate line is readable" not in reason
+            assert "unauthenticated" in reason and "_COMM" in reason
+            assert f"it reads {says}" in reason
+            assert "no restart" in reason and "re-rates the clock" not in reason
+        # only a GATE line's own witness bit says TIMEOUT — a comm-less
+        # telemetry/RX line in the head (truthy count/kind) must not
+        # (mutant: `c[1]` without `c[0] == "gate"` survived 93/93)
+        noisy = HEAD_GATE_UNAUTH + [(START + 2 * S, tele(5), None),
+                                    (START + 3 * S, rx(), None)]
+        wc._HEAD_CACHE.clear(); wc._CONSEQUENCE_CACHE.clear()
+        res = run(noisy, LEHUA)
+        assert "it reads synchronized" in res[1]["reason"]
+
+    def test_judge_head_states(self):
+        assert wc.judge_head(HEAD_WITNESS, START) == "witness"
+        assert wc.judge_head(HEAD_GATE_CLEAN, START) == "gate_clean"
+        assert wc.judge_head(HEAD_GATE_SILENT, START) == "gate_silent"
+        assert wc.judge_head(HEAD_GATE_UNAUTH, START) == "gate_unauthenticated"
+        assert wc.judge_head(HEAD_WITNESS_UNAUTH, START) == "gate_unauthenticated"
+        # authenticated beats unauthenticated; a FOREIGN comm is a forgery,
+        # never "unauthenticated" (a payload logs under meshtasticd's comm)
+        assert wc.judge_head(HEAD_GATE_UNAUTH + HEAD_GATE_CLEAN, START) == "gate_clean"
+        forged = [(START + 5 * S, SYNCED_AFTER, MTD), (START + S, RTC, MTD)]
+        assert wc.judge_head(forged, START) == "gate_silent"
 
     def test_empty_head_is_not_cached(self):
         """F1: a just-started unit's lines may not be flushed yet."""
-        sig, disp, calls = run([], FROZEN)
-        assert sig is None and disp["disp"] == "indeterminate"
+        res = run([], FROZEN)
+        assert res[1]["disp"] == "indeterminate" and shape(res) is None
         assert wc._HEAD_CACHE == {}
         assert frozen(run(HEAD_WITNESS, FROZEN))
 
@@ -294,20 +351,20 @@ class TestReviewR1:
 
 class TestUnobservable:
     def test_head_read_failure_is_indeterminate(self):
-        sig, disp, _ = run(None, FROZEN)
-        assert sig is None and disp["disp"] == "indeterminate"
+        res = run(None, FROZEN)
+        assert res[1]["disp"] == "indeterminate" and shape(res) is None
 
     def test_window_read_failure_is_indeterminate(self):
-        sig, disp, _ = run(HEAD_WITNESS, None)
-        assert sig is None and disp["disp"] == "indeterminate"
+        res = run(HEAD_WITNESS, None)
+        assert res[1]["disp"] == "indeterminate" and shape(res) is None
 
     @pytest.mark.parametrize("props", [
         None, {}, dict(PROPS, InvocationID=""),
         dict(PROPS, ExecMainStartTimestampMonotonic="0"),
         dict(PROPS, ExecMainStartTimestampMonotonic="junk")])
     def test_bad_unit_props_are_indeterminate(self, props):
-        sig, disp, _ = run(HEAD_WITNESS, FROZEN, props=props)
-        assert sig is None and disp["disp"] == "indeterminate"
+        res = run(HEAD_WITNESS, FROZEN, props=props)
+        assert res[1]["disp"] == "indeterminate" and shape(res) is None
 
 
 class TestFootprint:
@@ -570,8 +627,8 @@ class TestReviewR3:
         w = _real_witness_text(tmp_path)
         window = [(START - 2 * S, w), (ago(800), rx("routing", OWN)),
                   (ago(700), rx()), (ago(600), tele(0))]
-        sig, disp, _ = run(HEAD_WITNESS, window)
-        assert sig is None and disp["disp"] == "indeterminate"
+        res = run(HEAD_WITNESS, window)
+        assert res[1]["disp"] == "indeterminate" and shape(res) == "blind"
 
     @pytest.mark.parametrize("ver", [252, 257])
     def test_witness_never_enters_the_window_via_the_real_readers(self, tmp_path, fake_env, ver):
@@ -709,9 +766,14 @@ class TestReviewR5:
         assert wc.judge_head(late_gate, START) == "witness"
         # Each defence pinned ON ITS OWN (mutant P1 survived when both forged
         # rows were also late): the right stamp with the wrong/absent _COMM.
-        for comm in (MTD, None, "sh"):
+        for comm in (MTD, "sh"):
             early_forged = [(START - 2 * S, WITNESS, comm)]
             assert wc.judge_head(early_forged, START) == "gate_silent", comm
+        # r2 (Fable 5.2) revision: NO _COMM is journald's lazy read losing the
+        # gate's own line, not a forgery shape (a payload logs under
+        # meshtasticd's comm). It is named ``gate_unauthenticated`` — still
+        # never a witness and never clean, so it grants no authority.
+        assert wc.judge_head([(START - 2 * S, WITNESS, None)], START) == "gate_unauthenticated"
         assert wc.judge_head(HEAD_WITNESS, START) == "witness"
 
     def test_head_parser_reads_the_trusted_comm(self):
@@ -779,3 +841,22 @@ class TestWiringGuardsAgree:
         'fires into a void' gate) must be a deliberate edit of this test."""
         from utils.watchdog_probe_core import OBSERVE_ONLY_CLASSES
         assert OBSERVE_ONLY_CLASSES == {wc.CLS}
+
+
+class TestShapeSeam:
+    def test_every_indeterminate_assertion_names_its_shape(self):
+        """The SEAM (review r1 F1 + r2 F2/F3 — the same defect kind twice):
+        since r5 every consequence branch reads ``indeterminate``, so an
+        assertion on the disposition alone pins no branch. Every test that
+        asserts ``"indeterminate"`` must also call ``shape(`` (``is None``
+        for the non-consequence branches). Plant: delete one shape() call."""
+        import ast
+        src = open(__file__, encoding="utf-8").read()
+        bare = []
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.FunctionDef) and node.name.startswith("test_") \
+                    and node.name != "test_every_indeterminate_assertion_names_its_shape":
+                seg = ast.get_source_segment(src, node) or ""
+                if '"indeterminate"' in seg and "shape(" not in seg:
+                    bare.append(node.name)
+        assert bare == [], f"assert the shape too (shape(res) == ... / is None): {bare}"

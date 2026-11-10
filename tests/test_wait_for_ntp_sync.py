@@ -48,7 +48,7 @@ class TestGate:
     def test_a_synced_clock_returns_immediately(self, tmp_path):
         rc, err, elapsed = run(tmp_path, SYNCED, budget=10)
         assert rc == 0
-        assert elapsed < 2
+        assert elapsed < 3          # 1 s LINGER after speaking (r2 F1), no wait
         assert "TIMEOUT" not in err
         # 2026-11-09: the gate speaks on EVERY run, so a start with no gate
         # line means the gate did not run (meshtasticd_clock_unrated reads
@@ -181,3 +181,22 @@ class TestDropInIsDeployed:
         assert p.returncode == 0, p.stderr
         assert not dst.exists()
         assert "SVC_UPDATED=false" in p.stdout
+
+
+class TestLinger:
+    def test_the_gate_outlives_its_own_line(self, tmp_path):
+        """Fable 5.2 review r2 F1 (11-09): journald reads ``_COMM`` from
+        /proc/<pid> lazily — a gate that exits right after ``echo`` lost it on
+        11/30 and 22/30 lines (0 s path), 0/30 with a 0.3 s linger. The probe
+        authenticates the gate by ``_COMM``, so the gate must still be alive
+        after it speaks, on BOTH paths."""
+        for body, budget in ((SYNCED, 10), (UNSYNCED, 1)):
+            env = _stub(tmp_path, body)
+            p = subprocess.Popen(["sh", str(SCRIPT), str(budget)],
+                                 stderr=subprocess.PIPE, text=True, env=env)
+            line = p.stderr.readline()
+            assert line.startswith("wait_for_ntp_sync:"), line
+            time.sleep(0.5)
+            assert p.poll() is None, "the gate exited right after speaking"
+            p.communicate(timeout=10)
+            assert p.returncode == 0

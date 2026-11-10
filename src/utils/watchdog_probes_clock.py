@@ -144,8 +144,9 @@ JOURNALCTL_NEWEST_MATCHING_MIN = 255
 #: lines on every box but moc (one per ~9 h — indeterminate by age).
 RAW_TAIL_LINES = 3000
 
-#: InvocationID -> head verdict ("witness" | "gate_clean" | "gate_silent").
-_HEAD_CACHE: Dict[str, str] = {}
+#: InvocationID -> (head verdict, what an UNAUTHENTICATED gate line said:
+#: "TIMEOUT" | "synchronized" | None) — see judge_head.
+_HEAD_CACHE: Dict[str, Tuple[str, Optional[str]]] = {}
 #: InvocationID -> (monotonic ts, verdict tuple) for the consequence leg.
 _CONSEQUENCE_CACHE: Dict[str, Tuple[float, Tuple[str, dict]]] = {}
 
@@ -321,20 +322,38 @@ def _default_window(invocation: str, journalctl_path: str):
 
 
 def judge_head(entries, main_start_mono: int) -> Optional[str]:
-    """"witness" | "gate_clean" | "gate_silent", or None for an empty head
+    """"witness" | "gate_clean" | "gate_unauthenticated" | "gate_silent", or
+    None for an empty head
     (not yet in the journal — never cached). A gate line counts ONLY when
     journald's trusted ``_COMM`` is the gate's (review r5) — a payload logs
     under meshtasticd's comm and cannot forge it. No stamp rule: it adds no
     authentication and races systemd's fork (measured r6: the gate line lands
     ~1.4 ms before ExecMainStart on boot), which would DEMOTE a real witness.
-    ``main_start_mono`` is kept for the caller's contract."""
+    ``main_start_mono`` is kept for the caller's contract.
+
+    ``gate_unauthenticated`` (Fable 5.2 review r2 11-09): a gate line with NO
+    ``_COMM`` — journald reads it from /proc/<pid> lazily, and a gate that
+    exits right after speaking loses it (measured 8/30, 19/30 kept on the 0 s
+    path; 30/30 with a 0.3 s linger, so the gate now lingers 1 s). PRESENT but
+    unprovable — never reported as "no gate line", which would send the
+    operator to restart for a line a restart cannot authenticate. A line with
+    a FOREIGN comm is a forgery and stays ignored (``gate_silent``)."""
     if not entries:
         return None
-    gate = [c for m, msg, comm in entries for c in [classify_line(msg)]
-            if c and c[0] == "gate" and comm == GATE_COMM]
+    gate, unauth = [], []
+    for m, msg, comm in entries:
+        c = classify_line(msg)
+        if not c or c[0] != "gate":
+            continue
+        if comm == GATE_COMM:
+            gate.append(c)
+        elif comm is None:
+            unauth.append(c)
     if any(c[1] for c in gate):
         return "witness"
-    return "gate_clean" if gate else "gate_silent"
+    if gate:
+        return "gate_clean"
+    return "gate_unauthenticated" if unauth else "gate_silent"
 
 
 def judge_consequence(entries: List[Tuple[int, str]],
@@ -421,7 +440,8 @@ def probe_meshtasticd_clock_unrated(
                     "sync would leave no witness (install it: scripts/update.sh)"))
         return None
 
-    head = _HEAD_CACHE.get(invocation)
+    cached_head = _HEAD_CACHE.get(invocation)
+    head, said = cached_head if cached_head else (None, None)
     if head is None:
         entries = (head_fn or (lambda inv, stop: _read_head(
             inv, stop, journalctl_path=journalctl_path)))(
@@ -437,8 +457,14 @@ def probe_meshtasticd_clock_unrated(
             note_disposition("meshtasticd_clock_unrated", "indeterminate",
                              reason="this meshtasticd start has no journal lines yet")
             return None
+        said = None
+        if head == "gate_unauthenticated":
+            said = ("TIMEOUT" if any(
+                c[0] == "gate" and c[1]
+                for _, msg, comm in entries if comm is None
+                for c in [classify_line(msg)] if c) else "synchronized")
         _HEAD_CACHE.clear()                 # one live invocation per box
-        _HEAD_CACHE[invocation] = head
+        _HEAD_CACHE[invocation] = (head, said)
 
     if head == "gate_clean":
         note_disposition("meshtasticd_clock_unrated", "clean")
@@ -460,22 +486,36 @@ def probe_meshtasticd_clock_unrated(
         _CONSEQUENCE_CACHE.clear()
         _CONSEQUENCE_CACHE[invocation] = (now, (verdict, facts))
 
-    why = ("the NTP gate timed out at this start" if head == "witness" else
-           "no NTP-gate line is readable for this start (gate did not run, its "
-           "lines rotated out, or the start predates the always-speaking gate)")
+    if head == "witness":
+        why = "the NTP gate timed out at this start"
+    elif head == "gate_unauthenticated":
+        why = ("this start's NTP-gate line is present but unauthenticated (it reads "
+               f"{said}; journald recorded no _COMM — the gate exited before "
+               "journald read it)")
+    else:
+        why = ("no NTP-gate line is readable for this start (gate did not run, its "
+               "lines rotated out, or the start predates the always-speaking gate)")
     if verdict == "online":
         # INDETERMINATE on EVERY head: the "nodes online" that would excuse the
         # start is journal text, and the journal is mesh-writable (r5) — one
         # forged line used to flip a frozen gate-silent start to clean (Fable
         # 5.2 review 11-09 F2). Only the authenticated gate line reads clean.
-        verify = ("once `timedatectl` shows synchronized, sudo systemctl restart "
-                  "meshtasticd re-rates the clock" if head == "witness" else
-                  "sudo systemctl restart meshtasticd once lets the gate record "
-                  "this start (then this reads clean on its authenticated line)")
+        if head == "witness":
+            verify = ("once `timedatectl` shows synchronized, sudo systemctl "
+                      "restart meshtasticd re-rates the clock")
+        elif head == "gate_unauthenticated":
+            verify = ("no restart needed for this — a restart cannot authenticate "
+                      "this start's line; the gate now lingers after speaking so "
+                      "the next start's line keeps its _COMM")
+        else:
+            verify = ("the NEXT start records an authenticated gate line (clean "
+                      "if the gate reads synchronized; a TIMEOUT is a witness): "
+                      "sudo systemctl restart meshtasticd when convenient")
+        n1, n2 = facts["online_last_two"]
         note_disposition(
             "meshtasticd_clock_unrated", "indeterminate",
             reason=(f"{ONLINE_MARK}: {why}, and journal-derived telemetry (unverified) "
-                    f"reads {max(facts['online_last_two'])} node(s) online (last two: "
+                    f"reads {n1} then {n2} node(s) online (last two: "
                     f"{facts['online_last_two']}) — journal text cannot excuse the "
                     f"start; to verify: {verify}"))
         return None
