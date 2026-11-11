@@ -273,7 +273,17 @@ class TestColdStart:
     def test_later_ticks_go_incremental(self, cfg, tmp_path):
         from utils.watchdog_probes_peer_rf import JOURNAL_WINDOW_S
         windows = []
-        _run(cfg, tmp_path, seen=[], ticks=2, windows=windows)
+
+        def scan(_peers, window=None):
+            windows.append(window)
+            return set(), None
+        sp = str(tmp_path / "state.json")
+        # CONTINUOUS ticking (60 s apart). A 9 h jump between ticks is an
+        # unscanned GAP, which is now scanned (TestCoverageContinuity).
+        for i in range(2):
+            probe_segment_peer_silent(config_path=cfg, state_path=sp,
+                                      now=NOW + i * 60, _scan_fn=scan,
+                                      _uptime_fn=lambda _n: LONG_UPTIME)
         assert windows[0] == int(WINDOW)
         assert windows[1] == JOURNAL_WINDOW_S, (
             "re-reading the full window every tick is not a rounding error on a Pi")
@@ -400,7 +410,7 @@ class TestStateWriteWitness:
         for i in range(2):
             sig = probe_segment_peer_silent(
                 config_path=cfg, state_path=sp,
-                now=NOW + i * WINDOW, _scan_fn=scan,
+                now=NOW + i * 60, _scan_fn=scan,
                 _uptime_fn=lambda _n: LONG_UPTIME)
         # Tick 2 must be INCREMENTAL: the in-process state copy makes memory,
         # not disk, the record — the old swallow re-seeded the full window
@@ -433,3 +443,216 @@ class TestHeardOnceNeverAgain:
                 config_path=cfg, state_path=sp, now=NOW + WINDOW * i + 60,
                 _scan_fn=scan_none, _uptime_fn=up)
         assert sig is not None and sig.cls == "segment_peer_silent"
+
+
+class TestCoverageContinuity:
+    """Review 2026-11-10 finding 1: with a stale heard age now SILENT,
+    observed_for must be listening actually DONE. A tick gap is scanned (the
+    journal persists); a wall-clock step cannot be scanned and re-earns the
+    window from zero."""
+
+    def _tick(self, cfg, sp, now, seen=(), mono=None, windows=None):
+        def scan(_p, window=None):
+            if windows is not None:
+                windows.append(window)
+            return set(seen), None
+        kw = {}
+        if mono is not None:
+            kw["_mono_fn"] = lambda: mono
+        return probe_segment_peer_silent(config_path=cfg, state_path=sp, now=now,
+                                         _scan_fn=scan,
+                                         _uptime_fn=lambda _n: LONG_UPTIME * 4, **kw)
+
+    def test_a_tick_gap_is_scanned_not_skipped(self, cfg, tmp_path):
+        sp, w = str(tmp_path / "s.json"), []
+        self._tick(cfg, sp, NOW, seen=[MOC3], windows=w)
+        self._tick(cfg, sp, NOW + 7200, windows=w)
+        assert w[1] == 7200 + 60, w
+
+    def test_runner_outage_while_the_peer_beacons_does_not_fire(self, cfg, tmp_path):
+        """10 h outage; the peer kept beaconing — the gap scan finds it."""
+        sp = str(tmp_path / "s.json")
+        self._tick(cfg, sp, NOW, seen=[MOC3])
+        sig = None
+        for i in range(3):
+            sig = self._tick(cfg, sp, NOW + 36000 + i * 60, seen=[MOC3] if i == 0 else [])
+        assert sig is None
+
+    def test_forward_clock_step_re_earns_the_window(self, cfg, tmp_path):
+        """RTC-less Pi, NTP steps +3 d: the heard stamp looks 3 d old, but only
+        60 s of real listening happened. Must not fire."""
+        sp = str(tmp_path / "s.json")
+        self._tick(cfg, sp, NOW, seen=[MOC3], mono=1000.0)
+        sig = None
+        for i in range(4):
+            sig = self._tick(cfg, sp, NOW + 3 * 86400 + i * 60, mono=1060.0 + i * 60)
+        assert sig is None
+
+    def test_backward_clock_re_earns_the_window(self, cfg, tmp_path):
+        sp = str(tmp_path / "s.json")
+        self._tick(cfg, sp, NOW, seen=[MOC3])
+        sig = None
+        for i in range(4):
+            sig = self._tick(cfg, sp, NOW - 3600 + i * 60)
+        assert sig is None
+
+    def test_continuous_listening_past_the_window_still_fires(self, cfg, tmp_path):
+        """The cure must not blind the gate: heard once, then 9 h+ of
+        CONTINUOUS ticks with nothing -> silent."""
+        sp = str(tmp_path / "s.json")
+        self._tick(cfg, sp, NOW, seen=[MOC3], mono=0.0)
+        sig = None
+        step = 1500
+        n = int(WINDOW // step) + 3
+        for i in range(1, n):
+            sig = self._tick(cfg, sp, NOW + i * step, mono=float(i * step))
+        assert sig is not None and sig.cls == "segment_peer_silent"
+
+
+class TestCoverageSeam:
+    """Round 2 (Fable, by running): coverage changes are committed ONLY after a
+    successful scan, and each branch is pinned by its own state, not by a
+    verdict another layer could mask (mutants M2/M4/M7/M8 survived round 1)."""
+
+    def _tick(self, cfg, sp, now, *, seen=(), err=None, mono=None, windows=None):
+        def scan(_p, window=None):
+            if windows is not None:
+                windows.append(window)
+            return (None, err) if err else (set(seen), None)
+        kw = {"_mono_fn": (lambda: mono)} if mono is not None else {}
+        return probe_segment_peer_silent(config_path=cfg, state_path=sp, now=now,
+                                         _scan_fn=scan,
+                                         _uptime_fn=lambda _n: LONG_UPTIME * 4, **kw)
+
+    def _state(self, sp):
+        with open(sp) as f:
+            return json.load(f)
+
+    def test_failed_scans_are_not_credited_as_listening(self, cfg, tmp_path):
+        """Fable scenario B: continuous 30 s ticks, the journal read fails for
+        2 h, the peer beacons inside that span. Recovery must SCAN the failed
+        span, and the beaconing peer must not read silent."""
+        sp, w = str(tmp_path / "s.json"), []
+        t0 = NOW
+        self._tick(cfg, sp, t0, seen=[MOC3], mono=0.0)
+        t = t0 + 8 * 3600                      # quiet but healthy 8 h, ticking
+        for i in range(1, int(8 * 3600 // 1500)):
+            self._tick(cfg, sp, t0 + i * 1500, mono=float(i * 1500))
+        last_ok = t0 + (int(8 * 3600 // 1500) - 1) * 1500
+        for k in range(1, 240):                # 2 h of failing scans
+            self._tick(cfg, sp, last_ok + k * 30, err="journalctl timed out",
+                       mono=float(last_ok - t0 + k * 30))
+        rec = last_ok + 240 * 30
+        sig = self._tick(cfg, sp, rec, seen=[MOC3], mono=float(rec - t0), windows=w)
+        assert w[-1] >= 240 * 30, "the failed 2 h must be re-scanned: %r" % w[-1:]
+        assert sig is None
+
+    def test_a_failed_scan_commits_no_coverage(self, cfg, tmp_path):
+        sp = str(tmp_path / "s.json")
+        self._tick(cfg, sp, NOW, seen=[MOC3])
+        before = self._state(sp)
+        self._tick(cfg, sp, NOW + 20 * 3600, err="boom")
+        after = self._state(sp)
+        for k in ("last_tick_wall", "observing_since", "seed_window_s"):
+            assert after.get(k) == before.get(k), k
+
+    def test_gap_wider_than_the_window_reseeds_and_is_capped(self, cfg, tmp_path):
+        sp, w = str(tmp_path / "s.json"), []
+        self._tick(cfg, sp, NOW, seen=[MOC3])
+        self._tick(cfg, sp, NOW + 20 * 3600, windows=w)
+        st = self._state(sp)
+        assert w == [int(WINDOW)], "scan capped at the silence window"
+        assert st["observing_since"] == NOW + 20 * 3600
+        assert st["seed_window_s"] == int(WINDOW)
+
+    def test_backward_wall_clock_resets_coverage_itself(self, cfg, tmp_path):
+        sp = str(tmp_path / "s.json")
+        self._tick(cfg, sp, NOW, seen=[MOC3])
+        self._tick(cfg, sp, NOW - 3600)
+        st = self._state(sp)
+        assert st["seed_window_s"] == 0.0 and st["observing_since"] == NOW - 3600
+
+    def test_reboot_monotonic_reset_is_a_gap_not_a_step(self, cfg, tmp_path):
+        """mono below last_mono = a reboot; the 40 min wall gap is SCANNED."""
+        sp, w = str(tmp_path / "s.json"), []
+        self._tick(cfg, sp, NOW, seen=[MOC3], mono=500000.0)
+        self._tick(cfg, sp, NOW + 2400, mono=12.0, windows=w)
+        assert w == [2400 + 60]
+        assert self._state(sp)["seed_window_s"] != 0.0
+
+    def test_step_note_reports_the_step_not_the_gap(self, cfg, tmp_path):
+        """3 h outage carrying a +1 h step must say +3600, not +14400."""
+        sp = str(tmp_path / "s.json")
+        self._tick(cfg, sp, NOW, seen=[MOC3], mono=0.0)
+        from utils.watchdog_probe_core import collect_dispositions, reset_dispositions
+        reset_dispositions()
+        self._tick(cfg, sp, NOW + 4 * 3600, mono=3 * 3600.0)
+        reason = collect_dispositions()["segment_peer_silent"]["reason"]
+        assert "+3600s" in reason, reason
+
+    def test_heard_then_stopped_signal_names_the_id_check(self, cfg, tmp_path):
+        sp = str(tmp_path / "s.json")
+        self._tick(cfg, sp, NOW, seen=[MOC3], mono=0.0)
+        sig = None
+        for i in range(1, int(WINDOW // 1500) + 3):
+            sig = self._tick(cfg, sp, NOW + i * 1500, mono=float(i * 1500))
+        assert sig is not None
+        assert "WAS heard" in sig.detail and "node id changed" in sig.detail
+
+
+class TestWritePointIsAtomic:
+    """Round 3 (Fable, scenario J): an exception AFTER a successful scan but
+    before the save must commit nothing — the span stays a gap, its sightings
+    are re-scanned, and a beaconing peer does not read silent."""
+
+    def test_exception_between_scan_and_save_credits_nothing(self, cfg, tmp_path):
+        sp, w = str(tmp_path / "s.json"), []
+        def scan(_p, window=None):
+            w.append(window)
+            return ({MOC3} if window and window > 1800 else set()), None
+        up_ok = lambda _n: LONG_UPTIME * 4
+        def up_boom(_n):
+            raise RuntimeError("uptime read blew up")
+        t0 = NOW
+        probe_segment_peer_silent(config_path=cfg, state_path=sp, now=t0,
+                                  _scan_fn=lambda _p, window=None: ({MOC3}, None),
+                                  _uptime_fn=up_ok, _mono_fn=lambda: 0.0)
+        t1 = t0 + 8 * 3600
+        for i in range(1, int(8 * 3600 // 1500) + 1):
+            probe_segment_peer_silent(config_path=cfg, state_path=sp, now=t0 + i * 1500,
+                                      _scan_fn=lambda _p, window=None: (set(), None),
+                                      _uptime_fn=up_ok, _mono_fn=lambda i=i: float(i * 1500))
+        last = t0 + int(8 * 3600 // 1500) * 1500
+        stall = last + 7200                     # 2 h stall; peer beaconed inside it
+        probe_segment_peer_silent(config_path=cfg, state_path=sp, now=stall,
+                                  _scan_fn=scan, _uptime_fn=up_boom,
+                                  _mono_fn=lambda: float(stall - t0))
+        sig = None
+        for k in range(1, 4):
+            sig = probe_segment_peer_silent(config_path=cfg, state_path=sp,
+                                            now=stall + k * 30, _scan_fn=scan,
+                                            _uptime_fn=up_ok,
+                                            _mono_fn=lambda k=k: float(stall - t0 + k * 30))
+        assert w[1] > 1800, "the stalled span must be re-scanned: %r" % w
+        assert sig is None
+
+    def test_step_tick_judges_with_the_pending_coverage_not_the_old(self, cfg, tmp_path):
+        """Round 4 (Fable N9): observed_for must read the coverage being
+        committed THIS tick. With debounce 1 there is no second tick to absorb
+        a one-tick error: a +3 d step must not fire off the OLD coverage."""
+        sp = str(tmp_path / "s.json")
+        up = lambda _n: LONG_UPTIME * 40
+        probe_segment_peer_silent(config_path=cfg, state_path=sp, now=NOW,
+                                  _scan_fn=lambda _p, window=None: ({MOC3}, None),
+                                  _uptime_fn=up, _mono_fn=lambda: 0.0, debounce_ticks=1)
+        for i in range(1, int(8 * 3600 // 1500)):
+            probe_segment_peer_silent(config_path=cfg, state_path=sp, now=NOW + i * 1500,
+                                      _scan_fn=lambda _p, window=None: (set(), None),
+                                      _uptime_fn=up, _mono_fn=lambda i=i: float(i * 1500),
+                                      debounce_ticks=1)
+        last = int(8 * 3600 // 1500) - 1
+        sig = probe_segment_peer_silent(
+            config_path=cfg, state_path=sp, now=NOW + 3 * 86400,
+            _scan_fn=lambda _p, window=None: (set(), None), _uptime_fn=up,
+            _mono_fn=lambda: float(last * 1500 + 30), debounce_ticks=1)
+        assert sig is None

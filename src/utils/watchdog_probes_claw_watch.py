@@ -146,9 +146,12 @@ def _fold_seen(rec: Dict[str, Any], device: str, hearing: Hearing,
         case Heard():
             rec["heard_by"].append({"device": device, "age_s": v.get("age_s")})
         case NotHeard(silent_for_at_least_s=held):
-            rec["silent_by"].append({"device": device,
-                                     "silent_for_at_least_s":
-                                         v.get("silent_for_at_least_s")})
+            entry = {"device": device,
+                     "silent_for_at_least_s": v.get("silent_for_at_least_s")}
+            last = getattr(hearing, "last_heard_age_s", None)
+            if last is not None:
+                entry["last_heard_age_s"] = last
+            rec["silent_by"].append(entry)
             if held is not None:
                 # Longest observed silence is the honest lower bound — the
                 # firmware only knows "not since radio start", so the true
@@ -289,8 +292,14 @@ def probe_claw_watched_node_silent(
                 listed.append("%s (not heard by %s)" % (node, by))
                 continue
             window = "" if not need else ", window %.0fs" % need
-            listed.append("%s (not heard in >=%.0fs of listening by %s%s)"
-                          % (node, held, by, window))
+            lasts = [x["last_heard_age_s"] for x in rec["silent_by"]
+                     if x.get("last_heard_age_s") is not None]
+            was = ("" if not lasts else
+                   "; it WAS heard %.0fs ago and stopped — check FIRST whether "
+                   "its node id changed (re-flash/re-key), 2026-11-10 moc5"
+                   % min(lasts))
+            listed.append("%s (not heard in >=%.0fs of listening by %s%s%s)"
+                          % (node, held, by, window, was))
         blind_clause = ""
         if blind:
             blind_clause = ("; %d still un-observable and NOT counted either way"
@@ -309,8 +318,9 @@ def probe_claw_watched_node_silent(
                 f"coax — not the channel. The claws are independent receivers on "
                 f"separate silicon, so this is not a box talking about itself. "
                 f"{len(heard)} other watched node(s) ARE heard{blind_clause}. "
-                f"NOTE: the listening window is PROVISIONAL — no real `silent` "
-                f"verdict has been observed on this fleet yet, so this escalates "
+                f"NOTE: the listening window is PROVISIONAL — the only real "
+                f"`silent` so far (2026-11-10) was a RETIRED node id, not a mute "
+                f"PA; its false-positive rate is unmeasured, so this escalates "
                 f"and does not page."
             ),
             extra={

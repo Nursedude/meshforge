@@ -31,6 +31,8 @@ an unrecognised string read back is ``Failed`` — never an answer.
 """
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 
@@ -60,6 +62,10 @@ class NotHeard:
     """
 
     silent_for_at_least_s: Optional[float]
+    #: Set when the transmitter WAS heard and then stopped (an age past the
+    #: window, 2026-11-10) — the strongest tell of a retired/re-keyed id, and
+    #: distinct from never-heard-since-boot. None = never heard / not carried.
+    last_heard_age_s: Optional[float] = None
 
 
 Hearing = Union[Heard, NotHeard]
@@ -69,6 +75,15 @@ def _num(x: Any) -> Optional[float]:
     if isinstance(x, (int, float)) and not isinstance(x, bool):
         return float(x)
     return None
+
+
+def _age(x: Any) -> Optional[float]:
+    """A last-heard age read back from the wire: finite and non-negative, or
+    None (round 2: NaN/negatives passed `_num` straight into the detail)."""
+    f = _num(x)
+    if f is None or not math.isfinite(f) or f < 0:
+        return None
+    return f
 
 
 def from_wire(v: Dict[str, Any]) -> Observation[Hearing]:
@@ -82,7 +97,8 @@ def from_wire(v: Dict[str, Any]) -> Observation[Hearing]:
     if verdict == HEARD:
         return Seen(Heard(v.get("age_s")))
     if verdict == SILENT:
-        return Seen(NotHeard(_num(v.get("silent_for_at_least_s"))))
+        return Seen(NotHeard(_num(v.get("silent_for_at_least_s")),
+                             _age(v.get("last_heard_age_s"))))
     if verdict == UNOBSERVABLE:
         return Unobservable(str(v.get("reason") or "").strip()
                             or "claw reported unobservable (no reason given)")

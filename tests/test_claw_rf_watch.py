@@ -413,3 +413,85 @@ class TestHeardOnceNeverAgain:
     def test_unparseable_age_is_blind_not_heard(self):
         v = classify_watch({MOC: _heard(age="soon")}, uptime_s=99999)
         assert v[MOC]["verdict"] == UNOBSERVABLE
+
+
+class TestStaleAgeStateTable:
+    """Review 2026-11-10 (round 1): the whole input space of the age gate, not
+    one spec per finding. age x uptime x segment -> exactly one verdict."""
+
+    NEED = required_window_s()
+    LF, ST = "meshtastic:LONG_FAST/ch20", "meshtastic:SHORT_TURBO/ch8"
+    BAD = [float("nan"), float("inf"), -1, -3600, True, False, "x", "nan", [], {}]
+
+    @pytest.mark.parametrize("age", BAD)
+    @pytest.mark.parametrize("up", [None, 10, 10**7])
+    @pytest.mark.parametrize("cross", [False, True])
+    def test_an_age_nobody_meant_is_blind_never_heard_or_silent(self, age, up, cross):
+        segs = {MOC: self.ST if cross else self.LF}
+        v = classify_watch({MOC: _heard(age=age)}, uptime_s=up,
+                           segments=segs, claw_segment=self.LF)
+        assert v[MOC]["verdict"] == UNOBSERVABLE, (age, up, cross)
+
+    @pytest.mark.parametrize("frac", [0.0, 0.5, 0.999])
+    @pytest.mark.parametrize("up", [None, 10, 10**7])
+    def test_inside_window_is_heard_whatever_the_uptime(self, frac, up):
+        v = classify_watch({MOC: _heard(age=int(self.NEED * frac))}, uptime_s=up)
+        assert v[MOC]["verdict"] == HEARD
+
+    @pytest.mark.parametrize("mult", [1, 2, 160])
+    def test_stale_on_a_qualified_listener_is_silent_with_last_heard(self, mult):
+        age = self.NEED * mult
+        up = self.NEED * 200
+        r = classify_watch({MOC: _heard(age=age)}, uptime_s=up)[MOC]
+        assert r["verdict"] == SILENT
+        assert r["silent_for_at_least_s"] == min(age, up)
+        assert r["last_heard_age_s"] == age
+        assert r["age_s"] is None
+        assert "WAS reaching this claw" in r["reason"] and "id changed" in r["reason"]
+
+    def test_never_path_wire_is_unchanged(self):
+        r = classify_watch({MOC3: _never()}, uptime_s=self.NEED + 1)[MOC3]
+        assert list(r) == ["verdict", "age_s", "silent_for_at_least_s",
+                           "required_window_s", "reason"]
+
+    def test_numeric_string_age_travels_as_a_number(self):
+        r = classify_watch({MOC: _heard(age="12")}, uptime_s=99)[MOC]
+        assert r["verdict"] == HEARD and r["age_s"] == 12.0
+
+    def test_int_age_keeps_its_wire_type(self):
+        r = classify_watch({MOC: _heard(age=113)}, uptime_s=99)[MOC]
+        assert r["age_s"] == 113 and isinstance(r["age_s"], int)
+        assert r["reason"] == "heard 113s ago"
+
+    def test_cross_segment_stale_does_not_claim_it_cannot_be_heard(self):
+        r = classify_watch({MOC3: _heard(age=self.NEED * 3)}, uptime_s=self.NEED * 4,
+                           segments={MOC3: self.ST}, claw_segment=self.LF)[MOC3]
+        assert r["verdict"] == UNOBSERVABLE
+        assert r.get("segment_conflict") is True
+        assert "CANNOT be heard" not in r["reason"]
+        assert "last heard" in r["reason"]
+
+
+class TestRound2Inputs:
+    """Round 2 (Fable): the listening span is validated like an age; huge ints
+    do not crash the whole tick; from_wire validates last_heard."""
+
+    @pytest.mark.parametrize("up", [float("nan"), float("inf"), -5, True])
+    def test_unreadable_uptime_never_yields_silent(self, up):
+        need = required_window_s()
+        for rec in (_never(), _heard(age=need * 3)):
+            v = classify_watch({MOC3: rec}, uptime_s=up)
+            assert v[MOC3]["verdict"] == UNOBSERVABLE, (rec, up)
+
+    def test_overflowing_age_is_blind_and_does_not_sink_the_tick(self):
+        v = classify_watch({MOC: _heard(age=10 ** 400), MOC3: _heard(age=5)},
+                           uptime_s=99999)
+        assert v[MOC]["verdict"] == UNOBSERVABLE
+        assert v[MOC3]["verdict"] == HEARD
+
+    @pytest.mark.parametrize("bad", [float("nan"), -4, float("inf"), "x", True])
+    def test_from_wire_drops_an_unusable_last_heard(self, bad):
+        from utils.claw_watch_verdict import from_wire
+        obs = from_wire({"verdict": "silent", "silent_for_at_least_s": 100.0,
+                         "last_heard_age_s": bad})
+        assert obs.value.last_heard_age_s is None

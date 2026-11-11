@@ -233,3 +233,31 @@ class TestSelfGuards(_Base):
             "!bb": _verdict("silent", held=40000.0),
         })])
         assert sig.subject == "2 watched nodes"
+
+
+class TestHeardThenStoppedNamesTheIdCheck(_Base):
+    """2026-11-10: the first real `silent` was moc5's RETIRED node id. A node
+    that WAS heard and stopped must say so on the Signal, and send the
+    operator to the id first — the old detail sent them to the PA and coax."""
+
+    def test_detail_names_the_id_change_when_last_heard_is_carried(self):
+        v = _verdict("silent", held=57473.0)
+        v["last_heard_age_s"] = 5285198.0
+        sig = self._fire([_tick("dudeclaw-02", {"!4b3ef3bf": v})])
+        assert sig is not None
+        assert "WAS heard 5285198s ago and stopped" in sig.detail
+        assert "node id changed" in sig.detail
+        assert (sig.extra["silent_nodes"]["!4b3ef3bf"]["silent_by"][0]
+                ["last_heard_age_s"] == 5285198.0)
+
+    def test_never_heard_silent_detail_is_unchanged(self):
+        sig = self._fire([_tick("dudeclaw-02", {"!4b3ef3bf": _verdict("silent", held=57473.0)})])
+        assert sig is not None and "WAS heard" not in sig.detail
+        assert "last_heard_age_s" not in sig.extra["silent_nodes"]["!4b3ef3bf"]["silent_by"][0]
+
+    def test_two_claws_report_the_most_recent_sighting(self):
+        a = _verdict("silent", held=50000.0); a["last_heard_age_s"] = 900000.0
+        b = _verdict("silent", held=50000.0); b["last_heard_age_s"] = 400000.0
+        sig = self._fire([_tick("dudeclaw-01", {"!4b3ef3bf": a}),
+                          _tick("dudeclaw-02", {"!4b3ef3bf": b})])
+        assert "WAS heard 400000s ago" in sig.detail

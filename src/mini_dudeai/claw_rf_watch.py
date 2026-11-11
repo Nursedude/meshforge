@@ -35,6 +35,8 @@ this fleet a 6.5 h outage the same day.
 
 from __future__ import annotations
 
+import math
+
 from typing import Any, Dict, Optional
 
 # The verdict vocabulary and its Observation codec live in utils so the
@@ -161,6 +163,23 @@ def classify_watch(
     return out or None
 
 
+def _is_num(x: Any) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def _reading(x: Any) -> Optional[float]:
+    """A watch age as a usable reading, or None when it cannot be one."""
+    if isinstance(x, bool):
+        return None
+    try:
+        f = float(x)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(f) or f < 0:
+        return None
+    return f
+
+
 def judge_node(rec: Dict[str, Any], uptime_s: Optional[float], need: float,
                cross: bool, node_seg: Optional[str] = None,
                claw_segment: Optional[str] = None) -> Observation[Hearing]:
@@ -182,13 +201,27 @@ def judge_node(rec: Dict[str, Any], uptime_s: Optional[float], need: float,
         # silence surfaced only when the claw REBOOTED. A transmitter that goes
         # mute after one sighting stayed green forever — the case this gate is
         # for. A stale age falls through to the gates below; it is never heard.
-        try:
-            age_f = float(age)
-        except (TypeError, ValueError):
+        # Only a finite, non-negative NUMBER is a reading (review 2026-11-10):
+        # NaN slipped past float() and became a SILENT with a NaN bound; a
+        # negative age or a bool read as HEARD. A reading the author cannot have
+        # meant is blind (hfm #3), never an answer either way.
+        age_f = _reading(age)
+        if age_f is None:
             return Failed("watch entry age unreadable (%r) — cannot judge" % (age,))
         if age_f < need:
-            return Seen(Heard(age))
+            # Carry the VALIDATED value: a numeric string must not travel as one.
+            return Seen(Heard(age if _is_num(age) else age_f))
         stale_age = age_f
+    if cross and stale_age is not None:
+        # This claw DID hear it once — "cannot be heard here" would contradict
+        # the antenna. Neither silence nor hearing is claimed; the segment
+        # conflict stamp still rides on the unobservable render.
+        return Unobservable(
+            "last heard %.0fs ago (older than the %.0fs window) although it is "
+            "DECLARED on RF segment %r while this claw listens on %r — an old "
+            "reception contradicts the declaration (relayed, or the declaration "
+            "is stale); no silence is claimed across segments"
+            % (stale_age, need, node_seg, claw_segment))
     if cross:
         return Unobservable(
             "not heard, and it CANNOT be heard here: this node is on RF "
@@ -198,16 +231,22 @@ def judge_node(rec: Dict[str, Any], uptime_s: Optional[float], need: float,
     if uptime_s is None:
         return Unobservable("not heard, but the claw's uptime is unknown — the "
                             "listening window cannot be established")
-    if float(uptime_s) < need:
+    # The listening span is validated like an age (round 2): NaN slipped past
+    # `<` and came out SILENT with a NaN bound; inf claimed infinite listening.
+    up = _reading(uptime_s)
+    if up is None:
+        return Failed("listening span unreadable (%r) — cannot judge silence"
+                      % (uptime_s,))
+    if up < need:
         return Unobservable(
             "not heard, but the claw has listened only %.0fs of the %.0fs this "
             "node's transmit interval needs — silence means nothing yet"
-            % (float(uptime_s), need))
+            % (up, need))
     if stale_age is not None:
         # Lower bound: not heard for `stale_age`, but we can vouch only for the
         # span actually listened (a persisted stamp can predate it — peer_rf).
-        return Seen(NotHeard(min(stale_age, float(uptime_s))))
-    return Seen(NotHeard(float(uptime_s)))
+        return Seen(NotHeard(min(stale_age, up), last_heard_age_s=stale_age))
+    return Seen(NotHeard(up))
 
 
 def _render(obs: Observation[Hearing], need: float, uptime_s: Optional[float],
@@ -281,13 +320,28 @@ def _render_seen(hearing: Hearing, need: float, cross: bool,
                     "before concluding the link is direct."
                     % (node_seg, claw_segment))
             return rec_out
-        case NotHeard(silent_for_at_least_s=held):
+        case NotHeard(silent_for_at_least_s=held, last_heard_age_s=None):
+            # Never heard since boot: the 07-30 wire, byte for byte.
             return {"verdict": SILENT, "age_s": None,
                     "silent_for_at_least_s": held,
                     "required_window_s": need,
                     "reason": "NOT heard in %.0fs of listening (>= the %.0fs "
                               "window) — this radio is not reaching this claw"
                               % (held or 0.0, need)}
+        case NotHeard(silent_for_at_least_s=held, last_heard_age_s=last):
+            # Heard, then STOPPED. The measured last-heard age travels in its
+            # own key (age_s stays None: SILENT has never carried one), and the
+            # reason names the first check — on 2026-11-10 this exact shape was
+            # moc5's re-keyed node id, not a dead PA.
+            return {"verdict": SILENT, "age_s": None,
+                    "silent_for_at_least_s": held,
+                    "required_window_s": need,
+                    "reason": "last heard %.0fs ago, nothing since (>= the %.0fs "
+                              "window) — it WAS reaching this claw and stopped. "
+                              "First check whether that node's id changed "
+                              "(re-flash / re-key), then its TX leg"
+                              % (last or 0.0, need),
+                    "last_heard_age_s": last}
         case _ as unreachable:
             assert_never(unreachable)
 

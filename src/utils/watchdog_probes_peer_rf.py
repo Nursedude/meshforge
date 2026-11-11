@@ -64,6 +64,11 @@ DEFAULT_PEER_RF_STATE_PATH = "/var/lib/meshforge/peer_rf_witness.json"
 #: persisted last-heard.
 JOURNAL_WINDOW_S = 30 * 60
 
+#: Wall-vs-monotonic disagreement between two ticks that counts as a CLOCK
+#: STEP (not scheduling jitter). 5 min: well above tick jitter, well below any
+#: step that could manufacture a 9 h silence.
+CLOCK_STEP_TOLERANCE_S = 300.0
+
 #: Config naming the segment this box is on and the peers it should be hearing.
 PEER_CONFIG_BASENAME = "rf_segment_peers.json"
 
@@ -287,6 +292,7 @@ def probe_segment_peer_silent(
     debounce_ticks: int = 2,
     _uptime_fn=None,
     _scan_fn=None,
+    _mono_fn=None,
 ) -> Optional[Signal]:
     """A declared same-segment PEER has not been heard for its full window.
 
@@ -306,6 +312,7 @@ def probe_segment_peer_silent(
       listening window cannot be established, exactly as for a rebooted claw
     """
     try:
+        now_was_none = now is None
         now = time.time() if now is None else now
         sp = state_path or DEFAULT_PEER_RF_STATE_PATH
         cp = config_path if config_path is not None else _config_path(home)
@@ -332,6 +339,42 @@ def probe_segment_peer_silent(
         state = _load_state(sp)
         first_run = "observing_since" not in state
 
+        # COVERAGE CONTINUITY (review 2026-11-10). Since a stale heard age now
+        # reads SILENT, "observed_for" must mean listening we actually DID:
+        #   * a runner outage / long tick gap left journal time UNSCANNED — the
+        #     journal persists, so the honest cure is to scan the gap (capped at
+        #     the silence window, and re-seeded from it when wider);
+        #   * a wall-clock STEP (RTC-less Pi, NTP, fake-hwclock — hfm #6) makes
+        #     the journal's own timestamps disagree with the real last hours, so
+        #     no scan can cover it: re-earn the window from zero.
+        # Monotonic is compared only when it is known for both ticks; an
+        # injected `now` without `_mono_fn` (tests) leaves step detection off.
+        #
+        # THE SEAM (round 2, same defect kind twice): every coverage change is
+        # DECIDED here and COMMITTED to state in one place, only after the scan
+        # succeeded. `_load_state` can hand back the live in-memory fallback
+        # dict, so writing before the scan let a FAILED scan's span be credited
+        # as listening on the next tick (a beaconing peer read SILENT).
+        mono = (_mono_fn() if _mono_fn is not None
+                else (time.monotonic() if now_was_none else None))
+        coverage_note = ""
+        reseed: Optional[float] = None      # seed width to commit, if re-seeding
+        last_wall = state.get("last_tick_wall")
+        last_mono = state.get("last_tick_mono")
+        gap = None
+        if not first_run and isinstance(last_wall, (int, float)):
+            gap = now - float(last_wall)
+            step = None
+            if (mono is not None and isinstance(last_mono, (int, float))
+                    and mono >= float(last_mono)):
+                step = gap - (mono - float(last_mono))
+            if gap < 0 or (step is not None and abs(step) > CLOCK_STEP_TOLERANCE_S):
+                reseed = 0.0
+                coverage_note = (" [wall clock stepped (%+.0fs vs monotonic) — "
+                                 "coverage re-earned from zero]"
+                                 % (step if step is not None else gap))
+                gap = None
+
         # FIRST RUN seeds from the full silence window, not the incremental one.
         # The incremental scan only knows what it saw since it started, and a
         # fleet gateway beacons roughly every 40 min — so a cold 30 min window
@@ -339,13 +382,35 @@ def probe_segment_peer_silent(
         # incremental. (Observed live on moc3 2026-07-30: first tick produced a
         # silent CANDIDATE for a peer it had received 9 times in the prior 6 h.)
         scan = _scan_fn or scan_journal_for_peers
-        window = int(required_window_s()) if first_run else JOURNAL_WINDOW_S
+        full = int(required_window_s())
+        window = full if first_run else JOURNAL_WINDOW_S
+        if gap is not None and gap > JOURNAL_WINDOW_S:
+            window = int(min(gap + 60, full))
+            if gap + 60 > full:
+                # Wider than the silence window: what lies beyond it is
+                # irrelevant to a silence claim, so re-seed exactly like a
+                # first run rather than crediting the unscanned span.
+                reseed = float(window)
+            coverage_note = (" [tick gap %.0fs — scanned %ds of journal to cover "
+                             "it]" % (gap, window))
         seen, scan_err = scan(list(peers), window)
         if scan_err:
+            # NOTHING about coverage is committed: the next tick sees the same
+            # last_tick_wall, so the failed span stays a gap and is re-scanned.
             note_disposition("segment_peer_silent", "indeterminate",
                              reason="cannot observe: %s" % scan_err)
             _save_parity_streak(sp + ".streak", 0)
             return None
+        # Coverage to COMMIT — applied to `state` only at the write point below,
+        # beside the sightings fold. Nothing between here and there may leave a
+        # half-committed tick (round 3: an exception after a successful scan
+        # credited the span and dropped what it saw).
+        if first_run:
+            reseed = float(window)
+        pending: Dict[str, Any] = {"last_tick_wall": now, "last_tick_mono": mono}
+        if reseed is not None:
+            pending["observing_since"] = now
+            pending["seed_window_s"] = reseed
 
         # THE LISTENING WINDOW is the SHORTER of two things, and getting this
         # wrong is how the claw field first went wrong (3 of 4 radios read
@@ -356,30 +421,32 @@ def probe_segment_peer_silent(
         #     is invisible to us no matter how long it has been up.
         # Taking only the daemon's uptime would claim a 9 h window on a probe
         # that has been watching for 30 s.
-        if first_run:
-            state["observing_since"] = now
-            state["seed_window_s"] = window
         # The seed WIDTH is remembered, not recomputed from this tick's window:
         # we scanned `seed_window_s` backwards at `observing_since` and have been
         # watching ever since, so coverage only grows. Adding the CURRENT
         # (30 min) window instead made tick 2 claim LESS coverage than tick 1 and
         # bounced a qualified verdict back to unobservable.
-        observed_for = ((now - float(state.get("observing_since", now)))
-                        + float(state.get("seed_window_s", window)))
+        cov = {**state, **pending}
+        observed_for = ((now - float(cov.get("observing_since", now)))
+                        + float(cov.get("seed_window_s", window)))
         daemon_up = (_uptime_fn or meshtasticd_uptime_s)(now)
         # Unknown daemon uptime stays None -> classify_watch calls it
         # unobservable. Substituting our own observation age here would let a
         # box with no running receiver claim a qualified silence.
         uptime = None if daemon_up is None else min(daemon_up, observed_for)
 
+        # THE WRITE POINT: the sightings fold and the coverage commit land
+        # together, immediately before the save — no call between them.
         watched = build_watched(peers, seen, now, state)
+        state.update(pending)
         # A failed write is WITNESSED on every emission below, not swallowed:
         # memory keeps this process honest, but a runner restart re-seeds the
         # full window, and the operator should learn that from a disposition,
         # not from the CPU graph (honest_failure_modes #9).
-        state_warn = ("" if _save_state(sp, state) else
-                      " [peer_rf state unwritable at %s — held in memory only;"
-                      " a runner restart re-seeds the full window]" % sp)
+        state_warn = coverage_note + (
+            "" if _save_state(sp, state) else
+            " [peer_rf state unwritable at %s — held in memory only;"
+            " a runner restart re-seeds the full window]" % sp)
 
         verdicts = classify_watch(watched, uptime)
         summary = summarise(verdicts) or {}
@@ -423,8 +490,12 @@ def probe_segment_peer_silent(
             if held is None:
                 listed.append("%s (%s)" % (node, label))
             else:
-                listed.append("%s (%s, not heard in >=%.0fs of listening)"
-                              % (node, label, held))
+                last = rec.get("last_heard_age_s")
+                was = ("" if last is None else
+                       "; it WAS heard %.0fs ago and stopped — check FIRST "
+                       "whether its node id changed (re-flash/re-key)" % last)
+                listed.append("%s (%s, not heard in >=%.0fs of listening%s)"
+                              % (node, label, held, was))
         blind_clause = ""
         if blind:
             blind_clause = ("; %d peer(s) still un-observable and NOT counted "
