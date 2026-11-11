@@ -135,18 +135,29 @@ LINK_DOWN_EPISODE_GAP_S = 30.0
 
 
 def dm_destination(packet: dict):
-    """BR-T #18: a DM's destination from the WIRE. The library's ``toId`` is
-    ``None`` when the number is not in that radio's node DB; the numeric ``to``
-    is still on the packet. ``None`` = no destination at all (refuse, named) —
-    never ``sendText(destinationId=None)``, which is the library's ``our_exit``."""
-    to_id = packet.get('toId')
-    if isinstance(to_id, str) and to_id.startswith('!') and len(to_id) > 1:
-        return to_id
-    to_num = packet.get('to')
-    if isinstance(to_num, int) and 0 < to_num < 0xFFFFFFFF:
-        return f"!{to_num:08x}"
-    return None
+    """BR-T #18: a DM's destination from the WIRE, or ``None`` (refuse, named).
 
+    The numeric ``to`` is the wire fact and DECIDES ALONE when present: a valid
+    node number (1 .. 0xFFFFFFFE, a real int — bool is not a node) gives
+    ``!{to:08x}``; any other value refuses. ``toId`` is the library's node-DB
+    string, which a neighbour can set — r2 11-11: ``user.id='!ffffffff'``
+    turned a DM into a broadcast, ``'!abc'`` reached ``our_exit`` — so it is a
+    fallback ONLY with no ``to``, and only as ``'!'`` + 8 hex naming a node."""
+    to_num = packet.get('to')
+    if to_num is not None:
+        if isinstance(to_num, int) and not isinstance(to_num, bool) \
+                and 0 < to_num < 0xFFFFFFFF:
+            return f"!{to_num:08x}"
+        return None
+    to_id = packet.get('toId')
+    if isinstance(to_id, str) and len(to_id) == 9 and to_id[0] == '!':
+        try:
+            num = int(to_id[1:], 16)
+        except ValueError:
+            return None
+        if 0 < num < 0xFFFFFFFF:
+            return f"!{num:08x}"
+    return None
 
 def bump_stat(bridge, key: str) -> None:
     """One locked counter bump (the bridge's stats are shared across threads)."""

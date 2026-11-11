@@ -82,9 +82,13 @@ class TestIngress:
         assert rows[0].payload["destination_id"] == "!1234abcd"
         assert rows[0].payload["is_broadcast"] is False
 
-    def test_a_resolved_toId_is_kept(self, bridge):
+    def test_a_resolved_toId_that_agrees_with_the_wire_is_kept(self, bridge):
+        """r2 F2: the packet's numeric ``to`` decides; a resolved toId is the
+        same node written as a string (this test once let a DISAGREEING toId
+        win — the misdirect the r2 review refuted)."""
         q = bridge._primary_to_secondary
-        bridge._process_receive(_dm("dm two", to_id="!0000beef"), "primary", "secondary", q)
+        bridge._process_receive(_dm("dm two", to=0x0000BEEF, to_id="!0000beef"),
+                                "primary", "secondary", q)
         assert q.get_pending(destination="secondary")[0].payload["destination_id"] == "!0000beef"
 
     def test_a_dm_with_no_destination_at_all_is_a_named_drop(self, bridge, caplog):
@@ -166,3 +170,44 @@ class TestBackstop:
             bridge._secondary_to_primary.process_once(batch_size=5)
         assert [d for _, d in radio_s.sent] == ["!1234abcd"]
         assert len(radio_p.sent) == 1
+
+
+class TestRound2Shapes:
+    """#18 round 2 (Fable by running, 11-11): the numeric ``to`` is the WIRE
+    fact and decides alone when present; ``toId`` (a node-DB string a
+    neighbour can set) is a fallback ONLY when ``to`` is absent, and only as
+    ``'!'`` + 8 hex. F1: a short ``'!abc'`` reached the library's ``our_exit``;
+    F2: a node announcing ``user.id='!ffffffff'`` turned a DM into a broadcast."""
+
+    @pytest.mark.parametrize("packet,expected", [
+        ({"to": 0x1234ABCD, "toId": None}, "!1234abcd"),
+        ({"to": 0x1234ABCD, "toId": "!ffffffff"}, "!1234abcd"),    # F2: wire wins
+        ({"to": 0x00005555, "toId": "!0000beef"}, "!00005555"),    # F2: misdirect
+        ({"to": 0x00000ABC, "toId": "!abc"}, "!00000abc"),         # F1: short id
+        ({"to": 0, "toId": "!0000beef"}, None),                   # wire present, invalid
+        ({"to": -1, "toId": None}, None),
+        ({"to": 0x1FFFFFFFF, "toId": None}, None),                # > 32 bit
+        ({"to": True, "toId": None}, None),                       # F6: bool is not a node
+        ({"to": False, "toId": None}, None),
+        ({"toId": "!0000beef"}, "!0000beef"),                     # no wire to: 8-hex fallback
+        ({"toId": "!0000BEEF"}, "!0000beef"),
+        ({"toId": "!abc"}, None),                                 # M6: short refused
+        ({"toId": "!"}, None),
+        ({"toId": "!zzzzzzzz"}, None),
+        ({"toId": "!1ffffffff"}, None),                           # 9 hex (MQTT >32-bit shape)
+        ({"toId": "!ffffffff"}, None),                            # a broadcast, not a DM
+        ({"toId": "!00000000"}, None),
+        ({"toId": "^all"}, None),
+        ({}, None),
+    ])
+    def test_dm_destination_shape_table(self, packet, expected):
+        from gateway._mesh_bridge_legs import dm_destination
+        assert dm_destination(packet) == expected
+
+    def test_F2_a_dm_is_never_rebroadcast_by_a_neighbours_user_id(self, bridge):
+        q = bridge._primary_to_secondary
+        bridge._process_receive(_dm("private", to=0x1234ABCD, to_id="!ffffffff"),
+                                "primary", "secondary", q)
+        row = q.get_pending(destination="secondary")[0].payload
+        assert row["destination_id"] == "!1234abcd"
+        assert row["is_broadcast"] is False
