@@ -352,3 +352,64 @@ class TestWireShapePinnedPerCause:
         assert out["verdict"] == verdict
         assert out["silent_for_at_least_s"] == held
         assert list(out) == keys
+
+
+class TestHeardOnceNeverAgain:
+    """2026-11-10, moc2: dudeclaw-02 watched !4b3ef3bf (moc5's OLD radio id,
+    last on the air 09-10 — moc5 now transmits as !5f01371f). For ~2 months
+    the claw reported an ever-growing ``age_s`` and the gate read ``heard``,
+    because ANY age was heard. Only claw-02's reboot (resetting its since-boot
+    counters to ``never``) let the silence surface. A mute transmitter stays
+    green until the receiver reboots — the exact case this gate exists for.
+
+    Rule: an age at or past the window is NOT a reading of now. With a known
+    listening span that covers the window it is ``silent`` (lower bound
+    min(age, uptime)); without one it is ``unobservable`` — never ``heard``."""
+
+    LIVE_AGE = 1794371841 - 1789086643   # 61 d: moc4's radio_heard for it
+
+    def test_two_month_old_age_is_silent_not_heard(self):
+        v = classify_watch({"!4b3ef3bf": _heard(age=self.LIVE_AGE)},
+                           uptime_s=self.LIVE_AGE + 3600)
+        assert v["!4b3ef3bf"]["verdict"] == SILENT
+        assert v["!4b3ef3bf"]["silent_for_at_least_s"] == self.LIVE_AGE
+        assert summarise(v)["actionable"] is True
+
+    def test_age_at_the_window_is_silent(self):
+        need = required_window_s()
+        v = classify_watch({MOC: _heard(age=need)}, uptime_s=need * 2)
+        assert v[MOC]["verdict"] == SILENT
+
+    def test_age_inside_the_window_stays_heard(self):
+        need = required_window_s()
+        v = classify_watch({MOC: _heard(age=need - 1)}, uptime_s=need * 2)
+        assert v[MOC]["verdict"] == HEARD
+
+    def test_stale_age_with_unknown_uptime_is_unobservable(self):
+        need = required_window_s()
+        v = classify_watch({MOC: _heard(age=need * 5)}, uptime_s=None)
+        assert v[MOC]["verdict"] == UNOBSERVABLE
+
+    def test_lower_bound_never_exceeds_the_listening_span(self):
+        """An age older than what we listened (persisted stamp, peer_rf) can
+        only vouch for the span actually listened."""
+        need = required_window_s()
+        v = classify_watch({MOC: _heard(age=need * 10)}, uptime_s=need * 2)
+        assert v[MOC]["verdict"] == SILENT
+        assert v[MOC]["silent_for_at_least_s"] == need * 2
+
+    def test_stale_age_on_a_young_listener_is_unobservable(self):
+        need = required_window_s()
+        v = classify_watch({MOC: _heard(age=need * 3)}, uptime_s=need - 1)
+        assert v[MOC]["verdict"] == UNOBSERVABLE
+
+    def test_stale_age_cross_segment_is_unobservable_not_silent(self):
+        need = required_window_s()
+        v = classify_watch({MOC3: _heard(age=need * 3)}, uptime_s=need * 4,
+                           segments={MOC3: "meshtastic:SHORT_TURBO/ch8"},
+                           claw_segment="meshtastic:LONG_FAST/ch20")
+        assert v[MOC3]["verdict"] == UNOBSERVABLE
+
+    def test_unparseable_age_is_blind_not_heard(self):
+        v = classify_watch({MOC: _heard(age="soon")}, uptime_s=99999)
+        assert v[MOC]["verdict"] == UNOBSERVABLE

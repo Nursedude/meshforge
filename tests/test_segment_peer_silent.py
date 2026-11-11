@@ -411,3 +411,25 @@ class TestStateWriteWitness:
         # swallowed: this run ends in a fired signal, whose detail carries it.
         assert sig is not None
         assert "state unwritable" in sig.detail
+
+
+class TestHeardOnceNeverAgain:
+    """2026-11-10 (twin of the claw case): a peer sighted once, then gone,
+    carried a growing ``age_s`` that read ``heard`` forever — a peer that went
+    mute after one sighting could never fire."""
+
+    def test_peer_heard_once_then_gone_past_the_window_fires(self, cfg, tmp_path):
+        sp = str(tmp_path / "state.json")
+        def scan_seen(_p, window=None):
+            return ({MOC3}, None)
+        def scan_none(_p, window=None):
+            return (set(), None)
+        up = lambda _n: LONG_UPTIME * 4
+        probe_segment_peer_silent(config_path=cfg, state_path=sp, now=NOW,
+                                  _scan_fn=scan_seen, _uptime_fn=up)
+        sig = None
+        for i in (1, 2, 3):
+            sig = probe_segment_peer_silent(
+                config_path=cfg, state_path=sp, now=NOW + WINDOW * i + 60,
+                _scan_fn=scan_none, _uptime_fn=up)
+        assert sig is not None and sig.cls == "segment_peer_silent"

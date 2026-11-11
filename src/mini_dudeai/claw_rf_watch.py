@@ -89,7 +89,11 @@ def classify_watch(
     Per node: ``{verdict, age_s, silent_for_at_least_s, required_window_s,
     reason}``.
 
-    * ``heard``        — an age came back. The transmitter reaches this claw.
+    * ``heard``        — an age came back INSIDE the window. The transmitter
+                         reaches this claw. An age at/past the window is NOT
+                         heard: it is judged like ``never`` (silent once the
+                         listening span covers the window, lower bound
+                         min(age, uptime); else unobservable) — 2026-11-10.
     * ``silent``       — ``never`` AND the window elapsed. ACTIONABLE.
                          ``silent_for_at_least_s`` is the claw's uptime, an
                          honest LOWER bound: the firmware knows only "not since
@@ -170,8 +174,21 @@ def judge_node(rec: Dict[str, Any], uptime_s: Optional[float], need: float,
     if rec.get("parse_error"):
         return Failed("watch entry unreadable — cannot judge")
     age = rec.get("age_s")
+    stale_age: Optional[float] = None
     if age is not None:
-        return Seen(Heard(age))
+        # An age is a reading of NOW only while it is inside the window. Until
+        # 2026-11-10 ANY age was `heard`: dudeclaw-02 reported moc5's retired id
+        # (!4b3ef3bf, off the air since 09-10) as heard for ~2 months, and the
+        # silence surfaced only when the claw REBOOTED. A transmitter that goes
+        # mute after one sighting stayed green forever — the case this gate is
+        # for. A stale age falls through to the gates below; it is never heard.
+        try:
+            age_f = float(age)
+        except (TypeError, ValueError):
+            return Failed("watch entry age unreadable (%r) — cannot judge" % (age,))
+        if age_f < need:
+            return Seen(Heard(age))
+        stale_age = age_f
     if cross:
         return Unobservable(
             "not heard, and it CANNOT be heard here: this node is on RF "
@@ -186,6 +203,10 @@ def judge_node(rec: Dict[str, Any], uptime_s: Optional[float], need: float,
             "not heard, but the claw has listened only %.0fs of the %.0fs this "
             "node's transmit interval needs — silence means nothing yet"
             % (float(uptime_s), need))
+    if stale_age is not None:
+        # Lower bound: not heard for `stale_age`, but we can vouch only for the
+        # span actually listened (a persisted stamp can predate it — peer_rf).
+        return Seen(NotHeard(min(stale_age, float(uptime_s))))
     return Seen(NotHeard(float(uptime_s)))
 
 
