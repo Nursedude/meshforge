@@ -391,11 +391,28 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
         """
         return self._is_duplicate(self._compute_hash(payload), destination)
 
+    #: enqueue_with_reason()'s rejection names (BR-T #6): two different
+    #: losses that enqueue() alone reports as the same None.
+    REJECT_DEDUP = "dedup"
+    REJECT_QUEUE_FULL = "queue_full"
+
     def enqueue(self, payload: Dict[str, Any], destination: str,
                 priority: MessagePriority = MessagePriority.NORMAL,
                 max_retries: int = 3, deduplicate: bool = True,
                 created_at: Optional[datetime] = None,
                 source: Optional[str] = None) -> Optional[str]:
+        """Add a message to the queue; the id, or None if rejected (duplicate
+        OR queue full — use enqueue_with_reason() to tell them apart)."""
+        return self.enqueue_with_reason(
+            payload, destination, priority=priority, max_retries=max_retries,
+            deduplicate=deduplicate, created_at=created_at, source=source)[0]
+
+    def enqueue_with_reason(self, payload: Dict[str, Any], destination: str,
+                            priority: MessagePriority = MessagePriority.NORMAL,
+                            max_retries: int = 3, deduplicate: bool = True,
+                            created_at: Optional[datetime] = None,
+                            source: Optional[str] = None,
+                            ) -> "tuple[Optional[str], Optional[str]]":
         """
         Add a message to the queue.
 
@@ -407,7 +424,8 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
             deduplicate: Check for duplicates
 
         Returns:
-            Message ID if enqueued, None if duplicate
+            (message id, None) if enqueued; (None, REJECT_DEDUP) or
+            (None, REJECT_QUEUE_FULL) if rejected.
         """
         if source:
             # BIC-2: the row remembers its leg for every later lifecycle event.
@@ -429,7 +447,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                 protocol=destination, source=source,
                 drop_reason=_dc.DropReason.DEDUP,
             )
-            return None
+            return None, self.REJECT_DEDUP
 
         # Periodic auto-cleanup of old delivered/dead_letter messages
         self._maybe_auto_cleanup()
@@ -458,7 +476,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                         drop_reason=_dc.DropReason.QUEUE_PRESSURE,
                         note=f"depth={depth}/{self._max_queue_size}",
                     )
-                    return None
+                    return None, self.REJECT_QUEUE_FULL
 
         # Generate unique ID. The ms-timestamp + content-hash pair alone is
         # NOT unique: identical content enqueued twice in the same
@@ -510,7 +528,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
             protocol=destination, source=source,
         )
 
-        return msg_id
+        return msg_id, None
 
     def get_pending(self, destination: Optional[str] = None,
                     limit: int = 100) -> List[QueuedMessage]:
@@ -972,6 +990,11 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
         }
 
         return stats
+
+    def is_gated(self, destination: str) -> bool:
+        """True when the last process_once held ``destination`` (its ready_fn
+        said it cannot send) — rows waiting, not attempted."""
+        return destination in self._gated_destinations
 
     def get_queue_depth(self) -> int:
         """Get count of active messages (pending + in_progress).

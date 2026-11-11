@@ -6,6 +6,7 @@ from a counter delta, never by naming the message. These lines are the
 per-message record the C21 run reconciles against.
 """
 import logging
+from unittest.mock import patch
 
 import pytest
 
@@ -104,3 +105,71 @@ def test_a_message_the_queue_gives_up_on_is_a_named_drop(bridge, caplog):
     assert q.get_queue_depth() == 0
     assert _lines(caplog)[-1] == (
         "mesh_bridge drop leg=primary reason=dead_letter: c21 r1 5 lf2st")
+
+
+def test_a_full_queue_is_named_queue_full_not_dedup(bridge, caplog):
+    """BR-T #6 (11-09 review): ``enqueue()`` returns None for BOTH a duplicate
+    and a full queue, and the bridge named both ``queue_dedup`` with no counter
+    — a message lost to pressure read as a harmless repeat."""
+    from gateway.message_queue import MessagePriority
+    q = bridge._primary_to_secondary
+    q._max_queue_size = 1
+    assert q.enqueue({"content": "unsheddable"}, destination="secondary",
+                     priority=MessagePriority.HIGH)          # HIGH is never shed
+    caplog.set_level(logging.DEBUG, logger="gateway.mesh_bridge")
+    bridge._process_receive(_pkt("c21 r1 6 lf2st"), "primary", "secondary", q)
+    assert _lines(caplog)[-1] == (
+        "mesh_bridge drop leg=primary reason=queue_full: c21 r1 6 lf2st")
+    assert bridge.stats.get("queue_full_rejected") == 1
+
+
+def test_a_queue_duplicate_keeps_its_own_name(bridge, caplog):
+    """Control for #6: the dedup branch still says queue_dedup."""
+    q = bridge._primary_to_secondary
+    caplog.set_level(logging.DEBUG, logger="gateway.mesh_bridge")
+    with patch.object(q, "_is_duplicate", return_value=True):
+        bridge._process_receive(_pkt("c21 r1 7 lf2st"), "primary", "secondary", q)
+    assert _lines(caplog)[-1] == (
+        "mesh_bridge drop leg=primary reason=queue_dedup: c21 r1 7 lf2st")
+    assert bridge.stats.get("queue_full_rejected", 0) == 0
+
+
+def _depth(q):
+    return q.get_queue_depth()
+
+
+def test_one_way_bridge_refuses_the_other_direction_at_ingress(bridge, caplog):
+    """BR-T #4 (11-09 review): only _bridge_loop checked ``direction``, so a
+    reverse-direction text got an rx line, no stat, and sat pending in a queue
+    nothing drains — until shed at 1000, and a DM (HIGH) never."""
+    bridge.bridge_config.direction = "primary_to_secondary"
+    q = bridge._secondary_to_primary
+    caplog.set_level(logging.DEBUG, logger="gateway.mesh_bridge")
+    bridge._process_receive(_pkt("c21 r1 8 st2lf"), "secondary", "primary", q)
+    assert _lines(caplog)[-1] == (
+        "mesh_bridge drop leg=secondary reason=direction: c21 r1 8 st2lf")
+    assert bridge.stats.get("direction_filtered") == 1
+    assert _depth(q) == 0
+
+
+def test_one_way_bridge_still_carries_its_own_direction(bridge):
+    """Control for #4."""
+    bridge.bridge_config.direction = "primary_to_secondary"
+    q = bridge._primary_to_secondary
+    bridge._process_receive(_pkt("c21 r1 9 lf2st"), "primary", "secondary", q)
+    assert _depth(q) == 1
+    assert bridge.stats.get("direction_filtered", 0) == 0
+
+
+def test_a_receive_fault_is_counted_and_named(bridge, caplog):
+    """BR-T #5 (11-09 review): the broad except in _process_receive logged an
+    ERROR and nothing else — an injected sqlite fault left ``stats: {}``."""
+    import sqlite3
+    q = bridge._primary_to_secondary
+    caplog.set_level(logging.DEBUG, logger="gateway.mesh_bridge")
+    with patch.object(q, "enqueue_with_reason",
+                      side_effect=sqlite3.OperationalError("disk I/O error")):
+        bridge._process_receive(_pkt("c21 r1 10 lf2st"), "primary", "secondary", q)
+    assert _lines(caplog)[-1] == (
+        "mesh_bridge drop leg=primary reason=receive_error: c21 r1 10 lf2st")
+    assert bridge.stats.get("receive_errors") == 1
