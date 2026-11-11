@@ -132,3 +132,23 @@ LINK_DOWN_RETRY_S = 2.0
 #: Deferrals closer together than this are ONE outage (logged ERROR once);
 #: a gap longer starts a new one (r2 F-3: rows that aged out, an idle leg).
 LINK_DOWN_EPISODE_GAP_S = 30.0
+
+
+def dm_destination(packet: dict):
+    """BR-T #18: a DM's destination from the WIRE. The library's ``toId`` is
+    ``None`` when the number is not in that radio's node DB; the numeric ``to``
+    is still on the packet. ``None`` = no destination at all (refuse, named) —
+    never ``sendText(destinationId=None)``, which is the library's ``our_exit``."""
+    to_id = packet.get('toId')
+    if isinstance(to_id, str) and to_id.startswith('!') and len(to_id) > 1:
+        return to_id
+    to_num = packet.get('to')
+    if isinstance(to_num, int) and 0 < to_num < 0xFFFFFFFF:
+        return f"!{to_num:08x}"
+    return None
+
+
+def bump_stat(bridge, key: str) -> None:
+    """One locked counter bump (the bridge's stats are shared across threads)."""
+    with bridge._stats_lock:
+        bridge.stats[key] = bridge.stats.get(key, 0) + 1

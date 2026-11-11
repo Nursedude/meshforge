@@ -40,7 +40,8 @@ from .config import GatewayConfig, MeshtasticBridgeConfig, MeshtasticConfig
 from ._handoff_witness import HandoffWitness
 from ._mesh_bridge_mqtt import MQTTMeshInterface
 from ._mesh_bridge_legs import (
-    bridge_event, build_downlink_injector, queue_drop_witness,
+    bridge_event, build_downlink_injector, bump_stat, dm_destination,
+    queue_drop_witness,
     LINK_DOWN_EPISODE_GAP_S, LINK_DOWN_RETRY_S, MESH_BRIDGE_MAX_AGE_S,
     _library_gave_up, _write_target_gone)
 from .message_queue import PersistentMessageQueue, MessagePriority, RetryPolicy
@@ -578,8 +579,10 @@ class MeshtasticPresetBridge:
                     if self._stop_event.wait(0.05):
                         break
 
-            except Exception as e:
-                logger.error(f"Bridge loop error: {e}")
+            except (Exception, SystemExit) as e:   # BR-T #18: library our_exit
+                if isinstance(e, SystemExit):
+                    bump_stat(self, 'loop_fatal_caught')
+                logger.error(f"Bridge loop error ({type(e).__name__}): {e}")
                 if self._stop_event.wait(1):
                     break
 
@@ -1078,6 +1081,10 @@ class MeshtasticPresetBridge:
                 except re.error:
                     pass
 
+            if not is_broadcast and dm_destination(packet) is None:  # BR-T #18
+                bump_stat(self, 'dm_no_destination')
+                return bridge_event("drop", source, text, "dm_no_destination")
+            to_id = to_id if is_broadcast else dm_destination(packet)
             preset = (self.bridge_config.primary.preset if source == "primary"
                       else self.bridge_config.secondary.preset)
 
@@ -1341,6 +1348,11 @@ class MeshtasticPresetBridge:
     def _forward_message(self, msg: BridgedMeshMessage, interface,
                          connected: bool, dest_name: str) -> bool:
         """Forward a message to the specified interface."""
+        if not msg.is_broadcast and not msg.destination_id:   # BR-T #18
+            bump_stat(self, 'dm_no_destination')
+            logger.error(f"Forward to {dest_name} REFUSED: DM with no destination "
+                         f"(never sendText(destinationId=None)): {msg.content[:50]}")
+            return False
         if not connected or not interface:
             self._defer_link_down(dest_name, "not connected")
 
