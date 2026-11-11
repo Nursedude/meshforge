@@ -31,6 +31,18 @@ def _tile_bytes(value: int, length: int = SRTM3_LEN) -> bytes:
     return value.to_bytes(2, "big", signed=True) * (length // 2)
 
 
+@pytest.fixture(autouse=True)
+def _disk_is_not_the_question():
+    """warm_tiles() keeps DEFAULT_MIN_FREE_BYTES (2 GiB) free on the cache's
+    filesystem — here tmp_path, i.e. /tmp, a tmpfs. Unpinned, these verdicts
+    tracked how full the BOX's /tmp was (11-11: 2.0 G free → 3 tests failed,
+    3.0 G → passed, same tree). Free space is pinned huge; the floor's own
+    test patches it low inside its block, which wins."""
+    with patch("utils.terrain.shutil.disk_usage",
+               return_value=type("U", (), {"free": 1 << 40})()):
+        yield
+
+
 @pytest.fixture
 def cache(tmp_path) -> Path:
     return tmp_path / "srtm"
