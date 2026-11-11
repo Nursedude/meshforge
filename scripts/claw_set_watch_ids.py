@@ -46,7 +46,7 @@ import sys
 import time
 
 sys.path.insert(0, "/opt/meshforge/src")
-from mini_dudeai.nats_client import request  # noqa: E402
+from mini_dudeai.nats_client import NatsError, request  # noqa: E402
 
 CONFIG_PATH = "/config.json"
 BACKUP_PATH = "/config.json.bak"
@@ -102,8 +102,13 @@ def _device_state(server: str, device: str, timeout: float):
     """
     try:
         text = str(_tool(server, device, {"tool": "device_info"}, timeout))
-    except RuntimeError:
-        return None, None          # dark right now — not an answer, and not a failure
+    except (RuntimeError, NatsError, OSError):
+        # Dark right now — not an answer, and not a failure. A claw mid-reboot
+        # surfaces as a bus TIMEOUT (NatsError) or a refused connect (OSError),
+        # not as RuntimeError; catching only that crashed the poll the first
+        # time it ran for real (dudeclaw-02, 2026-11-10: rc 1 "refused" while
+        # the claw came back fine 18 s later).
+        return None, None
     mu, mr = _RE_UPTIME.search(text), _RE_RESET.search(text)
     return (int(mu.group(1)) if mu else None,
             mr.group(1).strip() if mr else None)
