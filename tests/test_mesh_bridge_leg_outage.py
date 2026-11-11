@@ -8,20 +8,24 @@ leg came back at +10.3 s and the message never crossed. The bridge's senders
 return a bare ``False`` for "link down", which the RetryPolicy classifies as
 ``unknown`` (2 tries), so a link outage spent the budget meant for send errors.
 
-The fix is the queue's existing outage contract (RNS precedent, F4 review R2):
-a ``ready_fn`` per leg. While the leg cannot take a write, its rows are left
-untouched — no attempt, no retry_count bump — and they age out WITNESSED at
-``MESH_BRIDGE_MAX_AGE_S`` instead of waiting forever.
+The fix: ``_forward_message``'s two link-down refusals raise the queue's
+``SendDeferred`` — the row returns to pending, retry_count UNTOUCHED — and rows
+age out WITNESSED at ``MESH_BRIDGE_MAX_AGE_S``. v1 (``bf5a3b90``) gated the
+whole destination with a ``ready_fn`` instead; the 11-11 non-author review
+found that gate ran AHEAD of the downlink-inject branch (broker, not socket —
+F1) and of the sender's dual-path dedup (F2), so the deferral lives at the
+refusal itself, after both.
 
 Real ``PersistentMessageQueue`` (tmp sqlite) and the real bridge sender; only
-the radio is replaced.
+the radio (and, for F1, the broker injector) is replaced.
 """
-import sqlite3
-from unittest.mock import patch
+from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from gateway.config import GatewayConfig, MeshtasticBridgeConfig, MeshtasticConfig
+from utils.db_helpers import connect_tuned
 
 
 @pytest.fixture(autouse=True)
@@ -58,44 +62,52 @@ class _Radio:
         return {"id": len(self.sent)}
 
 
-def _enqueue_for_primary(bridge, text):
+def _msg(text, preset):
     import uuid
     from gateway.mesh_bridge import BridgedMeshMessage
-    msg = BridgedMeshMessage(
-        source_preset="SHORT_TURBO", source_id="!b03bb70c", destination_id="^all",
+    return BridgedMeshMessage(
+        source_preset=preset, source_id="!b03bb70c", destination_id="^all",
         content=f"{text} {uuid.uuid4().hex[:8]}", channel=0, is_broadcast=True)
+
+
+def _enqueue_for_primary(bridge, text):
+    msg = _msg(text, "SHORT_TURBO")
     q = bridge._secondary_to_primary
     msg_id = q.enqueue(msg.to_payload(), destination="primary")
     assert msg_id
     return q, msg_id, msg.content
 
 
-def _row(q, msg_id):
-    conn = sqlite3.connect(q._db_path)
-    try:
-        conn.row_factory = sqlite3.Row
-        return dict(conn.execute(
-            "SELECT status, retry_count FROM messages WHERE id = ?",
-            (msg_id,)).fetchone())
-    finally:
-        conn.close()
+def _enqueue_for_secondary(bridge, text):
+    msg = _msg(text, "LONG_FAST")
+    q = bridge._primary_to_secondary
+    msg_id = q.enqueue(msg.to_payload(), destination="secondary")
+    assert msg_id
+    return q, msg_id, msg.content
 
 
-def _make_every_row_due(q):
-    """Collapse the retry backoff so each process_once is the NEXT attempt —
-    the outage then outlasts any retry budget in a handful of ticks."""
-    conn = sqlite3.connect(q._db_path)
+def _sql(q, sql, args=()):
+    conn = connect_tuned(q._db_path)
     try:
-        conn.execute("UPDATE messages SET retry_after = NULL")
+        rows = conn.execute(sql, args).fetchall()
         conn.commit()
+        return rows
     finally:
         conn.close()
+
+
+def _row(q, msg_id):
+    status, retry_count = _sql(
+        q, "SELECT status, retry_count FROM messages WHERE id = ?", (msg_id,))[0]
+    return {"status": status, "retry_count": retry_count}
 
 
 def _tick(q, n):
+    """Each process_once is the NEXT attempt (backoff collapsed), so the outage
+    outlasts any retry budget in a handful of ticks."""
     with patch("gateway.mesh_bridge.assert_iface_tx_allowed"):
         for _ in range(n):
-            _make_every_row_due(q)
+            _sql(q, "UPDATE messages SET retry_after = NULL")
             q.process_once(batch_size=5)
 
 
@@ -121,18 +133,29 @@ class TestLegDownLongerThanTheRetryBudget:
         assert bridge.stats["messages_secondary_to_primary"] == 1
 
     def test_connected_flag_with_a_dead_socket_holds_too(self, bridge):
-        """#10's window (flag still True, library write would no-op) is a link
-        fact, read by the same ``_write_target_gone`` the send path refuses on."""
+        """#10's window (flag still True, library write would no-op)."""
         q, msg_id, _ = _enqueue_for_primary(bridge, "socketless")
-        bridge._primary_interface, bridge._primary_connected = _Radio(), True
+        radio = _Radio()
+        bridge._primary_interface, bridge._primary_connected = radio, True
         with patch("gateway.mesh_bridge._write_target_gone", return_value=True):
             _tick(q, 6)
-        row = _row(q, msg_id)
-        assert row["status"] == "pending"
-        assert row["retry_count"] == 0
+        assert _row(q, msg_id) == {"status": "pending", "retry_count": 0}
+        assert radio.sent == []
+
+    def test_an_outage_is_logged_once_not_per_tick(self, bridge, caplog):
+        """A 10-min hold re-asks every few seconds; the ERROR is the EPISODE."""
+        import logging
+        caplog.set_level(logging.DEBUG, logger="gateway.mesh_bridge")
+        q, _, _ = _enqueue_for_primary(bridge, "quiet")
+        bridge._primary_interface, bridge._primary_connected = None, False
+        _tick(q, 6)
+        loud = [r for r in caplog.records if r.levelno >= logging.WARNING
+                and "primary" in r.getMessage() and "link down" in r.getMessage()]
+        assert len(loud) == 1
+        assert bridge.stats["link_down_deferrals"] == 6
 
     def test_a_send_error_on_a_live_leg_still_spends_the_budget(self, bridge):
-        """Control that can fail: the gate must not swallow REAL send failures
+        """Control that can fail: deferral must not swallow REAL send failures
         (an interface refusing the write on a link that is up)."""
         q, msg_id, _ = _enqueue_for_primary(bridge, "refused")
 
@@ -144,13 +167,58 @@ class TestLegDownLongerThanTheRetryBudget:
         _tick(q, 6)
         assert _row(q, msg_id)["status"] == "dead_letter"
 
-    def test_the_status_says_the_leg_is_holding(self, bridge):
-        q, _, _ = _enqueue_for_primary(bridge, "visible")
-        bridge._primary_interface, bridge._primary_connected = None, False
+
+class TestReviewFindings_2026_11_11:
+
+    def test_F1_downlink_broadcast_still_crosses_with_the_socket_gone(self, bridge):
+        """The broker path does not use the socket: a primary broadcast whose
+        TCP socket is None is delivered by downlink inject, as before v1."""
+        q, msg_id, _ = _enqueue_for_primary(bridge, "via broker")
+        radio = _Radio()
+        bridge._primary_interface, bridge._primary_connected = radio, True
+        inj = MagicMock()
+        inj.inject.return_value = True
+        inj.inject_nodeinfo.return_value = True
+        bridge._primary_downlink = inj
+        with patch("gateway.mesh_bridge._write_target_gone", return_value=True):
+            _tick(q, 1)
+        assert _row(q, msg_id)["status"] == "delivered"
+        assert inj.inject.call_count == 1
+        assert radio.sent == []                       # never the dead socket
+
+    def test_F2_content_already_on_the_far_mesh_is_not_held(self, bridge):
+        """The sender's dual-path check runs BEFORE the link-down deferral: a
+        copy that already reached the far mesh resolves now, not after."""
+        from gateway.mesh_bridge import get_secondary_rf_registry
+        q, msg_id, content = _enqueue_for_secondary(bridge, "already there")
+        bridge._secondary_interface, bridge._secondary_connected = None, False
+        get_secondary_rf_registry().register(content)
         _tick(q, 1)
-        status = bridge.get_status()["queue"]
-        assert status["s2p_held_link_down"] is True
-        assert status["p2s_held_link_down"] is False
+        assert _row(q, msg_id)["status"] == "delivered"   # suppressed = resolved
+        assert bridge.stats.get("dual_path_suppressed_secondary") == 1
+
+    def test_F5_an_undrained_queue_still_ages_out(self, bridge):
+        """One-way bridge: the reverse queue is never drained, but rows already
+        in it (from before #4, or a direction change) must still expire,
+        witnessed — never count as pending forever."""
+        from gateway.mesh_bridge import MESH_BRIDGE_MAX_AGE_S
+        bridge.bridge_config.direction = "primary_to_secondary"
+        q, msg_id, _ = _enqueue_for_primary(bridge, "stranded")
+        old = (datetime.now() - timedelta(seconds=MESH_BRIDGE_MAX_AGE_S + 60))
+        _sql(q, "UPDATE messages SET created_at = ? WHERE id = ?",
+             (old.isoformat(), msg_id))
+        bridge._expire_undrained()
+        assert _row(q, msg_id)["status"] == "dead_letter"
+        # the drained direction is left to process_once
+        assert bridge._primary_to_secondary.get_queue_depth() == 0
+
+    def test_F6_held_flag_is_rows_waiting_on_a_down_leg_now(self, bridge):
+        bridge._primary_interface, bridge._primary_connected = None, False
+        assert bridge.get_status()["queue"]["s2p_held_link_down"] is False  # empty
+        _enqueue_for_primary(bridge, "visible")
+        assert bridge.get_status()["queue"]["s2p_held_link_down"] is True
+        bridge._primary_interface, bridge._primary_connected = _Radio(), True
+        assert bridge.get_status()["queue"]["s2p_held_link_down"] is False  # live read
 
     def test_held_rows_age_out_witnessed_not_forever(self, bridge):
         from gateway.mesh_bridge import MESH_BRIDGE_MAX_AGE_S

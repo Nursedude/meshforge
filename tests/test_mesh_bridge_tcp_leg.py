@@ -214,15 +214,18 @@ class TestTcpLinkLost:
         caplog.set_level(logging.DEBUG, logger="gateway.mesh_bridge")
         iface = _real_tcp_iface()
         bridge._primary_interface, bridge._primary_connected = iface, True
+        from gateway.message_queue_models import SendDeferred
         errors_before = bridge.stats["errors"]
         with patch("gateway.mesh_bridge.assert_iface_tx_allowed"), \
-             patch.object(type(iface), "sendText") as send:
-            assert bridge._send_to_primary(_msg().to_payload()) is False
+             patch.object(type(iface), "sendText") as send, \
+             pytest.raises(SendDeferred):      # BR-T #14: held, not a send error
+            bridge._send_to_primary(_msg().to_payload())
         assert send.call_count == 0            # never handed to a dead socket
         assert bridge.stats["messages_secondary_to_primary"] == 0
-        assert bridge.stats["errors"] == errors_before + 1
+        assert bridge.stats["errors"] == errors_before
+        assert bridge.stats["link_down_deferrals"] == 1
         assert _tx_lines(caplog) == []
-        assert any(r.levelno == logging.ERROR and "REFUSED" in r.getMessage()
+        assert any(r.levelno == logging.ERROR and "DEFERRED" in r.getMessage()
                    for r in caplog.records)
 
     def test_a_refusal_leaves_the_leg_to_the_library(self, bridge):
@@ -233,10 +236,12 @@ class TestTcpLinkLost:
         tears a leg down."""
         iface = _real_tcp_iface()
         bridge._primary_interface, bridge._primary_connected = iface, True
+        from gateway.message_queue_models import SendDeferred
         with patch("gateway.mesh_bridge.assert_iface_tx_allowed"), \
              patch.object(type(iface), "sendText"), \
-             patch.object(type(iface), "close") as close:
-            assert bridge._send_to_primary(_msg().to_payload()) is False
+             patch.object(type(iface), "close") as close, \
+             pytest.raises(SendDeferred):
+            bridge._send_to_primary(_msg().to_payload())
         assert close.call_count == 0
         assert bridge._primary_interface is iface
         assert bridge._primary_connected is True
@@ -330,10 +335,12 @@ class TestTcpLinkLost:
         iface = StreamInterface.__new__(StreamInterface)
         iface.stream = None
         bridge._secondary_interface, bridge._secondary_connected = iface, True
+        from gateway.message_queue_models import SendDeferred
         with patch("gateway.mesh_bridge.assert_iface_tx_allowed"), \
-             patch.object(StreamInterface, "sendText", create=True) as send:
-            assert bridge._send_to_secondary(
-                _msg(source_preset="LONG_FAST").to_payload()) is False
+             patch.object(StreamInterface, "sendText", create=True) as send, \
+             pytest.raises(SendDeferred):
+            bridge._send_to_secondary(
+                _msg(source_preset="LONG_FAST").to_payload())
         assert send.call_count == 0
         assert bridge.stats["messages_primary_to_secondary"] == 0
         assert bridge._secondary_interface is iface        # left to the library

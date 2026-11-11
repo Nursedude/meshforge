@@ -1018,7 +1018,9 @@ class TestDualPathDedupRegistration:
             destination_id="!ffffffff", content="never went out",
             channel=2, is_broadcast=True,
         )
-        assert bridge._send_to_primary(msg.to_payload()) is False
+        from gateway.message_queue_models import SendDeferred
+        with pytest.raises(SendDeferred):     # BR-T #14: held, not sent
+            bridge._send_to_primary(msg.to_payload())
         assert not reg.seen_within("never went out", 60.0)
 
     @patch('gateway.mesh_bridge.get_real_user_home')

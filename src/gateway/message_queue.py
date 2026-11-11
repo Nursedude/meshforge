@@ -991,11 +991,6 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
 
         return stats
 
-    def is_gated(self, destination: str) -> bool:
-        """True when the last process_once held ``destination`` (its ready_fn
-        said it cannot send) — rows waiting, not attempted."""
-        return destination in self._gated_destinations
-
     def get_queue_depth(self) -> int:
         """Get count of active messages (pending + in_progress).
 
