@@ -284,10 +284,11 @@ PARKED 11-04, revisit 12-04:
 - **TRH-1** [MF] S — traceroute history on the web map: the data is in `traceroute_history.db`, TUI-only today (capabilities: Live NOC map)
 
 - **BASE-1** [MF][MA] S+F — shared base: one base, a subclass per radio (operator 11-11: "make sure we do this")
-  10-18: 410 shared files, ~75K dup lines (cloud 11-11: ~91K; re-measure). First: an app-identity module per repo.
+  First: an app-identity module per repo.
 - **DAI-0** [MF] S — `offline_oracle.py` corpus reads the operator's `~/.claude/.../memory` (VERIFIED 11-11): a public corpus first
-- **EVAL-PF** [MF][MA] F — planted-fault benchmark re-run per model, END-graded, null drills: the harness's evidence. ⚠️ RNS licence: AI-dataset clause
+- **EVAL-PF** [MF][MA] F — planted-fault benchmark per model, END-graded (first cases: CLAW-1). ⚠️ RNS AI-dataset clause
 - **SEC-2** [MF] S — `SECURITY.md` says 0.5.x + localhost-only (map binds 0.0.0.0); udev 0666 `install_noc.sh:895` (VERIFIED 11-11)
+- **CLAW-1** [MF] S+F — DudeClaw: honest 24/7 RF witnesses, fleet then one ham: `plans/claw1_grilling_2026_11_11.md`
 
 ### LATER
 
