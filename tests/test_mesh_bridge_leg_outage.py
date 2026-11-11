@@ -390,3 +390,13 @@ class TestReviewRound2_2026_11_11:
         loud = [r for r in caplog.records if r.levelno >= logging.WARNING
                 and "DEFERRED" in r.getMessage()]
         assert len(loud) == 2
+
+
+def test_hold_constants_are_pinned():
+    """End-state review 11-11 F6: mutants 2.0→200 s and 600→6000 s survived
+    every bridge test (the tests derive from the constants). Pin the values;
+    MESH_BRIDGE_MAX_AGE_S is the operator's 11-11 '10 min' (ASSERTED, deferred
+    measure row) — change it here and in the deferred ledger together."""
+    from gateway.mesh_bridge import LINK_DOWN_RETRY_S, MESH_BRIDGE_MAX_AGE_S
+    assert LINK_DOWN_RETRY_S == 2.0
+    assert MESH_BRIDGE_MAX_AGE_S == 600
