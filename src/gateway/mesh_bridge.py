@@ -42,7 +42,7 @@ from ._mesh_bridge_mqtt import MQTTMeshInterface
 from ._mesh_bridge_legs import (
     bridge_event, build_downlink_injector, queue_drop_witness,
     LINK_DOWN_EPISODE_GAP_S, LINK_DOWN_RETRY_S, MESH_BRIDGE_MAX_AGE_S,
-    _last_tx_unreachable, _library_gave_up, _write_target_gone)
+    _library_gave_up, _write_target_gone)
 from .message_queue import PersistentMessageQueue, MessagePriority, RetryPolicy
 from .message_queue_models import SendDeferred
 from utils.safe_import import safe_import
@@ -1316,8 +1316,7 @@ class MeshtasticPresetBridge:
             iface = getattr(self, f"_{leg}_interface")
             connected = getattr(self, f"_{leg}_connected")
         return bool(connected and iface is not None
-                    and not _write_target_gone(iface)
-                    and not _last_tx_unreachable(iface))
+                    and not _write_target_gone(iface))
 
     def _held_link_down(self, queue: PersistentMessageQueue, leg: str) -> bool:
         return queue.get_queue_depth() > 0 and not self._leg_can_write(leg)
@@ -1433,11 +1432,6 @@ class MeshtasticPresetBridge:
             # failure got a "tx" line, a delivered counter and a cleared queue
             # row. Only the declared failure value is read as failure — the
             # meshtastic library returns a packet object on success.
-            if sent is False and _last_tx_unreachable(interface):
-                # r2 F-1: the MQTT leg's TX goes over HTTP to meshtasticd; a
-                # daemon it could not reach took nothing — hold, don't spend.
-                self._defer_link_down(dest_name, "meshtasticd unreachable "
-                                      f"({type(interface).__name__} TX)")
             if sent is False:
                 logger.error(
                     f"Forward to {dest_name} REFUSED by the interface "

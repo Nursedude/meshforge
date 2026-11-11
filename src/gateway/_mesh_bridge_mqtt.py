@@ -55,15 +55,6 @@ class MQTTMeshInterface:
         self._recent_ids: Dict[str, float] = {}
         self._dedup_window = 60
         self._fb_witness = FallbackDropWitness(f"[{name}] ")  # id-less dups dropped (hfm #9)
-        self._tx_unreachable = False   # BR-T #14 r2 F-1: see tx_unreachable()
-
-    def tx_unreachable(self) -> bool:
-        """True when the LAST sendText failed because meshtasticd could not be
-        reached at all (stateless PUT failed AND the session client could not
-        connect, or raised OSError) — nothing went out, so the bridge HOLDS the
-        row instead of spending its retry budget. A refusal by a reachable
-        daemon (oversize, send_text False) stays a send error."""
-        return self._tx_unreachable
 
     @property
     def is_connected(self) -> bool:
@@ -239,7 +230,6 @@ class MQTTMeshInterface:
         Fallback: Session-based protobuf client (legacy).
         """
         from .meshtastic_protobuf_client import refuse_if_oversize  # F18: before EITHER path
-        self._tx_unreachable = False
         if refuse_if_oversize(text, destinationId, f"[{self._name}] mesh_bridge sendText"):
             return False  # never the fromradio-reading session fallback (#17)
         dest_num = None
@@ -277,7 +267,6 @@ class MQTTMeshInterface:
             if not client.is_connected:
                 if not client.connect():
                     logger.warning(f"[{self._name}] Protobuf client connect failed")
-                    self._tx_unreachable = True    # both paths: daemon unreachable
                     return False
 
             return client.send_text(
@@ -287,7 +276,6 @@ class MQTTMeshInterface:
             )
         except Exception as e:
             logger.error(f"[{self._name}] Session-based TX failed: {e}")
-            self._tx_unreachable = isinstance(e, OSError)   # refused/reset/timeout
             return False
 
     @staticmethod

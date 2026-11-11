@@ -265,27 +265,29 @@ class TestReviewRound2_2026_11_11:
              patch("gateway._mesh_bridge_mqtt._ProtobufTransportConfig"):
             _tick(q, n)
 
-    def test_F1_mqtt_leg_with_meshtasticd_unreachable_is_held(self, bridge):
-        """The MQTT leg TXes over HTTP to meshtasticd; it is "connected" to the
-        broker while meshtasticd is down. Unreachable (stateless PUT failed AND
-        the session client cannot connect) is a link fact: defer, not spend."""
-        q, msg_id, _ = _enqueue_for_primary(bridge, "mqtt held")
+    def test_known_limit_mqtt_leg_outage_spends_the_budget_named(self, bridge, caplog):
+        """KNOWN LIMIT, pinned on purpose (r3 11-11 reverted the r2 MQTT hold):
+        the MQTT leg's TX is HTTP to meshtasticd and its failure shapes
+        (refused, HTTP 500, stale session, missing dep) cannot be told apart
+        from the send path — r2's inference held a reachable daemon's 500s for
+        600 s and missed a second outage. Until a DIRECT reachability fact
+        exists (queued), an unreachable daemon dead-letters the row like any
+        send error — and the loss is NAMED, never silent. If this test starts
+        failing because the row is held, that is the queued fix landing:
+        replace this pin with its tests."""
+        import logging
+        caplog.set_level(logging.DEBUG, logger="gateway.mesh_bridge")
+        q, msg_id, content = _enqueue_for_primary(bridge, "mqtt limit")
         bridge._primary_interface, bridge._primary_connected = _mqtt_leg(), True
         self._mqtt_tick(bridge, q, _Client(connects=False), 6)
-        assert _row(q, msg_id) == {"status": "pending", "retry_count": 0}
-        assert bridge.get_status()["queue"]["s2p_held_link_down"] is True
-        client = _Client(connects=True)
-        self._mqtt_tick(bridge, q, client, 1)
-        assert _row(q, msg_id)["status"] == "delivered"
-        assert len(client.sent) == 1
-        assert bridge.get_status()["queue"]["s2p_held_link_down"] is False
-
-    def test_F1_control_mqtt_refusal_on_a_reachable_daemon_spends(self, bridge):
-        """Reachable meshtasticd that refuses the send = a send error."""
-        q, msg_id, _ = _enqueue_for_primary(bridge, "mqtt refused")
-        bridge._primary_interface, bridge._primary_connected = _mqtt_leg(), True
-        self._mqtt_tick(bridge, q, _Client(connects=True, sends=False), 6)
         assert _row(q, msg_id)["status"] == "dead_letter"
+        assert any("mesh_bridge drop leg=secondary reason=dead_letter" in r.getMessage()
+                   and content[:40] in r.getMessage() for r in caplog.records)
+
+    def test_episode_gap_is_thirty_seconds(self):
+        """r3 m13: the tests derive from the constant; pin its value."""
+        import gateway.mesh_bridge as mb
+        assert mb.LINK_DOWN_EPISODE_GAP_S == 30.0
 
     def test_F3_a_new_outage_logs_again_without_a_send_between(self, bridge, caplog):
         """Episode = deferrals closer than LINK_DOWN_EPISODE_GAP_S; an outage

@@ -118,12 +118,6 @@ def _library_gave_up(interface) -> bool:
     return isinstance(flag, threading.Event) and not flag.is_set()
 
 
-def _last_tx_unreachable(interface) -> bool:
-    """BR-T #14 r2 F-1: an interface that can say its last TX found the far
-    end unreachable (the MQTT leg's ``tx_unreachable()``). Others: False."""
-    probe = getattr(interface, "tx_unreachable", None)
-    return bool(callable(probe) and probe() is True)
-
 
 #: BR-T #14 (2026-11-11): a row held while its leg is down ages out, witnessed
 #: (queue_drop_witness -> `drop … dead_letter`), after this long. ASSERTED, not
