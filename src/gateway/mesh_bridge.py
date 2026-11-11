@@ -41,9 +41,10 @@ from ._handoff_witness import HandoffWitness
 from ._mesh_bridge_mqtt import MQTTMeshInterface
 from ._mesh_bridge_legs import (
     bridge_event, build_downlink_injector, queue_drop_witness,
-    _library_gave_up, _write_target_gone)
+    LINK_DOWN_EPISODE_GAP_S, LINK_DOWN_RETRY_S, MESH_BRIDGE_MAX_AGE_S,
+    _last_tx_unreachable, _library_gave_up, _write_target_gone)
 from .message_queue import PersistentMessageQueue, MessagePriority, RetryPolicy
-from .message_queue_models import SendDeferred, _env_seconds
+from .message_queue_models import SendDeferred
 from utils.safe_import import safe_import
 from utils.paths import get_real_user_home
 from utils.tx_guard import assert_iface_tx_allowed
@@ -58,17 +59,6 @@ _pub, _HAS_PUBSUB = safe_import('pubsub', 'pub')
 # How long a TCP leg waits for its endpoint's connection lock (one slot per
 # meshtasticd, Issue #17) before it gives up this attempt and the leg loop retries.
 _LOCK_WAIT_S = 10
-#: BR-T #14 (2026-11-11): a row held while its leg is down ages out, witnessed
-#: (queue_drop_witness -> `drop … dead_letter`), after this long. ASSERTED, not
-#: measured (operator 11-11: "10 min, measure later" — best effort, not 100%):
-#: covers a meshtasticd restart / USB replug; chat relayed later than this
-#: reads as new on the far mesh. Re-derive from the leg-outage history
-#: (deferred: mesh-bridge-leg-outage-measure-2026-11-11).
-MESH_BRIDGE_MAX_AGE_S = _env_seconds("MESHFORGE_MESH_BRIDGE_MAX_AGE_S", 600)
-#: How soon a row deferred on a down leg is asked again (no attempt spent).
-LINK_DOWN_RETRY_S = 2.0
-
-
 @dataclass
 class BridgedMeshMessage:
     """Message being bridged between Meshtastic presets."""
@@ -174,7 +164,7 @@ class MeshtasticPresetBridge:
         # budget no longer dead-letters them; max_age_s bounds the hold,
         # witnessed. NOT a destination-wide ready_fn: that ran ahead of the
         # downlink branch and the dual-path dedup (11-11 review F1/F2).
-        self._link_down_noted: set = set()   # legs whose outage was logged
+        self._link_down_last: Dict[str, float] = {}  # leg -> monotonic of last deferral
         self._primary_to_secondary.register_sender(
             "secondary", self._send_to_secondary,
             max_age_s=MESH_BRIDGE_MAX_AGE_S,
@@ -1326,7 +1316,8 @@ class MeshtasticPresetBridge:
             iface = getattr(self, f"_{leg}_interface")
             connected = getattr(self, f"_{leg}_connected")
         return bool(connected and iface is not None
-                    and not _write_target_gone(iface))
+                    and not _write_target_gone(iface)
+                    and not _last_tx_unreachable(iface))
 
     def _held_link_down(self, queue: PersistentMessageQueue, leg: str) -> bool:
         return queue.get_queue_depth() > 0 and not self._leg_can_write(leg)
@@ -1337,8 +1328,10 @@ class MeshtasticPresetBridge:
         with self._stats_lock:
             self.stats['link_down_deferrals'] = (
                 self.stats.get('link_down_deferrals', 0) + 1)
-        if dest_name not in self._link_down_noted:
-            self._link_down_noted.add(dest_name)
+        now = time.monotonic()
+        last = self._link_down_last.get(dest_name)
+        self._link_down_last[dest_name] = now
+        if last is None or now - last > LINK_DOWN_EPISODE_GAP_S:
             logger.error(f"Forward to {dest_name} DEFERRED: link down ({why}) "
                          f"— held, not sent; retried every {LINK_DOWN_RETRY_S:.0f} s "
                          f"for up to {MESH_BRIDGE_MAX_AGE_S} s")
@@ -1395,7 +1388,7 @@ class MeshtasticPresetBridge:
                         f"Bridged {msg.source_preset} -> {dest_name} "
                         f"(downlink as !{origin:08x}): {msg.content[:50]}...")
                     bridge_event("tx", dest_name, msg.content)
-                    self._link_down_noted.discard(dest_name)
+                    self._link_down_last.pop(dest_name, None)
                     return True
                 logger.debug(
                     "Downlink inject unavailable for %s — toradio fallback",
@@ -1440,6 +1433,11 @@ class MeshtasticPresetBridge:
             # failure got a "tx" line, a delivered counter and a cleared queue
             # row. Only the declared failure value is read as failure — the
             # meshtastic library returns a packet object on success.
+            if sent is False and _last_tx_unreachable(interface):
+                # r2 F-1: the MQTT leg's TX goes over HTTP to meshtasticd; a
+                # daemon it could not reach took nothing — hold, don't spend.
+                self._defer_link_down(dest_name, "meshtasticd unreachable "
+                                      f"({type(interface).__name__} TX)")
             if sent is False:
                 logger.error(
                     f"Forward to {dest_name} REFUSED by the interface "
@@ -1450,7 +1448,7 @@ class MeshtasticPresetBridge:
 
             logger.info(f"Bridged {msg.source_preset} -> {dest_name}: {content[:50]}...")
             bridge_event("tx", dest_name, content)
-            self._link_down_noted.discard(dest_name)
+            self._link_down_last.pop(dest_name, None)
             return True
 
         except SendDeferred:

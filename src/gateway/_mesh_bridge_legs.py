@@ -11,6 +11,8 @@ import threading
 from .config import MeshtasticConfig
 from utils.safe_import import safe_import
 
+from .message_queue_models import _env_seconds
+
 logger = logging.getLogger("gateway.mesh_bridge")
 
 
@@ -114,3 +116,25 @@ def _library_gave_up(interface) -> bool:
         return False
     flag = getattr(interface, "isConnected", None)
     return isinstance(flag, threading.Event) and not flag.is_set()
+
+
+def _last_tx_unreachable(interface) -> bool:
+    """BR-T #14 r2 F-1: an interface that can say its last TX found the far
+    end unreachable (the MQTT leg's ``tx_unreachable()``). Others: False."""
+    probe = getattr(interface, "tx_unreachable", None)
+    return bool(callable(probe) and probe() is True)
+
+
+#: BR-T #14 (2026-11-11): a row held while its leg is down ages out, witnessed
+#: (queue_drop_witness -> `drop … dead_letter`), after this long. ASSERTED, not
+#: measured (operator 11-11: "10 min, measure later" — best effort, not 100%):
+#: covers a meshtasticd restart / USB replug; chat relayed later than this
+#: reads as new on the far mesh. Applies to EVERY pending row, held or not —
+#: incl. rows persisted across a bridge restart (r2 F-2: accepted, named). Re-derive from the leg-outage history
+#: (deferred: mesh-bridge-leg-outage-measure-2026-11-11).
+MESH_BRIDGE_MAX_AGE_S = _env_seconds("MESHFORGE_MESH_BRIDGE_MAX_AGE_S", 600)
+#: How soon a row deferred on a down leg is asked again (no attempt spent).
+LINK_DOWN_RETRY_S = 2.0
+#: Deferrals closer together than this are ONE outage (logged ERROR once);
+#: a gap longer starts a new one (r2 F-3: rows that aged out, an idle leg).
+LINK_DOWN_EPISODE_GAP_S = 30.0

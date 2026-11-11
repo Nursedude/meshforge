@@ -226,3 +226,165 @@ class TestReviewFindings_2026_11_11:
         for q, dest in ((bridge._secondary_to_primary, "primary"),
                         (bridge._primary_to_secondary, "secondary")):
             assert q._send_max_age.get(dest) == MESH_BRIDGE_MAX_AGE_S
+
+
+def _mqtt_leg():
+    import threading
+    from gateway.mesh_bridge import MQTTMeshInterface
+    cfg = MeshtasticConfig(use_mqtt=True, mqtt_channel="meshforge", host="192.0.2.1")
+    return MQTTMeshInterface(config=cfg, name="primary",
+                             message_callback=lambda p: None,
+                             stop_event=threading.Event())
+
+
+class _Client:
+    def __init__(self, connects, sends=True):
+        self.is_connected = False
+        self._connects, self._sends = connects, sends
+        self.sent = []
+
+    def connect(self):
+        self.is_connected = self._connects
+        return self._connects
+
+    def send_text(self, text, **kw):
+        self.sent.append(text)
+        return self._sends
+
+
+class TestReviewRound2_2026_11_11:
+    """Fable round 2 (by running) of 16f97fa7."""
+
+    def _mqtt_tick(self, bridge, q, client, n):
+        with patch("gateway.meshtastic_protobuf_client.send_text_direct",
+                   return_value=None), \
+             patch("gateway._mesh_bridge_mqtt._get_protobuf_client",
+                   return_value=client), \
+             patch("gateway._mesh_bridge_mqtt._HAS_PROTOBUF_CLIENT", True), \
+             patch("gateway._mesh_bridge_mqtt._HAS_PROTOBUF_CONFIG", True), \
+             patch("gateway._mesh_bridge_mqtt._ProtobufTransportConfig"):
+            _tick(q, n)
+
+    def test_F1_mqtt_leg_with_meshtasticd_unreachable_is_held(self, bridge):
+        """The MQTT leg TXes over HTTP to meshtasticd; it is "connected" to the
+        broker while meshtasticd is down. Unreachable (stateless PUT failed AND
+        the session client cannot connect) is a link fact: defer, not spend."""
+        q, msg_id, _ = _enqueue_for_primary(bridge, "mqtt held")
+        bridge._primary_interface, bridge._primary_connected = _mqtt_leg(), True
+        self._mqtt_tick(bridge, q, _Client(connects=False), 6)
+        assert _row(q, msg_id) == {"status": "pending", "retry_count": 0}
+        assert bridge.get_status()["queue"]["s2p_held_link_down"] is True
+        client = _Client(connects=True)
+        self._mqtt_tick(bridge, q, client, 1)
+        assert _row(q, msg_id)["status"] == "delivered"
+        assert len(client.sent) == 1
+        assert bridge.get_status()["queue"]["s2p_held_link_down"] is False
+
+    def test_F1_control_mqtt_refusal_on_a_reachable_daemon_spends(self, bridge):
+        """Reachable meshtasticd that refuses the send = a send error."""
+        q, msg_id, _ = _enqueue_for_primary(bridge, "mqtt refused")
+        bridge._primary_interface, bridge._primary_connected = _mqtt_leg(), True
+        self._mqtt_tick(bridge, q, _Client(connects=True, sends=False), 6)
+        assert _row(q, msg_id)["status"] == "dead_letter"
+
+    def test_F3_a_new_outage_logs_again_without_a_send_between(self, bridge, caplog):
+        """Episode = deferrals closer than LINK_DOWN_EPISODE_GAP_S; an outage
+        whose rows all aged out must not silence the next one."""
+        import logging
+        import gateway.mesh_bridge as mb
+        caplog.set_level(logging.DEBUG, logger="gateway.mesh_bridge")
+        bridge._primary_interface, bridge._primary_connected = None, False
+        clock = [1000.0]
+        with patch.object(mb.time, "monotonic", lambda: clock[0]):
+            q, msg_id, _ = _enqueue_for_primary(bridge, "one")
+            _tick(q, 2)                                    # outage 1
+            _sql(q, "DELETE FROM messages")                # its rows gone (expired)
+            clock[0] += mb.LINK_DOWN_EPISODE_GAP_S + 1
+            _enqueue_for_primary(bridge, "two")
+            _tick(q, 2)                                    # outage 2
+        loud = [r for r in caplog.records if r.levelno >= logging.WARNING
+                and "DEFERRED" in r.getMessage()]
+        assert len(loud) == 2
+
+    def test_F3_a_send_ends_the_episode(self, bridge, caplog):
+        """m04/m05: the success path re-arms too (no gap needed)."""
+        import logging
+        caplog.set_level(logging.DEBUG, logger="gateway.mesh_bridge")
+        q, _, _ = _enqueue_for_primary(bridge, "a")
+        bridge._primary_interface, bridge._primary_connected = None, False
+        _tick(q, 2)
+        bridge._primary_interface, bridge._primary_connected = _Radio(), True
+        _tick(q, 1)
+        _enqueue_for_primary(bridge, "b")
+        bridge._primary_interface, bridge._primary_connected = None, False
+        _tick(q, 2)
+        loud = [r for r in caplog.records if r.levelno >= logging.WARNING
+                and "DEFERRED" in r.getMessage()]
+        assert len(loud) == 2
+
+    def test_m14_m17_held_flag_reads_both_link_facts(self, bridge):
+        _enqueue_for_primary(bridge, "flag")
+        bridge._primary_interface, bridge._primary_connected = _Radio(), False
+        assert bridge.get_status()["queue"]["s2p_held_link_down"] is True   # flag
+        bridge._primary_connected = True
+        with patch("gateway.mesh_bridge._write_target_gone", return_value=True):
+            assert bridge.get_status()["queue"]["s2p_held_link_down"] is True  # target
+        assert bridge.get_status()["queue"]["s2p_held_link_down"] is False
+
+    def test_m08_cleanup_loop_runs_the_undrained_expiry(self, bridge):
+        bridge._running = True
+        waits = iter([False, True])
+        with patch.object(bridge._stop_event, "wait", lambda *_: next(waits)), \
+             patch.object(bridge, "_expire_undrained") as exp:
+            bridge._cleanup_loop()
+        assert exp.call_count == 1
+
+    @pytest.mark.parametrize("direction,drained", [
+        ("primary_to_secondary", ("p2s",)),
+        ("secondary_to_primary", ("s2p",)),
+        ("bidirectional", ("p2s", "s2p")),
+    ])
+    def test_m18_the_drain_obeys_direction(self, bridge, direction, drained):
+        bridge.bridge_config.direction = direction
+        bridge._running = True
+        waits = iter([True])
+        with patch.object(bridge._stop_event, "wait", lambda *_: next(waits)), \
+             patch.object(bridge._primary_to_secondary, "process_once",
+                          return_value=0) as p2s, \
+             patch.object(bridge._secondary_to_primary, "process_once",
+                          return_value=0) as s2p:
+            bridge._bridge_loop()
+        assert (p2s.call_count == 1) == ("p2s" in drained)
+        assert (s2p.call_count == 1) == ("s2p" in drained)
+
+    def test_m07_a_fault_after_enqueue_is_counted_not_named_a_loss(self, bridge, caplog):
+        import logging
+        caplog.set_level(logging.DEBUG, logger="gateway.mesh_bridge")
+        q = bridge._primary_to_secondary
+        pkt = {"decoded": {"portnum": "TEXT_MESSAGE_APP", "payload": b"queued ok"},
+               "fromId": "!aaaa0001", "toId": "^all", "to": 0xFFFFFFFF, "channel": 0}
+        with patch.object(bridge, "_notify_message", side_effect=RuntimeError("cb")):
+            bridge._process_receive(pkt, "primary", "secondary", q)
+        assert bridge.stats.get("receive_errors") == 1
+        assert q.get_queue_depth() == 1
+        assert not any("reason=receive_error" in r.getMessage() for r in caplog.records)
+
+    def test_m04_a_downlink_delivery_ends_the_episode_too(self, bridge, caplog):
+        import logging
+        caplog.set_level(logging.DEBUG, logger="gateway.mesh_bridge")
+        inj = MagicMock()
+        inj.inject.return_value = True
+        inj.inject_nodeinfo.return_value = True
+        q, _, _ = _enqueue_for_primary(bridge, "dl a")
+        bridge._primary_interface, bridge._primary_connected = None, False
+        _tick(q, 2)                                    # outage 1: ERROR
+        bridge._primary_interface, bridge._primary_connected = _Radio(), True
+        bridge._primary_downlink = inj
+        _tick(q, 1)                                    # delivered by downlink
+        assert inj.inject.call_count == 1
+        _enqueue_for_primary(bridge, "dl b")
+        bridge._primary_interface, bridge._primary_connected = None, False
+        _tick(q, 2)                                    # outage 2: ERROR again
+        loud = [r for r in caplog.records if r.levelno >= logging.WARNING
+                and "DEFERRED" in r.getMessage()]
+        assert len(loud) == 2
