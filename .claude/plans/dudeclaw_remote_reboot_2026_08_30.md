@@ -223,6 +223,8 @@ watch verdict is currently answered from one vantage only.
 - What is the firmware's watch-list capacity? 5 ids survive with
   `watch_dropped: None`; the ceiling is unmeasured. `watch_dropped` exists as a
   field, so a ceiling exists somewhere.
+  **2026-11-10: 6 ids armed on dudeclaw-01 with `watch_dropped: None` → capacity
+  ≥ 6** (ceiling still unknown above that).
 - ~~What triggered dudeclaw-01's `sw-restart`~~ — **ANSWERED 2026-08-30**: the
   firmware has had a deferred-restart path all along (portal save and a
   Telegram command both use it), so `sw-restart` is an ordinary reported
