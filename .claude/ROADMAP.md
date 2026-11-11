@@ -188,7 +188,7 @@ product defect needs one.
   status: planned
 - **INBOX-2** [MF] S+F — inbox follow-ups from the operator's 10-21 iPhone report: a channel post the fleet demonstrably heard shows "handed to radio · unconfirmed" FOREVER; the phone lost its web login with no pairing code on screen (server session intact)
   Steps 1-3 landed 11-08 `4002f79a` but NO caller: page still unconfirmed (11-09). Next: TUI+/inbox.
-- **BR-T** [MF] S+F — `mesh_bridge` says more than it saw (11-09 review by running): failed MQTT-leg write counted sent, no DM refusal, dedup by sender+text, default TCP leg RX dead; 9 findings, `research/landscape_2026_11_09.md` §B. Before REL-1 (operator 11-10).
+- **BR-T** [MF] S+F — `mesh_bridge` says more than it saw (11-09 review by running). Open: DM refusal, dedup by packet id, #7 #9 #15–#17; `research/landscape_2026_11_09.md` §B. Before REL-1 (operator 11-10).
 - **REL-1** [MF] S — a release every month: tag + a changelog a ham can read; each runs the gate-5 virtual drill (brief 42fbS7, 10-27)
   30-DAY: v0.8.0-beta = first GitHub Release by 12-04; gate-5 drill to END (README only, a message crosses mesh↔RNS).
 - **BIC-1** [MF] S+F — `/inbox` browser chat; sends read "handed to radio · unconfirmed", never "delivered"
@@ -283,6 +283,12 @@ PARKED 11-04, revisit 12-04:
 - **SHOW-1** [MF] S — README shows the one unique screen (a message's legs); today logo + badges only. Session-added.
 - **TRH-1** [MF] S — traceroute history on the web map: the data is in `traceroute_history.db`, TUI-only today (capabilities: Live NOC map)
 
+- **BASE-1** [MF][MA] S+F — shared base: one base, a subclass per radio (operator 11-11: "make sure we do this")
+  10-18: 410 shared files, ~75K dup lines (cloud 11-11: ~91K; re-measure). First: an app-identity module per repo.
+- **DAI-0** [MF] S — `offline_oracle.py` corpus reads the operator's `~/.claude/.../memory` (VERIFIED 11-11): a public corpus first
+- **EVAL-PF** [MF][MA] F — planted-fault benchmark re-run per model, END-graded, null drills: the harness's evidence. ⚠️ RNS licence: AI-dataset clause
+- **SEC-2** [MF] S — `SECURITY.md` says 0.5.x + localhost-only (map binds 0.0.0.0); udev 0666 `install_noc.sh:895` (VERIFIED 11-11)
+
 ### LATER
 
 - **BIC-13** [MF] S+F — HOLD per-box CA + `wss://` (13b/c)
@@ -336,19 +342,11 @@ PARKED 11-04, revisit 12-04:
   or NEXT item it moves; (3) the row it changes in
   `.claude/foundations/bridge_contract_matrix.md` or `docs/capabilities.md`.
   Work that cannot name all three is bloat. A test, not a freeze.
-- **The biggest bloat is duplication between the twins**: MeshForge and
-  MeshAnchor share 410 source files, 212 within 10 lines of each other, about
-  75K duplicated lines (measured 2026-10-18). The cure is a shared base package
-  (one base, a subclass per radio) — its own arc, not a side task.
-- **No harness freeze** (the 09-09→10-09 freeze ended on its date; measured
-  10-09: it never bound — volume doubled under it and every in-freeze
-  instrument was exempt-and-right). Judge every change by its END; harness
-  work is welcome when it fixes a detector that is loud, blind, or aimed at
-  the wrong quantity. Measure the split with `scripts/harness_share.py`.
-  Record: `.claude/plans/post_freeze_harness_budget_2026_10_09.md` §8.
+- **The biggest bloat is duplication between the twins** — the cure is `BASE-1`.
+- **No harness freeze**: judge every change by its END; harness work is welcome
+  when it fixes a detector that is loud, blind, or aimed at the wrong quantity
+  (`scripts/harness_share.py`; `plans/post_freeze_harness_budget_2026_10_09.md` §8).
 - RNS-substrate changes land in MeshForge first, then port to MeshAnchor
   (`scripts/parity_check.py`).
 - Batch commits: one docs commit per session, code fixes grouped by logical
   change, at most one fleet deploy per session.
-- Superseded `plans/v1.0_roadmap.md` (MF + MA) DELETED 2026-10-22 after a diff into
-  "1.0 = these checks pass" (Q13; not-carried list: that day's provenance row; `git log --all`).
