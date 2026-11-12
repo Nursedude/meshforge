@@ -216,7 +216,9 @@ def test_every_gateway_enqueue_names_a_source():
             for node in ast.walk(fn):
                 if (isinstance(node, ast.Call)
                         and isinstance(node.func, ast.Attribute)
-                        and node.func.attr == "enqueue"
+                        # enqueue_with_reason too (BR-T #6, 11-11): a new
+                        # API name must not walk past this pin
+                        and node.func.attr in ("enqueue", "enqueue_with_reason")
                         and not any(k.arg == "source" for k in node.keywords)
                         and (path.name, fn.name) not in _SOURCELESS_ENQUEUE):
                     missing.append(f"{path.name}:{node.lineno} in {fn.name}()")

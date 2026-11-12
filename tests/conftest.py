@@ -455,6 +455,10 @@ _OPERATOR_STORE_MODULES = (
     "commands.messaging",              # messages.db
     "gateway.correlation_store",       # gateway_correlation.db
     "gateway.message_queue",           # message_queue.db
+    # mesh_bridge_queues/p2s.db + s2p.db — MeshtasticPresetBridge() resolves
+    # the home through ITS OWN import; only per-file fixtures covered it
+    # (2026-11-11, found porting BR-T #4–#18 to MeshAnchor before any red run).
+    "gateway.mesh_bridge",
     "commands.rns",                    # lxmf_storage/ (LXMF ratchets)
     "gateway._rns_bridge_connection",  # lxmf_storage/ (LXMF ratchets)
     # operator_line_status.json (BIC-15 pane, 2026-10-15) + the line's default
