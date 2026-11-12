@@ -667,3 +667,134 @@ class TestRound3Pins_2026_11_11:
         payload = {"content": "x"}
         q._fire_terminal("secondary", payload, "dropped", reason="expired")
         assert TERMINAL_REASON_KEY not in payload
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# THE LEG-STATE TABLES (R5 seam, 2026-11-12). Rounds 4 and 5 each found the
+# guard blind ONE STEP OVER — a gate inlined in the loop (R4-F1), then a gate
+# on the PRIMARY leg once a queue has rows (R5-F1), an early notify one frame
+# above the connectors (R5-F2), the #22 shortcut on a marked-down leg that
+# kept its handle (R5-F3). Same kind twice = a seam: one table, symmetric in
+# the leg, every row through the REAL _bridge_loop / _connect_<leg>. A gate
+# or shortcut keyed on ANY leg, state or row kind now has a row that fails.
+# ════════════════════════════════════════════════════════════════════════════
+
+_LEGS = ("primary", "secondary")
+# none = no handle · marked = _mark_leg_down (flag down, handle KEPT) ·
+# gone = flag up, write target gone (#10 window) · up = writable
+_LEG_STATES = ("none", "marked", "gone", "up")
+_ROWS = ("bcast", "bcast_downlink", "dm", "dm_nodest", "dedup", "aged")
+
+
+def _expected(row, leg, state):
+    """THE spec, from the sender's own order (_send_to_<leg> → _forward_message
+    → process_once): returns (status, via) where via ∈ held / radio / inject /
+    dedup / refused / expired."""
+    if row == "aged":                 # process_once expires BEFORE any send
+        return "dead_letter", "expired"
+    if row == "dedup":                # the sender's dedup runs before the defer
+        return "delivered", "dedup"
+    if row == "dm_nodest":            # #18: refused before the defer
+        return "dead_letter", "refused"
+    if state in ("none", "marked"):   # #22 REVERTED: the defer comes first
+        return "pending", "held"
+    if row == "bcast_downlink" and leg == "primary":
+        return "delivered", "inject"  # F1: broker path, not the socket
+    if state == "gone":               # #10: the library would drop the write
+        return "pending", "held"
+    return "delivered", "radio"
+
+
+def _set_leg(bridge, leg, state):
+    radio = None if state == "none" else _Radio()
+    setattr(bridge, f"_{leg}_interface", radio)
+    setattr(bridge, f"_{leg}_connected", state in ("gone", "up"))
+    return radio
+
+
+def _enqueue_row(bridge, row, dest):
+    """One row of kind ``row`` waiting for ``dest``; returns (queue, id, text)."""
+    from datetime import datetime, timedelta
+    from gateway.mesh_bridge import (BridgedMeshMessage, get_rf_tx_registry,
+                                     get_secondary_rf_registry)
+    import uuid
+    src_preset = "SHORT_TURBO" if dest == "primary" else "LONG_FAST"
+    q = bridge._secondary_to_primary if dest == "primary" else bridge._primary_to_secondary
+    dm = row in ("dm", "dm_nodest")
+    text = f"{row}->{dest} {uuid.uuid4().hex[:8]}"
+    m = BridgedMeshMessage(
+        source_preset=src_preset, source_id="!b03bb70c",
+        destination_id={"dm": "!0badcafe", "dm_nodest": ""}.get(row, "^all"),
+        content=text, channel=0, is_broadcast=not dm)
+    msg_id = q.enqueue(m.to_payload(), destination=dest)
+    assert msg_id
+    if row == "dedup":
+        (get_rf_tx_registry() if dest == "primary"
+         else get_secondary_rf_registry()).register(text)
+    if row == "aged":   # past MESH_BRIDGE_MAX_AGE_S, inside the clock-jump cap
+        _sql(q, "UPDATE messages SET created_at = ? WHERE id = ?",
+             ((datetime.now() - timedelta(seconds=720)).isoformat(), msg_id))
+    return q, msg_id, text
+
+
+@pytest.mark.parametrize("other_state", ["none", "up"])
+@pytest.mark.parametrize("state", _LEG_STATES)
+@pytest.mark.parametrize("dest", _LEGS)
+@pytest.mark.parametrize("row", _ROWS)
+def test_leg_state_table_through_the_real_loop(bridge, caplog, row, dest, state,
+                                                other_state):
+    other = "secondary" if dest == "primary" else "primary"
+    radio = _set_leg(bridge, dest, state)
+    other_radio = _set_leg(bridge, other, other_state)
+    inj = MagicMock()
+    inj.inject.return_value = True
+    inj.inject_nodeinfo.return_value = True
+    bridge._primary_downlink = inj if row == "bcast_downlink" else None
+    q, msg_id, text = _enqueue_row(bridge, row, dest)
+    caplog.set_level(logging.DEBUG, logger="gateway.mesh_bridge")
+
+    with patch.object(bridge, "_dual_path_dedup_on", return_value=True), \
+            patch("gateway.mesh_bridge._write_target_gone",
+                  side_effect=lambda i: state == "gone" and i is radio):
+        _loop_pass(bridge, 6)
+
+    status, via = _expected(row, dest, state)
+    got = _row(q, msg_id)
+    assert got["status"] == status, (row, dest, state, other_state, got)
+    sent = radio.sent if radio is not None else []
+    if via == "radio":                         # exactly one write, this text
+        assert len(sent) == 1 and sent[0].endswith(text), sent
+    else:
+        assert sent == []
+    assert inj.inject.call_count == (1 if via == "inject" else 0)
+    assert (other_radio.sent if other_radio else []) == []
+    if via == "held":
+        assert got["retry_count"] == 0         # the budget is for send errors
+    if via == "refused":
+        assert bridge.stats.get("dm_no_destination", 0) >= 1
+    if via == "expired":
+        assert f"mesh_bridge drop leg={other} reason=expired: {text}" in [
+            r.getMessage() for r in caplog.records]
+
+
+@pytest.mark.parametrize("outcome", ["ok", "fail"])
+@pytest.mark.parametrize("ctype", ["tcp", "mqtt", "serial"])
+@pytest.mark.parametrize("leg", _LEGS)
+def test_connect_table_exactly_one_event_after_the_install(bridge, leg, ctype, outcome):
+    """#21 through the REAL _connect_<leg> → _connect_interface → install, the
+    connector replaced: the WHOLE event list, per leg — one
+    `<leg>_connected`, reading the leg up; none on a failed connect."""
+    cfg = getattr(bridge.bridge_config, leg)
+    cfg.connection_type = "" if ctype == "tcp" else ctype
+    cfg.use_mqtt = False
+    radio = _Radio()
+    got = (radio, True) if outcome == "ok" else (None, False)
+    seen = []
+    bridge.register_status_callback(
+        lambda status, data: seen.append((status, data[leg]["connected"])))
+    with patch.object(bridge, "_connect_tcp", return_value=got), \
+            patch.object(bridge, "_connect_mqtt", return_value=got), \
+            patch.object(bridge, "_connect_serial", return_value=got):
+        getattr(bridge, f"_connect_{leg}")()
+    assert seen == ([(f"{leg}_connected", True)] if outcome == "ok" else [])
+    assert (getattr(bridge, f"_{leg}_interface") is radio) == (outcome == "ok")
