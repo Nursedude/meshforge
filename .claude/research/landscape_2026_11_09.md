@@ -161,6 +161,19 @@ success against a listener that accepts TCP but never CONNACKs — on a CONNECTE
 (moc runs `injection_mode: downlink`) a broker-side failure could also read `delivered`.
 Measure on the emulated tier (sim meshtasticd + mosquitto) before designing; MF first.
 
+**Round 4 (Fable subagent by running, 2026-11-12 00:01–00:21): NOT CLEAN on TESTS only — every
+claimed fix holds in both twins; queued for the next session (test-first, MF first):**
+- **R4-F1 (SHOULD-FIX, CONFIRMED + re-measured here):** the seam guard calls `_drain_once`
+  directly; a leg gate inlined in `_bridge_loop` (mutant m23k) SURVIVES all 452 MF / 410 MA
+  bridge+queue tests (my run: guard + m18 `12 passed` on the mutant = the control). Fix: drive the
+  through-the-loop cases via the REAL `_bridge_loop` (one-pass harness) and drop m18's "legs up".
+- **R4-F2:** `_mesh_bridge_drain.py` is not in `parity_check.py`'s byte tier — the "byte copy" has
+  no check that can fail. Add it.
+- **R4-F3:** B19 pins `_connect_tcp` only; a notify restored in `_connect_mqtt` / `_connect_serial`
+  survives. **R4-F4:** `_install_or_close` can emit `<leg>_connected` AFTER a concurrent
+  `_disconnected` (no consumer today). **R4-F5:** stale `dead_letter` comment in
+  `_mesh_bridge_legs.py`; `_note_link_down` has one caller. **R4-F6:** stale-sweep drop name unpinned.
+
 **#24 design — DECIDED 2026-11-11 (operator: "agree with your recommendation - lets do this"); build test-first in a FRESH session, inside BIC-2.**
 Rule: **chain each transport's OWN wire id, hop by hop — never a content hash**
 (a hash is text in disguise and collapses two identical "ok" texts — the BR-T #3
