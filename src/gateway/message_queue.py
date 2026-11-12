@@ -1059,7 +1059,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin, MessageQueueOutageMixin
                 source=delivery_legs.payload_source(payload),
                 drop_reason=_dc.DropReason.QUEUE_SHED,
             )
-            self._fire_terminal(destination, payload, "dropped")
+            self._fire_terminal(destination, payload, "dropped", reason="shed")
         return shed_count
 
     def _maybe_auto_cleanup(self) -> None:

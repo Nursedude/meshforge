@@ -40,6 +40,12 @@ logger = logging.getLogger(__name__)
 #: |Δwall − Δmonotonic| beyond this between two ticks is a clock step.
 CLOCK_JUMP_S = 60.0
 
+#: The key a terminal hook's payload COPY carries naming WHY a row was dropped
+#: (BR-T §B #20, 2026-11-11): "expired" / "shed" here and in the queue; absent
+#: = the historical dead-letter. ONE constant for the writer (the queue) and
+#: the reader (the mesh bridge's drop witness) — hfm #5.
+TERMINAL_REASON_KEY = "_terminal_reason"
+
 
 class MessageQueueOutageMixin:
     """Defer + expiry methods mixed into PersistentMessageQueue."""
@@ -122,7 +128,8 @@ class MessageQueueOutageMixin:
         return True
 
     def _fire_terminal(self, destination: Optional[str],
-                       payload: Optional[Dict], outcome: str) -> None:
+                       payload: Optional[Dict], outcome: str,
+                       reason: str = "") -> None:
         """Run the destination's terminal hook (``register_sender``'s
         ``on_terminal``): once per row at every exit — delivered, dead-letter,
         stale dead-letter, shed, expired. Never raises: a callback bug
@@ -133,8 +140,11 @@ class MessageQueueOutageMixin:
         cb = getattr(self, '_terminal_callbacks', {}).get(destination or "")
         if cb is None:
             return
+        copy = dict(payload or {})
+        if reason:
+            copy[TERMINAL_REASON_KEY] = reason   # the copy only, never the row
         try:
-            cb(dict(payload or {}), outcome)
+            cb(copy, outcome)
         except Exception as e:  # noqa: BLE001 — witness, never propagate
             with self._lock:
                 self._stats["terminal_callback_errors"] += 1
@@ -235,5 +245,5 @@ class MessageQueueOutageMixin:
         logger.warning(
             f"Message {msg_id} ({destination}) EXPIRED after {age / 3600:.1f} h "
             f"undelivered — dead-lettered")
-        self._fire_terminal(destination, payload, "dropped")
+        self._fire_terminal(destination, payload, "dropped", reason="expired")
         return True

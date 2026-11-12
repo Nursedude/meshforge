@@ -13,6 +13,7 @@ from .config import MeshtasticConfig
 from utils.safe_import import safe_import
 
 from .message_queue_models import _env_seconds
+from .message_queue_outage_mixin import TERMINAL_REASON_KEY
 
 logger = logging.getLogger("gateway.mesh_bridge")
 
@@ -66,11 +67,14 @@ def bridge_event(verb: str, side: str, text: str, reason: str = "") -> None:
 
 
 def queue_drop_witness(ingress: str):
-    """on_terminal hook for a bridge queue: name a row the queue gave up on."""
+    """on_terminal hook for a bridge queue: name a row the queue gave up on —
+    by WHY (§B #20): ``expired`` (the #14 hold aged out), ``shed`` (queue
+    pressure), else ``dead_letter`` (retries spent; c21 keys on that name)."""
     def on_terminal(payload, outcome: str) -> None:
         if outcome == "dropped":
-            bridge_event("drop", ingress, str((payload or {}).get("content", "")),
-                         "dead_letter")
+            payload = payload or {}
+            bridge_event("drop", ingress, str(payload.get("content", "")),
+                         payload.get(TERMINAL_REASON_KEY) or "dead_letter")
     return on_terminal
 
 

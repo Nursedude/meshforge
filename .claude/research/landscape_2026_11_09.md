@@ -149,6 +149,43 @@ moc3's RNS path (moc2 heard `[RNS:VAIL] …`). Hold path NOT exercised live; the
 witness read UNOBSERVABLE (its own radio was the one cut) while moc2 had heard it →
 **#24** the witness should consult a peer ST box's hearing before saying unknown.
 
+**2026-11-11 #19–#23 FIXED** (MF first, MA ported same session; not deployed) — see provenance.
+
+**#24 design — DECIDED 2026-11-11 (operator: "agree with your recommendation - lets do this"); build test-first in a FRESH session, inside BIC-2.**
+Rule: **chain each transport's OWN wire id, hop by hop — never a content hash**
+(a hash is text in disguise and collapses two identical "ok" texts — the BR-T #3
+defect; memory 09-18 "decided on a wire FACT, never text"). A deployment only lacks
+the hops it does not run; a hop with no id-carrying record reads `unobservable`,
+never guessed.
+
+| Deployment | Hops | Join |
+|---|---|---|
+| Meshtastic-only preset bridge (no RNS) | LF → bridge → its ST radio → ST hearers | the bridge's `sendText` returns the packet id it sent → ST boxes' `rx_heard` `[from, id, rx_ts]` — ONE hop. **= the channel syn/ack; FIRST SLICE** |
+| RNS hub (this fleet) | LF → moc → LXMF → moc3 → ST hearers | moc's LXMF message id → injector records `(LXMF id → injected packet id)` → `rx_heard` — two hops |
+| All-RNS RF | LXMF end to end | LXMF's cryptographic delivery proof IS the ack; no hearing join |
+
+Measured on the 18:36 drill (`MF drill held 183625`): moc3 logged `Sent text via
+stateless HTTP protobuf (id=2886856464)` = **0xac11ef10**, the SAME id moc2's
+`rx_heard` holds (`from=0xebfa1b11` = moc3) — the injector→hearer hop already joins
+on a wire id. moc's hand-off note keys on `content_id` and reads only its OWN
+secondary radio (UNOBSERVABLE when it is down) — the CENTER may upgrade that with
+evidence another box wrote; the box's own view stays honest.
+**Double tap DONE 11-11 19:49 (`date`):** moc's `lxmf-1794458192791-002c` ids are LOCAL
+delivery-tracking ids (one per dest, 4 for 4/4); moc3 logs only `Stored message
+23657 from 3dfbdb5d…` (local row + sender identity). Neither logs a shared id —
+but LXMF has one: `LXMessage.message_id = hash = full_hash(hashed_part)`
+(`LXMF/LXMessage.py:368-369`, the PACK side; that the receiver derives the same hash is BELIEVED — read its unpack path first). And row 2's
+home EXISTS: `BridgeCorrelationStore` (`gateway/correlation_store.py`, Thread-2)
+carries nullable `mesh_packet_id` / `lxmf_msg_hash` columns "up front so later
+steps need no migration" — its producers do not fill them yet (flag-gated: check
+per box). Row 2 = fill `lxmf_msg_hash` at moc's send and `(lxmf_msg_hash →
+injected mesh_packet_id)` at moc3's inject, in that store; no new id scheme.
+**Slice 1 acceptance (pre-register before code):** the preset bridge records the
+packet id `sendText` returned for each forward; the center joins it to any
+far-preset box's `rx_heard` → `heard_by [box]`; with no far-preset ring covering the
+window → `unobservable`, never `not_heard`. Byte-locked: `box_truth_rx.py` is
+parity-locked with MA — any new field lands in both.
+
 **What the public sentence can be today:** "one 24 h serial-to-serial lab run:
 1,436 of 1,436 broadcasts crossed, 48 of 48 planted controls dropped under their
 names." Not "every message accounted for", not "DMs refused", not "dedup by packet ID".

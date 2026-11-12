@@ -22,6 +22,8 @@ the radio (and, for F1, the broker injector) is replaced.
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
+import logging
+
 import pytest
 
 from gateway.config import GatewayConfig, MeshtasticBridgeConfig, MeshtasticConfig
@@ -349,6 +351,9 @@ class TestReviewRound2_2026_11_11:
     def test_m18_the_drain_obeys_direction(self, bridge, direction, drained):
         bridge.bridge_config.direction = direction
         bridge._running = True
+        # legs UP: §B #23 skips a queue whose leg cannot take a write
+        bridge._primary_interface, bridge._primary_connected = _Radio(), True
+        bridge._secondary_interface, bridge._secondary_connected = _Radio(), True
         waits = iter([True])
         with patch.object(bridge._stop_event, "wait", lambda *_: next(waits)), \
              patch.object(bridge._primary_to_secondary, "process_once",
@@ -386,6 +391,7 @@ class TestReviewRound2_2026_11_11:
         assert inj.inject.call_count == 1
         _enqueue_for_primary(bridge, "dl b")
         bridge._primary_interface, bridge._primary_connected = None, False
+        bridge._primary_downlink = None   # §B #22: a live broker path would carry it
         _tick(q, 2)                                    # outage 2: ERROR again
         loud = [r for r in caplog.records if r.levelno >= logging.WARNING
                 and "DEFERRED" in r.getMessage()]
@@ -400,3 +406,137 @@ def test_hold_constants_are_pinned():
     from gateway.mesh_bridge import LINK_DOWN_RETRY_S, MESH_BRIDGE_MAX_AGE_S
     assert LINK_DOWN_RETRY_S == 2.0
     assert MESH_BRIDGE_MAX_AGE_S == 600
+
+
+class TestPortReviewTwin_2026_11_11:
+    """MA port review r1 (code-review medium on MA b2e0fb85, 11-11): findings
+    that hold in MF too (the port copied MF) — landscape §B #19–#23."""
+
+    def test_19_a_library_exit_on_send_is_a_counted_failure_not_a_stuck_row(self, bridge):
+        """F4: SystemExit (library our_exit) was caught only at _bridge_loop,
+        after process_once had marked the row in_progress — the row stuck,
+        the batch was skipped, nothing named it."""
+        q, msg_id, _ = _enqueue_for_secondary(bridge, "lib exit")
+
+        class _Exiter(_Radio):
+            def sendText(self, text, **kw):
+                raise SystemExit("Warning: library our_exit")
+
+        bridge._secondary_interface, bridge._secondary_connected = _Exiter(), True
+        errors_before = bridge.stats["errors"]
+        _tick(q, 1)                                   # must not raise
+        assert _row(q, msg_id)["status"] == "pending"  # retried, not stuck
+        assert _row(q, msg_id)["retry_count"] == 1
+        assert bridge.stats["errors"] == errors_before + 1
+        assert bridge.stats.get("library_exit_caught") == 1
+
+    def test_20_a_hold_that_ages_out_is_named_expired_not_dead_letter(self, bridge, caplog):
+        """F5: every terminal drop read `dead_letter` — the #14 hold's own
+        loss (aged out while the leg was down) was indistinct from a send
+        that failed N times."""
+        q, msg_id, content = _enqueue_for_secondary(bridge, "aged")
+        # 2 h: past MESH_BRIDGE_MAX_AGE_S, inside AGE_SANITY_CAP (an older
+        # stamp reads as a clock jump and is re-stamped, never expired).
+        from datetime import datetime, timedelta
+        _sql(q, "UPDATE messages SET created_at = ? WHERE id = ?",
+             ((datetime.now() - timedelta(hours=2)).isoformat(), msg_id))
+        caplog.set_level(logging.DEBUG, logger="gateway.mesh_bridge")
+        q.expire_overdue()
+        drops = [r.getMessage() for r in caplog.records
+                 if r.getMessage().startswith("mesh_bridge drop")]
+        assert drops == [f"mesh_bridge drop leg=primary reason=expired: {content}"]
+
+    def test_20_a_shed_row_is_named_shed(self, bridge, caplog):
+        q, msg_id, content = _enqueue_for_secondary(bridge, "shed me")
+        caplog.set_level(logging.DEBUG, logger="gateway.mesh_bridge")
+        assert q._shed_overflow(1) == 1
+        drops = [r.getMessage() for r in caplog.records
+                 if r.getMessage().startswith("mesh_bridge drop")]
+        assert drops == [f"mesh_bridge drop leg=primary reason=shed: {content}"]
+
+    def test_20_control_retries_exhausted_keeps_dead_letter(self, bridge, caplog):
+        """c21's `delivered_unrecorded` keys on dead_letter — that name stays."""
+        q, msg_id, content = _enqueue_for_secondary(bridge, "fails")
+
+        class _Refuser(_Radio):
+            def sendText(self, text, **kw):
+                return False
+
+        bridge._secondary_interface, bridge._secondary_connected = _Refuser(), True
+        caplog.set_level(logging.DEBUG, logger="gateway.mesh_bridge")
+        _tick(q, 10)
+        assert _row(q, msg_id)["status"] == "dead_letter"
+        drops = [r.getMessage() for r in caplog.records
+                 if r.getMessage().startswith("mesh_bridge drop")]
+        assert drops == [f"mesh_bridge drop leg=primary reason=dead_letter: {content}"]
+
+    def test_21_the_connected_event_sees_the_leg_installed(self, bridge):
+        """F6: _notify_status('<leg>_connected') ran inside _connect_* BEFORE
+        _install_leg — the event's own payload read the leg as down."""
+        _enqueue_for_secondary(bridge, "waiting")
+        seen = []
+        bridge.register_status_callback(
+            lambda status, data: seen.append((status, data["queue"]["p2s_held_link_down"])))
+        with patch.object(bridge, "_connect_interface", return_value=(_Radio(), True)):
+            bridge._connect_secondary()
+        assert ("secondary_connected", False) in seen
+
+    def test_22_a_downlink_broadcast_crosses_with_the_leg_flagged_down(self, bridge):
+        """F7: the 'not connected' defer ran ahead of the downlink branch, so a
+        broadcast the broker path could carry was held until it aged out."""
+        q, msg_id, _ = _enqueue_for_primary(bridge, "broker path")
+        bridge._primary_interface, bridge._primary_connected = None, False
+        inj = MagicMock()
+        inj.inject.return_value = True
+        inj.inject_nodeinfo.return_value = True
+        bridge._primary_downlink = inj
+        _tick(q, 1)
+        assert _row(q, msg_id)["status"] == "delivered"
+        assert inj.inject.call_count == 1
+
+    def test_22_control_a_dm_on_a_down_leg_is_still_held(self, bridge):
+        from gateway.mesh_bridge import BridgedMeshMessage
+        q = bridge._secondary_to_primary
+        m = BridgedMeshMessage(source_preset="SHORT_TURBO", source_id="!b03bb70c",
+                               destination_id="!1234abcd", content="dm held",
+                               channel=0, is_broadcast=False)
+        msg_id = q.enqueue(m.to_payload(), destination="primary")
+        bridge._primary_interface, bridge._primary_connected = None, False
+        bridge._primary_downlink = MagicMock()
+        _tick(q, 1)
+        assert _row(q, msg_id)["status"] == "pending"
+        assert bridge._primary_downlink.inject.call_count == 0
+
+    def test_23_a_down_leg_is_not_re_asked_per_row_every_tick(self, bridge):
+        """F10: with a leg down every pending row cycled get_pending ->
+        in_progress -> SendDeferred -> pending each 2 s (two SQLite writes per
+        row per tick on SD). The drain skips a leg that cannot take a write,
+        and still ages its rows out."""
+        for i in range(5):
+            _enqueue_for_secondary(bridge, f"backlog {i}")
+        bridge._secondary_interface, bridge._secondary_connected = None, False
+        p2s = bridge._primary_to_secondary
+        with patch.object(p2s, "process_once", wraps=p2s.process_once) as drain, \
+                patch.object(p2s, "expire_overdue", wraps=p2s.expire_overdue) as expire:
+            bridge._drain_once()
+        assert drain.call_count == 0
+        assert expire.call_count == 1
+        assert bridge.get_status()["queue"]["p2s_held_link_down"] is True
+
+    def test_23_control_an_up_leg_is_drained(self, bridge):
+        _enqueue_for_secondary(bridge, "go")
+        bridge._secondary_interface, bridge._secondary_connected = _Radio(), True
+        p2s = bridge._primary_to_secondary
+        with patch("gateway.mesh_bridge.assert_iface_tx_allowed"), \
+                patch.object(p2s, "process_once", wraps=p2s.process_once) as drain:
+            bridge._drain_once()
+        assert drain.call_count == 1
+
+
+def test_21_a_failing_connected_notify_leaves_the_leg_installed(bridge):
+    """§B #21 hardening: the notify now runs after the install; a status read
+    that raises must not unseat the leg it is reporting."""
+    radio = _Radio()
+    with patch.object(bridge, "_notify_status", side_effect=RuntimeError("sqlite gone")):
+        bridge._install_or_close("secondary", radio, True)
+    assert bridge._secondary_interface is radio and bridge._secondary_connected

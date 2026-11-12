@@ -388,10 +388,12 @@ class TestTcpLockReleasedOnDisconnect:
 
     def test_a_connect_that_fails_after_construction_leaves_nothing_held(
             self, bridge):
-        """11-10 review F5: _notify_status raising after the interface exists
-        must release the lock, forget the owner AND close the interface."""
+        """11-10 review F5: a step raising after the interface exists must
+        release the lock, forget the owner AND close the interface. (§B #21
+        moved the status notify out of _connect_tcp; the listener attach is the
+        post-construction step that remains.)"""
         lk = _leg_lock(bridge, "primary")
-        bridge._notify_status = MagicMock(side_effect=RuntimeError("status boom"))
+        bridge._attach_stream_listeners = MagicMock(side_effect=RuntimeError("attach boom"))
         made = MagicMock()
         iface, ok, _ = _connect_tcp(bridge, "primary", lambda p: None, made)
         assert (iface, ok) == (None, False)

@@ -44,6 +44,7 @@ from ._mesh_bridge_legs import (
     node_dest, queue_drop_witness,
     LINK_DOWN_EPISODE_GAP_S, LINK_DOWN_RETRY_S, MESH_BRIDGE_MAX_AGE_S,
     _library_gave_up, _write_target_gone)
+from ._mesh_bridge_drain import MeshBridgeDrainMixin  # MF025 split (§B #23)
 from .message_queue import PersistentMessageQueue, MessagePriority, RetryPolicy
 from .message_queue_models import SendDeferred
 from utils.safe_import import safe_import
@@ -119,7 +120,7 @@ class BridgedMeshMessage:
         )
 
 
-class MeshtasticPresetBridge:
+class MeshtasticPresetBridge(MeshBridgeDrainMixin):
     """
     Bridges messages between two Meshtastic networks with different presets.
 
@@ -540,36 +541,11 @@ class MeshtasticPresetBridge:
                 if self._stop_event.wait(5):
                     break
 
-    def _direction_allows(self, ingress: str) -> bool:
-        """THE direction rule (BR-T #4): may text heard on ``ingress`` cross?
-        One reader for the RX gate and the queue drain, so they cannot drift."""
-        return self.bridge_config.direction in (
-            "bidirectional", f"{ingress}_to_"
-            f"{'secondary' if ingress == 'primary' else 'primary'}")
-
-    def _expire_undrained(self):
-        """Review F5: a queue the drain skips (one-way ``direction``) never
-        reaches process_once's expiry, so rows already in it — from before #4
-        or a direction change — would read pending forever. Age them out here,
-        witnessed like any other."""
-        for ingress, queue in (("primary", self._primary_to_secondary),
-                               ("secondary", self._secondary_to_primary)):
-            if not self._direction_allows(ingress):
-                queue.expire_overdue()
-
     def _bridge_loop(self):
         """Process persistent queues and forward messages."""
         while self._running:
             try:
-                processed = 0
-
-                # Process primary -> secondary queue
-                if self._direction_allows("primary"):
-                    processed += self._primary_to_secondary.process_once(batch_size=5)
-
-                # Process secondary -> primary queue
-                if self._direction_allows("secondary"):
-                    processed += self._secondary_to_primary.process_once(batch_size=5)
+                processed = self._drain_once()
 
                 # If no messages processed, wait a bit
                 if processed == 0:
@@ -652,6 +628,14 @@ class MeshtasticPresetBridge:
         (releasing its connection lock) instead of leaving it to nobody."""
         if not self._install_leg(leg, interface, connected):
             self._close_taken(leg, interface)
+        elif interface is not None and connected:
+            # §B #21: AFTER the install — notified from inside _connect_*, the
+            # event's own status payload read this leg as down. A failing
+            # notify (get_status reads SQLite) never unseats an installed leg.
+            try:
+                self._notify_status(f"{leg}_connected")
+            except Exception as e:  # noqa: BLE001 — status is advisory
+                logger.error(f"{leg} connected, status notify failed: {e}")
 
     def _mark_leg_down(self, leg: str) -> None:
         """Mark ``leg`` disconnected without detaching its handle (the next
@@ -711,7 +695,6 @@ class MeshtasticPresetBridge:
                 f"Connected to {name} via serial "
                 f"({config.preset or 'unknown preset'})"
             )
-            self._notify_status(f"{name}_connected")
             return interface, True
         except Exception as e:
             logger.error(f"Failed to connect to {name} via serial: {e}")
@@ -801,7 +784,6 @@ class MeshtasticPresetBridge:
 
             if interface.connect():
                 logger.info(f"Connected to {name} via MQTT ({config.preset})")
-                self._notify_status(f"{name}_connected")
                 return interface, True
 
             logger.warning(f"Failed to connect {name} via MQTT")
@@ -875,7 +857,6 @@ class MeshtasticPresetBridge:
                 self._attach_stream_listeners(interface, name, callback, "tcp")
 
                 logger.info(f"Connected to {name} via TCP ({config.preset})")
-                self._notify_status(f"{name}_connected")
                 # Note: lock stays held — released when THIS handle is torn down
                 return interface, True
             except Exception:
@@ -1325,15 +1306,17 @@ class MeshtasticPresetBridge:
         return bool(connected and iface is not None
                     and not _write_target_gone(iface))
 
-    def _held_link_down(self, queue: PersistentMessageQueue, leg: str) -> bool:
-        return queue.get_queue_depth() > 0 and not self._leg_can_write(leg)
-
     def _defer_link_down(self, dest_name: str, why: str):
         """BR-T #14: a down leg is not a send error — the row waits, retry
         budget untouched. Logged LOUD once per outage, quiet per re-ask."""
         with self._stats_lock:
             self.stats['link_down_deferrals'] = (
                 self.stats.get('link_down_deferrals', 0) + 1)
+        self._note_link_down(dest_name, why)
+        raise SendDeferred(LINK_DOWN_RETRY_S, f"{dest_name} link down: {why}")
+
+    def _note_link_down(self, dest_name: str, why: str) -> None:
+        """The outage episode log: ERROR once per outage, DEBUG per re-ask."""
         now = time.monotonic()
         last = self._link_down_last.get(dest_name)
         self._link_down_last[dest_name] = now
@@ -1343,7 +1326,6 @@ class MeshtasticPresetBridge:
                          f"for up to {MESH_BRIDGE_MAX_AGE_S} s")
         else:
             logger.debug(f"Forward to {dest_name} still deferred: {why}")
-        raise SendDeferred(LINK_DOWN_RETRY_S, f"{dest_name} link down: {why}")
 
     def _forward_message(self, msg: BridgedMeshMessage, interface,
                          connected: bool, dest_name: str) -> bool:
@@ -1353,9 +1335,6 @@ class MeshtasticPresetBridge:
             logger.error(f"Forward to {dest_name} REFUSED: DM with no destination "
                          f"(never sendText(destinationId=None)): {msg.content[:50]}")
             return False
-        if not connected or not interface:
-            self._defer_link_down(dest_name, "not connected")
-
         try:
             # Format message with prefix if enabled
             content = msg.content
@@ -1420,6 +1399,10 @@ class MeshtasticPresetBridge:
             # teardown signal. After the downlink branch: that path goes via
             # the broker, not the socket (F4). Residual, UNKNOWN by design: a
             # write racing a mid-call socket drop cannot be seen from here.
+            # §B #22: the not-connected defer sits HERE, after the downlink
+            # branch — a broadcast the broker path can carry is not held.
+            if not connected or not interface:
+                self._defer_link_down(dest_name, "not connected")
             if _write_target_gone(interface):
                 self._defer_link_down(
                     dest_name, f"{type(interface).__name__} has no open "
@@ -1459,6 +1442,16 @@ class MeshtasticPresetBridge:
 
         except SendDeferred:
             raise                      # BR-T #14: the queue's, not an error
+        except SystemExit as e:
+            # §B #19: the library's our_exit. Caught only at _bridge_loop, it
+            # left the row in_progress and skipped the batch. Here it is a
+            # send failure like any other: counted, retried, dead-lettered named.
+            bump_stat(self, 'library_exit_caught')
+            logger.error(f"Forward to {dest_name} FAILED: library exit "
+                         f"(SystemExit: {e}) — counted, the queue retries")
+            with self._stats_lock:
+                self.stats['errors'] += 1
+            return False
         except Exception as e:
             logger.error(f"Failed to forward to {dest_name}: {e}")
             with self._stats_lock:
