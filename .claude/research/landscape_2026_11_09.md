@@ -149,7 +149,17 @@ moc3's RNS path (moc2 heard `[RNS:VAIL] …`). Hold path NOT exercised live; the
 witness read UNOBSERVABLE (its own radio was the one cut) while moc2 had heard it →
 **#24** the witness should consult a peer ST box's hearing before saying unknown.
 
-**2026-11-11 #19–#23 FIXED** (MF first, MA ported same session; not deployed) — see provenance.
+**2026-11-11 #19–#21 FIXED; #22 and #23 REVERTED** (MF first, MA ported same session; not
+deployed) — see provenance. **#23** (drain gate) reverted after Fable r2 by running: it ran
+ahead of the sender's per-row decisions (the #14 v1 kind) → seam guard
+`TestDrainOffersEveryQueue`. **#22** (downlink ahead of the not-connected defer) reverted after
+Fable r3 by running: a leg flagged down usually means meshtasticd — the downlink topic's only
+subscriber — is down, and a broker accepting a QoS-0 publish is not delivery; held rows read
+`delivered` and were lost (CONFIRMED with the real injector + a fake broker, re-measured here).
+**#25 (NEW, PLAUSIBLE — measure first):** in that probe the real `DownlinkInjector` reported
+success against a listener that accepts TCP but never CONNACKs — on a CONNECTED primary leg
+(moc runs `injection_mode: downlink`) a broker-side failure could also read `delivered`.
+Measure on the emulated tier (sim meshtasticd + mosquitto) before designing; MF first.
 
 **#24 design — DECIDED 2026-11-11 (operator: "agree with your recommendation - lets do this"); build test-first in a FRESH session, inside BIC-2.**
 Rule: **chain each transport's OWN wire id, hop by hop — never a content hash**

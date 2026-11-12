@@ -242,6 +242,9 @@ class MeshtasticPresetBridge(MeshBridgeDrainMixin):
             'link_lost': 0,
             'start_time': None,
         }
+        # Pre-seeded like link_lost: zero vs meter-absent (hfm #9; r3 F5)
+        for _key in ('library_exit_caught', 'loop_fatal_caught'):
+            self.stats.setdefault(_key, 0)
         # Did a LF->ST hand-off to the RNS path reach the air? (2026-09-30)
         self._handoff = HandoffWitness(
             observable=lambda: self._secondary_connected,
@@ -1335,6 +1338,12 @@ class MeshtasticPresetBridge(MeshBridgeDrainMixin):
             logger.error(f"Forward to {dest_name} REFUSED: DM with no destination "
                          f"(never sendText(destinationId=None)): {msg.content[:50]}")
             return False
+        # §B #22 REVERTED (Fable r3): a down leg usually = meshtasticd down, the
+        # downlink's only subscriber; a broker accepting the publish is NOT
+        # delivery (held rows read `delivered`, lost). Keep this defer first.
+        if not connected or not interface:
+            self._defer_link_down(dest_name, "not connected")
+
         try:
             # Format message with prefix if enabled
             content = msg.content
@@ -1399,10 +1408,6 @@ class MeshtasticPresetBridge(MeshBridgeDrainMixin):
             # teardown signal. After the downlink branch: that path goes via
             # the broker, not the socket (F4). Residual, UNKNOWN by design: a
             # write racing a mid-call socket drop cannot be seen from here.
-            # §B #22: the not-connected defer sits HERE, after the downlink
-            # branch — a broadcast the broker path can carry is not held.
-            if not connected or not interface:
-                self._defer_link_down(dest_name, "not connected")
             if _write_target_gone(interface):
                 self._defer_link_down(
                     dest_name, f"{type(interface).__name__} has no open "

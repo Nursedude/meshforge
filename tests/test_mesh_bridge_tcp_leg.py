@@ -806,3 +806,16 @@ class TestRound3ReviewPins:
         setattr(bridge, f"_{leg}_connected", True)   # test sets up the F-B state
         getattr(bridge, f"_disconnect_{leg}")()
         assert getattr(bridge, f"_{leg}_connected") is False
+
+
+def test_B19_connect_tcp_itself_never_announces_connected(bridge):
+    """Fable r3 B19: §B #21 moved `<leg>_connected` to after the install. A
+    notify put back inside _connect_tcp (the original defect, beside the fix)
+    survived every test — pin that the connector announces nothing."""
+    bridge._notify_status = MagicMock()
+    iface, ok, _ = _connect_tcp(bridge, "primary", lambda p: None, MagicMock())
+    assert ok is True and iface is not None
+    assert bridge._notify_status.call_count == 0
+    lk = _leg_lock(bridge, "primary")
+    bridge._close_taken("primary", iface)
+    assert not lk.locked()

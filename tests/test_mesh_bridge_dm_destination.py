@@ -142,7 +142,7 @@ class TestBackstop:
             return 0
 
         waits = iter([False, True, True])
-        # legs UP: §B #23 skips a queue whose leg cannot take a write
+        # legs up: keeps this test about the loop backstop, not leg state
         bridge._primary_interface, bridge._primary_connected = object(), True
         bridge._secondary_interface, bridge._secondary_connected = object(), True
         with patch.object(bridge._stop_event, "wait", lambda *_: next(waits)), \
