@@ -61,8 +61,9 @@ items (6 / 43 / 26), item rules clean. No hand edits.
 > **Progress 2026-11-12:** #19–#21 + #22/#23 reverts HOLD (r4, r5) · R4-F1..F3 fixed
 > test-first MF `c6f6cea9` `429a00b9`, MA `bf445460` (CI success) · **round 5 NOT CLEAN on
 > tests** (R5-F1..F3) → leg-state tables `924cce9e`/`eee7722f` → **round 6 NOT CLEAN on tests
-> (R6-F1..F5)**; src unchanged since `3d912a7f`, held r4–r6 · NOT deployed (fleet `d185bfd2`) ·
-> next: operator decision on the review loop.
+> (R6-F1..F5)**; src unchanged since `3d912a7f`, held r4–r6 · **loop STOPPED (operator 11-12)**:
+> r6 scenarios adopted MF `5c5be03f` / MA `3c5ad2fc`; emulated drill at HEAD PASS 2/2, pre-fix control
+> FAIL · NOT deployed (fleet `d185bfd2`) · next: the deploy = operator's call.
 
 > **Progress 2026-11-11:** #4 #5 #6 #14 fixed — v1 `bf5a3b90` → review r1
 > (code-review medium: ready_fn ran ahead of downlink + dual-path dedup) → v2
@@ -208,6 +209,12 @@ HISTORY (g02/d03, MA); NITs R6-F3 (connect one frame above), R6-F4 (`LINK_DOWN_R
 use-site), R6-F5 (MA t07). The reviewer's drivers S1/S2/S6/S7/S9/S10 kill all of them.
 **The mutant space here is open-ended (any gate shape); per-round test growth is not converging
 on CLEAN — loop decision is the operator's.**
+
+**Loop STOPPED after round 6 (operator 11-12: "adopt the tests, then the drill").** The r6
+reviewer's 23 scenarios adopted (MF `5c5be03f`, MA `3c5ad2fc`) kill every R6 finding in both twins;
+known-uncaught shapes recorded in `.claude/audits/review_provenance.md` (f13, t05=R4-F6, MA t07, the
+r5 NITs). End-domain evidence instead of round 7: emulated drill at HEAD PASS 2/2 (held 20 s,
+crossed ~2.4 s after restart), pre-fix control FAIL at (2). Deploy = operator's call.
 
 **#24 design — DECIDED 2026-11-11 (operator: "agree with your recommendation - lets do this"); build test-first in a FRESH session, inside BIC-2.**
 Rule: **chain each transport's OWN wire id, hop by hop — never a content hash**
