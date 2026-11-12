@@ -174,10 +174,11 @@ if MESHTASTIC_CONNECTION_LOCK.acquire(timeout=10):
 ## meshtasticd VSZ leak (firmware#10468) — USB-radio boxes only
 
 Portduino meshtasticd on a USB (CH341) radio strands one 8 MB pthread stack per
-interrupt cycle (~9/min): hundreds of GB VSZ, normal RSS. **Fixed in firmware
-`develop` (ch341 `d85aceb7`, `pthread_detach` ×2) — in NO release yet**
-(re-verified at source 2026-09-30).
-- ⚠️ **Do not roll meshtasticd**: `apt-mark hold` on all 9 boxes; the OBS alpha repo is disabled. A stock roll today REGRESSES the 4 USB boxes. Keep the hold anyway: beta moves too. For the next release, grep its portduino.ini ch341 ref's `libpinedio-usb.c` for the detach — **read the pinned source, never the version string.**
+interrupt cycle (~9/min): hundreds of GB VSZ, normal RSS. **Fix (ch341 `d85aceb7`,
+`pthread_detach` ×2) ships in 2.8.2** (portduino.ini pins it from v2.8.1; outside
+objdump of the 2.8.2.d5f1619 Docker images, 11-12 — not re-derived here) — **NOT
+in 2.7.26 stable** (stock `/usr/bin` `objdump -T`: 0 detach, 11-11).
+- ⚠️ **Do not roll meshtasticd**: `apt-mark hold` on all 9 boxes; the OBS alpha repo is disabled, so apt's candidate is 2.7.26 (moc1/moc5, 11-11). A stock roll REGRESSES the 4 USB boxes; 2.8.x is alpha, re-keys NodeNum, had builds revoked. Before any move, `objdump -T` the box's OWN package for `pthread_detach` — **read the shipped binary/pinned source, never the version string.**
 - USB boxes (VolcanoAI/moc1/moc5/kiai) run `/usr/local/sbin/meshtasticd-patched` via `50-canary-pinedio-fix.conf`. Rebuild recipe and its traps (two builds trixie/noble; stash the stale `.pio/libdeps` cache; `objdump` the detach before deploying): the archive.
 - `meshtasticd-restart.timer` (weekly) STAYS until the soak proves the fix; `probe_meshtasticd_vsz_leak` fires only past the 768 GB envelope.
 - **Quick check**: `wc -l /proc/<pid>/maps` climbing over 30 min = leaking, flat = patched. ⚠️ `pgrep -x meshtasticd` MISSES the patched boxes — use `pgrep -f`.

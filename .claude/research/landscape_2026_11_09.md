@@ -113,6 +113,30 @@ ported `90f1d3e7` after an MF025 split `43b5c07a` (MQTTMeshInterface →
 critical defect; #15–#17 + T-15 are its findings, shared with MF. Not deployed as
 running code: meshanchor-server runs `bridge_mode: meshcore_bridge` (pull only).
 
+**2026-11-11 (15:03–17:59 HST `date`) — MF #4/#5/#6/#14/#18 DEPLOYED, MA port landed.**
+MF fleet 10/10 @ `bc5effbf` (sync 15:03 → pull; moc's gateway MainPID
+1639666→2156079 started 15:03:09 > t0, both legs connected 15:03:14; the 7
+stopped gateways stayed stopped); honest_status of record exit 0 16:20 (7/9 +
+WARN ntfy ack, meshforge-lab 1 apt security update). Live leg-down drill NOT
+run — queued `mesh-bridge-leg-down-live-drill-2026-11-11` (lab waits on 2 Muzi
+Duos; emulated tier proposed: meshtasticd `--sim` on meshforge-pro, never the
+UX seat). MA `b2e0fb85`: port + MF's C21 witness layer MA never had; test gate
+FIRST (`gateway.mesh_bridge` in both twins' `_OPERATOR_STORE_MODULES`, MF
+`5def21be`); red vs old src 42 behavioural fails; MA suite 9866 passed.
+**Port review r1** (code-review medium, contextless, 10 findings): fixed in MA
+test-first — F2 (no-destination DM retried + re-counted → MA `SendRefused`), F3
+(new counters not pre-seeded), F8 (MA-only rejections uncounted, WARNING
+unthrottled), F9. **Queued twin-wide, MF FIRST** (the port copied MF, so they
+hold here): **#19** F4 `SystemExit` caught only at the loop → row stays
+`in_progress`, batch skipped; **#20** F5 every terminal drop named
+`dead_letter` (hold expiry / direction / refusal indistinct); **#21** F6
+`*_connected` status event reads `held_link_down=True` (notify before
+install); **#22** F7 `not connected` defer runs ahead of the downlink branch
+(a broker-path broadcast is held though it could cross); **#23** F10 per-row
+re-defer = 2 SQLite writes/row/2 s on SD while a leg is down (short-circuit per
+leg); F1 = #14b (known-limit pin ported). MF has no `SendRefused` — porting it
+MA→MF is the shape of the #20/F2 fix there.
+
 **What the public sentence can be today:** "one 24 h serial-to-serial lab run:
 1,436 of 1,436 broadcasts crossed, 48 of 48 planted controls dropped under their
 names." Not "every message accounted for", not "DMs refused", not "dedup by packet ID".
