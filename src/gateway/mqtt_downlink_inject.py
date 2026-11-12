@@ -55,6 +55,11 @@ _HAS_DOWNLINK_DEPS = (
 
 BROADCAST_NUM = 0xFFFFFFFF
 
+#: How long _ensure_connected waits for the broker's CONNACK (#25). The
+#: broker is local (meshtasticd's mosquitto), so a healthy one answers in ms;
+#: this bounds what a wedged one costs each send before the caller falls back.
+CONNACK_TIMEOUT_S = 5.0
+
 
 def _xor_hash(data: bytes) -> int:
     """Meshtastic's xorHash — XOR-fold of all bytes (used for channel hash)."""
@@ -240,27 +245,74 @@ class DownlinkInjector:
     def fatal_reason(self) -> Optional[str]:
         return self._fatal_reason
 
+    def _teardown(self) -> None:
+        """Stop the current client's network thread (never raises).
+
+        Without this a reconnect left the old client's loop thread running —
+        and paho auto-reconnecting it — beside the new one."""
+        client, self._client = self._client, None
+        self._connected = False
+        if client is None:
+            return
+        try:
+            client.loop_stop()
+            client.disconnect()
+        except Exception as e:  # teardown of a dead session; nothing to save
+            logger.debug("Downlink injector teardown: %s", e)
+
     def _ensure_connected(self) -> bool:
+        """True only once the broker has ACCEPTED the session (CONNACK rc 0).
+
+        #25 (2026-11-12, measured on paho 2.1.0): ``connect()`` returns once
+        TCP is up and paho will write a QoS-0 PUBLISH before any CONNACK, so a
+        broker that accepts TCP but never answers (a wedged mosquitto) read as
+        connected and every inject() returned True into the void.
+        """
         if self._connected and self._client is not None:
             return True
+        self._teardown()
+        accepted = threading.Event()
+        result = {"rc": None}
+
+        def _on_connect(client, userdata, flags, rc, *rest):
+            code = int(getattr(rc, "value", rc))
+            result["rc"] = code
+            if code == 0 and client is self._client:
+                self._connected = True
+            accepted.set()
+
+        def _on_disconnect(client, userdata, *rest):
+            # A lost session must be noticed before the next publish, not
+            # discovered by publishing into it.
+            if client is self._client:
+                self._connected = False
+
         try:
             client = _mqtt_mod(client_id=self._client_id)
             if self._username:
                 client.username_pw_set(self._username, self._password)
+            client.on_connect = _on_connect
+            client.on_disconnect = _on_disconnect
+            self._client = client
             client.connect(self._broker, self._port, keepalive=30)
             client.loop_start()
-            self._client = client
-            self._connected = True
-            logger.info(
-                "Downlink injector connected to %s:%d (channel=%s)",
-                self._broker, self._port, self._channel_name,
-            )
-            return True
         except Exception as e:
             logger.warning("Downlink injector connect failed: %s", e)
-            self._connected = False
-            self._client = None
+            self._teardown()
             return False
+        if not accepted.wait(CONNACK_TIMEOUT_S) or result["rc"] != 0:
+            reason = (f"no CONNACK within {CONNACK_TIMEOUT_S:g} s"
+                      if result["rc"] is None
+                      else f"broker refused the session (CONNACK rc {result['rc']})")
+            logger.warning("Downlink injector connect to %s:%d failed: %s",
+                           self._broker, self._port, reason)
+            self._teardown()
+            return False
+        logger.info(
+            "Downlink injector connected to %s:%d (channel=%s)",
+            self._broker, self._port, self._channel_name,
+        )
+        return True
 
     def _publish(self, kind: str, origin_node: int, builder) -> bool:
         """Build (via ``builder``) and publish one envelope. Returns True only
@@ -286,6 +338,8 @@ class DownlinkInjector:
             try:
                 topic, payload, packet_id = builder()
                 info = self._client.publish(topic, payload, qos=0)
+                if info.rc != 0:   # MQTT_ERR_SUCCESS; e.g. NO_CONN after a drop
+                    raise RuntimeError(f"publish rc {info.rc}")
                 info.wait_for_publish(timeout=5)
                 logger.info(
                     "Downlink %s injected: id=0x%08x from=!%08x topic=%s",
