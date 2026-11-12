@@ -798,3 +798,213 @@ def test_connect_table_exactly_one_event_after_the_install(bridge, leg, ctype, o
         getattr(bridge, f"_connect_{leg}")()
     assert seen == ([(f"{leg}_connected", True)] if outcome == "ok" else [])
     assert (getattr(bridge, f"_{leg}_interface") is radio) == (outcome == "ok")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# R6 SCENARIOS (2026-11-12) — written by the round-6 reviewer (Fable 5.2,
+# non-author, by running), adopted as written. The leg-state table above has
+# one row per case, enqueued before the first pass; these vary what it does
+# not: rows ARRIVING mid-outage, more held rows than a batch, the leg
+# returning, reconnect over an old handle, the real _leg_loop, and the
+# LINK_DOWN_RETRY_S use-site (with REAL backoff — _loop_pass collapses it).
+# They kill R6-F1..F4 (g01 g02 g03 d03 d06 n02 n04 n06 f10 f16).
+# ════════════════════════════════════════════════════════════════════════════
+
+OTHER = {"primary": "secondary", "secondary": "primary"}
+
+
+def _drops(caplog):
+    return [r.getMessage() for r in caplog.records
+            if r.getMessage().startswith("mesh_bridge drop")]
+
+
+@pytest.mark.parametrize("state", ["none", "marked"])
+@pytest.mark.parametrize("dest", _LEGS)
+def test_S1_rows_arriving_MID_outage_still_get_every_per_row_decision(bridge, caplog, dest, state):
+    caplog.set_level(logging.DEBUG, logger="gateway.mesh_bridge")
+    radio = _set_leg(bridge, dest, state)
+    _set_leg(bridge, OTHER[dest], "up")
+    bridge._primary_downlink = None
+    with patch.object(bridge, "_dual_path_dedup_on", return_value=True):
+        q, held_id, _ = _enqueue_row(bridge, "bcast", dest)
+        _loop_pass(bridge, 3)                       # the outage is established
+        assert _row(q, held_id) == {"status": "pending", "retry_count": 0}
+        # NOW rows arrive, mid-outage
+        _, dedup_id, _ = _enqueue_row(bridge, "dedup", dest)
+        _, nodest_id, _ = _enqueue_row(bridge, "dm_nodest", dest)
+        _loop_pass(bridge, 6)
+        assert _row(q, dedup_id)["status"] == "delivered"
+        assert _row(q, nodest_id)["status"] == "dead_letter"
+        assert _row(q, held_id) == {"status": "pending", "retry_count": 0}
+        # the held row ages past the hold while the leg is still down
+        _sql(q, "UPDATE messages SET created_at = ? WHERE id = ?",
+             ((datetime.now() - timedelta(seconds=720)).isoformat(), held_id))
+        q._last_expire_mono = None                  # = _EXPIRE_EVERY_S elapsed
+        _loop_pass(bridge, 2)
+        assert _row(q, held_id)["status"] == "dead_letter"
+    assert any("reason=expired" in d for d in _drops(caplog))
+    assert (radio.sent if radio else []) == []
+
+
+def _real_backoff_passes(bridge, n):
+    """n passes of the real loop WITHOUT collapsing retry_after (the tree's
+    _loop_pass re-offers the same 5 head rows every pass, which is not what a
+    2 s deferral does)."""
+    waits = []
+    def w(timeout=None):
+        waits.append(timeout)
+        return len(waits) >= n
+    bridge._running = True
+    with patch("gateway.mesh_bridge.assert_iface_tx_allowed"), \
+            patch.object(bridge._stop_event, "wait", w):
+        bridge._bridge_loop()
+    assert all(x in (0.2, 0.05) for x in waits), waits
+    return waits
+
+
+@pytest.mark.parametrize("dest", _LEGS)
+def test_S2_more_held_rows_than_a_batch_do_not_starve_a_resolvable_row(bridge, dest):
+    _set_leg(bridge, dest, "none"); _set_leg(bridge, OTHER[dest], "up")
+    bridge._primary_downlink = None
+    with patch.object(bridge, "_dual_path_dedup_on", return_value=True):
+        held = [_enqueue_row(bridge, "bcast", dest) for _ in range(8)]
+        q, dedup_id, _ = _enqueue_row(bridge, "dedup", dest)
+        waits = _real_backoff_passes(bridge, 3)
+    assert waits == [0.05, 0.05, 0.2], waits      # 5 deferred, 3 deferred + 1 resolved, idle
+    assert _row(q, dedup_id)["status"] == "delivered"
+    assert all(_row(q, i)["status"] == "pending" and _row(q, i)["retry_count"] == 0
+               for _, i, _ in held)
+    assert bridge.stats["link_down_deferrals"] == 8
+
+
+@pytest.mark.parametrize("dest", _LEGS)
+def test_S3_the_leg_returns_every_held_row_crosses_once_in_order(bridge, dest):
+    _set_leg(bridge, dest, "none"); _set_leg(bridge, OTHER[dest], "up")
+    bridge._primary_downlink = None
+    held = [_enqueue_row(bridge, "bcast", dest) for _ in range(7)]
+    q = held[0][0]
+    _loop_pass(bridge, 4)
+    radio = _set_leg(bridge, dest, "up")
+    _loop_pass(bridge, 4)
+    assert [s.split("] ", 1)[-1] for s in radio.sent] == [t for _, _, t in held]
+    assert all(_row(q, i)["status"] == "delivered" for _, i, _ in held)
+    assert dest not in bridge._link_down_last
+
+
+@pytest.mark.parametrize("dest", _LEGS)
+def test_S4_library_exit_on_one_row_does_not_stop_the_batch_either_leg(bridge, dest):
+    class _ExitOnFirst(_Radio):
+        def sendText(self, text, **kw):
+            if not self.sent:
+                self.sent.append("EXIT")
+                raise SystemExit("our_exit")
+            return super().sendText(text, **kw)
+    radio = _ExitOnFirst()
+    setattr(bridge, f"_{dest}_interface", radio); setattr(bridge, f"_{dest}_connected", True)
+    _set_leg(bridge, OTHER[dest], "up")
+    bridge._primary_downlink = None
+    q, a, _ = _enqueue_row(bridge, "bcast", dest)
+    _, b, tb = _enqueue_row(bridge, "bcast", dest)
+    with patch.object(bridge, "_dual_path_dedup_on", return_value=False):
+        _loop_pass(bridge, 1)
+    assert _row(q, a) == {"status": "pending", "retry_count": 1}
+    assert _row(q, b)["status"] == "delivered"
+    assert bridge.stats["library_exit_caught"] == 1 and bridge.stats["loop_fatal_caught"] == 0
+
+
+@pytest.mark.parametrize("state", ["up", "gone"])
+def test_S5_a_DM_beside_a_downlink_injector_is_never_injected(bridge, state):
+    class _R(_Radio):
+        def sendText(self, text, **kw):
+            self.kw = kw
+            return super().sendText(text, **kw)
+    radio = _R()
+    bridge._primary_interface, bridge._primary_connected = radio, True
+    _set_leg(bridge, "secondary", "up")
+    inj = MagicMock(); inj.inject.return_value = True
+    bridge._primary_downlink = inj
+    q, dm_id, _ = _enqueue_row(bridge, "dm", "primary")
+    with patch("gateway.mesh_bridge._write_target_gone",
+               side_effect=lambda i: state == "gone" and i is radio):
+        _loop_pass(bridge, 3)
+    assert inj.inject.call_count == 0
+    if state == "up":
+        assert _row(q, dm_id)["status"] == "delivered"
+        assert radio.kw.get("destinationId") == "!0badcafe"
+    else:
+        assert _row(q, dm_id) == {"status": "pending", "retry_count": 0}
+
+
+@pytest.mark.parametrize("leg", _LEGS)
+def test_S6_reconnect_over_an_old_handle_exact_event_list(bridge, leg):
+    old, new = MagicMock(), _Radio()
+    setattr(bridge, f"_{leg}_interface", old); setattr(bridge, f"_{leg}_connected", False)
+    seen = []
+    bridge.register_status_callback(lambda s, d: seen.append((s, d[leg]["connected"])))
+    with patch.object(bridge, "_connect_interface", return_value=(new, True)):
+        getattr(bridge, f"_connect_{leg}")()
+    assert seen == [(f"{leg}_connected", True)]
+    assert old.close.call_count == 1
+    assert getattr(bridge, f"_{leg}_interface") is new
+
+
+@pytest.mark.parametrize("leg", _LEGS)
+def test_S7_refused_install_and_failing_notify_per_leg(bridge, leg):
+    seen = []
+    bridge.register_status_callback(lambda s, d: seen.append(s))
+    r = _Radio()
+    with patch.object(bridge, "get_status", side_effect=RuntimeError("sqlite gone")):
+        bridge._install_or_close(leg, r, True)
+    assert getattr(bridge, f"_{leg}_interface") is r and getattr(bridge, f"_{leg}_connected")
+    bridge._stop_event.set()
+    m = MagicMock()
+    bridge._install_or_close(leg, m, True)
+    assert seen == [] and m.close.call_count == 1
+    assert getattr(bridge, f"_{leg}_interface") is r     # the refused one never replaced it
+
+
+def test_S8_both_queues_loaded_both_legs_down_then_up(bridge):
+    _set_leg(bridge, "primary", "none"); _set_leg(bridge, "secondary", "marked")
+    bridge._primary_downlink = None
+    qp, ip, tp = _enqueue_row(bridge, "bcast", "primary")
+    qs, i_s, ts = _enqueue_row(bridge, "bcast", "secondary")
+    _loop_pass(bridge, 4)
+    assert _row(qp, ip)["status"] == _row(qs, i_s)["status"] == "pending"
+    assert bridge.get_status()["queue"] == {
+        "p2s_pending": 1, "s2p_pending": 1,
+        "p2s_held_link_down": True, "s2p_held_link_down": True}
+    rp, rs = _set_leg(bridge, "primary", "up"), _set_leg(bridge, "secondary", "up")
+    _loop_pass(bridge, 2)
+    assert len(rp.sent) == 1 and rp.sent[0].endswith(tp)
+    assert len(rs.sent) == 1 and rs.sent[0].endswith(ts)
+
+
+@pytest.mark.parametrize("dest", _LEGS)
+def test_S9_a_deferred_row_is_due_again_in_LINK_DOWN_RETRY_S(bridge, dest):
+    """The use-site of the constant: every tree helper collapses retry_after,
+    so SendDeferred(300.0) / (0.0) at the raise pass every test."""
+    from gateway.mesh_bridge import LINK_DOWN_RETRY_S
+    _set_leg(bridge, dest, "none"); _set_leg(bridge, OTHER[dest], "up")
+    bridge._primary_downlink = None
+    q, mid, _ = _enqueue_row(bridge, "bcast", dest)
+    t0 = datetime.now()
+    _real_backoff_passes(bridge, 1)
+    (ra,) = _sql(q, "SELECT retry_after FROM messages WHERE id = ?", (mid,))[0]
+    due_in = (datetime.fromisoformat(ra) - t0).total_seconds()
+    assert LINK_DOWN_RETRY_S - 0.01 <= due_in <= LINK_DOWN_RETRY_S + 1.0, due_in
+
+
+@pytest.mark.parametrize("outcome", ["ok", "fail"])
+@pytest.mark.parametrize("leg", _LEGS)
+def test_S10_the_real_leg_loop_emits_the_exact_event_list(bridge, leg, outcome):
+    """One frame ABOVE _connect_<leg>: the connect table calls the connector
+    wrapper directly, so an announce in _leg_loop passes it."""
+    radio = _Radio()
+    got = (radio, True) if outcome == "ok" else (None, False)
+    seen = []
+    bridge.register_status_callback(lambda s, d: seen.append((s, d[leg]["connected"])))
+    bridge._running = True
+    with patch.object(bridge, "_connect_interface", return_value=got), \
+            patch.object(bridge._stop_event, "wait", lambda *_: True):
+        bridge._leg_loop(leg)
+    assert seen == ([(f"{leg}_connected", True)] if outcome == "ok" else [])
