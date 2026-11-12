@@ -235,12 +235,16 @@ class _FakeBroker:
           "drop"        CONNACK rc 0; close the session after the first PUBLISH;
                         later sessions behave like "ok"
           "drop_silent" like "drop", but every LATER session is "silent"
+          "refuse"      CONNACK rc 5 (not authorized) — bad credentials
+          "mute"        CONNACK rc 0, then never answer again (no PINGRESP):
+                        a broker that wedges AFTER accepting the session
     """
 
     def __init__(self, mode):
         self.mode = mode
         self.packet_types = []
         self.sessions = 0
+        self.stop_reading = False   # True: leave bytes unread (fill the socket)
         self._srv = socket.socket()
         self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._srv.bind(("127.0.0.1", 0))
@@ -274,6 +278,9 @@ class _FakeBroker:
         buf = b""
         with conn:
             while not self._stop.is_set():
+                if self.stop_reading:
+                    time.sleep(0.05)
+                    continue
                 try:
                     b = conn.recv(4096)
                 except socket.timeout:
@@ -285,9 +292,11 @@ class _FakeBroker:
                 pkts, buf = _split_mqtt(buf + b)
                 for ptype, _body in pkts:
                     self.packet_types.append(ptype)
-                    if ptype == 1 and mode in ("ok", "drop"):
+                    if ptype == 1 and mode == "refuse":
+                        conn.sendall(bytes([0x20, 0x02, 0x00, 0x05]))
+                    if ptype == 1 and mode in ("ok", "drop", "mute"):
                         conn.sendall(bytes([0x20, 0x02, 0x00, 0x00]))
-                    if ptype == 12 and mode != "silent":   # PINGREQ
+                    if ptype == 12 and mode not in ("silent", "mute"):   # PINGREQ
                         conn.sendall(bytes([0xD0, 0x00]))
                     if ptype == 3 and mode == "drop":
                         return
@@ -406,3 +415,93 @@ class TestInjectRequiresAcceptedSession:
         monkeypatch.setattr(client, "publish", queued_never_written)
         assert inj.inject("stalled", ORIGIN) is False
         assert inj._client is None         # torn down: next call reconnects
+
+
+def _paho_threads():
+    return sum(1 for t in threading.enumerate()
+               if t.name.startswith("paho-mqtt-client-") and t.is_alive())
+
+
+class TestInjectorLifecycle:
+    """#25 round 2 (Fable by running): the paths r1 left unpinned —
+    refusal, the retry window both ways, thread/teardown hygiene, close(),
+    a builder error, and a broker that wedges AFTER CONNACK."""
+
+    def test_refused_session_is_false_and_refuses_fast(self, fake_broker, caplog):
+        b, inj = fake_broker("refuse")
+        with caplog.at_level("WARNING"):
+            assert inj.inject("hello", ORIGIN) is False
+            assert inj.inject("again", ORIGIN) is False
+        assert b.count(3) == 0
+        assert b.sessions == 1                      # 2nd call inside the window
+        assert "CONNACK rc 5" in caplog.text
+
+    def test_retry_window_holds_then_expires(self, fake_broker, monkeypatch):
+        # The window must be OPENED and EXPIRE through the code's own clock —
+        # writing _retry_after by hand let "never expires" survive (m18).
+        from gateway import mqtt_downlink_inject as mdi
+        monkeypatch.setattr(mdi, "CONNECT_RETRY_S", 0.5)
+        b, inj = fake_broker("silent")
+        assert inj.inject("one", ORIGIN) is False   # opens the window
+        b.mode = "ok"                               # broker recovers
+        assert inj.inject("two", ORIGIN) is False   # still inside the window
+        assert b.sessions == 1
+        time.sleep(0.6)                             # window expires
+        assert inj.inject("three", ORIGIN) is True
+        assert _until(lambda: b.count(3) == 1)
+
+    def test_no_paho_thread_survives_a_failed_connect(self, fake_broker):
+        base = _paho_threads()
+        b, inj = fake_broker("silent")
+        assert inj.inject("x", ORIGIN) is False
+        assert _until(lambda: _paho_threads() == base, t=2)
+
+    def test_reconnect_keeps_one_thread_and_close_leaves_none(self, fake_broker):
+        base = _paho_threads()
+        b, inj = fake_broker("drop")
+        assert inj.inject("one", ORIGIN) is True
+        assert _until(lambda: not inj.connected)
+        assert _until(lambda: inj.inject("two", ORIGIN), t=5)
+        assert _paho_threads() <= base + 1
+        inj.close()
+        assert _until(lambda: _paho_threads() == base, t=2)
+        assert inj._client is None
+
+    def test_close_disconnects_cleanly(self, fake_broker):
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        inj.close()
+        assert _until(lambda: b.count(14) == 1)     # DISCONNECT reached the broker
+
+    def test_builder_error_keeps_the_healthy_session(self, fake_broker):
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        client = inj._client
+        assert inj._publish("text", ORIGIN, lambda: 1 / 0) is False
+        assert inj._client is client and inj.connected   # not torn down
+        assert inj.inject("two", ORIGIN) is True
+        assert b.sessions == 1
+
+    def test_teardown_is_bounded_with_unwritten_output(self, fake_broker):
+        # Fable r2 F2: paho's loop thread exits only once its output queue
+        # drains, so loop_stop() joined until keepalive closed the socket.
+        b, inj = fake_broker("mute")
+        assert inj.inject("one", ORIGIN) is True
+        b.stop_reading = True
+        inj._client.publish("meshforge/bulk", b"\0" * (32 << 20), qos=0)
+        t0 = time.monotonic()
+        inj.close()
+        assert time.monotonic() - t0 < 3
+
+    def test_wedge_after_connack_is_noticed_within_two_keepalives(self, fake_broker, monkeypatch):
+        # Fable r2 F1, measured on real mosquitto: True for 60 s at keepalive
+        # 30. The window is 2 x KEEPALIVE_S; the knob must reach connect().
+        from gateway import mqtt_downlink_inject as mdi
+        monkeypatch.setattr(mdi, "KEEPALIVE_S", 1)
+        b, inj = fake_broker("mute")
+        assert inj.inject("one", ORIGIN) is True
+        b.mode = "silent"     # a wedged broker answers no NEW session either
+        t0 = time.monotonic()
+        assert _until(lambda: not inj.connected, t=4)
+        assert time.monotonic() - t0 < 2 * 1 + 1.5   # 2 x KEEPALIVE_S + slack
+        assert inj.inject("two", ORIGIN) is False

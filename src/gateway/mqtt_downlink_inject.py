@@ -25,6 +25,7 @@ accepted in step 0 — do not change them without re-proving on a live radio.
 import base64
 import logging
 import secrets
+import socket
 import struct
 import threading
 import time
@@ -68,6 +69,18 @@ CONNECT_RETRY_S = 30.0
 #: Bound on wait_for_publish; a QoS-0 message not written to the socket
 #: within it is a failed publish.
 PUBLISH_TIMEOUT_S = 5.0
+
+#: MQTT keepalive to the (local) broker. It sets the stall window: QoS-0
+#: True means "written to the socket", so a broker that wedges AFTER CONNACK
+#: reads True until paho's keepalive gives up at 2 x KEEPALIVE_S (Fable r2
+#: F1, real mosquitto: 60 s / 16 sends lost at 30). QoS 0 kept by operator
+#: decision 2026-11-12; the window is MEASURED, not accepted — re-measure it
+#: with any change here.
+KEEPALIVE_S = 5
+
+#: How long _teardown lets a healthy session close itself before breaking
+#: the socket.
+TEARDOWN_GRACE_S = 0.5
 
 
 def _xor_hash(data: bytes) -> int:
@@ -270,8 +283,23 @@ class DownlinkInjector:
         if client is None:
             return
         try:
-            client.loop_stop()
+            # Graceful first: a healthy session writes DISCONNECT and paho's
+            # loop thread closes the socket itself, within ms.
             client.disconnect()
+            deadline = time.monotonic() + TEARDOWN_GRACE_S
+            while client.socket() is not None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            # Then break the socket: paho's loop thread exits only once its
+            # output queue drains, so on a wedged peer loop_stop() joined
+            # until keepalive closed it — up to 2 x KEEPALIVE_S under
+            # self._lock (Fable r2 F2/F4).
+            sock = client.socket()
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            client.loop_stop()
         except Exception as e:  # teardown of a dead session; nothing to save
             logger.debug("Downlink injector teardown: %s", e)
 
@@ -307,7 +335,7 @@ class DownlinkInjector:
                 client.username_pw_set(self._username, self._password)
             client.on_connect = _on_connect
             self._client = client
-            client.connect(self._broker, self._port, keepalive=30)
+            client.connect(self._broker, self._port, keepalive=KEEPALIVE_S)
             client.loop_start()
             accepted.wait(CONNACK_TIMEOUT_S)
             ok = client.is_connected()
@@ -355,11 +383,17 @@ class DownlinkInjector:
                               detail=f"downlink inject kind={kind}")
         except TransmitBlocked:
             return False
+        # Build BEFORE touching the session: a bad input is not a broker
+        # fault and must not tear down a healthy session (Fable r2 F5).
+        try:
+            topic, payload, packet_id = builder()
+        except Exception as e:
+            logger.warning("Downlink %s envelope build failed: %s", kind, e)
+            return False
         with self._lock:
             if not self._ensure_connected():
                 return False
             try:
-                topic, payload, packet_id = builder()
                 info = self._client.publish(topic, payload, qos=0)
                 info.wait_for_publish(timeout=PUBLISH_TIMEOUT_S)
                 # wait_for_publish RETURNS on timeout (paho 2.x); a message
