@@ -60,6 +60,15 @@ BROADCAST_NUM = 0xFFFFFFFF
 #: this bounds what a wedged one costs each send before the caller falls back.
 CONNACK_TIMEOUT_S = 5.0
 
+#: After a failed connect, inject() refuses fast (False → caller's toradio
+#: fallback) for this long instead of paying CONNACK_TIMEOUT_S again per call
+#: (two calls per message: nodeinfo + text).
+CONNECT_RETRY_S = 30.0
+
+#: Bound on wait_for_publish; a QoS-0 message not written to the socket
+#: within it is a failed publish.
+PUBLISH_TIMEOUT_S = 5.0
+
 
 def _xor_hash(data: bytes) -> int:
     """Meshtastic's xorHash — XOR-fold of all bytes (used for channel hash)."""
@@ -224,7 +233,7 @@ class DownlinkInjector:
         self._psk = base64.b64decode(psk_b64) if psk_b64 else b""
         self._lock = threading.Lock()
         self._client = None
-        self._connected = False
+        self._retry_after = 0.0   # monotonic; refuse-fast window after a failed connect
 
         # Surface a clear reason once if the injector can't operate, so a
         # misconfigured downlink mode degrades loudly to toradio instead of
@@ -245,13 +254,19 @@ class DownlinkInjector:
     def fatal_reason(self) -> Optional[str]:
         return self._fatal_reason
 
+    @property
+    def connected(self) -> bool:
+        """paho's own session state: True only after CONNACK rc 0 and until
+        the session is lost (paho ``_handle_connack`` / connection-lost)."""
+        client = self._client
+        return client is not None and client.is_connected()
+
     def _teardown(self) -> None:
         """Stop the current client's network thread (never raises).
 
         Without this a reconnect left the old client's loop thread running —
         and paho auto-reconnecting it — beside the new one."""
         client, self._client = self._client, None
-        self._connected = False
         if client is None:
             return
         try:
@@ -261,53 +276,61 @@ class DownlinkInjector:
             logger.debug("Downlink injector teardown: %s", e)
 
     def _ensure_connected(self) -> bool:
-        """True only once the broker has ACCEPTED the session (CONNACK rc 0).
+        """True only while the broker has ACCEPTED the session (CONNACK rc 0).
 
         #25 (2026-11-12, measured on paho 2.1.0): ``connect()`` returns once
         TCP is up and paho will write a QoS-0 PUBLISH before any CONNACK, so a
         broker that accepts TCP but never answers (a wedged mosquitto) read as
-        connected and every inject() returned True into the void.
+        connected and every inject() returned True into the void. The truth
+        is paho's ``is_connected()``, never a flag of ours (review r1 F4/F8).
+
+        After a failed connect, refuse fast for ``CONNECT_RETRY_S`` so a wedged
+        broker costs one CONNACK wait per window, not one per call — the
+        caller's toradio fallback is the honest path meanwhile (r1 F2).
         """
-        if self._connected and self._client is not None:
+        if self.connected:
             return True
+        now = time.monotonic()
+        if now < self._retry_after:
+            return False
         self._teardown()
         accepted = threading.Event()
         result = {"rc": None}
 
         def _on_connect(client, userdata, flags, rc, *rest):
-            code = int(getattr(rc, "value", rc))
-            result["rc"] = code
-            if code == 0 and client is self._client:
-                self._connected = True
+            result["rc"] = int(getattr(rc, "value", rc))
             accepted.set()
-
-        def _on_disconnect(client, userdata, *rest):
-            # A lost session must be noticed before the next publish, not
-            # discovered by publishing into it.
-            if client is self._client:
-                self._connected = False
 
         try:
             client = _mqtt_mod(client_id=self._client_id)
             if self._username:
                 client.username_pw_set(self._username, self._password)
             client.on_connect = _on_connect
-            client.on_disconnect = _on_disconnect
             self._client = client
             client.connect(self._broker, self._port, keepalive=30)
             client.loop_start()
+            accepted.wait(CONNACK_TIMEOUT_S)
+            ok = client.is_connected()
         except Exception as e:
             logger.warning("Downlink injector connect failed: %s", e)
+            ok = False
+            result["rc"] = result["rc"] if result["rc"] is not None else "error"
+        if not ok:
+            rc = result["rc"]
+            if rc is None:
+                reason = f"no CONNACK within {CONNACK_TIMEOUT_S:g} s"
+            elif rc == "error":
+                reason = "connect error"
+            else:
+                reason = f"broker refused the session (CONNACK rc {rc})"
+            logger.warning(
+                "Downlink injector connect to %s:%d failed: %s — refusing for "
+                "%g s (callers fall back to toradio)",
+                self._broker, self._port, reason, CONNECT_RETRY_S)
             self._teardown()
+            self._retry_after = time.monotonic() + CONNECT_RETRY_S
             return False
-        if not accepted.wait(CONNACK_TIMEOUT_S) or result["rc"] != 0:
-            reason = (f"no CONNACK within {CONNACK_TIMEOUT_S:g} s"
-                      if result["rc"] is None
-                      else f"broker refused the session (CONNACK rc {result['rc']})")
-            logger.warning("Downlink injector connect to %s:%d failed: %s",
-                           self._broker, self._port, reason)
-            self._teardown()
-            return False
+        self._retry_after = 0.0
         logger.info(
             "Downlink injector connected to %s:%d (channel=%s)",
             self._broker, self._port, self._channel_name,
@@ -338,9 +361,12 @@ class DownlinkInjector:
             try:
                 topic, payload, packet_id = builder()
                 info = self._client.publish(topic, payload, qos=0)
-                if info.rc != 0:   # MQTT_ERR_SUCCESS; e.g. NO_CONN after a drop
-                    raise RuntimeError(f"publish rc {info.rc}")
-                info.wait_for_publish(timeout=5)
+                info.wait_for_publish(timeout=PUBLISH_TIMEOUT_S)
+                # wait_for_publish RETURNS on timeout (paho 2.x); a message
+                # still queued in the client is not published (r1 F1).
+                if not info.is_published():
+                    raise RuntimeError(
+                        f"not written to the broker within {PUBLISH_TIMEOUT_S:g} s")
                 logger.info(
                     "Downlink %s injected: id=0x%08x from=!%08x topic=%s",
                     kind, packet_id, origin_node, topic,
@@ -348,8 +374,8 @@ class DownlinkInjector:
                 return True
             except Exception as e:
                 logger.warning("Downlink %s inject failed: %s", kind, e)
-                # Drop the connection so the next attempt reconnects cleanly.
-                self._connected = False
+                # Drop the session so the next attempt reconnects cleanly.
+                self._teardown()
                 return False
 
     def inject(
@@ -385,11 +411,4 @@ class DownlinkInjector:
 
     def close(self):
         with self._lock:
-            if self._client is not None:
-                try:
-                    self._client.loop_stop()
-                    self._client.disconnect()
-                except Exception as e:
-                    logger.debug("Downlink injector close error: %s", e)
-                self._client = None
-                self._connected = False
+            self._teardown()

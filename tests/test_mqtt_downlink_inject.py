@@ -197,31 +197,62 @@ class TestInjectNodeInfoGuards:
 # These tests drive the REAL paho client against a fake broker socket.
 # ---------------------------------------------------------------------------
 
+import contextlib
 import socket
 import threading
 import time
 
 
-class _FakeBroker:
-    """One-connection MQTT broker stub on 127.0.0.1.
+def _split_mqtt(buf):
+    """Split a byte buffer into complete MQTT packets: [(type, body)], rest.
 
-    mode: "ok"     CONNACK rc 0 to every CONNECT
-          "silent" accept TCP, never CONNACK (a wedged broker)
-          "drop"   CONNACK rc 0, then close the socket after the first PUBLISH
+    Real framing (fixed header + varint remaining length), so packets that
+    share one recv() are each counted (review r1 F5)."""
+    out = []
+    while len(buf) >= 2:
+        mult, length, i = 1, 0, 1
+        while True:
+            if i >= len(buf):
+                return out, buf
+            byte = buf[i]
+            length += (byte & 0x7F) * mult
+            mult *= 128
+            i += 1
+            if not byte & 0x80:
+                break
+        if len(buf) < i + length:
+            return out, buf
+        out.append((buf[0] >> 4, buf[i:i + length]))
+        buf = buf[i + length:]
+    return out, buf
+
+
+class _FakeBroker:
+    """MQTT broker stub on 127.0.0.1, one connection at a time.
+
+    mode: "ok"          CONNACK rc 0 to every CONNECT
+          "silent"      accept TCP, never CONNACK (a wedged broker)
+          "drop"        CONNACK rc 0; close the session after the first PUBLISH;
+                        later sessions behave like "ok"
+          "drop_silent" like "drop", but every LATER session is "silent"
     """
 
     def __init__(self, mode):
         self.mode = mode
         self.packet_types = []
+        self.sessions = 0
         self._srv = socket.socket()
         self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._srv.bind(("127.0.0.1", 0))
         self._srv.listen(4)
-        self._srv.settimeout(0.2)
+        self._srv.settimeout(0.1)
         self.port = self._srv.getsockname()[1]
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
+
+    def count(self, ptype):
+        return self.packet_types.count(ptype)
 
     def _serve(self):
         while not self._stop.is_set():
@@ -229,23 +260,37 @@ class _FakeBroker:
                 conn, _ = self._srv.accept()
             except (socket.timeout, OSError):
                 continue
-            conn.settimeout(0.2)
+            self.sessions += 1
+            first = self.sessions == 1
+            mode = self.mode
+            if mode == "drop_silent":
+                mode = "drop" if first else "silent"
+            elif mode == "drop" and not first:
+                mode = "ok"
+            self._session(conn, mode)
+
+    def _session(self, conn, mode):
+        conn.settimeout(0.1)
+        buf = b""
+        with conn:
             while not self._stop.is_set():
                 try:
                     b = conn.recv(4096)
                 except socket.timeout:
                     continue
                 except OSError:
-                    break
+                    return
                 if not b:
-                    break
-                ptype = b[0] >> 4
-                self.packet_types.append(ptype)
-                if ptype == 1 and self.mode in ("ok", "drop"):
-                    conn.sendall(bytes([0x20, 0x02, 0x00, 0x00]))
-                if ptype == 3 and self.mode == "drop":
-                    break
-            conn.close()
+                    return
+                pkts, buf = _split_mqtt(buf + b)
+                for ptype, _body in pkts:
+                    self.packet_types.append(ptype)
+                    if ptype == 1 and mode in ("ok", "drop"):
+                        conn.sendall(bytes([0x20, 0x02, 0x00, 0x00]))
+                    if ptype == 12 and mode != "silent":   # PINGREQ
+                        conn.sendall(bytes([0xD0, 0x00]))
+                    if ptype == 3 and mode == "drop":
+                        return
 
     def close(self):
         self._stop.set()
@@ -253,61 +298,111 @@ class _FakeBroker:
         self._srv.close()
 
 
+def _until(pred, t=3.0):
+    end = time.monotonic() + t
+    while time.monotonic() < end:
+        if pred():
+            return True
+        time.sleep(0.02)
+    return pred()
+
+
 @pytest.fixture
-def fake_broker():
-    """Factory: a fake broker plus a tx_guard grant for its ephemeral port
-    (the guard cannot tell a fake broker from the real one)."""
-    import contextlib
+def fake_broker(monkeypatch):
+    """Factory: make(mode) -> (broker, injector). Grants tx_guard for the
+    ephemeral port, shortens the timeouts far under CI's 30 s cap, and
+    closes every injector before its broker (review r1 F6)."""
+    from gateway import mqtt_downlink_inject as mdi
     from utils import tx_guard
+    monkeypatch.setattr(mdi, "CONNACK_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(mdi, "PUBLISH_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(mdi, "CONNECT_RETRY_S", 30.0)
     with contextlib.ExitStack() as stack:
         def make(mode):
             b = _FakeBroker(mode)
             stack.callback(b.close)
             stack.enter_context(tx_guard.allow_targets(f"127.0.0.1:{b.port}"))
-            return b
+            inj = DownlinkInjector("127.0.0.1", b.port, "meshforge", PSK_B64)
+            stack.callback(inj.close)
+            return b, inj
         yield make
 
 
-def _injector(port, monkeypatch):
-    from gateway import mqtt_downlink_inject as mdi
-    # Keep every test far under CI's 30 s per-test cap.
-    monkeypatch.setattr(mdi, "CONNACK_TIMEOUT_S", 1.0, raising=False)
-    return DownlinkInjector("127.0.0.1", port, "meshforge", PSK_B64)
-
-
 class TestInjectRequiresAcceptedSession:
-    """#25 — True only after CONNACK rc 0; a lost session is noticed."""
+    """#25 — True only for an accepted session and a written publish."""
 
-    def test_control_ok_broker_true_and_publish_reaches_broker(self, fake_broker, monkeypatch):
-        b = fake_broker("ok")
-        inj = _injector(b.port, monkeypatch)
+    def test_control_ok_broker_true_and_publish_reaches_broker(self, fake_broker):
+        b, inj = fake_broker("ok")
         assert inj.inject("hello", ORIGIN) is True
-        deadline = time.monotonic() + 2
-        while 3 not in b.packet_types and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert 3 in b.packet_types  # a PUBLISH reached the broker
+        assert _until(lambda: b.count(3) == 1)
+        assert inj.connected is True
 
-    def test_silent_broker_no_connack_is_false(self, fake_broker, monkeypatch):
-        b = fake_broker("silent")
-        inj = _injector(b.port, monkeypatch)
+    def test_silent_broker_no_connack_is_false(self, fake_broker):
+        b, inj = fake_broker("silent")
         t0 = time.monotonic()
         assert inj.inject("hello", ORIGIN) is False
         assert time.monotonic() - t0 < 5   # bounded by CONNACK_TIMEOUT_S
-        assert 3 not in b.packet_types     # nothing published into the void
-        assert inj.inject("again", ORIGIN) is False  # still no session
+        time.sleep(0.3)
+        assert b.count(1) == 1             # it did try: one CONNECT
+        assert b.count(3) == 0             # nothing published into the void
+        assert inj.connected is False
 
-    def test_silent_broker_nodeinfo_is_false(self, fake_broker, monkeypatch):
-        b = fake_broker("silent")
-        inj = _injector(b.port, monkeypatch)
+    def test_silent_broker_nodeinfo_is_false(self, fake_broker):
+        b, inj = fake_broker("silent")
         assert inj.inject_nodeinfo(ORIGIN, "long", "sh") is False
+        assert b.count(3) == 0
 
-    def test_session_drop_is_noticed_before_next_publish(self, fake_broker, monkeypatch):
-        # Broker closes the session after the first PUBLISH; the stub serves
-        # one CONNECT per accept, so a reconnect gets a fresh CONNACK.
-        b = fake_broker("drop")
-        inj = _injector(b.port, monkeypatch)
+    def test_failed_connect_refuses_fast_without_reconnecting(self, fake_broker):
+        # r1 F2: nodeinfo + text per message must not cost two CONNACK waits.
+        b, inj = fake_broker("silent")
+        assert inj.inject_nodeinfo(ORIGIN, "long", "sh") is False
+        t0 = time.monotonic()
+        assert inj.inject("hello", ORIGIN) is False
+        assert time.monotonic() - t0 < 0.3
+        time.sleep(0.3)
+        assert b.sessions == 1             # no second connect attempt
+
+    def test_retry_window_expiry_reconnects(self, fake_broker, monkeypatch):
+        from gateway import mqtt_downlink_inject as mdi
+        b, inj = fake_broker("drop_silent")
+        assert inj.inject("one", ORIGIN) is True       # session 1, then dropped
+        assert _until(lambda: not inj.connected)
+        monkeypatch.setattr(mdi, "CONNECT_RETRY_S", 0.0)
+        b.mode = "ok"                                    # broker recovers
+        assert _until(lambda: inj.inject("two", ORIGIN), t=5)
+        assert _until(lambda: b.count(3) >= 2)
+
+    def test_session_drop_then_wedged_broker_is_false(self, fake_broker):
+        # r1 F7: deterministic — after the drop, no session can be accepted,
+        # so neither paho's auto-reconnect nor ours can read connected.
+        b, inj = fake_broker("drop_silent")
         assert inj.inject("one", ORIGIN) is True
-        deadline = time.monotonic() + 2
-        while inj._connected and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert inj._connected is False  # the drop cleared the flag
+        assert _until(lambda: not inj.connected)
+        assert inj.inject("two", ORIGIN) is False
+        assert b.count(3) == 1
+
+    def test_session_drop_reconnects_on_next_inject(self, fake_broker):
+        b, inj = fake_broker("drop")
+        assert inj.inject("one", ORIGIN) is True
+        assert _until(lambda: b.sessions >= 1 and b.count(3) == 1)
+        assert _until(lambda: inj.inject("two", ORIGIN), t=5)
+        assert _until(lambda: b.count(3) == 2)
+        assert b.sessions == 2
+
+    def test_publish_not_written_within_timeout_is_false(self, fake_broker, monkeypatch):
+        # r1 F1: CONNACK'd, then the message stays queued in the client.
+        # wait_for_publish RETURNS on timeout; True would be the #25 class.
+        b, inj = fake_broker("ok")
+        assert inj.inject("warm", ORIGIN) is True
+        client = inj._client
+        real_publish = client.publish
+
+        def queued_never_written(*a, **k):
+            info = real_publish("meshforge/unused", b"", qos=0)
+            info.wait_for_publish(timeout=1)
+            info._published = False        # the real class, held unwritten
+            info._condition = threading.Condition()
+            return info
+        monkeypatch.setattr(client, "publish", queued_never_written)
+        assert inj.inject("stalled", ORIGIN) is False
+        assert inj._client is None         # torn down: next call reconnects
