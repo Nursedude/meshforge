@@ -211,3 +211,52 @@ class TestRound2Shapes:
         row = q.get_pending(destination="secondary")[0].payload
         assert row["destination_id"] == "!1234abcd"
         assert row["is_broadcast"] is False
+
+
+class TestRound3OneValidator:
+    """#18 r3 (Fable by running, 11-11): two READERS of one fact drifted — the
+    ingress rule was strict, the send boundary only checked falsiness (F1), and
+    the toId fallback used int(x, 16), which accepts '0x', '+', ' ', '_' and
+    non-ASCII digits (F2). ONE validator, ``node_dest``, now decides both."""
+
+    @pytest.mark.parametrize("dest,ok", [
+        ("!1234abcd", True), ("!0000beef", True), ("!0000BEEF", True),
+        ("!ffffffff", False), ("!00000000", False), ("!abc", False),
+        ("nick", False), ("abc", False), ("", False), (None, False), (12345, False),
+        ("!zzzzzzzz", False), ("!0x00beef", False), ("!+000beef", False),
+        ("! 000beef", False), ("!0_00beef", False), ("!000beef\n", False),
+        ("!" + "١٢٣٤٥٦٧٨", False),
+        ("!1ffffffff", False), (True, False),
+        ("!0000beef\n", False), ("!0000beef ", False),   # 8 VALID hex + trailing junk
+        ("!0000beef0", False), ("!0000beefXX", False),   # (int() would strip/accept)
+    ])
+    def test_node_dest_is_the_one_rule(self, dest, ok):
+        from gateway._mesh_bridge_legs import node_dest
+        assert (node_dest(dest) is not None) is ok
+
+    @pytest.mark.parametrize("packet", [
+        {"toId": "!0x00beef"}, {"toId": "!+000beef"}, {"toId": "! 000beef"},
+        {"toId": "!0_00beef"}, {"toId": "!000beef\n"},
+        {"toId": "!" + "١٢٣٤٥٦٧٨"},
+        {"to": 0xFFFFFFFF},                                     # F4: upper bound
+    ])
+    def test_F2_F4_fallback_shapes_refused(self, packet):
+        from gateway._mesh_bridge_legs import dm_destination
+        assert dm_destination(packet) is None
+
+    @pytest.mark.parametrize("stored", ["!abc", "nick", "abc", "!ffffffff", 12345,
+                                        "!zzzzzzzz", None, ""])
+    def test_F1_a_row_persisted_by_an_older_build_is_refused_at_send(self, bridge, stored):
+        """Never handed to the library: no our_exit, no DM-as-broadcast."""
+        from gateway.mesh_bridge import BridgedMeshMessage
+        radio = _LibraryLikeRadio()
+        bridge._secondary_interface, bridge._secondary_connected = radio, True
+        msg = BridgedMeshMessage(source_preset="LONG_FAST", source_id="!aaaa0001",
+                                 destination_id=stored, content=f"old {stored!r}",
+                                 channel=0, is_broadcast=False)
+        sent = []
+        orig = radio.sendText
+        radio.sendText = lambda *a, **k: (sent.append(k), orig(*a, **k))[1]
+        with patch("gateway.mesh_bridge.assert_iface_tx_allowed"):
+            assert bridge._send_to_secondary(msg.to_payload()) is False
+        assert sent == []

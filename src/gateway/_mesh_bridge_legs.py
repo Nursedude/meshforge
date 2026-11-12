@@ -6,6 +6,7 @@ log-capturing tests that knew these lines before the split still find them.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 
 from .config import MeshtasticConfig
@@ -134,30 +135,37 @@ LINK_DOWN_RETRY_S = 2.0
 LINK_DOWN_EPISODE_GAP_S = 30.0
 
 
+_NODE_ID_RE = re.compile(r"![0-9a-fA-F]{8}")
+
+
+def node_dest(dest):
+    """THE rule for a DM destination string (BR-T #18 r3: ingress and the send
+    boundary each had their own reader, and they drifted). ``'!'`` + exactly 8
+    ASCII hex digits naming a node (not 0, not 0xFFFFFFFF) → the normalised
+    ``!xxxxxxxx``; anything else → ``None``. ``re.fullmatch`` on literal ASCII
+    ranges: no ``0x``/``+``/space/``_``/non-ASCII digits, no trailing newline."""
+    if not isinstance(dest, str) or not _NODE_ID_RE.fullmatch(dest):
+        return None
+    num = int(dest[1:], 16)
+    return f"!{num:08x}" if 0 < num < 0xFFFFFFFF else None
+
+
 def dm_destination(packet: dict):
     """BR-T #18: a DM's destination from the WIRE, or ``None`` (refuse, named).
 
     The numeric ``to`` is the wire fact and DECIDES ALONE when present: a valid
     node number (1 .. 0xFFFFFFFE, a real int — bool is not a node) gives
     ``!{to:08x}``; any other value refuses. ``toId`` is the library's node-DB
-    string, which a neighbour can set — r2 11-11: ``user.id='!ffffffff'``
-    turned a DM into a broadcast, ``'!abc'`` reached ``our_exit`` — so it is a
-    fallback ONLY with no ``to``, and only as ``'!'`` + 8 hex naming a node."""
+    string, which a neighbour can set (r2 11-11: ``user.id='!ffffffff'`` turned
+    a DM into a broadcast, ``'!abc'`` reached ``our_exit``), so it is a
+    fallback ONLY with no ``to``, and only through ``node_dest``."""
     to_num = packet.get('to')
     if to_num is not None:
         if isinstance(to_num, int) and not isinstance(to_num, bool) \
                 and 0 < to_num < 0xFFFFFFFF:
             return f"!{to_num:08x}"
         return None
-    to_id = packet.get('toId')
-    if isinstance(to_id, str) and len(to_id) == 9 and to_id[0] == '!':
-        try:
-            num = int(to_id[1:], 16)
-        except ValueError:
-            return None
-        if 0 < num < 0xFFFFFFFF:
-            return f"!{num:08x}"
-    return None
+    return node_dest(packet.get('toId'))
 
 def bump_stat(bridge, key: str) -> None:
     """One locked counter bump (the bridge's stats are shared across threads)."""

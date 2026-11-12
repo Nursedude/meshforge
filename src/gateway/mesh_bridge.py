@@ -41,7 +41,7 @@ from ._handoff_witness import HandoffWitness
 from ._mesh_bridge_mqtt import MQTTMeshInterface
 from ._mesh_bridge_legs import (
     bridge_event, build_downlink_injector, bump_stat, dm_destination,
-    queue_drop_witness,
+    node_dest, queue_drop_witness,
     LINK_DOWN_EPISODE_GAP_S, LINK_DOWN_RETRY_S, MESH_BRIDGE_MAX_AGE_S,
     _library_gave_up, _write_target_gone)
 from .message_queue import PersistentMessageQueue, MessagePriority, RetryPolicy
@@ -1348,7 +1348,7 @@ class MeshtasticPresetBridge:
     def _forward_message(self, msg: BridgedMeshMessage, interface,
                          connected: bool, dest_name: str) -> bool:
         """Forward a message to the specified interface."""
-        if not msg.is_broadcast and not msg.destination_id:   # BR-T #18
+        if not msg.is_broadcast and node_dest(msg.destination_id) is None:  # #18 r3
             bump_stat(self, 'dm_no_destination')
             logger.error(f"Forward to {dest_name} REFUSED: DM with no destination "
                          f"(never sendText(destinationId=None)): {msg.content[:50]}")
