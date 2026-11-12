@@ -819,3 +819,32 @@ def test_B19_connect_tcp_itself_never_announces_connected(bridge):
     lk = _leg_lock(bridge, "primary")
     bridge._close_taken("primary", iface)
     assert not lk.locked()
+
+
+def test_B19_connect_serial_itself_never_announces_connected(bridge):
+    """R4-F3 (Fable r4): B19 pinned only the tcp connector; a notify put back
+    inside _connect_serial survived. The serial connector announces nothing —
+    `<leg>_connected` belongs to _install_or_close (§B #21)."""
+    bridge._notify_status = MagicMock()
+    fake_serial = MagicMock()
+    with patch("gateway.mesh_bridge._HAS_MESHTASTIC", True), \
+         patch("gateway.mesh_bridge._HAS_MESHTASTIC_SERIAL", True), \
+         patch("gateway.mesh_bridge._HAS_PUBSUB", True), \
+         patch("gateway.mesh_bridge._meshtastic_serial", fake_serial), \
+         patch("gateway.mesh_bridge._pub", MagicMock()):
+        iface, ok = bridge._connect_serial(
+            bridge.bridge_config.secondary, "secondary", lambda p: None)
+    assert ok is True and iface is fake_serial.SerialInterface.return_value
+    assert bridge._notify_status.call_count == 0
+
+
+def test_B19_connect_mqtt_itself_never_announces_connected(bridge):
+    """R4-F3: the same pin for the MQTT connector."""
+    bridge._notify_status = MagicMock()
+    fake_mqtt = MagicMock()
+    fake_mqtt.return_value.connect.return_value = True
+    with patch("gateway.mesh_bridge.MQTTMeshInterface", fake_mqtt):
+        iface, ok = bridge._connect_mqtt(
+            bridge.bridge_config.secondary, "secondary", lambda p: None)
+    assert ok is True and iface is fake_mqtt.return_value
+    assert bridge._notify_status.call_count == 0

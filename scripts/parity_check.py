@@ -84,6 +84,10 @@ BYTE_IDENTICAL = (
     # max age, clock-jump shift. Both bridges sit on one rnsd; two copies
     # that drift = two different outage contracts (review F8).
     "src/gateway/message_queue_outage_mixin.py",
+    # The preset bridge's queue DRAIN (BR-T #23 seam, 2026-11-11): which queue
+    # each tick offers to its sender. A leg gate here was reverted twice; one
+    # twin re-growing it alone would split the bridges' hold contract (R4-F2).
+    "src/gateway/_mesh_bridge_drain.py",
     # The delivery-label vocabulary (2026-09-24, review C F7): which routing
     # lanes count as which transport in delivery_counters. Both repos' writers
     # and readers judge confirmation rates by it; a per-repo drift would make

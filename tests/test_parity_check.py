@@ -407,3 +407,10 @@ def test_reasons_rename_beside_a_local_of_the_old_name_is_drift(tmp_path):
     planted += "\n\ndef _legacy():\n    DELIVERY_FAILURE_REASONS = set()\n    return DELIVERY_FAILURE_REASONS\n"
     f = _reasons(pc.check_parity(str(ROOT), _ma_with(tmp_path, planted))[0])
     assert f.status == "drift" and "ma=absent" in f.detail
+
+
+def test_mesh_bridge_drain_is_byte_locked():
+    """R4-F2 (Fable r4, 11-11): the drain policy file was created byte-identical
+    in both twins but sat outside this tier, so a drift — a leg gate added to
+    one twin's drain — would pass parity silently."""
+    assert "src/gateway/_mesh_bridge_drain.py" in _load().BYTE_IDENTICAL
