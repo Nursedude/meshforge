@@ -1,7 +1,15 @@
 """The mesh bridge's queue DRAIN (MF025 split of mesh_bridge.py, 2026-11-11):
-which queue is drained this tick, and which waits on a leg that cannot take a
-write (BR-T #4 direction rule, #14 hold status, landscape §B #23). Mixed into
-MeshtasticPresetBridge; reads its legs through ``self``.
+which queue is drained this tick (BR-T #4 direction rule) and the #14 hold
+status read. Mixed into MeshtasticPresetBridge; reads its legs via ``self``.
+
+⚠️ NO LEG GATE HERE (landscape §B #23, reverted 2026-11-11 after Fable r2 by
+running): a drain that skips a queue because its leg is down runs AHEAD of the
+sender's per-row decisions — dual-path dedup (content already on the far mesh
+resolves now), DM refusal, the downlink path — and of process_once's clock-step
+shift + guarded expiry. Same kind as #14 v1's ``ready_fn`` gate (rejected r1).
+The deferral lives at the refusal, inside the sender, after all of them.
+``TestDrainOffersEveryQueue`` pins it: every direction-allowed queue is offered
+to its sender each pass, whatever the leg state.
 """
 from __future__ import annotations
 
@@ -12,8 +20,8 @@ logger = logging.getLogger("gateway.mesh_bridge")
 
 class MeshBridgeDrainMixin:
     """Drain policy for MeshtasticPresetBridge (needs ``bridge_config``,
-    ``_primary_to_secondary`` / ``_secondary_to_primary``, ``_primary_downlink``,
-    ``_leg_can_write`` and ``_note_link_down`` on the host class)."""
+    ``_primary_to_secondary`` / ``_secondary_to_primary`` and
+    ``_leg_can_write`` on the host class)."""
 
     def _direction_allows(self, ingress: str) -> bool:
         """THE direction rule (BR-T #4): may text heard on ``ingress`` cross?
@@ -32,30 +40,15 @@ class MeshBridgeDrainMixin:
             if not self._direction_allows(ingress):
                 queue.expire_overdue()
 
-    def _leg_blocked(self, leg: str) -> bool:
-        """§B #23: no row bound for ``leg`` can be written now — the leg cannot
-        take a write and (primary only) no broker downlink could carry one."""
-        if leg == "primary" and self._primary_downlink is not None:
-            return False
-        return not self._leg_can_write(leg)
-
     def _drain_once(self) -> int:
-        """One pass over both queues. A queue whose destination leg is
-        blocked is NOT drained (§B #23: each tick re-deferred every row — two
-        SQLite writes per row per 2 s on SD); its rows still age out, and the
-        outage is logged once."""
+        """One pass of the bridge loop: every direction-allowed queue is
+        offered to its sender (process_once), whatever its leg's state — the
+        sender decides each row (see the module docstring)."""
         processed = 0
-        for ingress, dest, queue in (
-                ("primary", "secondary", self._primary_to_secondary),
-                ("secondary", "primary", self._secondary_to_primary)):
-            if not self._direction_allows(ingress):
-                continue
-            if self._leg_blocked(dest):
-                queue.expire_overdue()
-                if queue.get_queue_depth() > 0:
-                    self._note_link_down(dest, "leg cannot take a write")
-                continue
-            processed += queue.process_once(batch_size=5)
+        for ingress, queue in (("primary", self._primary_to_secondary),
+                               ("secondary", self._secondary_to_primary)):
+            if self._direction_allows(ingress):
+                processed += queue.process_once(batch_size=5)
         return processed
 
     def _held_link_down(self, queue, leg: str) -> bool:

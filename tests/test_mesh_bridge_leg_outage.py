@@ -507,31 +507,89 @@ class TestPortReviewTwin_2026_11_11:
         assert _row(q, msg_id)["status"] == "pending"
         assert bridge._primary_downlink.inject.call_count == 0
 
-    def test_23_a_down_leg_is_not_re_asked_per_row_every_tick(self, bridge):
-        """F10: with a leg down every pending row cycled get_pending ->
-        in_progress -> SendDeferred -> pending each 2 s (two SQLite writes per
-        row per tick on SD). The drain skips a leg that cannot take a write,
-        and still ages its rows out."""
-        for i in range(5):
-            _enqueue_for_secondary(bridge, f"backlog {i}")
+def _loop_pass(bridge, n=1):
+    """n passes of the REAL loop body (_drain_once), backoff collapsed — the
+    seam #23 hid behind: tests that tick q.process_once directly cannot see a
+    gate the loop puts in front of the sender (Fable r2, 11-11)."""
+    with patch("gateway.mesh_bridge.assert_iface_tx_allowed"):
+        for _ in range(n):
+            for q in (bridge._primary_to_secondary, bridge._secondary_to_primary):
+                _sql(q, "UPDATE messages SET retry_after = NULL")
+            bridge._drain_once()
+
+
+class TestDrainOffersEveryQueue:
+    """§B #23 REVERTED (Fable r2 by running, NOT CLEAN): the drain must offer
+    every direction-allowed queue to its sender whatever the leg state — a
+    leg gate ran AHEAD of the sender's per-row decisions (dedup, DM refusal,
+    downlink) and of process_once's clock-step shift. Same kind as #14 v1's
+    ready_fn gate; this class is the seam guard so a third one fails here."""
+
+    @pytest.mark.parametrize("p_up,s_up", [(False, False), (True, False),
+                                           (False, True), (True, True)])
+    def test_every_queue_is_offered_whatever_the_legs(self, bridge, p_up, s_up):
+        bridge._primary_interface, bridge._primary_connected = (_Radio(), True) if p_up else (None, False)
+        bridge._secondary_interface, bridge._secondary_connected = (_Radio(), True) if s_up else (None, False)
+        p2s, s2p = bridge._primary_to_secondary, bridge._secondary_to_primary
+        with patch.object(p2s, "process_once", return_value=0) as a, \
+                patch.object(s2p, "process_once", return_value=0) as b:
+            assert bridge._drain_once() == 0
+        assert (a.call_count, b.call_count) == (1, 1)
+
+    def test_drain_returns_what_the_senders_processed(self, bridge):
+        p2s, s2p = bridge._primary_to_secondary, bridge._secondary_to_primary
+        with patch.object(p2s, "process_once", return_value=2), \
+                patch.object(s2p, "process_once", return_value=3):
+            assert bridge._drain_once() == 5          # sets the loop's cadence
+
+    def test_F2_through_the_loop_far_mesh_copy_resolves_with_the_leg_down(self, bridge):
+        from gateway.mesh_bridge import get_secondary_rf_registry
+        q, msg_id, content = _enqueue_for_secondary(bridge, "loop already there")
         bridge._secondary_interface, bridge._secondary_connected = None, False
-        p2s = bridge._primary_to_secondary
-        with patch.object(p2s, "process_once", wraps=p2s.process_once) as drain, \
-                patch.object(p2s, "expire_overdue", wraps=p2s.expire_overdue) as expire:
-            bridge._drain_once()
-        assert drain.call_count == 0
-        assert expire.call_count == 1
-        assert bridge.get_status()["queue"]["p2s_held_link_down"] is True
+        get_secondary_rf_registry().register(content)
+        _loop_pass(bridge)
+        assert _row(q, msg_id)["status"] == "delivered"
+        assert bridge.stats.get("dual_path_suppressed_secondary") == 1
 
-    def test_23_control_an_up_leg_is_drained(self, bridge):
-        _enqueue_for_secondary(bridge, "go")
-        bridge._secondary_interface, bridge._secondary_connected = _Radio(), True
-        p2s = bridge._primary_to_secondary
-        with patch("gateway.mesh_bridge.assert_iface_tx_allowed"), \
-                patch.object(p2s, "process_once", wraps=p2s.process_once) as drain:
-            bridge._drain_once()
-        assert drain.call_count == 1
+    def test_22_through_the_loop_a_downlink_broadcast_crosses_with_the_leg_down(self, bridge):
+        q, msg_id, _ = _enqueue_for_primary(bridge, "loop broker path")
+        bridge._primary_interface, bridge._primary_connected = None, False
+        inj = MagicMock()
+        inj.inject.return_value = True
+        inj.inject_nodeinfo.return_value = True
+        bridge._primary_downlink = inj
+        _loop_pass(bridge)
+        assert _row(q, msg_id)["status"] == "delivered"
 
+    def test_through_the_loop_a_dm_with_no_destination_is_refused_not_held(self, bridge):
+        from gateway.mesh_bridge import BridgedMeshMessage
+        q = bridge._primary_to_secondary
+        m = BridgedMeshMessage(source_preset="LONG_FAST", source_id="!b03bb70c",
+                               destination_id="", content="no dest dm",
+                               channel=0, is_broadcast=False)
+        msg_id = q.enqueue(m.to_payload(), destination="secondary")
+        bridge._secondary_interface, bridge._secondary_connected = None, False
+        _loop_pass(bridge, 6)
+        assert _row(q, msg_id)["status"] == "dead_letter"
+        assert bridge.stats.get("dm_no_destination", 0) >= 1
+
+    def test_F1_through_the_loop_a_wall_step_mid_outage_does_not_expire_the_hold(self, bridge):
+        """A +1 h wall step while the leg is down: process_once's note_clock
+        must shift the row before any expiry (a gate called expire_overdue
+        with no note_clock — the row died as 'expired after 3600s')."""
+        from datetime import timedelta
+        q, msg_id, _ = _enqueue_for_secondary(bridge, "held across a step")
+        bridge._secondary_interface, bridge._secondary_connected = None, False
+        _loop_pass(bridge)                             # baseline clock tick
+        assert q._clock_wall is not None
+        q._clock_wall = q._clock_wall - timedelta(hours=1)   # wall stepped +1 h
+        (created,) = _sql(q, "SELECT created_at FROM messages WHERE id = ?", (msg_id,))[0]
+        from datetime import datetime
+        _sql(q, "UPDATE messages SET created_at = ? WHERE id = ?",
+             ((datetime.fromisoformat(created) - timedelta(hours=1)).isoformat(), msg_id))
+        _loop_pass(bridge)
+        assert _row(q, msg_id)["status"] == "pending"
+        assert q._stats["clock_jumps"] == 1           # the shift ran, before any expiry
 
 def test_21_a_failing_connected_notify_leaves_the_leg_installed(bridge):
     """§B #21 hardening: the notify now runs after the install; a status read
@@ -540,3 +598,12 @@ def test_21_a_failing_connected_notify_leaves_the_leg_installed(bridge):
     with patch.object(bridge, "_notify_status", side_effect=RuntimeError("sqlite gone")):
         bridge._install_or_close("secondary", radio, True)
     assert bridge._secondary_interface is radio and bridge._secondary_connected
+
+
+def test_21_no_connected_event_on_a_failed_connect(bridge):
+    """Fable r2 M13: a connect that fails must not announce `<leg>_connected`."""
+    seen = []
+    bridge.register_status_callback(lambda status, data: seen.append(status))
+    with patch.object(bridge, "_connect_interface", return_value=(None, False)):
+        bridge._connect_secondary()
+    assert "secondary_connected" not in seen
