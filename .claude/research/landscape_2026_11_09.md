@@ -58,6 +58,11 @@ items (6 / 43 / 26), item rules clean. No hand edits.
 
 ## B. Review by running — `mesh_bridge` (the two-leg preset bridge)
 
+> **Progress 2026-11-12:** #19–#21 + #22/#23 reverts HOLD (r4, r5) · R4-F1..F3 fixed
+> test-first MF `c6f6cea9` `429a00b9`, MA `bf445460` (CI success) · **round 5 NOT CLEAN on
+> tests** (R5-F1..F3, seam rule fired — leg-symmetric state table next) · NOT deployed
+> (fleet `d185bfd2`) · next: the state-table guard, MF first → MA → round 6.
+
 > **Progress 2026-11-11:** #4 #5 #6 #14 fixed — v1 `bf5a3b90` → review r1
 > (code-review medium: ready_fn ran ahead of downlink + dual-path dedup) → v2
 > `16f97fa7` → Fable r2 by running (MQTT leg not covered; episode log) → r2 fix
@@ -173,6 +178,25 @@ claimed fix holds in both twins; queued for the next session (test-first, MF fir
   survives. **R4-F4:** `_install_or_close` can emit `<leg>_connected` AFTER a concurrent
   `_disconnected` (no consumer today). **R4-F5:** stale `dead_letter` comment in
   `_mesh_bridge_legs.py`; `_note_link_down` has one caller. **R4-F6:** stale-sweep drop name unpinned.
+
+**R4-F1/F2/F3 fixed test-first 2026-11-12** (MF `c6f6cea9` loop harness drives the real
+`_bridge_loop`, `429a00b9` drain file byte-locked + serial/MQTT B19 pins; MA `bf445460`; CI success
+×3). Not deployed.
+
+**Round 5 (Fable subagent by running, 2026-11-12 06:55–07:26): NOT CLEAN on TESTS only** — src
+fixes all hold; R4-F2 closed; the guards are blind ONE STEP OVER (re-measured here: control and
+each mutant `129 passed` on the 5 bridge test files):
+- **R5-F1 (SHOULD-FIX):** a gate on the PRIMARY leg once a queue has rows survives (g03 in
+  `_drain_once` via `_held_link_down`; g05 the same in `_bridge_loop`) — the every-queue case mocks
+  empty queues and every behavioural loop case arms the SECONDARY leg. Effect under g03, leg down:
+  dedup copy `pending` not `delivered`; no-dest DM never refused; a 720 s row never expires.
+- **R5-F2 (SHOULD-FIX):** #21/B19 miss an early `<leg>_connected` in the dispatcher
+  `_connect_interface` (n03) or atop `_install_or_close` (n02), and never assert the primary leg
+  (n12/n14). n03 re-emits the original #21 event (leg still down) first.
+- **R5-F3 (NIT):** #22-revert pins only `interface=None`; x05 (flag down, handle kept) re-opens r3.
+- **Seam rule:** same kind twice (r4, r5) → the fix is a leg-SYMMETRIC state table (leg × leg
+  state × row kind → outcome) through the real `_bridge_loop`, and an exact event-list assertion
+  per leg through the real `_connect_<leg>`; not more single-mutant pins.
 
 **#24 design — DECIDED 2026-11-11 (operator: "agree with your recommendation - lets do this"); build test-first in a FRESH session, inside BIC-2.**
 Rule: **chain each transport's OWN wire id, hop by hop — never a content hash**
