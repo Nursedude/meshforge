@@ -351,9 +351,10 @@ class TestReviewRound2_2026_11_11:
     def test_m18_the_drain_obeys_direction(self, bridge, direction, drained):
         bridge.bridge_config.direction = direction
         bridge._running = True
-        # legs up: keeps this test about direction, not leg state
-        bridge._primary_interface, bridge._primary_connected = _Radio(), True
-        bridge._secondary_interface, bridge._secondary_connected = _Radio(), True
+        # legs DOWN (R4-F1): direction alone decides — a leg gate anywhere in
+        # the loop would skip a queue here and fail this too
+        bridge._primary_interface, bridge._primary_connected = None, False
+        bridge._secondary_interface, bridge._secondary_connected = None, False
         waits = iter([True])
         with patch.object(bridge._stop_event, "wait", lambda *_: next(waits)), \
              patch.object(bridge._primary_to_secondary, "process_once",
@@ -509,15 +510,42 @@ class TestPortReviewTwin_2026_11_11:
         assert _row(q, msg_id)["status"] == "pending"
         assert bridge._primary_downlink.inject.call_count == 0
 
+_LOOP_CADENCE_WAITS = (0.2, 0.05)   # _bridge_loop's idle / busy waits
+
+
 def _loop_pass(bridge, n=1):
-    """n passes of the REAL loop body (_drain_once), backoff collapsed — the
-    seam #23 hid behind: tests that tick q.process_once directly cannot see a
-    gate the loop puts in front of the sender (Fable r2, 11-11)."""
-    with patch("gateway.mesh_bridge.assert_iface_tx_allowed"):
-        for _ in range(n):
-            for q in (bridge._primary_to_secondary, bridge._secondary_to_primary):
-                _sql(q, "UPDATE messages SET retry_after = NULL")
-            bridge._drain_once()
+    """n passes of the REAL ``_bridge_loop`` (not its helper), backoff
+    collapsed between passes; returns the wait the loop asked for after each.
+
+    The seam #23 hid behind: a test that ticks q.process_once cannot see a gate
+    the loop puts in front of the sender (Fable r2) — and a test that calls
+    ``_drain_once`` cannot see one inlined in ``_bridge_loop`` (R4-F1, mutant
+    m23k survived every test). Each pass must end at a cadence wait: the
+    except branch's wait(1) means the pass raised, which fails here."""
+    queues = (bridge._primary_to_secondary, bridge._secondary_to_primary)
+
+    def collapse_backoff():
+        for q in queues:
+            _sql(q, "UPDATE messages SET retry_after = NULL")
+
+    waits = []
+
+    def one_pass_then_stop(timeout=None):
+        waits.append(timeout)
+        if len(waits) >= n:
+            return True
+        collapse_backoff()
+        return False
+
+    collapse_backoff()
+    bridge._running = True
+    with patch("gateway.mesh_bridge.assert_iface_tx_allowed"), \
+            patch.object(bridge._stop_event, "wait", one_pass_then_stop):
+        bridge._bridge_loop()
+    assert len(waits) == n, f"loop ran {len(waits)} of {n} passes"
+    assert all(w in _LOOP_CADENCE_WAITS for w in waits), \
+        f"a pass took the loop's except branch: waits={waits}"
+    return waits
 
 
 class TestDrainOffersEveryQueue:
@@ -525,7 +553,9 @@ class TestDrainOffersEveryQueue:
     every direction-allowed queue to its sender whatever the leg state — a
     leg gate ran AHEAD of the sender's per-row decisions (dedup, DM refusal,
     downlink) and of process_once's clock-step shift. Same kind as #14 v1's
-    ready_fn gate; this class is the seam guard so a third one fails here."""
+    ready_fn gate; this class is the seam guard so a third one fails here.
+    Every case drives the REAL ``_bridge_loop`` (R4-F1): a gate inlined there,
+    above ``_drain_once``, must fail too."""
 
     @pytest.mark.parametrize("p_up,s_up", [(False, False), (True, False),
                                            (False, True), (True, True)])
@@ -535,14 +565,15 @@ class TestDrainOffersEveryQueue:
         p2s, s2p = bridge._primary_to_secondary, bridge._secondary_to_primary
         with patch.object(p2s, "process_once", return_value=0) as a, \
                 patch.object(s2p, "process_once", return_value=0) as b:
-            assert bridge._drain_once() == 0
+            assert _loop_pass(bridge) == [0.2]          # idle cadence
         assert (a.call_count, b.call_count) == (1, 1)
 
     def test_drain_returns_what_the_senders_processed(self, bridge):
         p2s, s2p = bridge._primary_to_secondary, bridge._secondary_to_primary
         with patch.object(p2s, "process_once", return_value=2), \
                 patch.object(s2p, "process_once", return_value=3):
-            assert bridge._drain_once() == 5          # sets the loop's cadence
+            assert bridge._drain_once() == 5
+            assert _loop_pass(bridge) == [0.05]        # work done -> busy cadence
 
     def test_F2_through_the_loop_far_mesh_copy_resolves_with_the_leg_down(self, bridge):
         from gateway.mesh_bridge import get_secondary_rf_registry
