@@ -137,6 +137,18 @@ re-defer = 2 SQLite writes/row/2 s on SD while a leg is down (short-circuit per
 leg); F1 = #14b (known-limit pin ported). MF has no `SendRefused` — porting it
 MA→MF is the shape of the #20/F2 fix there.
 
+**Emulated tier-1 drill (11-11, meshforge-pro, `scripts/emu_bridge_drill.py`):** two
+meshtasticd `--sim` nodes + the real bridge over TCP legs — fixed `bc5effbf` PASS 3/3
+(held through a 20 s leg kill, crossed 3.3 s after return), pre-fix `33743347` FAIL
+2/2 (`dead_letter`). First live-process evidence for #14 on the TCP leg; not RF, not
+serial, not MQTT.
+
+**moc live drill (11-11 18:36):** ST leg unbound 25 s, one LF broadcast sent — the bridge
+never queued it (RNS-first hand-off, by design); it reached ShortTurbo ~1 s later via
+moc3's RNS path (moc2 heard `[RNS:VAIL] …`). Hold path NOT exercised live; the hand-off
+witness read UNOBSERVABLE (its own radio was the one cut) while moc2 had heard it →
+**#24** the witness should consult a peer ST box's hearing before saying unknown.
+
 **What the public sentence can be today:** "one 24 h serial-to-serial lab run:
 1,436 of 1,436 broadcasts crossed, 48 of 48 planted controls dropped under their
 names." Not "every message accounted for", not "DMs refused", not "dedup by packet ID".
