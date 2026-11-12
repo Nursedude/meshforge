@@ -60,8 +60,9 @@ items (6 / 43 / 26), item rules clean. No hand edits.
 
 > **Progress 2026-11-12:** #19–#21 + #22/#23 reverts HOLD (r4, r5) · R4-F1..F3 fixed
 > test-first MF `c6f6cea9` `429a00b9`, MA `bf445460` (CI success) · **round 5 NOT CLEAN on
-> tests** (R5-F1..F3, seam rule fired — leg-symmetric state table next) · NOT deployed
-> (fleet `d185bfd2`) · next: the state-table guard, MF first → MA → round 6.
+> tests** (R5-F1..F3) → leg-state tables `924cce9e`/`eee7722f` → **round 6 NOT CLEAN on tests
+> (R6-F1..F5)**; src unchanged since `3d912a7f`, held r4–r6 · NOT deployed (fleet `d185bfd2`) ·
+> next: operator decision on the review loop.
 
 > **Progress 2026-11-11:** #4 #5 #6 #14 fixed — v1 `bf5a3b90` → review r1
 > (code-review medium: ready_fn ran ahead of downlink + dual-path dedup) → v2
@@ -197,6 +198,16 @@ each mutant `129 passed` on the 5 bridge test files):
 - **Seam rule:** same kind twice (r4, r5) → the fix is a leg-SYMMETRIC state table (leg × leg
   state × row kind → outcome) through the real `_bridge_loop`, and an exact event-list assertion
   per leg through the real `_connect_<leg>`; not more single-mutant pins.
+
+**Leg-state tables 2026-11-12** (MF `924cce9e`, MA `eee7722f`, CI success): every r5 leg-class
+survivor killed (MF 61/68, MA 59/68 of r5's mutants). **Round 6 (Fable by running, own harness,
+08:36–09:06): NOT CLEAN on tests only — the THIRD tests-only round.** src holds; the table spec
+is right. Blind spots: row POSITION (one row per case — g01 "one ask per leg per pass" lets rows
+behind a held row skip dedup/DM refusal; re-measured here: 437 passed = control) and outage
+HISTORY (g02/d03, MA); NITs R6-F3 (connect one frame above), R6-F4 (`LINK_DOWN_RETRY_S`
+use-site), R6-F5 (MA t07). The reviewer's drivers S1/S2/S6/S7/S9/S10 kill all of them.
+**The mutant space here is open-ended (any gate shape); per-round test growth is not converging
+on CLEAN — loop decision is the operator's.**
 
 **#24 design — DECIDED 2026-11-11 (operator: "agree with your recommendation - lets do this"); build test-first in a FRESH session, inside BIC-2.**
 Rule: **chain each transport's OWN wire id, hop by hop — never a content hash**
