@@ -8,7 +8,6 @@
 @.claude/rules/calibrated_claims.md
 @.claude/rules/model_advisor.md
 @.claude/rules/honest_failure_modes.md
-@.claude/foundations/persistent_issues.md
 
 ---
 
@@ -26,6 +25,14 @@
 - **ALWAYS** use `_stop_event.wait()` instead of `time.sleep()` in daemon loops
 - **ALWAYS** split files exceeding 1,500 lines — lint-enforced since 2026-07-13 (MF025, frozen baseline for the 5 pre-existing offenders; baseline only shrinks)
 
+**Before you act — fleet NEVERs** (no symptom exists yet to pull these, so they stay loaded; the rest of
+`persistent_issues.md` is ON DEMAND since 2026-11-13 — its tell rows fire on matching tool output via
+`scripts/symptom_tells.py`; `--inventory` lists the grep-only rows):
+- ⚠️ Never rapid-cycle rnsd restarts fleet-wide — opens the `@rns` race (#69); space them, check the owner first.
+- RNS forks: never change crypto or the packet/announce/path-table wire format (forks the NETWORK); roll EVERY env per box with rnsd.
+- ⚠️ Do not roll meshtasticd (`apt-mark hold`; stock regresses the USB boxes) — `objdump -T` the package for `pthread_detach` first.
+- Never pip over apt on an apt-managed box (`+debNuN` = backported CVE); never `gen_fleet_hosts.py --apply` while hosts AND DNS are stale.
+
 **Calibrated claims**: tag every completion claim **VERIFIED / BELIEVED /
 UNKNOWN** — the rule is `.claude/rules/calibrated_claims.md` (included above).
 Check of record: `bash scripts/honest_status.sh` (`exit 0` = green; `exit 2`/UNKNOWN is never a pass).
@@ -35,7 +42,7 @@ measured 0/112 sessions, 2026-10-04; long form + re-count recipe: `meshforge` sk
 
 | Shape | Reach for |
 |---|---|
-| broke / failing / "why" | `git log -S'<error>'` + persistent_issues grep, then `mattpocock-skills:diagnosing-bugs` |
+| broke / failing / "why" | `git log -S'<error>'` + `grep -n -i '<symptom word>' .claude/foundations/persistent_issues*.md`, then `mattpocock-skills:diagnosing-bugs` |
 | build / change behaviour | `mattpocock-skills:tdd` — fails on old code first |
 | define / decide / plan | `mattpocock-skills:grilling` → `.claude/ROADMAP.md` |
 | upstream / protocol fact | `mattpocock-skills:research` — the pinned source, not the version |
@@ -44,7 +51,7 @@ measured 0/112 sessions, 2026-10-04; long form + re-count recipe: `meshforge` sk
 
 > Full security rules: `.claude/rules/security.md`
 > Calibrated-claims discipline: `.claude/rules/calibrated_claims.md`
-> Known issues & fixes: `.claude/foundations/persistent_issues.md`
+> Known issues & fixes: `.claude/foundations/persistent_issues.md` (on demand — grep it)
 
 ---
 

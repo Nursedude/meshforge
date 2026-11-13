@@ -784,6 +784,8 @@ CONTEXT_DOC_LIMITS = {
     # Context trim phase 2c (2026-10-29): 39,210 -> 24,275 B; every trimmed
     # story verbatim in persistent_issues_archive.md (pinned by
     # tests/test_persistent_issues_tells.py). Cap = trimmed x 1.15, ratchet DOWN.
+    # ON DEMAND since 2026-11-13 (no longer @-included; tell rows fire via
+    # scripts/symptom_tells.py) — the cap stays: an on-demand read still costs.
     '.claude/foundations/persistent_issues.md': 27_500,
     # Roadmap cohesion Q11 (2026-10-19): measured post-migration size x 1.25,
     # ratchet DOWN only. Done items leave the list (Q4) — trim, never raise.

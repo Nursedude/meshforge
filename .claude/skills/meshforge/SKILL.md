@@ -15,8 +15,9 @@ description: >
 
 # MeshForge Development Assistant
 
-> **Scope note (2026-06-09):** CLAUDE.md, `.claude/rules/security.md`, and
-> `.claude/foundations/persistent_issues.md` are auto-loaded into every session —
+> **Scope note (2026-06-09; 2026-11-13):** CLAUDE.md and `.claude/rules/*.md` are
+> auto-loaded into every session; `.claude/foundations/persistent_issues.md` is ON
+> DEMAND (grep it; its tell rows fire on matching tool output via `symptom_tells.py`) —
 > do NOT restate them here. This skill carries only operational reference that
 > lives nowhere else. Version: read `src/__version__.py`, never hardcode it here
 > (a stale copy sat at 0.5.5-beta while main was 0.6.1-beta). Handler surface:
@@ -254,7 +255,7 @@ it when touching lint-adjacent code; new rules land there first. Grouped digest:
 
 ## For Detailed Reference
 
-- Known issues & fixes: `.claude/foundations/persistent_issues.md` (auto-loaded)
+- Known issues & fixes: `.claude/foundations/persistent_issues.md` (on demand — grep; `scripts/symptom_tells.py --inventory`)
 - Architecture: `.claude/foundations/domain_architecture.md`
 - Full doc index: `.claude/INDEX.md`
 - Research deep dives: `.claude/research/`
