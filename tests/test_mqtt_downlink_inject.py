@@ -1138,3 +1138,39 @@ class TestDownlinkCountersRound4:
         inj.inject("two", ORIGIN)
         st = inj.stats()
         assert st["sessions_lost"] == 1 and st["possibly_lost"] == 1
+
+
+class TestDownlinkCountersRound5:
+    """Counters slice, non-author round 5 (Fable by running): 0 HIGH/MED."""
+
+    def test_close_prunes_past_the_horizon_before_counting(self, fake_broker):
+        # F1: after a healthy idle past the horizon, those sends WERE
+        # witnessed (the session stayed up) — close() must not call them
+        # "unwitnessed".
+        from gateway import mqtt_downlink_inject as mdi
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        assert inj.inject("two", ORIGIN) is True
+        with inj._stats_lock:
+            for i in range(len(inj._true_at)):
+                inj._true_at[i] -= mdi.books_horizon_s() + 1.0
+        inj.close()
+        assert inj.stats()["unwitnessed_at_close"] == 0
+
+    def test_unwitnessed_accumulates_across_closes_and_survives_reopen(self, fake_broker):
+        # F2 M10/M14: the stat is a running total, and reopen() keeps it.
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        inj.close()
+        inj.reopen()
+        assert inj.inject("two", ORIGIN) is True
+        assert inj.inject("three", ORIGIN) is True
+        inj.close()
+        assert inj.stats()["unwitnessed_at_close"] == 3
+
+    def test_a_clean_line_does_not_mention_unwitnessed(self):
+        # F2 M11
+        from gateway.mqtt_downlink_inject import format_downlink_line
+        line = format_downlink_line({"label": "x", "counts": {"ok": 1}, "connected": True,
+                                     "unwitnessed_at_close": 0})
+        assert "unwitnessed" not in line

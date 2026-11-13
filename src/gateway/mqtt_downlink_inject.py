@@ -729,10 +729,16 @@ class DownlinkInjector:
         without paho having noticed yet ends the witness — the sends on the
         books can no longer be judged. They are NOT counted as lost (a normal
         shutdown would then always read as losses); instead close() SAYS how
-        many sends went unwitnessed, in one WARNING."""
+        many sends went unwitnessed (one INFO line + the unwitnessed_at_close stat)."""
         with self._lock:
             self._closed = True
+            now = time.monotonic()
+            horizon = books_horizon_s()
             with self._stats_lock:
+                # Off the books first: sends older than the horizon on a
+                # session that stayed up WERE witnessed (counters r5 F1).
+                while self._true_at and now - self._true_at[0] > horizon:
+                    self._true_at.popleft()
                 unwitnessed = len(self._true_at) if self._witness_up else 0
                 self._true_at.clear()
                 self._unwitnessed_at_close += unwitnessed
