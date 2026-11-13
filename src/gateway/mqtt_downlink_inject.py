@@ -102,9 +102,21 @@ DOWNLINK_LINE_RE = re.compile(r"Downlink\[(?P<label>[^\]]+)\]: (?P<body>.+)$")
 def stall_window_s() -> float:
     """How far back a lost session can have been silently eating sends: paho
     notices a wedged-after-CONNACK broker by keepalive, at up to
-    2 x KEEPALIVE_S (+1 s for its loop tick). Measured 5.5-11 s at 5 s on
-    real mosquitto (Fable r3, 11-12)."""
-    return 2 * KEEPALIVE_S + 1
+    2 x KEEPALIVE_S after the broker's last proof of life — PLUS up to 1 s
+    for each of its two loop-tick checks (PINGREQ due, PINGRESP overdue),
+    re-phased by every publish. Measured on real mosquitto at K=5: noticed up
+    to 11.9 s after CONNACK (counters r1, 11-12; 2 x K + 1 = 11 undercounted
+    3/3). 2 x K + 2.5 keeps half a second of margin over that measurement."""
+    return 2 * KEEPALIVE_S + 2.5
+
+
+def downlink_label(raw) -> str:
+    """The status-line label for an injector, made safe for the shared regex
+    (a free-form preset like 'A: B [x]' broke the round trip). The mesh
+    bridge's labels carry a 'mesh-' prefix so no preset collides with 'rns'.
+    Writer AND reader call this — one spelling."""
+    s = re.sub(r"[^\w.+-]", "_", str(raw or "").strip()) or "primary"
+    return s
 
 
 def downlink_status(label: str, injector, *, configured: bool, built: bool):
@@ -128,7 +140,7 @@ def format_downlink_line(status: dict) -> str:
     """
     label = status.get("label", "?")
     if status.get("unavailable"):
-        return (f"{DOWNLINK_LINE_PREFIX}{label}]: unavailable â downlink is "
+        return (f"{DOWNLINK_LINE_PREFIX}{label}]: unavailable — downlink is "
                 f"configured but no injector could be built (see the gateway "
                 f"log); sends go the toradio way")
     if status.get("idle"):
@@ -137,11 +149,12 @@ def format_downlink_line(status: dict) -> str:
     c = status.get("counts", {})
     parts = " · ".join(f"{k.replace('_', '-')} {c.get(k, 0)}"
                        for k in DOWNLINK_OUTCOMES)
-    state = "closed" if status.get("closed") else (
+    state = "injector closed" if status.get("closed") else (
         "session up" if status.get("connected") else "no session")
-    return (f"{DOWNLINK_LINE_PREFIX}{label}]: {state} · {parts} · lost-sessions "
+    # The witness FIRST: a narrow screen or a cut line must still show it.
+    return (f"{DOWNLINK_LINE_PREFIX}{label}]: {state} · lost-sessions "
             f"{status.get('sessions_lost', 0)} · <={status.get('possibly_lost', 0)} "
-            f"possibly lost (QoS 0, window {status.get('window_s', 0):g} s)")
+            f"possibly lost · QoS 0, window {status.get('window_s', 0):g} s · {parts}")
 
 
 def _xor_hash(data: bytes) -> int:
@@ -352,6 +365,8 @@ class DownlinkInjector:
         Without this a reconnect left the old client's loop thread running —
         and paho auto-reconnecting it — beside the new one."""
         client, self._client = self._client, None
+        with self._stats_lock:
+            self._witness_up = False      # a session WE end is not a loss (r1 F3)
         if client is None:
             return
         # Each step on its own: a raise in one must not skip loop_stop(), or
@@ -512,6 +527,13 @@ class DownlinkInjector:
                 return self._count("ok")
             except Exception as e:
                 logger.warning("Downlink %s inject failed: %s", kind, e)
+                # This publish may be what DISCOVERED the dead session; the
+                # teardown below drops _client before paho's callback runs,
+                # so count the loss here (r1 F4).
+                with self._stats_lock:
+                    was_up, self._witness_up = self._witness_up, False
+                if was_up:
+                    self._note_session_lost()
                 # Drop the session so the next attempt reconnects cleanly.
                 self._teardown()
                 return self._count("not_written")

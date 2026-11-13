@@ -219,7 +219,9 @@ class GatewayHandler(BaseHandler):
             # (S7, #74-#77).
             lines.extend(["", f"CIRCUIT BREAKERS: (status unavailable: {e})"])
 
-        self.ctx.dialog.msgbox("Gateway Status", "\n".join(lines), width=50, height=25)
+        # textbox scrolls (--scrolltext): the msgbox showed ~19 rows and cut
+        # every section below them (counters r1 F2).
+        self.ctx.dialog.textbox("Gateway Status", "\n".join(lines), width=60, height=25)
 
     def _show_operator_line(self, config):
         """BIC-15: the line runs inside the gateway process; render the status
@@ -241,15 +243,18 @@ class GatewayHandler(BaseHandler):
         (DOWNLINK_LINE_RE), so the screen and the log cannot disagree. Not
         configured = no section (absent by design); configured but no line =
         UNKNOWN, never zero."""
-        from gateway.mqtt_downlink_inject import DOWNLINK_LINE_RE
+        from gateway.mqtt_downlink_inject import DOWNLINK_LINE_RE, downlink_label
         from utils.watchdog_probe_core import _journal_match_lines
 
         def _mode(leg):
             return (getattr(leg, "injection_mode", "") or "")
         expected = []
         if config.mesh_bridge.enabled and str(_mode(config.mesh_bridge.primary)).lower() == "downlink":
-            expected.append(str(config.mesh_bridge.primary.preset or "primary"))
-        if str(_mode(getattr(config, "meshtastic", None))).lower() == "downlink":
+            expected.append("mesh-" + downlink_label(config.mesh_bridge.primary.preset))
+        # The RNS bridge runs only when rns_bridge_enabled (bridge_cli
+        # resolve_bridges): expecting its row otherwise = UNKNOWN forever.
+        if (getattr(config, "rns_bridge_enabled", False) is True
+                and str(_mode(getattr(config, "meshtastic", None))).lower() == "downlink"):
             expected.append("rns")
         if not expected:
             return []
@@ -270,10 +275,28 @@ class GatewayHandler(BaseHandler):
                 body = "UNKNOWN (gateway journal unreadable)"
             else:
                 body = latest.get(label, f"UNKNOWN (no gateway report in {window})")
-            out.append(f"  {label}: {body}")
-        out.append("    (<=N possibly lost = an upper bound; only the radio can say what aired)")
+            out.append(f"  {label}:")
+            out.extend(self._wrap_downlink_body(body))
+        out.append("    (<=N possibly lost = an upper bound;")
+        out.append("     only the radio can say what aired)")
         out.append("")
         return out
+
+    @staticmethod
+    def _wrap_downlink_body(body, width=54):
+        """The status line's ' · ' fields, packed into rows that fit the
+        pane (the witness fields come first in the writer's line)."""
+        rows, cur = [], ""
+        for part in body.split(" · "):
+            cand = f"{cur} · {part}" if cur else part
+            if len(cand) > width and cur:
+                rows.append(cur)
+                cur = part
+            else:
+                cur = cand
+        if cur:
+            rows.append(cur)
+        return [f"    {r}" for r in rows]
 
     def _mesh_bridge_leg_lines(self, config, lines_fn=None):
         """Per-leg rows for the cross-preset bridge: real endpoint + live state.

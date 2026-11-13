@@ -706,7 +706,7 @@ class TestDownlinkCounters:
         st = inj.stats()
         assert st["sessions_lost"] == 1      # retries are not lost sessions
         assert st["possibly_lost"] == 2
-        assert st["window_s"] == 2 * 1 + 1
+        assert st["window_s"] == 2 * 1 + 2.5
 
     def test_control_clean_close_is_not_a_lost_session(self, fake_broker):
         b, inj = fake_broker("ok")
@@ -721,7 +721,7 @@ class TestDownlinkCounters:
         monkeypatch.setattr(mdi, "KEEPALIVE_S", 1)
         b, inj = fake_broker("ok")                  # answers PINGREQ: stays up
         assert inj.inject("old", ORIGIN) is True
-        time.sleep(2 * 1 + 1 + 0.5)                 # older than the window
+        time.sleep(mdi.stall_window_s() + 0.5)      # older than the window
         b.mode = "silent"
         b.kick()                                    # broker drops the session
         assert _until(lambda: inj.stats()["sessions_lost"] == 1, t=5)
@@ -762,11 +762,12 @@ class TestDownlinkStatusWriters:
         from gateway.bridge_cli import print_multi_status
         a, b = MagicMock(), MagicMock()
         a.get_status.return_value = {"running": True, "downlink": {
-            "label": "LONG_FAST", "counts": {"ok": 2}, "connected": True}}
+            "label": "mesh-LONG_FAST", "counts": {"ok": 2}, "connected": True}}
         b.get_status.return_value = {"running": True, "downlink": None}
         print_multi_status([a, b])
         out = capsys.readouterr().out
-        assert "    Downlink[LONG_FAST]: session up · ok 2" in out
+        assert "    Downlink[mesh-LONG_FAST]: session up · lost-sessions 0" in out
+        assert "ok 2" in out
         assert out.count("Downlink[") == 1
 
     def test_downlink_status_helper_states(self):
@@ -777,3 +778,114 @@ class TestDownlinkStatusWriters:
         assert downlink_status("x", None, configured=True, built=True) == {"label": "x", "unavailable": True}
         inj = MagicMock(); inj.stats.return_value = {"calls": 1}
         assert downlink_status("x", inj, configured=True, built=True) == {"label": "x", "calls": 1}
+
+
+class TestDownlinkCountersRound1:
+    """Counters slice, non-author round 1 (Fable by running), each finding."""
+
+    def test_window_covers_the_measured_detection_delay(self):
+        # F1: noticed up to 11.9 s after CONNACK at K=5 on real mosquitto;
+        # 2K+1 = 11 undercounted 3/3. The window must cover 2K + 2 (two
+        # 1 s loop-tick checks), with margin.
+        from gateway import mqtt_downlink_inject as mdi
+        assert mdi.stall_window_s() >= 2 * mdi.KEEPALIVE_S + 2
+        assert mdi.KEEPALIVE_S == 5 and mdi.stall_window_s() >= 11.9
+
+    def test_teardown_disarms_the_witness(self, fake_broker):
+        # F3: ok session, close(), reopen(), a failed connect -> must NOT be
+        # a lost session (both sends were delivered).
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        inj.close()
+        assert inj._witness_up is False
+        inj.reopen()
+        b.mode = "silent"
+        assert inj.inject("two", ORIGIN) is False
+        time.sleep(0.5)
+        assert inj.stats()["sessions_lost"] == 0
+
+    def test_publish_that_discovers_the_dead_session_counts_it(self, fake_broker, monkeypatch):
+        # F4: not_written tears down before paho's callback can see the
+        # current client — the publish path must count the loss itself.
+        b, inj = fake_broker("ok")
+        assert inj.inject("warm", ORIGIN) is True
+        client = inj._client
+        real_publish = client.publish
+
+        def queued_never_written(*a, **k):
+            info = real_publish("meshforge/unused", b"", qos=0)
+            info.wait_for_publish(timeout=1)
+            info._published = False
+            info._condition = threading.Condition()
+            return info
+        monkeypatch.setattr(client, "publish", queued_never_written)
+        assert inj.inject("stalled", ORIGIN) is False
+        st = inj.stats()
+        assert st["sessions_lost"] == 1 and st["possibly_lost"] == 1
+
+    def test_callback_guards_each_pinned(self, fake_broker):
+        # F8 M6/M7/M19: every guard on the witness callbacks, alone.
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        client = inj._client
+        on_disc, on_conn = client.on_disconnect, client.on_connect
+        on_disc(object(), None, 7)                      # a STALE client's loss
+        assert inj.stats()["sessions_lost"] == 0        # M6
+        on_disc(client, None, 0)                        # our own clean disconnect
+        assert inj.stats()["sessions_lost"] == 0        # M7
+        assert inj._witness_up is True
+        on_disc(client, None, 7)                        # a real loss
+        assert inj.stats()["sessions_lost"] == 1
+        on_conn(client, None, {}, 5)                    # a REFUSED session
+        assert inj._witness_up is False                 # M19: not armed
+        on_disc(client, None, 7)
+        assert inj.stats()["sessions_lost"] == 1
+
+    def test_one_send_is_never_counted_twice(self, fake_broker):
+        # F8 M4: two losses in a row; the sends before the first count once.
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        assert inj.inject("two", ORIGIN) is True
+        inj._note_session_lost()
+        inj._note_session_lost()
+        assert inj.stats()["possibly_lost"] == 2
+
+    def test_line_carries_the_real_witness_numbers(self):
+        # F8 M27 + F7: the numbers are the stats', and the state word is not
+        # a counter's name.
+        from gateway.mqtt_downlink_inject import format_downlink_line
+        line = format_downlink_line({"label": "rns", "counts": {"ok": 9}, "connected": False,
+                                     "sessions_lost": 2, "possibly_lost": 7, "window_s": 12.5})
+        assert "lost-sessions 2 · <=7 possibly lost" in line
+        assert line.index("lost-sessions") < line.index("ok 9")     # witness first
+        closed = format_downlink_line({"label": "rns", "closed": True, "counts": {}})
+        assert "]: injector closed · " in closed
+
+    def test_state_word_follows_the_session(self, fake_broker):
+        # F8 M26/M28: the state word comes from paho's real session state.
+        from gateway.mqtt_downlink_inject import format_downlink_line
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        assert "]: session up · " in format_downlink_line({"label": "x", **inj.stats()})
+        b2, inj2 = fake_broker("silent")
+        assert inj2.inject("one", ORIGIN) is False
+        assert "]: no session · " in format_downlink_line({"label": "x", **inj2.stats()})
+
+    def test_unavailable_line_is_clean_text(self):
+        # F5 + F8 M9: the "unavailable" branch, and no mojibake in it.
+        from gateway.mqtt_downlink_inject import DOWNLINK_LINE_RE, format_downlink_line
+        line = format_downlink_line({"label": "rns", "unavailable": True})
+        assert "unavailable \u2014 downlink is configured" in line
+        assert all(ord(c) < 0x80 or ord(c) >= 0xa0 for c in line)   # no C1 controls
+        assert DOWNLINK_LINE_RE.search(line)
+
+    def test_odd_labels_round_trip(self):
+        # F6: free-form presets survive writer -> regex -> reader; no preset
+        # can collide with the RNS row.
+        from gateway.mqtt_downlink_inject import (DOWNLINK_LINE_RE, downlink_label,
+                                                  format_downlink_line)
+        for raw in ("odd]preset", "A: B [x]", "with\nnewline", "", None, "LONG_FAST"):
+            label = "mesh-" + downlink_label(raw)
+            m = DOWNLINK_LINE_RE.search(format_downlink_line({"label": label, "counts": {}}))
+            assert m and m.group("label") == label
+        assert "mesh-" + downlink_label("rns") != "rns"

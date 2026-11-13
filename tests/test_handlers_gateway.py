@@ -417,12 +417,13 @@ def _downlink_config(mesh=True, rns=True):
     config = _mesh_bridge_config()
     config.mesh_bridge.primary.injection_mode = "downlink" if mesh else "toradio"
     config.meshtastic.injection_mode = "downlink" if rns else "toradio"
+    config.rns_bridge_enabled = rns
     return config
 
 
 _DOWNLINK_BLOCK = [
-    "    Downlink[LONG_FAST]: session up · ok 4 · no-connack 0 · <=0 possibly lost (QoS 0, window 11 s)",
-    "    Downlink[LONG_FAST]: session up · ok 5 · no-connack 0 · <=0 possibly lost (QoS 0, window 11 s)",
+    "    Downlink[mesh-LONG_FAST]: session up · lost-sessions 0 · <=0 possibly lost · QoS 0, window 12.5 s · ok 4 · no-connack 0",
+    "    Downlink[mesh-LONG_FAST]: session up · lost-sessions 1 · <=3 possibly lost · QoS 0, window 12.5 s · ok 5 · no-connack 0",
     "Downlink[rns]: idle — enabled, no downlink attempted since start",
 ]
 
@@ -436,8 +437,10 @@ class TestDownlinkRows:
         h = _make_gateway()
         text = "\n".join(h._downlink_lines(_downlink_config(),
                                            lines_fn=lambda pat: list(_DOWNLINK_BLOCK)))
-        assert "LONG_FAST: session up · ok 5" in text      # the LAST line wins
-        assert "rns: idle" in text
+        assert "mesh-LONG_FAST:" in text
+        assert "lost-sessions 1" in text and "<=3 possibly lost" in text   # the LAST line wins
+        assert "ok 5" in text
+        assert "  rns:\n    idle" in text
         assert "upper bound" in text
 
     def test_configured_but_no_line_is_unknown_not_zero(self):
@@ -463,7 +466,60 @@ class TestDownlinkRows:
         from gateway.mqtt_downlink_inject import DOWNLINK_LINE_RE, format_downlink_line
         h = _make_gateway()
         seen = {}
-        line = format_downlink_line({"label": "LONG_FAST", "counts": {"ok": 1}, "connected": True})
+        line = format_downlink_line({"label": "mesh-LONG_FAST", "counts": {"ok": 1}, "connected": True})
         h._downlink_lines(_downlink_config(rns=False),
                           lines_fn=lambda pat: seen.setdefault("pat", pat) and [line])
         assert seen["pat"] == DOWNLINK_LINE_RE.pattern
+
+
+
+class TestDownlinkRowsRound1:
+
+    def test_pane_includes_the_section_and_scrolls(self):
+        # F2 + F8 M18: the section is wired into Gateway Status, and the pane
+        # is a scrolling textbox (the 19-row msgbox cut it off).
+        h = _make_gateway()
+        cfg = _downlink_config()
+        with patch.object(type(h), "_downlink_lines",
+                          lambda self, config, lines_fn=None: ["TRUE-ORIGIN DOWNLINK (MQTT, QoS 0):"]):
+            h._show_gateway_status(cfg)
+        kind, (title, text), kw = h.ctx.dialog.calls[-1]
+        assert kind == "textbox" and "TRUE-ORIGIN DOWNLINK" in text
+
+    def test_rows_fit_the_pane_with_the_witness_first(self):
+        from gateway.mqtt_downlink_inject import format_downlink_line
+        h = _make_gateway()
+        line = format_downlink_line({"label": "mesh-LONG_FAST", "counts": {"ok": 412, "not_written": 3},
+                                     "connected": True, "sessions_lost": 2, "possibly_lost": 7,
+                                     "window_s": 12.5})
+        out = h._downlink_lines(_downlink_config(rns=False), lines_fn=lambda pat: [line])
+        assert all(len(r) <= 60 for r in out), [r for r in out if len(r) > 60]
+        body = [r for r in out if r.startswith("    ")]
+        assert "lost-sessions 2" in body[0] and "<=7 possibly lost" in body[0]
+
+    def test_no_rns_row_when_the_rns_bridge_does_not_run(self):
+        # Suspected (r1): meshtastic downlink set but rns_bridge_enabled off
+        # -> no rns row (it would read UNKNOWN forever).
+        h = _make_gateway()
+        cfg = _downlink_config()
+        cfg.rns_bridge_enabled = False
+        text = "\n".join(h._downlink_lines(cfg, lines_fn=lambda pat: []))
+        assert "rns:" not in text and "mesh-LONG_FAST:" in text
+
+    def test_mesh_configured_without_injector_reads_unavailable(self):
+        # F8 M14: the mesh bridge's "configured, no injector" -> unavailable.
+        from gateway.mqtt_downlink_inject import downlink_status
+        assert downlink_status("mesh-LONG_FAST", None, configured=True, built=True) == \
+            {"label": "mesh-LONG_FAST", "unavailable": True}
+
+    def test_odd_preset_round_trips_writer_to_pane(self):
+        # F6 (TUI half): a free-form preset reaches the pane as the SAME
+        # sanitized label the writer printed — not UNKNOWN.
+        from gateway.mqtt_downlink_inject import downlink_label, format_downlink_line
+        h = _make_gateway()
+        cfg = _downlink_config(rns=False)
+        cfg.mesh_bridge.primary.preset = "A: B [x]"
+        line = format_downlink_line({"label": "mesh-" + downlink_label("A: B [x]"),
+                                     "counts": {"ok": 1}, "connected": True})
+        text = "\n".join(h._downlink_lines(cfg, lines_fn=lambda pat: [line]))
+        assert "UNKNOWN" not in text and "session up" in text

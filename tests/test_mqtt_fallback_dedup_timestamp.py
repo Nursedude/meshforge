@@ -108,6 +108,7 @@ class TestMQTTMeshInterfaceWitness:
         b._primary_connected = b._secondary_connected = True
         b._primary_interface, b._secondary_interface = i, object()
         b._handoff = MagicMock(snapshot=MagicMock(return_value={}))
+        b._primary_downlink = None   # get_status() reads it (#25 counters)
         b._primary_to_secondary = MagicMock(get_queue_depth=MagicMock(return_value=0))
         b._secondary_to_primary = MagicMock(get_queue_depth=MagicMock(return_value=0))
         assert b.get_status()["statistics"]["mqtt_fallback_dedup_dropped"] == 3

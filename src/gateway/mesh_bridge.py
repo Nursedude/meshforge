@@ -39,7 +39,7 @@ from .canonical_message import packet_is_broadcast  # the ONE rule (F15)
 from .config import GatewayConfig, MeshtasticBridgeConfig, MeshtasticConfig
 from ._handoff_witness import HandoffWitness
 from ._mesh_bridge_mqtt import MQTTMeshInterface
-from .mqtt_downlink_inject import downlink_status
+from .mqtt_downlink_inject import downlink_label, downlink_status
 from ._mesh_bridge_legs import (
     bridge_event, build_downlink_injector,
     lookup_node_user, bump_stat, dm_destination,
@@ -346,7 +346,7 @@ class MeshtasticPresetBridge(MeshBridgeDrainMixin):
         # stop() closes the downlink injector terminally; any stop() -> start()
         # on this object must reopen it, or every downlink silently degrades
         # to the toradio fallback (#25 r3; r4 I3: no in-app restart path
-        # reaches this class today â defensive).
+        # reaches this class today — defensive).
         if self._primary_downlink is not None:
             self._primary_downlink.reopen()
 
@@ -461,7 +461,7 @@ class MeshtasticPresetBridge(MeshBridgeDrainMixin):
                 'mode': self._leg_mode(sec),
             },
             'direction': self.bridge_config.direction,
-            'downlink': downlink_status(str(pri.preset or 'primary'), self._primary_downlink, built=True,
+            'downlink': downlink_status('mesh-' + downlink_label(pri.preset), self._primary_downlink, built=True,
                                         configured=(pri.injection_mode or '').lower() == 'downlink'),
             'uptime_seconds': uptime,
             'statistics': {**self.stats, **self._handoff.snapshot(), 'mqtt_fallback_dedup_dropped': sum(

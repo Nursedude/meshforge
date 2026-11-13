@@ -2701,3 +2701,36 @@ class TestMqttSettingsSingleOwner:
         for rel in self.FILENAME_IMPORT_OK:
             src = open(os.path.join(SRC_DIR, rel), encoding="utf-8").read()
             assert "FILENAME" in src, f"{rel}: allowlisted but no longer uses FILENAME — drop it"
+
+
+class TestNoDoubleEncodedUtf8:
+    """2026-11-12: an edit helper that decoded with unicode_escape re-read
+    UTF-8 as latin-1 and wrote mojibake ('—' -> 'â' + two C1 controls) into
+    five lines across both twins, four of them deployed, one an operator-
+    facing status line. Any U+0080-U+009F (a C1 control) in tracked text is
+    that class: refuse it at commit time."""
+
+    _ROOTS = ("src", "tests", "scripts")
+    _EXTS = (".py", ".sh", ".md", ".json", ".yaml", ".yml", ".txt", ".ini", ".service", ".timer")
+
+    def test_no_c1_control_characters_in_tracked_text(self):
+        import pathlib
+        repo = pathlib.Path(__file__).resolve().parent.parent
+        bad = []
+        for root in self._ROOTS:
+            for p in (repo / root).rglob("*"):
+                if p.suffix not in self._EXTS or "__pycache__" in p.parts or not p.is_file():
+                    continue
+                try:
+                    text = p.read_text(encoding="utf-8")
+                except (UnicodeDecodeError, OSError):
+                    continue
+                for n, line in enumerate(text.splitlines(), 1):
+                    if any("\x80" <= c <= "\x9f" for c in line):
+                        bad.append(f"{p.relative_to(repo)}:{n}")
+        assert not bad, "double-encoded UTF-8 (C1 controls) in: " + ", ".join(bad[:20])
+
+    def test_the_detector_sees_the_class(self):
+        # Positive control: the exact corruption must trip the predicate.
+        corrupted = "—".encode("utf-8").decode("latin-1")
+        assert any("\x80" <= c <= "\x9f" for c in corrupted)
