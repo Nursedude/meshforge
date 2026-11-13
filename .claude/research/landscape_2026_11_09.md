@@ -58,6 +58,13 @@ items (6 / 43 / 26), item rules clean. No hand edits.
 
 ## B. Review by running — `mesh_bridge` (the two-leg preset bridge)
 
+> **Progress 2026-11-13:** **#25 counters slice DEPLOYED** — r1→r5 (Fable by running; r4 seam HELD,
+> r5 0 HIGH/MED, 1 LOW fixed in `8aef9a69`); fleet 10/10 @ `8be95a8e`, MA @ `5b52b8e8`, honest_status rc 0;
+> moc's journal shows `Downlink[mesh-LONG_FAST] … window 22.5 s` (moc3 = mqtt_bridge, no downlink leg BY DESIGN).
+> ⚠️ `8aef9a69` (the r5 fix) has NO review of its own — queued Pri-1 in the Frontier worklist. **I4 FIXED +
+> DEPLOYED**: `start()` refuses while ANY previous-run thread lives — MF `66defb33` / MA `f74d6fd0`, Fable
+> CLEAN. Next: r6 on `8aef9a69`; #25's END witness = BIC-2 slice 1 (§D).
+
 > **Progress 2026-11-12:** #19–#21 + #22/#23 reverts HOLD (r4, r5) · R4-F1..F3 fixed
 > test-first MF `c6f6cea9` `429a00b9`, MA `bf445460` (CI success) · **round 5 NOT CLEAN on
 > tests** (R5-F1..F3) → leg-state tables `924cce9e`/`eee7722f` → **round 6 NOT CLEAN on tests
