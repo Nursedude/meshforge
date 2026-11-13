@@ -706,7 +706,7 @@ class TestDownlinkCounters:
         st = inj.stats()
         assert st["sessions_lost"] == 1      # retries are not lost sessions
         assert st["possibly_lost"] == 2
-        assert st["window_s"] == 2 * 1 + 2.5
+        assert st["window_s"] == mdi.books_horizon_s()   # r3: the books' horizon
 
     def test_control_clean_close_is_not_a_lost_session(self, fake_broker):
         b, inj = fake_broker("ok")
@@ -717,11 +717,14 @@ class TestDownlinkCounters:
         assert st["sessions_lost"] == 0 and st["possibly_lost"] == 0
 
     def test_sends_older_than_the_window_are_not_counted(self, fake_broker, monkeypatch):
+        # r3: "the window" is now the books' HORIZON (stall window + write
+        # wait + stated stall allowance); past it, a send is off the books.
         from gateway import mqtt_downlink_inject as mdi
         monkeypatch.setattr(mdi, "KEEPALIVE_S", 1)
+        monkeypatch.setattr(mdi, "STALL_ALLOWANCE_S", 0.5)
         b, inj = fake_broker("ok")                  # answers PINGREQ: stays up
         assert inj.inject("old", ORIGIN) is True
-        time.sleep(mdi.stall_window_s() + 0.5)      # older than the window
+        time.sleep(mdi.books_horizon_s() + 0.5)     # older than the horizon
         b.mode = "silent"
         b.kick()                                    # broker drops the session
         assert _until(lambda: inj.stats()["sessions_lost"] == 1, t=5)
@@ -976,3 +979,87 @@ class TestDownlinkCountersRound2:
         assert inj._witness_up is False
         client.on_connect(object(), None, {}, 0)        # a stale client's CONNACK
         assert inj._witness_up is False
+
+
+class TestDownlinkCountersRound3:
+    """Counters slice, non-author round 3 (Fable by running). Third undercount
+    of one class -> the books, not a fixed window, decide what is counted."""
+
+    def test_a_send_older_than_the_stall_window_is_still_counted(self, fake_broker):
+        # F1 MED: a ~1 s process stall at the worst keepalive phase noticed the
+        # loss 12.77 s after a lost send; the 12.5 s filter dropped it.
+        from gateway import mqtt_downlink_inject as mdi
+        b, inj = fake_broker("ok")
+        inj._note_send()
+        with inj._stats_lock:
+            inj._true_at[0] -= mdi.stall_window_s() + 1.0
+        inj._note_session_lost()
+        assert inj.stats()["possibly_lost"] == 1
+
+    def test_books_are_pruned_past_the_horizon(self, fake_broker):
+        # F4 b: without a prune the books grow forever.
+        from gateway import mqtt_downlink_inject as mdi
+        b, inj = fake_broker("ok")
+        inj._note_send()
+        with inj._stats_lock:
+            inj._true_at[0] -= mdi.books_horizon_s() + 1.0
+        inj._note_send()
+        assert len(inj._true_at) == 1
+        assert mdi.books_horizon_s() >= (mdi.stall_window_s() + mdi.PUBLISH_TIMEOUT_S
+                                         + mdi.STALL_ALLOWANCE_S)
+
+    def test_a_write_timeout_counts_the_books(self, fake_broker, monkeypatch):
+        # F2: a publish not written within PUBLISH_TIMEOUT_S on a session paho
+        # has not yet called dead is itself a stall: what is on the books may
+        # be lost. (The timed-out send returns False and is withdrawn.)
+        b, inj = fake_broker("ok")
+        for _ in range(3):
+            assert inj.inject("sent", ORIGIN) is True
+        client = inj._client
+        real_publish = client.publish
+
+        def queued_never_written(*a, **k):
+            info = real_publish("meshforge/unused", b"", qos=0)
+            info.wait_for_publish(timeout=1)
+            info._published = False
+            info._condition = threading.Condition()
+            return info
+        monkeypatch.setattr(client, "publish", queued_never_written)
+        assert inj.inject("stuck", ORIGIN) is False
+        st = inj.stats()
+        assert st["sessions_lost"] == 1 and st["possibly_lost"] == 3
+
+    def test_a_client_side_raise_keeps_the_healthy_session(self, fake_broker, monkeypatch):
+        # F2: a ValueError from publish() on a live session is not a stall —
+        # no loss, and no teardown of the session either.
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        client = inj._client
+
+        def boom(*a, **k):
+            raise ValueError("bad topic")
+        monkeypatch.setattr(client, "publish", boom)
+        assert inj.inject("bad", ORIGIN) is False
+        assert inj._client is client and inj.connected
+        assert inj.stats()["sessions_lost"] == 0
+
+    def test_close_with_unwitnessed_sends_says_so(self, fake_broker, caplog):
+        # F3: close() during an unnoticed wedge cannot witness what was sent;
+        # it must SAY so (one WARNING), never read as a clean zero silently.
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        assert inj.inject("two", ORIGIN) is True
+        with caplog.at_level("WARNING"):
+            inj.close()
+        assert "2 send(s)" in caplog.text and "unwitnessed" in caplog.text
+
+    def test_a_loss_prunes_past_the_horizon_before_counting(self, fake_broker):
+        # The horizon bounds the overcount even when no new send pruned first.
+        from gateway import mqtt_downlink_inject as mdi
+        b, inj = fake_broker("ok")
+        inj._note_send()
+        inj._note_send()
+        with inj._stats_lock:
+            inj._true_at[0] -= mdi.books_horizon_s() + 1.0
+        inj._note_session_lost()
+        assert inj.stats()["possibly_lost"] == 1

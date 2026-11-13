@@ -2713,7 +2713,7 @@ class TestNoDoubleEncodedUtf8:
     skipping it, include extensionless shebang scripts and template/config
     suffixes, and unit-test the scanner itself on fixtures."""
 
-    _ROOTS = ("src", "tests", "scripts", "templates")
+    _ROOTS = ("src", "tests", "scripts", "templates", "docs", ".githooks")
     _EXTS = (".py", ".sh", ".md", ".json", ".yaml", ".yml", ".txt", ".ini",
              ".service", ".timer", ".j2", ".conf", ".html", ".awk", ".cfg", ".toml")
     _C1 = __import__("re").compile("[\x80-\x9f]")
@@ -2772,6 +2772,11 @@ class TestNoDoubleEncodedUtf8:
         (tmp_path / "src" / "unit.j2").write_text(f"{dash}\n", encoding="utf-8")
         (tmp_path / "src" / "bad.py").write_bytes(b"\xff\xfe not utf-8\n")
         found = " ".join(self._scan(tmp_path))
+        for root in ("templates", "docs", ".githooks"):     # r3 F4 y: every root is scanned
+            (tmp_path / root).mkdir()
+            (tmp_path / root / "f.md").write_text(f"{dash}\n", encoding="utf-8")
+        found = " ".join(self._scan(tmp_path))
         for want in ("src/dash.py:1", "src/nel.md:1", "scripts/tool:2", "src/unit.j2:1",
-                     "src/bad.py: not valid UTF-8"):
+                     "src/bad.py: not valid UTF-8", "templates/f.md:1", "docs/f.md:1",
+                     ".githooks/f.md:1"):
             assert want in found, (want, found)

@@ -110,6 +110,34 @@ def stall_window_s() -> float:
     return 2 * KEEPALIVE_S + 2.5
 
 
+#: How long a stalled gateway PROCESS (GC, swap, SD-card I/O, a GIL hog) may
+#: delay paho's keepalive check beyond its own loop ticks and the witness
+#: still holds. Counters r3 (Fable, by running): a 1.0 s whole-process stall
+#: at the worst keepalive phase noticed the loss 12.77 s after a lost send —
+#: the 12.5 s window then dropped it. This is a STATED tolerance, not a
+#: measurement: a longer stall can still undercount (the residual, named).
+#: Measured 11-12 (r3 drill, real mosquitto, worst keepalive phase): whole-
+#: process stalls of 0 / 1 / 3 / 6 s all held (witness >= lost, 2/2 each) —
+#: sends are re-stamped once written, so the PUBLISH_TIMEOUT_S slack also
+#: absorbs stall. >= 9.5 s: UNKNOWN (the drill never saw the loss noticed).
+STALL_ALLOWANCE_S = 5.0
+
+
+def books_horizon_s() -> float:
+    """How long a send stays on the witness's books. At a loss EVERYTHING on
+    the books counts (counters r3: the books, not a fixed window, decide); the
+    horizon only bounds the overcount. It covers paho's detection delay
+    (stall_window_s), a send's own write wait (PUBLISH_TIMEOUT_S — sends are
+    re-stamped once written, so this is slack) and the stated process-stall
+    allowance (STALL_ALLOWANCE_S)."""
+    return stall_window_s() + PUBLISH_TIMEOUT_S + STALL_ALLOWANCE_S
+
+
+class _NotWritten(RuntimeError):
+    """publish() queued the message but it was not written within
+    PUBLISH_TIMEOUT_S — a stall in its own right (counters r3 F2)."""
+
+
 def downlink_label(raw) -> str:
     """The status-line label for an injector, made safe for the shared regex
     (a free-form preset like 'A: B [x]' broke the round trip). The mesh
@@ -529,8 +557,9 @@ class DownlinkInjector:
                 # wait_for_publish RETURNS on timeout (paho 2.x); a message
                 # still queued in the client is not published (r1 F1).
                 if not info.is_published():
-                    raise RuntimeError(
+                    raise _NotWritten(
                         f"not written to the broker within {PUBLISH_TIMEOUT_S:g} s")
+                self._confirm_send(token)    # re-stamp: written NOW (r3 F1)
                 logger.info(
                     "Downlink %s injected: id=0x%08x from=!%08x topic=%s",
                     kind, packet_id, origin_node, topic,
@@ -539,19 +568,21 @@ class DownlinkInjector:
             except Exception as e:
                 logger.warning("Downlink %s inject failed: %s", kind, e)
                 self._withdraw_send(token)   # it returns False: not a "sent"
-                # This publish may be what DISCOVERED the dead session; the
-                # teardown below drops _client before paho's callback runs,
-                # so count the loss here (r1 F4) — but ONLY if the session is
-                # actually gone: a client-side raise on a healthy session is
-                # not a lost session (r2 F2).
                 try:
                     gone = not client.is_connected()
                 except Exception:
                     gone = True
+                stalled = isinstance(e, _NotWritten)
+                if not (gone or stalled):
+                    # A client-side raise (bad topic, a bug) on a LIVE session:
+                    # not a stall, not a loss — and the session stays (r3 F2).
+                    return self._count("not_written")
+                # The session is gone, or a write timed out (itself a stall):
+                # this publish may be what DISCOVERED it, and the teardown
+                # below drops _client before paho's callback runs — so count
+                # the loss here (r1 F4 / r3 F2), once (the witness swap).
                 with self._stats_lock:
-                    was_up = self._witness_up and gone
-                    if was_up:
-                        self._witness_up = False
+                    was_up, self._witness_up = self._witness_up, False
                 if was_up:
                     self._note_session_lost()
                 # Drop the session so the next attempt reconnects cleanly.
@@ -574,12 +605,23 @@ class DownlinkInjector:
         inside that very call (loop_write then loop_misc in one pass), and a
         send recorded afterwards was invisible to it (counters r2 F1)."""
         now = time.monotonic()
-        window = stall_window_s()
+        horizon = books_horizon_s()
         with self._stats_lock:
-            while self._true_at and now - self._true_at[0] > window:
+            while self._true_at and now - self._true_at[0] > horizon:
                 self._true_at.popleft()
             self._true_at.append(now)
         return now
+
+    def _confirm_send(self, token) -> None:
+        """Re-stamp a send once it is WRITTEN (its write wait must not age it
+        toward the horizon). If a loss already counted and cleared it, it
+        stays counted — never re-added (r3 F1)."""
+        with self._stats_lock:
+            try:
+                self._true_at.remove(token)
+            except ValueError:
+                return
+            self._true_at.append(time.monotonic())
 
     def _withdraw_send(self, token) -> None:
         """A send that returned False is not 'possibly lost' — the caller
@@ -592,20 +634,25 @@ class DownlinkInjector:
                 pass
 
     def _note_session_lost(self) -> None:
-        """Stall witness (paho's network thread): a session the broker had
-        accepted is gone. Every True in the stall window before now may have
-        been written into it and lost — an UPPER bound, labelled as one."""
+        """Stall witness: a session the broker had accepted is gone. EVERY
+        send still on the books may have been written into it and lost — an
+        UPPER bound, labelled as one. No time filter here: three review
+        rounds each found a timing that a fixed window missed (r1 the window,
+        r2 a send in flight, r3 a process stall); the books' horizon bounds
+        the overcount instead."""
         now = time.monotonic()
-        window = stall_window_s()
+        horizon = books_horizon_s()
         with self._stats_lock:
+            while self._true_at and now - self._true_at[0] > horizon:
+                self._true_at.popleft()      # past the horizon: off the books
             self._sessions_lost += 1
-            n = sum(1 for t in self._true_at if now - t <= window)
+            n = len(self._true_at)
             self._possibly_lost += n
             self._true_at.clear()            # never count one send twice
         logger.warning(
             "Downlink session to %s:%d LOST — up to %d send(s) in the last "
             "%g s may not have reached the broker (QoS 0)",
-            self._broker, self._port, n, window)
+            self._broker, self._port, n, books_horizon_s())
 
     def stats(self) -> dict:
         """Snapshot for status surfaces: per-outcome counts, the stall
@@ -618,7 +665,7 @@ class DownlinkInjector:
             "calls": sum(counts.values()),
             "sessions_lost": lost,
             "possibly_lost": possibly,
-            "window_s": stall_window_s(),
+            "window_s": books_horizon_s(),
             "connected": self.connected,
             "closed": self._closed,
         }
@@ -656,9 +703,23 @@ class DownlinkInjector:
 
     def close(self):
         """Terminal until reopen(): an inject queued on the lock behind this
-        must not open a session nobody will close (Fable r3 F1)."""
+        must not open a session nobody will close (Fable r3 F1).
+
+        KNOWN LIMIT (counters r3 F3): closing a session that may be wedged
+        without paho having noticed yet ends the witness — the sends on the
+        books can no longer be judged. They are NOT counted as lost (a normal
+        shutdown would then always read as losses); instead close() SAYS how
+        many sends went unwitnessed, in one WARNING."""
         with self._lock:
             self._closed = True
+            with self._stats_lock:
+                unwitnessed = len(self._true_at) if self._witness_up else 0
+                self._true_at.clear()
+            if unwitnessed:
+                logger.warning(
+                    "Downlink injector closed with %d send(s) from the last "
+                    "%g s unwitnessed — if the broker was wedged, they may "
+                    "not have arrived (QoS 0)", unwitnessed, books_horizon_s())
             self._teardown()
 
     def reopen(self):

@@ -551,3 +551,13 @@ class TestDownlinkRowsRound2:
             cfg.rns_bridge_enabled = v
             text = "\n".join(h._downlink_lines(cfg, lines_fn=lambda pat: []))
             assert "  rns:" in text, v
+
+
+class TestDownlinkRowsRound3:
+
+    def test_wrap_never_exceeds_the_text_area(self):
+        # F4 s2: two 25-char fields join to 53 — width 53 would emit a 57-col
+        # row in a 56-col text area.
+        h = _make_gateway()
+        rows = h._wrap_downlink_body(("a" * 25) + " · " + ("b" * 25))
+        assert all(len(r) <= 56 for r in rows), rows
