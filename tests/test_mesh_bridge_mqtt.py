@@ -741,6 +741,23 @@ class TestDownlinkInjectionWiring:
         assert bridge._primary_downlink is None
 
 
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_status_carries_downlink_counters(self, mock_home, tmp_path, mock_config):
+        # #25 counters: get_status() carries the injector's stats under its
+        # primary preset's label; no downlink configured -> None (no line).
+        import base64
+        from gateway import mqtt_downlink_inject as mdi
+        mock_home.return_value = tmp_path
+        assert self._bridge(tmp_path, mock_config).get_status()["downlink"] is None
+        if not mdi._HAS_DOWNLINK_DEPS:
+            pytest.skip("downlink deps (protobuf/crypto/paho) not installed")
+        mock_config.mesh_bridge.primary.preset = "LONG_FAST"
+        bridge = self._bridge(tmp_path, mock_config, injection_mode="downlink",
+                              psk=base64.b64encode(bytes(range(32))).decode())
+        dl = bridge.get_status()["downlink"]
+        assert dl["label"] == "LONG_FAST"
+        assert dl["calls"] == 0 and set(dl["counts"]) == set(mdi.DOWNLINK_OUTCOMES)
     @patch('gateway.mesh_bridge.get_real_user_home')
     def test_restart_in_place_reopens_the_downlink(self, mock_home, tmp_path, mock_config):
         # #25 r3 F1: stop() closes the injector terminally, so any stop() ->

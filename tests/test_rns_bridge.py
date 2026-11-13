@@ -6361,3 +6361,31 @@ class TestF14ReviewFollowups:
         text = notice.call_args.args[0]
         assert "not delivered" in text
         assert PRIVATE_REFUSED_NOTICE_SESSIONS not in text
+
+
+class TestGetStatusDownlink:
+    """#25 counters: the RNS bridge's lazily-built true-origin injector shows
+    as absent / idle / unavailable / counted — never as bare zeros."""
+
+    def test_absent_when_not_configured(self, bridge):
+        bridge.config.meshtastic.injection_mode = "toradio"
+        assert bridge.get_status()["downlink"] is None
+
+    def test_idle_when_configured_but_not_built_yet(self, bridge):
+        bridge.config.meshtastic.injection_mode = "downlink"
+        if hasattr(bridge, "_true_origin_injector"):
+            del bridge._true_origin_injector
+        assert bridge.get_status()["downlink"] == {"label": "rns", "idle": True}
+
+    def test_unavailable_when_the_build_failed(self, bridge):
+        bridge.config.meshtastic.injection_mode = "downlink"
+        bridge._true_origin_injector = None        # cached failed build
+        assert bridge.get_status()["downlink"] == {"label": "rns", "unavailable": True}
+
+    def test_counts_when_built(self, bridge):
+        bridge.config.meshtastic.injection_mode = "downlink"
+        inj = MagicMock()
+        inj.stats.return_value = {"counts": {"ok": 3}, "sessions_lost": 0}
+        bridge._true_origin_injector = inj
+        dl = bridge.get_status()["downlink"]
+        assert dl["label"] == "rns" and dl["counts"] == {"ok": 3}

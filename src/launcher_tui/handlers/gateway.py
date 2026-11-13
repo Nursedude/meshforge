@@ -183,6 +183,7 @@ class GatewayHandler(BaseHandler):
 
         if config.mesh_bridge.enabled:
             lines.extend(self._mesh_bridge_leg_lines(config))
+        lines.extend(self._downlink_lines(config))
 
         lines.extend([
             "RNS:",
@@ -232,6 +233,47 @@ class GatewayHandler(BaseHandler):
                              now=time.time())
         lines += ["", f"status file: {path}"]
         self.ctx.dialog.msgbox("Operator Line", "\n".join(lines), width=78, height=22)
+
+    def _downlink_lines(self, config, lines_fn=None):
+        """True-origin downlink injector counters (#25), one row per injector
+        this box is CONFIGURED to run. State is the running gateway's own
+        status-block line, read back with the writer's regex
+        (DOWNLINK_LINE_RE), so the screen and the log cannot disagree. Not
+        configured = no section (absent by design); configured but no line =
+        UNKNOWN, never zero."""
+        from gateway.mqtt_downlink_inject import DOWNLINK_LINE_RE
+        from utils.watchdog_probe_core import _journal_match_lines
+
+        def _mode(leg):
+            return (getattr(leg, "injection_mode", "") or "")
+        expected = []
+        if config.mesh_bridge.enabled and str(_mode(config.mesh_bridge.primary)).lower() == "downlink":
+            expected.append(str(config.mesh_bridge.primary.preset or "primary"))
+        if str(_mode(getattr(config, "meshtastic", None))).lower() == "downlink":
+            expected.append("rns")
+        if not expected:
+            return []
+        window = "2min"
+        if lines_fn is None:
+            found = _journal_match_lines("meshforge-gateway.service",
+                                         DOWNLINK_LINE_RE.pattern, window)
+        else:
+            found = lines_fn(DOWNLINK_LINE_RE.pattern)
+        latest = {}
+        for ln in found or []:  # oldest first: the last line wins
+            m = DOWNLINK_LINE_RE.search(ln)
+            if m:
+                latest[m.group("label")] = m.group("body")
+        out = ["TRUE-ORIGIN DOWNLINK (MQTT, QoS 0):"]
+        for label in expected:
+            if found is None:
+                body = "UNKNOWN (gateway journal unreadable)"
+            else:
+                body = latest.get(label, f"UNKNOWN (no gateway report in {window})")
+            out.append(f"  {label}: {body}")
+        out.append("    (<=N possibly lost = an upper bound; only the radio can say what aired)")
+        out.append("")
+        return out
 
     def _mesh_bridge_leg_lines(self, config, lines_fn=None):
         """Per-leg rows for the cross-preset bridge: real endpoint + live state.

@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from .config import GatewayConfig
 from .node_tracker import UnifiedNodeTracker, UnifiedNode, get_node_tracker
 from .reconnect import ReconnectStrategy
+from .mqtt_downlink_inject import downlink_status
 from .bridge_health import (
     BridgeHealthMonitor, DeliveryTracker,
     BridgeStatus, SubsystemState, MessageOrigin
@@ -892,6 +893,13 @@ class RNSMeshtasticBridge(
         status['operator_line'] = (self._operator_line.get_status()
                                    if self._operator_line is not None else None)
         status['lxmf_identity_error'] = getattr(self, '_lxmf_identity_error', None)
+        # #25 counters: the true-origin injector is built lazily (first R->M
+        # true-origin message), so 'not built yet' reads idle, never zeros.
+        _mc = getattr(self.config, 'meshtastic', None)
+        status['downlink'] = downlink_status(
+            'rns', getattr(self, '_true_origin_injector', None),
+            built=hasattr(self, '_true_origin_injector'),
+            configured=(getattr(_mc, 'injection_mode', '') or '').lower() == 'downlink')
         # mqtt_bridge mode: meshtastic_connected is the BROKER session; the
         # radio is read separately so a stopped meshtasticd is not reported
         # as connected (2026-10-02). Absent key = handler has no such read.

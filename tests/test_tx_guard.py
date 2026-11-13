@@ -342,8 +342,9 @@ class TestGuardedSendSitesRefuse:
         from gateway.mqtt_downlink_inject import DownlinkInjector
         from unittest.mock import PropertyMock
 
-        inj = DownlinkInjector.__new__(DownlinkInjector)
-        inj._broker, inj._port = "127.0.0.1", 1883
+        # A real __init__ (it needs no downlink deps): __new__ skipped the
+        # counters #25 added, and _publish then raised instead of counting.
+        inj = DownlinkInjector("127.0.0.1", 1883, "meshforge", "")
         # patch.object RESTORES the real property. An earlier version of this
         # drill assigned `type(inj).usable` and `del`'d it in teardown, which
         # deleted the CLASS's genuine property for the rest of the session and

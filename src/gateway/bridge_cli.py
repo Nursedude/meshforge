@@ -23,6 +23,7 @@ from gateway import (
 )
 from utils.service_check import check_service, check_port
 from gateway.config import RNS_TRANSPORT_REMOVED  # shared with validate_bridge_mode
+from gateway.mqtt_downlink_inject import format_downlink_line  # one line format (TUI reads it)
 from utils.sandbox_check import assert_writable_or_exit, meshforge_writable_paths
 
 # Setup logging — use canonical logging_config (avoids basicConfig conflicts)
@@ -374,6 +375,8 @@ def print_status(status: dict):
     if stats:
         for line in _format_counts(stats):
             print(line)
+    if status.get('downlink'):
+        print(format_downlink_line(status['downlink']))
 
     node_stats = status.get('node_stats', {})
     if node_stats:
@@ -446,6 +449,8 @@ def print_multi_status(instances):
             # the relative indent.
             for line in _format_counts(stats):
                 print(f"    {line}")
+        if status.get("downlink"):
+            print(f"    {format_downlink_line(status['downlink'])}")
     print(f"{'='*50}")
     print("Press Ctrl+C to stop and return to menu\n")
 

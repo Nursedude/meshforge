@@ -27,8 +27,10 @@ import logging
 import secrets
 import socket
 import struct
+import re
 import threading
 import time
+from collections import deque
 from typing import Optional, Tuple
 
 from utils.safe_import import safe_import
@@ -81,6 +83,65 @@ KEEPALIVE_S = 5
 #: How long _teardown lets a healthy session close itself before breaking
 #: the socket.
 TEARDOWN_GRACE_S = 0.5
+
+#: Every inject()/inject_nodeinfo() call lands in EXACTLY one of these
+#: (#25 counters slice, operator 11-12: "anything that stalls is not an
+#: outcome - it's something to measure"). Order = the status line's order.
+DOWNLINK_OUTCOMES = (
+    "ok", "no_connack", "refused", "connect_error", "not_written",
+    "refused_fast", "closed", "build_error", "tx_blocked", "unusable",
+)
+
+#: The gateway's ~30 s status block carries one line per injector; the TUI
+#: Gateway Status pane reads it back with DOWNLINK_LINE_RE. ONE constant for
+#: writer and reader (honest_failure_modes #5) — change both here or neither.
+DOWNLINK_LINE_PREFIX = "Downlink["
+DOWNLINK_LINE_RE = re.compile(r"Downlink\[(?P<label>[^\]]+)\]: (?P<body>.+)$")
+
+
+def stall_window_s() -> float:
+    """How far back a lost session can have been silently eating sends: paho
+    notices a wedged-after-CONNACK broker by keepalive, at up to
+    2 x KEEPALIVE_S (+1 s for its loop tick). Measured 5.5-11 s at 5 s on
+    real mosquitto (Fable r3, 11-12)."""
+    return 2 * KEEPALIVE_S + 1
+
+
+def downlink_status(label: str, injector, *, configured: bool, built: bool):
+    """The status dict for one bridge's injector, or None when downlink is
+    not configured (absent by design: no line). ONE implementation for the
+    mesh and RNS bridges, so their lines cannot drift."""
+    if injector is not None:
+        return {"label": label, **injector.stats()}
+    if not configured:
+        return None
+    return {"label": label, "unavailable": True} if built else {"label": label, "idle": True}
+
+
+def format_downlink_line(status: dict) -> str:
+    """One status-block line for an injector's ``stats()`` (plus ``label``).
+
+    ``idle`` (an injector enabled but not built yet) says so — never zeros,
+    which would read as 'built, and nothing failed'. ``possibly_lost`` is an
+    UPPER bound: QoS-0 sends that returned True inside the stall window before
+    paho noticed the session was gone. Only the radio can say which arrived.
+    """
+    label = status.get("label", "?")
+    if status.get("unavailable"):
+        return (f"{DOWNLINK_LINE_PREFIX}{label}]: unavailable â downlink is "
+                f"configured but no injector could be built (see the gateway "
+                f"log); sends go the toradio way")
+    if status.get("idle"):
+        return (f"{DOWNLINK_LINE_PREFIX}{label}]: idle — enabled, no downlink "
+                f"attempted since start")
+    c = status.get("counts", {})
+    parts = " · ".join(f"{k.replace('_', '-')} {c.get(k, 0)}"
+                       for k in DOWNLINK_OUTCOMES)
+    state = "closed" if status.get("closed") else (
+        "session up" if status.get("connected") else "no session")
+    return (f"{DOWNLINK_LINE_PREFIX}{label}]: {state} · {parts} · lost-sessions "
+            f"{status.get('sessions_lost', 0)} · <={status.get('possibly_lost', 0)} "
+            f"possibly lost (QoS 0, window {status.get('window_s', 0):g} s)")
 
 
 def _xor_hash(data: bytes) -> int:
@@ -248,6 +309,16 @@ class DownlinkInjector:
         self._client = None
         self._retry_after = 0.0   # monotonic; refuse-fast window after a failed connect
         self._closed = False      # close() is terminal until reopen()
+        # Counters (one per DOWNLINK_OUTCOMES entry) + the stall witness.
+        # Own lock: paho's network thread writes the witness, and _lock can be
+        # held across loop_stop()'s join of that same thread.
+        self._stats_lock = threading.Lock()
+        self._counts = {k: 0 for k in DOWNLINK_OUTCOMES}
+        self._true_at = deque(maxlen=1024)   # monotonic times of True returns
+        self._sessions_lost = 0
+        self._witness_up = False      # witness only; truth = is_connected()
+        self._possibly_lost = 0
+        self._last_fail = ""            # why the last connect attempt failed
 
         # Surface a clear reason once if the injector can't operate, so a
         # misconfigured downlink mode degrades loudly to toradio instead of
@@ -325,11 +396,13 @@ class DownlinkInjector:
         caller's toradio fallback is the honest path meanwhile (r1 F2).
         """
         if self._closed:
+            self._last_fail = "closed"
             return False
         if self.connected:
             return True
         now = time.monotonic()
         if now < self._retry_after:
+            self._last_fail = "refused_fast"
             return False
         self._teardown()
         accepted = threading.Event()
@@ -337,13 +410,31 @@ class DownlinkInjector:
 
         def _on_connect(client, userdata, flags, rc, *rest):
             result["rc"] = int(getattr(rc, "value", rc))
+            if result["rc"] == 0 and client is self._client:
+                with self._stats_lock:
+                    self._witness_up = True   # an ACCEPTED session, to witness
             accepted.set()
+
+        def _on_disconnect(client, userdata, *rest):
+            # WITNESS ONLY — session truth stays paho's is_connected(). rc 0 =
+            # our own disconnect(); _teardown drops _client first, so a loss
+            # we caused is never counted.
+            rc = rest[0] if len(rest) == 1 else (rest[1] if len(rest) > 1 else 0)
+            # Only a session the broker ACCEPTED counts, once: paho's own
+            # auto-reconnect attempts against a wedged broker also end rc != 0,
+            # and counting those would turn retries into "lost sessions".
+            if int(getattr(rc, "value", rc) or 0) != 0 and client is self._client:
+                with self._stats_lock:
+                    was_up, self._witness_up = self._witness_up, False
+                if was_up:
+                    self._note_session_lost()
 
         try:
             client = _mqtt_mod(client_id=self._client_id)
             if self._username:
                 client.username_pw_set(self._username, self._password)
             client.on_connect = _on_connect
+            client.on_disconnect = _on_disconnect
             self._client = client
             client.connect(self._broker, self._port, keepalive=KEEPALIVE_S)
             client.loop_start()
@@ -357,10 +448,13 @@ class DownlinkInjector:
             rc = result["rc"]
             if rc is None:
                 reason = f"no CONNACK within {CONNACK_TIMEOUT_S:g} s"
+                self._last_fail = "no_connack"
             elif rc == "error":
                 reason = "connect error"
+                self._last_fail = "connect_error"
             else:
                 reason = f"broker refused the session (CONNACK rc {rc})"
+                self._last_fail = "refused"
             logger.warning(
                 "Downlink injector connect to %s:%d failed: %s — refusing for "
                 "%g s (callers fall back to toradio)",
@@ -379,7 +473,7 @@ class DownlinkInjector:
         """Build (via ``builder``) and publish one envelope. Returns True only
         on confirmed publish; never raises (callers fall back)."""
         if not self.usable:
-            return False
+            return self._count("unusable")
         # RF egress chokepoint. This publish is not "just MQTT": meshtasticd
         # subscribes to this topic and TRANSMITS the envelope, so it keys the
         # radio as surely as /api/v1/toradio does. Guarded before connecting.
@@ -392,17 +486,17 @@ class DownlinkInjector:
                               kind="mqtt_downlink_inject",
                               detail=f"downlink inject kind={kind}")
         except TransmitBlocked:
-            return False
+            return self._count("tx_blocked")
         # Build BEFORE touching the session: a bad input is not a broker
         # fault and must not tear down a healthy session (Fable r2 F5).
         try:
             topic, payload, packet_id = builder()
         except Exception as e:
             logger.warning("Downlink %s envelope build failed: %s", kind, e)
-            return False
+            return self._count("build_error")
         with self._lock:
             if not self._ensure_connected():
-                return False
+                return self._count(self._last_fail or "connect_error")
             try:
                 info = self._client.publish(topic, payload, qos=0)
                 info.wait_for_publish(timeout=PUBLISH_TIMEOUT_S)
@@ -415,12 +509,56 @@ class DownlinkInjector:
                     "Downlink %s injected: id=0x%08x from=!%08x topic=%s",
                     kind, packet_id, origin_node, topic,
                 )
-                return True
+                return self._count("ok")
             except Exception as e:
                 logger.warning("Downlink %s inject failed: %s", kind, e)
                 # Drop the session so the next attempt reconnects cleanly.
                 self._teardown()
-                return False
+                return self._count("not_written")
+
+    def _count(self, outcome: str) -> bool:
+        """Count one call's outcome; returns the call's verdict (True only
+        for "ok"). Every _publish exit goes through here — the sum of the
+        counters is the number of calls."""
+        if outcome not in self._counts:      # a reason this table lacks is a bug
+            outcome = "connect_error"
+        with self._stats_lock:
+            self._counts[outcome] += 1
+            if outcome == "ok":
+                self._true_at.append(time.monotonic())
+        return outcome == "ok"
+
+    def _note_session_lost(self) -> None:
+        """Stall witness (paho's network thread): a session the broker had
+        accepted is gone. Every True in the stall window before now may have
+        been written into it and lost — an UPPER bound, labelled as one."""
+        now = time.monotonic()
+        window = stall_window_s()
+        with self._stats_lock:
+            self._sessions_lost += 1
+            n = sum(1 for t in self._true_at if now - t <= window)
+            self._possibly_lost += n
+            self._true_at.clear()            # never count one send twice
+        logger.warning(
+            "Downlink session to %s:%d LOST — up to %d send(s) in the last "
+            "%g s may not have reached the broker (QoS 0)",
+            self._broker, self._port, n, window)
+
+    def stats(self) -> dict:
+        """Snapshot for status surfaces: per-outcome counts, the stall
+        witness, and the session's state as paho reports it."""
+        with self._stats_lock:
+            counts = dict(self._counts)
+            lost, possibly = self._sessions_lost, self._possibly_lost
+        return {
+            "counts": counts,
+            "calls": sum(counts.values()),
+            "sessions_lost": lost,
+            "possibly_lost": possibly,
+            "window_s": stall_window_s(),
+            "connected": self.connected,
+            "closed": self._closed,
+        }
 
     def inject(
         self,

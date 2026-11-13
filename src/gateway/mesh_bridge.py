@@ -39,6 +39,7 @@ from .canonical_message import packet_is_broadcast  # the ONE rule (F15)
 from .config import GatewayConfig, MeshtasticBridgeConfig, MeshtasticConfig
 from ._handoff_witness import HandoffWitness
 from ._mesh_bridge_mqtt import MQTTMeshInterface
+from .mqtt_downlink_inject import downlink_status
 from ._mesh_bridge_legs import (
     bridge_event, build_downlink_injector,
     lookup_node_user, bump_stat, dm_destination,
@@ -460,6 +461,8 @@ class MeshtasticPresetBridge(MeshBridgeDrainMixin):
                 'mode': self._leg_mode(sec),
             },
             'direction': self.bridge_config.direction,
+            'downlink': downlink_status(str(pri.preset or 'primary'), self._primary_downlink, built=True,
+                                        configured=(pri.injection_mode or '').lower() == 'downlink'),
             'uptime_seconds': uptime,
             'statistics': {**self.stats, **self._handoff.snapshot(), 'mqtt_fallback_dedup_dropped': sum(
                 i._fb_witness.count for i in (self._primary_interface, self._secondary_interface)

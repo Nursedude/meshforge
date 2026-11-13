@@ -411,3 +411,59 @@ class TestLoadTemplate:
             h.ctx.dialog._menu_returns = [None]
             h._load_template(config)
         assert config.bridge_mode == original_mode
+
+
+def _downlink_config(mesh=True, rns=True):
+    config = _mesh_bridge_config()
+    config.mesh_bridge.primary.injection_mode = "downlink" if mesh else "toradio"
+    config.meshtastic.injection_mode = "downlink" if rns else "toradio"
+    return config
+
+
+_DOWNLINK_BLOCK = [
+    "    Downlink[LONG_FAST]: session up · ok 4 · no-connack 0 · <=0 possibly lost (QoS 0, window 11 s)",
+    "    Downlink[LONG_FAST]: session up · ok 5 · no-connack 0 · <=0 possibly lost (QoS 0, window 11 s)",
+    "Downlink[rns]: idle — enabled, no downlink attempted since start",
+]
+
+
+class TestDownlinkRows:
+    """#25 counters in the Gateway Status pane: the writer's own line, read
+    with the writer's regex; UNKNOWN when it can't be seen; silent when the
+    box isn't configured for downlink."""
+
+    def test_latest_line_per_injector(self):
+        h = _make_gateway()
+        text = "\n".join(h._downlink_lines(_downlink_config(),
+                                           lines_fn=lambda pat: list(_DOWNLINK_BLOCK)))
+        assert "LONG_FAST: session up · ok 5" in text      # the LAST line wins
+        assert "rns: idle" in text
+        assert "upper bound" in text
+
+    def test_configured_but_no_line_is_unknown_not_zero(self):
+        h = _make_gateway()
+        text = "\n".join(h._downlink_lines(_downlink_config(),
+                                           lines_fn=lambda pat: []))
+        assert text.count("UNKNOWN (no gateway report in 2min)") == 2
+        assert "ok 0" not in text
+
+    def test_unreadable_journal_is_unknown(self):
+        h = _make_gateway()
+        text = "\n".join(h._downlink_lines(_downlink_config(),
+                                           lines_fn=lambda pat: None))
+        assert text.count("UNKNOWN (gateway journal unreadable)") == 2
+
+    def test_not_configured_shows_nothing(self):
+        h = _make_gateway()
+        assert h._downlink_lines(_downlink_config(mesh=False, rns=False),
+                                 lines_fn=lambda pat: list(_DOWNLINK_BLOCK)) == []
+
+    def test_reader_uses_the_writers_regex(self):
+        # One constant for writer and reader (honest_failure_modes #5).
+        from gateway.mqtt_downlink_inject import DOWNLINK_LINE_RE, format_downlink_line
+        h = _make_gateway()
+        seen = {}
+        line = format_downlink_line({"label": "LONG_FAST", "counts": {"ok": 1}, "connected": True})
+        h._downlink_lines(_downlink_config(rns=False),
+                          lines_fn=lambda pat: seen.setdefault("pat", pat) and [line])
+        assert seen["pat"] == DOWNLINK_LINE_RE.pattern
