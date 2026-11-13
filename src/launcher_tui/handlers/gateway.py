@@ -253,7 +253,7 @@ class GatewayHandler(BaseHandler):
             expected.append("mesh-" + downlink_label(config.mesh_bridge.primary.preset))
         # The RNS bridge runs only when rns_bridge_enabled (bridge_cli
         # resolve_bridges): expecting its row otherwise = UNKNOWN forever.
-        if (getattr(config, "rns_bridge_enabled", False) is True
+        if (bool(getattr(config, "rns_bridge_enabled", False))   # writer's truthiness (r2 F5)
                 and str(_mode(getattr(config, "meshtastic", None))).lower() == "downlink"):
             expected.append("rns")
         if not expected:
@@ -283,7 +283,7 @@ class GatewayHandler(BaseHandler):
         return out
 
     @staticmethod
-    def _wrap_downlink_body(body, width=54):
+    def _wrap_downlink_body(body, width=52):
         """The status line's ' · ' fields, packed into rows that fit the
         pane (the witness fields come first in the writer's line)."""
         rows, cur = [], ""

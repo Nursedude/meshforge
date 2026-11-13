@@ -327,7 +327,9 @@ class DownlinkInjector:
         # held across loop_stop()'s join of that same thread.
         self._stats_lock = threading.Lock()
         self._counts = {k: 0 for k in DOWNLINK_OUTCOMES}
-        self._true_at = deque(maxlen=1024)   # monotonic times of True returns
+        # Sends on the witness's books: recorded BEFORE they go on the wire
+        # (counters r2 F1), pruned by the stall window — never a capped tail.
+        self._true_at = deque()
         self._sessions_lost = 0
         self._witness_up = False      # witness only; truth = is_connected()
         self._possibly_lost = 0
@@ -343,6 +345,13 @@ class DownlinkInjector:
             self._fatal_reason = (
                 f"downlink_psk must decode to 32 bytes, got {len(self._psk)}"
             )
+        elif any(c in (channel_name or "") for c in "#+/"):
+            # The channel is a topic LEVEL: '#'/'+' are MQTT wildcards paho
+            # refuses in a publish topic, '/' splits the level — every send
+            # would fail (counters r2 F2). Refuse once, loudly.
+            self._fatal_reason = (
+                f"downlink channel {channel_name!r} contains an MQTT topic "
+                f"character (#, + or /) — every publish would be refused")
 
     @property
     def usable(self) -> bool:
@@ -364,8 +373,8 @@ class DownlinkInjector:
 
         Without this a reconnect left the old client's loop thread running —
         and paho auto-reconnecting it — beside the new one."""
-        client, self._client = self._client, None
-        with self._stats_lock:
+        with self._stats_lock:            # one lock with _on_connect's check+arm
+            client, self._client = self._client, None
             self._witness_up = False      # a session WE end is not a loss (r1 F3)
         if client is None:
             return
@@ -425,8 +434,8 @@ class DownlinkInjector:
 
         def _on_connect(client, userdata, flags, rc, *rest):
             result["rc"] = int(getattr(rc, "value", rc))
-            if result["rc"] == 0 and client is self._client:
-                with self._stats_lock:
+            with self._stats_lock:        # check + arm atomically vs _teardown
+                if result["rc"] == 0 and client is self._client:
                     self._witness_up = True   # an ACCEPTED session, to witness
             accepted.set()
 
@@ -512,8 +521,10 @@ class DownlinkInjector:
         with self._lock:
             if not self._ensure_connected():
                 return self._count(self._last_fail or "connect_error")
+            client = self._client
+            token = self._note_send()        # on the books BEFORE the wire (r2 F1)
             try:
-                info = self._client.publish(topic, payload, qos=0)
+                info = client.publish(topic, payload, qos=0)
                 info.wait_for_publish(timeout=PUBLISH_TIMEOUT_S)
                 # wait_for_publish RETURNS on timeout (paho 2.x); a message
                 # still queued in the client is not published (r1 F1).
@@ -527,11 +538,20 @@ class DownlinkInjector:
                 return self._count("ok")
             except Exception as e:
                 logger.warning("Downlink %s inject failed: %s", kind, e)
+                self._withdraw_send(token)   # it returns False: not a "sent"
                 # This publish may be what DISCOVERED the dead session; the
                 # teardown below drops _client before paho's callback runs,
-                # so count the loss here (r1 F4).
+                # so count the loss here (r1 F4) — but ONLY if the session is
+                # actually gone: a client-side raise on a healthy session is
+                # not a lost session (r2 F2).
+                try:
+                    gone = not client.is_connected()
+                except Exception:
+                    gone = True
                 with self._stats_lock:
-                    was_up, self._witness_up = self._witness_up, False
+                    was_up = self._witness_up and gone
+                    if was_up:
+                        self._witness_up = False
                 if was_up:
                     self._note_session_lost()
                 # Drop the session so the next attempt reconnects cleanly.
@@ -546,9 +566,30 @@ class DownlinkInjector:
             outcome = "connect_error"
         with self._stats_lock:
             self._counts[outcome] += 1
-            if outcome == "ok":
-                self._true_at.append(time.monotonic())
         return outcome == "ok"
+
+    def _note_send(self):
+        """Put one send on the witness's books, pruning what has aged out of
+        the stall window. Called BEFORE publish(): paho can notice the loss
+        inside that very call (loop_write then loop_misc in one pass), and a
+        send recorded afterwards was invisible to it (counters r2 F1)."""
+        now = time.monotonic()
+        window = stall_window_s()
+        with self._stats_lock:
+            while self._true_at and now - self._true_at[0] > window:
+                self._true_at.popleft()
+            self._true_at.append(now)
+        return now
+
+    def _withdraw_send(self, token) -> None:
+        """A send that returned False is not 'possibly lost' — the caller
+        falls back. (If the loss was already noted it stays counted: an upper
+        bound may overcount, never undercount.)"""
+        with self._stats_lock:
+            try:
+                self._true_at.remove(token)
+            except ValueError:
+                pass
 
     def _note_session_lost(self) -> None:
         """Stall witness (paho's network thread): a session the broker had

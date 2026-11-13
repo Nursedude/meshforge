@@ -2705,32 +2705,73 @@ class TestMqttSettingsSingleOwner:
 
 class TestNoDoubleEncodedUtf8:
     """2026-11-12: an edit helper that decoded with unicode_escape re-read
-    UTF-8 as latin-1 and wrote mojibake ('—' -> 'â' + two C1 controls) into
-    five lines across both twins, four of them deployed, one an operator-
-    facing status line. Any U+0080-U+009F (a C1 control) in tracked text is
-    that class: refuse it at commit time."""
+    UTF-8 as latin-1 and wrote mojibake ('\u2014' -> 'a-circumflex' + two C1
+    controls) into five lines across both twins, four of them deployed, one an
+    operator-facing status line. Any U+0080-U+009F (a C1 control) in tracked
+    text is that class: refuse it at commit time. Round 2 (Fable): scan the
+    WHOLE text (splitlines() ate U+0085), fail on undecodable text instead of
+    skipping it, include extensionless shebang scripts and template/config
+    suffixes, and unit-test the scanner itself on fixtures."""
 
-    _ROOTS = ("src", "tests", "scripts")
-    _EXTS = (".py", ".sh", ".md", ".json", ".yaml", ".yml", ".txt", ".ini", ".service", ".timer")
+    _ROOTS = ("src", "tests", "scripts", "templates")
+    _EXTS = (".py", ".sh", ".md", ".json", ".yaml", ".yml", ".txt", ".ini",
+             ".service", ".timer", ".j2", ".conf", ".html", ".awk", ".cfg", ".toml")
+    _C1 = __import__("re").compile("[\x80-\x9f]")
+
+    @classmethod
+    def _is_text_target(cls, p):
+        if p.suffix in cls._EXTS:
+            return True
+        if p.suffix == "" and p.is_file():
+            try:
+                return p.read_bytes()[:2] == b"#!"
+            except OSError:
+                return False
+        return False
+
+    @classmethod
+    def _scan(cls, repo, roots=None):
+        bad = []
+        for root in roots or cls._ROOTS:
+            base = repo / root
+            if not base.is_dir():
+                continue
+            for p in base.rglob("*"):
+                if "__pycache__" in p.parts or not p.is_file() or not cls._is_text_target(p):
+                    continue
+                try:
+                    text = p.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    bad.append(f"{p.relative_to(repo)}: not valid UTF-8")
+                    continue
+                except OSError:
+                    continue
+                m = cls._C1.search(text)
+                if m:
+                    line = text.count("\n", 0, m.start()) + 1
+                    bad.append(f"{p.relative_to(repo)}:{line}")
+        return bad
 
     def test_no_c1_control_characters_in_tracked_text(self):
         import pathlib
         repo = pathlib.Path(__file__).resolve().parent.parent
-        bad = []
-        for root in self._ROOTS:
-            for p in (repo / root).rglob("*"):
-                if p.suffix not in self._EXTS or "__pycache__" in p.parts or not p.is_file():
-                    continue
-                try:
-                    text = p.read_text(encoding="utf-8")
-                except (UnicodeDecodeError, OSError):
-                    continue
-                for n, line in enumerate(text.splitlines(), 1):
-                    if any("\x80" <= c <= "\x9f" for c in line):
-                        bad.append(f"{p.relative_to(repo)}:{n}")
+        bad = self._scan(repo)
         assert not bad, "double-encoded UTF-8 (C1 controls) in: " + ", ".join(bad[:20])
 
-    def test_the_detector_sees_the_class(self):
-        # Positive control: the exact corruption must trip the predicate.
-        corrupted = "—".encode("utf-8").decode("latin-1")
-        assert any("\x80" <= c <= "\x9f" for c in corrupted)
+    def test_the_scanner_catches_each_shape(self, tmp_path):
+        # The SCANNER is what is tested (round 1 re-implemented the predicate).
+        (tmp_path / "src").mkdir()
+        (tmp_path / "scripts").mkdir()
+        dash = "\u2014".encode("utf-8").decode("latin-1")      # the incident
+        nel = "\u00c5".encode("utf-8").decode("latin-1")       # contains U+0085
+        (tmp_path / "src" / "ok.py").write_text("fine \u2014 text\n", encoding="utf-8")
+        assert self._scan(tmp_path) == []
+        (tmp_path / "src" / "dash.py").write_text(f"x {dash} y\n", encoding="utf-8")
+        (tmp_path / "src" / "nel.md").write_text(f"a {nel} b\n", encoding="utf-8")
+        (tmp_path / "scripts" / "tool").write_text(f"#!/bin/sh\necho {dash}\n", encoding="utf-8")
+        (tmp_path / "src" / "unit.j2").write_text(f"{dash}\n", encoding="utf-8")
+        (tmp_path / "src" / "bad.py").write_bytes(b"\xff\xfe not utf-8\n")
+        found = " ".join(self._scan(tmp_path))
+        for want in ("src/dash.py:1", "src/nel.md:1", "scripts/tool:2", "src/unit.j2:1",
+                     "src/bad.py: not valid UTF-8"):
+            assert want in found, (want, found)

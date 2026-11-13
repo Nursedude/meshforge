@@ -523,3 +523,31 @@ class TestDownlinkRowsRound1:
                                      "counts": {"ok": 1}, "connected": True})
         text = "\n".join(h._downlink_lines(cfg, lines_fn=lambda pat: [line]))
         assert "UNKNOWN" not in text and "session up" in text
+
+
+class TestDownlinkRowsRound2:
+
+    def test_rows_fit_the_textbox_text_area_and_drop_no_field(self):
+        # F4: a 60-wide textbox shows 56 text columns; F7 m18b: wrapping must
+        # keep EVERY field.
+        from gateway.mqtt_downlink_inject import DOWNLINK_OUTCOMES, format_downlink_line
+        h = _make_gateway()
+        st = {"label": "mesh-LONG_FAST", "counts": {k: 123456 for k in DOWNLINK_OUTCOMES},
+              "connected": True, "sessions_lost": 12, "possibly_lost": 345, "window_s": 12.5}
+        line = format_downlink_line(st)
+        body = line.split("]: ", 1)[1]
+        out = h._downlink_lines(_downlink_config(rns=False), lines_fn=lambda pat: [line])
+        assert all(len(r) <= 56 for r in out), [r for r in out if len(r) > 56]
+        rows = [r.strip() for r in out if r.startswith("    ") and "upper bound" not in r
+                and "radio can say" not in r]
+        assert " · ".join(rows) == body
+
+    def test_rns_row_follows_the_writers_truthiness(self):
+        # F5: bridge_cli starts the RNS bridge on a TRUTHY rns_bridge_enabled
+        # (1, "true"); the reader must agree.
+        h = _make_gateway()
+        for v in (1, "true", True):
+            cfg = _downlink_config()
+            cfg.rns_bridge_enabled = v
+            text = "\n".join(h._downlink_lines(cfg, lines_fn=lambda pat: []))
+            assert "  rns:" in text, v

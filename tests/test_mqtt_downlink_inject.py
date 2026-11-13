@@ -813,14 +813,20 @@ class TestDownlinkCountersRound1:
         real_publish = client.publish
 
         def queued_never_written(*a, **k):
+            # The session is GONE (paho says so) and no callback fires: only
+            # the publish path can notice. (r2: a healthy-session failure is
+            # deliberately NOT a lost session — see the round-2 F2 test.)
             info = real_publish("meshforge/unused", b"", qos=0)
             info.wait_for_publish(timeout=1)
             info._published = False
             info._condition = threading.Condition()
+            monkeypatch.setattr(client, "is_connected", lambda: False)
             return info
         monkeypatch.setattr(client, "publish", queued_never_written)
         assert inj.inject("stalled", ORIGIN) is False
         st = inj.stats()
+        # warm send = possibly lost; the stalled one returned False (the caller
+        # falls back), so it is withdrawn from the books.
         assert st["sessions_lost"] == 1 and st["possibly_lost"] == 1
 
     def test_callback_guards_each_pinned(self, fake_broker):
@@ -889,3 +895,84 @@ class TestDownlinkCountersRound1:
             m = DOWNLINK_LINE_RE.search(format_downlink_line({"label": label, "counts": {}}))
             assert m and m.group("label") == label
         assert "mesh-" + downlink_label("rns") != "rns"
+
+
+class TestDownlinkCountersRound2:
+    """Counters slice, non-author round 2 (Fable by running)."""
+
+    def test_send_in_flight_when_the_loss_is_noted_is_counted(self, fake_broker, monkeypatch):
+        # F1 HIGH: paho's _loop runs loop_write() then loop_misc() in ONE pass,
+        # so a publish can itself trigger the keepalive close — the loss
+        # callback then runs BEFORE the caller records its True. The seam:
+        # a send must be on the witness's books BEFORE it goes on the wire.
+        b, inj = fake_broker("ok")
+        assert inj.inject("warm", ORIGIN) is True
+        client = inj._client
+        real_publish = client.publish
+
+        def publish_then_keepalive_drop(*a, **k):
+            info = real_publish(*a, **k)
+            info.wait_for_publish(timeout=1)
+            client.on_disconnect(client, None, 16)      # MQTT_ERR_KEEPALIVE, same pass
+            return info
+        monkeypatch.setattr(client, "publish", publish_then_keepalive_drop)
+        assert inj.inject("in flight", ORIGIN) is True
+        st = inj.stats()
+        assert st["sessions_lost"] == 1
+        assert st["possibly_lost"] == 2                  # warm + the in-flight send
+
+    def test_publish_error_on_a_healthy_session_is_not_a_lost_session(self, fake_broker, monkeypatch):
+        # F2: a client-side raise (bad topic, a bug) with the session still up
+        # is not_written — never "lost session".
+        b, inj = fake_broker("ok")
+        for _ in range(4):
+            assert inj.inject("ok", ORIGIN) is True
+        client = inj._client
+
+        def boom(*a, **k):
+            raise ValueError("Publish topic cannot contain wildcards.")
+        monkeypatch.setattr(client, "publish", boom)
+        assert inj.inject("bad", ORIGIN) is False
+        st = inj.stats()
+        assert st["counts"]["not_written"] == 1
+        assert st["sessions_lost"] == 0 and st["possibly_lost"] == 0
+
+    def test_wildcard_channel_is_unusable_up_front(self):
+        # F2: '#'/'+' in the channel make every topic invalid — refuse at
+        # construction (loud, once) instead of failing every send.
+        for ch in ("Long#Fast", "Long+Fast", "a/b"):
+            inj = DownlinkInjector("127.0.0.1", 1883, ch, PSK_B64)
+            assert not inj.usable and "channel" in inj.fatal_reason
+
+    def test_window_holds_every_send_not_a_capped_tail(self, fake_broker):
+        # suspected: deque(maxlen=1024) undercounted past 1024 sends in a window.
+        b, inj = fake_broker("ok")
+        for _ in range(1500):
+            inj._note_send()
+        inj._note_session_lost()
+        assert inj.stats()["possibly_lost"] == 1500
+
+    def test_unknown_outcome_maps_to_connect_error_and_calls_is_the_sum(self, fake_broker):
+        # F7 m11/m12
+        b, inj = fake_broker("ok")
+        assert inj._count("no_such_outcome") is False
+        assert inj.inject("one", ORIGIN) is True
+        st = inj.stats()
+        assert st["counts"]["connect_error"] == 1
+        assert st["calls"] == sum(st["counts"].values()) == 2
+
+    def test_label_fallback_and_sanitizing(self):
+        # F7 m6
+        from gateway.mqtt_downlink_inject import downlink_label
+        assert downlink_label(None) == downlink_label("") == downlink_label("  ") == "primary"
+        assert downlink_label("A: B [x]") == "A__B__x_"
+
+    def test_on_connect_from_a_stale_client_does_not_arm(self, fake_broker):
+        # F7 m20 + suspected race: only the CURRENT client's CONNACK arms.
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        client = inj._client
+        client.on_disconnect(client, None, 7)           # real loss: disarms
+        assert inj._witness_up is False
+        client.on_connect(object(), None, {}, 0)        # a stale client's CONNACK
+        assert inj._witness_up is False
