@@ -568,3 +568,31 @@ class TestInjectorCloseAndPins:
         # recording the new window, then updating this pin.
         from gateway import mqtt_downlink_inject as mdi
         assert mdi.KEEPALIVE_S == 5
+
+    def test_reopen_clears_the_retry_window(self, fake_broker):
+        # r4 I1: reopen() must also end a refuse-fast window, or a restart
+        # right after a failed connect hides a healthy broker for 30 s.
+        b, inj = fake_broker("silent")
+        assert inj.inject("one", ORIGIN) is False   # opens the 30 s window
+        b.mode = "ok"
+        inj.close()
+        inj.reopen()
+        assert inj.inject("two", ORIGIN) is True
+
+    def test_teardown_stops_paho_thread_when_disconnect_and_shutdown_raise(
+            self, fake_broker, monkeypatch):
+        # r4 I2: pins the finally — with only disconnect faulted, shutdown
+        # succeeds and loop_stop ran either way.
+        import socket as _socket
+        base = _paho_threads()
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        client = inj._client
+
+        def boom(*a, **k):
+            raise RuntimeError("injected fault")
+        client.disconnect = boom
+        monkeypatch.setattr(_socket.socket, "shutdown", boom)
+        inj.close()
+        monkeypatch.undo()
+        assert _until(lambda: _paho_threads() == base, t=3)

@@ -461,8 +461,8 @@ class DownlinkInjector:
             self._teardown()
 
     def reopen(self):
-        """Undo close() for a restart in place (commands/gateway restart()
-        reuses the bridge object: stop() closes, start() reopens)."""
+        """Undo close() for a restart in place: MeshBridge.stop() closes,
+        start() reopens, so any stop() -> start() on one bridge keeps downlink."""
         with self._lock:
             self._closed = False
             self._retry_after = 0.0

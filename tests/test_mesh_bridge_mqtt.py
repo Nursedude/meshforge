@@ -743,10 +743,15 @@ class TestDownlinkInjectionWiring:
 
     @patch('gateway.mesh_bridge.get_real_user_home')
     def test_restart_in_place_reopens_the_downlink(self, mock_home, tmp_path, mock_config):
-        # #25 r3 F1: stop() closes the injector terminally; commands/gateway
-        # restart() reuses the SAME bridge object (stop -> start), so start()
-        # must reopen it or downlink silently degrades to toradio for good.
+        # #25 r3 F1: stop() closes the injector terminally, so any stop() ->
+        # start() on the SAME bridge object must reopen it or downlink
+        # silently degrades to toradio for good.
         import base64
+        from gateway import mqtt_downlink_inject as mdi
+        if not mdi._HAS_DOWNLINK_DEPS:
+            # CI's minimal-deps profile has no paho/cryptography: the bridge
+            # then (correctly) builds no injector at all â nothing to reopen.
+            pytest.skip("downlink deps (protobuf/crypto/paho) not installed")
         mock_home.return_value = tmp_path
         mock_config.mesh_bridge.enabled = True
         bridge = self._bridge(tmp_path, mock_config, injection_mode="downlink",
