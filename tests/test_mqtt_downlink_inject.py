@@ -1049,7 +1049,7 @@ class TestDownlinkCountersRound3:
         b, inj = fake_broker("ok")
         assert inj.inject("one", ORIGIN) is True
         assert inj.inject("two", ORIGIN) is True
-        with caplog.at_level("WARNING"):
+        with caplog.at_level("INFO"):        # r4 F2: INFO; the stat carries the fact
             inj.close()
         assert "2 send(s)" in caplog.text and "unwitnessed" in caplog.text
 
@@ -1063,3 +1063,78 @@ class TestDownlinkCountersRound3:
             inj._true_at[0] -= mdi.books_horizon_s() + 1.0
         inj._note_session_lost()
         assert inj.stats()["possibly_lost"] == 1
+
+
+class TestDownlinkCountersRound4:
+    """Counters slice, non-author round 4 (Fable by running): the r3 seam held;
+    these pin its unpinned behaviours and close the close() question."""
+
+    def test_close_with_armed_sends_is_on_the_line_not_zero(self, fake_broker):
+        # F1: after close() in an unnoticed wedge the line said "<=0" — a false
+        # bound. The unwitnessed count is carried into stats and the line.
+        from gateway.mqtt_downlink_inject import format_downlink_line
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        assert inj.inject("two", ORIGIN) is True
+        inj.close()
+        st = inj.stats()
+        assert st["unwitnessed_at_close"] == 2
+        assert st["possibly_lost"] == 0                 # NOT folded into losses
+        assert "2 unwitnessed at close" in format_downlink_line({"label": "x", **st})
+
+    def test_close_message_is_info_not_warning(self, fake_broker, caplog):
+        # F2: a healthy shutdown must not page-look like a wedge; the stat carries it.
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        with caplog.at_level("INFO"):
+            inj.close()
+        recs = [r for r in caplog.records if "unwitnessed" in r.getMessage()]
+        assert recs and all(r.levelname == "INFO" for r in recs)
+
+    def test_a_written_send_is_restamped(self, fake_broker, monkeypatch):
+        # F4 A: the re-stamp the r3 design leans on — the stamp is the moment
+        # the send was WRITTEN, not when it was queued (a slow write must not
+        # age it toward the horizon).
+        b, inj = fake_broker("ok")
+        assert inj.inject("warm", ORIGIN) is True
+        client = inj._client
+        real_publish = client.publish
+
+        def slow_publish(*a, **k):
+            time.sleep(0.3)                  # the write takes a while
+            return real_publish(*a, **k)
+        monkeypatch.setattr(client, "publish", slow_publish)
+        t_before = time.monotonic()
+        assert inj.inject("slow", ORIGIN) is True
+        with inj._stats_lock:
+            assert inj._true_at[-1] >= t_before + 0.25
+
+    def test_confirm_after_a_counted_loss_never_re_adds(self, fake_broker):
+        # F4 B: "never re-added" — no double count at the next loss.
+        b, inj = fake_broker("ok")
+        token = inj._note_send()
+        inj._note_session_lost()
+        inj._confirm_send(token)
+        with inj._stats_lock:
+            assert len(inj._true_at) == 0
+        inj._note_session_lost()
+        assert inj.stats()["possibly_lost"] == 1
+
+    def test_close_clears_the_books_for_the_next_session(self, fake_broker):
+        # F4 D: stale sends must not be charged to a later session's loss.
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        inj.close()
+        inj.reopen()
+        inj._note_session_lost()
+        assert inj.stats()["possibly_lost"] == 0
+
+    def test_a_silent_session_drop_is_counted_on_the_next_inject(self, fake_broker, monkeypatch):
+        # r4 hardening: paho reports the session gone WITHOUT on_disconnect —
+        # the next inject's reconnect path counts the loss, once.
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        monkeypatch.setattr(inj._client, "is_connected", lambda: False)
+        inj.inject("two", ORIGIN)
+        st = inj.stats()
+        assert st["sessions_lost"] == 1 and st["possibly_lost"] == 1

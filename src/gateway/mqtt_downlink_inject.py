@@ -119,7 +119,13 @@ def stall_window_s() -> float:
 #: Measured 11-12 (r3 drill, real mosquitto, worst keepalive phase): whole-
 #: process stalls of 0 / 1 / 3 / 6 s all held (witness >= lost, 2/2 each) —
 #: sends are re-stamped once written, so the PUBLISH_TIMEOUT_S slack also
-#: absorbs stall. >= 9.5 s: UNKNOWN (the drill never saw the loss noticed).
+#: absorbs stall. Round 4 (Fable, observation window extended to 60 s):
+#: holds to 10.5 s, UNDERCOUNTS from 11 s (2/2) — exactly where the oldest
+#: lost send crosses books_horizon_s(); the residual, measured.
+#: Legibility (r4 F3): a 3-5 s stall of OUR process on a HEALTHY broker
+#: makes mosquitto drop us at 1.5 x KEEPALIVE_S — a real lost session whose
+#: 'possibly lost' sends were in fact delivered. The bound stays an upper
+#: bound; it does not say whose stall it was.
 STALL_ALLOWANCE_S = 5.0
 
 
@@ -180,9 +186,14 @@ def format_downlink_line(status: dict) -> str:
     state = "injector closed" if status.get("closed") else (
         "session up" if status.get("connected") else "no session")
     # The witness FIRST: a narrow screen or a cut line must still show it.
+    # Sends close() could not judge are NOT losses (a normal shutdown would
+    # then always read as losses) — but the line must not read as a clean
+    # zero either (r4 F1).
+    unw = status.get("unwitnessed_at_close", 0)
+    unw_part = f" · {unw} unwitnessed at close" if unw else ""
     return (f"{DOWNLINK_LINE_PREFIX}{label}]: {state} · lost-sessions "
             f"{status.get('sessions_lost', 0)} · <={status.get('possibly_lost', 0)} "
-            f"possibly lost · QoS 0, window {status.get('window_s', 0):g} s · {parts}")
+            f"possibly lost{unw_part} · QoS 0, window {status.get('window_s', 0):g} s · {parts}")
 
 
 def _xor_hash(data: bytes) -> int:
@@ -361,6 +372,7 @@ class DownlinkInjector:
         self._sessions_lost = 0
         self._witness_up = False      # witness only; truth = is_connected()
         self._possibly_lost = 0
+        self._unwitnessed_at_close = 0   # sends close() could not judge (r4 F1)
         self._last_fail = ""            # why the last connect attempt failed
 
         # Surface a clear reason once if the injector can't operate, so a
@@ -456,6 +468,12 @@ class DownlinkInjector:
         if now < self._retry_after:
             self._last_fail = "refused_fast"
             return False
+        # Hardening (r4, suspected): if paho ever reports the session gone
+        # without having fired on_disconnect, count it here, once (the swap).
+        with self._stats_lock:
+            was_up, self._witness_up = self._witness_up, False
+        if was_up:
+            self._note_session_lost()
         self._teardown()
         accepted = threading.Event()
         result = {"rc": None}
@@ -660,11 +678,13 @@ class DownlinkInjector:
         with self._stats_lock:
             counts = dict(self._counts)
             lost, possibly = self._sessions_lost, self._possibly_lost
+            unwitnessed = self._unwitnessed_at_close
         return {
             "counts": counts,
             "calls": sum(counts.values()),
             "sessions_lost": lost,
             "possibly_lost": possibly,
+            "unwitnessed_at_close": unwitnessed,
             "window_s": books_horizon_s(),
             "connected": self.connected,
             "closed": self._closed,
@@ -715,8 +735,11 @@ class DownlinkInjector:
             with self._stats_lock:
                 unwitnessed = len(self._true_at) if self._witness_up else 0
                 self._true_at.clear()
+                self._unwitnessed_at_close += unwitnessed
             if unwitnessed:
-                logger.warning(
+                # INFO, not WARNING (r4 F2): every healthy shutdown with recent
+                # traffic says this too; the FACT rides stats() and the line.
+                logger.info(
                     "Downlink injector closed with %d send(s) from the last "
                     "%g s unwitnessed — if the broker was wedged, they may "
                     "not have arrived (QoS 0)", unwitnessed, books_horizon_s())
