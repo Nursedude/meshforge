@@ -40,7 +40,8 @@ from .config import GatewayConfig, MeshtasticBridgeConfig, MeshtasticConfig
 from ._handoff_witness import HandoffWitness
 from ._mesh_bridge_mqtt import MQTTMeshInterface
 from ._mesh_bridge_legs import (
-    bridge_event, build_downlink_injector, bump_stat, dm_destination,
+    bridge_event, build_downlink_injector,
+    lookup_node_user, bump_stat, dm_destination,
     node_dest, queue_drop_witness,
     LINK_DOWN_EPISODE_GAP_S, LINK_DOWN_RETRY_S, MESH_BRIDGE_MAX_AGE_S,
     _library_gave_up, _write_target_gone)
@@ -267,27 +268,8 @@ class MeshtasticPresetBridge(MeshBridgeDrainMixin):
         return build_downlink_injector(leg)
 
     def _lookup_node_user(self, node_id_str: str):
-        """Return {'long','short','hw'} for a node id from an interface nodedb.
-
-        Bridged origins are heard on the source (serial) interface, whose
-        meshtastic nodedb carries the NodeInfo. The MQTT interface has no
-        nodedb, so this safely returns None there.
-        """
-        if not node_id_str:
-            return None
-        for iface in (self._secondary_interface, self._primary_interface):
-            nodes = getattr(iface, "nodes", None)
-            if not nodes:
-                continue
-            node = nodes.get(node_id_str)
-            user = (node or {}).get("user") if isinstance(node, dict) else None
-            if user and (user.get("longName") or user.get("shortName")):
-                return {
-                    "long": user.get("longName") or user.get("shortName") or node_id_str,
-                    "short": user.get("shortName") or node_id_str[-4:],
-                    "hw": user.get("hwModel"),
-                }
-        return None
+        """{'long','short','hw'} for a node id from an interface nodedb (see _mesh_bridge_legs)."""
+        return lookup_node_user(node_id_str, (self._secondary_interface, self._primary_interface))
 
     def _ensure_nodeinfo(self, origin: int, source_id: str) -> None:
         """Teach the primary radio this origin's NAME once (NodeInfo downlink)
@@ -360,6 +342,11 @@ class MeshtasticPresetBridge(MeshBridgeDrainMixin):
         self._running = True
         self._stop_event.clear()
         self.stats['start_time'] = datetime.now()
+        # stop() closes the downlink injector terminally; a restart in place
+        # (commands/gateway restart() reuses this object) must reopen it, or
+        # every downlink silently degrades to the toradio fallback (#25 r3).
+        if self._primary_downlink is not None:
+            self._primary_downlink.reopen()
 
         # Start connection threads
         self._primary_thread = threading.Thread(

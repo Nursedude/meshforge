@@ -740,6 +740,31 @@ class TestDownlinkInjectionWiring:
         bridge = MeshtasticPresetBridge(config=mock_config)
         assert bridge._primary_downlink is None
 
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_restart_in_place_reopens_the_downlink(self, mock_home, tmp_path, mock_config):
+        # #25 r3 F1: stop() closes the injector terminally; commands/gateway
+        # restart() reuses the SAME bridge object (stop -> start), so start()
+        # must reopen it or downlink silently degrades to toradio for good.
+        import base64
+        mock_home.return_value = tmp_path
+        mock_config.mesh_bridge.enabled = True
+        bridge = self._bridge(tmp_path, mock_config, injection_mode="downlink",
+                              psk=base64.b64encode(bytes(range(32))).decode())
+        inj = bridge._primary_downlink
+        assert inj is not None and inj.usable
+        noop = lambda *a, **k: None
+        with patch.object(bridge, "_primary_loop", noop), \
+             patch.object(bridge, "_secondary_loop", noop), \
+             patch.object(bridge, "_bridge_loop", noop), \
+             patch.object(bridge, "_cleanup_loop", noop):
+            assert bridge.start() is True
+            bridge.stop()
+            assert inj._closed is True
+            assert bridge.start() is True
+            assert bridge._primary_downlink is inj
+            assert inj._closed is False
+            bridge.stop()
     def test_node_id_to_num(self):
         from gateway.mesh_bridge import MeshtasticPresetBridge
         f = MeshtasticPresetBridge._node_id_to_num

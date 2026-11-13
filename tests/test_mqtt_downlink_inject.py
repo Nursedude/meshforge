@@ -505,3 +505,66 @@ class TestInjectorLifecycle:
         assert _until(lambda: not inj.connected, t=4)
         assert time.monotonic() - t0 < 2 * 1 + 1.5   # 2 x KEEPALIVE_S + slack
         assert inj.inject("two", ORIGIN) is False
+
+
+class TestInjectorCloseAndPins:
+    """#25 round 3 (Fable by running): close() is terminal until reopen();
+    teardown always stops paho's thread; the production keepalive is pinned."""
+
+    def test_inject_after_close_does_not_reconnect(self, fake_broker):
+        # r3 F1: an inject queued behind close() resurrected a session that
+        # nobody would close (mesh_bridge.stop closes before joining threads).
+        base = _paho_threads()
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        inj.close()
+        assert inj.inject("queued", ORIGIN) is False
+        time.sleep(0.3)
+        assert b.sessions == 1
+        assert _until(lambda: _paho_threads() == base, t=2)
+
+    def test_inject_waiting_on_the_lock_during_close_is_refused(self, fake_broker):
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        result = {}
+        with inj._lock:                       # close() body runs while...
+            t = threading.Thread(target=lambda: result.update(
+                r=inj.inject("queued", ORIGIN)))
+            t.start()                         # ...an inject waits on the lock
+            time.sleep(0.2)
+            inj._closed = True                # what close() sets under the lock
+            inj._teardown()
+        t.join(5)
+        assert result["r"] is False
+        assert b.sessions == 1
+
+    def test_reopen_after_close_reconnects(self, fake_broker):
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        inj.close()
+        inj.reopen()
+        assert inj.inject("two", ORIGIN) is True
+        assert _until(lambda: b.sessions == 2 and b.count(3) == 2)
+
+    def test_teardown_stops_paho_thread_even_if_disconnect_raises(self, fake_broker):
+        # r3 F2: one try around disconnect/shutdown/loop_stop let a raise skip
+        # loop_stop, leaving an orphan auto-reconnecting under our client_id.
+        base = _paho_threads()
+        b, inj = fake_broker("ok")
+        assert inj.inject("one", ORIGIN) is True
+        client = inj._client
+
+        def boom(*a, **k):
+            raise RuntimeError("injected disconnect fault")
+        client.disconnect = boom
+        inj.close()
+        assert _until(lambda: _paho_threads() == base, t=3)
+        assert client.is_connected() is False
+
+    def test_production_keepalive_is_the_measured_value(self):
+        # r3 F3: the stall window (~2 x KEEPALIVE_S, measured on real
+        # mosquitto 11-12) is pinned to the value it was measured at. Changing
+        # it means re-running the SIGSTOP-after-CONNACK measurement and
+        # recording the new window, then updating this pin.
+        from gateway import mqtt_downlink_inject as mdi
+        assert mdi.KEEPALIVE_S == 5

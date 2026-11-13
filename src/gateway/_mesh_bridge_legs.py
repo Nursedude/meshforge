@@ -175,3 +175,28 @@ def bump_stat(bridge, key: str) -> None:
     """One locked counter bump (the bridge's stats are shared across threads)."""
     with bridge._stats_lock:
         bridge.stats[key] = bridge.stats.get(key, 0) + 1
+
+
+def lookup_node_user(node_id_str, interfaces):
+    """Return {'long','short','hw'} for a node id from an interface nodedb.
+
+    Bridged origins are heard on the source (serial) interface, whose
+    meshtastic nodedb carries the NodeInfo. The MQTT interface has no
+    nodedb, so this safely returns None there. ``interfaces`` is searched
+    in order (mesh_bridge passes secondary, then primary).
+    """
+    if not node_id_str:
+        return None
+    for iface in interfaces:
+        nodes = getattr(iface, "nodes", None)
+        if not nodes:
+            continue
+        node = nodes.get(node_id_str)
+        user = (node or {}).get("user") if isinstance(node, dict) else None
+        if user and (user.get("longName") or user.get("shortName")):
+            return {
+                "long": user.get("longName") or user.get("shortName") or node_id_str,
+                "short": user.get("shortName") or node_id_str[-4:],
+                "hw": user.get("hwModel"),
+            }
+    return None

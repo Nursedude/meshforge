@@ -247,6 +247,7 @@ class DownlinkInjector:
         self._lock = threading.Lock()
         self._client = None
         self._retry_after = 0.0   # monotonic; refuse-fast window after a failed connect
+        self._closed = False      # close() is terminal until reopen()
 
         # Surface a clear reason once if the injector can't operate, so a
         # misconfigured downlink mode degrades loudly to toradio instead of
@@ -282,6 +283,9 @@ class DownlinkInjector:
         client, self._client = self._client, None
         if client is None:
             return
+        # Each step on its own: a raise in one must not skip loop_stop(), or
+        # the old client keeps auto-reconnecting under our client_id beside
+        # the next one (Fable r3 F2).
         try:
             # Graceful first: a healthy session writes DISCONNECT and paho's
             # loop thread closes the socket itself, within ms.
@@ -289,19 +293,23 @@ class DownlinkInjector:
             deadline = time.monotonic() + TEARDOWN_GRACE_S
             while client.socket() is not None and time.monotonic() < deadline:
                 time.sleep(0.01)
+        except Exception as e:  # teardown of a dead session; nothing to save
+            logger.debug("Downlink injector teardown (disconnect): %s", e)
+        try:
             # Then break the socket: paho's loop thread exits only once its
             # output queue drains, so on a wedged peer loop_stop() joined
             # until keepalive closed it — up to 2 x KEEPALIVE_S under
             # self._lock (Fable r2 F2/F4).
             sock = client.socket()
             if sock is not None:
-                try:
-                    sock.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
-            client.loop_stop()
-        except Exception as e:  # teardown of a dead session; nothing to save
-            logger.debug("Downlink injector teardown: %s", e)
+                sock.shutdown(socket.SHUT_RDWR)
+        except Exception as e:
+            logger.debug("Downlink injector teardown (shutdown): %s", e)
+        finally:
+            try:
+                client.loop_stop()
+            except Exception as e:
+                logger.debug("Downlink injector teardown (loop_stop): %s", e)
 
     def _ensure_connected(self) -> bool:
         """True only while the broker has ACCEPTED the session (CONNACK rc 0).
@@ -316,6 +324,8 @@ class DownlinkInjector:
         broker costs one CONNACK wait per window, not one per call — the
         caller's toradio fallback is the honest path meanwhile (r1 F2).
         """
+        if self._closed:
+            return False
         if self.connected:
             return True
         now = time.monotonic()
@@ -444,5 +454,15 @@ class DownlinkInjector:
         ))
 
     def close(self):
+        """Terminal until reopen(): an inject queued on the lock behind this
+        must not open a session nobody will close (Fable r3 F1)."""
         with self._lock:
+            self._closed = True
             self._teardown()
+
+    def reopen(self):
+        """Undo close() for a restart in place (commands/gateway restart()
+        reuses the bridge object: stop() closes, start() reopens)."""
+        with self._lock:
+            self._closed = False
+            self._retry_after = 0.0
