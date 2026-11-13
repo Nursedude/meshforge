@@ -466,3 +466,58 @@ def test_a_leg_waits_out_a_brief_hold_on_its_port():
     finally:
         t.cancel()
         t.join(1)
+
+
+# ------------------------------------- I4: all four threads gate start() ---
+
+@pytest.mark.parametrize("attr,name", [
+    ("_bridge_thread", "MeshBridge-Forward"),
+    ("_cleanup_thread", "MeshBridge-Cleanup"),
+])
+def test_start_refuses_while_a_previous_NON_LEG_thread_is_alive(attr, name, caplog):
+    """#25 r4 I4 (proven by running: 'start with OLD forward thread alive ->
+    True'): the guard covered only the two LEG threads. A forward thread that
+    outlives stop()'s 5 s join resumes beside the new one once start() clears
+    _stop_event — two drains injecting from one queue. Refuse, and name it."""
+    import logging
+    caplog.set_level(logging.ERROR, logger="gateway.mesh_bridge")
+    b = _bridge(("192.0.2.10", 4403), ("192.0.2.20", 4404))
+    b.bridge_config.enabled = True
+    gate = threading.Event()
+    stuck = threading.Thread(target=gate.wait, name=name, daemon=True)
+    stuck.start()
+    setattr(b, attr, stuck)
+    try:
+        with patch.object(b, "_primary_loop"), patch.object(b, "_secondary_loop"), \
+             patch.object(b, "_bridge_loop"), patch.object(b, "_cleanup_loop"):
+            assert b.start() is False
+        assert b._running is False
+        assert any(name in r.getMessage() and "have not exited" in r.getMessage()
+                   for r in caplog.records)
+    finally:
+        b._running = False
+        b._stop_event.set()
+        gate.set()
+        stuck.join(2)
+
+
+@pytest.mark.parametrize("attr,name", [
+    ("_bridge_thread", "MeshBridge-Forward"),
+    ("_cleanup_thread", "MeshBridge-Cleanup"),
+])
+def test_a_DEAD_previous_non_leg_thread_does_not_refuse_start(attr, name):
+    """I4 review LOW-2: the other direction — only a LIVE old forward/cleanup
+    thread refuses. Previously pinned only by a test that skips without paho."""
+    b = _bridge(("192.0.2.10", 4403), ("192.0.2.20", 4404))
+    b.bridge_config.enabled = True
+    dead = threading.Thread(target=lambda: None, name=name)
+    dead.start()
+    dead.join()
+    setattr(b, attr, dead)
+    try:
+        with patch.object(b, "_primary_loop"), patch.object(b, "_secondary_loop"), \
+             patch.object(b, "_bridge_loop"), patch.object(b, "_cleanup_loop"):
+            assert b.start() is True
+    finally:
+        b._running = False
+        b._stop_event.set()

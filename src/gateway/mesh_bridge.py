@@ -325,14 +325,16 @@ class MeshtasticPresetBridge(MeshBridgeDrainMixin):
         # A previous run's leg thread can outlive stop()'s 5 s join (blocked in
         # the library's connect). Starting now would clear _stop_event and let
         # it resume BESIDE the new one — two loops per leg, stranded handles
-        # (r4 F2). Refuse, and say why; start again once it has exited.
-        alive = [t.name for t in (self._primary_thread, self._secondary_thread)
+        # (r4 F2). The forward/cleanup threads too (#25 I4): a stale drain
+        # injects beside the new one. Refuse, and say why; retry once exited.
+        alive = [t.name for t in (self._primary_thread, self._secondary_thread,
+                                  self._bridge_thread, self._cleanup_thread)
                  if t is not None and t.is_alive()]
         if alive:
             logger.error(
-                f"Mesh bridge NOT started: the previous run's leg thread(s) "
-                f"{alive} have not exited yet (still inside a connect) — retry "
-                f"in a few seconds")
+                f"Mesh bridge NOT started: the previous run's thread(s) "
+                f"{alive} have not exited yet (a leg inside a connect, or a "
+                f"drain mid-send) — retry in a few seconds")
             return False
 
         logger.info("Starting Meshtastic preset bridge...")
