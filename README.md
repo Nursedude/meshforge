@@ -200,6 +200,30 @@ reports honestly when it doesn't. It isn't there yet, and the gaps are written
 down rather than hidden — see [docs/capabilities.md](docs/capabilities.md) for
 what's proven and what isn't.
 
+## How it's built
+
+MeshForge is built with an AI co-pilot (Claude) inside a harness made for this
+one domain. The harness is a deliberate second purpose of the project, not
+overhead. The aim: a focused harness lets each new model pick up the domain
+where the last one stopped, and get better at it. Self-improvement is the goal;
+it is not shown yet.
+
+- **What the harness is:** rules every session loads (`.claude/rules/`); lint
+  rules MF000–MF030 and regression guards, most added after a real failure; a
+  record of known issues; a watcher daemon on every box; and a check of record,
+  `scripts/honest_status.sh`, that a session cannot argue its way past. Map:
+  [`.claude/foundations/harness_map.md`](.claude/foundations/harness_map.md).
+- **How we check the co-pilot:** every completion claim is tagged VERIFIED,
+  BELIEVED or UNKNOWN, logged, and re-checked later from ground truth. As of
+  2026-11-13: 152 claims logged; of the 51 re-checked, 48 held and 3 broke;
+  101 are not re-checked yet. (The ledger lives on the build box, not in the repo.)
+- **What it has not shown yet:** that it improves without the operator; that
+  it improves from one model to the next (a planted-fault benchmark, `EVAL-PF`,
+  is planned, not built); and review from outside one AI vendor. Today the
+  radios, systemd and CI are the checks that are not Claude.
+- **What it is not:** a requirement. Everything in MeshForge runs without any
+  AI. AI help inside the app is optional, and you configure it yourself.
+
 ---
 
 ## Documentation

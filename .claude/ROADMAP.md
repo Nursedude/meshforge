@@ -175,6 +175,8 @@ product 27 % of commits (`harness_share.py --days 9`).
 - **DOC-1** [MF][MA] S twin→MA — in-app how-tos, risky flows first
   `plans/doc1_in_app_howtos_2026_11_03.md`
 - **MAP-H** [MF] S+F — map never draws healthy when blind; H15 `940ada70` H14 `50283000`; next H12 H4. `plans/maps_audit_2026_11_06.md`
+- **EVAL-PF** [MF][MA] F — planted-fault benchmark per model, END-graded: the evidence for the harness's second purpose (README "How it's built")
+  NOW 11-13 (operator: "both"). Slice 1: one case file + a scorer on the lab box; a fresh session gets only what ships, names the cause, the END check grades it; the score is stored per model. Case 1 = CLAW-1 Q16(a) (dead id → UNIDENTIFIABLE, clock fixture, no radio). Grill the case format first. ⚠️ RNS AI-dataset clause.
 
 ### NEXT
 
@@ -264,7 +266,6 @@ PARKED 11-04, revisit 12-04:
 - **BASE-1** [MF][MA] S+F — shared base: one base, a subclass per radio (operator 11-11: "make sure we do this")
   First: an app-identity module per repo.
 - **DAI-0** [MF] S — `offline_oracle.py` corpus reads the operator's `~/.claude/.../memory` (VERIFIED 11-11): a public corpus first
-- **EVAL-PF** [MF][MA] F — planted-fault benchmark per model, END-graded (first cases: CLAW-1). ⚠️ RNS AI-dataset clause
 - **SEC-2** [MF] S — `SECURITY.md` says 0.5.x + localhost-only (map binds 0.0.0.0); udev 0666 `install_noc.sh:895` (VERIFIED 11-11)
 - **CLAW-1** [MF] S+F — DudeClaw: honest 24/7 RF witnesses, fleet then one ham: `plans/claw1_grilling_2026_11_11.md`
 
