@@ -165,6 +165,27 @@ class TrafficInspectorHandler(BaseHandler):
             else:
                 self.ctx.notify_unwired(choice, "TrafficInspectorHandler._menu_traffic_inspector")
 
+    @staticmethod
+    def _meshtastic_feed() -> Optional[bool]:
+        """Can THIS process receive Meshtastic packets? meshtastic.receive only
+        fires for a radio connection held in this process (2026-11-14
+        manager box: "capture active" with no :4403 socket — 0 packets, forever).
+        True / False, or None = UNKNOWN (the state could not be read)."""
+        try:
+            from utils.connection_manager import is_connected
+            return bool(is_connected())
+        except Exception:
+            return None
+
+    @staticmethod
+    def _age_text(ts: datetime) -> str:
+        age = (datetime.now() - ts).total_seconds()
+        if age < 0:
+            return "in the FUTURE (clock stepped?)"
+        m = int(age // 60)
+        return (f"{int(age)}s ago" if age < 120 else f"{m}m ago" if m < 120
+                else f"{m // 60}h ago" if m < 2880 else f"{m // 1440}d ago")
+
     def _toggle_capture(self) -> None:
         """Start or stop packet capture."""
         if not start_packet_capture or not stop_packet_capture or not is_capture_running:
@@ -193,13 +214,35 @@ class TrafficInspectorHandler(BaseHandler):
         else:
             # Start capture
             if start_packet_capture():
-                self.ctx.dialog.msgbox(
-                    "Capture Started",
-                    "Packet capture is now active.\n\n"
-                    "Listening for meshtastic.receive events.\n"
-                    "Packets will appear in Live Traffic view.",
-                    height=10, width=50
-                )
+                feed = self._meshtastic_feed()
+                if feed:
+                    self.ctx.dialog.msgbox(
+                        "Capture Started",
+                        "Packet capture is now active.\n\n"
+                        "Listening for meshtastic.receive events.\n"
+                        "Packets will appear in Live Traffic view.",
+                        height=10, width=50
+                    )
+                elif feed is None:
+                    self.ctx.dialog.msgbox(
+                        "Capture Started — feed UNKNOWN",
+                        "Capture is listening, but whether this TUI holds a\n"
+                        "radio connection could not be read (UNKNOWN).\n\n"
+                        "If Live Traffic stays at 0, nothing is feeding it.",
+                        height=10, width=58
+                    )
+                else:
+                    self.ctx.dialog.msgbox(
+                        "Capture Started — no Meshtastic feed",
+                        "Capture is listening, but this TUI has\n"
+                        "no radio connection to meshtasticd, so\n"
+                        "NO Meshtastic packets will arrive here.\n\n"
+                        "RNS packets arrive only while the gateway's\n"
+                        "RNS capture runs on this box.\n\n"
+                        "The capture hook hears only this process's own\n"
+                        "radio connection.",
+                        height=13, width=60
+                    )
             else:
                 # Diagnose exactly what failed
                 diag_lines = ["Could not start packet capture.\n", "Diagnostics:"]
@@ -268,6 +311,12 @@ class TrafficInspectorHandler(BaseHandler):
                 "=" * 60,
                 "",
                 f"Capture Status: {capture_status}",
+                *([] if not capturing else [
+                    "Meshtastic feed: "
+                    + {True: "this TUI's radio connection",
+                       False: "NONE (no radio connection in this TUI)",
+                       None: "UNKNOWN (connection state unreadable)"}[self._meshtastic_feed()]
+                ]),
                 f"Packets Captured: {stats.get('packets_captured', 0)}",
                 f"Meshtastic: {stats.get('packets_meshtastic', 0)}",
                 f"RNS: {stats.get('packets_rns', 0)}",
@@ -282,6 +331,7 @@ class TrafficInspectorHandler(BaseHandler):
             # Show recent packets
             packets = inspector.get_packets(limit=20)
             if packets:
+                info[-2] = f"Recent packets (stored; newest {self._age_text(packets[0].timestamp)}):"
                 for pkt in packets[:15]:
                     summary = pkt.get_summary()
                     if len(summary) > 58:
@@ -305,11 +355,16 @@ class TrafficInspectorHandler(BaseHandler):
                         pass
                     try:
                         from utils.service_check import check_service
-                        svc = check_service("meshtasticd")
-                        if not svc.get("active"):
+                        # ServiceStatus is truthy iff available; .get()
+                        # raised and was swallowed, so this never showed.
+                        if not check_service("meshtasticd"):
                             info.append("  [!] meshtasticd not running")
                     except Exception:
                         pass
+                elif self._meshtastic_feed() is False:
+                    info.append("")
+                    info.append("Capture is running, but NOTHING feeds it here:")
+                    info.append("  this TUI has no radio connection to meshtasticd.")
                 else:
                     info.append("")
                     info.append("Capture is running — waiting for packets...")
