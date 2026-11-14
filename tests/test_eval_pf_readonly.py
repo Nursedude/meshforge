@@ -112,6 +112,9 @@ REFUSED = [
     "systemctl -M status status foo.service",
     "systemctl --host=x status foo.service",
     "systemctl --machine=x status foo.service",
+    "journalctl -u -f",                           # a unit value may not start with '-'
+    "journalctl --user-unit -x",
+    "journalctl -o=short -n 1",                   # only --output=short* is a real form
 ]
 
 
@@ -230,3 +233,56 @@ def test_unexpected_wrapper_argv_is_refused(box, argv):
     box(None)
     p = _run_with_argv(box, argv)
     assert p.returncode == 126
+
+
+def test_a_symlink_under_the_config_root_does_not_reach_outside_it(box, tmp_path):
+    """Round 2 (Fable 11-14): the resolved-path fix was pinned for the share root only."""
+    outside = tmp_path / "outside2"
+    outside.mkdir()
+    (box.home / ".config/meshforge/lnk").symlink_to(outside)
+    proc, called, _ = box("ls -l ~/.config/meshforge/lnk")
+    assert proc.returncode == 126 and called == [], proc.stderr
+
+
+def test_an_unwritable_audit_log_refuses_the_request(box, tmp_path):
+    """Round 2: 'log every request' — a log that cannot be written must not
+    become silent, unaudited access."""
+    box(None)
+    env = {"HOME": str(box.home), "PATH": f"{box.home.parent / 'bin'}:/usr/bin:/bin",
+           "EVAL_PF_LOG": "/proc/nonexistent/x.log", "SSH_ORIGINAL_COMMAND": "uptime"}
+    p = subprocess.run(["/bin/bash", str(SCRIPT)], env=env, capture_output=True, text=True,
+                       timeout=20, stdin=subprocess.DEVNULL)
+    calls = box.home.parent / "calls"
+    assert p.returncode == 126, p.stderr
+    assert not calls.exists() or "uptime" not in calls.read_text()
+
+
+def _utf8_locale():
+    out = subprocess.run(["locale", "-a"], capture_output=True, text=True, timeout=10).stdout.split()
+    for want in ("en_US.utf8", "en_US.UTF-8"):
+        if want in out:
+            return want
+    return None
+
+
+def test_charset_does_not_depend_on_the_client_locale(box):
+    """Round 2: sshd passes the client's LANG/LC_*; under en_US.UTF-8 the
+    [A-Za-z] range matched 'é'. The wrapper pins LC_ALL=C."""
+    loc = _utf8_locale()
+    if loc is None:
+        pytest.skip("no en_US UTF-8 locale installed")
+    box(None)
+    env = {"HOME": str(box.home), "PATH": f"{box.home.parent / 'bin'}:/usr/bin:/bin",
+           "EVAL_PF_LOG": str(box.home.parent / "wrapper.log"),
+           "SSH_ORIGINAL_COMMAND": "systemctl is-active \u00e9", "LC_ALL": loc, "LANG": loc}
+    p = subprocess.run(["/bin/bash", str(SCRIPT)], env=env, capture_output=True, text=True,
+                       timeout=20, stdin=subprocess.DEVNULL)
+    assert p.returncode == 126, p.stderr
+
+
+def test_log_lines_carry_no_control_bytes_and_are_capped(box):
+    box("id \x1b[2J\r FAKE".encode().decode("unicode_escape"))
+    _, _, logged = box("x" * 100000)
+    raw = (box.home.parent / "wrapper.log").read_bytes()
+    assert b"\x1b" not in raw and b"\r" not in raw
+    assert max(len(line) for line in raw.splitlines()) < 4200

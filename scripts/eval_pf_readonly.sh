@@ -19,17 +19,24 @@
 # Exit: the program's own exit code when allowed; 126 when refused.
 
 set -u
+# The client's LANG/LC_* reach us through sshd; under a UTF-8 locale bash's
+# [A-Za-z] ranges match letters like 'é'. Every check below assumes bytes.
+export LC_ALL=C
 
 LOG="${EVAL_PF_LOG:-$HOME/.local/state/meshforge/eval_pf_readonly.log}"
 GRANT="-"
 SHARE="$HOME/.local/share/meshforge"
 CONF="$HOME/.config/meshforge"
 
-log() {  # verdict, request
+log() {  # verdict, request — an unwritable log REFUSES (no unaudited access)
     mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
-    # Tabs/newlines in the request are already refused; still strip them so a
-    # log line is always one line.
-    printf '%s\t%s\t%s\t%s\n' "$(date -Is)" "$1" "${2//[$'\t\n']/ }" "$GRANT" >>"$LOG" 2>/dev/null || true
+    # Control bytes (tab, newline, ESC, CR, …) become spaces so a log line is
+    # always one plain line; a request is capped at 4000 bytes in the log (the verdict at 120).
+    local v="${1//[[:cntrl:]]/ }" r="${2//[[:cntrl:]]/ }"
+    if ! printf '%s\t%s\t%s\t%s\n' "$(date -Is)" "${v:0:120}" "${r:0:4000}" "$GRANT" >>"$LOG" 2>/dev/null; then
+        echo "eval_pf_readonly: refused (audit log $LOG is not writable)" >&2
+        exit 126
+    fi
 }
 
 refuse() {  # reason
@@ -134,7 +141,7 @@ journalctl)
                     *) unit_ok "$v" || refuse "bad unit name '$v'" ;;
                 esac
                 out+=("$a" "$v") ;;
-            --since=* | --until=* | -o=short* | --output=short*) out+=("$a") ;;
+            --since=* | --until=* | --output=short*) out+=("$a") ;;
             *) refuse "journalctl argument '$a' not allowed" ;;
         esac
         i=$((i + 1))

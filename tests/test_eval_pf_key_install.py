@@ -179,7 +179,7 @@ class FakeBox:
             elif remote.endswith(" list"):
                 rc = self.list_rc
                 rows = self.list_rows_after_revoke if self.revoked else self.list_rows
-                out = "" if rc else "\n".join(rows) + "\n"
+                out = "" if (rc or getattr(self, "list_empty_output", False)) else "\n".join(rows) + "\n"
         elif argv[0] == "bash" and argv[1] == inst.SHIM:
             rc = {"uptime": self.uptime_rc, "id": self.id_rc}[argv[2]]
         return subprocess.CompletedProcess(argv, rc, out, "")
@@ -249,7 +249,7 @@ def test_failed_proof_after_grant_says_to_revoke(lab, capsys):
 
 
 def test_revoke_happy_path(lab, capsys):
-    lab.list_rows_after_revoke = []
+    lab.list_rows_after_revoke = ["no NOC read grants on this box"]
     assert inst.main(["--box", BOX, "--revoke", "--apply"]) == 0
     assert "REVOKED" in capsys.readouterr().out
 
@@ -258,6 +258,7 @@ def test_revoke_happy_path(lab, capsys):
     (lambda b: setattr(b, "revoke_rc", 1), "revoke failed"),
     (lambda b: setattr(b, "list_rc", 255), "read-back blind"),                     # M4 / Fable 2
     (lambda b: setattr(b, "list_rows_after_revoke", list(b.list_rows)), "still listed"),
+    (lambda b: setattr(b, "list_empty_output", True), "list printed nothing"),
 ])
 def test_revoke_refuses_unless_read_back_proves_it(lab, capsys, breakit, why):
     breakit(lab)

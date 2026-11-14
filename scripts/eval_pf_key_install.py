@@ -196,6 +196,8 @@ def main(argv=None) -> int:
         if lst.returncode != 0:   # a blind read-back is not "gone" (Fable 11-14)
             return fail(f"read-back `list` on {a.box} rc={lst.returncode} — revoke UNVERIFIED; "
                         "re-run --revoke --apply")
+        if not lst.stdout.strip():   # `list` always prints something
+            return fail(f"read-back `list` on {a.box} printed nothing — revoke UNVERIFIED")
         if listed(lst.stdout, k.fingerprint):
             return fail(f"read-back: {k.fingerprint} still listed on {a.box}")
         print(r.stdout.strip())
