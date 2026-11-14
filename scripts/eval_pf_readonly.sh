@@ -89,7 +89,10 @@ ARGS=("${W[@]:1}")
 # THE ONLY WAY A PROGRAM RUNS (Fable 11-14 rounds 3+4: the log must name
 # everything that ran). The 5th log field is the exact argv exec'd — e.g. the
 # RESOLVED path a symlink led to — and a record that would be cut refuses.
-EXEC_CAP=8000
+# 3000 keeps the longest line (ts + verdict 120 + request 4000 + grant + exec)
+# under 8192 bytes = ONE write(), so concurrent requests never interleave
+# (Fable 11-14 round 9: an 8442-byte line went out as 8192 + rest).
+EXEC_CAP=3000
 run_allowed() {
     local x="$*"
     [ "${#x}" -le "$EXEC_CAP" ] || refuse "exec record over $EXEC_CAP bytes would be cut"
@@ -197,6 +200,17 @@ ls | cat)
     rshare="$(realpath -m -- "$SHARE")"; rconf="$(realpath -m -- "$CONF")"
     [ -n "$lshare" ] && [ -n "$lconf" ] && [ -n "$rshare" ] && [ -n "$rconf" ] \
         || refuse "cannot resolve the allowed roots"
+    # The roots must resolve to EXACTLY <real HOME>/.local/share/meshforge and
+    # <real HOME>/.config/meshforge — HOME itself may be a link, nothing below
+    # it may be (Fable 11-14 rounds 8+9: a root aliasing another — share ->
+    # config let cat read config secrets — or resolving to / or elsewhere).
+    # Fixed, disjoint roots end the root-alias class; any other layout
+    # refuses EVERY path read. (Measured 11-14: no root is a link on
+    # meshforge-lab or the manager.)
+    rhome="$(realpath -m -- "$HOME")"
+    [ -n "$rhome" ] && [ "$rshare" = "$rhome/.local/share/meshforge" ] \
+        && [ "$rconf" = "$rhome/.config/meshforge" ] \
+        || refuse "a root is a link or alias (share/config must be plain dirs under HOME)"
     # eval_pf must be a plain dir of plain, singly-linked files: a link in it
     # (cases -> ../store) moves the key somewhere readable, and a hardlink is
     # invisible by path. Either one refuses EVERY path read (fail closed).

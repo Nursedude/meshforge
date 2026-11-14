@@ -336,7 +336,7 @@ def test_an_exec_record_that_would_be_cut_refuses(tmp_path):
     """The exec'd argv (~/ expands to $HOME) can be far longer than the
     request; it is logged whole or not run at all."""
     home = tmp_path
-    for i in range(14):
+    for i in range(10):                     # ~2.4 KB: one path fits EXEC_CAP 3000
         home = home / (chr(97 + i) * 240)
     (home / ".local/share/meshforge").mkdir(parents=True)
     (home / ".local/share/meshforge/f").write_text("x")
@@ -570,3 +570,105 @@ def test_a_config_root_that_aliases_into_the_share_never_reaches_eval_pf(tmp_pat
     p = subprocess.run(["/bin/bash", str(SCRIPT)], env=env, capture_output=True, text=True,
                        timeout=20, stdin=subprocess.DEVNULL)
     assert p.returncode == 126 and "LISTED" not in p.stdout, (alias, p.returncode, p.stderr)
+
+
+# ── the WHOLE root-layout space (rounds 1, 6, 7, 8, 9 were each one cell) ──
+# Every layout an operator could make × every path request. Only a plain
+# layout (HOME itself may be a link) ever reads; any root that is a link,
+# aliases, nests, or resolves elsewhere refuses EVERY path read.
+
+LAYOUTS = ["plain", "home-link", "share->conf", "share-parent->config", "conf->share",
+           "conf->share-parent", "share->/", "conf->/", "share->elsewhere", "conf->elsewhere",
+           "share->home", "local->elsewhere"]
+REQS = {
+    "cat share/x": ("cat ~/.local/share/meshforge/x.json", "SHAREX"),
+    "ls share": ("ls ~/.local/share/meshforge", None),
+    "ls conf": ("ls ~/.config/meshforge", None),
+    "cat conf/secret": ("cat ~/.config/meshforge/secret.json", "CONFSECRET"),
+    "cat share/secret": ("cat ~/.local/share/meshforge/secret.json", "CONFSECRET"),
+    "cat share/etc": ("cat ~/.local/share/meshforge/etc/hostname", None),
+    "ls share/eval_pf": ("ls ~/.local/share/meshforge/eval_pf", None),
+}
+# In a plain layout these RUN (share/secret + share/etc are absent files: cat
+# runs and fails ENOENT — harmless). Never: cat in conf, anything in eval_pf.
+ALLOW = {"cat share/x", "ls share", "ls conf", "cat share/secret", "cat share/etc"}
+
+
+def _layout(tmp_path, name):
+    real_home = tmp_path / "realhome"
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    (other / "x.json").write_text("SHAREX")
+    home = real_home
+    share = real_home / ".local/share/meshforge"
+    conf = real_home / ".config/meshforge"
+    for d in (share, conf):
+        d.mkdir(parents=True)
+    (share / "x.json").write_text("SHAREX")
+    (conf / "secret.json").write_text("CONFSECRET")
+    (share / "eval_pf").mkdir()
+    (share / "eval_pf" / "k.json").write_text("KEY")
+
+    def relink(path, target):
+        import shutil
+        shutil.rmtree(path)
+        path.symlink_to(target)
+    if name == "home-link":
+        home = tmp_path / "homelink"
+        home.symlink_to(real_home)
+    elif name == "share->conf":
+        relink(share, conf)
+    elif name == "share-parent->config":
+        relink(share.parent, real_home / ".config")
+    elif name == "conf->share":
+        relink(conf, share)
+    elif name == "conf->share-parent":
+        relink(conf, share.parent)
+    elif name == "share->/":
+        relink(share, "/")
+    elif name == "conf->/":
+        relink(conf, "/")
+    elif name == "share->elsewhere":
+        relink(share, other)
+    elif name == "conf->elsewhere":
+        relink(conf, other)
+    elif name == "share->home":
+        relink(share, real_home)
+    elif name == "local->elsewhere":
+        import shutil
+        (other / "share/meshforge").mkdir(parents=True)
+        (other / "share/meshforge/x.json").write_text("SHAREX")
+        shutil.rmtree(real_home / ".local")
+        (real_home / ".local").symlink_to(other)
+    return home
+
+
+@pytest.mark.parametrize("layout", LAYOUTS)
+@pytest.mark.parametrize("req", list(REQS))
+def test_root_layout_table(tmp_path, layout, req):
+    home = _layout(tmp_path, layout)
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    for prog in ("ls", "cat"):
+        (stubs / prog).write_text(f'#!/bin/bash\necho RAN-{prog} "$@"\nexec /bin/{prog} "$@"\n')
+        (stubs / prog).chmod(0o755)
+    request, secret = REQS[req]
+    env = {"HOME": str(home), "PATH": f"{stubs}:/usr/bin:/bin", "EVAL_PF_LOG": str(tmp_path / "w.log"),
+           "SSH_ORIGINAL_COMMAND": request}
+    p = subprocess.run(["/bin/bash", str(SCRIPT)], env=env, capture_output=True, text=True,
+                       timeout=20, stdin=subprocess.DEVNULL)
+    should_run = layout in ("plain", "home-link") and req in ALLOW
+    if should_run:
+        assert "RAN-" in p.stdout, (layout, req, p.returncode, p.stderr)
+    else:
+        assert p.returncode == 126 and "RAN-" not in p.stdout, (layout, req, p.stdout[:80], p.stderr[:200])
+    if secret == "CONFSECRET":
+        assert "CONFSECRET" not in p.stdout, (layout, req)
+
+
+def test_the_longest_possible_log_line_is_one_write():
+    """Round 9 NIT: a line over 8192 bytes is split across write() calls."""
+    src = SCRIPT.read_text()
+    cap = int(re.search(r"^EXEC_CAP=(\d+)$", src, re.M).group(1))
+    longest = 25 + 1 + 120 + 1 + 4000 + 1 + 71 + 1 + cap + 1
+    assert longest < 8192, longest
