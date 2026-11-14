@@ -260,7 +260,7 @@ PARKED 11-04, revisit 12-04:
 - **SEC-URL3** [MF] F — urllib3 GHSA-vxq7/8988, apt copies (moc2, lehua, moc4): ACCEPTED to 12-13 (`dep_advisory_accepted`).
 - **SEC-KRN** [MF] F — kernel CVE-2026-98432 roll 2/9; order: provenance 11-13. Session-added.
 - **BT-USER** [MF][MA] F — `box_truth` reads SYSTEM units only (`systemctl show meshforge-*.service`, no `--user`): a user-scope unit (mini, dream, echo) is invisible to every NOC read. Session-added 11-13 (EVAL-PF Q14).
-- **MQTT-SEC** [MF][MA] S+F twin→MA — generated broker configs bind 127.0.0.1 by default (S1, `plans/mqtt_sec_grill_2026_11_03.md`; `broker_profiles.py:420` binds 0.0.0.0); S2, S5, F8 next-round 1–4. Restored 11-13: dropped in `73b2cb3f` with no DONE line.
+- **MQTT-SEC** [MF][MA] S+F twin→MA — generated broker configs bind 127.0.0.1 by default (S1, `plans/mqtt_sec_grill_2026_11_03.md`; `broker_profiles.py:420` binds 0.0.0.0); S2, S5, F8 next-round 1–4. Added 11-13: the 11-03 grill never had a row (MQTT-CFG, a different plan, is DONE `ada1fb67`). Fleet brokers measured loopback 11-03; the GENERATOR is the gap.
 
 - **INBOX-T** [MF] S+F — `/inbox` + leg-counter truth, F1–F13 (echo fold hides a stranger's row; one id in two terminal buckets): same doc §C–D. Before BIC-2's view. Session-added.
 - **SHOW-1** [MF] S — README shows the one unique screen (a message's legs); today logo + badges only. Session-added.
