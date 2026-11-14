@@ -63,7 +63,7 @@ read -r -a W <<<"$REQ"
 PROG="${W[0]}"
 ARGS=("${W[@]:1}")
 
-unit_ok() { [[ "$1" =~ ^[A-Za-z0-9@._:*-]+$ ]]; }
+unit_ok() { [[ "$1" =~ ^[A-Za-z0-9@._:*][A-Za-z0-9@._:*-]*$ ]]; }
 
 # Expand a leading ~/ to $HOME/ (sshd passes '~' literally); any other '~'
 # is refused.
@@ -85,14 +85,23 @@ case "$PROG" in
 systemctl)
     # The FIRST non-option word is what systemctl treats as the verb, so it
     # must be an allowed verb; every later non-option word must look like a
-    # unit (or property) name. With no verb at all, only --failed is allowed
-    # (systemctl's default verb is list-units).
-    verb=""; failed=0
-    for a in "${ARGS[@]}"; do
+    # unit name. With no verb at all, only --failed is allowed (systemctl's
+    # default verb is list-units). `-p` CONSUMES the next word (as systemctl
+    # does — Fable 11-14: reading it as a bare flag let `-p status restart X`
+    # run `restart`), and that word must be a property list.
+    verb=""; failed=0; i=0
+    prop_ok() { [[ "$1" =~ ^[A-Za-z][A-Za-z0-9]*(,[A-Za-z][A-Za-z0-9]*)*$ ]]; }
+    while [ $i -lt ${#ARGS[@]} ]; do
+        a="${ARGS[$i]}"
         case "$a" in
             --failed) failed=1 ;;
-            --user | --all | --no-pager | --no-legend | --full | -l | -p) ;;
-            --type=* | --state=* | --property=*) ;;
+            --user | --all | --no-pager | --no-legend | --full | -l) ;;
+            -p)
+                i=$((i + 1)); v="${ARGS[$i]-}"
+                prop_ok "$v" || refuse "-p needs a property list (got '${v}')" ;;
+            --property=*) prop_ok "${a#--property=}" || refuse "bad property '${a#--property=}'" ;;
+            --type=* | --state=*)
+                [[ "${a#*=}" =~ ^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$ ]] || refuse "bad value in '$a'" ;;
             -*) refuse "systemctl option '$a' not allowed" ;;
             *)
                 if [ -z "$verb" ]; then
@@ -104,6 +113,7 @@ systemctl)
                     unit_ok "$a" || refuse "bad unit name '$a'"
                 fi ;;
         esac
+        i=$((i + 1))
     done
     [ -n "$verb" ] || [ "$failed" = 1 ] || refuse "systemctl needs an allowed verb"
     log ALLOWED "$REQ"
@@ -146,12 +156,20 @@ ls | cat)
         esac
     done
     [ "${#paths[@]}" -gt 0 ] || refuse "$PROG needs a path"
+    # Judge the RESOLVED path against the RESOLVED roots (Fable 11-14: a
+    # lexical check followed a symlink under the share dir out to /etc), and
+    # exec the resolved path so what was judged is what is read.
+    rshare="$(readlink -m -- "$SHARE")"; rconf="$(readlink -m -- "$CONF")"
+    resolved=()
     for p in "${paths[@]}"; do
-        if under "$p" "$SHARE"; then :
-        elif [ "$PROG" = ls ] && under "$p" "$CONF"; then :
+        r="$(readlink -m -- "$p")" || refuse "cannot resolve '$p'"
+        if under "$r" "$rshare"; then :
+        elif [ "$PROG" = ls ] && under "$r" "$rconf"; then :
         else refuse "path '$p' is outside the allowed roots"
         fi
+        resolved+=("$r")
     done
+    paths=("${resolved[@]}")
     log ALLOWED "$REQ"
     exec "$PROG" "${flags[@]}" -- "${paths[@]}"
     ;;

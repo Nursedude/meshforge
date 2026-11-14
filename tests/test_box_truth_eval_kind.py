@@ -150,3 +150,19 @@ def test_one_grant_per_fingerprint_across_kinds(home, tmp_path):
     again = bg.plan_add(home, key.line(), center="center-a", export_path=wrap,
                         shell="/bin/bash", sshd={}, kind=bt.KIND_EVAL)
     assert any("already granted" in p for p in again.problems)
+
+
+def test_preflight_checks_the_interpreter_OF_THE_KIND(tmp_path, monkeypatch):
+    """Fable 11-14 mutant M8 (preflight always checked python) survived: pin
+    that each kind's own interpreter is the one measured."""
+    wrapper = tmp_path / "w.sh"
+    wrapper.write_text("#!/bin/bash\n")
+    wrapper.chmod(0o755)
+    monkeypatch.setattr(bt, "BASH", str(tmp_path / "no-bash"))
+    monkeypatch.setattr(bt, "PYTHON", str(tmp_path / "no-python"))
+    ev, _ = bg.preflight(tmp_path, str(wrapper), shell="/bin/bash", kind=bt.KIND_EVAL)
+    noc, _ = bg.preflight(tmp_path, str(wrapper), shell="/bin/bash", kind=bt.KIND_NOC)
+    assert any("no-bash not executable" in p for p in ev), ev
+    assert not any("no-python" in p for p in ev), ev
+    assert any("no-python not executable" in p for p in noc), noc
+    assert not any("no-bash" in p for p in noc), noc

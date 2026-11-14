@@ -95,6 +95,23 @@ REFUSED = [
     "ls\t~/.local/share/meshforge",
     "cat '~/.local/share/meshforge/x'",
     "uptime now",
+    # Fable 11-14 BLOCKER: systemctl's -p CONSUMES the next word, so a -p the
+    # wrapper read as a bare flag let the real verb ride in the unit slot.
+    "systemctl -p status restart rnsd.service",
+    "systemctl --user -p status stop meshforge-echo.service",
+    "systemctl --user -p x exit",
+    "systemctl --user -p x mask lxmd",
+    "systemctl -p x daemon-reload",
+    "systemctl --failed -p x poweroff",
+    "systemctl show -p",                          # -p needs its value
+    "systemctl show -p -x foo.service",
+    "systemctl show --property=-x foo.service",
+    "systemctl status -- restart",
+    "systemctl --state=-x list-units",
+    "systemctl -H status status foo.service",     # remote host: -H/-M also consume a word
+    "systemctl -M status status foo.service",
+    "systemctl --host=x status foo.service",
+    "systemctl --machine=x status foo.service",
 ]
 
 
@@ -115,6 +132,11 @@ ALLOWED = [
     ("systemctl --user cat foo.service", "systemctl --no-pager --user cat foo.service"),
     ("systemctl show -p ActiveState foo.service", "systemctl --no-pager show -p ActiveState foo.service"),
     ("systemctl list-units meshforge-*", "systemctl --no-pager list-units meshforge-*"),
+    ("systemctl show -p ActiveState,SubState foo.service",
+     "systemctl --no-pager show -p ActiveState,SubState foo.service"),
+    ("systemctl --state=failed,running list-units", "systemctl --no-pager --state=failed,running list-units"),
+    ("systemctl show --property=MainPID foo.service",
+     "systemctl --no-pager show --property=MainPID foo.service"),
     ("journalctl --user -u foo.service -n 50", "journalctl --no-pager --user -u foo.service -n 50"),
     ("journalctl -b -p err --since=-1h", "journalctl --no-pager -b -p err --since=-1h"),
     ("ps aux", "ps aux"),
@@ -144,6 +166,28 @@ def test_paths_expand_tilde_and_stay_inside_roots(box):
     # A sibling directory sharing the prefix is NOT inside the root.
     proc, called, _ = box("ls ~/.local/share/meshforge-evil")
     assert proc.returncode == 126 and len(called) == 2   # no new call
+
+
+def test_a_symlink_inside_a_root_does_not_reach_outside_it(box, tmp_path):
+    """Fable 11-14: the root check was lexical, so a link under the share dir
+    (one already exists on the manager) exposed whatever it points at."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_text("x")
+    share = box.home / ".local/share/meshforge"
+    (share / "lnk").symlink_to(outside)
+    (share / "flink").symlink_to(outside / "secret")
+    for req in ("cat ~/.local/share/meshforge/lnk/secret",
+                "cat ~/.local/share/meshforge/flink",
+                "ls ~/.local/share/meshforge/lnk"):
+        proc, called, _ = box(req)
+        assert proc.returncode == 126, (req, proc.stderr)
+        assert called == [], (req, called)
+    # A link that stays inside the root is still fine.
+    (share / "real.json").write_text("{}")
+    (share / "inner").symlink_to(share / "real.json")
+    proc, called, _ = box("cat ~/.local/share/meshforge/inner")
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_every_request_is_logged_in_order(box):

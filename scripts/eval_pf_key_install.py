@@ -50,6 +50,8 @@ BOX_WRAPPER = f"{BOX_REPO}/scripts/{bt.EVAL_BASENAME}"
 BOX_GRANT_CLI = f"{BOX_REPO}/scripts/box_truth_grant.py"
 SHIM = os.path.join(_HERE, "eval_pf_ssh.sh")
 TIMEOUT_S = 60
+# An ssh host ALIAS: never a word ssh could read as an option (Fable 11-14).
+_BOX_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def key_path(home: str) -> str:
@@ -140,7 +142,7 @@ def run(argv, *, env=None):
 
 
 def admin_ssh(box: str, remote: str):
-    return run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", box, remote])
+    return run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", box, remote])
 
 
 def fail(msg: str) -> int:
@@ -160,6 +162,9 @@ def main(argv=None) -> int:
     ap.add_argument("--apply", action="store_true", help="make changes (default: dry run)")
     ap.add_argument("--revoke", action="store_true", help="revoke the eval grant instead")
     a = ap.parse_args(argv)
+    if not _BOX_RE.match(a.box):
+        print(f"eval_pf_key_install: --box {a.box!r} is not an ssh host alias", file=sys.stderr)
+        return 2
 
     home = str(get_real_user_home())
     key, cfg = key_path(home), config_path(home)
@@ -188,6 +193,9 @@ def main(argv=None) -> int:
         if r.returncode != 0:
             return fail(f"revoke on {a.box} rc={r.returncode}: {(r.stdout + r.stderr).strip()[-300:]}")
         lst = admin_ssh(a.box, grant_list_cmd())
+        if lst.returncode != 0:   # a blind read-back is not "gone" (Fable 11-14)
+            return fail(f"read-back `list` on {a.box} rc={lst.returncode} — revoke UNVERIFIED; "
+                        "re-run --revoke --apply")
         if listed(lst.stdout, k.fingerprint):
             return fail(f"read-back: {k.fingerprint} still listed on {a.box}")
         print(r.stdout.strip())
@@ -217,13 +225,16 @@ def main(argv=None) -> int:
     if r.returncode != 0:
         return fail(f"grant on {a.box} rc={r.returncode}: {(r.stdout + r.stderr).strip()[-400:]}")
     lst = admin_ssh(a.box, grant_list_cmd())
+    if lst.returncode != 0:
+        return fail(f"read-back `list` on {a.box} rc={lst.returncode} — the grant may be "
+                    "installed; check, or revoke (--revoke --apply)")
     rows = listed(lst.stdout, k.fingerprint)
     if len(rows) != 1 or rows[0][0] != bt.KIND_EVAL or "FOREIGN" in rows[0][1]:
         return fail(f"read-back on {a.box}: want exactly 1 {bt.KIND_EVAL} grant for "
                     f"{k.fingerprint}, got {rows!r}")
 
     # 4. eval ssh config
-    g = run(["ssh", "-G", a.box])
+    g = run(["ssh", "-G", "--", a.box])
     if g.returncode != 0:
         return fail(f"`ssh -G {a.box}` failed: {g.stderr.strip()[:200]}")
     os.makedirs(os.path.dirname(cfg), mode=0o700, exist_ok=True)
@@ -237,7 +248,8 @@ def main(argv=None) -> int:
     up = run(["bash", SHIM, "uptime"], env=env)
     no = run(["bash", SHIM, "id"], env=env)
     if up.returncode != 0:
-        return fail(f"shim `uptime` rc={up.returncode}: {up.stderr.strip()[:200]}")
+        return fail(f"shim `uptime` rc={up.returncode}: {up.stderr.strip()[:200]} — the grant "
+                    "IS installed; fix and re-run, or revoke (--revoke --apply)")
     if no.returncode != 126:
         return fail(f"shim `id` rc={no.returncode} — the forced command is NOT in force; "
                     "revoke now (--revoke --apply)")

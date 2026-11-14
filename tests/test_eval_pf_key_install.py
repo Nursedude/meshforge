@@ -137,3 +137,135 @@ def test_shim_refuses_without_config_or_command(shim):
     assert p.returncode == 2 and argv == [] and "eval_pf_key_install.py" in p.stderr
     p, argv = shim()
     assert p.returncode == 2 and argv == []
+
+
+# ── the --apply / --revoke flow, end to end against a fake box ──────────
+# Fable 11-14: every check in main() could be deleted and the suite stayed
+# green (mutants M2–M5, M9, M10, M13–M15 survived). Each test below fails if
+# one of those checks is removed. Nothing here reaches a network: `run` is
+# replaced, and the box name is *.invalid.
+
+BOX = "lab.example.invalid"
+
+
+class FakeBox:
+    def __init__(self, fp):
+        self.fp = fp
+        self.wrapper = "ok\n"
+        self.add_rc = 0
+        self.list_rc = 0
+        self.list_rows = [f"{fp}  eval-pf eval-pf:center-a        last read never from -  [authorized_keys:4]"]
+        self.list_rows_after_revoke = []
+        self.revoked = False
+        self.revoke_rc = 0
+        self.uptime_rc = 0
+        self.id_rc = 126
+        self.calls = []
+
+    def __call__(self, argv, *, env=None):
+        self.calls.append((list(argv), env))
+        out, rc = "", 0
+        if argv[:2] == ["ssh", "-G"]:
+            out = SSH_G
+        elif argv[0] == "ssh":
+            remote = argv[-1]
+            if remote.startswith("test -x"):
+                out = self.wrapper
+            elif " add " in f" {remote} ":
+                rc = self.add_rc
+            elif " revoke " in f" {remote} ":
+                rc = self.revoke_rc
+                self.revoked = rc == 0
+            elif remote.endswith(" list"):
+                rc = self.list_rc
+                rows = self.list_rows_after_revoke if self.revoked else self.list_rows
+                out = "" if rc else "\n".join(rows) + "\n"
+        elif argv[0] == "bash" and argv[1] == inst.SHIM:
+            rc = {"uptime": self.uptime_rc, "id": self.id_rc}[argv[2]]
+        return subprocess.CompletedProcess(argv, rc, out, "")
+
+    def remotes(self):
+        return [a[-1] for a, _ in self.calls if a[0] == "ssh" and a[1] != "-G"]
+
+
+@pytest.fixture
+def lab(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    key = home / ".ssh" / "eval_pf_ed25519"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C",
+                    "eval-pf:center-a", "-f", str(key)], check=True, timeout=30,
+                   stdin=subprocess.DEVNULL)
+    monkeypatch.setattr(inst, "get_real_user_home", lambda: home)
+    monkeypatch.setattr(inst.socket, "gethostname", lambda: "center-a")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")
+    fake = FakeBox(inst.load_key(str(key)).fingerprint)
+    monkeypatch.setattr(inst, "run", fake)
+    fake.home = home
+    return fake
+
+
+def test_apply_happy_path_grants_writes_config_and_proves(lab, capsys):
+    assert inst.main(["--box", BOX, "--apply"]) == 0
+    out = capsys.readouterr().out
+    assert "TOUCH:" in out and lab.fp in out
+    cfg = Path(inst.config_path(str(lab.home)))
+    assert cfg.exists() and stat.S_IMODE(cfg.stat().st_mode) == 0o600
+    shim_envs = [env for a, env in lab.calls if a[0] == "bash"]
+    assert shim_envs and all("SSH_AUTH_SOCK" not in e for e in shim_envs)   # M10
+    # every admin ssh ends the options before the box name (Fable NIT 5)
+    for a, _ in lab.calls:
+        if a[0] == "ssh":
+            assert a[a.index(BOX) - 1] == "--", a
+
+
+@pytest.mark.parametrize("breakit,why", [
+    (lambda b: setattr(b, "wrapper", ""), "wrapper absent"),                       # M15
+    (lambda b: setattr(b, "add_rc", 1), "add failed"),                             # M14
+    (lambda b: setattr(b, "list_rc", 255), "list failed"),
+    (lambda b: setattr(b, "list_rows", [b.list_rows[0] + "  ⚠ FOREIGN — x"]), "foreign"),   # M2
+    (lambda b: setattr(b, "list_rows", [b.list_rows[0].replace("eval-pf eval", "noc     eval")]), "kind"),  # M3
+    (lambda b: setattr(b, "list_rows", b.list_rows * 2), "duplicate"),             # M5
+    (lambda b: setattr(b, "uptime_rc", 255), "uptime failed"),                     # M13
+    (lambda b: setattr(b, "id_rc", 0), "id ran"),                                  # M9
+    (lambda b: setattr(b, "id_rc", 255), "id transport fail"),
+])
+def test_apply_refuses_when_any_check_fails(lab, capsys, breakit, why):
+    breakit(lab)
+    assert inst.main(["--box", BOX, "--apply"]) == 1, why
+    assert "TOUCH:" not in capsys.readouterr().out
+
+
+def test_apply_without_wrapper_never_runs_the_grant(lab):
+    lab.wrapper = ""
+    inst.main(["--box", BOX, "--apply"])
+    assert not any(" add " in f" {r} " for r in lab.remotes())
+
+
+def test_failed_proof_after_grant_says_to_revoke(lab, capsys):
+    lab.uptime_rc = 255
+    assert inst.main(["--box", BOX, "--apply"]) == 1
+    assert "--revoke --apply" in capsys.readouterr().err
+
+
+def test_revoke_happy_path(lab, capsys):
+    lab.list_rows_after_revoke = []
+    assert inst.main(["--box", BOX, "--revoke", "--apply"]) == 0
+    assert "REVOKED" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("breakit,why", [
+    (lambda b: setattr(b, "revoke_rc", 1), "revoke failed"),
+    (lambda b: setattr(b, "list_rc", 255), "read-back blind"),                     # M4 / Fable 2
+    (lambda b: setattr(b, "list_rows_after_revoke", list(b.list_rows)), "still listed"),
+])
+def test_revoke_refuses_unless_read_back_proves_it(lab, capsys, breakit, why):
+    breakit(lab)
+    assert inst.main(["--box", BOX, "--revoke", "--apply"]) == 1, why
+    assert "TOUCH:" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("box", ["-oProxyCommand=touch x", "a b", "", "x;id"])
+def test_box_name_that_is_not_a_host_alias_is_refused(lab, box):
+    assert inst.main(["--box", box, "--apply"]) == 2
+    assert lab.calls == []
