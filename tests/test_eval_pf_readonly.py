@@ -13,6 +13,7 @@ and HOME is a tmp dir, so nothing here touches the real box.
 """
 
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -22,8 +23,10 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "eval_pf_readonly.sh"
 
+# `find` is NOT stubbed: the wrapper itself uses it to audit eval_pf (a
+# helper; the recorder test below sees every program, helpers included).
 PROGRAMS = ["systemctl", "journalctl", "ls", "cat", "ps", "ss", "df", "free",
-            "uptime", "rm", "bash", "sh", "id", "find", "echo", "kill"]
+            "uptime", "rm", "bash", "sh", "id", "echo", "kill"]
 
 
 @pytest.fixture
@@ -195,14 +198,15 @@ def test_a_symlink_inside_a_root_does_not_reach_outside_it(box, tmp_path):
         proc, called, _ = box(req)
         assert proc.returncode == 126, (req, proc.stderr)
         assert called == [], (req, called)
-    # A link that stays inside the root is still fine.
+    # Round 7: NO link is followed below a root — not even one that stays
+    # inside it (three escapes in seven rounds were operator-made links).
     (share / "real.json").write_text("{}")
     (share / "inner").symlink_to(share / "real.json")
-    proc, called, logged = box("cat ~/.local/share/meshforge/inner")
+    proc, called, _ = box("cat ~/.local/share/meshforge/inner")
+    assert proc.returncode == 126 and called == [], proc.stderr
+    proc, called, logged = box("cat ~/.local/share/meshforge/real.json")
     assert proc.returncode == 0, proc.stderr
-    # the log names the file actually READ, not only the link asked for
-    real = os.path.realpath(share / "real.json")
-    assert logged[-1].split("\t")[4] == f"cat -- {real}", logged[-1]
+    assert logged[-1].split("\t")[4] == f"cat -- {os.path.realpath(share / 'real.json')}"
 
 
 def test_every_request_is_logged_in_order(box):
@@ -328,23 +332,30 @@ def test_unwritable_log_message_is_ours_alone(box):
     assert p.stderr.startswith("eval_pf_readonly: refused (audit log"), p.stderr
 
 
-def test_an_exec_record_that_would_be_cut_refuses(box):
-    """The exec'd argv (resolved paths can be far longer than the request) is
-    logged whole or not run at all."""
-    share = box.home / ".local/share/meshforge"
-    deep = share
+def test_an_exec_record_that_would_be_cut_refuses(tmp_path):
+    """The exec'd argv (~/ expands to $HOME) can be far longer than the
+    request; it is logged whole or not run at all."""
+    home = tmp_path
     for i in range(14):
-        deep = deep / (chr(97 + i) * 240)
-    deep.mkdir(parents=True)
-    (deep / "f").write_text("x")
-    (share / "l").symlink_to(deep / "f")
-    proc, called, logged = box("cat " + " ".join(["~/.local/share/meshforge/l"] * 4))
-    assert proc.returncode == 126 and called == [], proc.stderr
-    assert "record" in logged[-1].split("\t")[1], logged[-1][:200]
-    # one copy fits and runs, logged whole
-    proc, called, logged = box("cat ~/.local/share/meshforge/l")
-    assert proc.returncode == 0, proc.stderr
-    assert logged[-1].split("\t")[4] == f"cat -- {os.path.realpath(deep / 'f')}"
+        home = home / (chr(97 + i) * 240)
+    (home / ".local/share/meshforge").mkdir(parents=True)
+    (home / ".local/share/meshforge/f").write_text("x")
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    (stubs / "cat").write_text("#!/bin/bash\necho ran\n")
+    (stubs / "cat").chmod(0o755)
+    log = tmp_path / "w.log"
+
+    def go(req):
+        env = {"HOME": str(home), "PATH": f"{stubs}:/usr/bin:/bin", "EVAL_PF_LOG": str(log),
+               "SSH_ORIGINAL_COMMAND": req}
+        return subprocess.run(["/bin/bash", str(SCRIPT)], env=env, capture_output=True,
+                              text=True, timeout=20, stdin=subprocess.DEVNULL)
+    p = go("cat " + " ".join(["~/.local/share/meshforge/f"] * 3))
+    assert p.returncode == 126 and "ran" not in p.stdout, p.stderr
+    assert "record" in log.read_text().splitlines()[-1].split("\t")[1]
+    p = go("cat ~/.local/share/meshforge/f")
+    assert p.returncode == 0 and "ran" in p.stdout, p.stderr
 
 
 def test_run_allowed_is_the_only_exec():
@@ -396,10 +407,116 @@ def test_eval_pf_that_is_itself_a_link_is_still_refused(box):
         assert proc.returncode == 126 and called == [], (req, proc.stderr)
 
 
-def test_roots_are_resolved_in_one_place():
-    """The seam: every root comparison uses a root resolved by readlink -m."""
-    import re
+def test_every_program_arm_ends_in_run_allowed_or_refuse():
+    """Round 7: pinning the word `exec` let `date) date; exit 0 ;;` run a
+    program with no log line. Every arm of `case "$PROG"` must END in
+    run_allowed or refuse, and none may exit on its own."""
+    lines = SCRIPT.read_text().splitlines()
+    start = lines.index('case "$PROG" in')
+    end = next(i for i in range(start + 1, len(lines)) if lines[i] == "esac")
+    arms, cur = {}, None
+    for ln in lines[start + 1:end]:
+        if ln and not ln[0].isspace() and ln.rstrip().endswith(")"):
+            cur = ln.strip()
+            arms[cur] = []
+        elif cur and ln.strip() and not ln.strip().startswith("#"):
+            arms[cur].append(ln.strip())
+    assert "*)" in arms and len(arms) >= 9, list(arms)
+    for arm, body in arms.items():
+        last = body[-1].removesuffix(";;").strip() or body[-2].removesuffix(";;").strip()
+        assert last.startswith(("run_allowed ", "refuse ")), (arm, last)
+        assert not any(re.search(r"(^|[;&|\s])exit(\s|$)", b) for b in body), (arm, body)
+
+
+def test_no_program_is_called_by_absolute_path():
+    """Round 7 M6: `/usr/bin/head …` slipped past a PATH-based recorder."""
     code = [ln for ln in SCRIPT.read_text().splitlines() if not ln.lstrip().startswith("#")]
-    for ln in code:
-        for m in re.finditer(r'under "\$r" "([^"]+)"', ln):
-            assert m.group(1).startswith("$r") and "/" not in m.group(1), ln
+    bad = [ln for ln in code if re.search(r"(^|[\s;|&(`$])/(usr/)?s?bin/", ln)]
+    assert not bad, bad
+
+
+HELPERS = {"date", "dirname", "mkdir", "realpath", "find"}
+
+
+@pytest.fixture(scope="module")
+def recorder(tmp_path_factory):
+    """Every executable on /usr/bin and /bin, replaced by a recorder: the
+    test sees EVERY program the wrapper runs, not only the 16 stubs."""
+    d = tmp_path_factory.mktemp("rec")
+    bindir, rec = d / "bin", d / "rec.txt"
+    bindir.mkdir()
+    for src in ("/usr/bin", "/bin"):
+        for p in Path(src).iterdir():
+            name = p.name
+            if (bindir / name).exists() or not os.access(p, os.X_OK) or "/" in name:
+                continue
+            target = "true" if name in PROGRAMS else f'exec {p} "$@"'
+            (bindir / name).write_text(f'#!/bin/bash\necho {shlex_q(name)} >> "{rec}"\n{target}\n')
+            (bindir / name).chmod(0o755)
+    home = d / "home"
+    (home / ".local/share/meshforge").mkdir(parents=True)
+    (home / ".config/meshforge").mkdir(parents=True)
+    (home / ".local/share/meshforge/state.json").write_text("{}")
+
+    def go(req):
+        rec.write_text("")
+        env = {"HOME": str(home), "PATH": str(bindir), "EVAL_PF_LOG": str(d / "w.log"),
+               "SSH_ORIGINAL_COMMAND": req}
+        p = subprocess.run(["/bin/bash", str(SCRIPT)], env=env, capture_output=True,
+                           text=True, timeout=30, stdin=subprocess.DEVNULL)
+        return p, set(rec.read_text().split())
+    return go
+
+
+def shlex_q(s):
+    import shlex
+    return shlex.quote(s)
+
+
+@pytest.mark.parametrize("request_", [a for a, _ in ALLOWED] + ["cat ~/.local/share/meshforge/state.json"])
+def test_an_allowed_request_runs_only_its_program_and_helpers(recorder, request_):
+    p, ran = recorder(request_)
+    assert p.returncode == 0, p.stderr
+    assert ran - HELPERS == {request_.split()[0]}, ran
+
+
+@pytest.mark.parametrize("request_", [r for r in REFUSED if r] [:20])
+def test_a_refused_request_runs_only_helpers(recorder, request_):
+    p, ran = recorder(request_)
+    assert p.returncode == 126
+    assert ran <= HELPERS, ran
+
+
+def test_links_or_hardlinks_inside_eval_pf_refuse_every_path_read(box):
+    """Round 7: a link INSIDE eval_pf (cases -> ../store) put the key in a
+    readable sibling; a hardlink cannot be seen by path at all. eval_pf
+    must be a plain dir of plain files, or every ls/cat is refused."""
+    share = box.home / ".local/share/meshforge"
+    (share / "store").mkdir()
+    (share / "store/key.json").write_text("SECRET_A")
+    (share / "ok.json").write_text("{}")
+    ev = share / "eval_pf"
+    ev.mkdir()
+    (ev / "cases").symlink_to("../store")
+    for req in ("cat ~/.local/share/meshforge/eval_pf/cases/key.json",
+                "cat ~/.local/share/meshforge/store/key.json",
+                "cat ~/.local/share/meshforge/ok.json"):
+        proc, called, _ = box(req)
+        assert proc.returncode == 126 and called == [], (req, proc.stderr)
+    (ev / "cases").unlink()
+    (ev / "cases").mkdir()
+    (ev / "cases/k.json").write_text("SECRET_B")
+    os.link(ev / "cases/k.json", share / "hard.json")
+    proc, called, _ = box("cat ~/.local/share/meshforge/hard.json")
+    assert proc.returncode == 126 and called == [], proc.stderr
+    (share / "hard.json").unlink()
+    proc, called, _ = box("cat ~/.local/share/meshforge/ok.json")
+    assert proc.returncode == 0, proc.stderr
+
+def test_eval_pf_that_is_not_a_plain_dir_refuses_every_path_read(box):
+    share = box.home / ".local/share/meshforge"
+    (share / "ok.json").write_text("{}")
+    (share / "eval_pf").write_text("not a dir")
+    proc, called, _ = box("cat ~/.local/share/meshforge/ok.json")
+    assert proc.returncode == 126 and called == [], proc.stderr
+    assert "not a plain directory" in proc.stderr

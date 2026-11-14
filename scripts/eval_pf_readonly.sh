@@ -180,27 +180,35 @@ ls | cat)
         esac
     done
     [ "${#paths[@]}" -gt 0 ] || refuse "$PROG needs a path"
-    # Judge the RESOLVED path against the RESOLVED roots (Fable 11-14: a
-    # lexical check followed a symlink under the share dir out to /etc), and
-    # exec the resolved path so what was judged is what is read.
-    # EVERY root is resolved here, once (Fable 11-14 rounds 1+6: a root
-    # compared unresolved is a hole — eval_pf -> eval_pf_v2 exposed the key).
-    # The eval deny root is checked both as resolved and as <rshare>/eval_pf.
-    rshare="$(readlink -m -- "$SHARE")"; rconf="$(readlink -m -- "$CONF")"
-    rdeny="$(readlink -m -- "$SHARE/eval_pf")"; rdeny2="$rshare/eval_pf"
-    [ -n "$rshare" ] && [ -n "$rconf" ] && [ -n "$rdeny" ] || refuse "cannot resolve the allowed roots"
+    # NO LINK IS FOLLOWED below a root (Fable 11-14 rounds 1, 6, 7: every
+    # path escape was an operator-made link around a check). A path is read
+    # only if it RESOLVES to exactly where it SAYS (realpath vs realpath -s),
+    # under a root (the roots themselves may be links), and never under the
+    # eval's own dir by its literal name. The exec'd path is the resolved one.
+    lshare="$(realpath -m -s -- "$SHARE")"; lconf="$(realpath -m -s -- "$CONF")"
+    rshare="$(realpath -m -- "$SHARE")"; rconf="$(realpath -m -- "$CONF")"
+    [ -n "$lshare" ] && [ -n "$lconf" ] && [ -n "$rshare" ] && [ -n "$rconf" ] \
+        || refuse "cannot resolve the allowed roots"
+    # eval_pf must be a plain dir of plain, singly-linked files: a link in it
+    # (cases -> ../store) moves the key somewhere readable, and a hardlink is
+    # invisible by path. Either one refuses EVERY path read (fail closed).
+    EV="$lshare/eval_pf"
+    if [ -e "$EV" ] || [ -L "$EV" ]; then
+        [ ! -L "$EV" ] && [ -d "$EV" ] || refuse "eval_pf is not a plain directory"
+        bad="$(find "$EV" \( -type l -o \( ! -type d -links +1 \) \) -print -quit 2>/dev/null)" \
+            || refuse "cannot audit eval_pf"
+        [ -z "$bad" ] || refuse "eval_pf holds a link or a hardlinked file"
+    fi
+    # Any hardlink into eval_pf from outside also shows here as -links +1.
     resolved=()
     for p in "${paths[@]}"; do
-        r="$(readlink -m -- "$p")" || refuse "cannot resolve '$p'"
-        # The eval's own cases (answer keys) and results: never, by any path
-        # (EVAL-PF Q8/Q30; Fable 11-14 round 5).
-        if under "$r" "$rdeny" || under "$r" "$rdeny2"; then
-            refuse "the eval's own cases/results are not readable"
-        fi
-        if under "$r" "$rshare"; then :
-        elif [ "$PROG" = ls ] && under "$r" "$rconf"; then :
+        l="$(realpath -m -s -- "$p")" && r="$(realpath -m -- "$p")" || refuse "cannot resolve '$p'"
+        if under "$l" "$lshare"; then lroot="$lshare"; rroot="$rshare"
+        elif [ "$PROG" = ls ] && under "$l" "$lconf"; then lroot="$lconf"; rroot="$rconf"
         else refuse "path '$p' is outside the allowed roots"
         fi
+        [ "$r" = "$rroot${l#"$lroot"}" ] || refuse "path '$p' goes through a link (links are not followed)"
+        under "$l" "$EV" && refuse "the eval's own cases/results are not readable"
         resolved+=("$r")
     done
     paths=("${resolved[@]}")
