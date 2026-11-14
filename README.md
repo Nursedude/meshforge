@@ -57,8 +57,8 @@ report green without quoting the check that produced it.
 scripts/meshforge-launcher.sh
 ```
 
-**Built for:** HAM operators, emergency comms teams, off-grid builders, and mesh
-enthusiasts who want professional-grade network visibility without the complexity.
+**Built for:** hams, engineers, scientists and off-grid builders who want real
+network visibility without the complexity.
 
 ---
 
@@ -178,7 +178,7 @@ Each line carries its tier from [docs/capabilities.md](docs/capabilities.md):
 
 MeshForge is developed in Hawaii, where the failure modes aren't hypothetical.
 During Hurricane Lala the power went out and the internet went with it, and
-several hundred battery-and-solar LoRa nodes kept working — while the
+battery-and-solar LoRa nodes kept working — while the
 infrastructure monitoring them did not.
 
 That's the design target: a monitoring layer that survives what it monitors, and

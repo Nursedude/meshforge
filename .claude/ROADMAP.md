@@ -4,7 +4,7 @@
 > session notes (`~/.claude/plans/gateway-session-notes-*.md`) say what the last
 > session was doing on that box. This file says where the domain is going and why.
 > Owner: WH6GXZ (operator). Update it when a direction changes, not when a task ends.
-> Last set: 2026-11-10 — ONE thing + the lead (operator). History: `git log`.
+> Last set: 2026-11-13 — the 11-11 niche direction adopted (operator, outside audit). History: `git log`.
 
 ## What we are
 
@@ -15,6 +15,12 @@ what it keeps, loses and translates. Every message it carries ends as delivered,
 dropped where and why, or unknown, never a silent "sent." Edges are added only
 when they can meet that bar. A ham can run it without AI, and every AI that builds
 it is held to the same truth.
+
+**Direction** (operator 2026-11-11, adopted 11-13): "I don't want mass adoption …
+I'm comfortable as a niche. I want to be best of class and it just works."
+Stars, strangers and release cadence are not the yardstick. The stranger test
+stays, with two subjects: a fresh model and a ham with no AI. The harness is a
+deliberate second purpose.
 
 - **RNS is the network stack and the hub.** Cross-mesh traffic goes RNS-first.
   Pairwise radio-to-radio bridges multiply into duplicates and false information.
@@ -38,16 +44,11 @@ it is held to the same truth.
 - **Built by a ham, for hams, engineers and scientists.** Field-tested on our own
   fleet, through storms and WAN outages.
 - **The END** a change must serve: *a message arrives*, or *the truth is told
-  in-app*. If the only honest END is "the harness", it is not roadmap work.
+  in-app*. Harness work names its END too (second purpose, 11-11).
 
 ## Why we win (be unique, not a feature list)
 
-| Them | What they do well | What only we do |
-|---|---|---|
-| **MeshMonitor** (web NOC, Meshtastic+MeshCore+MQTT+RNS) | Web UI, Docker/Helm install, analysis of the user's mesh, virtual nodes, LXMF send/receive | **Bridge** LXMF across meshes (theirs relays MT↔MC text only, 4.17.2-rc5 read 10-29); an SSH TUI on a thin link (they run offline too) |
-| **SMCI / RNS_Over_Meshcore** (RNS-over-MeshCore plugins) | Ride community MeshCore repeaters; airtime budget; published per-hop numbers | Native RNode path; owned RNS fork + rnsd lifecycle cures (#68/#69/#72); fleet-measured reliability |
-| **Mesh Bridge** (IceNet-01; Node.js, Meshtastic-only) | Bridges encrypted channels across 2+ radios; ID dedup 2,000 / 1 h; MQTT both ways; systemd installer | NOT YET EARNED. One measured run (`c21r1`, 1436/1436, serial+serial lab). 11-09 review: failed write counted sent, dedup sender+text (theirs: by ID), no DM refusal → `BR-T`. Claim only that run |
-| **MeshDash** (self-hosted dashboard) | "Up to 16 Meshtastic radios"; 100+ endpoint REST API; Docker runner | Nothing on radio count: `mesh_bridge` has 2 legs today. N legs is build work, not config |
+Competitor table: `research/landscape_2026_11_09.md` appendix (stale in parts — re-measure before quoting).
 
 **What best in class means here:** the most honest multi-radio router: every
 message accounted for, airtime respected, the truth told when we cannot see.
@@ -81,8 +82,8 @@ input to best-available-route, not the goal by itself.
 
 ## 1.0 = these checks pass (set 2026-10-04, operator grilling)
 
-**What 1.0 promises:** a stable contract AND a product a stranger can run
-without us. **What it does NOT mean** (carried from the superseded 2026-01
+**What 1.0 promises:** a stable contract AND a product a stranger (a fresh
+model, or a ham with no AI) can run without us. **What it does NOT mean** (carried from the superseded 2026-01
 `v1.0_roadmap.md`, still true): feature-complete (features come in 1.x),
 bug-free (bugs get 1.0.x patches), or final (2.0 may break the contract). It covers the **STANDALONE** offering only. FLEET (and the ECOMM
 kit) is the lab that produces the evidence; it gets its own milestone later.
@@ -128,32 +129,7 @@ clean-account install on a fleet box leaves (the system config — hosts block,
 rnsd, apt holds — would still be ours). Keep it OUT of the fleet so it stays a
 stranger: README-only install, no fleet registry, re-imaged before each rc.
 
-**`malihini`** (Hawaiian: newcomer, stranger — operator 2026-10-04):
-- **Where:** the tent (power + LAN), wired to **m1**. m1 may give it a DHCP
-  reservation and a plain name (`malihini.lan`); NEVER an `mf-fleet-naming`
-  entry (the fleet naming system; the hourly identity check reads it). Access
-  = one `~/.ssh/config` alias. Never `fleet_hosts`, `fleet_roles.yaml`, the
-  registry, our `/etc/hosts` block, mini or `fleet_sync` — so the monthly
-  `box_config_capture` never touches it (by design: re-imaged per rc).
-- **Hardware:** RAK6421 WisMesh Pi HAT + (per moc4's identical set) RAK13302
-  in slot 2 + WisBlock env sensors + ALFA 915 MHz 2 dBi elbow antenna.
-- **Answer key (from moc4, read 10-04 — not used during the blind install):**
-  `lora-RAK6421-13302-slot2.yaml`; pass = SX1262 `init result 0`, then a
-  message crosses mesh↔RNS. Confirm malihini's module/slot on first boot.
-- **Two stranger paths:** (A) stock Raspberry Pi OS Lite 64-bit trixie via
-  Raspberry Pi Imager + our README — run FIRST (tests our own claim); (B) RAK's
-  official pi-gen image (meshtasticd pre-configured) + our README — tests that
-  our installer does not break a working vendor setup (the #58 class).
-- **Hypothesis to measure (ASSERTION, 10-04):** the installer writes
-  `Module: auto` and its friendly labels name only RAK6421 + 13300 slot 1/2.
-  The HAT EEPROM (`/proc/device-tree/hat/product` = "6421 Pi Hat") is written
-  at manufacture and cannot know which module sits in which slot, so `auto`
-  cannot reach `13302-slot2`; a stranger with moc4's exact hardware gets no
-  label for the template it needs. Likely fix after the drill confirms: on a
-  RAK6421 EEPROM, ASK module + slot (all four combinations).
-- **Channel step:** a stranger's radio boots on public default LongFast; fleet
-  HATs run HawaiiNet primary with no public LongFast — the drill tests whether
-  the README gets a stranger onto a channel the mesh can hear.
+**`malihini`** (operator 2026-10-04): the bare-metal stranger box — where, hardware, answer key, two install paths: `plans/malihini_stranger_box_2026_10_04.md`.
 
 ## Now / Next / Later
 
@@ -176,8 +152,8 @@ the RNS/LXMF forks. Offering: S standalone · F fleet.
 ### NOW
 
 Operator's order. **30-day ship plan 11-04 → 12-04**: a stranger installs,
-sends a message, sees the truth about it. No new probes/hooks/gates unless a
-product defect needs one.
+sends a message, sees the truth about it. Measured 11-04..11-13: harness 53 %,
+product 27 % of commits (`harness_share.py --days 9`).
 
 
 - **BIC-2** [MF][MA] S+F twin→MA — per-leg delivery truth, shown per message, UNKNOWN first-class (= 1.0 gate 3)
@@ -190,7 +166,7 @@ product defect needs one.
   Steps 1-3 landed 11-08 (`f97e053f`), NO caller: page still unconfirmed (11-09). Next: TUI+/inbox.
 - **BR-T** [MF] S+F — `mesh_bridge` says more than it saw (11-09 review by running). Open: DM refusal, dedup by packet id, #7 #9 #15–#17; `research/landscape_2026_11_09.md` §B. Before REL-1 (operator 11-10).
 - **REL-1** [MF] S — a release every month: tag + a changelog a ham can read; each runs the gate-5 virtual drill (brief 42fbS7, 10-27)
-  30-DAY: v0.8.0-beta = first GitHub Release by 12-04; gate-5 drill to END (README only, a message crosses mesh↔RNS).
+  v0.8.0-beta = first GitHub Release once BR-T closes + 7 days with no fix to a pre-existing defect (rule 3); 12-04 dropped 11-13. Gate-5 drill to END (README only, a message crosses mesh↔RNS).
 - **BIC-1** [MF] S+F — `/inbox` browser chat; sends read "handed to radio · unconfirmed", never "delivered"
   DEPLOYED 10-13 `834012d8` (+3 fixes, provenance; iPhone-verified 10-21). OWED: operator acceptance — one real send. Still unwitnessed: a NEW LongFast text from another node stays off the primary channel.
   public: A chat page in the browser for the mesh, which says a message was handed to the radio, never that it was delivered, unless it was.
@@ -279,6 +255,7 @@ PARKED 11-04, revisit 12-04:
 - **AUDIT-1018** [MF][MA][maps] S+F maps:both — domain-audit residuals (10-18): OPERATOR decisions — Substack link (two live), moc5 + kiai declared `collector` but the maps unit is NOT INSTALLED (install, or fix the role), #151 F4 (MA bridge auto-enable only with a LOCAL meshtasticd — changes WHICH services run); design tasks — a serial-pinned, group-scoped MeshCore udev rule (today generic + 0666), a human surface for maps `/api/core-health`
 - **SEC-URL3** [MF] F — urllib3 GHSA-vxq7/8988, apt copies (moc2, lehua, moc4): ACCEPTED to 12-13 (`dep_advisory_accepted`).
 - **SEC-KRN** [MF] F — kernel CVE-2026-98432 roll 2/9; order: provenance 11-13. Session-added.
+- **MQTT-SEC** [MF][MA] S+F twin→MA — generated broker configs bind 127.0.0.1 by default (S1, `plans/mqtt_sec_grill_2026_11_03.md`; `broker_profiles.py:420` binds 0.0.0.0); S2, S5, F8 next-round 1–4. Restored 11-13: dropped in `73b2cb3f` with no DONE line.
 
 - **INBOX-T** [MF] S+F — `/inbox` + leg-counter truth, F1–F13 (echo fold hides a stranger's row; one id in two terminal buckets): same doc §C–D. Before BIC-2's view. Session-added.
 - **SHOW-1** [MF] S — README shows the one unique screen (a message's legs); today logo + badges only. Session-added.
@@ -334,7 +311,7 @@ PARKED 11-04, revisit 12-04:
 - **ALERT-1** [MF] S — Apprise as an optional alert sink beside ntfy (`safe_import`, never required)
 - **CONTRIB-1** [MF] S — CONTRIBUTING.md + good-first-issue labels (issue templates exist); pairs with gate 9 + CONNECT-1
 - **MESHSAT-1** [MF] F — PARKED 10-28: MeshSat v0.3. Hub seats, no modem = no new leg. Reopen: modem AND MeshSat 1.0.
-- **PILINA** [bot] S — Pilina (DM a node, get notices with receipts; own repo + build plan, artifact C9aWkjs): a second product — not before REL-1 ships (operator 11-10)
+- **PILINA** [bot] S — Pilina (DM a node, get notices with receipts): a profile of the meshing-around bot, not a new repo (11-13, artifact 13a9roa) — not before REL-1 ships (operator 11-10)
 - **LAND-1** [MF] S — monthly landscape check: peer repos' commits/releases/top issues + PyPI rns, diffed month to month; settle footprint before build
 
 ## Rules that shape the roadmap

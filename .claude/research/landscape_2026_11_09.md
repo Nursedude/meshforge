@@ -342,3 +342,14 @@ Measured on moc: 58 lifetime `main_thread_wedge_any` fires on `lab.lxmf_multi_us
 ## Appendix — moved out of ROADMAP `DET-DCS` to make room (verbatim, 2026-10-22)
 
 Measured on moc3: blind 09-22→09-28 (~6 d), 10-12→10-16 (~3.6 d), and again now (6 of 20) after the 10-21/22 deploy restarts — a total confirmation collapse cannot be seen for days after any deploy. Honest (`indeterminate`, not clean), but a probe indeterminate for days is a finding. Cure shape: persist the terminal ring across restarts (write the snapshot, reload on start), and/or a traffic-scaled minimum. Accept: restart the gateway on a box with a full ring → the probe judges on the next tick, never `indeterminate` from the restart alone.
+
+## Appendix — "Why we win" table (moved from ROADMAP.md 2026-11-13)
+
+> STALE in parts, per the 11-13 outside audit: the MeshMonitor "only we bridge LXMF" claim is contradicted by our own 11-12 research (A2, unmeasured upstream); the Mesh Bridge row lists BR-T defects already fixed (A10). Re-measure before quoting.
+
+| Them | What they do well | What only we do |
+|---|---|---|
+| **MeshMonitor** (web NOC, Meshtastic+MeshCore+MQTT+RNS) | Web UI, Docker/Helm install, analysis of the user's mesh, virtual nodes, LXMF send/receive | **Bridge** LXMF across meshes (theirs relays MT↔MC text only, 4.17.2-rc5 read 10-29); an SSH TUI on a thin link (they run offline too) |
+| **SMCI / RNS_Over_Meshcore** (RNS-over-MeshCore plugins) | Ride community MeshCore repeaters; airtime budget; published per-hop numbers | Native RNode path; owned RNS fork + rnsd lifecycle cures (#68/#69/#72); fleet-measured reliability |
+| **Mesh Bridge** (IceNet-01; Node.js, Meshtastic-only) | Bridges encrypted channels across 2+ radios; ID dedup 2,000 / 1 h; MQTT both ways; systemd installer | NOT YET EARNED. One measured run (`c21r1`, 1436/1436, serial+serial lab). 11-09 review: failed write counted sent, dedup sender+text (theirs: by ID), no DM refusal → `BR-T`. Claim only that run |
+| **MeshDash** (self-hosted dashboard) | "Up to 16 Meshtastic radios"; 100+ endpoint REST API; Docker runner | Nothing on radio count: `mesh_bridge` has 2 legs today. N legs is build work, not config |
