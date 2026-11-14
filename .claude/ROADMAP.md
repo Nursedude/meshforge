@@ -20,7 +20,8 @@ it is held to the same truth.
 I'm comfortable as a niche. I want to be best of class and it just works."
 Stars, strangers and release cadence are not the yardstick. The stranger test
 stays, with two subjects: a fresh model and a ham with no AI. The harness is a
-deliberate second purpose.
+deliberate second purpose. The niche is 1+1=2 (operator 11-13): one ham and an AI,
+never a team of AIs and engineers.
 
 - **RNS is the network stack and the hub.** Cross-mesh traffic goes RNS-first.
   Pairwise radio-to-radio bridges multiply into duplicates and false information.
@@ -176,7 +177,7 @@ product 27 % of commits (`harness_share.py --days 9`).
   `plans/doc1_in_app_howtos_2026_11_03.md`
 - **MAP-H** [MF] S+F — map never draws healthy when blind; H15 `940ada70` H14 `50283000`; next H12 H4. `plans/maps_audit_2026_11_06.md`
 - **EVAL-PF** [MF][MA] F — planted-fault benchmark per model, END-graded: the evidence for the harness's second purpose (README "How it's built")
-  NOW 11-13 (operator: "both"). Slice 1: one case file + a scorer on the lab box; a fresh session gets only what ships, names the cause, the END check grades it; the score is stored per model. Case 1 = CLAW-1 Q16(a) (dead id → UNIDENTIFIABLE, clock fixture, no radio). Grill the case format first. ⚠️ RNS AI-dataset clause.
+  Grilled 11-13 (30 Q): `plans/eval_pf_grilling_2026_11_13.md`; cases + keys OFF-repo. Grades a fresh session, harness ON vs OFF; +1/0/−1. ACCEPT slice 1: one model, both arms, n=3, case 1 + null = 12 scored rows; every plant pre-checked + restore verified; wrapper log only allowlisted; refusal test in CI; a hand-fed wrong answer scores −1. Order Q29; Fable review by running before the first score. ⚠️ RNS AI-dataset clause.
 
 ### NEXT
 
@@ -257,6 +258,7 @@ PARKED 11-04, revisit 12-04:
 - **AUDIT-1018** [MF][MA][maps] S+F maps:both — domain-audit residuals (10-18): OPERATOR decisions — Substack link (two live), moc5 + kiai declared `collector` but the maps unit is NOT INSTALLED (install, or fix the role), #151 F4 (MA bridge auto-enable only with a LOCAL meshtasticd — changes WHICH services run); design tasks — a serial-pinned, group-scoped MeshCore udev rule (today generic + 0666), a human surface for maps `/api/core-health`
 - **SEC-URL3** [MF] F — urllib3 GHSA-vxq7/8988, apt copies (moc2, lehua, moc4): ACCEPTED to 12-13 (`dep_advisory_accepted`).
 - **SEC-KRN** [MF] F — kernel CVE-2026-98432 roll 2/9; order: provenance 11-13. Session-added.
+- **BT-USER** [MF][MA] F — `box_truth` reads SYSTEM units only (`systemctl show meshforge-*.service`, no `--user`): a user-scope unit (mini, dream, echo) is invisible to every NOC read. Session-added 11-13 (EVAL-PF Q14).
 - **MQTT-SEC** [MF][MA] S+F twin→MA — generated broker configs bind 127.0.0.1 by default (S1, `plans/mqtt_sec_grill_2026_11_03.md`; `broker_profiles.py:420` binds 0.0.0.0); S2, S5, F8 next-round 1–4. Restored 11-13: dropped in `73b2cb3f` with no DONE line.
 
 - **INBOX-T** [MF] S+F — `/inbox` + leg-counter truth, F1–F13 (echo fold hides a stranger's row; one id in two terminal buckets): same doc §C–D. Before BIC-2's view. Session-added.
