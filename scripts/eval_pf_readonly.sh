@@ -236,6 +236,12 @@ ls | cat)
         [ -z "$bad" ] || refuse "eval_pf holds a link or a hardlinked file"
     fi
     # Any hardlink into eval_pf from outside also shows here as -links +1.
+    # Radio config snapshots (measured 11-14 on meshforge-lab: c21/radios/*.json
+    # carry each radio's local_config protobuf — private + admin keys). Denied
+    # literal AND resolved, like eval_pf. A STOPGAP: the measured subpath
+    # allowlist (Q14, operator 11-14) replaces this deny.
+    RAD="$lshare/c21/radios"; rRAD="$(realpath -m -- "$RAD")"
+    [ -n "$rRAD" ] || refuse "cannot resolve the allowed roots"
     resolved=()
     for p in "${paths[@]}"; do
         l="$(realpath -m -s -- "$p")" && r="$(realpath -m -- "$p")" || refuse "cannot resolve '$p'"
@@ -248,6 +254,9 @@ ls | cat)
         # config -> share listed eval_pf through ls).
         if under "$l" "$EV" || under "$r" "$rEV"; then
             refuse "the eval's own cases/results are not readable"
+        fi
+        if under "$l" "$RAD" || under "$r" "$rRAD"; then
+            refuse "radio config snapshots are not readable"
         fi
         resolved+=("$r")
     done

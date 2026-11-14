@@ -392,6 +392,44 @@ def test_the_eval_answer_keys_are_never_readable(box, tmp_path):
     assert proc.returncode == 0, proc.stderr
 
 
+@pytest.mark.parametrize("req", [
+    "cat ~/.local/share/meshforge/c21/radios/b29f-1.json",
+    "ls ~/.local/share/meshforge/c21/radios",
+    "ls -la ~/.local/share/meshforge/c21/radios/",
+    "cat ~/.local/share/meshforge/c21/./radios/b29f-1.json",
+    "cat ~/.local/share/meshforge/c21/smoke1/gateway.json ~/.local/share/meshforge/c21/radios/b29f-1.json",
+])
+def test_radio_config_snapshots_are_never_readable(box, req):
+    """Measured 11-14 on meshforge-lab: <share>/c21/radios/*.json hold each
+    radio's local_config as a base64 protobuf — the security section carries
+    the radio's private + admin keys (BELIEVED; not decoded, on purpose).
+    The eval key must never read or list them. Operator 11-14: deny first,
+    then the measured allowlist (Q14)."""
+    share = box.home / ".local/share/meshforge"
+    (share / "c21/radios").mkdir(parents=True)
+    (share / "c21/radios/b29f-1.json").write_text('{"local_config": "SECRETB64"}')
+    (share / "c21/smoke1").mkdir()
+    (share / "c21/smoke1/gateway.json").write_text("{}")
+    proc, called, _ = box(req)
+    assert proc.returncode == 126 and called == [], (req, proc.stderr)
+    assert "SECRETB64" not in proc.stdout
+
+
+def test_radio_snapshot_deny_leaves_the_siblings_readable(box):
+    """The deny is exactly c21/radios: its siblings and parent stay readable
+    (a control that would fail if the deny swallowed all of c21)."""
+    share = box.home / ".local/share/meshforge"
+    (share / "c21/radios").mkdir(parents=True)
+    (share / "c21/smoke1").mkdir()
+    (share / "c21/smoke1/gateway.json").write_text("{}")
+    (share / "c21/radios-notes").write_text("x")
+    for req in ("ls ~/.local/share/meshforge/c21",
+                "cat ~/.local/share/meshforge/c21/smoke1/gateway.json",
+                "cat ~/.local/share/meshforge/c21/radios-notes"):
+        proc, called, _ = box(req)
+        assert proc.returncode == 0, (req, proc.stderr)
+
+
 def test_eval_pf_that_is_itself_a_link_is_still_refused(box):
     """Round 6 (Fable 11-14): the deny root was compared UNRESOLVED, so
     eval_pf -> eval_pf_v2 exposed the key. Every root is resolved."""
