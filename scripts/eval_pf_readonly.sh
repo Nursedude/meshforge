@@ -30,10 +30,12 @@ CONF="$HOME/.config/meshforge"
 
 log() {  # verdict, request — an unwritable log REFUSES (no unaudited access)
     mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
-    # Control bytes (tab, newline, ESC, CR, …) become spaces so a log line is
-    # always one plain line; a request is capped at 4000 bytes in the log (the verdict at 120).
-    local v="${1//[[:cntrl:]]/ }" r="${2//[[:cntrl:]]/ }"
-    if ! printf '%s\t%s\t%s\t%s\n' "$(date -Is)" "${v:0:120}" "${r:0:4000}" "$GRANT" >>"$LOG" 2>/dev/null; then
+    # Only printable ASCII reaches the log (C0, DEL, C1, bidi → '?'). An
+    # ALLOWED request is ≤1024 bytes and single-spaced (checked below), so it
+    # is logged whole — the cap only ever cuts a REFUSED one.
+    local v="${1//[^ -~]/?}" r="${2//[^ -~]/?}"
+    # 2>/dev/null BEFORE >> so bash's own open error is silenced too.
+    if ! printf '%s\t%s\t%s\t%s\n' "$(date -Is)" "${v:0:120}" "${r:0:4000}" "$GRANT" 2>/dev/null >>"$LOG"; then
         echo "eval_pf_readonly: refused (audit log $LOG is not writable)" >&2
         exit 126
     fi
@@ -56,6 +58,11 @@ if [ "$#" -gt 0 ]; then
     fi
 fi
 [ -n "$REQ" ] || refuse "empty request (interactive shells are not allowed)"
+# The log must name everything that ran (Fable 11-14 round 3: space-padding
+# pushed an allowed read's argument past the log cap). So: bounded, and
+# exactly single-spaced — the words exec'd are the request logged.
+[ "${#REQ}" -le 1024 ] || refuse "request longer than 1024 bytes"
+case "$REQ" in " "* | *" " | *"  "*) refuse "words must be separated by single spaces" ;; esac
 
 # Whole-request charset: letters, digits and @ . _ : / = , + ~ * - and single
 # spaces. This alone rejects ; & | $ ` ( ) < > \ ' " ! # ? [ ] { } and any

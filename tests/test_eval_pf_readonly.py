@@ -115,6 +115,11 @@ REFUSED = [
     "journalctl -u -f",                           # a unit value may not start with '-'
     "journalctl --user-unit -x",
     "journalctl -o=short -n 1",                   # only --output=short* is a real form
+    "cat  ~/.local/share/meshforge/x",            # runs of spaces: the logged request
+    " uptime",                                    # must be exactly the words run
+    "uptime ",
+    "cat " + " " * 4100 + "~/.local/share/meshforge/x",
+    "ls ~/.local/share/meshforge/" + "a" * 1100,  # over the request cap
 ]
 
 
@@ -286,3 +291,31 @@ def test_log_lines_carry_no_control_bytes_and_are_capped(box):
     raw = (box.home.parent / "wrapper.log").read_bytes()
     assert b"\x1b" not in raw and b"\r" not in raw
     assert max(len(line) for line in raw.splitlines()) < 4200
+
+
+def test_the_logged_request_names_everything_that_ran(box):
+    """Round 3 (Fable 11-14): with a log cap and space-padding, an ALLOWED
+    read could push its real argument past the cap. Requests are now bounded
+    below the cap and single-spaced, so the log is never cut."""
+    share = box.home / ".local/share/meshforge"
+    (share / ("f" * 200)).write_text("x")
+    req = "cat " + " ".join(["~/.local/share/meshforge/" + "f" * 200] * 4)
+    proc, called, logged = box(req)
+    assert proc.returncode == 0, proc.stderr
+    assert logged[-1].split("\t")[2] == req
+
+
+def test_log_has_only_printable_ascii(box):
+    box("id \u009b2J \u202e x")
+    raw = (box.home.parent / "wrapper.log").read_bytes()
+    assert all(b == 9 or b == 10 or 32 <= b < 127 for b in raw), raw
+
+
+def test_unwritable_log_message_is_ours_alone(box):
+    box(None)
+    env = {"HOME": str(box.home), "PATH": f"{box.home.parent / 'bin'}:/usr/bin:/bin",
+           "EVAL_PF_LOG": "/proc/nonexistent/x.log", "SSH_ORIGINAL_COMMAND": "uptime"}
+    p = subprocess.run(["/bin/bash", str(SCRIPT)], env=env, capture_output=True, text=True,
+                       timeout=20, stdin=subprocess.DEVNULL)
+    assert p.returncode == 126
+    assert p.stderr.startswith("eval_pf_readonly: refused (audit log"), p.stderr
