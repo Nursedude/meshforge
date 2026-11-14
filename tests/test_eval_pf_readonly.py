@@ -379,3 +379,27 @@ def test_the_eval_answer_keys_are_never_readable(box, tmp_path):
     (share / "eval_pf-notes").write_text("x")
     proc, called, _ = box("cat ~/.local/share/meshforge/eval_pf-notes")
     assert proc.returncode == 0, proc.stderr
+
+
+def test_eval_pf_that_is_itself_a_link_is_still_refused(box):
+    """Round 6 (Fable 11-14): the deny root was compared UNRESOLVED, so
+    eval_pf -> eval_pf_v2 exposed the key. Every root is resolved."""
+    share = box.home / ".local/share/meshforge"
+    real = share / "eval_pf_v2"
+    real.mkdir()
+    (real / "key.json").write_text("SECRET2")
+    (share / "eval_pf").symlink_to(real)
+    for req in ("cat ~/.local/share/meshforge/eval_pf/key.json",
+                "ls ~/.local/share/meshforge/eval_pf",
+                "cat ~/.local/share/meshforge/eval_pf_v2/key.json"):
+        proc, called, _ = box(req)
+        assert proc.returncode == 126 and called == [], (req, proc.stderr)
+
+
+def test_roots_are_resolved_in_one_place():
+    """The seam: every root comparison uses a root resolved by readlink -m."""
+    import re
+    code = [ln for ln in SCRIPT.read_text().splitlines() if not ln.lstrip().startswith("#")]
+    for ln in code:
+        for m in re.finditer(r'under "\$r" "([^"]+)"', ln):
+            assert m.group(1).startswith("$r") and "/" not in m.group(1), ln

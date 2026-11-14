@@ -183,13 +183,20 @@ ls | cat)
     # Judge the RESOLVED path against the RESOLVED roots (Fable 11-14: a
     # lexical check followed a symlink under the share dir out to /etc), and
     # exec the resolved path so what was judged is what is read.
+    # EVERY root is resolved here, once (Fable 11-14 rounds 1+6: a root
+    # compared unresolved is a hole — eval_pf -> eval_pf_v2 exposed the key).
+    # The eval deny root is checked both as resolved and as <rshare>/eval_pf.
     rshare="$(readlink -m -- "$SHARE")"; rconf="$(readlink -m -- "$CONF")"
+    rdeny="$(readlink -m -- "$SHARE/eval_pf")"; rdeny2="$rshare/eval_pf"
+    [ -n "$rshare" ] && [ -n "$rconf" ] && [ -n "$rdeny" ] || refuse "cannot resolve the allowed roots"
     resolved=()
     for p in "${paths[@]}"; do
         r="$(readlink -m -- "$p")" || refuse "cannot resolve '$p'"
         # The eval's own cases (answer keys) and results: never, by any path
         # (EVAL-PF Q8/Q30; Fable 11-14 round 5).
-        under "$r" "$rshare/eval_pf" && refuse "the eval's own cases/results are not readable"
+        if under "$r" "$rdeny" || under "$r" "$rdeny2"; then
+            refuse "the eval's own cases/results are not readable"
+        fi
         if under "$r" "$rshare"; then :
         elif [ "$PROG" = ls ] && under "$r" "$rconf"; then :
         else refuse "path '$p' is outside the allowed roots"

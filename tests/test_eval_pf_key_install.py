@@ -260,6 +260,7 @@ def test_revoke_happy_path(lab, capsys):
     (lambda b: setattr(b, "list_rows_after_revoke", list(b.list_rows)), "still listed"),
     (lambda b: setattr(b, "list_empty_output", True), "list printed nothing"),
     (lambda b: setattr(b, "list_rows_after_revoke", ["Welcome to lab"]), "list output unrecognised"),
+    (lambda b: setattr(b, "list_rows_after_revoke", ["SHA256: still here"]), "row without a fingerprint"),
 ])
 def test_revoke_refuses_unless_read_back_proves_it(lab, capsys, breakit, why):
     breakit(lab)
@@ -271,3 +272,11 @@ def test_revoke_refuses_unless_read_back_proves_it(lab, capsys, breakit, why):
 def test_box_name_that_is_not_a_host_alias_is_refused(lab, box):
     assert inst.main(["--box", box, "--apply"]) == 2
     assert lab.calls == []
+
+
+def test_list_shape_splits_on_newline_only():
+    """The box splits authorized_keys on \\n only; a FOREIGN comment with \\f
+    is one row, not two (round 6 NIT: a correct revoke falsely failed)."""
+    row = "SHA256:" + "A" * 43 + "  ?       odd\fcomment            last read never from -  [authorized_keys:3]"
+    assert inst.list_shape_ok(row + "\n")
+    assert not inst.list_shape_ok("SHA256:short  x\n")

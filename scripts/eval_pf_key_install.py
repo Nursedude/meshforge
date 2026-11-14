@@ -137,16 +137,19 @@ def listed(list_out: str, fp: str) -> list:
 
 
 NO_GRANTS = "no NOC read grants on this box"   # box_truth_grant.py cmd_list, verbatim
+_LIST_ROW = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}  ")
 
 
 def list_shape_ok(list_out: str) -> bool:
     """True only for what `box_truth_grant.py list` prints: the no-grants line,
     or one `SHA256:` row per line. Anything else (a login banner, an error)
     is not a read-back — Fable 11-14 round 5."""
-    lines = [ln for ln in list_out.splitlines() if ln.strip()]
+    # split on \n ONLY — the box splits its key file the same way, so an
+    # odd FOREIGN comment (\f, \r, U+2028) stays one row.
+    lines = [ln for ln in list_out.split("\n") if ln.strip()]
     if lines == [NO_GRANTS]:
         return True
-    return bool(lines) and all(ln.startswith("SHA256:") for ln in lines)
+    return bool(lines) and all(_LIST_ROW.match(ln) for ln in lines)
 
 
 def run(argv, *, env=None):
