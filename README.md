@@ -43,8 +43,21 @@ tools, its own interfaces, its own learning curve. MeshForge is one interface
 over all of them, plus the gateway that actually bridges messages between
 incompatible meshes.
 
-It runs on **one box**. No cloud dependencies, no subscriptions, no account.
-A $35 Pi you can SSH into from anywhere.
+**The one thing it is for:** two meshes that can't hear each other, joined,
+with the truth about each message — which legs it crossed, and whether each one
+delivered, failed, or can't be seen.
+
+```mermaid
+flowchart LR
+  A["Meshtastic radio<br/>(one preset)"] <--> B["MeshForge box<br/>one dedup table"]
+  C["Meshtastic radio<br/>(another preset)"] <--> B
+  B <--> R(("RNS hub"))
+  R <--> D["Other MeshForge boxes<br/>MeshCore · LXMF clients"]
+```
+
+It runs on **one Raspberry Pi** with no cloud dependencies, no subscriptions and
+no account; you reach it over SSH. Several boxes can also run as one fleet, with
+RNS as the hub between them — that is how we run ours.
 
 **The design constraint is honesty.** Mesh monitoring fails in a specific way:
 the dashboard reads healthy because the thing measuring it died. Silence and
@@ -57,8 +70,8 @@ report green without quoting the check that produced it.
 scripts/meshforge-launcher.sh
 ```
 
-**Built for:** hams, engineers, scientists and off-grid builders who want real
-network visibility without the complexity.
+**Built for:** hams, engineers and off-grid builders who want to *measure* their
+mesh, not just look at it.
 
 ---
 
@@ -123,10 +136,11 @@ sudo bash scripts/install_noc.sh      # guided install
 scripts/meshforge-launcher.sh   # the NOC
 ```
 
-Runs on **Pi 3B, Pi 4, or Pi 5** (64-bit) — all three run in the reference
-fleet today. You don't need a Pi 4 to start — a
-**Pi Zero 2 W** (~$15) is the recommended low-cost board for a lightweight or
-single-purpose node, because the software is tuned to fit the box.
+Runs on a **Pi 4 or Pi 5** (64-bit). Our own fleet, read 2026-11-13: seven
+Pi 4, two Pi 5, one Pi 3B (1 GB, a gateway) and one Pi Zero 2 W. The Zero 2 W
+runs `meshtasticd`, the meshing-around bot and MeshForge's small watcher
+daemon, **not** the NOC; there is
+no lightweight or radio-free MeshForge install yet, so do not plan on a Zero.
 
 **What "runs" means here:** these boards run MeshForge in our own fleet. The
 README install is checked to complete on fresh Raspberry Pi OS bookworm and

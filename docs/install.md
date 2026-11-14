@@ -8,15 +8,14 @@ Hardware, install, first run, and upgrades. The short version lives in the [READ
 
 ### Hardware
 
-MeshForge runs on a Raspberry Pi. Our own fleet runs a mix of **Pi 3B, Pi 4,
-and Pi 5** boards (all 64-bit / `aarch64`) — any of these runs the full NOC stack
-(map server, gateway bridge, Reticulum, MQTT) comfortably.
+MeshForge runs on a **Raspberry Pi 4 or Pi 5** (64-bit / `aarch64`). Our own
+fleet, read 2026-11-13: seven Pi 4, two Pi 5, one Pi 3B (1 GB, a gateway) and one
+Pi Zero 2 W.
 
-**You don't need a Pi 4 to start.** Small boards are workable — not a deal-breaker —
-*because the software is tuned to fit the box*, not because the hardware is roomy.
-A **Pi Zero 2 W** (quad-core, 512 MB, ~$15) is the recommended low-cost board for a
-lightweight or single-purpose node, and a dedicated bot node has run for weeks on the
-original (1st-gen) **Pi Zero W**. On a 512 MB board:
+**Smaller boards:** the Pi 3B runs a gateway in our fleet but has not been
+installed from scratch. The Pi Zero 2 W runs `meshtasticd`, the meshing-around
+bot and MeshForge's small watcher daemon, **not** the NOC — there is no lightweight or radio-free MeshForge
+install yet, so do not plan on a Zero. If you do try a small board:
 
 - **Keep the memory-saving defaults on.** The node directory uses a bounding-box
   filter plus a node-count cap, and the large API responses (`/api/nodes/directory`,
@@ -26,11 +25,6 @@ original (1st-gen) **Pi Zero W**. On a 512 MB board:
   constrained board.
 - **Expect some swap** under the map service on a large mesh; a high-endurance SD card
   (or a USB SSD) helps latency and reduces card wear.
-- **Single-purpose roles do best on Zero-class boards** (a dedicated gateway or bot).
-  The full NOC stack is happier on a Pi 3B or larger.
-- **1st-gen Pi Zero W (`armv6`):** fine for a dedicated lightweight node, but its single
-  core and aging `armv6` Python-package support make a **Pi Zero 2 W or Pi 3B+ the
-  better entry choice** for anything new.
 
 ### Fresh Install
 
@@ -172,12 +166,11 @@ Main Menu (MeshForge NOC)
 
 ## Hardware
 
-**Minimum:** Raspberry Pi 3B+ or Pi Zero 2W + any Meshtastic radio
-**Recommended:** Raspberry Pi 4/5 + SPI HAT (~$90)
+**Supported:** Raspberry Pi 4 or 5 + a Meshtastic radio (USB, or an SPI HAT)
 
 | Component | Options |
 |-----------|---------|
-| **Computer** | Raspberry Pi 4/5 (recommended), Pi 3B+, Pi Zero 2W — all run in our fleet; the install is checked to complete on fresh OS images, not yet on each board from scratch |
+| **Computer** | Raspberry Pi 4/5. A Pi 3B runs a gateway in our fleet (not installed from scratch); a Pi Zero 2 W runs the bot and the watcher daemon, not the NOC |
 | **OS** | Raspberry Pi OS 64-bit, bookworm or trixie (both run in our fleet). Needs Python ≥ 3.11 (`pyproject.toml`); other Debian-based systems may work, untested |
 | **Radio (SPI)** | See SPI HATs table below |
 | **Radio (USB)** | See USB Radios table below |
