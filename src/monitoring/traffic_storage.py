@@ -99,6 +99,7 @@ class TrafficCapture:
             "packets_rns": 0,
             "bytes_captured": 0,
             "dissect_errors": 0,  # witnessed per-packet dissector failures
+            "cleanup_errors": 0,  # witnessed retention-prune failures
         }
 
         self._init_db()
@@ -313,6 +314,7 @@ class TrafficCapture:
         Returns:
             List of MeshPacket objects
         """
+        self._maybe_cleanup()
         query = "SELECT data FROM packets WHERE 1=1"
         params: List[Any] = []
 
@@ -367,6 +369,7 @@ class TrafficCapture:
 
     def get_packet_count(self, protocol: Optional[PacketProtocol] = None) -> int:
         """Get total packet count."""
+        self._maybe_cleanup()
         with self._get_connection() as conn:
             if protocol:
                 cursor = conn.execute(
@@ -420,13 +423,22 @@ class TrafficCapture:
         return stats
 
     def _maybe_cleanup(self) -> None:
-        """Periodically clean up old packets."""
+        """Periodically clean up old packets — from the write path AND every
+        reader (2026-11-14: run only on write, a box where nothing arrives
+        kept 98-day rows in a 24 h DB and listed them as recent). Throttled
+        by CLEANUP_INTERVAL; a failure never breaks the caller and is
+        counted in stats["cleanup_errors"]."""
         now = time.time()
         if now - self._last_cleanup < self.CLEANUP_INTERVAL:
             return
 
         self._last_cleanup = now
-        self._cleanup_old_packets()
+        try:
+            self._cleanup_old_packets()
+        except sqlite3.Error as e:
+            with self._lock:
+                self._stats["cleanup_errors"] = self._stats.get("cleanup_errors", 0) + 1
+            logger.warning(f"traffic_capture retention prune failed: {e}")
 
     def _cleanup_old_packets(self) -> int:
         """Remove packets older than retention OR over the row-count cap.

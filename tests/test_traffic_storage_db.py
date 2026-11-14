@@ -128,3 +128,49 @@ class TestFrontierReviewFixes20260709:
         assert packet is not None
         assert packet.protocol == PacketProtocol.UNKNOWN
         assert capture.get_stats()["dissect_errors"] == 1
+
+
+class TestRetentionRunsOnRead:
+    """MEASURED 2026-11-14 on the manager box: two rows from 2026-08-08 (98 d)
+    sat in a 24 h-retention DB and were listed as 'Recent packets'. Cleanup
+    ran only from the capture WRITE path, so on a box where nothing arrives
+    it never ran. Reading the DB must apply the retention it promises."""
+
+    def _ids(self, cap):
+        with cap._get_connection() as conn:
+            return {r[0] for r in conn.execute("SELECT id FROM packets")}
+
+    def _seed(self, cap):
+        TestTrafficCaptureRetention()._insert(
+            cap, "aug08", (datetime.now() - timedelta(days=98)).isoformat())
+        TestTrafficCaptureRetention()._insert(
+            cap, "fresh", (datetime.now() - timedelta(minutes=5)).isoformat())
+
+    def test_get_packets_prunes_rows_past_retention_with_no_write(self, capture):
+        self._seed(capture)
+        capture.get_packets(limit=20)
+        assert self._ids(capture) == {"fresh"}
+
+    def test_get_packet_count_prunes_too(self, capture):
+        self._seed(capture)
+        assert capture.get_packet_count() == 1
+        assert self._ids(capture) == {"fresh"}
+
+    def test_a_failed_prune_never_breaks_the_read_and_is_witnessed(self, capture, monkeypatch):
+        import sqlite3
+        self._seed(capture)
+
+        def boom():
+            raise sqlite3.OperationalError("database is locked")
+        monkeypatch.setattr(capture, "_cleanup_old_packets", boom)
+        capture.get_packets(limit=20)          # must not raise
+        assert capture.get_packet_count() == 2  # nothing pruned, read still works
+        assert capture.get_stats()["cleanup_errors"] >= 1
+
+    def test_prune_on_read_is_throttled(self, capture, monkeypatch):
+        calls = []
+        real = capture._cleanup_old_packets
+        monkeypatch.setattr(capture, "_cleanup_old_packets", lambda: calls.append(1) or real())
+        for _ in range(5):
+            capture.get_packets(limit=1)
+        assert len(calls) == 1
