@@ -17,6 +17,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'launcher_tui'))
+sys.path.insert(0, os.path.dirname(__file__))  # handler_test_utils (was order-dependent)
 
 import pytest
 
@@ -313,3 +314,77 @@ def test_fake_dialog_refuses_a_default_item_that_is_not_a_tag():
     fd.menu("T", "t", [("a", "A")], default_item="a")
     with _pt.raises(AssertionError):
         fd.menu("T", "t", [("a", "A")], default_item="nope")
+
+
+# ---------------------------------------------------------------------------
+# No-TTY spin (deferred row tui-no-tty-dialog-spin, 2026-11-13).
+#
+# dialog/whiptail report THEIR OWN errors as exit 255 — the same code as
+# Escape — with the reason on stderr (which _run captures as output);
+# Escape leaves it empty. menu() and yesno() read every 255 as a user
+# answer, so with no terminal the main loop went menu -> None ->
+# "Exit MeshForge?" -> False (also a 255) -> menu ... forever: ~50 MB of
+# 'Dialog exited 255 ... Failed to open terminal' in 9 min on tmpfs.
+# editbox() already made this distinction; menu/yesno now share it.
+# ---------------------------------------------------------------------------
+
+_NO_TTY = "Error: Failed to open terminal"
+
+
+class TestTool255ErrorIsNotAnAnswer:
+    def test_menu_255_with_error_text_raises_after_one_retry(self):
+        be = _make_backend([(255, _NO_TTY), (255, _NO_TTY)])
+        with pytest.raises(DialogError):
+            be.menu("T", "text", [("a", "A")])
+        assert len(be._run_calls) == 2
+
+    def test_menu_plain_escape_still_returns_none(self):
+        be = _make_backend([(255, "")])
+        assert be.menu("T", "text", [("a", "A")]) is None
+
+    def test_yesno_255_with_error_text_raises(self):
+        be = _make_backend([(255, _NO_TTY)])
+        with pytest.raises(DialogError):
+            be.yesno("Exit?", "Leave?")
+
+    def test_yesno_plain_escape_is_still_no(self):
+        be = _make_backend([(255, "")])
+        assert be.yesno("Exit?", "Leave?") is False
+
+
+def test_main_loop_exits_when_every_dialog_fails_with_no_tty():
+    """END state: the real main loop terminates, bounded, on a dead tty."""
+    import threading
+    from types import SimpleNamespace
+    import main as tui_main
+
+    be = _make_backend([])
+    be._run = lambda args, timeout=None: (be._run_calls.append(args)
+                                          or (255, _NO_TTY))
+    fake = SimpleNamespace(
+        _get_menu_status_hint=lambda: "",
+        _MAX_DIALOG_RETRIES=tui_main.MeshForgeLauncher._MAX_DIALOG_RETRIES,
+        _handle_main_choice=lambda c: pytest.fail("no choice was made"),
+        _handler_row=lambda tag: [],
+        dialog=be,
+    )
+    raised = []
+
+    def target():
+        try:
+            tui_main.MeshForgeLauncher._run_main_menu(fake)
+        except DialogError as e:
+            raised.append(e)
+
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert not t.is_alive(), (
+        f"main loop still spinning after {len(be._run_calls)} dialog runs "
+        "with no terminal — it must exit, not loop")
+    # bounded: retries x (menu + its one retry), nothing more
+    assert len(be._run_calls) <= 2 * fake._MAX_DIALOG_RETRIES
+    # LOUD: a launch that never showed a menu is a failure, not a clean
+    # exit — re-raised so main() prints the tool's reason and exits 1.
+    assert raised, "dead dialog layer ended the TUI silently (rc 0)"
+    assert "Failed to open terminal" in str(raised[0])

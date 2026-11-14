@@ -864,7 +864,11 @@ class MeshForgeLauncher:
                         "Main menu dialog failed %d consecutive times (%s), exiting",
                         consecutive_failures, e,
                     )
-                    break
+                    # Re-raise, never break: a TUI that could not show its
+                    # menu FAILED — main() prints the tool's reason (e.g.
+                    # 'Failed to open terminal' on a no-TTY launch) and
+                    # exits 1, instead of a silent rc 0 (tui-no-tty-dialog-spin).
+                    raise
                 logger.warning(
                     "Main menu dialog failed (attempt %d/%d): %s",
                     consecutive_failures, self._MAX_DIALOG_RETRIES, e,

@@ -22,6 +22,8 @@ import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'launcher_tui'))
 sys.path.insert(0, os.path.dirname(__file__))
@@ -193,7 +195,11 @@ class TestMainMenuEscapeSemantics:
         from backend import DialogError
         fake, calls = self._fake_self(
             tui_main, [DialogError("dead")], [True])
-        tui_main.MeshForgeLauncher._run_main_menu(fake)
+        # 2026-11-13 (tui-no-tty-dialog-spin): exhaustion RE-RAISES so
+        # main() reports the reason and exits 1 — it used to return, and
+        # the launch that never showed a menu exited rc 0.
+        with pytest.raises(DialogError):
+            tui_main.MeshForgeLauncher._run_main_menu(fake)
         assert calls['menu'] == 3, "3 genuine failures then exit"
         assert calls['yesno'] == 0, "failures must not ask Exit?"
 

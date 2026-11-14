@@ -50,6 +50,19 @@ class EditorUnavailable(DialogError):
 EDITOR_PACKAGE = "dialog"
 
 
+def _is_tool_error(code: int, output: str) -> bool:
+    """True when exit 255 is the TOOL's own error, not the operator's Escape.
+
+    dialog/whiptail report their own failures ('Failed to open terminal',
+    'Can't make new window') as 255 — the same code as Esc — with the reason
+    on stderr, which _run captures as output. Esc leaves it empty. Reading
+    every 255 as an answer made a no-TTY launch spin forever between the main
+    menu and 'Exit MeshForge?' (deferred row tui-no-tty-dialog-spin). ONE
+    discriminator for every input primitive, so they cannot drift apart.
+    """
+    return code == 255 and bool(output and output.strip())
+
+
 def clear_screen() -> None:
     """Clear the terminal including scrollback buffer.
 
@@ -258,12 +271,14 @@ class DialogBackend:
         if default_no:
             args.append('--defaultno')
         args += ['--yesno', text, str(h), str(w)]
-        code, _ = self._run(args)
+        code, output = self._run(args)
         if code == -1:
             # A dead dialog must not answer "No" on the operator's behalf —
             # for a confirm-to-keep flow that fabricated answer is
             # destructive (review F7).
             raise DialogError(f"yesno '{title}' failed (subprocess died)")
+        if _is_tool_error(code, output):
+            raise DialogError(f"yesno '{title}' failed: {output.strip()[:300]}")
         return code == 0
 
     def _cancel_flag(self, label: str) -> List[str]:
@@ -435,7 +450,7 @@ class DialogBackend:
         code, output = self._run(args)
         if code == 0:
             return output
-        if code in (1, 255):
+        if code in (1, 255) and not _is_tool_error(code, output):
             # User pressed Cancel (1) or Escape (255) — an answer, not a
             # failure. Never retry it: retrying made every Escape need two
             # presses. The stale-input problem the old blanket retry papered
@@ -443,17 +458,19 @@ class DialogBackend:
             return None
 
         # Retry once on genuine dialog failure (subprocess death/timeout,
-        # exotic exit codes) — the case the original retry was added for.
+        # the tool's own 255 error, exotic exit codes) — the case the
+        # original retry was added for.
         logger.debug("Menu '%s' failed (code=%d), retrying once", title, code)
         code, output = self._run(args)
         if code == 0:
             return output
-        if code in (1, 255):
+        if code in (1, 255) and not _is_tool_error(code, output):
             return None
         # Still dead after the retry: raise, never return None — None means
         # "the user cancelled", and a dead dialog must not impersonate a
         # user answer (review F4/F7).
-        raise DialogError(f"menu '{title}' failed (code={code})")
+        reason = f": {output.strip()[:300]}" if _is_tool_error(code, output) else ""
+        raise DialogError(f"menu '{title}' failed (code={code}){reason}")
 
     def inputbox(self, title: str, text: str, init: str = "",
                  height: int = None, width: int = None) -> Optional[str]:
@@ -517,7 +534,7 @@ class DialogBackend:
         if code < 0:
             # Killed by a signal — never an operator's cancel.
             raise DialogError(f"editbox '{title}' killed by signal {-code}")
-        if code == 255 and output.strip():
+        if _is_tool_error(code, output):
             # dialog reports ITS OWN errors as 255 — the same code as Esc —
             # with the reason on stderr; Esc leaves stderr empty.
             raise DialogError(f"editbox '{title}' failed: {output.strip()[:300]}")
