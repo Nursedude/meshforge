@@ -34,6 +34,7 @@ from utils.box_truth_collect import last_reads, witness_path
 
 AK_FILES = ("authorized_keys", "authorized_keys2")   # sshd -T default, measured
 DEFAULT_EXPORT = app.INSTALL_DIR + "/scripts/" + bt.EXPORT_BASENAME
+DEFAULT_EVAL_WRAPPER = app.INSTALL_DIR + "/scripts/" + bt.EVAL_BASENAME
 _NOT_SHELLS = ("nologin", "false")
 
 
@@ -137,6 +138,7 @@ def list_grants(home: Path, env: Optional[dict] = None) -> List[dict]:
                      # it may be unrestricted. Never shown as a read-only grant.
                      "foreign": e.foreign,
                      "blob_matches": e.is_grant,
+                     "kind": e.kind,
                      "from": _from_opt(e.options),
                      "export": _export_in(e.options),
                      "last_read_ts": last.get("ts"), "last_read_src": last.get("src")})
@@ -149,11 +151,14 @@ def _from_opt(options: str) -> Optional[str]:
 
 
 def _export_in(options: str) -> Optional[str]:
+    """The program path inside the forced command (either grant kind)."""
     i = options.find('command="')
     if i < 0:
         return None
-    parts = options[i + 9:].split()
-    return parts[2] if len(parts) > 2 else None
+    for part in options[i + 9:].split():
+        if part.endswith((bt.EXPORT_BASENAME, bt.EVAL_BASENAME)):
+            return part
+    return None
 
 
 # ── measured preconditions (S10) ─────────────────────────────────────────
@@ -180,7 +185,8 @@ def _login_shell() -> str:
     return pwd.getpwuid(os.getuid()).pw_shell or ""
 
 
-def preflight(home: Path, export_path: str, *, shell: Optional[str] = None) -> Tuple[List[str], List[str]]:
+def preflight(home: Path, export_path: str, *, shell: Optional[str] = None,
+              kind: str = bt.KIND_NOC) -> Tuple[List[str], List[str]]:
     """(problems, notes) measured now. Any problem refuses the write."""
     problems: List[str] = []
     notes: List[str] = []
@@ -211,8 +217,9 @@ def preflight(home: Path, export_path: str, *, shell: Optional[str] = None) -> T
                         "forced command through it, so the grant could never answer")
     if not (os.path.isfile(export_path) and os.access(export_path, os.X_OK)):
         problems.append(f"export {export_path} missing or not executable")
-    if not os.access(bt.PYTHON, os.X_OK):
-        problems.append(f"{bt.PYTHON} not executable")
+    interp = bt.PYTHON if kind == bt.KIND_NOC else bt.BASH
+    if not os.access(interp, os.X_OK):
+        problems.append(f"{interp} not executable")
     return problems, notes
 
 
@@ -297,21 +304,23 @@ def _unparseable(lines: List[Line]) -> List[str]:
             "before any grant change" for ln in lines if ln.unparseable]
 
 
-def plan_add(home: Path, pubkey: str, *, center: str, export_path: str = DEFAULT_EXPORT,
+def plan_add(home: Path, pubkey: str, *, center: str, export_path: Optional[str] = None,
              from_: Optional[str] = None, shell: Optional[str] = None,
-             sshd: Optional[Dict[str, str]] = None) -> Plan:
+             sshd: Optional[Dict[str, str]] = None, kind: str = bt.KIND_NOC) -> Plan:
     target = ssh_dir(home) / AK_FILES[0]
     plan = Plan("add", target)
+    if export_path is None:
+        export_path = DEFAULT_EVAL_WRAPPER if kind == bt.KIND_EVAL else DEFAULT_EXPORT
     try:
-        key = bt.parse_noc_pubkey(pubkey)
+        key = bt.parse_noc_pubkey(pubkey, kind=kind)
         plan.fingerprint = key.fingerprint
-        plan.line = bt.build_grant_line(key, export_path, from_=from_)
+        plan.line = bt.build_grant_line(key, export_path, from_=from_, kind=kind)
     except bt.KeyRejected as e:
         plan.problems.append(str(e))
         return plan
-    if key.comment != f"noc:{center}":
+    if key.comment != f"{kind}:{center}":
         plan.problems.append(f"key comment {key.comment!r} does not name center "
-                             f"{center!r} — expected noc:{center}")
+                             f"{center!r} — expected {kind}:{center}")
     lines = read_lines(home)
     plan.existing_grants = sum(1 for ln in lines if ln.entry and ln.entry.is_grant)
     plan.problems += _unparseable(lines)
@@ -332,7 +341,7 @@ def plan_add(home: Path, pubkey: str, *, center: str, export_path: str = DEFAULT
             plan.problems.append(f"this key already has INTERACTIVE access ({where}); "
                                  "sshd would use that line and ignore the grant — "
                                  "remove it first if it should become read-only")
-    problems, notes = preflight(home, export_path, shell=shell)
+    problems, notes = preflight(home, export_path, shell=shell, kind=kind)
     plan.problems += problems
     plan.notes += notes
     plan.sshd = read_sshd_t() if sshd is None else sshd

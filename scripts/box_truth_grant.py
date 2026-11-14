@@ -4,6 +4,8 @@
 ON A TARGET BOX (who may read me):
   list                                  grants: fingerprint, center, last read time + source
   add --pubkey '<line>' --center NAME   plan; with --confirm <fp last 8> it writes
+      [--kind eval-pf]                  the EVAL-PF lab key: forced command = the
+                                        read-only eval wrapper (comment eval-pf:NAME)
   revoke --fp SHA256:...                plan; with --confirm <fp last 8> it removes the key
                                         from BOTH authorized_keys files (--force for a line
                                         that is not one of ours)
@@ -42,6 +44,7 @@ from utils import box_truth_reader as br  # noqa: E402
 from utils.paths import get_real_user_home  # noqa: E402
 
 EXPORT_PATH = str(Path(os.path.realpath(__file__)).parent / bt.EXPORT_BASENAME)
+EVAL_PATH = str(Path(os.path.realpath(__file__)).parent / bt.EVAL_BASENAME)
 
 
 def _registry_expect(alias):
@@ -62,7 +65,7 @@ def cmd_list(home, _a):
     for r in rows:
         warn = ("  ⚠ FOREIGN — mentions the export but is NOT a restricted grant; "
                 "it may be UNRESTRICTED (revoke --fp … --force)") if r["foreign"] else ""
-        print(f"{r['fingerprint']}  {r['comment']:<24} last read {_when(r['last_read_ts'])}"
+        print(f"{r['fingerprint']}  {(r.get('kind') or '?'):<7} {r['comment']:<24} last read {_when(r['last_read_ts'])}"
               f" from {r['last_read_src'] or '-'}  [{r['file']}:{r['line']}"
               f"{' from=' + r['from'] if r['from'] else ''}]{warn}")
     return 0
@@ -75,8 +78,9 @@ def cmd_add(home, a):
         print(f"REFUSED: {why} — run this box's grant from the app it runs "
               f"(this is {app.APP} at {app.INSTALL_DIR})")
         return 1
-    plan = bg.plan_add(home, a.pubkey, center=a.center, export_path=EXPORT_PATH,
-                       from_=a.from_)
+    plan = bg.plan_add(home, a.pubkey, center=a.center,
+                       export_path=EVAL_PATH if a.kind == bt.KIND_EVAL else EXPORT_PATH,
+                       from_=a.from_, kind=a.kind)
     print(plan.render())
     if plan.problems:
         return 1
@@ -157,6 +161,9 @@ def main(argv=None):
     p.add_argument("--center", required=True)
     p.add_argument("--from", dest="from_", default=None)
     p.add_argument("--confirm", default=None)
+    p.add_argument("--kind", choices=bt.GRANT_KINDS, default=bt.KIND_NOC,
+                   help="noc (default): the box_truth export; eval-pf: the "
+                        "read-only EVAL-PF lab wrapper")
     p = sub.add_parser("revoke")
     p.add_argument("--fp", required=True)
     p.add_argument("--force", action="store_true")

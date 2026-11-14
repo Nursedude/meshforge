@@ -64,10 +64,28 @@ EXPORT_BASENAME = "box_truth_export.py"
 GRANT_ARG = "--grant"
 PYTHON = "/usr/bin/python3"
 
+#: EVAL-PF (plans/eval_pf_grilling_2026_11_13.md, operator 11-13 "one writer"):
+#: a second, CLOSED grant kind written by this same machinery. Its forced
+#: command is the read-only lab wrapper, with the grant's fingerprint bound in
+#: exactly like the NOC export. Adding a kind = a new row here + its own
+#: command shape below; every consumer switching on kind must handle it.
+EVAL_BASENAME = "eval_pf_readonly.sh"
+BASH = "/bin/bash"
+KIND_NOC = "noc"
+KIND_EVAL = "eval-pf"
+GRANT_KINDS = (KIND_NOC, KIND_EVAL)
+
 KEYTYPE = "ssh-ed25519"
 _COMMENT_RE = re.compile(r"^noc:[A-Za-z0-9._-]{1,64}$")
+_EVAL_COMMENT_RE = re.compile(r"^eval-pf:[A-Za-z0-9._-]{1,64}$")
 _FP_RE = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
 _EXPORT_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]+/" + re.escape(EXPORT_BASENAME) + "$")
+_EVAL_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]+/" + re.escape(EVAL_BASENAME) + "$")
+
+
+def _kind_ok(kind: str) -> None:
+    if kind not in GRANT_KINDS:
+        raise KeyRejected(f"grant kind {kind!r} unknown — one of {', '.join(GRANT_KINDS)}")
 _FROM_RE = re.compile(r"^[0-9A-Fa-f.:/*?,]+$")
 _KEYTYPES = ("ssh-ed25519", "ssh-rsa", "ssh-dss", "ecdsa-sha2-",
              "sk-ssh-ed25519@", "sk-ecdsa-sha2-")
@@ -105,10 +123,12 @@ def _read_string(buf: bytes, off: int) -> Tuple[bytes, int]:
     return buf[off + 4:end], end
 
 
-def parse_noc_pubkey(text: str) -> NocKey:
+def parse_noc_pubkey(text: str, kind: str = KIND_NOC) -> NocKey:
     """Validate a pasted center public key (B3). Exactly one line
-    ``ssh-ed25519 <base64> noc:<name>``; anything else is refused with the
-    reason. Never returns a key it would not write."""
+    ``ssh-ed25519 <base64> <kind>:<name>`` (``noc:`` by default; ``eval-pf:``
+    for an EVAL-PF lab key); anything else is refused with the reason. Never
+    returns a key it would not write."""
+    _kind_ok(kind)
     if not isinstance(text, str) or not text.strip():
         raise KeyRejected("empty paste")
     if text.endswith("\n"):
@@ -124,12 +144,12 @@ def parse_noc_pubkey(text: str) -> NocKey:
         raise KeyRejected("leading option token refused — paste the bare "
                           "public key, the grant adds its own options")
     if len(parts) != 3:
-        raise KeyRejected("expected exactly '<type> <base64> noc:<name>' — "
+        raise KeyRejected(f"expected exactly '<type> <base64> {kind}:<name>' — "
                           "the comment is required and may not contain spaces")
     _t, b64, comment = parts
-    if not _COMMENT_RE.match(comment):
+    if not (_COMMENT_RE if kind == KIND_NOC else _EVAL_COMMENT_RE).match(comment):
         raise KeyRejected(f"comment {comment[:70]!r} refused — must match "
-                          "noc:[A-Za-z0-9._-]{1,64}")
+                          f"{kind}:" + "[A-Za-z0-9._-]{1,64}")
     try:
         blob = base64.b64decode(b64.encode("ascii"), validate=True)
     except (binascii.Error, ValueError, UnicodeEncodeError):
@@ -146,19 +166,25 @@ def parse_noc_pubkey(text: str) -> NocKey:
     return NocKey(KEYTYPE, b64, comment, fingerprint_of_blob(blob))
 
 
-def export_command(export_path: str, fingerprint: str) -> str:
-    """The forced command (B1, B2, B4): isolated interpreter, the grant's
-    fingerprint bound in, stdin closed by the user's shell before Python."""
-    if not _EXPORT_PATH_RE.match(export_path or ""):
+def export_command(export_path: str, fingerprint: str, kind: str = KIND_NOC) -> str:
+    """The forced command (B1, B2, B4): the grant's fingerprint bound in,
+    stdin closed by the user's shell. ``noc``: isolated Python running the
+    export. ``eval-pf``: bash running the read-only lab wrapper."""
+    _kind_ok(kind)
+    path_re, base = ((_EXPORT_PATH_RE, EXPORT_BASENAME) if kind == KIND_NOC
+                     else (_EVAL_PATH_RE, EVAL_BASENAME))
+    if not path_re.match(export_path or ""):
         raise KeyRejected(f"export path {export_path!r} must be an absolute "
-                          f"path ending in {EXPORT_BASENAME}")
+                          f"path ending in {base}")
     if not _FP_RE.match(fingerprint or ""):
         raise KeyRejected(f"fingerprint {fingerprint!r} malformed")
-    return f"{PYTHON} -I {export_path} {GRANT_ARG} {fingerprint} </dev/null"
+    if kind == KIND_NOC:
+        return f"{PYTHON} -I {export_path} {GRANT_ARG} {fingerprint} </dev/null"
+    return f"{BASH} {export_path} {GRANT_ARG} {fingerprint} </dev/null"
 
 
 def build_grant_line(key: NocKey, export_path: str, *,
-                     from_: Optional[str] = None) -> str:
+                     from_: Optional[str] = None, kind: str = KIND_NOC) -> str:
     """The ``authorized_keys`` line a grant writes. ``from_`` is opt-in (B8)."""
     opts = ["restrict"]
     if from_ is not None:
@@ -166,7 +192,7 @@ def build_grant_line(key: NocKey, export_path: str, *,
             raise KeyRejected(f"from= value {from_[:60]!r} refused — "
                               "addresses/CIDRs/patterns only")
         opts.append(f'from="{from_}"')
-    opts.append(f'command="{export_command(export_path, key.fingerprint)}"')
+    opts.append(f'command="{export_command(export_path, key.fingerprint, kind)}"')
     return ",".join(opts) + " " + key.line()
 
 
@@ -186,6 +212,8 @@ class AuthorizedKey:
     #: options, a different command, case-changed options, or a swapped key.
     #: Listed with a warning; never treated as a read-only grant.
     foreign: bool = False
+    #: which closed grant kind the exact line is (GRANT_KINDS), or None.
+    kind: Optional[str] = None
 
     @property
     def is_grant(self) -> bool:
@@ -220,6 +248,11 @@ _GRANT_OPTIONS = re.compile(
     r'^restrict,(?:from="[0-9A-Fa-f.:/*?,]+",)?command="' + re.escape(PYTHON)
     + r" -I /[A-Za-z0-9._/-]+/" + re.escape(EXPORT_BASENAME) + " " + re.escape(GRANT_ARG)
     + r' (SHA256:[A-Za-z0-9+/]{43}) </dev/null"$')
+#: EXACTLY the EVAL-PF line build_grant_line(kind="eval-pf") writes.
+_EVAL_GRANT_OPTIONS = re.compile(
+    r'^restrict,(?:from="[0-9A-Fa-f.:/*?,]+",)?command="' + re.escape(BASH)
+    + r" /[A-Za-z0-9._/-]+/" + re.escape(EVAL_BASENAME) + " " + re.escape(GRANT_ARG)
+    + r' (SHA256:[A-Za-z0-9+/]{43}) </dev/null"$')
 
 
 def parse_authorized_keys_line(line: str) -> Optional[AuthorizedKey]:
@@ -239,13 +272,23 @@ def parse_authorized_keys_line(line: str) -> Optional[AuthorizedKey]:
     except (binascii.Error, ValueError, UnicodeEncodeError):
         return None
     fp = fingerprint_of_blob(blob)
-    m = _GRANT_OPTIONS.match(options)
-    grant_fp = m.group(1) if m and m.group(1) == fp else None
-    foreign = grant_fp is None and EXPORT_BASENAME in options
+    comment = parts[2] if len(parts) > 2 else ""
+    grant_fp = kind = None
+    for k, rx, crx in ((KIND_NOC, _GRANT_OPTIONS, _COMMENT_RE),
+                       (KIND_EVAL, _EVAL_GRANT_OPTIONS, _EVAL_COMMENT_RE)):
+        m = rx.match(options)
+        if m and m.group(1) == fp:
+            # The eval kind is ALSO bound to its comment, so a key granted as
+            # one kind can never be read back as the other.
+            if k == KIND_EVAL and not crx.match(comment):
+                break
+            grant_fp, kind = m.group(1), k
+            break
+    foreign = grant_fp is None and (EXPORT_BASENAME in options or EVAL_BASENAME in options)
     return AuthorizedKey(options=options, keytype=parts[0], blob_b64=parts[1],
-                         comment=parts[2] if len(parts) > 2 else "",
+                         comment=comment,
                          fingerprint=fp, grant_fp=grant_fp, raw=line.rstrip("\n"),
-                         foreign=foreign)
+                         foreign=foreign, kind=kind)
 
 
 # ── framing ──────────────────────────────────────────────────────────────

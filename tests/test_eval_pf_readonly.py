@@ -154,3 +154,35 @@ def test_every_request_is_logged_in_order(box):
     assert verdicts[0] == "ALLOWED"
     assert verdicts[1].startswith("REFUSED")
     assert verdicts[2] == "ALLOWED"
+
+
+# ── the grant line binds its fingerprint in as our own argv ─────────────
+
+FP = "SHA256:" + "A" * 43
+
+
+def _run_with_argv(box, argv, request="uptime"):
+    import subprocess as sp
+    env = {"HOME": str(box.home), "PATH": f"{box.home.parent / 'bin'}:/usr/bin:/bin",
+           "EVAL_PF_LOG": str(box.home.parent / "wrapper.log"),
+           "SSH_ORIGINAL_COMMAND": request}
+    return sp.run(["/bin/bash", str(SCRIPT), *argv], env=env, capture_output=True,
+                  text=True, timeout=20, stdin=sp.DEVNULL)
+
+
+def test_grant_argv_is_accepted_and_logged(box):
+    box(None)   # creates the stub dir/log paths
+    p = _run_with_argv(box, ["--grant", FP])
+    assert p.returncode == 0, p.stderr
+    log = (box.home.parent / "wrapper.log").read_text().splitlines()
+    assert log[-1].split("\t") [1:] == ["ALLOWED", "uptime", FP]
+
+
+@pytest.mark.parametrize("argv", [
+    ["--grant"], ["--grant", "SHA256:short"], ["--grant", FP, "extra"],
+    ["-c", "id"], ["--grant", FP.replace("A", ";", 1)],
+])
+def test_unexpected_wrapper_argv_is_refused(box, argv):
+    box(None)
+    p = _run_with_argv(box, argv)
+    assert p.returncode == 126

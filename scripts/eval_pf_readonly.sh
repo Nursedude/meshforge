@@ -1,8 +1,9 @@
 #!/bin/bash
 # eval_pf_readonly.sh — the ONLY thing an EVAL-PF eval key can run on a lab box.
 #
-# Installed as an ssh forced command:
-#   restrict,command="/opt/meshforge/scripts/eval_pf_readonly.sh" ssh-ed25519 … eval-pf
+# Installed ONLY by the one grant writer (box_truth_grant.py add --kind eval-pf),
+# as the forced command
+#   /bin/bash /opt/meshforge/scripts/eval_pf_readonly.sh --grant SHA256:<fp> </dev/null
 # so sshd puts the session's requested command in $SSH_ORIGINAL_COMMAND and
 # runs THIS instead (plans/eval_pf_grilling_2026_11_13.md Q14/Q18).
 #
@@ -20,6 +21,7 @@
 set -u
 
 LOG="${EVAL_PF_LOG:-$HOME/.local/state/meshforge/eval_pf_readonly.log}"
+GRANT="-"
 SHARE="$HOME/.local/share/meshforge"
 CONF="$HOME/.config/meshforge"
 
@@ -27,7 +29,7 @@ log() {  # verdict, request
     mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
     # Tabs/newlines in the request are already refused; still strip them so a
     # log line is always one line.
-    printf '%s\t%s\t%s\n' "$(date -Is)" "$1" "${2//[$'\t\n']/ }" >>"$LOG" 2>/dev/null || true
+    printf '%s\t%s\t%s\t%s\n' "$(date -Is)" "$1" "${2//[$'\t\n']/ }" "$GRANT" >>"$LOG" 2>/dev/null || true
 }
 
 refuse() {  # reason
@@ -37,6 +39,15 @@ refuse() {  # reason
 }
 
 REQ="${SSH_ORIGINAL_COMMAND-}"
+# The grant binds its fingerprint in as `--grant SHA256:<43>`; anything else
+# in our own argv means we were not invoked by the grant line — refuse.
+if [ "$#" -gt 0 ]; then
+    if [ "$#" -eq 2 ] && [ "$1" = "--grant" ] && [[ "$2" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]]; then
+        GRANT="$2"
+    else
+        refuse "wrapper invoked with unexpected arguments"
+    fi
+fi
 [ -n "$REQ" ] || refuse "empty request (interactive shells are not allowed)"
 
 # Whole-request charset: letters, digits and @ . _ : / = , + ~ * - and single
