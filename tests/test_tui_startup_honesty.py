@@ -196,3 +196,37 @@ class TestMainMenuEscapeSemantics:
         tui_main.MeshForgeLauncher._run_main_menu(fake)
         assert calls['menu'] == 3, "3 genuine failures then exit"
         assert calls['yesno'] == 0, "failures must not ask Exit?"
+
+
+class TestRootContextWarningClaimsOnlyWhatItDoes:
+    """Root Context Warning must not promise a workaround (deferred row
+    root-context-warning-claims-workaround, 2026-11-13).
+
+    The old text said "MeshForge will try to work around this" — no code
+    after the msgbox does anything. An instrument that claims an action
+    it does not take is the legibility class: the operator stays as root
+    trusting a repair that never happens.
+    """
+
+    def _run(self, rnsd_user):
+        tui_main = _import_main()
+        dialog = FakeDialog()
+        fake_self = SimpleNamespace(dialog=dialog)
+        done = SimpleNamespace(returncode=0, stdout=f"{rnsd_user}\n")
+        env = {k: v for k, v in os.environ.items() if k != 'SUDO_USER'}
+        with patch.object(tui_main.os, 'getuid', return_value=0), \
+                patch.dict(tui_main.os.environ, env, clear=True), \
+                patch.object(tui_main.subprocess, 'run', return_value=done):
+            tui_main.MeshForgeLauncher._check_root_without_sudo_user(fake_self)
+        return dialog
+
+    def test_mismatch_warning_promises_no_workaround(self):
+        dialog = self._run('wh6gxz')
+        assert dialog.last_msgbox_title == "Root Context Warning"
+        text = dialog.last_msgbox_text.lower()
+        assert "work around" not in text and "workaround" not in text, (
+            "the warning claims a workaround no code performs"
+        )
+        # It must still say what to DO (a refusal names the action).
+        assert "sudo -e meshforge" in text
+        assert "rpc" in text

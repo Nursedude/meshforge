@@ -746,8 +746,8 @@ class MeshForgeLauncher:
                 f"  meshforge   (without sudo)\n\n"
                 f"Or preserve SUDO_USER:\n"
                 f"  sudo -E meshforge\n\n"
-                f"MeshForge will try to work around this, but some\n"
-                f"features may not work correctly.",
+                f"MeshForge does NOT fix this for you: until you\n"
+                f"relaunch, RNS features (NomadNet, rnstatus) may fail.",
             )
         elif not rnsd_user:
             # rnsd not running yet - just a general warning
