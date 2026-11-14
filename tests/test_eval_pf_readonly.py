@@ -455,20 +455,30 @@ def recorder(tmp_path_factory):
             if (bindir / name).exists() or not os.access(p, os.X_OK) or "/" in name:
                 continue
             target = "true" if name in PROGRAMS else f'exec {p} "$@"'
-            (bindir / name).write_text(f'#!/bin/bash\necho {shlex_q(name)} >> "{rec}"\n{target}\n')
+            (bindir / name).write_text(f'#!/bin/bash\necho {shlex_q(name)} >> "$EVAL_REC"\n{target}\n')
             (bindir / name).chmod(0o755)
     home = d / "home"
     (home / ".local/share/meshforge").mkdir(parents=True)
     (home / ".config/meshforge").mkdir(parents=True)
     (home / ".local/share/meshforge/state.json").write_text("{}")
 
+    import itertools
+    import threading
+    counter, lock = itertools.count(), threading.Lock()
+
     def go(req):
-        rec.write_text("")
-        env = {"HOME": str(home), "PATH": str(bindir), "EVAL_PF_LOG": str(d / "w.log"),
-               "SSH_ORIGINAL_COMMAND": req}
+        # One recorder file per call, so calls can run in parallel.
+        with lock:
+            n = next(counter)
+        own = d / f"rec-{n}.txt"
+        own.write_text("")
+        env = {"HOME": str(home), "PATH": str(bindir), "EVAL_PF_LOG": str(d / f"w-{n}.log"),
+               "SSH_ORIGINAL_COMMAND": req, "EVAL_REC": str(own)}
         p = subprocess.run(["/bin/bash", str(SCRIPT)], env=env, capture_output=True,
                            text=True, timeout=30, stdin=subprocess.DEVNULL)
-        return p, set(rec.read_text().split())
+        ran = set(own.read_text().split())
+        own.unlink()
+        return p, ran
     return go
 
 
@@ -537,11 +547,16 @@ def test_every_other_program_name_is_refused_with_no_output(recorder):
     names = sorted({p.name for d in ("/usr/bin", "/bin") for p in Path(d).iterdir()
                     if re.fullmatch(r"[A-Za-z0-9._+-]+", p.name)} - ALLOWED_PROGS)
     assert len(names) > 100
-    leaks = []
-    for name in names:
+    # CI caps a test at 30 s and a runner has ~2.5k names: 8 workers.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(name):
         p, ran = recorder(name)
         if p.returncode != 126 or p.stdout or not ran <= HELPERS:
-            leaks.append((name, p.returncode, p.stdout[:40], sorted(ran - HELPERS)))
+            return (name, p.returncode, p.stdout[:40], sorted(ran - HELPERS))
+        return None
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        leaks = [r for r in ex.map(one, names) if r]
     assert not leaks, leaks[:10]
 
 
