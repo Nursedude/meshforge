@@ -187,6 +187,9 @@ ls | cat)
     resolved=()
     for p in "${paths[@]}"; do
         r="$(readlink -m -- "$p")" || refuse "cannot resolve '$p'"
+        # The eval's own cases (answer keys) and results: never, by any path
+        # (EVAL-PF Q8/Q30; Fable 11-14 round 5).
+        under "$r" "$rshare/eval_pf" && refuse "the eval's own cases/results are not readable"
         if under "$r" "$rshare"; then :
         elif [ "$PROG" = ls ] && under "$r" "$rconf"; then :
         else refuse "path '$p' is outside the allowed roots"

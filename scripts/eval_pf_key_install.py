@@ -136,6 +136,19 @@ def listed(list_out: str, fp: str) -> list:
     return rows
 
 
+NO_GRANTS = "no NOC read grants on this box"   # box_truth_grant.py cmd_list, verbatim
+
+
+def list_shape_ok(list_out: str) -> bool:
+    """True only for what `box_truth_grant.py list` prints: the no-grants line,
+    or one `SHA256:` row per line. Anything else (a login banner, an error)
+    is not a read-back — Fable 11-14 round 5."""
+    lines = [ln for ln in list_out.splitlines() if ln.strip()]
+    if lines == [NO_GRANTS]:
+        return True
+    return bool(lines) and all(ln.startswith("SHA256:") for ln in lines)
+
+
 def run(argv, *, env=None):
     return subprocess.run(argv, capture_output=True, text=True, timeout=TIMEOUT_S,
                           env=env, stdin=subprocess.DEVNULL)
@@ -196,8 +209,9 @@ def main(argv=None) -> int:
         if lst.returncode != 0:   # a blind read-back is not "gone" (Fable 11-14)
             return fail(f"read-back `list` on {a.box} rc={lst.returncode} — revoke UNVERIFIED; "
                         "re-run --revoke --apply")
-        if not lst.stdout.strip():   # `list` always prints something
-            return fail(f"read-back `list` on {a.box} printed nothing — revoke UNVERIFIED")
+        if not list_shape_ok(lst.stdout):   # empty / banner / error is not "gone"
+            return fail(f"read-back `list` on {a.box} printed no grant list — revoke UNVERIFIED: "
+                        f"{lst.stdout.strip()[:200]!r}")
         if listed(lst.stdout, k.fingerprint):
             return fail(f"read-back: {k.fingerprint} still listed on {a.box}")
         print(r.stdout.strip())

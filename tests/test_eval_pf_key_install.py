@@ -259,6 +259,7 @@ def test_revoke_happy_path(lab, capsys):
     (lambda b: setattr(b, "list_rc", 255), "read-back blind"),                     # M4 / Fable 2
     (lambda b: setattr(b, "list_rows_after_revoke", list(b.list_rows)), "still listed"),
     (lambda b: setattr(b, "list_empty_output", True), "list printed nothing"),
+    (lambda b: setattr(b, "list_rows_after_revoke", ["Welcome to lab"]), "list output unrecognised"),
 ])
 def test_revoke_refuses_unless_read_back_proves_it(lab, capsys, breakit, why):
     breakit(lab)

@@ -356,3 +356,26 @@ def test_run_allowed_is_the_only_exec():
     execs = [ln for ln in code if re.search(r'(^|[;&|\s])exec(\s|$)', ln)]
     assert execs == ['exec "$@"'], execs
     assert not [ln for ln in code if "log ALLOWED" in ln and '"$x"' not in ln]
+
+
+def test_the_eval_answer_keys_are_never_readable(box, tmp_path):
+    """Round 5 (Fable 11-14) + EVAL-PF Q8/Q30: cases (with the answer key)
+    and results live under <share>/eval_pf — the session under test must
+    never read or list them, by direct path or through a link."""
+    share = box.home / ".local/share/meshforge"
+    cases = share / "eval_pf" / "cases"
+    cases.mkdir(parents=True)
+    (cases / "case1.json").write_text('{"key": {"verdict": "x"}}')
+    (share / "innocent").symlink_to(cases / "case1.json")
+    for req in ("cat ~/.local/share/meshforge/eval_pf/cases/case1.json",
+                "ls ~/.local/share/meshforge/eval_pf",
+                "ls ~/.local/share/meshforge/eval_pf/cases",
+                "cat ~/.local/share/meshforge/innocent"):
+        proc, called, _ = box(req)
+        assert proc.returncode == 126 and called == [], (req, proc.stderr)
+    # the share root itself and its siblings stay listable
+    proc, called, _ = box("ls ~/.local/share/meshforge")
+    assert proc.returncode == 0, proc.stderr
+    (share / "eval_pf-notes").write_text("x")
+    proc, called, _ = box("cat ~/.local/share/meshforge/eval_pf-notes")
+    assert proc.returncode == 0, proc.stderr
