@@ -416,12 +416,16 @@ def test_every_program_arm_ends_in_run_allowed_or_refuse():
     end = next(i for i in range(start + 1, len(lines)) if lines[i] == "esac")
     arms, cur = {}, None
     for ln in lines[start + 1:end]:
-        if ln and not ln[0].isspace() and ln.rstrip().endswith(")"):
-            cur = ln.strip()
-            arms[cur] = []
-        elif cur and ln.strip() and not ln.strip().startswith("#"):
+        m = re.match(r"^(\S[^)]*\))\s*(.*)$", ln)   # an arm label at column 0
+        if m:
+            cur = m.group(1)
+            arms[cur] = [m.group(2).strip()] if m.group(2).strip() else []
+        elif ln.strip() and not ln.strip().startswith("#"):
+            assert cur is not None, f"code between `case` and its first arm: {ln!r}"
             arms[cur].append(ln.strip())
-    assert "*)" in arms and len(arms) >= 9, list(arms)
+    # CLOSED: a new program is a deliberate, reviewed change to this list.
+    assert list(arms) == ["systemctl)", "journalctl)", "ls | cat)", "ps)", "ss)", "df)",
+                          "free)", "uptime)", "*)"], list(arms)
     for arm, body in arms.items():
         last = body[-1].removesuffix(";;").strip() or body[-2].removesuffix(";;").strip()
         assert last.startswith(("run_allowed ", "refuse ")), (arm, last)
@@ -520,3 +524,49 @@ def test_eval_pf_that_is_not_a_plain_dir_refuses_every_path_read(box):
     proc, called, _ = box("cat ~/.local/share/meshforge/ok.json")
     assert proc.returncode == 126 and called == [], proc.stderr
     assert "not a plain directory" in proc.stderr
+
+
+ALLOWED_PROGS = {"systemctl", "journalctl", "ls", "cat", "ps", "ss", "df", "free", "uptime"}
+
+
+def test_every_other_program_name_is_refused_with_no_output(recorder):
+    """Round 8: a program handled OUTSIDE the case (`if [ $PROG = tail ]`),
+    or a one-line arm the parser missed, ran unlogged. Behaviourally: every
+    executable name on this box, sent as a bare request, refuses with no
+    stdout and only helpers run — unless it is one of the allowed programs."""
+    names = sorted({p.name for d in ("/usr/bin", "/bin") for p in Path(d).iterdir()
+                    if re.fullmatch(r"[A-Za-z0-9._+-]+", p.name)} - ALLOWED_PROGS)
+    assert len(names) > 100
+    leaks = []
+    for name in names:
+        p, ran = recorder(name)
+        if p.returncode != 126 or p.stdout or not ran <= HELPERS:
+            leaks.append((name, p.returncode, p.stdout[:40], sorted(ran - HELPERS)))
+    assert not leaks, leaks[:10]
+
+
+@pytest.mark.parametrize("alias", ["share", "share-parent", "eval_pf", "cases"])
+def test_a_config_root_that_aliases_into_the_share_never_reaches_eval_pf(tmp_path, alias):
+    """Round 8 regression: with the deny literal-only, ~/.config/meshforge ->
+    ~/.local/share/meshforge listed the answer keys through `ls`. The deny
+    holds on the RESOLVED path too, whatever a root aliases to."""
+    home = tmp_path / "home"
+    share = home / ".local/share/meshforge"
+    cases = share / "eval_pf" / "cases"
+    cases.mkdir(parents=True)
+    (cases / "key.json").write_text("K")
+    (home / ".config").mkdir()
+    target, via = {"share": (share, "eval_pf/cases"),
+                   "share-parent": (share.parent, "meshforge/eval_pf/cases"),
+                   "eval_pf": (share / "eval_pf", "cases"),
+                   "cases": (cases, "")}[alias]
+    (home / ".config/meshforge").symlink_to(target)
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    (stubs / "ls").write_text("#!/bin/bash\necho LISTED\n")
+    (stubs / "ls").chmod(0o755)
+    env = {"HOME": str(home), "PATH": f"{stubs}:/usr/bin:/bin", "EVAL_PF_LOG": str(tmp_path / "w.log"),
+           "SSH_ORIGINAL_COMMAND": ("ls -la ~/.config/meshforge/" + via).rstrip("/")}
+    p = subprocess.run(["/bin/bash", str(SCRIPT)], env=env, capture_output=True, text=True,
+                       timeout=20, stdin=subprocess.DEVNULL)
+    assert p.returncode == 126 and "LISTED" not in p.stdout, (alias, p.returncode, p.stderr)

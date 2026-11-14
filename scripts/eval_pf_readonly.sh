@@ -17,6 +17,14 @@
 # opens a radio/TCP client.
 #
 # Exit: the program's own exit code when allowed; 126 when refused.
+#
+# Gates (tests/test_eval_pf_readonly.py): the program arms are a CLOSED list;
+# every arm ends in run_allowed/refuse; every other program name on the box is
+# refused with no output; a recorder of every executable shows only the asked
+# program + helpers run. NOT gated by any test (Fable 11-14 round 8): a future
+# edit that reads a file with a bash BUILTIN inside an allowed arm ($(<f),
+# mapfile <f, read <f, source). Any change to this file needs a NON-AUTHOR
+# review by running before it reaches a box holding the eval key.
 
 set -u
 # The client's LANG/LC_* reach us through sshd; under a UTF-8 locale bash's
@@ -192,7 +200,8 @@ ls | cat)
     # eval_pf must be a plain dir of plain, singly-linked files: a link in it
     # (cases -> ../store) moves the key somewhere readable, and a hardlink is
     # invisible by path. Either one refuses EVERY path read (fail closed).
-    EV="$lshare/eval_pf"
+    EV="$lshare/eval_pf"; rEV="$(realpath -m -- "$EV")"
+    [ -n "$rEV" ] || refuse "cannot resolve the allowed roots"
     if [ -e "$EV" ] || [ -L "$EV" ]; then
         [ ! -L "$EV" ] && [ -d "$EV" ] || refuse "eval_pf is not a plain directory"
         bad="$(find "$EV" \( -type l -o \( ! -type d -links +1 \) \) -print -quit 2>/dev/null)" \
@@ -208,7 +217,11 @@ ls | cat)
         else refuse "path '$p' is outside the allowed roots"
         fi
         [ "$r" = "$rroot${l#"$lroot"}" ] || refuse "path '$p' goes through a link (links are not followed)"
-        under "$l" "$EV" && refuse "the eval's own cases/results are not readable"
+        # Literal AND resolved (round 8: a ROOT may alias into the share —
+        # config -> share listed eval_pf through ls).
+        if under "$l" "$EV" || under "$r" "$rEV"; then
+            refuse "the eval's own cases/results are not readable"
+        fi
         resolved+=("$r")
     done
     paths=("${resolved[@]}")
