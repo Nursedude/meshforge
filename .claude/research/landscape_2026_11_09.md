@@ -32,7 +32,7 @@ Tags: VERIFIED (checked tonight, source named) · CORRECTED · REFUTED · UNKNOW
 | "11 releases behind upstream" | CORRECTED | 12 PyPI versions after 1.3.9 (1.4.0–1.4.2, 1.5.0–1.5.7, 1.6.0) |
 | "current clients need 1.5.7 or later" | REFUTED for Sideband | `markqvist/Sideband` `setup.py`: `rns>=1.2.0`, `lxmf>=0.9.6` (default branch, 11-09). Other clients not checked. Interop with stock is still owed on real hardware (BIC-4) |
 | No screenshot or demo of the unique thing | VERIFIED | README images = the logo + 4 badges |
-| The 11-04 cross-audit was refuted on 6 of 16 claims | UNKNOWN | no such tally in `review_provenance.md` |
+| The 11-04 cross-audit was refuted on 6 of 16 claims | HOLDS as a SELF-check (corrected 11-13) | the Cross-Audit page's own repo check at `9b0b934a`: "7 hold, 6 are wrong, 3 partly right" — the author grading itself, not an outside result. The first read searched only `review_provenance.md` |
 | Fleet view is wired to our own fleet's config | not measured | consistent with ROADMAP ("full of our own config") |
 
 ### About them

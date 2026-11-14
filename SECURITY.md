@@ -4,14 +4,19 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.5.x   | :white_check_mark: |
-| < 0.5   | :x:                |
+| 0.7.x (current `main`) | :white_check_mark: |
+| < 0.7   | :x:                |
+
+MeshForge is beta software run from `main`; fixes land on `main`, not on old tags.
 
 ## Reporting a Vulnerability
 
 **Please do NOT report security vulnerabilities through public GitHub issues.**
 
-Instead, please report security issues by emailing the maintainers directly. You should receive a response within 48 hours. If the issue is confirmed, we will release a patch as soon as possible depending on complexity.
+Instead, open a GitHub issue titled **"Security contact request"** with no
+details of the problem. The maintainer will reply with a private channel.
+This is a one-maintainer project: we aim to answer within a few days, and a
+confirmed issue is fixed on `main` as soon as complexity allows.
 
 Please include:
 - Description of the vulnerability
@@ -21,11 +26,22 @@ Please include:
 
 ## Security Measures
 
-MeshForge implements the following security measures as of v0.5.4-beta:
+MeshForge's security measures are listed below. Read **Known gaps** first:
+it says where the installed defaults are weaker than this list suggests.
+
+### Known gaps (as of 0.7.0-beta, 2026-11-13)
+
+| What | Where | Why it matters |
+|------|-------|----------------|
+| The map service listens on **all interfaces with no authentication** when installed | `scripts/install_noc.sh` systemd unit: `--host 0.0.0.0 --port 5000` (the code default is `127.0.0.1`; the installer overrides it) | Anyone on your LAN can read the map and `/api/network/topology` (mesh routing structure). Run it on a trusted LAN only, or change `--host` to `127.0.0.1` |
+| Generated Mosquitto config binds **all interfaces** | `src/utils/broker_profiles.py` (`bind_address = "0.0.0.0"`) | Intended for gateways that take MQTT from radios on the LAN. Change it to `127.0.0.1` if only local clients connect |
+| Radio udev rules are **world-writable** (`MODE="0666"`) | `scripts/install_noc.sh` (USB-serial radios and all `spidev` devices) | Any local user can talk to the radio. Tracked as `SEC-2`; the fix is a group-scoped rule |
+| The RNS "TCP Server" template listens on all interfaces | `src/commands/rns_templates.py` | Only when you choose that template; it accepts RNS peers from the network by design |
 
 ### Coding Standards (Linter-Enforced)
 
-MeshForge's custom linter (`scripts/lint.py`) enforces ten security rules (MF001-MF010):
+MeshForge's custom linter (`scripts/lint.py`) defines rules MF000–MF030.
+The ones that guard security and correctness the most are:
 
 | Rule | Description | Severity |
 |------|-------------|----------|
@@ -39,6 +55,10 @@ MeshForge's custom linter (`scripts/lint.py`) enforces ten security rules (MF001
 | **MF008** | No raw `systemctl` for service state — use `service_check` helpers | Warning |
 | **MF009** | `RNS.Reticulum()` must include `configdir=` parameter | Error |
 | **MF010** | No `time.sleep()` in daemon loops — use `_stop_event.wait()` | Warning |
+| **MF013** | No direct `sqlite3.connect()` — use `connect_tuned()` | Error |
+| **MF014 / MF015** | No literal LAN IP addresses in source, templates or public docs | Error |
+
+The full list is in `scripts/lint.py`; run `python3 scripts/lint.py --all`.
 
 ### Command Injection Prevention
 
@@ -66,14 +86,14 @@ All user input is validated before use:
 
 ### Network Security
 
-- Default binding to `127.0.0.1` (localhost only)
+- Code defaults bind to `127.0.0.1`; the installer opens the map and broker to the LAN (see **Known gaps**)
 - HTTPS for external API calls (NOAA SWPC, GitHub)
 - Local services (Prometheus, Grafana, HamClock) use HTTP on localhost only
 - SSL certificate verification enabled by default in agent protocol
 
 ### Secure Defaults
 
-- Services bind to localhost by default
+- Code defaults bind to localhost; installed services may not (see **Known gaps**)
 - Sensitive operations require confirmation via TUI dialogs
 - No secrets stored in code or committed config files
 
@@ -84,6 +104,8 @@ All user input is validated before use:
 - All SQL uses parameterized queries with `?` placeholders
 
 ## Security Audit History
+
+These entries are historical records of each review at the time, not a statement about today's code.
 
 ### v0.5.4-beta (2026-03-02) - Routine Security Review
 
@@ -196,7 +218,7 @@ send_message(node_id, message)  # No validation!
 
 ## Security Contact
 
-For security concerns, contact the maintainers through GitHub.
+Open a GitHub issue titled "Security contact request" with no details; the maintainer will reply with a private channel.
 
 ## Acknowledgments
 

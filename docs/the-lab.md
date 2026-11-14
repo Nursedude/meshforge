@@ -49,8 +49,8 @@ To stand up your own VPS demo, see `scripts/cloud/README.md` — one-shot setup 
 ## Research & Technical Foundation
 
 MeshForge development is backed by <!--STAT:researchdocs-->58<!--/STAT--> technical research documents covering
-protocol analysis, integration architecture, and RF engineering. These inform
-every major design decision in the codebase.
+protocol analysis, integration architecture, and RF engineering. The count is
+of files in `.claude/research/`; not every design decision traces to one.
 
 ### Multi-Protocol Bridging
 

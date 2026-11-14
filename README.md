@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Mesh Network Operations Center</strong><br>
-  <em>Meshtastic + Reticulum + AREDN — one interface over incompatible meshes,
+  <em>Meshtastic + Reticulum, with AREDN monitoring — one interface over incompatible meshes,
   and an honest answer when it can't see.</em>
 </p>
 
@@ -16,7 +16,7 @@
   <a href="https://github.com/Nursedude/meshforge"><img src="https://img.shields.io/badge/version-0.7.0--beta-blue.svg" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green.svg" alt="License"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.11+-yellow.svg" alt="Python"></a>
-  <a href="https://github.com/Nursedude/meshforge/actions"><img src="https://img.shields.io/badge/tests-passing-brightgreen.svg" alt="Tests"></a>
+  <a href="https://github.com/Nursedude/meshforge/actions/workflows/ci.yml"><img src="https://github.com/Nursedude/meshforge/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
 </p>
 
 <p align="center">
@@ -82,7 +82,7 @@ server.
 | **Watchdog + mini-dudeai** | One probe per failure class; briefs and pages | — |
 
 You choose the combination at install with a **deployment profile** —
-`radio_maps`, `monitor`, `meshcore`, `gateway`, or `full` — and change it later
+`radio_maps`, `monitor`, `meshcore`, `gateway`, `field`, or `full` — and change it later
 without reinstalling:
 
 ```bash
@@ -153,7 +153,8 @@ Each line carries its tier from [docs/capabilities.md](docs/capabilities.md):
   unobservable* as three distinct states; the status gate quotes the check
   behind any green
 - **Gateway bridge** *(Field-Tested)* — Meshtastic ⇄ Reticulum via MQTT, zero
-  radio interference
+  radio interference. It runs in the fleet; per-message delivery accounting
+  (delivered / dropped / unknown for every message) is not proven yet
 - **Live NOC map** *(Field-Tested)* — both protocols on one map, SNR-coloured
   links, federation across fleet boxes
 - **RF engineering** *(Field-Tested)* — link budgets, Fresnel zones, terrain,

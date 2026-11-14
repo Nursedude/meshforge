@@ -19,7 +19,7 @@ it is held to the same truth.
 - **RNS is the network stack and the hub.** Cross-mesh traffic goes RNS-first.
   Pairwise radio-to-radio bridges multiply into duplicates and false information.
 - **One box with N radios is its own hub** (D1, 2026-10-18). On a single box the
-  bridge holds one dedup table and one airtime budget, so radio-to-radio on that
+  bridge holds one dedup table (no airtime budget yet), so radio-to-radio on that
   box does not multiply. This is the STANDALONE Meshtastic router and needs no
   RNS (`requirements/core.txt` carries none; `mesh_bridge.py` imports none).
   Across boxes or protocols, traffic stays RNS-first. Build it on
@@ -187,7 +187,7 @@ product defect needs one.
   public: For every message, MeshForge will say which network legs it crossed and whether each one delivered, failed, or cannot be seen.
   status: planned
 - **INBOX-2** [MF] S+F — inbox follow-ups from the operator's 10-21 iPhone report: a channel post the fleet demonstrably heard shows "handed to radio · unconfirmed" FOREVER; the phone lost its web login with no pairing code on screen (server session intact)
-  Steps 1-3 landed 11-08 `4002f79a` but NO caller: page still unconfirmed (11-09). Next: TUI+/inbox.
+  Steps 1-3 landed 11-08 (`f97e053f`), NO caller: page still unconfirmed (11-09). Next: TUI+/inbox.
 - **BR-T** [MF] S+F — `mesh_bridge` says more than it saw (11-09 review by running). Open: DM refusal, dedup by packet id, #7 #9 #15–#17; `research/landscape_2026_11_09.md` §B. Before REL-1 (operator 11-10).
 - **REL-1** [MF] S — a release every month: tag + a changelog a ham can read; each runs the gate-5 virtual drill (brief 42fbS7, 10-27)
   30-DAY: v0.8.0-beta = first GitHub Release by 12-04; gate-5 drill to END (README only, a message crosses mesh↔RNS).
