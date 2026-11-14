@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, Tuple
 
 if TYPE_CHECKING:
     pass  # For forward references if needed
@@ -101,6 +101,27 @@ MESHTASTIC_PORTS = {
     256: "PRIVATE",
     257: "ATAK_FORWARDER",
 }
+
+_PORT_BY_NAME = {name: num for num, name in MESHTASTIC_PORTS.items()}
+
+
+def resolve_meshtastic_port(value: Any) -> Tuple[int, str]:
+    """(portnum, name) from what a source hands us: an int, a digit string, or
+    meshtastic-python's enum NAME ("POSITION_APP"). An unknown name keeps its
+    own text with portnum 0 — never a crash, never a borrowed label."""
+    if isinstance(value, bool):
+        value = int(value)
+    if isinstance(value, int):
+        return value, MESHTASTIC_PORTS.get(value, f"PORT_{value}")
+    text = str(value or "").strip()
+    if text.isdigit():
+        return resolve_meshtastic_port(int(text))
+    key = text.upper()
+    if key.endswith("_APP"):
+        key = key[:-4]
+    if key in _PORT_BY_NAME:
+        return _PORT_BY_NAME[key], key
+    return 0, text or "UNKNOWN"
 
 
 # =============================================================================

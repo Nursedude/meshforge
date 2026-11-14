@@ -438,9 +438,18 @@ def start_packet_capture() -> bool:
                         metadata['snr'] = packet['rxSnr']
                     if 'rxRssi' in packet:
                         metadata['rssi'] = packet['rxRssi']
+                    # The dissector reads meshtastic-python's own keys; pass
+                    # them through (2026-11-14: only renamed copies went, and
+                    # never 'decoded', so every live packet degraded).
+                    for key in ('from', 'to', 'fromId', 'toId', 'channel',
+                                'hopLimit', 'hopStart', 'rxSnr', 'rxRssi',
+                                'viaMqtt', 'wantAck', 'relayNode', 'nextHop'):
+                        if key in packet:
+                            metadata[key] = packet[key]
                     if 'decoded' in packet:
                         decoded = packet['decoded']
                         if isinstance(decoded, dict):
+                            metadata['decoded'] = decoded
                             metadata['portnum'] = decoded.get('portnum', 'UNKNOWN')
 
                 inspector.capture(raw_data, metadata)

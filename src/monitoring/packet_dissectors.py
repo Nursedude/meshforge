@@ -21,12 +21,22 @@ from .traffic_models import (
     PacketField,
     PacketProtocol,
     PacketTree,
+    resolve_meshtastic_port,
 )
 
 
 # =============================================================================
 # PACKET DISSECTOR (PROTOCOL PARSER)
 # =============================================================================
+
+def _node_id(node_id: Any, node_num: Any, default: str) -> str:
+    """'!1234abcd' from meshtastic-python's fromId, else its int node number."""
+    if node_id:
+        return str(node_id)
+    if isinstance(node_num, int) and not isinstance(node_num, bool):
+        return f"!{node_num & 0xFFFFFFFF:08x}"
+    return str(node_num) if node_num not in (None, "") else default
+
 
 class PacketDissector(ABC):
     """
@@ -89,8 +99,8 @@ class MeshtasticDissector(PacketDissector):
         )
 
         # Extract from metadata (typically from meshtastic-python callbacks)
-        packet.source = str(metadata.get("from", metadata.get("fromId", "")))
-        packet.destination = str(metadata.get("to", metadata.get("toId", "broadcast")))
+        packet.source = _node_id(metadata.get("fromId"), metadata.get("from"), "")
+        packet.destination = _node_id(metadata.get("toId"), metadata.get("to"), "broadcast")
         packet.channel = int(metadata.get("channel", 0))
         packet.hop_limit = int(metadata.get("hopLimit", 3))
         packet.hop_start = int(metadata.get("hopStart", 3))
@@ -99,8 +109,11 @@ class MeshtasticDissector(PacketDissector):
         packet.want_ack = bool(metadata.get("wantAck", False))
 
         # Payload info
-        packet.portnum = int(metadata.get("portnum", metadata.get("decoded", {}).get("portnum", 0)))
-        packet.port_name = MESHTASTIC_PORTS.get(packet.portnum, f"PORT_{packet.portnum}")
+        decoded_meta = metadata.get("decoded")
+        raw_port = metadata.get("portnum")
+        if raw_port is None and isinstance(decoded_meta, dict):
+            raw_port = decoded_meta.get("portnum", 0)
+        packet.portnum, packet.port_name = resolve_meshtastic_port(raw_port)
 
         # Decoded payload
         if "decoded" in metadata:
@@ -226,12 +239,15 @@ class MeshtasticDissector(PacketDissector):
                             packet: MeshPacket) -> None:
         """Add decoded payload fields based on port type."""
         decoded = packet.decoded_payload
+        # Branch on the NAME from the one port table (traffic_models): the
+        # literals here once said 4 = POSITION / 5 = NODEINFO (firmware: 3/4).
+        port = packet.port_name
 
-        if packet.portnum == 1:  # TEXT_MESSAGE
+        if port == "TEXT_MESSAGE":
             text = decoded.get("text", decoded.get("payload", ""))
             tree.add_field(parent, "Text", "mesh.text", text, FieldType.STRING)
 
-        elif packet.portnum == 4:  # POSITION
+        elif port == "POSITION":
             pos_data = decoded.get("position", decoded)
             if "latitude" in pos_data:
                 tree.add_field(parent, "Latitude", "mesh.pos.lat",
@@ -243,7 +259,7 @@ class MeshtasticDissector(PacketDissector):
                 tree.add_field(parent, "Altitude", "mesh.pos.alt",
                                pos_data["altitude"], FieldType.INTEGER)
 
-        elif packet.portnum == 5:  # NODEINFO
+        elif port == "NODEINFO":
             user_data = decoded.get("user", decoded)
             if "longName" in user_data:
                 tree.add_field(parent, "Long Name", "mesh.user.long",
@@ -255,7 +271,7 @@ class MeshtasticDissector(PacketDissector):
                 tree.add_field(parent, "Hardware", "mesh.user.hw",
                                user_data["hwModel"], FieldType.STRING)
 
-        elif packet.portnum == 67:  # TELEMETRY
+        elif port == "TELEMETRY":
             telem = decoded.get("telemetry", decoded)
             if "deviceMetrics" in telem:
                 dm = telem["deviceMetrics"]
@@ -269,7 +285,7 @@ class MeshtasticDissector(PacketDissector):
                     tree.add_field(parent, "Ch Util", "mesh.telem.ch_util",
                                    dm["channelUtilization"], FieldType.FLOAT)
 
-        elif packet.portnum == 70:  # TRACEROUTE
+        elif port == "TRACEROUTE":
             route = decoded.get("route", decoded.get("routeBack", []))
             tree.add_field(parent, "Route", "mesh.traceroute",
                            route, FieldType.STRING)
