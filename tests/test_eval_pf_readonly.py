@@ -120,6 +120,8 @@ REFUSED = [
     "uptime ",
     "cat " + " " * 4100 + "~/.local/share/meshforge/x",
     "ls ~/.local/share/meshforge/" + "a" * 1100,  # over the request cap
+    "cat ~/.local/share/meshforge/~/x",           # '~' only as the leading ~/
+    "journalctl --output=shortX",
 ]
 
 
@@ -162,6 +164,8 @@ def test_allowed_reads_reach_exactly_the_program(box, request_, expect):
     assert called == [expect]
     assert logged[-1].split("\t")[1] == "ALLOWED"
     assert logged[-1].split("\t")[2] == request_
+    # the record names the EXACT argv exec'd (Fable 11-14 round 4)
+    assert logged[-1].split("\t")[4] == expect
 
 
 def test_paths_expand_tilde_and_stay_inside_roots(box):
@@ -194,8 +198,11 @@ def test_a_symlink_inside_a_root_does_not_reach_outside_it(box, tmp_path):
     # A link that stays inside the root is still fine.
     (share / "real.json").write_text("{}")
     (share / "inner").symlink_to(share / "real.json")
-    proc, called, _ = box("cat ~/.local/share/meshforge/inner")
+    proc, called, logged = box("cat ~/.local/share/meshforge/inner")
     assert proc.returncode == 0, proc.stderr
+    # the log names the file actually READ, not only the link asked for
+    real = os.path.realpath(share / "real.json")
+    assert logged[-1].split("\t")[4] == f"cat -- {real}", logged[-1]
 
 
 def test_every_request_is_logged_in_order(box):
@@ -227,7 +234,7 @@ def test_grant_argv_is_accepted_and_logged(box):
     p = _run_with_argv(box, ["--grant", FP])
     assert p.returncode == 0, p.stderr
     log = (box.home.parent / "wrapper.log").read_text().splitlines()
-    assert log[-1].split("\t") [1:] == ["ALLOWED", "uptime", FP]
+    assert log[-1].split("\t") [1:] == ["ALLOWED", "uptime", FP, "uptime"]
 
 
 @pytest.mark.parametrize("argv", [
@@ -319,3 +326,33 @@ def test_unwritable_log_message_is_ours_alone(box):
                        timeout=20, stdin=subprocess.DEVNULL)
     assert p.returncode == 126
     assert p.stderr.startswith("eval_pf_readonly: refused (audit log"), p.stderr
+
+
+def test_an_exec_record_that_would_be_cut_refuses(box):
+    """The exec'd argv (resolved paths can be far longer than the request) is
+    logged whole or not run at all."""
+    share = box.home / ".local/share/meshforge"
+    deep = share
+    for i in range(14):
+        deep = deep / (chr(97 + i) * 240)
+    deep.mkdir(parents=True)
+    (deep / "f").write_text("x")
+    (share / "l").symlink_to(deep / "f")
+    proc, called, logged = box("cat " + " ".join(["~/.local/share/meshforge/l"] * 4))
+    assert proc.returncode == 126 and called == [], proc.stderr
+    assert "record" in logged[-1].split("\t")[1], logged[-1][:200]
+    # one copy fits and runs, logged whole
+    proc, called, logged = box("cat ~/.local/share/meshforge/l")
+    assert proc.returncode == 0, proc.stderr
+    assert logged[-1].split("\t")[4] == f"cat -- {os.path.realpath(deep / 'f')}"
+
+
+def test_run_allowed_is_the_only_exec():
+    """The seam: a new branch that execs directly would run unlogged-argv.
+    Exactly one `exec` statement exists, inside run_allowed."""
+    import re
+    code = [ln.strip() for ln in SCRIPT.read_text().splitlines()
+            if not ln.lstrip().startswith("#")]
+    execs = [ln for ln in code if re.search(r'(^|[;&|\s])exec(\s|$)', ln)]
+    assert execs == ['exec "$@"'], execs
+    assert not [ln for ln in code if "log ALLOWED" in ln and '"$x"' not in ln]

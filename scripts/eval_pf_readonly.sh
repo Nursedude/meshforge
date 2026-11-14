@@ -28,14 +28,15 @@ GRANT="-"
 SHARE="$HOME/.local/share/meshforge"
 CONF="$HOME/.config/meshforge"
 
-log() {  # verdict, request — an unwritable log REFUSES (no unaudited access)
+log() {  # verdict, request, [exec'd argv] — an unwritable log REFUSES (no unaudited access)
     mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
     # Only printable ASCII reaches the log (C0, DEL, C1, bidi → '?'). An
     # ALLOWED request is ≤1024 bytes and single-spaced (checked below), so it
     # is logged whole — the cap only ever cuts a REFUSED one.
-    local v="${1//[^ -~]/?}" r="${2//[^ -~]/?}"
+    local v="${1//[^ -~]/?}" r="${2//[^ -~]/?}" x="${3:--}"
+    x="${x//[^ -~]/?}"
     # 2>/dev/null BEFORE >> so bash's own open error is silenced too.
-    if ! printf '%s\t%s\t%s\t%s\n' "$(date -Is)" "${v:0:120}" "${r:0:4000}" "$GRANT" 2>/dev/null >>"$LOG"; then
+    if ! printf '%s\t%s\t%s\t%s\t%s\n' "$(date -Is)" "${v:0:120}" "${r:0:4000}" "$GRANT" "$x" 2>/dev/null >>"$LOG"; then
         echo "eval_pf_readonly: refused (audit log $LOG is not writable)" >&2
         exit 126
     fi
@@ -77,6 +78,17 @@ read -r -a W <<<"$REQ"
 PROG="${W[0]}"
 ARGS=("${W[@]:1}")
 
+# THE ONLY WAY A PROGRAM RUNS (Fable 11-14 rounds 3+4: the log must name
+# everything that ran). The 5th log field is the exact argv exec'd — e.g. the
+# RESOLVED path a symlink led to — and a record that would be cut refuses.
+EXEC_CAP=8000
+run_allowed() {
+    local x="$*"
+    [ "${#x}" -le "$EXEC_CAP" ] || refuse "exec record over $EXEC_CAP bytes would be cut"
+    log ALLOWED "$REQ" "$x"
+    exec "$@"
+}
+
 unit_ok() { [[ "$1" =~ ^[A-Za-z0-9@._:*][A-Za-z0-9@._:*-]*$ ]]; }
 
 # Expand a leading ~/ to $HOME/ (sshd passes '~' literally); any other '~'
@@ -84,7 +96,7 @@ unit_ok() { [[ "$1" =~ ^[A-Za-z0-9@._:*][A-Za-z0-9@._:*-]*$ ]]; }
 expand_path() {
     local p="$1"
     case "$p" in
-        "~/"*) p="$HOME/${p#\~/}" ;;
+        "~/"*) p="${p#\~/}"; case "$p" in *"~"*) return 1 ;; esac; p="$HOME/$p" ;;
         *"~"*) return 1 ;;
     esac
     printf '%s' "$p"
@@ -130,8 +142,7 @@ systemctl)
         i=$((i + 1))
     done
     [ -n "$verb" ] || [ "$failed" = 1 ] || refuse "systemctl needs an allowed verb"
-    log ALLOWED "$REQ"
-    exec systemctl --no-pager "${ARGS[@]}"
+    run_allowed systemctl --no-pager "${ARGS[@]}"
     ;;
 journalctl)
     i=0; out=()
@@ -148,13 +159,12 @@ journalctl)
                     *) unit_ok "$v" || refuse "bad unit name '$v'" ;;
                 esac
                 out+=("$a" "$v") ;;
-            --since=* | --until=* | --output=short*) out+=("$a") ;;
+            --since=* | --until=* | --output=short | --output=short-iso | --output=short-precise | --output=short-monotonic | --output=short-full | --output=short-unix) out+=("$a") ;;
             *) refuse "journalctl argument '$a' not allowed" ;;
         esac
         i=$((i + 1))
     done
-    log ALLOWED "$REQ"
-    exec journalctl --no-pager "${out[@]}"
+    run_allowed journalctl --no-pager "${out[@]}"
     ;;
 ls | cat)
     paths=(); flags=()
@@ -184,24 +194,23 @@ ls | cat)
         resolved+=("$r")
     done
     paths=("${resolved[@]}")
-    log ALLOWED "$REQ"
-    exec "$PROG" "${flags[@]}" -- "${paths[@]}"
+    run_allowed "$PROG" "${flags[@]}" -- "${paths[@]}"
     ;;
 ps)
     [ "${ARGS[*]-}" = "aux" ] || [ "${ARGS[*]-}" = "-ef" ] || refuse "ps takes 'aux' or '-ef' only"
-    log ALLOWED "$REQ"; exec ps "${ARGS[@]}" ;;
+    run_allowed ps "${ARGS[@]}" ;;
 ss)
     case "${ARGS[*]-}" in -ltn | -lun | -ltnp | -lunp | -tln | -uln) ;; *) refuse "ss takes -ltn|-lun|-ltnp|-lunp only" ;; esac
-    log ALLOWED "$REQ"; exec ss "${ARGS[@]}" ;;
+    run_allowed ss "${ARGS[@]}" ;;
 df)
     [ "${ARGS[*]-}" = "-h" ] || refuse "df takes -h only"
-    log ALLOWED "$REQ"; exec df -h ;;
+    run_allowed df -h ;;
 free)
     case "${ARGS[*]-}" in -m | -h) ;; *) refuse "free takes -m or -h only" ;; esac
-    log ALLOWED "$REQ"; exec free "${ARGS[@]}" ;;
+    run_allowed free "${ARGS[@]}" ;;
 uptime)
     [ "${#ARGS[@]}" -eq 0 ] || refuse "uptime takes no arguments"
-    log ALLOWED "$REQ"; exec uptime ;;
+    run_allowed uptime ;;
 *)
     refuse "program '$PROG' is not on the read-only list" ;;
 esac
