@@ -59,6 +59,10 @@ It runs on **one Raspberry Pi** with no cloud dependencies, no subscriptions and
 no account; you reach it over SSH. Several boxes can also run as one fleet, with
 RNS as the hub between them — that is how we run ours.
 
+**Four parts:** standalone (one box, one ham) · fleet (many boxes run as one) ·
+an AI co-pilot that builds it, optional to you (see [How it's built](#how-its-built)) ·
+open source (GPL-3.0).
+
 **The design constraint is honesty.** Mesh monitoring fails in a specific way:
 the dashboard reads healthy because the thing measuring it died. Silence and
 success look identical. MeshForge is built against that failure — every probe

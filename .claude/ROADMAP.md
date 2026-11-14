@@ -39,10 +39,11 @@ never a team of AIs and engineers.
   `CanonicalMessage` (`src/gateway/canonical_message.py`, byte-identical with
   MeshAnchor) is its shared type, but today only the MeshCore edges build it
   (matrix F8).
-- **Two offerings:** STANDALONE (one box, one ham) and FLEET (nine boxes on two
-  sites, operated as one). The **ECOMM kit** (alaula router + kiai NOC) is the
+- **What it is, in four parts** (operator 11-13): STANDALONE (one box, one ham),
+  FLEET (many boxes operated as one; ours: 11, read 11-13), an AI CO-PILOT (the
+  harness that builds it; optional to every user) and OPEN SOURCE (GPL-3.0). The **ECOMM kit** (alaula router + kiai NOC) is the
   fleet folded into a box that runs with no WAN.
-- **Built by a ham, for hams, engineers and scientists.** Field-tested on our own
+- **Built by a ham, for hams, engineers and off-grid builders.** Field-tested on our own
   fleet, through storms and WAN outages.
 - **The END** a change must serve: *a message arrives*, or *the truth is told
   in-app*. Harness work names its END too (second purpose, 11-11).
