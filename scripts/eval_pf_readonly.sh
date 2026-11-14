@@ -31,10 +31,22 @@ set -u
 # [A-Za-z] ranges match letters like 'é'. Every check below assumes bytes.
 export LC_ALL=C
 
-LOG="${EVAL_PF_LOG:-$HOME/.local/state/meshforge/eval_pf_readonly.log}"
+# HOME is RESOLVED ONCE, here, and every path below derives from RHOME — the
+# HOME *string* is never used again (Fable 11-14 round 10: HOME=<link>/../B
+# made realpath -s name a different eval_pf than the real one, skipping its
+# audit). A HOME that is unset, empty, relative or `/` gives RHOME
+# "/nonexistent-home": the log cannot be written there, so every request
+# refuses (rc 126) — unless EVAL_PF_LOG is set (tests), when the root checks
+# below refuse every path read.
+case "${HOME-}" in
+    /?*) RHOME="$(realpath -m -- "$HOME" 2>/dev/null)" ;;
+    *) RHOME="" ;;
+esac
+case "$RHOME" in /?*) ;; *) RHOME="/nonexistent-home" ;; esac
+LOG="${EVAL_PF_LOG:-$RHOME/.local/state/meshforge/eval_pf_readonly.log}"
 GRANT="-"
-SHARE="$HOME/.local/share/meshforge"
-CONF="$HOME/.config/meshforge"
+SHARE="$RHOME/.local/share/meshforge"
+CONF="$RHOME/.config/meshforge"
 
 log() {  # verdict, request, [exec'd argv] — an unwritable log REFUSES (no unaudited access)
     mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
@@ -107,7 +119,7 @@ unit_ok() { [[ "$1" =~ ^[A-Za-z0-9@._:*][A-Za-z0-9@._:*-]*$ ]]; }
 expand_path() {
     local p="$1"
     case "$p" in
-        "~/"*) p="${p#\~/}"; case "$p" in *"~"*) return 1 ;; esac; p="$HOME/$p" ;;
+        "~/"*) p="${p#\~/}"; case "$p" in *"~"*) return 1 ;; esac; p="$RHOME/$p" ;;
         *"~"*) return 1 ;;
     esac
     printf '%s' "$p"
@@ -207,9 +219,10 @@ ls | cat)
     # Fixed, disjoint roots end the root-alias class; any other layout
     # refuses EVERY path read. (Measured 11-14: no root is a link on
     # meshforge-lab or the manager.)
-    rhome="$(realpath -m -- "$HOME")"
-    [ -n "$rhome" ] && [ "$rshare" = "$rhome/.local/share/meshforge" ] \
-        && [ "$rconf" = "$rhome/.config/meshforge" ] \
+    # SHARE/CONF are built from the RESOLVED home, so lexical == resolved iff
+    # no link sits at or below .local / .config.
+    [ "$RHOME" != "/nonexistent-home" ] && [ "$lshare" = "$SHARE" ] && [ "$rshare" = "$SHARE" ] \
+        && [ "$lconf" = "$CONF" ] && [ "$rconf" = "$CONF" ] \
         || refuse "a root is a link or alias (share/config must be plain dirs under HOME)"
     # eval_pf must be a plain dir of plain, singly-linked files: a link in it
     # (cases -> ../store) moves the key somewhere readable, and a hardlink is

@@ -672,3 +672,68 @@ def test_the_longest_possible_log_line_is_one_write():
     cap = int(re.search(r"^EXEC_CAP=(\d+)$", src, re.M).group(1))
     longest = 25 + 1 + 120 + 1 + 4000 + 1 + 71 + 1 + cap + 1
     assert longest < 8192, longest
+
+
+# ── axis 2: the HOME STRING × eval_pf shape (round 10: HOME=<link>/../B made
+# realpath -s name a different eval_pf than the real one, skipping its audit) ──
+
+HOME_FORMS = ["plain", "trailing-slash", "double-slash", "dotdot-through-link", "dot-segment",
+              "relative", "unset", "empty", "root"]
+EV_SHAPES = ["hardlink-out", "symlink-in", "clean"]
+
+
+def _home_string(tmp_path, form, real_home):
+    if form == "plain":
+        return str(real_home)
+    if form == "trailing-slash":
+        return str(real_home) + "/"
+    if form == "double-slash":
+        return str(real_home).replace("/", "//", 1)
+    if form == "dotdot-through-link":
+        deep = real_home.parent
+        (tmp_path / "L").symlink_to(deep / "inner")
+        (deep / "inner").mkdir()
+        return f"{tmp_path}/L/../{real_home.name}"   # lexical: tmp/<name>; real: deep/<name>
+    if form == "dot-segment":
+        return f"{real_home.parent}/./{real_home.name}"
+    if form == "relative":
+        return real_home.name
+    return {"unset": None, "empty": "", "root": "/"}[form]
+
+
+@pytest.mark.parametrize("ev", EV_SHAPES)
+@pytest.mark.parametrize("form", HOME_FORMS)
+def test_home_string_by_eval_pf_shape(tmp_path, form, ev):
+    real_home = tmp_path / "deep" / "B"
+    share = real_home / ".local/share/meshforge"
+    (share / "eval_pf/cases").mkdir(parents=True)
+    (real_home / ".config/meshforge").mkdir(parents=True)
+    (share / "eval_pf/cases/key").write_text("ANSWERKEY")
+    (share / "sub").mkdir()
+    (share / "ok.json").write_text("OK")
+    if ev == "hardlink-out":
+        os.link(share / "eval_pf/cases/key", share / "sub/hl")
+    elif ev == "symlink-in":
+        (share / "eval_pf/l").symlink_to(share / "ok.json")
+    home = _home_string(tmp_path, form, real_home)
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    (stubs / "cat").write_text('#!/bin/bash\necho RAN\nexec /bin/cat "$@"\n')
+    (stubs / "cat").chmod(0o755)
+    env = {"PATH": f"{stubs}:/usr/bin:/bin", "EVAL_PF_LOG": str(tmp_path / "w.log")}
+    if home is not None:
+        env["HOME"] = home
+    absolute = form in ("plain", "trailing-slash", "double-slash", "dotdot-through-link", "dot-segment")
+    for req in ("cat ~/.local/share/meshforge/sub/hl", "cat ~/.local/share/meshforge/eval_pf/cases/key",
+                "cat ~/.local/share/meshforge/ok.json"):
+        env["SSH_ORIGINAL_COMMAND"] = req
+        p = subprocess.run(["/bin/bash", str(SCRIPT)], env=env, capture_output=True, text=True,
+                           timeout=20, stdin=subprocess.DEVNULL, cwd=str(real_home.parent))
+        assert "ANSWERKEY" not in p.stdout, (form, ev, req)
+        # Runs ONLY with an absolute HOME, a clean eval_pf, and a path not in it
+        # (sub/hl is then just a missing file: cat runs and fails, harmless).
+        runs = absolute and ev == "clean" and "eval_pf" not in req
+        if runs:
+            assert "RAN" in p.stdout, (form, ev, req, p.returncode, p.stderr)
+        else:
+            assert p.returncode == 126 and "RAN" not in p.stdout, (form, ev, req, p.returncode, p.stderr)
