@@ -264,3 +264,60 @@ def test_the_dedupe_keeps_the_copy_that_carries_rx_evidence():
                 timestamp="2026-10-22 03:21:10")]
     (t,) = inbox_api.build_threads(rows)
     assert [(m["id"], m["snr"], m["rssi"]) for m in t["messages"]] == [(2, -4.0, -90)]
+
+
+# ── review r2 (Fable, by running, 2026-11-14) ──────────────────────────────
+
+def test_an_id_less_stranger_beside_my_id_send_is_never_folded():
+    # r2 MED: the text fallback keyed on "row has no id", so a stranger whose
+    # wire id was absent / 0 / malformed (MQTT rows carry no SNR) still
+    # vanished and my send read radio_echo. Mixed id-ness NEVER folds.
+    rows = [_db(id=1, from_id="local", content="test", packet_id=0x1001),
+            _db(id=2, from_id="!57a2a9e2", content="test", packet_id=None,
+                timestamp="2026-10-22 03:21:10")]
+    (t,) = inbox_api.build_threads(rows)
+    assert [(m["direction"], m["state"]) for m in t["messages"]] == \
+        [("out", "handed_off"), ("in", "received")]
+
+
+def test_encrypted_twins_far_apart_with_one_reused_id_are_two_messages():
+    # r2 LOW: rule (a) had no bound when both rows carried ids
+    rows = [_db(id=1, from_id="!851a9fe7", content="ola", packet_id=0x3003,
+                timestamp="2026-10-22 01:00:00"),
+            _db(id=2, from_id="!851a9fe7", content="ola", to_id="", channel=0,
+                is_dm=True, packet_id=0x3003, timestamp="2026-10-22 03:00:00")]
+    assert sum(t["count"] for t in inbox_api.build_threads(rows)) == 2
+
+
+@pytest.mark.parametrize("raw", ["9" * 4301, "9" * 11], ids=["4301-digits", "11-digits"])
+def test_an_absurdly_long_digit_id_is_none_not_a_crash(raw):
+    # r2 LOW: int('9'*4301) raises inside the writer's try → the row was LOST
+    assert messaging.wire_packet_id(raw) is None
+
+
+def test_the_dedupe_does_not_depend_on_row_order():
+    # r2 LOW: 3 copies at 0 / 500 / 1000 s collapsed to 1 or 2 by order
+    rows = [_db(id=i, from_id="!0000beef", packet_id=0x4004,
+                timestamp=f"2026-10-22 03:{m:02d}:{s:02d}")
+            for i, (m, s) in enumerate([(0, 0), (8, 20), (16, 40)], 1)]
+    import itertools
+
+    def shown(order):
+        return sorted(m["id"] for t in inbox_api.build_threads(list(order))
+                      for m in t["messages"])
+    results = {tuple(shown(p)) for p in itertools.permutations(rows)}
+    assert results == {(1, 3)}, results   # a function of the SET of rows
+
+
+def test_one_packet_means_within_the_window_of_its_first_copy():
+    # the window is anchored at the FIRST copy, not the current winner: a
+    # later copy that wins on rx evidence must not stretch the packet past
+    # JOIN_AFTER_S from its first appearance (chained copies 0/500/1000 s)
+    rows = [_db(id=1, from_id="!0000beef", packet_id=0x4004,
+                timestamp="2026-10-22 03:00:00"),
+            _db(id=2, from_id="!0000beef", packet_id=0x4004, snr=-3.0, rssi=-88,
+                timestamp="2026-10-22 03:08:20"),
+            _db(id=3, from_id="!0000beef", packet_id=0x4004,
+                timestamp="2026-10-22 03:16:40")]
+    (t,) = inbox_api.build_threads(rows)
+    assert [m["id"] for m in t["messages"]] == [2, 3]

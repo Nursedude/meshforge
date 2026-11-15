@@ -136,7 +136,9 @@ def wire_packet_id(raw) -> Optional[int]:
     if isinstance(raw, bool):
         return None
     if isinstance(raw, str):
-        if not (raw.isascii() and raw.isdigit()):
+        # <= 10 digits: 2**32-1 has 10; a longer string is never an id and
+        # int() of 4301+ digits RAISES inside the writer's try → row lost (r2)
+        if not (raw.isascii() and raw.isdigit() and len(raw) <= 10):
             return None
         raw = int(raw)
     if not isinstance(raw, int) or raw == 0:

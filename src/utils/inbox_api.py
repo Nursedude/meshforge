@@ -137,14 +137,19 @@ def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """(a) same sender + text already keyed: two legs of ONE packet?"""
         pa, pb = a.get("packet_id"), b.get("packet_id")
         if pa is not None and pb is not None:
-            return pa == pb
+            return pa == pb and same_packet_time(a, b)   # bounded like (b)/(c) — r2
         return near(a, b)
 
     def echo_of(send, rx):
         """(b) is ``rx`` my radio's copy of ``send``? The wire id decides."""
-        if rx.get("packet_id") is not None:
-            return (send.get("packet_id") == rx.get("packet_id")
-                    and same_packet_time(send, rx))
+        ps, pr = send.get("packet_id"), rx.get("packet_id")
+        if ps is not None and pr is not None:
+            return ps == pr and same_packet_time(send, rx)
+        if ps is not None or pr is not None:
+            # MIXED never folds (review r2): an id-less stranger beside my
+            # id'd send is not proven mine (F1), and an id'd echo beside an
+            # id-less TUI send shows twice — a duplicate, never a hide.
+            return False
         return (rx.get("snr") is None and rx.get("rssi") is None
                 and near(send, rx))
 
@@ -178,20 +183,24 @@ def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             return a if ev(a) else b
         return a if (a.get("id") or 0) <= (b.get("id") or 0) else b
 
-    kept: Dict[Tuple[Any, int, Any], List[Dict[str, Any]]] = {}
-    for m in rows:
-        pid = m.get("packet_id")
-        if id(m) in drop or m.get("from_id") == "local" or pid is None:
-            continue
-        group = kept.setdefault((m.get("from_id"), pid, m.get("content")), [])
-        for i, k in enumerate(group):
-            if same_packet_time(k, m):
-                win = better(k, m)
-                drop.add(id(m) if win is k else id(k))
-                group[i] = win
+    # Oldest first, each group ANCHORED at its first copy (the window never
+    # slides with the winner): the result is a function of the row SET, not
+    # the order the store returned it (review r2).
+    cand = sorted((m for m in rows if id(m) not in drop
+                   and m.get("from_id") != "local"
+                   and m.get("packet_id") is not None),
+                  key=lambda m: (when[id(m)] is None, when[id(m)] or 0, m.get("id") or 0))
+    kept: Dict[Tuple[Any, int, Any], List[List[Dict[str, Any]]]] = {}
+    for m in cand:
+        groups = kept.setdefault((m.get("from_id"), m.get("packet_id"), m.get("content")), [])
+        for g in groups:                       # g = [anchor, winner]
+            if same_packet_time(g[0], m):
+                win = better(g[1], m)
+                drop.add(id(m) if win is g[1] else id(g[1]))
+                g[1] = win
                 break
         else:
-            group.append(m)
+            groups.append([m, m])
 
     echoed, used = set(), set()
     for m in rows:
