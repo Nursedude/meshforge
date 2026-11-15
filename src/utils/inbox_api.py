@@ -150,6 +150,28 @@ def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                for o in by_sender[(m.get("from_id"), m.get("content"))]):
             drop.add(id(m))
 
+    # (c) one packet stored twice (operator 11-14: "Oops doubled", rows
+    # 6089/6090 — this radio's own text from another client, two copies
+    # 2-8 s apart): the same SENDER + packet id is one message. A packet id
+    # is unique per sender, not per mesh; a row with no id is never merged
+    # (a real resend and a storage double look identical without one).
+    first: Dict[Tuple[Any, int], Dict[str, Any]] = {}
+    for m in rows:
+        pid = m.get("packet_id")
+        if id(m) in drop or m.get("from_id") == "local" or pid is None:
+            continue
+        k = (m.get("from_id"), pid)
+        keep = first.get(k)
+        if keep is None:
+            first[k] = m
+            continue
+        # keep the FIRST stored copy (lowest row id); the store reads newest first
+        if (m.get("id") or 0) < (keep.get("id") or 0):
+            drop.add(id(keep))
+            first[k] = m
+        else:
+            drop.add(id(m))
+
     echoed, used = set(), set()
     for m in rows:
         if (id(m) in drop or m.get("from_id") == "local"

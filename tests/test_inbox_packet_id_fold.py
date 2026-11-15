@@ -150,3 +150,48 @@ def test_mqtt_leg_stores_only_a_real_wire_id(message_id, expect):
     with patch("commands.messaging.store_incoming", fake):
         lst._on_mqtt_message(_mqtt(message_id))
     assert seen and seen[0]["packet_id"] == expect
+
+
+# ── one packet stored twice → one row (operator 11-14 20:12: "Oops doubled") ──
+# Rows 6087/6088, 6089/6090, 6095/6096: this radio's own texts, sent from
+# another client, stored twice 2-8 s apart. With ids kept, the wire fact
+# (sender, packet id) merges them; without an id nothing does.
+
+def test_one_packet_stored_twice_shows_once():
+    rows = [_db(id=6089, content="Oops doubled", packet_id=0x4004),
+            _db(id=6090, content="Oops doubled", packet_id=0x4004,
+                timestamp="2026-10-22 03:21:16")]
+    (t,) = inbox_api.build_threads(rows)
+    assert [m["id"] for m in t["messages"]] == [6089]
+
+
+def test_same_id_from_two_senders_is_two_messages():
+    # a packet id is unique per SENDER, not per mesh
+    rows = [_db(id=1, from_id="!0000beef", packet_id=0x4004),
+            _db(id=2, from_id="!0000cafe", packet_id=0x4004)]
+    assert sum(t["count"] for t in inbox_api.build_threads(rows)) == 2
+
+
+def test_identical_text_without_ids_is_never_merged():
+    # no wire fact → a real resend and a storage double look the same; keep both
+    rows = [_db(id=1, content="Oops doubled"),
+            _db(id=2, content="Oops doubled", timestamp="2026-10-22 03:21:16")]
+    assert sum(t["count"] for t in inbox_api.build_threads(rows)) == 2
+
+
+def test_two_copies_of_my_echo_fold_into_one_send():
+    rows = [_db(id=1, from_id="local", packet_id=0x1001),
+            _db(id=2, packet_id=0x1001),
+            _db(id=3, packet_id=0x1001, timestamp="2026-10-22 03:21:11")]
+    (t,) = inbox_api.build_threads(rows)
+    assert [(m["id"], m["state"]) for m in t["messages"]] == [(1, "radio_echo")]
+
+
+def test_dedupe_is_counted_as_folded():
+    rows = [_db(id=1, packet_id=0x4004), _db(id=2, packet_id=0x4004)]
+    with patch.object(inbox_api.messaging, "get_messages",
+                      return_value=__import__("commands.base", fromlist=["x"])
+                      .CommandResult.ok("ok", data={"messages": rows})), \
+         patch("utils.message_listener.get_listener_status", return_value={}):
+        out = inbox_api.read_inbox()
+    assert (out["message_count"], out["shown_count"], out["folded_count"]) == (2, 1, 1)
