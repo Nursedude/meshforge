@@ -25,6 +25,15 @@
         ]
       },
       {
+        "matcher": "Bash|Monitor|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/bench_guard.py\" hook"
+          }
+        ]
+      },
+      {
         "matcher": "Artifact|Agent",
         "hooks": [
           {

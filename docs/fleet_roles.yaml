@@ -27,6 +27,7 @@ invariants:
   software_fits_the_box: "Memory-saving defaults stay ON on small boards; they are why constrained Pis bear the load."
   fail_loud_restart_clean: "Watchdog on every node; services systemd-supervised with Restart=."
   headless_unless_console: "A box with no monitor+keyboard boots multi-user.target (no display manager, no VNC); graphical.target only on a console box (operator, 2026-10-25). Pi OS 'full' installs default to graphical — switch at provisioning. Package removal of the desktop stack is a separate, audited step: autoremove takes python3 libs and kernels with it."
+  bench_flashers_lab_only: "Axiometa Headless (the axiometa CLI, axiometa-cli package, its MCP server) runs only on a box whose role is lab; any device touch names a /dev/serial/by-id/ port whose serial is on that box's ~/.config/meshforge/bench_boards list (its default port is first-enumerated, no confirm; a Heltec radio and an Axiometa board share USB id 303a:1001). Enforced for Claude sessions by .claude/settings.json PreToolUse -> scripts/bench_guard.py; the human Studio path is the operator's call (operator 2026-11-15)."
   born_correct_permissions: "Every box runs services as the NON-ROOT operator user and owns its RNS config tree + app data-roots (see the `foundation` block). Established born (install_noc.sh) + enforced on every converge. The mf.4/#73 perms class."
 
 # The born-correct permission FOUNDATION every box must have (ratified 2026-06-01,
@@ -281,6 +282,10 @@ roles:
     # before every move. Observability rides the watchdog + ssh truth-spool;
     # no HTTP surface, same reasoning as field-node, without that tier's RAM
     # excuse for dropping the watchdog.
+    #
+    # Also the ONLY home of Axiometa Headless (invariants.bench_flashers_lab_only,
+    # operator 2026-11-15): the dev board is flashed here, by its by-id serial,
+    # never by first-enumerated port. No account login from a session.
     board_tier: pi4_min_4gb
     repo: meshforge
     services:
