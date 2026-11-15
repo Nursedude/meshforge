@@ -119,6 +119,22 @@ def _valid_packet_id(packet_id) -> Optional[int]:
     return packet_id
 
 
+def first_received_id_row() -> Optional[int]:
+    """Row id of the first RECEIVED message stored with a packet id — the
+    moment this store's receive writers began keeping ids (the inbox era,
+    BIC-2 review r4). None = no such row yet. Raises on a store error: the
+    caller decides (the inbox then folds nothing by text — a duplicate,
+    never a hide)."""
+    conn = _init_db()
+    try:
+        row = conn.execute(
+            "SELECT MIN(id) FROM messages WHERE packet_id IS NOT NULL "
+            "AND from_id != 'local'").fetchone()
+    finally:
+        conn.close()
+    return row[0] if row and row[0] is not None else None
+
+
 #: Public name — the inbox's hand-off test shares this ONE validator (hfm #5).
 valid_packet_id = _valid_packet_id
 
@@ -136,9 +152,14 @@ def wire_packet_id(raw) -> Optional[int]:
     if isinstance(raw, bool):
         return None
     if isinstance(raw, str):
+        if not (raw.isascii() and raw.isdigit()):
+            return None
         # <= 10 digits: 2**32-1 has 10; a longer string is never an id and
-        # int() of 4301+ digits RAISES inside the writer's try → row lost (r2)
-        if not (raw.isascii() and raw.isdigit() and len(raw) <= 10):
+        # int() of 4301+ digits RAISES inside the writer's try → row lost
+        # (r2). Dropped, but WITNESSED like any impossible id (r4 F4).
+        if len(raw) > 10:
+            logger.warning("messages: refusing impossible packet_id string of "
+                           "%d digits (stored as unknown)", len(raw))
             return None
         raw = int(raw)
     if not isinstance(raw, int) or raw == 0:

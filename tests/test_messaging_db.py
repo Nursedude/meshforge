@@ -209,6 +209,21 @@ class TestOutgoingPacketId:
                                          packet_id=0)
         assert r.success and self._rows(tmp_db) == [("rx", None)]
 
+    def test_first_received_id_row_ignores_sends_and_id_less_rows(self, tmp_db):
+        # the inbox era (BIC-2 review r4): the first RECEIVED row with an id
+        messaging_mod.store_outgoing(content="s", network="meshtastic", to_id=None,
+                                     delivered=True, packet_id=0x1001)      # row 1
+        messaging_mod.store_incoming(from_id="!a1b2c3d4", content="no id")  # row 2
+        messaging_mod.store_incoming(from_id="!a1b2c3d4", content="id",
+                                     packet_id=0x2002)                      # row 3
+        messaging_mod.store_incoming(from_id="!a1b2c3d4", content="id2",
+                                     packet_id=0x3003)                      # row 4
+        assert messaging_mod.first_received_id_row() == 3
+
+    def test_first_received_id_row_is_none_before_any(self, tmp_db):
+        messaging_mod.store_incoming(from_id="!a1b2c3d4", content="no id")
+        assert messaging_mod.first_received_id_row() is None
+
     def test_packet_id_defaults_to_unknown(self, tmp_db):
         messaging_mod.store_outgoing(content="x", network="meshtastic",
                                      to_id=None)

@@ -275,7 +275,9 @@ def test_an_id_less_stranger_beside_my_id_send_is_never_folded():
     rows = [_db(id=1, from_id="local", content="test", packet_id=0x1001),
             _db(id=2, from_id="!57a2a9e2", content="test", packet_id=None,
                 timestamp="2026-10-22 03:21:10")]
-    (t,) = inbox_api.build_threads(rows)
+    # the stranger is POST-era (r4: the era is the store's first received
+    # id'd row — here row 1's era as a deployed store has it)
+    (t,) = inbox_api.build_threads(rows, era=1)
     assert [(m["direction"], m["state"]) for m in t["messages"]] == \
         [("out", "handed_off"), ("in", "received")]
 
@@ -384,7 +386,8 @@ def test_property_post_era_rows_hide_only_on_a_wire_fact_and_order_never_matters
     rng = random.Random(20261114)
     for _ in range(400):
         rows = _random_world(rng, rng.randint(2, 5))
-        ided = [r["id"] for r in rows if r["packet_id"] is not None]
+        ided = [r["id"] for r in rows
+                if r["packet_id"] is not None and r["from_id"] != "local"]
         era = min(ided) if ided else None
         shown_sets = set()
         for perm in itertools.permutations(rows):
@@ -409,3 +412,70 @@ def test_a_row_with_no_store_id_is_never_judged_pre_era():
             _db(id=None, from_id="!0000beef", content="test", channel=0)]
     threads = {t["key"]: t for t in inbox_api.build_threads(rows)}
     assert threads["meshtastic:channel:0"]["count"] == 2
+
+
+# ── review r4 (Fable, by running): the era comes from the STORE's first
+# RECEIVED row with an id — never the read window, never an outgoing row ──
+
+def test_the_era_does_not_slide_with_the_read_window():
+    # r4 F1 (a HIDE): rows 2/3 are post-era in the store, but the id'd row 1
+    # fell out of the 500-row window → the read-set era made them "pre-era"
+    rows = [_db(id=2, from_id="local", content="anyone on?", channel=0),
+            _db(id=3, from_id="!0000beef", content="anyone on?", channel=0,
+                timestamp="2026-10-22 03:21:09")] + \
+        [_db(id=i, from_id="!0000cafe", content=f"n{i}", channel=0, packet_id=0x5000 + i)
+         for i in range(4, 9)]
+    threads = {t["key"]: t for t in inbox_api.build_threads(rows, era=1)}
+    shown = [(m["id"], m["state"]) for m in threads["meshtastic:channel:0"]["messages"]
+             if m["content"] == "anyone on?"]
+    assert shown == [(2, "handed_off"), (3, "received")]
+
+
+def test_an_id_send_with_a_pre_era_echo_still_folds_by_text():
+    # r4 F2: sends kept ids from 11-08, received rows only from 11-14 20:16 —
+    # the 4 transitional pairs (send 6072 / echo 6073 …) must fold again
+    rows = [_db(id=6072, from_id="local", packet_id=0x7072),
+            _db(id=6073),                                      # echo, no id
+            _db(id=6098, from_id="!0000cafe", content="x", packet_id=0x6098)]
+    threads = {t["key"]: t for t in inbox_api.build_threads(rows, era=6098)}
+    assert [(m["id"], m["state"]) for m in threads["meshtastic:channel:1"]["messages"]
+            if m["content"] == "Hey there "] == [(6072, "radio_echo")]
+
+
+def test_an_outgoing_id_does_not_start_the_era():
+    # pure fallback (no era given): only RECEIVED id'd rows start it
+    rows = [_db(id=1, from_id="local", packet_id=0x1001),
+            _db(id=2, from_id="local", content="t2"),
+            _db(id=3, content="t2")]                           # id-less echo
+    threads = {t["key"]: t for t in inbox_api.build_threads(rows)}
+    assert [(m["id"], m["state"]) for m in threads["meshtastic:channel:1"]["messages"]
+            if m["content"] == "t2"] == [(2, "radio_echo")]
+
+
+def test_read_inbox_takes_the_era_from_the_store():
+    rows = [_db(id=2, from_id="local", content="q", channel=0),
+            _db(id=3, from_id="!0000beef", content="q", channel=0)]
+    with patch.object(inbox_api.messaging, "get_messages",
+                      return_value=CommandResult.ok("ok", data={"messages": rows})), \
+         patch.object(inbox_api.messaging, "first_received_id_row", return_value=1), \
+         patch("utils.message_listener.get_listener_status", return_value={}):
+        out = inbox_api.read_inbox()
+    assert out["shown_count"] == 2
+
+
+def test_an_unreadable_era_folds_nothing_by_text_and_says_so():
+    rows = [_db(id=2, from_id="local"), _db(id=3)]          # a pre-id-era pair
+    with patch.object(inbox_api.messaging, "get_messages",
+                      return_value=CommandResult.ok("ok", data={"messages": rows})), \
+         patch.object(inbox_api.messaging, "first_received_id_row",
+                      side_effect=OSError("db locked")), \
+         patch("utils.message_listener.get_listener_status", return_value={}):
+        out = inbox_api.read_inbox()
+    assert out["shown_count"] == 2          # a duplicate, never a hide
+    assert "db locked" in out["era_error"]
+
+
+def test_an_over_long_digit_id_is_dropped_loudly(caplog):
+    # r4 F4: an 11+ digit string is never an id — dropped, but WITNESSED
+    assert messaging.wire_packet_id("1099511627776") is None
+    assert [r for r in caplog.records if r.levelname == "WARNING"]

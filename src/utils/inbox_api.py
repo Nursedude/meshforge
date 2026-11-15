@@ -95,7 +95,8 @@ def _epoch(ts: Optional[str]) -> Optional[float]:
         return None
 
 
-def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _fold_duplicates(messages: List[Dict[str, Any]],
+                     era: Optional[float] = None) -> List[Dict[str, Any]]:
     """One send / one packet → one row (2026-10-21, measured on the store).
 
     (a) the local MQTT subscriber's ENCRYPTED leg stored a second copy of a
@@ -138,12 +139,22 @@ def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # r2 MED, r3 MED) — the property test in test_inbox_packet_id_fold is
     # the gate. Gap (accepted): a read set with NO id'd row at all is all
     # "pre-era" — a box that never stored an id keeps the old match.
-    ided = [m.get("id") for m in rows
-            if m.get("packet_id") is not None and m.get("id") is not None]
-    era = min(ided) if ided else None
+    # Review r4: the era is the STORE's first RECEIVED row with an id
+    # (``messaging.first_received_id_row``, passed by read_inbox) — never the
+    # read window (it slid: older id'd rows fall out of the newest-500 and
+    # post-era rows turned "pre-era"), never an OUTGOING id (sends kept ids
+    # from 11-08, received rows only from 11-14 20:16). The read-set value is
+    # only the pure-caller fallback. ``inf`` = no received id yet (all
+    # pre-era); ``0`` = era unknown (nothing text-folds).
+    if era is None:
+        ided = [m.get("id") for m in rows
+                if m.get("packet_id") is not None and m.get("id") is not None
+                and m.get("from_id") != "local"]
+        era = min(ided) if ided else float("inf")
 
     def pre_era(m):
-        return era is None or (m.get("id") is not None and m.get("id") < era)
+        # THE invariant: a row is hidden by TEXT only if it is pre-era itself
+        return m.get("id") is not None and m.get("id") < era
 
     def order(m):
         return (when[id(m)] is None, when[id(m)] or 0, m.get("id") or 0)
@@ -157,23 +168,24 @@ def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     def twin(a, b):
         """(a) same sender + text already keyed: two legs of ONE packet?"""
-        pa, pb = a.get("packet_id"), b.get("packet_id")
+        pa, pb = a.get("packet_id"), b.get("packet_id")      # b = the copy hidden
         if pa is not None and pb is not None:
             return pa == pb and same_packet_time(a, b)   # bounded like (b)/(c) — r2
-        return pre_era(a) and pre_era(b) and near(a, b)
+        # an id'd copy is never pre-era (the era IS the first received id'd
+        # row), so only an id-less, pre-era copy can be dropped by text
+        return pre_era(b) and near(a, b)
 
     def echo_of(send, rx):
         """(b) is ``rx`` my radio's copy of ``send``? The wire id decides."""
         ps, pr = send.get("packet_id"), rx.get("packet_id")
-        if ps is not None and pr is not None:
+        if pr is not None:
+            # an id'd received row is hidden ONLY by its own send's id (an
+            # id-less TUI send's id'd echo shows twice — a duplicate, r2)
             return ps == pr and same_packet_time(send, rx)
-        if ps is not None or pr is not None:
-            # MIXED never folds (review r2): an id-less stranger beside my
-            # id'd send is not proven mine (F1), and an id'd echo beside an
-            # id-less TUI send shows twice — a duplicate, never a hide.
-            return False
-        return (pre_era(send) and pre_era(rx)
-                and rx.get("snr") is None and rx.get("rssi") is None
+        # an id-less received row: text match ONLY when it is pre-era (r2/r3
+        # MED: an id-less stranger stored after the era is never hidden). Its
+        # send may carry an id — the transitional pairs of r4 F2.
+        return (pre_era(rx) and rx.get("snr") is None and rx.get("rssi") is None
                 and near(send, rx))
 
     by_sender: Dict[Tuple[Any, Any], List[Dict[str, Any]]] = {}
@@ -245,10 +257,12 @@ def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-def build_threads(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Group stored rows into conversations, newest conversation first."""
+def build_threads(messages: List[Dict[str, Any]],
+                  era: Optional[float] = None) -> List[Dict[str, Any]]:
+    """Group stored rows into conversations, newest conversation first.
+    ``era``: the store's first received id'd row (see ``_fold_duplicates``)."""
     threads: Dict[str, Dict[str, Any]] = {}
-    for msg in _fold_duplicates(messages):
+    for msg in _fold_duplicates(messages, era):
         key, kind, partner, channel = _thread_key(msg)
         t = threads.get(key)
         if t is None:
@@ -297,13 +311,20 @@ def read_inbox(limit: int = 500) -> Dict[str, Any]:
     if not result.success:
         return {"state": "unavailable", "error": result.message}
     rows = (result.data or {}).get("messages", [])
-    threads = build_threads(rows)
+    era_error = None
+    try:
+        first = messaging.first_received_id_row()
+        era = float("inf") if first is None else first
+    except Exception as e:   # unknown era → fold nothing by text (a duplicate, never a hide)
+        logger.warning("inbox: era unreadable, text fold off: %s", e)
+        era, era_error = 0, f"era unreadable: {e}"
+    threads = build_threads(rows, era=era)
     shown = sum(t["count"] for t in threads)
     # message_count = rows read from the store; folded = second copies of one
     # packet (radio echo / encrypted leg) not shown as their own messages
     return {"state": "ok", "threads": threads, "message_count": len(rows),
             "shown_count": shown, "folded_count": len(rows) - shown,
-            "rx": _rx_coverage()}
+            "rx": _rx_coverage(), **({"era_error": era_error} if era_error else {})}
 
 
 def _rx_coverage() -> Dict[str, Any]:
