@@ -839,6 +839,14 @@ class MeshtasticPresetBridge(MeshBridgeDrainMixin):
                        if ours else ""))
                 return None, False
 
+            # BR-T #16: stop() may have landed while this leg waited on the
+            # lock (up to _LOCK_WAIT_S) — never dial the radio's one client
+            # slot (Issue #17) for a handle stop() will only throw away.
+            if self._stop_event.is_set():
+                conn_lock.release()
+                logger.info(f"{name} TCP connect abandoned — bridge stopping")
+                return None, False
+
             interface = None
             try:
                 wait_for_cooldown()

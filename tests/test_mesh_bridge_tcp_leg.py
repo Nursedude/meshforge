@@ -848,3 +848,37 @@ def test_B19_connect_mqtt_itself_never_announces_connected(bridge):
             bridge.bridge_config.secondary, "secondary", lambda p: None)
     assert ok is True and iface is fake_mqtt.return_value
     assert bridge._notify_status.call_count == 0
+
+
+class TestBRT16StopWhileWaitingOnThePortLock:
+    """BR-T #16 (11-10 MA-port review, both trees): a leg waiting on its port
+    lock when stop() lands still dialled the radio after stop — "Connected to
+    primary via TCP" logged after "Mesh bridge stopped", a full config download
+    on meshtasticd's ONE client slot (Issue #17) for a handle then thrown away.
+    The END claim: after stop, no TCPInterface is constructed and the lock is
+    free."""
+
+    def test_stop_during_the_lock_wait_never_dials(self, bridge):
+        lk = _leg_lock(bridge, "primary")
+        assert lk.acquire(timeout=1)              # "another component" holds it
+        out = {}
+
+        def run():
+            out["got"] = _connect_tcp(bridge, "primary", MagicMock(), MagicMock())
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        time.sleep(0.2)                           # the leg is now waiting
+        bridge._stop_event.set()                  # stop() lands
+        lk.release()                              # the holder lets go
+        t.join(15)
+        assert not t.is_alive()
+        got, ok, tcp_ctor = out["got"]
+        assert tcp_ctor.call_count == 0, "dialled the radio after stop()"
+        assert (got, ok) == (None, False)
+        assert not lk.locked(), "lock left held after a refused connect"
+
+    def test_a_connect_with_no_stop_still_dials(self, bridge):
+        """Control: the gate must not refuse a normal connect."""
+        got, ok, tcp_ctor = _connect_tcp(bridge, "primary", MagicMock(), MagicMock())
+        assert tcp_ctor.call_count == 1 and ok is True
