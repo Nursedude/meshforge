@@ -42,7 +42,7 @@ main{display:grid;grid-template-columns:minmax(240px,320px) 1fr;height:calc(100%
 .msg{max-width:min(78%,560px);padding:8px 11px;border-radius:10px;background:var(--in);overflow-wrap:anywhere;white-space:pre-wrap}
 .msg.out{align-self:flex-end;background:var(--out)}
 .meta{display:block;font-size:.72rem;color:var(--muted);margin-top:3px;white-space:normal}
-.st-handed_off{color:var(--warn)} .st-radio_echo{color:var(--muted)} .st-not_sent{color:var(--bad)} .st-received{color:var(--muted)}
+.st-handed_off{color:var(--warn)} .st-radio_echo{color:var(--muted)} .st-not_sent{color:var(--bad)} .st-received{color:var(--muted)} .st-unknown{color:var(--bad)} .heard{color:var(--muted)}
 #empty{color:var(--muted);margin:auto;text-align:center;padding:24px}
 form{display:flex;gap:8px;padding:10px 16px;border-top:1px solid var(--rule);background:var(--panel)}
 textarea{flex:1;min-width:0;resize:none;height:44px;padding:10px;border:1px solid var(--rule);border-radius:8px;background:var(--bg);color:inherit;font:inherit}
@@ -108,6 +108,11 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
   var threads = [], current = null, enc = new TextEncoder();
   var $ = function (id) { return document.getElementById(id); };
   var STATE = { handed_off: "handed to radio · unconfirmed", radio_echo: "radio took it (uplink echo) · airtime unconfirmed", not_sent: "NOT SENT", received: "" };
+  // CLOSED map (INBOX-T F11): a state this page does not know says so — it is
+  // never rendered as nothing (which reads as "fine").
+  function stateLabel(s) {
+    return Object.prototype.hasOwnProperty.call(STATE, s) ? STATE[s] : "state unknown";
+  }
 
   function el(tag, cls, text) {
     var e = document.createElement(tag);
@@ -157,7 +162,11 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
       meta.append(document.createTextNode(when(m.ts)));
       if (m.direction === "in" && t.kind === "channel") meta.append(document.createTextNode(" · " + m.from_id));
       if (m.snr != null) meta.append(document.createTextNode(" · SNR " + m.snr));
-      if (m.state && STATE[m.state]) meta.append(document.createTextNode(" · "), el("span", "st-" + m.state, STATE[m.state]));
+      var label = stateLabel(m.state);
+      if (label) meta.append(document.createTextNode(" · "),
+        el("span", Object.prototype.hasOwnProperty.call(STATE, m.state) ? "st-" + m.state : "st-unknown", label));
+      // BIC-2: which fleet radios DECODED this packet — a hearing, not a reader
+      if (m.heard && m.heard.line) meta.append(document.createTextNode(" · "), el("span", "heard", m.heard.line));
       b.appendChild(meta);
       msgs.appendChild(b);
     });
@@ -183,6 +192,16 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
     renderList(); renderPane();
   }
 
+  // Who set the banner: a good poll clears only its OWN banners, never a send
+  // failure the person has not read yet (INBOX-T F11).
+  var bannerFrom = null;
+  function setPollBanner(text) {
+    // an unread send failure outranks a poll's news: the poll goes to the
+    // status line instead of overwriting it (review r5)
+    if (text && bannerFrom === "send") { $("status").textContent = text; return; }
+    bannerFrom = text ? "poll" : null; setBanner(text);
+  }
+  function setSendBanner(text) { bannerFrom = text ? "send" : null; setBanner(text); }
   function setBanner(text) {
     $("banner").textContent = text || "";
     $("banner").style.display = text ? "block" : "none";
@@ -191,6 +210,7 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
   // 401 on a send (11-14): say WHY, and give the phone a tappable /login.
   // Built with DOM nodes, never innerHTML (CSP + no injected markup).
   function setLoginBanner(how) {
+    bannerFrom = "send";   // a send result: the next poll must not wipe it (F11)
     setBanner("This browser has no operator login: it expired or was never paired, so nothing was sent. " +
               "A one-time code is made on the box (" + (how || "ask the box operator") + "), then: ");
     var a = document.createElement("a");
@@ -204,25 +224,30 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, j: j }; }); })
       .then(function (res) {
         if (res.j && res.j.state === "ok") {
-          threads = res.j.threads; setBanner("");
+          threads = res.j.threads; if (bannerFrom === "poll") setPollBanner("");
           Object.keys(drafts).forEach(function (k) {
             if (threads.some(function (t) { return t.key === k; })) delete drafts[k];
             else threads.unshift(drafts[k]);
           });
           lastRx = res.j.rx || null; renderCoverage();
-          $("status").textContent = threads.length + " conversations · updated " + new Date().toLocaleTimeString();
+          // what this read could NOT see is said, never silently dropped (r5)
+          var blindBits = [];
+          if (res.j.heard_error) blindBits.push("heard-by unreadable: " + res.j.heard_error);
+          if (res.j.era_error) blindBits.push("duplicate fold limited: " + res.j.era_error);
+          $("status").textContent = threads.length + " conversations · updated " + new Date().toLocaleTimeString() +
+            (blindBits.length ? " · " + blindBits.join(" · ") : "");
         } else if (res.status === 403) {
-          setBanner((res.j && res.j.detail) || "This box does not trust this device.");
+          setPollBanner((res.j && res.j.detail) || "This box does not trust this device.");
           $("status").textContent = "refused";
         } else {
           // Unobservable is not empty: keep the last view and say we are blind.
-          setBanner("Inbox unavailable: " + ((res.j && res.j.error) || "HTTP " + res.status) + ". Showing the last copy we had.");
+          setPollBanner("Inbox unavailable: " + ((res.j && res.j.error) || "HTTP " + res.status) + ". Showing the last copy we had.");
           $("status").textContent = "unavailable";
         }
         renderList(); renderPane();
       })
       .catch(function (e) {
-        setBanner("Cannot reach this MeshForge box (" + e.message + "). Showing the last copy we had.");
+        setPollBanner("Cannot reach this MeshForge box (" + e.message + "). Showing the last copy we had.");
         $("status").textContent = "offline";
       });
   }
@@ -320,13 +345,13 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
     fetch("/api/inbox/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
       .then(function (r) { return r.json(); })
       .then(function (j) {
-        if (j.state === "handed_off") { $("text").value = ""; $("count").textContent = "0/" + MAX; setBanner(j.recorded ? "" : "Sent, but not saved to history: " + (j.record_error || "")); }
+        if (j.state === "handed_off") { $("text").value = ""; $("count").textContent = "0/" + MAX; setSendBanner(j.recorded ? "" : "Sent, but not saved to history: " + (j.record_error || "")); }
         else if (j.error === "operator login required")
           setLoginBanner(j.how);
-        else setBanner(j.detail || j.error || "Send failed.");
+        else setSendBanner(j.detail || j.error || "Send failed.");
         return load();
       })
-      .catch(function (e) { setBanner("Send failed: " + e.message); })
+      .catch(function (e) { setSendBanner("Send failed: " + e.message); })
       .finally(function () { $("send").disabled = !$("text").value.trim(); });
   });
   $("text").addEventListener("keydown", function (ev) {

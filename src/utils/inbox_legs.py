@@ -35,11 +35,14 @@ def summarize_results(results: Iterable[inbox_heard.BoxHeard]) -> Dict[str, List
     return inbox_heard.summarize(results)
 
 
-def heard_line(summary: Mapping[str, List[str]], *, packet_id: Any) -> str:
-    """D4's words for one send. Every state is counted; none is implied."""
+def heard_line(summary: Mapping[str, List[str]], *, packet_id: Any,
+               skewed: Iterable[str] = ()) -> str:
+    """D4's words for one send. Every state is counted; none is implied. A
+    hearing outside the join window is QUALIFIED, never shown plain (r5)."""
     if not inbox_heard._valid_pid(packet_id):
         return NO_ID_LINE
-    heard = list(summary.get("heard", []))
+    off = set(skewed)
+    heard = [a + (" (clock off)" if a in off else "") for a in summary.get("heard", [])]
     could = len(heard) + len(summary.get("not_heard", []))
     parts = ["heard by " + (", ".join(heard) if heard else "none"),
              # "listening" = covered across the send's window (heard or
@@ -55,22 +58,56 @@ def heard_line(summary: Mapping[str, List[str]], *, packet_id: Any) -> str:
     return " · ".join(parts)
 
 
+def load_sections(now: float, *, targets_file: Optional[Path] = None,
+                  spool_dir: Optional[Path] = None) -> Optional[Dict[str, Optional[dict]]]:
+    """``{alias: rx_heard section or None}`` for every LISTED box, read once
+    (an inbox read judges many sends against one fleet snapshot). None = no
+    target list (a standalone box). A listed box with no fresh spool or no
+    ``rx_heard`` maps to None → ``unobservable``, never dropped."""
+    path = targets_file or center.targets_path()
+    targets = center.read_targets(path)
+    if not targets:
+        if _has_content(path):
+            # a damaged list is NOT "no fleet" (review r5): every heard line
+            # would vanish silently — raise, so the read says why
+            raise ValueError(f"target list {path} has no valid line")
+        return None
+    sections: Dict[str, Optional[dict]] = {}
+    for t in targets:
+        doc = center.read_spool(t.alias, now=now, spool_dir=spool_dir)
+        sec = doc.get("rx_heard") if isinstance(doc, dict) else None
+        sections[t.alias] = sec if isinstance(sec, dict) else None
+    return sections
+
+
+def _has_content(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    return any(line.split("#", 1)[0].strip() for line in text.splitlines())
+
+
+def heard_from(packet_id: Any, sent_ts: float, sections: Mapping[str, Optional[dict]], *,
+               now: float, segments: Optional[Mapping[str, Optional[str]]] = None,
+               send_segment: Optional[str] = None) -> Dict[str, Any]:
+    """``{"line", "summary", "boxes"}`` for one send against loaded sections."""
+    results = inbox_heard.judge_send(packet_id, sent_ts, sections, now=now,
+                                     segments=segments, send_segment=send_segment)
+    summary = summarize_results(results)
+    skewed = [r.alias for r in results if r.state == "heard" and r.skewed]
+    return {"line": heard_line(summary, packet_id=packet_id, skewed=skewed),
+            "summary": summary, "boxes": [asdict(r) for r in results]}
+
+
 def heard_for_send(packet_id: Any, sent_ts: float, *, now: float,
                    targets_file: Optional[Path] = None,
                    spool_dir: Optional[Path] = None,
                    segments: Optional[Mapping[str, Optional[str]]] = None,
                    send_segment: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """``{"line", "summary", "boxes"}`` for one send, or None with no fleet."""
-    targets = center.read_targets(targets_file or center.targets_path())
-    if not targets:
+    sections = load_sections(now, targets_file=targets_file, spool_dir=spool_dir)
+    if sections is None:
         return None
-    sections: Dict[str, Any] = {}
-    for t in targets:
-        doc = center.read_spool(t.alias, now=now, spool_dir=spool_dir)
-        sec = doc.get("rx_heard") if isinstance(doc, dict) else None
-        sections[t.alias] = sec if isinstance(sec, dict) else None
-    results = inbox_heard.judge_send(packet_id, sent_ts, sections, now=now,
-                                     segments=segments, send_segment=send_segment)
-    summary = summarize_results(results)
-    return {"line": heard_line(summary, packet_id=packet_id), "summary": summary,
-            "boxes": [asdict(r) for r in results]}
+    return heard_from(packet_id, sent_ts, sections, now=now, segments=segments,
+                      send_segment=send_segment)

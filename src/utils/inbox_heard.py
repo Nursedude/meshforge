@@ -63,7 +63,21 @@ def _valid_pid(v: Any) -> bool:
 def judge_box(alias: str, section: Any, *, packet_id: Any, sent_ts: float, now: float,
               box_segment: Optional[str] = None,
               send_segment: Optional[str] = None) -> BoxHeard:
-    """One box's verdict on one send. Never raises on a malformed section."""
+    """One box's verdict on one send. Never raises on a malformed section:
+    ``float()`` of a 310-digit JSON integer raised OverflowError and took the
+    whole inbox read down (BIC-2 review r5 MED) — any such section is
+    ``unobservable``, with the reason."""
+    try:
+        return _judge_box(alias, section, packet_id=packet_id, sent_ts=sent_ts, now=now,
+                          box_segment=box_segment, send_segment=send_segment)
+    except (OverflowError, ValueError, TypeError) as e:
+        return BoxHeard(alias, "unobservable",
+                        f"malformed rx_heard section ({type(e).__name__})")
+
+
+def _judge_box(alias: str, section: Any, *, packet_id: Any, sent_ts: float, now: float,
+               box_segment: Optional[str] = None,
+               send_segment: Optional[str] = None) -> BoxHeard:
     def out(state: str, reason: str, **kw) -> BoxHeard:
         return BoxHeard(alias, state, reason, **kw)
 

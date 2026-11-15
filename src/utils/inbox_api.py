@@ -14,6 +14,7 @@ Honesty rules this module keeps (honest_failure_modes #1, #2):
 """
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -319,12 +320,55 @@ def read_inbox(limit: int = 500) -> Dict[str, Any]:
         logger.warning("inbox: era unreadable, text fold off: %s", e)
         era, era_error = 0, f"era unreadable: {e}"
     threads = build_threads(rows, era=era)
+    heard_error = _attach_heard(threads)
     shown = sum(t["count"] for t in threads)
     # message_count = rows read from the store; folded = second copies of one
     # packet (radio echo / encrypted leg) not shown as their own messages
     return {"state": "ok", "threads": threads, "message_count": len(rows),
             "shown_count": shown, "folded_count": len(rows) - shown,
-            "rx": _rx_coverage(), **({"era_error": era_error} if era_error else {})}
+            "rx": _rx_coverage(), **({"era_error": era_error} if era_error else {}),
+            **({"heard_error": heard_error} if heard_error else {})}
+
+
+#: what a send says when the fleet evidence itself could not be read
+HEARD_UNREADABLE = "heard by: unobservable (fleet evidence unreadable)"
+
+
+def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
+    """BIC-2 step 3 (INBOX-T F2): every outbound BROADCAST send with a radio
+    packet id carries ``heard`` — the fleet's spools judged once for the
+    whole read (``inbox_legs``). DMs carry none (their truth is the ack path,
+    not hearings); a box with no fleet carries none (unchanged page). A
+    failure reading the evidence never 503s the inbox: each send says the
+    fleet is unobservable, and the read returns why (hfm #9 witness)."""
+    from utils import inbox_legs
+    sends = [m for t in threads if t.get("network") == "meshtastic" and t.get("kind") == "channel"
+             for m in t["messages"]
+             if m.get("direction") == "out" and m.get("packet_id") is not None
+             and m.get("state") in ("handed_off", "radio_echo")]
+    if not sends:
+        return None
+    now = time.time()
+    try:
+        sections = inbox_legs.load_sections(now)
+    except Exception as e:
+        logger.warning("inbox: fleet evidence unreadable: %s", e)
+        for m in sends:
+            m["heard"] = {"line": HEARD_UNREADABLE}
+        return f"fleet evidence unreadable: {e}"
+    if sections is None:
+        return None
+    errors = []
+    for m in sends:   # each send guarded on its own: one bad box never breaks the read (r5)
+        sent = _epoch(m.get("ts"))
+        try:
+            m["heard"] = inbox_legs.heard_from(m["packet_id"], sent if sent is not None
+                                               else float("nan"), sections, now=now)
+        except Exception as e:
+            logger.warning("inbox: heard-by failed for send %s: %s", m.get("id"), e)
+            m["heard"] = {"line": HEARD_UNREADABLE}
+            errors.append(f"send {m.get('id')}: {type(e).__name__}: {e}")
+    return "; ".join(errors) or None
 
 
 def _rx_coverage() -> Dict[str, Any]:
