@@ -70,6 +70,11 @@ def _state(msg: Dict[str, Any]) -> str:
         return "received"
     if msg.get("_radio_echo"):
         return "radio_echo"
+    # ``delivered`` is each WRITER's own hand-off record: inbox send() sets
+    # it only for a real radio id; the TUI path (send_message) sets it when
+    # the gateway/CLI accepted the text and has no id to give (review r3
+    # LOW, kept: "not_sent" would be false there). Deferred:
+    # tui-send-records-radio-packet-id-2026-11-14.
     return "handed_off" if msg.get("delivered") else "not_sent"
 
 
@@ -118,13 +123,30 @@ def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     by another gateway) also folds — it IS my packet; "heard over the air"
     is the heard-by legs' state (BIC-2 step 2), not this fold's (review r1 F3).
 
-    (a) vs (b) fallbacks differ on purpose (review r1 F6): ``twin`` already
-    keys on the same SENDER, so a one-sided id may fall back to text; an
-    echo has no sender to check (own node id is never inferred from
-    traffic), so a received id that is not my send's is a different packet.
+    (a) and (b) now share ONE fallback rule (the era cutoff below): a row
+    carrying an id is never pre-era, so a one-sided id never text-folds in
+    either step (closes review r1 F6's asymmetry).
     """
     rows = [m for m in messages if m.get("network") == "meshtastic"]
     when = {id(m): _epoch(m.get("timestamp")) for m in rows}
+
+    # THE ERA CUTOFF (review r3, operator 11-14): the text/time match may
+    # fold ONLY rows stored before this store began keeping packet ids —
+    # judged by row id (monotonic), never the wall clock (hfm #6). A row with
+    # no id stored AFTER that point never folds by text: a duplicate is
+    # shown, a message is never hidden. Third finding of one kind (r1 F1,
+    # r2 MED, r3 MED) — the property test in test_inbox_packet_id_fold is
+    # the gate. Gap (accepted): a read set with NO id'd row at all is all
+    # "pre-era" — a box that never stored an id keeps the old match.
+    ided = [m.get("id") for m in rows
+            if m.get("packet_id") is not None and m.get("id") is not None]
+    era = min(ided) if ided else None
+
+    def pre_era(m):
+        return era is None or (m.get("id") is not None and m.get("id") < era)
+
+    def order(m):
+        return (when[id(m)] is None, when[id(m)] or 0, m.get("id") or 0)
 
     def near(a, b, window=ECHO_WINDOW_S):
         ta, tb = when[id(a)], when[id(b)]
@@ -138,7 +160,7 @@ def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         pa, pb = a.get("packet_id"), b.get("packet_id")
         if pa is not None and pb is not None:
             return pa == pb and same_packet_time(a, b)   # bounded like (b)/(c) — r2
-        return near(a, b)
+        return pre_era(a) and pre_era(b) and near(a, b)
 
     def echo_of(send, rx):
         """(b) is ``rx`` my radio's copy of ``send``? The wire id decides."""
@@ -150,7 +172,8 @@ def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             # id'd send is not proven mine (F1), and an id'd echo beside an
             # id-less TUI send shows twice — a duplicate, never a hide.
             return False
-        return (rx.get("snr") is None and rx.get("rssi") is None
+        return (pre_era(send) and pre_era(rx)
+                and rx.get("snr") is None and rx.get("rssi") is None
                 and near(send, rx))
 
     by_sender: Dict[Tuple[Any, Any], List[Dict[str, Any]]] = {}
@@ -189,7 +212,7 @@ def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     cand = sorted((m for m in rows if id(m) not in drop
                    and m.get("from_id") != "local"
                    and m.get("packet_id") is not None),
-                  key=lambda m: (when[id(m)] is None, when[id(m)] or 0, m.get("id") or 0))
+                  key=order)
     kept: Dict[Tuple[Any, int, Any], List[List[Dict[str, Any]]]] = {}
     for m in cand:
         groups = kept.setdefault((m.get("from_id"), m.get("packet_id"), m.get("content")), [])
@@ -202,12 +225,14 @@ def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         else:
             groups.append([m, m])
 
+    # oldest first on both sides: which echo pairs with which send is a
+    # function of the row SET, not the store's return order (review r3)
     echoed, used = set(), set()
-    for m in rows:
+    for m in sorted(rows, key=order):
         if (id(m) in drop or m.get("from_id") == "local"
                 or m.get("to_id") not in BROADCAST_IDS):
             continue
-        for o in sends.get((m.get("channel"), m.get("content")), ()):
+        for o in sorted(sends.get((m.get("channel"), m.get("content")), ()), key=order):
             if id(o) not in used and echo_of(o, m):
                 echoed.add(id(m))
                 used.add(id(o))

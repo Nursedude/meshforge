@@ -321,3 +321,91 @@ def test_one_packet_means_within_the_window_of_its_first_copy():
                 timestamp="2026-10-22 03:16:40")]
     (t,) = inbox_api.build_threads(rows)
     assert [m["id"] for m in t["messages"]] == [2, 3]
+
+
+# ── review r3 (Fable, by running): the SEAM — hide only on a wire fact ─────
+# Third finding of one kind (r1 F1, r2 MED, r3 MED): the text/time fallback
+# hid another node's message whenever ids were missing. Operator 11-14
+# ("era cutoff"): text matching survives ONLY for rows stored before this
+# store began keeping ids — judged by row id (monotonic), never the clock.
+
+def _era_row():
+    # any row carrying an id marks the start of the id era (row id 10)
+    return _db(id=10, from_id="!0badc0de", content="era", channel=5, packet_id=0x9999)
+
+
+def test_post_era_id_less_stranger_beside_an_id_less_send_is_never_hidden():
+    # r3 MED repro: TUI send (no id) + a stranger's id-less publish, same text
+    rows = [_era_row(),
+            _db(id=11, from_id="local", content="test", channel=0),
+            _db(id=12, from_id="!0000beef", content="test", channel=0,
+                timestamp="2026-10-22 03:21:09")]
+    threads = {t["key"]: t for t in inbox_api.build_threads(rows)}
+    assert [(m["id"], m["state"]) for m in threads["meshtastic:channel:0"]["messages"]] == \
+        [(11, "handed_off"), (12, "received")]
+
+
+def test_pre_era_pairs_still_fold_by_text():
+    rows = [_db(id=1, from_id="local"), _db(id=2), _era_row()]
+    threads = {t["key"]: t for t in inbox_api.build_threads(rows)}
+    assert [m["state"] for m in threads["meshtastic:channel:1"]["messages"]] == ["radio_echo"]
+
+
+def test_a_post_era_id_less_encrypted_copy_is_not_dropped_by_text():
+    rows = [_era_row(),
+            _db(id=11, from_id="!851a9fe7", content="ola"),
+            _db(id=12, from_id="!851a9fe7", content="ola", to_id="", channel=0, is_dm=True)]
+    assert sum(t["count"] for t in inbox_api.build_threads(rows)) == 3
+
+
+def _random_world(rng, n):
+    rows = []
+    for i in range(1, n + 1):
+        local = rng.random() < 0.3
+        rows.append(_db(
+            id=i,
+            from_id="local" if local else rng.choice(["!0000beef", "!0000cafe", "!6201ce25"]),
+            to_id=rng.choice([None, None, "", "!6201ce25"]) if not local else None,
+            content=rng.choice(["test", "ola"]),
+            channel=rng.choice([0, 1]),
+            packet_id=rng.choice([None, 0x1001, 0x1002]),
+            snr=rng.choice([None, -4.0]),
+            delivered=True,
+            timestamp=f"2026-10-22 03:21:{rng.randint(0, 20):02d}"))
+    return rows
+
+
+def test_property_post_era_rows_hide_only_on_a_wire_fact_and_order_never_matters():
+    # the GATE for this class: random worlds, fixed seed. A shown-set that
+    # changes with order, or a post-era row hidden with no same-id partner,
+    # fails here — whichever patch reintroduces it.
+    import itertools
+    import random
+    rng = random.Random(20261114)
+    for _ in range(400):
+        rows = _random_world(rng, rng.randint(2, 5))
+        ided = [r["id"] for r in rows if r["packet_id"] is not None]
+        era = min(ided) if ided else None
+        shown_sets = set()
+        for perm in itertools.permutations(rows):
+            out = {m["id"]: m for t in inbox_api.build_threads(list(perm))
+                   for m in t["messages"]}
+            shown_sets.add(tuple(sorted((k, v["state"]) for k, v in out.items())))
+            for r in rows:
+                if r["id"] in out or era is None or r["id"] < era:
+                    continue
+                partners = [o for o in rows if o is not r
+                            and o["packet_id"] is not None
+                            and o["packet_id"] == r["packet_id"]]
+                assert partners, f"post-era row {r} hidden with no wire-id partner in {rows}"
+        assert len(shown_sets) == 1, f"order-dependent fold: {rows} -> {shown_sets}"
+
+
+def test_a_row_with_no_store_id_is_never_judged_pre_era():
+    # unknown position in the store = unknown era → no text fold (the
+    # conservative side: a duplicate, never a hide)
+    rows = [_era_row(),
+            _db(id=None, from_id="local", content="test", channel=0),
+            _db(id=None, from_id="!0000beef", content="test", channel=0)]
+    threads = {t["key"]: t for t in inbox_api.build_threads(rows)}
+    assert threads["meshtastic:channel:0"]["count"] == 2
