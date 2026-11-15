@@ -294,6 +294,12 @@
    "topic": "biarc-2026-05",
    "role": "authoritative",
    "ungrounded_verified_baseline": null
+  },
+  "5oUqetQyj6D9tqbdSeZHXP": {
+   "title": "Axiometa for MeshForge",
+   "topic": "research-axiometa",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": 0
   }
  }
 }
