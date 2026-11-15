@@ -315,7 +315,7 @@ PRUNED from NEXT 11-14 (operator: no ID-named commit ≥30 d; revisit 12-04):
 - **CONTRIB-1** [MF] S — CONTRIBUTING.md + good-first-issue labels (issue templates exist); pairs with gate 9 + CONNECT-1
 - **MESHSAT-1** [MF] F — PARKED 10-28: MeshSat v0.3. Hub seats, no modem = no new leg. Reopen: modem AND MeshSat 1.0.
 - **PILINA** [bot] S — Pilina (DM a node, get notices with receipts): a profile of the meshing-around bot, not a new repo (11-13, artifact 13a9roa) — not before REL-1 ships (operator 11-10)
-  Bot first (operator 11-14: lehua's meshing-around fork, "Pilina now tied to the bot"): ACK truth (own-radio ack = relayed, not delivered), byte-sized chunks, reply off the receive thread, tri-state alerts — `research/bot_lehua_improvement_2026_11_14.md`. Hawaiʻi has no public police/fire/power feed; power + internet stay mesh-measured.
+  DECIDED 11-14 (operator): Pilina is built IN the fork (`meshing-around@meshforge`, lehua) — supersedes 11-13's companion; a TUI choice in MF (exists) + MA (none yet). The bot is our syn/ack proof. Bot first: ACK truth (own-radio ack = relayed, not delivered), byte-sized chunks, reply off the receive thread, tri-state alerts — `research/bot_lehua_improvement_2026_11_14.md`. Hawaiʻi has no public police/fire/power feed; power + internet stay mesh-measured.
 - **LAND-1** [MF] S — monthly landscape check: peer repos' commits/releases/top issues + PyPI rns, diffed month to month; settle footprint before build
 
 ## Rules that shape the roadmap

@@ -15,10 +15,19 @@ at `3db5cef` vs upstream `92280b7`; firmware `meshtastic/firmware@6d41e279` +
 public feeds, every page opened), the 11-13 Pilina decision (artifact
 13a9roaJrEvPP4NRMYNJmX) and `meshing_around_bot_audit_2026_07_06.md`.
 
-⚠️ **Repo choice changed by the operator tonight.** The 11-13 decision ships
-Pilina from `meshing_around_meshforge` (the companion client, on no fleet
-box). Tonight's words name lehua's `Nursedude/meshing-around` fork (the
-running bot). This doc follows tonight's words; confirm at the grill.
+✅ **DECIDED 2026-11-14 (operator): "build Pilina in the fork on lehua —
+better integration to the meshforge/meshanchor TUI — a new user could choose
+to run the bot among other features — it often is our proof of syn/ack."**
+Supersedes the 11-13 line that shipped Pilina from `meshing_around_meshforge`.
+Measured integration state: MF's TUI Extensions handler ALREADY installs the
+fork (`git clone -b meshforge Nursedude/meshing-around` → `/opt/meshing-around`,
+`extensions.py:34-46,224`; the companion supplies only the service template +
+profiles). MeshAnchor has a `meshing_around` plugin but NO install/run path
+(grep of its `src/`: no `_MA_REPO`/`_MA_BOT_BRANCH`) — a gap. The fleet uses
+the bot as the far end of path proofs (lehua log 11-14: `wx From: meshforge
+kiai`, `[MC:wio] wx From: meshforge moc` over the MeshCore bridge, `Wx From:
+VolcanoAI` — each answered), so the reply arriving back is the real ACK and
+the bot's own "delivered" log line must never stand in for it (finding 1).
 
 ## What lehua runs (MEASURED, read-only, 2026-11-14 22:4x)
 
