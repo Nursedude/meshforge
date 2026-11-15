@@ -181,3 +181,27 @@ def test_judge_send_returns_every_box_once_sorted():
                                      "kiai": None, "lehua": section()}, now=NOW)
     assert [(r.alias, r.state) for r in rows] == [
         ("kiai", "unobservable"), ("lehua", "not_heard"), ("moc", "heard")]
+
+
+# ── INBOX-T F10 (BIC-2 step 2, 2026-11-14) ─────────────────────────────────
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_a_send_time_that_is_not_a_number_is_unobservable_never_not_heard(bad):
+    # F10: sent_ts=NaN made every coverage comparison False → "not_heard"
+    r = ih.judge_box("lehua", section(), packet_id=PID, sent_ts=bad, now=NOW)
+    assert r.state == "unobservable"
+
+
+def test_one_id_from_two_senders_in_the_window_is_ambiguous_not_heard():
+    # F10: judge_box ignored the entry's sender; a packet id is unique per
+    # SENDER, so two senders on one id inside the window prove nothing
+    sec = section(entries=[(FROM, PID, SENT + 1), (0x0BADC0DE, PID, SENT + 2)])
+    r = judge(sec)
+    assert r.state == "unobservable" and "sender" in r.reason
+
+
+def test_an_in_window_hearing_wins_over_an_old_same_id_from_another_sender():
+    # a 24 h ring can hold an unrelated packet that reused the id hours ago
+    sec = section(entries=[(0x0BADC0DE, PID, SENT - 7200), (FROM, PID, SENT + 1)])
+    r = judge(sec)
+    assert r.state == "heard" and r.rx_ts == SENT + 1 and not r.skewed

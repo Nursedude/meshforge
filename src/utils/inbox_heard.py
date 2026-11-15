@@ -69,13 +69,26 @@ def judge_box(alias: str, section: Any, *, packet_id: Any, sent_ts: float, now: 
 
     if not _valid_pid(packet_id):
         return out("unobservable", "send has no packet_id to join on")
+    if _ts(sent_ts) is None:
+        # INBOX-T F10: NaN made every coverage comparison False → "not_heard"
+        return out("unobservable", "send time unknown")
 
     entries = section.get("entries") if isinstance(section, dict) else None
     if isinstance(entries, list):
-        hits = [e[2] for e in map(_valid_entry, entries) if e and e[1] == packet_id]
+        hits = [(e[0], e[2]) for e in map(_valid_entry, entries) if e and e[1] == packet_id]
         if hits:
-            rx = min(hits)
-            skewed = not (sent_ts - JOIN_BEFORE_S <= rx <= sent_ts + JOIN_AFTER_S)
+            # A packet id is unique per SENDER, not per mesh (F10): a 24 h ring
+            # can hold an unrelated packet that reused the id. Prefer hearings
+            # inside the window; two senders among the chosen ones prove nothing.
+            def in_window(ts):
+                return sent_ts - JOIN_BEFORE_S <= ts <= sent_ts + JOIN_AFTER_S
+            pool = [h for h in hits if in_window(h[1])] or hits
+            senders = {f for f, _ in pool}
+            if len(senders) > 1:
+                return out("unobservable",
+                           f"packet id decoded from {len(senders)} senders — ambiguous")
+            rx = min(ts for _, ts in pool)
+            skewed = not in_window(rx)
             return out("heard", "decoded this packet id" + (
                 " (box clock outside the join window)" if skewed else ""),
                 rx_ts=rx, skewed=skewed)
