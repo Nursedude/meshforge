@@ -220,6 +220,52 @@ class TestOutgoingPacketId:
                                      packet_id=0x3003)                      # row 4
         assert messaging_mod.first_received_id_row() == 3
 
+    def test_the_era_survives_the_prune_of_its_own_row(self, tmp_db):
+        # BIC-2 review r5 HIGH: MIN(id) slid forward when retention pruned the
+        # era row itself → id-less rows between turned "pre-era" and a
+        # stranger's message was text-hidden. The era is written ONCE.
+        import sqlite3
+        messaging_mod.store_incoming(from_id="!a1b2c3d4", content="old id",
+                                     packet_id=0x1001)                     # row 1 = era
+        messaging_mod.store_incoming(from_id="!0000bbbb", content="no id")  # row 2
+        messaging_mod.store_incoming(from_id="!a1b2c3d4", content="id",
+                                     packet_id=0x2002)                     # row 3
+        c = sqlite3.connect(str(tmp_db))
+        c.execute("DELETE FROM messages WHERE id = 1"); c.commit(); c.close()
+        assert messaging_mod.first_received_id_row() == 1
+
+    def test_the_era_is_recorded_at_store_time_not_only_on_read(self, tmp_db):
+        import sqlite3
+        messaging_mod.store_incoming(from_id="!a1b2c3d4", content="id",
+                                     packet_id=0x1001)                     # row 1
+        c = sqlite3.connect(str(tmp_db))
+        c.execute("DELETE FROM messages WHERE id = 1"); c.commit(); c.close()
+        messaging_mod.store_incoming(from_id="!a1b2c3d4", content="id2",
+                                     packet_id=0x2002)                     # row 2
+        assert messaging_mod.first_received_id_row() == 1
+
+    def test_the_inbox_never_hides_a_stranger_after_the_era_row_is_pruned(self, tmp_db):
+        # r5 scenario A2 end to end, through the real store and read_inbox
+        import sqlite3
+        from unittest.mock import patch
+        from utils import inbox_api
+        messaging_mod.store_incoming(from_id="!a1b2c3d4", content="era",
+                                     channel=1, packet_id=0x1001)          # row 1
+        messaging_mod.store_outgoing(content="test", network="meshtastic", to_id=None,
+                                     channel=1, delivered=True, packet_id=555)  # row 2
+        messaging_mod.store_incoming(from_id="!bbbb0002", content="test",
+                                     channel=1)                            # row 3, no id
+        messaging_mod.store_incoming(from_id="!a1b2c3d4", content="later",
+                                     channel=1, packet_id=0x4004)          # row 4
+        c = sqlite3.connect(str(tmp_db))
+        c.execute("DELETE FROM messages WHERE id = 1"); c.commit(); c.close()
+        with patch("utils.message_listener.get_listener_status", return_value={}), \
+             patch("utils.inbox_legs.load_sections", return_value=None):
+            out = inbox_api.read_inbox()
+        shown = {m["id"]: m["state"] for t in out["threads"] for m in t["messages"]}
+        assert 3 in shown, "the stranger's message must stay visible"
+        assert shown[2] == "handed_off"
+
     def test_first_received_id_row_is_none_before_any(self, tmp_db):
         messaging_mod.store_incoming(from_id="!a1b2c3d4", content="no id")
         assert messaging_mod.first_received_id_row() is None

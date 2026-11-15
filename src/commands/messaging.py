@@ -119,6 +119,19 @@ def _valid_packet_id(packet_id) -> Optional[int]:
     return packet_id
 
 
+_RX_ERA_KEY = "rx_id_era"
+
+
+def _record_rx_era(conn) -> None:
+    """Write the era ONCE: the first received row stored with a packet id.
+    INSERT OR IGNORE = write-once; called at schema check (backfill) and
+    after every id'd store_incoming, always BEFORE a prune can run."""
+    conn.execute(
+        "INSERT OR IGNORE INTO messages_meta (key, value) "
+        "SELECT ?, MIN(id) FROM messages WHERE packet_id IS NOT NULL "
+        "AND from_id != 'local' HAVING MIN(id) IS NOT NULL", (_RX_ERA_KEY,))
+
+
 def first_received_id_row() -> Optional[int]:
     """Row id of the first RECEIVED message stored with a packet id — the
     moment this store's receive writers began keeping ids (the inbox era,
@@ -127,12 +140,18 @@ def first_received_id_row() -> Optional[int]:
     never a hide)."""
     conn = _init_db()
     try:
-        row = conn.execute(
-            "SELECT MIN(id) FROM messages WHERE packet_id IS NOT NULL "
-            "AND from_id != 'local'").fetchone()
+        row = conn.execute("SELECT value FROM messages_meta WHERE key = ?",
+                           (_RX_ERA_KEY,)).fetchone()
+        if row is None:
+            _record_rx_era(conn)
+            conn.commit()
+            row = conn.execute("SELECT value FROM messages_meta WHERE key = ?",
+                               (_RX_ERA_KEY,)).fetchone()
     finally:
         conn.close()
-    return row[0] if row and row[0] is not None else None
+    # PERSISTED, never re-derived: MIN(id) slid forward when the 30-day prune
+    # removed the era row itself (review r5 HIGH — a stranger was hidden)
+    return row[0] if row else None
 
 
 #: Public name — the inbox's hand-off test shares this ONE validator (hfm #5).
@@ -194,6 +213,12 @@ def _init_db() -> sqlite3.Connection:
             ensure_column(conn, "messages", "packet_id", "INTEGER")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_packet_id "
                          "ON messages(packet_id) WHERE packet_id IS NOT NULL")
+            # one-row facts about the store (BIC-2 r5): the inbox era, written
+            # ONCE, so a retention prune of its row can never move it
+            conn.execute("CREATE TABLE IF NOT EXISTS messages_meta "
+                         "(key TEXT PRIMARY KEY, value INTEGER NOT NULL)")
+            _record_rx_era(conn)   # backfill: before this process can prune
+            conn.commit()
         except Exception:
             conn.close()  # never leak the fd on a failed migration (#73)
             raise
@@ -647,6 +672,7 @@ def store_incoming(
         CommandResult with storage confirmation
     """
     try:
+        pid = _valid_packet_id(packet_id)   # validated ONCE (one warning, not two)
         conn = _init_db()
         cursor = conn.cursor()
 
@@ -655,8 +681,9 @@ def store_incoming(
             (network, from_id, to_id, content, channel, is_dm, snr, rssi, delivered,
              packet_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-        ''', (network, from_id, to_id, content, channel, to_id is not None, snr, rssi,
-              _valid_packet_id(packet_id)))
+        ''', (network, from_id, to_id, content, channel, to_id is not None, snr, rssi, pid))
+        if pid is not None and from_id != "local":
+            _record_rx_era(conn)   # before commit, before _maybe_prune below
 
         conn.commit()
         message_id = cursor.lastrowid
