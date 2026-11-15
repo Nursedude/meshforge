@@ -1,0 +1,299 @@
+{
+ "_comment": "Domain artifact registry — the TOPIC gate's source (scripts/loop_gate.py, operator 2026-11-15). ONE authoritative page per topic; variant = another format of it (links it); superseded = names a successor (artifact id or ROADMAP:<ROW>). ungrounded_verified_baseline = VERIFIED tags with no data-ground, frozen, only shrinks; null = not yet measured (full-page publish refused until measured from the LIVE page). Personal (non-domain) pages are not listed. Registered 2026-11-15 from the artifact list; roles are titles-level, not content-checked — supersession is the operator's call.",
+ "artifacts": {
+  "7NMLULS6Bf1ZURjRdcEYC9": {
+   "title": "Why Choose Us Over N",
+   "topic": "competitive-position",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": 7
+  },
+  "B3nHXQUgTdAFxb3UbuhP83": {
+   "title": "DudeAI Direction 11-11",
+   "topic": "dudeai-direction",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": 19
+  },
+  "13a9roaJrEvPP4NRMYNJmX": {
+   "title": "Pilina standalone, and a better dashboard than MeshMonitor",
+   "topic": "pilina-standalone",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "UL62HQMSLZrKnejKkoo4Ud": {
+   "title": "MeshForge Roadmap (generated from .claude/ROADMAP.md)",
+   "topic": "roadmap",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "S3q4BVaULGGQbRFYvsaWAV": {
+   "title": "Meshtastic on 2 Meters",
+   "topic": "research-2m-meshtastic-28",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "C9aWkjsArCntendQAJc47S": {
+   "title": "Pilina — Build Plan",
+   "topic": "pilina-build-plan",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "1Li1CG6aegAnpYTPdgf8N8": {
+   "title": "One app for MeshForge and MeshAnchor",
+   "topic": "base-1-one-app",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "2hQCzNFV5Z88DdALnC8zAU": {
+   "title": "MeshForge Cross-Audit — Nov 2026",
+   "topic": "cross-audit-2026-11",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "5wKgtARxZTss7Dsgwrh6Ep": {
+   "title": "RNS over MeshCore Review",
+   "topic": "rns-over-meshcore",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "QLgHJkRd2MKJKaBsncU6wt": {
+   "title": "MeshForge Outside Audit",
+   "topic": "outside-audit-2026-11-13",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "U21PnADCiedZEEqxJjXVfQ": {
+   "title": "Meshtastic Community vs MeshForge",
+   "topic": "meshtastic-community",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "UieYc41forRdEiQuSBrsA1": {
+   "title": "MeshForge Maps (:5000) — Deep Research, Audit & Plan",
+   "topic": "maps-audit",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "8S65gkKHvW1MBV3zMV5BEs": {
+   "title": "915 MHz Mesh Brief",
+   "topic": "915-mhz-brief",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "Q4u8XoTMQhgxAkNRBkL5E3": {
+   "title": "Meshtastic-Only MeshForge — Concept",
+   "topic": "meshtastic-only-concept",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "U5DF2AoynJEsFg9EVMsDNx": {
+   "title": "MeshForge / MeshAnchor → Rust Roadmap",
+   "topic": "rust-roadmap",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "PStH58wMsxGgpafY1ztR8p": {
+   "title": "Nursedude Mesh Research",
+   "topic": "mesh-research-2026-10",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "URnK4pgVAYuaX9zgN8VLjd": {
+   "title": "Bridge Contract Matrix",
+   "topic": "bridge-contract",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "JSM7h4imFeBdWZjPupAAyu": {
+   "title": "Bridge Contract Post",
+   "topic": "bridge-contract-post",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "FdbdWrCG19Jcrbn78YXUjU": {
+   "title": "MeshForge Double Tap",
+   "topic": "double-tap-2026-11",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "UedXXTf9LoQXELqWPBdtdH": {
+   "title": "Cascadia Mesh Study",
+   "topic": "cascadia-study",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "NR4pFeXiMmr3xqfMCrQW1T": {
+   "title": "MeshForge, Chapter Three — BIARC, Nov 8 2026",
+   "topic": "biarc-2026-11",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "N7mDPAanDAbupt4crR7wG3": {
+   "title": "Volcano Work Plan",
+   "topic": "volcano-work-plan",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "5SQV1y1NVjh2q6ipqRzxxN": {
+   "title": "Twenty-Four Minutes In",
+   "topic": "essay-twenty-four-minutes",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "N6XqGwSye1hN1K9HfbkNrQ": {
+   "title": "Twenty-Four Minutes Draft (Substack paste kit)",
+   "topic": "essay-twenty-four-minutes",
+   "role": "variant",
+   "ungrounded_verified_baseline": null
+  },
+  "42fbS7Q7z6w2LEff3NaoZZ": {
+   "title": "What Mesh Users Want",
+   "topic": "what-users-want",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "VJcBNa3XpDa3T8mYeNmXJE": {
+   "title": "Femtofox mPWRD-OS Rebuild",
+   "topic": "femtofox-rebuild",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "VygTjXDYPGpgW4PLPVDaqM": {
+   "title": "Hawaii Meshnet (hawaiimesh.net) — Critical Analysis & Engagement Plan",
+   "topic": "hawaii-meshnet",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "JNK2kZLyDVKWPfeXLtyA2q": {
+   "title": "Untitled (2026-10-29, content unchecked)",
+   "topic": "untitled-2026-10-29",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "BrQbKjGPzwS8ifWfB7nxBP": {
+   "title": "The Island Is the Test Bench",
+   "topic": "essay-island-test-bench",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "9vfKj6cjtsgP3dDYv3xdQc": {
+   "title": "After MeshChatX",
+   "topic": "after-meshchatx",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "KgNxL2yKxe87sPUuGwvjPd": {
+   "title": "MeshForge Domain Audit",
+   "topic": "domain-audit-2026-10",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "2ent1ZJfgo5Yi2wZunJ8v1": {
+   "title": "MeshForge Audit Bundle",
+   "topic": "audit-bundle-2026-10",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "JwQ2Fe5MuUJSbmtSvYUewo": {
+   "title": "Hub or Operations Center",
+   "topic": "hub-or-moc",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "BCmAAvgPS3wGtDLbr8fvtd": {
+   "title": "Live Map Packet",
+   "topic": "packet-live-map",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "JXreXwEYS1D4qViB4gXuAC": {
+   "title": "Map HTTPS Packet",
+   "topic": "packet-map-https",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "TiqsBXbbofQvZZC3cmQXx1": {
+   "title": "Operator Line Packet",
+   "topic": "packet-operator-line",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "TFuPNpkaUV1XhtBKXo7DXW": {
+   "title": "BIC-1 Inbox Patch",
+   "topic": "bic-1-inbox-patch",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "H6pjFRFQKeEJ4ZPT7a7jdv": {
+   "title": "RNS License Question — MeshForge",
+   "topic": "rns-license",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "VVMBApw4yvX4bBD2jrXx8N": {
+   "title": "Foreign Code in rnsd",
+   "topic": "foreign-code-rnsd",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "BqXdTJcjdrdXhiUAvSuxmv": {
+   "title": "Measuring the Air: LoRa, Power, and Truth in a Two-Site Mesh",
+   "topic": "essay-measuring-the-air",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "Ridkp4eEfSBJ5fiSbs8iz1": {
+   "title": "Measuring the Air for Substack",
+   "topic": "essay-measuring-the-air",
+   "role": "variant",
+   "ungrounded_verified_baseline": null
+  },
+  "NEu1r7h5bDr1GddBqVrGfg": {
+   "title": "MeshMonitor issue draft: @rns squat on rns 1.4.2",
+   "topic": "meshmonitor-rns-squat",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "TBPRYjM4zSLuBRwDUm9fsW": {
+   "title": "Why Try MeshForge",
+   "topic": "why-try-meshforge",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "P7maxZoJrhTTNDNYPR3LBC": {
+   "title": "Ecomm Kit Field Card",
+   "topic": "ecomm-field-card",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "MqzapkCLB3wv3odhHQ2yZA": {
+   "title": "Two Ways to Watch a Mesh",
+   "topic": "two-ways-to-watch",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "Ah42jy28YHb51v6ZrN7pUX": {
+   "title": "MeshForge — audit posture, the standalone default, and what to plan next",
+   "topic": "audit-posture-2026-08",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "JrnBUrGGQEqZ1xSjCs27up": {
+   "title": "Unobservable Is Not Healthy",
+   "topic": "essay-unobservable",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "YMRFB4c7vegqTZ75z4BCAG": {
+   "title": "BIARC Meshforge update",
+   "topic": "biarc-2026-06",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
+  "QhorSmqydmwtBgzGv2QJrT": {
+   "title": "BIARC Meshforge",
+   "topic": "biarc-2026-05",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  }
+ }
+}
