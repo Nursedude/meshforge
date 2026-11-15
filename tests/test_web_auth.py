@@ -436,3 +436,64 @@ def test_the_budget_is_per_client_and_expires(monkeypatch):
     assert b.wait_s("a") > 0 and b.wait_s("b") == 0
     now[0] += 101
     assert b.wait_s("a") == 0
+
+
+# ── 11-14: a phone was logged out 30 d after PAIRING however often it sent ──
+# The cookie's Max-Age was set ONCE, at /login, while the server slides its
+# idle window on every use — so the browser dropped a cookie the server still
+# honoured (operator iPhone 2026-11-14 18:04: 401 "no live operator session in
+# this browser", server session last used 11-08, live to 12-08).
+
+def _cookie_parts(set_cookie):
+    return [p.strip() for p in (set_cookie or "").split(";")]
+
+
+def test_a_validated_operator_write_renews_the_cookie(server, store):
+    srv, _ = server
+    cookie = _login(srv, store)
+    status, body, renewed = _req(srv, "POST", "/api/radio/message", MSG, _op(srv, cookie))
+    assert status == 200, body
+    assert renewed, "a validated write must re-issue the session cookie"
+    parts = _cookie_parts(renewed)
+    assert parts[0] == cookie, "renewal re-issues the SAME token, never a new session"
+    assert f"Max-Age={web_auth.SESSION_IDLE_S}" in parts
+    assert "HttpOnly" in parts and "SameSite=Strict" in parts
+
+
+def test_a_refused_write_sets_no_cookie(server):
+    srv, _ = server
+    status, _, set_cookie = _req(srv, "POST", "/api/radio/message", MSG, JSON)
+    assert status == 401
+    assert set_cookie is None
+
+
+def test_an_ordinary_get_sets_no_cookie_even_with_a_live_session(server, store):
+    """Only a request that passed the operator gate renews — a page view does
+    not mint lifetime for a cookie the server never checked."""
+    srv, _ = server
+    cookie = _login(srv, store)
+    _, _, set_cookie = _req(srv, "GET", "/api/auth/status", None, {"Cookie": cookie})
+    assert set_cookie is None
+
+
+def test_logout_clears_and_never_renews(server, store):
+    srv, _ = server
+    cookie = _login(srv, store)
+    status, _, set_cookie = _req(srv, "POST", "/logout", "{}", _op(srv, cookie))
+    assert status == 200
+    assert set_cookie and "Max-Age=0" in set_cookie
+    assert cookie not in set_cookie, "logout must not hand the token back"
+
+
+def test_inbox_401_banner_names_the_expiry_and_links_login():
+    """The phone user saw 'open /login (on the box: …)' and nothing they could
+    act on; the banner must say WHY and give a tappable /login."""
+    import pathlib
+    page = (pathlib.Path(__file__).parent.parent / "web" / "inbox.html").read_text()
+    i = page.index('j.error === "operator login required"')
+    assert "setLoginBanner(" in page[i:i + 120], "the 401 branch must use the login banner"
+    j = page.index("function setLoginBanner")
+    fn = page[j:page.index("\n  }\n", j)]
+    assert "expired" in fn.lower()
+    assert 'a.href = "/login"' in fn, "a tappable /login, built as a DOM node"
+    assert "innerHTML" not in fn

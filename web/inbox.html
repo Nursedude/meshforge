@@ -188,6 +188,17 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
     $("banner").style.display = text ? "block" : "none";
   }
 
+  // 401 on a send (11-14): say WHY, and give the phone a tappable /login.
+  // Built with DOM nodes, never innerHTML (CSP + no injected markup).
+  function setLoginBanner(how) {
+    setBanner("This browser has no operator login: it expired or was never paired, so nothing was sent. " +
+              "A one-time code is made on the box (" + (how || "ask the box operator") + "), then: ");
+    var a = document.createElement("a");
+    a.href = "/login";
+    a.textContent = "enter the code at /login";
+    $("banner").appendChild(a);
+  }
+
   function load() {
     return fetch("/api/inbox", { headers: { Accept: "application/json" } })
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, j: j }; }); })
@@ -311,7 +322,7 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
       .then(function (j) {
         if (j.state === "handed_off") { $("text").value = ""; $("count").textContent = "0/" + MAX; setBanner(j.recorded ? "" : "Sent, but not saved to history: " + (j.record_error || "")); }
         else if (j.error === "operator login required")
-          setBanner("Sending needs an operator login on this box: open /login (" + (j.how || "") + ")");
+          setLoginBanner(j.how);
         else setBanner(j.detail || j.error || "Send failed.");
         return load();
       })
