@@ -163,16 +163,12 @@ product, `--days 7` logged in each handoff (a measure, not a gate; operator 11-1
   30-DAY (by 11-24), NARROWED (operator 11-10): `/inbox` broadcast heard-by, UNKNOWN shown, echo-fold fix + unknown-state default (`INBOX-T` F1/F2/F11); never "delivered". A FLEET truth: a one-box stranger reads "cannot see" — confirm the one-box relay-heard state before promising it for 12-04. DMs + bridged legs: design the cross-process ack path first, then a new date. MA after.
   Observe before alarming: counters first, then a soak baseline (pass rule: gate 3).
   Counters live MF+MA + the MF-first twin-fix list: provenance § BIC-2 (moved verbatim 2026-11-14, MF012).
+  FIRST (operator iPhone 11-14): a phone is logged out 30 d after PAIRING however often used — the cookie's Max-Age is set once (`web_auth.py:261`, only issuer `_map_auth_endpoints.py:227`) while the server slides its idle window; re-issue on validate, red-first. And the 401 banner tells a phone user to run a box command — show the re-pair path in-app.
   INBOX-2 FOLDED IN (operator 11-14): its steps 1-3 (`f97e053f`) have NO caller — wiring them is this slice; plus the phone that lost its web login with no pairing code on screen. BIC-1's unwitnessed case (a NEW LongFast text stays off the primary channel) is on this checklist. Accept on the operator's phone, never on tests alone.
   public: For every message, MeshForge will say which network legs it crossed and whether each one delivered, failed, or cannot be seen.
   status: planned
 - **REL-1** [MF] S — a release every month: tag + a changelog a ham can read; each runs the gate-5 virtual drill (brief 42fbS7, 10-27)
   v0.8.0-beta = first GitHub Release 7 days after BR-T closed (11-14, provenance) with no fix to a pre-existing defect (rule 3); 12-04 dropped 11-13. Gate-5 drill to END (README only, a message crosses mesh↔RNS).
-- **BIC-1** [MF] S+F — `/inbox` browser chat; sends read "handed to radio · unconfirmed", never "delivered"
-  DEPLOYED 10-13 `834012d8` (+3 fixes, provenance; iPhone-verified 10-21). OWED: operator acceptance — one real send. Still unwitnessed: a NEW LongFast text from another node stays off the primary channel.
-  public: A chat page in the browser for the mesh, which says a message was handed to the radio, never that it was delivered, unless it was.
-  status: testing
-  help: a Pi running meshtasticd and a phone browser on the same LAN — send and receive a few messages, tell us what the page claimed vs what arrived
 - **MAP-H** [MF] S+F — map never draws healthy when blind; H15 `940ada70` H14 `50283000`; next H12 H4. `plans/maps_audit_2026_11_06.md`
   After H12 (red-first) → NEXT with H4 first (operator 11-14).
 - **EVAL-PF** [MF][MA] F — planted-fault benchmark per model, END-graded: the evidence for the harness's second purpose (README "How it's built")

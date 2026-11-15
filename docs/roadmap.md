@@ -13,8 +13,6 @@ you saw. A report that moves an item's status is credited by issue number.
 
 ## If you run one box
 
-- **Being tested — help wanted** — A chat page in the browser for the mesh, which says a message was handed to the radio, never that it was delivered, unless it was. <sub>(ref BIC-1)</sub>
-  - *Help wanted:* a Pi running meshtasticd and a phone browser on the same LAN — send and receive a few messages, tell us what the page claimed vs what arrived
 - **Planned** — For every message, MeshForge will say which network legs it crossed and whether each one delivered, failed, or cannot be seen. <sub>(ref BIC-2)</sub>
 - **Planned** — Prove MeshForge's pinned Reticulum talks to stock Reticulum in both directions on real radios. <sub>(ref BIC-4)</sub>
 - **Planned** — Pick the best working route between meshes from measured link health, not just hop count. <sub>(ref BIC-6)</sub>
@@ -28,8 +26,6 @@ you saw. A report that moves an item's status is credited by issue number.
 
 ## If you run several boxes
 
-- **Being tested — help wanted** — A chat page in the browser for the mesh, which says a message was handed to the radio, never that it was delivered, unless it was. <sub>(ref BIC-1)</sub>
-  - *Help wanted:* a Pi running meshtasticd and a phone browser on the same LAN — send and receive a few messages, tell us what the page claimed vs what arrived
 - **Planned** — For every message, MeshForge will say which network legs it crossed and whether each one delivered, failed, or cannot be seen. <sub>(ref BIC-2)</sub>
 - **Planned** — Prove MeshForge's pinned Reticulum talks to stock Reticulum in both directions on real radios. <sub>(ref BIC-4)</sub>
 - **Planned** — Pick the best working route between meshes from measured link health, not just hop count. <sub>(ref BIC-6)</sub>
