@@ -28,6 +28,10 @@ the bot as the far end of path proofs (lehua log 11-14: `wx From: meshforge
 kiai`, `[MC:wio] wx From: meshforge moc` over the MeshCore bridge, `Wx From:
 VolcanoAI` — each answered), so the reply arriving back is the real ACK and
 the bot's own "delivered" log line must never stand in for it (finding 1).
+The MA install gap lives in ROADMAP **BASE-1 stage 2** (HAM + BOT feature
+flags; operator 11-14), per the one-app artifact 1Li1CG6aegAnpYTPdgf8N8,
+which already named it ("MeshAnchor has no Extensions handler") and the
+missing TUI warning for a bot on `tcp` → `localhost:4403` — lehua's config.
 
 ## What lehua runs (MEASURED, read-only, 2026-11-14 22:4x)
 
