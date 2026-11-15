@@ -646,12 +646,11 @@ def main():
         logger.debug("Signal handlers reclaimed after bridge start (RNS "
                      "installs its own during Reticulum init)")
 
-        # Auto-start metrics server for Grafana integration
+        # Auto-start the Prometheus metrics server
         try:
             from utils.metrics_export import start_metrics_server
             _metrics_server = start_metrics_server(port=9090)
             print("Metrics server started on http://localhost:9090/metrics")
-            print("  Grafana JSON API: http://localhost:9090/api/json/metrics")
         except Exception as e:
             logger.debug(f"Metrics server not started: {e}")
 

@@ -88,7 +88,7 @@ All user input is validated before use:
 
 - Code defaults bind to `127.0.0.1`; the installer opens the map and broker to the LAN (see **Known gaps**)
 - HTTPS for external API calls (NOAA SWPC, GitHub)
-- Local services (Prometheus, Grafana, HamClock) use HTTP on localhost only
+- Local services (Prometheus, HamClock) use HTTP on localhost only
 - SSL certificate verification enabled by default in agent protocol
 
 ### Secure Defaults

@@ -107,7 +107,7 @@ meshtasticd
                               → MQTT Subscriber (monitoring)
                               → Traffic Inspector (packet capture)
                               → Coverage Maps (position data)
-                              → Grafana/InfluxDB
+                              → Prometheus/InfluxDB
                               → other consumers (unlimited)
 ```
 
@@ -203,7 +203,7 @@ src/
 │   ├── demo_mode.py        # Simulated mesh traffic (uses meshing_around MockAPI)
 │   ├── mqtt_decryptor.py   # AES-256-CTR packet decryption bridge
 │   ├── knowledge_base.py   # Core knowledge base + 20 topics
-│   ├── prometheus_exporter.py # Prometheus/Grafana metrics
+│   ├── prometheus_exporter.py # Prometheus metrics
 │   ├── aredn.py           # AREDN mesh client
 │   ├── paths.py           # Sudo-safe path resolution
 │   ├── watchdog_runner.py # Watchdog: one probe per field-learned failure class
@@ -212,7 +212,6 @@ src/
 ├── standalone.py          # Zero-dependency RF tools
 └── __version__.py         # Version tracking
 
-dashboards/                # Grafana monitoring dashboards
 ├── meshforge-overview.json  # Health, services, queues
 ├── meshforge-nodes.json     # Per-node RF metrics
 ├── meshforge-gateway.json   # Gateway bridge status

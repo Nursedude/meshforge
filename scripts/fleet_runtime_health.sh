@@ -86,7 +86,7 @@ err_count=$(journalctl --since "1 hour ago" --priority=err --no-pager -q 2>/dev/
 
 # Known meshforge services — report active/inactive/missing for each.
 svc_states=""
-for svc in meshforge-gateway meshforge-map meshforge-maps rnsd meshtasticd mosquitto prometheus grafana-server; do
+for svc in meshforge-gateway meshforge-map meshforge-maps rnsd meshtasticd mosquitto prometheus; do
     if systemctl list-unit-files "${svc}.service" 2>/dev/null | grep -q "^${svc}\\.service"; then
         # is-active prints exactly one of {active, inactive, failed,
         # activating, deactivating, unknown} regardless of exit code,

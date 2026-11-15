@@ -81,7 +81,7 @@ checks across status bar, diagnostics, repair wizard, and gateway pre-flight.
 
 ### Prometheus Metrics
 
-MeshForge exports metrics for monitoring with Prometheus and Grafana:
+MeshForge exports metrics for a Prometheus scraper:
 
 ```python
 from utils.metrics_export import start_metrics_server
@@ -93,26 +93,6 @@ server = start_metrics_server(port=9090)
 **TUI Access**: none. The TUI's Historical Metrics / Prometheus entry was retired
 2026-09-23 (its DB had no writer on any box); start the exporter from Python as above.
 
-### Grafana Dashboards
-
-Pre-built dashboards are available in `dashboards/`:
-
-| Dashboard | Description |
-|-----------|-------------|
-| `meshforge-overview.json` | Health scores, service status, message queues |
-| `meshforge-nodes.json` | Per-node SNR, RSSI, battery metrics |
-| `meshforge-gateway.json` | Gateway connections, message flow |
-| `meshforge-infinity.json` | JSON API via Grafana Infinity plugin (no Prometheus required) |
-| `meshforge-influxdb.json` | Node trends, signal quality, message activity (InfluxDB) |
-
-**Setup Requirements**:
-1. Install Prometheus and Grafana separately
-2. Start MeshForge metrics server (port 9090)
-3. Add Prometheus scrape target for `localhost:9090`
-4. Import dashboards via Grafana UI → Dashboards → Import
-
-See `dashboards/README.md` and `docs/METRICS.md` for full setup instructions.
-
 ### Ports
 
 | Port | Service | Owner | Notes |
@@ -122,7 +102,7 @@ See `dashboards/README.md` and `docs/METRICS.md` for full setup instructions.
 | 5000 | MeshForge Map Server | **MeshForge** | Live NOC map + REST API (enumerated in [API Reference](#api-reference)) |
 | 5001 | MeshForge WebSocket | **MeshForge** (map service) | Real-time broadcast; owned by `meshforge-map`, same trust gate as the :5000 read API |
 | 8081 | MeshForge Config API | **MeshForge** | RESTful config management |
-| 9090 | Prometheus metrics | **MeshForge** | Prometheus + Grafana JSON API |
+| 9090 | Prometheus metrics | **MeshForge** | Prometheus scrape endpoint |
 | 9443 | meshtasticd Web UI | meshtasticd | Protobuf + JSON endpoints |
 
 ### API Reference
@@ -155,10 +135,6 @@ local-only (LAN/localhost) with CORS enabled for browser access.
 | Method | Endpoint | Returns |
 |--------|----------|---------|
 | GET | `/metrics` | Prometheus exposition format (~45 metric families) |
-| GET | `/api/v1/query` | PromQL query (Grafana compatible) |
-| GET | `/api/v1/query_range` | Time-series range query |
-| GET | `/api/json/nodes` | Node metrics as JSON |
-| GET | `/api/json/status` | System status JSON |
 
 #### Config API (port 8081)
 

@@ -19,8 +19,8 @@ Three HTTP servers ship with MeshForge:
   described below.
 - **Config API** (the `meshforge` daemon, `127.0.0.1:8081`, loopback only) —
   read and write gateway settings by dotted path (`/config/rns.port`).
-- **Prometheus exporter** (default port 9090) — `/metrics` plus JSON and
-  Prometheus-query shims for Grafana.
+- **Prometheus exporter** (default port 9090) — `/metrics`, `/health` and
+  `/api/json/meshcore` (Grafana shims removed 2026-11-14).
 
 Responses are JSON unless the route serves a page. Errors carry an `error`
 field with a description.
@@ -161,26 +161,9 @@ then reads the API from your browser's trusted address.
 |---|---|---|
 | GET | `/` | Serve index page with available endpoints. |
 | GET | `/api/json/meshcore*` | Serve ``/api/json/meshcore[/contacts]`` on a MetricsHTTPHandler. |
-| GET | `/api/json/metrics` | Serve metrics as JSON for Grafana Infinity plugin. |
-| GET | `/api/json/nodes` | Serve node data as JSON for Grafana. |
-| GET | `/api/json/status` | Serve system status as JSON. |
-| GET | `/api/v1/label*` | Serve Prometheus label values API for Grafana variable queries. |
-| GET | `/api/v1/labels*` | Serve Prometheus labels API for Grafana compatibility. |
-| GET | `/api/v1/query*` | Serve Prometheus query API for Grafana compatibility. |
-| GET | `/api/v1/query_range*` | Serve Prometheus query_range API for Grafana time-series panels. |
 | GET | `/health` | Serve health check endpoint. |
 | GET | `/healthz` | Serve health check endpoint. |
 | GET | `/metrics` | Serve Prometheus metrics. |
-| POST | `/api/json/metrics` | Serve metrics as JSON for Grafana Infinity plugin. |
-| POST | `/api/json/nodes` | Serve node data as JSON for Grafana. |
-| POST | `/api/json/status` | Serve system status as JSON. |
-| POST | `/api/v1/label*` | Serve Prometheus label values API for Grafana variable queries. |
-| POST | `/api/v1/labels*` | Serve Prometheus labels API for Grafana compatibility. |
-| POST | `/api/v1/query*` | Serve Prometheus query API for Grafana compatibility. |
-| POST | `/api/v1/query_range*` | Serve Prometheus query_range API for Grafana time-series panels. |
-| POST | `/metrics` | Serve Prometheus metrics. |
-
-- `OPTIONS` on any path: Handle OPTIONS request (CORS preflight).
 
 ### Config API — `meshforge` daemon, 127.0.0.1:8081
 

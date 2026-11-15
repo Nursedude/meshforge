@@ -53,7 +53,7 @@ Code works in testing but hasn't been validated in real-world deployments with a
 | **Node Health** | Predictive maintenance, battery forecasting, signal trending | Needs historical data |
 | **RNS Packet Sniffer** | Live RNS capture, announce tracking, destination filtering | Needs RNS traffic |
 | **Device Backup** | Configuration backup/restore, versioned snapshots | Needs real device |
-| **Prometheus Metrics** | HTTP endpoint on port 9090, metrics exporter | Ready for Grafana |
+| **Prometheus Metrics** | HTTP endpoint on port 9090, metrics exporter | Prometheus scrape endpoint |
 | **Tactical Ops** | XTOC interop, 8 templates, X1 codec, KML/CoT/ATAK export | Implemented v0.5.4 |
 | **AI Assist (optional)** | Claude API chat assistant in the TUI, or a Claude subscription via Claude Code in the repo — see [AI Assist](#ai-assist--optional-and-yours-to-configure) | Your key or subscription; nothing without it |
 | **Messaging** | Broadcast/direct messaging, LXMF routing, message history | Needs bridge running |
@@ -63,7 +63,6 @@ Code works in testing but hasn't been validated in real-world deployments with a
 | Category | Capabilities | Blocker |
 |----------|-------------|---------|
 | **AREDN** | Node discovery, link quality, service enumeration — live at an AREDN site; Meshtastic↔AREDN messaging via Raven bridge (pilot, field-proven 2026-06-11) | Raven on the production AREDN router itself (Phase 2) pending |
-| **Grafana Dashboards** | Pre-built JSON dashboards for Prometheus | Needs Grafana + Prometheus setup |
 
 ### MeshAnchor (Live — [Nursedude/meshanchor](https://github.com/Nursedude/meshanchor))
 
@@ -158,7 +157,6 @@ and how proven it is — never plans.
 | **Coverage Maps** | Not yet validated with real GPS position data | Requires MQTT subscriber collecting positions |
 | **Live NOC Map** | Node trails require historical data | Enable MQTT subscriber for data collection |
 | **MeshCore** | Optional handler on main; full support lives in MeshAnchor | Use [MeshAnchor](https://github.com/Nursedude/meshanchor) for MeshCore-primary |
-| **Grafana** | Dashboards require manual import | See `dashboards/README.md` for instructions |
 | **TCP:4403** | Only one client can connect | Gateway uses MQTT (v0.5.4+), TCP free for CLI |
 | **AREDN** | Correct API implemented, needs AREDN hardware | Code-ready, awaiting hardware |
 | **Fleet Monitor (multi-host)** | Handler-thread pile-up on Pi-class hardware under sustained dashboard polling. Field-stable but newer code. | In-flight semaphore + dashboard 429-retry shipped in sister project ([MA #128](https://github.com/Nursedude/meshanchor/issues/128)); follow-on improvements tracked in [MA #126](https://github.com/Nursedude/meshanchor/issues/126) / [#127](https://github.com/Nursedude/meshanchor/issues/127) / [#131](https://github.com/Nursedude/meshanchor/issues/131). **Single-box install is the most reliable mode today.** |
@@ -166,7 +164,7 @@ and how proven it is — never plans.
 ### Testing Reality Check
 
 MeshForge's automated tests (run `python3 -m pytest tests/ --co -q` for the
-live count — never a hand-typed number here) span <!--STAT:testfiles-->645<!--/STAT--> test files. However, automated tests
+live count — never a hand-typed number here) span <!--STAT:testfiles-->646<!--/STAT--> test files. However, automated tests
 validate code paths with mocks — they do not replace field testing. The following
 features have strong unit test coverage but have **not been run with real services
 and radios** in a live deployment:
