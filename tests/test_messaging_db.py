@@ -393,3 +393,85 @@ class TestEnsureColumn:
         with pytest.raises(sqlite3.OperationalError):
             ensure_column(ro, "t", "c", "INTEGER")
         ro.close()
+
+
+class TestStoreFileReplaced:
+    """BIC-2 review r6 MED: the store file renamed/replaced under a running
+    process. The schema cache was keyed on the PATH, so the new file never
+    got ``messages_meta`` and every id'd RX failed — and the failed write
+    leaked its connection, holding the write lock until GC (30 s stalls)."""
+
+    @staticmethod
+    def _rows(path):
+        from utils.db_helpers import connect_tuned
+        c = connect_tuned(path)
+        try:
+            return c.execute("SELECT from_id, packet_id FROM messages "
+                             "ORDER BY id").fetchall()
+        finally:
+            c.close()
+
+    def test_id_rx_stored_after_file_moved_aside(self, tmp_db):
+        import os
+        assert messaging_mod.store_incoming("!a", "one", packet_id=11).success
+        for suffix in ("", "-wal", "-shm"):
+            p = Path(str(tmp_db) + suffix)
+            if p.exists():
+                os.rename(p, Path(str(tmp_db) + ".aside" + suffix))
+        r = messaging_mod.store_incoming("!b", "two", packet_id=22)
+        assert r.success, r.message
+        assert self._rows(tmp_db) == [("!b", 22)]
+        # the new store's era is its own first id'd RX row, written once
+        assert messaging_mod.first_received_id_row() == r.data["message_id"]
+
+    def test_failed_rx_write_releases_the_write_lock(self, tmp_db, monkeypatch):
+        import sqlite3
+        from utils.db_helpers import connect_tuned
+        messaging_mod._init_db().close()
+
+        def boom(conn):
+            raise sqlite3.OperationalError("planted")
+        monkeypatch.setattr(messaging_mod, "_record_rx_era", boom)
+        assert not messaging_mod.store_incoming("!a", "x", packet_id=5).success
+        other = connect_tuned(tmp_db, busy_timeout_seconds=0.2)
+        try:
+            other.execute("BEGIN IMMEDIATE")   # raises 'locked' on a leak
+            other.rollback()
+        finally:
+            other.close()
+
+
+class TestEraValueValidated:
+    """BIC-2 review r6 LOW: a corrupt/hand-edited ``messages_meta`` era must
+    read as UNREADABLE (raise → the inbox folds nothing by text), never as
+    an era — a text value crashed the read, a huge one hid post-era rows."""
+
+    @staticmethod
+    def _plant(path, value):
+        from utils.db_helpers import connect_tuned
+        c = connect_tuned(path)
+        try:
+            c.execute("UPDATE messages_meta SET value = ? WHERE key = ?",
+                      (value, messaging_mod._RX_ERA_KEY))
+            c.commit()
+        finally:
+            c.close()
+
+    @pytest.mark.parametrize("bad", ["abc", "", b"\x00", 10**18, 0, -1, 2.5])
+    def test_bad_era_value_raises(self, tmp_db, bad):
+        r = messaging_mod.store_incoming("!a", "x", packet_id=7)
+        assert messaging_mod.first_received_id_row() == r.data["message_id"]
+        self._plant(tmp_db, bad)
+        with pytest.raises(ValueError):
+            messaging_mod.first_received_id_row()
+
+    def test_bad_era_turns_text_fold_off_not_a_crash(self, tmp_db, monkeypatch):
+        from utils import inbox_api
+        # pin the fleet evidence + listener out: this test judges the era only
+        monkeypatch.setattr(inbox_api, "_attach_heard", lambda threads: None)
+        monkeypatch.setattr(inbox_api, "_rx_coverage", lambda: {})
+        messaging_mod.store_incoming("!a", "x", packet_id=7)
+        self._plant(tmp_db, "abc")
+        out = inbox_api.read_inbox()
+        assert out["state"] == "ok"
+        assert "era unreadable" in out.get("era_error", "")

@@ -24,6 +24,7 @@ Usage:
 """
 
 import logging
+import os
 import time
 import sqlite3
 from datetime import datetime
@@ -100,9 +101,22 @@ def _get_db_path() -> Path:
 _PACKET_ID_MAX = 0xFFFFFFFF
 
 
-#: DB paths whose schema this process already brought current — the
-#: migration probe runs once per path per process, not on every RX store.
+#: Store FILES whose schema this process already brought current — the
+#: migration probe runs once per file per process, not on every RX store.
+#: Keyed on the file's identity, not its path (BIC-2 r6 MED): a store moved
+#: aside or replaced under a running process is a NEW file and migrates.
 _schema_current: set = set()
+
+
+def _store_identity(db_path) -> Optional[tuple]:
+    """(path, device, inode) of the store file; None when it cannot be
+    stat'ed — the caller then migrates (idempotent) instead of trusting
+    the cache."""
+    try:
+        st = os.stat(db_path)
+    except OSError:
+        return None
+    return (str(db_path), st.st_dev, st.st_ino)
 
 
 def _valid_packet_id(packet_id) -> Optional[int]:
@@ -147,11 +161,27 @@ def first_received_id_row() -> Optional[int]:
             conn.commit()
             row = conn.execute("SELECT value FROM messages_meta WHERE key = ?",
                                (_RX_ERA_KEY,)).fetchone()
+        if row is not None:
+            _check_era(conn, row[0])
     finally:
         conn.close()
     # PERSISTED, never re-derived: MIN(id) slid forward when the 30-day prune
     # removed the era row itself (review r5 HIGH — a stranger was hidden)
     return row[0] if row else None
+
+
+def _check_era(conn, value) -> None:
+    """Refuse an era no writer can have stored (hfm #3, BIC-2 r6 LOW): not
+    a positive int, or past the highest row id ever assigned (AUTOINCREMENT's
+    sqlite_sequence survives prunes). A huge value would make every row
+    pre-era and text-fold strangers; raising = the inbox folds nothing."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"inbox era {value!r} is not a row id")
+    seq = conn.execute("SELECT seq FROM sqlite_sequence WHERE name = "
+                       "'messages'").fetchone()
+    if seq is None or value > seq[0]:
+        raise ValueError(f"inbox era {value} is past the store's last row id "
+                         f"({seq[0] if seq else 'none'})")
 
 
 #: Public name — the inbox's hand-off test shares this ONE validator (hfm #5).
@@ -208,7 +238,8 @@ def _init_db() -> sqlite3.Connection:
             packet_id INTEGER
         )
     ''')
-    if str(db_path) not in _schema_current:
+    ident = _store_identity(db_path)
+    if ident is None or ident not in _schema_current:
         try:
             ensure_column(conn, "messages", "packet_id", "INTEGER")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_packet_id "
@@ -222,7 +253,8 @@ def _init_db() -> sqlite3.Connection:
         except Exception:
             conn.close()  # never leak the fd on a failed migration (#73)
             raise
-        _schema_current.add(str(db_path))
+        if ident is not None:
+            _schema_current.add(ident)
 
     conn.execute('''
         CREATE INDEX IF NOT EXISTS idx_messages_timestamp
@@ -674,20 +706,23 @@ def store_incoming(
     try:
         pid = _valid_packet_id(packet_id)   # validated ONCE (one warning, not two)
         conn = _init_db()
-        cursor = conn.cursor()
-
-        cursor.execute('''
-            INSERT INTO messages
-            (network, from_id, to_id, content, channel, is_dm, snr, rssi, delivered,
-             packet_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-        ''', (network, from_id, to_id, content, channel, to_id is not None, snr, rssi, pid))
-        if pid is not None and from_id != "local":
-            _record_rx_era(conn)   # before commit, before _maybe_prune below
-
-        conn.commit()
-        message_id = cursor.lastrowid
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO messages
+                (network, from_id, to_id, content, channel, is_dm, snr, rssi,
+                 delivered, packet_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+            ''', (network, from_id, to_id, content, channel, to_id is not None,
+                  snr, rssi, pid))
+            if pid is not None and from_id != "local":
+                _record_rx_era(conn)   # before commit, before _maybe_prune below
+            conn.commit()
+            message_id = cursor.lastrowid
+        finally:
+            # a failed write must not hold the write lock until GC (r6 MED:
+            # every other writer then stalled the 30 s busy timeout)
+            conn.close()
 
         logger.info(f"Stored message {message_id} from {from_id}")
 
