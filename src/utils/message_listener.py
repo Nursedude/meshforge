@@ -91,18 +91,6 @@ class ListenerStatus:
         self.channels_seen[key] = self.channels_seen.get(key, 0) + 1
 
 
-def _wire_packet_id(message_id) -> Optional[int]:
-    """The radio's packet id from an ``MQTTMessage.message_id``, or None.
-
-    The decoder stores ``str(id)``, but falls back to ``str(time.time())``
-    (JSON leg) or ``""`` (encrypted leg) when the wire carried none — a
-    timestamp is NOT a packet id, so only an all-digits string counts. The
-    range check is ``messaging.store_incoming``'s (one validator)."""
-    if isinstance(message_id, str) and message_id.isascii() and message_id.isdigit():
-        return int(message_id)
-    return None
-
-
 class MessageListener:
     """
     Lightweight Meshtastic message listener.
@@ -533,7 +521,7 @@ class MessageListener:
                     channel=channel,
                     snr=snr,
                     rssi=rssi,
-                    packet_id=packet.get('id'),
+                    packet_id=messaging.wire_packet_id(packet.get('id')),
                 )
             except Exception as e:
                 logger.debug(f"Could not store message: {e}")
@@ -706,7 +694,7 @@ class MessageListener:
                         channel=mqtt_msg.channel,
                         snr=mqtt_msg.snr,
                         rssi=mqtt_msg.rssi,
-                        packet_id=_wire_packet_id(mqtt_msg.message_id),
+                        packet_id=messaging.wire_packet_id(mqtt_msg.message_id),
                     )
                 except Exception as e:
                     logger.debug(f"Could not store message: {e}")

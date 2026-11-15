@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from commands import messaging
+from utils.inbox_heard import JOIN_AFTER_S
 
 logger = logging.getLogger(__name__)
 
@@ -101,24 +102,36 @@ def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         channel + text, within the window) and mark that send radio-echoed.
         That proves the radio took the packet and uplinked it — NOT that it
         reached the air (the uplink can precede TX) and never delivery.
-        An echo carries NO rx SNR/RSSI (the radio never received it); a node
-        HEARD over the air always does, so a neighbour repeating the same
-        text is never swallowed.
+        A legacy (id-less) echo carries NO rx SNR/RSSI (the radio never
+        received it); a node HEARD over the air always does, so a neighbour
+        repeating the same text is never swallowed.
     Matching is on stored facts only; an unmatched row is always kept.
     Measured 10-21: 32 send/echo pairs, max gap 1 s.
 
     BIC-2 (INBOX-T F1, 2026-11-14): when a received row carries the radio's
     packet id, the id DECIDES — it pairs only with the send that owns that
-    id, inside or outside the window, and never with a send of the same
-    text (a stranger repeating my words is a real message). The text/time
-    match survives only for rows stored before ids were kept.
+    id, never with a send of the same text (a stranger repeating my words is
+    a real message). Bounded by the heard-by window (``JOIN_AFTER_S``, one
+    constant with ``inbox_heard``): a 32-bit id match an hour later is not
+    proof. The text/time match survives only for rows stored before ids.
+    ⚠️ An id-matched copy WITH rx stats (my packet relayed back and uplinked
+    by another gateway) also folds — it IS my packet; "heard over the air"
+    is the heard-by legs' state (BIC-2 step 2), not this fold's (review r1 F3).
+
+    (a) vs (b) fallbacks differ on purpose (review r1 F6): ``twin`` already
+    keys on the same SENDER, so a one-sided id may fall back to text; an
+    echo has no sender to check (own node id is never inferred from
+    traffic), so a received id that is not my send's is a different packet.
     """
     rows = [m for m in messages if m.get("network") == "meshtastic"]
     when = {id(m): _epoch(m.get("timestamp")) for m in rows}
 
-    def near(a, b):
+    def near(a, b, window=ECHO_WINDOW_S):
         ta, tb = when[id(a)], when[id(b)]
-        return ta is not None and tb is not None and abs(ta - tb) <= ECHO_WINDOW_S
+        return ta is not None and tb is not None and abs(ta - tb) <= window
+
+    def same_packet_time(a, b):
+        return near(a, b, JOIN_AFTER_S)
 
     def twin(a, b):
         """(a) same sender + text already keyed: two legs of ONE packet?"""
@@ -130,7 +143,8 @@ def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     def echo_of(send, rx):
         """(b) is ``rx`` my radio's copy of ``send``? The wire id decides."""
         if rx.get("packet_id") is not None:
-            return send.get("packet_id") == rx.get("packet_id")
+            return (send.get("packet_id") == rx.get("packet_id")
+                    and same_packet_time(send, rx))
         return (rx.get("snr") is None and rx.get("rssi") is None
                 and near(send, rx))
 
@@ -155,22 +169,29 @@ def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # 2-8 s apart): the same SENDER + packet id is one message. A packet id
     # is unique per sender, not per mesh; a row with no id is never merged
     # (a real resend and a storage double look identical without one).
-    first: Dict[Tuple[Any, int], Dict[str, Any]] = {}
+    # Review r1: same TEXT and inside the heard window too (a rebooted node
+    # can reuse an id for another message, F5); the kept copy is the one
+    # with rx evidence, then the first stored (F7).
+    def better(a, b):
+        ev = lambda r: r.get("snr") is not None or r.get("rssi") is not None
+        if ev(a) != ev(b):
+            return a if ev(a) else b
+        return a if (a.get("id") or 0) <= (b.get("id") or 0) else b
+
+    kept: Dict[Tuple[Any, int, Any], List[Dict[str, Any]]] = {}
     for m in rows:
         pid = m.get("packet_id")
         if id(m) in drop or m.get("from_id") == "local" or pid is None:
             continue
-        k = (m.get("from_id"), pid)
-        keep = first.get(k)
-        if keep is None:
-            first[k] = m
-            continue
-        # keep the FIRST stored copy (lowest row id); the store reads newest first
-        if (m.get("id") or 0) < (keep.get("id") or 0):
-            drop.add(id(keep))
-            first[k] = m
+        group = kept.setdefault((m.get("from_id"), pid, m.get("content")), [])
+        for i, k in enumerate(group):
+            if same_packet_time(k, m):
+                win = better(k, m)
+                drop.add(id(m) if win is k else id(k))
+                group[i] = win
+                break
         else:
-            drop.add(id(m))
+            group.append(m)
 
     echoed, used = set(), set()
     for m in rows:

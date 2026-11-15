@@ -19,6 +19,8 @@ from unittest.mock import patch
 
 import pytest
 
+from commands import messaging
+from commands.base import CommandResult
 from utils import inbox_api
 from utils import message_listener as ml
 
@@ -190,8 +192,75 @@ def test_two_copies_of_my_echo_fold_into_one_send():
 def test_dedupe_is_counted_as_folded():
     rows = [_db(id=1, packet_id=0x4004), _db(id=2, packet_id=0x4004)]
     with patch.object(inbox_api.messaging, "get_messages",
-                      return_value=__import__("commands.base", fromlist=["x"])
-                      .CommandResult.ok("ok", data={"messages": rows})), \
+                      return_value=CommandResult.ok("ok", data={"messages": rows})), \
          patch("utils.message_listener.get_listener_status", return_value={}):
         out = inbox_api.read_inbox()
     assert (out["message_count"], out["shown_count"], out["folded_count"]) == (2, 1, 1)
+
+
+# ── review r1 (non-author, 2026-11-14) ─────────────────────────────────────
+
+@pytest.mark.parametrize("raw, expect", [
+    (0x79C4A807, 0x79C4A807), ("2042931207", 2042931207),
+    (0, None), ("0", None), ("", None), (None, None), (True, None),
+    ("1731600000.123", None), ("abc", None), ("\u00b2", None),
+])
+def test_one_wire_id_parser_absent_means_none_quietly(raw, expect, caplog):
+    # r1 F9: an encrypted-leg id of 0 became "0" and logged a WARNING per
+    # packet; absent / zero is "the wire carried none", not an impossible id
+    assert messaging.wire_packet_id(raw) == expect
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+def test_every_meshtastic_writer_passes_the_wire_id():
+    # r1 F1: two gateway writers stored rows with NO id → the text fold, F1
+    # still live on gateway boxes. A NEW writer that forgets fails here.
+    import ast
+    import pathlib
+    src = pathlib.Path(__file__).resolve().parents[1] / "src"
+    missing, seen = [], 0
+    for path in src.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "attr",
+                    getattr(node.func, "id", None)) == "store_incoming"):
+                continue
+            kw = {k.arg: k.value for k in node.keywords}
+            net = kw.get("network")
+            if isinstance(net, ast.Constant) and net.value != "meshtastic":
+                continue                       # RNS / other: no Meshtastic id
+            seen += 1
+            if "packet_id" not in kw:
+                missing.append(f"{path.relative_to(src)}:{node.lineno}")
+    assert seen >= 4, f"walker found only {seen} meshtastic writers — blind?"
+    assert not missing, missing
+
+
+def test_an_id_echo_far_outside_the_heard_window_is_not_mine():
+    # r1 F4: the id match had no bound at all
+    rows = [_db(id=1, from_id="local", packet_id=0x1001),
+            _db(id=2, packet_id=0x1001, timestamp="2026-10-22 03:41:08")]  # +20 min
+    (t,) = inbox_api.build_threads(rows)
+    assert [m["state"] for m in t["messages"]] == ["handed_off", "received"]
+
+
+def test_a_reused_id_with_different_text_is_two_messages():
+    # r1 F5: a rebooted node reusing an id days later for another text
+    rows = [_db(id=1, content="first", packet_id=0x4004),
+            _db(id=2, content="second", packet_id=0x4004)]
+    assert sum(t["count"] for t in inbox_api.build_threads(rows)) == 2
+
+
+def test_a_reused_id_far_apart_is_two_messages():
+    rows = [_db(id=1, packet_id=0x4004),
+            _db(id=2, packet_id=0x4004, timestamp="2026-10-25 03:21:08")]
+    assert sum(t["count"] for t in inbox_api.build_threads(rows)) == 2
+
+
+def test_the_dedupe_keeps_the_copy_that_carries_rx_evidence():
+    # r1 F7: lowest row id first dropped the TCP copy's SNR/RSSI
+    rows = [_db(id=1, from_id="!0000beef", packet_id=0x4004),
+            _db(id=2, from_id="!0000beef", packet_id=0x4004, snr=-4.0, rssi=-90,
+                timestamp="2026-10-22 03:21:10")]
+    (t,) = inbox_api.build_threads(rows)
+    assert [(m["id"], m["snr"], m["rssi"]) for m in t["messages"]] == [(2, -4.0, -90)]

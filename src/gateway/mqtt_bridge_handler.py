@@ -891,6 +891,7 @@ class MQTTBridgeHandler(BaseMessageHandler):
                 network="meshtastic",
                 to_id=dest,
                 channel=channel,
+                packet_id=messaging.wire_packet_id(data.get('id')),
             )
         except Exception as e:
             logger.debug(f"Could not store incoming message: {e}")

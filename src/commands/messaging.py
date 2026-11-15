@@ -123,6 +123,27 @@ def _valid_packet_id(packet_id) -> Optional[int]:
 valid_packet_id = _valid_packet_id
 
 
+def wire_packet_id(raw) -> Optional[int]:
+    """The ONE parser for a packet id as a writer receives it off the wire
+    (BIC-2 review r1): an int, or the MQTT decoder's ``str(id)``.
+
+    "The wire carried none" is ``None`` QUIETLY — absent, ``0``, ``""``,
+    the decoder's ``str(time.time())`` fallback (a timestamp is not an id),
+    a bool, any non-ASCII-digit string. Range is NOT judged here: an
+    impossible id still reaches ``store_incoming``'s validator, which says
+    so loudly (hfm #3) — so a real anomaly is never drowned by the absent
+    case (r1 F9: an encrypted-leg ``0`` warned once per packet)."""
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, str):
+        if not (raw.isascii() and raw.isdigit()):
+            return None
+        raw = int(raw)
+    if not isinstance(raw, int) or raw == 0:
+        return None
+    return raw
+
+
 def _init_db() -> sqlite3.Connection:
     """Initialize message database."""
     db_path = _get_db_path()

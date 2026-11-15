@@ -788,6 +788,7 @@ class MeshtasticHandler(BaseMessageHandler):
                 channel=packet.get('channel', 0),
                 snr=packet.get('rxSnr'),
                 rssi=packet.get('rxRssi'),
+                packet_id=messaging.wire_packet_id(packet.get('id')),
             )
         except Exception as e:
             logger.debug(f"Could not store incoming message: {e}")
