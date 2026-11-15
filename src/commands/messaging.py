@@ -119,6 +119,10 @@ def _valid_packet_id(packet_id) -> Optional[int]:
     return packet_id
 
 
+#: Public name — the inbox's hand-off test shares this ONE validator (hfm #5).
+valid_packet_id = _valid_packet_id
+
+
 def _init_db() -> sqlite3.Connection:
     """Initialize message database."""
     db_path = _get_db_path()
@@ -575,7 +579,8 @@ def store_incoming(
     to_id: Optional[str] = None,
     channel: int = 0,
     snr: Optional[float] = None,
-    rssi: Optional[int] = None
+    rssi: Optional[int] = None,
+    packet_id: Optional[int] = None,
 ) -> CommandResult:
     """
     Store incoming message from mesh network.
@@ -590,6 +595,9 @@ def store_incoming(
         channel: Channel number
         snr: Signal-to-noise ratio
         rssi: Signal strength
+        packet_id: The radio's id for this packet, when the wire carried one
+            (BIC-2: the inbox folds an echo on this, never on matching text).
+            An impossible value is refused loudly and stored as unknown.
 
     Returns:
         CommandResult with storage confirmation
@@ -600,9 +608,11 @@ def store_incoming(
 
         cursor.execute('''
             INSERT INTO messages
-            (network, from_id, to_id, content, channel, is_dm, snr, rssi, delivered)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-        ''', (network, from_id, to_id, content, channel, to_id is not None, snr, rssi))
+            (network, from_id, to_id, content, channel, is_dm, snr, rssi, delivered,
+             packet_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+        ''', (network, from_id, to_id, content, channel, to_id is not None, snr, rssi,
+              _valid_packet_id(packet_id)))
 
         conn.commit()
         message_id = cursor.lastrowid

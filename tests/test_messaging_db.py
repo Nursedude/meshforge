@@ -196,6 +196,19 @@ class TestOutgoingPacketId:
         assert r.success, r.message
         assert self._rows(tmp_db) == [("Wx", 0x79C4A807)]
 
+    def test_store_incoming_keeps_packet_id(self, tmp_db):
+        # BIC-2 step 1: a received row keeps the radio's id so the inbox can
+        # fold an echo on the wire fact, never on matching text (INBOX-T F1)
+        r = messaging_mod.store_incoming(from_id="!a1b2c3d4", content="rx",
+                                         packet_id=0x79C4A807)
+        assert r.success, r.message
+        assert self._rows(tmp_db) == [("rx", 0x79C4A807)]
+
+    def test_store_incoming_refuses_an_impossible_id_keeps_the_row(self, tmp_db):
+        r = messaging_mod.store_incoming(from_id="!a1b2c3d4", content="rx",
+                                         packet_id=0)
+        assert r.success and self._rows(tmp_db) == [("rx", None)]
+
     def test_packet_id_defaults_to_unknown(self, tmp_db):
         messaging_mod.store_outgoing(content="x", network="meshtastic",
                                      to_id=None)

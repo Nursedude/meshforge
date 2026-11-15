@@ -106,6 +106,12 @@ def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         text is never swallowed.
     Matching is on stored facts only; an unmatched row is always kept.
     Measured 10-21: 32 send/echo pairs, max gap 1 s.
+
+    BIC-2 (INBOX-T F1, 2026-11-14): when a received row carries the radio's
+    packet id, the id DECIDES — it pairs only with the send that owns that
+    id, inside or outside the window, and never with a send of the same
+    text (a stranger repeating my words is a real message). The text/time
+    match survives only for rows stored before ids were kept.
     """
     rows = [m for m in messages if m.get("network") == "meshtastic"]
     when = {id(m): _epoch(m.get("timestamp")) for m in rows}
@@ -113,6 +119,20 @@ def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     def near(a, b):
         ta, tb = when[id(a)], when[id(b)]
         return ta is not None and tb is not None and abs(ta - tb) <= ECHO_WINDOW_S
+
+    def twin(a, b):
+        """(a) same sender + text already keyed: two legs of ONE packet?"""
+        pa, pb = a.get("packet_id"), b.get("packet_id")
+        if pa is not None and pb is not None:
+            return pa == pb
+        return near(a, b)
+
+    def echo_of(send, rx):
+        """(b) is ``rx`` my radio's copy of ``send``? The wire id decides."""
+        if rx.get("packet_id") is not None:
+            return send.get("packet_id") == rx.get("packet_id")
+        return (rx.get("snr") is None and rx.get("rssi") is None
+                and near(send, rx))
 
     by_sender: Dict[Tuple[Any, Any], List[Dict[str, Any]]] = {}
     sends: Dict[Tuple[Any, Any], List[Dict[str, Any]]] = {}
@@ -126,18 +146,17 @@ def _fold_duplicates(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for m in rows:
         if m.get("from_id") == "local" or m.get("to_id") != "":
             continue
-        if any(o is not m and o.get("to_id") != "" and near(o, m)
+        if any(o is not m and o.get("to_id") != "" and twin(o, m)
                for o in by_sender[(m.get("from_id"), m.get("content"))]):
             drop.add(id(m))
 
     echoed, used = set(), set()
     for m in rows:
         if (id(m) in drop or m.get("from_id") == "local"
-                or m.get("to_id") not in BROADCAST_IDS
-                or m.get("snr") is not None or m.get("rssi") is not None):
+                or m.get("to_id") not in BROADCAST_IDS):
             continue
         for o in sends.get((m.get("channel"), m.get("content")), ()):
-            if id(o) not in used and near(o, m):
+            if id(o) not in used and echo_of(o, m):
                 echoed.add(id(m))
                 used.add(id(o))
                 break
@@ -176,6 +195,8 @@ def build_threads(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "snr": msg.get("snr"),
             "rssi": msg.get("rssi"),
             "state": _state(msg),
+            # the radio's id — the one wire fact a heard-by join keys on
+            "packet_id": msg.get("packet_id"),
         })
     out = []
     for t in threads.values():
@@ -257,6 +278,9 @@ def send(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     except Exception as e:
         logger.warning("inbox: transmit raised: %s", e)
         packet_id = None
+    # only a real radio id is a hand-off: 0 / False / out-of-range are not
+    # (INBOX-T F3) — the same validator the store applies
+    packet_id = messaging.valid_packet_id(packet_id)
     handed_off = packet_id is not None
     rec = messaging.store_outgoing(
         content=params["text"], network="meshtastic", to_id=params["to_id"],
