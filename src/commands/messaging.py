@@ -24,7 +24,6 @@ Usage:
 """
 
 import logging
-import os
 import time
 import sqlite3
 from datetime import datetime
@@ -101,22 +100,19 @@ def _get_db_path() -> Path:
 _PACKET_ID_MAX = 0xFFFFFFFF
 
 
-#: Store FILES whose schema this process already brought current — the
-#: migration probe runs once per file per process, not on every RX store.
-#: Keyed on the file's identity, not its path (BIC-2 r6 MED): a store moved
-#: aside or replaced under a running process is a NEW file and migrates.
-_schema_current: set = set()
+def _schema_is_current(conn) -> bool:
+    """Probe THIS file's schema on every connection (two prepares, no rows).
 
-
-def _store_identity(db_path) -> Optional[tuple]:
-    """(path, device, inode) of the store file; None when it cannot be
-    stat'ed — the caller then migrates (idempotent) instead of trusting
-    the cache."""
+    BIC-2 r6 keyed a once-per-process cache on the file's identity; r7 showed
+    ext4 hands a deleted file's inode to the next one (measured 20 of 20), and
+    a backup copied over the store in place keeps it — the cache then skipped
+    the migration and every id'd RX was lost. Asking the file is the seam."""
     try:
-        st = os.stat(db_path)
-    except OSError:
-        return None
-    return (str(db_path), st.st_dev, st.st_ino)
+        conn.execute("SELECT packet_id FROM messages LIMIT 0")
+        conn.execute("SELECT value FROM messages_meta LIMIT 0")
+    except sqlite3.OperationalError:
+        return False
+    return True
 
 
 def _valid_packet_id(packet_id) -> Optional[int]:
@@ -238,8 +234,7 @@ def _init_db() -> sqlite3.Connection:
             packet_id INTEGER
         )
     ''')
-    ident = _store_identity(db_path)
-    if ident is None or ident not in _schema_current:
+    if not _schema_is_current(conn):
         try:
             ensure_column(conn, "messages", "packet_id", "INTEGER")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_packet_id "
@@ -253,8 +248,6 @@ def _init_db() -> sqlite3.Connection:
         except Exception:
             conn.close()  # never leak the fd on a failed migration (#73)
             raise
-        if ident is not None:
-            _schema_current.add(ident)
 
     conn.execute('''
         CREATE INDEX IF NOT EXISTS idx_messages_timestamp

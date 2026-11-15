@@ -475,3 +475,36 @@ class TestEraValueValidated:
         out = inbox_api.read_inbox()
         assert out["state"] == "ok"
         assert "era unreadable" in out.get("era_error", "")
+
+
+class TestStoreReplacedSameInode:
+    """BIC-2 review r7 MED (inode reuse measured on ext4: 20 of 20): a store
+    deleted and recreated — or a pre-change backup written over it in place —
+    keeps the SAME inode, so a cache keyed on file identity skipped the
+    migration and every id'd RX was lost. The schema is probed per connection."""
+
+    def test_pre_change_store_written_in_place_still_stores(self, tmp_db, tmp_path):
+        import sqlite3
+        assert messaging_mod.store_incoming("!a", "one", packet_id=11).success
+        old = tmp_path / "old.db"
+        c = sqlite3.connect(old)   # a pre-BIC-2 store: no packet_id, no meta
+        c.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                  "timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, network TEXT NOT NULL, "
+                  "from_id TEXT NOT NULL, to_id TEXT, content TEXT NOT NULL, "
+                  "channel INTEGER DEFAULT 0, is_dm BOOLEAN DEFAULT 1, snr REAL, "
+                  "rssi INTEGER, delivered BOOLEAN DEFAULT 0)")
+        c.execute("INSERT INTO messages (network, from_id, content) "
+                  "VALUES ('meshtastic', '!z', 'old')")
+        c.commit()
+        c.close()
+        for s in ("-wal", "-shm"):
+            Path(str(tmp_db) + s).unlink(missing_ok=True)
+        ino = tmp_db.stat().st_ino
+        with open(tmp_db, "r+b") as f:          # cp semantics: same inode
+            f.truncate(0)
+            f.write(old.read_bytes())
+        assert tmp_db.stat().st_ino == ino
+        r = messaging_mod.store_incoming("!b", "two", packet_id=22)
+        assert r.success, r.message
+        assert messaging_mod.store_outgoing("hi", "meshtastic", None).success
+        assert messaging_mod.first_received_id_row() == r.data["message_id"]
