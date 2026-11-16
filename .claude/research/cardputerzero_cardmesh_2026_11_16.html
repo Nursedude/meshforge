@@ -1,0 +1,279 @@
+<title>CardputerZero for MeshForge</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="mf:topic" content="research-cardputerzero">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one reading column in the MeshForge research series. Verdict first, then the hardware, the people already building on it, the comparison with our earlier hardware studies, the fit against the queued roadmap, and what to do next. Wide tables scroll inside their own box. */
+:root{
+  --bg:#f3f5f6; --panel:#ffffff; --fg:#162026; --muted:#55636c; --rule:#d3dadf;
+  --accent:#0a6e86; --accent-soft:#ddeef3;
+  --lcd:#0f1d16; --lcd-fg:#9fe8b5; --lcd-dim:#5f9c74; --lcd-warn:#f2c46b;
+  --ok:#2d6a3e; --ok-bg:#e3f1e6; --warn:#8a5a00; --warn-bg:#fbefd6; --bad:#9b2c2c; --bad-bg:#f8e1e1; --unk:#5a4f86; --unk-bg:#ebe8f6;
+  --display:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
+  --body:"Source Sans 3",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f1519; --panel:#172026; --fg:#e2eaee; --muted:#9aaab3; --rule:#2a363d; --accent:#5ec3dc; --accent-soft:#163540;
+  --lcd:#08120d; --lcd-fg:#9fe8b5; --lcd-dim:#5f9c74; --lcd-warn:#f2c46b;
+  --ok:#8fd3a0; --ok-bg:#1d3324; --warn:#e8c06a; --warn-bg:#3a2e12; --bad:#f09a9a; --bad-bg:#3d1f1f; --unk:#b9aef0; --unk-bg:#29243f; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f1519; --panel:#172026; --fg:#e2eaee; --muted:#9aaab3; --rule:#2a363d; --accent:#5ec3dc; --accent-soft:#163540;
+  --lcd:#08120d; --lcd-fg:#9fe8b5; --lcd-dim:#5f9c74; --lcd-warn:#f2c46b;
+  --ok:#8fd3a0; --ok-bg:#1d3324; --warn:#e8c06a; --warn-bg:#3a2e12; --bad:#f09a9a; --bad-bg:#3d1f1f; --unk:#b9aef0; --unk-bg:#29243f; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:17px;line-height:1.6}
+.wrap{max-width:920px;margin:0 auto;padding-block:40px 72px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:48px}
+h1,h2,h3{font-family:var(--display);text-wrap:balance;line-height:1.1;margin:0;letter-spacing:.01em}
+h1{font-size:clamp(2.2rem,6vw,3.1rem)}
+h2{font-size:1.75rem;padding-bottom:6px;border-bottom:2px solid var(--fg)}
+h3{font-size:1.25rem}
+p{margin:0;max-width:70ch}
+section{display:flex;flex-direction:column;gap:16px;min-width:0}
+header{display:flex;flex-direction:column;gap:14px}
+.eyebrow{font-family:var(--mono);font-size:.76rem;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+.lede{font-size:1.15rem;color:var(--muted)}
+.small{font-size:.88rem;color:var(--muted)}
+code{font-family:var(--mono);font-size:.84em;background:var(--accent-soft);padding:1px 5px;border-radius:3px;overflow-wrap:anywhere}
+a{color:var(--accent)}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+ul,ol{margin:0;padding-left:1.3em;display:flex;flex-direction:column;gap:8px;max-width:72ch}
+.verdict{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:24px;align-items:center;background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:22px}
+.verdict .big{font-family:var(--display);font-size:1.6rem;line-height:1.2}
+.verdict>div{display:flex;flex-direction:column;gap:12px;min-width:0}
+@media (max-width:720px){.verdict{grid-template-columns:1fr}}
+.lcd{width:320px;max-width:100%;aspect-ratio:320/170;background:var(--lcd);color:var(--lcd-fg);font-family:var(--mono);font-size:11px;line-height:1.35;padding:8px 10px;border-radius:4px;border:6px solid #2b3338;display:flex;flex-direction:column;gap:2px;overflow:hidden}
+.lcd .hd{display:flex;justify-content:space-between;border-bottom:1px solid var(--lcd-dim);padding-bottom:2px;margin-bottom:2px}
+.lcd .d{color:var(--lcd-dim)} .lcd .w{color:var(--lcd-warn)}
+.cap{font-size:.8rem;color:var(--muted);max-width:320px}
+.tag{display:inline-block;font-family:var(--mono);font-size:.66rem;letter-spacing:.05em;padding:1px 7px;border-radius:999px;font-weight:600;white-space:nowrap;vertical-align:1px}
+.t-v{background:var(--ok-bg);color:var(--ok)} .t-b{background:var(--warn-bg);color:var(--warn)} .t-u{background:var(--unk-bg);color:var(--unk)} .t-x{background:var(--bad-bg);color:var(--bad)}
+.tablebox{overflow-x:auto;border:1px solid var(--rule);border-radius:6px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;min-width:760px;font-size:.9rem}
+th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--rule)}
+th{font-family:var(--mono);font-size:.68rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);background:var(--bg)}
+tr:last-child td{border-bottom:none}
+td:first-child{font-weight:600}
+tr.us td{background:var(--accent-soft)}
+.note{border-left:3px solid var(--accent);background:var(--accent-soft);padding:12px 16px;border-radius:0 6px 6px 0;display:flex;flex-direction:column;gap:6px}
+.note.warn{border-color:var(--warn);background:var(--warn-bg)}
+.paths{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+.path{background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.path .k{font-family:var(--mono);font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--accent)}
+.path h3{font-size:1.3rem}
+.steps{list-style:none;padding:0;counter-reset:s;gap:16px}
+.steps>li{counter-increment:s;display:grid;grid-template-columns:2.2rem minmax(0,1fr);gap:12px;align-items:start}
+.steps>li::before{content:counter(s);font-family:var(--mono);font-weight:600;width:2rem;height:2rem;border-radius:50%;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent)}
+.steps>li>div{display:flex;flex-direction:column;gap:4px;min-width:0}
+.steps b{font-family:var(--display);font-size:1.2rem;letter-spacing:.01em}
+pre.mermaid{background:var(--panel);border:1px solid var(--rule);border-radius:6px;padding:12px;overflow-x:auto;margin:0}
+footer{font-size:.84rem;color:var(--muted);border-top:1px solid var(--rule);padding-top:14px;display:flex;flex-direction:column;gap:6px}
+</style>
+
+<div class="wrap">
+<header>
+  <span class="eyebrow">MeshForge research · hardware extension · 2026-11-16 · WH6GXZ · cloud session, repo read only</span>
+  <h1>CardputerZero for MeshForge</h1>
+  <p class="lede">M5Stack's CardputerZero is a pocket Linux computer, and its Cap LoRa-1262 adds an SX1262 radio on SPI. That combination is the same shape MeshForge already drives on a Pi. This page reads <a href="https://github.com/maxhayim/CardMesh">maxhayim/CardMesh</a> and the other projects already building for it, compares the device with our earlier hardware studies, and maps where it fits the roadmap queue.</p>
+  <p class="small">Companions: <a href="https://claude.ai/artifact/5oUqetQyj6D9tqbdSeZHXP">Axiometa for MeshForge</a> · <a href="https://claude.ai/artifact/VJcBNa3XpDa3T8mYeNmXJE">Femtofox mPWRD-OS Rebuild</a> · <a href="https://claude.ai/artifact/7NMLULS6Bf1ZURjRdcEYC9">Why Choose Us Over N</a> · <a href="https://claude.ai/artifact/UL62HQMSLZrKnejKkoo4Ud">MeshForge Roadmap</a></p>
+</header>
+
+<section>
+  <h2>Verdict</h2>
+  <div class="verdict">
+    <div>
+      <p class="big">MeshForge can support this device with little new code, and the parts that need new code are the parts we are best at.</p>
+      <p>The upstream Meshtastic repo already ships a meshtasticd config for this radio (<code>bin/config.d/lora-cardputer-zero.yaml</code>, present on <code>develop</code> today). MeshForge configures meshtasticd on SPI hats now, so the radio path is mostly a template. What upstream leaves out is the part where devices silently fail: the YAML cannot switch on the Cap's power rail or its I/O-expander gate, so meshtasticd can start "active" with a dead radio. Catching that is MeshForge's core habit.</p>
+      <p>The larger opportunity is different. CardMesh is a pocket console for a server (MeshMonitor). A pocket console that shows <b>the life of one message across two meshes</b> is the one screen the roadmap says we should be best at (BIC-2, SHOW-1). That idea belongs in NEXT after BIC-2 ships, not before it.</p>
+    </div>
+    <div>
+      <div class="lcd" role="img" aria-label="Sketch of a 320 by 170 screen showing one message's legs">
+        <div class="hd"><span>MSG !a13f · 22:41</span><span>●</span></div>
+        <div>"Testing Kendall node."</div>
+        <div class="d">───────────────────────────</div>
+        <div>MT LongFast  handed→radio  <span class="w">UNCONF</span></div>
+        <div>MT heard by  2 nodes       OK</div>
+        <div>RNS hub      lxmf path     OK</div>
+        <div>MC leg       --            <span class="w">CANNOT SEE</span></div>
+        <div class="d">───────────────────────────</div>
+        <div class="d">[L] legs  [R] route  ESC back</div>
+      </div>
+      <p class="cap">Sketch only, at the device's 320×170. No such screen exists in either project.</p>
+    </div>
+  </div>
+  <p class="note warn"><b>What this page is built from.</b> Every claim was read this session from git clones, upstream source and web search. No CardputerZero, Cap or fleet box was touched. Hardware behaviour is <span class="tag t-b">BELIEVED</span> until someone runs it on a real device and checks both ends of the radio link.</p>
+</section>
+
+<section>
+  <h2>The hardware</h2>
+  <div class="tablebox"><table>
+    <thead><tr><th>Fact</th><th>Value</th><th>Tag</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Compute</td><td>Raspberry Pi Compute Module 0 (CM0): quad Cortex-A53 up to 1 GHz, 512 MB LPDDR2, microSD. Some sources say BCM2837, one says BCM2710A1.</td><td><span class="tag t-b">REPORTED</span> (several search results agree)</td><td>LinuxGizmos, M5Stack launch post</td></tr>
+      <tr><td>Display and input</td><td>1.9-inch LCD at 320×170, 46-key keyboard</td><td><span class="tag t-v" data-ground="upstream">VERIFIED</span> (320×170 in CardMesh's manifest)</td><td>M5Stack docs; CardMesh <code>app-builder.json</code></td></tr>
+      <tr><td>Other I/O</td><td>2.4 GHz Wi-Fi, BT 4.2, 10/100 Ethernet, HDMI out, IMX219 camera, BMI270 IMU, RX8130CE RTC</td><td><span class="tag t-b">REPORTED</span></td><td>M5Stack launch post</td></tr>
+      <tr><td>OS</td><td>Stock 64-bit image based on Debian 13 (trixie)</td><td><span class="tag t-b">BELIEVED</span> (one project's README)</td><td>Pocket Mesh README</td></tr>
+      <tr><td>Cap LoRa-1262</td><td>SX1262 on <code>/dev/spidev0.1</code> (kernel CE1); IRQ 23, Reset 26, Busy 22 on gpiochip0; DIO2 RF switch; 3.0 V TCXO; AT6668 GNSS on <code>/dev/serial0</code></td><td><span class="tag t-v" data-ground="upstream">VERIFIED</span> (same pins in 3 independent codebases)</td><td>upstream preset, CardMesh <code>SX1262Hal.h</code>, Trail Mate</td></tr>
+      <tr><td>Power and gate</td><td>Before use, write 1 to <code>/sys/class/leds/ext_5v_out/brightness</code> (and <code>grove_5v_out</code>), and drive P0 of a PI4IOE5V6408 at I²C-1 0x43 high. Restore both on exit.</td><td><span class="tag t-v" data-ground="upstream">VERIFIED</span> in code; <span class="tag t-b">BELIEVED</span> as device behaviour</td><td>upstream preset comments, CardMesh <code>HatPower.h</code>, <code>Pi4ioExpander.h</code></td></tr>
+      <tr><td>Band</td><td>Rated 868–923 MHz</td><td><span class="tag t-b">BELIEVED</span> (one search source)</td><td>web search; an upstream reviewer asked for the range in the preset name</td></tr>
+      <tr><td>Price and ship date</td><td>LoRa kit about $138, shipping November 2026</td><td><span class="tag t-u">UNKNOWN</span> (one source only)</td><td>web search</td></tr>
+    </tbody>
+  </table></div>
+  <p class="small">US915 check, computed this session from the firmware's slot formula: the default US slots are LongFast 906.875, MediumFast 913.125, MediumSlow 914.875 and ShortFast 918.875 MHz, all inside the Cap's stated rating. A custom slot above 923 MHz would be outside it. <span class="tag t-b">BELIEVED</span>, since the 923 MHz limit comes from one source.</p>
+</section>
+
+<section>
+  <h2>Who is already building for it</h2>
+  <p>Four separate efforts showed up within days of each other. They differ on one decision that matters most for MeshForge: <b>which program owns the radio.</b></p>
+  <div class="tablebox"><table>
+    <thead><tr><th>Project</th><th>Who</th><th>Radio owner</th><th>State, read 11-16</th><th>Licence</th></tr></thead>
+    <tbody>
+      <tr><td>Upstream meshtasticd preset</td><td>thebentern (Meshtastic firmware), PRs #12341 and #12343 (GNSS)</td><td>meshtasticd</td><td><code>lora-cardputer-zero.yaml</code> is on <code>develop</code>, marked <code>support: community</code>. The GNSS PR still has an open merge ref.</td><td>GPL-3.0</td></tr>
+      <tr><td><a href="https://github.com/maxhayim/CardMesh">CardMesh</a></td><td>maxhayim</td><td>CardMesh itself (RadioLib, its own Linux HAL), alongside a MeshMonitor REST client</td><td>v0.1.0 MeshMonitor dashboard verified on real hardware 11-16. Direct SX1262, Meshtastic AES-CTR and a compose screen landed 11-16; one TX was received back over real RF.</td><td>MIT</td></tr>
+      <tr><td><a href="https://github.com/DavisW9/pocket-mesh-cardputer">Pocket Mesh</a></td><td>DavisW9</td><td>A bundled, checksum-pinned meshtasticd 2.7.26 on loopback, started and stopped with the app</td><td>Initial source 11-10. Its README lists the physical checks still owed before store submission.</td><td>GPL-3.0</td></tr>
+      <tr><td><a href="https://github.com/vicliu624/trail-mate/blob/main/apps/linux_cardputer_zero/README.md">Trail Mate</a></td><td>vicliu624</td><td>Its own raw LoRa and GPS runtime</td><td>Uses meshtasticd only as hardware reference</td><td>not checked</td></tr>
+    </tbody>
+  </table></div>
+  <h3>What CardMesh's code shows</h3>
+  <ul>
+    <li><b>Good discipline that matches ours.</b> <code>DEVICE_BUILD.md</code> separates what was verified from what was not, and the 11-16 commit messages give the root cause of each hardware bug, for example <code>lv_timer_handler()</code> returning <code>UINT32_MAX</code> and being used as a sleep, which froze the UI for about 49 days. Its README rules say "never fabricate unavailable values" and "never show ACK unless the data supports it."</li>
+    <li><b>The README is behind the code.</b> It still says direct LoRa is "planned, not yet implemented", while commits <code>f1326b5</code> through <code>5c13ff1</code> implement it. <span class="tag t-v" data-ground="git">VERIFIED</span> from the clone.</li>
+    <li><b>Radio parameters are hard-coded</b> to US915 MediumFast, 20 dBm, on one public channel (<code>MeshtasticWorker.cpp</code>). A LongFast mesh such as HawaiiNet would hear nothing from it until that is configurable.</li>
+    <li><b>It is a minimal Meshtastic stack.</b> It decodes text and position, broadcasts only, does not relay, does no PKI DMs and generates its own random node number. That is a reasonable pocket client, but it is not a full node.</li>
+    <li><b>Sent means transmitted.</b> A message is logged as sent when <code>radio_.send()</code> returns true. Nothing says "heard". This is the same gap as our BIC-2 work, in a smaller form.</li>
+  </ul>
+  <p class="note warn"><b>Radio ownership is the real hazard.</b> CardMesh's direct-LoRa worker and meshtasticd both open <code>/dev/spidev0.1</code> and toggle the same power rail and gate bit. Whichever starts second either fails or corrupts the other's state, and CardMesh's <code>restore()</code> on exit would switch the rail off under a running meshtasticd if it was the one that turned it on. This is our Issue #29 class (two owners of one radio), on new hardware. <span class="tag t-b">BELIEVED</span> from reading both code paths; not run.</p>
+</section>
+
+<section>
+  <h2>Compared with our earlier hardware studies</h2>
+  <p>We have now studied three new radio platforms in six weeks. Read side by side, they show a pattern in where MeshForge fits and where it fails.</p>
+  <div class="tablebox"><table>
+    <thead><tr><th></th><th>Femtofox (10-10)</th><th>Axiometa Genesis (11-15)</th><th>CardputerZero + Cap (11-16)</th></tr></thead>
+    <tbody>
+      <tr><td>Compute</td><td>Luckfox RV1103, 64 MB RAM, Linux</td><td>ESP32-S3 MCU, no Linux</td><td>Pi CM0, 512 MB RAM, Debian</td></tr>
+      <tr><td>Radio path</td><td>SX1262 on SPI, meshtasticd</td><td>SX1262 on SPI, stock Meshtastic firmware</td><td>SX1262 on SPI, meshtasticd or an app's own stack</td></tr>
+      <tr><td>Upstream support</td><td>meshtasticd config shipped with the OS image</td><td>Upstream variant merged 09-18</td><td>Upstream preset on <code>develop</code>; GNSS PR open</td></tr>
+      <tr><td>MeshForge on the device?</td><td>No. 4 MB free after login; MeshForge runs on another machine.</td><td>No (MCU)</td><td><span class="tag t-u">UNKNOWN</span>. 512 MB likely fits a <code>radio_maps</code> or monitor profile; not measured.</td></tr>
+      <tr><td>MeshForge's role</td><td>Remote NOC over TCP 4403</td><td>A second RF witness for CLAW-1</td><td>A box (meshtasticd + profile), a witness you can carry, and a pocket screen for a hub</td></tr>
+      <tr><td>The lesson it taught</td><td>Our hand-copied FemtoFox template had Raspberry Pi pins. <b>It still does</b>: <code>templates/available.d/femtofox.yaml</code> reads CS 8, IRQ 16, Busy 20, Reset 24 today.</td><td>A cloud AI that can flash a radio needs a written box rule</td><td>A YAML preset cannot express a power rail or I/O gate. A radio can be configured, "active" and dead.</td></tr>
+    </tbody>
+  </table></div>
+  <p><b>The pattern.</b> Each new board arrives with an upstream config written by people who own the hardware. MeshForge's copies of those configs drift (Femtofox), and the part upstream cannot express in a config (power, gates, radio ownership) is where devices fail with no message. So MeshForge keeps up with new hardware by <b>reading upstream as the source of truth</b> and adding <b>checks for what the config cannot say</b>, not by writing more templates by hand.</p>
+</section>
+
+<section>
+  <h2>Three ways MeshForge can work with it</h2>
+  <div class="paths">
+    <div class="path">
+      <span class="k">Path A · build now, small</span>
+      <h3>A CardputerZero as a MeshForge box</h3>
+      <p>meshtasticd with the upstream preset, configured from MeshForge's existing SPI-hat flow. MeshForge adds what the YAML lacks: a pre-start step that turns on the rail and gate and restores them, and a check that the SX1262 actually initialised (journal init line, <code>NRestarts</code>), not just that the unit is active.</p>
+      <p class="small">Fits: honest_failure_modes 1–2, MF018, INST-1 (role-aware installer).</p>
+    </div>
+    <div class="path">
+      <span class="k">Path B · after BIC-2</span>
+      <h3>A pocket screen for a MeshForge hub</h3>
+      <p>CardMesh already speaks MeshMonitor's <code>/api/v1/sources/{id}/…</code> REST shape. MeshForge already serves <code>/api/inbox</code>, <code>/api/radio/nodes</code>, <code>/api/radio/channels</code> and <code>/api/gateway/delivery</code>. A thin, read-mostly facade in that shape would let CardMesh show a MeshForge hub with no CardMesh changes. Each mesh MeshForge sees becomes one "source".</p>
+      <p class="small">Fits: BIC-2, SHOW-1. Limit: one screen (a message's legs), not dashboard breadth.</p>
+    </div>
+    <div class="path">
+      <span class="k">Path C · lab, with the operator</span>
+      <h3>A witness you can carry</h3>
+      <p>"Measure at both ends" needs a far end. A handheld that logs RSSI and SNR per packet (CardMesh's planned Field Mode) is that far end for range walks and antenna comparisons, and an independent SX1262 front end for CLAW-1's "witnesses disagree" case.</p>
+      <p class="small">Fits: CLAW-1, R2 / R8 measurement, the meshforge skill's RF rule.</p>
+    </div>
+  </div>
+  <pre class="mermaid">
+flowchart LR
+  subgraph CPZ["CardputerZero + Cap LoRa-1262"]
+    MTD["meshtasticd<br/>upstream preset"]
+    PRE["MeshForge pre-start<br/>rail + gate + init check"]
+    CM["CardMesh<br/>(pocket UI)"]
+  end
+  PRE --> MTD
+  MTD -- "RF 915 MHz" --> MESH(("Meshtastic<br/>mesh"))
+  MESH --> HUB["MeshForge hub<br/>(fleet box)"]
+  HUB -- "RNS / LXMF" --> RNS(("Other meshes"))
+  CM -- "Path B: REST facade<br/>/api/v1/sources/..." --> HUB
+  CM -. "TCP 4403 (one radio owner)" .-> MTD
+  </pre>
+  <p class="small">One radio owner per device. In this picture meshtasticd owns the SX1262 and CardMesh is a client. CardMesh's own direct-LoRa worker would have to stay off on a MeshForge box.</p>
+</section>
+
+<section>
+  <h2>Against the roadmap queue</h2>
+  <p>The roadmap is the only list of future work, and only the operator moves NOW. This section maps the device onto items already queued and proposes NEXT rows for the operator to accept or reject.</p>
+  <div class="tablebox"><table>
+    <thead><tr><th>Queued item</th><th>Where it is</th><th>What CardputerZero adds or needs</th></tr></thead>
+    <tbody>
+      <tr class="us"><td>BIC-2 per-leg delivery truth</td><td>NOW</td><td>The pocket screen (Path B) is the natural place to show one message's legs. It has nothing to show until BIC-2 does. Wait for it.</td></tr>
+      <tr class="us"><td>SHOW-1 the one unique screen</td><td>NEXT</td><td>A 320×170 photo of a message's legs on a real handheld is a strong README image. Same dependency on BIC-2.</td></tr>
+      <tr><td>REL-1 monthly release</td><td>NOW</td><td>Nothing here should slow v0.8.0-beta. Path A is small enough to ride a later release.</td></tr>
+      <tr><td>CLAW-1 honest RF witnesses</td><td>NEXT</td><td>A second, independent SX1262 front end (Path C). It competes with Axiometa for the same role; the Cap has GNSS and a reset line, which the Axiometa module lacks.</td></tr>
+      <tr><td>INST-1 role-aware installer</td><td>NEXT</td><td>A 512 MB handheld is a new role. The installer must not start the map server and mosquitto on it by default.</td></tr>
+      <tr><td>PARITY-1 copy, then match or beat</td><td>NEXT</td><td>The facade must be tested against real MeshMonitor responses (CardMesh found the <code>{"success":true,"data":[…]}</code> envelope only on hardware). One contract, pinned by a test.</td></tr>
+      <tr><td>TRUTH-1 claimed / wired / proven</td><td>NEXT</td><td>A CardputerZero row starts as "claimed". It moves to "proven" only after the drill in Path A.</td></tr>
+      <tr><td>SEC-2 udev 0666, map binds 0.0.0.0</td><td>NEXT</td><td>A pocket device on public Wi-Fi makes both worse. Fix before shipping a handheld profile.</td></tr>
+      <tr><td>The "STOP" list</td><td>Why we win</td><td>"STOP dashboard breadth" rules out a general CardMesh-style dashboard from us. Path B stays one screen.</td></tr>
+    </tbody>
+  </table></div>
+  <h3>Proposed NEXT rows (draft, for the operator)</h3>
+  <ol class="steps">
+    <li><div><b>HW-SYNC: templates come from upstream</b><p>Generate <code>templates/available.d/</code> from the meshtasticd package's <code>/etc/meshtasticd/available.d</code> (or the pinned upstream <code>bin/config.d</code>) instead of hand-copying, with a test that fails on drift. This fixes the Femtofox pins and brings in <code>lora-cardputer-zero.yaml</code> for free. Red-first: a test that reads today's femtofox template and fails.</p></div></li>
+    <li><div><b>HW-PRE: a pre-start hook for what YAML cannot say</b><p>A small declared table of per-board pre-start actions (rail on, gate bit set, restore on stop) run by an <code>ExecStartPre</code>/<code>ExecStopPost</code> drop-in, plus a probe that reads the SX126x init line and <code>NRestarts</code>. Without it, a dead radio reads healthy (honest_failure_modes 2).</p></div></li>
+    <li><div><b>HW-CPZ drill: one device, both ends</b><p>CardputerZero on HawaiiNet LongFast, a fleet node at the other end: text both ways, RSSI and SNR read at both ends, rail restored after <code>systemctl stop</code> and after SIGTERM. Only then does the TRUTH-1 row say "proven". Needs the operator and the hardware.</p></div></li>
+    <li><div><b>POCKET-1 (LATER, after BIC-2): MeshMonitor-shape read facade</b><p>Read-only <code>/api/v1/sources</code>, <code>…/nodes</code>, <code>…/channels</code>, <code>…/messages</code> over MeshForge's existing data, token auth, loopback or LAN by default, parity-tested against MeshMonitor's real responses. Send stays off until BIC-2's truth is on the screen.</p></div></li>
+  </ol>
+</section>
+
+<section>
+  <h2>How the domain keeps up with hardware</h2>
+  <p>Hardware now moves faster than one ham can buy it. The answer is a short, repeatable intake, not more templates.</p>
+  <ul>
+    <li><b>Watch the source, not the press.</b> One watch list: upstream <code>bin/config.d/</code> and <code>variants/</code> in meshtastic/firmware, the RNode_Firmware board list, MeshCore variants, and the client repos for any board we adopt. A new file there is the signal. Fold it into the existing landscape cadence (<code>research/landscape_*.md</code>) rather than a new process.</li>
+    <li><b>Ask five questions per board.</b> Is there an upstream target or config? Who owns the radio? What can the config not express (power, gates, reset, RF switch)? How much RAM is left with meshtasticd running? What band is the front end actually rated for?</li>
+    <li><b>Upstream is the source of truth; we add checks.</b> We sync configs and write probes for what they cannot say. We never fork a vendor config.</li>
+    <li><b>A board is "supported" only after a two-ended drill.</b> Until then the in-app row says "unproven" (TRUTH-1).</li>
+    <li><b>Keep the fleet NEVERs.</b> A CardputerZero runs its own meshtasticd version; that does not license rolling meshtasticd on fleet boxes. Before shipping a pinned meshtasticd, run <code>objdump -T</code> on it and look for <code>pthread_detach</code>, and stay on apt, not pip.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Being part of this, 1 + 1 = 2</h2>
+  <p>One ham and one AI is the same size as every team in the table above. CardMesh is one developer working with AI assistants (its README has a section for them), and MeshMonitor's commits carry Claude co-author lines too. The useful contribution is the thing those projects lack: two-ended measurement on a real mesh, and honest labels for what was not measured.</p>
+  <div class="tablebox"><table>
+    <thead><tr><th>Who</th><th>Does</th><th>Does not</th></tr></thead>
+    <tbody>
+      <tr><td>Operator (WH6GXZ)</td><td>Buys and holds the hardware; runs the two-ended drill; reads the module label and antenna connector; decides NOW; decides whether to open issues upstream</td><td>Get asked to trust a claim nobody measured</td></tr>
+      <tr><td>Local Claude (on a fleet box or the lab)</td><td>Runs the drill scripts, reads journals and both radios, writes the TRUTH-1 evidence, runs the non-author review of HW-SYNC and HW-PRE</td><td>Flash or reconfigure a fleet radio without the operator</td></tr>
+      <tr><td>Cloud Claude (this kind of session)</td><td>Upstream reading, research pages like this one, red-first patches for HW-SYNC and HW-PRE, the parity test for POCKET-1</td><td>Claim anything about the device past BELIEVED</td></tr>
+    </tbody>
+  </table></div>
+  <h3>Useful things to offer upstream, if the operator wants to</h3>
+  <ul>
+    <li><b>To CardMesh:</b> an issue on radio ownership (detect a running meshtasticd and refuse to open the SPI device, or offer a TCP-client mode), the hard-coded US915 MediumFast preset, and the README that still says direct LoRa is planned. Issues first, as its CONTRIBUTING asks. No pull request unless the maintainer wants one.</li>
+    <li><b>To the upstream preset:</b> once the drill has run, a short note on what was measured on a real Cap (rail, gate, both-ends RSSI). That is the evidence a <code>support: community</code> preset is missing.</li>
+    <li><b>Credit.</b> The pin map came from M5Stack's open Cap-LoRa-1262 reference and was carried into three codebases. Any MeshForge template names that source.</li>
+  </ul>
+  <p class="small">Nothing on this page has been posted anywhere. Posting to another project is the operator's call.</p>
+</section>
+
+<section>
+  <h2>Risks and blind spots</h2>
+  <ul>
+    <li><span class="tag t-u">UNKNOWN</span> Whether MeshForge's Python stack plus meshtasticd fits in 512 MB on a CM0. Measure the way the Femtofox guide did (peak RSS against MemAvailable) before choosing a profile.</li>
+    <li><span class="tag t-u">UNKNOWN</span> Whether the PR #12341 preset text on <code>develop</code> is final. The file is present; the GNSS follow-up is still open.</li>
+    <li><span class="tag t-b">BELIEVED</span> The 868–923 MHz rating, the $138 price and the November ship date each come from a single source.</li>
+    <li><span class="tag t-b">BELIEVED</span> Two programs fighting over the SX1262, from reading code. Not reproduced.</li>
+    <li><span class="tag t-x">NOT CHECKED</span> RNS. There is no RNode firmware for a Linux SPI SX1262, so on this device Reticulum would ride Wi-Fi or Ethernet (TCP), not the Cap. RNS-over-LoRa stays on RNodes.</li>
+    <li><span class="tag t-x">NOT CHECKED</span> Trail Mate's licence and code, the CardputerZero emulator, and the stock OS's glibc version.</li>
+    <li><b>Licences.</b> CardMesh is MIT and Pocket Mesh is GPL-3.0; both are compatible with MeshForge's GPL-3.0 for reading and for code we might take. Name the source in any copied file.</li>
+  </ul>
+</section>
+
+<footer>
+  <span>Sources: <a href="https://github.com/maxhayim/CardMesh">maxhayim/CardMesh</a> (cloned 11-16, HEAD <code>5c13ff1</code>) · <a href="https://github.com/meshtastic/firmware/pull/12341">meshtastic/firmware #12341</a> · <a href="https://github.com/meshtastic/firmware/pull/12343">#12343</a> · <a href="https://github.com/DavisW9/pocket-mesh-cardputer">DavisW9/pocket-mesh-cardputer</a> · <a href="https://github.com/vicliu624/trail-mate/blob/main/apps/linux_cardputer_zero/README.md">Trail Mate CardputerZero README</a> · <a href="https://linuxgizmos.com/m5stack-previews-cardputerzero-handheld-raspberry-pi-cm0-system/">LinuxGizmos</a> · <a href="https://shop.m5stack.com/blogs/news/m5stack-launches-cardputerzero-a-pocket-sized-linux-computer-for-makers-and-developers">M5Stack launch post</a> · <a href="https://docs.m5stack.com/ja/CardputerZero">M5Stack docs</a></span>
+  <span>MeshForge evidence: <code>.claude/ROADMAP.md</code>, <code>templates/available.d/femtofox.yaml</code>, <code>src/config/spi_hats.py</code>, the map server's <code>/api/*</code> routes, read at <code>e54e64d</code>. Made with aloha for the mesh community.</span>
+</footer>
+</div>

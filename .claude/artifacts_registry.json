@@ -300,6 +300,12 @@
    "topic": "research-axiometa",
    "role": "authoritative",
    "ungrounded_verified_baseline": 0
+  },
+  "FySnKBd7gcBKEcLTKquJd7": {
+   "title": "CardputerZero for MeshForge",
+   "topic": "research-cardputerzero",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": 0
   }
  }
 }
