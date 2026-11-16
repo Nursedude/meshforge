@@ -163,7 +163,6 @@ product, `--days 7` logged in each handoff (a measure, not a gate; operator 11-1
   30-DAY (by 11-24), NARROWED (operator 11-10): `/inbox` broadcast heard-by, UNKNOWN shown, echo-fold fix + unknown-state default (`INBOX-T` F1/F2/F11); never "delivered". A FLEET truth: a one-box stranger reads "cannot see" — confirm the one-box relay-heard state before promising it for 12-04. DMs + bridged legs: design the cross-process ack path first, then a new date. MA after. Next: in-app re-pair + LongFast witness.
   Observe before alarming: counters first, then a soak baseline (pass rule: gate 3).
   Counters live MF+MA + the MF-first twin-fix list: provenance § BIC-2 (moved verbatim 2026-11-14, MF012).
-  FIRST (operator iPhone 11-14): a phone is logged out 30 d after PAIRING however often used — the cookie's Max-Age is set once (`web_auth.py:261`, only issuer `_map_auth_endpoints.py:227`) while the server slides its idle window; re-issue on validate, red-first. And the 401 banner tells a phone user to run a box command — show the re-pair path in-app.
   INBOX-2 FOLDED IN (operator 11-14): its steps 1-3 (`f97e053f`) have NO caller — wiring them is this slice; plus the phone that lost its web login with no pairing code on screen. BIC-1's unwitnessed case (a NEW LongFast text stays off the primary channel) is on this checklist. Accept on the operator's phone, never on tests alone.
   public: For every message, MeshForge will say which network legs it crossed and whether each one delivered, failed, or cannot be seen.
   status: planned
@@ -238,6 +237,7 @@ PARKED 11-04, revisit 12-04:
 - **DAI-0** [MF] S — `offline_oracle.py` corpus reads the operator's `~/.claude/.../memory` (VERIFIED 11-11): a public corpus first
 - **SEC-2** [MF] S — `SECURITY.md` says 0.5.x + localhost-only (map binds 0.0.0.0); udev 0666 `install_noc.sh:895` (VERIFIED 11-11)
 - **CLAW-1** [MF] S+F — DudeClaw: honest 24/7 RF witnesses, fleet then one ham: `plans/claw1_grilling_2026_11_11.md`
+- **SRC-1** [MF] S — repo is SoT, pages are dated views (operator 11-16): extend loop_gate TOPIC (no new class) — registry `source` path; refuse a page update while it is dirty; page carries `mf:source` path@sha
 
 ### LATER
 
