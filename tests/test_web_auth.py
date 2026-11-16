@@ -327,6 +327,19 @@ def test_printed_commands_work_from_any_directory(server):
     assert status == 401 and str(cli).encode() in body
 
 
+def test_401_and_login_page_name_the_no_shell_tui_door(server):
+    """2026-11-16: a ham with no shell is pointed at the TUI's Pair action —
+    the SAME constant the TUI menu row is built from (web_pair)."""
+    import html
+    from utils.web_pair import PAIR_TUI_PATH
+    srv, _ = server
+    page = _req(srv, "GET", "/login")[1].decode("utf-8")
+    assert html.escape(PAIR_TUI_PATH) in page and "__TUI__" not in page
+    status, body, _ = _req(srv, "POST", "/api/radio/message", MSG, JSON)
+    assert status == 401
+    assert PAIR_TUI_PATH in json.loads(body)["how"]
+
+
 # ── 9. the adversarial pass (2026-10-14, scripts/bic3_gate_drill.py) ──────
 # Each block below was an ATTACK that succeeded on `95623429`; flipped here
 # to assert the gate, red first.

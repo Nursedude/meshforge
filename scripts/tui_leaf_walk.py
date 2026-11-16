@@ -136,6 +136,20 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "read 2026-11-03 (DOC-1, handlers/about.py _show_howtos): globs "
         "docs/howto/*.md, read_text() each, a menu of titles, textbox of the "
         "chosen file. Reads only; writes nothing.",
+    ("about", "weblogin"):
+        "read 2026-11-16 (handlers/web_client.py _show_operator_login, "
+        "utils/web_auth.py SessionStore.status/_read): before its first prompt "
+        "(the menu) it does _local_ip() — a UDP connect() for the route, no "
+        "packet sent — then web_pair.map_unit(): ONE `systemctl show "
+        "meshforge-map -p LoadState -p User -p ActiveState -p MainPID`, "
+        "argument list, timeout=5, never sudo, plus a read of "
+        "/proc/<MainPID>/status for the running uid (re-read 2026-11-16 after "
+        "review round 7) — and status() → "
+        "_read() of the MAP user's store (no unit -> no store is opened at "
+        "all, option B): open+read, no lock taken, no write; "
+        "the ONLY write is a CORRUPT store renamed aside (os.replace keeps the "
+        "owner). Minting (web_pair → the CLI as the map's User=) runs only if "
+        "'pair' is chosen, which the walk never does.",
 
     # ---- dashboard/ delivery — read 2026-10-30, handlers/delivery.py in
     # full (75 lines) + utils/delivery_view.py (746): json reads of the

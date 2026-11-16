@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 88 handlers · 122 menu actions (derived from get_all_handlers(), never hand-edited).
+# 88 handlers · 123 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -1005,6 +1005,7 @@ HANDLER_MANIFEST = [
         "error": None,
         "menu_items": [
             ('web', 'Web Client          Open web interface', None),
+            ('weblogin', 'Web Login           Log a browser in to send', None),
         ],
     },
     {

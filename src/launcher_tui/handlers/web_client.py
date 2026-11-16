@@ -24,16 +24,22 @@ class WebClientHandler(BaseHandler):
     menu_section = "about"
 
     def menu_items(self):
+        from utils.web_pair import PAIR_TUI_LABEL
         return [
             ("web", "Web Client          Open web interface", None),
+            # Its own row, NOT behind the Web Client gate: pairing needs only
+            # the map, and that gate refuses when meshtasticd is down.
+            ("weblogin", f"{PAIR_TUI_LABEL:<20}Log a browser in to send", None),
         ]
 
     def execute(self, action):
         if action == "web":
             self._open_web_client()
+        elif action == "weblogin":
+            self._show_operator_login(self._local_ip())
 
-    def _open_web_client(self):
-        """Show/open Meshtastic web client served by MeshForge."""
+    @staticmethod
+    def _local_ip() -> str:
         local_ip = "localhost"
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -45,6 +51,11 @@ class WebClientHandler(BaseHandler):
                 s.close()
         except OSError as e:
             logger.debug("Local IP detection failed: %s", e)
+        return local_ip
+
+    def _open_web_client(self):
+        """Show/open Meshtastic web client served by MeshForge."""
+        local_ip = self._local_ip()
 
         meshforge_port = 5000
         web_url = f"http://{local_ip}:{meshforge_port}/mesh/"
@@ -189,29 +200,95 @@ class WebClientHandler(BaseHandler):
         )
 
     def _show_operator_login(self, local_ip: str):
-        """BIC-3 login state — READ-ONLY (the TUI shows; the CLI mints codes)."""
+        """BIC-3 login state + "Pair a browser" (2026-11-16, operator go).
+
+        The TUI still never MINTS: ``web_pair`` runs the one minting CLI as the
+        map unit's User= (a root-minted store locks every browser out).
+        """
+        from utils import web_auth, web_pair
+        while True:
+            state = self._map_store_state()
+            # Revoke BEFORE the status block: a long UNKNOWN reason on a 24-row
+            # terminal clipped the command off the bottom (review r5-5).
+            choice = self.ctx.dialog.menu(
+                "Operator Login (web)",
+                "Viewing the map needs no login. Sending and changing\n"
+                "settings from a browser need an operator session.\n"
+                "Log every browser out (shell, as the operator):\n"
+                f"  {web_auth.REVOKE_COMMAND}\n\n"
+                f"{state}",
+                [("pair", f"{web_pair.PAIR_TUI_ACTION:<20}Show a one-time login code"),
+                 ("back", "Back")],
+                height=22, width=72
+            )
+            if choice != "pair":
+                return
+            self._pair_browser(local_ip)
+
+    @staticmethod
+    def _map_store_state() -> str:
+        """Status of the store the MAP reads (the one pairing writes to) —
+        never the TUI user's own CONFIG_DIR, which under sudo can differ."""
         import time
-        from utils import web_auth
+        from utils import web_auth, web_pair
+        m = web_pair.map_unit()
+        user, active = m.user, m.active
+        if user is None:
+            fix = "" if m.remedy == "shell" else f"\n{web_pair.remedy_text(m.remedy, '')}"
+            return f"UNKNOWN - cannot name the map's session store:\n{m.why}{fix}"
+        service = f"Map service:            {active or 'unknown'}\n"
+        problem = web_pair.store_access_problem(user)
+        if problem:
+            return f"{service}UNKNOWN - {problem}"
+        store = web_auth.SessionStore(web_pair.store_path_for(user))
+        # ONE guard over the whole read-AND-format step (r2-F4 then r3-C2: the
+        # same kind twice). status() lives in twin-locked web_auth and parses
+        # rows as-is; any damaged value — wrong type, out of time_t range,
+        # inf/nan, a huge int — must leave the menu (and Pair) drawable.
         try:
-            st = web_auth.SessionStore().status()
+            st = store.status()
             last = st["last_used"]
-            state = (f"Live operator sessions: {st['sessions']}\n"
-                     f"Last used:              "
-                     f"{'never' if last is None else time.strftime('%Y-%m-%d %H:%M', time.localtime(last))}\n"
-                     f"Pairing code pending:   {'yes' if st['pairing_pending'] else 'no'}")
+            when = "never" if last is None else time.strftime(
+                "%Y-%m-%d %H:%M", time.localtime(last))
+            return (f"{service}"
+                    f"Live operator sessions: {st['sessions']}\n"
+                    f"Last used:              {when}\n"
+                    f"Pairing code pending:   {'yes' if st['pairing_pending'] else 'no'}")
         except web_auth.StoreUnavailable as e:
-            state = f"UNKNOWN - the session store could not be read:\n{e}"
+            return f"{service}UNKNOWN - the map's session store could not be read:\n{e}"
+        except Exception as e:  # noqa: BLE001 — witnessed: shown + logged, never silent
+            logger.warning("Web Login status: session store not summarisable: %s: %s",
+                           e.__class__.__name__, e)
+            return (f"{service}UNKNOWN - the map's session store could not be summarised "
+                    f"({e.__class__.__name__}); a row may be damaged. Pairing still works.")
+
+    def _pair_browser(self, local_ip: str):
+        from utils import web_auth, web_pair
+        r = web_pair.pair_browser()
+        url = f"http://{local_ip}:5000/login"     # the unit's map (option B: no unit, no pairing)
+        if r.ok:
+            self.ctx.dialog.msgbox(
+                "Pairing Code",
+                f"Code:   {r.code}\n\n"
+                f"On the phone or browser, open:\n  {url}\n"
+                "and type the code.\n\n"
+                f"Valid {web_auth.PAIRING_TTL_S // 60} minutes, once; "
+                f"{web_auth.PAIRING_MAX_TRIES} wrong tries burn it."
+                + (f"\n\nNote: {r.message}" if r.message else ""),
+                height=18 if r.message else 14, width=64
+            )
+            return
+        # The remedy FIRST and never capped: whiptail clips a long box (F8),
+        # and the remedy is the refusal's OWN (r6-1) — the shell fallback only
+        # where it can work. Only the reason text is capped.
+        reason = r.message if len(r.message) <= 240 else r.message[:237] + "..."
+        minted = f"\n\nA code WAS printed ({r.code}) but may not work." if r.code else ""
         self.ctx.dialog.msgbox(
-            "Operator Login (web)",
-            "Viewing the map needs no login. Sending and changing settings\n"
-            "from a browser need an operator session.\n\n"
-            f"{state}\n\n"
-            "To log a browser in, at a shell on this box AS THE OPERATOR:\n"
-            f"  {web_auth.PAIR_COMMAND}\n"
-            f"then open http://{local_ip}:5000/login and type the code.\n\n"
-            "Log every browser out:\n"
-            f"  {web_auth.REVOKE_COMMAND}",
-            height=20, width=68
+            "Pairing Failed",
+            "No usable code.\n"
+            f"{web_pair.remedy_text(r.remedy, url)}\n\n"
+            f"Why: {reason}{minted}",
+            height=20, width=72
         )
 
     def _show_ssl_certificate_help(self, local_ip: str):

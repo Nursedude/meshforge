@@ -16,7 +16,7 @@ import html
 import json
 from typing import Optional
 
-from utils import web_auth
+from utils import web_auth, web_pair
 from utils._map_trust_gate import browser_origin_allowed
 
 _LOGIN_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -29,8 +29,8 @@ button{margin-top:.8rem}code{background:#fff;border:1px solid #ccc;padding:0 .3e
 @media (prefers-color-scheme:dark){body{color:#e4e8ec;background:#12171c}code{background:#1a2027}}
 </style></head><body>
 <h1>Operator login</h1>
-<p>Viewing needs no login. To send or change settings from this browser, run this on the box
-(SSH or console), then type the code it prints:</p>
+<p>Viewing needs no login. To send or change settings from this browser, get a one-time
+code on the box, then type it here. In the MeshForge TUI: <b>__TUI__</b>. Or at a shell on the box:</p>
 <p><code>__PAIR__</code></p>
 <form id="f"><label for="c">Pairing code</label>
 <input id="c" autocomplete="one-time-code" maxlength="12" required autofocus>
@@ -102,7 +102,8 @@ class AuthEndpointsMixin:
     def _refuse_operator(self, method: str, path: str, detail: str) -> None:
         self.auth_refusals.note(self._client_addr(), method, path, detail)
         self._serve_json({"error": "operator login required",
-                          "how": f"on the box: {web_auth.PAIR_COMMAND}, then open /login",
+                          "how": (f"on the box, in the MeshForge TUI: {web_pair.PAIR_TUI_PATH} — or run "
+                                  f"{web_auth.PAIR_COMMAND} — then open /login"),
                           "detail": detail}, status=401)
 
     # ── the gate ────────────────────────────────────────────────────────
@@ -166,7 +167,8 @@ class AuthEndpointsMixin:
 
     def _serve_login_page(self) -> None:
         """The pairing-code login page (BIC-3)."""
-        body = _LOGIN_PAGE.replace("__PAIR__", html.escape(web_auth.PAIR_COMMAND)).encode("utf-8")
+        body = (_LOGIN_PAGE.replace("__PAIR__", html.escape(web_auth.PAIR_COMMAND))
+                .replace("__TUI__", html.escape(web_pair.PAIR_TUI_PATH)).encode("utf-8"))
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
