@@ -183,3 +183,7 @@ So "Meshtastic 2.8 defaults new US nodes to LongTurbo" is accurate only for **al
 - Exact release years are not shown on the GitHub page; 2026 is BELIEVED.
 - Whether the Traffic Management Module is on by default and its rate limits were not read in source.
 - `AdminModule` region-change behaviour (phone/CLI path) was not verified.
+
+
+## Operator confirmation (2026-11-16)
+Operator (WH6GXZ) confirmed in chat: "rs1" IS the CoreScope repeater "meshanchor R1" (Hilo region, first seen 2026-09-01, flagged foreign:true, usefulness grade D, 50 relays/24h at fetch). The fleet is therefore already a contributing MeshCore repeater on the HawaiiMesh MeshCore network, not only an observer-candidate. Note it is a REPEATER, which updates the 2026-10-31 Cascadia study statement "we run no MeshCore repeaters".
