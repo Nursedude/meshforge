@@ -1,0 +1,472 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Cascadia Mesh Study</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a field notebook. One reading column, a sticky section rail on wide screens, evidence tags on every claim. */
+:root {
+  --bg: #f3f6f5;        /* sea-fog */
+  --panel: #ffffff;
+  --fg: #16232a;        /* basalt */
+  --muted: #546570;
+  --line: #d3dde0;
+  --accent: #0f6e78;    /* Puget teal */
+  --accent-soft: #dcedef;
+  --lava: #b5462a;      /* Hawai'i side */
+  --lava-soft: #f6e3dc;
+  --ok: #2f7a3e; --ok-soft: #e0f0e3;
+  --warn: #8a6300; --warn-soft: #f5ecd2;
+  --unk: #5d5d75; --unk-soft: #e7e7f0;
+  --display: "Familjen Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0e171b; --panel: #15222a; --fg: #e3ecee; --muted: #9db0b8; --line: #263a43;
+  --accent: #5cc3cd; --accent-soft: #163a40; --lava: #ef8a6b; --lava-soft: #3b211a;
+  --ok: #7cd08c; --ok-soft: #1b3321; --warn: #e3bd5a; --warn-soft: #3a2f12; --unk: #b4b4d0; --unk-soft: #26263a;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0e171b; --panel: #15222a; --fg: #e3ecee; --muted: #9db0b8; --line: #263a43;
+  --accent: #5cc3cd; --accent-soft: #163a40; --lava: #ef8a6b; --lava-soft: #3b211a;
+  --ok: #7cd08c; --ok-soft: #1b3321; --warn: #e3bd5a; --warn-soft: #3a2f12; --unk: #b4b4d0; --unk-soft: #26263a;
+  color-scheme: dark; }
+
+body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 15.5px; line-height: 1.6; }
+.wrap { max-width: 1120px; margin: 0 auto; padding-block: 28px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 40px; }
+@media (max-width: 860px) { .wrap { grid-template-columns: minmax(0,1fr); gap: 0; } nav.rail { display: none; } }
+nav.rail { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start; font-size: 13.5px; }
+nav.rail ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+nav.rail a { color: var(--muted); text-decoration: none; }
+nav.rail a:hover, nav.rail a:focus-visible { color: var(--accent); }
+main { min-width: 0; max-width: 72ch; }
+header.hero { border-bottom: 1px solid var(--line); padding-bottom: 22px; margin-bottom: 8px; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--display); font-weight: 700; font-size: clamp(30px, 5vw, 44px); line-height: 1.08; margin: 8px 0 12px; text-wrap: balance; }
+h1 .to { color: var(--lava); }
+h2 { font-family: var(--display); font-weight: 700; font-size: 25px; margin: 44px 0 10px; text-wrap: balance; scroll-margin-top: 20px; }
+h3 { font-family: var(--display); font-weight: 500; font-size: 18px; margin: 22px 0 6px; }
+p { margin: 0 0 12px; }
+.lede { font-size: 17px; color: var(--muted); }
+a { color: var(--accent); }
+code, .mono { font-family: var(--mono); font-size: .9em; }
+code { background: var(--accent-soft); padding: 1px 5px; border-radius: 3px; overflow-wrap: anywhere; }
+
+.meta { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); margin-top: 10px; }
+.tag { display: inline-block; font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: .04em; padding: 1px 7px; border-radius: 99px; vertical-align: 1px; white-space: nowrap; }
+.t-v { background: var(--ok-soft); color: var(--ok); }
+.t-b { background: var(--warn-soft); color: var(--warn); }
+.t-u { background: var(--unk-soft); color: var(--unk); }
+
+.callout { border-left: 3px solid var(--lava); background: var(--lava-soft); padding: 12px 16px; margin: 18px 0; border-radius: 0 6px 6px 0; }
+.callout strong { color: var(--lava); }
+
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin: 16px 0; }
+.facts div { background: var(--panel); padding: 12px 14px; min-width: 0; }
+.facts b { display: block; font-family: var(--display); font-size: 22px; font-variant-numeric: tabular-nums; }
+.facts span { font-size: 12.5px; color: var(--muted); }
+
+ul.clean { padding-left: 1.1em; margin: 0 0 12px; }
+ul.clean li { margin-bottom: 6px; }
+
+.tablebox { overflow-x: auto; margin: 14px 0; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; min-width: 560px; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-family: var(--mono); font-size: 11.5px; font-weight: 500; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+tr:last-child td { border-bottom: 0; }
+
+.adopt { display: grid; gap: 12px; margin: 14px 0; }
+.item { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+.item header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin-bottom: 6px; }
+.item h3 { margin: 0; }
+.rank { font-family: var(--mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.item .where { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
+.pill { font-family: var(--mono); font-size: 11px; padding: 1px 8px; border-radius: 99px; border: 1px solid currentColor; }
+.p-now { color: var(--ok); } .p-next { color: var(--accent); } .p-later { color: var(--muted); }
+
+.checklist { list-style: none; padding: 0; margin: 12px 0; display: grid; gap: 8px; }
+.checklist li { display: flex; gap: 10px; align-items: flex-start; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.checklist input { margin-top: 5px; accent-color: var(--accent); width: 17px; height: 17px; flex: none; }
+.checklist label { min-width: 0; cursor: pointer; }
+.checklist .who { font-family: var(--mono); font-size: 11.5px; color: var(--muted); display: block; }
+.progress { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+
+pre.mermaid { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; overflow-x: auto; }
+.src { font-size: 13.5px; }
+.src li { overflow-wrap: anywhere; }
+footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+<nav class="rail" aria-label="Sections">
+  <ol>
+    <li><a href="#what">What Cascadia Mesh is</a></li>
+    <li><a href="#site">Why the site works</a></li>
+    <li><a href="#mediamesh">MediaMesh flasher</a></li>
+    <li><a href="#overlap">Overlap with MeshForge</a></li>
+    <li><a href="#critique">Critical assessment</a></li>
+    <li><a href="#corescope">CoreScope: how we join</a></li>
+    <li><a href="#adopt">What to adopt</a></li>
+    <li><a href="#join">How we take part</a></li>
+    <li><a href="#hawaii">A Hawaiʻi region plan</a></li>
+    <li><a href="#open">Open questions</a></li>
+    <li><a href="#log">Change log</a></li>
+    <li><a href="#sources">Sources</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">Study notes · WH6GXZ · MeshForge</div>
+  <h1>Cascadia Mesh, studied <span class="to">from Hawaiʻi</span></h1>
+  <p class="lede">The Pacific Northwest's community MeshCore network: what it runs, why its website pulls people in, what MeshForge should borrow, and the ways we can join from 4,000 km of open water away.</p>
+  <div class="meta">
+    <span>Researched 2026-10-31</span>
+    <span>Evidence: <span class="tag t-v">VERIFIED</span> checked this session · <span class="tag t-b">BELIEVED</span> from search snapshots · <span class="tag t-u">UNKNOWN</span> not checked</span>
+  </div>
+  <div class="callout"><strong>Second pass, 2026-10-31.</strong> The live site <em>is</em> reachable from the MeshForge manager box (it was blocked only from the first research container). Five pages were fetched and their text read: Home, Regions, Getting Started, Channels, MediaMesh Flasher. Two first-pass claims turned out <b>wrong</b> and are corrected below. The node counter is drawn by JavaScript, so its number is still <span class="tag t-b">BELIEVED</span> from snapshots. The new <a href="#critique">critical assessment</a> reads everything against how our domain actually runs.</div>
+</header>
+
+<h2 id="what">What Cascadia Mesh is</h2>
+<p>A volunteer community that builds and maintains a <b>MeshCore</b> LoRa network across British Columbia, Washington and Oregon, and lately Eastern Washington and North Idaho as well. They work with local clubs to put solar repeaters on high points. Meshtastic is not their stack. Third-party write-ups quote PNW operators who moved to MeshCore because Meshtastic's 7-hop flood limit fell apart at their scale. <span class="tag t-b">BELIEVED</span></p>
+
+<div class="facts">
+  <div><b>~3,700</b><span>"Active Mesh Nodes" counter (snapshots read 3,338–3,786)</span></div>
+  <div><b>910.525</b><span>MHz · SF7 · BW 62.5 kHz · CR5, US/Canada Recommended (MeshCore FAQ)</span></div>
+  <div><b>≥ 1.15.0</b><span>MeshCore firmware recommended for regions</span></div>
+  <div><b>≥ 70 h</b><span>flood-advert interval, the suggested PNW default (corrected from 48 h)</span></div>
+</div>
+<p class="where" style="font-size:13px;color:var(--muted)">Preset values <span class="tag t-v">VERIFIED</span> in <code>meshcore-dev/MeshCore docs/faq.md</code>. Firmware and advert numbers <span class="tag t-v">VERIFIED</span> on the live Regions page. The node counter is <span class="tag t-b">BELIEVED</span>: it renders in JavaScript, and snapshots read 3,338–3,786.</p>
+
+<h3>The operating rules that keep a 3,700-node mesh usable</h3>
+<ul class="clean">
+  <li><b>Region tags on every repeater.</b> A Seattle repeater carries <code>west, pnw, wa, w-wa, sea</code>. Matching is per tag, not hierarchical: carrying <code>wa</code> does <em>not</em> forward <code>sea</code> traffic, so every ancestor tag has to be set explicitly. On firmware 1.15+, adding a region turns flooding on for it. On 1.14 and older you also need a per-region allow-flood command.</li>
+  <li><b>Default region only stamps the repeater's own packets</b> (mainly its adverts). It does not change what the repeater forwards.</li>
+  <li><b>Users scope their channels.</b> Companion apps have "Set Region Scope" on a channel, so local chat stays on the metro tag and statewide chat uses the state tag.</li>
+  <li><b>Advert discipline.</b> Flood adverts at least every <b>70 hours</b>; zero-hop adverts can stay short (8 h or more) for neighbour discovery; <code>set loop.detect minimal</code>. <span class="tag t-v">VERIFIED</span> live page. <em>Corrected: the first pass said 48 h and a zero-hop interval of 0.</em></li>
+  <li><b>Regions are a proposal, rolled out in two phases.</b> Phase 1 (tags, default region, scoped channels) is safe at any pace because unscoped traffic keeps flooding. <b>Phase 2 is a breaking change</b>: the repeater stops forwarding unscoped traffic, and any neighbour who has not scoped their channels can no longer pass traffic through it. Firmware 1.16 adds a one-message bulk region load (MeshCore PR #2540, merged 2026-05-23). <span class="tag t-v">VERIFIED</span></li>
+  <li><b>Corridor projects.</b> The I-5 Project is building a continuous repeater spine from Olympia to Vancouver, WA. The first MeshAmerica repeater is up near Mayfield. Hosts sign up via Discord or email.</li>
+</ul>
+
+<h2 id="site">Why the site works</h2>
+<p>You said you like their web interface. I couldn't render it, so this is a read of its <em>information architecture</em> from the page list. The look itself still needs a human eye. <span class="tag t-u">UNKNOWN</span> on visual design.</p>
+<p>Every page answers one question a newcomer actually has, in the order they'll have it:</p>
+<div class="tablebox"><table>
+  <thead><tr><th>Newcomer question</th><th>Their page</th><th>What it does well</th></tr></thead>
+  <tbody>
+    <tr><td>Is there a mesh near me?</td><td>Home, Map, Regions</td><td>Live node counter up front, plus a map. Social proof in one number.</td></tr>
+    <tr><td>How do I get on?</td><td>Getting Started ("3 Easy Steps"), Device Set Up</td><td>Three steps, one named preset. No RF theory first.</td></tr>
+    <tr><td>What do I buy?</td><td>Companion Devices, Repeaters (Fully Assembled), Repeaters (DIY)</td><td>Separate buy vs build tracks, with named local designs (JadeNode, Scott's Heltec v4 rooftop node).</td></tr>
+    <tr><td>Who do I talk to?</td><td>Channels</td><td>Hashtag channels per city (#seattle, #pdx, #salishmesh), each with a <b>tap-to-show QR code</b>.</td></tr>
+    <tr><td>How do I help?</td><td>I-5 Project, Regions</td><td>A concrete, mappable goal and a way to host a repeater.</td></tr>
+    <tr><td>What else can it do?</td><td>Bot Commands, Open TAK / Wadamesh TAK guides, Wardriving 101, OTA updating, Videos, Resources List</td><td>Deep features stay out of the onboarding path but are one click away.</td></tr>
+  </tbody>
+</table></div>
+<p>The lesson for us: <b>MeshForge is built for the operator at the terminal. Cascadia's site is built for the stranger with a new radio.</b> We have nothing in that second role yet.</p>
+
+<h2 id="mediamesh">MediaMesh and the web flasher</h2>
+<p>Added 2026-10-31 at WH6GXZ's request. This is the most technically interesting thing Cascadia ships. Their own page (<a href="https://cascadiamesh.org/mediamesh-flasher/">cascadiamesh.org/mediamesh-flasher</a>) was blocked here too; the flasher itself is served from <a href="https://jade-on-mesh.github.io/wadamesh-tak/">jade-on-mesh.github.io/wadamesh-tak</a>. <span class="tag t-b">BELIEVED</span></p>
+<h3>What MediaMesh is</h3>
+<p>MediaMesh puts <b>photos and voice clips on a second, faster LoRa profile</b> ("radio2") on the same SX1262, while text stays on the main 910.525 MHz mesh. Bulk media never eats the shared channel's airtime. That's the same airtime discipline as their 70 h advert rule, applied to media. The live flasher page describes radio2 as <b>"250 kHz fast or 125 kHz range, and community mesh channels are refused"</b>: the firmware will not let radio2 sit on a shared mesh channel. <span class="tag t-v">VERIFIED</span>. The 911.150 MHz default from one snapshot does not appear on the live page. <span class="tag t-u">UNKNOWN</span></p>
+<ul class="clean">
+  <li><b>Stock MeshCore does not have radio2.</b> Users on stock 1.18.0 companions (T1000-E, Heltec v3) get "This radio's firmware has no MediaMesh (radio2)."</li>
+  <li><b>Upstreaming is in progress:</b> <a href="https://github.com/meshcore-dev/MeshCore/pull/3638">meshcore-dev/MeshCore#3638</a> (mikecarper) adds dual radio profiles and scheduled switching. It is <b>open, not merged</b>: +5,417 / −277 lines, opened 2026-10-20, last updated 10-26. Stock MeshCore is at 1.18.0 (2026-10-15). <span class="tag t-v">VERIFIED</span> via GitHub. Today radio2 lives only in their forks.</li>
+  <li><b>Also on the page:</b> a "900 MHz link scan" that finds drones without Remote ID by their ELRS, Crossfire or SiK control links. Receive-only, but outside our domain; noted, not adopted.</li>
+  <li><b>Analyzer support:</b> <a href="https://github.com/Kpa-clawbot/CoreScope/pull/2360">Kpa-clawbot/CoreScope#2360</a> upstreams MediaMesh decoding.</li>
+</ul>
+<h3>The flasher: one page, three firmwares, one per role</h3>
+<div class="tablebox"><table>
+  <thead><tr><th>Device role</th><th>Firmware</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>Standalone radio (screen + keys)</td><td>Wadamesh TAK</td><td>Live map and team features on the radio. Their recommended first firmware for newcomers. Stock revert via flasher.wadamesh.com.</td></tr>
+    <tr><td>Companion and repeater</td><td>Keymind Cascade</td><td>MeshCore tuned for the Cascade region, carries radio2, OTAFix wireless updates on supported boards.</td></tr>
+    <tr><td>DX-LR30 repeater (STM32F103 + SX1262)</td><td>Spectra-Cascadia</td><td>Their repeater build for a cheap STM32 board.</td></tr>
+  </tbody>
+</table></div>
+<p>It runs in Chrome or Edge over Web Serial, selects the newest build by default, and keeps older builds for <b>rollback</b>. Pick your role, plug in, click. That is a big part of why their onboarding feels easy.</p>
+<h3>What it means for us</h3>
+<ul class="clean">
+  <li><b>A second MeshCore channel exists in the band.</b> Our SDR channel table (<code>src/utils/sdr_analysis.py</code>) knows only 910.525. If radio2 traffic shows up on a waterfall near 911.15 it is MediaMesh, not interference. Add it as a labelled channel once the value is confirmed.</li>
+  <li><b>Region-tuned forks are a fork-pin problem we already solved.</b> Running Keymind Cascade means pinning a fork by tag and SHA and reading the pinned source, which is the same discipline as our RNS/LXMF forks. Don't adopt it until #3638's fate is known.</li>
+  <li><b>Heltec v3 caution.</b> radio2 on a v3 adds TX on a board we've measured self-interfering. Bench one before trusting it. <span class="tag t-u">UNKNOWN</span> for MeshCore.</li>
+  <li><b>Hawaiʻi lesson:</b> a role-based web flasher with rollback is the single most adoptable piece for a new island community. We'd point at theirs (or the stock MeshCore flasher) before building our own.</li>
+</ul>
+
+<h2 id="overlap">Overlap with MeshForge</h2>
+<div class="tablebox"><table>
+  <thead><tr><th>Area</th><th>Cascadia Mesh</th><th>MeshForge today</th><th>Evidence</th></tr></thead>
+  <tbody>
+    <tr><td>Primary stack</td><td>MeshCore only</td><td>MOC across Meshtastic, MeshCore (optional handler), RNS hub, AREDN, MQTT</td><td><span class="tag t-v">VERIFIED</span> repo</td></tr>
+    <tr><td>MeshCore channel</td><td>910.525 MHz</td><td><code>Channel("meshcore", 910.525, 62.5)</code> in <code>src/utils/sdr_analysis.py:104</code>: same centre</td><td><span class="tag t-v">VERIFIED</span> grep</td></tr>
+    <tr><td>Region scoping</td><td>Core operating rule</td><td>No region-tag awareness in <code>meshcore_handler.py</code> (adverts parsed, regions ignored)</td><td><span class="tag t-v">VERIFIED</span> grep</td></tr>
+    <tr><td>MQTT packet observers</td><td><code>meshcore/{IATA}/{PUBKEY}/packets</code> feeding LetsMesh and similar analyzers</td><td>MQTT subscriber exists for Meshtastic; no MeshCore observer ingest found</td><td><span class="tag t-v">VERIFIED</span> grep · topic shape <span class="tag t-b">BELIEVED</span></td></tr>
+    <tr><td>Map</td><td>Public map + MeshMapper (pnw.meshmapper.net)</td><td><code>web/node_map.html</code> on :5000 already plots MeshCore (public directory + operator positions)</td><td><span class="tag t-v">VERIFIED</span> repo</td></tr>
+    <tr><td>TAK</td><td>Open TAK + Wadamesh TAK user guides</td><td>XTOC / ATAK / CoT, <code>src/tactical/</code></td><td><span class="tag t-v">VERIFIED</span> repo</td></tr>
+    <tr><td>Media over LoRa</td><td>MediaMesh: photos and voice on radio2 (forks only)</td><td>None; <code>src/tactical/chunker.py</code> chunks payloads but on the main channel</td><td><span class="tag t-v">VERIFIED</span> repo · MediaMesh <span class="tag t-b">BELIEVED</span></td></tr>
+    <tr><td>Bots</td><td>HowlBot: repeater prefix lookup, list/scan/stats</td><td><code>plugins/meshing_around.py</code> (Meshtastic side)</td><td><span class="tag t-v">VERIFIED</span> repo</td></tr>
+    <tr><td>Newcomer front door</td><td>The whole site</td><td>None. README and TUI assume an operator.</td><td><span class="tag t-v">VERIFIED</span> repo</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="critique">Critical assessment for our domain</h2>
+<p>Added in the second pass. The first pass asked "what does Cascadia do that we don't?" This section asks the harder question: <b>which of it fits how this domain actually runs?</b> Each point is checked against the repo, the fleet, or a recorded operator decision.</p>
+<div class="adopt">
+  <article class="item"><header><h3>1 · Most of this belongs in MeshAnchor, not MeshForge</h3><span class="tag t-v">VERIFIED</span></header>
+    <p>MeshAnchor is the MeshCore-primary sister, split from MeshForge on 2026-04-01. In MeshForge, MeshCore is an <em>optional</em> gateway handler. Region-tag awareness, the advert audit, observer ingest and the prefix bot are MeshCore-native features. Their first home is MeshAnchor, and MeshForge's optional handler follows through the twin map. A grep of MeshAnchor finds no region-tag or MeshCore observer code either, so the gap is real in both repos. The adopt list below now says so.</p></article>
+  <article class="item"><header><h3>2 · We run no MeshCore repeaters</h3><span class="tag t-v">VERIFIED</span></header>
+    <p><code>docs/fleet_roles.yaml</code> has no repeater role. The fleet's MeshCore presence is the MeshAnchor box's radio, a companion by design (operator). A companion still sees every packet raw (0x88 push), so measurement needs no repeater. So "audit the repeaters we manage" audits nothing today. The real value of a region and advert Config Doctor is as a <b>standalone tool for the Hawaiʻi MeshCore operators who do run repeaters</b>. That fits the standalone bar: a ham without Claude diagnoses their own repeater from the TUI.</p></article>
+  <article class="item"><header><h3>3 · The Phase 2 trap is our defect class, and the strongest reason to build</h3><span class="tag t-v">VERIFIED</span></header>
+    <p>A Phase 2 repeater looks configured, stays up, and silently drops every unscoped neighbour. A leaf tag without its ancestors does the same thing more quietly. That is honest-failure-modes #1–2: a degraded state that reads healthy. A checker that says "this repeater is Phase 2 while N neighbours are unscoped" is exactly the kind of truth-telling MeshForge exists for.</p></article>
+  <article class="item"><header><h3>4 · A Hawaiʻi region scheme is not ours to coin</h3><span class="tag t-v">VERIFIED</span> operator record</header>
+    <p>There is already a Hawaiʻi MeshCore community, new to this and using it for emergency comms. The operator knows some of them, and the band's future is <em>their</em> decision. The table below stays a <b>draft to bring to them</b>, not something to deploy. Ask whether hawaiimesh.net or the Big Island group already has a convention before proposing one.</p></article>
+  <article class="item"><header><h3>5 · Publishing to LetsMesh sends Hawaiʻi traffic to a mainland public broker</h3><span class="tag t-b">BELIEVED</span></header>
+    <p>An observer that publishes to a shared public broker exposes the local community's traffic metadata (who, when, which repeaters) to anyone. We have a precedent: the 2026-05 Channel 0 leak on MeshAnchor. Our rule is refuse-by-default for egress. Default the observer to the <b>local broker only</b>; publishing outward is the community's consent to give, per site.</p></article>
+  <article class="item"><header><h3>6 · The US preset itself is contested</h3><span class="tag t-v">VERIFIED</span> issue state</header>
+    <p><a href="https://github.com/meshcore-dev/MeshCore/issues/945">MeshCore#945</a>, "Suggestion: new USA Regulatory preset", is open with 377 comments. It challenges whether the narrow 62.5 kHz US/Canada preset fits the US rules. We take no position: it is a legal question, and the band's direction is a community decision. But MeshForge should <em>show</em> which preset a radio uses, never imply it is compliant.</p></article>
+  <article class="item"><header><h3>7 · The front door belongs to the community; MeshForge feeds it the truth</h3><span class="tag t-b">BELIEVED</span></header>
+    <p>Cascadia's site is a community site, not a NOC tool. For Hawaiʻi that role belongs to the community (hawaiimesh.net). MeshForge's part is an honest data feed: node counts <em>with their age</em>, a coverage map that says where it cannot see. That keeps MeshForge on its own job, telling the truth, instead of becoming a second community site.</p></article>
+</div>
+
+<h2 id="corescope">CoreScope: the sandbox, and how we become part of it</h2>
+<p>Added 2026-10-31. <a href="https://github.com/Kpa-clawbot/CoreScope">CoreScope</a> is the open MeshCore analyzer the community already uses: Go, GPL-3.0, about 200 stars, pushed daily. It ingests packets over MQTT from observers, decodes them and serves a public read API. <b>It already does the region work this study proposed we build.</b> <span class="tag t-v">VERIFIED</span> source, API spec and a live instance</p>
+<div class="facts">
+  <div><b>472</b><span>repeaters in the public instance's Scope Audit (BE/NL/DE)</span></div>
+  <div><b>36</b><span>already in Phase 2 (<code>no-unscoped</code>)</span></div>
+  <div><b>0</b><span>Hawaiʻi packets on any CoreScope: we have no observer</span></div>
+</div>
+<p class="where" style="font-size:13px;color:var(--muted)">One read-only GET each to <code>analyzer.on8ar.eu/api/scope-audit</code> and <code>/api/scope-stats</code>, 2026-10-31 ~08:45 HST. <span class="tag t-v">VERIFIED</span></p>
+<h3>What it already has</h3>
+<ul class="clean">
+  <li><b>Per-packet route type</b> on <code>/api/packets</code> and <code>/api/decode</code>: <code>routeType</code>, <code>transportCodes</code> and the raw hex. The decoder matches MeshCore's <code>packet_format.md</code> exactly.</li>
+  <li><b>Scope Audit</b> (<code>/api/scope-audit</code>, CoreScope #1975): for every repeater, the regions it declares against the regions it was heard forwarding. <code>configState</code> includes <code>no-unscoped</code>, which is Phase 2. Also <code>observedUnscopedPackets</code> and <code>notObserved</code>.</li>
+  <li><b>The same honesty creed as ours.</b> Their notes say "never asked" is not "declared nothing", that an absent field is not evidence, and they name each blind spot. We would be joining people who already think the way we do.</li>
+</ul>
+<h3>Two small defects we found (documentation, not architecture)</h3>
+<ul class="clean">
+  <li><b>The API contract mislabels route types.</b> <code>proto/decoded.proto</code> says <code>0=DIRECT, 1=FLOOD, 2=reserved, 3=TRANSPORT</code>; the code and MeshCore's spec say <code>0=TRANSPORT_FLOOD, 1=FLOOD, 2=DIRECT, 3=TRANSPORT_DIRECT</code>. A client built from the contract would misread packets. <span class="tag t-v">VERIFIED</span></li>
+  <li><b><code>/api/scope-stats</code> breaks its own definition.</b> The spec says <code>transportTotal = scoped + unscoped</code>; the live response read <code>transportTotal 7626</code>, <code>scoped 7621</code>, <code>unscoped 14328</code>. <code>unscoped</code> likely also counts plain FLOOD packets. <span class="tag t-v">VERIFIED</span> one response · cause <span class="tag t-u">UNKNOWN</span></li>
+</ul>
+<p>Both are findings to report <b>in WH6GXZ's own words</b>, as issues: small, checkable, and proof we read their code closely. No AI-written code or PR text under his name.</p>
+<h3>How we become part of it</h3>
+<ol class="clean">
+  <li><b>Become a data source.</b> The MeshAnchor box's companion already receives every raw packet (push 0x88). MeshAnchor publishes them in the <code>meshcoretomqtt</code> topic shape (<code>meshcore/{IATA}/{PUBKEY}/packets</code>) to a <b>local</b> broker. No new hardware, no custom firmware.</li>
+  <li><b>Run a Hawaiʻi CoreScope.</b> Self-host one fed by that broker. Hawaiʻi then appears in the same tool Belgium and the Bay Area use, with the Scope Audit working on our mesh from day one.</li>
+  <li><b>Share outward with consent.</b> Publishing to a shared or public broker is the Hawaiʻi MeshCore community's decision, site by site. Refuse by default.</li>
+  <li><b>MeshForge reads, never rebuilds.</b> The MOC view pulls CoreScope's API (Scope Audit, node health) and shows it beside Meshtastic, RNS and AREDN. That multi-mesh view is the thing nobody else has, and it is what MeshForge offers back.</li>
+  <li><b>Contribute.</b> File the two findings. Later, where Hawaiʻi's island geography exposes something new (sparse links, inter-island hops), bring it as data from our instance.</li>
+</ol>
+<pre class="mermaid">
+flowchart LR
+  C["MeshAnchor companion<br/>raw RX push 0x88"] --> MA["MeshAnchor<br/>meshcoretomqtt shape"]
+  MA -->|local broker| CS["Hawaiʻi CoreScope<br/>self-hosted"]
+  MA -.->|community consent only| SH["Shared brokers<br/>LetsMesh · other CoreScopes"]
+  CS -->|read API| MF["MeshForge MOC<br/>beside Meshtastic · RNS · AREDN"]
+</pre>
+
+<h2 id="adopt">What to adopt</h2>
+<p>Ranked by value to the fleet over effort. "Where" names the MeshForge file that would change. Nothing here is built yet.</p>
+<div class="adopt">
+  <article class="item"><header><span class="rank">1</span><h3>Region-tag and Phase 2 check: feed CoreScope, don't rebuild it</h3><span class="pill p-now">now</span></header>
+    <p>Read and display the region tags a repeater carries, and flag the classic mistake: a leaf tag without its ancestors, which silently stops forwarding. This is a Config Doctor rule in the same family as our existing drift checks. The trap matches our own creed: a repeater that <em>looks</em> configured but does not forward.</p>
+    <p class="where">Where: <b>MeshAnchor first</b> (MeshCore-primary), then MeshForge's optional <code>src/gateway/meshcore_handler.py</code> through the twin map. Config Doctor and the TUI MeshCore menu. Flag Phase 2 when neighbours are unscoped. Test first (tdd skill).</p></article>
+  <article class="item"><header><span class="rank">2</span><h3>MeshCore MQTT observer ingest</h3><span class="pill p-now">now</span></header>
+    <p>Subscribe to <code>meshcore/{IATA}/+/packets</code> and feed packets into the node map and traffic inspector, the same way the Meshtastic MQTT leg works. This gives every box visibility of MeshCore traffic it can't hear on RF, and makes our observer interoperable with LetsMesh, CoreScope and meshcore-analyzer.</p>
+    <p class="where">Where: <code>src/monitoring/</code> mqtt subscriber + dissectors, <code>web/node_map.html</code>. Needs a <code>DBSpec</code> if it persists (MF013).</p></article>
+  <article class="item"><header><span class="rank">3</span><h3>Advert-interval audit</h3><span class="pill p-next">next</span></header>
+    <p>Flag a repeater whose flood-advert interval is under 70 h, or that has no loop detection. Cheap, and it's the norm the largest MeshCore community in the US runs on. We run no repeaters, so this serves community operators using the standalone tool.</p>
+    <p class="where">Where: Config Doctor rule beside #1.</p></article>
+  <article class="item"><header><span class="rank">4</span><h3>A public "Get on the mesh" page</h3><span class="pill p-next">next</span></header>
+    <p>A read-only newcomer page served beside the node map: three steps, the preset, channel QR codes, a node counter that says how fresh it is. Our version should show its age honestly ("312 nodes, as of 4 min ago"), something Cascadia's cached counter doesn't do.</p>
+    <p class="where">Where: new <code>web/</code> page, reusing map data. Strip LAN IPs (MF015).</p></article>
+  <article class="item"><header><span class="rank">5</span><h3>Corridor planning, Hawaiʻi style</h3><span class="pill p-later">later</span></header>
+    <p>Their I-5 spine maps onto our island problems: H-1 and H-3 on Oʻahu, Saddle Road across Hawaiʻi Island, and the inter-island hops that only high sites can bridge. MeshForge already has coverage maps and LOS. A "corridor" view that strings sites together and shows the gaps is the missing piece.</p>
+    <p class="where">Where: <code>src/utils/coverage_map.py</code>, <code>web/los_visualization.html</code>.</p></article>
+  <article class="item"><header><span class="rank">7</span><h3>Recognise MediaMesh radio2 traffic</h3><span class="pill p-later">later</span></header>
+    <p>Label radio2 as a known channel in the SDR tools, and decode MediaMesh packets in the MeshCore observer leg once CoreScope's decoder lands. Watch MeshCore#3638 before considering a fork.</p>
+    <p class="where">Where: <code>src/utils/sdr_analysis.py</code>, MeshCore dissector (adopt item 2).</p></article>
+  <article class="item"><header><span class="rank">6</span><h3>Repeater prefix lookup bot command</h3><span class="pill p-later">later</span></header>
+    <p>HowlBot answers "who is prefix <code>A3</code>?" in-band. Useful when reading paths off a MeshCore trace. Small add once #2 gives us a node table.</p>
+    <p class="where">Where: <code>src/plugins/</code> bot plugin.</p></article>
+</div>
+
+<h2 id="join">How we take part</h2>
+<p>We can't join their RF mesh from Hawaiʻi. LoRa doesn't cross the Pacific. Everything else is open to us. Tick items off as you go; ticks are saved in your browser only.</p>
+<p class="progress" id="progress" aria-live="polite">0 of 7 done</p>
+<ul class="checklist" id="checklist">
+  <li><input type="checkbox" id="j1"><label for="j1">Join their Discord and introduce WH6GXZ and MeshForge. Ask whether a Hawaiʻi region tag already exists before we coin one.<span class="who">Operator · contact via the I-5 Project page (Discord or email)</span></label></li>
+  <li><input type="checkbox" id="j2"><label for="j2">Run one MeshCore MQTT observer on a fleet box, publishing to a <b>local</b> broker first. Publishing to the shared LetsMesh broker only with the Hawaiʻi community's consent (see critique #5).<span class="who">Fleet · repeater flashed with MESH_PACKET_LOGGING=1, meshcoretomqtt, IATA code HNL/KOA/ITO/OGG/LIH</span></label></li>
+  <li><input type="checkbox" id="j3"><label for="j3">Bring their region-tag scheme to the Hawaiʻi MeshCore operators as a draft (see the plan below). It is their call (critique #4).<span class="who">Community · MeshCore firmware ≥ 1.15</span></label></li>
+  <li><input type="checkbox" id="j4"><label for="j4">Share the Heltec v3 interference-avoidance finding (self-generated −71 dBm floor holding TX) and ask whether their v3 repeaters see it. Our proof was on RNode firmware, so whether it applies to MeshCore is an open question.<span class="who">Operator · cite the 10-28 bench numbers, not conclusions</span></label></li>
+  <li><input type="checkbox" id="j5"><label for="j5">Offer MeshForge's multi-protocol MOC view as an open-source tool for their operators who also run Meshtastic or RNS.<span class="who">Operator · after items 1–2 of the adopt list land, so there's something MeshCore-native to show</span></label></li>
+  <li><input type="checkbox" id="j6"><label for="j6">Find the Big Island MeshCore operators named in the Hurricane Lala AUXCOMM write-up, and the HIEMA RACES group. They are the seed of a Hawaiʻi community.<span class="who">Operator · qsl.net/ah6rh Lala page</span></label></li>
+  <li><input type="checkbox" id="j7"><label for="j7">Copy their front door for Hawaiʻi: a getting-started page, a channel list with QR codes, and a corridor project people can sign up to host.<span class="who">Community · adopt item 4</span></label></li>
+</ul>
+
+<h2 id="hawaii">A Hawaiʻi region plan</h2>
+<p>A <b>draft to bring to the Hawaiʻi community</b>, not a plan to deploy (critique #4). It follows Cascadia's pattern so their tools work unchanged. Phase 1 only. Phase 2 waits until every island's channels are scoped.</p>
+<div class="tablebox"><table>
+  <thead><tr><th>Repeater location</th><th>Tags it carries</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Honolulu metro</td><td class="mono">pac, hi, hi-oahu, hnl</td><td>Metro chat stays on <code>hnl</code>, island chat on <code>hi-oahu</code></td></tr>
+    <tr><td>Windward Oʻahu</td><td class="mono">pac, hi, hi-oahu</td><td>Island-wide without the metro tag</td></tr>
+    <tr><td>Hilo</td><td class="mono">pac, hi, hi-big, ito</td><td>East-side metro tag</td></tr>
+    <tr><td>Kona</td><td class="mono">pac, hi, hi-big, koa</td><td>West-side metro tag</td></tr>
+    <tr><td>Inter-island high site</td><td class="mono">pac, hi, hi-oahu, hi-maui, hi-big</td><td>A bridge must carry every island tag it joins. Matching is per tag, not hierarchical.</td></tr>
+  </tbody>
+</table></div>
+<p>Channels to scope: <code>#hawaii</code> → <code>hi</code>, <code>#oahu</code> → <code>hi-oahu</code>, <code>#hnl</code> → <code>hnl</code>. Emergency nets should scope to <code>hi</code> so they reach every island the bridges can carry.</p>
+
+<h2>Observer pipeline</h2>
+<pre class="mermaid">
+flowchart LR
+  R["MeshCore repeater<br/>MESH_PACKET_LOGGING=1"] -->|USB serial| H["Fleet box<br/>meshcoretomqtt"]
+  H -->|"meshcore/HNL/PUBKEY/packets"| B["LetsMesh broker<br/>(shared, PNW uses it)"]
+  H -->|same topic| L["Local broker"]
+  L --> M["MeshForge<br/>node map + traffic inspector"]
+  B --> A["Analyzers<br/>LetsMesh · CoreScope · meshcore-analyzer"]
+</pre>
+<p style="font-size:13px;color:var(--muted)">Topic shape, the build flag and the broker come from third-party READMEs <span class="tag t-b">BELIEVED</span>. Read the pinned source before building.</p>
+
+<h2 id="open">Open questions</h2>
+<ul class="clean">
+  <li>What does their site actually look like, and what specifically do you like about it? Layout, map, tone? <span class="tag t-u">UNKNOWN</span></li>
+  <li>Is their map self-hosted, or a view of map.meshcore.dev / MeshMapper? <span class="tag t-u">UNKNOWN</span></li>
+  <li>Is there an existing Hawaiʻi or Pacific region-tag convention? <span class="tag t-u">UNKNOWN</span></li>
+  <li><s>Exact US/Canada Recommended preset values.</s> Answered: 910.525 MHz, SF7, BW 62.5 kHz, CR5, matching our SDR table. <span class="tag t-v">VERIFIED</span></li>
+  <li>Does the Hawaiʻi MeshCore community already have a region convention or an observer? Ask before building. <span class="tag t-u">UNKNOWN</span></li>
+  <li><s>Is the MeshAnchor box's radio a companion or a repeater?</s> Answered: a <b>companion</b>, by design (operator). It is enough to measure Phase 2 readiness: stock companion firmware pushes every received packet raw, header included, as <code>PUSH_CODE_LOG_RX_DATA</code> 0x88 (<code>examples/companion_radio/MyMesh.cpp</code>). MeshAnchor does not read 0x88 yet; that is the first slice. <span class="tag t-v">VERIFIED</span> source</li>
+  <li>Does Heltec v3 self-interference hit MeshCore repeaters as it hit our RNodes? <span class="tag t-u">UNKNOWN</span></li>
+  <li>MediaMesh radio2 default: is it really 911.150 MHz / 250 kHz / SF7 / CR 4/5? Will MeshCore#3638 merge? <span class="tag t-u">UNKNOWN</span></li>
+</ul>
+
+<h2 id="log">Change log</h2>
+<ul class="clean">
+  <li><b>2026-10-31</b>: Added the CoreScope section. Its Scope Audit already answers the Phase 2 question, so the plan changes from building a checker to becoming a data source (MeshAnchor companion → local broker → Hawaiʻi CoreScope) and reading its API from MeshForge. Two documentation defects found for upstream.</li>
+  <li><b>2026-10-31</b>: Second pass: live site read from the manager box. Corrected the advert interval (70 h, not 48 h) and the zero-hop rule (8 h+, not 0). Added the Phase 2 warning, the verified preset, radio2's live description and #3638's state, and a critical assessment for our domain. Adopt items now point at MeshAnchor first.</li>
+  <li><b>2026-10-31</b>: Added MediaMesh and the web flasher (radio2, three role firmwares, upstream PRs), adopt item 7.</li>
+  <li><b>2026-10-31</b>: First pass. Built from search snapshots and a MeshForge repo grep; the live site was unreachable from the research container.</li>
+</ul>
+
+<h2 id="sources">Sources</h2>
+<ul class="clean src">
+  <li>Cascadia Mesh pages (via search snapshots): <a href="https://cascadiamesh.org/">Home</a>, <a href="https://cascadiamesh.org/about/">About</a>, <a href="https://cascadiamesh.org/getting-on-the-mesh/">Getting Started</a>, <a href="https://cascadiamesh.org/regions/">Regions</a>, <a href="https://cascadiamesh.org/channels/">Channels</a>, <a href="https://cascadiamesh.org/map/">Map</a>, <a href="https://cascadiamesh.org/i-5-project/">I-5 Project</a>, <a href="https://cascadiamesh.org/repeater-builds/">Repeaters (DIY)</a>, <a href="https://cascadiamesh.org/repeaters-fully-assembled/">Repeaters (Assembled)</a>, <a href="https://cascadiamesh.org/companion-devices-commercial/">Companion Devices</a>, <a href="https://cascadiamesh.org/bot-commands/">Bot Commands</a>, <a href="https://cascadiamesh.org/meshcore-open-tak-user-guide/">Open TAK guide</a>, <a href="https://cascadiamesh.org/wadamesh-tak-user-guide/">Wadamesh TAK guide</a>, <a href="https://cascadiamesh.org/meshcore-wardriving-101/">Wardriving 101</a>, <a href="https://cascadiamesh.org/meshcore-resources-list/">Resources List</a></li>
+  <li>MediaMesh: <a href="https://cascadiamesh.org/mediamesh-flasher/">Cascadia MediaMesh Flasher page</a> · <a href="https://jade-on-mesh.github.io/wadamesh-tak/">MediaMesh Flasher (GitHub Pages)</a> · <a href="https://wadamesh.com/">WADAMESH</a> · <a href="https://github.com/meshcore-dev/MeshCore/pull/3638">MeshCore#3638</a> · <a href="https://github.com/jade-on-mesh/meshcore-open-tak/pull/18">meshcore-open-tak#18</a> · <a href="https://github.com/jade-on-mesh/meshcore-open-tak/issues/135">meshcore-open-tak#135</a> · <a href="https://github.com/Kpa-clawbot/CoreScope/pull/2360">CoreScope#2360</a></li>
+  <li>CoreScope: <a href="https://github.com/Kpa-clawbot/CoreScope">repo</a> (<code>proto/decoded.proto</code>, <code>cmd/*/decoder.go</code>, <code>cmd/server/routes.go</code>, <code>docs/api-spec.md</code>) · <a href="https://github.com/Kpa-clawbot/CoreScope/issues/1975">#1975 Scope Audit</a> · <a href="https://analyzer.on8ar.eu">analyzer.on8ar.eu</a> (public read API)</li>
+  <li>Second pass: <a href="https://github.com/meshcore-dev/MeshCore/blob/main/docs/faq.md">MeshCore FAQ (preset values)</a> · <a href="https://github.com/meshcore-dev/MeshCore/issues/945">MeshCore#945 (USA Regulatory preset)</a> · <a href="https://github.com/meshcore-dev/MeshCore/pull/2540">MeshCore#2540 (bulk region load)</a> · MeshCore releases (1.18.0) · MeshForge <code>docs/fleet_roles.yaml</code> · MeshAnchor <code>src/</code> grep</li>
+  <li><a href="https://gessaman.com/meshcore/regions/rollout/">Pacific Northwest MeshCore: Region Rollout</a></li>
+  <li><a href="https://pnw.meshmapper.net/">MeshMapper PNW</a></li>
+  <li><a href="https://www.regionmesh.com/mesh-network-seattle/">MeshCore Seattle</a> · <a href="https://www.regionmesh.com/mesh-network-portland/">MeshCore Portland</a></li>
+  <li><a href="https://d-central.tech/meshtastic-vs-meshcore/">Meshtastic vs MeshCore (d-central)</a> · <a href="https://blog.segment7.net/2026-01-11-meshcore-and-meshtastic/">Segment7 blog</a></li>
+  <li><a href="https://github.com/Cisien/meshcoretomqtt">Cisien/meshcoretomqtt</a> · <a href="https://github.com/efiten/meshcore-analyzer">efiten/meshcore-analyzer</a> · <a href="https://github.com/Kpa-clawbot/CoreScope">CoreScope</a> · <a href="https://github.com/Dhovin/MeshCore_Observer_Setup/wiki/OffbandMesh">MeshCore Observer Setup</a></li>
+  <li><a href="https://qsl.net/ah6rh/am-radio/hawaii/hurricane-lala.html">Hurricane Lala AUXCOMM notes (AH6RH)</a></li>
+</ul>
+
+<footer>Made with aloha for the mesh community · WH6GXZ. Ask Claude to update this page as findings come in.</footer>
+</main>
+</div>
+
+<script>
+(function () {
+  var KEY = "cascadia-study-checklist";
+  var boxes = Array.prototype.slice.call(document.querySelectorAll("#checklist input"));
+  var out = document.getElementById("progress");
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch (e) { saved = {}; }
+  function render() {
+    var n = boxes.filter(function (b) { return b.checked; }).length;
+    out.textContent = n + " of " + boxes.length + " done";
+  }
+  boxes.forEach(function (b) {
+    b.checked = !!saved[b.id];
+    b.addEventListener("change", function () {
+      saved[b.id] = b.checked;
+      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) {}
+      render();
+    });
+  });
+  render();
+})();
+</script>
+
+<!--claude-mermaid-runtime-begin:3477-->
+<style>.mermaid-diagram{margin-block:4px}.mermaid-diagram svg{display:block;margin:0 auto;max-width:100%;height:auto}</style>
+<script src="/_runtime/mermaid-11.16.1.min.js"></script>
+<script>(function(){
+var CFG={"palettes":{"light":{"surface":"#f4efe4","text":"#42392e","line":"#8a7f6d","border":"#7a6c52","bg":"#fffdf8"},"dark":{"surface":"#262b34","text":"#f2f3f5","line":"#a8adb8","border":"#9aa4b8","bg":"#1f232b"}}};
+if(typeof mermaid==='undefined')return;
+var pres=Array.prototype.slice.call(document.querySelectorAll('pre.mermaid')).filter(function(p){if(p.hasAttribute('data-claude-mermaid-claimed'))return false;p.setAttribute('data-claude-mermaid-claimed','1');return true;});
+if(!pres.length)return;
+var mq=window.matchMedia?window.matchMedia('(prefers-color-scheme: dark)'):null;
+var root=document.documentElement;
+var items=pres.map(function(pre){
+var mount=document.createElement('div');mount.className='mermaid-diagram';
+return {pre:pre,mount:mount,src:pre.textContent||''};
+});
+var seq=0;
+var renderGen=0;
+var lastKey='';
+function pageBg(fallback){
+var els=[document.body,document.documentElement];
+for(var i=0;i<els.length;i++){
+var c=els[i]&&getComputedStyle(els[i]).backgroundColor;
+if(c&&c!=='transparent'&&c!=='rgba(0, 0, 0, 0)')return c;
+}
+return fallback;
+}
+function render(){
+var theme=root.getAttribute('data-theme');
+var dark=theme==='dark'||(!!(mq&&mq.matches)&&theme!=='light');
+var pal=dark?CFG.palettes.dark:CFG.palettes.light;
+var bg=pageBg(pal.bg);
+var key=(dark?'d':'l')+'|'+bg;
+if(key===lastKey)return;
+lastKey=key;
+var gen=++renderGen;
+var font=getComputedStyle(document.body).fontFamily||'sans-serif';
+var nat={useMaxWidth:false};
+mermaid.initialize({
+startOnLoad:false,securityLevel:'strict',theme:'base',
+flowchart:nat,sequence:nat,er:nat,state:nat,class:nat,pie:nat,
+gantt:nat,journey:nat,timeline:nat,gitGraph:nat,mindmap:nat,xyChart:nat,
+quadrantChart:nat,sankey:nat,c4:nat,requirement:nat,block:nat,
+packet:nat,kanban:nat,architecture:nat,radar:nat,
+themeVariables:{background:bg,mainBkg:pal.surface,primaryColor:pal.surface,
+primaryTextColor:pal.text,lineColor:pal.line,primaryBorderColor:pal.border,
+nodeBorder:pal.border,clusterBorder:pal.border,edgeLabelBackground:bg,
+clusterBkg:'rgba(127,127,127,0.07)',titleColor:pal.text,
+darkMode:dark,rowOdd:bg,rowEven:'rgba(127,127,127,0.07)',
+attributeBackgroundColorOdd:bg,attributeBackgroundColorEven:'rgba(127,127,127,0.07)',
+fontSize:'16px',fontFamily:font},
+themeCSS:'.node rect, .node circle, .node polygon, .node path, .cluster rect { stroke-width: 2px; }'
+});
+items.forEach(function(it){
+var id='claude-mermaid-'+seq++;
+mermaid.render(id,it.src).then(function(r){
+if(gen!==renderGen)return;
+var prev=it.pre.previousElementSibling;
+if(prev&&prev.className==='mermaid-diagram'&&prev!==it.mount)return;
+it.mount.innerHTML=r.svg;
+if(!it.mount.parentNode)it.pre.parentNode.insertBefore(it.mount,it.pre);
+it.pre.style.display='none';
+},function(){
+var scratch=document.getElementById(id);
+if(scratch)scratch.parentNode.removeChild(scratch);
+scratch=document.getElementById('d'+id);
+if(scratch)scratch.parentNode.removeChild(scratch);
+if(gen!==renderGen)return;
+if(it.mount.parentNode)it.mount.parentNode.removeChild(it.mount);
+it.pre.style.display='';
+});
+});
+}
+render();
+if(mq&&mq.addEventListener)mq.addEventListener('change',render);
+if(typeof MutationObserver!=='undefined')new MutationObserver(render).observe(root,{attributes:true,attributeFilter:['data-theme']});
+})();</script>
+<!--claude-mermaid-runtime-end-->
+
+</body></html>

@@ -81,9 +81,9 @@ Of the physical causes, **(a) remote-node power or hardware failure** and **(b) 
 
 | Path (channel) | ~Distance | FSPL @915 MHz | 1st Fresnel radius, midpoint | Earth bulge, midpoint (k=4/3) |
 |---|---|---|---|---|
-| Molokaʻi–Maui (Pailolo) | ~14 km | 114.3 dB | 33.9 m | 2.9 m |
+| Molokaʻi–Maui (Pailolo) | ~14 km | 114.6 dB | 33.9 m | 2.9 m |
 | Oʻahu–Molokaʻi (Kaʻiwi) | ~42 km | 124.1 dB | 58.7 m | 25.9 m |
-| Maui–Hawaiʻi (ʻAlenuihāhā) | ~48 km | 125.2 dB | 62.7 m | 33.8 m |
+| Maui–Hawaiʻi (ʻAlenuihāhā) | ~48 km | 125.3 dB | 62.7 m | 33.8 m |
 | Oʻahu–Kauaʻi (Kauaʻi Ch.) | ~116 km | 133.0 dB | 97.5 m | 198 m |
 | Kaʻala–Haleakalā (mountain-to-mountain) | ~200 km | 137.7 dB | 128 m | 588 m (but both ends ≫ this) |
 
