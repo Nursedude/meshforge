@@ -346,8 +346,14 @@ STRICT_LAB_ALLOW = [
 ]
 
 
+def _short_id(v):
+    """A test id a CI log can hold (a 200 KB id once wiped the log after it)."""
+    s = v if isinstance(v, str) else repr(v)
+    return s if len(s) <= 120 else f"{s[:60]}…len{len(s)}"
+
+
 @pytest.mark.parametrize("cmd", R1_NON_LAB_DENY + R2_NON_LAB_DENY + R3_NON_LAB_DENY
-                         + V4_ACCEPTED_FALSE_DENY_NON_LAB)
+                         + V4_ACCEPTED_FALSE_DENY_NON_LAB, ids=_short_id)
 def test_non_lab_deny(box, cmd):
     box.role("primary")
     box.bench(BENCH)
@@ -541,8 +547,9 @@ def test_unterminated_quote_is_refused_by_the_alphabet(box):
     b"[" * 200000 + b'"axiometa"',
     b'{"tool_name":"Bash","tool_input":"axiometa boards"}',
     b'{"tool_name":["Bash"],"tool_input":{"command":"axiometa boards"}}',
-])
+], ids=["non-utf8", "deep-200k-brackets", "tool_input-is-str", "tool_name-is-list"])
 def test_hostile_payloads_fail_closed_rc0(box, raw):
+    # short ids: the 200 KB default id once wiped the CI log after this test
     box.role("primary")
     r = _run_hook(raw, box)
     assert r.returncode == 0
