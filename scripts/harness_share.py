@@ -18,6 +18,11 @@ share would be machinery watching machinery (feedback_my_footprint_is_the_constr
 and a ratio gate is a freeze in disguise; the 2026-09-09→10-09 freeze, measured
 on 10-09, showed that axis never bound (post_freeze_harness_budget §8).
 
+Windows are whole LOCAL calendar days: SINCE from 00:00 inclusive, UNTIL at 00:00
+exclusive; `--days N` = the last N days including today (so `--days 7` on 11-15
+is 11-09..11-16). Before 2026-11-15 the bounds were bare dates, which git reads
+as that day at the current time of day — shifted windows, 0 for "today".
+
 Usage:  python3 scripts/harness_share.py 2026-09-09 2026-10-09
         python3 scripts/harness_share.py --days 30
 """
@@ -48,9 +53,21 @@ def classify(path: str) -> str | None:
     return None
 
 
+def window_for_days(today: _dt.date, days: int) -> tuple[str, str]:
+    """`--days N` = the last N calendar days INCLUDING today -> (since, until-exclusive)."""
+    if days < 1:
+        raise ValueError(f"--days must be >= 1, got {days}")
+    return ((today - _dt.timedelta(days=days - 1)).isoformat(),
+            (today + _dt.timedelta(days=1)).isoformat())
+
+
 def measure(since: str, until: str) -> dict:
+    # A bare date makes git use that day at the CURRENT wall-clock time (11-15: an
+    # explicit window began ~22:5x and read the day's 15 commits as 0). Anchor both
+    # bounds at local midnight: SINCE inclusive, UNTIL exclusive, whole days.
     out = subprocess.run(
-        ["git", "log", "--no-merges", f"--since={since}", f"--until={until}",
+        ["git", "log", "--no-merges", f"--since={since}T00:00:00",
+         f"--until={until}T00:00:00",
          "--format=%x00%H", "--name-only"],
         capture_output=True, text=True, timeout=60, check=True).stdout
     counts = {"harness": 0, "product": 0, "neither": 0}
@@ -77,14 +94,18 @@ def measure(since: str, until: str) -> dict:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("since", nargs="?", help="YYYY-MM-DD (inclusive)")
-    ap.add_argument("until", nargs="?", help="YYYY-MM-DD (exclusive); default today")
-    ap.add_argument("--days", type=int, help="trailing window ending today")
+    ap.add_argument("until", nargs="?",
+                    help="YYYY-MM-DD (exclusive, local midnight); default tomorrow = through today")
+    ap.add_argument("--days", type=int, help="last N calendar days, today included")
     a = ap.parse_args(argv)
     today = _dt.date.today()
-    if a.days:
-        since, until = (today - _dt.timedelta(days=a.days)).isoformat(), today.isoformat()
+    if a.days is not None:
+        try:
+            since, until = window_for_days(today, a.days)
+        except ValueError as e:
+            ap.error(str(e))
     elif a.since:
-        since, until = a.since, a.until or today.isoformat()
+        since, until = a.since, a.until or (today + _dt.timedelta(days=1)).isoformat()
     else:
         ap.error("give SINCE [UNTIL] or --days N")
     c = measure(since, until)

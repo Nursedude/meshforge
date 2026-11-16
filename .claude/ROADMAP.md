@@ -160,7 +160,7 @@ product, `--days 7` logged in each handoff (a measure, not a gate; operator 11-1
 
 
 - **BIC-2** [MF][MA] S+F twin→MA — per-leg delivery truth, shown per message, UNKNOWN first-class (= 1.0 gate 3)
-  30-DAY (by 11-24), NARROWED (operator 11-10): `/inbox` broadcast heard-by, UNKNOWN shown, echo-fold fix + unknown-state default (`INBOX-T` F1/F2/F11); never "delivered". A FLEET truth: a one-box stranger reads "cannot see" — confirm the one-box relay-heard state before promising it for 12-04. DMs + bridged legs: design the cross-process ack path first, then a new date. MA after.
+  30-DAY (by 11-24), NARROWED (operator 11-10): `/inbox` broadcast heard-by, UNKNOWN shown, echo-fold fix + unknown-state default (`INBOX-T` F1/F2/F11); never "delivered". A FLEET truth: a one-box stranger reads "cannot see" — confirm the one-box relay-heard state before promising it for 12-04. DMs + bridged legs: design the cross-process ack path first, then a new date. MA after. Next: in-app re-pair + LongFast witness.
   Observe before alarming: counters first, then a soak baseline (pass rule: gate 3).
   Counters live MF+MA + the MF-first twin-fix list: provenance § BIC-2 (moved verbatim 2026-11-14, MF012).
   FIRST (operator iPhone 11-14): a phone is logged out 30 d after PAIRING however often used — the cookie's Max-Age is set once (`web_auth.py:261`, only issuer `_map_auth_endpoints.py:227`) while the server slides its idle window; re-issue on validate, red-first. And the 401 banner tells a phone user to run a box command — show the re-pair path in-app.
