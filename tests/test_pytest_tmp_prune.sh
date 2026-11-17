@@ -350,6 +350,49 @@ if [ "$(id -u)" != 0 ]; then
   done
 fi
 
+# ── full-tree EXPORTS inside a LIVE session are RAM too (2026-11-16) ──────
+#
+# Measured on the manager: the session pass keeps a dir while ANY file in it is
+# fresh (correct — a live session writes there), so review/mutant/replay
+# exports — full copies of the repo, ~60 MB each — accumulated INSIDE sessions
+# younger than the idle window: 9 in one session + 14 in four 1-2-day-old ones,
+# ~1.6 GB of tmpfs; user.slice hit 8.51/8.59 GB and paged the operator. An
+# export is a scratchpad child holding a repo tree (src/launcher_tui); it goes
+# when nothing inside changed for CLAUDE_TMP_EXPORT_IDLE_H. Controls: a FRESH
+# export, an old non-tree dir (a drill/notes dir), and an old loose draft all
+# stay — drafts are not regenerable.
+CB="$TMP/claude-exports"; CLAUDE_TMP_BASE="$CB"
+EX_S="13131313-2424-3535-4646-575757575757"
+SP="$CB/-opt-meshforge/$EX_S/scratchpad"
+mkdir -p "$SP/review_old/tree/src/launcher_tui" "$SP/mut_old/src/launcher_tui" \
+         "$SP/review_fresh/tree/src/launcher_tui" "$SP/notes_old/sub" "$SP/drv"
+echo x > "$SP/review_old/tree/src/launcher_tui/main.py"
+echo x > "$SP/mut_old/src/launcher_tui/main.py"
+echo x > "$SP/review_fresh/tree/src/launcher_tui/main.py"
+echo x > "$SP/notes_old/sub/finding.md"
+echo x > "$SP/draft.md"
+two_days_ago="@$(( $(date +%s) - 30*3600 ))"
+find "$CB" -exec touch -h -d "$two_days_ago" {} +
+touch "$SP/review_fresh/tree/src/launcher_tui/main.py"   # an export still in use
+echo y > "$SP/drv/live.py"                               # the session itself is LIVE
+BASE="$TMP/no-pytest-tree"
+out="$(run_pgrep 1)"
+check "exports: an old tree export inside a live session is pruned" \
+  "$([ -d "$SP/review_old" ] && echo '' || echo ok)"
+check "exports: an old export with src/ at its top level is pruned too" \
+  "$([ -d "$SP/mut_old" ] && echo '' || echo ok)"
+check "exports: a FRESH tree export is kept" \
+  "$([ -f "$SP/review_fresh/tree/src/launcher_tui/main.py" ] && echo ok)"
+check "exports: an old NON-tree dir (notes, drills) is kept" \
+  "$([ -f "$SP/notes_old/sub/finding.md" ] && echo ok)"
+check "exports: an old loose draft is kept (not regenerable)" \
+  "$([ -f "$SP/draft.md" ] && echo ok)"
+check "exports: the live session itself is kept" \
+  "$([ -f "$SP/drv/live.py" ] && echo ok)"
+check "exports: the verdict SAYS what it pruned" \
+  "$(echo "$out" | grep -q 'tree exports: pruned 2' && echo ok)"
+CLAUDE_TMP_BASE="$TMP/claude-none"
+
 # ── it leaves a cron verdict so #78 can see it ───────────────────────────
 check "writes a cron_verdict line under its own name" \
   "$(grep -q 'pytest_tmp_prune' "$VERDICTS" 2>/dev/null && echo ok)"

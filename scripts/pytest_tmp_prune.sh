@@ -94,6 +94,33 @@ _note_stuck() {  # $1 = the dir rm -rf failed on
 CLAUDE_BASE="${CLAUDE_TMP_BASE:-/tmp/claude-$(id -u)}"
 CLAUDE_IDLE_DAYS="${CLAUDE_TMP_IDLE_DAYS:-2}"
 c_total=0; c_pruned=0; c_failed=0; c_freed_kb=0
+
+# ── tree EXPORTS inside a LIVE session (2026-11-16) ─────────────────────
+# A live session is kept whole (any fresh file), so full repo copies made for
+# reviews / mutant runs / replays (~60 MB each) piled up INSIDE sessions younger
+# than the idle window: ~1.6 GB of tmpfs on the manager, user.slice 8.51/8.59 GB,
+# operator paged. An EXPORT is an immediate scratchpad child holding a repo tree
+# (a src/launcher_tui dir within 3 levels); it goes when nothing inside changed
+# for CLAUDE_TMP_EXPORT_IDLE_H. Everything else in a live session — drafts,
+# notes, drills, logs — is never touched (not regenerable). Unobservable = keep.
+CLAUDE_EXPORT_IDLE_H="${CLAUDE_TMP_EXPORT_IDLE_H:-24}"
+e_pruned=0; e_freed_kb=0
+_prune_exports() {  # $1 = a LIVE session dir
+  local x kb recent
+  for x in "$1"/scratchpad/*/; do
+    x="${x%/}"
+    [ -d "$x" ] && [ ! -L "$x" ] || continue
+    [ -n "$(find "$x" -maxdepth 3 -type d -path '*/src/launcher_tui' -print -quit 2>/dev/null)" ] || continue
+    recent="$(find "$x" -mmin -$((CLAUDE_EXPORT_IDLE_H * 60)) -print -quit 2>/dev/null)" || continue
+    [ -n "$recent" ] && continue
+    kb=$(du -sk "$x" 2>/dev/null | cut -f1)
+    if rm -rf "$x" 2>/dev/null; then
+      e_pruned=$((e_pruned + 1)); e_freed_kb=$((e_freed_kb + ${kb:-0}))
+    else
+      c_failed=$((c_failed + 1)); _note_stuck "$x"
+    fi
+  done
+}
 if [ -d "$CLAUDE_BASE" ]; then
   for d in "$CLAUDE_BASE"/*/*/; do
     d="${d%/}"
@@ -111,7 +138,7 @@ if [ -d "$CLAUDE_BASE" ]; then
       notdir=(! -type d)
     fi
     recent="$(find "$d" "${notdir[@]}" -mmin -$((CLAUDE_IDLE_DAYS * 1440)) -print -quit 2>/dev/null)" || continue
-    [ -n "$recent" ] && continue
+    if [ -n "$recent" ]; then _prune_exports "$d"; continue; fi   # live: only its stale exports go
     kb=$(du -sk "$d" 2>/dev/null | cut -f1)
     if rm -rf "$d" 2>/dev/null; then
       c_pruned=$((c_pruned + 1)); c_freed_kb=$((c_freed_kb + ${kb:-0}))
@@ -120,7 +147,7 @@ if [ -d "$CLAUDE_BASE" ]; then
     fi
   done
 fi
-c_detail="claude scratch: pruned $c_pruned of $c_total session dir(s) idle > ${CLAUDE_IDLE_DAYS}d, freed $((c_freed_kb / 1024)) MB"
+c_detail="claude scratch: pruned $c_pruned of $c_total session dir(s) idle > ${CLAUDE_IDLE_DAYS}d, freed $((c_freed_kb / 1024)) MB; tree exports: pruned $e_pruned idle > ${CLAUDE_EXPORT_IDLE_H}h, freed $((e_freed_kb / 1024)) MB"
 # The failure count is appended ONCE, where the verdict is spoken — appending
 # it here too printed it twice on the full path (2026-10-18).
 
