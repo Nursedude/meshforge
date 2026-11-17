@@ -7,7 +7,9 @@
 
   "//inert": "Absent file = inert (no box is ever 'on another preset'). A file that EXISTS but is unreadable, names an unknown preset, or has an unknown key is a LOUD error on the inbox read, and no segments are used.",
 
-  "//format": "segment = meshtastic:<PRESET>/ch<N>; PRESET is a name in src/utils/meshtastic_modem.py PRESET_DISPLAY_NAMES. send_from = THIS box's alias (never inferred). A box left out is undeclared, never guessed. Consumer: src/utils/rf_segments.py -> src/utils/inbox_api.py.",
+  "//format": "segment = meshtastic:<PRESET>/ch<N>; PRESET is a name in src/utils/meshtastic_modem.py PRESET_DISPLAY_NAMES; N is a real slot (1..the preset's US slot count; ch0 'hashed from the name' is refused). send_from = THIS box's alias (never inferred). A box left out is undeclared, never guessed. Consumer: src/utils/rf_segments.py -> src/utils/inbox_api.py.",
+
+  "//which_boxes": "Declare ONLY boxes listed in ~/.config/meshforge/truth_spool_targets (plus send_from, which need not be listed). /inbox judges only those boxes, so a declaration for any other box changes no verdict, and the inbox names it as 'not in the fleet list' on every read. A real box that is not a spool target here is left OUT, with a // note saying its preset, so the fact is not lost if it is added later.",
 
   "send_from": "this-box",
 
