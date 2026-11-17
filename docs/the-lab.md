@@ -48,7 +48,7 @@ To stand up your own VPS demo, see `scripts/cloud/README.md` — one-shot setup 
 
 ## Research & Technical Foundation
 
-MeshForge development is backed by <!--STAT:researchdocs-->60<!--/STAT--> technical research documents covering
+MeshForge development is backed by <!--STAT:researchdocs-->61<!--/STAT--> technical research documents covering
 protocol analysis, integration architecture, and RF engineering. The count is
 of files in `.claude/research/`; not every design decision traces to one.
 
