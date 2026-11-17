@@ -62,8 +62,13 @@ document.getElementById('f').addEventListener('submit', async (e) => {
 """
 
 
-def _clock(ts: float) -> str:
-    return time.strftime("%H:%M", time.localtime(ts))
+def _clock(ts: float) -> Optional[str]:
+    """Box-local HH:MM, or None for a stamp the platform cannot render
+    (review r1 LOW-4: a hand-edited 1e30/inf expiry dropped the connection)."""
+    try:
+        return time.strftime("%H:%M", time.localtime(ts))
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _pause_body(wait: float, expires: Optional[float]) -> dict:
@@ -74,9 +79,11 @@ def _pause_body(wait: float, expires: Optional[float]) -> dict:
     now = time.time()
     detail = (f"Paused after {web_auth.LOGIN_TRIES_PER_CLIENT} wrong tries from this "
               f"browser. Your code may be fine, but it can't be checked until "
-              f"{_clock(now + retry)}. Faster: make a new code on the box "
-              f"(a new code gets fresh tries).")
-    if expires is not None and expires > now:
+              f"{_clock(now + retry) or f'{retry} s from now'}. Faster: make a new "
+              f"code on the box (a new code gets fresh tries).")
+    # only a stamp a real mint could have written (now + PAIRING_TTL_S)
+    if (expires is not None and now < expires <= now + web_auth.PAIRING_TTL_S
+            and _clock(expires)):
         detail += f" The current code is valid until {_clock(expires)}."
     return {"error": "too many wrong codes from this client", "detail": detail,
             "retry_after_s": retry}
@@ -215,19 +222,29 @@ class AuthEndpointsMixin:
 
     def _pairing_expires(self) -> Optional[float]:
         """The pending code's ``expires`` stamp, which names the code without
-        its secret, or None when no code is pending or the store can't be
-        read. None is its own budget key, and redeem() then judges the store
-        itself (an unreadable store refunds the try)."""
-        try:
-            p = self._auth()._read().get("pairing")
-        except web_auth.StoreUnavailable:
-            return None
+        its secret, or None when no code is pending. Raises StoreUnavailable:
+        the caller refuses with the store's own reason (review r1 LOW-2, where
+        swallowing it here turned a corrupt store into 'wrong code')."""
+        p = self._auth()._read().get("pairing")
         if not isinstance(p, dict):
             return None
         try:
             return float(p.get("expires"))
         except (TypeError, ValueError):
             return None
+
+    def _charge_a_racing_mint(self, client: str, keyed: Optional[float]) -> None:
+        """Review r1 MED-1: the key is read unlocked and redeem() judges under
+        the store lock, so a mint between them spends the NEW code's store
+        tries while the try was charged to the old key. After a wrong try,
+        re-read: if a different code is now pending, charge it as well, so
+        one client stays at 3 wrong tries per code."""
+        try:
+            now_pending = self._pairing_expires()
+        except web_auth.StoreUnavailable:
+            return   # redeem just read it; nothing pending to protect is judgeable
+        if now_pending is not None and now_pending != keyed:
+            self.login_tries.wrong(f"{client}|{now_pending}")
 
     def _read_json_body(self, limit: int = 1024) -> Optional[dict]:
         ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
@@ -260,7 +277,12 @@ class AuthEndpointsMixin:
         if data is None:
             return
         client = self._client_addr()
-        expires = self._pairing_expires()
+        try:
+            expires = self._pairing_expires()
+        except web_auth.StoreUnavailable as e:
+            # one read, one error, no try charged (review r1 LOW-2/LOW-3)
+            self._refuse_operator("POST", "/login", str(e))
+            return
         # LOGIN-UX 11-16: the budget is per (client, CODE). The pause (600 s)
         # outlives a code (300 s), so a per-client key made a code minted on
         # the box during a pause dead on arrival. A console mint is the
@@ -279,6 +301,7 @@ class AuthEndpointsMixin:
             self._refuse_operator("POST", "/login", str(e))
             return
         if not token:
+            self._charge_a_racing_mint(client, expires)
             self._refuse_operator("POST", "/login",
                                   "that code is wrong, used, expired or burned — run pair again")
             return

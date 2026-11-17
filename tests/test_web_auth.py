@@ -564,6 +564,94 @@ def test_the_pause_says_why_and_when_in_clock_time(server, store, fresh_budget):
     assert isinstance(j.get("retry_after_s"), int) and j["retry_after_s"] > 0
 
 
+def _stored_pairing(store):
+    return json.loads(store.path.read_text())["pairing"]
+
+
+def test_a_mint_racing_a_wrong_try_cannot_buy_one_client_extra_tries(
+        server, store, fresh_budget, monkeypatch):
+    """Review r1 MED-1 (11-16): the key is read unlocked, then redeem() judges
+    under the lock. A mint landing in between charged the try to the OLD code
+    while it spent the NEW code's store tries, so one client reached the new
+    code 3 + 3 times and burned it (reviewer: 192/300 trials). Deterministic:
+    the mint lands inside the first redeem."""
+    srv, _ = server
+    store.start_pairing()
+    real = store.redeem
+    calls = []
+
+    def racing_redeem(code):
+        calls.append(code)
+        if len(calls) == 1:
+            store.start_pairing()          # the operator's mint, inside the window
+        return real(code)
+
+    monkeypatch.setattr(store, "redeem", racing_redeem)
+    statuses = [_try(srv, "AAAAAAAA")[0] for _ in range(web_auth.LOGIN_TRIES_PER_CLIENT + 1)]
+    assert statuses == [401] * web_auth.LOGIN_TRIES_PER_CLIENT + [429]
+    assert _stored_pairing(store)["tries"] == web_auth.LOGIN_TRIES_PER_CLIENT
+
+
+def test_one_paused_client_does_not_pause_another(server, store, fresh_budget, monkeypatch):
+    """Review r1 mutant M2 survived: no test used two client addresses."""
+    srv, _ = server
+    monkeypatch.setattr(MapRequestHandler, "_client_addr",
+                        lambda self: self.headers.get("X-Test-Client", "127.0.0.1"))
+    code = store.start_pairing()
+    for _ in range(web_auth.LOGIN_TRIES_PER_CLIENT):
+        _req(srv, "POST", "/login", json.dumps({"code": "AAAAAAAA"}),
+             dict(JSON, Origin=_origin(srv), **{"X-Test-Client": "192.0.2.66"}))
+    status, _, _ = _req(srv, "POST", "/login", json.dumps({"code": "AAAAAAAA"}),
+                        dict(JSON, Origin=_origin(srv), **{"X-Test-Client": "192.0.2.66"}))
+    assert status == 429
+    status, body, cookie = _req(srv, "POST", "/login", json.dumps({"code": code}),
+                                dict(JSON, Origin=_origin(srv), **{"X-Test-Client": "192.0.2.7"}))
+    assert status == 200 and cookie, body
+
+
+def test_a_corrupt_store_says_so_on_login_and_charges_no_try(server, store, fresh_budget):
+    """Review r1 LOW-2: the key read moved the corrupt file aside and swallowed
+    the error, so redeem() saw 'never paired' and the browser read 'wrong code'."""
+    srv, _ = server
+    store.start_pairing()
+    store.path.write_text("{not json")
+    status, body, _ = _try(srv, "AAAAAAAA")
+    assert status == 401
+    assert "corrupt" in json.loads(body)["detail"]
+    assert MapRequestHandler.login_tries._tries == {}
+
+
+def test_an_unreadable_store_counts_one_error_per_login(server, store, fresh_budget):
+    """Review r1 LOW-3 (+M8): two reads per login counted every failure twice."""
+    srv, _ = server
+    store.start_pairing()
+    os.chmod(store.path, 0)
+    try:
+        before = store.store_errors
+        status, _, _ = _try(srv, "AAAAAAAA")
+        assert status == 401
+        assert store.store_errors == before + 1
+        assert MapRequestHandler.login_tries._tries == {}
+    finally:
+        os.chmod(store.path, 0o600)
+
+
+@pytest.mark.parametrize("expires", [1e30, float("inf")])
+def test_the_pause_still_answers_with_an_absurd_expiry_in_the_store(
+        server, store, fresh_budget, expires):
+    """Review r1 LOW-4: _clock() raised OverflowError and the connection dropped."""
+    srv, _ = server
+    store.start_pairing()
+    d = json.loads(store.path.read_text())
+    d["pairing"]["expires"] = expires
+    store.path.write_text(json.dumps(d))
+    for _ in range(web_auth.LOGIN_TRIES_PER_CLIENT):
+        _try(srv, "AAAAAAAA")
+    status, body, _ = _try(srv, "AAAAAAAA")
+    assert status == 429
+    assert "valid until" not in json.loads(body)["detail"]
+
+
 def test_the_login_button_is_disabled_while_a_try_is_in_flight(server):
     """The 13:36 burst: 3 taps in 4 s each spent a try before the first reply came back."""
     srv, _ = server
