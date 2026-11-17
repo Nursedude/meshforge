@@ -89,5 +89,5 @@ def test_the_line_never_claims_delivery(summary):
 def test_other_preset_boxes_are_named_as_unable_to_hear(fleet):
     summary = {"heard": ["kiai"], "not_heard": [], "unobservable": [], "cannot_hear": ["moc3"]}
     assert inbox_legs.heard_line(summary, packet_id=PID) == \
-        ("heard by kiai · 1 of 1 listening · 1 on another preset "
+        ("heard by kiai · 1 of 1 listening · 1 on another preset/slot "
          "(declared; a bridged copy carries a new id)")

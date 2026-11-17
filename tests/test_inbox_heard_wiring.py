@@ -182,7 +182,7 @@ def test_a_box_on_the_other_declared_preset_reads_cannot_hear_on_the_inbox():
         out, msgs, _ = _read([_row()], {"kiai": _sec(), "moc3": _sec()})
     heard = msgs[1]["heard"]
     assert heard["summary"]["cannot_hear"] == ["moc3"], heard
-    assert "on another preset (declared" in heard["line"]
+    assert "on another preset/slot (declared" in heard["line"]
 
 
 def test_an_unreadable_declaration_is_said_and_never_cannot_hear():
@@ -192,3 +192,25 @@ def test_an_unreadable_declaration_is_said_and_never_cannot_hear():
         out, msgs, _ = _read([_row()], {"kiai": _sec(), "moc3": _sec()})
     assert msgs[1]["heard"]["summary"].get("cannot_hear", []) == []
     assert "declared segments" in out["heard_error"]
+
+
+def test_h1_a_declaration_load_that_raises_never_breaks_the_inbox_read():
+    """r1 H1: load() sat outside every guard; a raise killed /api/inbox and the
+    page read 'offline'. Any failure is a said error, never a dead read."""
+    from utils import rf_segments
+    with patch.object(rf_segments, "load", side_effect=RecursionError("deep")):
+        out, msgs, _ = _read([_row()], {"kiai": _sec(), "moc3": _sec()})
+    assert out["state"] == "ok"
+    assert "heard" in msgs[1]
+    assert "declared segments" in out["heard_error"]
+
+
+def test_m1_a_declared_alias_the_fleet_does_not_list_is_said():
+    """r1 M1: a typo ('MOC3') left moc3 undeclared and silently back to
+    'listening, not heard'. A declared alias with no target is SAID."""
+    from utils import rf_segments
+    decl = rf_segments.Declared({"center-box": "meshtastic:LONG_FAST/ch20",
+                                 "MOC3": "meshtastic:SHORT_TURBO/ch8"}, "center-box", None)
+    with patch.object(rf_segments, "load", return_value=decl):
+        out, msgs, _ = _read([_row()], {"kiai": _sec(), "moc3": _sec()})
+    assert "MOC3" in (out.get("heard_error") or ""), out.get("heard_error")

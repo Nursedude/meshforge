@@ -363,10 +363,19 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
     # an unreadable or wrong one = no segments AND the read says why (never a
     # silent "nothing declared").
     from utils import rf_segments
-    decl = rf_segments.load()
+    try:
+        decl = rf_segments.load()
+    except Exception as e:   # r1 H1: guarded like every other step here; never a dead read
+        decl = rf_segments.Declared({}, None,
+                                    f"declared segments unreadable ({type(e).__name__})")
     if decl.error:
         logger.warning("inbox: %s", decl.error)
         errors.append(decl.error)
+    # r1 M1: a declared alias the fleet does not list (a typo) left its box
+    # silently undeclared. SAY it; the valid declarations still apply.
+    stray = sorted(a for a in decl.segments if a not in sections)
+    if stray:
+        errors.append(f"declared segments name box(es) not in the fleet list: {', '.join(stray)}")
     for m in sends:   # each send guarded on its own: one bad box never breaks the read (r5)
         sent = _epoch(m.get("ts"))
         try:

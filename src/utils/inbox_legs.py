@@ -57,7 +57,7 @@ def heard_line(summary: Mapping[str, List[str]], *, packet_id: Any,
         # DECLARED, not measured (utils.rf_segments: Linux meshtasticd has no
         # /json/report). A bridged copy reaches the other preset under a NEW
         # packet id, so this id is never expected there.
-        parts.append(f"{other} on another preset (declared; a bridged copy carries a new id)")
+        parts.append(f"{other} on another preset/slot (declared; a bridged copy carries a new id)")
     return " · ".join(parts)
 
 
