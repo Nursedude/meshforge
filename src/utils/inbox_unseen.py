@@ -22,9 +22,17 @@ minus uptime is constant per process: measured 11-17 over 7 d, -0.51 s ..
 that is a continuation of a PUBLISHED text is never a log line. A
 prefix-carrying line that fails the uptime check is counted ``unverified``
 and the page says the counts may be off (an NTP step shows here, not
-silently). Residual, stated: a sender whose text is NOT published here (a
-bridged one) and who knows this process's start time to the minute could
-still forge one line.
+silently). Texts pair with publishes on (from, id), never the id alone
+(review r2 MED: a reused id hid an unseen text).
+
+THREAT MODEL (the seam, after review r1 and r2 found the same kind twice):
+this witness is correct against ACCIDENTAL causes — bridged downlinks,
+truncated lines, clock steps, restarts, id collisions. A DELIBERATE sender
+crafting multi-line texts can still skew the count or the "Last:" sender (a
+forged line with a known uptime, forged lines setting the median right after
+a restart, a published text copying a genuine line). Accepted, ledger row
+``inbox-unseen-deliberate-sender-can-skew-the-counts``: counts only, no text
+shown, no action taken.
 
 Tri-state (honest_failure_modes #1/#2): ``ok`` with counts, or
 ``unobservable`` with why. Every working radio journal carries publish lines
@@ -68,6 +76,7 @@ _RECV = re.compile(r"^Received text msg from=0x([0-9a-fA-F]+), id=0x([0-9a-fA-F]
 _PUB = re.compile(r"^JSON publish message to \S+, \d+ bytes: (\{.*)$")   # a truncated line still counts
 _GREP = "Received text msg from=|JSON publish message to"
 _ID_IN_PREFIX = re.compile(r'"id":(\d+)[,}]')
+_FROM_IN_PREFIX = re.compile(r'"from":(\d+)[,}]')
 
 _lock = threading.Lock()
 _cache: Dict[str, Any] = {"at": None, "value": None}
@@ -83,20 +92,28 @@ def _reset_cache() -> None:
         _cache["value"] = None
 
 
-def _top_level_id(body: str) -> Optional[int]:
-    """The packet id of one JSON publish, or None. TOP level only: a payload's
-    own "id" is not a packet. meshtasticd truncates long log lines (measured
-    11-17: traceroute publishes cut at char 444), so a body json cannot parse
-    falls back to the part BEFORE the first nested object — the firmware
-    writes top-level keys in order, and "id" sorts before "payload"."""
+def _int(v) -> Optional[int]:
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+def _top_level_key(body: str) -> Optional[Tuple[int, int]]:
+    """``(from, id)`` of one JSON publish, or None. Pairing on the id alone
+    let any publish reusing it hide an unseen text (review r2 MED; ids also
+    collide by accident). TOP level only: a payload's own "id" is not a
+    packet. meshtasticd truncates long log lines (measured 11-17: traceroute
+    publishes cut at char 444), so a body json cannot parse falls back to the
+    part BEFORE the first nested object — the firmware writes top-level keys
+    in order, and "from" and "id" both sort before "payload"."""
     try:
         obj = json.loads(body)
     except ValueError:
         head = body[1:].split("{", 1)[0]
-        m = _ID_IN_PREFIX.search(head)
-        return int(m.group(1)) if m else None
-    pid = obj.get("id") if isinstance(obj, dict) else None
-    return pid if isinstance(pid, int) and not isinstance(pid, bool) else None
+        f, i = _FROM_IN_PREFIX.search(head), _ID_IN_PREFIX.search(head)
+        return (int(f.group(1)), int(i.group(1))) if f and i else None
+    if not isinstance(obj, dict):
+        return None
+    frm, pid = _int(obj.get("from")), _int(obj.get("id"))
+    return (frm, pid) if frm is not None and pid is not None else None
 
 
 def _continuations(body: str) -> List[str]:
@@ -114,7 +131,7 @@ def _median(xs: List[float]) -> float:
 
 
 def scan(lines: Iterable[str]) -> Dict[str, Any]:
-    """Pure: count heard texts (by packet id) and those never published."""
+    """Pure: count heard texts (by (from, packet id)) and those never published."""
     entries: List[Tuple[Optional[float], str, str]] = []   # (epoch, pid, message)
     for line in lines:
         e = _ENTRY.match(line)
@@ -139,7 +156,7 @@ def scan(lines: Iterable[str]) -> Dict[str, Any]:
         if pub:
             named.update(_continuations(pub.group(1)))
     medians = {proc: _median(v) for proc, v in offsets.items()}
-    heard: Dict[int, Dict[str, Any]] = {}
+    heard: Dict[Tuple[int, int], Dict[str, Any]] = {}   # keyed (from, id), like a publish
     published = set()
     unverified = 0
     verified_publishes = 0
@@ -152,17 +169,17 @@ def scan(lines: Iterable[str]) -> Dict[str, Any]:
             continue
         m = _RECV.match(rest)
         if m:
-            pid = int(m.group(2), 16)
-            if pid not in heard:          # first sighting wins
-                heard[pid] = {"from": "!%08x" % int(m.group(1), 16), "ts": ts}
+            key = (int(m.group(1), 16), int(m.group(2), 16))
+            if key not in heard:          # first sighting wins
+                heard[key] = {"from": "!%08x" % key[0], "ts": ts}
             continue
         pub = _PUB.match(rest)
         if pub:
-            pid = _top_level_id(pub.group(1))
-            if pid is None:
+            key = _top_level_key(pub.group(1))
+            if key is None:
                 unverified += 1           # never trusted as a pairing; counted (the page says so)
             else:
-                published.add(pid)
+                published.add(key)
                 verified_publishes += 1
     if not verified_publishes:
         return {"state": "unobservable",
@@ -242,9 +259,14 @@ def describe(u: Dict[str, Any]) -> Tuple[str, str]:
         line = (f"All {heard} texts this radio heard in the last {h} were published to MQTT, "
                 "which this page reads.")
         tone = "ok"
+    elif u.get("unverified"):
+        line, tone = f"No verified texts in the radio's journal for the last {h}.", "warn"
     else:
         line, tone = f"The radio's journal shows no texts heard in the last {h}.", "ok"
     if u.get("unverified"):
+        # r2 LOW-2: a clock step or restart can put real lines outside the
+        # window; a qualified count is never shown as healthy
         line += (f" ({u['unverified']} journal line(s) could not be verified, so these counts "
                  "may be off.)")
+        tone = "warn"
     return line, tone

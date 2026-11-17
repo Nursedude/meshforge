@@ -78,7 +78,7 @@ def test_a_heard_text_never_published_is_unseen():
 
 
 def test_every_heard_text_published_is_zero_unseen_with_no_last():
-    lines = _bg() + [_recv(T, 0x1, 0x10), _pub(T + 0.1, 0x10)]
+    lines = _bg() + [_recv(T, 0x1, 0x10), _pub(T + 0.1, 0x10, frm=0x1)]
     assert inbox_unseen.scan(lines) == {"state": "ok", "heard": 1, "unseen": 0, "last": None}
 
 
@@ -111,14 +111,14 @@ def test_this_radios_own_client_sends_are_not_heard_texts():
 
 
 def test_a_packet_logged_twice_counts_once_and_keeps_its_first_sighting():
-    lines = _bg() + [_recv(T, 0xA, 0x1), _recv(T + 0.5, 0xB, 0x1)]
+    lines = _bg() + [_recv(T, 0xA, 0x1), _recv(T + 0.5, 0xA, 0x1)]
     out = inbox_unseen.scan(lines)
     assert out["heard"] == 1 and out["unseen"] == 1
     assert out["last"] == {"from": "!0000000a", "ts": T}
 
 
 def test_a_publish_before_its_receive_line_still_pairs():
-    lines = _bg() + [_pub(T - 0.1, 0x10), _recv(T, 0x1, 0x10)]
+    lines = _bg() + [_pub(T - 0.1, 0x10, frm=0x1), _recv(T, 0x1, 0x10)]
     assert inbox_unseen.scan(lines)["unseen"] == 0
 
 
@@ -131,7 +131,7 @@ def test_a_nested_payload_id_never_pairs_a_packet():
 
 def test_a_publish_line_the_log_truncated_still_pairs_by_its_top_level_id():
     # measured 11-17: meshtasticd cuts long log lines (traceroute at char 444)
-    full = _pub(T + 0.1, 0x10)
+    full = _pub(T + 0.1, 0x10, frm=0x1)
     cut = full[:full.index('"payload"') + 20]
     out = inbox_unseen.scan(_bg() + [cut, _recv(T, 0x1, 0x10)])
     assert out["unseen"] == 0 and "unverified" not in out
@@ -155,7 +155,7 @@ def test_an_unparseable_publish_is_counted_not_trusted(body):
 
 def test_a_text_quoting_a_receive_line_is_one_text():
     quoted = "Received text msg from=0xdead, id=0xbeef"
-    lines = _bg() + [_recv(T, 0x1, 0x10, msg=quoted), _pub(T + 0.1, 0x10, text=quoted)]
+    lines = _bg() + [_recv(T, 0x1, 0x10, msg=quoted), _pub(T + 0.1, 0x10, frm=0x1, text=quoted)]
     out = inbox_unseen.scan(lines)
     assert out["heard"] == 1 and out["unseen"] == 0
 
@@ -187,7 +187,7 @@ def test_a_continuation_of_a_published_text_is_never_a_log_line_even_with_a_good
     forged_body = f"INFO  | 17:32:02 {int(T - OFF)} [Router] Received text msg from=0xdead, id=0x99, msg=x"
     text = "hello\n" + forged_body
     lines = _bg() + [_recv(T, 0x1, 0x10, msg="hello"), _continuation(forged_body, T),
-                     _pub(T + 0.1, 0x10, text=text)]
+                     _pub(T + 0.1, 0x10, frm=0x1, text=text)]
     out = inbox_unseen.scan(lines)
     assert out["heard"] == 1 and out["unseen"] == 0
 
@@ -197,10 +197,45 @@ def test_a_text_copying_a_genuine_log_line_discards_only_its_own_copy():
     real_msg = real.split("]: ", 1)[1]
     text = "x\n" + real_msg
     lines = _bg() + [real, _recv(T + 1, 0x1, 0x20, msg="x"), _continuation(real_msg, T + 1),
-                     _pub(T + 1.1, 0x20, text=text)]
+                     _pub(T + 1.1, 0x20, frm=0x1, text=text)]
     out = inbox_unseen.scan(lines)
     assert out["heard"] == 2 and out["unseen"] == 1
     assert out["last"]["from"] == "!a2e95ba4"
+
+
+def test_r2_a_publish_from_another_sender_with_the_same_id_never_pairs():
+    # r2 MED: pairing on the id alone let any publish reusing it hide an
+    # unseen text (ids collide by accident too). Pair on (from, id).
+    lines = _bg() + [_recv(T, 0xB, 0x77), _pub(T + 5, 0x77, frm=0xE)]
+    out = inbox_unseen.scan(lines)
+    assert out["heard"] == 1 and out["unseen"] == 1
+
+
+def test_r2_a_truncated_publish_pairs_on_from_and_id_from_its_head():
+    full = _pub(T + 0.1, 0x10, frm=0x1)
+    cut = full[:full.index('"payload"') + 20]
+    other = _pub(T + 0.2, 0x10, frm=0x2)
+    other_cut = other[:other.index('"payload"') + 20]
+    assert inbox_unseen.scan(_bg() + [cut, _recv(T, 0x1, 0x10)])["unseen"] == 0
+    assert inbox_unseen.scan(_bg() + [other_cut, _recv(T, 0x1, 0x10)])["unseen"] == 1
+
+
+@pytest.mark.parametrize("dev,ok", [(119.0, True), (121.0, False), (-1.4, True), (-1.6, False)],
+                         ids=["late-in", "late-out", "early-in", "early-out"])
+def test_r2_the_acceptance_window_bounds(dev, ok):
+    # r2 LOW-4: both bounds were unpinned. Lines at uptime n logged at
+    # OFF + n + dev against a median of OFF.
+    n = int(T - OFF)
+    line = _recv(OFF + n + dev, 0x1, 0x10, n=n)
+    out = inbox_unseen.scan(_bg(20) + [line])
+    assert (out["heard"] == 1) is ok
+    assert ("unverified" in out) is (not ok)
+
+
+def test_r2_publishes_whose_ids_are_all_unreadable_are_unobservable():
+    bad = _line(T, 'JSON publish message to t, 9 bytes: {not json')
+    out = inbox_unseen.scan([bad, _recv(T + 1, 0x1, 0x10)])
+    assert out["state"] == "unobservable"
 
 
 def test_journald_lateness_inside_the_measured_window_is_accepted():
@@ -356,9 +391,29 @@ def test_describe_unobservable_never_shows_counts():
 
 
 def test_describe_unverified_lines_qualify_the_counts():
-    line, _ = inbox_unseen.describe({"state": "ok", "heard": 3, "unseen": 0, "last": None,
-                                     "lookback_h": 24, "unverified": 2})
+    line, tone = inbox_unseen.describe({"state": "ok", "heard": 3, "unseen": 0, "last": None,
+                                        "lookback_h": 24, "unverified": 2})
     assert "2 journal line(s) could not be verified" in line and "may be off" in line
+    assert tone == "warn", "r2 LOW-2: a qualified count is never shown as healthy"
+
+
+def test_r2_a_clock_step_never_reads_as_no_texts_heard():
+    # r2 LOW-2: a step put the post-step lines outside the window; the read
+    # said "no texts heard" in the ok tone while hiding one
+    line, tone = inbox_unseen.describe({"state": "ok", "heard": 0, "unseen": 0, "last": None,
+                                        "lookback_h": 24, "unverified": 21})
+    assert tone == "warn" and "no texts heard" not in line
+    assert "21 journal line(s) could not be verified" in line
+
+
+def test_r2_read_unseen_guards_its_own_errors(run, monkeypatch):
+    set_result, _ = run
+
+    def boom():
+        raise RuntimeError("inner")
+    monkeypatch.setattr(inbox_unseen, "_read_now", boom)
+    out = inbox_unseen.read_unseen(now=1.0)
+    assert out["state"] == "unobservable" and "RuntimeError" in out["error"]
 
 
 def test_describe_a_last_with_no_time_says_no_time():
