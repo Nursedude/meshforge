@@ -224,6 +224,20 @@ def test_store_holding_this_code_passes(tmp_path):
     assert ok, why
 
 
+@pytest.mark.parametrize("raw", ['[]', '[1]', '"x"', '5', 'true',
+                                 '{"sessions": [], "pairing": [1]}',
+                                 '{"sessions": [], "pairing": "s"}',
+                                 '{"sessions": [], "pairing": 5}'])
+def test_a_malformed_store_says_it_could_not_be_read_back(tmp_path, raw):
+    """UX review mutants M8/M9: the one reader (_read_pairing) refuses a
+    non-dict store or pairing row LOUDLY; it never absorbs it as 'no code'."""
+    p = _store(tmp_path)
+    p.write_text(raw)
+    os.chmod(p, 0o600)
+    ok, why = web_pair.check_store(ME, p, CODE)
+    assert not ok and "could not be read back" in why, why
+
+
 def test_store_holding_a_different_code_fails(tmp_path):
     """F4: a correctly owned but STALE store is not success."""
     ok, why = web_pair.check_store(ME, _store(tmp_path, code="ZZZZ-ZZZZ"), CODE)

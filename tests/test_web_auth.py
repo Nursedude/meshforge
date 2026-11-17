@@ -659,6 +659,19 @@ def test_no_valid_until_for_an_expired_code(server, store, fresh_budget, monkeyp
     assert "valid until" in mae._pause_body(30, time.time() + 120)["detail"]
 
 
+def test_expiry_judge_refuses_a_finite_stamp_beyond_one_ttl():
+    """UX review mutant M3: the upper bound (no real mint writes past now + TTL)
+    was the stated guarantee and nothing fed a finite stamp beyond it."""
+    from utils import web_pair
+    from utils import _map_auth_endpoints as mae
+    now = 1_800_000_000.0
+    assert web_pair.expiry_hhmm(now + web_auth.PAIRING_TTL_S, now) is not None
+    assert web_pair.expiry_hhmm(now + web_auth.PAIRING_TTL_S + 1, now) is None
+    assert web_pair.expiry_hhmm(now + 1, now) is not None       # M14: `now` is honoured
+    assert web_pair.expiry_hhmm(now, now) is None
+    assert "valid until" not in mae._pause_body(30, time.time() + 86400)["detail"]
+
+
 def test_one_paused_client_does_not_pause_another(server, store, fresh_budget, monkeypatch):
     """Review r1 mutant M2 survived: no test used two client addresses."""
     srv, _ = server
