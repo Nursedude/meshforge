@@ -322,11 +322,13 @@ def read_inbox(limit: int = 500) -> Dict[str, Any]:
     threads = build_threads(rows, era=era)
     heard_error = _attach_heard(threads)
     shown = sum(t["count"] for t in threads)
+    rx = _rx_coverage()
+    unseen = _unseen(rx)
     # message_count = rows read from the store; folded = second copies of one
     # packet (radio echo / encrypted leg) not shown as their own messages
     return {"state": "ok", "threads": threads, "message_count": len(rows),
             "shown_count": shown, "folded_count": len(rows) - shown,
-            "rx": _rx_coverage(), "unseen": _unseen(),
+            "rx": rx, **({"unseen": unseen} if unseen is not None else {}),
             **({"era_error": era_error} if era_error else {}),
             **({"heard_error": heard_error} if heard_error else {})}
 
@@ -417,16 +419,25 @@ def _declaration_contradictions(sends: List[Dict[str, Any]], decl) -> List[str]:
     return sorted(out)
 
 
-def _unseen() -> Dict[str, Any]:
+def _unseen(rx: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """The downlink gap (11-17): texts the radio heard that never reached the
-    MQTT uplink this page reads (``inbox_unseen``). Guarded: a witness never
-    takes the read down — it says it could not look."""
-    from utils import inbox_unseen
+    MQTT uplink this page reads (``inbox_unseen``), with the page's ``line``
+    and ``tone`` built here (tested here; r1: the page's tri-state was
+    unpinned). None where this box does not read MQTT — there an unpublished
+    text still reaches the page, so the count would mean nothing. Guarded: a
+    witness never takes the read down — it says it could not look."""
+    if not str((rx or {}).get("subscription") or "").startswith("mqtt "):
+        return None
     try:
-        return inbox_unseen.read_unseen()
+        from utils import inbox_unseen
+        u = inbox_unseen.read_unseen()
+        u["line"], u["tone"] = inbox_unseen.describe(u)
+        return u
     except Exception as e:
         logger.warning("inbox: unseen witness raised: %s", e)
-        return {"state": "unobservable", "error": f"{type(e).__name__}: {e}"}
+        return {"state": "unobservable", "error": f"{type(e).__name__}: {e}", "tone": "warn",
+                "line": f"Radio journal: unobservable ({type(e).__name__}) — this page cannot "
+                        "count texts the radio heard that are not on this page."}
 
 
 def _rx_coverage() -> Dict[str, Any]:

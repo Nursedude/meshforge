@@ -54,6 +54,8 @@ button.send:disabled{opacity:.5;cursor:default}
 .blind{color:var(--warn);font-size:.8rem;padding:4px 16px;background:var(--panel)}
 #coverage{margin:0;padding:6px 16px;font-size:.78rem;color:var(--muted);border-bottom:1px solid var(--rule);background:var(--panel)}
 #coverage b{color:var(--fg);font-weight:600}
+#unseen{margin:0;padding:6px 16px;font-size:.78rem;color:var(--muted);border-bottom:1px solid var(--rule);background:var(--panel)}
+#unseen.warn{color:var(--warn)}
 header button{border:1px solid var(--accent);background:none;color:var(--accent);border-radius:6px;padding:3px 10px;font:600 .85rem system-ui;cursor:pointer}
 #newform{display:flex;flex-direction:column;gap:8px;padding:14px 16px;border-bottom:1px solid var(--rule);background:var(--panel)}
 #newform label{font-size:.8rem;color:var(--muted)}
@@ -282,36 +284,15 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
   // ── texts the RADIO heard that this page cannot show (downlink gap, 11-17) ──
   // The firmware silently refuses to put two kinds on MQTT: a packet that came
   // in over MQTT (a bridge's downlink) and one on a channel with no uplink.
-  // Silence is not golden: count them from the radio's own journal, and say
-  // when that journal cannot be read. Only meaningful when this page reads MQTT.
+  // Silence is not golden: the server counts them from the radio's own journal
+  // and builds the line (utils/inbox_unseen.describe — tested there). The
+  // server sends no `unseen` where this page does not read MQTT.
   function renderUnseen(u) {
     var p = $("unseen");
-    p.replaceChildren(); p.className = "";
-    var mqttRx = lastRx && /^mqtt/.test(lastRx.subscription || "");
-    if (!u || !mqttRx) { p.hidden = true; return; }
+    if (!u || !u.line) { p.hidden = true; p.textContent = ""; return; }
+    p.textContent = u.line;
+    p.className = u.tone === "warn" ? "warn" : "";
     p.hidden = false;
-    var h = (u.lookback_h || 24) + " h";
-    if (u.state !== "ok") {
-      p.className = "blind";
-      p.textContent = "Radio journal: unobservable (" + (u.error || "no reason given") +
-        ") — this page cannot count texts the radio heard that are not on this page.";
-      return;
-    }
-    if (!u.unseen) {
-      p.textContent = u.heard ? "All " + u.heard + " texts this radio heard in the last " + h + " are on this page."
-                              : "The radio's journal shows no texts heard in the last " + h + ".";
-      return;
-    }
-    p.className = "blind";
-    var last = "";
-    if (u.last) {
-      last = " Last: " + u.last.from + (u.last.ts ? " at " +
-        new Date(u.last.ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "") + ".";
-    }
-    p.textContent = u.unseen + " of " + u.heard + " texts this radio heard in the last " + h +
-      " are not on this page — they came in over MQTT (a bridge's downlink, which the firmware never" +
-      " re-publishes) or on a channel with no uplink." + last +
-      (u.unparsed ? " (" + u.unparsed + " publish line(s) in the journal were unreadable, so this count may be high.)" : "");
   }
 
   function loadChannels() {

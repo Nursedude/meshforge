@@ -11,20 +11,40 @@ as moc's RNS→Mesh downlink, were absent from /inbox with no witness.
 
 This module is that witness. It reads the meshtasticd journal — the radio's
 own record — and counts received texts whose packet id was never published.
-The read is tri-state (honest_failure_modes #1/#2): ``ok`` with counts, or
-``unobservable`` with why. It never says "0 heard" for a journal it could
-not read. It shows counts, not the texts: showing them would make the journal
-a second message source (a design decision, not this slice).
+
+The journal is a MIXED channel (review r1 MED-1): meshtasticd logs a text's
+first line on its "Received text msg" line, and journald stores every further
+line of the text as its own raw entry — so a sender can type a line that
+looks like a log line. A line counts only if it carries the full meshtasticd
+prefix AND an uptime counter consistent with its own process (journal epoch
+minus uptime is constant per process: measured 11-17 over 7 d, -0.51 s ..
++39 s for every receive/publish line; journald is only ever LATE). A line
+that is a continuation of a PUBLISHED text is never a log line. A
+prefix-carrying line that fails the uptime check is counted ``unverified``
+and the page says the counts may be off (an NTP step shows here, not
+silently). Residual, stated: a sender whose text is NOT published here (a
+bridged one) and who knows this process's start time to the minute could
+still forge one line.
+
+Tri-state (honest_failure_modes #1/#2): ``ok`` with counts, or
+``unobservable`` with why. Every working radio journal carries publish lines
+(positions, telemetry), so NO verified publish line in the window is
+unobservable — never "0 heard" (r1 MED-2/3: no permission, a vacuumed
+journal, logging above INFO, JSON publishing off all look like nothing).
+It shows counts, not the texts: showing them would make the journal a second
+message source (a design decision, not this slice).
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
 import subprocess
 import threading
 import time
-from typing import Any, Dict, Iterable, Optional
+from collections import Counter, defaultdict
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +52,22 @@ UNIT = "meshtasticd"
 LOOKBACK_H = 24
 CACHE_S = 60          # the page polls every 10 s; one journal scan per minute
 _TIMEOUT_S = 10
+# accepted (epoch - uptime) deviation from the process median, seconds.
+# Measured 11-17 (7 d, 14 632 receive/publish lines): -0.51 .. +39.
+_EARLY_S = 1.5
+_LATE_S = 120.0
 
-_RECV = re.compile(r"Received text msg from=0x([0-9a-fA-F]+), id=0x([0-9a-fA-F]+)")
-_PUB = re.compile(r"JSON publish message to \S+, \d+ bytes: (\{.*)$")   # a truncated line still counts
+# `-o short-unix`: "<epoch> <host> <ident>[<pid>]: <message>"
+_ENTRY = re.compile(r"^(\d+(?:\.\d+)?) \S+ [^\s\[]+\[(\d+)\]: (.*)$")
+# a meshtasticd log line: "INFO  | 17:32:02 104520 [Router] ...". Only the
+# Router thread's receives are texts HEARD over RF; a phone client's own send
+# logs "Received text msg from=0x0" with no thread tag (17 in 24 h, 11-17) and
+# is deliberately not counted (a no-uplink channel is the coverage line's job).
+_PREFIX = re.compile(r"^(?:INFO|WARN|ERROR|DEBUG|TRACE|CRIT)\s*\| \d\d:\d\d:\d\d (\d+) \[Router\] (.*)$")
+_RECV = re.compile(r"^Received text msg from=0x([0-9a-fA-F]+), id=0x([0-9a-fA-F]+), msg=")
+_PUB = re.compile(r"^JSON publish message to \S+, \d+ bytes: (\{.*)$")   # a truncated line still counts
 _GREP = "Received text msg from=|JSON publish message to"
-# journalctl's answer when the account may not read system logs: rc 0, no
-# lines, this hint on stderr. Read as "nothing heard" it would be a lie.
-_NO_SYSTEM_LOGS = "not seeing messages from other users and the system"
+_ID_IN_PREFIX = re.compile(r'"id":(\d+)[,}]')
 
 _lock = threading.Lock()
 _cache: Dict[str, Any] = {"at": None, "value": None}
@@ -52,17 +81,6 @@ def _reset_cache() -> None:
     with _lock:
         _cache["at"] = None
         _cache["value"] = None
-
-
-def _epoch(line: str) -> Optional[float]:
-    head = line.split(" ", 1)[0]
-    try:
-        return float(head)
-    except ValueError:
-        return None
-
-
-_ID_IN_PREFIX = re.compile(r'"id":(\d+)[,}]')
 
 
 def _top_level_id(body: str) -> Optional[int]:
@@ -81,34 +99,84 @@ def _top_level_id(body: str) -> Optional[int]:
     return pid if isinstance(pid, int) and not isinstance(pid, bool) else None
 
 
+def _continuations(body: str) -> List[str]:
+    """Lines 2+ of a published text: what journald stored as raw entries."""
+    try:
+        text = json.loads(body).get("payload", {}).get("text")
+    except (ValueError, AttributeError):
+        return []
+    return text.split("\n")[1:] if isinstance(text, str) else []
+
+
+def _median(xs: List[float]) -> float:
+    s = sorted(xs)
+    return s[len(s) // 2]
+
+
 def scan(lines: Iterable[str]) -> Dict[str, Any]:
     """Pure: count heard texts (by packet id) and those never published."""
+    entries: List[Tuple[Optional[float], str, str]] = []   # (epoch, pid, message)
+    for line in lines:
+        e = _ENTRY.match(line)
+        if e:
+            entries.append((float(e.group(1)), e.group(2), e.group(3)))
+        else:
+            entries.append((None, "", line))
+    # pass 1: candidate log lines, each process's uptime offset, and the
+    # continuation lines every published text names
+    cands = []
+    offsets: Dict[str, List[float]] = defaultdict(list)
+    named: Counter = Counter()   # a MULTISET: a copy never discards the genuine line too
+    for ts, proc, msg in entries:
+        p = _PREFIX.match(msg)
+        if not p:
+            continue                      # a raw continuation entry: never a log line
+        rest = p.group(2)
+        if ts is not None:
+            offsets[proc].append(ts - int(p.group(1)))
+        cands.append((ts, proc, int(p.group(1)), msg, rest))
+        pub = _PUB.match(rest)
+        if pub:
+            named.update(_continuations(pub.group(1)))
+    medians = {proc: _median(v) for proc, v in offsets.items()}
     heard: Dict[int, Dict[str, Any]] = {}
     published = set()
-    unparsed = 0
-    for line in lines:
-        m = _RECV.search(line)
+    unverified = 0
+    verified_publishes = 0
+    for ts, proc, n, msg, rest in cands:
+        if named[msg] > 0:
+            named[msg] -= 1
+            continue                      # a published text's own line 2+, not a log line
+        if ts is None or not (-_EARLY_S <= (ts - n) - medians[proc] <= _LATE_S):
+            unverified += 1
+            continue
+        m = _RECV.match(rest)
         if m:
             pid = int(m.group(2), 16)
-            if pid not in heard:
-                heard[pid] = {"from": "!%08x" % int(m.group(1), 16), "ts": _epoch(line)}
+            if pid not in heard:          # first sighting wins
+                heard[pid] = {"from": "!%08x" % int(m.group(1), 16), "ts": ts}
             continue
-        p = _PUB.search(line)
-        if p:
-            pid = _top_level_id(p.group(1))
+        pub = _PUB.match(rest)
+        if pub:
+            pid = _top_level_id(pub.group(1))
             if pid is None:
-                unparsed += 1            # never trusted as a pairing; counted (the page says so)
+                unverified += 1           # never trusted as a pairing; counted (the page says so)
             else:
                 published.add(pid)
+                verified_publishes += 1
+    if not verified_publishes:
+        return {"state": "unobservable",
+                "error": f"no MQTT publish line in the radio journal for {LOOKBACK_H} h "
+                         "(unreadable here, logging above INFO, or JSON publishing off)"}
     unseen = [v for k, v in heard.items() if k not in published]
     last = None
     if unseen:
-        last = max(unseen, key=lambda v: (v["ts"] is not None, v["ts"] or 0.0))
-        last = {"from": last["from"], "ts": last["ts"]}
+        newest = max(unseen, key=lambda v: (v["ts"] is not None, v["ts"] or 0.0))
+        last = {"from": newest["from"], "ts": newest["ts"]}
     out: Dict[str, Any] = {"state": "ok", "heard": len(heard), "unseen": len(unseen),
                            "last": last}
-    if unparsed:
-        out["unparsed"] = unparsed
+    if unverified:
+        out["unverified"] = unverified
     return out
 
 
@@ -125,26 +193,58 @@ def _read_now() -> Dict[str, Any]:
     if _journal_rc_unobservable(proc):
         return {"state": "unobservable",
                 "error": f"radio journal query did not run (rc {proc.returncode})"}
-    stdout = proc.stdout or ""
-    if not stdout.strip() and _NO_SYSTEM_LOGS in (getattr(proc, "stderr", "") or ""):
-        return {"state": "unobservable",
-                "error": "this account cannot read system logs (the radio's journal)"}
-    return scan(ln for ln in stdout.splitlines() if ln)
+    return scan(ln for ln in (proc.stdout or "").splitlines() if ln)
 
 
 def read_unseen(now: Optional[float] = None) -> Dict[str, Any]:
-    """Tri-state, cached for ``CACHE_S``; never raises."""
+    """Tri-state, cached for ``CACHE_S``; never raises; returns a copy."""
     t = time.monotonic() if now is None else now
     with _lock:
         at = _cache["at"]
-        if at is not None and 0 <= t - at < CACHE_S:
-            return _cache["value"]
-        try:
-            value = _read_now()
-        except Exception as e:   # a witness never takes the inbox down; it says why
-            logger.warning("inbox: unseen scan failed: %s", e)
-            value = {"state": "unobservable", "error": f"radio journal scan failed: "
-                                                       f"{type(e).__name__}: {e}"}
-        value["lookback_h"] = LOOKBACK_H
-        _cache["at"], _cache["value"] = t, value
-        return value
+        if at is None or not (0 <= t - at < CACHE_S):   # a clock that went back rescans
+            try:
+                value = _read_now()
+            except Exception as e:   # a witness never takes the inbox down; it says why
+                logger.warning("inbox: unseen scan failed: %s", e)
+                value = {"state": "unobservable", "error": f"radio journal scan failed: "
+                                                           f"{type(e).__name__}: {e}"}
+            value["lookback_h"] = LOOKBACK_H
+            _cache["at"], _cache["value"] = t, value
+        return copy.deepcopy(_cache["value"])
+
+
+def _hhmm(ts: Optional[float]) -> Optional[str]:
+    if ts is None:
+        return None
+    try:
+        return time.strftime("%H:%M", time.localtime(ts))
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def describe(u: Dict[str, Any]) -> Tuple[str, str]:
+    """The page's line and tone ("ok" / "warn") for one ``read_unseen`` result."""
+    h = f"{u.get('lookback_h', LOOKBACK_H)} h"
+    if u.get("state") != "ok":
+        return (f"Radio journal: unobservable ({u.get('error') or 'no reason given'}) — this "
+                "page cannot count texts the radio heard that are not on this page.", "warn")
+    heard, unseen = u.get("heard", 0), u.get("unseen", 0)
+    if unseen:
+        line = (f"{unseen} of {heard} texts this radio heard in the last {h} are not on this "
+                "page — they came in over MQTT (a bridge's downlink, which the firmware never "
+                "re-publishes) or on a channel with no uplink.")
+        last = u.get("last")
+        if last:
+            at = _hhmm(last.get("ts"))
+            line += f" Last: {last.get('from')}" + (f" at {at}." if at else ".")
+        tone = "warn"
+    elif heard:
+        line = (f"All {heard} texts this radio heard in the last {h} were published to MQTT, "
+                "which this page reads.")
+        tone = "ok"
+    else:
+        line, tone = f"The radio's journal shows no texts heard in the last {h}.", "ok"
+    if u.get("unverified"):
+        line += (f" ({u['unverified']} journal line(s) could not be verified, so these counts "
+                 "may be off.)")
+    return line, tone
