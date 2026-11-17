@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import html
 import json
+import threading
 import time
 from typing import Optional
 
@@ -62,6 +63,14 @@ document.getElementById('f').addEventListener('submit', async (e) => {
 """
 
 
+def _budget_key(client: str, expires: Optional[float]) -> str:
+    """ONE spelling of the budget key for the take, the refund and the
+    racing-mint charge. Comparing keys as strings, not floats, keeps a
+    hand-edited NaN equal to itself (review r2 LOW-B: nan != nan
+    double-charged)."""
+    return f"{client}|{expires!r}"
+
+
 def _clock(ts: float) -> Optional[str]:
     """Box-local HH:MM, or None for a stamp the platform cannot render
     (review r1 LOW-4: a hand-edited 1e30/inf expiry dropped the connection)."""
@@ -97,6 +106,8 @@ class AuthEndpointsMixin:
     auth_refusals = web_auth.RefusalLog()
     #: F4: per-client budget of wrong pairing codes, ahead of the shared burn.
     login_tries = web_auth.TryBudget()
+    #: review r2: serialises the login judging step (see _handle_login)
+    login_lock = threading.Lock()
 
     SESSIONLESS_WRITES = frozenset({"/login", "/logout"})
     OPERATOR_GETS = frozenset({"/fleet/logs", "/api/v1/fromradio", "/json/blink"})
@@ -233,6 +244,35 @@ class AuthEndpointsMixin:
         except (TypeError, ValueError):
             return None
 
+    def _judge_login(self, client: str, code: str):
+        """The judging step, called under ``login_lock``. Returns (outcome,
+        payload): ("store", reason) | ("pause", 429 body) | ("wrong", None) |
+        ("ok", token). Sends nothing."""
+        try:
+            expires = self._pairing_expires()
+        except web_auth.StoreUnavailable as e:
+            # one read, one error, no try charged (review r1 LOW-2/LOW-3)
+            return "store", str(e)
+        # LOGIN-UX 11-16: the budget is per (client, CODE). The pause (600 s)
+        # outlives a code (300 s), so a per-client key made a code minted on
+        # the box during a pause dead on arrival. A console mint is the
+        # operator's intent, so it gets fresh tries; guessing stays bounded
+        # per code (3 per client here, 5 shared in the store's burn).
+        key = _budget_key(client, expires)
+        wait = self.login_tries.take(key)
+        if wait > 0:
+            return "pause", _pause_body(wait, expires)
+        try:
+            token = self._auth().redeem(code)
+        except web_auth.StoreUnavailable as e:
+            self.login_tries.refund(key)
+            return "store", str(e)
+        if not token:
+            self._charge_a_racing_mint(client, expires)
+            return "wrong", None
+        self.login_tries.refund(key)   # a right code is not a wrong try
+        return "ok", token
+
     def _charge_a_racing_mint(self, client: str, keyed: Optional[float]) -> None:
         """Review r1 MED-1: the key is read unlocked and redeem() judges under
         the store lock, so a mint between them spends the NEW code's store
@@ -243,8 +283,9 @@ class AuthEndpointsMixin:
             now_pending = self._pairing_expires()
         except web_auth.StoreUnavailable:
             return   # redeem just read it; nothing pending to protect is judgeable
-        if now_pending is not None and now_pending != keyed:
-            self.login_tries.wrong(f"{client}|{now_pending}")
+        new_key = _budget_key(client, now_pending)
+        if now_pending is not None and new_key != _budget_key(client, keyed):
+            self.login_tries.wrong(new_key)
 
     def _read_json_body(self, limit: int = 1024) -> Optional[dict]:
         ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
@@ -277,35 +318,26 @@ class AuthEndpointsMixin:
         if data is None:
             return
         client = self._client_addr()
-        try:
-            expires = self._pairing_expires()
-        except web_auth.StoreUnavailable as e:
-            # one read, one error, no try charged (review r1 LOW-2/LOW-3)
-            self._refuse_operator("POST", "/login", str(e))
+        # Review r2 (11-16), the SEAM after two rounds of the same race: the
+        # whole judging step runs under ONE lock, so no two logins in this
+        # process interleave between the key read and the charge. A mint from
+        # another process (the CLI/TUI) can still land inside the step, and
+        # the re-read charges it. The reply is sent AFTER the lock, so a slow
+        # client cannot stall other logins.
+        with self.login_lock:
+            outcome, payload = self._judge_login(client, str(data.get("code", "")))
+        if outcome == "store":
+            self._refuse_operator("POST", "/login", payload)
             return
-        # LOGIN-UX 11-16: the budget is per (client, CODE). The pause (600 s)
-        # outlives a code (300 s), so a per-client key made a code minted on
-        # the box during a pause dead on arrival. A console mint is the
-        # operator's intent, so it gets fresh tries; guessing stays bounded
-        # per code (3 per client here, 5 shared in the store's burn).
-        key = f"{client}|{expires}"
-        wait = self.login_tries.take(key)
-        if wait > 0:
+        if outcome == "pause":
             self.auth_refusals.note(client, "POST", "/login", "wrong-code budget spent")
-            self._serve_json(_pause_body(wait, expires), status=429)
+            self._serve_json(payload, status=429)
             return
-        try:
-            token = self._auth().redeem(str(data.get("code", "")))
-        except web_auth.StoreUnavailable as e:
-            self.login_tries.refund(key)
-            self._refuse_operator("POST", "/login", str(e))
-            return
-        if not token:
-            self._charge_a_racing_mint(client, expires)
+        if outcome == "wrong":
             self._refuse_operator("POST", "/login",
                                   "that code is wrong, used, expired or burned — run pair again")
             return
-        self.login_tries.refund(key)   # a right code is not a wrong try
+        token = payload
         body = json.dumps({"operator": True}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")

@@ -592,6 +592,73 @@ def test_a_mint_racing_a_wrong_try_cannot_buy_one_client_extra_tries(
     assert _stored_pairing(store)["tries"] == web_auth.LOGIN_TRIES_PER_CLIENT
 
 
+def test_concurrent_racers_and_a_mint_cannot_let_one_client_burn_the_new_code(
+        server, store, fresh_budget, monkeypatch):
+    """Review r2 MED (11-16): the r1 cure charged the new code only AFTER
+    redeem(), so 3 racers keyed on the old code plus 3 takers on the new key
+    all reached redeem(): 6 tries on one code from one client, burned at 5
+    (reviewer: hammer 186-211/300 burned). The seam is ONE lock around the
+    login step (key read -> take -> redeem -> re-read -> charge)."""
+    srv, _ = server
+    store.start_pairing()
+    real = store.redeem
+    go = threading.Event()
+    entered = []
+    lock = threading.Lock()
+
+    def held_redeem(code):
+        with lock:
+            entered.append(1)
+            n = len(entered)
+        if n <= 3:
+            go.wait(5)
+        return real(code)
+
+    monkeypatch.setattr(store, "redeem", held_redeem)
+    statuses = []
+
+    def one():
+        statuses.append(_try(srv, "AAAAAAAA")[0])
+
+    racers = [threading.Thread(target=one) for _ in range(3)]
+    for t in racers:
+        t.start()
+    deadline = time.monotonic() + 1.0          # unlocked code: all 3 enter; locked: 1
+    while len(entered) < 3 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    store.start_pairing()                      # the operator's mint, mid-race
+    takers = [threading.Thread(target=one) for _ in range(4)]
+    for t in takers:
+        t.start()
+    time.sleep(0.3)
+    go.set()
+    for t in racers + takers:
+        t.join(10)
+    p = _stored_pairing(store)
+    assert p is not None, "one client burned the fresh code"
+    assert p["tries"] <= web_auth.LOGIN_TRIES_PER_CLIENT, (p, statuses)
+
+
+def test_an_expired_code_charges_no_extra_key(server, store, fresh_budget, monkeypatch):
+    """Review r2 mutant M8: nothing pinned the `is not None` guard on the re-read."""
+    srv, _ = server
+    store.start_pairing()
+    d = json.loads(store.path.read_text())
+    d["pairing"]["expires"] = time.time() - 1   # expired, still in the file
+    store.path.write_text(json.dumps(d))
+    assert _try(srv, "AAAAAAAA")[0] == 401
+    keys = list(MapRequestHandler.login_tries._tries)
+    assert len(keys) == 1 and not keys[0].endswith("|None"), keys
+
+
+def test_no_valid_until_for_an_expired_code(server, store, fresh_budget, monkeypatch):
+    """Review r2 mutant M13."""
+    from utils import _map_auth_endpoints as mae
+    body = mae._pause_body(30, time.time() - 5)
+    assert "valid until" not in body["detail"]
+    assert "valid until" in mae._pause_body(30, time.time() + 120)["detail"]
+
+
 def test_one_paused_client_does_not_pause_another(server, store, fresh_budget, monkeypatch):
     """Review r1 mutant M2 survived: no test used two client addresses."""
     srv, _ = server
