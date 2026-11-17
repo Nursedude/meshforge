@@ -326,7 +326,8 @@ def read_inbox(limit: int = 500) -> Dict[str, Any]:
     # packet (radio echo / encrypted leg) not shown as their own messages
     return {"state": "ok", "threads": threads, "message_count": len(rows),
             "shown_count": shown, "folded_count": len(rows) - shown,
-            "rx": _rx_coverage(), **({"era_error": era_error} if era_error else {}),
+            "rx": _rx_coverage(), "unseen": _unseen(),
+            **({"era_error": era_error} if era_error else {}),
             **({"heard_error": heard_error} if heard_error else {})}
 
 
@@ -392,7 +393,8 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
     contradicted = _declaration_contradictions(sends, decl)
     if contradicted:
         errors.append("declared on another preset/slot but decoded a send in its window "
-                      f"(the declaration is wrong): {', '.join(contradicted)}")
+                      "(the declaration is wrong, or the box changed segment since that send): "
+                      f"{', '.join(contradicted)}")
     return "; ".join(errors) or None
 
 
@@ -413,6 +415,18 @@ def _declaration_contradictions(sends: List[Dict[str, Any]], decl) -> List[str]:
             if b.get("state") == "heard" and not b.get("skewed") and seg and seg != send_seg:
                 out.add(b["alias"])
     return sorted(out)
+
+
+def _unseen() -> Dict[str, Any]:
+    """The downlink gap (11-17): texts the radio heard that never reached the
+    MQTT uplink this page reads (``inbox_unseen``). Guarded: a witness never
+    takes the read down — it says it could not look."""
+    from utils import inbox_unseen
+    try:
+        return inbox_unseen.read_unseen()
+    except Exception as e:
+        logger.warning("inbox: unseen witness raised: %s", e)
+        return {"state": "unobservable", "error": f"{type(e).__name__}: {e}"}
 
 
 def _rx_coverage() -> Dict[str, Any]:

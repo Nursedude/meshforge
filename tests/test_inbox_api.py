@@ -117,6 +117,8 @@ def test_empty_store_is_ok_with_zero_threads():
                       return_value=CommandResult.ok("0", data={"messages": []})):
         out = inbox_api.read_inbox()
     out.pop("rx")  # receive coverage, pinned by its own tests below
+    # the downlink-gap witness: pinned off by conftest -> unobservable, never "0 heard"
+    assert out.pop("unseen")["state"] == "unobservable"
     assert out == {"state": "ok", "threads": [], "message_count": 0,
                    "shown_count": 0, "folded_count": 0}
 

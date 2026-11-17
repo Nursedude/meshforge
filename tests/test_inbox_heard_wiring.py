@@ -253,6 +253,21 @@ def test_r3_a_hearing_that_contradicts_the_declaration_is_said_once_per_read():
     assert err.count("moc3") == 1, "one line per box per read, not per send"
 
 
+def test_l1_a_contradiction_names_a_real_segment_change_as_the_other_cause():
+    """r4 L-1, overruled by the operator 11-17: right after a REAL preset
+    change, a now-correct declaration met a hearing made on the old preset
+    and the page called the declaration wrong (for up to the 24 h ring). The
+    line must name both causes; it cannot tell them apart."""
+    from utils import rf_segments
+    sent = inbox_api._epoch("2026-11-15 06:19:18")
+    decl = _decl({"center-box": LF, "moc3": ST})
+    with patch.object(rf_segments, "load", return_value=decl):
+        out, _, _ = _read([_row(id=1)], {"moc3": _sec((0x0DAEE001, 287851589, sent + 1))})
+    err = out.get("heard_error") or ""
+    assert "(the declaration is wrong)" not in err, err
+    assert "the declaration is wrong, or the box changed segment since that send" in err, err
+
+
 def test_r3_a_skewed_hearing_is_not_called_a_contradiction():
     """A hearing outside the join window may be an unrelated packet id reuse."""
     from utils import rf_segments

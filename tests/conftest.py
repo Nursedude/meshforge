@@ -277,6 +277,28 @@ def _reset_lxmf_wedge_streaks():
 
 
 @pytest.fixture(autouse=True)
+def _pin_inbox_unseen_journal(monkeypatch):
+    """No test reads THIS box's meshtasticd journal through /api/inbox
+    (downlink gap, 2026-11-17). ``read_inbox`` now scans the radio's journal;
+    unpinned, every inbox test's verdict would depend on the machine (and the
+    module cache would leak one test's scan into the next). The default is an
+    absent journalctl -> ``unobservable``; tests/test_inbox_unseen.py replaces
+    ``_run`` itself to drive each state."""
+    try:
+        from utils import inbox_unseen
+    except ImportError:
+        yield
+        return
+
+    def _no_journal(argv, **kw):
+        raise FileNotFoundError("journalctl (pinned off in tests)")
+    monkeypatch.setattr(inbox_unseen, "_run", _no_journal)
+    inbox_unseen._reset_cache()
+    yield
+    inbox_unseen._reset_cache()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_meshtastic_cli_connection():
     """Every test starts from the DEFAULT meshtastic CLI connection and never
     touches the real saved one (2026-10-30). commands.meshtastic now persists
