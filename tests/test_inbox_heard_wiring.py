@@ -214,3 +214,16 @@ def test_m1_a_declared_alias_the_fleet_does_not_list_is_said():
     with patch.object(rf_segments, "load", return_value=decl):
         out, msgs, _ = _read([_row()], {"kiai": _sec(), "moc3": _sec()})
     assert "MOC3" in (out.get("heard_error") or ""), out.get("heard_error")
+
+
+def test_r2_the_sender_missing_from_its_own_fleet_list_is_not_an_error():
+    """r2 MED: parse() REQUIRES send_from in segments, and the stray check then
+    flagged it on any center whose target list omits itself (the list is
+    opt-in) - a false error the operator could not clear by editing."""
+    from utils import rf_segments
+    decl = rf_segments.Declared({"center-box": "meshtastic:LONG_FAST/ch20",
+                                 "moc3": "meshtastic:SHORT_TURBO/ch8"}, "center-box", None)
+    with patch.object(rf_segments, "load", return_value=decl):
+        out, msgs, _ = _read([_row()], {"kiai": _sec(), "moc3": _sec()})
+    assert out.get("heard_error") is None, out.get("heard_error")
+    assert msgs[1]["heard"]["summary"]["cannot_hear"] == ["moc3"]

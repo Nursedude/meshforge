@@ -117,6 +117,21 @@ def test_m2_a_segment_that_names_no_single_real_slot_is_refused(value):
     assert rf_segments.parse_segment(value) is None
 
 
+def test_r2_each_preset_is_ranged_by_its_own_bandwidth():
+    """r2 L-a: mutants 'N+1 accepted' and 'every preset gets LONG_FAST's slot
+    count' survived. Pin 1..N per preset from the ONE table (US)."""
+    from utils import meshtastic_modem as mm
+    for name, shown in mm.PRESET_DISPLAY_NAMES.items():
+        if shown == "Invalid":
+            continue
+        n = mm.num_channels(mm.firmware_params(name)[1], "US")
+        assert rf_segments.parse_segment(f"meshtastic:{name}/ch{n}") is not None, name
+        assert rf_segments.parse_segment(f"meshtastic:{name}/ch{n + 1}") is None, name
+    # the two widths that differ from LONG_FAST's 104, measured by the r2 reviewer
+    assert rf_segments.parse_segment("meshtastic:SHORT_TURBO/ch53") is None
+    assert rf_segments.parse_segment("meshtastic:LONG_SLOW/ch208") is not None
+
+
 def test_m2_a_slot_is_canonical_so_equal_slots_compare_equal():
     assert rf_segments.parse_segment("meshtastic:LONG_FAST/ch020") == LF
 

@@ -373,7 +373,9 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
         errors.append(decl.error)
     # r1 M1: a declared alias the fleet does not list (a typo) left its box
     # silently undeclared. SAY it; the valid declarations still apply.
-    stray = sorted(a for a in decl.segments if a not in sections)
+    # r2 MED: the sender is exempt. parse() requires send_from in segments,
+    # and the target list is opt-in, so a center need not list itself.
+    stray = sorted(a for a in decl.segments if a not in sections and a != decl.send_from)
     if stray:
         errors.append(f"declared segments name box(es) not in the fleet list: {', '.join(stray)}")
     for m in sends:   # each send guarded on its own: one bad box never breaks the read (r5)
