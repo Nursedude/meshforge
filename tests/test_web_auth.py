@@ -510,3 +510,65 @@ def test_inbox_401_banner_names_the_expiry_and_links_login():
     assert "expired" in fn.lower()
     assert 'a.href = "/login"' in fn, "a tappable /login, built as a DOM node"
     assert "innerHTML" not in fn
+
+
+# ── LOGIN-UX 11-16: the wrong-code budget is per CODE, not per client ──
+# Measured 13:36-13:47 (operator phone): a stale code tapped 3x in 4 s spent
+# the 3-try budget -> 600 s pause. A code lives 300 s, so a fresh code minted on
+# the box during the pause was DEAD ON ARRIVAL ("429s kick in on first try with
+# a good code; once resolved the key was stale"). A new console mint = a new
+# budget. Guessing stays bounded: 3 wrong per client per code, 5 shared burn.
+
+def _try(srv, code):
+    return _req(srv, "POST", "/login", json.dumps({"code": code}), dict(JSON, Origin=_origin(srv)))
+
+
+def test_a_fresh_code_is_not_dead_on_arrival_after_a_stale_one_spent_the_budget(
+        server, store, fresh_budget):
+    srv, _ = server
+    store.start_pairing()                                   # the stale code
+    for _ in range(web_auth.LOGIN_TRIES_PER_CLIENT):
+        assert _try(srv, "AAAAAAAA")[0] == 401
+    assert _try(srv, "AAAAAAAA")[0] == 429                  # paused, as before
+    fresh = store.start_pairing()                           # operator mints again
+    status, body, cookie = _try(srv, fresh)
+    assert status == 200, body
+    assert cookie
+
+
+def test_a_fresh_code_still_bounds_wrong_tries_from_one_client(server, store, fresh_budget):
+    srv, _ = server
+    store.start_pairing()
+    for _ in range(web_auth.LOGIN_TRIES_PER_CLIENT):
+        _try(srv, "AAAAAAAA")
+    store.start_pairing()
+    statuses = [_try(srv, "AAAAAAAA")[0] for _ in range(web_auth.LOGIN_TRIES_PER_CLIENT + 1)]
+    assert statuses == [401] * web_auth.LOGIN_TRIES_PER_CLIENT + [429]
+    assert store.status()["pairing_pending"] is True       # one client still cannot burn it
+
+
+def test_the_pause_says_why_and_when_in_clock_time(server, store, fresh_budget):
+    import re
+    srv, _ = server
+    store.start_pairing()
+    for _ in range(web_auth.LOGIN_TRIES_PER_CLIENT):
+        _try(srv, "AAAAAAAA")
+    status, body, _ = _try(srv, "AAAAAAAA")
+    assert status == 429
+    j = json.loads(body)
+    detail = j["detail"]
+    assert f"{web_auth.LOGIN_TRIES_PER_CLIENT} wrong" in detail
+    assert "may be fine" in detail                          # a right code is refused here too
+    assert "new code" in detail                             # the way out that works now
+    assert re.search(r"\b\d{2}:\d{2}\b", detail), detail    # clock time, not "wait 597 s"
+    assert isinstance(j.get("retry_after_s"), int) and j["retry_after_s"] > 0
+
+
+def test_the_login_button_is_disabled_while_a_try_is_in_flight(server):
+    """The 13:36 burst: 3 taps in 4 s each spent a try before the first reply came back."""
+    srv, _ = server
+    page = _req(srv, "GET", "/login")[1].decode("utf-8")
+    submit = page[page.index("addEventListener('submit'"):page.index("</script>")]
+    assert ".disabled = true" in submit
+    assert submit.index(".disabled = true") < submit.index("await fetch('/login'")
+    assert "finally" in submit and ".disabled = false" in submit[submit.index("finally"):]

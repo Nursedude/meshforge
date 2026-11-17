@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import html
 import json
+import time
 from typing import Optional
 
 from utils import web_auth, web_pair
@@ -40,6 +41,9 @@ code on the box, then type it here. In the MeshForge TUI: <b>__TUI__</b>. Or at 
 document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
   const m = document.getElementById('m');
+  const b = e.target.querySelector('button');
+  if (b.disabled) return;
+  b.disabled = true;   // one try in flight at a time: a double tap spent the budget (11-16)
   m.textContent = 'Checking…';
   try {
     const r = await fetch('/login', {method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -52,9 +56,30 @@ document.getElementById('f').addEventListener('submit', async (e) => {
       location.href = dest; }
     else { m.textContent = j.detail || j.error || ('Refused (' + r.status + ')'); }
   } catch (err) { m.textContent = 'Could not reach the box: ' + err; }
+  finally { b.disabled = false; }
 });
 </script></body></html>
 """
+
+
+def _clock(ts: float) -> str:
+    return time.strftime("%H:%M", time.localtime(ts))
+
+
+def _pause_body(wait: float, expires: Optional[float]) -> dict:
+    """The 429 says why, says the code may be fine, and gives clock times.
+    A right code is refused here too, by design: if a right code could
+    bypass the pause, guessing would just continue."""
+    retry = int(wait) + 1
+    now = time.time()
+    detail = (f"Paused after {web_auth.LOGIN_TRIES_PER_CLIENT} wrong tries from this "
+              f"browser. Your code may be fine, but it can't be checked until "
+              f"{_clock(now + retry)}. Faster: make a new code on the box "
+              f"(a new code gets fresh tries).")
+    if expires is not None and expires > now:
+        detail += f" The current code is valid until {_clock(expires)}."
+    return {"error": "too many wrong codes from this client", "detail": detail,
+            "retry_after_s": retry}
 
 
 class AuthEndpointsMixin:
@@ -188,6 +213,22 @@ class AuthEndpointsMixin:
         out["auth"] = self.auth_status_block()
         self._serve_json(out)
 
+    def _pairing_expires(self) -> Optional[float]:
+        """The pending code's ``expires`` stamp, which names the code without
+        its secret, or None when no code is pending or the store can't be
+        read. None is its own budget key, and redeem() then judges the store
+        itself (an unreadable store refunds the try)."""
+        try:
+            p = self._auth()._read().get("pairing")
+        except web_auth.StoreUnavailable:
+            return None
+        if not isinstance(p, dict):
+            return None
+        try:
+            return float(p.get("expires"))
+        except (TypeError, ValueError):
+            return None
+
     def _read_json_body(self, limit: int = 1024) -> Optional[dict]:
         ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
         if ctype != "application/json":
@@ -219,24 +260,29 @@ class AuthEndpointsMixin:
         if data is None:
             return
         client = self._client_addr()
-        wait = self.login_tries.take(client)
+        expires = self._pairing_expires()
+        # LOGIN-UX 11-16: the budget is per (client, CODE). The pause (600 s)
+        # outlives a code (300 s), so a per-client key made a code minted on
+        # the box during a pause dead on arrival. A console mint is the
+        # operator's intent, so it gets fresh tries; guessing stays bounded
+        # per code (3 per client here, 5 shared in the store's burn).
+        key = f"{client}|{expires}"
+        wait = self.login_tries.take(key)
         if wait > 0:
             self.auth_refusals.note(client, "POST", "/login", "wrong-code budget spent")
-            self._serve_json({"error": "too many wrong codes from this client",
-                              "detail": f"wait {int(wait) + 1} s, then try again"},
-                             status=429)
+            self._serve_json(_pause_body(wait, expires), status=429)
             return
         try:
             token = self._auth().redeem(str(data.get("code", "")))
         except web_auth.StoreUnavailable as e:
-            self.login_tries.refund(client)
+            self.login_tries.refund(key)
             self._refuse_operator("POST", "/login", str(e))
             return
         if not token:
             self._refuse_operator("POST", "/login",
                                   "that code is wrong, used, expired or burned — run pair again")
             return
-        self.login_tries.refund(client)   # a right code is not a wrong try
+        self.login_tries.refund(key)   # a right code is not a wrong try
         body = json.dumps({"operator": True}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
