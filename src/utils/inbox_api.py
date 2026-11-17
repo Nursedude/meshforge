@@ -359,11 +359,21 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
     if sections is None:
         return None
     errors = []
+    # cannot_hear (BIC-2, 11-16): the DECLARED segments. Absent file = inert;
+    # an unreadable or wrong one = no segments AND the read says why (never a
+    # silent "nothing declared").
+    from utils import rf_segments
+    decl = rf_segments.load()
+    if decl.error:
+        logger.warning("inbox: %s", decl.error)
+        errors.append(decl.error)
     for m in sends:   # each send guarded on its own: one bad box never breaks the read (r5)
         sent = _epoch(m.get("ts"))
         try:
             m["heard"] = inbox_legs.heard_from(m["packet_id"], sent if sent is not None
-                                               else float("nan"), sections, now=now)
+                                               else float("nan"), sections, now=now,
+                                               segments=decl.segments,
+                                               send_segment=decl.send_segment)
         except Exception as e:
             logger.warning("inbox: heard-by failed for send %s: %s", m.get("id"), e)
             m["heard"] = {"line": HEARD_UNREADABLE}

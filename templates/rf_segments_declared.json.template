@@ -1,0 +1,18 @@
+{
+  "//": "TEMPLATE — copy to ~/.config/meshforge/rf_segments_declared.json on the box that serves /inbox, and replace the aliases with the ones in your truth_spool_targets list. Real aliases are operator-specific and MUST NOT be committed (MF014).",
+
+  "//why": "A box on another modem preset cannot demodulate a send, so its silence is not a fault. Only a bridged copy reaches it, and that copy carries a NEW packet id. Without this file, /inbox counts such a box as 'listening, not heard', which is a false claim.",
+
+  "//declared": "DECLARED, not measured: Linux meshtasticd serves no /json/report (the map's /api/status radio_config reads available:false on a Pi), the journal names channels not presets, and asking the radio is a PhoneAPI client. The page therefore says 'declared'. Keep this file true when you change a box's preset.",
+
+  "//inert": "Absent file = inert (no box is ever 'on another preset'). A file that EXISTS but is unreadable, names an unknown preset, or has an unknown key is a LOUD error on the inbox read, and no segments are used.",
+
+  "//format": "segment = meshtastic:<PRESET>/ch<N>; PRESET is a name in src/utils/meshtastic_modem.py PRESET_DISPLAY_NAMES. send_from = THIS box's alias (never inferred). A box left out is undeclared, never guessed. Consumer: src/utils/rf_segments.py -> src/utils/inbox_api.py.",
+
+  "send_from": "this-box",
+
+  "segments": {
+    "this-box": "meshtastic:LONG_FAST/ch20",
+    "other-preset-box": "meshtastic:SHORT_TURBO/ch8"
+  }
+}

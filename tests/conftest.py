@@ -478,6 +478,10 @@ _OPERATOR_STORE_MODULES = (
     "monitoring.mqtt_subscriber",      # saved_mqtt_config_path / save_config
     "launcher_tui.handlers.mqtt",      # load/save_mqtt_config (+ alias below)
     "handlers.mqtt",
+    # rf_segments_declared.json — READ only, but a live declaration flips
+    # /inbox verdicts (moc3 -> cannot_hear) in tests that never asked for one
+    # (2026-11-16; feedback_tests_must_pin_ambient_state).
+    "utils.rf_segments",
     "daemon",                          # _operator_home_unknown reads the home
 )
 

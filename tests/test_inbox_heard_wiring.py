@@ -169,3 +169,26 @@ def test_a_send_whose_heard_by_raises_is_unobservable_and_the_read_says_why():
     assert out["state"] == "ok"
     assert out["threads"][0]["messages"][0]["heard"]["line"] == inbox_api.HEARD_UNREADABLE
     assert "boom" in out["heard_error"]
+
+
+# ── cannot_hear wired (BIC-2, 11-16): inbox_api.py passed NO segments, so
+# cannot_hear was unreachable live. The DECLARED segments now ride every read.
+
+def test_a_box_on_the_other_declared_preset_reads_cannot_hear_on_the_inbox():
+    from utils import rf_segments
+    decl = rf_segments.Declared({"center-box": "meshtastic:LONG_FAST/ch20",
+                                 "moc3": "meshtastic:SHORT_TURBO/ch8"}, "center-box", None)
+    with patch.object(rf_segments, "load", return_value=decl):
+        out, msgs, _ = _read([_row()], {"kiai": _sec(), "moc3": _sec()})
+    heard = msgs[1]["heard"]
+    assert heard["summary"]["cannot_hear"] == ["moc3"], heard
+    assert "on another preset (declared" in heard["line"]
+
+
+def test_an_unreadable_declaration_is_said_and_never_cannot_hear():
+    from utils import rf_segments
+    decl = rf_segments.Declared({}, None, "declared segments x: unreadable JSON")
+    with patch.object(rf_segments, "load", return_value=decl):
+        out, msgs, _ = _read([_row()], {"kiai": _sec(), "moc3": _sec()})
+    assert msgs[1]["heard"]["summary"].get("cannot_hear", []) == []
+    assert "declared segments" in out["heard_error"]

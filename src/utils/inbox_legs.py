@@ -54,7 +54,10 @@ def heard_line(summary: Mapping[str, List[str]], *, packet_id: Any,
         parts.append(f"{blind} unobservable")
     other = len(summary.get("cannot_hear", []))
     if other:
-        parts.append(f"{other} on another preset")
+        # DECLARED, not measured (utils.rf_segments: Linux meshtasticd has no
+        # /json/report). A bridged copy reaches the other preset under a NEW
+        # packet id, so this id is never expected there.
+        parts.append(f"{other} on another preset (declared; a bridged copy carries a new id)")
     return " · ".join(parts)
 
 
