@@ -389,7 +389,30 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
             logger.warning("inbox: heard-by failed for send %s: %s", m.get("id"), e)
             m["heard"] = {"line": HEARD_UNREADABLE}
             errors.append(f"send {m.get('id')}: {type(e).__name__}: {e}")
+    contradicted = _declaration_contradictions(sends, decl)
+    if contradicted:
+        errors.append("declared on another preset/slot but decoded a send in its window "
+                      f"(the declaration is wrong): {', '.join(contradicted)}")
     return "; ".join(errors) or None
+
+
+def _declaration_contradictions(sends: List[Dict[str, Any]], decl) -> List[str]:
+    """r3 MED (11-16): a bridged copy carries a NEW packet id, so a box declared
+    on another segment that decoded THIS id in its join window is measured
+    proof that the declaration is wrong (e.g. a send_from copied from another
+    center). The hearing already wins for that box on that send; this SAYS so
+    once per read. A skewed hearing is excluded: it may be an unrelated packet
+    that reused the id."""
+    send_seg = decl.send_segment
+    if not send_seg:
+        return []
+    out = set()
+    for m in sends:
+        for b in (m.get("heard") or {}).get("boxes") or []:
+            seg = decl.segments.get(b.get("alias"))
+            if b.get("state") == "heard" and not b.get("skewed") and seg and seg != send_seg:
+                out.add(b["alias"])
+    return sorted(out)
 
 
 def _rx_coverage() -> Dict[str, Any]:

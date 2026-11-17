@@ -227,3 +227,64 @@ def test_r2_the_sender_missing_from_its_own_fleet_list_is_not_an_error():
         out, msgs, _ = _read([_row()], {"kiai": _sec(), "moc3": _sec()})
     assert out.get("heard_error") is None, out.get("heard_error")
     assert msgs[1]["heard"]["summary"]["cannot_hear"] == ["moc3"]
+
+
+def _decl(segments, send_from="center-box"):
+    from utils import rf_segments
+    return rf_segments.Declared(segments, send_from, None)
+
+
+LF, ST = "meshtastic:LONG_FAST/ch20", "meshtastic:SHORT_TURBO/ch8"
+
+
+def test_r3_a_hearing_that_contradicts_the_declaration_is_said_once_per_read():
+    """r3 MED: a box declared on another segment DECODED the send (a bridged
+    copy carries a new id, so this proves the declaration wrong). The read
+    held the evidence and said nothing; other sends kept the false line."""
+    from utils import rf_segments
+    sent = inbox_api._epoch("2026-11-15 06:19:18")
+    rows = [_row(id=1), _row(id=2, content="again", packet_id=111)]
+    decl = _decl({"center-box": LF, "moc3": ST})
+    with patch.object(rf_segments, "load", return_value=decl):
+        out, msgs, _ = _read(rows, {"moc3": _sec((0x0DAEE001, 287851589, sent + 1),
+                                                 (0x0DAEE001, 111, sent + 1))})
+    err = out.get("heard_error") or ""
+    assert "moc3" in err and "decoded" in err, err
+    assert err.count("moc3") == 1, "one line per box per read, not per send"
+
+
+def test_r3_a_skewed_hearing_is_not_called_a_contradiction():
+    """A hearing outside the join window may be an unrelated packet id reuse."""
+    from utils import rf_segments
+    sent = inbox_api._epoch("2026-11-15 06:19:18")
+    decl = _decl({"center-box": LF, "moc3": ST})
+    with patch.object(rf_segments, "load", return_value=decl):
+        out, _, _ = _read([_row()], {"moc3": _sec((0x0DAEE001, 287851589, sent + 5000))})
+    assert "decoded" not in (out.get("heard_error") or "")
+
+
+def test_r3_two_problems_are_both_said():
+    """r3 L-3 (mutant: only the first error kept)."""
+    from utils import rf_segments
+    with patch.object(rf_segments, "load", return_value=_decl({"center-box": LF, "MOC3": ST})), \
+         patch.object(inbox_legs, "heard_from", side_effect=RuntimeError("boom")):
+        out, _, _ = _read([_row()], {"kiai": _sec(), "moc3": _sec()})
+    assert "MOC3" in out["heard_error"] and "boom" in out["heard_error"]
+
+
+def test_r3_a_typo_on_the_senders_own_segment_is_said():
+    """r3 L-4 (mutant: exempt by segment, not by name)."""
+    from utils import rf_segments
+    with patch.object(rf_segments, "load",
+                      return_value=_decl({"center-box": LF, "kiaii": LF, "moc3": ST})):
+        out, _, _ = _read([_row()], {"kiai": _sec(), "moc3": _sec()})
+    assert "kiaii" in (out.get("heard_error") or "")
+
+
+def test_r3_a_stray_alias_never_discards_the_valid_declarations():
+    """r3 L-5 (mutant: a stray drops every declaration)."""
+    from utils import rf_segments
+    with patch.object(rf_segments, "load",
+                      return_value=_decl({"center-box": LF, "kiaii": LF, "moc3": ST})):
+        out, msgs, _ = _read([_row()], {"kiai": _sec(), "moc3": _sec()})
+    assert msgs[1]["heard"]["summary"]["cannot_hear"] == ["moc3"]
