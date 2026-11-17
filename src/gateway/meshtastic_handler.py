@@ -30,6 +30,7 @@ from .base_handler import (
     true_origin_downlink_enabled, true_origin_loop_guard_window_s,
 )
 from .canonical_message import packet_is_broadcast  # the ONE rule (F15)
+from .wire_ids import packet_origin  # the ONE sender rule (wire `from`)
 from .config import GatewayConfig
 from .node_tracker import UnifiedNode
 from .reconnect import ReconnectStrategy
@@ -623,10 +624,13 @@ class MeshtasticHandler(BaseMessageHandler):
             portnum = decoded.get('portnum')
 
             # Update node info
-            from_id = packet.get('fromId')
+            # Sender from the WIRE `from`, never the node-DB string (None for a
+            # node the lib's DB lacks; neighbour-set otherwise) — the ONE rule
+            # shared with the preset bridge, so their dedup keys agree.
+            from_id = packet_origin(packet)
             if from_id:
                 node = UnifiedNode.from_meshtastic({
-                    'num': int(from_id[1:], 16) if from_id.startswith('!') else 0,
+                    'num': int(from_id[1:], 16),   # always '!' + 8 hex here
                     'snr': packet.get('rxSnr'),
                     'hopsAway': packet.get('hopStart', 0) - packet.get('hopLimit', 0),
                 })

@@ -52,6 +52,7 @@ from utils.meshtastic_se_crypto import (
 )
 from utils.safe_import import safe_import
 from utils.tx_guard import DEFAULT_MESH_TCP_PORT, assert_tx_allowed
+from .wire_ids import mqtt_json_origin, wire_node_num
 
 logger = logging.getLogger(__name__)
 
@@ -675,8 +676,9 @@ class MQTTBridgeHandler(BaseMessageHandler):
             return
 
         # Update node tracking
-        from_num = data.get('from', 0)
-        if from_num:
+        # Only a valid wire originator updates a node (r3 11-17: a truthy
+        # malformed `from` keyed the update on the uplinker via the fallback).
+        if wire_node_num(data.get('from')):
             self._update_node_from_mqtt(data)
 
         # Handle text messages for bridging
@@ -735,16 +737,13 @@ class MQTTBridgeHandler(BaseMessageHandler):
         # fallback below, when `from` is unusable — there is no sender-based
         # self-echo filter (bridge matrix F6): the bridge-tag loop guard
         # (is_already_bridged) is what stops an echo.
-        sender = data.get('sender', '')
-        from_num = data.get('from', 0)
         # Type-guarded (review 2026-07-01): a non-int/negative `from` from a
         # malformed or foreign publisher must fall back to sender attribution,
         # not ValueError out of the handler. UNKNOWN_ORIGIN is the shared
-        # sentinel mesh_origin_content_id refuses as an identity.
-        from_id = (f"!{from_num & 0xFFFFFFFF:08x}"
-                   if isinstance(from_num, int)
-                   and not isinstance(from_num, bool) and from_num > 0
-                   else (sender or UNKNOWN_ORIGIN))
+        # sentinel mesh_origin_content_id refuses as an identity. One reader
+        # with the preset bridge's MQTT leg (wire_ids, 2026-11-17).
+        sender = data.get('sender', '')
+        from_id = mqtt_json_origin(data, UNKNOWN_ORIGIN)
         to_num = data.get('to', 0)
         payload = data.get('payload', {})
         text = payload.get('text', '') if isinstance(payload, dict) else str(payload)
@@ -940,7 +939,7 @@ class MQTTBridgeHandler(BaseMessageHandler):
             emit_message(
                 direction='rx',
                 content=text,
-                node_id=sender,
+                node_id=from_id,   # the originator, as queue + store (r4)
                 channel=channel,
                 network='meshtastic',
                 raw_data={
@@ -965,12 +964,9 @@ class MQTTBridgeHandler(BaseMessageHandler):
         to whichever node was heard last; positions teleported between
         sites). Same sender-vs-from class as the 9554f06 text-attribution
         fix. `from` is the originating node; fall back to `sender` only
-        when `from` is absent.
+        when `from` is unusable (the one wire_ids rule, 2026-11-17).
         """
-        from_num = data.get('from', 0)
-        if from_num:
-            return f"!{from_num:08x}"
-        return data.get('sender', '')
+        return mqtt_json_origin(data)
 
     def _update_node_from_mqtt(self, data: dict) -> None:
         """Update node tracker from MQTT message data."""
@@ -1038,6 +1034,14 @@ class MQTTBridgeHandler(BaseMessageHandler):
         try:
             from .node_tracker import UnifiedNode
 
+            # A nodeinfo is a node naming ITSELF. A `from` that is PRESENT but
+            # not a node names nobody: the uplinker fallback would write the
+            # payload's name onto the UPLINKER's node (r4 11-17; the old code
+            # minted a phantom id instead). An ABSENT `from` keeps its pinned
+            # sender fallback (test_nodeinfo_falls_back_to_sender_when_from_
+            # absent) — whether it should exist is queued, not decided here.
+            if 'from' in data and not wire_node_num(data.get('from')):
+                return
             node_id = self._originator_id(data)
             payload = data.get('payload', {})
             if not isinstance(payload, dict) or not node_id:
@@ -1056,7 +1060,7 @@ class MQTTBridgeHandler(BaseMessageHandler):
             payload_id = str(payload.get('id') or '').lower()
             self_reported = bool(
                 (long_name or short_name)
-                and data.get('from')
+                and wire_node_num(data.get('from'))   # r3: the wire rule, not truthiness
                 and (not payload_id or payload_id == node_id.lower())
             )
 

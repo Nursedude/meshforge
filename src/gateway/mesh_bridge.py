@@ -43,7 +43,7 @@ from .mqtt_downlink_inject import downlink_label, downlink_status
 from ._mesh_bridge_legs import (
     bridge_event, build_downlink_injector,
     lookup_node_user, bump_stat, dm_destination,
-    node_dest, queue_drop_witness,
+    node_dest, packet_origin, queue_drop_witness,
     LINK_DOWN_EPISODE_GAP_S, LINK_DOWN_RETRY_S, MESH_BRIDGE_MAX_AGE_S,
     _library_gave_up, _write_target_gone)
 from ._mesh_bridge_drain import MeshBridgeDrainMixin  # MF025 split (§B #23)
@@ -983,7 +983,8 @@ class MeshtasticPresetBridge(MeshBridgeDrainMixin):
                 )
                 return
 
-            from_id = packet.get('fromId', '')
+            # Sender from the WIRE `from` (fromId=None → "????" tag, 11-17).
+            from_id = packet_origin(packet) or ''
             to_id = packet.get('toId', '')
 
             # Broadcast detection must cover every shape meshtastic emits:

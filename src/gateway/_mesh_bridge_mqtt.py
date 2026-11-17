@@ -16,6 +16,7 @@ from typing import Optional, Dict, Callable
 
 from .base_handler import mqtt_content_dedup_key, FallbackDropWitness
 from .config import MeshtasticConfig
+from .wire_ids import mqtt_json_origin
 from utils.safe_import import safe_import
 
 logger = logging.getLogger("gateway.mesh_bridge")
@@ -171,8 +172,6 @@ class MQTTMeshInterface:
             if msg_type != 'text':
                 return
 
-            sender = data.get('sender', '')
-            from_num = data.get('from', 0)
             to_num = data.get('to', 0)
             payload = data.get('payload', {})
             text = payload.get('text', '') if isinstance(payload, dict) else str(payload)
@@ -192,13 +191,15 @@ class MQTTMeshInterface:
             # (review 2026-07-01). Type-guarded: a non-int or negative
             # `from` (malformed/foreign publisher) must fall back to sender
             # attribution, not ValueError into the broad except below and
-            # silently drop the whole message.
-            from_id = (f"!{from_num & 0xFFFFFFFF:08x}"
-                       if isinstance(from_num, int)
-                       and not isinstance(from_num, bool) and from_num > 0
-                       else sender)
+            # silently drop the whole message. One reader with the handler
+            # (wire_ids, 2026-11-17).
+            from_id = mqtt_json_origin(data)
 
-            # Build a packet dict compatible with _process_receive
+            # Build a packet dict compatible with _process_receive. Only the
+            # resolved `fromId` rides along — never a numeric `from`: the
+            # bridge's packet_origin lets a present `from` decide alone, so an
+            # invalid one would erase the sender fallback (r1 review HIGH);
+            # fromId already carries the wire number when it is valid (r3).
             packet = {
                 'fromId': from_id,
                 'toId': to_id or '!ffffffff',
