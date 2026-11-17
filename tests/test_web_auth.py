@@ -727,3 +727,45 @@ def test_the_login_button_is_disabled_while_a_try_is_in_flight(server):
     assert ".disabled = true" in submit
     assert submit.index(".disabled = true") < submit.index("await fetch('/login'")
     assert "finally" in submit and ".disabled = false" in submit[submit.index("finally"):]
+
+
+# ── LOGIN-UX (3), 11-16: /login says when this browser is ALREADY logged in ──
+# Client-side on purpose: GET /login stays free of store reads/side effects;
+# the page asks the existing /api/auth/status. It claims "logged in" only on
+# operator === true; a failed or odd answer shows nothing (never a false yes).
+
+def _login_page(srv):
+    return _req(srv, "GET", "/login")[1].decode("utf-8")
+
+
+def test_login_page_asks_status_and_claims_logged_in_only_on_true(server):
+    srv, _ = server
+    page = _login_page(srv)
+    script = page[page.index("<script>"):page.index("</script>")]
+    assert "fetch('/api/auth/status'" in script
+    i = script.index("fetch('/api/auth/status'")
+    block = script[i:i + 900]
+    assert "j.operator === true" in block, "only a literal true may claim a live session"
+    assert "already logged in" in block.lower()
+    assert "innerHTML" not in script
+    assert "catch" in block, "a failed status read must show nothing, not throw"
+
+
+def test_status_says_operator_true_for_a_logged_in_browser_and_false_without(server, store):
+    """The answer the page relies on, through the real handler."""
+    srv, _ = server
+    cookie = _login(srv, store)
+    st = json.loads(_req(srv, "GET", "/api/auth/status", None, {"Cookie": cookie})[1])
+    assert st["operator"] is True
+    st = json.loads(_req(srv, "GET", "/api/auth/status")[1])
+    assert st["operator"] is False
+
+
+def test_login_page_get_reads_no_store(server, store, monkeypatch):
+    """GET /login must stay side-effect free: no store read at all."""
+    srv, _ = server
+    calls = []
+    real = store._read
+    monkeypatch.setattr(store, "_read", lambda: calls.append(1) or real())
+    status, _, _ = _req(srv, "GET", "/login")
+    assert status == 200 and calls == []

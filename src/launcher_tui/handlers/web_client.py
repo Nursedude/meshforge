@@ -267,12 +267,15 @@ class WebClientHandler(BaseHandler):
         r = web_pair.pair_browser()
         url = f"http://{local_ip}:5000/login"     # the unit's map (option B: no unit, no pairing)
         if r.ok:
+            mins = web_auth.PAIRING_TTL_S // 60
+            until = web_pair.expiry_hhmm(r.expires)
+            valid = f"Valid until {until} ({mins} minutes)" if until else f"Valid {mins} minutes"
             self.ctx.dialog.msgbox(
                 "Pairing Code",
                 f"Code:   {r.code}\n\n"
                 f"On the phone or browser, open:\n  {url}\n"
                 "and type the code.\n\n"
-                f"Valid {web_auth.PAIRING_TTL_S // 60} minutes, once; "
+                f"{valid}, once; "
                 f"{web_auth.PAIRING_MAX_TRIES} wrong tries burn it."
                 + (f"\n\nNote: {r.message}" if r.message else ""),
                 height=18 if r.message else 14, width=64

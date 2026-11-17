@@ -20,6 +20,7 @@ root", success without the code landing, the timeout orphan, path drift,
 numeric User=, a clipped fallback, "TUI" said twice — each pinned below.
 """
 import json
+import time
 import os
 import pwd
 import re
@@ -829,6 +830,39 @@ def test_tui_pair_shows_code_and_login_url(monkeypatch, tmp_path):
     h.execute("weblogin")
     text = _texts(dlg, "msgbox")[0]
     assert CODE in text and "http://192.0.2.7:5000/login" in text
+
+
+# ── LOGIN-UX (2), 11-16: the success box gives the expiry as a CLOCK time,
+# read back from the MAP's store (the map's own stamp, not now + TTL) ──
+
+def test_pair_browser_returns_the_stores_expiry(tmp_path):
+    store = _store(tmp_path)
+    d = json.loads(store.read_text())
+    d["pairing"]["expires"] = 1_800_000_123.0
+    store.write_text(json.dumps(d))
+    run = Runner(show(), Proc(0, CODE_OUT))
+    r = web_pair.pair_browser(run=run, euid=0, me="root", store_path=store)
+    assert r.ok and r.expires == 1_800_000_123.0
+
+
+def test_tui_pair_shows_the_expiry_clock_time(monkeypatch, tmp_path):
+    exp = time.time() + 240
+    h, dlg = _handler(monkeypatch, tmp_path,
+                      web_pair.PairResult(True, CODE, "", expires=exp), ["pair", "back"])
+    h.execute("weblogin")
+    text = _texts(dlg, "msgbox")[0]
+    assert f"Valid until {time.strftime('%H:%M', time.localtime(exp))}" in text, text
+
+
+@pytest.mark.parametrize("exp", [None, float("inf"), 1e30])
+def test_tui_pair_without_a_judgeable_expiry_claims_no_clock_time(monkeypatch, tmp_path, exp):
+    """Unreadable or absurd stamp: say the TTL, never an invented HH:MM."""
+    h, dlg = _handler(monkeypatch, tmp_path,
+                      web_pair.PairResult(True, CODE, "", expires=exp), ["pair", "back"])
+    h.execute("weblogin")
+    text = _texts(dlg, "msgbox")[0]
+    assert "Valid until" not in text
+    assert f"Valid {web_auth.PAIRING_TTL_S // 60} minutes" in text
 
 
 def test_tui_status_reads_the_map_users_store(monkeypatch, tmp_path):

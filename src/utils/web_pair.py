@@ -71,6 +71,25 @@ class PairResult:
     code: Optional[str]
     message: str
     remedy: str = "shell"     # a key of REMEDIES: what can actually fix THIS outcome
+    #: the pending code's expiry as the MAP's store holds it (epoch s), read
+    #: back after the mint; None when it could not be read (LOGIN-UX 2)
+    expires: Optional[float] = None
+
+
+def expiry_hhmm(expires: Optional[float], now: Optional[float] = None) -> Optional[str]:
+    """Box-local HH:MM for a pending code's expiry, or None when the stamp is
+    not one a real mint could have written (missing, past, beyond now + TTL,
+    or not renderable). ONE judge for the TUI box and the /login 429, so the
+    two never disagree about what a real expiry is."""
+    if expires is None:
+        return None
+    now = time.time() if now is None else now
+    try:
+        if not (now < float(expires) <= now + web_auth.PAIRING_TTL_S):
+            return None
+        return time.strftime("%H:%M", time.localtime(float(expires)))
+    except (OverflowError, OSError, ValueError, TypeError):
+        return None
 
 
 class MapUnit(NamedTuple):
@@ -344,6 +363,27 @@ def check_store(map_user: str, store: Path, code: str) -> Tuple[bool, str]:
     return ok, why
 
 
+def _read_pairing(store: Path) -> dict:
+    """The store's pending pairing row as raw JSON ({} when none). Raw on
+    purpose: never ``SessionStore._read``, which renames a corrupt store
+    aside. Raises OSError / ValueError / AttributeError. The ONE reader for
+    both the hash check and the expiry read-back."""
+    data = json.loads(Path(store).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("not a session store")
+    p = data.get("pairing") or {}
+    if not isinstance(p, dict):
+        raise ValueError("malformed pairing row")
+    return p
+
+
+def _stored_expires(store: Path) -> Optional[float]:
+    try:
+        return float(_read_pairing(store)["expires"])
+    except (OSError, ValueError, AttributeError, KeyError, TypeError, OverflowError):
+        return None
+
+
 def _check_store(map_user: str, store: Path, code: str) -> Tuple[bool, str, str]:
     """(ok, why, remedy kind). Reads the raw file (never ``SessionStore._read``,
     which renames a corrupt store aside) and lstat()s — a symlink names whoever
@@ -374,8 +414,7 @@ def _check_store(map_user: str, store: Path, code: str) -> Tuple[bool, str, str]
             return False, (f"the session {label} {p} has mode "
                            f"{oct(stat.S_IMODE(st.st_mode))}, not 0600"), "permission"
     try:
-        data = json.loads(store.read_text(encoding="utf-8"))
-        held = (data.get("pairing") or {}).get("h") if isinstance(data, dict) else None
+        held = _read_pairing(store).get("h")
     except (OSError, ValueError, AttributeError) as e:
         return False, (f"the session store {store} could not be read back "
                        f"({e.__class__.__name__})"), "shell"
@@ -431,4 +470,5 @@ def pair_browser(run: Callable = subprocess.run, euid: Optional[int] = None,
     if not ok:
         return PairResult(False, code, f"a code was minted but the map may not accept it: {why}",
                           remedy=remedy)
-    return PairResult(True, code, "; ".join(n for n in (map_running_note(active), m.note) if n))
+    return PairResult(True, code, "; ".join(n for n in (map_running_note(active), m.note) if n),
+                      expires=_stored_expires(store))

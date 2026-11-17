@@ -31,6 +31,7 @@ button{margin-top:.8rem}code{background:#fff;border:1px solid #ccc;padding:0 .3e
 @media (prefers-color-scheme:dark){body{color:#e4e8ec;background:#12171c}code{background:#1a2027}}
 </style></head><body>
 <h1>Operator login</h1>
+<p id="a" role="status"></p>
 <p>Viewing needs no login. To send or change settings from this browser, get a one-time
 code on the box, then type it here. In the MeshForge TUI: <b>__TUI__</b>. Or at a shell on the box:</p>
 <p><code>__PAIR__</code></p>
@@ -39,6 +40,22 @@ code on the box, then type it here. In the MeshForge TUI: <b>__TUI__</b>. Or at 
 <button type="submit">Log in</button></form>
 <p id="m" role="status"></p>
 <script>
+// LOGIN-UX (3): say so when this browser is ALREADY logged in. Only a literal
+// true claims it; a failed or odd answer shows nothing (never a false yes).
+(async () => {
+  try {
+    const r = await fetch('/api/auth/status', {cache: 'no-store'});
+    const j = await r.json();
+    if (r.ok && j.operator === true) {
+      const a = document.getElementById('a');
+      a.textContent = 'This browser is already logged in as operator. ';
+      const l = document.createElement('a');
+      l.href = '/';
+      l.textContent = 'Back to the map';
+      a.appendChild(l);
+    }
+  } catch (err) { /* unknown: say nothing */ }
+})();
 document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
   const m = document.getElementById('m');
@@ -90,10 +107,10 @@ def _pause_body(wait: float, expires: Optional[float]) -> dict:
               f"browser. Your code may be fine, but it can't be checked until "
               f"{_clock(now + retry) or f'{retry} s from now'}. Faster: make a new "
               f"code on the box (a new code gets fresh tries).")
-    # only a stamp a real mint could have written (now + PAIRING_TTL_S)
-    if (expires is not None and now < expires <= now + web_auth.PAIRING_TTL_S
-            and _clock(expires)):
-        detail += f" The current code is valid until {_clock(expires)}."
+    # only a stamp a real mint could have written; ONE judge with the TUI box
+    until = web_pair.expiry_hhmm(expires, now)
+    if until:
+        detail += f" The current code is valid until {until}."
     return {"error": "too many wrong codes from this client", "detail": detail,
             "retry_after_s": retry}
 
