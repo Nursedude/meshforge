@@ -233,13 +233,17 @@ PARKED 11-04, revisit 12-04:
 - **SHOW-1** [MF] S — README shows the one unique screen (a message's legs); today logo + badges only. Session-added.
 - **TRH-1** [MF] S — traceroute history on the web map: the data is in `traceroute_history.db`, TUI-only today (capabilities: Live NOC map)
 - **BASE-1** [MF][MA] S+F — ONE repo, MeshAnchor = an install profile (end-state (b), operator 11-14; was "shared base, two repos")
-  Evidence + stages: artifact 1Li1CG6aegAnpYTPdgf8N8 (36–58 % of MA commits are MF ports; 21 of 23 on 11-11..13). Stage 1: `app_identity` module, byte-identical twin, 77 rename-identical files read from it. Stage 2: HAM + BOT feature flags ([off] rows, no unit/radio change); BOT = MA's first bot install (none today) + warn on bot tcp→:4403 (lehua, 11-14). Stages 3+ after v0.8.0-beta, gateway last; merge needs operator words. Open: does any stranger run MA? how much of the divergence is deliberate (method-dependent: 28 % vs 48 %, A17 — publish the classifier first)?
+  Stage 1 `app_identity` twin; 2 HAM+BOT flags; 3+ after v0.8.0-beta, gateway last; merge needs operator words. Evidence + open Qs: `plans/base1_one_repo_2026_11_14.md`
 - **DAI-0** [MF] S — `offline_oracle.py` corpus reads the operator's `~/.claude/.../memory` (VERIFIED 11-11): a public corpus first
 - **SEC-2** [MF] S — udev 0666 `install_noc.sh:895` (SECURITY.md half done 11-13); maps unit `--host 0.0.0.0` as `User=pi` (11-17); + BENCH-G (red tests `d1d784aa`), AXI-1: `research/axiometa_2026_11_15.md`
 - **CLAW-1** [MF] S+F — DudeClaw: honest 24/7 RF witnesses, fleet then one ham: `plans/claw1_grilling_2026_11_11.md`
 - **MQTT-ARCH** [MF] S+F — local broker per box, kiai the one public uplink (op 11-17): `plans/mqtt_arch_2026_11_17.md`
 - **SRC-1** [MF] S — repo is SoT, pages are dated views (operator 11-16): extend loop_gate TOPIC (no new class) — registry `source` path; refuse a page update while it is dirty; page carries `mf:source` path@sha
   +11-17 (op): stamps both ways, stale derived from the sha; each page finding gets adopt/refute/drop. `audits/artifact_audit_2026_11_17.md`
+- **CLK-1** [MF] S+F — meshtasticd re-rates its clock after a fail-open boot, no human (4 hits in 47 d)
+  Op 11-18. Trigger = gate's authenticated TIMEOUT, never mesh-writable telemetry; ONE restart/invocation. `plans/clk1_ntp_rerate_2026_11_18.md`
+  public: After a boot without network time, MeshForge restarts the radio service once the clock syncs, so the node list never freezes.
+  status: planned
 
 ### LATER
 

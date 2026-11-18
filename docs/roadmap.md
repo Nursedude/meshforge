@@ -18,6 +18,7 @@ you saw. A report that moves an item's status is credited by issue number.
 - **Planned** — Pick the best working route between meshes from measured link health, not just hop count. <sub>(ref BIC-6)</sub>
 - **Planned** — One screen that shows whether the radio link is actually carrying traffic: airtime used, per-hop success, dead hops. <sub>(ref R8)</sub>
 - **Planned** — A central MeshForge or MeshAnchor can read the status of any box you grant, through a key that can only export status, never open a shell. <sub>(ref NRG)</sub>
+- **Planned** — After a boot without network time, MeshForge restarts the radio service once the clock syncs, so the node list never freezes. <sub>(ref CLK-1)</sub>
 - **Planned** — Let a mesh radio user start a private conversation with someone on Reticulum by name. <sub>(ref ADDR-1)</sub>
 - **Planned** — A screen that tells a new Reticulum user exactly how to connect to your node. <sub>(ref CONNECT-1)</sub>
 - **Planned** — Plain-language advice about problems on your own mesh, from one reviewed set of rules. <sub>(ref M1)</sub>
@@ -31,6 +32,7 @@ you saw. A report that moves an item's status is credited by issue number.
 - **Planned** — Pick the best working route between meshes from measured link health, not just hop count. <sub>(ref BIC-6)</sub>
 - **Planned** — One screen that shows whether the radio link is actually carrying traffic: airtime used, per-hop success, dead hops. <sub>(ref R8)</sub>
 - **Planned** — A central MeshForge or MeshAnchor can read the status of any box you grant, through a key that can only export status, never open a shell. <sub>(ref NRG)</sub>
+- **Planned** — After a boot without network time, MeshForge restarts the radio service once the clock syncs, so the node list never freezes. <sub>(ref CLK-1)</sub>
 - **Planned** — Let a mesh radio user start a private conversation with someone on Reticulum by name. <sub>(ref ADDR-1)</sub>
 - **Planned** — A screen that tells a new Reticulum user exactly how to connect to your node. <sub>(ref CONNECT-1)</sub>
 - **Planned** — Automatic responders wait when the radio channel is busy. <sub>(ref M4)</sub>
