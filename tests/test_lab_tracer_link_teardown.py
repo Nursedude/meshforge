@@ -57,7 +57,9 @@ def test_teardown_with_no_links_does_not_sleep(monkeypatch):
     assert slept == []
 
 
-def test_run_trace_tears_links_down_before_returning(monkeypatch):
+def test_run_trace_tears_links_down_before_returning(monkeypatch, tmp_path):
+    import tempfile
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))  # run_trace sweeps the tempdir
     link = MagicMock()
     rns = _fake_rns([link])
     monkeypatch.setitem(sys.modules, "RNS", rns)

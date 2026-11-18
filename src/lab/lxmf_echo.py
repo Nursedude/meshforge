@@ -19,7 +19,6 @@ import logging
 import os
 import signal
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -28,6 +27,12 @@ from utils.tx_guard import assert_rns_tx_allowed
 # Lazy RNS / LXMF imports so unit tests can patch around them.
 
 logger = logging.getLogger("lab.echo")
+
+# The `-m` name this module runs as (systemd units, virtual_fleet) — DERIVED,
+# never typed: the start-up sweep keeps a pre-fix dir only while another
+# process runs this exact name, so a typo here would delete a live one
+# (review 2026-11-17 r3 F1). None (run by path) = no pre-fix sweep.
+_OWNER_MODULE = getattr(__spec__, "name", None)
 
 
 # Re-announce cadence: peers' RNS path table evicts after the default
@@ -261,7 +266,8 @@ def run_daemon(loglevel: str = "INFO", announce_interval_s: int = ANNOUNCE_INTER
         return 3
 
     from lab._lab_common import (
-        init_reticulum_with_watchdog, load_or_create_identity, short_name,
+        exit_scoped_tmpdir, flush_lxmf_router, init_reticulum_with_watchdog,
+        load_or_create_identity, short_name,
     )
 
     state = _EchoState()
@@ -273,7 +279,10 @@ def run_daemon(loglevel: str = "INFO", announce_interval_s: int = ANNOUNCE_INTER
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
 
-    with tempfile.TemporaryDirectory(prefix="meshforge_lab_echo_") as tmp:
+    # exit_scoped_tmpdir, not TemporaryDirectory: the dir outlived every run
+    # (2026-11-17) — see its docstring for the exit order.
+    with exit_scoped_tmpdir("meshforge_lab_echo_",
+                            owner_module=_OWNER_MODULE) as tmp:
         tmpdir = Path(tmp)
         # Virtual-fleet hook (lab.virtual_fleet): attach to a SANDBOX rnsd
         # instance by using ITS configdir directly — the same rnsd+clients-
@@ -306,42 +315,53 @@ def run_daemon(loglevel: str = "INFO", announce_interval_s: int = ANNOUNCE_INTER
         lxmf_storage = tmpdir / "lxmf"
         lxmf_storage.mkdir(parents=True, exist_ok=True)
         state.router = LXMF.LXMRouter(storagepath=str(lxmf_storage))
-        display_name = f"lab-echo ({short_name()})"
-        state.source = state.router.register_delivery_identity(
-            identity, display_name=display_name,
-        )
-        logger.info(
-            "echo: lab-echo destination hash: %s (%s)",
-            state.source.hash.hex(), display_name,
-        )
+        # RNS.Reticulum.__init__ and then LXMRouter.__init__ each install THEIR
+        # SIGINT/SIGTERM handlers (persist, then os._exit), replacing ours:
+        # every systemd stop skipped this function's cleanup and leaked the
+        # dir (review 2026-11-17). Take them back — the flush below does
+        # LXMF's persist, atexit does RNS's. A stop in the ms between RNS init
+        # and here still os._exits; the next start's sweep clears it (r2 F5).
+        signal.signal(signal.SIGTERM, _on_signal)
+        signal.signal(signal.SIGINT, _on_signal)
+        try:
+            display_name = f"lab-echo ({short_name()})"
+            state.source = state.router.register_delivery_identity(
+                identity, display_name=display_name,
+            )
+            logger.info(
+                "echo: lab-echo destination hash: %s (%s)",
+                state.source.hash.hex(), display_name,
+            )
 
-        # Register inbound callback.
-        state.router.register_delivery_callback(make_on_receive(state))
+            # Register inbound callback.
+            state.router.register_delivery_callback(make_on_receive(state))
 
-        # Initial announce + periodic re-announce.
-        assert_rns_tx_allowed(kind="rns_announce", detail="lab echo announce")
-        state.router.announce(state.source.hash)
-        last_announce = time.monotonic()
+            # Initial announce + periodic re-announce.
+            assert_rns_tx_allowed(kind="rns_announce", detail="lab echo announce")
+            state.router.announce(state.source.hash)
+            last_announce = time.monotonic()
 
-        # Main loop. We don't poll anything — RNS' transport thread
-        # drives delivery callbacks. Just sleep until shutdown, with
-        # periodic re-announce to keep peers' path tables warm.
-        while not state.stopped:
-            if state.wait(min(60.0, announce_interval_s)):
-                break
-            if time.monotonic() - last_announce >= announce_interval_s:
-                try:
-                    assert_rns_tx_allowed(kind="rns_announce", detail="lab echo announce")
-                    state.router.announce(state.source.hash)
-                    last_announce = time.monotonic()
-                    logger.debug("echo: re-announced")
-                except Exception as exc:
-                    logger.warning("echo: re-announce failed: %s", exc)
+            # Main loop. We don't poll anything — RNS' transport thread
+            # drives delivery callbacks. Just sleep until shutdown, with
+            # periodic re-announce to keep peers' path tables warm.
+            while not state.stopped:
+                if state.wait(min(60.0, announce_interval_s)):
+                    break
+                if time.monotonic() - last_announce >= announce_interval_s:
+                    try:
+                        assert_rns_tx_allowed(kind="rns_announce", detail="lab echo announce")
+                        state.router.announce(state.source.hash)
+                        last_announce = time.monotonic()
+                        logger.debug("echo: re-announced")
+                    except Exception as exc:
+                        logger.warning("echo: re-announce failed: %s", exc)
 
-        logger.info(
-            "echo: shutdown — rx=%d tx=%d", state.rx_count, state.tx_count,
-        )
-        return 0
+            logger.info(
+                "echo: shutdown — rx=%d tx=%d", state.rx_count, state.tx_count,
+            )
+            return 0
+        finally:
+            flush_lxmf_router(state.router)
 
 
 def main(argv=None) -> int:

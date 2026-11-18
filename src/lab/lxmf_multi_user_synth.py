@@ -63,7 +63,6 @@ import json
 import logging
 import statistics
 import sys
-import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -73,6 +72,12 @@ from typing import Dict, List, Optional, Tuple
 from utils.tx_guard import assert_rns_tx_allowed
 
 logger = logging.getLogger("lab.synth")
+
+# The `-m` name this module runs as (systemd units, virtual_fleet) — DERIVED,
+# never typed: the start-up sweep keeps a pre-fix dir only while another
+# process runs this exact name, so a typo here would delete a live one
+# (review 2026-11-17 r3 F1). None (run by path) = no pre-fix sweep.
+_OWNER_MODULE = getattr(__spec__, "name", None)
 
 
 DEFAULT_N_USERS = 10
@@ -544,7 +549,24 @@ def run_synth(
     early_failures: List[PairResult] = []
     early_failures_lock = threading.Lock()
 
-    with tempfile.TemporaryDirectory(prefix="meshforge_lab_synth_") as tmp:
+    from lab._lab_common import exit_scoped_tmpdir, lxmf_router_flushed
+
+    # Flush on every exit, before the dir goes (2026-11-17 leak) — but NOT
+    # while a sender thread outlived its join: it may still be inside
+    # handle_outbound, and tearing the router down under it is worse than one
+    # leaked dir, which the next start's sweep removes (review r1 F6).
+    router = None
+    threads: List[threading.Thread] = []
+
+    def _router_if_quiet():
+        if any(t.is_alive() for t in threads):
+            logger.warning("synth: sender thread(s) still alive — LXMF flush skipped")
+            return None
+        return router
+
+    with exit_scoped_tmpdir("meshforge_lab_synth_",
+                            owner_module=_OWNER_MODULE) as tmp, \
+            lxmf_router_flushed(_router_if_quiet):
         tmpdir = Path(tmp)
         _build_client_config(tmpdir)
 
@@ -627,7 +649,6 @@ def run_synth(
         # Spawn sender threads.
         deadline_send = time.monotonic() + duration_s
         stop_event = threading.Event()
-        threads: List[threading.Thread] = []
         for user, offset in zip(users, offsets):
             t = threading.Thread(
                 target=_sender_loop,

@@ -22,7 +22,6 @@ import json
 import logging
 import os
 import sys
-import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -31,6 +30,12 @@ from typing import Dict, List, Optional, Tuple
 from utils.tx_guard import assert_rns_tx_allowed
 
 logger = logging.getLogger("lab.tracer")
+
+# The `-m` name this module runs as (systemd units, virtual_fleet) — DERIVED,
+# never typed: the start-up sweep keeps a pre-fix dir only while another
+# process runs this exact name, so a typo here would delete a live one
+# (review 2026-11-17 r3 F1). None (run by path) = no pre-fix sweep.
+_OWNER_MODULE = getattr(__spec__, "name", None)
 
 
 DEFAULT_PATH_TIMEOUT_S = 8.0
@@ -308,6 +313,7 @@ def run_trace(
 
     from lab._lab_common import (
         bounded_block,
+        exit_scoped_tmpdir, lxmf_router_flushed,
         init_reticulum_with_watchdog,
         load_or_create_identity, make_ping_body, short_name,
     )
@@ -315,7 +321,10 @@ def run_trace(
     self_short = short_name()
     pending: Dict[int, _PendingPing] = {}
 
-    with tempfile.TemporaryDirectory(prefix="meshforge_lab_tracer_") as tmp:
+    # exit_scoped_tmpdir, not TemporaryDirectory: the dir outlived every run
+    # (1,553 leaked, 2026-11-17) — see its docstring for the exit order.
+    with exit_scoped_tmpdir("meshforge_lab_tracer_",
+                            owner_module=_OWNER_MODULE) as tmp:
         tmpdir = Path(tmp)
         # Virtual-fleet hook (lab.virtual_fleet): attach to a SANDBOX rnsd
         # instance by using ITS configdir directly — the same rnsd+clients-
@@ -356,7 +365,12 @@ def run_trace(
         post_init_timeout_s = (
             len(peers) * per_peer_max_s + ack_timeout_s + 20.0
         )
-        with bounded_block(post_init_timeout_s, label="tracer post-init"):
+        # The flush rides every exit from this region (TX-guard refusal, a
+        # raise mid-send) INSIDE the bound: LXMF must persist while the dir
+        # exists, or the exit re-creates it (1,553 leaked dirs, 2026-11-17).
+        router = None
+        with bounded_block(post_init_timeout_s, label="tracer post-init"), \
+                lxmf_router_flushed(lambda: router):
             identity, _ = load_or_create_identity("lab_tracer")
             lxmf_storage = tmpdir / "lxmf"
             lxmf_storage.mkdir(parents=True, exist_ok=True)

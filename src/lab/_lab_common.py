@@ -23,9 +23,14 @@ callers. New code should prefer ``utils.rns_init.open_reticulum``.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import re
+import shutil
 import socket
+import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -257,6 +262,189 @@ def short_name() -> str:
         return socket.gethostname().split(".")[0] or "unknown"
     except OSError:
         return "unknown"
+
+
+# ---------------------------------------------------------------- scratch dir
+
+
+def _pid_maybe_alive(pid: int) -> bool:
+    """False ONLY when the kernel says no such process; anything else = keep.
+
+    ⚠️ Deliberately NOT ``virtual_fleet._pid_alive``: that one reads EPERM as
+    dead (it manages its own children); here a deletion rides on the answer,
+    so EPERM (exists, another user's), overflow and any doubt all read alive.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (OSError, OverflowError, ValueError):
+        return True
+    return True
+
+
+# New-style names: <prefix>pid<N>-<mkdtemp suffix>. mkdtemp's alphabet is
+# [a-z0-9_], so a '-' can never appear in a pre-fix name — the two forms
+# cannot be confused (review r1 F3: "4821_xq" read as PID 4821).
+_PID_DIR_RE = re.compile(r"pid([0-9]{1,10})-[a-z0-9_]+")
+# Pre-fix names: TemporaryDirectory(prefix=...) = prefix + 8 of [a-z0-9_],
+# never starting "pid" (that is the new form's lead — review r2 F2).
+_LEGACY_DIR_RE = re.compile(r"(?!pid)[a-z0-9_]{8}")
+LEGACY_DIR_MIN_AGE_S = 86400
+
+
+def _module_running_elsewhere(module: str) -> bool:
+    """Is any OTHER process running ``python -m <module>``? Unsure = yes.
+
+    The liveness test for pre-fix dirs, which carry no PID: a pre-fix daemon's
+    dir keeps its START mtime for days, so age alone deleted a live echo's
+    dir in review r2 (F1: virtual_fleet / a manual run beside the unit).
+    Every launcher of these modules uses ``-m`` (systemd units, virtual_fleet).
+    """
+    me = os.getpid()
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return True
+    for entry in entries:
+        if not entry.isdigit() or int(entry) == me:
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as fh:
+                argv = fh.read().split(b"\0")
+        except OSError:
+            continue                  # exited mid-scan, or not ours to read
+        if module.encode() in argv:
+            return True
+    return False
+
+
+def _rmtree_witnessed(path, what: str) -> bool:
+    """rmtree that never swallows silently (honest_failure_modes #9)."""
+    try:
+        shutil.rmtree(path)
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError as exc:
+        logger.warning("lab tmpdir: could not remove %s %s: %s", what, path, exc)
+        return False
+
+
+def sweep_dead_owner_dirs(prefix: str, *, owner_module: Optional[str] = None,
+                          now: Optional[float] = None) -> int:
+    """Remove this user's ``prefix`` dirs that no live process can own.
+
+    The cure for every exit that skips cleanup — ``os._exit`` in the RNS-init
+    watchdog (#68), RNS/LXMF signal handlers, RNS's own exit path, a SIGKILL,
+    a late LXMF writer (review r2 F3/F4/F5). Two forms:
+
+    * ``<prefix>pid<N>-*`` — removed when PID N is gone. Liveness is the PID
+      in the name, never an age: a daemon's own dir can be days old.
+    * pre-fix ``<prefix><8 chars>`` (no PID) — only when ``owner_module`` is
+      given, the dir is a day old, AND no other process runs that module
+      (the PID-less dir's only liveness evidence). This clears the fleet's
+      backlog on deploy with no hand cleanup.
+
+    Anything else, symlinks, other users' dirs and a live/unknown owner are
+    KEPT; PID reuse can only keep, never delete.
+    """
+    base = Path(tempfile.gettempdir())
+    uid = os.getuid()
+    now = time.time() if now is None else now
+    legacy_ok: Optional[bool] = None     # evaluated once, only if needed
+    swept = 0
+    for old in base.glob(f"{prefix}*"):
+        rest = old.name[len(prefix):]
+        m = _PID_DIR_RE.fullmatch(rest)
+        legacy = (m is None and owner_module is not None
+                  and _LEGACY_DIR_RE.fullmatch(rest) is not None)
+        if m is None and not legacy:
+            continue
+        try:
+            st = old.lstat()
+        except OSError:
+            continue
+        if old.is_symlink() or not old.is_dir() or st.st_uid != uid:
+            continue
+        if m is not None and _pid_maybe_alive(int(m.group(1))):
+            continue
+        if legacy:
+            if now - st.st_mtime < LEGACY_DIR_MIN_AGE_S:
+                continue
+            if legacy_ok is None:
+                legacy_ok = not _module_running_elsewhere(owner_module)
+            if not legacy_ok:
+                continue
+        if _rmtree_witnessed(old, "stale dir"):
+            swept += 1
+    if swept:
+        logger.info("lab tmpdir: swept %d stale %s* dir(s)", swept, prefix)
+    return swept
+
+
+@contextlib.contextmanager
+def exit_scoped_tmpdir(prefix: str, *, owner_module: Optional[str] = None):
+    """A temp dir for RNS/LXMF state that leaves nothing behind.
+
+    ``owner_module`` (e.g. ``"lab.lxmf_echo"``) is the ``-m`` name the caller
+    runs as; given, the start-up sweep may also clear pre-fix dirs.
+
+    Root-caused 2026-11-17 (tests/test_lab_tmpdir_survives_exit.py) by a
+    live drill of a real RNS+LXMF client: atexit ran ``LXMRouter.exit_handler``
+    (persists node_stats / local_deliveries into its storagepath, re-creating
+    a ``TemporaryDirectory`` already removed), then ``Reticulum.exit_handler``,
+    which in that run reached ``os._exit(0)`` (seen once, not on every exit) —
+    so a cleanup registered with atexit is not guaranteed to run at all.
+    1,553 tracer dirs (~50 MB of tmpfs) in 11 days on the manager.
+
+    So the contract is: the caller flushes its router INSIDE the ``with``
+    (``flush_lxmf_router``), the dir is removed when the ``with`` closes, and
+    any exit that skips that is cured by the next start's
+    ``sweep_dead_owner_dirs`` (the PID is in the dir name). Review r2 named
+    the 1-in-2 ``os._exit``: ``LocalClientInterface.teardown`` calls
+    ``RNS.exit()`` from its reader thread when detach closes the socket,
+    racing the main thread's atexit.
+    """
+    sweep_dead_owner_dirs(prefix, owner_module=owner_module)
+    path = tempfile.mkdtemp(prefix=f"{prefix}pid{os.getpid()}-")
+    try:
+        yield path
+    finally:
+        _rmtree_witnessed(path, "own dir")
+
+
+@contextlib.contextmanager
+def lxmf_router_flushed(get_router):
+    """Flush ``get_router()`` on EVERY way out of the block (review r1 F5).
+
+    A getter, not the router: the block usually builds it, and an exception
+    before that leaves ``None`` (a no-op). Nest it INSIDE ``bounded_block`` so
+    a wedged teardown stays bounded, and inside ``exit_scoped_tmpdir`` so the
+    persist lands before the dir is removed.
+    """
+    try:
+        yield
+    finally:
+        flush_lxmf_router(get_router())
+
+
+def flush_lxmf_router(router) -> None:
+    """Run LXMRouter's exit persist NOW, while its storagepath still exists.
+
+    LXMF guards the handler (``exit_handler_running``), so the atexit call
+    later is a no-op. Not every LXMF writer is guarded: an announce carrying a
+    stamp cost after this point runs ``save_outbound_stamp_costs`` (makedirs)
+    and can re-create the dir (review r2 F3; 0 of 1,553 leaked dirs held that
+    file) — the next start's sweep removes it. A failure is logged, not
+    raised: losing ephemeral lab LXMF state is not worth a failed trace.
+    """
+    if router is None:
+        return
+    try:
+        router.exit_handler()
+    except Exception as exc:  # noqa: BLE001 — third-party teardown, any shape
+        logger.warning("lab tmpdir: LXMRouter flush failed: %s", exc)
 
 
 # ---------------------------------------------------------------- identity

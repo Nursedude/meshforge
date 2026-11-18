@@ -460,9 +460,11 @@ def test_trace_result_path_retries_used_default_is_one():
     assert r.path_retries_used == 1
 
 
-def test_run_trace_labels_rns_init_failure_as_observer_side(monkeypatch):
+def test_run_trace_labels_rns_init_failure_as_observer_side(monkeypatch, tmp_path):
     """An RNS init failure (incl. the #69 join-only refusal) is about THIS
     box, not the peers: every row says rns-init-error, never send-error."""
+    import tempfile
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))  # run_trace sweeps the tempdir
     import lab._lab_common as common
     from lab import lxmf_tracer as t
     monkeypatch.setitem(sys.modules, "RNS", MagicMock())
