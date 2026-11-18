@@ -222,7 +222,7 @@ PARKED 11-04, revisit 12-04:
   Measured detail + cure shape: `research/landscape_2026_11_09.md` appendix.
   DEPLOYED 10-23 `213c6952` (detail: provenance 2026-10-22). OWED: no `main_thread_wedge` fire at moc :08 / moc3 :x0 through 10-30; the unit leg `probe_main_thread_wedge` still judges one snapshot.
 - **Q-CLAIM** [MF][MA] S+F twin→MA — persistent-queue claim races (found by the BIC-2 slice-2 non-author re-review, 10-23; PRE-DATE BIC-2): (a) a slow worker's late `mark_failed` lands on a row `cleanup_stale` already reset to pending (and maybe re-claimed), bumping retry_count twice for one attempt; (b) a late `mark_delivered` flips a dead-lettered row to delivered after its DROPPED was counted (leg shows both; `_fire_terminal` fires twice); (c) `mark_failed` is read-modify-write with no compare on the retry_count it read. Cure class: a per-claim token (or compare-and-swap on status+retry_count) so only the current claimant can resolve a row — design first (grill), then test-first. Added by a session (reason: correctness of the queue the BIC-2 legs read from).
-- **LOG-1** [MF][MA] S+F — the first `get_logger()` in a process clears root handlers a host configured another way (`setup_logging` `_initialized` guard). Provenance § QUEUED 2026-10-18. (2nd half DONE 10-23, `09531b7d`/`97219b8d`; claim races → Q-CLAIM.)
+- **LOG-1** [MF][MA] S+F — the first `get_logger()` in a process clears root handlers a host configured another way (`setup_logging` `_initialized` guard). Provenance § QUEUED 2026-10-18.
 - **SEC-URL3** [MF] F — urllib3 GHSA-vxq7/8988, apt copies (moc2, lehua, moc4): ACCEPTED to 12-13 (`dep_advisory_accepted`).
 - **SEC-KRN** [MF] F — kernel CVE-2026-98432 roll 2/9; order: provenance 11-13. Session-added.
 - **PARITY-1** [MF][MA] S+F — copy, then match or beat (operator 11-11): each copied feature ships with a parity test run against the reference on the SAME radios + traffic; where they disagree on one packet, one is wrong. List: per-message delivery (MeshMonitor; = BIC-2) · mesh-problem rules (MeshMonitor; = M1) · named routing faults (mesh-client) · one machine-readable diagnose command (Meshtastic tools) · key/impersonation views · coverage planning (Site Planner) · multi-observer trace (CoreScope). References run in the lab only. Session-added 11-13.
@@ -237,6 +237,7 @@ PARKED 11-04, revisit 12-04:
 - **DAI-0** [MF] S — `offline_oracle.py` corpus reads the operator's `~/.claude/.../memory` (VERIFIED 11-11): a public corpus first
 - **SEC-2** [MF] S — `SECURITY.md` says 0.5.x + localhost-only (map binds 0.0.0.0); udev 0666 `install_noc.sh:895` (VERIFIED 11-11)
 - **CLAW-1** [MF] S+F — DudeClaw: honest 24/7 RF witnesses, fleet then one ham: `plans/claw1_grilling_2026_11_11.md`
+- **Q-1117** [MF] S+F — BENCH-G, AXI-1, MQTT-ARCH, WIRE-2: provenance 11-17
 - **SRC-1** [MF] S — repo is SoT, pages are dated views (operator 11-16): extend loop_gate TOPIC (no new class) — registry `source` path; refuse a page update while it is dirty; page carries `mf:source` path@sha
 
 ### LATER
