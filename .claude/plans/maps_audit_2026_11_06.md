@@ -129,3 +129,22 @@ Pass = ALL of these, each a test that FAILS on `c639e260` first:
 5. Live, on the lab box (not a gateway): 50 parallel `curl /api/nodes/geojson` during a cold start → thread count flat (`ls /proc/<pid>/task | wc -l` before/after), p99 < 1 s, and a browser shows the banner, not a raw JSON page.
 Control that can fail: the same 50-curl drill on `c639e260` must show the pile-up (threads climb, p99 ≫ 1 s), or the drill is not measuring the defect.
 Not in scope: changing what the background refresher collects. Review: contextless non-author pass before deploy (concurrency = upshift; queue a frontier read if this session is not one).
+
+## H16 + the CoreScope comparison (operator 2026-11-17: "yes queue them - i follow your recommendations")
+
+**Question asked:** can :5000 do what CoreScope's live map does? Read 11-17 (code + CoreScope README/UI guide; CoreScope NOT run).
+
+**H16 — an animation draws a path nobody measured (MAP-H class).** `web/node_map.html:2663` animates a live message `msg.from_id → 'local'`: a straight line from the sender to this box, whatever the hop count. A 3-hop packet is drawn as direct. BELIEVED from reading (not observed on screen). Red-first: a hop>0 message must not draw a direct sender→box line; hops unknown → no line, say so.
+
+**Physics (why CoreScope's route animation does not port to Meshtastic):** a MeshCore packet carries its path (repeater hashes), so one packet draws a route. A Meshtastic packet carries hop count (`hopStart − hopLimit`) and, since fw 2.6, ONE byte of the last relay (ambiguous: several nodes share a byte). A Meshtastic route drawn from one packet is invented; measured routes come only from traceroutes (`traceroute_history.db`, ROADMAP TRH-1).
+
+**What :5000 has (VERIFIED 11-17):** websocket live message feed (:5001 listening on VolcanoAI + moc), a particle "message flow" animation, a 24 h playback slider of NODE snapshots (not packets), animated link lines, the MAP-H honesty layer.
+
+**Plan, in order (beat CoreScope on truth; PARITY-1 "copy, then match or beat"):**
+1. H16 (above) — first; it is a defect.
+2. Heard-by fan per packet: one line per fleet box that RECEIVED it, labelled SNR · hops · age; nothing for a box that did not (= Phase 4 heard-by edges; our fleet is the observer network).
+3. Last-hop CANDIDATES from the 1-byte relay id, drawn as candidates ("relayed by one of A, B"), never one confident line.
+4. Traceroute routes on the map (TRH-1) — the only measured Meshtastic paths.
+5. Packet replay (VCR over heard-by events we already record), beside the node-snapshot slider.
+6. MeshAnchor: true MeshCore route animation from packet paths (honest there).
+7. Run CoreScope in the lab as the reference (PARITY-1: references in the lab only); parity test on the same MeshCore traffic.
