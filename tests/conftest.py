@@ -13,9 +13,11 @@ was unused (no test imported it) and was removed in the 2026-05-19
 pattern-audit cleanup (Finding #9).
 """
 
+import itertools
 import os
 import sys
 from contextlib import ExitStack
+from pathlib import Path
 
 import pytest
 from unittest.mock import MagicMock, patch
@@ -338,8 +340,54 @@ def _isolate_meshtastic_cli_connection():
             setattr(mod, a, v)
 
 
+#: One counter PER ROOT (review 11-18 #6/#9): a fresh root numbers from 0, so
+#: naming is deterministic and testable; uniqueness never rests on one
+#: process-wide counter — a name already on disk is SKIPPED, never reused.
+_ISOLATION_SEQ = {}
+
+
+def _fresh_isolation_dir(root):
+    """A NEW, empty directory under ``root`` — O(1), never a scan (CI-1, 11-18).
+
+    ``tmp_path_factory.mktemp`` (and every ``tmp_path`` request) picks its number
+    by scanning EVERY entry of the basetemp root, so paying it per test in an
+    autouse fixture made the suite quadratic in its own size (cProfile diff:
+    +98.6 ms/test late in the run; 27,780 entries; see
+    ``plans/ci_suite_cost_2026_11_18.md`` and ``tests/test_conftest_tmp_cost.py``,
+    the gate). Children are sharded 1,000 per parent so no directory grows
+    without bound; ``exist_ok=False`` + skip means a test is never handed a
+    directory that already existed (a second conftest module object, a rerun)."""
+    root = Path(root)
+    seq = _ISOLATION_SEQ.setdefault(str(root), itertools.count())
+    while True:
+        n = next(seq)
+        d = root / f"s{n // 1000:04d}" / f"t{n % 1000:03d}"
+        d.parent.mkdir(exist_ok=True)
+        try:
+            d.mkdir(exist_ok=False)
+            return d
+        except FileExistsError:
+            continue
+
+
+@pytest.fixture(scope="session")
+def _isolation_root(tmp_path_factory):
+    """ONE ``mktemp`` for the session; per-test children via ``_fresh_isolation_dir``."""
+    return tmp_path_factory.mktemp("per_test_isolation")
+
+
+@pytest.fixture
+def _per_test_isolation_dir(_isolation_root):
+    """ONE fresh empty directory per test, shared by the autouse isolation
+    fixtures (review 11-18 #5: one mkdir per test, not one per fixture). Their
+    file names do not collide: broker_profiles.json, rns_nodes.json,
+    node_cache.json. Function-scoped, but it requests only the SESSION root —
+    the CI-1 gate allows exactly this shape."""
+    return _fresh_isolation_dir(_isolation_root)
+
+
 @pytest.fixture(autouse=True)
-def _isolate_broker_profile_store(tmp_path_factory):
+def _isolate_broker_profile_store(_per_test_isolation_dir):
     """Every test's broker profile store is a tmp file, never the operator's
     ``~/.config/meshforge/broker_profiles.json`` (F8 v2 r8, 2026-11-03).
 
@@ -354,7 +402,7 @@ def _isolate_broker_profile_store(tmp_path_factory):
         import utils.broker_profiles  # noqa: F401
     except Exception:            # minimal-deps profile — nothing to isolate
         pass
-    path = tmp_path_factory.mktemp("broker_store") / "broker_profiles.json"
+    path = _per_test_isolation_dir / "broker_profiles.json"
     saved = []
     for name in ("utils.broker_profiles", "src.utils.broker_profiles"):
         mod = sys.modules.get(name)
@@ -402,7 +450,7 @@ def _reset_node_tracker_singleton():
 
 
 @pytest.fixture(autouse=True)
-def _isolate_node_cache_files(tmp_path_factory):
+def _isolate_node_cache_files(_per_test_isolation_dir):
     """Keep the node-cache writers out of the operator's live data directory.
 
     ``UnifiedNodeTracker._save_cache`` writes TWO files: the one
@@ -436,7 +484,7 @@ def _isolate_node_cache_files(tmp_path_factory):
     property of today's tests, not of the gate. Patching the alias in front of
     you is exactly the half-covered guard this fixture exists to prevent.
     """
-    root = tmp_path_factory.mktemp("node_cache_isolation")
+    root = _per_test_isolation_dir
     targets = [
         ('utils.paths.MeshForgePaths.rns_nodes_cache_path', root / "rns_nodes.json"),
         ('src.utils.paths.MeshForgePaths.rns_nodes_cache_path', root / "rns_nodes.json"),

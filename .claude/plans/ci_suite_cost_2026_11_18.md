@@ -44,11 +44,47 @@ the same files ALONE vs AFTER a 300-file prefix (11,025 tests):
 | `test_regression_guards.py` (87, slow-test dominated) | 749 | 815 | 1.09 |
 
 A test's cost depends on how many tests ran BEFORE it in the process: an accumulation, not the
-mix. Not GC, not handlers, not output (above). **Root cause still UNKNOWN** — the next step is
-a profile DIFF: `cProfile` one fast file alone vs after the prefix; the function whose cumulative
-time grows names the accumulator (candidates: an autouse fixture whose work scales with
-`sys.modules` or a growing registry; CPU from leaked polling threads). Side find: `test_fleet_down` whole-fleet case takes > 30 s on the Pi (10.4 s on CI) —
-sandboxed (fake ssh + marker), slow not dangerous.
+mix. Not GC, not handlers, not output (above).
+
+## ROOT CAUSE — FOUND 11-18 (cProfile diff, `-p proftarget`, VERIFIED n=1, tree hash launch = end)
+
+`test_rf.py` profiled ONLY during its own tests: alone 12.8 ms/test, after the 300-file prefix
+110.5 ms/test. Of the +104 ms, **+98.6 ms is `tmp_path_factory.mktemp` → `make_numbered_dir` →
+`find_prefixed`/`extract_suffixes`** — called +20,064 times PER TEST. pytest's `mktemp` finds the
+next number by scanning EVERY entry of the shared basetemp root, and two AUTOUSE fixtures call it
+for EVERY test:
+
+- `_isolate_broker_profile_store` → `mktemp("broker_store")` (+49.2 ms)
+- `_isolate_node_cache_files` → `mktemp("node_cache_isolation")` (+49.2 ms)
+
+(both in `tests/conftest.py` @ `b831a09b`; cited by NAME — line numbers move with every edit)
+
+The last run's basetemp held 27,780 entries: 10,147 `broker_store*` + 10,147
+`node_cache_isolation*`. Each test adds 2 and scans all before it → the suite is **O(N²)** in its
+own size. That is the "9×", and why each cap raise was overtaken. Our doing: the same file already
+knows the lesson — the delivery-counters fixture (09-01) and `_absent_posture_path` (09-10) record
+moving two OTHER autouse fixtures off a per-test `mktemp` for exactly this cost; these two were
+never moved.
+
+## The cure (CI-1) — built 11-18
+
+1. Both fixtures request ONE per-test dir (`_per_test_isolation_dir`) from ONE session root
+   (`_isolation_root`, `mktemp` once); children named by an O(1) per-root counter, sharded 1,000 per
+   parent, a taken name skipped. Isolation unchanged (each test still gets its own empty dir).
+2. Gate `tests/test_conftest_tmp_cost.py`: follows the FIXTURE GRAPH across every `conftest.py`;
+   fails on any autouse function-scoped fixture that pays the basetemp scan (`tmp_path`, `tmpdir`,
+   `tmp_path_factory`, directly or via a dependency). Planted shapes pinned.
+3. Acceptance, measured not asserted: the position experiment re-run, then CI `Test Suite` wall
+   time for that head vs 33.5 min median today.
+
+**Acceptance leg 1 — VERIFIED 11-18 (n=1, conftest hash launch = end):** after the 300-file prefix,
+`test_rf` 55.3 → **2.8 ms/test** (0.85× alone; was 5.5×), `test_watchdog_probes` 75.2 → **10.1**
+(1.28×; was 3.2×); the 11 k-test prefix run 23:03 → **13:15**. (10,948 vs 10,963 passed: the new test
+file shifted the alphabetical 300-file window by one file — not a loss; 0 failed.) Leg 2 (CI wall
+time for the pushed head) owed.
+
+Side find (separate from the cure): `test_fleet_down` whole-fleet case takes > 30 s on the Pi
+(10.4 s on CI) — sandboxed (fake ssh + marker), slow not dangerous.
 
 ## Why raising the cap again is the bandage
 
