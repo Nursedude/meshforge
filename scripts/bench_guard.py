@@ -28,23 +28,28 @@ comments, so ``stage.split()`` is exactly the argv bash will build. Then:
 
 stage 1 is the judged program (a reader, a package/registration verb, or the
 plain CLI); later stages are filters; closed option tables refuse the reader
-options that execute or write. Review r4 showed the same class in the MENTION
-check (fnmatch: `[^`, quotes beside globs, quadratic on unclosed `[`), so the
-mention is an over-approximating star-pattern scan — every non-literal
-character, and in a second pass every $(…)/${…}/`…`/[…]/{…} region, is a
-wildcard — linear in the input. A refusal costs a re-phrase (Grep/Read/Write
-tools, one plain command per call); a false allow can flash a fleet radio.
+options that execute or write. The MENTION (what wakes the judge) is the
+LITERAL name, contiguous once quoting is removed (2026-11-18). r4-r5 made it
+an over-approximating construction scan on the belief "a false mention only
+costs a re-phrase"; nobody measured that cost until the 11-18 replays —
+~2,050–2,080 of ~17,300 real commands (11.9 %, the 14 d window slides) refused
+while unnamed, every session paying it. A
+REFUSAL HAS A PRICE: any change to what this guard refuses must replay the
+corpus before AND after (`scripts/bench_guard_replay.py`) and state both
+counts — UNNAMED (refused without the contiguous name) and named refusals —
+beside the catch it buys.
 
 THE JOB (re-scoped by the operator 2026-11-15 after review r7): stop a
 COOPERATING session from ACCIDENTALLY running Headless off the lab box or
-letting it pick the default port. It is a seatbelt, not a jail: the
-mention scans above are best-effort, and a session that DELIBERATELY
-constructs the name ($, glob, brace, bracket, backtick, quote or escape
-syntax inside or around it, in that word or an earlier one) is out of
-scope — ledger bg-accept-deliberate-name-construction-2026-11-15 (one row,
+letting it pick the default port. It is a seatbelt, not a jail: a
+session that DELIBERATELY constructs the name so its letters are not all in
+one word ($ / ${…} / $(…) / backtick expansion, globs, brace expansion,
+variables) is out of scope — ledger
+bg-accept-deliberate-name-construction-2026-11-15 (one row,
 replacing three earlier construction rows). Seven review rounds showed a
 string guard cannot model bash completely; plain-shape commands are what it
-must get right.
+must get right. Quotes, backslashes and bracket/brace characters INSIDE a
+word that still spells the name ARE caught (the literal rule above).
 
 SCOPE (honest): command strings and MCP tool names/args only. Not seen: a
 script FILE that calls axiometa, aliases, variable indirection, deliberate
@@ -70,7 +75,6 @@ from pathlib import Path
 _REPO = Path(__file__).resolve().parent.parent
 BY_ID = "/dev/serial/by-id/"
 MAX_LEN = 20000
-HUGE = 200_000
 SHELL_TOOLS = frozenset({"Bash", "Monitor"})
 NAMES = ("axiometa", "axiometa-cli", "axiometa_cli")
 
@@ -158,118 +162,34 @@ def port_is_bench(port, bench: frozenset) -> bool:
     return bool(m) and m.group(1).upper() in bench
 
 
-# ── the mention (wide on purpose: a false mention only costs a re-phrase) ──────
+# ── the mention: the LITERAL name (2026-11-18, operator "Literal name only") ──
+# r4 (star patterns) and r5 (letters-in-order) over-approximated DELIBERATE
+# construction — out of scope since r7 (ledger
+# bg-accept-deliberate-name-construction-2026-11-15). Replayed over 14 d of this
+# project's Bash (first replay 11-18: 2,079 of 17,404, 11.95 %) they refused commands that
+# never name the tool; 2,046 from letters-in-order alone. An ACCIDENT types the
+# name CONTIGUOUSLY. The rule, exactly (Fable r3 #2: a per-word split was dead
+# code — no break character is ever deleted, so it never changed a verdict):
+# join `\`-newline continuations, case-fold, delete ONLY the characters quoting
+# or an accident inserts inside a name (quotes ' " , backslash, the $ of
+# $'…'/$"…", NUL, CR, [ ] { }), then look for the name. So `ax'io'meta`,
+# `ax\iometa`, `a[x]iometa` read as the name; letters separated by anything
+# else — a blank (`--max-io --metadata`, review 11-18 #1), ; & | < > ( ), or a
+# character bash keeps literally (`relax.io/metadata`, Fable r2 #4) — do not.
+# Accepted residual (r3 #6, same as HEAD; 0 in 17.3 k real commands before r3, 1 since = the r3 demo): letters
+# joined ONLY by deleted characters (`cfg["max"]["io"]["metadata"]`) are refused, as are letters joined by `\`-newline continuations.
 
-_LIT = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_-")
-_SEP = frozenset(" \t\n\r\x0b\x0c;&|<>()/=@:")
-
-
-def _patterns(low: str):
-    """Word components as star-patterns: literal strings and None (= any run).
-    OVER-approximates bash: every non-literal character is a wildcard, and a
-    whole $(…) ${…} `…` […] {…} region is ONE wildcard. One forward pass, no
-    backtracking (review r4 F1: fnmatch was quadratic). Since r5 this decides
-    only words with < 4 name letters in order; `_letters_in_order` the rest."""
-    out, items, cur = [], [], []
-    depth, tick, i, n = 0, False, 0, len(low)
-
-    def wild():
-        if cur:
-            items.append("".join(cur))
-            cur.clear()
-        if not items or items[-1] is not None:
-            items.append(None)
-
-    def end():
-        nonlocal items
-        if cur:
-            items.append("".join(cur))
-            cur.clear()
-        if items:
-            out.append(items)
-        items = []
-    while i < n:
-        c = low[i]
-        if tick:
-            tick = c != "`"
-        elif depth:
-            depth += (c in "[{(") - (c in "]})")
-        elif c in _SEP:
-            end()
-        elif c == "`":
-            wild()
-            tick = True
-        elif c in "[{" or (c == "$" and low[i + 1:i + 2] in ("(", "{")):
-            wild()
-            depth, i = 1, i + (c == "$")
-        elif c in _LIT:
-            cur.append(c)
-        else:
-            wild()
-        i += 1
-    end()
-    return out
-
-
-def _star_match(items, name: str) -> bool:
-    if None not in items:
-        return "".join(items) == name
-    pos, last = 0, len(items) - 1
-    for k, it in enumerate(items):
-        if it is None:
-            continue
-        if k == 0:
-            if not name.startswith(it):
-                return False
-            pos = len(it)
-        elif k == last:
-            return len(name) - len(it) >= pos and name.endswith(it)
-        else:
-            pos = name.find(it, pos)
-            if pos < 0:
-                return False
-            pos += len(it)
-    return True
-
-
-def _letters_in_order(word: str, name: str = "axiometa") -> int:
-    """Longest run of `name`'s letters appearing in `word` in order (LCS, O(8n))."""
-    dp = [0] * (len(name) + 1)
-    for ch in word:
-        prev = 0
-        for j, nc in enumerate(name, 1):
-            cur = dp[j]
-            if ch == nc:
-                dp[j] = prev + 1                # LCS: old dp[j] <= old dp[j-1] + 1
-            else:
-                dp[j] = max(dp[j], dp[j - 1])
-            prev = cur
-    return dp[-1]
+_NAME_FLAT = NAMES[0]
+_INSERTED = re.compile(r"[\"'\\$\x00\r\[\]{}]")
 
 
 def _mentions(s) -> bool:
-    """axiometa named anywhere — also when quotes, $'', backslashes, NUL/CR,
-    braces, brackets, substitutions or a glob split or stand in for it: a
-    component with >= 2 literal characters that could expand to a name, or
-    (review r5) a word with a glob/brace/$ character carrying >= 4 of the
-    name's letters in order. Above HUGE characters the full scan is too slow
-    (measured 23 s on 10 MB), so it OVER-approximates (review r6): a name
-    4-gram, or any glob/brace/$/backtick character at all, is a mention."""
+    """`s`, continuations joined, case-folded, inserted characters deleted,
+    contains the name contiguously. Linear."""
     if not isinstance(s, str):
         return False
-    low = s.lower()
-    flat = re.sub(r"[^a-z0-9]", "", low)
-    if "axiometa" in flat:
-        return True
-    if len(s) > HUGE:
-        return any(g in flat for g in ("axio", "xiom", "iome", "omet", "meta")) or \
-            any(c in s for c in "[]{}*?$`")
-    for items in _patterns(low):
-        if None in items and sum(len(it) for it in items if it) >= 2 and \
-                any(_star_match(items, nm) for nm in NAMES):
-            return True
-    return any(any(c in w for c in "[]{}*?$`") and _letters_in_order(w) >= 4
-               for w in re.split(r"[\s;&|<>()/]+", low))
+    joined = s.lower().replace("\\\r\n", "").replace("\\\n", "")
+    return _NAME_FLAT in _INSERTED.sub("", joined)
 
 
 # ── the shape ──────────────────────────────────────────────────────────────────

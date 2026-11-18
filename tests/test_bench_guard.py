@@ -296,8 +296,8 @@ V4_ACCEPTED_FALSE_DENY_NON_LAB = [
     "ls ~/.axiometa 2>&1 | head -2", "echo axiometa > /dev/null", "find . -name '*axiometa*'",
     "ssh moc1 'grep -c axiometa /opt/meshforge/docs/fleet_roles.yaml'",
     "ssh -o ConnectTimeout=5 moc1 ls ~/.axiometa", "claude mcp get axiometa",
-    "claude mcp remove axiometa", "grep -rn axiometa . | tee hits.txt", "ls ax*",
-]
+    "claude mcp remove axiometa", "grep -rn axiometa . | tee hits.txt",
+]   # "ls ax*" left this list 11-18: a glob is no longer a mention (literal rule)
 V4_ACCEPTED_FALSE_DENY_LAB = [
     f"axiometa upload ./fw -b genesis-one \\" + NL + f"  -p {BENCH_PORT}",
     f"axiometa monitor -p '{BENCH_PORT}' | head -20",
@@ -653,7 +653,7 @@ def test_every_character_outside_the_alphabet_is_refused(box, ch):
 
 @pytest.mark.parametrize("cmd", [
     "axio$''meta monitor", 'ax$"io"meta monitor', "axiomet{a,} monitor",
-    "axiomet[a] monitor", "ax*meta monitor", "/usr/local/bin/axio?eta monitor",
+    "axiomet[a] monitor",
     "axio\x00meta monitor", "axio\rmeta monitor", "AXIOMETA monitor", "axio\\" + NL + "meta monitor",
     "a'x'i'o'm'e't'a monitor",
 ])
@@ -686,47 +686,53 @@ R4_MENTIONS = [
 ]
 
 
-@pytest.mark.parametrize("cmd", R4_MENTIONS)
-def test_r4_mention_bypasses(box, cmd):
-    assert bench_guard._mentions(cmd), cmd
-    for role in ("lab", "primary"):
-        box.role(role)
-        assert bench_guard.decide(bash(cmd)), (role, cmd)
+@pytest.mark.parametrize("cmd", [
+    # `axiomet[[:alpha:]]` left out: it flattens to axiomet-a-lpha, still the name
+    c for c in R4_MENTIONS if c != "axiomet[[:alpha:]] monitor"
+] + ["ax*meta monitor", "/usr/local/bin/axio?eta monitor"])
+def test_r4_constructions_are_accepted_residual(cmd):
+    """REVERSED 2026-11-18 (operator "Literal name only"): these were caught by the
+    r4 star scan, whose price was never measured — the 11-18 replay found the
+    r4+r5 scans refusing 11.95 % of real commands. Deliberate construction is out
+    of scope (r7 ledger); none of these carries the literal name. Re-widening
+    needs `scripts/bench_guard_replay.py` first (bench_guard docstring)."""
+    assert not bench_guard._mentions(cmd), cmd
 
 
-def _obfuscate(name, rng):
-    """(word, literals): a word bash expands (or may glob) back to `name`, built
-    from bash's rules, and how many characters of it bash reads LITERALLY
-    (plain, quoted, escaped, $'c') — globs, brackets and braces are not."""
-    out, literals = [], 0
-    for ch in name:
-        r = rng.random()
-        if r < 0.15:
-            out.append(rng.choice(["?", f"[{ch}]", "[!Z]", "[^Z]", "[[:alnum:]]", "*",
-                                   f"{{{ch},{ch}}}"]))
-        elif r < 0.25:
-            out.append(rng.choice([f"'{ch}'", f'"{ch}"', f"\\{ch}", f"$'{ch}'",
-                                   f"{ch}$(true)", f"{ch}${{E}}", f"{ch}``"]))
-            literals += 1
-        else:
-            out.append(ch)
-            literals += 1
-    return "".join(out), literals
-
-
-def test_property_constructed_obfuscations_are_mentions():
+def test_property_quote_and_escape_splits_are_always_mentions():
+    """Oracle BY CONSTRUCTION (review 11-18 #3 — never a copy of the rule): every
+    letter kept, each one optionally quoted or escaped, random case — bash reads
+    the name, so it MUST be a mention, in every argv position."""
     import random
     rng = random.Random(20261115)
     misses = []
     for _ in range(5000):
         name = rng.choice(bench_guard.NAMES)
-        word, literals = _obfuscate(name, rng)
-        if literals < 2:
-            continue                           # accepted residual: < 2 literal characters
-        for cmd in (f"{word} monitor", f"/usr/local/bin/{word} monitor", f"pip install {word}"):
+        word = "".join(
+            rng.choice([ch, ch.upper(), f"'{ch}'", f'"{ch}"', f"\\{ch}"]) if ch.isalpha() else ch
+            for ch in name)
+        for cmd in (f"{word} monitor", f"/usr/local/bin/{word} monitor", f"pip install {word}",
+                    f"x=1; {word} boards", f"echo hi | {word} upload s"):
             if not bench_guard._mentions(cmd):
                 misses.append(cmd)
     assert not misses, misses[:10]
+
+
+def test_property_a_glob_in_place_of_a_letter_is_never_a_mention():
+    """Oracle by construction: one or more letters REPLACED by a glob (? * [!Z])
+    leaves the name unspelled — deliberate construction, accepted residual."""
+    import random
+    rng = random.Random(1118)
+    hits = []
+    for _ in range(5000):
+        chars = list(_NM)
+        for i in rng.sample(range(len(chars)), rng.randint(1, 3)):
+            chars[i] = rng.choice(["?", "*", "[!Z]"])
+        word = "".join(chars)
+        for cmd in (f"{word} monitor", f"/usr/local/bin/{word} boards"):
+            if bench_guard._mentions(cmd):
+                hits.append(cmd)
+    assert not hits, hits[:10]
 
 
 def test_mention_check_is_linear_on_hostile_input(box):
@@ -735,7 +741,7 @@ def test_mention_check_is_linear_on_hostile_input(box):
     import time
     box.role("lab")
     for junk in ("[a-", "{a,", "$(", "[", "*?", "'\"\\"):
-        cmd = ": ax" + junk * 40000 + " ; axiomet? monitor"
+        cmd = ": ax" + junk * 40000 + " ; axiometa monitor"
         t0 = time.monotonic()
         assert bench_guard.decide(bash(cmd)), junk
         assert time.monotonic() - t0 < 1.0, junk
@@ -809,46 +815,11 @@ R5_MENTIONS = [
 
 
 @pytest.mark.parametrize("cmd", R5_MENTIONS)
-def test_r5_constructed_names_are_mentions(box, cmd):
-    assert bench_guard._mentions(cmd), cmd
-    for role in ("lab", "primary"):
-        box.role(role)
-        box.bench(BENCH)
-        assert bench_guard.decide(bash(cmd)), (role, cmd)
-
-
-def _padded(name, rng):
-    """(word, letters_present): bash expands it to `name` (classes and braces
-    padded with junk); letters_present = name letters that appear in the word."""
-    junk = "bqz}]{[,"
-    out, present = [], 0
-    for ch in name:
-        r = rng.random()
-        pad = "".join(rng.choice(junk) for _ in range(rng.randint(0, 3)))
-        if r < 0.12:
-            out.append(rng.choice(["?", "[!Q]", "[^Q]", "[[:alnum:]]"]))
-            continue
-        if r < 0.3:
-            out.append(f"[{pad.replace('[', '').replace(']', '')}{ch}]" if rng.random() < .5
-                       else f"{{{pad.replace('{', '').replace('}', '').replace(',', '')}q,{ch}}}")
-        else:
-            out.append(ch)
-        present += 1
-    return "".join(out), present
-
-
-def test_property_junk_padded_constructions_with_4_letters_are_mentions():
-    import random
-    rng = random.Random(1115)
-    misses = []
-    for _ in range(5000):
-        word, present = _padded("axiometa", rng)
-        if present < 4:
-            continue                           # accepted residual (operator 11-15)
-        for cmd in (f"{word} monitor", f"/usr/local/bin/{word} boards", f"env -u {word} x"):
-            if not bench_guard._mentions(cmd):
-                misses.append(cmd)
-    assert not misses, misses[:10]
+def test_r5_constructions_are_accepted_residual(cmd):
+    """REVERSED 2026-11-18: the r5 letters-in-order rule caught these and ALSO
+    2,046 of the replay's 2,079 false refusals (`primary.get` = i-m-e-t + a `$`
+    nearby). Same disposition as r4 above."""
+    assert not bench_guard._mentions(cmd), cmd
 
 
 def test_r5_device_or_config_write_before_a_filter_mention(box):
@@ -867,10 +838,9 @@ def test_r5_escaped_newline_in_unparseable_payload_fails_closed(box):
     assert json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-def test_letters_in_order_threshold_is_four():
-    assert bench_guard._letters_in_order("meta*") == 4
-    assert bench_guard._mentions("ls meta*")
-    assert bench_guard._letters_in_order("met*") == 3
+def test_partial_names_with_globs_are_not_mentions():
+    """Was the r5 threshold test (`ls meta*` = 4 letters = mention). Reversed 11-18."""
+    assert not bench_guard._mentions("ls meta*")
     assert not bench_guard._mentions("ls met*")
 
 
@@ -892,9 +862,9 @@ def test_r5_deeply_nested_deployment_is_not_lab(box):
 def test_r5_huge_commands_decide_fast(box):
     import time
     box.role("lab")
-    # r6 F2: above HUGE a glob/brace/$ character is a mention (over-approximation,
-    # fail closed) — the full scan is too slow there (measured 23 s on 10 MB)
-    for cmd, want_deny in [("a*x " * 2_500_000, True), ("ax{a," * 2_000_000, True),
+    # r6 F2 needed a HUGE over-approximation because the construction scan took
+    # 23 s on 10 MB; the literal rule is one linear pass, so no size branch (11-18)
+    for cmd, want_deny in [("a*x " * 2_500_000, False), ("ax{a," * 2_000_000, False),
                            ("x " * 2_500_000, False),
                            ("x " * 1_000_000 + "axiometa monitor", True),
                            ("x " * 1_000_000 + "axio[m]eta monitor", True)]:
@@ -955,16 +925,17 @@ def test_no_lexer_and_no_glob_library_to_disagree_with_bash():
 _NM = "axio" + "meta"
 
 
-@pytest.mark.parametrize("glob_word", ["axi?m?ta", "a?i?m?t?"])
-def test_r6_padding_past_huge_does_not_hide_a_glob_name(box, glob_word):
-    """F2: the same glob word that is denied short must be denied when padded
-    past HUGE (only the letters were read there)."""
-    short = f"/usr/local/bin/{glob_word} upload sk"
+@pytest.mark.parametrize("word, denied", [("axi?m?ta", False), ("a?i?m?t?", False),
+                                          (_NM, True), ("ax'io'meta", True)])
+def test_r6_padding_never_changes_the_verdict(box, word, denied):
+    """F2 (kept as an invariant after the 11-18 reversal): a command padded with
+    200 KB of junk decides exactly as the short one does."""
+    short = f"/usr/local/bin/{word} upload sk"
     padded = ": " + "z" * 200_100 + "; " + short
     for role in ("lab", "primary"):
         box.role(role)
-        assert bench_guard.decide(bash(short)), (role, "short")
-        assert bench_guard.decide(bash(padded)), (role, "padded")
+        assert bool(bench_guard.decide(bash(short))) is denied, (role, "short")
+        assert bool(bench_guard.decide(bash(padded))) is denied, (role, "padded")
 
 
 _ESC = "".join(f"\\u{ord(c):04x}" for c in _NM)
@@ -1032,3 +1003,301 @@ def test_r7_bench_port_still_allowed(box):
     assert bench_guard.decide(bash(f"{_NM} upload sk -p {BENCH_PORT}")) is None
     assert bench_guard.decide(bash(f"{_NM} monitor --port={BENCH_PORT}")) is None
     assert bench_guard.decide(bash(f"{_NM} boards")) is None
+
+
+# ── 2026-11-18: mention = the LITERAL name (operator: "Literal name only") ─────
+# Replay corpus (BENCH-G step: 14 d of this project's Bash, 17,404 distinct
+# commands): the r4 star scan + r5 letters-in-order rule refused 2,079 (11.95 %)
+# that never name the tool — 2,046 from letters-in-order alone (`primary.get`
+# carries i-m-e-t). Both rules existed only for DELIBERATE construction, out of
+# scope since r7 (ledger bg-accept-deliberate-name-construction-2026-11-15). An
+# accident types the name; the mention is the name, contiguous after deleting only `_INSERTED`
+# characters (quotes, backslash, $, NUL, CR, brackets, braces).
+
+REPLAY_FALSE_REFUSALS = [    # verbatim from the 11-18 replay, each refused before this fix
+    'grep -n \'known = set(known_networks or ()) | {"meshtastic"}\' src/utils/map_federation.py',
+    'grep -n "outage_mixin\\|delivery_legs\\|in .*BYTE_IDENTICAL" tests/test_parity_check.py | head',
+    'find / -path /proc -prune -o -name tcp_interface.py -path "*meshtastic*" -print 2>/dev/null | head',
+    'sed -n 1185,1290p scripts/honest_status.sh; ls tests/*honest_status* tests/*.sh 2>/dev/null | head',
+    "python3 -c 'import json; d=json.load(open(\"x.json\")); print(d[\"primary\"].get(\"metadata\"))'",
+    "jq '.federation[\"peer_status\"]' state.json",
+]
+
+
+@pytest.mark.parametrize("cmd", REPLAY_FALSE_REFUSALS)
+def test_plain_commands_that_never_name_the_tool_are_not_judged(box, cmd):
+    assert not bench_guard._mentions(cmd), cmd
+    for role in ("lab", "primary"):
+        box.role(role)
+        assert bench_guard.decide(bash(cmd)) is None, (role, cmd)
+
+
+@pytest.mark.parametrize("cmd", [
+    f"{_NM} monitor", "AXIOMETA monitor", "ax'io'meta monitor", 'axio""meta monitor',
+    "ax\\iometa monitor", "a[x]iometa monitor", "ax{i}ometa monitor", "axio\\\nmeta monitor",
+    "axio\x00meta monitor", "pip install axiometa-cli", "python3 -m axiometa_cli upload s",
+    f"~/.{_NM}/bin/esptool write_flash 0 x.bin",
+])
+def test_the_literal_name_through_punctuation_is_still_a_mention(box, cmd):
+    """What an ACCIDENT can look like: the name, cased or split by punctuation."""
+    assert bench_guard._mentions(cmd), cmd
+    box.role("primary")
+    assert bench_guard.decide(bash(cmd)), cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    "foo --max-io --metadata x", "echo relax; io_meta=1", "grep 'ax io meta' f",
+    "ax iometa", "printf 'a\\nx' | grep iometa", "cat relax.txt iometa.txt",
+])
+def test_letters_spread_across_words_are_not_a_mention(box, cmd):
+    """Review 11-18 #1: the first literal rule flattened WHITESPACE too, so the
+    name's letters across separate words read as the name — the same false-refusal
+    class, now hidden as 'literal'. No character between the letters but an `_INSERTED` one is deleted."""
+    assert not bench_guard._mentions(cmd), cmd
+    box.role("primary")
+    assert bench_guard.decide(bash(cmd)) is None, cmd
+
+
+# The rule's whole truth table, written out by hand — NOT computed by a copy of the
+# rule (review 11-18 #3: a test that re-implements the code can only catch drift
+# between the copies). Widening or narrowing the mention changes a row here.
+MENTION_TABLE = [
+    (f"{_NM} monitor", True), ("AXIOMETA boards", True), ("ax'io'meta monitor", True),
+    ('axio""meta monitor', True), ("ax\\iometa monitor", True), ("a[x]iometa x", True),
+    ("ax{i}ometa x", True), ("axio\\\nmeta monitor", True), ("axio\\\r\nmeta monitor", True),
+    ("axio\x00meta x", True), ("axio\rmeta x", True), ("pip install axiometa-cli", True),
+    ("x=1;axiometa boards", True), ("(axiometa boards)", True), ("cat a|axiometa x", True),
+    ("axio$''meta x", True), ('ax$"io"meta x', True), ("axiomet{a,} x", True),
+    (f"~/.{_NM}/bin/x", True), ("python3 -m axiometa_cli x", True),
+    ("axiomet[[:alpha:]] x", False),         # a glob class: deliberate (was True "by luck")
+    # letters across bash's word breaks: no break character is ever DELETED (r3 #2)
+    ("axio\tmeta", False), ("axio\nmeta", False), ("axio&&meta", False), ("axio>meta", False),
+    ("axio<meta", False), ("(axio)meta", False), ("axio|meta", False), ("axio;meta", False),
+    # letters across characters bash keeps literally (Fable r2 #4)
+    ("curl -s https://relax.io/metadata", False), ("wget https://tax.io/meta.json", False),
+    ("sed -i s/syntax/io_meta/ f.py", False), ("python3 -m pkg.syntax.io.meta", False),
+    ("pytest -k syntax_io_meta", False), ("tar xf relax-io-meta.tar.gz", False),
+    ("ls meta*", False), ("ls met*", False), ("axi?m?ta upload", False),
+    ("a?i?m?t? upload", False), ("ax$Bometa monitor", False), ("axio$(true)meta x", False),
+    ("axio${X}meta x", False), ("ax`true`iometa x", False), ("${A}meta monitor", False),
+    ("ax*meta monitor", False), ("axiom{e,e}ta-cli", False), ("axio meta", False),
+    ("foo --max-io --metadata x", False), ("grep -n primary.get src", False),
+    ("echo relax; io_meta=1", False), ("", False),
+    # ACCEPTED residual (Fable r3 #6, same as HEAD; 0 before r3, 1 since = the r3 demo): letters
+    # joined ONLY by deleted characters read as the name
+    ("python3 -c 'print(cfg[\"max\"][\"io\"][\"metadata\"])'", True),
+]
+
+# The deleted set is CLOSED (Fable r3 #3: widening it by one character was unpinned
+# for 13 of 17). Every character an accident does not insert inside a name keeps
+# the letters apart. Adding one to `_INSERTED` must fail here.
+_KEPT = "/*?=,+~@`!#%^.:_- \t\n;&|<>()"
+
+
+@pytest.mark.parametrize("sep", list(_KEPT))
+def test_a_kept_character_between_the_letters_is_never_a_mention(sep):
+    assert not bench_guard._mentions(f"ls relax{sep}io{sep}meta"), repr(sep)
+    assert not bench_guard._mentions(f"axio{sep}meta"), repr(sep)
+
+
+@pytest.mark.parametrize("ins", list("\"'\\$\x00\r[]{}"))
+def test_an_inserted_character_inside_the_name_is_still_a_mention(ins):
+    assert bench_guard._mentions(f"axio{ins}meta x"), repr(ins)
+
+
+@pytest.mark.parametrize("cmd, want", MENTION_TABLE)
+def test_mention_truth_table(cmd, want):
+    assert bench_guard._mentions(cmd) is want, cmd
+
+
+def test_mention_name_derives_from_NAMES():
+    """Review 11-18 #7: one constant, not two hardcodes."""
+    assert bench_guard._NAME_FLAT == bench_guard.NAMES[0]
+    assert all(bench_guard._NAME_FLAT in n.replace("-", "").replace("_", "")
+               for n in bench_guard.NAMES)
+
+
+# ── the replay tool (the gate the docstring makes mandatory) ───────────────────
+# SEAM (same kind twice: r1 #2 oracle == rule, Fable r2 #2 counting unpinned):
+# the tally is a pure function over {command: source}; every test injects its own
+# commands or transcripts. NO test may read the live corpus — Fable r2 #1: a test
+# that ran main() against it wrote private commands into docs/ when a refusal
+# regressed. `_no_live_corpus` makes reaching it a failure, not a leak.
+
+def _replay():
+    import importlib
+    return importlib.import_module("bench_guard_replay")
+
+
+@pytest.fixture
+def rp(monkeypatch):
+    mod = _replay()
+
+    def _forbidden(*a, **k):
+        raise AssertionError("a test reached the live transcript corpus")
+    monkeypatch.setattr(mod, "get_real_user_home", _forbidden)
+    return mod
+
+
+def _src(cmds):
+    return lambda days: (["synthetic"], {c: "synthetic" for c in cmds})
+
+
+SYNTH = {
+    f"{_NM} boards": "named-refused",            # off-lab invocation: refused, named
+    f"grep -n {_NM} notes.md": "named-allowed",   # a reader: allowed
+    "ax'io'meta boards": "unnamed-refused",       # refused by the guard, NOT named by the oracle
+    "curl -s https://relax.io/metadata": "allowed",
+    "ls -la": "allowed",
+}
+
+
+def test_replay_oracle_is_not_the_guard_rule(rp):
+    """r1 #2: the oracle is the CONTIGUOUS name in the raw text, independent of `_mentions`."""
+    assert rp.named("AXIOMETA boards") and rp.named(f"pip install {_NM}-cli")
+    assert not rp.named("ax'io'meta boards")
+    assert not rp.named("foo --max-io --metadata x")
+
+
+def test_replay_tally_splits_named_and_unnamed(rp):
+    n_named, unnamed = rp.tally({c: "synthetic" for c in SYNTH})
+    assert n_named == 1
+    assert [r["cmd"] for r in unnamed] == ["ax'io'meta boards"]
+    assert unnamed[0]["transcript"] == "synthetic" and unnamed[0]["reason"]
+
+
+def test_replay_judges_as_a_non_lab_box(rp, box):
+    """Mutant `lab=True` (Fable r2 #2): on the lab box the plain CLI is allowed, so a
+    lab-judging tally would count 0 named here."""
+    box.role("lab")
+    assert rp.tally({f"{_NM} boards": "s"})[0] == 1
+
+
+def test_replay_exit_codes_and_gates(rp, capsys):
+    assert rp.main([], source=_src(SYNTH)) == 1                      # 1 UNNAMED > 0
+    assert rp.main(["--max-unnamed", "1"], source=_src(SYNTH)) == 0
+    assert rp.main(["--max-unnamed", "1", "--baseline-named", "0"], source=_src(SYNTH)) == 1
+    assert rp.main(["--max-unnamed", "1", "--baseline-named", "1"], source=_src(SYNTH)) == 0
+    assert rp.main([], source=lambda d: ([], {})) == 2               # nothing measured = UNKNOWN
+    out = capsys.readouterr().out
+    assert "named=1  UNNAMED=1" in out
+    leaked = [c for c in SYNTH if c in out]                         # stdout = counts only,
+    assert not leaked, leaked                                       # EVERY class (r3 #4)
+
+
+def test_replay_out_refuses_any_git_tree(rp, tmp_path):
+    """Fable r2 #1: the repo AND any git work tree (an export, a worktree); refused
+    BEFORE any corpus read (the fixture fails the test if it is reached)."""
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(_SCRIPT)))
+    other = tmp_path / "export"
+    (other / ".git").mkdir(parents=True)
+    linked = tmp_path / "linked_worktree"        # r4 #3: a linked worktree / submodule
+    linked.mkdir()                               # carries a .git FILE, not a directory
+    (linked / ".git").write_text("gitdir: /elsewhere/.git/worktrees/x\n")
+    (other / "docs").mkdir()
+    lnk = tmp_path / "lnk"                       # r3 #1: the r2 leak's mechanism — a plain
+    lnk.symlink_to(other / "docs")               # scratch path that RESOLVES into a git tree
+    flink = tmp_path / "rows.jsonl"
+    flink.symlink_to(other / "docs" / "rows.jsonl")
+    for bad in (os.path.join(repo, "docs", "x.jsonl"), repo, str(other / "docs" / "x.jsonl"),
+                str(lnk / "x.jsonl"), str(flink), str(linked / "x.jsonl")):
+        assert not rp._out_ok(bad), bad
+        assert rp.main(["--out", bad]) == 3, bad
+    assert rp._out_ok(str(tmp_path / "plain" / "x.jsonl"))
+    assert not (other / "docs" / "x.jsonl").exists() and not (other / "docs" / "rows.jsonl").exists()
+
+
+def test_replay_out_is_0600_even_if_it_existed_and_a_pass_removes_it(rp, tmp_path):
+    """Fable r2 #3: O_CREAT's mode skips an existing file; a PASS left stale rows."""
+    out = tmp_path / "rows.jsonl"
+    out.write_text("STALE ROW\n")
+    os.chmod(out, 0o644)
+    assert rp.main(["--max-unnamed", "1", "--out", str(out)], source=_src(SYNTH)) == 0
+    assert (os.stat(out).st_mode & 0o777) == 0o600
+    assert "STALE" not in out.read_text() and "ax'io'meta" in out.read_text()
+    assert rp.main(["--out", str(out)], source=_src(["ls -la"])) == 0
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("where", ["missing_parent/x.jsonl", "is_a_dir"])
+def test_replay_unwritable_out_is_refused_not_a_traceback(rp, tmp_path, where):
+    """r4 #2: an unopenable --out raised OSError — rc 1, read as a gate FAIL."""
+    (tmp_path / "is_a_dir").mkdir()
+    rc = rp.main(["--max-unnamed", "1", "--out", str(tmp_path / where)], source=_src(SYNTH))
+    assert rc == 3
+
+
+@pytest.mark.parametrize("tool, judged", [
+    ("mcp__axiometa__upload", True), ("mcp__Axiometa__read_serial", True),
+    ("mcp__AXIOMETA__list_boards", True), ("mcp__esp32__flash", False),
+    ("mcp__axio_meta__upload", False),     # split name: out of SCOPE (Fable r4 info)
+])
+def test_mcp_tool_names_use_the_same_mention_rule(tool, judged):
+    assert bench_guard._mentions(tool) is judged, tool
+
+
+def test_a_mention_only_in_a_filter_pattern_is_allowed(box):
+    """Fable r4 info (pre-existing, unpinned): the name in a later stage's PATTERN,
+    after a non-reader first stage, must not refuse the pipeline."""
+    for role in ("lab", "primary"):
+        box.role(role)
+        assert bench_guard.decide(bash(f"dmesg | grep {_NM}")) is None, role
+
+
+def test_replay_reads_bash_and_monitor_from_transcripts_in_the_window(rp, tmp_path):
+    """commands() over a FAKE transcript dir: both tools, dedup, mtime window, junk lines."""
+    import time
+
+    def use(name, cmd):
+        return json.dumps({"message": {"content": [
+            {"type": "tool_use", "name": name, "input": {"command": cmd}}]}})
+    new = tmp_path / "sess" / "a.jsonl"
+    new.parent.mkdir()
+    new.write_text("\n".join([use("Bash", "ls -la"), use("Monitor", "tail -f x"),
+                              use("Bash", "ls -la"), "not json {\"Bash\"", use("Read", "nope")]))
+    old = tmp_path / "b.jsonl"
+    old.write_text(use("Bash", "echo old"))
+    os.utime(old, (time.time() - 30 * 86400,) * 2)
+    files, cmds = rp.commands(14, root=str(tmp_path))
+    assert sorted(cmds) == ["ls -la", "tail -f x"]
+    assert files == [str(new)]
+
+
+def test_replay_window_is_days_and_keeps_the_first_transcript(rp, tmp_path):
+    """r3 #7: --days is DAYS (a 2-day-old file is in at 3, out at 1); a command keeps
+    the FIRST transcript that ran it; only `tool_use` items count."""
+    import time
+    use = lambda name, cmd, typ="tool_use": json.dumps(  # noqa: E731
+        {"message": {"content": [{"type": typ, "name": name, "input": {"command": cmd}}]}})
+    a, b = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
+    a.write_text(use("Bash", "ls -la") + "\n" + use("Bash", "echo result", "tool_result"))
+    b.write_text(use("Bash", "ls -la"))
+    two_days = time.time() - 2 * 86400
+    os.utime(b, (two_days, two_days))
+    assert rp.commands(1, root=str(tmp_path))[0] == [str(a)]
+    files, cmds = rp.commands(3, root=str(tmp_path))
+    assert sorted(files) == sorted([str(a), str(b)])
+    assert list(cmds) == ["ls -la"]                     # tool_result never counted
+    assert cmds["ls -la"] == files[0]                   # the first file read keeps it
+
+
+@pytest.mark.parametrize("line", [
+    '"Bash"', '["Bash"]', '{"message": "Bash"}', '{"message": {"content": "Bash"}}',
+    '{"message": {"content": [{"type": "tool_use", "name": "Bash", "input": "x"}]}}',
+    '{"message": {"content": [{"type": "tool_use", "name": "Bash", "input": ["x"]}]}}',
+    '{"message": {"content": ["Bash", 3, null]}}',
+])
+def test_replay_skips_odd_records_instead_of_crashing(rp, tmp_path, line):
+    """r3 #5: a valid-JSON record of the wrong shape crashed the gate (rc 1 = FAIL)."""
+    (tmp_path / "a.jsonl").write_text(line + "\n" + json.dumps({"message": {"content": [
+        {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]}}))
+    assert list(rp.commands(14, root=str(tmp_path))[1]) == ["ls"]
+
+
+def test_replay_survives_a_transcript_vanishing_between_glob_and_stat(rp, tmp_path, monkeypatch):
+    """Review #5, pinned on the path commands() actually takes (Fable r2 #2)."""
+    real = tmp_path / "a.jsonl"
+    real.write_text("")
+    monkeypatch.setattr(rp.glob, "glob", lambda *a, **k: [str(tmp_path / "gone.jsonl"), str(real)])
+    files, _ = rp.commands(14, root=str(tmp_path))
+    assert files == [str(real)]

@@ -73,7 +73,16 @@ held port steals the radio from rnsd/meshtasticd, and a DTR/RTS pulse reboots it
 - Evidence for the change: the letters-in-order mention matcher refused 3 plain read-only
   commands in 2 sessions (11-17 ×2 in the addendum; this session, a `grep` of the Axiometa
   research file) — false positives grow with every name added.
-- Existing Headless (axiometa) rules stay as they are; this widens, it does not rewrite.
+- ~~Existing Headless (axiometa) rules stay as they are~~ — **REVERSED 2026-11-18**
+  (operator "Literal name only", on the replay corpus): the Headless MENTION is now the
+  literal name, contiguous once quoting is removed. The r4 star scan + r5
+  letters-in-order rule refused ~2,050–2,080 of ~17,300 real commands unnamed (11.9 %, first replay 2,079 of 17,404); after: 0
+  UNNAMED (1 since the r3 reviewer's demo of the accepted residual, until ~12-02); every named
+  SHELL command (112–113 distinct, x2 roles = 224–226 decisions) decides as HEAD. Replay tool + rule:
+  `scripts/bench_guard_replay.py` — a change replays before AND after and states both counts.
+  MCP: tool names are judged by the same rule, so `mcp__axio_meta__*` (split by `_`/`-`) is
+  no longer judged — consistent with SCOPE ("an MCP server named without the name"), Fable r4.
+  The flasher widening below inherits this: trigger on the command word, never a mention.
 
 ## Operator decisions (2026-11-17 23:2x)
 
@@ -92,6 +101,6 @@ held port steals the radio from rnsd/meshtasticd, and a DTR/RTS pulse reboots it
 
 ## Next (in order, after the operator answers 1–4)
 
-red tests A1–A8 (fail on today's guard) → replay corpus (14 d of Bash commands from
-`~/.claude/projects/-opt-meshforge/*.jsonl`) → build → `guard_drill.py` plant → non-author
+red tests A1–A8 (fail on today's guard) → ✅ replay corpus (11-18: `scripts/bench_guard_replay.py`,
+baseline UNNAMED 0 after the reversal, 1 since the r3 demo of the residual — `--max-unnamed 1` until ~12-02) → build → `guard_drill.py` plant → non-author
 review r1 (contextless) → Fable by running → fleet deploy (the guard runs on every box).
