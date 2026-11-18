@@ -396,6 +396,100 @@ class TestClaimDetectionStillCatchesRealClaims(unittest.TestCase):
             "docs: 2026-07-25 audit — 8 findings, all confirmed"))
 
 
+class TestNonAuthorIsNotANegation(unittest.TestCase):
+    """2026-11-18 (found pushing the bench_guard row): NEGATION_TERMS held a bare
+    `\\bnon\\b`, and a hyphen is a word boundary — so the domain's own standard
+    phrase "non-author" (and "non-frontier") DENIED the claim after it.
+    Leg 2: a transcript-witnessed "non-author Fable subagent" row read as NO
+    subagent read → false block (measured: r2/r3/r4 transcripts witness = True).
+    Leg 1: "non-author code-review found 3 findings" read as a DENIED review →
+    no witness row demanded — a hole in the unsafe direction."""
+
+    def test_non_author_subagent_row_claims_a_subagent_read(self):
+        for mech in ("r2–r4 non-author **Fable subagent BY RUNNING**",
+                     "Round 6: non-author **Fable 5.2 subagent BY RUNNING**",
+                     "non-frontier parent, Fable subagent read"):
+            with self.subTest(mech=mech):
+                self.assertTrue(rpc.row_claims_subagent_read(mech))
+
+    def test_non_author_review_commit_still_claims_a_review(self):
+        for msg in ("fix: non-author code-review found 3 findings",
+                    "fix: the non-author self-review of the arc",
+                    "fix: non-frontier code-review found bugs"):
+            with self.subTest(msg=msg):
+                self.assertTrue(rpc.commit_claims_review(msg))
+
+    def test_real_denials_still_deny(self):
+        self.assertFalse(rpc.row_claims_subagent_read("Fable SESSION pass (no subagent)"))
+        self.assertFalse(rpc.row_claims_subagent_read("Fable session read, not a subagent"))
+        self.assertFalse(rpc.row_claims_subagent_read("non subagent read (session)"))
+        self.assertFalse(rpc.commit_claims_review("docs: non code-review change, typo only"))
+        self.assertFalse(rpc.commit_claims_review("docs: no review pass was run here"))
+
+    def test_non_ATTACHED_to_the_claim_word_is_a_denial(self):
+        """Review of the first fix (`non(?!-)`, #1/#2/#6): it flipped these from
+        denial to claim. `non-` attached to the claim word itself denies it."""
+        for msg in ("refactor: non-adversarial cleanup", "docs: non-code-review change",
+                    "refactor: non-self-review arc"):
+            with self.subTest(msg=msg):
+                self.assertFalse(rpc.commit_claims_review(msg))
+        self.assertFalse(rpc.row_claims_subagent_read("Fable session, non-subagent pass"))
+
+    def test_typographic_hyphens_and_dashes_are_prefix_joiners_too(self):
+        """Review #4: U+2010 ‐, U+2011 ‑, U+2012 ‒, U+2013 – (rows pasted from
+        rendered markdown / an artifact)."""
+        for dash in "‐‑‒–":
+            with self.subTest(dash=hex(ord(dash))):
+                self.assertTrue(rpc.row_claims_subagent_read(f"non{dash}author Fable subagent read"))
+                self.assertTrue(rpc.commit_claims_review(f"fix: non{dash}author code-review found 3 findings"))
+                self.assertFalse(rpc.row_claims_subagent_read(f"session pass, non{dash}subagent"))
+
+    def test_a_negator_joined_to_a_compound_by_a_dash_still_denies(self):
+        """Fable r2 F1 (unsafe leg-2 direction): the compound strip took the whole
+        dash-joined run, negator included."""
+        for mech in ("Fable session read, non-author–no subagent",
+                     "Fable session read, non-author-no subagent",
+                     "(non-author–without a subagent)"):
+            with self.subTest(mech=mech):
+                self.assertFalse(rpc.row_claims_subagent_read(mech))
+
+    def test_attached_needs_a_real_word_boundary_before_non(self):
+        """Fable r2 F3: a fixed slice invented a boundary ("xe|non-    subagent")."""
+        for pad in ("", " ", "    ", "        "):
+            with self.subTest(pad=len(pad)):
+                self.assertTrue(rpc.row_claims_subagent_read(f"xenon-{pad}subagent read"))
+                self.assertTrue(rpc.row_claims_frontier_tier(f"phenomenon-{pad}fable pass"))
+        self.assertTrue(rpc.row_claims_frontier_tier("anon-fable pass"))
+        self.assertFalse(rpc.row_claims_frontier_tier("non- fable pass"))   # \s* after joiner
+
+    def test_a_wrapped_attached_prefix_still_denies(self):
+        """Fable r2 F4: intent stated — "non-" + a line wrap + the claim word is a
+        wrapped "non-self-review", a denial."""
+        self.assertFalse(rpc.commit_claims_review("fix: tidy non-\nself-review clean, 0 open"))
+
+    def test_frontier_tier_ignores_ordinary_negators(self):
+        """Fable r2 F5: only an ATTACHED non- removes a frontier marker — an
+        ordinary negator nearby must not take the row out of the gate."""
+        self.assertTrue(rpc.row_claims_frontier_tier("no open findings, Fable 5.2 subagent"))
+        self.assertTrue(rpc.row_claims_frontier_tier("no fable pass"))
+
+    def test_em_dash_is_a_clause_stop_not_a_prefix_joiner(self):
+        """Pinned as the comment states it (r2 nit M5f): `non—subagent` has an
+        empty window after the stop, so it reads as a claim — same as HEAD."""
+        self.assertTrue(rpc.row_claims_subagent_read("Fable session, non—subagent pass"))
+
+    def test_joiner_must_be_followed_by_a_word_to_be_a_compound(self):
+        """r2 nit M10: `non-)` is no compound, so the bare `non` still negates."""
+        self.assertFalse(rpc.commit_claims_review("docs: non-)self-review"))
+
+    def test_non_frontier_is_not_a_frontier_tier_claim(self):
+        """Review #5: `\\bfrontier\\b` matched inside "non-frontier"."""
+        self.assertFalse(rpc.row_claims_frontier_tier("non-frontier session read"))
+        self.assertFalse(rpc.row_claims_frontier_tier("non–frontier session pass"))
+        self.assertTrue(rpc.row_claims_frontier_tier("non-frontier parent, Fable subagent read"))
+        self.assertTrue(rpc.row_claims_frontier_tier("frontier pass by a subagent"))
+
+
 class TestHyphenatedLabelVsAttributedFinding(unittest.TestCase):
     """Both from REAL history — the only two commits in 800 whose verdict the
     2026-07-25 precision fix changed. They look alike and must not be treated

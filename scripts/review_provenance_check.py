@@ -149,6 +149,26 @@ NEGATION_TERMS = (
     r"isn't|wasn't|weren't|didn't|doesn't|won't|can't|cannot)\b"
 )
 
+#: `non` + a hyphen/dash is a PREFIX, and what it negates is the word it is
+#: attached to (2026-11-18, review of the first fix). Two cases a negator list
+#: cannot tell apart:
+#:   "non-code-review" — attached to the claim itself → a DENIAL;
+#:   "non-author code-review" — attached to ANOTHER word, a modifier → the
+#:   claim stands (the domain's own phrase; it read as a denial and caused a
+#:   leg-2 false block on a witnessed "non-author Fable subagent" row and a
+#:   leg-1 hole: "non-author code-review found 3 findings" demanded no row).
+#: Any hyphen or dash counts (ASCII -, U+2010 ‐, U+2011 ‑, U+2012 ‒, U+2013 –);
+#: the em dash — is a clause stop, not a prefix joiner.
+#: Known limit (Fable r2 F2, by design): a `non-X` that negates the SUBAGENT
+#: itself ("non-existent subagent transcript") reads as a modifier, so the row
+#: claims a subagent read — the transcript witness (a frontier sidechain that
+#: READ an anchor) is still required before leg 2 clears it.
+_NON_JOIN = "\\-\u2010\u2011\u2012\u2013"      # regex class body; `-` escaped
+_NON_ATTACHED_RE = re.compile(r"non[" + _NON_JOIN + r"]\s*$")
+#: ONE word after the joiner (r2 F1): a longer tail swallowed a real negator
+#: joined by a dash — "non-author–no subagent" read as a claim.
+_NON_COMPOUND_RE = re.compile(r"\bnon[" + _NON_JOIN + r"]\w+")
+
 #: How far back to look for a negator. Short on purpose — a negator in an
 #: earlier clause must not immunise a later real claim.
 NEGATION_WINDOW_CHARS = 30
@@ -365,12 +385,28 @@ def _is_negated(low, start):
     clause boundary in it — so "not a quick patch; a full code-review found
     bugs" stays a real claim while "no review pass was run here" does not.
     """
+    if _non_attached(low, start):
+        return True                     # "non-code-review": the prefix IS the denial
     window = low[max(0, start - NEGATION_WINDOW_CHARS):start]
     for sep in NEGATION_STOP_CHARS:
         idx = window.rfind(sep)
         if idx != -1:
             window = window[idx + 1:]
+    window = _NON_COMPOUND_RE.sub(" ", window)   # "non-author": modifies another word
     return re.search(NEGATION_TERMS, window) is not None
+
+
+def _non_attached(low, start):
+    """True if `non` + hyphen/dash sits directly against the match at ``start``
+    (whitespace and a line wrap between them allowed: "non-\\nself-review").
+    The word boundary before `non` is checked on the FULL text — a slice start
+    would invent one ("xenon-    subagent", r2 F3)."""
+    lo = max(0, start - 64)
+    m = _NON_ATTACHED_RE.search(low[lo:start])
+    if m is None:
+        return False
+    pos = lo + m.start()
+    return pos == 0 or not (low[pos - 1].isalnum() or low[pos - 1] == "_")
 
 
 def commit_claims_review(message):
@@ -451,7 +487,9 @@ def row_claims_frontier_tier(mechanism):
     if not mechanism:
         return False
     low = mechanism.lower()
-    return any(re.search(p, low) for p in FRONTIER_TIER_MARKERS)
+    # "non-frontier session" describes a NON-frontier pass (review 11-18 #5)
+    return any(not _non_attached(low, m.start())
+               for p in FRONTIER_TIER_MARKERS for m in re.finditer(p, low))
 
 
 def new_completed_rows(head_text, base_text):
