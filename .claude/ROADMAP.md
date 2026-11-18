@@ -240,9 +240,8 @@ PARKED 11-04, revisit 12-04:
 - **MQTT-ARCH** [MF] S+F — local broker per box, kiai the one public uplink (op 11-17): `plans/mqtt_arch_2026_11_17.md`
 - **SRC-1** [MF] S — repo is SoT, pages are dated views (operator 11-16): extend loop_gate TOPIC (no new class) — registry `source` path; refuse a page update while it is dirty; page carries `mf:source` path@sha
   +11-17 (op): stamps both ways, stale derived from the sha; each page finding gets adopt/refute/drop. `audits/artifact_audit_2026_11_17.md`
-- **CI-1** [MF] S — the suite's per-test cost grows ~9× in ONE CI run (13.5→120 ms) — find what we accumulate, fix at the source, gate the ratio
-  Op 11-18 ("a solution not a bandage"; "all our doing"). Not GC/handlers/output (measured); leaked eventbus + statusbar-weather threads. `plans/ci_suite_cost_2026_11_18.md`
-- **CI-2** [MF] S — then shard the suite (aggregator keeps `Test Suite (3.11)`, cap per shard) + the missing 3.13 leg; never a 5th cap raise (45 min, max run 44.5)
+- **CI-2** [MF] S — shard the suite ONLY if `Test Suite` > 30 min again (26.7 after CI-1); add the missing 3.13 leg; never a cap raise. `plans/ci_suite_cost_2026_11_18.md`
+- **THR-1** [MF] S — tests leave product threads running (`eventbus` ×5, `statusbar-weather` ×2 after ~5.5 k tests; a CI orphan python at exit): stop at source
 - **CLK-1** [MF] S+F — meshtasticd re-rates its clock after a fail-open boot, no human (4 hits in 47 d)
   Op 11-18. Trigger = gate's authenticated TIMEOUT, never mesh-writable telemetry; ONE restart/invocation. `plans/clk1_ntp_rerate_2026_11_18.md`
   public: After a boot without network time, MeshForge restarts the radio service once the clock syncs, so the node list never freezes.

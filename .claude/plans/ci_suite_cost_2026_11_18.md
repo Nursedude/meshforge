@@ -80,8 +80,30 @@ never moved.
 **Acceptance leg 1 — VERIFIED 11-18 (n=1, conftest hash launch = end):** after the 300-file prefix,
 `test_rf` 55.3 → **2.8 ms/test** (0.85× alone; was 5.5×), `test_watchdog_probes` 75.2 → **10.1**
 (1.28×; was 3.2×); the 11 k-test prefix run 23:03 → **13:15**. (10,948 vs 10,963 passed: the new test
-file shifted the alphabetical 300-file window by one file — not a loss; 0 failed.) Leg 2 (CI wall
-time for the pushed head) owed.
+file shifted the alphabetical 300-file window by one file — not a loss; 0 failed.)
+
+**Acceptance leg 2 — CI, VERIFIED 11-18 (`dcf6d571`, run 44402554977, success, n=1):**
+
+| CI `Test Suite (3.11)` | before (`bed21b67`) | after (`dcf6d571`) |
+|---|---|---|
+| job wall | 33.5 median / 44.5 max | **26.7 min** |
+| test span (first → last test line) | 35.4 | **17.7** |
+| fast-test median, LAST decile | 119.6 ms | **13.2 ms** (the climb is gone) |
+| `test_rf` / `test_watchdog_probes` late in the run | 71.2 / 115.9 ms | 3.6 / 13.2 |
+
+Full local suite on VolcanoAI: 43 min (11-18 01:21) → 26:55 (21,554 passed).
+
+**What the remaining 26.7 min is (measured from the same log):** 1.0 install + collection; 17.7
+tests (37 tests ≥ 5 s = ~5.7 min; `test_honest_status_shell` boxes harness alone 51 s); **7.9 min
+AFTER the last test** — `-rA` printing captured output for every passing test (36,517 lines;
+largest single gap 30 s, so volume, not one stall). → `ci.yml` `-rA` → `-ra` (operator go 11-18);
+`pytest_verdict.sh` reads only the summary line and `^FAILED`/`^ERROR` lines, which `-ra` keeps.
+Expected job ≈ 19 min — BELIEVED until CI measures the head that carries it.
+
+**Disposition:** CI-1 DONE (left the roadmap, provenance line). CI-2 shrunk to "shard only if
+`Test Suite` > 30 min again". THR-1 opened for the leaked threads — GitHub's cleanup step reported
+`Terminate orphan process: pid (80671) (python)` at the end of the job, consistent with them
+(BELIEVED, not traced).
 
 Side find (separate from the cure): `test_fleet_down` whole-fleet case takes > 30 s on the Pi
 (10.4 s on CI) — sandboxed (fake ssh + marker), slow not dangerous.

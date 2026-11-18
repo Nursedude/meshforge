@@ -253,7 +253,13 @@ jobs:
           # exits non-zero — GitHub's lazy-loaded log viewer sometimes hides
           # raw output, so we echo an explicit marker section too.
           rc=0
-          python -m pytest tests/ -v --tb=short --timeout=30 --timeout-method=thread -rA \
+          # -ra, not -rA (2026-11-18, operator go, CI-1 follow-up): -rA also
+          # printed captured output for EVERY PASSING test — 36,517 lines and
+          # 7.9 of the job's 26.7 min on dcf6d571, after the tests had finished.
+          # -ra keeps everything the classifier and the failure dump read: the
+          # final summary line and the ^FAILED/^ERROR short-summary lines (plus
+          # skips/xfails). -v still prints one PASSED line per test.
+          python -m pytest tests/ -v --tb=short --timeout=30 --timeout-method=thread -ra \
             --ignore=tests/test_bridge_integration.py \
             -o log_cli_level=WARNING \
             2>&1 | tee /tmp/pytest.log || rc=$?
