@@ -208,7 +208,7 @@ PARKED 11-04, revisit 12-04:
   Candidate `afit21/Reticulum-Smart-MeshCore-Interface` 1.0.0; lands MA-first (its radio), contract shared; R5 containment BEFORE it ships to anyone. Reminder `smci-gates-r4-r5` (paused to 12-14; decide by a WRITTEN test: GO only with a named adopter or a live SMCI upstream, else park R3/R4/R6).
 - **ORC-1** [MF] S+F — oracle-leg residuals: (1) id-less fallback dedup — decide from the gateway journal (recipe: provenance 2026-11-14, moved verbatim, MF012); (3) reply channel by name (low); a real multi-hop query via moc3's tap after a reconnect is unwitnessed. Reminder `oracle-leg-hardening-arc-2026-07-05`. (4) tap is fromId-first → `wire_ids`.
 - **TUI-OWES** [MF][MA] S+F twin→MA — the TUI must not fall behind what we can do (hfm #11; operator 10-03). Open rows:
-  #4 SDR slot occupancy; #4b delivery above vs below the 25% knee; Channel Load follow-ups (per-module knee, duration estimate, sample-set bias); TX Power Truth admin-shutdown note; audit follow-ups; #6 RNS ingress pane (highest value); #7 gateway posture sentence in-app; #8 field-kit uplink row; #9 SDR receiver-blind reason; #10 paging-health row; #11 View Alerts mesh = the box's running watchers, never its own feed (op); #12 Data Path/Quick Status: no radio session by default, absent radio says absent, "ask the radio" opt-in; #13 Diagnostics: 1 pause. Read-only, local-box-only, two contextless reviewers before first deploy.
+  #4 SDR, #6 RNS ingress pane (highest value) … #13: `plans/tui_owes_open_rows.md`. Read-only, local-box-only, 2 reviewers before first deploy.
 - **INST-1** [MF] S — installer is not role-aware (gate 7): `install_noc.sh --client-only` starts meshforge-map + installs mosquitto (absent for `lab`), installs no watchdog; map's stop hook needs `sqlite3`. Read the role, or document `provision_role --apply` as the step.
   Also (lab mini delta review 10-22): only `update.sh` installs `95-meshforge-journal-cap.conf` (`Storage=persistent`), so meshforge-lab — never update.sh'd — runs Pi OS's `Storage=volatile`: `/var/log/journal` empty, every reboot wipes history, and `user_timer_unit_failing` sits `indeterminate` on the once-a-day dream timer. The installer must lay the same drop-in.
 - **FREQ-MA** [MA] S+F — delete MA's dead `utils/frequency.py` (FREQ-1 twin)
@@ -240,6 +240,9 @@ PARKED 11-04, revisit 12-04:
 - **MQTT-ARCH** [MF] S+F — local broker per box, kiai the one public uplink (op 11-17): `plans/mqtt_arch_2026_11_17.md`
 - **SRC-1** [MF] S — repo is SoT, pages are dated views (operator 11-16): extend loop_gate TOPIC (no new class) — registry `source` path; refuse a page update while it is dirty; page carries `mf:source` path@sha
   +11-17 (op): stamps both ways, stale derived from the sha; each page finding gets adopt/refute/drop. `audits/artifact_audit_2026_11_17.md`
+- **CI-1** [MF] S — the suite's per-test cost grows ~9× in ONE CI run (13.5→120 ms) — find what we accumulate, fix at the source, gate the ratio
+  Op 11-18 ("a solution not a bandage"; "all our doing"). Not GC/handlers/output (measured); leaked eventbus + statusbar-weather threads. `plans/ci_suite_cost_2026_11_18.md`
+- **CI-2** [MF] S — then shard the suite (aggregator keeps `Test Suite (3.11)`, cap per shard) + the missing 3.13 leg; never a 5th cap raise (45 min, max run 44.5)
 - **CLK-1** [MF] S+F — meshtasticd re-rates its clock after a fail-open boot, no human (4 hits in 47 d)
   Op 11-18. Trigger = gate's authenticated TIMEOUT, never mesh-writable telemetry; ONE restart/invocation. `plans/clk1_ntp_rerate_2026_11_18.md`
   public: After a boot without network time, MeshForge restarts the radio service once the clock syncs, so the node list never freezes.
