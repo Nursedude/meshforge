@@ -29,11 +29,13 @@ Please include:
 MeshForge's security measures are listed below. Read **Known gaps** first:
 it says where the installed defaults are weaker than this list suggests.
 
-### Known gaps (as of 0.7.0-beta, 2026-11-13)
+### Known gaps (as of 0.7.0-beta, 2026-11-19)
 
 | What | Where | Why it matters |
 |------|-------|----------------|
-| The map service listens on **all interfaces with no authentication** when installed | `scripts/install_noc.sh` systemd unit: `--host 0.0.0.0 --port 5000` (the code default is `127.0.0.1`; the installer overrides it) | Anyone on your LAN can read the map and `/api/network/topology` (mesh routing structure). Run it on a trusted LAN only, or change `--host` to `127.0.0.1` |
+| The map service listens on **all interfaces with no authentication** when installed | `scripts/install_noc.sh` systemd unit: `--host 0.0.0.0 --port 5000` (the code default is `127.0.0.1`; the installer overrides it) | Anyone who can reach the box can read the map and `/api/network/topology` (mesh routing structure). Transmit, journal and terrain endpoints are narrower: loopback plus the box's own /24 (and any `/etc/meshforge/trusted_networks` entries) — an IP check, not a login. Run it on a trusted LAN only, or change `--host` to `127.0.0.1` |
+| The map's live-message **WebSocket (port 5001)** binds wherever the map does | `src/utils/map_data_service.py` (bind follows `--host`) | Same exposure as the map: every handshake passes the map's IP/Origin gate, not a login |
+| meshtasticd's TCP API (**4403**) and web server (**9443**) listen on all interfaces | meshtasticd's own behaviour; MeshForge presets in `templates/meshforge-presets/` turn the web server on | Anyone on your LAN can connect to the radio as a client. MeshForge itself talks to it on `127.0.0.1`; firewall these ports if your LAN is not trusted |
 | Generated Mosquitto config binds **all interfaces** | `src/utils/broker_profiles.py` (`bind_address = "0.0.0.0"`) | Intended for gateways that take MQTT from radios on the LAN. Change it to `127.0.0.1` if only local clients connect |
 | Radio udev rules are **world-writable** (`MODE="0666"`) | `scripts/install_noc.sh` (USB-serial radios and all `spidev` devices) | Any local user can talk to the radio. Tracked as `SEC-2`; the fix is a group-scoped rule |
 | The RNS "TCP Server" template listens on all interfaces | `src/commands/rns_templates.py` | Only when you choose that template; it accepts RNS peers from the network by design |
