@@ -240,7 +240,7 @@ PARKED 11-04, revisit 12-04:
 - **SEC-2** [MF] S — udev 0666 `install_noc.sh:895` (SECURITY.md half done 11-13); maps unit `--host 0.0.0.0` as `User=pi` (11-17); + BENCH-G (red tests `d1d784aa`), AXI-1: `research/axiometa_2026_11_15.md`
 - **CLAW-1** [MF] S+F — DudeClaw: honest 24/7 RF witnesses, fleet then one ham: `plans/claw1_grilling_2026_11_11.md`
 - **MQTT-ARCH** [MF] S+F — local broker per box, kiai the one public uplink (op 11-17): `plans/mqtt_arch_2026_11_17.md`
-- **SRC-1** [MF] S — repo is SoT, pages are dated views (operator 11-16): extend loop_gate TOPIC (no new class) — registry `source` path; refuse a page update while it is dirty; page carries `mf:source` path@sha
+- **SRC-1** [MF] S — repo is SoT, pages are the library's dated views (op 11-16/11-18): extend loop_gate TOPIC — source@sha + stale check, generated pages, catalog, `library_publish.py`. `plans/src1_library_2026_11_18.md`
   +11-17 (op): stamps both ways, stale derived from the sha; each page finding gets adopt/refute/drop. `audits/artifact_audit_2026_11_17.md`
 - **CI-2** [MF] S — shard the suite ONLY if `Test Suite` > 30 min again (26.7 after CI-1); add the missing 3.13 leg; never a cap raise. `plans/ci_suite_cost_2026_11_18.md`
 - **FENCE-1** [MF] S — /tmp held 917 `mf-host-fence-*` dirs (910 > 24 h): unconfigure cleanup misses killed/timed-out runs (BELIEVED); prune at start
