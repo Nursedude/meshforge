@@ -289,11 +289,11 @@ flag, never a pass.
 - ⚠️ Solar = a failure that is not ours: a drill that fails at night or on a flat battery may be r1 asleep,
   not the observer deaf. Read r1's status (battery / uptime, if it reports one over the mesh) before
   scoring a fail; drill 2 (p4/p1 direct) separates the two. UNKNOWN: r1's power budget and duty cycle.
-- **Trace from p4 to the "t-echo rptr" (operator, CORRECTED 2026-11-18 ~20:5x):**
+- **Trace from p4 to the "t-echo rptr" (operator, CORRECTED 2026-11-18 21:1x by `date`):**
   `c9, b6, 30, 32, 53, 32, 30, b6, c9` — SYMMETRIC out-and-back: out `c9 b6 30 32` → `53` → back
   `32 30 b6 c9`. (The first report read `…53, 30, b56, c9`; operator corrected it — there is no `b56` and no
-  asymmetry. My earlier "asymmetric" reading is withdrawn.) BELIEVED from the shape: `53` is the turnaround,
-  i.e. the t-echo repeater, and `c9` is p4's first hop; which prefix is r1 is still UNKNOWN (operator's).
+  asymmetry. My earlier "asymmetric" reading is withdrawn.) **r1 = `c9` (operator 21:2x)** — p4's first hop is our own repeater. BELIEVED from the shape: `53` is the turnaround,
+  i.e. the t-echo repeater. Drill 1 therefore expects our own advert back with `c9` in its path.
   ⚠️ One-byte hop prefixes are AMBIGUOUS (256 values, 68 nodes on the Hawaii instance): a prefix names a
   candidate set, never one node — CoreScope's prefix resolver / collision inspector is the tool. Baseline
   use: once our observer runs, packets carrying these prefixes in their paths are a cross-check of what we
