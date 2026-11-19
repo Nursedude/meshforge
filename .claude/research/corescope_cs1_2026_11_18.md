@@ -289,3 +289,12 @@ flag, never a pass.
 - ⚠️ Solar = a failure that is not ours: a drill that fails at night or on a flat battery may be r1 asleep,
   not the observer deaf. Read r1's status (battery / uptime, if it reports one over the mesh) before
   scoring a fail; drill 2 (p4/p1 direct) separates the two. UNKNOWN: r1's power budget and duty cycle.
+- **Trace from p4 to the "t-echo rptr" (operator-reported 2026-11-18 ~20:4x, as given):**
+  `c9, b6, 30, 32, 53, 30, b56, c9`. A second known MeshCore repeater ("t-echo rptr"). Read as an out-and-back
+  trace it looks ASYMMETRIC — out `c9 b6 30 32 53`, back `30 b6? c9` (no `32` on the return) — BELIEVED from
+  the shape only. Open: (a) `b56` is three hex digits where every other hop is one byte (two digits) —
+  typo for `b6`, or a multi-byte path hash (MeshCore carries a `path_hash_size`)? (b) which prefix is p4,
+  r1, the t-echo? ⚠️ One-byte hop prefixes are AMBIGUOUS (256 values, 68 nodes on the Hawaii instance):
+  a prefix names a candidate set, never one node — CoreScope's prefix resolver / collision inspector is the
+  tool. Baseline use: once our observer runs, packets carrying these prefixes in their paths are a
+  cross-check of what we hear, and drill 1/2 results should be read against this route.
