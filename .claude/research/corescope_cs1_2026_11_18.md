@@ -256,3 +256,24 @@ Meshtastic radios carry the two-preset fleet. **Neither may be repurposed.**
   page offers passkey login and account creation. The community's "run an observer" path is on
   hawaiimesh.net (the wiki) and corescope.hawaiimesh.net. Until an account exists, the outward leg could
   use only the shared community login, so it stays off by default.
+
+## Acceptance — the definition of done for CS-1 (operator 2026-11-18)
+
+Unit tests pin our model of the mesh; only these drills pin the observer. Each ends at the domain's END
+(a packet STORED in our CoreScope, matched by hash), never at "published to the broker".
+
+1. **Advert → repeater → back (primary; operator "add the advert-repeater drill as acceptance").** The
+   MeshAnchor companion sends its advert every `advert_heartbeat_sec` (600 s). 0x88 is RX-only, so the
+   companion's own TX is not logged — but a repeater in range rebroadcasts it, and that copy arrives as an
+   RX packet carrying the repeater's hash in its path. Pass: within a window of N heartbeats, our own
+   advert (our public key) is logged via 0x88 with a non-empty path, and is stored in our CoreScope.
+   Control that can fail: no rebroadcast ⇒ either no repeater hears us or the observer is deaf — the
+   witness counters + drill 2 tell which. N and which repeaters are in range: operator's physical facts.
+2. **Portables (operator 2026-11-18: messages can be sent from portables "p4" and "p1"; p4 sees 137
+   contacts).** A message sent from p4 / p1 on the community channel at a recorded time must be logged by
+   our observer (matched by packet hash) and stored in our CoreScope. Works with no repeater in path.
+3. **Cross-observer agreement (no account needed).** A packet the community instance's two ITO observers
+   record should also appear in ours — same hash, compared through its public read API.
+
+Not acceptance (supporting only): the moc5 SDR seeing energy on 910.525 MHz while we log nothing is a red
+flag, never a pass.
