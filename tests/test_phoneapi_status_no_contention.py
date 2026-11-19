@@ -107,7 +107,10 @@ class TestRadioStatusSummaryNoContentionIssue75:
         with patch.object(mse, "_HAS_MESHTASTIC_CONN", True), \
                 patch.object(mse, "tcp_port_listening", return_value=False), \
                 patch("glob.glob", return_value=["/dev/ttyACM0"]), \
+                patch.object(mse, "tty_held", return_value=True), \
                 patch("socket.socket") as m_sock:
+            # holder PINNED: unpinned, this read the test box's real ttyACM0
+            # (held by rnsd on the manager box) and passed by accident.
             summary = h._get_radio_status_summary()
 
         assert summary["mode"] == "serial"

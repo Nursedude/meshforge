@@ -47,7 +47,8 @@ _get_connection_manager, _ConnectionMode, _HAS_MESHTASTIC_CONN = safe_import(
 # existing importers.
 from utils.status_blocks import (  # noqa: E402,F401
     FUTURE_TS_SLACK_S, MINI_STALE_S, WATCHDOG_STALE_S, mini_block_from_payload,
-    radio_connection_from_probe, watchdog_block_from_payload)
+    radio_connection_from_probe, tty_held, usb_radio_devices,
+    watchdog_block_from_payload)
 
 
 def build_federation_status(collector: Any,
@@ -370,19 +371,24 @@ class StatusEndpointsMixin:
         tcp_available = tcp_port_listening(4403)
 
         # Check USB serial device
-        import glob
-        usb_devices = glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*')
+        usb_devices = usb_radio_devices()      # the ONE list (status_blocks)
         usb_available = len(usb_devices) > 0
+        # Presence is not use (2026-11-19): a process HOLDING the device is
+        # the evidence for serial. Scanned only when it can change the verdict.
+        usb_held = (tty_held(usb_devices)
+                    if usb_available and not tcp_available else None)
 
         # Determine connection mode (shared SSOT decision — the ssh-spool
         # fallback reaches the identical verdict from the same probe inputs).
-        connected, mode = radio_connection_from_probe(tcp_available, usb_available)
+        connected, mode = radio_connection_from_probe(
+            tcp_available, usb_available, usb_held)
 
         return {
             "connected": connected,
             "mode": mode,
             "tcp_available": tcp_available,
             "usb_available": usb_available,
+            "usb_held": usb_held,
             "usb_devices": usb_devices if usb_available else [],
         }
 

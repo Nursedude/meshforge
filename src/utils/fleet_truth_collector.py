@@ -242,7 +242,10 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
                 from utils._map_status_endpoints import radio_connection_from_probe
                 connected, mode = radio_connection_from_probe(
                     bool(radio_probe.get("tcp_listening")),
-                    bool(radio_probe.get("usb_present")))
+                    bool(radio_probe.get("usb_present")),
+                    # NOT bool(): None (unknown/old writer) must stay unknown;
+                    # the shared function counts only a real True as held.
+                    radio_probe.get("usb_held"))
                 slo = {"radio": {"connected": connected, "mode": mode}}
             if slo is not None or status is not None:
                 method = "ssh_spool"

@@ -1130,8 +1130,13 @@ def _check_server_status(port: int) -> int:
                 print(f"  Collector: {'active' if data.get('collector') else 'inactive'}")
                 if data.get('radio'):
                     radio = data['radio']
-                    print(f"  Radio: {radio.get('mode', 'unknown')} "
-                          f"({'connected' if radio.get('connected') else 'disconnected'})")
+                    conn = radio.get('connected')
+                    # None = the probe cannot tell (usb_unheld /
+                    # usb_holder_unknown) — never
+                    # print it as 'disconnected' (honest_failure_modes #1).
+                    word = ('connected' if conn is True else 'disconnected'
+                            if conn is False else 'unverified')
+                    print(f"  Radio: {radio.get('mode', 'unknown')} ({word})")
         except Exception:
             pass
         return 0

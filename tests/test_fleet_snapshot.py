@@ -377,12 +377,16 @@ def test_radio_probe_meshtasticd_listening(_meshtasticd_unit_not_active):
 
 
 def test_radio_probe_falls_back_to_meshcore_symlink(_meshtasticd_unit_not_active):
-    """No meshtasticd, but /dev/ttyMeshCore present → connected via MeshCore."""
+    """No meshtasticd, /dev/ttyMeshCore present AND held by a process →
+    connected via MeshCore (an unheld symlink is unverified: see
+    test_radio_probe_consumers)."""
     mock_sock = MagicMock()
     mock_sock.__enter__.return_value = mock_sock
     mock_sock.connect_ex.return_value = 1  # refused
     with patch("socket.socket", return_value=mock_sock), \
-         patch("os.path.exists", return_value=True):
+         patch("os.path.exists", return_value=True), \
+         patch.object(fleet_snapshot, "usb_radio_devices", return_value=["/dev/ttyACM0"]), \
+         patch.object(fleet_snapshot, "tty_held", return_value=True):
         r = _probe_radio()
     assert r["connected"] is True
     assert r["name"] == "meshcore"
@@ -393,7 +397,10 @@ def test_radio_probe_no_radio_returns_disconnected(_meshtasticd_unit_not_active)
     mock_sock.__enter__.return_value = mock_sock
     mock_sock.connect_ex.return_value = 1
     with patch("socket.socket", return_value=mock_sock), \
-         patch("os.path.exists", return_value=False):
+         patch("os.path.exists", return_value=False), \
+         patch.object(fleet_snapshot, "usb_radio_devices", return_value=[]):
+        # device list PINNED: unpinned, the test box's own ttyACM0 (held by
+        # rnsd on the manager box) reads as a radio.
         r = _probe_radio()
     assert r["connected"] is False
     assert r["name"] is None

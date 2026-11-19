@@ -92,7 +92,8 @@ def test_section_values_match_the_spool_shapes(home, tmp_path):
     assert s["deployment"] == {"role": "gateway-only"}
     assert s["raw_mini"]["reason"] == "café ☕"
     assert s["raw_watchdog"] is None and "raw_watchdog" not in errors  # absent ≠ error
-    assert s["radio_probe"] == {"tcp_listening": True, "usb_present": False}
+    assert s["radio_probe"] == {"tcp_listening": True, "usb_present": False,
+                                "usb_held": None}
     assert s["services"] == {
         "meshtasticd": {"active": "active", "enabled": "enabled"},
         "rnsd": {"active": "inactive", "enabled": "unknown"},

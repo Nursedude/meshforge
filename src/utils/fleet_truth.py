@@ -858,6 +858,14 @@ def _radio_cell(slo: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return cell(HEALTHY, source="/fleet/slo.radio")
     if conn is False:
         return cell(FAILED, reason="radio not connected", source="/fleet/slo.radio")
+    mode = r.get("mode")
+    if mode == "usb_unheld":
+        return cell(DARK, reason="radio unverified (usb_unheld): a USB device is "
+                    "present but no readable process holds it", source="/fleet/slo.radio")
+    if mode == "usb_holder_unknown":
+        return cell(DARK, reason="radio unverified (usb_holder_unknown): a USB device "
+                    "is present; whether a process holds it could not be read",
+                    source="/fleet/slo.radio")
     return cell(DARK, reason="radio connection state unknown", source="/fleet/slo.radio")
 
 

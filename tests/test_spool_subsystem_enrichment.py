@@ -62,8 +62,10 @@ class TestRadioConnectionFromProbe:
     def test_tcp_listening_is_connected_tcp(self):
         assert self._fn()(True, False) == (True, "tcp")
 
-    def test_usb_only_is_connected_serial(self):
-        assert self._fn()(False, True) == (True, "serial")
+    def test_usb_only_is_unverified_unless_held(self):
+        # Presence is not use (2026-11-19): full table in test_radio_probe_held.
+        assert self._fn()(False, True) == (None, "usb_holder_unknown")
+        assert self._fn()(False, True, True) == (True, "serial")
 
     def test_neither_is_disconnected(self):
         assert self._fn()(False, False) == (False, "none")

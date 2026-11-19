@@ -14,8 +14,10 @@ collector (``utils.fleet_truth_collector``) reads it unchanged:
   raw_watchdog   — /var/lib/meshforge/watchdog.json
   deployment     — the box's own role declaration
   raw_mini       — ~/mini_dudeai_state.json
-  radio_probe    — /proc LISTEN state for :4403 + USB presence. NEVER a
-                   connect to :4403 (#17/#75 PhoneAPI contention; N4).
+  radio_probe    — /proc LISTEN state for :4403 + USB presence + whether a
+                   process holds the USB device (/proc fd links). NEVER a
+                   connect to :4403 (#17/#75 PhoneAPI contention; N4), never
+                   an open() of the tty.
   services       — systemd ActiveState / UnitFileState
   schedules      — crontab + the last TWO cron verdicts per name, base64
   clock          — this box's own clock
@@ -45,7 +47,6 @@ from __future__ import annotations
 import base64
 import errno
 import fcntl
-import glob
 import http.client
 import importlib.util
 import json
@@ -64,6 +65,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 from utils import box_truth as bt
 from utils import box_truth_app as app
 from utils import box_truth_rx as rx
+from utils.status_blocks import USB_RADIO_GLOBS, tty_held, usb_radio_devices
 from utils.paths import atomic_write_text
 
 #: The map's VIEW routes the export reads (S4 — a test pins that neither is
@@ -76,7 +78,8 @@ WATCHDOG_PATH = app.WATCHDOG_PATH
 #: Role-catalog unit states that mean "this box is not supposed to run it".
 NOT_EXPECTED = ("disabled", "absent")
 PROC_TCP = ("/proc/net/tcp", "/proc/net/tcp6")
-DEV_GLOBS = ("/dev/ttyUSB*", "/dev/ttyACM*")
+DEV_GLOBS = USB_RADIO_GLOBS                # ONE list (status_blocks)
+PROC_ROOT = "/proc"                    # fd links read for the radio holder
 _MESHTASTIC_PORT_HEX = "1133"          # :4403, read from /proc only
 _LISTEN = "0A"
 
@@ -95,6 +98,7 @@ class Sources:
     watchdog_path: Path = WATCHDOG_PATH
     proc_tcp: Tuple[str, ...] = PROC_TCP
     dev_globs: Tuple[str, ...] = DEV_GLOBS
+    proc_root: str = PROC_ROOT
     runner: Callable[..., Any] = subprocess.run
     http_get: Optional[Callable[[str], Optional[dict]]] = None
     provisioner: Path = app.PROVISIONER
@@ -198,8 +202,12 @@ def _radio_probe(src: Sources) -> dict:
             f = line.split()
             if len(f) > 3 and f[3] == _LISTEN and f[1].endswith(":" + _MESHTASTIC_PORT_HEX):
                 listening = True
-    usb = any(glob.glob(g) for g in src.dev_globs)
-    return {"tcp_listening": listening, "usb_present": usb}
+    devs = usb_radio_devices(src.dev_globs)
+    usb = bool(devs)
+    # Presence is not use (2026-11-19): who HOLDS the device decides serial.
+    # Only scanned when it can change the verdict — tcp wins first.
+    held = tty_held(devs, proc_root=src.proc_root) if usb and not listening else None
+    return {"tcp_listening": listening, "usb_present": usb, "usb_held": held}
 
 
 def _run(src: Sources, argv: List[str]) -> Tuple[Optional[int], bytes]:

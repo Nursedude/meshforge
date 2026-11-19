@@ -12,8 +12,9 @@ it lacked the missing-timestamp and future-timestamp legs below.
 """
 from __future__ import annotations
 
+import os
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 
 WATCHDOG_STALE_S = 300.0  # 5 min — 10x the watchdog's 30s tick
@@ -174,16 +175,97 @@ def mini_block_from_payload(
     return block
 
 
+#: The USB tty names a radio can appear under — ONE list for every consumer
+#: (map /api/status, the ssh-spool writer, fleet_snapshot): honest_failure_
+#: modes #5. /dev/ttyMeshCore is a udev symlink onto one of these.
+USB_RADIO_GLOBS = ("/dev/ttyUSB*", "/dev/ttyACM*")
+
+
+def usb_radio_devices(globs: "Iterable[str]" = USB_RADIO_GLOBS) -> "list[str]":
+    """Sorted, de-duplicated USB tty device paths present now (presence only)."""
+    import glob
+    return sorted({d for g in globs for d in glob.glob(g)})
+
+
+def tty_held(paths: "Iterable[str]",
+             proc_root: str = "/proc") -> Optional[bool]:
+    """Is any of these device nodes open by a running process? Read from
+    ``/proc/<pid>/fd`` links only — never an open() of the device, which on a
+    radio tty can reset the board or steal its single reader.
+
+    True  = a process holds one (the device is IN USE by something — which
+            process is NOT judged here; see radio_connection_from_probe).
+    False = no holder among the processes this caller could read, and none it
+            could not. In practice only a ROOT caller gets here: a non-root
+            caller always meets unreadable root-owned fd dirs (/proc/1/fd) and
+            gets None (review r3, measured). Under hidepid / ProtectProc=
+            invisible other uids' pids are not even listed, so False there is
+            weaker than it reads.
+    None  = could not tell: /proc unreadable, or a process we may not read
+            (another uid) might be the holder. Unobservable is never "not held".
+    A link matches only the exact device node; a stale fd onto a removed node
+    reads "<path> (deleted)" and is (correctly) not a holder of the new node.
+    """
+    targets = set()
+    for p in paths:
+        try:
+            targets.add(os.path.realpath(p))
+        except (OSError, ValueError):
+            continue
+    if not targets:
+        return False
+    try:
+        pids = [d for d in os.listdir(proc_root) if d.isdigit()]
+    except OSError:
+        return None
+    blind = False
+    for pid in pids:
+        fd_dir = os.path.join(proc_root, pid, "fd")
+        try:
+            fds = os.listdir(fd_dir)
+        except FileNotFoundError:
+            continue                      # exited mid-scan
+        except OSError:
+            blind = True                  # another uid's process — unreadable
+            continue
+        for fd in fds:
+            try:
+                if os.readlink(os.path.join(fd_dir, fd)) in targets:
+                    return True
+            except OSError:
+                continue
+    return None if blind else False
+
+
 def radio_connection_from_probe(tcp_listening: bool,
-                                usb_present: bool) -> "tuple[bool, str]":
+                                usb_present: bool,
+                                usb_held: Optional[bool] = None,
+                                ) -> "tuple[Optional[bool], str]":
     """The (connected, mode) decision for the radio cell, from a NON-perturbing
     probe: meshtasticd's :4403 LISTEN state (read from /proc, never a connect —
     a connect seizes the single-consumer PhoneAPI and wedges mesh-TX, #17/#75)
-    or a USB radio device. Module-level so the map's own ``_read_radio_block``
-    and the ssh-spool fallback (which reads a map-less gateway's listen/usb
-    state over ssh) reach the identical verdict (honest_failure_modes #5)."""
+    or a USB radio device. Module-level so every consumer — the map's own
+    status summary, the ssh-spool fallback, fleet_snapshot — reaches the
+    identical verdict (honest_failure_modes #5).
+
+    A USB tty is PRESENCE, not use: a dev board on a desk enumerates exactly
+    like a radio (meshforge-lab, 2026-11-15). Only a device a process HOLDS
+    (``tty_held`` True — e.g. the MeshAnchor daemon on /dev/ttyMeshCore) reads
+    connected/serial. Otherwise connected is ``None`` (unobservable -> DARK,
+    never HEALTHY, never FAILED) with the mode saying which blindness:
+    ``usb_unheld`` (no readable holder) or ``usb_holder_unknown`` (holders
+    unreadable, or a spool written before ``usb_held`` existed). Only a real
+    ``True``/``False`` counts as holder evidence.
+
+    Known limit (review r2 F1, 2026-11-19): "held" means held by ANY process —
+    an RNode held by rnsd reads serial even if the Meshtastic daemon is down.
+    Which device IS the configured radio is the next arc."""
     if tcp_listening:
         return True, "tcp"
     if usb_present:
-        return True, "serial"
+        if usb_held is True:
+            return True, "serial"
+        if usb_held is False:
+            return None, "usb_unheld"
+        return None, "usb_holder_unknown"
     return False, "none"

@@ -20,7 +20,9 @@ Schema (parity with MA's `slo_view`):
             "optional": {"total": int, "available": int, "by_state": {...}},
         },
         "boundaries_top": [],
-        "radio": {"connected": bool, "name": <str|None>,
+        "radio": {"connected": <bool|None>,   # None = USB present, unverified
+                  "mode": <str>,  # only on the USB leg: usb_unheld | usb_holder_unknown | serial
+                  "name": <str|None>,
                   "preset": <str|None>, "battery_pct": <int|None>},
         "errors": [<str>, ...],
         "schedules": {
@@ -69,6 +71,8 @@ import socket
 import subprocess
 
 from utils._port_detection import tcp_port_listening
+from utils.status_blocks import (radio_connection_from_probe, tty_held,
+                                 usb_radio_devices)
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -262,6 +266,7 @@ def _probe_radio() -> Dict[str, Any]:
     """
     connected = False
     name = None
+    mode = None   # set by the USB leg: fleet_truth names WHICH blindness (r3)
 
     # #17 single-consumer defer: when meshforge-gateway owns the local :4403
     # PhoneAPI, a connect_ex() probe here is itself a contender — meshtasticd
@@ -310,17 +315,24 @@ def _probe_radio() -> Dict[str, Any]:
         pass
 
     if not connected:
-        import os
-        if os.path.exists("/dev/ttyMeshCore"):
-            connected = True
-            name = "meshcore"
+        # No PhoneAPI answer: the USB leg decides through the SAME list, holder
+        # scan and verdict as the map and the spool (review r2 F3, 2026-11-19)
+        # — presence alone is never connected, never failed.
+        devs = usb_radio_devices()
+        if devs:
+            held = tty_held(devs)
+            connected, mode = radio_connection_from_probe(False, True, held)
+            name = "meshcore" if os.path.exists("/dev/ttyMeshCore") else "usb"
 
-    return {
+    radio = {
         "connected": connected,
         "name": name,
         "preset": None,
         "battery_pct": None,
     }
+    if mode is not None:
+        radio["mode"] = mode
+    return radio
 
 
 def _list_timers_scope(scope: str) -> Optional[List[Dict[str, Any]]]:
