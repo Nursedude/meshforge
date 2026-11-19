@@ -277,3 +277,15 @@ Unit tests pin our model of the mesh; only these drills pin the observer. Each e
 
 Not acceptance (supporting only): the moc5 SDR seeing energy on 910.525 MHz while we log nothing is a red
 flag, never a pass.
+
+### Physical facts (operator 2026-11-18 ~20:4x HST)
+
+- **"meshanchor r1" is OUR MeshCore repeater: a solar node at a remote site.** CORRECTS the 10-31 Cascadia
+  study ("we run no MeshCore repeaters") and `docs/fleet_roles.yaml` (no repeater role) — both predate or
+  omit it. Not a fleet box (no Pi, no ssh); a radio-only node.
+- **The path through r1 is traceable from portable p4** (p4 sees 137 contacts).
+- What this does to drill 1: the expected hop is r1. Pass = our own advert logged via 0x88 with r1's hash in
+  its path, stored in our CoreScope; the SECOND END = a trace from p4 that shows the same r1 hop.
+- ⚠️ Solar = a failure that is not ours: a drill that fails at night or on a flat battery may be r1 asleep,
+  not the observer deaf. Read r1's status (battery / uptime, if it reports one over the mesh) before
+  scoring a fail; drill 2 (p4/p1 direct) separates the two. UNKNOWN: r1's power budget and duty cycle.
