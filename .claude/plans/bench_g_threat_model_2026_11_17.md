@@ -104,3 +104,9 @@ held port steals the radio from rnsd/meshtasticd, and a DTR/RTS pulse reboots it
 red tests A1–A8 (fail on today's guard) → ✅ replay corpus (11-18: `scripts/bench_guard_replay.py`,
 baseline UNNAMED 0 after the reversal, 1 since the r3 demo of the residual — `--max-unnamed 1` until ~12-02) → build → `guard_drill.py` plant → non-author
 review r1 (contextless) → Fable by running → fleet deploy (the guard runs on every box).
+
+**Gate: a control counts only if it FAILS on the pre-change tree** (operator 11-18, "fold control-must-fail
+into BENCH-G"). Every allow/deny control in the drill and the red tests runs against the previous guard
+too; a control that decides the same on both trees proves nothing and is refused. Origin: the 11-18 r5
+deploy drill's first "unnamed" control was allowed by the OLD guard as well; `echo $primary.get` /
+`echo $item_meta` (old DENY, new ALLOW) replaced it.
