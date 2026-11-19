@@ -13,9 +13,11 @@ was unused (no test imported it) and was removed in the 2026-05-19
 pattern-audit cleanup (Finding #9).
 """
 
+import functools
 import itertools
 import os
 import sys
+import threading
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -127,6 +129,304 @@ def pytest_unconfigure(config):
     d = getattr(config, "_mf_host_fence_dir", None)
     if d:
         shutil.rmtree(d, ignore_errors=True)
+    _arm_exit_watchdog()                 # THR-1: armed FIRST (r7 F2: a Ctrl-C in the census
+    _end_if_wedged()                     # grace escaped before it was armed); then name + end fast
+
+
+# ── THR-1 (2026-11-18): no test may leave a NON-DAEMON thread running ─────────
+# A full-suite tracker run found 30 non-daemon threads outliving their tests
+# (`statusbar-weather` ×25 from StatusBars never `cleanup()`-ed, `eventbus`
+# workers from EventBus instances never `shutdown()`), 27 still alive at
+# session end. A non-daemon thread is waited for at interpreter exit — GitHub
+# terminated an orphan python after the CI job (BELIEVED this class). The
+# product classes HAVE the stop API; the tests did not call it.
+
+_EVENT_BUS_ALIASES = ("utils.event_bus", "src.utils.event_bus")
+
+#: One bounded wait for the whole teardown (review 11-18 #2/#5/#8): never an
+#: unbounded join — a wedged worker must not turn teardown into the hang THR-1
+#: removes — and never a fresh grace per thread (that cost scales with N).
+_THREAD_JOIN_DEADLINE_S = 2.0
+
+
+def _join_all(threads, deadline_s):
+    """Join ``threads`` against ONE shared monotonic deadline; return survivors."""
+    import time
+    end = time.monotonic() + deadline_s
+    for t in threads:
+        left = end - time.monotonic()
+        if left <= 0:
+            break
+        t.join(left)
+    return [t for t in threads if t.is_alive()]
+
+
+def _settle_threads(select, deadline_s):
+    """Join what ``select()`` returns, RE-READING it until it is empty or ONE shared
+    deadline passes; survivors come from a FRESH ``select()`` (Fable r6: a single
+    snapshot missed threads started during the grace — a re-arming Timer, a
+    callback that spawns one — the third pointer-for-the-thing defect)."""
+    import time
+    end = time.monotonic() + deadline_s
+    while True:
+        cur = [t for t in select() if t.is_alive()]
+        left = end - time.monotonic()
+        if not cur or left <= 0:
+            return cur
+        for t in cur:
+            left = end - time.monotonic()
+            if left <= 0:
+                break
+            t.join(min(left, 0.25))
+
+
+#: The exit watchdog's grace (seconds after pytest_unconfigure finishes). Long
+#: enough for coverage / junit / atexit to finish on a slow Pi; short enough that
+#: a CI hang ends in seconds, not at the job timeout. Tests set it low.
+_EXIT_WATCHDOG_S = float(os.environ.get("MF_EXIT_WATCHDOG_S", "15"))
+
+
+def _arm_exit_watchdog():
+    """The GUARANTEE for the exit phases that matter here (Fable r6): a thread
+    census can never be complete — a thread started during the grace, a blocking
+    atexit handler, a non-daemon multiprocessing child, a ``-p`` plugin's
+    unconfigure. So measure the OUTCOME: a DAEMON thread (daemon threads keep
+    running while interpreter shutdown waits on non-daemon threads, atexit
+    handlers and children — VERIFIED on 3.13 by Fable r7) that, if this process
+    has not exited ``_EXIT_WATCHDOG_S`` after this hook, dumps every thread's
+    stack and ends it with the recorded failing status. A clean run exits first.
+
+    NOT covered (Fable r7, VERIFIED by plants; none occurs in this suite today):
+    a blocking ``__del__`` in module teardown (after daemon threads stop); a
+    plugin registered inside ``pytest_configure`` or a blocking
+    ``pytest_sessionfinish`` (they run before this hook arms it); a C call
+    holding the GIL; and ``os._exit`` orphans a non-daemon multiprocessing child,
+    which can hold a ``| tee`` pipe open. The CI job timeout is the backstop."""
+    def _watch():
+        import faulthandler
+        import time
+        time.sleep(_EXIT_WATCHDOG_S)
+        try:
+            sys.stdout.flush()
+            sys.stderr.write(f"\nTHR-1: the test process did not exit {_EXIT_WATCHDOG_S:g} s "
+                             "after the session ended — something blocks interpreter exit "
+                             "(a thread, an atexit handler, a child process). Stacks:\n")
+            sys.stderr.flush()
+            faulthandler.dump_traceback(all_threads=True)
+        finally:
+            os._exit(_SESSION_EXITSTATUS[0] or 1)
+    threading.Thread(target=_watch, daemon=True, name="mf-exit-watchdog").start()
+
+
+def _process_lifetime_threads():
+    """Workers of the GLOBAL ``event_bus`` singleton (both import aliases):
+    process-lifetime by design, bounded at 4. Exempt by IDENTITY — the
+    executor's own Thread objects, never names or idents (review #1: Linux
+    reuses thread idents). Idle, they exit at interpreter shutdown on their own.
+
+    A subscriber callback WEDGED on this bus is caught by
+    ``_no_wedged_global_bus_callbacks`` (fails the test that left it),
+    ``_end_if_wedged`` (names it and ends the process at session end) and, as the
+    guarantee, ``_arm_exit_watchdog`` (nothing may hang exit)."""
+    out = set()
+    for name in _EVENT_BUS_ALIASES:
+        bus = getattr(sys.modules.get(name), "event_bus", None)
+        out.update(_executor_threads(getattr(bus, "_executor", None)))
+    return out
+
+
+def _leaked_nondaemon_threads(before, deadline_s=0.5):
+    """Thread OBJECTS started since ``before`` (a set of Thread objects — never
+    idents, review #1) that are non-daemon and still alive after ONE shared
+    short deadline (a thread already finishing is not a leak; review #8)."""
+    exempt = _process_lifetime_threads()
+    return _settle_threads(lambda: [t for t in threading.enumerate()
+                                    if t not in before and t not in exempt
+                                    and not t.daemon and t is not threading.main_thread()],
+                           deadline_s)
+
+
+def _thread_fn_name(t):
+    """What a thread runs, for the failure message (a Timer keeps it in .function)."""
+    fn = getattr(t, "_target", None) or getattr(t, "function", None)
+    return getattr(fn, "__qualname__", None) or type(t).__qualname__
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_nondaemon_threads():
+    """Fail the test that leaves a non-daemon thread running (THR-1). The fix is
+    the owner's stop API (``StatusBar.cleanup()``, ``EventBus.shutdown()``,
+    ``executor.shutdown()``), not a wider exemption."""
+    import threading
+    before = set(threading.enumerate())
+    yield
+    leaked = _leaked_nondaemon_threads(before)
+    if leaked:
+        pytest.fail("THR-1: test left non-daemon thread(s) running: "
+                    + ", ".join(f"{t.name} ({_thread_fn_name(t)})" for t in leaked)
+                    + " — call the owner's stop API (cleanup()/shutdown()) in the test.",
+                    pytrace=False)
+
+
+#: THR-1 wedge guard (operator 11-18: "we need to fix this — we are better than
+#: this"). The global bus's workers are exempt from the leak gate (process-
+#: lifetime pool), so a subscriber callback that never returns was invisible —
+#: the test passed and interpreter exit then blocked on the non-daemon worker
+#: (Fable r2 F2, VERIFIED by a plant: results printed, python never exited).
+#: Two parts: (1) every task submitted to the GLOBAL bus during a test is
+#: tracked; at teardown one still running after the shared deadline FAILS THAT
+#: TEST, naming the callback; (2) if any is still running at session end, the
+#: process is ended with a failing status after saying exactly which — a stuck
+#: callback can never again turn into a silent hang. A clean run is unchanged.
+_WEDGED_BUS_CALLBACKS = []        # (callback name, nodeid, future) still running
+_SESSION_EXITSTATUS = [0]
+
+
+def _callback_name(fn, args):
+    """EventBus submits ``_safe_call(callback, event)`` — name the CALLBACK."""
+    target = args[0] if getattr(fn, "__name__", "") == "_safe_call" and args else fn
+    return getattr(target, "__qualname__", None) or repr(target)
+
+
+@pytest.fixture(autouse=True)
+def _no_wedged_global_bus_callbacks(request, monkeypatch):
+    import concurrent.futures
+    inflight = []
+    for name in _EVENT_BUS_ALIASES:
+        bus = getattr(sys.modules.get(name), "event_bus", None)
+        ex = getattr(bus, "_executor", None)
+        if ex is None or getattr(ex, "_mf_tracked", False):
+            continue
+        orig_submit = ex.submit
+
+        def _submit(fn, *a, _orig=orig_submit, **k):
+            fut = _orig(fn, *a, **k)
+            inflight.append((_callback_name(fn, a), fut))
+            return fut
+        monkeypatch.setattr(ex, "submit", _submit)
+        monkeypatch.setattr(ex, "_mf_tracked", True, raising=False)
+    yield
+    if not inflight:
+        return
+    import time
+    end = time.monotonic() + _THREAD_JOIN_DEADLINE_S
+    while True:                          # r4 F2: a child emitted while finishing is waited for too
+        pending = [f for _, f in list(inflight) if not f.done()]
+        left = end - time.monotonic()
+        if not pending or left <= 0:
+            break
+        concurrent.futures.wait(pending, timeout=left)
+    stuck = [(n, f) for n, f in list(inflight) if not f.done()]
+    if stuck:
+        _WEDGED_BUS_CALLBACKS.extend((n, request.node.nodeid, f) for n, f in stuck)
+        pytest.fail("THR-1: callback(s) on the GLOBAL event_bus still running after "
+                    f"teardown: {', '.join(n for n, _ in stuck)} — a callback that never "
+                    "returns blocks interpreter exit; make it return or time out.",
+                    pytrace=False)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    _SESSION_EXITSTATUS[0] = int(exitstatus)
+
+
+def _executor_threads(ex):
+    """The executor's worker Thread objects, robust to a mocked bus/executor and to
+    the set changing size while we look (r5 lows)."""
+    try:
+        return [t for t in list(getattr(ex, "_threads", None) or ())
+                if isinstance(t, threading.Thread)]
+    except TypeError:                    # a test left a plain Mock() — nothing real to join
+        return []
+
+
+def _end_if_wedged():
+    """Session end: the test process must NEVER hang at exit (operator 11-18).
+
+    Measures the ONE thing interpreter exit waits for — every alive NON-DAEMON
+    thread — not a pointer to it. Rounds 4 and 5 found the same defect twice:
+    trusting the callbacks a test window tracked (r4 F1), then trusting whichever
+    executor ``event_bus._executor`` named at the end (r5 F1: a wedge followed by
+    a swapped or restored executor still hung, once silently). So: shut the
+    global buses down without waiting, join EVERY alive non-daemon non-main
+    thread against one bounded grace, and only if one survives say what it runs
+    (and which tracked callbacks are stuck) and end the process with the
+    recorded failing status. A clean run returns."""
+    for name in _EVENT_BUS_ALIASES:
+        bus = getattr(sys.modules.get(name), "event_bus", None)
+        ex = getattr(bus, "_executor", None)
+        if ex is None:
+            continue
+        try:
+            ex.shutdown(wait=False, cancel_futures=True)
+        except Exception:    # noqa: BLE001 — session teardown must not mask results
+            pass
+    survivors = _settle_threads(
+        lambda: [t for t in threading.enumerate()
+                 if t is not threading.main_thread() and not t.daemon],
+        _THREAD_JOIN_DEADLINE_S)
+    if not survivors:
+        return
+    named = [(n, node) for n, node, f in _WEDGED_BUS_CALLBACKS if not f.done()]
+    lines = "".join(f"  {n}  (left by {node})\n" for n, node in named)
+    lines += "".join(f"  thread {t.name} running {_thread_fn_name(t)}\n" for t in survivors)
+    try:
+        sys.stdout.flush()               # r4 F4: the summary tail first, then why we exit
+        sys.stderr.write("\nTHR-1: ending the test process — non-daemon thread(s) still "
+                         f"running after a {_THREAD_JOIN_DEADLINE_S:g} s grace would block "
+                         "interpreter exit:\n" + lines)
+        sys.stderr.flush()
+    finally:
+        os._exit(_SESSION_EXITSTATUS[0] or 1)
+
+_STATUS_BAR_ALIASES = ("status_bar", "launcher_tui.status_bar", "src.launcher_tui.status_bar")
+
+
+@pytest.fixture(autouse=True)
+def _stop_status_bars(monkeypatch, _no_leaked_nondaemon_threads):
+    """Every StatusBar a test builds is stopped with its OWN API at teardown —
+    ``cleanup()``, then its executor shut down and its worker joined against one
+    bounded deadline. AUTOUSE (review #6: an opt-in marker every new file had to
+    remember; ``launcher_tui.main._setup_status_bar`` builds one indirectly).
+    Requests the leak check so it tears down AFTER this. EVERY import alias is
+    wrapped (separate module objects, separate classes — the
+    ``_isolate_node_cache_files`` lesson), imported HERE so a lazy first import
+    cannot slip past; only a genuinely unavailable alias is skipped (review #9)."""
+    import importlib
+    created = []
+    for name in _STATUS_BAR_ALIASES:
+        try:
+            mod = importlib.import_module(name)
+        except (ImportError, ModuleNotFoundError):   # this alias is not on sys.path here
+            continue
+        cls = getattr(mod, "StatusBar", None)
+        if cls is None:
+            continue
+        orig = cls.__init__
+
+        @functools.wraps(orig)          # F1 (Fable r2): getsource/signature see the REAL __init__ —
+        def _init(self, *a, _orig=orig, **k):   # test_tui_dead_code_purge reads its source
+            _orig(self, *a, **k)
+            created.append(self)
+        monkeypatch.setattr(cls, "__init__", _init)
+    yield created
+    errors, workers = [], []
+    for bar in created:                    # review #3: one failure must not skip the rest
+        try:
+            bar.cleanup()
+        except Exception as e:             # noqa: BLE001 — collected, re-raised below
+            errors.append(e)
+        ex = getattr(bar, "_weather_executor", None)
+        if ex is None:
+            continue
+        try:
+            workers.extend(t for t in (getattr(ex, "_threads", None) or ())
+                           if isinstance(t, threading.Thread))
+            ex.shutdown(wait=False, cancel_futures=True)
+        except Exception:                  # noqa: BLE001 — a test-mocked executor (Mock()) is
+            pass                           # scaffolding, not a leak: never errors the test (r3 L4)
+    _join_all(workers, _THREAD_JOIN_DEADLINE_S)
+    if errors:
+        raise errors[0]
 
 
 def pytest_configure(config):

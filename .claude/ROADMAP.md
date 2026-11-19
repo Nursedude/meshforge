@@ -241,7 +241,7 @@ PARKED 11-04, revisit 12-04:
 - **SRC-1** [MF] S — repo is SoT, pages are dated views (operator 11-16): extend loop_gate TOPIC (no new class) — registry `source` path; refuse a page update while it is dirty; page carries `mf:source` path@sha
   +11-17 (op): stamps both ways, stale derived from the sha; each page finding gets adopt/refute/drop. `audits/artifact_audit_2026_11_17.md`
 - **CI-2** [MF] S — shard the suite ONLY if `Test Suite` > 30 min again (26.7 after CI-1); add the missing 3.13 leg; never a cap raise. `plans/ci_suite_cost_2026_11_18.md`
-- **THR-1** [MF] S — tests leave product threads running (`eventbus` ×5, `statusbar-weather` ×2 after ~5.5 k tests; a CI orphan python at exit): stop at source
+- **FENCE-1** [MF] S — /tmp held 917 `mf-host-fence-*` dirs (910 > 24 h): unconfigure cleanup misses killed/timed-out runs (BELIEVED); prune at start
 - **CLK-1** [MF] S+F — meshtasticd re-rates its clock after a fail-open boot, no human (4 hits in 47 d)
   Op 11-18. Trigger = gate's authenticated TIMEOUT, never mesh-writable telemetry; ONE restart/invocation. `plans/clk1_ntp_rerate_2026_11_18.md`
   public: After a boot without network time, MeshForge restarts the radio service once the clock syncs, so the node list never freezes.

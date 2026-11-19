@@ -55,7 +55,17 @@ def subscriber():
         "reconnect_delay": 1,
         "max_reconnect_delay": 10,
     }
-    return MQTTNodelessSubscriber(config=config)
+    sub = MQTTNodelessSubscriber(config=config)
+    yield sub
+    # THR-1 (11-18): an unexpected-disconnect test starts the reconnect loop;
+    # without stop() it kept retrying test.example.com after the test ended.
+    # stop() only SETS the event (review #4), so join — the loop waits on that
+    # event between attempts and is stopped long before its first connect.
+    sub.stop()
+    t = sub._reconnect_thread
+    if t is not None:
+        t.join(timeout=3)
+        assert not t.is_alive(), "reconnect loop outlived stop() — it would keep retrying"
 
 
 # =============================================================================

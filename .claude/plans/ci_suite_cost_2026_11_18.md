@@ -98,7 +98,8 @@ tests (37 tests ≥ 5 s = ~5.7 min; `test_honest_status_shell` boxes harness alo
 AFTER the last test** — `-rA` printing captured output for every passing test (36,517 lines;
 largest single gap 30 s, so volume, not one stall). → `ci.yml` `-rA` → `-ra` (operator go 11-18);
 `pytest_verdict.sh` reads only the summary line and `^FAILED`/`^ERROR` lines, which `-ra` keeps.
-Expected job ≈ 19 min — BELIEVED until CI measures the head that carries it.
+Expected job ≈ 19 min — **measured: 18 min 44 s** (`e664f374`, CI success; n=1) — 44 % under the old
+33.5 min median, 26 min of headroom under the 45 min cap.
 
 **Disposition:** CI-1 DONE (left the roadmap, provenance line). CI-2 shrunk to "shard only if
 `Test Suite` > 30 min again". THR-1 opened for the leaked threads — GitHub's cleanup step reported

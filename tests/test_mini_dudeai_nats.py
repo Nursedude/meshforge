@@ -57,15 +57,34 @@ class FakeNats:
         self.port = self._sock.getsockname()[1]
         self.server = f"127.0.0.1:{self.port}"
         self._stop = threading.Event()
+        self._conn = None                # the live connection, so close() can wake it
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
 
     def close(self):
+        """Stop the serve thread and wait for it (THR-1). close() alone does not
+        wake a thread blocked in accept() on Linux — shutdown() does; a live
+        connection is shut down too so _serve_conn's readline returns."""
         self._stop.set()
+        # Two passes (review #7): a close() landing between accept() returning
+        # and `self._conn = conn` sees no connection; the second pass catches it.
+        for _ in range(2):
+            for s in (self._conn, self._sock):
+                if s is None:
+                    continue
+                try:
+                    s.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            self._thread.join(timeout=0.5)
+            if not self._thread.is_alive():
+                break
         try:
             self._sock.close()
         except OSError:
             pass
+        self._thread.join(timeout=2)
+        assert not self._thread.is_alive(), "FakeNats serve thread outlived close()"
 
     # -- internals ----------------------------------------------------
 
@@ -75,11 +94,13 @@ class FakeNats:
                 conn, _ = self._sock.accept()
             except OSError:
                 return
+            self._conn = conn
             try:
                 self._serve_conn(conn)
             except OSError:
                 pass
             finally:
+                self._conn = None
                 try:
                     conn.close()
                 except OSError:
@@ -130,6 +151,21 @@ class FakeNats:
                         + body + b"\r\n")
             elif line == b"PONG":
                 continue
+
+
+def test_fake_nats_close_stops_its_thread():
+    """THR-1 (11-18): ~20 `FakeNats._serve` threads outlived their tests —
+    close() closed the listening socket, which on Linux does NOT wake a thread
+    blocked in accept(). Idle and mid-connection both must end."""
+    idle = FakeNats()
+    idle.close()
+    assert not idle._thread.is_alive()
+    busy = FakeNats()
+    c = socket.create_connection(busy._sock.getsockname(), timeout=2)
+    c.recv(256)                          # INFO: the server is inside _serve_conn
+    busy.close()
+    c.close()
+    assert not busy._thread.is_alive()
 
 
 @pytest.fixture
