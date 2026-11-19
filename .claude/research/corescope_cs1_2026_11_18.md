@@ -215,3 +215,19 @@ Meshtastic radios carry the two-preset fleet. **Neither may be repurposed.**
 - `github.com/agessaman/MeshCore` releases `observer-mqtt-latest`, `observer-mqtt-beta-latest` (asset lists, API)
 - `https://corescope.hawaiimesh.net/api/{health,healthz,stats,observers,nodes,packets,scope-audit,scope-stats,config/regions,config/client,observers/metrics/summary}` (GETs, 2026-11-19T04:10Z)
 - meshanchor-server: `systemctl cat meshanchor.service` / `meshanchor-daemon.service`, `pip show meshcore`, `ss -ltn`, `dpkg-query -W mosquitto` (2.0.21-1), MeshAnchor @ `c1685dcb`
+
+## Decisions (operator 2026-11-18, after this research)
+
+- **IATA = `ITO`** for meshanchor-server's observer (operator).
+- **No container runtime: CoreScope runs as upstream binaries under systemd** (operator leaned binaries,
+  "your call"; recommendation taken). The binaries are **extracted from the pinned upstream arm64 image
+  by digest** (`sha256:7a496608d1fc…`, v3.18.0), not rebuilt by us: upstream builds them with
+  `CGO_ENABLED=1`, `CC=zigcc`, tags `netgo,osusergo,sqlite_omit_load_extension` and version ldflags
+  (`Dockerfile` @ `12f9c5c6` lines 29, 57, 82-125), and neither box has Go. A registry blob pull needs
+  no runtime. UNKNOWN until extracted: whether they are static or need host libs (`file`/`ldd` them).
+- **What the image's entrypoint did must move into the unit, explicitly** (`docker/entrypoint-go.sh` @
+  `12f9c5c6`, 42 lines): config lookup at `/app/data/config.json`; supervisord running ingestor + server
+  (+ mosquitto + Caddy unless `DISABLE_*`); `CORESCOPE_SERVICE_USER=root` default. Ours: two units
+  (ingestor, server), a non-root user, `Environment=`/`EnvironmentFile=` spelled out, config path
+  absolute, our host mosquitto, no Caddy. A parity check compares the image's `Env`/`Cmd`/supervisord
+  programs with our units at each pin bump.
