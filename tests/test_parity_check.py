@@ -414,3 +414,13 @@ def test_mesh_bridge_drain_is_byte_locked():
     in both twins but sat outside this tier, so a drift — a leg gate added to
     one twin's drain — would pass parity silently."""
     assert "src/gateway/_mesh_bridge_drain.py" in _load().BYTE_IDENTICAL
+
+
+def test_review_provenance_check_is_byte_locked():
+    """2026-11-19: MeshForge's 11-18 `_non_attached` fix ("non-author" is a
+    modifier, not a denial) never reached MeshAnchor's copy, and MA's pre-push
+    leg 2 refused a true "non-author Fable subagent" row. Nothing saw the
+    drift because this file sat outside every tier; the twins' copies were
+    byte-identical before the fix, so the gate is byte-locked (the TEST files
+    stay per-repo: MF pins a ledger row only MF's ledger carries)."""
+    assert "scripts/review_provenance_check.py" in _load().BYTE_IDENTICAL
