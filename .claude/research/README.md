@@ -67,7 +67,8 @@
 
 | `map_wedge_classes_2026_05_22.md` | `http_local_unresponsive` on :5000 has SIX different causes sharing one symptom, so the useful knowledge is which class this one is. The GIL-bound serialization class (#70/#71): `json.dumps`+`gzip.compress` hold the GIL for seconds on a 24–47 MB body, federation polls queue behind it and `/healthz` misses the watchdog's 2 s probe — nothing deadlocked, the process just cannot answer. Cure is caching the SERIALIZED BYTES with single-flight rebuild (a data cache does NOT fix it; geojson already had one). ⚠️ All known instances are cured, so a NEW wedge is a NEW class — includes the differential table against fd leak (#73), RNS wedge, `TCPInterface` leak (#75), dead probe (#76) and collect-coupling, plus the two lint/guard-pinned invariants |
 | `landscape_2026_11_04.md` | Three peers read 11-04 (CoreScope, mesh-api, AMMB): two more projects already relay Meshtastic↔MeshCore text and CoreScope owns MeshCore observer analytics, so the defensible ground is RNS/LXMF as the hub + per-leg delivery truth. Full rows + the four proposed CoreScope items (MC-OBS, HI-OBS, CS-READ, CS-ISSUE — operator to place); ROADMAP "Why we win" points here |
+| `corescope_cs1_2026_11_18.md` | CS-1 from pinned source: companion 0x88 → meshcoretomqtt shape → CoreScope ingest unchanged (v3.18.0); what must change on meshanchor-server (no container runtime, bundled mosquitto/Caddy, packet retention unset, 0x88 drops > 173 B); lab hardware options; what our domain adds to the Hawaii community. Places MC-OBS/HI-OBS/CS-READ as ROADMAP CS-1 |
 
 ---
 
-*<!--STAT:researchdocs-->61<!--/STAT--> research documents. Updated 2026-08-04.*
+*<!--STAT:researchdocs-->62<!--/STAT--> research documents. Updated 2026-08-04.*
