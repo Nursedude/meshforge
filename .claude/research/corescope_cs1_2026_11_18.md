@@ -231,3 +231,28 @@ Meshtastic radios carry the two-preset fleet. **Neither may be repurposed.**
   (ingestor, server), a non-root user, `Environment=`/`EnvironmentFile=` spelled out, config path
   absolute, our host mosquitto, no Caddy. A parity check compares the image's `Env`/`Cmd`/supervisord
   programs with our units at each pin bump.
+
+### Binaries extracted and inspected (2026-11-18 19:2x HST by `date`, VolcanoAI scratch, nothing executed)
+
+- **Pulled anonymously from ghcr, no container runtime:** arm64 manifest `sha256:7a496608d1fc…`
+  (= the digest above), 20 blobs (config + layers), each sha256 re-checked against its digest.
+- **`/app/corescope-server`, `/app/corescope-ingestor`, `/app/corescope-decrypt`: ELF 64-bit aarch64,
+  statically linked, stripped, no dynamic section, no PT_INTERP** (VERIFIED, `file` + `readelf -d/-l`).
+  No host libraries needed. sha256 prefixes: server `e7d310fc07f68ec5`, ingestor `03e7bcba01321486`,
+  decrypt `026b3bc984265193`.
+- The server also needs `/app/public/` (the web UI assets) beside it. `/app/.image-version` = `v3.18.0`;
+  `/app/.git-commit` = `unknown` (the live `/api/health` commit comes from build flags, not this file).
+- **Image config:** `User` unset (root), `Env` = PATH + `CORESCOPE_SERVICE_USER=root`, `Entrypoint`
+  `/entrypoint.sh`, `WorkingDir /app`, volumes `/app/data`, `/data/caddy`.
+- **What our units must reproduce** (supervisord `supervisord-no-mosquitto-no-caddy.conf`, VERIFIED):
+  `corescope-ingestor -config /app/config.json` and `corescope-server -config-dir /app -db
+  /app/data/meshcore.db -public /app/public -port 3000`, both `directory=/app`, autorestart,
+  `stopsignal=TERM`, `stopwaitsecs=20`. Our paths replace `/app` with an absolute install dir; the
+  server port (3000) must not clash with anything on meshanchor-server (check `ss -ltn` before install).
+
+### Correction (operator 2026-11-18)
+
+- The operator has **no account** on corescope.hawaiimesh.net (an earlier message said they did). Its login
+  page offers passkey login and account creation. The community's "run an observer" path is on
+  hawaiimesh.net (the wiki) and corescope.hawaiimesh.net. Until an account exists, the outward leg could
+  use only the shared community login, so it stays off by default.
