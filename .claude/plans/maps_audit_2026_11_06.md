@@ -141,7 +141,7 @@ Not in scope: changing what the background refresher collects. Review: contextle
 **What :5000 has (VERIFIED 11-17):** websocket live message feed (:5001 listening on VolcanoAI + moc), a particle "message flow" animation, a 24 h playback slider of NODE snapshots (not packets), animated link lines, the MAP-H honesty layer.
 
 **Plan, in order (beat CoreScope on truth; PARITY-1 "copy, then match or beat"):**
-1. H16 (above) — first; it is a defect.
+1. H16 (above) — first; it is a defect. **DONE 2026-11-20 `e68094df`** (not deployed: the map's listener half needs a map restart; page half is live from disk). Root: `message_listener` mapped missing `hopStart` → `hops_away=0`; now None (absent `hopLimit` = wire 0, proto3). Line only for `hops_away === 0` to the `is_self` marker; rows say direct / N hops — path not measured / hops unknown / not recorded. Residuals: (a) review F5 — if `is_self` is lost in a merge, a direct packet draws no line silently; check `_merge_feature` keeps it. (b) `store_incoming` keeps no `hops_away` → stored rows say 'not recorded'. (c) page half static-pinned, never seen in a browser.
 2. Heard-by fan per packet: one line per fleet box that RECEIVED it, labelled SNR · hops · age; nothing for a box that did not (= Phase 4 heard-by edges; our fleet is the observer network).
 3. Last-hop CANDIDATES from the 1-byte relay id, drawn as candidates ("relayed by one of A, B"), never one confident line.
 4. Traceroute routes on the map (TRH-1) — the only measured Meshtastic paths.
