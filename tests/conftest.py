@@ -37,104 +37,26 @@ os.environ["LIVE_STORE_GUARD_UNDER_PYTEST"] = "1"
 CI = os.environ.get('CI', 'false').lower() == 'true'
 MESHFORGE_CI = os.environ.get('MESHFORGE_CI', 'false').lower() == 'true'
 
-
-_SUDO_FENCE = r"""#!/bin/sh
-# tests/conftest.py sudo fence — NO test may run a privileged command on the
-# box it runs on. 2026-09-27: a mutation drill's mutants (bare rnsd restarts)
-# ran REAL `sudo systemctl stop/start/restart rnsd` on the manager box, twice, mid
-# experiment. One narrow allowance: a script inside pytest's own temp tree is
-# run UNPRIVILEGED (fleet_hosts_selfheal tests drive `sudo -n <tmp stub>`).
-echo "$(date +%T) ${PYTEST_CURRENT_TEST:-?} sudo $*" >> "$MF_SUDO_FENCE_LOG"
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -n|-E|-H|-k|-S) shift ;;
-    -u|-g) shift 2 ;;
-    --) shift; break ;;
-    -*) shift ;;
-    *) break ;;
-  esac
-done
-case "$1" in
-  "$MF_SUDO_FENCE_TMP"*) exec "$@" ;;
-esac
-echo "sudo refused under pytest (tests/conftest.py fence): $*" >&2
-exit 1
-"""
-
-
-_REFUSE = r"""#!/bin/sh
-echo "$(date +%T) ${PYTEST_CURRENT_TEST:-?} $(basename "$0") $*" >> "$MF_SUDO_FENCE_LOG"
-echo "$(basename "$0") refused under pytest (tests/conftest.py host fence): $*" >&2
-exit 1
-"""
-
-_SYSTEMCTL_FENCE = r"""#!/bin/sh
-# read-only verbs pass through to the real systemctl; mutating verbs refuse
-for a in "$@"; do
-  case "$a" in
-    start|stop|restart|reload|try-restart|reload-or-restart|kill|enable|disable|\
-    mask|unmask|daemon-reload|daemon-reexec|reset-failed|isolate|edit|\
-    set-property|revert|link|preset|reboot|poweroff|halt|suspend)
-      echo "$(date +%T) ${PYTEST_CURRENT_TEST:-?} systemctl $*" >> "$MF_SUDO_FENCE_LOG"
-      echo "systemctl $a refused under pytest (tests/conftest.py host fence)" >&2
-      exit 1 ;;
-  esac
-done
-exec "$MF_REAL_SYSTEMCTL" "$@"
-"""
-
-# Commands a test must never run for real on the box it runs on. 2026-09-27:
-# a sudo-only fence let a mutant's non-systemd fallback `pkill -x rnsd` kill
-# the LIVE rnsd (it runs as the operator's user — no sudo needed).
-_REFUSED_BINARIES = ("pkill", "killall", "reboot", "shutdown", "poweroff",
-                     "rnsd", "lxmd", "nomadnet", "meshtasticd",
-                     # review S4 (2026-09-28): four src sites exec
-                     # ['kill', ..., pid] — a mutant reaching one with a real
-                     # pid kills for real, the pkill shape the fence was built
-                     # from. systemd-run/busctl/dbus-send start or drive units
-                     # around the systemctl fence. (`kill` here is the /bin
-                     # binary; the shell builtin is untouched.) Residual: the
-                     # module form `python -m RNS.Utilities.rnsd` cannot be
-                     # fenced by PATH.
-                     "kill", "systemd-run", "busctl", "dbus-send")
-
-
-def _install_sudo_fence():
-    """Host fence: a refusing `sudo`, refusing process-killers/daemons, and a
-    `systemctl` that refuses mutating verbs — first on PATH for this process
-    AND every subprocess it spawns. Measured-safe: the full suite passes
-    under it (2026-09-27)."""
-    import shutil
-    import tempfile
-    real_systemctl = shutil.which("systemctl") or "/usr/bin/systemctl"
-    d = tempfile.mkdtemp(prefix="mf-host-fence-")
-
-    def _put(name, body):
-        path = os.path.join(d, name)
-        with open(path, "w") as fh:
-            fh.write(body)
-        os.chmod(path, 0o755)
-
-    _put("sudo", _SUDO_FENCE)
-    _put("systemctl", _SYSTEMCTL_FENCE)
-    for name in _REFUSED_BINARIES:
-        _put(name, _REFUSE)
-    os.environ["MF_REAL_SYSTEMCTL"] = real_systemctl
-    os.environ["MF_SUDO_FENCE_LOG"] = os.path.join(d, "calls.log")
-    os.environ["MF_SUDO_FENCE_TMP"] = tempfile.gettempdir().rstrip("/") + "/pytest-of-"
-    os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
-    return d
+# The host fence (refusing sudo/pkill/systemctl-mutations) lives in
+# tests/host_fence.py; installed in pytest_configure below.
+from tests.host_fence import _FENCE_STATS, _install_sudo_fence  # noqa: E402
 
 
 def pytest_unconfigure(config):
-    """Release the host fence dir. /tmp is tmpfs on the fleet: one leaked
-    fence per pytest invocation had accumulated 3,719 dirs on the manager box
-    by 2026-10-11 (TestTempDirsAreReleased pins the class)."""
-    import shutil
-    d = getattr(config, "_mf_host_fence_dir", None)
-    if d:
-        shutil.rmtree(d, ignore_errors=True)
-    _arm_exit_watchdog()                 # THR-1: armed FIRST (r7 F2: a Ctrl-C in the census
+    """Remove this run's refusal LOG — never the fence dir.
+
+    2026-11-20: the fence is one shared dir per (uid, shim content), never
+    deleted: a dir removed at exit (or by a reaper) unfenced any child a test
+    left running — it got the REAL sudo/pkill. A killed run now leaks nothing;
+    a clean one removes only its log. (TestTempDirsAreReleased: the per-run
+    fallback dir's release is deliberately NONE — see tests/host_fence.py.)"""
+    log = getattr(config, "_mf_host_fence_log", None)
+    if log:
+        try:
+            os.unlink(log)
+        except OSError:
+            pass                         # no refusal happened = no log was written
+    _arm_exit_watchdog()                # THR-1: armed FIRST (r7 F2: a Ctrl-C in the census
     _end_if_wedged()                     # grace escaped before it was armed); then name + end fast
 
 
@@ -434,10 +356,38 @@ def _stop_status_bars(monkeypatch, _no_leaked_nondaemon_threads):
         raise errors[0]
 
 
+def pytest_report_header(config):
+    """Host-fence witness: say what is not the healthy shape (silent when it is)."""
+    out = []
+    if _FENCE_STATS["fallback"]:
+        out.append(f"host fence: ⚠️ {_FENCE_STATS['fallback']}")
+    if _FENCE_STATS["repaired"]:
+        out.append(f"host fence: repaired {_FENCE_STATS['repaired']} shim(s) in the "
+                   "shared fence dir (missing or wrong — e.g. /tmp age-out)")
+    if _FENCE_STATS["unknown"]:
+        out.append("host fence: ⚠️ unexpected entr(ies) in the shared fence dir, "
+                   "first on PATH for every run: " + ", ".join(_FENCE_STATS["unknown"]))
+    if _FENCE_STATS["legacy"]:
+        # '[p]ytest' cannot match this command's own shell (Fable r5); >1 day old
+        # only. An orphan of a killed run is NOT detectable here — the operator's call.
+        # Fable r6: name the LITERAL dir this run counted (not the operator
+        # shell's $TMPDIR) and say so when the pytest gate declines.
+        out.append(f"host fence: {_FENCE_STATS['legacy']} other fence dir(s) in "
+                   f"{_FENCE_STATS['tmpdir']} (pre-2026-11-20 per-run dirs, fallbacks, "
+                   "older-version shared dirs; never auto-removed — an orphan of a "
+                   "killed run may still use one). To clear those >1 day old while "
+                   "no pytest runs: pgrep -f '[p]ytest' >/dev/null && echo 'pytest "
+                   "running - not clearing' || find '" + _FENCE_STATS["tmpdir"] +
+                   "' -maxdepth 1 -name 'mf-host-fence-*' ! -name '" +
+                   _FENCE_STATS["current"] + "' -mmin +1440 -exec rm -rf {} +")
+    return out or None
+
+
 def pytest_configure(config):
     """Register custom markers."""
     if os.environ.get("MF_TESTS_ALLOW_REAL_SUDO") != "1":
-        config._mf_host_fence_dir = _install_sudo_fence()
+        (config._mf_host_fence_dir, config._mf_host_fence_log,
+         config._mf_host_fence_shared) = _install_sudo_fence()
     config.addinivalue_line(
         "markers", "hardware: mark test as requiring hardware (skipped in CI)"
     )
