@@ -164,6 +164,20 @@ def teardown_module(module):
 '''
 
 
+def _child_env(tmp_path, **extra):
+    """Env for a child pytest: this repo on PYTHONPATH and its TMPDIR INSIDE
+    ``tmp_path``. Plants hang by design and the THR-1 exit watchdog ends them with
+    os._exit, which skips pytest's atexit lock removal — with the real TMPDIR each
+    stranded a top-level basetemp lock (11 per run of this file, measured
+    2026-11-20). Inside tmp_path, whatever a child strands goes with the parent."""
+    import os
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    child_tmp = tmp_path / "childtmp"
+    child_tmp.mkdir(exist_ok=True)
+    return dict(os.environ, PYTHONPATH=os.pathsep.join([repo, os.path.join(repo, "src")]),
+                TMPDIR=str(child_tmp), **extra)
+
+
 def test_the_autouse_gate_fails_a_real_leaking_test_end_to_end(tmp_path):
     """Fable r2 F3: the helper was tested, the FIXTURE's wiring was not (mutant
     `leaked = []` survived). Run pytest on planted tests with this repo's
@@ -174,7 +188,7 @@ def test_the_autouse_gate_fails_a_real_leaking_test_end_to_end(tmp_path):
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     plant = tmp_path / "test_planted_thr1.py"
     plant.write_text(_PLANT)
-    env = dict(os.environ, PYTHONPATH=os.pathsep.join([repo, os.path.join(repo, "src")]))
+    env = _child_env(tmp_path)
     p = subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "tests.conftest", "-p", "no:cacheprovider",
          "-q", "--rootdir", str(tmp_path), str(plant)],
@@ -219,7 +233,7 @@ def test_a_wedged_global_bus_callback_fails_its_test_and_never_hangs_exit(tmp_pa
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     plant = tmp_path / "test_planted_wedge.py"
     plant.write_text(_WEDGE_PLANT)
-    env = dict(os.environ, PYTHONPATH=os.pathsep.join([repo, os.path.join(repo, "src")]))
+    env = _child_env(tmp_path)
     try:
         p = subprocess.run(
             [sys.executable, "-m", "pytest", "-p", "tests.conftest", "-p", "no:cacheprovider",
@@ -245,8 +259,8 @@ def _run_plant(tmp_path, code, name):
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     plant = tmp_path / f"test_{name}.py"
     plant.write_text(code)
-    env = dict(os.environ, PYTHONPATH=os.pathsep.join([repo, os.path.join(repo, "src")]),
-               MF_EXIT_WATCHDOG_S="3")          # keeps a hang plant well inside CI's 30 s cap
+    env = _child_env(tmp_path,
+                     MF_EXIT_WATCHDOG_S="3")    # keeps a hang plant well inside CI's 30 s cap
     try:
         p = subprocess.run(
             [sys.executable, "-m", "pytest", "-p", "tests.conftest", "-p", "no:cacheprovider",
@@ -521,3 +535,16 @@ def test_clean_runs_exit_zero_with_no_thr1_message(tmp_path, name, code):
     rc, out = _run_plant(tmp_path, code, f"clean_{name}")
     assert rc == 0, (name, out[-1500:])
     assert "THR-1" not in out, (name, out[-1500:])
+
+
+def test_child_pytests_keep_their_basetemp_inside_this_tests_tmp(tmp_path):
+    """2026-11-20, measured: one run of THIS file left 11 dead-owner locks at the
+    TOP level of the real basetemp root (2 full suites → the 22 found that
+    morning). Its plants hang by design and the THR-1 exit watchdog ends them
+    with os._exit — which skips pytest's atexit lock removal — and the children
+    inherited the real TMPDIR. A child's basetemp must live under the parent
+    test's tmp_path, so whatever it strands is removed with the parent's."""
+    import glob
+    _run_plant(tmp_path, "def test_ok():\n    pass\n", "basetemp_probe")
+    inside = glob.glob(str(tmp_path / "childtmp" / "pytest-of-*" / "pytest-*"))
+    assert inside, "the child pytest's basetemp is not under this test's tmp_path"
