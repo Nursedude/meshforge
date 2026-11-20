@@ -344,3 +344,38 @@ def _fence_clear_command(tmpdir, current):
     return ("pgrep -f '[p]ytest' >/dev/null && echo 'tests running - not clearing' "
             "|| find '" + tmpdir + "' -maxdepth 1 -name 'mf-host-fence-*' ! -name '"
             + current + "' -mmin +1440 -exec rm -rf {} +")
+
+
+def _report_lines():
+    """Host-fence witness lines for ``pytest_report_header`` — silent when the
+    shape is healthy. Lives HERE (byte-locked with the MeshAnchor twin) so both
+    repos' conftests render one implementation, never two hand-synced copies."""
+    out = []
+    if _FENCE_STATS["fallback"]:
+        out.append(f"host fence: ⚠️ {_FENCE_STATS['fallback']}")
+    if _FENCE_STATS["repaired"]:
+        out.append(f"host fence: repaired {_FENCE_STATS['repaired']} shim(s) in the "
+                   "shared fence dir (missing or wrong — e.g. /tmp age-out)")
+    if _FENCE_STATS["unknown"]:
+        out.append("host fence: ⚠️ unexpected entr(ies) in the shared fence dir, "
+                   "first on PATH for every run: " + ", ".join(_FENCE_STATS["unknown"]))
+    if _FENCE_STATS["legacy"]:
+        # name the LITERAL dir this run counted (not the operator shell's $TMPDIR);
+        # >1 day old only. An orphan of a killed run is NOT detectable here.
+        out.append(f"host fence: {_FENCE_STATS['legacy']} other fence dir(s) in "
+                   f"{_FENCE_STATS['tmpdir']} (pre-2026-11-20 per-run dirs, fallbacks, "
+                   "older-version shared dirs; never auto-removed — an orphan of a "
+                   "killed run may still use one). To clear those >1 day old while "
+                   "no pytest runs: " + _fence_clear_command(_FENCE_STATS["tmpdir"],
+                                                            _FENCE_STATS["current"]))
+    return out
+
+
+def _release_log(log):
+    """Clean-exit release: this run's refusal LOG only — never the fence dir (a
+    dir removed at exit unfenced any child a test left running)."""
+    if log:
+        try:
+            os.unlink(log)
+        except OSError:
+            pass                         # no refusal happened = no log was written

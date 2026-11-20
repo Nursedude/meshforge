@@ -39,8 +39,9 @@ MESHFORGE_CI = os.environ.get('MESHFORGE_CI', 'false').lower() == 'true'
 
 # The host fence (refusing sudo/pkill/systemctl-mutations) lives in
 # tests/host_fence.py; installed in pytest_configure below.
-from tests.host_fence import (  # noqa: E402
-    _FENCE_STATS, _fence_clear_command, _install_sudo_fence)
+from tests.host_fence import _install_sudo_fence  # noqa: E402
+from tests.host_fence import _release_log as _fence_release_log  # noqa: E402
+from tests.host_fence import _report_lines as _fence_report_lines  # noqa: E402
 
 
 def pytest_unconfigure(config):
@@ -51,12 +52,7 @@ def pytest_unconfigure(config):
     left running — it got the REAL sudo/pkill. A killed run now leaks nothing;
     a clean one removes only its log. (TestTempDirsAreReleased: the per-run
     fallback dir's release is deliberately NONE — see tests/host_fence.py.)"""
-    log = getattr(config, "_mf_host_fence_log", None)
-    if log:
-        try:
-            os.unlink(log)
-        except OSError:
-            pass                         # no refusal happened = no log was written
+    _fence_release_log(getattr(config, "_mf_host_fence_log", None))
     _arm_exit_watchdog()                # THR-1: armed FIRST (r7 F2: a Ctrl-C in the census
     _end_if_wedged()                     # grace escaped before it was armed); then name + end fast
 
@@ -358,28 +354,8 @@ def _stop_status_bars(monkeypatch, _no_leaked_nondaemon_threads):
 
 
 def pytest_report_header(config):
-    """Host-fence witness: say what is not the healthy shape (silent when it is)."""
-    out = []
-    if _FENCE_STATS["fallback"]:
-        out.append(f"host fence: ⚠️ {_FENCE_STATS['fallback']}")
-    if _FENCE_STATS["repaired"]:
-        out.append(f"host fence: repaired {_FENCE_STATS['repaired']} shim(s) in the "
-                   "shared fence dir (missing or wrong — e.g. /tmp age-out)")
-    if _FENCE_STATS["unknown"]:
-        out.append("host fence: ⚠️ unexpected entr(ies) in the shared fence dir, "
-                   "first on PATH for every run: " + ", ".join(_FENCE_STATS["unknown"]))
-    if _FENCE_STATS["legacy"]:
-        # '[p]ytest' cannot match this command's own shell (Fable r5); >1 day old
-        # only. An orphan of a killed run is NOT detectable here — the operator's call.
-        # Fable r6: name the LITERAL dir this run counted (not the operator
-        # shell's $TMPDIR) and say so when the pytest gate declines.
-        out.append(f"host fence: {_FENCE_STATS['legacy']} other fence dir(s) in "
-                   f"{_FENCE_STATS['tmpdir']} (pre-2026-11-20 per-run dirs, fallbacks, "
-                   "older-version shared dirs; never auto-removed — an orphan of a "
-                   "killed run may still use one). To clear those >1 day old while "
-                   "no pytest runs: " + _fence_clear_command(_FENCE_STATS["tmpdir"],
-                                                            _FENCE_STATS["current"]))
-    return out or None
+    """Host-fence witness (tests/host_fence.py); silent when healthy."""
+    return _fence_report_lines() or None
 
 
 def pytest_configure(config):

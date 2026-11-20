@@ -255,6 +255,14 @@ BYTE_IDENTICAL = (
     # fires. Import-clean (only ._util.operator_home), so module AND test lock.
     "src/mini_dudeai/session_scratch.py",
     "tests/test_session_scratch.py",
+    # The test HOST FENCE (2026-11-20): one shared, never-deleted dir of shims
+    # that keeps every pytest run off the real sudo/pkill/systemctl. Both repos
+    # run their suites on the same boxes, and both share the SAME dir (same
+    # uid + shim digest) — two drifted copies would mean two digests and two
+    # different notions of what a test may run. MA's pre-port copy never
+    # released its fence at all (every run leaked one into tmpfs /tmp).
+    "tests/host_fence.py",
+    "tests/test_host_fence.py",
     "src/mini_dudeai/model_router.py",
     # The engine's generic I/O building blocks — concrete sources + actions.
     # All import-clean and generic (a reader/writer per medium); an app that
