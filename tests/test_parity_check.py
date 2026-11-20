@@ -424,3 +424,10 @@ def test_review_provenance_check_is_byte_locked():
     byte-identical before the fix, so the gate is byte-locked (the TEST files
     stay per-repo: MF pins a ledger row only MF's ledger carries)."""
     assert "scripts/review_provenance_check.py" in _load().BYTE_IDENTICAL
+
+
+def test_startup_hold_policy_is_byte_locked():
+    """2026-11-19: both twins' launchers re-started a hand-stopped service on
+    every TUI launch. The fix's policy lives in one module; a twin that grows
+    its own hold rule would split what 'operator stop honoured' means."""
+    assert "src/core/startup_hold.py" in _load().BYTE_IDENTICAL

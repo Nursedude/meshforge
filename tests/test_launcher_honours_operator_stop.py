@@ -164,7 +164,7 @@ def test_a_stop_in_progress_is_held(orch):
 
 def test_unknown_gets_one_slower_retry_before_holding(orch):
     """Review #4: one slow systemctl answer must not hold the boot bring-up."""
-    from core.orchestrator import BOOT_HISTORY_RETRY_TIMEOUT
+    from core.startup_hold import BOOT_HISTORY_RETRY_TIMEOUT
     calls = []
 
     def hist(unit, **kw):
@@ -186,7 +186,7 @@ def test_unknown_gets_one_slower_retry_before_holding(orch):
 def test_every_boot_history_verdict_has_exactly_one_policy():
     """Review #7 / honest_failure_modes #7: a new verdict fails HERE first."""
     from utils.service_check import BOOT_HISTORY_VERDICTS
-    from core.orchestrator import UI_HOLD_VERDICTS, UI_START_VERDICTS
+    from core.startup_hold import UI_HOLD_VERDICTS, UI_START_VERDICTS
     assert not (UI_HOLD_VERDICTS & UI_START_VERDICTS)
     assert UI_HOLD_VERDICTS | UI_START_VERDICTS == set(BOOT_HISTORY_VERDICTS)
 
@@ -195,7 +195,7 @@ def test_every_boot_history_verdict_has_exactly_one_policy():
     "active", "stopping", "stopped_this_boot", "not_started_this_boot",
     "failed", "absent", "unknown"])
 def test_each_verdict_walks_to_its_policy(orch, verdict):
-    from core.orchestrator import UI_HOLD_VERDICTS
+    from core.startup_hold import UI_HOLD_VERDICTS
     table = {"meshtasticd": (verdict, None), "rnsd": ("active", None)}
     with patch('core.orchestrator.unit_boot_history', side_effect=_history(table)), \
          patch.object(orch, 'start_service', return_value=True) as start, \

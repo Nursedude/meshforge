@@ -46,18 +46,9 @@ from utils.service_check import (
     _sudo_write,
     ServiceState as _CheckState,
     unit_boot_history,
-    BOOT_HISTORY_VERDICTS,
 )
 
-# startup(hold_operator_stops=True) policy over the closed boot-history
-# vocabulary — every verdict is in exactly ONE set (pinned by a test that walks
-# BOOT_HISTORY_VERDICTS, honest_failure_modes #7).
-UI_HOLD_VERDICTS = frozenset({'stopped_this_boot', 'stopping', 'unknown'})
-UI_START_VERDICTS = frozenset({'active', 'not_started_this_boot', 'failed',
-                               'absent'})
-#: A first `systemctl show` that fails gets ONE slower retry before the unit
-#: is held as unobservable (boot-time systemd can be slow to answer).
-BOOT_HISTORY_RETRY_TIMEOUT = 15
+from core.startup_hold import hold_decision, hold_summary
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -169,11 +160,7 @@ class ServiceOrchestrator:
         # wrong hardware config.  Should return True if user selected a new
         # config and startup should be retried.
         self._config_recovery_cb: Optional[Callable[[], bool]] = None
-        # name -> why it was NOT started by startup(hold_operator_stops=True).
-        # A hold is not a failure; the caller owes the operator a line.
         self.held_services: Dict[str, str] = {}
-        # name -> the held service it waits on (it is NOT running itself).
-        # Kept apart from held_services: there is no "start it" for these.
         self.held_by_dependency: Dict[str, str] = {}
 
         # Load configuration
@@ -1001,14 +988,8 @@ class ServiceOrchestrator:
 
         Args:
             graceful: If True, continue even when services fail (for no-radio scenarios)
-            hold_operator_stops: UI-launch mode. A launch must not change WHICH
-                services run (2026-10-31: the TUI re-started a hand-stopped
-                meshtasticd mid-drill). A unit stopped THIS boot, or whose
-                boot history is unobservable, is HELD — recorded in
-                ``held_services``, not started, not a failure — and so is
-                anything that depends on it (left exactly as it is). Units
-                that never came up this boot, or failed, are still started.
-                ``meshforge-noc --start`` (an explicit ask) leaves this False.
+            hold_operator_stops: UI-launch mode — hold what was stopped this
+                boot (core.startup_hold); ``meshforge-noc --start`` leaves it False.
 
         Returns:
             True if all required services are running and healthy (or graceful mode)
@@ -1038,52 +1019,17 @@ class ServiceOrchestrator:
 
         success = True
         failed_services = []
-        self.held_services = {}
-        self.held_by_dependency = {}
+        self.held_services, self.held_by_dependency = {}, {}
 
         for service_name in self.STARTUP_ORDER:
             config = self.SERVICES.get(service_name)
             if not config:
                 continue
 
-            if hold_operator_stops:
-                verdict, since = unit_boot_history(config.systemd_name)
-                if verdict == 'unknown':
-                    verdict, since = unit_boot_history(
-                        config.systemd_name,
-                        timeout=BOOT_HISTORY_RETRY_TIMEOUT)
-                held_dep = next((d for d in config.dependencies
-                                 if d in self.held_services
-                                 or d in self.held_by_dependency), None)
-                if held_dep:
-                    if verdict == 'active':
-                        # Running: left exactly as it is — not held, not failed.
-                        logger.info(f"{service_name} running; its dependency "
-                                    f"{held_dep} is held - left as it is")
-                    else:
-                        self.held_by_dependency[service_name] = held_dep
-                        logger.warning(f"Not starting {service_name} "
-                                       f"({verdict}): waits on held {held_dep}")
-                    continue
-                if verdict == 'stopped_this_boot':
-                    self.held_services[service_name] = (
-                        f"inactive since {since or 'an unknown time'} this "
-                        f"boot (stopped, or exited cleanly)")
-                elif verdict == 'stopping':
-                    self.held_services[service_name] = "stop in progress"
-                elif verdict == 'unknown':
-                    self.held_services[service_name] = (
-                        "boot history unobservable - cannot tell it was not "
-                        "a stop")
-                elif verdict not in UI_START_VERDICTS:
-                    # A verdict this policy does not know: hold, loudly.
-                    self.held_services[service_name] = (
-                        f"unhandled boot-history verdict {verdict!r}")
-                if service_name in self.held_services:
-                    logger.warning(f"Holding {service_name}: "
-                                   f"{self.held_services[service_name]}")
-                    continue
-
+            if hold_operator_stops and hold_decision(
+                    service_name, config.systemd_name, config.dependencies,
+                    self.held_services, self.held_by_dependency, unit_boot_history):
+                continue
             # Skip if dependency already failed (don't cascade)
             dep_failed = False
             for dep in config.dependencies:
@@ -1113,14 +1059,10 @@ class ServiceOrchestrator:
                 else:
                     logger.warning(f"Optional service {service_name} failed to start")
 
-        held_n = len(self.held_services) + len(self.held_by_dependency)
-        if success and held_n:
-            # A hold is not a failure — and not "all started" either: no
-            # all_ready event while a required service is deliberately down.
-            logger.warning(f"═══ Startup done with {held_n} held (not started) ═══")
-        elif success:
-            logger.info("═══ All services started ═══")
-            self._emit('all_ready')
+        if success:
+            if not hold_summary(self.held_services, self.held_by_dependency):
+                logger.info("═══ All services started ═══")
+                self._emit('all_ready')
         elif graceful:
             logger.warning("═══ Startup completed with failures (graceful mode) ═══")
             if failed_services:

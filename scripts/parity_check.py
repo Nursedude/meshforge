@@ -94,6 +94,11 @@ BYTE_IDENTICAL = (
     # of drift nobody saw. One gate, one verdict on the same row in both
     # twins. (Its test files stay per-repo: MF pins an MF-only ledger row.)
     "scripts/review_provenance_check.py",
+    # The UI-launch hold policy (2026-11-19): which boot-history verdicts a
+    # TUI launch holds vs starts. Both twins' launchers re-started a
+    # hand-stopped service the same way; one policy, one verdict per state.
+    # (unit_boot_history stays per-twin in service_check — argv differs.)
+    "src/core/startup_hold.py",
     # The delivery-label vocabulary (2026-09-24, review C F7): which routing
     # lanes count as which transport in delivery_counters. Both repos' writers
     # and readers judge confirmation rates by it; a per-repo drift would make
