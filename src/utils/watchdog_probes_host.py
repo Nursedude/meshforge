@@ -1081,6 +1081,62 @@ def _read_unreclaimable_kb(path: str) -> Optional[int]:
     return (fields["anon"] + fields.get("shmem", 0)) // 1024
 
 
+def _tmpfs_used_mb(path: str, mounts_path: str) -> Tuple[Optional[int], str]:
+    """``(used_mb, state)`` for ``path``. state: ``tmpfs`` · ``not_tmpfs`` (a
+    disk mount, or no mount of its own = a dir on the root fs) ·
+    ``mounts_unreadable`` · ``statvfs_failed``.
+
+    2026-11-19: idle Claude-session scratch in tmpfs ``/tmp`` (2 GB) was the
+    shmem floor under a day of ceiling fires. This runner is ``PrivateTmp=yes``:
+    its ``/tmp`` is a private bind of the SAME tmpfs (mountinfo, device 0:34), so
+    statvfs measures the shared total, but the per-session tree is invisible
+    here — the user-side ``/warmstart`` lists it. The LAST matching mount wins
+    (the private bind stacks over the host mount).
+    """
+    try:
+        # errors="replace": a non-UTF-8 mount name (a vfat stick) must not
+        # raise out of an optional note and blind the probe (review r2 #1).
+        with open(mounts_path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except (OSError, ValueError):
+        return None, "mounts_unreadable"
+    fstype = None
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 3 and parts[1] == path:
+            fstype = parts[2]
+    if fstype != "tmpfs":
+        return None, "not_tmpfs"
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return None, "statvfs_failed"
+    return ((st.f_blocks - st.f_bfree) * st.f_frsize) >> 20, "tmpfs"
+
+
+def _tmp_note(subject: str, path: str, used_mb: Optional[int], state: str) -> str:
+    """Detail suffix for a capped USER slice only — tmpfs pages charge the
+    cgroup that WROTE them, so naming session scratch on ollama/system caps
+    would blame the wrong cause (review r1 #4). Worded as a measurement of the
+    shared total, never as attribution."""
+    if not (subject == "user.slice" or subject.startswith("user.slice/user-")):
+        return ""
+    if state == "tmpfs":
+        return (f" {path} is tmpfs (RAM or swap; pages charge the cgroup that "
+                f"wrote them, as shmem) holding {used_mb} MB across all writers "
+                f"— by writer: `du -xsm {path}/* | sort -rn | head`; idle "
+                f"Claude-session scratch, one possible writer, is broken down "
+                f"by /warmstart (this probe runs PrivateTmp and cannot list "
+                f"either).")
+    if state == "mounts_unreadable":
+        return f" {path} usage UNKNOWN (mounts unreadable) — `df -m {path}`."
+    if state == "statvfs_failed":
+        return f" {path} usage UNKNOWN (statvfs failed) — `df -m {path}`."
+    if state == "error":
+        return f" {path} usage UNKNOWN (measurement crashed) — `df -m {path}`."
+    return ""
+
+
 def _capped_cgroups(*, cgroup_root: str = "/sys/fs/cgroup") -> Optional[List[Dict[str, Any]]]:
     """Every cgroup carrying a FINITE ``memory.max``, with its events counters.
 
@@ -1235,6 +1291,8 @@ def _probe_memory_cap_engaged_impl(
     boot_id_path: str = "/proc/sys/kernel/random/boot_id",
     ceiling_debounce_ticks: int = _CAP_CEILING_DEBOUNCE_TICKS,
     max_subjects: int = _CAP_MAX_SUBJECTS,
+    tmp_path_for_usage: str = "/tmp",
+    mounts_path: str = "/proc/self/mounts",
 ) -> List[Signal]:
     """A ``MemoryMax`` cap actually engaged — something was killed, or the slice
     is living at its ceiling.
@@ -1290,6 +1348,15 @@ def _probe_memory_cap_engaged_impl(
     signals: List[Signal] = []
     unreadable: List[str] = []
     benign_riders: List[str] = []
+    # Once per tick, shared by both legs (review r1 #5: the KILL leg is where
+    # unreclaimable shmem matters most).
+    # The note is OPTIONAL context: no failure in it may escape into the probe
+    # and drop a KILL signal (review r2 #1 — a non-UTF-8 mount name did).
+    try:
+        tmp_mb, tmp_state = _tmpfs_used_mb(tmp_path_for_usage, mounts_path)
+    except Exception as exc:  # noqa: BLE001 — witnessed in the note + log
+        logger.warning("memory_cap_engaged /tmp measurement crashed: %r", exc)
+        tmp_mb, tmp_state = None, "error"
 
     for row in sorted(rows, key=lambda r: r["cgroup"])[:max_subjects]:
         name = row["cgroup"]
@@ -1341,10 +1408,12 @@ def _probe_memory_cap_engaged_impl(
                     f"case (b). Cap lives in "
                     f"/etc/systemd/system/<slice>.d/10-memory-cap.conf; verify "
                     f"any change at the KERNEL (cat memory.max), never at "
-                    f"systemctl show."),
+                    f"systemctl show."
+                    f"{_tmp_note(name, tmp_path_for_usage, tmp_mb, tmp_state)}"),
                 extra={"cgroup": name, "cap_kb": row["cap_kb"],
                        "new_kills": d_kills, "events": ev,
-                       "first_look_this_boot": fresh_boot},
+                       "first_look_this_boot": fresh_boot,
+                       "tmp_tmpfs_used_mb": tmp_mb, "tmp_state": tmp_state},
             ))
         elif streak >= ceiling_debounce_ticks:
             # Benignity gate: a slice riding its cap on clean page cache with
@@ -1380,12 +1449,14 @@ def _probe_memory_cap_engaged_impl(
                     f"memory.peak now that it means something: "
                     f"cat /sys/fs/cgroup/{name}/memory.peak. "
                     f"Raise the cap if the workload is legitimate; find the "
-                    f"allocator if not. Not urgent — nothing has died."),
+                    f"allocator if not. Not urgent — nothing has died."
+                    f"{_tmp_note(name, tmp_path_for_usage, tmp_mb, tmp_state)}"),
                 extra={"cgroup": name, "cap_kb": row["cap_kb"],
                        "max_hits": hits, "delta_hits": d_hits,
                        "streak": streak, "events": ev,
                        "psi_some_avg10": psi,
-                       "unreclaimable_kb": unrecl_kb},
+                       "unreclaimable_kb": unrecl_kb,
+                       "tmp_tmpfs_used_mb": tmp_mb, "tmp_state": tmp_state},
             ))
 
     _save_cap_state(state_path, {"boot_id": boot, "cgroups": new_state})

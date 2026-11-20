@@ -63,6 +63,13 @@ def _bootid(tmp_path, value="boot-aaaa", name="bootid"):
 
 
 def _run(tmp_path, root, *, boot="boot-aaaa", state="cap_state.json", **kw):
+    # Pin the /tmp leg: the defaults read the live box's /proc/self/mounts,
+    # which made every ceiling detail machine-dependent (review r1 #7). An
+    # empty mounts file = "/tmp has no mount of its own" = not tmpfs, no note.
+    if "mounts_path" not in kw:
+        mp = tmp_path / "mounts_pinned_empty"
+        mp.write_text("")
+        kw["mounts_path"] = str(mp)
     return probe_memory_cap_engaged(
         cgroup_root=str(root),
         state_path=str(tmp_path / state),
@@ -327,6 +334,118 @@ class TestCeilingBenignityGate:
         sigs = self._ride_to_streak(tmp_path, root, cg)
         assert len(sigs) == 1
         assert "UNRECLAIMABLE" in sigs[0].detail
+
+    def _ride_with_tmp(self, tmp_path, fstype, *, mounts=True,
+                       subject="user.slice/user-1000.slice", mount_line=True):
+        root = tmp_path / "cg"
+        cg = _cgroup(root, subject, cap=2 << 30)
+        _psi(cg, "0.00")
+        _stat(cg, anon_mb=300, shmem_mb=900, file_mb=300)    # shmem-heavy
+        tmpdir = tmp_path / "faketmp"
+        tmpdir.mkdir()
+        mp = tmp_path / "mounts"
+        if mounts:
+            mp.write_text(f"{fstype} {tmpdir} {fstype} rw,nosuid 0 0\n"
+                          if mount_line else "/dev/root / ext4 rw 0 0\n")
+        kw = {"tmp_path_for_usage": str(tmpdir), "mounts_path": str(mp)}
+        (cg / "memory.events").write_text("max 0\noom_kill 0\noom_group_kill 0\n")
+        _run(tmp_path, root, **kw)
+        (cg / "memory.events").write_text("max 40\noom_kill 0\noom_group_kill 0\n")
+        _run(tmp_path, root, **kw)
+        (cg / "memory.events").write_text("max 90\noom_kill 0\noom_group_kill 0\n")
+        return _run(tmp_path, root, **kw)
+
+    def test_tmpfs_tmp_usage_is_measured_and_points_at_warmstart(self, tmp_path):
+        """2026-11-19: 2 GB of idle Claude-session scratch in tmpfs /tmp was the
+        shmem floor under six fires. This probe runs PrivateTmp — it can MEASURE
+        the shared tmpfs total but cannot LIST it, so it names the surface
+        that can (/warmstart)."""
+        sigs = self._ride_with_tmp(tmp_path, "tmpfs")
+        assert len(sigs) == 1
+        d = sigs[0].detail
+        assert "/tmp" in d and "tmpfs" in d and "/warmstart" in d
+        assert isinstance(sigs[0].extra["tmp_tmpfs_used_mb"], int)
+
+    def test_disk_backed_tmp_is_not_blamed(self, tmp_path):
+        sigs = self._ride_with_tmp(tmp_path, "ext4")
+        assert len(sigs) == 1
+        assert "/warmstart" not in sigs[0].detail
+        assert sigs[0].extra["tmp_tmpfs_used_mb"] is None
+
+    def test_unreadable_mounts_says_unknown_not_silent(self, tmp_path):
+        sigs = self._ride_with_tmp(tmp_path, "tmpfs", mounts=False)
+        assert len(sigs) == 1
+        assert "usage UNKNOWN (mounts unreadable)" in sigs[0].detail
+        assert sigs[0].extra["tmp_tmpfs_used_mb"] is None
+        assert sigs[0].extra["tmp_state"] == "mounts_unreadable"
+
+    def test_no_mount_of_its_own_is_root_fs_not_unknown(self, tmp_path):
+        """Review r1 #3: a readable mounts file with no /tmp line means /tmp is
+        a dir on the root fs — NOT 'mounts unreadable'."""
+        sigs = self._ride_with_tmp(tmp_path, "tmpfs", mount_line=False)
+        assert len(sigs) == 1
+        assert "UNKNOWN" not in sigs[0].detail
+        assert "/warmstart" not in sigs[0].detail
+        assert sigs[0].extra["tmp_state"] == "not_tmpfs"
+
+    def test_non_user_slice_is_not_blamed_on_session_scratch(self, tmp_path):
+        """Review r1 #4: tmpfs pages charge their WRITER — an ollama cap riding
+        its ceiling must not be told to go delete Claude scratch."""
+        sigs = self._ride_with_tmp(tmp_path, "tmpfs",
+                                   subject="system.slice/ollama.service")
+        assert len(sigs) == 1
+        assert "/warmstart" not in sigs[0].detail
+
+    def test_non_utf8_mount_name_never_drops_a_kill(self, tmp_path):
+        """Review r2 #1 (reproduced by running): a vfat stick at /media/pi/caf\\xe9
+        made the OPTIONAL /tmp note raise UnicodeDecodeError out of the probe —
+        the blanket guard returned [] and a real oom_kill was never paged."""
+        root = tmp_path / "cg"
+        cg = _cgroup(root, "user.slice/user-1000.slice", cap=2 << 30)
+        tmpdir = tmp_path / "faketmp"
+        tmpdir.mkdir()
+        mp = tmp_path / "mounts"
+        mp.write_bytes(f"tmpfs {tmpdir} tmpfs rw 0 0\n".encode()
+                       + b"/dev/sda1 /media/pi/caf\xe9 vfat rw 0 0\n")
+        kw = {"tmp_path_for_usage": str(tmpdir), "mounts_path": str(mp)}
+        (cg / "memory.events").write_text("max 0\noom_kill 0\noom_group_kill 0\n")
+        _run(tmp_path, root, **kw)
+        (cg / "memory.events").write_text("max 5\noom_kill 3\noom_group_kill 0\n")
+        sigs = _run(tmp_path, root, **kw)
+        assert len(sigs) == 1 and sigs[0].severity == "wedge"
+        assert sigs[0].extra["tmp_state"] == "tmpfs"
+
+    def test_tmp_measurement_crash_is_contained(self, tmp_path, monkeypatch):
+        import utils.watchdog_probes_host as h
+
+        def boom(*_a, **_k):
+            raise RuntimeError("kaboom")
+        monkeypatch.setattr(h, "_tmpfs_used_mb", boom)
+        root = tmp_path / "cg"
+        cg = _cgroup(root, "user.slice/user-1000.slice", cap=2 << 30)
+        (cg / "memory.events").write_text("max 0\noom_kill 0\noom_group_kill 0\n")
+        _run(tmp_path, root)
+        (cg / "memory.events").write_text("max 5\noom_kill 1\noom_group_kill 0\n")
+        sigs = _run(tmp_path, root)
+        assert len(sigs) == 1 and sigs[0].severity == "wedge"
+        assert "measurement crashed" in sigs[0].detail
+
+    def test_kill_leg_carries_the_tmp_measurement(self, tmp_path):
+        """Review r1 #5: a kill is where unreclaimable shmem matters most."""
+        root = tmp_path / "cg"
+        cg = _cgroup(root, "user.slice/user-1000.slice", cap=2 << 30)
+        tmpdir = tmp_path / "faketmp"
+        tmpdir.mkdir()
+        mp = tmp_path / "mounts"
+        mp.write_text(f"tmpfs {tmpdir} tmpfs rw 0 0\n")
+        kw = {"tmp_path_for_usage": str(tmpdir), "mounts_path": str(mp)}
+        (cg / "memory.events").write_text("max 0\noom_kill 0\noom_group_kill 0\n")
+        _run(tmp_path, root, **kw)
+        (cg / "memory.events").write_text("max 5\noom_kill 1\noom_group_kill 0\n")
+        sigs = _run(tmp_path, root, **kw)
+        assert len(sigs) == 1 and sigs[0].severity == "wedge"
+        assert "/warmstart" in sigs[0].detail
+        assert isinstance(sigs[0].extra["tmp_tmpfs_used_mb"], int)
 
     def test_unreadable_discriminators_page_never_silence(self, tmp_path):
         """The pre-existing fixtures have no memory.pressure/memory.stat at all

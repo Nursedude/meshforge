@@ -250,6 +250,11 @@ BYTE_IDENTICAL = (
     # into a same-named MF file, leaving this one app-agnostic (every test
     # pins `path`/`tmp_path` and touches no adapter) and safe to lock.
     "tests/test_mini_warmstart.py",
+    # warmstart's stale-session-scratch line (2026-11-19): idle Claude scratch
+    # in tmpfs /tmp was the shmem floor under a day of memory_cap_engaged
+    # fires. Import-clean (only ._util.operator_home), so module AND test lock.
+    "src/mini_dudeai/session_scratch.py",
+    "tests/test_session_scratch.py",
     "src/mini_dudeai/model_router.py",
     # The engine's generic I/O building blocks — concrete sources + actions.
     # All import-clean and generic (a reader/writer per medium); an app that

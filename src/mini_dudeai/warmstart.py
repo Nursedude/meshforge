@@ -504,6 +504,60 @@ def _routing_block(now_ts: float) -> str:
         return ""
 
 
+def _scratch_block(now_ts: float, exclude: tuple = ()) -> str:
+    """Idle Claude-session scratch in RAM (/tmp is tmpfs) — the 2026-11-19 leak.
+
+    Rides even on a mini-less box: the leak is the session's, not mini's. Only
+    this user-side surface can list it (the watchdog runs PrivateTmp). A crash
+    is LOUD — a silent "" would read as "no stale scratch". ``exclude`` = the
+    calling session's id, so a resumed session is never told to rm its own.
+    """
+    try:
+        from . import session_scratch as ss
+        return ss.format_stale_scratch_line(
+            ss.scan_stale_session_scratch(now=now_ts, exclude=exclude))
+    except Exception as exc:  # noqa: BLE001 — surfaced, not swallowed
+        return f"🧹 ⚠️ **stale-scratch scan UNKNOWN** — crashed: {exc!r}"
+
+
+def _hook_session_id(stream) -> str | None:
+    """The SessionStart hook's own ``session_id`` from its stdin JSON, or None
+    (tty, empty, unparsable — the fd/transcript checks still apply)."""
+    try:
+        if stream is None or stream.isatty():
+            return None
+        try:
+            fd = stream.fileno()
+        except (OSError, ValueError, AttributeError):
+            fd = None               # in-memory stream (tests): cannot block
+        if fd is not None:
+            import select
+            import time as _t
+            # A writer that keeps the pipe open must not stall SessionStart
+            # (Fable r4: `sleep 8 | … --hook` hung to the timeout). Read to
+            # EOF in chunks under ONE deadline (Fable r5: a split write or a
+            # >64 KiB payload lost the id).
+            chunks, total = [], 0
+            deadline = _t.monotonic() + 0.5
+            while total < 1 << 20:
+                left = deadline - _t.monotonic()
+                if left <= 0 or not select.select([fd], [], [], left)[0]:
+                    break
+                b = os.read(fd, 65536)
+                if not b:
+                    break
+                chunks.append(b)
+                total += len(b)
+            raw = b"".join(chunks).decode("utf-8", "replace")
+        else:
+            raw = stream.read(1 << 20)
+        data = json.loads(raw or "null")
+    except Exception:  # noqa: BLE001 — RecursionError on deep JSON (Fable r5)
+        return None      # must not drop the whole brief; exclusion just lapses
+    sid = data.get("session_id") if isinstance(data, dict) else None
+    return sid if isinstance(sid, str) and sid else None
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     import time
@@ -530,7 +584,13 @@ def main(argv: list[str] | None = None) -> int:
     # box (no eval ledger to report tier-L competence from).
     calib = _calibration_block(now)
     routing = _routing_block(now)
-    text = "\n\n".join(s for s in (text, calib, routing) if s.strip())
+    if args.hook:
+        import sys
+        own = _hook_session_id(sys.stdin)
+    else:
+        own = None
+    scratch = _scratch_block(now, (own,) if own else ())
+    text = "\n\n".join(s for s in (scratch, text, calib, routing) if s.strip())
 
     if args.hook:
         # Silent when there's nothing to say — don't inject empty context.
