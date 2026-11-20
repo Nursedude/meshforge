@@ -56,6 +56,30 @@ ERROR = "error"
 MODE_TCP = "tcp"
 MODE_MQTT = "mqtt"
 
+# Meshtastic's hop ceiling — hopStart/hopLimit are 3-bit header fields
+MAX_HOPS = 7
+
+
+def _hop_field(value):
+    """A header hop field as an int in 0..MAX_HOPS, else None (bool is not a count)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= MAX_HOPS else None
+
+
+def hops_from_header(hop_start, hop_limit):
+    """Hops a packet took = hopStart − hopLimit, or None when UNKNOWN.
+
+    None — not 0 — whenever the header cannot say: hopStart missing or 0
+    (pre-2.3 firmware / stripped header), either field out of range or the
+    wrong type, or hopLimit above hopStart. 0 is a MEASUREMENT ("heard
+    direct") and downstream draws a direct line from it (MAP-H H16).
+    """
+    start, limit = _hop_field(hop_start), _hop_field(hop_limit)
+    if not start or limit is None or limit > start:
+        return None
+    return start - limit
+
 
 @dataclass
 class ListenerStatus:
@@ -473,10 +497,13 @@ class MessageListener:
         snr = packet.get('rxSnr')
         rssi = packet.get('rxRssi')
 
-        # Hop info
-        hop_start = packet.get('hopStart', 0)
-        hop_limit = packet.get('hopLimit', 0)
-        hops_away = hop_start - hop_limit if hop_start else 0
+        # Hop info — None = UNKNOWN, never 0 (0 means "heard direct"; MAP-H H16).
+        # hopLimit is a proto3 implicit-presence scalar and the library's
+        # MessageToDict omits zeros, so an ABSENT hopLimit is the wire value 0
+        # (last hop spent). An absent hopStart stays unknown in hops_from_header.
+        hop_start = _hop_field(packet.get('hopStart'))
+        hop_limit = _hop_field(packet.get('hopLimit', 0))
+        hops_away = hops_from_header(hop_start, hop_limit)
 
         # Relay tracking (Meshtastic 2.6+)
         relay_node = packet.get('relayNode')  # Last byte of relay node ID

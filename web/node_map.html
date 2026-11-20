@@ -1082,6 +1082,12 @@
             font-size: 9px;
             margin-left: auto;
         }
+        .msg-hops {
+            color: #8a9aaa;
+            font-size: 9px;
+            white-space: nowrap;
+            margin-left: 4px;
+        }
 
         /* Message received flash */
         .update-indicator.message-received .update-dot {
@@ -2658,10 +2664,41 @@
         renderReceivedMessages();
         flashNewMessageIndicator();
 
-        // Animate message flow on topology view if sender is visible
-        if (state.currentView === 'topology' && msg.from_id) {
-            animateMessageFlow(msg.from_id, 'local');
+        // MAP-H H16: draw a sender → this-box line ONLY for a packet measured
+        // direct (hops_away === 0). Relayed or unknown-hop packets draw nothing —
+        // one packet does not tell us the path; the message row says why.
+        const selfId = selfMarkerId();
+        if (state.currentView === 'topology' && msg.from_id && selfId
+                && msg.hops_away === 0) {
+            animateMessageFlow(msg.from_id, selfId);
         }
+    }
+
+    // This box's own marker: the feature the collector tagged is_self from the
+    // radio connection (never inferred from traffic). null when not known.
+    function selfMarkerId() {
+        for (const [id, entry] of state.markers) {
+            if (entry.feature && entry.feature.properties
+                    && entry.feature.properties.is_self === true) {
+                return id;
+            }
+        }
+        return null;
+    }
+
+    // How a received message reached us, said in words (H16): direct, N hops
+    // with the path not measured, or hops unknown — never a drawn guess.
+    // '' for a non-Meshtastic message (hop count does not apply); 'hops not
+    // recorded' for a stored row (/api/messages/received keeps no hop field).
+    function hopLabel(msg) {
+        if (String(msg.network || 'meshtastic') !== 'meshtastic') return '';
+        if (!('hops_away' in msg)) return 'hops not recorded';
+        const h = msg.hops_away;
+        if (h === 0) return 'direct';
+        if (Number.isInteger(h) && h > 0) {
+            return `${h} hop${h !== 1 ? 's' : ''} — path not measured`;
+        }
+        return 'hops unknown';
     }
 
     function flashNewMessageIndicator() {
@@ -2695,14 +2732,16 @@
             const content = String(msg.content || '');
             const preview = content.substring(0, 30) + (content.length > 30 ? '...' : '');
             const snrInfo = msg.snr != null ? ` SNR:${Number(msg.snr)}` : '';
+            const hops = hopLabel(msg);
             const netClass = String(msg.network || 'meshtastic').replace(/[^a-zA-Z0-9_-]/g, '');
 
             return `
-                <div class="queue-item received-msg" title="${escHtml(content + snrInfo)}">
+                <div class="queue-item received-msg" title="${escHtml(content + snrInfo + (hops ? ' · ' + hops : ''))}">
                     <div class="queue-network ${netClass}"></div>
                     <span class="queue-direction">←</span>
                     <span class="msg-from">${escHtml(from.substring(0, 10))}</span>
                     <span class="msg-preview">${escHtml(preview)}</span>
+                    ${hops ? `<span class="msg-hops">${escHtml(hops)}</span>` : ''}
                     <span class="msg-time">${escHtml(time)}</span>
                 </div>
             `;
