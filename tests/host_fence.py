@@ -33,7 +33,7 @@ echo "$(date +%T) ${PYTEST_CURRENT_TEST:-?} sudo $*" >> "$MF_SUDO_FENCE_LOG"
 while [ $# -gt 0 ]; do
   case "$1" in
     -n|-E|-H|-k|-S) shift ;;
-    -u|-g) shift 2 ;;
+    -u|-g) [ $# -ge 2 ] || break; shift 2 ;;   # bare `-u`: refuse below, not die on shift
     --) shift; break ;;
     -*) shift ;;
     *) break ;;
@@ -122,7 +122,13 @@ _REFUSED_BINARIES = ("pkill", "killall", "reboot", "shutdown", "poweroff",
                      # binary; the shell builtin is untouched.) Residual: the
                      # module form `python -m RNS.Utilities.rnsd` cannot be
                      # fenced by PATH.
-                     "kill", "systemd-run", "busctl", "dbus-send")
+                     "kill", "systemd-run", "busctl", "dbus-send",
+                     # 2026-11-20 (Fable r8): the systemctl shim refuses
+                     # reboot/poweroff/halt verbs, but the binaries that do the
+                     # same around it did not — `halt`, `init 0`, `telinit 6`.
+                     # `loginctl`: this repo calls only the MUTATING
+                     # `enable-linger` (grep, both twins) — no read-only use to keep.
+                     "halt", "init", "telinit", "loginctl")
 
 
 

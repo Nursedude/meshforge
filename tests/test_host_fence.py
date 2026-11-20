@@ -71,17 +71,28 @@ def test_systemctl_read_only_passes_through():
 
 
 @pytest.mark.parametrize("name", ["pkill", "killall", "rnsd", "reboot",
-                                  "kill", "systemd-run", "busctl", "dbus-send"])
+                                  "kill", "systemd-run", "busctl", "dbus-send",
+                                  "halt", "init", "telinit", "loginctl"])
 def test_killers_and_daemons_are_refused(name):
+    """SAFE BY CONSTRUCTION (2026-11-20, live): this test used to EXEC `name` via
+    PATH — so wherever `name` was not fenced (a red check against older code, a
+    mutant) it ran the REAL binary. A red check ran the real `halt` on the lab
+    Pi; only polkit ("Interactive authentication required") stopped it. Now: first
+    prove PATH resolves `name` INTO the fence WITHOUT executing anything, then
+    exec the shim by its absolute fence path — never a PATH lookup."""
+    fence = os.environ["PATH"].split(os.pathsep)[0]
+    resolved = shutil.which(name)
+    assert resolved == os.path.join(fence, name), (
+        f"{name} resolves to {resolved!r}, not the fence — NOT executing it")
     if name == "kill":
-        argv = ["kill", "-TERM", "1"]          # the exec'd /bin/kill, not the builtin
+        args = ["-TERM", "1"]                  # the exec'd /bin/kill, not the builtin
     elif name == "systemd-run":
-        argv = ["systemd-run", "--user", "/bin/true"]
+        args = ["--user", "/bin/true"]
     elif name in ("pkill", "killall"):
-        argv = [name, "-x", "rnsd"]
+        args = ["-x", "rnsd"]
     else:
-        argv = [name]
-    r = _run(argv)
+        args = []
+    r = _run([resolved, *args])
     assert r.returncode == 1 and "refused under pytest" in r.stderr
 
 
@@ -525,3 +536,11 @@ def test_clear_command_cannot_match_its_own_shell():
     cmd = host_fence._fence_clear_command("/tmp", "mf-host-fence-u1-0123456789ab")
     assert "pytest" not in cmd.replace("[p]ytest", ""), cmd
     assert "! -name 'mf-host-fence-u1-0123456789ab'" in cmd and "-mmin +1440" in cmd
+
+
+@pytest.mark.parametrize("argv", [["sudo", "-u"], ["sudo", "-g"], ["sudo", "-n", "-u"]])
+def test_sudo_with_a_dangling_value_option_refuses_cleanly(argv):
+    """Fable r8: a bare `-u` died on `shift 2` (rc 2, dash's shift error) —
+    fail-closed, but not the refusal a caller is written to recognise."""
+    r = _run(argv)
+    assert r.returncode == 1 and "refused under pytest" in r.stderr, (argv, r)
