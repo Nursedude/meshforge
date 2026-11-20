@@ -189,14 +189,15 @@ before_kb=$(du -sk "$BASE" 2>/dev/null | cut -f1); before_kb=${before_kb:-0}
 # so the pruner would see itself, conclude a pytest is running, and skip
 # forever. Anchoring on a path/word boundary FOLLOWED BY whitespace-or-end is
 # what excludes it (pinned by a test that runs the real pgrep).
+LIVENESS="unknown"   # what pgrep MEASURED, for the verdict: "running" | "none" | "unknown"
 _pytest_running() {
-  command -v pgrep >/dev/null 2>&1 || return 0        # cannot tell -> assume yes
+  command -v pgrep >/dev/null 2>&1 || { LIVENESS="unknown"; return 0; }  # cannot tell -> assume yes
   pgrep -u "$(id -u)" -f '(^|/)pytest([[:space:]]|$)|-m[[:space:]]+pytest([[:space:]]|$)' \
     >/dev/null 2>&1
   case $? in
-    0) return 0 ;;   # match: a pytest is running
-    1) return 1 ;;   # pgrep's "no match" — definitively none
-    *) return 0 ;;   # pgrep errored: undeterminable -> assume yes
+    0) LIVENESS="running"; return 0 ;;   # match: a pytest is running
+    1) LIVENESS="none"; return 1 ;;      # pgrep's "no match" — definitively none
+    *) LIVENESS="unknown"; return 0 ;;   # pgrep errored: undeterminable -> assume yes
   esac
 }
 if _pytest_running; then PYTEST_LIVE=1; else PYTEST_LIVE=0; fi
@@ -255,8 +256,9 @@ for d in "${dirs[@]}"; do
   i=$((i + 1))
   [ "$i" -le "$KEEP" ] && continue          # keep the newest $KEEP
   lock="$d/.lock"
-  if [ -e "$lock" ]; then
-    lock_age=$(( now - $(stat -c %Y "$lock" 2>/dev/null || echo 0) ))
+  if [ -e "$lock" ] || [ -L "$lock" ]; then   # a DANGLING symlink is still a lock, not "no lock" (Fable r3)
+    # an UNREADABLE lock mtime is "fresh", never "ancient" (it used to read as age=now → pruned)
+    lock_age=$(( now - $(stat -c %Y "$lock" 2>/dev/null || echo "$now") ))
     if [ "$lock_age" -lt "$LOCK_MAX_AGE_S" ]; then
       if [ "$PYTEST_LIVE" = 1 ]; then
         if _lock_owner_dead "$lock"; then
@@ -290,7 +292,9 @@ after_kb=$(du -sk "$BASE" 2>/dev/null | cut -f1); after_kb=${after_kb:-0}
 freed_mb=$(( (before_kb - after_kb) / 1024 ))
 remain=$(ls -d "$BASE"/pytest-[0-9]* 2>/dev/null | wc -l)
 detail="pruned $pruned of $total dir(s), freed ${freed_mb} MB, $remain remain"
-[ "$skipped_locked" -gt 0 ] && detail="$detail, $skipped_locked skipped (lock < ${LOCK_MAX_AGE_S}s, pytest IS running)"
+# Say what was MEASURED (Fable r3): a pgrep error is "liveness unknown", never "IS running".
+if [ "$LIVENESS" = running ]; then why="pytest IS running"; else why="pytest liveness UNKNOWN (pgrep unavailable or errored) — kept"; fi
+[ "$skipped_locked" -gt 0 ] && detail="$detail, $skipped_locked skipped (lock < ${LOCK_MAX_AGE_S}s, $why)"
 [ "$stranded" -gt 0 ] && detail="$detail, $stranded stranded (fresh lock, no live pytest — shutdown left it behind)"
 [ "$dead_owner" -gt 0 ] && detail="$detail, $dead_owner stranded though a pytest may be running (fresh lock, owner pid dead — a killed run left it behind)"
 [ "$owner_alive" -gt 0 ] && detail="$detail, $owner_alive kept (no pytest per pgrep, but the lock's owner pid is alive)"

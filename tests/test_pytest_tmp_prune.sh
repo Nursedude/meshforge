@@ -503,6 +503,67 @@ check "no pytest per pgrep, lock owner ALIVE => KEPT (pytest.main driver case)" 
 check "and it is not called 'stranded'" \
   "$(echo "$out" | grep -q 'stranded' && echo '' || echo ok)"
 kill "$LIVEPID2" 2>/dev/null; wait "$LIVEPID2" 2>/dev/null
+
+# 9. Fable r3 residuals (2026-11-20).
+# 9a. PIN pytest's lock FORMAT — the reclaim rests on it. If a future pytest
+#     wrote 'pid\n' (or anything but bare digits) every dead-owner lock would
+#     read as "unparseable => keep" and the prune would silently go back to
+#     skipping them all. A REAL pytest reads its own basetemp lock.
+TR="$TMP/temproot"; mkdir -p "$TR" "$TMP/probe9"
+cat > "$TMP/probe9/test_lockfmt.py" <<'PY'
+import os
+def test_lock_is_bare_pid(tmp_path):
+    lock = tmp_path.parent / ".lock"          # basetemp/.lock; tmp_path = basetemp/<test>0
+    data = lock.read_bytes()
+    assert data == str(os.getpid()).encode(), (data, os.getpid())
+PY
+# hermetic (Fable r4): an inherited PYTEST_ADDOPTS (e.g. --basetemp) or an
+# ancestor config must not steer the probe — `-c /dev/null`, ADDOPTS unset.
+env -u PYTEST_ADDOPTS PYTEST_DEBUG_TEMPROOT="$TR" timeout 120 python3 -m pytest \
+  -q -p no:cacheprovider -c /dev/null --rootdir "$TMP/probe9" \
+  "$TMP/probe9/test_lockfmt.py" >"$TMP/probe9.out" 2>&1
+check "pytest's own .lock is EXACTLY its pid's digits (the format _lock_pid reads)" \
+  "$(grep -q '1 passed' "$TMP/probe9.out" && echo ok)"
+
+# 9b. a DANGLING-symlink lock is a lock, not "no lock": kept while a pytest
+#     may run (it used to fail `[ -e ]` and be pruned in every mode).
+BASE="$TMP/live9b"; mkdir -p "$BASE"
+for n in 1 2 3 4 5; do mkrun $n; done
+mkdir -p "$BASE/pytest-1/some_test0"; ln -s "$TMP/no-such-target" "$BASE/pytest-1/.lock"
+touch -h -d "@$(( $(date +%s) - 60 ))" "$BASE/pytest-1/.lock"
+run_pgrep 0 >/dev/null
+check "dangling-symlink .lock + live pytest => KEPT" "$([ -d "$BASE/pytest-1" ] && echo ok)"
+
+# 9c. say what was MEASURED: a pgrep error is "liveness UNKNOWN", never "IS running".
+BASE="$TMP/live9c"; mkdir -p "$BASE"
+for n in 1 2 3 4 5; do mkrun $n; done
+mkrun 1 60
+out="$(run_pgrep 2)"
+check "pgrep error: the skip says liveness UNKNOWN" \
+  "$(echo "$out" | grep -q 'liveness UNKNOWN' && echo ok)"
+check "pgrep error: the skip never claims 'pytest IS running'" \
+  "$(echo "$out" | grep -q 'pytest IS running' && echo '' || echo ok)"
+BASE="$TMP/live9d"; mkdir -p "$BASE"
+for n in 1 2 3 4 5; do mkrun $n; done
+mkrun 1 60
+out="$(run_pgrep 0)"
+check "pgrep match: the skip still says 'pytest IS running'" \
+  "$(echo "$out" | grep -q 'pytest IS running' && echo ok)"
+
+# 9e. an UNREADABLE lock mtime reads as FRESH, never "ancient" (Fable r4: the
+#     fix had no test — reverting it to `|| echo 0` stayed green). The lock is
+#     REALLY 4 days old, but a stub `stat` fails on %Y: the old fallback (age =
+#     now - 0) pruned it as stale; now it is fresh + unparseable => KEPT while
+#     a pytest runs.
+BASE="$TMP/live9e"; mkdir -p "$BASE"
+for n in 1 2 3 4 5; do mkrun $n; done
+mklockpid 1 "not-a-pid"; touch -d "@$(( $(date +%s) - 4 * 86400 ))" "$BASE/pytest-1/.lock"
+printf '#!/usr/bin/env bash\ncase "$*" in *%%Y*) exit 1 ;; esac\nexec /usr/bin/stat "$@"\n' > "$STUB/stat"
+chmod +x "$STUB/stat"
+run_pgrep 0 >/dev/null
+rm -f "$STUB/stat"
+check "unreadable lock mtime + live pytest => KEPT (fresh, not 'ancient')" \
+  "$([ -d "$BASE/pytest-1" ] && echo ok)"
 # ── it leaves a cron verdict so #78 can see it ───────────────────────────
 check "writes a cron_verdict line under its own name" \
   "$(grep -q 'pytest_tmp_prune' "$VERDICTS" 2>/dev/null && echo ok)"
