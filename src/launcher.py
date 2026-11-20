@@ -510,9 +510,23 @@ def start_noc_services():
         elif status.state == ServiceState.RUNNING:
             print(f"  {Colors.GREEN}+ {name} running{Colors.NC}")
 
-    success = orch.startup()
+    # A UI launch must not change WHICH services run (2026-10-31: this call
+    # re-started a hand-stopped meshtasticd mid-drill, no prompt, no line).
+    success = orch.startup(hold_operator_stops=True)
 
-    if success:
+    held = getattr(orch, 'held_services', None) or {}
+    waiting = getattr(orch, 'held_by_dependency', None) or {}
+    for name, why in held.items():
+        print(f"  {Colors.YELLOW}! {name} held - {why}; not started{Colors.NC}")
+        print(f"    start it: sudo systemctl start {name}")
+    for name, parent in waiting.items():
+        print(f"  {Colors.YELLOW}! {name} not started - waits on held "
+              f"{parent}{Colors.NC}")
+
+    if success and (held or waiting):
+        print(f"{Colors.YELLOW}! NOC services: {len(held) + len(waiting)} "
+              f"held, not started{Colors.NC}")
+    elif success:
         print(f"{Colors.GREEN}+ NOC services ready{Colors.NC}")
     else:
         print(f"{Colors.YELLOW}! Some services failed to start{Colors.NC}")
