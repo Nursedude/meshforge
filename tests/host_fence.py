@@ -43,8 +43,10 @@ done
 # e.g. `sudo -n /usr/bin/pkill` — the allowance needs a real, absolute prefix.
 # Fable r6: a string prefix let `<tmp>/pytest-of-x/../../usr/bin/pkill` out —
 # match the RESOLVED path (no realpath, or no resolution = refuse).
-case "$MF_SUDO_FENCE_TMP" in
-  /?*)
+# A BARE name is never in the allowance (Fable r8: realpath resolved it against
+# cwd — inside pytest's tmp that exec'd <cwd>/<name> or failed 127, not a refusal).
+case "$MF_SUDO_FENCE_TMP:$1" in
+  /?*:*/*)
     t="$(realpath -m -- "$1" 2>/dev/null)" || t=""
     case "$t" in
       "$MF_SUDO_FENCE_TMP"?*) shift; exec "$t" "$@" ;;
@@ -329,3 +331,16 @@ def _install_sudo_fence():
     os.environ["MF_SUDO_FENCE_TMP"] = os.path.realpath(tmp).rstrip("/") + "/pytest-of-"  # the shim matches RESOLVED paths
     os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
     return d, log, shared
+
+
+def _fence_clear_command(tmpdir, current):
+    """The one-line operator command the report header prints to clear other
+    fence dirs (>1 day old, never the current shared one) while no pytest runs.
+
+    2026-11-20, live: the r6 text echoed 'pytest running…' — that put the literal
+    word back into the command line, so `pgrep -f '[p]ytest'` matched the
+    operator's OWN shell and the command always declined. No part of this string
+    may contain that word except the bracketed pattern (test-pinned)."""
+    return ("pgrep -f '[p]ytest' >/dev/null && echo 'tests running - not clearing' "
+            "|| find '" + tmpdir + "' -maxdepth 1 -name 'mf-host-fence-*' ! -name '"
+            + current + "' -mmin +1440 -exec rm -rf {} +")

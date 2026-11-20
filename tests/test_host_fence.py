@@ -501,3 +501,27 @@ def test_an_unknown_entry_in_the_shared_dir_is_reported(tmp_path, monkeypatch):
     os.chmod(stub, 0o755)
     _install_into(tmp_path, monkeypatch)
     assert host_fence._FENCE_STATS["unknown"] == ["sh"]
+
+
+def test_sudo_bare_name_refuses_even_with_cwd_in_pytest_tmp(tmp_path):
+    """Fable r8: with cwd inside pytest's tmp tree, `sudo systemctl …` resolved
+    `systemctl` against cwd (exec'd a file there, or 127) instead of refusing."""
+    stub = tmp_path / "systemctl"
+    stub.write_text("#!/bin/sh\necho CWD-RAN\n")
+    stub.chmod(0o755)
+    for argv in (["sudo", "-n", "systemctl", "restart", "rnsd"], ["sudo", "-n", "true"]):
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=10, cwd=tmp_path)
+        assert r.returncode == 1 and "refused under pytest" in r.stderr, (argv, r)
+        assert "CWD-RAN" not in r.stdout
+    # the allowance itself still works for an explicit path
+    r = subprocess.run(["sudo", "-n", "./systemctl"], capture_output=True, text=True,
+                       timeout=10, cwd=tmp_path)
+    assert r.returncode == 0 and "CWD-RAN" in r.stdout
+
+
+def test_clear_command_cannot_match_its_own_shell():
+    """Live 2026-11-20: the printed command declined forever because its echo
+    text carried the word pgrep was gating on — it matched its own `bash -c`."""
+    cmd = host_fence._fence_clear_command("/tmp", "mf-host-fence-u1-0123456789ab")
+    assert "pytest" not in cmd.replace("[p]ytest", ""), cmd
+    assert "! -name 'mf-host-fence-u1-0123456789ab'" in cmd and "-mmin +1440" in cmd

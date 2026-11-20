@@ -39,7 +39,8 @@ MESHFORGE_CI = os.environ.get('MESHFORGE_CI', 'false').lower() == 'true'
 
 # The host fence (refusing sudo/pkill/systemctl-mutations) lives in
 # tests/host_fence.py; installed in pytest_configure below.
-from tests.host_fence import _FENCE_STATS, _install_sudo_fence  # noqa: E402
+from tests.host_fence import (  # noqa: E402
+    _FENCE_STATS, _fence_clear_command, _install_sudo_fence)
 
 
 def pytest_unconfigure(config):
@@ -376,10 +377,8 @@ def pytest_report_header(config):
                    f"{_FENCE_STATS['tmpdir']} (pre-2026-11-20 per-run dirs, fallbacks, "
                    "older-version shared dirs; never auto-removed — an orphan of a "
                    "killed run may still use one). To clear those >1 day old while "
-                   "no pytest runs: pgrep -f '[p]ytest' >/dev/null && echo 'pytest "
-                   "running - not clearing' || find '" + _FENCE_STATS["tmpdir"] +
-                   "' -maxdepth 1 -name 'mf-host-fence-*' ! -name '" +
-                   _FENCE_STATS["current"] + "' -mmin +1440 -exec rm -rf {} +")
+                   "no pytest runs: " + _fence_clear_command(_FENCE_STATS["tmpdir"],
+                                                            _FENCE_STATS["current"]))
     return out or None
 
 
