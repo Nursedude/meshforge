@@ -99,6 +99,10 @@ BYTE_IDENTICAL = (
     # hand-stopped service the same way; one policy, one verdict per state.
     # (unit_boot_history stays per-twin in service_check — argv differs.)
     "src/core/startup_hold.py",
+    # The session-driver live-store guard (2026-11-19): when a Claude session's
+    # driver may write the operator's delivery/queue DBs. Twin-neutral (the
+    # opt-in name derives from each store's own override prefix).
+    "src/utils/live_store_guard.py",
     # The delivery-label vocabulary (2026-09-24, review C F7): which routing
     # lanes count as which transport in delivery_counters. Both repos' writers
     # and readers judge confirmation rates by it; a per-repo drift would make

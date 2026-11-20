@@ -79,6 +79,8 @@ get_topology_snapshot_store, _HAS_TOPOLOGY_SNAPSHOT = safe_import(
     'utils.topology_snapshot', 'get_topology_snapshot_store'
 )
 
+from utils.live_store_guard import LiveStoreRefused  # noqa: E402
+
 logger = logging.getLogger(__name__)
 
 # PromQL query bodies are tiny; cap the POST body read so a huge declared
@@ -360,6 +362,8 @@ class PrometheusExporter:
                 lines.append(f"# TYPE {defn.name} {defn.metric_type}")
                 lines.append(_format_metric_line(defn.name, stats.get("dead_letter", 0)))
 
+            except LiveStoreRefused as e:  # session shell: stat unobservable
+                logger.warning("message queue stats unobservable: %s", e)
             except Exception as e:
                 logger.debug(f"Error collecting message metrics: {e}")
 

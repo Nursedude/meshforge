@@ -18,6 +18,7 @@ expected pragmas. The audit runs `connect_tuned(path)` and asserts
 """
 
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
@@ -172,7 +173,9 @@ INVENTORY: List[DBSpec] = [
     ),
     DBSpec(
         name="message_queue",
-        path_factory=lambda: _meshforge_config_dir() / "message_queue.db",
+        path_factory=lambda: Path(os.environ["MESHFORGE_MESSAGE_QUEUE_DB"])
+        if os.environ.get("MESHFORGE_MESSAGE_QUEUE_DB")
+        else _meshforge_config_dir() / "message_queue.db",
         creator_module="gateway.message_queue",
         has_auto_prune=True,
         retention_days=None,  # bounded by retry policy + dead-letter

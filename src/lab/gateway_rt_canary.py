@@ -46,6 +46,7 @@ import json
 import sys
 import time
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -264,6 +265,9 @@ def _default_counters_db() -> Path:
 
 
 def main(argv=None) -> int:
+    # This canary DELIBERATELY drives the live queue + counters (it measures
+    # the real pipeline), so it opts in to utils.live_store_guard explicitly.
+    os.environ.setdefault("MESHFORGE_ALLOW_LIVE_STORES", "1")
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--peer", default=DEFAULT_PEER,
                         help="lab_peers name of the echo peer to ping")

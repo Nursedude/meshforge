@@ -42,6 +42,8 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Union
 
+from utils.live_store_guard import LiveStoreRefused  # noqa: E402
+
 logger = logging.getLogger(__name__)
 
 # First-party imports
@@ -395,6 +397,8 @@ class InfluxDBExporter:
                 {},
                 timestamp
             )
+        except LiveStoreRefused as e:  # session shell: stat unobservable
+            logger.warning("message queue stats unobservable: %s", e)
         except Exception as e:
             logger.debug(f"Error collecting message metrics: {e}")
 

@@ -431,3 +431,10 @@ def test_startup_hold_policy_is_byte_locked():
     every TUI launch. The fix's policy lives in one module; a twin that grows
     its own hold rule would split what 'operator stop honoured' means."""
     assert "src/core/startup_hold.py" in _load().BYTE_IDENTICAL
+
+
+def test_live_store_guard_is_byte_locked():
+    """2026-11-19: one rule for when a session driver may write a live
+    delivery/queue store, in both twins — a twin that loosens it alone lets
+    fabricated rows back into that twin's truth source."""
+    assert "src/utils/live_store_guard.py" in _load().BYTE_IDENTICAL
