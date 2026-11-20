@@ -24,8 +24,10 @@
 #
 # SAFETY: never touches a run dir that a LIVE pytest may own. A fresh .lock
 # alone is NOT the guard — pytest's atexit often fails to remove it here, so
-# fresh locks are routinely stranded. A fresh lock skips only while a pytest is
-# ACTUALLY RUNNING, and unobservable liveness skips too (see the gate below).
+# fresh locks are routinely stranded. A fresh lock is judged by its OWNER: kept
+# while its pid (pytest writes it into .lock) is alive; while a pytest runs or
+# liveness is unobservable, kept unless that pid is PROVABLY dead; with no
+# pytest running, pruned unless that pid is alive (2026-11-20, see below).
 #
 # Usage (crontab idiom — the script emits its own verdict; the `||` guard
 # catches ONLY the case where the script dies before it can speak. The script
@@ -199,13 +201,55 @@ _pytest_running() {
 }
 if _pytest_running; then PYTEST_LIVE=1; else PYTEST_LIVE=0; fi
 
+# Is THIS lock's owner provably dead? (2026-11-20)
+#
+# "A pytest is running" protected EVERY fresh lock, so on a test-heavy box the
+# prune never got a window: 2026-11-20 00:11 freed 1,367 MB in one burst
+# (CONCERN), and 06:11 skipped 71 dirs while 93 locks named DEAD pids. pytest
+# writes its own pid into .lock (_pytest/pathlib.py create_cleanup_lock); a run
+# killed by SIGTERM / SIGKILL / pytest-timeout's thread method never removes it.
+#
+# Returns 0 ONLY when the content is exactly one well-formed pid AND /proc is
+# observable AND that pid does not exist. Everything else returns 1 = keep:
+# empty (pytest creates the file, then writes), garbage, unreadable, no /proc,
+# or a LIVE pid (even a recycled one — a wrong keep is harmless; a wrong delete
+# corrupts a live run). Residual, stated: a pytest in ANOTHER pid namespace
+# sharing this /tmp would read as dead here — none on this fleet.
+_lock_pid() {  # $1 = lock path; prints the pid and returns 0 ONLY for a well-formed one
+  local c
+  # Never OPEN anything but a regular, non-symlink file (Fable r2): a FIFO
+  # blocked `head` forever — the cron hung with no verdict — and a symlink was
+  # followed to someone else's pid.
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  c="$(head -c 16 -- "$1" 2>/dev/null)" || return 1
+  case "$c" in ''|*[!0-9]*|0*) return 1 ;; esac       # one positive decimal, no leading 0
+  [ "${#c}" -le 10 ] || return 1                       # no real pid is that long
+  # $(…) silently drops NUL bytes and trailing newlines: the FILE must be exactly
+  # the digits read, byte for byte (pytest writes the pid with no newline).
+  [ "$(wc -c < "$1" 2>/dev/null)" = "${#c}" ] || return 1
+  printf '%s' "$c"
+}
+_lock_owner_dead() {  # $1 = lock path; 0 = PROVABLY dead, 1 = keep
+  local p
+  [ -d /proc/self ] || return 1                       # /proc unobservable -> keep
+  p="$(_lock_pid "$1")" || return 1
+  [ -e "/proc/$p" ] && return 1                        # owner alive (or pid reused) -> keep
+  return 0
+}
+_lock_owner_alive() {  # $1 = lock path; 0 = the lock names a pid that EXISTS
+  local p
+  [ -d /proc/self ] || return 1
+  p="$(_lock_pid "$1")" || return 1
+  [ -e "/proc/$p" ]
+}
+
 # Newest-first BY RUN NUMBER, not mtime: the number is the sequence pytest
 # itself assigns, and mtime moves when anything inside is touched.
 mapfile -t dirs < <(ls -d "$BASE"/pytest-[0-9]* 2>/dev/null \
                     | sed 's/.*pytest-//' | sort -rn | sed "s|^|$BASE/pytest-|")
 total=${#dirs[@]}
 
-pruned=0; skipped_locked=0; stranded=0; failed=0
+pruned=0; skipped_locked=0; stranded=0; dead_owner=0; owner_alive=0; failed=0
 i=0
 for d in "${dirs[@]}"; do
   i=$((i + 1))
@@ -215,13 +259,28 @@ for d in "${dirs[@]}"; do
     lock_age=$(( now - $(stat -c %Y "$lock" 2>/dev/null || echo 0) ))
     if [ "$lock_age" -lt "$LOCK_MAX_AGE_S" ]; then
       if [ "$PYTEST_LIVE" = 1 ]; then
-        skipped_locked=$((skipped_locked + 1))   # a live run may own this
-        continue
+        if _lock_owner_dead "$lock"; then
+          # stranded even though others run — its OWN counter, never ALSO
+          # "stranded (no live pytest)": that would state a falsehood and
+          # double-count (Fable review 2026-11-20)
+          dead_owner=$((dead_owner + 1))
+        else
+          skipped_locked=$((skipped_locked + 1)) # a live run may own this
+          continue
+        fi
+      else
+        if _lock_owner_alive "$lock"; then
+          # pgrep saw no pytest, but the lock's OWN pid is alive — a pytest
+          # pgrep's pattern misses (a `pytest.main()` driver: Fable r2 drilled it
+          # losing its tmp dir mid-run). The lock outranks the process scan.
+          owner_alive=$((owner_alive + 1))
+          continue
+        fi
+        # Fresh lock, NO pytest running, owner not alive: nothing can own it.
+        # Stranded by a shutdown that never finished — reclaimable, and counted
+        # separately so the reclaim is visible rather than folded into "pruned".
+        stranded=$((stranded + 1))
       fi
-      # Fresh lock, but NO pytest is running: nothing can own it. Stranded by a
-      # shutdown that never finished — reclaimable, and counted separately so
-      # the reclaim is visible rather than silently folded into "pruned".
-      stranded=$((stranded + 1))
     fi
   fi
   if rm -rf "$d" 2>/dev/null; then pruned=$((pruned + 1)); else failed=$((failed + 1)); _note_stuck "$d"; fi
@@ -233,6 +292,8 @@ remain=$(ls -d "$BASE"/pytest-[0-9]* 2>/dev/null | wc -l)
 detail="pruned $pruned of $total dir(s), freed ${freed_mb} MB, $remain remain"
 [ "$skipped_locked" -gt 0 ] && detail="$detail, $skipped_locked skipped (lock < ${LOCK_MAX_AGE_S}s, pytest IS running)"
 [ "$stranded" -gt 0 ] && detail="$detail, $stranded stranded (fresh lock, no live pytest — shutdown left it behind)"
+[ "$dead_owner" -gt 0 ] && detail="$detail, $dead_owner stranded though a pytest may be running (fresh lock, owner pid dead — a killed run left it behind)"
+[ "$owner_alive" -gt 0 ] && detail="$detail, $owner_alive kept (no pytest per pgrep, but the lock's owner pid is alive)"
 detail="$detail; $c_detail"
 failed=$((failed + c_failed))
 

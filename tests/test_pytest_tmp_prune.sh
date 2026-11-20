@@ -198,6 +198,78 @@ run_pgrep 0 >/dev/null
 check "stale lock still pruned even with a live pytest" \
   "$([ -d "$BASE/pytest-1" ] && echo '' || echo ok)"
 
+# 5–7. PER-LOCK owner liveness (2026-11-20). pytest writes its OWN pid into
+# .lock (_pytest/pathlib.py create_cleanup_lock). A killed run (SIGTERM /
+# SIGKILL / pytest-timeout's thread method) never removes it, and the old rule
+# — "ANY pytest running => skip EVERY fresh lock" — gave the prune no window on
+# a test-heavy box: 2026-11-20 00:11 freed 1,367 MB in one burst (CONCERN),
+# 06:11 skipped 71 while 93 locks named DEAD pids. Now a fresh lock whose pid
+# is well-formed and NOT alive is stranded => pruned even while others run.
+# Anything else (live pid, empty, garbage) is KEPT — unknown is never "dead".
+mklockpid() {  # $1 = run number, $2 = lock content (written verbatim)
+  mkrun "$1" 60; printf '%s' "$2" > "$BASE/pytest-$1/.lock"
+  touch -d "@$(( $(date +%s) - 60 ))" "$BASE/pytest-$1/.lock"
+}
+sleep 0 & DEADPID=$!; wait "$DEADPID" 2>/dev/null
+[ -d "/proc/$DEADPID" ] && DEADPID=""          # reused already: case can't be built
+sleep 30 & LIVEPID=$!
+
+BASE="$TMP/live5"; mkdir -p "$BASE"
+for n in 1 2 3 4 5; do mkrun $n; done
+if [ -n "$DEADPID" ]; then
+  mklockpid 1 "$DEADPID"
+  out="$(run_pgrep 0)"        # a pytest IS running — but not THIS lock's owner
+  check "fresh lock, owner pid DEAD, other pytest live => PRUNED (stranded)" \
+    "$([ -d "$BASE/pytest-1" ] && echo '' || echo ok)"
+  check "and the dead-owner reclaim is stated" \
+    "$(echo "$out" | grep -q 'owner pid dead' && echo ok)"
+  # Fable review 2026-11-20: the reclaim was ALSO counted as "stranded (… no
+  # live pytest …)" — a falsehood on a run where a pytest WAS live, and 2N.
+  check "dead-owner reclaim is counted ONCE, under its own words" \
+    "$(echo "$out" | grep -q '1 stranded though a pytest may be running' && echo ok)"
+  check "and never claims 'no live pytest' while one runs" \
+    "$(echo "$out" | grep -q 'no live pytest' && echo '' || echo ok)"
+else
+  check "dead-pid fixture could be built (pid reused instantly)" ""
+fi
+
+BASE="$TMP/live6"; mkdir -p "$BASE"
+for n in 1 2 3 4 5; do mkrun $n; done
+mklockpid 1 "$LIVEPID"
+out="$(run_pgrep 0)"
+check "fresh lock, owner pid ALIVE => SKIPPED (its run may be live)" \
+  "$([ -d "$BASE/pytest-1" ] && echo ok)"
+kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null
+
+# 7. content we cannot read as ONE positive pid => keep (never infer "dead").
+for content in "" "abc" "0" "-5" "12 34" "1e3" "$(printf '42\n43')" "12345678901"; do
+  BASE="$TMP/live7-$RANDOM"; mkdir -p "$BASE"
+  for n in 1 2 3 4 5; do mkrun $n; done
+  mklockpid 1 "$content"
+  run_pgrep 0 >/dev/null
+  check "fresh lock with unparseable owner '$(printf '%s' "$content" | tr '\n' '|')' + live pytest => KEPT" \
+    "$([ -d "$BASE/pytest-1" ] && echo ok)"
+done
+
+# 7b. bytes the shell would silently DROP before the digit test sees them
+#     (NUL; a trailing newline) — the file must be exactly the digits read.
+if [ -n "$DEADPID" ]; then
+  for shape in nul-inside nul-after newline-after; do
+    BASE="$TMP/live7b-$shape"; mkdir -p "$BASE"
+    for n in 1 2 3 4 5; do mkrun $n; done
+    mkrun 1 60
+    case "$shape" in
+      nul-inside)    printf '%s\0%s' "${DEADPID:0:1}" "${DEADPID:1}" > "$BASE/pytest-1/.lock" ;;
+      nul-after)     printf '%s\0\0' "$DEADPID" > "$BASE/pytest-1/.lock" ;;
+      newline-after) printf '%s\n' "$DEADPID" > "$BASE/pytest-1/.lock" ;;
+    esac
+    touch -d "@$(( $(date +%s) - 60 ))" "$BASE/pytest-1/.lock"
+    run_pgrep 0 >/dev/null
+    check "lock '$shape' (not exactly the digits) + live pytest => KEPT" \
+      "$([ -d "$BASE/pytest-1" ] && echo ok)"
+  done
+fi
+
 # ── a SPOKEN fail exits 0 — the crontab || guard is for dying UNSPOKEN ───
 #
 # The documented idiom appends `|| cron_verdict.sh ... FAIL wrapper_crashed`.
@@ -393,6 +465,44 @@ check "exports: the verdict SAYS what it pruned" \
   "$(echo "$out" | grep -q 'tree exports: pruned 2' && echo ok)"
 CLAUDE_TMP_BASE="$TMP/claude-none"
 
+
+# 8. Fable round 2 (2026-11-20). (a) a .lock that is NOT a regular file must
+#    never be OPENED: a FIFO blocked `head` and hung the cron with no verdict
+#    (the old code only stat'ed it); a symlink was followed to a dead pid.
+#    (b) no pytest seen by pgrep (a pytest.main() driver does not match its
+#    pattern) but the lock names a LIVE pid => KEEP — it used to be deleted
+#    as "stranded (no live pytest)" mid-run.
+BASE="$TMP/live8a"; mkdir -p "$BASE"
+for n in 1 2 3 4 5; do mkrun $n; done
+mkdir -p "$BASE/pytest-1/some_test0"; mkfifo "$BASE/pytest-1/.lock"
+touch -h -d "@$(( $(date +%s) - 60 ))" "$BASE/pytest-1/.lock"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/pgrep"; chmod +x "$STUB/pgrep"
+out="$(PATH="$STUB:$PATH" PYTEST_TMP_BASE="$BASE" CRON_VERDICT_LOG="$VERDICTS" \
+  CRON_VERDICT_BIN="$HERE/../scripts/cron_verdict.sh" HOME="$TMP" \
+  timeout 20 bash "$SCRIPT" 2>&1)"; rc=$?
+check "a FIFO .lock + live pytest: the run FINISHES (rc $rc) and speaks" \
+  "$(echo "$out" | grep -q 'pytest_tmp_prune: ' && echo ok)"
+check "and the FIFO's dir is KEPT" "$([ -d "$BASE/pytest-1" ] && echo ok)"
+if [ -n "$DEADPID" ]; then
+  BASE="$TMP/live8s"; mkdir -p "$BASE"
+  for n in 1 2 3 4 5; do mkrun $n; done
+  printf '%s' "$DEADPID" > "$TMP/deadpid.target"
+  mkdir -p "$BASE/pytest-1/some_test0"; ln -s "$TMP/deadpid.target" "$BASE/pytest-1/.lock"
+  touch -h -d "@$(( $(date +%s) - 60 ))" "$BASE/pytest-1/.lock"
+  run_pgrep 0 >/dev/null
+  check "a SYMLINK .lock (even to a dead pid) + live pytest => KEPT" \
+    "$([ -d "$BASE/pytest-1" ] && echo ok)"
+fi
+sleep 30 & LIVEPID2=$!
+BASE="$TMP/live8b"; mkdir -p "$BASE"
+for n in 1 2 3 4 5; do mkrun $n; done
+mklockpid 1 "$LIVEPID2"
+out="$(run_pgrep 1)"          # pgrep: NO pytest seen — but the lock's owner lives
+check "no pytest per pgrep, lock owner ALIVE => KEPT (pytest.main driver case)" \
+  "$([ -d "$BASE/pytest-1" ] && echo ok)"
+check "and it is not called 'stranded'" \
+  "$(echo "$out" | grep -q 'stranded' && echo '' || echo ok)"
+kill "$LIVEPID2" 2>/dev/null; wait "$LIVEPID2" 2>/dev/null
 # ── it leaves a cron verdict so #78 can see it ───────────────────────────
 check "writes a cron_verdict line under its own name" \
   "$(grep -q 'pytest_tmp_prune' "$VERDICTS" 2>/dev/null && echo ok)"
