@@ -167,6 +167,22 @@ Cause: position-less writers set no `source_origin` → priority 0 → any peer 
   this radio's hearing in separate fields (`heard_here*`) + ONE exception (history stores our hearing
   as a GPS-less `local_radio` row). Keep r1's tagging (the actual cause). Findings + residuals:
   `.claude/audits/review_provenance.md` 2026-11-20 H4a rows.
-- Acceptance (unchanged, live, after deploy): ~174 local position-less from the radio, map online ≈
-  radio `num_online_nodes`, `/api/status federation.position_adopted` a number.
-- `main` carries r1–r3, CI green; NOT deployed — do not deploy as-is.
+- r4 `f5a15a1a` (2026-11-20): REBUILT as the federated representation — our GPS-less record stays
+  ours (history keeps the hearing with no new code); a peer fix = an ordinary federated feature +
+  `heard_here*`; `best_fix` only for winners without a fix (second pass); r2/r3 (b) unwound.
+- r5 `604d6c6d`: r4 Fable review fixed — `heard_here` reads ONLY H14 `radio_last_heard` (per-network
+  window, tri-state, None = unknown); adopted nodes out of federation totals; `strip_radio_stamp`
+  strips `heard_here*` on cache replay; status None on error.
+- **r5 Fable review NOT clean → r6, fresh session, SEAM FIRST.** F1 (reachable): a node GPS-less on
+  this radio AND positioned by a lower-trust LOCAL source + a peer `local_radio` fix takes the
+  pre-existing higher-trust REPLACE path — page "not heard here" for a node heard 60 s ago, counted
+  twice. Third time a merge path did not know the new marker → design ONE owner of the
+  local-vs-peer decision per (net,id) before patching. F2: `better_fix` TypeError on a non-numeric
+  peer `last_seen` crashes the poll (r4 flagged; deferring it was wrong). Nits + evidence:
+  provenance r5 row.
+- **Acceptance RESTATED (r4 review):** the page's online counter cannot move with this change
+  (position-less nodes never enter page counts; federated markers are `is_online: False`). Live,
+  after deploy: ~174 local position-less from the radio; online measured over features +
+  `nodes_without_position` ≈ radio `num_online_nodes`; `/api/status federation.position_adopted` a
+  number.
+- `main` @ `604d6c6d` carries r1–r5, CI success 604d6c6d (44877869655); NOT deployed — do not deploy as-is.
