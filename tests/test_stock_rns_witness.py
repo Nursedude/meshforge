@@ -145,3 +145,49 @@ def test_probe_survives_not_found_and_reports_every_identity(tmp_path):
     assert r.stdout.count("NOT_FOUND") == 2, r.stdout
     assert "FOUND 2" in r.stdout, r.stdout
     assert "found: 1/3" in r.stdout, r.stdout
+
+
+# ------------------------------- 11-21 root cause: the drop is SILENT in the log
+# MEASURED 13:08–13:20 (meshforge-lab): under enforce_stamps = yes rns 1.6.1
+# drops unstamped path responses via filtered_announce() with every log line
+# commented out — only the per-interface Filtered ↓ bytes saw it. `status` grepped
+# Interface|Status|Traffic and threw that line away. REAL 1.6.1 `rnstatus -F` text.
+RNSTATUS_F_161 = """\
+
+ Shared Instance[rns/default]
+    Status    : Up
+    Serving   : 0 programs
+    Rate      : 1.00 Gbps, MTU 262144
+    Traffic   : ↑0 B        0 bps
+                ↓747 B      0 bps
+    Filtered  : ↑0 B  0 bps
+                ↓0 B  0 bps
+
+ TCPInterface[Regional entry point/moc.mf.internal:4242]
+    Status    : Up
+    Mode      : Full
+    Rate      : 10.00 Mbps, MTU 16384
+    Traffic   : ↑1.25 KB    0 bps
+                ↓254 B      0 bps
+    Filtered  : ↑0 B  0 bps
+                ↓2.66 KB  0 bps
+"""
+
+
+def test_leg_stats_reports_the_entry_legs_filtered_rx_not_the_shared_instance(tmp_path):
+    r = _stdin("leg-stats", RNSTATUS_F_161, tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "rx accepted: 254 B" in r.stdout, r.stdout
+    assert "rx filtered: 2.66 KB" in r.stdout, r.stdout     # the leg's, not the shared instance's 0 B
+
+
+@pytest.mark.parametrize("raw", [
+    "",                                                      # rnstatus gave nothing
+    RNSTATUS_F_161.split(" TCPInterface")[0],                # no entry leg at all
+    "\n".join(l for l in RNSTATUS_F_161.splitlines() if "Filtered" not in l),  # run without -F
+])
+def test_leg_stats_missing_line_is_unknown_never_zero(tmp_path, raw):
+    r = _stdin("leg-stats", raw, tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "UNKNOWN" in r.stdout, r.stdout
+    assert "filtered: 0" not in r.stdout, r.stdout

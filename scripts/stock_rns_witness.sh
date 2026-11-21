@@ -123,11 +123,36 @@ cmd_status() {
     [ -f "$RNSDIR/config" ] && echo "enforce:  $(awk '/enforce_stamps/{print $3}' "$RNSDIR/config")"
     [ -x "$VENV/bin/rnstatus" ] || return 0
     echo "--- rnstatus"
-    timeout 20 "$VENV/bin/rnstatus" --config "$RNSDIR" 2>&1 | grep -E "Interface|Status|Traffic" || echo "UNKNOWN: rnstatus gave no interface lines"
+    local st
+    st="$(timeout 20 "$VENV/bin/rnstatus" -F --config "$RNSDIR" 2>&1 || true)"
+    printf '%s\n' "$st" | grep -E "Interface|Status|Traffic" || echo "UNKNOWN: rnstatus gave no interface lines"
+    echo "--- entry leg (filtered rx = announces/path responses DROPPED; under enforce_stamps the drop is not logged)"
+    printf '%s\n' "$st" | leg_stats
     echo "--- path table (passive: what happened to announce; reachability is \`probe\`)"
     local table
     table="$(timeout 20 "$VENV/bin/rnpath" -t --config "$RNSDIR" 2>&1 || true)"
     echo "table rows: $(printf '%s\n' "$table" | count_table)"
+}
+
+# The entry leg's inbound bytes from `rnstatus -F`: accepted vs FILTERED. Under
+# enforce_stamps = yes, 1.6.1 drops unstamped announces (and path responses) in
+# filtered_announce() with its log lines commented out — this counter is the ONLY
+# witness of the drop (11-21 root cause). A missing line is UNKNOWN, never 0.
+leg_stats() {
+    awk '
+        /^ TCPInterface\[Regional entry point/ { leg = 1; next }
+        leg && /^ [^ ]/                        { leg = 0 }
+        leg && want && /^[ \t]*↓/             { v = $0; sub(/^[ \t]*↓/, "", v); split(v, f, /[ \t]+/)
+                                                 val[want] = f[1] " " f[2]; want = ""; next }
+        leg && /^ +Traffic +:/                 { want = "accepted"; next }
+        leg && /^ +Filtered +:/                { want = "filtered"; next }
+        END {
+            for (k = 1; k <= 2; k++) {
+                n = (k == 1) ? "accepted" : "filtered"
+                if (n in val) print "rx " n ": " val[n]
+                else          print "rx " n ": UNKNOWN (no entry-leg " n " line)"
+            }
+        }'
 }
 
 # Rows of `rnpath -t` are `<32 hex> ...`. rns 1.6.1 prints `1h (?)`, never
@@ -181,6 +206,7 @@ case "${1:-}" in
     status)        shift; cmd_status "$@" ;;
     probe)         shift; cmd_probe "$@" ;;
     count-table)   count_table ;;
+    leg-stats)     leg_stats ;;
     classify)      classify ;;
     stop)          cmd_stop ;;
     uninstall)     cmd_uninstall ;;
