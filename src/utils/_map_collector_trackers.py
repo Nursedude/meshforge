@@ -35,6 +35,33 @@ def _hub():
     return map_data_collector
 
 
+def tracker_diagnostic(tracked, served_pos, dropped_pos, listed, dropped_listed, window_h):
+    """(reason_if_zero, notes) for the unified-tracker source — ONE function
+    of the counts (TRACKER-FORGET r3: the note was wrong TWICE in branches
+    nobody enumerated — "nothing current" beside 543 listed entries, then
+    "0 have GPS" when the GPS records were dropped for age). Every phrase is
+    a claim about what THIS reader served; tests/test_map_tracker_snapshot_age
+    checks it over the full count table. reason None = "ok" (served GPS).
+
+    tracked        nodes in the tracker (incl. position-less Meshtastic, which
+                   the HTTP collector serves — never counted here)
+    served_pos     positioned features served       dropped_pos     ... dropped for age
+    listed         position-less entries listed      dropped_listed  ... dropped for age
+    """
+    if not tracked:
+        return "no_data", "unified tracker empty — no peers known to this box"
+    dropped = dropped_pos + dropped_listed
+    dn = (f"; {dropped} older than {window_h:g} h dropped (node_cache_max_age_hours)"
+          if dropped else "")
+    if served_pos:
+        return None, f"{tracked} tracked total{dn}"
+    if not listed and dropped:
+        return "no_data", f"{tracked} tracked, this reader serves nothing current{dn}"
+    if dropped_pos:
+        return "no_positions", f"{tracked} tracked, 0 current with GPS{dn}"
+    return "no_positions", f"{tracked} tracked nodes, 0 have GPS{dn}"
+
+
 class TrackerDataCollectorMixin:
     """UnifiedNodeTracker, MQTT subscriber, and cache-file sources for MapDataCollector."""
 
@@ -88,7 +115,8 @@ class TrackerDataCollectorMixin:
 
             kept = [f for f in features
                     if not _too_old((f.get("properties") or {}).get("last_heard"))]
-            stale_dropped = len(features) - len(kept)
+            dropped_pos = len(features) - len(kept)
+            dropped_listed = 0
             features = kept
 
             if features:
@@ -129,7 +157,7 @@ class TrackerDataCollectorMixin:
                     continue  # handled by HTTP collector
                 ls = getattr(node, "last_seen", None)
                 if ls is not None and hasattr(ls, "timestamp") and _too_old(ls.timestamp()):
-                    stale_dropped += 1
+                    dropped_listed += 1
                     continue
                 try:
                     last_seen = node.get_age_string() if hasattr(node, "get_age_string") else None
@@ -148,28 +176,10 @@ class TrackerDataCollectorMixin:
                                       else "local_radio"),
                 })
 
-            # Distinguish three zero-yield cases for operator legibility:
-            #   all_nodes=[], features=[]    → tracker simply empty (boot, no peers yet)
-            #   all_nodes>0, features=0      → tracked peers exist but none have GPS
-            #   (exception path below)       → tracker actually unreachable
-            self._tracker_stale_dropped = stale_dropped
-            stale_note = (f"; {stale_dropped} older than {window_s / 3600:g} h dropped "
-                          "(node_cache_max_age_hours)") if stale_dropped else ""
-            # "nothing current" only when NOTHING was kept — a gateway box
-            # serves 0 positioned but hundreds of current position-less RNS
-            # entries (MEASURED post-deploy 07:3x; the note said otherwise).
-            if all_nodes and not features and not listed and stale_dropped:
-                reason = "no_data"
-                notes = f"{len(all_nodes)} tracked, nothing current{stale_note}"
-            elif not all_nodes:
-                reason = "no_data"
-                notes = "unified tracker empty — no peers known to this box"
-            elif not features:
-                reason = "no_positions"
-                notes = f"{len(all_nodes)} tracked nodes, 0 have GPS{stale_note}"
-            else:
-                reason = None  # "ok" computed by _record_diagnostic
-                notes = f"{len(all_nodes)} tracked total{stale_note}"
+            self._tracker_stale_dropped = dropped_pos + dropped_listed
+            reason, notes = tracker_diagnostic(
+                len(all_nodes), len(features), dropped_pos, listed, dropped_listed,
+                window_s / 3600)
             self._record_diagnostic(
                 "unified_tracker",
                 attempted=len(all_nodes),

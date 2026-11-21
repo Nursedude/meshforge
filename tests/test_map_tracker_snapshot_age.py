@@ -186,3 +186,49 @@ def test_position_less_current_entries_are_not_called_nothing_current(setup):
     assert "nothing current" not in diag["notes"], diag
     assert "1 older than" in diag["notes"], diag
     assert [e["id"] for e in collector._nodes_without_position] == ["rns_fresh"]
+
+
+# ----------------------------------------------- r3 review: ONE note function
+from itertools import product  # noqa: E402
+
+from utils._map_collector_trackers import tracker_diagnostic  # noqa: E402
+from utils.map_source_reasons import is_known_reason  # noqa: E402
+
+
+@pytest.mark.parametrize("sp,dp,ls,dl,meshless", list(product((0, 1), (0, 2), (0, 1), (0, 3), (0, 1))),
+                         ids=lambda v: str(v))
+def test_note_is_true_over_the_full_count_table(sp, dp, ls, dl, meshless):
+    """Every row of the count table: each phrase is a TRUE claim about what
+    this reader served (r3: the note lied twice in unenumerated branches)."""
+    tracked = sp + dp + ls + dl + meshless
+    reason, notes = tracker_diagnostic(tracked, sp, dp, ls, dl, 48)
+    assert reason is None or is_known_reason(reason), (reason, notes)
+    if tracked == 0:
+        assert "empty" in notes
+        return
+    assert "empty" not in notes, notes
+    if "0 have GPS" in notes:                       # never when a record HAD GPS
+        assert sp == 0 and dp == 0, notes
+    if "with GPS" in notes or "tracked total" in notes:
+        assert sp or dp, notes
+    assert ("nothing current" in notes) == (sp == 0 and ls == 0 and dp + dl > 0), notes
+    if sp:
+        assert reason is None, (reason, notes)
+    dropped = dp + dl
+    assert (f"; {dropped} older than" in notes) == bool(dropped), notes
+
+
+def test_stale_gps_plus_current_rns_does_not_say_no_gps(setup):
+    """r3 important, through the real tracker: 2 stale positioned + 1 fresh
+    position-less RNS read '3 tracked nodes, 0 have GPS' — two had GPS."""
+    collector, cfg = setup
+    window = collector.get_node_cache_max_age_seconds()
+    _collect_with_tracker(collector, cfg, [
+        _node("!stale001", "meshtastic", window + 86400),
+        _node("!stale002", "meshtastic", window + 86400),
+        _node("rns_fresh", "rns", 60, pos=False),
+    ])
+    diag = collector._source_diagnostics["unified_tracker"]
+    assert "0 have GPS" not in diag["notes"], diag
+    assert "0 current with GPS" in diag["notes"], diag
+    assert "2 older than" in diag["notes"], diag
