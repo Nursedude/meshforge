@@ -24,6 +24,15 @@ from typing import Any, Dict, NamedTuple, Optional
 logger = logging.getLogger(__name__)
 
 
+def _blind_of(geojson: Any) -> Optional[str]:
+    """The H12 blind reason a snapshot carries, or None (any malformed shape = None)."""
+    if not isinstance(geojson, dict):
+        return None
+    props = geojson.get("properties")
+    reason = props.get("map_blind") if isinstance(props, dict) else None
+    return reason if isinstance(reason, str) and reason else None
+
+
 class SnapshotWarming(RuntimeError):
     """No snapshot to serve. ``reason`` None = cold start; else the collect error."""
 
@@ -36,6 +45,9 @@ class Snapshot(NamedTuple):
     geojson: Dict[str, Any]
     age_s: float
     generation: int
+    # MAP-H H12: the cycle's blind reason, read off the stored geojson ONCE in
+    # peek_snapshot -- so a handler never re-reads .geojson to learn it.
+    blind: Optional[str] = None
 
 
 class MapSnapshotMixin:
@@ -61,6 +73,9 @@ class MapSnapshotMixin:
         self._snapshot_refresh_thread: Optional[threading.Thread] = None
         self._collect_failures = 0
         self._last_collect_error: Optional[str] = None
+        # MAP-H H12: sources that RAN this cycle (diagnostics outlive a cycle)
+        self._cycle_attempted: set = set()
+        self._blind_cycles = 0  # completed collects where every witness was dark
         self._refresh_lock_timeouts = 0
         self._last_lock_timeout_mono: Optional[float] = None
         self._last_lock_timeout_warn_mono: Optional[float] = None
@@ -87,6 +102,7 @@ class MapSnapshotMixin:
     def _run_collect_witnessed(self):
         """Run ``_collect_locked()`` (caller holds ``_collect_lock``) with a witness."""
         self._arm_collect_deadline()  # MAP-H H3 #4: ONE deadline per collect
+        self._cycle_attempted = set()
         try:
             result = self._collect_locked()
         except Exception as e:
@@ -95,8 +111,26 @@ class MapSnapshotMixin:
             raise
         finally:
             self._disarm_collect_deadline()
-        self._last_collect_error = None
+        # MAP-H H12: a cycle where every attempted source went dark completed
+        # without raising -- count it (its OWN counter: collect_failures stays
+        # "collects that raised", review F5) and say why in last_error.
+        blind = _blind_of(result)
+        if blind:
+            self._blind_cycles += 1
+            self._last_collect_error = blind[:200]
+        else:
+            self._last_collect_error = None
         return result
+
+    def _stamp_blind(self, geojson: Dict[str, Any]) -> Optional[str]:
+        """Stamp this cycle's blind verdict into the snapshot it will publish
+        (``properties.map_blind``: the reason, or None). Called by the collect
+        right before ``_publish_snapshot`` so verdict and data travel as ONE value."""
+        from utils.map_source_reasons import all_dark_reason
+        reason = all_dark_reason(self._source_diagnostics, self._cycle_attempted)
+        props = geojson.setdefault("properties", {})
+        props["map_blind"] = reason
+        return reason
 
     # ── read ─────────────────────────────────────────────────────────────
     def _max_age_s(self, max_age_seconds: Optional[int]) -> int:
@@ -111,7 +145,7 @@ class MapSnapshotMixin:
         if state is None:
             return None
         geo, mono, gen = state
-        return Snapshot(geo, max(0.0, time.monotonic() - mono), gen)
+        return Snapshot(geo, max(0.0, time.monotonic() - mono), gen, _blind_of(geo))
 
     def snapshot(self, max_age_seconds: Optional[int] = None) -> Optional[Snapshot]:
         """Request-thread read (H3 #1): NEVER waits on ``_collect_lock``.
@@ -152,6 +186,7 @@ class MapSnapshotMixin:
         and the collect witness (failures from EVERY driver + the last error)."""
         snap = self.peek_snapshot()
         out: Dict[str, Any] = {"collect_failures": self._collect_failures,
+                               "blind_cycles": self._blind_cycles,
                                "last_error": self._last_collect_error,
                                "refresh_lock_timeouts": self._refresh_lock_timeouts}
         if snap is None:
@@ -160,6 +195,13 @@ class MapSnapshotMixin:
         stale_after = self.snapshot_stale_after()
         out.update(state="stale" if snap.age_s > stale_after else "ok",
                    age_s=round(snap.age_s, 1), stale_after_s=stale_after)
+        # MAP-H H12: a snapshot from an all-dark cycle is never "ok". Stale
+        # still wins the state (the age is the bigger lie); the reason rides both.
+        blind = snap.blind
+        if blind:
+            out["blind_reason"] = blind
+            if out["state"] == "ok":
+                out["state"] = "blind"
         # Blame a wedge only for a timeout DURING this snapshot's life, never a
         # lifetime count (review r3#2: an old, cleared wedge is not today's cause).
         state, last_to = self._snapshot_state, self._last_lock_timeout_mono

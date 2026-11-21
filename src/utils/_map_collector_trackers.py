@@ -159,10 +159,12 @@ class TrackerDataCollectorMixin:
         then falls back to cached GeoJSON file.
         """
         live_connected = False
+        have_subscriber = False
         live_features: List[Dict] = []
         # Try live subscriber first (has real-time sensor data)
         try:
             subscriber = _hub().get_local_subscriber()
+            have_subscriber = subscriber is not None
             if subscriber.is_connected():
                 live_connected = True
                 geojson = subscriber.get_geojson()
@@ -199,12 +201,17 @@ class TrackerDataCollectorMixin:
         except Exception as e:
             logger.debug(f"MQTT cache collection error: {e}")
 
-        self._record_diagnostic(
-            "mqtt",
-            attempted=0, yielded=0,
-            reason_if_zero="unreachable" if live_connected else "not_configured",
-            notes="no live subscriber and no fresh cache",
-        )
+        # H12 r2 (Fable F3): connected-but-empty ANSWERED (no_data); a subscriber
+        # that exists but is not connected is a DOWN broker (unreachable), not
+        # "off by design"; only no subscriber at all is not_configured.
+        if live_connected:
+            reason, note = "no_data", "live subscriber connected, no nodes with position"
+        elif have_subscriber:
+            reason, note = "unreachable", "subscriber not connected to the broker and no fresh cache"
+        else:
+            reason, note = "not_configured", "no MQTT subscriber on this box and no fresh cache"
+        self._record_diagnostic("mqtt", attempted=0, yielded=0,
+                                reason_if_zero=reason, notes=note)
         return []
 
     def _collect_node_tracker(self) -> List[Dict]:

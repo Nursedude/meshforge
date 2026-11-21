@@ -25,6 +25,10 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+#: H12 r2: marks a diagnostic the timing wrapper pre-stamped and the source has
+#: not yet replaced this cycle (popped before the entry is ever published whole).
+_PENDING = "_diag_pending"
+
 from utils.safe_import import safe_import
 from utils.paths import get_real_user_home
 from utils.common import SettingsManager
@@ -664,6 +668,10 @@ class MapDataCollector(
         still-good cache (honest_failure_modes: error-isolation).
         """
         start = time.perf_counter()
+        # MAP-H H12: this source RAN this cycle -- only these vote on "blind".
+        attempted = getattr(self, "_cycle_attempted", None)
+        if attempted is not None:
+            attempted.add(source)
         # Pre-stamp so _record_diagnostic preserves it via the existing-entry
         # carry-over; if the source raises before recording, the except branch
         # below completes the synthetic diagnostic so the degraded source keeps
@@ -675,17 +683,30 @@ class MapDataCollector(
         # last-known state). The source's own _record_diagnostic replaces it.
         prior = dict(self._source_diagnostics.get(source) or {})
         prior["latency_ms"] = 0
+        # H12 r2 seam: _record_diagnostic writes a FRESH dict (it carries only
+        # latency_ms), so this marker survives only if the source recorded
+        # nothing this cycle -- then the carried reason is LAST cycle's.
+        prior[_PENDING] = True
         self._source_diagnostics[source] = prior
         try:
             result = fn(*args, **kwargs)
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             entry = self._source_diagnostics.get(source, {})
+            if entry.pop(_PENDING, False):
+                # The source returned without a diagnostic (Fable r2: direct_radio
+                # success, meshtasticd CLI fallback). Say THIS cycle's fact.
+                n = len(result) if isinstance(result, list) else 0
+                entry.update(attempted=n, yielded=n,
+                             reason_if_zero="ok" if n else None,
+                             notes=(f"{n} features; the source recorded no diagnostic"
+                                    if n else "returned nothing and recorded no diagnostic"))
             entry["latency_ms"] = elapsed_ms
             self._source_diagnostics[source] = entry
             return result
         except Exception as e:
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             entry = self._source_diagnostics.get(source, {})
+            entry.pop(_PENDING, None)
             # Explicit zeros: the pre-stamp now carries last cycle's counts,
             # and "yielded 50 · unreachable" would be a false number.
             entry["attempted"] = 0
@@ -989,6 +1010,7 @@ class MapDataCollector(
 
         # Source 7: Last-known cache (fill gaps). node_tracker tier — the
         # cache is whatever this box has previously seen locally.
+        replayed_ids: set = set()  # H12 r2: positioned nodes that ARE the disk cache
         if not features:
             # The cache is not this cycle's radio: no H14 stamp survives it.
             cache_features = self._tag_source_origin(
@@ -997,6 +1019,8 @@ class MapDataCollector(
                 fid = f["properties"].get("id", "")
                 if fid:
                     features[fid] = f
+            replayed_ids = set(features)
+        replayed_cache = bool(replayed_ids)
 
         # Post-process: promote MeshCore (and other position-less) nodes to map features
         # when the operator has assigned coordinates via map_settings.json.
@@ -1103,9 +1127,26 @@ class MapDataCollector(
             )
         logger.info(f"MapDataCollector latencies: total={total_ms}ms — {', '.join(latency_parts)}")
 
+        # MAP-H H12: every attempted source dark -> the snapshot SAYS blind
+        blind = self._stamp_blind(geojson)
+        was_blind = getattr(self, "_was_blind", False)
+        if blind and not was_blind:
+            logger.warning("Map collect BLIND: %s", blind)
+        elif was_blind and not blind:
+            logger.warning("Map collect no longer blind: a source answered")
+        self._was_blind = bool(blind)
+
         # Cache result
         self._publish_snapshot(geojson)  # atomic (geojson, mono, generation)
-        self._save_cache(geojson)
+        # Replayed cache (Source 7): re-saving would re-stamp its mtime so the
+        # 24 h expiry never trips (H12 review F4). Gated on the REPLAY, not on
+        # blind. History still records the replay, radio stamp stripped -- a
+        # deliberate H14 design (test_peer_radio_heard); whether a replay
+        # belongs in the observation stream is an open residual, not decided here.
+        if not replayed_cache:
+            self._save_cache(geojson)
+        else:
+            self._cache_replays = getattr(self, "_cache_replays", 0) + 1  # witness
 
         # Record to history database. Pass BOTH positioned features AND
         # position-less nodes (synthesized into geometry-less features)

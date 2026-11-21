@@ -133,6 +133,14 @@ def _finite(name: str, raw, lo: float, hi: float) -> float:
     return value
 
 
+# ── Blind header (MAP-H H12) ──────────────────────────────────────────
+def blind_header_value(reason: str) -> str:
+    """The blind reason as ONE header-safe line -- printable ASCII, no CR/LF
+    (header injection), capped at 200 chars."""
+    flat = "".join(ch if 32 <= ord(ch) < 127 else " " for ch in str(reason))
+    return " ".join(flat.split())[:200]
+
+
 # ── Query parameter helper ────────────────────────────────────────────
 def _safe_query_param(query, key, default=None):
     """Safely extract a single query parameter value."""
@@ -464,10 +472,16 @@ class NodeDataEndpointsMixin:
             return
 
         # MAP-H H3 #2: the served snapshot SAYS its age (the page banner reads it).
-        self._send_prebuilt_json(raw_bytes, gzip_bytes, status=200, extra_headers={
+        headers = {
             "X-Snapshot-Age": f"{snap.age_s:.1f}",
             "X-Snapshot-Stale-After": f"{self.collector.snapshot_stale_after():.0f}",
-        })
+        }
+        # MAP-H H12: the snapshot came from a cycle where every source was dark
+        # (snap.blind, never snap.geojson: a cache hit must not touch the data)
+        blind = getattr(snap, "blind", None)
+        if isinstance(blind, str) and blind:
+            headers["X-Map-Blind"] = blind_header_value(blind)
+        self._send_prebuilt_json(raw_bytes, gzip_bytes, status=200, extra_headers=headers)
 
     def _serve_snapshot_unavailable(self, path: str, w) -> None:
         """No snapshot: a cold start says warming; a FAILING collector says blind

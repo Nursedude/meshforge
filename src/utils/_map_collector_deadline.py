@@ -153,6 +153,11 @@ class CollectDeadlineMixin:
     def _bounded_source(self, source: str, run_inline):
         """Run ``run_inline()`` (the timed+isolated source body) within what is
         left of this collect's deadline. Outside a collect: inline, unbounded."""
+        # MAP-H H12 review F2: a source SKIPPED below still ran this cycle's
+        # course (it reads collect_timeout) -- it votes on blind.
+        attempted = getattr(self, "_cycle_attempted", None)
+        if attempted is not None:
+            attempted.add(source)
         deadline_at = self._collect_deadline_at
         if deadline_at is None or _sink_for(self) is not None:
             return run_inline()

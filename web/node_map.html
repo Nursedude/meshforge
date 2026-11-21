@@ -4338,11 +4338,16 @@
             const response = await fetch(geoUrl);
             if (response.ok) {
                 loadNodes(await response.json());
+                // MAP-H H12: every source this cycle was dark — a fresh age does
+                // not make it live. Checked FIRST so the age branch cannot clear it.
+                const mapBlind = response.headers.get('X-Map-Blind');
                 // MAP-H H3 #2: the server serves its last snapshot and SAYS its
                 // age; past the server's own stale line the map is not live.
                 const snapAge = parseFloat(response.headers.get('X-Snapshot-Age'));
                 const staleAfter = parseFloat(response.headers.get('X-Snapshot-Stale-After'));
-                if (snapAge > staleAfter) {
+                if (mapBlind) {
+                    showMapBlind(`${mapBlind} — showing last-known nodes, not live ones`);
+                } else if (snapAge > staleAfter) {
                     showMapBlind(`map data is ${Math.round(snapAge / 60)} min old — the collector has not refreshed it`);
                 } else {
                     clearMapBlind();

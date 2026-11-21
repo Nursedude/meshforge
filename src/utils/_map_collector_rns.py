@@ -337,9 +337,11 @@ class RNSDataCollectorMixin:
             from utils.service_check import check_rns_shared_instance
             if not check_rns_shared_instance(instance_name=instance_name):
                 logger.debug("rnsd shared instance not available (instance_name=%s)", instance_name)
+                # H12 r2 (Fable F3): RNS installed + rnsd down is a DOWN service
+                # (unreachable); only a box without RNS is not_configured.
                 self._record_diagnostic(
                     "rns_direct", attempted=0, yielded=0,
-                    reason_if_zero="not_configured",
+                    reason_if_zero="unreachable" if _HAS_RNS else "not_configured",
                     notes=f"rnsd shared instance unavailable (@rns/{instance_name}) — start rnsd.service",
                 )
                 return []
