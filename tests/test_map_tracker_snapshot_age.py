@@ -17,7 +17,7 @@ node whose age is unknown (hfm #2 — unknown age is not staleness).
 import json
 import time
 from datetime import datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -124,3 +124,49 @@ class TestTrackerSnapshotAgeGate:
             _node("!outside1", "meshtastic", 2 * 3600 + 120),
         ])
         assert {f["properties"]["id"] for f in feats} == {"!inside01"}
+
+
+# ----------------------------------------------- r1 review (Fable, by running)
+class TestR1Nits:
+    @pytest.mark.parametrize("bad", ["24", "abc", None, float("inf"), float("nan"),
+                                     [1], 0, 0.0001 / 3600, -5, True, 10 ** 400],
+                             ids=lambda v: repr(v)[:12])  # short ids: a 400-digit id buries CI logs
+    def test_bad_window_setting_falls_back_to_default(self, setup, bad):
+        """R1 nit 1: a string ('24' * 3600 = string repetition) or NaN raised
+        and took the WHOLE unified source down; 0/-5 dropped everything. A
+        setting the author cannot have meant uses the default, loudly (hfm #3)."""
+        collector, _ = setup
+        collector._settings.set("node_cache_max_age_hours", bad)
+        collector._settings.set("rns_cache_max_age_hours", bad)
+        assert collector.get_node_cache_max_age_seconds() == \
+            collector.DEFAULT_NODE_CACHE_MAX_AGE_HOURS * 3600
+        assert collector.get_rns_cache_max_age_seconds() == \
+            collector.DEFAULT_RNS_CACHE_MAX_AGE_HOURS * 3600
+
+    def test_all_stale_reason_and_wording_are_pinned(self, setup):
+        """R1 nit 2 (mutant survived): all-stale must not read 'no_positions /
+        0 have GPS' — that is false; it says nothing is current."""
+        collector, cfg = setup
+        window = collector.get_node_cache_max_age_seconds()
+        _collect_with_tracker(collector, cfg, [_node("!stale001", "meshtastic", window + 86400)])
+        diag = collector._source_diagnostics["unified_tracker"]
+        assert diag["reason_if_zero"] == "no_data", diag
+        assert "nothing current" in diag["notes"], diag
+        assert "GPS" not in diag["notes"], diag
+
+    def test_future_stamp_is_held(self, setup):
+        """R1 nit 2 (mutant survived: abs()): a clock that is behind fails OPEN."""
+        collector, cfg = setup
+        window = collector.get_node_cache_max_age_seconds()
+        feats = _collect_with_tracker(collector, cfg, [
+            _node("!future01", "meshtastic", -(window + 86400))])
+        assert {f["properties"]["id"] for f in feats} == {"!future01"}
+
+    def test_exception_path_is_unobservable_not_zero(self, setup):
+        """R1 nit 2 (mutant survived: None -> 0)."""
+        collector, _ = setup
+        broken = MagicMock()
+        broken.get_all_nodes.side_effect = RuntimeError("boom")
+        with patch("utils.map_data_collector.get_node_tracker", return_value=broken):
+            collector._collect_unified_tracker()
+        assert collector._tracker_stale_dropped is None

@@ -96,21 +96,30 @@ class MapCollectorConfigMixin:
             return False
         return True
 
+    def _cache_age_seconds(self, key: str, default_hours) -> int:
+        """A cache-age setting in hours -> seconds, through the SAME validator
+        as the online windows (TRACKER-FORGET r1 nit 1): a string ('24' * 3600
+        is string repetition), NaN, a bool, <= 0 raised or dropped everything,
+        and since the tracker reader gates per node, a bad value took the whole
+        unified source down. Refused loudly; the default is used."""
+        hours = self._settings.get(key, default_hours) if self._settings else default_hours
+        numeric = not isinstance(hours, bool) and isinstance(hours, (int, float))
+        try:
+            minutes = hours * 60 if numeric else hours
+        except OverflowError:
+            minutes = None
+        minutes = _usable_minutes(key, minutes, default_hours * 60)
+        return int(minutes * 60)
+
     def get_node_cache_max_age_seconds(self) -> int:
         """Get max age for node_cache.json in seconds."""
-        if self._settings:
-            hours = self._settings.get("node_cache_max_age_hours", self.DEFAULT_NODE_CACHE_MAX_AGE_HOURS)
-        else:
-            hours = self.DEFAULT_NODE_CACHE_MAX_AGE_HOURS
-        return int(hours * 3600)
+        return self._cache_age_seconds("node_cache_max_age_hours",
+                                       self.DEFAULT_NODE_CACHE_MAX_AGE_HOURS)
 
     def get_rns_cache_max_age_seconds(self) -> int:
         """Get max age for RNS temp cache in seconds."""
-        if self._settings:
-            hours = self._settings.get("rns_cache_max_age_hours", self.DEFAULT_RNS_CACHE_MAX_AGE_HOURS)
-        else:
-            hours = self.DEFAULT_RNS_CACHE_MAX_AGE_HOURS
-        return int(hours * 3600)
+        return self._cache_age_seconds("rns_cache_max_age_hours",
+                                       self.DEFAULT_RNS_CACHE_MAX_AGE_HOURS)
 
     def set_node_cache_max_age_hours(self, hours: int) -> None:
         """Set max age for node_cache.json in hours."""
