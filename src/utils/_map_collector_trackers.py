@@ -72,6 +72,25 @@ class TrackerDataCollectorMixin:
             geojson = tracker.to_geojson()
             features = geojson.get("features", [])
 
+            # TRACKER-FORGET slice 1 (2026-11-21, MEASURED on the lab manager box): the
+            # map's singleton is constructed, never started — it serves the
+            # node_cache.json snapshot it loaded (there: saved 2026-08-03, 236
+            # positioned records all >180 d, tagged local_radio below). The
+            # file reader for the SAME artifact refuses a file older than
+            # get_node_cache_max_age_seconds(); this reader shares that ONE
+            # window per node (hfm #5) and counts what it drops (hfm #9).
+            # Unknown age is held, never dropped (hfm #2).
+            window_s = self.get_node_cache_max_age_seconds()
+            now = time.time()
+
+            def _too_old(epoch) -> bool:
+                return isinstance(epoch, (int, float)) and now - epoch > window_s
+
+            kept = [f for f in features
+                    if not _too_old((f.get("properties") or {}).get("last_heard"))]
+            stale_dropped = len(features) - len(kept)
+            features = kept
+
             if features:
                 # Enrich with additional properties the map expects
                 for f in features:
@@ -107,6 +126,10 @@ class TrackerDataCollectorMixin:
                     continue
                 if node.network == "meshtastic":
                     continue  # handled by HTTP collector
+                ls = getattr(node, "last_seen", None)
+                if ls is not None and hasattr(ls, "timestamp") and _too_old(ls.timestamp()):
+                    stale_dropped += 1
+                    continue
                 try:
                     last_seen = node.get_age_string() if hasattr(node, "get_age_string") else None
                 except Exception:
@@ -127,15 +150,21 @@ class TrackerDataCollectorMixin:
             #   all_nodes=[], features=[]    → tracker simply empty (boot, no peers yet)
             #   all_nodes>0, features=0      → tracked peers exist but none have GPS
             #   (exception path below)       → tracker actually unreachable
-            if not all_nodes:
+            self._tracker_stale_dropped = stale_dropped
+            stale_note = (f"; {stale_dropped} older than {window_s / 3600:g} h dropped "
+                          "(node_cache_max_age_hours)") if stale_dropped else ""
+            if all_nodes and not features and stale_dropped:
+                reason = "no_data"
+                notes = f"{len(all_nodes)} tracked, nothing current{stale_note}"
+            elif not all_nodes:
                 reason = "no_data"
                 notes = "unified tracker empty — no peers known to this box"
             elif not features:
                 reason = "no_positions"
-                notes = f"{len(all_nodes)} tracked nodes, 0 have GPS"
+                notes = f"{len(all_nodes)} tracked nodes, 0 have GPS{stale_note}"
             else:
                 reason = None  # "ok" computed by _record_diagnostic
-                notes = f"{len(all_nodes)} tracked total"
+                notes = f"{len(all_nodes)} tracked total{stale_note}"
             self._record_diagnostic(
                 "unified_tracker",
                 attempted=len(all_nodes),
@@ -147,6 +176,7 @@ class TrackerDataCollectorMixin:
 
         except Exception as e:
             logger.debug(f"UnifiedNodeTracker collection error: {e}")
+            self._tracker_stale_dropped = None   # unobservable this cycle, never 0
             self._record_diagnostic(
                 "unified_tracker",
                 attempted=0,
