@@ -168,7 +168,7 @@ product, `--days 7` logged in each handoff (a measure, not a gate; operator 11-1
   status: planned
 - **REL-1** [MF] S — a release every month: tag + a changelog a ham can read; each runs the gate-5 virtual drill (brief 42fbS7, 10-27)
   v0.8.0-beta = first GitHub Release 7 days after BR-T closed (11-14, provenance) with no fix to a pre-existing defect (rule 3; 2 `fix:` 11-17 → ~11-24, BELIEVED). Gate-5 drill to END (README only, a message crosses mesh↔RNS).
-- **MAP-H** [MF] S+F — map never draws healthy when blind; H16 done `e68094df` (11-20); next H12 H4; then the CoreScope plan. `plans/maps_audit_2026_11_06.md`
+- **MAP-H** [MF] S+F — map never draws healthy when blind; H16+H12 done 11-20 (provenance); next H4; then the CoreScope plan. `plans/maps_audit_2026_11_06.md`
   After H12 (red-first) → NEXT with H4 first (operator 11-14).
 - **EVAL-PF** [MF][MA] F — planted-fault benchmark per model, END-graded: the evidence for the harness's second purpose (README "How it's built")
   Grilled 11-13 (30 Q): `plans/eval_pf_grilling_2026_11_13.md`; cases + keys OFF-repo. Grades a fresh session, harness ON vs OFF; +1/0/−1. ACCEPT slice 1: one model, both arms, n=3, case 1 + null = 12 scored rows; every plant pre-checked + restore verified; wrapper log only allowlisted; refusal test in CI; a hand-fed wrong answer scores −1. Order Q29; Fable review by running before the first score. ⚠️ RNS AI-dataset clause.
