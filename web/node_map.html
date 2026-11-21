@@ -223,16 +223,6 @@
         .node-marker-federated {
             opacity: 0.6;
         }
-        /* MAP-H H4a: heard by THIS radio, drawn at a PEER's GPS fix of unknown
-           age — dotted ring, full colour (the hearing is ours, the spot is not). */
-        .node-marker-borrowed::after {
-            content: '';
-            position: absolute;
-            top: -3px; left: -3px; right: -3px; bottom: -3px;
-            border: 1px dotted rgba(255, 213, 79, 0.85);
-            border-radius: 50%;
-            pointer-events: none;
-        }
         .node-marker-federated::after {
             content: '';
             position: absolute;
@@ -2812,17 +2802,38 @@
         }
         // age_s is the SERVER's (the clock that judged heard/not_heard) — never
         // the browser's, a third clock the verdict never consulted (r1 F6)
-        const age = ph.age_s;
-        if (typeof age !== 'number' || !isFinite(age) || age < 0) return '';
-        const ago = age < 60 ? age + ' s' : age < 3600 ? Math.floor(age / 60) + ' min'
-            : age < 86400 ? Math.floor(age / 3600) + ' h' : Math.floor(age / 86400) + ' d';
+        const ago = agoText(ph.age_s);
+        if (ago === null) return '';
         const unv = ph.unverified ? ' (unverified: ' + ph.unverified + ')' : '';
         if (ph.state === 'heard') return ' · heard by ' + by + ' ' + ago + ' ago' + unv;
         if (ph.state === 'not_heard') return ' · ' + by + ' last heard it ' + ago + ' ago' + unv;
         return '';
     }
 
+    // MAP-H H4a: an age judged on the SERVER's clock (r1 F6), as text.
+    function agoText(age) {
+        if (typeof age !== 'number' || !isFinite(age) || age < 0) return null;
+        return age < 60 ? age + ' s' : age < 3600 ? Math.floor(age / 60) + ' min'
+            : age < 86400 ? Math.floor(age / 3600) + ' h' : Math.floor(age / 86400) + ' d';
+    }
+
     function nodeStatusText(props) {
+        // MAP-H H4a: THIS radio hears the node but has no fix; the marker is a
+        // PEER's fix (whose age is unknown — a peer's last_seen is its write time).
+        if (props.federated && typeof props.heard_here === 'boolean') {
+            const ago = agoText(props.heard_here_age_s);
+            // only Meshtastic's verdict is judged by that window (11-08 F6)
+            const w = props.network === 'meshtastic' ? meshtasticWindowText() : null;
+            const here = props.heard_here
+                ? 'Heard here' + (ago ? ' ' + ago + ' ago' : '')
+                : (w ? 'Not heard here in ' + w : 'Not heard here recently')
+                    + (ago ? ' (last ' + ago + ' ago)' : '');
+            return here + ' · position via ' + String(props.federated_from || 'a peer')
+                + (props.source_origin ? ' (' + String(props.source_origin) + ')' : '')
+                + ' · age unknown'
+                // heard here = this radio is the better witness, as below
+                + (props.heard_here ? '' : peerHeardText(props.peer_heard));
+        }
         // a peer's node was judged by the PEER (its own window); this box only
         // knows its radio did not hear it (review 11-08 F6)
         if (props.federated) return 'Not heard by this box\'s radio' + peerHeardText(props.peer_heard);
@@ -2856,7 +2867,7 @@
     // Add a field here when the icon starts depending on it.
     function markerIconKey(p) {
         return [p.is_online, p.network, p.is_gateway, p.via_mqtt, p.role,
-                p.is_local, p.federated, !!p.position_from,
+                p.is_local, p.federated,
                 (p.battery !== null && p.battery !== undefined && p.battery < 20)].join('|');
     }
 
@@ -2881,7 +2892,6 @@
         if (props.battery !== null && props.battery < 20) cls.push('node-marker-alert');
         if (!props.is_online) cls.push('node-marker-stale');
         if (props.federated) cls.push('node-marker-federated');
-        if (props.position_from) cls.push('node-marker-borrowed');
 
         return L.divIcon({
             html: html,
@@ -3087,7 +3097,7 @@
                     ${congestionHtml}
                     ${hardwareSafe ? `<div class="info-label">Hardware</div><div class="info-value" style="font-size:11px">${hardwareSafe}</div>` : ''}
                     <div class="info-label">Position</div>
-                    <div class="info-value" style="font-size:11px">${latText}, ${lonText}${props.position_from ? `<br><span style="color:#ffd54f" title="This radio heard the node but has no GPS fix for it; the position is a peer's, and its age is not known">via ${escHtml(String(props.position_from))}${props.position_origin ? ' (' + escHtml(String(props.position_origin)) + ')' : ''} · age unknown</span>` : ''}</div>
+                    <div class="info-value" style="font-size:11px">${latText}, ${lonText}</div>
                 </div>
                 <button class="btn-trail" onclick="toggleNodeTrail('${escJsString(rawId)}', event)" id="trail-btn-${idForDom}">
                     Show Trail (24h)
@@ -3306,9 +3316,10 @@
                 oldProps.snr !== props.snr ||
                 oldProps.battery !== props.battery ||
                 oldProps.last_seen !== props.last_seen ||
-                // H4a: a borrowed fix's lender / source changes the popup + ring
-                oldProps.position_from !== props.position_from ||
-                oldProps.position_origin !== props.position_origin
+                // MAP-H H4a: the popup says this radio's hearing + whose fix
+                oldProps.heard_here !== props.heard_here ||
+                oldProps.heard_here_age_s !== props.heard_here_age_s ||
+                oldProps.federated_from !== props.federated_from
             );
             if (propsChanged) {
                 // Rebuild the icon ONLY when something the icon shows changed;

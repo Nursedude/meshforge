@@ -51,6 +51,15 @@ from utils.status_blocks import (  # noqa: E402,F401
     watchdog_block_from_payload)
 
 
+def _published_position_adopted(collector: Any) -> Optional[int]:
+    """MAP-H H4a: peer fixes drawn for nodes this radio hears GPS-less, as
+    the PUBLISHED map says (review F7: a merge not yet published must not
+    move it). None = no map published yet — unobservable, never 0."""
+    geo = getattr(collector, "_cached_geojson", None) or {}
+    fed = (geo.get("properties") or {}).get("federation") or {}
+    return fed.get("position_adopted")
+
+
 def build_federation_status(collector: Any,
                             now: Optional[float] = None) -> Dict[str, Any]:
     """The ``/api/status.federation`` block. Its envelope and rows come from
@@ -65,8 +74,9 @@ def build_federation_status(collector: Any,
     non_fed = dict(getattr(collector, "_non_federating", {}) or {}) \
         if collector else {}
     if not (collector and getattr(collector, "_federation", None)):
+        # H4a F2: with federation off nothing is drawn from a peer — 0.
         return {"enabled": False, "peers": [], "peer_status": [],
-                "non_federating": non_fed}
+                "non_federating": non_fed, "position_adopted": 0}
     try:
         snap = collector._federation.get_snapshot()
         t = time.time() if now is None else now
@@ -88,9 +98,7 @@ def build_federation_status(collector: Any,
                 for s in snap.peer_status.values()]
         block = federation_envelope(collector._federation, snap, non_fed, rows)
         block["federated_node_count"] = len(snap.by_node)
-        # MAP-H H4a: this box's GPS-less records drawn at a PEER's fix in the
-        # last merge. None = no merge has run (unobservable), never 0.
-        block["position_adopted"] = getattr(collector, "_position_adopted_last", None)
+        block["position_adopted"] = _published_position_adopted(collector)
         return block
     except Exception as e:
         logger.warning(f"federation status lookup failed: {e}")

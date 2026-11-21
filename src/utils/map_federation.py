@@ -204,10 +204,9 @@ class FederationSnapshot:
 
 def better_fix(candidate: Optional[Dict[str, Any]],
                current: Optional[Dict[str, Any]]) -> bool:
-    """MAP-H H4a r3: is ``candidate`` a better GPS fix than ``current``?
-    Higher source_origin trust first, then the newer ``last_seen`` — the same
-    order as the row winner rule, applied ONLY among rows that carry a valid
-    fix (r2 F1: a GPS-less winner row used to hide another peer's fix)."""
+    """MAP-H H4a: is ``candidate`` a better GPS fix than ``current``? Higher
+    source_origin trust first, then the newer ``last_seen`` — the row winner
+    rule, applied ONLY among rows that carry a valid fix."""
     if candidate is None:
         return False
     if current is None:
@@ -219,16 +218,31 @@ def better_fix(candidate: Optional[Dict[str, Any]],
     return (candidate.get("last_seen") or 0) > (current.get("last_seen") or 0)
 
 
-def _fix_of(entry: Dict[str, Any], peer: str) -> Optional[Dict[str, Any]]:
-    """The row's GPS fix, by the merge's own coordinate rule, or None."""
+def _attach_best_fixes(merged: Dict[Tuple[str, str], Dict[str, Any]],
+                       rows: List[Tuple[str, List[Dict[str, Any]]]]) -> None:
+    """MAP-H H4a (r2 F1): ``merged`` keeps ONE row per node, so a GPS-less
+    winner row hides another peer's fix. Attach ``best_fix`` to such winners
+    only — r3 built a fix for every row (poll 0.24 -> 0.64 s, +34 MB on a
+    Pi 5, review F3); this pays one set lookup per row and builds fixes only
+    for the keys that need one."""
     from utils._map_collector_config import MapCollectorConfigMixin
-    if not MapCollectorConfigMixin._is_valid_coordinate(entry.get("lat"), entry.get("lon")):
-        return None
-    return {"lat": entry.get("lat"), "lon": entry.get("lon"),
-            "altitude": entry.get("altitude"),
-            "source_origin": entry.get("source_origin") or "",
-            "last_seen": entry.get("last_seen"),
-            "federated_from": entry.get("federated_from") or peer}
+    valid = MapCollectorConfigMixin._is_valid_coordinate
+    need = {k for k, e in merged.items() if not valid(e.get("lat"), e.get("lon"))}
+    if not need:
+        return
+    best: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for peer, entries in rows:
+        for e in entries:
+            key = (e["network"], e["id"])
+            if key not in need or not valid(e.get("lat"), e.get("lon")):
+                continue
+            if better_fix(e, best.get(key)):
+                best[key] = {**e, "federated_from": e.get("federated_from") or peer}
+    for key, e in best.items():
+        merged[key]["best_fix"] = {
+            "lat": e.get("lat"), "lon": e.get("lon"), "altitude": e.get("altitude"),
+            "source_origin": e.get("source_origin") or "",
+            "last_seen": e.get("last_seen"), "federated_from": e["federated_from"]}
 
 
 NO_WINDOW_REASON = "network has no online window on this box"
@@ -885,7 +899,7 @@ class FederationCollector:
         if not self._peers:
             return
         merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
-        best_fix: Dict[Tuple[str, str], Dict[str, Any]] = {}  # H4a r3
+        polled_rows: List[Tuple[str, List[Dict[str, Any]]]] = []  # H4a best fix
         new_status: Dict[str, FederationPeerStatus] = {}
         attempt_ts = self._time_fn()
 
@@ -1031,17 +1045,13 @@ class FederationCollector:
                 _carry_deferral(status, prior)
                 new_status[peer] = status
 
+                polled_rows.append((peer, entries))
                 for entry in entries:
                     # H14: every peer's radio claim survives the merge, whichever
                     # peer's entry wins it (the winner rule is about trust in the
                     # ROW, not about whose radio heard the node).
                     claim = entry.get("radio_heard")
                     key = (entry["network"], entry["id"])
-                    # H4a r3: the best FIX any peer offers rides beside the
-                    # winner row, whichever row wins (attached after the loop).
-                    fix = _fix_of(entry, peer)
-                    if better_fix(fix, best_fix.get(key)):
-                        best_fix[key] = fix
                     existing = merged.get(key)
                     heard_by = dict((existing or {}).get("radio_heard_by") or {})
                     if claim is not None:
@@ -1083,9 +1093,7 @@ class FederationCollector:
                                 seen.append(peer)
                                 existing["seen_by_peers"] = seen
 
-        for key, fix in best_fix.items():
-            if key in merged:
-                merged[key]["best_fix"] = fix
+        _attach_best_fixes(merged, polled_rows)
 
         # Atomic swap
         with self._lock:

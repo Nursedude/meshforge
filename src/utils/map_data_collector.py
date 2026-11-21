@@ -1061,7 +1061,7 @@ class MapDataCollector(
                 "sources": sources,
                 "source_diagnostics": dict(self._source_diagnostics),
                 "total_nodes": self._total_nodes_seen,
-                **self._position_counts(features.values()),  # H4a: ONE count (map_borrowed_position)
+                "nodes_with_position": len(features),
                 "nodes_without_position": self._nodes_without_position,
                 "nodes_without_position_count": len(self._nodes_without_position),
                 "directory": directory_stats,
@@ -1081,7 +1081,7 @@ class MapDataCollector(
                 net = entry.get("network", "unknown")
                 by_network[net] = by_network.get(net, 0) + 1
             map_metrics.set_node_inventory(
-                with_position=self._position_counts(features.values())["nodes_with_position"],
+                with_position=len(features),
                 without_position_by_network=by_network,
             )
             if directory_stats:
@@ -1144,7 +1144,7 @@ class MapDataCollector(
         # deliberate H14 design (test_peer_radio_heard); whether a replay
         # belongs in the observation stream is an open residual, not decided here.
         if not replayed_cache:
-            self._save_cache(self._own_cache_geojson(geojson))  # H4a R2 F4
+            self._save_cache(geojson)
         else:
             self._cache_replays = getattr(self, "_cache_replays", 0) + 1  # witness
 
@@ -1171,7 +1171,7 @@ class MapDataCollector(
                 if props.get("federated") or props.get("federated_from"):
                     self._federated_skipped_persistence_count += 1
                     continue
-                history_features.append(self._own_history_feature(f))  # H4a: never a peer's fix
+                history_features.append(f)
             for entry in self._nodes_without_position:
                 nid = entry.get("id")
                 if not nid:

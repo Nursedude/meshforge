@@ -206,10 +206,13 @@ def test_window_text_is_null_when_not_sent():
 def test_federated_node_never_borrows_this_boxs_window():
     # review 11-08 F6: a peer judged it by ITS window; this box only knows its own radio
     body = _js_body("nodeStatusText")
-    fed = body[body.index("if (props.federated)"):]
+    fed = body[body.index("if (props.federated) return"):]
     fed = fed[:fed.index(";") + 1]
     assert "meshtasticWindowText" not in fed and "this box" in fed
-    assert body.index("if (props.federated)") < body.index("meshtasticWindowText()")
+    # MAP-H H4a: the heard-here branch is THIS radio's verdict, so it may name
+    # this box's window — but only where that window judged it (Meshtastic)
+    assert body.count("meshtasticWindowText()") == 2
+    assert body.count("props.network === 'meshtastic' ? meshtasticWindowText() : null") == 2
 
 
 # --- review round 2 (Fable by running, 11-08): pin what 5 mutants survived ---

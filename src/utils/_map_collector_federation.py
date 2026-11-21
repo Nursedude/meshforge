@@ -11,15 +11,12 @@ Expects the following on the host class (MapDataCollector):
 import json
 import logging
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from utils.map_federation import (
     federation_envelope, peer_status_radio_trust, serialize_peer_status,
     witness_networks)
 from utils.peer_radio_heard import peer_heard_verdict
-from utils.map_borrowed_position import (
-    POSITION_FROM, POSITION_ORIGIN, own_cache_geojson, own_history_feature,
-    position_counts)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +32,20 @@ def _hub():
     """
     from utils import map_data_collector
     return map_data_collector
+
+
+def _heard_here(local_entry: Dict[str, Any], now: float) -> Dict[str, Any]:
+    """MAP-H H4a: THIS radio's hearing of a node, for a federated feature
+    drawn at a peer's fix. ``heard_here`` is our radio's own online verdict;
+    the age is judged on this box's clock (the page never uses its own)."""
+    at = local_entry.get("last_heard")
+    try:
+        age = int(now - float(at)) if at else None
+    except (TypeError, ValueError):
+        age = None
+    return {"heard_here": local_entry.get("is_online") is True,
+            "heard_here_at": at,
+            "heard_here_age_s": age if age is not None and age >= 0 else None}
 
 
 class FederationDataCollectorMixin:
@@ -269,17 +280,15 @@ class FederationDataCollectorMixin:
             "non_federating": dict(getattr(self, "_non_federating", {}) or {}),
         }
         if not self._federation:
-            self._position_adopted_last = 0  # no peers: nothing CAN be borrowed
-            return empty_block
+            # H4a F2: no federation = nothing can be drawn from a peer: 0.
+            return {**empty_block, "position_adopted": 0}
 
-        # r3: unknown until THIS merge finishes — a snapshot failure or an
-        # exception mid-merge never leaves last cycle's count standing (hfm #2).
-        self._position_adopted_last = None
         try:
             snap = self._federation.get_snapshot()
         except Exception as e:
             logger.debug(f"federation snapshot failed: {e}")
-            return empty_block
+            # unobservable, never 0 (honest_failure_modes #2)
+            return {**empty_block, "position_adopted": None}
 
         # Index local entries by (network, id) with source_origin priority,
         # so a federated peer carrying a HIGHER-trust origin can override a
@@ -338,7 +347,8 @@ class FederationDataCollectorMixin:
         by_network: Dict[str, int] = {}
         with_pos = 0
         without_pos = 0
-        position_adopted = 0  # H4a (b): local records drawn at a peer's fix
+        # H4a witness: peer fixes drawn for nodes THIS radio hears GPS-less.
+        position_adopted = 0
 
         # Track position_less indices to delete after the loop (deleting in-flight
         # would shift indices and break the second `enumerate` pass above).
@@ -354,45 +364,26 @@ class FederationDataCollectorMixin:
                     # but keep what the PEERS' radios heard (H14): the local
                     # stub's is_online stays THIS radio's judgement.
                     verdict = _peer_heard(entry)
-                    # r3: the best fix ANY peer offers (map_federation carries it
-                    # beside the winner row); a hand-built snapshot without one
-                    # falls back to the row's own coordinates.
-                    fix = entry.get("best_fix") or (
-                        {**entry, "federated_from": entry.get("federated_from")}
-                        if self._is_valid_coordinate(entry.get("lat"), entry.get("lon"))
-                        else None)
-                    if (local_pl_idx is not None and fix is not None
-                            and self._is_valid_coordinate(fix.get("lat"), fix.get("lon"))):
-                        # MAP-H H4a (b): a peer has the GPS fix this radio lacks
-                        # — at ANY trust <= ours (R2 F1, operator 11-20: "adopt
-                        # lower-trust positions"; untagged, pre-H4a, any tagged
-                        # fix drew the node). Draw THIS radio's record at the
-                        # peer's position: hearing stays ours, the page says
-                        # whose fix it is and that its age is unknown (R2 F2/F3:
-                        # a peer's last_seen is a WRITE time, H14). Never a
-                        # federated stub in its place.
-                        props = dict(position_less[local_pl_idx])
-                        props[POSITION_FROM] = fix.get("federated_from") or ""
-                        props[POSITION_ORIGIN] = fix.get("source_origin") or ""
-                        if "is_online" not in props:  # R2 F7: HTTP-path entry
-                            props["is_online"] = self._is_node_online(
-                                props.get("last_heard"), source=net)
-                        if not props.get("hardware") and props.get("hw_model"):
-                            props["hardware"] = props["hw_model"]
-                        if verdict is not None:
-                            props["peer_heard"] = verdict
-                        alt = fix.get("altitude")
-                        # R2 F6: features is keyed by bare id; namespace it so
-                        # another network's same-id feature is never replaced.
-                        features[f"adopted:{net}:{nid}"] = {
-                            "type": "Feature",
-                            "geometry": {"type": "Point", "coordinates": [
-                                fix.get("lon"), fix.get("lat"),
-                                alt if alt is not None else 0]},
-                            "properties": props,
-                        }
-                        position_less_drop.add(local_pl_idx)
+                    fix = (self._peer_fix_for(entry)
+                           if local_pl_idx is not None else None)
+                    if fix is not None:
+                        # MAP-H H4a (operator 11-20 "switch to the federated
+                        # representation"): THIS radio hears the node without
+                        # a fix; a peer has one. Our record stays as it is
+                        # (position-less, ours — history keeps the hearing).
+                        # The peer's fix is drawn as an ordinary FEDERATED
+                        # feature (not ours to every consumer), carrying our
+                        # hearing in its own fields so the page says it.
+                        feature = self._federated_feature(
+                            {**entry, **fix}, net, nid, verdict)
+                        feature["properties"].update(
+                            _heard_here(position_less[local_pl_idx], now))
+                        features[f"federated:{net}:{nid}"] = feature
+                        by_network[net] = by_network.get(net, 0) + 1
+                        with_pos += 1
                         position_adopted += 1
+                        if verdict is not None:
+                            position_less[local_pl_idx]["peer_heard"] = verdict
                         continue
                     if verdict is not None:
                         if local_fkey is not None:
@@ -414,40 +405,8 @@ class FederationDataCollectorMixin:
             seen_by = entry.get("seen_by_peers") or [entry.get("federated_from")]
             verdict = _peer_heard(entry)
             if self._is_valid_coordinate(lat, lon):
-                # Federated-only feature: render as map marker. Use a
-                # namespaced dict key to avoid clashing with local id-keys.
-                feature = {
-                    "type": "Feature",
-                    "geometry": {
-                        "type": "Point",
-                        "coordinates": [
-                            lon, lat,
-                            entry.get("altitude") if entry.get("altitude") is not None else 0,
-                        ],
-                    },
-                    "properties": {
-                        "id": entry["id"],
-                        "name": entry.get("name") or entry["id"],
-                        "network": entry["network"],
-                        "role": entry.get("role", ""),
-                        "hardware": entry.get("hardware", ""),
-                        "last_seen": entry.get("last_seen"),
-                        "source": "federation",
-                        "source_origin": entry.get("source_origin") or "",
-                        "federated": True,
-                        "federated_from": entry.get("federated_from"),
-                        "seen_by_peers": seen_by,
-                        # Don't claim freshness — federation only knows
-                        # what the peer claimed; let UI mark "stale" by
-                        # rendering with reduced opacity.
-                        "is_online": False,
-                        "is_local": False,
-                        "is_gateway": False,
-                    },
-                }
-                if verdict is not None:
-                    feature["properties"]["peer_heard"] = verdict
-                features[f"federated:{net}:{nid}"] = feature
+                features[f"federated:{net}:{nid}"] = self._federated_feature(
+                    entry, net, nid, verdict)
                 with_pos += 1
             else:
                 position_less.append({
@@ -486,15 +445,47 @@ class FederationDataCollectorMixin:
             "total": with_pos + without_pos,
             "with_position": with_pos,
             "without_position": without_pos,
-            # H4a witness: how many of THIS box's GPS-less records were drawn
-            # at a peer's position (a count a probe / the page can read).
             "position_adopted": position_adopted,
         })
-        self._position_adopted_last = position_adopted  # /api/status witness
         return block
 
-    # ── MAP-H H4a: a borrowed fix is DRAWN, never stored as this box's own ──
-    # The rule lives in utils.map_borrowed_position (one owner, r3 seam).
-    _own_history_feature = staticmethod(own_history_feature)
-    _own_cache_geojson = staticmethod(own_cache_geojson)
-    _position_counts = staticmethod(position_counts)
+    def _peer_fix_for(self, entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """The peer fix to draw for a node this radio hears GPS-less: the
+        winner row's own, else the best fix another peer offered
+        (``map_federation._attach_best_fixes``), else None."""
+        if self._is_valid_coordinate(entry.get("lat"), entry.get("lon")):
+            return {}
+        # map_federation attaches only VALID fixes (its own coordinate check)
+        return entry.get("best_fix") or None
+
+    @staticmethod
+    def _federated_feature(entry: Dict[str, Any], net: str, nid: str,
+                           verdict: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """A peer's node as a map marker — ONE builder for every federated
+        feature. Keyed ``federated:{net}:{id}`` by the caller (never clashes
+        with a local id-key)."""
+        props = {
+            "id": entry["id"],
+            "name": entry.get("name") or entry["id"],
+            "network": entry["network"],
+            "role": entry.get("role", ""),
+            "hardware": entry.get("hardware", ""),
+            "last_seen": entry.get("last_seen"),
+            "source": "federation",
+            "source_origin": entry.get("source_origin") or "",
+            "federated": True,
+            "federated_from": entry.get("federated_from"),
+            "seen_by_peers": entry.get("seen_by_peers") or [entry.get("federated_from")],
+            # Don't claim freshness — federation only knows what the peer
+            # claimed; the UI renders it with reduced opacity.
+            "is_online": False,
+            "is_local": False,
+            "is_gateway": False,
+        }
+        if verdict is not None:
+            props["peer_heard"] = verdict
+        alt = entry.get("altitude")
+        return {"type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [
+                    entry.get("lon"), entry.get("lat"), alt if alt is not None else 0]},
+                "properties": props}

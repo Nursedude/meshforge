@@ -419,16 +419,20 @@ def _js_body(name):
 class TestPageSaysPeerHeard:
     def test_status_reader_appends_peer_heard_for_federated_and_not_online(self):
         body = _js_body("nodeStatusText")
-        assert body.count("peerHeardText(props.peer_heard)") == 2
+        # federated, heard-here-but-not-recently (MAP-H H4a), not online
+        assert body.count("peerHeardText(props.peer_heard)") == 3
         # an online node never gets a peer clause: this radio is the better witness
         assert "props.is_online ? '' : peerHeardText" in body
+        assert "props.heard_here ? '' : peerHeardText" in body
 
     def test_peer_text_names_every_state_and_reads_ts_not_last_seen(self):
         body = _js_body("peerHeardText")
         for state in ("'unobservable'", "'heard'", "'not_heard'"):
             assert state in body
         assert "ph.age_s" in body and "last_seen" not in body
-        assert "isFinite(age)" in body
+        # the server-clock age guard lives in the ONE formatter (MAP-H H4a)
+        assert "agoText(ph.age_s)" in body
+        assert "isFinite(age)" in _js_body("agoText")
 
     def test_popup_escapes_the_status_line(self):
         assert "${escHtml(nodeStatusText(props))}" in _HTML
