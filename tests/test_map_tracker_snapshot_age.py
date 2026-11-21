@@ -170,3 +170,19 @@ class TestR1Nits:
         with patch("utils.map_data_collector.get_node_tracker", return_value=broken):
             collector._collect_unified_tracker()
         assert collector._tracker_stale_dropped is None
+
+
+def test_position_less_current_entries_are_not_called_nothing_current(setup):
+    """MEASURED on a gateway box after deploy (07:3x): 0 positioned records,
+    543 current position-less RNS entries LISTED — and the note said
+    'nothing current'. The all-stale wording is for when NOTHING was kept."""
+    collector, cfg = setup
+    window = collector.get_node_cache_max_age_seconds()
+    _collect_with_tracker(collector, cfg, [
+        _node("rns_fresh", "rns", 60, pos=False),
+        _node("rns_stale", "rns", window + 86400, pos=False),
+    ])
+    diag = collector._source_diagnostics["unified_tracker"]
+    assert "nothing current" not in diag["notes"], diag
+    assert "1 older than" in diag["notes"], diag
+    assert [e["id"] for e in collector._nodes_without_position] == ["rns_fresh"]

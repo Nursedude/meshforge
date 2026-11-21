@@ -121,6 +121,7 @@ class TrackerDataCollectorMixin:
             # no-GPS nodes are handled by _collect_via_http (richer data available there);
             # for MeshCore/RNS/etc. the tracker is the only source.
             with_pos_ids = {n.id for n in tracker.get_nodes_with_position()}
+            listed = 0   # position-less entries THIS reader kept (the all-stale note's other half)
             for node in all_nodes:
                 if node.id in with_pos_ids:
                     continue
@@ -134,6 +135,7 @@ class TrackerDataCollectorMixin:
                     last_seen = node.get_age_string() if hasattr(node, "get_age_string") else None
                 except Exception:
                     last_seen = None
+                listed += 1
                 self._nodes_without_position.append({
                     "id": node.id,
                     "name": getattr(node, "name", node.id),
@@ -153,7 +155,10 @@ class TrackerDataCollectorMixin:
             self._tracker_stale_dropped = stale_dropped
             stale_note = (f"; {stale_dropped} older than {window_s / 3600:g} h dropped "
                           "(node_cache_max_age_hours)") if stale_dropped else ""
-            if all_nodes and not features and stale_dropped:
+            # "nothing current" only when NOTHING was kept — a gateway box
+            # serves 0 positioned but hundreds of current position-less RNS
+            # entries (MEASURED post-deploy 07:3x; the note said otherwise).
+            if all_nodes and not features and not listed and stale_dropped:
                 reason = "no_data"
                 notes = f"{len(all_nodes)} tracked, nothing current{stale_note}"
             elif not all_nodes:
