@@ -1,6 +1,12 @@
 {
  "_comment": "Domain artifact registry — the TOPIC gate's source (scripts/loop_gate.py, operator 2026-11-15). ONE authoritative page per topic; variant = another format of it (links it); superseded = names a successor (artifact id or ROADMAP:<ROW>). ungrounded_verified_baseline = VERIFIED tags with no data-ground, frozen, only shrinks; null = not yet measured (full-page publish refused until measured from the LIVE page). Personal (non-domain) pages are not listed. Registered 2026-11-15 from the artifact list; roles are titles-level, not content-checked — supersession is the operator's call.",
  "artifacts": {
+  "FojjbFHFQvDQQ2BiBr5LFu": {
+   "title": "RNS Discovery Research Brief",
+   "topic": "rns-discovery-brief",
+   "role": "authoritative",
+   "ungrounded_verified_baseline": null
+  },
   "7NMLULS6Bf1ZURjRdcEYC9": {
    "title": "Why Choose Us Over N",
    "topic": "competitive-position",
