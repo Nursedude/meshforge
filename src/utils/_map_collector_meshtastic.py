@@ -231,6 +231,7 @@ class MeshtasticDataCollectorMixin:
                         # H14 r2 F4: without it collect() defaults False and
                         # an MQTT-only node reads as heard by this radio.
                         "via_mqtt": node.via_mqtt,
+                        "source_origin": "local_radio",  # MAP-H H4a
                     })
 
             # Append (not overwrite) so entries added by other sources
@@ -627,6 +628,11 @@ class MeshtasticDataCollectorMixin:
             # H14 (review r1 F1): the radio's heard epoch, so a GPS-less node's
             # directory row carries radio_heard too (most nodes have no GPS).
             "last_heard": last_heard,
+            # MAP-H H4a: say where it came from, as collect() does for the
+            # positioned records. Untagged = priority 0, so ANY peer's
+            # local_radio stub replaced THIS radio's record (and its lastHeard)
+            # in _merge_federation — 149 of 174 on the lab map, 2026-11-20.
+            "source_origin": "local_radio",
         }
 
     def _collect_via_cli(self) -> List[Dict]:

@@ -117,6 +117,10 @@ class TrackerDataCollectorMixin:
                     "network": node.network,
                     "is_online": getattr(node, "is_online", False),
                     "last_seen": last_seen,
+                    # MAP-H H4a: same origin rule as the positioned tracker
+                    # features above — untagged lost every federation merge.
+                    "source_origin": ("rns_path_table" if node.network == "rns"
+                                      else "local_radio"),
                 })
 
             # Distinguish three zero-yield cases for operator legibility:

@@ -331,6 +331,7 @@ class FederationDataCollectorMixin:
         by_network: Dict[str, int] = {}
         with_pos = 0
         without_pos = 0
+        position_adopted = 0  # H4a (b): local records drawn at a peer's fix
 
         # Track position_less indices to delete after the loop (deleting in-flight
         # would shift indices and break the second `enumerate` pass above).
@@ -346,6 +347,28 @@ class FederationDataCollectorMixin:
                     # but keep what the PEERS' radios heard (H14): the local
                     # stub's is_online stays THIS radio's judgement.
                     verdict = _peer_heard(entry)
+                    if (local_pl_idx is not None and fed_priority == local_priority
+                            and self._is_valid_coordinate(entry.get("lat"), entry.get("lon"))):
+                        # MAP-H H4a (b): a peer at equal trust has the GPS fix
+                        # this radio lacks. Draw THIS radio's record at the
+                        # peer's position — hearing stays ours, the position
+                        # says whose it is. Never a federated stub in its place.
+                        local_entry = position_less[local_pl_idx]
+                        props = dict(local_entry)
+                        props["position_from"] = entry.get("federated_from")
+                        if verdict is not None:
+                            props["peer_heard"] = verdict
+                        alt = entry.get("altitude")
+                        features[nid] = {
+                            "type": "Feature",
+                            "geometry": {"type": "Point", "coordinates": [
+                                entry.get("lon"), entry.get("lat"),
+                                alt if alt is not None else 0]},
+                            "properties": props,
+                        }
+                        position_less_drop.add(local_pl_idx)
+                        position_adopted += 1
+                        continue
                     if verdict is not None:
                         if local_fkey is not None:
                             features[local_fkey].setdefault("properties", {})[
@@ -438,5 +461,8 @@ class FederationDataCollectorMixin:
             "total": with_pos + without_pos,
             "with_position": with_pos,
             "without_position": without_pos,
+            # H4a witness: how many of THIS box's GPS-less records were drawn
+            # at a peer's position (a count a probe / the page can read).
+            "position_adopted": position_adopted,
         })
         return block

@@ -1171,7 +1171,8 @@ class MapDataCollector(
                 if props.get("federated") or props.get("federated_from"):
                     self._federated_skipped_persistence_count += 1
                     continue
-                history_features.append(f)
+                # H4a: a peer's borrowed fix (position_from) is never persisted as ours
+                history_features.append({**f, "geometry": {}} if props.get("position_from") else f)
             for entry in self._nodes_without_position:
                 nid = entry.get("id")
                 if not nid:
