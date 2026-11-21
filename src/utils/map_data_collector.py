@@ -1061,8 +1061,7 @@ class MapDataCollector(
                 "sources": sources,
                 "source_diagnostics": dict(self._source_diagnostics),
                 "total_nodes": self._total_nodes_seen,
-                "nodes_with_position": len(features) - self._borrowed_position_count(),
-                "nodes_with_borrowed_position": self._borrowed_position_count(),  # H4a R2 F5
+                **self._position_counts(features.values()),  # H4a: ONE count (map_borrowed_position)
                 "nodes_without_position": self._nodes_without_position,
                 "nodes_without_position_count": len(self._nodes_without_position),
                 "directory": directory_stats,
@@ -1082,7 +1081,7 @@ class MapDataCollector(
                 net = entry.get("network", "unknown")
                 by_network[net] = by_network.get(net, 0) + 1
             map_metrics.set_node_inventory(
-                with_position=len(features) - self._borrowed_position_count(),
+                with_position=self._position_counts(features.values())["nodes_with_position"],
                 without_position_by_network=by_network,
             )
             if directory_stats:

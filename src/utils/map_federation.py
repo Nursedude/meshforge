@@ -202,6 +202,35 @@ class FederationSnapshot:
     last_attempt: Optional[float] = None   # most recent attempt across all peers
 
 
+def better_fix(candidate: Optional[Dict[str, Any]],
+               current: Optional[Dict[str, Any]]) -> bool:
+    """MAP-H H4a r3: is ``candidate`` a better GPS fix than ``current``?
+    Higher source_origin trust first, then the newer ``last_seen`` — the same
+    order as the row winner rule, applied ONLY among rows that carry a valid
+    fix (r2 F1: a GPS-less winner row used to hide another peer's fix)."""
+    if candidate is None:
+        return False
+    if current is None:
+        return True
+    c, x = (_origin_priority(candidate.get("source_origin")),
+            _origin_priority(current.get("source_origin")))
+    if c != x:
+        return c > x
+    return (candidate.get("last_seen") or 0) > (current.get("last_seen") or 0)
+
+
+def _fix_of(entry: Dict[str, Any], peer: str) -> Optional[Dict[str, Any]]:
+    """The row's GPS fix, by the merge's own coordinate rule, or None."""
+    from utils._map_collector_config import MapCollectorConfigMixin
+    if not MapCollectorConfigMixin._is_valid_coordinate(entry.get("lat"), entry.get("lon")):
+        return None
+    return {"lat": entry.get("lat"), "lon": entry.get("lon"),
+            "altitude": entry.get("altitude"),
+            "source_origin": entry.get("source_origin") or "",
+            "last_seen": entry.get("last_seen"),
+            "federated_from": entry.get("federated_from") or peer}
+
+
 NO_WINDOW_REASON = "network has no online window on this box"
 
 
@@ -856,6 +885,7 @@ class FederationCollector:
         if not self._peers:
             return
         merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        best_fix: Dict[Tuple[str, str], Dict[str, Any]] = {}  # H4a r3
         new_status: Dict[str, FederationPeerStatus] = {}
         attempt_ts = self._time_fn()
 
@@ -1007,6 +1037,11 @@ class FederationCollector:
                     # ROW, not about whose radio heard the node).
                     claim = entry.get("radio_heard")
                     key = (entry["network"], entry["id"])
+                    # H4a r3: the best FIX any peer offers rides beside the
+                    # winner row, whichever row wins (attached after the loop).
+                    fix = _fix_of(entry, peer)
+                    if better_fix(fix, best_fix.get(key)):
+                        best_fix[key] = fix
                     existing = merged.get(key)
                     heard_by = dict((existing or {}).get("radio_heard_by") or {})
                     if claim is not None:
@@ -1047,6 +1082,10 @@ class FederationCollector:
                             if peer not in seen:
                                 seen.append(peer)
                                 existing["seen_by_peers"] = seen
+
+        for key, fix in best_fix.items():
+            if key in merged:
+                merged[key]["best_fix"] = fix
 
         # Atomic swap
         with self._lock:

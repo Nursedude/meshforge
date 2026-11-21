@@ -39,6 +39,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 logger = logging.getLogger(__name__)
 
 from utils.safe_import import safe_import
+from utils.map_borrowed_position import position_counts
 
 _SRTMProvider, _LOSAnalyzer, _HAS_TERRAIN = safe_import(
     'utils.terrain', 'SRTMProvider', 'LOSAnalyzer'
@@ -307,7 +308,7 @@ def build_geojson_response(
             props = dict(geojson.get("properties", {}))
             props["preset_filtered"] = True
             props["preset"] = preset_key
-            props["nodes_with_position"] = len(filtered_features)
+            props.update(position_counts(filtered_features))  # H4a
             geojson["properties"] = props
 
     bboxes: list = []
@@ -360,7 +361,7 @@ def build_geojson_response(
         geojson = dict(geojson)
         geojson["features"] = filtered
         props = dict(geojson.get("properties", {}))
-        props["nodes_with_position"] = len(filtered)
+        props.update(position_counts(filtered))  # H4a
         props["bbox_filtered"] = True
         geojson["properties"] = props
 
@@ -376,7 +377,7 @@ def build_geojson_response(
         geojson["features"] = collapsed_features
         props = dict(geojson.get("properties", {}))
         props["collapsed_pairs"] = collapsed_pairs
-        props["nodes_with_position"] = len(collapsed_features)
+        props.update(position_counts(collapsed_features))  # H4a
         geojson["properties"] = props
     except Exception as e:
         logger.debug(f"cross-protocol collapse skipped: {e}")

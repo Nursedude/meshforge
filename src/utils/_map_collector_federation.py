@@ -17,6 +17,9 @@ from utils.map_federation import (
     federation_envelope, peer_status_radio_trust, serialize_peer_status,
     witness_networks)
 from utils.peer_radio_heard import peer_heard_verdict
+from utils.map_borrowed_position import (
+    POSITION_FROM, POSITION_ORIGIN, own_cache_geojson, own_history_feature,
+    position_counts)
 
 logger = logging.getLogger(__name__)
 
@@ -269,11 +272,13 @@ class FederationDataCollectorMixin:
             self._position_adopted_last = 0  # no peers: nothing CAN be borrowed
             return empty_block
 
+        # r3: unknown until THIS merge finishes — a snapshot failure or an
+        # exception mid-merge never leaves last cycle's count standing (hfm #2).
+        self._position_adopted_last = None
         try:
             snap = self._federation.get_snapshot()
         except Exception as e:
             logger.debug(f"federation snapshot failed: {e}")
-            self._position_adopted_last = None  # unobservable, never 0 (hfm #2)
             return empty_block
 
         # Index local entries by (network, id) with source_origin priority,
@@ -349,8 +354,15 @@ class FederationDataCollectorMixin:
                     # but keep what the PEERS' radios heard (H14): the local
                     # stub's is_online stays THIS radio's judgement.
                     verdict = _peer_heard(entry)
-                    if (local_pl_idx is not None
-                            and self._is_valid_coordinate(entry.get("lat"), entry.get("lon"))):
+                    # r3: the best fix ANY peer offers (map_federation carries it
+                    # beside the winner row); a hand-built snapshot without one
+                    # falls back to the row's own coordinates.
+                    fix = entry.get("best_fix") or (
+                        {**entry, "federated_from": entry.get("federated_from")}
+                        if self._is_valid_coordinate(entry.get("lat"), entry.get("lon"))
+                        else None)
+                    if (local_pl_idx is not None and fix is not None
+                            and self._is_valid_coordinate(fix.get("lat"), fix.get("lon"))):
                         # MAP-H H4a (b): a peer has the GPS fix this radio lacks
                         # — at ANY trust <= ours (R2 F1, operator 11-20: "adopt
                         # lower-trust positions"; untagged, pre-H4a, any tagged
@@ -360,8 +372,8 @@ class FederationDataCollectorMixin:
                         # a peer's last_seen is a WRITE time, H14). Never a
                         # federated stub in its place.
                         props = dict(position_less[local_pl_idx])
-                        props["position_from"] = entry.get("federated_from")
-                        props["position_origin"] = entry.get("source_origin") or ""
+                        props[POSITION_FROM] = fix.get("federated_from") or ""
+                        props[POSITION_ORIGIN] = fix.get("source_origin") or ""
                         if "is_online" not in props:  # R2 F7: HTTP-path entry
                             props["is_online"] = self._is_node_online(
                                 props.get("last_heard"), source=net)
@@ -369,13 +381,13 @@ class FederationDataCollectorMixin:
                             props["hardware"] = props["hw_model"]
                         if verdict is not None:
                             props["peer_heard"] = verdict
-                        alt = entry.get("altitude")
+                        alt = fix.get("altitude")
                         # R2 F6: features is keyed by bare id; namespace it so
                         # another network's same-id feature is never replaced.
                         features[f"adopted:{net}:{nid}"] = {
                             "type": "Feature",
                             "geometry": {"type": "Point", "coordinates": [
-                                entry.get("lon"), entry.get("lat"),
+                                fix.get("lon"), fix.get("lat"),
                                 alt if alt is not None else 0]},
                             "properties": props,
                         }
@@ -482,28 +494,7 @@ class FederationDataCollectorMixin:
         return block
 
     # ── MAP-H H4a: a borrowed fix is DRAWN, never stored as this box's own ──
-    # ONE rule for every writer of this box's own state (R2 F4, hfm #5): the
-    # history DB keeps our hearing without the peer's position; the Source-7
-    # disk cache (it replays POSITIONED nodes as ours) does not get it at all.
-
-    @staticmethod
-    def _is_borrowed_position(feature: Dict) -> bool:
-        return bool((feature.get("properties") or {}).get("position_from"))
-
-    @classmethod
-    def _own_history_feature(cls, feature: Dict) -> Dict:
-        return {**feature, "geometry": {}} if cls._is_borrowed_position(feature) else feature
-
-    @classmethod
-    def _own_cache_geojson(cls, geojson: Dict) -> Dict:
-        feats = geojson.get("features") or []
-        if not any(cls._is_borrowed_position(f) for f in feats):
-            return geojson
-        return {**geojson, "features": [
-            f for f in feats if not cls._is_borrowed_position(f)]}
-
-    def _borrowed_position_count(self) -> int:
-        """Adopted markers in the LAST merge, for inventory arithmetic
-        (unobservable reads 0 here — nothing was drawn from a merge that
-        did not run; /api/status says None for that case)."""
-        return getattr(self, "_position_adopted_last", None) or 0
+    # The rule lives in utils.map_borrowed_position (one owner, r3 seam).
+    _own_history_feature = staticmethod(own_history_feature)
+    _own_cache_geojson = staticmethod(own_cache_geojson)
+    _position_counts = staticmethod(position_counts)

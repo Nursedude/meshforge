@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests._federation_net_guard import _no_real_peer_http  # noqa: F401 — autouse: no real peer HTTP
 from utils.map_data_collector import MapDataCollector
 from utils.map_federation import (
     FederationCollector,
@@ -402,3 +403,223 @@ class TestR2InventoryAndKeys:
         props = _adopted(features)[0]["properties"]
         assert props["is_online"] is True
         assert props["hardware"] == "HELTEC_V3"
+
+
+# ── Round 3 (Fable r2, by running) ──────────────────────────────────────────
+# Seam: borrowed-ness and its counts were decided in four places (merge,
+# collector, 3 endpoint overwrites, page refresh gate) — same defect KIND in
+# r1 F5 and r2 F2. One module now owns it: utils.map_borrowed_position.
+
+from types import SimpleNamespace
+
+
+def _peer_rows(peer, origin, lat, lon, last_seen):
+    from utils.map_federation import FederationPeerStatus as PS
+    return ([{"network": "meshtastic", "id": NODE_ID, "name": f"from-{peer}",
+              "lat": lat, "lon": lon, "last_seen": last_seen,
+              "source_origin": origin, "federated_from": peer}],
+            PS(hostname=peer, ok=True, last_sync=time.time(), last_count=1,
+               last_attempt=time.time()))
+
+
+def _real_federation(collector, responses):
+    """The REAL FederationCollector winner rule, only the fetch patched."""
+    fc = FederationCollector(list(responses), poll_interval=10, timeout=1.0)
+    with patch("utils.map_federation.fetch_peer_directory",
+               side_effect=lambda peer, *a, **kw: responses[peer]):
+        fc.poll_once()
+    collector._federation = fc
+    return fc
+
+
+def _local_position_less(collector):
+    _, no_position, _ = collector._drain_interface_nodes(
+        _fake_interface(time.time() - 60), "meshtasticd")
+    return list(no_position)
+
+
+class TestR3BestFixSurvivesThePeerWinnerRule:
+    """r2 F1: by_node keeps ONE row per node, chosen by trust then newest
+    WRITE time — a GPS-less peer row hid another peer's fix. The snapshot now
+    carries the best fix any peer offers, beside the winner."""
+
+    @pytest.mark.parametrize("fix_origin,fix_ts,stub_ts", [
+        ("local_radio", 100, 200),      # equal trust, the stub written later
+        ("mqtt_global", 200, 100),      # lower trust than the stub
+        ("meshcore_public", 200, 100),
+    ])
+    def test_another_peers_fix_is_adopted(self, collector, fix_origin, fix_ts, stub_ts):
+        now = time.time()
+        _real_federation(collector, {
+            "peerSTUB": _peer_rows("peerSTUB", "local_radio", None, None, now - 1000 + stub_ts),
+            "peerFIX": _peer_rows("peerFIX", fix_origin, 19.5, -155.5, now - 1000 + fix_ts),
+        })
+        features, position_less = {}, _local_position_less(collector)
+        block = collector._merge_federation(features, position_less)
+        adopted = _adopted(features)
+        assert len(adopted) == 1, (block, position_less)
+        props = adopted[0]["properties"]
+        assert props["position_from"] == "peerFIX"
+        assert props["position_origin"] == fix_origin
+        assert adopted[0]["geometry"]["coordinates"][:2] == [-155.5, 19.5]
+
+    def test_best_fix_prefers_trust_then_newest(self):
+        from utils.map_federation import better_fix
+        hi_old = {"lat": 1.0, "lon": 1.0, "source_origin": "local_radio", "last_seen": 1}
+        lo_new = {"lat": 2.0, "lon": 2.0, "source_origin": "mqtt_global", "last_seen": 9}
+        eq_new = {"lat": 3.0, "lon": 3.0, "source_origin": "local_radio", "last_seen": 5}
+        assert better_fix(hi_old, lo_new) is True
+        assert better_fix(lo_new, hi_old) is False
+        assert better_fix(eq_new, hi_old) is True
+        assert better_fix(hi_old, None) is True
+
+    def test_invalid_fix_is_never_best(self, collector):
+        """Same coordinate rule as the merge (0,0 = unset GPS)."""
+        now = time.time()
+        _real_federation(collector, {
+            "peerZERO": _peer_rows("peerZERO", "local_radio", 0.0, 0.0, now),
+            "peerFIX": _peer_rows("peerFIX", "mqtt_global", 19.5, -155.5, now - 50),
+        })
+        features, position_less = {}, _local_position_less(collector)
+        collector._merge_federation(features, position_less)
+        assert _adopted(features)[0]["properties"]["position_from"] == "peerFIX"
+
+
+def _geo_with(features):
+    return {"type": "FeatureCollection", "features": features,
+            "properties": {"nodes_with_position": 999}}
+
+
+def _own(i):
+    return {"type": "Feature", "geometry": {"type": "Point", "coordinates": [-155.0, 19.0]},
+            "properties": {"id": f"!own{i}", "network": "meshtastic",
+                           "source_origin": "local_radio"}}
+
+
+def _borrowed():
+    return {"type": "Feature", "geometry": {"type": "Point", "coordinates": [-155.2, 19.2]},
+            "properties": {"id": NODE_ID, "network": "meshtastic",
+                           "source_origin": "local_radio", "position_from": "peerFIX"}}
+
+
+class TestR3OneCountEverywhere:
+    """r2 F2: the served geojson overwrote nodes_with_position with len(...)
+    three times. Every count of positioned nodes goes through ONE function."""
+
+    @pytest.mark.parametrize("preset,bbox", [(None, None), ("local_only", None),
+                                             (None, "18,-161,23,-154")])
+    def test_served_geojson_excludes_borrowed(self, preset, bbox):
+        import json
+        from utils._map_node_endpoints import build_geojson_response
+        snap = SimpleNamespace(geojson=_geo_with([_own(1), _borrowed()]))
+        raw, _ = build_geojson_response(MagicMock(), None, preset, bbox, 10 ** 9,
+                                        snapshot=snap)
+        props = json.loads(raw)["properties"]
+        assert props["nodes_with_position"] == 1, props
+        assert props["nodes_with_borrowed_position"] == 1, props
+
+    def test_prometheus_inventory_excludes_borrowed(self, tmp_path):
+        from utils import map_metrics
+        fake_home = tmp_path / "home"
+        cfg_dir = fake_home / ".config" / "meshforge"
+        cfg_dir.mkdir(parents=True)
+        with patch("utils.map_data_collector.get_real_user_home", return_value=fake_home):
+            c = MapDataCollector(cache_dir=tmp_path / "cache", enable_history=False,
+                                 config_dir=cfg_dir)
+        for name in ("_collect_unified_tracker", "_collect_direct_radio",
+                     "_collect_mqtt", "_collect_node_tracker", "_collect_aredn",
+                     "_collect_aredn_worldmap", "_collect_rns_direct",
+                     "_collect_meshcore_public"):
+            setattr(c, name, lambda: [])
+        c._collect_public_fallbacks = lambda current_feature_count=0: []
+
+        def radio():
+            c._nodes_without_position.extend(_local_position_less(c))
+            return []
+        c._collect_meshtasticd = radio
+        _federate_positioned_copy(c, peer_write_ts=time.time() - 5)
+        with patch.object(map_metrics, "set_node_inventory") as inv:
+            c._collect_locked()
+        assert inv.call_args.kwargs["with_position"] == 0
+
+
+class TestR3WitnessLifecycle:
+    """r2 F6 + mutants m02/m03/m08: the witness is THIS merge's count."""
+
+    def test_resets_each_merge(self, collector):
+        _merge_one(collector, "local_radio")
+        assert collector._position_adopted_last == 1
+        _federate_stub_copy(collector, peer_write_ts=time.time())
+        collector._merge_federation({}, _local_position_less(collector))
+        assert collector._position_adopted_last == 0
+
+    def test_snapshot_failure_is_unknown(self, collector):
+        _merge_one(collector, "local_radio")
+        collector._federation.get_snapshot.side_effect = RuntimeError("boom")
+        collector._merge_federation({}, [])
+        assert collector._position_adopted_last is None
+
+    def test_exception_mid_merge_is_unknown_not_stale(self, collector):
+        _merge_one(collector, "local_radio")
+        _federate_positioned_copy(collector, peer_write_ts=time.time())
+        with patch.object(type(collector), "_is_valid_coordinate",
+                          side_effect=RuntimeError("mid-merge")):
+            with pytest.raises(RuntimeError):
+                collector._merge_federation({}, _local_position_less(collector))
+        assert collector._position_adopted_last is None
+
+    def test_no_federation_is_zero(self, collector):
+        collector._federation = None
+        collector._merge_federation({}, [])
+        assert collector._position_adopted_last == 0
+
+    def test_altitude_carried(self, collector):
+        _federate_positioned_copy(collector, peer_write_ts=time.time())
+        snap = collector._federation.get_snapshot.return_value
+        snap.by_node[("meshtastic", NODE_ID)]["altitude"] = 412
+        features = {}
+        collector._merge_federation(features, _local_position_less(collector))
+        assert _adopted(features)[0]["geometry"]["coordinates"] == [-155.21, 19.43, 412]
+
+
+class TestR3PageRefreshesAndSaysTheSource:
+    """r2 F3/F7 + mutant m05: the popup refresh gate must include the lender,
+    the popup says the fix's SOURCE, and the lender is escaped."""
+
+    def test_update_gate_includes_position_from(self):
+        upd = HTML[HTML.index("const existing = state.markers.get(id);"):]
+        gate = upd[:upd.index("if (propsChanged)")]
+        assert "position_from" in gate
+        assert "position_origin" in gate
+
+    def test_popup_says_fix_source_and_escapes(self):
+        body = _js_body("createPopupContent")
+        assert "escHtml(String(props.position_from))" in body
+        assert "props.position_origin" in body
+
+
+class TestR3MutantSurvivors:
+    """Pins for the three r3 mutants that survived the first pass."""
+
+    @pytest.mark.parametrize("preset,bbox", [("local_only", None),
+                                             (None, "18,-161,23,-154")])
+    def test_count_holds_when_collapse_fails(self, preset, bbox):
+        """The collapse step overwrites the count; when it raises, the preset /
+        bbox count is what ships — it must exclude borrowed too."""
+        import json
+        from utils._map_node_endpoints import build_geojson_response
+        snap = SimpleNamespace(geojson=_geo_with([_own(1), _borrowed()]))
+        with patch("utils.cross_protocol_collapse.collapse_cross_protocol",
+                   side_effect=RuntimeError("collapse down")):
+            raw, _ = build_geojson_response(MagicMock(), None, preset, bbox,
+                                            10 ** 9, snapshot=snap)
+        props = json.loads(raw)["properties"]
+        assert props["nodes_with_position"] == 1, props
+        assert props["nodes_with_borrowed_position"] == 1, props
+
+    def test_empty_lender_name_is_still_borrowed(self):
+        from utils.map_borrowed_position import is_borrowed, own_cache_geojson
+        f = _borrowed()
+        f["properties"]["position_from"] = ""
+        assert is_borrowed(f)
+        assert own_cache_geojson({"features": [f]})["features"] == []

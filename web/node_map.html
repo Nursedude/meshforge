@@ -3087,7 +3087,7 @@
                     ${congestionHtml}
                     ${hardwareSafe ? `<div class="info-label">Hardware</div><div class="info-value" style="font-size:11px">${hardwareSafe}</div>` : ''}
                     <div class="info-label">Position</div>
-                    <div class="info-value" style="font-size:11px">${latText}, ${lonText}${props.position_from ? `<br><span style="color:#ffd54f" title="This radio heard the node but has no GPS fix for it; the position is a peer's, and its age is not known">via ${escHtml(String(props.position_from))} · age unknown</span>` : ''}</div>
+                    <div class="info-value" style="font-size:11px">${latText}, ${lonText}${props.position_from ? `<br><span style="color:#ffd54f" title="This radio heard the node but has no GPS fix for it; the position is a peer's, and its age is not known">via ${escHtml(String(props.position_from))}${props.position_origin ? ' (' + escHtml(String(props.position_origin)) + ')' : ''} · age unknown</span>` : ''}</div>
                 </div>
                 <button class="btn-trail" onclick="toggleNodeTrail('${escJsString(rawId)}', event)" id="trail-btn-${idForDom}">
                     Show Trail (24h)
@@ -3305,7 +3305,10 @@
                 oldProps.is_online !== props.is_online ||
                 oldProps.snr !== props.snr ||
                 oldProps.battery !== props.battery ||
-                oldProps.last_seen !== props.last_seen
+                oldProps.last_seen !== props.last_seen ||
+                // H4a: a borrowed fix's lender / source changes the popup + ring
+                oldProps.position_from !== props.position_from ||
+                oldProps.position_origin !== props.position_origin
             );
             if (propsChanged) {
                 // Rebuild the icon ONLY when something the icon shows changed;
