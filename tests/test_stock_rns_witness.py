@@ -109,3 +109,39 @@ def test_rnpath_verdicts(tmp_path, raw, verdict):
     r = _stdin("classify", raw, tmp_path)
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == verdict, (raw, r.stdout)
+
+
+def test_probe_survives_not_found_and_reports_every_identity(tmp_path):
+    """MEASURED 11-21 n=2 Run B: probe printed its header and then NOTHING —
+    rnpath exits non-zero on 'Path not found', and set -e + pipefail killed the
+    script at the first miss. The arm that matters most went silent. Stubs only
+    (a fake rnpath / systemctl in tmp) — nothing real is executed by PATH."""
+    base = tmp_path / "witness"
+    vbin = base / "venv" / "bin"
+    vbin.mkdir(parents=True)
+    (base / "rns").mkdir()
+    (base / "rns" / "config").write_text("[stamps]\n  enforce_stamps = yes\n")
+    rnpath = vbin / "rnpath"
+    rnpath.write_text("#!/bin/sh\n"
+                      "for a in \"$@\"; do last=$a; done\n"
+                      "case \"$1\" in -d) exit 0;; esac\n"
+                      "case \"$last\" in\n"
+                      "  aaaa*) printf 'Path found, destination <%s> is 2 hops away via <x> on y\\n' \"$last\"; exit 0;;\n"
+                      "  *) printf 'Path to <%s> requested\\rPath not found\\n' \"$last\"; exit 1;;\n"
+                      "esac\n")
+    py = vbin / "python"
+    py.write_text("#!/bin/sh\necho rns=1.6.1 lxmf=1.3.1 nomadnet=1.5.1\n")
+    stub = tmp_path / "stubbin"
+    stub.mkdir()
+    (stub / "systemctl").write_text("#!/bin/sh\nexit 0\n")      # 'is-active' -> active
+    for f in (rnpath, py, stub / "systemctl"):
+        f.chmod(0o755)
+    env = {"PATH": f"{stub}:/usr/bin:/bin", "HOME": str(tmp_path),
+           "STOCK_WITNESS_BASE": str(base), "STOCK_WITNESS_ENTRY_HOST": "entry.example.invalid"}
+    hit, miss1, miss2 = "a" * 32, "b" * 32, "c" * 32
+    r = subprocess.run(["/bin/bash", str(SCRIPT), "probe", f"one={miss1}", f"two={hit}", f"three={miss2}"],
+                       capture_output=True, text=True, timeout=30, env=env)
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    assert r.stdout.count("NOT_FOUND") == 2, r.stdout
+    assert "FOUND 2" in r.stdout, r.stdout
+    assert "found: 1/3" in r.stdout, r.stdout

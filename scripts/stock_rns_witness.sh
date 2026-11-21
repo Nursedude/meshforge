@@ -157,7 +157,9 @@ cmd_probe() {
         case "$hash" in *[!0-9a-f]*|"") echo "  skip invalid hash '$h'"; continue;; esac
         [ ${#hash} -eq 32 ] || { echo "  skip invalid hash '$h'"; continue; }
         timeout 15 "$VENV/bin/rnpath" -d --config "$RNSDIR" "$hash" >/dev/null 2>&1 || true
-        v="$(timeout 30 "$VENV/bin/rnpath" -w 20 --config "$RNSDIR" "$hash" 2>&1 | classify)"
+        # rnpath exits non-zero on "Path not found": under set -e + pipefail that
+        # killed the whole probe at the first miss (11-21 n=2 Run B went silent).
+        v="$( { timeout 30 "$VENV/bin/rnpath" -w 20 --config "$RNSDIR" "$hash" 2>&1 || true; } | classify)"
         total=$((total+1)); case "$v" in FOUND*) found=$((found+1));; esac
         printf '  %-10s %-20s %s\n' "$v" "$name" "$hash"
     done
