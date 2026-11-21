@@ -180,3 +180,39 @@ Re-measure every SOURCE/DOCUMENTED claim against the pinned source or the live b
 refute it in `.claude/audits/review_provenance.md`, or queue it. No fleet change follows without the
 operator's words: rmap discoverability needs a one-box pilot plus the operator's choice of name and
 coordinate precision. MeshChatX removal needs an explicit go.
+
+---
+
+## Verification of the returned report (local, 2026-11-21 09:0x–09:3x)
+
+Report: artifact `XupyHiRycirvkaM5eWNwrN` ("RNS Discovery Report"). Each claim below was re-measured; the
+rest stay at the report's own tag.
+
+**VERIFIED in our installed RNS 1.3.9+mf.0** (`~/.local/lib/python3.13/site-packages/RNS`):
+- `publish_ifac` sends `IFAC_NETNAME` **and `IFAC_NETKEY`** — the passphrase (Discovery.py ~L191–193). Part A
+  A1 was WRONG (said name only). → `publish_ifac` must never be on.
+- `TRANSPORT_ID` (the box's transport identity hash) is always in the payload — A1 omitted it.
+- `InterfaceAnnouncer.__init__` calls `RNS.panic()` if LXMF is not importable — discovery on a box whose
+  rnsd env lacks LXMF kills rnsd.
+- The mode auto-switch is skipped when `ignore_config_warnings = yes` (Reticulum.py ~L901–946).
+- Access-point mode blocks EVERY broadcast announce on that interface, including locally originated ones
+  (Transport.py L1239 branch has no `local_destination` test); AP paths expire in 1 d vs 7 d (L71–72, L801).
+- `location_cmd` / `reachable_on` executables run with `subprocess.run` and no timeout (Discovery.py L108, L150).
+- Longitude bounds bug: `if dlon < -180 or dlat > 180` (L118).
+
+**VERIFIED in the rns 1.6.1 sdist** (pip download, isolated dir):
+- `DEFAULT_STAMP_VALUE = 16` (Discovery.py L77) vs our 14; `AUTOCONNECT_TYPES = ["BackboneInterface"]` (L492).
+- `Transport.STAMPS_ENFORCED` / `LR_STAMPS_ENFORCED` exist, default False in 1.6.1, with "remove once enforcement
+  is enabled" TODOs (Transport.py L192–193, L2218, L4108–4113); config `[stamps] enforce_stamps` (Reticulum.py L533+).
+- With `STAMP_DESTINATIONS`, announce `app_data` gets an ext payload appended: marker + flags + stamp + cost
+  bytes (Destination.py ~L348–357).
+
+**Not verified locally (stays DOCUMENTED / ASSERTED):** "1.6.2 will enforce" (release notes, not in the sdist);
+1.3.9 dropping 1.6.x discovery announces (strong from code, not run); rmap ingest/threshold behaviour (rmap
+pages only); the bridge-landscape table (READMEs). The stock witness (`scripts/stock_rns_witness.sh`) is the
+instrument for the first two.
+
+**Corrected local advice:** keep MeshChatX (interop witness) until a stock successor runs; never make an RNode
+discoverable by default (auto-AP silences HawaiiNet RF announces) — explicit `mode = gateway` if ever; if
+anything is published, the TCP entry point only, stamp ≥ 16, coarse coordinates, interval ≥ 360 min, LXMF
+importable in rnsd's env first.
