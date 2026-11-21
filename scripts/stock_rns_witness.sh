@@ -20,7 +20,8 @@
 #   stock_rns_witness.sh install            # venv with pinned stock versions
 #   stock_rns_witness.sh render-config      # print the RNS config it would write
 #   stock_rns_witness.sh start [--enforce]  # write config, start the transient unit
-#   stock_rns_witness.sh status [HASH...]   # versions, unit, interfaces, paths to HASHes
+#   stock_rns_witness.sh status             # versions, unit, interfaces, table rows
+#   stock_rns_witness.sh probe NAME=HASH... # drop cached path, request fresh: FOUND n / NOT_FOUND / UNKNOWN
 #   stock_rns_witness.sh stop
 #   stock_rns_witness.sh uninstall          # stop + remove venv (identity kept)
 set -euo pipefail
@@ -123,16 +124,44 @@ cmd_status() {
     [ -x "$VENV/bin/rnstatus" ] || return 0
     echo "--- rnstatus"
     timeout 20 "$VENV/bin/rnstatus" --config "$RNSDIR" 2>&1 | grep -E "Interface|Status|Traffic" || echo "UNKNOWN: rnstatus gave no interface lines"
-    echo "--- path table"
-    local table n
+    echo "--- path table (passive: what happened to announce; reachability is \`probe\`)"
+    local table
     table="$(timeout 20 "$VENV/bin/rnpath" -t --config "$RNSDIR" 2>&1 || true)"
-    n="$(printf '%s\n' "$table" | grep -c 'hop' || true)"
-    echo "paths known: $n"
-    local h
+    echo "table rows: $(printf '%s\n' "$table" | count_table)"
+}
+
+# Rows of `rnpath -t` are `<32 hex> ...`. rns 1.6.1 prints `1h (?)`, never
+# "hops" — the 11-21 count grepped 'hop' and reported 0 beside 5 rows.
+count_table() { grep -c -E '^<[0-9a-f]{32}>' || true; }
+
+# One verdict per rnpath run: FOUND <hops> | NOT_FOUND | UNKNOWN. No verdict
+# line (timeout, traceback, empty) is UNKNOWN — never "not found" (hfm #2).
+classify() {
+    local out hops
+    out="$(tr '\r' '\n')"
+    hops="$(printf '%s\n' "$out" | grep -o -E 'Path found, destination <[0-9a-f]+> is [0-9]+ hops? away' | tail -1 | grep -o -E '[0-9]+ hops?' | grep -o -E '^[0-9]+' || true)"
+    if [ -n "$hops" ]; then echo "FOUND $hops"
+    elif printf '%s\n' "$out" | grep -q -E '^Path not found'; then echo "NOT_FOUND"
+    else echo "UNKNOWN"; fi
+}
+
+# Reachability, measured: drop the cached path, then ask the network fresh
+# (a cached path would answer without touching the network).
+cmd_probe() {
+    [ -x "$VENV/bin/rnpath" ] || die "not installed — run: $0 install"
+    systemctl --user is-active --quiet "$UNIT" || die "$UNIT not running — start it first"
+    echo "enforce: $(awk '/enforce_stamps/{print $3}' "$RNSDIR/config")  $(versions)"
+    local h v found=0 total=0
     for h in "$@"; do
-        case "$h" in *[!0-9a-f]*|"") echo "  skip invalid hash '$h'"; continue;; esac
-        if printf '%s\n' "$table" | grep -q "$h"; then echo "  HEARD   $h"; else echo "  absent  $h"; fi
+        local name="${h%%=*}" hash="${h#*=}"
+        case "$hash" in *[!0-9a-f]*|"") echo "  skip invalid hash '$h'"; continue;; esac
+        [ ${#hash} -eq 32 ] || { echo "  skip invalid hash '$h'"; continue; }
+        timeout 15 "$VENV/bin/rnpath" -d --config "$RNSDIR" "$hash" >/dev/null 2>&1 || true
+        v="$(timeout 30 "$VENV/bin/rnpath" -w 20 --config "$RNSDIR" "$hash" 2>&1 | classify)"
+        total=$((total+1)); case "$v" in FOUND*) found=$((found+1));; esac
+        printf '  %-10s %-20s %s\n' "$v" "$name" "$hash"
     done
+    echo "found: $found/$total"
 }
 
 cmd_stop() { systemctl --user stop "$UNIT" 2>/dev/null && echo "stopped $UNIT" || echo "$UNIT not running"; }
@@ -148,6 +177,9 @@ case "${1:-}" in
     render-config) shift; render_config "${1:-no}" ;;
     start)         shift; cmd_start "$@" ;;
     status)        shift; cmd_status "$@" ;;
+    probe)         shift; cmd_probe "$@" ;;
+    count-table)   count_table ;;
+    classify)      classify ;;
     stop)          cmd_stop ;;
     uninstall)     cmd_uninstall ;;
     *) sed -n '2,24p' "$0"; exit 2 ;;

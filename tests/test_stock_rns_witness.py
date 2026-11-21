@@ -67,3 +67,45 @@ def test_entry_host_has_no_default(tmp_path):
     r = _run("render-config", "no", home=tmp_path, extra={"STOCK_WITNESS_ENTRY_HOST": ""})
     assert r.returncode == 2
     assert "STOCK_WITNESS_ENTRY_HOST is not set" in r.stderr
+
+
+# ------------------------------------------- 11-21 Run A: the status count lied
+# MEASURED: `status` said "paths known: 0" while the table held 5 rows — rns
+# 1.6.1 prints `1h (?)`, never "hops", and the old count grepped 'hop'. And a
+# passive table is not reachability: `probe` drops the cached path and asks the
+# network fresh. These are the REAL 1.6.1 lines from that run.
+TABLE_161 = """\
+<59f83bb6565288236b0c299d3432d3bc>   1h (?) on TCPInterface[Regional entry point/moc.mf.internal:4242] (dv:0.000/lc:n)
+<ef1dcedc4c132296f2821ca14c870043>   2h (?) on TCPInterface[Regional entry point/moc.mf.internal:4242] (dv:0.000/lc:n)
+<fdf27722b6b26503b5d5bb766a734923>   2h (?) on TCPInterface[Regional entry point/moc.mf.internal:4242] (dv:0.000/lc:n)
+"""
+
+
+def _stdin(cmd, text, home):
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(home),
+           "STOCK_WITNESS_BASE": str(Path(home) / "witness"),
+           "STOCK_WITNESS_ENTRY_HOST": "entry.example.invalid"}
+    return subprocess.run(["/bin/bash", str(SCRIPT), cmd], input=text, capture_output=True,
+                          text=True, timeout=20, env=env)
+
+
+def test_table_count_reads_hash_rows_not_the_word_hop(tmp_path):
+    r = _stdin("count-table", TABLE_161, tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "3"
+
+
+@pytest.mark.parametrize("raw,verdict", [
+    ("Path to <7dce12ce67e4e32d89e6f2b01d238d33> requested   ⢄ ⢂ ⢁ \r"
+     "Path found, destination <7dce12ce67e4e32d89e6f2b01d238d33> is 1 hop away via <2bee> on X",
+     "FOUND 1"),                                                   # singular — the regex missed it
+    ("Path to <57a7…> requested\rPath found, destination <57a7f1400c1015d8907ff177daf89081> "
+     "is 2 hops away via <2bee> on X", "FOUND 2"),
+    ("Path to <57a7…> requested   ⢄ ⢂\rPath not found", "NOT_FOUND"),
+    ("", "UNKNOWN"),                                               # no verdict line is never 'not found'
+    ("Traceback (most recent call last):\n  ...", "UNKNOWN"),
+])
+def test_rnpath_verdicts(tmp_path, raw, verdict):
+    r = _stdin("classify", raw, tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == verdict, (raw, r.stdout)
