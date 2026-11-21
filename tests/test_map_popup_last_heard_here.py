@@ -41,7 +41,7 @@ class TestLastHeardHereRow:
             assert "1795258" not in s, out
         assert out[0] == "Not heard by this radio", out
         assert out[1] == "1 min ago", out
-        assert out[2] == "78 d ago", out
+        assert out[2] == "Not heard (last 78 d ago)", out
         assert out[3] == "Radio hearing unknown", out
         assert out[4] == "Heard (time unknown)", out
         assert out[5] == "Not heard by this radio", out
@@ -63,3 +63,39 @@ class TestLastHeardHereRow:
         assert out[2] == "2026-11-21T01:00:00", out
         assert out[3] == "Unknown", out
         assert out[4] == "9s ago", out
+
+
+# ----------------------------------------------- r1 review (Fable, by running)
+@pytest.mark.parametrize("engine", [_js_engine() or "none"])
+class TestR1RowAgreesWithStatus:
+    def test_our_marker_with_folded_hearing_says_this_radio(self, tmp_path, engine):
+        """R1 F1: our marker carrying folded heard_here* (r6 F3) showed the MQTT
+        instant ('9s ago') while its status said 'Not heard here in 2 h'."""
+        if engine == "none":
+            pytest.skip("no node and no headless chromium on this box — JS not executed")
+        now = int(PEER_WRITE_TIME) + 10
+        base = {"network": "meshtastic", "via_mqtt": True, "is_online": True,
+                "last_heard": now - 9}
+        cases = [dict(base, heard_here=False, heard_here_age_s=81 * 86400),
+                 dict(base, heard_here=True, heard_here_age_s=5400),
+                 dict(base, heard_here=None)]
+        out = _run(engine, tmp_path, cases)
+        assert out[0] == "Not heard (last 81 d ago)", out
+        assert out[1] == "1 h ago", out
+        assert out[2] == "Radio hearing unknown", out
+
+    def test_federated_not_heard_with_age_says_not_heard(self, tmp_path, engine):
+        """R1 F5: a bare '78 d ago' on a not-heard node reads as a hearing."""
+        if engine == "none":
+            pytest.skip("no node and no headless chromium on this box — JS not executed")
+        out = _run(engine, tmp_path, [{"federated": True, "network": "meshtastic",
+                                       "heard_here": False, "heard_here_age_s": 78 * 86400}])
+        assert out[0] == "Not heard (last 78 d ago)", out
+
+
+def test_mobile_card_uses_the_one_row_function():
+    """R1 F6: the mobile status card printed props.last_seen raw — the same
+    peer write time on a second surface. ONE phrasing: it calls the row fn."""
+    from tests.test_peer_radio_heard import _HTML
+    assert "card-last-seen').textContent = props.last_seen" not in _HTML
+    assert "card-last-seen').textContent = lastHeardHereText(props" in _HTML

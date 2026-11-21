@@ -2824,15 +2824,17 @@
     // it; null hearing = unobservable, said, never "not heard" (r4 F1). Local
     // rows keep their age; a numeric last_seen there IS a hearing instant
     // (collector merge), formatted — a raw epoch is never printed.
+    // r1 F1: OUR marker carrying folded heard_here* (r6 F3) takes the same
+    // radio branch — the row agrees with nodeStatusText, never the MQTT instant.
+    // r1 F5: a not-heard row names the verdict, never a bare age.
     function lastHeardHereText(props, nowSec) {
-        if (props.federated) {
-            if (!('heard_here' in props) || props.heard_here === undefined) {
-                return 'Not heard by this radio';
-            }
+        const hasHearing = 'heard_here' in props && props.heard_here !== undefined;
+        if (props.federated && !hasHearing) return 'Not heard by this radio';
+        if (hasHearing) {
             if (props.heard_here === null) return 'Radio hearing unknown';
             const ago = agoText(props.heard_here_age_s);
-            if (ago) return ago + ' ago';
-            return props.heard_here === true ? 'Heard (time unknown)' : 'Not heard by this radio';
+            if (props.heard_here === true) return ago ? ago + ' ago' : 'Heard (time unknown)';
+            return ago ? 'Not heard (last ' + ago + ' ago)' : 'Not heard by this radio';
         }
         const ageOf = (ts) => {
             const n = Number(ts);
@@ -6154,7 +6156,7 @@
         status.textContent = nodeStatusText(props);
         status.className = 'value ' + (props.is_online ? 'online' : 'offline');
 
-        document.getElementById('card-last-seen').textContent = props.last_seen || '--';
+        document.getElementById('card-last-seen').textContent = lastHeardHereText(props, Date.now() / 1000);
         document.getElementById('card-snr').textContent = props.snr !== null ? `${props.snr} dB` : '--';
         document.getElementById('card-battery').textContent = props.battery !== null ? `${props.battery}%` : '--';
         document.getElementById('card-hardware').textContent = props.hardware || '--';
