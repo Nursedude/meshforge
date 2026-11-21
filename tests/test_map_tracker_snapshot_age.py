@@ -95,6 +95,8 @@ class TestTrackerSnapshotAgeGate:
         diag = collector._source_diagnostics["unified_tracker"]
         assert collector._tracker_stale_dropped == 2
         assert "2 older than" in (diag["notes"] or ""), diag
+        # r4 M20: the WIRING passes the window in hours (seconds read "172800 h")
+        assert f"older than {window / 3600:g} h dropped" in diag["notes"], diag
         assert diag["yielded"] == 1
 
     def test_all_stale_is_said_not_silent(self, setup):
@@ -216,6 +218,9 @@ def test_note_is_true_over_the_full_count_table(sp, dp, ls, dl, meshless):
         assert reason is None, (reason, notes)
     dropped = dp + dl
     assert (f"; {dropped} older than" in notes) == bool(dropped), notes
+    assert notes.startswith(f"{tracked} tracked"), notes          # r4 M19: the leading count
+    if dropped:
+        assert f"older than 48 h dropped" in notes, notes         # r4 M20: the window label
 
 
 def test_stale_gps_plus_current_rns_does_not_say_no_gps(setup):
