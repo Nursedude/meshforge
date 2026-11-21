@@ -148,3 +148,25 @@ Not in scope: changing what the background refresher collects. Review: contextle
 5. Packet replay (VCR over heard-by events we already record), beside the node-snapshot slider.
 6. MeshAnchor: true MeshCore route animation from packet paths (honest there).
 7. Run CoreScope in the lab as the reference (PARITY-1: references in the lab only); parity test on the same MeshCore traffic.
+
+## H4a — this radio's GPS-less records lost to federation (2026-11-20, MEASURED; design REVERSED after r3)
+
+MEASURED 15:28 HST on the lab map (read-only): radio `num_online_nodes=37`, `num_total_nodes=400`;
+map positioned-from-radio 226 (24 heard ≤ 2 h), position-less from radio **25** (should be 174),
+federated position-less stubs 157 (no `is_online`, `last_seen` = peer WRITE time). The 11-08 premise
+"H4 (`or 0`) is the bigger cause" is REFUTED: no/zero `last_heard` on positioned nodes is now 28, not 166.
+Cause: position-less writers set no `source_origin` → priority 0 → any peer `local_radio` row won.
+
+- r1 `e8bb8135`: tag every position-less writer; at equal trust draw OUR record at a peer's fix.
+- r2 `0349c49c`: adopt at any trust ≤ ours (operator "adopt lower-trust positions"); popup + ring; witness.
+- r3 `bba86d86`: `best_fix` beside the federation winner; `utils/map_borrowed_position` as one owner.
+- **r3 review not clean, same defect kind a 3rd time → design REVERSED (operator 18:4x: "switch to the
+  federated representation").** An adopted node as a LOCAL feature at not-our-coordinates is a new
+  hybrid every geometry consumer must learn (Prometheus, topology inferred links, coverage, tile warm,
+  collapse). Next: draw it as a FEDERATED feature (every consumer already treats those as not ours) +
+  this radio's hearing in separate fields (`heard_here*`) + ONE exception (history stores our hearing
+  as a GPS-less `local_radio` row). Keep r1's tagging (the actual cause). Findings + residuals:
+  `.claude/audits/review_provenance.md` 2026-11-20 H4a rows.
+- Acceptance (unchanged, live, after deploy): ~174 local position-less from the radio, map online ≈
+  radio `num_online_nodes`, `/api/status federation.position_adopted` a number.
+- `main` carries r1–r3, CI green; NOT deployed — do not deploy as-is.
