@@ -2817,6 +2817,40 @@
             : age < 86400 ? Math.floor(age / 3600) + ' h' : Math.floor(age / 86400) + ' d';
     }
 
+    // The popup "Last heard here" row (finding 2026-11-21). "Here" = THIS
+    // radio. A federated marker's last_seen is the PEER's collector WRITE time
+    // (H14's wrong quantity) — never shown; the row says our radio's hearing
+    // (heard_here*, aged on the SERVER's clock, r1 F6) or that it did not hear
+    // it; null hearing = unobservable, said, never "not heard" (r4 F1). Local
+    // rows keep their age; a numeric last_seen there IS a hearing instant
+    // (collector merge), formatted — a raw epoch is never printed.
+    function lastHeardHereText(props, nowSec) {
+        if (props.federated) {
+            if (!('heard_here' in props) || props.heard_here === undefined) {
+                return 'Not heard by this radio';
+            }
+            if (props.heard_here === null) return 'Radio hearing unknown';
+            const ago = agoText(props.heard_here_age_s);
+            if (ago) return ago + ' ago';
+            return props.heard_here === true ? 'Heard (time unknown)' : 'Not heard by this radio';
+        }
+        const ageOf = (ts) => {
+            const n = Number(ts);
+            if (!Number.isFinite(n) || n <= 0) return null;
+            const s = Math.floor(nowSec - n);
+            if (s < 0) return null;
+            return s < 60 ? s + 's ago' : s < 3600 ? Math.floor(s / 60) + 'm ago'
+                : s < 86400 ? Math.floor(s / 3600) + 'h ago' : Math.floor(s / 86400) + 'd ago';
+        };
+        const fromHeard = ageOf(props.last_heard);
+        if (fromHeard) return fromHeard;
+        const ls = props.last_seen;
+        if (typeof ls === 'number' || (typeof ls === 'string' && /^\s*\d+(\.\d+)?\s*$/.test(ls))) {
+            return ageOf(ls) || 'Unknown';
+        }
+        return (typeof ls === 'string' && ls) ? ls : 'Unknown';
+    }
+
     function nodeStatusText(props) {
         // MAP-H H4a: THIS radio hears the node but has no fix; the marker is a
         // PEER's fix (whose age is unknown — a peer's last_seen is its write time).
@@ -3056,15 +3090,7 @@
             }
         }
 
-        // Format last_heard timestamp into human-readable age
-        let lastHeardText = props.last_seen || 'Unknown';
-        if (props.last_heard && props.last_heard > 0) {
-            const ageSec = Math.floor(Date.now() / 1000 - props.last_heard);
-            if (ageSec < 60) lastHeardText = ageSec + 's ago';
-            else if (ageSec < 3600) lastHeardText = Math.floor(ageSec / 60) + 'm ago';
-            else if (ageSec < 86400) lastHeardText = Math.floor(ageSec / 3600) + 'h ago';
-            else lastHeardText = Math.floor(ageSec / 86400) + 'd ago';
-        }
+        const lastHeardText = lastHeardHereText(props, Date.now() / 1000);
 
         // Channel / encryption info
         let channelHtml = '';
