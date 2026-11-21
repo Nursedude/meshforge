@@ -423,7 +423,7 @@ class TestPageSaysPeerHeard:
         assert body.count("peerHeardText(props.peer_heard)") == 3
         # an online node never gets a peer clause: this radio is the better witness
         assert "props.is_online ? '' : peerHeardText" in body
-        assert "props.heard_here ? '' : peerHeardText" in body
+        assert "props.heard_here === true ? '' : peerHeardText" in body
 
     def test_peer_text_names_every_state_and_reads_ts_not_last_seen(self):
         body = _js_body("peerHeardText")

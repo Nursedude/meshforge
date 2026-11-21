@@ -57,7 +57,8 @@ def _published_position_adopted(collector: Any) -> Optional[int]:
     move it). None = no map published yet — unobservable, never 0."""
     geo = getattr(collector, "_cached_geojson", None) or {}
     fed = (geo.get("properties") or {}).get("federation") or {}
-    return fed.get("position_adopted")
+    v = fed.get("position_adopted")
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
 
 
 def build_federation_status(collector: Any,
@@ -103,7 +104,8 @@ def build_federation_status(collector: Any,
     except Exception as e:
         logger.warning(f"federation status lookup failed: {e}")
         return {"enabled": True, "error": str(e)[:200],
-                "non_federating": non_fed}
+                "non_federating": non_fed,
+                "position_adopted": None}  # unobservable, never omitted
 
 
 def _read_deployment_role(app_name: str) -> Optional[str]:

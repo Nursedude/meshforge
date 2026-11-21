@@ -79,7 +79,7 @@ def _federate_stub_copy(collector, peer_write_ts):
     collector._federation = fc
 
 
-def _fake_interface(heard_ts):
+def _fake_interface(heard_ts, via_mqtt=False):
     iface = MagicMock()
     iface.myInfo = None
     iface.localNode = None
@@ -88,6 +88,7 @@ def _fake_interface(heard_ts):
             "num": NODE_NUM,
             "user": {"id": NODE_ID, "longName": "LOCAL HEARD", "shortName": "LH"},
             "lastHeard": int(heard_ts),
+            **({"viaMqtt": True} if via_mqtt else {}),
             # no "position" — the position-less case
         },
     }
@@ -267,8 +268,10 @@ class TestPeerFixDrawnAsFederated:
         position_less = _drain(collector, now - 60)
         _federate_positioned_copy(collector, now - 5)
         block = collector._merge_federation({}, position_less)
-        assert block["with_position"] == 1
-        assert block["by_network"] == {"meshtastic": 1}
+        # r4 review F2: the node is already counted as OURS (position-less);
+        # federation totals are federated-ONLY nodes — never counted twice
+        assert block["total"] == 0 and block["with_position"] == 0
+        assert block["by_network"] == {}
         assert block["position_adopted"] == 1
 
     def test_witness_zero_off_none_on_snapshot_failure(self, collector):
@@ -490,3 +493,167 @@ class TestPageSaysHeardHere:
         gate = _HTML[_HTML.index("const propsChanged = ("):][:600]
         for field in ("heard_here", "heard_here_age_s", "federated_from"):
             assert f"oldProps.{field} !== props.{field}" in gate, field
+
+
+def _drained_with(collector, iface):
+    _, no_position, _ = collector._drain_interface_nodes(iface, "meshtasticd")
+    return list(no_position)
+
+
+class TestR5HeardHereIsThisRadiosStamp:
+    """r4 review F1/F4 (one mistake): heard_here was built from ``is_online``,
+    a proxy. The ONE owner of "this radio heard it" is H14's
+    ``radio_last_heard`` (``_stamp_radio_heard``: radio drain only, never an
+    MQTT-downlinked node, never the radio itself). Tri-state: a record that
+    carries no stamp and is not MQTT says UNKNOWN (None), never "not heard"."""
+
+    def _merged(self, collector, position_less):
+        features: dict = {}
+        _federate_positioned_copy(collector, time.time() - 5)
+        collector._merge_federation(features, position_less)
+        return features[FED_KEY]["properties"]
+
+    def test_mqtt_only_node_is_not_heard_here(self, collector):
+        props = self._merged(collector, _drained_with(
+            collector, _fake_interface(time.time() - 20, via_mqtt=True)))
+        assert props["heard_here"] is False
+        assert props["heard_here_at"] is None and props["heard_here_age_s"] is None
+
+    def test_http_record_without_a_stamp_is_unknown_not_unheard(self, collector):
+        from utils.meshtastic_http import MeshtasticNode
+        client = MagicMock()
+        client.is_available = True
+        client.get_nodes.return_value = [MeshtasticNode(
+            node_id=NODE_ID, long_name="HTTP NOPOS", last_heard=int(time.time() - 20))]
+        collector._nodes_without_position = []
+        with patch("utils._map_collector_meshtastic.get_http_client",
+                   return_value=client):
+            collector._collect_via_http("127.0.0.1")
+        props = self._merged(collector, list(collector._nodes_without_position))
+        assert props["heard_here"] is None, props
+
+    def test_stamp_judged_by_that_networks_window_not_is_online(self, collector):
+        now = time.time()
+        rec = {"id": NODE_ID, "network": "meshtastic", "is_online": False,
+               "source_origin": "local_radio", "radio_last_heard": now - 30}
+        props = self._merged(collector, [rec])
+        assert props["heard_here"] is True and props["heard_here_at"] == now - 30
+        rec = {"id": NODE_ID, "network": "meshtastic", "is_online": True,
+               "source_origin": "local_radio", "radio_last_heard": now - 6 * 3600}
+        assert self._merged(collector, [rec])["heard_here"] is False
+
+    @pytest.mark.parametrize("stamp", [float("inf"), float("nan")])
+    def test_absurd_stamp_never_raises(self, collector, stamp):
+        rec = {"id": NODE_ID, "network": "meshtastic", "source_origin": "local_radio",
+               "radio_last_heard": stamp}
+        props = self._merged(collector, [rec])
+        assert props["heard_here_age_s"] is None
+
+    def test_future_stamp_is_not_heard_and_has_no_age(self, collector):
+        rec = {"id": NODE_ID, "network": "meshtastic", "source_origin": "local_radio",
+               "radio_last_heard": time.time() + 3600}
+        props = self._merged(collector, [rec])
+        assert props["heard_here"] is False and props["heard_here_age_s"] is None
+
+
+class TestR5HearingClaimNeverReplayed:
+    """r4 review F3: the Source-7 disk cache replays features; a replayed copy
+    carried a frozen heard_here ("60 s ago" forever). The ONE stripper of
+    this-radio hearing claims strips these too."""
+
+    def test_strip_radio_stamp_drops_heard_here(self):
+        from utils.peer_radio_heard import strip_radio_stamp
+        f = {"properties": {"id": NODE_ID, "radio_last_heard": 1.0,
+                            "heard_here": True, "heard_here_at": 1.0,
+                            "heard_here_age_s": 60, "federated": True}}
+        strip_radio_stamp([f])
+        assert f["properties"] == {"id": NODE_ID, "federated": True}
+
+    def test_replayed_cache_carries_no_hearing(self, tmp_path):
+        now = time.time()
+        c = _history_collector(tmp_path, now - 60)
+        _federate_positioned_copy(c, peer_write_ts=now - 5)
+        c._collect_locked()                       # cycle 1: adopted + cached
+        c._collect_meshtasticd = lambda: []       # cycle 2: radio yields nothing
+        geo = c._collect_locked()
+        replayed = [f for f in geo["features"]
+                    if f["properties"].get("id") == NODE_ID
+                    and "heard_here" in f["properties"]]
+        assert replayed == [], replayed
+
+
+class TestR5PeerVerdictAndStatusError:
+    def test_peer_verdict_reaches_our_record_on_adoption(self, collector):
+        """M22 survivor: the peer's radio verdict lands on OUR record too."""
+        now = time.time()
+        position_less = _drain(collector, now - 60)
+        _federate_positioned_copy(collector, now - 5)
+        verdict = {"state": "heard", "by": "moc5", "age_s": 5}
+        with patch("utils._map_collector_federation.peer_heard_verdict",
+                   return_value=verdict):
+            snap = collector._federation.get_snapshot.return_value
+            snap.by_node[("meshtastic", NODE_ID)]["radio_heard_by"] = {
+                "moc5.mf.internal": now - 5}
+            collector._merge_federation({}, position_less)
+        mine = [e for e in position_less if e.get("id") == NODE_ID]
+        assert mine[0].get("peer_heard") == verdict
+
+    def test_status_error_branch_is_unknown(self, collector):
+        from utils._map_status_endpoints import build_federation_status
+        fc = MagicMock(spec=FederationCollector)
+        fc.get_snapshot.side_effect = RuntimeError("boom")
+        collector._federation = fc
+        assert build_federation_status(collector)["position_adopted"] is None
+
+
+class TestR5PageUnknownHearing:
+    @pytest.mark.parametrize("engine", [_js_engine() or "none"])
+    def test_unknown_hearing_is_said(self, tmp_path, engine):
+        if engine == "none":
+            pytest.skip("no node and no headless chromium on this box — JS not executed")
+        cases = [{"federated": True, "network": "meshtastic", "heard_here": None,
+                  "federated_from": "moc5", "source_origin": "local_radio"}]
+        funcs = ("function meshtasticWindowText(){return '2 h';}\n"
+                 "function %s\nfunction %s\nfunction %s\n" % (
+                     _js_fn("agoText"), _js_fn("peerHeardText"),
+                     _js_fn("nodeStatusText")))
+        out = _run_page_js(engine, funcs, "JSON.stringify(%s.map(nodeStatusText))"
+                           % json.dumps(cases), tmp_path)
+        assert out[0] == ("Known here, radio hearing unknown · position via moc5 "
+                          "(local_radio) · age unknown")
+
+
+class TestR5MutantSurvivors:
+    """r5 mutant pass: 3 survivors, each a missing pin."""
+
+    def test_hearing_judged_by_the_nodes_own_network_window(self, collector):
+        windows = {"meshtastic": 7200, "meshcore": 600}
+        now = time.time()
+        rec = {"id": NODE_ID, "network": "meshcore", "source_origin": "local_radio",
+               "radio_last_heard": now - 1800}     # inside meshtastic's, outside meshcore's
+        with patch.object(collector, "get_source_threshold_seconds",
+                          side_effect=lambda n: windows.get(n, 7200)):
+            props = collector._heard_here(rec, "meshcore", now)
+        assert props["heard_here"] is False, props
+
+    @pytest.mark.parametrize("bad", ["3", True, 2.5, None])
+    def test_status_witness_rejects_a_non_count(self, collector, bad):
+        from utils._map_status_endpoints import build_federation_status
+        _federate_positioned_copy(collector, time.time())
+        collector._publish_snapshot({"type": "FeatureCollection", "features": [],
+                                     "properties": {"federation": {"position_adopted": bad}}})
+        assert build_federation_status(collector)["position_adopted"] is None
+
+    @pytest.mark.parametrize("engine", [_js_engine() or "none"])
+    def test_only_true_is_heard_here(self, tmp_path, engine):
+        if engine == "none":
+            pytest.skip("no node and no headless chromium on this box — JS not executed")
+        cases = [{"federated": True, "network": "meshtastic", "heard_here": "yes",
+                  "federated_from": "moc5", "source_origin": "local_radio"}]
+        funcs = ("function meshtasticWindowText(){return '2 h';}\n"
+                 "function %s\nfunction %s\nfunction %s\n" % (
+                     _js_fn("agoText"), _js_fn("peerHeardText"),
+                     _js_fn("nodeStatusText")))
+        out = _run_page_js(engine, funcs, "JSON.stringify(%s.map(nodeStatusText))"
+                           % json.dumps(cases), tmp_path)
+        assert out[0].startswith("Known here, radio hearing unknown"), out

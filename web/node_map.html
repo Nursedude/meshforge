@@ -2820,19 +2820,23 @@
     function nodeStatusText(props) {
         // MAP-H H4a: THIS radio hears the node but has no fix; the marker is a
         // PEER's fix (whose age is unknown — a peer's last_seen is its write time).
-        if (props.federated && typeof props.heard_here === 'boolean') {
+        if (props.federated && 'heard_here' in props) {
             const ago = agoText(props.heard_here_age_s);
             // only Meshtastic's verdict is judged by that window (11-08 F6)
             const w = props.network === 'meshtastic' ? meshtasticWindowText() : null;
-            const here = props.heard_here
+            // heard_here null = this box knows the node but its radio's
+            // hearing time is unobservable (r4 F1) — said, never "not heard"
+            const here = props.heard_here === true
                 ? 'Heard here' + (ago ? ' ' + ago + ' ago' : '')
-                : (w ? 'Not heard here in ' + w : 'Not heard here recently')
-                    + (ago ? ' (last ' + ago + ' ago)' : '');
+                : props.heard_here === false
+                ? (w ? 'Not heard here in ' + w : 'Not heard here recently')
+                    + (ago ? ' (last ' + ago + ' ago)' : '')
+                : 'Known here, radio hearing unknown';
             return here + ' · position via ' + String(props.federated_from || 'a peer')
                 + (props.source_origin ? ' (' + String(props.source_origin) + ')' : '')
                 + ' · age unknown'
                 // heard here = this radio is the better witness, as below
-                + (props.heard_here ? '' : peerHeardText(props.peer_heard));
+                + (props.heard_here === true ? '' : peerHeardText(props.peer_heard));
         }
         // a peer's node was judged by the PEER (its own window); this box only
         // knows its radio did not hear it (review 11-08 F6)

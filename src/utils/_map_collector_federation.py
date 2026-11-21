@@ -10,6 +10,7 @@ Expects the following on the host class (MapDataCollector):
 
 import json
 import logging
+import math
 import time
 from typing import Any, Dict, List, Optional
 
@@ -32,20 +33,6 @@ def _hub():
     """
     from utils import map_data_collector
     return map_data_collector
-
-
-def _heard_here(local_entry: Dict[str, Any], now: float) -> Dict[str, Any]:
-    """MAP-H H4a: THIS radio's hearing of a node, for a federated feature
-    drawn at a peer's fix. ``heard_here`` is our radio's own online verdict;
-    the age is judged on this box's clock (the page never uses its own)."""
-    at = local_entry.get("last_heard")
-    try:
-        age = int(now - float(at)) if at else None
-    except (TypeError, ValueError):
-        age = None
-    return {"heard_here": local_entry.get("is_online") is True,
-            "heard_here_at": at,
-            "heard_here_age_s": age if age is not None and age >= 0 else None}
 
 
 class FederationDataCollectorMixin:
@@ -376,11 +363,11 @@ class FederationDataCollectorMixin:
                         # hearing in its own fields so the page says it.
                         feature = self._federated_feature(
                             {**entry, **fix}, net, nid, verdict)
-                        feature["properties"].update(
-                            _heard_here(position_less[local_pl_idx], now))
+                        feature["properties"].update(self._heard_here(
+                            position_less[local_pl_idx], net, now))
                         features[f"federated:{net}:{nid}"] = feature
-                        by_network[net] = by_network.get(net, 0) + 1
-                        with_pos += 1
+                        # r4 F2: the node is counted as OURS (position-less);
+                        # federation totals count federated-ONLY nodes.
                         position_adopted += 1
                         if verdict is not None:
                             position_less[local_pl_idx]["peer_heard"] = verdict
@@ -448,6 +435,28 @@ class FederationDataCollectorMixin:
             "position_adopted": position_adopted,
         })
         return block
+
+    def _heard_here(self, local_entry: Dict[str, Any], net: str,
+                    now: float) -> Dict[str, Any]:
+        """MAP-H H4a: THIS radio's hearing of a node drawn at a peer's fix.
+        Reads ONLY H14's ``radio_last_heard`` (``_stamp_radio_heard`` — the
+        radio drain, never an MQTT-downlinked node, never the radio itself)
+        judged by THAT network's window — never ``is_online``, a proxy that
+        one writer does not even set (r4 F1/F4). Tri-state: no stamp and not
+        MQTT = None, unknown — never "not heard" (honest_failure_modes #1)."""
+        stamp = local_entry.get("radio_last_heard")
+        try:
+            stamp = float(stamp) if stamp is not None else None
+        except (TypeError, ValueError):
+            stamp = None
+        if stamp is None or not math.isfinite(stamp) or stamp <= 0:
+            heard = False if local_entry.get("via_mqtt") else None
+            return {"heard_here": heard, "heard_here_at": None,
+                    "heard_here_age_s": None}
+        age = int(now - stamp)
+        return {"heard_here": self._is_node_online(stamp, source=net),
+                "heard_here_at": stamp,
+                "heard_here_age_s": age if age >= 0 else None}
 
     def _peer_fix_for(self, entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """The peer fix to draw for a node this radio hears GPS-less: the

@@ -54,6 +54,12 @@ def coerce_radio_ts(value: Any, now: float) -> Optional[float]:
     return ts
 
 
+#: Every property that claims THIS radio heard a node (H14 stamp + MAP-H
+#: H4a's heard_here on a peer-fix marker) — stripped from any replayed copy.
+RADIO_HEARING_KEYS = ("radio_last_heard", "heard_here", "heard_here_at",
+                      "heard_here_age_s")
+
+
 def strip_radio_stamp(features: Any) -> Any:
     """Drop ``radio_last_heard`` from features that did NOT come off this
     box's radio drain THIS cycle (a cache replay, a relayed aggregate), in
@@ -64,7 +70,8 @@ def strip_radio_stamp(features: Any) -> Any:
     for f in features or ():
         props = f.get("properties") if isinstance(f, dict) else None
         if isinstance(props, dict):
-            props.pop("radio_last_heard", None)
+            for k in RADIO_HEARING_KEYS:
+                props.pop(k, None)
     return features
 
 
