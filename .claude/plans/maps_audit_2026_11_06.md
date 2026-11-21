@@ -186,3 +186,81 @@ Cause: position-less writers set no `source_origin` → priority 0 → any peer 
   `nodes_without_position` ≈ radio `num_online_nodes`; `/api/status federation.position_adopted` a
   number.
 - `main` @ `604d6c6d` carries r1–r5, CI success 604d6c6d (44877869655); NOT deployed — do not deploy as-is.
+
+### H4a r6 — the SEAM: one owner of local-vs-peer per (net,id) (2026-11-20 22:34 HST, operator "go — include row 10")
+
+**Root (read, BELIEVED):** `_merge_federation` indexes local features FIRST and adds a position-less
+entry only `if key not in local_index` (`_map_collector_federation.py:290-303`); no position-less
+writer skips a key that already has a feature. A node positioned by `mqtt_local` (70) AND heard
+GPS-less by our radio (`local_radio`, 100) is judged on the 70 — our hearing never enters the
+decision. r5 F1 is not "a path missing the marker"; the local side of the decision sees ONE of our
+records, picked by insertion order, not trust.
+
+Legend: LF = local positioned feature (trust f) · LP = local position-less record (trust p — every
+writer now tags `local_radio` 100 / `rns_path_table` 90) · R = peer winner row (trust r) · fix = R's
+own valid fix or `best_fix`.
+
+| # | local | peer | before r6 | r6 rule |
+|---|---|---|---|---|
+| 1 | — | R + fix | federated marker | unchanged |
+| 2 | — | R no fix, other peer has one | position-less fed stub; `best_fix` ignored | **DEFERRED** (not our hearing; own slice) |
+| 3 | — | R no fix | fed stub | unchanged |
+| 4 | LF | r ≤ f | local wins, `peer_heard` | unchanged |
+| 5 | LF | r > f, fix | local replaced by federated, counted fed-only | unchanged (pre-existing upgrade; no hearing involved) |
+| 6 | LF | r > f, no fix | **our marker popped → fed stub, position LOST** | I3: keep our marker + `peer_heard` |
+| 7 | LP | r ≤ p, fix | stub ours + fed marker + `heard_here`, adopted | unchanged |
+| 8 | LP | r ≤ p, no fix | stub ours + `peer_heard` | unchanged |
+| 9 | LP | r > p (RNS 90 vs peer `local_radio`) | **stub DROPPED before history reads it — hearing lost** | I1: = rows 7/8 at any trust |
+| 10 | LF+LP | r ≤ f / no peer | marker + stub: **counted in both lists** | I2: ONE marker (ours) carrying our hearing; stub leaves the served list, history still gets it |
+| 11 | LF+LP | r > f | **r5 F1:** fed marker w/o `heard_here`, stub stays → "not heard here" + twice | fold first, then: fix → fed marker + `heard_here`, adopted, not fed-only; no fix → row 10 |
+
+**Invariants (the test oracle, every row):**
+- **I1** our position-less hearing is never discarded (history always receives it) and is the ONLY
+  source of `heard_here` — any trust, any path.
+- **I2** a node our radio hears is never counted federated-only, and appears in at most one of
+  {features, served `nodes_without_position`} as OURS — except row 7's documented shape (stub ours +
+  a federated marker at a peer fix; federation totals exclude it).
+- **I3** a trust win never removes geometry without supplying geometry.
+- **I4** at most one marker per (net,id).
+- **F2 + its twin:** ONE winner rule (trust, then a `last_seen` compare that never raises — a
+  non-numeric value loses) used by BOTH the poll merge (`map_federation.py` ~1076, same `or 0`
+  compare, same crash) AND `better_fix`.
+
+**Seam (BELIEVED design, red tests first):**
+1. `map_federation.row_wins(candidate, current)` — the one winner rule; poll merge + `better_fix` call it.
+2. `_fold_local_hearing(features, position_less)` — local-local, runs every cycle (federation on or
+   off), after operator positions, before the merge: an LP whose (net,id) has an LF moves its
+   `radio_last_heard` onto the feature and leaves the served list; the moved records go to
+   `self._folded_hearings`, which the history loop reads beside `_nodes_without_position` (the ONE
+   new consumer — history keeps the `local_radio` row, origin and all).
+3. `_merge_federation` decides from a local view per key `{fkey, pl_idx, heard: bool}`; the peer
+   path for any key we hear goes through ONE branch (rows 7–11), never the REPLACE path.
+4. Line budget: `map_data_collector.py` is 1,499/1,500 (MF025) — collector edits net ≤ 0 lines; logic
+   lives in `_map_collector_federation.py`.
+
+**Acceptance (restated for row 10):** served `nodes_without_position` SHRINKS by the measured LF+LP
+overlap (UNKNOWN — `curl` of the live geojson was refused by the session's safety layer 22:2x;
+operator one-liner: `python3 <scratch>/lfp_measure.py`); history row count for those nodes
+unchanged; page online counter unchanged; `position_adopted` a number. Review: Fable BY RUNNING,
+export under `~/.cache/meshforge-review/`.
+
+**r6 build + reviews (2026-11-20 22:4x–23:3x HST, uncommitted until a clean round):**
+- r6 review r1 (Fable, by running) NOT clean → fixed red-first: F1 JSON-bigint `last_seen` →
+  OverflowError (`_row_time` now UNKNOWN); F2 a lower-trust `best_fix` replaced our marker (trust =
+  the FIX's own origin); F3 the fold hid our hearing → **operator option 1**: our marker carries
+  `heard_here*` (one `heardHere()` phrasing in `nodeStatusText`), `is_online`/counts untouched; P1 the
+  disk cache replayed a PEER's federated marker as a LOCAL feature (seam held 1 cycle) → replay skips
+  federated; P2 operator-promoted nodes lost our hearing from history → the fold owns removal.
+  Also: `meshcore_public` position-less stubs are NOT our hearing (`HEARING_ORIGINS`).
+- r6 review r2 (Fable, by running) NOT clean, all r1 fixes held → fixed red-first: F1 the fold wrote
+  into a SOURCE's dict (meshcore_public serves one cached list 600 s → stale hearing replayed) and
+  the older `_attach` path did the same with `peer_heard` → ONE copy-on-write `_own_props`; newer
+  stamp wins; F2 "Not heard here … · radio hearing unknown" → "Not heard in …"; F3 a promoted record
+  with no `network` never folded (matches as `unknown`).
+- **Deferred (not reachable by a known writer, or a separate slice):** row 2; duplicate GPS-less
+  stubs per key (order-dependent); two local features per key; `row_wins` ≠ old rule only for
+  `last_seen ≤ 0`/bool; **F4: MeshCore/RNS hearing records carry no radio stamp → option 1 can only
+  say "radio hearing unknown" for them — stamping those writers is its own slice.**
+- Reviewer r2 broke isolation (a probe outside pytest → ~44 real HTTP attempts to placeholder hosts
+  `peer-a`/`peer-b`, none answered): briefs must say "scratch probes outside pytest lose
+  `_federation_net_guard` — patch `fetch_peer_directory` and `_fetch_peer_status_extras`".

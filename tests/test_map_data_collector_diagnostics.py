@@ -213,8 +213,11 @@ class TestOperatorPositions:
         assert feat["properties"]["network"] == "meshcore"
         assert feat["properties"]["position_source"] == "operator"
         assert feat["properties"]["note"] == "test"
-        # Removed from the no-position list once promoted
+        # H4a r6 P2: the merge's fold removes it from the SERVED list (and
+        # hands the record to history) — promotion itself no longer does.
+        collector._merge_federation(features, collector._nodes_without_position)
         assert collector._nodes_without_position == []
+        assert [e["id"] for e in collector._folded_hearings] == ["meshcore:abc123"]
 
     def test_promotes_by_prefix(self, collector):
         collector._settings.set("meshcore_positions", {

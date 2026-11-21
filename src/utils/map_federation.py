@@ -27,6 +27,7 @@ Lifecycle:
 
 import json
 import logging
+import math
 import gzip
 import http.client
 import os
@@ -202,20 +203,44 @@ class FederationSnapshot:
     last_attempt: Optional[float] = None   # most recent attempt across all peers
 
 
-def better_fix(candidate: Optional[Dict[str, Any]],
-               current: Optional[Dict[str, Any]]) -> bool:
-    """MAP-H H4a: is ``candidate`` a better GPS fix than ``current``? Higher
-    source_origin trust first, then the newer ``last_seen`` — the row winner
-    rule, applied ONLY among rows that carry a valid fix."""
-    if candidate is None:
-        return False
-    if current is None:
-        return True
+def _row_time(row: Dict[str, Any]) -> Optional[float]:
+    """A peer row's ``last_seen`` as a finite number, else None (unknown)."""
+    v = row.get("last_seen")
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    try:
+        t = float(v)       # r6 review F1: a JSON bigint overflows float()
+    except OverflowError:
+        return None
+    return t if math.isfinite(t) else None
+
+
+def row_wins(candidate: Dict[str, Any], current: Dict[str, Any]) -> bool:
+    """MAP-H H4a r6: THE winner rule for two peer rows of one node — higher
+    source_origin trust first, then the newer ``last_seen``. A peer's
+    ``last_seen`` is untrusted input: a non-numeric / non-finite one is
+    UNKNOWN and loses to any known time, never raises (r5 F2 — the old
+    ``or 0`` compare TypeError'd the whole poll). Both unknown: current kept.
+    One rule for the poll merge AND ``better_fix`` (they had drifted twins)."""
     c, x = (_origin_priority(candidate.get("source_origin")),
             _origin_priority(current.get("source_origin")))
     if c != x:
         return c > x
-    return (candidate.get("last_seen") or 0) > (current.get("last_seen") or 0)
+    ct, xt = _row_time(candidate), _row_time(current)
+    if ct is None:
+        return False
+    return xt is None or ct > xt
+
+
+def better_fix(candidate: Optional[Dict[str, Any]],
+               current: Optional[Dict[str, Any]]) -> bool:
+    """MAP-H H4a: is ``candidate`` a better GPS fix than ``current``? The row
+    winner rule (``row_wins``), applied ONLY among rows that carry a valid fix."""
+    if candidate is None:
+        return False
+    if current is None:
+        return True
+    return row_wins(candidate, current)
 
 
 def _attach_best_fixes(merged: Dict[Tuple[str, str], Dict[str, Any]],
@@ -1069,17 +1094,8 @@ class FederationCollector:
                         # with a fresher firehose-poll timestamp. Tie-
                         # break on newer last_seen preserves the original
                         # behavior when both peers report the same origin.
-                        e_priority = _origin_priority(entry.get("source_origin"))
-                        x_priority = _origin_priority(existing.get("source_origin"))
-                        if e_priority > x_priority:
-                            wins = True
-                        elif e_priority < x_priority:
-                            wins = False
-                        else:
-                            e_last = entry.get("last_seen") or 0
-                            x_last = existing.get("last_seen") or 0
-                            wins = e_last > x_last
-                        if wins:
+                        # H4a r6: ONE rule with better_fix (row_wins).
+                        if row_wins(entry, existing):
                             new_seen = list(existing.get("seen_by_peers", []))
                             if peer not in new_seen:
                                 new_seen.append(peer)

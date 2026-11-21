@@ -2820,18 +2820,24 @@
     function nodeStatusText(props) {
         // MAP-H H4a: THIS radio hears the node but has no fix; the marker is a
         // PEER's fix (whose age is unknown — a peer's last_seen is its write time).
-        if (props.federated && 'heard_here' in props) {
+        // ONE phrasing of THIS radio's hearing (heard_here tri-state) for a
+        // federated marker at a peer's fix AND for our own marker whose
+        // GPS-less hearing was folded onto it (H4a r6 F3). Only Meshtastic's
+        // verdict is judged by that window (11-08 F6); null = this box knows
+        // the node but its radio's hearing time is unobservable (r4 F1) —
+        // said, never "not heard".
+        const heardHere = () => {
             const ago = agoText(props.heard_here_age_s);
-            // only Meshtastic's verdict is judged by that window (11-08 F6)
             const w = props.network === 'meshtastic' ? meshtasticWindowText() : null;
-            // heard_here null = this box knows the node but its radio's
-            // hearing time is unobservable (r4 F1) — said, never "not heard"
-            const here = props.heard_here === true
+            return props.heard_here === true
                 ? 'Heard here' + (ago ? ' ' + ago + ' ago' : '')
                 : props.heard_here === false
                 ? (w ? 'Not heard here in ' + w : 'Not heard here recently')
                     + (ago ? ' (last ' + ago + ' ago)' : '')
                 : 'Known here, radio hearing unknown';
+        };
+        if (props.federated && 'heard_here' in props) {
+            const here = heardHere();
             return here + ' · position via ' + String(props.federated_from || 'a peer')
                 + (props.source_origin ? ' (' + String(props.source_origin) + ')' : '')
                 + ' · age unknown'
@@ -2841,9 +2847,17 @@
         // a peer's node was judged by the PEER (its own window); this box only
         // knows its radio did not hear it (review 11-08 F6)
         if (props.federated) return 'Not heard by this box\'s radio' + peerHeardText(props.peer_heard);
+        // our marker carrying our radio's folded hearing (r6 F3): the radio's
+        // verdict is the "here" word; is_online (MQTT's) still colours it
+        if (props.heard_here === true) return heardHere();
+        if (props.heard_here === false) return heardHere() + peerHeardText(props.peer_heard);
+        const unk = 'heard_here' in props ? ' · radio hearing unknown' : '';
         const w = props.network === 'meshtastic' ? meshtasticWindowText() : null;
         const peer = props.is_online ? '' : peerHeardText(props.peer_heard);
-        if (props.is_online) return w ? 'Online · heard ≤ ' + w : 'Online';
+        if (props.is_online) return (w ? 'Online · heard ≤ ' + w : 'Online') + unk;
+        // r2 F2: with our radio's hearing unknown, never "not heard HERE"
+        // (r4 F1) — the source's verdict is said without the "here".
+        if (unk) return (w ? 'Not heard in ' + w : 'Offline') + unk + peer;
         return (w ? 'Not heard here in ' + w : 'Offline') + peer;
     }
 

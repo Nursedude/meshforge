@@ -17,9 +17,17 @@ from typing import Any, Dict, List, Optional
 from utils.map_federation import (
     federation_envelope, peer_status_radio_trust, serialize_peer_status,
     witness_networks)
-from utils.peer_radio_heard import peer_heard_verdict
+from utils.peer_radio_heard import coerce_radio_ts, peer_heard_verdict
 
 logger = logging.getLogger(__name__)
+
+# H4a r6 — outcomes of _merge_onto_local (closed set; the merge loop and the
+# tests switch on exactly these three).
+KEPT, ADOPTED, REPLACED = "kept", "adopted", "replaced"
+# The origins that mean THIS box received the node itself (the tags every
+# local position-less writer sets). A position-less record carrying any other
+# origin (a public feed) is not our hearing and may be upgraded by a peer.
+HEARING_ORIGINS = frozenset({"local_radio", "rns_path_table"})
 
 
 def _hub():
@@ -116,7 +124,12 @@ class FederationDataCollectorMixin:
         start_federation() is called by map_data_service after the warmup
         collect runs, so we don't compete with the cold-start collect for
         I/O budget on Pi-class hardware.
+
+        Also owns ``_folded_hearings`` (H4a r6): this cycle's position-less
+        hearings folded onto our own markers — rewritten by every merge,
+        read by the history loop; empty before the first collect.
         """
+        self._folded_hearings: List[Dict] = []
         peers = self._settings.get("federation_peers") or []
         if not peers:
             return
@@ -260,6 +273,15 @@ class FederationDataCollectorMixin:
         `{"enabled": False, ...}` with empty fields so the frontend can
         unconditionally read the block.
         """
+        # H4a r6 row 10: one record per node WE hold, every cycle (federation
+        # on or off) — BEFORE any early return. History reads the moved
+        # hearings beside the served list (I1); per cycle, never replayed.
+        self._folded_hearings = self._fold_local_hearing(features, position_less,
+                                                         time.time())
+        # Only THIS box's reception is a hearing (a folded public-feed stub
+        # is deduped, never promoted to "heard here").
+        folded_by_key = {(e.get("network"), e.get("id")): e for e in self._folded_hearings
+                         if e.get("source_origin") in HEARING_ORIGINS}
         empty_block = {
             "enabled": False, "peers": [], "peer_status": [],
             "last_sync": None, "last_attempt": None, "by_network": {},
@@ -286,7 +308,11 @@ class FederationDataCollectorMixin:
         # box is the only one with the radio. "Local always wins" stays
         # intact at equal priority (the original guarantee against peer
         # noise); a higher-priority federated entry strictly upgrades.
-        # Index entry: (priority, feature_key | None, position_less_index | None).
+        # Index entry (the ONE local view per key, H4a r6):
+        #   (priority, feature_key | None, position_less_index | None,
+        #    hearing | None) — ``hearing`` = our position-less record (in the
+        #    served list, or folded onto our feature). After the fold a key
+        #    is a feature OR a position-less record, never both.
         local_index: Dict[tuple, tuple] = {}
         for fkey, f in features.items():
             props = f.get("properties") or {}
@@ -294,13 +320,15 @@ class FederationDataCollectorMixin:
             nid = props.get("id")
             if net and nid:
                 origin = props.get("source_origin")
-                local_index[(net, nid)] = (_hub()._origin_priority(origin), fkey, None)
+                local_index[(net, nid)] = (_hub()._origin_priority(origin), fkey, None,
+                                           folded_by_key.get((net, nid)))
         for idx, entry in enumerate(position_less):
             net = entry.get("network")
             nid = entry.get("id")
             if net and nid and (net, nid) not in local_index:
                 origin = entry.get("source_origin")
-                local_index[(net, nid)] = (_hub()._origin_priority(origin), None, idx)
+                local_index[(net, nid)] = (_hub()._origin_priority(origin), None, idx,
+                                           entry if origin in HEARING_ORIGINS else None)
 
         # MAP-H H14: each peer's radio as a witness PER NETWORK, judged on this
         # box's clock with THAT network's online window (r1 F3/F4), memoised
@@ -337,54 +365,21 @@ class FederationDataCollectorMixin:
         # H4a witness: peer fixes drawn for nodes THIS radio hears GPS-less.
         position_adopted = 0
 
-        # Track position_less indices to delete after the loop (deleting in-flight
-        # would shift indices and break the second `enumerate` pass above).
+        # Upgraded public-feed stubs, deleted after the loop (in-flight
+        # deletion would shift the indices held in local_index).
         position_less_drop: set = set()
 
         for (net, nid), entry in snap.by_node.items():
             local = local_index.get((net, nid))
             if local is not None:
-                local_priority, local_fkey, local_pl_idx = local
-                fed_priority = _hub()._origin_priority(entry.get("source_origin"))
-                if fed_priority <= local_priority:
-                    # local-wins — skip the federated copy (original behavior),
-                    # but keep what the PEERS' radios heard (H14): the local
-                    # stub's is_online stays THIS radio's judgement.
-                    verdict = _peer_heard(entry)
-                    fix = (self._peer_fix_for(entry)
-                           if local_pl_idx is not None else None)
-                    if fix is not None:
-                        # MAP-H H4a (operator 11-20 "switch to the federated
-                        # representation"): THIS radio hears the node without
-                        # a fix; a peer has one. Our record stays as it is
-                        # (position-less, ours — history keeps the hearing).
-                        # The peer's fix is drawn as an ordinary FEDERATED
-                        # feature (not ours to every consumer), carrying our
-                        # hearing in its own fields so the page says it.
-                        feature = self._federated_feature(
-                            {**entry, **fix}, net, nid, verdict)
-                        feature["properties"].update(self._heard_here(
-                            position_less[local_pl_idx], net, now))
-                        features[f"federated:{net}:{nid}"] = feature
-                        # r4 F2: the node is counted as OURS (position-less);
-                        # federation totals count federated-ONLY nodes.
-                        position_adopted += 1
-                        if verdict is not None:
-                            position_less[local_pl_idx]["peer_heard"] = verdict
-                        continue
-                    if verdict is not None:
-                        if local_fkey is not None:
-                            features[local_fkey].setdefault("properties", {})[
-                                "peer_heard"] = verdict
-                        elif local_pl_idx is not None:
-                            position_less[local_pl_idx]["peer_heard"] = verdict
+                outcome = self._merge_onto_local(local, entry, net, nid, features,
+                                                 position_less, _peer_heard(entry), now)
+                if outcome == ADOPTED:
+                    position_adopted += 1
+                if outcome != REPLACED:
                     continue
-                # Federated peer carries a higher-trust origin: drop the
-                # local stub so the federated entry can take its place.
-                if local_fkey is not None:
-                    features.pop(local_fkey, None)
-                elif local_pl_idx is not None:
-                    position_less_drop.add(local_pl_idx)
+                if local[2] is not None:          # a public-feed stub, upgraded
+                    position_less_drop.add(local[2])
             by_network[net] = by_network.get(net, 0) + 1
 
             lat = entry.get("lat")
@@ -411,13 +406,9 @@ class FederationDataCollectorMixin:
                 })
                 without_pos += 1
 
-        # Drop position_less stubs that got overridden by a higher-priority
-        # federated entry (collected during the loop to avoid in-flight
-        # index shifts).
         if position_less_drop:
             position_less[:] = [
-                p for i, p in enumerate(position_less) if i not in position_less_drop
-            ]
+                p for i, p in enumerate(position_less) if i not in position_less_drop]
 
         rows = [
             serialize_peer_status(
@@ -435,6 +426,111 @@ class FederationDataCollectorMixin:
             "position_adopted": position_adopted,
         })
         return block
+
+    def _merge_onto_local(self, local: tuple, entry: Dict[str, Any], net: str,
+                          nid: str, features: Dict[str, Dict],
+                          position_less: List[Dict],
+                          verdict: Optional[Dict[str, Any]], now: float) -> str:
+        """MAP-H H4a r6: THE local-vs-peer decision for one (net, id) we hold
+        (state table + I1-I4: `.claude/plans/maps_audit_2026_11_06.md` § H4a
+        r6). Returns KEPT (ours stands), ADOPTED (a peer fix drawn as a
+        federated marker carrying OUR hearing — counted ours, never
+        federated-only) or REPLACED (our lower-trust, unheard feature popped;
+        the caller draws the peer row as federated-only — pre-existing row 5).
+        """
+        local_priority, fkey, pl_idx, hearing = local
+        fed_priority = _hub()._origin_priority(entry.get("source_origin"))
+
+        def _attach(target):
+            if verdict is not None and target is not None:
+                target["peer_heard"] = verdict
+
+        ours = self._own_props(features, fkey) if fkey is not None else None
+        stub = position_less[pl_idx] if pl_idx is not None else None
+        if hearing is not None:
+            # Rows 7-11: THIS radio hears it — one branch at ANY peer trust;
+            # our record is never dropped (I1). A peer fix is drawn as a
+            # FEDERATED marker (not ours to every consumer, operator 11-20)
+            # unless our own fix is at least as trusted (no federated twin).
+            fix = self._peer_fix_for(entry)
+            # r6 review F2: the geometry's trust is the FIX's own origin (a
+            # best_fix may come from a lower-trust peer row than the winner).
+            fix_priority = (_hub()._origin_priority(fix.get("source_origin"))
+                            if fix else fed_priority)
+            if fix is None or (fkey is not None and fix_priority <= local_priority):
+                _attach(ours if ours is not None else stub)
+                return KEPT
+            feature = self._federated_feature({**entry, **fix}, net, nid, verdict)
+            feature["properties"].update(self._heard_here(hearing, net, now))
+            if fkey is not None:
+                features.pop(fkey, None)          # I4: one marker
+            features[f"federated:{net}:{nid}"] = feature
+            _attach(stub)
+            return ADOPTED
+        # Rows 4-6: a local record that is not our radio's hearing (a local
+        # feature, or a public-feed position-less stub).
+        if fed_priority <= local_priority:
+            _attach(ours if ours is not None else stub)       # row 4
+            return KEPT
+        if fkey is not None:
+            if not self._is_valid_coordinate(entry.get("lat"), entry.get("lon")):
+                _attach(ours)                     # row 6 = I3: keep geometry
+                return KEPT
+            features.pop(fkey, None)              # row 5: higher-trust fix
+        return REPLACED                           # caller drops a stub (pl_idx)
+
+    @staticmethod
+    def _own_props(features: Dict[str, Dict], fkey: str) -> Dict[str, Any]:
+        """THE way the merge writes onto a local feature (r6 round 2): copy
+        on write. A source may hand back the SAME dicts next cycle (the
+        meshcore_public cache serves one list for 600 s), so a stamp written
+        into them would replay this cycle's hearing / peer verdict after it
+        stopped being true. Each call copies the CURRENT dict (so earlier
+        writes this cycle carry over); callers never hold a returned dict
+        across another call. No marker key: it would leak into the payload."""
+        f = features[fkey]
+        props = dict(f.get("properties") or {})
+        features[fkey] = {**f, "properties": props}
+        return props
+
+    def _fold_local_hearing(self, features: Dict[str, Dict],
+                            position_less: List[Dict], now: float) -> List[Dict]:
+        """MAP-H H4a r6 row 10: a node WE position (any local source) AND hear
+        GPS-less on our radio is ONE record — the marker. Our hearing's
+        ``radio_last_heard`` moves onto it; the position-less record leaves
+        the SERVED list (in place) and is returned for history, which must
+        still persist it as our GPS-less ``local_radio`` row (I1). r6 review F3
+        (operator option 1): when the record is THIS box's reception, our
+        marker carries ``heard_here*`` — the fields and words a federated
+        marker already has; ``is_online`` (every page count) is untouched."""
+        by_key = {}
+        for fkey, f in features.items():
+            props = f.get("properties") or {}
+            if props.get("network") and props.get("id") and not props.get("federated"):
+                by_key[(props["network"], props["id"])] = fkey
+        keep: List[Dict] = []
+        folded: List[Dict] = []
+        for e in position_less:
+            # r2 F3: an operator-promoted feature says "unknown" for a record
+            # that carried no network — the same default, so they match.
+            fkey = (None if e.get("federated")
+                    else by_key.get((e.get("network") or "unknown", e.get("id"))))
+            if fkey is None:
+                keep.append(e)
+                continue
+            # r2 F1: never write into a SOURCE's dict — a source may serve the
+            # same cached list next cycle (meshcore_public, 600 s), replaying
+            # this cycle's hearing after our record is gone. Copy on write.
+            props = self._own_props(features, fkey)
+            old = coerce_radio_ts(props.get("radio_last_heard"), now)
+            new = coerce_radio_ts(e.get("radio_last_heard"), now)
+            if new is not None and (old is None or new > old):   # newer wins
+                props["radio_last_heard"] = new
+            if e.get("source_origin") in HEARING_ORIGINS:
+                props.update(self._heard_here(e, e.get("network"), now))
+            folded.append(e)
+        position_less[:] = keep
+        return folded
 
     def _heard_here(self, local_entry: Dict[str, Any], net: str,
                     now: float) -> Dict[str, Any]:

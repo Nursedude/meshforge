@@ -419,8 +419,9 @@ def _js_body(name):
 class TestPageSaysPeerHeard:
     def test_status_reader_appends_peer_heard_for_federated_and_not_online(self):
         body = _js_body("nodeStatusText")
-        # federated, heard-here-but-not-recently (MAP-H H4a), not online
-        assert body.count("peerHeardText(props.peer_heard)") == 3
+        # federated, heard-here-but-not-recently (MAP-H H4a), our marker with
+        # a folded not-heard-here hearing (H4a r6 F3), not online
+        assert body.count("peerHeardText(props.peer_heard)") == 4
         # an online node never gets a peer clause: this radio is the better witness
         assert "props.is_online ? '' : peerHeardText" in body
         assert "props.heard_here === true ? '' : peerHeardText" in body

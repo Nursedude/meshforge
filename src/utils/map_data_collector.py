@@ -1017,7 +1017,7 @@ class MapDataCollector(
                 strip_radio_stamp(self._load_cache()), "node_tracker")
             for f in cache_features:
                 fid = f["properties"].get("id", "")
-                if fid:
+                if fid and not f["properties"].get("federated"):  # r6 P1: a peer's, never ours
                     features[fid] = f
             replayed_ids = set(features)
         replayed_cache = bool(replayed_ids)
@@ -1172,7 +1172,7 @@ class MapDataCollector(
                     self._federated_skipped_persistence_count += 1
                     continue
                 history_features.append(f)
-            for entry in self._nodes_without_position:
+            for entry in [*self._nodes_without_position, *self._folded_hearings]:
                 nid = entry.get("id")
                 if not nid:
                     continue
@@ -1229,8 +1229,8 @@ class MapDataCollector(
         Reads `meshcore_positions` from map_settings.json. Matches against
         self._nodes_without_position by either the full node id (e.g. "meshcore:abcd…")
         or a prefix of the id after the "network:" part (e.g. "abcd" matches
-        "meshcore:abcd1234ef"). Promoted nodes are added to `features` and REMOVED
-        from `self._nodes_without_position` (they're no longer "without" — operator fixed that).
+        "meshcore:abcd1234ef"). Promoted nodes are added to `features`; the merge's fold
+        (H4a r6) then removes them from the served list and hands their hearing to history.
 
         Returns the number of nodes promoted.
         """
@@ -1283,8 +1283,7 @@ class MapDataCollector(
             if nid and nid not in features:
                 features[nid] = feature
                 promoted += 1
-            else:
-                remaining.append(entry)
+            remaining.append(entry)  # r6 P2: the merge's fold owns removal (keeps our hearing)
 
         self._nodes_without_position = remaining
         return promoted
