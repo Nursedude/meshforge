@@ -1061,7 +1061,8 @@ class MapDataCollector(
                 "sources": sources,
                 "source_diagnostics": dict(self._source_diagnostics),
                 "total_nodes": self._total_nodes_seen,
-                "nodes_with_position": len(features),
+                "nodes_with_position": len(features) - self._borrowed_position_count(),
+                "nodes_with_borrowed_position": self._borrowed_position_count(),  # H4a R2 F5
                 "nodes_without_position": self._nodes_without_position,
                 "nodes_without_position_count": len(self._nodes_without_position),
                 "directory": directory_stats,
@@ -1081,7 +1082,7 @@ class MapDataCollector(
                 net = entry.get("network", "unknown")
                 by_network[net] = by_network.get(net, 0) + 1
             map_metrics.set_node_inventory(
-                with_position=len(features),
+                with_position=len(features) - self._borrowed_position_count(),
                 without_position_by_network=by_network,
             )
             if directory_stats:
@@ -1144,7 +1145,7 @@ class MapDataCollector(
         # deliberate H14 design (test_peer_radio_heard); whether a replay
         # belongs in the observation stream is an open residual, not decided here.
         if not replayed_cache:
-            self._save_cache(geojson)
+            self._save_cache(self._own_cache_geojson(geojson))  # H4a R2 F4
         else:
             self._cache_replays = getattr(self, "_cache_replays", 0) + 1  # witness
 
@@ -1171,8 +1172,7 @@ class MapDataCollector(
                 if props.get("federated") or props.get("federated_from"):
                     self._federated_skipped_persistence_count += 1
                     continue
-                # H4a: a peer's borrowed fix (position_from) is never persisted as ours
-                history_features.append({**f, "geometry": {}} if props.get("position_from") else f)
+                history_features.append(self._own_history_feature(f))  # H4a: never a peer's fix
             for entry in self._nodes_without_position:
                 nid = entry.get("id")
                 if not nid:

@@ -255,3 +255,150 @@ class TestAdoptedPositionNotPersistedAsOurs:
         assert not (persisted[0].get("geometry") or {}).get("coordinates"), (
             f"peer's position persisted as this radio's: {persisted[0]}")
         assert persisted[0]["properties"]["radio_last_heard"] == float(int(heard))
+
+
+# ── Round 2 (review of e8bb8135) ────────────────────────────────────────────
+
+import re
+from pathlib import Path
+
+HTML = (Path(__file__).resolve().parent.parent / "web" / "node_map.html").read_text()
+
+
+def _js_body(name):
+    m = re.search(r"function %s\(([^)]*)\)\s*\{" % name, HTML)
+    assert m, name
+    depth, i = 1, m.end()
+    while depth:
+        depth += {"{": 1, "}": -1}.get(HTML[i], 0)
+        i += 1
+    return HTML[m.end():i]
+
+
+def _merge_one(collector, peer_origin, local_entry=None, features=None):
+    now = time.time()
+    if local_entry is None:
+        _, no_position, _ = collector._drain_interface_nodes(
+            _fake_interface(now - 60), "meshtasticd")
+        position_less = list(no_position)
+    else:
+        position_less = [local_entry]
+    features = {} if features is None else features
+    _federate_positioned_copy(collector, peer_write_ts=now - 5)
+    snap = collector._federation.get_snapshot.return_value
+    snap.by_node[("meshtastic", NODE_ID)]["source_origin"] = peer_origin
+    block = collector._merge_federation(features, position_less)
+    return features, position_less, block
+
+
+def _adopted(features):
+    return [f for f in features.values()
+            if f["properties"].get("id") == NODE_ID and f["properties"].get("position_from")]
+
+
+class TestR2LowerTrustPeerPositionAdopted:
+    """R2 F1 (operator 2026-11-20: "adopt lower-trust positions"): before H4a
+    any tagged peer fix drew an untagged local record; tagging must not lose
+    those markers. A position-less record adopts ANY peer's valid fix."""
+
+    @pytest.mark.parametrize("origin", ["local_radio", "mqtt_local",
+                                        "node_tracker", "meshcore_public"])
+    def test_adopts_peer_fix_at_or_below_local_trust(self, collector, origin):
+        features, position_less, block = _merge_one(collector, origin)
+        assert len(_adopted(features)) == 1, (origin, features)
+        assert [e for e in position_less if e.get("id") == NODE_ID] == []
+        assert block["position_adopted"] == 1
+
+
+class TestR2BorrowedPositionIsSaid:
+    """R2 F2+F3: the fix's age is UNMEASURABLE (a peer's last_seen is its
+    collector write time — H14), so the page must SAY the position is
+    borrowed and of unknown age, never draw it as this radio's own."""
+
+    def test_popup_names_the_lender_and_unknown_age(self):
+        body = _js_body("createPopupContent")
+        assert "props.position_from" in body
+        assert "age unknown" in body
+
+    def test_marker_is_styled_borrowed(self):
+        assert "node-marker-borrowed" in _js_body("createMarkerIcon")
+        assert ".node-marker-borrowed" in HTML  # the CSS exists
+
+    def test_status_endpoint_carries_the_adopted_count(self, collector):
+        from utils._map_status_endpoints import build_federation_status
+        _merge_one(collector, "local_radio")
+        assert build_federation_status(collector)["position_adopted"] == 1
+
+    def test_status_count_is_unknown_before_any_merge(self, collector):
+        from utils._map_status_endpoints import build_federation_status
+        _federate_stub_copy(collector, peer_write_ts=time.time())
+        # no merge has run: unobservable, never a healthy-looking 0
+        assert build_federation_status(collector)["position_adopted"] is None
+
+
+class TestR2NoBorrowedFixInAnyStore:
+    """R2 F4: ONE rule for every writer of this box's own state — history AND
+    the Source-7 disk cache. A borrowed fix in the cache replays as ours."""
+
+    def test_cache_gets_no_borrowed_coordinates(self, tmp_path):
+        fake_home = tmp_path / "home"
+        cfg_dir = fake_home / ".config" / "meshforge"
+        cfg_dir.mkdir(parents=True)
+        with patch("utils.map_data_collector.get_real_user_home",
+                   return_value=fake_home):
+            c = MapDataCollector(cache_dir=tmp_path / "cache",
+                                 enable_history=False, config_dir=cfg_dir)
+        for name in ("_collect_unified_tracker", "_collect_direct_radio",
+                     "_collect_mqtt", "_collect_node_tracker", "_collect_aredn",
+                     "_collect_aredn_worldmap", "_collect_rns_direct",
+                     "_collect_meshcore_public"):
+            setattr(c, name, lambda: [])
+        c._collect_public_fallbacks = lambda current_feature_count=0: []
+
+        def radio():
+            _, no_pos, _ = c._drain_interface_nodes(
+                _fake_interface(time.time() - 60), "meshtasticd")
+            c._nodes_without_position.extend(no_pos)
+            return []
+        c._collect_meshtasticd = radio
+        c._save_cache = MagicMock()
+        _federate_positioned_copy(c, peer_write_ts=time.time() - 5)
+
+        geo = c._collect_locked()
+
+        assert _adopted({i: f for i, f in enumerate(geo["features"])}), "not drawn"
+        saved = c._save_cache.call_args.args[0]
+        mine = [f for f in saved["features"] if f["properties"].get("id") == NODE_ID]
+        # The cache replays POSITIONED nodes (Source 7) — a borrowed fix is not
+        # ours to replay, so it is not cached at all (history keeps the hearing).
+        assert mine == [], mine
+        # R2 F5: the inventory does not count a borrowed fix as ours
+        assert geo["properties"]["nodes_with_borrowed_position"] == 1
+        assert geo["properties"]["nodes_with_position"] == len(geo["features"]) - 1
+
+
+class TestR2InventoryAndKeys:
+    def test_adoption_never_overwrites_another_networks_feature(self, collector):
+        """R2 F6: features is keyed by bare id; (network, id) is the identity."""
+        other = {"type": "Feature",
+                 "geometry": {"type": "Point", "coordinates": [1.0, 2.0, 0]},
+                 "properties": {"id": NODE_ID, "network": "rns",
+                                "source_origin": "rns_path_table"}}
+        features = {NODE_ID: other}
+        # local_index takes the (rns, id) feature; our (meshtastic, id) entry is
+        # position-less — both must survive.
+        features, position_less, _ = _merge_one(collector, "local_radio",
+                                                features=features)
+        assert features[NODE_ID] is other
+        assert len(_adopted(features)) == 1
+
+    def test_adopted_marker_gets_this_radios_online_verdict(self, collector):
+        """R2 F7: an HTTP-path entry carries no is_online — judge it at adoption
+        from THIS radio's last_heard, never leave it undefined."""
+        entry = {"id": NODE_ID, "name": "HTTP", "network": "meshtastic",
+                 "hw_model": "HELTEC_V3", "last_heard": int(time.time() - 60),
+                 "source_origin": "local_radio", "via_mqtt": False}
+        features, _, _ = _merge_one(collector, "local_radio", local_entry=entry)
+        props = _adopted(features)[0]["properties"]
+        assert props["is_online"] is True
+        assert props["hardware"] == "HELTEC_V3"

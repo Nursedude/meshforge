@@ -88,6 +88,9 @@ def build_federation_status(collector: Any,
                 for s in snap.peer_status.values()]
         block = federation_envelope(collector._federation, snap, non_fed, rows)
         block["federated_node_count"] = len(snap.by_node)
+        # MAP-H H4a: this box's GPS-less records drawn at a PEER's fix in the
+        # last merge. None = no merge has run (unobservable), never 0.
+        block["position_adopted"] = getattr(collector, "_position_adopted_last", None)
         return block
     except Exception as e:
         logger.warning(f"federation status lookup failed: {e}")

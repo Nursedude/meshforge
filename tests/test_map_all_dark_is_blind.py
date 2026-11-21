@@ -285,7 +285,7 @@ def test_a_replayed_cache_is_not_resaved():
     import inspect
     from utils.map_data_collector import MapDataCollector
     src = inspect.getsource(MapDataCollector._collect_locked)
-    save = src.index("self._save_cache(geojson)")
+    save = src.index("self._save_cache(")
     assert "if not replayed_cache:" in src[src.rindex("\n", 0, save) - 200:save]
 
 

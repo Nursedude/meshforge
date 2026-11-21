@@ -223,6 +223,16 @@
         .node-marker-federated {
             opacity: 0.6;
         }
+        /* MAP-H H4a: heard by THIS radio, drawn at a PEER's GPS fix of unknown
+           age — dotted ring, full colour (the hearing is ours, the spot is not). */
+        .node-marker-borrowed::after {
+            content: '';
+            position: absolute;
+            top: -3px; left: -3px; right: -3px; bottom: -3px;
+            border: 1px dotted rgba(255, 213, 79, 0.85);
+            border-radius: 50%;
+            pointer-events: none;
+        }
         .node-marker-federated::after {
             content: '';
             position: absolute;
@@ -2846,7 +2856,7 @@
     // Add a field here when the icon starts depending on it.
     function markerIconKey(p) {
         return [p.is_online, p.network, p.is_gateway, p.via_mqtt, p.role,
-                p.is_local, p.federated,
+                p.is_local, p.federated, !!p.position_from,
                 (p.battery !== null && p.battery !== undefined && p.battery < 20)].join('|');
     }
 
@@ -2871,6 +2881,7 @@
         if (props.battery !== null && props.battery < 20) cls.push('node-marker-alert');
         if (!props.is_online) cls.push('node-marker-stale');
         if (props.federated) cls.push('node-marker-federated');
+        if (props.position_from) cls.push('node-marker-borrowed');
 
         return L.divIcon({
             html: html,
@@ -3076,7 +3087,7 @@
                     ${congestionHtml}
                     ${hardwareSafe ? `<div class="info-label">Hardware</div><div class="info-value" style="font-size:11px">${hardwareSafe}</div>` : ''}
                     <div class="info-label">Position</div>
-                    <div class="info-value" style="font-size:11px">${latText}, ${lonText}</div>
+                    <div class="info-value" style="font-size:11px">${latText}, ${lonText}${props.position_from ? `<br><span style="color:#ffd54f" title="This radio heard the node but has no GPS fix for it; the position is a peer's, and its age is not known">via ${escHtml(String(props.position_from))} · age unknown</span>` : ''}</div>
                 </div>
                 <button class="btn-trail" onclick="toggleNodeTrail('${escJsString(rawId)}', event)" id="trail-btn-${idForDom}">
                     Show Trail (24h)
