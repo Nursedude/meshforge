@@ -264,3 +264,15 @@ export under `~/.cache/meshforge-review/`.
 - Reviewer r2 broke isolation (a probe outside pytest → ~44 real HTTP attempts to placeholder hosts
   `peer-a`/`peer-b`, none answered): briefs must say "scratch probes outside pytest lose
   `_federation_net_guard` — patch `fetch_peer_directory` and `_fetch_peer_status_extras`".
+- **r6 DEPLOYED 2026-11-21 00:30–00:33 HST** (`e8c82d8d`, fleet 10/10, `honest_status` FULL exit 0 at 01:00).
+  Live n=1 (VolcanoAI, operator ran the read-only script): I2 overlap 0; 15 our markers carry
+  `heard_here`; `position_adopted` 20 = adopted markers carrying `heard_here`; online over our
+  features + position-less 38 vs radio `num_online_nodes` 37 measured 11-20 15:28 — NOT same-instant,
+  UNKNOWN. Browser (operator's screen): an adopted marker's status line read exactly as specified —
+  VERIFIED; a folded (our) marker not yet seen.
+- **Queued finding (pre-existing since `9672ca99`, made visible by r6):** the popup's "Last heard
+  here" row on EVERY federated marker prints the peer's raw `last_seen` — its collector WRITE time
+  (H14's wrong quantity), as an unformatted epoch (`web/node_map.html` `lastHeardText =
+  props.last_seen || 'Unknown'`, formatted only when `last_heard` exists). Seen live under a status
+  line saying "last 78 d ago". Fix: a federated marker's row = THIS radio's `heard_here_at` as an
+  age, else "not heard by this radio"; never a peer write time, never a raw epoch.
