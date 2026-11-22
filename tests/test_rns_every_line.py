@@ -358,3 +358,82 @@ def test_interface_table_unlisted_row_never_up_when_blind(blind, running, si, ex
     from handlers.rns_interfaces import unlisted_row_status
     assert unlisted_row_status("RNodeInterface", blind, rnsd_running=running,
                                si_available=si) == expect
+
+
+# ---------------------------------------------- Fable r6 IMPORTANT (seam)
+
+BRACKET_FIRST = (
+    "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 2 programs\n"
+    "    Traffic   : ↑1.00 KB  0 bps\n                ↓2.00 KB  0 bps\n"
+    "\n [nested][High Datarate]\n    Status    : Up\n    Mode      : Full\n"
+    "    Traffic   : ↑0 B       0 bps\n                ↓44.00 KB  0 bps\n"
+    "\n Transport Instance <aa> running\n Uptime is 1h\n")
+
+
+def test_r6_bracket_first_name_reaches_the_leg():
+    """Stock RNodeSubInterface under a section named "[nested]" has an empty
+    type_name; the engine's old `if i.type_name` filter (for the retired
+    regex's bogus matches) dropped this fully-read RX-only interface and the
+    leg said "All checks passed". The PARSER alone decides what an interface is."""
+    st = parse_rnstatus(BRACKET_FIRST)
+    assert st.unread_lines == []
+    leg = _leg(_traffic(st, False))
+    assert any("[nested][High Datarate]: RX-ONLY" in ln for ln in leg.lines)
+    assert leg.issues == ["Interface [nested][High Datarate] is RX-only (no TX)"]
+
+
+def test_live_stock_driver_fresh_cases_judged_at_the_leg():
+    """Fresh stock cases judged at the END: every shown interface is a leg
+    row, and the leg is not blind on genuine stock text."""
+    pytest.importorskip("RNS.Utilities.rnstatus")
+    import rnstatus_stock_driver as d
+    rng = random.Random("r6-leg")
+    fs = [False, True] if d.has_fstats() else [False]
+    for _ in range(300):
+        stats = d.random_stats(rng)
+        for flag in fs:
+            out = d.render(stats, fstats=flag)
+            leg = _leg(_traffic(parse_rnstatus(out), flag))
+            text = "\n".join(leg.lines)
+            truth = d.truth(stats, fstats=flag)
+            for t in truth:
+                assert f"  {t['name']}: " in text, out
+            acc = [u for u in leg.unobserved if u.startswith("interface traffic")]
+            # nothing shown is an explained blindness, never "passed"
+            assert acc == ([] if truth else
+                           ["interface traffic (rnstatus listed no interfaces)"]), out
+
+
+# ------------------- Fable r6 mutant survivors: right code, now pinned (nits)
+
+_BLK = " X[y]\n    Status    : Up\n"
+_TR = "    Traffic   : ↑1 B  0 bps\n                ↓2 B  0 bps\n"
+
+
+def test_duplicate_traffic_block_is_unread_and_first_kept():      # M1
+    st = parse_rnstatus(_BLK + _TR + "    Traffic   : ↑0 B  0 bps\n                ↓9 KB  0 bps\n")
+    assert st.unread_lines == ["    Traffic   : ↑0 B  0 bps", "                ↓9 KB  0 bps"]
+    assert st.interfaces[0].rx.text == "2 B"
+
+
+@pytest.mark.parametrize("bad", [                                  # M5 / M6
+    "    Traffic   : x↑1 B  0 bps\n                ↓2 B  0 bps\n",
+    "    Traffic   : ↑1 B  0 bps\n                x↓2 B  0 bps\n",
+])
+def test_counter_must_start_with_its_arrow(bad):
+    assert parse_rnstatus(_BLK + bad).unread_lines
+
+
+def test_header_scan_stops_at_a_blank_line():                       # M10
+    st = parse_rnstatus(" X[y]\n\n    Status    : Up\n" + _TR)
+    assert st.interfaces == [] and st.unread_lines[0] == " X[y]"
+
+
+def test_status_value_must_be_exactly_up_or_down():                 # M11
+    st = parse_rnstatus(" X[y]\n    Status    : Upside-down\n" + _TR)
+    assert st.unread_lines == ["    Status    : Upside-down"]
+    assert st.interfaces[0].status is InterfaceStatus.UNKNOWN
+
+
+def test_bracket_led_top_level_text_is_not_a_log_line():            # M13
+    assert parse_rnstatus(" [not a log] text\n").unread_lines == [" [not a log] text"]

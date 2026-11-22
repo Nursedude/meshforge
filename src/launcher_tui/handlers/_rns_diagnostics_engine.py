@@ -508,10 +508,13 @@ def _leg_interfaces(status):
     """Interfaces leg [6/6] is ABOUT, in listed order — Shared Instance
     INCLUDED (Fable r3: its filtered rx is a silent drop like any other).
 
-    Excludes only the bogus all-whitespace "interfaces" _IFACE_RE reads out
-    of argparse usage text.
+    No filter here: the PARSER alone decides what an interface is (a header
+    whose block holds a Status line). The old `if i.type_name` filter, kept
+    for the retired header regex's bogus usage-text matches, dropped a real
+    fully-read "[nested][High Datarate]" and the leg said "All checks
+    passed" (Fable r6 IMPORTANT — the same class one layer up).
     """
-    return [i for i in status.interfaces if i.type_name]
+    return list(status.interfaces)
 
 
 def health_rows(traffic):
