@@ -60,27 +60,59 @@ def test_unlisted_row_literals():
 
 _T = _SI + _blk("RNodeInterface[Alpha]") + _FOOT
 _IF = [("Alpha", "RNodeInterface"), ("Bravo", "RNodeInterface")]
+_SAFE_ORDER = "close RNS client apps"
 
 
-def test_table_client_hosts_complete_reading():                          # B1a
-    out = _table(_T, _IF, running=False, si=True, owner=("nomadnet", 4242))
+# r10 (Fable r9 #1): RNS shares over abstract Unix sockets, never UDP 37428,
+# so a UDP owner is NOT the instance host. Whatever it returns, no one is
+# named — the host is "not identified" and the safe order is generic.
+@pytest.mark.parametrize("owner", [None, ("nomadnet", 4242), ("python3", 88), ("rnsd", 77)])
+def test_table_client_hosts_complete_reading(owner):                     # B1a
+    out = _table(_T, _IF, running=False, si=True, owner=owner)
     assert _row(out, "Alpha", "RNodeInterface") == ("UP", "↑5 KB  ↓6 KB")
     assert _row(out, "Bravo", "RNodeInterface") == (
-        "UNKNOWN", "(not in rnstatus output; instance hosted by nomadnet)")
+        "UNKNOWN", "(not in rnstatus output)")
     text = "\n".join(out)
     assert "Start rnsd from Service Control." not in text
-    assert "nomadnet is hosting the shared instance" in text
+    assert "host not identified" in text and _SAFE_ORDER in text
+    for name in ("nomadnet", "python3", "PID"):
+        assert f"hosted by {name}" not in text and f"{name} (PID" not in text
 
 
 def test_table_client_hosts_blind_reading():                             # B1b
     t = _SI + _blk("RNodeInterface[Alpha]") + " weird\n" + _FOOT
     out = _table(t, _IF, running=False, si=True, owner=("nomadnet", 4242))
     st, detail = _row(out, "Bravo", "RNodeInterface")
+    assert st == "UNKNOWN" and "could not read" in detail
+    assert "hosted by" not in detail
+
+
+# r10 (Fable r9 #5): a row that was READ proves an instance answered — for
+# the row, the header and the footer — even when every proxy probe missed.
+@pytest.mark.parametrize("text", [
+    _T,                                                       # complete
+    _SI + _blk("RNodeInterface[Alpha]") + " weird\n" + _FOOT,  # blind, rows read
+])
+def test_read_row_proves_an_instance(text):
+    out = _table(text, _IF, running=False, si=False, owner=None)
+    st, _d = _row(out, "Bravo", "RNodeInterface")
     assert st == "UNKNOWN"
-    assert "could not read" in detail and "hosted by nomadnet" in detail
+    joined = "\n".join(out)
+    assert "NOT RUNNING" not in joined
+    assert "Start rnsd from Service Control." not in joined
+    assert _SAFE_ORDER in joined
 
 
 def test_table_nothing_hosts_is_down_and_says_start_rnsd():
     out = _table("", _IF, plain_rc=1, running=False, si=False, owner=None)
     assert _row(out, "Bravo", "RNodeInterface") == ("DOWN", "no RNS instance running")
-    assert "Start rnsd from Service Control." in "\n".join(out)
+    joined = "\n".join(out)
+    assert "Start rnsd from Service Control." in joined
+    assert "NOT RUNNING" in joined
+
+
+def test_rnsd_running_probe_missed_but_reading_answered_is_not_degraded():
+    out = _table(_T, _IF, running=True, si=False, owner=None)
+    joined = "\n".join(out)
+    assert "rnsd — shared instance available" in joined
+    assert "DEGRADED" not in joined and "NOT responding" not in joined

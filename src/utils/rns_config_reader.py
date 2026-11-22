@@ -27,8 +27,9 @@ file rnsd rejects is the defect this replaced (WITNESS-TUI r9, 2026-11-22:
 the old reader took any ``[[…]]`` line as an interface).
 """
 
+import io
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from utils.safe_import import safe_import
 
@@ -40,6 +41,21 @@ class RNSConfigError(ValueError):
 
 
 Interface = Dict[str, Any]
+Content = Union[str, bytes]
+
+# ConfigObj's ConfigParser-style interpolation key (rnsd's default):
+# `%(name)s`. MeshForge does not evaluate it — both paths refuse it by name.
+_INTERP = re.compile(r"%\(([^)]*)\)s")
+_UTF8_BOM = b"\xef\xbb\xbf"
+
+
+def _raw_lines(content: Content) -> List[bytes]:
+    """The file as rnsd's ConfigObj(path) sees it: bytes, readlines()
+    (split on b"\\n" ONLY — not \\f, \\x85, U+2028 or a lone \\r, which
+    str.splitlines() would also split on; Fable r9 #2)."""
+    if isinstance(content, str):
+        content = content.encode("utf-8")
+    return io.BytesIO(content).readlines()
 
 
 # ── shared output shaping ───────────────────────────────────────────────
@@ -61,8 +77,14 @@ def _split(section) -> Tuple[Dict[str, str], List[Tuple[str, Any]]]:
     for key, value in section.items():
         if _is_section(value):
             subs.append((key, value))
-        else:
-            settings[key] = _flat(value)
+            continue
+        for item in (value if isinstance(value, (list, tuple)) else [value]):
+            if _INTERP.search(str(item)):
+                raise RNSConfigError(
+                    f"value of '{key}' uses %(…)s interpolation — rnsd would "
+                    f"substitute it; MeshForge does not evaluate it (write the "
+                    f"value literally to see this interface here)")
+        settings[key] = _flat(value)
     return settings, subs
 
 
@@ -93,12 +115,19 @@ def _shape(root) -> List[Interface]:
 # ── path 1: RNS's own ConfigObj ─────────────────────────────────────────
 
 
-def _read_configobj(content: str) -> List[Interface]:
+def _read_configobj(content: Content) -> List[Interface]:
+    # The same call shape as rnsd's ConfigObj(path): a list of BYTES lines
+    # (ConfigObj strips the BOM and decodes). interpolation=False so values
+    # read RAW and _split refuses %(…)s by name — ConfigObj would otherwise
+    # raise MissingInterpolationOption lazily, on value access, past any
+    # try around the constructor (Fable r9 #3).
     try:
-        root = _ConfigObj(content.splitlines())
-    except Exception as e:  # ConfigObjError family + anything it raises
+        root = _ConfigObj(_raw_lines(content), interpolation=False)
+        return _shape(root)
+    except RNSConfigError:
+        raise
+    except Exception as e:  # ConfigObjError family, UnicodeDecodeError, …
         raise RNSConfigError(f"{type(e).__name__}: {e}") from e
-    return _shape(root)
 
 
 # ── path 2: strict fallback with ConfigObj's grammar ────────────────────
@@ -216,10 +245,22 @@ def _match_depth(sect: _Sec, depth: int, lineno: int) -> _Sec:
     raise RNSConfigError(f"Cannot compute nesting level at line {lineno}")
 
 
-def _read_strict(content: str) -> List[Interface]:
+def _decoded_lines(content: Content) -> List[str]:
+    """ConfigObj's load, for the strict path: bytes lines, the UTF-8 BOM
+    stripped from the first, utf-8 decode, trailing CR/LF stripped."""
+    raw = _raw_lines(content)
+    if raw and raw[0].startswith(_UTF8_BOM):
+        raw[0] = raw[0][len(_UTF8_BOM):]
+    try:
+        return [line.decode("utf-8").rstrip("\r\n") for line in raw]
+    except UnicodeDecodeError as e:
+        raise RNSConfigError(f"UnicodeDecodeError: {e}") from e
+
+
+def _read_strict(content: Content) -> List[Interface]:
     root = _Sec(0, None)
     this = root
-    for lineno, line in enumerate(content.splitlines(), 1):
+    for lineno, line in enumerate(_decoded_lines(content), 1):
         sline = line.strip()
         if not sline or sline.startswith('#'):
             continue
@@ -262,7 +303,7 @@ def _read_strict(content: str) -> List[Interface]:
 # ── the one entry point ─────────────────────────────────────────────────
 
 
-def read_interfaces(content: str) -> List[Interface]:
+def read_interfaces(content: Content) -> List[Interface]:
     """The interfaces rnsd would bring up sections for, in file order.
 
     Raises ``RNSConfigError`` when rnsd could not load the file either."""

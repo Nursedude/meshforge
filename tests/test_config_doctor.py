@@ -296,7 +296,7 @@ class TestCheckRnsInterfaceDevices:
              patch("handlers._rns_interface_mgr.find_blocking_interfaces", side_effect=fake):
             r = checks.check_rns_interface_devices()
         assert r.status == OK
-        assert seen["content"] == _ONE_IFACE
+        assert seen["content"] == _ONE_IFACE.encode()  # r10: the bytes rnsd reads
 
     def test_ok_when_no_blocking(self, tmp_path):
         cfg = tmp_path / "config"

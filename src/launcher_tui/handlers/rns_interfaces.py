@@ -197,7 +197,6 @@ class RNSInterfacesHandler(BaseHandler):
         from ._rns_diagnostics_engine import interface_health
         from utils.service_check import (
             check_process_running, get_rns_shared_instance_info,
-            get_udp_port_owner,
         )
 
         clear_screen()
@@ -207,11 +206,32 @@ class RNSInterfacesHandler(BaseHandler):
         rnsd_running = check_process_running('rnsd')
         si_info = get_rns_shared_instance_info()
         si_available = si_info.get('available', False)
-        # Who holds the shared instance — rnsd by design, a client when
-        # rnsd is down (#69 race). Rows and hints name it (r9).
+        # Who holds the shared instance — rnsd by design; when rnsd is down a
+        # CLIENT (NomadNet / Sideband / MeshChatX) can (#69 race). The client
+        # is NOT identified: RNS shares over abstract Unix sockets, never UDP
+        # 37428, so the old UDP-owner probe never named it on a real box and
+        # could name an unrelated process (Fable r9 #1). Unnamed until an
+        # @rns socket-owner read is measured live.
         host = "rnsd" if rnsd_running else None
 
-        if rnsd_running and si_available:
+        # rnstatus is read FIRST: a reading is a direct measurement that an
+        # instance answered — it outranks every proxy probe, for the header,
+        # the rows and the footer alike (Fable r9 #5).
+        # rows: (rnstatus name, tx, rx, is_healthy, status), a LIST in listed
+        # order — never a dict keyed by name (duplicates collapsed).
+        health = []
+        # Why the reading is incomplete (None = complete). An interface NOT
+        # in a blind reading is UNKNOWN, never "UP (no traffic data)".
+        blind = None
+        try:
+            health, blind = interface_health()
+        except Exception as e:
+            logger.debug("Interface health check failed: %s", e)
+            blind = f"could not check ({type(e).__name__})"
+        instance_read = blind is None or bool(health)
+        instance_seen = si_available or instance_read
+
+        if rnsd_running and instance_seen:
             print(f"  RNS Instance: rnsd — shared instance available")
         elif rnsd_running:
             # Degraded state: rnsd running but shared instance not responding
@@ -236,21 +256,12 @@ class RNSInterfacesHandler(BaseHandler):
                 print(f"  RNS Instance: rnsd — DEGRADED (socket exists, auth may be stale)")
             else:
                 print(f"  RNS Instance: rnsd — DEGRADED (socket missing, may be hung)")
+        elif instance_seen:
+            print("  RNS Instance: available — host not identified (rnsd is not")
+            print("    running; an RNS client app such as NomadNet, Sideband or")
+            print("    MeshChatX may be holding the shared instance)")
         else:
-            # Check if NomadNet or Sideband is serving as shared instance
-            port_owner = None
-            try:
-                port_owner = get_udp_port_owner(37428)
-            except Exception:
-                pass
-            if port_owner:
-                proc_name, pid = port_owner
-                host = proc_name
-                print(f"  RNS Instance: {proc_name} (PID {pid}) — running its own RNS")
-            elif si_available:
-                print(f"  RNS Instance: available (unknown process)")
-            else:
-                print(f"  RNS Instance: NOT RUNNING — no shared instance")
+            print(f"  RNS Instance: NOT RUNNING — no shared instance")
         print()
 
         # 2. Get configured interfaces from config
@@ -275,18 +286,6 @@ class RNSInterfacesHandler(BaseHandler):
         except Exception as e:
             logger.debug("Blocking interface check failed: %s", e)
 
-        # 4. Get live health from rnstatus (TX/RX counters)
-        # rows: (rnstatus name, tx, rx, is_healthy, status), a LIST in listed
-        # order — never a dict keyed by name (duplicates collapsed).
-        health = []
-        # Why the reading is incomplete (None = complete). An interface NOT
-        # in a blind reading is UNKNOWN, never "UP (no traffic data)".
-        blind = None
-        try:
-            health, blind = interface_health()
-        except Exception as e:
-            logger.debug("Interface health check failed: %s", e)
-            blind = f"could not check ({type(e).__name__})"
 
         # 5. Display unified table
         print(f"  {'Name':<26} {'Type':<24} {'Status':<10} Detail")
@@ -314,7 +313,7 @@ class RNSInterfacesHandler(BaseHandler):
                 else:
                     status, detail = unlisted_row_status(
                         itype, blind, rnsd_running=rnsd_running,
-                        si_available=si_available, host=host)
+                        si_available=instance_seen, host=host)
 
             # Color-coded status hint via text markers
             if status == "BLOCKED":
@@ -340,17 +339,16 @@ class RNSInterfacesHandler(BaseHandler):
         # Summary hints
         if blocking_map:
             print(f"\n  ! = blocked (dependency missing)")
-        if not rnsd_running and host:
-            # A client holds the instance: starting rnsd beside it contends
-            # for @rns (#69). Say who hosts and the order that is safe.
-            print(f"\n  rnsd is not running — {host} is hosting the shared instance.")
-            print(f"  rnsd normally hosts: close {host}, start rnsd from")
-            print(f"  Service Control, then reopen {host} (it connects as a client).")
-        elif not rnsd_running and si_available:
-            print(f"\n  rnsd is not running — another process hosts the shared instance.")
+        if not rnsd_running and instance_seen:
+            # Something else holds the instance: starting rnsd beside it
+            # contends for @rns (#69). Give the safe order, name no one.
+            print("\n  rnsd is not running — another process hosts the shared instance")
+            print("  (host not identified). rnsd normally hosts: close RNS client apps")
+            print("  (NomadNet, Sideband, MeshChatX), start rnsd from Service Control,")
+            print("  then reopen them — they connect as clients.")
         elif not rnsd_running:
             print(f"\n  Start rnsd from Service Control.")
-        elif not si_available:
+        elif not instance_seen:
             # Degraded state: show journal tail for immediate visibility
             print(f"\n  rnsd is running but shared instance is NOT responding.")
             print(f"  Common causes: stale auth tokens, config drift, hung interface.")

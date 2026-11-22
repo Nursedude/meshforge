@@ -150,7 +150,10 @@ def read_config() -> CommandResult:
         )
 
     try:
-        content = config_path.read_text()
+        # BYTES, as rnsd's ConfigObj(path) reads them: read_text() would
+        # translate a lone \r and keep a BOM the reader must see (Fable r9 #2).
+        raw_bytes = config_path.read_bytes()
+        content = raw_bytes.decode('utf-8', errors='replace')
     except Exception as e:
         return CommandResult.fail(
             f"Failed to read config: {e}",
@@ -158,10 +161,10 @@ def read_config() -> CommandResult:
             data={'path': str(config_path), 'exists': True}
         )
     try:
-        interfaces = _parse_interfaces(content)
+        interfaces = _parse_interfaces(raw_bytes)
     except RNSConfigError as e:
-        # rnsd cannot load this file either — say so; never a guessed list.
-        # The text rides along so an editor can show and fix it.
+        # Not readable the way rnsd reads it — say so with the reason; never
+        # a guessed list. The text rides along so an editor can fix it.
         return CommandResult.fail(
             f"RNS config is not loadable: {e}",
             error=str(e),
@@ -316,7 +319,7 @@ def _parse_share_instance(content: str) -> bool:
     return False
 
 
-def _parse_interfaces(content: str) -> List[Dict[str, Any]]:
+def _parse_interfaces(content) -> List[Dict[str, Any]]:
     """Interfaces as rnsd reads them — ``utils.rns_config_reader`` is the
     one reader (raises ``RNSConfigError`` on a file rnsd cannot load)."""
     return read_interfaces(content)
@@ -664,7 +667,9 @@ def get_status() -> CommandResult:
         else:
             # Unreadable ≠ zero interfaces (hfm #1): UNKNOWN, with the why.
             status['interface_count'] = None
-            status['config_error'] = config_result.message
+            status['config_error'] = (
+                (config_result.data or {}).get('parse_error')
+                or config_result.message)
 
     msg = "rnsd running" if status['rnsd_running'] else "rnsd not running"
     return CommandResult.ok(msg, data=status)

@@ -50,7 +50,7 @@ def iter_enabled_interfaces(content: str):
         yield iface['name'], iface_type, body
 
 
-def find_blocking_interfaces(content: Optional[str] = None) -> list:
+def find_blocking_interfaces(content=None) -> list:
     """Check if enabled RNS interfaces have missing dependencies.
 
     Parses /etc/reticulum/config for enabled interfaces and checks
@@ -73,7 +73,7 @@ def find_blocking_interfaces(content: Optional[str] = None) -> list:
             return blocking
 
         try:
-            content = config_file.read_text()
+            content = config_file.read_bytes()   # as rnsd reads it (r10)
         except (OSError, PermissionError):
             return blocking
 

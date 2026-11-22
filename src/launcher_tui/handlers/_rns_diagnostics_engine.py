@@ -44,6 +44,32 @@ def summary_lines(issues, warnings, unobserved) -> list:
     return out
 
 
+def dependency_leg(find_blocking, config_error):
+    """Leg [5/6]: (lines, issues, unobserved).
+
+    ``config_error`` = why the RNS config could not be loaded (None = it
+    loaded). An unloadable config yields NO interfaces to judge, so
+    "all dependencies met" there would be vacuous — UNKNOWN instead
+    (Fable r9 #4; hfm #2).
+    """
+    if config_error:
+        return ([f"  UNKNOWN — not checked: RNS config not loadable ({config_error})"],
+                [], ["interface dependencies (RNS config not loadable)"])
+    try:
+        blocking = find_blocking()
+    except Exception as e:
+        logger.debug("Interface dependency check failed: %s", e)
+        return ([f"  Could not check: {e}"], [],
+                [f"interface dependencies ({type(e).__name__})"])
+    if not blocking:
+        return (["  All enabled interfaces have their dependencies met"], [], [])
+    lines, issues = [], []
+    for iface_name, reason, fix in blocking:
+        lines += [f"  ! [{iface_name}] {reason}", f"    Fix: {fix}"]
+        issues.append(f"Blocking interface: {iface_name}")
+    return lines, issues, []
+
+
 def run_rns_diagnostics(handler):
     """Run comprehensive RNS diagnostics.
 
@@ -241,18 +267,14 @@ def run_rns_diagnostics(handler):
 
     # 5. Interface dependencies
     print("\n[5/6] Checking interface dependencies...")
-    try:
-        blocking = handler._find_blocking_interfaces()
-        if blocking:
-            for iface_name, reason, fix in blocking:
-                print(f"  ! [{iface_name}] {reason}")
-                print(f"    Fix: {fix}")
-                issues.append(f"Blocking interface: {iface_name}")
-        else:
-            print("  All enabled interfaces have their dependencies met")
-    except Exception as e:
-        logger.debug("Interface dependency check failed: %s", e)
-        print(f"  Could not check: {e}")
+    config_error = (status_data.get('config_error')
+                    if status_data.get('interface_count', 0) is None else None)
+    lines, dep_issues, dep_unobserved = dependency_leg(
+        handler._find_blocking_interfaces, config_error)
+    for line in lines:
+        print(line)
+    issues.extend(dep_issues)
+    unobserved.extend(dep_unobserved)
 
     # Check if shared instance is actually reachable.
     # RNS uses abstract Unix domain sockets on Linux (\0rns/default),

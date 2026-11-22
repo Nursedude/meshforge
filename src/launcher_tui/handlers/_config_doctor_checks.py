@@ -322,8 +322,9 @@ def check_rns_interface_devices() -> CheckResult:
     # config's presence HERE and say SKIP (truth-sweep review 2026-09-22).
     config_file = ReticulumPaths.get_config_file()
     try:
-        content = config_file.read_text()
-    except (OSError, UnicodeDecodeError) as e:
+        # Bytes, as rnsd's ConfigObj(path) reads them (Fable r9 #2).
+        content = config_file.read_bytes()
+    except OSError as e:
         return CheckResult(
             name="rns_interface_devices",
             status=SKIP,
@@ -345,7 +346,7 @@ def check_rns_interface_devices() -> CheckResult:
         return CheckResult(
             name="rns_interface_devices",
             status=FAIL,
-            message=f"RNS config at {config_file} is not loadable — rnsd cannot read it either",
+            message=f"RNS config at {config_file} is not loadable as rnsd reads it",
             details=[str(e)],
             fix_hint="Fix the line named above, then restart rnsd",
             route_hint="RNS > Edit Reticulum Config",
