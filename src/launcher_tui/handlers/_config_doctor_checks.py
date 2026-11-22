@@ -336,6 +336,20 @@ def check_rns_interface_devices() -> CheckResult:
     # what the shared parser actually yields, and judge the SAME text (a
     # second read could fail differently and collapse to []; Fable review
     # 2026-09-22).
+    # A file rnsd itself cannot load also yields [] — that is a FAIL with
+    # the parser's reason, never "nothing to check" (WITNESS-TUI r9).
+    from utils.rns_config_reader import RNSConfigError, read_interfaces
+    try:
+        read_interfaces(content)
+    except RNSConfigError as e:
+        return CheckResult(
+            name="rns_interface_devices",
+            status=FAIL,
+            message=f"RNS config at {config_file} is not loadable — rnsd cannot read it either",
+            details=[str(e)],
+            fix_hint="Fix the line named above, then restart rnsd",
+            route_hint="RNS > Edit Reticulum Config",
+        )
     from ._rns_interface_mgr import iter_enabled_interfaces
     enabled = [name for name, _t, _b in iter_enabled_interfaces(content)]
     if not enabled:

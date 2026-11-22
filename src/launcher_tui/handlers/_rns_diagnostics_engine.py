@@ -154,7 +154,12 @@ def run_rns_diagnostics(handler):
     print(f"  Config: {'found' if config_exists else 'MISSING'}")
     if config_exists:
         iface_count = status_data.get('interface_count', 0)
-        print(f"  Interfaces: {iface_count}")
+        if iface_count is None:
+            err = status_data.get('config_error', 'unreadable')
+            print(f"  Interfaces: UNKNOWN — {err}")
+            issues.append(f"RNS config not loadable: {err}")
+        else:
+            print(f"  Interfaces: {iface_count}")
 
     # 2b. Check for config shadowing and problematic settings
     try:

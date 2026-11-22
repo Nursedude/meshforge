@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Optional
 
 from utils.paths import ReticulumPaths
+from utils.rns_config_reader import RNSConfigError, read_interfaces
+from utils.rns_interface_flags import interface_enabled
 from utils.service_check import check_service
 
 logger = logging.getLogger(__name__)
@@ -24,33 +26,28 @@ def iter_enabled_interfaces(content: str):
     enabled interfaces parsed" instead of "all resolve" (vacuous truth,
     Fable review 2026-09-22).
     """
-    # RNS config uses [[InterfaceName]] sections with type= and enabled=
-    iface_pattern = re.compile(
-        r'^\s*\[\[(.+?)\]\]\s*$'
-        r'(.*?)'
-        r'(?=^\s*\[\[|\Z)',
-        re.MULTILINE | re.DOTALL
-    )
+    # Read the way rnsd reads it — the ONE reader (WITNESS-TUI r9): names
+    # match the TUI's config rows (blocking_map is keyed by name), an
+    # RNodeMulti [[[sub]]] is not an interface, comments are not values.
+    # A file rnsd cannot load yields nothing here; callers that must tell
+    # that apart from "nothing enabled" call read_interfaces themselves
+    # (Config Doctor does). `body` is rebuilt as `key = value` lines from
+    # the parsed settings so the _check_* scanners read clean values.
+    try:
+        interfaces = read_interfaces(content)
+    except RNSConfigError as e:
+        logger.debug("RNS config not loadable: %s", e)
+        return
 
-    for match in iface_pattern.finditer(content):
-        name = match.group(1).strip()
-        body = match.group(2)
-
-        # Check if enabled (RNS uses both 'enabled' and 'interface_enabled')
-        enabled_match = re.search(
-            r'^\s*(?:interface_)?enabled\s*=\s*(yes|true|on|1)\b',  # = _TRUE_WORDS
-            body, re.IGNORECASE | re.MULTILINE
-        )
-        if not enabled_match:
+    for iface in interfaces:
+        settings = iface['settings']
+        if not interface_enabled(settings):
             continue
-
-        # Check interface type
-        type_match = re.search(r'^\s*type\s*=\s*(\S+)', body,
-                               re.IGNORECASE | re.MULTILINE)
-        if not type_match:
+        iface_type = settings.get('type', '').strip()
+        if not iface_type:
             continue
-
-        yield name, type_match.group(1), body
+        body = "\n".join(f"{k} = {v}" for k, v in settings.items()) + "\n"
+        yield iface['name'], iface_type, body
 
 
 def find_blocking_interfaces(content: Optional[str] = None) -> list:

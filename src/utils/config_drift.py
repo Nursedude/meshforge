@@ -399,7 +399,6 @@ def _parse_reticulum_section(content: str) -> dict:
     """
     settings: dict = {}
     in_reticulum = False
-    interface_count = 0
 
     for line in content.split('\n'):
         stripped = line.strip()
@@ -414,9 +413,7 @@ def _parse_reticulum_section(content: str) -> dict:
             in_reticulum = False
             continue
 
-        # Count enabled interfaces
         if stripped.startswith('[[') and stripped.endswith(']]'):
-            interface_count += 1
             continue
 
         # Parse key=value in [reticulum] section
@@ -428,7 +425,13 @@ def _parse_reticulum_section(content: str) -> dict:
                        'shared_instance_type', 'share_instance'):
                 settings[key] = value
 
-    settings['interface_count'] = interface_count
+    # Interfaces counted by the ONE reader (rnsd's grammar): an RNodeMulti
+    # [[[sub]]] is not an interface; a file rnsd cannot load counts None.
+    from utils.rns_config_reader import RNSConfigError, read_interfaces
+    try:
+        settings['interface_count'] = len(read_interfaces(content))
+    except RNSConfigError:
+        settings['interface_count'] = None
     return settings
 
 
@@ -479,9 +482,12 @@ def detect_config_shadowing() -> ShadowResult:
                     f"{key}: /etc={etc_val} vs {user_config.parent.name}={user_val}"
                 )
 
-        etc_ifaces = etc_settings.get('interface_count', 0)
-        user_ifaces = user_settings.get('interface_count', 0)
-        if etc_ifaces != user_ifaces:
+        def _n(v):
+            return "UNKNOWN (config not loadable)" if v is None else v
+
+        etc_ifaces = _n(etc_settings.get('interface_count', 0))
+        user_ifaces = _n(user_settings.get('interface_count', 0))
+        if etc_ifaces != user_ifaces or etc_ifaces == _n(None):
             differences.append(
                 f"interfaces: /etc has {etc_ifaces}, "
                 f"{user_config.parent.name} has {user_ifaces}"

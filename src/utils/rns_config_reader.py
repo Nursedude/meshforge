@@ -1,0 +1,271 @@
+"""Read the RNS config's interfaces the way rnsd reads them — one reader.
+
+rnsd loads its config with ConfigObj (``RNS.vendor.configobj``) and brings
+up every section under ``[interfaces]`` (``for name in
+self.config["interfaces"]``). This module is the ONE place MeshForge turns a
+config file into a list of interfaces, so it uses the same parser:
+
+* ``_read_configobj`` — RNS's own ConfigObj, when RNS is importable;
+* ``_read_strict`` — a fallback for boxes/CI without RNS, built from
+  ConfigObj's own section/keyword/value regexes (copied below; ConfigObj is
+  BSD-3, (C) 2005-2014 Michael Foord, Nicola Larosa, Rob Dennis, Eli
+  Courtwright). It refuses — never guesses — what it does not implement
+  (triple-quoted values).
+
+``tests/test_rns_config_reader.py`` holds both paths to one literal oracle.
+
+Output (both paths): ``[{"name", "settings": {str: str},
+"subinterfaces": [{"name", "settings"}]}]`` in file order. List values are
+joined with ``", "`` so ``settings`` stays ``str -> str`` for its consumers;
+a sub-section (an RNodeMulti sub-interface ``[[[High Datarate]]]``) is a
+``subinterfaces`` entry, never an interface of its own.
+
+A config rnsd cannot load (duplicate key or section, bad nesting, a line
+that is neither section nor ``key = value``, a bare key directly under
+``[interfaces]``) raises ``RNSConfigError`` — a list of guessed rows from a
+file rnsd rejects is the defect this replaced (WITNESS-TUI r9, 2026-11-22:
+the old reader took any ``[[…]]`` line as an interface).
+"""
+
+import re
+from typing import Any, Dict, List, Optional, Tuple
+
+from utils.safe_import import safe_import
+
+_ConfigObj, HAS_CONFIGOBJ = safe_import('RNS.vendor.configobj', 'ConfigObj')
+
+
+class RNSConfigError(ValueError):
+    """The RNS config cannot be read as rnsd would read it."""
+
+
+Interface = Dict[str, Any]
+
+
+# ── shared output shaping ───────────────────────────────────────────────
+
+
+def _flat(value: Any) -> str:
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value)
+    return str(value)
+
+
+def _is_section(value: Any) -> bool:
+    return hasattr(value, "items") and hasattr(value, "keys")
+
+
+def _split(section) -> Tuple[Dict[str, str], List[Tuple[str, Any]]]:
+    settings: Dict[str, str] = {}
+    subs: List[Tuple[str, Any]] = []
+    for key, value in section.items():
+        if _is_section(value):
+            subs.append((key, value))
+        else:
+            settings[key] = _flat(value)
+    return settings, subs
+
+
+def _shape(root) -> List[Interface]:
+    if "interfaces" not in root:
+        return []
+    ifaces = root["interfaces"]
+    if not _is_section(ifaces):
+        raise RNSConfigError("'interfaces' is a key, not a [interfaces] section")
+    out: List[Interface] = []
+    for name, section in ifaces.items():
+        if not _is_section(section):
+            raise RNSConfigError(
+                f"'{name}' is a key directly under [interfaces] — rnsd "
+                f"expects only [[interface]] sections there")
+        settings, subs = _split(section)
+        out.append({
+            "name": name,
+            "settings": settings,
+            "subinterfaces": [
+                {"name": sub_name, "settings": _split(sub)[0]}
+                for sub_name, sub in subs
+            ],
+        })
+    return out
+
+
+# ── path 1: RNS's own ConfigObj ─────────────────────────────────────────
+
+
+def _read_configobj(content: str) -> List[Interface]:
+    try:
+        root = _ConfigObj(content.splitlines())
+    except Exception as e:  # ConfigObjError family + anything it raises
+        raise RNSConfigError(f"{type(e).__name__}: {e}") from e
+    return _shape(root)
+
+
+# ── path 2: strict fallback with ConfigObj's grammar ────────────────────
+
+_KEYWORD = re.compile(r'''^ # line start
+    (\s*)                   # indentation
+    (                       # keyword
+        (?:".*?")|          # double quotes
+        (?:'.*?')|          # single quotes
+        (?:[^'"=].*?)       # no quotes
+    )
+    \s*=\s*                 # divider
+    (.*)                    # value (including list values and comments)
+    $   # line end
+    ''', re.VERBOSE)
+
+_SECTIONMARKER = re.compile(r'''^
+    (\s*)                     # 1: indentation
+    ((?:\[\s*)+)              # 2: section marker open
+    (                         # 3: section name open
+        (?:"\s*\S.*?\s*")|    # at least one non-space with double quotes
+        (?:'\s*\S.*?\s*')|    # at least one non-space with single quotes
+        (?:[^'"\s].*?)        # at least one non-space unquoted
+    )                         # section name close
+    ((?:\s*\])+)              # 4: section marker close
+    \s*(\#.*)?                # 5: optional comment
+    $''', re.VERBOSE)
+
+_VALUEEXP = re.compile(r'''^
+    (?:
+        (?:
+            (
+                (?:
+                    (?:
+                        (?:".*?")|              # double quotes
+                        (?:'.*?')|              # single quotes
+                        (?:[^'",\#][^,\#]*?)    # unquoted
+                    )
+                    \s*,\s*                     # comma
+                )*      # match all list items ending in a comma (if any)
+            )
+            (
+                (?:".*?")|                      # double quotes
+                (?:'.*?')|                      # single quotes
+                (?:[^'",\#\s][^,]*?)|           # unquoted
+                (?:(?<!,))                      # Empty value
+            )?          # last item in a list - or string value
+        )|
+        (,)             # alternatively a single comma - empty list
+    )
+    \s*(\#.*)?          # optional comment
+    $''', re.VERBOSE)
+
+_LISTVALUEEXP = re.compile(r'''
+    (
+        (?:".*?")|          # double quotes
+        (?:'.*?')|          # single quotes
+        (?:[^'",\#]?.*?)       # unquoted
+    )
+    \s*,\s*                 # comma
+    ''', re.VERBOSE)
+
+
+class _Sec(dict):
+    """An ordered mapping of keys and sub-sections, like a ConfigObj Section."""
+
+    def __init__(self, depth: int, parent: Optional["_Sec"]):
+        super().__init__()
+        self.depth = depth
+        self.parent = parent if parent is not None else self
+
+
+def _unquote(value: str, lineno: int) -> str:
+    if not value:
+        raise RNSConfigError(f"empty value at line {lineno}")
+    if value[0] == value[-1] and value[0] in ('"', "'"):
+        value = value[1:-1]
+    return value
+
+
+def _handle_value(raw: str, lineno: int):
+    """ConfigObj ``_handle_value`` (list_values=True), errors raised."""
+    if raw[:3] in ('"""', "'''"):
+        raise RNSConfigError(
+            f"triple-quoted value at line {lineno} — the fallback reader "
+            f"does not implement it (install RNS so its ConfigObj reads it)")
+    mat = _VALUEEXP.match(raw)
+    if mat is None:
+        raise RNSConfigError(f"Parse error in value at line {lineno}")
+    list_values, single, empty_list, _comment = mat.groups()
+    if list_values == '' and single is None:
+        raise RNSConfigError(f"Parse error in value at line {lineno}")
+    if empty_list is not None:
+        return []
+    if single is not None:
+        if list_values and not single:
+            single = None
+        else:
+            single = _unquote(single or '""', lineno)
+    if list_values == '':
+        return single
+    the_list = [_unquote(v, lineno) for v in _LISTVALUEEXP.findall(list_values)]
+    if single is not None:
+        the_list.append(single)
+    return the_list
+
+
+def _match_depth(sect: _Sec, depth: int, lineno: int) -> _Sec:
+    while depth < sect.depth:
+        if sect is sect.parent:
+            break
+        sect = sect.parent
+    if sect.depth == depth:
+        return sect
+    raise RNSConfigError(f"Cannot compute nesting level at line {lineno}")
+
+
+def _read_strict(content: str) -> List[Interface]:
+    root = _Sec(0, None)
+    this = root
+    for lineno, line in enumerate(content.splitlines(), 1):
+        sline = line.strip()
+        if not sline or sline.startswith('#'):
+            continue
+        mat = _SECTIONMARKER.match(line)
+        if mat is not None:
+            _indent, sect_open, sect_name, sect_close, _c = mat.groups()
+            depth = sect_open.count('[')
+            if depth != sect_close.count(']'):
+                raise RNSConfigError(
+                    f"Cannot compute the section depth at line {lineno}")
+            if depth < this.depth:
+                parent = _match_depth(this, depth, lineno).parent
+            elif depth == this.depth:
+                parent = this.parent
+            elif depth == this.depth + 1:
+                parent = this
+            else:
+                raise RNSConfigError(f"Section too nested at line {lineno}")
+            sect_name = _unquote(sect_name, lineno)
+            if sect_name in parent:
+                raise RNSConfigError(
+                    f"Duplicate section name at line {lineno}")
+            this = _Sec(depth, parent)
+            parent[sect_name] = this
+            continue
+        mat = _KEYWORD.match(line)
+        if mat is None:
+            raise RNSConfigError(
+                f"Invalid line ({line!r}) (matched as neither section nor "
+                f"keyword) at line {lineno}")
+        _indent, key, raw = mat.groups()
+        value = _handle_value(raw, lineno)
+        key = _unquote(key, lineno)
+        if key in this:
+            raise RNSConfigError(f"Duplicate keyword name at line {lineno}")
+        this[key] = value
+    return _shape(root)
+
+
+# ── the one entry point ─────────────────────────────────────────────────
+
+
+def read_interfaces(content: str) -> List[Interface]:
+    """The interfaces rnsd would bring up sections for, in file order.
+
+    Raises ``RNSConfigError`` when rnsd could not load the file either."""
+    if HAS_CONFIGOBJ:
+        return _read_configobj(content)
+    return _read_strict(content)

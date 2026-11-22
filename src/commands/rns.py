@@ -21,6 +21,7 @@ from .base import CommandResult, ResultStatus
 from utils.backup_paths import reserve_backup_path
 from utils.boundary_timing import call_boundary
 from utils.safe_import import safe_import
+from utils.rns_config_reader import RNSConfigError, read_interfaces
 from utils.service_check import check_service, start_service, stop_service
 
 logger = logging.getLogger(__name__)
@@ -150,24 +151,34 @@ def read_config() -> CommandResult:
 
     try:
         content = config_path.read_text()
-        interfaces = _parse_interfaces(content)
-
-        return CommandResult.ok(
-            f"Config loaded ({len(interfaces)} interfaces)",
-            data={
-                'path': str(config_path),
-                'content': content,
-                'interfaces': interfaces,
-                'interface_count': len(interfaces)
-            },
-            raw=content
-        )
     except Exception as e:
         return CommandResult.fail(
             f"Failed to read config: {e}",
             error=str(e),
-            data={'path': str(config_path)}
+            data={'path': str(config_path), 'exists': True}
         )
+    try:
+        interfaces = _parse_interfaces(content)
+    except RNSConfigError as e:
+        # rnsd cannot load this file either — say so; never a guessed list.
+        # The text rides along so an editor can show and fix it.
+        return CommandResult.fail(
+            f"RNS config is not loadable: {e}",
+            error=str(e),
+            data={'path': str(config_path), 'exists': True,
+                  'content': content, 'parse_error': str(e)},
+            raw=content
+        )
+    return CommandResult.ok(
+        f"Config loaded ({len(interfaces)} interfaces)",
+        data={
+            'path': str(config_path),
+            'content': content,
+            'interfaces': interfaces,
+            'interface_count': len(interfaces)
+        },
+        raw=content
+    )
 
 
 def write_config(content: str, backup: bool = True) -> CommandResult:
@@ -306,30 +317,9 @@ def _parse_share_instance(content: str) -> bool:
 
 
 def _parse_interfaces(content: str) -> List[Dict[str, Any]]:
-    """Parse interface definitions from config."""
-    interfaces = []
-    current_interface = None
-
-    for line in content.split('\n'):
-        stripped = line.strip()
-
-        # Interface header
-        if stripped.startswith('[[') and stripped.endswith(']]'):
-            if current_interface:
-                interfaces.append(current_interface)
-            name = stripped[2:-2]
-            current_interface = {'name': name, 'settings': {}}
-
-        # Interface setting
-        elif current_interface and '=' in stripped and not stripped.startswith('#'):
-            key, value = stripped.split('=', 1)
-            current_interface['settings'][key.strip()] = value.strip()
-
-    # Add last interface
-    if current_interface:
-        interfaces.append(current_interface)
-
-    return interfaces
+    """Interfaces as rnsd reads them — ``utils.rns_config_reader`` is the
+    one reader (raises ``RNSConfigError`` on a file rnsd cannot load)."""
+    return read_interfaces(content)
 
 
 def create_default_config() -> CommandResult:
@@ -493,7 +483,10 @@ def add_interface(name: str, iface_type: str, settings: Dict[str, Any]) -> Comma
     # Read current config
     result = read_config()
     if not result.success:
-        # Create default if none exists
+        # Create a default ONLY when there is no config. An existing file
+        # that failed to read/parse is the operator's — never overwrite it.
+        if result.data.get('exists', True):
+            return result
         result = create_default_config()
         if not result.success:
             return result
@@ -668,6 +661,10 @@ def get_status() -> CommandResult:
         config_result = read_config()
         if config_result.success:
             status['interface_count'] = config_result.data.get('interface_count', 0)
+        else:
+            # Unreadable ≠ zero interfaces (hfm #1): UNKNOWN, with the why.
+            status['interface_count'] = None
+            status['config_error'] = config_result.message
 
     msg = "rnsd running" if status['rnsd_running'] else "rnsd not running"
     return CommandResult.ok(msg, data=status)

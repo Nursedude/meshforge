@@ -259,7 +259,7 @@ _ONE_IFACE = "[interfaces]\n  [[Mesh]]\n    type = TCPClientInterface\n    enabl
 
 class TestCheckRnsInterfaceDevices:
     @pytest.mark.parametrize("body", [
-        "", "garbage {{{", "[reticulum]\n  share_instance = Yes\n",
+        "", "[reticulum]\n  share_instance = Yes\n",
         "[interfaces]\n  [[X]]\n    enabled = yes\n",          # no type
         "[interfaces]\n  [[X]]\n    type = TCPClientInterface\n    enabled = no\n",
     ])
@@ -272,6 +272,17 @@ class TestCheckRnsInterfaceDevices:
             r = checks.check_rns_interface_devices()
         assert r.status == SKIP
         assert "nothing to check" in r.message
+
+    def test_unloadable_config_is_a_fail_not_a_skip(self, tmp_path):
+        # "garbage {{{" was a SKIP until r9 (2026-11-22): rnsd cannot load
+        # it either, so "nothing to check" hid a dead rnsd's cause.
+        cfg = tmp_path / "config"
+        cfg.write_text("garbage {{{")
+        with patch("utils.paths.ReticulumPaths.get_config_file", return_value=cfg):
+            r = checks.check_rns_interface_devices()
+        assert r.status == FAIL
+        assert "not loadable" in r.message
+        assert r.details and "Invalid line" in r.details[0]
 
     def test_judges_the_text_it_read_not_a_second_read(self, tmp_path):
         cfg = tmp_path / "config"
