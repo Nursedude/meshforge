@@ -30,6 +30,8 @@ SPEC (what leg [6/6] must say):
   blind     accepted: not installed > timed out > "rnstatus error: LINE" >
             (nothing listed) rnstatus's own error / cannot connect / "listed
             no interfaces" > N listed without readable counters: NAMES.
+            r6: "N line(s) this parser could not read: 'FIRST'" ranks after
+            the run's own error and before "nothing listed" (accepted_gap).
             filtered: UNKNOWN -> its reason; COUNTED -> rows without a
             Filtered line, named. NO_FILTER is an explained absence, not blind.
   no rows   "  Could not read: <accepted reason>" (+ the reinstall hint when
@@ -328,8 +330,14 @@ def oracle(c: Case):
         acc_spot = f"rnstatus error: {view_error}"
     else:
         pe = _parse_error_line(view, False)
+        # r6: a printed line no rule reads makes the view incomplete — the
+        # "↑n/a" Traffic line of every rx-shaped interface in the view.
+        bad = [i for i in view.ifaces if i.shape[0] == "rx"] if view is not None else []
         if pe:
             acc_spot = f"partial listing — {pe}" if _listed(view) else pe
+        elif bad:
+            acc_spot = (f"{len(bad)} line(s) this parser could not read: "
+                        "'    Traffic   : ↑n/a'")
         elif not shown and not unread:
             acc_spot = ("rnstatus cannot connect" if (c.running and not c.instance_ok)
                         else "rnstatus listed no interfaces")

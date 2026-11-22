@@ -20,6 +20,24 @@ from utils.paths import get_real_user_home, ReticulumPaths
 logger = logging.getLogger(__name__)
 
 
+def unlisted_row_status(itype, blind, *, rnsd_running, si_available):
+    """(status, detail) for a configured interface with NO live rnstatus row.
+
+    ``blind`` = why the rnstatus reading was incomplete (None = complete).
+    Not in a blind reading is UNKNOWN — never "UP (no traffic data)", which
+    claimed health from a read that failed (hfm #1; WITNESS-TUI r6).
+    """
+    if not rnsd_running:
+        return "DOWN", "rnsd not running"
+    if not si_available:
+        return "UNKNOWN", "rnsd running but shared instance not available"
+    if blind:
+        return "UNKNOWN", f"({blind})"
+    if itype == 'TCPServerInterface':
+        return "LISTEN", "waiting for clients"
+    return "UP", "(no traffic data)"
+
+
 class RNSInterfacesHandler(BaseHandler):
     """TUI handler for RNS interface management."""
 
@@ -94,7 +112,7 @@ class RNSInterfacesHandler(BaseHandler):
     def _rns_interface_status(self):
         """Show live interface status: config + blocking reasons + TX/RX."""
         from ._rns_interface_mgr import find_blocking_interfaces
-        from ._rns_diagnostics_engine import check_rns_interface_health
+        from ._rns_diagnostics_engine import interface_health
         from utils.service_check import (
             check_process_running, get_rns_shared_instance_info,
             get_udp_port_owner,
@@ -173,8 +191,11 @@ class RNSInterfacesHandler(BaseHandler):
 
         # 4. Get live health from rnstatus (TX/RX counters)
         health_map = {}
+        # Why the reading is incomplete (None = complete). An interface NOT
+        # in a blind reading is UNKNOWN, never "UP (no traffic data)".
+        blind = None
         try:
-            health = check_rns_interface_health()
+            health, blind = interface_health()
             for entry in health:
                 # entry = (display_name, tx_str, rx_str, is_healthy)
                 name = entry[0]
@@ -183,6 +204,7 @@ class RNSInterfacesHandler(BaseHandler):
                 }
         except Exception as e:
             logger.debug("Interface health check failed: %s", e)
+            blind = f"could not check ({type(e).__name__})"
 
         # 5. Display unified table
         print(f"  {'Name':<26} {'Type':<24} {'Status':<10} Detail")
@@ -211,21 +233,10 @@ class RNSInterfacesHandler(BaseHandler):
                     else:
                         status = "UP"
                         detail = f"↑{live['tx']}  ↓{live['rx']}"
-                elif rnsd_running and si_available:
-                    # rnsd is running and we have shared instance
-                    # but no rnstatus data for this interface
-                    if itype == 'TCPServerInterface':
-                        status = "LISTEN"
-                        detail = "waiting for clients"
-                    else:
-                        status = "UP"
-                        detail = "(no traffic data)"
-                elif rnsd_running:
-                    status = "UNKNOWN"
-                    detail = "rnsd running but shared instance not available"
                 else:
-                    status = "DOWN"
-                    detail = "rnsd not running"
+                    status, detail = unlisted_row_status(
+                        itype, blind, rnsd_running=rnsd_running,
+                        si_available=si_available)
 
             # Color-coded status hint via text markers
             if status == "BLOCKED":

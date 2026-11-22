@@ -254,7 +254,9 @@ class RNSMonitorHandler(BaseHandler):
         # --- Error banner ---
         if status.parse_error:
             print(f"  {_RED}ERROR: rnsd not responding{_RESET}")
-            err_line = status.parse_error.split('\n')[0][:70]
+            # The whole first line: a [:70] cut split the missing-binary
+            # remedy mid-word (r5 nit); the terminal wraps.
+            err_line = status.parse_error.split('\n')[0]
             print(f"  {_DIM}{err_line}{_RESET}")
 
             if last_good and last_good.interfaces:

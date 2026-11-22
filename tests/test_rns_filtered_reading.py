@@ -401,12 +401,16 @@ def test_leg6_no_filter_is_not_unobserved():
 def test_section_resets_at_each_interface_header():
     # Interface 1 ends INSIDE its Filtered block; interface 2's stray arrow
     # before any header must not be read as its traffic (r2 M4 survivor).
-    raw = (" TCPInterface[one/a:1]\n    Traffic   : ↑1 B  0 bps\n                ↓2 B  0 bps\n"
+    # r6: the stray arrow is an UNREAD line (blind), never two's rx.
+    raw = (" TCPInterface[one/a:1]\n    Status    : Up\n"
+           "    Traffic   : ↑1 B  0 bps\n                ↓2 B  0 bps\n"
            "    Filtered  : ↑0 B  0 bps\n                ↓3 B  0 bps\n"
            " TCPInterface[two/b:2]\n                ↓77 B  0 bps\n    Status    : Up\n")
-    one, two = parse_rnstatus(raw).interfaces
+    st = parse_rnstatus(raw)
+    one, two = st.interfaces
     assert format_bytes(one.rx_filtered) == "3 B"
     assert not two.rx.observed and two.rx_filtered is None
+    assert st.unread_lines == ["                ↓77 B  0 bps"]
 
 
 # ----------------------------------------------------- r4 nits (Fable r3)

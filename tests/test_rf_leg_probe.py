@@ -22,7 +22,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from utils import watchdog_probes_rf_leg as rf  # noqa: E402
-from utils.rns_status_parser import RNSStatus  # noqa: E402
+from utils.rns_status_parser import RNSTATUS_MISSING, RNSStatus  # noqa: E402
 from utils.watchdog_probe_core import (  # noqa: E402
     collect_dispositions,
     reset_dispositions,
@@ -547,7 +547,7 @@ class TestUnobservableRnstatus:
 
     @pytest.mark.parametrize("status", [
         RNSStatus(parse_error="rnstatus timed out (rnsd unresponsive)", timed_out=True),
-        RNSStatus(parse_error="rnstatus binary not found. Install RNS: pip install rns"),
+        RNSStatus(parse_error=RNSTATUS_MISSING),
         RNSStatus(parse_error="rnstatus produced no output (exit 1)"),
     ], ids=["timed_out", "binary_missing", "empty_output"])
     def test_errored_status_is_indeterminate_not_inert(self, tmp_path, status):

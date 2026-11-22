@@ -217,16 +217,23 @@ class NomadNetIfaceChecksMixin:
             return f"Meshtastic iface: BLOCKED ({short})"
 
         try:
-            from handlers._rns_diagnostics_engine import check_rns_interface_health
-            health = check_rns_interface_health() or []
-        except Exception:
-            health = []
+            from handlers._rns_diagnostics_engine import interface_health
+            # One plain rnstatus: a subtitle never shows filtered rx.
+            health, blind = interface_health(accepted_only=True)
+        except Exception as e:
+            logger.debug("interface_health failed: %s", e)
+            health, blind = [], f"could not check ({type(e).__name__})"
 
         mesh_entries = [
             e for e in health
             if self._MESHTASTIC_IFACE_TOKEN in (e[0] or '').lower()
         ]
         if not mesh_entries:
+            # Not seen is DOWN only when the reading was complete — a blind
+            # rnstatus is UNKNOWN (hfm #1/#2; r5 nit: a timeout said DOWN).
+            if blind:
+                short = blind[:50] + ("…" if len(blind) > 50 else "")
+                return f"Meshtastic iface: UNKNOWN ({short})"
             return "Meshtastic iface: DOWN"
 
         any_healthy = any(len(e) > 3 and e[3] for e in mesh_entries)

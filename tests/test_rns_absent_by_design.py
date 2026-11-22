@@ -31,7 +31,7 @@ from utils.watchdog_probe_core import (  # noqa: E402
     reset_dispositions,
 )
 
-BINARY_MISSING = "rnstatus binary not found. Install RNS: pip install rns"
+from utils.rns_status_parser import RNSTATUS_MISSING as BINARY_MISSING  # noqa: E402
 SS_EMPTY = "Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port\n"
 SS_RNS = SS_EMPTY + ("u_str LISTEN 0 0 @rns/default/rpc 123 * 0 "
                      'users:(("rnsd",pid=42,fd=7))\n')

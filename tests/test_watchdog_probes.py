@@ -33,6 +33,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from utils.rns_status_parser import RNSTATUS_MISSING  # noqa: E402
 from utils.watchdog_probes import (  # noqa: E402
     SEVERITIES,
     SIGNAL_CLASSES,
@@ -1060,7 +1061,7 @@ class TestProbeRnsRpcResponsive:
         """Binary missing → parse_error set but timed_out False → None
         (no false alarm on RNS-less boxes)."""
         status = self._status(
-            parse_error="rnstatus binary not found. Install RNS: pip install rns",
+            parse_error=RNSTATUS_MISSING,
         )
         assert probe_rns_rpc_responsive(rnstatus_status=status) is None
 

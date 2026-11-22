@@ -131,11 +131,16 @@ def test_observed_filtered_is_shown_when_accepted_is_unread():
 
 def test_any_named_header_closes_the_arrow_section():
     # nit 2: a digit in a header name ("I2P B32") left the section open.
-    raw = (" TCPInterface[one/a:1]\n    Traffic   : ↑1 B  0 bps\n                ↓2 B  0 bps\n"
+    # r6: a stock block has a Status line; an arrow under a field that has
+    # no continuation is an UNREAD line, not silently dropped.
+    raw = (" TCPInterface[one/a:1]\n    Status    : Up\n"
+           "    Traffic   : ↑1 B  0 bps\n                ↓2 B  0 bps\n"
            "    Filtered  : ↑0 B  0 bps\n                ↓0 B  0 bps\n"
            "    I2P B32   : ↑1 B\n                ↓66 B\n")
-    one, = parse_rnstatus(raw).interfaces
+    st = parse_rnstatus(raw)
+    one, = st.interfaces
     assert one.rx_filtered.text == "0 B" and one.rx.text == "2 B"
+    assert st.unread_lines == ["                ↓66 B"]
 
 
 def test_missing_binary_gives_one_remedy_never_pip():

@@ -1,0 +1,1405 @@
+{
+"source": "stock RNS 1.3.9+mf.0 RNS/Utilities/rnstatus.py program_setup (tests/rnstatus_stock_driver.py, seed 20261122, n 50)",
+"cases": [
+{
+"case": 0,
+"fstats": false,
+"output": "\n KISSInterface[lab_1]\n    Status    : Up\n    Clients   : 6\n    Mode      : Point-to-Point\n    Noise Fl. : -106 dBm\n    Intrfrnc. : -88 dBm\n    CPU temp  : 43°C\n    Battery   : 100% (discharging)\n    Switch ID : ab12\n    Endpoint  : cd34\n    Peers     : 7 reachable\n    I2P       : Tunnel ready\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑0 B      \n                ↓963 B    \n\n TCPInterface[x : y/192.0.2.15:4242]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Mode      : Point-to-Point\n    Rate      : 10.00 Mbps\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Via       : Unknown\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑902.53 KB  145.80 Kbps\n                ↓9.30 GB    593.37 Kbps\n\n UDPInterface[RNode-Multi/0.0.0.0:4242]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Clients   : 7\n    Mode      : Access Point\n    Rate      : 10.94 kbps\n    Via       : Unknown\n    Access    : 64-bit IFAC by <…0506070809>\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑682 B      537.32 Kbps\n                ↓718 B      159.49 Kbps\n\n a.b/c[High Datarate]\n    Network   : regional rns\n    Status    : Up\n    Mode      : Roaming\n    Rate      : 1.00 Gbps\n    CPU load  : 12 %\n    Ch. Load  : 9.84% (15s), 3.79% (1h)\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑186.94 KB\n                ↓728.74 KB\n\n Transport Instance <11efac4efafa0e7df3e413e0393bf0bd> running\n Uptime is 4d, 19h, 44m and 7s\n\n",
+"truth": [
+{
+"name": "KISSInterface[lab_1]",
+"up": true,
+"tx": "0 B",
+"rx": "963 B",
+"rx_filtered": null
+},
+{
+"name": "TCPInterface[x : y/192.0.2.15:4242]",
+"up": true,
+"tx": "902.53 KB",
+"rx": "9.30 GB",
+"rx_filtered": null
+},
+{
+"name": "UDPInterface[RNode-Multi/0.0.0.0:4242]",
+"up": true,
+"tx": "682 B",
+"rx": "718 B",
+"rx_filtered": null
+},
+{
+"name": "a.b/c[High Datarate]",
+"up": true,
+"tx": "186.94 KB",
+"rx": "728.74 KB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 1,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Down\n    Serving   : 0 programs\n    Rate      : 10.94 kbps\n    Noise Fl. : -106 dBm, no interference\n    CPU load  : 12 %\n    Mem usage : 40 %\n    I2P       : Tunnel ready\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑0 B      \n                ↓7.56 GB  \n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": false,
+"tx": "0 B",
+"rx": "7.56 GB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 2,
+"fstats": false,
+"output": "\n WDCL over /dev/ttyUSB2\n    Network   : regional rns\n    Status    : Up\n    Clients   : 2\n    Mode      : Gateway\n    Rate      : 1.20 kbps\n    Noise Fl. : Unknown\n    CPU load  : Unknown\n    Battery   : 100% (charging)\n    Endpoint  : cd34\n    Traffic   : ↑493.23 KB  680.62 Kbps\n                ↓604.56 KB  816.05 Kbps\n\n WDCL over /dev/ttyUSB2\n    Status    : Up\n    Clients   : 3\n    Mode      : Boundary\n    Rate      : 10.94 kbps\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Peers     : 5 reachable\n    Traffic   : ↑720 B    \n                ↓0 B      \n\n TCPInterface[[nested]/[fe80::1]:4242]\n    Status    : Down\n    Mode      : Full\n    Rate      : 1.20 kbps\n    CPU temp  : 43°C\n    Switch ID : ab12\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑0 B        689.19 Kbps\n                ↓0 B        974.01 Kbps\n\n KISSInterface[box-gateway]\n    Status    : Up\n    Mode      : Access Point\n    Rate      : 1.00 Gbps\n    Noise Fl. : Unknown\n    Battery   : 100% (charging)\n    Traffic   : ↑101 B    \n                ↓153.57 KB\n\n a.b/c[High Datarate]\n    Status    : Up\n    Mode      : Full\n    Rate      : 10.94 kbps\n    Via       : Unknown\n    Access    : 64-bit IFAC by <…0506070809>\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑5.20 GB    741.47 Kbps\n                ↓6.28 GB    397.14 Kbps\n\n Transport Instance <115e97a653c33095a6a5fb8c29a2b4af> running\n Probe responder at <00000000000000000000000000000000> active\n Uptime is 3d, 1h, 42m and 39s\n\n",
+"truth": [
+{
+"name": "WDCL over /dev/ttyUSB2",
+"up": true,
+"tx": "493.23 KB",
+"rx": "604.56 KB",
+"rx_filtered": null
+},
+{
+"name": "WDCL over /dev/ttyUSB2",
+"up": true,
+"tx": "720 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "TCPInterface[[nested]/[fe80::1]:4242]",
+"up": false,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "KISSInterface[box-gateway]",
+"up": true,
+"tx": "101 B",
+"rx": "153.57 KB",
+"rx_filtered": null
+},
+{
+"name": "a.b/c[High Datarate]",
+"up": true,
+"tx": "5.20 GB",
+"rx": "6.28 GB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 3,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 1 program\n    Rate      : 1.20 kbps\n    CPU load  : 12 %\n    Endpoint  : cd34\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑7.61 GB  \n                ↓0 B      \n\n BackboneInterface[x : y]\n    Network   : regional rns\n    Status    : Up\n    Clients   : 6\n    Mode      : Full\n    CPU load  : 12 %\n    Switch ID : ab12\n    Traffic   : ↑366 B      231.74 Kbps\n                ↓209 B      502.15 Kbps\n\n BackboneInterface[v6 peer]\n    Status    : Up\n    Mode      : Point-to-Point\n    Rate      : 10.94 kbps\n    CPU load  : 12 %\n    CPU load  : Unknown\n    Mem usage : 40 %\n    Battery   : 100% (charging)\n    Via       : ef56\n    Traffic   : ↑0 B      \n                ↓0 B      \n\n Transport Instance <4f913cee22722691e101c0ba90d32385> running\n Uptime is 6d, 3h, 13m and 15s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "7.61 GB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "BackboneInterface[x : y]",
+"up": true,
+"tx": "366 B",
+"rx": "209 B",
+"rx_filtered": null
+},
+{
+"name": "BackboneInterface[v6 peer]",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 4,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 0 programs\n    Rate      : 10.00 Mbps\n    Battery   : 100% (charging)\n    Traffic   : ↑121.71 KB  202.04 Kbps\n                ↓0 B        584.22 Kbps\n\n UDPInterface[[nested]/0.0.0.0:4242]\n    Status    : Up\n    Mode      : Access Point\n    Rate      : 10.00 Mbps\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Battery   : 100% (charging)\n    I2P       : Tunnel ready\n    Traffic   : ↑711.10 KB  807.98 Kbps\n                ↓8.71 GB    780.47 Kbps\n\n AutoInterface[Regional RNode RF]\n    Network   : regional rns\n    Status    : Up\n    Mode      : Access Point\n    Rate      : 10.94 kbps\n    Airtime   : 0.0% (15s), 0.25% (1h)\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑5.38 GB    716.89 Kbps\n                ↓0 B        332.55 Kbps\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "121.71 KB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "UDPInterface[[nested]/0.0.0.0:4242]",
+"up": true,
+"tx": "711.10 KB",
+"rx": "8.71 GB",
+"rx_filtered": null
+},
+{
+"name": "AutoInterface[Regional RNode RF]",
+"up": true,
+"tx": "5.38 GB",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 5,
+"fstats": false,
+"output": "\n BackboneInterface[Regional RNS]\n    Status    : Down\n    Clients   : 7\n    Mode      : Access Point\n    Rate      : 10.00 Mbps\n    Traffic   : ↑0 B        109.31 Kbps\n                ↓0 B        801.63 Kbps\n\n I2PInterface[Default Interface]\n    Network   : regional rns\n    Status    : Up\n    Mode      : Access Point\n    Rate      : 10.00 Mbps\n    Noise Fl. : -106 dBm, no interference\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Airtime   : 0.0% (15s), 0.25% (1h)\n    Endpoint  : cd34\n    Traffic   : ↑470 B    \n                ↓0 B      \n\n TCPInterface[a.b/c/[fe80::1]:4242]\n    Status    : Up\n    Mode      : Point-to-Point\n    CPU temp  : 43°C\n    Endpoint  : Unknown\n    Peers     : 5 reachable\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑459.03 KB  844.67 Kbps\n                ↓1.60 GB    661.94 Kbps\n\n RNodeInterface[Default Interface]\n    Status    : Down\n    Mode      : Full\n    Rate      : 1.20 kbps\n    Noise Fl. : -106 dBm\n    Via       : Unknown\n    Traffic   : ↑0 B        573.76 Kbps\n                ↓444 B      288.54 Kbps\n\n Transport Instance <08134722c888a5640ede9df97c2b5339> running\n Uptime is 1d, 9h, 49m and 5s\n\n",
+"truth": [
+{
+"name": "BackboneInterface[Regional RNS]",
+"up": false,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "I2PInterface[Default Interface]",
+"up": true,
+"tx": "470 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "TCPInterface[a.b/c/[fe80::1]:4242]",
+"up": true,
+"tx": "459.03 KB",
+"rx": "1.60 GB",
+"rx_filtered": null
+},
+{
+"name": "RNodeInterface[Default Interface]",
+"up": false,
+"tx": "0 B",
+"rx": "444 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 6,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 1 program\n    CPU load  : 12 %\n    Switch ID : Unknown\n    Via       : Unknown\n    Peers     : 2 reachable\n    I2P       : Tunnel ready\n    Traffic   : ↑4.37 GB    889.70 Kbps\n                ↓959 B      643.06 Kbps\n\n RNodeInterface[RNode-Multi]\n    Source    : Auto-connect via <abcd>\n    Network   : regional rns\n    Status    : Up\n    Mode      : Boundary\n    Rate      : 1.20 kbps\n    Noise Fl. : Unknown\n    CPU load  : 12 %\n    Battery   : 100% (charging)\n    Switch ID : Unknown\n    Peers     : 8 reachable\n    Traffic   : ↑0 B      \n                ↓43 B     \n\n TCPInterface[x : y/[fe80::1]:4242]\n    Source    : Auto-connect via <abcd>\n    Network   : regional rns\n    Status    : Up\n    Clients   : 7\n    Blocked   : 2 IPs\n    Mode      : Gateway\n    Rate      : 10.94 kbps\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Switch ID : ab12\n    I2P       : Tunnel ready\n    Traffic   : ↑91 B     \n                ↓0 B      \n\n I2PInterface[lab_1]\n    Status    : Down\n    Mode      : Boundary\n    Rate      : 10.94 kbps\n    Battery   : 100% (charging)\n    Ch. Load  : 9.84% (15s), 3.79% (1h)\n    I2P       : Tunnel ready\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑213.92 KB  58.84 Kbps\n                ↓793 B      259.06 Kbps\n\n dash-and.dot[High Datarate]\n    Network   : regional rns\n    Status    : Up\n    Mode      : Point-to-Point\n    Rate      : 1.20 kbps\n    Noise Fl. : Unknown\n    Via       : Unknown\n    Peers     : 5 reachable\n    Access    : 64-bit IFAC by <…0506070809>\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑815.85 KB\n                ↓857 B    \n\n AutoInterface[Regional RNS]\n    Status    : Up\n    Mode      : Gateway\n    Noise Fl. : Unknown\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Traffic   : ↑292.47 KB  457.75 Kbps\n                ↓5.70 GB    195.59 Kbps\n\n Transport Instance <89d194771a3af2308f10ead9dea3b4af> running\n Uptime is 4d, 1h, 41m and 16s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "4.37 GB",
+"rx": "959 B",
+"rx_filtered": null
+},
+{
+"name": "RNodeInterface[RNode-Multi]",
+"up": true,
+"tx": "0 B",
+"rx": "43 B",
+"rx_filtered": null
+},
+{
+"name": "TCPInterface[x : y/[fe80::1]:4242]",
+"up": true,
+"tx": "91 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "I2PInterface[lab_1]",
+"up": false,
+"tx": "213.92 KB",
+"rx": "793 B",
+"rx_filtered": null
+},
+{
+"name": "dash-and.dot[High Datarate]",
+"up": true,
+"tx": "815.85 KB",
+"rx": "857 B",
+"rx_filtered": null
+},
+{
+"name": "AutoInterface[Regional RNS]",
+"up": true,
+"tx": "292.47 KB",
+"rx": "5.70 GB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 7,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 3 programs\n    Switch ID : Unknown\n    I2P       : Tunnel ready\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑1.56 GB  \n                ↓593 B    \n\n KISSInterface[Default Interface]\n    Status    : Down\n    Mode      : Access Point\n    Rate      : 10.94 kbps\n    Switch ID : Unknown\n    Peers     : 5 reachable\n    I2P       : Tunnel ready\n    Traffic   : ↑0 B        142.56 Kbps\n                ↓0 B        105.75 Kbps\n\n AutoInterface[Traffic]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Clients   : 0\n    Mode      : Gateway\n    Rate      : 1.20 kbps\n    Traffic   : ↑637 B    \n                ↓193.63 KB\n\n TCPInterface[Ünïcode ☃/192.0.2.138:4242]\n    Status    : Up\n    Clients   : 4\n    Mode      : Roaming\n    Rate      : 1.20 kbps\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Peers     : 5 reachable\n    Traffic   : ↑0 B        79.98 Kbps\n                ↓0 B        365.40 Kbps\n\n Transport Instance <38054c75bcfe1e157f621d73ecd2d22c> running\n Uptime is 6d, 21h, 23m and 30s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "1.56 GB",
+"rx": "593 B",
+"rx_filtered": null
+},
+{
+"name": "KISSInterface[Default Interface]",
+"up": false,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "AutoInterface[Traffic]",
+"up": true,
+"tx": "637 B",
+"rx": "193.63 KB",
+"rx_filtered": null
+},
+{
+"name": "TCPInterface[Ünïcode ☃/192.0.2.138:4242]",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 8,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 1 program\n    Rate      : 10.94 kbps\n    CPU load  : Unknown\n    Battery   : 100% (charging)\n    I2P       : Tunnel ready\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑623 B      310.84 Kbps\n                ↓290.68 KB  430.00 Kbps\n\n RNodeInterface[lab_1]\n    Network   : regional rns\n    Status    : Up\n    Mode      : Gateway\n    Rate      : 1.00 Gbps\n    Noise Fl. : Unknown\n    CPU load  : 12 %\n    Peers     : 2 reachable\n    Traffic   : ↑7.90 GB    344.48 Kbps\n                ↓908.76 MB  800.84 Kbps\n\n I2PInterface[[nested]]\n    Network   : regional rns\n    Status    : Up\n    Mode      : Access Point\n    Via       : Unknown\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑965 B      923.31 Kbps\n                ↓715.50 KB  762.21 Kbps\n\n BackboneInterface[x : y]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Clients   : 4\n    Mode      : Full\n    Rate      : 10.00 Mbps\n    Switch ID : Unknown\n    Peers     : 8 reachable\n    Traffic   : ↑181 B      866.68 Kbps\n                ↓224.22 KB  334.61 Kbps\n\n KISSInterface[lab_1]\n    Status    : Up\n    Mode      : Roaming\n    Rate      : 1.20 kbps\n    Noise Fl. : Unknown\n    Switch ID : Unknown\n    Endpoint  : Unknown\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑0 B        25.28 Kbps\n                ↓0 B        312.42 Kbps\n\n AutoInterface[lab_1]\n    Status    : Up\n    Mode      : Boundary\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Endpoint  : Unknown\n    Via       : Unknown\n    Traffic   : ↑0 B        255.46 Kbps\n                ↓1.18 GB    688.79 Kbps\n\n Transport Instance <6d50bea75feb319166a894df7101a8ae> running\n Network Identity   <00000000000000000000000000000000>\n Uptime is 6d, 17h, 13m and 5s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "623 B",
+"rx": "290.68 KB",
+"rx_filtered": null
+},
+{
+"name": "RNodeInterface[lab_1]",
+"up": true,
+"tx": "7.90 GB",
+"rx": "908.76 MB",
+"rx_filtered": null
+},
+{
+"name": "I2PInterface[[nested]]",
+"up": true,
+"tx": "965 B",
+"rx": "715.50 KB",
+"rx_filtered": null
+},
+{
+"name": "BackboneInterface[x : y]",
+"up": true,
+"tx": "181 B",
+"rx": "224.22 KB",
+"rx_filtered": null
+},
+{
+"name": "KISSInterface[lab_1]",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "AutoInterface[lab_1]",
+"up": true,
+"tx": "0 B",
+"rx": "1.18 GB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 9,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 3 programs\n    Rate      : 10.00 Mbps\n    Via       : Unknown\n    Peers     : 5 reachable\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑457.13 KB  332.41 Kbps\n                ↓0 B        628.37 Kbps\n\n WDCL over /dev/ttyUSB1\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Mode      : Roaming\n    Rate      : 1.20 kbps\n    Noise Fl. : -106 dBm\n    CPU load  : 12 %\n    CPU temp  : 43°C\n    Battery   : 100% (discharging)\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑544 B      999.68 Kbps\n                ↓4.26 GB    137.47 Kbps\n\n Regional RNS[High Datarate]\n    Status    : Down\n    Mode      : Boundary\n    Rate      : 10.00 Mbps\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Battery   : 100% (charging)\n    Switch ID : ab12\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑0 B      \n                ↓0 B      \n\n Ünïcode ☃[High Datarate]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Mode      : Roaming\n    Rate      : 1.00 Gbps\n    CPU load  : 12 %\n    Battery   : 100% (charging)\n    I2P       : Tunnel ready\n    Traffic   : ↑2.88 KB  \n                ↓6.46 GB  \n\n TCPInterface[x : y/[fe80::1]:4242]\n    Status    : Up\n    Clients   : 4\n    Blocked   : 1 IPs\n    Mode      : Full\n    Rate      : 1.00 Gbps\n    CPU load  : 12 %\n    CPU temp  : 43°C\n    Mem usage : 40 %\n    Switch ID : Unknown\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑0 B        772.17 Kbps\n                ↓0 B        394.28 Kbps\n\n Transport Instance <ce653196cbe499b82a9b0523f4a6035b> running\n Network Identity   <00000000000000000000000000000000>\n Uptime is 2h, 11m and 2s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "457.13 KB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "WDCL over /dev/ttyUSB1",
+"up": true,
+"tx": "544 B",
+"rx": "4.26 GB",
+"rx_filtered": null
+},
+{
+"name": "Regional RNS[High Datarate]",
+"up": false,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "Ünïcode ☃[High Datarate]",
+"up": true,
+"tx": "2.88 KB",
+"rx": "6.46 GB",
+"rx_filtered": null
+},
+{
+"name": "TCPInterface[x : y/[fe80::1]:4242]",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 10,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Down\n    Serving   : 3 programs\n    Rate      : 10.00 Mbps\n    Noise Fl. : Unknown\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Traffic   : ↑0 B      \n                ↓2.38 GB  \n\n KISSInterface[lab_1]\n    Status    : Up\n    Clients   : 4\n    Mode      : Roaming\n    Rate      : 10.94 kbps\n    Battery   : 100% (charging)\n    Peers     : 6 reachable\n    Access    : 64-bit IFAC by <…0506070809>\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑916.25 KB  735.34 Kbps\n                ↓0 B        231.16 Kbps\n\n I2PInterface[Status]\n    Status    : Up\n    Mode      : Full\n    Rate      : 10.00 Mbps\n    Noise Fl. : -106 dBm\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑4.34 GB    939.75 Kbps\n                ↓0 B        423.90 Kbps\n\n TCPInterface[[nested]/192.0.2.218:4242]\n    Status    : Up\n    Clients   : 2\n    Mode      : Gateway\n    Rate      : 1.20 kbps\n    CPU load  : 12 %\n    I2P       : Tunnel ready\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑484.75 KB  446.02 Kbps\n                ↓0 B        526.53 Kbps\n\n KISSInterface[Regional RNode RF]\n    Network   : regional rns\n    Status    : Up\n    Mode      : Point-to-Point\n    Rate      : 10.00 Mbps\n    Noise Fl. : Unknown\n    CPU load  : Unknown\n    Switch ID : ab12\n    Via       : ef56\n    I2P       : Tunnel ready\n    Traffic   : ↑303.12 KB  596.21 Kbps\n                ↓664.84 KB  545.95 Kbps\n\n Transport Instance <5d763af30e6008d0f9f52f146a01858b> running\n Uptime is 6d, 3h, 55m and 39s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": false,
+"tx": "0 B",
+"rx": "2.38 GB",
+"rx_filtered": null
+},
+{
+"name": "KISSInterface[lab_1]",
+"up": true,
+"tx": "916.25 KB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "I2PInterface[Status]",
+"up": true,
+"tx": "4.34 GB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "TCPInterface[[nested]/192.0.2.218:4242]",
+"up": true,
+"tx": "484.75 KB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "KISSInterface[Regional RNode RF]",
+"up": true,
+"tx": "303.12 KB",
+"rx": "664.84 KB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 11,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 3 programs\n    Rate      : 10.00 Mbps\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Switch ID : ab12\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑0 B        137.21 Kbps\n                ↓0 B        980.08 Kbps\n\n WDCL over /dev/ttyUSB0\n    Status    : Up\n    Clients   : 6\n    Blocked   : 1 IPs\n    Mode      : Boundary\n    Rate      : 10.00 Mbps\n    Noise Fl. : -106 dBm\n    Intrfrnc. : -88 dBm\n    Via       : Unknown\n    Traffic   : ↑0 B        456.35 Kbps\n                ↓1.07 GB    302.26 Kbps\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "WDCL over /dev/ttyUSB0",
+"up": true,
+"tx": "0 B",
+"rx": "1.07 GB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 12,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Down\n    Serving   : 2 programs\n    Rate      : 10.94 kbps\n    Noise Fl. : Unknown\n    Endpoint  : Unknown\n    Traffic   : ↑0 B      \n                ↓8.33 GB  \n\n WDCL over /dev/ttyUSB0\n    Network   : regional rns\n    Status    : Up\n    Clients   : 0\n    Mode      : Full\n    Rate      : 10.94 kbps\n    Noise Fl. : -106 dBm\n    Endpoint  : cd34\n    I2P       : Tunnel ready\n    Traffic   : ↑61.72 KB   589.04 Kbps\n                ↓513 B      506.17 Kbps\n\n RNodeInterface[box-gateway]\n    Status    : Up\n    Mode      : Full\n    Rate      : 1.00 Gbps\n    CPU load  : Unknown\n    I2P       : Tunnel ready\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑79.07 KB   465.71 Kbps\n                ↓0 B        289.39 Kbps\n\n Transport Instance <8e39ead699edb514e4433d439ca079b8> running\n Uptime is 9d, 2h, 21m and 7s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": false,
+"tx": "0 B",
+"rx": "8.33 GB",
+"rx_filtered": null
+},
+{
+"name": "WDCL over /dev/ttyUSB0",
+"up": true,
+"tx": "61.72 KB",
+"rx": "513 B",
+"rx_filtered": null
+},
+{
+"name": "RNodeInterface[box-gateway]",
+"up": true,
+"tx": "79.07 KB",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 13,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 0 programs\n    Rate      : 10.94 kbps\n    Switch ID : ab12\n    Traffic   : ↑317.93 MB  362.04 Kbps\n                ↓8.85 GB    53.45 Kbps\n\n BackboneInterface[Traffic]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Clients   : 1\n    Mode      : Point-to-Point\n    Rate      : 10.94 kbps\n    Via       : ef56\n    I2P       : Tunnel ready\n    Traffic   : ↑697.07 KB  33.25 Kbps\n                ↓0 B        6.63 Kbps\n\n KISSInterface[Ünïcode ☃]\n    Status    : Up\n    Clients   : 4\n    Mode      : Boundary\n    Rate      : 1.00 Gbps\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Peers     : 4 reachable\n    Access    : 64-bit IFAC by <…0506070809>\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑7.48 GB    157.33 Kbps\n                ↓0 B        831.08 Kbps\n\n Transport Instance <4c4daba325f7bba498fcf3025f900b13> running\n Uptime is 2d, 16h, 45m and 40s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "317.93 MB",
+"rx": "8.85 GB",
+"rx_filtered": null
+},
+{
+"name": "BackboneInterface[Traffic]",
+"up": true,
+"tx": "697.07 KB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "KISSInterface[Ünïcode ☃]",
+"up": true,
+"tx": "7.48 GB",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 14,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Network   : regional rns\n    Status    : Up\n    Serving   : 2 programs\n    Noise Fl. : Unknown\n    Via       : ef56\n    Peers     : 8 reachable\n    Access    : 64-bit IFAC by <…0506070809>\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑677 B    \n                ↓342 B    \n\n Transport Instance <50b6f5af45570526f7baa70314af17fd> running\n Uptime is 10d, 9h, 40m and 4s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "677 B",
+"rx": "342 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 15,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Serving   : 1 program\n    Rate      : 10.94 kbps\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑0 B        496.05 Kbps\n                ↓700.46 KB  342.55 Kbps\n\n Status[High Datarate]\n    Status    : Up\n    Mode      : Access Point\n    Rate      : 10.00 Mbps\n    Noise Fl. : Unknown\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Battery   : 100% (charging)\n    I2P       : Tunnel ready\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑34 B     \n                ↓615 B    \n\n WDCL over /dev/ttyUSB1\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Mode      : Boundary\n    Rate      : 1.20 kbps\n    Noise Fl. : Unknown\n    Switch ID : ab12\n    Endpoint  : Unknown\n    Peers     : 6 reachable\n    Traffic   : ↑2.38 GB    654.34 Kbps\n                ↓0 B        49.39 Kbps\n\n UDPInterface[box-gateway/0.0.0.0:4242]\n    Source    : Auto-connect via <abcd>\n    Network   : regional rns\n    Status    : Up\n    Mode      : Boundary\n    Rate      : 1.20 kbps\n    Battery   : 100% (charging)\n    Peers     : 8 reachable\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑790.79 KB\n                ↓400.84 KB\n\n KISSInterface[RNode-Multi]\n    Source    : Auto-connect via <abcd>\n    Network   : regional rns\n    Status    : Up\n    Mode      : Roaming\n    Rate      : 1.00 Gbps\n    Switch ID : ab12\n    Via       : ef56\n    Traffic   : ↑0 B      \n                ↓0 B      \n\n Transport Instance <c872b88dce9711aeae0bdbb5a93f9ca6> running\n Probe responder at <00000000000000000000000000000000> active\n Uptime is 7d, 15h, 4m and 9s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "0 B",
+"rx": "700.46 KB",
+"rx_filtered": null
+},
+{
+"name": "Status[High Datarate]",
+"up": true,
+"tx": "34 B",
+"rx": "615 B",
+"rx_filtered": null
+},
+{
+"name": "WDCL over /dev/ttyUSB1",
+"up": true,
+"tx": "2.38 GB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "UDPInterface[box-gateway/0.0.0.0:4242]",
+"up": true,
+"tx": "790.79 KB",
+"rx": "400.84 KB",
+"rx_filtered": null
+},
+{
+"name": "KISSInterface[RNode-Multi]",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 16,
+"fstats": false,
+"output": "\n I2PInterface[[nested]]\n    Network   : regional rns\n    Status    : Down\n    Mode      : Gateway\n    Rate      : 1.00 Gbps\n    Noise Fl. : Unknown\n    Airtime   : 0.0% (15s), 0.25% (1h)\n    Endpoint  : Unknown\n    I2P       : Tunnel ready\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑0 B        550.55 Kbps\n                ↓0 B        453.90 Kbps\n\n a.b/c[High Datarate]\n    Network   : regional rns\n    Status    : Up\n    Clients   : 8\n    Mode      : Access Point\n    Rate      : 10.00 Mbps\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑3.85 GB    142.85 Kbps\n                ↓0 B        209.62 Kbps\n\n BackboneInterface[a.b/c]\n    Network   : regional rns\n    Status    : Up\n    Mode      : Roaming\n    Rate      : 10.94 kbps\n    Battery   : 100% (charging)\n    Traffic   : ↑142.28 KB  941.66 Kbps\n                ↓0 B        426.44 Kbps\n\n Transport Instance <167496c1e446aec69f584f48ac9bb7d8> running\n Uptime is 4d, 5h, 41m and 3s\n\n",
+"truth": [
+{
+"name": "I2PInterface[[nested]]",
+"up": false,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "a.b/c[High Datarate]",
+"up": true,
+"tx": "3.85 GB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "BackboneInterface[a.b/c]",
+"up": true,
+"tx": "142.28 KB",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 17,
+"fstats": false,
+"output": "\n KISSInterface[Traffic]\n    Status    : Up\n    Mode      : Full\n    Rate      : 10.94 kbps\n    CPU load  : Unknown\n    Endpoint  : cd34\n    Traffic   : ↑0 B        704.21 Kbps\n                ↓824 B      15.39 Kbps\n\n I2PInterface[v6 peer]\n    Network   : regional rns\n    Status    : Up\n    Mode      : Access Point\n    Rate      : 1.20 kbps\n    CPU load  : Unknown\n    Traffic   : ↑939.79 KB  701.30 Kbps\n                ↓0 B        54.88 Kbps\n\n Transport Instance <b43f4bb79ef1489ddf9813cb57724886> running\n Uptime is 3d, 15h, 35m and 45s\n\n",
+"truth": [
+{
+"name": "KISSInterface[Traffic]",
+"up": true,
+"tx": "0 B",
+"rx": "824 B",
+"rx_filtered": null
+},
+{
+"name": "I2PInterface[v6 peer]",
+"up": true,
+"tx": "939.79 KB",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 18,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Serving   : 2 programs\n    Rate      : 1.00 Gbps\n    Switch ID : ab12\n    Peers     : 7 reachable\n    I2P       : Tunnel ready\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑45.26 KB \n                ↓0 B      \n\n TCPInterface[Regional RNS/192.0.2.194:4242]\n    Status    : Up\n    Mode      : Point-to-Point\n    Rate      : 1.00 Gbps\n    CPU temp  : 43°C\n    Switch ID : ab12\n    Endpoint  : cd34\n    I2P       : Tunnel ready\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑60.57 KB \n                ↓0 B      \n\n x : y[High Datarate]\n    Network   : regional rns\n    Status    : Up\n    Mode      : Full\n    Rate      : 1.20 kbps\n    Noise Fl. : Unknown\n    CPU load  : 12 %\n    Endpoint  : Unknown\n    Peers     : 1 reachable\n    Traffic   : ↑9.40 GB    691.08 Kbps\n                ↓898 B      253.66 Kbps\n\n BackboneInterface[Regional RNS]\n    Source    : Auto-connect via <abcd>\n    Network   : regional rns\n    Status    : Down\n    Mode      : Boundary\n    Rate      : 1.20 kbps\n    Noise Fl. : Unknown\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Via       : Unknown\n    Peers     : 8 reachable\n    Traffic   : ↑0 B        605.54 Kbps\n                ↓678 B      810.89 Kbps\n\n WDCL over /dev/ttyUSB0\n    Network   : regional rns\n    Status    : Up\n    Mode      : Roaming\n    Rate      : 10.94 kbps\n    Battery   : 100% (discharging)\n    Switch ID : Unknown\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑0 B      \n                ↓7.63 GB  \n\n Transport Instance <69f971ed2a3aaeeb2dca5233cd7eecf3> running\n Uptime is 4d, 18h, 11m and 39s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "45.26 KB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "TCPInterface[Regional RNS/192.0.2.194:4242]",
+"up": true,
+"tx": "60.57 KB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "x : y[High Datarate]",
+"up": true,
+"tx": "9.40 GB",
+"rx": "898 B",
+"rx_filtered": null
+},
+{
+"name": "BackboneInterface[Regional RNS]",
+"up": false,
+"tx": "0 B",
+"rx": "678 B",
+"rx_filtered": null
+},
+{
+"name": "WDCL over /dev/ttyUSB0",
+"up": true,
+"tx": "0 B",
+"rx": "7.63 GB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 19,
+"fstats": false,
+"output": "\n TCPInterface[100%/[fe80::1]:4242]\n    Status    : Up\n    Clients   : 1\n    Mode      : Gateway\n    Rate      : 1.00 Gbps\n    Endpoint  : cd34\n    I2P       : Tunnel ready\n    Traffic   : ↑794.69 KB  202.62 Kbps\n                ↓0 B        45.53 Kbps\n\n WDCL over /dev/ttyUSB1\n    Status    : Up\n    Clients   : 0\n    Mode      : Full\n    Rate      : 1.00 Gbps\n    Noise Fl. : -106 dBm\n    Intrfrnc. : -88 dBm\n    Traffic   : ↑0 B      \n                ↓0 B      \n\n Transport Instance <ea75c0fcf9eabcc6b32f3c6849df9fc9> running\n Uptime is 7d, 22h, 18m and 44s\n\n",
+"truth": [
+{
+"name": "TCPInterface[100%/[fe80::1]:4242]",
+"up": true,
+"tx": "794.69 KB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "WDCL over /dev/ttyUSB1",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 20,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Serving   : 1 program\n    Rate      : 1.00 Gbps\n    CPU load  : Unknown\n    Mem usage : Unknown\n    Battery   : 100% (charging)\n    I2P       : Tunnel ready\n    Traffic   : ↑832.25 KB  872.78 Kbps\n                ↓0 B        119.36 Kbps\n\n UDPInterface[Regional RNS/0.0.0.0:4242]\n    Network   : regional rns\n    Status    : Up\n    Mode      : Roaming\n    Rate      : 10.00 Mbps\n    Noise Fl. : -106 dBm\n    Intrfrnc. : -90 dBm 20779d and 10h ago\n    Via       : ef56\n    Traffic   : ↑0 B        49.82 Kbps\n                ↓0 B        671.45 Kbps\n\n WDCL over /dev/ttyUSB2\n    Source    : Auto-connect via <abcd>\n    Network   : regional rns\n    Status    : Up\n    Clients   : 8\n    Mode      : Point-to-Point\n    Noise Fl. : Unknown\n    CPU load  : Unknown\n    Mem usage : Unknown\n    Battery   : 100% (discharging)\n    I2P       : Tunnel ready\n    Traffic   : ↑5.55 GB    272.30 Kbps\n                ↓9.95 GB    571.27 Kbps\n\n Transport Instance <e2bc89e5823eb302020945c2b956fa08> running\n Uptime is 10d, 15h, 53m and 40s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "832.25 KB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "UDPInterface[Regional RNS/0.0.0.0:4242]",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "WDCL over /dev/ttyUSB2",
+"up": true,
+"tx": "5.55 GB",
+"rx": "9.95 GB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 21,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 0 programs\n    Rate      : 1.20 kbps\n    CPU load  : Unknown\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑0 B        985.46 Kbps\n                ↓615.50 KB  140.76 Kbps\n\n RNodeInterface[Ünïcode ☃]\n    Status    : Up\n    Mode      : Boundary\n    Rate      : 10.00 Mbps\n    Via       : Unknown\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑573.37 KB  65.82 Kbps\n                ↓7.59 GB    325.34 Kbps\n\n I2PInterface[box-gateway]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Peers     : 5 connected I2P endpoints\n    Mode      : Full\n    Rate      : 10.00 Mbps\n    Via       : ef56\n    Traffic   : ↑789 B    \n                ↓0 B      \n\n Transport Instance <e41edf0bb0cf4fcab87146f874f9d3d5> running\n Uptime is 6d, 20h, 18m and 16s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "0 B",
+"rx": "615.50 KB",
+"rx_filtered": null
+},
+{
+"name": "RNodeInterface[Ünïcode ☃]",
+"up": true,
+"tx": "573.37 KB",
+"rx": "7.59 GB",
+"rx_filtered": null
+},
+{
+"name": "I2PInterface[box-gateway]",
+"up": true,
+"tx": "789 B",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 22,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Down\n    Serving   : 2 programs\n    Rate      : 1.20 kbps\n    CPU load  : Unknown\n    Battery   : 100% (discharging)\n    Endpoint  : Unknown\n    Traffic   : ↑530 B    \n                ↓0 B      \n\n RNodeInterface[x : y]\n    Status    : Up\n    Clients   : 2\n    Mode      : Full\n    Rate      : 10.94 kbps\n    CPU load  : Unknown\n    CPU temp  : 43°C\n    Traffic   : ↑9.81 GB  \n                ↓0 B      \n\n BackboneInterface[v6 peer]\n    Status    : Up\n    Mode      : Point-to-Point\n    Rate      : 1.00 Gbps\n    CPU load  : 12 %\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑679.43 MB  831.36 Kbps\n                ↓701 B      688.23 Kbps\n\n TCPInterface[box-gateway/192.0.2.83:4242]\n    Status    : Up\n    Mode      : Access Point\n    Rate      : 1.00 Gbps\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Traffic   : ↑0 B        622.06 Kbps\n                ↓340 B      341.29 Kbps\n\n Transport Instance <2939a11bb9db9e76d35ee57c92150570> running\n Probe responder at <00000000000000000000000000000000> active\n Uptime is 5d, 20h, 47m and 51s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": false,
+"tx": "530 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "RNodeInterface[x : y]",
+"up": true,
+"tx": "9.81 GB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "BackboneInterface[v6 peer]",
+"up": true,
+"tx": "679.43 MB",
+"rx": "701 B",
+"rx_filtered": null
+},
+{
+"name": "TCPInterface[box-gateway/192.0.2.83:4242]",
+"up": true,
+"tx": "0 B",
+"rx": "340 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 23,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 3 programs\n    Rate      : 1.20 kbps\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Via       : ef56\n    Peers     : 3 reachable\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑0 B        444.16 Kbps\n                ↓755.09 KB  757.30 Kbps\n\n Transport Instance <7f16286fd6547be103f2f25f0fe3b127> running\n Network Identity   <00000000000000000000000000000000>\n Uptime is 5d, 14h, 38m and 14s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "0 B",
+"rx": "755.09 KB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 24,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Serving   : 2 programs\n    Rate      : 10.00 Mbps\n    CPU load  : 12 %\n    Switch ID : Unknown\n    I2P       : Tunnel ready\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑0 B        141.12 Kbps\n                ↓0 B        838.10 Kbps\n\n lab_1[High Datarate]\n    Status    : Up\n    Mode      : Full\n    Rate      : 10.94 kbps\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Ch. Load  : 9.84% (15s), 3.79% (1h)\n    Switch ID : Unknown\n    Peers     : 1 reachable\n    Traffic   : ↑3.47 KB    276.30 Kbps\n                ↓0 B        520.50 Kbps\n\n TCPInterface[100%/192.0.2.253:4242]\n    Status    : Down\n    Clients   : 5\n    Mode      : Point-to-Point\n    Rate      : 10.94 kbps\n    Airtime   : 0.0% (15s), 0.25% (1h)\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑0 B        964.39 Kbps\n                ↓0 B        226.41 Kbps\n\n RNodeInterface[Regional RNode RF]\n    Network   : regional rns\n    Status    : Up\n    Mode      : Point-to-Point\n    Rate      : 10.94 kbps\n    Airtime   : 0.0% (15s), 0.25% (1h)\n    Via       : Unknown\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑968 B    \n                ↓0 B      \n\n RNodeInterface[Traffic]\n    Status    : Up\n    Mode      : Roaming\n    Rate      : 1.20 kbps\n    Peers     : 6 reachable\n    Traffic   : ↑0 B        453.08 Kbps\n                ↓0 B        734.88 Kbps\n\n Transport Instance <698656a10f645adf0594f04c0a21e4b9> running\n Uptime is 4d, 16h, 24m and 5s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "lab_1[High Datarate]",
+"up": true,
+"tx": "3.47 KB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "TCPInterface[100%/192.0.2.253:4242]",
+"up": false,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "RNodeInterface[Regional RNode RF]",
+"up": true,
+"tx": "968 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "RNodeInterface[Traffic]",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 25,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 1 program\n    Rate      : 10.00 Mbps\n    Noise Fl. : Unknown\n    CPU load  : 12 %\n    CPU load  : Unknown\n    Endpoint  : cd34\n    Via       : ef56\n    Traffic   : ↑3.50 GB    909.63 Kbps\n                ↓158.25 KB  354.55 Kbps\n\n Transport Instance <eeab370eeacd372209cdfbef00131b10> running\n Probe responder at <00000000000000000000000000000000> active\n Uptime is 1d, 4h, 38m and 11s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "3.50 GB",
+"rx": "158.25 KB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 26,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 0 programs\n    Rate      : 10.94 kbps\n    Noise Fl. : Unknown\n    CPU load  : Unknown\n    Mem usage : Unknown\n    Peers     : 8 reachable\n    Traffic   : ↑946 B      442.66 Kbps\n                ↓40 B       39.76 Kbps\n\n TCPInterface[Status/[fe80::1]:4242]\n    Status    : Up\n    Clients   : 3\n    Mode      : Gateway\n    Rate      : 1.20 kbps\n    CPU temp  : 43°C\n    Battery   : 100% (charging)\n    Via       : Unknown\n    Traffic   : ↑0 B        651.24 Kbps\n                ↓1.51 GB    808.96 Kbps\n\n I2PInterface[RNode-Multi]\n    Network   : regional rns\n    Status    : Up\n    Mode      : Full\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Battery   : 100% (charging)\n    Via       : ef56\n    Traffic   : ↑379 B    \n                ↓0 B      \n\n Transport Instance <2c98699b5240530463e3b06245c13b37> running\n Uptime is 6d, 15h, 25m and 59s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "946 B",
+"rx": "40 B",
+"rx_filtered": null
+},
+{
+"name": "TCPInterface[Status/[fe80::1]:4242]",
+"up": true,
+"tx": "0 B",
+"rx": "1.51 GB",
+"rx_filtered": null
+},
+{
+"name": "I2PInterface[RNode-Multi]",
+"up": true,
+"tx": "379 B",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 27,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Network   : regional rns\n    Status    : Up\n    Serving   : 1 program\n    Noise Fl. : -106 dBm\n    Intrfrnc. : -88 dBm\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Endpoint  : cd34\n    Via       : Unknown\n    Traffic   : ↑0 B        100.68 Kbps\n                ↓929 B      424.47 Kbps\n\n I2PInterface[Regional RNode RF]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Mode      : Access Point\n    Rate      : 1.00 Gbps\n    Noise Fl. : Unknown\n    Battery   : 100% (charging)\n    Endpoint  : Unknown\n    Via       : Unknown\n    Traffic   : ↑0 B      \n                ↓0 B      \n\n Transport Instance <0c6fdf42c9553aac44cce6001ffda9ed> running\n Uptime is 14h, 44m and 5s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "0 B",
+"rx": "929 B",
+"rx_filtered": null
+},
+{
+"name": "I2PInterface[Regional RNode RF]",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 28,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Serving   : 0 programs\n    Rate      : 10.00 Mbps\n    Battery   : 100% (charging)\n    Switch ID : Unknown\n    Peers     : 1 reachable\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑8.25 GB  \n                ↓3.59 GB  \n\n RNodeInterface[x : y]\n    Source    : Auto-connect via <abcd>\n    Network   : regional rns\n    Status    : Up\n    Mode      : Boundary\n    CPU load  : 12 %\n    CPU load  : Unknown\n    Mem usage : 40 %\n    Battery   : 100% (discharging)\n    Switch ID : Unknown\n    Access    : 64-bit IFAC by <…0506070809>\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑342 B      907.07 Kbps\n                ↓0 B        953.35 Kbps\n\n KISSInterface[lab_1]\n    Status    : Up\n    Mode      : Full\n    Rate      : 1.00 Gbps\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Battery   : 100% (charging)\n    Traffic   : ↑0 B        977.75 Kbps\n                ↓9.35 GB    311.14 Kbps\n\n TCPInterface[RNode-Multi/192.0.2.243:4242]\n    Status    : Up\n    Mode      : Boundary\n    Rate      : 10.00 Mbps\n    Noise Fl. : -106 dBm\n    Intrfrnc. : -88 dBm\n    Peers     : 8 reachable\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑0 B        902.73 Kbps\n                ↓563.88 KB  137.08 Kbps\n\n Transport Instance <4c84769480e95b8d386d1e7eb7b536af> running\n Network Identity   <00000000000000000000000000000000>\n Probe responder at <00000000000000000000000000000000> active\n Uptime is 8d, 32m and 7s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "8.25 GB",
+"rx": "3.59 GB",
+"rx_filtered": null
+},
+{
+"name": "RNodeInterface[x : y]",
+"up": true,
+"tx": "342 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "KISSInterface[lab_1]",
+"up": true,
+"tx": "0 B",
+"rx": "9.35 GB",
+"rx_filtered": null
+},
+{
+"name": "TCPInterface[RNode-Multi/192.0.2.243:4242]",
+"up": true,
+"tx": "0 B",
+"rx": "563.88 KB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 29,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 0 programs\n    Noise Fl. : Unknown\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Via       : Unknown\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑118 B      67.01 Kbps\n                ↓15 B       654.92 Kbps\n\n UDPInterface[Ünïcode ☃/0.0.0.0:4242]\n    Status    : Up\n    Clients   : 4\n    Mode      : Access Point\n    Rate      : 1.20 kbps\n    Noise Fl. : -106 dBm\n    Ch. Load  : 9.84% (15s), 3.79% (1h)\n    I2P       : Tunnel ready\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑27 B       686.59 Kbps\n                ↓936 B      17.60 Kbps\n\n RNodeInterface[[nested]]\n    Status    : Up\n    Mode      : Access Point\n    Rate      : 10.94 kbps\n    CPU temp  : 43°C\n    Battery   : 100% (charging)\n    Access    : 64-bit IFAC by <…0506070809>\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑0 B        190.87 Kbps\n                ↓829 B      193.53 Kbps\n\n v6 peer[High Datarate]\n    Network   : regional rns\n    Status    : Down\n    Mode      : Access Point\n    Rate      : 10.00 Mbps\n    Noise Fl. : Unknown\n    Switch ID : Unknown\n    Traffic   : ↑903 B    \n                ↓265 B    \n\n Transport Instance <8231275dd34a4f1c3e4f2d738a4c2c3a> running\n Network Identity   <00000000000000000000000000000000>\n Probe responder at <00000000000000000000000000000000> active\n Uptime is 3d, 21h, 17m and 6s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "118 B",
+"rx": "15 B",
+"rx_filtered": null
+},
+{
+"name": "UDPInterface[Ünïcode ☃/0.0.0.0:4242]",
+"up": true,
+"tx": "27 B",
+"rx": "936 B",
+"rx_filtered": null
+},
+{
+"name": "RNodeInterface[[nested]]",
+"up": true,
+"tx": "0 B",
+"rx": "829 B",
+"rx_filtered": null
+},
+{
+"name": "v6 peer[High Datarate]",
+"up": false,
+"tx": "903 B",
+"rx": "265 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 30,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 1 program\n    Rate      : 10.94 kbps\n    CPU temp  : 43°C\n    Endpoint  : Unknown\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑0 B        486.48 Kbps\n                ↓0 B        23.37 Kbps\n\n Transport Instance <0f0332f01d93223ac7a813f2afa2fa58> running\n Network Identity   <00000000000000000000000000000000>\n Uptime is 9d, 22h, 19m and 29s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 31,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 2 programs\n    Rate      : 10.00 Mbps\n    Switch ID : Unknown\n    Peers     : 8 reachable\n    Traffic   : ↑9.99 GB    207.48 Kbps\n                ↓267 B      453.54 Kbps\n\n Transport Instance <7c6613a98d64fa7ba4be9d80f25e0b70> running\n Uptime is 2d, 17h, 25m and 40s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "9.99 GB",
+"rx": "267 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 32,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Network   : regional rns\n    Status    : Up\n    Serving   : 0 programs\n    Rate      : 10.94 kbps\n    Battery   : 100% (charging)\n    Traffic   : ↑554.85 KB  740.17 Kbps\n                ↓1.06 GB    801.77 Kbps\n\n I2PInterface[100%]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Mode      : Access Point\n    Rate      : 1.00 Gbps\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Ch. Load  : 9.84% (15s), 3.79% (1h)\n    Switch ID : ab12\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑3.52 GB    304.60 Kbps\n                ↓932.51 KB  808.00 Kbps\n\n Transport Instance <46ad67a240e141f4ed0de63333616193> running\n Network Identity   <00000000000000000000000000000000>\n Uptime is 4d, 8h, 40m and 6s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "554.85 KB",
+"rx": "1.06 GB",
+"rx_filtered": null
+},
+{
+"name": "I2PInterface[100%]",
+"up": true,
+"tx": "3.52 GB",
+"rx": "932.51 KB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 33,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 0 programs\n    Rate      : 10.00 Mbps\n    CPU load  : Unknown\n    Mem usage : Unknown\n    Via       : ef56\n    Peers     : 1 reachable\n    Traffic   : ↑8.81 GB  \n                ↓0 B      \n\n WDCL over /dev/ttyUSB1\n    Network   : regional rns\n    Status    : Up\n    Clients   : 8\n    Mode      : Gateway\n    CPU load  : Unknown\n    Peers     : 8 reachable\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑66 B       574.69 Kbps\n                ↓3 B        357.87 Kbps\n\n WDCL over /dev/ttyUSB0\n    Source    : Auto-connect via <abcd>\n    Status    : Down\n    Clients   : 4\n    Mode      : Access Point\n    Rate      : 10.00 Mbps\n    CPU load  : 12 %\n    CPU temp  : 43°C\n    Mem usage : 40 %\n    Switch ID : Unknown\n    Peers     : 3 reachable\n    Traffic   : ↑17 B       186.45 Kbps\n                ↓73 B       62.20 Kbps\n\n v6 peer[High Datarate]\n    Network   : regional rns\n    Status    : Down\n    Clients   : 4\n    Mode      : Roaming\n    Rate      : 10.00 Mbps\n    CPU load  : 12 %\n    I2P       : Tunnel ready\n    Traffic   : ↑8.83 GB    545.92 Kbps\n                ↓0 B        718.23 Kbps\n\n Transport Instance <13edddd3d391f9cf0540cd85c75efb14> running\n Network Identity   <00000000000000000000000000000000>\n Probe responder at <00000000000000000000000000000000> active\n Uptime is 9d, 3h, 35m and 37s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "8.81 GB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "WDCL over /dev/ttyUSB1",
+"up": true,
+"tx": "66 B",
+"rx": "3 B",
+"rx_filtered": null
+},
+{
+"name": "WDCL over /dev/ttyUSB0",
+"up": false,
+"tx": "17 B",
+"rx": "73 B",
+"rx_filtered": null
+},
+{
+"name": "v6 peer[High Datarate]",
+"up": false,
+"tx": "8.83 GB",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 34,
+"fstats": false,
+"output": "\n AutoInterface[Regional RNode RF]\n    Status    : Down\n    Mode      : Point-to-Point\n    Rate      : 10.00 Mbps\n    Switch ID : ab12\n    Via       : ef56\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑0 B      \n                ↓185 B    \n\n Transport Instance <f02bdaad54d4f0da79214a8810f1dda5> running\n Network Identity   <00000000000000000000000000000000>\n Uptime is 7d, 13h, 39m and 3s\n\n",
+"truth": [
+{
+"name": "AutoInterface[Regional RNode RF]",
+"up": false,
+"tx": "0 B",
+"rx": "185 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 35,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Network   : regional rns\n    Status    : Up\n    Serving   : 3 programs\n    Rate      : 1.20 kbps\n    Noise Fl. : -106 dBm\n    Intrfrnc. : -90 dBm 20779d and 10h ago\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑214 B      885.41 Kbps\n                ↓0 B        452.14 Kbps\n\n KISSInterface[x : y]\n    Status    : Up\n    Clients   : 0\n    Mode      : Access Point\n    Rate      : 10.94 kbps\n    Noise Fl. : -106 dBm\n    Endpoint  : Unknown\n    Traffic   : ↑0 B        67.11 Kbps\n                ↓5.26 GB    227.08 Kbps\n\n RNodeInterface[Ünïcode ☃]\n    Status    : Up\n    Clients   : 8\n    Mode      : Access Point\n    Rate      : 1.20 kbps\n    Noise Fl. : -106 dBm, no interference\n    CPU load  : Unknown\n    Mem usage : Unknown\n    Peers     : 7 reachable\n    I2P       : Tunnel ready\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑0 B        227.65 Kbps\n                ↓490.01 KB  133.22 Kbps\n\n Transport Instance <63d4edfe55079558faedf49ccc53472d> running\n Probe responder at <00000000000000000000000000000000> active\n Uptime is 2d, 14h, 8m and 14s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "214 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "KISSInterface[x : y]",
+"up": true,
+"tx": "0 B",
+"rx": "5.26 GB",
+"rx_filtered": null
+},
+{
+"name": "RNodeInterface[Ünïcode ☃]",
+"up": true,
+"tx": "0 B",
+"rx": "490.01 KB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 36,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 2 programs\n    Rate      : 10.00 Mbps\n    CPU load  : Unknown\n    Mem usage : Unknown\n    Battery   : 100% (charging)\n    Endpoint  : Unknown\n    Traffic   : ↑714 B      832.69 Kbps\n                ↓619 B      286.06 Kbps\n\n KISSInterface[box-gateway]\n    Network   : regional rns\n    Status    : Up\n    Mode      : Boundary\n    Rate      : 1.00 Gbps\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Endpoint  : Unknown\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑0 B      \n                ↓0 B      \n\n TCPInterface[x : y/[fe80::1]:4242]\n    Status    : Up\n    Mode      : Gateway\n    Via       : ef56\n    Traffic   : ↑0 B      \n                ↓9.83 GB  \n\n Transport Instance <cf1e046aae72b040cb982810ec22c708> running\n Probe responder at <00000000000000000000000000000000> active\n Uptime is 3d, 8h, 26m and 42s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "714 B",
+"rx": "619 B",
+"rx_filtered": null
+},
+{
+"name": "KISSInterface[box-gateway]",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "TCPInterface[x : y/[fe80::1]:4242]",
+"up": true,
+"tx": "0 B",
+"rx": "9.83 GB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 37,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Down\n    Serving   : 0 programs\n    Rate      : 10.94 kbps\n    Battery   : 100% (charging)\n    Peers     : 7 reachable\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑0 B      \n                ↓0 B      \n\n Transport Instance <24488bc15c0dc49bbfa9eb5047fcbdf1> running\n Probe responder at <00000000000000000000000000000000> active\n Uptime is 9d, 4h, 29m and 18s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": false,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 38,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Serving   : 0 programs\n    Rate      : 1.20 kbps\n    CPU load  : 12 %\n    CPU temp  : 43°C\n    Mem usage : 40 %\n    Battery   : 100% (charging)\n    Traffic   : ↑46 B       998.63 Kbps\n                ↓0 B        542.18 Kbps\n\n Default Interface[High Datarate]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Mode      : Boundary\n    Rate      : 10.00 Mbps\n    Noise Fl. : -106 dBm, no interference\n    Endpoint  : Unknown\n    Via       : ef56\n    Traffic   : ↑0 B        75.51 Kbps\n                ↓811 B      757.76 Kbps\n\n Transport Instance <80a51230011a34d32080674cb062d7ce> running\n Network Identity   <00000000000000000000000000000000>\n Uptime is 2d, 22h, 16m and 50s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "46 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "Default Interface[High Datarate]",
+"up": true,
+"tx": "0 B",
+"rx": "811 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 39,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 3 programs\n    Rate      : 10.00 Mbps\n    CPU load  : Unknown\n    Peers     : 6 reachable\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑916 B    \n                ↓998 B    \n\n box-gateway[High Datarate]\n    Network   : regional rns\n    Status    : Up\n    Mode      : Roaming\n    Rate      : 10.00 Mbps\n    CPU load  : 12 %\n    CPU temp  : 43°C\n    Mem usage : 40 %\n    Peers     : 6 reachable\n    Access    : 64-bit IFAC by <…0506070809>\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑811.31 KB  940.62 Kbps\n                ↓0 B        214.53 Kbps\n\n BackboneInterface[Default Interface]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Mode      : Roaming\n    Noise Fl. : -106 dBm\n    Peers     : 0 reachable\n    Traffic   : ↑329 B      925.63 Kbps\n                ↓454.49 KB  108.81 Kbps\n\n Transport Instance <78ddb2720c0d5e0b89abd39f792f82cb> running\n Uptime is 2d, 16h, 29m and 47s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "916 B",
+"rx": "998 B",
+"rx_filtered": null
+},
+{
+"name": "box-gateway[High Datarate]",
+"up": true,
+"tx": "811.31 KB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "BackboneInterface[Default Interface]",
+"up": true,
+"tx": "329 B",
+"rx": "454.49 KB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 40,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Network   : regional rns\n    Status    : Up\n    Serving   : 0 programs\n    Rate      : 1.20 kbps\n    Noise Fl. : -106 dBm\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Traffic   : ↑796 B      84.65 Kbps\n                ↓639.10 KB  419.65 Kbps\n\n RNodeInterface[Regional RNS]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Mode      : Point-to-Point\n    Noise Fl. : -106 dBm\n    Intrfrnc. : -90 dBm 20779d and 10h ago\n    Battery   : 100% (charging)\n    Endpoint  : Unknown\n    Peers     : 6 reachable\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑0 B        582.27 Kbps\n                ↓0 B        789.19 Kbps\n\n RNodeInterface[a.b/c]\n    Status    : Up\n    Mode      : Access Point\n    Rate      : 1.20 kbps\n    Traffic   : ↑570 B    \n                ↓0 B      \n\n TCPInterface[box-gateway/[fe80::1]:4242]\n    Status    : Up\n    Clients   : 6\n    Mode      : Full\n    Rate      : 10.94 kbps\n    CPU load  : Unknown\n    Traffic   : ↑901 B    \n                ↓0 B      \n\n Transport Instance <0123e23c6592d3f40fc38a4ee8124ec7> running\n Network Identity   <00000000000000000000000000000000>\n Probe responder at <00000000000000000000000000000000> active\n Uptime is 5d, 4h, 12m and 22s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "796 B",
+"rx": "639.10 KB",
+"rx_filtered": null
+},
+{
+"name": "RNodeInterface[Regional RNS]",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "RNodeInterface[a.b/c]",
+"up": true,
+"tx": "570 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "TCPInterface[box-gateway/[fe80::1]:4242]",
+"up": true,
+"tx": "901 B",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 41,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Network   : regional rns\n    Status    : Up\n    Serving   : 0 programs\n    Rate      : 1.20 kbps\n    Battery   : 100% (charging)\n    I2P       : Tunnel ready\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑1.44 GB    408.44 Kbps\n                ↓993.62 KB  869.44 Kbps\n\n BackboneInterface[Regional RNS]\n    Status    : Up\n    Mode      : Boundary\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Switch ID : Unknown\n    Via       : ef56\n    I2P       : Tunnel ready\n    Traffic   : ↑0 B      \n                ↓0 B      \n\n Transport Instance <24324a5307bef461e59bfa2ea066ae3f> running\n Probe responder at <00000000000000000000000000000000> active\n Uptime is 4d, 22h, 31m and 11s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "1.44 GB",
+"rx": "993.62 KB",
+"rx_filtered": null
+},
+{
+"name": "BackboneInterface[Regional RNS]",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 42,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 0 programs\n    Battery   : 100% (discharging)\n    Switch ID : ab12\n    Peers     : 5 reachable\n    Traffic   : ↑0 B        325.91 Kbps\n                ↓0 B        460.85 Kbps\n\n Transport Instance <e7615c681907c977a9ef89d9a3014547> running\n Probe responder at <00000000000000000000000000000000> active\n Uptime is 8d, 18h, 28m and 25s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 43,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 0 programs\n    Rate      : 10.00 Mbps\n    Switch ID : Unknown\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑0 B        577.14 Kbps\n                ↓0 B        74.85 Kbps\n\n I2PInterface[RNode-Multi]\n    Network   : regional rns\n    Status    : Up\n    Mode      : Gateway\n    Rate      : 10.94 kbps\n    Switch ID : ab12\n    I2P       : Tunnel ready\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑0 B        283.65 Kbps\n                ↓8.04 GB    658.57 Kbps\n\n AutoInterface[100%]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Mode      : Access Point\n    Rate      : 1.00 Gbps\n    Peers     : 5 reachable\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑528.32 KB  855.62 Kbps\n                ↓6.55 GB    854.10 Kbps\n\n Transport Instance <8c6869b993917a9d33e1016efc7f03f6> running\n Network Identity   <00000000000000000000000000000000>\n Probe responder at <00000000000000000000000000000000> active\n Uptime is 10d, 17h, 40m and 51s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "I2PInterface[RNode-Multi]",
+"up": true,
+"tx": "0 B",
+"rx": "8.04 GB",
+"rx_filtered": null
+},
+{
+"name": "AutoInterface[100%]",
+"up": true,
+"tx": "528.32 KB",
+"rx": "6.55 GB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 44,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Serving   : 3 programs\n    Rate      : 10.94 kbps\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Endpoint  : Unknown\n    Via       : Unknown\n    Peers     : 8 reachable\n    I2P       : Tunnel ready\n    Traffic   : ↑0 B        397.35 Kbps\n                ↓884 B      989.00 Kbps\n\n Transport Instance <30ee97344c940d5e2d2df562e66ffc35> running\n Probe responder at <00000000000000000000000000000000> active\n Uptime is 10d, 4h, 7m and 54s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "0 B",
+"rx": "884 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 45,
+"fstats": false,
+"output": "\n BackboneInterface[x : y]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Mode      : Full\n    Rate      : 10.94 kbps\n    Battery   : 100% (charging)\n    Switch ID : ab12\n    Endpoint  : Unknown\n    I2P       : Tunnel ready\n    Traffic   : ↑994 B      691.57 Kbps\n                ↓0 B        737.24 Kbps\n\n AutoInterface[Default Interface]\n    Status    : Up\n    Mode      : Boundary\n    CPU load  : Unknown\n    Battery   : 100% (discharging)\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑0 B        982.50 Kbps\n                ↓0 B        755.51 Kbps\n\n TCPInterface[Ünïcode ☃/192.0.2.42:4242]\n    Status    : Up\n    Mode      : Access Point\n    Rate      : 1.20 kbps\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑1.79 GB  \n                ↓149 B    \n\n BackboneInterface[Status]\n    Status    : Up\n    Mode      : Point-to-Point\n    Rate      : 1.20 kbps\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑2.74 GB    68.65 Kbps\n                ↓438 B      320.20 Kbps\n\n Transport Instance <0e93f8c41047f0e3f943f3571ba779ec> running\n Probe responder at <00000000000000000000000000000000> active\n Uptime is 6d, 10h, 32m and 48s\n\n",
+"truth": [
+{
+"name": "BackboneInterface[x : y]",
+"up": true,
+"tx": "994 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "AutoInterface[Default Interface]",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "TCPInterface[Ünïcode ☃/192.0.2.42:4242]",
+"up": true,
+"tx": "1.79 GB",
+"rx": "149 B",
+"rx_filtered": null
+},
+{
+"name": "BackboneInterface[Status]",
+"up": true,
+"tx": "2.74 GB",
+"rx": "438 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 46,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Network   : regional rns\n    Status    : Up\n    Serving   : 0 programs\n    CPU load  : Unknown\n    Mem usage : Unknown\n    Battery   : 100% (charging)\n    Endpoint  : Unknown\n    Traffic   : ↑0 B        540.38 Kbps\n                ↓748.34 KB  895.96 Kbps\n\n Transport Instance <f6066a98e3476899ecc219a5a09b6f31> running\n Uptime is 10d, 23h, 47m and 10s\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "0 B",
+"rx": "748.34 KB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 47,
+"fstats": false,
+"output": "\n Shared Instance[rns/default]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Serving   : 2 programs\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Peers     : 1 reachable\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑119.52 KB  310.66 Kbps\n                ↓0 B        115.36 Kbps\n\n RNodeInterface[100%]\n    Status    : Up\n    Clients   : 4\n    Mode      : Access Point\n    Rate      : 1.00 Gbps\n    CPU temp  : 43°C\n    Battery   : 100% (discharging)\n    Endpoint  : cd34\n    Traffic   : ↑6.01 GB    605.25 Kbps\n                ↓0 B        881.89 Kbps\n\n RNodeInterface[x : y]\n    Status    : Up\n    Clients   : 2\n    Blocked   : 1 IPs\n    Mode      : Gateway\n    Rate      : 1.20 kbps\n    Airtime   : 0.0% (15s), 0.25% (1h)\n    Via       : Unknown\n    Traffic   : ↑0 B        204.67 Kbps\n                ↓2.29 GB    601.24 Kbps\n\n RNodeInterface[Regional RNode RF]\n    Status    : Down\n    Mode      : Access Point\n    Rate      : 10.00 Mbps\n    Endpoint  : Unknown\n    Peers     : 3 reachable\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑3.10 GB    817.49 Kbps\n                ↓251.96 KB  900.86 Kbps\n\n",
+"truth": [
+{
+"name": "Shared Instance[rns/default]",
+"up": true,
+"tx": "119.52 KB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "RNodeInterface[100%]",
+"up": true,
+"tx": "6.01 GB",
+"rx": "0 B",
+"rx_filtered": null
+},
+{
+"name": "RNodeInterface[x : y]",
+"up": true,
+"tx": "0 B",
+"rx": "2.29 GB",
+"rx_filtered": null
+},
+{
+"name": "RNodeInterface[Regional RNode RF]",
+"up": false,
+"tx": "3.10 GB",
+"rx": "251.96 KB",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 48,
+"fstats": false,
+"output": "\n KISSInterface[[nested]]\n    Network   : regional rns\n    Status    : Up\n    Mode      : Gateway\n    Rate      : 10.94 kbps\n    CPU load  : Unknown\n    Battery   : 100% (charging)\n    Traffic   : ↑0 B      \n                ↓959.47 KB\n\n TCPInterface[Ünïcode ☃/[fe80::1]:4242]\n    Status    : Up\n    Mode      : Full\n    Rate      : 10.00 Mbps\n    Switch ID : Unknown\n    Access    : 64-bit IFAC by <…0506070809>\n    I2P B32   : xyz.b32.i2p\n    Traffic   : ↑368 B      940.00 Kbps\n                ↓9.99 MB    611.87 Kbps\n\n AutoInterface[dash-and.dot]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Mode      : Point-to-Point\n    Rate      : 10.00 Mbps\n    I2P       : Tunnel ready\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑0 B      \n                ↓0 B      \n\n Transport Instance <d38ff1e477d8c52f098d7e375bc1794b> running\n Network Identity   <00000000000000000000000000000000>\n Uptime is 10d, 2h and 25m\n\n",
+"truth": [
+{
+"name": "KISSInterface[[nested]]",
+"up": true,
+"tx": "0 B",
+"rx": "959.47 KB",
+"rx_filtered": null
+},
+{
+"name": "TCPInterface[Ünïcode ☃/[fe80::1]:4242]",
+"up": true,
+"tx": "368 B",
+"rx": "9.99 MB",
+"rx_filtered": null
+},
+{
+"name": "AutoInterface[dash-and.dot]",
+"up": true,
+"tx": "0 B",
+"rx": "0 B",
+"rx_filtered": null
+}
+]
+},
+{
+"case": 49,
+"fstats": false,
+"output": "\n I2PInterface[Status]\n    Status    : Up\n    Mode      : Boundary\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Via       : ef56\n    Traffic   : ↑953 B      408.14 Kbps\n                ↓329.08 KB  893.58 Kbps\n\n TCPInterface[Status/[fe80::1]:4242]\n    Status    : Up\n    Clients   : 1\n    Mode      : Full\n    Rate      : 1.20 kbps\n    CPU temp  : 43°C\n    Battery   : 100% (discharging)\n    Switch ID : ab12\n    Via       : Unknown\n    Peers     : 1 reachable\n    Traffic   : ↑0 B        875.99 Kbps\n                ↓790 B      740.31 Kbps\n\n BackboneInterface[RNode-Multi]\n    Source    : Auto-connect via <abcd>\n    Status    : Up\n    Clients   : 6\n    Blocked   : 1 IPs\n    Mode      : Full\n    Rate      : 1.20 kbps\n    CPU load  : 12 %\n    Mem usage : 40 %\n    Battery   : 100% (charging)\n    Traffic   : ↑32.72 MB \n                ↓378 B    \n\n BackboneInterface[Status]\n    Network   : regional rns\n    Status    : Up\n    Mode      : Access Point\n    Rate      : 10.94 kbps\n    CPU load  : Unknown\n    Access    : 64-bit IFAC by <…0506070809>\n    Traffic   : ↑0 B        846.98 Kbps\n                ↓36 B       802.50 Kbps\n\n Transport Instance <7761e1021f5f2a8f1763bbbdc67a0ae7> running\n Uptime is 1d, 10h, 13m and 7s\n\n",
+"truth": [
+{
+"name": "I2PInterface[Status]",
+"up": true,
+"tx": "953 B",
+"rx": "329.08 KB",
+"rx_filtered": null
+},
+{
+"name": "TCPInterface[Status/[fe80::1]:4242]",
+"up": true,
+"tx": "0 B",
+"rx": "790 B",
+"rx_filtered": null
+},
+{
+"name": "BackboneInterface[RNode-Multi]",
+"up": true,
+"tx": "32.72 MB",
+"rx": "378 B",
+"rx_filtered": null
+},
+{
+"name": "BackboneInterface[Status]",
+"up": true,
+"tx": "0 B",
+"rx": "36 B",
+"rx_filtered": null
+}
+]
+}
+]
+}

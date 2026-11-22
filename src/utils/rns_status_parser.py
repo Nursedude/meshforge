@@ -82,9 +82,15 @@ class RNSInterface:
     # which would claim "nothing filtered" from a counter that isn't there.
     tx_filtered: Optional[TrafficCounters] = None
     rx_filtered: Optional[TrafficCounters] = None
+    # The header EXACTLY as rnstatus printed it (stock `str(interface)`):
+    # not every stock name is "Type[name]" — WeaveInterface prints
+    # "WDCL over <port>" (r6). "" = constructed by hand (tests).
+    name: str = ""
 
     @property
     def full_name(self) -> str:
+        if self.name:
+            return self.name
         return f"{self.type_name}[{self.display_name}]"
 
     @property
@@ -129,6 +135,11 @@ class RNSStatus:
     # latency baseline built from these values. On a TIMEOUT this is the
     # bound we gave up at, not a measurement of rnsd.
     duration_s: Optional[float] = None
+    # Every output line the parser could NOT account for, verbatim, in order
+    # (WITNESS-TUI r6). Non-empty = this reading is incomplete: something was
+    # printed that no rule read, so nothing may be called healthy from it
+    # (hfm #3 at the parser boundary). Judged by accepted_gap().
+    unread_lines: List[str] = field(default_factory=list)
 
     @property
     def all_up(self) -> bool:
@@ -154,25 +165,82 @@ class RNSStatus:
 # Compiled regexes
 # ---------------------------------------------------------------------------
 
-# Interface header — uses [\w\s]+? to match "Shared Instance" (space)
-# Greedy to the LAST ']' so an IPv6 name "[v6/[fe80::1]:4242]" stays whole.
-_IFACE_RE = re.compile(r'^\s*([\w\s]+?)\[(.+)\]')
-_STATUS_RE = re.compile(r'^\s*Status\s*:\s*(\S+)')
-_MODE_RE = re.compile(r'^\s*Mode\s*:\s*(.+)')
-_RATE_RE = re.compile(r'^\s*Rate\s*:\s*(.+)')
-_PEERS_RE = re.compile(r'^\s*Peers\s*:\s*(\d+)')
-_SERVING_RE = re.compile(r'^\s*Serving\s*:\s*(\d+)')
-# Any "Name :" property header inside an interface block. EVERY header
-# (re)sets the arrow section: only "traffic" and "filtered" route ↑/↓ lines;
-# any other header (Status, Held, Announces, a footer...) closes the section,
-# so a block this parser doesn't know can never land in rx (Fable r1 #3).
-# ANY "Name :" line is a header — dots, digits, anything but an arrow
-# ("Path Rqs.", "Ch. Load", "I2P B32"). An allowlist of name characters
-# was cured by enumeration twice (Fable r3 dots, r4 digits).
-_HDR_RE = re.compile(r'^\s*([A-Za-z][^:↑↓]*?)\s*:')
-_ARROW_SECTIONS = {"traffic": "traffic", "filtered": "filtered"}
-# Interface properties are indented >= 2; headers/footers sit at 0-1.
-_TOP_LEVEL_RE = re.compile(r'^ ?\S')
+# ---- The line grammar (WITNESS-TUI r6: EVERY line is accounted for) ------
+# Derived from the stock print code of rns 1.3.9 and 1.6.1
+# (RNS/Utilities/rnstatus.py program_setup), pinned by the corpora in
+# tests/fixtures/rnstatus_stock_*.json that code printed. A line matching no
+# rule is UNREAD (RNSStatus.unread_lines) and makes the reading incomplete —
+# never skipped. Five review rounds found five holes in an ignore-by-default
+# parser; an allowlist that refuses is the cure, a longer allowlist is not.
+#
+# Stock prints an interface as " " + str(interface) (indent 1), then its
+# fields at indent 4. str(interface) is free text: "Type[section name]",
+# "<parent section>[<sub name>]" (RNodeSubInterface), "WDCL over <port>".
+# So a header is not recognised by its characters (r5: a hyphen broke the
+# old regex) but by its SHAPE: a top-level line whose indented block holds
+# a "Status :" field.
+_FIELD_RE = re.compile(r'^(\s+)([A-Za-z][^:↑↓]*?)\s*:(.*)$')
+# Interface-block field names stock prints (lower-cased).
+_IFACE_FIELDS = frozenset({
+    "source", "network", "status", "serving", "clients", "peers", "blocked",
+    "mode", "tx drops", "rate", "tunnel id", "rem.tr.id", "rem.vers.",
+    "rem.csts.", "noise fl.", "intrfrnc.", "cpu load", "cpu temp",
+    "mem usage", "battery", "airtime", "ch. load", "switch id", "endpoint",
+    "via", "i2p", "access", "i2p b32", "queued", "held", "violatns.",
+    "flt. hits", "path rqs.", "announces", "traffic", "filtered",
+})
+# Fields stock continues on following indented lines (no "Name :"):
+# Traffic/Filtered = exactly ONE ↓ line; the rest are free text.
+_ONE_ARROW_CONT = frozenset({"traffic", "filtered"})
+# Fields the leg READS: each must parse, and appear once per block.
+_READ_FIELDS = frozenset({"status", "traffic", "filtered"})
+_FREE_CONT = frozenset({"path rqs.", "announces", "clients", "blocked"})
+# Top-level footer fields (`-t`, `-t -F`, `-l`, `-P`, `-A`, `-q`) — each may
+# continue on indented lines.
+# name -> how many continuation lines stock prints under it.
+_FOOTER_FIELDS = {
+    "totals": 1, "filtered": 1, "links": 1, "path rqs.": 1, "announces": 1,
+    "qu. pressure": 4,
+}
+_FOOTER_LINE_RE = re.compile(
+    r'^ ?(?:Transport Instance \S+ running|Network Identity\s+\S+'
+    r'|Probe responder at \S+ active|Uptime is .+'
+    r'|,? ?\d+ entr(?:y|ies) in link table.*)$')
+# RNS's own log line (stderr is folded into the output): recognised as not
+# part of the listing. Error words in it are still caught by _ERROR_PATTERNS.
+_LOG_LINE_RE = re.compile(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[')
+_STATUS_VALUE_RE = re.compile(r'^\s*(Up|Down)(?:,.*)?\s*$')
+_INT_RE = re.compile(r'^\s*(\d+)')
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(' '))
+
+
+def _is_top_level(line: str) -> bool:
+    return bool(line.strip()) and not line.startswith('\t') and _indent(line) <= 1
+
+
+def _opens_interface(lines: List[str], idx: int) -> bool:
+    """True when the top-level line at ``idx`` heads an interface block:
+    its following lines (until a blank or another top-level line) include an
+    indented ``Status :`` field — every stock interface prints one."""
+    for nxt in lines[idx + 1:]:
+        if not nxt.strip() or _is_top_level(nxt):
+            return False
+        f = _FIELD_RE.match(nxt)
+        if f and f.group(2).strip().lower() == "status":
+            return True
+    return False
+
+
+def _split_name(text: str):
+    """("Type", "inner") for "Type[inner]" (the LAST ']' — IPv6 stays whole);
+    (text, "") for a name without brackets ("WDCL over /dev/ttyUSB0")."""
+    if text.endswith("]") and "[" in text:
+        i = text.index("[")
+        return text[:i].strip(), text[i + 1:-1].strip()
+    return text, ""
 
 # Traffic — bytes value, unit, then (optionally) bps value, unit
 # Handles "↑242 B  0 bps", "↑1,234 KiB  500 Kbps" and a bare "↓254 B".
@@ -242,7 +310,10 @@ def parse_rnstatus(output: str) -> RNSStatus:
 
     Returns:
         Populated RNSStatus. If the output contains error patterns,
-        ``parse_error`` will be set and ``interfaces`` may be empty.
+        ``parse_error`` will be set and ``interfaces`` may be empty. Every
+        line no grammar rule accounts for is in ``unread_lines`` — the
+        reading is then incomplete (:func:`accepted_gap`), never "healthy
+        from what I recognised".
     """
     result = RNSStatus(raw_output=output)
 
@@ -261,118 +332,156 @@ def parse_rnstatus(output: str) -> RNSStatus:
             break
 
     current: Optional[RNSInterface] = None
-    # Which block the ↑/↓ lines belong to. The ↓ of a block sits on the line
-    # AFTER its header, so the section persists across lines — until the
-    # next header. None = no arrow-carrying block open: arrows are ignored.
-    section: Optional[str] = None
+    # The multi-line field the next continuation line belongs to (None = a
+    # continuation here is unread), and for Traffic/Filtered how many ↓
+    # lines it may still take (exactly one).
+    cont: Optional[str] = None
+    cont_left = 0
+    lines = output.splitlines()
 
-    for line in output.splitlines():
-        # --- Interface header ---
-        m = _IFACE_RE.match(line)
-        if m:
-            # Save previous interface
-            if current is not None:
-                result.interfaces.append(current)
-            current = RNSInterface(
-                type_name=m.group(1).strip(),
-                display_name=m.group(2).strip(),
-            )
-            section = None
+    def unread(ln: str) -> None:
+        result.unread_lines.append(ln)
+
+    def close(iface: Optional[RNSInterface]) -> None:
+        # A block missing a counter line is not an unread LINE: its unread
+        # counter (observed False) is named by the leg's ONE half-read
+        # message (accepted_blind_reason) — one producer per fact.
+        if iface is not None:
+            result.interfaces.append(iface)
+
+    # Read fields already seen in the open block: stock prints each ONCE, so
+    # a second Status/Traffic/Filtered is not rnstatus as we know it.
+    seen: set = set()
+
+    for idx, line in enumerate(lines):
+        if not line.strip():
+            continue                                   # blank: accounted
+        if '\t' in line[:len(line) - len(line.lstrip())]:
+            unread(line)                               # stock never indents with tabs
             continue
 
-        # A TOP-LEVEL line that is not an interface header (indent <= 1: the
-        # " Totals" / " Transport Instance" footers, a "Traceback") ends the
-        # interface block — its arrows must never land on the last interface
-        # (Fable r2 #4: `-t -F` prints a Filtered total after " Totals").
-        if current is not None and _TOP_LEVEL_RE.match(line):
-            result.interfaces.append(current)
+        if _is_top_level(line):
+            # Any top-level line closes the open interface block (Fable r2
+            # #4: a footer's arrows must never land on the last interface).
+            close(current)
             current = None
-            section = None
-
-        # --- Properties (only if we have a current interface) ---
-        if current is not None:
-            h = _HDR_RE.match(line)
-            if h:
-                section = _ARROW_SECTIONS.get(h.group(1).strip().lower())
-
-            m = _STATUS_RE.match(line)
-            if m:
-                current.status = _STATUS_MAP.get(
-                    m.group(1).lower(), InterfaceStatus.UNKNOWN
-                )
+            cont = None
+            text = line.strip()
+            if _opens_interface(lines, idx):
+                type_name, display = _split_name(text)
+                current = RNSInterface(type_name=type_name, display_name=display, name=text)
+                seen = set()
                 continue
-
-            m = _MODE_RE.match(line)
-            if m:
-                current.mode = _MODE_MAP.get(
-                    m.group(1).strip().lower(), InterfaceMode.UNKNOWN
-                )
+            f = _FIELD_RE.match(" " + text)
+            if f and f.group(2).strip().lower() in _FOOTER_FIELDS:
+                cont = "footer"                        # its continuation lines
+                cont_left = _FOOTER_FIELDS[f.group(2).strip().lower()]
                 continue
-
-            m = _RATE_RE.match(line)
-            if m:
-                current.rate = m.group(1).strip()
+            m = _TRANSPORT_RE.search(line)
+            if m and _FOOTER_LINE_RE.match(line):
+                result.transport.running = True
+                result.transport.instance_hash = m.group(1)
                 continue
-
-            m = _PEERS_RE.match(line)
-            if m:
-                try:
-                    current.peers = int(m.group(1))
-                except ValueError:
-                    pass
+            m = _UPTIME_RE.search(line)
+            if m and _FOOTER_LINE_RE.match(line):
+                result.transport.uptime_str = m.group(1).strip()
                 continue
-
-            m = _SERVING_RE.match(line)
-            if m:
-                try:
-                    current.serving = int(m.group(1))
-                except ValueError:
-                    pass
+            if _FOOTER_LINE_RE.match(line) or _LOG_LINE_RE.match(text):
                 continue
+            unread(line)
+            continue
 
-            # --- Traffic / Filtered blocks (section set by the header) ---
-            m = _TX_RE.search(line) if section else None
-            if m:
-                counters = _counters(m)
+        # --- Indented line ---
+        f = _FIELD_RE.match(line)
+        fname = f.group(2).strip().lower() if f else None
+        if current is not None and fname in _IFACE_FIELDS:
+            value = f.group(3)
+            cont, cont_left = None, 0
+            if fname in _READ_FIELDS:
+                if fname in seen:
+                    unread(line)        # and its continuation: cont is None
+                    continue
+                seen.add(fname)
+            if fname in _ONE_ARROW_CONT:
+                cont, cont_left = fname, 1
+            elif fname in _FREE_CONT:
+                cont, cont_left = fname, -1
+            if not _read_field(current, fname, value):
+                unread(line)
+            continue
+
+        if cont is not None and not f:
+            # A continuation of the open multi-line field.
+            if cont_left == -1:
+                continue                               # free text: accounted
+            if cont == "footer":
+                if cont_left > 0:
+                    cont_left -= 1
+                    continue
+            elif cont_left == 1:
+                cont_left = 0
+                m = _RX_RE.search(line)
+                counters = _counters(m) if m and line.lstrip().startswith("↓") else None
                 if counters is not None:
-                    if section == "filtered":
-                        current.tx_filtered = counters
-                    else:
-                        current.tx = counters
-                continue
-
-            m = _RX_RE.search(line) if section else None
-            if m:
-                counters = _counters(m)
-                if counters is not None:
-                    if section == "filtered":
+                    if cont == "filtered":
                         current.rx_filtered = counters
                     else:
                         current.rx = counters
-                continue
-
-        # --- Transport footer (outside any interface) ---
-        m = _TRANSPORT_RE.search(line)
-        if m:
-            result.transport.running = True
-            result.transport.instance_hash = m.group(1)
+                    continue
+            unread(line)
             continue
 
-        m = _UPTIME_RE.search(line)
-        if m:
-            result.transport.uptime_str = m.group(1).strip()
-            continue
+        unread(line)
 
     # Don't forget the last interface
-    if current is not None:
-        result.interfaces.append(current)
+    close(current)
 
     return result
+
+
+def _read_field(iface: RNSInterface, fname: str, value: str) -> bool:
+    """Apply one interface field; False = a field the leg READS whose value
+    did not parse (an unread line). Informational fields are accounted for
+    by name alone."""
+    if fname == "status":
+        m = _STATUS_VALUE_RE.match(value)
+        if not m:
+            iface.status = InterfaceStatus.UNKNOWN
+            return False
+        iface.status = _STATUS_MAP[m.group(1).lower()]
+        return True
+    if fname in ("traffic", "filtered"):
+        m = _TX_RE.search(value)
+        counters = _counters(m) if m and value.lstrip().startswith("↑") else None
+        if counters is None:
+            return False
+        if fname == "filtered":
+            iface.tx_filtered = counters
+        else:
+            iface.tx = counters
+        return True
+    if fname == "mode":
+        iface.mode = _MODE_MAP.get(value.strip().lower(), InterfaceMode.UNKNOWN)
+    elif fname == "rate":
+        iface.rate = value.strip()
+    elif fname in ("peers", "serving"):
+        m = _INT_RE.match(value)
+        if m:
+            setattr(iface, fname, int(m.group(1)))
+    return True
 
 
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
+
+
+# The ONE missing-binary text (hfm #5: tests and the TUI import it; three
+# fixtures still carried the retired "pip install rns" text after r4).
+# One remedy, the in-app one: never pip over an apt/fork install (Fable r4
+# nit 3 — the leg printed two contradictory fixes).
+RNSTATUS_MISSING = ("rnstatus binary not found — reinstall MeshForge to "
+                    "restore RNS (Settings > Updates)")
 
 
 def _find_rnstatus_binary() -> Optional[str]:
@@ -406,12 +515,7 @@ def run_rnstatus(timeout_s: float = 15.0, extra_args: tuple = ()) -> RNSStatus:
     rnstatus_path = _find_rnstatus_binary()
     if not rnstatus_path:
         logger.warning("rnstatus binary not found")
-        return RNSStatus(
-            # One remedy, the in-app one: never pip over an apt/fork install
-            # (Fable r4 nit 3 — the leg printed two contradictory fixes).
-            parse_error=("rnstatus binary not found — reinstall MeshForge to "
-                         "restore RNS (Settings > Updates)")
-        )
+        return RNSStatus(parse_error=RNSTATUS_MISSING)
 
     started = time.monotonic()
     try:
@@ -499,10 +603,10 @@ _NO_F_RE = re.compile(
 def _listed(status: RNSStatus) -> bool:
     """True when rnstatus really listed interfaces: some counter was READ.
 
-    ``interfaces`` alone is not proof — _IFACE_RE also matches argparse's
-    usage continuation lines ("                [-t] [-s SORT]") as an
-    interface with an all-whitespace type, so the 1.3.9 -F rejection
-    "lists" bogus interfaces (found 2026-11-21, Fable r1 round).
+    ``interfaces`` alone was not proof under the old header regex, which
+    read argparse usage continuation lines as interfaces (Fable r1 round);
+    an interface now needs a Status block (r6), but a header with no
+    readable counter has still observed nothing.
     """
     return any(i.rx.observed or i.tx.observed for i in status.interfaces)
 
@@ -554,6 +658,10 @@ def accepted_gap(status: RNSStatus) -> Optional[str]:
     if status.parse_error:
         why = error_summary(status)
         return f"partial listing — {why}" if _listed(status) else why
+    if status.unread_lines:
+        # r6: "All checks passed" requires every line accounted for.
+        return (f"{len(status.unread_lines)} line(s) this parser could not read: "
+                f"'{status.unread_lines[0][:80]}'")
     return None
 
 

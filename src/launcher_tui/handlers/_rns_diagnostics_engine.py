@@ -570,10 +570,32 @@ def check_rns_interface_health(traffic=None):
     when rnstatus timed out or cannot reach the shared instance — callers
     treat that as unobserved, never healthy. See :func:`health_rows`.
     """
-    from utils.rns_status_parser import read_interface_traffic
+    return interface_health(traffic)[0]
+
+
+def interface_health(traffic=None, *, accepted_only=False):
+    """(rows, why_blind) — :func:`check_rns_interface_health`'s rows AND why
+    the reading is not complete (None = every listed interface read).
+
+    An empty list alone cannot tell "nothing there" from "could not see"
+    (r5 nit: the NomadNet subtitle said DOWN on a timed-out rnstatus).
+    ``accepted_only`` = one plain rnstatus run, no -F: for callers that never
+    show filtered rx (a menu subtitle ran two rnstatus per render on 1.3.9).
+    """
+    from utils.rns_status_parser import (
+        FilterState, InterfaceTraffic, _find_rnstatus_binary, read_interface_traffic,
+        run_rnstatus,
+    )
     if traffic is None:
-        traffic = read_interface_traffic()
-    return [row for _, row in health_rows(traffic)]
+        traffic = (InterfaceTraffic(run_rnstatus(), FilterState.UNKNOWN, "not read")
+                   if accepted_only else read_interface_traffic())
+    st = traffic.status
+    # A reading that RAN (printed, timed out, or was timed) proves the binary.
+    ran = bool(st.raw_output) or st.timed_out or st.duration_s is not None
+    why = accepted_blind_reason(
+        traffic, running=False, instance_ok=False,
+        rnstatus_present=ran or _find_rnstatus_binary() is not None)
+    return [row for _, row in health_rows(traffic)], why
 
 
 def accepted_blind_reason(traffic, *, running, instance_ok, rnstatus_present):
