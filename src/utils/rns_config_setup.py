@@ -76,6 +76,16 @@ def is_valid_key(value: str) -> bool:
     return bool(_VALID_KEY_RE.match(value))
 
 
+def _lines(text: str) -> list:
+    """rnsd's lines of ``text``: split on ``\\n`` only, each line keeping any
+    ``\\r`` (the regexes above tolerate a trailing one). The final empty
+    element of a newline-terminated text is dropped; callers re-add it."""
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
 def render_template(text: str, rpc_key: Optional[str] = None) -> str:
     """Return ``text`` with ``__RPC_KEY__`` substituted (or inserted).
 
@@ -100,7 +110,10 @@ def render_template(text: str, rpc_key: Optional[str] = None) -> str:
         return text.replace(PLACEHOLDER, rpc_key)
 
     # Placeholder absent — insert a fresh line under [reticulum].
-    lines = text.splitlines(keepends=False)
+    # rnsd's lines: split on "\n" ONLY (splitlines() also splits a lone "\r"
+    # and the "\n".join below would then rewrite it into a real newline).
+    lines = _lines(text)
+    cr = "\r" if lines and lines[0].endswith("\r") else ""
     out: list = []
     inserted = False
     in_reticulum = False
@@ -119,7 +132,7 @@ def render_template(text: str, rpc_key: Optional[str] = None) -> str:
             while (insert_pos - 1 > section_start_idx
                    and out[insert_pos - 1].strip() == ""):
                 insert_pos -= 1
-            out.insert(insert_pos, f"  rpc_key = {rpc_key}")
+            out.insert(insert_pos, f"  rpc_key = {rpc_key}{cr}")
             inserted = True
             in_reticulum = False
 
@@ -127,15 +140,15 @@ def render_template(text: str, rpc_key: Optional[str] = None) -> str:
         # [reticulum] was the last section — append to end
         while out and out[-1].strip() == "":
             out.pop()
-        out.append(f"  rpc_key = {rpc_key}")
+        out.append(f"  rpc_key = {rpc_key}{cr}")
         inserted = True
 
     if not inserted:
         # No [reticulum] section at all — append one. Caller probably
         # has a malformed template but we still produce a usable file.
-        out.append("")
-        out.append("[reticulum]")
-        out.append(f"  rpc_key = {rpc_key}")
+        out.append(cr)
+        out.append(f"[reticulum]{cr}")
+        out.append(f"  rpc_key = {rpc_key}{cr}")
 
     return "\n".join(out) + ("\n" if text.endswith("\n") else "")
 
@@ -163,16 +176,28 @@ def ensure_rpc_key(
       and leaves the invalid value alone so the operator sees the
       mismatch during the Config Doctor pass.
 
-    Raises OSError on read/write failure. Callers should catch and
-    present a readable dialog when running under the TUI.
+    Reads the file the way rnsd does (``rns_config_reader.config_text``:
+    UTF-8 BOM stripped, split on ``\\n`` only) and writes the same bytes back
+    with only the rpc_key line changed — a BOM stays, CRLF stays.
+
+    Raises OSError on read/write failure, and ``RNSConfigError`` (a
+    ValueError) — writing NOTHING — when the file is not UTF-8: the writer
+    will not rewrite bytes it could not read. Callers must catch both and
+    SAY the key was not pinned.
     """
-    text = config_path.read_text()
+    from utils.rns_config_reader import _UTF8_BOM, config_text
+
+    raw = config_path.read_bytes()
+    bom = _UTF8_BOM if raw.startswith(_UTF8_BOM) else b""
+    text = config_text(raw, strict=True)
+
+    def _write(new_text: str) -> None:
+        config_path.write_bytes(bom + new_text.encode("utf-8"))
 
     # Placeholder takes priority — always a fresh install scenario.
     if PLACEHOLDER in text:
         new_key = generate_rpc_key()
-        new_text = text.replace(PLACEHOLDER, new_key)
-        config_path.write_text(new_text)
+        _write(text.replace(PLACEHOLDER, new_key))
         logger.info(
             "Substituted __RPC_KEY__ placeholder with fresh key in %s",
             config_path,
@@ -181,7 +206,7 @@ def ensure_rpc_key(
 
     # Look for an existing live rpc_key line.
     invalid_line_to_strip = None
-    for line in text.splitlines():
+    for line in _lines(text):
         m = _LIVE_KEY_RE.match(line)
         if not m:
             continue
@@ -208,14 +233,13 @@ def ensure_rpc_key(
     # we don't land two rpc_key entries in the file.
     if invalid_line_to_strip is not None:
         text = "\n".join(
-            line for line in text.splitlines()
+            line for line in _lines(text)
             if line != invalid_line_to_strip
         ) + ("\n" if text.endswith("\n") else "")
 
     # Either no rpc_key line at all, or invalid-with-force (now stripped).
     new_key = generate_rpc_key()
-    new_text = render_template(text, new_key)
-    config_path.write_text(new_text)
+    _write(render_template(text, new_key))
     logger.info(
         "Inserted fresh rpc_key in %s (was missing/invalid)",
         config_path,

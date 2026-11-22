@@ -526,6 +526,10 @@ def _ensure_rnsd_rpc_key() -> bool:
         else:
             print("  rpc_key still unresolved (existing value left as-is).")
         return generated
+    except ValueError as e:  # RNSConfigError: not UTF-8 — nothing was written
+        print(f"  rpc_key NOT pinned — {cfg_path} is not UTF-8 text, so it was")
+        print(f"  left untouched ({e}). Re-save it as UTF-8, then re-run repair.")
+        return False
     except OSError as e:
         print(f"  Could not write rpc_key: {e}")
         print("  (Relaunch in Admin mode to write /etc/reticulum/config.)")  # in-domain-ok: privilege separation — writing /etc/reticulum needs root (in_domain_principle.md)

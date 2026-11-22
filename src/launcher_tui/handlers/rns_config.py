@@ -130,16 +130,24 @@ class RNSConfigHandler(BaseHandler):
         """Ensure ``config_path`` carries a valid 64-hex per-box ``rpc_key``.
 
         Thin wrapper around ``utils.rns_config_setup.ensure_rpc_key`` that
-        swallows errors and surfaces a dialog only on OSError — the migrate
-        and deploy flows call this at config-landing time.
+        never raises: a failed pin (OSError, or RNSConfigError for a non-UTF-8
+        file) surfaces a dialog — the migrate and deploy flows call this at
+        config-landing time, after the file is already in place.
         """
         from utils.rns_config_setup import ensure_rpc_key
         try:
             _key, generated = ensure_rpc_key(config_path)
             if generated:
                 logger.info("Pinned fresh rpc_key into %s", config_path)
-        except OSError as e:
+        except (OSError, ValueError) as e:  # ValueError = RNSConfigError (not UTF-8)
+            # The config already landed; a missing key must be SAID, not logged.
             logger.warning("rpc_key pin skipped for %s: %s", config_path, e)
+            self.ctx.dialog.msgbox(
+                "rpc_key NOT pinned",
+                f"rpc_key NOT pinned in:\n  {config_path}\n\n{e}\n\n"
+                "The file was left as-is. If it is not UTF-8 text, re-save it "
+                "as UTF-8 and run RNS repair to pin a key.",
+            )
 
     def _view_rns_config(self):
         """View current Reticulum config."""

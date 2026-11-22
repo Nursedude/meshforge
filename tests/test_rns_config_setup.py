@@ -279,3 +279,101 @@ class TestShippedTemplate:
         assert len(key_line) == 1
         key = key_line[0].split('=', 1)[1].strip()
         assert is_valid_key(key)
+
+
+# ── r12 (Fable r11 #1): the writer reads the file the way rnsd does ─────
+#
+# ensure_rpc_key used read_text()/splitlines()/write_text(): a UTF-8 BOM hid
+# "[reticulum]" so a SECOND section was appended (rnsd: DuplicateError), a
+# lone "\r" made a commented key look live, and non-UTF-8 bytes raised an
+# untyped UnicodeDecodeError — after the migrate flow had already copied the
+# file into /etc. The oracle is rnsd's own parser (RNS's vendored ConfigObj).
+
+_BOM = b"\xef\xbb\xbf"
+_NOKEY = (b"[reticulum]\n  share_instance = Yes\n  instance_name = lab\n\n"
+          b"[interfaces]\n  [[Auto]]\n    type = AutoInterface\n")
+
+
+def _rnsd_rpc_key(cfg):
+    configobj = pytest.importorskip("RNS.vendor.configobj")
+    return configobj.ConfigObj(str(cfg))["reticulum"].get("rpc_key")
+
+
+class TestEnsureRpcKeyReadsLikeRnsd:
+    def test_bom_config_gets_one_reticulum_section(self, tmp_path):
+        cfg = tmp_path / "config"
+        cfg.write_bytes(_BOM + _NOKEY)
+        key, generated = ensure_rpc_key(cfg)
+        raw = cfg.read_bytes()
+        assert generated is True and is_valid_key(key)
+        assert raw.count(b"[reticulum]") == 1
+        assert raw.startswith(_BOM)          # bytes we did not mean to change stay
+        assert _rnsd_rpc_key(cfg) == key     # rnsd LOADS it and sees the key
+
+    def test_crlf_config_keeps_its_line_endings(self, tmp_path):
+        cfg = tmp_path / "config"
+        cfg.write_bytes(_NOKEY.replace(b"\n", b"\r\n"))
+        key, generated = ensure_rpc_key(cfg)
+        raw = cfg.read_bytes()
+        assert generated is True
+        assert b"  instance_name = lab\r\n" in raw
+        assert _rnsd_rpc_key(cfg) == key
+
+    def test_lone_cr_commented_key_is_not_live(self, tmp_path):
+        # rnsd splits on "\n" only: "# old\rrpc_key = …" is ONE comment line.
+        cfg = tmp_path / "config"
+        ghost = "a" * 64
+        cfg.write_bytes(_NOKEY.replace(
+            b"  instance_name = lab\n",
+            b"  # old\rrpc_key = " + ghost.encode() + b"\n  instance_name = lab\n"))
+        assert _rnsd_rpc_key(cfg) is None
+        key, generated = ensure_rpc_key(cfg)
+        assert generated is True and key != ghost
+        assert _rnsd_rpc_key(cfg) == key
+
+    @pytest.mark.parametrize("body", [
+        _NOKEY.replace(b"[interfaces]", b"# caf\xe9\n[interfaces]"),
+        _NOKEY.replace(b"  instance_name", b"  rpc_key = __RPC_KEY__\n  # caf\xe9\n  instance_name"),
+    ], ids=["nokey", "placeholder"])
+    def test_non_utf8_refuses_and_writes_nothing(self, tmp_path, body):
+        from utils.rns_config_reader import RNSConfigError
+        cfg = tmp_path / "config"
+        cfg.write_bytes(body)
+        with pytest.raises(RNSConfigError):
+            ensure_rpc_key(cfg)
+        assert cfg.read_bytes() == body
+
+
+class TestRpcKeyCallersSayTheRefusal:
+    """A refused pin must never read as a pin (hfm #2/#9)."""
+
+    def _nonutf8(self, tmp_path):
+        cfg = tmp_path / "config"
+        cfg.write_bytes(_NOKEY.replace(b"[interfaces]", b"# caf\xe9\n[interfaces]"))
+        return cfg
+
+    def test_repair_flow_says_refused_not_pinned(self, tmp_path, capsys):
+        from unittest.mock import patch
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'launcher_tui'))
+        from handlers import _rns_repair as R
+        from utils.paths import ReticulumPaths
+        cfg = self._nonutf8(tmp_path)
+        before = cfg.read_bytes()
+        with patch.object(ReticulumPaths, "get_config_file", return_value=cfg), \
+                patch.object(ReticulumPaths, "get_shared_rpc_key", return_value=None):
+            assert R._ensure_rnsd_rpc_key() is False
+        out = capsys.readouterr().out
+        assert "Pinned" not in out
+        assert "NOT pinned" in out and "UTF-8" in out
+        assert cfg.read_bytes() == before
+
+    def test_migrate_wrapper_surfaces_a_dialog(self, tmp_path):
+        from unittest.mock import MagicMock
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'launcher_tui'))
+        from handlers.rns_config import RNSConfigHandler
+        cfg = self._nonutf8(tmp_path)
+        h = RNSConfigHandler.__new__(RNSConfigHandler)
+        h.ctx = MagicMock()
+        h._ensure_rpc_key_on(cfg)        # must not raise past the migrate flow
+        h.ctx.dialog.msgbox.assert_called_once()
+        assert "NOT pinned" in h.ctx.dialog.msgbox.call_args[0][1]
