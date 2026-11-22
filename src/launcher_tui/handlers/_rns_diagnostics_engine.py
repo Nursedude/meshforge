@@ -533,20 +533,33 @@ def leg_rows(traffic):
     An unread counter is never a 0 B reading (r1 #2, r2 #6); what is left
     out is reported by :func:`blind_spots`, never silently dropped (r2 #1).
     """
-    from utils.rns_status_parser import format_bytes, parse_rnstatus
-    status = traffic.status
-    if status.timed_out:
-        return []
-    # Pattern errors only (no shared instance / could not connect) — the
-    # pure parse; run_rnstatus also flags a bare non-zero exit, which alone
-    # does not drop rows that were listed.
-    if parse_rnstatus(status.raw_output or "").parse_error:
-        return []
+    from utils.rns_status_parser import format_bytes
     return [
         (i, (i.full_name, format_bytes(i.tx), format_bytes(i.rx), i.is_healthy))
-        for i in _leg_interfaces(status)
+        for i in _trusted_interfaces(traffic.status)
         if i.rx.observed and i.tx.observed
     ]
+
+
+def _trusted_interfaces(status):
+    """Leg interfaces from a listing that can be trusted at all: none when
+    the run timed out or printed an rnstatus error line (no shared instance
+    / could not connect). A bare non-zero exit alone keeps what was listed
+    — :func:`accepted_blind_reason` names it a partial listing. No re-parse
+    (Fable r4 nit 5: each re-parse re-logged the whole dump)."""
+    from utils.rns_status_parser import error_line
+    if status.timed_out or error_line(status):
+        return []
+    return _leg_interfaces(status)
+
+
+def shown_interfaces(traffic):
+    """Every trusted interface with ANY reading — an accepted counter or a
+    Filtered ↓ (Fable r4 nit 1: a filtered 5.10 KB on an interface whose
+    Traffic was unread was observed and dropped). An unread counter prints
+    UNKNOWN on its row, and is a blind spot, never 0 B."""
+    return [i for i in _trusted_interfaces(traffic.status)
+            if i.tx.observed or i.rx.observed or i.rx_filtered is not None]
 
 
 def check_rns_interface_health(traffic=None):
@@ -567,24 +580,20 @@ def accepted_blind_reason(traffic, *, running, instance_ok, rnstatus_present):
     """Why accepted traffic was (partly) not seen — None when every listed
     interface was read. Causes in order, most specific first (Fable r3: a
     timeout read "cannot connect", an error text "returned nothing"):
-    not installed > timed out > an rnstatus error line (the listing, if
-    any, is not trusted) > nothing listed: rnstatus's own words / the TUI
-    probe's "cannot connect" / "listed no interfaces" > unread interfaces.
+    not installed > the READER's gap for its view (timed out / error line /
+    partial listing / failed run — Fable r4: judged once, for -F and the
+    plain re-read alike) > nothing listed: the TUI probe's "cannot connect"
+    / "listed no interfaces" > unread interfaces.
     """
-    from utils.rns_status_parser import error_line
     status = traffic.status
     if not rnstatus_present:
         return "rnstatus not installed"
-    if status.timed_out:
-        return "rnstatus timed out"
-    err = error_line(status)
-    if err:
-        return f"rnstatus error: {err}"
-    read_ids = {id(i) for i, _ in leg_rows(traffic)}
-    unread = [i.full_name for i in _leg_interfaces(status) if id(i) not in read_ids]
-    if not read_ids and not unread:
-        if status.parse_error:
-            return status.parse_error.strip().splitlines()[0][:160]
+    gap = traffic.accepted_gap
+    if gap:
+        return gap
+    unread = [i.full_name for i in _trusted_interfaces(status)
+              if not (i.tx.observed and i.rx.observed)]
+    if not shown_interfaces(traffic) and not unread:
         if running and not instance_ok:
             return "rnstatus cannot connect"
         return "rnstatus listed no interfaces"
@@ -613,11 +622,10 @@ def blind_spots(traffic, *, running, instance_ok, rnstatus_present):
                                    rnstatus_present=rnstatus_present)
     if reason:
         spots.append(f"interface traffic ({reason})")
-    rows = leg_rows(traffic)
     if traffic.filter_state is FilterState.UNKNOWN:
         spots.append(f"filtered rx ({traffic.filter_reason})")
     elif traffic.filter_state is FilterState.COUNTED:
-        missing = [i.full_name for i, _ in rows if i.rx_filtered is None]
+        missing = [i.full_name for i in shown_interfaces(traffic) if i.rx_filtered is None]
         if missing:
             spots.append(f"filtered rx ({len(missing)} interface(s) printed "
                          f"no Filtered line: {', '.join(missing)})")
@@ -641,14 +649,20 @@ def interface_traffic_leg(traffic, *, running, instance_ok, rnstatus_present):
     comes ONLY from :func:`blind_spots`; filtered > 0 is a WARNING, never an
     issue (observe before alarm).
     """
-    from utils.rns_status_parser import FilterState, filtered_rx_verdict
+    from utils.rns_status_parser import FilterState, filtered_rx_verdict, format_bytes
     leg = TrafficLeg()
-    rows = leg_rows(traffic)
+    rows = shown_interfaces(traffic)
     dropping = 0
     rx_only_found = False
-    for iface, (name, tx, rx, healthy) in rows:
-        # Shared Instance rx-without-tx is not an RX-only link fault (r1 #5).
-        if healthy or iface.type_name == SHARED_INSTANCE:
+    for iface in rows:
+        name = iface.full_name
+        tx = format_bytes(iface.tx) if iface.tx.observed else "UNKNOWN"
+        rx = format_bytes(iface.rx) if iface.rx.observed else "UNKNOWN"
+        # RX-only needs BOTH counters read; Shared Instance rx-without-tx is
+        # not an RX-only link fault (r1 #5).
+        rx_only = (iface.tx.observed and iface.rx.observed and not iface.is_healthy
+                   and iface.type_name != SHARED_INSTANCE)
+        if not rx_only:
             leg.lines.append(f"  {name}: ↑{tx} ↓{rx}")
         else:
             leg.lines.append(f"  {name}: RX-ONLY (↑{tx} ↓{rx})")

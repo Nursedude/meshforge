@@ -75,7 +75,10 @@ SHAPES = {
     "RK": ("full", True,  "2.00 KB"),
     "Tt": ("tx",   False, "0 B"),          # ↑ read, ↓ missing
     "Rr": ("rx",   False, "0 B"),          # ↓ read, ↑ unreadable
+    "TI": ("idle", False, "0 B"),          # ↑0 B ↓0 B: idle, NOT RX-only (r4 P21)
+    "Fu": ("full", False, "up-only"),      # Filtered ↑ line only, no ↓ (r4 P6)
 }
+FULL = ("full", "idle")                    # both accepted counters printed
 SI_SHAPES = {                              # Shared Instance variants
     None: None,
     "SZ": ("full", False, "0 B"),
@@ -96,7 +99,9 @@ CRASH = ("Traceback (most recent call last):\n  File \"rnstatus.py\", line 783, 
          "KeyError: 'frxb'\n")
 NOSHARED = "Could not get shared instance"
 ERRWORDS = "Could not connect to peer9/h9:4299: Connection refused"
-NOT_FOUND = "rnstatus binary not found. Install RNS: pip install rns"
+NOT_FOUND = ("rnstatus binary not found — reinstall MeshForge to restore RNS "
+             "(Settings > Updates)")
+LONG_ERR = "RuntimeError: " + "rnsd said no " * 15
 NO_F_REASON = "this rnstatus has no -F (no filtered counter to read)"
 WARN_SUFFIX = " ⚠ dropped by this RNS, not logged (e.g. unstamped announces under enforce_stamps)"
 
@@ -121,7 +126,9 @@ def _ifaces(si, shapes, dup):
     for k, sh in enumerate(shapes):
         traffic, rx_only, filtered = SHAPES[sh]
         t, n = (TYPES[0], NAMES[0]) if (dup and k == 1) else (TYPES[k], NAMES[k])
-        out.append(Iface(t, n, SHAPES[sh], "0 B" if rx_only else TX[k], RX[k]))
+        idle = traffic == "idle"
+        out.append(Iface(t, n, SHAPES[sh], "0 B" if (rx_only or idle) else TX[k],
+                         "0 B" if idle else RX[k]))
     return tuple(out)
 
 
@@ -129,13 +136,15 @@ def _block(i, with_filtered, dotted):
     traffic, _, filtered = i.shape
     out = f" {i.full_name}\n    Status    : Up\n"
     out += "    Serving   : 2 programs\n" if i.type_name == SI_TYPE else "    Mode      : Full\n"
-    if traffic == "full":
+    if traffic in FULL:
         out += f"    Traffic   : ↑{i.tx}  0 bps\n                ↓{i.rx}  0 bps\n"
     elif traffic == "tx":
         out += f"    Traffic   : ↑{i.tx}  0 bps\n"
     elif traffic == "rx":
         out += f"    Traffic   : ↑n/a\n                ↓{i.rx}  0 bps\n"
-    if with_filtered and filtered is not None:
+    if with_filtered and filtered == "up-only":
+        out += f"    Filtered  : ↑{TX_FILTERED}  0 bps\n"
+    elif with_filtered and filtered is not None:
         out += f"    Filtered  : ↑{TX_FILTERED}  0 bps\n                ↓{filtered}  0 bps\n"
     if dotted:
         out += DOTTED
@@ -177,6 +186,8 @@ def _respond(outcome, ifaces, is_f, dotted):
         return Resp(listing + FOOTER, "", 0, ifaces, is_f, None)
     if outcome == "rc1":
         return Resp(listing, "", 1, ifaces, is_f, None)
+    if outcome == "rc1long":             # a cause line longer than the 120 cut (r4 P9)
+        return Resp(listing, LONG_ERR + "\n", 1, ifaces, is_f, None)
     if outcome == "errwords":
         return Resp(listing, ERRWORDS + "\n", 0, ifaces, is_f, ERRWORDS)
     assert outcome == "ok", outcome
@@ -253,37 +264,53 @@ def oracle(c: Case):
         state, reason, calls = FilterState.UNKNOWN, f"rnstatus -F: {why[:160]}", 2
         view, view_missing = c.p_resp(), False
 
-    # ---- accepted rows (from the VIEW, exactly the structured interfaces)
+    # ---- what the VIEW printed, per interface (from the structured inputs)
     view_timed_out = view is None and not view_missing and calls > 0
     view_error = None if (view is None) else view.error_line
-    rows, unread = [], []
+
+    def tx_read(i):
+        return i.shape[0] in FULL + ("tx",)
+
+    def rx_read(i):
+        return i.shape[0] in FULL + ("rx",)
+
+    def filt(i):            # the Filtered ↓ text the view printed, or None
+        f = i.shape[2] if view.filtered else None
+        return None if f == "up-only" else f
+
+    shown, unread = [], []
     if view is not None and view_error is None:
         for i in view.ifaces:
-            (rows if i.shape[0] == "full" else unread).append(i)
+            if tx_read(i) or rx_read(i) or filt(i) is not None:
+                shown.append(i)
+            if not (tx_read(i) and rx_read(i)):
+                unread.append(i)
 
     # ---- lines, issues, warnings
     lines, issues, warnings = [], [], []
     dropping = 0
     rx_only_found = False
-    for i in rows:
-        rx_only = i.shape[1] and i.type_name != SI_TYPE
+    for i in shown:
+        tx = i.tx if tx_read(i) else "UNKNOWN"
+        rx = i.rx if rx_read(i) else "UNKNOWN"
+        rx_only = (tx_read(i) and rx_read(i) and i.shape[1] and i.type_name != SI_TYPE)
         if rx_only:
-            lines.append(f"  {i.full_name}: RX-ONLY (↑{i.tx} ↓{i.rx})")
+            lines.append(f"  {i.full_name}: RX-ONLY (↑{tx} ↓{rx})")
             issues.append(f"Interface {i.full_name} is RX-only (no TX)")
             rx_only_found = True
         else:
-            lines.append(f"  {i.full_name}: ↑{i.tx} ↓{i.rx}")
-        acc = f"rx accepted {i.rx}"
-        filtered = i.shape[2] if view.filtered else None
+            lines.append(f"  {i.full_name}: ↑{tx} ↓{rx}")
+        acc = f"rx accepted {rx}"
+        f = filt(i)
         if state is FilterState.NO_FILTER:
             v = f"{acc} · filtered n/a (this rnstatus has no -F)"
         elif state is FilterState.UNKNOWN:
             v = f"{acc} · filtered UNKNOWN"
-        elif filtered is None:
+        elif f is None:
             v = f"{acc} · filtered UNKNOWN (no Filtered line for this interface)"
         else:
-            v = f"{acc} · filtered {filtered}"
-            if filtered != "0 B":
+            v = f"{acc} · filtered {f}"
+            if f != "0 B":
                 v += WARN_SUFFIX
                 dropping += 1
         lines.append(f"      {v}")
@@ -291,37 +318,37 @@ def oracle(c: Case):
         lines.append("\n  RX-only interfaces = link establishment failing.")
         lines.append("  Common cause: shared instance port 37428 not bound.")
 
-    # ---- blind spots
+    # ---- blind spots: completeness is judged from the RESPONSE (exit code,
+    # error text, output), never from which reader branch ran (r4 IMPORTANT).
     if view_missing:
         acc_spot = "rnstatus not installed"
     elif view_timed_out:
         acc_spot = "rnstatus timed out"
     elif view_error:
         acc_spot = f"rnstatus error: {view_error}"
-    elif not rows and not unread:
-        err = _parse_error_line(view, False)
-        if err:
-            acc_spot = err[:160]
-        elif c.running and not c.instance_ok:
-            acc_spot = "rnstatus cannot connect"
-        else:
-            acc_spot = "rnstatus listed no interfaces"
-    elif unread:
-        acc_spot = (f"{len(unread)} interface(s) listed without readable counters: "
-                    + ", ".join(i.full_name for i in unread))
     else:
-        acc_spot = None
+        pe = _parse_error_line(view, False)
+        if pe:
+            acc_spot = f"partial listing — {pe}" if _listed(view) else pe
+        elif not shown and not unread:
+            acc_spot = ("rnstatus cannot connect" if (c.running and not c.instance_ok)
+                        else "rnstatus listed no interfaces")
+        elif unread:
+            acc_spot = (f"{len(unread)} interface(s) listed without readable counters: "
+                        + ", ".join(i.full_name for i in unread))
+        else:
+            acc_spot = None
     unobserved = []
     if acc_spot:
         unobserved.append(f"interface traffic ({acc_spot})")
     if state is FilterState.UNKNOWN:
         unobserved.append(f"filtered rx ({reason})")
     elif state is FilterState.COUNTED:
-        no_line = [i for i in rows if i.shape[2] is None]
+        no_line = [i for i in shown if filt(i) is None]
         if no_line:
             unobserved.append(f"filtered rx ({len(no_line)} interface(s) printed no "
                               "Filtered line: " + ", ".join(i.full_name for i in no_line) + ")")
-    if not rows:
+    if not shown:
         assert acc_spot, "no rows must always say why"
         lines.append(f"  Could not read: {acc_spot}")
         if view_missing:
@@ -335,9 +362,9 @@ def oracle(c: Case):
 
 # ------------------------------------------------------------------ cases
 
-F_ALL = ["ok", "footer", "rc1", "crash", "reject", "timeout", "noshared", "empty",
+F_ALL = ["ok", "footer", "rc1", "rc1long", "crash", "reject", "timeout", "noshared", "empty",
          "missing", "errwords"]
-P_ALL = ["ok", "noshared", "timeout", "errwords"]
+P_ALL = [o for o in F_ALL if o != "missing"]   # EVERY response the plain re-read can get (r4)
 F_BIG = [("ok", "ok"), ("footer", "ok"), ("reject", "ok"), ("rc1", "ok")]
 TRIPLES = [("TZ", "TS", "TK"), ("TK", "RK", "TM"), ("R", "R", "R"), ("TS", "TS", "TS"),
            ("N", "TZ", "N"), ("TZ", "N", "Rr"), ("Tt", "Rr", "F"), ("T", "TZ", "T"),
@@ -384,7 +411,7 @@ def _cases():
     for (si, shapes, dup, dotted), (fo, po) in itertools.product(_listings(), F_BIG):
         add(Case(fo, po, _ifaces(si, shapes, dup), dotted, True, True))
     for (si, shapes), fo, po, running, ok, dotted in itertools.product(
-            SMALL, F_ALL, P_ALL, (True, False), (True, False), (False, True)):
+            SMALL, F_ALL, P_ALL, (True, False), (True, False), (False,)):
         add(Case(fo, po, _ifaces(si, shapes, False), dotted, running, ok))
     return out
 
@@ -447,6 +474,14 @@ def test_cases_are_distinct_inputs_and_cover_the_dims():
                                                                                 (True, False)))
     assert any(i.type_name == SI_TYPE and i.shape[2] not in (None, "0 B")
                for c in CASES for i in c.ifaces)
+    # every accepted-blind cause is REACHED (r4 nit 4: two never were)
+    spots = {u for c in CASES for u in oracle(c)["unobserved"]}
+    for cause in ("rnstatus cannot connect", "rnstatus listed no interfaces",
+                  "rnstatus timed out", "rnstatus not installed", "rnstatus error: ",
+                  "partial listing — ", "without readable counters"):
+        assert any(cause in u for u in spots), cause
+    # the plain re-read meets every response the -F read can (r4 IMPORTANT)
+    assert {c.p_out for c in CASES if oracle(c)["plain_needed"]} == set(P_ALL)
     # RX-only on a non-TCP interface (a "TCP only" RX-only check dies)
     assert any(i.shape[1] and i.type_name == "RNodeInterface" for c in CASES for i in c.ifaces)
 

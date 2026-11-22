@@ -155,7 +155,8 @@ class RNSStatus:
 # ---------------------------------------------------------------------------
 
 # Interface header — uses [\w\s]+? to match "Shared Instance" (space)
-_IFACE_RE = re.compile(r'^\s*([\w\s]+?)\[(.+?)\]')
+# Greedy to the LAST ']' so an IPv6 name "[v6/[fe80::1]:4242]" stays whole.
+_IFACE_RE = re.compile(r'^\s*([\w\s]+?)\[(.+)\]')
 _STATUS_RE = re.compile(r'^\s*Status\s*:\s*(\S+)')
 _MODE_RE = re.compile(r'^\s*Mode\s*:\s*(.+)')
 _RATE_RE = re.compile(r'^\s*Rate\s*:\s*(.+)')
@@ -165,9 +166,10 @@ _SERVING_RE = re.compile(r'^\s*Serving\s*:\s*(\d+)')
 # (re)sets the arrow section: only "traffic" and "filtered" route ↑/↓ lines;
 # any other header (Status, Held, Announces, a footer...) closes the section,
 # so a block this parser doesn't know can never land in rx (Fable r1 #3).
-# Dots included: "Path Rqs." / "Ch. Load" are headers too, and must close
-# the section like any other (Fable r3 nit — their arrows clobbered rx).
-_HDR_RE = re.compile(r'^\s*([A-Za-z][A-Za-z .]*?)\s*:')
+# ANY "Name :" line is a header — dots, digits, anything but an arrow
+# ("Path Rqs.", "Ch. Load", "I2P B32"). An allowlist of name characters
+# was cured by enumeration twice (Fable r3 dots, r4 digits).
+_HDR_RE = re.compile(r'^\s*([A-Za-z][^:↑↓]*?)\s*:')
 _ARROW_SECTIONS = {"traffic": "traffic", "filtered": "filtered"}
 # Interface properties are indented >= 2; headers/footers sit at 0-1.
 _TOP_LEVEL_RE = re.compile(r'^ ?\S')
@@ -252,7 +254,10 @@ def parse_rnstatus(output: str) -> RNSStatus:
     for pattern in _ERROR_PATTERNS:
         if pattern in lower:
             result.parse_error = output.strip()
-            logger.warning("rnstatus error detected: %s", result.parse_error)
+            # the matching LINE, not the whole dump (Fable r4 nit 5)
+            hit = next((ln.strip() for ln in output.splitlines() if pattern in ln.lower()),
+                       pattern)
+            logger.warning("rnstatus error detected: %s", hit[:160])
             break
 
     current: Optional[RNSInterface] = None
@@ -402,7 +407,10 @@ def run_rnstatus(timeout_s: float = 15.0, extra_args: tuple = ()) -> RNSStatus:
     if not rnstatus_path:
         logger.warning("rnstatus binary not found")
         return RNSStatus(
-            parse_error="rnstatus binary not found. Install RNS: pip install rns"
+            # One remedy, the in-app one: never pip over an apt/fork install
+            # (Fable r4 nit 3 — the leg printed two contradictory fixes).
+            parse_error=("rnstatus binary not found — reinstall MeshForge to "
+                         "restore RNS (Settings > Updates)")
         )
 
     started = time.monotonic()
@@ -468,6 +476,17 @@ class InterfaceTraffic:
     filter_state: FilterState
     filter_reason: str = ""
 
+    @property
+    def accepted_gap(self) -> Optional[str]:
+        """Why the ACCEPTED view is not a complete reading — None = complete.
+
+        The ONE judgement, for whichever view the reader returned (-F or the
+        plain re-read): Fable r4 found the NO_FILTER path's plain re-read
+        crash after listing and the leg say "All checks passed", because
+        completeness was judged in the reader for -F only.
+        """
+        return accepted_gap(self.status)
+
 
 # The CLI's answer when this rnstatus has no -F (rns < 1.6, the fleet's
 # 1.3.9: argparse "unrecognized arguments: -F"; optparse "no such option").
@@ -518,6 +537,24 @@ def error_summary(status: RNSStatus) -> str:
     if not status.parse_error:
         return ""
     return error_line(status) or status.parse_error.strip().splitlines()[0][:160]
+
+
+def accepted_gap(status: RNSStatus) -> Optional[str]:
+    """Why one rnstatus run is not a complete accepted reading; None = complete.
+
+    timed out > an error-pattern line (the listing is not trusted) > a
+    failed run: "partial listing — <cause>" when it listed first, else the
+    cause. Nothing listed with no error is NOT a gap here (the TUI says why).
+    """
+    if status.timed_out:
+        return "rnstatus timed out"
+    hit = error_line(status)
+    if hit:
+        return f"rnstatus error: {hit}"
+    if status.parse_error:
+        why = error_summary(status)
+        return f"partial listing — {why}" if _listed(status) else why
+    return None
 
 
 NO_F_SHORT = "this rnstatus has no -F"
