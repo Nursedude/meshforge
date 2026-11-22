@@ -1,0 +1,20 @@
+
+ Shared Instance[rns/default]
+    Status    : Up
+    Serving   : 0 programs
+    Rate      : 1.00 Gbps, MTU 262144
+    Traffic   : ↑0 B        0 bps
+                ↓0 B        0 bps
+    Filtered  : ↑0 B  0 bps
+                ↓0 B  0 bps
+
+ TCPInterface[Regional entry point/<entry>:4242]
+    Status    : Up
+    Mode      : Full
+    Rate      : 10.00 Mbps, MTU 16384
+    Traffic   : ↑479 B      0 bps
+                ↓501 B      0 bps
+    Filtered  : ↑0 B  0 bps
+                ↓0 B  0 bps
+
+rc=0

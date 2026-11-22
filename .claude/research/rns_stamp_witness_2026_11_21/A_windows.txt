@@ -1,0 +1,1 @@
+idle_s=90 probe_s=38

@@ -216,3 +216,40 @@ instrument for the first two.
 discoverable by default (auto-AP silences HawaiiNet RF announces) — explicit `mode = gateway` if ever; if
 anything is published, the TCP entry point only, stamp ≥ 16, coarse coordinates, interval ≥ 360 min, LXMF
 importable in rnsd's env first.
+
+## Stock witness results — stamp enforcement vs the fleet (lab, 2026-11-21)
+
+**Verdict (VERIFIED, n=2 for reachability, n=1 per arm for the counter + a live re-check):** a stock
+rns 1.6.1 node with `[stamps] enforce_stamps = yes` RECEIVES the fleet's path responses and DISCARDS them —
+0/9 fleet identities reachable; with enforcement off, 8–9/9. The discard is **silent**: no log line at any level.
+
+**Instrument:** `scripts/stock_rns_witness.sh` on the lab box — its own stock instance (rns 1.6.1 / lxmf
+1.3.1 / nomadnet 1.5.1), not transport, one TCP leg to the fleet's entry point; `probe` drops each cached
+path and requests it fresh (`rnpath -w 20`). Drill: `rns_stamp_witness_2026_11_21/drill.sh` (60 s settle,
+`rnstatus -F` snapshot → 90 s idle → snapshot → probe 9 → snapshot; arm B enforce on, then arm A off).
+
+| entry leg, inbound | enforce ON (B) | enforce OFF (A) |
+|---|---|---|
+| idle 90 s | accepted +0 B · **filtered +491 B** | **accepted +501 B** · filtered 0 |
+| probe 9 identities | accepted +0 B · **filtered +2.17 KB** · 0/9 found | **accepted +1.92 KB** · filtered 0 · 8/9 found |
+
+Same packets, different fate: ≈241 B per response in both arms (2.17 KB / 9, 1.92 KB / 8). A's one miss
+was a destination whose host process was not running at the time (checked: no unit, no process).
+Live re-check after the `status` change (`52ecd67e`): enforce on, 90 s idle → 501 B filtered, 0 accepted.
+Raw: `rns_stamp_witness_2026_11_21/{A,B}_t{0,1,2}.rnstatus.txt`, `{A,B}_probe.txt` (entry host → `<entry>`).
+
+**Where (rns 1.6.1 source):** `Identity.validate_announce` returns `"no_stamp"` for an unstamped announce
+when `STAMPS_ENABLED and STAMPS_ENFORCED` (Identity.py ~L891); `Transport.inbound` maps that to
+`filtered_announce()` (Transport.py L2147–2150) — a counter (`afrxc`) only; the explanatory log lines in
+that path are commented out (Identity.py ~L885). Logging cannot see it: NomadNet also overrides the rns
+config's `loglevel` with its own after init. **The witness is the interface's Filtered rx bytes**
+(`rnstatus -F`), now printed by `stock_rns_witness.sh status` as `rx accepted` / `rx filtered`.
+
+**BELIEVED, not measured:** the reason is `no_stamp` rather than `invalid_stamp` (1.3.9 cannot stamp; the
+byte counter does not distinguish the two). **Not shown:** whether 1.6.2 enforces by default (release notes
+only); behaviour of other stock clients (Sideband/Columba/MeshChat) under enforcement.
+
+**Consequence + owed decision:** if upstream turns enforcement on by default, every upgraded stock client
+loses the fleet. The likely fix (BELIEVED) is that our announces carry stamps — a wire-format change (CLAUDE.md fleet NEVER:
+roll every env per box with rnsd) → operator decision + frontier review; not urgent until 1.6.2 ships.
+Upstream offer-back: HELD (operator 11-21).
