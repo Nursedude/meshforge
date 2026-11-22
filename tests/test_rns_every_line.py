@@ -351,13 +351,17 @@ def test_interface_health_returns_rows_and_why_blind():
 @pytest.mark.parametrize("blind,running,si,expect", [
     ("rnstatus timed out", True, True, ("UNKNOWN", "(rnstatus timed out)")),
     (None, True, True, ("UNKNOWN", "(not in rnstatus output)")),  # r8: absence is not UP
-    (None, True, False, ("UNKNOWN", "rnsd running but shared instance not available")),
-    ("rnstatus timed out", False, False, ("DOWN", "rnsd not running")),
+    # r9: a COMPLETE reading means rnstatus reached an instance — the
+    # reading outranks the separate shared-instance probe.
+    (None, True, False, ("UNKNOWN", "(not in rnstatus output)")),
+    ("rnstatus timed out", True, False,
+     ("UNKNOWN", "rnsd running but shared instance not available (rnstatus timed out)")),
+    ("rnstatus timed out", False, False, ("DOWN", "no RNS instance running")),
 ])
 def test_interface_table_unlisted_row_never_up_when_blind(blind, running, si, expect):
     from handlers.rns_interfaces import unlisted_row_status
     assert unlisted_row_status("RNodeInterface", blind, rnsd_running=running,
-                               si_available=si) == expect
+                               si_available=si, host=None) == expect
 
 
 # ---------------------------------------------- Fable r6 IMPORTANT (seam)
@@ -547,7 +551,7 @@ _SI = ("\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 1 p
 _FOOT = "\n Transport Instance <aabb> running\n Uptime is 5s\n\n"
 
 
-def _table(text, ifaces, plain_rc=0):
+def _table(text, ifaces, plain_rc=0, *, running=True, si=True, owner=None):
     """_rns_interface_status end to end; subprocess mocked (rnstatus never runs)."""
     import contextlib
     import io
@@ -564,10 +568,10 @@ def _table(text, ifaces, plain_rc=0):
     run = MagicMock(side_effect=[no_f, SimpleNamespace(stdout=text, stderr="", returncode=plain_rc)])
     buf = io.StringIO()
     with patch('handlers._rns_interface_mgr.find_blocking_interfaces', return_value=[]), \
-         patch('utils.service_check.check_process_running', return_value=True), \
+         patch('utils.service_check.check_process_running', return_value=running), \
          patch('utils.service_check.get_rns_shared_instance_info',
-               return_value={'available': True, 'method': 'x'}), \
-         patch('utils.service_check.get_udp_port_owner', return_value=None), \
+               return_value={'available': si, 'method': 'x'}), \
+         patch('utils.service_check.get_udp_port_owner', return_value=owner), \
          patch('utils.rns_status_parser._find_rnstatus_binary', return_value='/x/rnstatus'), \
          patch('handlers.rns_interfaces.clear_screen'), \
          patch('handlers.rns_interfaces.RNSInterfacesHandler._wait', create=True), \

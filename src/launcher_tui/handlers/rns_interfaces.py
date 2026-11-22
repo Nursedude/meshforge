@@ -93,23 +93,31 @@ def live_row_status(live, blind):
     return status, detail
 
 
-def unlisted_row_status(itype, blind, *, rnsd_running, si_available):
+def unlisted_row_status(itype, blind, *, rnsd_running, si_available, host):
     """(status, detail) for a configured interface with NO live rnstatus row.
 
     ``blind`` = why the rnstatus reading was incomplete (None = complete).
+    ``host`` = the process holding the shared instance (None = none seen).
     Not in a blind reading is UNKNOWN — never "UP (no traffic data)", which
     claimed health from a read that failed (hfm #1; WITNESS-TUI r6).
+
+    Judged by the READING, not by whether rnsd runs (r9): rnsd always hosts
+    by design, but when it is down a CLIENT (NomadNet / Sideband /
+    MeshChatX) can hold the shared instance (#69 race) and run the same
+    config's interfaces — "DOWN rnsd not running" beside that live instance
+    was a claim from a proxy (Fable r8). DOWN only when nothing hosts one.
     """
-    if not rnsd_running:
-        return "DOWN", "rnsd not running"
-    if not si_available:
-        return "UNKNOWN", "rnsd running but shared instance not available"
-    if blind:
-        return "UNKNOWN", f"({blind})"
-    # A complete reading that lists no such interface is an explained
-    # ABSENCE, not health (was "UP (no traffic data)" / "LISTEN" — asserted
-    # from absence, Fable r7 #4).
-    return "UNKNOWN", "(not in rnstatus output)"
+    note = f"; instance hosted by {host}" if host and host != "rnsd" else ""
+    if blind is None:
+        # A complete reading means rnstatus reached an instance: it outranks
+        # the separate shared-instance probe. Listing no such interface is
+        # an explained ABSENCE, not health (Fable r7 #4).
+        return "UNKNOWN", f"(not in rnstatus output{note})"
+    if not rnsd_running and not si_available and not host:
+        return "DOWN", "no RNS instance running"
+    if rnsd_running and not si_available:
+        return "UNKNOWN", f"rnsd running but shared instance not available ({blind}{note})"
+    return "UNKNOWN", f"({blind}{note})"
 
 
 class RNSInterfacesHandler(BaseHandler):
@@ -199,6 +207,9 @@ class RNSInterfacesHandler(BaseHandler):
         rnsd_running = check_process_running('rnsd')
         si_info = get_rns_shared_instance_info()
         si_available = si_info.get('available', False)
+        # Who holds the shared instance — rnsd by design, a client when
+        # rnsd is down (#69 race). Rows and hints name it (r9).
+        host = "rnsd" if rnsd_running else None
 
         if rnsd_running and si_available:
             print(f"  RNS Instance: rnsd — shared instance available")
@@ -234,6 +245,7 @@ class RNSInterfacesHandler(BaseHandler):
                 pass
             if port_owner:
                 proc_name, pid = port_owner
+                host = proc_name
                 print(f"  RNS Instance: {proc_name} (PID {pid}) — running its own RNS")
             elif si_available:
                 print(f"  RNS Instance: available (unknown process)")
@@ -302,7 +314,7 @@ class RNSInterfacesHandler(BaseHandler):
                 else:
                     status, detail = unlisted_row_status(
                         itype, blind, rnsd_running=rnsd_running,
-                        si_available=si_available)
+                        si_available=si_available, host=host)
 
             # Color-coded status hint via text markers
             if status == "BLOCKED":
@@ -328,7 +340,15 @@ class RNSInterfacesHandler(BaseHandler):
         # Summary hints
         if blocking_map:
             print(f"\n  ! = blocked (dependency missing)")
-        if not rnsd_running:
+        if not rnsd_running and host:
+            # A client holds the instance: starting rnsd beside it contends
+            # for @rns (#69). Say who hosts and the order that is safe.
+            print(f"\n  rnsd is not running — {host} is hosting the shared instance.")
+            print(f"  rnsd normally hosts: close {host}, start rnsd from")
+            print(f"  Service Control, then reopen {host} (it connects as a client).")
+        elif not rnsd_running and si_available:
+            print(f"\n  rnsd is not running — another process hosts the shared instance.")
+        elif not rnsd_running:
             print(f"\n  Start rnsd from Service Control.")
         elif not si_available:
             # Degraded state: show journal tail for immediate visibility
