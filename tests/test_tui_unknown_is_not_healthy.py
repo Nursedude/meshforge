@@ -125,12 +125,17 @@ class TestRnsDiagnosticsSummary:
         assert "All checks passed" in self._summary([], [], [])
 
     def test_every_blind_rnstatus_branch_records_unobserved(self):
+        # Leg [6/6] moved into the pure interface_traffic_leg() (Fable r1,
+        # 2026-11-21) whose blind branches are pinned BEHAVIOURALLY in
+        # tests/test_rns_filtered_reading.py (test_leg6_*). What stays here:
+        # run_rns_diagnostics folds ALL of the leg's unobserved entries into
+        # the summary, and keeps its own exception-handler entry.
         from handlers import _rns_diagnostics_engine as mod
         src = inspect.getsource(mod.run_rns_diagnostics)
-        block = src[src.index("iface_health = check_rns_interface_health(traffic)"):
+        block = src[src.index("leg = interface_traffic_leg("):
                     src.index("# Summary")]
-        # three "could not" branches + the exception handler + filtered-rx blind
-        assert block.count("unobserved.append(") == 5
+        assert "unobserved.extend(leg.unobserved)" in block
+        assert block.count("unobserved.append(") == 1   # the except handler
 
 
 # --------------------------------------------------------- Dashboard datapath

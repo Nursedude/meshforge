@@ -55,6 +55,12 @@ class TrafficCounters:
     bytes_unit: str = "B"
     bps: float = 0.0
     bps_unit: str = "bps"
+    # False = the default, never read from rnstatus. A 0 B that was READ and
+    # a 0 B that was never there must not look alike (hfm #1, Fable r1 #2).
+    observed: bool = False
+    # The value exactly as rnstatus printed it ("1.20 KB", "1,234 B") —
+    # what every reader (this one, the witness script's awk) shows.
+    text: str = ""
 
 
 @dataclass
@@ -155,14 +161,17 @@ _MODE_RE = re.compile(r'^\s*Mode\s*:\s*(.+)')
 _RATE_RE = re.compile(r'^\s*Rate\s*:\s*(.+)')
 _PEERS_RE = re.compile(r'^\s*Peers\s*:\s*(\d+)')
 _SERVING_RE = re.compile(r'^\s*Serving\s*:\s*(\d+)')
-# Section headers for the arrow lines that follow (1.6.x -F adds "Filtered").
-_TRAFFIC_HDR_RE = re.compile(r'^\s*Traffic\s*:')
-_FILTERED_HDR_RE = re.compile(r'^\s*Filtered\s*:')
+# Any "Name :" property header inside an interface block. EVERY header
+# (re)sets the arrow section: only "traffic" and "filtered" route ↑/↓ lines;
+# any other header (Status, Held, Announces, a footer...) closes the section,
+# so a block this parser doesn't know can never land in rx (Fable r1 #3).
+_HDR_RE = re.compile(r'^\s*([A-Za-z][A-Za-z ]*?)\s*:')
+_ARROW_SECTIONS = {"traffic": "traffic", "filtered": "filtered"}
 
-# Traffic — bytes value, unit, then bps value, unit
-# Handles both "↑242 B  0 bps" and "↑1,234 KiB  500 Kbps"
-_TX_RE = re.compile(r'↑\s*([\d,.]+)\s*(\w+)\s+([\d,.]+)\s*(\w+)')
-_RX_RE = re.compile(r'↓\s*([\d,.]+)\s*(\w+)\s+([\d,.]+)\s*(\w+)')
+# Traffic — bytes value, unit, then (optionally) bps value, unit
+# Handles "↑242 B  0 bps", "↑1,234 KiB  500 Kbps" and a bare "↓254 B".
+_TX_RE = re.compile(r'↑\s*([\d,.]+)\s*([A-Za-z]+)(?:\s+([\d,.]+)\s*(\w+))?')
+_RX_RE = re.compile(r'↓\s*([\d,.]+)\s*([A-Za-z]+)(?:\s+([\d,.]+)\s*(\w+))?')
 
 # Transport footer
 _TRANSPORT_RE = re.compile(r'Transport Instance\s+<?(\S+?)>?\s+running')
@@ -204,8 +213,10 @@ def _counters(m: "re.Match[str]") -> Optional[TrafficCounters]:
         return TrafficCounters(
             bytes_total=float(m.group(1).replace(',', '')),
             bytes_unit=m.group(2),
-            bps=float(m.group(3).replace(',', '')),
-            bps_unit=m.group(4),
+            bps=float(m.group(3).replace(',', '')) if m.group(3) else 0.0,
+            bps_unit=m.group(4) or "bps",
+            observed=True,
+            text=f"{m.group(1)} {m.group(2)}",
         )
     except ValueError:
         return None
@@ -236,8 +247,9 @@ def parse_rnstatus(output: str) -> RNSStatus:
 
     current: Optional[RNSInterface] = None
     # Which block the ↑/↓ lines belong to. The ↓ of a block sits on the line
-    # AFTER its header, so the section must persist across lines.
-    section = "traffic"
+    # AFTER its header, so the section persists across lines — until the
+    # next header. None = no arrow-carrying block open: arrows are ignored.
+    section: Optional[str] = None
 
     for line in output.splitlines():
         # --- Interface header ---
@@ -250,11 +262,15 @@ def parse_rnstatus(output: str) -> RNSStatus:
                 type_name=m.group(1).strip(),
                 display_name=m.group(2).strip(),
             )
-            section = "traffic"
+            section = None
             continue
 
         # --- Properties (only if we have a current interface) ---
         if current is not None:
+            h = _HDR_RE.match(line)
+            if h:
+                section = _ARROW_SECTIONS.get(h.group(1).strip().lower())
+
             m = _STATUS_RE.match(line)
             if m:
                 current.status = _STATUS_MAP.get(
@@ -290,13 +306,8 @@ def parse_rnstatus(output: str) -> RNSStatus:
                     pass
                 continue
 
-            # --- Traffic / Filtered blocks ---
-            if _FILTERED_HDR_RE.match(line):
-                section = "filtered"
-            elif _TRAFFIC_HDR_RE.match(line):
-                section = "traffic"
-
-            m = _TX_RE.search(line)
+            # --- Traffic / Filtered blocks (section set by the header) ---
+            m = _TX_RE.search(line) if section else None
             if m:
                 counters = _counters(m)
                 if counters is not None:
@@ -306,7 +317,7 @@ def parse_rnstatus(output: str) -> RNSStatus:
                         current.tx = counters
                 continue
 
-            m = _RX_RE.search(line)
+            m = _RX_RE.search(line) if section else None
             if m:
                 counters = _counters(m)
                 if counters is not None:
@@ -435,41 +446,63 @@ class InterfaceTraffic:
     filter_reason: str = ""
 
 
-# argparse's answer when this rnstatus has no -F (rns < 1.6, the fleet's 1.3.9).
-_NO_F_RE = re.compile(r'unrecognized arguments:.*(?<!\S)-F(?!\S)')
+# The CLI's answer when this rnstatus has no -F (rns < 1.6, the fleet's
+# 1.3.9: argparse "unrecognized arguments: -F"; optparse "no such option").
+# Only trusted when the run listed NO interfaces — the same words inside a
+# real listing (an interface name) are not a rejection (Fable r1 #7).
+_NO_F_RE = re.compile(
+    r"(?:unrecognized arguments:|no such option:)[^\n]*(?<![\w-])['\"]?-F(?![\w-])")
+
+
+def _listed(status: RNSStatus) -> bool:
+    """True when rnstatus really listed interfaces: some counter was READ.
+
+    ``interfaces`` alone is not proof — _IFACE_RE also matches argparse's
+    usage continuation lines ("                [-t] [-s SORT]") as an
+    interface with an all-whitespace type, so the 1.3.9 -F rejection
+    "lists" bogus interfaces (found 2026-11-21, Fable r1 round).
+    """
+    return any(i.rx.observed or i.tx.observed for i in status.interfaces)
 
 
 def read_interface_traffic(timeout_s: float = 15.0) -> InterfaceTraffic:
     """Read accepted + filtered traffic per interface: `rnstatus -F` first.
 
     States (one row each, no other outcome):
-      * -F prints interfaces            -> COUNTED (a leg without a Filtered
-                                           block is UNKNOWN per leg — see
-                                           :func:`filtered_rx_verdict`)
-      * -F rejected as unrecognized     -> NO_FILTER, accepted traffic re-read
-                                           with a plain rnstatus
-      * timed out                       -> UNKNOWN, NOT retried (a wedged rnsd
-                                           is not hit twice)
-      * binary missing / error / empty  -> UNKNOWN with the reason
-      * ok but zero interfaces          -> UNKNOWN
+      * -F lists interfaces              -> COUNTED (a leg without a Filtered
+                                            block is UNKNOWN per leg — see
+                                            :func:`filtered_rx_verdict`)
+      * -F rejected, nothing listed      -> NO_FILTER; accepted traffic re-read
+                                            plain (a failed re-read says so in
+                                            ``filter_reason``)
+      * timed out                        -> UNKNOWN, NOT retried (a wedged rnsd
+                                            is not hit twice)
+      * any other -F failure / no output -> UNKNOWN with the reason; accepted
+        / zero interfaces                   traffic re-read plain so the
+                                            accepted view is never lost to -F
     """
     status = run_rnstatus(timeout_s=timeout_s, extra_args=("-F",))
     if status.timed_out:
         return InterfaceTraffic(status, FilterState.UNKNOWN, "rnstatus -F timed out")
-    if _NO_F_RE.search(status.raw_output or ""):
+    if not _listed(status) and _NO_F_RE.search(status.raw_output or ""):
         plain = run_rnstatus(timeout_s=timeout_s)
-        return InterfaceTraffic(plain, FilterState.NO_FILTER,
-                                "this RNS has no announce filter (rnstatus has no -F)")
-    if status.parse_error:
-        return InterfaceTraffic(status, FilterState.UNKNOWN, status.parse_error)
-    if not status.interfaces:
-        return InterfaceTraffic(status, FilterState.UNKNOWN,
-                                "rnstatus -F reported no interfaces")
-    return InterfaceTraffic(status, FilterState.COUNTED)
+        reason = "this RNS has no announce filter (rnstatus has no -F)"
+        if plain.parse_error or not _listed(plain):
+            reason += ("; accepted traffic UNKNOWN: "
+                       + (plain.parse_error or "rnstatus reported no interfaces"))
+        return InterfaceTraffic(plain, FilterState.NO_FILTER, reason)
+    if _listed(status) and not parse_rnstatus(status.raw_output).parse_error:
+        # A listing came back (a non-zero exit alone does not blind it).
+        return InterfaceTraffic(status, FilterState.COUNTED)
+    reason = status.parse_error or "rnstatus -F reported no interfaces"
+    plain = run_rnstatus(timeout_s=timeout_s)
+    return InterfaceTraffic(plain, FilterState.UNKNOWN, f"rnstatus -F: {reason}")
 
 
 def format_bytes(c: TrafficCounters) -> str:
-    """'254 B' / '2.66 KB' — the counter as rnstatus printed it."""
+    """'254 B' / '1.20 KB' / '1,234 B' — exactly as rnstatus printed it."""
+    if c.text:
+        return c.text
     return f"{c.bytes_total:g} {c.bytes_unit}"
 
 
@@ -479,7 +512,8 @@ def filtered_rx_verdict(iface: RNSInterface, filter_state: FilterState):
     Never renders a filtered 0 it did not read: a leg with no Filtered block
     under a COUNTED reading is UNKNOWN for that leg.
     """
-    accepted = f"rx accepted {format_bytes(iface.rx)}"
+    accepted = ("rx accepted " + format_bytes(iface.rx)
+                if iface.rx.observed else "rx accepted UNKNOWN")
     if filter_state is FilterState.NO_FILTER:
         return (FilterState.NO_FILTER,
                 f"{accepted} · filtered — (no announce filter in this RNS)")

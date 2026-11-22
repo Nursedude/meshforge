@@ -202,7 +202,7 @@ FILTERED_OUTPUT_161 = (Path(__file__).parent / "fixtures" / "rnstatus"
 
 import sys  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from utils.rns_status_parser import parse_rnstatus  # noqa: E402
+from utils.rns_status_parser import format_bytes, parse_rnstatus  # noqa: E402
 
 
 def _py_leg_stats(raw):
@@ -212,11 +212,20 @@ def _py_leg_stats(raw):
     out = {}
     for name, c in (("accepted", legs[0].rx), ("filtered", legs[0].rx_filtered)):
         assert c is not None
-        out[name] = f"{c.bytes_total:g} {c.bytes_unit}"
+        out[name] = format_bytes(c)
     return out
 
 
-@pytest.mark.parametrize("raw", [RNSTATUS_F_161, FILTERED_OUTPUT_161])
+# rnstatus prints trailing zeros and thousands commas ("5.00 MB", "1,234 B");
+# the integer-only fixtures alone let a float-reformatting reader pass (r1 #4).
+_PRINTED = [
+    FILTERED_OUTPUT_161.replace("↓254 B      0 bps", "↓1.20 KB    0 bps"),
+    FILTERED_OUTPUT_161.replace("↓254 B      0 bps", "↓1,234 B    0 bps")
+                       .replace("↓491 B  0 bps", "↓100.00 MB  0 bps"),
+]
+
+
+@pytest.mark.parametrize("raw", [RNSTATUS_F_161, FILTERED_OUTPUT_161, *_PRINTED])
 def test_awk_and_python_readers_agree_on_the_entry_leg(tmp_path, raw):
     r = _stdin("leg-stats", raw, tmp_path)
     assert r.returncode == 0, r.stderr
