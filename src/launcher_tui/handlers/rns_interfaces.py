@@ -20,6 +20,25 @@ from utils.paths import get_real_user_home, ReticulumPaths
 logger = logging.getLogger(__name__)
 
 
+def live_row_status(live, blind):
+    """(status, detail) for a configured interface WITH a live rnstatus row.
+
+    rnstatus's own Status decides DOWN (Fable r6 #3: a Down row read UP);
+    a row from a blind reading is QUALIFIED, never a clean bill of health
+    (Fable r6 #2, operator 11-22).
+    """
+    counters = f"↑{live['tx']}  ↓{live['rx']}"
+    if live.get('status') == "Down":
+        status, detail = "DOWN", counters
+    elif not live['healthy']:
+        status, detail = "RX-ONLY", f"{counters} (link establishment failing)"
+    else:
+        status, detail = "UP", counters
+    if blind:
+        detail += f" (reading incomplete: {blind})"
+    return status, detail
+
+
 def unlisted_row_status(itype, blind, *, rnsd_running, si_available):
     """(status, detail) for a configured interface with NO live rnstatus row.
 
@@ -197,10 +216,11 @@ class RNSInterfacesHandler(BaseHandler):
         try:
             health, blind = interface_health()
             for entry in health:
-                # entry = (display_name, tx_str, rx_str, is_healthy)
+                # entry = (display_name, tx_str, rx_str, is_healthy, status)
                 name = entry[0]
                 health_map[name] = {
                     'tx': entry[1], 'rx': entry[2], 'healthy': entry[3],
+                    'status': entry[4],
                 }
         except Exception as e:
             logger.debug("Interface health check failed: %s", e)
@@ -227,12 +247,7 @@ class RNSInterfacesHandler(BaseHandler):
                 # Try to match against rnstatus output
                 live = self._match_live_health(name, itype, health_map)
                 if live:
-                    if not live['healthy']:
-                        status = "RX-ONLY"
-                        detail = f"↑{live['tx']}  ↓{live['rx']} (link establishment failing)"
-                    else:
-                        status = "UP"
-                        detail = f"↑{live['tx']}  ↓{live['rx']}"
+                    status, detail = live_row_status(live, blind)
                 else:
                     status, detail = unlisted_row_status(
                         itype, blind, rnsd_running=rnsd_running,

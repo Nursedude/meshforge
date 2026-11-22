@@ -573,12 +573,15 @@ def check_rns_interface_health(traffic=None):
     when rnstatus timed out or cannot reach the shared instance — callers
     treat that as unobserved, never healthy. See :func:`health_rows`.
     """
-    return interface_health(traffic)[0]
+    return [row[:4] for row in interface_health(traffic)[0]]
 
 
 def interface_health(traffic=None, *, accepted_only=False):
-    """(rows, why_blind) — :func:`check_rns_interface_health`'s rows AND why
-    the reading is not complete (None = every listed interface read).
+    """(rows, why_blind) — :func:`check_rns_interface_health`'s rows plus
+    each row's rnstatus Status ("Up" / "Down" / "Unknown") as a 5th element,
+    AND why the reading is not complete (None = every listed interface read).
+    A read row in a blind reading is still a row: callers QUALIFY it, never
+    present it as a clean bill of health (operator 11-22, Fable r6 #2).
 
     An empty list alone cannot tell "nothing there" from "could not see"
     (r5 nit: the NomadNet subtitle said DOWN on a timed-out rnstatus).
@@ -598,7 +601,7 @@ def interface_health(traffic=None, *, accepted_only=False):
     why = accepted_blind_reason(
         traffic, running=False, instance_ok=False,
         rnstatus_present=ran or _find_rnstatus_binary() is not None)
-    return [row for _, row in health_rows(traffic)], why
+    return [row + (i.status.value,) for i, row in health_rows(traffic)], why
 
 
 def accepted_blind_reason(traffic, *, running, instance_ok, rnstatus_present):
@@ -674,7 +677,9 @@ def interface_traffic_leg(traffic, *, running, instance_ok, rnstatus_present):
     comes ONLY from :func:`blind_spots`; filtered > 0 is a WARNING, never an
     issue (observe before alarm).
     """
-    from utils.rns_status_parser import FilterState, filtered_rx_verdict, format_bytes
+    from utils.rns_status_parser import (
+        FilterState, InterfaceStatus, filtered_rx_verdict, format_bytes,
+    )
     leg = TrafficLeg()
     rows = shown_interfaces(traffic)
     dropping = 0
@@ -687,7 +692,12 @@ def interface_traffic_leg(traffic, *, running, instance_ok, rnstatus_present):
         # not an RX-only link fault (r1 #5).
         rx_only = (iface.tx.observed and iface.rx.observed and not iface.is_healthy
                    and iface.type_name != SHARED_INSTANCE)
-        if not rx_only:
+        if iface.status is InterfaceStatus.DOWN:
+            # rnstatus SAYS Down: an issue, never a healthy-looking row
+            # (Fable r6 #3, pre-existing; operator 11-22). Down outranks RX-only.
+            leg.lines.append(f"  {name}: DOWN (↑{tx} ↓{rx})")
+            leg.issues.append(f"Interface {name} is Down")
+        elif not rx_only:
             leg.lines.append(f"  {name}: ↑{tx} ↓{rx}")
         else:
             leg.lines.append(f"  {name}: RX-ONLY (↑{tx} ↓{rx})")

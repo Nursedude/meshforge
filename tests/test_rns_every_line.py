@@ -342,7 +342,7 @@ def test_subtitle_mesh_listed_is_up(tmp_path):
 def test_interface_health_returns_rows_and_why_blind():
     from handlers._rns_diagnostics_engine import interface_health
     rows, why = interface_health(InterfaceTraffic(parse_rnstatus(OTHER), FilterState.NO_FILTER))
-    assert rows == [("TCPInterface[peer/h:1]", "5 KB", "6 KB", True)] and why is None
+    assert rows == [("TCPInterface[peer/h:1]", "5 KB", "6 KB", True, "Up")] and why is None
     rows, why = interface_health(InterfaceTraffic(
         parse_rnstatus(OTHER + " some new rns line\n"), FilterState.NO_FILTER))
     assert len(rows) == 1 and why.startswith("1 line(s) this parser could not read")
@@ -437,3 +437,62 @@ def test_status_value_must_be_exactly_up_or_down():                 # M11
 
 def test_bracket_led_top_level_text_is_not_a_log_line():            # M13
     assert parse_rnstatus(" [not a log] text\n").unread_lines == [" [not a log] text"]
+
+
+# --------- operator 11-22: Fable r6 #3 (Down renders UP) + #2 (blind + UP)
+
+MESH_DOWN = ("\n Meshtastic_Interface[MeshLF]\n    Status    : Down\n    Mode      : Full\n"
+             "    Traffic   : ↑5 KB  0 bps\n                ↓6 KB  0 bps\n\n")
+
+
+def test_leg_down_interface_is_an_issue_not_a_healthy_row():
+    from handlers._rns_diagnostics_engine import summary_lines
+    leg = _leg(_traffic(parse_rnstatus(OTHER + MESH_DOWN), False))
+    assert "  Meshtastic_Interface[MeshLF]: DOWN (↑5 KB ↓6 KB)" in leg.lines
+    assert leg.issues == ["Interface Meshtastic_Interface[MeshLF] is Down"]
+    s = "\n".join(summary_lines(leg.issues, leg.warnings, leg.unobserved))
+    assert "All checks passed" not in s
+
+
+def test_leg_down_and_rx_only_reports_down_once():
+    blk = ("\n TCPInterface[a/b:1]\n    Status    : Down\n    Mode      : Full\n"
+           "    Traffic   : ↑0 B  0 bps\n                ↓6 KB  0 bps\n\n")
+    leg = _leg(_traffic(parse_rnstatus(blk), False))
+    assert leg.issues == ["Interface TCPInterface[a/b:1] is Down"]
+
+
+def test_interface_health_rows_carry_status():
+    from handlers._rns_diagnostics_engine import interface_health, check_rns_interface_health
+    t = InterfaceTraffic(parse_rnstatus(OTHER + MESH_DOWN), FilterState.NO_FILTER)
+    rows, why = interface_health(t)
+    assert rows[1] == ("Meshtastic_Interface[MeshLF]", "5 KB", "6 KB", True, "Down")
+    assert why is None
+    assert check_rns_interface_health(t)[1] == ("Meshtastic_Interface[MeshLF]", "5 KB", "6 KB", True)
+
+
+def test_subtitle_mesh_down_says_down(tmp_path):
+    text, _ = _subtitle(tmp_path, _p(OTHER + MESH_DOWN))
+    assert text == "Meshtastic iface: DOWN"
+
+
+def test_subtitle_up_row_in_a_blind_reading_is_qualified(tmp_path):
+    text, _ = _subtitle(tmp_path, _p(OTHER + MESH_UP + " some new rns line\n"))
+    assert text.startswith("Meshtastic iface: UP (reading incomplete: 1 line(s)")
+
+
+def test_subtitle_partial_crash_with_mesh_listed_is_qualified(tmp_path):
+    text, _ = _subtitle(tmp_path, _p(OTHER + MESH_UP, "KeyError: 'txb'\n", 1))
+    assert text.startswith("Meshtastic iface: UP (reading incomplete: partial listing")
+
+
+@pytest.mark.parametrize("live,blind,expect", [
+    ({"tx": "1 B", "rx": "2 B", "healthy": True, "status": "Up"}, None, ("UP", "↑1 B  ↓2 B")),
+    ({"tx": "0 B", "rx": "2 B", "healthy": False, "status": "Up"}, None,
+     ("RX-ONLY", "↑0 B  ↓2 B (link establishment failing)")),
+    ({"tx": "1 B", "rx": "2 B", "healthy": True, "status": "Down"}, None, ("DOWN", "↑1 B  ↓2 B")),
+    ({"tx": "1 B", "rx": "2 B", "healthy": True, "status": "Up"}, "rnstatus timed out",
+     ("UP", "↑1 B  ↓2 B (reading incomplete: rnstatus timed out)")),
+])
+def test_interface_table_live_row(live, blind, expect):
+    from handlers.rns_interfaces import live_row_status
+    assert live_row_status(live, blind) == expect

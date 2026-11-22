@@ -236,5 +236,18 @@ class NomadNetIfaceChecksMixin:
                 return f"Meshtastic iface: UNKNOWN ({short})"
             return "Meshtastic iface: DOWN"
 
-        any_healthy = any(len(e) > 3 and e[3] for e in mesh_entries)
-        return "Meshtastic iface: UP" if any_healthy else "Meshtastic iface: RX-only"
+        # rows: (name, tx, rx, is_healthy, status) — rnstatus's own Status
+        # decides DOWN (Fable r6 #3: a Down row used to read UP).
+        up = [e for e in mesh_entries if e[4] != "Down"]
+        if not up:
+            state = "DOWN"
+        elif any(e[3] for e in up):
+            state = "UP"
+        else:
+            state = "RX-only"
+        if blind:
+            # A read row in a blind reading is QUALIFIED, never a clean
+            # bill of health (Fable r6 #2, operator 11-22).
+            short = blind[:40] + ("…" if len(blind) > 40 else "")
+            return f"Meshtastic iface: {state} (reading incomplete: {short})"
+        return f"Meshtastic iface: {state}"
