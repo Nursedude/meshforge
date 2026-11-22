@@ -127,10 +127,10 @@ class TestRnsDiagnosticsSummary:
     def test_every_blind_rnstatus_branch_records_unobserved(self):
         from handlers import _rns_diagnostics_engine as mod
         src = inspect.getsource(mod.run_rns_diagnostics)
-        block = src[src.index("iface_health = check_rns_interface_health()"):
+        block = src[src.index("iface_health = check_rns_interface_health(traffic)"):
                     src.index("# Summary")]
-        # three "could not" branches + the exception handler
-        assert block.count("unobserved.append(") == 4
+        # three "could not" branches + the exception handler + filtered-rx blind
+        assert block.count("unobserved.append(") == 5
 
 
 # --------------------------------------------------------- Dashboard datapath

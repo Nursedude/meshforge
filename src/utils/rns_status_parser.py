@@ -352,13 +352,14 @@ def _find_rnstatus_binary() -> Optional[str]:
     return None
 
 
-def run_rnstatus(timeout_s: float = 15.0) -> RNSStatus:
+def run_rnstatus(timeout_s: float = 15.0, extra_args: tuple = ()) -> RNSStatus:
     """Run ``rnstatus`` and return parsed output.
 
     Args:
         timeout_s: subprocess timeout. Default 15s preserves existing
             callers (e.g. rns_monitor_mixin). The watchdog passes a
             shorter value so a wedged rnsd can't stall its 30s tick.
+        extra_args: flags appended to the command (e.g. ``("-F",)``).
 
     Returns:
         RNSStatus with ``parse_error`` set if rnsd is unreachable or the
@@ -377,7 +378,7 @@ def run_rnstatus(timeout_s: float = 15.0) -> RNSStatus:
     started = time.monotonic()
     try:
         proc = subprocess.run(
-            [rnstatus_path],
+            [rnstatus_path, *extra_args],
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -412,3 +413,83 @@ def run_rnstatus(timeout_s: float = 15.0) -> RNSStatus:
         logger.warning("Failed to run rnstatus: %s", e)
         return RNSStatus(parse_error=f"Failed to run rnstatus: {e}",
                          duration_s=time.monotonic() - started)
+
+
+# ---------------------------------------------------------------------------
+# Filtered rx — the only witness of a silent drop (WITNESS-TUI, 2026-11-21)
+# ---------------------------------------------------------------------------
+
+
+class FilterState(Enum):
+    """What `rnstatus -F` could tell us about filtered (dropped) traffic."""
+    COUNTED = "counted"        # this RNS counts filtered bytes; the number is real
+    NO_FILTER = "no_filter"    # this RNS rejects -F: it has no announce filter
+    UNKNOWN = "unknown"        # nothing observed (timeout, error, no output)
+
+
+@dataclass
+class InterfaceTraffic:
+    """One reading of per-interface accepted (and, where counted, filtered) traffic."""
+    status: RNSStatus
+    filter_state: FilterState
+    filter_reason: str = ""
+
+
+# argparse's answer when this rnstatus has no -F (rns < 1.6, the fleet's 1.3.9).
+_NO_F_RE = re.compile(r'unrecognized arguments:.*(?<!\S)-F(?!\S)')
+
+
+def read_interface_traffic(timeout_s: float = 15.0) -> InterfaceTraffic:
+    """Read accepted + filtered traffic per interface: `rnstatus -F` first.
+
+    States (one row each, no other outcome):
+      * -F prints interfaces            -> COUNTED (a leg without a Filtered
+                                           block is UNKNOWN per leg — see
+                                           :func:`filtered_rx_verdict`)
+      * -F rejected as unrecognized     -> NO_FILTER, accepted traffic re-read
+                                           with a plain rnstatus
+      * timed out                       -> UNKNOWN, NOT retried (a wedged rnsd
+                                           is not hit twice)
+      * binary missing / error / empty  -> UNKNOWN with the reason
+      * ok but zero interfaces          -> UNKNOWN
+    """
+    status = run_rnstatus(timeout_s=timeout_s, extra_args=("-F",))
+    if status.timed_out:
+        return InterfaceTraffic(status, FilterState.UNKNOWN, "rnstatus -F timed out")
+    if _NO_F_RE.search(status.raw_output or ""):
+        plain = run_rnstatus(timeout_s=timeout_s)
+        return InterfaceTraffic(plain, FilterState.NO_FILTER,
+                                "this RNS has no announce filter (rnstatus has no -F)")
+    if status.parse_error:
+        return InterfaceTraffic(status, FilterState.UNKNOWN, status.parse_error)
+    if not status.interfaces:
+        return InterfaceTraffic(status, FilterState.UNKNOWN,
+                                "rnstatus -F reported no interfaces")
+    return InterfaceTraffic(status, FilterState.COUNTED)
+
+
+def format_bytes(c: TrafficCounters) -> str:
+    """'254 B' / '2.66 KB' — the counter as rnstatus printed it."""
+    return f"{c.bytes_total:g} {c.bytes_unit}"
+
+
+def filtered_rx_verdict(iface: RNSInterface, filter_state: FilterState):
+    """(state, one-line text) for one interface's accepted vs filtered rx.
+
+    Never renders a filtered 0 it did not read: a leg with no Filtered block
+    under a COUNTED reading is UNKNOWN for that leg.
+    """
+    accepted = f"rx accepted {format_bytes(iface.rx)}"
+    if filter_state is FilterState.NO_FILTER:
+        return (FilterState.NO_FILTER,
+                f"{accepted} · filtered — (no announce filter in this RNS)")
+    if filter_state is FilterState.UNKNOWN:
+        return (FilterState.UNKNOWN, f"{accepted} · filtered UNKNOWN")
+    if iface.rx_filtered is None:
+        return (FilterState.UNKNOWN,
+                f"{accepted} · filtered UNKNOWN (no Filtered line for this interface)")
+    text = f"{accepted} · filtered {format_bytes(iface.rx_filtered)}"
+    if iface.rx_filtered.bytes_total > 0:
+        text += (" ⚠ dropped by this RNS, not logged "
+                 "(e.g. unstamped announces under enforce_stamps)")
+    return (FilterState.COUNTED, text)

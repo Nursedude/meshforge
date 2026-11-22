@@ -6,7 +6,6 @@ Functions take handler for TUI interaction (same pattern as _rns_repair.py).
 
 import logging
 import os
-import re
 import shutil
 import subprocess
 import time
@@ -325,7 +324,15 @@ def run_rns_diagnostics(handler):
     # 6. Interface TX/RX health
     print("\n[6/6] Checking interface traffic...")
     try:
-        iface_health = check_rns_interface_health()
+        from utils.rns_status_parser import (
+            FilterState, read_interface_traffic, filtered_rx_verdict,
+        )
+        traffic = read_interface_traffic()
+        filtered_by_name = {
+            i.full_name: filtered_rx_verdict(i, traffic.filter_state)[1]
+            for i in traffic.status.interfaces
+        }
+        iface_health = check_rns_interface_health(traffic)
         if iface_health:
             rx_only_found = False
             for name, tx, rx, healthy in iface_health:
@@ -336,6 +343,13 @@ def run_rns_diagnostics(handler):
                     issues.append(
                         f"Interface {name} is RX-only (no TX)")
                     rx_only_found = True
+                # Filtered rx: the only witness of a silent drop (rns >= 1.6
+                # drops unstamped announces without a log line).
+                if name in filtered_by_name:
+                    print(f"      {filtered_by_name[name]}")
+            if traffic.filter_state is FilterState.UNKNOWN:
+                unobserved.append(
+                    f"filtered rx ({traffic.filter_reason})")
             if rx_only_found:
                 print("\n  RX-only interfaces = link "
                       "establishment failing.")
@@ -522,88 +536,33 @@ def diagnose_rns_connectivity(handler, error_output: str):
     print("\nRestart rnsd from Service Control to clear this.")
 
 
-def check_rns_interface_health():
-    """Run rnstatus and parse per-interface TX/RX counters.
+def check_rns_interface_health(traffic=None):
+    """Per-interface TX/RX counters from the ONE shared rnstatus reader.
 
     Returns a list of (interface_name, tx_str, rx_str, is_healthy)
     tuples. An interface is unhealthy if it has RX but zero TX
     (link establishment / SYN/ACK failing).
 
-    Returns empty list if rnstatus is unavailable or fails.
+    Args:
+        traffic: an ``InterfaceTraffic`` already read this pass (the
+            diagnostics leg reads once and shares it); None = read now.
+
+    Returns empty list if rnstatus is unavailable or fails — callers treat
+    that as unobserved, never healthy. Until 2026-11-21 this was a second
+    hand-rolled parser; under rns 1.6 ``-F`` its every-↓ match would have
+    emitted the Filtered bytes as a phantom rx row (hfm #5: one reader).
     """
-    rnstatus_path = shutil.which('rnstatus')
-    if not rnstatus_path:
-        user_home = get_real_user_home()
-        candidate = user_home / '.local' / 'bin' / 'rnstatus'
-        if candidate.exists():
-            rnstatus_path = str(candidate)
-    if not rnstatus_path:
+    from utils.rns_status_parser import format_bytes, read_interface_traffic
+    if traffic is None:
+        traffic = read_interface_traffic()
+    status = traffic.status
+    if status.parse_error or status.timed_out:
         return []
-
-    try:
-        result = subprocess.run(
-            [rnstatus_path],
-            capture_output=True, text=True, timeout=15
-        )
-        combined = (result.stdout or '') + (result.stderr or '')
-        if ('no shared' in combined.lower()
-                or 'could not' in combined.lower()):
-            return []
-    except (subprocess.SubprocessError, FileNotFoundError,
-            OSError):
-        return []
-
-    interfaces = []
-    current_iface = None
-    tx_cache = {}
-
-    for line in combined.splitlines():
-        # Interface header: InterfaceType[DisplayName]
-        iface_match = re.match(r'\s*(\w+)\[(.+?)\]', line)
-        if iface_match:
-            current_iface = (
-                f"{iface_match.group(1)}"
-                f"[{iface_match.group(2)}]"
-            )
-            continue
-
-        # TX line: ↑NNN B  NNN bps
-        tx_match = re.search(
-            r'↑\s*([\d,.]+)\s*(\w+)', line
-        )
-        if tx_match and current_iface:
-            tx_cache[current_iface] = (
-                tx_match.group(1).replace(',', ''),
-                tx_match.group(2),
-            )
-
-        # RX line: ↓NNN B  NNN bps
-        rx_match = re.search(
-            r'↓\s*([\d,.]+)\s*(\w+)', line
-        )
-        if rx_match and current_iface:
-            rx_val = rx_match.group(1).replace(',', '')
-            rx_unit = rx_match.group(2)
-            tx_info = tx_cache.get(
-                current_iface, ('0', 'B')
-            )
-            tx_str = f"{tx_info[0]} {tx_info[1]}"
-            rx_str = f"{rx_val} {rx_unit}"
-
-            try:
-                tx_bytes = float(tx_info[0])
-                rx_bytes = float(rx_val)
-            except ValueError:
-                tx_bytes = rx_bytes = 0
-
-            # Healthy if TX > 0, or both are 0 (just started)
-            healthy = not (rx_bytes > 0 and tx_bytes == 0)
-            interfaces.append(
-                (current_iface, tx_str, rx_str, healthy)
-            )
-            current_iface = None
-
-    return interfaces
+    return [
+        (iface.full_name, format_bytes(iface.tx), format_bytes(iface.rx),
+         iface.is_healthy)
+        for iface in status.interfaces
+    ]
 
 
 def diagnose_rns_port_conflict(handler):
