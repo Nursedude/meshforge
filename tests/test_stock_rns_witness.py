@@ -191,3 +191,35 @@ def test_leg_stats_missing_line_is_unknown_never_zero(tmp_path, raw):
     assert r.returncode == 0, r.stderr
     assert "UNKNOWN" in r.stdout, r.stdout
     assert "filtered: 0" not in r.stdout, r.stdout
+
+
+# ------------------------------- ONE reading, two readers (hfm #5, WITNESS-TUI)
+# The TUI reads Filtered ↓ through utils.rns_status_parser; this script reads it
+# with awk. Two readers of one artifact drift unless pinned: both must report the
+# same entry-leg accepted/filtered rx on every real snapshot.
+FILTERED_OUTPUT_161 = (Path(__file__).parent / "fixtures" / "rnstatus"
+                       / "stock_161_F_enforce_idle.txt").read_text()
+
+import sys  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from utils.rns_status_parser import parse_rnstatus  # noqa: E402
+
+
+def _py_leg_stats(raw):
+    legs = [i for i in parse_rnstatus(raw).interfaces
+            if i.display_name.startswith("Regional entry point")]
+    assert len(legs) == 1
+    out = {}
+    for name, c in (("accepted", legs[0].rx), ("filtered", legs[0].rx_filtered)):
+        assert c is not None
+        out[name] = f"{c.bytes_total:g} {c.bytes_unit}"
+    return out
+
+
+@pytest.mark.parametrize("raw", [RNSTATUS_F_161, FILTERED_OUTPUT_161])
+def test_awk_and_python_readers_agree_on_the_entry_leg(tmp_path, raw):
+    r = _stdin("leg-stats", raw, tmp_path)
+    assert r.returncode == 0, r.stderr
+    py = _py_leg_stats(raw)
+    for name, value in py.items():
+        assert f"rx {name}: {value}" in r.stdout, (name, value, r.stdout)

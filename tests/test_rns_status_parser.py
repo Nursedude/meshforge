@@ -459,3 +459,48 @@ class TestRunRnstatusEmptyOrFailedIsNotClean:
         assert result.timed_out is False
         assert result.parse_error is not None
         assert "exited 1" in result.parse_error
+
+
+# ---------------------------------------------------------------------------
+# rns 1.6.x `rnstatus -F` — the Filtered block (WITNESS-TUI, 2026-11-21)
+# ---------------------------------------------------------------------------
+
+# Real stock rns 1.6.1 `rnstatus -F` output, enforce_stamps = yes, idle 90 s
+# (meshforge-lab witness root-cause drill B_t1, 2026-11-21 13:08; host
+# sanitized). The fleet's announces arrive unstamped and are dropped SILENTLY
+# — the ↓ under "Filtered" is the only witness of the drop.
+FILTERED_OUTPUT_161 = (Path(__file__).parent / "fixtures" / "rnstatus"
+                       / "stock_161_F_enforce_idle.txt").read_text()
+
+
+class TestFilteredBlock:
+    def _leg(self):
+        status = parse_rnstatus(FILTERED_OUTPUT_161)
+        legs = [i for i in status.interfaces if i.type_name == "TCPInterface"]
+        assert len(legs) == 1
+        return legs[0]
+
+    def test_filtered_rx_does_not_clobber_accepted_rx(self):
+        # The bug this pins: _RX_RE matched the Filtered ↓ line too, so the
+        # accepted rx read 491 (the DROPPED bytes) instead of 254.
+        leg = self._leg()
+        assert leg.rx.bytes_total == 254
+        assert leg.tx.bytes_total == 478
+
+    def test_filtered_counters_parsed(self):
+        leg = self._leg()
+        assert leg.rx_filtered is not None
+        assert leg.rx_filtered.bytes_total == 491
+        assert leg.rx_filtered.bytes_unit == "B"
+        assert leg.tx_filtered is not None
+        assert leg.tx_filtered.bytes_total == 0
+
+    def test_no_filtered_block_is_none_not_zero(self):
+        # 1.3.9 (the fleet) prints no Filtered block: absent must read None —
+        # a 0 would claim "nothing was filtered" from a counter that does not
+        # exist (hfm #2).
+        status = parse_rnstatus(FULL_OUTPUT)
+        assert status.interfaces
+        for iface in status.interfaces:
+            assert iface.rx_filtered is None
+            assert iface.tx_filtered is None

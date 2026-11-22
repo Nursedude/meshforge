@@ -69,6 +69,13 @@ class RNSInterface:
     serving: Optional[int] = None
     tx: TrafficCounters = field(default_factory=TrafficCounters)
     rx: TrafficCounters = field(default_factory=TrafficCounters)
+    # rns >= 1.6 `rnstatus -F` prints a "Filtered :" block: bytes the
+    # transport DROPPED (e.g. unstamped announces under enforce_stamps — a
+    # drop 1.6.1 does not log). None = no Filtered block in the output (the
+    # fleet's 1.3.9 has no such counter, or -F was not passed) — never 0,
+    # which would claim "nothing filtered" from a counter that isn't there.
+    tx_filtered: Optional[TrafficCounters] = None
+    rx_filtered: Optional[TrafficCounters] = None
 
     @property
     def full_name(self) -> str:
@@ -148,6 +155,9 @@ _MODE_RE = re.compile(r'^\s*Mode\s*:\s*(.+)')
 _RATE_RE = re.compile(r'^\s*Rate\s*:\s*(.+)')
 _PEERS_RE = re.compile(r'^\s*Peers\s*:\s*(\d+)')
 _SERVING_RE = re.compile(r'^\s*Serving\s*:\s*(\d+)')
+# Section headers for the arrow lines that follow (1.6.x -F adds "Filtered").
+_TRAFFIC_HDR_RE = re.compile(r'^\s*Traffic\s*:')
+_FILTERED_HDR_RE = re.compile(r'^\s*Filtered\s*:')
 
 # Traffic — bytes value, unit, then bps value, unit
 # Handles both "↑242 B  0 bps" and "↑1,234 KiB  500 Kbps"
@@ -188,6 +198,19 @@ _MODE_MAP = {
 # ---------------------------------------------------------------------------
 
 
+def _counters(m: "re.Match[str]") -> Optional[TrafficCounters]:
+    """TrafficCounters from a _TX_RE/_RX_RE match; None if a number won't parse."""
+    try:
+        return TrafficCounters(
+            bytes_total=float(m.group(1).replace(',', '')),
+            bytes_unit=m.group(2),
+            bps=float(m.group(3).replace(',', '')),
+            bps_unit=m.group(4),
+        )
+    except ValueError:
+        return None
+
+
 def parse_rnstatus(output: str) -> RNSStatus:
     """Parse raw ``rnstatus`` text into an :class:`RNSStatus` object.
 
@@ -212,6 +235,9 @@ def parse_rnstatus(output: str) -> RNSStatus:
             break
 
     current: Optional[RNSInterface] = None
+    # Which block the ↑/↓ lines belong to. The ↓ of a block sits on the line
+    # AFTER its header, so the section must persist across lines.
+    section = "traffic"
 
     for line in output.splitlines():
         # --- Interface header ---
@@ -224,6 +250,7 @@ def parse_rnstatus(output: str) -> RNSStatus:
                 type_name=m.group(1).strip(),
                 display_name=m.group(2).strip(),
             )
+            section = "traffic"
             continue
 
         # --- Properties (only if we have a current interface) ---
@@ -263,31 +290,30 @@ def parse_rnstatus(output: str) -> RNSStatus:
                     pass
                 continue
 
-            # --- Traffic lines ---
+            # --- Traffic / Filtered blocks ---
+            if _FILTERED_HDR_RE.match(line):
+                section = "filtered"
+            elif _TRAFFIC_HDR_RE.match(line):
+                section = "traffic"
+
             m = _TX_RE.search(line)
             if m:
-                try:
-                    current.tx = TrafficCounters(
-                        bytes_total=float(m.group(1).replace(',', '')),
-                        bytes_unit=m.group(2),
-                        bps=float(m.group(3).replace(',', '')),
-                        bps_unit=m.group(4),
-                    )
-                except ValueError:
-                    pass
+                counters = _counters(m)
+                if counters is not None:
+                    if section == "filtered":
+                        current.tx_filtered = counters
+                    else:
+                        current.tx = counters
                 continue
 
             m = _RX_RE.search(line)
             if m:
-                try:
-                    current.rx = TrafficCounters(
-                        bytes_total=float(m.group(1).replace(',', '')),
-                        bytes_unit=m.group(2),
-                        bps=float(m.group(3).replace(',', '')),
-                        bps_unit=m.group(4),
-                    )
-                except ValueError:
-                    pass
+                counters = _counters(m)
+                if counters is not None:
+                    if section == "filtered":
+                        current.rx_filtered = counters
+                    else:
+                        current.rx = counters
                 continue
 
         # --- Transport footer (outside any interface) ---
