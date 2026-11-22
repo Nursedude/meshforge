@@ -1,0 +1,2692 @@
+{
+ "rns_config_utils.py::<module>::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "rns_config_utils.py::add_interface_to_config::read_bytes": {
+  "audited": "r12 2026-11-22: standalone drop-in: rnsd's rule inlined (BOM kept, utf-8 strict, no newline translation)",
+  "class": "rns-config",
+  "count": 1
+ },
+ "src/agent/agent.py::AgentConfig.from_file::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/agent/agent.py::AgentConfig.to_file::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/agent/agent.py::AgentDaemon._connect_management::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/amateur/ares_races.py::ARESRACESTools._load_data::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/amateur/ares_races.py::ARESRACESTools._save_data::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/amateur/ares_races.py::ARESRACESTools.log_message::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/amateur/callsign.py::CallsignManager._load_cache::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/amateur/callsign.py::CallsignManager._save_cache::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/amateur/callsign.py::StationIDTimer._load_state::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/cli/diagnose.py::check_ham_callsign::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/cli/diagnose.py::check_logs::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/cli/diagnose.py::check_nomadnet::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/cli/diagnose.py::check_processes::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/cli/diagnose.py::check_system_resources::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 2
+ },
+ "src/cli/diagnose.py::check_system_resources::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/cli/status.py::get_system_resources::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 3
+ },
+ "src/cli/status.py::get_system_resources::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/commands/device_backup.py::create_backup::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/commands/device_backup.py::get_backup_details::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/commands/device_backup.py::list_backups::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/commands/device_backup.py::restore_backup::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/commands/diagnostics.py::get_system_health::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 4
+ },
+ "src/commands/fleet_backup.py::create_local_backup::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 3
+ },
+ "src/commands/fleet_backup.py::load_fleet_config::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/commands/fleet_backup.py::verify_backup::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/commands/hardware.py::_find_usb_parent::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/commands/hardware.py::detect_lora_hardware::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/commands/hardware.py::get_platform_info::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/commands/hardware.py::get_platform_info::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/commands/hardware.py::get_radio_health::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/commands/hardware.py::match_config_to_hardware::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/commands/rnode.py::get_usb_info::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 5
+ },
+ "src/commands/rns.py::read_config::read_bytes": {
+  "audited": "r12 2026-11-22: -> config_text",
+  "class": "rns-config",
+  "count": 1
+ },
+ "src/commands/service.py::is_installed::cat": {
+  "audited": "r12 2026-11-22 line-audited: `systemctl cat` (a unit file)",
+  "class": "other",
+  "count": 1
+ },
+ "src/config/channel_presets.py::ChannelPresetManager.apply_preset_to_config::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/config/channel_presets.py::ChannelPresetManager.load_user_presets::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/config/channel_presets.py::ChannelPresetManager.save_user_preset::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/config/config_file_manager.py::ConfigFileManager._check_hardware::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/config/config_file_manager.py::ConfigFileManager._get_config_content::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/config/config_file_manager.py::ConfigFileManager._get_config_description::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/config/config_file_manager.py::ConfigFileManager._select_and_activate::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/config/config_file_manager.py::ConfigFileManager._select_and_activate::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/config/config_file_manager.py::ConfigFileManager._view_current_config::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/config/hardware.py::HardwareDetector._detect_hat_eeprom::cat": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/config/hardware.py::HardwareDetector._is_spi_enabled::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/config/hardware.py::HardwareDetector.detect_raspberry_pi_model::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/config/hardware.py::HardwareDetector.match_eeprom_to_template::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/config/yaml_editor.py::ConfigYamlEditor.load_config::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/core/meshtasticd_config.py::MeshtasticdConfig.read_config::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/core/orchestrator.py::ServiceOrchestrator._fix_stale_placeholder::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/core/orchestrator.py::ServiceOrchestrator._load_config::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/core/orchestrator.py::ServiceOrchestrator._validate_template_module::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/core/orchestrator.py::_overlay_kind::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/core/plugin_base.py::Plugin._load_settings::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/core/plugin_base.py::PluginManifest.from_file::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/daemon.py::DaemonController._write_status_file::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/daemon.py::DaemonController.reload_remote::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/daemon.py::DaemonController.start::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/daemon.py::DaemonController.status::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/daemon.py::DaemonController.status::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/daemon.py::DaemonController.stop_remote::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/daemon_config.py::DaemonConfig._load_yaml::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/dashboard.py::StatusDashboard.get_system_info::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/gateway/_rns_bridge_connection.py::quarantine_corrupt_ratchets::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/gateway/config.py::GatewayConfig.load::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/gateway/config_migrations.py::keep_pre_migration_copy::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/gateway/identity_store.py::_write_new::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/gateway/lxmf_identity_registry.py::_read_lab_peers::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/gateway/lxmf_identity_registry.py::load_registry::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/gateway/node_tracker.py::UnifiedNodeTracker._load_cache::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/gateway/profiles/__init__.py::ProfileManager.load_profile::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/gateway/rns_ingress_policy.py::IngressLedger._load::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/gateway/rns_ingress_policy.py::read_ledger_projection::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/installer/dependencies.py::DependencyManager.check_permissions::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/installer/meshtasticd.py::MeshtasticdInstaller._log_error::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/installer/update_notifier.py::UpdateNotifier._load_cache::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/installer/update_notifier.py::UpdateNotifier._save_cache::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/kilo/registry.py::load_registry::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/lab/_lab_common.py::_module_running_elsewhere::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/lab/gateway_resource_canary.py::write_envelope::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/lab/lxmf_propagation_soak.py::_resolve_propagation_node::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/lab/lxmf_tracer.py::load_peers::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/lab/virtual_fleet.py::_check_breach::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/lab/virtual_fleet.py::_read_pid::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/lab/virtual_fleet.py::_start_echo::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/lab/virtual_fleet.py::chaos::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/lab/virtual_fleet.py::smoke::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/lab/virtual_fleet.py::start_gateway::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/lab/virtual_fleet.py::start_gateway::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 2
+ },
+ "src/lab/virtual_fleet.py::up::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher.py::_make_config_recovery_callback._recover::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher.py::load_preferences::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher.py::save_preferences::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher.py::start_noc_services::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/backend.py::DialogBackend._run::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/launcher_tui/backend.py::DialogBackend.textbox::fdopen": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/config_edit.py::edit_config_in_app::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/guided_flow.py::GuidedFlow.load_state::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_ai_tools_coverage.py::CoverageMapAndHeatmapMixin._generate_coverage_map::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_ai_tools_coverage.py::CoverageMapAndHeatmapMixin._open_in_browser.do_open::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_ai_tools_mfmaps.py::MeshForgeMapsExtensionMixin._mfmaps_config_menu::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_ai_tools_mfmaps.py::MeshForgeMapsExtensionMixin._mfmaps_diagnose_service::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_ai_tools_mfmaps.py::MeshForgeMapsExtensionMixin._mfmaps_install_service::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_config_doctor_checks.py::_read_rpc_key::read_bytes": {
+  "audited": "r12 2026-11-22: -> config_lines",
+  "class": "rns-config",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_config_doctor_checks.py::check_gateway_default_lxmf_destination::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_config_doctor_checks.py::check_meshtasticd_overlay_keys::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_config_doctor_checks.py::check_nomadnet_unit_tmux::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_config_doctor_checks.py::check_rns_interface_devices::read_bytes": {
+  "audited": "r12 2026-11-22: -> read_interfaces",
+  "class": "rns-config",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_fleet_membership_core.py::write_fleet_hosts::fdopen": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_fleet_provision_core.py::load_presets::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_gateway_preflight_template.py::capture_live_state::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/launcher_tui/handlers/_gateway_preflight_template.py::load_default_template::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_gateway_preflight_template.py::load_templates::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_lxmf_utils.py::_read_cmdline::read_bytes": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_nomadnet_config_ops.py::NomadNetConfigOpsMixin._configure_propagation_node::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/launcher_tui/handlers/_nomadnet_config_ops.py::NomadNetConfigOpsMixin._read_key_values::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_nomadnet_config_ops.py::NomadNetConfigOpsMixin._remove_config_key::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_nomadnet_config_ops.py::NomadNetConfigOpsMixin._write_config_value::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_nomadnet_install_utils.py::NomadNetInstallUtilsMixin._create_nomadnet_wrapper::read_bytes": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/launcher_tui/handlers/_nomadnet_io_ops.py::NomadNetIOOpsMixin._show_log_options::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_nomadnet_io_ops.py::NomadNetIOOpsMixin._show_logfile_errors::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_nomadnet_io_ops.py::NomadNetIOOpsMixin._show_unified_log_snapshot::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_nomadnet_io_ops.py::NomadNetIOOpsMixin._view_nomadnet_config::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_nomadnet_rns_checks.py::NomadNetRNSChecksMixin._validate_nomadnet_config::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_nomadnet_rns_checks.py::NomadNetRNSChecksMixin._validate_nomadnet_config::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_nomadnet_service_ops.py::NomadNetServiceOpsMixin._install_user_unit::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_rns_diagnostics_engine.py::run_rns_diagnostics::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_rns_diagnostics_engine.py::run_rns_diagnostics::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_rns_interface_mgr.py::find_blocking_interfaces::read_bytes": {
+  "audited": "r12 2026-11-22: -> read_interfaces",
+  "class": "rns-config",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_rns_repair.py::validate_rnsd_service_file::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/about.py::AboutHandler._show_howtos::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 2
+ },
+ "src/launcher_tui/handlers/about.py::AboutHandler._show_system_info::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 2
+ },
+ "src/launcher_tui/handlers/ai_tools.py::AIToolsHandler._maybe_auto_start_map::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/ai_tools.py::AIToolsHandler._open_live_map::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/ai_tools.py::AIToolsHandler._open_live_map_browser::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/launcher_tui/handlers/ai_tools.py::AIToolsHandler._toggle_auto_map::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/launcher_tui/handlers/amateur_radio.py::AmateurRadioHandler._ares_net_status::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/amateur_radio.py::AmateurRadioHandler._ics213_compose::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/automation.py::AutomationHandler._view_traceroute_logs::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/daemon.py::DaemonHandler._daemon_logs::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/daemon.py::DaemonHandler._daemon_menu::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/daemon.py::DaemonHandler._daemon_show_status::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/daemon.py::DaemonHandler._daemon_start::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/dashboard.py::DashboardHandler._check_webserver_config::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/device_backup.py::BackupHandler._full_config_backup::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/dual_radio_failover.py::DualRadioFailoverHandler._deploy_secondary::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/dual_radio_failover.py::DualRadioFailoverHandler._generate_secondary_config::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/emergency_mode.py::EmergencyModeHandler._emcomm_messages::cat": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/extensions.py::ExtensionsHandler._ma_config_menu::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/extensions.py::ExtensionsHandler._ma_diagnose_service::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/extensions.py::ExtensionsHandler._ma_install_service::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/extensions.py::ExtensionsHandler._ma_save_config::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/extensions.py::ExtensionsHandler._ma_show_logs::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/first_run.py::FirstRunHandler._classify_templates::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/first_run.py::FirstRunHandler._is_raspberry_pi::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 2
+ },
+ "src/launcher_tui/handlers/first_run.py::FirstRunHandler._offer_enable_spi::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/first_run.py::FirstRunHandler._wizard_step_network_config::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/first_run.py::FirstRunHandler._wizard_step_region::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/first_run.py::_install_overlay::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/fleet_backup.py::FleetBackupHandler._setup_fleet_config::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/fleet_health.py::FleetHealthHandler._hostname::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/gateway.py::GatewayHandler._recent_bridge_log_lines::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/gateway_preflight.py::GatewayPreflightHandler._check_gateway_config_channel::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/gateway_preflight.py::GatewayPreflightHandler._check_nomadnet_identity_match::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 2
+ },
+ "src/launcher_tui/handlers/hardware.py::HardwareHandler._enable_spi::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/hardware.py::HardwareHandler._is_raspberry_pi::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/launcher_tui/handlers/logs.py::LogsHandler._display_log_file::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/logs.py::LogsHandler._view_rnsd_recent::read_bytes": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/meshtasticd_config.py::MeshtasticdConfigHandler._view_active_config::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/meshtasticd_config.py::MeshtasticdConfigHandler._view_config_overlays::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/meshtasticd_config.py::activate_hardware_config::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/meshtasticd_config.py::read_overlay::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/meshtasticd_config.py::write_overlay::fdopen": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/meshtasticd_lora.py::MeshtasticdLoRaHandler._lora_module_menu::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/meshtasticd_lora.py::MeshtasticdLoRaHandler._lora_view_overlay::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/meshtasticd_nodedb.py::MeshtasticdNodeDBHandler._check_maxnodes::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/meshtasticd_radio.py::MeshtasticdRadioHandler._classify_hardware_config::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/meshtasticd_radio.py::MeshtasticdRadioHandler._get_template_description::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/meshtasticd_radio.py::MeshtasticdRadioHandler._view_hardware_config::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/mini_dudeai.py::_read_history::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/mini_dudeai.py::_read_json::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/mqtt.py::MQTTHandler._export_mqtt_data::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/mqtt.py::MQTTHandler._load_mqtt_cache::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/nanovna.py::NanoVNAHandler._load_baseline::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/nomadnet.py::NomadNetHandler._ensure_interactive_config_dir::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/nomadnet.py::NomadNetHandler._nomadnet_status::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/nomadnet.py::NomadNetHandler._nomadnet_status::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/platform_posture.py::PlatformPostureHandler._show_posture::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/rns_config.py::RNSConfigHandler._check_rns_config_divergence::read_bytes": {
+  "audited": "r12 2026-11-22: byte-for-byte compare of two RNS configs (no decode)",
+  "class": "rns-config",
+  "count": 2
+ },
+ "src/launcher_tui/handlers/rns_config.py::RNSConfigHandler._deploy_rns_template::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/rns_diagnostics.py::RNSDiagnosticsHandler._ensure_rnsd_dependencies::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 2
+ },
+ "src/launcher_tui/handlers/rns_interfaces.py::RNSInterfacesHandler._rns_interface_status::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/rns_menu.py::RNSMenuHandler._save_rns_node_position::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/sdr.py::_airspy_on_usb::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/launcher_tui/handlers/service_menu.py::ServiceMenuHandler._fix_spi_config::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 2
+ },
+ "src/launcher_tui/handlers/service_menu.py::ServiceMenuHandler._has_systemd_unit::cat": {
+  "audited": "r12 2026-11-22 line-audited: `systemctl cat` (a unit file)",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/service_menu.py::ServiceMenuHandler._install_native_meshtasticd::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/service_menu.py::ServiceMenuHandler._service_action::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/test_gateway_rx.py::TestGatewayRxHandler._probe_in_conversations::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/test_gateway_rx.py::TestGatewayRxHandler._probe_in_logs::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/topology.py::TopologyHandler._export_topology::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/topology.py::TopologyHandler._open_topology_browser.open_browser::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/launcher_tui/handlers/traffic_inspector.py::TrafficInspectorHandler._path_html_view::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/traffic_inspector.py::TrafficInspectorHandler._traffic_export::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/launcher_tui/handlers/traffic_inspector.py::TrafficInspectorHandler._traffic_view_log::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/web_client.py::WebClientHandler._launch_web_client_browser.do_open::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/web_client.py::WebClientHandler._update_meshtasticd_ssl_config::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/main.py::MeshForgeLauncher._is_daemon_running::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/main.py::main._crash_hook::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/main.py::main::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 2
+ },
+ "src/launcher_tui/startup_checks.py::StartupChecker._check_alsa_udev::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/_util.py::_atomic_write::fdopen": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/_util.py::read_json::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/actions/file_annotate.py::FileAnnotateAction.execute::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/audit.py::_load_json::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/audit.py::_load_jsonl::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/brief.py::_brief_unchanged::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/brief.py::_latest_eval_summary::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/brief.py::_read_history_tail::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/mini_dudeai/brief.py::read_delivery_snapshot::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/cadence_fallback.py::load_proposed_deltas::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/calibration_ledger.py::load_events::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/daemon.py::_acquire_instance_lock::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/dreams.py::_known_fleet_subjects_ex::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/dreams.py::_load_deltas::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/dreams.py::_read_history_tail::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/engine.py::RuleEngine._backup_canonical::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/engine.py::RuleEngine.restore_backup::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/history.py::_repair_torn_tail::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/history.py::_rotate_if_needed::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/mini_dudeai/history.py::append_jsonl::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/mini_dudeai/local_brain_eval.py::_read_cursor::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/local_brain_eval.py::_write_cursor::fdopen": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/local_brain_eval.py::load_cases::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/memory_apply.py::_atomic_write::fdopen": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/memory_apply.py::_read_index::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/memory_apply.py::demote_memory::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/mini_dudeai/memory_apply.py::main::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/memory_apply.py::supersede_memory::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/model_router.py::_load_jsonl_dicts::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/offline_oracle.py::chunk_file::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/presets/standalone.py::_load_sensors::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/rollup.py::collect_local_deep::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/mini_dudeai/session_scratch.py::_fstype::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/sources/boot_health.py::BootHealthSource._last_power_line::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/sources/boot_health.py::BootHealthSource._read_boot_id::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/sources/boot_health.py::BootHealthSource._read_float::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/sources/boot_health.py::BootHealthSource._read_uptime::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/mini_dudeai/warmstart.py::_read_text::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/moc_analysis_tool/collectors/diag24h_parser.py::iter_log_packets::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/moc_analysis_tool/collectors/diag24h_parser.py::iter_log_telemetry::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/monitor.py::load_config::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/monitor.py::save_config::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/monitoring/meshforge_digest.py::_read_json_file::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/monitoring/meshforge_digest.py::_read_log::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/monitoring/meshforge_digest.py::_read_offline_state::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/monitoring/meshforge_digest.py::load_config::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/monitoring/meshforge_digest.py::write_digest::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/monitoring/mqtt_settings.py::_fingerprint::read_bytes": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/monitoring/mqtt_settings.py::_read::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/monitoring/mqtt_settings.py::acquire_lease::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/monitoring/mqtt_settings.py::save::read_bytes": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/monitoring/path_visualizer.py::PathVisualizer.generate::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/monitoring/pskreporter_subscriber.py::PSKReporterSubscriber._load_config::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/monitoring/tcp_monitor.py::TCPMonitor._get_connections_proc::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/monitoring/traffic_pulse.py::_mqtt_node_facts::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/monitoring/traffic_storage.py::TrafficLogger._write_header::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/monitoring/traffic_storage.py::TrafficLogger.log_packet::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/oracle/snapshot.py::_load_dict::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/plugins/_eas_location.py::_read_legacy_location::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/plugins/eas_alerts.py::EASAlertsPlugin._load_cache::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/plugins/eas_alerts.py::EASAlertsPlugin._save_cache::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/plugins/eas_alerts.py::EASAlertsPlugin._save_config::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/plugins/mqtt_bridge.py::MQTTBridgePlugin._load_config::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/setup_wizard.py::SetupWizard._save_decisions::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/updates/meshtasticd_apt.py::_os_version_id::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/updates/meshtasticd_apt.py::disable_repo_lines::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/updates/meshtasticd_apt.py::find_mismatched_meshtastic_repos::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/updates/version_checker.py::get_meshforge_version::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_map_collector_federation.py::FederationDataCollectorMixin._bootstrap_federation_peers::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_map_collector_federation.py::FederationDataCollectorMixin._load_fleet_peer_names::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_map_collector_rns.py::RNSDataCollectorMixin._load_nomadnet_peers::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_map_collector_rns.py::RNSDataCollectorMixin._load_rns_position_cache::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 2
+ },
+ "src/utils/_map_collector_trackers.py::TrackerDataCollectorMixin._collect_mqtt::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_map_collector_trackers.py::TrackerDataCollectorMixin._collect_node_tracker::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/utils/_map_fleet_endpoints.py::FleetEndpointsMixin._serve_fleet_dups::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_map_fleet_endpoints.py::FleetEndpointsMixin._serve_fleet_wan::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_map_fleet_endpoints.py::FleetEndpointsMixin._serve_lab_rollup::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_map_inbox_endpoints.py::InboxEndpointsMixin._serve_inbox_page::read_bytes": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_map_radio_endpoints.py::RadioEndpointsMixin._serve_mesh_web_client::read_bytes": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_map_status_endpoints.py::StatusEndpointsMixin._parse_claw_tick::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_map_status_endpoints.py::StatusEndpointsMixin._read_mini_state_block::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_map_status_endpoints.py::StatusEndpointsMixin._read_watchdog_block::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_map_status_endpoints.py::_read_deployment_role::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_port_detection.py::_check_proc_net_unix::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_port_detection.py::_verify_process_cmdline::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_port_detection.py::check_udp_port::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_port_detection.py::get_udp_port_owner::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_port_detection.py::get_udp_port_owner::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/_port_detection.py::tcp_port_listening::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/apt_lists.py::security_views::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/auto_review.py::ReviewAgent.scan_file::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/backup_paths.py::reserve_backup_path::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/box_truth_center.py::create_center_key::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/box_truth_center.py::load_center_key::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/box_truth_center.py::read_spool::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/box_truth_center.py::read_targets::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/box_truth_center.py::set_target::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/box_truth_collect.py::_acquire::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/box_truth_collect.py::_append::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/box_truth_collect.py::_read_text::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/box_truth_collect.py::read_witness::read_bytes": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/box_truth_grants.py::_log::fdopen": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/box_truth_grants.py::_log::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/box_truth_grants.py::read_lines::read_bytes": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/box_truth_reader.py::learned_hostkey_fp::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/box_truth_rx.py::load_state::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/box_truth_rx.py::machine_identity::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/box_truth_rx.py::save_state::fdopen": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/broker_profiles.py::_read_store_full::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/cascade_fingerprints.py::_read_proc_cmdline::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/cascade_recovery_actions.py::CascadeRecoveryActor._append_audit::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/classifier.py::FixRegistry._load::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/classifier.py::FixRegistry._save::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/claude_assistant.py::resolve_api_key::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/claw_battery.py::append_sample::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/claw_battery.py::read_series::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/cli.py::diagnose_meshtastic_cli::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/common.py::SettingsManager.load::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/config_drift.py::_get_rnsd_config_from_proc::read_bytes": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/config_drift.py::detect_config_shadowing::read_bytes": {
+  "audited": "r12 2026-11-22: -> _parse_reticulum_section (bytes)",
+  "class": "rns-config",
+  "count": 2
+ },
+ "src/utils/connection_manager.py::_ConnectionManager.get_cached_info::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/connection_manager.py::_ConnectionManager.get_cached_nodes::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/connection_manager.py::_ConnectionManager.save_to_cache::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/utils/coverage_map.py::CoverageMapGenerator._generate_fallback::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/delivery_view.py::_read_published::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/delivery_view.py::soak_leg::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/deployment_profiles.py::load_profile::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/deployment_profiles.py::save_profile::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/device_backup.py::DeviceBackupManager._save_backup::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/device_backup.py::DeviceBackupManager.list_backups::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/device_backup.py::DeviceBackupManager.restore_device_config::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/device_config_store.py::load_device_config::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/device_scanner.py::DeviceScanner._enrich_usb_device::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 4
+ },
+ "src/utils/device_scanner.py::DeviceScanner._identify_ttyama_device::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/utils/device_scanner.py::DeviceScanner._is_meshtastic_port::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/emoji.py::_is_raspberry_pi::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/utils/fleet_dup_collector.py::local_read_reader::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/fleet_hosts.py::read_fleet_hosts_file::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/fleet_naming.py::load_registry::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/fleet_platform.py::load_catalog::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/fleet_platform.py::load_declarations::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/fleet_posture.py::load_doc::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/fleet_posture.py::read_posture::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/fleet_posture.py::write_doc::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/fleet_snapshot.py::_ci_status_block::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/fleet_snapshot.py::_process_uptime_s::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/utils/fleet_snapshot.py::_read_cron_verdicts::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/fleet_snapshot.py::_read_loop_crons::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/fleet_snapshot.py::_watchdog_block::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/gateway_diagnostic.py::GatewayDiagnostic._get_serial_description::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/gateway_flow_audit.py::check_channel_consistency::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/geo_filter.py::_load_operator_position::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/gps_integration.py::GPSManager._load_cached::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/i18n.py::create_translation_template::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/i18n.py::load_language::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/inbox_legs.py::_has_content::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/intercept.py::InterceptBridge.check_status::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/intercept.py::InterceptBridge.run_adsb_capture::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/intercept.py::InterceptBridge.scan_frequencies::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/map_data_collector.py::MapDataCollector._load_cache::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/map_data_collector.py::MapDataCollector._save_cache::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/map_data_service.py::_apply_extra_trusted_networks::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/map_data_service.py::_write_pid_file::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/utils/map_http_handler.py::MapRequestHandler._serve_fleet_page::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/map_http_handler.py::MapRequestHandler._serve_map::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/map_http_handler.py::MapRequestHandler._serve_message_queue::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/map_http_handler.py::MapRequestHandler._serve_static_html::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/metrics_history.py::MetricsHistory.export_csv::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/node_inventory.py::NodeInventory._load::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/operator_line_view.py::read_status::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/paths.py::ReticulumPaths._fix_storage_file_permissions::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 3
+ },
+ "src/utils/paths.py::ReticulumPaths.get_configured_instance_name::read_bytes": {
+  "audited": "r12 2026-11-22: -> config_lines (r11 corpus test)",
+  "class": "rns-config",
+  "count": 1
+ },
+ "src/utils/paths.py::ReticulumPaths.get_shared_rpc_key::read_bytes": {
+  "audited": "r12 2026-11-22: -> config_lines (r11 corpus test)",
+  "class": "rns-config",
+  "count": 1
+ },
+ "src/utils/prometheus_exporter.py::PrometheusExporter.write_to_file::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/radio_txpower_truth.py::_read_prefs::read_bytes": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/requirements_floor.py::read_requirement_floors::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/rf_segments.py::load::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/rnode_profile.py::rnode_profile::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/rnode_session.py::_proc_comm::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/rns_alignment.py::_parse_nomadnet_unit::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/rns_alignment.py::_read_rpc_key_value::cat": {
+  "audited": "r12 2026-11-22: sudo cat captured as BYTES -> config_text",
+  "class": "rns-config",
+  "count": 1
+ },
+ "src/utils/rns_alignment.py::_read_systemd_unit::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/rns_config_reader.py::_read_configobj::ConfigObj": {
+  "audited": "r12 2026-11-22: rnsd's own parser over bytes lines (the seam)",
+  "class": "rns-config",
+  "count": 1
+ },
+ "src/utils/rns_config_reader.py::read_config_text::read_bytes": {
+  "audited": "r12 2026-11-22: THE seam",
+  "class": "rns-config",
+  "count": 1
+ },
+ "src/utils/rns_config_setup.py::ensure_rpc_key::read_bytes": {
+  "audited": "r12 2026-11-22: -> config_text(strict=True); writes bytes back",
+  "class": "rns-config",
+  "count": 1
+ },
+ "src/utils/rns_init.py::_read_instance_name_from_config::read_bytes": {
+  "audited": "r12 2026-11-22: MeshAnchor-parity file: rnsd's rule inlined",
+  "class": "rns-config",
+  "count": 1
+ },
+ "src/utils/rns_init.py::_shared_instance_listener_present::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/rns_init.py::check_rns_listener_owner::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/rns_tree_perms.py::_parse_user_from_unit_files::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/rns_tree_perms.py::rnsd_unit_readable::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/rnsd_plugin_manifest.py::_sha256::read_bytes": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/rnsd_plugin_manifest.py::build_manifest::ConfigObj": {
+  "audited": "r12 2026-11-22: rnsd's own ConfigObj(path) \u2014 the file exactly as rnsd parses it",
+  "class": "rns-config",
+  "count": 1
+ },
+ "src/utils/rnsd_plugin_manifest.py::installed_builtin_types::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/rnsd_restart_order.py::_cgroup_pids::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/rnsd_restart_order.py::_proc_children::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/rnsd_restart_order.py::_proc_uid::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/rnsd_restart_order.py::listener_owners::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/rnsd_restart_order.py::rpc_listener_up::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/sdr_view.py::_tail::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/sdr_view.py::local_usb_pairs::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/utils/service_check.py::_sudo_write::fdopen": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/starlink_dish.py::_grpc_call::read_bytes": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/starlink_dish.py::_grpc_call::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/startup_health.py::detect_hardware::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 2
+ },
+ "src/utils/system.py::get_available_memory::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/system.py::get_board_model::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/system.py::is_raspberry_pi::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 2
+ },
+ "src/utils/terrain.py::SRTMProvider._atomic_write::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/terrain.py::SRTMProvider._get_tile::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/terrain.py::SRTMProvider._get_tile::read_bytes": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/timer_cadence.py::timer_cadence_s::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/topology_visualizer.py::TopologyVisualizer.export_csv::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/utils/topology_visualizer.py::TopologyVisualizer.export_d3_json::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/topology_visualizer.py::TopologyVisualizer.export_geojson::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/topology_visualizer.py::TopologyVisualizer.export_graphml::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/topology_visualizer.py::TopologyVisualizer.generate::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/tracer_fires.py::_parse_fire_file::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/tui_logging.py::log_error::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/udev_fix.py::check_broken_udev_rules::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/udev_fix.py::fix_broken_udev_rules::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/user_unit_templates.py::audit::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/user_unit_templates.py::audit_unit::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/utils/user_unit_templates.py::classify_template::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/user_unit_templates.py::deploy_plan::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/user_unit_templates.py::render::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/user_unit_templates.py::same_program::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/utils/user_units.py::enabled_user_timers::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/wan_autotrace.py::read_trace_state::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/wan_path.py::_atomic_write::fdopen": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/wan_path.py::_cloud_host::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/wan_path.py::load_targets::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/wan_path.py::read_history::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/wan_path.py::write_state::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probe_core.py::_journal_match_lines::cat": {
+  "audited": "r12 2026-11-22 line-audited: `journalctl -o cat` (journal output)",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probe_core.py::_journal_user_unit_has_lines::cat": {
+  "audited": "r12 2026-11-22 line-audited: `journalctl -o cat` (journal output)",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probe_core.py::_load_parity_streak::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probe_core.py::_operator_cron_wired_uncached::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probe_core.py::_read_deployment_declaration_status::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probe_core.py::_save_parity_streak::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_aredn.py::_read_aredn_expectation::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_aredn.py::_read_configured_aredn_ips_state::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_channel.py::_read_json_uplink_expectation::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_claw_uplink.py::_read_arp_locations::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_claw_uplink.py::_read_pinhole_allowlist::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_claw_uplink.py::probe_claw_uplink_node_moved::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_cron.py::_read_operator_crontab_spool::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_cron.py::_read_operator_verdicts_log::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_drift.py::_consumer_site_dirs::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_drift.py::_declared_root_status::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_drift.py::_service_interpreter::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_env.py::_read_ntfy_ack_state::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_env.py::_read_ntfy_loopback_state::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_env.py::_read_router_scout_ticks::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_gateway.py::_load_dead_letter_baseline::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_gateway.py::_load_known_dual_homed::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_gateway.py::_read_gateway_state_file::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_gateway.py::_save_dead_letter_baseline::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_gateway.py::_save_known_dual_homed::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_gateway_flow.py::_read_oracle_recent::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_gateway_flow.py::probe_resource_canary_degraded::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_gateway_flow.py::probe_synth_soak_degraded::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_gateway_lxmf.py::_read_configured_propagation_node::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_gateway_lxmf.py::_read_fresh_propagation_nodes::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_gateway_lxmf.py::_read_propagation_liveness::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_host.py::_load_cap_state::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_host.py::_load_hist_state::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_host.py::_read_avail_overrides::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_host.py::_read_meminfo::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_host.py::_read_memory_events::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_host.py::_read_psi_memory_avg60::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_host.py::_read_psi_some_avg10::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_host.py::_read_small::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_host.py::_read_unreclaimable_kb::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_host.py::_read_vmhwm::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_host.py::_save_cap_state::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_host.py::_save_hist_state::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_host.py::_scan_processes::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_host.py::_tmpfs_used_mb::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_liveness.py::_read_claw_ticks::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_liveness.py::_read_host_probe_verdict::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_liveness.py::_read_operator_fleet_state::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_liveness.py::_soak_armed_devices::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_mesh_bridge.py::_declared_legs::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_mini.py::_load_eval_records::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_mini.py::_load_history_stall_state::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_mini.py::_mini_fleet_env_flag::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 2
+ },
+ "src/utils/watchdog_probes_mini.py::_read_mini_state::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_mini.py::_save_history_stall_state::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_mini.py::probe_history_write_failure::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_mini.py::probe_mini_rule_orphaned_exclusion::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_mini.py::probe_rules_seed_drift::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 2
+ },
+ "src/utils/watchdog_probes_parity.py::_load_parity_dirty_window::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_parity.py::_save_parity_dirty_window::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_peer_cron.py::_declared_targets::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_peer_cron.py::probe_peer_cron_verdict_stale::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_peer_rf.py::_load_state::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_peer_rf.py::_save_state::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_peer_rf.py::load_peer_config::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_peer_rf.py::meshtasticd_uptime_s::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_peer_rf.py::scan_journal_for_peers::cat": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_propagation.py::_bump_prop_indet_streak::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 2
+ },
+ "src/utils/watchdog_probes_propagation.py::probe_propagation_soak_degraded::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 3
+ },
+ "src/utils/watchdog_probes_rf_leg.py::_load_state::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_rf_leg.py::_save_state::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_rns.py::_classify_listener_owners::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_rns.py::_cpu_pressure_context::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_rns.py::_scan_pid_task_stacks::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 2
+ },
+ "src/utils/watchdog_probes_rns.py::probe_lxmf_process_wedge::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_rns_env.py::_load_stray_waivers::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_service.py::_estab_inodes_to_port::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_service.py::_load_phoneapi_leak_state::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_service.py::_read_fd_usage::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_service.py::_read_vm_size_gb::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_service.py::_save_phoneapi_leak_state::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_probes_tracer.py::_load_recent_fires::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_runner.py::_load_prior_signals::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_runner.py::load_config_file::read_text": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/watchdog_runner.py::write_state::open": {
+  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/web_auth.py::SessionStore._lockfile::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/web_auth.py::SessionStore._read::read_bytes": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/web_auth.py::SessionStore._write::fdopen": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/web_pair.py::_read_pairing::read_text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/web_pair.py::proc_uid::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/webhooks.py::WebhookManager._load_config::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/webhooks.py::WebhookManager._save_config::open": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ }
+}

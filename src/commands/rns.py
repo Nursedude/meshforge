@@ -424,8 +424,17 @@ def restore_backup(backup_path: str) -> CommandResult:
     if not backup.exists():
         return CommandResult.fail(f"Backup not found: {backup_path}")
 
+    from utils.rns_config_reader import RNSConfigError, read_config_text
     try:
-        content = backup.read_text()
+        # As rnsd reads it, strict: read_text() turned a lone "\r" into a real
+        # newline, so the restored file meant something the backup did not.
+        content = read_config_text(backup, strict=True)
+    except RNSConfigError as e:
+        return CommandResult.fail(
+            f"Restore refused: {backup_path} is not UTF-8 text ({e}) — nothing written")
+    except OSError as e:
+        return CommandResult.fail(f"Restore failed: {e}")
+    try:
         return write_config(content, backup=True)
     except Exception as e:
         return CommandResult.fail(f"Restore failed: {e}")

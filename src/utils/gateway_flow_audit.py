@@ -326,11 +326,12 @@ def check_4403_contention() -> CheckResult:
 
 def _read_rpc_key(path: Path) -> Optional[str]:
     """Inline rpc_key reader (matches paths.ReticulumPaths.get_shared_rpc_key shape)."""
+    from utils.rns_config_reader import config_lines, read_config_text
     try:
-        text = path.read_text()
+        text = read_config_text(path)   # as rnsd reads it (r12)
     except (OSError, PermissionError):
         return None
-    for raw in text.splitlines():
+    for raw in config_lines(text):
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue

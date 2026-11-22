@@ -199,7 +199,12 @@ def _read_instance_name_from_config(configdir: Union[str, os.PathLike]) -> Optio
     """
     try:
         path = Path(configdir) / "config"
-        for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        # As rnsd reads it: bytes, BOM stripped, split on "\n" ONLY —
+        # splitlines() made "# old\rinstance_name = x" a live line (r12).
+        # Inline, not utils.rns_config_reader: this file is byte-identical
+        # with MeshAnchor's (parity_check).
+        text = path.read_bytes().decode("utf-8", errors="replace").lstrip("\ufeff")
+        for raw in text.split("\n"):
             line = raw.strip()
             if line.startswith("instance_name"):
                 _, _, rhs = line.partition("=")

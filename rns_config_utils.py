@@ -399,7 +399,19 @@ def add_interface_to_config(config_path: Path, interface_section: str,
     # Read current config
     try:
         if config_path.exists():
-            content = config_path.read_text()
+            # As rnsd reads it: bytes, utf-8 STRICT, no newline translation.
+            # read_text() turned a lone "\r" inside a comment into a real
+            # newline, so the save rewrote what rnsd loads (MeshForge r12).
+            raw = config_path.read_bytes()
+            bom = raw.startswith(b"\xef\xbb\xbf")
+            try:
+                content = raw[3 if bom else 0:].decode("utf-8")
+            except UnicodeDecodeError as e:
+                result['error'] = (f"Config is not UTF-8 text ({e}) — "
+                                   "refusing to rewrite it; nothing written")
+                return result
+            if bom:
+                content = "\ufeff" + content
         else:
             # Create minimal config if it doesn't exist
             content = """[reticulum]

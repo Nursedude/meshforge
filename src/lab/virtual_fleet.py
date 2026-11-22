@@ -230,6 +230,8 @@ def down(workdir: Path) -> int:
 
 def status(workdir: Path, base_port: int) -> int:
     """Re-derive fleet + ISOLATION state from live configs/sockets/pids."""
+    from utils.rns_config_reader import read_config_text
+
     worst = 0
     for name in NODES:
         nd = _node_dir(workdir, name)
@@ -237,7 +239,8 @@ def status(workdir: Path, base_port: int) -> int:
         pid = _read_pid(_pidfile(workdir, name))
         alive = bool(pid and _pid_alive(pid))
         sock = _instance_socket_present(name)
-        viols = config_violations(cfg.read_text()) if cfg.exists() else ["no config"]
+        viols = (config_violations(read_config_text(cfg))   # as rnsd reads it (r12)
+                 if cfg.exists() else ["no config"])
         ok = alive and sock and not viols
         print(f"{name:10s} pid={pid or '-':<8} alive={alive} socket={sock} "
               f"isolation={'OK' if not viols else 'VIOLATION: ' + '; '.join(viols)}")

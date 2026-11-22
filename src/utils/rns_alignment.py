@@ -334,14 +334,16 @@ def _scan_config_file(path: Path, sudo: bool = False) -> ConfigFileFacts:
             pass
         return f
 
+    from utils.rns_config_reader import config_lines, read_config_text
+
     # Direct read (no sudo)
     if not path.is_file():
         return f
     f.exists = True
     f.owner = _stat_owner(path)
     try:
-        text = path.read_text()
-        for raw in text.splitlines():
+        text = read_config_text(path)   # as rnsd reads it (r12)
+        for raw in config_lines(text):
             # Lstrip so we detect rpc_key whether it's at column 0 or
             # indented inside a sub-section (RNS configs commonly
             # indent under [reticulum]). Without this, the planner would
@@ -464,24 +466,26 @@ def _read_rpc_key_value(path: Path, sudo: bool = False) -> Optional[str]:
     The full 64-hex value never appears in any returned dataclass or
     log line; callers fingerprint or compare-equal in-memory only.
     """
+    from utils.rns_config_reader import config_lines, config_text, read_config_text
+
     if sudo:
         try:
             res = subprocess.run(
                 ['sudo', '-n', 'cat', str(path)],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, timeout=5,   # bytes: decoded as rnsd does (r12)
             )
             if res.returncode != 0:
                 return None
-            text = res.stdout
+            text = config_text(res.stdout)
         except subprocess.SubprocessError:
             return None
     else:
         try:
-            text = path.read_text()
+            text = read_config_text(path)
         except (OSError, PermissionError):
             return None
 
-    for raw in text.splitlines():
+    for raw in config_lines(text):
         line = raw.lstrip().rstrip()
         if not line or line.startswith('#') or '=' not in line:
             continue

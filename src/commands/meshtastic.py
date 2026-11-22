@@ -395,14 +395,17 @@ def _real(path) -> str:
 def _rns_declared_ports(configs) -> Dict[str, str]:
     """realpath -> config file, for every `port = /dev/...` a readable
     Reticulum config declares (used to REFUSE and to LABEL, never to pick)."""
+    from utils.rns_config_reader import config_lines, read_config_text
     out: Dict[str, str] = {}
     for cfg in configs:
         try:
-            text = Path(cfg).read_text(encoding="utf-8", errors="replace")
+            text = read_config_text(Path(cfg))   # as rnsd reads it (r12)
         except OSError:
             continue
-        for mm in re.finditer(r"^\s*port\s*=\s*(/\S+)", text, re.M):
-            out[_real(mm.group(1))] = str(cfg)
+        for line in config_lines(text):
+            mm = re.match(r"\s*port\s*=\s*(/\S+)", line)
+            if mm:
+                out[_real(mm.group(1))] = str(cfg)
     return out
 
 
