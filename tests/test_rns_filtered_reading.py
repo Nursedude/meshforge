@@ -383,7 +383,7 @@ def test_leg6_every_blind_reading_records_filtered_unobserved(kw, raw):
 @pytest.mark.parametrize("present, running, ok, needle", [
     (False, True, True, "rnstatus not installed"),
     (True, True, False, "rnstatus cannot connect"),
-    (True, True, True, "rnstatus returned nothing"),
+    (True, True, True, "rnstatus listed no interfaces"),   # r4: never "returned nothing"
 ])
 def test_leg6_no_rows_branches_record_interface_traffic_unobserved(present, running, ok, needle):
     out = _leg6(_traffic("", state=FilterState.UNKNOWN, reason="r"),
@@ -407,3 +407,22 @@ def test_section_resets_at_each_interface_header():
     one, two = parse_rnstatus(raw).interfaces
     assert format_bytes(one.rx_filtered) == "3 B"
     assert not two.rx.observed and two.rx_filtered is None
+
+
+# ----------------------------------------------------- r4 nits (Fable r3)
+
+def test_filter_state_is_a_closed_enum_with_closed_consumers():
+    # hfm #7: a new FilterState must fail HERE until every consumer
+    # (filtered_rx_verdict, blind_spots, the state-table oracle) handles it.
+    assert {s.value for s in FilterState} == {"counted", "no_filter", "unknown"}
+    leg = parse_rnstatus(PLAIN_139).interfaces[1]
+    texts = {s: filtered_rx_verdict(leg, s)[1] for s in FilterState}
+    assert all(t.startswith("rx accepted 254 B · filtered ") for t in texts.values())
+    assert len(set(texts.values())) == len(texts)
+
+
+def test_a_non_byte_unit_is_never_read_as_traffic():
+    raw = (" TCPInterface[one/a:1]\n    Status    : Up\n"
+           "    Traffic   : ↑1.5 Hz\n                ↓2.0 Hz\n")
+    one, = parse_rnstatus(raw).interfaces
+    assert not one.tx.observed and not one.rx.observed

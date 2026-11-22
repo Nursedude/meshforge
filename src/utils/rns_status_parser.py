@@ -165,7 +165,9 @@ _SERVING_RE = re.compile(r'^\s*Serving\s*:\s*(\d+)')
 # (re)sets the arrow section: only "traffic" and "filtered" route ↑/↓ lines;
 # any other header (Status, Held, Announces, a footer...) closes the section,
 # so a block this parser doesn't know can never land in rx (Fable r1 #3).
-_HDR_RE = re.compile(r'^\s*([A-Za-z][A-Za-z ]*?)\s*:')
+# Dots included: "Path Rqs." / "Ch. Load" are headers too, and must close
+# the section like any other (Fable r3 nit — their arrows clobbered rx).
+_HDR_RE = re.compile(r'^\s*([A-Za-z][A-Za-z .]*?)\s*:')
 _ARROW_SECTIONS = {"traffic": "traffic", "filtered": "filtered"}
 # Interface properties are indented >= 2; headers/footers sit at 0-1.
 _TOP_LEVEL_RE = re.compile(r'^ ?\S')
@@ -209,8 +211,14 @@ _MODE_MAP = {
 # ---------------------------------------------------------------------------
 
 
+_BYTE_UNIT_RE = re.compile(r'^[KMGTPE]?i?B$')
+
+
 def _counters(m: "re.Match[str]") -> Optional[TrafficCounters]:
-    """TrafficCounters from a _TX_RE/_RX_RE match; None if a number won't parse."""
+    """TrafficCounters from a _TX_RE/_RX_RE match; None if a number won't
+    parse or the unit is not a byte unit ("2.0 Hz" is not traffic)."""
+    if not _BYTE_UNIT_RE.match(m.group(2)):
+        return None
     try:
         return TrafficCounters(
             bytes_total=float(m.group(1).replace(',', '')),
@@ -417,7 +425,10 @@ def run_rnstatus(timeout_s: float = 15.0, extra_args: tuple = ()) -> RNSStatus:
         if not combined.strip():
             status.parse_error = f"rnstatus produced no output (exit {rc})"
         elif rc != 0 and not status.parse_error:
-            first = combined.strip().splitlines()[0][:120]
+            # The cause, not stdout line 1: a traceback's last stderr line is
+            # its exception ("KeyError: 'frxb'"), argparse's is its "error:".
+            err = [ln.strip() for ln in (proc.stderr or "").splitlines() if ln.strip()]
+            first = (err[-1] if err else combined.strip().splitlines()[0])[:120]
             status.parse_error = f"rnstatus exited {rc}: {first}"
         status.duration_s = elapsed
         return status
@@ -445,7 +456,8 @@ def run_rnstatus(timeout_s: float = 15.0, extra_args: tuple = ()) -> RNSStatus:
 class FilterState(Enum):
     """What `rnstatus -F` could tell us about filtered (dropped) traffic."""
     COUNTED = "counted"        # this RNS counts filtered bytes; the number is real
-    NO_FILTER = "no_filter"    # this RNS rejects -F: it has no announce filter
+    NO_FILTER = "no_filter"    # this rnstatus CLI rejects -F (a fact about the
+    #                            CLI; the daemon is not proven filter-free)
     UNKNOWN = "unknown"        # nothing observed (timeout, error, no output)
 
 
@@ -488,6 +500,26 @@ def _complete(status: RNSStatus) -> bool:
     return status.parse_error is None
 
 
+def error_line(status: RNSStatus) -> Optional[str]:
+    """The rnstatus output line carrying a known error pattern, or None.
+
+    parse_rnstatus sets parse_error to the WHOLE output on a pattern hit, so
+    its first line is usually listing text, not the cause (Fable r3 nit).
+    """
+    for line in (status.raw_output or "").splitlines():
+        low = line.lower()
+        if any(p in low for p in _ERROR_PATTERNS):
+            return line.strip()[:160]
+    return None
+
+
+def error_summary(status: RNSStatus) -> str:
+    """One line naming why a reading failed ("" when it did not)."""
+    if not status.parse_error:
+        return ""
+    return error_line(status) or status.parse_error.strip().splitlines()[0][:160]
+
+
 NO_F_SHORT = "this rnstatus has no -F"
 NO_F_REASON = f"{NO_F_SHORT} (no filtered counter to read)"
 
@@ -517,14 +549,14 @@ def read_interface_traffic(timeout_s: float = 15.0) -> InterfaceTraffic:
         reason = NO_F_REASON
         if plain.parse_error or not _listed(plain):
             reason += ("; accepted traffic UNKNOWN: "
-                       + (plain.parse_error or "rnstatus reported no interfaces"))
+                       + (error_summary(plain) or "rnstatus reported no interfaces"))
         return InterfaceTraffic(plain, FilterState.NO_FILTER, reason)
     if _listed(status) and _complete(status):
         return InterfaceTraffic(status, FilterState.COUNTED)
     if _listed(status):
-        reason = "partial listing — " + (status.parse_error or "incomplete run")
+        reason = "partial listing — " + (error_summary(status) or "incomplete run")
     else:
-        reason = status.parse_error or "reported no interfaces"
+        reason = error_summary(status) or "reported no interfaces"
     plain = run_rnstatus(timeout_s=timeout_s)
     return InterfaceTraffic(plain, FilterState.UNKNOWN,
                             f"rnstatus -F: {reason.splitlines()[0][:160]}")
