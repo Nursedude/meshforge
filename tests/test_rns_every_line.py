@@ -298,7 +298,7 @@ def test_missing_filtered_counts_shown_not_only_fully_read_interfaces():
 
 # --------------------- callers: an empty health list is not DOWN / UP (r5 nit)
 
-MESH_UP = ("\n Meshtastic_Interface[MeshLF]\n    Status    : Up\n    Mode      : Full\n"
+MESH_UP = ("\n MeshtasticInterface[MeshLF]\n    Status    : Up\n    Mode      : Full\n"
            "    Traffic   : ↑5 KB  0 bps\n                ↓6 KB  0 bps\n\n")
 OTHER = ("\n TCPInterface[peer/h:1]\n    Status    : Up\n    Mode      : Full\n"
          "    Traffic   : ↑5 KB  0 bps\n                ↓6 KB  0 bps\n\n")
@@ -350,7 +350,7 @@ def test_interface_health_returns_rows_and_why_blind():
 
 @pytest.mark.parametrize("blind,running,si,expect", [
     ("rnstatus timed out", True, True, ("UNKNOWN", "(rnstatus timed out)")),
-    (None, True, True, ("UP", "(no traffic data)")),
+    (None, True, True, ("UNKNOWN", "(not in rnstatus output)")),  # r8: absence is not UP
     (None, True, False, ("UNKNOWN", "rnsd running but shared instance not available")),
     ("rnstatus timed out", False, False, ("DOWN", "rnsd not running")),
 ])
@@ -441,15 +441,15 @@ def test_bracket_led_top_level_text_is_not_a_log_line():            # M13
 
 # --------- operator 11-22: Fable r6 #3 (Down renders UP) + #2 (blind + UP)
 
-MESH_DOWN = ("\n Meshtastic_Interface[MeshLF]\n    Status    : Down\n    Mode      : Full\n"
+MESH_DOWN = ("\n MeshtasticInterface[MeshLF]\n    Status    : Down\n    Mode      : Full\n"
              "    Traffic   : ↑5 KB  0 bps\n                ↓6 KB  0 bps\n\n")
 
 
 def test_leg_down_interface_is_an_issue_not_a_healthy_row():
     from handlers._rns_diagnostics_engine import summary_lines
     leg = _leg(_traffic(parse_rnstatus(OTHER + MESH_DOWN), False))
-    assert "  Meshtastic_Interface[MeshLF]: DOWN (↑5 KB ↓6 KB)" in leg.lines
-    assert leg.issues == ["Interface Meshtastic_Interface[MeshLF] is Down"]
+    assert "  MeshtasticInterface[MeshLF]: DOWN (↑5 KB ↓6 KB)" in leg.lines
+    assert leg.issues == ["Interface MeshtasticInterface[MeshLF] is Down"]
     s = "\n".join(summary_lines(leg.issues, leg.warnings, leg.unobserved))
     assert "All checks passed" not in s
 
@@ -465,9 +465,9 @@ def test_interface_health_rows_carry_status():
     from handlers._rns_diagnostics_engine import interface_health, check_rns_interface_health
     t = InterfaceTraffic(parse_rnstatus(OTHER + MESH_DOWN), FilterState.NO_FILTER)
     rows, why = interface_health(t)
-    assert rows[1] == ("Meshtastic_Interface[MeshLF]", "5 KB", "6 KB", True, "Down")
+    assert rows[1] == ("MeshtasticInterface[MeshLF]", "5 KB", "6 KB", True, "Down")
     assert why is None
-    assert check_rns_interface_health(t)[1] == ("Meshtastic_Interface[MeshLF]", "5 KB", "6 KB", True)
+    assert check_rns_interface_health(t)[1] == ("MeshtasticInterface[MeshLF]", "5 KB", "6 KB", True)
 
 
 def test_subtitle_mesh_down_says_down(tmp_path):
@@ -496,3 +496,154 @@ def test_subtitle_partial_crash_with_mesh_listed_is_qualified(tmp_path):
 def test_interface_table_live_row(live, blind, expect):
     from handlers.rns_interfaces import live_row_status
     assert live_row_status(live, blind) == expect
+
+
+# ------ operator 11-22: mixed Meshtastic rows (r7 #2). The retired plugin's
+# stock name is "MeshtasticInterface[<name>]" (62c43328^ templates/interfaces/
+# Meshtastic_Interface.py __str__) — match THAT, never the word "meshtastic".
+
+def _mesh(name, status, tx="5 KB", rx="6 KB"):
+    return (f"\n MeshtasticInterface[{name}]\n    Status    : {status}\n    Mode      : Full\n"
+            f"    Traffic   : ↑{tx}  0 bps\n                ↓{rx}  0 bps\n\n")
+
+
+@pytest.mark.parametrize("blocks,expect", [
+    ([("LF", "Down"), ("ST", "Up")], "Meshtastic iface: UP, 1 DOWN"),
+    ([("LF", "Down"), ("ST", "Up", "0 B")], "Meshtastic iface: RX-only, 1 DOWN"),
+    ([("LF", "Down"), ("ST", "Down")], "Meshtastic iface: DOWN"),
+    ([("LF", "Up"), ("ST", "Up")], "Meshtastic iface: UP"),
+])
+def test_subtitle_mixed_meshtastic_rows_name_every_down(tmp_path, blocks, expect):
+    text, _ = _subtitle(tmp_path, _p(OTHER + "".join(_mesh(*b) for b in blocks)))
+    assert text == expect
+
+
+def test_subtitle_tcp_interface_named_meshtastic_is_not_a_mesh_row(tmp_path):
+    tcp = ("\n TCPInterface[Meshtastic hub/192.0.2.1:4242]\n    Status    : Up\n    Mode      : Full\n"
+           "    Traffic   : ↑5 KB  0 bps\n                ↓6 KB  0 bps\n\n")
+    text, _ = _subtitle(tmp_path, _p(OTHER + tcp + _mesh("LF", "Down")))
+    assert text == "Meshtastic iface: DOWN"
+
+
+def test_subtitle_mixed_and_blind_is_qualified(tmp_path):
+    text, _ = _subtitle(tmp_path, _p(OTHER + _mesh("LF", "Down") + _mesh("ST", "Up")
+                                     + " some new rns line\n"))
+    assert text.startswith("Meshtastic iface: UP, 1 DOWN (reading incomplete: 1 line(s)")
+
+
+# ------------------- r8: ONE config↔rnstatus matcher (Fable r7 #1, the seam)
+# Stock names (RNS/Interfaces/*.py __str__): TCP/Backbone/UDP/TCPServer =
+# "Type[<section>/<host>:<port>]"; RNodeMulti = "RNodeMultiInterface[<s>]" +
+# subs "<s>[<sub>]"; the retired plugin "MeshtasticInterface[<s>]"; the rest
+# "Type[<section>]". Substring / first-of-type matching is gone.
+
+def _blk(name, status="Up", tx="5 KB", rx="6 KB"):
+    return (f"\n {name}\n    Status    : {status}\n    Mode      : Full\n"
+            f"    Traffic   : ↑{tx}  0 bps\n                ↓{rx}  0 bps\n")
+
+
+_SI = ("\n Shared Instance[rns/default]\n    Status    : Up\n    Serving   : 1 program\n"
+       "    Traffic   : ↑1 KB  0 bps\n                ↓2 KB  0 bps\n")
+_FOOT = "\n Transport Instance <aabb> running\n Uptime is 5s\n\n"
+
+
+def _table(text, ifaces, plain_rc=0):
+    """_rns_interface_status end to end; subprocess mocked (rnstatus never runs)."""
+    import contextlib
+    import io
+    from types import SimpleNamespace
+    from handlers.rns_interfaces import RNSInterfacesHandler
+    from handler_test_utils import make_handler_context
+    h = RNSInterfacesHandler()
+    h.set_context(make_handler_context())
+    h._find_nomadnet_info = lambda: (None, None)
+    h._rns_cmd_list_interfaces = lambda: SimpleNamespace(data={"interfaces": [
+        {"name": n, "settings": {"type": t, "enabled": "yes"}} for n, t in ifaces]})
+    no_f = SimpleNamespace(stdout="", returncode=2,
+                           stderr="usage: rnstatus [-h]\nrnstatus: error: unrecognized arguments: -F\n")
+    run = MagicMock(side_effect=[no_f, SimpleNamespace(stdout=text, stderr="", returncode=plain_rc)])
+    buf = io.StringIO()
+    with patch('handlers._rns_interface_mgr.find_blocking_interfaces', return_value=[]), \
+         patch('utils.service_check.check_process_running', return_value=True), \
+         patch('utils.service_check.get_rns_shared_instance_info',
+               return_value={'available': True, 'method': 'x'}), \
+         patch('utils.service_check.get_udp_port_owner', return_value=None), \
+         patch('utils.rns_status_parser._find_rnstatus_binary', return_value='/x/rnstatus'), \
+         patch('handlers.rns_interfaces.clear_screen'), \
+         patch('handlers.rns_interfaces.RNSInterfacesHandler._wait', create=True), \
+         patch('builtins.input', return_value=""), \
+         patch('subprocess.run', run), contextlib.redirect_stdout(buf):
+        h._rns_interface_status()
+    return buf.getvalue().splitlines()
+
+
+def _row(lines, name, itype):
+    """(status, detail) of the table row for config interface ``name``."""
+    for ln in lines:
+        body = ln[2:]
+        if body.startswith(f"{name:<26} {itype:<24} "):
+            rest = body[len(f"{name:<26} {itype:<24} "):]
+            return rest[:10].strip(), rest[11:].strip()
+    raise AssertionError(f"no row for {name}: {lines}")
+
+
+def test_table_substring_name_does_not_take_a_neighbours_row():          # T1
+    out = _table(_SI + _blk("RNodeInterface[LoRa East]") + _blk("RNodeInterface[LoRa]", "Down", "0 B", "0 B")
+                 + _FOOT, [("LoRa East", "RNodeInterface"), ("LoRa", "RNodeInterface")])
+    assert _row(out, "LoRa East", "RNodeInterface") == ("UP", "↑5 KB  ↓6 KB")
+    assert _row(out, "LoRa", "RNodeInterface") == ("DOWN", "↑0 B  ↓0 B")
+
+
+def test_table_tcp_names_match_exactly_not_by_prefix_of_another():      # T5
+    out = _table(_SI + _blk("TCPInterface[hub2/h:1]", "Down") + _blk("TCPInterface[hub/h:2]") + _FOOT,
+                 [("hub", "TCPClientInterface"), ("hub2", "TCPClientInterface")])
+    assert _row(out, "hub", "TCPClientInterface")[0] == "UP"
+    assert _row(out, "hub2", "TCPClientInterface")[0] == "DOWN"
+
+
+def test_table_one_letter_name_is_not_a_substring_match():               # T9
+    out = _table(_SI + _blk("RNodeInterface[Alpha]", "Down") + _blk("KISSInterface[e]") + _FOOT,
+                 [("e", "KISSInterface"), ("Alpha", "RNodeInterface")])
+    assert _row(out, "e", "KISSInterface")[0] == "UP"
+    assert _row(out, "Alpha", "RNodeInterface")[0] == "DOWN"
+
+
+def test_table_absent_interface_never_borrows_a_same_type_row():        # T3
+    out = _table(_SI + _blk("RNodeInterface[Alpha]") + _FOOT,
+                 [("Alpha", "RNodeInterface"), ("Bravo", "RNodeInterface")])
+    assert _row(out, "Bravo", "RNodeInterface") == ("UNKNOWN", "(not in rnstatus output)")
+
+
+def test_table_half_read_interface_is_unknown_not_a_neighbours_up():     # T4
+    t = (_SI + _blk("RNodeInterface[Alpha]") + "\n RNodeInterface[Bravo]\n    Status    : Down\n"
+         "    Mode      : Full\n    Traffic   : ↑?? B\n                ↓5 B\n" + _FOOT)
+    out = _table(t, [("Alpha", "RNodeInterface"), ("Bravo", "RNodeInterface")])
+    st, detail = _row(out, "Bravo", "RNodeInterface")
+    assert st == "UNKNOWN" and "could not read" in detail
+
+
+def test_table_rnode_multi_shows_every_sub_and_the_worst_state():        # multi
+    out = _table(_SI + _blk("RNode-Multi[High Datarate]") + _blk("RNode-Multi[Low Datarate]", "Down") + _FOOT,
+                 [("RNode-Multi", "RNodeMultiInterface")])
+    assert _row(out, "RNode-Multi", "RNodeMultiInterface")[0] == "DOWN"
+    text = "\n".join(out)
+    assert "RNode-Multi[High Datarate]  UP" in text and "RNode-Multi[Low Datarate]  DOWN" in text
+
+
+@pytest.mark.parametrize("cfg_name,cfg_type,listed,want", [
+    ("hub", "TCPClientInterface", ["TCPInterface[hub/h:1]", "TCPInterface[hub2/h:2]"], ["TCPInterface[hub/h:1]"]),
+    ("srv", "TCPServerInterface", ["TCPServerInterface[srv/0.0.0.0:4242]"], ["TCPServerInterface[srv/0.0.0.0:4242]"]),
+    ("bb", "BackboneInterface", ["BackboneInterface[bb/[::]:4242]"], ["BackboneInterface[bb/[::]:4242]"]),
+    ("bc", "BackboneClientInterface", ["BackboneInterface[bc/h:1]"], ["BackboneInterface[bc/h:1]"]),
+    ("u", "UDPInterface", ["UDPInterface[u/0.0.0.0:4242]"], ["UDPInterface[u/0.0.0.0:4242]"]),
+    ("LoRa", "RNodeInterface", ["RNodeInterface[LoRa East]", "RNodeInterface[LoRa]"], ["RNodeInterface[LoRa]"]),
+    ("M", "RNodeMultiInterface", ["RNodeMultiInterface[M]", "M[a]", "M[b]", "MX[c]"],
+     ["RNodeMultiInterface[M]", "M[a]", "M[b]"]),
+    ("MeshLF", "Meshtastic_Interface", ["MeshtasticInterface[MeshLF]"], ["MeshtasticInterface[MeshLF]"]),
+    ("Default Interface", "AutoInterface", ["AutoInterface[Default Interface]"], ["AutoInterface[Default Interface]"]),
+    ("x", "AutoInterface", ["RNodeInterface[x]"], []),
+])
+def test_match_live_rows_exact_stock_shapes(cfg_name, cfg_type, listed, want):
+    from handlers.rns_interfaces import match_live_rows
+    rows = [(n, "1 B", "1 B", True, "Up") for n in listed]
+    assert [r[0] for r in match_live_rows(cfg_name, cfg_type, rows)] == want

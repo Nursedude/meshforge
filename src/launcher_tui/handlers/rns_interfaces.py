@@ -20,6 +20,60 @@ from utils.paths import get_real_user_home, ReticulumPaths
 logger = logging.getLogger(__name__)
 
 
+# Config `type =` -> the class name stock __str__ prints in rnstatus
+# (RNS/Interfaces/*.py; the retired plugin: 62c43328^ templates/interfaces/
+# Meshtastic_Interface.py). Unlisted types print their own type name.
+_RNSTATUS_TYPE = {
+    "TCPClientInterface": "TCPInterface",
+    "BackboneClientInterface": "BackboneInterface",
+    "Meshtastic_Interface": "MeshtasticInterface",
+}
+# Types whose stock name is "Type[<section>/<host>:<port>]".
+_ADDR_TYPES = frozenset({"TCPInterface", "TCPServerInterface", "BackboneInterface",
+                         "UDPInterface"})
+_WORST = ("DOWN", "RX-ONLY", "UP")
+
+
+def match_live_rows(cfg_name, cfg_type, rows):
+    """EVERY rnstatus health row that IS config interface ``cfg_name``, by
+    the exact stock name shape — never a substring, never "first of this
+    type" (Fable r7 #1: a Down "LoRa" read UP with "LoRa East"'s counters;
+    an absent interface borrowed a neighbour's). Rows stay a list: an
+    RNodeMultiInterface section yields its parent and EVERY sub "<s>[<sub>]".
+    """
+    t = _RNSTATUS_TYPE.get(cfg_type, cfg_type)
+    exact, addr, sub = f"{t}[{cfg_name}]", f"{t}[{cfg_name}/", f"{cfg_name}["
+    out = []
+    for row in rows:
+        n = row[0] or ""
+        if n == exact:
+            out.append(row)
+        elif (t in _ADDR_TYPES and n.startswith(addr) and n.endswith("]")
+              and "/" not in n[len(addr):-1]):          # "a" never takes "a/b"
+            out.append(row)
+        elif (cfg_type == "RNodeMultiInterface" and n.startswith(sub)
+              and n.endswith("]")):
+            out.append(row)
+    return out
+
+
+def config_row_status(matches, blind):
+    """(status, detail, sub_lines) for one config interface from its matched
+    rows: one row = that row; several = the WORST state, and every row named
+    on its own line (a Down sub is never hidden behind an Up sibling)."""
+    states = [live_row_status(_live(r), blind) for r in matches]
+    if len(matches) == 1:
+        return states[0][0], states[0][1], []
+    worst = min((st for st, _ in states), key=_WORST.index)
+    detail = f"{len(matches)} interfaces" + (f" (reading incomplete: {blind})" if blind else "")
+    subs = [f"{r[0]}  {st}  {d}" for r, (st, d) in zip(matches, states)]
+    return worst, detail, subs
+
+
+def _live(row):
+    return {'tx': row[1], 'rx': row[2], 'healthy': row[3], 'status': row[4]}
+
+
 def live_row_status(live, blind):
     """(status, detail) for a configured interface WITH a live rnstatus row.
 
@@ -52,9 +106,10 @@ def unlisted_row_status(itype, blind, *, rnsd_running, si_available):
         return "UNKNOWN", "rnsd running but shared instance not available"
     if blind:
         return "UNKNOWN", f"({blind})"
-    if itype == 'TCPServerInterface':
-        return "LISTEN", "waiting for clients"
-    return "UP", "(no traffic data)"
+    # A complete reading that lists no such interface is an explained
+    # ABSENCE, not health (was "UP (no traffic data)" / "LISTEN" — asserted
+    # from absence, Fable r7 #4).
+    return "UNKNOWN", "(not in rnstatus output)"
 
 
 class RNSInterfacesHandler(BaseHandler):
@@ -209,19 +264,14 @@ class RNSInterfacesHandler(BaseHandler):
             logger.debug("Blocking interface check failed: %s", e)
 
         # 4. Get live health from rnstatus (TX/RX counters)
-        health_map = {}
+        # rows: (rnstatus name, tx, rx, is_healthy, status), a LIST in listed
+        # order — never a dict keyed by name (duplicates collapsed).
+        health = []
         # Why the reading is incomplete (None = complete). An interface NOT
         # in a blind reading is UNKNOWN, never "UP (no traffic data)".
         blind = None
         try:
             health, blind = interface_health()
-            for entry in health:
-                # entry = (display_name, tx_str, rx_str, is_healthy, status)
-                name = entry[0]
-                health_map[name] = {
-                    'tx': entry[1], 'rx': entry[2], 'healthy': entry[3],
-                    'status': entry[4],
-                }
         except Exception as e:
             logger.debug("Interface health check failed: %s", e)
             blind = f"could not check ({type(e).__name__})"
@@ -231,6 +281,7 @@ class RNSInterfacesHandler(BaseHandler):
         print(f"  {'─' * 80}")
 
         for iface in interfaces:
+            sub_lines = []
             name = iface.get('name', '(unnamed)')
             settings = iface.get('settings', {})
             itype = settings.get('type', '?')
@@ -245,9 +296,9 @@ class RNSInterfacesHandler(BaseHandler):
                 detail = reason
             else:
                 # Try to match against rnstatus output
-                live = self._match_live_health(name, itype, health_map)
-                if live:
-                    status, detail = live_row_status(live, blind)
+                matches = match_live_rows(name, itype, health)
+                if matches:
+                    status, detail, sub_lines = config_row_status(matches, blind)
                 else:
                     status, detail = unlisted_row_status(
                         itype, blind, rnsd_running=rnsd_running,
@@ -264,6 +315,8 @@ class RNSInterfacesHandler(BaseHandler):
                 marker = " "
 
             print(f" {marker}{name:<26} {itype:<24} {status:<10} {detail}")
+            for sub in sub_lines:
+                print(f"  {' ' * 26} ↳ {sub}")
 
             # Show fix hint for blocked interfaces
             if name in blocking_map:
@@ -325,26 +378,6 @@ class RNSInterfacesHandler(BaseHandler):
                     print(f"\n    Try: Fix RNS File Ownership (in this menu)")
 
         self.ctx.wait_for_enter()
-
-    def _match_live_health(self, config_name: str, iface_type: str,
-                           health_map: dict) -> dict:
-        """Match a config interface name to rnstatus output.
-
-        rnstatus shows interfaces as 'TypeName[DisplayName]'.
-        Config names are [[DisplayName]]. Try fuzzy matching.
-        """
-        # Direct match: TypeName[config_name]
-        for key, data in health_map.items():
-            if config_name in key:
-                return data
-
-        # Type-based partial match
-        type_prefix = iface_type.replace('_', '')
-        for key, data in health_map.items():
-            if key.startswith(type_prefix):
-                return data
-
-        return {}
 
     # ------------------------------------------------------------------
     # NomadNet connectivity helpers

@@ -32,6 +32,12 @@ class NomadNetIfaceChecksMixin:
 
     # Case-insensitive match for Meshtastic_Interface entries.
     _MESHTASTIC_IFACE_TOKEN = "meshtastic"
+    # How rnstatus NAMES the (retired) plugin's interface: its stock __str__
+    # (62c43328^ templates/interfaces/Meshtastic_Interface.py). rnstatus rows
+    # match THIS prefix, never the word — a TCPInterface named "Meshtastic
+    # hub" is not a Meshtastic interface (Fable r7 #2). The token above stays
+    # for CONFIG names/reasons (blockers), a different vocabulary.
+    _MESHTASTIC_RNSTATUS_PREFIX = "MeshtasticInterface["
 
     # ------------------------------------------------------------------
     # RNS user-mismatch detection
@@ -172,7 +178,7 @@ class NomadNetIfaceChecksMixin:
         for entry in health:
             name = entry[0] if entry else ''
             healthy = entry[3] if len(entry) > 3 else True
-            if (self._MESHTASTIC_IFACE_TOKEN in name.lower()
+            if (name.startswith(self._MESHTASTIC_RNSTATUS_PREFIX)
                     and not healthy):
                 logger.warning(
                     "Meshtastic iface '%s' RX-only or no TX — "
@@ -226,7 +232,7 @@ class NomadNetIfaceChecksMixin:
 
         mesh_entries = [
             e for e in health
-            if self._MESHTASTIC_IFACE_TOKEN in (e[0] or '').lower()
+            if (e[0] or '').startswith(self._MESHTASTIC_RNSTATUS_PREFIX)
         ]
         if not mesh_entries:
             # Not seen is DOWN only when the reading was complete — a blind
@@ -238,13 +244,16 @@ class NomadNetIfaceChecksMixin:
 
         # rows: (name, tx, rx, is_healthy, status) — rnstatus's own Status
         # decides DOWN (Fable r6 #3: a Down row used to read UP).
+        # A box can carry two (e.g. LF + ST radios): every Down row is NAMED
+        # in the count, never hidden behind an Up sibling (operator 11-22).
         up = [e for e in mesh_entries if e[4] != "Down"]
+        down = len(mesh_entries) - len(up)
         if not up:
             state = "DOWN"
-        elif any(e[3] for e in up):
-            state = "UP"
         else:
-            state = "RX-only"
+            state = "UP" if any(e[3] for e in up) else "RX-only"
+            if down:
+                state += f", {down} DOWN"
         if blind:
             # A read row in a blind reading is QUALIFIED, never a clean
             # bill of health (Fable r6 #2, operator 11-22).
