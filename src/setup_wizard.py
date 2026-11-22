@@ -415,7 +415,8 @@ class SetupWizard:
             config_path = ReticulumPaths.get_config_file()
             if config_path.exists():
                 try:
-                    config_text = config_path.read_text()
+                    from utils.rns_config_reader import read_config_text
+                    config_text = read_config_text(config_path)
                     if 'share_instance = Yes' not in config_text and 'share_instance = yes' not in config_text:
                         conflicts.append(
                             "WARNING: rnsd and NomadNet both running, but shared instance may not be configured.\n"

@@ -162,7 +162,8 @@ def validate_rnsd_service_file() -> bool:
         try:
             rns_config = ReticulumPaths.get_config_file()
             if rns_config.exists():
-                rns_content = rns_config.read_text()
+                from utils.rns_config_reader import read_config_text  # lazy: imports RNS
+                rns_content = read_config_text(rns_config)
                 if re.search(r'^\s*\[\[.*Meshtastic', rns_content, re.MULTILINE):
                     missing_ordering = True
         except Exception as e:
@@ -561,7 +562,11 @@ def _preflight_share_instance(ctx):
         from commands.rns import _parse_share_instance
         config_path = ReticulumPaths.get_config_file()
         if config_path.exists():
-            config_content = config_path.read_text()
+            # Feeds a WRITER below (prepends [reticulum]): strict. A BOM
+            # file used to read share_instance False here and get a second
+            # [reticulum] prepended IN FRONT of its BOM — a line rnsd rejects.
+            from utils.rns_config_reader import read_config_text  # lazy: imports RNS
+            config_content = read_config_text(config_path, strict=True)
             share_ok = _parse_share_instance(config_content)
             if share_ok:
                 print("  share_instance: Yes (OK)")
@@ -597,7 +602,7 @@ def _preflight_share_instance(ctx):
                                  + config_content)
                     ok, msg = _sudo_write(str(config_path), fixed)
                     if ok:
-                        verify = config_path.read_text()
+                        verify = read_config_text(config_path)
                         if _parse_share_instance(verify):
                             print("  Fixed: share_instance = Yes")
                         else:
@@ -606,6 +611,9 @@ def _preflight_share_instance(ctx):
                         print(f"  Could not write config: {msg}")
         else:
             print(f"  Config not found at {config_path}")
+    except ValueError as e:   # RNSConfigError: bytes it could not decode
+        print(f"  share_instance: UNKNOWN — config not readable as UTF-8 ({e}); "
+              f"nothing written")
     except Exception as e:
         logger.debug("Pre-flight share_instance check failed: %s", e)
 
@@ -820,7 +828,8 @@ def _diagnose_timeout(handler, user_declined_disable: bool,
         from commands.rns import _parse_share_instance
         config_path = ReticulumPaths.get_config_file()
         if config_path.exists():
-            config_content = config_path.read_text()
+            from utils.rns_config_reader import read_config_text  # lazy: imports RNS
+            config_content = read_config_text(config_path)
             if not _parse_share_instance(config_content):
                 print("  Cause: share_instance not enabled in config")
                 print("  (pre-flight fix may not have applied due to config drift)")

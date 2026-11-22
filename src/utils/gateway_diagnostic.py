@@ -272,7 +272,8 @@ class GatewayDiagnostic:
 
         # Check config content
         try:
-            content = config_path.read_text()
+            from utils.rns_config_reader import read_config_text
+            content = read_config_text(config_path)
 
             issues = []
             if '[interfaces]' not in content.lower():

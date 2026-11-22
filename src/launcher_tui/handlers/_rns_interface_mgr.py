@@ -200,9 +200,11 @@ def disable_interfaces_in_config(interface_names: list) -> list:
     if not config_file.exists():
         return []
 
+    from utils.rns_config_reader import RNSConfigError, read_config_text
     try:
-        content = config_file.read_text()
-    except (OSError, PermissionError) as e:
+        # A WRITER: strict — never write back over bytes it could not read.
+        content = read_config_text(config_file, strict=True)
+    except (OSError, PermissionError, RNSConfigError) as e:
         logger.error("Cannot read RNS config: %s", e)
         return []
 

@@ -356,7 +356,7 @@ def test_interface_health_returns_rows_and_why_blind():
     (None, True, False, ("UNKNOWN", "(not in rnstatus output)")),
     ("rnstatus timed out", True, False,
      ("UNKNOWN", "rnsd running but shared instance not available (rnstatus timed out)")),
-    ("rnstatus timed out", False, False, ("DOWN", "no RNS instance running")),
+    ("rnstatus timed out", False, False, ("DOWN", "no RNS instance running (shared-instance probe found none; rnstatus timed out)")),
 ])
 def test_interface_table_unlisted_row_never_up_when_blind(blind, running, si, expect):
     from handlers.rns_interfaces import unlisted_row_status

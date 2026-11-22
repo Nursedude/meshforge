@@ -114,7 +114,9 @@ def unlisted_row_status(itype, blind, *, rnsd_running, si_available, host):
         # an explained ABSENCE, not health (Fable r7 #4).
         return "UNKNOWN", f"(not in rnstatus output{note})"
     if not rnsd_running and not si_available and not host:
-        return "DOWN", "no RNS instance running"
+        # The evidence is the probe (and no rnsd process), not the reading:
+        # say so — rnstatus here could not see either way (Fable r10 NIT).
+        return "DOWN", f"no RNS instance running (shared-instance probe found none; {blind})"
     if rnsd_running and not si_available:
         return "UNKNOWN", f"rnsd running but shared instance not available ({blind}{note})"
     return "UNKNOWN", f"({blind}{note})"
@@ -195,6 +197,7 @@ class RNSInterfacesHandler(BaseHandler):
         """Show live interface status: config + blocking reasons + TX/RX."""
         from ._rns_interface_mgr import find_blocking_interfaces
         from ._rns_diagnostics_engine import interface_health
+        from utils.rns_status_parser import instance_answered, read_interface_traffic
         from utils.service_check import (
             check_process_running, get_rns_shared_instance_info,
         )
@@ -223,12 +226,17 @@ class RNSInterfacesHandler(BaseHandler):
         # Why the reading is incomplete (None = complete). An interface NOT
         # in a blind reading is UNKNOWN, never "UP (no traffic data)".
         blind = None
+        traffic = None
         try:
-            health, blind = interface_health()
+            traffic = read_interface_traffic()
+            health, blind = interface_health(traffic)
         except Exception as e:
             logger.debug("Interface health check failed: %s", e)
             blind = f"could not check ({type(e).__name__})"
-        instance_read = blind is None or bool(health)
+        # Did the reading reach an instance? The PARSER says (any listed
+        # block, the Shared Instance and half-read rows included) — never
+        # this screen's health rows, which drop both (Fable r10 #1).
+        instance_read = traffic is not None and instance_answered(traffic.status)
         instance_seen = si_available or instance_read
 
         if rnsd_running and instance_seen:

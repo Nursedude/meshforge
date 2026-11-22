@@ -55,7 +55,8 @@ def test_unlisted_row_literals():
              host="nomadnet") == (
         "UNKNOWN", "(1 line(s) unread; instance hosted by nomadnet)")
     assert f("X", "rnstatus timed out", rnsd_running=False, si_available=False,
-             host=None) == ("DOWN", "no RNS instance running")
+             host=None) == (
+        "DOWN", "no RNS instance running (shared-instance probe found none; rnstatus timed out)")
 
 
 _T = _SI + _blk("RNodeInterface[Alpha]") + _FOOT
@@ -105,7 +106,9 @@ def test_read_row_proves_an_instance(text):
 
 def test_table_nothing_hosts_is_down_and_says_start_rnsd():
     out = _table("", _IF, plain_rc=1, running=False, si=False, owner=None)
-    assert _row(out, "Bravo", "RNodeInterface") == ("DOWN", "no RNS instance running")
+    st, detail = _row(out, "Bravo", "RNodeInterface")
+    assert st == "DOWN" and detail.startswith(
+        "no RNS instance running (shared-instance probe found none;")
     joined = "\n".join(out)
     assert "Start rnsd from Service Control." in joined
     assert "NOT RUNNING" in joined

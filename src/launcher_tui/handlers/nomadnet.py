@@ -796,7 +796,8 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
                 rns_config = ReticulumPaths.get_config_file()
                 if rns_config.exists():
                     import re as _re
-                    content = rns_config.read_text()
+                    from utils.rns_config_reader import read_config_text
+                    content = read_config_text(rns_config)
                     m = _re.search(
                         r'^\s*loglevel\s*=\s*(\d+)',
                         content, _re.MULTILINE,

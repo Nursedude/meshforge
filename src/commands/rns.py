@@ -21,7 +21,9 @@ from .base import CommandResult, ResultStatus
 from utils.backup_paths import reserve_backup_path
 from utils.boundary_timing import call_boundary
 from utils.safe_import import safe_import
-from utils.rns_config_reader import RNSConfigError, read_interfaces
+from utils.rns_config_reader import (
+    RNSConfigError, config_lines, config_text, read_interfaces,
+)
 from utils.service_check import check_service, start_service, stop_service
 
 logger = logging.getLogger(__name__)
@@ -153,7 +155,9 @@ def read_config() -> CommandResult:
         # BYTES, as rnsd's ConfigObj(path) reads them: read_text() would
         # translate a lone \r and keep a BOM the reader must see (Fable r9 #2).
         raw_bytes = config_path.read_bytes()
-        content = raw_bytes.decode('utf-8', errors='replace')
+        # The display/scan text is the ONE config text (BOM stripped — a
+        # U+FEFF before "[reticulum]" hid share_instance; Fable r10 #2).
+        content = config_text(raw_bytes)
     except Exception as e:
         return CommandResult.fail(
             f"Failed to read config: {e}",
@@ -245,17 +249,18 @@ def write_config(content: str, backup: bool = True) -> CommandResult:
         )
 
 
-def validate_config(content: str) -> Tuple[bool, List[str]]:
+def validate_config(content) -> Tuple[bool, List[str]]:
     """
     Validate RNS config syntax.
 
     Args:
-        content: Config file content
+        content: Config file content (str or bytes — read as rnsd's text)
 
     Returns:
         Tuple of (is_valid, error_list)
     """
     errors = []
+    content = config_text(content)
 
     # Check for required section
     if '[reticulum]' not in content.lower():
@@ -268,7 +273,7 @@ def validate_config(content: str) -> Tuple[bool, List[str]]:
         errors.append(f"Mismatched brackets: {open_brackets} '[' vs {close_brackets} ']'")
 
     # Check interface headers
-    for line_num, line in enumerate(content.split('\n'), 1):
+    for line_num, line in enumerate(config_lines(content), 1):
         stripped = line.strip()
         if stripped.startswith('[[') and not stripped.endswith(']]'):
             errors.append(f"Line {line_num}: Malformed interface header: {stripped}")
@@ -295,16 +300,17 @@ def validate_config(content: str) -> Tuple[bool, List[str]]:
     return len(errors) == 0, errors
 
 
-def _parse_share_instance(content: str) -> bool:
+def _parse_share_instance(content) -> bool:
     """Check if share_instance is enabled in the [reticulum] section.
 
     The shared instance allows multiple RNS programs (rnsd, gateway, nomadnet)
     to share a single Reticulum transport instance via UDP port 37428.
 
     Returns True if share_instance = Yes (or True), False otherwise.
+    ``content`` is str or bytes, read as rnsd's lines (``config_lines``).
     """
     in_reticulum = False
-    for line in content.split('\n'):
+    for line in config_lines(content):
         stripped = line.strip()
         if stripped.startswith('#'):
             continue

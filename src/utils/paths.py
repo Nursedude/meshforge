@@ -548,12 +548,16 @@ class ReticulumPaths:
         Returns the 64-char lowercase hex string, or None.
         """
         # Step 1: explicit rpc_key line in config
+        # rnsd's lines (bytes, BOM stripped, split on \n only) — read_text()
+        # raised UnicodeDecodeError through every caller on non-UTF-8 (r11).
+        # Lazy: importing the reader at module load would import RNS.
+        from utils.rns_config_reader import config_lines
         cfg = cls.get_config_file()
         try:
-            text = cfg.read_text()
+            raw_bytes = cfg.read_bytes()
         except (OSError, PermissionError):
-            text = ""
-        for raw in text.splitlines():
+            raw_bytes = b""
+        for raw in config_lines(raw_bytes):
             line = raw.strip()
             if not line or line.startswith('#'):
                 continue
@@ -600,11 +604,12 @@ class ReticulumPaths:
         rnsd is actually using. Passed both into the client's
         ``[reticulum]`` config and into ``check_rns_shared_instance()``.
         """
+        from utils.rns_config_reader import config_lines   # lazy (see above)
         try:
-            text = cls.get_config_file().read_text()
+            raw_bytes = cls.get_config_file().read_bytes()
         except (OSError, PermissionError):
             return 'default'
-        for raw in text.splitlines():
+        for raw in config_lines(raw_bytes):
             line = raw.strip()
             if not line or line.startswith('#'):
                 continue

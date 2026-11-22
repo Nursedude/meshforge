@@ -394,7 +394,8 @@ def check_rns_config(port: str) -> bool:
         return False
 
     try:
-        content = config_path.read_text()
+        from utils.rns_config_reader import read_config_text
+        content = read_config_text(config_path)
         return port in content
     except Exception as e:
         logger.debug(f"Could not read RNS config at {config_path}: {e}")

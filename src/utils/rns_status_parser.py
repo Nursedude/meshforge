@@ -255,6 +255,9 @@ _UPTIME_RE = re.compile(r'Uptime is\s+(.+)')
 # "Shared Instance[...]" is a valid interface — only match error messages.
 _ERROR_PATTERNS = (
     "no shared instance",
+    # rnstatus's OWN text (RNS Utilities/rnstatus.py: "No shared RNS instance
+    # available to get status from") — not matched by the line above (r11).
+    "no shared rns instance",
     "could not connect",
     "could not get shared instance",
     "authenticationerror",
@@ -634,6 +637,26 @@ def error_line(status: RNSStatus) -> Optional[str]:
         if any(p in low for p in _ERROR_PATTERNS):
             return line.strip()[:160]
     return None
+
+
+def instance_answered(status: RNSStatus) -> bool:
+    """True when this rnstatus run REACHED an RNS instance: it listed at
+    least one interface block (the parser's own definition — a header whose
+    block holds a Status line), the Shared Instance included, in a run that
+    did not time out and printed no rnstatus error line.
+
+    Counters need not be read and the run need not be complete: rnstatus
+    lists nothing without a shared instance to ask, so a listed block is
+    the instance answering, even ahead of a crash (a partial listing).
+    The ONE place this is decided (WITNESS-TUI r11; Fable r10 #1: a screen
+    derived it from its own health rows, which drop the Shared Instance
+    and half-read rows, and said NOT RUNNING beside an instance that had
+    just answered). Not answered is NOT "no instance": a timeout, a failed
+    exec or a missing binary saw nothing either way.
+    """
+    if status.timed_out or error_line(status):
+        return False
+    return bool(status.interfaces)
 
 
 def error_summary(status: RNSStatus) -> str:

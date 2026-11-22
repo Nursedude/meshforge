@@ -203,7 +203,8 @@ class NomadNetIfaceChecksMixin:
             config_file = ReticulumPaths.get_config_file()
             if not config_file.exists():
                 return ""
-            content = config_file.read_text()
+            from utils.rns_config_reader import read_config_text
+            content = read_config_text(config_file)   # never raises on bytes
         except (OSError, PermissionError) as e:
             logger.debug("Cannot read RNS config for subtitle: %s", e)
             return ""

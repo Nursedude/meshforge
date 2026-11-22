@@ -54,8 +54,56 @@ def _raw_lines(content: Content) -> List[bytes]:
     (split on b"\\n" ONLY — not \\f, \\x85, U+2028 or a lone \\r, which
     str.splitlines() would also split on; Fable r9 #2)."""
     if isinstance(content, str):
-        content = content.encode("utf-8")
+        try:
+            content = content.encode("utf-8")
+        except UnicodeEncodeError as e:   # a lone surrogate (Fable r10 NIT)
+            raise RNSConfigError(f"UnicodeEncodeError: {e}") from e
     return io.BytesIO(content).readlines()
+
+
+# ── the file as TEXT, for every hand scanner (r11 seam 1) ───────────────
+#
+# Every scanner of the RNS config that is not the interface reader
+# (share_instance, shared_instance_type, rpc_key, instance_name, loglevel,
+# validate_config, the shadow diff, …) reads its text HERE, so each sees the
+# lines rnsd sees: BOM gone, utf-8, split on "\n" only. read_text() kept the
+# BOM in front of "[reticulum]", turned a lone "\r" into a ghost line, and
+# raised an untyped UnicodeDecodeError through its caller (Fable r10 #2).
+# tests/test_rns_config_file_read.py gates new read_text() readers.
+
+
+def config_text(content: Content, *, strict: bool = False) -> str:
+    """The config as text the way rnsd decodes it: UTF-8 BOM stripped,
+    utf-8, NO newline translation (a lone ``\\r`` stays inside its line).
+
+    ``strict=False`` (scanners): undecodable bytes become U+FFFD — a scan
+    never aborts; whether rnsd can LOAD the file is ``read_interfaces``'s
+    verdict, not this one's. ``strict=True`` (read-modify-write callers):
+    undecodable bytes raise ``RNSConfigError``, so nothing is written back
+    over bytes the writer could not read."""
+    if isinstance(content, bytes):
+        if content.startswith(_UTF8_BOM):
+            content = content[len(_UTF8_BOM):]
+        try:
+            return content.decode("utf-8", errors="strict" if strict else "replace")
+        except UnicodeDecodeError as e:
+            raise RNSConfigError(f"UnicodeDecodeError: {e}") from e
+    return content[1:] if content.startswith("\ufeff") else content
+
+
+def config_lines(content: Content) -> List[str]:
+    """rnsd's lines: split on ``\\n`` only, trailing CR/LF stripped."""
+    text = config_text(content)
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return [line.rstrip("\r") for line in lines]
+
+
+def read_config_text(path, *, strict: bool = False) -> str:
+    """``config_text`` of the file at ``path`` (read as bytes). OSError
+    propagates — a file that could not be read is the caller's to say."""
+    return config_text(path.read_bytes(), strict=strict)
 
 
 # ── shared output shaping ───────────────────────────────────────────────

@@ -391,16 +391,27 @@ class ShadowResult:
     differences: list = field(default_factory=list)
 
 
-def _parse_reticulum_section(content: str) -> dict:
+# The system-wide RNS config (RNS resolution order step 1). A module constant
+# so tests point it at a scratch file instead of reading the live /etc.
+ETC_RNS_CONFIG = Path('/etc/reticulum/config')
+
+
+def _parse_reticulum_section(content) -> dict:
     """Extract key settings from the [reticulum] section of an RNS config.
+
+    ``content`` is the file's BYTES (or str): its lines are rnsd's lines
+    (``rns_config_reader.config_lines`` — BOM stripped, split on \\n only;
+    r11: ``read_text()`` made a lone \\r a ghost section, and a BOM file
+    read differently from the same file without one).
 
     Returns dict with: instance_name, enable_transport, shared_instance_type,
     share_instance, and interface_count.
     """
+    from utils.rns_config_reader import config_lines
     settings: dict = {}
     in_reticulum = False
 
-    for line in content.split('\n'):
+    for line in config_lines(content):
         stripped = line.strip()
         if stripped.startswith('#'):
             continue
@@ -447,7 +458,7 @@ def detect_config_shadowing() -> ShadowResult:
     the user config is silently ignored. This function detects that case
     and reports key setting differences.
     """
-    etc_config = Path('/etc/reticulum/config')
+    etc_config = ETC_RNS_CONFIG
     home = get_real_user_home()
 
     # Find user config (first match wins, same order as RNS)
@@ -469,8 +480,10 @@ def detect_config_shadowing() -> ShadowResult:
     # Both exist — the /etc config shadows the user config
     differences = []
     try:
-        etc_settings = _parse_reticulum_section(etc_config.read_text())
-        user_settings = _parse_reticulum_section(user_config.read_text())
+        # BYTES: a non-UTF-8 file raised UnicodeDecodeError here (not an
+        # OSError), the caller swallowed it and the shadow warning vanished.
+        etc_settings = _parse_reticulum_section(etc_config.read_bytes())
+        user_settings = _parse_reticulum_section(user_config.read_bytes())
 
         # Compare key settings
         for key in ('instance_name', 'enable_transport',

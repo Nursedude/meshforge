@@ -24,6 +24,10 @@ from utils.config_drift import detect_rnsd_config_drift
 logger = logging.getLogger(__name__)
 
 
+# dependency_leg's config_error when there is no config file at all.
+CONFIG_MISSING = "no RNS config found"
+
+
 def summary_lines(issues, warnings, unobserved) -> list:
     """The diagnostics verdict. A leg that could not be checked is UNKNOWN —
     it must never be summarised as "passed" or "OK" (TUI audit finding 5)."""
@@ -44,17 +48,43 @@ def summary_lines(issues, warnings, unobserved) -> list:
     return out
 
 
-def dependency_leg(find_blocking, config_error):
+def shared_instance_type_is_tcp(content) -> bool:
+    """``shared_instance_type = tcp`` under ``[reticulum]``, read as
+    rnsd's lines (``rns_config_reader.config_lines``)."""
+    from utils.rns_config_reader import config_lines
+    in_ret = False
+    for line in config_lines(content):
+        s = line.strip()
+        if s.startswith('#'):
+            continue
+        if s == '[reticulum]':
+            in_ret = True
+            continue
+        if s.startswith('[') and in_ret:
+            break
+        if in_ret and 'shared_instance_type' in s and '=' in s:
+            return s.split('=', 1)[1].strip().lower() == 'tcp'
+    return False
+
+
+def dependency_leg(find_blocking, config_error, enabled=None):
     """Leg [5/6]: (lines, issues, unobserved).
 
     ``config_error`` = why the RNS config could not be loaded (None = it
-    loaded). An unloadable config yields NO interfaces to judge, so
-    "all dependencies met" there would be vacuous — UNKNOWN instead
-    (Fable r9 #4; hfm #2).
+    loaded; ``CONFIG_MISSING`` = there is none). An unloadable or missing
+    config yields NO interfaces to judge, so "all dependencies met" there
+    would be vacuous — UNKNOWN instead (Fable r9 #4, r10; hfm #2).
+    ``enabled`` = how many interfaces the config enables (None = not
+    counted): zero is said as zero, never as "all met" (r11).
     """
+    if config_error == CONFIG_MISSING:
+        return (["  UNKNOWN — not checked: no RNS config found"],
+                [], ["interface dependencies (no RNS config)"])
     if config_error:
         return ([f"  UNKNOWN — not checked: RNS config not loadable ({config_error})"],
                 [], ["interface dependencies (RNS config not loadable)"])
+    if enabled == 0:
+        return (["  No enabled interfaces — nothing to check"], [], [])
     try:
         blocking = find_blocking()
     except Exception as e:
@@ -210,31 +240,19 @@ def run_rns_diagnostics(handler):
     try:
         config_path = config_dir / 'config' if config_exists else None
         if config_path and config_path.is_file():
-            cfg_text = config_path.read_text()
-            in_ret = False
-            for line in cfg_text.split('\n'):
-                s = line.strip()
-                if s.startswith('#'):
-                    continue
-                if s == '[reticulum]':
-                    in_ret = True
-                    continue
-                if s.startswith('[') and in_ret:
-                    break
-                if (in_ret and 'shared_instance_type' in s
-                        and '=' in s):
-                    _, val = s.split('=', 1)
-                    if val.strip().lower() == 'tcp':
-                        print("  WARNING: shared_instance_type = tcp")
-                        print("    This causes silent shared instance "
-                              "failures on Linux with epoll.")
-                        print("    Fix: Remove this setting to use "
-                              "domain sockets (default, recommended).")
-                        warnings.append(
-                            "shared_instance_type = tcp causes silent "
-                            "failures on Linux with epoll"
-                        )
-                    break
+            from utils.rns_config_reader import read_config_text
+            # Bytes → rnsd's text: read_text() aborted the whole run on a
+            # non-UTF-8 file (UnicodeDecodeError is not an OSError; r11).
+            if shared_instance_type_is_tcp(read_config_text(config_path)):
+                print("  WARNING: shared_instance_type = tcp")
+                print("    This causes silent shared instance "
+                      "failures on Linux with epoll.")
+                print("    Fix: Remove this setting to use "
+                      "domain sockets (default, recommended).")
+                warnings.append(
+                    "shared_instance_type = tcp causes silent "
+                    "failures on Linux with epoll"
+                )
     except (OSError, PermissionError) as e:
         logger.debug("shared_instance_type check failed: %s", e)
 
@@ -259,18 +277,33 @@ def run_rns_diagnostics(handler):
     if conn_data.get('rns_version'):
         print(f"  RNS version: {conn_data['rns_version']}")
     print(f"  Config valid: {'yes' if conn_data.get('config_valid') else 'NO'}")
-    print(f"  Interfaces enabled: {conn_data.get('interfaces_enabled', 0)}")
+    # The config's state was judged ONCE, at [2/6] (r11): over a missing or
+    # unloadable config the enabled count is UNKNOWN, not 0, and its
+    # "Config error" issue is the [2/6] fact again — not counted twice.
+    unloadable = config_exists and status_data.get('interface_count', 0) is None
+    config_judged = config_exists and not unloadable
+    if config_judged:
+        print(f"  Interfaces enabled: {conn_data.get('interfaces_enabled', 0)}")
+    else:
+        print("  Interfaces enabled: UNKNOWN — "
+              + ("config not loadable" if unloadable else "no RNS config"))
 
     # Merge issues and warnings from connectivity check
-    issues.extend(conn_data.get('issues', []))
+    issues.extend(i for i in conn_data.get('issues', [])
+                  if not (unloadable and i.startswith("Config error:")))
     warnings.extend(conn_data.get('warnings', []))
 
     # 5. Interface dependencies
     print("\n[5/6] Checking interface dependencies...")
-    config_error = (status_data.get('config_error')
-                    if status_data.get('interface_count', 0) is None else None)
+    if not config_exists:
+        config_error = CONFIG_MISSING
+    elif unloadable:
+        config_error = status_data.get('config_error') or 'unreadable'
+    else:
+        config_error = None
     lines, dep_issues, dep_unobserved = dependency_leg(
-        handler._find_blocking_interfaces, config_error)
+        handler._find_blocking_interfaces, config_error,
+        enabled=conn_data.get('interfaces_enabled') if config_judged else None)
     for line in lines:
         print(line)
     issues.extend(dep_issues)

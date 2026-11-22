@@ -157,7 +157,9 @@ class RNSConfigHandler(BaseHandler):
             else:
                 print(f"Config: {config_path}\n")
             try:
-                content = config_path.read_text()
+                # Function-local: the reader imports RNS (ConfigObj) — never at TUI start.
+                from utils.rns_config_reader import read_config_text
+                content = read_config_text(config_path)
                 print(content)
 
                 # Show validation warnings inline
@@ -280,8 +282,8 @@ class RNSConfigHandler(BaseHandler):
         for root_config in root_configs:
             if root_config.exists() and root_config != edited_path:
                 try:
-                    user_content = edited_path.read_text()
-                    root_content = root_config.read_text()
+                    user_content = edited_path.read_bytes()
+                    root_content = root_config.read_bytes()
 
                     if user_content != root_content:
                         if self.ctx.dialog.yesno(
@@ -420,7 +422,8 @@ class RNSConfigHandler(BaseHandler):
 
         # Config exists - validate it
         try:
-            content = config_path.read_text()
+            from utils.rns_config_reader import read_config_text
+            content = read_config_text(config_path)
             issues = self._validate_rns_config_content(content)
             if issues:
                 msg = f"Config: {config_path}\n\nIssues found:\n"
@@ -467,9 +470,12 @@ class RNSConfigHandler(BaseHandler):
             return
 
         # Read current loglevel
+        from utils.rns_config_reader import RNSConfigError, read_config_text
         try:
-            content = config_path.read_text()
-        except (OSError, PermissionError) as e:
+            # A WRITER (loglevel edit below): strict — refuse, never write
+            # U+FFFD back over bytes it could not decode.
+            content = read_config_text(config_path, strict=True)
+        except (OSError, PermissionError, RNSConfigError) as e:
             self.ctx.dialog.msgbox("Error", f"Cannot read config:\n{e}")
             return
 

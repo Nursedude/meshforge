@@ -193,11 +193,12 @@ def _read_rpc_key(config_path: Path) -> Optional[str]:
     """Parse an rpc_key line out of a client RNS config. Mirror-of the
     ReticulumPaths.get_shared_rpc_key logic but operates on an arbitrary
     path so we can compare files."""
+    from utils.rns_config_reader import config_lines
     try:
-        text = config_path.read_text()
+        raw_bytes = config_path.read_bytes()
     except (OSError, PermissionError):
         return None
-    for raw in text.splitlines():
+    for raw in config_lines(raw_bytes):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue

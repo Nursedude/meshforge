@@ -288,7 +288,8 @@ def check_rns_config():
 
             # Check for interfaces
             try:
-                content = config_path.read_text()
+                from utils.rns_config_reader import read_config_text
+                content = read_config_text(config_path)
                 if 'Meshtastic' in content or 'RNode' in content:
                     print("    Contains Meshtastic/RNode interface configuration")
                 if 'TCPClientInterface' in content:
