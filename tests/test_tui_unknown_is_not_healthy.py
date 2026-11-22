@@ -134,7 +134,7 @@ class TestRnsDiagnosticsSummary:
         src = inspect.getsource(mod.run_rns_diagnostics)
         block = src[src.index("leg = interface_traffic_leg("):
                     src.index("# Summary")]
-        assert "unobserved.extend(leg.unobserved)" in block
+        assert "apply_traffic_leg(leg, issues, warnings, unobserved)" in block
         assert block.count("unobserved.append(") == 1   # the except handler
 
 

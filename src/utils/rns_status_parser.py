@@ -167,6 +167,8 @@ _SERVING_RE = re.compile(r'^\s*Serving\s*:\s*(\d+)')
 # so a block this parser doesn't know can never land in rx (Fable r1 #3).
 _HDR_RE = re.compile(r'^\s*([A-Za-z][A-Za-z ]*?)\s*:')
 _ARROW_SECTIONS = {"traffic": "traffic", "filtered": "filtered"}
+# Interface properties are indented >= 2; headers/footers sit at 0-1.
+_TOP_LEVEL_RE = re.compile(r'^ ?\S')
 
 # Traffic — bytes value, unit, then (optionally) bps value, unit
 # Handles "↑242 B  0 bps", "↑1,234 KiB  500 Kbps" and a bare "↓254 B".
@@ -264,6 +266,15 @@ def parse_rnstatus(output: str) -> RNSStatus:
             )
             section = None
             continue
+
+        # A TOP-LEVEL line that is not an interface header (indent <= 1: the
+        # " Totals" / " Transport Instance" footers, a "Traceback") ends the
+        # interface block — its arrows must never land on the last interface
+        # (Fable r2 #4: `-t -F` prints a Filtered total after " Totals").
+        if current is not None and _TOP_LEVEL_RE.match(line):
+            result.interfaces.append(current)
+            current = None
+            section = None
 
         # --- Properties (only if we have a current interface) ---
         if current is not None:
@@ -465,38 +476,58 @@ def _listed(status: RNSStatus) -> bool:
     return any(i.rx.observed or i.tx.observed for i in status.interfaces)
 
 
+def _complete(status: RNSStatus) -> bool:
+    """True when the run ended cleanly: exit 0 and no error text.
+
+    A listing followed by a crash is PARTIAL (Fable r2 #2: stock 1.6.1
+    rnstatus indexes ifstat["frxb"] unguarded — against a pre-1.6 rnsd it
+    prints the first block then dies with KeyError, rc 1). An uncaught
+    exception always exits non-zero, so run_rnstatus's rc != 0 parse_error
+    is the whole test (a separate traceback grep was a never-failing guard).
+    """
+    return status.parse_error is None
+
+
+NO_F_SHORT = "this rnstatus has no -F"
+NO_F_REASON = f"{NO_F_SHORT} (no filtered counter to read)"
+
+
 def read_interface_traffic(timeout_s: float = 15.0) -> InterfaceTraffic:
     """Read accepted + filtered traffic per interface: `rnstatus -F` first.
 
     States (one row each, no other outcome):
-      * -F lists interfaces              -> COUNTED (a leg without a Filtered
-                                            block is UNKNOWN per leg — see
-                                            :func:`filtered_rx_verdict`)
-      * -F rejected, nothing listed      -> NO_FILTER; accepted traffic re-read
-                                            plain (a failed re-read says so in
-                                            ``filter_reason``)
-      * timed out                        -> UNKNOWN, NOT retried (a wedged rnsd
-                                            is not hit twice)
-      * any other -F failure / no output -> UNKNOWN with the reason; accepted
-        / zero interfaces                   traffic re-read plain so the
-                                            accepted view is never lost to -F
+      * -F complete + listed  -> COUNTED (a leg without a Filtered block is
+                                 still blind — see blind_spots in the TUI)
+      * -F rejected, nothing  -> NO_FILTER; accepted traffic re-read plain (a
+        listed                   failed re-read says so in ``filter_reason``)
+      * -F timed out          -> UNKNOWN, NOT retried (a wedged rnsd is not
+                                 hit twice)
+      * anything else: missing binary, an error, rc != 0, a traceback, a
+        PARTIAL listing, no interfaces -> UNKNOWN with the reason; accepted
+        traffic re-read plain so the accepted view is never lost to -F
+
+    NO_FILTER is a fact about the CLI (argparse refused -F), not proof the
+    daemon has no filter — the wording says exactly that (Fable r2 #7).
     """
     status = run_rnstatus(timeout_s=timeout_s, extra_args=("-F",))
     if status.timed_out:
         return InterfaceTraffic(status, FilterState.UNKNOWN, "rnstatus -F timed out")
     if not _listed(status) and _NO_F_RE.search(status.raw_output or ""):
         plain = run_rnstatus(timeout_s=timeout_s)
-        reason = "this RNS has no announce filter (rnstatus has no -F)"
+        reason = NO_F_REASON
         if plain.parse_error or not _listed(plain):
             reason += ("; accepted traffic UNKNOWN: "
                        + (plain.parse_error or "rnstatus reported no interfaces"))
         return InterfaceTraffic(plain, FilterState.NO_FILTER, reason)
-    if _listed(status) and not parse_rnstatus(status.raw_output).parse_error:
-        # A listing came back (a non-zero exit alone does not blind it).
+    if _listed(status) and _complete(status):
         return InterfaceTraffic(status, FilterState.COUNTED)
-    reason = status.parse_error or "rnstatus -F reported no interfaces"
+    if _listed(status):
+        reason = "partial listing — " + (status.parse_error or "incomplete run")
+    else:
+        reason = status.parse_error or "reported no interfaces"
     plain = run_rnstatus(timeout_s=timeout_s)
-    return InterfaceTraffic(plain, FilterState.UNKNOWN, f"rnstatus -F: {reason}")
+    return InterfaceTraffic(plain, FilterState.UNKNOWN,
+                            f"rnstatus -F: {reason.splitlines()[0][:160]}")
 
 
 def format_bytes(c: TrafficCounters) -> str:
@@ -516,7 +547,7 @@ def filtered_rx_verdict(iface: RNSInterface, filter_state: FilterState):
                 if iface.rx.observed else "rx accepted UNKNOWN")
     if filter_state is FilterState.NO_FILTER:
         return (FilterState.NO_FILTER,
-                f"{accepted} · filtered — (no announce filter in this RNS)")
+                f"{accepted} · filtered n/a ({NO_F_SHORT})")
     if filter_state is FilterState.UNKNOWN:
         return (FilterState.UNKNOWN, f"{accepted} · filtered UNKNOWN")
     if iface.rx_filtered is None:

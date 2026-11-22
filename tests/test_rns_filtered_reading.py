@@ -3,7 +3,7 @@
 rns >= 1.6 drops unstamped announces under enforce_stamps SILENTLY (1.6.1 has
 the log lines commented out); the per-interface Filtered ↓ from `rnstatus -F`
 is the only witness. The fleet's 1.3.9 has no filter and REJECTS -F — that is
-an explained absence ("this RNS has no announce filter"), not UNKNOWN and
+an explained absence ("this rnstatus has no -F"), not UNKNOWN and
 never "0 filtered". Anything that observed nothing is UNKNOWN (hfm #2).
 
 Run: python3 -m pytest tests/test_rns_filtered_reading.py -v
@@ -169,7 +169,7 @@ def test_verdict_no_filter_says_so_and_never_claims_zero(mock_run, _b):
     t = read_interface_traffic()
     state, text = filtered_rx_verdict(_leg(t), t.filter_state)
     assert state is FilterState.NO_FILTER
-    assert "no announce filter" in text
+    assert "this rnstatus has no -F" in text
     assert "filtered 0" not in text and "filtered: 0" not in text
 
 
@@ -395,4 +395,15 @@ def test_leg6_no_filter_is_not_unobserved():
     t = _traffic(PLAIN_139, state=FilterState.NO_FILTER, reason="no -F")
     out = _leg6(t)
     assert out.unobserved == []
-    assert "no announce filter in this RNS" in "\n".join(out.lines)
+    assert "this rnstatus has no -F" in "\n".join(out.lines)
+
+
+def test_section_resets_at_each_interface_header():
+    # Interface 1 ends INSIDE its Filtered block; interface 2's stray arrow
+    # before any header must not be read as its traffic (r2 M4 survivor).
+    raw = (" TCPInterface[one/a:1]\n    Traffic   : ↑1 B  0 bps\n                ↓2 B  0 bps\n"
+           "    Filtered  : ↑0 B  0 bps\n                ↓3 B  0 bps\n"
+           " TCPInterface[two/b:2]\n                ↓77 B  0 bps\n    Status    : Up\n")
+    one, two = parse_rnstatus(raw).interfaces
+    assert format_bytes(one.rx_filtered) == "3 B"
+    assert not two.rx.observed and two.rx_filtered is None
