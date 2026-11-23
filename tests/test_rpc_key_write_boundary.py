@@ -655,15 +655,11 @@ _SHELL_ALLOW = {
     # Scans MEMORY files for a leaked key literal — not an RNS config reader.
     "scripts/memory_secrets_check.sh",
 }
-# ONE owed site, by line text: install_meshchatx.sh's client-key COPY block is
-# a parity twin with MeshAnchor (block + its test byte-identical by design,
-# scripts/parity_check.py) and MeshAnchor has no seam yet. It moves to
-# `rns_rpc_key_pin.py --copy-from` (built + tested here) in the MA port.
-# Remove this entry in that port — the test then holds the line.
-_SHELL_OWED = {
-    ("scripts/install_meshchatx.sh",
-     'pat = re.compile(r"^\\s*rpc_key\\s*=\\s*([0-9a-fA-F]{64})\\s*$", re.M)'),
-}
+# No owed sites (r13.3, Fable r15 #1): the install_meshchatx.sh COPY block
+# now calls `rns_rpc_key_pin.py --copy-from`. Its MeshAnchor twin keeps its
+# own python until the MA seam port; only the shared harness test is
+# byte-identical (scripts/parity_check.py), not the block.
+_SHELL_OWED: set = set()
 
 
 def test_no_shell_or_template_parses_rpc_key_itself():

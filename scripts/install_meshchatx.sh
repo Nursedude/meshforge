@@ -594,32 +594,15 @@ elif [[ ! -f "${client_cfg}" ]]; then
     echo "  WARN: ${client_cfg} did not appear within 30 s — MeshChatX RPC may" >&2
     echo "        fail 'digest sent was rejected'; re-run: $0 --refresh" >&2
 else
+    # The ONE seam (r13.3, Fable r15 #1): the same reader the gate above
+    # asks, so "pinned" there is "copyable" here. It reads both files with
+    # rnsd's parser, checks the new client bytes before writing, keeps a
+    # .bak-<ts>-rpckey backup, and never prints the key. Its reason (stdout
+    # or stderr) rides into the WARN line below.
     client_rc=0
-    client_out="$(run_as_user_with_path python3 -I - "${server_cfg}" "${client_cfg}" <<'PYEOF'
-import re, shutil, sys, time
-server, client = sys.argv[1], sys.argv[2]
-pat = re.compile(r"^\s*rpc_key\s*=\s*([0-9a-fA-F]{64})\s*$", re.M)
-m = pat.search(open(server).read())
-if not m:
-    print("server config carries no pinned rpc_key"); sys.exit(3)
-text = open(client).read()
-cur = pat.search(text)
-if cur and cur.group(1).lower() == m.group(1).lower():
-    print("already pinned (same key as rnsd)"); sys.exit(0)
-if cur:
-    print("client carries a DIFFERENT rpc_key — not overwritten"); sys.exit(4)
-shutil.copy2(client, f"{client}.bak-{time.strftime('%Y%m%d-%H%M%S')}-rpckey")
-lines = text.splitlines(keepends=True)
-i = next((n for n, ln in enumerate(lines) if ln.strip() == "[reticulum]"), None)
-if i is None:
-    print("client config has no [reticulum] section"); sys.exit(5)
-lines.insert(i + 1, "  # rnsd's rpc_key (copied by install_meshchatx.sh): this client's\n"
-                    "  # configdir differs from rnsd's, so it must carry the same key.\n"
-                    f"  rpc_key = {m.group(1)}\n")
-open(client, "w").write("".join(lines))
-print("pinned"); sys.exit(10)
-PYEOF
-)" || client_rc=$?
+    client_out="$(run_as_user_with_path python3 \
+        "${REPO_ROOT}/scripts/rns_rpc_key_pin.py" --copy-from \
+        "${server_cfg}" "${client_cfg}" 2>&1)" || client_rc=$?
     case "${client_rc}" in
         0)  echo "  ${client_out}" ;;
         10) echo "  pinned rnsd's rpc_key into ${client_cfg} — restarting meshchatx"
