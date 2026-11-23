@@ -325,24 +325,10 @@ def check_4403_contention() -> CheckResult:
 
 
 def _read_rpc_key(path: Path) -> Optional[str]:
-    """Inline rpc_key reader (matches paths.ReticulumPaths.get_shared_rpc_key shape)."""
-    from utils.rns_config_reader import config_lines, read_config_text
-    try:
-        text = read_config_text(path)   # as rnsd reads it (r12)
-    except (OSError, PermissionError):
-        return None
-    for raw in config_lines(text):
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        name, _, value = line.partition("=")
-        if name.strip() != "rpc_key":
-            continue
-        key = value.strip()
-        if len(key) == 64 and all(c in "0123456789abcdefABCDEF" for c in key):
-            return key.lower()
-        return None
-    return None
+    """The valid rpc_key rnsd uses from ``path``, else None — THE definition
+    (``rns_config_reader.file_rpc_key``, r13.1)."""
+    from utils.rns_config_reader import file_rpc_key
+    return file_rpc_key(path)
 
 
 def check_rpc_key_alignment() -> CheckResult:

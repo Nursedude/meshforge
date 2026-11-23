@@ -529,11 +529,6 @@
   "class": "other",
   "count": 1
  },
- "src/launcher_tui/handlers/_config_doctor_checks.py::_read_rpc_key::read_bytes": {
-  "audited": "r12 2026-11-22: -> config_lines",
-  "class": "rns-config",
-  "count": 1
- },
  "src/launcher_tui/handlers/_config_doctor_checks.py::check_gateway_default_lxmf_destination::read_text": {
   "audited": "r12 2026-11-22 line-audited: not the RNS config",
   "class": "other",
@@ -1996,6 +1991,11 @@
  },
  "src/utils/rns_config_reader.py::_configobj_root::ConfigObj": {
   "audited": "r13 2026-11-22: rnsd's own parser over bytes lines (the seam; interfaces + rnsd_view)",
+  "class": "rns-config",
+  "count": 1
+ },
+ "src/utils/rns_config_reader.py::file_rpc_key::read_bytes": {
+  "audited": "r13.1 2026-11-22: BYTES -> rnsd_rpc_key (THE rpc_key definition)",
   "class": "rns-config",
   "count": 1
  },

@@ -143,7 +143,10 @@ def test_every_consumer_gives_the_plain_files_verdict(shape, tmp_path, monkeypat
 def test_not_utf8_never_raises_through_a_consumer(tmp_path, monkeypatch):
     v = _verdicts(tmp_path, monkeypatch, NOT_UTF8)
     assert v["share_instance(bytes)"] is True
-    assert v["rpc_key(paths)"] == KEY and v["instance_name"] == "lab"
+    # r13.1: rnsd's own ConfigObj REFUSES a non-UTF-8 file (measured
+    # 2026-11-22) — rnsd pins no key from it, so no client is handed one.
+    assert v["rpc_key(paths)"] is None and v["rpc_key(doctor)"] is None
+    assert v["instance_name"] == "lab"
 
 
 def test_drift_counts_interfaces_from_bytes():
@@ -320,7 +323,7 @@ def test_path_arg_readers_never_raise_on_not_utf8(tmp_path):
     p = tmp_path / "config"
     p.write_bytes(NOT_UTF8)
     v = _path_readers(p)
-    assert v["flow_audit._read_rpc_key"] == KEY
+    assert v["flow_audit._read_rpc_key"] is None      # r13.1: rnsd refuses this file
     assert v["rns_init._read_instance_name"] == "lab"
 
 

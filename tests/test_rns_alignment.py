@@ -447,13 +447,13 @@ class TestReadRpcKeyValueRejectsMalformed:
     def test_rejects_short_key(self, tmp_path):
         from utils.rns_alignment import _read_rpc_key_value
         f = tmp_path / "config"
-        f.write_text("rpc_key = abc123\n")
+        f.write_text("[reticulum]\n  rpc_key = abc123\n")
         assert _read_rpc_key_value(f, sudo=False) is None
 
     def test_rejects_non_hex(self, tmp_path):
         from utils.rns_alignment import _read_rpc_key_value
         f = tmp_path / "config"
-        f.write_text("rpc_key = " + "z" * 64 + "\n")
+        f.write_text("[reticulum]\n  rpc_key = " + "z" * 64 + "\n")
         assert _read_rpc_key_value(f, sudo=False) is None
 
     def test_accepts_indented_under_section(self, tmp_path):

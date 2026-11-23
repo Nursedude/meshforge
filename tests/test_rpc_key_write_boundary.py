@@ -146,13 +146,24 @@ def test_force_replaces_an_invalid_key_rnsd_reads_the_new_one(
     assert _rnsd_key(cfg.read_bytes()) == key
 
 
-def test_the_boundary_refuses_an_edit_that_changes_anything_else(reader_path):
-    # A placeholder that is ALSO used outside rpc_key: substituting it would
-    # change an interface value too — refuse, never write a wider edit.
+def test_a_placeholder_used_elsewhere_is_left_there(reader_path):
+    # r13.1: only the live [reticulum] rpc_key line is filled — the interface
+    # value keeps its literal (r13 refused the whole pin over it).
     raw = _with(key_line=f"  rpc_key = {PLACEHOLDER}").replace(
         b"enabled = yes", f"enabled = yes\n    name = {PLACEHOLDER}".encode())
-    with pytest.raises(RNSConfigError):
-        pin_rpc_key_bytes(raw)
+    new, key, gen = pin_rpc_key_bytes(raw)
+    assert gen and _rnsd_key(new) == key
+    view = rcr.rnsd_view(new)
+    assert view["interfaces"]["Default Interface"]["name"] == PLACEHOLDER
+
+
+def test_the_boundary_refuses_an_edit_that_changes_anything_else(reader_path):
+    from utils.rns_config_setup import RPCKeyWriteRefused, _require_pinned
+    before = rcr.rnsd_view(_with())
+    wider = _with(key_line=f"  rpc_key = {HEX}").replace(b"enabled = yes", b"enabled = no")
+    with pytest.raises(RPCKeyWriteRefused):
+        _require_pinned(before, wider, HEX)
+    _require_pinned(before, _with(key_line=f"  rpc_key = {HEX}"), HEX)   # exact: passes
 
 
 def test_refusal_says_why_in_words(reader_path):
@@ -326,3 +337,237 @@ def test_no_pin_is_planned_into_a_config_rnsd_cannot_load(tmp_path):
     st.etc_config.config_error = "Duplicate keyword name at line 4"
     st.drift_reasons = analyze_drift(st)
     assert not [a for a in plan_normalize(st) if "rpc_key" in a.description]
+
+
+# ── r13.1: ONE answer to "which rpc_key does rnsd use" (Fable r13 #1/#2/#4) ──
+#
+# r13 gated the WRITE; the READERS that feed every client
+# (ReticulumPaths.get_shared_rpc_key + its two copies) still took the first
+# `rpc_key =` line anywhere, and the pinner had its own "valid" (a trailing-
+# comma LIST joined into a key). Every reader now asks rns_config_reader.
+# rnsd_rpc_key; this table holds each of them to rnsd's own reading.
+
+R131_SHAPES = SHAPES + [
+    ("trailing-comma-list", _with(key_line=f"  rpc_key = {HEX},"), "keep:list"),
+    ("subsection-rpc_key", _with(key_line="  [[rpc_key]]\n    a = 1").replace(
+        b"\n\n[interfaces]", b"\n[interfaces]"), "keep:section"),
+    ("top-level-key", (f"rpc_key = {'ab' * 32}\n").encode() + _with(), "pin"),
+    ("key-in-logging", (f"[logging]\n  rpc_key = {'ab' * 32}\n").encode() + _with(), "pin"),
+]
+
+
+def _rnsd_uses(raw: bytes):
+    """The 64-hex key rnsd pins from ``raw`` (lowercased), else None —
+    rnsd: bytes.fromhex(config["reticulum"]["rpc_key"]); MeshForge's policy
+    on top is 64 hex. Uses rnsd's own ConfigObj when importable."""
+    try:
+        from RNS.vendor.configobj import ConfigObj
+        import io
+        sect = ConfigObj(io.BytesIO(raw).readlines()).get("reticulum", {})
+    except ImportError:
+        sect = rcr.rnsd_view(raw).get("reticulum", {})
+    v = sect.get("rpc_key") if hasattr(sect, "get") else None
+    if not isinstance(v, str):
+        return None
+    v = v.lower()
+    return v if is_valid_key(v) else None
+
+
+def _readers(cfg):
+    from utils import gateway_flow_audit as gfa
+    from utils import rns_alignment as A
+    from utils.paths import ReticulumPaths
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'launcher_tui'))
+    from handlers import _config_doctor_checks as cdc
+    with patch.object(ReticulumPaths, "get_config_file", return_value=cfg):
+        shared = ReticulumPaths.get_shared_rpc_key()   # no storage/ -> no derivation
+    scan = A._scan_config_file(cfg)
+    return {
+        "paths.get_shared_rpc_key": shared,
+        "gateway_flow_audit._read_rpc_key": gfa._read_rpc_key(cfg),
+        "config_doctor._read_rpc_key": cdc._read_rpc_key(cfg),
+        "alignment._read_rpc_key_value": A._read_rpc_key_value(cfg),
+        "alignment.scan.has_rpc_key": scan.has_rpc_key,
+    }
+
+
+@pytest.mark.parametrize("sid,raw,expected", R131_SHAPES, ids=[s[0] for s in R131_SHAPES])
+def test_every_rpc_key_reader_answers_what_rnsd_uses(tmp_path, reader_path, sid, raw, expected):
+    cfg = tmp_path / "config"
+    cfg.write_bytes(raw)
+    if expected == "refuse":
+        return          # unloadable / not UTF-8: covered by the refusal tests
+    want = _rnsd_uses(raw)
+    got = _readers(cfg)
+    assert got.pop("alignment.scan.has_rpc_key") is (want is not None), sid
+    assert got == {k: want for k in got}, sid
+
+
+@pytest.mark.parametrize("sid,raw,expected", R131_SHAPES, ids=[s[0] for s in R131_SHAPES])
+def test_pinner_and_readers_agree_after_the_pin(tmp_path, reader_path, sid, raw, expected):
+    """The pinner's 'already pinned' == the readers' key; after any pin the
+    readers return exactly the key the pinner reported."""
+    if expected == "refuse":
+        return
+    cfg = tmp_path / "config"
+    cfg.write_bytes(raw)
+    try:
+        key, generated = ensure_rpc_key(cfg)
+    except RNSConfigError:
+        assert _rnsd_uses(raw) is None
+        return
+    want = _rnsd_uses(cfg.read_bytes())
+    if generated:
+        assert want == key
+    else:
+        assert (want is not None) == is_valid_key(key), (sid, key)
+    got = _readers(cfg)
+    got.pop("alignment.scan.has_rpc_key")
+    assert set(got.values()) == {want}, (sid, got)
+
+
+def test_a_list_or_section_rpc_key_is_never_reported_valid(tmp_path, reader_path):
+    for line in (f"  rpc_key = {HEX},", f"  rpc_key = {HEX}, {HEX}"):
+        new, key, gen = pin_rpc_key_bytes(_with(key_line=line))
+        assert new is None and gen is False and not is_valid_key(key)
+    raw = b"[reticulum]\n  [[rpc_key]]\n    a = 1\n"
+    new, key, gen = pin_rpc_key_bytes(raw)          # typed, never AttributeError
+    assert new is None and gen is False and not is_valid_key(key)
+
+
+def test_alignment_pin_on_a_list_key_refuses_not_applied(tmp_path, reader_path):
+    from utils.rns_alignment import _pin_rpc_key_in
+    cfg = tmp_path / "config"
+    raw = _with(key_line=f"  rpc_key = {HEX},")
+    cfg.write_bytes(raw)
+    with pytest.raises(RNSConfigError):
+        _pin_rpc_key_in(cfg, sudo=False)
+    assert cfg.read_bytes() == raw
+
+
+def test_placeholder_in_a_comment_is_not_filled(reader_path):
+    raw = _with(key_line=f"  rpc_key = {PLACEHOLDER}  # was {PLACEHOLDER}").replace(
+        b"[interfaces]", f"# template: {PLACEHOLDER}\n[interfaces]".encode())
+    new, key, gen = pin_rpc_key_bytes(raw)
+    assert gen and new.count(key.encode()) == 1
+
+
+# ── r13.1: the alignment write (Fable r13 #3, #5) ───────────────────────
+
+
+def test_alignment_write_never_follows_a_planted_tmp_symlink(tmp_path, reader_path):
+    from utils.rns_alignment import _pin_rpc_key_in
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"untouched\n")
+    cfg = tmp_path / "config"
+    cfg.write_bytes(_with())
+    (tmp_path / "config.mf-new").symlink_to(victim)
+    _pin_rpc_key_in(cfg, sudo=False)
+    assert victim.read_bytes() == b"untouched\n"
+    assert not cfg.is_symlink() and is_valid_key(_rnsd_key(cfg.read_bytes()))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["config", "config.mf-new", "victim"]
+
+
+@pytest.mark.parametrize("mode", [0o600, 0o640, 0o644])
+def test_alignment_write_keeps_mode_and_is_a_rename(tmp_path, reader_path, mode):
+    from utils.rns_alignment import _pin_rpc_key_in
+    cfg = tmp_path / "config"
+    cfg.write_bytes(_with())
+    cfg.chmod(mode)
+    ino = cfg.stat().st_ino
+    _pin_rpc_key_in(cfg, sudo=False)
+    st = cfg.stat()
+    assert st.st_mode & 0o777 == mode
+    assert st.st_ino != ino                      # atomic rename, not an in-place write
+    assert [p.name for p in tmp_path.iterdir()] == ["config"]
+
+
+def test_alignment_write_failure_raises(tmp_path, reader_path):
+    import subprocess
+    from utils import rns_alignment as A
+    cfg = tmp_path / "config"
+    cfg.write_bytes(_with())
+    with patch.object(A.subprocess, "run",
+                      return_value=subprocess.CompletedProcess([], 1, b"", b"boom")):
+        with pytest.raises(OSError):
+            A._pin_rpc_key_in(cfg, sudo=False)
+
+
+def test_normalize_runs_fn_not_cmd():
+    from utils.rns_alignment import NormalizeAction, normalize_local
+    ran = []
+    act = NormalizeAction(description="x", cmd=["false"], fn=lambda: ran.append(1))
+    with patch("utils.rns_alignment.plan_normalize", return_value=[act]), \
+            patch("utils.rns_alignment.subprocess.run") as run:
+        assert normalize_local(None) == ["x"]
+    assert ran == [1] and not run.called
+
+
+def test_normalize_cli_says_failed_on_a_refusal(capsys):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "rns_alignment_cli", os.path.join(_ROOT, "scripts", "rns_alignment.py"))
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    st = _state_needing_pin(__import__("pathlib").Path("/nonexistent"))
+    st.drift_reasons = ["x"]
+    with patch.object(cli, "probe_local", return_value=st), \
+            patch.object(cli, "analyze_drift", return_value=["x"]), \
+            patch.object(cli, "plan_normalize", return_value=[]), \
+            patch.object(cli, "normalize_local",
+                         side_effect=RNSConfigError("refused — nothing written")):
+        rc = cli.cmd_normalize(type("A", (), {"dry_run": False, "yes": True})())
+    assert rc == 1 and "FAILED" in capsys.readouterr().out
+
+
+def test_unreadable_config_is_named_as_ours_not_rnsds(tmp_path, reader_path):
+    if os.geteuid() == 0:
+        pytest.skip("root reads a 000 file")
+    from utils.rns_alignment import _scan_config_file, analyze_drift
+    cfg = tmp_path / "config"
+    cfg.write_bytes(_with())
+    cfg.chmod(0)
+    try:
+        f = _scan_config_file(cfg)
+    finally:
+        cfg.chmod(0o644)
+    assert f.config_error and f.has_rpc_key is False
+    st = _state_needing_pin(tmp_path)
+    st.etc_config = f
+    reasons = " ".join(analyze_drift(st))
+    assert "could not read" in reasons and "rnsd cannot load" not in reasons
+
+
+def test_declared_ports_fallback_on_an_unloadable_config(tmp_path, reader_path):
+    from commands.meshtastic import _rns_declared_ports
+    cfg = tmp_path / "config"
+    cfg.write_text("[interfaces]\n  [[A]]\n    port = /dev/ttyQZ\n    port = /dev/ttyQY\n")
+    got = {os.path.basename(k) for k in _rns_declared_ports([cfg])}
+    assert got == {"ttyQZ", "ttyQY"}           # still REFUSED though rnsd can't load it
+
+
+@pytest.mark.parametrize("raw,derives", [
+    (_with(), True),                                         # absent -> derive
+    (_with(key_line="  rpc_key = short"), False),            # explicit, broken
+    (_with(key_line=f"  rpc_key = {HEX},"), False),          # a list: broken
+    (_with(key_line="  instance_name = other"), False),      # rnsd cannot load
+], ids=["absent", "invalid", "list", "unloadable"])
+def test_shared_rpc_key_derives_only_when_no_key_is_set(tmp_path, raw, derives):
+    """Mutants S3/S4 (r13.1): derivation from the transport identity is
+    rnsd's behaviour for an ABSENT key only — never over a broken explicit
+    key or a config rnsd cannot load."""
+    RNS = pytest.importorskip("RNS")
+    from utils.paths import ReticulumPaths
+    cfg = tmp_path / "config"
+    cfg.write_bytes(raw)
+    (tmp_path / "storage").mkdir()
+    (tmp_path / "storage" / "transport_identity").write_bytes(b"x")
+
+    class _Id:
+        def get_private_key(self):
+            return b"k"
+    with patch.object(ReticulumPaths, "get_config_file", return_value=cfg), \
+            patch.object(RNS.Identity, "from_file", return_value=_Id()), \
+            patch.object(RNS.Identity, "full_hash", return_value=bytes.fromhex("cd" * 32)):
+        got = ReticulumPaths.get_shared_rpc_key()
+    assert got == ("cd" * 32 if derives else None)

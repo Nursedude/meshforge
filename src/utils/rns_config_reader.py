@@ -445,3 +445,52 @@ def keyword_name(line: str) -> Optional[str]:
     if len(key) > 1 and key[0] == key[-1] and key[0] in ('"', "'"):
         key = key[1:-1]
     return key
+
+
+# ── which rpc_key rnsd uses (r13.1: ONE definition for every reader) ────
+
+_RPC_KEY_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def rnsd_rpc_key(content: Content) -> Tuple[str, Optional[str]]:
+    """``(state, value)`` for the rpc_key rnsd pins from ``content``.
+
+    * ``("valid", key)`` — ``[reticulum] rpc_key`` is ONE string of 64 hex
+      digits (returned lowercased). rnsd: ``bytes.fromhex(value)``; 64 hex is
+      MeshForge's per-box policy on top.
+    * ``("invalid", raw)`` — set, but rnsd cannot use it as a pinned key: not
+      64 hex, a LIST (``rpc_key = <hex>,`` — rnsd's fromhex raises and it
+      falls back to the derived key), a sub-section, the ``__RPC_KEY__``
+      placeholder. ``raw`` is a display string (never treat it as a key).
+    * ``("absent", None)`` — no ``[reticulum] rpc_key``. A key anywhere else
+      (top level, ``[logging]``) is NOT rnsd's key.
+
+    Raises ``RNSConfigError`` when rnsd could not load ``content``.
+
+    Every reader of "the rpc_key" — the pinner, the alignment scan, the
+    client-config resolver ``ReticulumPaths.get_shared_rpc_key``, the doctor,
+    the flow audit — answers from HERE (Fable r13 #1/#2: three line scans
+    took the first ``rpc_key =`` anywhere, and the pinner joined a list)."""
+    value = reticulum_section(rnsd_view(content)).get("rpc_key")
+    if value is None:
+        return "absent", None
+    if isinstance(value, dict):
+        return "invalid", "[[rpc_key]] (a section, not a value)"
+    if isinstance(value, list):
+        return "invalid", ", ".join(value) + ("," if len(value) == 1 else "")
+    low = value.lower()
+    if _RPC_KEY_HEX.fullmatch(low):
+        return "valid", low
+    return "invalid", value
+
+
+def file_rpc_key(path) -> Optional[str]:
+    """The valid rpc_key rnsd uses from the file at ``path``, else None (no
+    key, an invalid one, unreadable, or a file rnsd cannot load). For
+    readers that only compare keys; a caller that must tell those apart
+    uses ``rnsd_rpc_key`` on the bytes itself."""
+    try:
+        state, value = rnsd_rpc_key(path.read_bytes())
+    except (OSError, RNSConfigError):
+        return None
+    return value if state == "valid" else None

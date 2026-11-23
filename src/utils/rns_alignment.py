@@ -318,12 +318,10 @@ def _reticulum_facts(raw: bytes):
     reads ``raw`` (``rns_config_reader.rnsd_view``). Raises RNSConfigError
     when rnsd could not load it. ``rpc_key`` is the lowercased value only
     when it is valid 64-hex."""
-    from utils.rns_config_reader import reticulum_section, rnsd_view
+    from utils.rns_config_reader import reticulum_section, rnsd_rpc_key, rnsd_view
     sect = reticulum_section(rnsd_view(raw))
-    key = sect.get('rpc_key')
-    key = key.lower() if isinstance(key, str) else None
-    if key is not None and not re.fullmatch(r'[0-9a-f]{64}', key):
-        key = None
+    state, value = rnsd_rpc_key(raw)        # THE definition (r13.1)
+    key = value if state == 'valid' else None
     has_name = 'instance_name' in sect
     name = sect.get('instance_name')
     if isinstance(name, list):
@@ -586,14 +584,20 @@ def analyze_drift(state: RNSAlignmentState) -> List[str]:
             f"/etc/reticulum/config missing (canonical alignment file)"
         )
     elif state.etc_config.config_error:
-        reasons.append(
-            f"rnsd cannot load /etc/reticulum/config "
-            f"({state.etc_config.config_error}) — fix the file by hand; "
-            f"normalize will not write into it"
-        )
+        err = state.etc_config.config_error
+        if err.startswith("could not read"):
+            reasons.append(
+                f"MeshForge {err} — /etc/reticulum/config is UNKNOWN "
+                f"(run as admin/sudo); normalize will not write into it"
+            )
+        else:
+            reasons.append(
+                f"rnsd cannot load /etc/reticulum/config ({err}) — fix the "
+                f"file by hand; normalize will not write into it"
+            )
     elif not state.etc_config.has_rpc_key:
         reasons.append(
-            f"/etc/reticulum/config has no rpc_key — RPC handshake will derive "
+            f"/etc/reticulum/config has no valid rpc_key — RPC handshake will derive "
             f"per-identity authkeys, breaking cross-process RPC"
         )
 
@@ -786,10 +790,14 @@ def _pin_rpc_key_in(path: Path, sudo: bool) -> None:
         raise RPCKeyWriteRefused(
             f"{path} has an rpc_key that is not 64-hex — left untouched; "
             f"replace or remove it by hand, then re-run")
+    # mktemp (O_EXCL, 0600 under umask 077): never a fixed name a planted
+    # symlink can redirect, never the key world-readable mid-write (Fable
+    # r13 #3, hfm #8); the temp is removed on any failure.
     script = (
-        'set -e; t="$1.mf-new"; cat > "$t"; '
+        'set -e; umask 077; t=$(mktemp "$1.mf-XXXXXXXX"); '
+        'trap \'rm -f "$t"\' EXIT; cat > "$t"; '
         'chown --reference="$1" "$t"; chmod --reference="$1" "$t"; '
-        'mv -f "$t" "$1"'
+        'mv -f "$t" "$1"; trap - EXIT'
     )
     argv = (['sudo', '-n'] if sudo else []) + ['bash', '-c', script, '_', str(path)]
     res = subprocess.run(argv, input=new_raw, capture_output=True, timeout=30)

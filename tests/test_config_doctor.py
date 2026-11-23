@@ -119,7 +119,7 @@ class TestCheckRpcKeyClientMatch:
 
     def test_ok_when_client_matches(self, tmp_path):
         client_cfg = tmp_path / "client_config"
-        client_cfg.write_text(f"rpc_key = {VALID_KEY}\n")
+        client_cfg.write_text(f"[reticulum]\n  rpc_key = {VALID_KEY}\n")
         with patch("utils.paths.ReticulumPaths.get_shared_rpc_key",
                    return_value=VALID_KEY), \
              patch.object(checks, "_CLIENT_CONFIGS",
@@ -129,7 +129,7 @@ class TestCheckRpcKeyClientMatch:
 
     def test_fail_when_client_mismatches(self, tmp_path):
         client_cfg = tmp_path / "client_config"
-        client_cfg.write_text(f"rpc_key = {DIFFERENT_KEY}\n")
+        client_cfg.write_text(f"[reticulum]\n  rpc_key = {DIFFERENT_KEY}\n")
         with patch("utils.paths.ReticulumPaths.get_shared_rpc_key",
                    return_value=VALID_KEY), \
              patch.object(checks, "_CLIENT_CONFIGS",

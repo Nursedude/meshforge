@@ -52,8 +52,8 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from utils.rns_config_reader import (
-    _UTF8_BOM, RNSConfigError, config_text, keyword_name, rnsd_view,
-    reticulum_section, section_header,
+    _UTF8_BOM, RNSConfigError, config_text, keyword_name, rnsd_rpc_key,
+    rnsd_view, section_header,
 )
 
 logger = logging.getLogger(__name__)
@@ -215,6 +215,22 @@ def _strip_reticulum_key_lines(text: str) -> str:
     return "\n".join(keep) + ("\n" if text.endswith("\n") else "")
 
 
+def _fill_live_placeholder(text: str, rpc_key: str) -> str:
+    """Substitute ``__RPC_KEY__`` on the live ``[reticulum] rpc_key`` line
+    only (once) — a placeholder quoted in a comment elsewhere stays a
+    placeholder, never a second copy of the real key (Fable r13 #6)."""
+    out = []
+    section = None
+    for line in _lines(text):
+        h = section_header(line)
+        if h is not None:
+            section = h
+        elif section == (1, "reticulum") and keyword_name(line) == "rpc_key":
+            line = line.replace(PLACEHOLDER, rpc_key, 1)
+        out.append(line)
+    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+
+
 def pin_rpc_key_bytes(
     raw: bytes, force: bool = False,
 ) -> Tuple[Optional[bytes], str, bool]:
@@ -237,26 +253,24 @@ def pin_rpc_key_bytes(
             f"it as UTF-8") from e
     try:
         before = rnsd_view(raw)
-        current = reticulum_section(before).get("rpc_key")
+        state, current = rnsd_rpc_key(raw)   # THE definition (r13.1)
     except RNSConfigError as e:
         raise RPCKeyWriteRefused(
             f"rnsd cannot load this config as it stands ({e}) — nothing "
             f"written; a key added to it would never be read") from e
-    if isinstance(current, list):
-        current = ", ".join(current)
 
     new_key = generate_rpc_key()
-    if current == PLACEHOLDER:
-        new_text = text.replace(PLACEHOLDER, new_key)
-    elif current is not None and is_valid_key(current.lower()):
-        return None, current.lower(), False
-    elif current is not None and not force:
+    if state == "valid":
+        return None, current, False
+    if state == "invalid" and current == PLACEHOLDER:
+        new_text = _fill_live_placeholder(text, new_key)
+    elif state == "invalid" and not force:
         logger.warning(
-            "rpc_key is set but not valid 64-hex: %r "
+            "rpc_key is set but not a valid 64-hex key: %r "
             "(skipping; pass force=True to replace)", current)
         return None, current, False
     else:
-        if current is not None:          # force over an invalid key
+        if state == "invalid":           # force over an invalid key
             text = _strip_reticulum_key_lines(text)
         new_text = _insert_key_line(text, new_key)
     new_raw = bom + new_text.encode("utf-8")

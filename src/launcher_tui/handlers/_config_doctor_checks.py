@@ -192,26 +192,10 @@ def check_rpc_key_client_match() -> CheckResult:
 def _read_rpc_key(config_path: Path) -> Optional[str]:
     """Parse an rpc_key line out of a client RNS config. Mirror-of the
     ReticulumPaths.get_shared_rpc_key logic but operates on an arbitrary
-    path so we can compare files."""
-    from utils.rns_config_reader import config_lines
-    try:
-        raw_bytes = config_path.read_bytes()
-    except (OSError, PermissionError):
-        return None
-    for raw in config_lines(raw_bytes):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        name, _, value = line.partition("=")
-        if name.strip() != "rpc_key":
-            continue
-        key = value.strip()
-        if len(key) == 64 and all(c in "0123456789abcdefABCDEF" for c in key):
-            return key.lower()
-        return None
-    return None
+    path so we can compare files. THE definition: rns_config_reader.
+    file_rpc_key (r13.1) — no line scan of its own."""
+    from utils.rns_config_reader import file_rpc_key
+    return file_rpc_key(config_path)
 
 
 def _fingerprint(key: str) -> str:

@@ -551,24 +551,25 @@ class ReticulumPaths:
         # rnsd's lines (bytes, BOM stripped, split on \n only) — read_text()
         # raised UnicodeDecodeError through every caller on non-UTF-8 (r11).
         # Lazy: importing the reader at module load would import RNS.
-        from utils.rns_config_reader import config_lines
+        # r13.1: the key rnsd USES — [reticulum] rpc_key as rnsd's own parser
+        # reads it (rns_config_reader.rnsd_rpc_key). The old line scan took
+        # the first `rpc_key =` anywhere (a top-level / [logging] line rnsd
+        # ignores) and missed `<hex>  # c`, quoted keys (Fable r13 #1).
+        from utils.rns_config_reader import RNSConfigError, rnsd_rpc_key
         cfg = cls.get_config_file()
         try:
             raw_bytes = cfg.read_bytes()
         except (OSError, PermissionError):
             raw_bytes = b""
-        for raw in config_lines(raw_bytes):
-            line = raw.strip()
-            if not line or line.startswith('#'):
-                continue
-            if '=' not in line:
-                continue
-            name, _, value = line.partition('=')
-            if name.strip() != 'rpc_key':
-                continue
-            key = value.strip()
-            if len(key) == 64 and all(c in '0123456789abcdefABCDEF' for c in key):
-                return key.lower()
+        try:
+            state, value = rnsd_rpc_key(raw_bytes)
+        except RNSConfigError:
+            # rnsd cannot load its config: it runs with no key we could
+            # name — never derive one for clients over that.
+            return None
+        if state == "valid":
+            return value
+        if state == "invalid":
             # Explicit but malformed — don't silently fall through to
             # derivation; operator's intent was the (broken) explicit value.
             return None
