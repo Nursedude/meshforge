@@ -363,11 +363,17 @@ class TestConfigdirOfRecordParsesTheUnit:
         assert _resolve_rnsd_configdir(
             unit["user"], unit["exec_start"]) == Path("/etc/reticulum")
 
-    def test_no_config_flag_falls_back_to_units_user_home(self):
+    def test_no_config_flag_falls_back_to_units_user_home(self, tmp_path,
+                                                          monkeypatch):
+        # Layout pinned: no /etc config, no XDG — else the box's own
+        # /etc/reticulum/config answers (RNS order; r18 NIT 3).
+        from utils.paths import ReticulumPaths
         from utils.rns_alignment import _resolve_rnsd_configdir
+        monkeypatch.setattr(ReticulumPaths, "ETC_BASE", tmp_path / "no-etc")
+        home = tmp_path / "home" / "operator"
         assert _resolve_rnsd_configdir(
-            "operator", "/usr/bin/rnsd --service") == Path(
-                "/home/operator/.reticulum")
+            "operator", "/usr/bin/rnsd --service",
+            home_of=lambda u: home) == home / ".reticulum"
 
 
 # ─────────────────────────────────────────────────────────────────────

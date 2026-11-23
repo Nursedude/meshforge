@@ -73,6 +73,9 @@ class RNSAlignmentState:
     rnsd_user: Optional[str] = None  # e.g. "root", "<operator>"
     rnsd_exec_start: Optional[str] = None
     rnsd_configdir: Optional[Path] = None  # what configdir rnsd is *actually* using
+    # WHY rnsd_configdir is None (RnsdConfigdirUnknown text) — UNKNOWN is
+    # worded as UNKNOWN and plans no write (r18 NIT 3).
+    rnsd_configdir_unknown: Optional[str] = None
     # config files at known locations
     etc_config: Optional[ConfigFileFacts] = None
     user_home_config: Optional[ConfigFileFacts] = None  # /home/<user>/.reticulum/config
@@ -150,6 +153,12 @@ RNS_DEFAULT_INSTANCE_NAME = 'default'
 UNJUDGED_PREFIX = "cannot judge with"
 
 
+class RnsdConfigdirUnknown(ValueError):
+    """The rnsd unit does not let us say which configdir rnsd loads (no
+    readable unit, an argv we cannot judge, a User= with no passwd entry).
+    Callers report UNKNOWN — never a guessed default (r18 NIT 3)."""
+
+
 def rnsd_unit_paths() -> List[str]:
     """The rnsd unit file + its drop-ins, in systemd's own read order.
 
@@ -188,7 +197,7 @@ def rnsd_configdir_of_record() -> Optional[Path]:
         if not unit.get('user') and not unit.get('exec_start'):
             return None
         return _resolve_rnsd_configdir(unit.get('user'), unit.get('exec_start'))
-    except OSError:
+    except (OSError, RnsdConfigdirUnknown):
         return None
 
 
@@ -220,10 +229,23 @@ def read_rns_instance_name() -> Optional[str]:
     # and this keeps the two modules acyclic.
     from utils.rns_init import _read_instance_name_from_config
 
-    candidates: List[Path] = []
     rnsd_dir = rnsd_configdir_of_record()
     if rnsd_dir is not None:
-        candidates.append(rnsd_dir)
+        # The config rnsd LOADS is the whole answer when it is there: a
+        # readable one that omits instance_name means rnsd serves
+        # ``default`` — never fall through to a stale home config naming
+        # something rnsd does not serve (r18 NIT 3, meshanchor-server
+        # shape). Guesses below are only for when rnsd's own is unseen.
+        name = _read_instance_name_from_config(rnsd_dir)
+        if name:
+            return name
+        try:
+            if (rnsd_dir / 'config').is_file():
+                return RNS_DEFAULT_INSTANCE_NAME
+        except OSError:
+            pass
+
+    candidates: List[Path] = []
     try:
         from utils.paths import get_real_user_home
         candidates.append(get_real_user_home() / '.reticulum')
@@ -244,24 +266,106 @@ def read_rns_instance_name() -> Optional[str]:
     return RNS_DEFAULT_INSTANCE_NAME if saw_a_readable_config else None
 
 
-def _resolve_rnsd_configdir(user: Optional[str], exec_start: Optional[str]) -> Path:
+_RNSD_ENTRY_NAMES = ('rnsd', 'rnsd.py')
+_RNSD_MODULE = 'RNS.Utilities.rnsd'
+
+
+def _rnsd_args(exec_start: str) -> List[str]:
+    """rnsd's own argv (after the program) from a unit ``ExecStart=``.
+
+    Accepts the shapes rnsd is started with: ``[-]/path/rnsd ...``,
+    ``python3 /path/rnsd ...``, ``python3 -m RNS.Utilities.rnsd ...``.
+    Anything else (a shell wrapper, an ``@`` argv0 override) is a shape we
+    cannot judge → ``RnsdConfigdirUnknown``. A seatbelt for the shapes the
+    fleet's installers write, not a systemd parser."""
+    import shlex
+    try:
+        argv = shlex.split(exec_start)
+    except ValueError as e:
+        raise RnsdConfigdirUnknown(f"rnsd ExecStart= not parseable ({e})") from None
+    if not argv:
+        raise RnsdConfigdirUnknown("rnsd ExecStart= is empty")
+    if argv[0].startswith('@'):
+        raise RnsdConfigdirUnknown("rnsd ExecStart= uses an @ argv0 override")
+    argv[0] = argv[0].lstrip('-:+!')
+    for i, tok in enumerate(argv[:3]):
+        if os.path.basename(tok) in _RNSD_ENTRY_NAMES:
+            return argv[i + 1:]
+        if tok == '-m' and i + 1 < len(argv) and argv[i + 1] == _RNSD_MODULE:
+            return argv[i + 2:]
+    raise RnsdConfigdirUnknown(
+        f"rnsd ExecStart= does not start rnsd in a shape we can judge: {argv[0]}")
+
+
+def _rnsd_config_arg(exec_start: Optional[str]) -> Optional[Path]:
+    """The ``--config`` dir rnsd itself would take from ``exec_start``, or
+    None when rnsd falls through to its default order.
+
+    Mirrors rnsd.py ``main()``: a plain argparse ``--config`` (``=``,
+    unique prefixes and last-wins all count — pinned against rnsd's own
+    parser block in tests) and ``if args.config:`` (empty → default).
+    An argv rnsd would REFUSE (it exits; no daemon) and a value we cannot
+    resolve here (systemd specifier / env var, relative dir) raise
+    ``RnsdConfigdirUnknown`` — never a guessed path."""
+    import argparse
+    if exec_start is None:
+        raise RnsdConfigdirUnknown("no rnsd unit ExecStart= readable")
+    args = _rnsd_args(exec_start)
+    parser = argparse.ArgumentParser(prog='rnsd', add_help=True, exit_on_error=False)
+    parser.add_argument('--config', action='store', default=None, type=str)
+    parser.add_argument('-v', '--verbose', action='count', default=0)
+    parser.add_argument('-q', '--quiet', action='count', default=0)
+    parser.add_argument('-s', '--service', action='store_true', default=False)
+    parser.add_argument('-i', '--interactive', action='store_true', default=False)
+    parser.add_argument('--exampleconfig', action='store_true', default=False)
+    parser.add_argument('--version', action='store_true', default=False)
+    try:
+        ns, extra = parser.parse_known_args(args)
+    except (argparse.ArgumentError, SystemExit) as e:
+        raise RnsdConfigdirUnknown(f"rnsd would refuse its argv ({e})") from None
+    if extra or ns.version or ns.exampleconfig or '-h' in args or '--help' in args:
+        raise RnsdConfigdirUnknown(f"rnsd would not run as a daemon with {args!r}")
+    if not ns.config:
+        return None
+    if '%' in ns.config or '$' in ns.config:
+        raise RnsdConfigdirUnknown(
+            f"rnsd --config {ns.config!r} needs systemd expansion we do not do")
+    cfg = Path(ns.config)
+    if not cfg.is_absolute():
+        raise RnsdConfigdirUnknown(f"rnsd --config {ns.config!r} is relative")
+    return cfg
+
+
+def _resolve_rnsd_configdir(user: Optional[str], exec_start: Optional[str],
+                            *, home_of: Optional[Callable[[str], Path]] = None) -> Path:
     """Decide which configdir rnsd is *actually* using.
 
     Priority:
       1. ``--config <dir>`` flag in ExecStart
-      2. ``$HOME/.reticulum/`` for the systemd User=
+      2. else RNS's own order for the unit's user — the ONE answer,
+         ``ReticulumPaths.rnsd_config_dir_for_home`` (r18 NIT 3: this used
+         to hard-code ``/home/<user>/.reticulum`` and skip /etc + XDG).
+
+    ``home_of`` maps a user name to its home (default: passwd). An unset
+    ``User=`` runs as root. A user with no passwd entry raises
+    ``RnsdConfigdirUnknown``.
     """
-    if exec_start:
-        m = re.search(r'--config\s+(\S+)', exec_start)
-        if m:
-            return Path(m.group(1))
-    # Default: $HOME/.reticulum/
-    if user == 'root':
-        return Path('/root/.reticulum')
-    if user:
-        return Path(f'/home/{user}/.reticulum')
-    # No User= → default depends on systemd; treat as root-equivalent
-    return Path('/root/.reticulum')
+    config_arg = _rnsd_config_arg(exec_start)
+    if config_arg is not None:
+        return config_arg
+    from utils.paths import ReticulumPaths
+    if home_of is None:
+        import pwd
+
+        def home_of(name: str) -> Path:
+            return Path(pwd.getpwnam(name).pw_dir)
+    name = user or 'root'
+    try:
+        home = home_of(name)
+    except KeyError:
+        raise RnsdConfigdirUnknown(
+            f"rnsd unit User={name} has no passwd entry") from None
+    return ReticulumPaths.rnsd_config_dir_for_home(home)
 
 
 def _stat_owner(path: Path, sudo: bool = False) -> Optional[str]:
@@ -400,7 +504,14 @@ def probe_local() -> RNSAlignmentState:
     unit = _read_systemd_unit(*rnsd_unit_paths())
     rnsd_user = unit['user']
     rnsd_exec = unit['exec_start']
-    rnsd_configdir = _resolve_rnsd_configdir(rnsd_user, rnsd_exec)
+    rnsd_configdir: Optional[Path] = None
+    rnsd_configdir_unknown: Optional[str] = None
+    try:
+        rnsd_configdir = _resolve_rnsd_configdir(rnsd_user, rnsd_exec)
+    except RnsdConfigdirUnknown as e:
+        rnsd_configdir_unknown = str(e)
+    except OSError as e:   # e.g. an untraversable dir on RNS's search path
+        rnsd_configdir_unknown = f"could not check rnsd's config search path ({e})"
 
     rnsd_active = subprocess.run(
         ['systemctl', 'is-active', 'rnsd'],
@@ -413,6 +524,7 @@ def probe_local() -> RNSAlignmentState:
         rnsd_user=rnsd_user,
         rnsd_exec_start=rnsd_exec,
         rnsd_configdir=rnsd_configdir,
+        rnsd_configdir_unknown=rnsd_configdir_unknown,
     )
 
     # Scan known config locations (sudo for /etc and /root)
@@ -582,7 +694,13 @@ def analyze_drift(state: RNSAlignmentState) -> List[str]:
     reasons: List[str] = []
 
     # rnsd must be using the canonical configdir
-    if state.rnsd_configdir != CANONICAL_CONFIGDIR:
+    if state.rnsd_configdir is None:
+        reasons.append(
+            f"rnsd configdir UNKNOWN — "
+            f"{state.rnsd_configdir_unknown or 'no rnsd unit judged'}; "
+            f"check the rnsd unit (`systemctl cat rnsd`) before normalizing"
+        )
+    elif state.rnsd_configdir != CANONICAL_CONFIGDIR:
         reasons.append(
             f"rnsd uses {state.rnsd_configdir} (canonical: {CANONICAL_CONFIGDIR}); "
             f"add `--config /etc/reticulum` to ExecStart drop-in"
@@ -727,8 +845,10 @@ def plan_normalize(state: RNSAlignmentState) -> List[NormalizeAction]:
             fn=lambda: _pin_rpc_key_in(etc, sudo=os.geteuid() != 0),
         ))
 
-    # Step 3: rnsd systemd drop-in for --config /etc/reticulum
-    if state.rnsd_configdir != CANONICAL_CONFIGDIR:
+    # Step 3: rnsd systemd drop-in for --config /etc/reticulum — never over
+    # a unit we could not judge (UNKNOWN plans no write; r18 NIT 3).
+    if (state.rnsd_configdir is not None
+            and state.rnsd_configdir != CANONICAL_CONFIGDIR):
         actions.append(NormalizeAction(
             description="Install rnsd drop-in: --config /etc/reticulum",
             cmd=['sudo', 'bash', '-c', _build_rnsd_dropin_script()],

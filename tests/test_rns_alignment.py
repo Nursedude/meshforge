@@ -72,17 +72,32 @@ class TestResolveRnsdConfigdir:
         )
         assert cd == Path('/etc/reticulum')
 
-    def test_user_root_no_flag_defaults_to_root_home(self):
-        cd = _resolve_rnsd_configdir(user='root', exec_start='/usr/local/bin/rnsd --service')
-        assert cd == Path('/root/.reticulum')
+    # Layout pinned (no /etc config, no XDG) and the passwd home injected:
+    # these used to pass only because the hard-coded answer ignored the
+    # box's own /etc/reticulum/config (r18 NIT 3).
+    @pytest.fixture
+    def no_etc(self, tmp_path, monkeypatch):
+        from utils.paths import ReticulumPaths
+        monkeypatch.setattr(ReticulumPaths, "ETC_BASE", tmp_path / "no-etc")
+        return tmp_path
 
-    def test_named_user_no_flag_defaults_to_user_home(self):
-        cd = _resolve_rnsd_configdir(user='testuser', exec_start='/usr/local/bin/rnsd')
-        assert cd == Path('/home/testuser/.reticulum')
+    def test_user_root_no_flag_defaults_to_root_home(self, no_etc):
+        homes = {'root': no_etc / 'root'}
+        cd = _resolve_rnsd_configdir(user='root', exec_start='/usr/local/bin/rnsd --service',
+                                     home_of=homes.__getitem__)
+        assert cd == no_etc / 'root' / '.reticulum'
 
-    def test_no_user_no_flag_treated_as_root(self):
-        cd = _resolve_rnsd_configdir(user=None, exec_start='/usr/local/bin/rnsd')
-        assert cd == Path('/root/.reticulum')
+    def test_named_user_no_flag_defaults_to_user_home(self, no_etc):
+        homes = {'testuser': no_etc / 'srv' / 'testuser'}
+        cd = _resolve_rnsd_configdir(user='testuser', exec_start='/usr/local/bin/rnsd',
+                                     home_of=homes.__getitem__)
+        assert cd == no_etc / 'srv' / 'testuser' / '.reticulum'
+
+    def test_no_user_no_flag_treated_as_root(self, no_etc):
+        homes = {'root': no_etc / 'root'}
+        cd = _resolve_rnsd_configdir(user=None, exec_start='/usr/local/bin/rnsd',
+                                     home_of=homes.__getitem__)
+        assert cd == no_etc / 'root' / '.reticulum'
 
 
 # ---------- config-file scanner ----------
