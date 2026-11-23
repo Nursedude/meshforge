@@ -133,17 +133,13 @@ def test_cli_unloadable_stays_rnsd_cannot_load(tmp_path):
     assert r.returncode == 2 and "rnsd cannot load" in r.stderr
 
 
-def test_check_without_a_path_reads_the_config_rnsd_loads(tmp_path):
-    d = tmp_path / "rns"
-    d.mkdir()
-    env = {**os.environ, "MESHFORGE_RNS_CONFIGDIR": str(d)}
-    cmd = [sys.executable, str(REPO / "scripts" / "rns_rpc_key_pin.py"), "--check"]
-    r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)
-    assert r.returncode == 1, r.stderr                     # absent file: UNKNOWN, not "no key"
-    (d / "config").write_bytes(PLAIN)
-    r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)
-    assert r.returncode == 0 and str(d / "config") in r.stdout
-    assert KEY not in r.stdout + r.stderr
+def test_check_without_a_path_or_home_is_usage_not_a_guess():
+    """r13.6: the no-path ``--check`` inferred the home from SUDO_USER/LOGNAME
+    and honoured MESHFORGE_RNS_CONFIGDIR, both unlike rnsd (r17 NIT 3) —
+    gone; callers pass ``--home``. rnsd's order: test_rnsd_config_seam."""
+    r = subprocess.run([sys.executable, str(REPO / "scripts" / "rns_rpc_key_pin.py"), "--check"],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 1 and "--home DIR" in r.stderr
 
 
 def test_copy_never_forces_over_an_invalid_client_key(tmp_path):
@@ -161,17 +157,21 @@ def test_copy_never_forces_over_an_invalid_client_key(tmp_path):
 # ── the shell callers' DECISIONS, executed (r15 #4) ─────────────────────
 
 ALL_RCS = [0, 1, 2, 3, 4, 5]
+STUB_CFG = "/stub/rnsd/config"          # what the stub's --rnsd-config prints
 
 
 def _stub_repo(tmp_path, rc, msg="STUB-REASON", stream="stderr"):
-    """A repo whose rns_rpc_key_pin.py exits ``rc`` and logs its argv +
-    SUDO_USER, so a caller's branch on every rc can be observed."""
+    """A repo whose rns_rpc_key_pin.py exits ``rc`` and logs its argv, so a
+    caller's branch on every rc can be observed (``--rnsd-config`` answers
+    ``STUB_CFG``, rc 0)."""
     root = tmp_path / "stubrepo"
     (root / "scripts").mkdir(parents=True)
     log = tmp_path / "calls.log"
     (root / "scripts" / "rns_rpc_key_pin.py").write_text(
         "import os, sys\n"
-        f"open({str(log)!r}, 'a').write(repr((sys.argv[1:], os.environ.get('SUDO_USER'))) + '\\n')\n"
+        f"open({str(log)!r}, 'a').write(repr(sys.argv[1:]) + '\\n')\n"
+        "if sys.argv[1:2] == ['--rnsd-config']:\n"
+        f"    print({STUB_CFG!r}); sys.exit(0)\n"
         f"print({msg!r}, file=sys.{stream})\n"
         f"sys.exit({rc})\n")
     return root, log
@@ -219,9 +219,8 @@ def test_wrapper_gate_decides_on_every_rc(tmp_path, rc):
         assert ("MISMATCH" in r.stderr) is (want == "not-pinned"), r.stderr
         assert ("UNKNOWN" in r.stderr) is (want == "unknown"), r.stderr
     assert "STUB-REASON" in r.stderr                       # the seam's reason reaches the journal
-    (argv, sudo_user), = _calls(log)
-    assert argv == ["--check"]                             # the checker resolves rnsd's config
-    assert sudo_user == subprocess.run(["id", "-un"], capture_output=True, text=True).stdout.strip()
+    # the home is EXPLICIT — the one rnsd expands — never inferred (r17 NIT 3)
+    assert _calls(log) == [["--check", "--home", os.environ["HOME"]]]
 
 
 def test_wrapper_without_a_checker_is_unknown(tmp_path):
@@ -244,8 +243,8 @@ def test_installer_gate_decides_on_every_rc(tmp_path, rc):
     repo, log = _stub_repo(tmp_path, rc)
     gate = _section(_INSTALLER, 'echo "=== rpc_key precondition (Issue #41) ==="',
                     'echo "=== Activating meshchatx.service')
-    script = (f'set -uo pipefail\nREPO_ROOT="{repo}"; REAL_USER=someuser\n'
-              + _installer_check_fn() + gate + "echo GATE_PASSED\n")
+    script = (f'set -uo pipefail\nREPO_ROOT="{repo}"; REAL_USER=someuser; REAL_HOME=/home/someuser\n'
+              + _installer_check_fn() + gate + 'echo "GATE_PASSED ${RNSD_CFG}"\n')
     r = _bash(script)
     want = _verdict(r, rc)
     if want == "pass":
@@ -254,22 +253,26 @@ def test_installer_gate_decides_on_every_rc(tmp_path, rc):
         assert r.returncode == 3 and "GATE_PASSED" not in r.stdout
         assert ("UNKNOWN" in r.stderr) is (want == "unknown"), r.stderr
         assert ("not pinned" in r.stderr) is (want == "not-pinned"), r.stderr
-    if want == "unknown":
-        assert "STUB-REASON" in r.stderr
-    assert _calls(log) == [(["--check"], "someuser")]
+    if want == "pass":
+        assert f"GATE_PASSED {STUB_CFG}" in r.stdout       # RNSD_CFG rides on to COPY
+    else:
+        assert "STUB-REASON" in r.stderr                   # the reason names the file (r17 NIT 7)
+    # ONE resolution, then the check of THAT path (r17 #1)
+    assert _calls(log) == [["--rnsd-config", "--home", "/home/someuser"], ["--check", STUB_CFG]]
 
 
 @pytest.mark.parametrize("rc", ALL_RCS)
 def test_installer_check_mode_counts_and_words_every_rc(tmp_path, rc):
     repo, _log = _stub_repo(tmp_path, rc)
     case = _section(_INSTALLER, "    rpc_key_check\n    case", "    esac\n") + "    esac\n"
-    script = (f'set -uo pipefail\nREPO_ROOT="{repo}"; REAL_USER=someuser\n'
+    script = (f'set -uo pipefail\nREPO_ROOT="{repo}"; REAL_USER=someuser; REAL_HOME=/home/someuser\n'
               + _installer_check_fn() + "drift=0\n" + case + 'echo "DRIFT=${drift}"\n')
     r = _bash(script)
     want = _verdict(r, rc)
     assert f"DRIFT={0 if want == 'pass' else 1}" in r.stdout, r.stdout + r.stderr
     assert ("UNKNOWN" in r.stdout) is (want == "unknown")
     assert ("not pinned" in r.stdout) is (want == "not-pinned")
+    assert ("STUB-REASON" in r.stdout) is (want != "pass")
 
 
 @pytest.mark.parametrize("rc", ALL_RCS)
@@ -277,7 +280,8 @@ def test_configure_gateway_decides_on_every_rc(tmp_path, rc):
     repo, log = _stub_repo(tmp_path, rc, stream="stdout")
     block = _section("scripts/configure_gateway.sh",
                      "# rpc_key must be pinned in rnsd's config", "\nesac\n") + "\nesac\n"
-    script = (f'set -euo pipefail\nREPO_ROOT="{repo}"; TARGET_USER=someuser\n'
+    script = (f'set -euo pipefail\nREPO_ROOT="{repo}"; TARGET_USER=someuser; '
+              f'TARGET_HOME=/home/someuser; HASH_PY="{sys.executable}"\n'
               "warn() { printf 'WARN %s\\n' \"$*\"; }\n" + block + "echo BLOCK_DONE\n")
     r = _bash(script)
     assert "BLOCK_DONE" in r.stdout, r.stderr               # a warning, never an abort
@@ -286,7 +290,9 @@ def test_configure_gateway_decides_on_every_rc(tmp_path, rc):
     assert ("UNKNOWN" in r.stdout) is (want == "unknown")
     assert ("NOT pinned" in r.stdout) is (want == "not-pinned")
     assert "STUB-REASON" in r.stdout
-    assert _calls(log) == [(["--check"], "someuser")]
+    assert _calls(log) == [["--check", "--home", "/home/someuser"]]   # explicit home (NIT 3)
+    if want == "unknown":                                   # its Check line re-runs THE same call (NIT 6)
+        assert f"Check: sudo {sys.executable} {repo}/scripts/rns_rpc_key_pin.py --check --home /home/someuser" in r.stdout
 
 
 # ── the COPY block's arms (r16 #4: the seam's stderr IS the WARN) ───────
@@ -303,7 +309,7 @@ def test_copy_block_says_the_seams_reason_on_every_failure(tmp_path, rc):
     script = ("set -uo pipefail\n"
               'run_as_user_with_path() { "$@"; }\n'
               'run_user_systemctl() { echo "SYSTEMCTL $*"; }\n'
-              f'REAL_HOME="{home}"; REAL_USER=someuser; RNS_SERVER_CFG="{server}"; REPO_ROOT="{repo}"\n'
+              f'REAL_HOME="{home}"; REAL_USER=someuser; RNSD_CFG="{server}"; REPO_ROOT="{repo}"\n'
               "seq() { echo 1; }\n" + _block())
     r = _bash(script)
     warn = [ln for ln in r.stderr.splitlines() if "WARN" in ln or "UNKNOWN" in ln]

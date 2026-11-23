@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # MeshForge MeshChatX wrapper — refuses-loud on rpc_key mismatch.
 #
-# Version: 3
+# Version: 4
 #
 # Pairs with the canonical NomadNet wrapper (Python). MeshChatX is a
 # web daemon, not a TUI that imports RNS in-process, so the analogous
@@ -14,7 +14,9 @@
 #     rns_rpc_key_pin.py --check (rnsd's own parser; v2, r13.2 — v1's grep
 #     parked MeshChatX over a quoted key rnsd reads; v3, r13.5 — the
 #     checker resolves the config, and a key it cannot JUDGE is said
-#     UNKNOWN, not MISMATCH) — exit 87. The systemd unit's StartLimitBurst then
+#     UNKNOWN, not MISMATCH; v4, r13.6 — the home is passed EXPLICITLY,
+#     --home "$HOME", the home rnsd itself expands, not inferred from
+#     SUDO_USER/LOGNAME) — exit 87. The systemd unit's StartLimitBurst then
 #     parks the service in failed state after 5 retries so the journal
 #     carries one clear diagnostic line instead of 392 silent
 #     restarts. (Issue #41 / Issue #46.)
@@ -50,7 +52,7 @@ if [[ ! -f "${checker}" ]]; then
     err "cannot verify rpc_key: ${checker} not found (set MESHFORGE_REPO)"
 else
     rpc_rc=0
-    SUDO_USER="$(id -un)" python3 "${checker}" --check >&2 || rpc_rc=$?
+    python3 "${checker}" --check --home "${HOME}" >&2 || rpc_rc=$?
 fi
 
 case "${rpc_rc}" in
@@ -66,7 +68,7 @@ case "${rpc_rc}" in
         err "RNS rpc_key UNKNOWN — could not verify it (rc=${rpc_rc}; reason above)."
         err "  Not starting: an unverified key is how AuthenticationError churns."
         err "  rc=5: install RNS for this user's python3 so it reads rnsd's config"
-        err "  rc=1/2: make rnsd's config readable / loadable, then restart meshchatx"
+        err "  rc=1/2: fix what the reason above names, then restart meshchatx"
         exit "${EXIT_AUTH_MISMATCH}" ;;
 esac
 

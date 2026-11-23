@@ -32,7 +32,9 @@ def _run(tmp_path, server_text, client_text):
         "set -uo pipefail\n"
         'run_as_user_with_path() { "$@"; }\n'
         'run_user_systemctl() { echo "SYSTEMCTL $*"; }\n'
-        f'REAL_HOME="{home}"; RNS_SERVER_CFG="{server}"; REPO_ROOT="{REPO}"\n'
+        # RNSD_CFG: the path the gate resolved (MeshForge r13.6 — the block
+        # copies from it); RNS_SERVER_CFG: MeshAnchor's block reads it.
+        f'REAL_HOME="{home}"; RNSD_CFG="{server}"; RNS_SERVER_CFG="{server}"; REPO_ROOT="{REPO}"\n'
         "seq() { echo 1; }\n"  # no 30 s wait in a test
         f"{_block()}\necho BLOCK_DONE\n")
     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)

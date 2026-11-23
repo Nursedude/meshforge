@@ -2,9 +2,10 @@
 """rns_rpc_key_pin.py — the ONE rpc_key reader/pinner for shell callers.
 
     rns_rpc_key_pin.py CONFIG                     pin a per-box key (writes)
-    rns_rpc_key_pin.py --check [CONFIG]           is a key pinned? (read-only;
-                                                  no CONFIG = the file rnsd
-                                                  loads, rnsd's own order)
+    rns_rpc_key_pin.py --check CONFIG             is a key pinned? (read-only)
+    rns_rpc_key_pin.py --check --home DIR         ... in the config rnsd loads
+                                                  for the user whose home is DIR
+    rns_rpc_key_pin.py --rnsd-config --home DIR   print that config's path
     rns_rpc_key_pin.py --copy-from SERVER CLIENT  pin SERVER's key into CLIENT
 
 Every answer comes from ``utils.rns_config_reader.rnsd_rpc_key`` (the key
@@ -20,6 +21,7 @@ Exit codes:
               nothing written · 1 could not read/write · 5 UNKNOWN
   --check:    0 pinned (valid) · 4 no key · 3 set but invalid · 2 rnsd
               cannot load the file · 1 could not read it · 5 UNKNOWN
+  --rnsd-config: 0 the path is printed · 1 DIR is not an absolute home
   --copy-from: 0 CLIENT already carries SERVER's key · 10 copied (a
               ``.bak-<ts>-rpckey`` backup is kept) · 4 CLIENT carries a
               DIFFERENT valid key (never overwritten) · 3 SERVER has no
@@ -31,6 +33,12 @@ fallback reader does not implement a shape rnsd loads — a triple-quoted
 value). Nothing is written. It is never "rnsd cannot load" (r13.5, Fable
 r16 #1 / r15 #7). Shell callers word 1, 2 and 5 as UNKNOWN, 3 and 4 as
 not pinned (``UNKNOWN_RCS`` / ``NOT_PINNED_RCS``).
+
+"The config rnsd loads" has ONE answer — ``ReticulumPaths.
+rnsd_config_dir_for_home`` (rnsd's order, by existence, an EXPLICIT home, no
+env override). A caller that checks AND copies asks ``--rnsd-config`` once
+and hands the same path to both (r13.6, Fable r17 #1: the gate judged
+~/.config/reticulum while the COPY block hard-coded /etc then ~/.reticulum).
 """
 
 import shutil
@@ -62,12 +70,20 @@ def _unjudged(what: str, path: Path, e: RNSConfigUnjudged) -> int:
     return RC_UNJUDGED
 
 
-def _rnsd_config() -> Path:
-    """The file rnsd loads — ``ReticulumPaths``, rnsd's own order
-    (/etc/reticulum, ~/.config/reticulum, ~/.reticulum; by EXISTENCE, so a
-    later config is never consulted past an existing one; r15 #5)."""
+def _home(arg: str):
+    """``--home DIR``: absolute, no ``..`` (input rule) — else None."""
+    home = Path(arg)
+    if not home.is_absolute() or ".." in home.parts:
+        print(f"--home must be an absolute path without '..': {arg!r}", file=sys.stderr)
+        return None
+    return home
+
+
+def _rnsd_config(home: Path) -> Path:
+    """The file rnsd loads for the user whose home is ``home`` — the ONE
+    resolver (rnsd's own order, by EXISTENCE; r15 #5, r17 #1/NIT 3)."""
     from utils.paths import ReticulumPaths
-    return ReticulumPaths.get_config_file()
+    return ReticulumPaths.rnsd_config_dir_for_home(home) / "config"
 
 
 def _usage() -> int:
@@ -78,6 +94,14 @@ def _usage() -> int:
 def _check(path: Path) -> int:
     try:
         raw = path.read_bytes()
+    except FileNotFoundError:
+        # Named, not "make it readable" (r17 NIT 2): no config here means rnsd
+        # has not run as this user yet — or runs as another user, whose
+        # config we cannot see. Either way not judged.
+        print(f"rpc_key UNKNOWN — no config at {path}: rnsd has not run as "
+              f"this user yet (it writes one on first start), or runs as "
+              f"another user", file=sys.stderr)
+        return 1
     except OSError as e:
         print(f"rpc_key UNKNOWN — could not read {path}: {e}", file=sys.stderr)
         return 1
@@ -167,10 +191,17 @@ def _pin(path: Path) -> int:
 
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if len(argv) == 2 and argv[0] == "--check":
+    if len(argv) == 3 and argv[0] in ("--check", "--rnsd-config") and argv[1] == "--home":
+        home = _home(argv[2])
+        if home is None:
+            return 1
+        cfg = _rnsd_config(home)
+        if argv[0] == "--rnsd-config":
+            print(cfg)
+            return 0
+        return _check(cfg)
+    if len(argv) == 2 and argv[0] == "--check" and not argv[1].startswith("-"):
         return _check(Path(argv[1]))
-    if argv == ["--check"]:
-        return _check(_rnsd_config())
     if len(argv) == 3 and argv[0] == "--copy-from":
         return _copy(Path(argv[1]), Path(argv[2]))
     if len(argv) == 1 and not argv[0].startswith("-"):

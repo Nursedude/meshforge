@@ -88,9 +88,13 @@ fi
 # order by EXISTENCE (/etc/reticulum, ~/.config/reticulum, ~/.reticulum) —
 # a later file is never consulted past an existing one (r13.5, Fable r15 #5:
 # this loop searched on, and even /root, so a key rnsd never reads passed).
+# r13.6 (Fable r17 NIT 3/6): the home is EXPLICIT (--home "$TARGET_HOME", no
+# SUDO_USER/LOGNAME inference — TARGET_USER=root fell to LOGNAME) and the
+# check runs on HASH_PY, the python just proven to import RNS.
 # rc vocabulary: rns_rpc_key_pin.py UNKNOWN_RCS (1 2 5) / NOT_PINNED_RCS (3 4).
+RPC_CHECK=("$HASH_PY" "$REPO_ROOT/scripts/rns_rpc_key_pin.py" --check --home "$TARGET_HOME")
 RPC_RC=0
-RPC_WHY="$(SUDO_USER="$TARGET_USER" python3 "$REPO_ROOT/scripts/rns_rpc_key_pin.py" --check 2>&1)" || RPC_RC=$?
+RPC_WHY="$("${RPC_CHECK[@]}" 2>&1)" || RPC_RC=$?
 case "$RPC_RC" in
     0)  echo "    $RPC_WHY" ;;
     3|4)
@@ -100,8 +104,8 @@ case "$RPC_RC" in
         warn "       (pins a key only if rnsd will read it; never a duplicate), restart rnsd." ;;
     *)
         warn "rpc_key UNKNOWN — could not verify it (rc=$RPC_RC): $RPC_WHY"
-        warn "Check: sudo python3 $REPO_ROOT/scripts/rns_rpc_key_pin.py --check"
-        warn "       (rc=5: install RNS for python3; rc=1/2: rnsd's config unreadable / unloadable)" ;;
+        warn "Check: sudo ${RPC_CHECK[*]}"
+        warn "       (rc=5: install RNS for that python; rc=1/2: the reason above names the file)" ;;
 esac
 
 # ---------------------------------------------------------------------------

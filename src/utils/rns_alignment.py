@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -142,6 +143,11 @@ def _read_systemd_unit(*paths: str) -> dict:
 # TestRnsDefaultInstanceNameMatchesLibrary against the installed library,
 # so an upstream change fails a TEST instead of silently blinding a box.
 RNS_DEFAULT_INSTANCE_NAME = 'default'
+
+# ConfigFileFacts.config_error prefix for "THIS python cannot judge the file"
+# (RNSConfigUnjudged) — analyze_drift words it UNKNOWN, never "rnsd cannot
+# load" (r13.6, Fable r17 NIT 1). One constant: the writer and the reader.
+UNJUDGED_PREFIX = "cannot judge with"
 
 
 def rnsd_unit_paths() -> List[str]:
@@ -335,7 +341,7 @@ def _scan_config_file(path: Path, sudo: bool = False) -> ConfigFileFacts:
     Both branches read BYTES and answer from rnsd's own parser (r13) — the
     sudo branch used to grep, and disagreed with the direct branch on 12 of
     14 config shapes (Fable r12 #1)."""
-    from utils.rns_config_reader import RNSConfigError
+    from utils.rns_config_reader import RNSConfigError, RNSConfigUnjudged
     f = ConfigFileFacts(path=path)
     if sudo:
         if subprocess.run(
@@ -357,6 +363,10 @@ def _scan_config_file(path: Path, sudo: bool = False) -> ConfigFileFacts:
         return f
     try:
         key, f.has_instance_name, f.instance_name = _reticulum_facts(raw)
+    except RNSConfigUnjudged as e:
+        # THIS python cannot judge it — never "rnsd cannot load" (r17 NIT 1).
+        f.config_error = f"{UNJUDGED_PREFIX} {sys.executable} ({e})"
+        return f
     except RNSConfigError as e:
         f.config_error = str(e)
         return f
@@ -585,7 +595,13 @@ def analyze_drift(state: RNSAlignmentState) -> List[str]:
         )
     elif state.etc_config.config_error:
         err = state.etc_config.config_error
-        if err.startswith("could not read"):
+        if err.startswith(UNJUDGED_PREFIX):
+            reasons.append(
+                f"/etc/reticulum/config is UNKNOWN — {err}; rnsd may read it "
+                f"fine. Install RNS for this python and re-run; normalize "
+                f"will not write into it"
+            )
+        elif err.startswith("could not read"):
             reasons.append(
                 f"MeshForge {err} — /etc/reticulum/config is UNKNOWN "
                 f"(run as admin/sudo); normalize will not write into it"

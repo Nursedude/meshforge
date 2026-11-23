@@ -512,11 +512,19 @@ def rnsd_rpc_key(content: Content) -> Tuple[str, Optional[str]]:
 
 def file_rpc_key(path) -> Optional[str]:
     """The valid rpc_key rnsd uses from the file at ``path``, else None (no
-    key, an invalid one, unreadable, or a file rnsd cannot load). For
-    readers that only compare keys; a caller that must tell those apart
-    uses ``rnsd_rpc_key`` on the bytes itself."""
+    key, an invalid one, unreadable, a file rnsd cannot load, or one THIS
+    python cannot judge — logged as UNKNOWN, r17 NIT 1). For readers that
+    only compare keys; a caller that must tell those apart uses
+    ``rnsd_rpc_key`` on the bytes itself."""
     try:
         state, value = rnsd_rpc_key(path.read_bytes())
+    except RNSConfigUnjudged as e:
+        import logging
+        import sys
+        logging.getLogger(__name__).warning(
+            "rpc_key UNKNOWN — %s cannot judge %s (%s); install RNS for this "
+            "python", sys.executable, path, e)
+        return None
     except (OSError, RNSConfigError):
         return None
     return value if state == "valid" else None

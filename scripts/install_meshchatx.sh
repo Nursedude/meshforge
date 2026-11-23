@@ -367,15 +367,22 @@ ensure_storage_dir() {
 # the active config. If rpc_key is unpinned, the daemon will fail with
 # AuthenticationError on every RPC call.
 # --------------------------------------------------------------------
-# Sets RPC_RC / RPC_WHY. The ONE reader (r13.2, Fable r14 #1): the key
-# rnsd USES, in the config rnsd loads (the checker resolves it in rnsd's own
-# order for REAL_USER — r13.5; the -r test here skipped ~/.config/reticulum
-# and fell past an existing unreadable /etc config). rc vocabulary:
+# Sets RNSD_CFG / RPC_RC / RPC_WHY. The ONE reader (r13.2, Fable r14 #1):
+# the key rnsd USES. RNSD_CFG is the config rnsd LOADS for REAL_USER, asked
+# ONCE (rnsd's own order, explicit home) — and the client-key COPY block below
+# copies from that SAME value, so "pinned" here is about the file COPY reads
+# (r13.6, Fable r17 #1: the gate saw ~/.config/reticulum while COPY hard-coded
+# /etc then ~/.reticulum). No override: a knob that bypasses the resolver
+# is a second answer (r13.6 mutant M14). rc vocabulary:
 # rns_rpc_key_pin.py UNKNOWN_RCS (1 2 5) / NOT_PINNED_RCS (3 4).
 rpc_key_check() {
     RPC_RC=0
-    RPC_WHY="$(SUDO_USER="${REAL_USER}" python3 \
-        "${REPO_ROOT}/scripts/rns_rpc_key_pin.py" --check 2>&1)" || RPC_RC=$?
+    RNSD_CFG="$(python3 "${REPO_ROOT}/scripts/rns_rpc_key_pin.py" \
+        --rnsd-config --home "${REAL_HOME}" 2>&1)" || {
+        RPC_RC=1; RPC_WHY="could not resolve rnsd's config: ${RNSD_CFG}"
+        RNSD_CFG=""; return 0; }
+    RPC_WHY="$(python3 "${REPO_ROOT}/scripts/rns_rpc_key_pin.py" \
+        --check "${RNSD_CFG}" 2>&1)" || RPC_RC=$?
 }
 
 # --------------------------------------------------------------------
@@ -432,7 +439,7 @@ do_check() {
     case "${RPC_RC}" in
         0)  echo "  rpc_key:          pinned (Issue #41 OK)" ;;
         3|4)
-            echo "  DRIFT: rpc_key not pinned in active RNS config"
+            echo "  DRIFT: rpc_key not pinned: ${RPC_WHY}"
             echo "    (run: sudo python3 ${REPO_ROOT}/scripts/rns_alignment.py normalize)"
             drift=$((drift + 1)) ;;
         *)
@@ -564,8 +571,8 @@ elif [[ "${RPC_RC}" != 3 && "${RPC_RC}" != 4 ]]; then
 ERROR: rpc_key UNKNOWN — could not verify it (rc=${RPC_RC}):
   ${RPC_WHY}
 Not activating MeshChatX on an unverified key. rc=5: install RNS for
-python3 so it reads rnsd's config; rc=1/2: make rnsd's config readable /
-loadable. Then re-run:
+python3 so it reads rnsd's config; rc=1/2: the reason above names the
+file and what is wrong with it. Then re-run:
     $0 --refresh
 
 EOF
@@ -573,9 +580,10 @@ EOF
 else
     cat >&2 <<EOF
 
-ERROR: rpc_key is not pinned in /etc/reticulum/config (or
-~/.reticulum/config). MeshChatX will fail with AuthenticationError
-on shared-instance RPC calls until this is fixed.
+ERROR: rpc_key is not pinned in the config rnsd loads:
+  ${RPC_WHY}
+MeshChatX will fail with AuthenticationError on shared-instance RPC
+calls until this is fixed.
 
   Fix first:
     sudo python3 ${REPO_ROOT}/scripts/rns_alignment.py normalize
@@ -598,13 +606,16 @@ echo "=== Client rpc_key (MeshChatX's own RNS configdir) ==="
 # meshanchor-server, one every 20 s). The client must carry rnsd's pinned key.
 # The key is copied, never printed; a client holding a DIFFERENT key is left
 # alone and said loudly.
+# The server is RNSD_CFG — the SAME path the gate above judged (r13.6, Fable
+# r17 #1), never a second guess at which file is rnsd's.
 client_cfg="${REAL_HOME}/.reticulum/config"
-server_cfg=""
-server_cfg_default="${RNS_SERVER_CFG:-/etc/reticulum/config}"
-[[ -r "${server_cfg_default}" ]] && server_cfg="${server_cfg_default}"
+server_cfg="${RNSD_CFG:-}"
 for _ in $(seq 1 30); do [[ -f "${client_cfg}" ]] && break; sleep 1; done
-if [[ -z "${server_cfg}" || "${server_cfg}" -ef "${client_cfg}" ]]; then
-    echo "  client shares rnsd's config — nothing to copy"
+if [[ -z "${server_cfg}" ]]; then
+    echo "  UNKNOWN: rnsd's config was not resolved — client key NOT checked;" >&2
+    echo "        re-run: $0 --refresh" >&2
+elif [[ "${server_cfg}" -ef "${client_cfg}" ]]; then
+    echo "  client shares rnsd's config (${server_cfg}) — nothing to copy"
 elif [[ ! -f "${client_cfg}" ]]; then
     echo "  WARN: ${client_cfg} did not appear within 30 s — MeshChatX RPC may" >&2
     echo "        fail 'digest sent was rejected'; re-run: $0 --refresh" >&2

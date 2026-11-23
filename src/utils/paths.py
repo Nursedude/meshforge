@@ -12,6 +12,7 @@ config files, not root's.
 from pathlib import Path
 from typing import Optional
 import os
+import sys
 import tempfile
 
 
@@ -489,19 +490,26 @@ class ReticulumPaths:
         override = os.environ.get('MESHFORGE_RNS_CONFIGDIR')
         if override:
             return Path(override)
+        return cls.rnsd_config_dir_for_home(get_real_user_home())
 
-        # System-wide config
-        if Path('/etc/reticulum').is_dir() and Path('/etc/reticulum/config').is_file():
-            return Path('/etc/reticulum')
+    @classmethod
+    def rnsd_config_dir_for_home(cls, home: Path) -> Path:
+        """The configdir rnsd started as the user whose home is ``home``
+        loads — RNS ``Reticulum.__init__``'s own order, by EXISTENCE (a later
+        dir is never consulted past an existing config, readable or not):
+        /etc/reticulum, ``home``/.config/reticulum, ``home``/.reticulum.
 
-        # XDG-style user config
-        user_home = get_real_user_home()
-        xdg_dir = user_home / '.config' / 'reticulum'
+        The ONE answer (r13.6, Fable r17 #1): no env override (rnsd ignores
+        ``MESHFORGE_RNS_CONFIGDIR``) and an EXPLICIT home (no SUDO_USER /
+        LOGNAME inference — r17 NIT 3). ``get_config_dir`` delegates here.
+        """
+        etc = cls.ETC_BASE
+        if etc.is_dir() and (etc / 'config').is_file():
+            return etc
+        xdg_dir = Path(home) / '.config' / 'reticulum'
         if xdg_dir.is_dir() and (xdg_dir / 'config').is_file():
             return xdg_dir
-
-        # Traditional fallback
-        return user_home / '.reticulum'
+        return Path(home) / '.reticulum'
 
     @classmethod
     def get_config_file(cls) -> Path:
@@ -555,7 +563,7 @@ class ReticulumPaths:
         # reads it (rns_config_reader.rnsd_rpc_key). The old line scan took
         # the first `rpc_key =` anywhere (a top-level / [logging] line rnsd
         # ignores) and missed `<hex>  # c`, quoted keys (Fable r13 #1).
-        from utils.rns_config_reader import RNSConfigError, rnsd_rpc_key
+        from utils.rns_config_reader import RNSConfigError, RNSConfigUnjudged, rnsd_rpc_key
         cfg = cls.get_config_file()
         try:
             raw_bytes = cfg.read_bytes()
@@ -567,6 +575,15 @@ class ReticulumPaths:
             return None
         try:
             state, value = rnsd_rpc_key(raw_bytes)
+        except RNSConfigUnjudged as e:
+            # THIS python cannot judge the file (no RNS importable) — rnsd may
+            # pin a key here; never derive over it. Not "cannot load": said
+            # as UNKNOWN in the log so the None has a witness (r17 NIT 1).
+            import logging
+            logging.getLogger(__name__).warning(
+                "rpc_key UNKNOWN — %s cannot judge %s (%s); install RNS for "
+                "this python", sys.executable, cfg, e)
+            return None
         except RNSConfigError:
             # rnsd cannot load its config: it runs with no key we could
             # name — never derive one for clients over that.

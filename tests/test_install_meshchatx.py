@@ -119,7 +119,10 @@ class TestRPCKeyRefusesLoud:
 
     def test_installer_checks_rpc_key_pinned(self):
         text = INSTALLER.read_text()
-        assert "rpc_key_check" in text and "rns_rpc_key_pin.py\" --check" in text, (
+        # r13.6: resolve rnsd's config ONCE, check THAT path (executed in
+        # test_rnsd_config_seam / test_rpc_key_unjudged; this is the name pin)
+        assert ("rpc_key_check" in text and "--rnsd-config --home" in text
+                and '--check "${RNSD_CFG}"' in text), (
             "installer missing rpc_key precondition check (Issue #41)"
         )
         assert "rns_alignment.py" in text, (
@@ -128,7 +131,7 @@ class TestRPCKeyRefusesLoud:
 
     def test_wrapper_checks_rpc_key_pinned(self):
         text = WRAPPER_TEMPLATE.read_text()
-        assert '"${checker}" --check' in text and "rns_rpc_key_pin.py" in text, (
+        assert '"${checker}" --check --home "${HOME}"' in text and "rns_rpc_key_pin.py" in text, (
             "wrapper missing rpc_key precondition check"
         )
 
