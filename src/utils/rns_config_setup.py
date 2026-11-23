@@ -271,9 +271,12 @@ def pin_rpc_key_bytes(
     if state == "invalid" and current == PLACEHOLDER:
         new_text = _fill_live_placeholder(text, new_key)
     elif state == "invalid" and not force:
+        # Never the value: rnsd may USE an invalid-to-MeshForge key
+        # ("<64hex> ; note"), so it is a secret (Fable r15 #2).
         logger.warning(
-            "rpc_key is set but not a valid 64-hex key: %r "
-            "(skipping; pass force=True to replace)", current)
+            "rpc_key is set but not a valid 64-hex key (%d chars, value "
+            "withheld) — skipping; pass force=True to replace",
+            len(current or ""))
         return None, current, False
     else:
         if state == "invalid":           # force over an invalid key

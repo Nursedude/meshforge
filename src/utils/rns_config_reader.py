@@ -40,6 +40,23 @@ class RNSConfigError(ValueError):
     """The RNS config cannot be read as rnsd would read it."""
 
 
+def _foreign(e: BaseException) -> RNSConfigError:
+    """The ONE rendering of a parser's exception: its kind and line number,
+    never the line's TEXT. ConfigObj's ``Invalid line ('  rpc_key <hex>')``
+    quoted a key into every ``--check`` / ``--copy-from`` caller's stderr and
+    the MeshChatX wrapper's journal (Fable r15 #2). A message that still
+    carries the line after the known shape is removed collapses to kind +
+    line number."""
+    msg = str(e)
+    line = getattr(e, "line", None)
+    if isinstance(line, str) and line.strip():
+        msg = msg.replace(f"({line!r}) ", "")
+        if line.strip() in msg:
+            n = getattr(e, "line_number", None)
+            msg = f"line text withheld (line {n})" if n else "line text withheld"
+    return RNSConfigError(f"{type(e).__name__}: {msg}")
+
+
 Interface = Dict[str, Any]
 Content = Union[str, bytes]
 
@@ -174,7 +191,7 @@ def _configobj_root(content: Content):
     except RNSConfigError:
         raise
     except Exception as e:  # ConfigObjError family, UnicodeDecodeError, …
-        raise RNSConfigError(f"{type(e).__name__}: {e}") from e
+        raise _foreign(e) from e
 
 
 def _read_configobj(content: Content) -> List[Interface]:
@@ -184,7 +201,7 @@ def _read_configobj(content: Content) -> List[Interface]:
     except RNSConfigError:
         raise
     except Exception as e:
-        raise RNSConfigError(f"{type(e).__name__}: {e}") from e
+        raise _foreign(e) from e
 
 
 # ── path 2: strict fallback with ConfigObj's grammar ────────────────────
@@ -350,8 +367,8 @@ def _strict_root(content: Content) -> "_Sec":
         mat = _KEYWORD.match(line)
         if mat is None:
             raise RNSConfigError(
-                f"Invalid line ({line!r}) (matched as neither section nor "
-                f"keyword) at line {lineno}")
+                f"Invalid line (matched as neither section nor keyword) at "
+                f"line {lineno} — line text withheld (it may hold a key)")
         _indent, key, raw = mat.groups()
         value = _handle_value(raw, lineno)
         key = _unquote(key, lineno)
@@ -403,7 +420,7 @@ def rnsd_view(content: Content) -> Dict[str, Any]:
     except RNSConfigError:
         raise
     except Exception as e:
-        raise RNSConfigError(f"{type(e).__name__}: {e}") from e
+        raise _foreign(e) from e
 
 
 def reticulum_section(view: Dict[str, Any]) -> Dict[str, Any]:
