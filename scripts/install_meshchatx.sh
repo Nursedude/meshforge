@@ -367,17 +367,15 @@ ensure_storage_dir() {
 # the active config. If rpc_key is unpinned, the daemon will fail with
 # AuthenticationError on every RPC call.
 # --------------------------------------------------------------------
-rpc_key_pinned() {
-    local cfg
-    if [[ -r /etc/reticulum/config ]]; then
-        cfg=/etc/reticulum/config
-    elif [[ -r "${REAL_HOME}/.reticulum/config" ]]; then
-        cfg="${REAL_HOME}/.reticulum/config"
-    else
-        return 1
-    fi
-    # The ONE reader (r13.2, Fable r14 #1): the key rnsd USES.
-    python3 "${REPO_ROOT}/scripts/rns_rpc_key_pin.py" --check "${cfg}" >/dev/null 2>&1
+# Sets RPC_RC / RPC_WHY. The ONE reader (r13.2, Fable r14 #1): the key
+# rnsd USES, in the config rnsd loads (the checker resolves it in rnsd's own
+# order for REAL_USER — r13.5; the -r test here skipped ~/.config/reticulum
+# and fell past an existing unreadable /etc config). rc vocabulary:
+# rns_rpc_key_pin.py UNKNOWN_RCS (1 2 5) / NOT_PINNED_RCS (3 4).
+rpc_key_check() {
+    RPC_RC=0
+    RPC_WHY="$(SUDO_USER="${REAL_USER}" python3 \
+        "${REPO_ROOT}/scripts/rns_rpc_key_pin.py" --check 2>&1)" || RPC_RC=$?
 }
 
 # --------------------------------------------------------------------
@@ -430,13 +428,17 @@ do_check() {
         drift=$((drift + 1))
     fi
 
-    if rpc_key_pinned; then
-        echo "  rpc_key:          pinned (Issue #41 OK)"
-    else
-        echo "  DRIFT: rpc_key not pinned in active RNS config"
-        echo "    (run: sudo python3 ${REPO_ROOT}/scripts/rns_alignment.py normalize)"
-        drift=$((drift + 1))
-    fi
+    rpc_key_check
+    case "${RPC_RC}" in
+        0)  echo "  rpc_key:          pinned (Issue #41 OK)" ;;
+        3|4)
+            echo "  DRIFT: rpc_key not pinned in active RNS config"
+            echo "    (run: sudo python3 ${REPO_ROOT}/scripts/rns_alignment.py normalize)"
+            drift=$((drift + 1)) ;;
+        *)
+            echo "  UNKNOWN: rpc_key could not be verified (rc=${RPC_RC}): ${RPC_WHY}"
+            drift=$((drift + 1)) ;;
+    esac
 
     if (( drift == 0 )); then
         echo "RESULT: aligned"
@@ -553,8 +555,21 @@ write_unit
 
 echo
 echo "=== rpc_key precondition (Issue #41) ==="
-if rpc_key_pinned; then
+rpc_key_check
+if [[ "${RPC_RC}" == 0 ]]; then
     echo "  rpc_key: pinned"
+elif [[ "${RPC_RC}" != 3 && "${RPC_RC}" != 4 ]]; then
+    cat >&2 <<EOF
+
+ERROR: rpc_key UNKNOWN — could not verify it (rc=${RPC_RC}):
+  ${RPC_WHY}
+Not activating MeshChatX on an unverified key. rc=5: install RNS for
+python3 so it reads rnsd's config; rc=1/2: make rnsd's config readable /
+loadable. Then re-run:
+    $0 --refresh
+
+EOF
+    exit 3
 else
     cat >&2 <<EOF
 
@@ -607,6 +622,8 @@ else
         0)  echo "  ${client_out}" ;;
         10) echo "  pinned rnsd's rpc_key into ${client_cfg} — restarting meshchatx"
             run_user_systemctl restart meshchatx ;;
+        5)  echo "  UNKNOWN: ${client_out} (rc=5) — ${REAL_USER}'s python3 cannot" >&2
+            echo "        judge it; install RNS for it, then: $0 --refresh" >&2 ;;
         *)  echo "  WARN: ${client_out:-could not check ${client_cfg}} (rc=${client_rc})" >&2 ;;
     esac
 fi

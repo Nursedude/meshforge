@@ -84,26 +84,25 @@ else
 fi
 
 # rpc_key must be pinned in rnsd's config or Issue #37/#41 re-surface.
-# rnsd reads /etc/reticulum/config first, then ~/.config/reticulum/config,
-# then ~/.reticulum/config — check them in that order.
-RPC_KEY_SOURCE=""
-for candidate in /etc/reticulum/config "$TARGET_HOME/.config/reticulum/config" "$TARGET_HOME/.reticulum/config" /root/.reticulum/config; do
-    # The ONE reader (r13.2): the key rnsd USES, by rnsd's own parser — a
-    # grep here was wrong on 30 of 88 shapes (Fable r14 #1).
-    if [[ -r "$candidate" ]] && python3 "$REPO_ROOT/scripts/rns_rpc_key_pin.py" --check "$candidate" >/dev/null 2>&1; then
-        RPC_KEY_SOURCE="$candidate"
-        break
-    fi
-done
-if [[ -z "$RPC_KEY_SOURCE" ]]; then
-    warn "rpc_key is NOT pinned in any RNS config. The gateway will likely hit"
-    warn "AuthenticationError on inbound RNS traffic (Issue #37/#41)."
-    warn "Check: python3 $REPO_ROOT/scripts/rns_rpc_key_pin.py --check /etc/reticulum/config"
-    warn "Fix:   sudo python3 $REPO_ROOT/scripts/rns_rpc_key_pin.py /etc/reticulum/config"
-    warn "       (pins a key only if rnsd will read it; never a duplicate), restart rnsd."
-else
-    echo "    rpc_key pinned via: $RPC_KEY_SOURCE"
-fi
+# The checker resolves the config rnsd LOADS for $TARGET_USER, in rnsd's own
+# order by EXISTENCE (/etc/reticulum, ~/.config/reticulum, ~/.reticulum) —
+# a later file is never consulted past an existing one (r13.5, Fable r15 #5:
+# this loop searched on, and even /root, so a key rnsd never reads passed).
+# rc vocabulary: rns_rpc_key_pin.py UNKNOWN_RCS (1 2 5) / NOT_PINNED_RCS (3 4).
+RPC_RC=0
+RPC_WHY="$(SUDO_USER="$TARGET_USER" python3 "$REPO_ROOT/scripts/rns_rpc_key_pin.py" --check 2>&1)" || RPC_RC=$?
+case "$RPC_RC" in
+    0)  echo "    $RPC_WHY" ;;
+    3|4)
+        warn "rpc_key is NOT pinned in rnsd's config ($RPC_WHY). The gateway will"
+        warn "likely hit AuthenticationError on inbound RNS traffic (Issue #37/#41)."
+        warn "Fix:   sudo python3 $REPO_ROOT/scripts/rns_rpc_key_pin.py <that config>"
+        warn "       (pins a key only if rnsd will read it; never a duplicate), restart rnsd." ;;
+    *)
+        warn "rpc_key UNKNOWN — could not verify it (rc=$RPC_RC): $RPC_WHY"
+        warn "Check: sudo python3 $REPO_ROOT/scripts/rns_rpc_key_pin.py --check"
+        warn "       (rc=5: install RNS for python3; rc=1/2: rnsd's config unreadable / unloadable)" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Dependencies

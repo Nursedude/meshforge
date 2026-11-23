@@ -2,7 +2,9 @@
 """rns_rpc_key_pin.py — the ONE rpc_key reader/pinner for shell callers.
 
     rns_rpc_key_pin.py CONFIG                     pin a per-box key (writes)
-    rns_rpc_key_pin.py --check CONFIG             is a key pinned? (read-only)
+    rns_rpc_key_pin.py --check [CONFIG]           is a key pinned? (read-only;
+                                                  no CONFIG = the file rnsd
+                                                  loads, rnsd's own order)
     rns_rpc_key_pin.py --copy-from SERVER CLIENT  pin SERVER's key into CLIENT
 
 Every answer comes from ``utils.rns_config_reader.rnsd_rpc_key`` (the key
@@ -15,13 +17,20 @@ a quoted key rnsd reads parked MeshChatX). The key is never printed.
 Exit codes:
   pin:        0 a valid key already pinned · 10 a fresh key pinned ·
               3 an rpc_key is set but invalid (left as-is) · 2 refused,
-              nothing written · 1 could not read/write
+              nothing written · 1 could not read/write · 5 UNKNOWN
   --check:    0 pinned (valid) · 4 no key · 3 set but invalid · 2 rnsd
-              cannot load the file · 1 could not read it
+              cannot load the file · 1 could not read it · 5 UNKNOWN
   --copy-from: 0 CLIENT already carries SERVER's key · 10 copied (a
               ``.bak-<ts>-rpckey`` backup is kept) · 4 CLIENT carries a
               DIFFERENT valid key (never overwritten) · 3 SERVER has no
-              usable key · 2 refused, nothing written · 1 could not read/write
+              usable key · 2 refused, nothing written · 1 could not
+              read/write · 5 UNKNOWN
+
+5 = UNKNOWN: THIS python cannot judge the file (no RNS importable, and the
+fallback reader does not implement a shape rnsd loads — a triple-quoted
+value). Nothing is written. It is never "rnsd cannot load" (r13.5, Fable
+r16 #1 / r15 #7). Shell callers word 1, 2 and 5 as UNKNOWN, 3 and 4 as
+not pinned (``UNKNOWN_RCS`` / ``NOT_PINNED_RCS``).
 """
 
 import shutil
@@ -33,10 +42,32 @@ SRC = Path(__file__).resolve().parent.parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from utils.rns_config_reader import RNSConfigError, rnsd_rpc_key  # noqa: E402
+from utils.rns_config_reader import (  # noqa: E402
+    RNSConfigError, RNSConfigUnjudged, rnsd_rpc_key,
+)
 from utils.rns_config_setup import (  # noqa: E402
     ensure_rpc_key, is_valid_key, pin_rpc_key_bytes,
 )
+
+
+# The vocabulary shell callers branch on (tests pin the callers to it).
+UNKNOWN_RCS = (1, 2, 5)
+NOT_PINNED_RCS = (3, 4)
+RC_UNJUDGED = 5
+
+
+def _unjudged(what: str, path: Path, e: RNSConfigUnjudged) -> int:
+    print(f"rpc_key UNKNOWN — {what}: {sys.executable} cannot judge {path} "
+          f"({e}); rnsd may read it fine", file=sys.stderr)
+    return RC_UNJUDGED
+
+
+def _rnsd_config() -> Path:
+    """The file rnsd loads — ``ReticulumPaths``, rnsd's own order
+    (/etc/reticulum, ~/.config/reticulum, ~/.reticulum; by EXISTENCE, so a
+    later config is never consulted past an existing one; r15 #5)."""
+    from utils.paths import ReticulumPaths
+    return ReticulumPaths.get_config_file()
 
 
 def _usage() -> int:
@@ -52,6 +83,8 @@ def _check(path: Path) -> int:
         return 1
     try:
         state, _value = rnsd_rpc_key(raw)
+    except RNSConfigUnjudged as e:
+        return _unjudged("not checked", path, e)
     except RNSConfigError as e:
         print(f"rpc_key UNKNOWN — rnsd cannot load {path}: {e}", file=sys.stderr)
         return 2
@@ -73,6 +106,8 @@ def _copy(server: Path, client: Path) -> int:
     except OSError as e:
         print(f"rpc_key NOT copied — {e}", file=sys.stderr)
         return 1
+    except RNSConfigUnjudged as e:
+        return _unjudged("NOT copied", server, e)
     except RNSConfigError as e:
         print(f"rpc_key NOT copied — rnsd cannot load {server}: {e}", file=sys.stderr)
         return 3
@@ -80,7 +115,11 @@ def _copy(server: Path, client: Path) -> int:
         print(f"{server} carries no pinned rpc_key rnsd uses — nothing to copy", file=sys.stderr)
         return 3
     try:
+        # Never force: a client key rnsd's client would use is the
+        # operator's to replace (r16 #4 pins this).
         new_raw, c_key, _gen = pin_rpc_key_bytes(c_raw, key=s_key)
+    except RNSConfigUnjudged as e:
+        return _unjudged("NOT copied", client, e)
     except ValueError as e:      # RNSConfigError / RPCKeyWriteRefused
         print(f"rpc_key NOT copied — {client} left untouched: {e}", file=sys.stderr)
         return 2
@@ -107,6 +146,8 @@ def _copy(server: Path, client: Path) -> int:
 def _pin(path: Path) -> int:
     try:
         key, generated = ensure_rpc_key(path)
+    except RNSConfigUnjudged as e:
+        return _unjudged("NOT pinned", path, e)
     except ValueError as e:      # RNSConfigError / RPCKeyWriteRefused
         print(f"rpc_key NOT pinned — {path} left untouched: {e}", file=sys.stderr)
         return 2
@@ -128,6 +169,8 @@ def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if len(argv) == 2 and argv[0] == "--check":
         return _check(Path(argv[1]))
+    if argv == ["--check"]:
+        return _check(_rnsd_config())
     if len(argv) == 3 and argv[0] == "--copy-from":
         return _copy(Path(argv[1]), Path(argv[2]))
     if len(argv) == 1 and not argv[0].startswith("-"):

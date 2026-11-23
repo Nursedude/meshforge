@@ -52,8 +52,8 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from utils.rns_config_reader import (
-    _UTF8_BOM, RNSConfigError, config_text, keyword_name, rnsd_rpc_key,
-    rnsd_view, section_header,
+    _UTF8_BOM, RNSConfigError, RNSConfigUnjudged, config_text, keyword_name,
+    rnsd_rpc_key, rnsd_view, section_header,
 )
 
 logger = logging.getLogger(__name__)
@@ -158,7 +158,7 @@ def _require_pinned(before: Optional[dict], new_content, rpc_key: str) -> None:
     except RNSConfigError as e:
         raise RPCKeyWriteRefused(
             f"the edited config would not load in rnsd ({e}) — nothing "
-            f"written") from e
+            f"written") from None
     got = after.get("reticulum")
     if not isinstance(got, dict) or got.get("rpc_key") != rpc_key:
         raise RPCKeyWriteRefused(
@@ -256,14 +256,16 @@ def pin_rpc_key_bytes(
     except RNSConfigError as e:
         raise RPCKeyWriteRefused(
             f"the config is not UTF-8 text ({e}) — nothing written; re-save "
-            f"it as UTF-8") from e
+            f"it as UTF-8") from None
     try:
         before = rnsd_view(raw)
         state, current = rnsd_rpc_key(raw)   # THE definition (r13.1)
+    except RNSConfigUnjudged:
+        raise        # THIS python cannot judge — never "rnsd cannot load" (r13.5)
     except RNSConfigError as e:
         raise RPCKeyWriteRefused(
             f"rnsd cannot load this config as it stands ({e}) — nothing "
-            f"written; a key added to it would never be read") from e
+            f"written; a key added to it would never be read") from None
 
     new_key = key or generate_rpc_key()
     if state == "valid":

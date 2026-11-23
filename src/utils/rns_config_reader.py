@@ -40,6 +40,15 @@ class RNSConfigError(ValueError):
     """The RNS config cannot be read as rnsd would read it."""
 
 
+class RNSConfigUnjudged(RNSConfigError):
+    """THIS python cannot say what rnsd reads: the strict fallback (no RNS
+    importable) met a shape rnsd's ConfigObj loads but the fallback does not
+    implement (a triple-quoted value). Not "rnsd cannot load it" — rnsd may
+    read it fine. Callers word it UNKNOWN and name the cure (install RNS for
+    this python); r13.5, Fable r16 #1 / r15 #7: a triple-quoted key read
+    "rnsd cannot load" and ``--copy-from`` said "server has no usable key"."""
+
+
 def _foreign(e: BaseException) -> RNSConfigError:
     """The ONE rendering of a parser's exception: its kind and line number,
     never the line's TEXT. ConfigObj's ``Invalid line ('  rpc_key <hex>')``
@@ -74,7 +83,7 @@ def _raw_lines(content: Content) -> List[bytes]:
         try:
             content = content.encode("utf-8")
         except UnicodeEncodeError as e:   # a lone surrogate (Fable r10 NIT)
-            raise RNSConfigError(f"UnicodeEncodeError: {e}") from e
+            raise RNSConfigError(f"UnicodeEncodeError: {e}") from None
     return io.BytesIO(content).readlines()
 
 
@@ -104,7 +113,7 @@ def config_text(content: Content, *, strict: bool = False) -> str:
         try:
             return content.decode("utf-8", errors="strict" if strict else "replace")
         except UnicodeDecodeError as e:
-            raise RNSConfigError(f"UnicodeDecodeError: {e}") from e
+            raise RNSConfigError(f"UnicodeDecodeError: {e}") from None
     return content[1:] if content.startswith("\ufeff") else content
 
 
@@ -191,7 +200,7 @@ def _configobj_root(content: Content):
     except RNSConfigError:
         raise
     except Exception as e:  # ConfigObjError family, UnicodeDecodeError, …
-        raise _foreign(e) from e
+        raise _foreign(e) from None
 
 
 def _read_configobj(content: Content) -> List[Interface]:
@@ -201,7 +210,7 @@ def _read_configobj(content: Content) -> List[Interface]:
     except RNSConfigError:
         raise
     except Exception as e:
-        raise _foreign(e) from e
+        raise _foreign(e) from None
 
 
 # ── path 2: strict fallback with ConfigObj's grammar ────────────────────
@@ -285,7 +294,7 @@ def _unquote(value: str, lineno: int) -> str:
 def _handle_value(raw: str, lineno: int):
     """ConfigObj ``_handle_value`` (list_values=True), errors raised."""
     if raw[:3] in ('"""', "'''"):
-        raise RNSConfigError(
+        raise RNSConfigUnjudged(
             f"triple-quoted value at line {lineno} — the fallback reader "
             f"does not implement it (install RNS so its ConfigObj reads it)")
     mat = _VALUEEXP.match(raw)
@@ -328,7 +337,7 @@ def _decoded_lines(content: Content) -> List[str]:
     try:
         return [line.decode("utf-8").rstrip("\r\n") for line in raw]
     except UnicodeDecodeError as e:
-        raise RNSConfigError(f"UnicodeDecodeError: {e}") from e
+        raise RNSConfigError(f"UnicodeDecodeError: {e}") from None
 
 
 def _read_strict(content: Content) -> List[Interface]:
@@ -420,7 +429,7 @@ def rnsd_view(content: Content) -> Dict[str, Any]:
     except RNSConfigError:
         raise
     except Exception as e:
-        raise _foreign(e) from e
+        raise _foreign(e) from None
 
 
 def reticulum_section(view: Dict[str, Any]) -> Dict[str, Any]:
