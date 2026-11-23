@@ -1595,18 +1595,16 @@ if $INSTALL_RNS; then
     # template's __RPC_KEY__ placeholder (fresh-install path) OR insert a
     # new line under [reticulum] if the config was hand-rolled without one.
     # Never overwrite an existing valid key.
+    # ONE pinner (r13): the new bytes are checked against rnsd's own parser
+    # before writing — no sed/grep grammar guess (that wrote a 2nd [reticulum]).
     if [[ -f /etc/reticulum/config ]]; then
-        if grep -q '__RPC_KEY__' /etc/reticulum/config 2>/dev/null; then
-            RPC_KEY=$(openssl rand -hex 32)
-            sed -i "s/__RPC_KEY__/$RPC_KEY/" /etc/reticulum/config
-            echo -e "  ${GREEN}✓ Generated unique rpc_key for this box${NC}"
-        elif ! grep -Eq '^\s*rpc_key\s*=\s*[0-9a-fA-F]{64}\s*$' /etc/reticulum/config 2>/dev/null; then
-            RPC_KEY=$(openssl rand -hex 32)
-            sed -i "/^\[reticulum\]/a\\  rpc_key = $RPC_KEY" /etc/reticulum/config
-            echo -e "  ${GREEN}✓ Added missing rpc_key (unique per box)${NC}"
-        else
-            echo -e "  Existing rpc_key preserved"
-        fi
+        pin_rc=0
+        python3 "$MF_SCRIPT_DIR/rns_rpc_key_pin.py" /etc/reticulum/config || pin_rc=$?
+        case "$pin_rc" in
+            0)  echo -e "  Existing rpc_key preserved" ;;
+            10) echo -e "  ${GREEN}✓ Pinned unique rpc_key for this box${NC}" ;;
+            *)  echo -e "  ${YELLOW}⚠ rpc_key NOT pinned (rc $pin_rc, reason above) — fix /etc/reticulum/config, then: python3 $MF_SCRIPT_DIR/rns_rpc_key_pin.py /etc/reticulum/config${NC}" ;;
+        esac
     fi
 
     # Create systemd service (deploy from template or create inline)

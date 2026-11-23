@@ -122,7 +122,7 @@ class RNSConfigHandler(BaseHandler):
             target.write_text(rendered)
             target.chmod(0o644)
             return target
-        except (OSError, PermissionError) as e:
+        except (OSError, ValueError) as e:  # ValueError: the rendered key would not land
             self.ctx.dialog.msgbox("Error", f"Failed to deploy config:\n{e}")
             return None
 
@@ -139,14 +139,14 @@ class RNSConfigHandler(BaseHandler):
             _key, generated = ensure_rpc_key(config_path)
             if generated:
                 logger.info("Pinned fresh rpc_key into %s", config_path)
-        except (OSError, ValueError) as e:  # ValueError = RNSConfigError (not UTF-8)
+        except (OSError, ValueError) as e:  # ValueError = RNSConfigError / RPCKeyWriteRefused
             # The config already landed; a missing key must be SAID, not logged.
             logger.warning("rpc_key pin skipped for %s: %s", config_path, e)
             self.ctx.dialog.msgbox(
                 "rpc_key NOT pinned",
                 f"rpc_key NOT pinned in:\n  {config_path}\n\n{e}\n\n"
-                "The file was left as-is. If it is not UTF-8 text, re-save it "
-                "as UTF-8 and run RNS repair to pin a key.",
+                "The file was left as-is. Fix it (Edit Reticulum Config), "
+                "then run RNS repair to pin a key.",
             )
 
     def _view_rns_config(self):

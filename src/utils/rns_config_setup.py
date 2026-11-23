@@ -26,6 +26,15 @@ Public surface:
                                       rpc_key line is missing or not
                                       valid 64-hex, insert one. Never
                                       overwrites an existing valid key.
+    pin_rpc_key_bytes(raw)          — the same, on bytes (no I/O): the
+                                      ONE pinner every writer uses.
+
+The write boundary (WITNESS-TUI r13, 2026-11-22): every pin checks its NEW
+bytes with rnsd's own parser (``rns_config_reader.rnsd_view``) before it is
+written — they must load, carry ``reticulum.rpc_key`` == the key reported,
+and change nothing else rnsd reads — or it refuses (``RPCKeyWriteRefused``)
+and writes nothing. The line edits below only decide WHERE to write; they
+are not trusted to have got the grammar right.
 
 All writers (install_noc.sh, handlers/rns_config.py, fleet_restore.sh)
 should call one of these before putting a config on disk. The rpc_key
@@ -42,6 +51,11 @@ import secrets
 from pathlib import Path
 from typing import Optional, Tuple
 
+from utils.rns_config_reader import (
+    _UTF8_BOM, RNSConfigError, config_text, keyword_name, rnsd_view,
+    reticulum_section, section_header,
+)
+
 logger = logging.getLogger(__name__)
 
 # The placeholder shipped in templates/reticulum.conf. Any caller that
@@ -50,15 +64,6 @@ PLACEHOLDER = "__RPC_KEY__"
 
 # rpc_key is 32 bytes → 64 hex chars, lowercase (RNS normalizes).
 _VALID_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
-
-# Matches a live (uncommented) rpc_key assignment line in a config.
-# Accepts any indentation, any whitespace around '=', any 64-hex value.
-_LIVE_KEY_RE = re.compile(
-    r"^(?P<indent>\s*)rpc_key\s*=\s*(?P<value>\S+)\s*$"
-)
-
-# Matches the [reticulum] section header.
-_RETICULUM_HEADER_RE = re.compile(r"^\s*\[reticulum\]\s*$")
 
 
 def generate_rpc_key() -> str:
@@ -86,32 +91,22 @@ def _lines(text: str) -> list:
     return lines
 
 
-def render_template(text: str, rpc_key: Optional[str] = None) -> str:
-    """Return ``text`` with ``__RPC_KEY__`` substituted (or inserted).
+class RPCKeyWriteRefused(RNSConfigError):
+    """A pinner refused to write: the new bytes would not give rnsd the key
+    it reports, or would change something else rnsd reads. Nothing was
+    written; the message says why in words."""
 
-    If ``rpc_key`` is ``None``, a fresh key is generated. If ``text``
-    already contains the placeholder, it's substituted in place. If not,
-    a ``rpc_key = <key>`` line is inserted at the end of the
-    ``[reticulum]`` section — preserving the file's indentation
-    convention (2-space).
 
-    Raises ``ValueError`` if a non-None ``rpc_key`` argument is not a
-    valid 64-hex string, so we never bake an invalid key into a
-    fresh-install config.
-    """
-    if rpc_key is None:
-        rpc_key = generate_rpc_key()
-    elif not is_valid_key(rpc_key):
-        raise ValueError(
-            f"rpc_key must be 64 lowercase hex chars, got: {rpc_key!r}"
-        )
+def _header_is_reticulum(line: str) -> bool:
+    h = section_header(line)
+    return h is not None and h == (1, "reticulum")
 
-    if PLACEHOLDER in text:
-        return text.replace(PLACEHOLDER, rpc_key)
 
-    # Placeholder absent — insert a fresh line under [reticulum].
-    # rnsd's lines: split on "\n" ONLY (splitlines() also splits a lone "\r"
-    # and the "\n".join below would then rewrite it into a real newline).
+def _insert_key_line(text: str, rpc_key: str) -> str:
+    """``text`` with ``  rpc_key = <key>`` added at the end of the
+    ``[reticulum]`` section (or a new section appended). Locates by
+    ConfigObj's own section grammar; ``_require_pinned`` decides whether it
+    landed."""
     lines = _lines(text)
     cr = "\r" if lines and lines[0].endswith("\r") else ""
     out: list = []
@@ -120,12 +115,11 @@ def render_template(text: str, rpc_key: Optional[str] = None) -> str:
     section_start_idx = -1
     for i, line in enumerate(lines):
         out.append(line)
-        if _RETICULUM_HEADER_RE.match(line):
+        if not inserted and _header_is_reticulum(line):
             in_reticulum = True
-            section_start_idx = i
+            section_start_idx = len(out) - 1
             continue
-        if in_reticulum and line.strip().startswith('[') \
-                and not _RETICULUM_HEADER_RE.match(line):
+        if in_reticulum and section_header(line) is not None:
             # Next section starts — insert before it
             insert_pos = len(out) - 1
             # Walk back past trailing blank lines inside the section
@@ -144,13 +138,130 @@ def render_template(text: str, rpc_key: Optional[str] = None) -> str:
         inserted = True
 
     if not inserted:
-        # No [reticulum] section at all — append one. Caller probably
-        # has a malformed template but we still produce a usable file.
-        out.append(cr)
+        # No [reticulum] section at all — append one.
+        if out:
+            out.append(cr)
         out.append(f"[reticulum]{cr}")
         out.append(f"  rpc_key = {rpc_key}{cr}")
 
-    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+    return "\n".join(out) + ("\n" if text.endswith("\n") or not text else "")
+
+
+def _require_pinned(before: Optional[dict], new_content, rpc_key: str) -> None:
+    """THE write boundary (r13): ``new_content`` must load as rnsd loads it,
+    carry ``reticulum.rpc_key == rpc_key``, and — when ``before`` (the old
+    file's rnsd view) is given — differ from it in nothing but that key.
+    Raises ``RPCKeyWriteRefused`` otherwise; callers write only after this
+    returns."""
+    try:
+        after = rnsd_view(new_content)
+    except RNSConfigError as e:
+        raise RPCKeyWriteRefused(
+            f"the edited config would not load in rnsd ({e}) — nothing "
+            f"written") from e
+    got = after.get("reticulum")
+    if not isinstance(got, dict) or got.get("rpc_key") != rpc_key:
+        raise RPCKeyWriteRefused(
+            "the edit would not leave rnsd reading the new rpc_key under "
+            "[reticulum] — nothing written")
+    if before is None:
+        return
+    expected = {k: (dict(v) if isinstance(v, dict) else v)
+                for k, v in before.items()}
+    expected.setdefault("reticulum", {})["rpc_key"] = rpc_key
+    if after != expected:
+        raise RPCKeyWriteRefused(
+            "the edit would change more than rpc_key in what rnsd reads — "
+            "nothing written")
+
+
+def render_template(text: str, rpc_key: Optional[str] = None) -> str:
+    """Return ``text`` with ``__RPC_KEY__`` substituted (or inserted).
+
+    If ``rpc_key`` is ``None``, a fresh key is generated. If ``text``
+    already contains the placeholder, it's substituted in place. If not,
+    a ``rpc_key = <key>`` line is inserted at the end of the
+    ``[reticulum]`` section.
+
+    Raises ``ValueError`` if a non-None ``rpc_key`` argument is not a
+    valid 64-hex string, and ``RPCKeyWriteRefused`` when the rendered text
+    would not give rnsd that key — the caller writes nothing.
+    """
+    if rpc_key is None:
+        rpc_key = generate_rpc_key()
+    elif not is_valid_key(rpc_key):
+        raise ValueError(
+            f"rpc_key must be 64 lowercase hex chars, got: {rpc_key!r}"
+        )
+    if PLACEHOLDER in text:
+        rendered = text.replace(PLACEHOLDER, rpc_key)
+    else:
+        rendered = _insert_key_line(text, rpc_key)
+    _require_pinned(None, rendered, rpc_key)
+    return rendered
+
+
+def _strip_reticulum_key_lines(text: str) -> str:
+    """Drop every live ``rpc_key = …`` line inside ``[reticulum]``."""
+    keep = []
+    section = None
+    for line in _lines(text):
+        h = section_header(line)
+        if h is not None:
+            section = h
+        elif section == (1, "reticulum") and keyword_name(line) == "rpc_key":
+            continue
+        keep.append(line)
+    return "\n".join(keep) + ("\n" if text.endswith("\n") else "")
+
+
+def pin_rpc_key_bytes(
+    raw: bytes, force: bool = False,
+) -> Tuple[Optional[bytes], str, bool]:
+    """The one rpc_key pinner, on bytes: ``(new_bytes | None, key, generated)``.
+
+    ``new_bytes`` is None when nothing should be written (a valid key is
+    already pinned — or an invalid one and ``force`` is False). The key is
+    found the way rnsd finds it (``rnsd_view``: inline comments, quoted
+    names, ``[ reticulum ]`` …), and every write passes ``_require_pinned``.
+
+    Raises ``RNSConfigError`` (writing nothing) when the file is not UTF-8,
+    when rnsd could not load it as it stands, or when the edit would not
+    land exactly the key (``RPCKeyWriteRefused``)."""
+    bom = _UTF8_BOM if raw.startswith(_UTF8_BOM) else b""
+    try:
+        text = config_text(raw, strict=True)
+    except RNSConfigError as e:
+        raise RPCKeyWriteRefused(
+            f"the config is not UTF-8 text ({e}) — nothing written; re-save "
+            f"it as UTF-8") from e
+    try:
+        before = rnsd_view(raw)
+        current = reticulum_section(before).get("rpc_key")
+    except RNSConfigError as e:
+        raise RPCKeyWriteRefused(
+            f"rnsd cannot load this config as it stands ({e}) — nothing "
+            f"written; a key added to it would never be read") from e
+    if isinstance(current, list):
+        current = ", ".join(current)
+
+    new_key = generate_rpc_key()
+    if current == PLACEHOLDER:
+        new_text = text.replace(PLACEHOLDER, new_key)
+    elif current is not None and is_valid_key(current.lower()):
+        return None, current.lower(), False
+    elif current is not None and not force:
+        logger.warning(
+            "rpc_key is set but not valid 64-hex: %r "
+            "(skipping; pass force=True to replace)", current)
+        return None, current, False
+    else:
+        if current is not None:          # force over an invalid key
+            text = _strip_reticulum_key_lines(text)
+        new_text = _insert_key_line(text, new_key)
+    new_raw = bom + new_text.encode("utf-8")
+    _require_pinned(before, new_raw, new_key)
+    return new_raw, new_key, True
 
 
 def ensure_rpc_key(
@@ -158,90 +269,20 @@ def ensure_rpc_key(
 ) -> Tuple[str, bool]:
     """Make sure ``config_path`` carries a valid per-box rpc_key.
 
-    Returns ``(rpc_key, was_generated)``. When ``was_generated`` is
-    ``True``, the helper inserted a freshly-minted key and wrote the
-    file back to disk. When ``False``, the existing key was already
-    valid and nothing was written.
-
-    Behavior:
-
-    - If the file has a live ``rpc_key = <64-hex>`` line, returns that
-      key and touches nothing. Preserves existing fleet state.
-    - If the file has the ``__RPC_KEY__`` placeholder, substitutes a
-      fresh key (the install-time case).
-    - If the file has NO rpc_key line at all, inserts one under
-      ``[reticulum]`` (the upgrade case for pre-Issue-#41 boxes).
-    - If the file has an INVALID rpc_key (not 64-hex), replaces it
-      with a fresh one when ``force=True``; otherwise logs a warning
-      and leaves the invalid value alone so the operator sees the
-      mismatch during the Config Doctor pass.
-
-    Reads the file the way rnsd does (``rns_config_reader.config_text``:
-    UTF-8 BOM stripped, split on ``\\n`` only) and writes the same bytes back
-    with only the rpc_key line changed — a BOM stays, CRLF stays.
+    Returns ``(rpc_key, was_generated)``. ``was_generated`` is True only
+    after the file was written AND its new bytes were checked to give rnsd
+    exactly that key (``pin_rpc_key_bytes``). False = nothing written: a
+    valid key was already pinned (returned), or an invalid one is left for
+    the operator to see unless ``force=True``.
 
     Raises OSError on read/write failure, and ``RNSConfigError`` (a
-    ValueError) — writing NOTHING — when the file is not UTF-8: the writer
-    will not rewrite bytes it could not read. Callers must catch both and
-    SAY the key was not pinned.
+    ValueError; ``RPCKeyWriteRefused`` carries the why) — writing NOTHING —
+    when the file is not UTF-8, rnsd could not load it, or the edit would
+    not land the key. Callers must catch both and SAY the key was not pinned.
     """
-    from utils.rns_config_reader import _UTF8_BOM, config_text
-
-    raw = config_path.read_bytes()
-    bom = _UTF8_BOM if raw.startswith(_UTF8_BOM) else b""
-    text = config_text(raw, strict=True)
-
-    def _write(new_text: str) -> None:
-        config_path.write_bytes(bom + new_text.encode("utf-8"))
-
-    # Placeholder takes priority — always a fresh install scenario.
-    if PLACEHOLDER in text:
-        new_key = generate_rpc_key()
-        _write(text.replace(PLACEHOLDER, new_key))
-        logger.info(
-            "Substituted __RPC_KEY__ placeholder with fresh key in %s",
-            config_path,
-        )
-        return new_key, True
-
-    # Look for an existing live rpc_key line.
-    invalid_line_to_strip = None
-    for line in _lines(text):
-        m = _LIVE_KEY_RE.match(line)
-        if not m:
-            continue
-        # Skip comments — `#` prefix means the line is inactive even
-        # if the rest matches.
-        if line.lstrip().startswith('#'):
-            continue
-        value = m.group('value').lower()
-        if is_valid_key(value):
-            return value, False
-        if not force:
-            logger.warning(
-                "%s has an rpc_key line but value is not valid 64-hex: %r "
-                "(skipping; pass force=True to replace)",
-                config_path, value,
-            )
-            return value, False
-        # force=True and invalid — remember the exact line to strip, then
-        # fall through to replacement below.
-        invalid_line_to_strip = line
-        break
-
-    # If force=True found an invalid line, drop it before re-rendering so
-    # we don't land two rpc_key entries in the file.
-    if invalid_line_to_strip is not None:
-        text = "\n".join(
-            line for line in _lines(text)
-            if line != invalid_line_to_strip
-        ) + ("\n" if text.endswith("\n") else "")
-
-    # Either no rpc_key line at all, or invalid-with-force (now stripped).
-    new_key = generate_rpc_key()
-    _write(render_template(text, new_key))
-    logger.info(
-        "Inserted fresh rpc_key in %s (was missing/invalid)",
-        config_path,
-    )
-    return new_key, True
+    new_raw, key, generated = pin_rpc_key_bytes(
+        config_path.read_bytes(), force=force)
+    if new_raw is not None:
+        config_path.write_bytes(new_raw)
+        logger.info("Pinned fresh rpc_key in %s", config_path)
+    return key, generated

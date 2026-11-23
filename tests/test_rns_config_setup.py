@@ -364,7 +364,7 @@ class TestRpcKeyCallersSayTheRefusal:
             assert R._ensure_rnsd_rpc_key() is False
         out = capsys.readouterr().out
         assert "Pinned" not in out
-        assert "NOT pinned" in out and "UTF-8" in out
+        assert "NOT pinned" in out and "UTF-8" in out and "untouched" in out
         assert cfg.read_bytes() == before
 
     def test_migrate_wrapper_surfaces_a_dialog(self, tmp_path):

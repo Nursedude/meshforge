@@ -174,7 +174,13 @@ def cmd_normalize(args) -> int:
         if ans.strip().lower() != 'y':
             print("Aborted.")
             return 1
-    executed = normalize_local(state, dry_run=False)
+    try:
+        executed = normalize_local(state, dry_run=False)
+    except (subprocess.CalledProcessError, OSError, ValueError) as e:
+        # ValueError = RNSConfigError/RPCKeyWriteRefused: the pin refused and
+        # wrote nothing — say it, never a traceback or a silent "applied".
+        print(f"\nFAILED — normalize stopped: {e}")
+        return 1
     print(f"\nApplied {len(executed)} action(s):")
     for d in executed:
         print(f"  ✓ {d}")

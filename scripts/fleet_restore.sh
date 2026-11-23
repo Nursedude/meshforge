@@ -471,15 +471,14 @@ if [[ -d "$EXTRACT_DIR/etc/reticulum" ]]; then
         # config somehow lacks one — pre-Issue-#41 snapshot, hand-rolled
         # by the operator, or a leftover __RPC_KEY__ placeholder — fill
         # in a fresh unique value so rnsd boots cleanly.
-        if grep -q '__RPC_KEY__' /etc/reticulum/config 2>/dev/null; then
-            RPC_KEY=$(openssl rand -hex 32)
-            sed -i "s/__RPC_KEY__/$RPC_KEY/" /etc/reticulum/config
-            echo -e "  ${GREEN}+${NC} rpc_key substituted (placeholder in restore)"
-        elif ! grep -Eq '^\s*rpc_key\s*=\s*[0-9a-fA-F]{64}\s*$' /etc/reticulum/config 2>/dev/null; then
-            RPC_KEY=$(openssl rand -hex 32)
-            sed -i "/^\[reticulum\]/a\\  rpc_key = $RPC_KEY" /etc/reticulum/config
-            echo -e "  ${GREEN}+${NC} rpc_key added (restore lacked one)"
-        fi
+        # ONE pinner (r13): checked against rnsd's own parser before writing.
+        pin_rc=0
+        python3 "$(dirname "${BASH_SOURCE[0]}")/rns_rpc_key_pin.py" /etc/reticulum/config || pin_rc=$?
+        case "$pin_rc" in
+            0)  : ;;
+            10) echo -e "  ${GREEN}+${NC} rpc_key pinned (restore lacked a valid one)" ;;
+            *)  echo -e "  ${YELLOW}!${NC} rpc_key NOT pinned (rc $pin_rc, reason above) — fix /etc/reticulum/config, then re-run scripts/rns_rpc_key_pin.py" ;;
+        esac
     fi
 
     # Transport identity (CRITICAL)

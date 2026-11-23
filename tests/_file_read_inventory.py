@@ -32,6 +32,23 @@ INVENTORY = Path(__file__).resolve().parent / "fixtures" / "file_read_inventory.
 READ_ATTRS = {"open", "read_text", "read_bytes", "fdopen"}
 CONFIG_PARSERS = {"ConfigObj"}
 RNS_CONFIG_KINDS = {"read_bytes", "cat", "ConfigObj"}   # bytes in; ConfigObj = rnsd's own parser
+# argv readers: ["sudo", "-n", "cat", path] etc. Only a BYTES ``cat`` may be
+# rns-config: grep/head see lines their own way (Fable r12 #1: sudo grep
+# disagreed with the seam on 12/14 shapes), and ``cat`` with text=True decodes
+# before the seam does — both read as kinds (``grep``, ``cat+text``) that the
+# rns-config class refuses (r13, Fable r12 #3).
+ARGV_READERS = ("cat", "grep", "head", "tail")
+_TEXT_KWARGS = {"text", "universal_newlines", "encoding", "errors"}
+
+# STATED LIMITS — this gate is a SEATBELT against ACCIDENTAL drift, not a jail
+# against a determined author (memory: string guard = seatbelt). It sees a
+# literal call by name: open/read_text/read_bytes/fdopen, a *ConfigObj, and an
+# argv LITERAL (list/tuple) naming one of ARGV_READERS. It does NOT see, by
+# design: an argv built in a variable / concatenated / passed as args=; a
+# reader reached through getattr, an alias, map(Path.read_text, …), a bound
+# method; configparser/fileinput/linecache; a reader inside `bash -c` text;
+# a seam read that is then re-split by hand. Fable r12 planted 20 shapes, 4
+# were seen; r13 adds grep/head/tail and text-mode cat. Review catches the rest.
 
 
 def scanned_files(root=ROOT):
@@ -49,9 +66,14 @@ def _kind(call):
         if name and name.endswith(parser):
             return parser
     for arg in call.args:                       # ["sudo", "-n", "cat", path]
-        if isinstance(arg, (ast.List, ast.Tuple)) and any(
-                isinstance(e, ast.Constant) and e.value == "cat" for e in arg.elts):
-            return "cat"
+        if not isinstance(arg, (ast.List, ast.Tuple)):
+            continue
+        for e in arg.elts:
+            if isinstance(e, ast.Constant) and e.value in ARGV_READERS:
+                text = any(k.arg in _TEXT_KWARGS and not (
+                    isinstance(k.value, ast.Constant) and k.value.value in (False, None))
+                    for k in call.keywords)
+                return f"{e.value}+text" if text else e.value
     return None
 
 

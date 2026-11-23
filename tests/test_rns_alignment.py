@@ -328,10 +328,11 @@ class TestRpcKeyScriptDoesNotLeakViaDescription:
         rpc_action = next(a for a in plan if 'rpc_key' in a.description)
         # Description must not carry the secret (so journald never sees it).
         assert 'rpc_key = ' not in rpc_action.description
-        # The 64-hex key lives only inside the bash script body in cmd[-1].
-        script_body = rpc_action.cmd[-1]
-        match = re.search(r'\b[0-9a-fA-F]{64}\b', script_body)
-        assert match is not None, "rpc_key value must be present in the script"
+        # r13: the key is minted at APPLY time inside the in-process pinner —
+        # it is in no argv (ps) and no description (journald) at all.
+        for text in [rpc_action.description, *rpc_action.cmd]:
+            assert re.search(r'[0-9a-fA-F]{64}', text) is None
+        assert rpc_action.fn is not None
 
 
 # ---------- Hardening F: gateway preflight rpc_key alignment ----------
@@ -464,8 +465,15 @@ class TestReadRpcKeyValueRejectsMalformed:
     def test_normalizes_to_lowercase(self, tmp_path):
         from utils.rns_alignment import _read_rpc_key_value
         f = tmp_path / "config"
-        f.write_text("rpc_key = " + "A" * 64 + "\n")
+        f.write_text("[reticulum]\n  rpc_key = " + "A" * 64 + "\n")
         assert _read_rpc_key_value(f, sudo=False) == "a" * 64
+
+    def test_top_level_key_is_not_rnsds_key(self, tmp_path):
+        # rnsd reads config["reticulum"]["rpc_key"] only (r13: read as rnsd).
+        from utils.rns_alignment import _read_rpc_key_value
+        f = tmp_path / "config"
+        f.write_text("rpc_key = " + "a" * 64 + "\n")
+        assert _read_rpc_key_value(f, sudo=False) is None
 
     def test_skips_commented_line(self, tmp_path):
         from utils.rns_alignment import _read_rpc_key_value

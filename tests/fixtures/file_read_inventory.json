@@ -1,7 +1,7 @@
 {
- "rns_config_utils.py::<module>::read_text": {
-  "audited": "r12 2026-11-22 line-audited: not the RNS config",
-  "class": "other",
+ "rns_config_utils.py::<module>::read_bytes": {
+  "audited": "r13 2026-11-22: --validate, standalone drop-in: rnsd's rule inlined (BOM stripped, utf-8 strict) \u2014 was misclassed `other` as read_text (Fable r12 #3)",
+  "class": "rns-config",
   "count": 1
  },
  "rns_config_utils.py::add_interface_to_config::read_bytes": {
@@ -164,6 +164,11 @@
   "class": "other",
   "count": 2
  },
+ "src/commands/meshtastic.py::_rns_declared_ports::read_bytes": {
+  "audited": "r13 2026-11-22: BYTES -> read_interfaces (line scan of the same bytes only when unloadable)",
+  "class": "rns-config",
+  "count": 1
+ },
  "src/commands/rnode.py::get_usb_info::read_text": {
   "audited": "r12 2026-11-22 line-audited: not the RNS config",
   "class": "other",
@@ -174,8 +179,8 @@
   "class": "rns-config",
   "count": 1
  },
- "src/commands/service.py::is_installed::cat": {
-  "audited": "r12 2026-11-22 line-audited: `systemctl cat` (a unit file)",
+ "src/commands/service.py::is_installed::cat+text": {
+  "audited": "r12 2026-11-22 line-audited: `systemctl cat` (a unit file) (r13: kind now cat+text)",
   "class": "other",
   "count": 1
  },
@@ -604,8 +609,18 @@
   "class": "other",
   "count": 2
  },
+ "src/launcher_tui/handlers/_nomadnet_io_ops.py::NomadNetIOOpsMixin._follow_logfile::tail": {
+  "audited": "r13 2026-11-22 line-audited: tail of the NomadNet logfile, not the RNS config",
+  "class": "other",
+  "count": 1
+ },
  "src/launcher_tui/handlers/_nomadnet_io_ops.py::NomadNetIOOpsMixin._show_log_options::open": {
   "audited": "r12 2026-11-22 line-audited: not the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/launcher_tui/handlers/_nomadnet_io_ops.py::NomadNetIOOpsMixin._show_log_options::tail": {
+  "audited": "r13 2026-11-22 line-audited: tail of the NomadNet logfile, not the RNS config",
   "class": "other",
   "count": 1
  },
@@ -744,8 +759,8 @@
   "class": "other",
   "count": 1
  },
- "src/launcher_tui/handlers/emergency_mode.py::EmergencyModeHandler._emcomm_messages::cat": {
-  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+ "src/launcher_tui/handlers/emergency_mode.py::EmergencyModeHandler._emcomm_messages::cat+text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited (r13: kind now cat+text)",
   "class": "other",
   "count": 1
  },
@@ -984,8 +999,8 @@
   "class": "other",
   "count": 2
  },
- "src/launcher_tui/handlers/service_menu.py::ServiceMenuHandler._has_systemd_unit::cat": {
-  "audited": "r12 2026-11-22 line-audited: `systemctl cat` (a unit file)",
+ "src/launcher_tui/handlers/service_menu.py::ServiceMenuHandler._has_systemd_unit::cat+text": {
+  "audited": "r12 2026-11-22 line-audited: `systemctl cat` (a unit file) (r13: kind now cat+text)",
   "class": "other",
   "count": 1
  },
@@ -1964,8 +1979,13 @@
   "class": "other",
   "count": 1
  },
- "src/utils/rns_alignment.py::_read_rpc_key_value::cat": {
-  "audited": "r12 2026-11-22: sudo cat captured as BYTES -> config_text",
+ "src/utils/rns_alignment.py::_read_config_bytes::cat": {
+  "audited": "r13 2026-11-22: sudo cat captured as BYTES -> rnsd_view (both scan branches + the pin)",
+  "class": "rns-config",
+  "count": 1
+ },
+ "src/utils/rns_alignment.py::_read_config_bytes::read_bytes": {
+  "audited": "r13 2026-11-22: direct BYTES read -> rnsd_view",
   "class": "rns-config",
   "count": 1
  },
@@ -1974,8 +1994,8 @@
   "class": "other",
   "count": 1
  },
- "src/utils/rns_config_reader.py::_read_configobj::ConfigObj": {
-  "audited": "r12 2026-11-22: rnsd's own parser over bytes lines (the seam)",
+ "src/utils/rns_config_reader.py::_configobj_root::ConfigObj": {
+  "audited": "r13 2026-11-22: rnsd's own parser over bytes lines (the seam; interfaces + rnsd_view)",
   "class": "rns-config",
   "count": 1
  },
@@ -2229,13 +2249,13 @@
   "class": "other",
   "count": 1
  },
- "src/utils/watchdog_probe_core.py::_journal_match_lines::cat": {
-  "audited": "r12 2026-11-22 line-audited: `journalctl -o cat` (journal output)",
+ "src/utils/watchdog_probe_core.py::_journal_match_lines::cat+text": {
+  "audited": "r12 2026-11-22 line-audited: `journalctl -o cat` (journal output) (r13: kind now cat+text)",
   "class": "other",
   "count": 1
  },
- "src/utils/watchdog_probe_core.py::_journal_user_unit_has_lines::cat": {
-  "audited": "r12 2026-11-22 line-audited: `journalctl -o cat` (journal output)",
+ "src/utils/watchdog_probe_core.py::_journal_user_unit_has_lines::cat+text": {
+  "audited": "r12 2026-11-22 line-audited: `journalctl -o cat` (journal output) (r13: kind now cat+text)",
   "class": "other",
   "count": 1
  },
@@ -2559,8 +2579,8 @@
   "class": "other",
   "count": 1
  },
- "src/utils/watchdog_probes_peer_rf.py::scan_journal_for_peers::cat": {
-  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+ "src/utils/watchdog_probes_peer_rf.py::scan_journal_for_peers::cat+text": {
+  "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited (r13: kind now cat+text)",
   "class": "other",
   "count": 1
  },

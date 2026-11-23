@@ -468,6 +468,10 @@ _PLANTED = {
     "method": "class C:\n    def f(self, p):\n        return p.read_text()\n",
     "nested": "def f(p):\n    def g():\n        return p.read_text()\n    return g()\n",
     "lambda": "def f(p):\n    return (lambda q: q.read_text())(p)\n",
+    # r13 (Fable r12 #1/#3): argv readers beyond cat.
+    "sudo_grep": "import subprocess\ndef f(p):\n    return subprocess.run(['sudo', '-n', 'grep', '-E', '^rpc_key', str(p)], timeout=5)\n",
+    "sudo_head": "import subprocess\ndef f(p):\n    return subprocess.run(('head', '-n', '5', str(p)), timeout=5)\n",
+    "cat_text": "import subprocess\ndef f(p):\n    return subprocess.run(['sudo', 'cat', str(p)], text=True, timeout=5)\n",
 }
 
 
@@ -501,3 +505,21 @@ def test_gate_refuses_rns_config_class_on_a_text_read():
 def test_gate_refuses_unclassified():
     inv = {"src/a.py::f::open": {"class": "UNCLASSIFIED", "audited": "", "count": 1}}
     assert any("must classify" in p for p in fri.problems({"src/a.py::f::open": 1}, inv))
+
+
+@pytest.mark.parametrize("kind", ["grep", "head", "tail", "cat+text"])
+def test_gate_refuses_rns_config_class_on_a_line_or_text_argv_read(kind):
+    # r13: a sudo grep/head sees lines its own way and a text=True cat decodes
+    # before the seam — neither may be classed as reading the RNS config.
+    key = f"src/a.py::f::{kind}"
+    inv = {key: {"class": "rns-config", "audited": "x", "count": 1}}
+    assert any("read BYTES and decode via the seam" in p
+               for p in fri.problems({key: 1}, inv))
+
+
+def test_cat_kind_reads_text_kwarg():
+    import ast
+    call = ast.parse("run(['cat', p], text=True)").body[0].value
+    assert fri._kind(call) == "cat+text"
+    call = ast.parse("run(['cat', p], text=False)").body[0].value
+    assert fri._kind(call) == "cat"

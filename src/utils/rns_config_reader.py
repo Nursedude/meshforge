@@ -163,18 +163,27 @@ def _shape(root) -> List[Interface]:
 # ── path 1: RNS's own ConfigObj ─────────────────────────────────────────
 
 
-def _read_configobj(content: Content) -> List[Interface]:
+def _configobj_root(content: Content):
     # The same call shape as rnsd's ConfigObj(path): a list of BYTES lines
     # (ConfigObj strips the BOM and decodes). interpolation=False so values
     # read RAW and _split refuses %(…)s by name — ConfigObj would otherwise
     # raise MissingInterpolationOption lazily, on value access, past any
     # try around the constructor (Fable r9 #3).
     try:
-        root = _ConfigObj(_raw_lines(content), interpolation=False)
-        return _shape(root)
+        return _ConfigObj(_raw_lines(content), interpolation=False)
     except RNSConfigError:
         raise
     except Exception as e:  # ConfigObjError family, UnicodeDecodeError, …
+        raise RNSConfigError(f"{type(e).__name__}: {e}") from e
+
+
+def _read_configobj(content: Content) -> List[Interface]:
+    root = _configobj_root(content)
+    try:
+        return _shape(root)
+    except RNSConfigError:
+        raise
+    except Exception as e:
         raise RNSConfigError(f"{type(e).__name__}: {e}") from e
 
 
@@ -306,6 +315,10 @@ def _decoded_lines(content: Content) -> List[str]:
 
 
 def _read_strict(content: Content) -> List[Interface]:
+    return _shape(_strict_root(content))
+
+
+def _strict_root(content: Content) -> "_Sec":
     root = _Sec(0, None)
     this = root
     for lineno, line in enumerate(_decoded_lines(content), 1):
@@ -345,7 +358,7 @@ def _read_strict(content: Content) -> List[Interface]:
         if key in this:
             raise RNSConfigError(f"Duplicate keyword name at line {lineno}")
         this[key] = value
-    return _shape(root)
+    return root
 
 
 # ── the one entry point ─────────────────────────────────────────────────
@@ -358,3 +371,77 @@ def read_interfaces(content: Content) -> List[Interface]:
     if HAS_CONFIGOBJ:
         return _read_configobj(content)
     return _read_strict(content)
+
+
+# ── the whole file as rnsd sees it (r13: the write-boundary seam) ───────
+
+
+def _plain(section) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for key, value in section.items():
+        if _is_section(value):
+            out[key] = _plain(value)
+        elif isinstance(value, (list, tuple)):
+            out[key] = [str(v) for v in value]
+        else:
+            out[key] = str(value)
+    return out
+
+
+def rnsd_view(content: Content) -> Dict[str, Any]:
+    """Every section and value rnsd would load from ``content``, as plain
+    nested dicts (values RAW: str, or a list for a list value; no
+    interpolation). Raises ``RNSConfigError`` when rnsd could not load it.
+
+    This is the one answer to "what does rnsd read here?" for every
+    question that is not the interface list — ``reticulum.rpc_key``,
+    ``reticulum.instance_name`` — and the oracle every rpc_key WRITER checks
+    its new bytes against before it writes (``rns_config_setup``)."""
+    try:
+        root = _configobj_root(content) if HAS_CONFIGOBJ else _strict_root(content)
+        return _plain(root)
+    except RNSConfigError:
+        raise
+    except Exception as e:
+        raise RNSConfigError(f"{type(e).__name__}: {e}") from e
+
+
+def reticulum_section(view: Dict[str, Any]) -> Dict[str, Any]:
+    """``view["reticulum"]``, ``{}`` when absent. A ``reticulum`` that is a
+    key rather than a section is a config rnsd cannot use: refused."""
+    sect = view.get("reticulum", {})
+    if not isinstance(sect, dict):
+        raise RNSConfigError("'reticulum' is a key, not a [reticulum] section")
+    return sect
+
+
+def section_header(line: str) -> Optional[Tuple[int, str]]:
+    """``(depth, name)`` when ``line`` is a section marker as ConfigObj
+    reads one (``[ reticulum ]``, ``["reticulum"]``, ``[reticulum]  # c``),
+    else None. For a writer locating WHERE to edit; whether the edit landed
+    is ``rnsd_view``'s verdict, never this one's."""
+    mat = _SECTIONMARKER.match(line.rstrip("\r"))
+    if mat is None:
+        return None
+    _indent, sect_open, name, sect_close, _c = mat.groups()
+    depth = sect_open.count("[")
+    if depth != sect_close.count("]"):
+        return None
+    if len(name) > 1 and name[0] == name[-1] and name[0] in ('"', "'"):
+        name = name[1:-1]
+    return depth, name
+
+
+def keyword_name(line: str) -> Optional[str]:
+    """The key of a ``key = value`` line as ConfigObj reads it (quotes
+    stripped), else None. Comment lines are not keywords."""
+    line = line.rstrip("\r")
+    if line.strip().startswith("#"):
+        return None
+    mat = _KEYWORD.match(line)
+    if mat is None:
+        return None
+    key = mat.group(2)
+    if len(key) > 1 and key[0] == key[-1] and key[0] in ('"', "'"):
+        key = key[1:-1]
+    return key

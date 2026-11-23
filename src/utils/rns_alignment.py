@@ -22,12 +22,11 @@ import json
 import logging
 import os
 import re
-import secrets
 import shutil
 import subprocess
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 # RNS-tree perms (configdir/logfile/storage ownership for a non-root rnsd) are the
 # shared, app-agnostic SSOT carried byte-identical in MeshAnchor + parity-tracked
@@ -59,6 +58,9 @@ class ConfigFileFacts:
     has_rpc_key: bool = False
     has_instance_name: bool = False
     instance_name: Optional[str] = None  # actual value (not secret)
+    # Set when the file exists but rnsd could not load it (r13): every other
+    # fact is then UNKNOWN, not "absent" — the scan does not guess.
+    config_error: Optional[str] = None
 
 
 @dataclass
@@ -294,11 +296,50 @@ def _stat_mode(path: Path, sudo: bool = False) -> Optional[str]:
         return None
 
 
+def _read_config_bytes(path: Path, sudo: bool = False) -> bytes:
+    """The config's BYTES (rnsd decodes them itself). Raises OSError when
+    they could not be read — the caller says so; never ``text=True``."""
+    if not sudo:
+        return path.read_bytes()
+    try:
+        res = subprocess.run(
+            ['sudo', '-n', 'cat', str(path)],
+            capture_output=True, timeout=5,
+        )
+    except subprocess.SubprocessError as e:
+        raise OSError(f"sudo cat {path}: {e}") from e
+    if res.returncode != 0:
+        raise OSError(f"sudo cat {path}: rc {res.returncode}")
+    return res.stdout
+
+
+def _reticulum_facts(raw: bytes):
+    """``(rpc_key | None, has_instance_name, instance_name | None)`` as rnsd
+    reads ``raw`` (``rns_config_reader.rnsd_view``). Raises RNSConfigError
+    when rnsd could not load it. ``rpc_key`` is the lowercased value only
+    when it is valid 64-hex."""
+    from utils.rns_config_reader import reticulum_section, rnsd_view
+    sect = reticulum_section(rnsd_view(raw))
+    key = sect.get('rpc_key')
+    key = key.lower() if isinstance(key, str) else None
+    if key is not None and not re.fullmatch(r'[0-9a-f]{64}', key):
+        key = None
+    has_name = 'instance_name' in sect
+    name = sect.get('instance_name')
+    if isinstance(name, list):
+        name = ', '.join(name)
+    return key, has_name, (name or None)
+
+
 def _scan_config_file(path: Path, sudo: bool = False) -> ConfigFileFacts:
-    """Look at an RNS config file without leaking the rpc_key value."""
+    """Look at an RNS config file without leaking the rpc_key value.
+
+    Both branches read BYTES and answer from rnsd's own parser (r13) — the
+    sudo branch used to grep, and disagreed with the direct branch on 12 of
+    14 config shapes (Fable r12 #1)."""
+    from utils.rns_config_reader import RNSConfigError
     f = ConfigFileFacts(path=path)
     if sudo:
-        # Use sudo to peek at permission-restricted files
         if subprocess.run(
             ['sudo', '-n', 'test', '-f', str(path)],
             capture_output=True, timeout=5,
@@ -306,65 +347,22 @@ def _scan_config_file(path: Path, sudo: bool = False) -> ConfigFileFacts:
             return f
         f.exists = True
         f.owner = _stat_owner(path, sudo=True)
-        try:
-            # Match rpc_key whether at column 0 OR indented under a
-            # sub-section (RNS configs often indent under [reticulum]).
-            # The earlier `^rpc_key` anchor missed indented entries and
-            # caused the planner to insert duplicate keys that ConfigObj
-            # rejected. See rns_alignment regression test.
-            res = subprocess.run(
-                ['sudo', '-n', 'grep', '-cE', r'^[[:space:]]*rpc_key',
-                 str(path)],
-                capture_output=True, text=True, timeout=5,
-            )
-            f.has_rpc_key = res.returncode == 0 and res.stdout.strip() != '0'
-        except subprocess.SubprocessError:
-            pass
-        try:
-            res = subprocess.run(
-                ['sudo', '-n', 'grep', '-E', '^instance_name', str(path)],
-                capture_output=True, text=True, timeout=5,
-            )
-            if res.returncode == 0:
-                line = res.stdout.strip().splitlines()[0] if res.stdout else ''
-                if '=' in line:
-                    f.has_instance_name = True
-                    f.instance_name = line.split('=', 1)[1].strip() or None
-        except (subprocess.SubprocessError, IndexError):
-            pass
-        return f
-
-    from utils.rns_config_reader import config_lines, read_config_text
-
-    # Direct read (no sudo)
-    if not path.is_file():
-        return f
-    f.exists = True
-    f.owner = _stat_owner(path)
+    else:
+        if not path.is_file():
+            return f
+        f.exists = True
+        f.owner = _stat_owner(path)
     try:
-        text = read_config_text(path)   # as rnsd reads it (r12)
-        for raw in config_lines(text):
-            # Lstrip so we detect rpc_key whether it's at column 0 or
-            # indented inside a sub-section (RNS configs commonly
-            # indent under [reticulum]). Without this, the planner would
-            # think rpc_key is missing and insert a duplicate, which
-            # ConfigObj rejects with "Could not parse the configuration".
-            line = raw.lstrip().rstrip()
-            if not line or line.startswith('#') or '=' not in line:
-                continue
-            name, _, value = line.partition('=')
-            name = name.strip()
-            if name == 'rpc_key':
-                v = value.strip()
-                f.has_rpc_key = (
-                    len(v) == 64
-                    and all(c in '0123456789abcdefABCDEF' for c in v)
-                )
-            elif name == 'instance_name':
-                f.has_instance_name = True
-                f.instance_name = value.strip() or None
-    except (OSError, PermissionError):
-        pass
+        raw = _read_config_bytes(path, sudo=sudo)
+    except OSError as e:
+        f.config_error = f"could not read: {e}"
+        return f
+    try:
+        key, f.has_instance_name, f.instance_name = _reticulum_facts(raw)
+    except RNSConfigError as e:
+        f.config_error = str(e)
+        return f
+    f.has_rpc_key = key is not None
     return f
 
 
@@ -466,37 +464,12 @@ def _read_rpc_key_value(path: Path, sudo: bool = False) -> Optional[str]:
     The full 64-hex value never appears in any returned dataclass or
     log line; callers fingerprint or compare-equal in-memory only.
     """
-    from utils.rns_config_reader import config_lines, config_text, read_config_text
+    from utils.rns_config_reader import RNSConfigError
 
-    if sudo:
-        try:
-            res = subprocess.run(
-                ['sudo', '-n', 'cat', str(path)],
-                capture_output=True, timeout=5,   # bytes: decoded as rnsd does (r12)
-            )
-            if res.returncode != 0:
-                return None
-            text = config_text(res.stdout)
-        except subprocess.SubprocessError:
-            return None
-    else:
-        try:
-            text = read_config_text(path)
-        except (OSError, PermissionError):
-            return None
-
-    for raw in config_lines(text):
-        line = raw.lstrip().rstrip()
-        if not line or line.startswith('#') or '=' not in line:
-            continue
-        name, _, value = line.partition('=')
-        if name.strip() != 'rpc_key':
-            continue
-        v = value.strip()
-        if len(v) == 64 and all(c in '0123456789abcdefABCDEF' for c in v):
-            return v.lower()
+    try:
+        return _reticulum_facts(_read_config_bytes(path, sudo=sudo))[0]
+    except (OSError, RNSConfigError):
         return None
-    return None
 
 
 def check_gateway_rpc_key_alignment(
@@ -612,6 +585,12 @@ def analyze_drift(state: RNSAlignmentState) -> List[str]:
         reasons.append(
             f"/etc/reticulum/config missing (canonical alignment file)"
         )
+    elif state.etc_config.config_error:
+        reasons.append(
+            f"rnsd cannot load /etc/reticulum/config "
+            f"({state.etc_config.config_error}) — fix the file by hand; "
+            f"normalize will not write into it"
+        )
     elif not state.etc_config.has_rpc_key:
         reasons.append(
             f"/etc/reticulum/config has no rpc_key — RPC handshake will derive "
@@ -667,6 +646,9 @@ class NormalizeAction:
     description: str
     cmd: List[str]  # subprocess argv for the shell action
     requires_sudo: bool = True
+    # In-process step (r13: the rpc_key pin). When set, normalize runs it
+    # INSTEAD of ``cmd`` — at apply time, after earlier steps changed the file.
+    fn: Optional[Callable[[], None]] = None
 
 
 def plan_normalize(state: RNSAlignmentState) -> List[NormalizeAction]:
@@ -710,19 +692,19 @@ def plan_normalize(state: RNSAlignmentState) -> List[NormalizeAction]:
             ))
 
     # Step 2: pin rpc_key if missing
+    # (Not into a config rnsd cannot load: analyze_drift names that, and the
+    # pinner would refuse it anyway — r13.)
     if (
         not state.etc_config
         or not state.etc_config.exists
-        or not state.etc_config.has_rpc_key
+        or (not state.etc_config.has_rpc_key
+            and not state.etc_config.config_error)
     ):
-        key = secrets.token_hex(32)
-        # Use sed to insert under [reticulum]; if [reticulum] is absent, append
-        # a stanza. We try the [reticulum]-anchored insert first.
+        etc = Path('/etc/reticulum/config')
         actions.append(NormalizeAction(
             description="Pin rpc_key in /etc/reticulum/config (64-hex, never logged)",
-            # Heredoc-ish: write a small awk that inserts rpc_key after [reticulum]
-            # OR appends a [reticulum]\nrpc_key= stanza if missing.
-            cmd=['sudo', 'bash', '-c', _build_rpc_key_insert_script(key)],
+            cmd=['(in-process)', 'rns_config_setup.pin_rpc_key_bytes', str(etc)],
+            fn=lambda: _pin_rpc_key_in(etc, sudo=os.geteuid() != 0),
         ))
 
     # Step 3: rnsd systemd drop-in for --config /etc/reticulum
@@ -787,31 +769,34 @@ def plan_normalize(state: RNSAlignmentState) -> List[NormalizeAction]:
     return actions
 
 
-def _build_rpc_key_insert_script(key: str) -> str:
-    """Bash one-liner that inserts `rpc_key = <key>` under [reticulum].
+def _pin_rpc_key_in(path: Path, sudo: bool) -> None:
+    """Pin an rpc_key into ``path`` with THE pinner (``pin_rpc_key_bytes``:
+    the new bytes are checked against rnsd's parser before writing). Raises
+    — writing nothing — when it refuses, or when the existing key is
+    invalid (left for the operator; this step will not silently keep it).
 
-    Idempotent: if rpc_key already present, no-op. If [reticulum] absent,
-    append a [reticulum]\\nrpc_key=<key> stanza.
-    """
-    return f"""
-set -e
-CFG=/etc/reticulum/config
-# Belt-and-suspenders: detect rpc_key whether at column 0 or indented
-# inside [reticulum]. RNS commonly stores it indented, and a column-0
-# anchor (`^rpc_key`) misses those — producing a duplicate-key insert
-# that ConfigObj rejects with "Could not parse the configuration".
-if grep -qE '^[[:space:]]*rpc_key' "$CFG"; then exit 0; fi
-if grep -qE '^\\[reticulum\\]' "$CFG"; then
-  awk -v k='{key}' '
-    {{ print }}
-    /^\\[reticulum\\]/ && !done {{ print "rpc_key = " k; done=1 }}
-  ' "$CFG" > "$CFG.new"
-  mv "$CFG.new" "$CFG"
-  chmod 644 "$CFG"
-else
-  printf '\\n[reticulum]\\nrpc_key = %s\\n' '{key}' >> "$CFG"
-fi
-"""
+    Replaces a bash/awk insert that keyed on ``^[reticulum]`` and grep, and
+    wrote a second ``[reticulum]`` into BOM / indented configs (Fable r12 #1).
+    The write is atomic and keeps the file's owner and mode."""
+    from utils.rns_config_setup import RPCKeyWriteRefused, is_valid_key, pin_rpc_key_bytes
+    new_raw, key, _generated = pin_rpc_key_bytes(_read_config_bytes(path, sudo=sudo))
+    if new_raw is None:
+        if is_valid_key(key):
+            return
+        raise RPCKeyWriteRefused(
+            f"{path} has an rpc_key that is not 64-hex — left untouched; "
+            f"replace or remove it by hand, then re-run")
+    script = (
+        'set -e; t="$1.mf-new"; cat > "$t"; '
+        'chown --reference="$1" "$t"; chmod --reference="$1" "$t"; '
+        'mv -f "$t" "$1"'
+    )
+    argv = (['sudo', '-n'] if sudo else []) + ['bash', '-c', script, '_', str(path)]
+    res = subprocess.run(argv, input=new_raw, capture_output=True, timeout=30)
+    if res.returncode != 0:
+        raise OSError(
+            f"writing {path} failed (rc {res.returncode}): "
+            f"{res.stderr.decode('utf-8', 'replace').strip()}")
 
 
 # _build_logfile_perms_script and apply_logfile_perms now live in the shared
@@ -845,6 +830,9 @@ def normalize_local(state: RNSAlignmentState, dry_run: bool = False) -> List[str
             executed.append(f"[DRY-RUN] {action.description}")
             continue
         logger.info("normalize: %s", action.description)
-        subprocess.run(action.cmd, check=True, timeout=60)
+        if action.fn is not None:
+            action.fn()
+        else:
+            subprocess.run(action.cmd, check=True, timeout=60)
         executed.append(action.description)
     return executed

@@ -530,7 +530,17 @@ Examples:
             print(f"Config not found: {config_path}")
             exit(1)
 
-        content = config_path.read_text()
+        # As rnsd reads it (MeshForge r13, Fable r12 #3): bytes, UTF-8 BOM
+        # stripped, utf-8 strict, no newline translation — read_text() kept
+        # the BOM in front of [reticulum] and raised an untyped decode error.
+        raw = config_path.read_bytes()
+        if raw.startswith(b"\xef\xbb\xbf"):
+            raw = raw[3:]
+        try:
+            content = raw.decode("utf-8")
+        except UnicodeDecodeError as e:
+            print(f"✗ Config is not UTF-8 text ({e}) — rnsd cannot load it")
+            exit(1)
         is_valid, errors = validate_rns_config(content)
 
         if is_valid:

@@ -395,17 +395,30 @@ def _real(path) -> str:
 def _rns_declared_ports(configs) -> Dict[str, str]:
     """realpath -> config file, for every `port = /dev/...` a readable
     Reticulum config declares (used to REFUSE and to LABEL, never to pick)."""
-    from utils.rns_config_reader import config_lines, read_config_text
+    from utils.rns_config_reader import (
+        RNSConfigError, config_lines, read_interfaces)
     out: Dict[str, str] = {}
     for cfg in configs:
         try:
-            text = read_config_text(Path(cfg))   # as rnsd reads it (r12)
+            raw = Path(cfg).read_bytes()
         except OSError:
             continue
-        for line in config_lines(text):
-            mm = re.match(r"\s*port\s*=\s*(/\S+)", line)
-            if mm:
-                out[_real(mm.group(1))] = str(cfg)
+        try:
+            # rnsd's own grammar (r13): quoted values, inline comments,
+            # RNodeMulti sub-interfaces — every port an interface declares.
+            ports = []
+            for iface in read_interfaces(raw):
+                for sect in [iface] + iface["subinterfaces"]:
+                    port = sect["settings"].get("port", "")
+                    if port.startswith("/"):
+                        ports.append(port)
+        except RNSConfigError:
+            # rnsd cannot load it — still REFUSE any port it names (this
+            # list only ever refuses/labels), by the r12 line scan.
+            ports = [mm.group(1) for line in config_lines(raw)
+                     for mm in [re.match(r"\s*port\s*=\s*(/\S+)", line)] if mm]
+        for port in ports:
+            out[_real(port)] = str(cfg)
     return out
 
 
