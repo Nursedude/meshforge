@@ -122,6 +122,143 @@ class MeshtasticPaths:
             return False
 
 
+class PathUnjudged(OSError):
+    """We cannot say what ANOTHER account sees at a path (r13.8, Fable r19
+    #1): the observer cannot stat a component, or an ACL decides. An OSError
+    so existing catchers degrade to UNKNOWN; never the observer's answer."""
+
+
+# Indirection so tests can present modes/owners/ACLs without root.
+_stat = os.stat
+_getxattr = getattr(os, "getxattr", None)
+_ACL_XATTR = "system.posix_acl_access"
+
+
+def _may_search(st, uid: int, gids: frozenset) -> bool:
+    """POSIX DAC search (x) on one dir: owner bits, else group, else other.
+    uid 0 searches anything (CAP_DAC_READ_SEARCH)."""
+    if uid == 0:
+        return True
+    if st.st_uid == uid:
+        return bool(st.st_mode & 0o100)
+    if st.st_gid in gids:
+        return bool(st.st_mode & 0o010)
+    return bool(st.st_mode & 0o001)
+
+
+def _has_acl(path: Path) -> bool:
+    import errno
+    if _getxattr is None:
+        raise PathUnjudged(f"cannot read ACLs on {path} on this platform")
+    try:
+        _getxattr(str(path), _ACL_XATTR)
+    except OSError as e:
+        if e.errno in (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP):
+            return False
+        raise PathUnjudged(f"cannot read the ACL on {path} ({e})") from None
+    return True
+
+
+_MAXSYMLINKS = 40   # Linux's own hop limit → ELOOP
+
+
+def _dirs_walked(path: Path):
+    """The directories the kernel searches resolving ``path``, walked as the
+    kernel does (r13.8.1, Fable r20 #2): component by component, every
+    symlink (incl. the last) expanded hop by hop via ``readlink`` with its
+    ``.``/``..`` taken PHYSICALLY from where it lands — no realpath, no
+    lexical normalisation. Returns the searched dirs in order, or None when
+    resolution cannot finish for ANY uid (a missing component, a non-dir
+    mid-path, > 40 hops). An lstat/readlink the OBSERVER is refused raises
+    ``PathUnjudged``."""
+    import stat as stat_mod
+    from collections import deque
+    raw = str(path)
+    if not raw.startswith('/'):
+        raw = os.getcwd() + '/' + raw
+    comps = deque(raw.split('/'))
+    cur, searched, hops = '/', [], 0
+    while comps:
+        name = comps.popleft()
+        if name == '':
+            continue
+        searched.append(cur)            # every lookup needs search on cur
+        if name == '.':
+            continue
+        if name == '..':
+            cur = os.path.dirname(cur) or '/'
+            continue
+        nxt = cur.rstrip('/') + '/' + name
+        try:
+            st = os.lstat(nxt)
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        except OSError as e:
+            raise PathUnjudged(f"cannot lstat {nxt} ({e})") from None
+        if stat_mod.S_ISLNK(st.st_mode):
+            hops += 1
+            if hops > _MAXSYMLINKS:
+                return None
+            try:
+                target = os.readlink(nxt)
+            except OSError as e:
+                raise PathUnjudged(f"cannot readlink {nxt} ({e})") from None
+            if target.startswith('/'):
+                cur = '/'
+            comps.extendleft(reversed(target.split('/')))
+            continue
+        if comps and any(c for c in comps) and not stat_mod.S_ISDIR(st.st_mode):
+            return None                 # ENOTDIR mid-path
+        cur = nxt
+    return list(dict.fromkeys(searched))
+
+
+def isfile_as(path: Path, uid: int, gids) -> bool:
+    """``os.path.isfile(path)`` as the account (uid, groups) would get it —
+    RNS asks it as rnsd's uid; the observer may be another uid (the root
+    watchdog, r13.8). stat needs search on the dirs only, so file bits never
+    matter; a dir the account cannot search → False, as EACCES is for RNS.
+
+    Absence (ENOENT/ENOTDIR) is the same for every uid → False. Raises
+    ``PathUnjudged`` when the observer cannot see what the account sees:
+    it cannot stat a component (and is not that very account), or an ACL
+    sits on a dir in the walk."""
+    import stat as stat_mod
+    gids = frozenset(gids)
+    same = uid == os.geteuid() and gids == frozenset(os.getgroups()) | {os.getegid()}
+    import errno
+    try:
+        st = _stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except PermissionError:
+        if same:
+            return False   # the kernel answered for these very creds
+        raise PathUnjudged(f"cannot stat {path} to judge it as uid {uid}") from None
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            return False   # a symlink loop is False for every uid (r20 #8)
+        raise PathUnjudged(f"cannot stat {path} ({e})") from None
+    if not stat_mod.S_ISREG(st.st_mode):
+        return False
+    if same:
+        return True        # reached with the account's own creds
+    walked = _dirs_walked(path)
+    if walked is None:
+        return False       # unresolvable for any uid
+    for d in walked:
+        try:
+            dst = _stat(d)
+        except OSError as e:
+            raise PathUnjudged(f"cannot stat {d} ({e})") from None
+        if uid != 0 and _has_acl(d):
+            raise PathUnjudged(f"{d} carries an ACL: uid {uid}'s search right "
+                               f"is the kernel's call, not the mode bits'")
+        if not _may_search(dst, uid, gids):
+            return False
+    return True
+
+
 class ReticulumPaths:
     """Paths related to Reticulum/RNS configuration.
 
@@ -493,20 +630,32 @@ class ReticulumPaths:
         return cls.rnsd_config_dir_for_home(get_real_user_home())
 
     @classmethod
-    def rnsd_config_dir_for_home(cls, home: Path) -> Path:
+    def rnsd_config_dir_for_home(cls, home: Path, *, as_ids=None) -> Path:
         """The configdir rnsd started as the user whose home is ``home``
-        loads — RNS ``Reticulum.__init__``'s own order, by EXISTENCE (a later
-        dir is never consulted past an existing config, readable or not):
-        /etc/reticulum, ``home``/.config/reticulum, ``home``/.reticulum.
+        loads — RNS ``Reticulum.__init__``'s own order: /etc/reticulum,
+        ``home``/.config/reticulum, ``home``/.reticulum — the first whose
+        ``config`` is ``os.path.isfile`` AS RNSD'S UID. File bits never
+        matter; a dir rnsd cannot search makes it False (Fable r19 #1).
+
+        ``as_ids`` = rnsd's ``(uid, gids)``: judged as that account by
+        ``isfile_as``, which raises ``PathUnjudged`` (an OSError) when the
+        observer cannot see what rnsd sees. None = the observer's own view
+        (right when the observer IS rnsd's user, or asks for its own config).
 
         The ONE answer (r13.6, Fable r17 #1): no env override (rnsd ignores
         ``MESHFORGE_RNS_CONFIGDIR``) and an EXPLICIT home (no SUDO_USER /
         LOGNAME inference — r17 NIT 3). ``get_config_dir`` delegates here.
         """
         etc = cls.ETC_BASE
+        xdg_dir = Path(home) / '.config' / 'reticulum'
+        if as_ids is not None:
+            uid, gids = as_ids
+            for d in (etc, xdg_dir):
+                if isfile_as(d / 'config', uid, gids):
+                    return d
+            return Path(home) / '.reticulum'
         if etc.is_dir() and (etc / 'config').is_file():
             return etc
-        xdg_dir = Path(home) / '.config' / 'reticulum'
         if xdg_dir.is_dir() and (xdg_dir / 'config').is_file():
             return xdg_dir
         return Path(home) / '.reticulum'

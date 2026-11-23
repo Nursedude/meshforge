@@ -1984,8 +1984,8 @@
   "class": "rns-config",
   "count": 1
  },
- "src/utils/rns_alignment.py::_read_systemd_unit::open": {
-  "audited": "r12 2026-11-22 line-audited: not the RNS config",
+ "src/utils/rns_alignment.py::_unit_lines::open": {
+  "audited": "r13.8.1 2026-11-23 moved from _read_systemd_unit: reads rnsd systemd unit files, not the RNS config",
   "class": "other",
   "count": 1
  },

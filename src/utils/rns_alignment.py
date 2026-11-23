@@ -120,26 +120,101 @@ class RNSAlignmentState:
 def _read_systemd_unit(*paths: str) -> dict:
     """Parse first ExecStart= and User= from rnsd unit + drop-ins.
 
-    Returns dict with 'user', 'exec_start' (last wins per drop-in semantics).
+    Returns dict with 'user', 'exec_start', 'group' (last wins per drop-in
+    semantics), 'supplementary_groups' (accumulates; empty resets), and the
+    settings under which what rnsd SEES differs from what we stat (r13.8,
+    Fable r19 NIT 3; split r13.8.1, Fable r20 #1):
+      'view_keys'      — rnsd's HOME / uid / capabilities: matter only when
+                         no ``--config`` names the dir;
+      'namespace_keys' — rnsd's filesystem view: matter even with --config.
+    Lines are read as systemd does: ``Key = value`` spacing, ``\\``
+    continuations, comments; a later empty assignment resets (r20 #3/#4).
     """
     user = None
+    group = None
+    supplementary: List[str] = []
     exec_start = None
+    seen: dict = {}          # view/namespace key → its effective lines
+    for line in _unit_lines(paths):
+        key, sep, val = line.partition('=')
+        if not sep:
+            continue
+        key, val = key.strip(), val.strip()
+        if key == 'User':
+            user = val
+        elif key == 'Group':
+            group = val or None
+        elif key == 'SupplementaryGroups':
+            if val:
+                supplementary.extend(val.split())
+            else:
+                supplementary = []
+        elif key == 'ExecStart':
+            # systemd allows ExecStart= (empty) to reset; drop-ins
+            # use that pattern. Keep latest non-empty.
+            if val:
+                exec_start = val
+        elif key in _VIEW_KEYS or key in _NAMESPACE_KEYS or key == 'Environment':
+            if key in _LIST_KEYS:
+                seen[key] = (seen.get(key, []) + [f"{key}={val}"]) if val else []
+            else:
+                seen[key] = [f"{key}={val}"] if val.lower() not in _FALSEY else []
+    view, ns = [], []
+    for key, lines in seen.items():
+        if key == 'Environment':
+            view.extend(ln for ln in lines
+                        if re.search(r'(?:^|[\s"\'=])HOME=', ln[len('Environment='):]))
+        elif key in _NAMESPACE_KEYS:
+            ns.extend(lines)
+        else:
+            view.extend(lines)
+    return {'user': user, 'exec_start': exec_start, 'group': group,
+            'supplementary_groups': supplementary, 'view_keys': view,
+            'namespace_keys': ns}
+
+
+def _unit_lines(paths):
+    """Logical unit-file lines: stripped, comments dropped, ``\\``
+    continuations joined (systemd joins with a space)."""
     for p in paths:
         try:
             with open(p) as f:
+                buf = ''
                 for raw in f:
                     line = raw.strip()
-                    if line.startswith('User='):
-                        user = line[len('User='):].strip()
-                    elif line.startswith('ExecStart='):
-                        # systemd allows ExecStart= (empty) to reset; drop-ins
-                        # use that pattern. Keep latest non-empty.
-                        val = line[len('ExecStart='):].strip()
-                        if val:
-                            exec_start = val
+                    if not buf and line[:1] in ('#', ';'):
+                        continue
+                    if line.endswith('\\'):
+                        buf += line[:-1] + ' '
+                        continue
+                    yield buf + line
+                    buf = ''
+                if buf:
+                    yield buf
         except OSError:
             continue
-    return {'user': user, 'exec_start': exec_start}
+
+
+# Unit settings under which a stat from outside the unit cannot say what
+# RNS's isfile() gets. None is on the fleet (survey 2026-11-23, 8/8 units).
+# HOME / identity class — only the no-``--config`` fall-through cares:
+_VIEW_KEYS = frozenset({
+    'EnvironmentFile', 'DynamicUser', 'ProtectHome', 'PAMName',
+    'AmbientCapabilities', 'CapabilityBoundingSet', 'PrivateUsers',
+})
+# Filesystem-namespace class — what ``--config /etc/reticulum`` means moves:
+_NAMESPACE_KEYS = frozenset({
+    'RootDirectory', 'RootImage', 'TemporaryFileSystem', 'InaccessiblePaths',
+    'BindPaths', 'BindReadOnlyPaths', 'MountImages', 'ExtensionDirectories',
+    'ExtensionImages',
+})
+# Accumulating (list) settings: each assignment adds, an empty one resets.
+_LIST_KEYS = frozenset({
+    'Environment', 'EnvironmentFile', 'TemporaryFileSystem', 'InaccessiblePaths',
+    'BindPaths', 'BindReadOnlyPaths', 'MountImages', 'ExtensionDirectories',
+    'ExtensionImages', 'AmbientCapabilities', 'CapabilityBoundingSet',
+})
+_FALSEY = frozenset({'', 'no', 'n', 'false', 'f', '0', 'off'})
 
 
 # RNS's own fallback when `instance_name` is omitted — pinned by
@@ -196,7 +271,7 @@ def rnsd_configdir_of_record() -> Optional[Path]:
         unit = _read_systemd_unit(*rnsd_unit_paths())
         if not unit.get('user') and not unit.get('exec_start'):
             return None
-        return _resolve_rnsd_configdir(unit.get('user'), unit.get('exec_start'))
+        return _resolve_rnsd_configdir(**_unit_kwargs(unit))
     except (OSError, RnsdConfigdirUnknown):
         return None
 
@@ -336,36 +411,101 @@ def _rnsd_config_arg(exec_start: Optional[str]) -> Optional[Path]:
     return cfg
 
 
+def _rnsd_home_of(name: str) -> Path:
+    import pwd
+    return Path(pwd.getpwnam(name).pw_dir)
+
+
+def _rnsd_ids_of(name: str, primary: Optional[int] = None):
+    """(uid, gid, groups) systemd gives ``User=name``: gid = ``Group=``'s
+    (``primary``) else passwd's; groups = ``getgrouplist(name, gid)`` — the
+    passwd gid is NOT added when ``Group=`` differs (initgroups semantics)."""
+    import pwd
+    pw = pwd.getpwnam(name)
+    gid = pw.pw_gid if primary is None else primary
+    return pw.pw_uid, gid, tuple(os.getgrouplist(name, gid))
+
+
+def _gid_of(group: str) -> int:
+    if group.isascii() and group.isdigit():   # '²'.isdigit() is True (r20 #5)
+        gid = int(group)
+        if gid > 0xFFFFFFFE:
+            raise RnsdConfigdirUnknown(f"rnsd unit gid {group} is out of range")
+        return gid
+    import grp
+    try:
+        return grp.getgrnam(group).gr_gid
+    except KeyError:
+        raise RnsdConfigdirUnknown(
+            f"rnsd unit group {group!r} has no group entry") from None
+
+
+def _unit_kwargs(unit: dict) -> dict:
+    """``_read_systemd_unit`` output → ``_resolve_rnsd_configdir`` kwargs
+    (one mapping for both live callers)."""
+    return {'user': unit.get('user'), 'exec_start': unit.get('exec_start'),
+            'group': unit.get('group'),
+            'supplementary': tuple(unit.get('supplementary_groups') or ()),
+            'view_keys': tuple(unit.get('view_keys') or ()),
+            'namespace_keys': tuple(unit.get('namespace_keys') or ())}
+
+
 def _resolve_rnsd_configdir(user: Optional[str], exec_start: Optional[str],
-                            *, home_of: Optional[Callable[[str], Path]] = None) -> Path:
+                            *, home_of: Optional[Callable[[str], Path]] = None,
+                            ids_of: Optional[Callable[[str], tuple]] = None,
+                            group: Optional[str] = None,
+                            supplementary: tuple = (),
+                            view_keys: tuple = (),
+                            namespace_keys: tuple = ()) -> Path:
     """Decide which configdir rnsd is *actually* using.
 
     Priority:
       1. ``--config <dir>`` flag in ExecStart
       2. else RNS's own order for the unit's user — the ONE answer,
          ``ReticulumPaths.rnsd_config_dir_for_home`` (r18 NIT 3: this used
-         to hard-code ``/home/<user>/.reticulum`` and skip /etc + XDG).
+         to hard-code ``/home/<user>/.reticulum`` and skip /etc + XDG),
+         judged AS RNSD'S uid + groups (r13.8, Fable r19 #1: the root
+         watchdog's own view named /etc where rnsd could not search it).
 
-    ``home_of`` maps a user name to its home (default: passwd). An unset
-    ``User=`` runs as root. A user with no passwd entry raises
-    ``RnsdConfigdirUnknown``.
+    ``home_of`` / ``ids_of`` map a user name to its home / (uid, gid,
+    groups) (default: passwd). ``group`` / ``supplementary`` are the unit's
+    ``Group=`` / ``SupplementaryGroups=``. An unset ``User=`` runs as root.
+    Raises ``RnsdConfigdirUnknown`` for a user/group with no entry, a unit
+    whose ``view_keys`` change what rnsd sees, or a path we cannot judge as
+    rnsd's uid — never the observer's answer.
     """
+    if namespace_keys:   # moves what even ``--config DIR`` means
+        raise RnsdConfigdirUnknown(
+            f"rnsd unit changes rnsd's filesystem view ({namespace_keys[0]!r}); "
+            f"its config path cannot be judged from outside")
     config_arg = _rnsd_config_arg(exec_start)
     if config_arg is not None:
-        return config_arg
+        return config_arg   # HOME/identity keys cannot move a named dir (r20 #1)
+    if view_keys:
+        raise RnsdConfigdirUnknown(
+            f"rnsd unit changes rnsd's HOME or identity ({view_keys[0]!r}); "
+            f"its default config search cannot be judged from outside")
     from utils.paths import ReticulumPaths
-    if home_of is None:
-        import pwd
-
-        def home_of(name: str) -> Path:
-            return Path(pwd.getpwnam(name).pw_dir)
+    home_of = home_of or _rnsd_home_of
+    ids_of = ids_of or _rnsd_ids_of
     name = user or 'root'
+    primary = _gid_of(group) if group else None
     try:
         home = home_of(name)
+        uid, gid, groups = ids_of(name, primary)
     except KeyError:
         raise RnsdConfigdirUnknown(
             f"rnsd unit User={name} has no passwd entry") from None
-    return ReticulumPaths.rnsd_config_dir_for_home(home)
+    except (OverflowError, ValueError) as e:   # getgrouplist on a bad gid
+        raise RnsdConfigdirUnknown(
+            f"rnsd unit identity for {name} cannot be built ({e})") from None
+    gids = set(groups) | {gid}
+    gids.update(_gid_of(g) for g in supplementary)
+    try:
+        return ReticulumPaths.rnsd_config_dir_for_home(home, as_ids=(uid, gids))
+    except OSError as e:   # PathUnjudged, or a stat error on the way
+        raise RnsdConfigdirUnknown(
+            f"cannot judge rnsd's config search path as uid {uid} ({e})") from None
 
 
 def _stat_owner(path: Path, sudo: bool = False) -> Optional[str]:
@@ -507,7 +647,7 @@ def probe_local() -> RNSAlignmentState:
     rnsd_configdir: Optional[Path] = None
     rnsd_configdir_unknown: Optional[str] = None
     try:
-        rnsd_configdir = _resolve_rnsd_configdir(rnsd_user, rnsd_exec)
+        rnsd_configdir = _resolve_rnsd_configdir(**_unit_kwargs(unit))
     except RnsdConfigdirUnknown as e:
         rnsd_configdir_unknown = str(e)
     except OSError as e:   # e.g. an untraversable dir on RNS's search path

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+
 from unittest.mock import patch
 
 import pytest
@@ -42,6 +43,14 @@ from utils.watchdog_probes_rns import (  # noqa: E402
     probe_rns_namespace_collision,
     probe_rns_shared_instance_responsive,
 )
+
+
+def _self_ids(name, primary=None):
+    """rnsd runs as the test runner (same creds → the kernel answers;
+    r13.8 judges as rnsd's ids, and these users are fake)."""
+    import os as _os
+    return _os.geteuid(), _os.getegid(), tuple(_os.getgroups())
+
 
 # The kernel's DISPLAY form: ss splits columns on whitespace, so the
 # spaced instance name "volcano ai rns" shows truncated as "@rns/volcano".
@@ -373,7 +382,7 @@ class TestConfigdirOfRecordParsesTheUnit:
         home = tmp_path / "home" / "operator"
         assert _resolve_rnsd_configdir(
             "operator", "/usr/bin/rnsd --service",
-            home_of=lambda u: home) == home / ".reticulum"
+            ids_of=_self_ids, home_of=lambda u: home) == home / ".reticulum"
 
 
 # ─────────────────────────────────────────────────────────────────────

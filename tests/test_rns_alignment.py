@@ -10,6 +10,7 @@ Covers:
 """
 
 from pathlib import Path
+
 from typing import Optional
 from unittest.mock import patch
 
@@ -32,6 +33,13 @@ from utils.rns_alignment import (
 
 
 # ---------- systemd unit parser ----------
+
+
+def _self_ids(name, primary=None):
+    """rnsd runs as the test runner (same creds → the kernel answers;
+    r13.8 judges as rnsd's ids, and these users are fake)."""
+    import os as _os
+    return _os.geteuid(), _os.getegid(), tuple(_os.getgroups())
 
 
 class TestReadSystemdUnit:
@@ -58,7 +66,9 @@ class TestReadSystemdUnit:
 
     def test_missing_unit_returns_none(self, tmp_path):
         result = _read_systemd_unit(str(tmp_path / "doesnotexist"))
-        assert result == {'user': None, 'exec_start': None}
+        assert result == {'user': None, 'exec_start': None, 'group': None,
+                          'supplementary_groups': [], 'view_keys': [],
+                          'namespace_keys': []}
 
 
 # ---------- configdir resolver ----------
@@ -84,19 +94,19 @@ class TestResolveRnsdConfigdir:
     def test_user_root_no_flag_defaults_to_root_home(self, no_etc):
         homes = {'root': no_etc / 'root'}
         cd = _resolve_rnsd_configdir(user='root', exec_start='/usr/local/bin/rnsd --service',
-                                     home_of=homes.__getitem__)
+                                     ids_of=_self_ids, home_of=homes.__getitem__)
         assert cd == no_etc / 'root' / '.reticulum'
 
     def test_named_user_no_flag_defaults_to_user_home(self, no_etc):
         homes = {'testuser': no_etc / 'srv' / 'testuser'}
         cd = _resolve_rnsd_configdir(user='testuser', exec_start='/usr/local/bin/rnsd',
-                                     home_of=homes.__getitem__)
+                                     ids_of=_self_ids, home_of=homes.__getitem__)
         assert cd == no_etc / 'srv' / 'testuser' / '.reticulum'
 
     def test_no_user_no_flag_treated_as_root(self, no_etc):
         homes = {'root': no_etc / 'root'}
         cd = _resolve_rnsd_configdir(user=None, exec_start='/usr/local/bin/rnsd',
-                                     home_of=homes.__getitem__)
+                                     ids_of=_self_ids, home_of=homes.__getitem__)
         assert cd == no_etc / 'root' / '.reticulum'
 
 

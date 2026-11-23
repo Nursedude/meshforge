@@ -19,10 +19,18 @@ import os
 import textwrap
 from pathlib import Path
 
+
 import pytest
 
 from utils.paths import ReticulumPaths
 from utils.rns_alignment import RnsdConfigdirUnknown, _resolve_rnsd_configdir
+
+
+def _self_ids(name, primary=None):
+    """rnsd runs as the test runner (same creds → the kernel answers;
+    r13.8 judges as rnsd's ids, and these users are fake)."""
+    import os as _os
+    return _os.geteuid(), _os.getegid(), tuple(_os.getgroups())
 
 
 def _rns_reticulum_source():
@@ -72,7 +80,7 @@ def test_no_config_flag_follows_rns_own_order(tmp_path, monkeypatch, etc, xdg, d
     fake_etc, home = _layout(tmp_path, etc, xdg, dot)
     monkeypatch.setattr(ReticulumPaths, "ETC_BASE", fake_etc)
     got = _resolve_rnsd_configdir("op", "/usr/local/bin/rnsd --service",
-                                  home_of=lambda u: home)
+                                  ids_of=_self_ids, home_of=lambda u: home)
     assert got == _rns_pick(fake_etc, home)
 
 
@@ -81,7 +89,7 @@ def test_meshanchor_server_shape_reads_etc_not_dot_reticulum(tmp_path, monkeypat
     fake_etc, home = _layout(tmp_path, etc=True, xdg=False, dot=True)
     monkeypatch.setattr(ReticulumPaths, "ETC_BASE", fake_etc)
     got = _resolve_rnsd_configdir("op", "/usr/local/bin/rnsd --service",
-                                  home_of=lambda u: home)
+                                  ids_of=_self_ids, home_of=lambda u: home)
     assert got == fake_etc
 
 
@@ -89,7 +97,7 @@ def test_no_etc_config_uses_the_users_passwd_home(tmp_path, monkeypatch):
     fake_etc, home = _layout(tmp_path, etc=False, xdg=False, dot=False)
     monkeypatch.setattr(ReticulumPaths, "ETC_BASE", fake_etc)
     got = _resolve_rnsd_configdir("op", "/usr/local/bin/rnsd",
-                                  home_of=lambda u: home)
+                                  ids_of=_self_ids, home_of=lambda u: home)
     assert got == home / ".reticulum"
 
 
@@ -98,7 +106,7 @@ def test_unset_user_is_root_by_passwd(tmp_path, monkeypatch):
     monkeypatch.setattr(ReticulumPaths, "ETC_BASE", fake_etc)
     asked = []
     got = _resolve_rnsd_configdir(None, "/usr/local/bin/rnsd",
-                                  home_of=lambda u: asked.append(u) or home)
+                                  ids_of=_self_ids, home_of=lambda u: asked.append(u) or home)
     assert asked == ["root"]
     assert got == home / ".reticulum"
 
@@ -146,7 +154,7 @@ def test_execstart_argv_table(tmp_path, monkeypatch, exec_start, expected):
     monkeypatch.setattr(ReticulumPaths, "ETC_BASE", fake_etc)
 
     def call():
-        return _resolve_rnsd_configdir("op", exec_start, home_of=lambda u: home)
+        return _resolve_rnsd_configdir("op", exec_start, ids_of=_self_ids, home_of=lambda u: home)
 
     if expected is UNKNOWN:
         with pytest.raises(RnsdConfigdirUnknown):
@@ -209,7 +217,7 @@ def test_user_without_passwd_entry_is_unknown(tmp_path, monkeypatch):
         raise KeyError(u)
 
     with pytest.raises(RnsdConfigdirUnknown):
-        _resolve_rnsd_configdir("ghost", "/usr/local/bin/rnsd", home_of=no_such_user)
+        _resolve_rnsd_configdir("ghost", "/usr/local/bin/rnsd", ids_of=_self_ids, home_of=no_such_user)
 
 
 # ── the consumer END: the @rns/<name> the watchdog probes ──────────────
