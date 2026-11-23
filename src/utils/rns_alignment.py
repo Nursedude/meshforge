@@ -793,14 +793,21 @@ def _pin_rpc_key_in(path: Path, sudo: bool) -> None:
     # mktemp (O_EXCL, 0600 under umask 077): never a fixed name a planted
     # symlink can redirect, never the key world-readable mid-write (Fable
     # r13 #3, hfm #8); the temp is removed on any failure.
+    # A symlinked config is refused (rc 3), never replaced by a regular file
+    # (Fable r14 #4) — the check runs with the write's own privilege.
     script = (
-        'set -e; umask 077; t=$(mktemp "$1.mf-XXXXXXXX"); '
+        'set -e; if [ -L "$1" ]; then echo "is a symlink" >&2; exit 3; fi; '
+        'umask 077; t=$(mktemp "$1.mf-XXXXXXXX"); '
         'trap \'rm -f "$t"\' EXIT; cat > "$t"; '
         'chown --reference="$1" "$t"; chmod --reference="$1" "$t"; '
         'mv -f "$t" "$1"; trap - EXIT'
     )
     argv = (['sudo', '-n'] if sudo else []) + ['bash', '-c', script, '_', str(path)]
     res = subprocess.run(argv, input=new_raw, capture_output=True, timeout=30)
+    if res.returncode == 3:
+        raise RPCKeyWriteRefused(
+            f"{path} is a symlink — nothing written; pin its target "
+            f"(rns_rpc_key_pin.py <target>) or replace the link with the file")
     if res.returncode != 0:
         raise OSError(
             f"writing {path} failed (rc {res.returncode}): "

@@ -232,7 +232,7 @@ def _fill_live_placeholder(text: str, rpc_key: str) -> str:
 
 
 def pin_rpc_key_bytes(
-    raw: bytes, force: bool = False,
+    raw: bytes, force: bool = False, key: Optional[str] = None,
 ) -> Tuple[Optional[bytes], str, bool]:
     """The one rpc_key pinner, on bytes: ``(new_bytes | None, key, generated)``.
 
@@ -243,7 +243,13 @@ def pin_rpc_key_bytes(
 
     Raises ``RNSConfigError`` (writing nothing) when the file is not UTF-8,
     when rnsd could not load it as it stands, or when the edit would not
-    land exactly the key (``RPCKeyWriteRefused``)."""
+    land exactly the key (``RPCKeyWriteRefused``).
+
+    ``key`` pins THAT key instead of a fresh one (copying rnsd's key into a
+    client config, r13.2); an existing valid key is still never replaced —
+    the caller compares the returned key to see whether they match."""
+    if key is not None and not is_valid_key(key):
+        raise ValueError("key must be 64 lowercase hex chars")
     bom = _UTF8_BOM if raw.startswith(_UTF8_BOM) else b""
     try:
         text = config_text(raw, strict=True)
@@ -259,7 +265,7 @@ def pin_rpc_key_bytes(
             f"rnsd cannot load this config as it stands ({e}) — nothing "
             f"written; a key added to it would never be read") from e
 
-    new_key = generate_rpc_key()
+    new_key = key or generate_rpc_key()
     if state == "valid":
         return None, current, False
     if state == "invalid" and current == PLACEHOLDER:

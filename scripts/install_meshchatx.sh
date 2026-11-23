@@ -376,7 +376,8 @@ rpc_key_pinned() {
     else
         return 1
     fi
-    grep -qE '^[[:space:]]*rpc_key[[:space:]]*=[[:space:]]*[0-9a-fA-F]{64}' "${cfg}"
+    # The ONE reader (r13.2, Fable r14 #1): the key rnsd USES.
+    python3 "${REPO_ROOT}/scripts/rns_rpc_key_pin.py" --check "${cfg}" >/dev/null 2>&1
 }
 
 # --------------------------------------------------------------------

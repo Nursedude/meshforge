@@ -559,8 +559,12 @@ class ReticulumPaths:
         cfg = cls.get_config_file()
         try:
             raw_bytes = cfg.read_bytes()
-        except (OSError, PermissionError):
-            raw_bytes = b""
+        except FileNotFoundError:
+            raw_bytes = b""          # no config: rnsd runs on defaults (derives)
+        except OSError:
+            # UNREADABLE is not ABSENT: rnsd may pin a key we cannot see —
+            # deriving would hand clients a key rnsd does not use (Fable r14 #2).
+            return None
         try:
             state, value = rnsd_rpc_key(raw_bytes)
         except RNSConfigError:

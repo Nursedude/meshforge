@@ -571,3 +571,181 @@ def test_shared_rpc_key_derives_only_when_no_key_is_set(tmp_path, raw, derives):
             patch.object(RNS.Identity, "full_hash", return_value=bytes.fromhex("cd" * 32)):
         got = ReticulumPaths.get_shared_rpc_key()
     assert got == ("cd" * 32 if derives else None)
+
+
+# ── r13.2: the SHELL readers ask the seam too (Fable r14 #1) ────────────
+#
+# configure_gateway.sh, the MeshChatX wrapper and install_meshchatx.sh each
+# grepped "is rpc_key pinned" (30-34 of 88 verdicts wrong vs rnsd; a quoted
+# key rnsd reads parked MeshChatX at exit 87). They now call
+# scripts/rns_rpc_key_pin.py --check / --copy-from.
+
+CHECK_RC = {"valid": 0, "invalid": 3, "absent": 4}
+
+
+@pytest.mark.parametrize("sid,raw,expected", R131_SHAPES, ids=[s[0] for s in R131_SHAPES])
+def test_check_cli_answers_what_rnsd_uses(tmp_path, sid, raw, expected):
+    import subprocess
+    cfg = tmp_path / "config"
+    cfg.write_bytes(raw)
+    r = subprocess.run([sys.executable, os.path.join(_ROOT, "scripts", "rns_rpc_key_pin.py"),
+                        "--check", str(cfg)], capture_output=True, text=True, timeout=60)
+    assert cfg.read_bytes() == raw                            # read-only
+    if expected == "refuse":
+        assert r.returncode == 2, (sid, r.stdout, r.stderr)   # rnsd cannot load it
+        return
+    want = _rnsd_uses(raw)
+    assert (r.returncode == 0) is (want is not None), (sid, r.returncode)
+    assert r.returncode in (0, 3, 4)
+    assert want is None or want not in r.stdout + r.stderr    # never prints the key
+
+
+def test_check_cli_unreadable_is_rc1(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root reads a 000 file")
+    cfg = tmp_path / "config"
+    cfg.write_bytes(_with(key_line=f"  rpc_key = {HEX}"))
+    cfg.chmod(0)
+    try:
+        assert _pin_cli_args("--check", cfg).returncode == 1
+    finally:
+        cfg.chmod(0o644)
+
+
+def _pin_cli_args(*args):
+    import subprocess
+    return subprocess.run(
+        [sys.executable, os.path.join(_ROOT, "scripts", "rns_rpc_key_pin.py"),
+         *[str(a) for a in args]], capture_output=True, text=True, timeout=60)
+
+
+@pytest.mark.parametrize("client_raw,rc", [
+    (_with(), 10),                                             # absent -> copy
+    (_with(header="[ reticulum ]"), 10),                       # grammar the old insert missed
+    (_with(key_line=f'  rpc_key = "{HEX}"'), 0),               # same key, quoted
+    (_with(key_line=f"  rpc_key = {'ef' * 32}"), 4),            # different: never overwritten
+    (_with(key_line="  instance_name = other"), 2),            # client unloadable: refuse
+], ids=["absent", "spaced-header", "same-quoted", "different", "client-unloadable"])
+def test_copy_from_cli(tmp_path, client_raw, rc):
+    server = tmp_path / "server"
+    server.write_bytes(_with(key_line=f"  rpc_key = {HEX}  # pinned"))
+    client = tmp_path / "client"
+    client.write_bytes(client_raw)
+    r = _pin_cli_args("--copy-from", server, client)
+    assert r.returncode == rc, (r.stdout, r.stderr)
+    assert HEX not in r.stdout + r.stderr
+    if rc == 10:
+        assert _rnsd_uses(client.read_bytes()) == HEX
+        assert list(tmp_path.glob("client.bak-*-rpckey"))     # backup kept, as before
+    else:
+        assert client.read_bytes() == client_raw
+
+
+def test_copy_from_cli_server_without_a_usable_key_is_rc3(tmp_path):
+    server = tmp_path / "server"
+    server.write_bytes(_with(key_line=f"  rpc_key = {HEX},"))   # a list: rnsd falls back
+    client = tmp_path / "client"
+    client.write_bytes(_with())
+    assert _pin_cli_args("--copy-from", server, client).returncode == 3
+    assert client.read_bytes() == _with()
+
+
+_SHELL_ROOTS = ["scripts", "templates"]
+_SHELL_ALLOW = {
+    # Scans MEMORY files for a leaked key literal — not an RNS config reader.
+    "scripts/memory_secrets_check.sh",
+}
+# ONE owed site, by line text: install_meshchatx.sh's client-key COPY block is
+# a parity twin with MeshAnchor (block + its test byte-identical by design,
+# scripts/parity_check.py) and MeshAnchor has no seam yet. It moves to
+# `rns_rpc_key_pin.py --copy-from` (built + tested here) in the MA port.
+# Remove this entry in that port — the test then holds the line.
+_SHELL_OWED = {
+    ("scripts/install_meshchatx.sh",
+     'pat = re.compile(r"^\\s*rpc_key\\s*=\\s*([0-9a-fA-F]{64})\\s*$", re.M)'),
+}
+
+
+def test_no_shell_or_template_parses_rpc_key_itself():
+    """Every reader of an RNS config's rpc_key outside src/ goes through
+    scripts/rns_rpc_key_pin.py (the seam). A grep/sed/awk/regex over
+    `rpc_key` in a shell script or template is the r14 #1 defect."""
+    import re
+    bad = []
+    pat = re.compile(r"rpc_key")
+    tool = re.compile(r"\b(grep|sed|awk|perl)\b|=~|re\.(compile|search|match)")
+    for root in _SHELL_ROOTS:
+        for dirpath, _dirs, files in os.walk(os.path.join(_ROOT, root)):
+            for name in files:
+                full = os.path.join(dirpath, name)
+                rel = os.path.relpath(full, _ROOT).replace(os.sep, "/")
+                if rel in _SHELL_ALLOW or rel.endswith((".md", ".json", ".py")) and not rel.startswith("templates/"):
+                    continue
+                try:
+                    text = open(full, encoding="utf-8").read()
+                except (UnicodeDecodeError, OSError):
+                    continue
+                for n, line in enumerate(text.splitlines(), 1):
+                    if line.lstrip().startswith("#"):
+                        continue
+                    if (rel, line.strip()) in _SHELL_OWED:
+                        continue
+                    if pat.search(line) and tool.search(line):
+                        bad.append(f"{rel}:{n}: {line.strip()[:100]}")
+    assert bad == [], "\n".join(bad)
+
+
+@pytest.mark.parametrize("script", [
+    "scripts/configure_gateway.sh", "templates/python/meshchatx_wrapper.sh",
+    "scripts/install_meshchatx.sh"])
+def test_shell_readers_call_the_seam(script):
+    with open(os.path.join(_ROOT, script), encoding="utf-8") as fh:
+        assert "rns_rpc_key_pin.py" in fh.read()
+
+
+def test_alignment_pin_refuses_a_symlinked_config(tmp_path, reader_path):
+    from utils.rns_alignment import _pin_rpc_key_in
+    real = tmp_path / "real_config"
+    real.write_bytes(_with())
+    cfg = tmp_path / "config"
+    cfg.symlink_to(real)
+    with pytest.raises(RNSConfigError):
+        _pin_rpc_key_in(cfg, sudo=False)
+    assert cfg.is_symlink() and real.read_bytes() == _with()
+
+
+def test_shared_rpc_key_unreadable_config_never_derives(tmp_path):
+    """Fable r14 #2: an UNREADABLE config is not an absent key."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads a 000 file")
+    RNS = pytest.importorskip("RNS")
+    from utils.paths import ReticulumPaths
+    cfg = tmp_path / "config"
+    cfg.write_bytes(_with(key_line=f"  rpc_key = {HEX}"))
+    (tmp_path / "storage").mkdir()
+    (tmp_path / "storage" / "transport_identity").write_bytes(b"x")
+
+    class _Id:
+        def get_private_key(self):
+            return b"k"
+    cfg.chmod(0)
+    try:
+        with patch.object(ReticulumPaths, "get_config_file", return_value=cfg), \
+                patch.object(RNS.Identity, "from_file", return_value=_Id()), \
+                patch.object(RNS.Identity, "full_hash", return_value=bytes.fromhex("cd" * 32)):
+            assert ReticulumPaths.get_shared_rpc_key() is None
+    finally:
+        cfg.chmod(0o644)
+
+
+def test_repair_says_why_an_invalid_key_is_left(tmp_path, capsys):
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'launcher_tui'))
+    from handlers import _rns_repair as R
+    from utils.paths import ReticulumPaths
+    cfg = tmp_path / "config"
+    cfg.write_bytes(_with(key_line="  rpc_key = " + "ab" * 16))   # 32 hex: rnsd uses it
+    with patch.object(ReticulumPaths, "get_config_file", return_value=cfg), \
+            patch.object(ReticulumPaths, "get_shared_rpc_key", return_value=None):
+        assert R._ensure_rnsd_rpc_key() is False
+    out = capsys.readouterr().out
+    assert "64" in out and "Pinned" not in out

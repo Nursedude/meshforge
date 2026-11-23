@@ -524,7 +524,12 @@ def _ensure_rnsd_rpc_key() -> bool:
         if generated:
             print("  Pinned a fresh rpc_key — RNS clients read it on (re)start.")
         else:
-            print("  rpc_key still unresolved (existing value left as-is).")
+            # Say WHY (Fable r14 #3): the existing value is set but is not a
+            # 64-hex key MeshForge can hand clients; repair never overwrites it.
+            print(f"  rpc_key NOT pinned — {cfg_path} has an rpc_key that is not")
+            print("  a 64-hex key MeshForge can share with clients (rnsd may still")
+            print("  use it). Repair never overwrites a set key: replace or remove")
+            print("  it (Edit Reticulum Config), then re-run repair.")
         return generated
     except ValueError as e:  # RNSConfigError / RPCKeyWriteRefused — nothing written
         print(f"  rpc_key NOT pinned — {cfg_path} was left untouched:")

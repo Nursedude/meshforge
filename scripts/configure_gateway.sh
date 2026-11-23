@@ -88,7 +88,9 @@ fi
 # then ~/.reticulum/config — check them in that order.
 RPC_KEY_SOURCE=""
 for candidate in /etc/reticulum/config "$TARGET_HOME/.config/reticulum/config" "$TARGET_HOME/.reticulum/config" /root/.reticulum/config; do
-    if [[ -r "$candidate" ]] && grep -qE '^\s*rpc_key\s*=\s*[0-9a-fA-F]{64}\s*$' "$candidate" 2>/dev/null; then
+    # The ONE reader (r13.2): the key rnsd USES, by rnsd's own parser — a
+    # grep here was wrong on 30 of 88 shapes (Fable r14 #1).
+    if [[ -r "$candidate" ]] && python3 "$REPO_ROOT/scripts/rns_rpc_key_pin.py" --check "$candidate" >/dev/null 2>&1; then
         RPC_KEY_SOURCE="$candidate"
         break
     fi
@@ -96,8 +98,9 @@ done
 if [[ -z "$RPC_KEY_SOURCE" ]]; then
     warn "rpc_key is NOT pinned in any RNS config. The gateway will likely hit"
     warn "AuthenticationError on inbound RNS traffic (Issue #37/#41)."
-    warn "Fix: openssl rand -hex 32 → add to /etc/reticulum/config as"
-    warn "     'rpc_key = <64hex>' under [reticulum], restart rnsd."
+    warn "Check: python3 $REPO_ROOT/scripts/rns_rpc_key_pin.py --check /etc/reticulum/config"
+    warn "Fix:   sudo python3 $REPO_ROOT/scripts/rns_rpc_key_pin.py /etc/reticulum/config"
+    warn "       (pins a key only if rnsd will read it; never a duplicate), restart rnsd."
 else
     echo "    rpc_key pinned via: $RPC_KEY_SOURCE"
 fi

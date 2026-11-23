@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # MeshForge MeshChatX wrapper — refuses-loud on rpc_key mismatch.
 #
-# Version: 1
+# Version: 2
 #
 # Pairs with the canonical NomadNet wrapper (Python). MeshChatX is a
 # web daemon, not a TUI that imports RNS in-process, so the analogous
 # refuses-loud guard happens at startup as a precondition check rather
 # than a runtime monkeypatch:
 #
-#   - If /etc/reticulum/config (or ~/.reticulum/config) lacks a 64-hex
-#     rpc_key line, exit 87. The systemd unit's StartLimitBurst then
+#   - If /etc/reticulum/config (or ~/.reticulum/config) carries no 64-hex
+#     rpc_key rnsd USES — asked of ${MESHFORGE_REPO:-/opt/meshforge}/
+#     scripts/rns_rpc_key_pin.py --check (rnsd's own parser; v2, r13.2 —
+#     v1's grep parked MeshChatX over a quoted key rnsd reads) — exit 87. The systemd unit's StartLimitBurst then
 #     parks the service in failed state after 5 retries so the journal
 #     carries one clear diagnostic line instead of 392 silent
 #     restarts. (Issue #41 / Issue #46.)
@@ -47,7 +49,12 @@ rpc_key_pinned() {
     else
         return 1
     fi
-    grep -qE '^[[:space:]]*rpc_key[[:space:]]*=[[:space:]]*[0-9a-fA-F]{64}' "${cfg}"
+    local checker="${MESHFORGE_REPO:-/opt/meshforge}/scripts/rns_rpc_key_pin.py"
+    if [[ ! -f "${checker}" ]]; then
+        err "cannot verify rpc_key: ${checker} not found (set MESHFORGE_REPO)"
+        return 1
+    fi
+    python3 "${checker}" --check "${cfg}" >&2
 }
 
 if ! rpc_key_pinned; then
