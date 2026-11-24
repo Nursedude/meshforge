@@ -40,8 +40,11 @@ NO_FLEET_LINE = f"heard by: this box cannot see hearings ({NO_TARGETS})"
 
 def kept_hearings(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
     """The kept rows that ARE hearings — judged, not assumed from what the
-    store happens to keep today (``inbox_heard.FREEZABLE`` may grow)."""
-    return sorted((dict(b, kept=True) for b in rows if b.get("state") == "heard"),
+    store happens to keep today (``inbox_heard.FREEZABLE`` may grow). The
+    reason carries ``KEPT_NOTE`` exactly as the fleet path's merged rows do
+    (r1 nit 3: one kept box, one reason, whichever exit showed it)."""
+    return sorted((dict(b, kept=True, reason=b.get("reason", "") + inbox_heard.KEPT_NOTE)
+                   for b in rows if b.get("state") == "heard"),
                   key=lambda b: b["alias"])
 
 

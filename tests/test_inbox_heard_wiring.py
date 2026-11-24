@@ -7,7 +7,8 @@ reads 'unconfirmed' forever". Pinned here:
   * a box with no fleet (no target list) says it cannot see hearings — one
     line per broadcast send, never a count, never an error;
   * fleet evidence that raises never 503s the inbox — the send says the
-    fleet is unobservable, and the read says why (hfm #9 witness);
+    fleet is unobservable (or names the hearings the store kept, beside why
+    it cannot judge now), and the read says why (hfm #9 witness);
   * DMs and received rows never carry a broadcast heard-by line;
   * the page: a closed STATE map whose unknown default says "state unknown"
     (F11), a heard line rendered as text, and a send failure that the next
@@ -390,7 +391,7 @@ _KEPT = {1: [{"alias": "kiai", "state": "heard", "reason": "r", "rx_ts": 1.0,
               "skewed": False}]}
 
 
-def _read_raising(*, load_exc=None, judge_exc=None):
+def _read_raising(*, load_exc=None, judge_exc=None, kept_exc=False):
     load = ({"side_effect": load_exc} if load_exc
             else {"return_value": {"kiai": _sec()}})
     judge = ({"side_effect": judge_exc} if judge_exc
@@ -399,9 +400,14 @@ def _read_raising(*, load_exc=None, judge_exc=None):
                       return_value=CommandResult.ok("ok", data={"messages": [_row()]})), \
          patch("utils.message_listener.get_listener_status", return_value={}), \
          patch.object(inbox_api.messaging, "first_received_id_row", return_value=None), \
-         patch.object(inbox_api.messaging, "kept_heard", return_value=(_KEPT, 0)), \
+         patch.object(inbox_api.messaging, "kept_heard",
+                      **({"side_effect": OSError("db locked")} if kept_exc
+                         else {"return_value": (_KEPT, 0)})), \
          patch.object(inbox_legs, "load_sections", **load), \
-         patch.object(inbox_legs, "heard_from", **judge):
+         patch.object(inbox_legs, "heard_from", **judge), \
+         patch("utils.rf_segments.load", return_value=_decl({})):
+        # r1 nit 5: segments pinned — the per-send case reaches rf_segments,
+        # and the box's own declaration must not decide this verdict
         return inbox_api.read_inbox()
 
 
@@ -414,8 +420,14 @@ def test_a_blind_exit_still_shows_the_hearings_the_store_kept(kw):
     assert heard["line"].startswith("heard by kiai (kept from an earlier read)"), heard["line"]
     # the blindness about NOW is still said, in the unreadable words — never
     # the no-target-list words (this box HAS a list; it could not read it)
-    assert "fleet evidence unreadable" in heard["line"]
+    # r1 nit 1: each exit says ITS reason — a per-send fault is never worded
+    # as a fleet-wide read failure; never the no-target-list words either
+    why = (inbox_api.UNREADABLE_WHY if "load_exc" in kw else inbox_api.SEND_UNJUDGED_WHY)
+    assert heard["line"].endswith("now " + why), heard["line"]
     assert "no target list here" not in heard["line"]
+    # r1 nit 3: a kept box reads the SAME reason on every exit (KEPT_NOTE)
+    from utils.inbox_heard import KEPT_NOTE
+    assert heard["boxes"][0]["reason"] == "r" + KEPT_NOTE
     assert [b["alias"] for b in heard["boxes"]] == ["kiai"] and heard["boxes"][0]["kept"]
     assert out["heard_error"], "the failure is still witnessed in the read"
 
@@ -428,3 +440,27 @@ def test_a_blind_exit_with_nothing_kept_reads_unreadable_exactly(kw):
     with patch.dict(_KEPT, clear=True):
         out = _read_raising(**kw)
     assert out["threads"][0]["messages"][0]["heard"] == {"line": inbox_api.HEARD_UNREADABLE}
+
+
+@pytest.mark.parametrize("kw", [{"load_exc": ValueError("damaged")},
+                                {"judge_exc": RuntimeError("boom")}],
+                         ids=["damaged-list", "per-send-raise"])
+def test_a_blind_exit_with_an_unreadable_kept_store_says_both(kw):
+    # r1 nit 6: the kept read now runs FIRST — with it raising AND an exit
+    # that cannot judge, kept is None: the exact blind line, both failures said
+    out = _read_raising(**kw, kept_exc=True)
+    assert out["threads"][0]["messages"][0]["heard"] == {"line": inbox_api.HEARD_UNREADABLE}
+    assert "kept heard-by verdicts unreadable" in out["heard_error"]
+    if "load_exc" in kw:
+        assert out["heard_error"].startswith("fleet evidence unreadable"), out["heard_error"]
+
+
+def test_a_malformed_kept_row_on_a_blind_exit_never_takes_the_read_down():
+    # r1 nit 2: the show-kept step runs INSIDE an except handler — a row it
+    # cannot read must fall back to the blind line, never 500 the inbox
+    bad = {1: [{"state": "heard"}]}   # no alias
+    with patch.dict(_KEPT, bad, clear=True):
+        out = _read_raising(load_exc=ValueError("damaged"))
+    assert out["state"] == "ok"
+    assert out["threads"][0]["messages"][0]["heard"] == {"line": inbox_api.HEARD_UNREADABLE}
+    assert "kept heard-by row(s) unreadable" in out["heard_error"]

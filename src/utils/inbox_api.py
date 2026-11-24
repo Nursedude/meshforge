@@ -339,6 +339,9 @@ def read_inbox(limit: int = 500) -> Dict[str, Any]:
 #: what a send says when the fleet evidence itself could not be read
 UNREADABLE_WHY = "fleet evidence unreadable"
 HEARD_UNREADABLE = f"heard by: unobservable ({UNREADABLE_WHY})"
+#: a kept hearing beside ONE send's judging fault — the fleet evidence read
+#: fine; never worded as a fleet-wide failure (r1 nit 1)
+SEND_UNJUDGED_WHY = "this send could not be judged (see heard_error)"
 
 
 def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
@@ -347,7 +350,8 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
     whole read (``inbox_legs``). DMs carry none (their truth is the ack path,
     not hearings); a box with no fleet says it cannot see hearings. A
     failure reading the evidence never 503s the inbox: each send says the
-    fleet is unobservable, and the read returns why (hfm #9 witness)."""
+    fleet is unobservable — or, where the store KEPT hearings for it, names
+    them beside why it cannot judge now — and the read returns why (hfm #9)."""
     from utils import inbox_legs
     sends = [m for t in threads if t.get("network") == "meshtastic" and t.get("kind") == "channel"
              for m in t["messages"]
@@ -374,7 +378,15 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
         errors.append(f"kept heard-by verdicts unreadable: {type(e).__name__}: {e}")
 
     def blind(m: Dict[str, Any], line: str, why: str) -> Dict[str, Any]:
-        return inbox_legs.blind_heard((kept or {}).get(m["id"], []), line=line, why=why)
+        # runs inside except handlers: a kept row it cannot read falls back
+        # to the exit's blind line and is witnessed — never a dead read (r1 nit 2)
+        try:
+            return inbox_legs.blind_heard((kept or {}).get(m["id"], []), line=line, why=why)
+        except Exception as e:
+            logger.warning("inbox: kept heard-by rows unreadable for send %s: %s", m.get("id"), e)
+            errors.append(f"send {m.get('id')}: kept heard-by row(s) unreadable: "
+                          f"{type(e).__name__}: {e}")
+            return {"line": line}
 
     try:
         sections = inbox_legs.load_sections(now)
@@ -431,8 +443,8 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
                                  for b in freeze]))
         except Exception as e:
             logger.warning("inbox: heard-by failed for send %s: %s", m.get("id"), e)
-            m["heard"] = blind(m, HEARD_UNREADABLE, UNREADABLE_WHY)
             errors.append(f"send {m.get('id')}: {type(e).__name__}: {e}")
+            m["heard"] = blind(m, HEARD_UNREADABLE, SEND_UNJUDGED_WHY)
     if to_keep:
         try:
             messaging.keep_heard(to_keep, now=now)
