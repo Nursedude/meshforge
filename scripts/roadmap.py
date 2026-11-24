@@ -26,7 +26,10 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -55,6 +58,61 @@ FIELD_RE = re.compile(r"^  (?P<key>" + "|".join(FIELDS) + r"): (?P<val>\S.*)$")
 # — absorbing it would silently drop the item from the public page (hfm #3).
 NEAR_FIELD_RE = re.compile(r"^\s+(?P<key>[A-Za-z]+)\s*:", re.I)
 PROVENANCE = ROOT / ".claude" / "audits" / "review_provenance.md"
+
+sys.path.insert(0, str(ROOT / "scripts"))
+
+#: Below this share of commits touching src/, the intake line warns
+#: (operator 2026-11-23: "the product is???" — measured 34 % over 30 d).
+PRODUCT_SHARE_FLOOR = 0.5
+PRODUCT_SHARE_DAYS = 7
+
+
+def product_share(repo, days=PRODUCT_SHARE_DAYS):
+    """(commits touching src/, all commits) over the last ``days`` — git's
+    count, not an estimate. Raises OSError/CalledProcessError when git can't say."""
+    def n(*extra):
+        r = subprocess.run(["git", "-C", str(repo), "rev-list", "--count",
+                            f"--since={days} days ago", "HEAD", *extra],
+                           capture_output=True, text=True, timeout=10, check=True)
+        return int(r.stdout.strip())
+    return n("--", "src/"), n()
+
+
+def _default_ledger():
+    # get(key, default) — the watcher's and warmstart's form: an EMPTY override
+    # is a loud UNKNOWN (open('') fails), never a silent read of the real ledger.
+    sys.path.insert(0, str(ROOT / "src"))
+    from utils.paths import get_real_user_home
+    return os.environ.get("DEFERRED_WORK_LEDGER",
+                          str(get_real_user_home() / "deferred_work.json"))
+
+
+def focus_line(repo=ROOT, ledger="default"):
+    """The intake line's measured half: is the work the product, and is the
+    queue shrinking? Tri-state — a git or ledger read failure says UNKNOWN."""
+    try:
+        src, total = product_share(repo)
+        name = Path(repo).name
+        if not total:
+            raise ValueError(f"no commits in {PRODUCT_SHARE_DAYS} d in {name}")
+        pct = round(100 * src / total)
+        share = f"{name} product share {src}/{total} commits touch src/ ({pct}%, {PRODUCT_SHARE_DAYS} d)"
+        if src / total < PRODUCT_SHARE_FLOOR:
+            share = f"⚠ {share} — below {round(PRODUCT_SHARE_FLOOR * 100)}%: start on a NOW item, not the harness"
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        share = f"product share UNKNOWN ({type(e).__name__}: {e})"
+    if ledger is None:
+        return f"📏 {share}"
+    try:
+        import deferred_cap  # lazy: a broken import says UNKNOWN, never blanks the NOW line
+        path = _default_ledger() if ledger == "default" else ledger
+        with open(path, encoding="utf-8") as f:
+            live = deferred_cap.live_count(json.load(f))
+        queue = f"deferred {live} live (may only shrink — close one to add one)"
+    except Exception as e:  # SessionStart drops stderr: every failure must print UNKNOWN
+        queue = f"deferred UNKNOWN ({type(e).__name__})"
+    return f"📏 {share} · {queue}"
+
 
 # MF015 (security.md): no operator LAN address in anything published.
 _PRIVATE_IP = re.compile(
@@ -293,6 +351,7 @@ def main() -> int:
             print(f"  {it.id:<7} {' '.join('[' + r + ']' for r in it.repos)} {it.title}")
         if errors:
             print(f"  ⚠️ {len(errors)} roadmap rule failure(s) — run scripts/roadmap.py --check")
+        print(focus_line())
         return 0
     try:
         refusals = _publish_refusals(items)

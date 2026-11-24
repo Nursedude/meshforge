@@ -16,6 +16,16 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR:-.}/scripts/deferred_cap.py\"",
+            "timeout": 30
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {

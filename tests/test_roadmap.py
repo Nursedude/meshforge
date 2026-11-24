@@ -138,10 +138,13 @@ def test_now_prints_ids(capsys, monkeypatch, tmp_path):
     f = tmp_path / "ROADMAP.md"
     f.write_text(_doc(GOOD + "### NEXT\n- **Z-9** [MF] S — later thing\n"), encoding="utf-8")
     monkeypatch.setattr(mod, "ROADMAP", f)
+    # focus_line reads git + the operator's ledger — pinned out of this unit test
+    monkeypatch.setattr(mod, "focus_line", lambda *a, **k: "📏 FOCUS-STUB")
     monkeypatch.setattr(sys, "argv", ["roadmap.py", "--now"])
     assert mod.main() == 0
     out = capsys.readouterr().out
     assert "ROADMAP NOW (1)" in out and "R2" in out and "Z-9" not in out
+    assert out.rstrip().endswith("📏 FOCUS-STUB")  # the measured line rides the intake line
 
 
 def test_now_unreadable_says_unknown_on_stdout(capsys, monkeypatch, tmp_path):
