@@ -130,8 +130,9 @@ def _judge_box(alias: str, section: Any, *, packet_id: Any, sent_ts: float, now:
         window = _ts(section.get("window_s"))
         if window is not None and window > 0 and sent_ts < until - window:
             # the box's RING moved past the send (11-23: its journal still held
-            # the packet). Whether a read judged the send in time is NOT known
-            # here — the caller says it (r2 MED-1, ``heard_judged``)
+            # the packet). Whether an earlier read saw THIS box cover the send
+            # is not known here — the caller says it from the box's own mark
+            # (r3: ``heard_covered``)
             return out("unobservable", f"{RING_AGED_PREFIX}{window / 3600:g} h rx ring")
         return out("unobservable", "box journal coverage starts after the send")
     if until < sent_ts + JOIN_AFTER_S:
@@ -175,16 +176,15 @@ FREEZABLE = ("heard",)
 KEPT_NOTE = (f" (kept: decoded while the box's {RING_WINDOW_S / 3600:g} h "
              f"rx ring covered this send)")
 RING_AGED_PREFIX = "send is older than this box's "   # + "<N> h rx ring …"
-#: r2 MED-1: the two endings of a ring-aged reason — ONE place decides which
-AGED_JUDGED = "; a read judged this send in time and kept no hearing from this box"
-AGED_UNJUDGED = "; no read judged this send while the ring covered it"
-
-
-def judged_in_time(sent_ts: float, now: float) -> bool:
-    """A read at ``now`` JUDGES a send when its listen window has closed and
-    the boxes' rings can still cover it (center clock; hfm #6 — a center
-    clock off by days is the accepted r1 L7 residual)."""
-    return sent_ts + JOIN_AFTER_S <= now < sent_ts + RING_WINDOW_S
+#: r3: the endings of a ring-aged reason, decided PER BOX from that box's own
+#: coverage mark — never from the center clock (r3 MED-1/2: a per-send,
+#: clock-derived mark claimed judgements no box had made). The mark is written
+#: only when the box's LIVE verdict was heard or not_heard, i.e. the judge saw
+#: that box's ring cover the send window.
+COVERING = ("heard", "not_heard")
+AGED_COVERED = "; at an earlier read this box covered the send and had not decoded it"
+AGED_UNSEEN = "; no read saw this box cover the send while its ring held it"
+AGED_UNKNOWN = "; whether a read saw this box cover the send is unknown (store unreadable)"
 
 
 def _hearing_rank(b: Optional[BoxHeard]) -> int:

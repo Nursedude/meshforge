@@ -36,8 +36,8 @@ def summarize_results(results: Iterable[inbox_heard.BoxHeard]) -> Dict[str, List
 
 
 def heard_line(summary: Mapping[str, List[str]], *, packet_id: Any,
-               skewed: Iterable[str] = (), kept: int = 0, aged: int = 0,
-               judged: bool = False) -> str:
+               skewed: Iterable[str] = (), kept: int = 0,
+               aged: Optional[Mapping[str, int]] = None) -> str:
     """D4's words for one send. Every state is counted; none is implied. A
     hearing outside the join window is QUALIFIED, never shown plain (r5)."""
     if not inbox_heard._valid_pid(packet_id):
@@ -53,9 +53,13 @@ def heard_line(summary: Mapping[str, List[str]], *, packet_id: Any,
     blind = len(summary.get("unobservable", []))
     if blind:
         # r1 M2: the gap is SAID where the operator reads, not only in the API
+        a = {k: v for k, v in (aged or {}).items() if v}
+        words = [f"{a['covered']} not heard when covered" if a.get("covered") else "",
+                 f"{a['unseen']} never seen covering it" if a.get("unseen") else "",
+                 f"{a['unknown']} unknown" if a.get("unknown") else ""]
+        n = sum(a.values())
         parts.append(f"{blind} unobservable" + (
-            f" ({aged} past the box's rx ring, "
-            + ("no hearing kept)" if judged else "never judged in time)") if aged else ""))
+            f" ({n} past the box's rx ring: {', '.join(w for w in words if w)})" if n else ""))
     if kept:
         parts.append(f"{kept} kept from an earlier read")
     other = len(summary.get("cannot_hear", []))
@@ -101,28 +105,42 @@ def heard_from(packet_id: Any, sent_ts: float, sections: Mapping[str, Optional[d
                now: float, segments: Optional[Mapping[str, Optional[str]]] = None,
                send_segment: Optional[str] = None,
                frozen: Optional[Mapping[str, inbox_heard.BoxHeard]] = None,
-               judged: bool = False) -> Dict[str, Any]:
-    """``{"line", "summary", "boxes", "judged_in_time", "freeze"}`` for one
-    send. ``frozen`` = the hearings the store kept; ``judged`` = the store
-    holds a ``heard_judged`` mark (an earlier read judged it in time), or
-    THIS read does; ``freeze`` = the hearings the caller should keep now."""
+               covered: Optional[Iterable[str]] = ()) -> Dict[str, Any]:
+    """``{"line", "summary", "boxes", "aged_unseen", "freeze", "cover"}``
+    for one send. ``frozen`` = the hearings the store kept; ``covered`` = the
+    boxes the store MARKED as having covered this send at an earlier read
+    (None = the store could not be read → UNKNOWN, never "unseen");
+    ``freeze`` = hearings to keep now; ``cover`` = boxes whose LIVE verdict
+    covered the send at THIS read (to mark)."""
     results = inbox_heard.judge_send(packet_id, sent_ts, sections, now=now,
                                      segments=segments, send_segment=send_segment)
+    cover = sorted(r.alias for r in results if r.state in inbox_heard.COVERING)
     results, freeze = inbox_heard.merge_frozen(results, frozen or {})
-    judged = judged or inbox_heard.judged_in_time(sent_ts, now)
-    end = inbox_heard.AGED_JUDGED if judged else inbox_heard.AGED_UNJUDGED
-    results = [replace(r, reason=r.reason + end)
+    # a box covering at THIS read has a live verdict, so it is never ring-aged
+    # here: only EARLIER reads' marks decide the aged endings
+    marked = None if covered is None else set(covered)
+    aged = {"covered": 0, "unseen": 0, "unknown": 0}
+
+    def ending(r):
+        if marked is None:
+            aged["unknown"] += 1
+            return inbox_heard.AGED_UNKNOWN
+        if r.alias in marked:
+            aged["covered"] += 1
+            return inbox_heard.AGED_COVERED
+        aged["unseen"] += 1
+        return inbox_heard.AGED_UNSEEN
+
+    results = [replace(r, reason=r.reason + ending(r))
                if r.state == "unobservable" and r.reason.startswith(inbox_heard.RING_AGED_PREFIX)
                else r for r in results]
     summary = summarize_results(results)
     skewed = [r.alias for r in results if r.state == "heard" and r.skewed]
     kept = sum(1 for r in results if r.kept)
-    aged = sum(1 for r in results
-               if r.state == "unobservable" and r.reason.startswith(inbox_heard.RING_AGED_PREFIX))
     return {"line": heard_line(summary, packet_id=packet_id, skewed=skewed,
-                               kept=kept, aged=aged, judged=judged),
+                               kept=kept, aged=aged),
             "summary": summary, "boxes": [asdict(r) for r in results],
-            "judged_in_time": judged, "freeze": freeze}
+            "aged_unseen": aged["unseen"], "freeze": freeze, "cover": cover}
 
 
 def heard_for_send(packet_id: Any, sent_ts: float, *, now: float,
@@ -137,5 +155,5 @@ def heard_for_send(packet_id: Any, sent_ts: float, *, now: float,
     out = heard_from(packet_id, sent_ts, sections, now=now, segments=segments,
                      send_segment=send_segment)
     out.pop("freeze")   # nothing here keeps verdicts; the inbox read does
-    out.pop("judged_in_time")
+    out.pop("cover")
     return out

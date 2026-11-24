@@ -269,7 +269,8 @@ def test_a_send_nobody_judged_in_time_names_the_ring_not_the_journal(tmp_db):
     assert "24 h rx ring" in kiai["reason"] and "journal" not in kiai["reason"], kiai
     assert out["heard_not_kept"] == 1   # the witness (hfm #9): sends that aged out unjudged
     # r1 M2: the page renders only the line — the gap must be IN it
-    assert "1 unobservable (1 past the box's rx ring, never judged in time)" in m["heard"]["line"]
+    assert ("1 unobservable (1 past the box's rx ring: 1 never seen covering it)"
+            in m["heard"]["line"]), m["heard"]["line"]
 
 
 def test_a_kept_hearing_says_so_on_the_line(tmp_db):
@@ -345,10 +346,11 @@ def test_r2_med1_a_send_judged_in_time_is_never_called_unjudged(tmp_db):
                             "moc": dict(_ring(later), window_s=DAY)})
     m = _msg(out, mid)
     assert out["heard_not_kept"] == 0
-    assert "never judged" not in m["heard"]["line"], m["heard"]["line"]
-    assert "1 past the box's rx ring, no hearing kept" in m["heard"]["line"], m["heard"]["line"]
+    assert "never seen" not in m["heard"]["line"], m["heard"]["line"]
+    assert "1 past the box's rx ring: 1 not heard when covered" in m["heard"]["line"], \
+        m["heard"]["line"]
     moc = next(b for b in m["heard"]["boxes"] if b["alias"] == "moc")
-    assert "a read judged this send in time" in moc["reason"], moc
+    assert "at an earlier read this box covered the send" in moc["reason"], moc
 
 
 def test_r2_med1_a_send_no_read_judged_in_time_still_counts(tmp_db):
@@ -358,7 +360,7 @@ def test_r2_med1_a_send_no_read_judged_in_time_still_counts(tmp_db):
     later = sent + 25 * 3600
     out = _read_out(later, {"moc": dict(_ring(later), window_s=DAY)})
     assert out["heard_not_kept"] == 1
-    assert "never judged in time" in _msg(out, mid)["heard"]["line"]
+    assert "1 never seen covering it" in _msg(out, mid)["heard"]["line"]
 
 
 def test_r2_lb_a_hearing_the_live_ring_still_confirms_is_not_labelled_kept(tmp_db):
@@ -435,7 +437,8 @@ def test_r2_a_failed_keep_is_said(tmp_db):
     now = sent + 700
     with patch.object(messaging_mod, "keep_heard", side_effect=OSError("disk full")):
         out = _read_out(now, {"kiai": _ring(now, (0x0DAEE001, PID, sent + 2))})
-    assert "heard-by not kept for 1 send(s): OSError: disk full" in out["heard_error"]
+    assert ("heard-by not kept: 1 send(s) of hearings, 1 box coverage mark(s): "
+            "OSError: disk full") in out["heard_error"], out["heard_error"]
 
 
 def test_r2_the_schema_probe_never_trusts_a_heard_kept_of_the_wrong_shape(tmp_db):
@@ -453,9 +456,9 @@ def test_r2_the_schema_probe_never_trusts_a_heard_kept_of_the_wrong_shape(tmp_db
         conn.close()
 
 
-def test_r2_a_store_at_the_r1_shape_gets_the_judged_mark_table(tmp_db):
+def test_r2_a_store_at_the_r1_shape_gets_the_coverage_mark_table(tmp_db):
     """r3 mutation survivor K: a store 69bd53ad created (heard_kept, no
-    heard_judged) must not pass the probe as current."""
+    coverage table) must not pass the probe as current."""
     import sqlite3
     _old_store(tmp_db)
     conn = sqlite3.connect(tmp_db)
@@ -471,4 +474,145 @@ def test_r2_a_store_at_the_r1_shape_gets_the_judged_mark_table(tmp_db):
     first = sent + 700
     out = _read_out(first, {"moc": dict(_ring(first), window_s=DAY)})
     assert out.get("heard_error") is None, out.get("heard_error")
-    assert messaging_mod.kept_heard([(mid, PID)])[2] == {mid}
+    assert messaging_mod.kept_heard([(mid, PID)])[2] == {mid: {"moc"}}
+
+
+
+# ── review r3: the coverage mark is PER BOX and MEASURED ─────────────────
+
+def _later(mid, boxes, hours=25):
+    sent = _sent_ts(mid, 0)
+    later = sent + hours * 3600
+    return _read_out(later, {a: dict(_ring(later), window_s=DAY) for a in boxes})
+
+
+def test_r3_s1_a_read_that_saw_no_box_marks_nothing(tmp_db):
+    """r3 MED-1 S1: every spool stale at the only in-time read."""
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    _read_out(sent + 700, {"moc": None, "kiai": None})
+    assert messaging_mod.kept_heard([(mid, PID)])[2] == {}
+    out = _later(mid, ["moc", "kiai"])
+    assert out["heard_not_kept"] == 1
+    m = _msg(out, mid)
+    assert "2 never seen covering it" in m["heard"]["line"], m["heard"]["line"]
+    assert all("no read saw this box cover" in b["reason"] for b in m["heard"]["boxes"])
+
+
+def test_r3_s1b_a_box_whose_window_was_still_open_is_not_marked(tmp_db):
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    now = sent + 601
+    sec = dict(_ring(now), covered_until=sent + 400, window_s=DAY)
+    _read_out(now, {"moc": sec})
+    assert messaging_mod.kept_heard([(mid, PID)])[2] == {}
+
+
+def test_r3_s1c_marks_only_the_box_that_covered(tmp_db):
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    first = sent + 700
+    _read_out(first, {"kiai": dict(_ring(first), window_s=DAY), "moc": None})
+    out = _later(mid, ["kiai", "moc"])
+    reasons = {b["alias"]: b["reason"] for b in _msg(out, mid)["heard"]["boxes"]}
+    assert "covered the send" in reasons["kiai"] and "no read saw" in reasons["moc"], reasons
+    assert out["heard_not_kept"] == 1
+
+
+def test_r3_s4_a_box_with_a_short_ring_is_never_claimed_covered(tmp_db):
+    """r3 MED-2: the box's own window decides, not the center's constant."""
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    now = sent + 2 * 3600
+    out = _read_out(now, {"moc": dict(_ring(now), window_s=3600,
+                                      covered_since=now - 3600)})
+    m = _msg(out, mid)
+    assert "no read saw this box cover" in m["heard"]["boxes"][0]["reason"], m["heard"]
+    assert out["heard_not_kept"] == 1
+
+
+def test_r3_low1_an_unreadable_store_says_unknown_and_is_not_counted(tmp_db):
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    first = sent + 700
+    _read_out(first, {"moc": dict(_ring(first), window_s=DAY)})
+    with patch.object(messaging_mod, "kept_heard", side_effect=OSError("database is locked")):
+        out = _later(mid, ["moc"])
+    m = _msg(out, mid)
+    assert "1 unknown" in m["heard"]["line"], m["heard"]["line"]
+    assert "unknown (store unreadable)" in m["heard"]["boxes"][0]["reason"]
+    assert out["heard_not_kept"] == 0
+    assert "kept heard-by verdicts unreadable" in out["heard_error"]
+
+
+def test_r3_low3_a_non_text_reason_never_blocks_the_real_hearing(tmp_db):
+    import sqlite3
+    mid = _send()
+    messaging_mod._init_db().close()
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("INSERT INTO heard_kept VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 (mid, PID, "kiai", "heard", b"\x00blob", None, 0, 1.0))
+    conn.commit()
+    conn.close()
+    messaging_mod.keep_heard([(mid, PID, [_hearing()])])
+    kept, refused = messaging_mod.kept_heard([(mid, PID)])[:2]
+    assert refused == 0 and kept[mid][0]["reason"] == "decoded this packet id"
+
+
+def test_r3_nit1_prune_drops_marks_keyed_to_another_packet_id(tmp_db):
+    mid = _send()
+    messaging_mod.keep_heard([(mid, PID + 5, [_hearing()])], covered=[(mid, PID + 5, "moc")])
+    messaging_mod.keep_heard([(mid, PID, [_hearing()])], covered=[(mid, PID, "moc")])
+    messaging_mod._last_message_prune_ts = 0.0
+    import sqlite3
+    messaging_mod._maybe_prune_messages(now=10 ** 10)
+    conn = sqlite3.connect(tmp_db)
+    left = {t: conn.execute(f"SELECT packet_id FROM {t}").fetchall()
+            for t in ("heard_kept", "heard_covered")}
+    conn.close()
+    assert left == {"heard_kept": [(PID,)], "heard_covered": [(PID,)]}, left
+
+
+def test_r3_nit3_each_send_keeps_its_own_marks(tmp_db):
+    """r3 NIT-3 mutants F/H: one send's coverage never lends itself to another."""
+    a = _send(PID)
+    b = _send(PID + 1)
+    sa = _sent_ts(a, 0)
+    sb = _sent_ts(b, 0)
+    now = max(sa, sb) + 700
+    _read_out(now, {"moc": dict(_ring(now), window_s=DAY)})
+    marks = messaging_mod.kept_heard([(a, PID), (b, PID + 1)])[2]
+    assert marks == {a: {"moc"}, b: {"moc"}}
+    # a third send nobody saw covered stays unmarked beside two marked ones
+    c = _send(PID + 2)
+    sc = _sent_ts(c, 0)
+    _read_out(sc + 700, {"moc": None})
+    later = sc + 25 * 3600
+    out = _read_out(later, {"moc": dict(_ring(later), window_s=DAY)})
+    assert out["heard_not_kept"] == 1
+    assert "never seen" in _msg(out, c)["heard"]["line"]
+    assert "never seen" not in _msg(out, a)["heard"]["line"]
+
+
+def test_r3_clear_takes_the_marks_too(tmp_db):
+    import sqlite3
+    mid = _send()
+    messaging_mod.keep_heard([], covered=[(mid, PID, "moc")])
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("UPDATE messages SET timestamp = datetime('now', '-5 days')")
+    conn.commit()
+    conn.close()
+    messaging_mod.clear_messages(older_than_days=1)
+    conn = sqlite3.connect(tmp_db)
+    assert conn.execute("SELECT COUNT(*) FROM heard_covered").fetchone()[0] == 0
+    conn.close()
+
+
+def test_r3_nit2_a_failed_mark_says_marks_not_sends_of_hearings(tmp_db):
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    now = sent + 700
+    with patch.object(messaging_mod, "keep_heard", side_effect=OSError("disk full")):
+        out = _read_out(now, {"moc": dict(_ring(now), window_s=DAY)})
+    assert ("heard-by not kept: 0 send(s) of hearings, 1 box coverage mark(s): "
+            "OSError: disk full") in out["heard_error"], out["heard_error"]
