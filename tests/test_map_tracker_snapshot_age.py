@@ -237,3 +237,95 @@ def test_stale_gps_plus_current_rns_does_not_say_no_gps(setup):
     assert "0 have GPS" not in diag["notes"], diag
     assert "0 current with GPS" in diag["notes"], diag
     assert "2 older than" in diag["notes"], diag
+
+
+# ------------------------------- MAP-H H4 (2026-11-24): a sentinel is not an age
+def _collect_planted(collector, stamps):
+    """Features as a producer that writes ``last_heard or 0`` would hand them
+    (H4 survey: 29 such sites in the domain; this reader's own producer emits
+    None today, so the plant is the only way to reach the branch)."""
+    tracker = MagicMock()
+    tracker.get_all_nodes.return_value = []
+    tracker.get_nodes_with_position.return_value = []
+    tracker.to_geojson.return_value = {"features": [
+        {"type": "Feature", "properties": {"id": f"!n{i:07d}", "last_heard": s}}
+        for i, s in enumerate(stamps)]}
+    collector._nodes_without_position = []
+    with patch("utils.map_data_collector.get_node_tracker", return_value=tracker):
+        return collector._collect_unified_tracker()
+
+
+@pytest.mark.parametrize("sentinel", [0, 0.0, -5, True, False, float("-inf"),
+                                      float("nan"), float("inf")], ids=repr)
+def test_a_sentinel_stamp_is_unknown_age_and_held(setup, sentinel):
+    """H4 survey's one exception: every other last_heard reader reads <= 0 as
+    unknown (the page's ageOf, _is_node_online, ...); this one computed
+    ``now - 0 > window`` and DROPPED the node — against its own rule that
+    unknown age is held (hfm #2), and counted it as stale (a false witness)."""
+    collector, _ = setup
+    feats = _collect_planted(collector, [sentinel])
+    assert len(feats) == 1, sentinel
+    assert collector._tracker_stale_dropped == 0
+
+
+def test_a_real_stale_stamp_is_still_dropped_beside_a_sentinel(setup):
+    """The control that can fail: the guard must not hold a REAL old stamp."""
+    collector, _ = setup
+    window = collector.get_node_cache_max_age_seconds()
+    feats = _collect_planted(collector, [0, time.time() - window - 86400, time.time() - 60])
+    assert [f["properties"]["id"] for f in feats] == ["!n0000000", "!n0000002"]
+    assert collector._tracker_stale_dropped == 1
+
+
+def test_string_stamps_share_the_online_checks_coercion(setup):
+    """H4 r1 nit 1: ONE coercion with _is_node_online (_coerce_epoch). A
+    stale numeric or ISO string was HELD by an int/float-only gate — a
+    >180 d node served as current while the online check read it as old."""
+    collector, _ = setup
+    old = time.time() - collector.get_node_cache_max_age_seconds() - 86400
+    feats = _collect_planted(collector, [
+        str(old), datetime.fromtimestamp(old).astimezone().isoformat(),
+        "", "junk", str(time.time() - 60)])
+    assert [f["properties"]["id"] for f in feats] == ["!n0000002", "!n0000003", "!n0000004"]
+    assert collector._tracker_stale_dropped == 2
+
+
+def test_a_listed_node_with_a_sentinel_last_seen_is_held(setup):
+    """H4 r1 nit 3: the position-less path shares _too_old — a last_seen at
+    epoch 0 is unknown age, listed, not counted stale."""
+    collector, _ = setup
+    node = MagicMock(id="rns_zero", network="rns", is_online=False)
+    node.name = "rns_zero"
+    node.last_seen.timestamp.return_value = 0
+    node.get_age_string.return_value = "?"
+    tracker = MagicMock()
+    tracker.get_all_nodes.return_value = [node]
+    tracker.get_nodes_with_position.return_value = []
+    tracker.to_geojson.return_value = {"features": []}
+    collector._nodes_without_position = []
+    with patch("utils.map_data_collector.get_node_tracker", return_value=tracker):
+        collector._collect_unified_tracker()
+    assert [e["id"] for e in collector._nodes_without_position] == ["rns_zero"]
+    assert collector._tracker_stale_dropped == 0
+
+
+# ------------------------------------------ H4 r2 (Fable, by running)
+def test_a_huge_int_stamp_never_takes_the_source_down(setup):
+    """r2 pre_existing (CONFIRMED): float(10**400) raised OverflowError inside
+    _coerce_epoch ("NEVER raises") — one junk stamp, 0 features served, the
+    fresh node beside it lost. Junk is unknown age: held, not counted."""
+    collector, _ = setup
+    assert collector._coerce_epoch(10 ** 400) == 0.0
+    assert collector._coerce_epoch(-(10 ** 400)) == 0.0
+    feats = _collect_planted(collector, [10 ** 400, time.time() - 60])
+    assert len(feats) == 2
+    assert collector._tracker_stale_dropped == 0
+
+
+def test_the_sentinel_boundary_is_zero_exactly(setup):
+    """r2 nit (mutant `e > 1e9` survived): a small POSITIVE stamp is a real
+    (ancient) age — dropped and counted; only <= 0 is the sentinel."""
+    collector, _ = setup
+    feats = _collect_planted(collector, [1, 1e-9, 0])
+    assert [f["properties"]["id"] for f in feats] == ["!n0000002"]
+    assert collector._tracker_stale_dropped == 2

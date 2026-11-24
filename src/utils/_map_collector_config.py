@@ -216,7 +216,10 @@ class MapCollectorConfigMixin:
         if isinstance(v, bool):
             return 0.0
         if isinstance(v, (int, float)):
-            return float(v)
+            try:
+                return float(v)
+            except OverflowError:   # H4 r2: a 400-digit int is junk, not an age
+                return 0.0
         if isinstance(v, str):
             s = v.strip()
             if not s:

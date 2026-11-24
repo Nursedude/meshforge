@@ -111,7 +111,15 @@ class TrackerDataCollectorMixin:
             now = time.time()
 
             def _too_old(epoch) -> bool:
-                return isinstance(epoch, (int, float)) and now - epoch > window_s
+                # MAP-H H4 (11-24): ONE coercion with _is_node_online
+                # (_coerce_epoch: numeric/ISO strings parse; bool/None/junk
+                # -> 0). <= 0 is a SENTINEL (`last_heard or 0`), not an age:
+                # unknown, held, never counted stale. nan/-inf fail `e > 0`;
+                # +inf and a FUTURE stamp give a negative age and are held
+                # (fail open on a behind clock — test_future_stamp_is_held;
+                # _is_node_online differs there).
+                e = self._coerce_epoch(epoch)
+                return e > 0 and now - e > window_s
 
             kept = [f for f in features
                     if not _too_old((f.get("properties") or {}).get("last_heard"))]
