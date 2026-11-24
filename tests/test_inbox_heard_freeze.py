@@ -1,0 +1,317 @@
+"""BIC-2 — a send's heard-by verdict outlives the boxes' 24 h rx_heard ring.
+
+Measured 2026-11-23: the operator's sends 7638/7640 (11-22 06:52 HST) were
+decoded by kiai, moc, moc1 and moc4 (their meshtasticd journals still hold
+the packet ids), yet /inbox read "heard by none · 0 of 0 listening · 7
+unobservable" 31 h later — the verdict was re-judged on every read from a
+ring trimmed to ``RING_WINDOW_S`` (24 h) and never kept (hfm #2: hold the
+last-known state; gate 3: an ENDED state must not revert).
+
+Seams (operator-agreed 11-23): read_inbox end to end on a real temp store;
+the store's migration of an old file; the pure merge rule.
+"""
+from unittest.mock import patch
+
+import pytest
+
+from commands import messaging as messaging_mod
+from utils import inbox_api, inbox_legs
+
+PID = 4198519586
+DAY = 24 * 3600
+
+
+@pytest.fixture
+def tmp_db(tmp_path, monkeypatch):
+    db_path = tmp_path / "messages.db"
+    monkeypatch.setattr(messaging_mod, "_get_db_path", lambda: db_path)
+    monkeypatch.setattr(messaging_mod, "_last_message_prune_ts", 0.0)
+    return db_path
+
+
+def _send(packet_id=PID):
+    r = messaging_mod.store_outgoing("Wx", "meshtastic", None, channel=0,
+                                     delivered=True, packet_id=packet_id)
+    assert r.success, r.message
+    return r.data["message_id"]
+
+
+def _ring(now, *hits):
+    """A box's rx_heard section as box_truth_rx writes it: a ring that can
+    vouch only for the last 24 h, read a minute ago."""
+    return {"entries": [list(h) for h in hits], "covered_since": now - DAY,
+            "covered_until": now - 60, "last_line_ts": now - 70}
+
+
+def _read_at(now, sections):
+    with patch.object(inbox_api.time, "time", return_value=now), \
+         patch("utils.message_listener.get_listener_status", return_value={}), \
+         patch.object(inbox_legs, "load_sections", return_value=sections):
+        out = inbox_api.read_inbox()
+    return {m["id"]: m for t in out["threads"] for m in t["messages"]}
+
+
+def _sent_ts(mid, now):
+    msgs = _read_at(now, None)
+    return inbox_api._epoch(msgs[mid]["ts"])
+
+
+def test_a_heard_send_still_reads_heard_after_the_ring_trims_it(tmp_db):
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    first = sent + 700                     # listen window (600 s) closed
+    msgs = _read_at(first, {"kiai": _ring(first, (0x0DAEE001, PID, sent + 2))})
+    assert msgs[mid]["heard"]["line"].startswith("heard by kiai · 1 of 1 listening")
+
+    later = sent + 25 * 3600               # the ring no longer reaches the send
+    msgs = _read_at(later, {"kiai": _ring(later)})
+    heard = msgs[mid]["heard"]
+    assert heard["line"].startswith("heard by kiai · 1 of 1 listening"), heard["line"]
+    kiai = next(b for b in heard["boxes"] if b["alias"] == "kiai")
+    assert kiai["state"] == "heard"
+
+
+# ── seam 2: the store — an existing messages.db from before heard_kept ──
+
+def _old_store(path):
+    """A store as the 11-15..11-23 code left it: messages + packet_id +
+    messages_meta, no heard_kept — the OLD probe called it current."""
+    import sqlite3
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, network TEXT NOT NULL,
+            from_id TEXT NOT NULL, to_id TEXT, content TEXT NOT NULL,
+            channel INTEGER DEFAULT 0, is_dm BOOLEAN DEFAULT 1, snr REAL,
+            rssi INTEGER, delivered BOOLEAN DEFAULT 0, packet_id INTEGER);
+        CREATE TABLE messages_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+    """)
+    conn.commit()
+    conn.close()
+
+
+def test_an_existing_store_without_the_table_keeps_verdicts_too(tmp_db):
+    _old_store(tmp_db)
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    first = sent + 700
+    _read_at(first, {"kiai": _ring(first, (0x0DAEE001, PID, sent + 2))})
+    later = sent + 25 * 3600
+    msgs = _read_at(later, {"kiai": _ring(later)})
+    assert msgs[mid]["heard"]["line"].startswith("heard by kiai"), msgs[mid]["heard"]
+
+
+def _hearing(alias="kiai", skewed=False):
+    return {"alias": alias, "state": "heard", "reason": "decoded this packet id",
+            "rx_ts": 1.0, "skewed": skewed}
+
+
+def test_a_kept_verdict_never_lends_itself_to_another_packet_id(tmp_db):
+    mid = _send()
+    messaging_mod.keep_heard([(mid, PID, [_hearing()])], now=2.0)
+    assert messaging_mod.kept_heard([(mid, PID + 1)]) == ({}, 0)
+    assert messaging_mod.kept_heard([(mid, PID)])[0][mid][0]["state"] == "heard"
+
+
+@pytest.mark.parametrize("state", ["unobservable", "not_heard", "cannot_hear"])
+def test_the_store_keeps_hearings_only(tmp_db, state):
+    """r1 L2: a kept ABSENCE outlived the evidence that corrects it."""
+    mid = _send()
+    with pytest.raises(ValueError):
+        messaging_mod.keep_heard([(mid, PID, [dict(_hearing(), state=state)])])
+
+
+def test_a_clean_hearing_replaces_a_skewed_one_never_the_reverse(tmp_db):
+    """r1 L1/L5: overlapping reads never downgrade what the other kept."""
+    mid = _send()
+    messaging_mod.keep_heard([(mid, PID, [_hearing(skewed=True)])])
+    messaging_mod.keep_heard([(mid, PID, [_hearing(skewed=False)])])
+    assert messaging_mod.kept_heard([(mid, PID)])[0][mid][0]["skewed"] is False
+    messaging_mod.keep_heard([(mid, PID, [_hearing(skewed=True)])])   # a stale reader
+    assert messaging_mod.kept_heard([(mid, PID)])[0][mid][0]["skewed"] is False
+
+
+def _plant(db, *row):
+    import sqlite3
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO heard_kept VALUES (?, ?, ?, ?, ?, ?, ?, ?)", row)
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.parametrize("state,alias,reason", [
+    ("unobservable", "kiai", "r"), ("cannot_hear", "kiai", "r"),
+    ("not_heard", "kiai", "r"), ("bogus", "kiai", "r"), ("heard", "", "r"),
+])
+def test_the_reader_refuses_a_row_no_writer_can_have_stored(tmp_db, state, alias, reason):
+    """r1 L4: the writer refused it, so the reader must too — and say so."""
+    mid = _send()
+    _plant(tmp_db, mid, PID, alias, state, reason, None, 0, 1.0)
+    assert messaging_mod.kept_heard([(mid, PID)]) == ({}, 1)
+
+
+def test_a_refused_kept_row_is_said_and_never_beats_the_live_answer(tmp_db):
+    mid = _send()
+    _plant(tmp_db, mid, PID, "kiai", "unobservable", "r", None, 0, 1.0)
+    sent = _sent_ts(mid, 0)
+    now = sent + 700
+    with patch.object(inbox_api.time, "time", return_value=now), \
+         patch("utils.message_listener.get_listener_status", return_value={}), \
+         patch.object(inbox_legs, "load_sections", return_value={"kiai": _ring(now)}):
+        out = inbox_api.read_inbox()
+    m = next(m for t in out["threads"] for m in t["messages"] if m["id"] == mid)
+    assert m["heard"]["summary"]["not_heard"] == ["kiai"]
+    assert "1 kept heard-by row(s) refused" in out["heard_error"]
+
+
+def test_an_unreadable_kept_table_is_said_and_the_live_verdict_still_shows(tmp_db):
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    now = sent + 700
+    with patch.object(messaging_mod, "kept_heard", side_effect=OSError("disk")), \
+         patch.object(messaging_mod, "keep_heard") as keep, \
+         patch.object(inbox_api.time, "time", return_value=now), \
+         patch("utils.message_listener.get_listener_status", return_value={}), \
+         patch.object(inbox_legs, "load_sections",
+                      return_value={"kiai": _ring(now, (0x0DAEE001, PID, sent + 2))}):
+        out = inbox_api.read_inbox()
+    m = next(m for t in out["threads"] for m in t["messages"] if m["id"] == mid)
+    assert m["heard"]["line"].startswith("heard by kiai")
+    assert "kept heard-by verdicts unreadable" in out["heard_error"]
+    keep.assert_not_called()   # never write over what could not be read
+
+
+def test_prune_and_clear_take_kept_rows_with_their_sends(tmp_db):
+    import sqlite3
+    mid = _send()
+    messaging_mod.keep_heard([(mid, PID, [_hearing()])])
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("UPDATE messages SET timestamp = datetime('now', '-40 days')")
+    conn.commit()
+    conn.close()
+    messaging_mod._maybe_prune_messages(now=10 ** 10)
+    assert messaging_mod.kept_heard([(mid, PID)]) == ({}, 0)
+    mid2 = _send(PID + 1)
+    messaging_mod.keep_heard([(mid2, PID + 1, [_hearing()])])
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("UPDATE messages SET timestamp = datetime('now', '-5 days')")
+    conn.commit()
+    conn.close()
+    messaging_mod.clear_messages(older_than_days=1)
+    conn = sqlite3.connect(tmp_db)
+    assert conn.execute("SELECT COUNT(*) FROM heard_kept").fetchone()[0] == 0
+    conn.close()
+
+
+# ── seam 3: the merge rule (pure) ──
+
+from utils.inbox_heard import BoxHeard, merge_frozen  # noqa: E402
+
+
+def _b(alias, state, reason="r"):
+    return BoxHeard(alias, state, reason)
+
+
+def _sk(alias):
+    return BoxHeard(alias, "heard", "r", skewed=True)
+
+
+@pytest.mark.parametrize("live,kept,shown,to_keep", [
+    # a kept hearing beats the blind live answer the trimmed ring gives
+    ([_b("kiai", "unobservable")], {"kiai": _b("kiai", "heard")}, "heard", []),
+    # r1 M1: a kept hearing beats a LATER declaration, as the live judge orders it
+    ([_b("moc2", "cannot_hear")], {"moc2": _b("moc2", "heard")}, "heard", []),
+    # and beats a live not_heard (positive evidence outranks absence)
+    ([_b("kiai", "not_heard")], {"kiai": _b("kiai", "heard")}, "heard", []),
+    # an equal kept hearing is not re-kept
+    ([_b("kiai", "heard")], {"kiai": _b("kiai", "heard")}, "heard", []),
+    # a fresh hearing is kept
+    ([_b("kiai", "heard")], {}, "heard", ["kiai"]),
+    # r1 L2: an absence is NEVER kept
+    ([_b("kiai", "not_heard")], {}, "not_heard", []),
+    ([_b("kiai", "unobservable")], {}, "unobservable", []),
+    ([_b("moc3", "cannot_hear")], {}, "cannot_hear", []),
+])
+def test_merge_rule(live, kept, shown, to_keep):
+    merged, new = merge_frozen(live, kept)
+    assert [b.state for b in merged] == [shown]
+    assert [b.alias for b in new] == to_keep
+
+
+def test_a_clean_live_hearing_upgrades_a_kept_skewed_one_and_not_back():
+    """r1 L5."""
+    merged, new = merge_frozen([_b("kiai", "heard")], {"kiai": _sk("kiai")})
+    assert merged[0].skewed is False and [b.alias for b in new] == ["kiai"]
+    merged, new = merge_frozen([_sk("kiai")], {"kiai": _b("kiai", "heard")})
+    assert merged[0].skewed is False and new == []
+
+
+def test_a_kept_box_the_fleet_list_dropped_still_counts():
+    merged, new = merge_frozen([_b("moc", "unobservable")], {"kiai": _b("kiai", "heard")})
+    assert [(b.alias, b.state) for b in merged] == [("kiai", "heard"), ("moc", "unobservable")]
+    assert new == []
+
+
+# ── say the gap: a send first judged after the ring passed it ──
+
+def test_a_send_nobody_judged_in_time_names_the_ring_not_the_journal(tmp_db):
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    later = sent + 25 * 3600            # first read ever: the ring is past it
+    ring = dict(_ring(later), window_s=DAY)
+    with patch.object(inbox_api.time, "time", return_value=later), \
+         patch("utils.message_listener.get_listener_status", return_value={}), \
+         patch.object(inbox_legs, "load_sections", return_value={"kiai": ring}):
+        out = inbox_api.read_inbox()
+    m = next(m for t in out["threads"] for m in t["messages"] if m["id"] == mid)
+    kiai = next(b for b in m["heard"]["boxes"] if b["alias"] == "kiai")
+    assert kiai["state"] == "unobservable"
+    assert "24 h rx ring" in kiai["reason"] and "journal" not in kiai["reason"], kiai
+    assert out["heard_not_kept"] == 1   # the witness (hfm #9): sends that aged out unjudged
+    # r1 M2: the page renders only the line — the gap must be IN it
+    assert "1 unobservable (1 past the box's rx ring, never judged in time)" in m["heard"]["line"]
+
+
+def test_a_kept_hearing_says_so_on_the_line(tmp_db):
+    """r1 M2: a kept verdict is distinguishable from a live one where it is read."""
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    first = sent + 700
+    _read_at(first, {"kiai": _ring(first, (0x0DAEE001, PID, sent + 2))})
+    later = sent + 25 * 3600
+    line = _read_at(later, {"kiai": dict(_ring(later), window_s=DAY)})[mid]["heard"]["line"]
+    assert line == "heard by kiai · 1 of 1 listening · 1 kept from an earlier read", line
+
+
+@pytest.mark.parametrize("window", [0, -3600, None, "x"])
+def test_a_window_no_ring_can_have_is_not_a_ring_age(window):
+    """r1 L7."""
+    from utils.inbox_heard import judge_box
+    now = 10 ** 9
+    sec = dict(_ring(now), window_s=window, covered_since=now - 3600)
+    b = judge_box("kiai", sec, packet_id=PID, sent_ts=now - 7200, now=now)
+    assert b.reason == "box journal coverage starts after the send"
+
+
+def test_a_kept_hearing_survives_a_later_declaration_end_to_end(tmp_db):
+    """r1 M1, the reviewer's reproduction: moc2 heard it, then moved preset."""
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    first = sent + 700
+    _read_at(first, {"moc2": _ring(first, (0x0DAEE001, PID, sent + 2))})
+    later = sent + 25 * 3600
+    from utils import rf_segments
+    decl = rf_segments.Declared({"moc2": "meshtastic:SHORT_TURBO/ch8",
+                                 "self": "meshtastic:LONG_FAST/ch20"}, "self", None)
+    with patch.object(rf_segments, "load", return_value=decl):
+        msgs = _read_at(later, {"moc2": _ring(later)})
+    boxes = {b["alias"]: b["state"] for b in msgs[mid]["heard"]["boxes"]}
+    assert boxes["moc2"] == "heard", msgs[mid]["heard"]
+
+
+def test_the_page_says_the_read_level_gap():
+    """r1 M2: heard_not_kept had no consumer anywhere in the tree."""
+    import pathlib
+    page = (pathlib.Path(__file__).parent.parent / "web" / "inbox.html").read_text()
+    assert "res.j.heard_not_kept" in page
+    assert "aged past a box's rx ring before any read kept heard-by" in page

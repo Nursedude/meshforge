@@ -15,11 +15,12 @@ Honesty rules this module keeps (honest_failure_modes #1, #2):
 import logging
 import re
 import time
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from commands import messaging
-from utils.inbox_heard import JOIN_AFTER_S
+from utils.inbox_heard import JOIN_AFTER_S, KEPT_NOTE, RING_AGED_PREFIX, BoxHeard
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +322,11 @@ def read_inbox(limit: int = 500) -> Dict[str, Any]:
         era, era_error = 0, f"era unreadable: {e}"
     threads = build_threads(rows, era=era)
     heard_error = _attach_heard(threads)
+    # hfm #9 witness: sends whose verdict aged out of a box's ring before
+    # any read kept it (the "freeze on read" gap, operator 11-23)
+    not_kept = sum(1 for t in threads for m in t["messages"]
+                   if any(str(b.get("reason", "")).startswith(RING_AGED_PREFIX)
+                          for b in (m.get("heard") or {}).get("boxes") or []))
     shown = sum(t["count"] for t in threads)
     rx = _rx_coverage()
     unseen = _unseen(rx)
@@ -328,6 +334,7 @@ def read_inbox(limit: int = 500) -> Dict[str, Any]:
     # packet (radio echo / encrypted leg) not shown as their own messages
     return {"state": "ok", "threads": threads, "message_count": len(rows),
             "shown_count": shown, "folded_count": len(rows) - shown,
+            "heard_not_kept": not_kept,
             "rx": rx, **({"unseen": unseen} if unseen is not None else {}),
             **({"era_error": era_error} if era_error else {}),
             **({"heard_error": heard_error} if heard_error else {})}
@@ -381,17 +388,46 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
     stray = sorted(a for a in decl.segments if a not in sections and a != decl.send_from)
     if stray:
         errors.append(f"declared segments name box(es) not in the fleet list: {', '.join(stray)}")
+    # BIC-2 11-23: verdicts judged while a box's 24 h ring still covered the
+    # send are KEPT in the store and merged back (inbox_heard.merge_frozen) —
+    # never re-judged blind. A store that cannot read them says so; the live
+    # judgement still shows.
+    try:
+        kept, refused = messaging.kept_heard([(m["id"], m["packet_id"]) for m in sends])
+        if refused:
+            errors.append(f"{refused} kept heard-by row(s) refused (not a kept hearing)")
+    except Exception as e:
+        logger.warning("inbox: kept heard-by verdicts unreadable: %s", e)
+        kept = None
+        errors.append(f"kept heard-by verdicts unreadable: {type(e).__name__}: {e}")
+    to_keep = []
     for m in sends:   # each send guarded on its own: one bad box never breaks the read (r5)
         sent = _epoch(m.get("ts"))
         try:
-            m["heard"] = inbox_legs.heard_from(m["packet_id"], sent if sent is not None
-                                               else float("nan"), sections, now=now,
-                                               segments=decl.segments,
-                                               send_segment=decl.send_segment)
+            frozen = {b["alias"]: BoxHeard(b["alias"], b["state"],
+                                           b["reason"] + KEPT_NOTE,
+                                           rx_ts=b["rx_ts"], skewed=b["skewed"])
+                      for b in (kept or {}).get(m["id"], [])}
+            heard = inbox_legs.heard_from(m["packet_id"], sent if sent is not None
+                                          else float("nan"), sections, now=now,
+                                          segments=decl.segments,
+                                          send_segment=decl.send_segment,
+                                          frozen=frozen)
+            freeze = heard.pop("freeze")
+            m["heard"] = heard
+            if freeze and kept is not None:
+                to_keep.append((m["id"], m["packet_id"], [asdict(b) for b in freeze]))
         except Exception as e:
             logger.warning("inbox: heard-by failed for send %s: %s", m.get("id"), e)
             m["heard"] = {"line": HEARD_UNREADABLE}
             errors.append(f"send {m.get('id')}: {type(e).__name__}: {e}")
+    if to_keep:
+        try:
+            messaging.keep_heard(to_keep, now=now)
+        except Exception as e:
+            logger.warning("inbox: keeping heard-by verdicts failed: %s", e)
+            errors.append(f"heard-by not kept for {len(to_keep)} send(s): "
+                          f"{type(e).__name__}: {e}")
     contradicted = _declaration_contradictions(sends, decl)
     if contradicted:
         errors.append("declared on another preset/slot but decoded a send in its window "

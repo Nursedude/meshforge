@@ -13,12 +13,23 @@ reads 'unconfirmed' forever". Pinned here:
     poll does not wipe (F11).
 """
 import pathlib
+
+import pytest
 from unittest.mock import patch
 
 from commands.base import CommandResult
 from utils import inbox_api, inbox_legs
 
 PAGE = (pathlib.Path(__file__).parent.parent / "web" / "inbox.html").read_text()
+
+
+@pytest.fixture(autouse=True)
+def _own_store(tmp_path, monkeypatch):
+    """Each test its OWN messages.db: the inbox read now KEEPS heard-by
+    verdicts (BIC-2 11-23), and the conftest home is shared by the whole
+    session — a verdict one test kept leaked into the next (fixed copy, r1)."""
+    from commands import messaging as messaging_mod
+    monkeypatch.setattr(messaging_mod, "_get_db_path", lambda: tmp_path / "messages.db")
 
 
 def _row(**kw):

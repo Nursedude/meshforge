@@ -120,7 +120,9 @@ def test_empty_store_is_ok_with_zero_threads():
     # the downlink-gap witness rides only where the page reads MQTT (no listener here)
     assert "unseen" not in out
     assert out == {"state": "ok", "threads": [], "message_count": 0,
-                   "shown_count": 0, "folded_count": 0}
+                   "shown_count": 0, "folded_count": 0,
+                   # BIC-2 11-23 witness: always a count, 0 is a real answer
+                   "heard_not_kept": 0}
 
 
 # ── send validation ───────────────────────────────────────────────────────

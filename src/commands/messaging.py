@@ -110,6 +110,7 @@ def _schema_is_current(conn) -> bool:
     try:
         conn.execute("SELECT packet_id FROM messages LIMIT 0")
         conn.execute("SELECT value FROM messages_meta LIMIT 0")
+        conn.execute("SELECT state FROM heard_kept LIMIT 0")
     except sqlite3.OperationalError:
         return False
     return True
@@ -244,6 +245,16 @@ def _init_db() -> sqlite3.Connection:
             conn.execute("CREATE TABLE IF NOT EXISTS messages_meta "
                          "(key TEXT PRIMARY KEY, value INTEGER NOT NULL)")
             _record_rx_era(conn)   # backfill: before this process can prune
+            # BIC-2 11-23: each send's MEASURED heard-by verdicts, kept past
+            # the boxes' 24 h rx_heard ring. packet_id rides the key so a
+            # store swapped under a running map never lends one send's
+            # verdicts to another row with the same id.
+            conn.execute("CREATE TABLE IF NOT EXISTS heard_kept ("
+                         "message_id INTEGER NOT NULL, packet_id INTEGER NOT NULL, "
+                         "alias TEXT NOT NULL, state TEXT NOT NULL, reason TEXT NOT NULL, "
+                         "rx_ts REAL, skewed INTEGER NOT NULL DEFAULT 0, "
+                         "kept_at REAL NOT NULL, "
+                         "PRIMARY KEY (message_id, packet_id, alias))")
             conn.commit()
         except Exception:
             conn.close()  # never leak the fd on a failed migration (#73)
@@ -285,8 +296,10 @@ def _maybe_prune_messages(now: Optional[float] = None) -> None:
                 "DELETE FROM messages WHERE timestamp < datetime('now', ? || ' days')",
                 (f'-{_MESSAGE_RETENTION_DAYS}',),
             )
-            conn.commit()
             deleted = cursor.rowcount
+            conn.execute("DELETE FROM heard_kept WHERE message_id NOT IN "
+                         "(SELECT id FROM messages)")
+            conn.commit()
             _last_message_prune_ts = now
             if deleted > 0:
                 logger.info(
@@ -780,6 +793,81 @@ def store_outgoing(
         return CommandResult.fail(f"Failed to record outgoing message: {e}")
 
 
+def _keepable_states():
+    # ONE constant with the judge (hfm #5, r1 L8); imported lazily so this
+    # module keeps loading without utils on the path
+    from utils.inbox_heard import FREEZABLE
+    return FREEZABLE
+
+
+def keep_heard(items: List[tuple], now: Optional[float] = None) -> None:
+    """Keep heard-by verdicts for ``[(message_id, packet_id, [box dict]), ...]``
+    in ONE transaction (r1 L3: one busy wait per read, not one per send).
+
+    Ranked, never blind-replaced (r1 L1/L5): a row is written only when it
+    is new or a clean hearing replaces one outside the join window — so two
+    overlapping reads can never downgrade what the other kept. Refuses a
+    state the judge does not keep, LOUDLY (hfm #3). Raises on a store
+    error: the caller decides."""
+    keepable = _keepable_states()
+    bad = [b.get("state") for _, _, boxes in items for b in boxes
+           if b.get("state") not in keepable]
+    if bad:
+        raise ValueError(f"heard_kept refuses state(s) {bad!r}")
+    rows = [(mid, pid, b["alias"], b["state"], b["reason"], b.get("rx_ts"),
+             int(bool(b.get("skewed"))), time.time() if now is None else now)
+            for mid, pid, boxes in items for b in boxes]
+    if not rows:
+        return
+    conn = _init_db()
+    try:
+        conn.executemany(
+            "INSERT INTO heard_kept (message_id, packet_id, alias, state, reason, "
+            "rx_ts, skewed, kept_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (message_id, packet_id, alias) DO UPDATE SET "
+            "state = excluded.state, reason = excluded.reason, rx_ts = excluded.rx_ts, "
+            "skewed = excluded.skewed, kept_at = excluded.kept_at "
+            "WHERE excluded.skewed < heard_kept.skewed", rows)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def kept_heard(sends: List[tuple]) -> "tuple[Dict[int, List[Dict[str, Any]]], int]":
+    """``({message_id: [box dict, ...]}, refused)`` for ``[(message_id,
+    packet_id), ...]`` — only rows whose packet id matches. A row no writer
+    here can have stored (a state the judge does not keep, a blank alias, a
+    non-text reason) is LEFT OUT and counted in ``refused`` (r1 L4: the
+    writer refused it, the reader must too — hfm #3, #9). Raises on a store
+    error."""
+    if not sends:
+        return {}, 0
+    keepable = _keepable_states()
+    conn = _init_db()
+    try:
+        out: Dict[int, List[Dict[str, Any]]] = {}
+        refused = 0
+        for mid, pid in sends:
+            for r in conn.execute(
+                    "SELECT alias, state, reason, rx_ts, skewed FROM heard_kept "
+                    "WHERE message_id = ? AND packet_id = ? ORDER BY alias", (mid, pid)):
+                rx = r["rx_ts"]
+                if (r["state"] not in keepable or not isinstance(r["alias"], str)
+                        or not r["alias"] or not isinstance(r["reason"], str)
+                        or not (rx is None or isinstance(rx, (int, float)))):
+                    refused += 1
+                    continue
+                out.setdefault(mid, []).append(
+                    {"alias": r["alias"], "state": r["state"], "reason": r["reason"],
+                     "rx_ts": rx, "skewed": bool(r["skewed"])})
+        if refused:
+            logger.warning("heard_kept: %d row(s) no writer can have stored were "
+                           "left out", refused)
+        return out, refused
+    finally:
+        conn.close()
+
+
 def get_stats() -> CommandResult:
     """
     Get messaging statistics.
@@ -858,6 +946,9 @@ def clear_messages(older_than_days: int = 30) -> CommandResult:
         ''', (f'-{older_than_days}',))
 
         deleted = cursor.rowcount
+        # r1 N1: kept heard-by rows go with the sends they describe
+        conn.execute("DELETE FROM heard_kept WHERE message_id NOT IN "
+                     "(SELECT id FROM messages)")
         conn.commit()
         conn.close()
 

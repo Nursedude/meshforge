@@ -29,7 +29,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
-from utils.box_truth_rx import FUTURE_SLOP_S, _valid_entry
+from utils.box_truth_rx import FUTURE_SLOP_S, RING_WINDOW_S, _valid_entry
 
 STATES = ("heard", "not_heard", "unobservable", "cannot_hear")
 
@@ -124,6 +124,12 @@ def _judge_box(alias: str, section: Any, *, packet_id: Any, sent_ts: float, now:
     if since > until:
         return out("unobservable", "rx_heard coverage inverted")
     if since > sent_ts:
+        window = _ts(section.get("window_s"))
+        if window is not None and window > 0 and sent_ts < until - window:
+            # the box's RING moved past the send (11-23: its journal still held
+            # the packet) — the center did not judge it while it could
+            return out("unobservable", f"{RING_AGED_PREFIX}{window / 3600:g} h rx ring "
+                                       "and no verdict was kept in time")
         return out("unobservable", "box journal coverage starts after the send")
     if until < sent_ts + JOIN_AFTER_S:
         return out("unobservable", "listen window still open (not covered past send + 600 s)")
@@ -151,3 +157,56 @@ def summarize(results: Iterable[BoxHeard]) -> Dict[str, List[str]]:
             raise ValueError(f"unknown heard state {r.state!r}")  # hfm #7
         out[r.state].append(r.alias)
     return out
+
+
+#: Verdicts a center may KEEP once judged (BIC-2, 11-23): HEARINGS only.
+#: A box's rx_heard ring vouches for 24 h (box_truth_rx RING_WINDOW_S), so a
+#: send judged ``heard`` read "unobservable" a day later (measured: 7638/7640).
+#: A hearing is positive evidence on the box's own wire fact (the packet id).
+#: ``not_heard`` is an ABSENCE judged against the center's send stamp — a
+#: center clock off by minutes judged it early (review r1 L2), and a kept
+#: absence then outlived the evidence that would correct it (hfm #2). It
+#: stays live-only: after the ring it reads unobservable, saying why.
+#: ``cannot_hear`` is re-derived from the declaration on every read.
+FREEZABLE = ("heard",)
+KEPT_NOTE = (f" (kept: decoded while the box's {RING_WINDOW_S / 3600:g} h "
+             f"rx ring covered this send)")
+RING_AGED_PREFIX = "send is older than this box's "   # + "<N> h rx ring …"
+
+
+def _hearing_rank(b: Optional[BoxHeard]) -> int:
+    """0 nothing kept · 1 a hearing outside the join window · 2 a clean one."""
+    if b is None or b.state != "heard":
+        return 0
+    return 1 if b.skewed else 2
+
+
+def merge_frozen(live: Iterable[BoxHeard],
+                 frozen: Mapping[str, BoxHeard]) -> "tuple[List[BoxHeard], List[BoxHeard]]":
+    """``(merged, to_keep)`` for one send. Pure.
+
+    * the better HEARING shows — live or kept, a clean one over one outside
+      the join window (r1 L5); a live hearing better than the kept one is
+      returned to keep;
+    * a kept hearing beats every live non-hearing — ``unobservable`` once the
+      ring has moved on, and ``cannot_hear`` too: positive evidence outranks a
+      declaration, exactly as the live judge orders it (r1 M1);
+    * nothing else is kept, ever;
+    * a kept box the fleet list no longer names still counts (it heard it).
+    """
+    merged: List[BoxHeard] = []
+    new: List[BoxHeard] = []
+    seen = set()
+    for r in live:
+        seen.add(r.alias)
+        f = frozen.get(r.alias)
+        if _hearing_rank(r) > _hearing_rank(f):
+            merged.append(r)
+            new.append(r)
+        elif f is not None:
+            merged.append(f)
+        else:
+            merged.append(r)
+    merged.extend(frozen[a] for a in sorted(frozen) if a not in seen)
+    merged.sort(key=lambda b: b.alias)
+    return merged, new
