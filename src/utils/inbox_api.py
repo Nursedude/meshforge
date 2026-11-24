@@ -342,6 +342,8 @@ HEARD_UNREADABLE = f"heard by: unobservable ({UNREADABLE_WHY})"
 #: a kept hearing beside ONE send's judging fault — the fleet evidence read
 #: fine; never worded as a fleet-wide failure (r1 nit 1)
 SEND_UNJUDGED_WHY = "this send could not be judged (see heard_error)"
+#: the per-send exit's own blind line, kept or not (Fable r2 LOW 2)
+HEARD_SEND_UNJUDGED = f"heard by: unobservable ({SEND_UNJUDGED_WHY})"
 
 
 def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
@@ -444,7 +446,7 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
         except Exception as e:
             logger.warning("inbox: heard-by failed for send %s: %s", m.get("id"), e)
             errors.append(f"send {m.get('id')}: {type(e).__name__}: {e}")
-            m["heard"] = blind(m, HEARD_UNREADABLE, SEND_UNJUDGED_WHY)
+            m["heard"] = blind(m, HEARD_SEND_UNJUDGED, SEND_UNJUDGED_WHY)
     if to_keep:
         try:
             messaging.keep_heard(to_keep, now=now)

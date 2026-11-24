@@ -243,7 +243,8 @@ def test_a_send_whose_heard_by_raises_is_unobservable_and_the_read_says_why():
          patch.object(inbox_legs, "heard_from", side_effect=RuntimeError("boom")):
         out = inbox_api.read_inbox()
     assert out["state"] == "ok"
-    assert out["threads"][0]["messages"][0]["heard"]["line"] == inbox_api.HEARD_UNREADABLE
+    # Fable r2 LOW 2: ONE send's fault is never worded as a fleet-wide one
+    assert out["threads"][0]["messages"][0]["heard"]["line"] == inbox_api.HEARD_SEND_UNJUDGED
     assert "boom" in out["heard_error"]
 
 
@@ -391,9 +392,17 @@ _KEPT = {1: [{"alias": "kiai", "state": "heard", "reason": "r", "rx_ts": 1.0,
               "skewed": False}]}
 
 
-def _read_raising(*, load_exc=None, judge_exc=None, kept_exc=False):
+def _blind_line(kw):
+    """Each blind exit's OWN line (Fable r2 LOW 2): never one exit's words
+    on another."""
+    if kw.get("no_list"):
+        return inbox_legs.NO_FLEET_LINE
+    return inbox_api.HEARD_UNREADABLE if "load_exc" in kw else inbox_api.HEARD_SEND_UNJUDGED
+
+
+def _read_raising(*, load_exc=None, judge_exc=None, kept_exc=False, no_list=False):
     load = ({"side_effect": load_exc} if load_exc
-            else {"return_value": {"kiai": _sec()}})
+            else {"return_value": None if no_list else {"kiai": _sec()}})
     judge = ({"side_effect": judge_exc} if judge_exc
              else {"wraps": inbox_legs.heard_from})
     with patch.object(inbox_api.messaging, "get_messages",
@@ -439,7 +448,7 @@ def test_a_blind_exit_with_nothing_kept_reads_unreadable_exactly(kw):
     # nothing kept for the send → the exact unreadable line, no boxes key
     with patch.dict(_KEPT, clear=True):
         out = _read_raising(**kw)
-    assert out["threads"][0]["messages"][0]["heard"] == {"line": inbox_api.HEARD_UNREADABLE}
+    assert out["threads"][0]["messages"][0]["heard"] == {"line": _blind_line(kw)}
 
 
 @pytest.mark.parametrize("kw", [{"load_exc": ValueError("damaged")},
@@ -449,18 +458,23 @@ def test_a_blind_exit_with_an_unreadable_kept_store_says_both(kw):
     # r1 nit 6: the kept read now runs FIRST — with it raising AND an exit
     # that cannot judge, kept is None: the exact blind line, both failures said
     out = _read_raising(**kw, kept_exc=True)
-    assert out["threads"][0]["messages"][0]["heard"] == {"line": inbox_api.HEARD_UNREADABLE}
+    assert out["threads"][0]["messages"][0]["heard"] == {"line": _blind_line(kw)}
     assert "kept heard-by verdicts unreadable" in out["heard_error"]
     if "load_exc" in kw:
         assert out["heard_error"].startswith("fleet evidence unreadable"), out["heard_error"]
 
 
-def test_a_malformed_kept_row_on_a_blind_exit_never_takes_the_read_down():
-    # r1 nit 2: the show-kept step runs INSIDE an except handler — a row it
-    # cannot read must fall back to the blind line, never 500 the inbox
+@pytest.mark.parametrize("kw", [{"load_exc": ValueError("damaged")},
+                                {"judge_exc": RuntimeError("boom")},
+                                {"no_list": True}],
+                         ids=["damaged-list", "per-send-raise", "no-list"])
+def test_a_malformed_kept_row_on_a_blind_exit_never_takes_the_read_down(kw):
+    # r1 nit 2 / Fable r2 NIT 5: the show-kept step runs on EVERY blind exit
+    # (two of them inside except handlers) — a row it cannot read falls back
+    # to that exit's blind line and is witnessed, never 500s the inbox
     bad = {1: [{"state": "heard"}]}   # no alias
     with patch.dict(_KEPT, bad, clear=True):
-        out = _read_raising(load_exc=ValueError("damaged"))
+        out = _read_raising(**kw)
     assert out["state"] == "ok"
-    assert out["threads"][0]["messages"][0]["heard"] == {"line": inbox_api.HEARD_UNREADABLE}
+    assert out["threads"][0]["messages"][0]["heard"] == {"line": _blind_line(kw)}
     assert "kept heard-by row(s) unreadable" in out["heard_error"]
