@@ -84,7 +84,37 @@ def validate_settings(path: Path) -> list[str]:
     return errors
 
 
+def hook_main(stdin_text: str) -> tuple[int, str]:
+    """PostToolUse Write|Edit hook entry: validate only when the edited file
+    is a ``.claude/settings.json``. Exit 2 + stderr on invalid (fed back to
+    the model); 0 silent otherwise; 1 when the payload is unreadable.
+    The old hook keyed on ``$CLAUDE_TOOL_ARG_file_path`` (not set by Claude
+    Code) and so never fired — tests/test_lint_hook_mode.py."""
+    try:
+        payload = json.loads(stdin_text)
+        path = (payload.get("tool_input") or {}).get("file_path") or ""
+    except (ValueError, AttributeError) as e:
+        return 1, f"settings hook: unreadable hook payload ({e}); settings NOT validated"
+    if not isinstance(path, str) or not path.replace("\\", "/").endswith(".claude/settings.json"):
+        return 0, ""
+    p = Path(path)
+    if not p.is_file():
+        return 0, ""
+    errors = validate_settings(p)
+    if not errors:
+        return 0, ""
+    lines = [f"INVALID: {p} has {len(errors)} permission grammar error(s):"]
+    lines += [f"  - {e}" for e in errors]
+    lines.append("These rules would be silently skipped by Claude Code at startup.")
+    return 2, "\n".join(lines)
+
+
 def main(argv: list[str]) -> int:
+    if argv[1:] == ["--hook"]:
+        rc, msg = hook_main(sys.stdin.read())
+        if msg:
+            print(msg, file=sys.stderr)
+        return rc
     if len(argv) != 2:
         print("usage: validate_claude_settings.py <path>", file=sys.stderr)
         return 2

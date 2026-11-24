@@ -58,11 +58,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PROJECT_DIR:-.}/scripts/lint.py\" --severity warning \"$CLAUDE_TOOL_ARG_file_path\" 2>/dev/null || true"
+            "command": "python3 \"${CLAUDE_PROJECT_DIR:-.}/scripts/lint_hook.py\"",
+            "timeout": 30
           },
           {
             "type": "command",
-            "command": "case \"$CLAUDE_TOOL_ARG_file_path\" in */.claude/settings.json|.claude/settings.json) python3 \"${CLAUDE_PROJECT_DIR:-.}/scripts/validate_claude_settings.py\" \"$CLAUDE_TOOL_ARG_file_path\" ;; esac"
+            "command": "python3 \"${CLAUDE_PROJECT_DIR:-.}/scripts/validate_claude_settings.py\" --hook",
+            "timeout": 30
           }
         ]
       }
