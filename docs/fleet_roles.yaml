@@ -206,6 +206,17 @@ roles:
     # especially meshforge-watchdog, which is present and healthy. Declaring it
     # `absent` would drop a live watchdog out of honest_status.sh's denominator,
     # which is the exact blindness this catalog exists to prevent.
+    # 🛑 DELIBERATE ABSENCE — meshchatx (operator words 2026-11-23 00:09 HST:
+    # "stop and disable it"; Sideband on Android covers the use). On the box
+    # that runs MeshAnchor, the `meshchatx` USER unit (systemd --user, managed
+    # by MeshAnchor via ~/.config/meshanchor/meshchatx_wrapper.sh) is STOPPED +
+    # DISABLED. Do NOT restore, refresh or "fix" it — `install_meshchatx.sh
+    # --refresh` included. Reverse ONLY on operator words:
+    #   systemctl --user enable --now meshchatx
+    # Not a `services:` key on purpose: that map is SYSTEM units converged by
+    # provision_role.py, this role is provisioned_by meshanchor, and no box
+    # declares it — a key here would claim a scope and a reader it does not
+    # have. Record: .claude/audits/review_provenance.md (2026-11-23 rows).
     services:
       meshtasticd: absent             # radio-less; egresses to a peer meshtasticd
       rnsd: enabled
