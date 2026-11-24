@@ -40,7 +40,7 @@ pytest-timeout==2.4.0
 rich==15.0.0
 textual==8.2.8
 flask==3.1.3
-pyyaml==6.0.3
+pyyaml==6.0.4
 psutil==7.2.2
 distro==1.9.0
 
@@ -58,11 +58,11 @@ distro==1.9.0
 # was dismiss-as-tolerable-risk or retire the floor; retiring it fixes them
 # by actually patching. Do not re-introduce a <3.10 marker here without
 # re-opening that decision.
-pytest==9.1.1
+pytest==9.2.0
 # truth-path type gate (tests/test_truth_path_types.py; ADR plans/adr_truth_kernel_2026_10_02.md)
-mypy==1.15.0
+mypy==2.4.1
 # mypy's declared deps, pinned so the gate does not float (review C5;
 # the 2026-09-20 floating-transitive CI incident)
-mypy_extensions==1.0.0
-typing_extensions==4.15.0
+mypy_extensions==1.2.0
+typing_extensions==4.16.0
 requests==2.34.2
