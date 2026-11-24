@@ -337,7 +337,8 @@ def read_inbox(limit: int = 500) -> Dict[str, Any]:
 
 
 #: what a send says when the fleet evidence itself could not be read
-HEARD_UNREADABLE = "heard by: unobservable (fleet evidence unreadable)"
+UNREADABLE_WHY = "fleet evidence unreadable"
+HEARD_UNREADABLE = f"heard by: unobservable ({UNREADABLE_WHY})"
 
 
 def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
@@ -355,21 +356,14 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
     if not sends:
         return None
     now = time.time()
-    try:
-        sections = inbox_legs.load_sections(now)
-    except Exception as e:
-        logger.warning("inbox: fleet evidence unreadable: %s", e)
-        for m in sends:
-            m["heard"] = {"line": HEARD_UNREADABLE}
-        return f"fleet evidence unreadable: {e}"
     errors = []
     # BIC-2 11-23: verdicts judged while a box's 24 h ring still covered the
     # send are KEPT in the store and merged back (inbox_heard.merge_frozen) —
     # never re-judged blind. A store that cannot read them says so; the live
-    # judgement still shows. Read BEFORE the no-target-list branch (r1 11-24:
-    # a box with NO list must still show what it kept). A DAMAGED list or a
-    # raising spool read (above) still shows unobservable without its kept
-    # hearings — said in heard_error, not silent (pre-existing, r2 #1).
+    # judgement still shows. Read FIRST, before any exit that cannot judge
+    # now (seam 11-24): every such exit goes through ``inbox_legs.blind_heard``
+    # so none drops what the store kept (r1 11-24 no list; the damaged-list
+    # and per-send exits dropped them until this seam).
     try:
         kept, refused = messaging.kept_heard([(m["id"], m["packet_id"]) for m in sends])
         if refused:
@@ -378,15 +372,24 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
         logger.warning("inbox: kept heard-by verdicts unreadable: %s", e)
         kept = None
         errors.append(f"kept heard-by verdicts unreadable: {type(e).__name__}: {e}")
+
+    def blind(m: Dict[str, Any], line: str, why: str) -> Dict[str, Any]:
+        return inbox_legs.blind_heard((kept or {}).get(m["id"], []), line=line, why=why)
+
+    try:
+        sections = inbox_legs.load_sections(now)
+    except Exception as e:
+        logger.warning("inbox: fleet evidence unreadable: %s", e)
+        for m in sends:
+            m["heard"] = blind(m, HEARD_UNREADABLE, UNREADABLE_WHY)
+        errors.insert(0, f"fleet evidence unreadable: {e}")
+        return "; ".join(errors)
     if sections is None:
         # no target list (standalone, or a non-center fleet box): the
         # blindness is SAID on each send (BIC-2 one-box, 11-24); kept
         # hearings still show. Nothing failed → no heard_error of its own.
         for m in sends:
-            hearings = inbox_legs.kept_hearings((kept or {}).get(m["id"], []))
-            line = inbox_legs.kept_only_line(hearings)
-            m["heard"] = ({"line": line, "boxes": hearings} if line
-                          else {"line": inbox_legs.NO_FLEET_LINE})
+            m["heard"] = blind(m, inbox_legs.NO_FLEET_LINE, inbox_legs.NO_TARGETS)
         return "; ".join(errors) or None
     # cannot_hear (BIC-2, 11-16): the DECLARED segments. Absent file = inert;
     # an unreadable or wrong one = no segments AND the read says why (never a
@@ -428,7 +431,7 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
                                  for b in freeze]))
         except Exception as e:
             logger.warning("inbox: heard-by failed for send %s: %s", m.get("id"), e)
-            m["heard"] = {"line": HEARD_UNREADABLE}
+            m["heard"] = blind(m, HEARD_UNREADABLE, UNREADABLE_WHY)
             errors.append(f"send {m.get('id')}: {type(e).__name__}: {e}")
     if to_keep:
         try:

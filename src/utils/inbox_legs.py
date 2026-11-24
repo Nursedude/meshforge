@@ -45,15 +45,26 @@ def kept_hearings(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
                   key=lambda b: b["alias"])
 
 
-def kept_only_line(hearings: Iterable[Mapping[str, Any]]) -> Optional[str]:
-    """No target list, but the store KEPT hearings for this send (r1: a box
-    that once read the fleet never calls itself blind about evidence it
-    holds). A skewed hearing stays qualified, as on the fleet path (r5).
-    None when there is no hearing to name."""
+def kept_only_line(hearings: Iterable[Mapping[str, Any]], why: str = NO_TARGETS) -> Optional[str]:
+    """This box cannot judge the send NOW (``why``), but the store KEPT
+    hearings for it (r1: a box that once read the fleet never calls itself
+    blind about evidence it holds). A skewed hearing stays qualified, as on
+    the fleet path (r5). None when there is no hearing to name."""
     named = [b["alias"] + (" (clock off)" if b.get("skewed") else "") for b in hearings]
     if not named:
         return None
-    return f"heard by {', '.join(named)} (kept from an earlier read) · now {NO_TARGETS}"
+    return f"heard by {', '.join(named)} (kept from an earlier read) · now {why}"
+
+
+def blind_heard(kept_rows: Iterable[Mapping[str, Any]], *, line: str,
+                why: str) -> Dict[str, Any]:
+    """THE show-kept step for every exit that cannot judge a send now (no
+    target list, unreadable fleet evidence, a per-send failure — BIC-2 seam
+    11-24): the kept hearings still show beside ``why``; with none, the
+    exit's own blind ``line``. One step, so no exit can drop them again."""
+    hearings = kept_hearings(kept_rows)
+    named = kept_only_line(hearings, why)
+    return {"line": named, "boxes": hearings} if named else {"line": line}
 
 
 def summarize_results(results: Iterable[inbox_heard.BoxHeard]) -> Dict[str, List[str]]:

@@ -378,3 +378,53 @@ def test_r3_a_stray_alias_never_discards_the_valid_declarations():
                       return_value=_decl({"center-box": LF, "kiaii": LF, "moc3": ST})):
         out, msgs, _ = _read([_row()], {"kiai": _sec(), "moc3": _sec()})
     assert msgs[1]["heard"]["summary"]["cannot_hear"] == ["moc3"]
+
+
+# ── BIC-2 seam (11-24): ONE show-kept step for all three blind exits. A
+# damaged target list / raising spool read (load_sections raises) and a
+# per-send heard_from failure both said only HEARD_UNREADABLE — the hearings
+# the store KEPT for that send vanished (recorded residual, 11-24 06:5x).
+# Blind about NOW is never blind about evidence held (hfm #2).
+
+_KEPT = {1: [{"alias": "kiai", "state": "heard", "reason": "r", "rx_ts": 1.0,
+              "skewed": False}]}
+
+
+def _read_raising(*, load_exc=None, judge_exc=None):
+    load = ({"side_effect": load_exc} if load_exc
+            else {"return_value": {"kiai": _sec()}})
+    judge = ({"side_effect": judge_exc} if judge_exc
+             else {"wraps": inbox_legs.heard_from})
+    with patch.object(inbox_api.messaging, "get_messages",
+                      return_value=CommandResult.ok("ok", data={"messages": [_row()]})), \
+         patch("utils.message_listener.get_listener_status", return_value={}), \
+         patch.object(inbox_api.messaging, "first_received_id_row", return_value=None), \
+         patch.object(inbox_api.messaging, "kept_heard", return_value=(_KEPT, 0)), \
+         patch.object(inbox_legs, "load_sections", **load), \
+         patch.object(inbox_legs, "heard_from", **judge):
+        return inbox_api.read_inbox()
+
+
+@pytest.mark.parametrize("kw", [{"load_exc": ValueError("target list has no valid line")},
+                                {"judge_exc": RuntimeError("boom")}],
+                         ids=["damaged-list", "per-send-raise"])
+def test_a_blind_exit_still_shows_the_hearings_the_store_kept(kw):
+    out = _read_raising(**kw)
+    heard = out["threads"][0]["messages"][0]["heard"]
+    assert heard["line"].startswith("heard by kiai (kept from an earlier read)"), heard["line"]
+    # the blindness about NOW is still said, in the unreadable words — never
+    # the no-target-list words (this box HAS a list; it could not read it)
+    assert "fleet evidence unreadable" in heard["line"]
+    assert "no target list here" not in heard["line"]
+    assert [b["alias"] for b in heard["boxes"]] == ["kiai"] and heard["boxes"][0]["kept"]
+    assert out["heard_error"], "the failure is still witnessed in the read"
+
+
+@pytest.mark.parametrize("kw", [{"load_exc": ValueError("damaged")},
+                                {"judge_exc": RuntimeError("boom")}],
+                         ids=["damaged-list", "per-send-raise"])
+def test_a_blind_exit_with_nothing_kept_reads_unreadable_exactly(kw):
+    # nothing kept for the send → the exact unreadable line, no boxes key
+    with patch.dict(_KEPT, clear=True):
+        out = _read_raising(**kw)
+    assert out["threads"][0]["messages"][0]["heard"] == {"line": inbox_api.HEARD_UNREADABLE}
