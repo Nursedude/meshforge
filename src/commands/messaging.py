@@ -114,8 +114,6 @@ def _schema_is_current(conn) -> bool:
         # r2 NIT: every column a reader or writer names, not one
         conn.execute("SELECT message_id, packet_id, alias, state, reason, rx_ts, "
                      "skewed, kept_at FROM heard_kept LIMIT 0")
-        conn.execute("SELECT message_id, packet_id, alias, seen_at FROM heard_covered "
-                     "LIMIT 0")
     except sqlite3.OperationalError:
         return False
     return True
@@ -259,15 +257,6 @@ def _init_db() -> sqlite3.Connection:
                          "alias TEXT NOT NULL, state TEXT NOT NULL, reason TEXT NOT NULL, "
                          "rx_ts REAL, skewed INTEGER NOT NULL DEFAULT 0, "
                          "kept_at REAL NOT NULL, "
-                         "PRIMARY KEY (message_id, packet_id, alias))")
-            # r3: "a read saw THIS box's ring cover this send" — one row per
-            # box, written only from that box's live heard/not_heard verdict.
-            # It tells a box judged in time (no hearing, by design) from one no
-            # read ever saw (the on-read gap). Replaces 2c6637fa's per-send,
-            # clock-derived heard_judged (never on a live store; left unread).
-            conn.execute("CREATE TABLE IF NOT EXISTS heard_covered ("
-                         "message_id INTEGER NOT NULL, packet_id INTEGER NOT NULL, "
-                         "alias TEXT NOT NULL, seen_at REAL NOT NULL, "
                          "PRIMARY KEY (message_id, packet_id, alias))")
             conn.commit()
         except Exception:
@@ -807,10 +796,11 @@ def store_outgoing(
 
 
 def _drop_orphan_heard_rows(conn) -> None:
-    """Kept hearings and coverage marks go with the send they describe — by
-    row id AND packet id (r3 NIT-1: a mark keyed to a swapped-in row's old id
-    outlived the swap)."""
-    for table in ("heard_kept", "heard_covered"):
+    """Kept hearings go with the send they describe — by row id AND packet id
+    (r3 NIT-1: a row keyed to a swapped-in row's old id outlived the swap).
+    ``heard_judged`` / ``heard_covered`` from unreleased commits 2c6637fa /
+    fe08a41d are never created, read or written (no live store has them)."""
+    for table in ("heard_kept",):
         conn.execute(f"DELETE FROM {table} WHERE NOT EXISTS (SELECT 1 FROM messages "
                      f"WHERE messages.id = {table}.message_id "
                      f"AND messages.packet_id = {table}.packet_id)")
@@ -833,8 +823,7 @@ def _keepable_states():
     return FREEZABLE
 
 
-def keep_heard(items: List[tuple], covered: List[tuple] = (),
-               now: Optional[float] = None) -> None:
+def keep_heard(items: List[tuple], now: Optional[float] = None) -> None:
     """Keep heard-by verdicts for ``[(message_id, packet_id, [box dict]), ...]``
     in ONE transaction (r1 L3: one busy wait per read, not one per send).
 
@@ -852,8 +841,7 @@ def keep_heard(items: List[tuple], covered: List[tuple] = (),
     rows = [(mid, pid, b["alias"], b["state"], b["reason"], b.get("rx_ts"),
              int(bool(b.get("skewed"))), stamp)
             for mid, pid, boxes in items for b in boxes]
-    marks = [(mid, pid, alias, stamp) for mid, pid, alias in covered]
-    if not rows and not marks:
+    if not rows:
         return
     conn = _init_db()
     try:
@@ -873,14 +861,12 @@ def keep_heard(items: List[tuple], covered: List[tuple] = (),
             "state = excluded.state, reason = excluded.reason, rx_ts = excluded.rx_ts, "
             "skewed = excluded.skewed, kept_at = excluded.kept_at "
             "WHERE excluded.skewed < heard_kept.skewed", rows)
-        conn.executemany("INSERT OR IGNORE INTO heard_covered (message_id, packet_id, "
-                         "alias, seen_at) VALUES (?, ?, ?, ?)", marks)
         conn.commit()
     finally:
         conn.close()
 
 
-def kept_heard(sends: List[tuple]) -> "tuple[Dict[int, List[Dict[str, Any]]], int, Dict[int, set]]":
+def kept_heard(sends: List[tuple]) -> "tuple[Dict[int, List[Dict[str, Any]]], int]":
     """``({message_id: [box dict, ...]}, refused)`` for ``[(message_id,
     packet_id), ...]`` — only rows whose packet id matches. A row no writer
     here can have stored (a state the judge does not keep, a blank alias, a
@@ -888,7 +874,7 @@ def kept_heard(sends: List[tuple]) -> "tuple[Dict[int, List[Dict[str, Any]]], in
     writer refused it, the reader must too — hfm #3, #9). Raises on a store
     error."""
     if not sends:
-        return {}, 0, {}
+        return {}, 0
     keepable = _keepable_states()
     conn = _init_db()
     try:
@@ -910,13 +896,7 @@ def kept_heard(sends: List[tuple]) -> "tuple[Dict[int, List[Dict[str, Any]]], in
         if refused:
             logger.warning("heard_kept: %d row(s) no writer can have stored were "
                            "left out", refused)
-        covered: Dict[int, set] = {}
-        for mid, pid in sends:
-            for r in conn.execute("SELECT alias FROM heard_covered WHERE message_id = ? "
-                                  "AND packet_id = ?", (mid, pid)):
-                if isinstance(r["alias"], str) and r["alias"]:
-                    covered.setdefault(mid, set()).add(r["alias"])
-        return out, refused, covered
+        return out, refused
     finally:
         conn.close()
 

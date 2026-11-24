@@ -237,8 +237,6 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
           var blindBits = [];
           if (res.j.heard_error) blindBits.push("heard-by unreadable: " + res.j.heard_error);
           if (res.j.era_error) blindBits.push("duplicate fold limited: " + res.j.era_error);
-          if (res.j.heard_not_kept) blindBits.push(res.j.heard_not_kept +
-            " send(s) aged past a box's rx ring before any read kept heard-by");
           $("status").textContent = threads.length + " conversations · updated " + new Date().toLocaleTimeString() +
             (blindBits.length ? " · " + blindBits.join(" · ") : "");
         } else if (res.status === 403) {

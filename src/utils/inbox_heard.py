@@ -130,10 +130,10 @@ def _judge_box(alias: str, section: Any, *, packet_id: Any, sent_ts: float, now:
         window = _ts(section.get("window_s"))
         if window is not None and window > 0 and sent_ts < until - window:
             # the box's RING moved past the send (11-23: its journal still held
-            # the packet). Whether an earlier read saw THIS box cover the send
-            # is not known here — the caller says it from the box's own mark
-            # (r3: ``heard_covered``)
-            return out("unobservable", f"{RING_AGED_PREFIX}{window / 3600:g} h rx ring")
+            # the packet). Only HEARINGS are kept past the ring (inbox
+            # merge_frozen); a non-hearing is said as what it is — unknown now
+            return out("unobservable", f"{RING_AGED_PREFIX}{window / 3600:g} h rx ring"
+                                       f"{AGED_NOTE}")
         return out("unobservable", "box journal coverage starts after the send")
     if until < sent_ts + JOIN_AFTER_S:
         return out("unobservable", "listen window still open (not covered past send + 600 s)")
@@ -176,15 +176,13 @@ FREEZABLE = ("heard",)
 KEPT_NOTE = (f" (kept: decoded while the box's {RING_WINDOW_S / 3600:g} h "
              f"rx ring covered this send)")
 RING_AGED_PREFIX = "send is older than this box's "   # + "<N> h rx ring …"
-#: r3: the endings of a ring-aged reason, decided PER BOX from that box's own
-#: coverage mark — never from the center clock (r3 MED-1/2: a per-send,
-#: clock-derived mark claimed judgements no box had made). The mark is written
-#: only when the box's LIVE verdict was heard or not_heard, i.e. the judge saw
-#: that box's ring cover the send window.
-COVERING = ("heard", "not_heard")
-AGED_COVERED = "; at an earlier read this box covered the send and had not decoded it"
-AGED_UNSEEN = "; no read saw this box cover the send while its ring held it"
-AGED_UNKNOWN = "; whether a read saw this box cover the send is unknown (store unreadable)"
+#: The one ending of a ring-aged reason (operator stop rule 11-23, after four
+#: review rounds on a "was it judged in time" witness: r1 page, r2 counted
+#: prompt reads, r3 a center-clock mark, r4 a per-box mark that blamed reads
+#: for boxes added/renamed/blind and kept a clock-stepped not_heard). Nothing
+#: is claimed about earlier reads: only hearings are kept, so past the ring a
+#: box that did not hear is UNKNOWN, and the reason says exactly that.
+AGED_NOTE = "; only hearings are kept past it"
 
 
 def _hearing_rank(b: Optional[BoxHeard]) -> int:
