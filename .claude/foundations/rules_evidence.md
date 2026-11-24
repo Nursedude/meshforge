@@ -658,3 +658,63 @@ full suite, lint, live `confirmation_rate ≤ 1.0`, watchdog signals). `exit 0`
 = fully verified; `UNKNOWN` (unreachable / CI-pending) is never counted as
 pass. `--quick` skips the local suite; `--strict` fails on fleet warnings.
 
+
+## `CLAUDE.md` — trimmed sections, full text as of `a74ed526` (2026-11-23, /doctor)
+
+Removed from the always-loaded file in `dc3380d9` as derivable from the tree; kept here verbatim per the MF012 remedy ("never delete a rule"). The priority rule (work → reliable → maintainable → fast; fast only when proven necessary) still stands.
+
+````text
+## Development Principles
+
+```
+1. Make it work         ← First priority
+2. Make it reliable     ← Security, testing
+3. Make it maintainable ← Clean code, docs
+4. Make it fast         ← Only when proven necessary
+```
+
+
+```
+src/
+├── launcher_tui/      # PRIMARY INTERFACE (TUI)
+│   ├── main.py        # NOC launcher + handler registration
+│   ├── handler_protocol.py  # CommandHandler Protocol + TUIContext + BaseHandler
+│   ├── handler_registry.py  # register/lookup/dispatch
+│   ├── backend.py           # whiptail/dialog abstraction
+│   └── handlers/            # <!--STAT:handlers-->88<!--/STAT--> handlers (sentinel; action
+│                            #   count: SSOT .claude/skills/meshforge/capability_index.md)
+├── commands/          # propagation.py, hamclock.py, base.py
+├── gateway/           # RNS-Meshtastic bridge
+│   ├── rns_bridge.py, gateway_cli.py, meshcore_handler.py
+│   ├── canonical_message.py   # Multi-protocol message format
+│   └── message_routing.py, message_queue.py (SQLite)
+├── monitoring/        # mqtt_subscriber, node_monitor, traffic_inspector, packet_dissectors
+├── plugins/           # eas_alerts, meshing_around, mqtt_bridge
+│                     #   (MeshCore lives in gateway/meshcore_handler.py)
+├── utils/             # rf.py, common.py, service_check.py, coverage_map.py, claude_assistant.py
+├── standalone.py      # Zero-dependency RF tools
+└── __version__.py     # Version + changelog
+```
+Profiles: `radio_maps` | `monitor` | `meshcore` | `gateway` | `field` | `full`
+
+```bash
+python3 src/launcher.py --profile gateway   # Select profile
+python3 src/launcher.py                      # Auto-detect (default)
+# Profile saved to ~/.config/meshforge/deployment.json
+```
+
+> Full profile definitions + install commands: `.claude/foundations/deployment_profiles.md`
+Key imports: `check_service`, `apply_config_and_restart`, `enable_service`, `start_service`, `stop_service`, `_sudo_cmd`, `_sudo_write`
+
+## Key Modules
+
+| Module | API |
+|--------|-----|
+| `utils/diagnostic_engine.py` | `diagnose(symptom, category, severity)` |
+| `utils/knowledge_base.py` | `get_knowledge_base().query("topic")` |
+| `utils/claude_assistant.py` | AI assistant (Standalone + PRO tiers) |
+| `utils/coverage_map.py` | Folium coverage map generator |
+| `commands/propagation.py` | Space weather (NOAA primary) |
+
+
+````

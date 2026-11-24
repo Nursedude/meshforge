@@ -19,9 +19,13 @@ PostToolUse hooks on .claude/settings.json edits and into pre-commit.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from hook_payload import payload_paths, read_stdin_text  # noqa: E402
 
 BASH_RULE_RE = re.compile(r"^Bash\((.+)\)$")
 
@@ -61,11 +65,18 @@ def validate_settings(path: Path) -> list[str]:
     errors: list[str] = []
 
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return [f"file not found: {path}"]
     except json.JSONDecodeError as e:
         return [f"invalid JSON in {path}: {e}"]
+    except UnicodeDecodeError as e:
+        return [f"not UTF-8: {path}: {e}"]
+    except OSError as e:  # unreadable (mode 000, EIO): Claude Code can't load it either
+        return [f"unreadable: {path}: {e}"]
+    if not isinstance(data, dict):
+        # Claude Code ignores a settings file whose top level is not an object.
+        return [f"top level of {path} is {type(data).__name__}, not an object"]
 
     perms = data.get("permissions", {})
     if not isinstance(perms, dict):
@@ -84,18 +95,25 @@ def validate_settings(path: Path) -> list[str]:
     return errors
 
 
+SETTINGS_SUFFIXES = ("/.claude/settings.json", "/.claude/settings.local.json")
+
+
 def hook_main(stdin_text: str) -> tuple[int, str]:
     """PostToolUse Write|Edit hook entry: validate only when the edited file
-    is a ``.claude/settings.json``. Exit 2 + stderr on invalid (fed back to
+    is a ``.claude/settings.json`` or ``.claude/settings.local.json`` (by its
+    LINK path when symlinked — the parser keeps the final component). Exit 2 + stderr on invalid (fed back to
     the model); 0 silent otherwise; 1 when the payload is unreadable.
     The old hook keyed on ``$CLAUDE_TOOL_ARG_file_path`` (not set by Claude
-    Code) and so never fired — tests/test_lint_hook_mode.py."""
-    try:
-        payload = json.loads(stdin_text)
-        path = (payload.get("tool_input") or {}).get("file_path") or ""
-    except (ValueError, AttributeError) as e:
-        return 1, f"settings hook: unreadable hook payload ({e}); settings NOT validated"
-    if not isinstance(path, str) or not path.replace("\\", "/").endswith(".claude/settings.json"):
+    Code) and so never fired — tests/test_lint_hook_mode.py. The payload is
+    read by the ONE shared parser (scripts/hook_payload.py)."""
+    base = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    path, lexical, err = payload_paths(stdin_text, base)
+    if err:
+        return 1, f"settings hook: {err}; settings NOT validated"
+    # NAME match on the path as named OR as resolved: a dotfiles-symlinked
+    # `.claude` dir resolves to another name (Fable r3 I2), a symlinked file
+    # keeps its link name. No backslash rewriting — on Linux it is a filename char.
+    if not path or not (lexical.endswith(SETTINGS_SUFFIXES) or path.endswith(SETTINGS_SUFFIXES)):
         return 0, ""
     p = Path(path)
     if not p.is_file():
@@ -111,7 +129,14 @@ def hook_main(stdin_text: str) -> tuple[int, str]:
 
 def main(argv: list[str]) -> int:
     if argv[1:] == ["--hook"]:
-        rc, msg = hook_main(sys.stdin.read())
+        text, err = read_stdin_text(sys.stdin)
+        if err:
+            rc, msg = 1, f"settings hook: {err}; settings NOT validated"
+        else:
+            try:
+                rc, msg = hook_main(text)
+            except Exception as e:  # last resort: never a bare traceback
+                rc, msg = 1, f"settings hook: crashed ({type(e).__name__}: {e}); settings NOT validated"
         if msg:
             print(msg, file=sys.stderr)
         return rc

@@ -519,40 +519,40 @@ class MeshForgeLinter:
         return all_issues
 
 
-def get_staged_files() -> List[str]:
-    """Get list of staged Python files."""
+class StagedListError(RuntimeError):
+    """git could not produce the staged list. NEVER mapped to [] — an empty
+    list reads as "nothing staged" and the gate passes clean (honest_failure_
+    modes #1; Fable r3 I1: one non-UTF-8 name blanked the whole list)."""
+
+
+def _staged_names() -> List[str]:
+    """Staged paths exactly as git names them: -z (NUL-separated, never
+    quoted), raw bytes → os.fsdecode (a non-UTF-8 name survives as surrogate
+    escapes and still opens). ACMRT: added/copied/modified/renamed/typechanged
+    — every status that leaves a file to lint."""
     try:
         result = subprocess.run(
-            ['git', 'diff', '--cached', '--name-only', '--diff-filter=ACM'],
+            ['git', 'diff', '--cached', '--name-only', '-z', '--diff-filter=ACMRT'],
             capture_output=True,
-            text=True,
             timeout=10
         )
-        files = [f for f in result.stdout.strip().split('\n') if f.endswith('.py')]
-        return files
-    except Exception:
-        return []
+    except (OSError, subprocess.SubprocessError) as e:
+        raise StagedListError(f"git diff --cached could not run: {e}") from e
+    if result.returncode != 0:
+        err = os.fsdecode(result.stderr).strip()[:200]
+        raise StagedListError(f"git diff --cached exited {result.returncode}: {err}")
+    return [os.fsdecode(n) for n in result.stdout.split(b'\0') if n]
+
+
+def get_staged_files() -> List[str]:
+    """Staged Python files. Raises StagedListError when git can't say."""
+    return [f for f in _staged_names() if f.endswith('.py')]
 
 
 def get_staged_files_all_types() -> List[str]:
-    """Get list of staged text-like files (any extension that MF014 scans)."""
-    try:
-        result = subprocess.run(
-            ['git', 'diff', '--cached', '--name-only', '--diff-filter=ACM'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        files = []
-        for f in result.stdout.strip().split('\n'):
-            if not f:
-                continue
-            ext = os.path.splitext(f)[1].lower()
-            if ext in MF014_SCAN_EXTENSIONS:
-                files.append(f)
-        return files
-    except Exception:
-        return []
+    """Staged text-like files (any extension MF014 scans). Raises StagedListError."""
+    return [f for f in _staged_names()
+            if os.path.splitext(f)[1].lower() in MF014_SCAN_EXTENSIONS]
 
 
 # MF014: Operator-specific value blocklist.
@@ -801,7 +801,9 @@ CONTEXT_DOC_LIMITS = {
     '.claude/rules/testing.md': 1_300,
     # Context trim phase 2b (2026-10-29): 15,372 → 13,337 B, stories moved to
     # foundations/rules_evidence.md. Cap = trimmed x 1.15. Ratchet DOWN only.
-    'CLAUDE.md': 15_300,
+    # 2026-11-23 /doctor trim: 14,561 → 12,455 B (derivable sections moved
+    # verbatim to rules_evidence.md) → cap 12,455 x 1.15 = 14,300.
+    'CLAUDE.md': 14_300,
 }
 # The remedy differs per file: following persistent_issues' advice on the
 # roadmap would archive LIVE items (non-author pass 2026-10-22).
@@ -1964,17 +1966,82 @@ def check_probe_fail_dark(files: List[str],
     return issues
 
 
+def check_in_domain_escapes_full_tree() -> List[LintIssue]:
+    """MF018 over every TUI file (the non-staged twin of check_in_domain_escapes)."""
+    return check_in_domain_escapes(get_all_python_files(MF018_SCAN_DIR))
+
+
+# THE per-file lint set (2026-11-23 seam). `--staged` (pre-commit) and the
+# post-edit hook (scripts/lint_hook.py) both call per_file_issues(), so they
+# cannot disagree about what "lint this file" means — round 1 of the hook kept
+# its own list, missed MF018, and passed absolute paths where pre-commit passes
+# repo-relative ones ('/tests/' exemptions flipped → MF007 missed). Every
+# check_* below MUST be classified in exactly one tuple — closed enum, pinned
+# by tests/test_lint_hook_mode.py::TestSeamParity.
+PER_FILE_CHECKS = (
+    check_operator_values_in_files,   # MF014
+    check_pip_invocations_in_files,   # MF022
+    check_in_domain_escapes,          # MF018
+    check_file_size_ratchet,          # MF025
+    check_config_atomicity,           # MF026
+    check_probe_fail_dark,            # MF027
+    check_state_saver_swallow,        # MF028
+)
+WHOLE_TREE_CHECKS = (
+    check_context_doc_sizes,             # MF012
+    check_version_consistency,           # MF024
+    check_roadmap_rules,                 # MF030
+    check_operator_values_full_tree,     # MF014 whole tree
+    check_pip_invocations_full_tree,     # MF022 whole tree
+    check_systemd_sandbox_paths,         # MF017
+    check_in_domain_escapes_full_tree,   # MF018 whole tree
+    check_mini_dudeai_observation_only,  # MF021 (fixed file set)
+    check_bounded_collect_chokepoint,    # MF023 (fixed file)
+)
+# Non-staged runs swap these per-file checks for their whole-tree twin
+# (drift in an untouched file still matters there); --staged runs the per-file
+# form and skips the twin. STAGED_SKIPS: too costly for a one-file commit.
+# main() DISPATCHES from these tuples — a check that is declared runs.
+_WHOLE_TREE_TWIN = {
+    check_operator_values_in_files: check_operator_values_full_tree,
+    check_pip_invocations_in_files: check_pip_invocations_full_tree,
+    check_in_domain_escapes: check_in_domain_escapes_full_tree,
+}
+STAGED_SKIPS = frozenset({check_version_consistency, check_systemd_sandbox_paths})
+
+
+def per_file_issues(files: List[str], repo_root: Optional[str] = None) -> List[LintIssue]:
+    """Lint exactly ``files`` with the per-file set. ``files`` are paths
+    relative to the cwd, which must be the repo root (pre-commit's shape —
+    `git diff --name-only`); any extension (each check filters its own scope).
+    """
+    files = [f for f in files if os.path.splitext(f)[1].lower() in MF014_SCAN_EXTENSIONS]
+    kw = {} if repo_root is None else {'repo_root': repo_root}
+    issues = MeshForgeLinter().lint_files(files)
+    for check in PER_FILE_CHECKS:
+        issues.extend(check(files, **kw))
+    return issues
+
+
 def main():
     parser = argparse.ArgumentParser(description='MeshForge Linter')
     parser.add_argument('files', nargs='*', help='Files to lint')
-    parser.add_argument('--all', action='store_true',
-                        help='Lint all Python files in src/ and scripts/')
-    parser.add_argument('--staged', action='store_true', help='Lint staged files only')
+    # --all and --staged are exclusive: together they once meant "every file,
+    # staged variants" and silently changed meaning in the 2026-11-23 seam
+    # refactor (Fable r2 N1). No caller passes both; refuse it.
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument('--all', action='store_true',
+                       help='Lint all Python files in src/ and scripts/')
+    scope.add_argument('--staged', action='store_true', help='Lint staged files only')
     parser.add_argument('--format', choices=['text', 'json', 'github'], default='text',
                        help='Output format')
     parser.add_argument('--severity', choices=['error', 'warning', 'info'], default='info',
                        help='Minimum severity to report')
     args = parser.parse_args()
+    # A non-UTF-8 staged name prints as escapes instead of crashing the gate.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(errors='backslashreplace')
 
     # Determine files to lint
     if args.all:
@@ -1990,7 +2057,14 @@ def main():
         # Pinned by TestLintAllCoversScripts in tests/test_lint_scope.py.
         files = get_all_python_files('src') + get_all_python_files('scripts')
     elif args.staged:
-        files = get_staged_files()
+        try:
+            staged_all = get_staged_files_all_types()
+        except StagedListError as e:
+            # stdout: .githooks/pre-commit discards stderr. Nonzero: refuse.
+            print(f"lint --staged: cannot read the staged file list — refusing to "
+                  f"report clean ({e})", flush=True)
+            sys.exit(2)
+        files = [f for f in staged_all if f.endswith('.py')]
     elif args.files:
         files = args.files
     else:
@@ -2004,78 +2078,28 @@ def main():
         # commit clean (non-author read 2026-10-29).
         print("No Python files to lint.")
 
-    # Run linter
-    linter = MeshForgeLinter()
-    issues = linter.lint_files(files)
-
-    # MF012: per-turn context doc caps. Runs in --staged mode too (2026-10-29
-    # non-author read: skipping it there let a rules file regrow past its cap
-    # and commit clean); it is a handful of stat() calls.
-    issues.extend(check_context_doc_sizes())
-
-    # MF024: version SSOT vs pyproject/README drift (repo-level; the 4-way-drift
-    # guard). Whole-repo only — a one-file --staged PR shouldn't pay the audit.
-    if not args.staged:
-        issues.extend(check_version_consistency())
-
-    # MF030: roadmap item rules + docs/roadmap.md drift (repo-level, cheap).
-    issues.extend(check_roadmap_rules())
-
-    # MF014: operator-value blocklist (broader than .py — scans templates/scripts/docs too)
+    # Run linter — DISPATCHED from the declaration tuples, so a declared check
+    # always runs (r2 review: a declaration-only tuple let 19 mutants live).
+    #   --staged: THE per-file seam (what the post-edit hook runs) + whole-tree
+    #             checks minus STAGED_SKIPS and minus the per-file twins.
+    #   other:    per-file checks over `files` (twinned ones swapped for their
+    #             whole-tree form) + every whole-tree check.
+    # Notes kept from the hand-written sequence this replaces: MF012 runs in
+    # --staged too (2026-10-29: skipping it let a rules file regrow and commit
+    # clean); MF024/MF017 are whole-repo audits a one-file commit doesn't pay;
+    # MF021/MF023 scan fixed file sets and must always fail.
+    twins = set(_WHOLE_TREE_TWIN.values())
     if args.staged:
-        issues.extend(check_operator_values_in_files(get_staged_files_all_types()))
+        issues = per_file_issues(staged_all)
+        whole = [c for c in WHOLE_TREE_CHECKS if c not in STAGED_SKIPS and c not in twins]
     else:
-        issues.extend(check_operator_values_full_tree())
-
-    # MF022: shell-installer pip/apt hygiene (broader than .py — scans .sh/.bash).
-    if args.staged:
-        issues.extend(check_pip_invocations_in_files(get_staged_files_all_types()))
-    else:
-        issues.extend(check_pip_invocations_full_tree())
-
-    # MF018: In-Domain Principle ratchet — TUI shell-escapes vs frozen baseline.
-    if args.staged:
-        issues.extend(check_in_domain_escapes(get_staged_files()))
-    else:
-        issues.extend(check_in_domain_escapes(get_all_python_files(MF018_SCAN_DIR)))
-
-    # MF017: systemd sandbox writable-path drift (Issue #58 class). Walks
-    # the whole contrib/systemd/ tree — drift in a unit not touched by this
-    # PR still matters. Skip in --staged mode so a one-file PR doesn't pay
-    # the audit cost.
-    if not args.staged:
-        issues.extend(check_systemd_sandbox_paths())
-
-    # MF025: file-size ratchet (1,500-line cap, frozen offender baseline).
-    # Cheap (line counts of the files already selected), so it runs in both
-    # whole-tree and --staged modes — a file blowing past the cap must fail
-    # in the same commit that grew it.
-    issues.extend(check_file_size_ratchet(files))
-
-    # MF026: config/state torn-write guard (O_TRUNC ban + non-atomic config
-    # open('w') ratchet). Cheap per-file scan; runs in both modes so a new
-    # non-atomic config write fails in the commit that adds it.
-    issues.extend(check_config_atomicity(files))
-
-    # MF021: mini-dudeai observation-only invariant. Scans the fixed engine/
-    # sources/actions set (cheap), so run it in both whole-tree and --staged
-    # modes — an execution token sneaking into the loop must always fail.
-    issues.extend(check_mini_dudeai_observation_only())
-
-    # MF023: bounded-collect chokepoint. Scans one fixed file (cheap), so run
-    # it in both whole-tree and --staged modes — an unbounded interface create
-    # sneaking into a serving path must always fail.
-    issues.extend(check_bounded_collect_chokepoint())
-
-    # MF027: probe fail-dark guard (except-handler returns None with no
-    # note_disposition witness). Cheap AST pass over only the watchdog_probe*
-    # files in the selection; runs in both modes — a dark error path must
-    # fail in the commit that writes it, not in the review that finds it.
-    issues.extend(check_probe_fail_dark(files))
-
-    # MF028: state-saver swallow guard (an except in a _save_* helper that
-    # leaves no witness). Same cheap AST pass, same files, same reason.
-    issues.extend(check_state_saver_swallow(files))
+        issues = MeshForgeLinter().lint_files(files)
+        for check in PER_FILE_CHECKS:
+            if check not in _WHOLE_TREE_TWIN:
+                issues.extend(check(files))
+        whole = list(WHOLE_TREE_CHECKS)
+    for check in whole:
+        issues.extend(check())
 
     # Filter by severity
     severity_order = {'error': 0, 'warning': 1, 'info': 2}

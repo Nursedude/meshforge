@@ -50,7 +50,11 @@ def test_staged_mode_with_no_python_staged_still_runs_repo_checks(
                              "MF012", "planted")
     monkeypatch.setattr(lint, "get_staged_files", lambda: [])
     monkeypatch.setattr(lint, "get_staged_files_all_types", lambda: [])
-    monkeypatch.setattr(lint, "check_context_doc_sizes", lambda: [planted])
+    # main() dispatches from WHOLE_TREE_CHECKS (2026-11-23 seam), so the plant
+    # goes into the tuple — patching the module name alone no longer reaches it.
+    monkeypatch.setattr(lint, "WHOLE_TREE_CHECKS", tuple(
+        (lambda: [planted]) if c is lint.check_context_doc_sizes else c
+        for c in lint.WHOLE_TREE_CHECKS))
     monkeypatch.setattr(lint.sys, "argv", ["lint.py", "--staged"])
     assert lint.main() == 1
 
