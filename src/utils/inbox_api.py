@@ -367,7 +367,9 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
     # send are KEPT in the store and merged back (inbox_heard.merge_frozen) —
     # never re-judged blind. A store that cannot read them says so; the live
     # judgement still shows. Read BEFORE the no-target-list branch (r1 11-24:
-    # a box that lost its list must still show what it kept).
+    # a box with NO list must still show what it kept). A DAMAGED list or a
+    # raising spool read (above) still shows unobservable without its kept
+    # hearings — said in heard_error, not silent (pre-existing, r2 #1).
     try:
         kept, refused = messaging.kept_heard([(m["id"], m["packet_id"]) for m in sends])
         if refused:

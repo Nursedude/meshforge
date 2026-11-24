@@ -134,9 +134,13 @@ def test_no_fleet_with_an_unreadable_kept_store_says_so():
 
 
 def test_no_fleet_dms_and_received_rows_still_carry_no_heard_line():
+    # r2 nit 2: WITH a broadcast send in the read, so the no-list branch
+    # actually runs (without one, the read returns before it — vacuous)
     rows = [_row(id=1, to_id="!a1b2c3d4", is_dm=True),
-            _row(id=2, from_id="!0000beef", packet_id=222)]
+            _row(id=2, from_id="!0000beef", packet_id=222),
+            _row(id=3, content="bcast", packet_id=333)]
     out, msgs, _ = _read(rows, None)
+    assert msgs[3]["heard"]["line"] == inbox_legs.NO_FLEET_LINE
     assert "heard" not in msgs[1] and "heard" not in msgs[2]
 
 
