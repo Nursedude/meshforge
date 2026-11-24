@@ -47,6 +47,9 @@ class BoxHeard:
     reason: str
     rx_ts: Optional[float] = None
     skewed: bool = False
+    #: r2: shown from the store (a hearing an earlier read kept), not from the
+    #: live ring — a FIELD, never inferred from the reason text
+    kept: bool = False
 
 
 def _ts(v: Any) -> Optional[float]:
@@ -127,9 +130,9 @@ def _judge_box(alias: str, section: Any, *, packet_id: Any, sent_ts: float, now:
         window = _ts(section.get("window_s"))
         if window is not None and window > 0 and sent_ts < until - window:
             # the box's RING moved past the send (11-23: its journal still held
-            # the packet) — the center did not judge it while it could
-            return out("unobservable", f"{RING_AGED_PREFIX}{window / 3600:g} h rx ring "
-                                       "and no verdict was kept in time")
+            # the packet). Whether a read judged the send in time is NOT known
+            # here — the caller says it (r2 MED-1, ``heard_judged``)
+            return out("unobservable", f"{RING_AGED_PREFIX}{window / 3600:g} h rx ring")
         return out("unobservable", "box journal coverage starts after the send")
     if until < sent_ts + JOIN_AFTER_S:
         return out("unobservable", "listen window still open (not covered past send + 600 s)")
@@ -172,6 +175,16 @@ FREEZABLE = ("heard",)
 KEPT_NOTE = (f" (kept: decoded while the box's {RING_WINDOW_S / 3600:g} h "
              f"rx ring covered this send)")
 RING_AGED_PREFIX = "send is older than this box's "   # + "<N> h rx ring …"
+#: r2 MED-1: the two endings of a ring-aged reason — ONE place decides which
+AGED_JUDGED = "; a read judged this send in time and kept no hearing from this box"
+AGED_UNJUDGED = "; no read judged this send while the ring covered it"
+
+
+def judged_in_time(sent_ts: float, now: float) -> bool:
+    """A read at ``now`` JUDGES a send when its listen window has closed and
+    the boxes' rings can still cover it (center clock; hfm #6 — a center
+    clock off by days is the accepted r1 L7 residual)."""
+    return sent_ts + JOIN_AFTER_S <= now < sent_ts + RING_WINDOW_S
 
 
 def _hearing_rank(b: Optional[BoxHeard]) -> int:
@@ -200,13 +213,13 @@ def merge_frozen(live: Iterable[BoxHeard],
     for r in live:
         seen.add(r.alias)
         f = frozen.get(r.alias)
-        if _hearing_rank(r) > _hearing_rank(f):
+        if _hearing_rank(r) >= _hearing_rank(f):
+            # r2 L-B: the live ring still confirms it → shown LIVE (no kept label)
             merged.append(r)
-            new.append(r)
-        elif f is not None:
-            merged.append(f)
+            if _hearing_rank(r) > _hearing_rank(f):
+                new.append(r)
         else:
-            merged.append(r)
+            merged.append(f)
     merged.extend(frozen[a] for a in sorted(frozen) if a not in seen)
     merged.sort(key=lambda b: b.alias)
     return merged, new

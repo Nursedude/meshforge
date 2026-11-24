@@ -109,7 +109,7 @@ def _hearing(alias="kiai", skewed=False):
 def test_a_kept_verdict_never_lends_itself_to_another_packet_id(tmp_db):
     mid = _send()
     messaging_mod.keep_heard([(mid, PID, [_hearing()])], now=2.0)
-    assert messaging_mod.kept_heard([(mid, PID + 1)]) == ({}, 0)
+    assert messaging_mod.kept_heard([(mid, PID + 1)])[:2] == ({}, 0)
     assert messaging_mod.kept_heard([(mid, PID)])[0][mid][0]["state"] == "heard"
 
 
@@ -147,7 +147,7 @@ def test_the_reader_refuses_a_row_no_writer_can_have_stored(tmp_db, state, alias
     """r1 L4: the writer refused it, so the reader must too — and say so."""
     mid = _send()
     _plant(tmp_db, mid, PID, alias, state, reason, None, 0, 1.0)
-    assert messaging_mod.kept_heard([(mid, PID)]) == ({}, 1)
+    assert messaging_mod.kept_heard([(mid, PID)])[:2] == ({}, 1)
 
 
 def test_a_refused_kept_row_is_said_and_never_beats_the_live_answer(tmp_db):
@@ -190,7 +190,7 @@ def test_prune_and_clear_take_kept_rows_with_their_sends(tmp_db):
     conn.commit()
     conn.close()
     messaging_mod._maybe_prune_messages(now=10 ** 10)
-    assert messaging_mod.kept_heard([(mid, PID)]) == ({}, 0)
+    assert messaging_mod.kept_heard([(mid, PID)])[:2] == ({}, 0)
     mid2 = _send(PID + 1)
     messaging_mod.keep_heard([(mid2, PID + 1, [_hearing()])])
     conn = sqlite3.connect(tmp_db)
@@ -315,3 +315,160 @@ def test_the_page_says_the_read_level_gap():
     page = (pathlib.Path(__file__).parent.parent / "web" / "inbox.html").read_text()
     assert "res.j.heard_not_kept" in page
     assert "aged past a box's rx ring before any read kept heard-by" in page
+
+
+# ── review r2 ───────────────────────────────────────────────────────────
+
+def _read_out(now, sections, decl=None):
+    from utils import rf_segments
+    with patch.object(inbox_api.time, "time", return_value=now), \
+         patch("utils.message_listener.get_listener_status", return_value={}), \
+         patch.object(inbox_legs, "load_sections", return_value=sections), \
+         patch.object(rf_segments, "load", return_value=decl or rf_segments.INERT):
+        return inbox_api.read_inbox()
+
+
+def _msg(out, mid):
+    return next(m for t in out["threads"] for m in t["messages"] if m["id"] == mid)
+
+
+def test_r2_med1_a_send_judged_in_time_is_never_called_unjudged(tmp_db):
+    """r2 MED-1: hearings-only (r1 L2) made every not_heard box read 'never
+    judged in time' a day later, so heard_not_kept counted promptly-read sends."""
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    first = sent + 700
+    _read_out(first, {"kiai": dict(_ring(first, (0x0DAEE001, PID, sent + 2)), window_s=DAY),
+                      "moc": dict(_ring(first), window_s=DAY)})
+    later = sent + 25 * 3600
+    out = _read_out(later, {"kiai": dict(_ring(later), window_s=DAY),
+                            "moc": dict(_ring(later), window_s=DAY)})
+    m = _msg(out, mid)
+    assert out["heard_not_kept"] == 0
+    assert "never judged" not in m["heard"]["line"], m["heard"]["line"]
+    assert "1 past the box's rx ring, no hearing kept" in m["heard"]["line"], m["heard"]["line"]
+    moc = next(b for b in m["heard"]["boxes"] if b["alias"] == "moc")
+    assert "a read judged this send in time" in moc["reason"], moc
+
+
+def test_r2_med1_a_send_no_read_judged_in_time_still_counts(tmp_db):
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    _read_out(sent + 30, {"moc": dict(_ring(sent + 30), window_s=DAY)})  # window still open
+    later = sent + 25 * 3600
+    out = _read_out(later, {"moc": dict(_ring(later), window_s=DAY)})
+    assert out["heard_not_kept"] == 1
+    assert "never judged in time" in _msg(out, mid)["heard"]["line"]
+
+
+def test_r2_lb_a_hearing_the_live_ring_still_confirms_is_not_labelled_kept(tmp_db):
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    for now in (sent + 700, sent + 730):
+        out = _read_out(now, {"kiai": _ring(now, (0x0DAEE001, PID, sent + 2))})
+    m = _msg(out, mid)
+    assert m["heard"]["line"] == "heard by kiai · 1 of 1 listening", m["heard"]["line"]
+    assert [b["kept"] for b in m["heard"]["boxes"]] == [False]
+
+
+def test_r2_la_a_kept_hearing_never_raises_the_declaration_warning(tmp_db):
+    """A box moved and correctly re-declared: before the change the warning
+    died with the ring; a kept hearing must not keep it alive for 30 days."""
+    from utils import rf_segments
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    first = sent + 700
+    _read_out(first, {"moc2": _ring(first, (0x0DAEE001, PID, sent + 2))})
+    later = sent + 2 * DAY
+    decl = rf_segments.Declared({"moc2": "meshtastic:SHORT_TURBO/ch8",
+                                 "self": "meshtastic:LONG_FAST/ch20"}, "self", None)
+    out = _read_out(later, {"moc2": _ring(later)}, decl)
+    assert out.get("heard_error") is None, out.get("heard_error")
+    assert {b["alias"]: b["state"] for b in _msg(out, mid)["heard"]["boxes"]} == {"moc2": "heard"}
+
+
+@pytest.mark.parametrize("planted", ["not_heard", "unobservable", "bogus"])
+def test_r2_lc_a_refused_row_never_blocks_keeping_the_real_hearing(tmp_db, planted):
+    mid = _send()
+    _plant(tmp_db, mid, PID, "kiai", planted, "r", None, 0, 1.0)
+    messaging_mod.keep_heard([(mid, PID, [_hearing()])])
+    kept, refused = messaging_mod.kept_heard([(mid, PID)])[:2]
+    assert refused == 0 and kept[mid][0]["state"] == "heard"
+
+
+@pytest.mark.parametrize("rx_ts,skewed,alias", [
+    (float("inf"), 0, "kiai"), (None, 7, "kiai"),
+    (None, "x", "kiai"), (None, 0, "ki\nai"), (None, 0, "kiai\x00"),
+])
+def test_r2_ld_the_reader_refuses_values_the_judge_cannot_produce(tmp_db, rx_ts, skewed, alias):
+    mid = _send()
+    _plant(tmp_db, mid, PID, alias, "heard", "r", rx_ts, skewed, 1.0)
+    assert messaging_mod.kept_heard([(mid, PID)])[:2] == ({}, 1)
+
+
+def test_r2_a_kept_skewed_hearing_still_says_clock_off_after_the_ring(tmp_db):
+    """r2 survivor #22: the writer must store the skew it was given."""
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    first = sent + 700
+    _read_out(first, {"kiai": _ring(first, (0x0DAEE001, PID, sent + 3600))})   # outside window
+    later = sent + 25 * 3600
+    line = _msg(_read_out(later, {"kiai": _ring(later)}), mid)["heard"]["line"]
+    assert line.startswith("heard by kiai (clock off)"), line
+
+
+def test_r2_a_kept_hearing_carries_the_kept_note(tmp_db):
+    """r2 survivor #19."""
+    from utils.inbox_heard import KEPT_NOTE
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    _read_out(sent + 700, {"kiai": _ring(sent + 700, (0x0DAEE001, PID, sent + 2))})
+    later = sent + 25 * 3600
+    b = _msg(_read_out(later, {"kiai": _ring(later)}), mid)["heard"]["boxes"][0]
+    assert b["reason"].endswith(KEPT_NOTE) and b["kept"] is True
+
+
+def test_r2_a_failed_keep_is_said(tmp_db):
+    """r2 survivor #24: the 'heard-by not kept' witness."""
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    now = sent + 700
+    with patch.object(messaging_mod, "keep_heard", side_effect=OSError("disk full")):
+        out = _read_out(now, {"kiai": _ring(now, (0x0DAEE001, PID, sent + 2))})
+    assert "heard-by not kept for 1 send(s): OSError: disk full" in out["heard_error"]
+
+
+def test_r2_the_schema_probe_never_trusts_a_heard_kept_of_the_wrong_shape(tmp_db):
+    import sqlite3
+    messaging_mod._init_db().close()
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("DROP TABLE heard_kept")
+    conn.execute("CREATE TABLE heard_kept (message_id INTEGER, state TEXT)")
+    conn.commit()
+    conn.close()
+    conn = messaging_mod._init_db()
+    try:
+        assert messaging_mod._schema_is_current(conn) is False   # said, not trusted
+    finally:
+        conn.close()
+
+
+def test_r2_a_store_at_the_r1_shape_gets_the_judged_mark_table(tmp_db):
+    """r3 mutation survivor K: a store 69bd53ad created (heard_kept, no
+    heard_judged) must not pass the probe as current."""
+    import sqlite3
+    _old_store(tmp_db)
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("CREATE TABLE heard_kept (message_id INTEGER NOT NULL, packet_id INTEGER "
+                 "NOT NULL, alias TEXT NOT NULL, state TEXT NOT NULL, reason TEXT NOT NULL, "
+                 "rx_ts REAL, skewed INTEGER NOT NULL DEFAULT 0, kept_at REAL NOT NULL, "
+                 "PRIMARY KEY (message_id, packet_id, alias))")
+    conn.execute("ALTER TABLE messages ADD COLUMN _x INTEGER")   # any later column is fine
+    conn.commit()
+    conn.close()
+    mid = _send()
+    sent = _sent_ts(mid, 0)
+    first = sent + 700
+    out = _read_out(first, {"moc": dict(_ring(first), window_s=DAY)})
+    assert out.get("heard_error") is None, out.get("heard_error")
+    assert messaging_mod.kept_heard([(mid, PID)])[2] == {mid}

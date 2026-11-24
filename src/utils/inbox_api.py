@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from commands import messaging
 from utils.inbox_heard import JOIN_AFTER_S, KEPT_NOTE, RING_AGED_PREFIX, BoxHeard
+from utils.inbox_heard import judged_in_time as inbox_heard_judged_in_time
 
 logger = logging.getLogger(__name__)
 
@@ -324,9 +325,13 @@ def read_inbox(limit: int = 500) -> Dict[str, Any]:
     heard_error = _attach_heard(threads)
     # hfm #9 witness: sends whose verdict aged out of a box's ring before
     # any read kept it (the "freeze on read" gap, operator 11-23)
+    # r2 MED-1: ONE reader of "judged in time" — the send's own mark, never
+    # the absence of a kept hearing (hearings-only made every not_heard box
+    # look unjudged a day later)
     not_kept = sum(1 for t in threads for m in t["messages"]
-                   if any(str(b.get("reason", "")).startswith(RING_AGED_PREFIX)
-                          for b in (m.get("heard") or {}).get("boxes") or []))
+                   if (m.get("heard") or {}).get("judged_in_time") is False
+                   and any(str(b.get("reason", "")).startswith(RING_AGED_PREFIX)
+                           for b in (m.get("heard") or {}).get("boxes") or []))
     shown = sum(t["count"] for t in threads)
     rx = _rx_coverage()
     unseen = _unseen(rx)
@@ -393,40 +398,47 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
     # never re-judged blind. A store that cannot read them says so; the live
     # judgement still shows.
     try:
-        kept, refused = messaging.kept_heard([(m["id"], m["packet_id"]) for m in sends])
+        kept, refused, judged = messaging.kept_heard([(m["id"], m["packet_id"])
+                                                      for m in sends])
         if refused:
             errors.append(f"{refused} kept heard-by row(s) refused (not a kept hearing)")
     except Exception as e:
         logger.warning("inbox: kept heard-by verdicts unreadable: %s", e)
-        kept = None
+        kept, judged = None, set()
         errors.append(f"kept heard-by verdicts unreadable: {type(e).__name__}: {e}")
-    to_keep = []
+    to_keep, to_mark = [], []
     for m in sends:   # each send guarded on its own: one bad box never breaks the read (r5)
         sent = _epoch(m.get("ts"))
         try:
             frozen = {b["alias"]: BoxHeard(b["alias"], b["state"],
                                            b["reason"] + KEPT_NOTE,
-                                           rx_ts=b["rx_ts"], skewed=b["skewed"])
+                                           rx_ts=b["rx_ts"], skewed=b["skewed"], kept=True)
                       for b in (kept or {}).get(m["id"], [])}
             heard = inbox_legs.heard_from(m["packet_id"], sent if sent is not None
                                           else float("nan"), sections, now=now,
                                           segments=decl.segments,
                                           send_segment=decl.send_segment,
-                                          frozen=frozen)
+                                          frozen=frozen, judged=m["id"] in judged)
             freeze = heard.pop("freeze")
             m["heard"] = heard
-            if freeze and kept is not None:
-                to_keep.append((m["id"], m["packet_id"], [asdict(b) for b in freeze]))
+            if kept is not None:
+                if freeze:
+                    to_keep.append((m["id"], m["packet_id"],
+                                    [{k: v for k, v in asdict(b).items() if k != "kept"}
+                                     for b in freeze]))
+                if (m["id"] not in judged and sent is not None
+                        and inbox_heard_judged_in_time(sent, now)):
+                    to_mark.append((m["id"], m["packet_id"]))
         except Exception as e:
             logger.warning("inbox: heard-by failed for send %s: %s", m.get("id"), e)
             m["heard"] = {"line": HEARD_UNREADABLE}
             errors.append(f"send {m.get('id')}: {type(e).__name__}: {e}")
-    if to_keep:
+    if to_keep or to_mark:
         try:
-            messaging.keep_heard(to_keep, now=now)
+            messaging.keep_heard(to_keep, judged=to_mark, now=now)
         except Exception as e:
             logger.warning("inbox: keeping heard-by verdicts failed: %s", e)
-            errors.append(f"heard-by not kept for {len(to_keep)} send(s): "
+            errors.append(f"heard-by not kept for {len(to_keep or to_mark)} send(s): "
                           f"{type(e).__name__}: {e}")
     contradicted = _declaration_contradictions(sends, decl)
     if contradicted:
@@ -450,7 +462,10 @@ def _declaration_contradictions(sends: List[Dict[str, Any]], decl) -> List[str]:
     for m in sends:
         for b in (m.get("heard") or {}).get("boxes") or []:
             seg = decl.segments.get(b.get("alias"))
-            if b.get("state") == "heard" and not b.get("skewed") and seg and seg != send_seg:
+            # r2 L-A: a KEPT hearing is history — the box may have moved since,
+            # correctly re-declared; only a live hearing contradicts today
+            if (b.get("state") == "heard" and not b.get("skewed") and not b.get("kept")
+                    and seg and seg != send_seg):
                 out.add(b["alias"])
     return sorted(out)
 

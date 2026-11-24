@@ -24,6 +24,7 @@ Usage:
 """
 
 import logging
+import math
 import time
 import sqlite3
 from datetime import datetime
@@ -110,7 +111,10 @@ def _schema_is_current(conn) -> bool:
     try:
         conn.execute("SELECT packet_id FROM messages LIMIT 0")
         conn.execute("SELECT value FROM messages_meta LIMIT 0")
-        conn.execute("SELECT state FROM heard_kept LIMIT 0")
+        # r2 NIT: every column a reader or writer names, not one
+        conn.execute("SELECT message_id, packet_id, alias, state, reason, rx_ts, "
+                     "skewed, kept_at FROM heard_kept LIMIT 0")
+        conn.execute("SELECT message_id, packet_id, judged_at FROM heard_judged LIMIT 0")
     except sqlite3.OperationalError:
         return False
     return True
@@ -255,6 +259,12 @@ def _init_db() -> sqlite3.Connection:
                          "rx_ts REAL, skewed INTEGER NOT NULL DEFAULT 0, "
                          "kept_at REAL NOT NULL, "
                          "PRIMARY KEY (message_id, packet_id, alias))")
+            # r2 MED-1: "a read judged this send while the rings covered it" —
+            # the mark that tells a send judged in time (no hearing kept, by
+            # design) from one no read judged (the on-read gap)
+            conn.execute("CREATE TABLE IF NOT EXISTS heard_judged ("
+                         "message_id INTEGER NOT NULL, packet_id INTEGER NOT NULL, "
+                         "judged_at REAL NOT NULL, PRIMARY KEY (message_id, packet_id))")
             conn.commit()
         except Exception:
             conn.close()  # never leak the fd on a failed migration (#73)
@@ -297,8 +307,9 @@ def _maybe_prune_messages(now: Optional[float] = None) -> None:
                 (f'-{_MESSAGE_RETENTION_DAYS}',),
             )
             deleted = cursor.rowcount
-            conn.execute("DELETE FROM heard_kept WHERE message_id NOT IN "
-                         "(SELECT id FROM messages)")
+            for table in ("heard_kept", "heard_judged"):
+                conn.execute(f"DELETE FROM {table} WHERE message_id NOT IN "
+                             "(SELECT id FROM messages)")
             conn.commit()
             _last_message_prune_ts = now
             if deleted > 0:
@@ -800,7 +811,8 @@ def _keepable_states():
     return FREEZABLE
 
 
-def keep_heard(items: List[tuple], now: Optional[float] = None) -> None:
+def keep_heard(items: List[tuple], judged: List[tuple] = (),
+               now: Optional[float] = None) -> None:
     """Keep heard-by verdicts for ``[(message_id, packet_id, [box dict]), ...]``
     in ONE transaction (r1 L3: one busy wait per read, not one per send).
 
@@ -814,10 +826,12 @@ def keep_heard(items: List[tuple], now: Optional[float] = None) -> None:
            if b.get("state") not in keepable]
     if bad:
         raise ValueError(f"heard_kept refuses state(s) {bad!r}")
+    stamp = time.time() if now is None else now
     rows = [(mid, pid, b["alias"], b["state"], b["reason"], b.get("rx_ts"),
-             int(bool(b.get("skewed"))), time.time() if now is None else now)
+             int(bool(b.get("skewed"))), stamp)
             for mid, pid, boxes in items for b in boxes]
-    if not rows:
+    marks = [(mid, pid, stamp) for mid, pid in judged]
+    if not rows and not marks:
         return
     conn = _init_db()
     try:
@@ -827,13 +841,19 @@ def keep_heard(items: List[tuple], now: Optional[float] = None) -> None:
             "ON CONFLICT (message_id, packet_id, alias) DO UPDATE SET "
             "state = excluded.state, reason = excluded.reason, rx_ts = excluded.rx_ts, "
             "skewed = excluded.skewed, kept_at = excluded.kept_at "
-            "WHERE excluded.skewed < heard_kept.skewed", rows)
+            # r2 L-C: a row the reader refuses never blocks the real hearing
+            "WHERE excluded.skewed < heard_kept.skewed OR heard_kept.state != 'heard' "
+            "OR heard_kept.skewed NOT IN (0, 1) "
+            "OR typeof(heard_kept.rx_ts) NOT IN ('null', 'real', 'integer') "
+            "OR abs(heard_kept.rx_ts) > 1e15", rows)
+        conn.executemany("INSERT OR IGNORE INTO heard_judged (message_id, packet_id, "
+                         "judged_at) VALUES (?, ?, ?)", marks)
         conn.commit()
     finally:
         conn.close()
 
 
-def kept_heard(sends: List[tuple]) -> "tuple[Dict[int, List[Dict[str, Any]]], int]":
+def kept_heard(sends: List[tuple]) -> "tuple[Dict[int, List[Dict[str, Any]]], int, set]":
     """``({message_id: [box dict, ...]}, refused)`` for ``[(message_id,
     packet_id), ...]`` — only rows whose packet id matches. A row no writer
     here can have stored (a state the judge does not keep, a blank alias, a
@@ -841,7 +861,7 @@ def kept_heard(sends: List[tuple]) -> "tuple[Dict[int, List[Dict[str, Any]]], in
     writer refused it, the reader must too — hfm #3, #9). Raises on a store
     error."""
     if not sends:
-        return {}, 0
+        return {}, 0, set()
     keepable = _keepable_states()
     conn = _init_db()
     try:
@@ -851,10 +871,16 @@ def kept_heard(sends: List[tuple]) -> "tuple[Dict[int, List[Dict[str, Any]]], in
             for r in conn.execute(
                     "SELECT alias, state, reason, rx_ts, skewed FROM heard_kept "
                     "WHERE message_id = ? AND packet_id = ? ORDER BY alias", (mid, pid)):
-                rx = r["rx_ts"]
-                if (r["state"] not in keepable or not isinstance(r["alias"], str)
-                        or not r["alias"] or not isinstance(r["reason"], str)
-                        or not (rx is None or isinstance(rx, (int, float)))):
+                rx, sk, alias = r["rx_ts"], r["skewed"], r["alias"]
+                # r2 L-D: only values the judge can produce (finite stamp,
+                # 0/1 skew, a printable alias) — inf broke the JSON reply
+                if (r["state"] not in keepable or not isinstance(alias, str)
+                        or not alias or not alias.isprintable()
+                        or not isinstance(r["reason"], str)
+                        or sk not in (0, 1) or isinstance(sk, bool)
+                        or not (rx is None or (isinstance(rx, (int, float))
+                                               and not isinstance(rx, bool)
+                                               and math.isfinite(rx)))):
                     refused += 1
                     continue
                 out.setdefault(mid, []).append(
@@ -863,7 +889,12 @@ def kept_heard(sends: List[tuple]) -> "tuple[Dict[int, List[Dict[str, Any]]], in
         if refused:
             logger.warning("heard_kept: %d row(s) no writer can have stored were "
                            "left out", refused)
-        return out, refused
+        judged = set()
+        for mid, pid in sends:
+            if conn.execute("SELECT 1 FROM heard_judged WHERE message_id = ? AND "
+                            "packet_id = ?", (mid, pid)).fetchone():
+                judged.add(mid)
+        return out, refused, judged
     finally:
         conn.close()
 
@@ -947,8 +978,9 @@ def clear_messages(older_than_days: int = 30) -> CommandResult:
 
         deleted = cursor.rowcount
         # r1 N1: kept heard-by rows go with the sends they describe
-        conn.execute("DELETE FROM heard_kept WHERE message_id NOT IN "
-                     "(SELECT id FROM messages)")
+        for table in ("heard_kept", "heard_judged"):
+            conn.execute(f"DELETE FROM {table} WHERE message_id NOT IN "
+                         "(SELECT id FROM messages)")
         conn.commit()
         conn.close()
 
