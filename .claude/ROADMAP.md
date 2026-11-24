@@ -160,7 +160,7 @@ product, `--days 7` logged in each handoff (a measure, not a gate; operator 11-1
 
 
 - **BIC-2** [MF][MA] S+F twin→MA — per-leg delivery truth, shown per message, UNKNOWN first-class (= 1.0 gate 3)
-  30-DAY (by 11-24), NARROWED (operator 11-10): `/inbox` broadcast heard-by, UNKNOWN shown, echo-fold fix + unknown-state default (`INBOX-T` F1/F2/F11); never "delivered". A FLEET truth: a one-box stranger reads "cannot see" — confirm the one-box relay-heard state before promising it for 12-04. DMs + bridged legs: design the cross-process ack path first, then a new date. MA after. Slices DONE 11-15..17: provenance 11-17 23:4x. Left: phone accept of cannot_hear + downlink gap (none recorded); one-box relay-heard; DM ack design. Next: operator's pick.
+  30-DAY (by 11-24), NARROWED (operator 11-10): `/inbox` broadcast heard-by, UNKNOWN shown, echo-fold fix + unknown-state default (`INBOX-T` F1/F2/F11); never "delivered". A FLEET truth. DMs + bridged legs: design the cross-process ack path first, then a new date. MA after. Slices DONE 11-15..17: provenance 11-17 23:4x. Phone-accepted: cannot_hear + downlink gap (a). Left: one-box MEASURED SILENT (no heard line; owes "cannot see hearings" before 12-04); DM ack design (frontier). Provenance 11-24.
   Observe before alarming: counters first, then a soak baseline (pass rule: gate 3).
   Counters live MF+MA + the MF-first twin-fix list: provenance § BIC-2 (moved verbatim 2026-11-14, MF012).
   INBOX-2 FOLDED IN (operator 11-14): steps 1-3 (`f97e053f`) wired (heard-by live 11-15). Queue detail: provenance 11-16. Accept on the operator's phone, never on tests alone.
@@ -168,7 +168,7 @@ product, `--days 7` logged in each handoff (a measure, not a gate; operator 11-1
   status: planned
 - **REL-1** [MF] S — a release every month: tag + a changelog a ham can read; each runs the gate-5 virtual drill (brief 42fbS7, 10-27)
   v0.8.0-beta = first GitHub Release 7 days after BR-T closed (11-14, provenance) with no fix to a pre-existing defect (rule 3; 2 `fix:` 11-17 → ~11-24, BELIEVED). Gate-5 drill to END (README only, a message crosses mesh↔RNS).
-- **MAP-H** [MF] S+F — map never draws healthy when blind; H16+H12 done 11-20; H4a r5 undeployed; r6 seam first; H4, CoreScope. `plans/maps_audit_2026_11_06.md`
+- **MAP-H** [MF] S+F — map never draws healthy when blind; H16+H12 done 11-20; H4a r6 seam deployed 11-21 (`e8c82d8d`); next H4, CoreScope. `plans/maps_audit_2026_11_06.md`
   After H12 (red-first) → NEXT with H4 first (operator 11-14).
 - **EVAL-PF** [MF][MA] F — planted-fault benchmark per model, END-graded: the evidence for the harness's second purpose (README "How it's built")
   Grilled 11-13 (30 Q): `plans/eval_pf_grilling_2026_11_13.md`; cases + keys OFF-repo. Grades a fresh session, harness ON vs OFF; +1/0/−1. ACCEPT slice 1: one model, both arms, n=3, case 1 + null = 12 scored rows; every plant pre-checked + restore verified; wrapper log only allowlisted; refusal test in CI; a hand-fed wrong answer scores −1. Order Q29; Fable review by running before the first score. ⚠️ RNS AI-dataset clause.
