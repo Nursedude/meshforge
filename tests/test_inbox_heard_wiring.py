@@ -82,13 +82,55 @@ def test_no_fleet_says_this_box_cannot_see_hearings():
     # not see hearings (an absence unexplained to a stranger, hfm #2/#11).
     # The blindness is SAID per send; it is not a negative ("heard by none")
     # and not a read error (no heard_error — nothing failed).
+    import re
     out, msgs, _ = _read([_row()], None)
     line = msgs[1]["heard"]["line"]
     assert line == inbox_legs.NO_FLEET_LINE
     assert "cannot see hearings" in line
-    assert "none" not in line and "0 of" not in line, "blind is never a count"
+    assert not re.search(r"\d+\s+of\s+\d+|heard by none", line), "blind is never a count"
+    # r1 #3: every non-center FLEET box has no target list too (measured
+    # 11-24: only the center has one) — never word it as "not in a fleet"
+    assert "no target list here" in line and "no fleet" not in line
+    # r1 #2: a handed_off send has no echo — the line asserts none
+    assert "echo" not in line
     assert "summary" not in msgs[1]["heard"] and "boxes" not in msgs[1]["heard"]
     assert "heard_error" not in out
+
+
+def test_no_fleet_still_shows_hearings_the_store_kept():
+    # r1 IMPORTANT: a box that once read the fleet (hearings KEPT for a send)
+    # and later has no target list must not call itself blind about evidence
+    # it holds — the kept hearings show, labelled kept, beside the blindness.
+    sent = inbox_api._epoch("2026-11-15 06:19:18")
+    _, first, _ = _read([_row()], {"kiai": _sec((0x0DAEE001, 287851589, sent + 1))})
+    assert first[1]["heard"]["line"].startswith("heard by kiai")
+    out, msgs, _ = _read([_row()], None)
+    heard = msgs[1]["heard"]
+    assert heard["line"].startswith("heard by kiai (kept from an earlier read)"), heard["line"]
+    assert "no target list here" in heard["line"]
+    assert [b["alias"] for b in heard["boxes"]] == ["kiai"] and heard["boxes"][0]["kept"]
+    assert "heard_error" not in out
+
+
+def test_no_fleet_kept_rows_are_judged_not_assumed():
+    # only HEARINGS may be named "heard by"; a skewed one stays qualified
+    # exactly as on the fleet path (r5: never shown plain)
+    rows = {1: [{"alias": "moc", "state": "heard", "reason": "r", "rx_ts": 1.0, "skewed": True},
+                {"alias": "kiai", "state": "not_heard", "reason": "r", "rx_ts": None,
+                 "skewed": False}]}
+    with patch.object(inbox_api.messaging, "kept_heard", return_value=(rows, 0)):
+        _, msgs, _ = _read([_row()], None)
+    line = msgs[1]["heard"]["line"]
+    assert line.startswith("heard by moc (clock off) (kept from an earlier read)"), line
+    assert "kiai" not in line
+    assert [b["alias"] for b in msgs[1]["heard"]["boxes"]] == ["moc"]
+
+
+def test_no_fleet_with_an_unreadable_kept_store_says_so():
+    with patch.object(inbox_api.messaging, "kept_heard", side_effect=OSError("db locked")):
+        out, msgs, _ = _read([_row()], None)
+    assert msgs[1]["heard"]["line"] == inbox_legs.NO_FLEET_LINE
+    assert "kept heard-by verdicts unreadable" in out["heard_error"]
 
 
 def test_no_fleet_dms_and_received_rows_still_carry_no_heard_line():

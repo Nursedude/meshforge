@@ -362,13 +362,30 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
         for m in sends:
             m["heard"] = {"line": HEARD_UNREADABLE}
         return f"fleet evidence unreadable: {e}"
-    if sections is None:
-        # standalone (no target list): the blindness is SAID on each send
-        # (BIC-2 one-box, 11-24) — nothing failed, so no heard_error
-        for m in sends:
-            m["heard"] = {"line": inbox_legs.NO_FLEET_LINE}
-        return None
     errors = []
+    # BIC-2 11-23: verdicts judged while a box's 24 h ring still covered the
+    # send are KEPT in the store and merged back (inbox_heard.merge_frozen) —
+    # never re-judged blind. A store that cannot read them says so; the live
+    # judgement still shows. Read BEFORE the no-target-list branch (r1 11-24:
+    # a box that lost its list must still show what it kept).
+    try:
+        kept, refused = messaging.kept_heard([(m["id"], m["packet_id"]) for m in sends])
+        if refused:
+            errors.append(f"{refused} kept heard-by row(s) refused (not a kept hearing)")
+    except Exception as e:
+        logger.warning("inbox: kept heard-by verdicts unreadable: %s", e)
+        kept = None
+        errors.append(f"kept heard-by verdicts unreadable: {type(e).__name__}: {e}")
+    if sections is None:
+        # no target list (standalone, or a non-center fleet box): the
+        # blindness is SAID on each send (BIC-2 one-box, 11-24); kept
+        # hearings still show. Nothing failed → no heard_error of its own.
+        for m in sends:
+            hearings = inbox_legs.kept_hearings((kept or {}).get(m["id"], []))
+            line = inbox_legs.kept_only_line(hearings)
+            m["heard"] = ({"line": line, "boxes": hearings} if line
+                          else {"line": inbox_legs.NO_FLEET_LINE})
+        return "; ".join(errors) or None
     # cannot_hear (BIC-2, 11-16): the DECLARED segments. Absent file = inert;
     # an unreadable or wrong one = no segments AND the read says why (never a
     # silent "nothing declared").
@@ -388,18 +405,6 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
     stray = sorted(a for a in decl.segments if a not in sections and a != decl.send_from)
     if stray:
         errors.append(f"declared segments name box(es) not in the fleet list: {', '.join(stray)}")
-    # BIC-2 11-23: verdicts judged while a box's 24 h ring still covered the
-    # send are KEPT in the store and merged back (inbox_heard.merge_frozen) —
-    # never re-judged blind. A store that cannot read them says so; the live
-    # judgement still shows.
-    try:
-        kept, refused = messaging.kept_heard([(m["id"], m["packet_id"]) for m in sends])
-        if refused:
-            errors.append(f"{refused} kept heard-by row(s) refused (not a kept hearing)")
-    except Exception as e:
-        logger.warning("inbox: kept heard-by verdicts unreadable: %s", e)
-        kept = None
-        errors.append(f"kept heard-by verdicts unreadable: {type(e).__name__}: {e}")
     to_keep = []
     for m in sends:   # each send guarded on its own: one bad box never breaks the read (r5)
         sent = _epoch(m.get("ts"))

@@ -30,10 +30,30 @@ from utils import box_truth_center as center
 from utils import inbox_heard
 
 NO_ID_LINE = "heard by: cannot tell (this send has no radio packet id)"
-#: a standalone box (no target list): BLIND, said per send — never "heard by
-#: none", never a count (BIC-2 one-box, measured silent 11-24; hfm #2/#11)
-NO_FLEET_LINE = ("heard by: this box cannot see hearings (no fleet target list — "
-                 "it sees only its own radio's echo)")
+#: a box with no target list: BLIND, said per send — never "heard by none",
+#: never a count (BIC-2 one-box, measured silent 11-24; hfm #2/#11). Worded
+#: for BOTH a standalone box and a non-center fleet member (measured 11-24:
+#: only the center has a list) — never "not in a fleet".
+NO_TARGETS = "it reads no box's rx spool — no target list here"
+NO_FLEET_LINE = f"heard by: this box cannot see hearings ({NO_TARGETS})"
+
+
+def kept_hearings(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    """The kept rows that ARE hearings — judged, not assumed from what the
+    store happens to keep today (``inbox_heard.FREEZABLE`` may grow)."""
+    return sorted((dict(b, kept=True) for b in rows if b.get("state") == "heard"),
+                  key=lambda b: b["alias"])
+
+
+def kept_only_line(hearings: Iterable[Mapping[str, Any]]) -> Optional[str]:
+    """No target list, but the store KEPT hearings for this send (r1: a box
+    that once read the fleet never calls itself blind about evidence it
+    holds). A skewed hearing stays qualified, as on the fleet path (r5).
+    None when there is no hearing to name."""
+    named = [b["alias"] + (" (clock off)" if b.get("skewed") else "") for b in hearings]
+    if not named:
+        return None
+    return f"heard by {', '.join(named)} (kept from an earlier read) · now {NO_TARGETS}"
 
 
 def summarize_results(results: Iterable[inbox_heard.BoxHeard]) -> Dict[str, List[str]]:
