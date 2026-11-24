@@ -79,17 +79,6 @@ MeshForge is a **Mesh Operations Center (MOC)**: one interface over meshes that 
 
 ---
 
-## Development Principles
-
-```
-1. Make it work         ← First priority
-2. Make it reliable     ← Security, testing
-3. Make it maintainable ← Clean code, docs
-4. Make it fast         ← Only when proven necessary
-```
-
----
-
 ## Key Commands
 
 ```bash
@@ -118,27 +107,8 @@ git config core.hooksPath .githooks
 
 **TUI Pattern**: Handler Registry (Protocol + BaseHandler + TUIContext). Each menu action is a self-contained handler in `handlers/` dispatched by `handler_registry.py`.
 
-```
-src/
-├── launcher_tui/      # PRIMARY INTERFACE (TUI)
-│   ├── main.py        # NOC launcher + handler registration
-│   ├── handler_protocol.py  # CommandHandler Protocol + TUIContext + BaseHandler
-│   ├── handler_registry.py  # register/lookup/dispatch
-│   ├── backend.py           # whiptail/dialog abstraction
-│   └── handlers/            # <!--STAT:handlers-->88<!--/STAT--> handlers (sentinel; action
-│                            #   count: SSOT .claude/skills/meshforge/capability_index.md)
-├── commands/          # propagation.py, hamclock.py, base.py
-├── gateway/           # RNS-Meshtastic bridge
-│   ├── rns_bridge.py, gateway_cli.py, meshcore_handler.py
-│   ├── canonical_message.py   # Multi-protocol message format
-│   └── message_routing.py, message_queue.py (SQLite)
-├── monitoring/        # mqtt_subscriber, node_monitor, traffic_inspector, packet_dissectors
-├── plugins/           # eas_alerts, meshing_around, mqtt_bridge
-│                     #   (MeshCore lives in gateway/meshcore_handler.py)
-├── utils/             # rf.py, common.py, service_check.py, coverage_map.py, claude_assistant.py
-├── standalone.py      # Zero-dependency RF tools
-└── __version__.py     # Version + changelog
-```
+`src/launcher_tui/handlers/` holds <!--STAT:handlers-->88<!--/STAT--> handlers (sentinel; action
+count: SSOT `.claude/skills/meshforge/capability_index.md`). MeshCore lives in `gateway/meshcore_handler.py`.
 
 > Full architecture: `.claude/foundations/domain_architecture.md`
 
@@ -159,15 +129,7 @@ src/
 
 ## Deployment Profiles
 
-Profiles: `radio_maps` | `monitor` | `meshcore` | `gateway` | `field` | `full`
-
-```bash
-python3 src/launcher.py --profile gateway   # Select profile
-python3 src/launcher.py                      # Auto-detect (default)
-# Profile saved to ~/.config/meshforge/deployment.json
-```
-
-> Full profile definitions + install commands: `.claude/foundations/deployment_profiles.md`
+> Profile saved to `~/.config/meshforge/deployment.json`. Full profile definitions + install commands: `.claude/foundations/deployment_profiles.md`
 
 ---
 
@@ -175,23 +137,9 @@ python3 src/launcher.py                      # Auto-detect (default)
 
 `utils/service_check.py` — **SINGLE SOURCE OF TRUTH** for systemd operations.
 
-Key imports: `check_service`, `apply_config_and_restart`, `enable_service`, `start_service`, `stop_service`, `_sudo_cmd`, `_sudo_write`
-
 **Privilege Separation**:
 - **Viewer Mode** (default, no sudo): Monitoring, RF calcs, API data
 - **Admin Mode** (sudo): Service control, `/etc/` config, hardware
-
----
-
-## Key Modules
-
-| Module | API |
-|--------|-----|
-| `utils/diagnostic_engine.py` | `diagnose(symptom, category, severity)` |
-| `utils/knowledge_base.py` | `get_knowledge_base().query("topic")` |
-| `utils/claude_assistant.py` | AI assistant (Standalone + PRO tiers) |
-| `utils/coverage_map.py` | Folium coverage map generator |
-| `commands/propagation.py` | Space weather (NOAA primary) |
 
 ---
 
