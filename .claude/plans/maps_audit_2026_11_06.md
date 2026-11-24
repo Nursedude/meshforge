@@ -276,3 +276,14 @@ export under `~/.cache/meshforge-review/`.
   props.last_seen || 'Unknown'`, formatted only when `last_heard` exists). Seen live under a status
   line saying "last 78 d ago". Fix: a federated marker's row = THIS radio's `heard_here_at` as an
   age, else "not heard by this radio"; never a peer write time, never a raw epoch.
+
+## H4 survey — `last_heard or 0` consumers (2026-11-24, READ, no code)
+
+Every server reader of `last_heard` already treats `<= 0` as unknown: the page (`web/node_map.html`
+`ageOf`: `n <= 0 → null → 'Unknown'`), `_is_node_online` (`_map_collector_config.py:251`),
+`cross_protocol_collapse._plausible_instant`, `node_history` (gates `0 < upstream`), the merge's
+"fresher" compare. ONE exception: `_map_collector_trackers._too_old` (`now - 0 > window` → DROPS a
+node whose age is unknown, against its own comment "unknown age is held") — its producer
+`node_tracker.to_geojson:964` emits None, so BELIEVED unreachable today. → H4's live harm BELIEVED
+nil; the cheapest real step is `_too_old` guarding `> 0` itself (red-first), NOT a 29-file
+`or 0`→None migration. Upgrade to MEASURED: count `last_heard == 0` features per source on a live map.
