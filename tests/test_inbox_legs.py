@@ -6,7 +6,7 @@ fresh spool (``box_truth_center.read_spool``) at the edge and hands the
 renders design D4's words. Pinned (design 2026-11-07, landscape §D step 2):
   * a listed box whose spool is absent/stale reads ``unobservable`` — never
     left out, never "not heard";
-  * no target list (a standalone box) → no line at all (unchanged page);
+  * no target list (a standalone box) → None here; the inbox read says NO_FLEET_LINE;
   * the word "delivered" never appears.
 Ambient state is pinned: every test passes its own targets file + spool dir.
 """

@@ -344,7 +344,7 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
     """BIC-2 step 3 (INBOX-T F2): every outbound BROADCAST send with a radio
     packet id carries ``heard`` — the fleet's spools judged once for the
     whole read (``inbox_legs``). DMs carry none (their truth is the ack path,
-    not hearings); a box with no fleet carries none (unchanged page). A
+    not hearings); a box with no fleet says it cannot see hearings. A
     failure reading the evidence never 503s the inbox: each send says the
     fleet is unobservable, and the read returns why (hfm #9 witness)."""
     from utils import inbox_legs
@@ -363,6 +363,10 @@ def _attach_heard(threads: List[Dict[str, Any]]) -> Optional[str]:
             m["heard"] = {"line": HEARD_UNREADABLE}
         return f"fleet evidence unreadable: {e}"
     if sections is None:
+        # standalone (no target list): the blindness is SAID on each send
+        # (BIC-2 one-box, 11-24) — nothing failed, so no heard_error
+        for m in sends:
+            m["heard"] = {"line": inbox_legs.NO_FLEET_LINE}
         return None
     errors = []
     # cannot_hear (BIC-2, 11-16): the DECLARED segments. Absent file = inert;

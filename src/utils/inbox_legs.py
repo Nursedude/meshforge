@@ -12,8 +12,9 @@ Honesty rules kept here (honest_failure_modes #1, #2):
   * a LISTED box whose spool is absent, stale or carries no ``rx_heard`` is
     passed as None → ``unobservable``; it is never dropped from the count and
     never read as "not heard";
-  * no target list at all (a standalone box, no fleet) → ``None``: the page
-    keeps its single-box text instead of claiming a fleet it does not have;
+  * no target list at all (a standalone box, no fleet) → ``None``: never a
+    fleet it does not have; the inbox read turns it into ``NO_FLEET_LINE``
+    (blind, said — not silence, not "heard by none");
   * the words are "heard", never "delivered" — a hearing proves a radio
     decoded the packet, not that a person read it.
 Segments (``cannot_hear``) are passed only when declared; undeclared is never
@@ -29,6 +30,10 @@ from utils import box_truth_center as center
 from utils import inbox_heard
 
 NO_ID_LINE = "heard by: cannot tell (this send has no radio packet id)"
+#: a standalone box (no target list): BLIND, said per send — never "heard by
+#: none", never a count (BIC-2 one-box, measured silent 11-24; hfm #2/#11)
+NO_FLEET_LINE = ("heard by: this box cannot see hearings (no fleet target list — "
+                 "it sees only its own radio's echo)")
 
 
 def summarize_results(results: Iterable[inbox_heard.BoxHeard]) -> Dict[str, List[str]]:

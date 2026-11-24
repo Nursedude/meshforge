@@ -4,7 +4,8 @@ INBOX-T F2: steps 1-3 of INBOX-2 had NO caller — "a fleet-heard post still
 reads 'unconfirmed' forever". Pinned here:
   * every outbound BROADCAST send with a packet id carries ``heard`` (the
     D4 line + summary) — the fleet's spools are read ONCE per inbox read;
-  * a box with no fleet (no target list) carries no ``heard`` at all;
+  * a box with no fleet (no target list) says it cannot see hearings — one
+    line per broadcast send, never a count, never an error;
   * fleet evidence that raises never 503s the inbox — the send says the
     fleet is unobservable, and the read says why (hfm #9 witness);
   * DMs and received rows never carry a broadcast heard-by line;
@@ -75,9 +76,26 @@ def test_a_broadcast_send_carries_the_heard_line_and_spools_are_read_once():
     assert msgs[2]["heard"]["line"].startswith("heard by none")
 
 
-def test_no_fleet_means_no_heard_field():
+def test_no_fleet_says_this_box_cannot_see_hearings():
+    # BIC-2 one-box (measured 11-24): no target list used to mean NO heard
+    # field — the page showed only "radio took it" and never said it could
+    # not see hearings (an absence unexplained to a stranger, hfm #2/#11).
+    # The blindness is SAID per send; it is not a negative ("heard by none")
+    # and not a read error (no heard_error — nothing failed).
     out, msgs, _ = _read([_row()], None)
-    assert "heard" not in msgs[1]
+    line = msgs[1]["heard"]["line"]
+    assert line == inbox_legs.NO_FLEET_LINE
+    assert "cannot see hearings" in line
+    assert "none" not in line and "0 of" not in line, "blind is never a count"
+    assert "summary" not in msgs[1]["heard"] and "boxes" not in msgs[1]["heard"]
+    assert "heard_error" not in out
+
+
+def test_no_fleet_dms_and_received_rows_still_carry_no_heard_line():
+    rows = [_row(id=1, to_id="!a1b2c3d4", is_dm=True),
+            _row(id=2, from_id="!0000beef", packet_id=222)]
+    out, msgs, _ = _read(rows, None)
+    assert "heard" not in msgs[1] and "heard" not in msgs[2]
 
 
 def test_dms_and_received_rows_carry_no_broadcast_heard_line():
