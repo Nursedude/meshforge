@@ -414,14 +414,32 @@ def send_message(
         conn = _init_db()
         cursor = conn.cursor()
 
+        # The index the DIRECT path transmits on (send_dm: 0; send_broadcast:
+        # ``channel if channel > 0 else 1``, below). A row says where its
+        # packet left, so the echo — which carries the wire index — can pair
+        # with it; a gateway send overwrites it with its own on success.
+        is_dm_dest = bool(destination and destination != '!ffffffff')
+        direct_channel = (0 if is_dm_dest else (channel if channel > 0 else 1)) \
+            if network == "meshtastic" else channel
+        row_ids = []
         for chunk in chunks:
             cursor.execute('''
                 INSERT INTO messages (network, from_id, to_id, content, channel, is_dm, delivered)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (network, "local", destination, chunk, channel, destination is not None, False))
+            ''', (network, "local", destination, chunk, direct_channel,
+                  is_dm_dest, False))
+            row_ids.append(cursor.lastrowid)
 
         conn.commit()
         message_id = cursor.lastrowid
+        # per-chunk outcome, recorded the moment a chunk LEAVES, whatever
+        # happens to the chunks after it: row id -> (wire channel, radio
+        # packet id or None). Every chunk that left is marked delivered — not
+        # only the last (F12), and not only when the whole send succeeded
+        # (review r1: a refused chunk 3 erased chunks 1-2's ids). A later
+        # path that re-airs a chunk overwrites its entry (pre-existing: the
+        # direct fallback re-sends from chunk 1 — recorded, not fixed here).
+        aired = {}
 
         # Actually send the message
         # Priority: 1) Gateway bridge (if running) 2) Direct meshtastic CLI
@@ -441,11 +459,12 @@ def send_message(
             if gateway_available:
                 # Use gateway bridge
                 try:
-                    for chunk in chunks:
+                    for row_id, chunk in zip(row_ids, chunks):
                         result = cmd_gateway.send_to_meshtastic(chunk, destination, channel)
                         if not result.success:
                             send_error = result.message
                             break
+                        aired[row_id] = (channel, None)   # gateway returns no id
                     else:
                         send_success = True
                 except Exception as e:
@@ -457,9 +476,9 @@ def send_message(
             # Fallback to direct meshtastic CLI if gateway failed
             if not send_success:
                 try:
-                    for chunk in chunks:
+                    for row_id, chunk in zip(row_ids, chunks):
                         # Use send_dm for direct messages, send_broadcast for channels
-                        if destination and destination != '!ffffffff':
+                        if is_dm_dest:
                             result = cmd_meshtastic.send_dm(
                                 text=chunk,
                                 dest=destination,
@@ -469,12 +488,15 @@ def send_message(
                         else:
                             result = cmd_meshtastic.send_broadcast(
                                 text=chunk,
-                                channel_index=channel if channel > 0 else 1,
+                                channel_index=direct_channel,
                                 hop_limit=7 if high_reliability else 3
                             )
                         if not result.success:
                             send_error = result.message
                             break
+                        data = result.data if isinstance(result.data, dict) else {}
+                        aired[row_id] = (direct_channel,
+                                         _valid_packet_id(data.get('packet_id')))
                     else:
                         send_success = True
                         send_error = None  # Clear any previous error
@@ -494,12 +516,13 @@ def send_message(
                             f"Invalid RNS destination: {destination}\n"
                             "Must be a hex hash (e.g. a1b2c3d4e5f6...)"
                         )
-                for chunk in chunks:
+                for row_id, chunk in zip(row_ids, chunks):
                     dest_bytes = bytes.fromhex(destination.lstrip('!')) if destination else None
                     result = cmd_gateway.send_to_rns(chunk, dest_bytes)
                     if not result.success:
                         send_error = result.message
                         break
+                    aired[row_id] = (channel, None)
                 else:
                     send_success = True
             except Exception as e:
@@ -507,9 +530,11 @@ def send_message(
                 logger.error(f"Failed to send via RNS: {e}")
 
         # Update delivery status
-        if send_success:
+        if aired:
             cursor = conn.cursor()
-            cursor.execute('UPDATE messages SET delivered = 1 WHERE id = ?', (message_id,))
+            for row_id, (wire_channel, pid) in aired.items():
+                cursor.execute('UPDATE messages SET delivered = 1, channel = ?, '
+                               'packet_id = ? WHERE id = ?', (wire_channel, pid, row_id))
             conn.commit()
 
         conn.close()

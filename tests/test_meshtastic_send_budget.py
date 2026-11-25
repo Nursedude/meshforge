@@ -124,6 +124,8 @@ def test_cli_refuses_oversize_before_either_send_path():
     from commands import meshtastic as cmd
     with patch("gateway.meshtastic_protobuf_client.send_text_direct",
                side_effect=AssertionError("must not hand it to the radio")), \
+         patch("gateway.meshtastic_protobuf_client.send_text_direct_with_id",
+               side_effect=AssertionError("must not hand it to the radio")), \
          patch.object(cmd, "_run_command",
                       side_effect=AssertionError("must not fall back to the CLI")):
         res = cmd.send_message("x" * (DM_LIMIT + 1), dest="!11223344")
@@ -225,8 +227,9 @@ def test_cli_bare_hex_broadcast_gets_the_broadcast_limit():
     """Bare-hex 'ffffffff' is parsed as broadcast by the send path — the guard must
     read it the same way, not as a DM."""
     from commands import meshtastic as cmd
-    with patch("gateway.meshtastic_protobuf_client.send_text_direct",
-               return_value=True) as sd:
+    # the direct path calls the id-returning sender (TUI sends record the id)
+    with patch("gateway.meshtastic_protobuf_client.send_text_direct_with_id",
+               return_value=0x1234) as sd:
         res = cmd.send_message("x" * (DM_LIMIT + 5), dest="ffffffff")
     assert res.success, res.message
     sd.assert_called_once()

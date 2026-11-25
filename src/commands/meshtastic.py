@@ -757,15 +757,19 @@ def send_message(
     # no fromradio reads. This prevents "waiting for delivery" hangs on
     # the meshtasticd web client at :9443.
     try:
-        from gateway.meshtastic_protobuf_client import send_text_direct
+        from gateway.meshtastic_protobuf_client import send_text_direct_with_id
 
-        if send_text_direct(
+        # The id-returning sender (not the bool wrapper): the radio's packet
+        # id is the wire fact a caller records so /inbox can fold this send's
+        # echo onto it (deferred tui-send-records-radio-packet-id, BIC-2).
+        packet_id = send_text_direct_with_id(
             text=text,
             destination=dest_num,
             channel_index=channel_index,
             want_ack=want_ack,
             hop_limit=hop_limit,
-        ):
+        )
+        if packet_id is not None:
             is_dm = dest and dest != '!ffffffff'
             routing_note = (
                 'DM: uses next-hop routing (flood then direct)' if is_dm
@@ -779,6 +783,7 @@ def send_message(
                     'channel': channel_index,
                     'routing_note': routing_note,
                     'tx_method': 'http_protobuf',
+                    'packet_id': packet_id,
                 },
             )
     except Exception as e:
