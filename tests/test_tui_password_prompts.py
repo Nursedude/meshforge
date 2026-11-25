@@ -731,3 +731,124 @@ def test_device_backup_menu_header_says_it():
     from handlers.device_backup import BackupHandler
     text = _first_menu_text(BackupHandler(), lambda h: h._device_backup_menu())
     assert ARGV_CHANNEL_KEY_POSTURE in text
+
+
+# ---- Fable (channel-key posture) pre_existing CONFIRMED: a restore whose
+# channel-URL apply times out put the whole URL (every channel key) in the
+# ERROR log and the Restore Failed box via str(TimeoutExpired).
+CHAN_URL = "https://meshtastic.org/e/#SENTINELchannelKEYS"
+
+
+def _restore(tmp_path, caplog, run):
+    from commands import device_backup as db
+    (tmp_path / "b1.json").write_text("{}")
+    fake = MagicMock(channels=[{"url": CHAN_URL}], owner={})
+    with patch.object(db, "get_backup_dir", return_value=tmp_path), \
+            patch.object(db.DeviceBackup, "from_dict", return_value=fake), \
+            patch.object(db, "find_meshtastic_cli", return_value="/x/meshtastic"), \
+            patch.object(db.subprocess, "run", side_effect=run), \
+            caplog.at_level("DEBUG"):
+        return db.restore_backup("b1", restore_config=False)
+
+
+def test_a_restore_timeout_never_shows_or_logs_the_channel_url(tmp_path, caplog):
+    def run(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 30))
+    result = _restore(tmp_path, caplog, run)
+    assert result["success"] is False
+    assert "SENTINEL" not in (result["error"] or "") and "SENTINEL" not in caplog.text
+    assert "timed out" in result["error"]
+
+
+def test_a_failed_url_apply_logs_its_stderr_scrubbed(tmp_path, caplog):
+    def run(cmd, **kw):
+        return MagicMock(returncode=1, stderr=f"Error: bad url {CHAN_URL}")
+    _restore(tmp_path, caplog, run)
+    assert "SENTINEL" not in caplog.text and "<channel URL>" in caplog.text
+
+
+def test_scrub_secret_label():
+    assert scrub_secret("x KEY y", "KEY", label="<channel URL>") == "x <channel URL> y"
+
+
+# ---- Fable r1 (restore fix) -------------------------------------------------
+def test_scrub_secret_skips_non_strings_and_scrubs_longest_first():
+    """IMPORTANT: a corrupt backup's int/list url crashed the error path;
+    nit: a prefix secret left the longer one's tail."""
+    assert scrub_secret("v=5", 5, [1], None, True) == "v=5"
+    assert scrub_secret("k=ABCDEF", "ABC", "ABCDEF", label="<u>") == "k=<u>"
+
+
+def _restore_with(tmp_path, caplog, channels, run):
+    from commands import device_backup as db
+    (tmp_path / "b1.json").write_text("{}")
+    fake = MagicMock(channels=channels, owner={})
+    with patch.object(db, "get_backup_dir", return_value=tmp_path), \
+            patch.object(db.DeviceBackup, "from_dict", return_value=fake), \
+            patch.object(db, "find_meshtastic_cli", return_value="/x/meshtastic"), \
+            patch.object(db.subprocess, "run", side_effect=run), \
+            caplog.at_level("DEBUG"):
+        return db.restore_backup("b1", restore_config=False)
+
+
+def test_a_non_string_url_returns_an_error_dict_never_raises(tmp_path, caplog):
+    def run(cmd, **kw):
+        raise TypeError(f"bad argv {cmd!r}")
+    result = _restore_with(tmp_path, caplog, [{"url": CHAN_URL}, {"url": [1, 2]}], run)
+    assert isinstance(result, dict) and result["success"] is False
+    assert "SENTINEL" not in result["error"] and "SENTINEL" not in caplog.text
+
+
+def test_a_generic_error_carrying_argv_is_scrubbed(tmp_path, caplog):
+    """r1: the generic-except scrub was pinned by no test."""
+    def run(cmd, **kw):
+        raise RuntimeError(repr(cmd))
+    result = _restore_with(tmp_path, caplog, [{"url": CHAN_URL}], run)
+    assert "SENTINEL" not in result["error"] and "<channel URL>" in result["error"]
+    assert "SENTINEL" not in caplog.text
+
+
+def test_a_corrupt_backup_file_returns_an_error_dict(tmp_path, caplog):
+    """r1: `backup = None` before the try was unpinned (UnboundLocalError)."""
+    from commands import device_backup as db
+    (tmp_path / "b1.json").write_text("{not json")
+    with patch.object(db, "get_backup_dir", return_value=tmp_path), \
+            patch.object(db, "find_meshtastic_cli", return_value="/x/meshtastic"):
+        result = db.restore_backup("b1")
+    assert isinstance(result, dict) and result["success"] is False and result["error"]
+
+
+@pytest.mark.parametrize("channels", [123, True, "abc", [1, 2], {"url": "x"}],
+                         ids=["int", "bool", "str", "list-of-int", "dict"])
+def test_a_corrupt_channels_container_returns_an_error_dict(tmp_path, caplog, channels):
+    """Fable r2 IMPORTANT (CONFIRMED): the error path iterated channels
+    unguarded — `channels: 123` made the HANDLER raise (HEAD returned a dict).
+    list-of-int pins the per-item dict guard (r2 nit)."""
+    def run(cmd, **kw):
+        raise RuntimeError(repr(cmd))
+    result = _restore_with(tmp_path, caplog, channels, run)
+    assert isinstance(result, dict) and result["success"] is False
+
+
+def test_restore_timeout_message_names_the_real_window(tmp_path, caplog):
+    """r2 nits: the constant patched (so a hardcoded 30 fails), the owner
+    calls exercised, and the FULL fixed message asserted (the dedicated
+    TimeoutExpired branch, not the generic scrub)."""
+    from commands import device_backup as db
+    (tmp_path / "b1.json").write_text("{}")
+    fake = MagicMock(channels=[{"url": CHAN_URL}], owner={"longName": "L", "shortName": "S"})
+    got = []
+
+    def run(cmd, **kw):
+        got.append(kw["timeout"])
+        if len(got) == 3:
+            raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+        return MagicMock(returncode=0, stderr="")
+    with patch.object(db, "_RESTORE_CLI_TIMEOUT_S", 7), \
+            patch.object(db, "get_backup_dir", return_value=tmp_path), \
+            patch.object(db.DeviceBackup, "from_dict", return_value=fake), \
+            patch.object(db, "find_meshtastic_cli", return_value="/x/meshtastic"), \
+            patch.object(db.subprocess, "run", side_effect=run):
+        result = db.restore_backup("b1")
+    assert got == [7, 7, 7]
+    assert result["error"] == "A meshtastic command timed out after 7 s (radio not answering?)"

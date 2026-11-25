@@ -36,14 +36,17 @@ def is_secret_key(key: object) -> bool:
     return bool(_SECRET_KEY.search(str(key)))
 
 
-def scrub_secret(text: Optional[str], *secrets: Optional[str]) -> str:
-    """``text`` with every non-empty known secret replaced by ``<password>``.
+def scrub_secret(text: Optional[str], *secrets: Optional[str],
+                 label: str = "<password>") -> str:
+    """``text`` with every non-empty known secret replaced by ``label``.
     A plain substring replace: a short password may garble unrelated text —
     the safe way to fail (review r1 nit, recorded)."""
     out = text or ""
-    for sec in secrets:
-        if sec:
-            out = out.replace(sec, "<password>")
+    # only non-empty STRINGS (a corrupt backup's int/list "url" crashed the
+    # error path that called this — Fable 11-24); LONGEST first, so a secret
+    # that is a prefix of another never leaves the longer one's tail
+    for sec in sorted((s for s in secrets if isinstance(s, str) and s), key=len, reverse=True):
+        out = out.replace(sec, label)
     return out
 
 

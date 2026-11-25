@@ -20,6 +20,7 @@ from dataclasses import dataclass, asdict
 from utils.backup_paths import reserve_backup_path
 from utils.paths import get_real_user_home
 from utils.cli import find_meshtastic_cli
+from utils.secret_scrub import scrub_secret
 from utils.safe_import import safe_import
 
 _yaml, _HAS_YAML = safe_import('yaml')
@@ -273,6 +274,20 @@ def create_backup(
     return result
 
 
+def _channel_urls(backup) -> List[str]:
+    """The backup's channel URLs for scrubbing an error — NEVER raises (it
+    runs inside the error path: a corrupt `channels: 123` made the handler
+    itself raise, Fable r2 11-24)."""
+    chans = getattr(backup, 'channels', None)
+    if not isinstance(chans, list):
+        return []
+    return [c.get('url') for c in chans if isinstance(c, dict)]
+
+
+#: ONE number for each restore CLI call's timeout= AND its timeout message (hfm #5)
+_RESTORE_CLI_TIMEOUT_S = 30
+
+
 def restore_backup(
     backup_id: str,
     connection: str = "localhost",
@@ -301,6 +316,7 @@ def restore_backup(
         'error': None,
         'dry_run': dry_run,
     }
+    backup = None   # read by the error path's scrub (its channel URLs)
 
     try:
         # Find backup file
@@ -354,12 +370,14 @@ def restore_backup(
                     url = channel['url']
                     cmd_result = subprocess.run(
                         [cli_path] + conn_args + ['--seturl', url],
-                        capture_output=True, text=True, timeout=30
+                        capture_output=True, text=True, timeout=_RESTORE_CLI_TIMEOUT_S
                     )
                     if cmd_result.returncode == 0:
                         result['restored_items'].append(f"Restored channel URL")
                     else:
-                        logger.warning(f"Channel restore warning: {cmd_result.stderr}")
+                        # the URL encodes every channel key (Fable 11-24)
+                        logger.warning("Channel restore warning: %s", scrub_secret(
+                            cmd_result.stderr, url, label="<channel URL>"))
 
         # Restore owner info
         if restore_config and backup.owner:
@@ -369,7 +387,7 @@ def restore_backup(
             if long_name:
                 cmd_result = subprocess.run(
                     [cli_path] + conn_args + ['--set-owner', long_name],
-                    capture_output=True, text=True, timeout=30
+                    capture_output=True, text=True, timeout=_RESTORE_CLI_TIMEOUT_S
                 )
                 if cmd_result.returncode == 0:
                     result['restored_items'].append(f"Restored owner: {long_name}")
@@ -377,7 +395,7 @@ def restore_backup(
             if short_name:
                 cmd_result = subprocess.run(
                     [cli_path] + conn_args + ['--set-owner-short', short_name],
-                    capture_output=True, text=True, timeout=30
+                    capture_output=True, text=True, timeout=_RESTORE_CLI_TIMEOUT_S
                 )
                 if cmd_result.returncode == 0:
                     result['restored_items'].append(f"Restored short name: {short_name}")
@@ -391,9 +409,15 @@ def restore_backup(
             result['error'] = "meshtastic CLI not found"
         else:
             result['error'] = f"Backup file not found: {e}"
+    except subprocess.TimeoutExpired:
+        # never str(e): TimeoutExpired embeds the argv — a channel URL carries
+        # every channel key (Fable 11-24, CONFIRMED: log + Restore Failed box)
+        result['error'] = (f"A meshtastic command timed out after {_RESTORE_CLI_TIMEOUT_S} s "
+                           f"(radio not answering?)")
+        logger.error("Restore error: %s", result['error'])
     except Exception as e:
-        result['error'] = str(e)
-        logger.error(f"Restore error: {e}")
+        result['error'] = scrub_secret(str(e), *_channel_urls(backup), label="<channel URL>")
+        logger.error("Restore error: %s", result['error'])
 
     return result
 
