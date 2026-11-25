@@ -29,6 +29,7 @@ from dataclasses import dataclass, field, asdict, replace
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List
+from utils.secret_scrub import scrub_secret
 
 from utils.mqtt_defaults import (
     MESHTASTIC_PUBLIC_BROKER,
@@ -748,7 +749,9 @@ def install_mosquitto_config(profile: BrokerProfile) -> Tuple[bool, str]:
                 os.chmod(str(passwd_path), 0o640)
             else:
                 messages.append(
-                    f"Warning: mosquitto_passwd failed: {result.stderr.strip()}"
+                    # its usage/error text can echo its argv (review r1)
+                    f"Warning: mosquitto_passwd failed: "
+                    f"{scrub_secret(result.stderr.strip(), profile.password)}"
                 )
 
         # Write ACL file if enabled

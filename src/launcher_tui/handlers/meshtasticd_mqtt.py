@@ -12,10 +12,15 @@ import logging
 import subprocess
 
 from handler_protocol import BaseHandler
-from backend import blank_secret, clear_screen
+from backend import ARGV_SECRET_POSTURE, blank_secret, clear_screen
+from utils.secret_scrub import redact_password_lines, scrub_secret
 logger = logging.getLogger(__name__)
 
 from utils.broker_profiles import get_active_profile as _get_active_profile
+
+
+#: ONE number for the CLI's timeout= AND the timeout message it shows (hfm #5)
+_CREDS_CLI_TIMEOUT_S = 15
 
 
 class MeshtasticdDeviceMQTTHandler(BaseHandler):
@@ -52,7 +57,8 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
             choice = self.ctx.dialog.menu(
                 "MQTT Device Config",
                 "Configure radio MQTT uplink/downlink:\n\n"
-                "This sends mesh traffic to an MQTT broker.",
+                "This sends mesh traffic to an MQTT broker.\n\n"
+                + ARGV_SECRET_POSTURE,   # the one posture line (operator 11-24)
                 choices
             )
 
@@ -87,7 +93,8 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
                 capture_output=True, text=True, timeout=15
             )
             if result.returncode == 0:
-                print(result.stdout.strip() or "(no output)")
+                # --get mqtt prints the radio's stored password (review r1)
+                print(redact_password_lines(result.stdout.strip()) or "(no output)")
             else:
                 print("\nFailed to get MQTT settings.")
                 print("Is meshtasticd running?")
@@ -220,8 +227,8 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
         if password is None:
             return
         password = blank_secret(password)   # blank/whitespace = none
-        # Residual (review r1, pre_existing): the CLI takes the password in
-        # argv, visible to `ps` for up to 15 s — deferred ledger row.
+        # The CLI takes the password in argv (no stdin form): SAID once, in this
+        # menu's header (ARGV_SECRET_POSTURE, operator 11-24).
 
         cli = self.ctx.get_meshtastic_cli()
         clear_screen()
@@ -234,7 +241,8 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
                 cmd.extend(['--set', 'mqtt.password', password])
 
             if len(cmd) > 3:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                result = subprocess.run(cmd, capture_output=True, text=True,
+                                        timeout=_CREDS_CLI_TIMEOUT_S)
                 if result.returncode == 0:
                     print("\nMQTT credentials updated.")
                     from utils.device_config_store import save_device_settings
@@ -258,11 +266,15 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
                 else:
                     print("\nCommand failed.")
                     if result.stderr:
-                        print(result.stderr.strip()[:500])
+                        print(scrub_secret(result.stderr.strip(), password)[:500])
             else:
                 print("No credentials to set.")
+        except subprocess.TimeoutExpired:
+            # never str(e): TimeoutExpired embeds the whole argv, password
+            # included (review r2, CONFIRMED)
+            print(f"\nTimed out after {_CREDS_CLI_TIMEOUT_S} s — the radio did not answer.")
         except Exception as e:
-            print(f"\nError: {e}")
+            print(f"\nError: {scrub_secret(str(e), password)}")   # never a raw argv (r1)
         self.ctx.wait_for_enter()
 
     def _mqtt_set_topic(self):

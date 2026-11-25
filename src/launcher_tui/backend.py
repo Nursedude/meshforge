@@ -60,6 +60,16 @@ def blank_secret(typed: Optional[str]) -> Optional[str]:
     return typed
 
 
+#: ONE posture line (operator 11-24: "one posture line", single operator on
+#: every box). Shown in the HEADER of each menu where an MQTT password is set
+#: or used — menu text grows to fit, so it cannot be clipped, and every flow
+#: under those menus is covered without listing it (3 review rounds of
+#: per-site notes each found another silent site).
+ARGV_SECRET_POSTURE = (
+    "Passwords used here are passed to meshtastic / mosquitto tools on their "
+    "command line; ps on this box can read them while those run.")
+
+
 def _is_tool_error(code: int, output: str) -> bool:
     """True when exit 255 is the TOOL's own error, not the operator's Escape.
 

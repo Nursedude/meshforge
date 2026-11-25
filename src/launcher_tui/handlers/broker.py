@@ -12,10 +12,12 @@ config access.
 import logging
 import os
 import subprocess
-from backend import blank_secret
+from backend import ARGV_SECRET_POSTURE, blank_secret
+
 from typing import Optional
 
 from handler_protocol import BaseHandler
+from utils.secret_scrub import scrub_secret
 from utils.safe_import import safe_import
 
 logger = logging.getLogger(__name__)
@@ -38,6 +40,10 @@ logger = logging.getLogger(__name__)
     'get_meshtastic_mqtt_setup_commands', 'profile_store_status',
     'reset_unreadable_profile_store', 'DEFAULTS_WRITE_FAILED',
 )
+
+#: ONE number each for a child's timeout= AND the timeout message it shows (hfm #5)
+_MOSQ_PUB_TIMEOUT_S = 10
+_APPLY_CLI_TIMEOUT_S = 60
 
 
 class BrokerHandler(BaseHandler):
@@ -109,6 +115,7 @@ class BrokerHandler(BaseHandler):
                 header = note + "\n\n" + header
             choices.append(("back", "Back"))
 
+            header += "\n\n" + ARGV_SECRET_POSTURE   # the one posture line (operator 11-24)
             choice = self.ctx.dialog.menu("MQTT Broker Manager", header, choices)
 
             if choice is None or choice == "back":
@@ -888,7 +895,8 @@ class BrokerHandler(BaseHandler):
             if active.password:
                 cmd.extend(["-P", active.password])
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    timeout=_MOSQ_PUB_TIMEOUT_S)
 
             if result.returncode == 0:
                 self.ctx.dialog.msgbox(
@@ -900,7 +908,7 @@ class BrokerHandler(BaseHandler):
                 self.ctx.dialog.msgbox(
                     "Connection Failed",
                     f"Could not connect to {active.host}:{active.port}\n\n"
-                    f"Error: {result.stderr.strip()}\n\n"
+                    f"Error: {scrub_secret(result.stderr.strip(), active.password)[:300]}\n\n"
                     "Check:\n"
                     "  1. Mosquitto is running\n"
                     "  2. Credentials are correct\n"
@@ -917,7 +925,8 @@ class BrokerHandler(BaseHandler):
         except subprocess.TimeoutExpired:
             self.ctx.dialog.msgbox(
                 "Connection Timeout",
-                f"Connection to {active.host}:{active.port} timed out."
+                f"Connection to {active.host}:{active.port} timed out "
+                f"after {_MOSQ_PUB_TIMEOUT_S} s."
             )
 
     def _no_active_text(self) -> str:
@@ -1092,13 +1101,22 @@ class BrokerHandler(BaseHandler):
                 full = [cli] + list(cmd[1:])
                 try:
                     r = subprocess.run(full, capture_output=True, text=True,
-                                       timeout=60)
-                except (subprocess.SubprocessError, OSError) as e:
+                                       timeout=_APPLY_CLI_TIMEOUT_S)
+                except subprocess.TimeoutExpired:
+                    # never str(e): TimeoutExpired embeds the whole argv,
+                    # password included (r2, CONFIRMED)
+                    return (False, f"Radio command timed out after "
+                                   f"{_APPLY_CLI_TIMEOUT_S} s (the radio did not answer).")
+                except subprocess.SubprocessError as e:
+                    return (False, f"Radio command failed to run: {type(e).__name__}")
+                except OSError as e:
                     return (False, f"Radio command failed to run: {e}")
                 if r.returncode != 0:
-                    detail = (r.stderr or r.stdout or "").strip()[:200]
+                    # the CLI echoes "Set mqtt.password to <value>" (r3)
+                    detail = scrub_secret((r.stderr or r.stdout or "").strip(),
+                                          profile.password)[:200]
                     return (False,
-                            f"Radio rejected: {' '.join(cmd[3:6])}…\n{detail}")
+                            f"Radio rejected: {scrub_secret(' '.join(cmd[3:6]), profile.password)}…\n{detail}")
             return (True, "Radio MQTT settings applied — the radio will "
                           "connect to the broker over WiFi.")
 

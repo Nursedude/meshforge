@@ -19,9 +19,14 @@ import time
 import uuid
 from pathlib import Path
 
+from backend import ARGV_SECRET_POSTURE
 from handler_protocol import BaseHandler
 from utils.paths import get_real_user_home
+from utils.secret_scrub import scrub_secret
 from utils.service_check import check_service, check_rns_shared_instance
+
+#: ONE number for mosquitto_pub's timeout= AND its timeout message (hfm #5)
+_PUB_TIMEOUT_S = 10
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +120,14 @@ class TestGatewayRxHandler(BaseHandler):
             ):
                 return
 
+        # The bridge password rides mosquitto_pub's argv: SAID before it runs,
+        # in a blocking, self-sizing yes/no (review r1: this top-level item
+        # sits under none of the posture-line menus)
+        if config.mqtt_bridge.username and config.mqtt_bridge.password:
+            if not self.ctx.dialog.yesno(
+                    "Test Gateway RX", "Publish the probe now?\n\n" + ARGV_SECRET_POSTURE):
+                return
+
         probe_uuid = uuid.uuid4().hex[:12]
         probe_text = f"meshforge-rx-probe-{probe_uuid}"
         topic = self._build_topic(config)
@@ -125,7 +138,7 @@ class TestGatewayRxHandler(BaseHandler):
             self.ctx.dialog.msgbox(
                 "mosquitto_pub Failed",
                 f"Could not publish probe to {topic}.\n\n"
-                f"stderr:\n{stderr or '(none)'}\n\n"
+                f"stderr:\n{scrub_secret(stderr or '(none)', config.mqtt_bridge.password)[:300]}\n\n"
                 "Check MQTT broker reachability and credentials.",
             )
             return
@@ -209,12 +222,12 @@ class TestGatewayRxHandler(BaseHandler):
             cmd += ["--capath", "/etc/ssl/certs"]
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=10
+                cmd, capture_output=True, text=True, timeout=_PUB_TIMEOUT_S
             )
         except FileNotFoundError:
             return False, "mosquitto_pub not installed (apt install mosquitto-clients)"
         except subprocess.TimeoutExpired:
-            return False, "mosquitto_pub timed out after 10s"
+            return False, f"mosquitto_pub timed out after {_PUB_TIMEOUT_S}s"
         if result.returncode != 0:
             return False, (result.stderr or "").strip()
         return True, ""
