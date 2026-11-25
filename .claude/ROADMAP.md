@@ -160,7 +160,7 @@ product, `--days 7` logged in each handoff (a measure, not a gate; operator 11-1
 
 
 - **BIC-2** [MF][MA] S+F twin→MA — per-leg delivery truth, shown per message, UNKNOWN first-class (= 1.0 gate 3)
-  30-DAY (by 11-24), NARROWED (operator 11-10): `/inbox` broadcast heard-by, UNKNOWN shown, echo-fold fix + unknown-state default (`INBOX-T` F1/F2/F11); never "delivered". A FLEET truth. DMs + bridged legs: design the cross-process ack path first, then a new date. MA after. Slices DONE 11-15..17: provenance 11-17 23:4x. Phone-accepted: cannot_hear + downlink gap (a). Left: one-box MEASURED SILENT (no heard line; owes "cannot see hearings" before 12-04); DM ack design (frontier). Provenance 11-24.
+  30-DAY (by 11-24), NARROWED (operator 11-10): `/inbox` broadcast heard-by, UNKNOWN shown, echo-fold fix + unknown-state default (`INBOX-T` F1/F2/F11); never "delivered". A FLEET truth. DMs + bridged legs: design the cross-process ack path first, then a new date. MA after. Slices DONE 11-15..17: provenance 11-17 23:4x. Phone-accepted: cannot_hear + downlink gap (a). Left: one-box MEASURED SILENT (no heard line; owes "cannot see hearings" before 12-04); DM ack designed: `plans/bic2_dm_delivery_design_2026_11_25.md`, measure first, by 12-11.
   Observe before alarming: counters first, then a soak baseline (pass rule: gate 3).
   Counters live MF+MA + the MF-first twin-fix list: provenance § BIC-2 (moved verbatim 2026-11-14, MF012).
   INBOX-2 FOLDED IN (operator 11-14): steps 1-3 (`f97e053f`) wired (heard-by live 11-15). Queue detail: provenance 11-16. Accept on the operator's phone, never on tests alone.
