@@ -31,7 +31,37 @@ the map process" because the listener subscribes to every `meshtastic.receive`
 — true of the code, false of the fleet: that path is the TCP mode, and no map
 runs it. In the live MQTT mode, the map sees no ack at all.
 
-## UNKNOWN — the measurements that decide the design
+## MEASURED 2026-11-25 10:29–10:32 HST — unknowns 1 + 2 ANSWERED (n=2)
+
+Operator sent two `/inbox` DMs from VolcanoAI to kiai (`!851a9fe7`) while a
+180 s `mosquitto_sub -t 'msh/2/e/#'` ran on VolcanoAI's LOCAL broker
+(scratch capture, 7 envelopes; decoder `utils.meshtastic_se_crypto`, counts
+and ids only). Per DM, the same three envelopes, all `gateway=!6201ce25`
+(VolcanoAI's own radio):
+
+| t | topic | from → to | decoded |
+|---|---|---|---|
+| +0 s | `PKI` | us → kiai | the DM itself, `pki_encrypted`, `want_ack` — NOT decryptable (as expected) |
+| +2–3 s | `HawaiiNet` | **kiai → us** | **ROUTING_APP, `request_id` = the DM's packet id, error NONE** |
+| +2–3 s | `HawaiiNet` | us → kiai | ROUTING_APP, hop_start 0 (our radio's own routing packet) |
+
+- **UNKNOWN 2 → VERIFIED yes:** the sender box's radio uplinks the ack it
+  RECEIVES to its own local broker's `/e/`.
+- **UNKNOWN 1 → VERIFIED: the destination's ack is CHANNEL-keyed, not PKI** —
+  decryptable although the DM itself is PKI. Both DMs (`0xab3c8abc`,
+  `0xab3c8abd`) acked by kiai, `request_id` exact, error NONE, ~2–3 s.
+- **No secret needed on this fleet:** both acks decrypted with the DEFAULT
+  key `AQ==` alone (the HawaiiNet channel here is default-keyed). This
+  removes the "channel PSK at runtime in the map" collision with 11-24's
+  no-stored-secret posture FOR THIS CHANNEL; a custom-keyed channel still
+  needs the operator decision.
+- **The gap, live:** both DMs read `handed_off` in `/inbox` while the
+  destination's ack sat on the local broker — fork A (per-box `/e/` witness in
+  the map's MQTT listener + read-time join with `dm_delivery.classify`) is now
+  the evidenced candidate. Design pass still owed (frontier), n=2 on ONE pair
+  (VolcanoAI → kiai, direct, 0 hops): a relayed DM and a NAK are unmeasured.
+
+## UNKNOWN — the measurements that decided the design (kept for the record)
 
 1. **PKC.** DMs between nodes that both hold keys (fw ≥ 2.5) are
    `pki_encrypted`; `meshtastic_se_crypto` cannot decrypt those (header). Is

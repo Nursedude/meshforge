@@ -264,51 +264,65 @@ _ci_nwo() {   # owner/repo from the origin remote; ssh and https forms both
   printf '%s\n' "$u" | awk -F'[/:]' 'NF>1 {print $(NF-1)"/"$NF}'
 }
 
-# The authoritative per-SHA view. Echoes exactly one state:
+# The CI workflow's `name:` in .github/workflows/ci.yml — pinned equal by
+# tests/test_honest_status_ci_workflow_name.py (two consumers, one constant).
+# BOTH sources below judge ONLY this workflow's run (2026-11-25: a manual
+# stranger-drill run on the same sha was reported as "CI success"; review r1:
+# the old /check-runs fallback mixed EVERY workflow's jobs — the same false
+# green one hop later, and a scheduled drill could turn a green head red).
+CI_WORKFLOW_NAME="CI"
+
+# The per-SHA view, NOT windowed: /actions/runs?head_sha=<sha>, filtered to
+# the CI workflow by name (one rule with the listing). Echoes exactly one state:
 #   HIT success <n> | HIT failure <names> | PENDING <names> | NONE | FAIL <why>
 _ci_check_runs() {
   local nwo
   nwo=$(_ci_nwo) || { echo "FAIL cannot-resolve-owner/repo-from-origin"; return 0; }
-  if ! gh api "repos/$nwo/commits/$HEADFULL/check-runs" \
+  if ! gh api "repos/$nwo/actions/runs?head_sha=$HEADFULL&per_page=100" \
         >"$HS_TMP/ci_cr.json" 2>"$HS_TMP/ci_cr.err"; then
     echo "FAIL $(head -c 120 "$HS_TMP/ci_cr.err" | tr '\n' ' ')"; return 0
   fi
-  HS_CR="$HS_TMP/ci_cr.json" python3 - <<'PY'
+  HS_CR="$HS_TMP/ci_cr.json" HS_CI_WORKFLOW="$CI_WORKFLOW_NAME" python3 - <<'PY'
 import json, os
 try:
     d = json.load(open(os.environ["HS_CR"]))
 except Exception as e:
-    print(f"FAIL unparseable-check-runs:{type(e).__name__}"); raise SystemExit
-runs = d.get("check_runs") or []
+    print(f"FAIL unparseable-runs:{type(e).__name__}"); raise SystemExit
+wf = os.environ["HS_CI_WORKFLOW"]
+runs = [r for r in (d.get("workflow_runs") or []) if r.get("name") == wf]
 if not runs:
-    print("NONE"); raise SystemExit
-pending = [r.get("name", "?") for r in runs if r.get("status") != "completed"]
-if pending:
-    print("PENDING " + ",".join(pending[:4])); raise SystemExit
-# neutral/skipped are not failures — a skipped optional check must not turn a
-# green head red (the inverse of the bug this whole block fixes).
-bad = [f"{r.get('name','?')}={r.get('conclusion')}" for r in runs
-       if r.get("conclusion") not in ("success", "neutral", "skipped")]
-print("HIT failure " + ",".join(bad[:4]) if bad else f"HIT success {len(runs)}")
+    print("NONE"); raise SystemExit          # another workflow's run is not CI
+# the NEWEST CI run for this sha decides (a re-trigger supersedes the old one)
+r = max(runs, key=lambda x: (x.get("run_number") or 0, x.get("id") or 0))
+if r.get("status") != "completed":
+    print(f"PENDING {wf}#{r.get('id', '?')}"); raise SystemExit
+c = r.get("conclusion")
+print(f"HIT success {r.get('id', '?')}" if c == "success"
+      else f"HIT failure {wf}#{r.get('id', '?')}={c}")
 PY
 }
 
 if ! command -v gh >/dev/null 2>&1; then
   unk "CI($HEAD)" "gh not installed — cannot verify CI externally"
-elif ! gh run list --branch main --limit 30 \
-        --json headSha,conclusion,status,databaseId \
+elif ! gh run list --branch main --workflow "$CI_WORKFLOW_NAME" --limit 30 \
+        --json headSha,conclusion,status,databaseId,workflowName \
         >"$HS_TMP/ci.json" 2>"$HS_TMP/ci.err"; then
   unk "CI($HEAD)" "'gh run list' FAILED (auth/network — NOT evidence of no run): $(head -c 120 "$HS_TMP/ci.err" | tr '\n' ' ')"
 else
-  read -r TAG ST CC RID < <(HEADFULL="$HEADFULL" HS_CI_JSON="$HS_TMP/ci.json" python3 - <<'PY'
+  read -r TAG ST CC RID < <(HEADFULL="$HEADFULL" HS_CI_JSON="$HS_TMP/ci.json" \
+      HS_CI_WORKFLOW="$CI_WORKFLOW_NAME" python3 - <<'PY'
 import json, os
 sha = os.environ["HEADFULL"]
+wf = os.environ["HS_CI_WORKFLOW"]
 try:
     runs = json.load(open(os.environ["HS_CI_JSON"]))
 except Exception:
     print("PARSEFAIL - - -"); raise SystemExit
 for r in runs:
-    if r.get("headSha") == sha:
+    # ONLY the CI workflow's run judges CI (2026-11-25: a manual drill run on
+    # the same sha, listed first, was reported as "CI success"). A run with no
+    # workflowName is not assumed to be CI.
+    if r.get("headSha") == sha and r.get("workflowName") == wf:
         print("HIT", r.get("status") or "-", r.get("conclusion") or "-",
               r.get("databaseId") or "-")
         break
@@ -328,12 +342,12 @@ PY
       # calling it absent at all (the 2026-09-03 lag).
       CR=$(_ci_check_runs)
       case "$CR" in
-        "HIT success"*) ok  "CI($HEAD)" "check-runs ${CR#HIT success } check(s) success (runs listing lagged)" ;;
-        "HIT failure"*) bad "CI($HEAD)" "check-runs failing: ${CR#HIT failure }" ;;
-        PENDING*)       unk "CI($HEAD)" "check-runs still running: ${CR#PENDING }" ;;
-        NONE)           unk "CI($HEAD)" "absent from BOTH the runs listing and check-runs for this SHA (pushed yet?)" ;;
-        FAIL*)          unk "CI($HEAD)" "not in runs listing; check-runs fallback FAILED (query, not verdict): ${CR#FAIL }" ;;
-        *)              unk "CI($HEAD)" "not in runs listing; check-runs fallback returned an unrecognised state: $CR" ;;
+        "HIT success"*) ok  "CI($HEAD)" "run ${CR#HIT success } success (per-sha runs; listing lagged)" ;;
+        "HIT failure"*) bad "CI($HEAD)" "per-sha CI run failing: ${CR#HIT failure }" ;;
+        PENDING*)       unk "CI($HEAD)" "per-sha CI run still running: ${CR#PENDING }" ;;
+        NONE)           unk "CI($HEAD)" "no $CI_WORKFLOW_NAME run in BOTH the runs listing and the per-sha runs for this SHA (pushed yet?)" ;;
+        FAIL*)          unk "CI($HEAD)" "not in runs listing; per-sha runs fallback FAILED (query, not verdict): ${CR#FAIL }" ;;
+        *)              unk "CI($HEAD)" "not in runs listing; per-sha runs fallback returned an unrecognised state: $CR" ;;
       esac ;;
   esac
 fi

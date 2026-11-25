@@ -47,7 +47,7 @@ case "${1:-}" in
   run)  [ "${GH_RUNLIST_RC:-0}" = 0 ] || { echo "HTTP 401: Bad credentials" >&2; exit 1; }
         printf '%s' "${GH_RUNLIST_OUT:-[]}" ;;
   api)  [ "${GH_CHECKRUNS_RC:-0}" = 0 ] || { echo "HTTP 404: Not Found" >&2; exit 1; }
-        printf '%s' "${GH_CHECKRUNS_OUT:-{\"check_runs\":[]\}}" ;;
+        printf '%s' "${GH_CHECKRUNS_OUT:-{\"workflow_runs\":[]\}}" ;;
   *)    exit 1 ;;
 esac
 EOF
@@ -71,36 +71,36 @@ check() {  # $1 name, $2 output, $3 must-contain, $4 must-NOT-contain (optional)
 }
 
 SHA="$(git -C "$FAKE_REPO" rev-parse HEAD)"
-HIT="[{\"headSha\":\"$SHA\",\"status\":\"completed\",\"conclusion\":\"success\",\"databaseId\":42}]"
+HIT="[{\"workflowName\":\"CI\",\"headSha\":\"$SHA\",\"status\":\"completed\",\"conclusion\":\"success\",\"databaseId\":42}]"
 
 # ── the listing answers: unchanged fast path ──────────────────────────────
 out="$(GH_RUNLIST_OUT="$HIT" run)"
 check "listing hit + success => PASS" "$out" "PASS"
 
-out="$(GH_RUNLIST_OUT="[{\"headSha\":\"$SHA\",\"status\":\"completed\",\"conclusion\":\"failure\",\"databaseId\":42}]" run)"
+out="$(GH_RUNLIST_OUT="[{\"workflowName\":\"CI\",\"headSha\":\"$SHA\",\"status\":\"completed\",\"conclusion\":\"failure\",\"databaseId\":42}]" run)"
 check "listing hit + failure => FAIL" "$out" "FAIL"
 
-out="$(GH_RUNLIST_OUT="[{\"headSha\":\"$SHA\",\"status\":\"in_progress\",\"conclusion\":null,\"databaseId\":42}]" run)"
+out="$(GH_RUNLIST_OUT="[{\"workflowName\":\"CI\",\"headSha\":\"$SHA\",\"status\":\"in_progress\",\"conclusion\":null,\"databaseId\":42}]" run)"
 check "listing hit + still running => UNKNOWN" "$out" "UNKNOWN"
 
 # ── THE BUG: listing lags, check-runs is authoritative and GREEN ───────────
 # Old logic: not in the window => "no CI run found for this SHA (pushed yet?)".
 out="$(GH_RUNLIST_OUT='[]' \
-       GH_CHECKRUNS_OUT='{"check_runs":[{"name":"CI","status":"completed","conclusion":"success"}]}' run)"
+       GH_CHECKRUNS_OUT='{"workflow_runs":[{"name":"CI","id":11,"status":"completed","conclusion":"success"}]}' run)"
 check "listing lags + check-runs green => PASS" "$out" "PASS" "pushed yet"
 
 # ── and it must not launder a RED head green ──────────────────────────────
 out="$(GH_RUNLIST_OUT='[]' \
-       GH_CHECKRUNS_OUT='{"check_runs":[{"name":"Test Suite","status":"completed","conclusion":"failure"}]}' run)"
+       GH_CHECKRUNS_OUT='{"workflow_runs":[{"name":"CI","id":12,"status":"completed","conclusion":"failure"}]}' run)"
 check "listing lags + check-runs red => FAIL" "$out" "FAIL"
 
 # skipped/neutral are not failures — the inverse overcorrection.
 out="$(GH_RUNLIST_OUT='[]' \
-       GH_CHECKRUNS_OUT='{"check_runs":[{"name":"CI","status":"completed","conclusion":"success"},{"name":"opt","status":"completed","conclusion":"skipped"}]}' run)"
-check "skipped check does not turn green red" "$out" "PASS"
+       GH_CHECKRUNS_OUT='{"workflow_runs":[{"name":"CI","id":13,"status":"completed","conclusion":"success"},{"name":"Falsifiability Drill","id":14,"status":"completed","conclusion":"failure"}]}' run)"
+check "another workflow's FAILED run does not turn a green CI red (r1)" "$out" "PASS"
 
 out="$(GH_RUNLIST_OUT='[]' \
-       GH_CHECKRUNS_OUT='{"check_runs":[{"name":"CI","status":"queued","conclusion":null}]}' run)"
+       GH_CHECKRUNS_OUT='{"workflow_runs":[{"name":"CI","id":15,"status":"queued","conclusion":null}]}' run)"
 check "listing lags + check-runs pending => UNKNOWN" "$out" "UNKNOWN" "pushed yet"
 
 # ── the three not-a-verdict states stay distinct ───────────────────────────
@@ -111,11 +111,41 @@ check "gh run list FAILS names the query failure" "$out" "FAILED"
 out="$(GH_RUNLIST_OUT='[]' GH_CHECKRUNS_RC=1 run)"
 check "check-runs fallback FAILS => UNKNOWN, not absence" "$out" "UNKNOWN" "pushed yet"
 
-out="$(GH_RUNLIST_OUT='[]' GH_CHECKRUNS_OUT='{"check_runs":[]}' run)"
+out="$(GH_RUNLIST_OUT='[]' GH_CHECKRUNS_OUT='{"workflow_runs":[]}' run)"
 check "absent from BOTH => UNKNOWN naming both sources" "$out" "BOTH"
 
 out="$(GH_RUNLIST_OUT='not json at all' run)"
 check "unparseable listing => UNKNOWN, not absence" "$out" "UNKNOWN" "pushed yet"
+
+# ── another workflow on the SAME sha is not CI (2026-11-25) ───────────────
+# A manual `workflow_dispatch` (stranger drill, observe mode) ran on the head
+# CI ran on. The leg took the FIRST listed run for the SHA from ANY workflow
+# and reported "run 45687916460 success" — the drill — as CI(86c7f05d). Real
+# CI happened to be green; with a red CI it would have been a FALSE GREEN from
+# the check of record. Only a run whose workflowName is the CI workflow's
+# `name:` (.github/workflows/ci.yml) judges CI.
+DRILL="{\"workflowName\":\"Stranger drill (gate 5, virtual)\",\"headSha\":\"$SHA\",\"status\":\"completed\",\"conclusion\":\"success\",\"databaseId\":7}"
+CIFAIL="{\"workflowName\":\"CI\",\"headSha\":\"$SHA\",\"status\":\"completed\",\"conclusion\":\"failure\",\"databaseId\":8}"
+out="$(GH_RUNLIST_OUT="[$DRILL,$CIFAIL]" run)"
+check "a green drill listed first never stands in for a RED CI run" "$out" "FAIL" "run 7 success"
+out="$(GH_RUNLIST_OUT="[$DRILL]" GH_CHECKRUNS_OUT='{"workflow_runs":[]}' run)"
+check "only a non-CI run for the sha => not PASS (falls to check-runs)" "$out" "UNKNOWN" "run 7 success"
+NONAME="{\"headSha\":\"$SHA\",\"status\":\"completed\",\"conclusion\":\"success\",\"databaseId\":9}"
+out="$(GH_RUNLIST_OUT="[$NONAME]" GH_CHECKRUNS_OUT='{"workflow_runs":[]}' run)"
+check "a run with NO workflowName is not CI (unknown, never assumed)" "$out" "UNKNOWN" "run 9 success"
+# r1 (important): the FALLBACK must not judge another workflow either — the
+# real per-sha answer for a drill-only sha holds the DRILL's run, not [].
+DRILLRUN='{"name":"Stranger drill (gate 5, virtual)","id":21,"status":"completed","conclusion":"success"}'
+out="$(GH_RUNLIST_OUT="[$DRILL]" GH_CHECKRUNS_OUT="{\"workflow_runs\":[$DRILLRUN]}" run)"
+check "drill-only sha, fallback holds the drill's green run => never PASS" "$out" "UNKNOWN" "PASS"
+DRILLPEND='{"name":"Falsifiability Drill","id":22,"status":"in_progress","conclusion":null}'
+CIOK='{"name":"CI","id":23,"status":"completed","conclusion":"success"}'
+out="$(GH_RUNLIST_OUT='[]' GH_CHECKRUNS_OUT="{\"workflow_runs\":[$DRILLPEND,$CIOK]}" run)"
+check "a scheduled drill still running never holds a green CI at UNKNOWN" "$out" "PASS"
+CIOLD='{"name":"CI","id":24,"run_number":5,"status":"completed","conclusion":"failure"}'
+CINEW='{"name":"CI","id":25,"run_number":6,"status":"completed","conclusion":"success"}'
+out="$(GH_RUNLIST_OUT='[]' GH_CHECKRUNS_OUT="{\"workflow_runs\":[$CINEW,$CIOLD]}" run)"
+check "the newest CI run for the sha decides (re-trigger supersedes)" "$out" "PASS"
 
 [ "$fails" = 0 ] && echo "ALL PASS" || echo "SOME FAILED"
 exit "$fails"
