@@ -9,6 +9,7 @@ import re
 import secrets
 import base64
 
+from backend import ARGV_CHANNEL_KEY_POSTURE
 from handler_protocol import BaseHandler
 from utils.meshtastic_info import CH0_LINE, parse_primary_channel_name
 
@@ -85,7 +86,7 @@ class ChannelConfigHandler(BaseHandler):
 
             choice = self.ctx.dialog.menu(
                 "Channel Config",
-                "Configure all 8 mesh channels:",
+                "Configure all 8 mesh channels:\n\n" + ARGV_CHANNEL_KEY_POSTURE,
                 choices
             )
 

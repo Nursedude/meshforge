@@ -706,3 +706,28 @@ def test_the_success_box_claims_only_what_exit_0_shows(store):
     """r2 nit: no readback, so never 'the radio keeps them'."""
     boxes = _creds_ok(store)
     assert "exited 0" in boxes["Success"] and "keeps them" not in boxes["Success"]
+
+
+# ---- channel keys: the same posture (operator 11-24: "yes posture line for
+# channel PSK/URL too") — `--ch-set psk <key>`, `--seturl <url>` ride argv
+from backend import ARGV_CHANNEL_KEY_POSTURE  # noqa: E402
+
+
+def test_both_postures_come_from_one_template():
+    for line in (ARGV_SECRET_POSTURE, ARGV_CHANNEL_KEY_POSTURE):
+        assert line.endswith("on the command line; ps on this box can read them "
+                             "while the command runs.")
+    assert "PSK" in ARGV_CHANNEL_KEY_POSTURE and "URL" in ARGV_CHANNEL_KEY_POSTURE
+
+
+def test_channel_config_menu_header_says_it():
+    from handlers.channel_config import ChannelConfigHandler
+    with patch.object(ChannelConfigHandler, "_ensure_meshtastic_connection", return_value=True):
+        text = _first_menu_text(ChannelConfigHandler(), lambda h: h._channel_config_menu())
+    assert ARGV_CHANNEL_KEY_POSTURE in text
+
+
+def test_device_backup_menu_header_says_it():
+    from handlers.device_backup import BackupHandler
+    text = _first_menu_text(BackupHandler(), lambda h: h._device_backup_menu())
+    assert ARGV_CHANNEL_KEY_POSTURE in text

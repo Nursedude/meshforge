@@ -9,7 +9,7 @@ import logging
 import tarfile
 from pathlib import Path
 
-from backend import clear_screen
+from backend import ARGV_CHANNEL_KEY_POSTURE, clear_screen
 from handler_protocol import BaseHandler
 from commands.device_backup import create_backup, list_backups, get_backup_dir
 from commands.device_backup import restore_backup, delete_backup
@@ -46,7 +46,8 @@ class BackupHandler(BaseHandler):
 
             choice = self.ctx.dialog.menu(
                 "Device Backup",
-                "Backup and restore Meshtastic configurations:",
+                "Backup and restore Meshtastic configurations:\n\n"
+                + ARGV_CHANNEL_KEY_POSTURE,   # restore runs --seturl <url>
                 choices
             )
 

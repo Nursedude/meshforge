@@ -65,9 +65,19 @@ def blank_secret(typed: Optional[str]) -> Optional[str]:
 #: or used — menu text grows to fit, so it cannot be clipped, and every flow
 #: under those menus is covered without listing it (3 review rounds of
 #: per-site notes each found another silent site).
-ARGV_SECRET_POSTURE = (
-    "Passwords used here are passed to meshtastic / mosquitto tools on their "
-    "command line; ps on this box can read them while those run.")
+def _argv_posture(what: str, tools: str) -> str:
+    """ONE template for every posture line (hfm #5: one wording)."""
+    return (f"{what} used here are passed to {tools} on the command line; "
+            f"ps on this box can read them while the command runs.")
+
+
+ARGV_SECRET_POSTURE = _argv_posture("Passwords", "meshtastic / mosquitto tools")
+#: the same residual for channel keys (operator 11-24: "yes posture line for
+#: channel PSK/URL too"): `--ch-set psk <key>` and `--seturl <url>` (the URL
+#: encodes the channel keys). Radio Info still SHOWS the URL — sharing it is
+#: how a new node joins; the ruling covers the argv exposure.
+ARGV_CHANNEL_KEY_POSTURE = _argv_posture("Channel keys (custom PSK, channel URLs)",
+                                         "the meshtastic tool")
 
 
 def _is_tool_error(code: int, output: str) -> bool:
