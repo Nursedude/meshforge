@@ -245,24 +245,28 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
                                         timeout=_CREDS_CLI_TIMEOUT_S)
                 if result.returncode == 0:
                     print("\nMQTT credentials updated.")
-                    from utils.device_config_store import save_device_settings
-                    cred_data = {}
-                    if username:
-                        cred_data['username'] = username
-                    if password:
-                        cred_data['password'] = password
-                    if cred_data:
-                        saved = save_device_settings({'mqtt': cred_data})
-                        if saved:
-                            self.ctx.dialog.msgbox("Success",
-                                "MQTT credentials updated on device.\n\n"
-                                "Saved for restart persistence.")
-                        else:
-                            self.ctx.dialog.msgbox("Partial Success",
-                                "MQTT credentials updated on device.\n\n"
-                                "WARNING: Failed to save for restart "
-                                "persistence. These credentials will be lost "
-                                "on next meshtasticd restart.")
+                    # MeshForge keeps NO copy (review r2, 11-24): the saved one
+                    # was never re-applied after a restart (apply_saved_config
+                    # replays only mqtt.enabled/address) — a plaintext password
+                    # stored for no consumer, whose only reader showed it.
+                    from utils.device_config_store import (
+                        DeviceConfigUnreadable, forget_device_settings)
+                    try:
+                        gone = forget_device_settings("mqtt", ["username", "password"])
+                        kept = ("\n\nMeshForge removed the copy an older version "
+                                "had saved." if gone else "")
+                    except DeviceConfigUnreadable as e:
+                        # unknown contents are never "no copy" (r1)
+                        kept = (f"\n\nWARNING: the saved-settings file could not be "
+                                f"read ({e}); an older copy of the password may "
+                                f"still be in it.")
+                    except OSError as e:
+                        kept = (f"\n\nWARNING: an older saved copy could not be "
+                                f"removed ({type(e).__name__}).")
+                    self.ctx.dialog.msgbox(
+                        "Success",
+                        "MQTT credentials sent to the radio (the CLI exited 0).\n\n"
+                        "MeshForge stores no copy." + kept)   # r2: no readback, so no "keeps"
                 else:
                     print("\nCommand failed.")
                     if result.stderr:

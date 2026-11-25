@@ -1729,6 +1729,11 @@
   "class": "other",
   "count": 1
  },
+ "src/utils/device_config_store.py::_load_strict::read_text": {
+  "audited": "2026-11-24 line-audited: reads device_config.yaml (the same file as load_device_config), not the RNS config",
+  "class": "other",
+  "count": 1
+ },
  "src/utils/device_config_store.py::load_device_config::read_text": {
   "audited": "r12 2026-11-22 line-audited: not the RNS config",
   "class": "other",

@@ -24,7 +24,7 @@ import os
 import time
 import yaml
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from utils.paths import MeshForgePaths, atomic_write_text
 
@@ -60,6 +60,34 @@ def load_device_config() -> Dict[str, Any]:
         return {}
 
 
+class DeviceConfigUnreadable(OSError):
+    """The store file EXISTS but does not parse: its contents are unknown —
+    never read as "nothing stored" (hfm #1/#2)."""
+
+
+def _load_strict() -> Dict[str, Any]:
+    """Like load_device_config, but a present-and-unreadable file RAISES."""
+    path = _get_config_path()
+    if not path.exists():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text())
+    except Exception as e:
+        raise DeviceConfigUnreadable(f"{path}: {type(e).__name__}") from e
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise DeviceConfigUnreadable(f"{path}: not a mapping")
+    return data
+
+
+def _rewrite(config: Dict[str, Any]) -> None:
+    content = DEVICE_CONFIG_HEADER + "\n" + yaml.dump(
+        config, default_flow_style=False, sort_keys=False)
+    atomic_write_text(_get_config_path(), content)
+    _fix_file_ownership(_get_config_path())
+
+
 def save_device_setting(section: str, key: str, value: Any) -> bool:
     """Save a single device setting to the config store.
 
@@ -72,7 +100,9 @@ def save_device_setting(section: str, key: str, value: Any) -> bool:
         True if saved successfully.
     """
     try:
-        config = load_device_config()
+        # strict: a damaged store is never overwritten from a {} read (r2,
+        # pre_existing data loss: lora/owner settings wiped, "saved" said)
+        config = _load_strict()
         if section not in config:
             config[section] = {}
         config[section][key] = value
@@ -85,7 +115,9 @@ def save_device_setting(section: str, key: str, value: Any) -> bool:
         # Fix ownership if running under sudo
         _fix_file_ownership(_get_config_path())
 
-        logger.info("Saved device setting: %s.%s = %s", section, key, value)
+        from utils.secret_scrub import is_secret_key
+        logger.info("Saved device setting: %s.%s = %s", section, key,
+                    "<hidden>" if is_secret_key(key) else value)   # never log a secret
         return True
     except Exception as e:
         logger.error("Failed to save device setting %s.%s: %s", section, key, e)
@@ -102,7 +134,7 @@ def save_device_settings(settings: Dict[str, Dict[str, Any]]) -> bool:
         True if saved successfully.
     """
     try:
-        config = load_device_config()
+        config = _load_strict()        # never overwrite a damaged store (r2)
         for section, values in settings.items():
             if section not in config:
                 config[section] = {}
@@ -119,6 +151,49 @@ def save_device_settings(settings: Dict[str, Dict[str, Any]]) -> bool:
     except Exception as e:
         logger.error("Failed to save device settings: %s", e)
         return False
+
+
+def forget_device_settings(section: str, keys) -> List[str]:
+    """Remove ``keys`` from ``section``; the keys actually removed (``[]`` =
+    nothing stored). Writes ONLY when something was removed: an unreadable
+    store is never overwritten here. Raises DeviceConfigUnreadable when the
+    file exists but does not parse (its contents are unknown — r1: it was
+    read as "nothing stored"), OSError if the rewrite fails."""
+    config = _load_strict()
+    values = config.get(section)
+    if not isinstance(values, dict):
+        return []
+    removed = [k for k in keys if k in values]
+    if not removed:
+        return []
+    for k in removed:
+        values.pop(k)
+    if not values:
+        config.pop(section)
+    _rewrite(config)
+    logger.info("Forgot device settings: %s.%s", section, removed)
+    return removed
+
+
+def forget_secret_settings() -> List[str]:
+    """Remove EVERY stored secret (``is_secret_key``) from every section —
+    MeshForge keeps none (operator 11-24): ``["mqtt.password", ...]``.
+    Same write/raise rules as forget_device_settings."""
+    from utils.secret_scrub import is_secret_key
+    config = _load_strict()
+    removed = []
+    for section, values in list(config.items()):
+        if not isinstance(values, dict):
+            continue
+        for k in [k for k in values if is_secret_key(k)]:
+            values.pop(k)
+            removed.append(f"{section}.{k}")
+        if not values:
+            config.pop(section)
+    if removed:
+        _rewrite(config)
+        logger.info("Forgot stored secrets: %s", removed)
+    return removed
 
 
 def clear_device_config() -> bool:

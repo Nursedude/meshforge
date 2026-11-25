@@ -430,3 +430,279 @@ def test_mosquitto_passwd_failure_text_is_scrubbed(tmp_path):
             patch("utils.broker_profiles.Path.exists", return_value=True):
         out = bp.install_mosquitto_config(prof)
     assert "s3cret" not in repr(out), out
+
+
+# ---- Fable r2 pre_existing (operator 11-24: "i agree with your
+# recommendations"): a stored password nobody re-applies is not kept; any
+# that an older version stored is never shown; --info JSON is redacted.
+from utils.secret_scrub import is_secret_key  # noqa: E402
+
+
+@pytest.mark.parametrize("text,want", [
+    ('    "password": "s3cret",', '    "password": "<hidden>",'),
+    ('"mqtt.password":"a\\"b"', '"mqtt.password":"<hidden>"'),   # an escaped quote inside
+    ("{'mqtt': {'password': 's3cret', 'x': 1}}", "{'mqtt': {'password': '<hidden>', 'x': 1}}"),
+    ('"username": "u"', '"username": "u"'),
+])
+def test_redact_handles_the_info_json_form(text, want):
+    assert redact_password_lines(text) == want
+
+
+@pytest.mark.parametrize("key,secret", [("password", True), ("mqtt_password", True),
+                                        ("psk", True), ("channel_psk", True),
+                                        ("private_key", True), ("adminKey", True),
+                                        ("username", False), ("address", False)])
+def test_is_secret_key(key, secret):
+    assert is_secret_key(key) is secret
+
+
+@pytest.fixture
+def store(tmp_path):
+    path = tmp_path / "device_config.yaml"
+    with patch("utils.device_config_store._get_config_path", return_value=path), \
+            patch("utils.device_config_store._fix_file_ownership"):
+        yield path
+
+
+def test_forget_removes_only_what_is_there_and_writes_only_then(store):
+    from utils import device_config_store as dcs
+    assert dcs.forget_device_settings("mqtt", ["password"]) == []
+    assert not store.exists()                                  # nothing -> no write
+    dcs.save_device_settings({"mqtt": {"enabled": True, "password": "s3cret"}})
+    assert dcs.forget_device_settings("mqtt", ["username", "password"]) == ["password"]
+    assert dcs.load_device_config() == {"mqtt": {"enabled": True}}
+
+
+def test_forget_never_overwrites_an_unreadable_store(store):
+    """load_device_config reads a damaged file as {} — writing then would
+    destroy it (hfm #1)."""
+    from utils import device_config_store as dcs
+    store.write_text("mqtt: [unclosed\n")
+    before = store.read_bytes()
+    with pytest.raises(dcs.DeviceConfigUnreadable):
+        dcs.forget_device_settings("mqtt", ["password"])
+    assert store.read_bytes() == before
+
+
+def test_a_saved_secret_is_never_logged(store, caplog):
+    from utils import device_config_store as dcs
+    with caplog.at_level("INFO"):
+        dcs.save_device_setting("mqtt", "password", "s3cret")
+    assert "s3cret" not in caplog.text and "<hidden>" in caplog.text
+
+
+#: every key apply_saved_config REPLAYS (device_config_store) — a purge of
+#: secret keys must never remove one of these
+REPLAYED = {"lora": ["modem_preset", "channel_num", "region", "hop_limit"],
+            "owner": ["long_name", "short_name"], "mqtt": ["enabled", "address"]}
+
+
+def test_no_replayed_key_is_a_secret_key():
+    assert not [k for ks in REPLAYED.values() for k in ks if is_secret_key(k)]
+
+
+def test_forget_raises_on_an_unreadable_store_never_says_nothing(store):
+    """r1 IMPORTANT: a damaged file read as {} -> 'no copy' while the old
+    password stayed in it."""
+    from utils import device_config_store as dcs
+    store.write_text("mqtt: [unclosed\n")
+    with pytest.raises(dcs.DeviceConfigUnreadable):
+        dcs.forget_device_settings("mqtt", ["password"])
+    with pytest.raises(dcs.DeviceConfigUnreadable):
+        dcs.forget_secret_settings()
+
+
+def test_forget_secret_settings_keeps_every_replayed_key(store):
+    from utils import device_config_store as dcs
+    keep = {sec: {k: "v" for k in ks} for sec, ks in REPLAYED.items()}
+    dcs.save_device_settings(keep)
+    dcs.save_device_settings({"mqtt": {"password": "s3cret"}, "x": {"channel_psk": "k"}})
+    assert sorted(dcs.forget_secret_settings()) == ["mqtt.password", "x.channel_psk"]
+    assert dcs.load_device_config() == keep
+
+
+def _creds_ok(store):
+    from handlers.meshtasticd_mqtt import MeshtasticdDeviceMQTTHandler
+    h = MeshtasticdDeviceMQTTHandler()
+    ctx = make_handler_context()
+    h.set_context(ctx)
+    ctx.dialog._inputbox_returns = ["alice", "s3cret"]
+    with patch.object(type(ctx), "get_meshtastic_cli", return_value="meshtastic"), \
+            patch("handlers.meshtasticd_mqtt.clear_screen"), \
+            patch("handlers.meshtasticd_mqtt.subprocess.run",
+                  return_value=MagicMock(returncode=0, stderr="")), \
+            patch("builtins.input", return_value=""):
+        h._mqtt_set_credentials()
+    return {c[1][0]: c[1][1] for c in ctx.dialog.calls if c[0] == "msgbox"}
+
+
+def test_credentials_are_not_stored_and_the_screen_says_so(store):
+    """'Saved for restart persistence' was FALSE: the replay sets only
+    mqtt.enabled/address, so the plaintext copy served no one."""
+    boxes = _creds_ok(store)
+    assert "s3cret" not in (store.read_text() if store.exists() else "")
+    assert "stores no copy" in boxes["Success"]
+    assert "restart persistence" not in boxes["Success"]
+
+
+def test_an_older_stored_copy_is_removed_and_said(store):
+    from utils import device_config_store as dcs
+    dcs.save_device_settings({"mqtt": {"address": "m.example", "username": "alice",
+                                       "password": "old"}})
+    boxes = _creds_ok(store)
+    assert dcs.load_device_config() == {"mqtt": {"address": "m.example"}}
+    assert "removed the copy" in boxes["Success"]
+
+
+def _restart(store):
+    from handlers.meshtasticd_config import MeshtasticdConfigHandler
+    h = MeshtasticdConfigHandler()
+    h.set_context(make_handler_context())
+    h.ctx.dialog._yesno_returns = [True, False]                # restart yes, re-apply no
+    with patch("handlers.meshtasticd_config.apply_config_and_restart",
+               return_value=(True, "ok")):
+        h._restart_meshtasticd()
+    return repr(h.ctx.dialog.calls)
+
+
+def test_restart_removes_a_stored_password_and_says_so(store):
+    """r1 IMPORTANT: an older copy stayed on disk unless Set Credentials
+    re-ran; the restart flow is the store's only reader — it purges there."""
+    from utils import device_config_store as dcs
+    dcs.save_device_settings({"mqtt": {"address": "m.example", "password": "s3cret"}})
+    shown = _restart(store)
+    assert "s3cret" not in shown and "s3cret" not in store.read_text()
+    assert "Removed stored secret(s)" in shown and "mqtt.password" in shown
+    assert "m.example" in shown
+
+
+def test_restart_with_an_unreadable_store_warns(store):
+    store.write_text("mqtt: [unclosed\n")
+    shown = _restart(store)
+    assert "could not be" in shown and "read" in shown
+
+
+def test_restart_summary_survives_odd_sections_and_hides_nested(store):
+    """r1 pre_existing: a scalar section crashed .items(); a nested dict
+    printed its repr (a password one level down)."""
+    store.write_text("mqtt: on\nlora:\n  modem_preset: LONG_FAST\n  creds: {pw: x9}\n")
+    shown = _restart(store)
+    assert "not a settings list" in shown and "(nested" in shown and "x9" not in shown
+
+
+def test_radio_info_output_hides_the_json_password(capsys):
+    from handlers.radio_menu import RadioMenuHandler
+    h = RadioMenuHandler()
+    h.set_context(make_handler_context())
+    info = 'Module preferences: {\n  "mqtt": {\n    "password": "s3cret",\n    "address": "m"\n  }\n}'
+    with patch("handlers.radio_menu.clear_screen"), \
+            patch("handlers.radio_menu.subprocess.run",
+                  return_value=MagicMock(returncode=0, stdout=info, stderr="")), \
+            patch("builtins.input", return_value=""):
+        h._radio_run(["meshtastic", "--host", "localhost", "--info"], "Radio Info", redact=True)
+    out = capsys.readouterr().out
+    assert "s3cret" not in out and '"password": "<hidden>"' in out and '"address": "m"' in out
+
+
+def test_radio_info_timeout_withholds_partial_output(capsys):
+    from handlers.radio_menu import RadioMenuHandler
+    h = RadioMenuHandler()
+    h.set_context(make_handler_context())
+    e = subprocess.TimeoutExpired(["meshtastic"], 30, output=b'"password": "s3cret\\')   # cut after a backslash (r3)
+    with patch("handlers.radio_menu.clear_screen"), \
+            patch("handlers.radio_menu.subprocess.run", side_effect=e), \
+            patch("builtins.input", return_value=""):
+        h._radio_run(["meshtastic", "--info"], "Radio Info", redact=True)
+    out = capsys.readouterr().out
+    assert "s3cret" not in out and "withheld" in out and "timed out" in out
+
+
+# ---- Fable r2 (stored secrets) ---------------------------------------------
+def test_a_crafted_name_never_blanks_the_rest_of_the_output():
+    """r3 IMPORTANT (CONFIRMED): an end-of-text match let a node longName
+    `'password':'` hide every field after it."""
+    import json
+    doc = json.dumps({"nodes": {"!a": {"user": {"longName": "'password':'"}}},
+                      "prefs": {"KEEP": "KEEP1"}}, indent=2)
+    assert "KEEP1" in redact_password_lines(doc)
+
+
+def test_wifi_psk_is_redacted_like_a_password():
+    assert redact_password_lines('"wifiPsk": "homewifi",') == '"wifiPsk": "<hidden>",'
+
+
+def test_radio_info_menu_choice_runs_redacted():
+    """r2: the wiring was unpinned (tests called _radio_run directly)."""
+    from handlers.radio_menu import RadioMenuHandler
+    h = RadioMenuHandler()
+    ctx = make_handler_context()
+    h.set_context(ctx)
+    ctx.dialog._menu_returns = ["info", None]
+    with patch.object(type(ctx), "get_meshtastic_cli", return_value="meshtastic"), \
+            patch.object(RadioMenuHandler, "_radio_run") as run:
+        h._radio_menu()
+    (args, kw), = [(c.args, c.kwargs) for c in run.call_args_list]
+    assert "--info" in args[0] and kw.get("redact") is True
+
+
+@pytest.mark.parametrize("rc", [-9, 1])
+def test_radio_info_cut_off_by_a_dying_cli_is_withheld(capsys, rc):
+    """r4 IMPORTANT (CONFIRMED by a real SIGKILL drill): no timeout, a
+    non-zero exit, stdout cut inside the value — the prefix was printed."""
+    from handlers.radio_menu import RadioMenuHandler
+    h = RadioMenuHandler()
+    h.set_context(make_handler_context())
+    with patch("handlers.radio_menu.clear_screen"), \
+            patch("handlers.radio_menu.subprocess.run",
+                  return_value=MagicMock(returncode=rc, stdout='{"password": "s3cr',
+                                         stderr='password: errsecret')), \
+            patch("builtins.input", return_value=""):
+        h._radio_run(["meshtastic", "--info"], "Radio Info", redact=True)
+    out = capsys.readouterr().out
+    assert "s3cr" not in out and "withheld" in out
+    assert "errsecret" not in out and "password: <hidden>" in out   # r4 nit: stderr pinned
+
+
+def test_forget_on_a_list_topped_store_raises_the_named_error(store):
+    """r4 nit: without the non-mapping raise, forget_* hit AttributeError,
+    which the handlers do not catch — the warning was lost."""
+    from utils import device_config_store as dcs
+    store.write_text("- a\n- b\n")
+    with pytest.raises(dcs.DeviceConfigUnreadable):
+        dcs.forget_secret_settings()
+    with pytest.raises(dcs.DeviceConfigUnreadable):
+        dcs.forget_device_settings("mqtt", ["password"])
+
+
+def test_radio_info_timeout_keeps_stderr_redacted(capsys):
+    from handlers.radio_menu import RadioMenuHandler
+    h = RadioMenuHandler()
+    h.set_context(make_handler_context())
+    e = subprocess.TimeoutExpired(["meshtastic"], 30, output=None,
+                                  stderr=b"Traceback: connect failed\npassword: errsecret")
+    with patch("handlers.radio_menu.clear_screen"), \
+            patch("handlers.radio_menu.subprocess.run", side_effect=e), \
+            patch("builtins.input", return_value=""):
+        h._radio_run(["meshtastic", "--info"], "Radio Info", redact=True)
+    out = capsys.readouterr().out
+    assert "connect failed" in out and "errsecret" not in out   # r4 nit: redacted, pinned
+
+
+@pytest.mark.parametrize("damage", ["lora:\n  modem_preset: LONG_FAST\nmqtt: [unclosed\n",
+                                    "- a\n- b\n"], ids=["unparseable", "list-topped"])
+@pytest.mark.parametrize("save", ["one", "many"])
+def test_a_save_never_overwrites_a_damaged_store(store, save, damage):
+    """r2 pre_existing (CONFIRMED data loss): a {} read from a damaged file,
+    then a save, wiped lora/owner settings and reported success."""
+    from utils import device_config_store as dcs
+    store.write_text(damage)                 # r3: the non-mapping raise is pinned too
+    before = store.read_bytes()
+    ok = (dcs.save_device_setting("mqtt", "address", "m") if save == "one"
+          else dcs.save_device_settings({"mqtt": {"address": "m"}}))
+    assert ok is False and store.read_bytes() == before
+
+
+def test_the_success_box_claims_only_what_exit_0_shows(store):
+    """r2 nit: no readback, so never 'the radio keeps them'."""
+    boxes = _creds_ok(store)
+    assert "exited 0" in boxes["Success"] and "keeps them" not in boxes["Success"]

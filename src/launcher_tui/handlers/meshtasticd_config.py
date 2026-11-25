@@ -714,18 +714,40 @@ class MeshtasticdConfigHandler(BaseHandler):
                 self.ctx.dialog.msgbox("Error", f"Restart failed:\n{msg}")
                 return
 
-            from utils.device_config_store import load_device_config, apply_saved_config
+            from utils.device_config_store import (
+                DeviceConfigUnreadable, apply_saved_config, forget_secret_settings,
+                load_device_config)
+            from utils.secret_scrub import is_secret_key
+            # MeshForge keeps no stored secret (operator 11-24); this flow is
+            # the store's only reader, so an older copy is removed HERE and said
+            try:
+                purged = forget_secret_settings()
+                purge_note = (f"\n\nRemoved stored secret(s) MeshForge no longer "
+                              f"keeps: {', '.join(purged)}." if purged else "")
+            except DeviceConfigUnreadable as e:
+                purge_note = (f"\n\nWARNING: the saved-settings file could not be "
+                              f"read ({e}); it may still hold a password.")
+            except OSError as e:
+                purge_note = (f"\n\nWARNING: a stored password could not be "
+                              f"removed ({type(e).__name__}).")
             saved = load_device_config()
 
             if not saved:
-                self.ctx.dialog.msgbox("Success", f"meshtasticd restarted.\n\n{msg}")
+                self.ctx.dialog.msgbox("Success", f"meshtasticd restarted.\n\n{msg}{purge_note}")
                 return
 
             sections = []
             for section, values in saved.items():
-                items = [f"  {k}: {v}" for k, v in values.items()]
+                if not isinstance(values, dict):          # r1: .items() crashed
+                    sections.append(f"{section}: (not a settings list — not shown)")
+                    continue
+                # a secret or a nested value is never shown (r1/r2)
+                items = [f"  {k}: " + ("<hidden>" if is_secret_key(k)
+                                       else "(nested — not shown)" if isinstance(v, (dict, list))
+                                       else str(v))
+                         for k, v in values.items()]
                 sections.append(f"{section}:\n" + "\n".join(items))
-            summary = "\n".join(sections)
+            summary = "\n".join(sections) + purge_note
 
             reapply = self.ctx.dialog.yesno(
                 "Re-apply Settings?",

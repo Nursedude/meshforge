@@ -143,7 +143,10 @@ class RadioMenuHandler(BaseHandler):
                 cli = self.ctx.get_meshtastic_cli()
                 conn_args = ['--host', 'localhost']
                 if choice == "info":
-                    self._radio_run([cli] + conn_args + ['--info'], "Radio Info")
+                    # --info prints module preferences as JSON, mqtt.password
+                    # included: captured and redacted (review r2, 11-24)
+                    self._radio_run([cli] + conn_args + ['--info'], "Radio Info",
+                                    redact=True)
                 elif choice == "nodes":
                     self._radio_run([cli] + conn_args + ['--nodes'], "Node List")
                 elif choice == "channels":
@@ -206,20 +209,45 @@ class RadioMenuHandler(BaseHandler):
             handler.set_context(self.ctx)
         handler._favorites_menu()
 
-    def _radio_run(self, cmd: list, title: str):
-        """Run a meshtastic CLI command and show output in terminal."""
+    def _radio_run(self, cmd: list, title: str, redact: bool = False):
+        """Run a meshtastic CLI command and show output in terminal.
+        ``redact``: capture the output and hide password values before
+        printing (no live streaming for that command)."""
         clear_screen()
         print(f"=== {title} ===")
         print("(Ctrl+C to abort)\n")
         try:
-            result = subprocess.run(cmd, timeout=30)
+            if redact:
+                from utils.secret_scrub import redact_password_lines
+                result = subprocess.run(cmd, timeout=30, capture_output=True, text=True)
+                # stdout only from a CLEAN exit: a child that dies mid-output
+                # (killed, crashed) leaves cut-off text no redactor is safe on
+                # (review r4 — the same class as the timeout, another exit)
+                if result.returncode == 0:
+                    print(redact_password_lines(result.stdout))
+                elif result.stdout:
+                    print("(partial output withheld — it may contain secrets)")
+                if result.stderr:
+                    print(redact_password_lines(result.stderr))
+            else:
+                result = subprocess.run(cmd, timeout=30)
             if result.returncode != 0:
                 print(f"\nCommand failed (exit {result.returncode})")
                 print("Is meshtasticd running? Check it in Service Control.")
         except FileNotFoundError:
             self._offer_install_meshtastic_cli()
             return
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
+            if redact:
+                # partial stdout is WITHHELD: a chunk can stop mid-secret, and
+                # no redactor is safe on cut-off text (review r3). stderr (the
+                # CLI's error, not the preferences dump) is shown, redacted.
+                from utils.secret_scrub import redact_password_lines
+                if e.stdout:
+                    print("(partial output withheld — it may contain secrets)")
+                if e.stderr:
+                    err = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else e.stderr
+                    print(redact_password_lines(err))
             print("\n\nCommand timed out (30s). Radio may not be connected.")
             print("Check meshtasticd in Service Control.")
         except KeyboardInterrupt:

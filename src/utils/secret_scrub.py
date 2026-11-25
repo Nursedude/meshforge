@@ -16,6 +16,24 @@ from typing import Optional
 #: the value is hidden even when the caller does not know it (a radio's
 #: stored mqtt.password read back with --get)
 _PASSWORD_LINE = re.compile(r"(?im)^(\s*[\w.]*password\s*[:=]\s*)(\S.*)$")
+#: the same field in JSON (``meshtastic --info`` prints module preferences
+#: as JSON: ``"password": "<value>"`` — review r2: the line form misses it)
+_PASSWORD_JSON = re.compile(
+    r"""(?i)(["'][\w.]*(?:password|passphrase|wifi_?psk)["']\s*:\s*)(["'])"""
+    r"""(?:(?!\2)[^\\]|\\.)*\2""")
+# JSON or a dict repr (r1); wifiPsk is a password in all but name (r2). A
+# COMPLETE value only: a cut-off chunk is never fed here — the one caller that
+# could produce one (a timed-out Radio Info) withholds partial output instead
+# (r3: an end-of-text match let a crafted node name blank the rest of the
+# screen, and a cut after a backslash still leaked a prefix)
+#: a config KEY whose value is a secret (display and logs mask it)
+_SECRET_KEY = re.compile(
+    r"(?i)password|passphrase|passwd|secret|psk|private_?key|admin_?key|api_?key|token")
+
+
+def is_secret_key(key: object) -> bool:
+    """True for a settings key whose VALUE must never be shown or logged."""
+    return bool(_SECRET_KEY.search(str(key)))
 
 
 def scrub_secret(text: Optional[str], *secrets: Optional[str]) -> str:
@@ -32,4 +50,5 @@ def scrub_secret(text: Optional[str], *secrets: Optional[str]) -> str:
 def redact_password_lines(text: Optional[str]) -> str:
     """``text`` with the value of any ``password: …`` / ``password = …`` line
     hidden — for output whose secret the caller never saw."""
-    return _PASSWORD_LINE.sub(r"\1<hidden>", text or "")
+    out = _PASSWORD_JSON.sub(r"\1\2<hidden>\2", text or "")
+    return _PASSWORD_LINE.sub(r"\1<hidden>", out)
