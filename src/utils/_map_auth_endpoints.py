@@ -36,7 +36,7 @@ button{margin-top:.8rem}code{background:#fff;border:1px solid #ccc;padding:0 .3e
 code on the box, then type it here. In the MeshForge TUI: <b>__TUI__</b>. Or at a shell on the box:</p>
 <p><code>__PAIR__</code></p>
 <form id="f"><label for="c">Pairing code</label>
-<input id="c" autocomplete="one-time-code" maxlength="12" required autofocus>
+<input id="c" autocomplete="one-time-code" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="12" required autofocus>
 <button type="submit">Log in</button></form>
 <p id="m" role="status"></p>
 <script>

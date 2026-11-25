@@ -782,3 +782,31 @@ def test_login_page_get_reads_no_store(server, store, monkeypatch):
     monkeypatch.setattr(store, "_read", lambda: calls.append(1) or real())
     status, _, _ = _req(srv, "GET", "/login")
     assert status == 200 and calls == []
+
+
+# ── LOGIN-UX (4), 11-24: a phone keyboard opens in CAPITALS for the code ──
+# MEASURED at the lab 11-24 (code minted 14:05:28 HST by `date`; the send it
+# unlocked stamped 14:10:05): the operator, pairing a fleet box from an iPhone, read
+# the lowercase keyboard as "can't do lower case" — the server always took
+# any case (``_normalize_code``), the page never said so to the keyboard.
+
+def test_code_field_asks_the_keyboard_for_capitals_and_no_autocorrect(server):
+    srv, _ = server
+    page = _login_page(srv)
+    tag = page[page.index('<input id="c"'):]
+    tag = tag[:tag.index(">") + 1]
+    for attr in ('autocapitalize="characters"', 'autocorrect="off"', 'spellcheck="false"'):
+        assert attr in tag, (attr, tag)
+
+
+@pytest.mark.parametrize("shape", [str.lower, lambda c: f"{c[:4]}-{c[4:]}".lower(),
+                                   lambda c: f" {c[:4]} {c[4:]} "],
+                         ids=["lower", "lower-dashed", "spaced"])
+def test_a_code_in_any_case_or_separator_logs_in(server, store, shape):
+    """The other half: what a phone keyboard sends anyway still works (the
+    CLI prints the code as XXXX-XXXX; the store mints it without the dash)."""
+    srv, _ = server
+    code = shape(store.start_pairing())
+    status, body, _ = _req(srv, "POST", "/login", json.dumps({"code": code}),
+                           dict(JSON, Origin=_origin(srv)))
+    assert status == 200, (code, body)
