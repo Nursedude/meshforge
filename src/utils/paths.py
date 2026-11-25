@@ -12,6 +12,7 @@ config files, not root's.
 from pathlib import Path
 from typing import Optional
 import os
+import stat
 import sys
 import tempfile
 
@@ -73,17 +74,71 @@ def get_real_username() -> str:
     return os.environ.get('USER', 'unknown')
 
 
+def root_owned_chain(path, home, lstat=None) -> list:
+    """Every ROOT-OWNED real directory (or the path itself) from ``path`` up
+    to — NOT including — ``home``, nearest first.
+
+    Why the chain and not the leaf (gate-5 stranger drill 45652768967): a
+    fresh account has no ``~/.config``; root made it on the way to a deeper
+    path, the leaf was handed back, and the operator could never create
+    ``~/.config/meshforge`` ("Permission denied"). The home itself, anything
+    outside it and a ``..`` path are never in the chain; a symlinked home is
+    resolved once (r3) and a home that is — or resolves to — ``/``, or is
+    relative, yields no chain at all (r2). The walk runs
+    top-down from just below ``home`` and STOPS at the first symlink:
+    everything deeper resolves through the link, possibly out of the home
+    (review r1). A component that cannot be stat'ed is skipped. A relative
+    path is made absolute against the cwd (no symlink resolution). Pure: no
+    chown here.
+    """
+    lstat = lstat or os.lstat
+    p, home = Path(os.path.abspath(path)) if not Path(path).is_absolute() else Path(path), Path(home)
+    if ".." in p.parts or ".." in home.parts:
+        return []
+    try:
+        rel = p.relative_to(home)
+    except ValueError:
+        return []
+    # A symlinked home (/home/ham -> /mnt/ssd/ham) is RESOLVED once and the
+    # walk runs on the real tree (Fable r3: refusing it dropped a working
+    # install); every check below applies to the REAL home. Same rule as
+    # mf_mkdir_for_user.
+    try:
+        if stat.S_ISLNK(lstat(home).st_mode):
+            home = Path(os.path.realpath(home))
+    except OSError:
+        return []
+    # A home of "/" (a service account's passwd entry, or a link to it) makes
+    # EVERY path "under" it — the walk would hand /etc to that account (r2).
+    if not home.is_absolute() or len(home.parts) < 2:
+        return []
+    out, cur = [], home
+    for part in rel.parts:       # top-down from just below the (real) home
+        cur = cur / part
+        try:
+            st = lstat(cur)
+        except OSError:
+            continue
+        if stat.S_ISLNK(st.st_mode):
+            break
+        if st.st_uid == 0:
+            out.append(cur)
+    return out[::-1]
+
+
 def chown_to_operator(*paths) -> None:
     """Hand root-created config artifacts back to the real operator.
 
     Under sudo a file written by root in the operator's home stays
     root-owned, which breaks every later user-mode reader/writer (MF001
     class). Any writer that persists to ``get_real_user_home()`` while
-    possibly running as root must call this — the same fix
-    ``MeshForgePaths.ensure_directories`` applies to the dirs, factored
-    out so ``write_role`` and ``save_profile`` (and future writers) share
-    ONE implementation instead of drifting copies. Best-effort: a chown
-    failure leaves the file root-usable, never raises."""
+    possibly running as root must call this — ONE implementation instead of
+    drifting copies. Hands back each path AND every root-owned directory
+    above it up to the operator's home (``root_owned_chain``): a parent root
+    made with ``parents=True`` (``~/.config``, ``~/.local``) is as
+    unwritable as the leaf. The path itself keeps the old rule (chowned if
+    root-owned, wherever it is); the chain above it is inside the home only. Best-effort: a chown failure leaves the file
+    root-usable, never raises."""
     sudo_user = os.environ.get('SUDO_USER', '')
     if not sudo_user or sudo_user == 'root' or '/' in sudo_user \
             or '..' in sudo_user:
@@ -91,12 +146,21 @@ def chown_to_operator(*paths) -> None:
     try:
         import pwd
         pw = pwd.getpwnam(sudo_user)
-        for p in paths:
-            p = Path(p)
+    except (KeyError, OSError):
+        return
+    for p in paths:
+        p = Path(p)
+        try:
+            # the path itself: the rule this function always had (any
+            # root-owned path it is handed — /etc callers rely on it, r1)
             if p.exists() and p.stat().st_uid == 0:
                 os.chown(str(p), pw.pw_uid, pw.pw_gid)
-    except (KeyError, OSError):
-        pass  # non-critical: still root-usable
+            # NEW: the root-made directories above it, inside the home only
+            for d in root_owned_chain(p.parent, pw.pw_dir):
+                # never through a link swapped in after the lstat (r3)
+                os.chown(str(d), pw.pw_uid, pw.pw_gid, follow_symlinks=False)
+        except OSError:
+            pass  # non-critical: still root-usable
 
 
 # ============================================================================
@@ -937,19 +1001,9 @@ class MeshForgePaths:
         for d in dirs:
             d.mkdir(parents=True, exist_ok=True)
 
-        # Fix ownership if running under sudo
-        sudo_user = os.environ.get('SUDO_USER', '')
-        if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-            try:
-                import pwd
-                pw = pwd.getpwnam(sudo_user)
-                uid, gid = pw.pw_uid, pw.pw_gid
-                for d in dirs:
-                    # Only chown if currently root-owned
-                    if d.stat().st_uid == 0:
-                        os.chown(str(d), uid, gid)
-            except (KeyError, OSError):
-                pass  # Non-critical: dirs still usable by root
+        # Under sudo: hand back each dir AND the root-made parents above it
+        # (~/.config, ~/.local, ~/.local/share) — the one helper.
+        chown_to_operator(*dirs)
 
 
 class SystemPaths:

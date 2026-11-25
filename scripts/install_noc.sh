@@ -1671,27 +1671,34 @@ RNSD_SERVICE
     REAL_HOME=$(eval echo "~${REAL_USER}")
     USER_SYSTEMD_DIR="${REAL_HOME}/.config/systemd/user"
     if [[ -d "$INSTALL_DIR/templates/systemd" ]]; then
-        mkdir -p "$USER_SYSTEMD_DIR"
-        cp "$INSTALL_DIR/templates/systemd/rnsd-user.service" "$USER_SYSTEMD_DIR/rnsd.service" 2>/dev/null || true
-        if [[ -f "$INSTALL_DIR/templates/systemd/nomadnet-user.service" ]]; then
-            # One rule with update.sh + the TUI (utils.user_unit_templates): a
-            # template its installer RENDERS is never copied raw (2026-10-21).
-            # A plan that cannot run copies nothing.
-            uut_rc=0
-            uut_plan="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$INSTALL_DIR/src" timeout 30 python3 -m utils.user_unit_templates plan \
-                    "$INSTALL_DIR/templates/systemd" "$USER_SYSTEMD_DIR" 2>&1)" || uut_rc=$?
-            uut_copy="$(printf '%s\n' "$uut_plan" | awk -F'\t' '$1=="copy" && $3=="nomadnet.service" {print "yes"; exit}')"
-            uut_why="$(printf '%s\n' "$uut_plan" | awk -F'\t' '$1=="skip" && $2=="nomadnet.service" {print $4; exit}')"
-            if [[ $uut_rc -ne 0 ]]; then
-                echo -e "  ${YELLOW}⚠ nomadnet.service: not copied — user-unit plan failed (rc=$uut_rc): ${uut_plan:0:160}${NC}"
-            elif [[ "$uut_copy" == "yes" ]]; then
-                cp "$INSTALL_DIR/templates/systemd/nomadnet-user.service" "$USER_SYSTEMD_DIR/nomadnet.service" 2>/dev/null || true
-            else
-                echo -e "  ${YELLOW}↷ nomadnet.service: not copied — ${uut_why:-no copy step in the plan}${NC}"
+        # whole chain, not the leaf: a fresh account has no ~/.config (drill 45652768967)
+        uud_rc=0
+        mf_mkdir_for_user "$REAL_USER" "$REAL_HOME" "$USER_SYSTEMD_DIR" || uud_rc=$?
+        if [[ $uud_rc -ne 0 ]]; then
+            [[ $uud_rc -eq 2 ]] && uud_why="refused: home missing, '/', or the path is not under it" || uud_why="mkdir failed (its error is above)"
+            echo -e "  ${YELLOW}⚠ User service templates NOT deployed — ${uud_why} (rc $uud_rc): user='${REAL_USER}' home='${REAL_HOME}'${NC}" >&2
+        else
+            cp "$INSTALL_DIR/templates/systemd/rnsd-user.service" "$USER_SYSTEMD_DIR/rnsd.service" 2>/dev/null || true
+            if [[ -f "$INSTALL_DIR/templates/systemd/nomadnet-user.service" ]]; then
+                # One rule with update.sh + the TUI (utils.user_unit_templates): a
+                # template its installer RENDERS is never copied raw (2026-10-21).
+                # A plan that cannot run copies nothing.
+                uut_rc=0
+                uut_plan="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$INSTALL_DIR/src" timeout 30 python3 -m utils.user_unit_templates plan \
+                        "$INSTALL_DIR/templates/systemd" "$USER_SYSTEMD_DIR" 2>&1)" || uut_rc=$?
+                uut_copy="$(printf '%s\n' "$uut_plan" | awk -F'\t' '$1=="copy" && $3=="nomadnet.service" {print "yes"; exit}')"
+                uut_why="$(printf '%s\n' "$uut_plan" | awk -F'\t' '$1=="skip" && $2=="nomadnet.service" {print $4; exit}')"
+                if [[ $uut_rc -ne 0 ]]; then
+                    echo -e "  ${YELLOW}⚠ nomadnet.service: not copied — user-unit plan failed (rc=$uut_rc): ${uut_plan:0:160}${NC}"
+                elif [[ "$uut_copy" == "yes" ]]; then
+                    cp "$INSTALL_DIR/templates/systemd/nomadnet-user.service" "$USER_SYSTEMD_DIR/nomadnet.service" 2>/dev/null || true
+                else
+                    echo -e "  ${YELLOW}↷ nomadnet.service: not copied — ${uut_why:-no copy step in the plan}${NC}"
+                fi
             fi
+            chown -R "${REAL_USER}:" "$USER_SYSTEMD_DIR" 2>/dev/null || true
+            echo -e "  ${GREEN}✓ User service templates deployed to ${USER_SYSTEMD_DIR}${NC}"
         fi
-        chown -R "${REAL_USER}:" "$USER_SYSTEMD_DIR" 2>/dev/null || true
-        echo -e "  ${GREEN}✓ User service templates deployed to ${USER_SYSTEMD_DIR}${NC}"
     fi
 
     # Born-correct permission foundation: the canonical RNS tree
@@ -1969,31 +1976,37 @@ mini_user_systemctl() {
 
 MINI_TMPL_DIR="$INSTALL_DIR/templates/systemd"
 if [[ -f "$MINI_TMPL_DIR/meshforge-mini-dudeai.service" ]]; then
-    mkdir -p "$MINI_USER_SYSTEMD_DIR"
-    for mini_unit in meshforge-mini-dudeai.service \
-                     meshforge-mini-dudeai-dream.service \
-                     meshforge-mini-dudeai-dream.timer; do
-        if [[ -f "$MINI_TMPL_DIR/$mini_unit" ]]; then
-            cp "$MINI_TMPL_DIR/$mini_unit" "$MINI_USER_SYSTEMD_DIR/$mini_unit" 2>/dev/null || true
-        fi
-    done
-    chown -R "${MINI_USER}:" "$MINI_USER_SYSTEMD_DIR" 2>/dev/null || true
-
-    # Lingering keeps the user bus + units alive without an active login —
-    # required for a 24/7 watcher on a headless box.
-    loginctl enable-linger "$MINI_USER" 2>/dev/null || true
-
-    if mini_user_systemctl daemon-reload 2>/dev/null; then
-        # Enable+start the daemon and the nightly dream timer (the dream
-        # .service is pulled by its timer — enable the timer, not the service).
-        mini_user_systemctl enable --now meshforge-mini-dudeai.service 2>/dev/null || true
-        mini_user_systemctl enable --now meshforge-mini-dudeai-dream.timer 2>/dev/null || true
-        echo -e "  ${GREEN}✓ mini-dudeai user units enrolled (service + nightly dream timer)${NC}"
+    mud_rc=0
+    mf_mkdir_for_user "$MINI_USER" "$MINI_HOME" "$MINI_USER_SYSTEMD_DIR" || mud_rc=$?
+    if [[ $mud_rc -ne 0 ]]; then
+        [[ $mud_rc -eq 2 ]] && mud_why="refused: home empty (not in passwd), missing, or '/'" || mud_why="mkdir failed (its error is above)"
+        echo -e "  ${YELLOW}⚠ mini-dudeai NOT enrolled — ${mud_why} (rc $mud_rc): user='${MINI_USER}' home='${MINI_HOME}'${NC}" >&2
     else
-        echo -e "  ${YELLOW}⚠ mini-dudeai units copied but the user bus was unreachable.${NC}"
-        echo -e "  ${YELLOW}  As ${MINI_USER}: systemctl --user daemon-reload && systemctl --user enable --now meshforge-mini-dudeai.service meshforge-mini-dudeai-dream.timer${NC}"
+        for mini_unit in meshforge-mini-dudeai.service \
+                         meshforge-mini-dudeai-dream.service \
+                         meshforge-mini-dudeai-dream.timer; do
+            if [[ -f "$MINI_TMPL_DIR/$mini_unit" ]]; then
+                cp "$MINI_TMPL_DIR/$mini_unit" "$MINI_USER_SYSTEMD_DIR/$mini_unit" 2>/dev/null || true
+            fi
+        done
+        chown -R "${MINI_USER}:" "$MINI_USER_SYSTEMD_DIR" 2>/dev/null || true
+
+        # Lingering keeps the user bus + units alive without an active login —
+        # required for a 24/7 watcher on a headless box.
+        loginctl enable-linger "$MINI_USER" 2>/dev/null || true
+
+        if mini_user_systemctl daemon-reload 2>/dev/null; then
+            # Enable+start the daemon and the nightly dream timer (the dream
+            # .service is pulled by its timer — enable the timer, not the service).
+            mini_user_systemctl enable --now meshforge-mini-dudeai.service 2>/dev/null || true
+            mini_user_systemctl enable --now meshforge-mini-dudeai-dream.timer 2>/dev/null || true
+            echo -e "  ${GREEN}✓ mini-dudeai user units enrolled (service + nightly dream timer)${NC}"
+        else
+            echo -e "  ${YELLOW}⚠ mini-dudeai units copied but the user bus was unreachable.${NC}"
+            echo -e "  ${YELLOW}  As ${MINI_USER}: systemctl --user daemon-reload && systemctl --user enable --now meshforge-mini-dudeai.service meshforge-mini-dudeai-dream.timer${NC}"
+        fi
+        echo -e "  ${YELLOW}  mini-dudeai needs ${MINI_HOME}/.config/meshforge/mini_dudeai.env (ntfy topic, MF014).${NC}"
     fi
-    echo -e "  ${YELLOW}  mini-dudeai needs ${MINI_HOME}/.config/meshforge/mini_dudeai.env (ntfy topic, MF014).${NC}"
 fi
 
 # Radio hardware already detected and configured above (ask_radio_type + SPI/USB setup)

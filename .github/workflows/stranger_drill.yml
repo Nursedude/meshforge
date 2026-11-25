@@ -110,6 +110,13 @@ jobs:
           if [ -n "$DRILL_PROFILE" ]; then
             DAEMON_RC=$(x "sudo timeout 60 python3 src/launcher.py --daemon --profile \"$DRILL_PROFILE\"" daemon.log)
           fi
+          # Who owns the stranger's own config tree (11-25: a root-owned
+          # ~/.config left "Permission denied: ~/.config/meshforge"; the
+          # cause was READ in code, this line makes it OBSERVED). Taken
+          # LAST — after the installer (shell half) AND after the root-run
+          # steps (verify, gate-7 daemon) where ensure_user_dirs runs the
+          # Python half (Fable r4: an earlier snapshot never saw it).
+          docker exec box bash -c 'cd /home/ham && for d in .config .local; do if [ -e "$d" ]; then find "$d" -maxdepth 3 -type d -printf "%u %m %p\n" 2>&1; else echo "absent $d"; fi; done' > owners.log 2>&1
           {
             echo "## Stranger drill — debian ${{ matrix.release }} arm64 @ ${GITHUB_SHA::8}"
             echo "_OBSERVE MODE — records what a stranger meets; not a gate yet._"
@@ -121,10 +128,26 @@ jobs:
             echo "| standalone.py --help | rc=$STANDALONE_RC |"
             echo "| failed systemd units | $(grep -c . failed_units.log) |"
             echo "| AI configured in env | $(cat ai_env.log) var(s) (expect 0) |"
+            # unobservable != 0 (r1/r2): EVERY line that is not an owner
+            # record (find errors, a dead container, a failed cd) counts, and
+            # no .config record at all is itself unobservable — never a
+            # green "0 root-owned" from an observation that did not happen
+            OWN_REC='^[a-z_][a-z0-9_-]* [0-7]+ \.'
+            OWN_ROOT=$(grep -cE '^root [0-7]+ \.' owners.log)
+            # an "absent .local" line is a fact, not blindness (r3): listed,
+            # never counted as unobservable; a missing .config record still is
+            OWN_BAD=$(grep -vE '^absent \.' owners.log | grep -cvE "$OWN_REC")
+            grep -qE '^[^ ]+ [0-7]+ \.config$' owners.log || OWN_BAD=$((OWN_BAD + 1))
+            OWN_ABSENT=$(grep -oE '^absent \.[a-z]+' owners.log | sed 's/^absent //' | paste -sd, -)
+            # the SYMPTOM itself, wherever a step met it (it surfaced in
+            # ai_offline.log): the domain END for the 11-25 fix
+            echo "| 'Permission denied' lines across every step log | $(cat *.log | grep -c 'Permission denied') (expect 0) |"
+            echo "| dirs root-owned in ~ham/.config + ~ham/.local (depth 3) | ${OWN_ROOT} root-owned · ${OWN_BAD} unobservable (expect 0 · 0)${OWN_ABSENT:+ · absent: $OWN_ABSENT} |"
             echo "| gate 4: AI says not configured + offline answers | rc=$AI_RC (0 = both) — $(grep -m1 '^availability:' ai_offline.log) |"
             echo "| gate 7: daemon --profile ${DRILL_PROFILE:-<none>} 60 s | rc=$DAEMON_RC (124 = alive at 60 s) — started: $(grep -o 'Started: [A-Za-z_]*' daemon.log 2>/dev/null | sed 's/Started: //' | paste -sd, -) |"
             echo
             echo '```'; cat units.log; echo '```'
+            echo '```'; cat owners.log; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep the evidence

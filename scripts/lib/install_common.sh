@@ -536,3 +536,52 @@ mf_install_failed_report() {
     printf '  guarantee proven from every one of the 8 phases. If a re-run does\n'
     printf '  not clear it, please report the transcript rather than hand-patching.\n\n'
 }
+
+# mf_mkdir_for_user USER HOME DIR — `mkdir -p DIR` (DIR strictly under HOME),
+# then hand USER every ROOT-OWNED real directory from DIR up to — NOT
+# including — HOME, not only the leaf. A fresh account has no ~/.config:
+# root's `mkdir -p ~/.config/systemd/user` + a leaf-only chown left ~/.config
+# root-owned, so the operator could never create ~/.config/meshforge (gate-5
+# stranger drill 45652768967, bookworm + trixie: "Permission denied:
+# '/home/ham/.config/meshforge'"). The SAME rule as the Python half,
+# utils.paths.root_owned_chain / chown_to_operator. HOME itself, anything
+# outside it, `..` paths and symlinks are never touched; contents are not
+# walked (callers `chown -R` their own leaf). rc 2 = refused (bad arguments).
+# Under --dry-run mkdir/chown are shadowed: previewed, nothing changes.
+mf_mkdir_for_user() {
+    local user="$1" home="$2" dir="$3" p comps=() i real
+    # one spelling per path, as Python's Path has: squeeze "//" anywhere and
+    # strip EVERY trailing slash ("/home/ham//" bypassed the link test, r2;
+    # "h//.config" walked a second spelling of the same dir, the r3 table)
+    while [[ "$home" == *//* ]]; do home="${home//\/\//\/}"; done
+    while [[ "$dir" == *//* ]]; do dir="${dir//\/\//\/}"; done
+    while [[ "$home" == */ ]]; do home="${home%/}"; done
+    while [[ "$dir" == */ ]]; do dir="${dir%/}"; done
+    [[ -n "$user" && "$home" == /?* && "$dir" == "$home"/?* ]] || return 2
+    case "/$dir/" in */../*|*/./*) return 2 ;; esac
+    # a symlinked HOME (/home/ham -> /mnt/ssd/ham) is RESOLVED once and the
+    # walk runs on the real tree (r3: refusing it dropped a working install)
+    if [[ -L "$home" ]]; then
+        real="$(readlink -f -- "$home")" || return 2
+        dir="${real}${dir#"$home"}"
+        home="$real"
+    fi
+    # a missing HOME would be created by root and left root's (r1); a HOME
+    # that is — or resolves to — "/" makes every path "under" it (r2)
+    [[ "$home" == /?* && -d "$home" && ! -L "$home" ]] || return 2
+    mkdir -p "$dir" || return $?
+    p="$dir"
+    while [[ "$p" != "$home" && "$p" == "$home"/* ]]; do
+        comps+=("$p")
+        p="$(dirname "$p")"
+    done
+    # top-down from just below HOME: a symlinked component ends the walk —
+    # everything deeper resolves THROUGH the link, possibly out of HOME (r1)
+    for (( i=${#comps[@]}-1; i>=0; i-- )); do
+        p="${comps[i]}"
+        [[ -L "$p" ]] && break
+        if [[ -d "$p" && "$(stat -c %u "$p" 2>/dev/null)" == 0 ]]; then
+            chown -h "${user}:" "$p" 2>/dev/null || true
+        fi
+    done
+}
