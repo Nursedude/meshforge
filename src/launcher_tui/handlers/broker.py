@@ -12,6 +12,7 @@ config access.
 import logging
 import os
 import subprocess
+from backend import blank_secret
 from typing import Optional
 
 from handler_protocol import BaseHandler
@@ -417,15 +418,21 @@ class BrokerHandler(BaseHandler):
         from utils.broker_profiles import generate_password
         default_pw = generate_password(12)
 
-        password = self._ask(
+        # Masked, and the generated one is never shown or put in argv (`ps`):
+        # blank takes it (the r6 #4 blank-takes-the-default rule, without
+        # displaying the default). Radio MQTT Setup reveals it on an explicit Yes.
+        typed = self.ctx.dialog.passwordbox(
             "MQTT Password",
             "Password for broker authentication:\n\n"
-            "A random password has been generated.\n"
-            "You can use it or enter your own.",
-            init=default_pw
-        )
-        if password is None:
+            "Type your own, or leave blank to use a generated\n"
+            "random one (not shown here; Radio MQTT Setup can\n"
+            "reveal it).")
+        if typed is None:
             return
+        generated = blank_secret(typed) == ""   # the one blank rule; blank = generated here
+        password = default_pw if generated else typed
+        pw_said = ("generated (not shown — reveal it in Radio MQTT Setup)"
+                   if generated else "set (not shown — the one you just entered)")
 
         profile = create_private_profile(
             name="meshforge_private",
@@ -441,7 +448,7 @@ class BrokerHandler(BaseHandler):
         profile.is_active = True
         if not self._confirm_replace(
                 profiles, "meshforge_private",
-                f"user {username} and the password just entered"):
+                f"user {username} and the password just {'generated' if generated else 'entered'}"):
             return
         verb = self._verb(profiles, "meshforge_private")
         profiles["meshforge_private"] = profile
@@ -476,7 +483,7 @@ class BrokerHandler(BaseHandler):
             f"Private broker profile {verb} and activated!\n\n"
             f"Broker: localhost:{profile.port}\n"
             f"User: {username}\n"
-            f"Password: set (not shown — the one you just entered)\n"
+            f"Password: {pw_said}\n"
             f"Channel: {channel}\n"
             f"Region: {region}\n\n"
             f"Configure your Meshtastic radio:\n\n{cmds}",
@@ -629,9 +636,10 @@ class BrokerHandler(BaseHandler):
         password = ""
         if username:
             # not via _ask: blank here means NO password, never a default
-            password = self.ctx.dialog.inputbox("Password", "MQTT password:")
+            password = self.ctx.dialog.passwordbox("Password", "MQTT password:")
             if password is None:
                 return
+            password = blank_secret(password)   # blank/whitespace = NO password
 
         region = self._ask("Region", "Meshtastic region code:", init="US")
         if region is None:

@@ -143,14 +143,14 @@ def test_default_choice_sends_the_cli_word_not_aq():
 
 
 def test_primary_custom_key_needs_the_typed_word():
-    h, writes = _drive("_set_channel_psk", 0, menu=["custom"], inputs=[_B64, ""])
+    h, writes = _drive("_set_channel_psk", 0, menu=["custom"], inputs=[_B64, _B64, ""])
     assert writes == [], writes
-    h, writes = _drive("_set_channel_psk", 0, menu=["custom"], inputs=[_B64, " PRIMARY "])
+    h, writes = _drive("_set_channel_psk", 0, menu=["custom"], inputs=[_B64, _B64, " PRIMARY "])
     assert writes == [("psk", 0, "base64:" + _B64)], writes   # control + strip()
 
 
 def test_custom_key_is_shown_in_the_confirm():
-    h, writes = _drive("_set_channel_psk", 2, menu=["custom"], inputs=[_B64])
+    h, writes = _drive("_set_channel_psk", 2, menu=["custom"], inputs=[_B64, _B64])
     texts = [args[1] for name, args, kw in h.ctx.dialog.calls if name == 'yesno']
     assert texts and "256-bit" in texts[0] and _B64[:4] in texts[0], texts
 
@@ -169,7 +169,7 @@ def test_custom_key_normalization():
 
 
 def test_unusable_custom_key_is_refused_with_a_reason():
-    h, writes = _drive("_set_channel_psk", 2, menu=["custom"], inputs=["1a2b"], yesno=[True])
+    h, writes = _drive("_set_channel_psk", 2, menu=["custom"], inputs=["1a2b", "1a2b"], yesno=[True])
     assert writes == [], writes
     assert "Not written" in (h.ctx.dialog.last_msgbox_text or "")
 
@@ -230,7 +230,7 @@ def test_pasted_base64_forms_normalize_to_the_same_key():
 def test_a_truncated_256_bit_paste_is_flagged_in_the_confirm():
     # the Generate PSK screen once showed only hex[:32] — which is a VALID
     # 128-bit key; the confirm must make the half-key visible
-    h, writes = _drive("_set_channel_psk", 2, menu=["custom"], inputs=[_KEY32.hex()[:32]])
+    h, writes = _drive("_set_channel_psk", 2, menu=["custom"], inputs=[_KEY32.hex()[:32], _KEY32.hex()[:32]])
     texts = [args[1] for name, args, kw in h.ctx.dialog.calls if name == 'yesno']
     assert texts and "expected 256" in texts[0], texts
     assert writes == [], writes
@@ -253,7 +253,7 @@ def test_gateway_custom_key_goes_through_the_key_confirm():
     ctx.src_dir = _ROOT / "src"
     h.set_context(ctx)
     h.ctx.dialog._menu_returns = ["custom"]
-    h.ctx.dialog._inputbox_returns = [_B64]
+    h.ctx.dialog._inputbox_returns = [_B64, _B64]
     h.ctx.dialog._yesno_returns = [True]          # "Set up gateway channel?" only
     writes = []
     with patch.object(_mesh_cmd_module, 'set_channel_name',
@@ -294,3 +294,28 @@ def test_restore_and_region_confirms_default_to_no():
     r._radio_set_region()
     confirms = [kw for n, a, kw in r.ctx.dialog.calls if n == 'yesno']
     assert confirms and confirms[0].get('default_no') is True, confirms
+
+
+# ---- review r2 (Fable, 11-24): a key typed BLIND is typed twice ------------
+def test_a_custom_key_whose_two_entries_differ_is_not_written():
+    """Masked input hides a typo; a 44-char key wrong in one place would be
+    written silently (channel 0: the node drops off the mesh)."""
+    other = _B64[:-2] + ("A=" if _B64[-2:] != "A=" else "B=")
+    h, writes = _drive("_set_channel_psk", 2, menu=["custom"], inputs=[_B64, other],
+                       yesno=[True])
+    assert writes == [], writes
+    said = [args[1] for name, args, kw in h.ctx.dialog.calls if name == 'msgbox']
+    assert any("differ" in t for t in said), said
+
+
+def test_esc_on_the_second_key_entry_writes_nothing():
+    h, writes = _drive("_set_channel_psk", 2, menu=["custom"], inputs=[_B64, None],
+                       yesno=[True])
+    assert writes == [], writes
+
+
+def test_both_key_entries_are_masked():
+    h, writes = _drive("_set_channel_psk", 2, menu=["custom"], inputs=[_B64, _B64],
+                       yesno=[True])
+    kinds = [name for name, args, kw in h.ctx.dialog.calls if args and args[0] == "Custom PSK"]
+    assert kinds[:2] == ["passwordbox", "passwordbox"], kinds

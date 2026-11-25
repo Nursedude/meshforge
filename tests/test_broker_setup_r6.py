@@ -249,9 +249,50 @@ def test_r6_4_private_blank_takes_the_shown_defaults(cfg):
     store = _Store()
     ctx = _run(store, "_setup_private_broker", ["", "", "", ""])
     p = store.profiles["meshforge_private"]
-    (pw_box,) = _calls(ctx, "inputbox", "MQTT Password")
+    (pw_box,) = _calls(ctx, "passwordbox", "MQTT Password")
     assert (p.channel, p.region, p.username) == ("LongFast", "US", "meshforge")
-    assert p.password and p.password == pw_box[2]["init"]
+    # blank takes the GENERATED password — masked, never pre-filled (argv/ps)
+    assert p.password and "init" not in pw_box[2]
+
+
+def test_tui_pw_private_generated_password_is_never_shown(cfg):
+    """Review r1 (11-24) IMPORTANT: the generated default rode an echoing
+    inputbox AND whiptail's argv (``init=``). Now: nothing the operator is
+    shown carries it, and Setup Complete says where to reveal it."""
+    store = _Store()
+    ctx = _run(store, "_setup_private_broker", ["", "", "", ""])
+    pw = store.profiles["meshforge_private"].password
+    shown = repr(ctx.dialog.calls)
+    assert pw and pw not in shown
+    assert "generated (not shown" in _text(ctx, "Setup Complete")
+
+
+def test_tui_pw_generated_password_is_never_shown_when_replacing(cfg):
+    """r2 nit: the replace-confirm yesno is a dialog the operator sees too."""
+    store = _Store({"meshforge_private": create_private_profile(
+        name="meshforge_private", channel="LongFast", region="US",
+        username="old", password="oldpw")})
+    ctx = _run(store, "_setup_private_broker", ["", "", "", ""], yes=[True])
+    pw = store.profiles["meshforge_private"].password
+    assert pw and pw != "oldpw" and pw not in repr(ctx.dialog.calls)
+    assert _calls(ctx, "yesno"), "the replace confirm must have been shown"
+
+
+def test_tui_pw_private_typed_password_is_used_as_typed(cfg):
+    store = _Store()
+    _run(store, "_setup_private_broker", ["", "", "", " my pass "])
+    assert store.profiles["meshforge_private"].password == " my pass "
+
+
+def test_tui_pw_custom_whitespace_password_is_none(cfg):
+    """Review r1 nit: a masked box is not stripped; "   " at a 'blank = none'
+    prompt must still mean NO password, never a 3-space one."""
+    store = _Store()
+    inputs = list(CUSTOM_TLS)
+    inputs[inputs.index("bobpw")] = "   "
+    _run(store, "_setup_custom_broker", inputs)
+    (p,) = store.profiles.values()
+    assert p.password == ""
 
 
 @pytest.mark.parametrize("flow,inputs", [

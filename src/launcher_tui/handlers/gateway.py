@@ -7,6 +7,7 @@ Converted from gateway_config_mixin.py as part of the mixin-to-registry migratio
 import logging
 import re
 from pathlib import Path
+from backend import blank_secret
 
 from handler_protocol import BaseHandler
 from utils.paths import get_real_user_home
@@ -455,13 +456,12 @@ class GatewayHandler(BaseHandler):
                 if user is not None:
                     mqtt.username = user.strip()
                     if mqtt.username:
-                        pw = self.ctx.dialog.inputbox(
+                        pw = self.ctx.dialog.passwordbox(
                             "MQTT Password",
                             "Enter MQTT password:",
-                            init=""
                         )
                         if pw is not None:
-                            mqtt.password = pw
+                            mqtt.password = blank_secret(pw)   # blank/whitespace = none
                     else:
                         mqtt.password = ""
 

@@ -141,13 +141,27 @@ Not in scope: changing what the background refresher collects. Review: contextle
 **What :5000 has (VERIFIED 11-17):** websocket live message feed (:5001 listening on VolcanoAI + moc), a particle "message flow" animation, a 24 h playback slider of NODE snapshots (not packets), animated link lines, the MAP-H honesty layer.
 
 **Plan, in order (beat CoreScope on truth; PARITY-1 "copy, then match or beat"):**
-1. H16 (above) — first; it is a defect. **DONE 2026-11-20 `e68094df`** (not deployed: the map's listener half needs a map restart; page half is live from disk). Root: `message_listener` mapped missing `hopStart` → `hops_away=0`; now None (absent `hopLimit` = wire 0, proto3). Line only for `hops_away === 0` to the `is_self` marker; rows say direct / N hops — path not measured / hops unknown / not recorded. Residuals: (a) review F5 — if `is_self` is lost in a merge, a direct packet draws no line silently; check `_merge_feature` keeps it. (b) `store_incoming` keeps no `hops_away` → stored rows say 'not recorded'. (c) page half static-pinned, never seen in a browser.
+1. H16 (above) — first; it is a defect. **DONE 2026-11-20 `e68094df`** (not deployed: the map's listener half needs a map restart; page half is live from disk). Root: `message_listener` mapped missing `hopStart` → `hops_away=0`; now None (absent `hopLimit` = wire 0, proto3). Line only for `hops_away === 0` to the `is_self` marker; rows say direct / N hops — path not measured / hops unknown / not recorded. Residuals: (a) review F5 — if `is_self` is lost in a merge, a direct packet draws no line silently; check `_merge_feature` keeps it. **(a) MEASURED 2026-11-24 before 17:20 HST (`date` at write; live `/api/nodes/geojson` on VolcanoAI/moc/moc1/moc4/moc5/kiai): no feature anywhere carries `is_self: false` (the merge's fill-gaps rule cannot lose a True no source contradicts) → BELIEVED a non-issue. `is_self` exists only where the MAP drains its own radio (`_drain_interface_nodes`, "via tcp"): moc5 = a positioned marker → the line can draw; moc4 = tagged but GPS-less (in `nodes_without_position`) → no marker, no line, row still says "direct" (honest: no endpoint); moc/moc1 = `deferred_to_gateway` → own id unknown → no line (honest). No code change.** (b) `store_incoming` keeps no `hops_away` → stored rows say 'not recorded'. (c) page half static-pinned, never seen in a browser.
 2. Heard-by fan per packet: one line per fleet box that RECEIVED it, labelled SNR · hops · age; nothing for a box that did not (= Phase 4 heard-by edges; our fleet is the observer network).
 3. Last-hop CANDIDATES from the 1-byte relay id, drawn as candidates ("relayed by one of A, B"), never one confident line.
 4. Traceroute routes on the map (TRH-1) — the only measured Meshtastic paths.
 5. Packet replay (VCR over heard-by events we already record), beside the node-snapshot slider.
 6. MeshAnchor: true MeshCore route animation from packet paths (honest there).
 7. Run CoreScope in the lab as the reference (PARITY-1: references in the lab only); parity test on the same MeshCore traffic.
+
+### Step 2 — heard-by fan: design OPEN, two prerequisites MEASURED missing (2026-11-24 17:38 HST, `date`)
+
+**Scope (operator 11-24, AskUserQuestion: "Our sends first"):** THIS box's own `/inbox` sends, on the center map (VolcanoAI) first. Reuse BIC-2's judged boxes (`inbox_legs.heard_from` → `boxes`): ONE reader, so the map and `/inbox` can never name different hearers (hfm #5).
+
+**Acceptance sentence (pre-registered, not yet buildable):** an `/inbox` send whose line reads "heard by A, B" draws, on the center map, one line from the SENDING radio's marker to A's and B's markers, each labelled "heard +Ns after send · SNR/hops not recorded"; nothing for `not_heard` / `unobservable` / `cannot_hear`; a hearer with no position is LISTED ("heard (no position)"), never drawn; a kept hearing says "kept". END = the operator sends from `/inbox` and the map fans to exactly the boxes the inbox names.
+
+**Prerequisite P1 — alias → radio node id: ABSENT (measured).** No spool (`truth_spool/<alias>.json` sections: alias, box_truth, clock, deployment, ingress, radio_probe{tcp_listening,usb_present,usb_held}, rx_heard, role, services, …), no config, no `docs/fleet_roles.yaml` maps "moc4" to its radio's node id. Each box must report its OWN node id, read from its OWN radio (memory: own id NEVER inferred from traffic — moc4's journal shows `Received routing from=0x896b1917`, its own id, which is exactly the inference that rule bans). Candidate sources, none decided: (a) the box's map `_own_node_id` (TCP drain only — the PhoneAPI client class that force-closed the map, 11-11; HTTP-collected boxes have none); (b) a meshtasticd boot-banner line (none found by grep on moc4 — journal starts 11-02, banner wording UNKNOWN); (c) an HTTP :9443 endpoint (UNKNOWN whether one exposes it on Linux meshtasticd). Lands in the box_truth export → `box_truth_*.py` is byte-identical with MeshAnchor (parity) → a TWIN change.
+
+**Prerequisite P2 — the fan's origin on VolcanoAI: ABSENT (measured).** VolcanoAI's `/api/nodes/geojson` carries no `is_self` feature; which radio carries the center's `/inbox` sends is not established here. No origin → no line (draw nothing rather than invent one).
+
+**Label limit (measured):** `rx_heard` entries are `[from, id, rx_ts]` only — no SNR, no hops. The fan can say WHEN each box heard it, never how well; anything else is "not recorded".
+
+**Tier:** novel cross-twin export field + new map layer = frontier-class design (model_advisor upshift). Next: frontier session + operator grilling on P1's source; then red-first slices P1 → P2 → page.
 
 ## H4a — this radio's GPS-less records lost to federation (2026-11-20, MEASURED; design REVERSED after r3)
 

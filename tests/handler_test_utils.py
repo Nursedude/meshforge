@@ -72,6 +72,17 @@ class FakeDialog:
             return self._inputbox_returns.pop(0)
         return init
 
+    def passwordbox(self, title, text, **kwargs):
+        """Mirror backend.passwordbox: masked, no init. Answers come from the
+        SAME ordered queue as inputbox (one queue of typed answers), so a
+        handler's prompt order stays the test's order; the call is recorded
+        as 'passwordbox' so a test can tell a masked prompt from an echoed one."""
+        self._reject_ansi(title, text)
+        self.calls.append(('passwordbox', (title, text), kwargs))
+        if self._inputbox_returns:
+            return self._inputbox_returns.pop(0)
+        return ""
+
     def checklist(self, title, text, choices, **kwargs):
         self._reject_ansi(title, text, *(c for tup in choices for c in tup))
         self.calls.append(('checklist', (title, text, choices), kwargs))

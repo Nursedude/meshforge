@@ -50,6 +50,16 @@ class EditorUnavailable(DialogError):
 EDITOR_PACKAGE = "dialog"
 
 
+def blank_secret(typed: Optional[str]) -> Optional[str]:
+    """A masked box is NOT stripped (a secret's own spaces are part of it),
+    so at a "blank = none" prompt a whitespace-only answer must still mean
+    none: ONE rule for every such prompt (review r2, 11-24). None (Esc)
+    passes through."""
+    if typed is not None and not typed.strip():
+        return ""
+    return typed
+
+
 def _is_tool_error(code: int, output: str) -> bool:
     """True when exit 255 is the TOOL's own error, not the operator's Escape.
 
@@ -488,6 +498,30 @@ class DialogBackend:
             return output
         if code == -1:
             raise DialogError(f"inputbox '{title}' failed (subprocess died)")
+        return None
+
+    def passwordbox(self, title: str, text: str,
+                    height: int = None, width: int = None) -> Optional[str]:
+        """Masked input for a SECRET (whiptail and dialog both have
+        --passwordbox): what is typed never echoes to the terminal, tmux
+        scrollback or a screen share. No ``init``: a default would ride
+        argv, where ``ps`` shows it. Not stripped: a secret's own leading
+        or trailing space is part of it."""
+        h = height if height is not None else self.height
+        w = self._fit_width(width if width is not None else self.width)
+        args = ['--title', title, '--passwordbox', text, str(h), str(w)]
+        if self.backend == 'dialog':
+            # dialog echoes NOTHING by default (no cursor feedback at all);
+            # --insecure shows one '*' per key, as whiptail does (r2)
+            args.insert(0, '--insecure')
+        code, output = self._run(args, strip=False)
+        if code == 0:
+            return output
+        if code == -1:
+            raise DialogError(f"passwordbox '{title}' failed (subprocess died)")
+        if _is_tool_error(code, output):
+            # the TOOL failed (255 + a reason), not the operator's Esc
+            raise DialogError(f"passwordbox '{title}' failed: {output.strip()[:200]}")
         return None
 
     def editbox(self, title: str, file_path: str, height: int = None,

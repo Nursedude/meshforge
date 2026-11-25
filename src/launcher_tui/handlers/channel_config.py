@@ -454,10 +454,20 @@ class ChannelConfigHandler(BaseHandler):
     def _read_custom_psk(self):
         """Ask for a custom key; (token, description) or (None, None) after
         telling the operator why it was refused."""
-        text = self.ctx.dialog.inputbox(
+        # masked: this IS the channel's encryption key (review r1, 11-24)
+        text = self.ctx.dialog.passwordbox(
             "Custom PSK",
-            "Enter a 16- or 32-byte key (base64 or hex), or simple0..simple9:", "")
+            "Enter a 16- or 32-byte key (base64 or hex), or simple0..simple9:")
         if not text:
+            return None, None
+        # Typed blind (masked), so typed TWICE (review r2, 11-24): a wrong
+        # character in a 44-char key is otherwise written silently, and on
+        # channel 0 the node drops off the mesh. A paste repeats in one key.
+        again = self.ctx.dialog.passwordbox("Custom PSK", "Enter the same key again:")
+        if again is None:
+            return None, None
+        if again.strip() != text.strip():
+            self.ctx.dialog.msgbox("Custom PSK", "Not written — the two entries differ.")
             return None, None
         token, desc = self._normalize_custom_psk(text)
         if not token:

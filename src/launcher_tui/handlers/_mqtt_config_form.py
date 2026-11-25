@@ -19,6 +19,7 @@ profile apply (its own short lease — it is not opened from this menu).
 import copy
 import logging
 from typing import Any, Dict, Optional
+from backend import blank_secret
 
 from utils.mqtt_defaults import (
     MESHTASTIC_PUBLIC_PASSWORD,
@@ -233,9 +234,10 @@ def save_with_prompts(ctx, lease, intent: Dict[str, Any], title: str, body: str,
                             "does not load")
                 ask = (f"No password was saved for {_who(intent)} when this "
                        f"screen opened ({why}) — enter one (blank = none)")
-            typed = ctx.dialog.inputbox("Password", ask, init='')
+            typed = ctx.dialog.passwordbox("Password", ask)
             if typed is None:
                 return REFUSED
+            typed = blank_secret(typed)   # blank/whitespace = none
             intent["password"] = typed
             continue
         ctx.dialog.msgbox(fail_title, f"{fail_note}:\n\n{res.error}")
@@ -276,8 +278,9 @@ class MQTTConfigFormMixin:
         if choice == "clear":
             return ""
         if choice == "new":
-            return self.ctx.dialog.inputbox(
-                "Password", "MQTT password (blank for none):", init='')
+            typed = self.ctx.dialog.passwordbox(
+                "Password", "MQTT password (blank for none):")
+            return blank_secret(typed)   # blank/whitespace = none
         return None
 
     def _configure_mqtt_held(self, lease):

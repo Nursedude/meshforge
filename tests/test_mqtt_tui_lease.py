@@ -233,7 +233,7 @@ def test_v2_file_broke_after_open_reset_rebuilds_from_the_screen(cfg):
              lambda: (cfg / ms.FILENAME).write_text(""))
     h._configure_mqtt()
     assert [c[1][0] for c in _calls(ctx, "yesno")] == ["Settings File Broke"]
-    pw_prompt = [c for c in _calls(ctx, "inputbox", "Password")][0][1][1]
+    pw_prompt = [c for c in _calls(ctx, "passwordbox", "Password")][0][1][1]
     assert "alice@mqtt.a.example" in pw_prompt
     disk = _disk(cfg)
     assert disk["channel"] == "Mine" and disk["broker"] == "mqtt.a.example"
@@ -264,7 +264,7 @@ def test_q15_unreadable_at_open_save_asks_for_reset_then_writes(cfg):
     assert [c[1][0] for c in _calls(ctx, "yesno")] == ["Settings Unreadable"]
     # r2 F7: the password is ASKED (unknown — the file never loaded) and the
     # typed answer is what lands, not the fake inputbox's default
-    pw = _calls(ctx, "inputbox", "Password")
+    pw = _calls(ctx, "passwordbox", "Password")
     assert len(pw) == 1 and "cannot be read" in pw[0][1][1]
     assert _disk(cfg)["channel"] == "Mine" and _disk(cfg)["password"] == "typedpw"
     assert [b.read_text() for b in cfg.glob(ms.FILENAME + ".unreadable.*")] == ["{broken"]
@@ -291,7 +291,7 @@ def test_r2_f4_rebuild_never_claims_a_saved_password_that_never_was(cfg):
              lambda: (cfg / ms.FILENAME).write_text(""))
     h._configure_mqtt()
     assert _disk(cfg)["channel"] == "Mine" and _disk(cfg)["password"] == ""
-    (pw,) = [c[1][1] for c in _calls(ctx, "inputbox", "Password")]
+    (pw,) = [c[1][1] for c in _calls(ctx, "passwordbox", "Password")]
     assert "cannot be read" not in pw
     assert "No password was saved" in pw and "alice@mqtt.a.example" in pw
 
@@ -387,7 +387,7 @@ def test_r3_4_absent_at_open_rebuild_never_claims_a_saved_password(cfg):
              lambda: (cfg / ms.FILENAME).write_text("{garbage"))
     h._configure_mqtt()
     assert _disk(cfg)["channel"] == "Mine"
-    (pw,) = [c[1][1] for c in _calls(ctx, "inputbox", "Password")]
+    (pw,) = [c[1][1] for c in _calls(ctx, "passwordbox", "Password")]
     assert "cannot be read" not in pw and "No password was saved" in pw
 
 
@@ -447,7 +447,7 @@ def test_q7_keep_for_another_broker_asks_for_that_accounts_password(cfg):
     ctx.dialog._menu_returns = ["broker", "save"]
     ctx.dialog._inputbox_returns = ["mqtt.b.example", "bpw"]
     h._configure_mqtt()
-    prompt = _calls(ctx, "inputbox", "Password")[0][1][1]
+    prompt = _calls(ctx, "passwordbox", "Password")[0][1][1]
     assert "alice@mqtt.b.example" in prompt and "s3cret" not in prompt
     assert _disk(cfg)["broker"] == "mqtt.b.example" and _disk(cfg)["password"] == "bpw"
 
@@ -468,7 +468,7 @@ def test_q7_r5_keep_saved_does_not_loop(cfg):
     ctx.dialog._menu_returns = ["auth", "keep", "save"]
     ctx.dialog._inputbox_returns = ["bob", ""]          # new user, blank pw
     h._configure_mqtt()
-    assert len(_calls(ctx, "inputbox", "Password")) == 1
+    assert len(_calls(ctx, "passwordbox", "Password")) == 1
     assert _disk(cfg)["username"] == "bob" and _disk(cfg)["password"] == ""
 
 
@@ -580,7 +580,7 @@ def test_r4_4_absent_at_open_prompt_never_says_no_longer_loads(cfg):
     _fire_at(ctx, "MQTT Configuration", "channel",
              lambda: (cfg / ms.FILENAME).write_text("{garbage"))
     h._configure_mqtt()
-    (pw,) = [c[1][1] for c in _calls(ctx, "inputbox", "Password")]
+    (pw,) = [c[1][1] for c in _calls(ctx, "passwordbox", "Password")]
     assert "No password was saved" in pw and "no longer loads" not in pw
     assert "no settings file existed" in pw
 

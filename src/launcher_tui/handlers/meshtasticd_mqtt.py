@@ -12,7 +12,7 @@ import logging
 import subprocess
 
 from handler_protocol import BaseHandler
-from backend import clear_screen
+from backend import blank_secret, clear_screen
 logger = logging.getLogger(__name__)
 
 from utils.broker_profiles import get_active_profile as _get_active_profile
@@ -212,14 +212,16 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
         if username is None:
             return
 
-        password = self.ctx.dialog.inputbox(
+        password = self.ctx.dialog.passwordbox(
             "MQTT Password",
             "Enter MQTT password (blank for none):",
-            init=""
         )
 
         if password is None:
             return
+        password = blank_secret(password)   # blank/whitespace = none
+        # Residual (review r1, pre_existing): the CLI takes the password in
+        # argv, visible to `ps` for up to 15 s — deferred ledger row.
 
         cli = self.ctx.get_meshtastic_cli()
         clear_screen()
