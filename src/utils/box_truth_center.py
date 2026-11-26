@@ -66,6 +66,7 @@ def read_spool(alias: str, *, now: Optional[float] = None,
     wrong schema / stamped in the future). Never raises. The ONE reader both
     apps' collectors use, so freshness means the same thing everywhere."""
     import json
+    import math
     import time
     if not isinstance(alias, str) or not _ALIAS_RE.match(alias):
         return None   # never a path built from an unvalidated alias (step-8 F5)
@@ -78,7 +79,16 @@ def read_spool(alias: str, *, now: Optional[float] = None,
         if doc.get("alias") != alias:
             return None   # a doc about another box is never this box's truth (F1)
         fetched_at = doc.get("fetched_at")
-        if not isinstance(fetched_at, (int, float)):
+        # a stamp must be a finite real: bool is an int, NaN fails every
+        # comparison (fresh forever), 10**400 overflows the float maths —
+        # each is THIS box unobservable, never a raise that blinds the rest
+        if isinstance(fetched_at, bool) or not isinstance(fetched_at, (int, float)):
+            return None
+        try:
+            fetched_at = float(fetched_at)
+        except OverflowError:
+            return None
+        if not math.isfinite(fetched_at):
             return None
         age = (now if now is not None else time.time()) - fetched_at
         # a stamp AHEAD of this reader's clock is a clock fault, never

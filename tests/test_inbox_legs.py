@@ -91,3 +91,26 @@ def test_other_preset_boxes_are_named_as_unable_to_hear(fleet):
     assert inbox_legs.heard_line(summary, packet_id=PID) == \
         ("heard by kiai · 1 of 1 listening · 1 on another preset/slot "
          "(declared; a bridged copy carries a new id)")
+
+
+# ── deferred read-spool-bad-fetched-at-2026-11-15 (Fable BIC-2 r6 LOW) ──────
+# A spool's fetched_at is the writer's wall clock (forgeable, hfm #6). A value
+# that is not a finite real number is a broken stamp: THAT box is unobservable,
+# never a crash that blinds every other box, never "fresh forever".
+
+def _poison(spool_dir, alias, raw_fetched_at):
+    """A spool whose fetched_at is a raw JSON token json.dumps cannot spell."""
+    (spool_dir / f"{alias}.json").write_text(
+        '{"schema": "truth_spool/v1", "alias": "%s", "fetched_at": %s, "rx_heard": %s}'
+        % (alias, raw_fetched_at, json.dumps(_section([(FROM, PID, SENT + 1)]))))
+
+
+@pytest.mark.parametrize("raw", ["1" + "0" * 400, "NaN", "Infinity", "-Infinity", "true"],
+                         ids=["10e400", "nan", "inf", "-inf", "bool"])
+def test_a_spool_with_a_broken_stamp_is_that_box_unobservable_only(fleet, tmp_path, raw):
+    fleet({"kiai": _section([(FROM, PID, SENT + 1)]), "moc4": None})   # writes targets
+    _poison(tmp_path / "spool", "moc4", raw)
+    out = inbox_legs.heard_for_send(PID, SENT, now=NOW, targets_file=tmp_path / "targets",
+                                    spool_dir=tmp_path / "spool")
+    assert out["summary"]["heard"] == ["kiai"]
+    assert out["summary"]["unobservable"] == ["moc4"]

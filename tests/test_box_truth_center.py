@@ -357,3 +357,20 @@ def test_remote_cli_is_one_simple_command_for_any_login_shell(two_dirs):
     assert words[2].startswith("for d in ")
     p = _run_remote(cmd)
     assert p.returncode == 0, p.stderr
+
+
+# deferred read-spool-bad-fetched-at-2026-11-15: a fetched_at that is not a
+# finite real is a broken stamp -> that box unobservable (None), never a raise
+# (10**400 overflowed the float maths) and never fresh forever (NaN).
+@pytest.mark.parametrize("raw", ["1" + "0" * 400, "NaN", "Infinity", "-Infinity", "true"],
+                         ids=["10e400", "nan", "inf", "-inf", "bool"])
+def test_read_spool_refuses_a_stamp_that_is_not_a_finite_real(tmp_path, raw):
+    (tmp_path / "a.json").write_text(
+        '{"schema": "%s", "alias": "a", "fetched_at": %s}' % (bc.SPOOL_SCHEMA, raw))
+    assert bc.read_spool("a", now=1_800_000_000.0, spool_dir=tmp_path) is None
+
+
+def test_read_spool_still_accepts_an_integer_stamp(tmp_path):
+    (tmp_path / "a.json").write_text(
+        '{"schema": "%s", "alias": "a", "fetched_at": 1800000000}' % bc.SPOOL_SCHEMA)
+    assert bc.read_spool("a", now=1_800_000_010.0, spool_dir=tmp_path)
