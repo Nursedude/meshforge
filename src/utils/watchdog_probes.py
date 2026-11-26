@@ -179,6 +179,7 @@ from utils.watchdog_probes_mini import (
     probe_history_write_failure,
     probe_local_brain_regressed,
     probe_memory_index_oversize,
+    probe_watchdog_knob_ignored,
     probe_mini_rule_orphaned_exclusion,
     probe_mini_watchdog_source_unwired,
     probe_rules_seed_drift,
@@ -269,6 +270,8 @@ __all__ = [
     "probe_memory_index_oversize",
     "probe_calibration_drift",
     "probe_local_brain_regressed",
+    "probe_watchdog_knob_ignored",
+    "announce_watchdog_knobs",
 ]
 
 
@@ -290,3 +293,25 @@ def resolve_watchdog_knobs() -> dict:
         "calib_drift_recent_days": _mini.CALIB_DRIFT_RECENT_WINDOW_S / 86400.0,
         "local_brain_regression_min_passes": _mini.LOCAL_BRAIN_REGRESSION_MIN_PRIOR_PASSES,
     }
+
+
+def announce_watchdog_knobs(log=None) -> None:
+    """Startup posture line + one formatted WARNING per IMPORT-time rejection.
+
+    The mini knobs are parsed at import, before logging is configured, so
+    their one-time WARNING reached only Python's lastResort stderr. The
+    per-call knobs warn inside ``resolve_watchdog_knobs`` already, so only
+    the rejections that existed BEFORE it ran are re-announced (review r2:
+    no double warning). Never raises: posture must not abort startup."""
+    import logging as _logging
+    from utils.watchdog_knobs import rejected_knobs
+    log = log or _logging.getLogger("watchdog")
+    try:
+        before = rejected_knobs()
+        knobs = resolve_watchdog_knobs()
+        log.info("watchdog: knobs %s", " ".join(f"{k}={v}" for k, v in knobs.items()))
+        for rej in before:
+            log.warning("watchdog: knob %s=%r was IGNORED (default in use)",
+                        rej["knob"], rej["value"])
+    except Exception as exc:
+        log.warning("watchdog: knob posture unavailable: %s", exc)

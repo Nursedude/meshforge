@@ -235,10 +235,9 @@ class TestRunnerGateInertNotes:
                     # defensive, so a None here would TypeError. Adding a new
                     # list-returning probe MUST be declared in this tuple; that
                     # is the closed-consumer half of the closed enum.
-                    ret = [] if name in ("probe_lxmf_process_wedge",
-                                         "probe_tracer_peer_unreachable",
-                                         "probe_memory_cap_engaged",
-                                         "probe_peer_cron_verdict_stale") else None
+                    # one registry, not a hand copy (hfm #5; 11-26 it missed a new probe)
+                    from utils.watchdog_isolation import LIST_RETURNING_PROBES
+                    ret = [] if name in LIST_RETURNING_PROBES else None
                     monkeypatch.setattr(wr, name, lambda *a, _r=ret, **k: _r)
         monkeypatch.setattr(wr, "run_rnstatus", lambda **k: None)
         signals = wr.run_all_probes(

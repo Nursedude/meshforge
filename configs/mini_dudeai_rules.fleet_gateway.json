@@ -768,7 +768,10 @@
       "match": {
         "kind": "signal_class",
         "class": "mini_watchdog_source_unwired",
-        "subject_glob": "*"
+        "subject_glob": "*",
+        "subject_exclude_globs": [
+          "MESHFORGE_*"
+        ]
       },
       "action": {
         "kind": "propose_escalation"
@@ -788,6 +791,19 @@
       },
       "cooldown_s": 21600,
       "annotation": "Issue #79 — MEMORY.md crept over the ~24KB context-load limit; sessions silently partial-load the index. Remedy: demote older/shipped entries to MEMORY_ARCHIVE.md (mini_dudeai.memory_apply.demote_memory). Side-effect-free escalation; NO ntfy page."
+    },
+    {
+      "id": "watchdog_knob_ignored_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "mini_watchdog_source_unwired",
+        "subject_glob": "MESHFORGE_*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "2026-11-26 — a watchdog tuning knob (subject = env name) held a value its parser refused, so the default runs and the operator's retune is NOT live. Fix the value in the watchdog's environment and restart meshforge-watchdog. Side-effect-free escalation; NO ntfy page."
     },
     {
       "id": "kernel_reboot_pending_any",

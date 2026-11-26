@@ -77,7 +77,9 @@ def watchdog_block_from_payload(
     # knob posture (effective + IGNORED values, 2026-11-26): the journal
     # WARNING rotates away, so this is the witness an operator can still read
     if isinstance(payload.get("knobs"), dict):
-        block["knobs"] = payload["knobs"]
+        # a frozen/dead writer's posture describes no running process (hfm #2)
+        block["knobs"] = ({"state": "stale"} if (stale or no_ts or future)
+                          else payload["knobs"])
     if no_ts:
         block["reason"] = ("no_tick_timestamp: watchdog state lacks a numeric ts — "
                            "freshness unobservable, treating as not-ok")

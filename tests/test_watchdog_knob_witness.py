@@ -85,7 +85,7 @@ def test_daemon_resolves_knobs_at_startup():
            / "watchdog_runner.py").read_text(encoding="utf-8")
     run_loop = src[src.index("rehydrated = tracker.rehydrate"):]
     run_loop = run_loop[:run_loop.index("phase2_config = phase2_config or")]
-    assert "resolve_watchdog_knobs()" in run_loop
+    assert "announce_watchdog_knobs(logger)" in run_loop   # resolves the knobs (r2: moved to the hub)
 
 
 # ── deferred watchdog-knob-witness-residue (a)+(b), 2026-11-26 ─────────────
@@ -201,9 +201,124 @@ def test_the_probe_uses_the_constant_the_report_names(monkeypatch):
         "min_prior_passes"].default is None
 
 
-def test_startup_names_each_rejected_knob_in_the_formatted_log():
+# ── review r2 (ac7b25cd..f669b808) IMPORTANT: nothing an operator reads SHOWED it ──
+# Same defect kind twice (r1: no reader of the file; r2: no renderer of the
+# block) -> the seam is a SIGNAL: every surface already renders signals.
+def test_the_witness_rides_an_existing_class_no_new_one():
+    """operator 11-26: class budget held at 62 — no watchdog_knob_ignored class."""
+    from utils.watchdog_probes import SIGNAL_CLASSES
+    assert "watchdog_knob_ignored" not in SIGNAL_CLASSES
+    assert "mini_watchdog_source_unwired" in SIGNAL_CLASSES
+
+
+def test_an_ignored_knob_fires_one_degraded_signal_naming_it():
+    sigs = wpm.probe_watchdog_knob_ignored([{"knob": _DRIFT, "value": "nan"}])
+    assert [(s.cls, s.subject, s.severity) for s in sigs] == [
+        ("mini_watchdog_source_unwired", _DRIFT, "degraded")]
+    assert "'nan'" in sigs[0].detail and "NOT live" in sigs[0].detail
+
+
+def test_the_probe_reads_what_the_parsers_refused(monkeypatch):
+    monkeypatch.setenv("MESHFORGE_RNS_RPC_CONFIRM_TICKS", "3.0")
+    resolve_watchdog_knobs()
+    assert [s.subject for s in wpm.probe_watchdog_knob_ignored()] == [
+        "MESHFORGE_RNS_RPC_CONFIRM_TICKS"]
+
+
+def test_no_ignored_knob_is_clean():
+    assert wpm.probe_watchdog_knob_ignored() == []
+
+
+def test_the_runner_ticks_the_knob_probe():
     src = (Path(__file__).resolve().parent.parent / "src" / "utils"
            / "watchdog_runner.py").read_text(encoding="utf-8")
-    run_loop = src[src.index("rehydrated = tracker.rehydrate"):]
-    run_loop = run_loop[:run_loop.index("phase2_config = phase2_config or")]
-    assert "for rej in rejected_knobs():" in run_loop
+    assert "signals.extend(probe_watchdog_knob_ignored())" in src
+
+
+@pytest.mark.parametrize("preset", ["fleet_gateway", "federator"])
+def test_every_fleet_preset_escalates_it_without_paging(preset):
+    import json as _json
+    path = (Path(__file__).resolve().parent.parent / "configs"
+            / f"mini_dudeai_rules.{preset}.json")
+    doc = _json.loads(path.read_text(encoding="utf-8"))
+    rules = doc["rules"] if isinstance(doc, dict) else doc
+    cls = [r for r in rules if r.get("match", {}).get("class") == "mini_watchdog_source_unwired"]
+    knob = [r for r in cls if r["match"]["subject_glob"] == "MESHFORGE_*"]
+    assert len(knob) == 1 and knob[0]["action"]["kind"] == "propose_escalation"
+    # the original rule must not ALSO fire (wrong fix text) on a knob subject
+    other = [r for r in cls if r is not knob[0]]
+    assert other and all("MESHFORGE_*" in r["match"].get("subject_exclude_globs", [])
+                         for r in other)
+
+
+# r2 nits: the startup announce is BEHAVIOUR, not a source grep; it names
+# only IMPORT-time rejections (per-call knobs already warned in resolve);
+# it never aborts startup.
+def test_startup_announce_warns_import_time_rejections_once(caplog):
+    from utils import watchdog_probes as wp
+    core._rejected_knobs.add((_DRIFT, "nan"))
+    with caplog.at_level(logging.WARNING, logger="watchdog"):
+        wp.announce_watchdog_knobs()
+    hits = [r for r in caplog.records if _DRIFT in r.getMessage()]
+    assert len(hits) == 1 and "IGNORED" in hits[0].getMessage()
+
+
+def test_startup_announce_does_not_double_warn_a_per_call_knob(monkeypatch, caplog):
+    from utils import watchdog_probes as wp
+    monkeypatch.setenv("MESHFORGE_RNS_IFACE_DOWN_CONFIRM_TICKS", "0")
+    with caplog.at_level(logging.WARNING, logger="watchdog"):
+        wp.announce_watchdog_knobs()
+    assert len([r for r in caplog.records
+                if "MESHFORGE_RNS_IFACE_DOWN_CONFIRM_TICKS" in r.getMessage()]) == 1
+
+
+def test_startup_announce_never_raises(monkeypatch, caplog):
+    from utils import watchdog_probes as wp
+
+    def boom():
+        raise TypeError("bad constant")
+    monkeypatch.setattr(wp, "resolve_watchdog_knobs", boom)
+    with caplog.at_level(logging.WARNING, logger="watchdog"):
+        wp.announce_watchdog_knobs()        # must not raise
+    assert any("knob posture unavailable" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("floor, fires", [(1, True), (3, False)])
+def test_the_probe_uses_the_module_constant_at_call_time(monkeypatch, floor, fires):
+    """r2 nit: behaviour, not the signature — 2 prior passes then a fail
+    fires at floor 1 and stays quiet at floor 3."""
+    monkeypatch.setattr(wpm, "LOCAL_BRAIN_REGRESSION_MIN_PRIOR_PASSES", floor)
+    recs = _brain_records(prior_passes=2)
+    assert (wpm.probe_local_brain_regressed(records=recs) is not None) is fires
+
+
+# r2 nit: knob posture from a dead / frozen writer is labelled, never live
+def test_stale_knob_posture_is_labelled_stale():
+    from utils.status_blocks import watchdog_block_from_payload
+    block = watchdog_block_from_payload(
+        {"ts": 100.0, "ok": True, "signals": [], "knobs": _KNOBS_BLOCK},
+        now=100.0 + 10_000)
+    assert block["knobs"] == {"state": "stale"}
+
+
+# r2 pre_existing: fleet_snapshot hand-copied the transform and had drifted
+# (no future-ts leg, ok via bool()) -> it now calls status_blocks
+def test_fleet_snapshot_uses_the_shared_transform(monkeypatch, tmp_path):
+    import json as _json
+    import time as _time
+    from utils import fleet_snapshot as fs
+    p = tmp_path / "watchdog.json"
+    p.write_text(_json.dumps({"ts": _time.time() + 3600, "ok": True, "signals": []}))
+    monkeypatch.setattr(fs, "_WATCHDOG_STATE_PATH", str(p))
+    assert fs._watchdog_block()["ok"] is False      # future stamp is a clock fault
+    p.write_text(_json.dumps({"ts": _time.time(), "ok": "false", "signals": []}))
+    assert fs._watchdog_block()["ok"] is False      # only a real True is ok
+
+
+def _brain_records(prior_passes):
+    """``prior_passes`` passing eval runs of one case, then a failing one."""
+    recs = [{"ts": i + 1, "results": [{"id": "t1", "kind": "triage", "ok": True}]}
+            for i in range(prior_passes)]
+    recs.append({"ts": prior_passes + 1,
+                 "results": [{"id": "t1", "kind": "triage", "ok": False}]})
+    return recs

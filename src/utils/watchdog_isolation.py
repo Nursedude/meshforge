@@ -56,6 +56,9 @@ PROBE_OWNS_OVERRIDES: Dict[str, Tuple[str, ...]] = {
     # "peer_" prefix precisely because it is a second producer for a
     # class the local probe already owns, so the stem is not a class.
     "probe_peer_cron_verdict_stale": ("cron_verdict_stale",),
+    # Ignored-knob witness (2026-11-26): a SECOND producer of the existing
+    # class (subject = MESHFORGE_* env name) — no new class, budget held 62.
+    "probe_watchdog_knob_ignored": ("mini_watchdog_source_unwired",),
 }
 
 #: Probes that return ``List[Signal]`` (0..N) — the runner ``extend``s
@@ -66,6 +69,7 @@ LIST_RETURNING_PROBES: Tuple[str, ...] = (
     "probe_tracer_peer_unreachable",
     "probe_memory_cap_engaged",
     "probe_peer_cron_verdict_stale",
+    "probe_watchdog_knob_ignored",
 )
 
 #: Per-probe raise counter (process lifetime) — the witness for a probe

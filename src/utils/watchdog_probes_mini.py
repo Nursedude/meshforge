@@ -1419,3 +1419,49 @@ def probe_local_brain_regressed(
     except Exception:
         note_disposition(cls, "indeterminate", reason="probe error")
         return None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Ignored-knob witness (2026-11-26, deferred watchdog-knob-witness-residue
+# review r2 IMPORTANT): an IGNORED tuning knob reached watchdog.json and
+# /api/status but nothing an operator reads SHOWED it. A signal is the one
+# reader every surface already renders (honest_status, fleet, mini, map).
+# NO new class (budget 62, operator 11-26): it rides
+# mini_watchdog_source_unwired — 'this watchdog's environment makes its
+# output other than you believe' — with subject = the MESHFORGE_* env name
+# (the existing form's subject is 'mini-dudeai'). It writes NO disposition:
+# the primary probe owns that class's coverage, and a 'clean' from here
+# would overwrite its 'active' (last writer wins).
+# ─────────────────────────────────────────────────────────────────────
+
+def probe_watchdog_knob_ignored(rejected=None):
+    """Fire one degraded Signal per knob value this process IGNORED.
+
+    ``rejected`` defaults to ``watchdog_knobs.rejected_knobs()`` (the set the
+    parsers fill as they refuse values). Empty -> no signal (and no
+    disposition: see above). Never raises into the tick."""
+    cls = "mini_watchdog_source_unwired"
+    try:
+        if rejected is None:
+            from utils.watchdog_knobs import rejected_knobs
+            rejected = rejected_knobs()
+        if not rejected:
+            return []
+        out = []
+        for rej in rejected:
+            knob, value = rej["knob"], rej["value"]
+            out.append(Signal(
+                cls=cls,
+                subject=knob,
+                severity="degraded",
+                detail=(
+                    f"{knob}={value!r} is not a value this watchdog accepts, so it is "
+                    f"IGNORED and the default is in use — the retune you set is NOT "
+                    f"live. Fix the value in the watchdog's environment "
+                    f"(systemd drop-in / env file) and restart meshforge-watchdog."
+                ),
+                extra={"knob": knob, "value": value},
+            ))
+        return out
+    except Exception:
+        return []   # never raises into the tick; isolation counts a raise

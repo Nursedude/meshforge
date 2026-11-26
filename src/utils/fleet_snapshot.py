@@ -1362,7 +1362,7 @@ def _rns_ingress_block() -> Optional[Dict[str, Any]]:
 # ─────────────────────────────────────────────────────────────────────
 
 _WATCHDOG_STATE_PATH = "/var/lib/meshforge/watchdog.json"
-_WATCHDOG_STALE_S = 300.0
+from utils.status_blocks import WATCHDOG_STALE_S as _WATCHDOG_STALE_S  # noqa: E402  (one constant)
 
 
 def _watchdog_block() -> Dict[str, Any]:
@@ -1394,27 +1394,7 @@ def _watchdog_block() -> Dict[str, Any]:
         return {"installed": True, "ok": False,
                 "reason": "malformed_json: not an object"}
 
-    ts = payload.get("ts")
-    age_s = None
-    if isinstance(ts, (int, float)):
-        age_s = max(0.0, time.time() - float(ts))
-
-    stale = bool(age_s is not None and age_s > _WATCHDOG_STALE_S)
-    block = {
-        "installed": True,
-        "ok": bool(payload.get("ok", True)) and not stale,
-        "ts": ts,
-        "age_s": age_s,
-        "probe_count": payload.get("probe_count"),
-        "signals": payload.get("signals", []),
-    }
-    # knob posture rides on (same rule as status_blocks; test-pinned twins)
-    if isinstance(payload.get("knobs"), dict):
-        block["knobs"] = payload["knobs"]
-    if stale:
-        block["reason"] = (
-            f"stale: last write {age_s:.0f}s ago "
-            f"(threshold {_WATCHDOG_STALE_S:.0f}s) — watchdog daemon "
-            f"may have crashed"
-        )
-    return block
+    # ONE transform for watchdog.json (review r2, hfm #5): this was a hand copy
+    # that had drifted (no future-ts / no-ts legs, `ok` via bool(), no coverage)
+    from utils.status_blocks import watchdog_block_from_payload
+    return watchdog_block_from_payload(payload)

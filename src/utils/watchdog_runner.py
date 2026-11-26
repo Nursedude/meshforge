@@ -51,6 +51,7 @@ from utils.watchdog_probes import (
     Signal,
     collect_dispositions,
     collect_observed_subjects,
+    announce_watchdog_knobs,
     resolve_watchdog_knobs,
     note_disposition,
     reset_dispositions,
@@ -86,6 +87,7 @@ from utils.watchdog_probes import (
     probe_memory_cap_engaged,
     probe_kernel_reboot_pending,
     probe_memory_index_oversize,
+    probe_watchdog_knob_ignored,
     probe_meshtasticd_phoneapi_wedge,
     probe_oracle_delivery_degraded,
     probe_meshtasticd_vsz_leak,
@@ -844,6 +846,7 @@ def run_all_probes(
     sig = probe_memory_index_oversize()
     if sig is not None:
         signals.append(sig)
+    signals.extend(probe_watchdog_knob_ignored())
 
     # Calibration spine (2026-06-15) — turns the self-observation pattern on the
     # assistant: a VERIFIED claim that did not hold on re-derivation. Self-guards
@@ -1192,13 +1195,7 @@ def run_loop(
     # holds it with extra.unobserved_hold (still blind), or re-fires it.
     rehydrated = tracker.rehydrate(_load_prior_signals(output_path))
     logger.info("watchdog: rehydrated %d signal(s) from prior state", rehydrated)
-    logger.info("watchdog: knobs %s", " ".join(
-        f"{k}={v}" for k, v in resolve_watchdog_knobs().items()))
-    for rej in rejected_knobs():
-        # an import-time parse warned before logging was configured; say it
-        # again here, formatted and timestamped (review r1 nit)
-        logger.warning("watchdog: knob %s=%r was IGNORED (default in use)",
-                       rej["knob"], rej["value"])
+    announce_watchdog_knobs(logger)
     probe_count = 0
     rns_instance = _read_rns_instance_name()
     if rns_instance:
