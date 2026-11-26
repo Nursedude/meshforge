@@ -6,7 +6,9 @@
 > choice (A + D) is QUEUED for a Fable pass (`review_provenance.md`) before
 > the first deploy. Groundwork + measured facts:
 > `bic2_dm_ack_groundwork_2026_11_25.md` (read it first).
-> **Nothing is coded until the measurement session (§4) is done.**
+> **§4 measurement session DONE 14:11–14:49 HST — see §4b: it REOPENED and
+> superseded Q1, Q2 (window), Q10; added Q17–Q19 + D-1. §4b wins where it
+> differs.** Next = slice 1, test-first (red on today's `handed_off`).
 
 ## 1. Acceptance sentence (sharpened, Q2)
 
@@ -62,9 +64,28 @@ Results → append to the groundwork doc with `date` stamps. If a result
 contradicts a decision above (e.g. the NAK never reaches `/e/`, or a relayed
 ack comes from the relay), that decision REOPENS — no code against it.
 
+## 4b. §4 RAN 2026-11-25 14:11–14:49 HST — results + the decisions they reopened
+
+Results table: groundwork doc § "design §4 session". §4 #1 ✅, #2 ⚠️ (give-up
+invisible), #3 ⚠️ (moc5 half-blind), #4 n/a so far, #5 ✅ offline. Every DM's
+row read `handed_off` — refused, failed and delivered alike (the live gap).
+
+**Superseding decisions** (operator "yes" to each, 14:2x–14:5x HST; these
+OVERRIDE the rows above where they differ):
+
+| Q | Was | Now |
+|---|---|---|
+| Q1′ | D never decides | D DECIDES for own-radio NAKs: journal `Alloc an err=N … idFrom=0x<id>` == the row's packet id → **failed: \<name\> (said by our radio)**. Exact id = A's standard. Remote acks via D stay cross-check only (no `request_id` at INFO). |
+| Q10′ + Q17 | D = slice 2 | **All of D lands in slice 1**, ONE allowlisted reader extending `box_truth_rx` (`parity_check`). Remote cross-check: routing from the destination in the journal, no `/e/` match → **"possible ack, not matched — this box doesn't uplink the channel the ack came on"** (measured live on moc5). |
+| Q2′ | "waiting" window = measured, TBD | **waiting = 60 s** — BELIEVED (n=6 acks, max 24 s; retries span ~17 s; one sender box). A **late-ack counter**: a match after the window still flips the row AND counts as a witness the window is too short. Re-derive after a soak. A closed window never blocks a later "delivered". |
+| new | — | **"failed" never comes from a retry give-up** on this fleet (MAX_RETRANSMIT invisible to both witnesses, n=2). A dead destination ends "no ack seen: window closed", with **"sent N×"** from the retransmissions counted on `/e/` (same packet id). |
+| Q18 | — | **No radio config change in this arc** (moc5's channel uplink): device config + a broker that may bridge to a public server = its own decision with a full-box survey first. Operator reads moc5's channel list when convenient. |
+| Q19 | witness line "acks visible: yes/no" | The witness line NAMES the channels it covers, measured from the broker ("acks visible on: HawaiiNet, meshforge, LongFast — seen here in the last N min"), never inferred from the radio. |
+| D-1 | — | **The journal reader ALLOWLISTS the exact lines it parses** (routing, `Alloc an err`, `refusing`, `Resetting next hop`) and keeps ids only — never a blocklist. This session's four blocklist reads all leaked text or a position. |
+
 ## 5. Not in this slice
 
-- Fork D journal cross-check (slice 2).
+- (Fork D moved INTO slice 1 — Q10′/Q17.)
 - Fleet join of relay-heard acks (later; heard-by pattern).
 - Custom channel keys (operator decision).
 - Bridged legs mesh ↔ RNS (BIC-2's other half; own groundwork).

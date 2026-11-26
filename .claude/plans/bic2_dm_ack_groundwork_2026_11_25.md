@@ -107,3 +107,31 @@ acks says "this box cannot see delivery acks (<why>)", never a blank, never
 
 Bridged legs (mesh ↔ RNS per-leg truth) — the roadmap's other half of
 "DMs + bridged legs"; needs its own groundwork.
+
+## MEASURED 2026-11-25 14:11–14:49 HST — design §4 session (operator sent every DM)
+
+Capture = `timeout mosquitto_sub -t 'msh/2/e/#'` on the SENDER box's local
+broker + its meshtasticd journal; ids/counts only. Sender VolcanoAI
+`!6201ce25` unless stated. Packet ids are the `/inbox` rows' `packet_id`.
+
+| # | DM → dest | packet | `/e/` saw | journal saw | `/inbox` row |
+|---|---|---|---|---|---|
+| NAK-a | → `!5eed1e56` (never seen) ×2 | `0xab3c8abf`, `…c0` | **nothing** (not even the DM) | `Unknown public key … refusing to send legacy DM` · `Error=39` · `Alloc an err=39,…,idFrom=0xab3c8abf` | `handed_off` ✗ |
+| relay-1 | → `!514eae28` (1 hop, relay `0xd8`) | `0xab3c8ac1` | dest NAK **`PKI_UNKNOWN_PUBKEY`**, `req` exact, +24 s, `LongFast` topic; our radio then sent NODEINFO | `Received routing from=0x514eae28` | `handed_off` ✗ |
+| relay-2 | same, after key exchange | `0xab3c8ac2` | dest ack **NONE**, `req` exact, +4 s, 1 hop | same | `handed_off` ✗ |
+| on | → `!b03da894` (p5, 0 hops) | `0xab3c8ac3` | dest ack NONE +1.9 s; the ack carried `want_ack`, our radio acked the ACK (`req` = the ack's id) | | `handed_off` ✗ |
+| off-1 | p5 unplugged | `0xab3c8ac4` | the DM **3×** (+0, +7.3, +16.5 s; 3rd after `Resetting next hop`) · **no NAK, ever** | no give-up line at INFO, 6+ min | `handed_off` |
+| off-2 | p5 unplugged | `0xab3c8ac5` | the DM **1×** (why not 3× = UNKNOWN, n=1) · no NAK | no give-up line | `handed_off` |
+| replug | p5 back, ~50 s after boot | `0xab3c8ac6` | dest ack NONE +3.0 s | | `handed_off` ✗ |
+| moc5-1/2 | sender **moc5** `!5f01371f` → p5 ×2 | `0x2a089819`, `…1a` | the DMs only (PKI) · **no ack** · topics in 6 min: HawaiiNet 2, meshforge 3, PKI 2, **no LongFast** | `Received routing from=0xb03da894` +2–3 s, both | `handed_off` |
+
+(✗ = the row is wrong today: refused, failed, or delivered — all read `handed_off`.)
+
+- **Radio give-up (MAX_RETRANSMIT) is invisible to both witnesses** (n=2): never on `/e/`, never at INFO. A powered-off destination can only end "no ack seen: window closed" (+ "sent N×").
+- **Local refusal is journal-only, with the exact id** (`idFrom=`), never on `/e/` — and the DM is never transmitted.
+- **Acks ride the channel topic the destination answers on** (`LongFast` here, `HawaiiNet` on the 10:29 run) → the subscription must be `+`. Every ack decrypted with the DEFAULT key; no custom-keyed channel met (§4 #4 = not applicable so far).
+- **moc5 is half-blind**: its broker carries its own DMs but not the acks (BELIEVED cause: the ack's channel is not uplinked on moc5 — unverified, would need a radio session; operator to read moc5's channel list). Load average 0.20–0.40 throughout; 2 of 7 envelopes non-broadcast.
+- Ack latencies observed (destination acks, n=6): 1.9, 2–3, 2–3, 3.0, 4, 24 s (the 24 s = a NAK).
+- **Control that can fail** (offline, the real `dm_delivery.classify` over these captures): true acks → FAILED `PKI_UNKNOWN_PUBKEY` + DELIVERED 4.0 s; empty replies → NO_WITNESS ×2; own-radio ack only → LEFT_ONLY. Never delivered without the destination.
+- Side observations, NOT chased: an unrelated PhoneAPI client connected + dropped on VolcanoAI at 14:34:48 (not this session); the own-node thread `!6201ce25` shows sent DMs as incoming copies (echo-fold class → INBOX-T).
+- ⚠️ Session hygiene: four reads (journal greps + an `/api/inbox` walker) printed message text / a node position into the transcript (nothing to the repo). Each was a BLOCKLIST; the fix that held was an ALLOWLIST. → design rule D-1 below.
