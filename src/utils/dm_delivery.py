@@ -25,8 +25,10 @@ The /inbox row rule (BIC-2 DM slice 1) is ``row_verdict`` below, built ON
 ``classify`` with ``give_up_fails=False`` and ``require_origin=True``: its
 source is the per-box ``/e/`` MQTT ack witness, not a radio API session, so
 a retry give-up is a hint, and a destination ack is delivery only once this
-box can rule out a DM to its own radio -- from its own node id (an existing
-connection, ``utils.own_radio``) or the DM's own uplinked header.
+box can rule out a DM to its own radio. That is decided in ONE place,
+``dm_origin`` (operator 11-26 after Fable r5: "One origin seam, any doubt
+refuses"), from the own node id stamped on the row AT SEND and the DM's
+own uplinked header; pinned by ``tests/test_dm_origin.py``.
 """
 
 import time
@@ -53,8 +55,9 @@ class Send:
     #: dest == sender is a DM to this box's own radio (r3 #1: decided from
     #: the DM, never from an ack's gateway).
     sender: Optional[int] = None
-    #: this box's own node id from an EXISTING connection (None = unknown).
-    #: When known it decides self-DM and outranks ``sender`` (r4 #1).
+    #: this box's own node id, stamped on the row AT SEND from an existing
+    #: connection (``utils.own_radio``; None = unknown then). Never read at
+    #: judge time (r5 #1). ``dm_origin`` weighs it with ``sender``.
     own: Optional[int] = None
 
 
@@ -64,6 +67,51 @@ class RoutingReply:
     sender: int         # the reply packet's `from`
     request_id: int     # the DM packet id it answers
     error: str          # "NONE" for a positive ack, else the NAK reason
+
+
+ORIGIN_REMOTE = "remote"        # self-DM ruled out: the destination's answer is its own
+ORIGIN_SELF = "self"            # a DM to this box's own radio: never delivery
+ORIGIN_UNKNOWN = "unknown"      # nothing rules a self-DM out yet
+ORIGIN_CONFLICT = "conflict"    # the sources disagree: refuse, keep nothing
+#: Closed enum (hfm #7).
+ORIGIN_STATES = (ORIGIN_REMOTE, ORIGIN_SELF, ORIGIN_UNKNOWN, ORIGIN_CONFLICT)
+#: A row's final verdict is kept only when the origin is settled (r5 #1).
+KEEPABLE_ORIGINS = (ORIGIN_REMOTE, ORIGIN_SELF)
+#: ``Send.own`` when the stamped id could not be READ: never a node id, so
+#: ``dm_origin`` answers unknown ("an origin source is unreadable").
+OWN_UNREADABLE = "unreadable"
+
+
+@dataclass(frozen=True)
+class Origin:
+    state: str
+    why: str = ""
+
+
+def dm_origin(dest, own_at_send, header_sender) -> Origin:
+    """THE origin seam: was this DM to our own radio? Decided from EVERY
+    source, and any doubt refuses (operator 11-26, after self-DM drew an
+    important finding in r3, r4 and r5). ``own_at_send`` = this box's node
+    id stamped on the row when it was sent; ``header_sender`` = the DM's own
+    uplinked ``from``. Unknown or disagreeing -> never delivery, never kept.
+    Table: ``tests/test_dm_origin.py``."""
+    d = _node_num(dest)
+    if d is None:
+        return Origin(ORIGIN_UNKNOWN, "the destination id is unreadable")
+    own = None if own_at_send is None else _node_num(own_at_send)
+    hdr = None if header_sender is None else _node_num(header_sender)
+    if (own_at_send is not None and own is None) or (header_sender is not None and hdr is None):
+        return Origin(ORIGIN_UNKNOWN, "an origin source is unreadable")
+    if own is None and hdr is None:
+        return Origin(ORIGIN_UNKNOWN,
+                      "this box did not know its own radio id at send and has not seen "
+                      "the DM's own header — a DM to itself is not ruled out")
+    if own is not None and hdr is not None and own != hdr:
+        return Origin(ORIGIN_CONFLICT,
+                      f"this box's radio id at send (!{own:08x}) and the DM's uplinked "
+                      f"header (!{hdr:08x}) disagree — nothing is settled")
+    origin = own if own is not None else hdr
+    return Origin(ORIGIN_SELF if origin == d else ORIGIN_REMOTE)
 
 
 @dataclass(frozen=True)
@@ -79,6 +127,8 @@ class Outcome:
     own_dest_acks: int = 0              # acks on a DM to our own radio (not delivery)
     origin_unknown_acks: int = 0        # dest acks, self-DM not ruled out (require_origin)
     long_after: int = 0                 # same id, stamped after REPLY_MAX_S
+    origin: str = ""                    # dm_origin state (require_origin)
+    origin_why: str = ""
 
 
 @dataclass
@@ -119,11 +169,10 @@ def classify(sends: Iterable[Send], replies: Iterable[RoutingReply], *,
     header) is never delivered (r2 #7, r3 #1). The destination's ack
     outranks any NAK; the destination's NAK is preferred (r2 #5, r3 #8).
 
-    ``require_origin`` (rows, r4 #1): the destination's answer counts as the
-    destination's only once self-DM is ruled out -- by ``s.own`` (this box's
-    id, which outranks a header) or ``s.sender``. With neither known its acks
-    are ``origin_unknown_acks`` and its NAK is said by its id, not "the
-    destination". The drill (its own API session) keeps the plain rule."""
+    ``require_origin`` (rows): the destination's answer counts as the
+    destination's only when ``dm_origin`` says ``remote``; unknown or
+    conflict -> its acks are ``origin_unknown_acks``. The drill (its own API
+    session, no origin sources) keeps the plain rule."""
     replies = list(replies)
     out = []
     for s in sends:
@@ -134,9 +183,9 @@ def classify(sends: Iterable[Send], replies: Iterable[RoutingReply], *,
                     and s.t - EARLY_S <= r.t < s.t - REPLY_SLOP_S)
         long_after = sum(1 for r in replies if r.request_id == s.packet_id
                          and r.t > s.t + REPLY_MAX_S)
-        origin = s.own if s.own is not None else s.sender
-        self_dm = dest is not None and origin is not None and _node_num(origin) == dest
-        unproven = require_origin and origin is None
+        og = dm_origin(s.dest, s.own, s.sender)
+        self_dm = og.state == ORIGIN_SELF
+        unproven = require_origin and og.state in (ORIGIN_UNKNOWN, ORIGIN_CONFLICT)
         by_dest = [dest is not None and not self_dm and _node_num(r.sender) == dest
                    for r in mine]
         is_dest = [d and not unproven for d in by_dest]
@@ -152,7 +201,8 @@ def classify(sends: Iterable[Send], replies: Iterable[RoutingReply], *,
         others = sum(1 for r, d in zip(mine, is_dest) if _is_positive(r.error) and not d)
         gave = "" if give_up_fails or not give_ups else str(give_ups[0].error)
         extra = dict(gave_up=gave, early=early, own_dest_acks=own_dest,
-                     origin_unknown_acks=origin_unknown, long_after=long_after)
+                     origin_unknown_acks=origin_unknown, long_after=long_after,
+                     origin=og.state, origin_why=og.why)
         if from_dest:
             out.append(Outcome(s, DELIVERED, latency_s=from_dest[0] - s.t,
                                other_acks=others, **extra))
@@ -237,6 +287,7 @@ class RowVerdict:
     #: keeps; the tail is rebuilt from the live witness on every read (r4 #5)
     base: str = ""
     tail: str = ""
+    origin: str = ""          # dm_origin state: only remote/self may be kept
 
 
 def sent_suffix(n: int) -> str:
@@ -268,7 +319,7 @@ def row_verdict(send: Send, replies: Iterable[RoutingReply], witness: Witness,
         detail = (f"delivered — acked by the destination in {o.latency_s:.1f} s"
                   + (" (after the waiting window)" if late else ""))
         return RowVerdict(ROW_DELIVERED, detail, latency_s=o.latency_s, late=late,
-                          sent_n=sent_n, base=detail)
+                          sent_n=sent_n, base=detail, origin=o.origin)
 
     # Hints: /e/ facts that never settle the row, shown beside its state.
     hints = []
@@ -282,47 +333,49 @@ def row_verdict(send: Send, replies: Iterable[RoutingReply], witness: Witness,
         hints.append("an ack for this id arrived long after the send "
                      "(clock step or reused id?) — not counted")
     if o.origin_unknown_acks:
-        hints.append("the destination acked, but this box has not seen the DM's own "
-                     "header and does not know its own radio id — a DM to itself "
-                     "is not ruled out")
+        hints.append(f"the destination acked, but {o.origin_why}")
     tail = "".join(f" · {h}" for h in hints) + _sent(sent_n)
     H = tuple(hints)
 
     def v(state, base, **kw):
         return RowVerdict(state, base + tail, sent_n=sent_n, hints=H, base=base,
-                          tail=tail, **kw)
+                          tail=tail, origin=o.origin, **kw)
 
     if o.status == FAILED:
-        # "the destination" only once self-DM is ruled out (r4 #1): with no
-        # origin known -- or a DM to ourselves -- the NAK is said by its id
-        origin = send.own if send.own is not None else send.sender
-        proven = origin is not None and _node_num(origin) != dest
-        who = ("the destination" if proven and o.nak_sender == dest
+        # "the destination" only when dm_origin says remote (the seam)
+        who = ("the destination" if o.origin == ORIGIN_REMOTE and o.nak_sender == dest
                else f"!{o.nak_sender or 0:08x}")
         return v(ROW_FAILED, f"failed: {o.reason} (said by {who})",
                  reason=o.reason, said_by=who)
 
+    # Coverage gaps only pick the why; evidence the ring HOLDS is never hidden
+    # behind one (r5 #3: "no ack seen" beside "the destination acked").
     if witness.since is None:
-        why = witness.why or "this box cannot see delivery acks"
+        gap = witness.why or "this box cannot see delivery acks"
     elif witness.since > send.t:
-        why = "witness started after this send"
+        gap = "witness started after this send"
     elif now - send.t < -CLOCK_SLOP_S:
-        why = "this box's clock went backward since the send (it is stamped in the future)"
-    elif now - send.t < WAITING_S:
-        return v(ROW_WAITING, f"waiting — {max(0, int(now - send.t))} s of {WAITING_S} s")
-    elif o.status == LEFT_ONLY and o.origin_unknown_acks:
-        return v(ROW_LEFT_UNCONFIRMED,
-                 "left, not confirmed — acked by the destination's id, but this box "
-                 "cannot yet rule out a DM to its own radio (own header not seen)")
-    elif o.status == LEFT_ONLY:
+        gap = "this box's clock went backward since the send (it is stamped in the future)"
+    else:
+        gap = ""
+    if o.status == LEFT_ONLY and (gap or now - send.t >= WAITING_S):
+        note = f" · coverage: {gap}" if gap else ""
+        if o.origin_unknown_acks:
+            return v(ROW_LEFT_UNCONFIRMED,
+                     "left, not confirmed — acked by the destination's id, but this box "
+                     "cannot yet rule out a DM to its own radio" + note)
         return v(ROW_LEFT_UNCONFIRMED,
                  "left, not confirmed — acked only by our radio or a relay, never "
-                 "the destination")
+                 "the destination" + note)
+    if gap:
+        why = gap
+    elif now - send.t < WAITING_S:
+        return v(ROW_WAITING, f"waiting — {max(0, int(now - send.t))} s of {WAITING_S} s")
     elif witness.lost_until is not None and witness.lost_until >= send.t - REPLY_SLOP_S:
         why = "the ack ring overflowed after this send (an answer may have been lost)"
     elif now - send.t > ACK_RING_S:
-        why = (f"sent more than {ACK_RING_S // 3600} h ago — older than the ack ring, "
-               "and never judged while an answer could be held")
+        why = (f"sent more than {ACK_RING_S // 3600} h ago — the ack ring no longer "
+               "holds this send's replies")
     else:
         why = "window closed"
     return v(ROW_NO_ACK, f"no ack seen: {why}", why=why)

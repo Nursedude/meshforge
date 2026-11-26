@@ -352,10 +352,20 @@ def _dm_sends(threads: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Dict[
             and m.get("state") in ("handed_off", "radio_echo")]
 
 
+def _delivery(state: str, detail: str, *, kept: bool, reason: str = "", said_by: str = "",
+              why: str = "", latency_s=None, late: bool = False, sent_n: int = 0,
+              hints=(), origin: str = "") -> Dict[str, Any]:
+    """THE one shape of a row's ``delivery`` (Fable r5 #7): live, kept and
+    unjudgeable rows carry the same keys."""
+    return {"state": state, "detail": detail, "reason": reason, "said_by": said_by,
+            "why": why, "latency_s": latency_s, "late": late, "sent_n": sent_n,
+            "kept": kept, "hints": list(hints), "origin": origin}
+
+
 def _verdict_dict(v, kept: bool) -> Dict[str, Any]:
-    return {"state": v.state, "detail": v.detail, "reason": v.reason,
-            "said_by": v.said_by, "why": v.why, "latency_s": v.latency_s,
-            "late": v.late, "sent_n": v.sent_n, "kept": kept, "hints": list(v.hints)}
+    return _delivery(v.state, v.detail, kept=kept, reason=v.reason, said_by=v.said_by,
+                     why=v.why, latency_s=v.latency_s, late=v.late, sent_n=v.sent_n,
+                     hints=v.hints, origin=v.origin)
 
 
 def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Optional[str]]:
@@ -369,7 +379,6 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
     from commands import messaging as store
     from utils import dm_ack_witness, dm_delivery as dd, own_radio
     now = time.time()
-    own = own_radio.own_node()
     errors: List[str] = []
     snap = dm_ack_witness.get_witness().snapshot(now=now)
     sends = _dm_sends(threads)
@@ -384,12 +393,25 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
             logger.warning("inbox: kept DM verdicts unreadable: %s", e)
             errors.append(f"kept DM verdicts unreadable: {type(e).__name__}: {e}")
             kept_why = "kept verdicts unreadable (a settled answer may be hidden)"
+    # r5 #1: this box's own radio id AS STAMPED AT SEND (the origin seam's
+    # first source); unreadable -> every row's origin is unknown, said
+    origins: Dict[int, Any] = {}
+    if sends:
+        try:
+            origins = store.dm_origins([(m["id"], m["packet_id"]) for _, m in sends])
+        except Exception as e:
+            logger.warning("inbox: DM origins unreadable: %s", e)
+            errors.append(f"DM origins unreadable: {type(e).__name__}: {e}")
+            origins = {m["id"]: dd.OWN_UNREADABLE for _, m in sends}
     todo = []
     for t, m in sends:
         k = kept.get(m["id"])
         if k is not None:
-            late = k.get("latency_s") is not None and k["latency_s"] > dd.WAITING_S
-            m["delivery"] = {**k, "why": "", "late": late, "kept": True}
+            late = (k.get("latency_s") is not None
+                    and dd.WAITING_S < k["latency_s"] <= dd.REPLY_MAX_S)
+            m["delivery"] = _delivery(k["state"], k["detail"], kept=True, reason=k["reason"],
+                                      said_by=k["said_by"], latency_s=k["latency_s"],
+                                      late=late, sent_n=k["sent_n"], origin="kept")
             # Only DELIVERED is final. A kept failure -- even the
             # destination's own NAK -- is re-judged live, and the
             # destination's later ack replaces it (operator 11-25, r3 #8).
@@ -399,9 +421,8 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
         if sent is None:
             if "delivery" in m:
                 continue
-            m["delivery"] = {"state": dd.ROW_NO_ACK, "why": "send time unreadable",
-                             "detail": "no ack seen: send time unreadable",
-                             "kept": False}
+            m["delivery"] = _delivery(dd.ROW_NO_ACK, "no ack seen: send time unreadable",
+                                      kept=False, why="send time unreadable")
             continue
         todo.append((t, m, sent))
     unreadable = _unreadable_channels(snap, now)
@@ -409,7 +430,7 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
     for t, m, sent in todo:
         v = dd.row_verdict(dd.Send(sent, m["packet_id"], t.get("partner"),
                                    sender=(snap.get("tx_from") or {}).get(m["packet_id"]),
-                                   own=own),
+                                   own=origins.get(m["id"])),
                            snap["replies"], snap["witness"],
                            tx_seen=snap["tx"].get(m["packet_id"], 0), now=now)
         if "delivery" in m and not (v.state == dd.ROW_DELIVERED or (
@@ -429,9 +450,10 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
             if unreadable and v.state != dd.ROW_WAITING:
                 # Q6, Fable r2 #4: an ack on a channel this box cannot open
                 d["detail"] += (f" · acks on {', '.join(unreadable)} are unreadable "
-                                f"here (key not held)")
+                                f"here ({_unreadable_cause(snap)})")
         m["delivery"] = d
-        if v.state in dd.ROW_FINAL_STATES:
+        # r5 #1: any doubt about the origin keeps nothing
+        if v.state in dd.ROW_FINAL_STATES and v.origin in dd.KEEPABLE_ORIGINS:
             # the store keeps the bare verdict; the tail is rebuilt live
             keep.append((m["id"], m["packet_id"], {**d, "detail": v.base or v.detail}))
     if keep:
@@ -463,6 +485,13 @@ def _unreadable_channels(snap: Dict[str, Any], now: float) -> List[str]:
             if c not in opened and c != PKI_TOPIC]
 
 
+def _unreadable_cause(snap: Dict[str, Any]) -> str:
+    """r5 #4: a decode fault is a library fault, never "key not held"."""
+    n = (snap.get("counts") or {}).get("decode_error") or 0
+    return (f"{n} envelope(s) failed to decode — a library fault, not the key" if n
+            else "key not held")
+
+
 def _witness_line(snap: Dict[str, Any], now: float, late_acks: int,
                   own: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Q19: name what the witness covers, MEASURED: a channel counts as
@@ -478,10 +507,10 @@ def _witness_line(snap: Dict[str, Any], now: float, late_acks: int,
         line = f"DM acks visible on: {', '.join(visible)} — decrypted here in the last {mins} min"
     else:
         line = f"DM acks: witness listening, but nothing decrypted here in the last {mins} min"
-    if w.since is not None and unreadable:
-        line += f" · seen but unreadable (key not held): {', '.join(unreadable)}"
     dec_err = (snap.get("counts") or {}).get("decode_error") or 0
-    if dec_err:
+    if w.since is not None and unreadable:
+        line += f" · seen but unreadable ({_unreadable_cause(snap)}): {', '.join(unreadable)}"
+    elif dec_err:
         # r4 #4: a library fault is not a missing key
         line += f" · {dec_err} envelope(s) failed to decode (a library fault, not the key)"
     num = (own or {}).get("num")
@@ -717,9 +746,13 @@ def send(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     # (INBOX-T F3) — the same validator the store applies
     packet_id = messaging.valid_packet_id(packet_id)
     handed_off = packet_id is not None
+    # BIC-2 DM r5 #1: this box's own radio id AT SEND, only if a connection
+    # re-read it recently -- never inferred, never a new radio session
+    from utils.own_radio import fresh_own_node
     rec = messaging.store_outgoing(
         content=params["text"], network="meshtastic", to_id=params["to_id"],
-        channel=params["channel"], delivered=handed_off, packet_id=packet_id)
+        channel=params["channel"], delivered=handed_off, packet_id=packet_id,
+        own_id=fresh_own_node() if params["to_id"] is not None else None)
     body = {
         "state": "handed_off" if handed_off else "not_sent",
         "detail": ("Handed to the radio. Delivery is unconfirmed." if handed_off

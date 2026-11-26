@@ -234,13 +234,19 @@ def _reader(mid, tx_from=None, tx=None, witness=None, counts=None):
 class TestInboxOrigin:
 
     def test_inbox_passes_this_boxs_own_id_to_the_judge(self, tmp_path, monkeypatch):
-        """a2 end to end: no header, own ack, own id known -> never delivered."""
+        """a2 end to end: no header, own ack, own id stamped at send (r5) ->
+        never delivered; a self-DM's left verdict is not final, so not kept."""
         mid = _store(tmp_path, monkeypatch, to="!6201ce25")
-        own_radio.note_own_node(ME, source="test connection")
+        conn = messaging_mod._init_db()
+        conn.execute("INSERT INTO dm_origin (message_id, packet_id, own_id) VALUES (?, ?, ?)",
+                     (mid, PID, ME))
+        conn.commit()
+        conn.close()
         rows = _reader(mid)
         sent = inbox_api._epoch(rows(0, [])["ts"])
         d = rows(sent + 90, [RoutingReply(sent + 0.02, ME, PID, "NONE")])["delivery"]
-        assert d["state"] != ROW_DELIVERED
+        assert d["state"] != ROW_DELIVERED and d["origin"] == "self"
+        assert "own radio" in d["detail"]
         assert messaging_mod.kept_dm([(mid, PID)])[0] == {}
 
     def test_with_neither_known_nothing_is_kept_until_the_header_arrives(self, tmp_path,
@@ -504,8 +510,14 @@ class TestMutantKillersR4Fold:
         assert not any("its own ack" in h for h in v.hints)
 
     def test_k29_the_inbox_own_id_alone_proves_a_remote_delivery(self, tmp_path, monkeypatch):
+        """r5: the own id is the one STAMPED at send (dm_origin), not the
+        registry at judge time."""
         mid = _store(tmp_path, monkeypatch)
-        own_radio.note_own_node(ME, source="test connection")
+        conn = messaging_mod._init_db()
+        conn.execute("INSERT INTO dm_origin (message_id, packet_id, own_id) VALUES (?, ?, ?)",
+                     (mid, PID, ME))
+        conn.commit()
+        conn.close()
         rows = _reader(mid)                      # no header seen
         sent = inbox_api._epoch(rows(0, [])["ts"])
         d = rows(sent + 5, [RoutingReply(sent + 2, P5, PID, "NONE")])["delivery"]

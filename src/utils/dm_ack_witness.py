@@ -23,6 +23,7 @@ Thread-safe: the MQTT thread writes, the HTTP thread reads ``snapshot()``.
 """
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections import Counter, OrderedDict, deque
@@ -61,6 +62,9 @@ class AckWitness:
         #: First writer wins (r4 #1: a same-id envelope never overwrites it),
         #: and it outlives ``_tx`` while a reply for it is in the ring.
         self._tx_from: Dict[int, int] = {}
+        #: ids whose header came only from another gateway's copy: bounds
+        #: ``_tx_from`` the way ``_tx`` bounds own uplinks (r5 #9)
+        self._tx_order: deque = deque()
         self._channels: Dict[str, float] = {}
         #: channels on which the DEFAULT key opened something (r2 #4: "seen"
         #: is presence, not function -- only these can carry a visible ack)
@@ -114,17 +118,27 @@ class AckWitness:
             # "sent N×" counts only the SENDER's own uplink of its packet
             # (gateway == from, compared as NUMBERS -- r4 #8). A bridged/other
             # gateway's copy is the same transmission heard elsewhere -- r1 F6.
-            if pid and _gateway_num(gateway) == frm:
-                self._tx[pid] = self._tx.pop(pid, 0) + 1
+            own_uplink = bool(pid) and _gateway_num(gateway) == frm
+            if pid:
+                # The DM's own ``from`` rides every copy in plaintext, so ANY
+                # gateway's copy is its header (r5 #9); first writer wins.
                 first = self._tx_from.setdefault(pid, frm)
                 if first != frm:
                     self._counts["tx_from_conflict"] += 1
+            if own_uplink:
+                self._tx[pid] = self._tx.pop(pid, 0) + 1
                 while len(self._tx) > TX_CAP:
                     old, _ = self._tx.popitem(last=False)
                     if not self._reply_ids.get(old):
                         self._tx_from.pop(old, None)
             elif pid:
                 self._counts["other_gateway_copy"] += 1
+                if pid not in self._tx and not self._reply_ids.get(pid):
+                    self._tx_order.append(pid)
+                    while len(self._tx_order) > TX_CAP:
+                        old = self._tx_order.popleft()
+                        if old not in self._tx and not self._reply_ids.get(old):
+                            self._tx_from.pop(old, None)
             if pki:
                 self._counts["pki_skipped"] += 1
                 return
@@ -150,18 +164,24 @@ class AckWitness:
             # from a degraded parse (hfm #1, r1 F4). Counted, so a probe sees it.
             self._bump("routing_unparseable")
             return
+        rid = int(dp.request_id)
         with self._lock:
             self._counts["routing"] += 1
             if len(self._replies) >= RING_CAP:
                 old = self._replies.popleft()
-                self._counts["reply_evicted"] += 1
-                self._lost_until = max(old.t, self._lost_until or old.t)
+                # r5 #6: a reply already past the 24 h window was not LOST;
+                # r5 #5: a future-stamped one never moves the horizon past now
+                if old.t >= t - RING_WINDOW_S:
+                    self._counts["reply_evicted"] += 1
+                    lost = min(old.t, t)
+                    self._lost_until = lost if self._lost_until is None else max(
+                        self._lost_until, lost)
                 self._reply_ids[old.request_id] -= 1
                 if self._reply_ids[old.request_id] <= 0:
                     del self._reply_ids[old.request_id]
-                    if old.request_id not in self._tx:
+                    # the reply being added may guard the same header
+                    if old.request_id not in self._tx and old.request_id != rid:
                         self._tx_from.pop(old.request_id, None)
-            rid = int(dp.request_id)
             self._replies.append(RoutingReply(t, int(dp.from_node), rid, err))
             self._reply_ids[rid] += 1
 
@@ -181,6 +201,10 @@ class AckWitness:
                 # r4 #4: every envelope would be "unparseable" -- blind, said
                 w = Witness(None, "this box cannot decode MQTT envelopes "
                                   "(meshtastic protobuf not installed)")
+            elif not _crypto_ok():
+                # r5 #4: no decryption = no ack can ever be seen -- blind, said
+                w = Witness(None, "this box cannot decrypt MQTT envelopes "
+                                  "(cryptography or meshtastic protobufs not installed)")
             else:
                 w = Witness(self._since, self._why, self._lost_until)
             return {"witness": w,
@@ -192,15 +216,21 @@ class AckWitness:
                     "counts": dict(self._counts)}
 
 
+_GATEWAY_ID = re.compile(r"![0-9a-fA-F]{8}")
+
+
 def _gateway_num(gateway: str) -> Optional[int]:
-    """``!6201ce25`` (any case) -> its number; anything else -> None."""
-    g = gateway.strip()
-    if len(g) != 9 or not g.startswith("!"):
-        return None
+    """``!6201ce25`` (any case) -> its number; anything else -> None
+    (r5 #8: strict -- ``int(x, 16)`` alone took ``!+201ce25``)."""
+    return int(gateway[1:], 16) if _GATEWAY_ID.fullmatch(gateway) else None
+
+
+def _crypto_ok() -> bool:
     try:
-        return int(g[1:], 16)
-    except ValueError:
-        return None
+        from utils.meshtastic_se_crypto import crypto_available
+        return bool(crypto_available())
+    except Exception:
+        return False
 
 
 _WITNESS: Optional[AckWitness] = None

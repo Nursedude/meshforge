@@ -189,7 +189,7 @@ class TestMutantKillersR3:
 
     def test_inbox_shows_the_kept_destination_failure_not_a_later_one(self, tmp_path, monkeypatch):
         mid = self._store(tmp_path, monkeypatch)
-        rows = _reader(mid)
+        rows = _reader(mid, tx_from={PID: ME})   # r5: an origin source is needed
         sent = inbox_api._epoch(rows(0, [])["ts"])
         n1 = RoutingReply(sent + 2, P5, PID, "PKI_UNKNOWN_PUBKEY")
         rows(sent + 3, [n1])

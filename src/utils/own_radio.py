@@ -25,6 +25,10 @@ _OWN: Optional[Dict[str, Any]] = None
 
 #: 0 and 0xFFFFFFFF (broadcast) are never a node.
 _MAX = 0xFFFFFFFF
+#: A send stamps the id only if a connection re-read it this recently (r5 #1:
+#: "last good id stands" for a process lifetime would outlive a radio swap).
+#: BELIEVED: the map collector re-reads it every collect cycle (minutes).
+OWN_FRESH_S = 3600
 
 
 def _valid(num: Any) -> bool:
@@ -45,6 +49,16 @@ def note_own_node(num: Any, *, source: str, now: Optional[float] = None) -> None
 def own_node() -> Optional[int]:
     with _LOCK:
         return None if _OWN is None else _OWN["num"]
+
+
+def fresh_own_node(now: Optional[float] = None) -> Optional[int]:
+    """The id only if noted within ``OWN_FRESH_S`` (and not in the future) --
+    what a send stamps on its row."""
+    t = time.time() if now is None else now
+    with _LOCK:
+        if _OWN is None or not (0 <= t - _OWN["ts"] <= OWN_FRESH_S):
+            return None
+        return _OWN["num"]
 
 
 def own_node_status() -> Dict[str, Any]:

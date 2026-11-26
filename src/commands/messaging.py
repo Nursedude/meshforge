@@ -116,6 +116,7 @@ def _schema_is_current(conn) -> bool:
                      "skewed, kept_at FROM heard_kept LIMIT 0")
         conn.execute("SELECT message_id, packet_id, state, detail, reason, said_by, "
                      "latency_s, sent_n, kept_at FROM dm_kept LIMIT 0")
+        conn.execute("SELECT message_id, packet_id, own_id FROM dm_origin LIMIT 0")
     except sqlite3.OperationalError:
         return False
     return True
@@ -269,6 +270,13 @@ def _init_db() -> sqlite3.Connection:
                          "reason TEXT NOT NULL DEFAULT '', said_by TEXT NOT NULL DEFAULT '', "
                          "latency_s REAL, sent_n INTEGER NOT NULL DEFAULT 0, "
                          "kept_at REAL NOT NULL, "
+                         "PRIMARY KEY (message_id, packet_id))")
+            # BIC-2 DM r5 (operator 11-26, "One origin seam"): this box's own
+            # radio id AT SEND, from an existing connection -- never re-read
+            # at judge time, so a later id cannot re-judge an old send.
+            conn.execute("CREATE TABLE IF NOT EXISTS dm_origin ("
+                         "message_id INTEGER NOT NULL, packet_id INTEGER NOT NULL, "
+                         "own_id INTEGER NOT NULL, "
                          "PRIMARY KEY (message_id, packet_id))")
             # r1 F10: a dm_kept created before sent_n (unreleased shape)
             cols = {r[1] for r in conn.execute("PRAGMA table_info(dm_kept)")}
@@ -794,6 +802,7 @@ def store_outgoing(
     channel: int = 0,
     delivered: bool = False,
     packet_id: Optional[int] = None,
+    own_id: Optional[int] = None,
 ) -> CommandResult:
     """
     Record a message THIS box sent by a path that did not store it itself
@@ -811,6 +820,9 @@ def store_outgoing(
         packet_id: The radio's id for this packet (``send_text_direct_with_id``),
             None when unknown — the key that joins a send to any box's RX
             record (INBOX-2). Kept as the radio gave it.
+        own_id: This box's own radio node id at send time, from an existing
+            connection (``utils.own_radio.fresh_own_node``), or None. Kept in
+            ``dm_origin`` for a DM with a packet id (BIC-2 DM r5).
 
     Returns:
         CommandResult with the new row id
@@ -825,8 +837,13 @@ def store_outgoing(
                 VALUES (?, 'local', ?, ?, ?, ?, ?, ?)
             ''', (network, to_id, content, channel, to_id is not None,
                   bool(delivered), _valid_packet_id(packet_id)))
-            conn.commit()
             message_id = cursor.lastrowid
+            pid = _valid_packet_id(packet_id)
+            if (to_id is not None and pid is not None and isinstance(own_id, int)
+                    and not isinstance(own_id, bool) and 0 < own_id < 0xFFFFFFFF):
+                conn.execute("INSERT OR REPLACE INTO dm_origin (message_id, packet_id, own_id) "
+                             "VALUES (?, ?, ?)", (message_id, pid, own_id))
+            conn.commit()
         finally:
             conn.close()
         _maybe_prune_messages()
@@ -841,7 +858,7 @@ def _drop_orphan_heard_rows(conn) -> None:
     (r3 NIT-1: a row keyed to a swapped-in row's old id outlived the swap).
     ``heard_judged`` / ``heard_covered`` from unreleased commits 2c6637fa /
     fe08a41d are never created, read or written (no live store has them)."""
-    for table in ("heard_kept", "dm_kept"):
+    for table in ("heard_kept", "dm_kept", "dm_origin"):
         conn.execute(f"DELETE FROM {table} WHERE NOT EXISTS (SELECT 1 FROM messages "
                      f"WHERE messages.id = {table}.message_id "
                      f"AND messages.packet_id = {table}.packet_id)")
@@ -1005,6 +1022,25 @@ def keep_dm(items: List[tuple], now: Optional[float] = None) -> None:
             [(*r, stamp, finals[0], finals[0], finals[1], *terminal, finals[1], *terminal)
              for r in rows])
         conn.commit()
+    finally:
+        conn.close()
+
+
+def dm_origins(sends: List[tuple]) -> Dict[int, int]:
+    """``{message_id: own_id}`` -- this box's radio id stamped AT SEND, for
+    ``[(message_id, packet_id)]`` (only rows whose packet id matches).
+    Absent = unknown at send. Raises on a store error: the caller says so."""
+    if not sends:
+        return {}
+    conn = _init_db()
+    try:
+        out: Dict[int, int] = {}
+        for mid, pid in sends:
+            r = conn.execute("SELECT own_id FROM dm_origin WHERE message_id = ? "
+                             "AND packet_id = ?", (mid, pid)).fetchone()
+            if r is not None and isinstance(r["own_id"], int) and r["own_id"] > 0:
+                out[mid] = r["own_id"]
+        return out
     finally:
         conn.close()
 
