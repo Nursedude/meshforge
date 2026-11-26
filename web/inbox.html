@@ -335,6 +335,14 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
       });
     }).catch(function () {});
   }
+  // r8 #1: a draft keyed by what was typed follows the id the server stored
+  function rekeyDraft(t, key, partner) {
+    if (t.key === key) return;
+    delete drafts[t.key];
+    threads = threads.filter(function (x) { return x !== t; });
+    if (current === t.key) current = key;
+    t.key = key; t.partner = partner;
+  }
   $("new").addEventListener("click", openNew);
   $("to").addEventListener("change", function () { $("dmrow").hidden = this.value !== "dm"; });
   $("newcancel").addEventListener("click", function () { $("newform").hidden = true; current = null; $("main").classList.remove("open"); renderPane(); });
@@ -344,6 +352,8 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
     if (v === "dm") {
       var id = ($("node").value || "").trim().toLowerCase();
       if (!/^![0-9a-f]{1,8}$/.test(id)) { $("newerr").textContent = "A node id looks like !a1b2c3d4."; return; }
+      // one spelling with the server (!%08x) -- Fable r8 #1
+      id = "!" + id.slice(1).padStart(8, "0");
       t = { key: "meshtastic:" + id, network: "meshtastic", kind: "dm", partner: id, channel: null };
     } else {
       var ch = Number(v.slice(3));
@@ -373,7 +383,12 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
     fetch("/api/inbox/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
       .then(function (r) { return r.json(); })
       .then(function (j) {
-        if (j.state === "handed_off") { $("text").value = ""; $("count").textContent = "0/" + MAX; setSendBanner(j.recorded ? "" : "Sent, but not saved to history: " + (j.record_error || "")); }
+        if (j.state === "handed_off") {
+          $("text").value = ""; $("count").textContent = "0/" + MAX;
+          if (t.kind === "dm" && j.to_id) rekeyDraft(t, "meshtastic:" + j.to_id, j.to_id);
+          setSendBanner(!j.recorded ? "Sent, but not saved to history: " + (j.record_error || "")
+                        : (j.stamp_error || ""));
+        }
         else if (j.error === "operator login required")
           setLoginBanner(j.how);
         else setSendBanner(j.detail || j.error || "Send failed.");

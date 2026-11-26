@@ -48,15 +48,26 @@ _NODE_ID = NODE_ID_RE
 _REFUTED: Dict[Tuple[int, int], float] = {}
 
 
+def _canonical_node(v: Any) -> Any:
+    """A Meshtastic node id in its ONE spelling, ``!%08x``; anything else as
+    stored (Fable r8 #1: a short or upper-case id split one partner into
+    several threads, and the page's draft never matched the stored row)."""
+    if isinstance(v, str) and _NODE_ID.fullmatch(v):
+        return f"!{int(v[1:], 16):08x}"
+    return v
+
+
 def _thread_key(msg: Dict[str, Any]) -> Tuple[str, str, Optional[str], Optional[int]]:
-    """(key, kind, partner, channel) for one stored row."""
+    """(key, kind, partner, channel) for one stored row -- THE place a
+    Meshtastic partner is canonicalised (server, page and TUI read it)."""
     network = msg.get("network") or "unknown"
     outbound = msg.get("from_id") == "local"
     peer = msg.get("to_id") if outbound else msg.get("from_id")
     if network == "rns":
         # LXMF is always point-to-point; inbound rows are stored to_id=None.
         return f"rns:{peer}", "dm", peer, None
-    if msg.get("to_id") in BROADCAST_IDS:
+    peer = _canonical_node(peer)
+    if msg.get("to_id") in BROADCAST_IDS or _canonical_node(msg.get("to_id")) == "!ffffffff":
         ch = msg.get("channel") or 0
         return f"{network}:channel:{ch}", "channel", None, ch
     return f"{network}:{peer}", "dm", peer, None
@@ -765,7 +776,7 @@ def validate_send(data: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     destination = data.get("destination", "^all")
     if destination in BROADCAST_IDS:
         return {"text": text, "channel": channel, "dest_num": None, "to_id": None}, None
-    if not isinstance(destination, str) or not _NODE_ID.match(destination):
+    if not isinstance(destination, str) or not _NODE_ID.fullmatch(destination):
         return None, "destination must be '^all' or a node id like !a1b2c3d4"
     num = int(destination[1:], 16)
     if num == 0xFFFFFFFF:          # any spelling of broadcast is a broadcast
@@ -803,6 +814,8 @@ def send(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
         "detail": ("Handed to the radio. Delivery is unconfirmed." if handed_off
                    else "The radio did not accept the message (is meshtasticd running?)."),
         "recorded": bool(rec.success),
+        # r8 #1: the page re-keys its draft to the id the server stored
+        "to_id": params["to_id"],
     }
     if not rec.success:
         body["record_error"] = rec.message
