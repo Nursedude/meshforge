@@ -27,7 +27,12 @@ _OWN: Optional[Dict[str, Any]] = None
 _MAX = 0xFFFFFFFF
 #: A send stamps the id only if a connection re-read it this recently (r5 #1:
 #: "last good id stands" for a process lifetime would outlive a radio swap).
-#: BELIEVED: the map collector re-reads it every collect cycle (minutes).
+#: The only writer today is the map collector's TCP-interface drain, which
+#: runs only when its HTTP collect yields nothing (Fable r6 #2) -- so on a
+#: healthy box this registry is usually EMPTY and rows fall back to the DM's
+#: header. A config-supplied id is the queued next slice. Residual (r6 W2):
+#: a radio swapped inside this window, with no header seen, can be stamped
+#: with the old id.
 OWN_FRESH_S = 3600
 
 

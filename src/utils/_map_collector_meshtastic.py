@@ -257,9 +257,14 @@ class MeshtasticDataCollectorMixin:
                           (getattr(interface, 'localNode', None), 'nodeNum')):
             num = getattr(obj, attr, None) if obj is not None else None
             if isinstance(num, int) and not isinstance(num, bool) and num > 0:
-                # BIC-2 r4 #1: the DM judge's own-radio id, from THIS connection
-                from utils.own_radio import note_own_node
-                note_own_node(num, source=f"map collector connection ({attr})")
+                # BIC-2 r4 #1: the DM judge's own-radio id, from THIS
+                # connection -- only when it is the radio inbox sends through
+                # (localhost; Fable r6 #1: a remote meshtasticd_host is
+                # another box's radio, never this box's own)
+                host = getattr(self, "get_meshtasticd_host", lambda: "")()
+                if host in ("localhost", "127.0.0.1", "::1"):
+                    from utils.own_radio import note_own_node
+                    note_own_node(num, source=f"map collector connection ({attr})")
                 return self._canonical_meshtastic_id("", num)
         return None
 

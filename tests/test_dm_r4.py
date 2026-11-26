@@ -97,8 +97,9 @@ class TestOwnRadioRegistry:
     def test_the_map_collector_notes_the_id_it_reads_from_the_connection(self):
         from utils._map_collector_meshtastic import MeshtasticDataCollectorMixin
         iface = SimpleNamespace(myInfo=SimpleNamespace(my_node_num=ME), localNode=None)
-        MeshtasticDataCollectorMixin._own_node_id(MeshtasticDataCollectorMixin.__new__(
-            MeshtasticDataCollectorMixin), iface)
+        collector = MeshtasticDataCollectorMixin.__new__(MeshtasticDataCollectorMixin)
+        collector.get_meshtasticd_host = lambda: "localhost"   # r6 #1: the send host only
+        MeshtasticDataCollectorMixin._own_node_id(collector, iface)
         assert own_radio.own_node() == ME
 
 
@@ -353,7 +354,7 @@ class TestDecodeFaultIsNotAKey:
                 "channels": {"LongFast": T0}, "decrypted": {},
                 "counts": {"decode_error": 4}}
         line = inbox_api._witness_line(snap, T0 + 1, 0)["line"]
-        assert "4 envelope(s) failed to decode" in line
+        assert "4 decode fault(s) seen" in line and "key not held" not in line   # r6 #3
 
 
 class TestKeptDetailTail:

@@ -399,19 +399,31 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
     if sends:
         try:
             origins = store.dm_origins([(m["id"], m["packet_id"]) for _, m in sends])
+            bad = sum(1 for v in origins.values() if v == dd.OWN_UNREADABLE)
+            if bad:
+                errors.append(f"{bad} DM origin row(s) unreadable (those rows never settle)")
         except Exception as e:
             logger.warning("inbox: DM origins unreadable: %s", e)
             errors.append(f"DM origins unreadable: {type(e).__name__}: {e}")
             origins = {m["id"]: dd.OWN_UNREADABLE for _, m in sends}
     todo = []
+    refuted = []
+    tx_from = snap.get("tx_from") or {}
     for t, m in sends:
         k = kept.get(m["id"])
+        og = dd.dm_origin(t.get("partner"), origins.get(m["id"]), tx_from.get(m["packet_id"]))
+        if (k is not None and k["state"] == dd.ROW_DELIVERED
+                and og.state in (dd.ORIGIN_SELF, dd.ORIGIN_CONFLICT)):
+            # r6 #6: a kept delivered the seam now refutes (an earlier
+            # commit's wrong keep) is dropped, counted, and judged live
+            refuted.append((m["id"], m["packet_id"]))
+            k = None
         if k is not None:
             late = (k.get("latency_s") is not None
                     and dd.WAITING_S < k["latency_s"] <= dd.REPLY_MAX_S)
             m["delivery"] = _delivery(k["state"], k["detail"], kept=True, reason=k["reason"],
                                       said_by=k["said_by"], latency_s=k["latency_s"],
-                                      late=late, sent_n=k["sent_n"], origin="kept")
+                                      late=late, sent_n=k["sent_n"], origin=og.state)
             # Only DELIVERED is final. A kept failure -- even the
             # destination's own NAK -- is re-judged live, and the
             # destination's later ack replaces it (operator 11-25, r3 #8).
@@ -447,7 +459,7 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
         if v.state not in dd.ROW_FINAL_STATES:
             if kept_why:
                 d["detail"] += f" · {kept_why}"
-            if unreadable and v.state != dd.ROW_WAITING:
+            if unreadable and v.state != dd.ROW_WAITING and snap["witness"].since is not None:
                 # Q6, Fable r2 #4: an ack on a channel this box cannot open
                 d["detail"] += (f" · acks on {', '.join(unreadable)} are unreadable "
                                 f"here ({_unreadable_cause(snap)})")
@@ -456,6 +468,14 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
         if v.state in dd.ROW_FINAL_STATES and v.origin in dd.KEEPABLE_ORIGINS:
             # the store keeps the bare verdict; the tail is rebuilt live
             keep.append((m["id"], m["packet_id"], {**d, "detail": v.base or v.detail}))
+    if refuted:
+        try:
+            store.drop_dm_kept(refuted)
+        except Exception as e:
+            logger.warning("inbox: refuted DM verdicts not dropped: %s", e)
+            errors.append(f"refuted DM verdicts not dropped: {type(e).__name__}: {e}")
+        errors.append(f"{len(refuted)} kept delivery row(s) refuted by the origin "
+                      "(a DM to this box's own radio, or disagreeing sources) — dropped")
     if keep:
         try:
             store.keep_dm(keep, now=now)
@@ -486,10 +506,11 @@ def _unreadable_channels(snap: Dict[str, Any], now: float) -> List[str]:
 
 
 def _unreadable_cause(snap: Dict[str, Any]) -> str:
-    """r5 #4: a decode fault is a library fault, never "key not held"."""
+    """r5 #4 / r6 #3: with decode faults seen, the cause of an unreadable
+    channel is UNKNOWN -- neither a missing key nor a library fault is
+    asserted (``decode_error`` is a lifetime count, not per channel)."""
     n = (snap.get("counts") or {}).get("decode_error") or 0
-    return (f"{n} envelope(s) failed to decode — a library fault, not the key" if n
-            else "key not held")
+    return f"cause unknown — {n} decode fault(s) seen" if n else "key not held"
 
 
 def _witness_line(snap: Dict[str, Any], now: float, late_acks: int,
@@ -511,8 +532,7 @@ def _witness_line(snap: Dict[str, Any], now: float, late_acks: int,
     if w.since is not None and unreadable:
         line += f" · seen but unreadable ({_unreadable_cause(snap)}): {', '.join(unreadable)}"
     elif dec_err:
-        # r4 #4: a library fault is not a missing key
-        line += f" · {dec_err} envelope(s) failed to decode (a library fault, not the key)"
+        line += f" · {dec_err} decode fault(s) seen (cause unknown)"
     num = (own or {}).get("num")
     # r4 #1: what rules out a DM to this box's own radio, said
     line += (f" · own radio id: !{num:08x} (from {own.get('source') or 'a connection'})"

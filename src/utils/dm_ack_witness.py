@@ -65,6 +65,7 @@ class AckWitness:
         #: ids whose header came only from another gateway's copy: bounds
         #: ``_tx_from`` the way ``_tx`` bounds own uplinks (r5 #9)
         self._tx_order: deque = deque()
+        self._tx_order_ids: set = set()
         self._channels: Dict[str, float] = {}
         #: channels on which the DEFAULT key opened something (r2 #4: "seen"
         #: is presence, not function -- only these can carry a visible ack)
@@ -133,10 +134,13 @@ class AckWitness:
                         self._tx_from.pop(old, None)
             elif pid:
                 self._counts["other_gateway_copy"] += 1
-                if pid not in self._tx and not self._reply_ids.get(pid):
+                # one slot per id, not per copy (r6 #7)
+                if pid not in self._tx and pid not in self._tx_order_ids:
                     self._tx_order.append(pid)
+                    self._tx_order_ids.add(pid)
                     while len(self._tx_order) > TX_CAP:
                         old = self._tx_order.popleft()
+                        self._tx_order_ids.discard(old)
                         if old not in self._tx and not self._reply_ids.get(old):
                             self._tx_from.pop(old, None)
             if pki:
@@ -180,7 +184,9 @@ class AckWitness:
                 if self._reply_ids[old.request_id] <= 0:
                     del self._reply_ids[old.request_id]
                     # the reply being added may guard the same header
-                    if old.request_id not in self._tx and old.request_id != rid:
+                    # r6 #8: kept while its id is still tracked anywhere
+                    if (old.request_id not in self._tx and old.request_id != rid
+                            and old.request_id not in self._tx_order_ids):
                         self._tx_from.pop(old.request_id, None)
             self._replies.append(RoutingReply(t, int(dp.from_node), rid, err))
             self._reply_ids[rid] += 1

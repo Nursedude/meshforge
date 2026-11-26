@@ -838,16 +838,27 @@ def store_outgoing(
             ''', (network, to_id, content, channel, to_id is not None,
                   bool(delivered), _valid_packet_id(packet_id)))
             message_id = cursor.lastrowid
+            conn.commit()        # the send record first: a stamp fault never costs it (r6 #10)
             pid = _valid_packet_id(packet_id)
+            stamped = None
             if (to_id is not None and pid is not None and isinstance(own_id, int)
                     and not isinstance(own_id, bool) and 0 < own_id < 0xFFFFFFFF):
-                conn.execute("INSERT OR REPLACE INTO dm_origin (message_id, packet_id, own_id) "
-                             "VALUES (?, ?, ?)", (message_id, pid, own_id))
-            conn.commit()
+                try:
+                    conn.execute("INSERT OR REPLACE INTO dm_origin (message_id, packet_id, "
+                                 "own_id) VALUES (?, ?, ?)", (message_id, pid, own_id))
+                    conn.commit()
+                    stamped = True
+                except sqlite3.Error as e:
+                    logger.warning("dm_origin: own id not stamped on message %s: %s",
+                                   message_id, e)
+                    stamped = False
         finally:
             conn.close()
         _maybe_prune_messages()
-        return CommandResult.ok("Message recorded", data={'message_id': message_id})
+        data = {'message_id': message_id}
+        if stamped is not None:
+            data['stamped'] = stamped
+        return CommandResult.ok("Message recorded", data=data)
     except Exception as e:
         logger.error(f"Failed to record outgoing message: {e}")
         return CommandResult.fail(f"Failed to record outgoing message: {e}")
@@ -1029,18 +1040,42 @@ def keep_dm(items: List[tuple], now: Optional[float] = None) -> None:
 def dm_origins(sends: List[tuple]) -> Dict[int, int]:
     """``{message_id: own_id}`` -- this box's radio id stamped AT SEND, for
     ``[(message_id, packet_id)]`` (only rows whose packet id matches).
-    Absent = unknown at send. Raises on a store error: the caller says so."""
+    Absent = unknown at send. A row no writer here can have stored is
+    ``OWN_UNREADABLE`` -- never "absent", which would defer to the header
+    (Fable r6 #5). Raises on a store error: the caller says so."""
     if not sends:
         return {}
+    from utils.dm_delivery import OWN_UNREADABLE
     conn = _init_db()
     try:
-        out: Dict[int, int] = {}
+        out: Dict[int, Any] = {}
         for mid, pid in sends:
             r = conn.execute("SELECT own_id FROM dm_origin WHERE message_id = ? "
                              "AND packet_id = ?", (mid, pid)).fetchone()
-            if r is not None and isinstance(r["own_id"], int) and r["own_id"] > 0:
-                out[mid] = r["own_id"]
+            if r is None:
+                continue
+            v = r["own_id"]
+            ok = isinstance(v, int) and not isinstance(v, bool) and 0 < v < 0xFFFFFFFF
+            out[mid] = v if ok else OWN_UNREADABLE
         return out
+    finally:
+        conn.close()
+
+
+def drop_dm_kept(items: List[tuple]) -> int:
+    """Remove kept verdicts for ``[(message_id, packet_id)]`` -- a kept
+    ``delivered`` the origin seam now refutes (Fable r6 #6). Returns the
+    number removed. Raises on a store error."""
+    if not items:
+        return 0
+    conn = _init_db()
+    try:
+        n = 0
+        for mid, pid in items:
+            n += conn.execute("DELETE FROM dm_kept WHERE message_id = ? AND packet_id = ?",
+                              (mid, pid)).rowcount
+        conn.commit()
+        return n
     finally:
         conn.close()
 

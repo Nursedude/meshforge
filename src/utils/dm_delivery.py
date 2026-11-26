@@ -31,6 +31,7 @@ refuses"), from the own node id stamped on the row AT SEND and the DM's
 own uplinked header; pinned by ``tests/test_dm_origin.py``.
 """
 
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional
@@ -88,6 +89,22 @@ class Origin:
     why: str = ""
 
 
+_NODE_ID = re.compile(r"![0-9a-fA-F]{8}")
+
+
+def _node_strict(v) -> Optional[int]:
+    """A real node: an int or a strict ``!xxxxxxxx``, never 0, never the
+    broadcast address, never a bool/float/empty (Fable r6 #4: a header
+    ``from=0`` was taken as a sender)."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, str):
+        v = int(v[1:], 16) if _NODE_ID.fullmatch(v) else None
+    if isinstance(v, int) and 0 < v < 0xFFFFFFFF:
+        return v
+    return None
+
+
 def dm_origin(dest, own_at_send, header_sender) -> Origin:
     """THE origin seam: was this DM to our own radio? Decided from EVERY
     source, and any doubt refuses (operator 11-26, after self-DM drew an
@@ -95,11 +112,11 @@ def dm_origin(dest, own_at_send, header_sender) -> Origin:
     id stamped on the row when it was sent; ``header_sender`` = the DM's own
     uplinked ``from``. Unknown or disagreeing -> never delivery, never kept.
     Table: ``tests/test_dm_origin.py``."""
-    d = _node_num(dest)
+    d = _node_strict(dest)
     if d is None:
         return Origin(ORIGIN_UNKNOWN, "the destination id is unreadable")
-    own = None if own_at_send is None else _node_num(own_at_send)
-    hdr = None if header_sender is None else _node_num(header_sender)
+    own = None if own_at_send is None else _node_strict(own_at_send)
+    hdr = None if header_sender is None else _node_strict(header_sender)
     if (own_at_send is not None and own is None) or (header_sender is not None and hdr is None):
         return Origin(ORIGIN_UNKNOWN, "an origin source is unreadable")
     if own is None and hdr is None:
