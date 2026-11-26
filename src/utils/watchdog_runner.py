@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from utils.rns_status_parser import run_rnstatus
+from utils.watchdog_knobs import rejected_knobs
 from utils.watchdog_probes import (
     SIGNAL_CLASSES,
     Signal,
@@ -961,6 +962,14 @@ def write_state(
     }
     if coverage is not None:
         payload["coverage"] = coverage
+    # knob posture (2026-11-26, hfm #9): an IGNORED knob's journal WARNING
+    # rotates away; this copy is what a probe or the map can still read
+    try:
+        payload["knobs"] = {"effective": resolve_watchdog_knobs(),
+                            "rejected": rejected_knobs()}
+    except Exception as exc:   # posture is best-effort; never lose the signals
+        logger.warning("watchdog: knob posture unavailable: %s", exc)
+        payload["knobs"] = {"state": "unavailable"}
 
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)

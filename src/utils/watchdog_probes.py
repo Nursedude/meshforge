@@ -278,10 +278,15 @@ def resolve_watchdog_knobs() -> dict:
     The daemon calls this at startup so an ignored value is witnessed before
     the incident it would have mis-tuned, and logs the result — a daemon
     that says its posture (2026-10-28). NOT every watchdog knob: the mini
-    probes' import-time knobs are not covered yet."""
+    probes' knobs are parsed once at IMPORT, so theirs are reported from
+    the module constants the probes actually use — never a re-read of the
+    env, which would show a value no probe is running with."""
+    from utils import watchdog_probes_mini as _mini
     return {
         "rpc_confirm_ticks": _rpc_confirm_ticks(),
         "lxmf_wedge_confirm_ticks": _lxmf_wedge_confirm_ticks(),
         "iface_down_confirm_ticks": _iface_down_confirm_ticks(),
         "rnstatus_slow_factor": _rnstatus_slow_factor(),
+        "calib_drift_recent_days": _mini.CALIB_DRIFT_RECENT_WINDOW_S / 86400.0,
+        "local_brain_regression_min_passes": _mini.LOCAL_BRAIN_REGRESSION_MIN_PRIOR_PASSES,
     }

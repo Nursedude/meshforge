@@ -63,7 +63,7 @@ def _watchdog_functions():
 def test_defined_once_in_core():
     homes = [f for f, n in _watchdog_functions()
              if n.name.lstrip("_") == "env_confirm_ticks"]
-    assert homes == ["watchdog_probe_core.py"]
+    assert homes == ["watchdog_knobs.py"]   # the knob family moved out of core (MF025, 11-26)
 
 
 def test_no_tick_knob_parses_the_environment_itself():

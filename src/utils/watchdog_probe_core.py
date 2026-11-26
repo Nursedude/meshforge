@@ -1436,54 +1436,14 @@ def _operator_cron_wired_uncached(token: str) -> Optional[bool]:
                     return True
     return None if blind else False
 
-
-_rejected_knobs: set = set()
-_PLAIN_DECIMAL = re.compile(r"[0-9]+(?:\.[0-9]+)?")
-
-
-def _warn_ignored_knob(env_name: str, raw: str, why: str, default) -> None:
-    """One WARNING per (knob, value): an ignored knob is a swallow that must
-    leave a witness (hfm #9), but not on every tick."""
-    if (env_name, raw) in _rejected_knobs:
-        return
-    _rejected_knobs.add((env_name, raw))
-    logger.warning("watchdog: %s=%r is not %s; IGNORED, using the default "
-                   "of %s", env_name, raw, why, default)
-
-
-def env_confirm_ticks(env_name: str, default: int) -> int:
-    """One parser for every N-consecutive-ticks knob (hfm #5): resolved per
-    call so an operator can retune without a restart.
-
-    Only a plain positive integer is honoured. Anything else ("3.0", "1_000",
-    "0", "O") falls back to ``default`` and leaves a WARNING, once per bad
-    value: a knob that silently does nothing is a swallow with no witness
-    (hfm #9), and the operator believes the retune is live."""
-    raw = os.environ.get(env_name)
-    if raw is None:
-        return default
-    text = raw.strip()
-    if text.isdigit() and text.isascii() and int(text) >= 1:
-        return int(text)
-    _warn_ignored_knob(env_name, raw, "a positive integer",
-                       f"{default} tick(s)")
-    return default
-
-
-def env_float_above(env_name: str, default: float, floor: float) -> float:
-    """A float knob: a plain decimal ("2.5", "4"), finite, above ``floor``.
-
-    float() alone accepts "inf" and "nan" — and "inf" passes a ``> floor``
-    check, so a multiplier knob could switch its alarm arm off unseen. It
-    also takes "1_0", "+3" and non-ASCII digits, which ``env_confirm_ticks``
-    rejects: one knob family, one notion of a valid value."""
-    raw = os.environ.get(env_name)
-    if raw is None:
-        return default
-    text = raw.strip()
-    if _PLAIN_DECIMAL.fullmatch(text):
-        value = float(text)
-        if math.isfinite(value) and value > floor:
-            return value
-    _warn_ignored_knob(env_name, raw, f"a finite number above {floor}", default)
-    return default
+# Knob parsers live in utils.watchdog_knobs (MF025 split, 2026-11-26);
+# re-exported so every existing `from utils.watchdog_probe_core import` holds.
+from utils.watchdog_knobs import (  # noqa: E402,F401
+    _PLAIN_DECIMAL,
+    _rejected_knobs,
+    _warn_ignored_knob,
+    env_confirm_ticks,
+    env_float_above,
+    env_int_at_least,
+    rejected_knobs,
+)

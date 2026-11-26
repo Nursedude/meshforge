@@ -21,6 +21,7 @@ from utils.watchdog_probe_core import (
     note_disposition,
     note_unit_presence_gate,
 )
+from utils.watchdog_knobs import env_float_above, env_int_at_least
 
 # ─────────────────────────────────────────────────────────────────────
 # Probes: mini-dudeai self-health (audit 2026-06-09)
@@ -1061,11 +1062,12 @@ _CALIB_LEDGER_NAME = "calibration_ledger.jsonl"
 # PRIOR runs before a current failure counts as a regression (not first-eval
 # noise / best-of-N flakiness on a brand-new case). Env-overridable.
 _EVAL_LEDGER_NAME = "local_brain_evals.jsonl"
-try:
-    LOCAL_BRAIN_REGRESSION_MIN_PRIOR_PASSES = int(
-        os.environ.get("MESHFORGE_LOCAL_BRAIN_REGRESSION_MIN_PASSES", "2"))
-except (TypeError, ValueError):
-    LOCAL_BRAIN_REGRESSION_MIN_PRIOR_PASSES = 2
+def _local_brain_min_prior_passes() -> int:
+    """Plain integer >= 0; anything else is IGNORED with a witness."""
+    return env_int_at_least("MESHFORGE_LOCAL_BRAIN_REGRESSION_MIN_PASSES", 2, 0)
+
+
+LOCAL_BRAIN_REGRESSION_MIN_PRIOR_PASSES = _local_brain_min_prior_passes()
 
 # Recency window for calibration_drift (2026-06-19, self-audit-qa-arc §1): a broke
 # claim older than this no longer fires the alert — so the signal can CLEAR once
@@ -1075,11 +1077,13 @@ except (TypeError, ValueError):
 # lifetime held/broke RATIO stays visible in the warm-brief ledger block
 # regardless — this alert reflects "am I CURRENTLY miscalibrating," the brief
 # keeps the full history. Env-overridable; default 7 days.
-try:
-    CALIB_DRIFT_RECENT_WINDOW_S = float(
-        os.environ.get("MESHFORGE_CALIB_DRIFT_RECENT_DAYS", "7")) * 86400.0
-except (TypeError, ValueError):
-    CALIB_DRIFT_RECENT_WINDOW_S = 7 * 86400.0
+def _calib_drift_recent_days() -> float:
+    """Finite plain decimal above 0 (nan made every age<window False; inf
+    pinned one old broke claim forever); anything else IGNORED + witnessed."""
+    return env_float_above("MESHFORGE_CALIB_DRIFT_RECENT_DAYS", 7.0, 0.0)
+
+
+CALIB_DRIFT_RECENT_WINDOW_S = _calib_drift_recent_days() * 86400.0
 
 
 def probe_calibration_drift(
