@@ -1194,6 +1194,11 @@ def run_loop(
     logger.info("watchdog: rehydrated %d signal(s) from prior state", rehydrated)
     logger.info("watchdog: knobs %s", " ".join(
         f"{k}={v}" for k, v in resolve_watchdog_knobs().items()))
+    for rej in rejected_knobs():
+        # an import-time parse warned before logging was configured; say it
+        # again here, formatted and timestamped (review r1 nit)
+        logger.warning("watchdog: knob %s=%r was IGNORED (default in use)",
+                       rej["knob"], rej["value"])
     probe_count = 0
     rns_instance = _read_rns_instance_name()
     if rns_instance:

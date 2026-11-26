@@ -74,6 +74,10 @@ def watchdog_block_from_payload(
     # class dark), never as clean.
     if isinstance(payload.get("coverage"), dict):
         block["coverage"] = payload["coverage"]
+    # knob posture (effective + IGNORED values, 2026-11-26): the journal
+    # WARNING rotates away, so this is the witness an operator can still read
+    if isinstance(payload.get("knobs"), dict):
+        block["knobs"] = payload["knobs"]
     if no_ts:
         block["reason"] = ("no_tick_timestamp: watchdog state lacks a numeric ts — "
                            "freshness unobservable, treating as not-ok")

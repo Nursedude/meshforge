@@ -1231,7 +1231,7 @@ def probe_local_brain_regressed(
     ledger_path: Optional[str] = None,
     records: Optional[list] = None,
     now_ts: Optional[float] = None,
-    min_prior_passes: int = LOCAL_BRAIN_REGRESSION_MIN_PRIOR_PASSES,
+    min_prior_passes: Optional[int] = None,
 ) -> Optional[Signal]:
     """Fire when a local-brain eval case REGRESSED — passed ``min_prior_passes``
     times in earlier runs, now fails in its most-recent run.
@@ -1264,6 +1264,8 @@ def probe_local_brain_regressed(
     (never a false clean); no regressed case -> clean. degraded only; the seed
     routes it escalate-only (NO ntfy page). Never raises into the tick."""
     cls = "local_brain_regressed"
+    if min_prior_passes is None:   # call time: the value resolve_watchdog_knobs reports
+        min_prior_passes = LOCAL_BRAIN_REGRESSION_MIN_PRIOR_PASSES
     try:
         if records is None:
             if ledger_path is None:

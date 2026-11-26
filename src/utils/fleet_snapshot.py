@@ -1408,6 +1408,9 @@ def _watchdog_block() -> Dict[str, Any]:
         "probe_count": payload.get("probe_count"),
         "signals": payload.get("signals", []),
     }
+    # knob posture rides on (same rule as status_blocks; test-pinned twins)
+    if isinstance(payload.get("knobs"), dict):
+        block["knobs"] = payload["knobs"]
     if stale:
         block["reason"] = (
             f"stale: last write {age_s:.0f}s ago "

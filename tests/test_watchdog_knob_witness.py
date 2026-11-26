@@ -58,6 +58,10 @@ def test_slow_factor_warns_once_per_value(monkeypatch, caplog):
 
 
 def test_resolve_reports_every_knob_at_its_effective_value(monkeypatch):
+    from utils import watchdog_probes_mini as _wpm
+    # import-time constants: pin them, never trust the collecting env (review r1 nit)
+    monkeypatch.setattr(_wpm, "CALIB_DRIFT_RECENT_WINDOW_S", 7 * 86400.0)
+    monkeypatch.setattr(_wpm, "LOCAL_BRAIN_REGRESSION_MIN_PRIOR_PASSES", 2)
     monkeypatch.setenv("MESHFORGE_RNS_IFACE_DOWN_CONFIRM_TICKS", "4")
     got = resolve_watchdog_knobs()
     assert got == {"rpc_confirm_ticks": 3, "lxmf_wedge_confirm_ticks": 5,
@@ -154,3 +158,52 @@ def test_clean_knobs_write_an_empty_rejected_list(tmp_path):
     out = tmp_path / "watchdog.json"
     wr.write_state(out, host="h", now=1.0, probe_count=0, active_signals=[])
     assert _json.loads(out.read_text())["knobs"]["rejected"] == []
+
+
+# ── review r1 (083b3deb..ac7b25cd) IMPORTANT: the knobs block had no reader ──
+# watchdog.json carried it, but both transforms that hand watchdog state on
+# (/api/status via status_blocks, the fleet view via fleet_snapshot) copied
+# only ts/ok/probe_count/signals(/coverage) — the witness died at the file.
+_KNOBS_BLOCK = {"effective": {"calib_drift_recent_days": 7.0},
+                "rejected": [{"knob": _DRIFT, "value": "nan"}]}
+
+
+def test_api_status_block_carries_the_knobs():
+    from utils.status_blocks import watchdog_block_from_payload
+    block = watchdog_block_from_payload(
+        {"ts": 100.0, "ok": True, "signals": [], "knobs": _KNOBS_BLOCK}, now=101.0)
+    assert block["knobs"] == _KNOBS_BLOCK
+
+
+def test_fleet_snapshot_block_carries_the_knobs(monkeypatch, tmp_path):
+    import json as _json
+    import time as _time
+    from utils import fleet_snapshot as fs
+    p = tmp_path / "watchdog.json"
+    p.write_text(_json.dumps({"ts": _time.time(), "ok": True, "signals": [],
+                              "knobs": _KNOBS_BLOCK}))
+    monkeypatch.setattr(fs, "_WATCHDOG_STATE_PATH", str(p))
+    assert fs._watchdog_block()["knobs"] == _KNOBS_BLOCK
+
+
+def test_a_knobs_block_that_is_not_an_object_is_not_passed_on():
+    from utils.status_blocks import watchdog_block_from_payload
+    block = watchdog_block_from_payload(
+        {"ts": 100.0, "ok": True, "signals": [], "knobs": ["junk"]}, now=101.0)
+    assert "knobs" not in block
+
+
+def test_the_probe_uses_the_constant_the_report_names(monkeypatch):
+    """review r1 nit: a def-time default froze the value; resolve read the
+    module constant — the two could disagree. Now the probe reads it at call."""
+    import inspect
+    assert inspect.signature(wpm.probe_local_brain_regressed).parameters[
+        "min_prior_passes"].default is None
+
+
+def test_startup_names_each_rejected_knob_in_the_formatted_log():
+    src = (Path(__file__).resolve().parent.parent / "src" / "utils"
+           / "watchdog_runner.py").read_text(encoding="utf-8")
+    run_loop = src[src.index("rehydrated = tracker.rehydrate"):]
+    run_loop = run_loop[:run_loop.index("phase2_config = phase2_config or")]
+    assert "for rej in rejected_knobs():" in run_loop
